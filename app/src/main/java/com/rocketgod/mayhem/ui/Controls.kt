@@ -211,7 +211,9 @@ fun AdaptivePane(
         }
     } else {
         Column(Modifier.fillMaxSize()) {
-            if (visualHeightNarrow != null) visual(Modifier.fillMaxWidth().height(visualHeightNarrow))
+            // an upright tablet has the height for a real waterfall: at least a third of the screen
+            val h = visualHeightNarrow?.let { if (d.cls != ScreenClass.COMPACT) maxOf(it, (d.heightDp * 0.32f).dp) else it }
+            if (h != null) visual(Modifier.fillMaxWidth().height(h))
             else visual(Modifier.fillMaxWidth().weight(1f))
             controls()
         }

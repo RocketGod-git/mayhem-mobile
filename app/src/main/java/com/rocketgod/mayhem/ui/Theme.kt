@@ -102,7 +102,8 @@ fun rememberDims(): Dims {
     val w = cfg.screenWidthDp; val h = cfg.screenHeightDp
     return remember(w, h) {
         val cls = when { w >= 840 -> ScreenClass.EXPANDED; w >= 600 -> ScreenClass.MEDIUM; else -> ScreenClass.COMPACT }
-        val wide = w >= 720 || (w > h && w >= 560)
+        // side by side when the screen is on its side; a tablet held upright stacks like a phone, only bigger
+        val wide = (w > h && w >= 560) || w >= 1100
         val scale = when (cls) { ScreenClass.COMPACT -> 1f; ScreenClass.MEDIUM -> 1.15f; ScreenClass.EXPANDED -> 1.3f }
         Dims(cls, wide, scale, w, h)
     }
