@@ -57,7 +57,7 @@ fun ProwlScreen(accent: Color) {
     ) {
         ScrollColumn(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                Chip(if (v.on) "STOP HUNTING" else "HUNT", selected = v.on, accent = accent, modifier = Modifier.weight(2f)) { if (v.on) Prowl.stop() else Prowl.start() }
+                Chip(if (v.on) "STOP HUNTING" else "HUNT", selected = true, accent = if (v.on) Palette.danger else accent, modifier = Modifier.weight(2f)) { if (v.on) Prowl.stop() else Prowl.start() }
                 Chip(if (v.on) "SKIP" else "NEXT", selected = false, accent = accent, modifier = Modifier.weight(1f)) { Prowl.skip() }
             }
             SectionLabel("NOW")

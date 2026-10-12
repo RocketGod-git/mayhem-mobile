@@ -69,7 +69,7 @@ fun SettingsScreen(accent: Color) {
             }
         }
         Box(Modifier.height(d.dp(8f)))
-        SectionLabel("TRANSMIT · off by default — you are responsible for what you send")
+        SectionLabel("TRANSMIT · on, with a safety prompt before the first send — you are responsible for what you send")
         val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
         Column(Modifier.fillMaxWidth().panel(if (txOn) Palette.danger else Palette.line).padding(d.dp(10f))) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
