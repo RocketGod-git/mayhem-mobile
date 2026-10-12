@@ -131,6 +131,7 @@ let scanTimer = 0, scanIdx = 0, scanHopAt = 0;
 const logs: Record<string, string[]> = {};
 const counts: Record<string, number> = {};
 const diag: string[] = [];
+let logFollow = true;   // stops when the reader scrolls up, resumes at the bottom
 let radio: Radio | null = null;
 // Transmit is a HackRF capability and there is no polite way to fake it: a dongle receives only. Handing the
 // transmitter nothing when an RTL-SDR is connected is what makes every send path refuse cleanly.
@@ -158,11 +159,25 @@ function log(line: string): void {
   const t = new Date();
   const ts = `${t.getHours().toString().padStart(2, '0')}:${t.getMinutes().toString().padStart(2, '0')}:${t.getSeconds().toString().padStart(2, '0')}.${t.getMilliseconds().toString().padStart(3, '0')}`;
   diag.push(`${ts} ${line}`);
-  if (diag.length > 400) diag.shift();
+  if (diag.length > 4000) diag.shift();
   console.log('[mayhem]', line);
   const el = $('log');
-  if (el && !$('log-panel').hidden) el.textContent = diag.slice(-16).join('\n');
+  if (el && !$('log-panel').hidden) { el.textContent = diag.join('\n'); if (logFollow) el.scrollTop = el.scrollHeight; }
 }
+
+/** What a shared log needs in order to mean anything: the build, the browser, the screen and the radio. */
+function logHeader(): string {
+  const s = screen;
+  return [
+    `Mayhem Mobile (web) ${versionText}`,
+    `${navigator.userAgent}`,
+    `platform ${navigator.platform || '?'} \u00b7 ${s.width}x${s.height} @${devicePixelRatio}x \u00b7 ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+    `radio ${state.board ? `${state.board}${state.firmware ? ' \u00b7 fw ' + state.firmware : ''}` : 'none attached'}`,
+    `captured ${new Date().toISOString()} \u00b7 ${diag.length} lines`,
+  ].join('\n');
+}
+
+function logText(): string { return logHeader() + '\n\n' + diag.join('\n'); }
 function setTools(open: boolean): void {
   $('toolbar').classList.toggle('open', open);
   $('tools').textContent = open ? '✕' : '☰';
@@ -3050,7 +3065,7 @@ function renderSettings(view: HTMLElement): void {
     </div>
     <div class="caption">APP</div>
     <div class="panel about">
-      <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button>${isAndroid() ? `<a id="apk" class="chip primary" href="${apkUrl}" download="mayhem.apk">DOWNLOAD ANDROID APK</a>` : ''}</div>
+      <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button>${isAndroid() ? `<a class="chip primary" href="https://play.google.com/store/apps/details?id=com.rocketgod.mayhem">GET IT ON GOOGLE PLAY</a><a id="apk" class="chip" href="${apkUrl}" download="mayhem.apk">DOWNLOAD APK</a>` : ''}</div>
       ${isAndroid() ? `<div class="kv"><span>APK</span><span>The native app auto-launches when the HackRF is plugged in and keeps running in the background. It is served from this site, built from the same commit as the page you are reading, so it needs no GitHub account and can never be a different version from this one.</span></div>` : ''}
       <div class="kv"><span>Mayhem Mobile</span><span>${versionText} — one build, two shells: this desktop web app in any Chrome/Edge browser, and an APK that installs on Android phones</span></div>
       <div class="kv"><span>Device</span><span>${state.board ? (radio?.kind === 'rtlsdr' ? state.board : `${state.board} · fw ${state.firmware}`) : 'no radio attached'}</span></div>
@@ -3906,7 +3921,47 @@ function init(): void {
   $('hint').onclick = () => hideHint();
   bindDesktop();
   scrollHints();
-  $('log-toggle').onclick = () => { const p = $('log-panel'); p.hidden = !p.hidden; $('log-toggle').classList.toggle('on', !p.hidden); $('log').textContent = diag.slice(-16).join('\n'); };
+  const panel = $('log-panel'), body = $('log');
+  const refreshLog = () => { $('log-head').textContent = logHeader(); body.textContent = diag.join('\n'); if (logFollow) body.scrollTop = body.scrollHeight; };
+  $('log-toggle').onclick = () => { panel.hidden = !panel.hidden; $('log-toggle').classList.toggle('on', !panel.hidden); if (!panel.hidden) refreshLog(); };
+  $('log-close').onclick = () => { panel.hidden = true; $('log-toggle').classList.remove('on'); };
+  $('log-clear').onclick = () => { diag.length = 0; refreshLog(); };
+  $('log-pip').onclick = () => {
+    const pip = panel.classList.toggle('pip');
+    $('log-pip').textContent = pip ? 'FULL' : 'PIP';
+    if (pip) { panel.style.left = '12px'; panel.style.top = '12px'; } else { panel.style.left = panel.style.top = ''; }
+  };
+  // Auto-follow the tail, but stop the moment the reader scrolls away from the bottom.
+  body.addEventListener('scroll', () => { logFollow = body.scrollTop + body.clientHeight >= body.scrollHeight - 4; });
+  $('log-save').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([logText()], { type: 'text/plain' }));
+    a.download = `mayhem-${new Date().toISOString().replace(/[:.]/g, '-')}.log`;
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  $('log-share').onclick = async () => {
+    const file = new File([logText()], 'mayhem.log', { type: 'text/plain' });
+    // Only some browsers can share a file; the rest get the text, and failing that the clipboard.
+    try {
+      if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: 'Mayhem Mobile log' }); return; }
+      if (navigator.share) { await navigator.share({ title: 'Mayhem Mobile log', text: logText().slice(0, 4000) }); return; }
+      await navigator.clipboard.writeText(logText()); log('log copied to the clipboard');
+    } catch { /* the user dismissed the sheet */ }
+  };
+  // Drag the window by its bar. Pointer events cover mouse and touch with one path.
+  let dragging = false, dx = 0, dy = 0;
+  const bar = $('log-bar');
+  bar.addEventListener('pointerdown', e => {
+    if (!panel.classList.contains('pip')) return;
+    dragging = true; bar.setPointerCapture(e.pointerId);
+    dx = e.clientX - panel.offsetLeft; dy = e.clientY - panel.offsetTop;
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    panel.style.left = `${Math.max(0, Math.min(innerWidth - panel.offsetWidth, e.clientX - dx))}px`;
+    panel.style.top = `${Math.max(0, Math.min(innerHeight - panel.offsetHeight, e.clientY - dy))}px`;
+  });
+  bar.addEventListener('pointerup', () => { dragging = false; });
   $('title').onclick = () => { if (state.app) open(null); };
   window.addEventListener('popstate', () => { if (state.app) open(null); });
   window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); });

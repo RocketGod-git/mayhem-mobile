@@ -35,6 +35,23 @@ button { font: inherit; }
 .link { background: none; border: 0; color: var(--muted); letter-spacing: 2px; font-size: 10px; cursor: pointer; padding: 4px 6px; }
 .row { display: flex; gap: 6px; }
 .row > .chip, .row > .stepper { flex: 1; min-width: 0; text-align: center; }
+/* The log is a window, not a strip: full screen by default, or a small panel dragged by its title bar
+   over whatever app is open, so a decode can be watched while the log scrolls. */
+.logwin { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  background: var(--bg); border: 1px solid var(--accent); }
+.logwin[hidden] { display: none; }
+.logwin.pip { inset: auto; width: min(340px, 86vw); height: min(260px, 42vh); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.6); }
+.logwin-bar { display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--line);
+  cursor: grab; touch-action: none; }
+.logwin.pip .logwin-bar { cursor: grab; }
+.logwin-bar .chip { padding: 6px 8px; font-size: 11px; }
+.logwin-title { color: var(--accent); font-weight: 900; letter-spacing: 2px; font-size: 12px; padding: 0 4px; }
+.logwin-head { margin: 0; padding: 6px 8px; color: var(--accent2); font-size: 10px; line-height: 1.5;
+  border-bottom: 1px solid var(--line); white-space: pre-wrap; }
+.logwin-body { margin: 0; padding: 8px; flex: 1; overflow: auto; color: var(--ink); font-size: 11px;
+  line-height: 1.45; white-space: pre-wrap; }
+
 /* For rows with more buttons than fit a phone: wrap instead of squeezing each into an ellipsis. */
 .row.wrap { flex-wrap: wrap; }
 .row.wrap > .chip { flex: 1 1 30%; }   /* a basis of a third gives three to a row, evenly, at any width */
@@ -421,7 +438,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.adsb .scope .sp, .view.sat .scope .sp, .view.ais .scope .sp, .view.aprs .scope .sp, .view.ham[data-tab="log"] .scope .sp, .view.ham[data-tab="sat"] .scope .sp { height: 40px !important; }
   .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls, .view.ham[data-tab="log"] .controls, .view.ham[data-tab="sat"] .controls { flex: 1; max-height: none; min-height: 0; }
   .view.ham[data-tab="log"] .map, .view.ham[data-tab="sat"] .map { height: 36vh; min-height: 200px; }
-  #log-panel { max-height: 22vh; overflow: auto; }
   .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls { display: flex; flex-direction: column; }
   .view.adsb .map, .view.ais .map, .view.aprs .map { flex: none; height: 30vh; min-height: 180px; }
   /* Passes are only a handful — let the list grow to show them all rather than trapping them in a little scroll
