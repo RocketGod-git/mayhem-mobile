@@ -32,6 +32,9 @@ fun hexBytes(b: UBytes, n: Int = b.length, at: Int = 0): String { val sb = Strin
 /** JavaScript's Number#toFixed for the usual small precisions. */
 fun fixed(x: Double, digits: Int): String = java.math.BigDecimal(x).setScale(digits, java.math.RoundingMode.HALF_UP).toPlainString()
 
+/** A number as JavaScript's String() would write it: integral values carry no ".0". */
+fun jsNum(x: Double): String = if (x == kotlin.math.floor(x) && kotlin.math.abs(x) < 1e15) x.toLong().toString() else x.toString()
+
 /** A device entry with the usual timings; everything else by name. */
 fun dev(
     num: Int, name: String, modulation: Int, shortWidth: Number, longWidth: Number, resetLimit: Number,
