@@ -7,6 +7,9 @@ import org.junit.Test
 import kotlin.math.abs
 import kotlin.math.max
 
+/** Decoders that carry state between calls, so a lone captured frame cannot be replayed blind. */
+private val STATEFUL = setOf(164, 178)
+
 /**
  * Every protocol against the web app's own decodes: each fixture is a bit buffer exactly as a decoder received it
  * while web/test ran, with what that decoder emitted. The Kotlin decoder must produce the same readings, field
@@ -42,7 +45,8 @@ class R433FixtureTest {
         for (i in 0 until fixtures.length()) {
             val f = fixtures.getJSONObject(i)
             val dev = byNum[f.getInt("num")]
-            if (dev == null) { skipped++; continue }
+            // Security+ pairs two halves across calls, and the capture holds only the completing half; SecplusTest covers it.
+            if (dev == null || dev.num in STATEFUL) { skipped++; continue }
             run++
             val bits = BitBuffer()
             val rows = f.getJSONArray("rows")
