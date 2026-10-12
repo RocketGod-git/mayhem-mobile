@@ -4,11 +4,18 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.rocketgod.mayhem.Diag
+import com.rocketgod.mayhem.core.audio.HdDetector
+import com.rocketgod.mayhem.core.audio.HdReport
+import com.rocketgod.mayhem.core.audio.RdsDecoder
+import com.rocketgod.mayhem.core.audio.RdsState
+import com.rocketgod.mayhem.core.audio.SameDecoder
+import com.rocketgod.mayhem.core.audio.SameEvent
 import com.rocketgod.mayhem.usb.HackRfOne
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ArrayBlockingQueue
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
@@ -103,6 +110,31 @@ object SdrEngine {
     private val voiceDet = VoiceDetector()
     private val _voice = MutableStateFlow<VoiceScore?>(null)
     val voice: StateFlow<VoiceScore?> = _voice.asStateFlow()
+    /** RDS, from the WFM composite: station name, programme type, RadioText, alternative frequencies. */
+    @Volatile private var rdsOn = false
+    private val _rdsWanted = MutableStateFlow(false)
+    val rdsWanted: StateFlow<Boolean> = _rdsWanted.asStateFlow()
+    private val _rds = MutableStateFlow<RdsState?>(null)
+    val rds: StateFlow<RdsState?> = _rds.asStateFlow()
+    private val rdsDec = RdsDecoder { _rds.value = it }
+    fun setRds(on: Boolean) { rdsOn = on; _rdsWanted.value = on; if (!on) _rds.value = null }
+
+    /** Whether a WFM station carries HD Radio sidebands; detection only, the codec is proprietary. */
+    @Volatile private var hdOn = false
+    private val _hdWanted = MutableStateFlow(false)
+    val hdWanted: StateFlow<Boolean> = _hdWanted.asStateFlow()
+    private val _hd = MutableStateFlow<HdReport?>(null)
+    val hd: StateFlow<HdReport?> = _hd.asStateFlow()
+    private val hdDet = HdDetector { _hd.value = it }
+    fun setHd(on: Boolean) { hdOn = on; _hdWanted.value = on; if (!on) _hd.value = null }
+
+    /** NOAA Weather Radio / EAS alerts, watched on NFM while the Audio app is open. */
+    @Volatile var sameOn = false
+    private val _same = MutableStateFlow<SameEvent?>(null)
+    val same: StateFlow<SameEvent?> = _same.asStateFlow()
+    private val sameDec = SameDecoder { if (it.event != "tone") _same.value = it }
+    fun dismissSame() { _same.value = null }
+
     fun listenForVoice(on: Boolean) { if (on != voiceOn) { voiceDet.reset(); _voice.value = null }; voiceOn = on }
 
     @Volatile private var sampleRate = IQ_RATE
@@ -222,6 +254,9 @@ object SdrEngine {
         val cwin = FloatArray(CLS_N) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / CLS_N)).toFloat() }
         var cFrames = 0; var lastCls = 0L; var clsRate = 0; var clsFreq = 0L; var clsQuietUntil = 0L
         var lastVoice = 0L
+        val rdsBuf = FloatArray(8192); var rdsN = 0; var rdsWas = false; var rdsFreq = 0L
+        val sameBuf = FloatArray(4096); var sameN = 0; var sameWas = false
+        var hdWas = false
         try {
             while (!stopWorker) {
                 val item = try { queue.take() } catch (e: InterruptedException) { break }
@@ -239,6 +274,8 @@ object SdrEngine {
                     prevI = 0f; prevQ = 0f; deemph = 0f; amDc = 0f; wph = 0.0
                     lpI1 = 0f; lpI2 = 0f; lpQ1 = 0f; lpQ2 = 0f
                     decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0
+                    rdsN = 0; sameN = 0
+                    if (m != Mode.WFM) { rdsDec.reset(); hdDet.reset(); _rds.value = null; _hd.value = null }
                     prevMode = m
                 }
                 val wantTrack = m != Mode.NONE || p?.producesAudio == true
@@ -317,6 +354,15 @@ object SdrEngine {
                     }
                 } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
 
+                val wantRds = rdsOn && m == Mode.WFM
+                val tuned = _freqHz.value
+                if (wantRds != rdsWas || (wantRds && tuned != rdsFreq)) { rdsDec.reset(); rdsN = 0; rdsWas = wantRds; rdsFreq = tuned; if (wantRds) _rds.value = null }
+                val wantSame = sameOn && m == Mode.NFM
+                if (wantSame != sameWas) { sameDec.reset(0); sameN = 0; sameWas = wantSame }
+                val wantHd = hdOn && m == Mode.WFM
+                if (wantHd != hdWas) { hdDet.reset(); hdWas = wantHd }
+                if (wantHd && abs(_offsetHz.value) < rate / 2 - 240_000) runCatching { hdDet.push(item, nSamp, rate, _offsetHz.value.toDouble()) }
+
                 // ---- demod → audio (+ FM tap for packet processors) ----
                 if (m != Mode.NONE) {
                     // Two-stage decimation. Stage 1 is the channel filter (complex boxcar) down to an intermediate
@@ -360,6 +406,8 @@ object SdrEngine {
                                     prevI = ci; prevQ = cq; d
                                 }
                             }
+                            if (wantRds) { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.size) { runCatching { rdsDec.push(rdsBuf, rdsN, interRate) }; rdsN = 0 } }
+                            if (wantSame) { sameBuf[sameN++] = s; if (sameN >= sameBuf.size) { runCatching { sameDec.onFm(sameBuf, sameN, interRate) }; sameN = 0 } }
                             if (wantFm) {
                                 fmBuf[fmN++] = s
                                 if (fmN >= fmBuf.size) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }

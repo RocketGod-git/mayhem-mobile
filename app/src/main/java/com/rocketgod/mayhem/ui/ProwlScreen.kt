@@ -37,6 +37,7 @@ fun ProwlScreen(accent: Color) {
     val signals by SdrEngine.signals.collectAsState()
     val v by Prowl.view.collectAsState()
     val t = v.target
+    val held = v.held
 
     val chBw = (t?.bw ?: 12_500.0).coerceAtLeast(6_000.0)
     val chFrac = (0.5 + offset.toDouble() / rate).toFloat()
@@ -66,7 +67,7 @@ fun ProwlScreen(accent: Color) {
                     t != null -> Triple("${Prowl.mhz(t.hz)} MHz · $mode",
                         "${t.cls.ifEmpty { "unclassified" }} · ${t.peak.roundToInt()} dB · ${v.dwellS}s",
                         "speech ${"%.2f".format(v.score)}, best ${"%.2f".format(v.best)}${if (t.judged) "" else " · deciding"}")
-                    v.held != null -> Triple("HOLDING ${Prowl.mhz(v.held)} MHz", "listening here until you press HUNT",
+                    held != null -> Triple("HOLDING ${Prowl.mhz(held)} MHz", "listening here until you press HUNT",
                         "${v.seen} in view · ${v.remembered} remembered")
                     else -> Triple(if (v.on) "HUNTING" else "STOPPED", "${v.seen} in view · ${v.ready} worth a try",
                         "${v.remembered} remembered${if (v.sweep) " · ${v.band.ifEmpty { "this span" }}" else ""}")
