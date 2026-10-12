@@ -232,7 +232,7 @@ const CAVIUS_MESSAGE: Record<number, string> = {
 };
 
 /**
- * A网 of alarms that all sound together, and say which of them started it.
+ * A network of alarms that all sound together, and say which of them started it.
  *
  * Every unit knows the identity of the master it was paired to as well as its own, so a message names both:
  * which network, and which detector in it. The message byte is sent twice, the second copy inverted, and a
