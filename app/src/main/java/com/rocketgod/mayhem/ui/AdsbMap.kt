@@ -33,7 +33,7 @@ import org.osmdroid.views.overlay.Overlay
 import kotlin.math.max
 
 /** OpenStreetMap tiles pushed to a dark, low-saturation look so the accent-coloured aircraft carry the scene. */
-private val DARK_TILE_FILTER = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply {
+internal val DARK_TILE_FILTER = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply {
     val invert = android.graphics.ColorMatrix(floatArrayOf(
         -1f, 0f, 0f, 0f, 255f,
         0f, -1f, 0f, 0f, 255f,

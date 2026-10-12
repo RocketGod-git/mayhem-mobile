@@ -9,6 +9,8 @@
     <!-- The phone's position: the CPR reference for single-frame ADS-B positions and the map's starting centre. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- HAM push-to-talk: the microphone, only while the PTT button is held. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="false"

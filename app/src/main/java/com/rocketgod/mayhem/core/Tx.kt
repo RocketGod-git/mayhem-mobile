@@ -65,6 +65,28 @@ object Tx {
     }
     fun stop() { HackRfOne.abortTx() }
 
+    /**
+     * Push-to-talk FM voice from the microphone: pre-emphasis and a limiter on the voice, an optional CTCSS tone
+     * underneath, until [stop]. [read] hands over one 48 kHz microphone sample at a time.
+     */
+    fun fmVoice(freqHz: Long, devHz: Double, ctcssHz: Double, read: () -> Float): Boolean {
+        var ph = 0.0; var tph = 0.0; var hold = 0.0; var sub = 0.0; var pre = 0.0
+        val inc = 2 * PI * OFFSET_HZ / RATE; val tInc = 2 * PI * ctcssHz / RATE; val step = Mic.RATE.toDouble() / RATE
+        return start("FM voice %.4f MHz".format(freqHz / 1e6), freqHz, RATE, OFFSET_HZ) { buf ->
+            val n = buf.size / 2
+            for (i in 0 until n) {
+                sub += step
+                if (sub >= 1) { sub -= 1; val a = read().toDouble(); pre = 0.7 * pre + (a - 0.7 * pre); hold = (pre * 2.5).coerceIn(-1.0, 1.0) }
+                val tone = if (ctcssHz > 0) 0.12 * sin(tph) else 0.0
+                tph += tInc; if (tph > 2 * PI) tph -= 2 * PI
+                ph += inc + 2 * PI * devHz * (hold * 0.85 + tone) / RATE
+                if (ph > 2 * PI) ph -= 2 * PI else if (ph < 0) ph += 2 * PI
+                buf[2 * i] = (AMP * cos(ph)).toInt().toByte(); buf[2 * i + 1] = (AMP * sin(ph)).toInt().toByte()
+            }
+            n * 2
+        }
+    }
+
     enum class SigMode(val label: String) { CW("CW carrier"), FM_TONE("FM tone"), AM_TONE("AM tone"), SWEEP("sweep ±50 kHz") }
 
     /** Signal generator: a carrier, an FM- or AM-modulated 1 kHz tone, or a slow sweep. [seconds] 0 = until stopped. */

@@ -153,6 +153,10 @@ class HamDemod : IqProcessor {
     /** Called from any thread; takes effect at the start of the next IQ buffer. */
     fun set(p: Params) { pending = p }
 
+    private val jobs = java.util.concurrent.ConcurrentLinkedQueue<() -> Unit>()
+    /** Run [job] on the DSP thread before the next buffer: decoder resets and swaps never land mid-buffer. */
+    fun onDsp(job: () -> Unit) { jobs.add(job) }
+
     private fun apply(p: Params) {
         val agcChanged = p.agc != params.agc
         params = p
@@ -249,6 +253,7 @@ class HamDemod : IqProcessor {
     }
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
+        while (true) { val j = jobs.poll() ?: break; runCatching { j() } }
         pending?.let { pending = null; apply(it) }
         if (rate != this.rate) reset(rate)
         rebuildFilters()                      // picks up a tap's channel width; a no-op when nothing changed
