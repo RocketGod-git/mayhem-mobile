@@ -70,6 +70,7 @@ object Apps {
         if (app != MayhemApp.SAT) com.rocketgod.mayhem.core.sat.Sats.close()
         if (app != MayhemApp.PROWL) Prowl.stop()          // the hunt owns the receiver; anything else takes it back
         SdrEngine.watchSignals = app == MayhemApp.PROWL
+        SdrEngine.sameOn = app == MayhemApp.AUDIO
         _current.value = app
         val r = SdrEngine.IQ_RATE
         when (app) {
@@ -108,6 +109,7 @@ object Apps {
         Scanner.stop()
         Prowl.stop()
         SdrEngine.watchSignals = false
+        SdrEngine.sameOn = false
         _current.value = null
         _sweep.value = null
         SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
@@ -117,6 +119,7 @@ object Apps {
     fun listen(freqHz: Long, mode: SdrEngine.Mode) {
         _sweep.value = null
         SdrEngine.watchSignals = false
+        SdrEngine.sameOn = true
         _current.value = MayhemApp.AUDIO
         SdrEngine.configure(mode, freqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
     }
