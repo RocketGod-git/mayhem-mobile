@@ -21,7 +21,15 @@ private object SecplusCache {
 
 private class V2Half(val fixed: UBytes, val roll: IntArray)
 
-private fun now() = System.currentTimeMillis()
+/** The clock, behind a seam so tests can age the cache without waiting. */
+internal var secplusClock: () -> Long = { System.currentTimeMillis() }
+private fun now() = secplusClock()
+
+/** Drop every held half. */
+internal fun secplusResetCache() = synchronized(SecplusCache) {
+    SecplusCache.v1Digits = null; SecplusCache.v1At = 0
+    SecplusCache.v2Half1 = null; SecplusCache.v2Half2 = null; SecplusCache.v2At = 0
+}
 
 private val V1_PRE_A = UBytes.of(0x02)
 private val V1_PRE_B = UBytes.of(0x07)
