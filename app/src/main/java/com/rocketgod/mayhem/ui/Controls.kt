@@ -27,6 +27,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -38,8 +40,9 @@ import com.rocketgod.mayhem.core.SdrEngine
 @Composable
 fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
     Box(
-        modifier.control(accent, selected).clickable { onClick() }.padding(vertical = d.dp(9f), horizontal = d.dp(6f)),
+        modifier.control(accent, selected).clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(vertical = d.dp(9f), horizontal = d.dp(6f)),
         contentAlignment = Alignment.Center
     ) {
         Text(label, color = if (selected) inkOn(accent) else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f),
