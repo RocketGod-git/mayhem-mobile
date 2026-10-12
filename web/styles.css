@@ -433,6 +433,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .launch-grid { display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 108px; gap: 6px; margin: 0; padding: 0 2px; }
   .launch-grid .tile { width: 108px; aspect-ratio: 1.1; scroll-snap-align: start; }
   .launch-side .foot, .launch-gain { display: none; }
+  /* The bands card is the last item in that swipe row. Nothing was setting its width, so it shrank to the
+     chips' own minimum (~39 px) and every label truncated to a single letter; two tiles' worth of width
+     gives three readable columns. */
+  .launch-side .launch-radio { flex: 0 0 222px; width: 222px; }
+  .launch-side .bandrow > .chip { flex: 1 1 30%; }
   .freq { font-size: 32px; }
   .countrow .count { letter-spacing: 1px; font-size: 10px; }
   /* Devices on a phone: the sheet is the app, so it gets most of the screen and the waterfall becomes a strip.
