@@ -1,11 +1,14 @@
 package com.rocketgod.mayhem.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.rocketgod.mayhem.core.SdrEngine
 
 /** A band worth a look, and the mode to hear it in; ISM and ADS-B have no voice mode, so NFM is the default to browse them. */
@@ -32,9 +35,15 @@ fun bandAt(hz: Long): ListenBand? = LISTEN_BANDS.firstOrNull { hz in it.lo..it.h
 fun ListenBandChips(accent: androidx.compose.ui.graphics.Color, hz: Long, onPick: (ListenBand) -> Unit) {
     val d = rememberDims()
     val lit = bandAt(hz)
-    for (row in LISTEN_BANDS.chunked(if (d.widthDp >= 600) 8 else 4)) {
-        Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (b in row) Chip(b.name, selected = b === lit, accent = accent, modifier = Modifier.weight(1f)) { onPick(b) }
+    // by the width this row actually has, not the screen's: a half-width pane on a phone on its side holds four
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val perRow = if (maxWidth >= 560.dp) 8 else 4
+        Column {
+            for (row in LISTEN_BANDS.chunked(perRow)) {
+                Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+                    for (b in row) Chip(b.name, selected = b === lit, accent = accent, modifier = Modifier.weight(1f)) { onPick(b) }
+                }
+            }
         }
     }
 }
