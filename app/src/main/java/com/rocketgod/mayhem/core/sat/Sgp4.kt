@@ -230,6 +230,9 @@ object Tles {
     private var dir: File? = null
     fun init(filesDir: File) { dir = filesDir }
 
+    /** Drop the cached element sets so the next request fetches fresh ones. */
+    fun forget() { dir?.listFiles()?.filter { it.name.startsWith("tle-") }?.forEach { it.delete() } }
+
     private fun get(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 10_000; c.readTimeout = 15_000; c.setRequestProperty("User-Agent", "MayhemMobile")
