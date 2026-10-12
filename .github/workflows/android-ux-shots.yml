@@ -5,8 +5,6 @@ name: Layout Shots
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ mobile-ux ]
 
 permissions:
   contents: read
