@@ -134,6 +134,7 @@ object HackRfOne {
             // and the same libhackrf command set, so this one driver handles One / One r9 / Pro / Jawbreaker / rad1o.
             val boardId = readBoardId()
             boardLabel = boardName(boardId)
+            SdrEngine.onBoard()
             Diag.log("HackRF: board id = $boardId ($boardLabel)")
             // Read-backs prove the control plane round-trips AND pin the exact firmware. A non-empty version string
             // here = host↔device control works, so any RX failure is downstream in the RF/mixer path, not transport.
