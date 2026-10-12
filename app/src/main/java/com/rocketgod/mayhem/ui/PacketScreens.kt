@@ -1,18 +1,14 @@
 package com.rocketgod.mayhem.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -20,14 +16,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.rocketgod.mayhem.core.AdsbStore
 import com.rocketgod.mayhem.core.Apps
-import com.rocketgod.mayhem.core.Geo
 import com.rocketgod.mayhem.core.PacketLog
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.apps.BtleDecoder
@@ -42,6 +35,7 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
     val freq by SdrEngine.freqHz.collectAsState()
     val count by log.count.collectAsState()
     val lines by log.lines.collectAsState()
+    var held by remember { mutableStateOf<List<String>?>(null) }
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
@@ -58,12 +52,14 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
         controls()
         GainRow(accent)
         Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("$count DECODED", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp)
-            Text("CLEAR", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp,
-                modifier = Modifier.padding(start = 12.dp).clickable { log.clear() })
+            Text("$count DECODED", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp, modifier = Modifier.weight(1f))
+            // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
+            Chip(if (held != null) "RESUME" else "PAUSE", selected = held != null, accent = accent) { held = if (held == null) lines else null }
+            Spacer(Modifier.width(d.dp(4f)))
+            Chip("CLEAR", selected = false, accent = accent) { log.clear(); if (held != null) held = emptyList() }
         }
         if (list != null) list()
-        LogList(lines, Modifier.fillMaxWidth().weight(1f))
+        LogList(held ?: lines, Modifier.fillMaxWidth().weight(1f))
     }
 }
 
