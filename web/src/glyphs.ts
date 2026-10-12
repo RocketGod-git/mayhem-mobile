@@ -20,6 +20,7 @@ function arc(cx: number, cy: number, r: number, a0: number, a1: number, step = 1
 }
 
 const PATHS: Record<string, { d: string; circles?: [number, number, number][]; dot?: [number, number, number] }> = {
+  ham: { d: 'M50 92 L50 14 M24 22 L76 22 M30 36 L70 36 M36 50 L64 50 M34 92 L66 92' },
   audio: { d: wave(5, 95, 50, 38, 40, 0.9) },
   adsb: { d: 'M50 6 L50 92 M6 52 L50 38 L94 52 M30 90 L50 78 L70 90' },
   ais: { d: 'M8 60 L92 60 L78 84 L22 84 Z M50 60 L50 14 M50 20 L72 42 L50 42 ' + wave(8, 92, 94, 3, 12, 1.6) },

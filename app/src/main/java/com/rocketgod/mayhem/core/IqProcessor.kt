@@ -18,6 +18,16 @@ interface IqProcessor {
     fun onIq(iq: ByteArray, len: Int, rate: Int)
     /** FM discriminator samples (radians/sample, ±π) at [rate] Hz. Only if [wantsFm]. */
     fun onFm(samples: FloatArray, n: Int, rate: Int) {}
+
+    /**
+     * A receiver rather than a decoder: it demodulates its own channel and owns the speaker. [SdrEngine] then
+     * keeps an AudioTrack open for it even with no built-in mode selected, and plays whatever [drainAudio] returns
+     * after each buffer.
+     */
+    val producesAudio: Boolean get() = false
+
+    /** Moves up to [max] samples of 48 kHz audio (±1) into [dst]; returns how many. */
+    fun drainAudio(dst: FloatArray, max: Int): Int = 0
 }
 
 /** Newest-first text log a decoder publishes to its screen. */

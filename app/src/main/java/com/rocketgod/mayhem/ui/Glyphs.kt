@@ -28,6 +28,13 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
         val circles = ArrayList<Triple<Float, Float, Float>>()
         var dot: Triple<Float, Float, Float>? = null
         when (app) {
+            MayhemApp.HAM -> {
+                path.m(0.5f, 0.92f); path.l(0.5f, 0.14f)
+                path.m(0.24f, 0.22f); path.l(0.76f, 0.22f)
+                path.m(0.3f, 0.36f); path.l(0.7f, 0.36f)
+                path.m(0.36f, 0.5f); path.l(0.64f, 0.5f)
+                path.m(0.34f, 0.92f); path.l(0.66f, 0.92f)
+            }
             MayhemApp.AUDIO -> {
                 path.m(0.05f, 0.5f)
                 for (i in 0..40) {

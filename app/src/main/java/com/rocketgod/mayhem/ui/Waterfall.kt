@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.sp
 fun WaterfallView(
     spec: FloatArray, cols: Int, accent: Color, modifier: Modifier = Modifier,
     rows: Int = 140, traceFrac: Float = 0.38f, centreMarker: Boolean = true,
+    /** A receiver's pass band as [from, to] fractions of the span, shaded so the channel can be seen. */
+    channel: Pair<Float, Float>? = null,
     labels: List<Pair<Float, String>> = emptyList(), onPreviewFrac: ((Float?) -> Unit)? = null, onTapFrac: ((Float) -> Unit)? = null
 ) {
     var dragFrac by remember { mutableStateOf<Float?>(null) }
@@ -122,6 +124,11 @@ fun WaterfallView(
         }
         if (centreMarker) {
             drawLine(accent.copy(alpha = 0.55f), Offset(w / 2, 0f), Offset(w / 2, traceBase), strokeWidth = 1.5f)
+        }
+        channel?.let { (a, b) ->
+            val x0 = (minOf(a, b) * w).coerceIn(0f, w); val x1 = (maxOf(a, b) * w).coerceIn(0f, w)
+            drawRect(accent.copy(alpha = 0.22f), Offset(x0, 0f), androidx.compose.ui.geometry.Size(maxOf(2f, x1 - x0), traceBase))
+            drawLine(accent, Offset((x0 + x1) / 2, 0f), Offset((x0 + x1) / 2, traceBase), strokeWidth = 1.5f)
         }
         dragFrac?.let { f ->
             val x = f * w

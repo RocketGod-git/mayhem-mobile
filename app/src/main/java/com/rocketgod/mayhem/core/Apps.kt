@@ -18,6 +18,7 @@ import java.io.File
 
 /** The app menu — Mayhem's launcher grid, HackRF-DSP apps only (no games, no PortaPack-hardware apps). */
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
+    HAM("HAM", "SSB · CW · AM · NFM · repeaters · CTCSS", "Receive"),
     AUDIO("Audio", "WFM · NFM · AM · SSB receiver", "Receive"),
     ADSB("ADS-B", "aircraft, 1090 MHz", "Receive"),
     AIS("AIS", "ships, 162 MHz", "Receive"),
@@ -65,6 +66,7 @@ object Apps {
         _current.value = app
         val r = SdrEngine.IQ_RATE
         when (app) {
+            MayhemApp.HAM -> com.rocketgod.mayhem.core.ham.Ham.open()
             MayhemApp.AUDIO -> SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, r, 24, 24, false, null)
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
