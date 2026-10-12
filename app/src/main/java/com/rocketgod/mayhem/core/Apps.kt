@@ -63,6 +63,7 @@ object Apps {
     fun open(app: MayhemApp) {
         recorder?.stop()
         if (app != MayhemApp.AUDIO) Scanner.stop()
+        if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
         _current.value = app
         val r = SdrEngine.IQ_RATE
         when (app) {

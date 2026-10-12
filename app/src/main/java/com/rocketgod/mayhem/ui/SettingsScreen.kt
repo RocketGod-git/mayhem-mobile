@@ -51,6 +51,24 @@ fun SettingsScreen(accent: Color) {
                 repeat(cols - rowSkins.size) { Box(Modifier.weight(1f)) }
             }
         }
+        SectionLabel("STATION · your callsign and grid, for the HAM logbook, APRS and FT8")
+        val st = com.rocketgod.mayhem.core.Station.info.collectAsState().value
+        val gpsGrid = com.rocketgod.mayhem.core.Geo.fix.collectAsState().value?.let { com.rocketgod.mayhem.core.ham.latLonToGrid(it.first, it.second) }
+        Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f))) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+                LogField(st.call, "callsign", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(call = v.uppercase().trim()) } }
+                LogField(st.license, "licence class", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(license = v) } }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+                LogField(st.name, "name", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(name = v) } }
+                LogField(st.grid, gpsGrid?.let { "grid · $it from GPS" } ?: "grid square, e.g. DM04og", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(grid = v.trim()) } }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+                LogField(st.dmrId, "DMR ID (radioid.net)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(dmrId = v.filter { c -> c.isDigit() }) } }
+                LogField(st.aprsSsid, "APRS SSID (9 = mobile)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(aprsSsid = v.filter { c -> c.isDigit() }.take(2)) } }
+            }
+        }
+        Box(Modifier.height(d.dp(8f)))
         SectionLabel("TRANSMIT · off by default — you are responsible for what you send")
         val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
         Column(Modifier.fillMaxWidth().panel(if (txOn) Palette.danger else Palette.line).padding(d.dp(10f))) {
