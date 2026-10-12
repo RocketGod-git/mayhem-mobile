@@ -1,4 +1,4 @@
-val BASE_VERSION_CODE = 6
+val BASE_VERSION_CODE = 7
 
 plugins {
     id("com.android.application")
@@ -18,7 +18,7 @@ android {
         // Play already knows about, so an API upload can never collide with a Console one.
         // BASE_VERSION_CODE stays a plain literal because the release workflow reads it with sed.
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: BASE_VERSION_CODE
-        versionName = "0.5.0"
+        versionName = "0.5.1"
         vectorDrawables { useSupportLibrary = true }
         // Short commit hash stamped by CI (GITHUB_SHA) so the APK and the web app can prove they are the same build.
         buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
@@ -62,6 +62,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
+    // Android framework calls answer with defaults under the JVM tests, so the singletons can be initialised there.
+    testOptions { unitTests.isReturnDefaultValues = true }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 
