@@ -41,7 +41,6 @@ type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' |
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
-  { id: 'troll', title: 'Troll', blurb: 'sub-GHz pranks · weather spoof · cart sounds', cat: 'Transmit' },
   { id: 'ham', title: 'HAM', blurb: 'SSB · CW · AM · NFM · repeaters · CTCSS', cat: 'Receive' },
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB receiver', cat: 'Receive' },
   { id: 'devices', title: 'Devices', blurb: 'alarms, meters, remotes, tire sensors, weather', cat: 'Receive' },
@@ -60,6 +59,7 @@ const APPS: AppDef[] = [
   { id: 'search', title: 'Search', blurb: 'find active frequencies', cat: 'Analyze' },
   { id: 'capture', title: 'Capture', blurb: 'record raw IQ to file', cat: 'Tools' },
   { id: 'transmit', title: 'Transmit', blurb: 'signal gen · morse · OOK', cat: 'Transmit' },
+  { id: 'troll', title: 'Troll', blurb: 'sub-GHz pranks · weather spoof · cart sounds', cat: 'Transmit' },
   { id: 'settings', title: 'Settings', blurb: 'theme · about · install', cat: 'Tools' },
 ];
 const RANGES: [string, number, number][] = [
