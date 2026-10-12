@@ -127,13 +127,7 @@ fun AudioScreen(accent: Color) {
                 SdrEngine.tune(hz)
             }
             SectionLabel("BANDS")
-            for (row in LISTEN_BANDS.chunked(4)) {
-                Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                    for (b in row) Chip(b.name, selected = freq in b.lo..b.hi, accent = accent, modifier = Modifier.weight(1f)) {
-                        SdrEngine.setMode(b.mode); SdrEngine.tune((b.lo + b.hi) / 2)
-                    }
-                }
-            }
+            BandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
             SectionLabel("SQUELCH · dB above the noise floor")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for (s in intArrayOf(0, 6, 12, 20)) Chip(if (s == 0) "OFF" else "$s dB", selected = squelch == s, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setSquelch(s) }
@@ -166,19 +160,6 @@ fun AudioScreen(accent: Color) {
         }
     }
 }
-
-/** The band chips shared with the web receiver; ISM and ADS-B have no voice mode, so NFM is the default to browse them. */
-private class ListenBand(val name: String, val lo: Long, val hi: Long, val mode: SdrEngine.Mode)
-private val LISTEN_BANDS = listOf(
-    ListenBand("FM", 88_000_000L, 108_000_000L, SdrEngine.Mode.WFM),
-    ListenBand("AIR", 118_000_000L, 137_000_000L, SdrEngine.Mode.AM),
-    ListenBand("VHF", 144_000_000L, 163_000_000L, SdrEngine.Mode.NFM),
-    ListenBand("315", 314_000_000L, 316_000_000L, SdrEngine.Mode.NFM),
-    ListenBand("UHF", 430_000_000L, 450_000_000L, SdrEngine.Mode.NFM),
-    ListenBand("433", 433_000_000L, 435_000_000L, SdrEngine.Mode.NFM),
-    ListenBand("915", 902_000_000L, 928_000_000L, SdrEngine.Mode.NFM),
-    ListenBand("1090", 1_089_000_000L, 1_091_000_000L, SdrEngine.Mode.NFM),
-)
 
 /** Everything RDS gave, station identity first and RadioText last, scrolling as one line when it overflows. */
 @OptIn(ExperimentalFoundationApi::class)

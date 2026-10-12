@@ -37,6 +37,6 @@ private val ALTERNATE = mapOf(
 fun aprsSymbolName(table: Char?, symbol: Char?): String {
     if (symbol == null) return ""
     if (table == '/') return PRIMARY[symbol] ?: "symbol /$symbol"
-    val alt = ALTERNATE[symbol] ?: "symbol \$symbol"
-    return if (table != null && table != '\') "$alt ($table)" else alt
+    val alt = ALTERNATE[symbol] ?: "symbol \\$symbol"
+    return if (table != null && table != '\\') "$alt ($table)" else alt
 }

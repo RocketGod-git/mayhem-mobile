@@ -1,13 +1,19 @@
 package com.rocketgod.mayhem
 
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,12 +21,19 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
+import androidx.lifecycle.lifecycleScope
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.Geo
+import com.rocketgod.mayhem.core.MayhemApp
+import com.rocketgod.mayhem.core.Prowl
+import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.ui.Pip
 import com.rocketgod.mayhem.ui.MayhemScreen
 import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.HackRfUsb
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 /**
  * Phase 0 — link up. Finds a HackRF on the USB-OTG port (hot-plug via the manifest USB_DEVICE_ATTACHED filter,
@@ -42,6 +55,8 @@ class MainActivity : ComponentActivity() {
                     if (d != null && granted && HackRfUsb.isHackRf(d)) engage(d)
                     else status.value = "USB permission denied — replug to retry"
                 }
+                ACTION_PIP_MUTE -> SdrEngine.toggleMute()
+                ACTION_PIP_SKIP -> Prowl.skip()
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> if (d != null && HackRfUsb.isHackRf(d)) {
                     Diag.log("USB detached: ${HackRfUsb.describe(d)}")
                     HackRfOne.abort()
@@ -71,6 +86,8 @@ class MainActivity : ComponentActivity() {
         val f = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
             addAction(HackRfUsb.ACTION_PERMISSION)
+            addAction(ACTION_PIP_MUTE)
+            addAction(ACTION_PIP_SKIP)
         }
         ContextCompat.registerReceiver(this, receiver, f, ContextCompat.RECEIVER_NOT_EXPORTED)
 
@@ -80,9 +97,45 @@ class MainActivity : ComponentActivity() {
             MayhemScreen(status = st, connected = c)
         }
 
+        // Keep the picture-in-picture offer in step with what is open, so leaving the app keeps a receiver on screen.
+        lifecycleScope.launch {
+            combine(Apps.current, SdrEngine.muted, connected, Prowl.view) { _, _, _, _ -> Unit }.collect { runCatching { setPictureInPictureParams(pipParams()) } }
+        }
+
         if (!handleIntent(intent)) autoConnect()
         Geo.request(this)
         AppUpdates.check(this)
+    }
+
+    /** A receiver is open and the radio is running: worth a floating window. Settings and Transmit are not. */
+    private fun pipWanted(): Boolean {
+        val a = Apps.current.value ?: return false
+        return a != MayhemApp.SETTINGS && a != MayhemApp.TRANSMIT && connected.value
+    }
+
+    private fun pipAction(icon: Int, title: String, action: String, code: Int) = RemoteAction(
+        Icon.createWithResource(this, icon), title, title,
+        PendingIntent.getBroadcast(this, code, Intent(action).setPackage(packageName), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+
+    private fun pipParams(): PictureInPictureParams {
+        val actions = mutableListOf(
+            if (SdrEngine.muted.value) pipAction(R.drawable.ic_pip_mute, "Unmute", ACTION_PIP_MUTE, 1)
+            else pipAction(R.drawable.ic_pip_sound, "Mute", ACTION_PIP_MUTE, 1))
+        if (Apps.current.value == MayhemApp.PROWL && Prowl.view.value.on) actions.add(pipAction(R.drawable.ic_pip_skip, "Skip", ACTION_PIP_SKIP, 2))
+        return PictureInPictureParams.Builder().setAspectRatio(Rational(16, 10)).setActions(actions).apply {
+            if (Build.VERSION.SDK_INT >= 31) { setAutoEnterEnabled(pipWanted()); setSeamlessResizeEnabled(true) }
+        }.build()
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Android 12 and later enter on their own (autoEnter); before that the home button has to ask.
+        if (Build.VERSION.SDK_INT < 31 && pipWanted()) runCatching { enterPictureInPictureMode(pipParams()) }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        Pip.active.value = isInPictureInPictureMode
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -127,6 +180,11 @@ class MainActivity : ComponentActivity() {
             HackRfOne.run(appCtx, d) { s -> status.value = s }
             connected.value = false
         }, "hackrf-rx").apply { isDaemon = true; start() }
+    }
+
+    private companion object {
+        const val ACTION_PIP_MUTE = "com.rocketgod.mayhem.PIP_MUTE"
+        const val ACTION_PIP_SKIP = "com.rocketgod.mayhem.PIP_SKIP"
     }
 
     override fun onDestroy() {

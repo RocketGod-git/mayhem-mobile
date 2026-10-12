@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -47,6 +49,11 @@ fun MayhemScreen(status: String, connected: Boolean) {
     var showTools by remember { mutableStateOf(false) }
     LaunchedEffect(connected) { if (!connected) showTools = true }
     BackHandler(enabled = current != null) { Apps.home() }
+    // A receiver that dims and locks mid-pass is no use; the launcher may sleep as usual.
+    val view = LocalView.current
+    DisposableEffect(current) { view.keepScreenOn = current != null; onDispose { view.keepScreenOn = false } }
+    val inPip by Pip.active.collectAsState()
+    if (inPip) { PipView(current, accent); return }
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = d.pad, vertical = d.dp(6f))) {
             Header(status, connected, current, showLog, showTools, accent, onLog = { showLog = !showLog }, onTools = { showTools = !showTools })
