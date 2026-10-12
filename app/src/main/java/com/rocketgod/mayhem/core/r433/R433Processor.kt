@@ -2,6 +2,7 @@ package com.rocketgod.mayhem.core.r433
 
 import com.rocketgod.mayhem.Diag
 import com.rocketgod.mayhem.core.IqProcessor
+import com.rocketgod.mayhem.core.r433.devices.resetBluelineId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -85,7 +86,7 @@ class R433Processor : IqProcessor {
     fun setSpan(hz: Int) { wantSpan = hz; pendingReset = true }
     fun span(): Int = if (rate != 0) (rate.toDouble() / (if (baseband.decim == 0) 1 else baseband.decim)).roundToInt() else 0
 
-    fun clear() { worker.execute { heard.clear(); lastPayload.clear(); unknownSeen.clear(); _devices.value = emptyList() } }
+    fun clear() { worker.execute { resetBluelineId(); heard.clear(); lastPayload.clear(); unknownSeen.clear(); _devices.value = emptyList() } }
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
         if (rate != this.rate || pendingReset) { pendingReset = false; reset(rate) }

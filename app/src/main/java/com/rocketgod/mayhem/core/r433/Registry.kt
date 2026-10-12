@@ -7,7 +7,7 @@ object R433Registry {
     val all: List<RDevice> by lazy {
         listOf(
             WEATHER_PPM, TPMS, KEELOQ, LACROSSE, LACROSSE2, LACROSSE3, ACURITE, FINEOFFSET, FINEOFFSET2, FINEOFFSET3, OREGON, BRESSER,
-            SECURITY, AMBIENT, METERS, TPMS2, TPMS3,
+            SECURITY, AMBIENT, METERS, TPMS2, TPMS3, ENERGY, REMOTES, AURIOL, WEATHER_MORE,
         ).flatten()
     }
 }
