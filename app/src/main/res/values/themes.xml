@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Framework parent so no extra XML theme dependency is needed; the real UI palette lives in Compose
+         (ui/Theme.kt). paper #06090A / glow #37ECCB. -->
+    <style name="Theme.Mayhem" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#06090A</item>
+        <item name="android:statusBarColor">#06090A</item>
+        <item name="android:navigationBarColor">#06090A</item>
+    </style>
+</resources>

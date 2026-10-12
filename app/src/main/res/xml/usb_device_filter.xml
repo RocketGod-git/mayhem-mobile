@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- HackRF-direct targets (libhackrf USB vendor protocol). Vendor 0x1d50 = 7504.
+         HackRF One / One r9 / HackRF Pro "Praline" (shares PID 0x6089 = 24713; told apart by BOARD_ID_READ). -->
+    <usb-device vendor-id="7504" product-id="24713" />
+    <!-- Jawbreaker (0x604b = 24651) -->
+    <usb-device vendor-id="7504" product-id="24651" />
+    <!-- rad1o (0xcc15 = 52245) -->
+    <usb-device vendor-id="7504" product-id="52245" />
+    <!-- NOT listed on purpose: 1d50:6018 is a PortaPack running Mayhem firmware in its USB-CDC SERIAL mode
+         (the Mayhem shell path). This app is the HackRF-direct path: put the PortaPack in "HackRF" mode and it
+         enumerates as 0x6089 above. -->
+</resources>

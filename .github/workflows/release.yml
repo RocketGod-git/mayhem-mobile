@@ -1,0 +1,168 @@
+name: Release
+
+# One release per push to main: the Android APK + AAB go to the rolling "latest" GitHub release (or a v* tag's
+# release), then the web app is deployed to GitHub Pages FROM THE SAME COMMIT, with that very same APK copied
+# into the site. The page and the APK a visitor downloads from it are therefore always the same build.
+#
+# The APK is served from the site rather than linked to the GitHub release on purpose. This repository is
+# private, so release assets sit behind a GitHub sign-in; the Pages site is public, so an APK next to it is
+# public too. Anyone can download it, with no account and without leaving the site.
+#
+# Signing: with ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD (optional
+# ANDROID_KEY_ALIAS) set as repo secrets the APK is release-signed; without them it is debug-signed and still
+# published so it can be sideloaded. Play upload is deliberately not wired yet.
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  android:
+    name: Android APK + AAB → GitHub release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      code: ${{ steps.ver.outputs.code }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from app/build.gradle.kts
+        id: ver
+        run: |
+          V=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          C=$(sed -n 's/.*BASE_VERSION_CODE = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then TAG="${GITHUB_REF_NAME}"; else TAG="latest"; fi
+          [ -n "$V" ] && [ -n "$C" ] || { echo "::error::could not read versionName / BASE_VERSION_CODE from app/build.gradle.kts"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "code=$C" >> "$GITHUB_OUTPUT"; echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version $V ($C) → release $TAG"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Materialize keystore from secret
+        id: ks
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "path=$RUNNER_TEMP/release.keystore" >> "$GITHUB_OUTPUT"
+            echo "keystore: from ANDROID_KEYSTORE_B64 secret"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "keystore: none — release will be DEBUG-signed"
+          fi
+
+      - name: Assemble release APK + AAB
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.ks.outputs.path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace
+
+      - name: Stage artifacts
+        run: |
+          set -e
+          cp "$(find app/build/outputs/apk -name '*.apk' | head -1)" mayhem.apk
+          cp "$(find app/build/outputs/bundle -name '*.aab' | head -1)" mayhem.aab
+          ls -la mayhem.apk mayhem.aab
+
+      - name: Roll the "latest" prerelease (non-tag runs)
+        if: ${{ github.ref_type != 'tag' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete latest --yes --cleanup-tag || true
+
+      # The web job copies this into the published site, so the download link on the page is same-origin and
+      # needs no GitHub account - release assets on a private repository are behind a sign-in, the site is not.
+      - name: Hand the APK to the web job
+        uses: actions/upload-artifact@v4
+        with:
+          name: mayhem-apk
+          path: mayhem.apk
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Latest build · v{0} · {1}', steps.ver.outputs.version, github.sha) }}
+          body: |
+            Mayhem Mobile v${{ steps.ver.outputs.version }} (${{ steps.ver.outputs.code }}) — commit ${{ github.sha }}.
+            The web app at the same commit: https://rocketgod-git.github.io/mayhem-mobile/
+          prerelease: ${{ github.ref_type != 'tag' }}
+          files: |
+            mayhem.apk
+            mayhem.aab
+
+  web:
+    name: Web app → GitHub Pages (gh-pages branch)
+    needs: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Fetch the APK built by the android job
+        uses: actions/download-artifact@v4
+        with:
+          name: mayhem-apk
+
+      - name: Assemble site (with version.json naming the APK from this same commit)
+        run: |
+          set -e
+          mkdir -p site/dist
+          cp web/index.html web/privacy.html web/styles.css web/manifest.webmanifest web/sw.js web/audio-worklet.js web/icon.svg web/icon-maskable.svg site/
+          cp -r web/dist/. site/dist/
+          if [ -d web/assets ]; then mkdir -p site/assets && cp -r web/assets/. site/assets/; fi
+          cp mayhem.apk site/mayhem.apk
+          ls -la site/mayhem.apk
+          TAG='${{ needs.android.outputs.tag }}'
+          cat > site/version.json <<JSON
+          {
+            "version": "${{ needs.android.outputs.version }}",
+            "versionCode": ${{ needs.android.outputs.code }},
+            "commit": "${GITHUB_SHA::7}",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "apk": "./mayhem.apk",
+            "release": "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          }
+          JSON
+          cat site/version.json
+          touch site/.nojekyll
+
+      # Publishes the site to the gh-pages branch. Pages source: Settings → Pages → "Deploy from a branch" →
+      # gh-pages / (root). Custom domain: set `cname: mayhem.app` below once DNS points at GitHub Pages (README).
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          force_orphan: true
+          commit_message: "web ${{ needs.android.outputs.version }} from ${{ github.sha }}"

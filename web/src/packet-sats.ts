@@ -1,0 +1,53 @@
+/**
+ * Cubesats that beacon 9600 (or 4800) baud packet in the two bands a whip hears. Taken from the SatNOGS
+ * transmitter database on 2026-09-09, keeping only the ones still alive that CelesTrak also has an orbit
+ * for, so every one of them can be tracked and Doppler-corrected. Each row is NORAD id, downlink in Hz, baud, name.
+ *
+ * A snapshot rather than a live fetch: the SatNOGS API sends no cross-origin header, so a browser cannot read it
+ * directly. Regenerate with the scratchpad tooling when it drifts.
+ */
+export const PACKET_SATS: [number, number, number, string][] = [
+  [64881, 436270000, 9600, "239ALFEROV (RS61S)"],
+  [68506, 437325000, 9600, "AEPEX"],
+  [35933, 435950000, 4800, "BEESAT-1"],
+  [40974, 437375500, 9600, "BISONSAT"],
+  [40014, 437445000, 9600, "BUGSAT-1 (TITA)"],
+  [68635, 437250000, 9600, "CANVAS"],
+  [61746, 436835000, 9600, "COLIBRI-S (RS67S)"],
+  [62394, 436775000, 9600, "CROCUBE"],
+  [57175, 436990000, 9600, "CUBEBEL 2 (EU11S)"],
+  [39440, 437445000, 9600, "CUBEBUG-2 (LO-74)"],
+  [66778, 437125000, 9600, "FORESAIL-1 PRIME"],
+  [60237, 145935000, 9600, "GRBBETA"],
+  [60237, 436785000, 9600, "GRBBETA"],
+  [57188, 435300000, 9600, "HORS 1"],
+  [25544, 437800000, 9600, "ISS (ZARYA)"],
+  [67683, 145825000, 9600, "KNACKSAT-2"],
+  [62391, 436925000, 9600, "LASARSAT"],
+  [40908, 437225000, 4800, "LILACSAT-2"],
+  [43485, 437250000, 4800, "LUOJIA-1 01"],
+  [58810, 435950000, 4800, "NANOFF A"],
+  [58755, 435950000, 4800, "NANOFF B"],
+  [60525, 436500000, 9600, "ORESAT0.5"],
+  [40042, 437675000, 9600, "POLYITAN-1"],
+  [67291, 436950000, 9600, "QMR-KWT-2 (RS95S)"],
+  [60476, 435600000, 9600, "QUBE"],
+  [43773, 437475000, 9600, "RANGE-A"],
+  [60243, 436750000, 9600, "ROBUSTA-3A (MEDITERRAN*)"],
+  [67290, 437350000, 9600, "SAKHACUBE-CHOLBON (RS1*)"],
+  [55104, 437325000, 9600, "SHARJAHSAT-1"],
+  [52899, 436490000, 9600, "SNUGLITE-II"],
+  [59112, 437025000, 9600, "SONATE-2"],
+  [42829, 435950000, 4800, "TECHNOSAT"],
+  [25397, 435225000, 9600, "TECHSAT 1B (GO-32)"],
+  [25397, 435325000, 9600, "TECHSAT 1B (GO-32)"],
+  [49396, 437450000, 9600, "TEIKYOSAT-4 (OORURI)"],
+  [43677, 437390000, 9600, "TEN-KOH"],
+  [44881, 145890000, 4800, "TIANYAN 01"],
+  [40043, 435000000, 9600, "TIGRISAT"],
+  [39446, 436395000, 9600, "UWE-3"],
+  [43880, 435600000, 9600, "UWE-4"],
+  [61749, 436870000, 9600, "VIZARD-ION (RS68S)"],
+  [50466, 435725000, 4800, "XW-3 (CAS-9)"],
+  [39417, 437356000, 9600, "ZACUBE-1 (TSHEPISOSAT)"],
+];
