@@ -35,6 +35,16 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.36f, 0.5f); path.l(0.64f, 0.5f)
                 path.m(0.34f, 0.92f); path.l(0.66f, 0.92f)
             }
+            MayhemApp.SAT -> {
+                // a body with two solar panels, and the arc of its downlink
+                path.m(0.40f, 0.40f); path.l(0.60f, 0.40f); path.l(0.60f, 0.60f); path.l(0.40f, 0.60f); path.close()
+                path.m(0.10f, 0.44f); path.l(0.32f, 0.44f); path.l(0.32f, 0.56f); path.l(0.10f, 0.56f); path.close()
+                path.m(0.68f, 0.44f); path.l(0.90f, 0.44f); path.l(0.90f, 0.56f); path.l(0.68f, 0.56f); path.close()
+                path.m(0.32f, 0.50f); path.l(0.40f, 0.50f); path.m(0.60f, 0.50f); path.l(0.68f, 0.50f)
+                path.m(0.50f, 0.60f); path.l(0.50f, 0.70f)
+                var a = 200.0; var first = true
+                while (a <= 340.0) { val x = 0.5f + 0.2f * cos(Math.toRadians(a)).toFloat(); val y = 0.9f + 0.2f * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
+            }
             MayhemApp.AUDIO -> {
                 path.m(0.05f, 0.5f)
                 for (i in 0..40) {

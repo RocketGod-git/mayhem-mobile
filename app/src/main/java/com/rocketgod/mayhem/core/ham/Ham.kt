@@ -31,6 +31,10 @@ object Ham {
     const val LO_OFFSET = 250_000L
     private val rate get() = SdrEngine.IQ_RATE
 
+    /** Which app is driving the receiver: HAM itself, or Satellites (which never uses the band monitor). */
+    enum class Host { HAM, SAT }
+    @Volatile var host = Host.HAM; private set
+
     enum class Tab(val label: String) { RX("RECEIVE"), MONITOR("MONITOR"), DIGI("DIGITAL"), TX("TRANSMIT"), LOG("LOGBOOK") }
 
     val demod = HamDemod()
@@ -92,16 +96,33 @@ object Ham {
 
     /** Hands the radio to the HAM receiver (or the band monitor). The built-in demodulator is off: we own the audio. */
     fun open() {
+        host = Host.HAM
         stopPtt()
         if (_tab.value == Tab.MONITOR) { openMonitor(); return }
         val d = HamDigital.settings.value.mode
         if (_tab.value == Tab.DIGI && d == HamDigital.Mode.FT8 && _state.value.mode != Mode.USB) setMode(Mode.USB)
         if (_tab.value == Tab.DIGI && (d == HamDigital.Mode.DMR || d == HamDigital.Mode.P25) && _state.value.mode != Mode.NFM) setMode(Mode.NFM)
+        openReceiver()
+    }
+
+    /** The channel receiver on the LO placed for the current channel. */
+    private fun openReceiver() {
         val s = _state.value.copy(lo = _state.value.channel + LO_OFFSET)
         _state.value = s
         SdrEngine.configure(SdrEngine.Mode.NONE, s.lo, rate, 32, 40, false, demod)
         push()
     }
+
+    /** The Satellites app takes the receiver, tuned to [channel]. */
+    fun openSat(channel: Long) {
+        host = Host.SAT
+        stopPtt()
+        _state.value = _state.value.copy(channel = channel, rev = false)
+        openReceiver()
+    }
+
+    /** True while the band monitor, not the channel receiver, has the radio. */
+    val monitoring: Boolean get() = host == Host.HAM && _tab.value == Tab.MONITOR
 
     fun setTab(t: Tab) {
         if (t == _tab.value) return
@@ -112,7 +133,7 @@ object Ham {
 
     fun tune(hzIn: Long) {
         val hz = hzIn.coerceIn(1_000_000L, 6_000_000_000L)
-        if (_tab.value == Tab.MONITOR) {
+        if (monitoring) {
             _state.value = _state.value.copy(channel = hz)
             // inside the monitored span: lock that channel; outside it: move the whole monitor there
             if (abs(hz - monCentre) > rate / 2 - GUARD) { openMonitor(); return }
@@ -169,13 +190,13 @@ object Ham {
     fun toggleNr() = update { it.copy(nr = !it.nr) }
     fun toggleAnf() = update { it.copy(anf = !it.anf) }
     fun setSquelch(db: Int) = update { it.copy(squelch = db) }
-    fun setVolume(v: Float) { update { it.copy(volume = v) }; if (_tab.value == Tab.MONITOR) monitorSend() }
+    fun setVolume(v: Float) { update { it.copy(volume = v) }; if (monitoring) monitorSend() }
 
     /** Jump to a band's calling frequency in the mode it expects. */
     fun pickBand(b: Band) {
         update { it.copy(rev = false) }
         if (b.mode != _state.value.mode) setMode(b.mode)
-        if (_tab.value == Tab.MONITOR) {
+        if (monitoring) {
             _state.value = _state.value.copy(channel = b.calling ?: b.lo)
             _mon.value = _mon.value.copy(lock = -1)
             openMonitor()
@@ -229,7 +250,7 @@ object Ham {
     }
 
     /** Slide the monitored span (it re-plants the whole channel set). */
-    fun monitorMove(centre: Long) { if (_tab.value == Tab.MONITOR) openMonitor(centre) }
+    fun monitorMove(centre: Long) { if (monitoring) openMonitor(centre) }
     fun monitorCentre(): Long = monCentre
 
     private fun monitorSend() {

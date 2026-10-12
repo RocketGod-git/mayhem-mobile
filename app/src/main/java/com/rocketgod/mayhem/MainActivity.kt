@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.Tx.load(this)
         com.rocketgod.mayhem.core.Station.load(this)
         com.rocketgod.mayhem.core.ham.Logbook.load(this)
+        com.rocketgod.mayhem.core.sat.Tles.init(filesDir)
         if (savedInstanceState == null) {
             Diag.clear()
             Diag.log("Mayhem Android ${BuildConfig.VERSION_NAME} · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")

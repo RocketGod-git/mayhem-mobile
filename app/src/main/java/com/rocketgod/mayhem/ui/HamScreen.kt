@@ -253,8 +253,9 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
 @Composable
 private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s: Ham.State, rate: Int) {
     val tab by Ham.tab.collectAsState()
-    val centre = if (tab == Ham.Tab.MONITOR) Ham.monitorCentre() else s.lo
-    val chan = if (tab == Ham.Tab.MONITOR) null else {
+    val mon = tab == Ham.Tab.MONITOR && Ham.host == Ham.Host.HAM
+    val centre = if (mon) Ham.monitorCentre() else s.lo
+    val chan = if (mon) null else {
         val (lo, hi) = when (s.mode) {
             Mode.USB -> (s.pbLo + s.shift) to (s.pbHi + s.shift)
             Mode.LSB -> -(s.pbHi + s.shift) to -(s.pbLo + s.shift)
