@@ -163,7 +163,8 @@ class MainActivity : ComponentActivity() {
             connected.value = true; status.value = "demo signal"
         }
         i.getStringExtra("open")?.let { name ->
-            if (name == "HOME") Apps.home() else runCatching { Apps.open(MayhemApp.valueOf(name)) }
+            runCatching { if (name == "HOME") Apps.home() else Apps.open(MayhemApp.valueOf(name)) }
+                .onFailure { android.util.Log.e("Mayhem", "debug open $name failed", it); Diag.log("debug open $name failed: $it") }
         }
     }
 

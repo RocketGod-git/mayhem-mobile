@@ -18,6 +18,7 @@ ACT=com.rocketgod.mayhem/.MainActivity
 open_app() { adb shell am start -n $ACT --ez demo true --es open "$1" >/dev/null; sleep "${2:-5}"; }
 shot() { adb exec-out screencap -p > "$OUT/$1.png"; echo "captured $1"; }
 
+adb logcat -c || true
 adb shell am start -n $ACT --ez demo true
 sleep 12
 
@@ -47,4 +48,5 @@ sleep 5
 shot pip-prowl
 
 adb shell am broadcast -a com.android.systemui.demo -e command exit
+adb logcat -d > "$OUT/logcat.txt" || true
 ls -la "$OUT"
