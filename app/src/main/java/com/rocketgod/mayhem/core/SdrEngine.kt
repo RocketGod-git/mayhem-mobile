@@ -195,6 +195,7 @@ object SdrEngine {
         var lastProc: IqProcessor? = null; var lastProcRate = 0
         var chPow = 0.0; var chN = 0                     // channel power for the squelch
         var lastVol = -1f
+        val procAudio = FloatArray(16384); val procPcm = ShortArray(16384)
         try {
             while (!stopWorker) {
                 val item = try { queue.take() } catch (e: InterruptedException) { break }
@@ -214,10 +215,11 @@ object SdrEngine {
                     decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0
                     prevMode = m
                 }
-                if (m != Mode.NONE && track == null) { track = newTrack(); lastVol = -1f }
+                val wantTrack = m != Mode.NONE || p?.producesAudio == true
+                if (wantTrack && track == null) { track = newTrack(); lastVol = -1f }
                 val vol = if (muteNow) 0f else 1f
                 if (track != null && vol != lastVol) { runCatching { track?.setVolume(vol) }; lastVol = vol }
-                if (m == Mode.NONE && track != null) {
+                if (!wantTrack && track != null) {
                     val t = track
                     runCatching { t?.stop() }; runCatching { t?.release() }
                     track = null
@@ -327,6 +329,19 @@ object SdrEngine {
                     }
                 }
                 if (p != null) runCatching { p.onIq(item, len, rate) }.onFailure { Diag.log("processor error: ${it.message}") }
+                val t = track
+                if (p != null && p.producesAudio && t != null) {
+                    val k = p.drainAudio(procAudio, procAudio.size)
+                    if (k > 0) {
+                        for (i in 0 until k) {
+                            val v = (procAudio[i] * 32000f).toInt().coerceIn(-32767, 32767)
+                            procPcm[i] = v.toShort()
+                            val a = if (v < 0) -v else v
+                            if (a > audioPeak) audioPeak = a
+                        }
+                        runCatching { t.write(procPcm, 0, k) }
+                    }
+                }
                 pool.offer(item)
             }
         } catch (t: Throwable) {

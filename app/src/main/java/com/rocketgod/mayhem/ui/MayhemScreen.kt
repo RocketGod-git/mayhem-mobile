@@ -53,6 +53,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (current) {
                     null -> Launcher(accent)
+                    MayhemApp.HAM -> HamScreen(accent)
                     MayhemApp.AUDIO -> AudioScreen(accent)
                     MayhemApp.ADSB -> AdsbScreen(accent)
                     MayhemApp.AIS -> AisScreen(accent)
