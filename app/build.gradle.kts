@@ -72,6 +72,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
+    // Play in-app updates: a Play-installed build may not fetch its own APK, so the update has to be
+    // handed to Play. Unused by sideloads, which check GitHub instead (see AppUpdates).
+    implementation("com.google.android.play:app-update-ktx:2.1.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)

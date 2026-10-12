@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The share sheet reads the log out of the cache; nothing else in the app is exposed. -->
+<paths>
+    <cache-path name="logs" path="logs/" />
+</paths>
