@@ -176,8 +176,12 @@ internal fun HamDigitalTab(accent: Color) {
     val p25 by HamDigital.p25Status.collectAsState()
     val s by Ham.state.collectAsState()
     val status: @Composable () -> Unit = {
-        val line = if (g.mode == HamDigital.Mode.OFF) "pick a decoder" else
-            "${st.winner.ifEmpty { g.mode.name }} · " + st.conf.joinToString(" ") { "${it.first} ${it.second}%" } + if (g.mode == HamDigital.Mode.CW || st.winner == "CW") " · ${st.wpm} WPM" else ""
+        // only AUTO is a contest between decoders; once a mode is chosen the others' scores are noise
+        val auto = g.mode == HamDigital.Mode.AUTO
+        val conf = if (auto) st.conf else st.conf.filter { it.first.equals(g.mode.name, ignoreCase = true) }
+        val wpm = if (st.wpm > 0 && (auto || g.mode == HamDigital.Mode.CW)) " · ${st.wpm} WPM" else ""
+        val head = if (auto) (if (st.winner.isNotEmpty()) "AUTO → ${st.winner}" else "AUTO · listening") else g.mode.name
+        val line = if (g.mode == HamDigital.Mode.OFF) "pick a decoder" else head + conf.joinToString("") { " · ${it.first} ${it.second}%" } + wpm
         Text(line, color = accent, fontFamily = Mono, fontSize = d.sp(10f), fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = d.dp(4f)))
     }
     fun pick(m: HamDigital.Mode) {
