@@ -34,8 +34,8 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /** Something to put on a map: a logged contact, a looked-up callsign, a satellite, a sensor. */
-data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: String, val kind: Kind) {
-    enum class Kind { QSO, OBJECT, SAT, DEVICE }
+data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: String, val kind: Kind, val heading: Double? = null) {
+    enum class Kind { QSO, OBJECT, SAT, DEVICE, SHIP, ATON, STATION }
 }
 
 /** The map's extra layers: lines home to each contact, a satellite's ground track and radio footprint. */
@@ -96,8 +96,13 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         home?.let { (la, lo) -> val (x, y) = xy(mv, la, lo); dot.color = 0xFFFFFFFF.toInt(); c.drawCircle(x, y, 4f * d, dot); c.drawCircle(x, y, 4f * d, rim) }
         for (it in items) {
             val (x, y) = xy(mv, it.lat, it.lon)
-            val col = when (it.kind) { GeoItem.Kind.OBJECT -> goldInt; GeoItem.Kind.SAT -> goldInt; else -> accentInt }
+            val col = when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
             val r = (if (it.kind == GeoItem.Kind.SAT) 7f else 5f) * d
+            it.heading?.let { h ->
+                // where it is pointing: a short stalk off the dot
+                val a = Math.toRadians(h); line.color = col; line.strokeWidth = 2.5f * d
+                c.drawLine(x, y, x + (r * 2.8f * kotlin.math.sin(a)).toFloat(), y - (r * 2.8f * kotlin.math.cos(a)).toFloat(), line)
+            }
             dot.color = col
             c.drawCircle(x, y, r, dot); c.drawCircle(x, y, r, rim)
             if (it.id == selected) { line.color = 0xFFFFFFFF.toInt(); line.strokeWidth = 2f * d; c.drawCircle(x, y, r + 4f * d, line) }
@@ -134,7 +139,9 @@ private fun destination(lat: Double, lon: Double, km: Double, deg: Double): Pair
 @Composable
 fun GeoMapView(
     items: List<GeoItem>, accent: Color, modifier: Modifier = Modifier, home: Pair<Double, Double>? = null,
-    selected: String? = null, layers: GeoLayers = GeoLayers(), follow: String? = null, onPick: (String) -> Unit = {},
+    selected: String? = null, layers: GeoLayers = GeoLayers(), follow: String? = null,
+    /** Centre on this point whenever [focusKey] changes (the MAP button on a detail card). */
+    focus: Pair<Double, Double>? = null, focusKey: Int = 0, onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
@@ -154,6 +161,14 @@ fun GeoMapView(
                 fitted = true
             } else if (pts.size == 1) { mv.controller.setCenter(GeoPoint(pts[0].first, pts[0].second)); fitted = items.isNotEmpty() }
         }
+    }
+
+    LaunchedEffect(focusKey) {
+        val mv = mapRef ?: return@LaunchedEffect
+        val f = focus ?: return@LaunchedEffect
+        if (focusKey == 0) return@LaunchedEffect
+        if (mv.zoomLevelDouble < 11.0) mv.controller.setZoom(11.0)
+        mv.controller.animateTo(GeoPoint(f.first, f.second))
     }
 
     Box(modifier.clipToBounds()) {

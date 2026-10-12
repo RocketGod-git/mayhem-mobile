@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.SdrEngine
@@ -28,9 +29,12 @@ private val RANGES = listOf(
     "2m 144-148" to (144_000_000L to 148_000_000L),
     "70cm 420-450" to (420_000_000L to 450_000_000L),
     "ISM 902-928" to (902_000_000L to 928_000_000L),
+    "GSM 925-960" to (925_000_000L to 960_000_000L),
+    "1.2-1.6G" to (1_200_000_000L to 1_600_000_000L),
+    "2.4G ISM" to (2_400_000_000L to 2_483_000_000L),
     "0.1-1 GHz" to (100_000_000L to 1_000_000_000L),
-    "1-2 GHz" to (1_000_000_000L to 2_000_000_000L),
-    "2.4 GHz" to (2_400_000_000L to 2_500_000_000L),
+    "1-3 GHz" to (1_000_000_000L to 3_000_000_000L),
+    "3-6 GHz" to (3_000_000_000L to 6_000_000_000L),
 )
 
 private val emptyRow = MutableStateFlow(FloatArray(0))
@@ -40,16 +44,17 @@ private val zero = MutableStateFlow(0)
 private fun RangeChips(accent: Color, sp: SweepProcessor?) {
     val d = rememberDims()
     val rate by SdrEngine.rateHz.collectAsState()
-    SectionLabel("RANGE")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for ((label, r) in RANGES.subList(0, 4)) Chip(label, selected = sp?.startHz == r.first, accent = accent, modifier = Modifier.weight(1f)) { Apps.startSweep(r.first, r.second) }
+    SectionLabel("RANGE · wider spans sweep slower")
+    // FULL is the whole radio: hundreds of steps and slow, but it is the "what is out there anywhere" view
+    val chips = RANGES + ("FULL 1M-6G" to (SdrEngine.FREQ_MIN_HZ to SdrEngine.FREQ_MAX_HZ))
+    for ((i, row) in chips.chunked(4).withIndex()) {
+        Row(Modifier.fillMaxWidth().padding(top = if (i > 0) d.dp(4f) else 0.dp), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            for ((label, r) in row) Chip(label, selected = sp?.startHz == r.first && sp?.endHz == r.second, accent = accent, modifier = Modifier.weight(1f)) { Apps.startSweep(r.first, r.second) }
+        }
     }
-    Row(Modifier.fillMaxWidth().padding(top = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for ((label, r) in RANGES.subList(4, 8)) Chip(label, selected = sp?.startHz == r.first, accent = accent, modifier = Modifier.weight(1f)) { Apps.startSweep(r.first, r.second) }
-    }
-    SectionLabel("SLICE WIDTH · faster sweeps need the HackRF to accept the rate")
+    SectionLabel("SLICE WIDTH · wider = faster, if the HackRF keeps up")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for (r in intArrayOf(2_000_000, 4_000_000, 8_000_000)) {
+        for (r in intArrayOf(2_000_000, 4_000_000, 8_000_000, 16_000_000)) {
             Chip("${r / 1_000_000} MHz", selected = rate == r, accent = accent, modifier = Modifier.weight(1f)) {
                 Apps.sweepRate = r
                 if (sp != null) Apps.startSweep(sp.startHz, sp.endHz)

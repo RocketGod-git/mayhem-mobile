@@ -68,35 +68,6 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
 }
 
 @Composable
-fun AisScreen(accent: Color) {
-    val d = rememberDims()
-    var showTable by remember { mutableStateOf(false) }
-    val table by Apps.ais.table.collectAsState()
-    val tableList: @Composable () -> Unit = {
-        Box(Modifier.fillMaxWidth().padding(bottom = d.dp(6f)).panel(Palette.accent2)) {
-            LazyColumn(Modifier.fillMaxWidth().padding(d.dp(6f))) {
-                items(table) { Text(it, color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(11f), maxLines = 1) }
-            }
-        }
-    }
-    PacketFrame(accent, Apps.aisLog, controls = {
-        PresetRow(accent, listOf("AIS A 161.975" to 161_975_000L, "AIS B 162.025" to 162_025_000L), title = "CHANNEL")
-        SectionLabel("VIEW")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("LOG", selected = !showTable, accent = accent, modifier = Modifier.weight(1f)) { showTable = false }
-            Chip("VESSELS ${table.size}", selected = showTable, accent = accent, modifier = Modifier.weight(1f)) { showTable = true }
-        }
-    }, list = if (showTable) tableList else null)
-}
-
-@Composable
-fun AprsScreen(accent: Color) {
-    PacketFrame(accent, Apps.aprsLog, controls = {
-        PresetRow(accent, listOf("NA 144.39" to 144_390_000L, "EU 144.80" to 144_800_000L, "AU 145.175" to 145_175_000L, "JP 144.64" to 144_640_000L), title = "REGION")
-    })
-}
-
-@Composable
 fun PagerScreen(accent: Color) {
     val d = rememberDims()
     val which by Apps.pager.which.collectAsState()
@@ -174,60 +145,4 @@ fun BtleScreen(accent: Color) {
             }
         }
     })
-}
-
-@Composable
-fun AdsbScreen(accent: Color) {
-    val d = rememberDims()
-    val spec by SdrEngine.spectrum.collectAsState()
-    val health by SdrEngine.rxHealth.collectAsState()
-    val freq by SdrEngine.freqHz.collectAsState()
-    val planes by AdsbStore.flow.collectAsState()
-    val frames by AdsbStore.frames.collectAsState()
-    val home by Geo.fix.collectAsState()
-    var showMap by remember { mutableStateOf(true) }
-    var selected by remember { mutableStateOf<String?>(null) }
-    val ctx = LocalContext.current
-    LaunchedEffect(Unit) { Geo.start(ctx) }
-    AdaptivePane(
-        visualHeightNarrow = d.dp(190f),
-        visual = { m ->
-            Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
-                WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()))
-            }
-        }
-    ) {
-        GainRow(accent)
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("✈ $frames MODE-S FRAMES · ${planes.size} AIRCRAFT", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, modifier = Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                Chip("MAP", selected = showMap, accent = accent) { showMap = true }
-                Chip("LIST", selected = !showMap, accent = accent) { showMap = false }
-            }
-        }
-        val sel = planes.firstOrNull { it.icao == selected }
-        if (sel != null) {
-            Text("%s %s · %s · %s · %s · %s".format(sel.icao.uppercase(), sel.flight ?: "", sel.altBaro?.let { "${it} ft" } ?: "alt ?", sel.gs?.let { "${it} kt" } ?: "gs ?", sel.track?.let { "$it°" } ?: "trk ?",
-                if (sel.lat != null && sel.lon != null) "%.3f,%.3f".format(sel.lat, sel.lon) else "no pos"),
-                color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, modifier = Modifier.fillMaxWidth().padding(bottom = d.dp(4f)))
-        }
-        if (showMap) {
-            AdsbMap(planes, accent, home, selected, Modifier.fillMaxWidth().weight(1f).panel()) { selected = it }
-        } else Box(Modifier.fillMaxWidth().weight(1f).panel()) {
-            if (planes.isEmpty()) Text("listening on 1090 MHz…", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
-            LazyColumn(Modifier.fillMaxSize().padding(d.dp(6f))) {
-                items(planes, key = { it.icao }) { a ->
-                    val la = a.lat; val lo = a.lon
-                    val pos = if (la != null && lo != null) "%.3f,%.3f".format(la, lo) else "no pos"
-                    Row(Modifier.fillMaxWidth().clickable { selected = a.icao; showMap = a.lat != null }.padding(vertical = d.dp(3f)), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("%s %-8s".format(a.icao.uppercase(), a.flight ?: ""), color = if (a.icao == selected) Palette.accent2 else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
-                        Text("%6s %5s %4s %s".format(a.altBaro?.let { "${it}ft" } ?: "", a.gs?.let { "${it}kt" } ?: "", a.track?.let { "$it°" } ?: "", pos),
-                            color = Palette.ink.copy(alpha = 0.8f), fontFamily = Mono, fontSize = d.sp(11f), maxLines = 1)
-                    }
-                }
-            }
-        }
-    }
 }

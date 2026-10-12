@@ -1,32 +1,12 @@
 package com.rocketgod.mayhem.core.audio
 
 import com.rocketgod.mayhem.core.BitSync
+import com.rocketgod.mayhem.core.DiscFilter
 import kotlin.math.cos
-import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
-
-/** DC blocker then a 4th-order Butterworth low-pass, for discriminator audio ahead of a tone demodulator. */
-internal class DiscFilter(cutoffHz: Double, rate: Double, dcHz: Double = 40.0) {
-    private var dcX = 0.0; private var dcY = 0.0
-    private val dcA = exp(-2 * Math.PI * dcHz / rate)
-    private val b0 = DoubleArray(2); private val b1 = DoubleArray(2); private val b2 = DoubleArray(2)
-    private val a1 = DoubleArray(2); private val a2 = DoubleArray(2); private val z1 = DoubleArray(2); private val z2 = DoubleArray(2)
-    init {
-        for ((k, q) in doubleArrayOf(0.5412, 1.3066).withIndex()) {
-            val w0 = 2 * Math.PI * min(0.45 * rate, cutoffHz) / rate; val alpha = sin(w0) / (2 * q); val c = cos(w0); val a0 = 1 + alpha
-            b0[k] = (1 - c) / 2 / a0; b1[k] = (1 - c) / a0; b2[k] = (1 - c) / 2 / a0; a1[k] = -2 * c / a0; a2[k] = (1 - alpha) / a0
-        }
-    }
-    fun push(x: Double): Double {
-        val y = x - dcX + dcA * dcY; dcX = x; dcY = y
-        var v = y
-        for (k in 0 until 2) { val o = b0[k] * v + z1[k]; z1[k] = b1[k] * v - a1[k] * o + z2[k]; z2[k] = b2[k] * v - a2[k] * o; v = o }
-        return v
-    }
-}
 
 data class SameLocation(val code: String, val portion: Int, val state: String, val county: String)
 data class SameHeader(

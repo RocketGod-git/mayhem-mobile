@@ -114,7 +114,8 @@ private class PlanesOverlay(private val accentInt: Int, @Volatile var planes: Li
  * crosshair button re-arms it. [home] is the phone's fix, used to centre an empty map.
  */
 @Composable
-fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, selected: String?, modifier: Modifier = Modifier, onTapPlane: (String) -> Unit) {
+fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, selected: String?, modifier: Modifier = Modifier,
+            focus: Pair<Double, Double>? = null, focusKey: Int = 0, onTapPlane: (String) -> Unit) {
     val accentInt = accent.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
     var overlayRef by remember { mutableStateOf<PlanesOverlay?>(null) }
@@ -134,6 +135,13 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
         val mv = mapRef ?: return@LaunchedEffect
         overlayRef?.let { it.planes = planes; it.selected = selected; mv.invalidate() }
         if (follow) fitTo(mv)
+    }
+    LaunchedEffect(focusKey) {
+        val mv = mapRef ?: return@LaunchedEffect
+        val f = focus ?: return@LaunchedEffect
+        if (focusKey == 0) return@LaunchedEffect
+        follow = false
+        mv.controller.animateTo(GeoPoint(f.first, f.second))
     }
     LaunchedEffect(mapRef, home, planes.isEmpty()) {
         val mv = mapRef ?: return@LaunchedEffect
