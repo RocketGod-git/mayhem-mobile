@@ -338,7 +338,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
 
 /** Session-scoped safety prompt: confirms an antenna or a dummy load is attached before the first transmission. */
 @Composable
-internal fun SafetyPromptDialog(accent: Color, onAck: () -> Unit) {
+internal fun SafetyPromptDialog(accent: Color, onCancel: () -> Unit = { Apps.home() }, onAck: () -> Unit) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = {},
         containerColor = Palette.surface,
@@ -354,6 +354,6 @@ internal fun SafetyPromptDialog(accent: Color, onAck: () -> Unit) {
             }
         },
         confirmButton = { androidx.compose.material3.TextButton(onClick = onAck) { Text("I HAVE ONE — CONTINUE", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold) } },
-        dismissButton = { androidx.compose.material3.TextButton(onClick = { Apps.home() }) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onCancel) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
     )
 }

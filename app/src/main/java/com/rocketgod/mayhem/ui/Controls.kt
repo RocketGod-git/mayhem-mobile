@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -70,7 +71,7 @@ fun GainRow(accent: Color) {
     val vga by SdrEngine.radioVga.collectAsState()
     val amp by SdrEngine.radioAmp.collectAsState()
     val agc by SdrEngine.agc.collectAsState()
-    SectionLabel(if (agc) "GAIN · AGC sets LNA / VGA (gold) · tap one to take over" else "GAIN · set by hand · AGC hands it back")
+    SectionLabel(if (agc) "GAIN · AUTO · tap LNA or VGA to set it" else "GAIN · BY HAND · AGC for auto")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(0.8f)) { SdrEngine.setAgc(!agc) }
         Chip(if (amp) "AMP +14" else "AMP OFF", selected = amp, accent = accent, modifier = Modifier.weight(0.9f)) { SdrEngine.toggleRadioAmp() }
@@ -197,7 +198,13 @@ fun AdaptivePane(
     if (d.wide) {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Box(Modifier.weight(1.35f).fillMaxHeight()) { visual(Modifier.fillMaxSize()) }
-            Column(Modifier.weight(1f).fillMaxHeight()) { controls() }
+            // A phone on its side is too short for a controls pane with a list or a map in it, so the pane scrolls
+            // and is laid out as if it had a tablet's height: lists and maps keep real room instead of collapsing.
+            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight()) {
+                val room = 640.dp
+                if (maxHeight >= room) Column(Modifier.fillMaxSize()) { controls() }
+                else Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) { Column(Modifier.fillMaxWidth().height(room)) { controls() } }
+            }
         }
     } else {
         Column(Modifier.fillMaxSize()) {

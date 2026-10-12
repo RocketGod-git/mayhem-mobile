@@ -91,7 +91,9 @@ private fun SatTrack(accent: Color) {
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); now = System.currentTimeMillis() } }
     var note by remember { mutableStateOf("") }
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> note = if (ok) "microphone ready — hold the button" else "no microphone permission" }
-    if (needsPrompt && Sats.service().up != null) SafetyPromptDialog(accent) { Tx.acknowledgeSafety() }
+    // A receive app first: the transmit safety prompt waits until push-to-talk is actually pressed.
+    var asking by remember { mutableStateOf(false) }
+    if (asking && needsPrompt) SafetyPromptDialog(accent, onCancel = { asking = false }) { Tx.acknowledgeSafety(); asking = false }
     val def = Sats.def(); val svc = Sats.service(); val sgp = Sats.sgp(def.norad)
     val l = if (sgp != null && home != null) runCatching { look(sgp, now, home!!.first, home!!.second) }.getOrNull() else null
     val status: @Composable () -> Unit = {
@@ -119,6 +121,7 @@ private fun SatTrack(accent: Color) {
                     .background(if (p.on) Palette.danger else Palette.surface, RoundedCornerShape(10.dp)).then(Modifier.panel(if (p.on) Palette.danger else accent))
                     .pointerInput(Unit) {
                         detectTapGestures(onPress = {
+                            if (Tx.needsPrompt.value) { asking = true; return@detectTapGestures }
                             if (!Mic.granted(ctx)) { askMic.launch(Manifest.permission.RECORD_AUDIO); return@detectTapGestures }
                             val up = Sats.uplink()
                             if (up != null) Ham.startPtt(ctx, up.first, up.second)?.let { note = it }
