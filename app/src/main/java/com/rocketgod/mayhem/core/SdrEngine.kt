@@ -204,6 +204,9 @@ object SdrEngine {
     }
     fun nudge(deltaHz: Long) = tune(_freqHz.value + deltaHz)
 
+    /** Where the Audio app opens next: set from the launcher, where a tap means "listen here". */
+    fun setDial(hz: Long, mode: Mode) { radioFreqHz = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ); radioMode = mode }
+
     fun setRate(rate: Int) { _rateHz.value = rate; HackRfOne.targetRateHz = rate }
 
     fun setRadioLna(db: Int) { _radioLna.value = (db.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; syncDriver() }

@@ -58,8 +58,16 @@ class IqRecorder(private val dir: File) : IqProcessor {
     }
 
     fun listCaptures(): List<String> =
+        captureFiles().map { "%s  %.1f MB".format(it.name, it.length() / 1e6) }
+
+    /** Recordings, newest first. */
+    fun captureFiles(): List<File> =
         (dir.listFiles() ?: emptyArray()).filter { it.name.endsWith(".c8") }.sortedByDescending { it.lastModified() }
-            .map { "%s  %.1f MB".format(it.name, it.length() / 1e6) }
+
+    /** The recording and its .txt sidecar. */
+    fun filesOf(c8: File): List<File> = listOf(c8, File(c8.parentFile, c8.name.removeSuffix(".c8") + ".txt")).filter { it.exists() }
+
+    fun delete(c8: File) { filesOf(c8).forEach { it.delete() } }
 
     val directory: String get() = dir.absolutePath
 

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The share sheet reads the log out of the cache; nothing else in the app is exposed. -->
+<!-- The share sheet reads the log out of the cache and captures out of the app's own files; nothing else is exposed. -->
 <paths>
     <cache-path name="logs" path="logs/" />
+    <!-- IQ captures, handed to the share sheet one at a time. -->
+    <external-files-path name="captures" path="captures/" />
 </paths>

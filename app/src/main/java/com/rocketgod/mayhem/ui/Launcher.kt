@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Text
@@ -38,21 +39,37 @@ fun Launcher(accent: Color) {
     val health by SdrEngine.rxHealth.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
     Column(Modifier.fillMaxSize()) {
+        // The front door is a spectrum browser: pick a band, tap what you see, then pick the app to hear it with.
+        // A tap sets the dial the Audio app opens on, so "that one" carries straight into the receiver.
+        val band = bandAt(freq)
         WaterfallView(
             spec, SdrEngine.SPEC_BINS, accent,
-            Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 180f)).padding(top = d.dp(6f)),
-            rows = 70, traceFrac = 0.32f, labels = centredLabels(freq, SdrEngine.currentRate())
-        )
-        Text(if (health.isNotEmpty()) health else "no IQ yet — attach a HackRF over USB-OTG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
-            modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(6f)), maxLines = 1)
+            Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 160f)).padding(top = d.dp(6f)),
+            rows = 70, traceFrac = 0.32f, labels = centredLabels(freq, SdrEngine.currentRate()),
+            onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
+        ) { frac ->
+            val hz = spanHz(freq, SdrEngine.currentRate(), frac)
+            SdrEngine.tune(hz); SdrEngine.setDial(hz, bandAt(hz)?.mode ?: SdrEngine.Mode.NFM)
+        }
+        Text(if (health.isNotEmpty()) "%.3f MHz%s · %s".format(freq / 1e6, band?.let { " · ${it.what}" } ?: "", health)
+             else "no IQ yet — attach a HackRF over USB-OTG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
+            modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
+        BandChips(accent, freq) { b -> SdrEngine.tune(b.centre); SdrEngine.setDial(b.centre, b.mode) }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = d.tileMin),
             verticalArrangement = Arrangement.spacedBy(d.dp(8f)),
             horizontalArrangement = Arrangement.spacedBy(d.dp(8f)),
-            contentPadding = PaddingValues(bottom = d.dp(12f)),
+            contentPadding = PaddingValues(top = d.dp(2f), bottom = d.dp(12f)),
             modifier = Modifier.fillMaxSize()
         ) {
-            items(MayhemApp.values().toList()) { app -> AppTile(app, d) }
+            val groups = MayhemApp.entries.groupBy { it.category }
+            for ((cat, apps) in listOf("Receive", "Analyze", "Transmit", "Tools").mapNotNull { c -> groups[c]?.let { c to it } }) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(cat.uppercase(), color = tintFor(apps.first()), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
+                        modifier = Modifier.padding(top = d.dp(6f), start = d.dp(2f)))
+                }
+                items(apps) { app -> AppTile(app, d) }
+            }
         }
     }
 }
