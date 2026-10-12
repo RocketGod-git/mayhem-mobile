@@ -38,7 +38,18 @@
   </div>
 
   <div id="hint" class="notice" hidden></div>
-  <section id="log-panel" class="panel log" hidden><pre id="log"></pre></section>
+  <section id="log-panel" class="logwin" hidden>
+    <div id="log-bar" class="logwin-bar">
+      <span class="logwin-title">LOG</span>
+      <button id="log-pip" class="chip">PIP</button>
+      <button id="log-save" class="chip">SAVE</button>
+      <button id="log-share" class="chip">SHARE</button>
+      <button id="log-clear" class="chip">CLEAR</button>
+      <button id="log-close" class="chip">✕</button>
+    </div>
+    <pre id="log-head" class="logwin-head"></pre>
+    <pre id="log" class="logwin-body"></pre>
+  </section>
 
   <main id="view" class="view launcher"></main>
 
