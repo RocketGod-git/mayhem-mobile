@@ -402,3 +402,58 @@ class Resampler(private val ratio: Double) {   // out rate / in rate
         return o
     }
 }
+
+/**
+ * Arbitrary-ratio resampler: a windowed-sinc kernel tabulated at [phases] fractional offsets, [ch] interleaved
+ * channels (2 = complex IQ). Android runs the HackRF at 2 Msps where the web app uses 1.92, so this is what puts
+ * the HAM chain back on exactly 48 kHz / 240 kHz for decoders that count samples per symbol.
+ */
+class SincResampler(inRate: Double, outRate: Double, private val ch: Int = 2, private val taps: Int = 16, private val phases: Int = 128) {
+    private val step = inRate / outRate
+    private val table = FloatArray((phases + 1) * taps)
+    private var work = FloatArray(0)
+    private var have = 0
+    private var pos = 0.0
+
+    init {
+        val fc = min(1.0, outRate / inRate) * 0.92
+        val half = taps / 2 - 1
+        for (p in 0..phases) {
+            val frac = p.toDouble() / phases
+            var sum = 0.0
+            for (k in 0 until taps) {
+                val t = k - half - frac
+                val x = PI * fc * t
+                val sinc = if (abs(x) < 1e-9) 1.0 else sin(x) / x
+                val w = 0.42 + 0.5 * cos(PI * t / (taps / 2.0)) + 0.08 * cos(2 * PI * t / (taps / 2.0))
+                val v = sinc * max(0.0, w)
+                table[p * taps + k] = v.toFloat(); sum += v
+            }
+            for (k in 0 until taps) table[p * taps + k] = (table[p * taps + k] / sum).toFloat()
+        }
+    }
+
+    fun reset() { have = 0; pos = 0.0 }
+
+    /** [n] input frames in, frames written to [out] returned. [out] needs room for n / step + 2 frames. */
+    fun process(inp: FloatArray, n: Int, out: FloatArray): Int {
+        if (work.size < (have + n) * ch) work = work.copyOf((have + n) * ch * 2)
+        System.arraycopy(inp, 0, work, have * ch, n * ch); have += n
+        var o = 0
+        while (pos + taps <= have) {
+            val i0 = pos.toInt()
+            val row = ((pos - i0) * phases).roundToInt() * taps
+            for (c in 0 until ch) {
+                var acc = 0f
+                var j = i0 * ch + c
+                for (k in 0 until taps) { acc += work[j] * table[row + k]; j += ch }
+                out[o * ch + c] = acc
+            }
+            o++; pos += step
+        }
+        val drop = min(pos.toInt(), have)
+        System.arraycopy(work, drop * ch, work, 0, (have - drop) * ch)
+        have -= drop; pos -= drop
+        return o
+    }
+}
