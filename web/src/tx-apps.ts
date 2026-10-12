@@ -62,7 +62,65 @@ export function noiseBits(count: number): boolean[] {
   return Array.from({ length: count }, () => Math.random() < 0.5);
 }
 
-// ---- Transmit app encoders, all on the plain OOK / FM-tone primitives ---------------------------------------
+// ---- Troll app: novelty transmitters, all on the plain OOK / FM-tone primitives -----------------------------
+
+/** Manchester-code a bit list as OOK pulses (1 → mark then space, 0 → space then mark), `halfUs` per half-bit. */
+function manchester(bits: number[], halfUs: number, rate: number): [boolean, number][] {
+  const t = Math.max(1, Math.round(halfUs * rate / 1_000_000));
+  const out: [boolean, number][] = [];
+  for (const b of bits) { out.push([b === 1, t]); out.push([b === 1 ? false : true, t]); }
+  return out;
+}
+
+/**
+ * Tesla charge-port door opener. The port has no rolling code, so the trigger is a fixed, widely-published
+ * signal: an OOK burst Manchester-coded at ~400 µs a half-bit, the same on 315 MHz (US/JP) and 433.92 MHz (EU) —
+ * only the carrier differs. The payload below is the commonly-circulated command, repeated a handful of times the
+ * way the public tools send it. Confirm on the bench; if a car wants a hair different timing, `HALF_US`/repeats
+ * are the knobs.
+ */
+const TESLA_HALF_US = 400;
+
+const TESLA_MSG = [0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1];
+
+export function teslaPulses(rate: number, repeats = 5): [boolean, number][] {
+  const one = manchester(TESLA_MSG, TESLA_HALF_US, rate);
+  const gap: [boolean, number] = [false, Math.round(23_000 * rate / 1_000_000)];   // ~23 ms between messages
+  const out: [boolean, number][] = [];
+  for (let r = 0; r < repeats; r++) { out.push(...one); out.push(gap); }
+  return out;
+}
+
+/** Note names → Hz (equal temperament, A4 = 440). '0' is a rest. */
+const NOTE: Record<string, number> = (() => {
+  const base: Record<string, number> = { C: -9, 'C#': -8, D: -7, 'D#': -6, E: -5, F: -4, 'F#': -3, G: -2, 'G#': -1, A: 0, 'A#': 1, B: 2 };
+  const m: Record<string, number> = { '0': 0 };
+  for (let oct = 2; oct <= 7; oct++) for (const [n, s] of Object.entries(base)) m[n + oct] = Math.round(440 * 2 ** (s / 12 + (oct - 4)));
+  return m;
+})();
+
+/** A tune as `[note, beats]` pairs; expanded to one tone per slot so the fixed-slot FM-tone player can sing it. */
+const TUNES: Record<string, [string, number][]> = {
+  // A rising-falling two-tone that reads unmistakably as a siren rather than a real emergency signal.
+  siren: Array.from({ length: 12 }, (_, i) => [i % 2 ? 'A5' : 'E5', 2] as [string, number]),
+  // Ode to Joy — public domain.
+  joy: [['E5', 1], ['E5', 1], ['F5', 1], ['G5', 1], ['G5', 1], ['F5', 1], ['E5', 1], ['D5', 1], ['C5', 1], ['C5', 1], ['D5', 1], ['E5', 1], ['E5', 2], ['D5', 1], ['D5', 2], ['0', 1]],
+  // Westminster chime — public domain doorbell.
+  chime: [['E5', 2], ['C5', 2], ['D5', 2], ['G4', 3], ['0', 1], ['G4', 2], ['D5', 2], ['E5', 2], ['C5', 3]],
+  // Short, recognizable riffs — the monophonic beep versions novelty firmware ships.
+  imperial: [['G4', 2], ['G4', 2], ['G4', 2], ['D#4', 1], ['A#4', 1], ['G4', 2], ['D#4', 1], ['A#4', 1], ['G4', 3], ['0', 1]],
+  rick: [['C#5', 1], ['D#5', 1], ['0', 1], ['D#5', 1], ['0', 1], ['F5', 1], ['F5', 1], ['D#5', 1], ['C#5', 1], ['C#5', 1], ['C#5', 1], ['A#4', 2], ['0', 1]],
+};
+
+export function tuneNames(): string[] { return Object.keys(TUNES); }
+
+/** One tone per slot (0 = silence) for `fmTones`. Slots are short so `[note, beats]` gives duration by repetition. */
+export function melody(name: string): number[] {
+  const t = TUNES[name] ?? TUNES.siren;
+  const out: number[] = [];
+  for (const [note, beats] of t) for (let i = 0; i < beats; i++) out.push(NOTE[note] ?? 0);
+  return out;
+}
 
 /**
  * A de Bruijn sequence B(2, n): a cyclic 0/1 string in which every n-bit word appears exactly once as a window.

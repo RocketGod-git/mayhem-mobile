@@ -37,10 +37,11 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'btle' | 'tpms' | 'acars' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'btle' | 'tpms' | 'acars' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
+  { id: 'troll', title: 'Troll', blurb: 'sub-GHz pranks · weather spoof · cart sounds', cat: 'Transmit' },
   { id: 'ham', title: 'HAM', blurb: 'SSB · CW · AM · NFM · repeaters · CTCSS', cat: 'Receive' },
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB receiver', cat: 'Receive' },
   { id: 'devices', title: 'Devices', blurb: 'alarms, meters, remotes, tire sensors, weather', cat: 'Receive' },
@@ -692,6 +693,7 @@ function open(app: AppId | null): void {
     case 'search': render(app); startSweep(400e6, 470e6); return;
     case 'capture': configure('NONE', dial, RX_RATE, 24, 24, false, 'capture'); worker?.postMessage({ type: 'capture', cmd: 'list' }); break;
     case 'transmit': configure('NONE', dial, RX_RATE, 24, 24, false, 'none'); break;
+    case 'troll': configure('NONE', dial, RX_RATE, 24, 24, false, 'none'); break;
   }
   render(app);
   // SAME weather-alert decoding belongs to the audio app (NOAA weather radio); scope it so no other NFM app pays for it.
@@ -1352,6 +1354,7 @@ function render(app: AppId | null): void {
     case 'lookingglass': case 'search': renderSweep(view, app); break;
     case 'capture': renderCapture(view); break;
     case 'transmit': renderTx(view); break;
+    case 'troll': renderTroll(view); break;
     case 'settings': renderSettings(view); break;
   }
   wireCommon(view);
@@ -2908,6 +2911,126 @@ function renderSweep(view: HTMLElement, app: AppId): void {
 }
 
 function txStatus(s: string): void { const e = q('#tx-status'); if (e) e.textContent = s; const stop = q('#tx-stop'); if (stop) (stop as HTMLElement).hidden = !tx.active; }
+/**
+ * Shopping-cart wheel locks listen for a signal in the air, not over radio, so this trick is pure phone-speaker
+ * audio and works with no HackRF attached. These are the real recordings for the two common systems — Gatekeeper
+ * (a 7.8 kHz tone) and Rocateq — from begaydocrime.com, credited in the About screen. Point the speaker at a wheel.
+ */
+const CART_SOUNDS: Record<string, Record<string, string>> = {
+  gatekeeper: { lock: 'assets/cart/GateKeeperCartKeyLock78.wav', unlock: 'assets/cart/unlock-cart.wav' },
+  rocateq: { lock: 'assets/cart/roca-lock.mp3', unlock: 'assets/cart/roca-unlock.mp3', arm: 'assets/cart/roca-armingsignal-17s.mp3', purchase: 'assets/cart/roca-purcheck-ok.mp3' },
+};
+
+let cartAudioEl: HTMLAudioElement | null = null;
+
+function cartSound(brand: 'gatekeeper' | 'rocateq', action: string): void {
+  try {
+    if (cartAudioEl) { cartAudioEl.pause(); cartAudioEl.currentTime = 0; }   // one at a time; a new tap interrupts
+    const a = cartAudioEl = new Audio(CART_SOUNDS[brand][action]);
+    a.volume = 1;
+    void a.play().catch(e => log(`cart audio: ${(e as Error).message}`));
+    setStatus(`cart · ${brand} ${action} · through the speaker`, false);
+  } catch (e) { log(`cart audio: ${(e as Error).message}`); }
+}
+
+function renderTroll(view: HTMLElement): void {
+  tx.onStatus = txStatus;
+  if (!tx.enabled) {
+    view.innerHTML = `<div class="notice tx-off"><b>Transmit is switched off in Settings.</b> Most Troll tricks transmit, so turn it back on there — the shopping-cart one is phone audio and works regardless.<div class="row" style="margin-top:10px"><button id="tx-settings" class="chip">OPEN SETTINGS</button><button id="tr-cart-only" class="chip">CART · UNLOCK</button></div></div>`;
+    $('tx-settings').onclick = () => open('settings');
+    $('tr-cart-only').onclick = () => cartSound('gatekeeper', 'unlock');
+    return;
+  }
+  if (tx.needsPrompt) showTxSafetyPrompt();
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}</section>
+    <section class="controls trollctl">
+      <div class="trollintro">Everything here <b>transmits</b> unless noted — use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live. Harmless fun, your call.</div>
+      ${stepHtml([1e6, 1e5, 1e4])}
+      <div class="trollgain"><span class="trolllabel">TX&nbsp;GAIN</span><div class="row">${[0, 10, 20, 30, 47].map(g => `<button class="chip" data-txg="${g}">${g}</button>`).join('')}<button id="tx-amp" class="chip">amp</button></div></div>
+
+      <div class="trollcard sub">
+        <div class="trollhead"><span class="ico">📡</span><b>ON THE DIAL</b><small>fires on the frequency tuned above</small></div>
+        <div class="trollsub">Band <em>sub-GHz</em></div>
+        <div class="trollgrid band">${[['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000]].map(([l, hz]) => `<button class="chip" data-preset="${hz}">${l}</button>`).join('')}</div>
+        <div class="trollsub">Fixed-code OOK <em>doorbells · outlets · gates</em></div>
+        <div class="trollgrid"><button class="chip" id="tr-doorbell">Doorbell</button><button class="chip" id="tr-outlet">Outlet</button><button class="chip" id="tr-fan">Fan / LED</button><button class="chip" id="tr-walk">Code walk</button><button class="chip" id="tr-gate">Gate opener</button><button class="chip" id="tr-noise">Static burst</button></div>
+        <div class="trollsub">Replay a capture <em>paste a Flipper .sub</em></div>
+        <textarea id="tr-sub" class="txin mono" rows="3" placeholder="Protocol: RAW&#10;RAW_Data: 340 -1020 340 -1020 ..."></textarea>
+        <div class="row tight"><span id="tr-rep" class="unit">×3</span><button class="chip" id="tr-repm">−</button><button class="chip" id="tr-repp">+</button><button class="chip primary wide2" id="tr-subsend">FIRE .SUB</button></div>
+        <div class="trollsub">FM jingle <em>tune to a station first</em></div>
+        <div class="trollgrid">${Apps.tuneNames().map(n => `<button class="chip" data-tune="${n}">${n}</button>`).join('')}</div>
+        <div class="trollsub">Morse <em>troll a repeater in code</em></div>
+        <div class="row tight"><input id="tr-morse" class="txin" value="HI HI" maxlength="60"><button class="chip primary" id="tr-morsesend">SEND</button></div>
+      </div>
+
+      <div class="trolldivide"></div>
+
+      <div class="trollcard spoof">
+        <div class="trollhead"><span class="ico">🎯</span><b>FIXED SIGNALS</b><small>each sets its own frequency</small></div>
+        <div class="trollsub">Tesla charge port</div>
+        <div class="trollgrid two"><button class="chip" id="tr-tesla-us">US · 315</button><button class="chip" id="tr-tesla-eu">EU · 433.92</button></div>
+        <div class="trollsub">Weather spoof <em>phantom Acurite · 433.92</em></div>
+        <div class="row tight"><input id="tr-wx-temp" class="txin" value="45" inputmode="decimal"><span class="unit">°C</span><input id="tr-wx-hum" class="txin" value="50" inputmode="numeric"><span class="unit">%RH</span><button class="chip primary" id="tr-wx">SEND</button></div>
+      </div>
+
+      <div class="trollcard cart">
+        <div class="trollhead"><span class="ico">🛒</span><b>SHOPPING CART</b><small>real wheel sounds · phone speaker · no radio</small></div>
+        <div class="cartbrands">
+          <div class="cartbrand"><img src="assets/cart/gatekeeper.png" alt="Gatekeeper locking cart wheel" loading="lazy"><div class="cartname">Gatekeeper · 7.8 kHz</div><div class="trollgrid two"><button class="chip" id="tr-gk-unlock">Unlock</button><button class="chip" id="tr-gk-lock">Lock</button></div></div>
+          <div class="cartbrand"><img src="assets/cart/rocateq.png" alt="Rocateq locking cart wheel" loading="lazy"><div class="cartname">Rocateq</div><div class="trollgrid two"><button class="chip" id="tr-rc-unlock">Unlock</button><button class="chip" id="tr-rc-lock">Lock</button><button class="chip" id="tr-rc-arm">Arm</button><button class="chip" id="tr-rc-purchase">Purchase check</button></div></div>
+        </div>
+      </div>
+    </section>`;
+
+  // gain / amp / stop — same controls and ids as the Transmit app; only one view is mounted at a time
+  const setg = () => qa('[data-txg]').forEach(b => b.classList.toggle('on', Number(b.dataset.txg) === tx.gain));
+  qa<HTMLButtonElement>('[data-txg]', view).forEach(b => b.onclick = () => { tx.gain = Number(b.dataset.txg); setg(); });
+  setg();
+  const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp); ampb.textContent = tx.amp ? 'AMP' : 'amp';
+  ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); ampb.textContent = tx.amp ? 'AMP' : 'amp'; };
+  // STOP belongs to the card of the tool that is transmitting, not a bar at the foot of the page. Remember the last
+  // card tapped, and while a transmission runs, move the status + STOP strip into that card.
+  const ctl = view.querySelector('.trollctl') as HTMLElement;
+  const runStrip = document.createElement('div');
+  runStrip.className = 'trollrun'; runStrip.hidden = true;
+  runStrip.innerHTML = '<span class="health" id="tx-status">TX running</span><button id="tx-stop" class="chip rec">■ STOP</button>';
+  ctl.appendChild(runStrip);
+  $('tx-stop').onclick = () => tx.stop();
+  let activeCard: HTMLElement | null = null;
+  ctl.addEventListener('click', (e) => { const c = (e.target as HTMLElement).closest('.trollcard'); if (c) activeCard = c as HTMLElement; }, true);
+  tx.onStatus = (s) => {
+    const st = q('#tx-status'); if (st) st.textContent = s;
+    if (tx.active) { (activeCard ?? ctl).appendChild(runStrip); runStrip.hidden = false; }
+    else runStrip.hidden = true;
+  };
+
+  $('tr-tesla-us').onclick = () => { tune(315_000_000); tx.teslaChargePort(315_000_000); };
+  $('tr-tesla-eu').onclick = () => { tune(433_920_000); tx.teslaChargePort(433_920_000); };
+  // cheap wireless doorbells / outlet remotes are fixed Princeton codes; blast one, flicker a pair, or walk a slice
+  $('tr-doorbell').onclick = () => tx.ookPrinceton(state.freq, 0x1A2B3C, 24, 350, 12);
+  $('tr-outlet').onclick = () => tx.ookPrinceton(state.freq, 0x145591, 24, 320, 10);
+  $('tr-fan').onclick = () => tx.ookPrinceton(state.freq, 0x0AAA55, 24, 380, 10);
+  $('tr-walk').onclick = () => tx.ookBrute(24, 0x000000, 0x0000FF, 350, state.freq);
+  $('tr-gate').onclick = () => tx.gateOpener(12, 350, state.freq);
+  $('tr-noise').onclick = () => tx.ookNoise(100, 3, state.freq);
+
+  let reps = 3;
+  $('tr-repm').onclick = () => { reps = Math.max(1, reps - 1); $('tr-rep').textContent = `×${reps}`; };
+  $('tr-repp').onclick = () => { reps = Math.min(20, reps + 1); $('tr-rep').textContent = `×${reps}`; };
+  $('tr-subsend').onclick = () => tx.subghzReplay(($('tr-sub') as HTMLTextAreaElement).value, state.freq, reps);
+
+  $('tr-wx').onclick = () => { tune(433_920_000); const t = parseFloat(($('tr-wx-temp') as HTMLInputElement).value); const h = ($('tr-wx-hum') as HTMLInputElement).value.trim(); tx.weatherSpoof(isNaN(t) ? 20 : t, h === '' ? undefined : parseInt(h, 10), 433_920_000); };
+  qa<HTMLButtonElement>('[data-tune]', view).forEach(b => b.onclick = () => tx.jingle(b.dataset.tune!, state.freq));
+  $('tr-morsesend').onclick = () => tx.morse(($('tr-morse') as HTMLInputElement).value, 20, state.freq, true);
+  $('tr-gk-lock').onclick = () => cartSound('gatekeeper', 'lock');
+  $('tr-gk-unlock').onclick = () => cartSound('gatekeeper', 'unlock');
+  $('tr-rc-lock').onclick = () => cartSound('rocateq', 'lock');
+  $('tr-rc-unlock').onclick = () => cartSound('rocateq', 'unlock');
+  $('tr-rc-arm').onclick = () => cartSound('rocateq', 'arm');
+  $('tr-rc-purchase').onclick = () => cartSound('rocateq', 'purchase');
+}
+
 /** Session-scoped safety modal: confirms an antenna or a dummy load is attached before the first transmission. */
 function showTxSafetyPrompt(): void {
   if (q('#tx-safety')) return;

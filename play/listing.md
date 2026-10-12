@@ -29,7 +29,6 @@ pure-userspace USB driver.
 RECEIVE
 • Audio — WFM, NFM, AM and SSB, with a slide-to-tune waterfall, squelch, bookmarks and
   a scanner
-• HAM — SSB, CW, NFM, repeater offsets and CTCSS
 • ADS-B — Mode-S decoding with a live aircraft map and table
 • AIS — vessel positions and names on 162 MHz
 • APRS — Bell 202 AFSK packet radio on 144.39 MHz
@@ -39,7 +38,6 @@ RECEIVE
 • ACARS — aircraft messages on 131 MHz
 • BLE — Bluetooth advertising on 2.4 GHz
 • Sub-GHz — weather stations, remotes and sensors, rtl_433 style
-• Satellites — tracking and decoding of what is overhead
 
 ANALYSE
 • Looking Glass — a wideband sweep waterfall
@@ -59,8 +57,8 @@ WHAT YOU NEED
 A PortaPack is not required. If your HackRF has one attached, put it in HackRF mode.
 
 OPEN SOURCE
-GPL-3.0. The full source, and a browser version that runs the same DSP over WebUSB, are
-linked below.
+GPL-3.0. The full source is linked below, along with a browser version that runs the same
+DSP over WebUSB and adds a few apps this one does not have yet.
 
 PRIVACY
 No accounts, no analytics, no advertising and no tracking. Location permission is used on
