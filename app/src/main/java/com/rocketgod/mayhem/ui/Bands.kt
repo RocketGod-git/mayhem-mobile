@@ -29,7 +29,7 @@ fun bandAt(hz: Long): ListenBand? = LISTEN_BANDS.firstOrNull { hz in it.lo..it.h
 
 /** Eight chips, four to a row on a phone and one row of eight on a wide screen; the band holding [hz] is lit. */
 @Composable
-fun BandChips(accent: androidx.compose.ui.graphics.Color, hz: Long, onPick: (ListenBand) -> Unit) {
+fun ListenBandChips(accent: androidx.compose.ui.graphics.Color, hz: Long, onPick: (ListenBand) -> Unit) {
     val d = rememberDims()
     val lit = bandAt(hz)
     for (row in LISTEN_BANDS.chunked(if (d.widthDp >= 600) 8 else 4)) {

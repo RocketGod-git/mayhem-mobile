@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (!handleIntent(intent)) autoConnect()
+        debugExtras(intent)
         Geo.request(this)
         AppUpdates.check(this)
     }
@@ -147,6 +148,22 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
+        debugExtras(intent)
+    }
+
+    /**
+     * Debug builds only, for laying screens out on an emulator: `--ez demo true` feeds a synthetic signal and
+     * `--es open AUDIO` opens an app, so every screen can be reached and photographed from adb.
+     */
+    private fun debugExtras(i: Intent?) {
+        if (!BuildConfig.DEBUG || i == null) return
+        if (i.getBooleanExtra("demo", false) && !HackRfOne.running) {
+            com.rocketgod.mayhem.core.DemoIq.start()
+            connected.value = true; status.value = "demo signal"
+        }
+        i.getStringExtra("open")?.let { name ->
+            if (name == "HOME") Apps.home() else runCatching { Apps.open(MayhemApp.valueOf(name)) }
+        }
     }
 
     /** USB_DEVICE_ATTACHED from the manifest filter: the device comes with permission for this attachment. */

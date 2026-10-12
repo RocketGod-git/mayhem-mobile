@@ -98,6 +98,19 @@ fun SettingsScreen(accent: Color) {
         }
         SectionLabel("CREDITS · who wrote what this app is built from")
         CreditsRoll(accent)
+        SectionLabel("FIELD NOTES")
+        Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
+            AboutLine("Plugging in", "the app opens by itself when a HackRF is plugged in; allow the USB prompt once and tick 'always'")
+            AboutLine("Power", "a HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ")
+            AboutLine("Reading LOG", "iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode")
+            AboutLine("Tuning", "press the waterfall and slide: the amber guide and readout follow your finger and the radio retunes when you lift. On the home screen a tap sets where Audio opens")
+            AboutLine("Floating window", "press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing; mute (and skip, in Prowl) are on the window")
+            AboutLine("Screen", "the screen stays on while an app is open, and sleeps as usual on the home screen")
+            AboutLine("Maps", "ADS-B, AIS and APRS plot on OpenStreetMap; allow location so distances and single-frame aircraft positions use your spot")
+            AboutLine("Gain", "receivers start at LNA 24 / VGA 24 / amp off (the amp overloads strong FM); ADS-B uses Mayhem's LNA 32 / VGA 32 / amp on")
+            AboutLine("Squelch + scan", "squelch gates audio against a tracked noise floor; SCAN in Audio hops your bookmarks and holds where the squelch opens")
+            AboutLine("Captures", "Capture records signed 8-bit IQ with a .txt sidecar; SHARE sends both to SDR#, GNU Radio or a drive")
+        }
         Box(Modifier.height(d.dp(12f)))
     }
 }
