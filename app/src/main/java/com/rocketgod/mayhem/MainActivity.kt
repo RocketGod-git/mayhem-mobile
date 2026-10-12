@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
 
         if (!handleIntent(intent)) autoConnect()
         Geo.request(this)
+        AppUpdates.check(this)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

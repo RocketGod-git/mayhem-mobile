@@ -50,7 +50,6 @@ fun MayhemScreen(status: String, connected: Boolean) {
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = d.pad, vertical = d.dp(6f))) {
             Header(status, connected, current, showLog, showTools, accent, onLog = { showLog = !showLog }, onTools = { showTools = !showTools })
-            if (showLog) DiagPanel()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (current) {
                     null -> Launcher(accent)
@@ -72,6 +71,8 @@ fun MayhemScreen(status: String, connected: Boolean) {
                 }
             }
         }
+        if (showLog) LogWindow(onClose = { showLog = false })
+        UpdateDialog()
     }
 }
 
@@ -116,18 +117,5 @@ private fun Header(status: String, connected: Boolean, app: MayhemApp?, showLog:
                 Chip("SETTINGS", selected = app == MayhemApp.SETTINGS, accent = accent, modifier = Modifier.weight(1f)) { Apps.open(MayhemApp.SETTINGS) }
             }
         }
-    }
-}
-
-/** Tail of the diagnostic log: bring-up control transfers, the once/sec iqRMS RX-health line, decode counters. */
-@Composable
-private fun DiagPanel() {
-    val d = rememberDims()
-    val lines by Diag.lines.collectAsState()
-    val n = if (d.wide) 20 else 12
-    val tail = if (lines.size > n) lines.subList(lines.size - n, lines.size) else lines
-    Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)).panel().padding(d.dp(8f))) {
-        if (tail.isEmpty()) Text("(log empty)", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
-        for (l in tail) Text(l, color = Palette.ink.copy(alpha = 0.85f), fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2)
     }
 }
