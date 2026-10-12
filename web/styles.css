@@ -439,6 +439,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .launch-side .launch-radio { flex: 0 0 222px; width: 222px; }
   .launch-side .bandrow > .chip { flex: 1 1 30%; }
   .freq { font-size: 32px; }
+  /* Section captions carry a description after the label, which does not fit a phone on one line.
+     Ellipsising it hid the half that explains the section, so let it wrap instead. */
+  .caption { white-space: normal; overflow: visible; text-overflow: clip; letter-spacing: 1.4px; }
+  /* Two text inputs to a row leaves ~165px each, which clips placeholders mid-word
+     ("license class (Tec", "DMR ID (radioid.ne"). One per row at this width. */
+  .row > .txin { flex: 1 1 100%; min-width: 0; }
+  .view.settings .row:has(> .txin) { flex-wrap: wrap; }
   .countrow .count { letter-spacing: 1px; font-size: 10px; }
   /* Devices on a phone: the sheet is the app, so it gets most of the screen and the waterfall becomes a strip.
    * Same table, narrower — the count column folds away and the reading gets the width back. */
