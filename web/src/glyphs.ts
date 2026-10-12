@@ -33,6 +33,7 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   lookingglass: { d: 'M61 61 L90 90 ' + wave(28, 56, 42, -12, 10, 1.1), circles: [[42, 42, 26]] },
   search: { d: 'M50 8 L50 30 M50 70 L50 92 M8 50 L30 50 M70 50 L92 50', circles: [[50, 50, 30]], dot: [50, 50, 5] },
   capture: { d: '', circles: [[50, 50, 36]], dot: [50, 50, 20] },
+  troll: { d: 'M20 76 H80 M24 76 L18 40 L34 58 L50 34 L66 58 L82 40 L76 76', circles: [[18, 40, 4], [50, 34, 4], [82, 40, 4]] },
   transmit: { d: 'M50 58 L50 92 M30 92 H70 ' + arc(50, 42, 16, -140, -40) + arc(50, 42, 28, -150, -30) + arc(50, 42, 40, -155, -25), dot: [50, 42, 4] },
   settings: { d: Array.from({ length: 8 }, (_, k) => { const a = k * 45 * Math.PI / 180; return `M${(50 + 28 * Math.cos(a)).toFixed(1)} ${(50 + 28 * Math.sin(a)).toFixed(1)} L${(50 + 40 * Math.cos(a)).toFixed(1)} ${(50 + 40 * Math.sin(a)).toFixed(1)}`; }).join(' '), circles: [[50, 50, 16], [50, 50, 28]] },
 };

@@ -3,6 +3,7 @@
 import type { HackRf } from './hackrf.js';
 import * as Enc from './tx-encoders.js';
 import * as Apps from './tx-apps.js';
+import * as Weather from './dsp/tx-weather.js';
 
 const RATE = 2_000_000, OFFSET = 100_000, AMP = 100;
 
@@ -284,6 +285,39 @@ export class Tx {
     const pulses: [boolean, number][] = [];
     for (let r = 0; r < Math.max(1, Math.min(20, repeats)); r++) for (const [level, us] of basic) pulses.push([level, Math.max(1, Math.floor(us * RATE / 1_000_000))]);
     return this.ookPulses(`SubGHz ${basic.length} × ${repeats}`, freqHz, pulses);
+  }
+
+  /**
+   * De Bruijn "open sesame" gate opener: instead of sending each fixed OOK code in full, stream a de Bruijn
+   * sequence in which every `bits`-bit code appears once as a sliding window, so a receiver keyed to any code in
+   * that space matches as the window passes — the whole space in ~2^bits symbols rather than 2^bits × bits.
+   */
+  gateOpener(bits: number, teUs: number, freqHz: number): boolean {
+    const seq = Apps.deBruijn(bits);
+    const te = Math.max(1, Math.floor(teUs * RATE / 1_000_000));
+    const pulses: [boolean, number][] = [];
+    // Each code bit as a Princeton symbol: 1 = long-high/short-low, 0 = short-high/long-low.
+    for (const b of seq) { if (b) { pulses.push([true, te * 3]); pulses.push([false, te]); } else { pulses.push([true, te]); pulses.push([false, te * 3]); } }
+    return this.ookPulses(`gate opener ${bits}-bit · ${seq.length} sym`, freqHz, pulses);
+  }
+
+  /** Spoof an Acurite 592TXR weather sensor so a nearby display shows a phantom temperature/humidity. See tx-weather. */
+  weatherSpoof(tempC: number, humidity: number | undefined, freqHz: number): boolean {
+    const pulses = Weather.weatherPulses({ tempC, humidity }, RATE);
+    return this.ookPulses(`weather ${tempC}°C ${humidity ?? '--'}%`, freqHz, pulses);
+  }
+
+  /** Tesla charge-port opener — a fixed OOK burst, same on 315 (US/JP) and 433.92 MHz (EU). See tx-apps.teslaPulses. */
+  teslaChargePort(freqHz: number): boolean {
+    return this.ookPulses(`Tesla charge port ${(freqHz / 1e6).toFixed(2)} MHz`, freqHz, Apps.teslaPulses(RATE));
+  }
+
+  /** FM jingle: sing a named tune (tx-apps.melody) as FM tones, wide enough to land on a broadcast FM receiver. */
+  jingle(name: string, freqHz: number): boolean {
+    const tones = Apps.melody(name);
+    if (!tones.length) { this.onStatus('empty tune'); return false; }
+    const slot = Math.floor(RATE * 0.11);   // ~110 ms a slot; a tune spells duration by repeating a note
+    return this.fmTones(`jingle ${name}`, freqHz, tones, slot, 75_000);
   }
 
   /** KeeLoq HCS301 rolling-code TX. */
