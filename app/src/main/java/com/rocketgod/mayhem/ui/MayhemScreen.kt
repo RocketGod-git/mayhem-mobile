@@ -55,6 +55,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     null -> Launcher(accent)
                     MayhemApp.HAM -> HamScreen(accent)
                     MayhemApp.AUDIO -> AudioScreen(accent)
+                    MayhemApp.DEVICES -> DevicesScreen(accent)
                     MayhemApp.SAT -> SatScreen(accent)
                     MayhemApp.ADSB -> AdsbScreen(accent)
                     MayhemApp.AIS -> AisScreen(accent)
