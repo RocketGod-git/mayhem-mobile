@@ -6,7 +6,7 @@ import com.rocketgod.mayhem.core.r433.devices.*
 object R433Registry {
     val all: List<RDevice> by lazy {
         listOf(
-            WEATHER_PPM, TPMS, KEELOQ, LACROSSE, LACROSSE2, LACROSSE3, ACURITE,
+            WEATHER_PPM, TPMS, KEELOQ, LACROSSE, LACROSSE2, LACROSSE3, ACURITE, FINEOFFSET, FINEOFFSET2, FINEOFFSET3, OREGON, BRESSER,
         ).flatten()
     }
 }
