@@ -62,6 +62,71 @@ object SdrEngine {
     val radioVga: StateFlow<Int> = _radioVga.asStateFlow()
     private val _radioAmp = MutableStateFlow(false)
     val radioAmp: StateFlow<Boolean> = _radioAmp.asStateFlow()
+
+    /**
+     * Automatic gain, on by default: hold the ADC level (iqRMS, once a second) where the 8-bit converter has both
+     * headroom and resolution — under ~2 counts the spectrum is quantisation mush, over ~40 it clips. VGA moves first,
+     * 2 dB at a time (8 when far off), then the LNA. Touching LNA or VGA by hand hands the gain back to the user.
+     */
+    private val _agc = MutableStateFlow(true)
+    val agc: StateFlow<Boolean> = _agc.asStateFlow()
+    private var prefs: android.content.SharedPreferences? = null
+    /** A gain the user set by hand outranks every app's own default until it is changed again. */
+    private var gainPref: IntArray? = null
+    private var agcLast = 0L; private var agcSaidMax = 0L
+
+    fun loadGains(ctx: android.content.Context) {
+        val p = ctx.getSharedPreferences("mayhem", android.content.Context.MODE_PRIVATE); prefs = p
+        p.getString("gains", null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 4 }?.let { g ->
+            gainPref = g.toIntArray(); _agc.value = g[3] == 1
+        }
+    }
+    private fun saveGains() {
+        val g = intArrayOf(_radioLna.value, _radioVga.value, if (_radioAmp.value) 1 else 0, if (_agc.value) 1 else 0)
+        gainPref = g
+        prefs?.edit()?.putString("gains", g.joinToString(","))?.apply()
+    }
+    fun setAgc(on: Boolean) { _agc.value = on; agcLast = 0; saveGains() }
+
+    private fun isPro() = HackRfOne.boardLabel.contains("Pro", ignoreCase = true)
+    /**
+     * Per-app presets are written for a HackRF One. On a HackRF Pro the same settings leave the ADC under one count;
+     * it needs about 28 dB more VGA for the same level, and LNA steps count for less, so the LNA is pinned at 40.
+     */
+    private fun boardGains(lna: Int, vga: Int, amp: Boolean): Triple<Int, Int, Boolean> =
+        if (!isPro()) Triple(lna, vga, amp) else Triple(LNA_MAX, minOf(if (amp) 56 else VGA_MAX, vga + 28), amp)
+
+    /** The board is known now: a Pro gets its stages raised unless the user has set them. */
+    fun onBoard() {
+        if (gainPref != null || !isPro()) return
+        val (l, v, a) = boardGains(_radioLna.value, _radioVga.value, _radioAmp.value)
+        _radioLna.value = l; _radioVga.value = (v / VGA_STEP) * VGA_STEP; _radioAmp.value = a; syncDriver()
+    }
+
+    /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
+    private fun agcStep(rms: Double, now: Long) {
+        if (!_agc.value || HackRfOne.txActive || now - agcLast < 900) return
+        agcLast = now
+        val scale = minOf(3.2, kotlin.math.sqrt(sampleRate / 2_000_000.0))
+        val lo = minOf(24.0, 7 * scale); val hi = minOf(34.0, 22 * scale)
+        val l = _radioLna.value; val v = _radioVga.value
+        if (rms < lo) {
+            when {
+                v < VGA_MAX -> _radioVga.value = minOf(VGA_MAX, v + if (rms < 2) 8 else 2)
+                l < LNA_MAX -> _radioLna.value = l + LNA_STEP
+                _mode.value != Mode.NONE && now - agcSaidMax > 20_000 -> {
+                    agcSaidMax = now
+                    Diag.log("AGC is at maximum and the level is still %.1f counts — check the antenna, or set the gain by hand".format(rms))
+                }
+            }
+        } else if (rms > hi) {
+            when {
+                v > 0 -> _radioVga.value = maxOf(0, v - if (rms > hi * 2) 8 else 2)
+                l > 0 -> _radioLna.value = l - LNA_STEP
+            }
+        }
+        if (_radioLna.value != l || _radioVga.value != v) syncDriver()
+    }
     /** Latest spectrum: [SPEC_BINS] normalised magnitudes 0..1, low→high frequency (fftshifted). */
     private val _spectrum = MutableStateFlow(FloatArray(0))
     val spectrum: StateFlow<FloatArray> = _spectrum.asStateFlow()
@@ -187,9 +252,14 @@ object SdrEngine {
         _offsetHz.value = 0
         _mode.value = mode
         _rateHz.value = rateHz
-        _radioLna.value = (lna.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
-        _radioVga.value = (vga.coerceIn(0, VGA_MAX) / VGA_STEP) * VGA_STEP
-        _radioAmp.value = amp
+        // Before the user has touched gain, no app starts below 32 on either stage and the front-end amp is on: AGC
+        // (on by default) trims the stages if a strong signal would clip, so every app starts sensitive.
+        val g = gainPref
+        val (l, v, a) = boardGains(
+            g?.get(0) ?: maxOf(lna, 32), g?.get(1) ?: maxOf(vga, 32), if (g != null) g[2] == 1 else true)
+        _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
+        _radioVga.value = (v.coerceIn(0, VGA_MAX) / VGA_STEP) * VGA_STEP
+        _radioAmp.value = a
         _freqHz.value = freqHz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
         if (proc == null && mode != Mode.NONE) { radioFreqHz = _freqHz.value; radioMode = mode }
         syncDriver()
@@ -209,9 +279,16 @@ object SdrEngine {
 
     fun setRate(rate: Int) { _rateHz.value = rate; HackRfOne.targetRateHz = rate }
 
-    fun setRadioLna(db: Int) { _radioLna.value = (db.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; syncDriver() }
-    fun setRadioVga(db: Int) { _radioVga.value = (db.coerceIn(0, VGA_MAX) / VGA_STEP) * VGA_STEP; syncDriver() }
-    fun toggleRadioAmp() { _radioAmp.value = !_radioAmp.value; syncDriver() }
+    /** A hand on the LNA or VGA switches the AGC off so the setting sticks, and is remembered for every app. */
+    fun setRadioLna(db: Int) {
+        if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
+        _agc.value = false; _radioLna.value = (db.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; syncDriver(); saveGains()
+    }
+    fun setRadioVga(db: Int) {
+        if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
+        _agc.value = false; _radioVga.value = (db.coerceIn(0, VGA_MAX) / VGA_STEP) * VGA_STEP; syncDriver(); saveGains()
+    }
+    fun toggleRadioAmp() { _radioAmp.value = !_radioAmp.value; syncDriver(); saveGains() }
 
     /** Audio mode switch (Audio app). */
     fun setMode(m: Mode) {
@@ -318,6 +395,7 @@ object SdrEngine {
                         Diag.log(health)
                         _rxHealth.value = health
                         _levelDb.value = peak - avg
+                        agcStep(rms, now)
                         if (m != Mode.NONE) Diag.log("SDR audio: peak=%d/32000 %s".format(
                             audioPeak, if (audioPeak > 2500) "— demod producing audio" else "— silent (no modulation / no signal)"))
                         audioPeak = 0

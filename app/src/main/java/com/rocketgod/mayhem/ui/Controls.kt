@@ -48,13 +48,13 @@ fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = M
 
 /** A HackRF gain-stage stepper: [−] LABEL <value> [+]. */
 @Composable
-fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, onMinus: () -> Unit, onPlus: () -> Unit) {
+fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, auto: Boolean = false, onMinus: () -> Unit, onPlus: () -> Unit) {
     val d = rememberDims()
     Row(modifier.control(accent, false), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f).clickable { onMinus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
             Text("−", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
         }
-        Text("$label $value", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
+        Text("$label $value", color = if (auto) Palette.accent2 else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
             maxLines = 1, modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
         Box(Modifier.weight(1f).clickable { onPlus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
             Text("+", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
@@ -69,13 +69,15 @@ fun GainRow(accent: Color) {
     val lna by SdrEngine.radioLna.collectAsState()
     val vga by SdrEngine.radioVga.collectAsState()
     val amp by SdrEngine.radioAmp.collectAsState()
-    SectionLabel("GAIN · AMP / LNA / VGA")
+    val agc by SdrEngine.agc.collectAsState()
+    SectionLabel(if (agc) "GAIN · AGC sets LNA / VGA (gold) · tap one to take over" else "GAIN · set by hand · AGC hands it back")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip(if (amp) "AMP +14" else "AMP OFF", selected = amp, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.toggleRadioAmp() }
-        GainStepper("LNA", lna, accent, Modifier.weight(1f),
+        Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(0.8f)) { SdrEngine.setAgc(!agc) }
+        Chip(if (amp) "AMP +14" else "AMP OFF", selected = amp, accent = accent, modifier = Modifier.weight(0.9f)) { SdrEngine.toggleRadioAmp() }
+        GainStepper("LNA", lna, accent, Modifier.weight(1f), auto = agc,
             onMinus = { SdrEngine.setRadioLna(lna - SdrEngine.LNA_STEP) },
             onPlus = { SdrEngine.setRadioLna(lna + SdrEngine.LNA_STEP) })
-        GainStepper("VGA", vga, accent, Modifier.weight(1f),
+        GainStepper("VGA", vga, accent, Modifier.weight(1f), auto = agc,
             onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
             onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
     }
