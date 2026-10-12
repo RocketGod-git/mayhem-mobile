@@ -54,7 +54,7 @@ fun Launcher(accent: Color) {
         Text(if (health.isNotEmpty()) "%.3f MHz%s · %s".format(freq / 1e6, band?.let { " · ${it.what}" } ?: "", health)
              else "no IQ yet — attach a HackRF over USB-OTG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
             modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
-        BandChips(accent, freq) { b -> SdrEngine.tune(b.centre); SdrEngine.setDial(b.centre, b.mode) }
+        ListenBandChips(accent, freq) { b -> SdrEngine.tune(b.centre); SdrEngine.setDial(b.centre, b.mode) }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = d.tileMin),
             verticalArrangement = Arrangement.spacedBy(d.dp(8f)),
