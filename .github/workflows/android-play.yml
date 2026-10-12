@@ -1,0 +1,182 @@
+name: Play Release
+
+# Builds the release bundle and uploads it to a Google Play track.
+#
+# Requirements:
+#   PLAY_SERVICE_ACCOUNT_JSON   service-account key with "Release manager" on the Play account
+#   ANDROID_KEYSTORE_B64        upload keystore; Play refuses debug-signed bundles
+#   ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
+#
+# The app entry itself has to exist in the Play Console first — the Developer API cannot
+# create a new application, and for a brand-new app Google may require the first bundle to
+# be uploaded through the Console before the API will accept one.
+#
+# versionCode is resolved from Play, not from the repo: the highest code Play already knows
+# about, plus one. That way a manual Console upload never collides with a CI one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: 'Play track to release on'
+        type: choice
+        options: [internal, alpha, beta, production]
+        default: internal
+      release_notes:
+        description: 'What''s new (en-US). Play caps this at 500 characters. Blank leaves the existing notes alone.'
+        type: string
+        default: ''
+      rollout:
+        description: 'Staged rollout fraction 0.0-1.0 (production only). Blank = full release.'
+        type: string
+        default: ''
+      draft:
+        description: 'Upload as a DRAFT release instead of sending it for review'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  play:
+    name: AAB → Play
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Check the secrets this workflow needs
+        env:
+          SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -e
+          [ -n "$SA" ] || { echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not set"; exit 1; }
+          [ -n "$KS" ] || { echo "::error::ANDROID_KEYSTORE_B64 is not set - Play rejects debug-signed bundles"; exit 1; }
+          echo "secrets present"
+
+      - name: Materialize the upload keystore
+        id: ks
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -e
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
+          echo "path=$RUNNER_TEMP/upload.keystore" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Play API client
+        run: pip install --quiet google-auth requests
+
+      - name: Next versionCode (highest Play knows about, plus one)
+        id: ver
+        env:
+          SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          PKG = "com.rocketgod.mayhem"
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["SA_JSON"]),
+              scopes=["https://www.googleapis.com/auth/androidpublisher"])
+          s = AuthorizedSession(creds)
+          base = f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PKG}"
+
+          r = s.post(f"{base}/edits")
+          r.raise_for_status()
+          eid = r.json()["id"]
+          codes = []
+          for kind in ("bundles", "apks"):
+              g = s.get(f"{base}/edits/{eid}/{kind}")
+              if g.status_code == 200:
+                  codes += [int(x["versionCode"]) for x in g.json().get(kind, [])]
+          s.delete(f"{base}/edits/{eid}")
+          print(f"code={max(codes) + 1 if codes else 1}")
+          PY
+
+      - name: Build the release bundle
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.ks.outputs.path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          VERSION_CODE: ${{ steps.ver.outputs.code }}
+        run: |
+          set -e
+          ./gradlew bundleRelease --no-daemon --stacktrace
+          cp "$(find app/build/outputs/bundle -name '*.aab' | head -1)" mayhem.aab
+          ls -la mayhem.aab
+
+      - name: Upload to Play
+        env:
+          SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          TRACK: ${{ inputs.track }}
+          NOTES: ${{ inputs.release_notes }}
+          ROLLOUT: ${{ inputs.rollout }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          PKG = "com.rocketgod.mayhem"
+          track = os.environ["TRACK"]
+          notes = os.environ.get("NOTES", "").strip()
+          rollout = os.environ.get("ROLLOUT", "").strip()
+          draft = os.environ.get("DRAFT", "false") == "true"
+
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["SA_JSON"]),
+              scopes=["https://www.googleapis.com/auth/androidpublisher"])
+          s = AuthorizedSession(creds)
+          base = f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PKG}"
+
+          def die(what, r):
+              print(f"::error::{what}: HTTP {r.status_code} {r.text[:600]}")
+              sys.exit(1)
+
+          r = s.post(f"{base}/edits")
+          r.status_code == 200 or die("edits.insert", r)
+          eid = r.json()["id"]
+
+          with open("mayhem.aab", "rb") as fh:
+              r = s.post(f"https://androidpublisher.googleapis.com/upload/androidpublisher/v3/"
+                         f"applications/{PKG}/edits/{eid}/bundles?uploadType=media",
+                         headers={"Content-Type": "application/octet-stream"}, data=fh)
+          r.status_code == 200 or die("bundles.upload", r)
+          code = r.json()["versionCode"]
+          print(f"uploaded versionCode {code}")
+
+          release = {"versionCodes": [str(code)],
+                     "status": "draft" if draft else ("inProgress" if rollout else "completed")}
+          if notes:
+              release["releaseNotes"] = [{"language": "en-US", "text": notes[:500]}]
+          if rollout and not draft:
+              release["userFraction"] = float(rollout)
+
+          r = s.put(f"{base}/edits/{eid}/tracks/{track}",
+                    headers={"Content-Type": "application/json"},
+                    json={"track": track, "releases": [release]})
+          r.status_code == 200 or die("tracks.update", r)
+
+          r = s.post(f"{base}/edits/{eid}:commit")
+          r.status_code == 200 or die("edits.commit", r)
+          print(f"PLAY OK: {track} <- versionCode {code}"
+                + (" (draft)" if draft else "")
+                + (f" rollout {rollout}" if rollout and not draft else ""))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mayhem-play-aab
+          path: mayhem.aab

@@ -1,0 +1,63 @@
+name: Screenshots
+
+# Captures the app running on an emulator and uploads the frames as an artifact, for the
+# Play listing.
+#
+# An emulator has no HackRF, so the live screens sit at "waiting for IQ" - what this can
+# capture honestly is the launcher, Settings, About and the empty state of a receiver.
+# Photographs of a real phone with the radio attached are better listing images; these are
+# the fallback.
+#
+# Tap targets are derived from the reported screen size rather than hard-coded pixels, so
+# the same script survives a different emulator profile.
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_level:
+        description: 'Android API level to emulate'
+        type: string
+        default: '34'
+
+permissions:
+  contents: read
+
+jobs:
+  shots:
+    name: Emulator screenshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build the debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Boot the emulator and capture
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ inputs.api_level }}
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/scripts/capture-screenshots.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: shots/*.png

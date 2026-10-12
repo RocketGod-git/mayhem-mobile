@@ -1,0 +1,23 @@
+# Gradle / Android build output
+.gradle/
+build/
+*/build/
+.kotlin/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+# Signing — never commit a keystore or credentials (CI materializes them from secrets)
+*.keystore
+*.jks
+keystore.properties
+# Logs / captures
+*.log
+*.iq
+*.c8

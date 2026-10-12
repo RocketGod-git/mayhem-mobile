@@ -1,0 +1,213 @@
+package com.rocketgod.mayhem.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.rocketgod.mayhem.core.Scanner
+import com.rocketgod.mayhem.core.SdrEngine
+
+@Composable
+fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val d = rememberDims()
+    Box(
+        modifier.control(accent, selected).clickable { onClick() }.padding(vertical = d.dp(9f), horizontal = d.dp(6f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = if (selected) inkOn(accent) else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f),
+            fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+/** A HackRF gain-stage stepper: [−] LABEL <value> [+]. */
+@Composable
+fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, onMinus: () -> Unit, onPlus: () -> Unit) {
+    val d = rememberDims()
+    Row(modifier.control(accent, false), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).clickable { onMinus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
+            Text("−", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
+        }
+        Text("$label $value", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
+            maxLines = 1, modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
+        Box(Modifier.weight(1f).clickable { onPlus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
+            Text("+", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
+        }
+    }
+}
+
+/** The HackRF's three gain stages: RF amp toggle (+14 dB) and the LNA (0..40/8) / VGA (0..62/2) steppers. */
+@Composable
+fun GainRow(accent: Color) {
+    val d = rememberDims()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    SectionLabel("GAIN · AMP / LNA / VGA")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        Chip(if (amp) "AMP +14" else "AMP OFF", selected = amp, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.toggleRadioAmp() }
+        GainStepper("LNA", lna, accent, Modifier.weight(1f),
+            onMinus = { SdrEngine.setRadioLna(lna - SdrEngine.LNA_STEP) },
+            onPlus = { SdrEngine.setRadioLna(lna + SdrEngine.LNA_STEP) })
+        GainStepper("VGA", vga, accent, Modifier.weight(1f),
+            onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
+            onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
+    }
+}
+
+/** Small uppercase caption above a control group. */
+@Composable
+fun SectionLabel(text: String) {
+    val d = rememberDims()
+    Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp,
+        modifier = Modifier.padding(top = d.dp(8f), bottom = d.dp(4f), start = 2.dp))
+}
+
+/** Tuned-frequency readout with the level bar and the RX-health sub-line. */
+@Composable
+fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false) {
+    val d = rememberDims()
+    val tuned by SdrEngine.freqHz.collectAsState()
+    val level by SdrEngine.levelDb.collectAsState()
+    val squelch by SdrEngine.squelchDb.collectAsState()
+    val sqOpen by SdrEngine.squelchOpen.collectAsState()
+    val scanning by Scanner.active.collectAsState()
+    val preview = Tuning.previewHz
+    val freq = preview ?: tuned
+    val tint = if (preview != null) Palette.accent2 else accent
+    val mhz = freq / 1e6
+    val whole = mhz.toLong()
+    val frac = "%.4f".format(mhz - whole).substring(1)   // ".xxxx"
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.Bottom) {
+        Text("$whole", color = if (preview != null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (big) 42f else 30f), maxLines = 1)
+        Text(frac, color = tint, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(if (big) 26f else 18f), maxLines = 1,
+            modifier = Modifier.padding(bottom = d.dp(if (big) 6f else 3f)))
+        Text(" MHz", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(12f), modifier = Modifier.padding(bottom = d.dp(if (big) 8f else 5f)))
+        if (squelch > 0 || scanning) {
+            val badge = if (scanning) (if (sqOpen) "SCAN · SIGNAL" else "SCAN") else if (sqOpen) "OPEN" else "SQL"
+            val c = if (sqOpen) Palette.ok else Palette.muted
+            Text(badge, color = c, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp,
+                modifier = Modifier.padding(start = 8.dp, bottom = d.dp(if (big) 9f else 6f)).border(1.dp, c, RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
+        }
+    }
+    LevelBar(level, accent, Modifier.fillMaxWidth().padding(horizontal = d.dp(24f), vertical = d.dp(3f)).height(d.dp(4f)))
+    if (sub.isNotEmpty()) Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
+        modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = TextAlign.Center)
+}
+
+/** Peak-over-floor level meter, 0..45 dB → full width. */
+@Composable
+fun LevelBar(levelDb: Float, accent: Color, modifier: Modifier = Modifier) {
+    val frac = (levelDb / 45f).coerceIn(0f, 1f)
+    Box(modifier.clip(RoundedCornerShape(2.dp)).background(Palette.line)) {
+        Box(Modifier.fillMaxHeight().fillMaxWidth(frac).background(accent))
+    }
+}
+
+/** Fine-tuning steppers. */
+@Composable
+fun StepperRow(accent: Color, steps: LongArray = longArrayOf(1_000_000L, 100_000L, 10_000L)) {
+    val d = rememberDims()
+    SectionLabel("TUNE · MHz")
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        for (s in steps) Chip("−" + stepLabel(s), false, accent, Modifier.weight(1f)) { SdrEngine.nudge(-s) }
+        for (s in steps.reversedArray()) Chip("+" + stepLabel(s), false, accent, Modifier.weight(1f)) { SdrEngine.nudge(s) }
+    }
+}
+
+private fun stepLabel(hz: Long): String = when {
+    hz >= 1_000_000L -> "${hz / 1_000_000L}"
+    hz >= 100_000L -> ".${hz / 100_000L}"
+    hz >= 10_000L -> ".0${hz / 10_000L}"
+    hz >= 1_000L -> ".00${hz / 1_000L}"
+    else -> ".000${hz / 100L}"
+}
+
+/** Frequency presets: label → Hz. */
+@Composable
+fun PresetRow(accent: Color, presets: List<Pair<String, Long>>, title: String = "PRESETS", onPick: (Long) -> Unit = { SdrEngine.tune(it) }) {
+    val d = rememberDims()
+    val freq by SdrEngine.freqHz.collectAsState()
+    SectionLabel(title)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        for ((label, hz) in presets) Chip(label, selected = freq == hz, accent = accent, modifier = Modifier.weight(1f)) { onPick(hz) }
+    }
+}
+
+/** Monospace scrolling log with striped rows. */
+@Composable
+fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = "listening…", onTap: ((String) -> Unit)? = null) {
+    val d = rememberDims()
+    Box(modifier.panel()) {
+        if (lines.isEmpty()) {
+            Text(empty, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
+        } else {
+            LazyColumn(Modifier.fillMaxSize().padding(horizontal = d.dp(6f), vertical = d.dp(4f))) {
+                itemsIndexed(lines) { i, l ->
+                    val m = Modifier.fillMaxWidth()
+                        .background(if (i % 2 == 0) Color.Transparent else Palette.panel.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
+                        .padding(vertical = d.dp(3f), horizontal = d.dp(4f))
+                    Text(l, color = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontSize = d.sp(11f),
+                        modifier = if (onTap != null) m.clickable { onTap(l) } else m)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Two-pane on wide screens (visual left, controls right), stacked on phones. [visualHeightNarrow] caps the
+ * visual's height when stacked (null = it takes the remaining space and the controls stay compact).
+ */
+@Composable
+fun AdaptivePane(
+    visualHeightNarrow: Dp? = null,
+    visual: @Composable (Modifier) -> Unit,
+    controls: @Composable ColumnScope.() -> Unit
+) {
+    val d = rememberDims()
+    if (d.wide) {
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            Box(Modifier.weight(1.35f).fillMaxHeight()) { visual(Modifier.fillMaxSize()) }
+            Column(Modifier.weight(1f).fillMaxHeight()) { controls() }
+        }
+    } else {
+        Column(Modifier.fillMaxSize()) {
+            if (visualHeightNarrow != null) visual(Modifier.fillMaxWidth().height(visualHeightNarrow))
+            else visual(Modifier.fillMaxWidth().weight(1f))
+            controls()
+        }
+    }
+}
+
+/** A vertically scrolling controls column (for wide layouts where controls can exceed the height). */
+@Composable
+fun ScrollColumn(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier.verticalScroll(rememberScrollState())) { content() }
+}

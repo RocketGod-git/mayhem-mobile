@@ -1,0 +1,133 @@
+package com.rocketgod.mayhem.ui
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.rocketgod.mayhem.Diag
+import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
+import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.usb.HackRfOne
+
+/** Root: header (back / wordmark / device status / LOG), optional diagnostic panel, launcher or the open app. */
+@Composable
+fun MayhemScreen(status: String, connected: Boolean) {
+    val accent = Palette.accent
+    val d = rememberDims()
+    val current by Apps.current.collectAsState()
+    var showLog by remember { mutableStateOf(false) }
+    var showTools by remember { mutableStateOf(false) }
+    LaunchedEffect(connected) { if (!connected) showTools = true }
+    BackHandler(enabled = current != null) { Apps.home() }
+    Box(Modifier.fillMaxSize().background(Palette.paper)) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = d.pad, vertical = d.dp(6f))) {
+            Header(status, connected, current, showLog, showTools, accent, onLog = { showLog = !showLog }, onTools = { showTools = !showTools })
+            if (showLog) DiagPanel()
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (current) {
+                    null -> Launcher(accent)
+                    MayhemApp.AUDIO -> AudioScreen(accent)
+                    MayhemApp.ADSB -> AdsbScreen(accent)
+                    MayhemApp.AIS -> AisScreen(accent)
+                    MayhemApp.APRS -> AprsScreen(accent)
+                    MayhemApp.PAGER -> PagerScreen(accent)
+                    MayhemApp.ERT -> ErtScreen(accent)
+                    MayhemApp.BTLE -> BtleScreen(accent)
+                    MayhemApp.TPMS -> TpmsScreen(accent)
+                    MayhemApp.ACARS -> AcarsScreen(accent)
+                    MayhemApp.SUBGHZ -> SubGhzScreen(accent)
+                    MayhemApp.LOOKING_GLASS -> LookingGlassScreen(accent)
+                    MayhemApp.SEARCH -> SearchScreen(accent)
+                    MayhemApp.CAPTURE -> CaptureScreen(accent)
+                    MayhemApp.TRANSMIT -> TxScreen(accent)
+                    MayhemApp.SETTINGS -> SettingsScreen(accent)
+                }
+            }
+        }
+    }
+}
+
+/** Mayhem-style status bar: an accent stripe, the wordmark, the board, the connection state, the LOG toggle. */
+@Composable
+private fun Header(status: String, connected: Boolean, app: MayhemApp?, showLog: Boolean, showTools: Boolean, accent: Color, onLog: () -> Unit, onTools: () -> Unit) {
+    val d = rememberDims()
+    val muted by SdrEngine.muted.collectAsState()
+    Column(Modifier.fillMaxWidth().panel()) {
+        Box(Modifier.fillMaxWidth().height(2.dp).background(accent))
+        Row(
+            Modifier.fillMaxWidth().padding(start = d.dp(12f), end = d.dp(8f), top = d.dp(6f), bottom = d.dp(6f)),
+            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f).clickable { if (app != null) Apps.home() }) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        if (app == null) "MAYHEM" else "‹ ${app.title.uppercase()}",
+                        color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(16f), letterSpacing = 3.sp, maxLines = 1
+                    )
+                    if (app == null) Text(" MOBILE", color = accent, fontFamily = Mono, fontWeight = FontWeight.Light, fontSize = d.sp(11f), letterSpacing = 3.sp,
+                        modifier = Modifier.padding(bottom = 2.dp))
+                }
+                if (app == null) Text(
+                    "Android phone · Desktop web app",
+                    color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
+                )
+                Text(
+                    if (app == null) "${HackRfOne.boardLabel.ifEmpty { "HackRF" }}${if (HackRfOne.firmware.isNotEmpty()) " · " + HackRfOne.firmware else ""} · $status"
+                    else "${app.blurb} · $status",
+                    color = if (connected) Palette.muted else Palette.danger, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
+                )
+            }
+            Box(Modifier.padding(horizontal = d.dp(8f)).size(d.dp(8f)).background(if (connected) Palette.ok else Palette.danger, CircleShape))
+            Chip(if (showTools) "✕" else "☰", selected = showTools, accent = accent) { onTools() }
+        }
+        AnimatedVisibility(visible = showTools) {
+            Row(Modifier.fillMaxWidth().padding(start = d.dp(8f), end = d.dp(8f), bottom = d.dp(8f)), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+                Chip(if (muted) "UNMUTE" else "MUTE", selected = muted, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.toggleMute() }
+                Chip(if (showLog) "LOG ▲" else "LOG", selected = showLog, accent = accent, modifier = Modifier.weight(1f)) { onLog() }
+                Chip("HOME", selected = false, accent = accent, modifier = Modifier.weight(1f)) { Apps.home() }
+                Chip("SETTINGS", selected = app == MayhemApp.SETTINGS, accent = accent, modifier = Modifier.weight(1f)) { Apps.open(MayhemApp.SETTINGS) }
+            }
+        }
+    }
+}
+
+/** Tail of the diagnostic log: bring-up control transfers, the once/sec iqRMS RX-health line, decode counters. */
+@Composable
+private fun DiagPanel() {
+    val d = rememberDims()
+    val lines by Diag.lines.collectAsState()
+    val n = if (d.wide) 20 else 12
+    val tail = if (lines.size > n) lines.subList(lines.size - n, lines.size) else lines
+    Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)).panel().padding(d.dp(8f))) {
+        if (tail.isEmpty()) Text("(log empty)", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+        for (l in tail) Text(l, color = Palette.ink.copy(alpha = 0.85f), fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2)
+    }
+}
