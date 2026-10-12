@@ -86,6 +86,25 @@ object SdrEngine {
     const val SPEC_BINS = 256
     private const val FFT_N = 1024
 
+    /** Where the demodulator listens relative to the LO, so a channel can be heard without parking it on the DC spike. */
+    private val _offsetHz = MutableStateFlow(0)
+    val offsetHz: StateFlow<Int> = _offsetHz.asStateFlow()
+    fun setOffset(hz: Int) { _offsetHz.value = hz }
+
+    /** The signals in view with their modulation, refreshed ten times a second while [watchSignals] is on. */
+    @Volatile var watchSignals = false
+    private val _signals = MutableStateFlow<List<Signal>>(emptyList())
+    val signals: StateFlow<List<Signal>> = _signals.asStateFlow()
+    private const val CLS_N = 2048
+    private val classifier = Classifier()
+
+    /** Speech score of the demodulated audio, four times a second while [listenForVoice] is on. */
+    @Volatile private var voiceOn = false
+    private val voiceDet = VoiceDetector()
+    private val _voice = MutableStateFlow<VoiceScore?>(null)
+    val voice: StateFlow<VoiceScore?> = _voice.asStateFlow()
+    fun listenForVoice(on: Boolean) { if (on != voiceOn) { voiceDet.reset(); _voice.value = null }; voiceOn = on }
+
     @Volatile private var sampleRate = IQ_RATE
     @Volatile var sourceLabel = "HackRF"
     @Volatile var processor: IqProcessor? = null; private set
@@ -133,6 +152,7 @@ object SdrEngine {
     /** Enter an app: audio mode, dial, IQ rate, gain preset and the baseband processor, all at once. */
     fun configure(mode: Mode, freqHz: Long, rateHz: Int, lna: Int, vga: Int, amp: Boolean, proc: IqProcessor?) {
         processor = null
+        _offsetHz.value = 0
         _mode.value = mode
         _rateHz.value = rateHz
         _radioLna.value = (lna.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
@@ -196,6 +216,12 @@ object SdrEngine {
         var chPow = 0.0; var chN = 0                     // channel power for the squelch
         var lastVol = -1f
         val procAudio = FloatArray(16384); val procPcm = ShortArray(16384)
+        var ncoR = 1f; var ncoI = 0f; var ncoN = 0                 // channel-offset oscillator
+        val cre = FloatArray(CLS_N); val cim = FloatArray(CLS_N); val cacc = DoubleArray(CLS_N)
+        val cpdb = FloatArray(CLS_N); val csort = FloatArray(CLS_N)
+        val cwin = FloatArray(CLS_N) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / CLS_N)).toFloat() }
+        var cFrames = 0; var lastCls = 0L; var clsRate = 0; var clsFreq = 0L; var clsQuietUntil = 0L
+        var lastVoice = 0L
         try {
             while (!stopWorker) {
                 val item = try { queue.take() } catch (e: InterruptedException) { break }
@@ -258,6 +284,39 @@ object SdrEngine {
                     }
                 }
 
+                // ---- signal finder: finer bins than the waterfall, averaged over ~2.4 M samples/s whatever the rate ----
+                if (watchSignals) {
+                    val lo = _freqHz.value
+                    if (rate != clsRate || lo != clsFreq) {
+                        // Buffers already queued were taken on the old tuning; let them drain before trusting any.
+                        clsRate = rate; clsFreq = lo; classifier.reset(); cacc.fill(0.0); cFrames = 0
+                        clsQuietUntil = now + 300; _signals.value = emptyList()
+                    }
+                    if (now >= clsQuietUntil) {
+                        val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
+                        var off = 0
+                        while (off + CLS_N <= nSamp) {
+                            for (k in 0 until CLS_N) {
+                                val j = 2 * (off + k)
+                                cre[k] = ((item[j].toInt() and 0xff) - 127.4f) * cwin[k]
+                                cim[k] = ((item[j + 1].toInt() and 0xff) - 127.4f) * cwin[k]
+                            }
+                            Dsp.fft(cre, cim)
+                            for (k in 0 until CLS_N) cacc[k] += (cre[k] * cre[k] + cim[k] * cim[k]).toDouble()
+                            cFrames++
+                            off += CLS_N * skip
+                        }
+                        if (now - lastCls > 100L && cFrames > 0) {
+                            lastCls = now
+                            for (k in 0 until CLS_N) cpdb[k] = (10.0 * Math.log10(cacc[(k + CLS_N / 2) % CLS_N] / cFrames + 1e-12)).toFloat()
+                            cacc.fill(0.0); cFrames = 0
+                            System.arraycopy(cpdb, 0, csort, 0, CLS_N); csort.sort()
+                            val sigs = runCatching { classifier.update(cpdb, rate.toDouble(), lo.toDouble(), csort[CLS_N / 2].toDouble()) }.getOrElse { emptyList() }
+                            _signals.value = sigs
+                        }
+                    }
+                } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
+
                 // ---- demod → audio (+ FM tap for packet processors) ----
                 if (m != Mode.NONE) {
                     // Two-stage decimation. Stage 1 is the channel filter (complex boxcar) down to an intermediate
@@ -268,10 +327,17 @@ object SdrEngine {
                     val stage2 = max(1, interRate / AUDIO_RATE)
                     val wantFm = p != null && p.wantsFm
                     val wInc = 2.0 * Math.PI * 1500.0 / interRate
+                    val off = _offsetHz.value
+                    val stepR = cos(-2.0 * Math.PI * off / rate).toFloat(); val stepI = sin(-2.0 * Math.PI * off / rate).toFloat()
                     var i = 0
                     while (i < nSamp) {
-                        s1I += (item[2 * i].toInt() and 0xff) - 127.4f
-                        s1Q += (item[2 * i + 1].toInt() and 0xff) - 127.4f
+                        val iv = (item[2 * i].toInt() and 0xff) - 127.4f
+                        val qv = (item[2 * i + 1].toInt() and 0xff) - 127.4f
+                        if (off != 0) {
+                            s1I += iv * ncoR - qv * ncoI; s1Q += iv * ncoI + qv * ncoR
+                            val nr = ncoR * stepR - ncoI * stepI; ncoI = ncoR * stepI + ncoI * stepR; ncoR = nr
+                            if (++ncoN >= 4096) { ncoN = 0; val g = 1f / sqrt(ncoR * ncoR + ncoI * ncoI); ncoR *= g; ncoI *= g }
+                        } else { s1I += iv; s1Q += qv }
                         s1n++
                         if (s1n >= stage1) {
                             val ci = s1I / s1n; val cq = s1Q / s1n; s1I = 0f; s1Q = 0f; s1n = 0
@@ -310,12 +376,14 @@ object SdrEngine {
                                 }
                                 val sampI = v.coerceIn(-32000f, 32000f).toInt()
                                 val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
+                                if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
                                 audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
                                 if (audioLen >= audioBuf.size) { track?.write(audioBuf, 0, audioLen); audioLen = 0 }
                             }
                         }
                         i++
                     }
+                    if (voiceOn && now - lastVoice > 250L) { lastVoice = now; _voice.value = voiceDet.read() }
                     if (wantFm && fmN > 0) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
                     if (audioLen > 0) { track?.write(audioBuf, 0, audioLen); audioLen = 0 }
                     if (chN > 0) {

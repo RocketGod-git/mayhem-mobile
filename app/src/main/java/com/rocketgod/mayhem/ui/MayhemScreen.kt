@@ -66,6 +66,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.TPMS -> TpmsScreen(accent)
                     MayhemApp.ACARS -> AcarsScreen(accent)
                     MayhemApp.SUBGHZ -> SubGhzScreen(accent)
+                    MayhemApp.PROWL -> ProwlScreen(accent)
                     MayhemApp.LOOKING_GLASS -> LookingGlassScreen(accent)
                     MayhemApp.SEARCH -> SearchScreen(accent)
                     MayhemApp.CAPTURE -> CaptureScreen(accent)

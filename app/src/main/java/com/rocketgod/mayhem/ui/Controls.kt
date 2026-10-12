@@ -89,9 +89,9 @@ fun SectionLabel(text: String) {
         modifier = Modifier.padding(top = d.dp(8f), bottom = d.dp(4f), start = 2.dp))
 }
 
-/** Tuned-frequency readout with the level bar and the RX-health sub-line. */
+/** Tuned-frequency readout with the level bar and the RX-health sub-line; [channelHz] when listening off the LO. */
 @Composable
-fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false) {
+fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz: Long? = null) {
     val d = rememberDims()
     val tuned by SdrEngine.freqHz.collectAsState()
     val level by SdrEngine.levelDb.collectAsState()
@@ -99,7 +99,7 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false) {
     val sqOpen by SdrEngine.squelchOpen.collectAsState()
     val scanning by Scanner.active.collectAsState()
     val preview = Tuning.previewHz
-    val freq = preview ?: tuned
+    val freq = preview ?: channelHz ?: tuned
     val tint = if (preview != null) Palette.accent2 else accent
     val mhz = freq / 1e6
     val whole = mhz.toLong()
