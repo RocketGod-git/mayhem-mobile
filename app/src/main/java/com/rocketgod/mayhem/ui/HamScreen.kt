@@ -200,7 +200,7 @@ internal fun TuneSteps(accent: Color) {
     val s by Ham.state.collectAsState()
     val steps = remember(s.channel) { Ham.steps() }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        for (st in steps) Chip((if (st > 0) "+" else "−") + stepLabel(kotlin.math.abs(st)), false, accent, Modifier.weight(1f)) { Ham.nudge(st) }
+        for (st in steps) Chip((if (st > 0) "+" else "−") + hamStepLabel(kotlin.math.abs(st)), false, accent, Modifier.weight(1f)) { Ham.nudge(st) }
     }
 }
 
@@ -286,7 +286,7 @@ internal fun <T> ChipGrid(items: List<T>, columns: Int, chip: @Composable RowSco
     }
 }
 
-internal fun stepLabel(hz: Long) = when {
+internal fun hamStepLabel(hz: Long) = when {
     hz >= 1_000_000 -> if (hz % 1_000_000 == 0L) "${hz / 1_000_000}M" else "%.1fM".format(hz / 1e6)
     hz >= 1_000 -> if (hz % 1000 == 0L) "${hz / 1000}k" else "%.1fk".format(hz / 1000.0)
     else -> "$hz"
