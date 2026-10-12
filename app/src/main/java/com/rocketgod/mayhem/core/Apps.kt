@@ -31,6 +31,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     TPMS("TPMS", "tyre pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
     SUBGHZ("Sub-GHz", "weather · remotes · car keys, rtl_433 style", "Receive"),
+    PROWL("Prowl", "hunts live voice across the bands", "Receive"),
     LOOKING_GLASS("Looking Glass", "wideband sweep waterfall", "Analyze"),
     SEARCH("Search", "find active frequencies", "Analyze"),
     CAPTURE("Capture", "record raw IQ to file", "Tools"),
@@ -67,6 +68,8 @@ object Apps {
         if (app != MayhemApp.AUDIO) Scanner.stop()
         if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
         if (app != MayhemApp.SAT) com.rocketgod.mayhem.core.sat.Sats.close()
+        if (app != MayhemApp.PROWL) Prowl.stop()          // the hunt owns the receiver; anything else takes it back
+        SdrEngine.watchSignals = app == MayhemApp.PROWL
         _current.value = app
         val r = SdrEngine.IQ_RATE
         when (app) {
@@ -83,6 +86,7 @@ object Apps {
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
             MayhemApp.ACARS -> SdrEngine.configure(SdrEngine.Mode.AM, 131_550_000L, r, 32, 32, false, acars)
             MayhemApp.SUBGHZ -> SdrEngine.configure(SdrEngine.Mode.NONE, 433_920_000L, r, 32, 40, true, ism)
+            MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
             MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, r, 24, 24, false, recorder)
@@ -102,6 +106,8 @@ object Apps {
     fun home() {
         recorder?.stop()
         Scanner.stop()
+        Prowl.stop()
+        SdrEngine.watchSignals = false
         _current.value = null
         _sweep.value = null
         SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
@@ -110,6 +116,7 @@ object Apps {
     /** Jump from a sweep hit into the Audio receiver on that frequency. */
     fun listen(freqHz: Long, mode: SdrEngine.Mode) {
         _sweep.value = null
+        SdrEngine.watchSignals = false
         _current.value = MayhemApp.AUDIO
         SdrEngine.configure(mode, freqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
     }

@@ -104,6 +104,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.1f, 0.32f); path.l(0.5f, 0.56f); path.l(0.9f, 0.32f)
                 path.m(0.5f, 0.06f); path.l(0.5f, 0.2f); path.m(0.38f, 0.14f); path.l(0.62f, 0.14f)
             }
+            MayhemApp.PROWL -> {
+                // a cat's eye: two arcs meeting at the corners, and a slit pupil
+                for ((cy, a0, a1) in listOf(Triple(0.648f, -158.8, -21.2), Triple(0.352f, 21.2, 158.8))) {
+                    var a = a0; var first = true
+                    while (a <= a1 + 0.01) { val x = 0.5f + 0.408f * cos(Math.toRadians(a)).toFloat(); val y = cy + 0.408f * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += (a1 - a0) / 12 }
+                }
+                for (k in 0..12) { val t = k / 12f; val x = 0.5f + 0.07f * sin(Math.PI * t).toFloat(); val y = 0.30f + 0.40f * t; if (k == 0) path.m(x, y) else path.l(x, y) }
+                for (k in 1..12) { val t = 1f - k / 12f; path.l(0.5f - 0.07f * sin(Math.PI * t).toFloat(), 0.30f + 0.40f * t) }
+            }
             MayhemApp.SUBGHZ -> {
                 path.m(0.5f, 0.92f); path.l(0.5f, 0.42f)
                 circles.add(Triple(0.5f, 0.42f, 0.07f))
