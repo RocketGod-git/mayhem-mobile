@@ -45,6 +45,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 var a = 200.0; var first = true
                 while (a <= 340.0) { val x = 0.5f + 0.2f * cos(Math.toRadians(a)).toFloat(); val y = 0.9f + 0.2f * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
             }
+            MayhemApp.DEVICES -> {
+                // a house, and what it says about itself on the air
+                path.m(0.22f, 0.88f); path.l(0.22f, 0.54f); path.l(0.50f, 0.32f); path.l(0.78f, 0.54f); path.l(0.78f, 0.88f); path.close()
+                path.m(0.44f, 0.88f); path.l(0.44f, 0.70f); path.l(0.56f, 0.70f); path.l(0.56f, 0.88f)
+                for (r in floatArrayOf(0.12f, 0.22f)) {
+                    var a = -150.0; var first = true
+                    while (a <= -30.0) { val x = 0.5f + r * cos(Math.toRadians(a)).toFloat(); val y = 0.32f + r * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
+                }
+            }
             MayhemApp.AUDIO -> {
                 path.m(0.05f, 0.5f)
                 for (i in 0..40) {

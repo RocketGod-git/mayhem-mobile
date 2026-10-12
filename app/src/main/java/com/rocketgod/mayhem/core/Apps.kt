@@ -20,6 +20,7 @@ import java.io.File
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
     HAM("HAM", "SSB · CW · AM · NFM · repeaters · CTCSS", "Receive"),
     AUDIO("Audio", "WFM · NFM · AM · SSB receiver", "Receive"),
+    DEVICES("Devices", "alarms, meters, remotes, tire sensors, weather", "Receive"),
     SAT("Satellites", "track, listen to and decode what is overhead", "Receive"),
     ADSB("ADS-B", "aircraft, 1090 MHz", "Receive"),
     AIS("AIS", "ships, 162 MHz", "Receive"),
@@ -71,6 +72,7 @@ object Apps {
         when (app) {
             MayhemApp.HAM -> com.rocketgod.mayhem.core.ham.Ham.open()
             MayhemApp.SAT -> com.rocketgod.mayhem.core.sat.Sats.open()
+            MayhemApp.DEVICES -> com.rocketgod.mayhem.core.r433.Devices.open()
             MayhemApp.AUDIO -> SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, r, 24, 24, false, null)
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
