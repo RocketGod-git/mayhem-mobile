@@ -62,6 +62,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
+    // Android framework calls answer with defaults under the JVM tests, so the singletons can be initialised there.
+    testOptions { unitTests.isReturnDefaultValues = true }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 

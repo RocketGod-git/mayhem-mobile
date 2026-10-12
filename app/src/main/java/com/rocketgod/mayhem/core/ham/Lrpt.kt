@@ -148,7 +148,8 @@ private val rsInit = run {
     ALPHA[0] = 1; LOGT[1] = 0; LOGT[0] = 183
     for (i in 1 until RS_N) { var t = ALPHA[i - 1] shl 1; if (t > RS_N) t = t xor GEN_POLY; ALPHA[i] = t; LOGT[t] = i }
     LOGT[255] = 183; ALPHA[255] = 0
-    for (i in 0 until RS_N) GAPROOT[gfpow(i, ROOT_SKIP)] = i
+    // alpha^0 raised to the skip lands on 255, past the table; the decoder never looks there
+    for (i in 0 until RS_N) { val k = gfpow(i, ROOT_SKIP); if (k < RS_N) GAPROOT[k] = i }
     for (i in 0 until RS_T) ZEROES[i] = ALPHA[((i + FIRST_ROOT) * ROOT_SKIP) % RS_N]
     true
 }
