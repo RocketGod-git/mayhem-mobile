@@ -152,7 +152,7 @@ fun AudioScreen(accent: Color) {
                         val on = b.hz == freq
                         Row(Modifier.control(accent, on).padding(vertical = d.dp(6f)).padding(start = d.dp(10f), end = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
                             Text(b.name, color = if (on) inkOn(accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1,
-                                modifier = Modifier.clickable { Scanner.stop(); Bookmarks.go(b) })
+                                modifier = Modifier.clickable { Scanner.stop(); Bookmarks.open(b) })
                             Text("✕", color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontSize = d.sp(11f),
                                 modifier = Modifier.padding(start = 6.dp).clickable { Bookmarks.remove(b) }.padding(horizontal = 6.dp))
                         }

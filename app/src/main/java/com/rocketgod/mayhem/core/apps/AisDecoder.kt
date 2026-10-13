@@ -39,6 +39,7 @@ data class Vessel(
  */
 class AisDecoder(private val log: PacketLog) : IqProcessor {
     override val wantsFm: Boolean get() = true
+    override val fmChannelHz: Int get() = 10_000      // 9600 baud GMSK wants the whole channel
 
     private var fmRate = 0
     private var sync = BitSync(9600.0, 48000.0)

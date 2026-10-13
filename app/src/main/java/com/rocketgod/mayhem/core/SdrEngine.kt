@@ -38,6 +38,15 @@ object SdrEngine {
     /** Default IQ sample rate. 2.0 Msps is the Pro-clean rate: the HackRF Pro's FPGA decimation only resolves
      *  cleanly here (2.4 Msps gave all-zeros / intermittent static). Apps may pick others (Looking Glass, ERT). */
     const val IQ_RATE = 2_000_000
+    /**
+     * The general-purpose receivers' base rate. 1.92 Msps rather than 2, because the audio path decimates by whole
+     * numbers with no resampler: 1.92 M → 240 k → 48 k lands exactly on the 48 kHz output, where 2 M gives 50 k
+     * for WFM (played 4 % fast and sharp, and faster than the output drains, so it backs up) and 48.78 k for NFM.
+     * The fixed-purpose decoders keep [IQ_RATE]: their timing is built around it and they make no audio.
+     */
+    const val RX_RATE = 1_920_000
+    /** The spans a receiver zooms through: every rung divides down to 48 kHz exactly. */
+    val RX_RATES = intArrayOf(1_920_000, 3_840_000, 7_680_000, 15_360_000, 19_200_000)
     const val FREQ_MIN_HZ = 1_000_000L
     const val FREQ_MAX_HZ = 6_000_000_000L
 
@@ -54,9 +63,14 @@ object SdrEngine {
     val mode: StateFlow<Mode> = _mode.asStateFlow()
     private val _rateHz = MutableStateFlow(IQ_RATE)
     val rateHz: StateFlow<Int> = _rateHz.asStateFlow()
-    /** Last audio-receiver dial / mode, restored when the Audio app is reopened. */
+    /**
+     * The dial the receiver apps share, kept across launches. It records only what the user chose; a retune the
+     * app makes on its own (the start-up pick of the strongest station) never becomes where the next app opens.
+     */
     @Volatile var radioFreqHz = 92_300_000L; private set
     @Volatile var radioMode = Mode.WFM; private set
+    /** Whether a dial was saved by an earlier session. */
+    @Volatile var dialSaved = false; private set
     private val _radioLna = MutableStateFlow(24)
     val radioLna: StateFlow<Int> = _radioLna.asStateFlow()
     private val _radioVga = MutableStateFlow(24)
@@ -81,6 +95,20 @@ object SdrEngine {
         p.getString("gains", null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 4 }?.let { g ->
             gainPref = g.toIntArray(); _agc.value = g[3] == 1
         }
+        val dial = p.getLong("dial", 0L)
+        if (dial in FREQ_MIN_HZ..FREQ_MAX_HZ) {
+            radioFreqHz = dial; dialSaved = true
+            radioMode = runCatching { Mode.valueOf(p.getString("dial_mode", null) ?: "") }.getOrDefault(radioMode)
+        }
+        rdsOn = p.getBoolean("rds", true); _rdsWanted.value = rdsOn
+    }
+
+    /** Remember where the receivers are tuned, for the other apps and the next launch. */
+    fun setDial(hz: Long, mode: Mode) {
+        radioFreqHz = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        if (mode != Mode.NONE) radioMode = mode
+        dialSaved = true
+        prefs?.edit()?.putLong("dial", radioFreqHz)?.putString("dial_mode", radioMode.name)?.apply()
     }
     private fun saveGains() {
         val g = intArrayOf(_radioLna.value, _radioVga.value, if (_radioAmp.value) 1 else 0, if (_agc.value) 1 else 0)
@@ -88,6 +116,8 @@ object SdrEngine {
         prefs?.edit()?.putString("gains", g.joinToString(","))?.apply()
     }
     fun setAgc(on: Boolean) { _agc.value = on; agcLast = 0; saveGains() }
+    /** AGC on without touching the saved gains: a screen that has no gain controls of its own rides it. */
+    fun rideAgc() { if (gainPref == null && !_agc.value) { _agc.value = true; agcLast = 0 } }
 
     private fun isPro() = HackRfOne.boardLabel.contains("Pro", ignoreCase = true)
     /**
@@ -120,9 +150,10 @@ object SdrEngine {
 
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
     private fun agcStep(rms: Double, now: Long) {
-        if (!_agc.value || HackRfOne.txActive || now - agcLast < 900) return
+        // held for as long as Transmit is open, not just while it sends: the receive level there means nothing
+        if (!_agc.value || HackRfOne.txActive || Apps.playing() == MayhemApp.TRANSMIT || now - agcLast < 900) return
         agcLast = now
-        val scale = minOf(3.2, kotlin.math.sqrt(sampleRate / 2_000_000.0))
+        val scale = minOf(3.2, kotlin.math.sqrt(sampleRate / RX_RATE.toDouble()))
         val lo = minOf(24.0, 7 * scale); val hi = minOf(34.0, 22 * scale)
         val l = _radioLna.value; val v = _radioVga.value
         val vMax = vgaMax(); val hasLna = Radio.kind.value != Radio.Kind.RTLSDR
@@ -202,13 +233,13 @@ object SdrEngine {
     private val _voice = MutableStateFlow<VoiceScore?>(null)
     val voice: StateFlow<VoiceScore?> = _voice.asStateFlow()
     /** RDS, from the WFM composite: station name, programme type, RadioText, alternative frequencies. */
-    @Volatile private var rdsOn = false
-    private val _rdsWanted = MutableStateFlow(false)
+    @Volatile private var rdsOn = true
+    private val _rdsWanted = MutableStateFlow(true)
     val rdsWanted: StateFlow<Boolean> = _rdsWanted.asStateFlow()
     private val _rds = MutableStateFlow<RdsState?>(null)
     val rds: StateFlow<RdsState?> = _rds.asStateFlow()
     private val rdsDec = RdsDecoder { _rds.value = it }
-    fun setRds(on: Boolean) { rdsOn = on; _rdsWanted.value = on; if (!on) _rds.value = null }
+    fun setRds(on: Boolean) { rdsOn = on; _rdsWanted.value = on; if (!on) _rds.value = null; prefs?.edit()?.putBoolean("rds", on)?.apply() }
 
     /** Whether a WFM station carries HD Radio sidebands; detection only, the codec is proprietary. */
     @Volatile private var hdOn = false
@@ -223,7 +254,11 @@ object SdrEngine {
     @Volatile var sameOn = false
     private val _same = MutableStateFlow<SameEvent?>(null)
     val same: StateFlow<SameEvent?> = _same.asStateFlow()
-    private val sameDec = SameDecoder { if (it.event != "tone") _same.value = it }
+    private val sameDec = SameDecoder { e ->
+        if (e.event == "tone") return@SameDecoder
+        _same.value = e
+        e.header?.let { h -> Diag.log("SAME: ${h.eventName} from ${h.callsign}") }
+    }
     fun dismissSame() { _same.value = null }
 
     fun listenForVoice(on: Boolean) { if (on != voiceOn) { voiceDet.reset(); _voice.value = null }; voiceOn = on }
@@ -292,7 +327,7 @@ object SdrEngine {
         processor = null
         _offsetHz.value = 0
         _mode.value = mode
-        _rateHz.value = Radio.nearestRate(Radio.limits, rateHz)
+        _rateHz.value = clampRate(rateHz)
         // Before the user has touched gain, no app starts below 32 on either stage and the front-end amp is on: AGC
         // (on by default) trims the stages if a strong signal would clip, so every app starts sensitive.
         preset = Triple(lna, vga, amp)
@@ -301,7 +336,6 @@ object SdrEngine {
         _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
         _radioAmp.value = a
         _freqHz.value = freqHz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
-        if (proc == null && mode != Mode.NONE) { radioFreqHz = _freqHz.value; radioMode = mode }
         syncDriver()
         processor = proc
         configured = true
@@ -313,6 +347,8 @@ object SdrEngine {
     @Volatile private var configured = false
     /** A plain receiver is set up and playing, so a screen that only wants to listen can leave it exactly as it is. */
     fun listening() = configured && channelInSpan()
+    /** A plain receiver is set up, playing or not (a launcher band with no voice mode is still one). */
+    fun plain() = configured && processor == null
 
     /** Keep a tuned channel this far inside the span edge before the radio follows it. */
     private const val VIEW_GUARD = 100_000L
@@ -325,13 +361,27 @@ object SdrEngine {
      * it, so picking something already on the waterfall does not throw the waterfall sideways and wipe its
      * history. Everything else (decoders working on the raw samples) retunes the radio itself.
      */
-    fun tune(hz: Long) {
+    fun tune(hz: Long, silent: Boolean = false) {
         val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
-        if (!channelInSpan()) { tuneLo(f); return }
+        if (!channelInSpan()) { tuneLo(f); if (!silent && plain() && _mode.value == Mode.NONE) radioFreqHz = f; return }
         val lo = _freqHz.value
         if (kotlin.math.abs(f - lo) > _rateHz.value / 2 - VIEW_GUARD) { tuneLo(f); _offsetHz.value = 0 }
         else _offsetHz.value = (f - lo).toInt()
-        radioFreqHz = f
+        if (!silent) setDial(f, _mode.value)
+    }
+
+    /**
+     * Point a plain receiver at a whole band: the span is the band's own width (as wide as this radio and screen
+     * take in one shot) centred on its middle, heard in the band's mode.
+     */
+    fun viewBand(lo: Long, hi: Long, mode: Mode, cap: Int) {
+        val widest = RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
+        val want = (hi - lo).toInt()
+        val rate = widest.firstOrNull { it >= want } ?: widest.lastOrNull() ?: RX_RATE
+        _offsetHz.value = 0
+        _mode.value = mode
+        setRate(rate)
+        tuneLo((lo + hi) / 2)
     }
     fun nudge(deltaHz: Long) = tune(channelHz() + deltaHz)
 
@@ -354,12 +404,10 @@ object SdrEngine {
         _offsetHz.value = (ch - _freqHz.value).coerceIn(-(Int.MAX_VALUE.toLong()), Int.MAX_VALUE.toLong()).toInt()
     }
 
-    /** The spans a receiver zooms out through: whole numbers of megahertz the HackRF samples cleanly. */
-    private val SPANS = intArrayOf(2_000_000, 4_000_000, 8_000_000, 10_000_000, 20_000_000)
 
     /** Zoom past 1×: −1 widens the span a rung, +1 narrows it; false at either end of what this radio and screen allow. */
     fun stepSpan(dir: Int, cap: Int): Boolean {
-        val ladder = SPANS.filter { it <= cap && Radio.canSample(Radio.limits, it) }
+        val ladder = RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
         if (ladder.isEmpty()) return false
         val cur = ladder.indexOfFirst { it >= _rateHz.value }.let { if (it < 0) ladder.size - 1 else it }
         val next = (cur - dir).coerceIn(0, ladder.size - 1)
@@ -373,7 +421,14 @@ object SdrEngine {
     /** ⌖: bring the view back to the channel. */
     fun recentre() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
 
-    fun setRate(rate: Int) { _rateHz.value = Radio.nearestRate(Radio.limits, rate); syncDriver() }
+    fun setRate(rate: Int) { _rateHz.value = clampRate(rate); syncDriver() }
+
+    private fun clampRate(rate: Int): Int {
+        val r = Radio.nearestRate(Radio.limits, rate)
+        if (r != rate && Radio.kind.value != Radio.Kind.NONE)
+            Diag.log("%.2f Msps is out of range for this ${Radio.name} — using %.2f".format(rate / 1e6, r / 1e6))
+        return r
+    }
 
     /** A hand on the LNA or VGA switches the AGC off so the setting sticks, and is remembered for every app. */
     fun setRadioLna(db: Int) {
@@ -386,10 +441,19 @@ object SdrEngine {
     }
     fun toggleRadioAmp() { _radioAmp.value = !_radioAmp.value; syncDriver(); saveGains() }
 
+    /** Gain as a favourite saved it: with AGC it is only where the AGC starts; without, it is the user's own. */
+    fun applyGains(lna: Int, vga: Int, amp: Boolean, agc: Boolean) {
+        _radioLna.value = (lna.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
+        _radioVga.value = (vga.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
+        _radioAmp.value = amp; _agc.value = agc; agcLast = 0
+        syncDriver()
+        if (!agc) saveGains()
+    }
+
     /** Audio mode switch (Audio app). */
-    fun setMode(m: Mode) {
+    fun setMode(m: Mode, silent: Boolean = false) {
         _mode.value = m
-        if (processor == null && m != Mode.NONE) radioMode = m
+        if (!silent && processor == null && m != Mode.NONE) setDial(channelHz(), m)
     }
 
     // A worker runs only while it is the current one, so a stop and a quick restart can never leave two of them
@@ -417,6 +481,11 @@ object SdrEngine {
         var prevI = 0f; var prevQ = 0f                 // FM discriminator memory
         var deemph = 0f                                 // WFM de-emphasis one-pole memory
         var amDc = 0f                                   // AM DC blocker memory
+        var dcFmI = 0f; var dcFmQ = 0f                  // NFM front-end DC tracker
+        // NFM / AM channel filter: a 4th-order Butterworth low-pass (two biquads, I and Q) at the intermediate rate,
+        // just before the detector. Without it the discriminator sees the whole ~48 kHz, and a packet with 10 dB of
+        // SNR in its 12.5 kHz channel sits below the FM threshold.
+        val bq = FloatArray(10); val bz = FloatArray(8); var bqKey = 0L
         var wph = 0.0                                   // SSB (Weaver) BFO phase
         var lpI1 = 0f; var lpI2 = 0f; var lpQ1 = 0f; var lpQ2 = 0f   // SSB low-pass memories
         var decAcc = 0f; var decCnt = 0                 // stage-2 (audio) decimator accumulator
@@ -583,7 +652,7 @@ object SdrEngine {
                     if (wantHd && abs(_offsetHz.value) < rate / 2 - 240_000) runCatching { hdDet.push(item, nSamp, rate, _offsetHz.value.toDouble()) }
 
                     // ---- demod → audio (+ FM tap for packet processors) ----
-                    if (m != Mode.NONE) {
+                    if (m != Mode.NONE && abs(_offsetHz.value) < rate / 2 - 40_000) {     // a channel slid off the span is silent
                         // Two-stage decimation. Stage 1 is the channel filter (complex boxcar) down to an intermediate
                         // rate near the channel bandwidth: WFM → ~240 kHz, everything else → ~48 kHz. Stage 2 decimates
                         // the demodulated audio to 48 kHz.
@@ -591,6 +660,21 @@ object SdrEngine {
                         val interRate = rate / stage1
                         val stage2 = max(1, interRate / AUDIO_RATE)
                         val wantFm = p != null && p.wantsFm
+                        val filtered = m == Mode.NFM || m == Mode.AM
+                        if (filtered) {
+                            val cut = when { (p?.fmChannelHz ?: 0) > 0 -> p!!.fmChannelHz; m == Mode.AM -> 5_000; else -> 6_500 }
+                            val key = cut.toLong() * 100_000_000L + interRate
+                            if (key != bqKey) {
+                                bqKey = key; bz.fill(0f)
+                                val w0 = 2.0 * Math.PI * minOf(0.45 * interRate, cut.toDouble()) / interRate
+                                val c = cos(w0)
+                                for ((k, q) in doubleArrayOf(0.5412, 1.3066).withIndex()) {
+                                    val alpha = sin(w0) / (2 * q); val a0 = 1 + alpha
+                                    bq[5 * k] = ((1 - c) / 2 / a0).toFloat(); bq[5 * k + 1] = ((1 - c) / a0).toFloat(); bq[5 * k + 2] = ((1 - c) / 2 / a0).toFloat()
+                                    bq[5 * k + 3] = (-2 * c / a0).toFloat(); bq[5 * k + 4] = ((1 - alpha) / a0).toFloat()
+                                }
+                            }
+                        }
                         val wInc = 2.0 * Math.PI * 1500.0 / interRate
                         val off = _offsetHz.value
                         val stepR = cos(-2.0 * Math.PI * off / rate).toFloat(); val stepI = sin(-2.0 * Math.PI * off / rate).toFloat()
@@ -605,7 +689,13 @@ object SdrEngine {
                             } else { s1I += iv; s1Q += qv }
                             s1n++
                             if (s1n >= stage1) {
-                                val ci = s1I / s1n; val cq = s1Q / s1n; s1I = 0f; s1Q = 0f; s1n = 0
+                                var ci = s1I / s1n; var cq = s1Q / s1n; s1I = 0f; s1Q = 0f; s1n = 0
+                                if (filtered) for (k in 0..1) {
+                                    val o = 5 * k; val z = 4 * k
+                                    val oi = bq[o] * ci + bz[z]; bz[z] = bq[o + 1] * ci - bq[o + 3] * oi + bz[z + 1]; bz[z + 1] = bq[o + 2] * ci - bq[o + 4] * oi
+                                    val oq = bq[o] * cq + bz[z + 2]; bz[z + 2] = bq[o + 1] * cq - bq[o + 3] * oq + bz[z + 3]; bz[z + 3] = bq[o + 2] * cq - bq[o + 4] * oq
+                                    ci = oi; cq = oq
+                                }
                                 chPow += (ci * ci + cq * cq).toDouble(); chN++
                                 val s: Float = when (m) {
                                     Mode.AM -> { val env = sqrt(ci * ci + cq * cq); amDc += 0.001f * (env - amDc); env - amDc }
@@ -621,8 +711,14 @@ object SdrEngine {
                                         lpI2 * c + lpQ2 * sn
                                     }
                                     else -> {   // FM discriminator: angle(cur * conj(prev)) at the intermediate rate
-                                        val d = atan2(cq * prevI - ci * prevQ, ci * prevI + cq * prevQ)
-                                        prevI = ci; prevQ = cq; d
+                                        // A HackRF holds a steady DC on I/Q, and a narrowband decoder tuned to the
+                                        // carrier puts its signal right on it, anchoring the phasor and shrinking the
+                                        // deviation, so packet tones come out weak. A slow one-pole (~15 Hz) takes off
+                                        // only the static offset; WFM is wide and strong and keeps the raw path.
+                                        var fi = ci; var fq = cq
+                                        if (m == Mode.NFM) { dcFmI += 2e-3f * (ci - dcFmI); dcFmQ += 2e-3f * (cq - dcFmQ); fi = ci - dcFmI; fq = cq - dcFmQ }
+                                        val d = atan2(fq * prevI - fi * prevQ, fi * prevI + fq * prevQ)
+                                        prevI = fi; prevQ = fq; d
                                     }
                                 }
                                 if (wantRds) { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.size) { runCatching { rdsDec.push(rdsBuf, rdsN, interRate) }; rdsN = 0 } }

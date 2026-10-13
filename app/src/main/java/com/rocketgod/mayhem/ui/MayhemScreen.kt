@@ -46,7 +46,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
     val current by Apps.current.collectAsState()
     var showLog by remember { mutableStateOf(false) }
     var showTools by remember { mutableStateOf(false) }
-    LaunchedEffect(connected) { if (!connected) showTools = true }
+    LaunchedEffect(connected) { showTools = !connected }
     BackHandler(enabled = current != null) { Apps.back() }
     // every screen, the launcher included, is a live receiver: none of them may dim and lock mid-listen
     val view = LocalView.current
