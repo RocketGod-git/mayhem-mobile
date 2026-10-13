@@ -61,15 +61,18 @@ object Devices {
     /** Fields too long for the wrapped list; each gets its own line. */
     val LONG = setOf("raw", "raw_msg", "code", "summary", "DifferentialConsumptionIntervals")
 
-    /** How a field is explained when it is not self-evident. */
+    /** How a field is explained when it is not self-evident; tapping the field on a device row shows it. */
     val MEANING = mapOf(
         "raw" to "the frame exactly as it arrived, in the notation rtl_433 uses for its own test codes",
         "raw_msg" to "the decoded bytes, kept because this family still has bits nobody has explained",
+        "protocol" to "rtl_433 protocol number — look this up against that project's documentation",
         "mic" to "which error check the reading passed",
         "exception" to "a bit was set that should not have been; the reading may still be right",
         "battery_mV" to "battery voltage as the sensor measures it",
+        "ad_raw" to "the sensor's own reading before it was turned into a percentage",
         "storm_dist" to "the detector's estimate of how far off the leading edge of the storm is",
         "strike_count" to "a running total since the batteries went in, not a rate",
+        "rfi" to "broadband interference, which stops the detector hearing strikes at all",
         "consumption_data" to "a meter register reading, not a unit of energy — the multiplier is the utility's",
         "DifferentialConsumptionIntervals" to "consumption in each recent interval, oldest first",
         "tristate" to "the solder links or switches inside the remote: 0 low, 1 high, Z floating",

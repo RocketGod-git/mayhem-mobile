@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -114,9 +115,10 @@ private fun EmptyPanel(text: String, modifier: Modifier) {
 private fun <T> TwoLineList(items: List<T>, key: (T) -> String, selected: String?, modifier: Modifier, empty: String,
                             top: (T) -> String, bottom: (T) -> String, onPick: (T) -> Unit) {
     val d = rememberDims()
+    val state = rememberLazyListState()
     if (items.isEmpty()) { EmptyPanel(empty, modifier); return }
     Box(modifier.panel()) {
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = d.dp(4f), vertical = d.dp(2f))) {
+        LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(4f), vertical = d.dp(2f)), state = state) {
             itemsIndexed(items, key = { _, it -> key(it) }) { i, it ->
                 val on = key(it) == selected
                 Column(Modifier.fillMaxWidth().background(if (i % 2 == 1) Palette.panel.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(3.dp))
@@ -129,13 +131,13 @@ private fun <T> TwoLineList(items: List<T>, key: (T) -> String, selected: String
     }
 }
 
-/** The packet log, frozen while paused. */
+/** The packet log, frozen while paused. A tapped line selects whoever sent it, as the list and the map do. */
 @Composable
-private fun FrozenLog(log: PacketLog, paused: Boolean, modifier: Modifier, empty: String) {
+private fun FrozenLog(log: PacketLog, paused: Boolean, modifier: Modifier, empty: String, onTap: ((String) -> Unit)? = null) {
     val lines by log.lines.collectAsState()
     var held by remember { mutableStateOf<List<String>?>(null) }
     LaunchedEffect(paused) { held = if (paused) lines else null }
-    LogList(held ?: lines, modifier, empty = empty)
+    LogList(held ?: lines, modifier, empty = empty, onTap = onTap)
 }
 
 /** Recomposes once a second, for "heard 12 s ago". */
@@ -242,7 +244,9 @@ fun AisScreen(accent: Color) {
                     shipTypeName(x.shipType).takeIf { it.isNotEmpty() }).joinToString(" · ") }) { x ->
                 sel = x.mmsi; if (x.lat != null) view = View.MAP
             }
-            View.LOG -> FrozenLog(Apps.aisLog, frozen != null, m, "listening on the AIS channel…")
+            View.LOG -> FrozenLog(Apps.aisLog, frozen != null, m, "listening on the AIS channel…") { l ->
+                Regex("MMSI (\\d+)").find(l)?.groupValues?.get(1)?.toIntOrNull()?.let { sel = it }
+            }
         }
     }
 }
@@ -325,7 +329,9 @@ fun AprsScreen(accent: Color) {
                     x.speed?.takeIf { it > 0 }?.let { "%.0f kn".format(it) }).joinToString(" · ") }) { x ->
                 sel = x.call; if (x.lat != null) view = View.MAP
             }
-            View.LOG -> FrozenLog(Apps.aprsLog, frozen != null, m, "listening on the APRS frequency…")
+            View.LOG -> FrozenLog(Apps.aprsLog, frozen != null, m, "listening on the APRS frequency…") { l ->
+                Regex("^([A-Za-z0-9-]+)>").find(l)?.let { sel = it.groupValues[1] }
+            }
         }
     }
 }

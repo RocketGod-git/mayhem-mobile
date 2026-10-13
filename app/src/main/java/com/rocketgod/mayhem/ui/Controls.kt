@@ -3,6 +3,7 @@ package com.rocketgod.mayhem.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +32,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -167,11 +173,12 @@ fun PresetRow(accent: Color, presets: List<Pair<String, Long>>, title: String = 
 @Composable
 fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = "listening…", onTap: ((String) -> Unit)? = null) {
     val d = rememberDims()
+    val state = rememberLazyListState()
     Box(modifier.panel()) {
         if (lines.isEmpty()) {
             Text(empty, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(horizontal = d.dp(6f), vertical = d.dp(4f))) {
+            LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
                 itemsIndexed(lines) { i, l ->
                     val m = Modifier.fillMaxWidth()
                         .background(if (i % 2 == 0) Color.Transparent else Palette.panel.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
@@ -203,7 +210,7 @@ fun AdaptivePane(
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight()) {
                 val room = 640.dp
                 if (maxHeight >= room) Column(Modifier.fillMaxSize()) { controls() }
-                else Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) { Column(Modifier.fillMaxWidth().height(room)) { controls() } }
+                else { val scroll = rememberScrollState(); Column(Modifier.fillMaxWidth().scrollGlow(scroll).verticalScroll(scroll)) { Column(Modifier.fillMaxWidth().height(room)) { controls() } } }
             }
         }
     } else {
@@ -220,5 +227,33 @@ fun AdaptivePane(
 /** A vertically scrolling controls column (for wide layouts where controls can exceed the height). */
 @Composable
 fun ScrollColumn(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.verticalScroll(rememberScrollState())) { content() }
+    val scroll = rememberScrollState()
+    Column(modifier.scrollGlow(scroll).verticalScroll(scroll)) { content() }
+}
+
+/**
+ * A soft accent glow over each edge of a scroller that has more past it, so a list says it goes on without a
+ * scrollbar. Goes before the scroll modifier, so it draws on the viewport. [horizontal] for a sideways strip.
+ */
+fun Modifier.scrollGlow(state: ScrollableState, horizontal: Boolean = false): Modifier = drawWithContent {
+    drawContent()
+    val a = Palette.accent
+    val depth = (if (horizontal) 18 else 16).dp.toPx()
+    val edge = 1.dp.toPx()
+    val stops = arrayOf(0f to a.copy(alpha = 0.22f), 0.5f to a.copy(alpha = 0.06f), 1f to Color.Transparent)
+    fun glow(start: Boolean) {
+        if (horizontal) {
+            val x = if (start) 0f else size.width - depth
+            drawRect(Brush.horizontalGradient(*stops, startX = if (start) 0f else size.width, endX = if (start) depth else size.width - depth),
+                topLeft = Offset(x, 0f), size = Size(depth, size.height))
+            drawRect(a.copy(alpha = 0.4f), topLeft = Offset(if (start) 0f else size.width - edge, 0f), size = Size(edge, size.height))
+        } else {
+            val y = if (start) 0f else size.height - depth
+            drawRect(Brush.verticalGradient(*stops, startY = if (start) 0f else size.height, endY = if (start) depth else size.height - depth),
+                topLeft = Offset(0f, y), size = Size(size.width, depth))
+            drawRect(a.copy(alpha = 0.4f), topLeft = Offset(0f, if (start) 0f else size.height - edge), size = Size(size.width, edge))
+        }
+    }
+    if (state.canScrollBackward) glow(true)
+    if (state.canScrollForward) glow(false)
 }
