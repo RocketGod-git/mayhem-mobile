@@ -15,15 +15,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -32,11 +40,16 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Saves
 import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.core.Signal
 import com.rocketgod.mayhem.core.ham.BANDS
 import com.rocketgod.mayhem.core.ham.Band
 import com.rocketgod.mayhem.core.ham.Ham
@@ -49,6 +62,8 @@ import com.rocketgod.mayhem.core.ham.repeaterInput
 import com.rocketgod.mayhem.core.ham.segmentOf
 import com.rocketgod.mayhem.core.signalAt
 import com.rocketgod.mayhem.core.signalDial
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /**
  * HAM: a proper channel receiver — any mode, any filter width, anywhere in the HackRF's span — on a panadapter
@@ -95,6 +110,18 @@ private fun HamReceive(accent: Color) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for ((label, w) in Ham.WIDTHS.getValue(s.mode)) {
                 Chip(label, selected = s.width == w, accent = accent, modifier = Modifier.weight(1f)) { Ham.setWidth(w) }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            if (s.mode == Mode.USB || s.mode == Mode.LSB) {
+                HzBox(s.pbLo.roundToInt(), "low edge · Hz", 0..5000, accent, Modifier.weight(1f)) { v ->
+                    Ham.setPassband(v.toDouble(), Ham.state.value.pbHi.coerceIn(v + 100.0, 6000.0))
+                }
+                HzBox(s.pbHi.roundToInt(), "high edge · Hz", (s.pbLo.roundToInt() + 100)..6000, accent, Modifier.weight(1f)) { v ->
+                    Ham.setPassband(Ham.state.value.pbLo, v.toDouble())
+                }
+            } else {
+                HzBox(s.width.roundToInt(), if (s.mode == Mode.CW) "width · Hz" else "Hz wide", 50..50_000, accent, Modifier.weight(1f)) { v -> Ham.setWidth(v.toDouble()) }
             }
         }
 
@@ -163,6 +190,8 @@ internal fun HamLayout(accent: Color, meter: Boolean, status: (@Composable () ->
     val s by Ham.state.collectAsState()
     val spec by SdrEngine.spectrum.collectAsState()
     val rate = SdrEngine.currentRate()
+    val wide = d.cls != ScreenClass.COMPACT || d.wide
+    LaunchedEffect(wide) { Ham.wideScreen = wide }
     AdaptivePane(
         visualHeightNarrow = visualHeight ?: d.dp(if (meter) 300f else 250f),
         visual = { mod ->
@@ -252,8 +281,12 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
 @Composable
 private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s: Ham.State, rate: Int) {
     val tab by Ham.tab.collectAsState()
-    val mon = tab == Ham.Tab.MONITOR && Ham.host == Ham.Host.HAM
-    val centre = if (mon) Ham.monitorCentre() else s.lo
+    val ham = Ham.host == Ham.Host.HAM
+    val mon = tab == Ham.Tab.MONITOR && ham
+    // the monitor re-plants its whole channel set, so a slide only lands once it comes to rest
+    var monTo by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(monTo) { val c = monTo ?: return@LaunchedEffect; delay(400); if (Ham.monitoring) Ham.slide(c); monTo = null }
+    val centre = if (mon) monTo ?: Ham.monitorCentre() else s.lo
     val chan = if (mon) null else {
         val (lo, hi) = when (s.mode) {
             Mode.USB -> (s.pbLo + s.shift) to (s.pbHi + s.shift)
@@ -275,16 +308,53 @@ private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s
             else -> Ham.setPassband(0.0, kotlin.math.abs(if (hiEdge) bb else a).coerceIn(if (s.mode == Mode.AM) 1500.0 else 2500.0, if (s.mode == Mode.NFM) 25_000.0 else if (s.mode == Mode.AM) 12_000.0 else 100_000.0))
         }
     }
+    // in HAM a tap on a classified signal lands on the band's raster and brings the mode and filter with it, and
+    // anywhere else on the nearest 100 Hz
+    fun target(frac: Float): Pair<Long, Signal?> {
+        val hz = centre + ((frac - 0.5f) * rate).toLong()
+        val sig = signalAt(hz, rate * 0.015)
+        if (!ham) return (sig?.let { signalDial(it, if (s.channel < 30_000_000L) 100L else 1000L) } ?: spanHz(centre, rate, frac)) to null
+        return (sig?.let { signalDial(it, Ham.raster()) } ?: (Math.round(hz / 100.0) * 100L)) to sig
+    }
+    fun slideTo(c: Long) { if (mon) monTo = c else Ham.slide(c) }
     WaterfallView(
         spec, SdrEngine.SPEC_BINS, accent, modifier,
         rows = 160, centreMarker = false, channel = chan,
         labels = centredLabels(centre, rate), centerHz0 = centre, spanHz0 = rate, onChannelEdge = edges,
-        onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(centre, rate, it) } },
+        onPreviewFrac = { f -> Tuning.previewHz = f?.let { target(it).first } },
+        onSlide = { slideTo(it) },
+        onRecentre = { monTo = null; Ham.recentre() },
+        onSpanStep = { dir -> Ham.spanStep(dir) },
     ) { frac ->
-        val hz = centre + ((frac - 0.5f) * rate).toLong()
-        val sig = signalAt(hz, rate * 0.015)
-        Ham.tune(sig?.let { signalDial(it, if (s.channel < 30_000_000L) 100L else 1000L) } ?: spanHz(centre, rate, frac))
+        val (hz, sig) = target(frac)
+        if (sig != null) Ham.fitSignal(sig)
+        Ham.tune(hz)
     }
+}
+
+/** Hertz typed into a box: applied, clamped to [range], on Done or when the box loses focus. */
+@Composable
+private fun HzBox(value: Int, label: String, range: IntRange, accent: Color, modifier: Modifier, onSet: (Int) -> Unit) {
+    val d = rememberDims()
+    val focus = LocalFocusManager.current
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    var focused by remember { mutableStateOf(false) }
+    fun commit() {
+        if (text == value.toString()) return
+        val v = text.toIntOrNull()?.coerceIn(range) ?: value
+        text = v.toString()
+        if (v != value) onSet(v)
+    }
+    OutlinedTextField(
+        value = text, onValueChange = { t -> text = t.filter { it.isDigit() }.take(6) }, singleLine = true,
+        modifier = modifier.onFocusChanged { f -> if (focused && !f.isFocused) commit(); focused = f.isFocused },
+        label = { Text(label, fontFamily = Mono, fontSize = d.sp(10f)) },
+        textStyle = TextStyle(fontFamily = Mono, color = Palette.ink, fontSize = d.sp(13f)),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
+        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = Palette.line, focusedLabelColor = accent,
+            unfocusedLabelColor = Palette.muted, cursorColor = accent),
+    )
 }
 
 /** Rows of [columns] chips, so long sets like the band list wrap instead of squeezing to a sliver each. */
