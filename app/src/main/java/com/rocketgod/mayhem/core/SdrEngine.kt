@@ -336,6 +336,22 @@ object SdrEngine {
         _offsetHz.value = (ch - _freqHz.value).coerceIn(-(Int.MAX_VALUE.toLong()), Int.MAX_VALUE.toLong()).toInt()
     }
 
+    /** The spans a receiver zooms out through: whole numbers of megahertz the HackRF samples cleanly. */
+    private val SPANS = intArrayOf(2_000_000, 4_000_000, 8_000_000, 10_000_000, 20_000_000)
+
+    /** Zoom past 1×: −1 widens the span a rung, +1 narrows it; false at either end of what this radio and screen allow. */
+    fun stepSpan(dir: Int, cap: Int): Boolean {
+        val ladder = SPANS.filter { it <= cap && Radio.canSample(Radio.limits, it) }
+        if (ladder.isEmpty()) return false
+        val cur = ladder.indexOfFirst { it >= _rateHz.value }.let { if (it < 0) ladder.size - 1 else it }
+        val next = (cur - dir).coerceIn(0, ladder.size - 1)
+        if (ladder[next] == _rateHz.value) return false
+        setRate(ladder[next])
+        // narrowed past the channel: bring the span back over it
+        if (kotlin.math.abs(_offsetHz.value.toLong()) > _rateHz.value / 2 - VIEW_GUARD) recentre()
+        return true
+    }
+
     /** ⌖: bring the view back to the channel. */
     fun recentre() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
 
