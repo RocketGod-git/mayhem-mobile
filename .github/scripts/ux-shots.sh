@@ -48,7 +48,7 @@ sleep 5
 shot pip-prowl
 
 # the same demo dressed as an RTL-SDR: dimmed tiles, one gain control, receive-only panels
-for a in HOME AUDIO TRANSMIT SAT; do
+for a in HOME AUDIO HAM LOOKING_GLASS PROWL TRANSMIT SAT; do
   adb shell am start -n $ACT --ez demo true --es radio RTLSDR --es open "$a" >/dev/null; sleep 5
   shot "rtl-$a"
 done

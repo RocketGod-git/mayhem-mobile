@@ -96,8 +96,11 @@ object Apps {
         }
     }
 
-    fun startSweep(startHz: Long, endHz: Long) {
-        val rate = sweepRate
+    fun startSweep(startHz0: Long, endHz0: Long) {
+        // a range that runs past what the radio tunes is swept as far as it goes
+        val lim = Radio.limits
+        val startHz = startHz0.coerceIn(lim.minHz, lim.maxHz); val endHz = endHz0.coerceIn(lim.minHz, lim.maxHz)
+        val rate = Radio.nearestRate(lim, sweepRate)
         val sp = SweepProcessor(startHz, endHz, rate)
         _sweep.value = sp
         SdrEngine.configure(SdrEngine.Mode.NONE, sp.centerOf(0), rate, 24, 24, false, sp)

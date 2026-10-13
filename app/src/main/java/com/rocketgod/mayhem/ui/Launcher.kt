@@ -17,10 +17,15 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -80,6 +85,8 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
 @Composable
 private fun AppGrid(modifier: Modifier) {
     val d = rememberDims()
+    var asking by remember { mutableStateOf<MayhemApp?>(null) }
+    asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = d.tileMin),
         verticalArrangement = Arrangement.spacedBy(d.dp(8f)),
@@ -93,19 +100,19 @@ private fun AppGrid(modifier: Modifier) {
                 Text(cat.uppercase(), color = tintFor(apps.first()), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
                     modifier = Modifier.padding(top = d.dp(6f), start = d.dp(2f)))
             }
-            items(apps) { app -> AppTile(app, d) }
+            items(apps) { app -> AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.open(app) } }
         }
     }
 }
 
 @Composable
-private fun AppTile(app: MayhemApp, d: Dims) {
+private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
     val tint = tintFor(app)
     // dimmed, never locked: a dongle owner may still want two-metre HAM
     Radio.kind.collectAsState().value
     val why = Radio.blockedBecause(app)
     Column(
-        Modifier.fillMaxWidth().aspectRatio(1.3f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { Apps.open(app) }.padding(d.dp(12f))
+        Modifier.fillMaxWidth().aspectRatio(1.3f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { onClick() }.padding(d.dp(12f))
     ) {
         AppGlyph(app, tint, Modifier.size(d.dp(36f)))
         Box(Modifier.weight(1f))
@@ -113,4 +120,25 @@ private fun AppTile(app: MayhemApp, d: Dims) {
         Text(if (why.isNotEmpty()) "${Radio.name}: $why" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
             fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, modifier = Modifier.padding(top = d.dp(3f)))
     }
+}
+
+/** What a dimmed tile says when tapped: why this radio cannot, what can, and a way in where part of it still works. */
+@Composable
+private fun NeedsHackRfDialog(app: MayhemApp, onDismiss: () -> Unit) {
+    val still = when (app) {
+        MayhemApp.HAM -> "Two metres, 70 cm and the bands above still work on this radio; the HF bands and FT8 at 14.074 do not."
+        MayhemApp.TRANSMIT -> "Everything that listens works on this radio."
+        else -> ""
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.surface, titleContentColor = Palette.ink, textContentColor = Palette.ink,
+        title = { Text("${app.title} needs a HackRF", fontFamily = Mono, fontWeight = FontWeight.Bold) },
+        text = { Text(listOf("${Radio.name}: ${Radio.blockedBecause(app)}.", still, Radio.HACKRF_PITCH).filter { it.isNotEmpty() }.joinToString("\n\n"), fontFamily = Mono) },
+        confirmButton = {
+            if (app == MayhemApp.HAM) TextButton({ onDismiss(); Apps.open(app) }) { Text("OPEN ANYWAY", color = Palette.accent, fontFamily = Mono) }
+            else TextButton(onDismiss) { Text("OK", color = Palette.accent, fontFamily = Mono) }
+        },
+        dismissButton = { if (app == MayhemApp.HAM) TextButton(onDismiss) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
+    )
 }

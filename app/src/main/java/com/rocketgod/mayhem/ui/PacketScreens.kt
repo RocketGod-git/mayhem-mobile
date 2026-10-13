@@ -121,7 +121,9 @@ fun ErtScreen(accent: Color) {
         SectionLabel("IQ RATE")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             Chip("2.0 Msps", selected = rate == 2_000_000, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setRate(2_000_000) }
-            Chip("4.194 Msps · Mayhem", selected = rate == 4_194_304, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setRate(4_194_304) }
+            val why = com.rocketgod.mayhem.core.Radio.rateWhy(4_194_304)
+            Chip("4.194 Msps · Mayhem", selected = rate == 4_194_304, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(),
+                onClick = gated(why) { SdrEngine.setRate(4_194_304) })
         }
     })
 }

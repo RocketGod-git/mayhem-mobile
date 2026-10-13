@@ -57,6 +57,17 @@ object Radio {
         MayhemApp.TRANSMIT to Needs(tx = true),
     )
 
+    /** Why this radio cannot reach any of [lo]..[hi], or "" when it can reach some of it. */
+    fun tuneWhy(lo: Long, hi: Long = lo, l: Limits = limits): String =
+        if (hi < l.minHz || lo > l.maxHz) "${if (lo == hi) "%.3f MHz".format(lo / 1e6) else "%.0f–%.0f MHz".format(lo / 1e6, hi / 1e6)} is outside this $name's %d–%d MHz".format(l.minHz / 1_000_000, l.maxHz / 1_000_000) else ""
+
+    /** Why this radio cannot sample at [hz], or "". */
+    fun rateWhy(hz: Int, l: Limits = limits): String =
+        if (canSample(l, hz)) "" else "%.1f Msps is above this $name's %.1f".format(hz / 1e6, l.rates.maxOf { it.last } / 1e6)
+
+    /** What to suggest when the dongle cannot do something. */
+    const val HACKRF_PITCH = "A HackRF covers 1 MHz to 6 GHz, samples up to 20 Msps and transmits."
+
     /** Why an app is not worth opening on this radio, or "" when it is. */
     fun blockedBecause(app: MayhemApp, l: Limits = limits): String {
         val n = NEEDS[app] ?: return ""
