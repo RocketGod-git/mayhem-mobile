@@ -88,6 +88,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.ham.Logbook.load(this)
         com.rocketgod.mayhem.core.sat.Tles.init(filesDir)
         if (savedInstanceState == null) {
+            if (Apps.current.value == null) { Apps.open(MayhemApp.AUDIO); com.rocketgod.mayhem.core.AutoPick.arm() }
             Diag.clear()
             Diag.log("Mayhem Android ${BuildConfig.VERSION_NAME} · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         }
