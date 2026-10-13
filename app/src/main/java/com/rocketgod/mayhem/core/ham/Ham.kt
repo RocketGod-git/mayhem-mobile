@@ -1,6 +1,9 @@
 package com.rocketgod.mayhem.core.ham
 
 import android.content.Context
+import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.Bookmark
+import com.rocketgod.mayhem.core.Bookmarks
 import com.rocketgod.mayhem.core.Mic
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
@@ -8,15 +11,16 @@ import com.rocketgod.mayhem.core.Signal
 import com.rocketgod.mayhem.core.Tx
 import com.rocketgod.mayhem.core.ham.HamDemod.AgcMode
 import com.rocketgod.mayhem.core.ham.HamDemod.Mode
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 
 /**
  * The HAM app's state and tuning model.
@@ -108,12 +112,33 @@ object Ham {
 
     /**
      * Opening the HAM app. HAM keeps its own last frequency, except arriving from the launcher, where a tap is an
-     * explicit "go here": then it starts on the shared dial. Only the launcher hands over a plain receiver still
-     * playing (HAM and Satellites run this one instead), which is how arriving from it shows.
+     * explicit "go here": then it starts on the shared dial, provided the user has ever set one. Coming from Audio
+     * it must not be dropped onto a broadcast station.
      */
     fun open() {
-        if (SdrEngine.listening()) _state.value = _state.value.copy(channel = SdrEngine.radioFreqHz.coerceIn(1_000_000L, 6_000_000_000L), rev = false)
+        if (Apps.cameFrom == null && SdrEngine.dialSaved)
+            _state.value = _state.value.copy(channel = SdrEngine.radioFreqHz.coerceIn(1_000_000L, 6_000_000_000L), rev = false)
         start()
+    }
+
+    init { Bookmarks.hamRecall = { recall(it) } }
+
+    /** HAM's part of a favourite: its own receiver, saved beside the gains the favourite already holds. */
+    fun favourite(): JSONObject {
+        val s = _state.value
+        return JSONObject().put("mode", s.mode.name).put("lo", s.pbLo).put("hi", s.pbHi).put("squelch", s.squelch)
+            .put("agc", s.agc.name).put("nr", s.nr).put("anf", s.anf).put("digi", HamDigital.settings.value.mode.name)
+    }
+
+    private fun recall(b: Bookmark) {
+        val h = b.ham ?: return
+        runCatching { Mode.valueOf(h.getString("mode")) }.getOrNull()?.let { if (it != _state.value.mode) setMode(it) }
+        update { s ->
+            s.copy(pbLo = h.optDouble("lo", s.pbLo), pbHi = h.optDouble("hi", s.pbHi), shift = 0.0, squelch = h.optInt("squelch", s.squelch),
+                agc = runCatching { AgcMode.valueOf(h.getString("agc")) }.getOrDefault(s.agc), nr = h.optBoolean("nr", s.nr), anf = h.optBoolean("anf", s.anf))
+        }
+        runCatching { HamDigital.Mode.valueOf(h.getString("digi")) }.getOrNull()?.let { d -> HamDigital.update { it.copy(mode = d) } }
+        tune(b.hz)
     }
 
     /** Hands the radio to the HAM receiver (or the band monitor). The built-in demodulator is off: we own the audio. */

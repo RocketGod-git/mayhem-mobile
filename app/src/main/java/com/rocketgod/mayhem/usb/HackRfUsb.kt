@@ -38,6 +38,8 @@ object HackRfUsb {
     fun hasPermission(ctx: Context, d: UsbDevice): Boolean = manager(ctx).hasPermission(d)
 
     /** A PortaPack on the port in Mayhem serial mode, or null. */
+    private val switchTried = HashSet<String>()
+
     fun findMayhemSerial(ctx: Context): UsbDevice? = manager(ctx).deviceList.values.firstOrNull { isMayhemSerial(it) }
 
     /**
@@ -47,6 +49,7 @@ object HackRfUsb {
      */
     fun switchPortaPack(ctx: Context): Boolean {
         val d = findMayhemSerial(ctx) ?: return false
+        if (!switchTried.add(d.deviceName)) return false      // once per plug-in: a resume must not keep typing into its shell
         Diag.log("That is a PortaPack in Mayhem serial mode: ${describe(d)}")
         if (hasPermission(ctx, d)) { val app = ctx.applicationContext; Thread({ portapackToHackRf(app, d) }, "portapack-switch").start() }
         else requestPermission(ctx, d)

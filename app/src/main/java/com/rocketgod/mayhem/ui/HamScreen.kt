@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,8 +63,8 @@ import com.rocketgod.mayhem.core.ham.repeaterInput
 import com.rocketgod.mayhem.core.ham.segmentOf
 import com.rocketgod.mayhem.core.signalAt
 import com.rocketgod.mayhem.core.signalDial
-import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 /**
  * HAM: a proper channel receiver — any mode, any filter width, anywhere in the HackRF's span — on a panadapter
@@ -250,6 +251,14 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
             val preview = Tuning.previewHz
             FreqDigits(preview ?: s.channel, big = false, tint = accent, preview = preview != null) { Ham.tune(it) }
             Text("  ${s.mode.name}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f))
+            if (com.rocketgod.mayhem.core.Apps.playing() == com.rocketgod.mayhem.core.MayhemApp.HAM) {
+                val marks by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
+                val fav = marks.any { kotlin.math.abs(it.hz - s.channel) < 50 }
+                Text(if (fav) "★" else "☆", color = if (fav) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
+                    modifier = Modifier.clickable {
+                        com.rocketgod.mayhem.core.Bookmarks.star(s.channel, SdrEngine.Mode.NFM, s.mode.name, Ham.favourite())
+                    }.padding(horizontal = d.dp(8f)))
+            }
         }
         Text(segmentOf(s.channel).ifEmpty { "outside the amateur bands" } + if (s.rev) " · REVERSE" else "",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 1.sp)
