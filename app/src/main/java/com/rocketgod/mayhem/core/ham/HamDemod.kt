@@ -28,10 +28,10 @@ import kotlin.math.sqrt
  * Unlike the packet decoders this processor owns the speaker: [producesAudio] tells [com.rocketgod.mayhem.core.SdrEngine]
  * to play what [drainAudio] hands back instead of running its own demodulator.
  *
- * Android runs the HackRF at 2 Msps (the rate a HackRF Pro is clean at) where the web app uses 1.92, so the
- * baseband comes out at 50 k and is resampled to exactly 48 k before any demodulator or decoder sees it: CW,
- * RTTY, PSK31, FT8, SSTV, DMR, APT and packet all count samples per symbol at 48 k. The wide stage is likewise
- * resampled to 240 k for [iqTaps].
+ * HAM runs at 1.92 Msps (or a multiple of it when zoomed out), where the baseband comes out at exactly 48 k. At any
+ * other rate (2 Msps gives 50 k) it is resampled to exactly 48 k before any demodulator or decoder sees it: CW, RTTY,
+ * PSK31, FT8, SSTV, DMR, APT and packet all count samples per symbol at 48 k. The wide stage is likewise resampled
+ * to 240 k for [iqTaps].
  *
  * Settings arrive from the UI thread through [set] but every filter and phasor lives on the DSP thread, so a
  * change is parked in [pending] and applied at the top of the next buffer rather than rebuilt mid-stream.

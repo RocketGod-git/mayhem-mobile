@@ -2,7 +2,9 @@ package com.rocketgod.mayhem.core.ham
 
 import android.content.Context
 import com.rocketgod.mayhem.core.Mic
+import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.core.Signal
 import com.rocketgod.mayhem.core.Tx
 import com.rocketgod.mayhem.core.ham.HamDemod.AgcMode
 import com.rocketgod.mayhem.core.ham.HamDemod.Mode
@@ -10,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
@@ -29,7 +32,14 @@ import kotlin.math.roundToInt
 object Ham {
     const val GUARD = 120_000L
     const val LO_OFFSET = 250_000L
-    private val rate get() = SdrEngine.IQ_RATE
+    /** The spans HAM zooms out through: multiples of 1.92 Msps keep the 48 k audio chain exact. Phones stop at 3.84. */
+    private val RATES = intArrayOf(1_920_000, 3_840_000, 7_680_000, 15_360_000, 19_200_000)
+    private const val MON_WIDE = 3_840_000
+    private var rateIdx = 0
+    private val rate get() = RATES[rateIdx]
+    /** The screen has room for the wide spans and the wide monitor (and its four voices); set by the HAM screens. */
+    @Volatile var wideScreen = false
+        set(v) { if (v == field) return; field = v; if (monitoring) monitorSend() }
 
     /** Which app is driving the receiver: HAM itself, or Satellites (which never uses the band monitor). */
     enum class Host { HAM, SAT }
@@ -66,11 +76,13 @@ object Ham {
 
     data class MonitorUi(
         val spacing: Int = 12_500, val threshold: Int = 8, val listen: BandMonitor.Listen = BandMonitor.Listen.MIX, val lock: Int = -1,
+        /** Watch 3.84 MHz instead of 1.92 (wide screens only). */
+        val wide: Boolean = false,
         /** Activity log: "hh:mm:ss  145.2300 MHz", newest first. */
         val log: List<String> = emptyList(),
     )
 
-    data class Ptt(val on: Boolean = false, val dev: Int = 5000, val tone: Double = 0.0)
+    data class Ptt(val on: Boolean = false, val dev: Int = 2500, val tone: Double = 0.0)
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
@@ -94,8 +106,18 @@ object Ham {
         Mode.WFM to listOf("200k" to 200_000.0),   // broadcast FM is one width; hi is half of it
     )
 
-    /** Hands the radio to the HAM receiver (or the band monitor). The built-in demodulator is off: we own the audio. */
+    /**
+     * Opening the HAM app. HAM keeps its own last frequency, except arriving from the launcher, where a tap is an
+     * explicit "go here": then it starts on the shared dial. Only the launcher hands over a plain receiver still
+     * playing (HAM and Satellites run this one instead), which is how arriving from it shows.
+     */
     fun open() {
+        if (SdrEngine.listening()) _state.value = _state.value.copy(channel = SdrEngine.radioFreqHz.coerceIn(1_000_000L, 6_000_000_000L), rev = false)
+        start()
+    }
+
+    /** Hands the radio to the HAM receiver (or the band monitor). The built-in demodulator is off: we own the audio. */
+    private fun start() {
         host = Host.HAM
         stopPtt()
         if (_tab.value == Tab.MONITOR) { openMonitor(); return }
@@ -128,15 +150,18 @@ object Ham {
         if (t == _tab.value) return
         val wasMon = _tab.value == Tab.MONITOR
         _tab.value = t
-        if (t == Tab.MONITOR || wasMon) open() else stopPtt()
+        if (t == Tab.MONITOR || wasMon) start() else stopPtt()
     }
+
+    /** The span on air: a rung of [RATES], or the monitor's. */
+    private fun span() = SdrEngine.rateHz.value
 
     fun tune(hzIn: Long) {
         val hz = hzIn.coerceIn(1_000_000L, 6_000_000_000L)
         if (monitoring) {
             _state.value = _state.value.copy(channel = hz)
             // inside the monitored span: lock that channel; outside it: move the whole monitor there
-            if (abs(hz - monCentre) > rate / 2 - GUARD) { openMonitor(); return }
+            if (abs(hz - monCentre) > span() / 2 - GUARD) { openMonitor(); return }
             val r = monitor.report.value
             if (r.count > 0) {
                 val k = ((hz - r.first).toDouble() / r.spacing).roundToInt()
@@ -146,20 +171,115 @@ object Ham {
         }
         var s = _state.value.copy(channel = hz)
         val off = hz - s.lo
-        if (abs(off) > rate / 2 - GUARD || abs(off) < 15_000) {
+        if (abs(off) > span() / 2 - GUARD || abs(off) < 15_000) {
             s = s.copy(lo = hz + LO_OFFSET)
             SdrEngine.tune(s.lo)
         }
         _state.value = s
+        if (host == Host.HAM) SdrEngine.setDial(hz, dialMode(s.mode))
         push()
+    }
+
+    /** The receiver mode the other apps would hear this HAM mode in. */
+    private fun dialMode(m: Mode): SdrEngine.Mode = when (m) {
+        Mode.USB, Mode.CW -> SdrEngine.Mode.USB
+        Mode.LSB -> SdrEngine.Mode.LSB
+        Mode.AM -> SdrEngine.Mode.AM
+        Mode.NFM -> SdrEngine.Mode.NFM
+        Mode.WFM -> SdrEngine.Mode.WFM
     }
 
     fun nudge(delta: Long) = tune(_state.value.channel + delta)
 
+    /** The channel raster under the dial: the band plan's step, else 500 Hz on HF and 12.5 kHz above. */
+    fun raster(): Long = bandOf(_state.value.channel)?.step ?: if (_state.value.channel < 30_000_000) 500L else 12_500L
+
     /** Tuning steps for the current band: ±step and ±10×step. */
     fun steps(): LongArray {
-        val st = bandOf(_state.value.channel)?.step ?: if (_state.value.channel < 30_000_000) 500L else 12_500L
+        val st = raster()
         return longArrayOf(-st * 10, -st, st, st * 10)
+    }
+
+    /**
+     * Slide the span: the LO moves to [centreHz] in whole raster steps while the channel keeps its frequency (it goes
+     * quiet while outside the span). The monitor instead re-plants its whole channel set on the new centre.
+     */
+    fun slide(centreHz: Long) {
+        val c = centreHz.coerceIn(1_000_000L, 6_000_000_000L); val st = raster()
+        if (monitoring) {
+            val d = Math.round((c - monCentre).toDouble() / st) * st
+            if (d != 0L) monitorMove(monCentre + d)
+            return
+        }
+        val s = _state.value
+        val d = Math.round((c - s.lo).toDouble() / st) * st
+        if (d == 0L) return
+        _state.value = s.copy(lo = s.lo + d)
+        SdrEngine.tuneLo(s.lo + d)
+        push()
+    }
+
+    /** ⌖: the LO back to its place beside the channel; the monitor back over the band. */
+    fun recentre() {
+        if (monitoring) { openMonitor(); return }
+        val s = _state.value; val lo = s.channel + LO_OFFSET
+        if (lo == s.lo) return
+        _state.value = s.copy(lo = lo)
+        SdrEngine.tuneLo(lo)
+        push()
+    }
+
+    /**
+     * Zoom past 1×: −1 widens the span a rung of [RATES], +1 narrows it; false when there is no rung that way on this
+     * radio and screen. The monitor has two spans, 1.92 and (on a wide screen) 3.84 MHz.
+     */
+    fun spanStep(dir: Int): Boolean {
+        if (monitoring) {
+            val wide = dir < 0
+            if (!wideScreen || _mon.value.wide == wide || (wide && !Radio.canSample(Radio.limits, MON_WIDE))) return false
+            monitorWide(wide)
+            return true
+        }
+        val top = (0..(if (wideScreen) RATES.lastIndex else 1)).lastOrNull { Radio.canSample(Radio.limits, RATES[it]) } ?: 0
+        val i = (rateIdx - dir).coerceIn(0, top)
+        if (i == rateIdx) return false
+        rateIdx = i
+        SdrEngine.setRate(rate)
+        // narrowed past the channel: put the LO back beside it
+        val s = _state.value
+        if (abs(s.channel - s.lo) > rate / 2 - GUARD) { _state.value = s.copy(lo = s.channel + LO_OFFSET); SdrEngine.tuneLo(s.channel + LO_OFFSET) }
+        push()
+        return true
+    }
+
+    /**
+     * A tapped signal: open the filter to just cover it, and switch mode only when the shape is clear. A wide hump goes
+     * to NFM, a confident label picks its mode, a doubtful one leaves the mode alone (but an AM filter on a doubtful
+     * 5+ kHz hump is not it, so that goes to NFM).
+     */
+    fun fitSignal(sig: Signal) {
+        val bw = sig.bw6 * 1.15                                           // −6 dB width plus a little shoulder
+        val wide = sig.cls == "WFM" || sig.cls == "WIDE" || sig.bw6 > 60_000 || (sig.hz > 87_500_000 && sig.hz < 108_000_000)
+        val ssb = sig.cls == "USB" || sig.cls == "LSB" || sig.cls == "SSB"
+        val cur = _state.value.mode
+        val want = when {
+            wide -> Mode.NFM
+            sig.conf >= 0.6 -> when {
+                sig.cls == "CW" -> Mode.CW
+                sig.cls == "AM" -> Mode.AM
+                ssb -> if (sig.cls == "LSB" || (sig.cls == "SSB" && sig.hz < 10_000_000)) Mode.LSB else Mode.USB
+                else -> Mode.NFM
+            }
+            cur == Mode.AM && sig.bw6 > 4500 -> Mode.NFM
+            else -> cur
+        }
+        if (want != cur) setMode(want)
+        setWidth(when (want) {
+            Mode.CW -> if (bw < 180) 100.0 else if (bw < 400) 250.0 else if (bw < 800) 500.0 else 1000.0
+            Mode.USB, Mode.LSB -> ((bw / 100).roundToInt() * 100.0).coerceIn(1800.0, 3500.0)
+            Mode.AM -> (ceil(bw / 1000) * 1000).coerceIn(4000.0, 10_000.0)
+            else -> if (bw <= 8500) 8000.0 else if (bw <= 13_000) 12_500.0 else if (bw <= 17_000) 16_000.0 else if (bw <= 26_000) 25_000.0 else min(48_000.0, ceil(bw / 1000) * 1000)
+        })
     }
 
     fun setMode(m: Mode) {
@@ -245,9 +365,10 @@ object Ham {
     /** The LO sits on the band (or the current channel) and every raster channel in the span is watched. */
     private fun openMonitor(at: Long? = null) {
         val s = _state.value; val band = bandOf(s.channel)
-        val centre = at ?: if (band != null && band.hi - band.lo <= rate) (band.lo + band.hi) / 2 else s.channel + 10_000
+        val r = if (_mon.value.wide && wideScreen && Radio.canSample(Radio.limits, MON_WIDE)) MON_WIDE else RATES[0]
+        val centre = at ?: if (band != null && band.hi - band.lo <= r) (band.lo + band.hi) / 2 else s.channel + 10_000
         monCentre = centre
-        SdrEngine.configure(SdrEngine.Mode.NONE, centre, rate, 32, 40, false, monitor)
+        SdrEngine.configure(SdrEngine.Mode.NONE, centre, r, 32, 40, false, monitor)
         monitorSend()
     }
 
@@ -257,12 +378,13 @@ object Ham {
 
     private fun monitorSend() {
         val s = _state.value; val m = _mon.value; val band = bandOf(s.channel)
-        monitor.set(BandMonitor.Params(m.spacing, band?.lo ?: (s.channel / 1_000_000 * 1_000_000), m.threshold, m.listen, m.lock, 2, s.volume, monCentre))
+        monitor.set(BandMonitor.Params(m.spacing, band?.lo ?: (s.channel / 1_000_000 * 1_000_000), m.threshold, m.listen, m.lock, if (wideScreen) 4 else 2, s.volume, monCentre))
     }
 
     fun monitorListen(l: BandMonitor.Listen) { _mon.value = _mon.value.copy(listen = l, lock = if (l == BandMonitor.Listen.LOCK) _mon.value.lock else -1); monitorSend() }
     fun monitorSpacing(hz: Int) { _mon.value = _mon.value.copy(spacing = hz, lock = -1); monitorSend() }
     fun monitorThreshold(db: Int) { _mon.value = _mon.value.copy(threshold = db); monitorSend() }
+    fun monitorWide(on: Boolean) { _mon.value = _mon.value.copy(wide = on); if (monitoring) openMonitor() }
 
     /** Tap a channel: lock it; tap it again: back to mixing everything open. */
     fun monitorLock(k: Int) {
