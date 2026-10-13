@@ -1,4 +1,4 @@
-val BASE_VERSION_CODE = 15
+val BASE_VERSION_CODE = 16
 
 plugins {
     id("com.android.application")
@@ -17,7 +17,7 @@ android {
         // Play already knows about, so an API upload can never collide with a Console one.
         // BASE_VERSION_CODE stays a plain literal because the release workflow reads it with sed.
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: BASE_VERSION_CODE
-        versionName = "0.6.7"
+        versionName = "0.6.8"
         vectorDrawables { useSupportLibrary = true }
         // Short commit hash stamped by CI (GITHUB_SHA) so the APK and the web app can prove they are the same build.
         buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
