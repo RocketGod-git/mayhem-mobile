@@ -93,7 +93,8 @@ object HackRfOne {
     )
 
     private lateinit var conn: UsbDeviceConnection
-    @Volatile private var appliedFreq = 0L
+    /** The frequency the radio has actually been set to, so a sweep knows when its retune has landed. */
+    @Volatile var appliedFreq = 0L; private set
     @Volatile private var appliedRate = 0
     @Volatile private var appliedGain = Int.MAX_VALUE
     @Volatile private var appliedOvrLna = Int.MIN_VALUE   // track the gain OVERRIDE too, so a mode switch that changes

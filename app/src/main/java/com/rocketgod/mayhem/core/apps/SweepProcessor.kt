@@ -3,12 +3,14 @@ package com.rocketgod.mayhem.core.apps
 import com.rocketgod.mayhem.core.Dsp
 import com.rocketgod.mayhem.core.IqProcessor
 import com.rocketgod.mayhem.core.SdrEngine
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import com.rocketgod.mayhem.usb.HackRfOne
+import com.rocketgod.mayhem.usb.RtlSdr
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.log10
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Wideband sweep (Mayhem Looking Glass / Search): steps the radio across [startHz]..[endHz] one IQ-bandwidth slice
@@ -32,6 +34,8 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
     private val work = FloatArray(steps * KEEP) { Float.NaN }
     private var step = 0
     private var settle = 0
+    /** The centre asked for and not yet confirmed by the driver; 0 once it has been. */
+    private var awaiting = 0L
     private var lastLive = 0L
 
     private val _row = MutableStateFlow(FloatArray(0))
@@ -53,10 +57,13 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
     override fun reset(rate: Int) {
         step = 0
         settle = 8
-        SdrEngine.tune(centerOf(0))
+        awaiting = centerOf(0)
+        SdrEngine.tune(awaiting)
     }
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
+        // once the driver confirms the retune, only the reads already in flight are stale, not the whole settle time
+        if (awaiting != 0L && (HackRfOne.appliedFreq == awaiting || RtlSdr.appliedFreq == awaiting)) { awaiting = 0L; settle = minOf(settle, INFLIGHT_STALE) }
         if (settle > 0) { settle--; return }
         val nSamp = len / 2
         acc.fill(0.0)
@@ -96,7 +103,8 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
             _sweeps.value = _sweeps.value + 1
         }
         _progress.value = step
-        SdrEngine.tune(centerOf(step))
+        awaiting = centerOf(step)
+        SdrEngine.tune(awaiting)
         // Retune settle: the driver sleeps ~50 ms after a tune and the USB pipeline holds ~12 buffers of stale IQ.
         val bufMs = nSamp * 1000.0 / rate
         settle = ceil(SETTLE_MS / bufMs).toInt().coerceIn(2, 500)
@@ -109,6 +117,8 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         const val KEEP = KEEP1 - KEEP0
         private const val FFT = 1024
         private const val SETTLE_MS = 130.0
+        /** Twelve bulk reads in flight in the driver, up to eight queued for the DSP thread, and the one being filled. */
+        private const val INFLIGHT_STALE = 21
         /** The live trace is republished at most this often; the completed pass corrects everything. */
         private const val LIVE_MS = 110L
     }
