@@ -21,7 +21,7 @@ import java.util.concurrent.TimeoutException
  * Drives HackRF One (`1d50:6089`), Jawbreaker (`0x604b`), rad1o (`0xcc15`), HackRF One r9, and HackRF Pro /
  * "Praline" (board id 5, same PID as the One). This is the HackRF-DIRECT path: a PortaPack running Mayhem must be
  * put in its on-screen "HackRF" mode (it then enumerates as a plain HackRF); its Mayhem serial mode (`0x6018`) is a
- * different protocol and not handled here.
+ * different protocol, not handled here; [HackRfUsb.portapackToHackRf] switches a board out of it.
  *
  * The USB vendor protocol is ported VERBATIM from libhackrf (host/libhackrf/src/hackrf.c). Key facts:
  *  - vendor control transfers: bmRequestType IN=0xC0 / OUT=0x40, RECIPIENT_DEVICE; the request byte selects op.
