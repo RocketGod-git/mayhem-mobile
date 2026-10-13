@@ -191,7 +191,8 @@ internal fun HamTabs(accent: Color) {
 internal fun BandChips(accent: Color, channel: Long, onPick: (Band) -> Unit) {
     val current = bandOf(channel)?.id
     ChipGrid(BANDS + NON_HAM, columns = 5) { b ->
-        Chip(b.name, selected = current == b.id, accent = accent, modifier = Modifier.weight(1f)) { onPick(b) }
+        val why = com.rocketgod.mayhem.core.Radio.tuneWhy(b.lo, b.hi)
+        Chip(b.name, selected = current == b.id, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) { onPick(b) })
     }
 }
 

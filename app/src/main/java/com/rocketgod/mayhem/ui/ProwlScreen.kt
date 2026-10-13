@@ -91,7 +91,10 @@ fun ProwlScreen(accent: Color) {
             }
             SectionLabel("SPAN · wider hears more at once, narrower hears further into the noise")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                for ((label, hz) in Prowl.SPANS) Chip(label, selected = rate == hz, accent = accent, modifier = Modifier.weight(1f)) { Prowl.setSpan(hz) }
+                for ((label, hz) in Prowl.SPANS) {
+                    val why = com.rocketgod.mayhem.core.Radio.rateWhy(hz)
+                    Chip(label, selected = rate == hz, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) { Prowl.setSpan(hz) })
+                }
             }
             SectionLabel("WHEN THIS SPAN GOES QUIET")
             Chip(if (v.sweep) "MOVE TO ANOTHER BAND" else "STAY WHERE I PUT IT", selected = v.sweep, accent = accent, modifier = Modifier.fillMaxWidth()) { Prowl.toggleSweep() }

@@ -81,6 +81,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                 }
             }
         }
+        NoticeBar(Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
         if (showLog) LogWindow(onClose = { showLog = false })
         UpdateDialog()
     }

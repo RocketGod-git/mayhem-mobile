@@ -49,16 +49,21 @@ private fun RangeChips(accent: Color, sp: SweepProcessor?) {
     val chips = RANGES + ("FULL 1M-6G" to (SdrEngine.FREQ_MIN_HZ to SdrEngine.FREQ_MAX_HZ))
     for ((i, row) in chips.chunked(4).withIndex()) {
         Row(Modifier.fillMaxWidth().padding(top = if (i > 0) d.dp(4f) else 0.dp), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-            for ((label, r) in row) Chip(label, selected = sp?.startHz == r.first && sp?.endHz == r.second, accent = accent, modifier = Modifier.weight(1f)) { Apps.startSweep(r.first, r.second) }
+            for ((label, r) in row) {
+                val why = com.rocketgod.mayhem.core.Radio.tuneWhy(r.first, r.second)
+                Chip(label, selected = sp?.startHz == r.first && sp?.endHz == r.second, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(),
+                    onClick = gated(why) { Apps.startSweep(r.first, r.second) })
+            }
         }
     }
     SectionLabel("SLICE WIDTH · wider = faster, if the HackRF keeps up")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         for (r in intArrayOf(2_000_000, 4_000_000, 8_000_000, 16_000_000)) {
-            Chip("${r / 1_000_000} MHz", selected = rate == r, accent = accent, modifier = Modifier.weight(1f)) {
+            val why = com.rocketgod.mayhem.core.Radio.rateWhy(r)
+            Chip("${r / 1_000_000} MHz", selected = rate == r, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) {
                 Apps.sweepRate = r
                 if (sp != null) Apps.startSweep(sp.startHz, sp.endHz)
-            }
+            })
         }
     }
 }
