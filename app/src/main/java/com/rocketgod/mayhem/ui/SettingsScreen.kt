@@ -80,6 +80,7 @@ fun SettingsScreen(accent: Color) {
                 LogField(st.dmrId, "DMR ID (radioid.net)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(dmrId = v.filter { c -> c.isDigit() }) } }
                 LogField(st.aprsSsid, "APRS SSID (9 = mobile)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(aprsSsid = v.filter { c -> c.isDigit() }.take(2)) } }
             }
+            AboutLine("Where it goes", "ADIF STATION_CALLSIGN / MY_GRIDSQUARE and the logbook's distance and bearing. Nothing is sent anywhere else.")
         }
         Box(Modifier.height(d.dp(8f)))
         SectionLabel("TRANSMIT · on, with a safety prompt before the first send — you are responsible for what you send")
@@ -88,7 +89,7 @@ fun SettingsScreen(accent: Color) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(if (txOn) "TX ENABLED" else "TX DISABLED", color = if (txOn) Palette.danger else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp)
-                    Text("Enables the Transmit app. Most bands require a licence; always use a dummy load or an antenna rated for the frequency.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.padding(top = d.dp(4f)))
+                    Text("Enables the Transmit app (signal generator, Morse, OOK remotes). Most bands require a licence; always use a dummy load or an antenna rated for the frequency.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.padding(top = d.dp(4f)))
                 }
                 Box(Modifier.padding(start = d.dp(10f))) { Chip(if (txOn) "ON" else "OFF", selected = txOn, accent = Palette.danger) { com.rocketgod.mayhem.core.Tx.setEnabled(ctx, !txOn) } }
             }
@@ -109,7 +110,7 @@ fun SettingsScreen(accent: Color) {
             LinkLine("RocketGod", "RocketGod.dev", "https://rocketgod.dev")
             LinkLine("Crew", "The Pirates' Plunder — discord.gg/thepirates", "https://discord.gg/thepirates")
         }
-        SectionLabel("CREDITS · who wrote what this app is built from")
+        SectionLabel("CREDITS · who wrote what this app is built from · drag to steer")
         CreditsRoll(accent)
         SectionLabel("FIELD NOTES")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
@@ -121,7 +122,8 @@ fun SettingsScreen(accent: Color) {
             AboutLine("Tuning", "press the waterfall and slide: the amber guide and readout follow your finger and the radio retunes when you lift. On the home screen a tap sets where Audio opens")
             AboutLine("Floating window", "press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing; mute (and skip, in Prowl) are on the window")
             AboutLine("Screen", "the screen stays on while an app is open, and sleeps as usual on the home screen")
-            AboutLine("Maps", "ADS-B, AIS and APRS plot on OpenStreetMap; allow location so distances and single-frame aircraft positions use your spot")
+            AboutLine("Maps", "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, ⌖ re-arms it; allow location so distances and single-frame aircraft positions use your spot")
+            AboutLine("FLEX", "the pager app decodes FLEX (1600/3200, 2- and 4-level) by default — messages carry cycle/frame and capcode; switch the decoder to POCSAG (512/1200/2400) or run both on one channel like PDW")
             AboutLine("Gain", "receivers start at LNA 24 / VGA 24 / amp off (the amp overloads strong FM); ADS-B uses Mayhem's LNA 32 / VGA 32 / amp on")
             AboutLine("Squelch + scan", "squelch gates audio against a tracked noise floor; SCAN in Audio hops your bookmarks and holds where the squelch opens")
             AboutLine("Captures", "Capture records signed 8-bit IQ with a .txt sidecar; SHARE sends both to SDR#, GNU Radio or a drive")
