@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -46,8 +47,10 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.Station
 import com.rocketgod.mayhem.core.Saves
 import com.rocketgod.mayhem.core.Tx
@@ -77,6 +80,7 @@ internal fun HamMonitor(accent: Color) {
     val r by Ham.monitor.report.collectAsState()
     val m by Ham.mon.collectAsState()
     val s by Ham.state.collectAsState()
+    val wide = d.cls != ScreenClass.COMPACT || d.wide
     LaunchedEffect(r) { Ham.monitorActivity(r) }
     val status: @Composable () -> Unit = {
         Text("${r.count} channels @ ${r.spacing / 1e3} kHz · ${r.open.size} open · ${r.listening.size} playing",
@@ -102,10 +106,14 @@ internal fun HamMonitor(accent: Color) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for (l in BandMonitor.Listen.entries) Chip(l.name, m.listen == l, accent, Modifier.weight(1f)) { Ham.monitorListen(l) }
         }
-        SectionLabel("RASTER · THRESHOLD")
+        SectionLabel(if (wide) "RASTER · THRESHOLD · SPAN" else "RASTER · THRESHOLD")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for (sp in listOf(12_500, 25_000)) Chip("${sp / 1e3} kHz", m.spacing == sp, accent, Modifier.weight(1f)) { Ham.monitorSpacing(sp) }
             for (t in listOf(6, 8, 12)) Chip("+$t dB", m.threshold == t, accent, Modifier.weight(1f)) { Ham.monitorThreshold(t) }
+            if (wide) {
+                val why = Radio.rateWhy(3_840_000)
+                Chip("3.84 MHz", m.wide, accent, Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) { Ham.monitorWide(!m.wide) })
+            }
         }
         SectionLabel("BAND")
         BandChips(accent, s.channel) { Ham.pickBand(it) }
@@ -392,6 +400,8 @@ internal fun HamLogbook(accent: Color) {
     val s by Ham.state.collectAsState()
     var msg by remember { mutableStateOf("") }
     var confirmWipe by remember { mutableStateOf(false) }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(5_000); now = System.currentTimeMillis() } }
     val modeNow = HamDigital.logMode(s.mode)
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -411,9 +421,10 @@ internal fun HamLogbook(accent: Color) {
         HamTabs(accent)
         SectionLabel("STATION · " + if (st.call.isNotBlank()) "${st.call}${if (st.name.isNotBlank()) " · ${st.name}" else ""} · grid ${Station.grid().ifEmpty { "?" }}${if (st.license.isNotBlank()) " · ${st.license}" else ""}" else "set your callsign and grid in Settings")
         SectionLabel("CONTACT · " + if (editing.isNotEmpty()) "editing an earlier contact" else
-            "now · %.4f MHz · %s · %s".format(s.channel / 1e6, draft.mode.ifEmpty { modeNow }, bandOfHz(s.channel).ifEmpty { "out of band" }))
+            "now · %sz · %.4f MHz · %s · %s".format(java.time.Instant.ofEpochMilli(now).toString().substring(11, 16), s.channel / 1e6,
+                draft.mode.ifEmpty { modeNow }, bandOfHz(s.channel).ifEmpty { "out of band" }))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-            LogField(draft.call, "CALLSIGN", accent, Modifier.weight(2f), caps = true) { Logbook.setDraft(draft.copy(call = it.uppercase())) }
+            LogField(draft.call, "CALLSIGN", accent, Modifier.weight(2f), caps = true, onDone = { Logbook.lookup() }) { Logbook.setDraft(draft.copy(call = it.uppercase())) }
             Chip(if (busy) "…" else "LOOKUP", false, accent, Modifier.weight(1f)) { Logbook.lookup() }
             Chip("QRZ ↗", false, accent, Modifier.weight(1f)) {
                 val c = parseCall(draft.call).base
@@ -523,13 +534,15 @@ private fun CallInfoPanel(call: String, entries: List<com.rocketgod.mayhem.core.
 }
 
 @Composable
-internal fun LogField(value: String, label: String, accent: Color, modifier: Modifier, caps: Boolean = false, onChange: (String) -> Unit) {
+internal fun LogField(value: String, label: String, accent: Color, modifier: Modifier, caps: Boolean = false, onDone: (() -> Unit)? = null, onChange: (String) -> Unit) {
     val d = rememberDims()
     OutlinedTextField(
         value = value, onValueChange = onChange, singleLine = true, modifier = modifier,
         label = { Text(label, fontFamily = Mono, fontSize = d.sp(10f)) },
         textStyle = androidx.compose.ui.text.TextStyle(fontFamily = Mono, color = Palette.ink, fontSize = d.sp(13f)),
-        keyboardOptions = KeyboardOptions(capitalization = if (caps) KeyboardCapitalization.Characters else KeyboardCapitalization.Sentences, autoCorrectEnabled = false),
+        keyboardOptions = KeyboardOptions(capitalization = if (caps) KeyboardCapitalization.Characters else KeyboardCapitalization.Sentences, autoCorrectEnabled = false,
+            imeAction = if (onDone != null) ImeAction.Done else ImeAction.Default),
+        keyboardActions = if (onDone != null) KeyboardActions(onDone = { onDone.invoke() }) else KeyboardActions.Default,
         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = Palette.line, focusedLabelColor = accent,
             unfocusedLabelColor = Palette.muted, cursorColor = accent),
     )
