@@ -62,7 +62,7 @@ object Radio {
         val n = NEEDS[app] ?: return ""
         if (n.tx && !l.canTransmit) return "this radio receives only"
         val f = n.freqHz
-        if (f != null && !canTune(l, f)) return "it lives at %.3f MHz, outside this radio's %d–%d MHz".format(f / 1e6, l.minHz / 1_000_000, l.maxHz / 1_000_000)
+        if (f != null && !canTune(l, f)) return "%.3f MHz is outside its %d–%d MHz".format(f / 1e6, l.minHz / 1_000_000, l.maxHz / 1_000_000)
         return ""
     }
 }
