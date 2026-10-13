@@ -1,4 +1,4 @@
-# Mayhem on Android — R8 rules (minify is OFF for now; these apply the day it's switched on).
+# Mayhem on Android — R8 rules.
 # Keep readable crash traces.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile

@@ -33,7 +33,7 @@ jobs:
       code: ${{ steps.ver.outputs.code }}
       tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read version from app/build.gradle.kts
         id: ver
@@ -45,12 +45,12 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "code=$C" >> "$GITHUB_OUTPUT"; echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version $V ($C) → release $TAG"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v6
 
       - name: Materialize keystore from secret
         id: ks
@@ -90,7 +90,7 @@ jobs:
       # The web job copies this into the published site, so the download link on the page is same-origin and
       # needs no GitHub account - release assets on a private repository are behind a sign-in, the site is not.
       - name: Hand the APK to the web job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mayhem-apk
           path: mayhem.apk
@@ -98,7 +98,7 @@ jobs:
           retention-days: 1
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ github.ref_type == 'tag' && github.ref_name || format('Latest build · v{0} · {1}', steps.ver.outputs.version, github.sha) }}
@@ -115,9 +115,9 @@ jobs:
     needs: android
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -130,7 +130,7 @@ jobs:
           npm run build
 
       - name: Fetch the APK built by the android job
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: mayhem-apk
 
