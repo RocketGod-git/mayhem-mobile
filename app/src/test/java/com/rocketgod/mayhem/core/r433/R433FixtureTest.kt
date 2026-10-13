@@ -30,7 +30,7 @@ class R433FixtureTest {
     }
 
     private fun matches(want: JSONObject, got: R433Data): Boolean {
-        val keys = want.keySet()
+        val keys = want.keys().asSequence().toSet()
         if (keys != got.keys) return false
         return keys.all { same(want.get(it), got[it]) }
     }
@@ -71,6 +71,9 @@ class R433FixtureTest {
         val report = StringBuilder("ran $run fixtures, skipped $skipped (protocol not ported)\n")
         for ((k, v) in failures) report.append("FAIL $k (${v.size})\n  ${v.first().take(1500)}\n")
         println(report)
+        // the platform's org.json stubs answer every call with a default; if they ever shadow the real library this
+        // test would otherwise pass on zero fixtures
+        assertTrue("only $run fixtures ran", run > 1000)
         assertTrue(report.toString(), failures.isEmpty())
     }
 }
