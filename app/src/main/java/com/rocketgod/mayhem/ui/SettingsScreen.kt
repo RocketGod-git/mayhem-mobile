@@ -35,7 +35,6 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.rocketgod.mayhem.BuildConfig
-import com.rocketgod.mayhem.usb.HackRfOne
 
 /** Settings (Mayhem ui_settings): theme skins lifted from the firmware, and an About panel. */
 @Composable
@@ -85,8 +84,8 @@ fun SettingsScreen(accent: Color) {
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
             AboutLine("Mayhem Mobile", "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · build ${BuildConfig.GIT_SHA}")
             AboutLine("Web app", "rocketgod-git.github.io/mayhem-mobile — same build, in Chrome/Edge over WebUSB")
-            AboutLine("Device", if (HackRfOne.boardLabel.isEmpty()) "no HackRF attached" else "${HackRfOne.boardLabel} · fw ${HackRfOne.firmware}")
-            AboutLine("What it is", "PortaPack Mayhem's receivers, ported to Kotlin and run on the phone from raw HackRF IQ over USB")
+            AboutLine("Device", com.rocketgod.mayhem.core.Radio.label.ifEmpty { "no radio attached" })
+            AboutLine("What it is", "PortaPack Mayhem's receivers, ported to Kotlin and run on the phone from raw HackRF or RTL-SDR IQ over USB")
             AboutLine("Source", "github.com/RocketGod-git/mayhem-mobile")
             AboutLine("Upstream", "github.com/portapack-mayhem/mayhem-firmware")
             AboutLine("License", "GPL-3.0 (Mayhem-derived)")
@@ -100,7 +99,8 @@ fun SettingsScreen(accent: Color) {
         CreditsRoll(accent)
         SectionLabel("FIELD NOTES")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
-            AboutLine("Plugging in", "the app opens by itself when a HackRF is plugged in; allow the USB prompt once and tick 'always'")
+            AboutLine("Plugging in", "the app opens by itself when a HackRF or an RTL-SDR is plugged in; allow the USB prompt once and tick 'always'")
+            AboutLine("RTL-SDR", "receive only, 24 MHz to 1.766 GHz, up to 2.4 Msps, one gain control: the transmit side is greyed out, HAM's HF bands and Bluetooth are out of reach, and wider spans are held to 2.4 MHz")
             AboutLine("Power", "a HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ")
             AboutLine("Reading LOG", "iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode")
             AboutLine("Tuning", "press the waterfall and slide: the amber guide and readout follow your finger and the radio retunes when you lift. On the home screen a tap sets where Audio opens")

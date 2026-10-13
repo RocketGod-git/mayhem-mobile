@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
-import com.rocketgod.mayhem.usb.HackRfOne
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -51,8 +50,7 @@ object Diag {
         "Mayhem Mobile ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · build ${BuildConfig.GIT_SHA}",
         "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}",
         "ABI ${Build.SUPPORTED_ABIS.firstOrNull() ?: "?"} · captured ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US).format(Date())}",
-        "Radio " + if (HackRfOne.boardLabel.isEmpty()) "none attached"
-                   else "${HackRfOne.boardLabel}${if (HackRfOne.firmware.isNotEmpty()) " · fw ${HackRfOne.firmware}" else ""}",
+        "Radio " + com.rocketgod.mayhem.core.Radio.label.ifEmpty { "none attached" },
         "Lines ${synchronized(buf) { buf.size }} of $MAX_LINES" +
             if (synchronized(buf) { buf.size } >= MAX_LINES) " (oldest dropped)" else "",
     )

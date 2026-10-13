@@ -27,21 +27,22 @@ import com.rocketgod.mayhem.core.Geo
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.Prowl
 import com.rocketgod.mayhem.core.SdrEngine
-import com.rocketgod.mayhem.ui.Pip
 import com.rocketgod.mayhem.ui.MayhemScreen
+import com.rocketgod.mayhem.ui.Pip
 import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.HackRfUsb
+import com.rocketgod.mayhem.usb.RtlSdr
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Phase 0 — link up. Finds a HackRF on the USB-OTG port (hot-plug via the manifest USB_DEVICE_ATTACHED filter,
+ * Phase 0 — link up. Finds a HackRF or an RTL-SDR on the USB-OTG port (hot-plug via the manifest USB_DEVICE_ATTACHED filter,
  * or already-attached at launch via enumeration + a permission request), then runs [HackRfOne] on its own
  * thread. Everything after "IQ is flowing" is [com.rocketgod.mayhem.core.SdrEngine] + the Compose screen.
  */
 class MainActivity : ComponentActivity() {
-    private val status = MutableStateFlow("no HackRF — plug one in via USB-OTG")
+    private val status = MutableStateFlow("no radio — plug in a HackRF or an RTL-SDR via USB-OTG")
     private val connected = MutableStateFlow(false)
     private var rxThread: Thread? = null
 
@@ -52,16 +53,16 @@ class MainActivity : ComponentActivity() {
                 HackRfUsb.ACTION_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     Diag.log("USB permission ${if (granted) "granted" else "DENIED"} for ${d?.let { HackRfUsb.describe(it) } ?: "?"}")
-                    if (d != null && granted && HackRfUsb.isHackRf(d)) engage(d)
+                    if (d != null && granted && HackRfUsb.isRadio(d)) engage(d)
                     else status.value = "USB permission denied — replug to retry"
                 }
                 ACTION_PIP_MUTE -> SdrEngine.toggleMute()
                 ACTION_PIP_SKIP -> Prowl.skip()
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> if (d != null && HackRfUsb.isHackRf(d)) {
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> if (d != null && HackRfUsb.isRadio(d)) {
                     Diag.log("USB detached: ${HackRfUsb.describe(d)}")
-                    HackRfOne.abort()
+                    HackRfOne.abort(); RtlSdr.abort()
                     connected.value = false
-                    status.value = "HackRF detached"
+                    status.value = "${if (RtlSdr.isRtlSdr(d)) "RTL-SDR" else "HackRF"} detached"
                 }
             }
         }
@@ -158,10 +159,12 @@ class MainActivity : ComponentActivity() {
      */
     private fun debugExtras(i: Intent?) {
         if (!BuildConfig.DEBUG || i == null) return
-        if (i.getBooleanExtra("demo", false) && !HackRfOne.running) {
+        if (i.getBooleanExtra("demo", false) && !radioRunning()) {
             com.rocketgod.mayhem.core.DemoIq.start()
             connected.value = true; status.value = "demo signal"
         }
+        // `--es radio RTLSDR` dresses the demo as a dongle, to see the receive-only screens
+        i.getStringExtra("radio")?.let { k -> runCatching { SdrEngine.onRadio(com.rocketgod.mayhem.core.Radio.Kind.valueOf(k)) } }
         i.getStringExtra("open")?.let { name ->
             runCatching { if (name == "HOME") Apps.home() else Apps.open(MayhemApp.valueOf(name)) }
                 .onFailure { android.util.Log.e("Mayhem", "debug open $name failed", it); Diag.log("debug open $name failed: $it") }
@@ -173,14 +176,14 @@ class MainActivity : ComponentActivity() {
         if (i?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return false
         val d = IntentCompat.getParcelableExtra(i, UsbManager.EXTRA_DEVICE, UsbDevice::class.java) ?: return false
         Diag.log("USB attached: ${HackRfUsb.describe(d)}")
-        if (!HackRfUsb.isHackRf(d)) return false
+        if (!HackRfUsb.isRadio(d)) return false
         engage(d)
         return true
     }
 
-    /** App launched with a HackRF already on the port: enumerate and ask for permission if we lack it. */
+    /** App launched with a radio already on the port: enumerate and ask for permission if we lack it. */
     private fun autoConnect() {
-        if (HackRfOne.running) return
+        if (radioRunning()) return
         Diag.log(HackRfUsb.scanLog(this))
         val d = HackRfUsb.find(this) ?: return
         if (HackRfUsb.hasPermission(this, d)) engage(d)
@@ -191,12 +194,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun engage(d: UsbDevice) {
-        if (HackRfOne.running) { Diag.log("engage: HackRF already running, ignoring"); return }
-        status.value = "HackRF · opening ${HackRfUsb.describe(d)}"
+        if (radioRunning()) { Diag.log("engage: a radio is already running, ignoring"); return }
+        val rtl = RtlSdr.isRtlSdr(d)
+        SdrEngine.onRadio(if (rtl) com.rocketgod.mayhem.core.Radio.Kind.RTLSDR else com.rocketgod.mayhem.core.Radio.Kind.HACKRF)
+        status.value = "${if (rtl) "RTL-SDR" else "HackRF"} · opening ${HackRfUsb.describe(d)}"
         connected.value = true
         val appCtx = applicationContext
         rxThread = Thread({
-            HackRfOne.run(appCtx, d) { s -> status.value = s }
+            if (rtl) RtlSdr.run(appCtx, d) { s -> status.value = s } else HackRfOne.run(appCtx, d) { s -> status.value = s }
+            SdrEngine.onRadio(com.rocketgod.mayhem.core.Radio.Kind.NONE)
             connected.value = false
         }, "hackrf-rx").apply { isDaemon = true; start() }
     }
@@ -209,6 +215,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         runCatching { unregisterReceiver(receiver) }
-        if (isFinishing) HackRfOne.abort()
+        if (isFinishing) { HackRfOne.abort(); RtlSdr.abort() }
     }
+
+    private fun radioRunning() = HackRfOne.running || RtlSdr.running
 }

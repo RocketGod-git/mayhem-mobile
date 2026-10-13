@@ -179,9 +179,11 @@ internal fun HamLayout(accent: Color, meter: Boolean, status: (@Composable () ->
 internal fun HamTabs(accent: Color) {
     val d = rememberDims()
     val tab by Ham.tab.collectAsState()
+    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
     // the tabs share the width in proportion to their labels, so all five are always on screen
     Row(Modifier.fillMaxWidth().padding(bottom = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for (t in Ham.Tab.entries) Chip(t.label, selected = tab == t, accent = accent, modifier = Modifier.weight(t.label.length + 2f)) { Ham.setTab(t) }
+        for (t in Ham.Tab.entries) Chip(t.label, selected = tab == t, accent = accent, modifier = Modifier.weight(t.label.length + 2f),
+            dim = t == Ham.Tab.TX && radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) { Ham.setTab(t) }
     }
 }
 

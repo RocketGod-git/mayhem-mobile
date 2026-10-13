@@ -37,7 +37,6 @@ import com.rocketgod.mayhem.Diag
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.SdrEngine
-import com.rocketgod.mayhem.usb.HackRfOne
 
 /** Root: header (back / wordmark / device status / LOG), optional diagnostic panel, launcher or the open app. */
 @Composable
@@ -112,7 +111,7 @@ private fun Header(status: String, connected: Boolean, app: MayhemApp?, showLog:
                     color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
                 )
                 Text(
-                    if (app == null) "${HackRfOne.boardLabel.ifEmpty { "HackRF" }}${if (HackRfOne.firmware.isNotEmpty()) " · " + HackRfOne.firmware else ""} · $status"
+                    if (app == null) "${com.rocketgod.mayhem.core.Radio.label.ifEmpty { "HackRF or RTL-SDR" }} · $status"
                     else "${app.blurb} · $status",
                     color = if (connected) Palette.muted else Palette.danger, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
                 )

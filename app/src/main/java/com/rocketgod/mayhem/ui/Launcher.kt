@@ -23,11 +23,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
+import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
 
 fun tintFor(app: MayhemApp): Color = when (app.category) { "Receive" -> Palette.accent; "Analyze" -> Palette.accent2; "Transmit" -> Palette.danger; else -> Palette.muted }
@@ -68,7 +70,7 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
             SdrEngine.tune(hz); SdrEngine.setDial(hz, bandAt(hz)?.mode ?: SdrEngine.Mode.NFM)
         }
         Text(if (health.isNotEmpty()) "%.3f MHz%s · %s".format(freq / 1e6, band?.let { " · ${it.what}" } ?: "", health)
-             else "no IQ yet — attach a HackRF over USB-OTG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
+             else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
             modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
         ListenBandChips(accent, freq) { b -> SdrEngine.tune(b.centre); SdrEngine.setDial(b.centre, b.mode) }
     }
@@ -99,12 +101,16 @@ private fun AppGrid(modifier: Modifier) {
 @Composable
 private fun AppTile(app: MayhemApp, d: Dims) {
     val tint = tintFor(app)
+    // dimmed, never locked: a dongle owner may still want two-metre HAM
+    Radio.kind.collectAsState().value
+    val why = Radio.blockedBecause(app)
     Column(
-        Modifier.fillMaxWidth().aspectRatio(1.3f).panel(tint).clickable { Apps.open(app) }.padding(d.dp(12f))
+        Modifier.fillMaxWidth().aspectRatio(1.3f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { Apps.open(app) }.padding(d.dp(12f))
     ) {
         AppGlyph(app, tint, Modifier.size(d.dp(36f)))
         Box(Modifier.weight(1f))
         Text(app.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
-        Text(app.blurb, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, modifier = Modifier.padding(top = d.dp(3f)))
+        Text(if (why.isNotEmpty()) "${Radio.name}: $why" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
+            fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, modifier = Modifier.padding(top = d.dp(3f)))
     }
 }
