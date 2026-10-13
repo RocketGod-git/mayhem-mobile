@@ -45,9 +45,12 @@ fun TxScreen(defaultAccent: Color) {
     val accent = Palette.danger
     var tab by remember { mutableStateOf(0) }
 
-    if (needsPrompt) SafetyPromptDialog(accent) { Tx.acknowledgeSafety() }
+    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
+    val canTx = radio != com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
+    if (needsPrompt && canTx) SafetyPromptDialog(accent) { Tx.acknowledgeSafety() }
 
     ScrollColumn(Modifier.fillMaxSize()) {
+        if (!canTx) { ReceiveOnlyNote(accent); return@ScrollColumn }
         if (!enabled) {
             Column(Modifier.fillMaxWidth().panel(accent).padding(d.dp(12f))) {
                 Text("TRANSMIT IS OFF", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 2.sp)

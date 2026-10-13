@@ -52,6 +52,7 @@ object Tx {
     fun start(label: String, freqHz: Long, rateHz: Int, offsetHz: Int, fill: (ByteArray) -> Int): Boolean {
         if (!_enabled.value) { _status.value = "transmit is switched off in Settings"; return false }
         if (_needsPrompt.value) { _status.value = "confirm the safety prompt first"; return false }
+        if (!Radio.canTransmit) { _status.value = "${Radio.name} receives only — transmitting needs a HackRF"; return false }
         if (!HackRfOne.running) { _status.value = "no HackRF"; return false }
         if (_active.value) { _status.value = "already transmitting"; return false }
         val job = HackRfOne.TxJob(label, freqHz - offsetHz, rateHz, _gain.value, _amp.value, fill) { err ->

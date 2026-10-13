@@ -113,7 +113,9 @@ private fun SatTrack(accent: Color) {
             Chip(if (u.track) "LISTENING · DOPPLER ON" else "LISTEN · TRACK DOPPLER", u.track, accent, Modifier.weight(2f)) { Sats.toggleTrack() }
             Chip("REFRESH TLE", false, accent, Modifier.weight(1f)) { Sats.refreshTles() }
         }
-        if (svc.up != null) {
+        val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
+        if (svc.up != null && radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) Box(Modifier.padding(top = d.gap)) { ReceiveOnlyNote(accent) }
+        else if (svc.up != null) {
             Box(
                 Modifier.fillMaxWidth().padding(top = d.gap).height(d.dp(56f))
                     .background(if (p.on) Palette.danger else Palette.surface, RoundedCornerShape(10.dp)).then(Modifier.panel(if (p.on) Palette.danger else accent))

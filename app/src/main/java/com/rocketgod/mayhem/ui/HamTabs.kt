@@ -326,10 +326,13 @@ internal fun HamTransmit(accent: Color) {
     val needsPrompt by Tx.needsPrompt.collectAsState()
     var note by remember { mutableStateOf("") }
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> note = if (ok) "microphone ready — hold the button" else "no microphone permission" }
-    if (needsPrompt) SafetyPromptDialog(accent) { Tx.acknowledgeSafety() }
+    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
+    val canTx = radio != com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
+    if (needsPrompt && canTx) SafetyPromptDialog(accent) { Tx.acknowledgeSafety() }
     val rin = repeaterInput(s.channel)
     HamLayout(accent, meter = true) {
         HamTabs(accent)
+        if (!canTx) { ReceiveOnlyNote(accent); return@HamLayout }
         SectionLabel("TX · ${if (rin != null && !s.rev) "repeater input %.4f MHz (offset applied)".format(rin / 1e6) else "simplex on the dial frequency"} · hold the button")
         Box(
             Modifier.fillMaxWidth().height(d.dp(64f))

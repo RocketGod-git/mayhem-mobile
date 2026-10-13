@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -41,11 +42,11 @@ import com.rocketgod.mayhem.core.Scanner
 import com.rocketgod.mayhem.core.SdrEngine
 
 @Composable
-fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = Modifier, dim: Boolean = false, onClick: () -> Unit) {
     val d = rememberDims()
     val haptic = LocalHapticFeedback.current
     Box(
-        modifier.control(accent, selected).clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(vertical = d.dp(9f), horizontal = d.dp(6f)),
+        modifier.alpha(if (dim) 0.38f else 1f).control(accent, selected).clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(vertical = d.dp(9f), horizontal = d.dp(6f)),
         contentAlignment = Alignment.Center
     ) {
         // A label never wraps (FRS/GMRS used to break at the slash); one that does not fit steps its size down until it does.
@@ -72,6 +73,16 @@ fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, au
     }
 }
 
+/** Where a transmit control would be, on a radio that cannot transmit: says so, and what would. */
+@Composable
+fun ReceiveOnlyNote(accent: Color) {
+    val d = rememberDims()
+    Column(Modifier.fillMaxWidth().alpha(0.85f).panel(Palette.line).padding(d.dp(12f))) {
+        Text("${com.rocketgod.mayhem.core.Radio.name.uppercase()} RECEIVES ONLY", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 2.sp)
+        Text("Transmitting needs a HackRF. Everything that listens works on this radio.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(top = d.dp(6f)))
+    }
+}
+
 /** The HackRF's three gain stages: RF amp toggle (+14 dB) and the LNA (0..40/8) / VGA (0..62/2) steppers. */
 @Composable
 fun GainRow(accent: Color) {
@@ -80,6 +91,18 @@ fun GainRow(accent: Color) {
     val vga by SdrEngine.radioVga.collectAsState()
     val amp by SdrEngine.radioAmp.collectAsState()
     val agc by SdrEngine.agc.collectAsState()
+    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
+    if (radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) {
+        // a dongle has one tuner gain; showing an LNA and an amp that do nothing would be worse than not showing them
+        SectionLabel(if (agc) "GAIN · AUTO · tap it to set it" else "GAIN · BY HAND · AGC for auto")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setAgc(!agc) }
+            GainStepper("GAIN", vga, accent, Modifier.weight(2f), auto = agc,
+                onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
+                onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
+        }
+        return
+    }
     SectionLabel(if (agc) "GAIN · AUTO · tap LNA or VGA to set it" else "GAIN · BY HAND · AGC for auto")
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(0.8f)) { SdrEngine.setAgc(!agc) }
@@ -131,6 +154,11 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
     LevelBar(level, accent, Modifier.fillMaxWidth().padding(horizontal = d.dp(24f), vertical = d.dp(3f)).height(d.dp(4f)))
     if (sub.isNotEmpty()) Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
         modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = TextAlign.Center)
+    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
+    val lim = com.rocketgod.mayhem.core.Radio.limits
+    if (radio != com.rocketgod.mayhem.core.Radio.Kind.NONE && !com.rocketgod.mayhem.core.Radio.canTune(lim, freq))
+        Text("outside this ${com.rocketgod.mayhem.core.Radio.name}'s %d–%d MHz".format(lim.minHz / 1_000_000, lim.maxHz / 1_000_000),
+            color = Palette.danger, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = TextAlign.Center)
 }
 
 /** Peak-over-floor level meter, 0..45 dB → full width. */

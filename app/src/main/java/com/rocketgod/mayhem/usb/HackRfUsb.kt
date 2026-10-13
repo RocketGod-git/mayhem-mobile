@@ -7,8 +7,8 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 
 /**
- * USB enumeration / permission helpers for the HackRF-direct path. Everything the activity needs to find a
- * HackRF on the OTG port and get permission to open it; the radio-level work is in [HackRfOne].
+ * USB enumeration / permission helpers. Everything the activity needs to find a HackRF or an RTL-SDR on the OTG
+ * port and get permission to open it; the radio-level work is in [HackRfOne] and [RtlSdr].
  */
 object HackRfUsb {
     /** Great Scott Gadgets / OpenMoko vendor id shared by every HackRF board. */
@@ -22,10 +22,13 @@ object HackRfUsb {
 
     fun isHackRf(d: UsbDevice): Boolean = d.vendorId == VID && d.productId in PIDS
 
+    /** Either radio the app drives: a HackRF, or an RTL-SDR dongle (receive only). */
+    fun isRadio(d: UsbDevice): Boolean = isHackRf(d) || RtlSdr.isRtlSdr(d)
+
     fun manager(ctx: Context): UsbManager = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    /** First attached HackRF, or null. */
-    fun find(ctx: Context): UsbDevice? = manager(ctx).deviceList.values.firstOrNull { isHackRf(it) }
+    /** The attached radio, a HackRF first if both are plugged in, or null. */
+    fun find(ctx: Context): UsbDevice? = manager(ctx).deviceList.values.let { all -> all.firstOrNull { isHackRf(it) } ?: all.firstOrNull { RtlSdr.isRtlSdr(it) } }
 
     fun hasPermission(ctx: Context, d: UsbDevice): Boolean = manager(ctx).hasPermission(d)
 
@@ -47,6 +50,7 @@ object HackRfUsb {
         return "USB scan: " + devs.joinToString(" · ") { d ->
             val tag = when {
                 isHackRf(d) -> "HackRF ✔"
+                RtlSdr.isRtlSdr(d) -> "RTL-SDR ✔ (receive only)"
                 d.vendorId == VID && d.productId == PID_MAYHEM_SERIAL -> "PortaPack/Mayhem SERIAL mode — switch it to HackRF mode"
                 else -> "ignored"
             }

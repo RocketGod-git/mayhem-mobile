@@ -11,9 +11,7 @@ import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameDecoder
 import com.rocketgod.mayhem.core.audio.SameEvent
 import com.rocketgod.mayhem.usb.HackRfOne
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import com.rocketgod.mayhem.usb.RtlSdr
 import java.util.concurrent.ArrayBlockingQueue
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -22,6 +20,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The DSP + state hub — a mini Mayhem `receiver_model` + baseband in Kotlin. [HackRfOne] streams raw 8-bit IQ
@@ -110,10 +111,11 @@ object SdrEngine {
         val scale = minOf(3.2, kotlin.math.sqrt(sampleRate / 2_000_000.0))
         val lo = minOf(24.0, 7 * scale); val hi = minOf(34.0, 22 * scale)
         val l = _radioLna.value; val v = _radioVga.value
+        val vMax = vgaMax(); val hasLna = Radio.kind.value != Radio.Kind.RTLSDR
         if (rms < lo) {
             when {
-                v < VGA_MAX -> _radioVga.value = minOf(VGA_MAX, v + if (rms < 2) 8 else 2)
-                l < LNA_MAX -> _radioLna.value = l + LNA_STEP
+                v < vMax -> _radioVga.value = minOf(vMax, v + if (rms < 2) 8 else 2)
+                hasLna && l < LNA_MAX -> _radioLna.value = l + LNA_STEP
                 _mode.value != Mode.NONE && now - agcSaidMax > 20_000 -> {
                     agcSaidMax = now
                     Diag.log("AGC is at maximum and the level is still %.1f counts — check the antenna, or set the gain by hand".format(rms))
@@ -122,7 +124,7 @@ object SdrEngine {
         } else if (rms > hi) {
             when {
                 v > 0 -> _radioVga.value = maxOf(0, v - if (rms > hi * 2) 8 else 2)
-                l > 0 -> _radioLna.value = l - LNA_STEP
+                hasLna && l > 0 -> _radioLna.value = l - LNA_STEP
             }
         }
         if (_radioLna.value != l || _radioVga.value != v) syncDriver()
@@ -244,6 +246,22 @@ object SdrEngine {
         HackRfOne.ovrVgaDb = _radioVga.value
         HackRfOne.ovrAmp = if (_radioAmp.value) 1 else 0
         HackRfOne.targetFreqHz = _freqHz.value
+        // A dongle has one tuner gain where a HackRF has three stages; the VGA is that knob, which is also the one
+        // the AGC moves first, so the automatic gain drives a dongle with no special case.
+        RtlSdr.targetRateHz = Radio.nearestRate(Radio.RTLSDR, _rateHz.value)
+        RtlSdr.targetFreqHz = _freqHz.value
+        RtlSdr.targetGainTenthDb = (_radioVga.value * 10).coerceIn(0, (RtlSdr.MAX_GAIN_DB * 10).toInt())
+    }
+
+    /** The top of the VGA knob for the radio attached: a dongle's tuner stops at 48.8 dB. */
+    fun vgaMax(): Int = if (Radio.kind.value == Radio.Kind.RTLSDR) 48 else VGA_MAX
+
+    /** A radio arrived or left: hold the rate and gain to what it can do, so the screen never shows what it is not doing. */
+    fun onRadio(kind: Radio.Kind) {
+        Radio.attached(kind)
+        _rateHz.value = Radio.nearestRate(Radio.limits, _rateHz.value)
+        _radioVga.value = minOf(_radioVga.value, vgaMax())
+        syncDriver()
     }
 
     /** Enter an app: audio mode, dial, IQ rate, gain preset and the baseband processor, all at once. */
@@ -251,14 +269,14 @@ object SdrEngine {
         processor = null
         _offsetHz.value = 0
         _mode.value = mode
-        _rateHz.value = rateHz
+        _rateHz.value = Radio.nearestRate(Radio.limits, rateHz)
         // Before the user has touched gain, no app starts below 32 on either stage and the front-end amp is on: AGC
         // (on by default) trims the stages if a strong signal would clip, so every app starts sensitive.
         val g = gainPref
         val (l, v, a) = boardGains(
             g?.get(0) ?: maxOf(lna, 32), g?.get(1) ?: maxOf(vga, 32), if (g != null) g[2] == 1 else true)
         _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
-        _radioVga.value = (v.coerceIn(0, VGA_MAX) / VGA_STEP) * VGA_STEP
+        _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
         _radioAmp.value = a
         _freqHz.value = freqHz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
         if (proc == null && mode != Mode.NONE) { radioFreqHz = _freqHz.value; radioMode = mode }
@@ -271,13 +289,14 @@ object SdrEngine {
         _freqHz.value = f
         if (processor == null && _mode.value != Mode.NONE) radioFreqHz = f
         HackRfOne.targetFreqHz = f
+        RtlSdr.targetFreqHz = f
     }
     fun nudge(deltaHz: Long) = tune(_freqHz.value + deltaHz)
 
     /** Where the Audio app opens next: set from the launcher, where a tap means "listen here". */
     fun setDial(hz: Long, mode: Mode) { radioFreqHz = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ); radioMode = mode }
 
-    fun setRate(rate: Int) { _rateHz.value = rate; HackRfOne.targetRateHz = rate }
+    fun setRate(rate: Int) { _rateHz.value = Radio.nearestRate(Radio.limits, rate); syncDriver() }
 
     /** A hand on the LNA or VGA switches the AGC off so the setting sticks, and is remembered for every app. */
     fun setRadioLna(db: Int) {
@@ -286,7 +305,7 @@ object SdrEngine {
     }
     fun setRadioVga(db: Int) {
         if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
-        _agc.value = false; _radioVga.value = (db.coerceIn(0, VGA_MAX) / VGA_STEP) * VGA_STEP; syncDriver(); saveGains()
+        _agc.value = false; _radioVga.value = (db.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; syncDriver(); saveGains()
     }
     fun toggleRadioAmp() { _radioAmp.value = !_radioAmp.value; syncDriver(); saveGains() }
 

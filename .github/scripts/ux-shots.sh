@@ -47,6 +47,12 @@ adb shell input keyevent KEYCODE_HOME
 sleep 5
 shot pip-prowl
 
+# the same demo dressed as an RTL-SDR: dimmed tiles, one gain control, receive-only panels
+for a in HOME AUDIO TRANSMIT SAT; do
+  adb shell am start -n $ACT --ez demo true --es radio RTLSDR --es open "$a" >/dev/null; sleep 5
+  shot "rtl-$a"
+done
+
 adb shell am broadcast -a com.android.systemui.demo -e command exit
 adb logcat -d > "$OUT/logcat.txt" || true
 ls -la "$OUT"
