@@ -176,10 +176,11 @@ object SdrEngine {
         if (_radioLna.value != l || _radioVga.value != v) syncDriver()
     }
     /**
-     * Latest spectrum: [SPEC_BINS] normalised magnitudes 0..1, low→high frequency (fftshifted). Every sample that
-     * arrives between frames is power-averaged through a 4096-point Hann FFT (about 2.4 M samples a second are
-     * transformed whatever the rate), which pulls the noise spread down to a dB or two so a weak station stands out;
-     * the floor is the median bin (robust to strong carriers) and the display covers [SPEC_RANGE_DB] above it.
+     * Latest spectrum: [SPEC_BINS] (or [specBinsWanted]) normalised magnitudes 0..1, low→high frequency (fftshifted).
+     * Every sample that arrives between frames is power-averaged through a 4096..16384-point Hann FFT (about 2.4 M
+     * samples a second are transformed whatever the rate), which pulls the noise spread down to a dB or two so a weak
+     * station stands out; the floor is the median bin (robust to strong carriers) and the display covers
+     * [SPEC_RANGE_DB] above it.
      */
     private val _spectrum = MutableStateFlow(FloatArray(0))
     val spectrum: StateFlow<FloatArray> = _spectrum.asStateFlow()
@@ -208,10 +209,19 @@ object SdrEngine {
         if (db <= 0) { sqOpen = true; _squelchOpen.value = true }
     }
 
+    /** Spectrum bins while no waterfall asks for more ([specBinsWanted]); a [spectrum] array may be any of 256..8192. */
     const val SPEC_BINS = 1024
+    /** The smallest transform; finer bins get a larger one, up to [FFT_MAX]. Power is scaled to an FFT_N-point
+     *  transform's whatever the size, so the floor and its dB labels hold still while zooming. */
     private const val FFT_N = 4096
+    private const val FFT_MAX = 16384
     const val SPEC_RANGE_DB = 40f
     private const val SPEC_FLOOR_PAD_DB = 4f
+    /** Bins the waterfall on screen wants: its columns × its zoom, so a zoomed view is drawn from real resolution. */
+    @Volatile var specBinsWanted = SPEC_BINS
+    /** [n] rounded up to a bin count the spectrum comes in: a power of two, 256..8192. */
+    fun specBinsFor(n: Int): Int { var b = 256; while (b < n && b < 8192) b = b shl 1; return b }
+    private fun hann(n: Int) = FloatArray(n) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / n)).toFloat() }
     /** The dB the 0..1 spectrum is scaled against: (floor, range), for the spectrum's grid labels. */
     private val _specScale = MutableStateFlow(Float.NaN to SPEC_RANGE_DB)
     val specScale: StateFlow<Pair<Float, Float>> = _specScale.asStateFlow()
@@ -472,10 +482,11 @@ object SdrEngine {
     // ---- DSP worker ---------------------------------------------------------------------------------------
     private fun workerLoop() {
         var track: AudioTrack? = null
-        val fre = FloatArray(FFT_N); val fim = FloatArray(FFT_N)
-        val win = FloatArray(FFT_N) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / FFT_N)).toFloat() }
-        val acc = DoubleArray(FFT_N); var frames = 0
-        val pdb = FloatArray(FFT_N); val sorted = FloatArray(FFT_N)
+        var fftN = FFT_N; var specBins = SPEC_BINS
+        var fre = FloatArray(fftN); var fim = FloatArray(fftN); var win = hann(fftN)
+        var acc = DoubleArray(fftN); var frames = 0
+        // pdb is always FFT_N bins (the classifier's and the health line's); pdbN is the transform's own resolution
+        val pdb = FloatArray(FFT_N); var pdbN = FloatArray(fftN); var sorted = FloatArray(fftN)
         var prevOut = FloatArray(0); var specFrame = 0
         var clsRate = 0; var clsFreq = 0L; var clsQuietUntil = 0L
         var prevI = 0f; var prevQ = 0f                 // FM discriminator memory
@@ -558,45 +569,65 @@ object SdrEngine {
                     // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed ----
                     val now = System.currentTimeMillis()
                     val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
-                    if (nSamp >= FFT_N) {
+                    val wantBins = specBinsFor(specBinsWanted)
+                    if (wantBins != specBins) {
+                        // twice as many transform points as bins, never fewer than FFT_N
+                        specBins = wantBins; prevOut = FloatArray(0)
+                        val n = (2 * wantBins).coerceIn(FFT_N, FFT_MAX)
+                        if (n != fftN) {
+                            fftN = n; fre = FloatArray(n); fim = FloatArray(n); win = hann(n)
+                            acc = DoubleArray(n); pdbN = FloatArray(n); sorted = FloatArray(n); frames = 0
+                        }
+                    }
+                    if (nSamp >= fftN) {
                         var off = 0
-                        while (off + FFT_N <= nSamp) {
-                            for (k in 0 until FFT_N) {
+                        while (off + fftN <= nSamp) {
+                            for (k in 0 until fftN) {
                                 val j = 2 * (off + k)
                                 fre[k] = ((item[j].toInt() and 0xff) - 127.4f) * win[k]
                                 fim[k] = ((item[j + 1].toInt() and 0xff) - 127.4f) * win[k]
                             }
                             Dsp.fft(fre, fim)
-                            for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
+                            for (k in 0 until fftN) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
                             frames++
-                            off += FFT_N * skip
+                            off += fftN * skip
                         }
                     } else if (frames == 0) {
-                        for (k in 0 until FFT_N) {
+                        for (k in 0 until fftN) {
                             if (k < nSamp) { fre[k] = ((item[2 * k].toInt() and 0xff) - 127.4f) * win[k]; fim[k] = ((item[2 * k + 1].toInt() and 0xff) - 127.4f) * win[k] }
                             else { fre[k] = 0f; fim[k] = 0f }
                         }
                         Dsp.fft(fre, fim)
-                        for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
+                        for (k in 0 until fftN) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
                         frames = 1
                     }
                     if (now - lastSpec > 40L && frames > 0) {
                         lastSpec = now
                         val nAvg = frames
-                        for (k in 0 until FFT_N) pdb[k] = (10.0 * Math.log10(acc[(k + FFT_N / 2) % FFT_N] / nAvg + 1e-12)).toFloat()
+                        val norm = FFT_N.toDouble() / fftN / nAvg
+                        val half = fftN / 2
+                        for (k in 0 until fftN) pdbN[k] = (10.0 * Math.log10(acc[(k + half) % fftN] * norm + 1e-12)).toFloat()
+                        // a larger transform's bins are power-averaged down to FFT_N, so the classifier always sees the same scale
+                        val g = fftN / FFT_N
+                        if (g == 1) System.arraycopy(pdbN, 0, pdb, 0, FFT_N)
+                        else for (k in 0 until FFT_N) {
+                            var s = 0.0
+                            for (j in 0 until g) s += acc[(k * g + j + half) % fftN]
+                            pdb[k] = (10.0 * Math.log10(s / g * norm + 1e-12)).toFloat()
+                        }
                         acc.fill(0.0); frames = 0
-                        System.arraycopy(pdb, 0, sorted, 0, FFT_N); sorted.sort()
-                        val median = sorted[FFT_N / 2]
+                        System.arraycopy(pdbN, 0, sorted, 0, fftN); sorted.sort()
+                        val median = sorted[fftN / 2]
                         floorEma = if (floorEma.isNaN()) median else floorEma + 0.2f * (median - floorEma)
                         val base = floorEma - SPEC_FLOOR_PAD_DB
                         // peak-downsampled so a narrow carrier never falls between columns; a frame that averaged only a
                         // few transforms is blended with the last so the noise stays flat
-                        val group = FFT_N / SPEC_BINS
-                        val keep = if (prevOut.size == SPEC_BINS) maxOf(0f, 0.6f - nAvg * 0.05f) else 0f
-                        val out = FloatArray(SPEC_BINS)
-                        for (bin in 0 until SPEC_BINS) {
+                        val group = fftN / specBins
+                        val keep = if (prevOut.size == specBins) maxOf(0f, 0.6f - nAvg * 0.05f) else 0f
+                        val out = FloatArray(specBins)
+                        for (bin in 0 until specBins) {
                             var pk = -999f
-                            for (j in 0 until group) { val v = pdb[bin * group + j]; if (v > pk) pk = v }
+                            for (j in 0 until group) { val v = pdbN[bin * group + j]; if (v > pk) pk = v }
                             val v = ((pk - base) / SPEC_RANGE_DB).coerceIn(0f, 1f)
                             out[bin] = if (keep > 0f) v * (1 - keep) + prevOut[bin] * keep else v
                         }
