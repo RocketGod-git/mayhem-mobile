@@ -172,6 +172,8 @@ object RtlSdr {
                 if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.direction == UsbConstants.USB_DIR_IN) { rx = ep; break }
             }
             val ep = rx ?: run { Diag.log("RTL-SDR: no bulk-IN endpoint"); onStatus("RTL-SDR: no IQ endpoint"); return }
+            // a dongle another app left streaming can have its endpoint halted; clear it before touching anything
+            runCatching { c.controlTransfer(0x02, 0x01, 0x00, ep.address, null, 0, 500) }
             Diag.log("=== RTL-SDR bring-up (RTL2832U + R82xx) === RX endpoint=0x%02x".format(ep.address))
             onStatus("RTL-SDR · initializing…")
             initBaseband()
@@ -206,7 +208,7 @@ object RtlSdr {
 
     /** Stream with a pool of requests in flight; returns when the rate must change (or on stop). */
     private fun streamUntilRateChange(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
-        val nbuf = 12; val bufSz = 32768
+        val nbuf = 12; val bufSz = 16384
         val buffers = Array(nbuf) { ByteBuffer.allocateDirect(bufSz) }
         val reqs = ArrayList<UsbRequest>(nbuf)
         for (i in 0 until nbuf) {
@@ -219,10 +221,20 @@ object RtlSdr {
         if (reqs.isEmpty()) { streamSync(c, rx, onStatus); return }
         val scratch = ByteArray(bufSz)
         var lastStatus = 0L
+        // A dongle pulled out without a detach arriving fails every wait and every requeue at once, forever;
+        // a run of failures means it is gone, not that one transfer was unlucky.
+        var fails = 0; var failSince = 0L
+        fun failed(what: String): Boolean {
+            val now = System.currentTimeMillis()
+            if (fails++ == 0) failSince = now
+            if (fails >= 200 || now - failSince >= 3000) { Diag.log("RTL-SDR: $fails failures in a row ($what) — dongle gone, stopping"); stop = true; return true }
+            return false
+        }
         try {
             while (!stop && targetRateHz == appliedRate) {
                 applyPending()
-                val req = try { c.requestWait(100L) } catch (e: TimeoutException) { null } ?: continue
+                val req = try { c.requestWait(100L) } catch (e: TimeoutException) { continue }
+                if (req == null) { if (failed("wait")) break; Thread.sleep(2); continue }
                 val idx = req.clientData as? Int ?: continue
                 val b = buffers[idx]
                 val n = b.position()
@@ -232,7 +244,16 @@ object RtlSdr {
                     runCatching { SdrEngine.onIq(scratch, n) }
                 }
                 b.clear()
-                if (!runCatching { req.queue(b) }.getOrDefault(false)) runCatching { req.close() }
+                var requeued = runCatching { req.queue(b) }.getOrDefault(false)
+                if (!requeued) {
+                    runCatching { req.close() }
+                    val nr = UsbRequest()
+                    if (runCatching { nr.initialize(c, rx) }.getOrDefault(false)) {
+                        nr.clientData = idx
+                        if (runCatching { nr.queue(b) }.getOrDefault(false)) { reqs[idx] = nr; requeued = true }
+                    }
+                }
+                if (!requeued) { if (failed("requeue")) break } else fails = 0
                 val now = System.currentTimeMillis()
                 if (now - lastStatus > 1000L) { lastStatus = now; onStatus("$label · %.3f MHz".format(appliedFreq / 1e6)) }
             }
@@ -243,11 +264,14 @@ object RtlSdr {
 
     private fun streamSync(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
         Diag.log("RTL-SDR: async RX unavailable — synchronous fallback")
-        val buf = ByteArray(32768)
+        val buf = ByteArray(16384)
+        var fails = 0
         while (!stop && targetRateHz == appliedRate) {
             applyPending()
             val n = c.bulkTransfer(rx, buf, buf.size, 500)
-            if (n > 0) { probe(buf, n, onStatus); runCatching { SdrEngine.onIq(buf, n) } }
+            if (n > 0) { fails = 0; probe(buf, n, onStatus); runCatching { SdrEngine.onIq(buf, n) } }
+            else if (n < 0 && ++fails >= 200) { Diag.log("RTL-SDR: bulk reads keep failing — dongle gone, stopping"); stop = true }
+            else if (n < 0) Thread.sleep(2)
         }
     }
 
