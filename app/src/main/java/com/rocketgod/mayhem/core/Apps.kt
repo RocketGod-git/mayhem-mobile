@@ -63,6 +63,8 @@ object Apps {
         Bookmarks.load(ctx)
     }
 
+    /** The app open before the current one; null is the launcher. */
+    @Volatile var cameFrom: MayhemApp? = null; private set
     /** The app Settings was opened over, which keeps running underneath it. */
     private var under: MayhemApp? = null
     /** What the radio is doing for: the open app, or the one under Settings. */
@@ -83,6 +85,7 @@ object Apps {
         // the signal finder labels every waterfall; the sweeps have no fixed span to label
         SdrEngine.watchSignals = app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH
         SdrEngine.sameOn = app == MayhemApp.AUDIO
+        cameFrom = _current.value
         _current.value = app
         val r = SdrEngine.IQ_RATE
         when (app) {

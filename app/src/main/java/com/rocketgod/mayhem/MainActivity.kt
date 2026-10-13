@@ -55,6 +55,10 @@ class MainActivity : ComponentActivity() {
                     askingPermission = false
                     Diag.log("USB permission ${if (granted) "granted" else "DENIED"} for ${d?.let { HackRfUsb.describe(it) } ?: "?"}")
                     if (d != null && granted && HackRfUsb.isRadio(d)) engage(d)
+                    else if (d != null && granted && HackRfUsb.isMayhemSerial(d)) {
+                        Thread({ HackRfUsb.portapackToHackRf(applicationContext, d) }, "portapack-switch").start()
+                        status.value = "PortaPack switching to HackRF mode…"
+                    }
                     else status.value = "USB permission denied — replug to retry"
                 }
                 ACTION_PIP_MUTE -> SdrEngine.toggleMute()
@@ -64,7 +68,7 @@ class MainActivity : ComponentActivity() {
                 // broadcast as well means it always does.
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> if (d != null) {
                     Diag.log("USB attached: ${HackRfUsb.describe(d)}${if (HackRfUsb.isRadio(d)) "" else " (not a radio this app drives)"}")
-                    if (HackRfUsb.isRadio(d) && !radioRunning()) autoConnect()
+                    if ((HackRfUsb.isRadio(d) || HackRfUsb.isMayhemSerial(d)) && !radioRunning()) autoConnect()
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> if (d != null && HackRfUsb.isRadio(d)) {
                     Diag.log("USB detached: ${HackRfUsb.describe(d)}")
@@ -201,7 +205,8 @@ class MainActivity : ComponentActivity() {
         if (radioRunning()) return
         val d = HackRfUsb.find(this)
         if (!quiet || d != null) Diag.log(HackRfUsb.scanLog(this))
-        if (d == null) return
+        // a PortaPack in its Mayhem serial mode is asked to become a HackRF; it comes back as an ordinary attach
+        if (d == null) { HackRfUsb.switchPortaPack(this); return }
         if (HackRfUsb.hasPermission(this, d)) engage(d)
         else if (!askingPermission) {
             askingPermission = true
