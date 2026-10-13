@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Placeholder launcher art: a spectrum trace in the accent colour. Swap for real artwork later. -->
+<!-- A spectrum trace in the app's default blue over its baseline: the same mark as the web app and the store icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
     <path
-        android:strokeColor="#37ECCB" android:strokeWidth="4" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:strokeColor="#4C8DFF" android:strokeWidth="4" android:strokeLineCap="round" android:strokeLineJoin="round"
         android:fillColor="#00000000"
         android:pathData="M20,70 L28,66 L34,72 L40,50 L46,74 L52,30 L58,76 L64,58 L70,70 L76,62 L82,72 L88,68" />
     <path
-        android:strokeColor="#37ECCB" android:strokeWidth="2" android:strokeAlpha="0.5"
+        android:strokeColor="#2A3348" android:strokeWidth="2"
         android:fillColor="#00000000"
         android:pathData="M20,80 L88,80" />
 </vector>
