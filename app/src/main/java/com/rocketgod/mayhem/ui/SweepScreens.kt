@@ -9,11 +9,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -68,22 +70,38 @@ private fun RangeChips(accent: Color, sp: SweepProcessor?) {
     }
 }
 
-/** Downsample a sweep row (steps × 256 dB) to [cols] columns by max, auto-ranged to 0..1. */
-private fun rowToSpec(row: FloatArray, cols: Int): FloatArray {
-    val out = FloatArray(cols)
-    if (row.isEmpty()) return out
-    val sorted = row.copyOf(); java.util.Arrays.sort(sorted)
-    var floor = 0f; val nHalf = (sorted.size / 2).coerceAtLeast(1)
-    for (i in 0 until nHalf) floor += sorted[i]
-    floor /= nHalf
-    for (c in 0 until cols) {
-        val a = (c.toLong() * row.size / cols).toInt(); val b = ((c + 1).toLong() * row.size / cols).toInt().coerceAtLeast(a + 1)
+/** A sweep row as 0..1 columns and the dB its 0 sits at. */
+private class SweepSpec(val spec: FloatArray, val floorDb: Float)
+private val noSpec = SweepSpec(FloatArray(0), Float.NaN)
+private const val SWEEP_RANGE_DB = 30f
+
+/**
+ * Downsample a sweep row (steps × KEEP dB, NaN where not yet measured) to at most [cols] columns by max. The median
+ * is the floor, sitting 4 dB up a 30 dB scale, so a sweep reads like the live waterfall; it is taken over at most
+ * ~4096 samples of the row, which a full-range row (150 k bins) would otherwise have to sort on every live update.
+ */
+private fun rowToSpec(row: FloatArray, cols: Int = 8192): SweepSpec {
+    if (row.isEmpty()) return noSpec
+    val stride = maxOf(1, row.size / 4096)
+    val sample = FloatArray((row.size + stride - 1) / stride)
+    var m = 0; var i = 0
+    while (i < row.size) { val v = row[i]; if (!v.isNaN()) sample[m++] = v; i += stride }
+    if (m == 0) return noSpec
+    java.util.Arrays.sort(sample, 0, m)
+    val floor = sample[m / 2] - 4f
+    val n = minOf(cols, row.size)
+    val out = FloatArray(n)
+    for (c in 0 until n) {
+        val a = (c.toLong() * row.size / n).toInt(); val b = ((c + 1).toLong() * row.size / n).toInt().coerceAtLeast(a + 1)
         var peak = -999f
-        for (i in a until minOf(b, row.size)) if (row[i] > peak) peak = row[i]
-        out[c] = ((peak - floor) / 45f).coerceIn(0f, 1f)
+        for (k in a until minOf(b, row.size)) if (row[k] > peak) peak = row[k]
+        out[c] = ((peak - floor) / SWEEP_RANGE_DB).coerceIn(0f, 1f)
     }
-    return out
+    return SweepSpec(out, floor)
 }
+
+/** The sweep's frequency at a fraction of its row, as the waterfall labels it. */
+private fun sweepLabel(s: SweepProcessor): (Float, Float) -> String = { f, _ -> "%.3f".format((s.startHz + s.coverHz * f.toDouble()) / 1e6) }
 
 @Composable
 private fun SweepTitle(s: SweepProcessor?, progress: Int, sweeps: Int, extra: String, accent: Color) {
@@ -102,23 +120,31 @@ fun LookingGlassScreen(accent: Color) {
     val sp by Apps.sweep.collectAsState()
     val s = sp
     val row by (s?.row ?: emptyRow).collectAsState()
+    val live by (s?.live ?: emptyRow).collectAsState()
     val progress by (s?.progress ?: zero).collectAsState()
     val sweeps by (s?.sweeps ?: zero).collectAsState()
     val cols = if (d.wide) 768 else 512
-    val spec = remember(row, cols) { rowToSpec(row, cols) }
+    val done = remember(row) { rowToSpec(row) }
+    val now = remember(live) { rowToSpec(live) }
+    val floorDb = if (now.floorDb.isNaN()) done.floorDb else now.floorDb
+    val rowPx = maxOf(1, (2 * LocalDensity.current.density).toInt())
     var previewHz by remember { mutableStateOf<Long?>(null) }
     AdaptivePane(
         visual = { m ->
             Column(m) {
                 SweepTitle(s, progress, sweeps, if (previewHz != null) " · LISTEN %.3f MHz — lift to tune".format(previewHz!! / 1e6) else "", if (previewHz != null) Palette.accent2 else accent)
-                WaterfallView(
-                    spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 200, traceFrac = 0.3f,
-                    centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.endHz, if (d.wide) 7 else 5) else emptyList(),
-                    onPreviewFrac = { f -> previewHz = if (f != null && s != null) s.startHz + ((s.endHz - s.startHz) * f.toDouble()).toLong() else null }
-                ) { frac ->
-                    if (s != null) {
-                        val f = s.startHz + ((s.endHz - s.startHz) * frac.toDouble()).toLong()
-                        Apps.listen((f / 10_000L) * 10_000L, if (f < 108_000_000L && f > 87_000_000L) SdrEngine.Mode.WFM else SdrEngine.Mode.NFM)
+                // a new sweep starts a new history: rows from another range would mislead
+                key(s) {
+                    WaterfallView(
+                        done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 64, traceFrac = 0.3f,
+                        centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
+                        onPreviewFrac = { f -> previewHz = if (f != null && s != null) s.startHz + (s.coverHz * f.toDouble()).toLong() else null },
+                        live = now.spec, scale = floorDb to SWEEP_RANGE_DB, labelAt = s?.let { sweepLabel(it) }, rowPx = rowPx,
+                    ) { frac ->
+                        if (s != null) {
+                            val f = s.startHz + (s.coverHz * frac.toDouble()).toLong()
+                            Apps.listen((f / 10_000L) * 10_000L, if (f < 108_000_000L && f > 87_000_000L) SdrEngine.Mode.WFM else SdrEngine.Mode.NFM)
+                        }
                     }
                 }
             }
@@ -138,21 +164,28 @@ fun SearchScreen(accent: Color) {
     val sp by Apps.sweep.collectAsState()
     val s = sp
     val row by (s?.row ?: emptyRow).collectAsState()
+    val live by (s?.live ?: emptyRow).collectAsState()
     val progress by (s?.progress ?: zero).collectAsState()
     val sweeps by (s?.sweeps ?: zero).collectAsState()
     var threshold by remember { mutableStateOf(15) }
     val hits = remember(row, threshold, s) { if (s == null) emptyList() else findHits(row, threshold, s) }
     val cols = if (d.wide) 768 else 512
-    val spec = remember(row, cols) { rowToSpec(row, cols) }
+    val done = remember(row) { rowToSpec(row) }
+    val now = remember(live) { rowToSpec(live) }
+    val floorDb = if (now.floorDb.isNaN()) done.floorDb else now.floorDb
+    val rowPx = maxOf(1, (2 * LocalDensity.current.density).toInt())
     AdaptivePane(
         visualHeightNarrow = d.dp(200f),
         visual = { m ->
             Column(m) {
                 SweepTitle(s, progress, sweeps, " · ${hits.size} hits", accent)
-                WaterfallView(
-                    spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = if (d.wide) 200 else 80, traceFrac = 0.35f,
-                    centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.endHz, if (d.wide) 7 else 5) else emptyList()
-                )
+                key(s) {
+                    WaterfallView(
+                        done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 64, traceFrac = 0.35f,
+                        centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
+                        live = now.spec, scale = floorDb to SWEEP_RANGE_DB, labelAt = s?.let { sweepLabel(it) }, rowPx = rowPx,
+                    )
+                }
             }
         }
     ) {
