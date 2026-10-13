@@ -67,12 +67,17 @@ class TpmsDecoder(private val log: PacketLog) : IqProcessor {
             80 -> report("FLM_80", rd(bits, 8, 32), rd(bits, 48, 8).toInt() * 4 / 3, rd(bits, 56, 8).toInt() - 56, null)
         }
     }
+    /**
+     * The 8.192 kbit/s Schrader family (SMD3MA4, Schrader 3039): one fixed bit, three flag bits, 24 of identity, eight
+     * of pressure and two of checksum, and no temperature. Nobody has documented the flags, so they are shown raw.
+     */
     private fun readOok8192(bits: IntArray) {
         val flags = rd(bits, 0, 3).toInt(); val checksum = rd(bits, 35, 2).toInt()
+        // the two-bit groups of the whole frame, padded to an even 38 bits, sum to 3 modulo 4
         var calc = rd(bits, 0, 1).toInt()
         var i = 1
         while (i < 37) { calc += rd(bits, i, 2).toInt(); i += 2 }
-        if ((calc and 3) == 3) report("Schrader", rd(bits, 3, 24), rd(bits, 27, 8).toInt() * 4 / 3, null, (flags shl 4) or checksum)
+        if ((calc and 3) == 3) report("Schrader", rd(bits, 3, 24), rd(bits, 27, 8).toInt() * 4 / 3, null, flags, checksum)
     }
     private fun readOok8400(bits: IntArray) {
         val id = rd(bits, 20, 32); val v0 = rd(bits, 52, 8).toInt(); val v1 = rd(bits, 60, 8).toInt(); val checksum = rd(bits, 68, 8).toInt()
@@ -100,7 +105,7 @@ class TpmsDecoder(private val log: PacketLog) : IqProcessor {
     }
     private fun rd(bits: IntArray, start: Int, n: Int): Long { var v = 0L; for (i in start until start + n) v = (v shl 1) or (if (i < bits.size) bits[i].toLong() else 0L); return v }
 
-    private fun report(type: String, id: Long, kPa: Int, degC: Int?, flags: Int?) {
+    private fun report(type: String, id: Long, kPa: Int, degC: Int?, flags: Int?, checksum: Int? = null) {
         val now = System.currentTimeMillis()
         val key = id xor (type.hashCode().toLong() shl 40)
         val last = seen[key] ?: 0L
@@ -108,8 +113,10 @@ class TpmsDecoder(private val log: PacketLog) : IqProcessor {
         seen[key] = now
         val sb = StringBuilder("TPMS %-8s ID %-10d %08X".format(type, id, id))
         sb.append(" · %d kPa / %.1f psi".format(kPa, kPa * 0.145038))
-        if (degC != null) sb.append(" · %d°C / %d°F".format(degC, degC * 9 / 5 + 32))
-        if (flags != null) sb.append(" · flags %02X".format(flags))
+        if (degC != null) sb.append(" · %d°C / %d°F".format(degC, Math.floorDiv(degC * 9, 5) + 32))
+        // two different fields: run together as one hex byte they read as a single value that does not exist
+        if (flags != null) sb.append(" · flags ${Integer.toBinaryString(flags).padStart(3, '0')}")
+        if (checksum != null) sb.append(" · chk $checksum")
         log.add(sb.toString())
     }
 }

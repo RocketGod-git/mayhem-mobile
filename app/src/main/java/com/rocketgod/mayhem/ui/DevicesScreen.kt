@@ -1,6 +1,7 @@
 package com.rocketgod.mayhem.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,10 +25,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -103,7 +109,7 @@ fun DevicesScreen(accent: Color) {
                 else "${heard.size} DEVICE${if (heard.size == 1) "" else "S"}"
             Text(count, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, modifier = Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                Chip(if (showProtocols) "DEVICES" else "PROTOCOLS", selected = showProtocols, accent = accent) { showProtocols = !showProtocols }
+                Chip(if (showProtocols) "DEVICES" else "PROTOCOLS ${Devices.protocols.size}", selected = showProtocols, accent = accent) { showProtocols = !showProtocols }
                 Chip("PAUSE", selected = paused != null, accent = accent) { paused = if (paused == null) live else null }
                 Chip("CLEAR", selected = false, accent = accent) { Devices.proc.clear(); if (paused != null) paused = emptyList() }
             }
@@ -116,22 +122,29 @@ fun DevicesScreen(accent: Color) {
 @Composable
 private fun DeviceList(heard: List<HeardDevice>, accent: Color, modifier: Modifier) {
     val d = rememberDims()
+    val state = rememberLazyListState()
     Box(modifier.panel()) {
         if (heard.isEmpty()) {
             Text("nothing yet — most of these report every thirty to sixty seconds, so give it a minute",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
             return@Box
         }
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = d.dp(6f), vertical = d.dp(4f))) {
+        LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
             itemsIndexed(heard, key = { _, h -> h.key }) { i, h -> DeviceRow(h, i, accent) }
         }
     }
 }
 
-/** One device and everything it sent; always shown, since comparing two sensors one tap at a time is worse than scrolling. */
+/**
+ * One device and everything it sent; always shown, since comparing two sensors one tap at a time is worse than scrolling.
+ * The fields with an explanation are underlined, and tapping one shows it under the row.
+ */
 @Composable
 private fun DeviceRow(h: HeardDevice, i: Int, accent: Color) {
     val d = rememberDims()
+    var why by remember { mutableStateOf<String?>(null) }
+    val toggle: (String) -> Unit = { k -> why = if (why == k) null else k }
+    val explained = TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline))
     val doubtful = h.num in Devices.doubtful
     val mic = h.data["mic"]?.toString() ?: ""
     val id = listOfNotNull(h.data["id"]?.let { fmtValue(it) }, h.data["channel"]?.let { "ch ${fmtValue(it)}" }).joinToString(" ")
@@ -159,8 +172,11 @@ private fun DeviceRow(h: HeardDevice, i: Int, accent: Color) {
                 if (k == "model" || k in Devices.LONG) continue
                 if (!first) append("   ")
                 first = false
-                if (k != "battery_ok" && k != "leak_detected") withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Palette.ink)) { append(k.replace('_', ' ') + " ") }
-                append(Devices.value(k, v))
+                val field: () -> Unit = {
+                    if (k != "battery_ok" && k != "leak_detected") withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Palette.ink)) { append(k.replace('_', ' ') + " ") }
+                    append(Devices.value(k, v))
+                }
+                if (k in Devices.MEANING) withLink(LinkAnnotation.Clickable(k, explained) { toggle(k) }) { field() } else field()
             }
             withStyle(SpanStyle(color = Palette.muted)) {
                 append("   ${h.what}${if (h.num != 0) " · rtl_433 protocol ${h.num}" else ""} · first heard ${Devices.clock(h.firstSeen)}")
@@ -169,10 +185,15 @@ private fun DeviceRow(h: HeardDevice, i: Int, accent: Color) {
         }, color = Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontSize = d.sp(10.5f))
         for ((k, v) in h.data) {
             if (k !in Devices.LONG || k == "summary") continue
+            val explains = k in Devices.MEANING
             Text(buildAnnotatedString {
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(k.replace('_', ' ') + " ") }
-                append(fmtValue(v))
-            }, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, textDecoration = if (explains) TextDecoration.Underline else null)) { append(k.replace('_', ' ')) }
+                append(" " + fmtValue(v))
+            }, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = if (explains) Modifier.clickable { toggle(k) } else Modifier)
+        }
+        why?.let { k ->
+            Text("${k.replace('_', ' ')} — ${Devices.MEANING[k] ?: ""}", color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(10f),
+                modifier = Modifier.fillMaxWidth().clickable { why = null }.padding(top = d.dp(3f)))
         }
     }
 }
@@ -181,8 +202,16 @@ private fun DeviceRow(h: HeardDevice, i: Int, accent: Color) {
 @Composable
 private fun ProtocolList(protocols: List<R433Protocol>, modifier: Modifier) {
     val d = rememberDims()
+    val state = rememberLazyListState()
     Box(modifier.panel()) {
-        LazyColumn(Modifier.fillMaxSize().padding(horizontal = d.dp(6f), vertical = d.dp(4f))) {
+        LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
+            item {
+                Text("Every one of these runs over every burst, so nothing has to be chosen in advance: whatever transmits nearby is " +
+                    "decoded. Weather stations and tire sensors, but also door contacts and motion detectors, gas and electricity " +
+                    "meters, gate and blind remotes, doorbells, smoke alarms, leak detectors and cooking probes — anything that talks " +
+                    "in the clear. Bursts that none of them claim are still listed, described by their timings.",
+                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.padding(horizontal = d.dp(4f), vertical = d.dp(6f)))
+            }
             itemsIndexed(protocols, key = { _, p -> p.num }) { i, p ->
                 Row(Modifier.fillMaxWidth()
                     .background(if (i % 2 == 0) Color.Transparent else Palette.panel.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
