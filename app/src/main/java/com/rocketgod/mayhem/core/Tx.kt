@@ -197,7 +197,7 @@ object Tx {
             if (i >= total) return@start 0
             val n = buf.size / 2
             for (k in 0 until n) {
-                val bi = (i / spb.toLong()).toInt().let { if (it < bits.size) it else bits.size - 1 }
+                val bi = (i / spb).toInt().let { if (it < bits.size) it else bits.size - 1 }
                 val dev = if (bits[bi]) devHz else -devHz
                 ph += inc + 2 * PI * dev / RATE; if (ph > 2 * PI) ph -= 2 * PI; if (ph < 0) ph += 2 * PI
                 buf[2 * k] = (AMP * cos(ph)).toInt().toByte(); buf[2 * k + 1] = (AMP * sin(ph)).toInt().toByte()
@@ -276,6 +276,14 @@ object Tx {
 
     // ---- The rest of the Mayhem TX apps (TxApps encoders + wrappers) ------------------------------------------
 
+    /** Pulse trains are built in memory up front; past this a typed-in range or duration would exhaust the heap. */
+    private const val MAX_PULSES = 1_000_000L
+    private fun tooLong(pulses: Long): Boolean {
+        if (pulses <= MAX_PULSES) return false
+        _status.value = "too long · %,d pulses, the limit is %,d — narrow it down".format(pulses, MAX_PULSES)
+        return true
+    }
+
     /** Timed OOK pulse train (level, duration in samples) — used by SubGHz replay and OOK-based emitters. */
     private fun ookPulses(label: String, freqHz: Long, pulses: List<Pair<Boolean, Long>>): Boolean {
         if (pulses.isEmpty()) { _status.value = "empty pulse list"; return false }
@@ -336,8 +344,9 @@ object Tx {
     /** OOK noise / jammer: random on/off keying at [chipUs] per chip, over the tuned frequency. Authorised RF-lab work only. */
     fun ookNoise(seed: Long, chipUs: Int, seconds: Int, freqHz: Long): Boolean {
         val chipSamples = (chipUs.toLong() * RATE / 1_000_000L).coerceAtLeast(1)
-        val chipCount = (seconds.toLong() * RATE / chipSamples).toInt()
-        val bits = TxApps.noiseBits(if (seed == 0L) System.nanoTime() else seed, chipCount)
+        val chipCount = seconds.toLong() * RATE / chipSamples
+        if (tooLong(chipCount)) return false
+        val bits = TxApps.noiseBits(if (seed == 0L) System.nanoTime() else seed, chipCount.toInt())
         val pulses = bits.map { (it to chipSamples) }
         return ookPulses("noise %ds %dµs".format(seconds, chipUs), freqHz, pulses)
     }
@@ -345,7 +354,8 @@ object Tx {
     /** OOK brute-force: iterate a Princeton/PT2262 codespace sending each code once. */
     fun ookBrute(freqHz: Long, bits: Int, start: Long, end: Long, teUs: Int): Boolean {
         val range = TxApps.bruteRange(bits, start, end)
-        val te = (teUs.toLong() * RATE / 1_000_000L)
+        if (!range.isEmpty() && tooLong((range.last - range.first + 1) * (2 * bits + 2))) return false
+        val te = (teUs.toLong() * RATE / 1_000_000L).coerceAtLeast(1)
         val frame = ArrayList<Pair<Boolean, Long>>()
         for (code in range) {
             for (b in bits - 1 downTo 0) { if ((code ushr b) and 1L == 1L) { frame.add(true to te * 3); frame.add(false to te) } else { frame.add(true to te); frame.add(false to te * 3) } }
