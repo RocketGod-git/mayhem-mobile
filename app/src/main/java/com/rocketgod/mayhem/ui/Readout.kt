@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -19,15 +21,22 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -70,19 +79,39 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, onTune: ((
     val tuneNow = rememberUpdatedState(onTune)
     val stepPx = with(LocalDensity.current) { 22.dp.toPx() }
     val fs = d.sp(if (big) 34f else 26f)
+    val fsPx = with(LocalDensity.current) { fs.toPx() }
+    // which way the last change went, so every digit that moved flashes the same direction
+    val last = remember { longArrayOf(hz) }
+    val dir = if (hz > last[0]) 1 else if (hz < last[0]) -1 else 0
+    SideEffect { last[0] = hz }
     var lead = true
     Row(verticalAlignment = Alignment.Bottom) {
         GROUPS.forEachIndexed { gi, (weights, unit) ->
             if (gi > 0) Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs, modifier = Modifier.padding(bottom = d.dp(9f)))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row {
-                    for (w in weights) {
+                    for (w in weights) key(w) {
                         val v = ((hz / w) % 10).toInt()
                         if (v != 0 || w <= 1_000_000L) lead = false
                         val dim = lead
-                        val color = when { preview -> Palette.accent2; dim -> Palette.muted.copy(alpha = 0.4f); w >= 1_000_000L -> Palette.ink; else -> tint }
+                        val base = when { preview -> Palette.accent2; dim -> Palette.muted.copy(alpha = 0.4f); w >= 1_000_000L -> Palette.ink; else -> tint }
+                        // a digit that changes kicks a little in the direction it moved, lit in the second accent
+                        val flash = remember { Animatable(0f) }
+                        val kick = remember { intArrayOf(0) }
+                        val seen = remember { intArrayOf(v) }
+                        LaunchedEffect(v) {
+                            if (v != seen[0] && dir != 0) { kick[0] = dir; flash.snapTo(1f); flash.animateTo(0f, tween(250)) }
+                            seen[0] = v
+                        }
+                        val color = lerp(base, Palette.accent2, flash.value)
+                        val hint = Palette.accent2.copy(alpha = 0.35f)
                         Text("$v", color = color, fontFamily = Mono, fontWeight = if (w >= 1_000_000L) FontWeight.Black else FontWeight.Bold, fontSize = fs,
-                            modifier = if (onTune == null) Modifier else Modifier.pointerInput(w) {
+                            modifier = (if (onTune == null || preview) Modifier else Modifier.drawBehind {
+                                // faint chevrons on every tunable digit: there is no hover on a phone to reveal them
+                                val t = fsPx * 0.14f; val cx = size.width / 2
+                                drawPath(Path().apply { moveTo(cx - t, t); lineTo(cx + t, t); lineTo(cx, 0f); close() }, hint)
+                                drawPath(Path().apply { moveTo(cx - t, size.height - t); lineTo(cx + t, size.height - t); lineTo(cx, size.height); close() }, hint)
+                            }).graphicsLayer { translationY = -kick[0] * flash.value * fsPx * 0.12f }.then(if (onTune == null) Modifier else Modifier.pointerInput(w) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
                                     var moved = 0f; var stepped = false
@@ -104,7 +133,7 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, onTune: ((
                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     }
                                 }
-                            })
+                            }))
                     }
                 }
                 Text(unit, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
@@ -165,10 +194,7 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
         if (onTune != null) Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
             val fav = marks.firstOrNull { abs(it.hz - tuned) < 50 }
             Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
-                modifier = Modifier.clickable {
-                    if (fav != null) Bookmarks.remove(fav)
-                    else Bookmarks.add("%.4f %s".format(tuned / 1e6, if (mode == SdrEngine.Mode.NONE) "" else mode.name).trim(), tuned, mode)
-                }.padding(horizontal = 4.dp))
+                modifier = Modifier.clickable { Bookmarks.star(tuned, mode) }.padding(horizontal = 4.dp))
             Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = 4.dp))
         }
     }

@@ -31,7 +31,7 @@ object Prowl {
         Range(420e6, 470e6, SdrEngine.Mode.NFM, "UHF"),
         Range(851e6, 869e6, SdrEngine.Mode.NFM, "800 public safety"),
     )
-    val SPANS = listOf("2 MHz" to 2_000_000, "8 MHz" to 8_000_000, "20 MHz" to 20_000_000)
+    val SPANS = listOf("1.92 MHz" to 1_920_000, "7.68 MHz" to 7_680_000, "19.2 MHz" to 19_200_000)
 
     // The quiet timeout has to outlast the test, or a channel is dropped before it can be judged and the log fills
     // with things that were never actually listened to.
@@ -53,7 +53,7 @@ object Prowl {
         val on: Boolean = false, val target: Target? = null, val held: Double? = null, val note: String = "",
         val seen: Int = 0, val ready: Int = 0, val remembered: Int = 0, val sweep: Boolean = false, val band: String = "",
         val score: Double = 0.0, val best: Double = 0.0, val parts: String = "", val log: List<Hit> = emptyList(),
-        val span: Int = 2_000_000, val dwellS: Int = 0,
+        val span: Int = SdrEngine.RX_RATE, val dwellS: Int = 0,
     )
 
     private val _view = MutableStateFlow(View())
@@ -74,7 +74,7 @@ object Prowl {
     private var sweep = false
     private var seen = 0
     private var ready = 0
-    private var span = 2_000_000
+    private var span = SdrEngine.RX_RATE
     private var lastLo = 0L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -149,7 +149,7 @@ object Prowl {
     @Synchronized fun holdAt(hz: Double, mode: SdrEngine.Mode = modeAt(hz)) {
         stop()
         held = hz
-        SdrEngine.setMode(mode)
+        SdrEngine.setMode(mode, silent = true)
         listenAt(hz)
         note = "holding ${mhz(hz)} · press HUNT to carry on looking"
         publish()
@@ -254,7 +254,7 @@ object Prowl {
     private fun land(t: Track, now: Long, signals: List<Signal>) {
         val sig = signals.firstOrNull { key(it.hz) == key(t.hz) }
         val mode = modeAt(t.hz)
-        if (SdrEngine.mode.value != mode) SdrEngine.setMode(mode)
+        if (SdrEngine.mode.value != mode) SdrEngine.setMode(mode, silent = true)
         listenAt(t.hz)
         target = Target(t.hz, sig?.bw6 ?: 12_500.0, sig?.cls ?: "", now, now, now, false, t.best, band)
         score = 0.0; best = 0.0; parts = ""
@@ -310,7 +310,7 @@ object Prowl {
         val (centre, mode, name) = wins[win]
         band = name; movedAt = now
         SdrEngine.tuneLo(centre); SdrEngine.setOffset(0); lastLo = centre
-        if (SdrEngine.mode.value != mode) SdrEngine.setMode(mode)
+        if (SdrEngine.mode.value != mode) SdrEngine.setMode(mode, silent = true)
         note = "sweeping $name around ${mhz(centre.toDouble())}"
     }
 

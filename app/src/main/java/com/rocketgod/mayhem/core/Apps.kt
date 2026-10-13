@@ -90,7 +90,11 @@ object Apps {
             MayhemApp.SAT -> com.rocketgod.mayhem.core.sat.Sats.open()
             MayhemApp.DEVICES -> com.rocketgod.mayhem.core.r433.Devices.open()
             // already listening (from the launcher, or back from Settings): carry on exactly where it is
-            MayhemApp.AUDIO -> if (!SdrEngine.listening()) SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, r, 24, 24, false, null)
+            MayhemApp.AUDIO -> when {
+                SdrEngine.listening() -> {}
+                SdrEngine.plain() -> SdrEngine.setMode(SdrEngine.radioMode, silent = true)
+                else -> SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
+            }
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
             MayhemApp.APRS -> SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L, r, 24, 24, false, aprs)
@@ -103,8 +107,8 @@ object Apps {
             MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
-            MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, r, 24, 24, false, recorder)
-            MayhemApp.TRANSMIT -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, r, 24, 24, false, null)
+            MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, recorder)
+            MayhemApp.TRANSMIT -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
             MayhemApp.SETTINGS -> {}
         }
     }
@@ -119,10 +123,9 @@ object Apps {
         SdrEngine.configure(SdrEngine.Mode.NONE, sp.centerOf(0), rate, 24, 24, false, sp)
     }
 
-    /** Back: off Settings to whatever it was opened over, otherwise to the launcher. */
+    /** Back: off Settings to whatever it was opened over (the launcher included), otherwise to the launcher. */
     fun back() {
-        val u = under
-        if (_current.value == MayhemApp.SETTINGS && u != null) { under = null; _current.value = u } else home()
+        if (_current.value == MayhemApp.SETTINGS) { _current.value = under; under = null } else home()
     }
 
     /**
@@ -140,7 +143,9 @@ object Apps {
         SdrEngine.sameOn = true
         _current.value = null
         _sweep.value = null
-        if (!SdrEngine.listening()) SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
+        if (!SdrEngine.listening()) SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
+        // the launcher has no gain controls of its own, so it rides the AGC unless the gain has been set by hand
+        SdrEngine.rideAgc()
     }
 
     /** Jump from a sweep hit into the Audio receiver on that frequency. */
@@ -149,6 +154,7 @@ object Apps {
         SdrEngine.watchSignals = true
         SdrEngine.sameOn = true
         _current.value = MayhemApp.AUDIO
-        SdrEngine.configure(mode, freqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
+        SdrEngine.configure(mode, freqHz, SdrEngine.RX_RATE, 24, 24, false, null)
+        SdrEngine.setDial(freqHz, mode)
     }
 }

@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 interface IqProcessor {
     val wantsFm: Boolean get() = false
+    /** Cut-off of the NFM channel filter ahead of the discriminator, for a signal wider than voice; 0 keeps the default. */
+    val fmChannelHz: Int get() = 0
     /** Called on the DSP thread before the first buffer and whenever the IQ sample rate changes. */
     fun reset(rate: Int)
     /** Offset-128 interleaved I,Q bytes; [len] bytes valid. */

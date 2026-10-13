@@ -10,7 +10,15 @@ import org.json.JSONObject
 import java.util.Timer
 import java.util.TimerTask
 
-data class Bookmark(val name: String, val hz: Long, val mode: SdrEngine.Mode)
+/**
+ * A saved channel. One saved with the star also remembers how it was heard: the app, the gain stages and AGC, the
+ * squelch, and for HAM its own receiver ([ham], whatever the HAM screen chose to keep), so recalling it brings the
+ * whole set-up back, not just the frequency.
+ */
+data class Bookmark(
+    val name: String, val hz: Long, val mode: SdrEngine.Mode,
+    val app: String? = null, val gains: List<Int>? = null, val squelch: Int? = null, val ham: JSONObject? = null,
+)
 
 /** Saved frequencies (Mayhem's frequency manager, the phone way): a JSON list in SharedPreferences. */
 object Bookmarks {
@@ -25,14 +33,23 @@ object Bookmarks {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
-                Bookmark(o.getString("name"), o.getLong("hz"), runCatching { SdrEngine.Mode.valueOf(o.getString("mode")) }.getOrDefault(SdrEngine.Mode.NFM))
+                Bookmark(o.getString("name"), o.getLong("hz"), runCatching { SdrEngine.Mode.valueOf(o.getString("mode")) }.getOrDefault(SdrEngine.Mode.NFM),
+                    o.optString("app").ifEmpty { null },
+                    o.optJSONArray("gains")?.let { g -> (0 until g.length()).map { g.getInt(it) } }?.takeIf { it.size == 4 },
+                    if (o.has("squelch")) o.getInt("squelch") else null,
+                    o.optJSONObject("ham"))
             }
         }.getOrDefault(emptyList())
     }
 
     private fun save() {
         val arr = JSONArray()
-        for (b in _list.value) arr.put(JSONObject().put("name", b.name).put("hz", b.hz).put("mode", b.mode.name))
+        for (b in _list.value) arr.put(JSONObject().put("name", b.name).put("hz", b.hz).put("mode", b.mode.name).apply {
+            b.app?.let { put("app", it) }
+            b.gains?.let { put("gains", JSONArray(it)) }
+            b.squelch?.let { put("squelch", it) }
+            b.ham?.let { put("ham", it) }
+        })
         ctx?.getSharedPreferences("mayhem", Context.MODE_PRIVATE)?.edit()?.putString("bookmarks", arr.toString())?.apply()
     }
 
@@ -42,6 +59,34 @@ object Bookmarks {
     }
 
     fun remove(b: Bookmark) { _list.value = _list.value.filter { it != b }; save() }
+
+    /** The favourite at [hz], if there is one. */
+    fun at(hz: Long): Bookmark? = _list.value.firstOrNull { kotlin.math.abs(it.hz - hz) < 50 }
+
+    /** ★: save where you are and how you are listening, or drop it if it is already saved. */
+    fun star(hz: Long, mode: SdrEngine.Mode, label: String = mode.name, ham: JSONObject? = null) {
+        at(hz)?.let { remove(it); Diag.log("removed %.4f from favourites".format(hz / 1e6)); return }
+        val app = Apps.playing() ?: MayhemApp.AUDIO
+        val b = Bookmark("%.4f %s".format(hz / 1e6, if (mode == SdrEngine.Mode.NONE && ham == null) "" else label).trim(), hz, mode, app.name,
+            listOf(SdrEngine.radioLna.value, SdrEngine.radioVga.value, if (SdrEngine.radioAmp.value) 1 else 0, if (SdrEngine.agc.value) 1 else 0),
+            SdrEngine.squelchDb.value, ham)
+        _list.value = _list.value.filter { kotlin.math.abs(it.hz - hz) >= 50 } + b
+        save()
+        Diag.log("saved ${b.name} to favourites")
+    }
+
+    /** Where the HAM screen restores its own part of a favourite; set by HAM, which owns those settings. */
+    @Volatile var hamRecall: ((Bookmark) -> Unit)? = null
+
+    /** Recall a favourite the way it was heard: the right app, its gain and squelch, then the frequency. */
+    fun open(b: Bookmark) {
+        val app = b.app?.let { runCatching { MayhemApp.valueOf(it) }.getOrNull() }
+        if (app != null && app != Apps.current.value) Apps.open(app)
+        b.gains?.let { g -> SdrEngine.applyGains(g[0], g[1], g[2] == 1, g[3] == 1) }
+        if (app == MayhemApp.HAM && b.ham != null) { hamRecall?.invoke(b); return }
+        b.squelch?.let { SdrEngine.setSquelch(it) }
+        go(b)
+    }
 
     fun go(b: Bookmark) { SdrEngine.setMode(b.mode); SdrEngine.tune(b.hz) }
 }

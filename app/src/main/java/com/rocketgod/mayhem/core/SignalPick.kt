@@ -31,12 +31,16 @@ fun signalDial(s: Signal, raster: Long): Long {
     return (hz / 100).roundToLong() * 100
 }
 
-/** The mode a tapped signal asks for, only when its shape is clear: a wide hump is WFM, a confident label picks its own. */
-fun modeFor(s: Signal): SdrEngine.Mode? {
+/**
+ * The mode a tapped signal asks for: a wide hump (or anything in the broadcast band) is WFM and a confident label
+ * picks its own. A doubtful narrow hump heard in WFM is safest as NFM; otherwise a doubtful one leaves the mode
+ * alone rather than putting a broadcast station through a 12.5 kHz demodulator.
+ */
+fun modeFor(s: Signal, current: SdrEngine.Mode = SdrEngine.mode.value): SdrEngine.Mode? {
     val wide = s.cls == "WFM" || s.cls == "WIDE" || s.bw6 > 60_000 || (s.hz > 87_500_000 && s.hz < 108_000_000)
     if (wide) return SdrEngine.Mode.WFM
-    if (s.conf < 0.6) return null
-    return when (s.cls) { "AM" -> SdrEngine.Mode.AM; "USB" -> SdrEngine.Mode.USB; "LSB" -> SdrEngine.Mode.LSB; "NFM", "DMR", "FSK" -> SdrEngine.Mode.NFM; else -> null }
+    if (s.conf >= 0.6) return when (s.cls) { "AM" -> SdrEngine.Mode.AM; "USB" -> SdrEngine.Mode.USB; "LSB", "SSB" -> SdrEngine.Mode.LSB; else -> SdrEngine.Mode.NFM }
+    return if (current == SdrEngine.Mode.WFM || current == SdrEngine.Mode.NONE) SdrEngine.Mode.NFM else null
 }
 
 /**
@@ -66,8 +70,8 @@ object AutoPick {
         val pool = if (broadcast) inView.filter { it.cls == "WFM" || it.bw6 > 60_000 }.ifEmpty { inView } else inView
         val best = pool.maxByOrNull { it.snr } ?: return
         armed = false
-        modeFor(best)?.let { if (it != SdrEngine.mode.value) SdrEngine.setMode(it) }
-        SdrEngine.tune(signalDial(best, rasterFor(SdrEngine.mode.value)))
+        modeFor(best)?.let { if (it != SdrEngine.mode.value) SdrEngine.setMode(it, silent = true) }
+        SdrEngine.tune(signalDial(best, rasterFor(SdrEngine.mode.value)), silent = true)
         com.rocketgod.mayhem.Diag.log("start-up: tuned the strongest signal in view, %.3f MHz %s %.0f dB".format(best.hz / 1e6, best.cls, best.snr))
     }
 }

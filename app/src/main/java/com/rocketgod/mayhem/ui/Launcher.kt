@@ -17,10 +17,13 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +69,15 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
     val mode by SdrEngine.mode.collectAsState()
     val freq = Tuning.previewHz ?: (lo + offset)
     val band = bandAt(freq)
+    val wide = d.cls != ScreenClass.COMPACT
+    // Landing in a band (sliding the span there) lights its chip and takes up the way you listen there, so a drag
+    // from 93 MHz to 433 does not leave wideband FM putting a wall of noise through the speaker.
+    val seen = remember { mutableStateOf(bandAt(lo)) }
+    LaunchedEffect(lo) {
+        val b = bandAt(lo)
+        if (b != null && b !== seen.value && b.mode != SdrEngine.mode.value) SdrEngine.setMode(b.mode, silent = true)
+        seen.value = b
+    }
     Column(modifier) {
         ReceiverScope(accent,
             (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 160f))).padding(top = d.dp(6f)),
@@ -73,9 +85,17 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
         Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
              else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
             fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
-        ListenBandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
+        // a chip shows the whole band (as wide as this radio and screen take) and picks its strongest station
+        ListenBandChips(accent, lo) { b ->
+            SdrEngine.viewBand(b.lo, b.hi, b.mode, if (wide) 19_200_000 else 7_680_000)
+            seen.value = b
+            com.rocketgod.mayhem.core.AutoPick.arm()
+        }
     }
 }
+
+/** Where the app list was scrolled to, kept while an app is open so coming back lands in the same place. */
+private object GridSpot { var index = 0; var offset = 0 }
 
 /** The apps by what they do: receivers, analysers, transmit, tools. 2-up on a phone, 5–6 across on a tablet. */
 @Composable
@@ -83,7 +103,10 @@ private fun AppGrid(modifier: Modifier) {
     val d = rememberDims()
     var asking by remember { mutableStateOf<MayhemApp?>(null) }
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
+    val grid = rememberLazyGridState(GridSpot.index, GridSpot.offset)
+    DisposableEffect(Unit) { onDispose { GridSpot.index = grid.firstVisibleItemIndex; GridSpot.offset = grid.firstVisibleItemScrollOffset } }
     LazyVerticalGrid(
+        state = grid,
         columns = GridCells.Adaptive(minSize = d.tileMin),
         verticalArrangement = Arrangement.spacedBy(d.dp(8f)),
         horizontalArrangement = Arrangement.spacedBy(d.dp(8f)),
