@@ -124,43 +124,6 @@ fun SectionLabel(text: String) {
         modifier = Modifier.padding(top = d.dp(8f), bottom = d.dp(4f), start = 2.dp))
 }
 
-/** Tuned-frequency readout with the level bar and the RX-health sub-line; [channelHz] when listening off the LO. */
-@Composable
-fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz: Long? = null) {
-    val d = rememberDims()
-    val tuned by SdrEngine.freqHz.collectAsState()
-    val level by SdrEngine.levelDb.collectAsState()
-    val squelch by SdrEngine.squelchDb.collectAsState()
-    val sqOpen by SdrEngine.squelchOpen.collectAsState()
-    val scanning by Scanner.active.collectAsState()
-    val preview = Tuning.previewHz
-    val freq = preview ?: channelHz ?: tuned
-    val tint = if (preview != null) Palette.accent2 else accent
-    val mhz = freq / 1e6
-    val whole = mhz.toLong()
-    val frac = "%.4f".format(mhz - whole).substring(1)   // ".xxxx"
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.Bottom) {
-        Text("$whole", color = if (preview != null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (big) 42f else 30f), maxLines = 1)
-        Text(frac, color = tint, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(if (big) 26f else 18f), maxLines = 1,
-            modifier = Modifier.padding(bottom = d.dp(if (big) 6f else 3f)))
-        Text(" MHz", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(12f), modifier = Modifier.padding(bottom = d.dp(if (big) 8f else 5f)))
-        if (squelch > 0 || scanning) {
-            val badge = if (scanning) (if (sqOpen) "SCAN · SIGNAL" else "SCAN") else if (sqOpen) "OPEN" else "SQL"
-            val c = if (sqOpen) Palette.ok else Palette.muted
-            Text(badge, color = c, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp,
-                modifier = Modifier.padding(start = 8.dp, bottom = d.dp(if (big) 9f else 6f)).border(1.dp, c, RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
-        }
-    }
-    LevelBar(level, accent, Modifier.fillMaxWidth().padding(horizontal = d.dp(24f), vertical = d.dp(3f)).height(d.dp(4f)))
-    if (sub.isNotEmpty()) Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
-        modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = TextAlign.Center)
-    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
-    val lim = com.rocketgod.mayhem.core.Radio.limits
-    if (radio != com.rocketgod.mayhem.core.Radio.Kind.NONE && !com.rocketgod.mayhem.core.Radio.canTune(lim, freq))
-        Text("outside this ${com.rocketgod.mayhem.core.Radio.name}'s %d–%d MHz".format(lim.minHz / 1_000_000, lim.maxHz / 1_000_000),
-            color = Palette.danger, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = TextAlign.Center)
-}
-
 /** Peak-over-floor level meter, 0..45 dB → full width. */
 @Composable
 fun LevelBar(levelDb: Float, accent: Color, modifier: Modifier = Modifier) {

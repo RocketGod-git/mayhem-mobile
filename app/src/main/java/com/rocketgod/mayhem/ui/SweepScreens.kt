@@ -113,7 +113,7 @@ fun LookingGlassScreen(accent: Color) {
                 SweepTitle(s, progress, sweeps, if (previewHz != null) " · LISTEN %.3f MHz — lift to tune".format(previewHz!! / 1e6) else "", if (previewHz != null) Palette.accent2 else accent)
                 WaterfallView(
                     spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 200, traceFrac = 0.3f,
-                    centreMarker = false, labels = if (s != null) rangeLabels(s.startHz, s.endHz, if (d.wide) 7 else 5) else emptyList(),
+                    centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.endHz, if (d.wide) 7 else 5) else emptyList(),
                     onPreviewFrac = { f -> previewHz = if (f != null && s != null) s.startHz + ((s.endHz - s.startHz) * f.toDouble()).toLong() else null }
                 ) { frac ->
                     if (s != null) {
@@ -151,7 +151,7 @@ fun SearchScreen(accent: Color) {
                 SweepTitle(s, progress, sweeps, " · ${hits.size} hits", accent)
                 WaterfallView(
                     spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = if (d.wide) 200 else 80, traceFrac = 0.35f,
-                    centreMarker = false, labels = if (s != null) rangeLabels(s.startHz, s.endHz, if (d.wide) 7 else 5) else emptyList()
+                    centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.endHz, if (d.wide) 7 else 5) else emptyList()
                 )
             }
         }

@@ -69,7 +69,8 @@ object Apps {
         if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
         if (app != MayhemApp.SAT) com.rocketgod.mayhem.core.sat.Sats.close()
         if (app != MayhemApp.PROWL) Prowl.stop()          // the hunt owns the receiver; anything else takes it back
-        SdrEngine.watchSignals = app == MayhemApp.PROWL
+        // the signal finder labels every waterfall; the sweeps have no fixed span to label
+        SdrEngine.watchSignals = app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH
         SdrEngine.sameOn = app == MayhemApp.AUDIO
         _current.value = app
         val r = SdrEngine.IQ_RATE
@@ -111,7 +112,7 @@ object Apps {
         recorder?.stop()
         Scanner.stop()
         Prowl.stop()
-        SdrEngine.watchSignals = false
+        SdrEngine.watchSignals = true
         SdrEngine.sameOn = false
         _current.value = null
         _sweep.value = null
@@ -121,7 +122,7 @@ object Apps {
     /** Jump from a sweep hit into the Audio receiver on that frequency. */
     fun listen(freqHz: Long, mode: SdrEngine.Mode) {
         _sweep.value = null
-        SdrEngine.watchSignals = false
+        SdrEngine.watchSignals = true
         SdrEngine.sameOn = true
         _current.value = MayhemApp.AUDIO
         SdrEngine.configure(mode, freqHz, SdrEngine.IQ_RATE, 24, 24, false, null)

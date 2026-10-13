@@ -129,7 +129,12 @@ object SdrEngine {
         }
         if (_radioLna.value != l || _radioVga.value != v) syncDriver()
     }
-    /** Latest spectrum: [SPEC_BINS] normalised magnitudes 0..1, low→high frequency (fftshifted). */
+    /**
+     * Latest spectrum: [SPEC_BINS] normalised magnitudes 0..1, low→high frequency (fftshifted). Every sample that
+     * arrives between frames is power-averaged through a 4096-point Hann FFT (about 2.4 M samples a second are
+     * transformed whatever the rate), which pulls the noise spread down to a dB or two so a weak station stands out;
+     * the floor is the median bin (robust to strong carriers) and the display covers [SPEC_RANGE_DB] above it.
+     */
     private val _spectrum = MutableStateFlow(FloatArray(0))
     val spectrum: StateFlow<FloatArray> = _spectrum.asStateFlow()
     /** Once-per-second RX health line (iqRMS / DC / peak) for the UI. */
@@ -157,8 +162,13 @@ object SdrEngine {
         if (db <= 0) { sqOpen = true; _squelchOpen.value = true }
     }
 
-    const val SPEC_BINS = 256
-    private const val FFT_N = 1024
+    const val SPEC_BINS = 1024
+    private const val FFT_N = 4096
+    const val SPEC_RANGE_DB = 40f
+    private const val SPEC_FLOOR_PAD_DB = 4f
+    /** The dB the 0..1 spectrum is scaled against: (floor, range), for the spectrum's grid labels. */
+    private val _specScale = MutableStateFlow(Float.NaN to SPEC_RANGE_DB)
+    val specScale: StateFlow<Pair<Float, Float>> = _specScale.asStateFlow()
 
     /** Where the demodulator listens relative to the LO, so a channel can be heard without parking it on the DC spike. */
     private val _offsetHz = MutableStateFlow(0)
@@ -166,10 +176,9 @@ object SdrEngine {
     fun setOffset(hz: Int) { _offsetHz.value = hz }
 
     /** The signals in view with their modulation, refreshed ten times a second while [watchSignals] is on. */
-    @Volatile var watchSignals = false
+    @Volatile var watchSignals = true
     private val _signals = MutableStateFlow<List<Signal>>(emptyList())
     val signals: StateFlow<List<Signal>> = _signals.asStateFlow()
-    private const val CLS_N = 2048
     private val classifier = Classifier()
 
     /** Speech score of the demodulated audio, four times a second while [listenForVoice] is on. */
@@ -284,14 +293,51 @@ object SdrEngine {
         processor = proc
     }
 
+    /** Whether the open app is a plain receiver, whose channel can move inside the span with the radio left still. */
+    private fun channelInSpan() = processor == null && _mode.value != Mode.NONE
+
+    /** Keep a tuned channel this far inside the span edge before the radio follows it. */
+    private const val VIEW_GUARD = 100_000L
+
+    /** The frequency being listened to: the radio's LO plus where the channel sits in the span. */
+    fun channelHz(): Long = _freqHz.value + _offsetHz.value
+
+    /**
+     * Tune. A plain receiver moves its channel inside the span and the radio only follows when the channel leaves
+     * it, so picking something already on the waterfall does not throw the waterfall sideways and wipe its
+     * history. Everything else (decoders working on the raw samples) retunes the radio itself.
+     */
     fun tune(hz: Long) {
         val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        if (!channelInSpan()) { tuneLo(f); return }
+        val lo = _freqHz.value
+        if (kotlin.math.abs(f - lo) > _rateHz.value / 2 - VIEW_GUARD) { tuneLo(f); _offsetHz.value = 0 }
+        else _offsetHz.value = (f - lo).toInt()
+        radioFreqHz = f
+    }
+    fun nudge(deltaHz: Long) = tune(channelHz() + deltaHz)
+
+    /** Move the radio itself, leaving the channel offset alone. */
+    fun tuneLo(hz: Long) {
+        val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
         _freqHz.value = f
-        if (processor == null && _mode.value != Mode.NONE) radioFreqHz = f
         HackRfOne.targetFreqHz = f
         RtlSdr.targetFreqHz = f
     }
-    fun nudge(deltaHz: Long) = tune(_freqHz.value + deltaHz)
+
+    /**
+     * Slide the span: the radio's LO goes to [lo] while the channel keeps its frequency, so you can look further
+     * along the band than the screen shows. It keeps playing while it is inside the span and goes quiet outside.
+     */
+    fun slideSpan(lo: Long) {
+        if (!channelInSpan()) { tune(lo); return }
+        val ch = channelHz()
+        tuneLo(lo)
+        _offsetHz.value = (ch - _freqHz.value).coerceIn(-(Int.MAX_VALUE.toLong()), Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** ⌖: bring the view back to the channel. */
+    fun recentre() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
 
     /** Where the Audio app opens next: set from the launcher, where a tap means "listen here". */
     fun setDial(hz: Long, mode: Mode) { radioFreqHz = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ); radioMode = mode }
@@ -330,7 +376,11 @@ object SdrEngine {
     private fun workerLoop() {
         var track: AudioTrack? = null
         val fre = FloatArray(FFT_N); val fim = FloatArray(FFT_N)
-        val powerDb = FloatArray(SPEC_BINS)
+        val win = FloatArray(FFT_N) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / FFT_N)).toFloat() }
+        val acc = DoubleArray(FFT_N); var frames = 0
+        val pdb = FloatArray(FFT_N); val sorted = FloatArray(FFT_N)
+        var prevOut = FloatArray(0); var specFrame = 0
+        var clsRate = 0; var clsFreq = 0L; var clsQuietUntil = 0L
         var prevI = 0f; var prevQ = 0f                 // FM discriminator memory
         var deemph = 0f                                 // WFM de-emphasis one-pole memory
         var amDc = 0f                                   // AM DC blocker memory
@@ -348,10 +398,6 @@ object SdrEngine {
         var lastVol = -1f
         val procAudio = FloatArray(16384); val procPcm = ShortArray(16384)
         var ncoR = 1f; var ncoI = 0f; var ncoN = 0                 // channel-offset oscillator
-        val cre = FloatArray(CLS_N); val cim = FloatArray(CLS_N); val cacc = DoubleArray(CLS_N)
-        val cpdb = FloatArray(CLS_N); val csort = FloatArray(CLS_N)
-        val cwin = FloatArray(CLS_N) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / CLS_N)).toFloat() }
-        var cFrames = 0; var lastCls = 0L; var clsRate = 0; var clsFreq = 0L; var clsQuietUntil = 0L
         var lastVoice = 0L
         val rdsBuf = FloatArray(8192); var rdsN = 0; var rdsWas = false; var rdsFreq = 0L
         val sameBuf = FloatArray(4096); var sameN = 0; var sameWas = false
@@ -387,14 +433,67 @@ object SdrEngine {
                     track = null
                 }
 
-                // ---- spectrum (~20 fps) ----
+                // ---- spectrum (~25 fps): every whole FFT frame in this buffer is accumulated (a short buffer gives one
+                // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed ----
                 val now = System.currentTimeMillis()
-                if (now - lastSpec > 50L) {
-                    lastSpec = now
-                    Dsp.loadIq(item, nSamp, fre, fim)
+                val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
+                if (nSamp >= FFT_N) {
+                    var off = 0
+                    while (off + FFT_N <= nSamp) {
+                        for (k in 0 until FFT_N) {
+                            val j = 2 * (off + k)
+                            fre[k] = ((item[j].toInt() and 0xff) - 127.4f) * win[k]
+                            fim[k] = ((item[j + 1].toInt() and 0xff) - 127.4f) * win[k]
+                        }
+                        Dsp.fft(fre, fim)
+                        for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
+                        frames++
+                        off += FFT_N * skip
+                    }
+                } else if (frames == 0) {
+                    for (k in 0 until FFT_N) {
+                        if (k < nSamp) { fre[k] = ((item[2 * k].toInt() and 0xff) - 127.4f) * win[k]; fim[k] = ((item[2 * k + 1].toInt() and 0xff) - 127.4f) * win[k] }
+                        else { fre[k] = 0f; fim[k] = 0f }
+                    }
                     Dsp.fft(fre, fim)
-                    Dsp.powerDb(fre, fim, powerDb)
-                    emitSpectrum(powerDb)
+                    for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
+                    frames = 1
+                }
+                if (now - lastSpec > 40L && frames > 0) {
+                    lastSpec = now
+                    val nAvg = frames
+                    for (k in 0 until FFT_N) pdb[k] = (10.0 * Math.log10(acc[(k + FFT_N / 2) % FFT_N] / nAvg + 1e-12)).toFloat()
+                    acc.fill(0.0); frames = 0
+                    System.arraycopy(pdb, 0, sorted, 0, FFT_N); sorted.sort()
+                    val median = sorted[FFT_N / 2]
+                    floorEma = if (floorEma.isNaN()) median else floorEma + 0.2f * (median - floorEma)
+                    val base = floorEma - SPEC_FLOOR_PAD_DB
+                    // peak-downsampled so a narrow carrier never falls between columns; a frame that averaged only a
+                    // few transforms is blended with the last so the noise stays flat
+                    val group = FFT_N / SPEC_BINS
+                    val keep = if (prevOut.size == SPEC_BINS) maxOf(0f, 0.6f - nAvg * 0.05f) else 0f
+                    val out = FloatArray(SPEC_BINS)
+                    for (bin in 0 until SPEC_BINS) {
+                        var pk = -999f
+                        for (j in 0 until group) { val v = pdb[bin * group + j]; if (v > pk) pk = v }
+                        val v = ((pk - base) / SPEC_RANGE_DB).coerceIn(0f, 1f)
+                        out[bin] = if (keep > 0f) v * (1 - keep) + prevOut[bin] * keep else v
+                    }
+                    prevOut = out.copyOf()
+                    _spectrum.value = out
+                    _specScale.value = base to SPEC_RANGE_DB
+
+                    // the signal finder works on the same averaged spectrum, every third frame (~8 a second)
+                    if (watchSignals) {
+                        val lo = _freqHz.value
+                        if (rate != clsRate || lo != clsFreq) {
+                            // buffers already queued were taken on the old tuning; let them drain before trusting any
+                            clsRate = rate; clsFreq = lo; classifier.reset(); clsQuietUntil = now + 300; _signals.value = emptyList()
+                        }
+                        if (++specFrame % 3 == 0 && now >= clsQuietUntil)
+                            _signals.value = runCatching { classifier.update(pdb, rate.toDouble(), lo.toDouble(), median.toDouble()) }.getOrElse { emptyList() }
+                    } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
+
                     if (now - lastDiag > 1000L) {
                         lastDiag = now
                         var sumI = 0.0; var sumQ = 0.0; var sumSq = 0.0
@@ -404,55 +503,20 @@ object SdrEngine {
                             sumI += iv; sumQ += qv; sumSq += iv * iv + qv * qv
                         }
                         val rms = sqrt(sumSq / nn)
-                        var peak = -999f; var peakIdx = 0; var sum = 0.0
-                        for (k in 0 until SPEC_BINS) { val d = powerDb[k]; sum += d; if (d > peak) { peak = d; peakIdx = k } }
-                        val binHz = rate.toDouble() / SPEC_BINS
-                        val offKhz = (peakIdx - SPEC_BINS / 2) * binHz / 1000.0
-                        val avg = (sum / SPEC_BINS).toFloat()
-                        val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs avg %.0fdB (Δ%.0f)".format(
-                            sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, avg, peak - avg)
+                        var peak = -999f; var peakIdx = 0
+                        for (k in 0 until FFT_N) { val dv = pdb[k]; if (dv > peak) { peak = dv; peakIdx = k } }
+                        val offKhz = (peakIdx - FFT_N / 2) * (rate.toDouble() / FFT_N) / 1000.0
+                        val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs floor %.0fdB (Δ%.0f)".format(
+                            sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median)
                         Diag.log(health)
                         _rxHealth.value = health
-                        _levelDb.value = peak - avg
+                        _levelDb.value = peak - median
                         agcStep(rms, now)
                         if (m != Mode.NONE) Diag.log("SDR audio: peak=%d/32000 %s".format(
                             audioPeak, if (audioPeak > 2500) "— demod producing audio" else "— silent (no modulation / no signal)"))
                         audioPeak = 0
                     }
                 }
-
-                // ---- signal finder: finer bins than the waterfall, averaged over ~2.4 M samples/s whatever the rate ----
-                if (watchSignals) {
-                    val lo = _freqHz.value
-                    if (rate != clsRate || lo != clsFreq) {
-                        // Buffers already queued were taken on the old tuning; let them drain before trusting any.
-                        clsRate = rate; clsFreq = lo; classifier.reset(); cacc.fill(0.0); cFrames = 0
-                        clsQuietUntil = now + 300; _signals.value = emptyList()
-                    }
-                    if (now >= clsQuietUntil) {
-                        val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
-                        var off = 0
-                        while (off + CLS_N <= nSamp) {
-                            for (k in 0 until CLS_N) {
-                                val j = 2 * (off + k)
-                                cre[k] = ((item[j].toInt() and 0xff) - 127.4f) * cwin[k]
-                                cim[k] = ((item[j + 1].toInt() and 0xff) - 127.4f) * cwin[k]
-                            }
-                            Dsp.fft(cre, cim)
-                            for (k in 0 until CLS_N) cacc[k] += (cre[k] * cre[k] + cim[k] * cim[k]).toDouble()
-                            cFrames++
-                            off += CLS_N * skip
-                        }
-                        if (now - lastCls > 100L && cFrames > 0) {
-                            lastCls = now
-                            for (k in 0 until CLS_N) cpdb[k] = (10.0 * Math.log10(cacc[(k + CLS_N / 2) % CLS_N] / cFrames + 1e-12)).toFloat()
-                            cacc.fill(0.0); cFrames = 0
-                            System.arraycopy(cpdb, 0, csort, 0, CLS_N); csort.sort()
-                            val sigs = runCatching { classifier.update(cpdb, rate.toDouble(), lo.toDouble(), csort[CLS_N / 2].toDouble()) }.getOrElse { emptyList() }
-                            _signals.value = sigs
-                        }
-                    }
-                } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
 
                 val wantRds = rdsOn && m == Mode.WFM
                 val tuned = _freqHz.value
@@ -580,13 +644,4 @@ object SdrEngine {
     }
 
     private var floorEma = Float.NaN
-    private fun emitSpectrum(db: FloatArray) {
-        // Auto-range: track the noise floor (EMA of the per-frame minimum) and scale a fixed 45 dB span above it.
-        var minDb = Float.MAX_VALUE
-        for (bin in 0 until SPEC_BINS) if (db[bin] < minDb) minDb = db[bin]
-        floorEma = if (floorEma.isNaN()) minDb else floorEma + 0.05f * (minDb - floorEma)
-        val out = FloatArray(SPEC_BINS)
-        for (bin in 0 until SPEC_BINS) out[bin] = ((db[bin] - floorEma) / 45f).coerceIn(0f, 1f)
-        _spectrum.value = out
-    }
 }

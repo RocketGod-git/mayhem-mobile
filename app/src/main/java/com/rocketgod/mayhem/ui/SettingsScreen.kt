@@ -3,6 +3,7 @@ package com.rocketgod.mayhem.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,29 +13,29 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.BuildConfig
+import kotlinx.coroutines.delay
 
 /** Settings (Mayhem ui_settings): theme skins lifted from the firmware, and an About panel. */
 @Composable
@@ -48,6 +49,19 @@ fun SettingsScreen(accent: Color) {
             Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for (skin in rowSkins) SkinCard(skin, skin == Skins.current, Modifier.weight(1f)) { Skins.set(ctx, skin) }
                 repeat(cols - rowSkins.size) { Box(Modifier.weight(1f)) }
+            }
+        }
+        SectionLabel("WATERFALL · colours")
+        for (p in WfPalette.entries) {
+            val on = Waterfalls.palette == p
+            val lut = remember(p, Palette.paper, Palette.accent, Palette.accent2) { Waterfalls.lut(p, Palette.paper, Palette.accent, Palette.accent2) }
+            Row(Modifier.fillMaxWidth().padding(bottom = d.gap).control(Palette.accent, on).clickable { Waterfalls.set(ctx, p) }.padding(d.dp(8f)),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(p.title, color = if (on) inkOn(Palette.accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), modifier = Modifier.weight(1f))
+                androidx.compose.foundation.Canvas(Modifier.size(width = d.dp(110f), height = d.dp(14f))) {
+                    val n = 64
+                    for (i in 0 until n) drawRect(Color(lut[i * 255 / (n - 1)]), androidx.compose.ui.geometry.Offset(size.width * i / n, 0f), androidx.compose.ui.geometry.Size(size.width / n + 1f, size.height))
+                }
             }
         }
         SectionLabel("STATION · your callsign and grid, for the HAM logbook, APRS and FT8")

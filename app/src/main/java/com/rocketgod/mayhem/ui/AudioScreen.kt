@@ -54,7 +54,9 @@ import kotlin.math.roundToLong
 fun AudioScreen(accent: Color) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
-    val freq by SdrEngine.freqHz.collectAsState()
+    val lo by SdrEngine.freqHz.collectAsState()
+    val offset by SdrEngine.offsetHz.collectAsState()
+    val freq = lo + offset
     val mode by SdrEngine.mode.collectAsState()
     val health by SdrEngine.rxHealth.collectAsState()
     val squelch by SdrEngine.squelchDb.collectAsState()
@@ -83,16 +85,14 @@ fun AudioScreen(accent: Color) {
     }
 
     AdaptivePane(
+        // a receiver is mostly for looking at: on a phone the waterfall gets the larger share
+        visualHeightNarrow = (d.heightDp * 0.46f).dp,
         visual = { m ->
             Column(m) {
                 alert?.header?.let { h -> SameBanner(h) }
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
                 Box(Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f))) {
-                    WaterfallView(
-                        spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                        rows = 160, labels = centredLabels(freq, SdrEngine.currentRate()),
-                        onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-                    ) { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
+                    ReceiverScope(accent, Modifier.fillMaxSize(), rows = 200)
                     if (mode == SdrEngine.Mode.WFM && rdsWanted) RdsBar(rds, accent, Modifier.align(Alignment.TopCenter))
                     if (mode == SdrEngine.Mode.WFM && hdWanted) HdBadge(hd, Modifier.align(Alignment.TopEnd).padding(top = d.dp(if (rdsWanted) 30f else 4f), end = d.dp(4f)))
                 }
