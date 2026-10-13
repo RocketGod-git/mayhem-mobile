@@ -52,12 +52,20 @@ class MainActivity : ComponentActivity() {
             when (intent.action) {
                 HackRfUsb.ACTION_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    askingPermission = false
                     Diag.log("USB permission ${if (granted) "granted" else "DENIED"} for ${d?.let { HackRfUsb.describe(it) } ?: "?"}")
                     if (d != null && granted && HackRfUsb.isRadio(d)) engage(d)
                     else status.value = "USB permission denied — replug to retry"
                 }
                 ACTION_PIP_MUTE -> SdrEngine.toggleMute()
                 ACTION_PIP_SKIP -> Prowl.skip()
+                // Plugged in while the app is open. The system also offers this to whichever app is the default for the
+                // device, and another SDR app set as default meant this one never heard of the dongle; listening for the
+                // broadcast as well means it always does.
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> if (d != null) {
+                    Diag.log("USB attached: ${HackRfUsb.describe(d)}${if (HackRfUsb.isRadio(d)) "" else " (not a radio this app drives)"}")
+                    if (HackRfUsb.isRadio(d) && !radioRunning()) autoConnect()
+                }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> if (d != null && HackRfUsb.isRadio(d)) {
                     Diag.log("USB detached: ${HackRfUsb.describe(d)}")
                     HackRfOne.abort(); RtlSdr.abort()
@@ -86,6 +94,7 @@ class MainActivity : ComponentActivity() {
         // already granted. The runtime receiver only needs DETACHED and our own permission-result broadcast.
         // NOT_EXPORTED: an exported receiver would let any app forge a "permission granted" broadcast.
         val f = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
             addAction(HackRfUsb.ACTION_PERMISSION)
             addAction(ACTION_PIP_MUTE)
@@ -141,6 +150,12 @@ class MainActivity : ComponentActivity() {
         Pip.active.value = isInPictureInPictureMode
     }
 
+    /** Back in front: a radio plugged in while the app was away (or whose intent went to another app) is picked up now. */
+    override fun onResume() {
+        super.onResume()
+        if (!radioRunning() && !askingPermission) autoConnect(quiet = true)
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 7) Geo.start(this)
@@ -182,12 +197,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /** App launched with a radio already on the port: enumerate and ask for permission if we lack it. */
-    private fun autoConnect() {
+    private fun autoConnect(quiet: Boolean = false) {
         if (radioRunning()) return
-        Diag.log(HackRfUsb.scanLog(this))
-        val d = HackRfUsb.find(this) ?: return
+        val d = HackRfUsb.find(this)
+        if (!quiet || d != null) Diag.log(HackRfUsb.scanLog(this))
+        if (d == null) return
         if (HackRfUsb.hasPermission(this, d)) engage(d)
-        else {
+        else if (!askingPermission) {
+            askingPermission = true
             status.value = "asking for USB permission…"
             HackRfUsb.requestPermission(this, d)
         }
@@ -219,4 +236,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun radioRunning() = HackRfOne.running || RtlSdr.running
+    /** The permission dialog is up; asking again from onResume would stack a second one. */
+    private var askingPermission = false
 }
