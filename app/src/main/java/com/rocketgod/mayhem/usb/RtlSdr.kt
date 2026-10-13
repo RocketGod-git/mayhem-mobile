@@ -149,7 +149,8 @@ object RtlSdr {
     private var tunerAddr = R820T_ADDR
     private var tunerXtal = RTL_XTAL
     private var vcoPowerRef = 2
-    @Volatile private var appliedFreq = 0L
+    /** The frequency the radio has actually been set to, so a sweep knows when its retune has landed. */
+    @Volatile var appliedFreq = 0L; private set
     @Volatile private var appliedRate = 0
     @Volatile private var appliedGain = Int.MAX_VALUE
     private var dbgBuffers = 0
