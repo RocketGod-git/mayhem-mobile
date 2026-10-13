@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -181,8 +179,9 @@ internal fun HamLayout(accent: Color, meter: Boolean, status: (@Composable () ->
 internal fun HamTabs(accent: Color) {
     val d = rememberDims()
     val tab by Ham.tab.collectAsState()
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        for (t in Ham.Tab.entries) Chip(t.label, selected = tab == t, accent = accent) { Ham.setTab(t) }
+    // the tabs share the width in proportion to their labels, so all five are always on screen
+    Row(Modifier.fillMaxWidth().padding(bottom = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        for (t in Ham.Tab.entries) Chip(t.label, selected = tab == t, accent = accent, modifier = Modifier.weight(t.label.length + 2f)) { Ham.setTab(t) }
     }
 }
 

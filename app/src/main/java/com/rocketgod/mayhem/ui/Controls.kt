@@ -23,6 +23,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,8 +48,11 @@ fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = M
         modifier.control(accent, selected).clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(vertical = d.dp(9f), horizontal = d.dp(6f)),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = if (selected) inkOn(accent) else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f),
-            fontWeight = FontWeight.Bold, maxLines = 1)
+        // A label never wraps (FRS/GMRS used to break at the slash); one that does not fit steps its size down until it does.
+        var fit by remember(label) { mutableFloatStateOf(1f) }
+        Text(label, color = if (selected) inkOn(accent) else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f) * fit,
+            fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false,
+            onTextLayout = { r -> if (r.didOverflowWidth && fit > 0.6f) fit *= 0.9f })
     }
 }
 
