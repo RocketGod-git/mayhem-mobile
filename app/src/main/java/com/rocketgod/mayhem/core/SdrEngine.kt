@@ -232,7 +232,6 @@ object SdrEngine {
     @Volatile var sourceLabel = "HackRF"
     @Volatile var processor: IqProcessor? = null; private set
     @Volatile private var worker: Thread? = null
-    @Volatile private var stopWorker = false
     private val queue = ArrayBlockingQueue<ByteArray>(8)
     private val pool = ArrayBlockingQueue<ByteArray>(8)
 
@@ -305,10 +304,15 @@ object SdrEngine {
         if (proc == null && mode != Mode.NONE) { radioFreqHz = _freqHz.value; radioMode = mode }
         syncDriver()
         processor = proc
+        configured = true
     }
 
     /** Whether the open app is a plain receiver, whose channel can move inside the span with the radio left still. */
     private fun channelInSpan() = processor == null && _mode.value != Mode.NONE
+
+    @Volatile private var configured = false
+    /** A plain receiver is set up and playing, so a screen that only wants to listen can leave it exactly as it is. */
+    fun listening() = configured && channelInSpan()
 
     /** Keep a tuned channel this far inside the span edge before the radio follows it. */
     private const val VIEW_GUARD = 100_000L
@@ -369,9 +373,6 @@ object SdrEngine {
     /** ⌖: bring the view back to the channel. */
     fun recentre() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
 
-    /** Where the Audio app opens next: set from the launcher, where a tap means "listen here". */
-    fun setDial(hz: Long, mode: Mode) { radioFreqHz = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ); radioMode = mode }
-
     fun setRate(rate: Int) { _rateHz.value = Radio.nearestRate(Radio.limits, rate); syncDriver() }
 
     /** A hand on the LNA or VGA switches the AGC off so the setting sticks, and is remembered for every app. */
@@ -391,14 +392,16 @@ object SdrEngine {
         if (processor == null && m != Mode.NONE) radioMode = m
     }
 
+    // A worker runs only while it is the current one, so a stop and a quick restart can never leave two of them
+    // splitting the samples between them.
     private fun startWorker() {
-        if (worker != null) return
-        stopWorker = false
-        worker = Thread { workerLoop() }.apply { isDaemon = true; name = "sdr-dsp"; start() }
+        if (worker?.isAlive == true) return
+        val t = Thread { workerLoop() }.apply { isDaemon = true; name = "sdr-dsp" }
+        worker = t; t.start()
     }
     private fun stopWorker() {
-        stopWorker = true
-        worker?.interrupt(); worker = null
+        val t = worker; worker = null
+        t?.interrupt()
         queue.clear(); pool.clear()
     }
 
@@ -432,230 +435,256 @@ object SdrEngine {
         val rdsBuf = FloatArray(8192); var rdsN = 0; var rdsWas = false; var rdsFreq = 0L
         val sameBuf = FloatArray(4096); var sameN = 0; var sameWas = false
         var hdWas = false
+        var lastTrackTry = 0L; var lastErr = 0L
+        // a write the output refuses means the system has taken it away; drop it and the next buffer opens another
+        fun emit(buf: ShortArray, n: Int) {
+            val t = track ?: return
+            val r = try { t.write(buf, 0, n) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
+            if (r < 0) { Diag.log("audio output lost (code $r), reopening it"); runCatching { t.release() }; track = null }
+        }
         try {
-            while (!stopWorker) {
+            val me = Thread.currentThread()
+            while (worker === me) {
                 val item = try { queue.take() } catch (e: InterruptedException) { break }
-                val len = item.size
-                val nSamp = len / 2
-                if (nSamp < 4) { pool.offer(item); continue }
-                val m = _mode.value
-                val rate = sampleRate
-                val p = processor
-                if (p != null && (p !== lastProc || rate != lastProcRate)) {
-                    runCatching { p.reset(rate) }.onFailure { Diag.log("processor reset failed: ${it.message}") }
-                    lastProc = p; lastProcRate = rate
-                } else if (p == null) lastProc = null
-                if (m != prevMode) {
-                    prevI = 0f; prevQ = 0f; deemph = 0f; amDc = 0f; wph = 0.0
-                    lpI1 = 0f; lpI2 = 0f; lpQ1 = 0f; lpQ2 = 0f
-                    decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0
-                    rdsN = 0; sameN = 0
-                    if (m != Mode.WFM) { rdsDec.reset(); hdDet.reset(); _rds.value = null; _hd.value = null }
-                    prevMode = m
-                }
-                val wantTrack = m != Mode.NONE || p?.producesAudio == true
-                if (wantTrack && track == null) { track = newTrack(); lastVol = -1f }
-                val vol = if (muteNow) 0f else 1f
-                if (track != null && vol != lastVol) { runCatching { track?.setVolume(vol) }; lastVol = vol }
-                if (!wantTrack && track != null) {
-                    val t = track
-                    runCatching { t?.stop() }; runCatching { t?.release() }
-                    track = null
-                }
+                try {
+                    val len = item.size
+                    val nSamp = len / 2
+                    if (nSamp < 4) { pool.offer(item); continue }
+                    val m = _mode.value
+                    val rate = sampleRate
+                    val p = processor
+                    if (p != null && (p !== lastProc || rate != lastProcRate)) {
+                        runCatching { p.reset(rate) }.onFailure { Diag.log("processor reset failed: ${it.message}") }
+                        lastProc = p; lastProcRate = rate
+                    } else if (p == null) lastProc = null
+                    if (m != prevMode) {
+                        prevI = 0f; prevQ = 0f; deemph = 0f; amDc = 0f; wph = 0.0
+                        lpI1 = 0f; lpI2 = 0f; lpQ1 = 0f; lpQ2 = 0f
+                        decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0
+                        rdsN = 0; sameN = 0
+                        if (m != Mode.WFM) { rdsDec.reset(); hdDet.reset(); _rds.value = null; _hd.value = null }
+                        prevMode = m
+                    }
+                    // One output for the life of the stream, paused while there is nothing to hear and resumed after rather
+                    // than torn down and rebuilt, so moving between screens can never leave the receiver silent.
+                    val wantTrack = m != Mode.NONE || p?.producesAudio == true
+                    if (wantTrack && track == null && System.currentTimeMillis() - lastTrackTry > 1000L) {
+                        lastTrackTry = System.currentTimeMillis()
+                        track = runCatching { newTrack() }.onFailure { Diag.log("audio output unavailable: ${it.message}") }.getOrNull()
+                        lastVol = -1f
+                    }
+                    val tk = track
+                    if (tk != null) {
+                        val vol = if (muteNow) 0f else 1f
+                        if (vol != lastVol) { runCatching { tk.setVolume(vol) }; lastVol = vol }
+                        val playing = tk.playState == AudioTrack.PLAYSTATE_PLAYING
+                        if (wantTrack && !playing) {
+                            if (runCatching { tk.play() }.isFailure || tk.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                                Diag.log("audio output would not resume, reopening it"); runCatching { tk.release() }; track = null
+                            }
+                        } else if (!wantTrack && playing) runCatching { tk.pause(); tk.flush() }
+                    }
 
-                // ---- spectrum (~25 fps): every whole FFT frame in this buffer is accumulated (a short buffer gives one
-                // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed ----
-                val now = System.currentTimeMillis()
-                val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
-                if (nSamp >= FFT_N) {
-                    var off = 0
-                    while (off + FFT_N <= nSamp) {
+                    // ---- spectrum (~25 fps): every whole FFT frame in this buffer is accumulated (a short buffer gives one
+                    // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed ----
+                    val now = System.currentTimeMillis()
+                    val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
+                    if (nSamp >= FFT_N) {
+                        var off = 0
+                        while (off + FFT_N <= nSamp) {
+                            for (k in 0 until FFT_N) {
+                                val j = 2 * (off + k)
+                                fre[k] = ((item[j].toInt() and 0xff) - 127.4f) * win[k]
+                                fim[k] = ((item[j + 1].toInt() and 0xff) - 127.4f) * win[k]
+                            }
+                            Dsp.fft(fre, fim)
+                            for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
+                            frames++
+                            off += FFT_N * skip
+                        }
+                    } else if (frames == 0) {
                         for (k in 0 until FFT_N) {
-                            val j = 2 * (off + k)
-                            fre[k] = ((item[j].toInt() and 0xff) - 127.4f) * win[k]
-                            fim[k] = ((item[j + 1].toInt() and 0xff) - 127.4f) * win[k]
+                            if (k < nSamp) { fre[k] = ((item[2 * k].toInt() and 0xff) - 127.4f) * win[k]; fim[k] = ((item[2 * k + 1].toInt() and 0xff) - 127.4f) * win[k] }
+                            else { fre[k] = 0f; fim[k] = 0f }
                         }
                         Dsp.fft(fre, fim)
                         for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
-                        frames++
-                        off += FFT_N * skip
+                        frames = 1
                     }
-                } else if (frames == 0) {
-                    for (k in 0 until FFT_N) {
-                        if (k < nSamp) { fre[k] = ((item[2 * k].toInt() and 0xff) - 127.4f) * win[k]; fim[k] = ((item[2 * k + 1].toInt() and 0xff) - 127.4f) * win[k] }
-                        else { fre[k] = 0f; fim[k] = 0f }
-                    }
-                    Dsp.fft(fre, fim)
-                    for (k in 0 until FFT_N) acc[k] += (fre[k] * fre[k] + fim[k] * fim[k]).toDouble()
-                    frames = 1
-                }
-                if (now - lastSpec > 40L && frames > 0) {
-                    lastSpec = now
-                    val nAvg = frames
-                    for (k in 0 until FFT_N) pdb[k] = (10.0 * Math.log10(acc[(k + FFT_N / 2) % FFT_N] / nAvg + 1e-12)).toFloat()
-                    acc.fill(0.0); frames = 0
-                    System.arraycopy(pdb, 0, sorted, 0, FFT_N); sorted.sort()
-                    val median = sorted[FFT_N / 2]
-                    floorEma = if (floorEma.isNaN()) median else floorEma + 0.2f * (median - floorEma)
-                    val base = floorEma - SPEC_FLOOR_PAD_DB
-                    // peak-downsampled so a narrow carrier never falls between columns; a frame that averaged only a
-                    // few transforms is blended with the last so the noise stays flat
-                    val group = FFT_N / SPEC_BINS
-                    val keep = if (prevOut.size == SPEC_BINS) maxOf(0f, 0.6f - nAvg * 0.05f) else 0f
-                    val out = FloatArray(SPEC_BINS)
-                    for (bin in 0 until SPEC_BINS) {
-                        var pk = -999f
-                        for (j in 0 until group) { val v = pdb[bin * group + j]; if (v > pk) pk = v }
-                        val v = ((pk - base) / SPEC_RANGE_DB).coerceIn(0f, 1f)
-                        out[bin] = if (keep > 0f) v * (1 - keep) + prevOut[bin] * keep else v
-                    }
-                    prevOut = out.copyOf()
-                    _spectrum.value = out
-                    _specScale.value = base to SPEC_RANGE_DB
-
-                    // the signal finder works on the same averaged spectrum, every third frame (~8 a second)
-                    if (watchSignals) {
-                        val lo = _freqHz.value
-                        if (rate != clsRate || lo != clsFreq) {
-                            // buffers already queued were taken on the old tuning; let them drain before trusting any
-                            clsRate = rate; clsFreq = lo; classifier.reset(); clsQuietUntil = now + 300; _signals.value = emptyList()
+                    if (now - lastSpec > 40L && frames > 0) {
+                        lastSpec = now
+                        val nAvg = frames
+                        for (k in 0 until FFT_N) pdb[k] = (10.0 * Math.log10(acc[(k + FFT_N / 2) % FFT_N] / nAvg + 1e-12)).toFloat()
+                        acc.fill(0.0); frames = 0
+                        System.arraycopy(pdb, 0, sorted, 0, FFT_N); sorted.sort()
+                        val median = sorted[FFT_N / 2]
+                        floorEma = if (floorEma.isNaN()) median else floorEma + 0.2f * (median - floorEma)
+                        val base = floorEma - SPEC_FLOOR_PAD_DB
+                        // peak-downsampled so a narrow carrier never falls between columns; a frame that averaged only a
+                        // few transforms is blended with the last so the noise stays flat
+                        val group = FFT_N / SPEC_BINS
+                        val keep = if (prevOut.size == SPEC_BINS) maxOf(0f, 0.6f - nAvg * 0.05f) else 0f
+                        val out = FloatArray(SPEC_BINS)
+                        for (bin in 0 until SPEC_BINS) {
+                            var pk = -999f
+                            for (j in 0 until group) { val v = pdb[bin * group + j]; if (v > pk) pk = v }
+                            val v = ((pk - base) / SPEC_RANGE_DB).coerceIn(0f, 1f)
+                            out[bin] = if (keep > 0f) v * (1 - keep) + prevOut[bin] * keep else v
                         }
-                        if (++specFrame % 3 == 0 && now >= clsQuietUntil) {
-                            val sigs = runCatching { classifier.update(pdb, rate.toDouble(), lo.toDouble(), median.toDouble()) }.getOrElse { emptyList() }
-                            _signals.value = sigs
-                            runCatching { AutoPick.onSignals(sigs) }
-                        }
-                    } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
+                        prevOut = out.copyOf()
+                        _spectrum.value = out
+                        _specScale.value = base to SPEC_RANGE_DB
 
-                    if (now - lastDiag > 1000L) {
-                        lastDiag = now
-                        var sumI = 0.0; var sumQ = 0.0; var sumSq = 0.0
-                        val nn = min(nSamp, 4096)
-                        for (k in 0 until nn) {
-                            val iv = (item[2 * k].toInt() and 0xff) - 127.4; val qv = (item[2 * k + 1].toInt() and 0xff) - 127.4
-                            sumI += iv; sumQ += qv; sumSq += iv * iv + qv * qv
+                        // the signal finder works on the same averaged spectrum, every third frame (~8 a second)
+                        if (watchSignals) {
+                            val lo = _freqHz.value
+                            if (rate != clsRate || lo != clsFreq) {
+                                // buffers already queued were taken on the old tuning; let them drain before trusting any
+                                clsRate = rate; clsFreq = lo; classifier.reset(); clsQuietUntil = now + 300; _signals.value = emptyList()
+                            }
+                            if (++specFrame % 3 == 0 && now >= clsQuietUntil) {
+                                val sigs = runCatching { classifier.update(pdb, rate.toDouble(), lo.toDouble(), median.toDouble()) }.getOrElse { emptyList() }
+                                _signals.value = sigs
+                                runCatching { AutoPick.onSignals(sigs) }
+                            }
+                        } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
+
+                        if (now - lastDiag > 1000L) {
+                            lastDiag = now
+                            var sumI = 0.0; var sumQ = 0.0; var sumSq = 0.0
+                            val nn = min(nSamp, 4096)
+                            for (k in 0 until nn) {
+                                val iv = (item[2 * k].toInt() and 0xff) - 127.4; val qv = (item[2 * k + 1].toInt() and 0xff) - 127.4
+                                sumI += iv; sumQ += qv; sumSq += iv * iv + qv * qv
+                            }
+                            val rms = sqrt(sumSq / nn)
+                            var peak = -999f; var peakIdx = 0
+                            for (k in 0 until FFT_N) { val dv = pdb[k]; if (dv > peak) { peak = dv; peakIdx = k } }
+                            val offKhz = (peakIdx - FFT_N / 2) * (rate.toDouble() / FFT_N) / 1000.0
+                            val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs floor %.0fdB (Δ%.0f)".format(
+                                sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median)
+                            Diag.log(health)
+                            _rxHealth.value = health
+                            _levelDb.value = peak - median
+                            agcStep(rms, now)
+                            if (m != Mode.NONE) Diag.log("SDR audio: peak=%d/32000 %s".format(
+                                audioPeak, if (audioPeak > 2500) "— demod producing audio" else "— silent (no modulation / no signal)"))
+                            audioPeak = 0
                         }
-                        val rms = sqrt(sumSq / nn)
-                        var peak = -999f; var peakIdx = 0
-                        for (k in 0 until FFT_N) { val dv = pdb[k]; if (dv > peak) { peak = dv; peakIdx = k } }
-                        val offKhz = (peakIdx - FFT_N / 2) * (rate.toDouble() / FFT_N) / 1000.0
-                        val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs floor %.0fdB (Δ%.0f)".format(
-                            sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median)
-                        Diag.log(health)
-                        _rxHealth.value = health
-                        _levelDb.value = peak - median
-                        agcStep(rms, now)
-                        if (m != Mode.NONE) Diag.log("SDR audio: peak=%d/32000 %s".format(
-                            audioPeak, if (audioPeak > 2500) "— demod producing audio" else "— silent (no modulation / no signal)"))
-                        audioPeak = 0
                     }
-                }
 
-                val wantRds = rdsOn && m == Mode.WFM
-                val tuned = _freqHz.value
-                if (wantRds != rdsWas || (wantRds && tuned != rdsFreq)) { rdsDec.reset(); rdsN = 0; rdsWas = wantRds; rdsFreq = tuned; if (wantRds) _rds.value = null }
-                val wantSame = sameOn && m == Mode.NFM
-                if (wantSame != sameWas) { sameDec.reset(0); sameN = 0; sameWas = wantSame }
-                val wantHd = hdOn && m == Mode.WFM
-                if (wantHd != hdWas) { hdDet.reset(); hdWas = wantHd }
-                if (wantHd && abs(_offsetHz.value) < rate / 2 - 240_000) runCatching { hdDet.push(item, nSamp, rate, _offsetHz.value.toDouble()) }
+                    val wantRds = rdsOn && m == Mode.WFM
+                    val tuned = _freqHz.value
+                    if (wantRds != rdsWas || (wantRds && tuned != rdsFreq)) { rdsDec.reset(); rdsN = 0; rdsWas = wantRds; rdsFreq = tuned; if (wantRds) _rds.value = null }
+                    val wantSame = sameOn && m == Mode.NFM
+                    if (wantSame != sameWas) { sameDec.reset(0); sameN = 0; sameWas = wantSame }
+                    val wantHd = hdOn && m == Mode.WFM
+                    if (wantHd != hdWas) { hdDet.reset(); hdWas = wantHd }
+                    if (wantHd && abs(_offsetHz.value) < rate / 2 - 240_000) runCatching { hdDet.push(item, nSamp, rate, _offsetHz.value.toDouble()) }
 
-                // ---- demod → audio (+ FM tap for packet processors) ----
-                if (m != Mode.NONE) {
-                    // Two-stage decimation. Stage 1 is the channel filter (complex boxcar) down to an intermediate
-                    // rate near the channel bandwidth: WFM → ~240 kHz, everything else → ~48 kHz. Stage 2 decimates
-                    // the demodulated audio to 48 kHz.
-                    val stage1 = if (m == Mode.WFM) max(1, rate / 240_000) else max(1, rate / AUDIO_RATE)
-                    val interRate = rate / stage1
-                    val stage2 = max(1, interRate / AUDIO_RATE)
-                    val wantFm = p != null && p.wantsFm
-                    val wInc = 2.0 * Math.PI * 1500.0 / interRate
-                    val off = _offsetHz.value
-                    val stepR = cos(-2.0 * Math.PI * off / rate).toFloat(); val stepI = sin(-2.0 * Math.PI * off / rate).toFloat()
-                    var i = 0
-                    while (i < nSamp) {
-                        val iv = (item[2 * i].toInt() and 0xff) - 127.4f
-                        val qv = (item[2 * i + 1].toInt() and 0xff) - 127.4f
-                        if (off != 0) {
-                            s1I += iv * ncoR - qv * ncoI; s1Q += iv * ncoI + qv * ncoR
-                            val nr = ncoR * stepR - ncoI * stepI; ncoI = ncoR * stepI + ncoI * stepR; ncoR = nr
-                            if (++ncoN >= 4096) { ncoN = 0; val g = 1f / sqrt(ncoR * ncoR + ncoI * ncoI); ncoR *= g; ncoI *= g }
-                        } else { s1I += iv; s1Q += qv }
-                        s1n++
-                        if (s1n >= stage1) {
-                            val ci = s1I / s1n; val cq = s1Q / s1n; s1I = 0f; s1Q = 0f; s1n = 0
-                            chPow += (ci * ci + cq * cq).toDouble(); chN++
-                            val s: Float = when (m) {
-                                Mode.AM -> { val env = sqrt(ci * ci + cq * cq); amDc += 0.001f * (env - amDc); env - amDc }
-                                Mode.USB, Mode.LSB -> {
-                                    // Weaver SSB: shift the wanted sideband's centre (±1.5 kHz) to DC, low-pass
-                                    // ±1.5 kHz, shift back, take the real part.
-                                    wph += if (m == Mode.USB) -wInc else wInc
-                                    if (wph > 2.0 * Math.PI) wph -= 2.0 * Math.PI else if (wph < 0.0) wph += 2.0 * Math.PI
-                                    val c = cos(wph).toFloat(); val sn = sin(wph).toFloat()
-                                    val ri = ci * c - cq * sn; val rq = ci * sn + cq * c
-                                    lpI1 += 0.18f * (ri - lpI1); lpI2 += 0.18f * (lpI1 - lpI2)
-                                    lpQ1 += 0.18f * (rq - lpQ1); lpQ2 += 0.18f * (lpQ1 - lpQ2)
-                                    lpI2 * c + lpQ2 * sn
+                    // ---- demod → audio (+ FM tap for packet processors) ----
+                    if (m != Mode.NONE) {
+                        // Two-stage decimation. Stage 1 is the channel filter (complex boxcar) down to an intermediate
+                        // rate near the channel bandwidth: WFM → ~240 kHz, everything else → ~48 kHz. Stage 2 decimates
+                        // the demodulated audio to 48 kHz.
+                        val stage1 = if (m == Mode.WFM) max(1, rate / 240_000) else max(1, rate / AUDIO_RATE)
+                        val interRate = rate / stage1
+                        val stage2 = max(1, interRate / AUDIO_RATE)
+                        val wantFm = p != null && p.wantsFm
+                        val wInc = 2.0 * Math.PI * 1500.0 / interRate
+                        val off = _offsetHz.value
+                        val stepR = cos(-2.0 * Math.PI * off / rate).toFloat(); val stepI = sin(-2.0 * Math.PI * off / rate).toFloat()
+                        var i = 0
+                        while (i < nSamp) {
+                            val iv = (item[2 * i].toInt() and 0xff) - 127.4f
+                            val qv = (item[2 * i + 1].toInt() and 0xff) - 127.4f
+                            if (off != 0) {
+                                s1I += iv * ncoR - qv * ncoI; s1Q += iv * ncoI + qv * ncoR
+                                val nr = ncoR * stepR - ncoI * stepI; ncoI = ncoR * stepI + ncoI * stepR; ncoR = nr
+                                if (++ncoN >= 4096) { ncoN = 0; val g = 1f / sqrt(ncoR * ncoR + ncoI * ncoI); ncoR *= g; ncoI *= g }
+                            } else { s1I += iv; s1Q += qv }
+                            s1n++
+                            if (s1n >= stage1) {
+                                val ci = s1I / s1n; val cq = s1Q / s1n; s1I = 0f; s1Q = 0f; s1n = 0
+                                chPow += (ci * ci + cq * cq).toDouble(); chN++
+                                val s: Float = when (m) {
+                                    Mode.AM -> { val env = sqrt(ci * ci + cq * cq); amDc += 0.001f * (env - amDc); env - amDc }
+                                    Mode.USB, Mode.LSB -> {
+                                        // Weaver SSB: shift the wanted sideband's centre (±1.5 kHz) to DC, low-pass
+                                        // ±1.5 kHz, shift back, take the real part.
+                                        wph += if (m == Mode.USB) -wInc else wInc
+                                        if (wph > 2.0 * Math.PI) wph -= 2.0 * Math.PI else if (wph < 0.0) wph += 2.0 * Math.PI
+                                        val c = cos(wph).toFloat(); val sn = sin(wph).toFloat()
+                                        val ri = ci * c - cq * sn; val rq = ci * sn + cq * c
+                                        lpI1 += 0.18f * (ri - lpI1); lpI2 += 0.18f * (lpI1 - lpI2)
+                                        lpQ1 += 0.18f * (rq - lpQ1); lpQ2 += 0.18f * (lpQ1 - lpQ2)
+                                        lpI2 * c + lpQ2 * sn
+                                    }
+                                    else -> {   // FM discriminator: angle(cur * conj(prev)) at the intermediate rate
+                                        val d = atan2(cq * prevI - ci * prevQ, ci * prevI + cq * prevQ)
+                                        prevI = ci; prevQ = cq; d
+                                    }
                                 }
-                                else -> {   // FM discriminator: angle(cur * conj(prev)) at the intermediate rate
-                                    val d = atan2(cq * prevI - ci * prevQ, ci * prevI + cq * prevQ)
-                                    prevI = ci; prevQ = cq; d
+                                if (wantRds) { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.size) { runCatching { rdsDec.push(rdsBuf, rdsN, interRate) }; rdsN = 0 } }
+                                if (wantSame) { sameBuf[sameN++] = s; if (sameN >= sameBuf.size) { runCatching { sameDec.onFm(sameBuf, sameN, interRate) }; sameN = 0 } }
+                                if (wantFm) {
+                                    fmBuf[fmN++] = s
+                                    if (fmN >= fmBuf.size) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
+                                }
+                                decAcc += s; decCnt++
+                                if (decCnt >= stage2) {
+                                    var v = decAcc / decCnt; decAcc = 0f; decCnt = 0
+                                    when (m) {
+                                        Mode.WFM -> { deemph += 0.28f * (v - deemph); v = deemph * 9000f }   // 75µs de-emphasis + gain
+                                        Mode.NFM -> v *= 16000f
+                                        Mode.AM -> v *= 60f
+                                        Mode.USB, Mode.LSB -> v *= 150f
+                                        else -> {}
+                                    }
+                                    val sampI = v.coerceIn(-32000f, 32000f).toInt()
+                                    val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
+                                    if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
+                                    audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
+                                    if (audioLen >= audioBuf.size) { emit(audioBuf, audioLen); audioLen = 0 }
                                 }
                             }
-                            if (wantRds) { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.size) { runCatching { rdsDec.push(rdsBuf, rdsN, interRate) }; rdsN = 0 } }
-                            if (wantSame) { sameBuf[sameN++] = s; if (sameN >= sameBuf.size) { runCatching { sameDec.onFm(sameBuf, sameN, interRate) }; sameN = 0 } }
-                            if (wantFm) {
-                                fmBuf[fmN++] = s
-                                if (fmN >= fmBuf.size) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
-                            }
-                            decAcc += s; decCnt++
-                            if (decCnt >= stage2) {
-                                var v = decAcc / decCnt; decAcc = 0f; decCnt = 0
-                                when (m) {
-                                    Mode.WFM -> { deemph += 0.28f * (v - deemph); v = deemph * 9000f }   // 75µs de-emphasis + gain
-                                    Mode.NFM -> v *= 16000f
-                                    Mode.AM -> v *= 60f
-                                    Mode.USB, Mode.LSB -> v *= 150f
-                                    else -> {}
-                                }
-                                val sampI = v.coerceIn(-32000f, 32000f).toInt()
-                                val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
-                                if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
-                                audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
-                                if (audioLen >= audioBuf.size) { track?.write(audioBuf, 0, audioLen); audioLen = 0 }
-                            }
+                            i++
                         }
-                        i++
-                    }
-                    if (voiceOn && now - lastVoice > 250L) { lastVoice = now; _voice.value = voiceDet.read() }
-                    if (wantFm && fmN > 0) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
-                    if (audioLen > 0) { track?.write(audioBuf, 0, audioLen); audioLen = 0 }
-                    if (chN > 0) {
-                        // Squelch: channel power vs a floor that follows dips quickly and rises only slowly, so a
-                        // carrier that stays up doesn't get absorbed into the floor.
-                        val db = (10.0 * Math.log10(chPow / chN + 1e-9)).toFloat(); chPow = 0.0; chN = 0
-                        sqFloor = if (sqFloor.isNaN()) db else if (db < sqFloor) sqFloor + 0.2f * (db - sqFloor) else sqFloor + 0.002f * (db - sqFloor)
-                        val thr = _squelchDb.value
-                        val open = thr == 0 || db > sqFloor + thr
-                        if (open != sqOpen) { sqOpen = open; _squelchOpen.value = open }
-                    }
-                }
-                if (p != null) runCatching { p.onIq(item, len, rate) }.onFailure { Diag.log("processor error: ${it.message}") }
-                val t = track
-                if (p != null && p.producesAudio && t != null) {
-                    val k = p.drainAudio(procAudio, procAudio.size)
-                    if (k > 0) {
-                        for (i in 0 until k) {
-                            val v = (procAudio[i] * 32000f).toInt().coerceIn(-32767, 32767)
-                            procPcm[i] = v.toShort()
-                            val a = if (v < 0) -v else v
-                            if (a > audioPeak) audioPeak = a
+                        if (voiceOn && now - lastVoice > 250L) { lastVoice = now; _voice.value = voiceDet.read() }
+                        if (wantFm && fmN > 0) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
+                        if (audioLen > 0) { emit(audioBuf, audioLen); audioLen = 0 }
+                        if (chN > 0) {
+                            // Squelch: channel power vs a floor that follows dips quickly and rises only slowly, so a
+                            // carrier that stays up doesn't get absorbed into the floor.
+                            val db = (10.0 * Math.log10(chPow / chN + 1e-9)).toFloat(); chPow = 0.0; chN = 0
+                            sqFloor = if (sqFloor.isNaN()) db else if (db < sqFloor) sqFloor + 0.2f * (db - sqFloor) else sqFloor + 0.002f * (db - sqFloor)
+                            val thr = _squelchDb.value
+                            val open = thr == 0 || db > sqFloor + thr
+                            if (open != sqOpen) { sqOpen = open; _squelchOpen.value = open }
                         }
-                        runCatching { t.write(procPcm, 0, k) }
                     }
+                    if (p != null) runCatching { p.onIq(item, len, rate) }.onFailure { Diag.log("processor error: ${it.message}") }
+                    val t = track
+                    if (p != null && p.producesAudio && t != null) {
+                        val k = p.drainAudio(procAudio, procAudio.size)
+                        if (k > 0) {
+                            for (i in 0 until k) {
+                                val v = (procAudio[i] * 32000f).toInt().coerceIn(-32767, 32767)
+                                procPcm[i] = v.toShort()
+                                val a = if (v < 0) -v else v
+                                if (a > audioPeak) audioPeak = a
+                            }
+                            emit(procPcm, k)
+                        }
+                    }
+                    pool.offer(item)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (t: Throwable) {
+                    pool.offer(item)
+                    val n = System.currentTimeMillis()
+                    if (n - lastErr > 1000L) { lastErr = n; Diag.log("SDR DSP error: ${t.message}") }
                 }
-                pool.offer(item)
             }
         } catch (t: Throwable) {
             Diag.log("SDR DSP error: ${t.message}")

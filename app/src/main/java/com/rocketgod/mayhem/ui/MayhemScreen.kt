@@ -47,12 +47,12 @@ fun MayhemScreen(status: String, connected: Boolean) {
     var showLog by remember { mutableStateOf(false) }
     var showTools by remember { mutableStateOf(false) }
     LaunchedEffect(connected) { if (!connected) showTools = true }
-    BackHandler(enabled = current != null) { Apps.home() }
-    // A receiver that dims and locks mid-pass is no use; the launcher may sleep as usual.
+    BackHandler(enabled = current != null) { Apps.back() }
+    // every screen, the launcher included, is a live receiver: none of them may dim and lock mid-listen
     val view = LocalView.current
-    DisposableEffect(current) { view.keepScreenOn = current != null; onDispose { view.keepScreenOn = false } }
+    DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
     val inPip by Pip.active.collectAsState()
-    if (inPip) { PipView(current, accent); return }
+    if (inPip) { PipView(Apps.playing(), accent); return }
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = d.pad, vertical = d.dp(6f))) {
             Header(status, connected, current, showLog, showTools, accent, onLog = { showLog = !showLog }, onTools = { showTools = !showTools })
@@ -98,7 +98,7 @@ private fun Header(status: String, connected: Boolean, app: MayhemApp?, showLog:
             Modifier.fillMaxWidth().padding(start = d.dp(12f), end = d.dp(8f), top = d.dp(6f), bottom = d.dp(6f)),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(Modifier.weight(1f).clickable { if (app != null) Apps.home() }) {
+            Column(Modifier.weight(1f).clickable { if (app != null) Apps.back() }) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         if (app == null) "MAYHEM" else "‹ ${app.title.uppercase()}",

@@ -63,7 +63,18 @@ object Apps {
         Bookmarks.load(ctx)
     }
 
+    /** The app Settings was opened over, which keeps running underneath it. */
+    private var under: MayhemApp? = null
+    /** What the radio is doing for: the open app, or the one under Settings. */
+    fun playing(): MayhemApp? = if (_current.value == MayhemApp.SETTINGS) under else _current.value
+
     fun open(app: MayhemApp) {
+        if (app == MayhemApp.SETTINGS) {
+            if (_current.value != MayhemApp.SETTINGS) under = _current.value
+            _current.value = app
+            return
+        }
+        under = null
         recorder?.stop()
         if (app != MayhemApp.AUDIO) Scanner.stop()
         if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
@@ -78,7 +89,8 @@ object Apps {
             MayhemApp.HAM -> com.rocketgod.mayhem.core.ham.Ham.open()
             MayhemApp.SAT -> com.rocketgod.mayhem.core.sat.Sats.open()
             MayhemApp.DEVICES -> com.rocketgod.mayhem.core.r433.Devices.open()
-            MayhemApp.AUDIO -> SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, r, 24, 24, false, null)
+            // already listening (from the launcher, or back from Settings): carry on exactly where it is
+            MayhemApp.AUDIO -> if (!SdrEngine.listening()) SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, r, 24, 24, false, null)
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
             MayhemApp.APRS -> SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L, r, 24, 24, false, aprs)
@@ -93,7 +105,7 @@ object Apps {
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
             MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, r, 24, 24, false, recorder)
             MayhemApp.TRANSMIT -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, r, 24, 24, false, null)
-            MayhemApp.SETTINGS -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, r, 24, 24, false, null)
+            MayhemApp.SETTINGS -> {}
         }
     }
 
@@ -107,16 +119,28 @@ object Apps {
         SdrEngine.configure(SdrEngine.Mode.NONE, sp.centerOf(0), rate, 24, 24, false, sp)
     }
 
-    /** Back to the launcher: audio off, no processor (the HackRF keeps streaming for the waterfall). */
+    /** Back: off Settings to whatever it was opened over, otherwise to the launcher. */
+    fun back() {
+        val u = under
+        if (_current.value == MayhemApp.SETTINGS && u != null) { under = null; _current.value = u } else home()
+    }
+
+    /**
+     * Back to the launcher, which is a receiver as well: what was playing keeps playing, and leaving a decoder
+     * brings the last station back.
+     */
     fun home() {
+        under = null
         recorder?.stop()
         Scanner.stop()
         Prowl.stop()
+        com.rocketgod.mayhem.core.ham.Ham.stopPtt()
+        com.rocketgod.mayhem.core.sat.Sats.close()
         SdrEngine.watchSignals = true
-        SdrEngine.sameOn = false
+        SdrEngine.sameOn = true
         _current.value = null
         _sweep.value = null
-        SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
+        if (!SdrEngine.listening()) SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.IQ_RATE, 24, 24, false, null)
     }
 
     /** Jump from a sweep hit into the Audio receiver on that frequency. */
