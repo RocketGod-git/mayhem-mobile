@@ -118,6 +118,8 @@ fun WaterfallView(
     onChannelEdge: ((lo: Float, hi: Float, hiEdge: Boolean) -> Unit)? = null,
     onSlide: ((Long) -> Unit)? = null,
     onRecentre: (() -> Unit)? = null,
+    /** Zooming out past 1× (−1) widens the span itself, and zooming in from a wide span (+1) narrows it; true when it did. */
+    onSpanStep: ((Int) -> Boolean)? = null,
     showSignals: Boolean = true,
     onTapFrac: ((Float) -> Unit)? = null,
 ) {
@@ -372,9 +374,9 @@ fun WaterfallView(
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp).background(Palette.surface.copy(alpha = 0.82f), RoundedCornerShape(6.dp)),
             verticalAlignment = Alignment.CenterVertically) {
             if (onRecentre != null) ZoomBtn("⌖") { onRecentre(); setView(zoom, 0.5f) }
-            ZoomBtn("−") { setView(zoom / 2) }
+            ZoomBtn("−") { if (zoom <= 1.001f) onSpanStep?.invoke(-1) else setView(zoom / 2) }
             Text(if (zoom > 1.001f) "${zoom.roundToInt()}×" else if (spanHz > 0) fmtSpan(spanHz) else "1×", color = Palette.muted, fontFamily = Mono, fontSize = 10.sp)
-            ZoomBtn("+") { val c = channel; setView(zoom * 2, c?.let { (it.first + it.second) / 2 }) }
+            ZoomBtn("+") { if (zoom <= 1.001f && onSpanStep?.invoke(1) == true) return@ZoomBtn; val c = channel; setView(zoom * 2, c?.let { (it.first + it.second) / 2 }) }
         }
     }
 }
@@ -460,6 +462,7 @@ fun ReceiverScope(accent: Color, modifier: Modifier, rows: Int = 160, traceFrac:
     val rate by SdrEngine.rateHz.collectAsState()
     val offset by SdrEngine.offsetHz.collectAsState()
     val mode by SdrEngine.mode.collectAsState()
+    val wide = rememberDims().cls != ScreenClass.COMPACT
     val (a, b) = when (mode) {
         SdrEngine.Mode.WFM -> -100_000 to 100_000; SdrEngine.Mode.NFM -> -6_250 to 6_250; SdrEngine.Mode.AM -> -5_000 to 5_000
         SdrEngine.Mode.USB -> 0 to 3_000; SdrEngine.Mode.LSB -> -3_000 to 0; SdrEngine.Mode.NONE -> 0 to 0
@@ -474,6 +477,7 @@ fun ReceiverScope(accent: Color, modifier: Modifier, rows: Int = 160, traceFrac:
         labels = centredLabels(lo, rate),
         onPreviewFrac = { f -> Tuning.previewHz = f?.let { target(it).first } },
         onSlide = { SdrEngine.slideSpan(it) }, onRecentre = { SdrEngine.recentre() },
+        onSpanStep = { dir -> SdrEngine.stepSpan(dir, if (wide) 20_000_000 else 10_000_000) },
     ) { f ->
         val (hz, s) = target(f)
         if (fitMode && s != null) modeFor(s)?.let { if (it != mode) SdrEngine.setMode(it) }
