@@ -46,7 +46,7 @@ object HackRfUsb {
      *  unexpected PID (e.g. a PortaPack still in Mayhem serial mode) is visible in the log. */
     fun scanLog(ctx: Context): String {
         val devs = manager(ctx).deviceList.values
-        if (devs.isEmpty()) return "USB scan: no devices enumerated (nothing on the OTG port, or the cable is charge-only)"
+        if (devs.isEmpty()) return "USB scan: no devices enumerated — nothing on the OTG port, a charge-only cable, or the phone's OTG switch is off (OnePlus, OPPO and realme turn it off after ten idle minutes: Settings › Additional settings › OTG)"
         return "USB scan: " + devs.joinToString(" · ") { d ->
             val tag = when {
                 isHackRf(d) -> "HackRF ✔"

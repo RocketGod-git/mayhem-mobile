@@ -100,6 +100,7 @@ fun SettingsScreen(accent: Color) {
         SectionLabel("FIELD NOTES")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
             AboutLine("Plugging in", "the app opens by itself when a HackRF or an RTL-SDR is plugged in; allow the USB prompt once and tick 'always'")
+            AboutLine("Nothing happens", "if plugging in does nothing, check the phone's OTG switch — OnePlus, OPPO and realme turn it off after ten idle minutes (Settings › Additional settings › OTG) — and that the cable carries data")
             AboutLine("RTL-SDR", "receive only, 24 MHz to 1.766 GHz, up to 2.4 Msps, one gain control: the transmit side is greyed out, HAM's HF bands and Bluetooth are out of reach, and wider spans are held to 2.4 MHz")
             AboutLine("Power", "a HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ")
             AboutLine("Reading LOG", "iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode")
