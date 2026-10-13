@@ -2,18 +2,17 @@ val BASE_VERSION_CODE = 15
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.rocketgod.mayhem"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.rocketgod.mayhem"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         // The Play workflow overrides this with VERSION_CODE, resolved from the highest code
         // Play already knows about, so an API upload can never collide with a Console one.
         // BASE_VERSION_CODE stays a plain literal because the release workflow reads it with sed.
@@ -44,8 +43,11 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 shrinks and obfuscates; the mapping rides inside the bundle, so Play de-obfuscates crash traces.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // Native libraries come from dependencies; their symbol tables go into the bundle for Play's crash reports.
+            ndk { debugSymbolLevel = "FULL" }
             // Signed with the release keystore when the env vars above are present (the release workflow);
             // otherwise fall back to the debug key so `assembleRelease` still yields an installable APK.
             signingConfig = if (System.getenv("ANDROID_KEYSTORE_PATH").isNullOrBlank())
@@ -60,7 +62,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
     // Android framework calls answer with defaults under the JVM tests, so the singletons can be initialised there.
     testOptions { unitTests.isReturnDefaultValues = true }
@@ -68,17 +69,17 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     // Play in-app updates: a Play-installed build may not fetch its own APK, so the update has to be
     // handed to Play. Unused by sideloads, which check GitHub instead (see AppUpdates).
     implementation("com.google.android.play:app-update-ktx:2.1.0")
 
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -87,5 +88,5 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260814")
 }
