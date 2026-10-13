@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -22,10 +24,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.core.Station
 import com.rocketgod.mayhem.core.Tx
 import com.rocketgod.mayhem.core.TxEncoders
 import kotlin.math.roundToLong
@@ -102,7 +107,7 @@ fun TxScreen(defaultAccent: Color) {
                 11 -> KeeloqTab(accent, freq, active)
                 12 -> NoiseTab(accent, freq, active)
                 13 -> BruteTab(accent, freq, active)
-                14 -> HopperTab(accent, freq, active)
+                14 -> HopperTab(accent, active)
                 else -> AdsbTab(accent, active)
             }
         }
@@ -118,7 +123,7 @@ fun TxScreen(defaultAccent: Color) {
         Chip("1 kHz", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.tones(Tx.ToneMode.SINGLE, "", freq) }
         Chip("two-tone", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.tones(Tx.ToneMode.TWO_TONE, "", freq) }
     }
-    TxField(digits, accent, "DTMF digits (0-9 A-D * #)") { digits = it.uppercase().filter { c -> c in "0123456789ABCD*#" } }
+    TxField(digits, accent, "DTMF digits (0-9 A-D * #)", kb = Kb.CAPS) { digits = it.uppercase().filter { c -> c in "0123456789ABCD*#" }.take(32) }
     Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND DTMF", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.tones(Tx.ToneMode.DTMF, digits, freq) } }
 }
 
@@ -128,8 +133,8 @@ fun TxScreen(defaultAccent: Color) {
     var msg by remember { mutableStateOf("TEST DE MAYHEM") }
     var baud by remember { mutableStateOf(1200) }
     var numeric by remember { mutableStateOf(false) }
-    TxField(addr, accent, "address (RIC)") { addr = it.filter { c -> c.isDigit() }.take(7) }
-    TxField(msg, accent, if (numeric) "digits 0-9 SU-][ " else "message") { msg = if (numeric) it.filter { c -> c in "0123456789SU -][" } else it }
+    TxField(addr, accent, "address (RIC)", kb = Kb.NUMBER) { addr = digitsOf(it, 7) }
+    TxField(msg, accent, if (numeric) "digits 0-9 SU-][ " else "message") { msg = (if (numeric) it.filter { c -> c in "0123456789SU -][" } else it).take(80) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
         Chip("$baud bd", selected = false, accent = accent, modifier = Modifier.weight(1f)) { baud = if (baud == 1200) 2400 else if (baud == 2400) 512 else 1200 }
         Chip(if (numeric) "numeric" else "alpha", selected = numeric, accent = accent, modifier = Modifier.weight(1f)) { numeric = !numeric }
@@ -141,9 +146,9 @@ fun TxScreen(defaultAccent: Color) {
 
 @Composable private fun RttyTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var text by remember { mutableStateOf("RYRYRY DE MAYHEM") }
+    var text by remember { mutableStateOf("RYRYRY DE ${stationCall()}") }
     var shift by remember { mutableStateOf(170) }
-    TxField(text, accent, "text") { text = it }
+    TxField(text, accent, "text", kb = Kb.CAPS) { text = it.take(120) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         Chip("${shift} Hz", selected = false, accent = accent, modifier = Modifier.weight(1f)) { shift = if (shift == 170) 425 else if (shift == 425) 850 else 170 }
         Chip("▶ SEND 45 bd", selected = false, accent = accent, modifier = Modifier.weight(1.4f)) { if (!active) Tx.rtty(text, 45, shift.toDouble(), freq) }
@@ -153,10 +158,10 @@ fun TxScreen(defaultAccent: Color) {
 
 @Composable private fun AprsTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var call by remember { mutableStateOf("N0CALL-9") }
+    var call by remember { mutableStateOf(Station.aprsCall()) }
     var info by remember { mutableStateOf("!4903.50N/07201.75W-Mayhem Mobile") }
-    TxField(call, accent, "source callsign-ssid") { call = it.uppercase() }
-    TxField(info, accent, "AX.25 info (position/status)") { info = it }
+    TxField(call, accent, "source callsign-ssid", kb = Kb.CAPS) { call = it.uppercase().take(9) }
+    TxField(info, accent, "AX.25 info (position/status)") { info = it.take(120) }
     Box(Modifier.padding(top = d.gap)) { Chip("▶ BEACON 144.39", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.aprs(call, info, freq) } }
     Note("Bell 202 AX.25 UI frame — decodes on the APRS app and on any TNC. Ham licence required on 144.39.")
 }
@@ -174,10 +179,10 @@ fun TxScreen(defaultAccent: Color) {
 
 @Composable private fun MorseTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var text by remember { mutableStateOf("CQ DE MAYHEM") }
+    var text by remember { mutableStateOf("CQ DE ${stationCall()}") }
     var wpm by remember { mutableStateOf(20) }
     var fm by remember { mutableStateOf(true) }
-    TxField(text, accent, "message") { text = it.uppercase() }
+    TxField(text, accent, "message", kb = Kb.CAPS) { text = it.uppercase().take(80) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
         Text("$wpm WPM", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.weight(1f))
         Chip("−", false, accent, Modifier.weight(0.5f)) { wpm = (wpm - 5).coerceAtLeast(5) }
@@ -192,7 +197,7 @@ fun TxScreen(defaultAccent: Color) {
     var hex by remember { mutableStateOf("A5C3F1") }
     var bits by remember { mutableStateOf(24) }
     var te by remember { mutableStateOf(350) }
-    TxField(hex, accent, "code (hex)") { hex = it.filter { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' }.take(12) }
+    TxField(hex, accent, "code (hex)", kb = Kb.HEX) { hex = hexOf(it, 12) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
         Text("$bits bit  ${te}µs", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.weight(1.2f))
         Chip("bits", false, accent, Modifier.weight(1f)) { bits = if (bits == 24) 12 else if (bits == 12) 32 else 24 }
@@ -214,11 +219,31 @@ fun TxScreen(defaultAccent: Color) {
     }
 }
 
-@Composable private fun TxField(value: String, accent: Color, label: String, onChange: (String) -> Unit) {
-    OutlinedTextField(value, onChange, singleLine = true, label = { Text(label, fontFamily = Mono) }, modifier = Modifier.fillMaxWidth(),
+private enum class Kb { TEXT, CAPS, HEX, NUMBER, DECIMAL }
+
+/** A transmit parameter field; [lines] > 1 makes it a paste box that grows to twice that before scrolling. */
+@Composable private fun TxField(value: String, accent: Color, label: String, modifier: Modifier = Modifier.fillMaxWidth(), kb: Kb = Kb.TEXT,
+                                placeholder: String? = null, lines: Int = 1, onChange: (String) -> Unit) {
+    val keys = when (kb) {
+        Kb.TEXT -> KeyboardOptions.Default
+        Kb.CAPS -> KeyboardOptions(capitalization = KeyboardCapitalization.Characters)
+        Kb.HEX -> KeyboardOptions(capitalization = KeyboardCapitalization.Characters, keyboardType = KeyboardType.Ascii)
+        Kb.NUMBER -> KeyboardOptions(keyboardType = KeyboardType.Number)
+        Kb.DECIMAL -> KeyboardOptions(keyboardType = KeyboardType.Decimal)
+    }
+    OutlinedTextField(value, onChange, modifier = modifier, singleLine = lines == 1, minLines = lines, maxLines = if (lines == 1) 1 else lines * 2,
+        textStyle = LocalTextStyle.current.copy(fontFamily = Mono), keyboardOptions = keys,
+        label = { Text(label, fontFamily = Mono, maxLines = 1) },
+        placeholder = if (placeholder != null) { { Text(placeholder, fontFamily = Mono, color = Palette.muted) } } else null,
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Palette.ink, unfocusedTextColor = Palette.ink, focusedBorderColor = accent,
             unfocusedBorderColor = Palette.line, cursorColor = accent, focusedLabelColor = accent, unfocusedLabelColor = Palette.muted))
 }
+
+private fun hexOf(s: String, max: Int) = s.uppercase().filter { it in "0123456789ABCDEF" }.take(max)
+private fun digitsOf(s: String, max: Int) = s.filter { it.isDigit() }.take(max)
+private fun decimalOf(s: String) = s.filter { it.isDigit() || it == '.' }.take(12)
+/** The station callsign from Settings, or MAYHEM before one is set. */
+private fun stationCall() = Station.info.value.call.ifBlank { "MAYHEM" }
 
 @Composable private fun Note(text: String) {
     val d = rememberDims()
@@ -229,110 +254,137 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
 
 @Composable private fun MdcTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var unit by remember { mutableStateOf("0001") }
-    var op by remember { mutableStateOf(0x35) }
-    TxField(unit, accent, "unit ID (hex)") { unit = it.uppercase().filter { c -> c in "0123456789ABCDEF" }.take(4) }
-    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("PTT ID (01)", selected = op == 0x01, accent = accent, modifier = Modifier.weight(1f)) { op = 0x01 }
-        Chip("Emerg (30)", selected = op == 0x30, accent = accent, modifier = Modifier.weight(1f)) { op = 0x30 }
-        Chip("Radio ck (35)", selected = op == 0x35, accent = accent, modifier = Modifier.weight(1f)) { op = 0x35 }
+    var op by remember { mutableStateOf("01") }
+    var arg by remember { mutableStateOf("00") }
+    var unit by remember { mutableStateOf("1234") }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        TxField(op, accent, "op", Modifier.weight(1f), Kb.HEX) { op = hexOf(it, 2) }
+        TxField(arg, accent, "arg", Modifier.weight(1f), Kb.HEX) { arg = hexOf(it, 2) }
+        TxField(unit, accent, "unit ID", Modifier.weight(2f), Kb.HEX) { unit = hexOf(it, 4) }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.mdc1200(op, 0x00, unit.toIntOrNull(16) ?: 0, freq) } }
-    Note("Motorola PTT-ID (1200 bps AFSK) — for business-band radios you own.")
+    val opv = op.toIntOrNull(16)
+    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        Chip("PTT ID (01)", selected = opv == 0x01, accent = accent, modifier = Modifier.weight(1f)) { op = "01" }
+        Chip("Emerg (30)", selected = opv == 0x30, accent = accent, modifier = Modifier.weight(1f)) { op = "30" }
+        Chip("Radio ck (35)", selected = opv == 0x35, accent = accent, modifier = Modifier.weight(1f)) { op = "35" }
+    }
+    Box(Modifier.padding(top = d.gap)) { Chip("▶ PTT-ID", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+        if (!active) Tx.mdc1200(opv ?: 0, arg.toIntOrNull(16) ?: 0, unit.toIntOrNull(16) ?: 0, freq) } }
+    Note("MDC-1200 Motorola PTT-ID · op / arg (hex) / 16-bit unit ID (hex) · 1200 bd AFSK — for business-band radios you own.")
 }
 
 @Composable private fun QcTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
     var a by remember { mutableStateOf("1122.5") }
-    var b by remember { mutableStateOf("1358.9") }
-    TxField(a, accent, "Tone A (Hz)") { a = it }
-    TxField(b, accent, "Tone B (Hz)") { b = it }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ PAGE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.quickCall2(a.toDoubleOrNull() ?: 1000.0, b.toDoubleOrNull() ?: 1500.0, freq) } }
-    Note("Quick-Call II two-tone paging (fire, utility). 1 s A, 3 s B, then a carrier tail.")
+    var b by remember { mutableStateOf("1465.5") }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        TxField(a, accent, "Tone A (Hz)", Modifier.weight(1f), Kb.DECIMAL) { a = decimalOf(it) }
+        TxField(b, accent, "Tone B (Hz)", Modifier.weight(1f), Kb.DECIMAL) { b = decimalOf(it) }
+    }
+    Box(Modifier.padding(top = d.gap)) { Chip("▶ PAGE QC-II", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+        if (!active) Tx.quickCall2(a.toDoubleOrNull() ?: 0.0, b.toDoubleOrNull() ?: 0.0, freq) } }
+    Note("Quick-Call II two-tone paging (fire, utility). 1 s A, 3 s B, then a 26 s carrier tail.")
 }
 
 @Composable private fun SubGhzTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var raw by remember { mutableStateOf("RAW_Data: 340 -1020 340 -340 1020 -340 340 -1020") }
+    var raw by remember { mutableStateOf("") }
     var reps by remember { mutableStateOf(3) }
-    TxField(raw, accent, "Flipper .sub RAW_Data line") { raw = it }
+    TxField(raw, accent, "Flipper .sub file", placeholder = "Paste a Flipper .sub file here — Protocol: RAW / RAW_Data: 340 -1020 …", lines = 5) { raw = it }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("×$reps", selected = false, accent = accent, modifier = Modifier.weight(1f)) { reps = if (reps == 3) 5 else if (reps == 5) 10 else 3 }
-        Chip("▶ REPLAY", selected = false, accent = accent, modifier = Modifier.weight(2f)) { if (!active) Tx.subghzReplay(raw, freq, reps) }
+        GainStepper("×", reps, accent, Modifier.weight(1f), onMinus = { reps = (reps - 1).coerceAtLeast(1) }, onPlus = { reps = (reps + 1).coerceAtMost(20) })
+        Chip("▶ REPLAY", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.subghzReplay(raw, freq, reps) }
     }
-    Note("Replay a Flipper .sub file's RAW pulses — remotes on your own equipment.")
+    Note("Replay a Flipper Zero .sub file's RAW pulses as OOK, 2 Msps — remotes on your own equipment.")
 }
 
 @Composable private fun KeeloqTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var key by remember { mutableStateOf("0000000000000000") }
-    var serial by remember { mutableStateOf("0000000") }
-    var counter by remember { mutableStateOf(1) }
-    var button by remember { mutableStateOf(1) }
-    TxField(key, accent, "64-bit key (hex)") { key = it.uppercase().filter { c -> c in "0123456789ABCDEF" }.take(16) }
-    TxField(serial, accent, "serial (hex, 28 bits)") { serial = it.uppercase().filter { c -> c in "0123456789ABCDEF" }.take(7) }
+    var key by remember { mutableStateOf("5CEC6701B79FD949") }
+    var serial by remember { mutableStateOf("1234567") }
+    var button by remember { mutableStateOf("2") }
+    var counter by remember { mutableStateOf("42") }
+    var reps by remember { mutableStateOf(3) }
+    TxField(key, accent, "64-bit key (hex)", kb = Kb.HEX) { key = hexOf(it, 16) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("btn $button", selected = false, accent = accent, modifier = Modifier.weight(1f)) { button = (button % 15) + 1 }
-        Chip("cnt $counter", selected = false, accent = accent, modifier = Modifier.weight(1f)) { counter++ }
-        Chip("▶ SEND", selected = false, accent = accent, modifier = Modifier.weight(1.4f)) { if (!active) Tx.keeloqTx(key.toULong(16).toLong(), serial.toIntOrNull(16) ?: 0, button, counter, freq, 3) }
+        TxField(serial, accent, "serial (hex)", Modifier.weight(1.5f), Kb.HEX) { serial = hexOf(it, 7) }
+        TxField(button, accent, "btn", Modifier.weight(0.7f), Kb.NUMBER) { button = digitsOf(it, 2) }
+        TxField(counter, accent, "counter", Modifier.weight(1f), Kb.NUMBER) { counter = digitsOf(it, 6) }
     }
-    Note("HCS301 (Microchip) rolling-code — needs the manufacturer key. Test on equipment you own.")
+    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        GainStepper("×", reps, accent, Modifier.weight(1f), onMinus = { reps = (reps - 1).coerceAtLeast(1) }, onPlus = { reps = (reps + 1).coerceAtMost(8) })
+        Chip("▶ HOP", selected = false, accent = accent, modifier = Modifier.weight(1f)) {
+            if (!active) Tx.keeloqTx(key.toULongOrNull(16)?.toLong() ?: 0L, serial.toIntOrNull(16) ?: 0, (button.toIntOrNull() ?: 0).coerceAtMost(15),
+                counter.toIntOrNull() ?: 0, freq, reps)
+        }
+    }
+    Note("HCS301 (Microchip) rolling code · 64-bit key / 28-bit serial (hex) / 4-bit button / counter · OOK PWM — needs the manufacturer key. Test on equipment you own.")
 }
 
 @Composable private fun NoiseTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var chip by remember { mutableStateOf(400) }
-    var secs by remember { mutableStateOf(3) }
+    var chip by remember { mutableStateOf("100") }
+    var secs by remember { mutableStateOf("3") }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("${chip}µs", selected = false, accent = accent, modifier = Modifier.weight(1f)) { chip = if (chip == 400) 200 else if (chip == 200) 800 else 400 }
-        Chip("${secs}s", selected = false, accent = accent, modifier = Modifier.weight(1f)) { secs = if (secs == 3) 10 else if (secs == 10) 30 else 3 }
+        TxField(chip, accent, "chip (µs)", Modifier.weight(1f), Kb.NUMBER) { chip = digitsOf(it, 7) }
+        TxField(secs, accent, "seconds", Modifier.weight(1f), Kb.NUMBER) { secs = digitsOf(it, 5) }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ NOISE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.ookNoise(0L, chip, secs, freq) } }
-    Note("Random OOK for authorised RF-lab work only. Illegal on populated bands.")
+    Box(Modifier.padding(top = d.gap)) { Chip("▶ NOISE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+        if (!active) Tx.ookNoise(0L, chip.toIntOrNull() ?: 0, secs.toIntOrNull() ?: 0, freq) } }
+    Note("Pseudo-random OOK for authorised RF-lab work on your own gear only. Illegal on populated bands.")
 }
 
 @Composable private fun BruteTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var bits by remember { mutableStateOf(12) }
+    var bits by remember { mutableStateOf("24") }
     var from by remember { mutableStateOf("0") }
-    var to by remember { mutableStateOf("4095") }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-        Chip("$bits bit", selected = false, accent = accent, modifier = Modifier.weight(1f)) { bits = if (bits == 12) 20 else if (bits == 20) 24 else 12 }
+    var to by remember { mutableStateOf("255") }
+    var te by remember { mutableStateOf("350") }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        TxField(bits, accent, "bits", Modifier.weight(1f), Kb.NUMBER) { bits = digitsOf(it, 2) }
+        TxField(from, accent, "from", Modifier.weight(1f), Kb.NUMBER) { from = digitsOf(it, 10) }
+        TxField(to, accent, "to", Modifier.weight(1f), Kb.NUMBER) { to = digitsOf(it, 10) }
     }
-    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Box(Modifier.weight(1f)) { TxField(from, accent, "from") { from = it.filter { c -> c.isDigit() } } }
-        Box(Modifier.weight(1f)) { TxField(to, accent, "to") { to = it.filter { c -> c.isDigit() } } }
+    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
+        TxField(te, accent, "te (µs)", Modifier.weight(1.5f), Kb.NUMBER) { te = digitsOf(it, 5) }
+        for (n in intArrayOf(12, 24, 32)) Chip("$n", selected = bits == "$n", accent = accent, modifier = Modifier.weight(1f)) { bits = "$n" }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ BRUTE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.ookBrute(freq, bits, from.toLongOrNull() ?: 0, to.toLongOrNull() ?: 0, 350) } }
-    Note("Sweep a Princeton codespace — for your own remotes or a bench receiver.")
+    Box(Modifier.padding(top = d.gap)) { Chip("▶ BRUTE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+        if (!active) Tx.ookBrute(freq, (bits.toIntOrNull() ?: 24).coerceIn(1, 32), from.toLongOrNull() ?: 0L, to.toLongOrNull() ?: 0L, te.toIntOrNull() ?: 350)
+    } }
+    Note("Princeton PT2262 brute force · bits (12/24/32), from–to (decimal), te µs — a gate or remote you own on ISM.")
 }
 
-@Composable private fun HopperTab(accent: Color, freq: Long, active: Boolean) {
+@Composable private fun HopperTab(accent: Color, active: Boolean) {
     val d = rememberDims()
-    var count by remember { mutableStateOf(20) }
-    var lowMhz by remember { mutableStateOf("433.0") }
-    var highMhz by remember { mutableStateOf("434.0") }
-    TxField(lowMhz, accent, "low (MHz)") { lowMhz = it }
-    TxField(highMhz, accent, "high (MHz)") { highMhz = it }
-    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("×$count", selected = false, accent = accent, modifier = Modifier.weight(1f)) { count = if (count == 20) 50 else if (count == 50) 100 else 20 }
-        Chip("▶ HOP", selected = false, accent = accent, modifier = Modifier.weight(1.4f)) {
-            if (!active) {
-                val lo = ((lowMhz.toDoubleOrNull() ?: 433.0) * 1e6).toLong()
-                val hi = ((highMhz.toDoubleOrNull() ?: 434.0) * 1e6).toLong()
-                Tx.frequencyHopper(com.rocketgod.mayhem.core.TxApps.hopList(lo, hi, count), 100)
-            }
-        }
+    var lowMhz by remember { mutableStateOf("433.05") }
+    var highMhz by remember { mutableStateOf("434.79") }
+    var count by remember { mutableStateOf("16") }
+    var dwell by remember { mutableStateOf("20") }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        TxField(lowMhz, accent, "low (MHz)", Modifier.weight(1f), Kb.DECIMAL) { lowMhz = decimalOf(it) }
+        TxField(highMhz, accent, "high (MHz)", Modifier.weight(1f), Kb.DECIMAL) { highMhz = decimalOf(it) }
     }
-    Note("Random-hop CW carrier for spread-spectrum experiments on a licence-free band.")
+    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        TxField(count, accent, "hops", Modifier.weight(1f), Kb.NUMBER) { count = digitsOf(it, 5) }
+        TxField(dwell, accent, "dwell (ms)", Modifier.weight(1f), Kb.NUMBER) { dwell = digitsOf(it, 5) }
+    }
+    Box(Modifier.padding(top = d.gap)) { Chip("▶ HOP", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+        if (!active) {
+            val lo = ((lowMhz.toDoubleOrNull() ?: 433.05) * 1e6).roundToLong()
+            val hi = ((highMhz.toDoubleOrNull() ?: 434.79) * 1e6).roundToLong()
+            Tx.frequencyHopper(com.rocketgod.mayhem.core.TxApps.hopList(lo, hi, count.toIntOrNull() ?: 16), (dwell.toIntOrNull() ?: 20).coerceAtLeast(1))
+        }
+    } }
+    Note("Random-hop CW carrier · low–high MHz · hops · dwell ms each — spread-spectrum bench work on a licence-free band.")
 }
 
 @Composable private fun AdsbTab(accent: Color, active: Boolean) {
     val d = rememberDims()
     var icao by remember { mutableStateOf("A19E43") }
     var me by remember { mutableStateOf("58C382C82F4D4A") }
-    TxField(icao, accent, "ICAO 24-bit (hex)") { icao = it.uppercase().filter { c -> c in "0123456789ABCDEF" }.take(6) }
-    TxField(me, accent, "ME field (56 bits hex)") { me = it.uppercase().filter { c -> c in "0123456789ABCDEF" }.take(14) }
+    TxField(icao, accent, "ICAO 24-bit (hex)", kb = Kb.HEX) { icao = hexOf(it, 6) }
+    TxField(me, accent, "ME field (56 bits hex)", kb = Kb.HEX) { me = hexOf(it, 14) }
     Box(Modifier.padding(top = d.gap)) { Chip("▶ SQUITTER", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
         if (!active) Tx.adsb(icao.toIntOrNull(16) ?: 0, me.padStart(14, '0').toULong(16).toLong())
     } }
