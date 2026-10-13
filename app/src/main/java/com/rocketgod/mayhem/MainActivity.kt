@@ -121,11 +121,8 @@ class MainActivity : ComponentActivity() {
         AppUpdates.check(this)
     }
 
-    /** A receiver is open and the radio is running: worth a floating window. Settings and Transmit are not. */
-    private fun pipWanted(): Boolean {
-        val a = Apps.current.value ?: return false
-        return a != MayhemApp.SETTINGS && a != MayhemApp.TRANSMIT && connected.value
-    }
+    /** The radio is running, so something is being heard (the launcher listens too): worth a floating window. Transmit is not. */
+    private fun pipWanted(): Boolean = connected.value && Apps.playing() != MayhemApp.TRANSMIT
 
     private fun pipAction(icon: Int, title: String, action: String, code: Int) = RemoteAction(
         Icon.createWithResource(this, icon), title, title,

@@ -54,30 +54,26 @@ fun Launcher(accent: Color) {
 }
 
 /**
- * Pick a band, tap what you see, then pick the app to hear it with. A tap sets the dial the Audio app opens on, so
- * "that one" carries straight into the receiver.
+ * The front door listens: the receiver plays here as it does in Audio, a tap tunes what you see, and the Audio app
+ * opens on whatever is playing.
  */
 @Composable
 private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
     val d = rememberDims()
-    val spec by SdrEngine.spectrum.collectAsState()
     val health by SdrEngine.rxHealth.collectAsState()
-    val freq by SdrEngine.freqHz.collectAsState()
+    val lo by SdrEngine.freqHz.collectAsState()
+    val offset by SdrEngine.offsetHz.collectAsState()
+    val mode by SdrEngine.mode.collectAsState()
+    val freq = Tuning.previewHz ?: (lo + offset)
     val band = bandAt(freq)
     Column(modifier) {
-        WaterfallView(
-            spec, SdrEngine.SPEC_BINS, accent,
+        ReceiverScope(accent,
             (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 160f))).padding(top = d.dp(6f)),
-            rows = 70, traceFrac = 0.32f, labels = centredLabels(freq, SdrEngine.currentRate()),
-            onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-        ) { frac ->
-            val hz = spanHz(freq, SdrEngine.currentRate(), frac)
-            SdrEngine.tune(hz); SdrEngine.setDial(hz, bandAt(hz)?.mode ?: SdrEngine.Mode.NFM)
-        }
-        Text(if (health.isNotEmpty()) "%.3f MHz%s · %s".format(freq / 1e6, band?.let { " · ${it.what}" } ?: "", health)
-             else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
-            modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
-        ListenBandChips(accent, freq) { b -> SdrEngine.tune(b.centre); SdrEngine.setDial(b.centre, b.mode) }
+            rows = 70, traceFrac = 0.32f)
+        Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
+             else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
+            fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
+        ListenBandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
     }
 }
 
