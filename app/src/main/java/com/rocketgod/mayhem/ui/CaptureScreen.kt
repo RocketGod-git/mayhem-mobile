@@ -62,10 +62,7 @@ fun CaptureScreen(accent: Color) {
         visual = { m ->
             Column(m) {
                 FreqReadout(if (recording) Palette.danger else accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
-                WaterfallView(spec, SdrEngine.SPEC_BINS, recTint, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 80, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
-                    onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } },
-                    onTapFrac = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) })
+                ReceiverScope(recTint, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = if (d.wide) 160 else 100, traceFrac = 0.35f, fitMode = false)
             }
         }
     ) {

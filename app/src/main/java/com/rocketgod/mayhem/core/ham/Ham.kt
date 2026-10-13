@@ -183,6 +183,8 @@ object Ham {
 
     /** Wide pass band for a satellite image service (APT / LRPT want ±20 kHz). */
     fun setHalfWidth(hz: Double) = update { it.copy(pbLo = 0.0, pbHi = hz) }
+    /** A filter edge dragged on the waterfall: the pass band as it now stands, Hz from the carrier. */
+    fun setPassband(lo: Double, hi: Double) = update { it.copy(pbLo = lo, pbHi = hi, shift = 0.0) }
 
     fun setShift(hz: Double) = update { it.copy(shift = hz) }
     fun setPitch(hz: Double) { update { it.copy(pitch = hz) }; HamDigital.pitchChanged(hz) }

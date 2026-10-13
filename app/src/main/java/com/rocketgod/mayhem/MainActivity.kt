@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
         Apps.init(this)
         com.rocketgod.mayhem.ui.Skins.load(this)
         SdrEngine.loadGains(this)
+        com.rocketgod.mayhem.ui.Waterfalls.load(this)
         com.rocketgod.mayhem.core.Tx.load(this)
         com.rocketgod.mayhem.core.Station.load(this)
         com.rocketgod.mayhem.core.ham.Logbook.load(this)

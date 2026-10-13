@@ -213,17 +213,12 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
     val s by Ham.state.collectAsState()
     val m by Ham.demod.meter.collectAsState()
     val dbm = Ham.dbm(m.db)
-    val mhz = s.channel / 1_000_000L
-    val khz = (s.channel / 1000L) % 1000L
-    val hz = s.channel % 1000L
 
     Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f))) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text("$mhz.", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(30f))
-            Text("%03d".format(khz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(30f))
-            Text(".%03d".format(hz), color = accent, fontFamily = Mono, fontSize = d.sp(18f), modifier = Modifier.padding(bottom = d.dp(4f)))
-            Text("  ${s.mode.name}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f),
-                modifier = Modifier.padding(bottom = d.dp(5f)))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val preview = Tuning.previewHz
+            FreqDigits(preview ?: s.channel, big = false, tint = accent, preview = preview != null) { Ham.tune(it) }
+            Text("  ${s.mode.name}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f))
         }
         Text(segmentOf(s.channel).ifEmpty { "outside the amateur bands" } + if (s.rev) " · REVERSE" else "",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 1.sp)
@@ -267,12 +262,27 @@ private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s
         val off = (s.channel - s.lo).toDouble()
         (0.5 + (off + lo) / rate).toFloat() to (0.5 + (off + hi) / rate).toFloat()
     }
+    // the filter edges drag to set the pass band, the way the web app's HAM does
+    val edges: ((Float, Float, Boolean) -> Unit)? = if (mon) null else { loF, hiF, hiEdge ->
+        val off = (s.channel - s.lo).toDouble()
+        val a = (loF - 0.5) * rate - off; val bb = (hiF - 0.5) * rate - off
+        when (s.mode) {
+            Mode.USB -> { val lo = a.coerceIn(0.0, 5000.0); Ham.setPassband(lo, bb.coerceIn(lo + 100, 6000.0)) }
+            Mode.LSB -> { val lo = (-bb).coerceIn(0.0, 5000.0); Ham.setPassband(lo, (-a).coerceIn(lo + 100, 6000.0)) }
+            Mode.CW -> Ham.setPassband(0.0, (bb - a).coerceIn(50.0, 2000.0))
+            else -> Ham.setPassband(0.0, kotlin.math.abs(if (hiEdge) bb else a).coerceIn(if (s.mode == Mode.AM) 1500.0 else 2500.0, if (s.mode == Mode.NFM) 25_000.0 else if (s.mode == Mode.AM) 12_000.0 else 100_000.0))
+        }
+    }
     WaterfallView(
         spec, SdrEngine.SPEC_BINS, accent, modifier,
         rows = 160, centreMarker = false, channel = chan,
-        labels = centredLabels(centre, rate),
+        labels = centredLabels(centre, rate), centerHz0 = centre, spanHz0 = rate, onChannelEdge = edges,
         onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(centre, rate, it) } },
-    ) { frac -> Ham.tune(spanHz(centre, rate, frac)) }
+    ) { frac ->
+        val hz = centre + ((frac - 0.5f) * rate).toLong()
+        val sig = signalAt(hz, rate * 0.015)
+        Ham.tune(sig?.let { signalDial(it, if (s.channel < 30_000_000L) 100L else 1000L) } ?: spanHz(centre, rate, frac))
+    }
 }
 
 /** Rows of [columns] chips, so long sets like the band list wrap instead of squeezing to a sliver each. */

@@ -167,7 +167,7 @@ object Prowl {
         if (abs(hz - lo) < rate / 2 - 60_000 && abs(hz - lo) > 5_000) SdrEngine.setOffset((hz - lo).roundToInt())
         else {
             val nlo = (hz - rate / 4).roundToLong()
-            SdrEngine.tune(nlo); lastLo = nlo
+            SdrEngine.tuneLo(nlo); lastLo = nlo
             SdrEngine.setOffset(rate / 4)
         }
     }
@@ -309,7 +309,7 @@ object Prowl {
         win = (win + 1) % wins.size
         val (centre, mode, name) = wins[win]
         band = name; movedAt = now
-        SdrEngine.tune(centre); SdrEngine.setOffset(0); lastLo = centre
+        SdrEngine.tuneLo(centre); SdrEngine.setOffset(0); lastLo = centre
         if (SdrEngine.mode.value != mode) SdrEngine.setMode(mode)
         note = "sweeping $name around ${mhz(centre.toDouble())}"
     }
