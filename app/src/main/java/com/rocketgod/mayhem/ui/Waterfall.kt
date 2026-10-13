@@ -393,23 +393,25 @@ private fun DrawScope.signalLabels(
     val p = android.graphics.Paint().apply { textSize = textPx; typeface = android.graphics.Typeface.MONOSPACE; isAntiAlias = true }
     val bg = android.graphics.Paint().apply { color = 0x8C000000.toInt() }
     val holdArgb = Palette.hold.toArgb()
-    var row = 0; var lastRight = -1e9f
-    for (s in list.sortedBy { it.hz }) {
+    // strongest first; each label takes the first of three rows where it overlaps nothing, or is left out
+    val taken = Array(3) { ArrayList<Pair<Float, Float>>() }
+    for (s in list.sortedByDescending { it.snr }) {
         val v = toView((0.5 + (s.hz - centerHz) / spanHz).toFloat()) ?: continue
         val x = v * w
         val y = base - ((s.db.toFloat() - floorDb) / rangeDb).coerceIn(0f, 1f) * (base - top)
         val text = "%.3f%s %ddB".format(s.hz / 1e6, if (s.cls.isNotEmpty()) " ${s.cls}${if (s.conf < 0.6) "?" else ""}" else "", s.snr.roundToInt())
         val tw = p.measureText(text)
         val right = x > w * 0.85f
-        row = if (x - lastRight < tw + 6 * dp && x - lastRight > -tw) (row + 1) % 3 else 0
         val tx = if (right) x - 3 * dp - tw else x + 3 * dp
+        val span = (tx - 4 * dp) to (tx + tw + 4 * dp)
+        val row = (0 until 3).firstOrNull { r -> taken[r].none { it.first < span.second && span.first < it.second } } ?: continue
+        taken[row].add(span)
         val ty = max(top + 11 * dp * (row + 1), y - 2 * dp - row * 11 * dp)
         drawIntoCanvas { c ->
             c.nativeCanvas.drawRect(tx - 2 * dp, ty - 10 * dp, tx + tw + 2 * dp, ty + 1 * dp, bg)
             p.color = holdArgb; c.nativeCanvas.drawText(text, tx, ty, p)
             c.nativeCanvas.drawRect(x - dp / 2, y, x + dp / 2, base, p)
         }
-        lastRight = if (right) x else x + tw
     }
 }
 
