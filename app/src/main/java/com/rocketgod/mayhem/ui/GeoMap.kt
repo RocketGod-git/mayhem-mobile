@@ -1,9 +1,11 @@
 package com.rocketgod.mayhem.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +22,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
@@ -52,7 +55,10 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
     @Volatile var selected: String? = null
     @Volatile var home: Pair<Double, Double>? = null
     private val dot = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.FILL }
-    private val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0B1416.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f }
+    private val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0B1416.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; strokeJoin = android.graphics.Paint.Join.ROUND }
+    private val glow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.FILL }
+    private val shape = android.graphics.Path()
+    private val box = android.graphics.RectF()
     private val line = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f }
     private val area = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.FILL }
     private val label = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); textAlign = android.graphics.Paint.Align.CENTER; isFakeBoldText = true; typeface = android.graphics.Typeface.MONOSPACE }
@@ -70,6 +76,32 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             prevLon = lo
         }
         c.drawPath(path, p)
+    }
+
+    /** Marker size in dp: the drawn shapes span ±1.4 units of it. */
+    private fun sizeDp(k: GeoItem.Kind): Float = when (k) {
+        GeoItem.Kind.SAT -> 30f; GeoItem.Kind.STATION, GeoItem.Kind.DEVICE -> 18f; GeoItem.Kind.QSO -> 14f; else -> 22f
+    }
+
+    /** Each kind's outline around x, y at [s] px per unit: a hull for a ship under way, a diamond for an AtoN, a ring for a station. */
+    private fun outline(it: GeoItem, x: Float, y: Float, s: Float) {
+        val p = shape; p.reset()
+        val cw = android.graphics.Path.Direction.CW
+        when (it.kind) {
+            GeoItem.Kind.SHIP -> if (it.heading == null) p.addCircle(x, y, 0.75f * s, cw) else {
+                p.moveTo(x, y - 1.25f * s); p.lineTo(x + 0.62f * s, y - 0.35f * s); p.lineTo(x + 0.62f * s, y + 1.05f * s)
+                p.lineTo(x - 0.62f * s, y + 1.05f * s); p.lineTo(x - 0.62f * s, y - 0.35f * s); p.close()
+            }
+            GeoItem.Kind.ATON -> { p.moveTo(x, y - 1.1f * s); p.lineTo(x + 1.1f * s, y); p.lineTo(x, y + 1.1f * s); p.lineTo(x - 1.1f * s, y); p.close() }
+            GeoItem.Kind.STATION -> p.addCircle(x, y, 0.8f * s, cw)
+            GeoItem.Kind.OBJECT -> { box.set(x - 0.8f * s, y - 0.8f * s, x + 0.8f * s, y + 0.8f * s); p.addRoundRect(box, 0.2f * s, 0.2f * s, cw) }
+            GeoItem.Kind.SAT -> {
+                p.addRect(x - 0.35f * s, y - 0.35f * s, x + 0.35f * s, y + 0.35f * s, cw)
+                p.addRect(x - 1.3f * s, y - 0.2f * s, x - 0.5f * s, y + 0.2f * s, cw)
+                p.addRect(x + 0.5f * s, y - 0.2f * s, x + 1.3f * s, y + 0.2f * s, cw)
+            }
+            GeoItem.Kind.QSO, GeoItem.Kind.DEVICE -> p.addCircle(x, y, 0.6f * s, cw)
+        }
     }
 
     override fun draw(c: android.graphics.Canvas, mv: MapView, shadow: Boolean) {
@@ -93,20 +125,26 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         }
         line.color = (0x66 shl 24) or rgb; line.strokeWidth = 1.2f * d
         for ((a, b) in layers.lines) polyline(c, mv, listOf(a, b), line)
+        rim.strokeWidth = 2f
         home?.let { (la, lo) -> val (x, y) = xy(mv, la, lo); dot.color = 0xFFFFFFFF.toInt(); c.drawCircle(x, y, 4f * d, dot); c.drawCircle(x, y, 4f * d, rim) }
         for (it in items) {
             val (x, y) = xy(mv, it.lat, it.lon)
             val col = when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
-            val r = (if (it.kind == GeoItem.Kind.SAT) 7f else 5f) * d
-            it.heading?.let { h ->
-                // where it is pointing: a short stalk off the dot
-                val a = Math.toRadians(h); line.color = col; line.strokeWidth = 2.5f * d
-                c.drawLine(x, y, x + (r * 2.8f * kotlin.math.sin(a)).toFloat(), y - (r * 2.8f * kotlin.math.cos(a)).toFloat(), line)
-            }
-            dot.color = col
-            c.drawCircle(x, y, r, dot); c.drawCircle(x, y, r, rim)
-            if (it.id == selected) { line.color = 0xFFFFFFFF.toInt(); line.strokeWidth = 2f * d; c.drawCircle(x, y, r + 4f * d, line) }
-            val ly = y + r + label.textSize + 2f * d
+            val half = sizeDp(it.kind) * d / 2f
+            val s = half / 1.4f
+            glow.shader = android.graphics.RadialGradient(x, y, half * 1.3f, (0x70 shl 24) or (col and 0x00FFFFFF), col and 0x00FFFFFF, android.graphics.Shader.TileMode.CLAMP)
+            c.drawCircle(x, y, half * 1.3f, glow)
+            if (it.id == selected) { line.color = 0xFFFFFFFF.toInt(); line.strokeWidth = 2f * d; c.drawCircle(x, y, half + 3f * d, line) }
+            outline(it, x, y, s)
+            dot.color = col; rim.strokeWidth = 0.12f * s
+            // only a ship's hull turns: the other shapes have no front
+            val turn = if (it.kind == GeoItem.Kind.SHIP) it.heading else null
+            c.save()
+            if (turn != null) c.rotate(turn.toFloat(), x, y)
+            c.drawPath(shape, dot); c.drawPath(shape, rim)
+            c.restore()
+            if (it.kind == GeoItem.Kind.STATION) { dot.color = 0xFF0B1416.toInt(); c.drawCircle(x, y, 0.3f * s, dot) }
+            val ly = y + half + label.textSize
             c.drawText(it.label, x, ly, halo); c.drawText(it.label, x, ly, label)
         }
     }
@@ -134,7 +172,8 @@ private fun destination(lat: Double, lon: Double, km: Double, deg: Double): Pair
 
 /**
  * A general map on OSM tiles (same dark look as the ADS-B map): items with labels, an optional ground track and
- * footprint, lines home. It fits everything once when the item set first appears, then leaves the view to the user.
+ * footprint, lines home. It follows the traffic, re-fitting as it moves, until you drag; the crosshair button
+ * re-arms it. [follow] names an item to keep centred instead of fitting the lot (a satellite and its long track).
  */
 @Composable
 fun GeoMapView(
@@ -146,27 +185,35 @@ fun GeoMapView(
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
     var overlayRef by remember { mutableStateOf<ItemsOverlay?>(null) }
-    var fitted by remember { mutableStateOf(false) }
+    var following by remember { mutableStateOf(true) }
 
-    LaunchedEffect(items, layers, selected, home) {
+    fun fitTo(mv: MapView) {
+        val f = follow?.let { id -> items.firstOrNull { it.id == id } }
+        if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
+        // home only counts when something is drawn from it
+        val pts = items.map { it.lat to it.lon } + layers.track +
+            (if (layers.track.isNotEmpty() || layers.lines.isNotEmpty()) listOfNotNull(home) else emptyList())
+        if (pts.isEmpty()) return
+        val n = pts.maxOf { it.first }; val s = pts.minOf { it.first }; val e = pts.maxOf { it.second }; val w = pts.minOf { it.second }
+        if (n - s < 1e-6 && e - w < 1e-6) { mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second)); return }
+        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, (40 * mv.resources.displayMetrics.density).toInt()) }
+        if (mv.zoomLevelDouble > 11.0) mv.controller.setZoom(11.0)
+    }
+
+    LaunchedEffect(mapRef, items, layers, selected, home, following) {
         val mv = mapRef ?: return@LaunchedEffect
         overlayRef?.let { it.items = items; it.layers = layers; it.selected = selected; it.home = home; mv.invalidate() }
-        val f = follow?.let { id -> items.firstOrNull { it.id == id } }
-        if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return@LaunchedEffect }
-        if (!fitted && mv.width > 0) {
-            val pts = items.map { it.lat to it.lon } + listOfNotNull(home)
-            if (pts.size >= 2) {
-                val pad = 1.0
-                runCatching { mv.zoomToBoundingBox(BoundingBox(pts.maxOf { it.first } + pad, pts.maxOf { it.second } + pad, pts.minOf { it.first } - pad, pts.minOf { it.second } - pad), false, 60) }
-                fitted = true
-            } else if (pts.size == 1) { mv.controller.setCenter(GeoPoint(pts[0].first, pts[0].second)); fitted = items.isNotEmpty() }
-        }
+        if (!following) return@LaunchedEffect
+        var waits = 0
+        while ((mv.width == 0 || mv.height == 0) && waits++ < 40) delay(50)
+        if (mv.width > 0 && mv.height > 0) fitTo(mv)
     }
 
     LaunchedEffect(focusKey) {
         val mv = mapRef ?: return@LaunchedEffect
         val f = focus ?: return@LaunchedEffect
         if (focusKey == 0) return@LaunchedEffect
+        following = false
         if (mv.zoomLevelDouble < 11.0) mv.controller.setZoom(11.0)
         mv.controller.animateTo(GeoPoint(f.first, f.second))
     }
@@ -188,10 +235,14 @@ fun GeoMapView(
                     zoomController.setVisibility(CustomZoomButtonsController.Visibility.SHOW_AND_FADEOUT)
                     controller.setZoom(3.0)
                     controller.setCenter(if (home != null) GeoPoint(home.first, home.second) else GeoPoint(30.0, -40.0))
+                    // a drag (past the touch slop, so a tap on a marker does not count) hands the view to the user
+                    val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop.toFloat()
+                    var downX = 0f; var downY = 0f
                     @Suppress("ClickableViewAccessibility")
                     setOnTouchListener { v, ev ->
                         when (ev.actionMasked) {
-                            android.view.MotionEvent.ACTION_DOWN -> v.parent?.requestDisallowInterceptTouchEvent(true)
+                            android.view.MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; v.parent?.requestDisallowInterceptTouchEvent(true) }
+                            android.view.MotionEvent.ACTION_MOVE -> if (following && (abs(ev.x - downX) > slop || abs(ev.y - downY) > slop)) following = false
                             android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
                         }
                         false
@@ -202,6 +253,12 @@ fun GeoMapView(
                 }
             }
         )
+        Box(
+            Modifier.align(Alignment.BottomEnd).padding(6.dp).size(30.dp)
+                .background(if (following) accent else Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
+                .clickable { following = !following },
+            contentAlignment = Alignment.Center
+        ) { Text("⌖", color = if (following) inkOn(accent) else Palette.ink, fontFamily = Mono) }
         Text("© OpenStreetMap contributors", color = Palette.muted, fontFamily = Mono, fontSize = 8.sp,
             modifier = Modifier.align(Alignment.BottomStart).padding(4.dp).background(Palette.paper.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(horizontal = 4.dp, vertical = 1.dp))
     }
