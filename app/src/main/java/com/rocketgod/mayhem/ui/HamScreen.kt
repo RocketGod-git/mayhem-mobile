@@ -47,6 +47,8 @@ import com.rocketgod.mayhem.core.ham.Picture
 import com.rocketgod.mayhem.core.ham.bandOf
 import com.rocketgod.mayhem.core.ham.repeaterInput
 import com.rocketgod.mayhem.core.ham.segmentOf
+import com.rocketgod.mayhem.core.signalAt
+import com.rocketgod.mayhem.core.signalDial
 
 /**
  * HAM: a proper channel receiver — any mode, any filter width, anywhere in the HackRF's span — on a panadapter

@@ -97,11 +97,25 @@ object SdrEngine {
     private fun boardGains(lna: Int, vga: Int, amp: Boolean): Triple<Int, Int, Boolean> =
         if (!isPro()) Triple(lna, vga, amp) else Triple(LNA_MAX, minOf(if (amp) 56 else VGA_MAX, vga + 28), amp)
 
+    /** The open app's own gain preset, kept so a board found after it opened can be applied to the preset, not on top of it. */
+    private var preset = Triple(24, 24, false)
+
+    /**
+     * Where an app's gain starts: the user's own if they have set one; otherwise the app's preset, raised for a
+     * HackRF Pro, then floored at 32 on both stages with the front-end amp on (the web app's order), and the AGC
+     * trims from there if a strong signal would clip.
+     */
+    private fun startGains(lna: Int, vga: Int, amp: Boolean): Triple<Int, Int, Boolean> {
+        gainPref?.let { g -> return Triple(g[0], g[1], g[2] == 1) }
+        val (l, v, _) = boardGains(lna, vga, amp)
+        return Triple(maxOf(l, 32), maxOf(v, 32), true)
+    }
+
     /** The board is known now: a Pro gets its stages raised unless the user has set them. */
     fun onBoard() {
         if (gainPref != null || !isPro()) return
-        val (l, v, a) = boardGains(_radioLna.value, _radioVga.value, _radioAmp.value)
-        _radioLna.value = l; _radioVga.value = (v / VGA_STEP) * VGA_STEP; _radioAmp.value = a; syncDriver()
+        val (l, v, a) = startGains(preset.first, preset.second, preset.third)
+        _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; _radioAmp.value = a; syncDriver()
     }
 
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
@@ -114,7 +128,8 @@ object SdrEngine {
         val vMax = vgaMax(); val hasLna = Radio.kind.value != Radio.Kind.RTLSDR
         if (rms < lo) {
             when {
-                v < vMax -> _radioVga.value = minOf(vMax, v + if (rms < 2) 8 else 2)
+                // far off moves in big steps, so a radio that starts deaf is listening within a few seconds
+                v < vMax -> _radioVga.value = minOf(vMax, v + when { rms < 2 -> 8; rms < lo / 2 -> 6; else -> 2 })
                 hasLna && l < LNA_MAX -> _radioLna.value = l + LNA_STEP
                 _mode.value != Mode.NONE && now - agcSaidMax > 20_000 -> {
                     agcSaidMax = now
@@ -123,7 +138,7 @@ object SdrEngine {
             }
         } else if (rms > hi) {
             when {
-                v > 0 -> _radioVga.value = maxOf(0, v - if (rms > hi * 2) 8 else 2)
+                v > 0 -> _radioVga.value = maxOf(0, v - when { rms > hi * 2 -> 8; rms > hi * 1.4 -> 4; else -> 2 })
                 hasLna && l > 0 -> _radioLna.value = l - LNA_STEP
             }
         }
@@ -281,9 +296,8 @@ object SdrEngine {
         _rateHz.value = Radio.nearestRate(Radio.limits, rateHz)
         // Before the user has touched gain, no app starts below 32 on either stage and the front-end amp is on: AGC
         // (on by default) trims the stages if a strong signal would clip, so every app starts sensitive.
-        val g = gainPref
-        val (l, v, a) = boardGains(
-            g?.get(0) ?: maxOf(lna, 32), g?.get(1) ?: maxOf(vga, 32), if (g != null) g[2] == 1 else true)
+        preset = Triple(lna, vga, amp)
+        val (l, v, a) = startGains(lna, vga, amp)
         _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
         _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
         _radioAmp.value = a
@@ -506,8 +520,11 @@ object SdrEngine {
                             // buffers already queued were taken on the old tuning; let them drain before trusting any
                             clsRate = rate; clsFreq = lo; classifier.reset(); clsQuietUntil = now + 300; _signals.value = emptyList()
                         }
-                        if (++specFrame % 3 == 0 && now >= clsQuietUntil)
-                            _signals.value = runCatching { classifier.update(pdb, rate.toDouble(), lo.toDouble(), median.toDouble()) }.getOrElse { emptyList() }
+                        if (++specFrame % 3 == 0 && now >= clsQuietUntil) {
+                            val sigs = runCatching { classifier.update(pdb, rate.toDouble(), lo.toDouble(), median.toDouble()) }.getOrElse { emptyList() }
+                            _signals.value = sigs
+                            runCatching { AutoPick.onSignals(sigs) }
+                        }
                     } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
 
                     if (now - lastDiag > 1000L) {
