@@ -92,8 +92,9 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.ham.Logbook.load(this)
         com.rocketgod.mayhem.core.sat.Tles.init(filesDir)
         if (savedInstanceState == null) {
-            // back on the station last chosen; on a first run, the strongest one in view
-            if (Apps.current.value == null) { Apps.open(MayhemApp.AUDIO); if (!SdrEngine.dialSaved) com.rocketgod.mayhem.core.AutoPick.arm() }
+            // Land on the launcher (the front door), not Audio, and arm the auto-pick so it tunes the strongest
+            // signal in view the moment the radio delivers one — the landing comes up alive, like Audio does.
+            if (Apps.current.value == null) { Apps.home(); com.rocketgod.mayhem.core.AutoPick.arm() }
             Diag.clear()
             Diag.log("Mayhem Android ${BuildConfig.VERSION_NAME} · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         }
