@@ -1,0 +1,8 @@
+{
+  "version": "0.6.9",
+  "versionCode": 17,
+  "commit": "bb0f996",
+  "builtAt": "2026-10-14T02:57:20Z",
+  "apk": "./mayhem.apk",
+  "release": "https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest"
+}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0d13">
+  <meta name="description" content="Mayhem Mobile: PortaPack Mayhem's receivers in your browser, driving a HackRF or RTL-SDR over WebUSB.">
+  <title>Mayhem Mobile</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="stripe"></div>
+    <div class="bar-row">
+      <div class="brand">
+        <div id="title" class="wordmark">MAYHEM<span>MOBILE</span></div>
+        <div class="tag">Android phone · Desktop web app</div>
+        <div id="sub" class="sub">HackRF or RTL-SDR · no device</div>
+      </div>
+      <div class="state"><span id="dot" class="dot off"></span><span id="status">plug in a HackRF or RTL-SDR, then tap CONNECT</span><span id="board" hidden></span></div>
+      <button id="tools" class="chip icon">☰</button>
+    </div>
+    <div id="toolbar" class="toolbar">
+      <button id="connect" class="chip primary">CONNECT</button>
+      <button id="mute" class="chip">MUTE</button>
+      <button id="log-toggle" class="chip">LOG</button>
+      <button id="home" class="chip">HOME</button>
+      <button id="settings-btn" class="chip">SETTINGS</button>
+    </div>
+  </header>
+
+  <div id="unsupported" class="notice" hidden>
+    This browser has no WebUSB. Use Chrome or Edge on Android phones, Windows, macOS or Linux — or install the Android phone APK from the launcher below.
+    iPhone and iPad cannot talk to USB devices from a browser.
+  </div>
+
+  <div id="hint" class="notice" hidden></div>
+  <section id="log-panel" class="logwin" hidden>
+    <div id="log-bar" class="logwin-bar">
+      <span class="logwin-title">LOG</span>
+      <button id="log-pip" class="chip">PIP</button>
+      <button id="log-save" class="chip">SAVE</button>
+      <button id="log-share" class="chip">SHARE</button>
+      <button id="log-clear" class="chip">CLEAR</button>
+      <button id="log-close" class="chip">✕</button>
+    </div>
+    <pre id="log-head" class="logwin-head"></pre>
+    <pre id="log" class="logwin-body"></pre>
+  </section>
+
+  <main id="view" class="view launcher"></main>
+
+  <script type="module" src="./dist/main.js"></script>
+</body>
+</html>
