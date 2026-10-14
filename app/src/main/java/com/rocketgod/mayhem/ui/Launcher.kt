@@ -113,7 +113,10 @@ private fun AppGrid(modifier: Modifier) {
         contentPadding = PaddingValues(top = d.dp(2f), bottom = d.dp(12f)),
         modifier = modifier
     ) {
-        val groups = MayhemApp.entries.groupBy { it.category }
+        // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
+        val groups = MayhemApp.entries
+            .filter { it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL }
+            .groupBy { it.category }
         for ((cat, apps) in listOf("Receive", "Analyze", "Transmit", "Tools").mapNotNull { c -> groups[c]?.let { c to it } }) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(cat.uppercase(), color = tintFor(apps.first()), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,

@@ -175,4 +175,81 @@ object TxApps {
     // ---- Foxhunt sequence helper --------------------------------------------------------------------------------
     /** Wrap Morse text with a long tail carrier for direction-finding on a fox-hunt band. */
     fun foxhuntPattern(ident: String, tailSec: Int, wpm: Int): Pair<String, Int> = ident to tailSec.coerceAtLeast(1)
+
+    // ---- Troll app helpers (sideload APK only; gated by BuildConfig.INCLUDE_TROLL) -----------------------------
+    // Faithful ports of web/src/tx-apps.ts. OOK pulse lists are [carrier-on, samples] pairs for Tx.ookPulses,
+    // timed for `rate` samples/s (the transmitter runs at Tx.RATE).
+
+    /** Manchester-code bits at `halfUs` per half-bit. A 1 is high-then-low, a 0 is low-then-high. */
+    private fun manchester(bits: IntArray, halfUs: Int, rate: Int): List<Pair<Boolean, Long>> {
+        val t = maxOf(1L, Math.round(halfUs.toDouble() * rate / 1_000_000.0))
+        val out = ArrayList<Pair<Boolean, Long>>(bits.size * 2)
+        for (b in bits) { out.add((b == 1) to t); out.add((b != 1) to t) }
+        return out
+    }
+
+    private const val TESLA_HALF_US = 400
+    private val TESLA_MSG = intArrayOf(
+        0,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1,0,1,1)
+
+    /** Tesla charge-port burst: Manchester OOK at ~400 µs/half-bit, repeated with a ~23 ms gap. */
+    fun teslaPulses(rate: Int, repeats: Int = 5): List<Pair<Boolean, Long>> {
+        val one = manchester(TESLA_MSG, TESLA_HALF_US, rate)
+        val gap = false to Math.round(23_000.0 * rate / 1_000_000.0)
+        val out = ArrayList<Pair<Boolean, Long>>()
+        repeat(repeats) { out.addAll(one); out.add(gap) }
+        return out
+    }
+
+    /** Note name → Hz (equal temperament, A4 = 440); "0" is a rest. */
+    private val NOTE: Map<String, Int> = buildMap {
+        val base = mapOf(
+            "C" to -9, "C#" to -8, "D" to -7, "D#" to -6, "E" to -5, "F" to -4,
+            "F#" to -3, "G" to -2, "G#" to -1, "A" to 0, "A#" to 1, "B" to 2)
+        put("0", 0)
+        for (oct in 2..7) for ((n, s) in base)
+            put("$n$oct", Math.round(440.0 * Math.pow(2.0, s / 12.0 + (oct - 4))).toInt())
+    }
+
+    private val TUNES: LinkedHashMap<String, List<Pair<String, Int>>> = linkedMapOf(
+        // A rising-falling two-tone that reads as a siren, not a real emergency signal.
+        "siren" to (0 until 12).map { (if (it % 2 == 1) "A5" else "E5") to 2 },
+        // Ode to Joy — public domain.
+        "joy" to listOf("E5" to 1, "E5" to 1, "F5" to 1, "G5" to 1, "G5" to 1, "F5" to 1, "E5" to 1, "D5" to 1,
+            "C5" to 1, "C5" to 1, "D5" to 1, "E5" to 1, "E5" to 2, "D5" to 1, "D5" to 2, "0" to 1),
+        // Westminster chime — public domain doorbell.
+        "chime" to listOf("E5" to 2, "C5" to 2, "D5" to 2, "G4" to 3, "0" to 1, "G4" to 2, "D5" to 2, "E5" to 2, "C5" to 3),
+        "imperial" to listOf("G4" to 2, "G4" to 2, "G4" to 2, "D#4" to 1, "A#4" to 1, "G4" to 2, "D#4" to 1, "A#4" to 1, "G4" to 3, "0" to 1),
+        "rick" to listOf("C#5" to 1, "D#5" to 1, "0" to 1, "D#5" to 1, "0" to 1, "F5" to 1, "F5" to 1, "D#5" to 1,
+            "C#5" to 1, "C#5" to 1, "C#5" to 1, "A#4" to 2, "0" to 1),
+    )
+
+    fun tuneNames(): List<String> = TUNES.keys.toList()
+
+    /** One tone per fixed slot (0 = silence) for Tx.fmTones; a tune spells duration by repeating a note. */
+    fun melody(name: String): DoubleArray {
+        val t = TUNES[name] ?: TUNES["siren"]!!
+        val out = ArrayList<Double>()
+        for ((note, beats) in t) repeat(beats) { out.add((NOTE[note] ?: 0).toDouble()) }
+        return out.toDoubleArray()
+    }
+
+    /**
+     * de Bruijn B(2, n): a cyclic 0/1 string in which every n-bit word appears exactly once as a window. Streamed
+     * as OOK it opens any fixed-code receiver in the n-bit space in one pass. Unwrapped by n−1 bits so the
+     * wrap-around windows are covered when sent linearly rather than as a loop.
+     */
+    fun deBruijn(n: Int): IntArray {
+        val a = IntArray(n * 2)
+        val seq = ArrayList<Int>()
+        fun db(t: Int, p: Int) {
+            if (t > n) { if (n % p == 0) for (i in 1..p) seq.add(a[i]); return }
+            a[t] = a[t - p]; db(t + 1, p)
+            for (j in a[t - p] + 1 until 2) { a[t] = j; db(t + 1, t) }
+        }
+        db(1, 1)
+        val out = ArrayList(seq)
+        for (i in 0 until n - 1) out.add(seq[i])
+        return out.toIntArray()
+    }
 }

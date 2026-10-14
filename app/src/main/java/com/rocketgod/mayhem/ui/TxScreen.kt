@@ -219,10 +219,10 @@ fun TxScreen(defaultAccent: Color) {
     }
 }
 
-private enum class Kb { TEXT, CAPS, HEX, NUMBER, DECIMAL }
+internal enum class Kb { TEXT, CAPS, HEX, NUMBER, DECIMAL }
 
 /** A transmit parameter field; [lines] > 1 makes it a paste box that grows to twice that before scrolling. */
-@Composable private fun TxField(value: String, accent: Color, label: String, modifier: Modifier = Modifier.fillMaxWidth(), kb: Kb = Kb.TEXT,
+@Composable internal fun TxField(value: String, accent: Color, label: String, modifier: Modifier = Modifier.fillMaxWidth(), kb: Kb = Kb.TEXT,
                                 placeholder: String? = null, lines: Int = 1, onChange: (String) -> Unit) {
     val keys = when (kb) {
         Kb.TEXT -> KeyboardOptions.Default
@@ -240,12 +240,12 @@ private enum class Kb { TEXT, CAPS, HEX, NUMBER, DECIMAL }
 }
 
 private fun hexOf(s: String, max: Int) = s.uppercase().filter { it in "0123456789ABCDEF" }.take(max)
-private fun digitsOf(s: String, max: Int) = s.filter { it.isDigit() }.take(max)
-private fun decimalOf(s: String) = s.filter { it.isDigit() || it == '.' }.take(12)
+internal fun digitsOf(s: String, max: Int) = s.filter { it.isDigit() }.take(max)
+internal fun decimalOf(s: String) = s.filter { it.isDigit() || it == '.' }.take(12)
 /** The station callsign from Settings, or MAYHEM before one is set. */
 private fun stationCall() = Station.info.value.call.ifBlank { "MAYHEM" }
 
-@Composable private fun Note(text: String) {
+@Composable internal fun Note(text: String) {
     val d = rememberDims()
     Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.fillMaxWidth().padding(top = d.dp(8f)))
 }
