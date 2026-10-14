@@ -98,12 +98,6 @@ fun DevicesScreen(accent: Color) {
             append(" · listening across ${Devices.spanLabel(rep.span)} · noise ${rep.noise}, triggers above ${rep.trigger}")
         } else "listening…"
         Text(stats, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(6f)))
-        // Near misses: right length, header and timings, failed the checksum. In range but too weak.
-        val near = rep.near.entries.sortedByDescending { it.value }.take(6)
-        if (near.isNotEmpty()) {
-            Text("almost heard · ${near.joinToString(" · ") { "${it.key} ×${it.value}" }} — right shape, failed checksum: try more gain or a better aerial",
-                color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(2f)))
-        }
         Row(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             val count = if (showProtocols) "${Devices.protocols.size} PROTOCOLS · ALL RUNNING"
                 else "${heard.size} DEVICE${if (heard.size == 1) "" else "S"}"
