@@ -412,6 +412,36 @@ object Tx {
         return ookPulses("KeeLoq #${counter}", freqHz, pulses)
     }
 
+    // ---- Troll app transmitters (sideload APK only; gated by BuildConfig.INCLUDE_TROLL) ------------------------
+
+    /** Tesla charge-port opener — a fixed OOK burst, same on 315 (US/JP) and 433.92 MHz (EU). See TxApps.teslaPulses. */
+    fun teslaChargePort(freqHz: Long): Boolean =
+        ookPulses("Tesla charge port ${"%.2f".format(freqHz / 1e6)} MHz", freqHz, TxApps.teslaPulses(RATE))
+
+    /** Gate/garage opener brute: stream a de Bruijn sequence as Princeton symbols, opening every n-bit fixed code in one pass. */
+    fun gateOpener(bits: Int, teUs: Int, freqHz: Long): Boolean {
+        val seq = TxApps.deBruijn(bits)
+        val te = maxOf(1L, (teUs.toLong() * RATE / 1_000_000L))
+        val pulses = ArrayList<Pair<Boolean, Long>>(seq.size * 2)
+        // Each code bit as a Princeton symbol: 1 = long-high/short-low, 0 = short-high/long-low.
+        for (b in seq) { if (b == 1) { pulses.add(true to te * 3); pulses.add(false to te) } else { pulses.add(true to te); pulses.add(false to te * 3) } }
+        return ookPulses("gate opener ${bits}-bit · ${seq.size} sym", freqHz, pulses)
+    }
+
+    /** Spoof an Acurite 592TXR weather sensor so a nearby display shows a phantom temperature/humidity. See TxWeather. */
+    fun weatherSpoof(tempC: Double, humidity: Int?, freqHz: Long): Boolean {
+        val pulses = TxWeather.weatherPulses(tempC, humidity, RATE)
+        return ookPulses("weather ${tempC}°C ${humidity ?: "--"}%", freqHz, pulses)
+    }
+
+    /** FM jingle: sing a named tune (TxApps.melody) as FM tones, wide enough to land on a broadcast FM receiver. */
+    fun jingle(name: String, freqHz: Long): Boolean {
+        val tones = TxApps.melody(name)
+        if (tones.isEmpty()) { _status.value = "empty tune"; return false }
+        val slot = (RATE * 0.11).toInt()   // ~110 ms a slot; a tune spells duration by repeating a note
+        return fmTones("jingle $name", freqHz, tones, slot, 75_000.0)
+    }
+
     /** Foxhunt beacon: Morse ID once, then long carrier for direction-finding, repeated. */
     fun foxhunt(ident: String, wpm: Int, tailSeconds: Int, freqHz: Long): Boolean {
         // Compose Morse then a plain carrier hold. Simplification: single transmission.

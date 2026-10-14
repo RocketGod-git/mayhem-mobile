@@ -77,6 +77,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.SEARCH -> SearchScreen(accent)
                     MayhemApp.CAPTURE -> CaptureScreen(accent)
                     MayhemApp.TRANSMIT -> TxScreen(accent)
+                    MayhemApp.TROLL -> TrollScreen(accent)
                     MayhemApp.SETTINGS -> SettingsScreen(accent)
                 }
             }

@@ -164,6 +164,13 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 }
                 path.m(0.3f, 0.92f); path.l(0.7f, 0.92f)
             }
+            MayhemApp.TROLL -> {
+                // A shopping cart — the Troll app's signature trick.
+                path.m(0.1f, 0.22f); path.l(0.26f, 0.22f); path.l(0.36f, 0.64f); path.l(0.74f, 0.64f)
+                path.m(0.26f, 0.34f); path.l(0.84f, 0.34f); path.l(0.74f, 0.64f)
+                circles.add(Triple(0.42f, 0.8f, 0.06f))
+                circles.add(Triple(0.7f, 0.8f, 0.06f))
+            }
             MayhemApp.SETTINGS -> {
                 circles.add(Triple(0.5f, 0.5f, 0.16f))
                 for (k in 0 until 8) {

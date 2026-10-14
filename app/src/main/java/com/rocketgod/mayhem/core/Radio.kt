@@ -55,6 +55,7 @@ object Radio {
         MayhemApp.HAM to Needs(freqHz = 14_074_000L),
         MayhemApp.BTLE to Needs(freqHz = 2_402_000_000L),
         MayhemApp.TRANSMIT to Needs(tx = true),
+        MayhemApp.TROLL to Needs(tx = true),
     )
 
     /** Why this radio cannot reach any of [lo]..[hi], or "" when it can reach some of it. */

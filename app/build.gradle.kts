@@ -21,6 +21,9 @@ android {
         vectorDrawables { useSupportLibrary = true }
         // Short commit hash stamped by CI (GITHUB_SHA) so the APK and the web app can prove they are the same build.
         buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
+        // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
+        // release.yml passes -PincludeTroll=true for the APK; android-play.yml leaves it unset → false.
+        buildConfigField("boolean", "INCLUDE_TROLL", (project.findProperty("includeTroll") ?: "false").toString())
     }
 
     signingConfigs {
