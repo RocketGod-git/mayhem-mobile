@@ -91,7 +91,7 @@ fun TxScreen(defaultAccent: Color) {
             }
         }
 
-        Box(Modifier.padding(top = d.dp(8f))) {
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(8f))) {
             when (tab) {
                 0 -> SigGenTab(accent, freq, active)
                 1 -> TonesTab(accent, freq, active)
