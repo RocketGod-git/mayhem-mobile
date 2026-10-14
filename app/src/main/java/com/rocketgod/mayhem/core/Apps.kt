@@ -36,6 +36,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     SEARCH("Search", "find active frequencies", "Analyze"),
     CAPTURE("Capture", "record raw IQ to file", "Tools"),
     TRANSMIT("Transmit", "signal gen · morse · OOK · replay", "Transmit"),
+    TROLL("Troll", "novelty transmitters · jingles · cart sounds", "Transmit"),
     SETTINGS("Settings", "theme · about", "Tools");
 }
 
@@ -112,6 +113,7 @@ object Apps {
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
             MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, recorder)
             MayhemApp.TRANSMIT -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
+            MayhemApp.TROLL -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
             MayhemApp.SETTINGS -> {}
         }
     }
