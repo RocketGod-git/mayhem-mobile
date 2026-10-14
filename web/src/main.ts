@@ -2640,7 +2640,6 @@ function renderR433(view: HTMLElement): void {
       <div class="row">${[['250 kHz', 250_000], ['500 kHz', 500_000], ['1 MHz', 1_000_000], ['2 MHz', 2_000_000]]
         .map(([l, hz]) => `<button class="chip" data-span="${hz}">${l}</button>`).join('')}<button id="r433-hop" class="chip">HOP OFF</button></div>
       <div id="r433-stats" class="health">listening&hellip;</div>
-      <div id="r433-near" class="health near" hidden></div>
       <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="chip" id="r433-ptoggle">PROTOCOLS</button><button class="chip" id="pause-devices">PAUSE</button><button class="chip" id="clear-devices">CLEAR</button></span></div>
       <div id="r433-list" class="panel devtable"></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
@@ -2739,17 +2738,6 @@ function drawR433(): void {
     st.textContent = s
       ? `${R433_BANDS[r.band][0]} MHz · ${s.protocols} protocols · ${s.bursts} bursts (${s.ook} keyed, ${s.fsk} shifted) · ${s.decoded} decoded${s.badChecksum ? ` · ${s.badChecksum} failed their checksum` : ''} · listening across ${s.span >= 1e6 ? `${s.span / 1e6} MHz` : `${Math.round(s.span / 1e3)} kHz`} · noise ${s.noise}, triggers above ${s.trigger}`
       : 'listening…';
-  }
-  // The near misses, loudest first. A frame that got as far as a checksum had the right length, header and
-  // timings for that protocol, so this says what is out there but not quite readable — which is the one thing
-  // a quiet list cannot tell you on its own.
-  const near = q('#r433-near');
-  if (near) {
-    const list = Object.entries(r.stats?.near ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 6);
-    near.hidden = !list.length;
-    near.textContent = list.length
-      ? `almost heard · ${list.map(([n, c]) => `${n} ×${c}`).join(' · ')} — right shape, failed checksum: in range but too weak, so try more gain or a better aerial`
-      : '';
   }
   const named = r.heard.filter(d => d.num !== 0).length;
   const c = q('#r433-count');
