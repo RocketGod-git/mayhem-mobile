@@ -136,6 +136,8 @@ let logFollow = true;   // stops when the reader scrolls up, resumes at the bott
 let radio: Radio | null = null;
 /** The USB device behind `radio`, so a detach event can tell whether it was the radio that left. */
 let radioDev: USBDevice | null = null;
+/** True from the start of connect() until its radio stops, so two bring-ups never race for one device. */
+let connecting = false;
 // Transmit is a HackRF capability and there is no polite way to fake it: a dongle receives only. Handing the
 // transmitter nothing when an RTL-SDR is connected is what makes every send path refuse cleanly.
 const tx = new Tx(() => (radio && radio.kind === 'hackrf' ? radio as HackRf : null));
@@ -3746,8 +3748,11 @@ async function ensureAudio(): Promise<void> {
   // A browser will not start audio until the page has been interacted with. When the radio comes up on its own
   // at start-up there has been no gesture yet, so a refusal here is expected and must not stop the receiver: the
   // first tap anywhere resumes it.
-  try { await audioCtx.resume(); } catch { /* resumed on the first gesture instead */ }
+  // Not awaited. Without a gesture Chrome neither resumes nor refuses: the promise just stays pending until a
+  // later resume() runs inside one. Awaited, that parked the radio's start-up behind audio forever, because the
+  // listener that makes that later call (armAudioResume) was only set up after this line.
   armAudioResume();
+  void audioCtx.resume().catch(() => { /* resumed on the first gesture instead */ });
 }
 let audioArmed = false;
 /**
@@ -3775,6 +3780,11 @@ function wakeAudio(): void {
 async function connect(dev?: USBDevice): Promise<void> {
   const btn = $<HTMLButtonElement>('connect');
   if (radio?.running) { radio.stop(); btn.textContent = 'CONNECT'; return; }
+  // One bring-up at a time. A second open() on the same device fails, and the loser's cleanup below cleared
+  // `radio` out from under the winner: the dongle kept streaming but no app could retune it any more, so every
+  // decoder went deaf until you reconnected.
+  if (connecting) return;
+  connecting = true;
   hideHint();                       // a fresh attempt clears a stale hint from the last one
   try {
     // A device this origin was already granted skips the chooser (and works without a click gesture).
@@ -3826,6 +3836,7 @@ async function connect(dev?: USBDevice): Promise<void> {
     setStatus(err.name === 'NotFoundError' ? 'no device chosen' : `error: ${err.message}`, false);
     showHint(err);
   } finally {
+    connecting = false;
     btn.textContent = 'CONNECT';
     setStatus(state.board ? `${state.board} disconnected` : 'disconnected', false);
     radio = null; radioDev = null;
