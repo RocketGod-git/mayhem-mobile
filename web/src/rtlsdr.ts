@@ -67,6 +67,8 @@ export function isRtlSdr(d: USBDevice): boolean {
 const DEMODB = 0, USBB = 1, SYSB = 2, IICB = 6;
 const USB_SYSCTL = 0x2000, USB_EPA_CTL = 0x2148, USB_EPA_MAXPKT = 0x2158;
 const DEMOD_CTL = 0x3000, DEMOD_CTL_1 = 0x300b;
+/** The RTL2832U's general-purpose pins: output value, output enable, direction. */
+const GPO = 0x3001, GPOE = 0x3003, GPD = 0x3004;
 
 /** The RTL2832U's own crystal. Sets the resampler ratio and the IF, and is 28.8 MHz on every dongle made. */
 const RTL_XTAL = 28_800_000;
@@ -77,6 +79,14 @@ const R820T_ADDR = 0x34;
 /** The R828D in the RTL-SDR Blog V4 and the Astrometa sticks. Same tuner core, different address and crystal. */
 const R828D_ADDR = 0x74;
 const R828D_XTAL = 16_000_000;
+/**
+ * The RTL-SDR Blog V4L ("V4 Lite"). The R828D went out of production, so the V4L carries an R828S instead. That
+ * part answers at the R820T's address with the R820T's check value, so nothing on the I2C bus tells it apart:
+ * librtlsdr goes by the USB strings the EEPROM programs, and so does this. Compared after trimming, since some
+ * stacks hand the strings back with a trailing NUL.
+ */
+const BLOG_MAKER = 'RTLSDRBlog', BLOG_V4L = 'Blog V4L';
+const usbString = (s: string | undefined): string => (s ?? '').replace(/\0/g, '').trim();
 /** What either part answers at register zero. The one reliable way to tell a tuner is really there. */
 const R82XX_CHECK_VAL = 0x69;
 
@@ -260,6 +270,8 @@ export class RtlSdr implements Radio {
   private dbgBuffers = 0;
   /** The last transfer error, kept so the give-up message can say what actually went wrong. */
   private lastError: string | null = null;
+  /** The last retune failure, so a retry that keeps failing logs once rather than every buffer. */
+  private retuneError: string | null = null;
 
   constructor(private dev: USBDevice, private ev: RadioEvents) {}
 
@@ -399,13 +411,24 @@ export class RtlSdr implements Radio {
    *  bulk FIFO and so are handled in stream(), which first drains the reads in flight. Freq and gain are
    *  I2C-only and safe to apply with reads outstanding. */
   private async applyPending(): Promise<void> {
-    if (this.targetFreqHz !== this.appliedFreq) {
-      await this.setCenterFreq(this.targetFreqHz);
-      this.appliedFreq = this.targetFreqHz;
-    }
-    if (this.targetGainTenthDb !== this.appliedGain) {
-      await this.applyGain(this.targetGainTenthDb);
-      this.appliedGain = this.targetGainTenthDb;
+    // A control transfer can fail once without the dongle being gone, and switching apps is exactly when a
+    // retune lands on top of a busy bus. Thrown out of here it would end stream() and close the device, which
+    // is a disconnect the user has to undo by hand. Caught, the applied value stays stale and the next buffer
+    // tries again; a dongle that really has gone still ends the loop through its failed bulk reads.
+    try {
+      if (this.targetFreqHz !== this.appliedFreq) {
+        await this.setCenterFreq(this.targetFreqHz);
+        this.appliedFreq = this.targetFreqHz;
+      }
+      if (this.targetGainTenthDb !== this.appliedGain) {
+        await this.applyGain(this.targetGainTenthDb);
+        this.appliedGain = this.targetGainTenthDb;
+      }
+      this.retuneError = null;
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg !== this.retuneError) this.ev.onLog(`RTL-SDR: retune failed, retrying — ${msg}`);
+      this.retuneError = msg;
     }
   }
 
@@ -416,6 +439,22 @@ export class RtlSdr implements Radio {
     const data = len === 1 ? new Uint8Array([val & 0xff]) : new Uint8Array([(val >> 8) & 0xff, val & 0xff]);
     await this.dev.controlTransferOut(
       { requestType: 'vendor', recipient: 'device', request: 0, value: addr, index: (block << 8) | 0x10 }, data);
+  }
+
+  /** Block register read, one byte. */
+  private async readReg(block: number, addr: number): Promise<number> {
+    const r = await this.dev.controlTransferIn(
+      { requestType: 'vendor', recipient: 'device', request: 0, value: addr, index: block << 8 }, 1);
+    return r.status === 'ok' && r.data && r.data.byteLength ? r.data.getUint8(0) : 0;
+  }
+
+  /** Drive one of the RTL2832U's GPIO pins as an output (librtlsdr rtlsdr_set_gpio_output + _set_gpio_bit). */
+  private async setGpio(pin: number, on: boolean): Promise<void> {
+    const bit = 1 << pin;
+    await this.writeReg(SYSB, GPD, (await this.readReg(SYSB, GPD)) & ~bit, 1);
+    await this.writeReg(SYSB, GPOE, (await this.readReg(SYSB, GPOE)) | bit, 1);
+    const v = await this.readReg(SYSB, GPO);
+    await this.writeReg(SYSB, GPO, on ? v | bit : v & ~bit, 1);
   }
 
   private async demodWrite(page: number, addr: number, val: number, len: number): Promise<void> {
@@ -591,7 +630,14 @@ export class RtlSdr implements Radio {
       this.tunerAddr = R820T_ADDR; this.tunerXtal = RTL_XTAL; this.vcoPowerRef = 2; this.tuner = 'unknown';
       this.ev.onLog('RTL-SDR: no R82xx answered. An E4000 or FC0012 dongle is not supported yet — expect static.');
     }
-    this.label = `RTL-SDR · ${this.tuner}`;
+    // A V4L's R828S passes for an R820T on the bus; its USB strings are what give it away. It runs from the RTL's
+    // 28.8 MHz like an R820T but wants the R828D's VCO power reference of one (librtlsdr r82xx_set_pll).
+    if (found && this.tunerAddr === R820T_ADDR
+        && usbString(this.dev.manufacturerName) === BLOG_MAKER && usbString(this.dev.productName) === BLOG_V4L) {
+      this.tuner = 'R828S'; this.vcoPowerRef = 1;
+      this.ev.onLog('RTL-SDR: RTL-SDR Blog V4L (R828S)');
+    }
+    this.label = this.tuner === 'R828S' ? 'RTL-SDR Blog V4L' : `RTL-SDR · ${this.tuner}`;
 
     for (let i = 0; i < R82XX_INIT.length; i++) this.tunerRegs[5 + i] = R82XX_INIT[i];
     await this.tunerWrite(0x05, R82XX_INIT);
@@ -599,6 +645,9 @@ export class RtlSdr implements Radio {
     await this.setTvStandard();
     await this.sysFreqSel();
     await this.setI2cRepeater(false);
+    // Newer V4L batches route the antenna through an upconverter switch on GPIO5: high is the direct path that
+    // everything from 24 MHz up uses, low is the HF upconverter. This driver does not tune HF, so it is set once.
+    if (this.tuner === 'R828S') await this.setGpio(5, true);
   }
 
   /**
@@ -716,6 +765,9 @@ export class RtlSdr implements Radio {
     // init block leaves it at 0x00 (cable-in), so on a V4 nothing below 345 MHz — FM, APRS, air, 2 m — ever
     // reached the mixer, which read as a dead aerial. An R820T/R820T2 has one input and ignores this bit.
     if (this.tuner === 'R828D') await this.tunerWriteMask(0x05, rfHz > 345_000_000 ? 0x00 : 0x60, 0x60);
+    // The V4L's R828S has one input fewer: cable-1 for HF (0x05 bit 6) and the air-in for everything else, with
+    // the air-in enabled by clearing bit 5. Above HF both bits are clear (librtlsdr r82xx_set_freq, V4L branch).
+    if (this.tuner === 'R828S') await this.tunerWriteMask(0x05, 0x00, 0x60);
     if (!(await this.r82xxSetPll(lo))) {
       this.ev.onLog(`RTL-SDR: PLL did not lock at ${(rfHz / 1e6).toFixed(3)} MHz`);
     }
