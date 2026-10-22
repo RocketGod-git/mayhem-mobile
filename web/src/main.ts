@@ -3962,7 +3962,9 @@ function bindDesktop(): void {
       case 's': case 'S': if (state.app === 'audio') setSquelch([0, 6, 12, 20][([0, 6, 12, 20].indexOf(state.squelch) + 1) % 4]); break;
       case 'b': case 'B': if (state.app === 'audio') addBookmark(); break;
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
-      case 'c': case 'C': void connect(); break;
+      // Connect only. connect() toggles, and one stray keystroke dropping a live radio reads as the SDR falling
+      // off the bus; disconnecting takes the button.
+      case 'c': case 'C': if (!radio?.running) void connect(); break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
       case 't': case 'T': $('tools').click(); break;
