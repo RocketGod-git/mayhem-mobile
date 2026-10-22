@@ -134,6 +134,8 @@ const counts: Record<string, number> = {};
 const diag: string[] = [];
 let logFollow = true;   // stops when the reader scrolls up, resumes at the bottom
 let radio: Radio | null = null;
+/** The USB device behind `radio`, so a detach event can tell whether it was the radio that left. */
+let radioDev: USBDevice | null = null;
 // Transmit is a HackRF capability and there is no polite way to fake it: a dongle receives only. Handing the
 // transmitter nothing when an RTL-SDR is connected is what makes every send path refuse cleanly.
 const tx = new Tx(() => (radio && radio.kind === 'hackrf' ? radio as HackRf : null));
@@ -3811,7 +3813,7 @@ async function connect(dev?: USBDevice): Promise<void> {
       },
     });
     r.targetFreqHz = state.freq; r.targetRateHz = state.rate; r.setGain(state.lna, state.vga, state.amp);
-    radio = r;
+    radio = r; radioDev = d;
     refreshLauncherLimits();
     applyLauncherView();          // now we know how wide it can go, show the whole band rather than a slice
     await r.open();
@@ -3826,7 +3828,7 @@ async function connect(dev?: USBDevice): Promise<void> {
   } finally {
     btn.textContent = 'CONNECT';
     setStatus(state.board ? `${state.board} disconnected` : 'disconnected', false);
-    radio = null;
+    radio = null; radioDev = null;
     refreshLauncherLimits();
   }
 }
@@ -3847,7 +3849,7 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   r.targetFreqHz = state.freq;
   r.targetRateHz = nearestRate(r.limits, state.rate);
   r.setGain(state.lna, state.vga, state.amp);
-  radio = r;
+  radio = r; radioDev = d;
   refreshLauncherLimits();
   applyLauncherView();
   if (r.targetRateHz !== state.rate) { state.rate = r.targetRateHz; worker?.postMessage({ type: 'config', rate: state.rate }); refreshReadout(); }
@@ -3938,7 +3940,10 @@ function scrollHints(): void {
 }
 function bindDesktop(): void {
   window.addEventListener('keydown', (e) => {
-    if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+    // Any field you type into keeps its keys: a textarea or select passing a 'c' through would toggle CONNECT and
+    // drop the radio mid-session.
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'acars' || state.app === 'tpms' || state.app === 'subghz' || state.app === 'devices';
     // start typing a number (or F) to key in a frequency; a focused readout digit already took its own keystroke
     if ((tunable || state.app === 'ham') && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9.,fF]$/.test(e.key)) {
@@ -4098,7 +4103,9 @@ function init(): void {
       void connect(d).catch(() => setStatus(`${what} remembered — tap CONNECT`, false));
     }).catch(() => undefined);
     navigator.usb.addEventListener('connect', (e) => { log(`USB attached: ${e.device.productName ?? ''}`); if (!radio) setStatus(`${isRtlSdr(e.device) ? 'RTL-SDR' : 'HackRF'} attached — tap CONNECT`, false); });
-    navigator.usb.addEventListener('disconnect', (e) => { log(`USB detached: ${e.device.productName ?? ''}`); radio?.stop(); });
+    // Only the radio leaving stops the radio. Any USB device detaching used to end the session - a phone on charge,
+    // a hub dropping a port - which looked like the SDR disconnecting by itself.
+    navigator.usb.addEventListener('disconnect', (e) => { log(`USB detached: ${e.device.productName ?? ''}`); if (e.device === radioDev) radio?.stop(); });
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => undefined);
   log('Mayhem Mobile web ready');

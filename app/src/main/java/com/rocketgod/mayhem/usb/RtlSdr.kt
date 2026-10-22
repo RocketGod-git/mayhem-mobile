@@ -58,6 +58,13 @@ object RtlSdr {
     private const val DEMODB = 0; private const val USBB = 1; private const val SYSB = 2; private const val IICB = 6
     private const val USB_SYSCTL = 0x2000; private const val USB_EPA_CTL = 0x2148; private const val USB_EPA_MAXPKT = 0x2158
     private const val DEMOD_CTL = 0x3000; private const val DEMOD_CTL_1 = 0x300b
+    /** The RTL2832U's general-purpose pins: output value, output enable, direction. */
+    private const val GPO = 0x3001; private const val GPOE = 0x3003; private const val GPD = 0x3004
+    /**
+     * The RTL-SDR Blog V4L. The R828D went out of production and the V4L carries an R828S, which answers at the
+     * R820T's address with the R820T's check value; only the USB strings tell it apart, as in librtlsdr.
+     */
+    private const val BLOG_MAKER = "RTLSDRBlog"; private const val BLOG_V4L = "Blog V4L"
     private const val RTL_XTAL = 28_800_000L
     /** Where the tuner puts the wanted signal: low-side injection, which the demodulator inverts back. */
     private const val IF_HZ = 3_570_000L
@@ -149,6 +156,7 @@ object RtlSdr {
     private var tunerAddr = R820T_ADDR
     private var tunerXtal = RTL_XTAL
     private var vcoPowerRef = 2
+    private var device: UsbDevice? = null
     /** The frequency the radio has actually been set to, so a sweep knows when its retune has landed. */
     @Volatile var appliedFreq = 0L; private set
     @Volatile private var appliedRate = 0
@@ -164,6 +172,7 @@ object RtlSdr {
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
         val c = mgr.openDevice(device) ?: run { onStatus("RTL-SDR: couldn't open device"); running = false; return }
         conn = c
+        this.device = device
         try {
             val intf = device.getInterface(0)
             c.claimInterface(intf, true)
@@ -288,8 +297,23 @@ object RtlSdr {
 
     /** Frequency and gain are I2C only and safe with reads in flight; applied between buffers. */
     private fun applyPending() {
-        if (targetFreqHz != appliedFreq) { runCatching { setCenterFreq(targetFreqHz) }; appliedFreq = targetFreqHz }
-        if (targetGainTenthDb != appliedGain) { runCatching { applyGain(targetGainTenthDb) }; appliedGain = targetGainTenthDb }
+        // Marked applied only once it lands. A control transfer that fails during an app switch used to be
+        // recorded as done anyway, which left the dongle parked on the old frequency with the new app deaf;
+        // now the next buffer simply tries again.
+        if (targetFreqHz != appliedFreq) {
+            val f = targetFreqHz
+            runCatching { setCenterFreq(f) }.onSuccess { appliedFreq = f }.onFailure { retuneFailed(it) }
+        }
+        if (targetGainTenthDb != appliedGain) {
+            val g = targetGainTenthDb
+            runCatching { applyGain(g) }.onSuccess { appliedGain = g }.onFailure { retuneFailed(it) }
+        }
+    }
+
+    private var retuneError: String? = null
+    private fun retuneFailed(t: Throwable) {
+        if (t.message != retuneError) Diag.log("RTL-SDR: retune failed, retrying — ${t.message}")
+        retuneError = t.message
     }
 
     // ---- RTL2832U registers -----------------------------------------------------------------------------------
@@ -308,6 +332,21 @@ object RtlSdr {
         val r = conn.controlTransfer(0xC0, 0, (addr shl 8) or 0x20, page, b, len, TIMEOUT)
         if (r != len) return 0
         return if (len == 1) b[0].toInt() and 0xff else ((b[1].toInt() and 0xff) shl 8) or (b[0].toInt() and 0xff)
+    }
+
+    /** Block register read, one byte. */
+    private fun readReg(block: Int, addr: Int): Int {
+        val b = ByteArray(1)
+        return if (conn.controlTransfer(0xC0, 0, addr, block shl 8, b, 1, TIMEOUT) == 1) b[0].toInt() and 0xff else 0
+    }
+
+    /** Drive one of the RTL2832U's GPIO pins as an output (librtlsdr rtlsdr_set_gpio_output + _set_gpio_bit). */
+    private fun setGpio(pin: Int, on: Boolean) {
+        val bit = 1 shl pin
+        writeReg(SYSB, GPD, readReg(SYSB, GPD) and bit.inv(), 1)
+        writeReg(SYSB, GPOE, readReg(SYSB, GPOE) or bit, 1)
+        val v = readReg(SYSB, GPO)
+        writeReg(SYSB, GPO, if (on) v or bit else v and bit.inv(), 1)
     }
 
     private fun initBaseband() {
@@ -401,14 +440,27 @@ object RtlSdr {
             tunerAddr = R820T_ADDR; tunerXtal = RTL_XTAL; vcoPowerRef = 2; tuner = "unknown"
             Diag.log("RTL-SDR: no R82xx answered. An E4000 or FC0012 dongle is not supported yet — expect static.")
         }
-        label = "RTL-SDR · $tuner"
+        // A V4L's R828S passes for an R820T on the bus. It runs from the RTL's 28.8 MHz like one, but wants the
+        // R828D's VCO power reference of one (librtlsdr r82xx_set_pll).
+        val dev = device
+        if (found && tunerAddr == R820T_ADDR && dev != null &&
+            usbString(dev.manufacturerName) == BLOG_MAKER && usbString(dev.productName) == BLOG_V4L) {
+            tuner = "R828S"; vcoPowerRef = 1
+            Diag.log("RTL-SDR: RTL-SDR Blog V4L (R828S)")
+        }
+        label = if (tuner == "R828S") "RTL-SDR Blog V4L" else "RTL-SDR · $tuner"
         for (i in R82XX_INIT.indices) tunerRegs[5 + i] = R82XX_INIT[i]
         tunerWrite(0x05, R82XX_INIT)
         if (found && tuner == "R828D") pickR828dReference()
         setTvStandard()
         sysFreqSel()
         i2cRepeater(false)
+        // Newer V4L batches switch the antenna through an upconverter on GPIO5: high is the direct path used from
+        // 24 MHz up, low is the HF upconverter. HF is not tuned here, so it is set once.
+        if (tuner == "R828S") setGpio(5, true)
     }
+
+    private fun usbString(s: String?) = (s ?: "").replace("\u0000", "").trim()
 
     private data class Quad(val a: Int, val b: Long, val c: Int, val d: String)
 
@@ -487,6 +539,8 @@ object RtlSdr {
         setMux(lo)
         // the R828D's aerial is on the air input below ~345 MHz and the cable input above; the init leaves cable
         if (tuner == "R828D") tunerWriteMask(0x05, if (rfHz > 345_000_000L) 0x00 else 0x60, 0x60)
+        // the V4L's R828S has cable-1 for HF (bit 6) and the air-in (enabled by clearing bit 5) for the rest
+        if (tuner == "R828S") tunerWriteMask(0x05, 0x00, 0x60)
         if (!setPll(lo)) Diag.log("RTL-SDR: PLL did not lock at %.3f MHz".format(rfHz / 1e6))
     }
 
