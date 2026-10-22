@@ -3216,7 +3216,7 @@ function renderSettings(view: HTMLElement): void {
       <div class="kv"><span>Windows</span><span>bind the HackRF to the WinUSB driver (Zadig), the same step hackrf_transfer needs; libusbK / libusb-win32 bindings hide it from the browser</span></div>
       <div class="kv"><span>macOS</span><span>nothing to install — just close any other SDR program that has the HackRF open</span></div>
       <div class="kv"><span>Linux</span><span>the udev rule from the hackrf package (53-hackrf.rules) grants access; replug after adding it</span></div>
-      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · T toolbar · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · C connect · L log · Esc home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div>
+      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · T toolbar · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div>
     </div>`;
   qa<HTMLInputElement>('[data-st]', view).forEach(i => i.oninput = () => { const k = i.dataset.st as keyof Station; const v = k === 'call' || k === 'grid' ? i.value.toUpperCase() : i.value; if (k === 'call' || k === 'grid') i.value = v; state.ham.station[k] = v; saveStation(); });
   qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); render('settings'); });
@@ -3973,9 +3973,6 @@ function bindDesktop(): void {
       case 's': case 'S': if (state.app === 'audio') setSquelch([0, 6, 12, 20][([0, 6, 12, 20].indexOf(state.squelch) + 1) % 4]); break;
       case 'b': case 'B': if (state.app === 'audio') addBookmark(); break;
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
-      // Connect only. connect() toggles, and one stray keystroke dropping a live radio reads as the SDR falling
-      // off the bus; disconnecting takes the button.
-      case 'c': case 'C': if (!radio?.running) void connect(); break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
       case 't': case 'T': $('tools').click(); break;
