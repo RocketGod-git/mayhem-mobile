@@ -286,7 +286,7 @@ object RtlSdr {
                 if (now - lastStatus > 1000L) { lastStatus = now; onStatus("$label · %.3f MHz".format(appliedFreq / 1e6)) }
             }
         } finally {
-            reqs.forEach { runCatching { it.cancel() }; runCatching { it.close() } }
+            UsbRequests.drainAndClose(c, reqs)
         }
     }
 
