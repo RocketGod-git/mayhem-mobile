@@ -1,0 +1,137 @@
+<!doctype html>
+<!--
+  Source for web/assets/og.jpg, the 1200x630 link-preview image (og:image / twitter:image).
+  Render with Edge or Chrome headless:
+    msedge --headless=new --hide-scrollbars --window-size=1200,630 --virtual-time-budget=6000
+           --user-data-dir=<temp dir> --screenshot=og.png file:///.../play/og-image.html
+  then save it as a quality-90 JPEG to web/assets/og.jpg (the PNG is ~700 KB of waterfall noise; the JPEG ~120 KB).
+  --user-data-dir matters when Edge is already open: without it the headless run joins that instance and writes nothing.
+  The waterfall is drawn from a seeded generator, so the same file always renders the same picture.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&display=block">
+<style>
+  :root {
+    --paper: #0a0d13; --surface: #121722; --line: #2a3348;
+    --ink: #e8ecf4; --muted: #8d97ab; --accent: #4c8dff; --amber: #ffaf00;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; background: var(--paper); }
+  body { position: relative; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; color: var(--ink); }
+  canvas { position: absolute; inset: 0; }
+  .stripe { position: absolute; left: 0; top: 0; width: 100%; height: 10px; background: var(--accent); }
+  .copy { position: absolute; left: 64px; top: 70px; width: 600px; }
+  .eyebrow { font-weight: 700; font-size: 20px; letter-spacing: 0.22em; color: var(--amber); }
+  .mark { margin-top: 22px; font-weight: 800; font-size: 118px; line-height: 0.92; letter-spacing: -0.02em; }
+  .mark span { display: block; color: var(--accent); text-shadow: 0 0 34px rgba(76, 141, 255, 0.45); }
+  .hook { margin-top: 34px; font-weight: 700; font-size: 34px; line-height: 1.25; }
+  .sub { margin-top: 12px; font-weight: 500; font-size: 25px; color: var(--muted); }
+  .url { position: absolute; left: 64px; bottom: 44px; font-weight: 700; font-size: 22px; letter-spacing: 0.04em; color: var(--muted); }
+  .url b { color: var(--ink); font-weight: 700; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1200" height="630"></canvas>
+<div class="stripe"></div>
+<div class="copy">
+  <div class="eyebrow">HACKRF · PORTAPACK · RTL-SDR</div>
+  <div class="mark">MAYHEM<span>MOBILE</span></div>
+  <div class="hook">Plug the radio into<br>your phone.</div>
+  <div class="sub">No PC. No drivers. Browser or Android.</div>
+</div>
+<div class="url"><b>rocketgod.dev</b>/mayhem-mobile</div>
+<script>
+// Canvas text does not wait for web fonts, so draw once the face the readout uses has loaded.
+Promise.all([document.fonts.load('800 30px "JetBrains Mono"'), document.fonts.load('700 16px "JetBrains Mono"')]).then(draw);
+function draw() {
+// ---- a seeded FM-band waterfall, drawn on the right and faded into the paper on the left ----------------
+let seed = 0x5eed1e;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+const gauss = () => { let s = 0; for (let i = 0; i < 6; i++) s += rnd(); return s / 6 - 0.5; };
+
+const W = 1200, H = 630, X0 = 470, SPEC_TOP = 34, SPEC_H = 150, WF_TOP = SPEC_TOP + SPEC_H + 8;
+const cv = document.getElementById('c'), g = cv.getContext('2d');
+
+// Stations across the span: x in px, width in px, strength 0..1. The tuned one carries the amber marker.
+const stations = [];
+for (let x = X0 + 40; x < W - 20; x += 46 + rnd() * 60) stations.push({ x, w: 7 + rnd() * 9, a: 0.25 + rnd() * 0.55 });
+const tuned = stations[Math.floor(stations.length * 0.62)]; tuned.a = 1; tuned.w = 15;
+stations[2].a = 0.85; stations[stations.length - 2].a = 0.7;
+
+// Colormap: paper -> deep blue -> accent blue -> cyan -> amber -> near white, like the app's waterfall.
+const stops = [[0, [10, 13, 19]], [0.22, [18, 34, 78]], [0.45, [56, 110, 230]], [0.65, [70, 210, 255]], [0.83, [255, 175, 0]], [1, [255, 246, 220]]];
+function cmap(v) {
+  v = Math.max(0, Math.min(1, v));
+  for (let i = 1; i < stops.length; i++) if (v <= stops[i][0]) {
+    const [p0, c0] = stops[i - 1], [p1, c1] = stops[i], t = (v - p0) / (p1 - p0);
+    return c0.map((c, k) => Math.round(c + (c1[k] - c) * t));
+  }
+  return stops[stops.length - 1][1];
+}
+
+// Short OOK bursts (remotes, sensors) as brief bright dashes.
+const bursts = Array.from({ length: 14 }, () => ({ x: X0 + 60 + rnd() * (W - X0 - 80), y: WF_TOP + rnd() * (H - WF_TOP), w: 1.2 + rnd() * 1.2, h: 10 + rnd() * 26, a: 0.3 + rnd() * 0.18 }));
+
+function level(x, y) {
+  let v = 0.18 + gauss() * 0.16;
+  for (const s of stations) {
+    const wob = Math.sin(y * 0.05 + s.x) * 1.4;                       // a little FM deviation
+    const d = (x - s.x - wob) / s.w;
+    const fade = s === tuned ? 1 : 0.75 + 0.25 * Math.sin(y * 0.013 + s.x * 0.1);
+    v += s.a * fade * Math.exp(-d * d * 1.6);
+  }
+  for (const b of bursts) if (Math.abs(x - b.x) < b.w && y > b.y && y < b.y + b.h) v += b.a;
+  return v;
+}
+
+// Waterfall body.
+const img = g.createImageData(W, H);
+for (let y = WF_TOP; y < H; y++) for (let x = X0 - 160; x < W; x++) {
+  const [r, gg, b] = cmap(level(x, y) * 0.95);
+  const i = (y * W + x) * 4; img.data[i] = r; img.data[i + 1] = gg; img.data[i + 2] = b; img.data[i + 3] = 255;
+}
+g.putImageData(img, 0, 0);
+
+// Spectrum panel above it: the averaged level as a glowing trace with a soft fill.
+const spec = [];
+for (let x = X0 - 160; x < W; x++) { let s = 0; for (let k = 0; k < 10; k++) s += level(x, WF_TOP + 4 + k * 3); spec.push([x, s / 10]); }
+const yOf = v => SPEC_TOP + SPEC_H - Math.min(1.05, v * 0.82) * SPEC_H;
+g.save();
+g.beginPath(); g.moveTo(spec[0][0], SPEC_TOP + SPEC_H);
+for (const [x, v] of spec) g.lineTo(x, yOf(v));
+g.lineTo(W, SPEC_TOP + SPEC_H); g.closePath();
+const fill = g.createLinearGradient(0, SPEC_TOP, 0, SPEC_TOP + SPEC_H);
+fill.addColorStop(0, 'rgba(76,141,255,0.35)'); fill.addColorStop(1, 'rgba(76,141,255,0.02)');
+g.fillStyle = fill; g.fill();
+g.beginPath(); spec.forEach(([x, v], i) => i ? g.lineTo(x, yOf(v)) : g.moveTo(x, yOf(v)));
+g.strokeStyle = '#7fb0ff'; g.lineWidth = 2.5; g.shadowColor = 'rgba(76,141,255,0.9)'; g.shadowBlur = 14; g.stroke();
+g.restore();
+g.fillStyle = '#2a3348'; g.fillRect(X0 - 160, SPEC_TOP + SPEC_H + 3, W, 2);
+
+// The amber tuning guide on the strongest station, with the readout the app shows.
+g.save();
+g.strokeStyle = '#ffaf00'; g.lineWidth = 2; g.setLineDash([7, 6]); g.shadowColor = 'rgba(255,175,0,0.8)'; g.shadowBlur = 10;
+g.beginPath(); g.moveTo(tuned.x, SPEC_TOP + 8); g.lineTo(tuned.x, H); g.stroke();
+g.restore();
+g.font = '800 30px "JetBrains Mono"'; g.fillStyle = '#ffaf00'; g.textAlign = 'right';
+g.shadowColor = 'rgba(0,0,0,0.9)'; g.shadowBlur = 8;
+g.fillText('98.300', tuned.x - 14, SPEC_TOP + 38);
+g.font = '700 16px "JetBrains Mono"'; g.fillText('MHz · WFM', tuned.x - 14, SPEC_TOP + 60);
+g.shadowBlur = 0;
+
+// Fade the whole radio picture into the paper so the type on the left sits on clean ground.
+const fade = g.createLinearGradient(X0 - 160, 0, X0 + 210, 0);
+fade.addColorStop(0, 'rgba(10,13,19,1)'); fade.addColorStop(0.55, 'rgba(10,13,19,0.72)'); fade.addColorStop(1, 'rgba(10,13,19,0)');
+g.fillStyle = fade; g.fillRect(0, 0, X0 + 210, H);
+g.fillStyle = 'rgba(10,13,19,1)'; g.fillRect(0, 0, X0 - 160, H);
+// and a light vignette at the bottom so the URL reads
+const vb = g.createLinearGradient(0, H - 140, 0, H);
+vb.addColorStop(0, 'rgba(10,13,19,0)'); vb.addColorStop(1, 'rgba(10,13,19,0.55)');
+g.fillStyle = vb; g.fillRect(0, H - 140, W, 140);
+}
+</script>
+</body>
+</html>
