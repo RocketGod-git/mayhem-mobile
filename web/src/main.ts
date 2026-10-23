@@ -229,6 +229,7 @@ function tune(hz: number, hold = false): void {
   }
   if (state.app === 'audio' || state.app === 'capture') state.radioFreq = state.freq;
   if (generalPurpose() && !silentTune) setDial(state.freq);
+  if (!silentTune) { if (state.app === null) launchTapped = true; if (state.app === 'audio') audioPick = false; }
   if (tunesInSpan()) {
     // the channel moves inside the view; only when it leaves the view does the radio follow it
     const prevLo = state.viewLo;
@@ -636,7 +637,7 @@ function launcherView(): { center: number; rate: number; mode: Mode } {
 /** Re-point the launcher, for when the band changes or a radio arrives that can show more of it. */
 function applyLauncherView(): void {
   if (state.app) return;
-  launchPicked = false;
+  launchPicked = false; launchTapped = false;
   const v = launcherView();
   configure(v.mode, v.center, v.rate, 24, 24, false, 'none');
   // The band's midpoint is where the launcher LOOKS, not a choice the user made: it must never overwrite the
@@ -665,13 +666,25 @@ function open(app: AppId | null): void {
     // tap retune the radio rather than slide a channel about inside the span.
     // No gain UI here, so ride AGC so the wide band isn't a wall of static (the HackRF amp default is handled in
     // configure, and stays off if the user has turned it off).
-    case null: { const v = launcherView(); configure(v.mode, v.center, v.rate, 32, 32, false, 'none'); setAgc(true); launchPicked = false; break; }
+    case null: { const v = launcherView(); configure(v.mode, v.center, v.rate, 32, 32, false, 'none'); setAgc(true); launchPicked = false; launchTapped = false; break; }
     case 'settings': configure('NONE', dial, RX_RATE, 24, 24, false, 'none'); break;
     case 'ham': hamOpen(); return;
     // Arriving from the launcher is "take me to what I am looking at": open on the station the launcher has
     // (its auto-pick of the strongest, or one you tapped), state.freq. From anywhere else, keep the shared dial —
     // the launcher's auto-pick still never writes that dial, so a plain app-to-app hop is never thrown onto it.
-    case 'audio': configure(state.radioMode, prev === null ? state.freq : dial, RX_RATE, 24, 24, false, 'none'); break;
+    // Unless you picked something on the launcher, Audio lands on the band's strongest station: the launcher's own
+    // pick if it has landed, the last one it found in this band if not, and failing both its own pick once the
+    // first signals arrive. Never the band's midpoint, and never wherever ADS-B or AIS last left the radio.
+    case 'audio': {
+      let f = prev === null ? state.freq : dial;
+      audioPick = false;
+      if (prev === null && !launchTapped && !launchPicked) {
+        const known = bandBest.get(state.launchBand);
+        if (known) f = known; else audioPick = true;
+      }
+      configure(state.radioMode, f, RX_RATE, 24, 24, false, 'none');
+      break;
+    }
     case 'prowl': configure('NFM', state.prowl.target ? state.freq : dial, Math.max(RX_RATE, state.rate), 24, 24, false, 'none'); break;
     case 'adsb': configure('NONE', 1_090_000_000, 2e6, 32, 32, true, 'adsb'); requestGeo(); break;
     case 'sat': satAppOpen(); return;
@@ -1321,13 +1334,35 @@ const launchScroll = { x: 0, y: 0 };
 /** The launcher tunes its marker to the strongest signal in view, once per band open, so it never lands on a dead
  *  frequency (the band midpoint is often empty). Re-armed when the launcher opens or the band changes. */
 let launchPicked = false;
+/** The user tuned on the launcher this visit (a tap, the keypad, a step): Audio then opens exactly there. */
+let launchTapped = false;
+/** The strongest station the launcher has found in each of its bands. Audio opens on it when it is tapped before
+ *  this visit's pick has landed; broadcast stations do not move, so the last one found is still right. */
+const bandBest = new Map<string, number>();
+/** Audio opened with nothing better to go on: take the strongest station in its own view once signals arrive. */
+let audioPick = false;
 function launchAutoPick(): void {
   if (state.app !== null || launchPicked || !lastSignals.length) return;
   const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
   let best: SeenSignal | null = null;
   for (const s of lastSignals) { if (Math.abs(s.hz - c) > half) continue; if (!best || s.snr > best.snr) best = s; }
   // An automatic pick is a suggestion on screen, not the user's choice: it must not become the shared dial.
-  if (best) { launchPicked = true; silentTune = true; try { tune(best.hz, true); } finally { silentTune = false; } }
+  if (best) {
+    launchPicked = true; bandBest.set(state.launchBand, best.hz);
+    silentTune = true; try { tune(best.hz, true); } finally { silentTune = false; }
+  }
+}
+/** Audio's own pick, for when it opened before the launcher knew the band's strongest station. A broadcast
+ *  receiver prefers broadcast stations over whatever else is loud in the span. */
+function audioAutoPick(): void {
+  if (state.app !== 'audio' || !audioPick || !lastSignals.length) return;
+  const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
+  const inView = lastSignals.filter(s => Math.abs(s.hz - c) <= half);
+  const wide = state.mode === 'WFM' ? inView.filter(s => s.cls === 'WFM' || s.bw > 60_000) : [];
+  const pool = wide.length ? wide : inView;
+  let best: SeenSignal | null = null;
+  for (const s of pool) if (!best || s.snr > best.snr) best = s;
+  if (best) { audioPick = false; silentTune = true; try { tune(best.hz); } finally { silentTune = false; } }
 }
 function render(app: AppId | null): void {
   const view = $('view');
@@ -3671,7 +3706,7 @@ function ensureWorker(): Worker {
         break;
       }
       case 'sq': if (m.open !== state.sqOpen) { state.sqOpen = m.open; refreshSquelch(); } break;
-      case 'signals': if (scope && state.app !== 'lookingglass' && state.app !== 'search') { const c = spanCenter(); lastSignals = m.list as SeenSignal[]; (window as unknown as { mmSignals: SeenSignal[] }).mmSignals = lastSignals; launchAutoPick(); scope.setSignals((m.list as { hz: number; db: number; cls: string; conf: number; val: number }[]).map(s => ({ frac: 0.5 + (s.hz - c) / state.rate, val: s.val, text: `${(s.hz / 1e6).toFixed(3)}${s.cls ? ` ${s.cls}${s.conf < 0.6 ? '?' : ''}` : ''} ${Math.round(s.db)}dB` }))); } break;
+      case 'signals': if (scope && state.app !== 'lookingglass' && state.app !== 'search') { const c = spanCenter(); lastSignals = m.list as SeenSignal[]; (window as unknown as { mmSignals: SeenSignal[] }).mmSignals = lastSignals; launchAutoPick(); audioAutoPick(); scope.setSignals((m.list as { hz: number; db: number; cls: string; conf: number; val: number }[]).map(s => ({ frac: 0.5 + (s.hz - c) / state.rate, val: s.val, text: `${(s.hz / 1e6).toFixed(3)}${s.cls ? ` ${s.cls}${s.conf < 0.6 ? '?' : ''}` : ''} ${Math.round(s.db)}dB` }))); } break;
       case 'monitor': onMonitor(m); break;
       case 'digi': { const g = state.ham.digi; g.text += m.text as string; if (g.text.length > 4000) g.text = g.text.slice(-3000); const el = q('#digi-text'); if (el) { el.textContent = g.text; el.scrollTop = el.scrollHeight; } break; }
       case 'digiStatus': {
