@@ -256,7 +256,7 @@ object HackRfOne {
             reqs.add(r)
         }
         if (!ok) {
-            reqs.forEach { runCatching { it.cancel() }; runCatching { it.close() } }
+            UsbRequests.drainAndClose(c, reqs)
             streamLoopSync(c, rx, onStatus); return
         }
         val scratch = ByteArray(bufSz)
@@ -303,7 +303,7 @@ object HackRfOne {
                 }
             }
         } finally {
-            reqs.forEach { runCatching { it.cancel() }; runCatching { it.close() } }
+            UsbRequests.drainAndClose(c, reqs)
         }
     }
 
