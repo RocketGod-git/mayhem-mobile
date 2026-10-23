@@ -39,7 +39,9 @@ jobs:
         id: ver
         run: |
           V=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
-          C=$(sed -n 's/.*BASE_VERSION_CODE = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          # versionCode: minutes since 2026-01-01 UTC, the same clock android-play.yml uses, so whichever build is
+          # newer - the sideload APK here or a Play upload - always carries the higher code and installs as an update.
+          C=$(( ($(date -u +%s) - $(date -u -d 2026-01-01 +%s)) / 60 ))
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then TAG="${GITHUB_REF_NAME}"; else TAG="latest"; fi
           [ -n "$V" ] && [ -n "$C" ] || { echo "::error::could not read versionName / BASE_VERSION_CODE from app/build.gradle.kts"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "code=$C" >> "$GITHUB_OUTPUT"; echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -72,6 +74,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          VERSION_CODE: ${{ steps.ver.outputs.code }}
         # -PincludeTroll=true: the sideload APK/AAB carry the Troll app. The Play pipeline
         # (android-play.yml) never passes this, so its bundle is built with INCLUDE_TROLL=false.
         run: ./gradlew assembleRelease bundleRelease -PincludeTroll=true --no-daemon --stacktrace
