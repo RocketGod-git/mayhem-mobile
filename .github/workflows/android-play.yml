@@ -11,8 +11,9 @@ name: Play Release
 # create a new application, and for a brand-new app Google may require the first bundle to
 # be uploaded through the Console before the API will accept one.
 #
-# versionCode is resolved from Play, not from the repo: the highest code Play already knows
-# about, plus one. That way a manual Console upload never collides with a CI one.
+# versionCode is minutes since 2026-01-01 UTC - the clock release.yml stamps the sideload APK
+# with, so the newer build always has the higher code - and never less than the highest code
+# Play already knows about plus one, so a manual Console upload can never collide with it.
 
 on:
   workflow_dispatch:
@@ -74,13 +75,13 @@ jobs:
       - name: Install the Play API client
         run: pip install --quiet google-auth requests
 
-      - name: Next versionCode (highest Play knows about, plus one)
+      - name: Next versionCode (build clock, at least the highest Play knows about plus one)
         id: ver
         env:
           SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os
+          import json, os, time, calendar
           from google.oauth2 import service_account
           from google.auth.transport.requests import AuthorizedSession
 
@@ -100,7 +101,8 @@ jobs:
               if g.status_code == 200:
                   codes += [int(x["versionCode"]) for x in g.json().get(kind, [])]
           s.delete(f"{base}/edits/{eid}")
-          print(f"code={max(codes) + 1 if codes else 1}")
+          clock = (int(time.time()) - calendar.timegm((2026, 1, 1, 0, 0, 0))) // 60
+          print(f"code={max(clock, max(codes) + 1 if codes else 1)}")
           PY
 
       - name: Build the release bundle

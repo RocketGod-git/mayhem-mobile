@@ -13,11 +13,11 @@ android {
         applicationId = "com.rocketgod.mayhem"
         minSdk = 26
         targetSdk = 37
-        // The Play workflow overrides this with VERSION_CODE, resolved from the highest code
-        // Play already knows about, so an API upload can never collide with a Console one.
-        // BASE_VERSION_CODE stays a plain literal because the release workflow reads it with sed.
+        // Both CI workflows set VERSION_CODE from one clock (minutes since 2026-01-01 UTC), so the newer of a
+        // sideload APK and a Play build always has the higher code; Play's is also kept above anything it
+        // already has. BASE_VERSION_CODE only applies to local builds.
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: BASE_VERSION_CODE
-        versionName = "0.6.9"
+        versionName = "0.7.0"
         vectorDrawables { useSupportLibrary = true }
         // Short commit hash stamped by CI (GITHUB_SHA) so the APK and the web app can prove they are the same build.
         buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
