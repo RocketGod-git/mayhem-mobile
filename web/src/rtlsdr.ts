@@ -272,6 +272,10 @@ export class RtlSdr implements Radio {
   private lastError: string | null = null;
   /** The last retune failure, so a retry that keeps failing logs once rather than every buffer. */
   private retuneError: string | null = null;
+  /** Set once a retune has failed live and then landed with the reads drained: retune drained from then on. */
+  private quietRetune = false;
+  /** No retune before this time: set after a retune fails even with the reads drained. */
+  private retuneAfter = 0;
 
   constructor(private dev: USBDevice, private ev: RadioEvents) {}
 
@@ -400,17 +404,42 @@ export class RtlSdr implements Radio {
         if (!this.stopFlag) for (let i = 0; i < N; i++) inflight.push(read());
         bad = 0;
       }
-      await this.applyPending();
+      if (this.pending() && performance.now() >= this.retuneAfter) {
+        // Retune between buffers. Live first - with reads in flight it costs nothing - unless this machine has
+        // already shown it needs a quiet bus. Some USB stacks fail control transfers sent while bulk reads are
+        // outstanding; there every retune failed, the radio stayed where it was (stuck on broadcast FM, which
+        // the launcher reaches without a retune) and, before retries, the stream closed instead. So on a
+        // failure: drain the reads, retune with nothing outstanding, re-prime - exactly what a rate change does.
+        let ok = !this.quietRetune && await this.applyPending();
+        if (!ok) {
+          const rest = inflight.splice(0);
+          await Promise.allSettled(rest);
+          ok = await this.applyPending();
+          try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
+          if (!this.stopFlag) for (let i = 0; i < N; i++) inflight.push(read());
+          bad = 0;
+          // Still failing with the bus quiet: something else is wrong. Back off rather than drain every buffer.
+          if (!ok) this.retuneAfter = performance.now() + 1000;
+          if (ok && !this.quietRetune) {
+            this.quietRetune = true;
+            this.ev.onLog('RTL-SDR: this USB stack rejects retunes during streaming — retuning between drained reads from now on');
+          }
+        }
+      }
       const now = performance.now();
       if (now - lastStatus > 1000) { lastStatus = now; this.ev.onStatus(`${this.label} · ${(this.appliedFreq / 1e6).toFixed(3)} MHz`); }
     }
     await Promise.allSettled(inflight);
   }
 
-  /** Retune between buffers, so no buffer ever straddles a change. Rate changes are not here: they reset the
-   *  bulk FIFO and so are handled in stream(), which first drains the reads in flight. Freq and gain are
-   *  I2C-only and safe to apply with reads outstanding. */
-  private async applyPending(): Promise<void> {
+  /** Whether a frequency or gain change is waiting. Rate changes are not here: they reset the bulk FIFO and so
+   *  are handled in stream(), which first drains the reads in flight. */
+  private pending(): boolean {
+    return this.targetFreqHz !== this.appliedFreq || this.targetGainTenthDb !== this.appliedGain;
+  }
+
+  /** Apply a pending frequency and gain. True when both landed; on a failure the applied value stays stale. */
+  private async applyPending(): Promise<boolean> {
     // A control transfer can fail once without the dongle being gone, and switching apps is exactly when a
     // retune lands on top of a busy bus. Thrown out of here it would end stream() and close the device, which
     // is a disconnect the user has to undo by hand. Caught, the applied value stays stale and the next buffer
@@ -425,10 +454,12 @@ export class RtlSdr implements Radio {
         this.appliedGain = this.targetGainTenthDb;
       }
       this.retuneError = null;
+      return true;
     } catch (e) {
       const msg = (e as Error).message;
       if (msg !== this.retuneError) this.ev.onLog(`RTL-SDR: retune failed, retrying — ${msg}`);
       this.retuneError = msg;
+      return false;
     }
   }
 

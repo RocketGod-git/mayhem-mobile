@@ -168,6 +168,7 @@ object RtlSdr {
         if (running) return
         running = true; stop = false
         appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; dbgBuffers = 0
+        quietRetune = false; needQuietRetune = false; retuneAfter = 0L
         SdrEngine.syncDriver()
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
         val c = mgr.openDevice(device) ?: run { onStatus("RTL-SDR: couldn't open device"); running = false; return }
@@ -200,10 +201,23 @@ object RtlSdr {
             while (!stop) {
                 streamUntilRateChange(c, ep, onStatus)
                 if (stop) break
+                // Nothing is in flight here, so this is where a retune that failed live gets its second try.
+                if (needQuietRetune) {
+                    needQuietRetune = false
+                    val ok = applyPending()
+                    runCatching { resetBuffer() }
+                    if (!ok) retuneAfter = System.currentTimeMillis() + 1000
+                    else if (!quietRetune) {
+                        quietRetune = true
+                        Diag.log("RTL-SDR: this USB stack rejects retunes during streaming — retuning between drained reads from now on")
+                    }
+                }
                 // A rate change resets the bulk FIFO, so it waits until nothing is in flight.
-                runCatching { setSampleRate(targetRateHz); resetBuffer(); SdrEngine.onSource(targetRateHz) }
-                    .onFailure { Diag.log("RTL-SDR: rate change failed — ${it.message}") }
-                appliedRate = targetRateHz
+                if (targetRateHz != appliedRate) {
+                    runCatching { setSampleRate(targetRateHz); resetBuffer(); SdrEngine.onSource(targetRateHz) }
+                        .onFailure { Diag.log("RTL-SDR: rate change failed — ${it.message}") }
+                    appliedRate = targetRateHz
+                }
             }
         } catch (t: Throwable) {
             Diag.log("RTL-SDR error: ${t.message}")
@@ -242,7 +256,11 @@ object RtlSdr {
         }
         try {
             while (!stop && targetRateHz == appliedRate) {
-                applyPending()
+                // Retune live first; where this USB stack has shown it rejects that, or it just failed, leave the
+                // loop so run() cancels every request and retunes with nothing in flight.
+                if (pending() && System.currentTimeMillis() >= retuneAfter) {
+                    if (quietRetune || !applyPending()) { needQuietRetune = true; break }
+                }
                 val req = try { c.requestWait(100L) } catch (e: TimeoutException) { continue }
                 if (req == null) { if (failed("wait")) break; Thread.sleep(2); continue }
                 val idx = req.clientData as? Int ?: continue
@@ -295,20 +313,37 @@ object RtlSdr {
         if (mx - mn < 3) { Diag.log("RTL-SDR: the samples barely move — check the aerial and try another USB port"); onStatus("RTL-SDR: no signal — check aerial / cable") }
     }
 
-    /** Frequency and gain are I2C only and safe with reads in flight; applied between buffers. */
-    private fun applyPending() {
-        // Marked applied only once it lands. A control transfer that fails during an app switch used to be
-        // recorded as done anyway, which left the dongle parked on the old frequency with the new app deaf;
-        // now the next buffer simply tries again.
+    private fun pending() = targetFreqHz != appliedFreq || targetGainTenthDb != appliedGain
+
+    /**
+     * Apply a pending frequency and gain, between buffers. True when both landed. Marked applied only once it
+     * lands: Android's controlTransfer reports failure as a negative length rather than throwing, so a retune
+     * whose writes were refused used to "succeed" and leave the dongle parked on the old frequency with the new
+     * app deaf. Failed writes are counted, and any during the retune make it a failure.
+     */
+    private fun applyPending(): Boolean {
+        var ok = true
         if (targetFreqHz != appliedFreq) {
-            val f = targetFreqHz
-            runCatching { setCenterFreq(f) }.onSuccess { appliedFreq = f }.onFailure { retuneFailed(it) }
+            val f = targetFreqHz; val before = writeFails
+            runCatching { setCenterFreq(f); check(writeFails == before) { "control transfer refused" } }
+                .onSuccess { appliedFreq = f }.onFailure { retuneFailed(it); ok = false }
         }
         if (targetGainTenthDb != appliedGain) {
-            val g = targetGainTenthDb
-            runCatching { applyGain(g) }.onSuccess { appliedGain = g }.onFailure { retuneFailed(it) }
+            val g = targetGainTenthDb; val before = writeFails
+            runCatching { applyGain(g); check(writeFails == before) { "control transfer refused" } }
+                .onSuccess { appliedGain = g }.onFailure { retuneFailed(it); ok = false }
         }
+        if (ok) retuneError = null
+        return ok
     }
+
+    /** Control writes the dongle refused (Android returns a negative length rather than throwing). */
+    @Volatile private var writeFails = 0
+    /** Set once a retune failed live and then landed with nothing in flight: retune that way from then on. */
+    @Volatile private var quietRetune = false
+    @Volatile private var needQuietRetune = false
+    /** No retune before this time: set after one fails even with nothing in flight. */
+    @Volatile private var retuneAfter = 0L
 
     private var retuneError: String? = null
     private fun retuneFailed(t: Throwable) {
@@ -317,7 +352,8 @@ object RtlSdr {
     }
 
     // ---- RTL2832U registers -----------------------------------------------------------------------------------
-    private fun out(value: Int, index: Int, data: ByteArray): Int = conn.controlTransfer(0x40, 0, value, index, data, data.size, TIMEOUT)
+    private fun out(value: Int, index: Int, data: ByteArray): Int =
+        conn.controlTransfer(0x40, 0, value, index, data, data.size, TIMEOUT).also { if (it < 0) writeFails++ }
     private fun be(v: Int, len: Int) = if (len == 1) byteArrayOf(v.toByte()) else byteArrayOf((v shr 8).toByte(), v.toByte())
 
     private fun writeReg(block: Int, addr: Int, v: Int, len: Int) { out(addr, (block shl 8) or 0x10, be(v, len)) }
