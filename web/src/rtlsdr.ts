@@ -276,6 +276,10 @@ export class RtlSdr implements Radio {
   private quietRetune = false;
   /** No retune before this time: set after a retune fails even with the reads drained. */
   private retuneAfter = 0;
+  /** Control transfers the dongle did not accept (stalls resolve, they do not throw). */
+  private ctlFails = 0;
+  /** When the dongle was last reopened to land a retune; a burst of these means it has really failed. */
+  private reopenTimes: number[] = [];
 
   constructor(private dev: USBDevice, private ev: RadioEvents) {}
 
@@ -302,21 +306,26 @@ export class RtlSdr implements Radio {
     if (this.running) return;
     this.running = true; this.stopFlag = false; this.dbgBuffers = 0;
     this.appliedFreq = 0; this.appliedRate = 0; this.appliedGain = Number.MAX_SAFE_INTEGER;
+    this.reopenTimes = []; this.quietRetune = false; this.retuneAfter = 0;
     try {
       this.ev.onLog('=== RTL-SDR bring-up (RTL2832U + R82xx, WebUSB) ===');
       this.ev.onStatus('RTL-SDR · initializing…');
-      // A dongle left running by another program halts its endpoint; clear it before touching anything.
-      try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
-
-      await this.initBaseband();
-      await this.initTuner();
-      await this.setSampleRate(this.targetRateHz); this.appliedRate = this.targetRateHz;
-      await this.setCenterFreq(this.targetFreqHz); this.appliedFreq = this.targetFreqHz;
-      await this.applyGain(this.targetGainTenthDb); this.appliedGain = this.targetGainTenthDb;
-      await this.resetBuffer();
-
-      this.ev.onLog(`RTL-SDR: streaming ${(this.targetFreqHz / 1e6).toFixed(3)} MHz @ ${(this.targetRateHz / 1e6).toFixed(3)} Msps`);
-      await this.stream();
+      for (;;) {
+        await this.bringUp();
+        if (await this.stream() !== 'reopen' || this.stopFlag) break;
+        // A retune would not land even with the bus quiet. Bring-up does land - it is what fixed this by hand -
+        // so close the dongle and open it again at the frequency the app asked for. Each reopen that brings the
+        // dongle up IS the retune succeeding, so on a stack that needs one for every retune this simply repeats;
+        // only a burst (more than 6 in 10 s) means something has really failed, and that ends the session.
+        const now = performance.now();
+        this.reopenTimes = this.reopenTimes.filter(t => now - t < 10_000);
+        this.reopenTimes.push(now);
+        if (this.reopenTimes.length > 6) { this.ev.onLog('RTL-SDR: reopened the dongle 6 times in 10 s and retunes still fail — stopping'); break; }
+        this.ev.onLog(`RTL-SDR: retune to ${(this.targetFreqHz / 1e6).toFixed(3)} MHz would not land — reopening the dongle there`);
+        try { await this.dev.releaseInterface(0); } catch { /* may already be released */ }
+        try { await this.dev.close(); } catch { /* may already be closed */ }
+        await this.open();
+      }
     } catch (e) {
       this.ev.onLog(`RTL-SDR error: ${(e as Error).message}`);
       this.ev.onStatus(`RTL-SDR stopped: ${(e as Error).message}`);
@@ -329,6 +338,19 @@ export class RtlSdr implements Radio {
   }
 
   stop(): void { this.stopFlag = true; }
+
+  /** Configure the dongle from cold at the current targets. Also how a reopen picks up where the app is. */
+  private async bringUp(): Promise<void> {
+    // A dongle left running by another program halts its endpoint; clear it before touching anything.
+    try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
+    await this.initBaseband();
+    await this.initTuner();
+    await this.setSampleRate(this.targetRateHz); this.appliedRate = this.targetRateHz;
+    await this.setCenterFreq(this.targetFreqHz); this.appliedFreq = this.targetFreqHz;
+    await this.applyGain(this.targetGainTenthDb); this.appliedGain = this.targetGainTenthDb;
+    await this.resetBuffer();
+    this.ev.onLog(`RTL-SDR: streaming ${(this.targetFreqHz / 1e6).toFixed(3)} MHz @ ${(this.targetRateHz / 1e6).toFixed(3)} Msps`);
+  }
 
   /**
    * Gain, in the three terms the interface offers, mapped onto the one knob this radio has.
@@ -346,7 +368,7 @@ export class RtlSdr implements Radio {
 
   // ---- streaming ------------------------------------------------------------------------------------------
 
-  private async stream(): Promise<void> {
+  private async stream(): Promise<'stop' | 'reopen'> {
     const N = 8, SIZE = 65536;
     // Several reads are kept in flight so the dongle never waits on us. Each carries its own catch: when one
     // fails - the device unplugged, the endpoint gone - the other seven fail moments later, and a rejected
@@ -418,8 +440,9 @@ export class RtlSdr implements Radio {
           try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
           if (!this.stopFlag) for (let i = 0; i < N; i++) inflight.push(read());
           bad = 0;
-          // Still failing with the bus quiet: something else is wrong. Back off rather than drain every buffer.
-          if (!ok) this.retuneAfter = performance.now() + 1000;
+          // Still failing with the bus quiet: only a fresh open of the dongle has been seen to fix this (it is what
+          // reconnecting by hand did), so leave and let run() reopen it at the new frequency.
+          if (!ok) { await Promise.allSettled(inflight.splice(0)); return 'reopen'; }
           if (ok && !this.quietRetune) {
             this.quietRetune = true;
             this.ev.onLog('RTL-SDR: this USB stack rejects retunes during streaming — retuning between drained reads from now on');
@@ -430,6 +453,7 @@ export class RtlSdr implements Radio {
       if (now - lastStatus > 1000) { lastStatus = now; this.ev.onStatus(`${this.label} · ${(this.appliedFreq / 1e6).toFixed(3)} MHz`); }
     }
     await Promise.allSettled(inflight);
+    return 'stop';
   }
 
   /** Whether a frequency or gain change is waiting. Rate changes are not here: they reset the bulk FIFO and so
@@ -445,13 +469,18 @@ export class RtlSdr implements Radio {
     // is a disconnect the user has to undo by hand. Caught, the applied value stays stale and the next buffer
     // tries again; a dongle that really has gone still ends the loop through its failed bulk reads.
     try {
+      const before = this.ctlFails;
       if (this.targetFreqHz !== this.appliedFreq) {
-        await this.setCenterFreq(this.targetFreqHz);
-        this.appliedFreq = this.targetFreqHz;
+        const f = this.targetFreqHz;
+        await this.setCenterFreq(f);
+        if (this.ctlFails !== before) throw new Error('the dongle refused a control transfer');
+        this.appliedFreq = f;
       }
       if (this.targetGainTenthDb !== this.appliedGain) {
-        await this.applyGain(this.targetGainTenthDb);
-        this.appliedGain = this.targetGainTenthDb;
+        const g = this.targetGainTenthDb;
+        await this.applyGain(g);
+        if (this.ctlFails !== before) throw new Error('the dongle refused a control transfer');
+        this.appliedGain = g;
       }
       this.retuneError = null;
       return true;
@@ -468,8 +497,18 @@ export class RtlSdr implements Radio {
   /** Block register write. Two-byte values go out big-endian, which is not how they read back. */
   private async writeReg(block: number, addr: number, val: number, len: number): Promise<void> {
     const data = len === 1 ? new Uint8Array([val & 0xff]) : new Uint8Array([(val >> 8) & 0xff, val & 0xff]);
-    await this.dev.controlTransferOut(
-      { requestType: 'vendor', recipient: 'device', request: 0, value: addr, index: (block << 8) | 0x10 }, data);
+    await this.ctlOut({ requestType: 'vendor', recipient: 'device', request: 0, value: addr, index: (block << 8) | 0x10 }, data);
+  }
+
+  /**
+   * Every control write goes through here. A write the dongle refuses does not always throw: WebUSB resolves it
+   * with status 'stall'. Unchecked, a retune whose writes all stalled looked like success - the driver recorded
+   * the new frequency while the tuner never moved, which is how a radio sits on broadcast FM with the screen
+   * saying 1090. So refusals are counted, and a retune that lost any write is a failed retune.
+   */
+  private async ctlOut(setup: USBControlTransferParameters, data: Uint8Array): Promise<void> {
+    const r = await this.dev.controlTransferOut(setup, data);
+    if (r.status !== 'ok') this.ctlFails++;
   }
 
   /** Block register read, one byte. */
@@ -490,8 +529,7 @@ export class RtlSdr implements Radio {
 
   private async demodWrite(page: number, addr: number, val: number, len: number): Promise<void> {
     const data = len === 1 ? new Uint8Array([val & 0xff]) : new Uint8Array([(val >> 8) & 0xff, val & 0xff]);
-    await this.dev.controlTransferOut(
-      { requestType: 'vendor', recipient: 'device', request: 0, value: (addr << 8) | 0x20, index: 0x10 | page }, data);
+    await this.ctlOut({ requestType: 'vendor', recipient: 'device', request: 0, value: (addr << 8) | 0x20, index: 0x10 | page }, data);
     // Required by the hardware after every demodulator write. Skipping it works until suddenly it does not.
     await this.demodRead(0x0a, 0x01, 1);
   }
@@ -499,7 +537,7 @@ export class RtlSdr implements Radio {
   private async demodRead(page: number, addr: number, len: number): Promise<number> {
     const r = await this.dev.controlTransferIn(
       { requestType: 'vendor', recipient: 'device', request: 0, value: (addr << 8) | 0x20, index: page }, len);
-    if (r.status !== 'ok' || !r.data || r.data.byteLength !== len) return 0;
+    if (r.status !== 'ok' || !r.data || r.data.byteLength !== len) { this.ctlFails++; return 0; }
     return len === 1 ? r.data.getUint8(0) : (r.data.getUint8(1) << 8) | r.data.getUint8(0);
   }
 
@@ -561,8 +599,7 @@ export class RtlSdr implements Radio {
   // ---- I2C to the tuner -----------------------------------------------------------------------------------
 
   private async i2cWrite(bytes: Uint8Array): Promise<void> {
-    await this.dev.controlTransferOut(
-      { requestType: 'vendor', recipient: 'device', request: 0, value: this.tunerAddr, index: (IICB << 8) | 0x10 }, bytes);
+    await this.ctlOut({ requestType: 'vendor', recipient: 'device', request: 0, value: this.tunerAddr, index: (IICB << 8) | 0x10 }, bytes);
   }
 
   /** Read `len` tuner registers - the part always starts at register zero - and un-reverse each byte. */
