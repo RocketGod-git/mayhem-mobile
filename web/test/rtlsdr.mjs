@@ -169,14 +169,13 @@ console.log('a HackRF is untouched by any of this');
 console.log('a dongle dims exactly what it should, and nothing else');
 {
   const dimmed = Object.keys(APP_NEEDS).filter(id => blockedBecause(APP_NEEDS[id], RTL_LIMITS));
-  eq(dimmed.sort().join(','), 'btle,ham,transmit', 'HAM, Bluetooth and Transmit dim on a dongle');
+  eq(dimmed.sort().join(','), 'btle,transmit', 'Bluetooth and Transmit dim on a dongle');
   // The other half of being useful: everything else stays bright.
-  for (const id of ['audio', 'sat', 'adsb', 'ais', 'aprs', 'pager', 'ert', 'tpms', 'acars', 'subghz',
+  for (const id of ['ham', 'audio', 'sat', 'adsb', 'ais', 'aprs', 'pager', 'ert', 'tpms', 'acars', 'subghz',
     'devices', 'lookingglass', 'search', 'capture', 'settings', 'prowl']) {
     eq(blockedBecause(APP_NEEDS[id], RTL_LIMITS), '', `${id} stays bright on a dongle`);
   }
   ok(blockedBecause(APP_NEEDS.transmit, RTL_LIMITS).includes('receives only'), 'Transmit says why');
-  ok(blockedBecause(APP_NEEDS.ham, RTL_LIMITS).includes('14.074'), 'HAM names the band it is missing');
   // A sweep slice a dongle cannot sample is pulled to one it can, rather than leaving unswept gaps.
   eq(nearestRate(RTL_LIMITS, 4_000_000), 2_400_000, 'a 4 MHz sweep slice comes down');
   eq(nearestRate(RTL_LIMITS, 2_000_000), 2_000_000, 'a 2 MHz slice is already fine');

@@ -86,9 +86,8 @@ export interface AppNeeds {
  * Kept here rather than beside the app list so it can be checked against each radio's limits without a browser.
  */
 export const APP_NEEDS: Record<string, AppNeeds> = {
-  // HAM is an HF app before it is anything else - SSB, CW and the FT8 watering hole at 14.074 all live below
-  // where a dongle's tuner starts. It still works on two metres, but calling that "HAM" would be a stretch.
-  ham: { freqHz: 14_074_000 },
+  // HAM is not here: HF sits below where a dongle's tuner starts, but two meters and 70 cm do not, so on a
+  // dongle HAM opens on 146.520 instead of being dimmed (hamOpen in main.ts).
   // Bluetooth advertising sits at 2.4 GHz, well past the top of an R82xx.
   btle: { freqHz: 2_402_000_000 },
   transmit: { tx: true },
