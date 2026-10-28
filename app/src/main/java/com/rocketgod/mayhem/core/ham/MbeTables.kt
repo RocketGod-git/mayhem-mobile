@@ -1,6 +1,6 @@
 package com.rocketgod.mayhem.core.ham
 
-/* AMBE+2 (3600x2450) quantiser tables, from mbelib (ISC license, Copyright 2010 mbelib Author). Generated. */
+/* AMBE+2 (3600x2450) quantizer tables, from mbelib (ISC license, Copyright 2010 mbelib Author). Generated. */
 
 internal val W0: DoubleArray = doubleArrayOf(
     0.049971, 0.049215, 0.048471, 0.047739, 0.047010, 0.046299, 0.045601, 0.044905, 0.044226, 0.043558, 0.042900, 0.042246, 0.041609, 0.040979, 0.040356, 0.039747, 0.039148, 0.038559, 0.037971, 0.037399,

@@ -58,7 +58,7 @@ export class ComplexFirDecimator {
 }
 
 /**
- * Third-order CIC decimator on integer-quantised complex samples. The integrators use wraparound int32
+ * Third-order CIC decimator on integer-quantized complex samples. The integrators use wraparound int32
  * arithmetic (JS `| 0`), so they never lose precision however long they run; six adds per input sample.
  * At D = 10 the worst alias into a ±110 kHz passband is ≈ −75 dB down and the droop under 0.1 dB, which is
  * what lets a 19.2 Msps HackRF stream feed the 1.92 M FIR chain without a 63-tap FIR at the full rate.
@@ -68,7 +68,7 @@ export class Cic3Decimator {
   private c1r = 0; private c1i = 0; private c2r = 0; private c2i = 0; private c3r = 0; private c3i = 0;
   private ph = 0;
   private readonly gain: number;
-  /** `scale` quantises the float input (|x| ≤ ~181 from an int8 mixer) to 16-bit integers; 3·log2(D) growth bits must fit in 31. */
+  /** `scale` quantizes the float input (|x| ≤ ~181 from an int8 mixer) to 16-bit integers; 3·log2(D) growth bits must fit in 31. */
   constructor(private readonly D: number, private readonly scale = 256) { this.gain = 1 / (scale * D * D * D); }
   reset(): void { this.i1r = this.i1i = this.i2r = this.i2i = this.i3r = this.i3i = 0; this.c1r = this.c1i = this.c2r = this.c2i = this.c3r = this.c3i = 0; this.ph = 0; }
   /** in: interleaved I/Q floats (n complex). out: interleaved I/Q at rate / D. Returns complex outputs written. */

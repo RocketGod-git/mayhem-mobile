@@ -425,7 +425,7 @@ export const acuriteTxr: RDevice = register({
 // The older sensors, each with its own arrangement.
 // ---------------------------------------------------------------------------------------------------------
 
-/** The 896 rain gauge: a bucket-tip count, half a millimetre each, with no checksum at all. */
+/** The 896 rain gauge: a bucket-tip count, half a millimeter each, with no checksum at all. */
 export const acuriteRain896: RDevice = register({
   num: 10,
   name: 'Acurite 896 rain gauge',
@@ -440,7 +440,7 @@ export const acuriteRain896: RDevice = register({
   decode(_dev, bits: BitBuffer, ctx: DecodeCtx): number {
     const b = bits.bb[0];
     if (bits.bitsPerRow[0] < 24) return DECODE_ABORT_LENGTH;
-    // Sixteen repeats is nominal. Insisting on twelve is the only real defence against a look-alike.
+    // Sixteen repeats is nominal. Insisting on twelve is the only real defense against a look-alike.
     if (bits.numRows < 12) return DECODE_ABORT_EARLY;
     if (b[0] === 0 || b[1] === 0 || b[2] === 0 || b[3] !== 0 || b[4] !== 0) return DECODE_ABORT_EARLY;
 

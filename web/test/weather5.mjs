@@ -10,7 +10,7 @@
  * Three upstream problems are asserted rather than papered over.
  *
  * Sainlogic is the substantial one. Upstream's CRC parameters do not validate upstream's own sample frame, and
- * upstream never rejects on the result anyway — it logs and emits, labelled `mic: "CRC"`. Searching the
+ * upstream never rejects on the result anyway — it logs and emits, labeled `mic: "CRC"`. Searching the
  * parameter space over that frame turns up exactly one conventional configuration and it is the reflected twin
  * of upstream's guess: CRC-16/MODBUS, poly 0xa001 (0x8005 reversed), init 0xffff, same span, high byte first.
  * Both facts are pinned below so the disagreement stays visible and legible.
@@ -130,7 +130,7 @@ console.log('Holman, Cotech, Vevor, Sainlogic and the Bresser garden set');
   const uvOut = run(d, rows(build(uv, 218)));
   eq(uvOut.length, 1, 'Holman PCM decodes the longer frame');
   eq(uvOut[0]?.model, 'AOK-5056', 'the longer frame is the build with a light sensor');
-  eq(uvOut[0]?.rain_mm, 100, 'the AOK counts rain in whole millimetres, not units of 0.79');
+  eq(uvOut[0]?.rain_mm, 100, 'the AOK counts rain in whole millimeters, not units of 0.79');
   eq(uvOut[0]?.uvi, 7, 'AOK UV index is split across two bytes');
   eq(uvOut[0]?.light_lux, 26645, 'AOK light reading spans three bytes');
   eq(uvOut[0]?.counter, 42, 'AOK message counter');
@@ -340,7 +340,7 @@ function round1ref(x) { return Math.round(x * 10) / 10; }
   eq(out[0]?.id, 0xab80, 'the 36-7900 marker doubles as an id');
   eq(out[0]?.temperature_C, 18.5, 'the 36-7900 temperature');
   eq(out[0]?.rain_raw, 1234, 'the 36-7900 rain stays a raw count, since no mm-per-tip was ever measured');
-  eq(out[0]?.rain_mm, undefined, 'and is deliberately not converted to millimetres');
+  eq(out[0]?.rain_mm, undefined, 'and is deliberately not converted to millimeters');
 
   {
     const cold = build({ tempRaw: 0xfff });          // twelve bits, so this is -1
@@ -466,7 +466,7 @@ function round1ref(x) { return Math.round(x * 10) / 10; }
   eq(out[0]?.mic, 'CRC', 'so this reading is allowed to claim a verified check');
 
   /*
-   * A damaged frame. Upstream would emit it labelled `mic: "CRC"` regardless, because it never rejects and
+   * A damaged frame. Upstream would emit it labeled `mic: "CRC"` regardless, because it never rejects and
    * never looks at the outcome. This port emits it too — declining to reject is upstream's behavior and
    * dropping frames would be the bigger change — but withholds the badge it did not earn.
    */
@@ -587,7 +587,7 @@ function round1ref(x) { return Math.round(x * 10) / 10; }
     f[31] = c >> 8; f[32] = c & 0xff;
     const o = run(d, rows(wireOf(f)));
     eq(o.length, 1, 'an unrecognized message type is still reported');
-    eq(o[0]?.msg_name, 'Unknown msg', 'and labelled as unknown');
+    eq(o[0]?.msg_name, 'Unknown msg', 'and labeled as unknown');
     eq(o[0]?.msg, '0e060008882f859402', 'with its payload emitted as raw hex');
   }
 

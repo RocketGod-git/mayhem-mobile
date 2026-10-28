@@ -22,7 +22,7 @@
  * times faster.
  *
  * Most of what the Elster meters carry is undecoded, and it is reported as raw hex rather than guessed at.
- * Where upstream marks a field speculative, that judgement is kept.
+ * Where upstream marks a field speculative, that judgment is kept.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `ecodhome.c`, `geo_minim.c`, `bm5.c`, `elster_power_meter.c`.
  */
@@ -415,7 +415,7 @@ export const elsterPowerMeter: RDevice = register({
  * byte and excludes the check, where type-1's length included itself and the check sat beyond it.
  *
  * Most bodies are encrypted under a per-meter key and are reported as raw hex. The two cleartext classes are
- * neighbour tables, and even there only each record's leading address is read: the remaining sixteen bytes of
+ * neighbor tables, and even there only each record's leading address is read: the remaining sixteen bytes of
  * every record are of unconfirmed meaning and go out with the rest of the raw data rather than being named.
  */
 export const elsterPowerMeter2: RDevice = register({

@@ -85,7 +85,7 @@ console.log('Alecto, inFactory, Oregon SL109H, Ambient TX-8300, TS-FT002, Euroch
   ok(!!dr, 'Alecto rain decodes', JSON.stringify(dr));
   if (dr) {
     eq(dr.model, 'AlectoV1-Rain', '  Alecto reports a rain message');
-    eq(dr.rain_mm, Math.round(((0x01 << 8) | 0x40) * 0.25 * 100) / 100, '  Alecto rain counts quarter millimetres');
+    eq(dr.rain_mm, Math.round(((0x01 << 8) | 0x40) * 0.25 * 100) / 100, '  Alecto rain counts quarter millimeters');
     ok(dr.temperature_C === undefined, '  and carries no temperature');
   }
 
@@ -251,7 +251,7 @@ console.log('Alecto, inFactory, Oregon SL109H, Ambient TX-8300, TS-FT002, Euroch
   if (d) {
     eq(d.model, 'TS-FT002', '  TS-FT002 model');
     eq(d.id, 0x37, '  TS-FT002 id');
-    eq(d.depth_cm, 125, '  TS-FT002 depth in centimetres');
+    eq(d.depth_cm, 125, '  TS-FT002 depth in centimeters');
     eq(d.temperature_C, 21.5, '  TS-FT002 temperature');
     eq(d.transmit_s, 180, '  TS-FT002 says how often it speaks');
     eq(d.mic, 'CHECKSUM', '  TS-FT002 reports its check');

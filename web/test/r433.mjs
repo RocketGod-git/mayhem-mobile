@@ -5,7 +5,7 @@
  *   1. checksums against published check values, which owe nothing to rtl_433;
  *   2. bit buffer operations against naive reimplementations written here;
  *   3. slicers against a transmitter written from the coding rules, bits in and the same bits out;
- *   4. the whole chain — synthesised radio envelope, pulse detector, slicer, decoder — against a frame built
+ *   4. the whole chain — synthesized radio envelope, pulse detector, slicer, decoder — against a frame built
  *      transmit-side with its real checksum, checking the readings come back as sent.
  *
  * Run with `npm run build && npm test` from the web directory: it loads the compiled output.
@@ -1036,7 +1036,7 @@ console.log('the rest of the Fine Offset range: soil, leak, lightning, probe, WS
       eq(d.strike_count, 7, '  WH31L strike count');
       eq(d.id, 0xabcde, '  WH31L id');
     }
-    // A distance of 63 means "heard it, could not place it" and must not be reported as sixty-three kilometres.
+    // A distance of 63 means "heard it, could not place it" and must not be reported as sixty-three kilometers.
     const b2 = [...b]; b2[5] = 63; b2[7] = crc(b2, 7); b2[8] = sum(b2, 8);
     const d2 = run(dev, frame(b2));
     ok(d2 && d2.storm_dist === undefined, '  WH31L leaves an unplaceable strike without a distance', JSON.stringify(d2));

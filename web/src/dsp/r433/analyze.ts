@@ -8,7 +8,7 @@
  * prints when asked to characterize an unknown device.
  *
  * Nothing here guesses at meaning. It measures widths, groups the ones that recur, and names the coding only
- * when the grouping makes it unambiguous. Everything it reports is a measurement or is labelled as a guess.
+ * when the grouping makes it unambiguous. Everything it reports is a measurement or is labeled as a guess.
  */
 
 /** How far apart two widths may be and still count as the same symbol. Twenty per cent is rtl_433's own default. */

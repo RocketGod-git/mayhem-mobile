@@ -32,7 +32,7 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Overlay
 import kotlin.math.max
 
-/** OpenStreetMap tiles pushed to a dark, low-saturation look so the accent-coloured aircraft carry the scene. */
+/** OpenStreetMap tiles pushed to a dark, low-saturation look so the accent-colored aircraft carry the scene. */
 internal val DARK_TILE_FILTER = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply {
     val invert = android.graphics.ColorMatrix(floatArrayOf(
         -1f, 0f, 0f, 0f, 255f,
@@ -111,7 +111,7 @@ private class PlanesOverlay(private val accentInt: Int, @Volatile var planes: Li
 
 /**
  * Live aircraft map (Wardrive Go's ADS-B map, on key-free OSM tiles). Follows the aircraft until you drag, the
- * crosshair button re-arms it. [home] is the phone's fix, used to centre an empty map.
+ * crosshair button re-arms it. [home] is the phone's fix, used to center an empty map.
  */
 @Composable
 fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, selected: String?, modifier: Modifier = Modifier,

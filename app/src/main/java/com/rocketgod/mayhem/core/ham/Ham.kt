@@ -71,7 +71,7 @@ object Ham {
         val rev: Boolean = false,
         val back: Long = 0,
     ) {
-        /** The width the filter chips select, in the same terms the chips are labelled. */
+        /** The width the filter chips select, in the same terms the chips are labeled. */
         val width: Double get() = when (mode) {
             Mode.USB, Mode.LSB, Mode.CW -> pbHi - pbLo
             else -> pbHi * 2
@@ -96,11 +96,11 @@ object Ham {
     val mon: StateFlow<MonitorUi> = _mon.asStateFlow()
     private val _ptt = MutableStateFlow(Ptt())
     val ptt: StateFlow<Ptt> = _ptt.asStateFlow()
-    /** Where the monitor's span is centred while MONITOR is up. */
-    private var monCentre = 0L
+    /** Where the monitor's span is centered while MONITOR is up. */
+    private var monCenter = 0L
     private var lastOpen = emptyList<Int>()
 
-    /** Filter choices per mode, labelled as a radio would label them. */
+    /** Filter choices per mode, labeled as a radio would label them. */
     val WIDTHS: Map<Mode, List<Pair<String, Double>>> = mapOf(
         Mode.USB to listOf("1.8k" to 1800.0, "2.4k" to 2400.0, "2.7k" to 2700.0, "3.0k" to 3000.0, "3.5k" to 3500.0),
         Mode.LSB to listOf("1.8k" to 1800.0, "2.4k" to 2400.0, "2.7k" to 2700.0, "3.0k" to 3000.0, "3.5k" to 3500.0),
@@ -123,8 +123,8 @@ object Ham {
 
     init { Bookmarks.hamRecall = { recall(it) } }
 
-    /** HAM's part of a favourite: its own receiver, saved beside the gains the favourite already holds. */
-    fun favourite(): JSONObject {
+    /** HAM's part of a favorite: its own receiver, saved beside the gains the favorite already holds. */
+    fun favorite(): JSONObject {
         val s = _state.value
         return JSONObject().put("mode", s.mode.name).put("lo", s.pbLo).put("hi", s.pbHi).put("squelch", s.squelch)
             .put("agc", s.agc.name).put("nr", s.nr).put("anf", s.anf).put("digi", HamDigital.settings.value.mode.name)
@@ -186,7 +186,7 @@ object Ham {
         if (monitoring) {
             _state.value = _state.value.copy(channel = hz)
             // inside the monitored span: lock that channel; outside it: move the whole monitor there
-            if (abs(hz - monCentre) > span() / 2 - GUARD) { openMonitor(); return }
+            if (abs(hz - monCenter) > span() / 2 - GUARD) { openMonitor(); return }
             val r = monitor.report.value
             if (r.count > 0) {
                 val k = ((hz - r.first).toDouble() / r.spacing).roundToInt()
@@ -226,14 +226,14 @@ object Ham {
     }
 
     /**
-     * Slide the span: the LO moves to [centreHz] in whole raster steps while the channel keeps its frequency (it goes
-     * quiet while outside the span). The monitor instead re-plants its whole channel set on the new centre.
+     * Slide the span: the LO moves to [centerHz] in whole raster steps while the channel keeps its frequency (it goes
+     * quiet while outside the span). The monitor instead re-plants its whole channel set on the new center.
      */
-    fun slide(centreHz: Long) {
-        val c = centreHz.coerceIn(1_000_000L, 6_000_000_000L); val st = raster()
+    fun slide(centerHz: Long) {
+        val c = centerHz.coerceIn(1_000_000L, 6_000_000_000L); val st = raster()
         if (monitoring) {
-            val d = Math.round((c - monCentre).toDouble() / st) * st
-            if (d != 0L) monitorMove(monCentre + d)
+            val d = Math.round((c - monCenter).toDouble() / st) * st
+            if (d != 0L) monitorMove(monCenter + d)
             return
         }
         val s = _state.value
@@ -245,7 +245,7 @@ object Ham {
     }
 
     /** ⌖: the LO back to its place beside the channel; the monitor back over the band. */
-    fun recentre() {
+    fun recenter() {
         if (monitoring) { openMonitor(); return }
         val s = _state.value; val lo = s.channel + LO_OFFSET
         if (lo == s.lo) return
@@ -391,19 +391,19 @@ object Ham {
     private fun openMonitor(at: Long? = null) {
         val s = _state.value; val band = bandOf(s.channel)
         val r = if (_mon.value.wide && wideScreen && Radio.canSample(Radio.limits, MON_WIDE)) MON_WIDE else RATES[0]
-        val centre = at ?: if (band != null && band.hi - band.lo <= r) (band.lo + band.hi) / 2 else s.channel + 10_000
-        monCentre = centre
-        SdrEngine.configure(SdrEngine.Mode.NONE, centre, r, 32, 40, false, monitor)
+        val center = at ?: if (band != null && band.hi - band.lo <= r) (band.lo + band.hi) / 2 else s.channel + 10_000
+        monCenter = center
+        SdrEngine.configure(SdrEngine.Mode.NONE, center, r, 32, 40, false, monitor)
         monitorSend()
     }
 
     /** Slide the monitored span (it re-plants the whole channel set). */
-    fun monitorMove(centre: Long) { if (monitoring) openMonitor(centre) }
-    fun monitorCentre(): Long = monCentre
+    fun monitorMove(center: Long) { if (monitoring) openMonitor(center) }
+    fun monitorCenter(): Long = monCenter
 
     private fun monitorSend() {
         val s = _state.value; val m = _mon.value; val band = bandOf(s.channel)
-        monitor.set(BandMonitor.Params(m.spacing, band?.lo ?: (s.channel / 1_000_000 * 1_000_000), m.threshold, m.listen, m.lock, if (wideScreen) 4 else 2, s.volume, monCentre))
+        monitor.set(BandMonitor.Params(m.spacing, band?.lo ?: (s.channel / 1_000_000 * 1_000_000), m.threshold, m.listen, m.lock, if (wideScreen) 4 else 2, s.volume, monCenter))
     }
 
     fun monitorListen(l: BandMonitor.Listen) { _mon.value = _mon.value.copy(listen = l, lock = if (l == BandMonitor.Listen.LOCK) _mon.value.lock else -1); monitorSend() }
@@ -452,7 +452,7 @@ object Ham {
     }
 
     // ---- S-meter -----------------------------------------------------------------------------------------
-    /** Rough dBm from dBFS: the HackRF's ADC clips near −5 dBm at zero gain, less whatever gain is dialled in. */
+    /** Rough dBm from dBFS: the HackRF's ADC clips near −5 dBm at zero gain, less whatever gain is dialed in. */
     fun dbm(meterDb: Float): Float {
         val gain = SdrEngine.radioLna.value + SdrEngine.radioVga.value + if (SdrEngine.radioAmp.value) 14 else 0
         return meterDb - 5 - gain

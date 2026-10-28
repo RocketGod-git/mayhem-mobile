@@ -212,7 +212,7 @@ console.log('Water and utility meter endpoints');
     eq(d.flags1, '40', '  Arad first flag byte');
     eq(d.flags2, '0c', '  Arad second flag byte');
     eq(d.gear, 0.01, '  a blank serial suffix with flags 0x40 means hundredths');
-    eq(d.unit, 'm3', '  and cubic metres');
+    eq(d.unit, 'm3', '  and cubic meters');
     eq(d.volume, 95.67, '  Arad volume, the raw counter scaled by the deduced count factor');
     eq(d.corrections, 0, '  the documented capture needs no repair');
     eq(d.mic, 'CHECKSUM', '  Arad reports its check');
@@ -410,7 +410,7 @@ console.log('Water and utility meter endpoints');
     const fixed = hexToBytes(CAPS[0][0]); fixed[19] ^= 0x01;
     const dFix = run(dev(296), buildRow(fixed))[0];
     ok(!!dFix, '  flipping a single bit of capture 1 makes it decode', JSON.stringify(dFix));
-    eq(dFix?.current_heating, 517, '  and it then reads as the reading its neighbours bracket');
+    eq(dFix?.current_heating, 517, '  and it then reads as the reading its neighbors bracket');
   }
 
   // The other four are genuine and decode. Their readings climb and their dates advance, which is a stronger
@@ -486,7 +486,7 @@ console.log('Water and utility meter endpoints');
     eq(d.model, 'ApatorMetra-ERM30', '  E-RM 30 model');
     eq(d.id, 123456789, '  E-RM 30 id, which is the number on the radio module rather than the dial');
     eq(d.len, 19, '  E-RM 30 declares nineteen payload bytes');
-    eq(d.volume_m3, 456.789, '  E-RM 30 counts litres and reports cubic metres');
+    eq(d.volume_m3, 456.789, '  E-RM 30 counts liters and reports cubic meters');
     eq(d.date, '2025-07-14', '  E-RM 30 date');
     eq(d.payload, hexOf(p), '  the decoded payload goes out as hex, its unidentified bytes included');
     eq(d.mic, 'CRC', '  E-RM 30 reports its check');

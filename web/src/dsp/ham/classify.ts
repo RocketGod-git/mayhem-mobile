@@ -44,8 +44,8 @@ export class Classifier {
   private tracks: Track[] = [];
   private frame = 0;
 
-  /** pdb: fftshifted dB per bin; rate: span in Hz; centreHz: span center. Returns the signals found this call. */
-  update(pdb: Float32Array, rate: number, centreHz: number, floorDb: number): Signal[] {
+  /** pdb: fftshifted dB per bin; rate: span in Hz; centerHz: span center. Returns the signals found this call. */
+  update(pdb: Float32Array, rate: number, centerHz: number, floorDb: number): Signal[] {
     const n = pdb.length, binHz = rate / n;
     if (this.hold.length !== n) { this.hold = new Float32Array(n); this.smooth = new Float32Array(n); this.hold.set(pdb); }
     const hold = this.hold;
@@ -85,8 +85,8 @@ export class Classifier {
       // modulation pushes one shoulder in and out, and it sits on the carrier for AM, NFM and broadcast FM alike
       let cenNum = 0, cenDen = 0;
       for (let k = w6[0]; k <= w6[1]; k++) { const v = Math.pow(10, hold[k] / 10); cenNum += k * v; cenDen += v; }
-      const hz = centreHz + ((cenDen > 0 ? cenNum / cenDen : center) - n / 2) * binHz;
-      if (Math.abs(hz - centreHz) < 2500) continue;       // the HackRF's own DC spike at the LO is not a signal
+      const hz = centerHz + ((cenDen > 0 ? cenNum / cenDen : center) - n / 2) * binHz;
+      if (Math.abs(hz - centerHz) < 2500) continue;       // the HackRF's own DC spike at the LO is not a signal
       const t = this.track(hz, pk, bw6, bw20, peakiness, skew, bimodal);
       const f = settle(t);
       const duty = t.onFrames / Math.max(1, t.frames);

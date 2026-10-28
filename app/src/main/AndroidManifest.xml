@@ -6,7 +6,7 @@
 
     <!-- Map tiles for the ADS-B map. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- The phone's position: the CPR reference for single-frame ADS-B positions and the map's starting centre. -->
+    <!-- The phone's position: the CPR reference for single-frame ADS-B positions and the map's starting center. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- HAM push-to-talk: the microphone, only while the PTT button is held. -->

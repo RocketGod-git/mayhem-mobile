@@ -654,7 +654,7 @@ export const flowis: RDevice = register({
  *
  * After a long run-in, each byte on the wire is one of four symbols standing for a pair of bits, and a byte of
  * 0xf0 ends the message. Anything that is not one of the five is skipped rather than treated as an error, which
- * is upstream's behaviour and is kept.
+ * is upstream's behavior and is kept.
  *
  * The check is a CRC-8 run over eight bytes and required to come out zero. A command packet is five bytes and a
  * pairing packet four, so the run always reaches past the end of the real data into zeroes — which is harmless,

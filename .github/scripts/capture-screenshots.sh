@@ -9,7 +9,7 @@ mkdir -p shots
 adb install -r "$(find app/build/outputs/apk -name '*.apk' | head -1)"
 
 # Grant location up front: the runtime prompt otherwise covers the first frames. The app
-# only uses it to centre the map and as the ADS-B position reference.
+# only uses it to center the map and as the ADS-B position reference.
 adb shell pm grant com.rocketgod.mayhem android.permission.ACCESS_FINE_LOCATION || true
 adb shell pm grant com.rocketgod.mayhem android.permission.ACCESS_COARSE_LOCATION || true
 

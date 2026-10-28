@@ -307,7 +307,7 @@ const BURNHARD_TASTE = ['rare', 'medium rare', 'medium', 'medium well', 'well do
  * As well as the probe reading and its target it carries a countdown timer, which cut of meat is on the probe
  * and how well done it is wanted — the base station's whole user interface, put on the air.
  *
- * The frame is sent inverted, and the last of its 81 bits is a coding artefact rather than data. A probe that
+ * The frame is sent inverted, and the last of its 81 bits is a coding artifact rather than data. A probe that
  * is not plugged in reads exactly zero, which would otherwise be reported as -50 °C, so that case is dropped.
  *
  * Every row carries the same message, so the first one that passes its digest wins; the reason for reporting

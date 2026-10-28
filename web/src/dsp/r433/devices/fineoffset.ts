@@ -201,7 +201,7 @@ function wh24Decode(bits: BitBuffer, ctx: DecodeCtx): number {
 /**
  * The WH0290 air quality monitor, sold as the Ecowitt WH41 and the Ambient Weather PM25.
  *
- * It reports two figures. The first is a real measurement of particles under 2.5 microns. The second is labelled
+ * It reports two figures. The first is a real measurement of particles under 2.5 microns. The second is labeled
  * PM10 by the sensor but is not measured: the Honeywell module inside derives it from the first by a rule the
  * datasheet never states, and Ecowitt's own displays do not show it. It is reported here as an estimate.
  */

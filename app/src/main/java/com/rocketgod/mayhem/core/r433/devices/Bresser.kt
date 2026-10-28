@@ -4,7 +4,7 @@ import com.rocketgod.mayhem.core.r433.*
 import kotlin.math.min
 
 /*
- * Bresser weather centres, and the Froggit and Ventus stations built from the same parts. The old 3-channel
+ * Bresser weather centers, and the Froggit and Ventus stations built from the same parts. The old 3-channel
  * thermometer is OOK; everything since is FSK on 868.3 MHz behind `2d d4`, with a sensor type in the seventh
  * byte. Unusual protections: a shift-register digest, or (the 5-in-1) the whole message sent twice with the
  * second copy inverted; and several fields xored with 0xff or 0xaa before transmission.

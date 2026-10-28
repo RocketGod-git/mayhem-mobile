@@ -8,7 +8,7 @@ import kotlin.math.roundToInt
 
 /*
  * From raw samples to bursts: the envelope and discriminator streams (rtl_433's baseband.c), the OOK / FSK pulse
- * detector (pulse_detect.c and pulse_detect_fsk.c), and the description of a burst nobody recognised. Twin of
+ * detector (pulse_detect.c and pulse_detect_fsk.c), and the description of a burst nobody recognized. Twin of
  * web/src/dsp/r433/baseband.ts, detect.ts and analyze.ts.
  */
 
@@ -258,7 +258,7 @@ class Baseband {
 /** One recurring width, µs, with how many times it occurred. */
 data class Cluster(val us: Int, val n: Int)
 
-/** Everything measurable about one unrecognised burst. */
+/** Everything measurable about one unrecognized burst. */
 data class BurstShape(val fsk: Boolean, val pulses: Int, val ms: Double, val mark: List<Cluster>, val space: List<Cluster>, val coding: String, val rate: Int, val key: String)
 
 private fun cluster(v: IntArray, n: Int, spus: Double): List<Cluster> {

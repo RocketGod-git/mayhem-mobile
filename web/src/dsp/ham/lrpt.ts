@@ -100,10 +100,10 @@ export function huffmanDecode(dst: Int16Array, src: Uint8Array, off: number, cou
   }
   return true;
 }
-/** De-zigzag, dequantise (JPEG quality q) and inverse-DCT one block into 64 gray pixels. */
+/** De-zigzag, dequantize (JPEG quality q) and inverse-DCT one block into 64 gray pixels. */
 export function idctBlock(src: Int16Array, at: number, q: number, out: Uint8Array, outAt: number, tmp: Float32Array): void {
   const compr = q < 50 ? 5000 / Math.max(1, q) : 200 - 2 * q;
-  const F = tmp;                                     // 64 dequantised coefficients in natural order
+  const F = tmp;                                     // 64 dequantized coefficients in natural order
   for (let k = 0; k < 64; k++) { const nat = ZIGZAG[k]; const qv = Math.max(1, Math.floor((QUANT[nat] * compr / 50 + 1) / 2)); F[nat] = src[at + k] * qv; }
   // separable IDCT: rows then columns
   const row = new Float32Array(64);

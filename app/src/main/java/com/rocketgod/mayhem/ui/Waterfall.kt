@@ -58,7 +58,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
-/** Waterfall colour maps. Inferno is the web app's and the default; the others follow taste or the skin. */
+/** Waterfall color maps. Inferno is the web app's and the default; the others follow taste or the skin. */
 enum class WfPalette(val title: String) {
     INFERNO("Inferno · the web app's"), RAINBOW("Rainbow · SDR++ style"), SKIN("Skin · the theme's own colors");
 }
@@ -74,7 +74,7 @@ object Waterfalls {
         ctx.getSharedPreferences("mayhem", Context.MODE_PRIVATE).edit().putString("wf_palette", p.name).apply()
     }
 
-    /** 256 colours for 0..1. */
+    /** 256 colors for 0..1. */
     fun lut(p: WfPalette, paper: Color, accent: Color, accent2: Color): IntArray = when (p) {
         WfPalette.INFERNO -> ramp(listOf(0.00f to 0xFF000004.toInt(), 0.13f to 0xFF1F0C48.toInt(), 0.25f to 0xFF550F6D.toInt(),
             0.38f to 0xFF88226A.toInt(), 0.50f to 0xFFBA3655.toInt(), 0.63f to 0xFFE35933.toInt(), 0.75f to 0xFFF98C0A.toInt(),
@@ -349,7 +349,7 @@ private class SignalMarks {
 
     /**
      * Humps of the peak-hold trace [v], box-smoothed over 1/80 of the view so a wide FM station reads as one hump
-     * labelled at its centre, at least 6 dB over the floor (which sits 4 dB up a [rangeDb] scale) and 1/30 of the
+     * labeled at its center, at least 6 dB over the floor (which sits 4 dB up a [rangeDb] scale) and 1/30 of the
      * view apart. Returns how many of [pIdx] / [pVal] it filled.
      */
     fun peaks(v: FloatArray, rangeDb: Float): Int {
@@ -419,7 +419,7 @@ private object SpecWants {
  * Waterfall (top), live spectrum (bottom), frequency axis and, when [onSlide] is given, a span bar: the twin of the
  * web app's scope.
  *
- * - One column per screen pixel and, unless [rows] asks for more, one row per pixel of height (up to 600), coloured
+ * - One column per screen pixel and, unless [rows] asks for more, one row per pixel of height (up to 600), colored
  *   by the chosen palette, with a seconds ruler down the side. When the radio moves ([centerHz0]) the history slides
  *   with it so what was painted stays under its true frequency; history slid or panned out of view is remembered and
  *   comes back with it. Only a span change clears it.
@@ -428,7 +428,7 @@ private object SpecWants {
  *   the screen, unless the user has worked the view in the last two seconds.
  * - Press and slide to pick a frequency: a guide and [onPreviewFrac] follow the finger, [onTapFrac] fires on release.
  * - The channel ([channel]) is shaded with its edges drawn last; with [onChannelEdge] the edges can be dragged.
- * - Signals found by the engine's classifier are labelled with frequency, class and level; a view the engine does
+ * - Signals found by the engine's classifier are labeled with frequency, class and level; a view the engine does
  *   not feed (a sweep) labels the peaks it finds itself. The spectrum carries a dB grid against the floor.
  *
  * Every fraction passed in or out is of the whole span, whatever the zoom.
@@ -439,7 +439,7 @@ fun WaterfallView(
     /** Columns to start with until the view has been measured; after that it has one per pixel. */
     cols: Int, accent: Color, modifier: Modifier = Modifier,
     /** Fewest history rows; the history is otherwise one row per pixel of waterfall height. */
-    rows: Int = 140, traceFrac: Float = 0.38f, centreMarker: Boolean = true,
+    rows: Int = 140, traceFrac: Float = 0.38f, centerMarker: Boolean = true,
     channel: Pair<Float, Float>? = null,
     labels: List<Pair<Float, String>> = emptyList(), onPreviewFrac: ((Float?) -> Unit)? = null,
     /** The span the spectrum covers; -1 takes the engine's own, 0 means a sweep (no fixed span to label or slide). */
@@ -447,7 +447,7 @@ fun WaterfallView(
     onChannelEdge: ((lo: Float, hi: Float, hiEdge: Boolean) -> Unit)? = null,
     onSlide: ((Long) -> Unit)? = null,
     /** ⌖, offered while the channel is off the span. */
-    onRecentre: (() -> Unit)? = null,
+    onRecenter: (() -> Unit)? = null,
     /** Zooming out past 1× (−1) widens the span itself, and zooming in from a wide span (+1) narrows it; true when it did. */
     onSpanStep: ((Int) -> Boolean)? = null,
     showSignals: Boolean = true,
@@ -527,7 +527,7 @@ fun WaterfallView(
         onDispose { SpecWants.set(owner, 0) }
     }
 
-    // the span bar's window: the radio's whole range, or 24 spans around it re-centred only when the span nears its edge
+    // the span bar's window: the radio's whole range, or 24 spans around it re-centered only when the span nears its edge
     if (onSlide != null && spanHz > 0 && centerHz > 0) {
         if (wholeRange) {
             val lim = Radio.limits
@@ -747,7 +747,7 @@ fun WaterfallView(
                     drawPath(g, Color.White.copy(alpha = 0.75f))
                 }
             }
-            if (centreMarker) toView(0.5f)?.let { vline(it * w, accent.copy(alpha = 0.66f), 0.8f * dp) }
+            if (centerMarker) toView(0.5f)?.let { vline(it * w, accent.copy(alpha = 0.66f), 0.8f * dp) }
             dragFrac?.let { f -> toView(f)?.let { vline(it * w, Palette.accent2, 2f * dp / 1.5f) } }
 
             // frequency axis: the view's own labels when zoomed, else the caller's
@@ -792,7 +792,7 @@ fun WaterfallView(
         val offSpan = channel != null && spanHz > 0 && abs((channel.first + channel.second) / 2 - 0.5f) > 0.5f - 40_000f / spanHz
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp).background(Palette.surface.copy(alpha = 0.82f), RoundedCornerShape(6.dp)),
             verticalAlignment = Alignment.CenterVertically) {
-            if (onRecentre != null && offSpan) ZoomBtn("⌖", Palette.accent2) { onRecentre(); setView(zoom, 0.5f) }
+            if (onRecenter != null && offSpan) ZoomBtn("⌖", Palette.accent2) { onRecenter(); setView(zoom, 0.5f) }
             ZoomBtn("−") { if (zoom <= 1.001f) onSpanStep?.invoke(-1) else setView(zoom / 2) }
             Text(if (zoom > 1.001f) "${zoom.roundToInt()}×" else if (spanHz > 0) fmtSpan(spanHz) else "1×", color = Palette.muted, fontFamily = Mono, fontSize = 10.sp)
             ZoomBtn("+") { if (zoom <= 1.001f && onSpanStep?.invoke(1) == true) return@ZoomBtn; val c = channel; setView(zoom * 2, c?.let { (it.first + it.second) / 2 }) }
@@ -831,10 +831,10 @@ fun ReceiverScope(accent: Color, modifier: Modifier, rows: Int = 160, traceFrac:
         val s = signalAt(hz, rate * 0.015)
         return if (s != null) signalDial(s, rasterFor(mode)) to s else ((hz / 1000.0).roundToLong() * 1000) to null
     }
-    WaterfallView(spec, SdrEngine.SPEC_BINS, accent, modifier, rows = rows, traceFrac = traceFrac, centreMarker = offset != 0, channel = channel,
-        labels = centredLabels(lo, rate),
+    WaterfallView(spec, SdrEngine.SPEC_BINS, accent, modifier, rows = rows, traceFrac = traceFrac, centerMarker = offset != 0, channel = channel,
+        labels = centeredLabels(lo, rate),
         onPreviewFrac = { f -> Tuning.previewHz = f?.let { target(it).first } },
-        onSlide = { SdrEngine.slideSpan(it) }, onRecentre = { SdrEngine.recentre() },
+        onSlide = { SdrEngine.slideSpan(it) }, onRecenter = { SdrEngine.recenter() },
         onSpanStep = { dir -> SdrEngine.stepSpan(dir, if (wide) 20_000_000 else 10_000_000) },
         wholeRange = wholeRange,
     ) { f ->
@@ -849,11 +849,11 @@ object Tuning {
     var previewHz by mutableStateOf<Long?>(null)
 }
 
-/** Frequency at horizontal fraction [frac] of a span centred on [centerHz], rounded to 1 kHz. */
+/** Frequency at horizontal fraction [frac] of a span centered on [centerHz], rounded to 1 kHz. */
 fun spanHz(centerHz: Long, spanHz: Int, frac: Float): Long = Math.round((centerHz + ((frac - 0.5f) * spanHz).toLong()) / 1000.0) * 1000L
 
-/** Axis labels for a span centred on [centerHz] with width [spanHz]. */
-fun centredLabels(centerHz: Long, spanHz: Int): List<Pair<Float, String>> {
+/** Axis labels for a span centered on [centerHz] with width [spanHz]. */
+fun centeredLabels(centerHz: Long, spanHz: Int): List<Pair<Float, String>> {
     val out = ArrayList<Pair<Float, String>>()
     for (k in 0..4) {
         val f = k / 4f

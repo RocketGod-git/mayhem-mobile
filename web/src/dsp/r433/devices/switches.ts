@@ -9,7 +9,7 @@
  *
  * That is also why four of them ship switched off. `disabled` in this app does not stop a decoder running — it
  * marks the reading doubtful — and upstream's flag is mirrored exactly rather than re-litigated, because the
- * judgement behind it (does this frame catch other people's traffic?) was made against far more radio than
+ * judgment behind it (does this frame catch other people's traffic?) was made against far more radio than
  * anything available here.
  *
  * Three of these are the same product sold under three names. KlikAanKlikUit (15), Nexa (96) and the Proove
@@ -153,7 +153,7 @@ function kakuTernary(src: BitBuffer): Uint8Array | null {
  * what the next protocol saw.
  *
  * There is no check of any kind on the twenty-six bit address. The sync mark and the exact frame length are all
- * that stand between this and the neighbours' traffic, which is why no `mic` is claimed.
+ * that stand between this and the neighbors' traffic, which is why no `mic` is claimed.
  */
 export const newkaku: RDevice = register({
   num: 15,

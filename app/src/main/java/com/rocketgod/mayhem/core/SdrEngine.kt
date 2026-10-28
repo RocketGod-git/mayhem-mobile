@@ -80,7 +80,7 @@ object SdrEngine {
 
     /**
      * Automatic gain, on by default: hold the ADC level (iqRMS, once a second) where the 8-bit converter has both
-     * headroom and resolution — under ~2 counts the spectrum is quantisation mush, over ~40 it clips. VGA moves first,
+     * headroom and resolution — under ~2 counts the spectrum is quantization mush, over ~40 it clips. VGA moves first,
      * 2 dB at a time (8 when far off), then the LNA. Touching LNA or VGA by hand hands the gain back to the user.
      */
     private val _agc = MutableStateFlow(true)
@@ -176,7 +176,7 @@ object SdrEngine {
         if (_radioLna.value != l || _radioVga.value != v) syncDriver()
     }
     /**
-     * Latest spectrum: [SPEC_BINS] (or [specBinsWanted]) normalised magnitudes 0..1, low→high frequency (fftshifted).
+     * Latest spectrum: [SPEC_BINS] (or [specBinsWanted]) normalized magnitudes 0..1, low→high frequency (fftshifted).
      * Every sample that arrives between frames is power-averaged through a 4096..16384-point Hann FFT (about 2.4 M
      * samples a second are transformed whatever the rate), which pulls the noise spread down to a dB or two so a weak
      * station stands out; the floor is the median bin (robust to strong carriers) and the display covers
@@ -242,7 +242,7 @@ object SdrEngine {
     private val voiceDet = VoiceDetector()
     private val _voice = MutableStateFlow<VoiceScore?>(null)
     val voice: StateFlow<VoiceScore?> = _voice.asStateFlow()
-    /** RDS, from the WFM composite: station name, programme type, RadioText, alternative frequencies. */
+    /** RDS, from the WFM composite: station name, program type, RadioText, alternative frequencies. */
     @Volatile private var rdsOn = true
     private val _rdsWanted = MutableStateFlow(true)
     val rdsWanted: StateFlow<Boolean> = _rdsWanted.asStateFlow()
@@ -382,7 +382,7 @@ object SdrEngine {
 
     /**
      * Point a plain receiver at a whole band: the span is the band's own width (as wide as this radio and screen
-     * take in one shot) centred on its middle, heard in the band's mode.
+     * take in one shot) centered on its middle, heard in the band's mode.
      */
     fun viewBand(lo: Long, hi: Long, mode: Mode, cap: Int) {
         val widest = RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
@@ -424,12 +424,12 @@ object SdrEngine {
         if (ladder[next] == _rateHz.value) return false
         setRate(ladder[next])
         // narrowed past the channel: bring the span back over it
-        if (kotlin.math.abs(_offsetHz.value.toLong()) > _rateHz.value / 2 - VIEW_GUARD) recentre()
+        if (kotlin.math.abs(_offsetHz.value.toLong()) > _rateHz.value / 2 - VIEW_GUARD) recenter()
         return true
     }
 
     /** ⌖: bring the view back to the channel. */
-    fun recentre() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
+    fun recenter() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
 
     fun setRate(rate: Int) { _rateHz.value = clampRate(rate); syncDriver() }
 
@@ -451,7 +451,7 @@ object SdrEngine {
     }
     fun toggleRadioAmp() { _radioAmp.value = !_radioAmp.value; syncDriver(); saveGains() }
 
-    /** Gain as a favourite saved it: with AGC it is only where the AGC starts; without, it is the user's own. */
+    /** Gain as a favorite saved it: with AGC it is only where the AGC starts; without, it is the user's own. */
     fun applyGains(lna: Int, vga: Int, amp: Boolean, agc: Boolean) {
         _radioLna.value = (lna.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
         _radioVga.value = (vga.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
@@ -731,7 +731,7 @@ object SdrEngine {
                                 val s: Float = when (m) {
                                     Mode.AM -> { val env = sqrt(ci * ci + cq * cq); amDc += 0.001f * (env - amDc); env - amDc }
                                     Mode.USB, Mode.LSB -> {
-                                        // Weaver SSB: shift the wanted sideband's centre (±1.5 kHz) to DC, low-pass
+                                        // Weaver SSB: shift the wanted sideband's center (±1.5 kHz) to DC, low-pass
                                         // ±1.5 kHz, shift back, take the real part.
                                         wph += if (m == Mode.USB) -wInc else wInc
                                         if (wph > 2.0 * Math.PI) wph -= 2.0 * Math.PI else if (wph < 0.0) wph += 2.0 * Math.PI

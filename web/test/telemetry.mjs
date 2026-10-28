@@ -506,7 +506,7 @@ console.log('Steelmate, RadioHead, Digitech, Companion, Telldus, ANT+, Shenzhen,
     p[5] = press;
     p[6] = 0x20 | ((tempBits >> 2) & 0x03);          // fixed pattern, plus the top two temperature bits
     p[7] = ((tempBits & 0x03) << 6) | 0x35;          // fixed pattern, plus the bottom two
-    p[8] = tail;                                     // labelled a checksum upstream, but never read
+    p[8] = tail;                                     // labeled a checksum upstream, but never read
     if (breakSix) p[6] ^= 0x04;
     if (breakSeven) p[7] ^= 0x01;
 

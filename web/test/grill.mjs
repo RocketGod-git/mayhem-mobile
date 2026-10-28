@@ -4,7 +4,7 @@
  * Every frame here is built from the transmit side — lay out the bytes the sensor sends, work out its own
  * checks the way it does — except where rtl_433's own sources carry a recorded capture, which four of these
  * nine do. Those recordings are the only evidence in this batch that owes nothing to the port, so they are used
- * in preference to anything synthesised and their stated values are asserted directly.
+ * in preference to anything synthesized and their stated values are asserted directly.
  *
  * Three of these devices have a rule that only fires on a particular kind of frame — an unplugged probe, a
  * dropped leading bit, an over-range sentinel — and for each of those the test asserts the *premise* as well as
@@ -112,7 +112,7 @@ console.log('Barbecue and food thermometers');
 
 // ---- Globaltronics GT-TMBBQ-05 (137): Fahrenheit on the wire, and a parity bit upstream mis-describes ----
 {
-  // The rows recorded in rtl_433's doc comment, each with the temperature it was labelled with.
+  // The rows recorded in rtl_433's doc comment, each with the temperature it was labeled with.
   const rec = [
     ['001001001010101010111100110010000', 507],
     ['001001001010011010111100110010111', 499],
@@ -180,7 +180,7 @@ console.log('Barbecue and food thermometers');
   eq(U.lfsrDigest8Reflect(Uint8Array.from(rec), 9, 0x31, 0xf4), 0x1e,
     'the recorded Burnhard frame closes its own digest');
 
-  // Sent inverted; 81 bits, the last of which is a coding artefact rather than data.
+  // Sent inverted; 81 bits, the last of which is a coding artifact rather than data.
   const wire = (bytes, rows) => {
     const bits = bytesToBits(bytes, 80).map(v => v ^ 1);
     bits.push(0);

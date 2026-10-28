@@ -57,7 +57,7 @@ console.log('Microchip KeeLoq hopping encoders');
     }
   }
 
-  // The all-ones payload is a receiver artefact, not a remote.
+  // The all-ones payload is a receiver artifact, not a remote.
   ok(!run(dev(131), twoRows([0xff, 0xf0], 12, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00], 66))[0],
     '  HCS200 rejects an all-ones payload');
   // A frame whose preamble is not there at all.

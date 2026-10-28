@@ -38,7 +38,7 @@ build. Both speak the libhackrf vendor protocol directly:
 
 The board is identified by `BOARD_ID_READ` (14), not by PID: 1 Jawbreaker, 2 HackRF One, 3 rad1o,
 4 HackRF One r9, 5 HackRF Pro — the Pro shares the One's `0x6089`. USB ids are VID `0x1d50` with PIDs
-`0x6089`, `0x604b` and `0xcc15`; a PortaPack left in Mayhem serial mode (`0x6018`) is recognised and
+`0x6089`, `0x604b` and `0xcc15`; a PortaPack left in Mayhem serial mode (`0x6018`) is recognized and
 reported as needing its on-screen HackRF mode.
 
 `usb/HackRfOne.kt` is the driver and `usb/HackRfUsb.kt` handles enumeration and permissions. The
@@ -62,7 +62,7 @@ Devices, Satellites, Prowl and Troll.
 | FLEX RX + POCSAG RX | **FLEX** | FLEX 1600/3200 bps 2-/4-level by default (proc_flex port: FIW, BIW, alpha / numeric / tone / hex / instruction pages); a decoder chip switches to POCSAG 512/1200/2400 auto-baud with BCH(31,21), or runs both on one channel like PDW |
 | ERT | **ERT** | Itron SCM / SCM+ / IDM, OOK Manchester 32.768 kbaud |
 | BLE RX (btle_rx) | **BLE RX** | channels 37/38/39, de-whitening + CRC-24, AD structures |
-| TPMS RX | **TPMS** | Schrader-family tyre sensors on 315 / 433.92 MHz: FSK 19.2k (FLM 64/72/80), OOK 8.192k, OOK 8.4k (GMC); Manchester, CRC-8 / checksums, kPa + psi, °C + °F |
+| TPMS RX | **TPMS** | Schrader-family tire sensors on 315 / 433.92 MHz: FSK 19.2k (FLM 64/72/80), OOK 8.192k, OOK 8.4k (GMC); Manchester, CRC-8 / checksums, kPa + psi, °C + °F |
 | ACARS RX | **ACARS** | AM + 2400 bps MSK, per-bit differential decision (acarsdec style), SYN/SOH framing, odd parity, CRC-16, registration / label / block / message number / flight / text |
 | Weather Station, SubGhzD, SubCar (fprotos/) | **Sub-GHz** | rtl_433-style: 26 weather sensors, 47 remotes and gate openers (Princeton, CAME, Nice, KeeLoq, Somfy, Security+ …), 11 car key fobs, all running at once on one OOK pulse detector, with the field decoders from Mayhem's apps |
 | Looking Glass | **Looking Glass** | stepped sweep across any range, stitched waterfall, slide + release to listen |
@@ -70,15 +70,15 @@ Devices, Satellites, Prowl and Troll.
 | Capture | **Capture** | raw IQ to `.c8` + Mayhem-style `.txt` sidecar |
 | Level / Detector / Tone search | (Audio readout) | the RX-health line shows peak-vs-floor dB |
 | Frequency manager / Scanner | **Bookmarks + SCAN** (Audio) | saved frequencies with mode; scan hops through them and holds while the squelch is open |
-| (none — Mayhem has no ham-radio receiver) | **HAM Radio** *(web app only)* | RECEIVE: USB / LSB / CW / AM / NFM channel receiver anywhere in the span (phasing SSB, AGC, noise reduction, auto-notch, CTCSS / DCS, S-meter, band plan with repeater offsets). MONITOR: every channel in the span at once. DIGITAL: CW, RTTY, PSK31, FT8 (full ft8_lib LDPC decode), SSTV (Martin / Scottie / Robot / PD incl. the ISS's PD120) and DMR (both time slots, talkgroups / IDs / talker alias, AMBE+2 voice via a port of mbelib) with an AUTO mode that picks the decoder that is making sense; P25 / D-STAR / NXDN / YSF are identified by sync word. SATELLITE: SGP4 tracking from the phone's GPS, passes, Doppler-tracked listening, APRS from the ISS, SSTV, NOAA APT and Meteor-M LRPT pictures (72 kbaud QPSK, Viterbi, Reed-Solomon, the MSU-MR JPEG strips, live colour composite), and push-to-talk on the uplink with Doppler and the bird's tone. TRANSMIT: FM voice from the microphone with CTCSS on the repeater input. LOGBOOK: contacts with callsign details (prefix → entity offline; HamQTH / hamdb / callook online for name, QTH, grid, zones), worked-before, distance and bearing from your grid, ADIF export / import, CSV; FT8 decodes and satellite packets log with a tap. |
+| (none — Mayhem has no ham-radio receiver) | **HAM Radio** *(web app only)* | RECEIVE: USB / LSB / CW / AM / NFM channel receiver anywhere in the span (phasing SSB, AGC, noise reduction, auto-notch, CTCSS / DCS, S-meter, band plan with repeater offsets). MONITOR: every channel in the span at once. DIGITAL: CW, RTTY, PSK31, FT8 (full ft8_lib LDPC decode), SSTV (Martin / Scottie / Robot / PD incl. the ISS's PD120) and DMR (both time slots, talkgroups / IDs / talker alias, AMBE+2 voice via a port of mbelib) with an AUTO mode that picks the decoder that is making sense; P25 / D-STAR / NXDN / YSF are identified by sync word. SATELLITE: SGP4 tracking from the phone's GPS, passes, Doppler-tracked listening, APRS from the ISS, SSTV, NOAA APT and Meteor-M LRPT pictures (72 kbaud QPSK, Viterbi, Reed-Solomon, the MSU-MR JPEG strips, live color composite), and push-to-talk on the uplink with Doppler and the bird's tone. TRANSMIT: FM voice from the microphone with CTCSS on the repeater input. LOGBOOK: contacts with callsign details (prefix → entity offline; HamQTH / hamdb / callook online for name, QTH, grid, zones), worked-before, distance and bearing from your grid, ADIF export / import, CSV; FT8 decodes and satellite packets log with a tap. |
 | Sonde, Weather, SubGHz, AFSK, NRF, EPIRB, VOR, WEFAX, FM RDS, Recon | planned | pure-DSP ports, same IqProcessor pattern |
 | Signal Gen, Tones/DTMF, POCSAG TX, RTTY TX, APRS TX, Morse, OOK TX, Replay | **Transmit** | on by default, with a one-off "do you have an antenna or a dummy load?" prompt on the first send each session (can be switched back off in Settings): CW / FM / AM / sweep generator; 1 kHz / two-tone / DTMF; POCSAG pager (512/1200/2400, alpha + numeric, round-trip-verified against the Pager RX decoder); RTTY (ITA2 Baudot 45 bd); APRS (Bell 202 AX.25, round-trip-verified against the APRS decoder); a Morse keyer (CW or FM tone); fixed-code Princeton/PT2262 OOK; and `.c8` replay (Android). All on a 100 kHz digital offset off the LO. TX VGA 0–47 dB + amp. |
-| MDC-1200 TX, Quick-Call II two-tone, SubGHz .sub replay, KeeLoq HCS301, OOK noise, OOK brute, frequency hopper, ADS-B TX | **Transmit** | ports of upstream Mayhem's `ui_mdc_tx`, `ui_test` (QC-II), `ui_flippertx`, `ui_keyfob`, `ui_jammer`, `ookbrute`, `ui_lge` and `ui_adsb_tx`. MDC-1200 is 1200 bps AFSK ±2.5 kHz FM with CRC-16-CCITT + K=7 conv + 16-way interleaver, faithful to `ui_mdc_tx`. KeeLoq encrypts a 32-bit hop code with the standard 528-round cipher (NLF 0x3A5C742E) and emits the HCS301 wake-up + 66-bit PWM payload. ADS-B is a 112-bit DF17 Extended Squitter with CRC-24 (poly 0xFFF409), PPM at 8 Msps. Same "have you got an antenna?" prompt gates them all — for authorised use on your own equipment or a dummy load. |
+| MDC-1200 TX, Quick-Call II two-tone, SubGHz .sub replay, KeeLoq HCS301, OOK noise, OOK brute, frequency hopper, ADS-B TX | **Transmit** | ports of upstream Mayhem's `ui_mdc_tx`, `ui_test` (QC-II), `ui_flippertx`, `ui_keyfob`, `ui_jammer`, `ookbrute`, `ui_lge` and `ui_adsb_tx`. MDC-1200 is 1200 bps AFSK ±2.5 kHz FM with CRC-16-CCITT + K=7 conv + 16-way interleaver, faithful to `ui_mdc_tx`. KeeLoq encrypts a 32-bit hop code with the standard 528-round cipher (NLF 0x3A5C742E) and emits the HCS301 wake-up + 66-bit PWM payload. ADS-B is a 112-bit DF17 Extended Squitter with CRC-24 (poly 0xFFF409), PPM at 8 Msps. Same "have you got an antenna?" prompt gates them all — for authorized use on your own equipment or a dummy load. |
 
 **Waterfall (web):** rendered at device resolution — one column per device pixel (up to 4096), the FFT sized to
 match (2048–16384 points), every sample between 30 Hz frames power-averaged into the row, a median noise floor with
-a 40 dB display range, inferno colour map, a glowing spectrum trace with a dB grid, the demodulated channel shaded,
-the strongest carriers labelled with frequency and level, and a seconds ruler down the left edge. On desktop the
+a 40 dB display range, inferno color map, a glowing spectrum trace with a dB grid, the demodulated channel shaded,
+the strongest carriers labeled with frequency and level, and a seconds ruler down the left edge. On desktop the
 launcher and every receiver put the waterfall in a full-height left pane with the apps / controls in a side column;
 ultra-wide screens are not capped.
 
@@ -87,18 +87,18 @@ holds the ADC level between 7 and 22 counts RMS, where the 8-bit converter has b
 per-app presets are written for a HackRF One; a Pro needs roughly 28 dB more VGA for the same level (One presets
 leave it under one count), so the app rescales them after bring-up (LNA 40, VGA + 28) and the AGC trims from there.
 
-The spectrum's signal labels come from a smoothed peak-hold trace, so a wide FM station gets one label on its centre
-rather than on this frame's tallest modulation spike; anything 6 dB over the median floor is labelled. The APK card
+The spectrum's signal labels come from a smoothed peak-hold trace, so a wide FM station gets one label on its center
+rather than on this frame's tallest modulation spike; anything 6 dB over the median floor is labeled. The APK card
 is shown only to Android browsers, in Settings.
 
 **HAM Radio (web):** the digital decoders run on the receiver's own audio or discriminator, so anything the
 channel receiver can hear can be decoded: FT8 is a TypeScript port of ft8_lib (Costas sync, LDPC belief
 propagation, full message unpacking, plus an encoder for the Transmit app); DMR is a complete ETSI TS 102 361
 receiver (4FSK timing from the sync words with automatic polarity, Golay / BPTC / RS / CRC / QR checked
-headers, CSBKs and embedded link control, colour-code voting, both slots followed, AMBE+2 voice through a port of
+headers, CSBKs and embedded link control, color-code voting, both slots followed, AMBE+2 voice through a port of
 mbelib's 3600×2450 vocoder — the same ISC-licensed code DSD uses); SSTV times each line from its sync pulse and
 paints rows as they arrive; APT envelope-detects the 2400 Hz subcarrier and finds the 1040 Hz sync burst. The
-SATELLITE tab carries a curated catalogue with each bird's services (FM repeater, linear transponder, APRS
+SATELLITE tab carries a curated catalog with each bird's services (FM repeater, linear transponder, APRS
 digipeater, SSTV, APT, LRPT) and sets the receiver up per service; LISTEN follows the Doppler, PTT transmits on
 the Doppler-corrected uplink with the satellite's CTCSS. Meteor LRPT runs a QPSK demodulator on the 240 kHz
 baseband (fourth-power acquisition, Costas loop, Gardner timing), finds frames under every constellation
@@ -108,8 +108,8 @@ the M-PDU image packets into 1568-pixel lines as they arrive; the packet and MCU
 channel when zoomed, and the channel's edges drag to set the filter. Zooming out past 1x widens the span itself
 by raising the HackRF sample rate (1.92 -> 3.84 -> 7.68 -> 15.36 -> 19.2 Msps on a desktop, 3.84 on a phone), a
 span bar under the axis slides the view along the band like a scrollbar (48 MHz of reach at 1.92 Msps) while the dial
-stays put, and a wheel notch over the waterfall moves one filter width on the band's channel raster. Tapping a labelled signal on the waterfall snaps the dial to its
-measured centre (pulled onto the channel raster when it is close) and picks the mode and filter width from its shape.
+stays put, and a wheel notch over the waterfall moves one filter width on the band's channel raster. Tapping a labeled signal on the waterfall snaps the dial to its
+measured center (pulled onto the channel raster when it is close) and picks the mode and filter width from its shape.
 
 **Frequency readout (web):** ten digits from 1 GHz to 1 Hz, each its own control — wheel over a digit, click or
 tap its top half for +1 and its bottom half for −1, or focus one and use ↑ ↓ / type a number (the cursor moves to

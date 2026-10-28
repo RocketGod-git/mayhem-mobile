@@ -45,7 +45,7 @@ data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: 
 data class GeoLayers(
     val lines: List<Pair<Pair<Double, Double>, Pair<Double, Double>>> = emptyList(),
     val track: List<Pair<Double, Double>> = emptyList(),
-    /** Centre lat, lon and radius in km. */
+    /** Center lat, lon and radius in km. */
     val footprint: Triple<Double, Double, Double>? = null,
 )
 
@@ -173,13 +173,13 @@ private fun destination(lat: Double, lon: Double, km: Double, deg: Double): Pair
 /**
  * A general map on OSM tiles (same dark look as the ADS-B map): items with labels, an optional ground track and
  * footprint, lines home. It follows the traffic, re-fitting as it moves, until you drag; the crosshair button
- * re-arms it. [follow] names an item to keep centred instead of fitting the lot (a satellite and its long track).
+ * re-arms it. [follow] names an item to keep centered instead of fitting the lot (a satellite and its long track).
  */
 @Composable
 fun GeoMapView(
     items: List<GeoItem>, accent: Color, modifier: Modifier = Modifier, home: Pair<Double, Double>? = null,
     selected: String? = null, layers: GeoLayers = GeoLayers(), follow: String? = null,
-    /** Centre on this point whenever [focusKey] changes (the MAP button on a detail card). */
+    /** Center on this point whenever [focusKey] changes (the MAP button on a detail card). */
     focus: Pair<Double, Double>? = null, focusKey: Int = 0, onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()

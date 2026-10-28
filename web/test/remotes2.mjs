@@ -77,7 +77,7 @@ console.log('Car remotes and keyfobs');
   // No button at all is not a press.
   ok(!run(dev(303), build(0x0))[0], '  Chrysler refuses a frame naming no button');
 
-  // An all-ones frame sums to 0xff*5, which only a full-width sum can recognise.
+  // An all-ones frame sums to 0xff*5, which only a full-width sum can recognize.
   const saturated = (() => {
     const b = new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff, rawSum(new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff]), 5) & 0xff]);
     return rowBits(inv(bytesToBits(reflect(b))));
@@ -242,7 +242,7 @@ console.log('Car remotes and keyfobs');
   ok(!!d3, 'Siemens decodes several buttons at once', JSON.stringify(d3));
   if (d3) eq(d3.button_str, 'Lock; Trunk; Right Door', '  and names each of them');
 
-  // An all-ones payload sums to 0xff*12, which only a full-width sum can recognise.
+  // An all-ones payload sums to 0xff*12, which only a full-width sum can recognize.
   const saturated = rowBits(pad([...bytesToBits([0x60, 0x01]), ...bytesToBits(new Uint8Array(12).fill(0xff))], 130));
   eq(rawSum(new Uint8Array(12).fill(0xff), 12), 0xff * 12, 'an all-ones Siemens frame sums well past a byte');
   ok(!run(dev(314), saturated)[0], '  and Siemens refuses it');

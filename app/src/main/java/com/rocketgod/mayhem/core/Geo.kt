@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The phone's own position: the CPR reference that lets ADS-B place an aircraft from a single position frame
- * (dump1090 decodeCPRrelative), and the spot the map centres on before any aircraft shows up. Coarse is enough.
+ * (dump1090 decodeCPRrelative), and the spot the map centers on before any aircraft shows up. Coarse is enough.
  */
 object Geo {
     private val _fix = MutableStateFlow<Pair<Double, Double>?>(null)

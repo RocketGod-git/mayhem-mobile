@@ -256,7 +256,7 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
                 val fav = marks.any { kotlin.math.abs(it.hz - s.channel) < 50 }
                 Text(if (fav) "★" else "☆", color = if (fav) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
                     modifier = Modifier.clickable {
-                        com.rocketgod.mayhem.core.Bookmarks.star(s.channel, SdrEngine.Mode.NFM, s.mode.name, Ham.favourite())
+                        com.rocketgod.mayhem.core.Bookmarks.star(s.channel, SdrEngine.Mode.NFM, s.mode.name, Ham.favorite())
                     }.padding(horizontal = d.dp(8f)))
             }
         }
@@ -286,7 +286,7 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
     }
 }
 
-/** The panadapter: centred on the LO, with the receiver's pass band shaded where the channel actually sits. */
+/** The panadapter: centered on the LO, with the receiver's pass band shaded where the channel actually sits. */
 @Composable
 private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s: Ham.State, rate: Int) {
     val tab by Ham.tab.collectAsState()
@@ -295,7 +295,7 @@ private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s
     // the monitor re-plants its whole channel set, so a slide only lands once it comes to rest
     var monTo by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(monTo) { val c = monTo ?: return@LaunchedEffect; delay(400); if (Ham.monitoring) Ham.slide(c); monTo = null }
-    val centre = if (mon) monTo ?: Ham.monitorCentre() else s.lo
+    val center = if (mon) monTo ?: Ham.monitorCenter() else s.lo
     val chan = if (mon) null else {
         val (lo, hi) = when (s.mode) {
             Mode.USB -> (s.pbLo + s.shift) to (s.pbHi + s.shift)
@@ -320,19 +320,19 @@ private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s
     // in HAM a tap on a classified signal lands on the band's raster and brings the mode and filter with it, and
     // anywhere else on the nearest 100 Hz
     fun target(frac: Float): Pair<Long, Signal?> {
-        val hz = centre + ((frac - 0.5f) * rate).toLong()
+        val hz = center + ((frac - 0.5f) * rate).toLong()
         val sig = signalAt(hz, rate * 0.015)
-        if (!ham) return (sig?.let { signalDial(it, if (s.channel < 30_000_000L) 100L else 1000L) } ?: spanHz(centre, rate, frac)) to null
+        if (!ham) return (sig?.let { signalDial(it, if (s.channel < 30_000_000L) 100L else 1000L) } ?: spanHz(center, rate, frac)) to null
         return (sig?.let { signalDial(it, Ham.raster()) } ?: (Math.round(hz / 100.0) * 100L)) to sig
     }
     fun slideTo(c: Long) { if (mon) monTo = c else Ham.slide(c) }
     WaterfallView(
         spec, SdrEngine.SPEC_BINS, accent, modifier,
-        rows = 160, centreMarker = false, channel = chan,
-        labels = centredLabels(centre, rate), centerHz0 = centre, spanHz0 = rate, onChannelEdge = edges,
+        rows = 160, centerMarker = false, channel = chan,
+        labels = centeredLabels(center, rate), centerHz0 = center, spanHz0 = rate, onChannelEdge = edges,
         onPreviewFrac = { f -> Tuning.previewHz = f?.let { target(it).first } },
         onSlide = { slideTo(it) },
-        onRecentre = { monTo = null; Ham.recentre() },
+        onRecenter = { monTo = null; Ham.recenter() },
         onSpanStep = { dir -> Ham.spanStep(dir) },
     ) { frac ->
         val (hz, sig) = target(frac)

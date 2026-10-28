@@ -83,12 +83,12 @@ private const val NS = 160
 /** Synthesis window: rises over 50 samples around the frame boundary, flat across the frame. */
 private val WS = DoubleArray(321) { n -> if (n <= 55) 0.0 else if (n <= 105) (n - 55) * 0.02 else if (n <= 215) 1.0 else if (n <= 265) (265 - n) * 0.02 else 0.0 }
 private const val TWO_PI = 2 * PI
-/** Unvoiced synthesis works in a 256-point transform centred on the frame: the window sits at WS[x + WOFF]. */
+/** Unvoiced synthesis works in a 256-point transform centered on the frame: the window sits at WS[x + WOFF]. */
 private const val NFFT_UV = 256
 private const val WOFF = NS - (NFFT_UV shr 1)
 /**
  * Turns a band of unit-power noise into the amplitude the codec asked for. Calibrated against the model's own
- * rule that a band carries the same energy whether it is synthesised as tone or as noise.
+ * rule that a band carries the same energy whether it is synthesized as tone or as noise.
  */
 private const val UV_SCALE = 43.91
 
@@ -278,7 +278,7 @@ open class AmbeDecoder {
     private fun nextNoise() {
         val u = noise
         System.arraycopy(u, NS, u, 0, NFFT_UV - NS)
-        // centred on zero: an all-positive sequence is a constant plus noise, which the window turns into a pulse
+        // centered on zero: an all-positive sequence is a constant plus noise, which the window turns into a pulse
         for (i in NFFT_UV - NS until NFFT_UV) { noiseSeed = (171 * noiseSeed + 11213) % 53125; u[i] = (noiseSeed - 26562).toDouble() }
     }
 
@@ -326,7 +326,7 @@ open class AmbeDecoder {
             psi -= TWO_PI * floor(psi / TWO_PI)
             c.PSIl[l] = psi
             // The codec sends no phase, so the decoder invents it; keeping the predicted phase throughout sounds
-            // clearly better than the reference's per-frame randomisation of the upper harmonics.
+            // clearly better than the reference's per-frame randomization of the upper harmonics.
             c.PHIl[l] = psi
         }
         for (l in 1..maxl) {
@@ -360,7 +360,7 @@ open class AmbeDecoder {
 /*
  * IMBE 7200x4400, the vocoder P25 Phase 1 carries: 144 bits on air every 20 ms, 88 of them parameters. Only the
  * front half differs from AMBE; once the bits become a pitch, a harmonic count, voicing and spectral amplitudes
- * the two share the enhancement and synthesis above. Every value is scalar quantised with a bit allocation that
+ * the two share the enhancement and synthesis above. Every value is scalar quantized with a bit allocation that
  * depends on the harmonic count; what is intricate is where the bits live, ordered by how much protection they
  * deserve rather than by what they mean. Ported from mbelib (ISC), checked against JMBE and OP25.
  */
@@ -375,7 +375,7 @@ private val WORD_LEN = intArrayOf(23, 23, 23, 23, 15, 15, 15, 7)
 
 class ImbeDecoder : AmbeDecoder() {
     private val id = IntArray(88)
-    // twelve wide: every quantised value fits in ten bits, but the voicing word runs to twelve
+    // twelve wide: every quantized value fits in ten bits, but the voicing word runs to twelve
     private val bb = Array(58) { IntArray(12) }
     private val w = IntArray(144)
     private val words = IntArray(8)

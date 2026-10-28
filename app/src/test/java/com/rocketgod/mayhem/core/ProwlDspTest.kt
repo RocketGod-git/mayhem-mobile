@@ -24,12 +24,12 @@ class ProwlDspTest {
         return p
     }
 
-    private fun run(centre: Double, humps: List<Pair<Int, Double>>): List<Signal> {
+    private fun run(center: Double, humps: List<Pair<Int, Double>>): List<Signal> {
         val c = Classifier(); val rng = Random(1)
         var out = emptyList<Signal>()
         repeat(20) {
             val p = spectrum(rng, humps)
-            out = c.update(p, rate, centre, p.sorted()[n / 2].toDouble())
+            out = c.update(p, rate, center, p.sorted()[n / 2].toDouble())
         }
         return out
     }

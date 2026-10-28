@@ -77,7 +77,7 @@ export const schraderEg53ma4: RDevice = register({
   decode(_dev, bits: BitBuffer, ctx: DecodeCtx): number {
     if (bits.bitsPerRow[0] !== 120) return DECODE_ABORT_LENGTH;
     const b = bits.bytes(0, 40, 80);
-    // A frame of nothing but zeroes in the payload bytes is a receiver artefact.
+    // A frame of nothing but zeroes in the payload bytes is a receiver artifact.
     if (!b[1] && !b[2] && !b[4] && !b[5] && !b[7] && !b[8]) return DECODE_FAIL_SANITY;
     if ((addBytes(b, 9) & 0xff) !== b[9]) return DECODE_FAIL_MIC;
 

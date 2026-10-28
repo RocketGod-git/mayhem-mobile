@@ -324,7 +324,7 @@ function jeepDecode(bits: BitBuffer, ctx: DecodeCtx, row: number, bitpos: number
   if (packet.bitsPerRow[0] < 80) return DECODE_FAIL_SANITY;
 
   const b = packet.bb[0];
-  // A tire at no pressure and no temperature at once is a receiver artefact rather than a reading.
+  // A tire at no pressure and no temperature at once is a receiver artifact rather than a reading.
   if (b[6] === 0 || b[7] === 0) return DECODE_ABORT_EARLY;
 
   let chk = 0;

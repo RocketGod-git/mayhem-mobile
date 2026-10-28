@@ -96,7 +96,7 @@ console.log('Alarm, motion and door/window sensors, a meat thermometer and a wil
     ok(!('mic' in out[0]), 'Kerui claims no integrity check, because it has none');
   }
 
-  // The repeat count is the whole defence, so both sides of it are pinned.
+  // The repeat count is the whole defense, so both sides of it are pinned.
   eq(run(d, buf({}, 9)).rc, 1, 'nine copies is enough (premise for the count below)');
   eq(run(d, buf({}, 8)).rc, ABORT_LENGTH, 'Kerui refuses a frame repeated only eight times');
   eq(run(d, buf({}, 8)).out.length, 0, 'and emits nothing when it does');

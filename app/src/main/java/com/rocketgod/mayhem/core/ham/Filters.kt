@@ -83,7 +83,7 @@ class ComplexFirDecimator(private val h: FloatArray, private val decim: Int) {
 }
 
 /**
- * Third-order CIC decimator on integer-quantised complex samples. The integrators wrap in Int arithmetic, so they
+ * Third-order CIC decimator on integer-quantized complex samples. The integrators wrap in Int arithmetic, so they
  * never lose precision however long they run; six adds per input sample. At D = 10 the worst alias into a
  * ±110 kHz passband is about −75 dB and the droop under 0.1 dB, which is what lets a 19.2 Msps stream feed the
  * 1.92 M FIR chain without a 63-tap FIR at the full rate.

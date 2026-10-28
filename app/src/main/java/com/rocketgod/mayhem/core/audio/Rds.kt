@@ -13,7 +13,7 @@ data class RdsState(
     val tp: Boolean, val ta: Boolean, val ms: Boolean, val groups: Int, val errors: Int, val synced: Boolean, val af: List<Double>,
 )
 
-/** RDS (European) programme type names, index 0..31. */
+/** RDS (European) program type names, index 0..31. */
 val PTY_NAMES = listOf(
     "None", "News", "Current Affairs", "Information", "Sport", "Education", "Drama", "Culture", "Science", "Varied",
     "Pop Music", "Rock Music", "Easy Listening", "Light Classical", "Serious Classical", "Other Music", "Weather",

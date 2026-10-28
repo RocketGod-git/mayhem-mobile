@@ -113,7 +113,7 @@ object HackRfUsb {
     fun describe(d: UsbDevice): String =
         "%04x:%04x %s".format(d.vendorId, d.productId, d.productName ?: d.deviceName ?: "").trim()
 
-    /** One line per USB device the phone enumerates — recognised or not — so a board that came up under an
+    /** One line per USB device the phone enumerates — recognized or not — so a board that came up under an
      *  unexpected PID (e.g. a PortaPack still in Mayhem serial mode) is visible in the log. */
     fun scanLog(ctx: Context): String {
         val devs = manager(ctx).deviceList.values

@@ -2,7 +2,7 @@ package com.rocketgod.mayhem.core.ham
 
 import com.rocketgod.mayhem.core.ham.HamDemod.Mode
 
-/** Amateur band plan (IARU Region 2 / FCC flavoured), with the mode, step and repeater offset each band expects. */
+/** Amateur band plan (IARU Region 2 / FCC flavored), with the mode, step and repeater offset each band expects. */
 data class Band(
     val id: String,
     val name: String,

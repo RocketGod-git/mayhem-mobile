@@ -1,6 +1,6 @@
 package com.rocketgod.mayhem.core.sat
 
-/* The satellite catalogue. Generated from web/src/sat.ts and packet-sats.ts; edit those and regenerate. */
+/* The satellite catalog. Generated from web/src/sat.ts and packet-sats.ts; edit those and regenerate. */
 
 enum class SatKind { FM, LINEAR, PACKET, SSTV, APT, LRPT, DIGI, CW }
 

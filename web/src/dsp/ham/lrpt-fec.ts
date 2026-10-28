@@ -117,7 +117,7 @@ export function syncScore(soft: Int8Array, at: number): [number, number] {
 // ------------------------------------------------------------------------------------------- descrambler
 const NOISE = new Uint8Array(255);
 { let state = 0xff; for (let i = 0; i < 255; i++) { let b = 0; for (let j = 0; j < 8; j++) { const nb = ((state >> 7) ^ (state >> 5) ^ (state >> 3) ^ state) & 1; b = (b << 1) | (state & 1); state = (state >> 1) | (nb << 7); } NOISE[i] = b; } }
-/** Undo the CCSDS randomiser over the 1020 bytes after the sync marker. */
+/** Undo the CCSDS randomizer over the 1020 bytes after the sync marker. */
 export function descramble(cadu: Uint8Array): void { for (let i = 0; i < 1020; i++) cadu[4 + i] ^= NOISE[i % 255]; }
 
 // ------------------------------------------------------------------------------------------- Reed-Solomon

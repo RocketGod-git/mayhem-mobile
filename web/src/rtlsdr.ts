@@ -667,7 +667,7 @@ export class RtlSdr implements Radio {
   /**
    * Find which tuner is fitted and bring it up.
    *
-   * Both parts answer with a recognisable value at register zero; only the I2C address and the PLL reference
+   * Both parts answer with a recognizable value at register zero; only the I2C address and the PLL reference
    * crystal differ, which is why librtlsdr drives them with one body of code. Probing rather than assuming is
    * what lets an RTL-SDR Blog V4 work, since those carry an R828D and are most of what is sold now.
    */

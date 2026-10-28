@@ -37,7 +37,7 @@ export function shipTypeName(code?: number): string {
   return f + (ones >= 1 && ones <= 4 ? HAZARD[ones] : ones === 9 ? ' (no additional info)' : '');
 }
 
-const NAV = ['Under way using engine', 'At anchor', 'Not under command', 'Restricted manoeuvrability', 'Constrained by draft', 'Moored', 'Aground', 'Engaged in fishing', 'Under way sailing', 'Reserved (HSC)', 'Reserved (WIG)', 'Towing astern', 'Pushing ahead / towing alongside', 'Reserved', 'AIS-SART / MOB / EPIRB active', ''];
+const NAV = ['Under way using engine', 'At anchor', 'Not under command', 'Restricted maneuverability', 'Constrained by draft', 'Moored', 'Aground', 'Engaged in fishing', 'Under way sailing', 'Reserved (HSC)', 'Reserved (WIG)', 'Towing astern', 'Pushing ahead / towing alongside', 'Reserved', 'AIS-SART / MOB / EPIRB active', ''];
 export function navStatusName(code?: number): string { return code === undefined ? '' : NAV[code] ?? ''; }
 
 const ATON = ['Unspecified', 'Reference point', 'RACON', 'Fixed offshore structure', 'Emergency wreck mark', 'Light, without sectors', 'Light, with sectors', 'Leading light front', 'Leading light rear', 'Beacon, cardinal N', 'Beacon, cardinal E', 'Beacon, cardinal S', 'Beacon, cardinal W', 'Beacon, port hand', 'Beacon, starboard hand', 'Beacon, preferred channel port', 'Beacon, preferred channel starboard', 'Beacon, isolated danger', 'Beacon, safe water', 'Beacon, special mark', 'Cardinal mark N', 'Cardinal mark E', 'Cardinal mark S', 'Cardinal mark W', 'Port hand mark', 'Starboard hand mark', 'Preferred channel port', 'Preferred channel starboard', 'Isolated danger', 'Safe water', 'Special mark', 'Light vessel / LANBY / rig'];

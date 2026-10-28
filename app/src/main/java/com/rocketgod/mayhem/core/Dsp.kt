@@ -49,7 +49,7 @@ object Dsp {
         for (k in n until nFft) { re[k] = 0f; im[k] = 0f }
     }
 
-    /** fftshifted power in dB, downsampled to out.size bins (peak within each group), DC in the centre. */
+    /** fftshifted power in dB, downsampled to out.size bins (peak within each group), DC in the center. */
     fun powerDb(re: FloatArray, im: FloatArray, out: FloatArray) {
         val nFft = re.size
         val bins = out.size

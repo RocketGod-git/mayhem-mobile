@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 
-/** The operator: callsign, name, grid, licence, DMR ID and APRS SSID, set in Settings and used by HAM, APRS and the logbook. */
+/** The operator: callsign, name, grid, license, DMR ID and APRS SSID, set in Settings and used by HAM, APRS and the logbook. */
 object Station {
     data class Info(
         val call: String = "", val name: String = "", val grid: String = "", val license: String = "",
@@ -43,7 +43,7 @@ object Station {
         return Geo.fix.value?.let { latLonToGrid(it.first, it.second) } ?: ""
     }
 
-    /** Where the station is: the grid square's centre if one is set, else the phone's fix. */
+    /** Where the station is: the grid square's center if one is set, else the phone's fix. */
     fun latLon(): Pair<Double, Double>? {
         val s = _info.value
         if (s.grid.isNotBlank()) gridToLatLon(s.grid)?.let { return it }

@@ -1,5 +1,5 @@
 /**
- * Quantiser tables for the IMBE 7200x4400 vocoder used by P25 Phase 1, ported from mbelib (ISC license).
+ * Quantizer tables for the IMBE 7200x4400 vocoder used by P25 Phase 1, ported from mbelib (ISC license).
  * Every row is indexed by L - 9, L being the harmonic count, which runs 9..56.
  *
  * mbelib also carries a 7584-entry table mapping each of the 88 decoded bits to its parameter and bit position.
@@ -17,7 +17,7 @@ export const STAND_DEV = [
   0.307, 0.241, 0.207, 0.19, 0.179, 0.173, 0.165, 0.17, 0.17,
 ];
 
-/** The gain quantiser: six bits of b2 choose G1 directly. */
+/** The gain quantizer: six bits of b2 choose G1 directly. */
 export const B2 = [
   -2.842205, -2.694235, -2.55826, -2.38285, -2.221042, -2.095574, -1.980845, -1.836058, -1.645556, -1.417658,
   -1.261301, -1.125631, -0.958207, -0.781591, -0.555837, -0.346976, -0.147249, 0.027755, 0.211495, 0.38838, 0.552873,

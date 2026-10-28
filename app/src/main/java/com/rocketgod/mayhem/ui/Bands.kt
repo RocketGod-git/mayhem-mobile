@@ -13,7 +13,7 @@ import com.rocketgod.mayhem.core.SdrEngine
 
 /** A band worth a look, and the mode to hear it in; ISM and ADS-B have no voice mode, so NFM is the default to browse them. */
 class ListenBand(val name: String, val lo: Long, val hi: Long, val mode: SdrEngine.Mode, val what: String) {
-    val centre: Long get() = (lo + hi) / 2
+    val center: Long get() = (lo + hi) / 2
 }
 
 /** The same eight the web app offers on its front door and in its receiver. */
@@ -22,7 +22,7 @@ val LISTEN_BANDS = listOf(
     ListenBand("AIR", 118_000_000L, 137_000_000L, SdrEngine.Mode.AM, "airband AM"),
     ListenBand("VHF", 144_000_000L, 163_000_000L, SdrEngine.Mode.NFM, "two meters, marine, weather"),
     ListenBand("315", 314_000_000L, 316_000_000L, SdrEngine.Mode.NFM, "American remotes and sensors"),
-    ListenBand("UHF", 430_000_000L, 450_000_000L, SdrEngine.Mode.NFM, "seventy centimetres"),
+    ListenBand("UHF", 430_000_000L, 450_000_000L, SdrEngine.Mode.NFM, "seventy centimeters"),
     ListenBand("433", 433_000_000L, 435_000_000L, SdrEngine.Mode.NFM, "European remotes and sensors"),
     ListenBand("915", 902_000_000L, 928_000_000L, SdrEngine.Mode.NFM, "meters and telemetry"),
     ListenBand("1090", 1_089_000_000L, 1_091_000_000L, SdrEngine.Mode.NFM, "aircraft"),

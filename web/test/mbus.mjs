@@ -8,7 +8,7 @@
  * function was checked against itself.
  *
  * The 3-of-6 table is written out in the transmit direction on purpose. It is the inverse of the one in the
- * decoder, so a transposed pair would show up as a failure here rather than cancelling itself out.
+ * decoder, so a transposed pair would show up as a failure here rather than canceling itself out.
  */
 import { BitBuffer } from '../dist/dsp/r433/bitbuffer.js';
 import * as U from '../dist/dsp/r433/util.js';

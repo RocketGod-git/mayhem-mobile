@@ -24,7 +24,7 @@ data class Vessel(
     /** Knots, degrees, degrees, degrees a minute (signed). */
     var sog: Double? = null, var cog: Double? = null, var hdg: Int? = null, var rot: Double? = null,
     var alt: Int? = null,
-    /** To bow, stern, port and starboard, metres. */
+    /** To bow, stern, port and starboard, meters. */
     var dimA: Int? = null, var dimB: Int? = null, var dimC: Int? = null, var dimD: Int? = null,
     var draft: Double? = null,
     /** Month, day, hour, minute (UTC). */

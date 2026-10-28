@@ -236,7 +236,7 @@ export const inkbirdIth20r: RDevice = register({
  * The line coding is doubly turned around — inverted, then reflected byte by byte — and the reflection
  * happens in place, on the buffer itself, exactly as upstream does it. That matters for a row that then
  * fails its checksum: the row stays reflected, and any decoder that runs afterwards sees it that way.
- * Faithfulness wins over tidiness here, because that is the behaviour every other rtl_433 decoder is
+ * Faithfulness wins over tidiness here, because that is the behavior every other rtl_433 decoder is
  * calibrated against.
  *
  * The checksum is a plain sum with carry, and the sum is deliberately taken at full width. Upstream

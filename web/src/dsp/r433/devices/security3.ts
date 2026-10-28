@@ -51,7 +51,7 @@ const KERUI_STATE: Record<number, string> = {
  * water leak probe, all sending the same twenty-four bits.
  *
  * There is no checksum, so the integrity check is entirely the repeat count. The sensor sends twenty-five
- * copies and upstream demands nine of them agree; that number is the whole defence and is copied exactly.
+ * copies and upstream demands nine of them agree; that number is the whole defense and is copied exactly.
  *
  * The bits arrive inverted — a short pulse means a one — which the decoder undoes in place before reading. The
  * all-zero test runs before the inversion, so what it rejects is a frame that was all ones on the air.
@@ -109,7 +109,7 @@ export const kerui: RDevice = register({
  *
  * Nothing here says what the code means, so nothing here pretends to. Upstream's own notes list a handful of
  * observed values — `80042` arming, `80002` disarming, `80008` the quarter-hourly ping, `800a2` and its
- * neighbours a motion event — but the decoder reports the raw code and lets the reader match it, which is the
+ * neighbors a motion event — but the decoder reports the raw code and lets the reader match it, which is the
  * only honest thing to do with an undocumented command set.
  *
  * With no checksum the validation is structural and strict: exactly twenty bits, three copies that agree, and
@@ -299,7 +299,7 @@ function ssSensorParser(bits: BitBuffer, ctx: DecodeCtx, row: number): number {
  * digits arrive low nibble first within each byte as well as least significant bit first within each nibble.
  *
  * Note that the sequence number is reported straight from the byte here, not turned around the way the sensor
- * parser turns its own. That is upstream's behaviour and it looks like an oversight, but the two are reported
+ * parser turns its own. That is upstream's behavior and it looks like an oversight, but the two are reported
  * as upstream reports them so a reading can be compared against it directly.
  */
 function ssPinentryParser(bits: BitBuffer, ctx: DecodeCtx, row: number): number {
@@ -318,7 +318,7 @@ function ssPinentryParser(bits: BitBuffer, ctx: DecodeCtx, row: number): number 
   return 1;
 }
 
-/** The keypad's other buttons — arming, cancelling, panic. Again no checksum, and the raw byte if unknown. */
+/** The keypad's other buttons — arming, canceling, panic. Again no checksum, and the raw byte if unknown. */
 function ssKeypadCommands(bits: BitBuffer, ctx: DecodeCtx, row: number): number {
   const b = bits.bb[row];
   ctx.emit({

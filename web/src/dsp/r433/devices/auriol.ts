@@ -168,7 +168,7 @@ export const auriol4ld5661: RDevice = register({
         id: b[0],
         battery_ok: b[1] >> 7,
         temperature_C: round1((signed(((b[1] & 0x0f) << 12) | (b[2] << 4), 16) >> 4) * 0.1),
-        rain_mm: tips,                               // one millimetre a tip, from the bucket and funnel sizes
+        rain_mm: tips,                               // one millimeter a tip, from the bucket and funnel sizes
         rain: tips,
       });
       return 1;

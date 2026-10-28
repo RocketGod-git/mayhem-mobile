@@ -11,7 +11,7 @@
  * matches. It also carries an upstream defect that is preserved here and described where it occurs.
  *
  * The Homelead soil probe is the only one of the five with published radio, and its two example rows are
- * labelled as one capture shown raw and inverted. They are not: they are two different transmissions from two
+ * labeled as one capture shown raw and inverted. They are not: they are two different transmissions from two
  * different sensors, and both independently satisfy the device's own checksum. The tests assert both.
  *
  * The WallarGe thermometer checks itself twice over — a byte sum and a parity byte whose bits are the
@@ -46,7 +46,7 @@ const round2 = (x: number) => Math.round(x * 100) / 100;
  *
  * The battery field is a defect kept for faithfulness. Upstream masks bit two and then shifts right by three,
  * which cannot yield anything but zero for any byte, so a low battery is never reported. The intended shift
- * was plainly two. The behaviour is preserved and pinned by a test rather than quietly corrected, because a
+ * was plainly two. The behavior is preserved and pinned by a test rather than quietly corrected, because a
  * decoder that disagrees with its source is harder to audit than one that is faithfully wrong.
  */
 export const wec2103: RDevice = register({

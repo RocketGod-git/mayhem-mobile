@@ -1,6 +1,6 @@
 package com.rocketgod.mayhem.core.ham
 
-/* Quantiser tables for the IMBE 7200x4400 vocoder (P25 Phase 1), from mbelib (ISC license). Rows are indexed by L - 9. Generated. */
+/* Quantizer tables for the IMBE 7200x4400 vocoder (P25 Phase 1), from mbelib (ISC license). Rows are indexed by L - 9. Generated. */
 
 internal val IMBE_QUANT_STEP: DoubleArray = doubleArrayOf(
     1.2, 0.85, 0.65, 0.4, 0.28, 0.15, 0.08, 0.04, 0.02, 0.01,

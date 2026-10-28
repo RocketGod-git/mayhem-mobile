@@ -73,7 +73,7 @@ const TWO_PI = 2 * Math.PI;
 const NFFT = 256, WOFF = N - (NFFT >> 1);
 /**
  * Turns a band of unit-power noise into the amplitude the codec asked for. Calibrated against the model's own
- * rule that a band carries the same energy whether it is synthesised as tone or as noise: driving identical
+ * rule that a band carries the same energy whether it is synthesized as tone or as noise: driving identical
  * spectral amplitudes through both paths now matches to a fraction of a decibel.
  */
 const UV_SCALE = 43.91;
@@ -316,7 +316,7 @@ export class AmbeDecoder {
       let psi = prev.PSIl[l] + (pw0 + cw0) * (l * N / 2);
       psi -= TWO_PI * Math.floor(psi / TWO_PI);
       cur.PSIl[l] = psi;
-      // The codec sends no phase, so the decoder invents it. The reference randomises every harmonic above
+      // The codec sends no phase, so the decoder invents it. The reference randomizes every harmonic above
       // the first quarter on every 20 ms frame, which smears the voice and is what makes these decoders sound
       // hollow. Keeping the predicted phase throughout was clearly better on air.
       cur.PHIl[l] = psi;

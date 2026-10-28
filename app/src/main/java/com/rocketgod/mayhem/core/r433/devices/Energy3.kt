@@ -194,7 +194,7 @@ private fun elster(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
 
 /**
  * No Manchester, whitened with 0xaa, a sixteen-bit length that excludes the check. Most bodies are encrypted
- * per meter; in the two cleartext neighbour tables only each record's leading address is read.
+ * per meter; in the two cleartext neighbor tables only each record's leading address is read.
  */
 private fun elster2(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     if (bits.numRows != 1) return DECODE_ABORT_EARLY

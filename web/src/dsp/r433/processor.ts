@@ -59,7 +59,7 @@ const CODING: Record<number, string> = {
   18: 'frequency shift, Manchester',
 };
 
-/** Everything registered, in protocol order — what the receiver can recognise. */
+/** Everything registered, in protocol order — what the receiver can recognize. */
 export function protocolList(): R433Protocol[] {
   return REGISTRY.map(d => ({
     num: d.num,

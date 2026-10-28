@@ -134,7 +134,7 @@ private fun niceUnscramble(p: UBytes): Int {
     return ((p[1] shl 8) or p[0]) and 0xffff
 }
 
-/** The transmitter leaves a trailing empty row, which is part of how the frame is recognised. */
+/** The transmitter leaves a trailing empty row, which is part of how the frame is recognized. */
 private fun niceFlorS(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     if (bits.numRows != 2 || bits.bitsPerRow[1] != 0) return DECODE_ABORT_EARLY
     if (bits.bitsPerRow[0] != 52 && bits.bitsPerRow[0] != 72) return DECODE_ABORT_LENGTH

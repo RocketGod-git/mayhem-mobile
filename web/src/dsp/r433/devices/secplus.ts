@@ -85,7 +85,7 @@ function v1DecodeHalf(src: Uint8Array, out: Uint8Array): number {
  * Find where the next half starts.
  *
  * There is no preamble to look for. Every half begins with a digit of nought or two, which on the wire are
- * `0001` and `0111`, so the run-in is recognised by those shapes — or, at the very start of a row, by the
+ * `0001` and `0111`, so the run-in is recognized by those shapes — or, at the very start of a row, by the
  * first byte already looking like one of them.
  */
 function v1FindNext(bits: BitBuffer, from: number): number {

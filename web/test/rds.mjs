@@ -10,7 +10,7 @@
  * decoder is not tested only against the square pulses that its integrate-and-dump is trivially matched to, and
  * does not claim to reproduce the standard's spectrum-shaping filter.
  *
- * Every rule is checked from its premise: the checkword generator has to show the offset behaviour before any
+ * Every rule is checked from its premise: the checkword generator has to show the offset behavior before any
  * block built with it counts, the residue of an untoggled text A/B flag has to be shown before the toggle is
  * credited with clearing it, and the sync-loss test first shows the decoder was synced.
  */
@@ -166,7 +166,7 @@ const RT_SHOWN = 'MAYHEM MOBILE RADIO DATA SYSTEM TEST';
 
 // ---- The checkword itself ----
 {
-  // The offset behaviour: dividing an undamaged block by the generator leaves exactly its offset word. This is
+  // The offset behavior: dividing an undamaged block by the generator leaves exactly its offset word. This is
   // what the decoder's block search relies on, so it is shown here from the reference builder alone.
   for (const [name, off] of Object.entries(OFF)) {
     let all = true;
@@ -216,7 +216,7 @@ const RT_SHOWN = 'MAYHEM MOBILE RADIO DATA SYSTEM TEST';
     'Varied', 'Pop Music', 'Rock Music', 'Easy Listening', 'Light Classical', 'Serious Classical', 'Other Music',
     'Weather', 'Finance', "Children's", 'Social Affairs', 'Religion', 'Phone In', 'Travel', 'Leisure', 'Jazz Music',
     'Country Music', 'National Music', 'Oldies Music', 'Folk Music', 'Documentary', 'Alarm Test', 'Alarm'];
-  eq(PTY_NAMES.length, 32, 'thirty-two programme types');
+  eq(PTY_NAMES.length, 32, 'thirty-two program types');
   eqArr([...PTY_NAMES], want, 'the European PTY names, in order');
 }
 

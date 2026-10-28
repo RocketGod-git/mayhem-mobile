@@ -63,7 +63,7 @@ class ChannelDemod {
 export class BandMonitor implements IqProcessor {
   readonly wantsFm = false;
   params: MonitorParams = { spacingHz: 12_500, originHz: 144_000_000, thresholdDb: 8, mode: 'mix', lock: -1, maxDemods: 3, volume: 1 };
-  centreHz = 146_000_000;
+  centerHz = 146_000_000;
   private rate = 0;
   private readonly re = new Float32Array(FFT_N); private readonly im = new Float32Array(FFT_N);
   private readonly acc = new Float32Array(FFT_N); private readonly pdb = new Float32Array(FFT_N);
@@ -87,8 +87,8 @@ export class BandMonitor implements IqProcessor {
 
   constructor(private readonly emit: Emit, private readonly sink: (chunk: Float32Array) => void) {}
 
-  set(p: Partial<MonitorParams> & { centreHz?: number }): void {
-    if (p.centreHz !== undefined) this.centreHz = p.centreHz;
+  set(p: Partial<MonitorParams> & { centerHz?: number }): void {
+    if (p.centerHz !== undefined) this.centerHz = p.centerHz;
     Object.assign(this.params, p);
     this.plan();
   }
@@ -106,10 +106,10 @@ export class BandMonitor implements IqProcessor {
   private plan(): void {
     if (!this.rate) return;
     const p = this.params, half = this.rate / 2 - 40_000;
-    const key = `${this.centreHz}|${this.rate}|${p.spacingHz}|${p.originHz}`;
+    const key = `${this.centerHz}|${this.rate}|${p.spacingHz}|${p.originHz}`;
     if (key === this.lastPlan) return;
     this.lastPlan = key;
-    const first = Math.ceil((this.centreHz - half - p.originHz) / p.spacingHz), last = Math.floor((this.centreHz + half - p.originHz) / p.spacingHz);
+    const first = Math.ceil((this.centerHz - half - p.originHz) / p.spacingHz), last = Math.floor((this.centerHz + half - p.originHz) / p.spacingHz);
     const n = Math.max(0, last - first + 1);
     this.chanHz = new Float64Array(n);
     for (let k = 0; k < n; k++) this.chanHz[k] = p.originHz + (first + k) * p.spacingHz;
@@ -139,7 +139,7 @@ export class BandMonitor implements IqProcessor {
     if (p.mode === 'lock' && p.lock >= 0) listening = [p.lock];
     else if (p.mode === 'latest') listening = this.order.length ? [this.order[this.order.length - 1]] : [];
     else listening = this.order.slice(-p.maxDemods);
-    for (const k of listening) if (!this.demods.has(k)) this.demods.set(k, new ChannelDemod(rate, this.chanHz[k] - this.centreHz, n, this.interRate, this.decA, this.decB));
+    for (const k of listening) if (!this.demods.has(k)) this.demods.set(k, new ChannelDemod(rate, this.chanHz[k] - this.centerHz, n, this.interRate, this.decA, this.decB));
     for (const k of [...this.demods.keys()]) if (!listening.includes(k) && !(this.open[k] && this.demods.size <= p.maxDemods)) this.demods.delete(k);
     let m = 0; const mix = this.mix; let voices = 0;
     for (const k of listening) {
@@ -160,7 +160,7 @@ export class BandMonitor implements IqProcessor {
     const halfBins = Math.max(1, Math.floor((p.spacingHz * 0.4) / binHz));
     const now = performance.now();
     for (let k = 0; k < n; k++) {
-      const c = Math.round((this.chanHz[k] - this.centreHz) / binHz) + FFT_N / 2;
+      const c = Math.round((this.chanHz[k] - this.centerHz) / binHz) + FFT_N / 2;
       let s = 0, cnt = 0;
       for (let b = Math.max(1, c - halfBins); b <= Math.min(FFT_N - 2, c + halfBins); b++) { s += Math.pow(10, this.pdb[b] / 10); cnt++; }
       const db = 10 * Math.log10(s / Math.max(1, cnt) + 1e-12);

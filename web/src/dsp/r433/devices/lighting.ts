@@ -290,7 +290,7 @@ export const geColoreffects: RDevice = register({
  * fail, because some transmissions cover the last byte and some do not. All five of the rows its file prints
  * pass on the first of those, so the second never fires on the published evidence.
  *
- * The temperature conversion is upstream's, including its doubt. Against the five labelled rows it reads low
+ * The temperature conversion is upstream's, including its doubt. Against the five labeled rows it reads low
  * by roughly half a degree at the top of the range and a degree at the bottom, which is why that file marks
  * the line as very likely wrong. It is reproduced unchanged: five points are not enough to fit a better curve,
  * and quietly substituting one would put this app and its source in disagreement on real radio.

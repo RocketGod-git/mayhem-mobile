@@ -47,7 +47,7 @@ export class Tx {
   stop(): void { this.radioGetter()?.abortTx(); }
 
   /**
-   * Push-to-talk FM voice from the microphone: 48 kHz mic audio (pre-emphasised, limited) frequency-modulates the
+   * Push-to-talk FM voice from the microphone: 48 kHz mic audio (pre-emphasized, limited) frequency-modulates the
    * carrier at ±devHz, with an optional CTCSS tone at ±600 Hz. `mic` is a ring the AudioWorklet fills; the fill
    * callback reads it 40x oversampled (1.92 Msps).
    */
@@ -258,7 +258,7 @@ export class Tx {
     return this.fmTones(`QC-II ${freqA}/${freqB}`, freqHz, list, RATE, 3000);
   }
 
-  /** Random OOK on/off keying — authorised RF-lab work. */
+  /** Random OOK on/off keying — authorized RF-lab work. */
   ookNoise(chipUs: number, seconds: number, freqHz: number): boolean {
     const chipSamples = Math.max(1, Math.floor(chipUs * RATE / 1_000_000));
     const chips = Math.floor(seconds * RATE / chipSamples);

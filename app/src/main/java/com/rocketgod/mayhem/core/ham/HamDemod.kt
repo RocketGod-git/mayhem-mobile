@@ -244,7 +244,7 @@ class HamDemod : IqProcessor {
             if (++wfmCnt >= wfmDecim) {
                 val v = wfmAcc / wfmCnt; wfmAcc = 0f; wfmCnt = 0
                 wfmDeemph += wfmDeCoef * (v - wfmDeemph)
-                // Full broadcast deviation is ~2 rad/sample at 240 k; programme material after de-emphasis sits
+                // Full broadcast deviation is ~2 rad/sample at 240 k; program material after de-emphasis sits
                 // well under that, so this lands it around half scale with headroom for the AGC or volume.
                 dst[m++] = wfmDeemph * 1.6f
             }

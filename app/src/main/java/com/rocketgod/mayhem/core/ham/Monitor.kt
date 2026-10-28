@@ -64,7 +64,7 @@ class BandMonitor : IqProcessor {
 
     data class Params(
         val spacingHz: Int = 12_500, val originHz: Long = 144_000_000, val thresholdDb: Int = 8,
-        val mode: Listen = Listen.MIX, val lock: Int = -1, val maxDemods: Int = 2, val volume: Float = 1f, val centreHz: Long = 146_000_000,
+        val mode: Listen = Listen.MIX, val lock: Int = -1, val maxDemods: Int = 2, val volume: Float = 1f, val centerHz: Long = 146_000_000,
     )
 
     /** What the channel grid shows, about five times a second. */
@@ -119,11 +119,11 @@ class BandMonitor : IqProcessor {
     private fun plan() {
         if (rate == 0) return
         val p = params; val half = rate / 2.0 - 40_000
-        val key = "${p.centreHz}|$rate|${p.spacingHz}|${p.originHz}"
+        val key = "${p.centerHz}|$rate|${p.spacingHz}|${p.originHz}"
         if (key == lastPlan) return
         lastPlan = key
-        val first = ceil((p.centreHz - half - p.originHz) / p.spacingHz).toLong()
-        val last = floor((p.centreHz + half - p.originHz) / p.spacingHz).toLong()
+        val first = ceil((p.centerHz - half - p.originHz) / p.spacingHz).toLong()
+        val last = floor((p.centerHz + half - p.originHz) / p.spacingHz).toLong()
         val n = max(0, (last - first + 1).toInt())
         chanHz = LongArray(n) { p.originHz + (first + it) * p.spacingHz }
         chFloor = FloatArray(n) { Float.NaN }; snr = FloatArray(n)
@@ -162,7 +162,7 @@ class BandMonitor : IqProcessor {
             p.mode == Listen.LATEST -> if (order.isNotEmpty()) listOf(order.last()) else emptyList()
             else -> order.takeLast(p.maxDemods)
         }.filter { it in chanHz.indices }
-        for (k in listening) if (k !in demods) demods[k] = ChannelDemod(rate.toDouble(), (chanHz[k] - p.centreHz).toDouble(), n, interRate, decA, decB)
+        for (k in listening) if (k !in demods) demods[k] = ChannelDemod(rate.toDouble(), (chanHz[k] - p.centerHz).toDouble(), n, interRate, decA, decB)
         for (k in demods.keys.toList()) if (k !in listening && !(open.getOrElse(k) { false } && demods.size <= p.maxDemods)) demods.remove(k)
         var m = 0; var voices = 0
         for (k in listening) {
@@ -194,7 +194,7 @@ class BandMonitor : IqProcessor {
         val n = chanHz.size; val binHz = rate.toDouble() / FFT_N; val p = params
         val halfBins = max(1, floor(p.spacingHz * 0.4 / binHz).toInt())
         for (k in 0 until n) {
-            val c = ((chanHz[k] - p.centreHz) / binHz).roundToInt() + FFT_N / 2
+            val c = ((chanHz[k] - p.centerHz) / binHz).roundToInt() + FFT_N / 2
             var s = 0.0; var cnt = 0
             for (b in max(1, c - halfBins)..min(FFT_N - 2, c + halfBins)) { s += 10.0.pow(pdb[b] / 10.0); cnt++ }
             val db = (10 * log10(s / max(1, cnt) + 1e-12)).toFloat()

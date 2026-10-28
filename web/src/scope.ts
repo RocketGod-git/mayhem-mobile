@@ -109,7 +109,7 @@ export class Scope {
   private readonly fixedCols: boolean;
   private readonly dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
 
-  /** Device pixels across the host, honouring any CSS zoom on the page. */
+  /** Device pixels across the host, honoring any CSS zoom on the page. */
   private static measure(el: HTMLElement, fallback: number): number {
     const r = el.getBoundingClientRect();
     return r.width > 0 ? r.width : fallback;
@@ -529,7 +529,7 @@ export class Scope {
   /**
    * Resample `bins` into `out` (one value per column), starting at bin `lo` with `span` bins per column: max-pool
    * when a column covers more than one bin so a narrow carrier never falls between pixels, linear interpolation at
-   * the column's centre when it covers less.
+   * the column's center when it covers less.
    */
   private resample(bins: Float32Array, out: Float32Array, lo: number, span: number): void {
     const cols = out.length, nb = bins.length;
@@ -683,7 +683,7 @@ export class Scope {
     }
     // A full-height vertical line with a dark casing under it, so it reads whether it crosses black grid or the
     // tuned signal's own accent-filled trace. Without the casing an accent line vanishes into the accent fill of
-    // a strong centred station — which is what made the band look "incomplete" exactly over the signal you tuned.
+    // a strong centered station — which is what made the band look "incomplete" exactly over the signal you tuned.
     const vline = (x: number, color: string, lw: number) => {
       const xr = Math.round(x) + 0.5;
       g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = lw + 2.5 * dpr;
@@ -751,7 +751,7 @@ export class Scope {
 }
 
 /** Axis labels for a span centered on centerHz with width spanHz. */
-export function centredLabels(centerHz: number, spanHz: number): AxisLabel[] {
+export function centeredLabels(centerHz: number, spanHz: number): AxisLabel[] {
   return [0, 0.25, 0.5, 0.75, 1].map(f => [f, ((centerHz + (f - 0.5) * spanHz) / 1e6).toFixed(3)]);
 }
 /** Axis labels for an absolute range. */

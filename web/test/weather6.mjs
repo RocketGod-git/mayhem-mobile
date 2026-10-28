@@ -256,7 +256,7 @@ console.log('Emos TTX201, Arexx Multilogger, TFA wind and Hideki');
     eq(out.length, 1, 'TFA decodes a frame built through its own coding chain');
     eq(out[0]?.id, '0b1122334455', 'TFA device id, type byte first');
     eq(out[0]?.wind_dir_deg, 90, 'TFA wind direction is the nibble times 22.5 degrees');
-    eq(out[0]?.wind_avg_m_s, 3.7, 'TFA wind speed in tenths of a metre per second');
+    eq(out[0]?.wind_avg_m_s, 3.7, 'TFA wind speed in tenths of a meter per second');
     eq(out[0]?.wind_max_m_s, 26, 'TFA gust uses its ninth bit, parked away from the other eight');
     eq(out[0]?.mic, 'CRC', 'TFA reports a CRC');
   }

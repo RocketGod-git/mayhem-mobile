@@ -259,7 +259,7 @@ console.log('BMW, Chrysler, Aston Martin, Mercedes, Jeep and Honda');
   }
 
   ok(dev(380).disabled === true, '  Jeep is flagged doubtful, sharing its frame with the Citroen sensor');
-  // A frame with no pressure or no temperature is a receiver artefact, not a reading.
+  // A frame with no pressure or no temperature is a receiver artifact, not a reading.
   ok(!run(dev(380), build(0, 70))[0], '  Jeep refuses a frame reporting no pressure at all');
   ok(!run(dev(380), build(80, 0))[0], '  Jeep refuses a frame reporting no temperature at all');
 }

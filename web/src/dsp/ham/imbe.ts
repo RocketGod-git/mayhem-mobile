@@ -5,7 +5,7 @@
  * a voicing decision per band and a set of spectral amplitudes, the two are the same model and share the
  * enhancement and synthesis in mbe.ts, so this file extends that decoder rather than repeating it.
  *
- * IMBE is the simpler of the two to unpack: there is no vector quantisation anywhere, every value is scalar with
+ * IMBE is the simpler of the two to unpack: there is no vector quantization anywhere, every value is scalar with
  * a bit allocation that depends on the harmonic count. What is intricate instead is where the bits live, because
  * they are ordered by how much protection they deserve rather than by what they mean.
  *
@@ -40,7 +40,7 @@ export class ImbeDecoder extends AmbeDecoder {
   /** The 88 parameter bits, most significant of each value first. */
   private readonly id = new Uint8Array(88);
   /** Each parameter's bits, as bb[vector][bit]; vector 0 is the pitch, 1 the voicing, 2 the gain. */
-  // Twelve wide, not ten: every quantised value fits in ten bits, but the voicing word runs to twelve.
+  // Twelve wide, not ten: every quantized value fits in ten bits, but the voicing word runs to twelve.
   private readonly bb: Uint8Array[] = Array.from({ length: 58 }, () => new Uint8Array(12));
   private readonly w = new Uint8Array(144);
   private readonly words = new Int32Array(8);
@@ -130,7 +130,7 @@ export class ImbeDecoder extends AmbeDecoder {
       if (j === 3) { j = 1; if (k > 0) k--; } else j++;
     }
 
-    // Gain, then the five-value gain vector, both scalar quantised.
+    // Gain, then the five-value gain vector, both scalar quantized.
     let b2 = 0; for (let b = 5; b >= 0; b--) b2 = (b2 << 1) | bb[2][b];
     Gm[1] = B2[b2];
     for (let i = 2; i < 7; i++) {

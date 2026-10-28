@@ -9,7 +9,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-/** One signal in view: centre, peak level, height over the floor, settled widths and the track's label. */
+/** One signal in view: center, peak level, height over the floor, settled widths and the track's label. */
 data class Signal(val hz: Double, val db: Double, val snr: Double, val bw6: Double, val bw20: Double, val cls: String, val conf: Double)
 
 /**
@@ -37,8 +37,8 @@ class Classifier {
 
     fun reset() { hold = FloatArray(0); smooth = FloatArray(0); tracks.clear(); frame = 0 }
 
-    /** [pdb]: fftshifted dB per bin; [rate]: span in Hz; [centreHz]: span centre. Returns the signals found this call. */
-    fun update(pdb: FloatArray, rate: Double, centreHz: Double, floorDb: Double): List<Signal> {
+    /** [pdb]: fftshifted dB per bin; [rate]: span in Hz; [centerHz]: span center. Returns the signals found this call. */
+    fun update(pdb: FloatArray, rate: Double, centerHz: Double, floorDb: Double): List<Signal> {
         val n = pdb.size; val binHz = rate / n
         if (hold.size != n) { hold = pdb.copyOf(); smooth = FloatArray(n) }
         val hold = hold
@@ -81,8 +81,8 @@ class Classifier {
             // still when FM pushes one shoulder in and out.
             var cenNum = 0.0; var cenDen = 0.0
             for (k in w6.first..w6.second) { val v = 10.0.pow(hold[k] / 10.0); cenNum += k * v; cenDen += v }
-            val hz = centreHz + ((if (cenDen > 0) cenNum / cenDen else center) - n / 2) * binHz
-            if (abs(hz - centreHz) < 2500) continue                 // the HackRF's own DC spike at the LO
+            val hz = centerHz + ((if (cenDen > 0) cenNum / cenDen else center) - n / 2) * binHz
+            if (abs(hz - centerHz) < 2500) continue                 // the HackRF's own DC spike at the LO
             val t = track(hz, pk, bw6, bw20, peakiness, skew, bimodal)
             val f6 = pct(t.bw6, 0.8); val f20 = pct(t.bw20, 0.8)
             val duty = t.onFrames.toDouble() / max(1, t.frames)

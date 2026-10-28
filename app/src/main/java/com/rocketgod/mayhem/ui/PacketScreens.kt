@@ -44,7 +44,7 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
+                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centeredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
             }
         }

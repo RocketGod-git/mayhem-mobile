@@ -178,7 +178,7 @@ class P25Decoder {
 
     fun status(now: Long) = P25Status(locked, nac, duid, frameName, tg, src, enc, lcf, frames, errs, now - lastFrame)
 
-    /** A frame sync was recognised: the next symbol is index 24 of a new frame. */
+    /** A frame sync was recognized: the next symbol is index 24 of a new frame. */
     fun sync(now: Long) { sym = 24; nInfo = 0; want = 32; state = 2; lastFrame = now; locked = true }
 
     /** One recovered dibit. Status symbols are dropped here; everything else accumulates into the frame. */

@@ -175,7 +175,7 @@ class OrbcommDecoder : FmTap {
     private fun onPacket(type: Int, at: Int, len: Int) {
         if (type == 0x65) { lastId = frame[at + 3]; val s = sat(lastId); sats[lastId] = s.copy(frames = s.frames + 1); return }
         if (type != 0x1f) { if (type == 0x1a) Diag.log("ORBCOMM message packet, payload encrypted: ${hex(at + 2, 8)}"); return }
-        // ephemeris: the satellite's own clock, then velocity and position in Earth-centred coordinates
+        // ephemeris: the satellite's own clock, then velocity and position in Earth-centered coordinates
         val p = hex(at + 2, len - 2)
         val week = p.substring(0, 4).toInt(16); val tow = p.substring(4, 10).toInt(16)
         val vz = scale(field20(p, 10, 15), MAX_V); val vy = scale(field20(p, 15, 20), MAX_V); val vx = scale(field20(p, 20, 25), MAX_V)
@@ -247,7 +247,7 @@ class G3ruhDecoder : FmTap {
     fun reset() { fmRate = 0.0; framer.reset(); reg = 0; last = 0; heard = 0; bad = 0; frames.clear() }
     fun clear() { heard = 0; bad = 0; frames.clear(); onFrames(emptyList()) }
 
-    /** Self-synchronising: the output is the tapped register's parity xor the input, and the input is fed back. */
+    /** Self-synchronizing: the output is the tapped register's parity xor the input, and the input is fed back. */
     private fun descramble(bit: Int): Int {
         val out = (Integer.bitCount(reg and 0x21) and 1) xor (bit and 1)
         reg = (reg ushr 1) or ((bit and 1) shl 16)

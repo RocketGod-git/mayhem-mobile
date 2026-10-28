@@ -5,7 +5,7 @@
  * `d2 aa 2d d4`, then three bytes of identity, a byte of flags carrying a three-bit sequence number, the
  * readings, and a CRC-8 over the whole thing with generator 0x31. Because the frame carries no family code,
  * they are told apart by length and by which CRC length closes — which is also why each one range-checks its
- * own readings before reporting them: with no family byte, a neighbour's frame that happens to pass the CRC
+ * own readings before reporting them: with no family byte, a neighbor's frame that happens to pass the CRC
  * would otherwise arrive as a plausible-looking temperature.
  *
  * The rain gauge is the awkward one. One board covers the LTV-R1, the LTV-R3 and the LTV-W1/W2 wind sensor,

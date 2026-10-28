@@ -184,7 +184,7 @@ setInterval(() => {
   if (dv) conf.push(['DMR', dv.locked ? 100 : 0]);
   post({ type: 'digiStatus', conf, winner: digiMode === 'auto' ? (autoSettled ? 'ANALOG VOICE' : digiWinner) : digiMode.toUpperCase(), wpm: cw.wpm });
 }, 700);
-let centreHz = 0, specFrame = 0;
+let centerHz = 0, specFrame = 0;
 
 let fre = new Float32Array(fftN), fim = new Float32Array(fftN), pdb = new Float32Array(bins);
 let win = hann(fftN), acc = new Float32Array(fftN), sortBuf = new Float32Array(bins);
@@ -240,9 +240,9 @@ self.onmessage = (e: MessageEvent) => {
     case 'config':
       if (typeof m.rate === 'number') rate = m.rate;
       if (typeof m.specBins === 'number') setSpecBins(m.specBins);
-      if (typeof m.centreHz === 'number') centreHz = m.centreHz;
+      if (typeof m.centerHz === 'number') centerHz = m.centerHz;
       // The channel being demodulated is the span center plus the offset, not the span center.
-      orbcomm.channelHz = centreHz + offsetHz;
+      orbcomm.channelHz = centerHz + offsetHz;
       if (typeof m.offsetHz === 'number') offsetHz = m.offsetHz;
       if (m.mode) mode = m.mode as Mode;
       if (typeof m.squelch === 'number') { squelchDb = m.squelch; if (squelchDb === 0) sqOpen = true; }
@@ -279,7 +279,7 @@ self.onmessage = (e: MessageEvent) => {
 function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | null {
   switch (app) {
     case 'adsb': return adsb;
-    case 'orbcomm': orbcomm.channelHz = centreHz + offsetHz; return orbcomm;
+    case 'orbcomm': orbcomm.channelHz = centerHz + offsetHz; return orbcomm;
     case 'ais': return ais;
     case 'aprs': return aprs;
     case 'pocsag': return pocsag;
@@ -348,8 +348,8 @@ function process(iq: Int8Array): void {
     prevOut = Float32Array.from(out);
     post({ type: 'spectrum', bins: out, floorDb: base, rangeDb: SPEC_RANGE_DB }, [out.buffer]);
     // signal finder + classifier on every third frame (~10 Hz)
-    if ((++specFrame % 3) === 0 && centreHz > 0) {
-      const sigs = classifier.update(pdb, rate, centreHz, median);
+    if ((++specFrame % 3) === 0 && centerHz > 0) {
+      const sigs = classifier.update(pdb, rate, centerHz, median);
       post({ type: 'signals', list: sigs.map(s => ({ hz: s.hz, db: s.db, snr: s.snr, bw: s.bw6, cls: s.cls, conf: s.conf, val: Math.min(1, Math.max(0, (s.db - base) / SPEC_RANGE_DB)) })) });
     }
     if (now - lastDiag > 1000) {

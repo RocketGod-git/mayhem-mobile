@@ -13,10 +13,10 @@
 import { BitSync, DiscFilter, HdlcFramer, type Emit, type IqProcessor } from './core.js';
 
 /**
- * The G3RUH descrambler: x^17 + x^12 + 1, self-synchronising, so it needs no agreement about where a frame
+ * The G3RUH descrambler: x^17 + x^12 + 1, self-synchronizing, so it needs no agreement about where a frame
  * starts and locks itself within seventeen bits. Written the way the reference implementation does it: the
  * output is the parity of the tapped register exclusive-ored with the input, and it is the input that is fed
- * back, which is what makes it self-synchronising rather than free-running.
+ * back, which is what makes it self-synchronizing rather than free-running.
  */
 class Descrambler {
   private reg = 0;

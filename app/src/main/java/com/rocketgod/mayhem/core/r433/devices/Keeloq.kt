@@ -26,7 +26,7 @@ private fun serial28(b: UBytes): Int = (reverse8(b[7] and 0xf0) shl 24) or (reve
 
 private fun allOnes(b: UBytes, from: Int, to: Int): Boolean { for (i in from..to) if (b[i] != 0xff) return false; return true }
 
-/** The plain 66-bit frame, with no check of any kind: the preamble and the all-ones test are the only defence. */
+/** The plain 66-bit frame, with no check of any kind: the preamble and the all-ones test are the only defense. */
 private fun hcs200(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     if (bits.bitsPerRow[0] != 12 || bits.bitsPerRow[1] != 66) return DECODE_ABORT_LENGTH
     val p = bits.bb[0]
