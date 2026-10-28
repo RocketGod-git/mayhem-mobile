@@ -329,14 +329,16 @@ private class WfHistory {
 }
 
 /**
- * The labels over the spectrum: up to [MAX_MARKS] in the order added (strongest first), each on the first of three
- * rows where it overlaps nothing, or left out. Also finds the peaks to label when no classifier speaks for the view.
+ * The labels over the spectrum: up to [MAX_MARKS] in the order added (strongest first), each as low as it can sit
+ * above its signal without overlapping a label already drawn, or left out. Also finds the peaks to label when no
+ * classifier speaks for the view.
  */
 private class SignalMarks {
     private val text = android.graphics.Paint().apply { typeface = android.graphics.Typeface.MONOSPACE; isAntiAlias = true }
     private val bg = android.graphics.Paint().apply { color = 0x8C000000.toInt() }
     private val xs = FloatArray(MAX_MARKS); private val ys = FloatArray(MAX_MARKS); private val texts = arrayOfNulls<String>(MAX_MARKS)
-    private val taken = FloatArray(3 * MAX_MARKS * 2); private val takenN = IntArray(3)
+    /** Left, top, right, bottom of each label drawn this frame. */
+    private val boxes = FloatArray(MAX_MARKS * 4)
     private var n = 0
     val full: Boolean get() = n >= MAX_MARKS
     /** View columns and levels of the peaks [peaks] found, strongest first. */
@@ -383,23 +385,28 @@ private class SignalMarks {
 
     fun draw(c: android.graphics.Canvas, w: Float, top: Float, base: Float, dp: Float, textPx: Float, color: Int) {
         text.textSize = textPx; text.color = color
-        takenN.fill(0)
+        // Placed against the boxes already drawn, not by rows: a label sits at its signal's height, so two labels in
+        // different rows still collided whenever their signals were close in level. Each starts just above its
+        // signal and rises a line at a time until it clears every box so far; one that never does is left out.
+        val asc = textPx * 0.85f; val desc = textPx * 0.25f; val lineH = asc + desc + 2 * dp
+        var nb = 0
         for (i in 0 until n) {
             val t = texts[i] ?: continue
             val x = xs[i]; val y = ys[i]
             val tw = text.measureText(t)
             val tx = if (x > w * 0.85f) x - 3 * dp - tw else x + 3 * dp
-            val l = tx - 4 * dp; val r = tx + tw + 4 * dp
-            var row = -1
-            for (k in 0 until 3) {
+            val l = tx - 2 * dp; val r = tx + tw + 2 * dp
+            var ty = max(top + asc, y - 2 * dp)
+            var placed = false
+            while (ty - asc >= top) {
                 var free = true
-                for (j in 0 until takenN[k]) { val o = (k * MAX_MARKS + j) * 2; if (taken[o] < r && l < taken[o + 1]) { free = false; break } }
-                if (free) { row = k; break }
+                for (j in 0 until nb) { val o = j * 4; if (boxes[o] < r && l < boxes[o + 2] && boxes[o + 1] < ty + desc && ty - asc < boxes[o + 3]) { free = false; break } }
+                if (free) { placed = true; break }
+                ty -= lineH
             }
-            if (row < 0) continue
-            val o = (row * MAX_MARKS + takenN[row]) * 2; taken[o] = l; taken[o + 1] = r; takenN[row]++
-            val ty = max(top + 11 * dp * (row + 1), y - 2 * dp - row * 11 * dp)
-            c.drawRect(tx - 2 * dp, ty - 10 * dp, tx + tw + 2 * dp, ty + 1 * dp, bg)
+            if (!placed) continue
+            val o = nb * 4; boxes[o] = l; boxes[o + 1] = ty - asc; boxes[o + 2] = r; boxes[o + 3] = ty + desc; nb++
+            c.drawRect(l, ty - asc, r, ty + desc, bg)
             c.drawText(t, tx, ty, text)
             c.drawRect(x - dp / 2, y, x + dp / 2, base, text)
         }
