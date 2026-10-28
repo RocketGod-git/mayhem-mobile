@@ -50,9 +50,8 @@ object Radio {
     /** The one thing about an app a radio has to be able to do: the band it exists for, or transmitting at all. */
     data class Needs(val freqHz: Long? = null, val tx: Boolean = false)
     val NEEDS = mapOf(
-        // HAM is an HF app before anything else: SSB, CW and FT8 at 14.074 sit below where a dongle's tuner starts.
-        // It still works on two metres, so it is dimmed, not locked.
-        MayhemApp.HAM to Needs(freqHz = 14_074_000L),
+        // HAM is not here: HF sits below where a dongle's tuner starts, but two meters and 70 cm do not, so on a
+        // dongle HAM opens on 146.520 instead of being dimmed (Ham.open).
         MayhemApp.BTLE to Needs(freqHz = 2_402_000_000L),
         MayhemApp.TRANSMIT to Needs(tx = true),
         MayhemApp.TROLL to Needs(tx = true),

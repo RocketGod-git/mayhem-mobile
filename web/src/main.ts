@@ -1,7 +1,7 @@
 /** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
 import { HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
 import { RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
-import { APP_NEEDS, blockedBecause, nearestRate, whyNot, type Radio } from './radio.js';
+import { APP_NEEDS, blockedBecause, canTune, nearestRate, whyNot, type Radio } from './radio.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
 import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
@@ -1735,6 +1735,8 @@ function satStrip(): string {
 function hamOpen(): void {
   const h = state.ham;
   if (h.tab === 'sat') h.tab = 'rx';                   // satellites left HAM and became their own app
+  // a dongle starts at 24 MHz: a channel it cannot reach (FT8 at 14.074, say) opens on the 2 m calling frequency
+  if (radio && !canTune(radio.limits, h.freq)) { h.freq = 146_520_000; h.rev = false; if (h.mode !== 'NFM') hamSetMode('NFM'); }
   if (h.tab === 'monitor') { monitorOpen(); return; }
   if (h.tab === 'digi' && h.digi.mode === 'ft8' && h.mode !== 'USB') hamSetMode('USB');
   if (h.tab === 'digi' && (h.digi.mode === 'dmr' || h.digi.mode === 'p25') && h.mode !== 'NFM') hamSetMode('NFM');

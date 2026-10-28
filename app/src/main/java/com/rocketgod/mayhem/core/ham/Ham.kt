@@ -118,6 +118,11 @@ object Ham {
     fun open() {
         if (Apps.cameFrom == null && SdrEngine.dialSaved)
             _state.value = _state.value.copy(channel = SdrEngine.radioFreqHz.coerceIn(1_000_000L, 6_000_000_000L), rev = false)
+        // a dongle starts at 24 MHz: a channel it cannot reach (FT8 at 14.074, say) opens on the 2 m calling frequency
+        if (!Radio.canTune(Radio.limits, _state.value.channel)) {
+            _state.value = _state.value.copy(channel = 146_520_000L, rev = false)
+            if (_state.value.mode != Mode.NFM) setMode(Mode.NFM)
+        }
         start()
     }
 

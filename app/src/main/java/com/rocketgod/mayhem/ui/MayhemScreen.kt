@@ -113,7 +113,11 @@ private fun Header(status: String, connected: Boolean, app: MayhemApp?, showLog:
                     color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
                 )
                 Text(
-                    if (app == null) "${com.rocketgod.mayhem.core.Radio.label.ifEmpty { "HackRF or RTL-SDR" }} · $status"
+                    // the drivers' own status already starts with the radio ("RTL-SDR · R828D · 92.936 MHz"); naming it twice read as a glitch
+                    if (app == null) com.rocketgod.mayhem.core.Radio.let { r ->
+                        val label = r.label.ifEmpty { "HackRF or RTL-SDR" }
+                        if (status.startsWith(label) || status.startsWith(r.name)) status else "$label · $status"
+                    }
                     // the readout shows the channel; the radio's own centre here would read as a second, wrong frequency
                     else "${app.blurb} · ${status.replace(Regex(" · [0-9.]+ MHz$"), "")}",
                     color = if (connected) Palette.muted else Palette.danger, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
