@@ -106,12 +106,14 @@ object TxApps {
         return f
     }
     private fun adsbCrc(data: ByteArray, byteLen: Int): Int {
+        // a byte at a time: each byte goes in at the top and its eight bits are shifted through before the next
+        // (XORing them all in first and then shifting gave a checksum no receiver accepts)
         var rem = 0
-        for (i in 0 until byteLen) rem = rem xor ((data[i].toInt() and 0xFF) shl 16)
-        for (i in 0 until byteLen * 8) {
-            if ((rem and 0x800000) != 0) rem = (rem shl 1) xor 0xFFF409 else rem = rem shl 1
+        for (i in 0 until byteLen) {
+            rem = rem xor ((data[i].toInt() and 0xFF) shl 16)
+            repeat(8) { rem = (if ((rem and 0x800000) != 0) (rem shl 1) xor 0xFFF409 else rem shl 1) and 0xFFFFFF }
         }
-        return rem and 0xFFFFFF
+        return rem
     }
     /** ADS-B is PPM: each bit is a 500 ns half-hi/half-lo (for '1') or lo/hi (for '0'), preceded by an 8 µs preamble. */
     fun adsbSymbols(frame: ByteArray): BooleanArray {

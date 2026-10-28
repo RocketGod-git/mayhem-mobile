@@ -147,10 +147,14 @@ export function adsbFrame(icao: number, meLo: number, meHi: number): Uint8Array 
   f[1] = (icao >>> 16) & 0xFF; f[2] = (icao >>> 8) & 0xFF; f[3] = icao & 0xFF;
   f[4] = (meHi >>> 16) & 0xFF; f[5] = (meHi >>> 8) & 0xFF; f[6] = meHi & 0xFF;
   f[7] = (meLo >>> 24) & 0xFF; f[8] = (meLo >>> 16) & 0xFF; f[9] = (meLo >>> 8) & 0xFF; f[10] = meLo & 0xFF;
+  // Mode-S CRC-24, a byte at a time: each byte goes in at the top and its eight bits are shifted through before
+  // the next. (XORing all eleven in first and then shifting 88 times gave a checksum no receiver accepts.)
   let rem = 0;
-  for (let i = 0; i < 11; i++) rem ^= f[i] << 16;
-  for (let i = 0; i < 88; i++) { if (rem & 0x800000) rem = (rem << 1) ^ 0xFFF409; else rem <<= 1; }
-  const crc = rem & 0xFFFFFF;
+  for (let i = 0; i < 11; i++) {
+    rem ^= f[i] << 16;
+    for (let b = 0; b < 8; b++) rem = ((rem & 0x800000) ? (rem << 1) ^ 0xFFF409 : rem << 1) & 0xFFFFFF;
+  }
+  const crc = rem;
   f[11] = (crc >>> 16) & 0xFF; f[12] = (crc >>> 8) & 0xFF; f[13] = crc & 0xFF;
   return f;
 }
