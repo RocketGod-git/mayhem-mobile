@@ -1,0 +1,49 @@
+Plug a HackRF or an RTL-SDR into your phone and it becomes a full software-defined radio. The waterfall, the demodulators and every decoder run on the phone itself. No laptop, no PortaPack screen, no account, and nothing gets sent anywhere.
+
+I'm one of the devs on Mayhem, the PortaPack firmware. Mayhem Mobile takes its receivers to Android, then keeps going.
+
+WORKS WITH
+• RTL-SDR dongles, including the RTL-SDR Blog V3, V4 and V4L (receive, 24 MHz to 1.7 GHz)
+• HackRF One and HackRF Pro (receive and transmit, 1 MHz to 6 GHz)
+• A PortaPack running Mayhem, switched to HackRF mode
+• Jawbreaker and rad1o
+All you need is a USB-C OTG cable. Plug the radio in and the app opens.
+
+SEE WHAT'S AROUND YOU
+• ADS-B: aircraft on a live map, with type, registration and operator
+• AIS: ships and their names on the marine band
+• Devices: 379 kinds of gadgets decoded at once, rtl_433 style. Weather stations, utility meters, tire sensors, doorbells, alarms and remotes
+• Sub-GHz: gate openers, garage remotes and car key fobs
+• FLEX and POCSAG pagers, ACARS aircraft messages, ERT utility meters, TPMS and Bluetooth LE
+
+LISTEN
+• Audio: FM, AM and SSB with a slide-to-tune waterfall that lands on the strongest station for you
+• FM broadcast shows RDS station names and song text, and NOAA weather alerts (SAME) pop up on screen
+• Squelch, bookmarks and a scanner
+• Prowl hunts the bands for live voice and drops you on whoever is talking
+
+HAM RADIO
+• SSB, CW, AM and NFM receiver with the band plan, repeater offsets, CTCSS and DCS, noise reduction and an S-meter
+• Monitor every channel in the span at once
+• Digital: FT8, CW, RTTY, PSK31, SSTV pictures, and DMR and P25 with voice
+• Logbook with callsign lookup and ADIF import and export
+• Push-to-talk FM voice through a HackRF, with your license
+
+SATELLITES
+• Pass predictions from your phone's GPS, with Doppler-corrected listening
+• ISS packet radio and SSTV pictures
+• Meteor-M weather satellite pictures, decoded in color line by line as it passes over
+
+ANALYZE
+• Looking Glass wideband sweep, Search for active frequencies, and raw IQ capture
+
+TRANSMIT (HackRF)
+Signal generator, tones, Morse, pagers, APRS, RTTY and replay of your own captures. Transmitting is regulated nearly everywhere. Use a band you are licensed for and a proper antenna or a dummy load, and know your local rules. You are responsible for what you send.
+
+DESKTOP TOO
+The same app runs in Chrome on Windows, Mac and Linux at rocketgod.dev/mayhem-mobile with the same radios.
+
+OPEN SOURCE, NO TRACKING
+GPL-3.0, full source on GitHub. No accounts, no ads, no analytics. Your location stays on the phone, where it centers the map and decodes aircraft positions. The only network traffic is map tiles and the lookups you ask for.
+
+Built by RocketGod for The Pirates' Plunder. Not affiliated with Great Scott Gadgets or RTL-SDR Blog.

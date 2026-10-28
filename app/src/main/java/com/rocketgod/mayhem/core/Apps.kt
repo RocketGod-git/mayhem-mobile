@@ -28,7 +28,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     PAGER("FLEX", "pager RX · FLEX, or POCSAG too", "Receive"),
     ERT("ERT", "utility meters, 915 MHz", "Receive"),
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
-    TPMS("TPMS", "tyre pressure, 315 / 433 MHz", "Receive"),
+    TPMS("TPMS", "tire pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
     SUBGHZ("Sub-GHz", "weather · remotes · car keys, rtl_433 style", "Receive"),
     PROWL("Prowl", "hunts live voice across the bands", "Receive"),
