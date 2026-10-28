@@ -89,6 +89,8 @@ object SdrEngine {
     /** A gain the user set by hand outranks every app's own default until it is changed again. */
     private var gainPref: IntArray? = null
     private var agcLast = 0L; private var agcSaidMax = 0L
+    /** The sweep pass the AGC last stepped on. */
+    private var agcPass = -1
 
     fun loadGains(ctx: android.content.Context) {
         val p = ctx.getSharedPreferences("mayhem", android.content.Context.MODE_PRIVATE); prefs = p
@@ -149,9 +151,18 @@ object SdrEngine {
     }
 
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
-    private fun agcStep(rms: Double, now: Long) {
+    private fun agcStep(sampled: Double, now: Long) {
         // held for as long as Transmit is open, not just while it sends: the receive level there means nothing
         if (!_agc.value || HackRfOne.txActive || Apps.playing() == MayhemApp.TRANSMIT || now - agcLast < 900) return
+        // A sweep's slices take turns being loud and quiet, and the once-a-second sample lands on whichever is
+        // current: steering by it put part of every pass at another gain, dark bands across Looking Glass. So a
+        // sweep's gain moves once a pass, by its loudest slice, and every slice of a pass shares one gain.
+        var rms = sampled
+        Apps.sweep.value?.let { sw ->
+            val pass = sw.sweeps.value
+            if (pass == agcPass || sw.passPeakRms <= 0.0) return
+            agcPass = pass; rms = sw.passPeakRms
+        }
         agcLast = now
         val scale = minOf(3.2, kotlin.math.sqrt(sampleRate / RX_RATE.toDouble()))
         val lo = minOf(24.0, 7 * scale); val hi = minOf(34.0, 22 * scale)
