@@ -60,7 +60,7 @@ import kotlin.math.roundToLong
 
 /** Waterfall colour maps. Inferno is the web app's and the default; the others follow taste or the skin. */
 enum class WfPalette(val title: String) {
-    INFERNO("Inferno · the web app's"), RAINBOW("Rainbow · SDR++ style"), SKIN("Skin · the theme's own colours");
+    INFERNO("Inferno · the web app's"), RAINBOW("Rainbow · SDR++ style"), SKIN("Skin · the theme's own colors");
 }
 
 object Waterfalls {

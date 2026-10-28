@@ -20,7 +20,7 @@ class ListenBand(val name: String, val lo: Long, val hi: Long, val mode: SdrEngi
 val LISTEN_BANDS = listOf(
     ListenBand("FM", 88_000_000L, 108_000_000L, SdrEngine.Mode.WFM, "broadcast radio"),
     ListenBand("AIR", 118_000_000L, 137_000_000L, SdrEngine.Mode.AM, "airband AM"),
-    ListenBand("VHF", 144_000_000L, 163_000_000L, SdrEngine.Mode.NFM, "two metres, marine, weather"),
+    ListenBand("VHF", 144_000_000L, 163_000_000L, SdrEngine.Mode.NFM, "two meters, marine, weather"),
     ListenBand("315", 314_000_000L, 316_000_000L, SdrEngine.Mode.NFM, "American remotes and sensors"),
     ListenBand("UHF", 430_000_000L, 450_000_000L, SdrEngine.Mode.NFM, "seventy centimetres"),
     ListenBand("433", 433_000_000L, 435_000_000L, SdrEngine.Mode.NFM, "European remotes and sensors"),

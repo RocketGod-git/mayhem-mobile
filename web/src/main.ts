@@ -586,7 +586,7 @@ interface LaunchBand { id: string; name: string; lo: number; hi: number; what: s
 const LAUNCH_BANDS: LaunchBand[] = [
   { id: 'fm', name: 'FM', lo: 88_000_000, hi: 108_000_000, what: 'broadcast radio', mode: 'WFM' },
   { id: 'air', name: 'AIR', lo: 118_000_000, hi: 137_000_000, what: 'airband AM', mode: 'AM' },
-  { id: 'vhf', name: 'VHF', lo: 144_000_000, hi: 163_000_000, what: 'two metres, marine, weather', mode: 'NFM' },
+  { id: 'vhf', name: 'VHF', lo: 144_000_000, hi: 163_000_000, what: 'two meters, marine, weather', mode: 'NFM' },
   { id: 'ism3', name: '315', lo: 314_000_000, hi: 316_000_000, what: 'American remotes and sensors', mode: 'NONE' },
   { id: 'uhf', name: 'UHF', lo: 430_000_000, hi: 450_000_000, what: 'seventy centimetres', mode: 'NFM' },
   { id: 'ism4', name: '433', lo: 433_000_000, hi: 435_000_000, what: 'European remotes and sensors', mode: 'NONE' },
@@ -3155,7 +3155,7 @@ function renderTx(view: HTMLElement): void {
       $('k-repp').onclick = () => { reps = Math.min(8, reps + 1); $('k-rep').textContent = `×${reps}`; };
       $('k-send').onclick = () => tx.keeloqTx(BigInt('0x' + (($('k-key') as HTMLInputElement).value || '0')), parseInt(($('k-serial') as HTMLInputElement).value || '0', 16), parseInt(($('k-btn') as HTMLInputElement).value || '0', 10), parseInt(($('k-cnt') as HTMLInputElement).value || '0', 10), state.freq, reps);
     } else if (tab === 11) {
-      body.innerHTML = `<div class="row"><input id="n-chip" class="txin" value="100" style="flex:1"><input id="n-sec" class="txin" value="3" style="flex:1"></div><div class="caption">Pseudo-random OOK · chipUs µs per chip, [seconds] total · authorised RF-lab work on your own gear</div><button class="chip primary" id="n-send" style="margin-top:6px;width:100%">▶ NOISE</button>`;
+      body.innerHTML = `<div class="row"><input id="n-chip" class="txin" value="100" style="flex:1"><input id="n-sec" class="txin" value="3" style="flex:1"></div><div class="caption">Pseudo-random OOK · chipUs µs per chip, [seconds] total · authorized RF-lab work on your own gear</div><button class="chip primary" id="n-send" style="margin-top:6px;width:100%">▶ NOISE</button>`;
       $('n-send').onclick = () => tx.ookNoise(parseInt(($('n-chip') as HTMLInputElement).value || '0', 10), parseInt(($('n-sec') as HTMLInputElement).value || '0', 10), state.freq);
     } else if (tab === 12) {
       body.innerHTML = `<div class="row"><input id="b-bits" class="txin" value="24" style="flex:1"><input id="b-from" class="txin" value="0" style="flex:1"><input id="b-to" class="txin" value="255" style="flex:1"></div><input id="b-te" class="txin" value="350" style="margin-top:6px"><div class="caption">Princeton PT2262 brute-force · bits (12/24/32), start-end (decimal), te µs · a gate you own on ISM</div><button class="chip primary" id="b-send" style="margin-top:6px;width:100%">▶ BRUTE</button>`;

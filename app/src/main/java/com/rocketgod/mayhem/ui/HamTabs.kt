@@ -212,7 +212,7 @@ internal fun HamDigitalTab(accent: Color) {
         }
         if (g.mode == HamDigital.Mode.P25 || g.mode == HamDigital.Mode.AUTO) P25Panel(p25)
         if (g.mode == HamDigital.Mode.DMR || g.mode == HamDigital.Mode.AUTO) DmrPanel(accent, dmr, g.dmrSlot)
-        SectionLabel("PSK31 AUDIO CENTRE · RTTY BAUD/SHIFT")
+        SectionLabel("PSK31 AUDIO CENTER · RTTY BAUD/SHIFT")
         ChipGrid(listOf(500.0, 1000.0, 1500.0, 2000.0), columns = 4) { f -> Chip("${f.toInt()}", g.pskHz == f, accent, Modifier.weight(1f)) { HamDigital.update { it.copy(pskHz = f) } } }
         Spacer(Modifier.height(d.gap))
         ChipGrid(listOf(45.45 to 170.0, 50.0 to 170.0, 75.0 to 170.0, 45.45 to 450.0, 50.0 to 850.0), columns = 5) { (b, sh) ->
@@ -276,7 +276,7 @@ private fun DmrPanel(accent: Color, s: DmrStatus?, slotSel: Int) {
     val d = rememberDims()
     val head = when {
         s == null -> "waiting for the decoder"
-        s.locked -> "LOCKED · ${when (s.source) { "BS" -> "repeater / base"; "MS" -> "mobile"; else -> "direct mode" }} · colour code ${if (s.cc >= 0) s.cc.toString() else "?"} · deviation %.0f Hz · audio slot ${s.audioSlot}".format(s.level * 48000 / (2 * Math.PI))
+        s.locked -> "LOCKED · ${when (s.source) { "BS" -> "repeater / base"; "MS" -> "mobile"; else -> "direct mode" }} · color code ${if (s.cc >= 0) s.cc.toString() else "?"} · deviation %.0f Hz · audio slot ${s.audioSlot}".format(s.level * 48000 / (2 * Math.PI))
         s.dv.isNotEmpty() -> "${s.dv} sync seen · identification only"
         else -> "searching for sync · tune a DMR channel in NFM"
     }

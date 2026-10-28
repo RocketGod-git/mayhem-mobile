@@ -117,7 +117,7 @@ fun ErtScreen(accent: Color) {
     val d = rememberDims()
     val rate by SdrEngine.rateHz.collectAsState()
     PacketFrame(accent, Apps.ertLog, controls = {
-        PresetRow(accent, listOf("911.6" to 911_600_000L, "915.0" to 915_000_000L, "920.0" to 920_000_000L), title = "CENTRE · MHz")
+        PresetRow(accent, listOf("911.6" to 911_600_000L, "915.0" to 915_000_000L, "920.0" to 920_000_000L), title = "CENTER · MHz")
         SectionLabel("IQ RATE")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             Chip("2.0 Msps", selected = rate == 2_000_000, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setRate(2_000_000) }
