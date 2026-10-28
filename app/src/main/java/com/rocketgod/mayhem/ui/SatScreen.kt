@@ -92,7 +92,10 @@ private fun SatTrack(accent: Color) {
     // A receive app first: the transmit safety prompt waits until push-to-talk is actually pressed.
     var asking by remember { mutableStateOf(false) }
     if (asking && needsPrompt) SafetyPromptDialog(accent, onCancel = { asking = false }) { Tx.acknowledgeSafety(); asking = false }
-    val def = Sats.def(); val svc = Sats.service(); val sgp = Sats.sgp(def.norad)
+    // Taken from `u`, not Sats' own copy, so this scope recomposes when the TLEs land or the selection changes. Before
+    // that it read no state at all while the orbit was missing (`now` is only read once there is one), so a screen
+    // opened before the TLEs arrived kept saying "no orbit data" while the passes below it filled in.
+    val def = Sats.def(u); val svc = Sats.service(u); val sgp = Sats.sgp(def.norad)
     val l = if (sgp != null && home != null) runCatching { look(sgp, now, home!!.first, home!!.second) }.getOrNull() else null
     val status: @Composable () -> Unit = {
         Text(u.status + (home?.let { " · %.2f, %.2f".format(it.first, it.second) } ?: " · no GPS fix"), color = Palette.muted, fontFamily = Mono,
