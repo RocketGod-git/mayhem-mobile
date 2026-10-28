@@ -1,0 +1,121 @@
+name: Play Listing
+
+# The Store listing, kept in the repo like the code. "read" prints what Play has now and saves its
+# images as an artifact; "push" replaces the en-US listing with play/en-US/ (text, icon, feature
+# graphic, phone screenshots) and sets the website, in one edit that commits only if every step
+# lands. Nothing here touches releases or tracks.
+#
+# Uses the same PLAY_SERVICE_ACCOUNT_JSON as android-play.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'read = show the live listing; push = publish play/en-US/'
+        type: choice
+        options: [read, push]
+        default: read
+
+permissions:
+  contents: read
+
+jobs:
+  listing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Play API client
+        run: pip install --quiet google-auth requests
+
+      - name: ${{ inputs.mode }} the listing
+        env:
+          SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          python - <<'PY'
+          import json, os, sys, glob, pathlib
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          PKG, LANG = "com.rocketgod.mayhem", "en-US"
+          SRC = pathlib.Path("play/en-US")
+          OUT = pathlib.Path("live-listing"); OUT.mkdir(exist_ok=True)
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["SA_JSON"]),
+              scopes=["https://www.googleapis.com/auth/androidpublisher"])
+          s = AuthorizedSession(creds)
+          api = f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PKG}"
+          up = f"https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/{PKG}"
+
+          def die(what, r):
+              print(f"::error::{what}: HTTP {r.status_code} {r.text[:800]}"); sys.exit(1)
+
+          r = s.post(f"{api}/edits"); r.status_code == 200 or die("edits.insert", r)
+          eid = r.json()["id"]
+          kinds = ["icon", "featureGraphic", "phoneScreenshots", "sevenInchScreenshots", "tenInchScreenshots"]
+
+          if os.environ["MODE"] == "read":
+              d = s.get(f"{api}/edits/{eid}/details").json()
+              print("== details ==\n" + json.dumps(d, indent=2))
+              l = s.get(f"{api}/edits/{eid}/listings").json()
+              for x in l.get("listings", []):
+                  print(f"\n== listing {x.get('language')} ==")
+                  for k in ("title", "shortDescription", "fullDescription", "video"):
+                      v = x.get(k, "")
+                      print(f"-- {k} ({len(v)} chars) --\n{v}")
+              for k in kinds:
+                  imgs = s.get(f"{api}/edits/{eid}/listings/{LANG}/{k}").json().get("images", [])
+                  print(f"\n== {k}: {len(imgs)} ==")
+                  for i, im in enumerate(imgs):
+                      print(im.get("url"))
+                      g = s.get(im["url"] + "=s0") if im.get("url") else None
+                      if g is not None and g.status_code == 200:
+                          (OUT / f"{k}-{i}.png").write_bytes(g.content)
+              s.delete(f"{api}/edits/{eid}")
+              sys.exit(0)
+
+          # ---- push ----
+          text = {k: (SRC / f"{k}.txt").read_text(encoding="utf-8").strip()
+                  for k in ("title", "short-description", "full-description")}
+          caps = {"title": 30, "short-description": 80, "full-description": 4000}
+          for k, v in text.items():
+              if len(v) > caps[k]:
+                  print(f"::error::{k} is {len(v)} characters, Play allows {caps[k]}"); sys.exit(1)
+          body = {"language": LANG, "title": text["title"],
+                  "shortDescription": text["short-description"], "fullDescription": text["full-description"]}
+          r = s.put(f"{api}/edits/{eid}/listings/{LANG}", json=body)
+          r.status_code == 200 or die("listings.update", r)
+
+          site = (SRC / "website.txt").read_text(encoding="utf-8").strip()
+          r = s.patch(f"{api}/edits/{eid}/details", json={"contactWebsite": site})
+          r.status_code == 200 or die("details.patch", r)
+
+          def put_images(kind, files):
+              if not files: return
+              r = s.delete(f"{api}/edits/{eid}/listings/{LANG}/{kind}")
+              r.status_code in (200, 204) or die(f"images.deleteall {kind}", r)
+              for f in files:
+                  ctype = "image/png" if f.endswith(".png") else "image/jpeg"
+                  with open(f, "rb") as fh:
+                      r = s.post(f"{up}/edits/{eid}/listings/{LANG}/{kind}?uploadType=media",
+                                 data=fh.read(), headers={"Content-Type": ctype})
+                  r.status_code == 200 or die(f"images.upload {kind} {f}", r)
+                  print(f"{kind} <- {f}")
+
+          put_images("icon", sorted(glob.glob(str(SRC / "icon.png"))))
+          put_images("featureGraphic", sorted(glob.glob(str(SRC / "feature-graphic.*"))))
+          put_images("phoneScreenshots", sorted(glob.glob(str(SRC / "phone" / "*.png"))))
+          put_images("tenInchScreenshots", sorted(glob.glob(str(SRC / "tablet" / "*.png"))))
+
+          r = s.post(f"{api}/edits/{eid}:commit"); r.status_code == 200 or die("edits.commit", r)
+          print("PLAY LISTING OK")
+          PY
+
+      - name: Save the live images
+        if: inputs.mode == 'read'
+        uses: actions/upload-artifact@v5
+        with:
+          name: live-listing
+          path: live-listing/
+          if-no-files-found: ignore
