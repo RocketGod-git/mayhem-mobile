@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+  Source for en-US/feature-graphic.png, the 1024x500 Play feature graphic. The two phone screens are real captures
+  of the Android app with an RTL-SDR Blog V4 attached (captures/lookingglass.png, captures/adsb.png), status bar
+  trimmed. Nothing on them is drawn.
+
+  Render with Edge or Chrome headless at 1024x500 (render-store.ps1 does it), then flatten to RGB: Play refuses
+  a feature graphic with an alpha channel.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&display=block">
+<style>
+  :root { --paper: #0a0d13; --ink: #e8ecf4; --muted: #8d97ab; --accent: #4c8dff; --amber: #ffaf00; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1024px; height: 500px; overflow: hidden; background: var(--paper); }
+  body { position: relative; font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; color: var(--ink); }
+  .stripe { position: absolute; left: 0; top: 0; width: 100%; height: 8px; background: var(--accent); z-index: 3; }
+  .bloom { position: absolute; right: -120px; top: -60px; width: 760px; height: 760px;
+           background: radial-gradient(closest-side, rgba(76,141,255,0.24), rgba(76,141,255,0) 70%); }
+  .copy { position: absolute; left: 56px; top: 74px; width: 470px; z-index: 2; }
+  .eyebrow { font-weight: 700; font-size: 15px; letter-spacing: 0.22em; color: var(--amber); }
+  .mark { margin-top: 18px; font-weight: 800; font-size: 82px; line-height: 0.92; letter-spacing: -0.02em; }
+  .mark span { display: block; color: var(--accent); text-shadow: 0 0 30px rgba(76, 141, 255, 0.45); }
+  .hook { margin-top: 28px; font-weight: 700; font-size: 25px; line-height: 1.3; }
+  .sub { margin-top: 10px; font-weight: 500; font-size: 17px; color: var(--muted); }
+  /* two real screens, tilted toward each other, running off the bottom edge */
+  .phone { position: absolute; width: 228px; height: 560px; border-radius: 26px; overflow: hidden;
+           border: 2px solid #2a3650; box-shadow: 0 24px 60px rgba(0,0,0,0.65), 0 0 0 7px #121826; background: var(--paper); }
+  .phone img { display: block; width: 100%; margin-top: -27px; }
+  .p1 { left: 560px; top: 46px; transform: rotate(-5deg); z-index: 1; }
+  .p2 { left: 770px; top: 84px; transform: rotate(5deg); z-index: 2; }
+</style>
+</head>
+<body>
+<div class="bloom"></div>
+<div class="stripe"></div>
+<div class="copy">
+  <div class="eyebrow">HACKRF · RTL-SDR · PORTAPACK</div>
+  <div class="mark">MAYHEM<span>MOBILE</span></div>
+  <div class="hook">Your phone is the radio.</div>
+  <div class="sub">Planes, ships, pagers, ham radio, satellites.</div>
+</div>
+<div class="phone p1"><img src="captures/lookingglass.png" alt=""></div>
+<div class="phone p2"><img src="captures/adsb.png" alt=""></div>
+</body>
+</html>
