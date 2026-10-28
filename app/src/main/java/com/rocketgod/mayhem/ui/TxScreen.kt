@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -83,11 +84,14 @@ fun TxScreen(defaultAccent: Color) {
             "Signal", "Tones", "POCSAG", "RTTY",
             "APRS", "Morse", "OOK", "Replay",
             "MDC", "QC-II", "SubGHz", "KeeLoq",
-            "Noise", "Brute", "Hopper", "ADS-B",
-        )
+            "Noise", "Brute", "Hopper",
+            // ADS-B TX ships only in the sideload APK (the same build flag as Troll): Play's policy has no room for
+            // an app that puts aircraft on someone else's display. It stays last so every other mode keeps its index.
+        ) + (if (com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) listOf("ADS-B") else emptyList())
         for (rowModes in modes.withIndex().chunked(4)) {
             Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for ((i, t) in rowModes) Chip(t, selected = tab == i, accent = accent, modifier = Modifier.weight(1f)) { tab = i }
+                repeat(4 - rowModes.size) { Spacer(Modifier.weight(1f)) }
             }
         }
 
@@ -108,7 +112,7 @@ fun TxScreen(defaultAccent: Color) {
                 12 -> NoiseTab(accent, freq, active)
                 13 -> BruteTab(accent, freq, active)
                 14 -> HopperTab(accent, active)
-                else -> AdsbTab(accent, active)
+                15 -> if (com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) AdsbTab(accent, active)
             }
         }
 
