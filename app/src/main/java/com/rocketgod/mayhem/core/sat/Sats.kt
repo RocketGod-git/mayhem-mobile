@@ -53,6 +53,8 @@ object Sats {
 
     private val _ui = MutableStateFlow(Ui())
     val ui: StateFlow<Ui> = _ui.asStateFlow()
+    // Filled on the background scope, read from the UI thread and the ticker: every touch goes through orbitLock.
+    private val orbitLock = Any()
     private val tles = HashMap<Int, Tle>()
     private val sgps = HashMap<Int, Sgp4?>()
     @Volatile private var tlesLoading = false
@@ -133,17 +135,17 @@ object Sats {
     }
 
     // ---- TRACK & LISTEN -----------------------------------------------------------------------------------
-    fun def(): SatDef = SATS.firstOrNull { it.norad == _ui.value.sel } ?: SATS[0]
-    fun service(): SatService { val d = def(); return d.services[min(_ui.value.svc, d.services.size - 1)] }
-    fun sgp(norad: Int): Sgp4? = sgps.getOrPut(norad) { tles[norad]?.let { runCatching { Sgp4(it) }.getOrNull() } }
+    fun def(u: Ui = _ui.value): SatDef = SATS.firstOrNull { it.norad == u.sel } ?: SATS[0]
+    fun service(u: Ui = _ui.value): SatService { val d = def(u); return d.services[min(u.svc, d.services.size - 1)] }
+    fun sgp(norad: Int): Sgp4? = synchronized(orbitLock) { sgps.getOrPut(norad) { tles[norad]?.let { runCatching { Sgp4(it) }.getOrNull() } } }
 
     fun loadTles(force: Boolean = false) {
-        if (tlesLoading || (tles.isNotEmpty() && !force)) return
+        if (tlesLoading || (synchronized(orbitLock) { tles.isNotEmpty() } && !force)) return
         tlesLoading = true
         _ui.value = _ui.value.copy(status = "fetching TLEs…")
         scope.launch {
             runCatching { Tles.forIds(SATS.map { it.norad }) }
-                .onSuccess { m -> tles.clear(); tles.putAll(m); sgps.clear(); _ui.value = _ui.value.copy(status = "${m.size} TLEs"); recomputePasses() }
+                .onSuccess { m -> synchronized(orbitLock) { tles.clear(); tles.putAll(m); sgps.clear() }; _ui.value = _ui.value.copy(status = "${m.size} TLEs"); recomputePasses() }
                 .onFailure { e -> _ui.value = _ui.value.copy(status = "TLE fetch failed: ${e.message}") }
             tlesLoading = false
         }
@@ -151,7 +153,7 @@ object Sats {
 
     fun refreshTles() {
         Tles.forget()
-        tles.clear(); sgps.clear()
+        synchronized(orbitLock) { tles.clear(); sgps.clear() }
         loadTles(true)
     }
 
