@@ -148,7 +148,6 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
 @Composable
 private fun NeedsHackRfDialog(app: MayhemApp, onDismiss: () -> Unit) {
     val still = when (app) {
-        MayhemApp.HAM -> "Two meters, 70 cm and the bands above still work on this radio; the HF bands and FT8 at 14.074 do not."
         MayhemApp.TRANSMIT -> "Everything that listens works on this radio."
         else -> ""
     }
@@ -158,9 +157,7 @@ private fun NeedsHackRfDialog(app: MayhemApp, onDismiss: () -> Unit) {
         title = { Text("${app.title} needs a HackRF", fontFamily = Mono, fontWeight = FontWeight.Bold) },
         text = { Text(listOf("${Radio.name}: ${Radio.blockedBecause(app)}.", still, Radio.HACKRF_PITCH).filter { it.isNotEmpty() }.joinToString("\n\n"), fontFamily = Mono) },
         confirmButton = {
-            if (app == MayhemApp.HAM) TextButton({ onDismiss(); Apps.open(app) }) { Text("OPEN ANYWAY", color = Palette.accent, fontFamily = Mono) }
-            else TextButton(onDismiss) { Text("OK", color = Palette.accent, fontFamily = Mono) }
+            TextButton(onDismiss) { Text("OK", color = Palette.accent, fontFamily = Mono) }
         },
-        dismissButton = { if (app == MayhemApp.HAM) TextButton(onDismiss) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
     )
 }

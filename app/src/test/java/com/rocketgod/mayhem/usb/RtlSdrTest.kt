@@ -88,9 +88,8 @@ class RtlSdrTest {
 
     @Test fun whatDimsOnADongle() {
         val dimmed = MayhemApp.entries.filter { Radio.blockedBecause(it, Radio.RTLSDR).isNotEmpty() }.toSet()
-        assertEquals(setOf(MayhemApp.HAM, MayhemApp.BTLE, MayhemApp.TRANSMIT), dimmed)
+        assertEquals(setOf(MayhemApp.BTLE, MayhemApp.TRANSMIT), dimmed)
         assertTrue(MayhemApp.entries.all { Radio.blockedBecause(it, Radio.HACKRF).isEmpty() })
         assertTrue(Radio.blockedBecause(MayhemApp.TRANSMIT, Radio.RTLSDR).contains("receives only"))
-        assertTrue(Radio.blockedBecause(MayhemApp.HAM, Radio.RTLSDR).contains("14.074"))
     }
 }
