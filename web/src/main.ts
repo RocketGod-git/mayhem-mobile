@@ -3643,7 +3643,8 @@ function ensureWorker(): Worker {
     const m = e.data;
     switch (m.type) {
       case 'spectrum': if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); } break;
-      case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
+      // a sweep steers its gain from the 'sweep' message instead: see there
+      case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
         const id = state.app ?? 'x'; (logs[id] ??= []).unshift(m.line); if (logs[id].length > 300) logs[id].length = 300; counts[id] = (counts[id] ?? 0) + 1; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); break; }
@@ -3749,6 +3750,10 @@ function ensureWorker(): Worker {
         break;
       }
       case 'sweep': {
+        // A sweep's slices take turns being loud and quiet, and the once-a-second health sample lands on whichever
+        // is current: steering by it put part of every pass at another gain (dark bands across Looking Glass). So
+        // a sweep's gain moves at most once a pass, by its loudest slice, and every slice of a pass shares one gain.
+        if (typeof m.peakRms === 'number' && m.peakRms > 0) agcStep(m.peakRms);
         lastSweepRow = m.row; lastSweepBinHz = m.binHz as number;
         if (state.sweep) state.sweep.steps = m.steps as number;
         const s = sweepScope;

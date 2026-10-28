@@ -37,6 +37,9 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
     /** The centre asked for and not yet confirmed by the driver; 0 once it has been. */
     private var awaiting = 0L
     private var lastLive = 0L
+    private var peakSq = 0.0
+    /** RMS (counts) of the loudest slice in the last complete pass: what the AGC steers a sweep by. */
+    @Volatile var passPeakRms = 0.0; private set
 
     private val _row = MutableStateFlow(FloatArray(0))
     /** Latest complete sweep: steps × KEEP dB values, low → high frequency. */
@@ -69,11 +72,14 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         acc.fill(0.0)
         var frames = 0
         var off = 0
+        var sq = 0.0
         while (off + FFT <= nSamp) {
             for (k in 0 until FFT) {
                 val j = 2 * (off + k)
-                re[k] = ((iq[j].toInt() and 0xff) - 127.4f) * win[k]
-                im[k] = ((iq[j + 1].toInt() and 0xff) - 127.4f) * win[k]
+                val i0 = (iq[j].toInt() and 0xff) - 127.4f; val q0 = (iq[j + 1].toInt() and 0xff) - 127.4f
+                sq += i0 * i0 + q0 * q0
+                re[k] = i0 * win[k]
+                im[k] = q0 * win[k]
             }
             Dsp.fft(re, im)
             for (k in 0 until FFT) { val s = (k + FFT / 2) % FFT; acc[k] += (re[s] * re[s] + im[s] * im[s]).toDouble() }
@@ -81,6 +87,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
             off += FFT
         }
         if (frames == 0) return
+        peakSq = maxOf(peakSq, sq / (frames * FFT))
         // fftshifted, averaged, peak-downsampled to BINS
         val g = FFT / BINS
         for (b in 0 until BINS) {
@@ -100,6 +107,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         if (step >= steps) {
             step = 0
             _row.value = work.copyOf()
+            passPeakRms = kotlin.math.sqrt(peakSq); peakSq = 0.0
             _sweeps.value = _sweeps.value + 1
         }
         _progress.value = step

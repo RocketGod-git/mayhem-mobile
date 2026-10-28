@@ -28,6 +28,8 @@ export class SweepProcessor implements IqProcessor {
   private settle = 0;
   private awaitingTune = false;
   private sweeps = 0;
+  /** Mean square (counts²) of the loudest slice so far this pass: the AGC steers a sweep by it. */
+  private peakSq = 0;
 
   readonly stepHz: number;
   readonly binHz: number;
@@ -52,6 +54,9 @@ export class SweepProcessor implements IqProcessor {
     this.acc.fill(0); let frames = 0;
     for (let off = 0; off + 1024 <= nSamp; off += 1024) { loadIqAt(iq, off, this.re, this.im, this.win); fft(this.re, this.im); accumulatePower(this.re, this.im, this.acc); frames++; }
     if (frames === 0) return;
+    let sq = 0;
+    for (let k = 0; k < frames * 2048; k++) sq += iq[k] * iq[k];
+    this.peakSq = Math.max(this.peakSq, sq / (frames * 1024));
     powerDbFrom(this.acc, frames, this.slice);
     const c = SWEEP_BINS / 2;
     this.slice[c] = (this.slice[c - 2] + this.slice[c + 2]) * 0.5; this.slice[c - 1] = this.slice[c - 2]; this.slice[c + 1] = this.slice[c + 2];
@@ -65,7 +70,8 @@ export class SweepProcessor implements IqProcessor {
     if (this.step >= this.steps) {
       this.step = 0; this.sweeps++;
       const row = this.work.slice();
-      this.emit({ type: 'sweep', row, steps: this.steps, sweeps: this.sweeps, startHz: this.startHz, endHz: this.startHz + this.steps * this.stepHz, binHz: this.binHz, progress: 0 }, [row.buffer]);
+      const peakRms = Math.sqrt(this.peakSq); this.peakSq = 0;
+      this.emit({ type: 'sweep', row, peakRms, steps: this.steps, sweeps: this.sweeps, startHz: this.startHz, endHz: this.startHz + this.steps * this.stepHz, binHz: this.binHz, progress: 0 }, [row.buffer]);
     } else this.emit({ type: 'sweepProgress', progress: this.step, steps: this.steps, sweeps: this.sweeps });
     this.emit({ type: 'tune', hz: this.centerOf(this.step) });
     const bufMs = nSamp * 1000 / rate;
