@@ -389,12 +389,14 @@ private class SignalMarks {
         // different rows still collided whenever their signals were close in level. Each starts just above its
         // signal and rises a line at a time until it clears every box so far; one that never does is left out.
         val asc = textPx * 0.85f; val desc = textPx * 0.25f; val lineH = asc + desc + 2 * dp
+        // the dB scale runs down the right edge; a label that would reach it goes on the left of its signal
+        val right = w - text.measureText("888") - 6 * dp
         var nb = 0
         for (i in 0 until n) {
             val t = texts[i] ?: continue
             val x = xs[i]; val y = ys[i]
             val tw = text.measureText(t)
-            val tx = if (x > w * 0.85f) x - 3 * dp - tw else x + 3 * dp
+            val tx = if (x + 3 * dp + tw > right) x - 3 * dp - tw else x + 3 * dp
             val l = tx - 2 * dp; val r = tx + tw + 2 * dp
             var ty = max(top + asc, y - 2 * dp)
             var placed = false
