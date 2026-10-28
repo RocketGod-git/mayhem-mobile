@@ -142,9 +142,10 @@ jobs:
       - name: Assemble site (with version.json naming the APK from this same commit)
         run: |
           set -e
-          mkdir -p site/dist
-          cp web/index.html web/privacy.html web/styles.css web/manifest.webmanifest web/sw.js web/audio-worklet.js web/icon.svg web/icon-maskable.svg site/
-          cp -r web/dist/. site/dist/
+          mkdir -p site/build
+          cp web/index.html web/privacy.html web/styles.css web/manifest.webmanifest web/sw.js web/audio-worklet.js web/mic-worklet.js web/icon.svg web/icon-maskable.svg site/
+          # The page and the DSP worker are bundled (npm run bundle): two files instead of ~600 modules a visit.
+          cp web/build/app.js web/build/dsp-worker.js site/build/
           if [ -d web/assets ]; then mkdir -p site/assets && cp -r web/assets/. site/assets/; fi
           cp mayhem.apk site/mayhem.apk
           ls -la site/mayhem.apk

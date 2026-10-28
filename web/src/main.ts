@@ -3634,7 +3634,7 @@ function esc(s: string): string { return s.replace(/[&<>]/g, c => ({ '&': '&amp;
 // ---- worker / audio / radio -----------------------------------------------------------------------------------
 function ensureWorker(): Worker {
   if (worker) return worker;
-  worker = new Worker('./dist/dsp.worker.js', { type: 'module' });
+  worker = new Worker('./build/dsp-worker.js', { type: 'module' });
   (window as unknown as { mmFeed: (m: unknown) => void }).mmFeed = (m) => worker!.onmessage!({ data: m } as MessageEvent);   // support hook: inject a worker message
   (window as unknown as { mmWorker: (m: unknown) => void }).mmWorker = (m) => worker!.postMessage(m);                             // support hook: send the worker a message
   worker.onmessage = (e: MessageEvent) => {
