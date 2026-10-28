@@ -30,7 +30,7 @@ import java.util.concurrent.TimeoutException
  *  - LNA/VGA gain are IN transfers carrying the value in wIndex and returning a 1-byte ack; AMP and
  *    TRANSCEIVER_MODE are OUT with the value in wValue and no data stage.
  *  - HackRF streams SIGNED 8-bit IQ; [SdrEngine] wants offset-128 uint8, so we XOR each byte with 0x80.
- * The HackRF mixes to true baseband internally — IQ arrives centred on the tuned frequency, non-inverted.
+ * The HackRF mixes to true baseband internally — IQ arrives centered on the tuned frequency, non-inverted.
  * Control (frequency / sample-rate / gain) is read from @Volatile fields the engine mutates; the RX loop applies
  * any pending change between buffers so the UI can retune live.
  */
@@ -181,10 +181,10 @@ object HackRfOne {
         val (rcAmp, rcLna, rcVga) = applyGainStages(targetGainTenthDb); appliedGain = targetGainTenthDb
         val rcRx = setTransceiverMode(TRANSCEIVER_MODE_RECEIVE)
         // ★ THE PRO FIX — cache-busting post-RECEIVE re-tune. Source-confirmed against Mayhem radio.cpp
-        // (set_tuning_frequency, PRALINE path): the Pro is NOT zero-IF. It tunes the analog passband off-centre
+        // (set_tuning_frequency, PRALINE path): the Pro is NOT zero-IF. It tunes the analog passband off-center
         // by Fs/4 and the iCE40 FPGA rotates it back to DC (the "quarter shift", FPGA_REG_RX_PSTEP). Entering RX
         // (set_direction) CLEARS the quarter shift, and ONLY set_tuning_frequency re-applies it — tuning
-        // off-centre without the rotation puts the signal outside the decimation filter's passband and it
+        // off-center without the rotation puts the signal outside the decimation filter's passband and it
         // disappears entirely (== all-zeros). The firmware's tuning path caches the frequency, so an unchanged
         // re-tune is a NO-OP → write an off-target freq FIRST to bust the cache, THEN the real target. Also
         // re-apply gains (entering RX can reset them on the Pro). Harmless on a standard zero-IF HackRF.

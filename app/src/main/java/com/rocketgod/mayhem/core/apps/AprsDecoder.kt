@@ -31,7 +31,7 @@ data class AprsStation(
     var owner: String? = null,
     var lat: Double? = null, var lon: Double? = null,
     var symbol: Char? = null, var table: Char? = null,
-    /** Degrees, knots, metres. */
+    /** Degrees, knots, meters. */
     var course: Int? = null, var speed: Double? = null, var alt: Double? = null,
     var comment: String? = null, var status: String? = null, var mice: String? = null,
     /** The last packet's destination, digipeater path, and the IGate that relayed it (third-party). */

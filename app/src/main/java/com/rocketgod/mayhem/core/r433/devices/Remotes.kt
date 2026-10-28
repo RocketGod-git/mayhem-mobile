@@ -31,7 +31,7 @@ private fun intertechno(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     return 1
 }
 
-/** Exactly one sync mark before the data is most of what tells this apart from its neighbours. */
+/** Exactly one sync mark before the data is most of what tells this apart from its neighbors. */
 private fun proove(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     if (bits.syncsBeforeRow[0] != 1) return DECODE_ABORT_EARLY
     if (bits.bitsPerRow[0] != 64) return DECODE_ABORT_LENGTH

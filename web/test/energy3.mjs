@@ -350,7 +350,7 @@ console.log('EcoDHOME, GEO minim+, BM5 and the Elster meters');
     return rowOf([...new Array(offset).fill(0), ...bytesToBits(wire)]);
   };
 
-  // A neighbour table: a record count, then that many twenty-byte records.
+  // A neighbor table: a record count, then that many twenty-byte records.
   for (const [msgClass, recStart] of [[0x57, 30], [0x7f, 29]]) {
     const len = recStart + 2 * 20;
     const body = new Uint8Array(len);
@@ -361,12 +361,12 @@ console.log('EcoDHOME, GEO minim+, BM5 and the Elster meters');
     body[recStart] = 0xaa; body[recStart + 1] = 0xbb; body[recStart + 2] = 0xcc; body[recStart + 3] = 0xdd;
     body[recStart + 20] = 0x11; body[recStart + 21] = 0x22; body[recStart + 22] = 0x33; body[recStart + 23] = 0x44;
     const out = run(d, elster2(body, len));
-    eq(out.length, 1, `Elster type-2 decodes a 0x${msgClass.toString(16)} neighbour table`);
+    eq(out.length, 1, `Elster type-2 decodes a 0x${msgClass.toString(16)} neighbor table`);
     eq(out[0]?.id, '16909060', `type-2 0x${msgClass.toString(16)}: meter id`);
     eq(out[0]?.dst, '9', `type-2 0x${msgClass.toString(16)}: collector id`);
     eq(out[0]?.msg, msgClass.toString(16), `type-2 0x${msgClass.toString(16)}: message class`);
     eq(out[0]?.mesh, 0, `type-2 0x${msgClass.toString(16)}: not a mesh frame`);
-    eq(out[0]?.nbr_ids, 'aabbccdd,11223344', `type-2 0x${msgClass.toString(16)}: neighbour addresses`);
+    eq(out[0]?.nbr_ids, 'aabbccdd,11223344', `type-2 0x${msgClass.toString(16)}: neighbor addresses`);
   }
 
   // The two classes really do start their records a byte apart -- reading one with the other's offset
@@ -390,7 +390,7 @@ console.log('EcoDHOME, GEO minim+, BM5 and the Elster meters');
     eq(out.length, 1, 'Elster type-2 reports a mesh frame');
     eq(out[0]?.mesh, 1, 'and marks it as mesh');
     eq(out[0]?.msg, undefined, 'without reading a message class from it');
-    eq(out[0]?.nbr_ids, undefined, 'and without inventing a neighbour table');
+    eq(out[0]?.nbr_ids, undefined, 'and without inventing a neighbor table');
   }
 
   // An encrypted body is reported as raw hex rather than guessed at.
@@ -400,7 +400,7 @@ console.log('EcoDHOME, GEO minim+, BM5 and the Elster meters');
     body[3] = 0x01; body[16] = 0x56;                  // 0x56 marks an AES-encrypted body
     const out = run(d, elster2(body, len));
     eq(out[0]?.msg, '56', 'Elster type-2 names the encrypted message class');
-    eq(out[0]?.nbr_ids, undefined, 'and reads no neighbour table out of ciphertext');
+    eq(out[0]?.nbr_ids, undefined, 'and reads no neighbor table out of ciphertext');
     ok(typeof out[0]?.data_raw === 'string' && out[0].data_raw.length === (len - 12) * 2,
       'the whole undecoded body goes out as hex');
   }

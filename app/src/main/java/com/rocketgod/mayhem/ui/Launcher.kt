@@ -130,7 +130,7 @@ private fun AppGrid(modifier: Modifier) {
 @Composable
 private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
     val tint = tintFor(app)
-    // dimmed, never locked: a dongle owner may still want two-metre HAM
+    // dimmed, never locked: a dongle owner may still want two-meter HAM
     Radio.kind.collectAsState().value
     val why = Radio.blockedBecause(app)
     Column(

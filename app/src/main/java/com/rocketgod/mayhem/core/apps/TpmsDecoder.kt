@@ -7,7 +7,7 @@ import kotlin.math.atan2
 import kotlin.math.sqrt
 
 /**
- * TPMS tyre-pressure receiver (Mayhem proc_tpms.cpp + tpms_packet.cpp): three Schrader-family signals on 315 /
+ * TPMS tire-pressure receiver (Mayhem proc_tpms.cpp + tpms_packet.cpp): three Schrader-family signals on 315 /
  * 433.92 MHz — FSK 19.2 kchip/s (FLM 64/72/80-bit frames), OOK 8.192 kchip/s (Schrader 37-bit) and OOK 8.4 kchip/s
  * (GMC 96-bit). Raw IQ → 500 kHz: a discriminator feeds the FSK chip clock; the magnitude feeds two OOK chip
  * clocks. Chip streams are matched against Mayhem's preambles, Manchester-decoded and checked (CRC-8 / sums).

@@ -124,7 +124,7 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 /* Phone launcher: three compact columns, five rows, the whole menu on one screen under the waterfall strip. */
 .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
 .tile { --tint: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--tint) 45%, transparent); border-radius: 12px; padding: 8px 9px; text-align: left; color: var(--ink); cursor: pointer; aspect-ratio: 1.05; display: flex; flex-direction: column; min-width: 0; }
-/* An app the connected radio cannot serve. Dimmed, never disabled: a dongle owner may still want two-metre
+/* An app the connected radio cannot serve. Dimmed, never disabled: a dongle owner may still want two-meter
  * HAM and should be allowed to try. Nothing carries this class unless a radio is connected that lacks what the
  * app needs, so a HackRF session never sees it. */
 .tile.limited { opacity: 0.38; filter: saturate(0.35); }

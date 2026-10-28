@@ -658,7 +658,7 @@ const OMNI_INITCRC = 0xaa;
  * supply voltage, and a Bosch environmental sensor with two temperatures, humidity, light and pressure — and
  * the remaining fourteen are reported as raw hex so an unrecognized build is still visible.
  *
- * Temperatures are twelve-bit two's complement packed against their neighbours, and upstream sign-extends
+ * Temperatures are twelve-bit two's complement packed against their neighbors, and upstream sign-extends
  * them by loading each into a sixteen-bit value with the sign bit at the top and shifting back down. The
  * outdoor one relies on the cast discarding everything above sixteen bits, so the nibble above it falls off
  * rather than being masked away; that is reproduced here, since masking first and shifting after would give

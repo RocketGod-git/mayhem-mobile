@@ -110,7 +110,7 @@ export const proove: RDevice = register({
   tolerance: 200,
   bands: [433920000],
   decode(_dev, bits: BitBuffer, ctx: DecodeCtx): number {
-    // Exactly one sync mark must precede the data, which is most of what tells this apart from its neighbours.
+    // Exactly one sync mark must precede the data, which is most of what tells this apart from its neighbors.
     if (bits.syncsBeforeRow[0] !== 1) return DECODE_ABORT_EARLY;
     if (bits.bitsPerRow[0] !== 64) return DECODE_ABORT_LENGTH;
 

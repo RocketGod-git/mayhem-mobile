@@ -278,7 +278,7 @@ console.log('Car keys, a satellite handset, a gate opener and a light switch');
   // The run-in must be there.
   ok(!run(dev(317), build(payload, [0x01, 0x00]).bb)[0], '  Code Alarm refuses a frame without its run-in');
 
-  // An empty payload, and a saturated one that only a full-width sum can recognise.
+  // An empty payload, and a saturated one that only a full-width sum can recognize.
   ok(!run(dev(317), build(Uint8Array.from([0, 0, 0, 0, 0])).bb)[0],
     '  Code Alarm refuses an empty payload');
   const saturated = Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xff]);

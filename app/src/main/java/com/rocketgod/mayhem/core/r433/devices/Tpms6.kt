@@ -169,7 +169,7 @@ private fun airpuxem(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     return if (events > 0) events else ret
 }
 
-/** The pressure's page bits are scrambled: codes 7, 4, 5, 2 mean pages nought to three, learnt from a deflating tire. */
+/** The pressure's page bits are scrambled: codes 7, 4, 5, 2 mean pages nought to three, learned from a deflating tire. */
 private val SEFIS_PAGE = mapOf(7 to 0, 4 to 1, 5 to 2, 2 to 3)
 
 private fun sefisM3(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {

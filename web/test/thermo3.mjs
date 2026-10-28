@@ -484,7 +484,7 @@ console.log('Rubicson, Klimalogg, Inkbird, Acurite, Thermor DG950, Bresser, Oria
     eq(out2[0]?.temperature_C, undefined, 'a pairing broadcast carries no reading');
   }
 
-  // Wind and direction are each optional, signalled by an all-ones field.
+  // Wind and direction are each optional, signaled by an all-ones field.
   {
     const b = seal(Uint8Array.from([0xe7, 215, 0xff, 0, 0xff, 0xff, 0xe9, 0xff, 0xd2, 0, 254, 0, 0]));
     const out2 = run(d, emit(b));

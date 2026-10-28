@@ -1,6 +1,6 @@
 /**
  * FT8 encoder: standard message ("CQ K1ABC FN42", "K1ABC W9XYZ -10", "... RR73") or free text → 77-bit payload →
- * CRC-14 → LDPC(174,91) → 79 tones (S7 D29 S7 D29 S7), and a GFSK-shaped audio / baseband synthesiser. Used to
+ * CRC-14 → LDPC(174,91) → 79 tones (S7 D29 S7 D29 S7), and a GFSK-shaped audio / baseband synthesizer. Used to
  * exercise the decoder with known signals and, behind the safety prompt, to transmit.
  */
 import { FT8_COSTAS, FT8_GRAY, LDPC_GENERATOR } from './ft8-tables.js';

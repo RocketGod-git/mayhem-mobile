@@ -14,7 +14,7 @@ import com.rocketgod.mayhem.core.MayhemApp
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** Line-art glyph for each app, in normalised 0..1 coordinates. */
+/** Line-art glyph for each app, in normalized 0..1 coordinates. */
 @Composable
 fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
     Canvas(modifier) {

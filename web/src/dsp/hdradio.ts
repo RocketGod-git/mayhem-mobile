@@ -45,7 +45,7 @@ const OFDM_N = 2048, OFDM_CP = 112, OFDM_SYM = OFDM_N + OFDM_CP;
 const SUB_SPACING = HD_RATE / OFDM_N;
 /** Primary main sideband: subcarriers 356..545, so 129.36–198.04 kHz from the carrier. */
 const SB_LO_HZ = 356 * SUB_SPACING, SB_HI_HZ = 545 * SUB_SPACING;
-/** The sideband is brought down by a whole number of subcarrier spacings (450 of the 450.5 to its centre), so the
+/** The sideband is brought down by a whole number of subcarrier spacings (450 of the 450.5 to its center), so the
  *  subcarrier grid lands exactly on DC. Mixing by a fraction of a spacing leaves the cyclic-prefix phase carrying
  *  that fraction as a turn, which read as a constant carrier error of half the symbol rate. */
 const SB_MIX_HZ = 450 * SUB_SPACING;
@@ -100,7 +100,7 @@ class Sideband {
 
   /** One sample at rate1. */
   push(re: number, im: number): void {
-    // mix this sideband's centre to DC
+    // mix this sideband's center to DC
     const xr = re * this.phRe - im * this.phIm, xi = re * this.phIm + im * this.phRe;
     const nr = this.phRe * this.stepRe - this.phIm * this.stepIm; this.phIm = this.phRe * this.stepIm + this.phIm * this.stepRe; this.phRe = nr;
     if (++this.phN >= 4096) { this.phN = 0; const g = 1 / Math.sqrt(this.phRe * this.phRe + this.phIm * this.phIm); this.phRe *= g; this.phIm *= g; }
@@ -179,7 +179,7 @@ export class HdDetector {
     this.offset = NaN;
   }
 
-  /** Raw interleaved int8 IQ at `rate`; the station sits `offsetHz` from the span centre. */
+  /** Raw interleaved int8 IQ at `rate`; the station sits `offsetHz` from the span center. */
   push(iq: Int8Array, n: number, rate: number, offsetHz: number): void {
     const t0 = performance.now();
     if (rate !== this.rate) this.configure(rate);

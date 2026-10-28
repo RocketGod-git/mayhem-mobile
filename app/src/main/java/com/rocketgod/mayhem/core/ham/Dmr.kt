@@ -9,14 +9,14 @@ import kotlin.math.roundToLong
 
 /*
  * DMR (ETSI TS 102 361) receiver fed with the NFM discriminator: 4FSK at 4800 symbols/s (the transmitter's
- * raised-cosine pulses are Nyquist, so the receiver band-limits and samples at the symbol centres), sync-word
+ * raised-cosine pulses are Nyquist, so the receiver band-limits and samples at the symbol centers), sync-word
  * correlation for symbol timing and eye levels, then per 30 ms time slot:
- *   · CACH (which slot), slot type via Golay (20,8): colour code + data type
+ *   · CACH (which slot), slot type via Golay (20,8): color code + data type
  *   · BPTC(196,96) for voice LC headers / terminators (RS(12,9) checked) and CSBKs (CRC-CCITT checked)
  *   · EMB via QR(16,7) plus the embedded LC spread over voice bursts B–E (Hamming 16,11,4, column parity,
  *     5-bit checksum) — talkgroup, source ID and talker alias mid-call
  *   · the three AMBE+2 voice frames per burst, de-interleaved and handed to the vocoder
- * Both time slots are followed; the audio follows one of them. The same correlator recognises P25 (decoded, with
+ * Both time slots are followed; the audio follows one of them. The same correlator recognizes P25 (decoded, with
  * its IMBE vocoder), D-STAR, NXDN and Fusion (YSF) sync words so the DIGITAL tab can name what it hears.
  * Twin of web/src/dsp/ham/dmr.ts.
  */
@@ -248,7 +248,7 @@ private class TimeSlot {
 data class DmrStatus(
     val locked: Boolean, val proto: String, val source: String, val cc: Int, val level: Float, val syncs: Int,
     val slots: List<SlotStatus>, val audioSlot: Int, val dv: String, val dvCount: Int, val inverted: Boolean,
-    /** Checked payloads (RS / CRC / embedded LC) or a settled colour code have been seen: this is DMR, not a look-alike. */
+    /** Checked payloads (RS / CRC / embedded LC) or a settled color code have been seen: this is DMR, not a look-alike. */
     val strong: Boolean,
 )
 
@@ -393,7 +393,7 @@ class DmrDecoder : FmTap {
     }
 
     /**
-     * Colour-code voting: every burst of a DMR system carries the same colour code, so once one is settled a burst
+     * Color-code voting: every burst of a DMR system carries the same color code, so once one is settled a burst
      * claiming another is noise whose Golay happened to land on a code word — rejecting it keeps a phantom caller
      * out of the other time slot.
      */
@@ -415,7 +415,7 @@ class DmrDecoder : FmTap {
         val strong = min24 > 0.3f * (a24 / 24)            // every sync symbol is ±3: no weak symbols allowed
         val nxdn = !locked
         var a18 = 0f; var a18a = 0f; var a18b = 0f; var min18 = Float.MAX_VALUE
-        if (nxdn) for (k in 0 until 18) {                  // 2400 symbols/s: the symbol must hold ±5 samples around its centre
+        if (nxdn) for (k in 0 until 18) {                  // 2400 symbols/s: the symbol must hold ±5 samples around its center
             val i = t - (17 - k) * 20
             val x = ring[(i and MASK.toLong()).toInt()]; val xa = ring[((i - 5) and MASK.toLong()).toInt()]; val xb = ring[((i + 5) and MASK.toLong()).toInt()]
             v18[k] = x; v18a[k] = xa; v18b[k] = xb
@@ -470,7 +470,7 @@ class DmrDecoder : FmTap {
         // is actually producing frames
         if (wantP25 && !p25Mode && locked && n - dmrFrameN < RATE / 2) return
         if (s.proto == "DMR" && p25Mode && n - p25.lastFrame < RATE / 2) return
-        // Matched-filter output, NOT the normalised correlation: dividing by the signal's own magnitude flattens the
+        // Matched-filter output, NOT the normalized correlation: dividing by the signal's own magnitude flattens the
         // very peak this is locating, and the parabolic fit then lands about a tenth of a symbol early.
         fun corrAt(t: Double): Float { var c = 0f; for (k in 0 until 24) c += interp(t - (23 - k) * 10) * s.s[k]; return c }
         val cm = corrAt(n0 - 1.0); val c0 = corrAt(n0.toDouble()); val cp = corrAt(n0 + 1.0)
@@ -506,10 +506,10 @@ class DmrDecoder : FmTap {
         symNext = t0 + sps; pos = 90; locked = true; lastSyncN = t0.toLong(); syncCount++; source = s.src
     }
 
-    /** Soft match of the slot's centre 48 bits against the DMR sync words. */
+    /** Soft match of the slot's center 48 bits against the DMR sync words. */
     private fun matchCenter(thr: Float): Sync? {
         var a = 0f; for (k in 0 until 24) a += abs(soft[66 + k] - center)
-        if (a < 24 * 0.4f * lvl) return null                // sync symbols are all ±3: a weak centre is not a sync
+        if (a < 24 * 0.4f * lvl) return null                // sync symbols are all ±3: a weak center is not a sync
         var best: Sync? = null; var bestC = thr
         for (s in DMR_SYNCS) {
             var c = 0f; for (k in 0 until 24) c += (soft[66 + k] - center) * s.s[k]
@@ -556,7 +556,7 @@ class DmrDecoder : FmTap {
         else if (kind == "voice") {
             t.seq = 0; t.emb.reset()
             if (confirmed) {
-                // a voice sync on its own is not proof of a call: wait for this slot's colour code to match the system's
+                // a voice sync on its own is not proof of a call: wait for this slot's color code to match the system's
                 if (!t.voice && cc >= 0 && t.cc == cc) {
                     t.since = n; t.ambe.reset()
                     if (slotSel == 0) audioSlot = frame
@@ -573,7 +573,7 @@ class DmrDecoder : FmTap {
         else t.seq = -1
     }
 
-    /** Polarity evidence from a voice burst's first AMBE frame without synthesising anything. */
+    /** Polarity evidence from a voice burst's first AMBE frame without synthesizing anything. */
     private fun voiceEvidence(t: TimeSlot) {
         for (row in fr) row.fill(0)
         for (i in 0 until 36) { val d = dib[12 + i]; fr[rW[i]][rX[i]] = d shr 1; fr[rY[i]][rZ[i]] = d and 1 }

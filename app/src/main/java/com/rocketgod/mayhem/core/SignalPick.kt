@@ -19,7 +19,7 @@ fun signalAt(hz: Long, reachHz: Double): Signal? {
 fun rasterFor(m: SdrEngine.Mode): Long = when (m) { SdrEngine.Mode.WFM -> 100_000L; SdrEngine.Mode.NFM -> 12_500L; SdrEngine.Mode.AM -> 10_000L; else -> 1_000L }
 
 /**
- * Where to put the dial for a signal: its measured centre, pulled onto the raster when close (a repeater measured
+ * Where to put the dial for a signal: its measured center, pulled onto the raster when close (a repeater measured
  * 200 Hz off still reads 146.520). SSB humps sit beside the suppressed carrier, so the dial goes to the carrier.
  */
 fun signalDial(s: Signal, raster: Long): Long {

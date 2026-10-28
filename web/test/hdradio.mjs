@@ -75,7 +75,7 @@ const fmt = (r) => `snr ${r.snrDb.toFixed(1)} dB · lock ${r.lock.toFixed(2)} (l
   ok(r.snrDb > 10, 'its sidebands stand well over the reference noise', fmt(r));
   ok(r.lock > 1.5, 'the cyclic prefix locks', fmt(r));
   ok(r.lockLo > 1.3 && r.lockHi > 1.3, 'both sidebands lock', fmt(r));
-  ok(Math.abs(r.cfoHz) < 40, 'no carrier error is measured on a centred station', fmt(r));
+  ok(Math.abs(r.cfoHz) < 40, 'no carrier error is measured on a centered station', fmt(r));
   ok(r.analogDb > r.sbHiDb + 10, 'the analog carrier is the strongest thing there (premise)', fmt(r));
   ok(r.symbols > 100, 'a few hundred symbols were folded', fmt(r));
 }
@@ -97,7 +97,7 @@ const fmt = (r) => `snr ${r.snrDb.toFixed(1)} dB · lock ${r.lock.toFixed(2)} (l
   ok(r.lock < 1.3, 'noise folds flat', fmt(r));
 }
 
-// ---- Carrier error and an off-centre channel ----
+// ---- Carrier error and an off-center channel ----
 {
   const r = last(run(hybrid({ cfoHz: 120, seed: 3 })));
   ok(r.present, 'a station 120 Hz off is still detected', fmt(r));
@@ -105,7 +105,7 @@ const fmt = (r) => `snr ${r.snrDb.toFixed(1)} dB · lock ${r.lock.toFixed(2)} (l
   // The prefix resolves the error only modulo one subcarrier spacing (363.4 Hz): 250 Hz reads as 250 − 363.
   const w = last(run(hybrid({ cfoHz: 250, seed: 7 })));
   ok(Math.abs(w.cfoHz - (250 - 744187.5 / 2048)) < 40, 'an error past half a spacing wraps: the prefix can only tell the fractional part', fmt(w));
-  // The same station sitting 300 kHz above the span centre, with the offset told to the detector.
+  // The same station sitting 300 kHz above the span center, with the offset told to the detector.
   const iq = hybrid({ seed: 4 });
   const shifted = new Int8Array(iq.length);
   let p = 0; const wo = 2 * Math.PI * 300_000 / RATE;

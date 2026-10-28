@@ -40,7 +40,7 @@ const le32 = (b: Uint8Array, i: number) =>
 
 const hex = (v: number, n: number) => (v >>> 0).toString(16).toUpperCase().padStart(n, '0');
 
-/** True when the payload is nothing but ones, which is a receiver artefact rather than a remote. */
+/** True when the payload is nothing but ones, which is a receiver artifact rather than a remote. */
 const allOnes = (b: Uint8Array, from: number, to: number) => {
   for (let i = from; i <= to; i++) if (b[i] !== 0xff) return false;
   return true;
@@ -50,7 +50,7 @@ const allOnes = (b: Uint8Array, from: number, to: number) => {
 
 /**
  * The plain sixty-six bit frame, with no check of any kind: a twelve-bit preamble row followed by the data.
- * The only defence against nonsense is the preamble and the all-ones test.
+ * The only defense against nonsense is the preamble and the all-ones test.
  */
 function hcs200Decode(bits: BitBuffer, ctx: DecodeCtx): number {
   if (bits.bitsPerRow[0] !== 12 || bits.bitsPerRow[1] !== 66) return DECODE_ABORT_LENGTH;

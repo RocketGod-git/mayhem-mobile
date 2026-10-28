@@ -408,7 +408,7 @@ export const aradMsMeter: RDevice = register({
     const readRaw = (b[6] | (b[7] << 8) | (b[8] << 16)) >>> 0;
 
     // The register's count factor, deduced from the serial suffix and the flag byte. Any other combination is
-    // undocumented, and falls through to the tenth-of-a-cubic-metre default.
+    // undocumented, and falls through to the tenth-of-a-cubic-meter default.
     let scale = 0.1, unit = 'm3';
     if (snSufx === 0x00 && (flags1 === 0x00 || flags1 === 0x40)) { scale = 0.01; unit = 'm3'; }
     else if (snSufx === 0x27 && flags1 === 0x00) { scale = 0.1; unit = 'gal'; }

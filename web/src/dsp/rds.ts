@@ -37,7 +37,7 @@ export interface RdsState {
   af: number[];
 }
 
-/** RDS (European) programme type names, index 0..31. */
+/** RDS (European) program type names, index 0..31. */
 export const PTY_NAMES: readonly string[] = [
   'None', 'News', 'Current Affairs', 'Information', 'Sport', 'Education', 'Drama', 'Culture', 'Science', 'Varied',
   'Pop Music', 'Rock Music', 'Easy Listening', 'Light Classical', 'Serious Classical', 'Other Music', 'Weather',

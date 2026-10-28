@@ -381,7 +381,7 @@ export const companionWtr001: RDevice = register({
  *
  * Every reading it has arrives at once — wind three different ways, rain over six periods, both thermometers
  * and both barometers — of which upstream reports the handful it is confident about and leaves the rest
- * commented out. That judgement is kept rather than second-guessed.
+ * commented out. That judgment is kept rather than second-guessed.
  *
  * The run-in is nine bits but the frame starts on the ninth, not after it, so the search advances by eight: the
  * last bit of the pattern is the first bit of the message and is covered by the CRC.
@@ -612,7 +612,7 @@ export const shenzhenWaleWlTh6r: RDevice = register({
  *
  * Each byte on air is the exclusive-or of the byte before it with the byte it means, seeded from the low half
  * of the sync word, so a single flipped bit corrupts every byte after it as well. Nothing checks that: the
- * final byte is labelled a checksum upstream but is read into a variable that is then commented out, so the
+ * final byte is labeled a checksum upstream but is read into a variable that is then commented out, so the
  * only thing standing between noise and a reading is a pair of fixed bit patterns in bytes six and seven.
  * `mic` still says CHECKSUM because upstream says so; the test asserts that byte eight is in fact never
  * verified, so the gap is recorded rather than implied.

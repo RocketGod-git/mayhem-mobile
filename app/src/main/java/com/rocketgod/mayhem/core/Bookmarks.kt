@@ -60,7 +60,7 @@ object Bookmarks {
 
     fun remove(b: Bookmark) { _list.value = _list.value.filter { it != b }; save() }
 
-    /** The favourite at [hz], if there is one. */
+    /** The favorite at [hz], if there is one. */
     fun at(hz: Long): Bookmark? = _list.value.firstOrNull { kotlin.math.abs(it.hz - hz) < 50 }
 
     /** ★: save where you are and how you are listening, or drop it if it is already saved. */
@@ -75,10 +75,10 @@ object Bookmarks {
         Diag.log("saved ${b.name} to favorites")
     }
 
-    /** Where the HAM screen restores its own part of a favourite; set by HAM, which owns those settings. */
+    /** Where the HAM screen restores its own part of a favorite; set by HAM, which owns those settings. */
     @Volatile var hamRecall: ((Bookmark) -> Unit)? = null
 
-    /** Recall a favourite the way it was heard: the right app, its gain and squelch, then the frequency. */
+    /** Recall a favorite the way it was heard: the right app, its gain and squelch, then the frequency. */
     fun open(b: Bookmark) {
         val app = b.app?.let { runCatching { MayhemApp.valueOf(it) }.getOrNull() }
         if (app != null && app != Apps.current.value) Apps.open(app)

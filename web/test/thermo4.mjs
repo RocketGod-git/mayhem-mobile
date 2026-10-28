@@ -1,7 +1,7 @@
 /**
  * WEC-2103, the Homelead soil probe, the WallarGe thermometer and two cooking thermometers.
  *
- * Only Homelead publishes radio, and what it publishes is mislabelled: its two example rows are presented as
+ * Only Homelead publishes radio, and what it publishes is mislabeled: its two example rows are presented as
  * one capture shown raw and inverted, but they are not bit-inverses of each other and carry different sensor
  * ids. Both independently satisfy the device's own checksum, so they are two separate transmissions. Both are
  * asserted here, along with the fact that they are not one frame — so the discrepancy stays visible.

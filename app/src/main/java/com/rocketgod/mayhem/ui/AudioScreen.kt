@@ -129,7 +129,7 @@ fun AudioScreen(accent: Color) {
                 SdrEngine.tune(hz)
             }
             SectionLabel("BANDS")
-            ListenBandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
+            ListenBandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.center) }
             SectionLabel("SQUELCH · dB above the noise floor")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for (s in intArrayOf(0, 6, 12, 20)) Chip(if (s == 0) "OFF" else "$s dB", selected = squelch == s, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setSquelch(s) }

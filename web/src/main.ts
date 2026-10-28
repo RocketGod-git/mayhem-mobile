@@ -7,7 +7,7 @@ import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
 import { SKINS, applySkin, currentSkin, loadSkin } from './theme.js';
 import { glyph } from './glyphs.js';
-import { Scope, centredLabels, rangeLabels, rowToSpec } from './scope.js';
+import { Scope, centeredLabels, rangeLabels, rowToSpec } from './scope.js';
 import { btleChannelFreq } from './dsp/btle.js';
 import { ORBCOMM_CHANNELS, type OrbcommSat } from './dsp/orbcomm.js';
 import type { PacketFrame } from './dsp/g3ruh.js';
@@ -467,7 +467,7 @@ let agcLast = 0, agcSaidMax = 0;
 /**
  * Automatic gain: keep the ADC level (iqRMS over the once/sec health sample) between AGC_LO and AGC_HI counts.
  * That is where the HackRF's 8-bit converter has both headroom and resolution — under ~2 counts the FFT is
- * quantisation mush, over ~40 it clips. Steps VGA 2 dB at a time (8 dB when far off), then falls back to the LNA.
+ * quantization mush, over ~40 it clips. Steps VGA 2 dB at a time (8 dB when far off), then falls back to the LNA.
  */
 const AGC_LO = 7, AGC_HI = 22;
 /**
@@ -526,7 +526,7 @@ function configure(mode: Mode, freq: number, rate: number, lna: number, vga: num
   if (gainPref) { lna = gainPref.lna; vga = gainPref.vga; amp = gainPref.amp; state.agc = gainPref.agc; }
   // Before the user has touched gain: floor both stages at 32 and, on a HackRF, run the front-end amp on. It is a
   // receive-safe preamp and AGC (on by default) trims the stages if a strong signal would clip, so the whole app
-  // set starts sensitive; the moment they tap AMP off it is saved and honoured everywhere. Not on an RTL-SDR,
+  // set starts sensitive; the moment they tap AMP off it is saved and honored everywhere. Not on an RTL-SDR,
   // whose "amp" can be a bias-tee (DC out the antenna).
   else { lna = Math.max(lna, 32); vga = Math.max(vga, 32); if (radio && radio.kind === 'hackrf') amp = true; }
   setGains(lna, vga, amp);
@@ -588,7 +588,7 @@ const LAUNCH_BANDS: LaunchBand[] = [
   { id: 'air', name: 'AIR', lo: 118_000_000, hi: 137_000_000, what: 'airband AM', mode: 'AM' },
   { id: 'vhf', name: 'VHF', lo: 144_000_000, hi: 163_000_000, what: 'two meters, marine, weather', mode: 'NFM' },
   { id: 'ism3', name: '315', lo: 314_000_000, hi: 316_000_000, what: 'American remotes and sensors', mode: 'NONE' },
-  { id: 'uhf', name: 'UHF', lo: 430_000_000, hi: 450_000_000, what: 'seventy centimetres', mode: 'NFM' },
+  { id: 'uhf', name: 'UHF', lo: 430_000_000, hi: 450_000_000, what: 'seventy centimeters', mode: 'NFM' },
   { id: 'ism4', name: '433', lo: 433_000_000, hi: 435_000_000, what: 'European remotes and sensors', mode: 'NONE' },
   { id: 'ism9', name: '915', lo: 902_000_000, hi: 928_000_000, what: 'meters and telemetry', mode: 'NONE' },
   // Nothing at 1090 is worth hearing, and the digital bands would only put a wall of noise through the
@@ -628,8 +628,8 @@ function launcherView(): { center: number; rate: number; mode: Mode } {
   // keeping up, and a phone gives up sooner than a desktop. A launcher that stutters is worse than a narrow one.
   const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)];
   // Center the VIEW on the band's midpoint so the span sits over the band itself, not off to one side — an FM
-  // view centred on 93.1 spent its left third below 88 (empty) and cut off 103-108. The marker then lands on the
-  // strongest signal (see the auto-pick), so we no longer need a "recognizable station" as the centre.
+  // view centered on 93.1 spent its left third below 88 (empty) and cut off 103-108. The marker then lands on the
+  // strongest signal (see the auto-pick), so we no longer need a "recognizable station" as the center.
   const rate = Math.max(RX_RATE, Math.min(widest, cap, b.hi - b.lo));
   return { center: Math.round((b.lo + b.hi) / 2), rate, mode: b.mode };
 }
@@ -641,11 +641,11 @@ function applyLauncherView(): void {
   const v = launcherView();
   configure(v.mode, v.center, v.rate, 24, 24, false, 'none');
   // The band's midpoint is where the launcher LOOKS, not a choice the user made: it must never overwrite the
-  // dial the receiver apps share, or Audio would reopen on a band centre instead of where you left it.
+  // dial the receiver apps share, or Audio would reopen on a band center instead of where you left it.
   refreshReadout();
   refreshChannel();
   sendOffset();
-  scope?.setLabels(centredLabels(state.freq, state.rate));
+  scope?.setLabels(centeredLabels(state.freq, state.rate));
 }
 
 function open(app: AppId | null): void {
@@ -1408,7 +1408,7 @@ function renderLauncher(view: HTMLElement): void {
     <div class="launch-radio"><div class="caption">BANDS</div><div class="row wrap bandrow">${bandChipsHtml()}</div><div class="launch-gain">${gainHtml()}</div></div>
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));
-  scope.setLabels(centredLabels(state.freq, state.rate));
+  scope.setLabels(centeredLabels(state.freq, state.rate));
   qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => open(b.dataset.app as AppId));
   // Restore the app strip to where it was, and keep track as it moves, so opening an app and coming back does not
   // jump it to the start (the strip scrolls sideways on a phone, down on a wide screen — remember both).
@@ -1424,7 +1424,7 @@ function renderLauncher(view: HTMLElement): void {
 /**
  * Dim the apps the connected radio cannot serve.
  *
- * Only ever dims: the tiles stay live, because a dongle owner may still want two-metre HAM and should not be
+ * Only ever dims: the tiles stay live, because a dongle owner may still want two-meter HAM and should not be
  * stopped from trying. With nothing connected, or with a radio that can do everything, this changes nothing at
  * all - which is what keeps a HackRF session looking exactly as it always did.
  */
@@ -1530,7 +1530,7 @@ function tunableScope(id: string, rows: number, spectrumHeight?: number): Scope 
     onChannel: state.app === 'ham' ? hamChannelEdges : undefined,
     onSlide: (f, done) => { const r = spanBarRange(); slideSpan(r.lo + f * (r.hi - r.lo), done); },
     onSpanStep: spanStep,
-    onCenter: recentreView,
+    onCenter: recenterView,
     onDragSpan: (delta, done) => {
       // Two fingers across a span already showing everything cannot pan within the view, so it moves the view
       // itself - which is what "pan the waterfall" means when you are looking at a whole band.
@@ -1541,7 +1541,7 @@ function tunableScope(id: string, rows: number, spectrumHeight?: number): Scope 
   });
 }
 /** ⌖: bring the view back to the tuned channel (HAM parks the LO its usual 250 kHz above it, the receiver centers on it). */
-function recentreView(): void {
+function recenterView(): void {
   if (state.app === 'ham') {
     const h = state.ham; if (h.tab === 'monitor') { monitorOpen(); return; }
     const lo = hamLoFor(h.freq), d = lo - state.hamLo; if (!d) return;
@@ -1804,7 +1804,7 @@ function refreshFt8(): void {
 let ft8Timer = 0;
 function monitorSend(): void {
   const h = state.ham, band = bandOf(h.freq);
-  worker?.postMessage({ type: 'monitorParams', params: { centreHz: state.hamLo, spacingHz: h.mon.spacing, originHz: band?.lo ?? Math.floor(h.freq / 1e6) * 1e6, thresholdDb: h.mon.threshold, mode: h.mon.mode, lock: h.mon.lock, maxDemods: window.innerWidth >= 720 ? 4 : 2, volume: h.volume } });
+  worker?.postMessage({ type: 'monitorParams', params: { centerHz: state.hamLo, spacingHz: h.mon.spacing, originHz: band?.lo ?? Math.floor(h.freq / 1e6) * 1e6, thresholdDb: h.mon.threshold, mode: h.mon.mode, lock: h.mon.lock, maxDemods: window.innerWidth >= 720 ? 4 : 2, volume: h.volume } });
 }
 function onMonitor(m: Record<string, unknown>): void {
   const mon = state.ham.mon;
@@ -1897,7 +1897,7 @@ function refreshHamChannel(): void {
   const off = h.freq - state.hamLo;
   scope.setChannel(Math.max(0.002, (hi - lo) / state.rate), 0.5 + (off + (lo + hi) / 2) / state.rate);
 }
-/** Rough dBm from dBFS: the HackRF's ADC clips near −5 dBm at zero gain, minus whatever gain is dialled in. */
+/** Rough dBm from dBFS: the HackRF's ADC clips near −5 dBm at zero gain, minus whatever gain is dialed in. */
 function hamDbm(): number { return state.ham.db - 5 - state.lna - state.vga - (state.amp ? 14 : 0); }
 function sUnits(dbm: number, hz: number): string {
   const s9 = hz >= 30e6 ? -93 : -73;
@@ -2817,7 +2817,7 @@ function drawR433(): void {
     }).join('');
 }
 
-/** Everything the receiver can recognise, so it is possible to tell "nothing there" from "not supported". */
+/** Everything the receiver can recognize, so it is possible to tell "nothing there" from "not supported". */
 function drawR433Protocols(): void {
   const r = state.r433;
   const tog = q('#r433-ptoggle');
@@ -3339,10 +3339,10 @@ function wireCommon(view: HTMLElement): void {
 
 function refreshReadout(): void {
   setFreqDisplay(state.freq);
-  scope?.setLabels(centredLabels(spanCenter(), state.rate));
+  scope?.setLabels(centeredLabels(spanCenter(), state.rate));
   refreshSpanBar();
   document.body.classList.toggle('offspan', channelOff());
-  if (lastCenterSent !== spanCenter()) { lastCenterSent = spanCenter(); worker?.postMessage({ type: 'config', centreHz: lastCenterSent }); }
+  if (lastCenterSent !== spanCenter()) { lastCenterSent = spanCenter(); worker?.postMessage({ type: 'config', centerHz: lastCenterSent }); }
   qa('[data-preset]').forEach(b => b.classList.toggle('on', Number(b.dataset.preset) === state.freq));
   highlightBands();
   refreshFav();
@@ -3762,7 +3762,7 @@ function ensureWorker(): Worker {
       case 'captureFile': { const f = m.file as File; const url = URL.createObjectURL(f); const a = document.createElement('a'); a.href = url; a.download = m.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); if (m.sidecar) { const b = new Blob([m.sidecar], { type: 'text/plain' }); const u2 = URL.createObjectURL(b); const a2 = document.createElement('a'); a2.href = u2; a2.download = (m.name as string).replace(/\.c8$/, '.txt'); setTimeout(() => { a2.click(); setTimeout(() => URL.revokeObjectURL(u2), 60_000); }, 500); } break; }
     }
   };
-  worker.postMessage({ type: 'config', rate: state.rate, mode: state.mode, squelch: state.squelch, specBins: scope?.cols, centreHz: spanCenter() });
+  worker.postMessage({ type: 'config', rate: state.rate, mode: state.mode, squelch: state.squelch, specBins: scope?.cols, centerHz: spanCenter() });
   lastCenterSent = spanCenter();
   if (audioPort) { worker.postMessage({ type: 'audioPort', port: audioPort }, [audioPort]); audioPort = null; }
   return worker;
@@ -3853,7 +3853,7 @@ async function connect(dev?: USBDevice): Promise<void> {
         const newBoard = state.board !== r.board;
         state.board = r.board; state.firmware = r.firmware; setStatus(s, true);
         if (!state.app) $('sub').textContent = `HackRF · ${r.board} · ${r.firmware}`;
-        // The board is only known after bring-up: re-scale the One-flavoured gains once for a Pro.
+        // The board is only known after bring-up: re-scale the One-flavored gains once for a Pro.
         if (newBoard && isPro() && !state.gainsScaled) { const [l, v, a] = boardGains(state.lna, state.vga, state.amp); state.gainsScaled = true; setGains(l, v, a); log(`HackRF Pro: gains scaled to LNA ${l} / VGA ${v}${a ? ' / amp' : ''} (One presets sit under 1 ADC count on a Pro)`); }
       },
     });
@@ -4134,7 +4134,7 @@ function init(): void {
     const rl = q<HTMLAnchorElement>('#release-link'); if (rl) rl.href = releaseUrl;
   }).catch(() => undefined);
   // Not `render(null)`: the launcher needs the same configuration going Home gives it. Rendering alone left
-  // the first view with whatever the defaults happened to be - mode WFM and a span centre of zero - so the
+  // the first view with whatever the defaults happened to be - mode WFM and a span center of zero - so the
   // frequency picker computed its taps against nothing and appeared not to work until you had entered an app
   // and come back.
   open(null);

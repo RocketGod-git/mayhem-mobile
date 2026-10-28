@@ -17,7 +17,7 @@ import kotlin.math.sqrt
  * SSTV decoder on the HAM receiver's audio (ISS SSTV events on 145.800, 14.230 / 28.680 on HF): a quadrature
  * frequency detector around 1900 Hz gives the instantaneous tone frequency; the VIS header (1900 leader, 1200
  * start bit, 8 bits at 30 ms, 1100 = 1 / 1300 = 0) names the mode; then each line is timed from its 1200 Hz sync
- * pulse and the colour components are read as pixel = (f − 1500) / 800. Martin, Scottie, Robot and PD modes,
+ * pulse and the color components are read as pixel = (f − 1500) / 800. Martin, Scottie, Robot and PD modes,
  * including the PD120 the ISS uses. Twin of web/src/dsp/ham/sstv.ts.
  *
  * Also the NOAA APT weather-image decoder, twin of apt.ts.
@@ -217,7 +217,7 @@ private fun argb(r: Int, g: Int, b: Int) = (0xFF shl 24) or (r shl 16) or (g shl
  * NOAA APT on the NFM discriminator (137 MHz, ±17 kHz deviation): the picture is AM on a 2400 Hz subcarrier at
  * 4160 words per second, two 909-pixel channels per 2080-word line with a 1040 Hz "sync A" square-wave burst at
  * the start of each line. Envelope-detect the subcarrier, resample to the word rate, find the sync burst, and hand
- * out one grey line every half second. Calibration is a slow running black / white.
+ * out one gray line every half second. Calibration is a slow running black / white.
  */
 private const val WORDS = 4160
 const val APT_LINE = 2080
@@ -230,7 +230,7 @@ private val SYNC_A = IntArray(39).also { s ->
 
 class AptDecoder : FmTap {
     override val minHalf = 20_000.0
-    /** One finished line of [APT_LINE] grey values 0..255, and its index. */
+    /** One finished line of [APT_LINE] gray values 0..255, and its index. */
     var onRow: (IntArray, Int) -> Unit = { _, _ -> }
     private var cr = 1.0; private var ci = 0.0
     private val dr = cos(-2 * PI * 2400 / RATE); private val di = sin(-2 * PI * 2400 / RATE)
@@ -278,7 +278,7 @@ class AptDecoder : FmTap {
         lineStart = best
     }
 
-    /** Normalised correlation of the words starting at [at] with the sync-A template. */
+    /** Normalized correlation of the words starting at [at] with the sync-A template. */
     private fun corr(at: Long): Double {
         val len = words.size
         if (at < m - len || at + 39 > m) return 0.0

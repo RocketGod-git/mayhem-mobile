@@ -81,7 +81,7 @@ fun shipTypeName(code: Int?): String {
     return f + if (ones in 1..4) HAZARD[ones] else if (ones == 9) " (no additional info)" else ""
 }
 
-private val NAV = listOf("Under way using engine", "At anchor", "Not under command", "Restricted manoeuvrability", "Constrained by draft",
+private val NAV = listOf("Under way using engine", "At anchor", "Not under command", "Restricted maneuverability", "Constrained by draft",
     "Moored", "Aground", "Engaged in fishing", "Under way sailing", "Reserved (HSC)", "Reserved (WIG)", "Towing astern",
     "Pushing ahead / towing alongside", "Reserved", "AIS-SART / MOB / EPIRB active", "")
 fun navStatusName(code: Int?): String = code?.let { NAV.getOrNull(it) } ?: ""

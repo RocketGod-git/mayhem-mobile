@@ -532,7 +532,7 @@ export class DmrDecoder {
     else ts.seq = -1;
   }
 
-  /** Polarity evidence from a voice burst's first AMBE frame without synthesising anything. */
+  /** Polarity evidence from a voice burst's first AMBE frame without synthesizing anything. */
   private voiceEvidence(ts: TimeSlot): void {
     const dib = this.dib, fr = this.fr;
     for (const row of fr) row.fill(0);

@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * completes ([row]). Search runs on the rows.
  */
 class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqProcessor {
-    /** Distance between slice centres: the kept part of a slice. */
+    /** Distance between slice centers: the kept part of a slice. */
     val stepHz: Double = sliceHz.toDouble() * KEEP / BINS
     val binHz: Double = sliceHz.toDouble() / BINS
     val steps: Int = ceil((endHz - startHz) / stepHz).toInt().coerceAtLeast(1)
@@ -34,7 +34,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
     private val work = FloatArray(steps * KEEP) { Float.NaN }
     private var step = 0
     private var settle = 0
-    /** The centre asked for and not yet confirmed by the driver; 0 once it has been. */
+    /** The center asked for and not yet confirmed by the driver; 0 once it has been. */
     private var awaiting = 0L
     private var lastLive = 0L
 
@@ -88,7 +88,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
             for (j in 0 until g) { val v = acc[b * g + j]; if (v > pk) pk = v }
             slice[b] = (10.0 * log10(pk / frames + 1e-9)).toFloat()
         }
-        // The DC spike sits in the centre bins: replace with the neighbours.
+        // The DC spike sits in the center bins: replace with the neighbors.
         val c = BINS / 2
         slice[c] = (slice[c - 2] + slice[c + 2]) * 0.5f
         slice[c - 1] = slice[c - 2]

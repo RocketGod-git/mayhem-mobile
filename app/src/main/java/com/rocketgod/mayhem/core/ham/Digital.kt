@@ -18,7 +18,7 @@ import kotlin.math.sqrt
  *
  *   CW     tone detector at the pitch → adaptive threshold → mark/space timing → adaptive dit → Morse table
  *   RTTY   mark/space tone detectors (2125/2295, 170 Hz shift, 45.45 Bd by default) → UART framing → ITA2 Baudot
- *   PSK31  mix to baseband at the audio centre → matched low-pass → symbol clock from the envelope dips at
+ *   PSK31  mix to baseband at the audio center → matched low-pass → symbol clock from the envelope dips at
  *          phase reversals → differential BPSK → varicode
  */
 

@@ -2,7 +2,7 @@
  * Ultrasonic oil tank monitors: five protocols from one family of sensors, sold under a dozen names.
  *
  * These sit in the neck of a domestic heating oil tank and ping the surface of the oil once or twice an hour,
- * reporting the distance down to it in centimetres. They all descend from the same design and have drifted
+ * reporting the distance down to it in centimeters. They all descend from the same design and have drifted
  * apart over the years, which is why the family needs five decoders rather than one: the original Watchman
  * frames its 64 bits with a preamble and postamble, the Standard drops the checksum entirely, the Smart adds
  * one back, and the Advanced abandons the whole scheme for a length-prefixed message with a CRC-16.

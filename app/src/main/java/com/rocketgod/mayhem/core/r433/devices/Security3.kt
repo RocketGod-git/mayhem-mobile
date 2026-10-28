@@ -14,7 +14,7 @@ private val BAND_433 = listOf(433_920_000L)
 
 private val KERUI_STATE = mapOf(0xa to "motion", 0xe to "open", 0x7 to "close", 0xb to "tamper", 0x5 to "water", 0xf to "battery")
 
-/** No checksum: nine of twenty-five copies agreeing is the whole defence. Inverted, after an all-zero test. */
+/** No checksum: nine of twenty-five copies agreeing is the whole defense. Inverted, after an all-zero test. */
 private fun kerui(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     val row = bits.findRepeatedRow(9, 25)
     if (row < 0) return DECODE_ABORT_LENGTH
@@ -176,7 +176,7 @@ private val ABMT_SYNC = UBytes.of(0x55, 0xaa, 0xaa)
 
 /**
  * The "sync" is the frame's own constant tail seen through Manchester, so the frame starts 72 bits before it.
- * No checksum: four agreeing copies and that tail are the only defence.
+ * No checksum: four agreeing copies and that tail are the only defense.
  */
 private fun abmt(d: RDevice, bits: BitBuffer, ctx: DecodeCtx): Int {
     val row = bits.findRepeatedRow(4, 90)

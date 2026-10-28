@@ -66,7 +66,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true; buildConfig = true }
-    // Android framework calls answer with defaults under the JVM tests, so the singletons can be initialised there.
+    // Android framework calls answer with defaults under the JVM tests, so the singletons can be initialized there.
     testOptions { unitTests.isReturnDefaultValues = true }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }

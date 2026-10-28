@@ -252,7 +252,7 @@ export const niceFlorS: RDevice = register({
   bands: [433920000],
   disabled: true,                                  // no checksum: the frame shape is all there is
   decode(_dev, bits: BitBuffer, ctx: DecodeCtx): number {
-    // The transmitter leaves a trailing empty row, which is part of how the frame is recognised.
+    // The transmitter leaves a trailing empty row, which is part of how the frame is recognized.
     if (bits.numRows !== 2 || bits.bitsPerRow[1] !== 0) return DECODE_ABORT_EARLY;
     if (bits.bitsPerRow[0] !== 52 && bits.bitsPerRow[0] !== 72) return DECODE_ABORT_LENGTH;
 

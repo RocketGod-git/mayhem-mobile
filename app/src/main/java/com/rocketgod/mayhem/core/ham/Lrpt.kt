@@ -130,7 +130,7 @@ private val NOISE = IntArray(255).also { n ->
         n[i] = b
     }
 }
-/** Undo the CCSDS randomiser over the 1020 bytes after the sync marker. */
+/** Undo the CCSDS randomizer over the 1020 bytes after the sync marker. */
 private fun descramble(cadu: ByteArray) { for (i in 0 until 1020) cadu[4 + i] = (cadu[4 + i].toInt() xor NOISE[i % 255]).toByte() }
 
 // Reed-Solomon (255,223), interleave 4, dual-basis root spacing 11
@@ -292,7 +292,7 @@ private fun huffmanDecode(dst: IntArray, src: ByteArray, off: Int, count: Int, m
     return true
 }
 
-/** De-zigzag, dequantise (JPEG quality q) and inverse-DCT one block into 64 grey pixels. */
+/** De-zigzag, dequantize (JPEG quality q) and inverse-DCT one block into 64 gray pixels. */
 private fun idctBlock(src: IntArray, at: Int, q: Int, out: ByteArray, outAt: Int, f: DoubleArray, row: DoubleArray) {
     val compr = if (q < 50) 5000.0 / max(1, q) else 200.0 - 2 * q
     for (k in 0 until 64) { val nat = ZIGZAG[k]; val qv = max(1, floor((QUANT[nat] * compr / 50 + 1) / 2).toInt()); f[nat] = (src[at + k] * qv).toDouble() }
@@ -332,7 +332,7 @@ private fun rrcTaps(alpha: Double, sps: Double, span: Int): FloatArray {
 data class LrptStats(val lock: Boolean, val freqHz: Double, val ber: Double, val rs: Int, val frames: Int, val badFrames: Int)
 
 class LrptDecoder : IqTap {
-    /** (apid, strip line, x, 8×112 grey pixels). */
+    /** (apid, strip line, x, 8×112 gray pixels). */
     var onStrip: (Int, Int, Int, ByteArray) -> Unit = { _, _, _, _ -> }
     var onStats: (LrptStats) -> Unit = {}
     var onLog: (String) -> Unit = {}

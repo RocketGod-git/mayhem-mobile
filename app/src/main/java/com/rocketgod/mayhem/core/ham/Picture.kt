@@ -20,7 +20,7 @@ object Picture {
     @Volatile var mode = ""; private set
     private var line = 0
     private var aptLines = 0
-    // LRPT: one grey plane per APID, composited into the frame strip by strip
+    // LRPT: one gray plane per APID, composited into the frame strip by strip
     private const val LRPT_W = 1568
     private val planes = HashMap<Int, ByteArray>()
     private var lrptLines = 0

@@ -114,7 +114,7 @@ private fun Header(status: String, connected: Boolean, app: MayhemApp?, showLog:
                 )
                 Text(
                     if (app == null) "${com.rocketgod.mayhem.core.Radio.label.ifEmpty { "HackRF or RTL-SDR" }} · $status"
-                    // the readout shows the channel; the radio's own centre here would read as a second, wrong frequency
+                    // the readout shows the channel; the radio's own center here would read as a second, wrong frequency
                     else "${app.blurb} · ${status.replace(Regex(" · [0-9.]+ MHz$"), "")}",
                     color = if (connected) Palette.muted else Palette.danger, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1
                 )

@@ -137,7 +137,7 @@ fun LookingGlassScreen(accent: Color) {
                 key(s) {
                     WaterfallView(
                         done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 64, traceFrac = 0.3f,
-                        centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
+                        centerMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
                         onPreviewFrac = { f -> previewHz = if (f != null && s != null) s.startHz + (s.coverHz * f.toDouble()).toLong() else null },
                         live = now.spec, scale = floorDb to SWEEP_RANGE_DB, labelAt = s?.let { sweepLabel(it) }, rowPx = rowPx,
                     ) { frac ->
@@ -182,7 +182,7 @@ fun SearchScreen(accent: Color) {
                 key(s) {
                     WaterfallView(
                         done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 64, traceFrac = 0.35f,
-                        centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
+                        centerMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
                         live = now.spec, scale = floorDb to SWEEP_RANGE_DB, labelAt = s?.let { sweepLabel(it) }, rowPx = rowPx,
                     )
                 }

@@ -74,7 +74,7 @@ export class R433 {
 
   constructor(devices?: RDevice[]) {
     // Everything runs. rtl_433 ships a handful of these switched off because they have no usable checksum and
-    // will occasionally claim another maker's transmission; that judgement is kept on each device as a note,
+    // will occasionally claim another maker's transmission; that judgment is kept on each device as a note,
     // but it no longer decides anything. Hearing a doubtful reading beats not hearing a real one.
     this.devices = (devices ?? REGISTRY.slice())
       .slice()

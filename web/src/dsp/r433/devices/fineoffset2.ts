@@ -192,7 +192,7 @@ export const fineoffsetWh31l: RDevice = register({
       strike_count: b[6],
       mic: 'CRC',
     };
-    // 63 is the detector saying it heard something it could not place, not a storm sixty-three kilometres off.
+    // 63 is the detector saying it heard something it could not place, not a storm sixty-three kilometers off.
     if (dist !== 63) data.storm_dist = dist;
     ctx.emit(data);
     return 1;

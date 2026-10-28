@@ -53,7 +53,7 @@ object Palette {
     var accent2 by mutableStateOf(Skin.MAYHEM.accent2); private set
     val danger = Color(0xFFFF5B52)
     val ok = Color(0xFF3DDC84)
-    /** Peak-hold trace colour: the secondary accent unless it is too dark to read over the spectrum. */
+    /** Peak-hold trace color: the secondary accent unless it is too dark to read over the spectrum. */
     val hold: Color get() = if (accent2.luminance() < 0.15f) ink.copy(alpha = 0.6f) else accent2
 
     fun apply(s: Skin) {
@@ -80,7 +80,7 @@ object Skins {
 
 val Mono: FontFamily = FontFamily.Monospace
 
-/** Text colour that reads on a filled [bg]. */
+/** Text color that reads on a filled [bg]. */
 fun inkOn(bg: Color): Color = if (bg.luminance() > 0.45f) Color(0xFF05080A) else Color(0xFFF4F6F8)
 
 // ---- Responsive sizing -------------------------------------------------------------------------------------

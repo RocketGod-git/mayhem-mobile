@@ -1,10 +1,10 @@
 /**
  * Lighting, fans and switches, plus the two Philips clock-radio thermometers.
  *
- * Only the AJ7010 publishes frames, and it publishes them decoded rather than raw: five binary rows labelled
+ * Only the AJ7010 publishes frames, and it publishes them decoded rather than raw: five binary rows labeled
  * with the temperature and channel each was recorded at. Those go in directly. They also settle something —
  * the conversion that file applies does not reproduce its own labels, which upstream already suspects, so the
- * computed values are asserted alongside the labelled ones rather than either being quietly preferred.
+ * computed values are asserted alongside the labeled ones rather than either being quietly preferred.
  *
  * The other five publish nothing at all, so every frame is built from the transmit side. Where a device has a
  * checksum the builder computes it from the definition rather than importing the code under test; where a
@@ -86,7 +86,7 @@ console.log('LightwaveRF, Philips AJ3650/AJ7010, GE Color Effects, Quinetic and 
     ok(zeros.every(z => z === 2), 'every legal byte has exactly two zero bits (premise)');
   }
 
-  // Rejections. There is no checksum, so the table and the delimiters are the whole defence.
+  // Rejections. There is no checksum, so the table and the delimiters are the whole defense.
   {
     const badTable = build(NIBS, { badByte: 4 });
     eq(badTable.bitsPerRow[0], 71, 'the bad-byte frame is still the right length (premise)');
@@ -223,7 +223,7 @@ console.log('LightwaveRF, Philips AJ3650/AJ7010, GE Color Effects, Quinetic and 
     eq(out[0]?.temperature_C, wantTemp, `AJ7010 temperature from ${hex}`);
     // The published label disagrees with what this file's own conversion produces.
     ok(Math.abs(out[0].temperature_C - parseFloat(label)) > 0.3,
-      `AJ7010 row ${hex} is labelled ${label} C but its own formula gives ${wantTemp} C`);
+      `AJ7010 row ${hex} is labeled ${label} C but its own formula gives ${wantTemp} C`);
     // Every published row passes on the first of the two alternative sums.
     let x = 0;
     for (let i = 0; i < 5; i++) x ^= b[i];

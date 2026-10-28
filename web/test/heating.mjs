@@ -332,14 +332,14 @@ console.log('Heating, pool and utility devices');
 
   eq(run(d, vaillantRow(normalFrame({ heat: 0x00 })))[0]?.heating, 'OFF', 'Vaillant heating off');
   eq(run(d, vaillantRow(normalFrame({ heat: 0x2d })))[0]?.heating, 'ON (analogue)', 'Vaillant analogue heating mode');
-  eq(run(d, vaillantRow(normalFrame({ heat: 0x2d })))[0]?.heating_temp, 45, 'Vaillant analogue target temperature');
+  eq(run(d, vaillantRow(normalFrame({ heat: 0x2d })))[0]?.heating_temp, 45, 'Vaillant analog target temperature');
   eq(run(d, vaillantRow(normalFrame({ water: 0x88 })))[0]?.water, 'off', 'Vaillant pre-heated water off');
   eq(run(d, vaillantRow(normalFrame({ battery: 0x01 })))[0]?.battery_ok, 0, 'Vaillant low battery');
 
   /*
    * Bit seven alone chooses two-point control. Every value used above happens to read the same way whether the
    * mode is taken from bit seven or from bit six, so none of them can tell those apart -- 0x40 can, because it
-   * has bit six set and bit seven clear and is therefore still an analogue target.
+   * has bit six set and bit seven clear and is therefore still an analog target.
    */
   eq(run(d, vaillantRow(normalFrame({ heat: 0x40 })))[0]?.heating, 'ON (analogue)',
     'Vaillant takes the heating mode from bit seven alone, not from bit six');
@@ -606,7 +606,7 @@ console.log('Heating, pool and utility devices');
   /*
    * The inner CRC-8 is computed upstream, logged, and never compared. Nothing has ever forced its parameters to
    * be right and no capture is published to settle them, so this port neither enforces nor reports it. A frame
-   * carrying a deliberately wrong one still decodes, which is upstream's behaviour exactly.
+   * carrying a deliberately wrong one still decodes, which is upstream's behavior exactly.
    */
   {
     const built = srsmith({ subParity: 0x00 });
@@ -653,7 +653,7 @@ console.log('Heating, pool and utility devices');
     eq(out[0]?.model, 'Flowis', 'Flowis model');
     eq(out[0]?.id, 0x12345678, 'Flowis meter id, sent least significant byte first');
     eq(out[0]?.msg_type, 1, 'Flowis message type');
-    eq(out[0]?.volume_m3, 123.456, 'Flowis volume counts litres');
+    eq(out[0]?.volume_m3, 123.456, 'Flowis volume counts liters');
     eq(out[0]?.device_time, '2025-09-10T14:30:45', 'Flowis unpacks its bit-packed timestamp');
     eq(out[0]?.alarm, 0, 'Flowis alarm byte');
     eq(out[0]?.backflow, 0, 'Flowis backflow byte');

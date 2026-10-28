@@ -31,7 +31,7 @@ const SYNC_D255 = new Uint8Array([0xd2, 0x55, 0x2d, 0xd4]);
 const round1 = (x: number) => Math.round(x * 10) / 10;
 /** C's `(int16_t)`: the temperature fields are signed and read through a sixteen-bit intermediate. */
 const s16 = (x: number) => ((x & 0xffff) << 16) >> 16;
-/** A frame of all zeroes or all ones is a receiver artefact, not a sensor. */
+/** A frame of all zeroes or all ones is a receiver artifact, not a sensor. */
 const allSame = (b: Uint8Array, n: number, v: number) => {
   for (let i = 0; i < n; i++) if (b[i] !== v) return false;
   return true;

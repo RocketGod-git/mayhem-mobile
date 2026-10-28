@@ -627,7 +627,7 @@ console.log('WG-PB12V1, IBIS, Opus XT300, EnOcean, CED7000, Rosstech, RFM69, TR-
   eq(out[0]?.flags, '40', 'McPower flags go out as a raw value');
   eq(out[0]?.mic, 'CRC', 'McPower reports a CRC');
 
-  // The three separately labelled captures: left, right, and a repeat with nothing held down.
+  // The three separately labeled captures: left, right, and a repeat with nothing held down.
   eq(run(d, build({ left: 1, right: 0 }))[0]?.button_left, 1, 'McPower reads a left press');
   eq(run(d, build({ left: 0, right: 1 }))[0]?.button_right, 1, 'McPower reads a right press');
   {

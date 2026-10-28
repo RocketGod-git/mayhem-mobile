@@ -112,7 +112,7 @@ console.log('limits: what each radio will and will not do');
   ok(canTune(RTL_LIMITS, 433_920_000), 'a dongle tunes the ISM band');
   ok(canTune(RTL_LIMITS, 1_090_000_000), 'a dongle tunes ADS-B');
   ok(!canTune(RTL_LIMITS, 2_402_000_000), 'a dongle does not reach Bluetooth');
-  ok(!canTune(RTL_LIMITS, 7_074_000), 'a dongle does not reach the forty metre band');
+  ok(!canTune(RTL_LIMITS, 7_074_000), 'a dongle does not reach the forty meter band');
   ok(canTune(HACKRF_LIMITS, 2_402_000_000), 'a HackRF does reach Bluetooth');
 
   ok(canSample(RTL_LIMITS, 2_000_000), 'a dongle samples at 2 Msps');
@@ -137,7 +137,7 @@ console.log('limits: what each radio will and will not do');
 console.log('a HackRF is untouched by any of this');
 {
   // The standing rule: adding a second radio must not change what a HackRF session does. Every one of these
-  // would be a behaviour change on hardware that was working before, so they are asserted rather than assumed.
+  // would be a behavior change on hardware that was working before, so they are asserted rather than assumed.
 
   // Nothing dims. If an app ever declares a need a HackRF cannot meet, this fails and names it.
   for (const [id, needs] of Object.entries(APP_NEEDS)) {

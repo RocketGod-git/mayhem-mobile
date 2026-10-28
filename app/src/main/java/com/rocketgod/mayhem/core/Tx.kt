@@ -341,7 +341,7 @@ object Tx {
         }
     }
 
-    /** OOK noise / jammer: random on/off keying at [chipUs] per chip, over the tuned frequency. Authorised RF-lab work only. */
+    /** OOK noise / jammer: random on/off keying at [chipUs] per chip, over the tuned frequency. Authorized RF-lab work only. */
     fun ookNoise(seed: Long, chipUs: Int, seconds: Int, freqHz: Long): Boolean {
         val chipSamples = (chipUs.toLong() * RATE / 1_000_000L).coerceAtLeast(1)
         val chipCount = seconds.toLong() * RATE / chipSamples

@@ -167,7 +167,7 @@ class HdDetector(private val emit: (HdReport) -> Unit) {
         offset = Double.NaN
     }
 
-    /** Offset-128 interleaved IQ at [rate]; the station sits [offsetHz] from the span centre. */
+    /** Offset-128 interleaved IQ at [rate]; the station sits [offsetHz] from the span center. */
     fun push(iq: ByteArray, nSamp: Int, rate: Int, offsetHz: Double) {
         if (rate != this.rate) configure(rate)
         if (offsetHz != offset) { offset = offsetHz; val w = -2 * Math.PI * offsetHz / rate; stepRe = cos(w); stepIm = sin(w) }

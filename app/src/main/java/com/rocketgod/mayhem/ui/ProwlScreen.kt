@@ -48,8 +48,8 @@ fun ProwlScreen(accent: Color) {
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide, channelHz = lo + offset)
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, centreMarker = offset == 0, channel = channel,
-                    labels = centredLabels(lo, rate),
+                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, centerMarker = offset == 0, channel = channel,
+                    labels = centeredLabels(lo, rate),
                     onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(lo, rate, it) } },
                     onTapFrac = { frac -> Prowl.holdAt(spanHz(lo, rate, frac).toDouble()) })
             }

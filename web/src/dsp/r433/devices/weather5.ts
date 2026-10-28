@@ -13,7 +13,7 @@
  * below freezing reads as roughly 409 C there. That is upstream's behavior and the test pins it.
  *
  * Sainlogic's checksum is the interesting one. Upstream computes a CRC-16 and then never acts on it: a
- * mismatch is logged and the reading is emitted anyway, labelled `mic: "CRC"`. Its own sample frame fails that
+ * mismatch is logged and the reading is emitted anyway, labeled `mic: "CRC"`. Its own sample frame fails that
  * check, and the code comment says as much — "crc checksum here when guessed". Searching the parameter space
  * over that frame turns up exactly one conventional configuration, and it is the reflected twin of upstream's
  * own guess: CRC-16/MODBUS, poly 0xa001 (which is 0x8005 reversed), init 0xffff, over the same bytes upstream
@@ -82,7 +82,7 @@ export const holmanWs5029pcm: RDevice = register({
   shortWidth: 100,
   longWidth: 100,
   resetLimit: 19200,
-  bands: [917000000],                              // 917.0 MHz, not the usual 915 centre
+  bands: [917000000],                              // 917.0 MHz, not the usual 915 center
   decode(_dev, bits: BitBuffer, ctx: DecodeCtx): number {
     if (bits.numRows !== 1) return DECODE_ABORT_EARLY;
 
@@ -125,7 +125,7 @@ export const holmanWs5029pcm: RDevice = register({
       return 1;
     }
     if (rowBits < 221) {
-      // The AOK-5056, which counts rain in whole millimetres instead and adds the light block.
+      // The AOK-5056, which counts rain in whole millimeters instead and adds the light block.
       ctx.emit({
         model: 'AOK-5056',
         type: 'Weather',
@@ -383,7 +383,7 @@ export const cotechFt0203: RDevice = register({
  * the entire defense — which is why it ships marked doubtful.
  *
  * The rain figure is deliberately left as a raw count. It climbs by about forty per bucket tip, but nobody has
- * ever calibrated a tip against a measured volume, so converting it to millimetres would be inventing a number.
+ * ever calibrated a tip against a measured volume, so converting it to millimeters would be inventing a number.
  */
 export const cotech367900: RDevice = register({
   num: 382,

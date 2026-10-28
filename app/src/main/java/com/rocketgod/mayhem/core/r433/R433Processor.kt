@@ -25,7 +25,7 @@ data class R433Report(
     val trigger: Int = 0, val span: Int = 0,
 )
 
-/** One line about a protocol, for the list of everything the receiver can recognise. */
+/** One line about a protocol, for the list of everything the receiver can recognize. */
 data class R433Protocol(val num: Int, val name: String, val what: String, val coding: String, val bands: List<Double>, val doubtful: Boolean)
 
 private val CODING = mapOf(3 to "Manchester", 4 to "level per bit", 5 to "pulse position", 6 to "pulse width", 8 to "level per bit, raw",

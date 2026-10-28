@@ -160,7 +160,7 @@ object Prowl {
 
     private fun modeAt(hz: Double) = if (hz > 117e6 && hz < 138e6) SdrEngine.Mode.AM else SdrEngine.Mode.NFM
 
-    /** Listen off-centre when the channel is in view; otherwise move the LO a quarter span away so DC stays clear. */
+    /** Listen off-center when the channel is in view; otherwise move the LO a quarter span away so DC stays clear. */
     private fun listenAt(hz: Double) {
         val lo = SdrEngine.freqHz.value
         val rate = SdrEngine.rateHz.value
@@ -307,11 +307,11 @@ object Prowl {
     private fun move(now: Long) {
         val wins = windows()
         win = (win + 1) % wins.size
-        val (centre, mode, name) = wins[win]
+        val (center, mode, name) = wins[win]
         band = name; movedAt = now
-        SdrEngine.tuneLo(centre); SdrEngine.setOffset(0); lastLo = centre
+        SdrEngine.tuneLo(center); SdrEngine.setOffset(0); lastLo = center
         if (SdrEngine.mode.value != mode) SdrEngine.setMode(mode, silent = true)
-        note = "sweeping $name around ${mhz(centre.toDouble())}"
+        note = "sweeping $name around ${mhz(center.toDouble())}"
     }
 
     private fun publish() {

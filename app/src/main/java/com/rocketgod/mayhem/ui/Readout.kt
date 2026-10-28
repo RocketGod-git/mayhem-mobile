@@ -169,7 +169,7 @@ fun FreqEntryDialog(hz: Long, accent: Color, onDone: (Long?) -> Unit) {
 }
 
 /**
- * The tuned frequency with digit tuning, keypad entry and a favourite star, then the level bar and the RX-health
+ * The tuned frequency with digit tuning, keypad entry and a favorite star, then the level bar and the RX-health
  * line. [channelHz] overrides what is shown; [onTune] is where a digit or the keypad sends the new frequency.
  */
 @Composable

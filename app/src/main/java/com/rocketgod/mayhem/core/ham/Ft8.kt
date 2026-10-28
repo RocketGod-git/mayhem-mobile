@@ -213,7 +213,7 @@ class Ft8Decoder : DigitalDecoder {
             log174[bi + 1] = max4(s2[2], s2[3], s2[6], s2[7]) - max4(s2[0], s2[1], s2[4], s2[5])
             log174[bi + 2] = max4(s2[1], s2[3], s2[5], s2[7]) - max4(s2[0], s2[2], s2[4], s2[6])
         }
-        // normalise to the experimentally found scale
+        // normalize to the experimentally found scale
         var sum = 0.0; var sum2 = 0.0
         for (i in 0 until N) { sum += log174[i]; sum2 += log174[i] * log174[i] }
         val variance = (sum2 - sum * sum / N) / N

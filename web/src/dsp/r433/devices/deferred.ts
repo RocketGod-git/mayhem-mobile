@@ -74,7 +74,7 @@ const DTV_BUTTON: Record<number, string> = {
  * Differential pulse width decoding: only the run lengths between transitions carry data.
  *
  * The counter starts at all ones so that the very first transition is treated as the end of a sync of length
- * zero, which is how the leading run — whatever its length — is kept out of the data. Two behaviours matter
+ * zero, which is how the leading run — whatever its length — is kept out of the data. Two behaviors matter
  * and are easy to lose: a sync discards everything decoded before it, and the run straight after a sync is a
  * marker, not a bit.
  */
@@ -170,7 +170,7 @@ export const directv: RDevice = register({
  *
  * The status byte is encrypted under a per-device seed that is never transmitted; upstream accepts one on its
  * command line and, without it, reports the raw payload instead. This app has no equivalent facility, so the
- * cipher is not ported and the payload is always reported as hex — which is exactly upstream's behaviour for
+ * cipher is not ported and the payload is always reported as hex — which is exactly upstream's behavior for
  * a sensor whose seed it has not been given. Nothing is silently guessed: `state` and `contact_open` simply do
  * not appear.
  *

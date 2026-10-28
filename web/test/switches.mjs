@@ -731,7 +731,7 @@ const jascoBits = (b0, b1, b2, { chk, lead = [], trail = [] } = {}) => {
 
     // Two errors that cancel do get through, which is the honest limit of an exclusive-or.
     eq(run(d, rowOf(jascoBits(0x12 ^ 0x40, 0x34 ^ 0x40, 0xef))).length, 1,
-      '  while two cancelling errors pass, which is what an exclusive-or cannot see');
+      '  while two canceling errors pass, which is what an exclusive-or cannot see');
   }
 
   // The run-in has to be found, not assumed to be at the start.

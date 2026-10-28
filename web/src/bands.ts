@@ -1,4 +1,4 @@
-/** Amateur band plan (IARU Region 2 / FCC flavoured), with the mode, step and repeater offset each band expects. */
+/** Amateur band plan (IARU Region 2 / FCC flavored), with the mode, step and repeater offset each band expects. */
 import type { HamMode } from './dsp/ham/demod.js';
 
 export interface Band {

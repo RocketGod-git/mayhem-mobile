@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Framework parent so no extra XML theme dependency is needed; the real UI palette lives in Compose
-         (ui/Theme.kt). Window colours match its default paper. -->
+         (ui/Theme.kt). Window colors match its default paper. -->
     <style name="Theme.Mayhem" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">#0A0D13</item>
         <item name="android:statusBarColor">#0A0D13</item>

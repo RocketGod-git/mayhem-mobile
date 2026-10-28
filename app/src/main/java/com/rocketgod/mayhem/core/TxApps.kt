@@ -7,8 +7,8 @@ import kotlin.random.Random
 
 /**
  * The rest of Mayhem's transmit apps, ported to run on the phone/browser. These are dual-use tools that ship in
- * the upstream PortaPack Mayhem firmware and are meant for authorised use on your own equipment: bench work,
- * amateur-radio experiments (with a licence), security research on hardware you own. Nothing here bypasses a
+ * the upstream PortaPack Mayhem firmware and are meant for authorized use on your own equipment: bench work,
+ * amateur-radio experiments (with a license), security research on hardware you own. Nothing here bypasses a
  * rolling code or opens a door on its own — the encoders take a key/seed from the user and produce a valid
  * on-air waveform. The Settings safety prompt still gates the first transmission.
  *
@@ -83,7 +83,7 @@ object TxApps {
     }
 
     // ---- OOK jammer / noise (random amplitude modulation over a channel) -----------------------------------------
-    /** A random bit stream at [chipUs] per chip — pseudo-random OOK for authorised RF-lab work. */
+    /** A random bit stream at [chipUs] per chip — pseudo-random OOK for authorized RF-lab work. */
     fun noiseBits(seed: Long, count: Int): BooleanArray {
         val r = Random(seed)
         return BooleanArray(count) { r.nextBoolean() }
