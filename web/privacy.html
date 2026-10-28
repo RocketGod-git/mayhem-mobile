@@ -26,7 +26,7 @@
 <body>
 <main>
   <h1>Mayhem Mobile — Privacy Policy</h1>
-  <p class="sub">Effective 11 October 2026</p>
+  <p class="sub">Effective October 28, 2026</p>
 
   <div class="panel">
     <strong>Mayhem Mobile collects nothing.</strong> There are no accounts, no analytics, no
@@ -37,31 +37,44 @@
   <h2>What the permissions are for</h2>
   <ul>
     <li><strong>USB</strong> — to talk to the SDR hardware you plug in. This is the whole point of the app.</li>
-    <li><strong>Location</strong> — used on the device to centre the map and as the reference position
+    <li><strong>Location</strong> — used on the device to center the map and as the reference position
       that aircraft position messages are decoded against. Your location is never transmitted by
       the app and is not stored anywhere outside it.</li>
-    <li><strong>Internet</strong> — used only to fetch map tiles. See below.</li>
+    <li><strong>Microphone</strong> — only while you hold push-to-talk to transmit your voice through a
+      HackRF (HAM Radio and Satellites). The audio goes straight to the radio. It is never recorded,
+      stored or sent anywhere else. Receive-only use never asks for it.</li>
+    <li><strong>Internet</strong> — map tiles and the optional lookups listed below.</li>
   </ul>
 
-  <h2>Map tiles</h2>
+  <h2>Network requests</h2>
   <p>
-    The map is drawn with tiles from <a href="https://www.openstreetmap.org/">OpenStreetMap</a>.
-    Requesting a tile tells that service your IP address and which part of the world you are
-    looking at, the same as loading any map in a browser. Their handling of that is covered by the
-    <a href="https://osmfoundation.org/wiki/Privacy_Policy">OpenStreetMap Foundation privacy policy</a>.
-    Nothing else in the Android app makes network requests.
+    The app has no server of its own. It talks to these public services, and only when you use
+    the feature that needs them:
+  </p>
+  <ul>
+    <li><strong>Map tiles</strong> from <a href="https://www.openstreetmap.org/">OpenStreetMap</a>,
+      when a map is on screen. The tile request reveals which part of the world you are looking at, the same
+      as any map in a browser (<a href="https://osmfoundation.org/wiki/Privacy_Policy">OpenStreetMap
+      Foundation privacy policy</a>).</li>
+    <li><strong>Aircraft details</strong> (type, registration, operator) from
+      <a href="https://www.adsbdb.com/">adsbdb</a>, by the aircraft's broadcast address.</li>
+    <li><strong>Amateur callsign lookups</strong> from <a href="https://www.hamqth.com/">HamQTH</a>,
+      <a href="https://hamdb.org/">HamDB</a> and <a href="https://callook.info/">Callook</a>, for the
+      callsign you look up or log. Tapping QRZ opens qrz.com in your browser.</li>
+    <li><strong>Satellite orbits</strong> from <a href="https://celestrak.org/">CelesTrak</a>. Passes are
+      worked out on the phone; your location is not sent.</li>
+    <li><strong>Update checks</strong>: a copy installed from Google Play is updated by Play. A copy
+      installed from the APK on this site asks GitHub whether a newer build exists.</li>
+  </ul>
+  <p>
+    Each request tells that service your IP address and what was asked for. None of them receive an
+    account, an identifier, your location or anything about you beyond the lookup itself.
   </p>
 
   <h2>The browser version</h2>
   <p>
-    This policy covers the Android app. The browser version of Mayhem Mobile, which runs on
-    this same site, performs optional lookups while you use it: aircraft details from
-    <a href="https://www.adsbdb.com/">adsbdb</a>, amateur callsign lookups from HamDB,
-    Callook, HamQTH and QRZ, satellite orbit data from
-    <a href="https://celestrak.org/">CelesTrak</a>, map tiles as above, and its charting
-    library from a public CDN. Each request tells that service your IP address and what you
-    asked about. None of them receive an account, an identifier or anything about you beyond
-    the lookup itself, and they only happen when you use the feature that needs them.
+    The browser version of Mayhem Mobile, on this same site, makes the same lookups and also
+    loads its charting library from a public CDN. Everything else above applies to it too.
   </p>
 
   <h2>What stays on your device</h2>
@@ -73,7 +86,7 @@
   <h2>Radio reception</h2>
   <p>
     The app decodes radio signals that are already being broadcast around you — aircraft, ships,
-    pagers, utility meters, tyre-pressure sensors and similar. That data is shown to you and
+    pagers, utility meters, tire-pressure sensors and similar. That data is shown to you and
     written to the local logs described above. It is not forwarded anywhere.
   </p>
 

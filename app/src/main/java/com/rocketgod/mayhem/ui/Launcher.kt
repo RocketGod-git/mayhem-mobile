@@ -148,7 +148,7 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
 @Composable
 private fun NeedsHackRfDialog(app: MayhemApp, onDismiss: () -> Unit) {
     val still = when (app) {
-        MayhemApp.HAM -> "Two metres, 70 cm and the bands above still work on this radio; the HF bands and FT8 at 14.074 do not."
+        MayhemApp.HAM -> "Two meters, 70 cm and the bands above still work on this radio; the HF bands and FT8 at 14.074 do not."
         MayhemApp.TRANSMIT -> "Everything that listens works on this radio."
         else -> ""
     }

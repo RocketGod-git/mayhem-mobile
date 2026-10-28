@@ -163,7 +163,7 @@ fun TxScreen(defaultAccent: Color) {
     TxField(call, accent, "source callsign-ssid", kb = Kb.CAPS) { call = it.uppercase().take(9) }
     TxField(info, accent, "AX.25 info (position/status)") { info = it.take(120) }
     Box(Modifier.padding(top = d.gap)) { Chip("▶ BEACON 144.39", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.aprs(call, info, freq) } }
-    Note("Bell 202 AX.25 UI frame — decodes on the APRS app and on any TNC. Ham licence required on 144.39.")
+    Note("Bell 202 AX.25 UI frame — decodes on the APRS app and on any TNC. Ham license required on 144.39.")
 }
 
 @Composable private fun SigGenTab(accent: Color, freq: Long, active: Boolean) {
@@ -204,7 +204,7 @@ fun TxScreen(defaultAccent: Color) {
         Chip("te", false, accent, Modifier.weight(1f)) { te = if (te == 350) 500 else if (te == 500) 200 else 350 }
     }
     Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND ×8", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.ookPrinceton(freq, hex.toLongOrNull(16) ?: 0L, bits, te, 8) } }
-    Note("Fixed-code Princeton/PT2262 OOK — for remotes you own on a licence-free ISM band.")
+    Note("Fixed-code Princeton/PT2262 OOK — for remotes you own on a license-free ISM band.")
 }
 
 @Composable private fun ReplayTab(accent: Color, active: Boolean) {
@@ -331,7 +331,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     }
     Box(Modifier.padding(top = d.gap)) { Chip("▶ NOISE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
         if (!active) Tx.ookNoise(0L, chip.toIntOrNull() ?: 0, secs.toIntOrNull() ?: 0, freq) } }
-    Note("Pseudo-random OOK for authorised RF-lab work on your own gear only. Illegal on populated bands.")
+    Note("Pseudo-random OOK for authorized RF-lab work on your own gear only. Illegal on populated bands.")
 }
 
 @Composable private fun BruteTab(accent: Color, freq: Long, active: Boolean) {
@@ -376,7 +376,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
             Tx.frequencyHopper(com.rocketgod.mayhem.core.TxApps.hopList(lo, hi, count.toIntOrNull() ?: 16), (dwell.toIntOrNull() ?: 20).coerceAtLeast(1))
         }
     } }
-    Note("Random-hop CW carrier · low–high MHz · hops · dwell ms each — spread-spectrum bench work on a licence-free band.")
+    Note("Random-hop CW carrier · low–high MHz · hops · dwell ms each — spread-spectrum bench work on a license-free band.")
 }
 
 @Composable private fun AdsbTab(accent: Color, active: Boolean) {
@@ -404,7 +404,7 @@ internal fun SafetyPromptDialog(accent: Color, onCancel: () -> Unit = { Apps.hom
             Column {
                 Text("Do you have an antenna, dummy load or matched load on the ANT port?", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
                 Text("• Transmitting into an open port can damage the HackRF.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
-                Text("• Most bands need a licence — know the rules where you are.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
+                Text("• Most bands need a license — know the rules where you are.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
                 Text("• Turn TX GAIN low first; the amp adds +14 dB.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
             }
         },

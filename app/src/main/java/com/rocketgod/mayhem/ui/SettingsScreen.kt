@@ -51,7 +51,7 @@ fun SettingsScreen(accent: Color) {
                 repeat(cols - rowSkins.size) { Box(Modifier.weight(1f)) }
             }
         }
-        SectionLabel("WATERFALL · colours")
+        SectionLabel("WATERFALL · colors")
         for (p in WfPalette.entries) {
             val on = Waterfalls.palette == p
             val lut = remember(p, Palette.paper, Palette.accent, Palette.accent2) { Waterfalls.lut(p, Palette.paper, Palette.accent, Palette.accent2) }
@@ -70,7 +70,7 @@ fun SettingsScreen(accent: Color) {
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f))) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 LogField(st.call, "callsign", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(call = v.uppercase().trim()) } }
-                LogField(st.license, "licence class", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(license = v) } }
+                LogField(st.license, "license class", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(license = v) } }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 LogField(st.name, "name", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(name = v) } }
@@ -89,7 +89,7 @@ fun SettingsScreen(accent: Color) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(if (txOn) "TX ENABLED" else "TX DISABLED", color = if (txOn) Palette.danger else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp)
-                    Text("Enables the Transmit app (signal generator, Morse, OOK remotes). Most bands require a licence; always use a dummy load or an antenna rated for the frequency.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.padding(top = d.dp(4f)))
+                    Text("Enables the Transmit app (signal generator, Morse, OOK remotes). Most bands require a license; always use a dummy load or an antenna rated for the frequency.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.padding(top = d.dp(4f)))
                 }
                 Box(Modifier.padding(start = d.dp(10f))) { Chip(if (txOn) "ON" else "OFF", selected = txOn, accent = Palette.danger) { com.rocketgod.mayhem.core.Tx.setEnabled(ctx, !txOn) } }
             }
@@ -116,7 +116,7 @@ fun SettingsScreen(accent: Color) {
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
             AboutLine("Plugging in", "the app opens by itself when a HackRF or an RTL-SDR is plugged in; allow the USB prompt once and tick 'always'")
             AboutLine("Nothing happens", "if plugging in does nothing, check the phone's OTG switch — OnePlus, OPPO and realme turn it off after ten idle minutes (Settings › Additional settings › OTG) — and that the cable carries data")
-            AboutLine("RTL-SDR", "receive only, 24 MHz to 1.766 GHz, up to 2.4 Msps, one gain control: the transmit side is greyed out, HAM's HF bands and Bluetooth are out of reach, and wider spans are held to 2.4 MHz")
+            AboutLine("RTL-SDR", "receive only, 24 MHz to 1.766 GHz, up to 2.4 Msps, one gain control: the transmit side is grayed out, HAM's HF bands and Bluetooth are out of reach, and wider spans are held to 2.4 MHz")
             AboutLine("Power", "a HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ")
             AboutLine("Reading LOG", "iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode")
             AboutLine("Tuning", "press the waterfall and slide: the amber guide and readout follow your finger and the radio retunes when you lift. On the home screen a tap sets where Audio opens")

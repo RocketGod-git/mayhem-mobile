@@ -65,14 +65,14 @@ object Bookmarks {
 
     /** ★: save where you are and how you are listening, or drop it if it is already saved. */
     fun star(hz: Long, mode: SdrEngine.Mode, label: String = mode.name, ham: JSONObject? = null) {
-        at(hz)?.let { remove(it); Diag.log("removed %.4f from favourites".format(hz / 1e6)); return }
+        at(hz)?.let { remove(it); Diag.log("removed %.4f from favorites".format(hz / 1e6)); return }
         val app = Apps.playing() ?: MayhemApp.AUDIO
         val b = Bookmark("%.4f %s".format(hz / 1e6, if (mode == SdrEngine.Mode.NONE && ham == null) "" else label).trim(), hz, mode, app.name,
             listOf(SdrEngine.radioLna.value, SdrEngine.radioVga.value, if (SdrEngine.radioAmp.value) 1 else 0, if (SdrEngine.agc.value) 1 else 0),
             SdrEngine.squelchDb.value, ham)
         _list.value = _list.value.filter { kotlin.math.abs(it.hz - hz) >= 50 } + b
         save()
-        Diag.log("saved ${b.name} to favourites")
+        Diag.log("saved ${b.name} to favorites")
     }
 
     /** Where the HAM screen restores its own part of a favourite; set by HAM, which owns those settings. */
