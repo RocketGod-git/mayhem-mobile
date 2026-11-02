@@ -84,9 +84,11 @@ object DemoIq {
                 val keyed = (s % 5.0) < 3.0
                 p2 += 2 * PI * (f2 + 2500 * sin(2 * PI * 600 * s) * (0.6 + 0.4 * sin(2 * PI * 4 * s))) / rate
                 p3 += 2 * PI * f3 / rate
-                i += 24 * cos(p1) + 5 * cos(p3)
-                q += 24 * sin(p1) + 5 * sin(p3)
-                if (keyed) { i += 14 * cos(p2); q += 14 * sin(p2) }
+                // levels picked to land inside the waterfall's 40 dB scale (about 25, 25 and 20 dB over the floor), so
+                // each signal shows as its own colour on the ramp instead of all clipping to the top of it
+                i += 8 * cos(p1) + 1.0 * cos(p3)
+                q += 8 * sin(p1) + 1.0 * sin(p3)
+                if (keyed) { i += 2.5 * cos(p2); q += 2.5 * sin(p2) }
                 buf[2 * k] = (127.4 + i).toInt().coerceIn(0, 255).toByte()
                 buf[2 * k + 1] = (127.4 + q).toInt().coerceIn(0, 255).toByte()
             }
