@@ -42,9 +42,13 @@ object DemoIq {
         var t = 0L
         var p1 = 0.0; var p2 = 0.0; var p3 = 0.0
         val pulse = DoubleArray(n)
+        // a ring of Gaussian noise, read from a random point each buffer: nextGaussian per sample is too slow on an emulator
+        val noise = DoubleArray(1 shl 18) { 3.0 * rng.nextGaussian() }
+        val nMask = noise.size - 1
         var next = 0                   // the next recorded frame to play
         var loopAt = 0L                // the sample the recording's current pass started at
         var free = 0L                  // the first sample after the last frame played: frames never overlap
+        var clock = System.nanoTime()  // paced by the clock: a buffer's worth of real time per buffer, less the work
         while (true) {
             val rate = SdrEngine.rateHz.value.toDouble()
             SdrEngine.onSource(rate.toInt())
@@ -64,26 +68,34 @@ object DemoIq {
                     next++
                 }
             } else { loopAt = t; next = 0; free = t }
+            var nz = rng.nextInt(noise.size)
             for (k in 0 until n) {
+                var i = noise[nz]; var q = noise[(nz + 7919) and nMask]; nz = (nz + 1) and nMask
+                if (pulse[k] > 0) { i += pulse[k]; q += 0.3 * pulse[k] }
+                if (onAdsb) {                     // on 1090 MHz the dial's stations give way to the ADS-B pulses, as on air
+                    buf[2 * k] = (127.4 + i).toInt().coerceIn(0, 255).toByte()
+                    buf[2 * k + 1] = (127.4 + q).toInt().coerceIn(0, 255).toByte()
+                    continue
+                }
                 val s = (t + k) / rate
                 p1 += 2 * PI * (f1 + 60_000 * sin(2 * PI * 900 * s)) / rate
                 // a voice channel that keys up for three seconds in five, with a syllable-rate swing
                 val keyed = (s % 5.0) < 3.0
                 p2 += 2 * PI * (f2 + 2500 * sin(2 * PI * 600 * s) * (0.6 + 0.4 * sin(2 * PI * 4 * s))) / rate
                 p3 += 2 * PI * f3 / rate
-                // on 1090 MHz the dial's stations give way to the ADS-B pulses, as on air
-                val tones = if (onAdsb) 0.0 else 1.0
-                var i = 3.0 * rng.nextGaussian() + tones * (24 * cos(p1) + 5 * cos(p3))
-                var q = 3.0 * rng.nextGaussian() + tones * (24 * sin(p1) + 5 * sin(p3))
-                if (keyed) { i += tones * 14 * cos(p2); q += tones * 14 * sin(p2) }
-                if (pulse[k] > 0) { i += pulse[k]; q += 0.3 * pulse[k] }
+                i += 24 * cos(p1) + 5 * cos(p3)
+                q += 24 * sin(p1) + 5 * sin(p3)
+                if (keyed) { i += 14 * cos(p2); q += 14 * sin(p2) }
                 buf[2 * k] = (127.4 + i).toInt().coerceIn(0, 255).toByte()
                 buf[2 * k + 1] = (127.4 + q).toInt().coerceIn(0, 255).toByte()
             }
             t += n
             p1 %= 2 * PI; p2 %= 2 * PI; p3 %= 2 * PI
             SdrEngine.onIq(buf, buf.size)
-            try { Thread.sleep((n * 1000 / rate).toLong().coerceAtLeast(5)) } catch (e: InterruptedException) { return }
+            clock += (n * 1e9 / rate).toLong()
+            val wait = (clock - System.nanoTime()) / 1_000_000
+            if (wait < -500) clock = System.nanoTime()        // too far behind (a slow emulator): stop trying to catch up
+            try { Thread.sleep(wait.coerceAtLeast(1)) } catch (e: InterruptedException) { return }
         }
     }
 }
