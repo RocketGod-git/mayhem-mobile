@@ -49,28 +49,39 @@ object DemoIq {
     private fun program(isTalk: Boolean): FloatArray {
         val r = Random(if (isTalk) 11L else 7L)
         val out = FloatArray(1 shl 18)
-        var lp = 0.0; var lp2 = 0.0; var note = 220.0; var ph1 = 0.0; var ph2 = 0.0; var ph3 = 0.0; var pitch = 0.0
+        var lp = 0.0; var lp2 = 0.0; var note = 220.0; var ph1 = 0.0; var ph2 = 0.0; var ph3 = 0.0
+        var pitch = 0.0; var f0 = 120.0; var env = 0.0; var loud = 1.0
+        var left = 0; var on = false; var syls = 0      // talk: samples left in this syllable or gap, syllables left in the phrase
         for (k in out.indices) {
-            val s = k / PROG_RATE
             val w = r.nextGaussian()
             lp += 0.35 * (w - lp); lp2 += 0.04 * (lp - lp2)
+            if (k % 1600 == 0) loud = (loud + 0.25 * r.nextGaussian()).coerceIn(0.5, 1.5)   // loudness wanders, 20 times a second
             out[k] = if (isTalk) {
-                pitch += (115 + 25 * sin(2 * PI * 1.3 * s) + 10 * sin(2 * PI * 0.31 * s)) / PROG_RATE
-                val syl = maxOf(0.0, sin(2 * PI * 4.4 * s + 3 * sin(2 * PI * 0.7 * s)))
-                val words = if (sin(2 * PI * 0.23 * s) + 0.6 * sin(2 * PI * 0.67 * s) > -0.7) 1.0 else 0.04
-                (((pitch % 1.0) - 0.5) * 0.9 + 0.5 * (lp - lp2)) * syl * words
+                if (--left <= 0) {
+                    on = !on && syls > 0
+                    if (on) { syls--; left = (0.08 + 0.18 * r.nextDouble()).times(PROG_RATE).toInt(); f0 = (f0 + 25 * r.nextGaussian()).coerceIn(85.0, 190.0) }
+                    else if (syls > 0) left = (0.02 + 0.10 * r.nextDouble()).times(PROG_RATE).toInt()
+                    else { syls = 3 + r.nextInt(7); left = (0.15 + 0.7 * r.nextDouble()).times(PROG_RATE).toInt() }
+                }
+                env += ((if (on) 1.0 else 0.3) - env) * 0.0015   // breath and room between words, never dead air
+                pitch += f0 / PROG_RATE
+                (((pitch % 1.0) - 0.5) + 0.8 * (lp - lp2)) * env * loud
             } else {
-                if (k % 8000 == 0) note = 110 * 2.0.pow(r.nextInt(24) / 12.0)
+                if (k % (6000 + 4000 * (k / 50000 % 2)) == 0) note = 98 * 2.0.pow(r.nextInt(24) / 12.0)
                 ph1 += note / PROG_RATE; ph2 += note * 1.26 / PROG_RATE; ph3 += note * 1.5 / PROG_RATE
-                val chord = sin(2 * PI * ph1) + 0.4 * sin(4 * PI * ph1) + 0.6 * sin(2 * PI * ph2) + 0.5 * sin(2 * PI * ph3)
-                val beat = (s * 2) % 1.0
-                val kick = kotlin.math.exp(-beat * 9) * sin(2 * PI * (55 - 30 * beat) * s)
-                val hat = if (((s * 4) % 1.0) < 0.06) w * 0.5 else 0.0
-                0.35 * chord + 0.9 * kick + 0.5 * (lp - lp2) + hat
+                // saw-edged chord for a full spread of harmonics, a bed of hiss, and only a light kick
+                val chord = ((ph1 % 1.0) - 0.5) + 0.7 * ((ph2 % 1.0) - 0.5) + 0.6 * ((ph3 % 1.0) - 0.5)
+                val beat = (k / PROG_RATE * 2.1) % 1.0
+                val kick = kotlin.math.exp(-beat * 12) * sin(2 * PI * 60 * k / PROG_RATE)
+                (0.6 * chord + 1.2 * (lp - lp2) + 0.25 * kick) * loud
             }.toFloat()
         }
-        val peak = out.maxOf { kotlin.math.abs(it) }
-        for (k in out.indices) out[k] = kotlin.math.tanh(2.0 * out[k] / peak).toFloat()   // squashed loud, like broadcast
+        // compressed and clipped hard, as broadcast is: the deviation stays near full instead of idling at the carrier
+        var rms = 0.0
+        for (v in out) rms += v * v
+        rms = kotlin.math.sqrt(rms / out.size)
+        val g = (if (isTalk) 0.6 else 0.9) / rms
+        for (k in out.indices) out[k] = kotlin.math.tanh(g * out[k]).toFloat()
         return out
     }
 
