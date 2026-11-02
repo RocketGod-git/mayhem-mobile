@@ -1,0 +1,3 @@
+Turn your phone into a software-defined radio with a HackRF or RTL-SDR — the waterfall, demodulators and decoders all run on the device.
+
+See ADS-B planes on a map and AIS ships. Tune FM, AM and SSB with RDS. Decode pagers, ACARS, TPMS, 379 rtl_433 devices and Sub-GHz remotes. Ham radio with FT8, CW, SSTV, DMR and P25. Track satellites. Sweep bands with Looking Glass. Transmit on a HackRF. The same app runs in Chrome on the desktop.
