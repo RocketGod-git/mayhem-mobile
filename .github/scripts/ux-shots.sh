@@ -13,6 +13,8 @@ adb shell am broadcast -a com.android.systemui.demo -e command enter
 adb shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 1000
 adb shell am broadcast -a com.android.systemui.demo -e command notifications -e visible false
 adb shell settings put system accelerometer_rotation 0
+# the demo's ADS-B is a real recording from southern California: put the emulator there, as a phone would be
+adb emu geo fix -118.9 34.5 || true
 
 ACT=com.rocketgod.mayhem/.MainActivity
 open_app() { adb shell am start -n $ACT --ez demo true --es open "$1" >/dev/null; sleep "${2:-5}"; }
@@ -51,6 +53,15 @@ shot pip-prowl
 for a in HOME AUDIO HAM LOOKING_GLASS PROWL TRANSMIT SAT; do
   adb shell am start -n $ACT --ez demo true --es radio RTLSDR --es open "$a" >/dev/null; sleep 5
   shot "rtl-$a"
+done
+
+# store frames, in the device's natural orientation: the same screens left long enough for the waterfall to fill,
+# the recorded traffic to build up on the map and a Looking Glass sweep to finish
+adb shell settings put system user_rotation 0
+sleep 3
+for a in HOME:20 AUDIO:20 ADSB:30 LOOKING_GLASS:45; do
+  open_app "${a%%:*}" "${a##*:}"
+  shot "store-${a%%:*}"
 done
 
 adb shell am broadcast -a com.android.systemui.demo -e command exit
