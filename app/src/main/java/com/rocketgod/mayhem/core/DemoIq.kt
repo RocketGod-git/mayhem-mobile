@@ -23,8 +23,9 @@ object DemoIq {
         res.bufferedReader().readLines().mapNotNull { line ->
             val (ms, hex) = line.split(' ').takeIf { it.size == 2 } ?: return@mapNotNull null
             val bytes = runCatching { ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() } }.getOrNull()
-            // each plane at its own steady level, as it would be at its own range
-            bytes?.let { Frame(ms.toLong(), TxApps.adsbSymbols(it), 60.0 + (hex.substring(2, 8).hashCode() and 31)) }
+            // each plane at its own steady level, 12 to 23 dB over the noise as at its own range: strong enough to decode,
+            // not so strong that the pulses wash the whole waterfall
+            bytes?.let { Frame(ms.toLong(), TxApps.adsbSymbols(it), 12.0 + (hex.substring(2, 8).hashCode() and 31)) }
         }
     }
 
