@@ -1,7 +1,8 @@
 name: Layout Shots
 
 # Every screen of a debug build on an emulated phone and tablet, portrait and landscape, fed by the synthetic demo
-# signal, plus the picture-in-picture window. For reviewing layouts without hardware; not for the store listing.
+# signal, plus the picture-in-picture window, for reviewing layouts without hardware. The store-* frames sit long
+# enough for the waterfalls to fill and show real recorded ADS-B traffic: the tablet ones feed play/en-US/tablet/.
 
 on:
   workflow_dispatch:
