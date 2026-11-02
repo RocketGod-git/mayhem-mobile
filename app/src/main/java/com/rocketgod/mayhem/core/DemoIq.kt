@@ -90,8 +90,8 @@ object DemoIq {
      * fade. Broadcast stations send the FM stereo multiplex (L+R, a 19 kHz pilot, L-R on 38 kHz, RDS on 57 kHz).
      */
     private class Station(val hz: Long, val amp: Double, val dev: Double, val prog: FloatArray, val stereo: Boolean,
-                          val duty: Double, val fade: Double, val fph: Double, start: Double) {
-        var ph = 0.0; var ap = start; var pil = 0.0
+                          val duty: Double, val fph: Double, start: Double) {
+        var ph = 0.0; var ap = start; var pil = 0.0; var lvl = 1.0
     }
     private val stations = HashMap<Long, Station?>()
 
@@ -113,14 +113,14 @@ object DemoIq {
             val db = 6 + 14 * u(h, 1)
             val isTalk = u(h, 3) < 0.25
             Station(hz, 8 * 10.0.pow((db - 24) / 20), 60_000 + 15_000 * u(h, 2), if (isTalk) talk else music, !isTalk || u(h, 4) < 0.5,
-                1.0, 3 + 9 * u(h, 5), u(h, 6), start)
+                1.0, u(h, 6), start)
         } else {
             if (u(h, 0) > 0.045) return@getOrPut null
             val db = 6 + 14 * u(h, 1)
             val carrier = u(h, 2) < 0.3
             // narrow FM is mostly two-way talk, keyed up part of the time; a few carriers stay on
             Station(hz, 10.0.pow((db - (if (carrier) 20 else 12)) / 20), if (carrier) 0.0 else 2500 + 2000 * u(h, 3), talk, false,
-                if (carrier) 1.0 else 0.3 + 0.5 * u(h, 4), 2 + 8 * u(h, 5), u(h, 6), start)
+                if (carrier) 1.0 else 0.3 + 0.5 * u(h, 4), u(h, 6), start)
         }
     }
 
@@ -147,6 +147,7 @@ object DemoIq {
         val buf = ByteArray(2 * n)
         var t = 0L
         var p2 = 0.0; var v1 = 0.0                // the voice channel's carrier phase (cycles) and place in the talk loop
+        var vOn = false; var vLeft = 0.0          // whether it is keyed, and the seconds left in this over or gap
         val pulse = DoubleArray(n)
         val si = DoubleArray(n); val sq = DoubleArray(n)
         // a ring of Gaussian noise, read from a random point each buffer: nextGaussian per sample is too slow on an emulator
@@ -180,11 +181,14 @@ object DemoIq {
                 val sec = t / rate
                 val step = PROG_RATE / rate; val pMask = music.size - 1
                 for (st in stationsIn(fc - (0.48 * rate).toLong(), fc + (0.48 * rate).toLong())) {
-                    // keyed stations talk in overs: on for part of each cycle, a cycle set by the station
-                    if (st.duty < 1.0 && ((sec / (4 + 6 * st.fph) + st.fph) % 1.0) > st.duty) continue
+                    // keyed stations talk in overs: each 1.2 s slot on or off by chance (its share of slots set by the
+                    // station), so overs and gaps run to random lengths rather than a beat
+                    if (st.duty < 1.0 && u(mix(st.hz xor floor(sec / 1.2 + 7 * st.fph).toLong()), 0) > st.duty) continue
                     val off = (st.hz - fc) / rate; val dv = st.dev / rate; val pil = 19_000 / rate
-                    // each fades on its own, with a little multipath flicker from buffer to buffer
-                    val a = st.amp * (0.7 + 0.3 * sin(2 * PI * (sec / st.fade + st.fph))) * (1 + 0.12 * rng.nextGaussian())
+                    // each fades on its own as a slow random wander (a regular fade draws even stripes down the
+                    // waterfall), with a little multipath flicker from buffer to buffer
+                    st.lvl = (st.lvl + 0.06 * rng.nextGaussian() - 0.03 * (st.lvl - 1)).coerceIn(0.6, 1.4)
+                    val a = st.amp * st.lvl * (1 + 0.1 * rng.nextGaussian())
                     val prog = st.prog
                     var ph = st.ph; var ap = st.ap; var pp = st.pil
                     for (k in 0 until n) {
@@ -201,8 +205,10 @@ object DemoIq {
                     }
                     st.ph = ph - floor(ph); st.ap = ap % (pMask + 1); st.pil = pp - floor(pp)
                 }
-                // a voice channel that keys up for three seconds in five, talking
-                if ((sec % 5.0) < 3.0) {
+                // a voice channel keyed up in overs of random length, with random gaps between
+                vLeft -= n / rate
+                if (vLeft <= 0) { vOn = !vOn; vLeft = if (vOn) 1.5 + 4 * rng.nextDouble() else 1 + 6 * rng.nextDouble() }
+                if (vOn) {
                     for (k in 0 until n) {
                         v1 += step
                         p2 += (f2 + 2500 * talk[v1.toInt() and pMask]) / rate
