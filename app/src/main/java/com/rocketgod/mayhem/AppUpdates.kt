@@ -129,10 +129,14 @@ object AppUpdates {
         if (a.fromPlay) {
             val info = playInfo
             val mgr = AppUpdateManagerFactory.create(activity.applicationContext)
-            if (info != null) {
+            // Play may refuse an immediate update (for one, while it is still processing a fresh release); the
+            // store page always works, so the button never does nothing.
+            val started = info != null && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE) &&
                 runCatching { mgr.startUpdateFlowForResult(info, AppUpdateType.IMMEDIATE, activity, REQ_UPDATE) }
-                    .onFailure { e -> Diag.log("updates: could not start Play flow — ${e.message}") }
-            }
+                    .onFailure { e -> Diag.log("updates: could not start Play flow — ${e.message}") }.getOrDefault(false)
+            if (!started) runCatching {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${activity.packageName}")))
+            }.onFailure { e -> Diag.log("updates: could not open the store page — ${e.message}") }
         } else {
             runCatching {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(a.url ?: "https://github.com/$REPO/releases")))
