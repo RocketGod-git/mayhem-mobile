@@ -59,8 +59,10 @@ done
 # the recorded traffic to build up on the map and a Looking Glass sweep to finish
 adb shell settings put system user_rotation 0
 sleep 3
-for a in HOME:20 AUDIO:20 ADSB:30 LOOKING_GLASS:45; do
-  open_app "${a%%:*}" "${a##*:}"
+# (the emulator makes the demo slower than real time, so a waterfall takes minutes to fill). As a HackRF, which the
+# RTL-SDR pass before this leaves behind.
+for a in HOME:180 AUDIO:180 ADSB:60 LOOKING_GLASS:180; do
+  adb shell am start -n $ACT --ez demo true --es radio HACKRF --es open "${a%%:*}" >/dev/null; sleep "${a##*:}"
   shot "store-${a%%:*}"
 done
 
