@@ -43,6 +43,9 @@ export interface Radio {
   setGain(lnaDb: number, vgaDb: number, amp: boolean): void;
 }
 
+/** A limit in MHz for the screen: whole megahertz, or one decimal below one (an RTL-SDR's 0.1 MHz HF floor). */
+export const mhzLimit = (hz: number): string => (hz / 1e6).toFixed(hz < 1e6 ? 1 : 0);
+
 /** Whether a radio will tune here at all. */
 export function canTune(r: RadioLimits, hz: number): boolean {
   return hz >= r.minHz && hz <= r.maxHz;
@@ -98,7 +101,7 @@ export function blockedBecause(n: AppNeeds | undefined, lim: RadioLimits): strin
   if (!n) return '';
   if (n.tx && !lim.canTransmit) return 'this radio receives only';
   if (n.freqHz !== undefined && !canTune(lim, n.freqHz)) {
-    return `it lives at ${(n.freqHz / 1e6).toFixed(3)} MHz, outside this radio's ${(lim.minHz / 1e6).toFixed(0)}–${(lim.maxHz / 1e6).toFixed(0)} MHz`;
+    return `it lives at ${(n.freqHz / 1e6).toFixed(3)} MHz, outside this radio's ${mhzLimit(lim.minHz)}–${mhzLimit(lim.maxHz)} MHz`;
   }
   if (n.rateHz !== undefined && !canSample(lim, n.rateHz)) {
     const top = Math.max(...lim.rates.map(([, hi]) => hi));
@@ -110,7 +113,7 @@ export function blockedBecause(n: AppNeeds | undefined, lim: RadioLimits): strin
 /** Why an app will not work on this radio, or an empty string when it will. */
 export function whyNot(r: RadioLimits, freqHz: number, rateHz: number): string {
   if (!canTune(r, freqHz)) {
-    return `needs ${(freqHz / 1e6).toFixed(3)} MHz, outside this radio's ${(r.minHz / 1e6).toFixed(0)}–${(r.maxHz / 1e6).toFixed(0)} MHz`;
+    return `needs ${(freqHz / 1e6).toFixed(3)} MHz, outside this radio's ${mhzLimit(r.minHz)}–${mhzLimit(r.maxHz)} MHz`;
   }
   if (!canSample(r, rateHz)) {
     const top = Math.max(...r.rates.map(([, hi]) => hi));

@@ -19,13 +19,16 @@ object Radio {
     /** Below ~24 MHz the R82xx tracking filter runs out, above 1.766 GHz the PLL; between 300 and 900 kHz the
      *  resampler produces nothing usable, and past 2.4 Msps the USB link drops samples rather than slowing. */
     val RTLSDR = Limits(24_000_000L, 1_766_000_000L, listOf(225_001..300_000, 900_001..2_400_000), false)
+    /** The same dongle once bring-up has found an HF path on it (V3-style direct sampling on an R820T/R820T2, or a
+     *  Blog V4L's upconverter): the floor drops to 100 kHz. Other tuners keep [RTLSDR]. */
+    val RTLSDR_HF = RTLSDR.copy(minHz = com.rocketgod.mayhem.usb.RtlSdr.HF_MIN_HZ)
 
     private val _kind = MutableStateFlow(Kind.NONE)
     val kind: StateFlow<Kind> = _kind.asStateFlow()
     fun attached(k: Kind) { _kind.value = k }
 
     /** With nothing attached nothing is dimmed: a HackRF session looks exactly as it always did. */
-    val limits: Limits get() = if (_kind.value == Kind.RTLSDR) RTLSDR else HACKRF
+    val limits: Limits get() = if (_kind.value == Kind.RTLSDR) { if (com.rocketgod.mayhem.usb.RtlSdr.hfPath != null) RTLSDR_HF else RTLSDR } else HACKRF
     val canTransmit: Boolean get() = limits.canTransmit
     val name: String get() = if (_kind.value == Kind.RTLSDR) "RTL-SDR" else "HackRF"
 
@@ -37,6 +40,8 @@ object Radio {
     }
 
     fun canTune(l: Limits, hz: Long) = hz in l.minHz..l.maxHz
+    /** A limit in MHz for the screen: whole megahertz, or one decimal below one (an RTL-SDR's 0.1 MHz HF floor). */
+    fun mhz(hz: Long): String = if (hz < 1_000_000L) "%.1f".format(hz / 1e6) else (hz / 1_000_000).toString()
     fun canSample(l: Limits, hz: Int) = l.rates.any { hz in it }
 
     /** The nearest rate the radio will accept, for clamping rather than refusing. */
@@ -59,7 +64,7 @@ object Radio {
 
     /** Why this radio cannot reach any of [lo]..[hi], or "" when it can reach some of it. */
     fun tuneWhy(lo: Long, hi: Long = lo, l: Limits = limits): String =
-        if (hi < l.minHz || lo > l.maxHz) "${if (lo == hi) "%.3f MHz".format(lo / 1e6) else "%.0f–%.0f MHz".format(lo / 1e6, hi / 1e6)} is outside this $name's %d–%d MHz".format(l.minHz / 1_000_000, l.maxHz / 1_000_000) else ""
+        if (hi < l.minHz || lo > l.maxHz) "${if (lo == hi) "%.3f MHz".format(lo / 1e6) else "%.0f–%.0f MHz".format(lo / 1e6, hi / 1e6)} is outside this $name's ${mhz(l.minHz)}–${mhz(l.maxHz)} MHz" else ""
 
     /** Why this radio cannot sample at [hz], or "". */
     fun rateWhy(hz: Int, l: Limits = limits): String =
@@ -73,7 +78,7 @@ object Radio {
         val n = NEEDS[app] ?: return ""
         if (n.tx && !l.canTransmit) return "this radio receives only"
         val f = n.freqHz
-        if (f != null && !canTune(l, f)) return "%.3f MHz is outside its %d–%d MHz".format(f / 1e6, l.minHz / 1_000_000, l.maxHz / 1_000_000)
+        if (f != null && !canTune(l, f)) return "%.3f MHz is outside its ${mhz(l.minHz)}–${mhz(l.maxHz)} MHz".format(f / 1e6)
         return ""
     }
 }

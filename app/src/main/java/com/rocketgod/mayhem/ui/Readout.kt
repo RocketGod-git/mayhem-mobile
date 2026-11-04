@@ -212,6 +212,6 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
     val radio by Radio.kind.collectAsState()
     val lim = Radio.limits
     if (radio != Radio.Kind.NONE && !Radio.canTune(lim, freq))
-        Text("outside this ${Radio.name}'s %d–%d MHz".format(lim.minHz / 1_000_000, lim.maxHz / 1_000_000),
+        Text("outside this ${Radio.name}'s ${Radio.mhz(lim.minHz)}–${Radio.mhz(lim.maxHz)} MHz",
             color = Palette.danger, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth(), maxLines = 1, textAlign = TextAlign.Center)
 }

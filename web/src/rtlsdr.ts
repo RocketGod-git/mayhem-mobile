@@ -87,6 +87,19 @@ const R828D_XTAL = 16_000_000;
  */
 const BLOG_MAKER = 'RTLSDRBlog', BLOG_V4L = 'Blog V4L';
 const usbString = (s: string | undefined): string => (s ?? '').replace(/\0/g, '').trim();
+/**
+ * HF, below where the tuner's own path starts. Under this the dongle is switched onto its HF path, at and above it
+ * the 24 MHz-up path runs exactly as it always has. The edge is the bottom of the normal limits, so no frequency
+ * that tuned before moves to the new path.
+ */
+const HF_EDGE_HZ = 24_000_000;
+/**
+ * The V4L's HF upconverter: below the edge its antenna goes through a mixer that adds this, and the R828S tunes the
+ * sum. librtlsdr-blog uses the RTL's 28.8 MHz for it; measured on a V4L against WWV, the carriers land on frequency.
+ */
+const V4L_UPCONVERT_HZ = 28_800_000;
+/** Which way a frequency reaches the ADC: the tuner, the RTL2832U's Q-branch directly, or the V4L's upconverter. */
+type RfPath = 'tuner' | 'direct' | 'upconvert';
 /** What either part answers at register zero. The one reliable way to tell a tuner is really there. */
 const R82XX_CHECK_VAL = 0x69;
 
@@ -244,6 +257,13 @@ export const RTL_LIMITS: RadioLimits = {
   canTransmit: false,
 };
 
+/**
+ * The same dongle once bring-up has found an HF path on it: an R820T/R820T2 (the RTL-SDR Blog V3 samples HF straight
+ * off the RTL2832U's Q-branch) or a Blog V4L (its upconverter). The floor drops to 100 kHz; everything else is the
+ * same. Other tuners and unknown dongles keep the 24 MHz floor.
+ */
+export const RTL_HF_LIMITS: RadioLimits = { ...RTL_LIMITS, minHz: 100_000 };
+
 export class RtlSdr implements Radio {
   readonly kind = 'rtlsdr' as const;
 
@@ -253,7 +273,9 @@ export class RtlSdr implements Radio {
   targetGainTenthDb = 496;
 
   running = false;
-  readonly limits = RTL_LIMITS;
+  /** How this dongle reaches HF, once bring-up knows: direct sampling, the upconverter, or not at all. */
+  hfPath: RfPath | null = null;
+  get limits(): RadioLimits { return this.hfPath ? RTL_HF_LIMITS : RTL_LIMITS; }
   tuner = '';
   label = 'RTL-SDR';
 
@@ -266,6 +288,12 @@ export class RtlSdr implements Radio {
   private tunerXtal = RTL_XTAL;
   /** Two on an R820T, one on an R828D. Sets how far the synthesizer's integer divider may go. */
   private vcoPowerRef = 2;
+  /** The path the dongle is on now. Bring-up leaves it on the tuner; setCenterFreq switches it by frequency. */
+  private path: RfPath = 'tuner';
+  /** The gain last asked of the tuner, so leaving direct sampling (which re-inits the tuner) can put it back. */
+  private tunerGain = 496;
+  /** What the bias tee was last set to. Bring-up drives the pin to this, so a reopen never leaves stale DC on. */
+  private biasOn = false;
   private appliedFreq = 0; private appliedRate = 0; private appliedGain = Number.MAX_SAFE_INTEGER;
   private dbgBuffers = 0;
   /** The last transfer error, kept so the give-up message can say what actually went wrong. */
@@ -345,6 +373,7 @@ export class RtlSdr implements Radio {
     try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
     await this.initBaseband();
     await this.initTuner();
+    await this.restoreBiasTee();
     await this.setSampleRate(this.targetRateHz); this.appliedRate = this.targetRateHz;
     await this.setCenterFreq(this.targetFreqHz); this.appliedFreq = this.targetFreqHz;
     await this.applyGain(this.targetGainTenthDb); this.appliedGain = this.targetGainTenthDb;
@@ -529,7 +558,17 @@ export class RtlSdr implements Radio {
 
   /** RTL-SDR Blog bias tee: GPIO0 drives the DC injector that puts ~4.5 V on the antenna port for an inline LNA
    *  (librtlsdr rtlsdr_set_bias_tee). It never touches the receive path; the caller gates it behind a warning. */
-  async setBiasTee(on: boolean): Promise<void> { await this.setGpio(0, on); }
+  async setBiasTee(on: boolean): Promise<void> { this.biasOn = on; await this.setGpio(0, on); }
+
+  /**
+   * Put the bias tee where this session says it is. Only a replug powers the dongle down: a page reload or a fresh
+   * open of a dongle that was left with the tee on finds GPIO0 still driven high (measured on a V4L), while the UI
+   * starts at off. So bring-up drives it low unless it was asked for - but only if something already made the pin
+   * an output; a pin still at its power-on input setting is already off and is left alone.
+   */
+  private async restoreBiasTee(): Promise<void> {
+    if (this.biasOn || ((await this.readReg(SYSB, GPOE)) & 1)) await this.setGpio(0, this.biasOn);
+  }
 
   private async demodWrite(page: number, addr: number, val: number, len: number): Promise<void> {
     const data = len === 1 ? new Uint8Array([val & 0xff]) : new Uint8Array([(val >> 8) & 0xff, val & 0xff]);
@@ -595,9 +634,60 @@ export class RtlSdr implements Radio {
   }
 
   private async setCenterFreq(freqHz: number): Promise<void> {
+    const want: RfPath = freqHz < HF_EDGE_HZ && this.hfPath ? this.hfPath : 'tuner';
+    if (want !== this.path) await this.switchPath(want);
+    // Direct sampling has no tuner in the way: the RTL2832U's own downconverter is set to the frequency itself.
+    if (this.path === 'direct') { await this.setIfFreq(freqHz); return; }
     await this.setI2cRepeater(true);
-    await this.r82xxSetFreq(freqHz);
+    await this.r82xxSetFreq(this.path === 'upconvert' ? freqHz + V4L_UPCONVERT_HZ : freqHz, this.path === 'upconvert');
     await this.setI2cRepeater(false);
+  }
+
+  /**
+   * Move between the tuner path and an HF path. Leaving HF puts back exactly what bring-up left, so 24 MHz and up
+   * runs on the same registers it always has.
+   *
+   * Direct sampling (V3, librtlsdr rtlsdr_set_direct_sampling with input 2): the tuner goes to standby, the
+   * demodulator takes the in-phase ADC only, un-inverted and with I and Q swapped so the Q-branch input feeds it,
+   * and the downconverter is set straight to the wanted frequency. Back out, the tuner is brought up again as at
+   * open (its init block resets its gain, so that is put back) and the demodulator gets its tuner settings back.
+   *
+   * Upconverter (V4L, librtlsdr-blog r82xx_set_freq): GPIO5 low switches the antenna through the HF upconverter;
+   * high is the direct path that bring-up selects. The tuner side of it is done in r82xxSetFreq.
+   */
+  private async switchPath(to: RfPath): Promise<void> {
+    const from = this.path;
+    if (from === 'direct') {
+      await this.setI2cRepeater(true);
+      await this.initTunerRegs();
+      await this.setI2cRepeater(false);
+      await this.demodWrite(1, 0xb1, 0x1a, 1);
+      await this.demodWrite(DEMODB, 0x08, 0x4d, 1);
+      await this.setIfFreq(R82XX_IF_HZ);
+      await this.demodWrite(1, 0x15, 0x01, 1);
+      await this.demodWrite(DEMODB, 0x06, 0x80, 1);
+      this.path = 'tuner';
+      await this.applyGain(this.tunerGain);
+    }
+    if (from === 'upconvert') await this.setGpio(5, true);
+    if (to === 'direct') {
+      await this.setI2cRepeater(true);
+      await this.r82xxStandby();
+      await this.setI2cRepeater(false);
+      await this.demodWrite(1, 0xb1, 0x1a, 1);         // no zero-IF
+      await this.demodWrite(1, 0x15, 0x00, 1);         // no spectrum inversion
+      await this.demodWrite(DEMODB, 0x08, 0x4d, 1);    // in-phase ADC input only
+      await this.demodWrite(DEMODB, 0x06, 0x90, 1);    // I and Q swapped: the Q-branch input
+    }
+    if (to === 'upconvert') await this.setGpio(5, false);
+    this.path = to;
+    this.ev.onLog(`RTL-SDR: ${to === 'direct' ? 'HF · direct sampling (Q-branch)' : to === 'upconvert' ? 'HF · upconverter' : 'tuner path'}`);
+  }
+
+  /** The tuner's low-power state (librtlsdr r82xx_standby), for while direct sampling bypasses it. */
+  private async r82xxStandby(): Promise<void> {
+    for (const [reg, v] of [[0x06, 0xb1], [0x05, 0xa0], [0x07, 0x3a], [0x08, 0x40], [0x09, 0xc0], [0x0a, 0x36],
+      [0x0c, 0x35], [0x0f, 0x68], [0x11, 0x03], [0x17, 0xf4], [0x19, 0x0c]] as const) await this.tunerWriteReg(reg, v);
   }
 
   // ---- I2C to the tuner -----------------------------------------------------------------------------------
@@ -710,16 +800,27 @@ export class RtlSdr implements Radio {
       this.ev.onLog('RTL-SDR: RTL-SDR Blog V4L (R828S)');
     }
     this.label = this.tuner === 'R828S' ? 'RTL-SDR Blog V4L' : `RTL-SDR · ${this.tuner}`;
+    // HF: the V4L through its upconverter; an R820T/R820T2 by sampling the Q-branch directly, which is the RTL-SDR
+    // Blog V3's HF input. A V3 cannot be told from a plain R820T2 stick over USB (both report Realtek /
+    // RTL2838UHIDIR), so every R820T-family dongle is offered it; one without the Q-branch wired just hears noise
+    // down there. The R828D (Blog V4, Astrometa) and unknown tuners keep the 24 MHz floor.
+    this.hfPath = this.tuner === 'R828S' ? 'upconvert' : this.tuner === 'R820T/R820T2' ? 'direct' : null;
+    this.path = 'tuner';
 
-    for (let i = 0; i < R82XX_INIT.length; i++) this.tunerRegs[5 + i] = R82XX_INIT[i];
-    await this.tunerWrite(0x05, R82XX_INIT);
-    if (found && this.tuner === 'R828D') await this.pickR828dReference();
-    await this.setTvStandard();
-    await this.sysFreqSel();
+    await this.initTunerRegs(found && this.tuner === 'R828D');
     await this.setI2cRepeater(false);
     // Newer V4L batches route the antenna through an upconverter switch on GPIO5: high is the direct path that
-    // everything from 24 MHz up uses, low is the HF upconverter. This driver does not tune HF, so it is set once.
+    // everything from 24 MHz up uses, low is the HF upconverter (switchPath).
     if (this.tuner === 'R828S') await this.setGpio(5, true);
+  }
+
+  /** The tuner's own bring-up, with the I2C repeater on. Also how leaving direct sampling wakes it back up. */
+  private async initTunerRegs(pickReference = false): Promise<void> {
+    for (let i = 0; i < R82XX_INIT.length; i++) this.tunerRegs[5 + i] = R82XX_INIT[i];
+    await this.tunerWrite(0x05, R82XX_INIT);
+    if (pickReference) await this.pickR828dReference();
+    await this.setTvStandard();
+    await this.sysFreqSel();
   }
 
   /**
@@ -829,9 +930,17 @@ export class RtlSdr implements Radio {
     return true;
   }
 
-  private async r82xxSetFreq(rfHz: number): Promise<void> {
+  private async r82xxSetFreq(rfHz: number, hf = false): Promise<void> {
     const lo = rfHz + R82XX_IF_HZ;                      // low-side injection; the demodulator un-inverts
     await this.setMux(lo);
+    if (hf) {
+      // V4L HF, out of the upconverter (librtlsdr-blog): tracking filter bypassed, cable-1 in, air-in off.
+      await this.tunerWriteMask(0x1a, 0x40, 0xc3);
+      await this.tunerWriteReg(0x1b, 0x00);
+      await this.tunerWriteMask(0x05, 0x60, 0x60);
+      if (!(await this.r82xxSetPll(lo))) this.ev.onLog(`RTL-SDR: PLL did not lock at ${(rfHz / 1e6).toFixed(3)} MHz (HF)`);
+      return;
+    }
     // The R828D (RTL-SDR Blog V4, Astrometa) has three RF inputs, and the aerial sits on the air-in below
     // ~345 MHz and the cable-in above it. librtlsdr steers register 0x05 bit 6:5 (mask 0x60) to pick them; the
     // init block leaves it at 0x00 (cable-in), so on a V4 nothing below 345 MHz — FM, APRS, air, 2 m — ever
@@ -853,6 +962,10 @@ export class RtlSdr implements Radio {
    * what was asked for is what librtlsdr does, and it is why the achievable gains are the ragged list they are.
    */
   private async applyGain(tenthDb: number): Promise<void> {
+    this.tunerGain = tenthDb;
+    // Direct sampling bypasses the tuner, which is in standby: there is no gain to set, and writing its gain bits
+    // would half-wake it. Kept, and put back when the tuner path returns.
+    if (this.path === 'direct') return;
     await this.setI2cRepeater(true);
     if (tenthDb === GAIN_AUTO) {
       await this.tunerWriteMask(0x05, 0x00, 0x10);      // amplifier automatic

@@ -218,7 +218,7 @@ function setDial(hz: number): void {
 let silentTune = false;
 function tune(hz: number, hold = false): void {
   if (state.app === 'ham') { hamTune(hz); return; }
-  state.freq = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
+  state.freq = Math.min(6_000_000_000, Math.max(Math.min(1_000_000, radio?.limits.minHz ?? 1_000_000), Math.round(hz)));
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
   // the finger that just picked something (`hold`). Explicit tuning — the dial, the keypad, the step keys — is
   // free to go anywhere the radio reaches: the view follows it, so you are never walled inside the band you
@@ -1578,7 +1578,7 @@ function spanBarRange(): { lo: number; hi: number } {
   // rather than looking for one - and the launcher is the screen for looking for one.
   if (state.app === null) {
     const lim = radio?.limits;
-    return { lo: Math.max(1e6, lim?.minHz ?? 1e6), hi: lim?.maxHz ?? 6_000_000_000 };
+    return { lo: lim?.minHz ?? 1e6, hi: lim?.maxHz ?? 6_000_000_000 };
   }
   const c = spanCenter(), half = state.rate / 2, w = 24 * state.rate;
   if (!spanBar || c - half < spanBar.lo || c + half > spanBar.hi || spanBar.hi - spanBar.lo !== w) spanBar = { lo: Math.max(0, c - w / 2), hi: Math.max(w, c + w / 2) };
