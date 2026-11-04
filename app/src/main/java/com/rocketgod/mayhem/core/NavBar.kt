@@ -17,7 +17,7 @@ object NavBar {
     private const val KEY_LAST = "nav_last"
     private const val KEY_BIAS_OK = "bias_ok"
 
-    /** What a fresh install's bar holds: the receivers people reach for first. */
+    /** The receivers people reach for first: they lead the bar on a fresh install. */
     val STARTER = listOf(MayhemApp.AUDIO, MayhemApp.PAGER, MayhemApp.ADSB, MayhemApp.HAM, MayhemApp.DEVICES, MayhemApp.LOOKING_GLASS)
 
     /** Every app the bar can hold: all of them but Settings (it has its own button), and Troll only where it ships. */
@@ -28,9 +28,10 @@ object NavBar {
     private val _order = MutableStateFlow(defaultOrder())
     /** Every app, in the order the user set. */
     val order: StateFlow<List<MayhemApp>> = _order.asStateFlow()
-    private val _checked = MutableStateFlow(STARTER.toSet())
+    // a fresh install has every app in the bar; Settings › Bar unticks the ones you don't use
+    private val _checked = MutableStateFlow(all().toSet())
     val checked: StateFlow<Set<MayhemApp>> = _checked.asStateFlow()
-    private val _bar = MutableStateFlow(STARTER)
+    private val _bar = MutableStateFlow(defaultOrder())
     /** The ticked apps, in order: what the bar shows after HOME. */
     val bar: StateFlow<List<MayhemApp>> = _bar.asStateFlow()
     private val _opensOnLast = MutableStateFlow(false)
