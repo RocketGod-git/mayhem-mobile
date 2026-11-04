@@ -83,13 +83,12 @@ fun LogWindow(onClose: () -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("LOG", color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(14f), letterSpacing = 3.sp)
                 Text("  ${lines.size} lines", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.weight(1f))
-                if (floating) Chip("FULL", selected = false, accent = Palette.accent) { floating = false }
+                IconChip(if (floating) FullscreenIcon else FullscreenExitIcon, if (floating) "Full screen" else "Exit full screen", Palette.accent) { floating = !floating }
                 Spacer(Modifier.width(d.dp(4f)))
                 Chip("✕", selected = false, accent = Palette.accent) { onClose() }
             }
             if (!floating) {
                 Row(Modifier.fillMaxWidth().padding(top = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                    Chip("FLOAT", selected = false, accent = Palette.accent, modifier = Modifier.weight(1f)) { floating = true }
                     Chip("SAVE", selected = false, accent = Palette.accent, modifier = Modifier.weight(1f)) {
                         val where = Diag.saveToDownloads(ctx)
                         Toast.makeText(ctx, where?.let { "Saved to $it" } ?: "Could not save the log", Toast.LENGTH_LONG).show()

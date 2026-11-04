@@ -89,7 +89,7 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
         }
         Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("${snap.total} DECODED", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp, modifier = Modifier.weight(1f))
-            Chip("FULL", selected = false, accent = accent) { full = true }
+            IconChip(FullscreenIcon, "Full screen", accent) { full = true }
             Spacer(Modifier.width(d.dp(4f)))
             logActions()
         }
@@ -240,7 +240,7 @@ private fun PagerFeed(messages: List<PagerMessage>, capcodes: Int, f: PagerFilte
             horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
             Text("$capcodes CAPCODES · ${messages.size} PAGES", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold,
                 fontSize = d.sp(11f), letterSpacing = 2.sp, maxLines = 1, modifier = Modifier.weight(1f))
-            if (onFull != null) Chip("FULL", selected = false, accent = accent) { onFull() }
+            if (onFull != null) IconChip(FullscreenIcon, "Full screen", accent) { onFull() }
             Chip("CLEAR", selected = false, accent = accent) { PagerEngine.clear(); f.capcode = null; f.hz = null }
         }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = d.dp(4f)),
