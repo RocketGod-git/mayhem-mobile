@@ -77,6 +77,10 @@ object SdrEngine {
     val radioVga: StateFlow<Int> = _radioVga.asStateFlow()
     private val _radioAmp = MutableStateFlow(false)
     val radioAmp: StateFlow<Boolean> = _radioAmp.asStateFlow()
+    /** RTL-SDR Blog bias tee (GPIO0, DC out the antenna port). Off by default; the UI gates the first enable. */
+    private val _biasTee = MutableStateFlow(false)
+    val biasTee: StateFlow<Boolean> = _biasTee.asStateFlow()
+    fun setBiasTee(on: Boolean) { _biasTee.value = on; RtlSdr.targetBiasTee = on }
 
     /**
      * Automatic gain, on by default: hold the ADC level (iqRMS, once a second) where the 8-bit converter has both
@@ -340,6 +344,7 @@ object SdrEngine {
         Radio.attached(kind)
         _rateHz.value = Radio.nearestRate(Radio.limits, _rateHz.value)
         _radioVga.value = minOf(_radioVga.value, vgaMax())
+        _biasTee.value = false; RtlSdr.targetBiasTee = false   // a dongle powers up with the tee off; keep it that way until asked
         syncDriver()
     }
 

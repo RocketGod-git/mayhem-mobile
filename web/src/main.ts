@@ -100,7 +100,7 @@ const state = {
   capturing: false, captureName: '', captureBytes: 0, captures: [] as { name: string; size: number }[],
   aircraft: [] as Aircraft[], frames: 0, aisTable: [] as Vessel[], aisSel: 0, aisView: 'map' as 'map' | 'list' | 'log',
   aprsStations: [] as AprsStation[], aprsSel: '', aprsView: 'map' as 'map' | 'list' | 'log',
-  connected: false, board: '', firmware: '', gainsScaled: false, agc: true,
+  connected: false, board: '', firmware: '', gainsScaled: false, agc: true, biast: false,
   squelch: 0, sqOpen: true, scanning: false,
   prowl: {
     on: false, target: null as ProwlTarget | null, tracks: new Map<number, ProwlTrack>(), log: [] as ProwlHit[],
@@ -442,9 +442,12 @@ function refreshGainUi(): void {
   const rtl = radio?.kind === 'rtlsdr';
   const lnaStep = q('#lna')?.closest('.stepper') as HTMLElement | null;
   const amp = q('#amp') as HTMLElement | null;
+  const biast = q('#biast') as HTMLElement | null;
   const cap = q('#gain-cap');
   if (lnaStep) lnaStep.hidden = rtl;
   if (amp) amp.hidden = rtl;
+  // Bias tee is an RTL-SDR Blog feature; it takes the slot the (hidden) amp button leaves on a dongle.
+  if (biast) { biast.hidden = !rtl; biast.classList.toggle('on', state.biast); biast.textContent = state.biast ? 'BIAS-T ON' : 'BIAS-T'; }
   if (cap) cap.textContent = rtl ? 'GAIN · AGC / TUNER · 0–48.8 dB' : 'GAIN';
 }
 
@@ -1319,7 +1322,7 @@ function freqEntry(seed = ''): void {
   inp.onblur = () => close(true);
 }
 const isAndroid = () => /android/i.test(navigator.userAgent);
-const gainHtml = () => `<div class="caption" id="gain-cap">GAIN</div><div class="row"><button id="agc" class="chip">AGC</button><button id="amp" class="chip">AMP OFF</button><div class="stepper"><button id="lna-minus">−</button><span id="lna">LNA</span><button id="lna-plus">+</button></div><div class="stepper"><button id="vga-minus">−</button><span id="vga">VGA</span><button id="vga-plus">+</button></div></div>`;
+const gainHtml = () => `<div class="caption" id="gain-cap">GAIN</div><div class="row"><button id="agc" class="chip">AGC</button><button id="amp" class="chip">AMP OFF</button><button id="biast" class="chip" hidden>BIAS-T</button><div class="stepper"><button id="lna-minus">−</button><span id="lna">LNA</span><button id="lna-plus">+</button></div><div class="stepper"><button id="vga-minus">−</button><span id="vga">VGA</span><button id="vga-plus">+</button></div></div>`;
 const stepHtml = (steps: number[]) => `<div class="caption">TUNE · MHz</div><div class="row">${steps.map(s => `<button class="chip" data-step="${-s}">−${stepLabel(s)}</button>`).join('')}${[...steps].reverse().map(s => `<button class="chip" data-step="${s}">+${stepLabel(s)}</button>`).join('')}</div>`;
 const presetHtml = (title: string, presets: [string, number, Mode?][]) => `<div class="caption">${title}</div><div class="row">${presets.map(([l, hz, m]) => `<button class="chip" data-preset="${hz}" ${m ? `data-pmode="${m}"` : ''}>${l}</button>`).join('')}</div>`;
 function stepLabel(hz: number): string { return hz >= 1e6 ? `${hz / 1e6}` : hz >= 1e5 ? `.${hz / 1e5}` : hz >= 1e4 ? `.0${hz / 1e4}` : hz >= 1e3 ? `.00${hz / 1e3}` : `.000${hz / 100}`; }
@@ -3061,6 +3064,25 @@ function renderTroll(view: HTMLElement): void {
 }
 
 /** Session-scoped safety modal: confirms an antenna or a dummy load is attached before the first transmission. */
+let biasAcked = false;
+/** Bias-tee pushes DC out the antenna port, so it is off by default and the first enable each session asks first. */
+function toggleBiasTee(): void {
+  const rtl = radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null;
+  if (!rtl) return;
+  if (state.biast) { state.biast = false; void rtl.setBiasTee(false); refreshGainUi(); return; }
+  if (!biasAcked) { showBiasWarn(); return; }
+  state.biast = true; void rtl.setBiasTee(true); refreshGainUi();
+}
+function showBiasWarn(): void {
+  if (q('#bias-warn')) return;
+  const el = document.createElement('div');
+  el.id = 'bias-warn'; el.className = 'modal';
+  el.innerHTML = `<div class="modal-card"><h3>Bias-tee: DC on the antenna port</h3><p>This puts about 4.5 V DC on the RTL-SDR's antenna input to power an inline LNA.</p><ul><li>Only turn it on with a bias-tee-ready LNA or feed.</li><li>Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked — the DC can damage it.</li></ul><div class="modal-actions"><button id="bias-cancel" class="chip">CANCEL</button><button id="bias-ok" class="chip primary">ENABLE BIAS-T</button></div></div>`;
+  document.body.appendChild(el);
+  const close = () => el.remove();
+  $('bias-ok').onclick = () => { biasAcked = true; state.biast = true; const rtl = radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null; if (rtl) void rtl.setBiasTee(true); refreshGainUi(); close(); };
+  $('bias-cancel').onclick = close;
+}
 function showTxSafetyPrompt(): void {
   if (q('#tx-safety')) return;
   const el = document.createElement('div');
@@ -3330,6 +3352,7 @@ function wireCommon(view: HTMLElement): void {
   on('lna-minus', () => manualGains(state.lna - 8, state.vga, state.amp)); on('lna-plus', () => manualGains(state.lna + 8, state.vga, state.amp));
   on('vga-minus', () => manualGains(state.lna, state.vga - 2, state.amp)); on('vga-plus', () => manualGains(state.lna, state.vga + 2, state.amp));
   on('amp', () => { setGains(state.lna, state.vga, !state.amp); saveGains(); });
+  on('biast', () => toggleBiasTee());
   on('agc', () => userAgc(!state.agc)); refreshAgcChip(); refreshGainUi();
   // by id, whatever screen they are on. The old loop keyed off `logs`, which only the first packet creates, so
   // a CLEAR tapped on a screen opened before anything arrived was never wired at all.
@@ -3902,6 +3925,7 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   r.targetFreqHz = state.freq;
   r.targetRateHz = nearestRate(r.limits, state.rate);
   r.setGain(state.lna, state.vga, state.amp);
+  state.biast = false;   // the dongle powers up with the bias tee off; keep the UI honest
   radio = r; radioDev = d;
   refreshLauncherLimits();
   applyLauncherView();
