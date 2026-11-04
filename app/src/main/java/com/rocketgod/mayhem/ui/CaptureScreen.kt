@@ -70,17 +70,9 @@ fun CaptureScreen(accent: Color) {
         face = {
             val bytes = rec?.bytes?.collectAsState()?.value ?: 0L
             val level by SdrEngine.levelDb.collectAsState()
-            Column(Modifier.faceCard(recTint, d)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FaceTag("CAPTURE", recTint)
-                    Text("%d MSPS · %.1f MB/S · .C8 IQ".format(rate / 1_000_000, rate * 2 / 1e6), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
-                        letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                    DialActions(recTint, freq)
-                    if (recording) Lamp("REC %.1f MB".format(bytes.toLong() / 1e6), Palette.danger, blink = true) else Lamp("READY", Palette.ok)
-                }
-                Box(Modifier.padding(top = d.dp(2f))) { DialRow(recTint, freq, big = false) }
-                LedMeter(level / 45f, recTint, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
-            }
+            FreqCard(recTint, tag = "CAPTURE", title = "%d MSPS · .C8 IQ".format(rate / 1_000_000), freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+                right = "%.1f MB/s to disk".format(rate * 2 / 1e6),
+                lamp = { if (recording) Lamp("REC %.1f MB".format(bytes.toLong() / 1e6), Palette.danger, blink = true) else Lamp("READY", Palette.ok) })
         },
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, if (recording) Palette.danger else Palette.line, RoundedCornerShape(d.dp(12f)))) {

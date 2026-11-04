@@ -187,7 +187,8 @@ fun SettingsScreen(accent: Color) {
                 add("radio" to "RADIO"); add("bar" to "BAR"); add("look" to "LOOK"); add("station" to "STATION")
                 add("transmit" to "TRANSMIT"); add("how" to "HOW IT WORKS"); add("log" to "LOG"); add("about" to "ABOUT")
             }
-            if (term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            val pills = rememberScrollState()
+            if (term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).scrollGlow(pills, horizontal = true).horizontalScroll(pills), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 for ((k, l) in keys) Text(l, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
                     modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, accent.copy(alpha = 0.6f), RoundedCornerShape(50))
                         .clickable { SettingsNav.jump = k }.padding(horizontal = d.dp(12f), vertical = d.dp(6f)))

@@ -77,21 +77,15 @@ fun DevicesScreen(accent: Color) {
         // the card keeps its height; the waterfall and the device list split the rest evenly
         share = true,
         face = {
-            Column(Modifier.faceCard(accent, d)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FaceTag("DEVICES", accent)
-                    Text(if (rep.span > 0) "${rep.protocols} PROTOCOLS · ${rep.decoded} DECODED" else "SENSORS · METERS · REMOTES", color = Palette.muted, fontFamily = Mono,
-                        fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                    DialActions(accent, freq)
+            FreqCard(accent, tag = "DEVICES", title = if (rep.span > 0) "${rep.protocols} PROTOCOLS · ${rep.decoded} DECODED" else "SENSORS · METERS · REMOTES",
+                freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level), right = if (rep.span > 0) "${rep.bursts} bursts · ${Devices.spanLabel(rep.span)}" else "listening",
+                lamp = {
                     when {
                         hop -> Lamp("HOPPING", Palette.accent2, blink = true)
                         heard.isNotEmpty() -> Lamp("${heard.size} HEARD", Palette.ok)
                         else -> Lamp("LISTENING", Palette.accent2, blink = true)
                     }
-                }
-                Box(Modifier.padding(top = d.dp(2f))) { DialRow(accent, freq, big = false) }
-                LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
-            }
+                })
         },
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {

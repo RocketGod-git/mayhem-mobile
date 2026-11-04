@@ -61,28 +61,20 @@ fun ProwlScreen(accent: Color) {
     AdaptivePane(
         visualHeightNarrow = d.dp(170f),
         face = {
-            Column(Modifier.faceCard(accent, d)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FaceTag(if (t != null) mode.name else "PROWL", accent)
-                    Text(head, color = if (voice) Palette.ok else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                    DialActions(accent, lo + offset)
+            FreqCard(accent, tag = if (t != null) mode.name else "PROWL", title = head, titleColor = if (voice) Palette.ok else Palette.muted, freq = lo + offset,
+                // how much it sounds like speech: the hunt keeps a channel once this passes the mark
+                meter = if (t != null) v.score.toFloat().coerceIn(0f, 1f) else 0f, tick = Prowl.VOICE.toFloat(),
+                scale = listOf(0f to "0", 0.5f to "0.5", 1f to "1.0 SPEECH"),
+                left = if (t != null) "SPEECH %.2f · best %.2f".format(v.score, v.best) else "SPEECH —",
+                right = listOf(mid, low).filter { it.isNotEmpty() }.joinToString(" · ").let { if (t != null) low.ifEmpty { if (t.judged) "judged" else "deciding" } else it },
+                lamp = {
                     when {
                         voice -> Lamp("VOICE", Palette.ok)
                         held != null -> Lamp("HOLDING", Palette.ok)
                         v.on -> Lamp("HUNTING", Palette.accent2, blink = true)
                         else -> Lamp("STOPPED", Palette.muted)
                     }
-                }
-                Box(Modifier.padding(top = d.dp(2f))) { DialRow(accent, lo + offset, big = false) }
-                // how much it sounds like speech: the hunt keeps a channel once this passes the voice mark
-                Row(Modifier.fillMaxWidth().padding(top = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
-                    RowLabel("SPEECH ")
-                    LedMeter(if (t != null) v.score.toFloat().coerceIn(0f, 1f) else 0f, accent, Modifier.weight(1f))
-                }
-                Text(listOf(mid, low).filter { it.isNotEmpty() }.joinToString(" · "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = d.dp(4f)))
-            }
+                })
         },
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {

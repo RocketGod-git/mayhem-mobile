@@ -8,6 +8,11 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.height
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.Dp
@@ -268,13 +273,14 @@ fun TileRow(tiles: List<Tile>, accent: Color, width: Dp = 74.dp, onPick: (Int) -
 
 /** Thirty-two LEDs over [frac] of full scale: blue, then green, amber and red toward the top. */
 @Composable
-fun LedMeter(frac: Float, accent: Color, modifier: Modifier) {
+fun LedMeter(frac: Float, accent: Color, modifier: Modifier, tick: Float? = null) {
     val d = rememberDims()
     val n = 32
     val lit = (frac * n).roundToInt().coerceIn(0, n)
     val off = Palette.line.copy(alpha = 0.7f)
     val ok = Palette.ok; val amber = Palette.accent2; val red = Palette.danger
-    Canvas(modifier.height(d.dp(10f))) {
+    val ink = Palette.ink
+    Canvas(modifier.height(d.dp(12f))) {
         val gap = 2.dp.toPx()
         val w = (size.width - gap * (n - 1)) / n
         val r = CornerRadius(2.dp.toPx())
@@ -284,5 +290,69 @@ fun LedMeter(frac: Float, accent: Color, modifier: Modifier) {
             if (i < lit) drawRoundRect(c.copy(alpha = 0.3f), Offset(x - 1.dp.toPx(), -1.dp.toPx()), Size(w + 2.dp.toPx(), size.height + 2.dp.toPx()), r)
             drawRoundRect(c, Offset(x, 0f), Size(w, size.height), r)
         }
+        // a threshold: a white mark on a dark casing, so it reads over lit and unlit LEDs alike
+        if (tick != null) {
+            val x = tick.coerceIn(0f, 1f) * size.width
+            drawLine(Color.Black.copy(alpha = 0.6f), Offset(x, -3.dp.toPx()), Offset(x, size.height + 3.dp.toPx()), 4.dp.toPx(), StrokeCap.Round)
+            drawLine(ink, Offset(x, -3.dp.toPx()), Offset(x, size.height + 3.dp.toPx()), 2.dp.toPx(), StrokeCap.Round)
+        }
+    }
+}
+
+/** The scale every dB meter on a [FreqCard] uses unless it has its own: 0 to 40 dB in tens. */
+val DB_SCALE: List<Pair<Float, String>> = listOf(0f to "0", 0.25f to "10", 0.5f to "20", 0.75f to "30", 1f to "40 dB")
+
+/**
+ * The frequency card, the same on every app: a header (a filled [tag], a [title], ☆ and ⌨, the [lamp]), the digits
+ * across the full width, a 32-LED [meter] (0..1) with an optional [tick] (a threshold, at 0..1) and its [scale],
+ * then a caption line ([left] in bold, [right] muted). [digits] replaces the dial for an app that shows a range
+ * instead of one frequency; [footer] is for an app's own extras (the pager's counters), under everything else.
+ * [onTune] null means the dial is shown but can't be tuned (and there is no ☆ or ⌨).
+ */
+@Composable
+fun FreqCard(
+    accent: Color, tag: String, title: String, freq: Long, meter: Float, left: String, right: String,
+    lamp: @Composable () -> Unit,
+    titleColor: Color = Palette.muted,
+    tick: Float? = null,
+    scale: List<Pair<Float, String>> = DB_SCALE,
+    onTune: ((Long) -> Unit)? = { SdrEngine.tune(it) },
+    actions: (@Composable () -> Unit)? = null,
+    rightColor: Color = Palette.muted,
+    digits: (@Composable () -> Unit)? = null,
+    footer: (@Composable ColumnScope.() -> Unit)? = null,
+) {
+    val d = rememberDims()
+    Column(Modifier.faceCard(accent, d)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            FaceTag(tag, accent)
+            Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+            if (actions != null) actions() else if (onTune != null) DialActions(accent, freq, onTune = onTune)
+            lamp()
+        }
+        Box(Modifier.fillMaxWidth().padding(top = d.dp(2f))) {
+            when {
+                digits != null -> digits()
+                onTune != null -> DialRow(accent, freq, big = true, onTune = onTune)
+                else -> FreqDigits(freq, true, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
+            }
+        }
+        LedMeter(meter, accent, Modifier.fillMaxWidth().padding(top = d.dp(6f)), tick = tick)
+        if (scale.isNotEmpty()) BoxWithConstraints(Modifier.fillMaxWidth().height(d.dp(12f)).padding(top = 2.dp)) {
+            val w = maxWidth
+            for ((at, label) in scale) {
+                if (at >= 0.98f) Text(label, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), maxLines = 1, softWrap = false, modifier = Modifier.align(Alignment.TopEnd))
+                else Text(label, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), maxLines = 1, softWrap = false, modifier = Modifier.offset(x = w * at))
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = d.dp(3f)), verticalAlignment = Alignment.CenterVertically) {
+            Text(left, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false))
+            Spacer(Modifier.weight(0.01f))
+            Text(right, color = rightColor, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End,
+                modifier = Modifier.padding(start = d.dp(8f)))
+        }
+        footer?.invoke(this)
     }
 }

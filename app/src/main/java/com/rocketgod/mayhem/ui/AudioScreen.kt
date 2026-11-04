@@ -168,7 +168,6 @@ private fun bandTitle(hz: Long): String = when (hz) {
  */
 @Composable
 private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
-    val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val rate by SdrEngine.rateHz.collectAsState()
     val offset by SdrEngine.offsetHz.collectAsState()
@@ -176,17 +175,10 @@ private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
     val squelch by SdrEngine.squelchDb.collectAsState()
     val sqOpen by SdrEngine.squelchOpen.collectAsState()
     val scanning by Scanner.active.collectAsState()
-    Column(Modifier.faceCard(accent, d)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            FaceTag(mode.name, accent)
-            Text(bandTitle(Tuning.previewHz ?: freq), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-            DialActions(accent, freq)
-            SquelchLamp(squelch, sqOpen, scanning)
-        }
-        Box(Modifier.padding(top = d.dp(6f))) { DialRow(accent, freq) }
-        SignalMeter(channelDb, squelch, accent, Modifier.fillMaxWidth().padding(top = d.dp(8f)))
-    }
+    FreqCard(accent, tag = mode.name, title = bandTitle(Tuning.previewHz ?: freq), freq = freq,
+        meter = channelDb / METER_DB, tick = if (squelch > 0) squelch / METER_DB else null,
+        left = "+%.0f dB over the noise".format(channelDb), right = if (squelch > 0) "SQL $squelch dB" else "SQL OFF",
+        lamp = { SquelchLamp(squelch, sqOpen, scanning) })
 }
 
 /** OPEN (green), SQUELCHED (hollow) or SCAN (amber, blinking): the one word that says whether you'd hear anything. */
@@ -195,42 +187,6 @@ private fun SquelchLamp(squelch: Int, open: Boolean, scanning: Boolean) = when {
     scanning -> Lamp(if (open && squelch > 0) "SCAN · SIGNAL" else "SCAN", Palette.accent2, blink = true)
     squelch > 0 && !open -> Lamp("SQUELCHED", Palette.muted)
     else -> Lamp("OPEN", Palette.ok)
-}
-
-/** Thirty-two LEDs, blue then green, amber and red, over 0–40 dB above the noise floor; a white tick at the squelch. */
-@Composable
-private fun SignalMeter(db: Float, squelch: Int, accent: Color, modifier: Modifier) {
-    val d = rememberDims()
-    val n = 32
-    val lit = ((db / METER_DB) * n).roundToInt().coerceIn(0, n)
-    val off = Palette.line.copy(alpha = 0.7f)
-    val ink = Palette.ink
-    Column(modifier) {
-        Canvas(Modifier.fillMaxWidth().height(d.dp(12f))) {
-            val gap = 2.dp.toPx()
-            val w = (size.width - gap * (n - 1)) / n
-            val r = CornerRadius(2.dp.toPx())
-            for (i in 0 until n) {
-                val c = if (i >= lit) off else when { i < 14 -> accent; i < 22 -> Palette.ok; i < 28 -> Palette.accent2; else -> Palette.danger }
-                val x = i * (w + gap)
-                if (i < lit) drawRoundRect(c.copy(alpha = 0.3f), Offset(x - 1.dp.toPx(), -1.dp.toPx()), Size(w + 2.dp.toPx(), size.height + 2.dp.toPx()), r)
-                drawRoundRect(c, Offset(x, 0f), Size(w, size.height), r)
-            }
-            if (squelch > 0) {
-                val x = (squelch / METER_DB).coerceIn(0f, 1f) * size.width
-                drawLine(Color.Black.copy(alpha = 0.6f), Offset(x, -3.dp.toPx()), Offset(x, size.height + 3.dp.toPx()), 4.dp.toPx(), StrokeCap.Round)
-                drawLine(ink, Offset(x, -3.dp.toPx()), Offset(x, size.height + 3.dp.toPx()), 2.dp.toPx(), StrokeCap.Round)
-            }
-        }
-        // 0, 10, 20 and 30 dB sit at a quarter of the scale each; the squelch setting reads out at the right
-        Row(Modifier.fillMaxWidth().padding(top = 3.dp)) {
-            for (v in listOf(0, 10, 20)) Text("$v", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), modifier = Modifier.weight(1f))
-            Row(Modifier.weight(1f)) {
-                Text("30", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), modifier = Modifier.weight(1f))
-                Text(if (squelch > 0) "SQL $squelch dB" else "SQL OFF", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
-            }
-        }
-    }
 }
 
 /** What RDS says about the station: its name large, then programme type, traffic and PI, and the radiotext scrolling. */

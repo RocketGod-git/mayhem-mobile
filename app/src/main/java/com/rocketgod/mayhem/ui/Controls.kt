@@ -1,5 +1,11 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.ui.composed
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -363,25 +369,29 @@ fun ScrollColumn(modifier: Modifier = Modifier, content: @Composable ColumnScope
  * A soft accent glow over each edge of a scroller that has more past it, so a list says it goes on without a
  * scrollbar. Goes before the scroll modifier, so it draws on the viewport. [horizontal] for a sideways strip.
  */
-fun Modifier.scrollGlow(state: ScrollableState, horizontal: Boolean = false): Modifier = drawWithContent {
+fun Modifier.scrollGlow(state: ScrollableState, horizontal: Boolean = false): Modifier = composed {
+    // the glow breathes, so an edge with more past it catches the eye without an arrow in the way
+    val pulse by rememberInfiniteTransition(label = "glow").animateFloat(0.55f, 1f, infiniteRepeatable(tween(1100), RepeatMode.Reverse), label = "breath")
+    drawWithContent {
     drawContent()
     val a = Palette.accent
-    val depth = (if (horizontal) 18 else 16).dp.toPx()
-    val edge = 1.dp.toPx()
-    val stops = arrayOf(0f to a.copy(alpha = 0.22f), 0.5f to a.copy(alpha = 0.06f), 1f to Color.Transparent)
+    val depth = (if (horizontal) 22 else 18).dp.toPx()
+    val edge = (if (horizontal) 2 else 1).dp.toPx()
+    val stops = arrayOf(0f to a.copy(alpha = 0.34f * pulse), 0.5f to a.copy(alpha = 0.10f * pulse), 1f to Color.Transparent)
     fun glow(start: Boolean) {
         if (horizontal) {
             val x = if (start) 0f else size.width - depth
             drawRect(Brush.horizontalGradient(*stops, startX = if (start) 0f else size.width, endX = if (start) depth else size.width - depth),
                 topLeft = Offset(x, 0f), size = Size(depth, size.height))
-            drawRect(a.copy(alpha = 0.4f), topLeft = Offset(if (start) 0f else size.width - edge, 0f), size = Size(edge, size.height))
+            drawRect(a.copy(alpha = 0.75f * pulse), topLeft = Offset(if (start) 0f else size.width - edge, 0f), size = Size(edge, size.height))
         } else {
             val y = if (start) 0f else size.height - depth
             drawRect(Brush.verticalGradient(*stops, startY = if (start) 0f else size.height, endY = if (start) depth else size.height - depth),
                 topLeft = Offset(0f, y), size = Size(size.width, depth))
-            drawRect(a.copy(alpha = 0.4f), topLeft = Offset(0f, if (start) 0f else size.height - edge), size = Size(size.width, edge))
+            drawRect(a.copy(alpha = 0.6f * pulse), topLeft = Offset(0f, if (start) 0f else size.height - edge), size = Size(size.width, edge))
         }
     }
     if (state.canScrollBackward) glow(true)
     if (state.canScrollForward) glow(false)
+    }
 }
