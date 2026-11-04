@@ -375,6 +375,8 @@ object SdrEngine {
     fun listening() = configured && channelInSpan()
     /** A plain receiver is set up, playing or not (a launcher band with no voice mode is still one). */
     fun plain() = configured && processor == null
+    /** Whether what is running makes sound: a demod mode, or a processor that hands audio back (the pager hunter). */
+    val audible: Boolean get() = _mode.value != Mode.NONE || processor?.producesAudio == true
 
     /** Keep a tuned channel this far inside the span edge before the radio follows it. */
     private const val VIEW_GUARD = 100_000L

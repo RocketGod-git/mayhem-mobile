@@ -108,48 +108,9 @@ fun ReceiveOnlyNote(accent: Color) {
     }
 }
 
-/** The HackRF's three gain stages: RF amp toggle (+14 dB) and the LNA (0..40/8) / VGA (0..62/2) steppers. */
-@Composable
-fun GainRow(accent: Color) {
-    val d = rememberDims()
-    val lna by SdrEngine.radioLna.collectAsState()
-    val vga by SdrEngine.radioVga.collectAsState()
-    val amp by SdrEngine.radioAmp.collectAsState()
-    val agc by SdrEngine.agc.collectAsState()
-    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
-    if (radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) {
-        val bias by SdrEngine.biasTee.collectAsState()
-        var warn by remember { mutableStateOf(false) }
-        // a dongle has one tuner gain; showing an LNA and an amp that do nothing would be worse than not showing them
-        // RTL-SDR Blog bias tee rides the same row: DC on the antenna port for an inline LNA, off by default, and the
-        // first enable asks. A row of its own pushed every decoder's log a full button height down the screen.
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setAgc(!agc) }
-            GainStepper("GAIN", vga, accent, Modifier.weight(1.8f), auto = agc,
-                onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
-                onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
-            Chip(if (bias) "BIAS-T ON" else "BIAS-T", selected = bias, accent = accent, modifier = Modifier.weight(1.1f)) {
-                if (bias) SdrEngine.setBiasTee(false) else warn = true
-            }
-        }
-        if (warn) BiasTeeDialog(accent, onConfirm = { SdrEngine.setBiasTee(true); warn = false }, onCancel = { warn = false })
-        return
-    }
-    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(0.8f)) { SdrEngine.setAgc(!agc) }
-        Chip(if (amp) "AMP +14" else "AMP OFF", selected = amp, accent = accent, modifier = Modifier.weight(0.9f)) { SdrEngine.toggleRadioAmp() }
-        GainStepper("LNA", lna, accent, Modifier.weight(1f), auto = agc,
-            onMinus = { SdrEngine.setRadioLna(lna - SdrEngine.LNA_STEP) },
-            onPlus = { SdrEngine.setRadioLna(lna + SdrEngine.LNA_STEP) })
-        GainStepper("VGA", vga, accent, Modifier.weight(1f), auto = agc,
-            onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
-            onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
-    }
-}
-
 /** First-enable warning for the RTL-SDR bias tee — it puts DC on the antenna port and can damage the wrong gear. */
 @Composable
-private fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () -> Unit) {
+internal fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () -> Unit) {
     AlertDialog(
         onDismissRequest = onCancel,
         containerColor = Palette.surface,
@@ -201,6 +162,24 @@ fun IconChip(icon: ImageVector, description: String, accent: Color, modifier: Mo
 
 /** Material's full-screen and exit-full-screen glyphs (Apache-2.0), kept as path data so no icon library is pulled in. */
 val FullscreenIcon: ImageVector by lazy { pathIcon("Fullscreen", "M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z") }
+/** Material's speaker glyphs: sound on, and muted. */
+val SpeakerIcon: ImageVector by lazy { pathIcon("Speaker", "M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z") }
+val SpeakerOffIcon: ImageVector by lazy { pathIcon("SpeakerOff", "M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z") }
+/** Material's settings gear. */
+val GearIcon: ImageVector by lazy { pathIcon("Gear", "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z") }
+
+/** One tap: Mayhem's own sound on or off. The phone's volume buttons still set how loud. */
+@Composable
+fun SpeakerButton(modifier: Modifier = Modifier, size: Dp = 20.dp) {
+    val muted by SdrEngine.muted.collectAsState()
+    val haptic = LocalHapticFeedback.current
+    Box(modifier.clip(RoundedCornerShape(6.dp)).clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); SdrEngine.toggleMute() }.padding(4.dp),
+        contentAlignment = Alignment.Center) {
+        Icon(if (muted) SpeakerOffIcon else SpeakerIcon, contentDescription = if (muted) "Unmute" else "Mute",
+            tint = if (muted) Palette.danger else Palette.muted, modifier = Modifier.size(size))
+    }
+}
+
 val FullscreenExitIcon: ImageVector by lazy { pathIcon("FullscreenExit", "M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z") }
 
 private fun pathIcon(name: String, path: String): ImageVector =

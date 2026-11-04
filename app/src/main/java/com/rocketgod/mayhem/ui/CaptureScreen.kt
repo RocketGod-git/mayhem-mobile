@@ -66,7 +66,6 @@ fun CaptureScreen(accent: Color) {
             }
         }
     ) {
-        GainRow(accent)
         if (rec != null) {
             val bytes by rec.bytes.collectAsState()
             val file by rec.file.collectAsState()

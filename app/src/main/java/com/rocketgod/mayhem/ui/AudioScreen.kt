@@ -133,7 +133,6 @@ fun AudioScreen(accent: Color) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for (s in intArrayOf(0, 6, 12, 20)) Chip(if (s == 0) "OFF" else "$s dB", selected = squelch == s, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setSquelch(s) }
             }
-            GainRow(accent)
             Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("BOOKMARKS", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp)
                 Row {

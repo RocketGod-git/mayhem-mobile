@@ -90,7 +90,6 @@ fun DevicesScreen(accent: Color) {
             for ((label, hz) in Devices.SPANS) Chip(label, selected = span == hz, accent = accent, modifier = Modifier.weight(1f)) { Devices.setSpan(hz) }
             Chip(if (hop) "HOP ON" else "HOP OFF", selected = hop, accent = accent, modifier = Modifier.weight(1f)) { Devices.setHop(!hop) }
         }
-        GainRow(accent)
         val stats = if (rep.span > 0) buildString {
             append("${Devices.BANDS[band].first} MHz · ${rep.protocols} protocols · ${rep.bursts} bursts (${rep.ook} keyed, ${rep.fsk} shifted) · ${rep.decoded} decoded")
             if (rep.badChecksum > 0) append(" · ${rep.badChecksum} failed their checksum")

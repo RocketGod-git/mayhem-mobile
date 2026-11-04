@@ -1,136 +1,666 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.rocketgod.mayhem.BuildConfig
+import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
+import com.rocketgod.mayhem.core.NavBar
+import com.rocketgod.mayhem.core.Radio
+import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.usb.RtlSdr
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
-/** Settings (Mayhem ui_settings): theme skins lifted from the firmware, and an About panel. */
+/** Where Settings lands when it opens: the radio line under the digits asks for "radio". */
+object SettingsNav {
+    var jump by mutableStateOf<String?>(null)
+    fun open(section: String) {
+        jump = section
+        if (Apps.current.value != MayhemApp.SETTINGS) Apps.open(MayhemApp.SETTINGS)
+    }
+}
+
+/** One searchable row of a Settings group: the words it answers to, and how it draws. */
+private class SRow(val keys: String, val content: @Composable () -> Unit)
+
+/**
+ * Settings: everything that is about the radio, the bar or the app rather than the signal on screen. It opens on
+ * the app it was opened from ("this app"), then the radio, and searches every row and every app's explainer. A
+ * switch is a switch, a level is a slider, a choice is a segmented row; only the bias tee asks, once.
+ */
 @Composable
 fun SettingsScreen(accent: Color) {
     val d = rememberDims()
     val ctx = LocalContext.current
+    val scroll = rememberScrollState()
+    val tops = remember { HashMap<String, Int>() }
+    val edges = remember { floatArrayOf(0f, 0f) }   // the scroll viewport's top and bottom in the window, for drag auto-scroll
+    var q by remember { mutableStateOf("") }
+    val over = Apps.settingsOver()
+    val radio by Radio.kind.collectAsState()
+    val agc by SdrEngine.agc.collectAsState()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    val bias by SdrEngine.biasTee.collectAsState()
+    val multi by Apps.pagerMulti.collectAsState()
+    val opensLast by NavBar.opensOnLast.collectAsState()
+    val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
+    var askBias by remember { mutableStateOf(false) }
+    var how by remember { mutableStateOf<MayhemApp?>(null) }
+    if (askBias) BiasTeeDialog(accent, onConfirm = { NavBar.acceptBias(); SdrEngine.setBiasTee(true); askBias = false }, onCancel = { askBias = false })
+    LaunchedEffect(SettingsNav.jump) {
+        val j = SettingsNav.jump ?: return@LaunchedEffect
+        delay(80)
+        tops[j]?.let { scroll.animateScrollTo(it) }
+        SettingsNav.jump = null
+    }
+    val term = q.trim()
+    fun hit(keys: String) = term.isEmpty() || keys.contains(term, ignoreCase = true)
+
+    // ---- the rows, by section ----
+    val appRows = when (over) {
+        MayhemApp.PAGER -> listOf(
+            SRow("mode single multi hunt channels") { SegRow("Mode", listOf("0" to "SINGLE", "1" to "MULTI"), if (multi) "1" else "0") { Apps.setPagerMulti(it == "1") } },
+            SRow("fold repeats duplicate") { SwitchRow("Fold repeats", PagerUi.fold) { PagerUi.fold = it } },
+        )
+        else -> emptyList()
+    }
+    val rtl = radio == Radio.Kind.RTLSDR
+    val hfTuner = rtl && RtlSdr.tuner.let { it == "R820T/R820T2" || it == "R828S" }
+    val radioRows = when (radio) {
+        Radio.Kind.NONE -> listOf(SRow("radio none") { ValueRow("No radio attached", "plug in", "A HackRF or an RTL-SDR over USB-OTG.") })
+        Radio.Kind.RTLSDR -> listOf(
+            SRow("agc automatic gain") { SwitchRow("AGC", agc) { SdrEngine.setAgc(it) } },
+            SRow("gain db tuner") { SliderRow("Gain", vga, 0, SdrEngine.vgaMax(), SdrEngine.VGA_STEP, "dB", auto = agc) { SdrEngine.setRadioVga(it) } },
+            SRow("bias tee lna power dc") { SwitchRow("Bias tee", bias) { on -> if (!on) SdrEngine.setBiasTee(false) else if (NavBar.biasOk) SdrEngine.setBiasTee(true) else askBias = true } },
+            SRow("hf shortwave below 24 direct sampling upconverter") {
+                ValueRow("HF below 24 MHz", if (hfTuner) "Automatic" else "Not on this tuner",
+                    if (hfTuner) "Upconverter on a V4L, direct sampling on a V3." else null)
+            },
+        )
+        else -> listOf(
+            SRow("agc automatic gain") { SwitchRow("AGC", agc) { SdrEngine.setAgc(it) } },
+            SRow("amp rf amplifier 14") { SwitchRow("Amp", amp, "+14 dB ahead of everything") { if (it != amp) SdrEngine.toggleRadioAmp() } },
+            SRow("lna gain") { SliderRow("LNA", lna, 0, SdrEngine.LNA_MAX, SdrEngine.LNA_STEP, "dB", auto = agc) { SdrEngine.setRadioLna(it) } },
+            SRow("vga gain") { SliderRow("VGA", vga, 0, SdrEngine.VGA_MAX, SdrEngine.VGA_STEP, "dB", auto = agc) { SdrEngine.setRadioVga(it) } },
+        )
+    }
+    val barRows = listOf(
+        SRow("opens on start home last") { SegRow("Opens on", listOf("home" to "HOME", "last" to "LAST APP"), if (opensLast) "last" else "home") { NavBar.setOpensOnLast(it == "last") } },
+    )
+    val barKeys = "bar order apps reorder drag " + NavBar.all().joinToString(" ") { it.title + " " + it.blurb }
+    val lookKeys = "look skin theme colour color waterfall palette " + Skin.entries.joinToString(" ") { it.title }
+    val stationKeys = "station callsign call grid license name dmr aprs ssid"
+    val txKeys = "transmit tx enable license dummy load"
+    val howApps = NavBar.all()
+    val logKeys = "log diagnostics share save problem"
+    val aboutKeys = "about version license source credits made by rocketgod pirates"
+
+    Column(
+        Modifier.fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
+            .verticalScroll(scroll),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Column(Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
+            SearchField(q, accent) { q = it }
+            Spacer(Modifier.height(d.dp(10f)))
+            RadioCard(accent)
+            // section shortcuts: plain pills that jump; they don't stick over the card
+            val keys = buildList {
+                if (over != null && appRows.isNotEmpty()) add("app" to over.title.uppercase())
+                add("radio" to "RADIO"); add("bar" to "BAR"); add("look" to "LOOK"); add("station" to "STATION")
+                add("transmit" to "TRANSMIT"); add("how" to "HOW IT WORKS"); add("log" to "LOG"); add("about" to "ABOUT")
+            }
+            if (term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                for ((k, l) in keys) Text(l, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
+                    modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, accent.copy(alpha = 0.6f), RoundedCornerShape(50))
+                        .clickable { SettingsNav.jump = k }.padding(horizontal = d.dp(12f), vertical = d.dp(6f)))
+            }
+
+            if (over != null) Section("app", over.title.uppercase(), "this app", tops, appRows.filter { hit(it.keys + " " + over.title) })
+            Section("radio", "RADIO", Radio.label.ifEmpty { null }, tops, radioRows.filter { hit(it.keys + " radio") })
+
+            val showBarList = hit(barKeys)
+            val barShown = barRows.filter { hit(it.keys) }
+            if (barShown.isNotEmpty() || showBarList) SectionHead("bar", "BAR", null, tops) {
+                if (barShown.isNotEmpty()) Group(barShown)
+                if (showBarList) {
+                    Spacer(Modifier.height(d.dp(8f)))
+                    BarChecklist(accent, scroll, edges)
+                    Text("Ticked apps sit in the bar after HOME, in this order. Drag ≡ to move one.", color = Palette.muted, fontFamily = Mono,
+                        fontSize = d.sp(10f), modifier = Modifier.padding(start = d.dp(4f), top = d.dp(6f)))
+                }
+            }
+
+            if (hit(lookKeys)) SectionHead("look", "LOOK", null, tops) { LookGroup(ctx) }
+            if (hit(stationKeys)) SectionHead("station", "STATION", "for the HAM logbook, APRS and FT8", tops) { StationGroup(accent) }
+            if (hit(txKeys)) SectionHead("transmit", "TRANSMIT", null, tops) {
+                Group(listOf(SRow(txKeys) {
+                    SwitchRow("Transmit", txOn, "Signal generator, Morse, OOK. Most bands need a licence; use a dummy load or a rated antenna.", tint = Palette.danger) {
+                        com.rocketgod.mayhem.core.Tx.setEnabled(ctx, it)
+                    }
+                }))
+            }
+
+            val howShown = howApps.filter { a -> hit("how it works help " + a.title + " " + a.blurb + " " + (HOW[a]?.joinToString(" ") ?: "")) }
+            val tipsShown = TIPS.filter { (k, v) -> hit("tips field notes $k $v") }
+            if (howShown.isNotEmpty() || tipsShown.isNotEmpty()) SectionHead("how", "HOW IT WORKS", null, tops) {
+                for (cat in listOf("Receive", "Analyze", "Transmit", "Tools")) {
+                    val apps = howShown.filter { it.category == cat }
+                    if (apps.isEmpty()) continue
+                    Text(cat.uppercase(), color = tintFor(apps.first()), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp,
+                        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(8f), bottom = d.dp(4f)))
+                    Group(apps.map { a -> SRow(a.name) { HowRow(a, how == a, accent) { how = if (how == a) null else a } } })
+                }
+                if (tipsShown.isNotEmpty()) {
+                    Text("TIPS", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp,
+                        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(10f), bottom = d.dp(4f)))
+                    Group(tipsShown.map { (k, v) -> SRow(k) { ValueRow(k, "", v) } })
+                }
+            }
+
+            if (hit(logKeys)) SectionHead("log", "LOG", null, tops) {
+                Group(listOf(SRow(logKeys) {
+                    SRowLayout("Diagnostics log", "What the radio and decoders are doing. Share it when reporting a problem.") {
+                        SmallButton("OPEN", accent) { LogUi.open = true }
+                    }
+                }))
+            }
+            if (hit(aboutKeys)) SectionHead("about", "ABOUT", null, tops) { AboutGroup(accent) }
+            Spacer(Modifier.height(d.dp(16f)))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the radio card
+
+@Composable
+private fun RadioCard(accent: Color) {
+    val d = rememberDims()
+    val radio by Radio.kind.collectAsState()
+    val lo by SdrEngine.freqHz.collectAsState()
+    val offset by SdrEngine.offsetHz.collectAsState()
+    val level by SdrEngine.levelDb.collectAsState()
+    val agc by SdrEngine.agc.collectAsState()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    val bias by SdrEngine.biasTee.collectAsState()
+    val muted by SdrEngine.muted.collectAsState()
+    val up = radio != Radio.Kind.NONE && RadioStatus.connected
+    val rtl = radio == Radio.Kind.RTLSDR
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier.fillMaxWidth().clip(shape)
+            .background(Brush.radialGradient(listOf(accent.copy(alpha = 0.20f), Color.Transparent), radius = 900f, center = androidx.compose.ui.geometry.Offset(2000f, 0f)))
+            .background(Palette.surface.copy(alpha = 0.92f)).border(1.dp, Palette.line, shape).padding(d.dp(12f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(10f))
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Box(Modifier.size(8.dp).background(if (up) Palette.ok else Palette.danger, CircleShape))
+            Text(if (up) Radio.label.uppercase() else "NO RADIO", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f),
+                letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (rtl && RtlSdr.tuner.isNotEmpty()) Badge(RtlSdr.tuner)
+        }
+        if (up) Row(Modifier.fillMaxWidth()) {
+            Stat("TUNED", "%.3f".format((lo + offset) / 1e6), Modifier.weight(1f))
+            Stat("RATE", "%.2f Msps".format(SdrEngine.currentRate() / 1e6), Modifier.weight(1f))
+            Stat("GAIN", if (agc) "AGC" else if (rtl) "$vga dB" else "$lna/$vga dB", Modifier.weight(1f))
+        }
+        if (up) LevelBar(level, accent, Modifier.fillMaxWidth().height(d.dp(5f)))
+        val badges = buildList {
+            if (rtl && RtlSdr.tuner.let { it == "R820T/R820T2" || it == "R828S" }) add("HF READY" to true)
+            if (bias) add("BIAS-T ON" to true)
+            if (!rtl && up && amp) add("AMP +14" to true)
+            if (muted) add("MUTED" to true)
+        }
+        if (badges.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) { for ((b, hot) in badges) Badge(b, hot) }
+        if (RadioStatus.text.isNotBlank()) Text(RadioStatus.text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2)
+    }
+}
+
+@Composable
+private fun Stat(label: String, value: String, modifier: Modifier) {
+    val d = rememberDims()
+    Column(modifier) {
+        Text(label, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
+        Text(value, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1)
+    }
+}
+
+@Composable
+private fun Badge(text: String, hot: Boolean = false) {
+    val d = rememberDims()
+    val c = if (hot) Palette.accent2 else Palette.muted
+    Text(text, color = c, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1,
+        modifier = Modifier.border(1.dp, if (hot) c else Palette.line, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp))
+}
+
+// ---------------------------------------------------------------- building blocks
+
+@Composable
+private fun SearchField(value: String, accent: Color, onChange: (String) -> Unit) {
+    val d = rememberDims()
+    Box(Modifier.fillMaxWidth().height(d.dp(42f)).clip(RoundedCornerShape(8.dp)).background(Palette.surface).border(1.dp, Palette.line, RoundedCornerShape(8.dp))
+        .padding(horizontal = d.dp(12f)), contentAlignment = Alignment.CenterStart) {
+        if (value.isEmpty()) Text("Search settings and apps", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(13f))
+        BasicTextField(value, onChange, singleLine = true, cursorBrush = SolidColor(accent),
+            textStyle = TextStyle(color = Palette.ink, fontFamily = Mono, fontSize = d.sp(13f)), modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** A section title with its rows; nothing at all when a search leaves it empty. */
+@Composable
+private fun Section(key: String, title: String, sub: String?, tops: HashMap<String, Int>, rows: List<SRow>) {
+    if (rows.isEmpty()) return
+    SectionHead(key, title, sub, tops) { Group(rows) }
+}
+
+@Composable
+private fun SectionHead(key: String, title: String, sub: String?, tops: HashMap<String, Int>, content: @Composable ColumnScope.() -> Unit) {
+    val d = rememberDims()
+    Column(Modifier.fillMaxWidth().onGloballyPositioned { tops[key] = it.positionInParent().y.roundToInt() }.padding(top = d.dp(16f))) {
+        Row(Modifier.padding(start = d.dp(4f), bottom = d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp)
+            if (sub != null) Text("  ·  $sub", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        content()
+    }
+}
+
+@Composable
+private fun Group(rows: List<SRow>) {
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, Palette.line, shape)) {
+        rows.forEachIndexed { i, r ->
+            if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
+            r.content()
+        }
+    }
+}
+
+@Composable
+private fun SRowLayout(label: String, desc: String? = null, dim: Boolean = false, control: @Composable () -> Unit) {
+    val d = rememberDims()
+    Row(Modifier.fillMaxWidth().heightIn(min = d.dp(52f)).padding(horizontal = d.dp(14f), vertical = d.dp(8f)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(12f))) {
+        Column(Modifier.weight(1f).alpha(if (dim) 0.5f else 1f)) {
+            Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = d.sp(13f))
+            if (!desc.isNullOrBlank()) Text(desc, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f), modifier = Modifier.padding(top = 2.dp))
+        }
+        control()
+    }
+}
+
+@Composable
+private fun SwitchRow(label: String, on: Boolean, desc: String? = null, tint: Color = Palette.accent, onChange: (Boolean) -> Unit) {
+    SRowLayout(label, desc) {
+        Switch(on, onChange, colors = SwitchDefaults.colors(
+            checkedThumbColor = inkOn(tint), checkedTrackColor = tint, checkedBorderColor = tint,
+            uncheckedThumbColor = Palette.ink, uncheckedTrackColor = Palette.line, uncheckedBorderColor = Palette.line))
+    }
+}
+
+@Composable
+private fun ValueRow(label: String, value: String, desc: String? = null) {
+    val d = rememberDims()
+    SRowLayout(label, desc) { if (value.isNotEmpty()) Text(value, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(12f), maxLines = 1) }
+}
+
+@Composable
+private fun SegRow(label: String, options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
+    SRowLayout(label) { Seg(options, selected, onSelect) }
+}
+
+@Composable
+private fun Seg(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(6.dp)
+    Row(Modifier.clip(shape).border(1.dp, Palette.line, shape)) {
+        for ((v, l) in options) {
+            val on = v == selected
+            Box(Modifier.background(if (on) Palette.accent else Color.Transparent).clickable { onSelect(v) }
+                .padding(horizontal = d.dp(11f), vertical = d.dp(7f)), contentAlignment = Alignment.Center) {
+                Text(l, color = if (on) inkOn(Palette.accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
+            }
+        }
+    }
+}
+
+/** A level: its value on the right, the slider under it. Under AGC it reads AUTO; moving it takes the gain back by hand. */
+@Composable
+private fun SliderRow(label: String, value: Int, min: Int, max: Int, step: Int, unit: String, auto: Boolean, onChange: (Int) -> Unit) {
+    val d = rememberDims()
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    val shown = dragging?.roundToInt() ?: value
+    Column(Modifier.fillMaxWidth().padding(horizontal = d.dp(14f), vertical = d.dp(8f))) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = d.sp(13f), modifier = Modifier.weight(1f).alpha(if (auto) 0.5f else 1f))
+            Text(if (auto && dragging == null) "AUTO" else "$shown $unit", color = if (auto && dragging == null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f))
+        }
+        Slider(
+            value = (dragging ?: value.toFloat()).coerceIn(min.toFloat(), max.toFloat()),
+            onValueChange = { dragging = ((it / step).roundToInt() * step).toFloat() },
+            onValueChangeFinished = { dragging?.let { onChange(it.roundToInt()) }; dragging = null },
+            valueRange = min.toFloat()..max.toFloat(),
+            steps = ((max - min) / step - 1).coerceAtLeast(0),
+            colors = SliderDefaults.colors(thumbColor = Palette.accent, activeTrackColor = if (auto) Palette.muted else Palette.accent,
+                inactiveTrackColor = Palette.line, activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent),
+            modifier = Modifier.alpha(if (auto) 0.6f else 1f)
+        )
+    }
+}
+
+@Composable
+private fun SmallButton(label: String, accent: Color, onClick: () -> Unit) {
+    val d = rememberDims()
+    Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f),
+        modifier = Modifier.clip(RoundedCornerShape(6.dp)).border(1.dp, accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp)).clickable { onClick() }
+            .padding(horizontal = d.dp(12f), vertical = d.dp(7f)))
+}
+
+// ---------------------------------------------------------------- the bar: tick to include, drag ≡ to order
+
+@Composable
+private fun BarChecklist(accent: Color, scroll: ScrollState, edges: FloatArray) {
+    val d = rememberDims()
+    val order by NavBar.order.collectAsState()
+    val checked by NavBar.checked.collectAsState()
+    val orderNow by rememberUpdatedState(order)
+    val rowH = d.dp(56f)
+    val slotPx = with(LocalDensity.current) { rowH.toPx() }
+    var dragIndex by remember { mutableIntStateOf(-1) }
+    var dragBy by remember { mutableFloatStateOf(0f) }
+    var fingerY by remember { mutableFloatStateOf(0f) }
+    val target = if (dragIndex < 0) -1 else (dragIndex + (dragBy / slotPx).roundToInt()).coerceIn(0, order.lastIndex)
+    // while a row is held near the top or bottom of the screen, the page scrolls under it and the row stays put
+    LaunchedEffect(dragIndex) {
+        if (dragIndex < 0) return@LaunchedEffect
+        while (true) {
+            withFrameNanos { }
+            val step = when {
+                fingerY < edges[0] + slotPx -> -12f
+                fingerY > edges[1] - slotPx -> 12f
+                else -> 0f
+            }
+            if (step != 0f) dragBy += scroll.dispatchRawDelta(step)
+        }
+    }
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, Palette.line, shape)) {
+        order.forEachIndexed { i, app -> key(app) {
+            val on = app in checked
+            val dragging = i == dragIndex
+            val room = when {
+                dragIndex < 0 || dragging -> 0f
+                dragIndex < target && i > dragIndex && i <= target -> -slotPx
+                dragIndex > target && i < dragIndex && i >= target -> slotPx
+                else -> 0f
+            }
+            val shiftY by animateFloatAsState(room, label = "barRoom")
+            val tint = tintFor(app)
+            var handleTop by remember { mutableFloatStateOf(0f) }
+            Row(
+                Modifier.fillMaxWidth().height(rowH).zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer { translationY = if (dragging) dragBy else shiftY; shadowElevation = if (dragging) 16f else 0f }
+                    .background(if (dragging) Palette.panel else Palette.surface),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(Modifier.size(rowH).clickable { NavBar.toggle(app) }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(d.dp(22f)).clip(RoundedCornerShape(6.dp)).background(if (on) tint else Color.Transparent)
+                        .border(2.dp, if (on) tint else Palette.muted, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
+                        if (on) Text("✓", color = inkOn(tint), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f))
+                    }
+                }
+                Column(Modifier.weight(1f).clickable { NavBar.toggle(app) }) {
+                    Text(app.title.uppercase(), color = if (on) tint else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1)
+                    Text(app.blurb, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Box(
+                    Modifier.size(rowH).onGloballyPositioned { if (dragIndex < 0) handleTop = it.positionInWindow().y }
+                        .pointerInput(app) {
+                            var startY = 0f
+                            detectDragGestures(
+                                onDragStart = { off -> dragIndex = orderNow.indexOf(app); dragBy = 0f; startY = handleTop + off.y; fingerY = startY },
+                                onDragEnd = {
+                                    val from = dragIndex; val to = (from + (dragBy / slotPx).roundToInt()).coerceIn(0, orderNow.lastIndex)
+                                    dragIndex = -1; dragBy = 0f
+                                    if (from >= 0 && to != from) NavBar.move(from, to)
+                                },
+                                onDragCancel = { dragIndex = -1; dragBy = 0f },
+                                onDrag = { change, amount -> change.consume(); dragBy += amount.y; fingerY += amount.y }
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) { Text("≡", color = Palette.muted, fontSize = d.sp(22f)) }
+            }
+            if (i < order.lastIndex) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
+        } }
+    }
+}
+
+// ---------------------------------------------------------------- look, station, about
+
+@Composable
+private fun LookGroup(ctx: android.content.Context) {
+    val d = rememberDims()
     val cols = if (d.wide) 4 else 2
-    ScrollColumn(Modifier.fillMaxSize()) {
-        SectionLabel("THEME · the PortaPack Mayhem firmware skins, plus the mobile default")
-        for (rowSkins in Skin.values().toList().chunked(cols)) {
+    Column(Modifier.fillMaxWidth()) {
+        for (rowSkins in Skin.entries.chunked(cols)) {
             Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for (skin in rowSkins) SkinCard(skin, skin == Skins.current, Modifier.weight(1f)) { Skins.set(ctx, skin) }
                 repeat(cols - rowSkins.size) { Box(Modifier.weight(1f)) }
             }
         }
-        SectionLabel("WATERFALL · colors")
-        for (p in WfPalette.entries) {
-            val on = Waterfalls.palette == p
-            val lut = remember(p, Palette.paper, Palette.accent, Palette.accent2) { Waterfalls.lut(p, Palette.paper, Palette.accent, Palette.accent2) }
-            Row(Modifier.fillMaxWidth().padding(bottom = d.gap).control(Palette.accent, on).clickable { Waterfalls.set(ctx, p) }.padding(d.dp(8f)),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text(p.title, color = if (on) inkOn(Palette.accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), modifier = Modifier.weight(1f))
-                androidx.compose.foundation.Canvas(Modifier.size(width = d.dp(110f), height = d.dp(14f))) {
-                    val n = 64
-                    for (i in 0 until n) drawRect(Color(lut[i * 255 / (n - 1)]), androidx.compose.ui.geometry.Offset(size.width * i / n, 0f), androidx.compose.ui.geometry.Size(size.width / n + 1f, size.height))
+        Text("WATERFALL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp, modifier = Modifier.padding(start = d.dp(4f), top = d.dp(6f), bottom = d.dp(4f)))
+        Group(WfPalette.entries.map { p ->
+            SRow(p.title) {
+                val on = Waterfalls.palette == p
+                val lut = remember(p, Palette.paper, Palette.accent, Palette.accent2) { Waterfalls.lut(p, Palette.paper, Palette.accent, Palette.accent2) }
+                Row(Modifier.fillMaxWidth().clickable { Waterfalls.set(ctx, p) }.heightIn(min = d.dp(48f)).padding(horizontal = d.dp(14f)),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(p.title, color = if (on) Palette.accent else Palette.ink, fontFamily = Mono, fontWeight = if (on) FontWeight.Bold else FontWeight.Medium, fontSize = d.sp(12f), modifier = Modifier.weight(1f))
+                    androidx.compose.foundation.Canvas(Modifier.size(width = d.dp(110f), height = d.dp(14f)).clip(RoundedCornerShape(3.dp))) {
+                        val n = 64
+                        for (i in 0 until n) drawRect(Color(lut[i * 255 / (n - 1)]), androidx.compose.ui.geometry.Offset(size.width * i / n, 0f), androidx.compose.ui.geometry.Size(size.width / n + 1f, size.height))
+                    }
+                    Spacer(Modifier.width(d.dp(10f)))
+                    Text(if (on) "●" else "○", color = if (on) Palette.accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(12f))
                 }
             }
-        }
-        SectionLabel("STATION · your callsign and grid, for the HAM logbook, APRS and FT8")
-        val st = com.rocketgod.mayhem.core.Station.info.collectAsState().value
-        val gpsGrid = com.rocketgod.mayhem.core.Geo.fix.collectAsState().value?.let { com.rocketgod.mayhem.core.ham.latLonToGrid(it.first, it.second) }
-        Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f))) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                LogField(st.call, "callsign", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(call = v.uppercase().trim()) } }
-                LogField(st.license, "license class", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(license = v) } }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                LogField(st.name, "name", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(name = v) } }
-                LogField(st.grid, gpsGrid?.let { "grid · $it from GPS" } ?: "grid square, e.g. DM04og", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(grid = v.trim()) } }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                LogField(st.dmrId, "DMR ID (radioid.net)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(dmrId = v.filter { c -> c.isDigit() }) } }
-                LogField(st.aprsSsid, "APRS SSID (9 = mobile)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(aprsSsid = v.filter { c -> c.isDigit() }.take(2)) } }
-            }
-            AboutLine("Where it goes", "ADIF STATION_CALLSIGN / MY_GRIDSQUARE and the logbook's distance and bearing. Nothing is sent anywhere else.")
-        }
-        Box(Modifier.height(d.dp(8f)))
-        SectionLabel("TRANSMIT · on, with a safety prompt before the first send — you are responsible for what you send")
-        val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
-        Column(Modifier.fillMaxWidth().panel(if (txOn) Palette.danger else Palette.line).padding(d.dp(10f))) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(if (txOn) "TX ENABLED" else "TX DISABLED", color = if (txOn) Palette.danger else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp)
-                    Text("Enables the Transmit app (signal generator, Morse, OOK remotes). Most bands require a license; always use a dummy load or an antenna rated for the frequency.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.padding(top = d.dp(4f)))
-                }
-                Box(Modifier.padding(start = d.dp(10f))) { Chip(if (txOn) "ON" else "OFF", selected = txOn, accent = Palette.danger) { com.rocketgod.mayhem.core.Tx.setEnabled(ctx, !txOn) } }
-            }
-        }
-        Box(Modifier.height(d.dp(8f)))
-        SectionLabel("ABOUT")
-        Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
-            AboutLine("Mayhem Mobile", "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · build ${BuildConfig.GIT_SHA}")
-            AboutLine("Web app", "rocketgod-git.github.io/mayhem-mobile — same build, in Chrome/Edge over WebUSB")
-            AboutLine("Device", com.rocketgod.mayhem.core.Radio.label.ifEmpty { "no radio attached" })
-            AboutLine("What it is", "PortaPack Mayhem's receivers, ported to Kotlin and run on the phone from raw HackRF or RTL-SDR IQ over USB")
-            AboutLine("Source", "github.com/RocketGod-git/mayhem-mobile")
-            AboutLine("Upstream", "github.com/portapack-mayhem/mayhem-firmware")
-            AboutLine("License", "GPL-3.0 (Mayhem-derived)")
-        }
-        SectionLabel("MADE BY")
-        Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
-            LinkLine("RocketGod", "RocketGod.dev", "https://rocketgod.dev")
-            LinkLine("Crew", "The Pirates' Plunder — discord.gg/thepirates", "https://discord.gg/thepirates")
-        }
-        SectionLabel("CREDITS · who wrote what this app is built from · drag to steer")
-        CreditsRoll(accent)
-        SectionLabel("FIELD NOTES")
-        Column(Modifier.fillMaxWidth().panel().padding(d.dp(10f))) {
-            AboutLine("Plugging in", "the app opens by itself when a HackRF or an RTL-SDR is plugged in; allow the USB prompt once and tick 'always'")
-            AboutLine("Nothing happens", "if plugging in does nothing, check the phone's OTG switch — OnePlus, OPPO and realme turn it off after ten idle minutes (Settings › Additional settings › OTG) — and that the cable carries data")
-            AboutLine("RTL-SDR", "receive only, 24 MHz to 1.766 GHz, up to 2.4 Msps, one gain control: the transmit side is grayed out, HAM's HF bands and Bluetooth are out of reach, and wider spans are held to 2.4 MHz")
-            AboutLine("Power", "a HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ")
-            AboutLine("Reading LOG", "iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode")
-            AboutLine("Tuning", "press the waterfall and slide: the amber guide and readout follow your finger and the radio retunes when you lift. On the home screen a tap sets where Audio opens")
-            AboutLine("Floating window", "press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing; mute (and skip, in Prowl) are on the window")
-            AboutLine("Screen", "the screen stays on while an app is open, and sleeps as usual on the home screen")
-            AboutLine("Maps", "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, ⌖ re-arms it; allow location so distances and single-frame aircraft positions use your spot")
-            AboutLine("FLEX", "the pager app decodes FLEX (1600/3200, 2- and 4-level) by default — messages carry cycle/frame and capcode; switch the decoder to POCSAG (512/1200/2400) or run both on one channel like PDW")
-            AboutLine("Gain", "receivers start at LNA 24 / VGA 24 / amp off (the amp overloads strong FM); ADS-B uses Mayhem's LNA 32 / VGA 32 / amp on")
-            AboutLine("Squelch + scan", "squelch gates audio against a tracked noise floor; SCAN in Audio hops your bookmarks and holds where the squelch opens")
-            AboutLine("Captures", "Capture records signed 8-bit IQ with a .txt sidecar; SHARE sends both to SDR#, GNU Radio or a drive")
-        }
-        Box(Modifier.height(d.dp(12f)))
+        })
     }
 }
+
+@Composable
+private fun StationGroup(accent: Color) {
+    val d = rememberDims()
+    val st = com.rocketgod.mayhem.core.Station.info.collectAsState().value
+    val gpsGrid = com.rocketgod.mayhem.core.Geo.fix.collectAsState().value?.let { com.rocketgod.mayhem.core.ham.latLonToGrid(it.first, it.second) }
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, Palette.line, shape).padding(d.dp(10f))) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            LogField(st.call, "callsign", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(call = v.uppercase().trim()) } }
+            LogField(st.license, "license class", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(license = v) } }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            LogField(st.name, "name", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(name = v) } }
+            LogField(st.grid, gpsGrid?.let { "grid · $it from GPS" } ?: "grid square, e.g. DM04og", accent, Modifier.weight(1f), caps = true) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(grid = v.trim()) } }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            LogField(st.dmrId, "DMR ID (radioid.net)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(dmrId = v.filter { c -> c.isDigit() }) } }
+            LogField(st.aprsSsid, "APRS SSID (9 = mobile)", accent, Modifier.weight(1f)) { v -> com.rocketgod.mayhem.core.Station.update { it.copy(aprsSsid = v.filter { c -> c.isDigit() }.take(2)) } }
+        }
+        Text("Goes into the ADIF log (STATION_CALLSIGN, MY_GRIDSQUARE) and the logbook's distance and bearing. Nothing is sent anywhere else.",
+            color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), modifier = Modifier.padding(top = d.dp(6f)))
+    }
+}
+
+@Composable
+private fun AboutGroup(accent: Color) {
+    val d = rememberDims()
+    Group(listOf(
+        SRow("version") { ValueRow("Mayhem Mobile", "v${BuildConfig.VERSION_NAME}", "build ${BuildConfig.GIT_SHA} · ${BuildConfig.VERSION_CODE}") },
+        SRow("web app") { LinkRow("Web app", "Same build in Chrome or Edge, over WebUSB", "https://rocketgod-git.github.io/mayhem-mobile") },
+        SRow("source") { LinkRow("Source", "github.com/RocketGod-git/mayhem-mobile", "https://github.com/RocketGod-git/mayhem-mobile") },
+        SRow("upstream") { LinkRow("Upstream", "github.com/portapack-mayhem/mayhem-firmware", "https://github.com/portapack-mayhem/mayhem-firmware") },
+        SRow("license") { ValueRow("License", "GPL-3.0", "Mayhem-derived") },
+        SRow("made by rocketgod") { LinkRow("Made by", "RocketGod · RocketGod.dev", "https://rocketgod.dev") },
+        SRow("crew pirates") { LinkRow("Crew", "The Pirates' Plunder · discord.gg/thepirates", "https://discord.gg/thepirates") },
+    ))
+    Text("CREDITS · who wrote what this app is built from · drag to steer", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp,
+        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(12f), bottom = d.dp(6f)))
+    CreditsRoll(accent)
+}
+
+@Composable
+private fun LinkRow(label: String, value: String, url: String) {
+    val d = rememberDims()
+    val uri = LocalUriHandler.current
+    Row(Modifier.fillMaxWidth().clickable { runCatching { uri.openUri(url) } }.heightIn(min = d.dp(52f)).padding(horizontal = d.dp(14f), vertical = d.dp(8f)),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = d.sp(13f))
+            Text(value, color = Palette.accent, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text("↗", color = Palette.muted, fontSize = d.sp(14f))
+    }
+}
+
+// ---------------------------------------------------------------- how it works
+
+/** What each app does, where it listens, and a tip. Shown in Settings › How it works, and searched. */
+private val HOW: Map<MayhemApp, List<String>> = mapOf(
+    MayhemApp.AUDIO to listOf("A general receiver: broadcast FM with RDS station names, airband AM, narrow FM, and SSB or CW.", "88–108 FM · 118–137 air · anywhere the radio reaches", "Tap the waterfall to tune; on Home the band chips jump to FM, AIR, VHF and the ISM bands."),
+    MayhemApp.HAM to listOf("Amateur radio: FM simplex and repeaters on 2 m and 70 cm, SSB and CW on HF, digital modes and a logbook.", "144–148 · 420–450 · HF below 30 MHz", "HF needs a HackRF, or an RTL-SDR Blog V3 or V4L."),
+    MayhemApp.DEVICES to listOf("Decodes the short bursts household gadgets send — weather stations, doorbells, tire sensors, meters, remotes — from the rtl_433 device library.", "433.92 · 315 · 868 · 915 MHz", "Readings repeat every minute or so; leave it listening."),
+    MayhemApp.SAT to listOf("Tracks what is overhead, follows each pass's Doppler shift, and decodes what the satellite sends.", "145.800 ISS · 137 MHz · 437 MHz cubesats", "Passes last 5–15 minutes; an outdoor antenna helps."),
+    MayhemApp.ADSB to listOf("Aircraft broadcast their position, altitude and speed every second; Mayhem lists them and puts them on the map.", "1090 MHz", "Range is line of sight: a window or the roof makes the difference."),
+    MayhemApp.AIS to listOf("Ships report their name, position, course and speed.", "161.975 and 162.025 MHz", "Anywhere near a coast, river or lake with traffic."),
+    MayhemApp.APRS to listOf("Amateur packet radio: positions, weather stations and short messages.", "144.390 North America · 144.800 Europe", ""),
+    MayhemApp.PAGER to listOf("Decodes pager networks: FLEX at 1600, 3200 and 6400 and POCSAG at 512, 1200 and 2400. MULTI decodes up to four channels across the span at once; tap a channel to stay on it.", "929–932 MHz in the US · varies by country", "Tune to your country's pager band; MULTI finds the carriers itself."),
+    MayhemApp.ERT to listOf("Utility meters — electric, gas and water — that broadcast their readings.", "902–928 MHz", ""),
+    MayhemApp.BTLE to listOf("Bluetooth Low Energy advertising: the beacons phones, trackers and wearables send.", "2.402 · 2.426 · 2.480 GHz", "Needs a HackRF: 2.4 GHz is above an RTL-SDR's range."),
+    MayhemApp.TPMS to listOf("Tire pressure sensors: each wheel reports its pressure and temperature.", "315 MHz US · 433.92 MHz EU", "Walk or drive past parked cars."),
+    MayhemApp.ACARS to listOf("Text messages between aircraft and their airline: position reports, weather, maintenance.", "131.550 US · 131.525 / 131.725 EU · 131.450 JP", ""),
+    MayhemApp.SUBGHZ to listOf("rtl_433-style decoding with every protocol running at once; mute the families you don't want.", "300–928 MHz", ""),
+    MayhemApp.PROWL to listOf("Hunts across the bands for live voice and stops on it.", "the bands you choose", "Good for finding what is busy near you."),
+    MayhemApp.LOOKING_GLASS to listOf("Sweeps a range far wider than one view to show what is active across it.", "any range the radio reaches", "A HackRF sweeps hundreds of MHz at a time."),
+    MayhemApp.SEARCH to listOf("Steps through a range and lists the frequencies that come alive; tap one to listen.", "any range", ""),
+    MayhemApp.CAPTURE to listOf("Records raw IQ to a file, with a .txt sidecar, to replay or study later in SDR#, GNU Radio or similar.", "any frequency · up to the radio's sample rate", "2 Msps of 8-bit IQ is about 4 MB a second."),
+    MayhemApp.TRANSMIT to listOf("Signal generator, Morse, OOK and replay. Transmitting is your responsibility: use a band you are licensed for, or a dummy load.", "a HackRF's range, 1 MHz–6 GHz", "Needs a HackRF. Leaving the app stops the transmission."),
+    MayhemApp.TROLL to listOf("Novelty transmitters, jingles and cart sounds.", "a HackRF's range", "Needs a HackRF. Sideload build only."),
+)
+
+/** The field notes: the things people ask about. */
+private val TIPS = listOf(
+    "Plugging in" to "The app opens by itself when a HackRF or an RTL-SDR is plugged in; allow the USB prompt once and tick 'always'.",
+    "Nothing happens" to "Check the phone's OTG switch — OnePlus, OPPO and realme turn it off after ten idle minutes — and that the cable carries data.",
+    "RTL-SDR" to "Receive only, up to 1.766 GHz and 2.4 Msps. Below 24 MHz only on an RTL-SDR Blog V3 or V4L; transmit and Bluetooth need a HackRF.",
+    "Power" to "A HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ.",
+    "Tuning" to "Drag the digits up or down, tap ⌨ to type a frequency, or press the waterfall and slide; the radio retunes when you lift.",
+    "Mute" to "The speaker beside the frequency silences Mayhem; the phone's volume buttons set how loud.",
+    "Gain" to "AGC sets the gain for you. Set it by hand in Settings › Radio; tap the radio line under the digits to get there.",
+    "Floating window" to "Press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing.",
+    "Maps" to "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, and ⌖ re-arms it.",
+    "Squelch and scan" to "Squelch gates audio against a tracked noise floor; SCAN in Audio hops your bookmarks and holds where the squelch opens.",
+    "Captures" to "Capture records signed 8-bit IQ with a .txt sidecar; share both to SDR#, GNU Radio or a drive.",
+)
+
+@Composable
+private fun HowRow(app: MayhemApp, open: Boolean, accent: Color, onToggle: () -> Unit) {
+    val d = rememberDims()
+    val tint = tintFor(app)
+    val (what, where, tip) = HOW[app] ?: listOf("", "", "")
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().clickable { onToggle() }.heightIn(min = d.dp(48f)).padding(horizontal = d.dp(14f)), verticalAlignment = Alignment.CenterVertically) {
+            Text(app.title.uppercase(), color = tint, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), modifier = Modifier.width(d.dp(110f)), maxLines = 1)
+            Text(app.blurb, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(if (open) "▴" else "▾", color = Palette.muted, fontSize = d.sp(12f), modifier = Modifier.padding(start = d.dp(6f)))
+        }
+        if (open) Column(Modifier.fillMaxWidth().padding(start = d.dp(14f), end = d.dp(14f), bottom = d.dp(12f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            Text(what, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), lineHeight = d.sp(16f))
+            Row(horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                if (where.isNotEmpty()) Badge(where)
+                val needs = app == MayhemApp.BTLE || app == MayhemApp.TRANSMIT || app == MayhemApp.TROLL
+                Badge(if (needs) "NEEDS A HACKRF" else "RTL-SDR OR HACKRF", hot = needs)
+            }
+            if (tip.isNotEmpty()) Text(tip, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(15f))
+            SmallButton("OPEN ${app.title.uppercase()}", accent) {
+                if (Radio.blockedBecause(app).isEmpty()) Apps.open(app)
+                else Notice.msg.value = "${app.title}: ${Radio.blockedBecause(app)}"
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- kept from the old Settings
 
 @Composable
 private fun SkinCard(skin: Skin, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
@@ -162,7 +692,7 @@ private fun SkinCard(skin: Skin, selected: Boolean, modifier: Modifier, onClick:
 private fun CreditsRoll(accent: Color) {
     val d = rememberDims()
     val scroll = rememberScrollState()
-    var listHeightPx by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+    var listHeightPx by remember { mutableStateOf(0) }
     LaunchedEffect(scroll, listHeightPx) {
         while (true) {
             if (!scroll.isScrollInProgress) {
@@ -188,24 +718,5 @@ private fun CreditsRoll(accent: Color) {
                 Box(Modifier.height(d.dp(28f)))
             }
         }
-    }
-}
-
-@Composable
-private fun LinkLine(k: String, v: String, url: String) {
-    val d = rememberDims()
-    val uri = LocalUriHandler.current
-    Row(Modifier.fillMaxWidth().clickable { runCatching { uri.openUri(url) } }.padding(vertical = d.dp(3f))) {
-        Text(k, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.size(width = d.dp(92f), height = d.dp(16f)))
-        Text(v, color = Palette.accent, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun AboutLine(k: String, v: String) {
-    val d = rememberDims()
-    Row(Modifier.fillMaxWidth().padding(vertical = d.dp(3f))) {
-        Text(k, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.size(width = d.dp(92f), height = d.dp(16f)))
-        Text(v, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.weight(1f))
     }
 }

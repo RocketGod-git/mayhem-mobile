@@ -81,7 +81,6 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
         }
     ) {
         controls()
-        GainRow(accent)
         // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
         val logActions: @Composable () -> Unit = {
             Chip(if (held != null) "RESUME" else "PAUSE", selected = held != null, accent = accent) { held = if (held == null) snap.lines else null }
@@ -108,22 +107,11 @@ fun PagerScreen(accent: Color) {
     if (multi) PagerHunterView(accent) else PagerSingleView(accent)
 }
 
-/** SINGLE = decode the one tuned channel; MULTI = hunt several carriers across the current span. */
-@Composable
-private fun PagerModeRow(accent: Color, multi: Boolean) {
-    val d = rememberDims()
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("SINGLE CH", selected = !multi, accent = accent, modifier = Modifier.weight(1f)) { Apps.setPagerMulti(false) }
-        Chip("MULTI CH", selected = multi, accent = accent, modifier = Modifier.weight(1f)) { Apps.setPagerMulti(true) }
-    }
-}
-
 @Composable
 private fun PagerSingleView(accent: Color) {
     val d = rememberDims()
     val which by Apps.pager.which.collectAsState()
     PacketFrame(accent, Apps.pagerLog, roomy = true, controls = {
-        PagerModeRow(accent, false)
         Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for (w in PagerDecoder.Which.entries) Chip(w.label, selected = which == w, accent = accent, modifier = Modifier.weight(1f)) { Apps.pager.select(w) }
         }
@@ -158,8 +146,6 @@ private fun PagerHunterView(accent: Color) {
             }
         }
     ) {
-        PagerModeRow(accent, true)
-        GainRow(accent)
         ChannelPills(accent, channels, status)
         PagerFeed(messages, capcodes, filter, accent, Modifier.fillMaxWidth().weight(1f), onFull = { full = true })
     }
@@ -167,6 +153,9 @@ private fun PagerHunterView(accent: Color) {
         PagerFeed(messages, capcodes, filter, accent, Modifier.fillMaxWidth().weight(1f), onFull = null)
     }
 }
+
+/** Pager display settings shared by the feed and Settings › FLEX. */
+object PagerUi { var fold by mutableStateOf(true) }
 
 /** What the MULTI feed is narrowed to. One instance serves the inline feed and the full-screen one, so both agree. */
 private class PagerFilter {
@@ -178,8 +167,10 @@ private class PagerFilter {
     var capcode by mutableStateOf<Long?>(null)
     /** Only what came in on this channel. */
     var hz by mutableStateOf<Long?>(null)
-    /** Fold the same text sent again within [FOLD_MS] into one card. */
-    var fold by mutableStateOf(true)
+    /** Fold the same text sent again within [FOLD_MS] into one card. One setting: the feed's pill and Settings › FLEX. */
+    var fold: Boolean
+        get() = PagerUi.fold
+        set(v) { PagerUi.fold = v }
 
     fun keeps(m: PagerMessage): Boolean =
         (capcode == null || m.page.capcode == capcode) && (hz == null || m.hz == hz) &&

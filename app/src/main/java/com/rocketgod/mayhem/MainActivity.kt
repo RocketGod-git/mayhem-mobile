@@ -88,13 +88,19 @@ class MainActivity : ComponentActivity() {
         SdrEngine.loadGains(this)
         com.rocketgod.mayhem.ui.Waterfalls.load(this)
         com.rocketgod.mayhem.core.Tx.load(this)
+        com.rocketgod.mayhem.core.NavBar.load(this)
         com.rocketgod.mayhem.core.Station.load(this)
         com.rocketgod.mayhem.core.ham.Logbook.load(this)
         com.rocketgod.mayhem.core.sat.Tles.init(filesDir)
         if (savedInstanceState == null) {
             // Land on the launcher (the front door), not Audio, and arm the auto-pick so it tunes the strongest
             // signal in view the moment the radio delivers one — the landing comes up alive, like Audio does.
-            if (Apps.current.value == null) { Apps.home(); com.rocketgod.mayhem.core.AutoPick.arm() }
+            if (Apps.current.value == null) {
+                // Home is the front door, unless the user asked to come back to the app they last used
+                val last = if (com.rocketgod.mayhem.core.NavBar.opensOnLast.value) com.rocketgod.mayhem.core.NavBar.lastApp() else null
+                if (last != null && com.rocketgod.mayhem.core.Radio.blockedBecause(last).isEmpty()) Apps.open(last)
+                else { Apps.home(); com.rocketgod.mayhem.core.AutoPick.arm() }
+            }
             Diag.clear()
             Diag.log("Mayhem Android ${BuildConfig.VERSION_NAME} · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         }

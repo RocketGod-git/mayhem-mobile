@@ -152,7 +152,6 @@ fun LookingGlassScreen(accent: Color) {
     ) {
         ScrollColumn(Modifier.fillMaxWidth()) {
             RangeChips(accent, s)
-            GainRow(accent)
         }
     }
 }
@@ -194,7 +193,6 @@ fun SearchScreen(accent: Color) {
             for (t in intArrayOf(10, 15, 20, 30)) Chip("+$t dB", selected = threshold == t, accent = accent, modifier = Modifier.weight(1f)) { threshold = t }
         }
         RangeChips(accent, s)
-        GainRow(accent)
         SectionLabel("HITS · tap to listen")
         LogList(hits, Modifier.fillMaxWidth().weight(1f), empty = "sweeping… hits appear after the first full pass") { line ->
             val mhz = line.trim().split(" ")[0].toDoubleOrNull()
