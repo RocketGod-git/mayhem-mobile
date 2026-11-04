@@ -100,7 +100,6 @@ private fun TrafficFrame(
         }
         body()
         extra()
-        GainRow(accent)
     }
 }
 

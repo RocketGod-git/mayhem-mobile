@@ -47,7 +47,21 @@ object Apps {
     /** The pager app's mode: false = the single tuned-channel decoder, true = the multi-channel span hunter. */
     private val _pagerMulti = MutableStateFlow(true)
     val pagerMulti: StateFlow<Boolean> = _pagerMulti.asStateFlow()
-    fun setPagerMulti(on: Boolean) { if (_pagerMulti.value == on) return; _pagerMulti.value = on; if (_current.value == MayhemApp.PAGER) open(MayhemApp.PAGER) }
+    fun setPagerMulti(on: Boolean) {
+        if (_pagerMulti.value == on) return
+        _pagerMulti.value = on
+        // the mode is switched from Settings now, opened over the pager: reconfigure it underneath, don't leave Settings
+        if (_current.value == MayhemApp.PAGER || (_current.value == MayhemApp.SETTINGS && under == MayhemApp.PAGER)) startPager()
+    }
+    private fun startPager() {
+        val r = SdrEngine.IQ_RATE
+        if (_pagerMulti.value) {
+            SdrEngine.configure(SdrEngine.Mode.NONE, 929_612_500L, r, 32, 40, true, hunter); com.rocketgod.mayhem.core.pager.PagerEngine.start()
+        } else {
+            com.rocketgod.mayhem.core.pager.PagerEngine.stop()
+            SdrEngine.configure(SdrEngine.Mode.NFM, 929_612_500L, r, 32, 32, false, pager)
+        }
+    }
     val aisLog = PacketLog(); val ais = AisDecoder(aisLog)
     val aprsLog = PacketLog(); val aprs = AprsDecoder(aprsLog)
     val ertLog = PacketLog(); val ert = ErtDecoder(ertLog)
@@ -75,6 +89,8 @@ object Apps {
     private var under: MayhemApp? = null
     /** What the radio is doing for: the open app, or the one under Settings. */
     fun playing(): MayhemApp? = if (_current.value == MayhemApp.SETTINGS) under else _current.value
+    /** The app Settings is open over (null: over Home, or Settings is not open). */
+    fun settingsOver(): MayhemApp? = if (_current.value == MayhemApp.SETTINGS) under else null
 
     fun open(app: MayhemApp) {
         if (app == MayhemApp.SETTINGS) {
@@ -84,6 +100,9 @@ object Apps {
         }
         under = null
         recorder?.stop()
+        // one tap in the bar now switches app; a transmission never outlives the app that started it
+        if (app != MayhemApp.TRANSMIT && app != MayhemApp.TROLL) Tx.stop()
+        if (app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH) _sweep.value = null
         if (app != MayhemApp.AUDIO) Scanner.stop()
         if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
         if (app != MayhemApp.SAT) com.rocketgod.mayhem.core.sat.Sats.close()
@@ -94,6 +113,7 @@ object Apps {
         SdrEngine.sameOn = app == MayhemApp.AUDIO
         cameFrom = _current.value
         _current.value = app
+        NavBar.noteOpened(app)
         val r = SdrEngine.IQ_RATE
         when (app) {
             MayhemApp.HAM -> com.rocketgod.mayhem.core.ham.Ham.open()
@@ -109,9 +129,7 @@ object Apps {
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
             MayhemApp.APRS -> SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L, r, 24, 24, false, aprs)
-            MayhemApp.PAGER -> if (_pagerMulti.value) {
-                SdrEngine.configure(SdrEngine.Mode.NONE, 929_612_500L, r, 32, 40, true, hunter); com.rocketgod.mayhem.core.pager.PagerEngine.start()
-            } else SdrEngine.configure(SdrEngine.Mode.NFM, 929_612_500L, r, 32, 32, false, pager)
+            MayhemApp.PAGER -> startPager()
             MayhemApp.ERT -> SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, r, 32, 40, true, ert)
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
@@ -149,6 +167,7 @@ object Apps {
     fun home() {
         under = null
         recorder?.stop()
+        Tx.stop()
         Scanner.stop()
         Prowl.stop()
         com.rocketgod.mayhem.core.ham.Ham.stopPtt()

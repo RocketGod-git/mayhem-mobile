@@ -177,7 +177,6 @@ private fun HamReceive(accent: Color) {
             modifier = Modifier.fillMaxWidth(),
         )
 
-        GainRow(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }

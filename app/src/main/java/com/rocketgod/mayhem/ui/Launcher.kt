@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +20,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,11 +35,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
+import com.rocketgod.mayhem.core.NavBar
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
 
@@ -82,9 +88,13 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
         ReceiverScope(accent,
             (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 160f))).padding(top = d.dp(6f)),
             rows = 70, traceFrac = 0.32f, wholeRange = true)
-        Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
-             else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
-            fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), maxLines = 1)
+        Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
+                 else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
+                fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.weight(1f), maxLines = 1)
+            // Home is a receiver too: its sound gets the same one-tap mute as every app
+            SpeakerButton(size = d.dp(16f))
+        }
         // a chip shows the whole band (as wide as this radio and screen take) and picks its strongest station
         ListenBandChips(accent, lo) { b ->
             SdrEngine.viewBand(b.lo, b.hi, b.mode, if (wide) 19_200_000 else 7_680_000)
@@ -133,10 +143,20 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
     // dimmed, never locked: a dongle owner may still want two-metre HAM
     Radio.kind.collectAsState().value
     val why = Radio.blockedBecause(app)
+    val inBar = NavBar.checked.collectAsState().value.contains(app)
     Column(
         Modifier.fillMaxWidth().aspectRatio(1.3f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { onClick() }.padding(d.dp(12f))
     ) {
-        AppGlyph(app, tint, Modifier.size(d.dp(36f)))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            AppGlyph(app, tint, Modifier.size(d.dp(36f)))
+            Box(Modifier.weight(1f))
+            // + puts the app in the bottom bar, ✓ takes it out; order and the rest live in Settings › Bar
+            if (app in NavBar.all()) Box(
+                Modifier.size(d.dp(28f)).clip(RoundedCornerShape(6.dp)).background(if (inBar) tint else Color.Transparent)
+                    .border(1.dp, if (inBar) tint else Palette.line, RoundedCornerShape(6.dp)).clickable { NavBar.toggle(app) },
+                contentAlignment = Alignment.Center
+            ) { Text(if (inBar) "✓" else "+", color = if (inBar) inkOn(tint) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f)) }
+        }
         Box(Modifier.weight(1f))
         Text(app.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
         Text(if (why.isNotEmpty()) "${Radio.name}: $why" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
@@ -146,7 +166,7 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
 
 /** What a dimmed tile says when tapped: why this radio cannot, what can, and a way in where part of it still works. */
 @Composable
-private fun NeedsHackRfDialog(app: MayhemApp, onDismiss: () -> Unit) {
+internal fun NeedsHackRfDialog(app: MayhemApp, onDismiss: () -> Unit) {
     val still = when (app) {
         MayhemApp.TRANSMIT -> "Everything that listens works on this radio."
         else -> ""

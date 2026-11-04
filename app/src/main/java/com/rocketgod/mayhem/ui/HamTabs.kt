@@ -122,7 +122,6 @@ internal fun HamMonitor(accent: Color) {
             if (m.log.isEmpty()) Text("activity log", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
             for (l in m.log.take(30)) Text(l, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f))
         }
-        GainRow(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }
@@ -257,7 +256,6 @@ internal fun HamDigitalTab(accent: Color) {
         }
         SectionLabel("TUNE")
         TuneSteps(accent)
-        GainRow(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }

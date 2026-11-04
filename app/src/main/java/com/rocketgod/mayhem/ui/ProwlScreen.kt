@@ -98,7 +98,6 @@ fun ProwlScreen(accent: Color) {
             }
             SectionLabel("WHEN THIS SPAN GOES QUIET")
             Chip(if (v.sweep) "MOVE TO ANOTHER BAND" else "STAY WHERE I PUT IT", selected = v.sweep, accent = accent, modifier = Modifier.fillMaxWidth()) { Prowl.toggleSweep() }
-            GainRow(accent)
             Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("HEARD", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp)
                 Text("CLEAR", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp,

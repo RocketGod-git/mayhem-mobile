@@ -197,7 +197,6 @@ private fun SatTrack(accent: Color) {
                 }
             }
         }
-        GainRow(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }
@@ -264,7 +263,6 @@ private fun SatPacket(accent: Color) {
         }
         Text("Ordinary AX.25 at 9600 baud, scrambled the way James Miller's modem does it. The payload is usually binary telemetry rather than text, so the callsigns are the part you read: they tell you which satellite you just heard.",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.gap))
-        GainRow(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }
@@ -303,7 +301,6 @@ private fun SatOrbcomm(accent: Color) {
         GeoMapView(items, accent, Modifier.fillMaxWidth().height(d.dp(260f)).panel(), home = home, selected = o.sel.toString()) { Sats.orbSelect(it.toIntOrNull() ?: -1) }
         Text("The message packets are encrypted and are not decoded. What is shown is each satellite's own report of where it is, which it sends every four seconds, plus its clock and speed.",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.gap))
-        GainRow(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }
