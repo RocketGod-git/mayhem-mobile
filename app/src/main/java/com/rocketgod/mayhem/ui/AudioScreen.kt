@@ -173,62 +173,24 @@ private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
     val squelch by SdrEngine.squelchDb.collectAsState()
     val sqOpen by SdrEngine.squelchOpen.collectAsState()
     val scanning by Scanner.active.collectAsState()
-    val marks by Bookmarks.list.collectAsState()
-    var keying by remember { mutableStateOf(false) }
-    val preview = Tuning.previewHz
-    val shown = preview ?: freq
-    val tint = if (preview != null) Palette.accent2 else accent
-    if (keying) FreqEntryDialog(freq, accent) { f -> keying = false; if (f != null) SdrEngine.tune(f) }
-    val shape = RoundedCornerShape(d.dp(16f))
-    Column(
-        Modifier.fillMaxWidth().clip(shape)
-            .background(Brush.verticalGradient(listOf(Palette.panel, Palette.surface)))
-            .drawBehind { drawRect(Brush.radialGradient(listOf(accent.copy(alpha = 0.18f), Color.Transparent), center = Offset(size.width / 2, 0f), radius = size.width * 0.75f)) }
-            .border(1.dp, Palette.line, shape)
-            .padding(horizontal = d.dp(12f), vertical = d.dp(10f))
-    ) {
+    Column(Modifier.faceCard(accent, d)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(mode.name, color = inkOn(accent), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.5.sp,
-                modifier = Modifier.background(accent, RoundedCornerShape(5.dp)).padding(horizontal = 7.dp, vertical = 2.dp))
-            Text(bandTitle(shown), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            FaceTag(mode.name, accent)
+            Text(bandTitle(Tuning.previewHz ?: freq), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
             SquelchLamp(squelch, sqOpen, scanning)
         }
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(6f)), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            FreqDigits(shown, true, tint, preview != null, glow = accent) { SdrEngine.tune(it) }
-            Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
-                val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
-                Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
-                    modifier = Modifier.clickable { Bookmarks.star(freq, mode) }.padding(horizontal = 4.dp))
-                Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = 4.dp))
-            }
-        }
+        Box(Modifier.padding(top = d.dp(6f))) { DialRow(accent, freq) }
         SignalMeter(channelDb, squelch, accent, Modifier.fillMaxWidth().padding(top = d.dp(8f)))
-        val lim = Radio.limits
-        if (Radio.kind.collectAsState().value != Radio.Kind.NONE && !Radio.canTune(lim, shown))
-            Text("outside this ${Radio.name}'s %d–%d MHz".format(lim.minHz / 1_000_000, lim.maxHz / 1_000_000),
-                color = Palette.danger, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth().padding(top = 4.dp), maxLines = 1, textAlign = TextAlign.Center)
     }
 }
 
 /** OPEN (green), SQUELCHED (hollow) or SCAN (amber, blinking): the one word that says whether you'd hear anything. */
 @Composable
-private fun SquelchLamp(squelch: Int, open: Boolean, scanning: Boolean) {
-    val d = rememberDims()
-    val blink by rememberInfiniteTransition(label = "lamp").animateFloat(1f, 0.25f, infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "blink")
-    val (label, c) = when {
-        scanning -> (if (open && squelch > 0) "SCAN · SIGNAL" else "SCAN") to Palette.accent2
-        squelch > 0 && !open -> "SQUELCHED" to Palette.muted
-        else -> "OPEN" to Palette.ok
-    }
-    val lit = c != Palette.muted
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).alpha(if (scanning) blink else 1f).then(
-            if (lit) Modifier.drawBehind { drawCircle(c.copy(alpha = 0.35f), radius = size.minDimension) }.background(c, CircleShape)
-            else Modifier.border(1.5.dp, c, CircleShape)))
-        Text(label, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
-            modifier = Modifier.padding(start = 6.dp))
-    }
+private fun SquelchLamp(squelch: Int, open: Boolean, scanning: Boolean) = when {
+    scanning -> Lamp(if (open && squelch > 0) "SCAN · SIGNAL" else "SCAN", Palette.accent2, blink = true)
+    squelch > 0 && !open -> Lamp("SQUELCHED", Palette.muted)
+    else -> Lamp("OPEN", Palette.ok)
 }
 
 /** Thirty-two LEDs, blue then green, amber and red, over 0–40 dB above the noise floor; a white tick at the squelch. */
@@ -293,39 +255,6 @@ private fun StationStrip(r: RdsState?, accent: Color) {
     }
 }
 
-@Composable
-private fun Pill(text: String, c: Color) {
-    val d = rememberDims()
-    Text(text, color = c, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1,
-        modifier = Modifier.border(1.dp, if (c == Palette.muted) Palette.line else c, RoundedCornerShape(20.dp)).padding(horizontal = 6.dp, vertical = 1.dp))
-}
-
-/** One rounded bar of equal segments, the chosen one filled and lit. */
-@Composable
-private fun SegBar(labels: List<String>, selected: Int, accent: Color, modifier: Modifier = Modifier, onPick: (Int) -> Unit) {
-    val d = rememberDims()
-    val haptic = LocalHapticFeedback.current
-    val outer = RoundedCornerShape(d.dp(12f))
-    val inner = RoundedCornerShape(d.dp(9f))
-    Row(modifier.fillMaxWidth().background(Palette.surface, outer).border(1.dp, Palette.line, outer).padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        labels.forEachIndexed { i, label ->
-            val on = i == selected
-            Box(Modifier.weight(1f)
-                .then(if (on) Modifier.drawBehind {
-                    // a soft halo just outside the lit segment
-                    drawRoundRect(accent.copy(alpha = 0.28f), Offset(-2.dp.toPx(), -2.dp.toPx()), Size(size.width + 4.dp.toPx(), size.height + 4.dp.toPx()), CornerRadius(11.dp.toPx()))
-                }.background(accent, inner) else Modifier)
-                .clip(inner)
-                .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(i) }
-                .padding(vertical = d.dp(8f)), contentAlignment = Alignment.Center) {
-                Text(label, color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
-                    letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
-            }
-        }
-    }
-}
-
 /** The bands as a scrolling row of tiles, each with its range; the one you're in is lit and scrolled into view. */
 @Composable
 private fun BandTiles(accent: Color, hz: Long, onPick: (ListenBand) -> Unit) {
@@ -369,7 +298,6 @@ private fun ScanButton(scanning: Boolean, empty: Boolean, modifier: Modifier, on
     val d = rememberDims()
     val haptic = LocalHapticFeedback.current
     val shape = RoundedCornerShape(d.dp(12f))
-    val angle by rememberInfiniteTransition(label = "radar").animateFloat(0f, 360f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "sweep")
     val bg = if (scanning) Palette.accent2 else Palette.surface
     val fg = if (scanning) inkOn(Palette.accent2) else Palette.ink
     Row(modifier.alpha(if (empty && !scanning) 0.45f else 1f)
@@ -379,14 +307,7 @@ private fun ScanButton(scanning: Boolean, empty: Boolean, modifier: Modifier, on
         .clip(shape).background(bg).border(1.dp, if (scanning) Palette.accent2 else Palette.line, shape)
         .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
         horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        Canvas(Modifier.size(d.dp(18f))) {
-            val c = center; val r = size.minDimension / 2
-            val sw = 1.6.dp.toPx()
-            drawCircle(fg.copy(alpha = 0.5f), r - sw / 2, c, style = Stroke(sw))
-            drawCircle(fg.copy(alpha = 0.7f), r * 0.5f, c, style = Stroke(sw))
-            rotate(if (scanning) angle else 0f, c) { drawLine(fg, c, Offset(c.x, c.y - r + sw), sw * 1.2f, StrokeCap.Round) }
-            drawCircle(fg, sw, c)
-        }
+        RadarGlyph(fg, scanning, Modifier.size(d.dp(18f)))
         Text("SCAN", color = fg, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp,
             modifier = Modifier.padding(start = d.dp(7f)))
     }
