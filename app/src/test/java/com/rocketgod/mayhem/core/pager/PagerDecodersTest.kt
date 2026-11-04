@@ -234,7 +234,8 @@ class PagerDecodersTest {
     @Test fun flexCutsAPageWhereTheNoiseStarts() {
         val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
         // content words start at 6 (the header is 5); the first holds two characters, the rest three each
-        val flip = mapOf(6 + 6 to 0x0F000000, 6 + 7 to 0x00F00000, 6 + 8 to 0x000F0000)
+        // three bit errors a word: past what the code corrects, and never close enough to another word to miscorrect
+        val flip = mapOf(6 + 6 to 0x0E000000, 6 + 7 to 0x00E00000, 6 + 8 to 0x000E0000)
         val frame = flexFrame(0x870C, 1600, false, phase, flip)
         val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(21))
         val c = Collect()
@@ -242,8 +243,23 @@ class PagerDecodersTest {
         val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
         assertTrue("alpha missing: ${c.pages}", alpha != null)
         assertEquals("STATION 7 RESPOND …", alpha!!.text)
-        assertTrue("errors: ${alpha.errors}", alpha.errors >= 2)
+        assertEquals(3, alpha.errors)
         assertEquals("5551234", c.pages.first { it.capcode == 765432L }.text)
+    }
+
+    /** A word that needed two bits fixed is kept, even the last: on a real signal they are common and right. */
+    @Test fun flexKeepsTwoBitFixes() {
+        val text = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
+        val phase = flexPhase(1234567L, text, 765432L, "5551234")
+        val lastWord = 6 + (text.length - 2 + 2) / 3   // two characters in the first word, three in each after
+        val frame = flexFrame(0x870C, 1600, false, phase, mapOf(6 + 4 to 0x00000006, lastWord to 0x60000000))
+        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(23))
+        val c = Collect()
+        FlexDecoder(c, 48_000.0).push(sig, sig.size)
+        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
+        assertTrue("alpha missing: ${c.pages}", alpha != null)
+        assertEquals(text, alpha!!.text)
+        assertEquals(0, alpha.errors)
     }
 
     /** One failed word inside good text stays a gap; the rest of the page is kept. */

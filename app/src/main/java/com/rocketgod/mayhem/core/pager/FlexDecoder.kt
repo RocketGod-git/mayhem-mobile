@@ -206,8 +206,11 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
                 val mw2 = mw1 + len - 1
                 if (len == 0 || mw2 >= WORDS) return
                 val sb = StringBuilder()
-                for (k in mw1 + 1..mw2) { if (sb.isNotEmpty()) sb.append(' '); sb.append(if (bad[k]) "??????" else "%06X".format(w[k])) }
-                emit(cap, PageKind.BINARY, sb.toString(), where)
+                var lost = 0
+                for (k in mw1 + 1..mw2) { if (sb.isNotEmpty()) sb.append(' '); if (bad[k]) lost++; sb.append(if (bad[k]) "??????" else "%06X".format(w[k])) }
+                // a binary page that is mostly lost words is noise: it goes out empty, so the feed can hide it
+                val n = mw2 - mw1
+                emit(cap, PageKind.BINARY, if (lost * 2 > n) "" else sb.toString(), where, lost)
             }
             // T_INSTR: temporary address assignments and system events, not pages.
         }
@@ -216,20 +219,23 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
     private fun emit(cap: Long, kind: PageKind, text: String, where: String, errors: Int = 0) =
         sink.onPage(PagerPage("FLEX", rateLabel(), cap, kind, text, where, errors))
 
-    /** [errors]: message words that failed or were suspect. A page cut short where the noise began ends in " …". */
+    /** [errors]: message words that failed the check. A page cut short where the noise began ends in " …". */
     private class Alpha(val text: String, val frag: Int, val more: Int, val errors: Int)
 
     private fun alpha(w: IntArray, bad: BooleanArray, first: Int, last: Int): Alpha {
         var frag = 3; var more = 0
         if (first in 0 until WORDS && !bad[first]) { val h = w[first]; more = (h ushr 10) and 1; frag = (h ushr 11) and 3 }
-        // Two suspect words in a row is where the signal was lost (a fade, or the symbol clock slipping), and
-        // nothing after it in this phase can be trusted: the text stops there rather than running on as noise.
-        // A lone failed word inside good text stays a '???'; a lone two-bit fix is most likely right and is kept.
-        fun sus(k: Int) = k !in 0 until WORDS || suspect[k]
+        // A failed word with another failure right after it, or one word on, is where the signal was lost (a fade,
+        // or the symbol clock slipping): nothing after it in this phase can be trusted, so the text stops there
+        // rather than running on as noise, and so do any two-bit fixes leading into it, which are that noise
+        // "corrected". A lone failed word inside good text stays a '???'. A two-bit fix on its own is kept: on a
+        // real signal they are common and nearly always right.
+        fun lost(k: Int) = k !in 0 until WORDS || bad[k]
         var cutAt = last + 1
-        for (k in first + 1..last) if (sus(k) && (k == last || sus(k + 1))) { cutAt = k; break }
+        for (k in first + 1..last) if (lost(k) && k < last && (lost(k + 1) || (k + 2 <= last && lost(k + 2)))) { cutAt = k; break }
+        if (cutAt <= last) while (cutAt > first + 1 && suspect[cutAt - 1]) cutAt--
         var errors = 0
-        for (k in first + 1..last) if (sus(k)) errors++
+        for (k in first + 1..last) if (lost(k)) errors++
         val chars = ArrayList<Int>()
         fun put(c: Int, isBad: Boolean) {
             when {

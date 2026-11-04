@@ -276,8 +276,8 @@ object PagerUi {
     var noise by mutableStateOf(false)
 }
 
-/** A text page the decoder gave up on: its words were lost before any readable text came through. */
-private fun unreadable(m: PagerMessage) = m.page.errors > 0 && m.page.text.isBlank() && (m.page.kind == PageKind.ALPHA || m.page.kind == PageKind.SECURE)
+/** A page the decoder gave up on: its words were lost before anything readable came through. */
+private fun unreadable(m: PagerMessage) = m.page.errors > 0 && m.page.text.isBlank() && (m.page.kind == PageKind.ALPHA || m.page.kind == PageKind.SECURE || m.page.kind == PageKind.BINARY)
 
 /** What the MULTI feed is narrowed to. One instance serves the inline feed and the full-screen one, so both agree. */
 private class PagerFilter {
