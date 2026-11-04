@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.height
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalDensity
@@ -261,6 +262,27 @@ fun TileRow(tiles: List<Tile>, accent: Color, width: Dp = 74.dp, onPick: (Int) -
                 Text(t.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
                 Text(t.sub, color = if (t.on) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
             }
+        }
+    }
+}
+
+/** Thirty-two LEDs over [frac] of full scale: blue, then green, amber and red toward the top. */
+@Composable
+fun LedMeter(frac: Float, accent: Color, modifier: Modifier) {
+    val d = rememberDims()
+    val n = 32
+    val lit = (frac * n).roundToInt().coerceIn(0, n)
+    val off = Palette.line.copy(alpha = 0.7f)
+    val ok = Palette.ok; val amber = Palette.accent2; val red = Palette.danger
+    Canvas(modifier.height(d.dp(10f))) {
+        val gap = 2.dp.toPx()
+        val w = (size.width - gap * (n - 1)) / n
+        val r = CornerRadius(2.dp.toPx())
+        for (i in 0 until n) {
+            val c = if (i >= lit) off else when { i < 14 -> accent; i < 22 -> ok; i < 28 -> amber; else -> red }
+            val x = i * (w + gap)
+            if (i < lit) drawRoundRect(c.copy(alpha = 0.3f), Offset(x - 1.dp.toPx(), -1.dp.toPx()), Size(w + 2.dp.toPx(), size.height + 2.dp.toPx()), r)
+            drawRoundRect(c, Offset(x, 0f), Size(w, size.height), r)
         }
     }
 }
