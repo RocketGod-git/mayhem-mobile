@@ -1,5 +1,8 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.text.style.TextOverflow
 import android.content.Context
 import android.media.MediaPlayer
 import androidx.compose.foundation.Image
@@ -77,19 +80,25 @@ fun TrollScreen(defaultAccent: Color) {
             return@ScrollColumn
         }
 
-        FreqReadout(accent, if (status.isNotEmpty()) status else "idle", big = true)
+        Column(Modifier.faceCard(accent, d)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                FaceTag("TROLL", accent)
+                Text(status.ifEmpty { "idle" }.uppercase(), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+                DialActions(accent, freq)
+                if (active) Lamp("ON AIR", accent, blink = true) else Lamp("IDLE", Palette.muted)
+            }
+            Box(Modifier.padding(top = d.dp(2f))) { DialRow(accent, freq) }
+        }
         Note("Everything here transmits unless noted — use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live.")
 
-        SectionLabel("TUNE · MHz")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-            for (s in longArrayOf(1_000_000L, 100_000L, 10_000L)) Chip("−" + trollStep(s), false, accent, Modifier.weight(1f)) { SdrEngine.tune(freq - s) }
-            for (s in longArrayOf(10_000L, 100_000L, 1_000_000L)) Chip("+" + trollStep(s), false, accent, Modifier.weight(1f)) { SdrEngine.tune(freq + s) }
-        }
-
-        SectionLabel("TX GAIN · IF 0–47 dB   ·   AMP +14 dB")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (g in intArrayOf(0, 10, 20, 30, 47)) Chip("$g", selected = gain == g, accent = accent, modifier = Modifier.weight(1f)) { Tx.setGain(g) }
-            Chip(if (amp) "AMP" else "amp", selected = amp, accent = accent, modifier = Modifier.weight(1f)) { Tx.toggleAmp() }
+        // IF gain 0–47 dB; AMP adds 14 dB
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f)), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)),
+            verticalAlignment = Alignment.CenterVertically) {
+            val gains = listOf(0, 10, 20, 30, 47)
+            RowLabel("GAIN")
+            SegBar(gains.map { "$it" }, gains.indexOf(gain), accent, Modifier.weight(1f).fillMaxHeight()) { Tx.setGain(gains[it]) }
+            ToggleBox("AMP", amp, accent, Modifier.fillMaxHeight()) { Tx.toggleAmp() }
         }
 
         // ---- ON THE DIAL: fires on the frequency tuned above --------------------------------------------------
