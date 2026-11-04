@@ -36,13 +36,23 @@ object PagerEngine {
 
     /** HUNT: track the span's busiest carriers. PINNED: keep only [pinned]. */
     @Volatile var hunting = true; private set
-    fun setHunting(on: Boolean) { hunting = on; status() }
+    /** AUTO: forget the pins and hunt again; the heard channel goes back to whichever synced last. */
+    fun setHunting(on: Boolean) {
+        if (on) { synchronized(pinned) { pinned.clear() }; listenHz = null }
+        hunting = on; status()
+    }
     /** The channel whose audio plays (tap a channel); null = whichever synced last. */
     @Volatile var listenHz: Long? = null
     /** Carriers the user pinned (tap an active frequency to stay on it). */
     private val pinned = LinkedHashSet<Long>()
     fun pin(hz: Long) { synchronized(pinned) { pinned.add(hz) }; hunting = false; listenHz = hz; status() }
-    fun unpin(hz: Long) { synchronized(pinned) { pinned.remove(hz) }; status() }
+    /** Let a pinned carrier go. With nothing left pinned there is nothing to decode, so it hunts again. */
+    fun unpin(hz: Long) {
+        val none = synchronized(pinned) { pinned.remove(hz); pinned.isEmpty() }
+        if (listenHz == hz) listenHz = null
+        if (none) hunting = true
+        status()
+    }
     fun pinnedList(): List<Long> = synchronized(pinned) { pinned.toList() }
 
     @Volatile var running = false; private set

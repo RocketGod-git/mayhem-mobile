@@ -121,10 +121,9 @@ fun GainRow(accent: Color) {
         val bias by SdrEngine.biasTee.collectAsState()
         var warn by remember { mutableStateOf(false) }
         // a dongle has one tuner gain; showing an LNA and an amp that do nothing would be worse than not showing them
-        SectionLabel(if (agc) "GAIN · AUTO · tap it to set it" else "GAIN · BY HAND · AGC for auto")
         // RTL-SDR Blog bias tee rides the same row: DC on the antenna port for an inline LNA, off by default, and the
         // first enable asks. A row of its own pushed every decoder's log a full button height down the screen.
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setAgc(!agc) }
             GainStepper("GAIN", vga, accent, Modifier.weight(1.8f), auto = agc,
                 onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
@@ -136,8 +135,7 @@ fun GainRow(accent: Color) {
         if (warn) BiasTeeDialog(accent, onConfirm = { SdrEngine.setBiasTee(true); warn = false }, onCancel = { warn = false })
         return
     }
-    SectionLabel(if (agc) "GAIN · AUTO · tap LNA or VGA to set it" else "GAIN · BY HAND · AGC for auto")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+    Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         Chip(if (agc) "AGC" else "MANUAL", selected = agc, accent = accent, modifier = Modifier.weight(0.8f)) { SdrEngine.setAgc(!agc) }
         Chip(if (amp) "AMP +14" else "AMP OFF", selected = amp, accent = accent, modifier = Modifier.weight(0.9f)) { SdrEngine.toggleRadioAmp() }
         GainStepper("LNA", lna, accent, Modifier.weight(1f), auto = agc,

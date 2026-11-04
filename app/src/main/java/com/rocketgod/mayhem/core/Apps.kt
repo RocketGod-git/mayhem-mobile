@@ -45,7 +45,7 @@ object Apps {
     val pagerLog = PacketLog(); val pager = PagerDecoder(pagerLog)
     val hunter = com.rocketgod.mayhem.core.pager.PagerHunter()
     /** The pager app's mode: false = the single tuned-channel decoder, true = the multi-channel span hunter. */
-    private val _pagerMulti = MutableStateFlow(false)
+    private val _pagerMulti = MutableStateFlow(true)
     val pagerMulti: StateFlow<Boolean> = _pagerMulti.asStateFlow()
     fun setPagerMulti(on: Boolean) { if (_pagerMulti.value == on) return; _pagerMulti.value = on; if (_current.value == MayhemApp.PAGER) open(MayhemApp.PAGER) }
     val aisLog = PacketLog(); val ais = AisDecoder(aisLog)

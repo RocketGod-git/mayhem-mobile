@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
@@ -111,8 +112,7 @@ fun PagerScreen(accent: Color) {
 @Composable
 private fun PagerModeRow(accent: Color, multi: Boolean) {
     val d = rememberDims()
-    SectionLabel("MODE")
-    Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         Chip("SINGLE CH", selected = !multi, accent = accent, modifier = Modifier.weight(1f)) { Apps.setPagerMulti(false) }
         Chip("MULTI CH", selected = multi, accent = accent, modifier = Modifier.weight(1f)) { Apps.setPagerMulti(true) }
     }
@@ -124,16 +124,15 @@ private fun PagerSingleView(accent: Color) {
     val which by Apps.pager.which.collectAsState()
     PacketFrame(accent, Apps.pagerLog, roomy = true, controls = {
         PagerModeRow(accent, false)
-        SectionLabel("DECODER · FLEX 1600/3200 2L/4L · POCSAG 512/1200/2400")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for (w in PagerDecoder.Which.entries) Chip(w.label, selected = which == w, accent = accent, modifier = Modifier.weight(1f)) { Apps.pager.select(w) }
         }
         PresetRow(accent, listOf("929.6125" to 929_612_500L, "929.6625" to 929_662_500L, "931.9375" to 931_937_500L, "466.175" to 466_175_000L), title = "CHANNEL · MHz")
     })
 }
 
-/** The multi-channel hunter: tune to a pager band and it decodes the busiest carriers in the span (HUNT), or only
- *  the ones you tap (PINNED). Audio for the focused channel plays through the normal path, so the global mute rules it. */
+/** The multi-channel hunter: tune to a pager band and it decodes the busiest carriers in the span (AUTO), or only
+ *  the ones you tap. Audio for the focused channel plays through the normal path, so the global mute rules it. */
 @Composable
 private fun PagerHunterView(accent: Color) {
     val d = rememberDims()
@@ -160,18 +159,8 @@ private fun PagerHunterView(accent: Color) {
         }
     ) {
         PagerModeRow(accent, true)
-        // Without its own caption this row read as two more mode buttons under SINGLE / MULTI.
-        SectionLabel("CARRIERS · HUNT the busiest · PINNED only the ones you tap")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("HUNT", selected = status.hunting, accent = accent, modifier = Modifier.weight(1f)) { PagerEngine.setHunting(true) }
-            Chip(if (status.pinned > 0) "PINNED ${status.pinned}" else "PINNED", selected = !status.hunting, accent = accent, modifier = Modifier.weight(1f)) { PagerEngine.setHunting(false) }
-        }
         GainRow(accent)
-        Text(status.text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.fillMaxWidth().padding(vertical = d.dp(4f)))
-        SectionLabel("CHANNELS · tap to pin & listen")
-        val pins = PagerEngine.pinnedList().toHashSet()
-        // a phone keeps the busiest few so the feed below still has room; FULL has the rest of the screen for reading
-        for (c in channels.take(if (d.wide) 8 else 5)) PagerChanRow(accent, c, c.hz in pins)
+        ChannelPills(accent, channels, status)
         PagerFeed(messages, capcodes, filter, accent, Modifier.fillMaxWidth().weight(1f), onFull = { full = true })
     }
     if (full) FullscreenPanel("PAGES", accent, onClose = { full = false }) {
@@ -347,15 +336,47 @@ private fun copyPage(ctx: Context, text: String) {
 
 private val PAGE_TIME: ThreadLocal<SimpleDateFormat> = ThreadLocal.withInitial { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
+/**
+ * The span's carriers as one scrolling row: AUTO first, then each carrier. AUTO hunts the busiest by itself;
+ * tapping a carrier pins it (and plays it), tapping it again lets it go, and letting the last one go goes back to
+ * AUTO. A carrier that is decoding has a lit edge; a pinned one is filled. One row instead of a list keeps the
+ * feed below it the room it needs.
+ */
 @Composable
-private fun PagerChanRow(accent: Color, c: PagerEngine.Chan, pinned: Boolean) {
+private fun ChannelPills(accent: Color, channels: List<PagerEngine.Chan>, status: PagerEngine.Status) {
     val d = rememberDims()
-    Row(Modifier.fillMaxWidth().clickable { if (pinned) PagerEngine.unpin(c.hz) else PagerEngine.pin(c.hz) }.padding(vertical = d.dp(3f)), verticalAlignment = Alignment.CenterVertically) {
-        Text(if (c.listening) "●" else "○", color = if (c.listening) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.width(d.dp(14f)))
-        Text("%.4f".format(c.hz / 1e6), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), modifier = Modifier.width(d.dp(74f)))
-        Text(if (c.protocol.isNotEmpty()) "${c.protocol} ${c.rate}" else "—", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.weight(1f))
-        if (c.pages > 0) Text("${c.pages}p", color = accent, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(end = d.dp(6f)))
-        if (pinned) Text("PIN", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
+    val pins = PagerEngine.pinnedList().toHashSet()
+    Row(Modifier.fillMaxWidth().padding(top = d.dp(10f), bottom = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
+        Text("CHANNELS", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
+        Text("  ·  ${status.text}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        ChanPill("AUTO", "hunt", on = status.hunting, live = false, accent = accent) { PagerEngine.setHunting(true) }
+        for (c in channels) {
+            val pinned = c.hz in pins
+            val sub = when {
+                c.protocol.isNotEmpty() -> "${c.protocol} ${c.rate}" + (if (c.pages > 0) " · ${c.pages}p" else "")
+                c.listening -> "trying"
+                else -> "%.0f dB".format(c.snrDb)
+            }
+            ChanPill("%.4f".format(c.hz / 1e6), sub, on = pinned, live = c.listening && c.protocol.isNotEmpty(), accent = accent) {
+                if (pinned) PagerEngine.unpin(c.hz) else PagerEngine.pin(c.hz)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChanPill(title: String, sub: String, on: Boolean, live: Boolean, accent: Color, onClick: () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(8.dp)
+    Column(
+        Modifier.clip(shape).background(if (on) accent.copy(alpha = 0.22f) else Palette.surface)
+            .border(if (on || live) 1.5.dp else 1.dp, if (on || live) accent else Palette.line, shape)
+            .clickable { onClick() }.padding(horizontal = d.dp(10f), vertical = d.dp(5f))
+    ) {
+        Text(title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1)
+        Text(sub, color = if (live) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
     }
 }
 
