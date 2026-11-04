@@ -43,12 +43,20 @@ class PacketLog(private val cap: Int = 300) {
     private val _count = MutableStateFlow(0)
     val count: StateFlow<Int> = _count.asStateFlow()
 
+    /** The lines and the running total in one value, so a list keyed by the total never sees one without the other. */
+    data class Snapshot(val lines: List<String>, val total: Int)
+    private val _snapshot = MutableStateFlow(Snapshot(emptyList(), 0))
+    val snapshot: StateFlow<Snapshot> = _snapshot.asStateFlow()
+
     fun add(s: String) {
         val cur = _lines.value
-        _lines.value = if (cur.size >= cap) listOf(s) + cur.subList(0, cap - 1) else listOf(s) + cur
-        _count.value = _count.value + 1
+        val next = if (cur.size >= cap) listOf(s) + cur.subList(0, cap - 1) else listOf(s) + cur
+        val total = _count.value + 1
+        _lines.value = next
+        _count.value = total
+        _snapshot.value = Snapshot(next, total)
     }
-    fun clear() { _lines.value = emptyList(); _count.value = 0 }
+    fun clear() { _lines.value = emptyList(); _count.value = 0; _snapshot.value = Snapshot(emptyList(), 0) }
 }
 
 /**
