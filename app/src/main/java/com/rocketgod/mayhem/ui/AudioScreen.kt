@@ -8,26 +8,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -44,16 +33,11 @@ import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.audio.HdReport
 import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameHeader
-import kotlin.math.log10
-import kotlin.math.pow
-import kotlin.math.roundToLong
 
-/** Audio receiver (Mayhem "Audio" / analog_audio_app): waterfall, slide-to-tune, WFM/NFM/AM/USB/LSB, squelch, bookmarks + scan, gain. */
-@OptIn(ExperimentalLayoutApi::class)
+/** Audio receiver (Mayhem "Audio" / analog_audio_app): waterfall, slide-to-tune, WFM/NFM/AM/USB/LSB, bands, squelch and scan. */
 @Composable
 fun AudioScreen(accent: Color) {
     val d = rememberDims()
-    val spec by SdrEngine.spectrum.collectAsState()
     val lo by SdrEngine.freqHz.collectAsState()
     val offset by SdrEngine.offsetHz.collectAsState()
     val freq = lo + offset
@@ -67,26 +51,10 @@ fun AudioScreen(accent: Color) {
     val rds by SdrEngine.rds.collectAsState()
     val hd by SdrEngine.hd.collectAsState()
     val alert by SdrEngine.same.collectAsState()
-    var naming by remember { mutableStateOf(false) }
-    var newName by remember { mutableStateOf("") }
-
-    if (naming) {
-        AlertDialog(
-            onDismissRequest = { naming = false },
-            containerColor = Palette.surface, titleContentColor = Palette.ink, textContentColor = Palette.ink,
-            title = { Text("Bookmark", fontFamily = Mono, fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(newName, { newName = it }, singleLine = true, label = { Text("name", fontFamily = Mono) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Palette.ink, unfocusedTextColor = Palette.ink, focusedBorderColor = accent, unfocusedBorderColor = Palette.line, cursorColor = accent, focusedLabelColor = accent, unfocusedLabelColor = Palette.muted))
-            },
-            confirmButton = { TextButton({ Bookmarks.add(newName, freq, mode); naming = false }) { Text("SAVE", color = accent, fontFamily = Mono) } },
-            dismissButton = { TextButton({ naming = false }) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } }
-        )
-    }
 
     AdaptivePane(
-        // a receiver is mostly for looking at: on a phone the waterfall gets the larger share
-        visualHeightNarrow = (d.heightDp * 0.53f).dp,
+        // a receiver is mostly for looking at: on a phone the waterfall gets most of the screen, the controls four rows
+        visualHeightNarrow = (d.heightDp * 0.58f).dp,
         visual = { m ->
             Column(m) {
                 alert?.header?.let { h -> SameBanner(h) }
@@ -99,62 +67,21 @@ fun AudioScreen(accent: Color) {
             }
         }
     ) {
+        // Four rows: how to listen, where (the bands), and squelch with SCAN. Everything else has a better home —
+        // the digits, ⌨ and the waterfall tune; ☆ saves and FAVES recalls; RDS and HD are switches in Settings › Audio.
         ScrollColumn(Modifier.fillMaxWidth()) {
-            // Coarse tuning across whatever the radio covers, on a log scale; fine control = tap-to-tune + steppers.
-            com.rocketgod.mayhem.core.Radio.kind.collectAsState().value
-            val lim = com.rocketgod.mayhem.core.Radio.limits
-            SectionLabel(if (lim.maxHz >= 1_000_000_000L * 6) "BAND · 1 MHz – 6 GHz" else "BAND · %d MHz – %.3f GHz".format(lim.minHz / 1_000_000, lim.maxHz / 1e9))
-            val lo = log10(lim.minHz / 1e6).toFloat(); val hi = log10(lim.maxHz / 1e6).toFloat()
-            val pos = log10((freq / 1e6).coerceAtLeast(1.0)).toFloat().coerceIn(lo, hi)
-            Slider(
-                value = pos,
-                onValueChange = { v -> SdrEngine.tune(((10.0.pow(v.toDouble()) * 1e6) / 10_000.0).roundToLong() * 10_000L) },
-                valueRange = lo..hi,
-                colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Palette.line),
-                modifier = Modifier.fillMaxWidth()
-            )
-            SectionLabel("MODE")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
                 for (m in listOf(SdrEngine.Mode.WFM, SdrEngine.Mode.NFM, SdrEngine.Mode.AM, SdrEngine.Mode.USB, SdrEngine.Mode.LSB)) {
                     Chip(m.name, selected = mode == m, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setMode(m) }
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                Chip("RDS", selected = rdsWanted, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setRds(!rdsWanted) }
-                Chip("HD", selected = hdWanted, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setHd(!hdWanted) }
-            }
-            PresetRow(accent, listOf("FM 92.3" to 92_300_000L, "AIR 121.5" to 121_500_000L, "NOAA 162.4" to 162_400_000L, "ISM 433.92" to 433_920_000L)) { hz ->
-                SdrEngine.setMode(when (hz) { 92_300_000L -> SdrEngine.Mode.WFM; 121_500_000L -> SdrEngine.Mode.AM; else -> SdrEngine.Mode.NFM })
-                SdrEngine.tune(hz)
-            }
-            SectionLabel("BANDS")
             ListenBandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
-            SectionLabel("SQUELCH · dB above the noise floor")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
+                Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp)
                 for (s in intArrayOf(0, 6, 12, 20)) Chip(if (s == 0) "OFF" else "$s dB", selected = squelch == s, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setSquelch(s) }
-            }
-            Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("BOOKMARKS", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp)
-                Row {
-                    Text("★ SAVE", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp,
-                        modifier = Modifier.padding(start = 12.dp).clickable { newName = "%.4f %s".format(freq / 1e6, mode.name); naming = true })
-                    Text("⟳ SCAN", color = if (scanning) Palette.accent2 else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp,
-                        modifier = Modifier.padding(start = 12.dp).clickable { Scanner.toggle() })
-                }
-            }
-            if (bookmarks.isEmpty()) {
-                Text("no bookmarks — tune something and tap ★ SAVE", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(2.dp))
-            } else {
-                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                    for (b in bookmarks) {
-                        val on = b.hz == freq
-                        Row(Modifier.control(accent, on).padding(vertical = d.dp(6f)).padding(start = d.dp(10f), end = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
-                            Text(b.name, color = if (on) inkOn(accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1,
-                                modifier = Modifier.clickable { Scanner.stop(); Bookmarks.open(b) })
-                            Text("✕", color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontSize = d.sp(11f),
-                                modifier = Modifier.padding(start = 6.dp).clickable { Bookmarks.remove(b) }.padding(horizontal = 6.dp))
-                        }
-                    }
+                // SCAN hops your FAVES and holds wherever the squelch opens
+                Chip(if (scanning) "SCANNING" else "SCAN", selected = scanning, accent = accent, modifier = Modifier.weight(1.5f), dim = bookmarks.isEmpty()) {
+                    if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES — star a few with ☆ beside the frequency first" else Scanner.toggle()
                 }
             }
         }

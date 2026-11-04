@@ -109,6 +109,8 @@ fun SettingsScreen(accent: Color) {
     val amp by SdrEngine.radioAmp.collectAsState()
     val bias by SdrEngine.biasTee.collectAsState()
     val multi by Apps.pagerMulti.collectAsState()
+    val rdsOn by SdrEngine.rdsWanted.collectAsState()
+    val hdOn by SdrEngine.hdWanted.collectAsState()
     val opensLast by NavBar.opensOnLast.collectAsState()
     val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
     var askBias by remember { mutableStateOf(false) }
@@ -125,6 +127,10 @@ fun SettingsScreen(accent: Color) {
 
     // ---- the rows, by section ----
     val appRows = when (over) {
+        MayhemApp.AUDIO -> listOf(
+            SRow("rds station name radiotext fm") { SwitchRow("RDS", rdsOn, "Station name and radiotext on broadcast FM") { SdrEngine.setRds(it) } },
+            SRow("hd radio digital") { SwitchRow("HD Radio", hdOn, "The digital sidebands, where a station has them") { SdrEngine.setHd(it) } },
+        )
         MayhemApp.PAGER -> listOf(
             SRow("mode single multi hunt channels") { SegRow("Mode", listOf("0" to "SINGLE", "1" to "MULTI"), if (multi) "1" else "0") { Apps.setPagerMulti(it == "1") } },
             SRow("fold repeats duplicate") { SwitchRow("Fold repeats", PagerUi.fold) { PagerUi.fold = it } },
@@ -597,7 +603,7 @@ private fun LinkRow(label: String, value: String, url: String) {
 
 /** What each app does, where it listens, and a tip. Shown in Settings › How it works, and searched. */
 private val HOW: Map<MayhemApp, List<String>> = mapOf(
-    MayhemApp.AUDIO to listOf("A general receiver: broadcast FM with RDS station names, airband AM, narrow FM, and SSB or CW.", "88–108 FM · 118–137 air · anywhere the radio reaches", "Tap the waterfall to tune; on Home the band chips jump to FM, AIR, VHF and the ISM bands."),
+    MayhemApp.AUDIO to listOf("A general receiver: broadcast FM with RDS station names, airband AM, narrow FM, and SSB or CW.", "88–108 FM · 118–137 air · anywhere the radio reaches", "Tap the waterfall or a band chip to tune; ☆ saves a station to FAVES. RDS and HD Radio switch on here."),
     MayhemApp.HAM to listOf("Amateur radio: FM simplex and repeaters on 2 m and 70 cm, SSB and CW on HF, digital modes and a logbook.", "144–148 · 420–450 · HF below 30 MHz", "HF needs a HackRF, or an RTL-SDR Blog V3 or V4L."),
     MayhemApp.DEVICES to listOf("Decodes the short bursts household gadgets send — weather stations, doorbells, tire sensors, meters, remotes — from the rtl_433 device library.", "433.92 · 315 · 868 · 915 MHz", "Readings repeat every minute or so; leave it listening."),
     MayhemApp.SAT to listOf("Tracks what is overhead, follows each pass's Doppler shift, and decodes what the satellite sends.", "145.800 ISS · 137 MHz · 437 MHz cubesats", "Passes last 5–15 minutes; an outdoor antenna helps."),
@@ -630,7 +636,7 @@ private val TIPS = listOf(
     "Gain" to "AGC sets the gain for you. To set it by hand, open SETTINGS from any app — it lands on that app, with Radio right under it.",
     "Floating window" to "Press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing.",
     "Maps" to "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, and ⌖ re-arms it.",
-    "Squelch and scan" to "Squelch gates audio against a tracked noise floor; SCAN in Audio hops your bookmarks and holds where the squelch opens.",
+    "Squelch and scan" to "Squelch gates audio against a tracked noise floor; SCAN in Audio hops your FAVES and holds where the squelch opens.",
     "Captures" to "Capture records signed 8-bit IQ with a .txt sidecar; share both to SDR#, GNU Radio or a drive.",
 )
 
