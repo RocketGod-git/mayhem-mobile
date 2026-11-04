@@ -43,6 +43,11 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
 /** Wires each app to its engine configuration and baseband processor (Mayhem's receiver_model per app). */
 object Apps {
     val pagerLog = PacketLog(); val pager = PagerDecoder(pagerLog)
+    val hunter = com.rocketgod.mayhem.core.pager.PagerHunter()
+    /** The pager app's mode: false = the single tuned-channel decoder, true = the multi-channel span hunter. */
+    private val _pagerMulti = MutableStateFlow(false)
+    val pagerMulti: StateFlow<Boolean> = _pagerMulti.asStateFlow()
+    fun setPagerMulti(on: Boolean) { if (_pagerMulti.value == on) return; _pagerMulti.value = on; if (_current.value == MayhemApp.PAGER) open(MayhemApp.PAGER) }
     val aisLog = PacketLog(); val ais = AisDecoder(aisLog)
     val aprsLog = PacketLog(); val aprs = AprsDecoder(aprsLog)
     val ertLog = PacketLog(); val ert = ErtDecoder(ertLog)
@@ -83,6 +88,7 @@ object Apps {
         if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
         if (app != MayhemApp.SAT) com.rocketgod.mayhem.core.sat.Sats.close()
         if (app != MayhemApp.PROWL) Prowl.stop()          // the hunt owns the receiver; anything else takes it back
+        if (!(app == MayhemApp.PAGER && _pagerMulti.value)) com.rocketgod.mayhem.core.pager.PagerEngine.stop()
         // the signal finder labels every waterfall; the sweeps have no fixed span to label
         SdrEngine.watchSignals = app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH
         SdrEngine.sameOn = app == MayhemApp.AUDIO
@@ -103,7 +109,9 @@ object Apps {
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
             MayhemApp.APRS -> SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L, r, 24, 24, false, aprs)
-            MayhemApp.PAGER -> SdrEngine.configure(SdrEngine.Mode.NFM, 929_612_500L, r, 32, 32, false, pager)
+            MayhemApp.PAGER -> if (_pagerMulti.value) {
+                SdrEngine.configure(SdrEngine.Mode.NONE, 929_612_500L, r, 32, 40, true, hunter); com.rocketgod.mayhem.core.pager.PagerEngine.start()
+            } else SdrEngine.configure(SdrEngine.Mode.NFM, 929_612_500L, r, 32, 32, false, pager)
             MayhemApp.ERT -> SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, r, 32, 40, true, ert)
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
