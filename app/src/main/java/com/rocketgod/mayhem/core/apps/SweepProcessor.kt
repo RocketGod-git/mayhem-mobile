@@ -61,7 +61,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         step = 0
         settle = 8
         awaiting = centerOf(0)
-        SdrEngine.tune(awaiting)
+        SdrEngine.tuneLo(awaiting)
     }
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
@@ -112,7 +112,8 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         }
         _progress.value = step
         awaiting = centerOf(step)
-        SdrEngine.tune(awaiting)
+        // the radio only: a sweep's slices are not the dial, so they are never saved as the station to come back to
+        SdrEngine.tuneLo(awaiting)
         // Retune settle: the driver sleeps ~50 ms after a tune and the USB pipeline holds ~12 buffers of stale IQ.
         val bufMs = nSamp * 1000.0 / rate
         settle = ceil(SETTLE_MS / bufMs).toInt().coerceIn(2, 500)

@@ -85,16 +85,16 @@ fun LogWindow(onClose: () -> Unit) {
                 Text("  ${lines.size} lines", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.weight(1f))
                 IconChip(if (floating) FullscreenIcon else FullscreenExitIcon, if (floating) "Full screen" else "Exit full screen", Palette.accent) { floating = !floating }
                 Spacer(Modifier.width(d.dp(4f)))
-                Chip("✕", selected = false, accent = Palette.accent) { onClose() }
+                ToggleBox("✕", false, Palette.accent) { onClose() }
             }
             if (!floating) {
                 Row(Modifier.fillMaxWidth().padding(top = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                    Chip("SAVE", selected = false, accent = Palette.accent, modifier = Modifier.weight(1f)) {
+                    ToggleBox("SAVE", false, Palette.accent, Modifier.weight(1f)) {
                         val where = Diag.saveToDownloads(ctx)
                         Toast.makeText(ctx, where?.let { "Saved to $it" } ?: "Could not save the log", Toast.LENGTH_LONG).show()
                     }
-                    Chip("SHARE", selected = false, accent = Palette.accent, modifier = Modifier.weight(1f)) { share() }
-                    Chip("CLEAR", selected = false, accent = Palette.danger, modifier = Modifier.weight(1f)) { Diag.clear() }
+                    ToggleBox("SHARE", false, Palette.accent, Modifier.weight(1f)) { share() }
+                    ToggleBox("CLEAR", false, Palette.danger, Modifier.weight(1f)) { Diag.clear() }
                 }
                 Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)).panel().padding(horizontal = d.dp(8f), vertical = d.dp(6f))) {
                     for (h in Diag.header()) Text(h, color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2)
@@ -107,7 +107,7 @@ fun LogWindow(onClose: () -> Unit) {
                             modifier = Modifier.padding(vertical = 1.dp))
                     }
                 }
-                if (!follow) Chip("↓ LATEST", selected = true, accent = Palette.accent, modifier = Modifier.align(Alignment.BottomEnd).padding(d.dp(6f))) { follow = true }
+                if (!follow) ToggleBox("↓ LATEST", true, Palette.accent, Modifier.align(Alignment.BottomEnd).padding(d.dp(6f))) { follow = true }
             }
         }
     }

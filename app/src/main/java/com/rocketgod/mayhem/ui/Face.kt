@@ -8,6 +8,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Spacer
@@ -354,5 +356,52 @@ fun FreqCard(
                 modifier = Modifier.padding(start = d.dp(8f)))
         }
         footer?.invoke(this)
+    }
+}
+
+/** Tiles in a grid of [columns], for a set that should all be in view at once (TX's modes). */
+@Composable
+fun TileGrid(tiles: List<Tile>, accent: Color, columns: Int = 4, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        for (row in tiles.withIndex().chunked(columns)) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                for ((i, t) in row) {
+                    val shape = RoundedCornerShape(d.dp(12f))
+                    Column(Modifier.weight(1f).fillMaxHeight().alpha(if (t.dim) 0.4f else 1f).clip(shape)
+                        .background(if (t.on) Brush.verticalGradient(listOf(accent.copy(alpha = 0.26f), Palette.surface)) else SolidColor(Palette.surface))
+                        .border(1.dp, if (t.on) accent else Palette.line, shape)
+                        .drawBehind {
+                            if (t.on) {
+                                val inset = 8.dp.toPx(); val h = 2.dp.toPx()
+                                drawRoundRect(accent.copy(alpha = 0.35f), Offset(inset - 2.dp.toPx(), size.height - h * 3), Size(size.width - inset * 2 + 4.dp.toPx(), h * 3), CornerRadius(h * 2))
+                                drawRoundRect(accent, Offset(inset, size.height - h), Size(size.width - inset * 2, h), CornerRadius(h))
+                            }
+                        }
+                        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(i) }
+                        .padding(horizontal = d.dp(7f), vertical = d.dp(6f))) {
+                        Text(t.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12.5f), maxLines = 1, softWrap = false)
+                        Text(t.sub, color = if (t.on) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 1, softWrap = false)
+                    }
+                }
+                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+/** The one thing a panel does (▶ SEND, ▶ PAGE): filled in its colour and glowing, the full width it is given. */
+@Composable
+fun ActionButton(label: String, accent: Color, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(d.dp(12f))
+    Box(modifier.alpha(if (enabled) 1f else 0.4f)
+        .drawBehind { drawRoundRect(accent.copy(alpha = 0.3f), Offset(-3.dp.toPx(), -3.dp.toPx()), Size(size.width + 6.dp.toPx(), size.height + 6.dp.toPx()), CornerRadius(15.dp.toPx())) }
+        .clip(shape).background(Brush.verticalGradient(listOf(accent, accent.copy(alpha = 0.8f))))
+        .clickable(enabled = enabled) { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() }
+        .padding(horizontal = d.dp(12f), vertical = d.dp(11f)), contentAlignment = Alignment.Center) {
+        Text(label, color = inkOn(accent), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(13f), letterSpacing = 2.sp, maxLines = 1, softWrap = false)
     }
 }

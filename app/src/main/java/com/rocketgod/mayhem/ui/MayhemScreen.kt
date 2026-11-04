@@ -241,7 +241,7 @@ private fun FavesSheet(accent: Color, onClose: () -> Unit) {
                 Icon(StarIcon, contentDescription = null, tint = accent, modifier = Modifier.size(d.dp(18f)))
                 Spacer(Modifier.width(d.dp(8f)))
                 Text("FAVES", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 3.sp, modifier = Modifier.weight(1f))
-                Chip("DONE", selected = false, accent = accent) { onClose() }
+                ToggleBox("DONE", false, accent) { onClose() }
             }
             Spacer(Modifier.height(d.dp(10f)))
             if (list.isEmpty()) Text("Nothing saved yet. Tap ☆ beside the frequency in any app to keep it here.",

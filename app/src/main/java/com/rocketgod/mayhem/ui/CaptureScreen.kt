@@ -104,9 +104,9 @@ fun CaptureScreen(accent: Color) {
                             Text("%.1f MB · %s".format(f.length() / 1e6, java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(f.lastModified()))),
                                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1)
                         }
-                        Chip("SHARE", selected = false, accent = accent) { shareCapture(ctx, rec.filesOf(f)) }
+                        ToggleBox("SHARE", false, accent) { shareCapture(ctx, rec.filesOf(f)) }
                         Spacer(Modifier.width(d.dp(4f)))
-                        Chip("✕", selected = false, accent = Palette.danger) { doomed = f }
+                        IconBox(ClearIcon, "Delete") { doomed = f }
                     }
                 }
             }

@@ -74,7 +74,7 @@ fun TrollScreen(defaultAccent: Color) {
                 Text("TRANSMIT IS OFF", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 2.sp)
                 Text("Most Troll tricks transmit — turn TX back on in Settings. The shopping-cart one is phone audio and works regardless.",
                     color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(top = d.dp(6f)))
-                Box(Modifier.padding(top = d.dp(10f))) { Chip("OPEN SETTINGS", selected = false, accent = accent) { Apps.open(MayhemApp.SETTINGS) } }
+                Box(Modifier.padding(top = d.dp(10f))) { ActionButton("OPEN SETTINGS", accent) { Apps.open(MayhemApp.SETTINGS) } }
             }
             CartCard(ctx, accent)
             return@ScrollColumn
@@ -99,21 +99,19 @@ fun TrollScreen(defaultAccent: Color) {
             CardHead("📡 ON THE DIAL", "fires on the frequency tuned above", accent)
 
             SubLabel("Band · sub-GHz")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                for ((label, hz) in listOf("433.92" to 433_920_000L, "315.00" to 315_000_000L, "868.35" to 868_350_000L, "915.00" to 915_000_000L))
-                    Chip(label, selected = freq == hz, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.tune(hz) }
-            }
+            val bands = listOf("433.92" to 433_920_000L, "315.00" to 315_000_000L, "868.35" to 868_350_000L, "915.00" to 915_000_000L)
+            SegBar(bands.map { it.first }, bands.indexOfFirst { it.second == freq }, accent) { SdrEngine.tune(bands[it].second) }
 
             SubLabel("Fixed-code OOK · doorbells · outlets · gates")
             Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                Chip("Doorbell", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookPrinceton(freq, 0x1A2B3CL, 24, 350, 12) }
-                Chip("Outlet", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookPrinceton(freq, 0x145591L, 24, 320, 10) }
-                Chip("Fan / LED", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookPrinceton(freq, 0x0AAA55L, 24, 380, 10) }
+                ToggleBox("Doorbell", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookPrinceton(freq, 0x1A2B3CL, 24, 350, 12) }
+                ToggleBox("Outlet", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookPrinceton(freq, 0x145591L, 24, 320, 10) }
+                ToggleBox("Fan / LED", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookPrinceton(freq, 0x0AAA55L, 24, 380, 10) }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                Chip("Code walk", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookBrute(freq, 24, 0L, 255L, 350) }
-                Chip("Gate opener", false, accent, Modifier.weight(1f)) { if (!active) Tx.gateOpener(12, 350, freq) }
-                Chip("Static burst", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookNoise(0L, 100, 3, freq) }
+                ToggleBox("Code walk", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookBrute(freq, 24, 0L, 255L, 350) }
+                ToggleBox("Gate opener", false, accent, Modifier.weight(1f)) { if (!active) Tx.gateOpener(12, 350, freq) }
+                ToggleBox("Static burst", false, accent, Modifier.weight(1f)) { if (!active) Tx.ookNoise(0L, 100, 3, freq) }
             }
 
             SubLabel("Replay a capture · paste a Flipper .sub")
@@ -121,14 +119,15 @@ fun TrollScreen(defaultAccent: Color) {
             var reps by remember { mutableStateOf(3) }
             TxField(raw, accent, "Flipper .sub file", placeholder = "Protocol: RAW / RAW_Data: 340 -1020 340 -1020 …", lines = 3) { raw = it }
             Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                GainStepper("×", reps, accent, Modifier.weight(1f), onMinus = { reps = (reps - 1).coerceAtLeast(1) }, onPlus = { reps = (reps + 1).coerceAtMost(20) })
-                Chip("▶ FIRE .SUB", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.subghzReplay(raw, freq, reps) }
+                val repOpts = listOf(1, 3, 5, 10, 20)
+                SegBar(repOpts.map { "×$it" }, repOpts.indexOf(reps), accent, Modifier.weight(1.3f)) { reps = repOpts[it] }
+                ActionButton("▶ FIRE", accent, Modifier.weight(1f)) { if (!active) Tx.subghzReplay(raw, freq, reps) }
             }
 
             SubLabel("FM jingle · tune to a station first")
             for (row in TxApps.tuneNames().chunked(3)) {
                 Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                    for (name in row) Chip(name, selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.jingle(name, freq) }
+                    for (name in row) ToggleBox(name, false, accent, Modifier.weight(1f)) { if (!active) Tx.jingle(name, freq) }
                     repeat(3 - row.size) { Box(Modifier.weight(1f)) }
                 }
             }
@@ -136,7 +135,7 @@ fun TrollScreen(defaultAccent: Color) {
             SubLabel("Morse · troll a repeater in code")
             var morse by remember { mutableStateOf("HI HI") }
             TxField(morse, accent, "message", kb = Kb.CAPS) { morse = it.uppercase().take(60) }
-            Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND MORSE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.morse(morse, 20, freq, true) } }
+            Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SEND MORSE", accent, Modifier.fillMaxWidth()) { if (!active) Tx.morse(morse, 20, freq, true) } }
         }
 
         // ---- FIXED SIGNALS: each sets its own frequency -------------------------------------------------------
@@ -145,8 +144,8 @@ fun TrollScreen(defaultAccent: Color) {
 
             SubLabel("Tesla charge port")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                Chip("US · 315", false, accent, Modifier.weight(1f)) { if (!active) { SdrEngine.tune(315_000_000L); Tx.teslaChargePort(315_000_000L) } }
-                Chip("EU · 433.92", false, accent, Modifier.weight(1f)) { if (!active) { SdrEngine.tune(433_920_000L); Tx.teslaChargePort(433_920_000L) } }
+                ToggleBox("US · 315", false, accent, Modifier.weight(1f)) { if (!active) { SdrEngine.tune(315_000_000L); Tx.teslaChargePort(315_000_000L) } }
+                ToggleBox("EU · 433.92", false, accent, Modifier.weight(1f)) { if (!active) { SdrEngine.tune(433_920_000L); Tx.teslaChargePort(433_920_000L) } }
             }
 
             SubLabel("Weather spoof · phantom Acurite · 433.92")
@@ -155,7 +154,7 @@ fun TrollScreen(defaultAccent: Color) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
                 TxField(temp, accent, "°C", Modifier.weight(1f), Kb.DECIMAL) { temp = decimalOf(it) }
                 TxField(hum, accent, "%RH", Modifier.weight(1f), Kb.NUMBER) { hum = digitsOf(it, 3) }
-                Chip("▶ SEND", selected = false, accent = accent, modifier = Modifier.weight(1f)) {
+                ActionButton("▶ SEND", accent, Modifier.weight(1f)) {
                     if (!active) {
                         SdrEngine.tune(433_920_000L)
                         val h = hum.trim().ifBlank { null }?.toIntOrNull()
@@ -167,7 +166,7 @@ fun TrollScreen(defaultAccent: Color) {
 
         CartCard(ctx, accent)
 
-        if (active) Box(Modifier.padding(top = d.dp(10f))) { Chip("■ STOP", selected = true, accent = accent, modifier = Modifier.fillMaxWidth()) { Tx.stop() } }
+        if (active) ToggleBox("■  STOP", true, accent, Modifier.fillMaxWidth().padding(top = d.dp(10f))) { Tx.stop() }
     }
 }
 
@@ -182,20 +181,20 @@ private fun CartCard(ctx: Context, accent: Color) {
             Modifier.fillMaxWidth().height(d.dp(120f)).padding(vertical = d.dp(4f)), contentScale = ContentScale.Fit)
         Text("Gatekeeper · 7.8 kHz", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(bottom = d.gap))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("Unlock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_gk_unlock) }
-            Chip("Lock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_gk_lock) }
+            ToggleBox("Unlock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_gk_unlock) }
+            ToggleBox("Lock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_gk_lock) }
         }
 
         Image(painterResource(R.drawable.cart_rc), "Rocateq locking cart wheel",
             Modifier.fillMaxWidth().height(d.dp(120f)).padding(top = d.dp(10f), bottom = d.dp(4f)), contentScale = ContentScale.Fit)
         Text("Rocateq", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(bottom = d.gap))
         Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("Unlock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_unlock) }
-            Chip("Lock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_lock) }
+            ToggleBox("Unlock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_unlock) }
+            ToggleBox("Lock", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_lock) }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("Arm", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_arm) }
-            Chip("Purchase check", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_purchase) }
+            ToggleBox("Arm", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_arm) }
+            ToggleBox("Purchase check", false, Palette.accent2, Modifier.weight(1f)) { CartSound.play(ctx, R.raw.cart_rc_purchase) }
         }
         Note("Point the speaker at a cart wheel. Credit: begaydocrime.com.")
     }

@@ -76,7 +76,12 @@ object Apps {
     private val _current = MutableStateFlow<MayhemApp?>(null)
     val current: StateFlow<MayhemApp?> = _current.asStateFlow()
     /** IQ rate used for sweeps (bigger slices = faster sweeps; 2 Msps is the HackRF Pro's proven-safe rate). */
-    @Volatile var sweepRate = SdrEngine.IQ_RATE
+    /**
+     * Slice width a sweep starts with. Every hop costs the same (the LO relocks and the reads already in flight are
+     * thrown away), so a wider slice sweeps a range in fewer hops: 8 MHz is four times the speed of 2 MHz on a
+     * HackRF, and a radio that can't sample that fast is clamped to its own widest.
+     */
+    @Volatile var sweepRate = 8_000_000
 
     fun init(ctx: Context) {
         if (recorder == null) recorder = IqRecorder(File(ctx.getExternalFilesDir(null), "captures"))
