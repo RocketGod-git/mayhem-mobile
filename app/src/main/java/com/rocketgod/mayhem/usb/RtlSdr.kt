@@ -39,6 +39,20 @@ object RtlSdr {
 
     const val MIN_HZ = 24_000_000L
     const val MAX_HZ = 1_766_000_000L
+    /** The floor once bring-up has found an HF path on this dongle ([hfPath]). */
+    const val HF_MIN_HZ = 100_000L
+    /** Below this the dongle switches to its HF path; at and above it the tuner path runs exactly as it always has. */
+    private const val HF_EDGE_HZ = 24_000_000L
+    /** The V4L's HF upconverter adds this (the RTL's 28.8 MHz, as librtlsdr-blog); measured on a V4L against WWV. */
+    private const val V4L_UPCONVERT_HZ = 28_800_000L
+
+    /** Which way a frequency reaches the ADC: the tuner, the RTL2832U's Q-branch directly, or the V4L's upconverter. */
+    enum class RfPath { TUNER, DIRECT, UPCONVERT }
+    /** How this dongle reaches HF, once bring-up knows; null = it does not (24 MHz floor). */
+    @Volatile var hfPath: RfPath? = null; private set
+    private var path = RfPath.TUNER
+    /** The gain last asked of the tuner, so leaving direct sampling (which re-inits the tuner) can put it back. */
+    private var tunerGain = 400
     /** The most the tuner's stages add up to, in dB (not the 49.6 librtlsdr's table claims). */
     const val MAX_GAIN_DB = 48.8
 
@@ -173,13 +187,23 @@ object RtlSdr {
             .onSuccess { appliedBiasTee = on; Diag.log("RTL-SDR: bias tee ${if (on) "on" else "off"}") }
             .onFailure { Diag.log("RTL-SDR: bias tee write failed — ${it.message}") }
     }
+    /**
+     * Put the bias tee where the app says it is. Only a replug powers the dongle down: reopening one that was left
+     * with the tee on finds GPIO0 still high (measured on a V4L) while the app starts at off. So bring-up drives it
+     * to the target, but only if something already made the pin an output; at its power-on input setting it is off.
+     */
+    private fun restoreBiasTee() {
+        val on = targetBiasTee
+        if (on || (readReg(SYSB, GPOE) and 1) != 0) setGpio(0, on)
+        appliedBiasTee = on
+    }
     private var dbgBuffers = 0
 
     /** Blocking: opens the dongle, brings it up and streams until [abort] or an error. Run on its own thread. */
     fun run(ctx: Context, device: UsbDevice, onStatus: (String) -> Unit) {
         if (running) return
         running = true; stop = false
-        appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; appliedBiasTee = false; dbgBuffers = 0
+        appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; appliedBiasTee = false; dbgBuffers = 0; hfPath = null
         quietRetune = false; needQuietRetune = false; retuneAfter = 0L
         SdrEngine.syncDriver()
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -201,6 +225,7 @@ object RtlSdr {
             onStatus("RTL-SDR · initializing…")
             initBaseband()
             initTuner()
+            restoreBiasTee()
             setSampleRate(targetRateHz); appliedRate = targetRateHz
             setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
             applyGain(targetGainTenthDb); appliedGain = targetGainTenthDb
@@ -439,7 +464,55 @@ object RtlSdr {
 
     private fun resetBuffer() { writeReg(USBB, USB_EPA_CTL, 0x1002, 2); writeReg(USBB, USB_EPA_CTL, 0x0000, 2) }
 
-    private fun setCenterFreq(freqHz: Long) { i2cRepeater(true); r82xxSetFreq(freqHz); i2cRepeater(false) }
+    private fun setCenterFreq(freqHz: Long) {
+        val hf = hfPath
+        val want = if (freqHz < HF_EDGE_HZ && hf != null) hf else RfPath.TUNER
+        if (want != path) switchPath(want)
+        // direct sampling has no tuner in the way: the RTL2832U's own downconverter is set to the frequency itself
+        if (path == RfPath.DIRECT) { setIfFreq(freqHz); return }
+        i2cRepeater(true)
+        r82xxSetFreq(if (path == RfPath.UPCONVERT) freqHz + V4L_UPCONVERT_HZ else freqHz, hf = path == RfPath.UPCONVERT)
+        i2cRepeater(false)
+    }
+
+    /**
+     * Move between the tuner path and an HF path; leaving HF puts back exactly what bring-up left, so 24 MHz and up
+     * runs on the same registers it always has. Direct sampling (V3, librtlsdr rtlsdr_set_direct_sampling input 2):
+     * tuner to standby, in-phase ADC only, no inversion, I/Q swapped so the Q-branch feeds the demodulator, DDC set
+     * to the frequency. Back out: the tuner is brought up again as at open (its init block resets the gain, so that
+     * is put back) and the demodulator gets its tuner settings back. Upconverter (V4L, librtlsdr-blog): GPIO5 low
+     * routes the antenna through it, high is the direct path bring-up selects; the tuner side is in [r82xxSetFreq].
+     */
+    private fun switchPath(to: RfPath) {
+        val from = path
+        if (from == RfPath.DIRECT) {
+            i2cRepeater(true); initTunerRegs(); i2cRepeater(false)
+            demodWrite(1, 0xb1, 0x1a, 1)
+            demodWrite(DEMODB, 0x08, 0x4d, 1)
+            setIfFreq(IF_HZ)
+            demodWrite(1, 0x15, 0x01, 1)
+            demodWrite(DEMODB, 0x06, 0x80, 1)
+            path = RfPath.TUNER
+            applyGain(tunerGain)
+        }
+        if (from == RfPath.UPCONVERT) setGpio(5, true)
+        if (to == RfPath.DIRECT) {
+            i2cRepeater(true); r82xxStandby(); i2cRepeater(false)
+            demodWrite(1, 0xb1, 0x1a, 1)            // no zero-IF
+            demodWrite(1, 0x15, 0x00, 1)            // no spectrum inversion
+            demodWrite(DEMODB, 0x08, 0x4d, 1)       // in-phase ADC input only
+            demodWrite(DEMODB, 0x06, 0x90, 1)       // I and Q swapped: the Q-branch input
+        }
+        if (to == RfPath.UPCONVERT) setGpio(5, false)
+        path = to
+        Diag.log("RTL-SDR: " + when (to) { RfPath.DIRECT -> "HF · direct sampling (Q-branch)"; RfPath.UPCONVERT -> "HF · upconverter"; else -> "tuner path" })
+    }
+
+    /** The tuner's low-power state (librtlsdr r82xx_standby), while direct sampling bypasses it. */
+    private fun r82xxStandby() {
+        for ((reg, v) in listOf(0x06 to 0xb1, 0x05 to 0xa0, 0x07 to 0x3a, 0x08 to 0x40, 0x09 to 0xc0, 0x0a to 0x36,
+            0x0c to 0x35, 0x0f to 0x68, 0x11 to 0x03, 0x17 to 0xf4, 0x19 to 0x0c)) tunerWriteReg(reg, v)
+    }
 
     // ---- I2C to the tuner -------------------------------------------------------------------------------------
     /** Raw read from the tuner's address. Nothing at the address stalls rather than answering: that is an answer. */
@@ -499,15 +572,26 @@ object RtlSdr {
             Diag.log("RTL-SDR: RTL-SDR Blog V4L (R828S)")
         }
         label = if (tuner == "R828S") "RTL-SDR Blog V4L" else "RTL-SDR · $tuner"
-        for (i in R82XX_INIT.indices) tunerRegs[5 + i] = R82XX_INIT[i]
-        tunerWrite(0x05, R82XX_INIT)
-        if (found && tuner == "R828D") pickR828dReference()
-        setTvStandard()
-        sysFreqSel()
+        // HF: the V4L through its upconverter; an R820T/R820T2 by sampling the Q-branch directly, the RTL-SDR Blog
+        // V3's HF input. A V3 can't be told from a plain R820T2 stick over USB (both report Realtek / RTL2838UHIDIR),
+        // so every R820T-family dongle is offered it; one without the Q-branch wired just hears noise down there.
+        // The R828D (Blog V4, Astrometa) and unknown tuners keep the 24 MHz floor.
+        hfPath = when (tuner) { "R828S" -> RfPath.UPCONVERT; "R820T/R820T2" -> RfPath.DIRECT; else -> null }
+        path = RfPath.TUNER
+        initTunerRegs(pickReference = found && tuner == "R828D")
         i2cRepeater(false)
         // Newer V4L batches switch the antenna through an upconverter on GPIO5: high is the direct path used from
-        // 24 MHz up, low is the HF upconverter. HF is not tuned here, so it is set once.
+        // 24 MHz up, low is the HF upconverter ([switchPath]).
         if (tuner == "R828S") setGpio(5, true)
+    }
+
+    /** The tuner's own bring-up, repeater on. Also how leaving direct sampling wakes it back up. */
+    private fun initTunerRegs(pickReference: Boolean = false) {
+        for (i in R82XX_INIT.indices) tunerRegs[5 + i] = R82XX_INIT[i]
+        tunerWrite(0x05, R82XX_INIT)
+        if (pickReference) pickR828dReference()
+        setTvStandard()
+        sysFreqSel()
     }
 
     private fun usbString(s: String?) = (s ?: "").replace("\u0000", "").trim()
@@ -584,9 +668,15 @@ object RtlSdr {
         return true
     }
 
-    private fun r82xxSetFreq(rfHz: Long) {
+    private fun r82xxSetFreq(rfHz: Long, hf: Boolean = false) {
         val lo = rfHz + IF_HZ
         setMux(lo)
+        if (hf) {
+            // V4L HF out of the upconverter (librtlsdr-blog): tracking filter bypassed, cable-1 in, air-in off
+            tunerWriteMask(0x1a, 0x40, 0xc3); tunerWriteReg(0x1b, 0x00); tunerWriteMask(0x05, 0x60, 0x60)
+            if (!setPll(lo)) Diag.log("RTL-SDR: PLL did not lock at %.3f MHz (HF)".format(rfHz / 1e6))
+            return
+        }
         // the R828D's aerial is on the air input below ~345 MHz and the cable input above; the init leaves cable
         if (tuner == "R828D") tunerWriteMask(0x05, if (rfHz > 345_000_000L) 0x00 else 0x60, 0x60)
         // the V4L's R828S has cable-1 for HF (bit 6) and the air-in (enabled by clearing bit 5) for the rest
@@ -596,6 +686,9 @@ object RtlSdr {
 
     /** Two uneven 16-step stages walked to the asked total; the tuner's own auto mode is not used (it parks near minimum). */
     private fun applyGain(tenthDb: Int) {
+        tunerGain = tenthDb
+        // direct sampling bypasses the tuner (in standby): no gain to set, and writing it would half-wake it
+        if (path == RfPath.DIRECT) return
         i2cRepeater(true)
         val (lna, mix, _) = gainSteps(tenthDb)
         tunerWriteMask(0x05, 0x10, 0x10)        // LNA manual

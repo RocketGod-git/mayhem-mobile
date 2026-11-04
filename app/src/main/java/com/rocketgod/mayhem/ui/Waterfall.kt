@@ -540,7 +540,7 @@ fun WaterfallView(
     if (onSlide != null && spanHz > 0 && centerHz > 0) {
         if (wholeRange) {
             val lim = Radio.limits
-            barLo = max(1_000_000L, lim.minHz); barHi = lim.maxHz
+            barLo = lim.minHz; barHi = lim.maxHz
         } else {
             val w = 24L * spanHz
             if (barHi - barLo != w || centerHz - spanHz / 2 < barLo || centerHz + spanHz / 2 > barHi) {

@@ -49,6 +49,8 @@ object SdrEngine {
     val RX_RATES = intArrayOf(1_920_000, 3_840_000, 7_680_000, 15_360_000, 19_200_000)
     const val FREQ_MIN_HZ = 1_000_000L
     const val FREQ_MAX_HZ = 6_000_000_000L
+    /** The lowest the dial goes: 1 MHz, or lower when the attached radio reaches lower (an RTL-SDR on its HF path). */
+    fun freqMin(): Long = minOf(FREQ_MIN_HZ, Radio.limits.minHz)
 
     // The HackRF's own three gain stages, exactly as libhackrf exposes them (MAX2837 + front-end amp; ranges
     // cross-checked against mayhem-firmware max283x.hpp): amp 0/1 (+14 dB), LNA 0..40 step 8, VGA 0..62 step 2.
@@ -111,7 +113,7 @@ object SdrEngine {
 
     /** Remember where the receivers are tuned, for the other apps and the next launch. */
     fun setDial(hz: Long, mode: Mode) {
-        radioFreqHz = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        radioFreqHz = hz.coerceIn(freqMin(), FREQ_MAX_HZ)
         if (mode != Mode.NONE) radioMode = mode
         dialSaved = true
         prefs?.edit()?.putLong("dial", radioFreqHz)?.putString("dial_mode", radioMode.name)?.apply()
@@ -361,7 +363,7 @@ object SdrEngine {
         _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
         _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
         _radioAmp.value = a
-        _freqHz.value = freqHz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        _freqHz.value = freqHz.coerceIn(freqMin(), FREQ_MAX_HZ)
         syncDriver()
         processor = proc
         configured = true
@@ -388,7 +390,7 @@ object SdrEngine {
      * history. Everything else (decoders working on the raw samples) retunes the radio itself.
      */
     fun tune(hz: Long, silent: Boolean = false) {
-        val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        val f = hz.coerceIn(freqMin(), FREQ_MAX_HZ)
         if (!channelInSpan()) { tuneLo(f); if (!silent && plain() && _mode.value == Mode.NONE) radioFreqHz = f; return }
         val lo = _freqHz.value
         if (kotlin.math.abs(f - lo) > _rateHz.value / 2 - VIEW_GUARD) { tuneLo(f); _offsetHz.value = 0 }
@@ -413,7 +415,7 @@ object SdrEngine {
 
     /** Move the radio itself, leaving the channel offset alone. */
     fun tuneLo(hz: Long) {
-        val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        val f = hz.coerceIn(freqMin(), FREQ_MAX_HZ)
         _freqHz.value = f
         HackRfOne.targetFreqHz = f
         RtlSdr.targetFreqHz = f

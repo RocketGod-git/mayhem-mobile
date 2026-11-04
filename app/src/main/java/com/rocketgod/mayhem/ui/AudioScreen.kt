@@ -103,7 +103,7 @@ fun AudioScreen(accent: Color) {
             // Coarse tuning across whatever the radio covers, on a log scale; fine control = tap-to-tune + steppers.
             com.rocketgod.mayhem.core.Radio.kind.collectAsState().value
             val lim = com.rocketgod.mayhem.core.Radio.limits
-            SectionLabel(if (lim.maxHz >= 1_000_000_000L * 6) "BAND · 1 MHz – 6 GHz" else "BAND · %d MHz – %.3f GHz".format(lim.minHz / 1_000_000, lim.maxHz / 1e9))
+            SectionLabel(if (lim.maxHz >= 1_000_000_000L * 6) "BAND · 1 MHz – 6 GHz" else "BAND · ${com.rocketgod.mayhem.core.Radio.mhz(lim.minHz)} MHz – %.3f GHz".format(lim.maxHz / 1e9))
             val lo = log10(lim.minHz / 1e6).toFloat(); val hi = log10(lim.maxHz / 1e6).toFloat()
             val pos = log10((freq / 1e6).coerceAtLeast(1.0)).toFloat().coerceIn(lo, hi)
             Slider(
