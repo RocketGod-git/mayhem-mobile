@@ -50,6 +50,8 @@ object RtlSdr {
     @Volatile var targetRateHz = 2_000_000
     /** Tuner gain in tenths of a dB. Near the top by default: too little gain reads as static. */
     @Volatile var targetGainTenthDb = 400
+    /** RTL-SDR Blog bias tee (GPIO0 → ~4.5 V on the antenna port for an inline LNA). Off unless the user turns it on. */
+    @Volatile var targetBiasTee = false
 
     /** What it turned out to be, for the screen. */
     @Volatile var label = "RTL-SDR"; private set
@@ -161,13 +163,23 @@ object RtlSdr {
     @Volatile var appliedFreq = 0L; private set
     @Volatile private var appliedRate = 0
     @Volatile private var appliedGain = Int.MAX_VALUE
+    @Volatile private var appliedBiasTee = false
+
+    /** Apply a pending bias-tee change on the USB thread (GPIO0), between buffers. Independent of retune. */
+    private fun applyBias() {
+        if (targetBiasTee == appliedBiasTee) return
+        val on = targetBiasTee
+        runCatching { setGpio(0, on) }
+            .onSuccess { appliedBiasTee = on; Diag.log("RTL-SDR: bias tee ${if (on) "on" else "off"}") }
+            .onFailure { Diag.log("RTL-SDR: bias tee write failed — ${it.message}") }
+    }
     private var dbgBuffers = 0
 
     /** Blocking: opens the dongle, brings it up and streams until [abort] or an error. Run on its own thread. */
     fun run(ctx: Context, device: UsbDevice, onStatus: (String) -> Unit) {
         if (running) return
         running = true; stop = false
-        appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; dbgBuffers = 0
+        appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; appliedBiasTee = false; dbgBuffers = 0
         quietRetune = false; needQuietRetune = false; retuneAfter = 0L
         SdrEngine.syncDriver()
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -261,6 +273,7 @@ object RtlSdr {
                 if (pending() && System.currentTimeMillis() >= retuneAfter) {
                     if (quietRetune || !applyPending()) { needQuietRetune = true; break }
                 }
+                applyBias()
                 val req = try { c.requestWait(100L) } catch (e: TimeoutException) { continue }
                 if (req == null) { if (failed("wait")) break; Thread.sleep(2); continue }
                 val idx = req.clientData as? Int ?: continue
@@ -296,6 +309,7 @@ object RtlSdr {
         var fails = 0
         while (!stop && targetRateHz == appliedRate) {
             applyPending()
+            applyBias()
             val n = c.bulkTransfer(rx, buf, buf.size, 500)
             if (n > 0) { fails = 0; probe(buf, n, onStatus); runCatching { SdrEngine.onIq(buf, n) } }
             else if (n < 0 && ++fails >= 200) { Diag.log("RTL-SDR: bulk reads keep failing — dongle gone, stopping"); stop = true }

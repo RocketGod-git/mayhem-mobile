@@ -527,6 +527,10 @@ export class RtlSdr implements Radio {
     await this.writeReg(SYSB, GPO, on ? v | bit : v & ~bit, 1);
   }
 
+  /** RTL-SDR Blog bias tee: GPIO0 drives the DC injector that puts ~4.5 V on the antenna port for an inline LNA
+   *  (librtlsdr rtlsdr_set_bias_tee). It never touches the receive path; the caller gates it behind a warning. */
+  async setBiasTee(on: boolean): Promise<void> { await this.setGpio(0, on); }
+
   private async demodWrite(page: number, addr: number, val: number, len: number): Promise<void> {
     const data = len === 1 ? new Uint8Array([val & 0xff]) : new Uint8Array([(val >> 8) & 0xff, val & 0xff]);
     await this.ctlOut({ requestType: 'vendor', recipient: 'device', request: 0, value: (addr << 8) | 0x20, index: 0x10 | page }, data);
