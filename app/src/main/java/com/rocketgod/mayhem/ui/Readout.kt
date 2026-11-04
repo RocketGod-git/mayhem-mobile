@@ -35,12 +35,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -72,7 +74,7 @@ fun parseFreq(s: String): Long? {
  * digits, and each group is captioned with its unit.
  */
 @Composable
-fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, onTune: ((Long) -> Unit)?) {
+fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, onTune: ((Long) -> Unit)?, glow: Color? = null) {
     val d = rememberDims()
     val haptic = LocalHapticFeedback.current
     val now = rememberUpdatedState(hz)
@@ -106,6 +108,7 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, onTune: ((
                         val color = lerp(base, Palette.accent2, flash.value)
                         val hint = Palette.accent2.copy(alpha = 0.35f)
                         Text("$v", color = color, fontFamily = Mono, fontWeight = if (w >= 1_000_000L) FontWeight.Black else FontWeight.Bold, fontSize = fs,
+                            style = if (glow != null && !dim) TextStyle(shadow = Shadow(glow.copy(alpha = 0.6f), blurRadius = fsPx * 0.45f)) else TextStyle.Default,
                             modifier = (if (onTune == null || preview) Modifier else Modifier.drawBehind {
                                 // faint chevrons on every tunable digit: there is no hover on a phone to reveal them
                                 val t = fsPx * 0.14f; val cx = size.width / 2
