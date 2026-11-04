@@ -18,7 +18,7 @@ object NavBar {
     private const val KEY_BIAS_OK = "bias_ok"
 
     /** The receivers people reach for first: they lead the bar on a fresh install. */
-    val STARTER = listOf(MayhemApp.AUDIO, MayhemApp.PAGER, MayhemApp.ADSB, MayhemApp.HAM, MayhemApp.DEVICES, MayhemApp.LOOKING_GLASS)
+    val STARTER = listOf(MayhemApp.AUDIO, MayhemApp.PAGER, MayhemApp.ADSB, MayhemApp.HAM, MayhemApp.DEVICES, MayhemApp.SAT)
 
     /** Every app the bar can hold: all of them but Settings (it has its own button), and Troll only where it ships. */
     fun all(): List<MayhemApp> = MayhemApp.entries.filter {

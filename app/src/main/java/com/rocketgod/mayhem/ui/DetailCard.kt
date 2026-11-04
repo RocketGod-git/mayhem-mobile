@@ -36,8 +36,8 @@ fun DetailCard(
             Text(title, color = gold, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(15f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("  $sub", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                if (onMap != null) Chip("MAP", selected = false, accent = gold) { onMap() }
-                Chip("✕", selected = false, accent = gold) { onClose() }
+                if (onMap != null) ToggleBox("MAP", false, gold) { onMap() }
+                ToggleBox("✕", false, gold) { onClose() }
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = d.dp(4f))) {

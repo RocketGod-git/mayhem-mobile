@@ -65,7 +65,7 @@ fun TxScreen(defaultAccent: Color) {
             Column(Modifier.fillMaxWidth().panel(accent).padding(d.dp(12f))) {
                 Text("TRANSMIT IS OFF", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 2.sp)
                 Text("You switched TX off in Settings. Turn it back on there.", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(top = d.dp(6f)))
-                Box(Modifier.padding(top = d.dp(10f))) { Chip("OPEN SETTINGS", selected = false, accent = accent) { Apps.open(com.rocketgod.mayhem.core.MayhemApp.SETTINGS) } }
+                Box(Modifier.padding(top = d.dp(10f))) { ActionButton("OPEN SETTINGS", accent) { Apps.open(com.rocketgod.mayhem.core.MayhemApp.SETTINGS) } }
             }
             return@ScrollColumn
         }
@@ -83,7 +83,6 @@ fun TxScreen(defaultAccent: Color) {
             ToggleBox("AMP", amp, accent, Modifier.fillMaxHeight()) { Tx.toggleAmp() }
         }
 
-        SectionLabel("MODE")
         val modes = listOf(
             "Signal", "Tones", "POCSAG", "RTTY",
             "APRS", "Morse", "OOK", "Replay",
@@ -92,11 +91,12 @@ fun TxScreen(defaultAccent: Color) {
             // ADS-B TX ships only in the sideload APK (the same build flag as Troll): Play's policy has no room for
             // an app that puts aircraft on someone else's display. It stays last so every other mode keeps its index.
         ) + (if (com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) listOf("ADS-B") else emptyList())
-        for (rowModes in modes.withIndex().chunked(4)) {
-            Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                for ((i, t) in rowModes) Chip(t, selected = tab == i, accent = accent, modifier = Modifier.weight(1f)) { tab = i }
-                repeat(4 - rowModes.size) { Spacer(Modifier.weight(1f)) }
-            }
+        // what each sends, from its own panel's note
+        val subs = mapOf("Signal" to "test carrier", "Tones" to "DTMF", "POCSAG" to "pager", "RTTY" to "45 baud", "APRS" to "AX.25", "Morse" to "CW",
+            "OOK" to "PT2262", "Replay" to "IQ capture", "MDC" to "PTT-ID", "QC-II" to "two-tone", "SubGhz" to "Flipper .sub", "KeeLoq" to "HCS301",
+            "Noise" to "OOK noise", "Brute" to "PT2262", "Hopper" to "hop list", "ADS-B" to "DF17")
+        Box(Modifier.padding(top = d.dp(10f))) {
+            TileGrid(modes.mapIndexed { i, m -> Tile(m.uppercase(), subs[m] ?: "", tab == i) }, accent, columns = 4) { tab = it }
         }
 
         Column(Modifier.fillMaxWidth().padding(top = d.dp(8f))) {
@@ -128,11 +128,11 @@ fun TxScreen(defaultAccent: Color) {
     val d = rememberDims()
     var digits by remember { mutableStateOf("1234") }
     Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("1 kHz", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.tones(Tx.ToneMode.SINGLE, "", freq) }
-        Chip("two-tone", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.tones(Tx.ToneMode.TWO_TONE, "", freq) }
+        ActionButton("▶ 1 kHz", accent, Modifier.weight(1f)) { if (!active) Tx.tones(Tx.ToneMode.SINGLE, "", freq) }
+        ActionButton("▶ TWO-TONE", accent, Modifier.weight(1f)) { if (!active) Tx.tones(Tx.ToneMode.TWO_TONE, "", freq) }
     }
     TxField(digits, accent, "DTMF digits (0-9 A-D * #)", kb = Kb.CAPS) { digits = it.uppercase().filter { c -> c in "0123456789ABCD*#" }.take(32) }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND DTMF", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.tones(Tx.ToneMode.DTMF, digits, freq) } }
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SEND DTMF", accent, Modifier.fillMaxWidth()) { if (!active) Tx.tones(Tx.ToneMode.DTMF, digits, freq) } }
 }
 
 @Composable private fun PocsagTab(accent: Color, freq: Long, active: Boolean) {
@@ -144,10 +144,11 @@ fun TxScreen(defaultAccent: Color) {
     TxField(addr, accent, "address (RIC)", kb = Kb.NUMBER) { addr = digitsOf(it, 7) }
     TxField(msg, accent, if (numeric) "digits 0-9 SU-][ " else "message") { msg = (if (numeric) it.filter { c -> c in "0123456789SU -][" } else it).take(80) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-        Chip("$baud bd", selected = false, accent = accent, modifier = Modifier.weight(1f)) { baud = if (baud == 1200) 2400 else if (baud == 2400) 512 else 1200 }
-        Chip(if (numeric) "numeric" else "alpha", selected = numeric, accent = accent, modifier = Modifier.weight(1f)) { numeric = !numeric }
+        val bauds = listOf(512, 1200, 2400)
+        SegBar(bauds.map { "$it" }, bauds.indexOf(baud), accent, Modifier.weight(1f)) { baud = bauds[it] }
+        SegBar(listOf("ALPHA", "NUM"), if (numeric) 1 else 0, accent, Modifier.weight(1f)) { numeric = it == 1 }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ PAGE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ PAGE", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.pocsag(addr.toIntOrNull() ?: 0, 3, msg, if (numeric) TxEncoders.PocsagType.NUMERIC else TxEncoders.PocsagType.ALPHANUMERIC, baud, freq) } }
     Note("Decodes on the Pager RX app and on PDW. RIC + function 3.")
 }
@@ -158,8 +159,11 @@ fun TxScreen(defaultAccent: Color) {
     var shift by remember { mutableStateOf(170) }
     TxField(text, accent, "text", kb = Kb.CAPS) { text = it.take(120) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("${shift} Hz", selected = false, accent = accent, modifier = Modifier.weight(1f)) { shift = if (shift == 170) 425 else if (shift == 425) 850 else 170 }
-        Chip("▶ SEND 45 bd", selected = false, accent = accent, modifier = Modifier.weight(1.4f)) { if (!active) Tx.rtty(text, 45, shift.toDouble(), freq) }
+        val shifts = listOf(170, 425, 850)
+        SegBar(shifts.map { "$it Hz" }, shifts.indexOf(shift), accent, Modifier.weight(1f)) { shift = shifts[it] }
+    }
+    Box(Modifier.padding(top = d.dp(10f))) {
+        ActionButton("▶ SEND 45 bd", accent, Modifier.fillMaxWidth()) { if (!active) Tx.rtty(text, 45, shift.toDouble(), freq) }
     }
     Note("ITA2 Baudot, 45.45 baud — decodes on any RTTY reader (fldigi, etc.).")
 }
@@ -170,7 +174,7 @@ fun TxScreen(defaultAccent: Color) {
     var info by remember { mutableStateOf("!4903.50N/07201.75W-Mayhem Mobile") }
     TxField(call, accent, "source callsign-ssid", kb = Kb.CAPS) { call = it.uppercase().take(9) }
     TxField(info, accent, "AX.25 info (position/status)") { info = it.take(120) }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ BEACON 144.39", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.aprs(call, info, freq) } }
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ BEACON 144.39", accent, Modifier.fillMaxWidth()) { if (!active) Tx.aprs(call, info, freq) } }
     Note("Bell 202 AX.25 UI frame — decodes on the APRS app and on any TNC. Ham license required on 144.39.")
 }
 
@@ -178,7 +182,7 @@ fun TxScreen(defaultAccent: Color) {
     val d = rememberDims()
     for (m in Tx.SigMode.values().toList().chunked(2)) {
         Row(Modifier.fillMaxWidth().padding(bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (mode in m) Chip(mode.label, selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.sigGen(freq, mode) }
+            for (mode in m) ActionButton("▶ " + mode.label.uppercase(), accent, Modifier.weight(1f)) { if (!active) Tx.sigGen(freq, mode) }
             if (m.size == 1) Box(Modifier.weight(1f))
         }
     }
@@ -192,12 +196,12 @@ fun TxScreen(defaultAccent: Color) {
     var fm by remember { mutableStateOf(true) }
     TxField(text, accent, "message", kb = Kb.CAPS) { text = it.uppercase().take(80) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-        Text("$wpm WPM", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.weight(1f))
-        Chip("−", false, accent, Modifier.weight(0.5f)) { wpm = (wpm - 5).coerceAtLeast(5) }
-        Chip("+", false, accent, Modifier.weight(0.5f)) { wpm = (wpm + 5).coerceAtMost(60) }
-        Chip(if (fm) "FM tone" else "CW key", selected = fm, accent = accent, modifier = Modifier.weight(1f)) { fm = !fm }
+        val speeds = listOf(10, 15, 20, 25, 30)
+        RowLabel("WPM")
+        SegBar(speeds.map { "$it" }, speeds.indexOf(wpm), accent, Modifier.weight(1.4f)) { wpm = speeds[it] }
+        SegBar(listOf("FM", "CW"), if (fm) 0 else 1, accent, Modifier.weight(1f)) { fm = it == 0 }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.morse(text, wpm, freq, fm) } }
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SEND", accent, Modifier.fillMaxWidth()) { if (!active) Tx.morse(text, wpm, freq, fm) } }
 }
 
 @Composable private fun OokTab(accent: Color, freq: Long, active: Boolean) {
@@ -207,11 +211,11 @@ fun TxScreen(defaultAccent: Color) {
     var te by remember { mutableStateOf(350) }
     TxField(hex, accent, "code (hex)", kb = Kb.HEX) { hex = hexOf(it, 12) }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-        Text("$bits bit  ${te}µs", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.weight(1.2f))
-        Chip("bits", false, accent, Modifier.weight(1f)) { bits = if (bits == 24) 12 else if (bits == 12) 32 else 24 }
-        Chip("te", false, accent, Modifier.weight(1f)) { te = if (te == 350) 500 else if (te == 500) 200 else 350 }
+        val bitsOpts = listOf(12, 24, 32); val teOpts = listOf(200, 350, 500)
+        SegBar(bitsOpts.map { "$it bit" }, bitsOpts.indexOf(bits), accent, Modifier.weight(1f)) { bits = bitsOpts[it] }
+        SegBar(teOpts.map { "${it}µs" }, teOpts.indexOf(te), accent, Modifier.weight(1f)) { te = teOpts[it] }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ SEND ×8", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) { if (!active) Tx.ookPrinceton(freq, hex.toLongOrNull(16) ?: 0L, bits, te, 8) } }
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SEND ×8", accent, Modifier.fillMaxWidth()) { if (!active) Tx.ookPrinceton(freq, hex.toLongOrNull(16) ?: 0L, bits, te, 8) } }
     Note("Fixed-code Princeton/PT2262 OOK — for remotes you own on a license-free ISM band.")
 }
 
@@ -221,8 +225,8 @@ fun TxScreen(defaultAccent: Color) {
     val files = remember { rec?.listCaptures() ?: emptyList() }
     if (files.isEmpty()) { Note("No captures. Record raw IQ in the Capture app first; its sidecar carries the frequency to replay on."); return }
     Column(Modifier.fillMaxWidth()) {
-        for (f in files) Row(Modifier.fillMaxWidth().panel().padding(d.dp(10f)).clickable { if (!active && rec != null) Tx.replay(java.io.File(rec.directory, f)) }.padding(vertical = d.dp(2f))) {
-            Text("▶ $f", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), maxLines = 1)
+        for (f in files) Box(Modifier.padding(bottom = d.dp(6f))) {
+            ToggleBox("▶  $f", false, accent, Modifier.fillMaxWidth()) { if (!active && rec != null) Tx.replay(java.io.File(rec.directory, f)) }
         }
     }
 }
@@ -272,11 +276,10 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     }
     val opv = op.toIntOrNull(16)
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("PTT ID (01)", selected = opv == 0x01, accent = accent, modifier = Modifier.weight(1f)) { op = "01" }
-        Chip("Emerg (30)", selected = opv == 0x30, accent = accent, modifier = Modifier.weight(1f)) { op = "30" }
-        Chip("Radio ck (35)", selected = opv == 0x35, accent = accent, modifier = Modifier.weight(1f)) { op = "35" }
+        val ops = listOf(0x01 to "PTT ID 01", 0x30 to "EMERG 30", 0x35 to "CHECK 35")
+        SegBar(ops.map { it.second }, ops.indexOfFirst { it.first == opv }, accent) { op = "%02X".format(ops[it].first) }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ PTT-ID", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ PTT-ID", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.mdc1200(opv ?: 0, arg.toIntOrNull(16) ?: 0, unit.toIntOrNull(16) ?: 0, freq) } }
     Note("MDC-1200 Motorola PTT-ID · op / arg (hex) / 16-bit unit ID (hex) · 1200 bd AFSK — for business-band radios you own.")
 }
@@ -289,7 +292,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
         TxField(a, accent, "Tone A (Hz)", Modifier.weight(1f), Kb.DECIMAL) { a = decimalOf(it) }
         TxField(b, accent, "Tone B (Hz)", Modifier.weight(1f), Kb.DECIMAL) { b = decimalOf(it) }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ PAGE QC-II", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ PAGE QC-II", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.quickCall2(a.toDoubleOrNull() ?: 0.0, b.toDoubleOrNull() ?: 0.0, freq) } }
     Note("Quick-Call II two-tone paging (fire, utility). 1 s A, 3 s B, then a 26 s carrier tail.")
 }
@@ -300,8 +303,12 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     var reps by remember { mutableStateOf(3) }
     TxField(raw, accent, "Flipper .sub file", placeholder = "Paste a Flipper .sub file here — Protocol: RAW / RAW_Data: 340 -1020 …", lines = 5) { raw = it }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        GainStepper("×", reps, accent, Modifier.weight(1f), onMinus = { reps = (reps - 1).coerceAtLeast(1) }, onPlus = { reps = (reps + 1).coerceAtMost(20) })
-        Chip("▶ REPLAY", selected = false, accent = accent, modifier = Modifier.weight(1f)) { if (!active) Tx.subghzReplay(raw, freq, reps) }
+        val repOpts = listOf(1, 3, 5, 10, 20)
+        RowLabel("REPEAT")
+        SegBar(repOpts.map { "×$it" }, repOpts.indexOf(reps), accent, Modifier.weight(1f)) { reps = repOpts[it] }
+    }
+    Box(Modifier.padding(top = d.dp(10f))) {
+        ActionButton("▶ REPLAY", accent, Modifier.fillMaxWidth()) { if (!active) Tx.subghzReplay(raw, freq, reps) }
     }
     Note("Replay a Flipper Zero .sub file's RAW pulses as OOK, 2 Msps — remotes on your own equipment.")
 }
@@ -320,8 +327,12 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
         TxField(counter, accent, "counter", Modifier.weight(1f), Kb.NUMBER) { counter = digitsOf(it, 6) }
     }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        GainStepper("×", reps, accent, Modifier.weight(1f), onMinus = { reps = (reps - 1).coerceAtLeast(1) }, onPlus = { reps = (reps + 1).coerceAtMost(8) })
-        Chip("▶ HOP", selected = false, accent = accent, modifier = Modifier.weight(1f)) {
+        val repOpts = listOf(1, 2, 3, 5, 8)
+        RowLabel("REPEAT")
+        SegBar(repOpts.map { "×$it" }, repOpts.indexOf(reps), accent, Modifier.weight(1f)) { reps = repOpts[it] }
+    }
+    Box(Modifier.padding(top = d.dp(10f))) {
+        ActionButton("▶ HOP", accent, Modifier.fillMaxWidth()) {
             if (!active) Tx.keeloqTx(key.toULongOrNull(16)?.toLong() ?: 0L, serial.toIntOrNull(16) ?: 0, (button.toIntOrNull() ?: 0).coerceAtMost(15),
                 counter.toIntOrNull() ?: 0, freq, reps)
         }
@@ -337,7 +348,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
         TxField(chip, accent, "chip (µs)", Modifier.weight(1f), Kb.NUMBER) { chip = digitsOf(it, 7) }
         TxField(secs, accent, "seconds", Modifier.weight(1f), Kb.NUMBER) { secs = digitsOf(it, 5) }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ NOISE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ NOISE", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.ookNoise(0L, chip.toIntOrNull() ?: 0, secs.toIntOrNull() ?: 0, freq) } }
     Note("Pseudo-random OOK for authorized RF-lab work on your own gear only. Illegal on populated bands.")
 }
@@ -355,9 +366,10 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
         TxField(te, accent, "te (µs)", Modifier.weight(1.5f), Kb.NUMBER) { te = digitsOf(it, 5) }
-        for (n in intArrayOf(12, 24, 32)) Chip("$n", selected = bits == "$n", accent = accent, modifier = Modifier.weight(1f)) { bits = "$n" }
+        val bitOpts = listOf(12, 24, 32)
+        SegBar(bitOpts.map { "$it" }, bitOpts.indexOfFirst { "$it" == bits }, accent, Modifier.weight(2f)) { bits = "${bitOpts[it]}" }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ BRUTE", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ BRUTE", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.ookBrute(freq, (bits.toIntOrNull() ?: 24).coerceIn(1, 32), from.toLongOrNull() ?: 0L, to.toLongOrNull() ?: 0L, te.toIntOrNull() ?: 350)
     } }
     Note("Princeton PT2262 brute force · bits (12/24/32), from–to (decimal), te µs — a gate or remote you own on ISM.")
@@ -377,7 +389,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
         TxField(count, accent, "hops", Modifier.weight(1f), Kb.NUMBER) { count = digitsOf(it, 5) }
         TxField(dwell, accent, "dwell (ms)", Modifier.weight(1f), Kb.NUMBER) { dwell = digitsOf(it, 5) }
     }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ HOP", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ HOP", accent, Modifier.fillMaxWidth()) {
         if (!active) {
             val lo = ((lowMhz.toDoubleOrNull() ?: 433.05) * 1e6).roundToLong()
             val hi = ((highMhz.toDoubleOrNull() ?: 434.79) * 1e6).roundToLong()
@@ -393,7 +405,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     var me by remember { mutableStateOf("58C382C82F4D4A") }
     TxField(icao, accent, "ICAO 24-bit (hex)", kb = Kb.HEX) { icao = hexOf(it, 6) }
     TxField(me, accent, "ME field (56 bits hex)", kb = Kb.HEX) { me = hexOf(it, 14) }
-    Box(Modifier.padding(top = d.gap)) { Chip("▶ SQUITTER", selected = false, accent = accent, modifier = Modifier.fillMaxWidth()) {
+    Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SQUITTER", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.adsb(icao.toIntOrNull(16) ?: 0, me.padStart(14, '0').toULong(16).toLong())
     } }
     Note("Mode-S DF17 Extended Squitter (1090 MHz). Only for bench test / dummy load — real airspace is illegal.")

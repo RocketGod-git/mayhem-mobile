@@ -213,7 +213,10 @@ internal fun HamDigitalTab(accent: Color) {
     HamLayout(accent, meter = true, status = status) {
         HamTabs(accent)
         SectionLabel("DECODER · AUTO picks whatever makes sense")
-        ChipGrid(HamDigital.Mode.entries.toList(), columns = 5) { m -> Chip(m.name, g.mode == m, accent, Modifier.weight(1f)) { pick(m) } }
+        val decs = HamDigital.Mode.entries.toList()
+        val decSub = mapOf(HamDigital.Mode.AUTO to "whatever fits", HamDigital.Mode.CW to "morse", HamDigital.Mode.RTTY to "baudot", HamDigital.Mode.PSK31 to "BPSK",
+            HamDigital.Mode.FT8 to "15 s slots", HamDigital.Mode.SSTV to "pictures", HamDigital.Mode.DMR to "two slots", HamDigital.Mode.P25 to "phase 1", HamDigital.Mode.OFF to "audio only")
+        TileGrid(decs.map { Tile(it.name, decSub[it] ?: "", g.mode == it) }, accent, columns = 3) { pick(decs[it]) }
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             val modes = listOf(Mode.USB, Mode.LSB, Mode.CW, Mode.NFM)
             SegBar(modes.map { it.name }, modes.indexOf(s.mode), accent, Modifier.weight(1f).fillMaxHeight()) { Ham.setMode(modes[it]) }
@@ -222,14 +225,14 @@ internal fun HamDigitalTab(accent: Color) {
         if (g.mode == HamDigital.Mode.P25 || g.mode == HamDigital.Mode.AUTO) P25Panel(p25)
         if (g.mode == HamDigital.Mode.DMR || g.mode == HamDigital.Mode.AUTO) DmrPanel(accent, dmr, g.dmrSlot)
         SectionLabel("PSK31 CENTRE · RTTY BAUD / SHIFT")
-        ChipGrid(listOf(500.0, 1000.0, 1500.0, 2000.0), columns = 4) { f -> Chip("${f.toInt()}", g.pskHz == f, accent, Modifier.weight(1f)) { HamDigital.update { it.copy(pskHz = f) } } }
+        val psk = listOf(500.0, 1000.0, 1500.0, 2000.0)
+        SegBar(psk.map { "${it.toInt()} Hz" }, psk.indexOf(g.pskHz), accent) { i -> HamDigital.update { it.copy(pskHz = psk[i]) } }
         Spacer(Modifier.height(d.gap))
-        ChipGrid(listOf(45.45 to 170.0, 50.0 to 170.0, 75.0 to 170.0, 45.45 to 450.0, 50.0 to 850.0), columns = 5) { (b, sh) ->
-            Chip("${if (b % 1.0 == 0.0) b.toInt().toString() else b.toString()}/${sh.toInt()}", g.rttyBaud == b && g.rttyShift == sh, accent, Modifier.weight(1f)) {
-                HamDigital.update { it.copy(rttyBaud = b, rttyShift = sh) }
-            }
+        val rtty = listOf(45.45 to 170.0, 50.0 to 170.0, 75.0 to 170.0, 45.45 to 450.0, 50.0 to 850.0)
+        TileGrid(rtty.map { (b, sh) -> Tile("${if (b % 1.0 == 0.0) b.toInt().toString() else b.toString()} bd", "${sh.toInt()} Hz shift", g.rttyBaud == b && g.rttyShift == sh) }, accent, columns = 5) { i ->
+            val (b, sh) = rtty[i]; HamDigital.update { it.copy(rttyBaud = b, rttyShift = sh) }
         }
-        Box(Modifier.padding(top = d.gap)) { Chip("RTTY REVERSE", g.rttyRev, accent, Modifier.fillMaxWidth()) { HamDigital.update { it.copy(rttyRev = !it.rttyRev) } } }
+        ToggleBox("RTTY REVERSE", g.rttyRev, accent, Modifier.fillMaxWidth().padding(top = d.dp(6f))) { HamDigital.update { it.copy(rttyRev = !it.rttyRev) } }
         SectionLabel("TEXT")
         val sc = rememberScrollState()
         LaunchedEffect(text.length) { sc.scrollTo(sc.maxValue) }
@@ -239,9 +242,10 @@ internal fun HamDigitalTab(accent: Color) {
         if (g.mode == HamDigital.Mode.SSTV || g.mode == HamDigital.Mode.AUTO) {
             PicturePanel(accent)
             SectionLabel("SSTV FREQUENCIES")
-            ChipGrid(listOf(Triple("20m 14.230", 14_230_000L, Mode.USB), Triple("20m 14.233", 14_233_000L, Mode.USB), Triple("10m 28.680", 28_680_000L, Mode.USB),
-                Triple("40m 7.171", 7_171_000L, Mode.LSB), Triple("ISS 145.800", 145_800_000L, Mode.NFM)), columns = 3) { (l, f, md) ->
-                Chip(l, s.channel == f, accent, Modifier.weight(1f)) { if (s.mode != md) Ham.setMode(md); Ham.tune(f); HamDigital.update { it.copy(mode = HamDigital.Mode.SSTV) } }
+            val sstv = listOf(Triple("20m 14.230", 14_230_000L, Mode.USB), Triple("20m 14.233", 14_233_000L, Mode.USB), Triple("10m 28.680", 28_680_000L, Mode.USB),
+                Triple("40m 7.171", 7_171_000L, Mode.LSB), Triple("ISS 145.800", 145_800_000L, Mode.NFM))
+            TileRow(sstv.map { (l, f, md) -> Tile(l.substringAfter(' '), "${l.substringBefore(' ')} · ${md.name}", s.channel == f) }, accent, width = 92.dp) { i ->
+                val (_, f, md) = sstv[i]; if (s.mode != md) Ham.setMode(md); Ham.tune(f); HamDigital.update { it.copy(mode = HamDigital.Mode.SSTV) }
             }
         }
         if (g.mode == HamDigital.Mode.FT8 || g.mode == HamDigital.Mode.AUTO) {
@@ -260,8 +264,10 @@ internal fun HamDigitalTab(accent: Color) {
             }
             SectionLabel("FT8 FREQUENCIES")
             ChipGrid(listOf("160m" to 1_840_000L, "80m" to 3_573_000L, "40m" to 7_074_000L, "30m" to 10_136_000L, "20m" to 14_074_000L,
-                "17m" to 18_100_000L, "15m" to 21_074_000L, "12m" to 24_915_000L, "10m" to 28_074_000L, "6m" to 50_313_000L, "2m" to 144_174_000L), columns = 6) { (l, f) ->
-                Chip(l, s.channel == f, accent, Modifier.weight(1f)) { if (s.mode != Mode.USB) Ham.setMode(Mode.USB); Ham.tune(f); HamDigital.update { it.copy(mode = HamDigital.Mode.FT8) } }
+                "17m" to 18_100_000L, "15m" to 21_074_000L, "12m" to 24_915_000L, "10m" to 28_074_000L, "6m" to 50_313_000L, "2m" to 144_174_000L).let { ft8s ->
+                TileRow(ft8s.map { (l, f) -> Tile(l.replace("m", " m"), "%.3f".format(f / 1e6), s.channel == f) }, accent, width = 84.dp) { i ->
+                    val f = ft8s[i].second; if (s.mode != Mode.USB) Ham.setMode(Mode.USB); Ham.tune(f); HamDigital.update { it.copy(mode = HamDigital.Mode.FT8) }
+                }
             }
         }
         Spacer(Modifier.height(d.dp(12f)))
@@ -302,9 +308,7 @@ private fun DmrPanel(accent: Color, s: DmrStatus?, slotSel: Int) {
         }
     }
     SectionLabel("AUDIO FOLLOWS · both time slots are decoded, you hear one")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        for ((v, l) in listOf(0 to "AUTO", 1 to "SLOT 1", 2 to "SLOT 2")) Chip(l, slotSel == v, accent, Modifier.weight(1f)) { HamDigital.update { it.copy(dmrSlot = v) } }
-    }
+    SegBar(listOf("AUTO", "SLOT 1", "SLOT 2"), slotSel, accent) { v -> HamDigital.update { it.copy(dmrSlot = v) } }
 }
 
 @Composable
@@ -370,9 +374,8 @@ internal fun HamTransmit(accent: Color) {
         val devs = listOf(2500, 5000)
         SegBar(devs.map { "±${it / 1000.0} kHz" }, devs.indexOf(p.dev), accent) { Ham.setDeviation(devs[it]) }
         Spacer(Modifier.height(d.gap))
-        ChipGrid(listOf(0.0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5), columns = 6) { t ->
-            Chip(if (t == 0.0) "none" else "%.1f".format(t), p.tone == t, accent, Modifier.weight(1f)) { Ham.setTone(t) }
-        }
+        val tones = listOf(0.0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5)
+        TileGrid(tones.map { t -> Tile(if (t == 0.0) "none" else "%.1f".format(t), if (t == 0.0) "no tone" else "Hz", p.tone == t) }, accent, columns = 6) { Ham.setTone(tones[it]) }
         SectionLabel("TX GAIN · IF 0–47 dB · AMP +14 dB")
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             val gains = listOf(0, 10, 20, 30, 47)
@@ -428,8 +431,8 @@ internal fun HamLogbook(accent: Color) {
                 draft.mode.ifEmpty { modeNow }, bandOfHz(s.channel).ifEmpty { "out of band" }))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
             LogField(draft.call, "CALLSIGN", accent, Modifier.weight(2f), caps = true, onDone = { Logbook.lookup() }) { Logbook.setDraft(draft.copy(call = it.uppercase())) }
-            Chip(if (busy) "…" else "LOOKUP", false, accent, Modifier.weight(1f)) { Logbook.lookup() }
-            Chip("QRZ ↗", false, accent, Modifier.weight(1f)) {
+            ToggleBox(if (busy) "…" else "LOOKUP", busy, accent, Modifier.weight(1f)) { Logbook.lookup() }
+            ToggleBox("QRZ ↗", false, accent, Modifier.weight(1f)) {
                 val c = parseCall(draft.call).base
                 if (c.isNotEmpty()) runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.qrz.com/db/$c"))) }
             }
@@ -445,14 +448,14 @@ internal fun HamLogbook(accent: Color) {
         }
         LogField(draft.qth, "QTH", accent, Modifier.fillMaxWidth()) { Logbook.setDraft(draft.copy(qth = it)) }
         LogField(draft.notes, "notes", accent, Modifier.fillMaxWidth()) { Logbook.setDraft(draft.copy(notes = it)) }
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip(if (editing.isNotEmpty()) "SAVE CHANGES" else "LOG IT", true, accent, Modifier.weight(2f)) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(10f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            ActionButton(if (editing.isNotEmpty()) "SAVE CHANGES" else "LOG IT", accent, Modifier.weight(1f)) {
                 val dr = Logbook.draft.value
                 val filled = dr.copy(rstS = dr.rstS.ifEmpty { rstDefault(dr.mode.ifEmpty { modeNow }) }, rstR = dr.rstR.ifEmpty { rstDefault(dr.mode.ifEmpty { modeNow }) })
                 Logbook.setDraft(filled)
                 msg = Logbook.save(s.channel, modeNow) ?: "logged ${filled.call.uppercase()} · %.4f MHz ${filled.mode.ifEmpty { modeNow }}".format(s.channel / 1e6)
             }
-            Chip("CLEAR", false, accent, Modifier.weight(1f)) { Logbook.clearForm(); msg = "" }
+            IconBox(ClearIcon, "Clear the form", Modifier.fillMaxHeight()) { Logbook.clearForm(); msg = "" }
         }
         if (msg.isNotEmpty()) Text(msg, color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
 
@@ -474,26 +477,26 @@ internal fun HamLogbook(accent: Color) {
                 }
             }
         }
-        SectionLabel("MAP · contacts by grid square, the callsign you are looking up in gold")
+        SectionLabel("MAP · by grid square · the lookup in gold")
         val me = Station.latLon()
         val items = entries.mapNotNull { e -> gridToLatLon(e.grid)?.let { GeoItem(e.id, it.first, it.second, e.call, GeoItem.Kind.QSO) } } +
             listOfNotNull(info?.let { i -> (i.grid?.let { gridToLatLon(it) } ?: if (i.lat != null && i.lon != null) i.lat!! to i.lon!! else null)?.let { GeoItem("lookup", it.first, it.second, i.call, GeoItem.Kind.OBJECT) } })
         val lines = if (me != null) items.filter { it.kind == GeoItem.Kind.QSO }.map { me to (it.lat to it.lon) } else emptyList()
         GeoMapView(items, accent, Modifier.fillMaxWidth().height(d.dp(260f)).panel(), home = me, selected = editing.ifEmpty { "lookup" },
             layers = GeoLayers(lines = lines)) { id -> if (id != "lookup") Logbook.edit(id) }
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("EXPORT ADIF", false, accent, Modifier.weight(1f)) {
+        Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            ToggleBox("EXPORT ADIF", false, accent, Modifier.weight(1f)) {
                 val where = Saves.toDownloads(ctx, "mayhem-log-${Saves.stamp()}.adi", "text/plain", toAdif(entries, st.call, Station.grid()).toByteArray())
                 msg = where?.let { "saved $it" } ?: "could not save"
             }
-            Chip("IMPORT ADIF", false, accent, Modifier.weight(1f)) { import.launch(arrayOf("*/*")) }
+            ToggleBox("IMPORT ADIF", false, accent, Modifier.weight(1f)) { import.launch(arrayOf("*/*")) }
         }
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("EXPORT CSV", false, accent, Modifier.weight(1f)) {
+        Row(Modifier.fillMaxWidth().padding(top = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            ToggleBox("EXPORT CSV", false, accent, Modifier.weight(1f)) {
                 val where = Saves.toDownloads(ctx, "mayhem-log-${Saves.stamp()}.csv", "text/csv", Logbook.csv().toByteArray())
                 msg = where?.let { "saved $it" } ?: "could not save"
             }
-            Chip("DELETE ALL", false, accent, Modifier.weight(1f)) { if (entries.isNotEmpty()) confirmWipe = true }
+            ToggleBox("DELETE ALL", false, Palette.danger, Modifier.weight(1f)) { if (entries.isNotEmpty()) confirmWipe = true }
         }
         Spacer(Modifier.height(d.dp(12f)))
     }

@@ -321,10 +321,10 @@ internal fun PicturePanel(accent: Color) {
         Image(bmp.asImageBitmap(), null, Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth, filterQuality = FilterQuality.Low)
     }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        Chip("SAVE PNG", false, accent, Modifier.weight(1f)) {
+        ToggleBox("SAVE PNG", false, accent, Modifier.weight(1f)) {
             val where = Saves.toDownloads(ctx, "${Picture.mode.ifEmpty { "image" }.replace(' ', '_')}-${Saves.stamp()}.png", "image/png", Saves.png(bmp), pictures = true)
             Toast.makeText(ctx, where?.let { "saved to $it" } ?: "could not save", Toast.LENGTH_SHORT).show()
         }
-        Chip("CLEAR", false, accent, Modifier.weight(1f)) { Picture.reset() }
+        ToggleBox("CLEAR", false, accent, Modifier.weight(1f)) { Picture.reset() }
     }
 }
