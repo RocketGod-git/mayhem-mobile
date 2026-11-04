@@ -248,7 +248,7 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
     Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f))) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val preview = Tuning.previewHz
-            FreqDigits(preview ?: s.channel, big = false, tint = accent, preview = preview != null) { Ham.tune(it) }
+            FreqDigits(preview ?: s.channel, big = false, tint = accent, preview = preview != null, modifier = Modifier.weight(1f)) { Ham.tune(it) }
             Text("  ${s.mode.name}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f))
             if (com.rocketgod.mayhem.core.Apps.playing() == com.rocketgod.mayhem.core.MayhemApp.HAM) {
                 val marks by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
