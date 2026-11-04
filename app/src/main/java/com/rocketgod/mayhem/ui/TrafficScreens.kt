@@ -1,5 +1,10 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -60,46 +65,58 @@ import kotlin.math.roundToInt
 private enum class View { MAP, LIST, LOG }
 
 /**
- * The three traffic receivers share a frame: readout and waterfall, then a count line with MAP / LIST / LOG, PAUSE
- * and CLEAR, the selected item's card, and the chosen view. PAUSE freezes the rows for reading while decoding goes on.
+ * The three traffic receivers share a frame: the face card (tag, what it has heard, a lamp counting what is live,
+ * the digits and the level) over the waterfall, then [extra] (presets), MAP / LIST / LOG with PAUSE and CLEAR, the
+ * selected item's card, and the chosen view. PAUSE freezes the rows for reading while decoding goes on.
  */
 @Composable
 private fun TrafficFrame(
-    accent: Color, tunable: Boolean, cardOpen: Boolean, head: String, views: List<View>, view: View, onView: (View) -> Unit,
+    accent: Color, tunable: Boolean, tag: String, title: String, count: Int, unit: String, views: List<View>, view: View, onView: (View) -> Unit,
     paused: Boolean, onPause: () -> Unit, onClear: () -> Unit, extra: @Composable ColumnScope.() -> Unit = {},
     body: @Composable ColumnScope.() -> Unit,
 ) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
-    val health by SdrEngine.rxHealth.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
+    val level by SdrEngine.levelDb.collectAsState()
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        // the waterfall and the list under it split the screen evenly
+        // the card keeps its height; the waterfall and the map or list split the rest evenly
         share = true,
+        face = {
+            Column(Modifier.faceCard(accent, d)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    FaceTag(tag, accent)
+                    Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+                    if (tunable) DialActions(accent, freq)
+                    if (count > 0) Lamp("$count $unit", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true)
+                }
+                Box(Modifier.padding(top = d.dp(2f))) {
+                    if (tunable) DialRow(accent, freq, big = false)
+                    else FreqDigits(freq, false, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
+                }
+                LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
+            }
+        },
         visual = { m ->
-            Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
-                WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 60, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
+            Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
+                WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
+                    rows = if (d.wide) 160 else 80, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
             }
         }
     ) {
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
-            Text(head, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                for (v in views) Chip(v.name, selected = view == v, accent = accent) { onView(v) }
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            extra()
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                SegBar(views.map { it.name }, views.indexOf(view), accent, Modifier.weight(1f).fillMaxHeight()) { onView(views[it]) }
+                ToggleBox(if (paused) "RESUME" else "PAUSE", paused, accent, Modifier.fillMaxHeight()) { onPause() }
+                IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { onClear() }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(bottom = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip(if (paused) "RESUME" else "PAUSE", selected = paused, accent = accent, modifier = Modifier.weight(1f)) { onPause() }
-            Chip("CLEAR", selected = false, accent = accent, modifier = Modifier.weight(1f)) { onClear() }
-        }
         body()
-        extra()
     }
 }
 
@@ -159,7 +176,7 @@ fun AdsbScreen(accent: Color) {
     val planes = frozen ?: live
     val now = ticker()
     val a = live.firstOrNull { it.icao == sel } ?: planes.firstOrNull { it.icao == sel }
-    TrafficFrame(accent, tunable = false, cardOpen = a != null, head = "✈ $frames FRAMES · ${planes.size} AIRCRAFT",
+    TrafficFrame(accent, tunable = false, tag = "ADS-B", title = "$frames FRAMES", count = planes.size, unit = "AIRCRAFT",
         views = listOf(View.MAP, View.LIST), view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null }, onClear = { AdsbStore.clear(); sel = null; if (frozen != null) frozen = emptyList() }) {
         if (a != null) AircraftCard(a, home, now, onMap = if (a.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = null }
@@ -221,11 +238,11 @@ fun AisScreen(accent: Color) {
     val vessels = frozen ?: live
     val now = ticker()
     val v = live.firstOrNull { it.mmsi == sel } ?: vessels.firstOrNull { it.mmsi == sel }
-    TrafficFrame(accent, tunable = true, cardOpen = v != null, head = "⚓ $count PACKETS · ${vessels.size} VESSELS",
+    TrafficFrame(accent, tunable = true, tag = "AIS", title = "$count PACKETS", count = vessels.size, unit = "VESSELS",
         views = View.entries, view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
         onClear = { Apps.ais.clear(); Apps.aisLog.clear(); sel = 0; if (frozen != null) frozen = emptyList() },
-        extra = { PresetRow(accent, listOf("AIS A 161.975" to 161_975_000L, "AIS B 162.025" to 162_025_000L), title = "CHANNEL") }) {
+        extra = { PresetTiles(accent, listOf(Preset("161.975", "AIS A", 161_975_000L), Preset("162.025", "AIS B", 162_025_000L))) }) {
         if (v != null) VesselCard(v, home, now, onMap = if (v.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = 0 }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {
@@ -308,11 +325,12 @@ fun AprsScreen(accent: Color) {
     val stations = frozen ?: live
     val now = ticker()
     val s = live.firstOrNull { it.call == sel } ?: stations.firstOrNull { it.call == sel }
-    TrafficFrame(accent, tunable = true, cardOpen = s != null, head = "📡 $count PACKETS · ${stations.size} STATIONS",
+    TrafficFrame(accent, tunable = true, tag = "APRS", title = "$count PACKETS", count = stations.size, unit = "STATIONS",
         views = View.entries, view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
         onClear = { Apps.aprs.clear(); Apps.aprsLog.clear(); sel = ""; if (frozen != null) frozen = emptyList() },
-        extra = { PresetRow(accent, listOf("NA 144.39" to 144_390_000L, "EU 144.80" to 144_800_000L, "AU 145.175" to 145_175_000L, "JP 144.64" to 144_640_000L), title = "REGION") }) {
+        extra = { PresetTiles(accent, listOf(Preset("144.390", "N. America", 144_390_000L), Preset("144.800", "Europe", 144_800_000L),
+            Preset("145.175", "Australia", 145_175_000L), Preset("144.640", "Japan", 144_640_000L))) }) {
         if (s != null) StationCard(s, home, now, onMap = if (s.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = "" }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {

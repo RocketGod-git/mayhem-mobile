@@ -1,5 +1,12 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.dp
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -60,10 +67,24 @@ fun CaptureScreen(accent: Color) {
     AdaptivePane(
         // the waterfall and the list under it split the screen evenly
         share = true,
+        face = {
+            val bytes = rec?.bytes?.collectAsState()?.value ?: 0L
+            val level by SdrEngine.levelDb.collectAsState()
+            Column(Modifier.faceCard(recTint, d)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    FaceTag("CAPTURE", recTint)
+                    Text("%d MSPS · %.1f MB/S · .C8 IQ".format(rate / 1_000_000, rate * 2 / 1e6), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
+                        letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+                    DialActions(recTint, freq)
+                    if (recording) Lamp("REC %.1f MB".format(bytes.toLong() / 1e6), Palette.danger, blink = true) else Lamp("READY", Palette.ok)
+                }
+                Box(Modifier.padding(top = d.dp(2f))) { DialRow(recTint, freq, big = false) }
+                LedMeter(level / 45f, recTint, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
+            }
+        },
         visual = { m ->
-            Column(m) {
-                FreqReadout(if (recording) Palette.danger else accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
-                ReceiverScope(recTint, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = if (d.wide) 160 else 100, traceFrac = 0.35f, fitMode = false)
+            Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, if (recording) Palette.danger else Palette.line, RoundedCornerShape(d.dp(12f)))) {
+                ReceiverScope(recTint, Modifier.fillMaxSize(), rows = if (d.wide) 160 else 100, traceFrac = 0.38f, fitMode = false)
             }
         }
     ) {
@@ -71,20 +92,17 @@ fun CaptureScreen(accent: Color) {
             val bytes by rec.bytes.collectAsState()
             val file by rec.file.collectAsState()
             val dropped by rec.dropped.collectAsState()
-            SectionLabel("RECORD · signed 8-bit I/Q (.c8) + .txt sidecar")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-                Chip(if (recording) "■  STOP" else "●  REC", selected = recording, accent = recTint, modifier = Modifier.weight(1f)) {
-                    if (recording) { rec.stop(); recording = false; files = rec.captureFiles() }
-                    else { rec.start(freq, rate); recording = true }
-                }
-                Text(
-                    if (recording) "%.1f MB · %s%s".format(bytes / 1e6, file ?: "", if (dropped > 0) " · $dropped dropped" else "")
-                    else "%d Msps · %.1f MB/s".format(rate / 1_000_000, rate * 2 / 1e6),
-                    color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.weight(2f), maxLines = 1
-                )
+            // signed 8-bit I/Q (.c8) with a .txt sidecar
+            ToggleBox(if (recording) "■  STOP" else "●  RECORD", recording, Palette.danger, Modifier.fillMaxWidth().padding(top = d.dp(8f))) {
+                if (recording) { rec.stop(); recording = false; files = rec.captureFiles() }
+                else { rec.start(freq, rate); recording = true }
             }
-            Text(rec.directory, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), modifier = Modifier.fillMaxWidth().padding(top = d.dp(6f)), maxLines = 2, textAlign = TextAlign.Center)
-            SectionLabel("CAPTURES · SHARE sends the recording and its sidecar to any app")
+            Text(if (recording) "${file ?: ""}${if (dropped > 0) " · $dropped dropped" else ""}" else rec.directory,
+                color = if (dropped > 0) Palette.danger else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = d.dp(6f)))
+            // SHARE sends the recording and its sidecar to any app
+            Text("${files.size} CAPTURES", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(top = d.dp(10f), bottom = d.dp(6f)))
             if (files.isEmpty()) Text("no captures yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(4f)))
             else LazyColumn(Modifier.fillMaxWidth().weight(1f).panel().padding(d.dp(4f))) {
                 items(files, key = { it.name }) { f ->

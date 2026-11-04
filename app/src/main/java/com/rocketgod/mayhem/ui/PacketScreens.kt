@@ -86,11 +86,11 @@ import java.util.Locale
 private fun fitVisual(d: Dims, preferredDp: Float): Dp = minOf(d.dp(preferredDp), maxOf(140.dp, (d.heightDp * 0.30f).dp))
 
 /** A preset frequency as a tile: [title] large, [sub] under it. */
-private class Preset(val title: String, val sub: String, val hz: Long)
+internal class Preset(val title: String, val sub: String, val hz: Long)
 
 /** Presets as a tile row, the one the radio sits on lit. */
 @Composable
-private fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp) {
+internal fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp) {
     val freq by SdrEngine.freqHz.collectAsState()
     TileRow(presets.map { Tile(it.title, it.sub, freq == it.hz) }, accent, width) { SdrEngine.tune(presets[it].hz) }
 }
