@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -298,19 +299,32 @@ fun FullscreenPanel(title: String, accent: Color, onClose: () -> Unit, actions: 
 }
 
 /**
- * Two-pane on wide screens (visual left, controls right), stacked on phones. [visualHeightNarrow] caps the
- * visual's height when stacked (null = it takes the remaining space and the controls stay compact).
+ * Two-pane on wide screens (visual left, controls right), stacked on phones. On a phone the waterfall always takes
+ * the room nobody else needs:
+ *
+ *  - [share] off (controls that scroll): the controls take their own height and the visual flexes into the rest,
+ *    never below [visualHeightNarrow] (or 40% of the pane); controls taller than what is left scroll.
+ *  - [share] on (the controls hold a log or list with a weight): the visual and that list split what is left
+ *    evenly, so a waterfall is as tall as the log beside it.
+ *
+ * [face] is a card that keeps its own height above the visual (the frequency card), so the even split is between
+ * the waterfall and the log, not the card and the log.
  */
 @Composable
 fun AdaptivePane(
     visualHeightNarrow: Dp? = null,
+    share: Boolean = false,
+    face: (@Composable () -> Unit)? = null,
     visual: @Composable (Modifier) -> Unit,
     controls: @Composable ColumnScope.() -> Unit
 ) {
     val d = rememberDims()
     if (d.wide) {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
-            Box(Modifier.weight(1.35f).fillMaxHeight()) { visual(Modifier.fillMaxSize()) }
+            Column(Modifier.weight(1.35f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                face?.invoke()
+                Box(Modifier.fillMaxWidth().weight(1f)) { visual(Modifier.fillMaxSize()) }
+            }
             // A phone on its side is too short for a controls pane with a list or a map in it, so the pane scrolls
             // and is laid out as if it had a tablet's height: lists and maps keep real room instead of collapsing.
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight()) {
@@ -320,12 +334,20 @@ fun AdaptivePane(
             }
         }
     } else {
-        Column(Modifier.fillMaxSize()) {
-            // an upright tablet has the height for a real waterfall: at least a third of the screen
-            val h = visualHeightNarrow?.let { if (d.cls != ScreenClass.COMPACT) maxOf(it, (d.heightDp * 0.32f).dp) else it }
-            if (h != null) visual(Modifier.fillMaxWidth().height(h))
-            else visual(Modifier.fillMaxWidth().weight(1f))
-            controls()
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val total = maxHeight
+            Column(Modifier.fillMaxSize()) {
+                if (face != null) Box(Modifier.fillMaxWidth().padding(bottom = d.dp(6f))) { face() }
+                if (share) {
+                    visual(Modifier.fillMaxWidth().weight(1f))
+                    controls()
+                } else {
+                    // an upright tablet has the height for a real waterfall: at least a third of the screen
+                    val floor = (visualHeightNarrow ?: total * 0.4f).let { if (d.cls != ScreenClass.COMPACT) maxOf(it, (d.heightDp * 0.32f).dp) else it }
+                    visual(Modifier.fillMaxWidth().weight(1f))
+                    Column(Modifier.fillMaxWidth().heightIn(max = (total - floor).coerceAtLeast(0.dp))) { controls() }
+                }
+            }
         }
     }
 }
