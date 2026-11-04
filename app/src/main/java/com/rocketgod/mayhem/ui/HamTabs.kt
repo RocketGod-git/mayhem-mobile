@@ -263,7 +263,7 @@ internal fun HamDigitalTab(accent: Color) {
                 }
             }
             SectionLabel("FT8 FREQUENCIES")
-            ChipGrid(listOf("160m" to 1_840_000L, "80m" to 3_573_000L, "40m" to 7_074_000L, "30m" to 10_136_000L, "20m" to 14_074_000L,
+            listOf("160m" to 1_840_000L, "80m" to 3_573_000L, "40m" to 7_074_000L, "30m" to 10_136_000L, "20m" to 14_074_000L,
                 "17m" to 18_100_000L, "15m" to 21_074_000L, "12m" to 24_915_000L, "10m" to 28_074_000L, "6m" to 50_313_000L, "2m" to 144_174_000L).let { ft8s ->
                 TileRow(ft8s.map { (l, f) -> Tile(l.replace("m", " m"), "%.3f".format(f / 1e6), s.channel == f) }, accent, width = 84.dp) { i ->
                     val f = ft8s[i].second; if (s.mode != Mode.USB) Ham.setMode(Mode.USB); Ham.tune(f); HamDigital.update { it.copy(mode = HamDigital.Mode.FT8) }
