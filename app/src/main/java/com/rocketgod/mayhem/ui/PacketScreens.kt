@@ -120,7 +120,8 @@ private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Strin
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
         // the face and a strip of waterfall; the log under them is what these apps are for
-        visualHeightNarrow = fitVisual(d, if (roomy) 300f else 260f),
+        // up to 36% of a short phone: the face card has to keep a strip of waterfall under it
+        visualHeightNarrow = minOf(d.dp(if (roomy) 300f else 270f), maxOf(200.dp, (d.heightDp * 0.36f).dp)),
         visual = { m ->
             Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 Column(Modifier.faceCard(accent, d)) {
