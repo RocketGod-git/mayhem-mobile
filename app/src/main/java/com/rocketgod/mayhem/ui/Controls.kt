@@ -21,11 +21,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -99,6 +102,8 @@ fun GainRow(accent: Color) {
     val agc by SdrEngine.agc.collectAsState()
     val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
     if (radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) {
+        val bias by SdrEngine.biasTee.collectAsState()
+        var warn by remember { mutableStateOf(false) }
         // a dongle has one tuner gain; showing an LNA and an amp that do nothing would be worse than not showing them
         SectionLabel(if (agc) "GAIN · AUTO · tap it to set it" else "GAIN · BY HAND · AGC for auto")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
@@ -107,6 +112,13 @@ fun GainRow(accent: Color) {
                 onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
                 onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
         }
+        // RTL-SDR Blog bias tee: DC on the antenna port for an inline LNA. Off by default; first enable asks.
+        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+            Chip(if (bias) "BIAS-T ON" else "BIAS-T", selected = bias, accent = accent, modifier = Modifier.weight(1f)) {
+                if (bias) SdrEngine.setBiasTee(false) else warn = true
+            }
+        }
+        if (warn) BiasTeeDialog(accent, onConfirm = { SdrEngine.setBiasTee(true); warn = false }, onCancel = { warn = false })
         return
     }
     SectionLabel(if (agc) "GAIN · AUTO · tap LNA or VGA to set it" else "GAIN · BY HAND · AGC for auto")
@@ -120,6 +132,27 @@ fun GainRow(accent: Color) {
             onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) },
             onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
     }
+}
+
+/** First-enable warning for the RTL-SDR bias tee — it puts DC on the antenna port and can damage the wrong gear. */
+@Composable
+private fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        containerColor = Palette.surface,
+        titleContentColor = accent,
+        textContentColor = Palette.ink,
+        title = { Text("Bias-tee: DC on the antenna port", fontFamily = Mono, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text("This puts about 4.5 V DC on the dongle's antenna input to power an inline LNA.", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
+                Text("• Only turn it on with a bias-tee-ready LNA or feed.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
+                Text("• Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
+            }
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("ENABLE BIAS-T", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold) } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
+    )
 }
 
 /** Small uppercase caption above a control group. */
