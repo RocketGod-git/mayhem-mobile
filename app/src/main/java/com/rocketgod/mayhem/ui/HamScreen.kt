@@ -3,6 +3,11 @@ package com.rocketgod.mayhem.ui
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -88,96 +93,35 @@ private fun HamReceive(accent: Color) {
     val d = rememberDims()
     val s by Ham.state.collectAsState()
 
+    // Tabs, the band, the mode, the filter, then AGC and the noise tools (squelch and reverse in FM). The digits and
+    // the panadapter tune; the filter's exact edges, the shift, the CW pitch and the volume are in Settings.
     HamLayout(accent, meter = true) {
-        HamTabs(accent)
-        SectionLabel("BAND")
-        BandChips(accent, s.channel) { Ham.pickBand(it) }
-
-        SectionLabel("MODE")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (md in listOf(Mode.LSB, Mode.USB, Mode.CW, Mode.AM, Mode.NFM, Mode.WFM)) {
-                Chip(md.name, selected = s.mode == md, accent = accent, modifier = Modifier.weight(1f)) { Ham.setMode(md) }
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            HamTabs(accent)
+            BandChips(accent, s.channel) { Ham.pickBand(it) }
+            val modes = listOf(Mode.LSB, Mode.USB, Mode.CW, Mode.AM, Mode.NFM, Mode.WFM)
+            SegBar(modes.map { it.name }, modes.indexOf(s.mode), accent) { Ham.setMode(modes[it]) }
+            val widths = Ham.WIDTHS.getValue(s.mode)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("FILTER")
+                SegBar(widths.map { it.first }, widths.indexOfFirst { it.second == s.width }, accent, Modifier.weight(1f)) { Ham.setWidth(widths[it].second) }
             }
-        }
-
-        SectionLabel("TUNE")
-        TuneSteps(accent)
-
-        SectionLabel(when (s.mode) {
-            Mode.USB, Mode.LSB -> "FILTER · %.0f–%.0f Hz".format(s.pbLo, s.pbHi)
-            Mode.CW -> "FILTER · %.0f Hz around the pitch".format(s.width)
-            else -> "FILTER · %.0f Hz wide (±%.0f)".format(s.width, s.pbHi)
-        })
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for ((label, w) in Ham.WIDTHS.getValue(s.mode)) {
-                Chip(label, selected = s.width == w, accent = accent, modifier = Modifier.weight(1f)) { Ham.setWidth(w) }
-            }
-        }
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            if (s.mode == Mode.USB || s.mode == Mode.LSB) {
-                HzBox(s.pbLo.roundToInt(), "low edge · Hz", 0..5000, accent, Modifier.weight(1f)) { v ->
-                    Ham.setPassband(v.toDouble(), Ham.state.value.pbHi.coerceIn(v + 100.0, 6000.0))
-                }
-                HzBox(s.pbHi.roundToInt(), "high edge · Hz", (s.pbLo.roundToInt() + 100)..6000, accent, Modifier.weight(1f)) { v ->
-                    Ham.setPassband(Ham.state.value.pbLo, v.toDouble())
-                }
-            } else {
-                HzBox(s.width.roundToInt(), if (s.mode == Mode.CW) "width · Hz" else "Hz wide", 50..50_000, accent, Modifier.weight(1f)) { v -> Ham.setWidth(v.toDouble()) }
-            }
-        }
-
-        if (s.mode == Mode.USB || s.mode == Mode.LSB) {
-            SectionLabel("PASSBAND SHIFT · ${s.shift.toInt()} Hz")
-            Slider(
-                value = s.shift.toFloat(), onValueChange = { Ham.setShift(Math.round(it / 50f) * 50.0) },
-                valueRange = -600f..600f, steps = 23,
-                colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Palette.line),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        if (s.mode == Mode.CW) {
-            SectionLabel("CW PITCH · Hz")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                for (p in listOf(500.0, 600.0, 700.0, 800.0)) {
-                    Chip(p.toInt().toString(), selected = s.pitch == p, accent = accent, modifier = Modifier.weight(1f)) { Ham.setPitch(p) }
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                if (s.mode == Mode.NFM) {
+                    val steps = listOf(0, 3, 6, 10, 15)
+                    RowLabel("SQL")
+                    SegBar(steps.map { if (it == 0) "OFF" else "$it" }, steps.indexOf(s.squelch), accent, Modifier.weight(1f)) { Ham.setSquelch(steps[it]) }
+                    val rin = repeaterInput(s.channel)
+                    if (s.rev || rin != null) ToggleBox("REV", s.rev, accent, Modifier.fillMaxHeight()) { Ham.toggleReverse() }
+                } else {
+                    val agcs = AgcMode.entries
+                    RowLabel("AGC")
+                    SegBar(agcs.map { it.name }, agcs.indexOf(s.agc), accent, Modifier.weight(1f)) { Ham.setAgc(agcs[it]) }
+                    ToggleBox("NR", s.nr, accent, Modifier.fillMaxHeight()) { Ham.toggleNr() }
+                    ToggleBox("NOTCH", s.anf, accent, Modifier.fillMaxHeight()) { Ham.toggleAnf() }
                 }
             }
         }
-
-        SectionLabel("AGC · DSP")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (a in AgcMode.entries) {
-                Chip("AGC ${a.name}", selected = s.agc == a, accent = accent, modifier = Modifier.weight(1f)) { Ham.setAgc(a) }
-            }
-            Chip("NR", selected = s.nr, accent = accent, modifier = Modifier.weight(1f)) { Ham.toggleNr() }
-            Chip("NOTCH", selected = s.anf, accent = accent, modifier = Modifier.weight(1f)) { Ham.toggleAnf() }
-        }
-
-        if (s.mode == Mode.NFM) {
-            SectionLabel("SQUELCH · dB over floor")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                for (q in listOf(0, 3, 6, 10, 15)) {
-                    Chip(if (q == 0) "OFF" else "$q", selected = s.squelch == q, accent = accent, modifier = Modifier.weight(1f)) { Ham.setSquelch(q) }
-                }
-            }
-            val rin = repeaterInput(s.channel)
-            if (s.rev || rin != null) {
-                Box(Modifier.padding(top = d.gap)) {
-                    Chip(if (s.rev) "LISTENING ON INPUT · tap to return" else "REV · input %.4f".format((rin ?: s.channel) / 1e6),
-                        selected = s.rev, accent = accent, modifier = Modifier.fillMaxWidth()) { Ham.toggleReverse() }
-                }
-            }
-        }
-
-        SectionLabel("VOLUME")
-        Slider(
-            value = s.volume, onValueChange = { Ham.setVolume(it) }, valueRange = 0f..2f,
-            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Palette.line),
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        Spacer(Modifier.height(d.dp(12f)))
     }
 }
 
@@ -208,32 +152,24 @@ internal fun HamLayout(accent: Color, meter: Boolean, status: (@Composable () ->
 
 @Composable
 internal fun HamTabs(accent: Color) {
-    val d = rememberDims()
     val tab by Ham.tab.collectAsState()
     val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
-    // the tabs share the width in proportion to their labels, so all five are always on screen
-    Row(Modifier.fillMaxWidth().padding(bottom = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for (t in Ham.Tab.entries) Chip(t.label, selected = tab == t, accent = accent, modifier = Modifier.weight(t.label.length + 2f),
-            dim = t == Ham.Tab.TX && radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) { Ham.setTab(t) }
-    }
+    val tabs = Ham.Tab.entries
+    val noTx = radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
+    // short names so all five sit on one bar; TRANSMIT is faded on a radio that can't
+    SegBar(tabs.map { when (it) { Ham.Tab.RX -> "RX"; Ham.Tab.MONITOR -> "MONITOR"; Ham.Tab.DIGI -> "DIGITAL"; Ham.Tab.TX -> "TX"; Ham.Tab.LOG -> "LOG" } },
+        tabs.indexOf(tab), accent, tints = tabs.map { if (it == Ham.Tab.TX && noTx) Palette.muted.copy(alpha = 0.45f) else null }) { Ham.setTab(tabs[it]) }
 }
 
+/** The bands as scrolling tiles with their ranges; one this radio can't reach is faded and says why when tapped. */
 @Composable
 internal fun BandChips(accent: Color, channel: Long, onPick: (Band) -> Unit) {
     val current = bandOf(channel)?.id
-    ChipGrid(BANDS + NON_HAM, columns = 5) { b ->
-        val why = com.rocketgod.mayhem.core.Radio.tuneWhy(b.lo, b.hi)
-        Chip(b.name, selected = current == b.id, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) { onPick(b) })
-    }
-}
-
-@Composable
-internal fun TuneSteps(accent: Color) {
-    val d = rememberDims()
-    val s by Ham.state.collectAsState()
-    val steps = remember(s.channel) { Ham.steps() }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        for (st in steps) Chip((if (st > 0) "+" else "−") + hamStepLabel(kotlin.math.abs(st)), false, accent, Modifier.weight(1f)) { Ham.nudge(st) }
+    val all = BANDS + NON_HAM
+    fun mhz(hz: Long) = if (hz < 30_000_000L) "%.1f".format(hz / 1e6) else "${hz / 1_000_000}"
+    val whys = all.map { com.rocketgod.mayhem.core.Radio.tuneWhy(it.lo, it.hi) }
+    TileRow(all.mapIndexed { i, b -> Tile(b.name, "${mhz(b.lo)}–${mhz(b.hi)}", current == b.id, dim = whys[i].isNotEmpty()) }, accent, width = 88.dp) { i ->
+        gated(whys[i]) { onPick(all[i]) }()
     }
 }
 
@@ -244,43 +180,65 @@ internal fun HamReadout(accent: Color, meter: Boolean = true) {
     val s by Ham.state.collectAsState()
     val m by Ham.demod.meter.collectAsState()
     val dbm = Ham.dbm(m.db)
+    val playing = com.rocketgod.mayhem.core.Apps.playing() == com.rocketgod.mayhem.core.MayhemApp.HAM
+    val marks by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
 
-    Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f))) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            val preview = Tuning.previewHz
-            FreqDigits(preview ?: s.channel, big = false, tint = accent, preview = preview != null, modifier = Modifier.weight(1f)) { Ham.tune(it) }
-            Text("  ${s.mode.name}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f))
-            if (com.rocketgod.mayhem.core.Apps.playing() == com.rocketgod.mayhem.core.MayhemApp.HAM) {
-                val marks by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
-                val fav = marks.any { kotlin.math.abs(it.hz - s.channel) < 50 }
-                Text(if (fav) "★" else "☆", color = if (fav) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
-                    modifier = Modifier.clickable {
-                        com.rocketgod.mayhem.core.Bookmarks.star(s.channel, SdrEngine.Mode.NFM, s.mode.name, Ham.favourite())
-                    }.padding(horizontal = d.dp(8f)))
+    Column(Modifier.faceCard(accent, d)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            FaceTag(s.mode.name, accent)
+            Text((segmentOf(s.channel).ifEmpty { "outside the amateur bands" } + if (s.rev) " · reverse" else "").uppercase(),
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+            DialActions(accent, s.channel, star = playing, starred = marks.any { kotlin.math.abs(it.hz - s.channel) < 50 },
+                onStar = { com.rocketgod.mayhem.core.Bookmarks.star(s.channel, SdrEngine.Mode.NFM, s.mode.name, Ham.favourite()) }) { Ham.tune(it) }
+            when {
+                s.mode == Mode.NFM && s.squelch > 0 && !m.open -> Lamp("SQUELCHED", Palette.muted)
+                s.mode == Mode.NFM && s.squelch > 0 -> Lamp("OPEN", Palette.ok)
+                else -> Lamp("RX", Palette.ok)
             }
         }
-        Text(segmentOf(s.channel).ifEmpty { "outside the amateur bands" } + if (s.rev) " · REVERSE" else "",
-            color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 1.sp)
+        Box(Modifier.padding(top = d.dp(4f))) { DialRow(accent, s.channel, big = false) { Ham.tune(it) } }
         if (!meter) return@Column
 
-        // S-meter: S0 at the left, S9 marked, S9+60 at the right edge
-        val frac = Ham.meterFrac(dbm, s.channel)
-        val bar = if (dbm > Ham.s9(s.channel) + 30) Palette.danger else accent
-        val track = Palette.panel
-        val tick = Palette.ink.copy(alpha = 0.6f)
-        Canvas(Modifier.fillMaxWidth().padding(top = d.dp(6f)).height(d.dp(10f))) {
-            drawRoundRect(track, cornerRadius = CornerRadius(3f, 3f))
-            drawRoundRect(bar, size = Size(size.width * frac, size.height), cornerRadius = CornerRadius(3f, 3f))
-            for (u in 1..9) {
-                val x = size.width * (u * 6f) / 114f
-                drawLine(tick, Offset(x, if (u == 9) 0f else size.height * 0.6f), Offset(x, size.height), strokeWidth = if (u == 9) 2f else 1f)
+        // S-meter: S0 at the left, S9 a little short of half way, S9+60 at the right edge
+        SMeter(Ham.meterFrac(dbm, s.channel), accent, Modifier.fillMaxWidth().padding(top = d.dp(6f)))
+        Row(Modifier.fillMaxWidth().padding(top = d.dp(3f)), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("%s · %.0f dBm".format(Ham.sUnits(dbm, s.channel), dbm), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f))
+            Text(Ham.statusLine(m, s), color = if (s.mode == Mode.NFM && m.open) accent else Palette.muted,
+                fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = d.dp(8f)))
+        }
+    }
+}
+
+/** Thirty-two LEDs from S0 to S9+60: blue to S9, then green, amber and red by twenties, scaled S1–S9 and +20–+60. */
+@Composable
+private fun SMeter(frac: Float, accent: Color, modifier: Modifier) {
+    val d = rememberDims()
+    val n = 32
+    val lit = (frac * n).roundToInt().coerceIn(0, n)
+    val off = Palette.line.copy(alpha = 0.7f)
+    val ok = Palette.ok; val amber = Palette.accent2; val red = Palette.danger
+    fun at(units: Float) = units / 114f   // 6 dB an S-unit to S9 (54 dB), then dB over
+    Column(modifier) {
+        Canvas(Modifier.fillMaxWidth().height(d.dp(12f))) {
+            val gap = 2.dp.toPx()
+            val w = (size.width - gap * (n - 1)) / n
+            val r = CornerRadius(2.dp.toPx())
+            for (i in 0 until n) {
+                val f = (i + 0.5f) / n
+                val c = if (i >= lit) off else when { f < at(54f) -> accent; f < at(74f) -> ok; f < at(94f) -> amber; else -> red }
+                val x = i * (w + gap)
+                if (i < lit) drawRoundRect(c.copy(alpha = 0.3f), Offset(x - 1.dp.toPx(), -1.dp.toPx()), Size(w + 2.dp.toPx(), size.height + 2.dp.toPx()), r)
+                drawRoundRect(c, Offset(x, 0f), Size(w, size.height), r)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(3f)), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("%s · %.0f dBm est · +%.0f dB · audio %d%%".format(Ham.sUnits(dbm, s.channel), dbm, m.db - m.floor, (m.audioPeak * 100).toInt()),
-                color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
-            Text(Ham.statusLine(m, s), color = if (s.mode == Mode.NFM && m.open) accent else Palette.muted,
-                fontFamily = Mono, fontSize = d.sp(10f), fontWeight = FontWeight.Bold)
+        BoxWithConstraints(Modifier.fillMaxWidth().height(d.dp(12f)).padding(top = 2.dp)) {
+            val w = maxWidth
+            for ((label, u) in listOf("S1" to 6f, "3" to 18f, "5" to 30f, "7" to 42f, "9" to 54f, "+20" to 74f, "+40" to 94f)) {
+                Text(label, color = if (label == "9") Palette.ink else Palette.muted, fontFamily = Mono, fontSize = d.sp(8f),
+                    modifier = Modifier.offset(x = w * at(u) - 3.dp))
+            }
+            Text("+60", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), modifier = Modifier.align(Alignment.TopEnd))
         }
     }
 }

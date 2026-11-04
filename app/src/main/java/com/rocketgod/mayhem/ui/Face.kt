@@ -8,6 +8,14 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -108,18 +116,24 @@ fun DialRow(accent: Color, freq: Long, big: Boolean = true, onTune: (Long) -> Un
     }
 }
 
-/** ☆ (save to FAVES, ★ once saved) and ⌨ (key a frequency in), for a face's header. */
+/**
+ * ☆ (save to FAVES, ★ once saved) and ⌨ (key a frequency in), for a face's header. An app that saves its own kind
+ * of favourite passes [onStar] (and [starred]); without [onStar] there is no star, only the keypad, when [star] is off.
+ */
 @Composable
-fun DialActions(accent: Color, freq: Long, onTune: (Long) -> Unit = { SdrEngine.tune(it) }) {
+fun DialActions(accent: Color, freq: Long, star: Boolean = true, starred: Boolean? = null, onStar: (() -> Unit)? = null,
+                onTune: (Long) -> Unit = { SdrEngine.tune(it) }) {
     val d = rememberDims()
     val mode by SdrEngine.mode.collectAsState()
     val marks by Bookmarks.list.collectAsState()
     var keying by remember { mutableStateOf(false) }
     if (keying) FreqEntryDialog(freq, accent) { f -> keying = false; if (f != null) onTune(f) }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
-        Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(17f),
-            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { Bookmarks.star(freq, mode) }.padding(horizontal = d.dp(6f)))
+        if (star) {
+            val fav = starred ?: marks.any { abs(it.hz - freq) < 50 }
+            Text(if (fav) "★" else "☆", color = if (fav) Palette.accent2 else Palette.muted, fontSize = d.sp(17f),
+                modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { onStar?.invoke() ?: Bookmarks.star(freq, mode) }.padding(horizontal = d.dp(6f)))
+        }
         Text("⌨", color = Palette.muted, fontSize = d.sp(16f),
             modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { keying = true }.padding(horizontal = d.dp(6f)))
     }
@@ -184,5 +198,69 @@ fun IconBox(icon: ImageVector, description: String, modifier: Modifier = Modifie
         .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
         .padding(horizontal = d.dp(10f), vertical = d.dp(8f)), contentAlignment = Alignment.Center) {
         Icon(icon, contentDescription = description, tint = Palette.ink, modifier = Modifier.size(d.dp(18f)))
+    }
+}
+
+/** A label at the start of a control row: FILTER, SQL, AGC. */
+@Composable
+fun RowLabel(text: String) {
+    val d = rememberDims()
+    Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1, softWrap = false)
+}
+
+/** An on/off box the height of a [SegBar]: lit and glowing when on. Use in a row of [IntrinsicSize.Min] height. */
+@Composable
+fun ToggleBox(label: String, on: Boolean, accent: Color, modifier: Modifier = Modifier, dim: Boolean = false, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(d.dp(12f))
+    Box(modifier.alpha(if (dim) 0.4f else 1f)
+        .then(if (on) Modifier.drawBehind {
+            drawRoundRect(accent.copy(alpha = 0.28f), Offset(-2.dp.toPx(), -2.dp.toPx()), Size(size.width + 4.dp.toPx(), size.height + 4.dp.toPx()), CornerRadius(14.dp.toPx()))
+        } else Modifier)
+        .clip(shape).background(if (on) accent.copy(alpha = 0.24f) else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
+        .padding(horizontal = d.dp(12f), vertical = d.dp(8f)), contentAlignment = Alignment.Center) {
+        Text(label, color = if (on) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
+            letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
+    }
+}
+
+/** One tile in a [TileRow]: a name, a line under it (a range, a frequency), lit when it is where you are. */
+class Tile(val title: String, val sub: String, val on: Boolean, val dim: Boolean = false)
+
+/**
+ * Tiles in one scrolling row, the lit one scrolled into view: bands, presets, channels. Each is [width] wide so a
+ * row of them reads as a set; [onPick] gets the tile's index.
+ */
+@Composable
+fun TileRow(tiles: List<Tile>, accent: Color, width: Dp = 74.dp, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val scroll = rememberScrollState()
+    val tileW = d.dp(width.value)
+    val gap = d.dp(6f)
+    val stepPx = with(LocalDensity.current) { (tileW + gap).toPx() }
+    val lit = tiles.indexOfFirst { it.on }
+    LaunchedEffect(lit) { if (lit >= 0) scroll.animateScrollTo(((lit - 1) * stepPx).roundToInt().coerceAtLeast(0)) }
+    Row(Modifier.fillMaxWidth().scrollGlow(scroll, horizontal = true).horizontalScroll(scroll), horizontalArrangement = Arrangement.spacedBy(gap)) {
+        tiles.forEachIndexed { i, t ->
+            val shape = RoundedCornerShape(d.dp(12f))
+            Column(Modifier.width(tileW).alpha(if (t.dim) 0.4f else 1f).clip(shape)
+                .background(if (t.on) Brush.verticalGradient(listOf(accent.copy(alpha = 0.24f), Palette.surface)) else SolidColor(Palette.surface))
+                .border(1.dp, if (t.on) accent else Palette.line, shape)
+                .drawBehind {
+                    if (t.on) {
+                        val inset = 10.dp.toPx(); val h = 2.dp.toPx()
+                        drawRoundRect(accent.copy(alpha = 0.35f), Offset(inset - 2.dp.toPx(), size.height - h * 3), Size(size.width - inset * 2 + 4.dp.toPx(), h * 3), CornerRadius(h * 2))
+                        drawRoundRect(accent, Offset(inset, size.height - h), Size(size.width - inset * 2, h), CornerRadius(h))
+                    }
+                }
+                .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(i) }
+                .padding(horizontal = d.dp(8f), vertical = d.dp(6f))) {
+                Text(t.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+                Text(t.sub, color = if (t.on) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
+            }
+        }
     }
 }

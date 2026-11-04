@@ -105,7 +105,10 @@ fun AudioScreen(accent: Color) {
         ScrollColumn(Modifier.fillMaxWidth()) {
             Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(2f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 SegBar(MODES.map { it.name }, MODES.indexOf(mode), accent) { SdrEngine.setMode(MODES[it]) }
-                BandTiles(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
+                val lit = bandAt(freq)
+                TileRow(LISTEN_BANDS.map { Tile(it.name, "%d–%d".format(it.lo / 1_000_000, it.hi / 1_000_000), it == lit) }, accent) { i ->
+                    val b = LISTEN_BANDS[i]; SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre)
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
                     Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
                     SegBar(SQL_STEPS.map { if (it == 0) "OFF" else "$it dB" }, SQL_STEPS.indexOf(squelch), accent, Modifier.weight(1f)) { SdrEngine.setSquelch(SQL_STEPS[it]) }
@@ -252,43 +255,6 @@ private fun StationStrip(r: RdsState?, accent: Color) {
             val rt = r?.rt?.trim().orEmpty()
             Text(rt.ifEmpty { if (locked) "no radiotext from this station" else "reading the station's data…" }, color = Palette.muted, fontFamily = Mono,
                 fontSize = d.sp(11f), maxLines = 1, modifier = Modifier.padding(top = 3.dp).basicMarquee(iterations = Int.MAX_VALUE))
-        }
-    }
-}
-
-/** The bands as a scrolling row of tiles, each with its range; the one you're in is lit and scrolled into view. */
-@Composable
-private fun BandTiles(accent: Color, hz: Long, onPick: (ListenBand) -> Unit) {
-    val d = rememberDims()
-    val haptic = LocalHapticFeedback.current
-    val lit = bandAt(hz)
-    val scroll = rememberScrollState()
-    val tileW = d.dp(74f)
-    val gap = d.dp(6f)
-    val stepPx = with(LocalDensity.current) { (tileW + gap).toPx() }
-    LaunchedEffect(lit) {
-        val i = LISTEN_BANDS.indexOf(lit)
-        if (i >= 0) scroll.animateScrollTo(((i - 1) * stepPx).roundToInt().coerceAtLeast(0))
-    }
-    Row(Modifier.fillMaxWidth().horizontalScroll(scroll), horizontalArrangement = Arrangement.spacedBy(gap)) {
-        for (b in LISTEN_BANDS) {
-            val on = b == lit
-            val shape = RoundedCornerShape(d.dp(12f))
-            Column(Modifier.width(tileW).clip(shape)
-                .background(if (on) Brush.verticalGradient(listOf(accent.copy(alpha = 0.24f), Palette.surface)) else Brush.verticalGradient(listOf(Palette.surface, Palette.surface)))
-                .border(1.dp, if (on) accent else Palette.line, shape)
-                .drawBehind {
-                    if (on) {
-                        val inset = 10.dp.toPx(); val h = 2.dp.toPx()
-                        drawRoundRect(accent.copy(alpha = 0.35f), Offset(inset - 2.dp.toPx(), size.height - h * 3), Size(size.width - inset * 2 + 4.dp.toPx(), h * 3), CornerRadius(h * 2))
-                        drawRoundRect(accent, Offset(inset, size.height - h), Size(size.width - inset * 2, h), CornerRadius(h))
-                    }
-                }
-                .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(b) }
-                .padding(horizontal = d.dp(8f), vertical = d.dp(6f))) {
-                Text(b.name, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 1.sp, maxLines = 1)
-                Text("%d–%d".format(b.lo / 1_000_000, b.hi / 1_000_000), color = if (on) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
-            }
         }
     }
 }

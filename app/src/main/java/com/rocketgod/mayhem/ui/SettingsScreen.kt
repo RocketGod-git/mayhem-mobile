@@ -74,6 +74,8 @@ import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.usb.RtlSdr
 import kotlinx.coroutines.delay
+import com.rocketgod.mayhem.core.ham.Ham
+import com.rocketgod.mayhem.core.ham.HamDemod.Mode as HamMode
 import kotlin.math.roundToInt
 
 /** Where Settings lands when it opens: the radio line under the digits asks for "radio". */
@@ -111,6 +113,7 @@ fun SettingsScreen(accent: Color) {
     val multi by Apps.pagerMulti.collectAsState()
     val rdsOn by SdrEngine.rdsWanted.collectAsState()
     val hdOn by SdrEngine.hdWanted.collectAsState()
+    val ham by Ham.state.collectAsState()
     val opensLast by NavBar.opensOnLast.collectAsState()
     val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
     var askBias by remember { mutableStateOf(false) }
@@ -131,6 +134,7 @@ fun SettingsScreen(accent: Color) {
             SRow("rds station name radiotext fm") { SwitchRow("RDS", rdsOn, "Station name and radiotext on broadcast FM") { SdrEngine.setRds(it) } },
             SRow("hd radio digital") { SwitchRow("HD Radio", hdOn, "The digital sidebands, where a station has them") { SdrEngine.setHd(it) } },
         )
+        MayhemApp.HAM -> hamRows(ham)
         MayhemApp.PAGER -> listOf(
             SRow("mode single multi hunt channels") { SegRow("Mode", listOf("0" to "SINGLE", "1" to "MULTI"), if (multi) "1" else "0") { Apps.setPagerMulti(it == "1") } },
             SRow("fold repeats duplicate") { SwitchRow("Fold repeats", PagerUi.fold) { PagerUi.fold = it } },
@@ -362,6 +366,26 @@ private fun SRowLayout(label: String, desc: String? = null, dim: Boolean = false
         }
         control()
     }
+}
+
+/** HAM's fine controls: the filter's exact edges (or width), the passband shift, the CW pitch and the volume. */
+private fun hamRows(s: Ham.State): List<SRow> {
+    val rows = ArrayList<SRow>()
+    if (s.mode == HamMode.USB || s.mode == HamMode.LSB) {
+        rows += SRow("filter low edge passband hz") { SliderRow("Filter low edge", s.pbLo.roundToInt(), 0, 5000, 50, "Hz", false) { Ham.setPassband(it.toDouble(), Ham.state.value.pbHi.coerceIn(it + 100.0, 6000.0)) } }
+        rows += SRow("filter high edge passband hz") { SliderRow("Filter high edge", s.pbHi.roundToInt(), (s.pbLo.roundToInt() + 100).coerceAtMost(6000), 6000, 50, "Hz", false) { Ham.setPassband(Ham.state.value.pbLo, it.toDouble()) } }
+        rows += SRow("passband shift ibs") { SliderRow("Passband shift", s.shift.roundToInt(), -600, 600, 50, "Hz", false) { Ham.setShift(it.toDouble()) } }
+    } else {
+        val (lo, hi, step) = when (s.mode) {
+            HamMode.CW -> Triple(50, 2000, 50); HamMode.AM -> Triple(1500, 12_000, 500); HamMode.NFM -> Triple(2500, 25_000, 500); else -> Triple(25_000, 100_000, 5000)
+        }
+        rows += SRow("filter width bandwidth hz") { SliderRow("Filter width", s.width.roundToInt().coerceIn(lo, hi), lo, hi, step, "Hz", false) { Ham.setWidth(it.toDouble()) } }
+    }
+    if (s.mode == HamMode.CW) rows += SRow("cw pitch tone") {
+        SegRow("CW pitch", listOf(500, 600, 700, 800).map { "$it" to "$it" }, s.pitch.roundToInt().toString()) { Ham.setPitch(it.toDouble()) }
+    }
+    rows += SRow("volume loudness") { SliderRow("Volume", (s.volume * 100).roundToInt(), 0, 200, 5, "%", false) { Ham.setVolume(it / 100f) } }
+    return rows
 }
 
 @Composable

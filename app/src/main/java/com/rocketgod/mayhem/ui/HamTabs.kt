@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -88,7 +90,7 @@ internal fun HamMonitor(accent: Color) {
     }
     HamLayout(accent, meter = false, status = status) {
         HamTabs(accent)
-        SectionLabel("CHANNELS · tap to lock one, tap again to mix")
+        SectionLabel("CHANNELS · tap to lock, again to mix")
         ChannelGrid(r, m.lock, accent) { Ham.monitorLock(it) }
         SectionLabel("OPEN NOW")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(6f))) {
@@ -102,21 +104,28 @@ internal fun HamMonitor(accent: Color) {
                 }
             }
         }
-        SectionLabel("LISTEN")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (l in BandMonitor.Listen.entries) Chip(l.name, m.listen == l, accent, Modifier.weight(1f)) { Ham.monitorListen(l) }
-        }
-        SectionLabel(if (wide) "RASTER · THRESHOLD · SPAN" else "RASTER · THRESHOLD")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (sp in listOf(12_500, 25_000)) Chip("${sp / 1e3} kHz", m.spacing == sp, accent, Modifier.weight(1f)) { Ham.monitorSpacing(sp) }
-            for (t in listOf(6, 8, 12)) Chip("+$t dB", m.threshold == t, accent, Modifier.weight(1f)) { Ham.monitorThreshold(t) }
-            if (wide) {
-                val why = Radio.rateWhy(3_840_000)
-                Chip("3.84 MHz", m.wide, accent, Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) { Ham.monitorWide(!m.wide) })
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            val listens = BandMonitor.Listen.entries
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("HEAR")
+                SegBar(listens.map { it.name }, listens.indexOf(m.listen), accent, Modifier.weight(1f)) { Ham.monitorListen(listens[it]) }
             }
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                val spacings = listOf(12_500, 25_000)
+                RowLabel("RASTER")
+                SegBar(spacings.map { "${it / 1e3}k" }, spacings.indexOf(m.spacing), accent, Modifier.weight(1f)) { Ham.monitorSpacing(spacings[it]) }
+                if (wide) {
+                    val why = Radio.rateWhy(3_840_000)
+                    ToggleBox("3.84 MHz", m.wide, accent, Modifier.fillMaxHeight(), dim = why.isNotEmpty(), onClick = gated(why) { Ham.monitorWide(!m.wide) })
+                }
+            }
+            val thresholds = listOf(6, 8, 12)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("OPENS")
+                SegBar(thresholds.map { "+$it dB" }, thresholds.indexOf(m.threshold), accent, Modifier.weight(1f)) { Ham.monitorThreshold(thresholds[it]) }
+            }
+            BandChips(accent, s.channel) { Ham.pickBand(it) }
         }
-        SectionLabel("BAND")
-        BandChips(accent, s.channel) { Ham.pickBand(it) }
         SectionLabel("ACTIVITY")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(6f))) {
             if (m.log.isEmpty()) Text("activity log", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
@@ -203,15 +212,16 @@ internal fun HamDigitalTab(accent: Color) {
     }
     HamLayout(accent, meter = true, status = status) {
         HamTabs(accent)
-        SectionLabel("DECODER · AUTO picks whichever modem is making sense")
+        SectionLabel("DECODER · AUTO picks whatever makes sense")
         ChipGrid(HamDigital.Mode.entries.toList(), columns = 5) { m -> Chip(m.name, g.mode == m, accent, Modifier.weight(1f)) { pick(m) } }
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (md in listOf(Mode.USB, Mode.LSB, Mode.CW, Mode.NFM)) Chip(md.name, s.mode == md, accent, Modifier.weight(1f)) { Ham.setMode(md) }
-            Chip("CLEAR", false, accent, Modifier.weight(1f)) { HamDigital.clear() }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            val modes = listOf(Mode.USB, Mode.LSB, Mode.CW, Mode.NFM)
+            SegBar(modes.map { it.name }, modes.indexOf(s.mode), accent, Modifier.weight(1f).fillMaxHeight()) { Ham.setMode(modes[it]) }
+            IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { HamDigital.clear() }
         }
         if (g.mode == HamDigital.Mode.P25 || g.mode == HamDigital.Mode.AUTO) P25Panel(p25)
         if (g.mode == HamDigital.Mode.DMR || g.mode == HamDigital.Mode.AUTO) DmrPanel(accent, dmr, g.dmrSlot)
-        SectionLabel("PSK31 AUDIO CENTER · RTTY BAUD/SHIFT")
+        SectionLabel("PSK31 CENTRE · RTTY BAUD / SHIFT")
         ChipGrid(listOf(500.0, 1000.0, 1500.0, 2000.0), columns = 4) { f -> Chip("${f.toInt()}", g.pskHz == f, accent, Modifier.weight(1f)) { HamDigital.update { it.copy(pskHz = f) } } }
         Spacer(Modifier.height(d.gap))
         ChipGrid(listOf(45.45 to 170.0, 50.0 to 170.0, 75.0 to 170.0, 45.45 to 450.0, 50.0 to 850.0), columns = 5) { (b, sh) ->
@@ -254,8 +264,6 @@ internal fun HamDigitalTab(accent: Color) {
                 Chip(l, s.channel == f, accent, Modifier.weight(1f)) { if (s.mode != Mode.USB) Ham.setMode(Mode.USB); Ham.tune(f); HamDigital.update { it.copy(mode = HamDigital.Mode.FT8) } }
             }
         }
-        SectionLabel("TUNE")
-        TuneSteps(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }
@@ -359,26 +367,23 @@ internal fun HamTransmit(accent: Color) {
         }
         Text(note.ifEmpty { txStatus.ifEmpty { "idle" } }, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
         SectionLabel("DEVIATION · CTCSS")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (dev in listOf(2500, 5000)) Chip("±${dev / 1000.0} kHz", p.dev == dev, accent, Modifier.weight(1f)) { Ham.setDeviation(dev) }
-        }
+        val devs = listOf(2500, 5000)
+        SegBar(devs.map { "±${it / 1000.0} kHz" }, devs.indexOf(p.dev), accent) { Ham.setDeviation(devs[it]) }
         Spacer(Modifier.height(d.gap))
         ChipGrid(listOf(0.0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5), columns = 6) { t ->
             Chip(if (t == 0.0) "none" else "%.1f".format(t), p.tone == t, accent, Modifier.weight(1f)) { Ham.setTone(t) }
         }
         SectionLabel("TX GAIN · IF 0–47 dB · AMP +14 dB")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (gv in listOf(0, 10, 20, 30, 47)) Chip("$gv", gain == gv, accent, Modifier.weight(1f)) { Tx.setGain(gv) }
-            Chip("AMP", amp, accent, Modifier.weight(1f)) { Tx.toggleAmp() }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            val gains = listOf(0, 10, 20, 30, 47)
+            SegBar(gains.map { "$it" }, gains.indexOf(gain), accent, Modifier.weight(1f).fillMaxHeight()) { Tx.setGain(gains[it]) }
+            ToggleBox("AMP", amp, Palette.danger, Modifier.fillMaxHeight()) { Tx.toggleAmp() }
         }
-        SectionLabel("BAND")
-        BandChips(accent, s.channel) { Ham.pickBand(it) }
-        SectionLabel("MODE (receive between overs)")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (md in listOf(Mode.NFM, Mode.USB, Mode.LSB)) Chip(md.name, s.mode == md, accent, Modifier.weight(1f)) { Ham.setMode(md) }
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            BandChips(accent, s.channel) { Ham.pickBand(it) }
+            val modes = listOf(Mode.NFM, Mode.USB, Mode.LSB)
+            SegBar(modes.map { it.name }, modes.indexOf(s.mode), accent) { Ham.setMode(modes[it]) }
         }
-        SectionLabel("TUNE")
-        TuneSteps(accent)
         Spacer(Modifier.height(d.dp(12f)))
     }
 }
