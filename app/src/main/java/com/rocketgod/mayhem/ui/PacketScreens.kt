@@ -57,7 +57,7 @@ import java.util.Locale
 
 /** Shared layout for the packet receivers: readout + waterfall (visual pane), controls, count, decoded log. */
 @Composable
-private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null) {
+private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, roomy: Boolean = false, controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val health by SdrEngine.rxHealth.collectAsState()
@@ -68,10 +68,11 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        visualHeightNarrow = d.dp(190f),
+        // a screen that gave up its tune steppers gets their height back as bigger digits and more waterfall
+        visualHeightNarrow = d.dp(if (roomy) 250f else 190f),
         visual = { m ->
             Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
+                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide || roomy)
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
                     rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
@@ -121,14 +122,13 @@ private fun PagerModeRow(accent: Color, multi: Boolean) {
 private fun PagerSingleView(accent: Color) {
     val d = rememberDims()
     val which by Apps.pager.which.collectAsState()
-    PacketFrame(accent, Apps.pagerLog, controls = {
+    PacketFrame(accent, Apps.pagerLog, roomy = true, controls = {
         PagerModeRow(accent, false)
         SectionLabel("DECODER · FLEX 1600/3200 2L/4L · POCSAG 512/1200/2400")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for (w in PagerDecoder.Which.entries) Chip(w.label, selected = which == w, accent = accent, modifier = Modifier.weight(1f)) { Apps.pager.select(w) }
         }
         PresetRow(accent, listOf("929.6125" to 929_612_500L, "929.6625" to 929_662_500L, "931.9375" to 931_937_500L, "466.175" to 466_175_000L), title = "CHANNEL · MHz")
-        StepperRow(accent, longArrayOf(100_000L, 12_500L, 2_500L))
     })
 }
 
@@ -149,10 +149,10 @@ private fun PagerHunterView(accent: Color) {
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        visualHeightNarrow = d.dp(190f),
+        visualHeightNarrow = d.dp(250f),
         visual = { m ->
             Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
+                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
                     rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = onPreview, onTapFrac = onTune)
@@ -166,7 +166,6 @@ private fun PagerHunterView(accent: Color) {
             Chip("HUNT", selected = status.hunting, accent = accent, modifier = Modifier.weight(1f)) { PagerEngine.setHunting(true) }
             Chip(if (status.pinned > 0) "PINNED ${status.pinned}" else "PINNED", selected = !status.hunting, accent = accent, modifier = Modifier.weight(1f)) { PagerEngine.setHunting(false) }
         }
-        StepperRow(accent, longArrayOf(1_000_000L, 25_000L, 2_500L))
         GainRow(accent)
         Text(status.text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.fillMaxWidth().padding(vertical = d.dp(4f)))
         SectionLabel("CHANNELS · tap to pin & listen")
@@ -370,9 +369,8 @@ fun TpmsScreen(accent: Color) {
 
 @Composable
 fun AcarsScreen(accent: Color) {
-    PacketFrame(accent, Apps.acarsLog, controls = {
+    PacketFrame(accent, Apps.acarsLog, roomy = true, controls = {
         PresetRow(accent, listOf("131.550 US" to 131_550_000L, "131.525 EU" to 131_525_000L, "131.725 EU2" to 131_725_000L, "131.450 JP" to 131_450_000L, "130.025" to 130_025_000L), title = "CHANNEL · MHz")
-        StepperRow(accent, longArrayOf(1_000_000L, 25_000L, 5_000L))
         SectionLabel("AM · 2400 bps MSK · registration, label, block, message number, flight, text · CRC-16 checked")
     })
 }
@@ -383,9 +381,8 @@ fun SubGhzScreen(accent: Color) {
     var wx by remember { mutableStateOf(Apps.ism.weather) }
     var rc by remember { mutableStateOf(Apps.ism.remotes) }
     var car by remember { mutableStateOf(Apps.ism.cars) }
-    PacketFrame(accent, Apps.ismLog, controls = {
+    PacketFrame(accent, Apps.ismLog, roomy = true, controls = {
         PresetRow(accent, listOf("433.92" to 433_920_000L, "315.00" to 315_000_000L, "868.35" to 868_350_000L, "915.00" to 915_000_000L, "303.875" to 303_875_000L), title = "BAND · MHz")
-        StepperRow(accent, longArrayOf(1_000_000L, 100_000L, 10_000L))
         SectionLabel("FAMILIES · every protocol runs at once; tap to mute a family")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             Chip("WEATHER 26", selected = wx, accent = accent, modifier = Modifier.weight(1f)) { wx = !wx; Apps.ism.weather = wx }
