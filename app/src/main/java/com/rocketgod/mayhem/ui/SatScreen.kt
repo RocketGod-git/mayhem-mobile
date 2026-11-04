@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,9 +69,8 @@ fun SatScreen(accent: Color) {
 private fun SatStrip(accent: Color) {
     val d = rememberDims()
     val u by Sats.ui.collectAsState()
-    Row(Modifier.fillMaxWidth().padding(bottom = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for (v in Sats.View.entries) Chip(v.label, u.view == v, accent, Modifier.weight(v.label.length + 2f)) { Sats.setView(v) }
-    }
+    val views = Sats.View.entries
+    Box(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f))) { SegBar(views.map { it.label }, views.indexOf(u.view), accent) { Sats.setView(views[it]) } }
 }
 
 private fun hhmm(ms: Long): String { val c = Calendar.getInstance().apply { timeInMillis = ms }; return "%02d:%02d".format(c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE)) }
@@ -103,18 +104,19 @@ private fun SatTrack(accent: Color) {
     }
     HamLayout(accent, meter = true, status = status) {
         SatStrip(accent)
-        SectionLabel("SATELLITE")
-        ChipGrid(SATS, columns = 4) { x -> Chip(x.name, u.sel == x.norad, accent, Modifier.weight(1f)) { Sats.select(x.norad) } }
+        TileRow(SATS.map { Tile(it.name, "${it.services.size} service${if (it.services.size == 1) "" else "s"}", u.sel == it.norad) }, accent, width = 96.dp) { Sats.select(SATS[it].norad) }
         def.what?.let { Text(it, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.padding(top = d.dp(6f))) }
-        SectionLabel("WHAT IT OFFERS · tap to set the receiver up for it")
-        ChipGrid(def.services.withIndex().toList(), columns = 2) { (i, x) -> Chip(x.name.uppercase(), u.svc == i, accent, Modifier.weight(1f)) { Sats.selectService(i) } }
+        // what it offers: tap one to set the receiver up for it
+        Box(Modifier.padding(top = d.dp(8f))) {
+            TileRow(def.services.map { Tile(it.name.uppercase(), "%.3f".format(it.down / 1e6), def.services.indexOf(it) == u.svc) }, accent, width = 112.dp) { Sats.selectService(it) }
+        }
         Text((if (svc.up != null) "Two-way, license needed to transmit. " else "Receive only. ") + (svc.how ?: ""), color = Palette.ink, fontFamily = Mono,
             fontSize = d.sp(10.5f), modifier = Modifier.padding(top = d.dp(6f)))
         Text("${svc.name} · %.4f MHz down".format(svc.down / 1e6) + (svc.up?.let { " · %.3f up".format(it / 1e6) + (svc.tone?.let { t -> " tone $t" } ?: "") } ?: "") +
             (svc.note?.let { " · $it" } ?: ""), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip(if (u.track) "LISTENING · DOPPLER ON" else "LISTEN · TRACK DOPPLER", u.track, accent, Modifier.weight(2f)) { Sats.toggleTrack() }
-            Chip("REFRESH TLE", false, accent, Modifier.weight(1f)) { Sats.refreshTles() }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            ToggleBox(if (u.track) "LISTENING · DOPPLER ON" else "LISTEN · TRACK DOPPLER", u.track, accent, Modifier.weight(2f).fillMaxHeight()) { Sats.toggleTrack() }
+            ToggleBox("REFRESH TLE", false, accent, Modifier.weight(1f).fillMaxHeight()) { Sats.refreshTles() }
         }
         val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
         if (svc.up != null && radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR) Box(Modifier.padding(top = d.gap)) { ReceiveOnlyNote(accent) }
@@ -249,9 +251,9 @@ private fun SatPacket(accent: Color) {
         }
         Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("${Sats.g3ruh.heard} FRAME${if (Sats.g3ruh.heard == 1) "" else "S"}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f))
-            Row(horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                Chip(if (paused) "RESUME" else "PAUSE", paused, accent) { frozen = if (paused) null else frames }
-                Chip("CLEAR", false, accent) { Sats.clearFrames(); if (paused) frozen = emptyList() }
+            Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                ToggleBox(if (paused) "RESUME" else "PAUSE", paused, accent, Modifier.fillMaxHeight()) { frozen = if (paused) null else frames }
+                IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { Sats.clearFrames(); if (paused) frozen = emptyList() }
             }
         }
         Column(Modifier.fillMaxWidth().padding(top = d.dp(4f)).panel().padding(d.dp(6f))) {
@@ -274,11 +276,10 @@ private fun SatOrbcomm(accent: Color) {
     val home by Geo.fix.collectAsState()
     HamLayout(accent, meter = false) {
         SatStrip(accent)
-        SectionLabel("CHANNEL · the busy ones are listed first")
-        ChipGrid(ORBCOMM_CHANNELS.toList(), columns = 4) { hz ->
-            Chip("%.4f".format(hz / 1e6).trimEnd('0'), o.channel == hz, accent, Modifier.weight(1f)) { if (o.hunt) Sats.orbHunt(); Sats.orbTune(hz) }
-        }
-        Box(Modifier.padding(top = d.gap)) { Chip(if (o.hunt) "SEARCHING THE CHANNELS" else "FIND A BUSY CHANNEL", o.hunt, accent, Modifier.fillMaxWidth()) { Sats.orbHunt() } }
+        // the busy channels come first
+        val chans = ORBCOMM_CHANNELS.toList()
+        TileRow(chans.map { Tile("%.4f".format(it / 1e6).trimEnd('0'), "MHz", o.channel == it) }, accent, width = 92.dp) { i -> if (o.hunt) Sats.orbHunt(); Sats.orbTune(chans[i]) }
+        ToggleBox(if (o.hunt) "SEARCHING THE CHANNELS" else "FIND A BUSY CHANNEL", o.hunt, accent, Modifier.fillMaxWidth().padding(top = d.dp(6f))) { Sats.orbHunt() }
         Text(if (o.frames > 0) "${o.frames} frames · ${o.packets} packets, ${o.packets - o.bad} good · %.4f MHz".format(o.channel / 1e6) + if (o.sats.isEmpty()) " · decoding, waiting for a position report" else ""
             else "nothing decoded yet on %.4f MHz · a pass lasts about ten minutes and there is often nothing overhead · look for a narrow line on the waterfall".format(o.channel / 1e6),
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
