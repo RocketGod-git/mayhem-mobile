@@ -86,14 +86,12 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
     }
     Column(modifier) {
         ReceiverScope(accent,
-            (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 160f))).padding(top = d.dp(6f)),
+            (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 240f))).padding(top = d.dp(6f)),
             rows = 70, traceFrac = 0.32f, wholeRange = true)
         Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
             Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
                  else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
                 fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.weight(1f), maxLines = 1)
-            // Home is a receiver too: its sound gets the same one-tap mute as every app
-            SpeakerButton(size = d.dp(16f))
         }
         // a chip shows the whole band (as wide as this radio and screen take) and picks its strongest station
         ListenBandChips(accent, lo) { b ->
@@ -143,20 +141,10 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
     // dimmed, never locked: a dongle owner may still want two-metre HAM
     Radio.kind.collectAsState().value
     val why = Radio.blockedBecause(app)
-    val inBar = NavBar.checked.collectAsState().value.contains(app)
     Column(
         Modifier.fillMaxWidth().aspectRatio(1.3f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { onClick() }.padding(d.dp(12f))
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            AppGlyph(app, tint, Modifier.size(d.dp(36f)))
-            Box(Modifier.weight(1f))
-            // + puts the app in the bottom bar, ✓ takes it out; order and the rest live in Settings › Bar
-            if (app in NavBar.all()) Box(
-                Modifier.size(d.dp(28f)).clip(RoundedCornerShape(6.dp)).background(if (inBar) tint else Color.Transparent)
-                    .border(1.dp, if (inBar) tint else Palette.line, RoundedCornerShape(6.dp)).clickable { NavBar.toggle(app) },
-                contentAlignment = Alignment.Center
-            ) { Text(if (inBar) "✓" else "+", color = if (inBar) inkOn(tint) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f)) }
-        }
+        AppGlyph(app, tint, Modifier.size(d.dp(36f)))
         Box(Modifier.weight(1f))
         Text(app.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
         Text(if (why.isNotEmpty()) "${Radio.name}: $why" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
