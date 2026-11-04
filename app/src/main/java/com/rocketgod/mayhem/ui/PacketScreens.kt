@@ -99,7 +99,7 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
         // a screen that gave up its tune steppers gets their height back as bigger digits and more waterfall
-        visualHeightNarrow = fitVisual(d, if (roomy) 250f else 190f),
+        visualHeightNarrow = fitVisual(d, if (roomy) 280f else 220f),
         visual = { m ->
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide || roomy)
@@ -167,7 +167,7 @@ private fun PagerHunterView(accent: Color) {
     val spark = d.wide || d.heightDp >= 700
     AdaptivePane(
         // the face, then a strip of waterfall: the feed under them is what this app is for
-        visualHeightNarrow = minOf(d.dp(if (spark) 300f else 250f), maxOf(220.dp, (d.heightDp * 0.40f).dp)),
+        visualHeightNarrow = minOf(d.dp(if (spark) 330f else 280f), maxOf(240.dp, (d.heightDp * 0.42f).dp)),
         visual = { m ->
             Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 HunterFace(accent, freq, status, channels, messages, capcodes, spark)
@@ -208,14 +208,14 @@ private fun HunterFace(accent: Color, freq: Long, status: PagerEngine.Status, ch
                 else -> Lamp("HUNTING", Palette.accent2, blink = true)
             }
         }
-        Box(Modifier.padding(top = d.dp(4f), bottom = d.dp(6f))) { DialRow(accent, freq, big = false) }
+        Box(Modifier.padding(top = d.dp(2f), bottom = d.dp(4f))) { DialRow(accent, freq, big = false) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             StatTile("${messages.size}", "PAGES", accent, Modifier.weight(1f))
             StatTile("$capcodes", "CAPCODES", accent, Modifier.weight(1f))
             StatTile("$alerts", "CALL-OUTS", Palette.danger, Modifier.weight(1f))
             StatTile("$decoding / ${channels.size}", "CHANNELS", accent, Modifier.weight(1f))
         }
-        if (spark) ActivityStrip(messages, accent, Modifier.fillMaxWidth().padding(top = d.dp(7f)))
+        if (spark) ActivityStrip(messages, accent, Modifier.fillMaxWidth().padding(top = d.dp(6f)))
     }
 }
 
@@ -223,8 +223,8 @@ private fun HunterFace(accent: Color, freq: Long, status: PagerEngine.Status, ch
 private fun StatTile(value: String, label: String, c: Color, modifier: Modifier) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(10f))
-    Column(modifier.clip(shape).background(Palette.paper.copy(alpha = 0.6f)).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(7f), vertical = d.dp(5f))) {
-        Text(value, color = if (c == Palette.danger) c else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(18f), maxLines = 1,
+    Column(modifier.clip(shape).background(Palette.paper.copy(alpha = 0.6f)).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(7f), vertical = d.dp(4f))) {
+        Text(value, color = if (c == Palette.danger) c else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(16f), maxLines = 1,
             style = TextStyle(shadow = Shadow(c.copy(alpha = 0.55f), blurRadius = 14f)), softWrap = false)
         Text(label, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
     }
@@ -249,7 +249,7 @@ private fun ActivityStrip(messages: List<PagerMessage>, accent: Color, modifier:
     val top = maxOf(1, counts.maxOrNull() ?: 1)
     val line = Palette.line; val danger = Palette.danger
     Column(modifier) {
-        Canvas(Modifier.fillMaxWidth().height(d.dp(20f))) {
+        Canvas(Modifier.fillMaxWidth().height(d.dp(12f))) {
             val gap = 2.dp.toPx()
             val w = (size.width - gap * (minutes - 1)) / minutes
             for (i in 0 until minutes) {

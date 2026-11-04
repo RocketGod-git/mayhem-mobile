@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -74,22 +76,33 @@ fun parseFreq(s: String): Long? {
  * digits, and each group is captioned with its unit.
  */
 @Composable
-fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Color? = null, onTune: ((Long) -> Unit)?) {
+fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Color? = null, modifier: Modifier = Modifier, onTune: ((Long) -> Unit)?) {
     val d = rememberDims()
     val haptic = LocalHapticFeedback.current
     val now = rememberUpdatedState(hz)
     val tuneNow = rememberUpdatedState(onTune)
     val stepPx = with(LocalDensity.current) { 22.dp.toPx() }
-    val fs = d.sp(if (big) 34f else 26f)
-    val fsPx = with(LocalDensity.current) { fs.toPx() }
+    val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    // the advance of one digit at 100 sp: the row is sized from it to fill the width it is given
+    val digit100 = remember(density) { measurer.measure("0", TextStyle(fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = 100.sp)).size.width.toFloat() }
     // which way the last change went, so every digit that moved flashes the same direction
     val last = remember { longArrayOf(hz) }
     val dir = if (hz > last[0]) 1 else if (hz < last[0]) -1 else 0
     SideEffect { last[0] = hz }
+    // Below 1 GHz the GHz digit is a zero nobody taps, so it goes and the rest get its width; stepping the 100 MHz
+    // digit past 9 still carries into it. The digits fill the width they are given, between 26 sp (about the least a
+    // fingertip can hit digit by digit) and a ceiling, so every screen's digits are tappable one by one.
+    val groups = if (hz >= 1_000_000_000L) GROUPS else GROUPS.drop(1)
+    val chars = groups.sumOf { it.first.size } + groups.size - 1
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+    val fit = if (constraints.hasBoundedWidth && digit100 > 0f) constraints.maxWidth * 0.96f / chars / digit100 * 100f else 99f
+    val fs = fit.coerceIn(26f, if (big) 64f else 52f).sp
+    val fsPx = with(density) { fs.toPx() }
     var lead = true
     Row(verticalAlignment = Alignment.Bottom) {
-        GROUPS.forEachIndexed { gi, (weights, unit) ->
-            if (gi > 0) Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs, modifier = Modifier.padding(bottom = d.dp(9f)))
+        groups.forEachIndexed { gi, (weights, unit) ->
+            if (gi > 0) Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs, modifier = Modifier.padding(bottom = d.dp(12f)))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row {
                     for (w in weights) key(w) {
@@ -143,6 +156,7 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Colo
             }
         }
     }
+    }
 }
 
 /** Key a frequency in; the phone brings up its number pad. */
@@ -193,7 +207,7 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
     val tint = if (preview != null) Palette.accent2 else accent
     if (keying) FreqEntryDialog(tuned, accent) { f -> keying = false; if (f != null) onTune?.invoke(f) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        FreqDigits(freq, big, tint, preview != null, onTune = onTune)
+        FreqDigits(freq, big, tint, preview != null, modifier = Modifier.weight(1f), onTune = onTune)
         if (onTune != null) Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
             val fav = marks.firstOrNull { abs(it.hz - tuned) < 50 }
             Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),

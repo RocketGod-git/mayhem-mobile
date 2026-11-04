@@ -104,7 +104,7 @@ fun DialRow(accent: Color, freq: Long, big: Boolean = true, onTune: (Long) -> Un
     if (keying) FreqEntryDialog(freq, accent) { f -> keying = false; if (f != null) onTune(f) }
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            FreqDigits(shown, big, if (preview != null) Palette.accent2 else accent, preview != null, glow = accent) { onTune(it) }
+            FreqDigits(shown, big, if (preview != null) Palette.accent2 else accent, preview != null, glow = accent, modifier = Modifier.weight(1f)) { onTune(it) }
             Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
                 val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
                 Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
