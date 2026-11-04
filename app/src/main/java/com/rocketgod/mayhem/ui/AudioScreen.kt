@@ -169,7 +169,7 @@ private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
             SquelchLamp(squelch, sqOpen, scanning)
         }
         Row(Modifier.fillMaxWidth().padding(top = d.dp(6f)), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            FreqDigits(shown, true, tint, preview != null, { SdrEngine.tune(it) }, glow = accent)
+            FreqDigits(shown, true, tint, preview != null, glow = accent) { SdrEngine.tune(it) }
             Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
                 val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
                 Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),

@@ -74,7 +74,7 @@ fun parseFreq(s: String): Long? {
  * digits, and each group is captioned with its unit.
  */
 @Composable
-fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, onTune: ((Long) -> Unit)?, glow: Color? = null) {
+fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Color? = null, onTune: ((Long) -> Unit)?) {
     val d = rememberDims()
     val haptic = LocalHapticFeedback.current
     val now = rememberUpdatedState(hz)
@@ -193,7 +193,7 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
     val tint = if (preview != null) Palette.accent2 else accent
     if (keying) FreqEntryDialog(tuned, accent) { f -> keying = false; if (f != null) onTune?.invoke(f) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        FreqDigits(freq, big, tint, preview != null, onTune)
+        FreqDigits(freq, big, tint, preview != null, onTune = onTune)
         if (onTune != null) Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
             val fav = marks.firstOrNull { abs(it.hz - tuned) < 50 }
             Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
