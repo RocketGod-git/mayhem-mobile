@@ -85,46 +85,81 @@ import java.util.Locale
  *  screen, so the decoded feed or log under them keeps its share. */
 private fun fitVisual(d: Dims, preferredDp: Float): Dp = minOf(d.dp(preferredDp), maxOf(140.dp, (d.heightDp * 0.30f).dp))
 
-/** Shared layout for the packet receivers: readout + waterfall (visual pane), controls, count, decoded log. */
+/** A preset frequency as a tile: [title] large, [sub] under it. */
+private class Preset(val title: String, val sub: String, val hz: Long)
+
+/** Presets as a tile row, the one the radio sits on lit. */
 @Composable
-private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, roomy: Boolean = false, controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null) {
+private fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp) {
+    val freq by SdrEngine.freqHz.collectAsState()
+    TileRow(presets.map { Tile(it.title, it.sub, freq == it.hz) }, accent, width) { SdrEngine.tune(presets[it].hz) }
+}
+
+/** A short muted note under a row of controls: what the app decodes, and how to get the most from it. */
+@Composable
+private fun Note(text: String) {
+    val d = rememberDims()
+    Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f), modifier = Modifier.padding(top = d.dp(6f)))
+}
+
+/**
+ * Shared layout for the packet receivers: a face card ([tag], [title], a lamp that reads LISTENING until something
+ * decodes, the digits and the level) over the waterfall, then [controls], the log header and the decoded log.
+ */
+@Composable
+private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: String, tunable: Boolean = true, roomy: Boolean = false,
+                        controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
-    val health by SdrEngine.rxHealth.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
+    val level by SdrEngine.levelDb.collectAsState()
     val snap by log.snapshot.collectAsState()
     var held by remember { mutableStateOf<List<String>?>(null) }
     var full by remember { mutableStateOf(false) }
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        // a screen that gave up its tune steppers gets their height back as bigger digits and more waterfall
-        visualHeightNarrow = fitVisual(d, if (roomy) 280f else 220f),
+        // the face and a strip of waterfall; the log under them is what these apps are for
+        visualHeightNarrow = fitVisual(d, if (roomy) 300f else 260f),
         visual = { m ->
-            Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide || roomy)
-                WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
-                    onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
+            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                Column(Modifier.faceCard(accent, d)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        FaceTag(tag, accent)
+                        Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+                        if (tunable) DialActions(accent, freq)
+                        if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true)
+                    }
+                    Box(Modifier.padding(top = d.dp(2f))) {
+                        if (tunable) DialRow(accent, freq, big = false)
+                        else FreqDigits(freq, false, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
+                    }
+                    LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
+                }
+                Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
+                    WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
+                        rows = if (d.wide) 160 else 70, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
+                        onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
+                }
             }
         }
     ) {
-        controls()
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { controls() }
         // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
         val logActions: @Composable () -> Unit = {
-            Chip(if (held != null) "RESUME" else "PAUSE", selected = held != null, accent = accent) { held = if (held == null) snap.lines else null }
-            Spacer(Modifier.width(d.dp(4f)))
-            Chip("CLEAR", selected = false, accent = accent) { log.clear(); if (held != null) held = emptyList() }
+            ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent, Modifier.fillMaxHeight()) { held = if (held == null) snap.lines else null }
+            IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { log.clear(); if (held != null) held = emptyList() }
         }
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(8f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f), bottom = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
+            verticalAlignment = Alignment.CenterVertically) {
             Text("${snap.total} DECODED", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp, modifier = Modifier.weight(1f))
-            IconChip(FullscreenIcon, "Full screen", accent) { full = true }
-            Spacer(Modifier.width(d.dp(4f)))
+            IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
             logActions()
         }
         if (list != null) list()
         LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent)
-        if (full) FullscreenPanel("${snap.total} DECODED", accent, onClose = { full = false }, actions = { logActions() }) {
+        if (full) FullscreenPanel("${snap.total} DECODED", accent, onClose = { full = false }, actions = { Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) { logActions() } }) {
             LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent)
         }
     }
@@ -138,13 +173,12 @@ fun PagerScreen(accent: Color) {
 
 @Composable
 private fun PagerSingleView(accent: Color) {
-    val d = rememberDims()
     val which by Apps.pager.which.collectAsState()
-    PacketFrame(accent, Apps.pagerLog, roomy = true, controls = {
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (w in PagerDecoder.Which.entries) Chip(w.label, selected = which == w, accent = accent, modifier = Modifier.weight(1f)) { Apps.pager.select(w) }
-        }
-        PresetRow(accent, listOf("929.6125" to 929_612_500L, "929.6625" to 929_662_500L, "931.9375" to 931_937_500L, "466.175" to 466_175_000L), title = "CHANNEL · MHz")
+    PacketFrame(accent, Apps.pagerLog, tag = "PAGER", title = "ONE CHANNEL", roomy = true, controls = {
+        val all = PagerDecoder.Which.entries
+        SegBar(all.map { it.label }, all.indexOf(which), accent) { Apps.pager.select(all[it]) }
+        PresetTiles(accent, listOf(Preset("929.6125", "FLEX", 929_612_500L), Preset("929.6625", "FLEX", 929_662_500L),
+            Preset("931.9375", "POCSAG", 931_937_500L), Preset("466.175", "FLEX", 466_175_000L)))
     })
 }
 
@@ -542,17 +576,18 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
 
 @Composable
 fun TpmsScreen(accent: Color) {
-    PacketFrame(accent, Apps.tpmsLog, controls = {
-        PresetRow(accent, listOf("315.000 · US" to 315_000_000L, "433.920 · EU" to 433_920_000L), title = "BAND · MHz")
-        SectionLabel("DECODES · FSK 19.2k Schrader FLM 64/72/80 · OOK 8.192k Schrader · OOK 8.4k GMC — drive past parked cars, readings repeat every minute or so")
+    PacketFrame(accent, Apps.tpmsLog, tag = "TPMS", title = "TYRE SENSORS", controls = {
+        PresetTiles(accent, listOf(Preset("315.000", "US", 315_000_000L), Preset("433.920", "EU", 433_920_000L)))
+        Note("Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.")
     })
 }
 
 @Composable
 fun AcarsScreen(accent: Color) {
-    PacketFrame(accent, Apps.acarsLog, roomy = true, controls = {
-        PresetRow(accent, listOf("131.550 US" to 131_550_000L, "131.525 EU" to 131_525_000L, "131.725 EU2" to 131_725_000L, "131.450 JP" to 131_450_000L, "130.025" to 130_025_000L), title = "CHANNEL · MHz")
-        SectionLabel("AM · 2400 bps MSK · registration, label, block, message number, flight, text · CRC-16 checked")
+    PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, controls = {
+        PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
+            Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)))
+        Note("Registration, flight, label and text from each message, CRC checked.")
     })
 }
 
@@ -562,13 +597,14 @@ fun SubGhzScreen(accent: Color) {
     var wx by remember { mutableStateOf(Apps.ism.weather) }
     var rc by remember { mutableStateOf(Apps.ism.remotes) }
     var car by remember { mutableStateOf(Apps.ism.cars) }
-    PacketFrame(accent, Apps.ismLog, roomy = true, controls = {
-        PresetRow(accent, listOf("433.92" to 433_920_000L, "315.00" to 315_000_000L, "868.35" to 868_350_000L, "915.00" to 915_000_000L, "303.875" to 303_875_000L), title = "BAND · MHz")
-        SectionLabel("FAMILIES · every protocol runs at once; tap to mute a family")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("WEATHER 26", selected = wx, accent = accent, modifier = Modifier.weight(1f)) { wx = !wx; Apps.ism.weather = wx }
-            Chip("REMOTES 47", selected = rc, accent = accent, modifier = Modifier.weight(1f)) { rc = !rc; Apps.ism.remotes = rc }
-            Chip("CAR KEYS 11", selected = car, accent = accent, modifier = Modifier.weight(1f)) { car = !car; Apps.ism.cars = car }
+    PacketFrame(accent, Apps.ismLog, tag = "SUB-GHZ", title = "SENSORS · REMOTES · KEYS", roomy = true, controls = {
+        PresetTiles(accent, listOf(Preset("433.92", "EU · US", 433_920_000L), Preset("315.00", "US", 315_000_000L), Preset("868.35", "EU", 868_350_000L),
+            Preset("915.00", "US", 915_000_000L), Preset("303.875", "US", 303_875_000L)))
+        // every protocol runs at once; a family switched off is muted
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            ToggleBox("WEATHER", wx, accent, Modifier.weight(1f).fillMaxHeight()) { wx = !wx; Apps.ism.weather = wx }
+            ToggleBox("REMOTES", rc, accent, Modifier.weight(1f).fillMaxHeight()) { rc = !rc; Apps.ism.remotes = rc }
+            ToggleBox("CAR KEYS", car, accent, Modifier.weight(1f).fillMaxHeight()) { car = !car; Apps.ism.cars = car }
         }
     })
 }
@@ -577,31 +613,26 @@ fun SubGhzScreen(accent: Color) {
 fun ErtScreen(accent: Color) {
     val d = rememberDims()
     val rate by SdrEngine.rateHz.collectAsState()
-    PacketFrame(accent, Apps.ertLog, controls = {
-        PresetRow(accent, listOf("911.6" to 911_600_000L, "915.0" to 915_000_000L, "920.0" to 920_000_000L), title = "CENTER · MHz")
-        SectionLabel("IQ RATE")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            Chip("2.0 Msps", selected = rate == 2_000_000, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setRate(2_000_000) }
-            val why = com.rocketgod.mayhem.core.Radio.rateWhy(4_194_304)
-            Chip("4.194 Msps · Mayhem", selected = rate == 4_194_304, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(),
-                onClick = gated(why) { SdrEngine.setRate(4_194_304) })
+    PacketFrame(accent, Apps.ertLog, tag = "ERT", title = "UTILITY METERS", controls = {
+        PresetTiles(accent, listOf(Preset("911.6", "low", 911_600_000L), Preset("915.0", "centre", 915_000_000L), Preset("920.0", "high", 920_000_000L)))
+        val why = com.rocketgod.mayhem.core.Radio.rateWhy(4_194_304)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+            RowLabel("RATE")
+            SegBar(listOf("2.0 Msps", "4.194 Msps"), if (rate == 4_194_304) 1 else if (rate == 2_000_000) 0 else -1, accent, Modifier.weight(1f),
+                tints = listOf(null, if (why.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null)) {
+                if (it == 0) SdrEngine.setRate(2_000_000) else gated(why) { SdrEngine.setRate(4_194_304) }()
+            }
         }
     })
 }
 
 @Composable
 fun BtleScreen(accent: Color) {
-    val d = rememberDims()
     val freq by SdrEngine.freqHz.collectAsState()
-    PacketFrame(accent, Apps.btleLog, tunable = false, controls = {
-        SectionLabel("ADVERTISING CHANNEL")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for (ch in intArrayOf(37, 38, 39)) {
-                val hz = BtleDecoder.channelFreq(ch)
-                Chip("CH $ch · ${hz / 1_000_000}", selected = freq == hz, accent = accent, modifier = Modifier.weight(1f)) {
-                    Apps.btle.channel = ch; SdrEngine.tune(hz)
-                }
-            }
+    PacketFrame(accent, Apps.btleLog, tag = "BLE", title = "ADVERTISING", tunable = false, controls = {
+        val chans = intArrayOf(37, 38, 39)
+        TileRow(chans.map { ch -> val hz = BtleDecoder.channelFreq(ch); Tile("CH $ch", "${hz / 1_000_000} MHz", freq == hz) }, accent, width = 104.dp) { i ->
+            val ch = chans[i]; Apps.btle.channel = ch; SdrEngine.tune(BtleDecoder.channelFreq(ch))
         }
     })
 }
