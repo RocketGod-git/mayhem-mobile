@@ -196,8 +196,6 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
             Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
                 modifier = Modifier.clickable { Bookmarks.star(tuned, mode) }.padding(horizontal = 4.dp))
             Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = 4.dp))
-            // mute is one tap, beside the frequency it silences — only where the app is making sound
-            if (SdrEngine.audible) SpeakerButton(size = d.dp(18f))
         }
     }
     if (squelch > 0 || scanning) {
@@ -209,9 +207,8 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
         }
     }
     LevelBar(level, tint, Modifier.fillMaxWidth().padding(horizontal = d.dp(24f), vertical = d.dp(3f)).height(d.dp(4f)))
-    // the radio line is the way to its settings (gain, bias tee): they left the app screens for Settings › Radio
-    if (sub.isNotEmpty()) Text("$sub  ⚙", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f),
-        modifier = Modifier.fillMaxWidth().clickable { SettingsNav.open("radio") }.padding(vertical = 2.dp), maxLines = 1, textAlign = TextAlign.Center)
+    // the radio's own status line is not shown under the digits any more: the readout is the frequency, nothing else
+
     val radio by Radio.kind.collectAsState()
     val lim = Radio.limits
     if (radio != Radio.Kind.NONE && !Radio.canTune(lim, freq))

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
@@ -52,6 +55,7 @@ import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.NavBar
 import com.rocketgod.mayhem.core.Radio
+import com.rocketgod.mayhem.core.SdrEngine
 
 /** The diagnostics log window: opened from Settings › Log, closed from its own ✕. */
 object LogUi { var open by mutableStateOf(false) }
@@ -60,15 +64,16 @@ object LogUi { var open by mutableStateOf(false) }
 object RadioStatus { var text by mutableStateOf(""); var connected by mutableStateOf(false) }
 
 /**
- * Root: the open app or Home, and under it one bar — HOME and your apps in a strip that scrolls sideways, and
- * Settings on its own at the right. There is no header: the lit segment says where you are. Back goes Home from an
- * app, back to the app from Settings, and out of Mayhem from Home.
+ * Root: a short action bar on top (HOME · FAVES · MUTE · SETTINGS), the open app or Home, and your apps in a
+ * full-width scroller along the bottom where the thumb is. The lit app is where you are. Back goes Home from an app,
+ * back to the app from Settings, and out of Mayhem from Home.
  */
 @Composable
 fun MayhemScreen(status: String, connected: Boolean) {
     val accent = Palette.accent
     val d = rememberDims()
     val current by Apps.current.collectAsState()
+    var faves by remember { mutableStateOf(false) }
     SideEffect { RadioStatus.text = status; RadioStatus.connected = connected }
     BackHandler(enabled = current != null) { Apps.back() }
     // every screen, Home included, is a live receiver: none of them may dim and lock mid-listen
@@ -78,7 +83,9 @@ fun MayhemScreen(status: String, connected: Boolean) {
     if (inPip) { PipView(Apps.playing(), accent); return }
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            // a little air at the top: the readout's top chevrons sat right against the edge
+            TopBar(current, connected, accent, favesOpen = faves) { faves = true }
+            if (!connected) RadioMissing(status)
+            // a little air under the bar: the readout's top chevrons sat right against it
             Box(Modifier.weight(1f).fillMaxWidth().padding(start = d.pad, end = d.pad, top = d.dp(10f))) {
                 when (current) {
                     null -> Launcher(accent)
@@ -104,10 +111,10 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.SETTINGS -> SettingsScreen(accent)
                 }
             }
-            if (!connected) RadioMissing(status)
-            BottomBar(current, connected, accent)
+            AppScroller(current)
         }
-        NoticeBar(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = d.dp(62f)))
+        NoticeBar(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = d.dp(58f)))
+        if (faves) FavesSheet(accent) { faves = false }
         if (LogUi.open) LogWindow(onClose = { LogUi.open = false })
         UpdateDialog()
     }
@@ -136,13 +143,55 @@ private fun RadioMissing(status: String) {
     }
 }
 
+/** HOME · FAVES · MUTE · SETTINGS, icon and word on one line: everything here works from any screen. */
+@Composable
+private fun TopBar(current: MayhemApp?, connected: Boolean, accent: Color, favesOpen: Boolean, onFaves: () -> Unit) {
+    val d = rememberDims()
+    val muted by SdrEngine.muted.collectAsState()
+    val onSettings = current == MayhemApp.SETTINGS
+    Column(Modifier.fillMaxWidth().background(Palette.surface)) {
+        Box(Modifier.fillMaxWidth().height(2.dp).background(accent))
+        Row(Modifier.fillMaxWidth().height(d.dp(44f)).padding(horizontal = d.dp(8f)), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            TopButton(AppsIcon, "HOME", on = current == null, accent = accent, modifier = Modifier.weight(1f)) { if (current != null) Apps.home() }
+            TopButton(StarIcon, "FAVES", on = favesOpen, accent = accent, modifier = Modifier.weight(1f)) { onFaves() }
+            TopButton(if (muted) SpeakerOffIcon else SpeakerIcon, if (muted) "MUTED" else "MUTE", on = false, accent = accent,
+                warn = muted, modifier = Modifier.weight(1f)) { SdrEngine.toggleMute() }
+            Box(Modifier.weight(1f)) {
+                TopButton(GearIcon, "SETTINGS", on = onSettings, accent = accent, modifier = Modifier.fillMaxWidth()) {
+                    if (onSettings) Apps.back() else Apps.open(MayhemApp.SETTINGS)
+                }
+                Box(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp).size(6.dp).background(if (connected) Palette.ok else Palette.danger, CircleShape))
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
+    }
+}
+
+@Composable
+private fun TopButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, on: Boolean, accent: Color, modifier: Modifier,
+                      warn: Boolean = false, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val c = if (warn) Palette.danger else if (on) accent else Palette.ink
+    Row(
+        modifier.height(d.dp(34f)).clip(RoundedCornerShape(8.dp)).background(if (on) Palette.panel else Color.Transparent)
+            .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = c, modifier = Modifier.size(d.dp(18f)))
+        Spacer(Modifier.width(d.dp(6f)))
+        Text(label, color = if (warn) Palette.danger else if (on) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold,
+            fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+    }
+}
+
 /**
- * HOME and the apps ticked in Settings › Bar, in their order, as one strip that scrolls sideways and keeps the open
- * one in view. The lit segment is where you are, in its category's colour (Transmit is always red). Settings sits
- * apart on the right with the radio's connection dot on it.
+ * The apps ticked in Settings › Bar, in their order, edge to edge along the bottom. It scrolls sideways and keeps the
+ * open app in view; the edges fade, an arrow shows on whichever side has more, and a thin track says where you are.
  */
 @Composable
-private fun BottomBar(current: MayhemApp?, connected: Boolean, accent: Color) {
+private fun AppScroller(current: MayhemApp?) {
     val d = rememberDims()
     val bar by NavBar.bar.collectAsState()
     Radio.kind.collectAsState().value
@@ -150,22 +199,18 @@ private fun BottomBar(current: MayhemApp?, connected: Boolean, accent: Color) {
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
     val scroll = rememberScrollState()
     val spots = remember { HashMap<String, Pair<Int, Int>>() }
-    val here = when (current) { null -> "HOME"; MayhemApp.SETTINGS -> Apps.settingsOver()?.name ?: "HOME"; else -> current!!.name }
+    val here = when (current) { null -> ""; MayhemApp.SETTINGS -> Apps.settingsOver()?.name ?: ""; else -> current!!.name }
     LaunchedEffect(here, bar) {
         val (x, w) = spots[here] ?: return@LaunchedEffect
         scroll.animateScrollTo((x - (scroll.viewportSize - w) / 2).coerceIn(0, scroll.maxValue))
     }
     val onSettings = current == MayhemApp.SETTINGS
+    val edge = d.dp(24f)
     Column(Modifier.fillMaxWidth().background(Palette.surface)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
-        Row(Modifier.fillMaxWidth().padding(horizontal = d.pad, vertical = d.dp(6f)), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Row(
-                Modifier.weight(1f).height(d.dp(44f)).clip(RoundedCornerShape(8.dp)).background(Palette.paper)
-                    .border(1.dp, Palette.line, RoundedCornerShape(8.dp)).horizontalScroll(scroll).padding(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically
-            ) {
-                BarSeg("HOME", on = current == null, tint = Palette.ink, key = "HOME", spots = spots) { if (current != null) Apps.home() }
+        Box(Modifier.fillMaxWidth().height(d.dp(50f))) {
+            Row(Modifier.fillMaxSize().horizontalScroll(scroll).padding(horizontal = edge, vertical = d.dp(6f)),
+                horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                 for (app in bar) {
                     val blocked = Radio.blockedBecause(app).isNotEmpty()
                     BarSeg(barLabel(app), on = current == app, tint = tintFor(app), key = app.name, spots = spots, dim = blocked) {
@@ -179,14 +224,63 @@ private fun BottomBar(current: MayhemApp?, connected: Boolean, accent: Color) {
                     }
                 }
             }
-            Box(
-                Modifier.size(d.dp(44f)).clip(RoundedCornerShape(8.dp)).background(if (onSettings) Palette.panel else Color.Transparent)
-                    .border(1.dp, if (onSettings) accent else Palette.line, RoundedCornerShape(8.dp))
-                    .clickable { if (onSettings) Apps.back() else Apps.open(MayhemApp.SETTINGS) },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(GearIcon, contentDescription = "Settings", tint = Palette.ink, modifier = Modifier.size(d.dp(22f)))
-                Box(Modifier.align(Alignment.TopEnd).padding(5.dp).size(7.dp).background(if (connected) Palette.ok else Palette.danger, CircleShape))
+            val more = scroll.maxValue > 4
+            if (more && scroll.value > 4) EdgeHint("‹", Alignment.CenterStart, edge, fromStart = true)
+            if (more && scroll.value < scroll.maxValue - 4) EdgeHint("›", Alignment.CenterEnd, edge, fromStart = false)
+            if (more) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = edge, end = edge, bottom = 3.dp).height(2.dp)
+                .clip(RoundedCornerShape(1.dp)).background(Palette.line)) {
+                val total = (scroll.viewportSize + scroll.maxValue).coerceAtLeast(1)
+                val frac = scroll.viewportSize.toFloat() / total
+                val at = if (scroll.maxValue > 0) scroll.value.toFloat() / scroll.maxValue * (1f - frac) else 0f
+                Box(Modifier.fillMaxWidth(frac).fillMaxHeight().graphicsLayer { translationX = at * size.width / frac }.background(Palette.accent))
+            }
+        }
+    }
+}
+
+/** An arrow over a fade at the scroller's edge: there is more this way. */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.EdgeHint(glyph: String, align: Alignment, width: androidx.compose.ui.unit.Dp, fromStart: Boolean) {
+    val d = rememberDims()
+    val fade = if (fromStart) listOf(Palette.surface, Palette.surface.copy(alpha = 0f)) else listOf(Palette.surface.copy(alpha = 0f), Palette.surface)
+    Box(Modifier.align(align).width(width).fillMaxHeight().background(androidx.compose.ui.graphics.Brush.horizontalGradient(fade)), contentAlignment = Alignment.Center) {
+        Text(glyph, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f))
+    }
+}
+
+/** FAVES: the frequencies starred with ☆ beside the digits. A tap brings one back in its own app, as it was heard. */
+@Composable
+private fun FavesSheet(accent: Color, onClose: () -> Unit) {
+    val d = rememberDims()
+    val list by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
+        Column(Modifier.fillMaxWidth().heightIn(max = (d.heightDp * 0.75f).dp).clip(RoundedCornerShape(14.dp)).background(Palette.surface)
+            .border(1.dp, Palette.line, RoundedCornerShape(14.dp)).padding(d.dp(14f))) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(StarIcon, contentDescription = null, tint = accent, modifier = Modifier.size(d.dp(18f)))
+                Spacer(Modifier.width(d.dp(8f)))
+                Text("FAVES", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 3.sp, modifier = Modifier.weight(1f))
+                Chip("DONE", selected = false, accent = accent) { onClose() }
+            }
+            Spacer(Modifier.height(d.dp(10f)))
+            if (list.isEmpty()) Text("Nothing saved yet. Tap ☆ beside the frequency in any app to keep it here.",
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), lineHeight = d.sp(16f))
+            else Column(Modifier.verticalScroll(rememberScrollState()).clip(RoundedCornerShape(10.dp)).border(1.dp, Palette.line, RoundedCornerShape(10.dp))) {
+                list.forEachIndexed { i, b ->
+                    if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
+                    val app = b.app?.let { n -> runCatching { MayhemApp.valueOf(n) }.getOrNull() }
+                    Row(Modifier.fillMaxWidth().clickable { onClose(); com.rocketgod.mayhem.core.Bookmarks.open(b) }.heightIn(min = d.dp(52f))
+                        .padding(start = d.dp(12f), end = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("%.4f MHz".format(b.hz / 1e6), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f))
+                            Text(listOfNotNull(b.name.takeIf { it.isNotBlank() && it != b.mode.name }, app?.title, b.mode.name).joinToString(" · "),
+                                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Box(Modifier.size(d.dp(44f)).clickable { com.rocketgod.mayhem.core.Bookmarks.remove(b) }, contentAlignment = Alignment.Center) {
+                            Text("✕", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(14f))
+                        }
+                    }
+                }
             }
         }
     }

@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
@@ -55,6 +56,10 @@ import com.rocketgod.mayhem.core.pager.PagerMessage
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** The readout and waterfall at their size, unless the phone is short: then they give way, capped at 30% of the
+ *  screen, so the decoded feed or log under them keeps its share. */
+private fun fitVisual(d: Dims, preferredDp: Float): Dp = minOf(d.dp(preferredDp), maxOf(140.dp, (d.heightDp * 0.30f).dp))
 
 /** Shared layout for the packet receivers: readout + waterfall (visual pane), controls, count, decoded log. */
 @Composable
@@ -70,7 +75,7 @@ private fun PacketFrame(accent: Color, log: PacketLog, tunable: Boolean = true, 
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
         // a screen that gave up its tune steppers gets their height back as bigger digits and more waterfall
-        visualHeightNarrow = d.dp(if (roomy) 250f else 190f),
+        visualHeightNarrow = fitVisual(d, if (roomy) 250f else 190f),
         visual = { m ->
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide || roomy)
@@ -136,7 +141,7 @@ private fun PagerHunterView(accent: Color) {
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        visualHeightNarrow = d.dp(250f),
+        visualHeightNarrow = fitVisual(d, 250f),
         visual = { m ->
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)

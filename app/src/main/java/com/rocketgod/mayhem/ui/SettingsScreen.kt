@@ -193,7 +193,7 @@ fun SettingsScreen(accent: Color) {
                 if (showBarList) {
                     Spacer(Modifier.height(d.dp(8f)))
                     BarChecklist(accent, scroll, edges)
-                    Text("Ticked apps sit in the bar after HOME, in this order. Drag ≡ to move one.", color = Palette.muted, fontFamily = Mono,
+                    Text("Ticked apps sit in the bar along the bottom, in this order. Drag ≡ to move one.", color = Palette.muted, fontFamily = Mono,
                         fontSize = d.sp(10f), modifier = Modifier.padding(start = d.dp(4f), top = d.dp(6f)))
                 }
             }
@@ -624,9 +624,10 @@ private val TIPS = listOf(
     "Nothing happens" to "Check the phone's OTG switch — OnePlus, OPPO and realme turn it off after ten idle minutes — and that the cable carries data.",
     "RTL-SDR" to "Receive only, up to 1.766 GHz and 2.4 Msps. Below 24 MHz only on an RTL-SDR Blog V3 or V4L; transmit and Bluetooth need a HackRF.",
     "Power" to "A HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ.",
+    "Faves" to "Tap ☆ beside the digits to keep a frequency; FAVES in the top bar brings it back in its own app, as it was heard.",
     "Tuning" to "Drag the digits up or down, tap ⌨ to type a frequency, or press the waterfall and slide; the radio retunes when you lift.",
-    "Mute" to "The speaker beside the frequency silences Mayhem; the phone's volume buttons set how loud.",
-    "Gain" to "AGC sets the gain for you. Set it by hand in Settings › Radio; tap the radio line under the digits to get there.",
+    "Mute" to "MUTE in the top bar silences Mayhem from any screen; the phone's volume buttons set how loud.",
+    "Gain" to "AGC sets the gain for you. To set it by hand, open SETTINGS from any app — it lands on that app, with Radio right under it.",
     "Floating window" to "Press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing.",
     "Maps" to "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, and ⌖ re-arms it.",
     "Squelch and scan" to "Squelch gates audio against a tracked noise floor; SCAN in Audio hops your bookmarks and holds where the squelch opens.",
