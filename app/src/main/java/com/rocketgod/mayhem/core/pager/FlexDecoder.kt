@@ -29,7 +29,7 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
     private var bitCounter = 0
     private var odd = false
     private var frames = 0L
-    private class Piece(val text: String, val at: Long, val rate: String, val where: String)
+    private class Piece(val text: String, val at: Long, val rate: String, val where: String, val errors: Int)
     private val pieces = HashMap<Long, Piece>()
 
     fun push(xs: FloatArray, n: Int) { for (i in 0 until n) if (clock.push(xs[i])) symbol(clock.value) }
@@ -112,17 +112,22 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
         for (p in list) decodePhase(phases[p], "ABCD"[p])
         // A split page whose next piece never came: show what arrived.
         val stale = pieces.filterValues { frames - it.at > 8 }
-        for ((cap, pc) in stale) { pieces.remove(cap); sink.onPage(PagerPage("FLEX", pc.rate, cap, PageKind.ALPHA, pc.text + " …", pc.where)) }
+        for ((cap, pc) in stale) { pieces.remove(cap); sink.onPage(PagerPage("FLEX", pc.rate, cap, PageKind.ALPHA, pc.text + " …", pc.where, pc.errors)) }
     }
 
     private fun decodePhase(raw: IntArray, letter: Char) {
         if (raw.all { it == 0 || it == -1 }) return
         val w = IntArray(WORDS)
         val bad = BooleanArray(WORDS)
+        // A word that needed two bits fixed (the parity bit counts) is suspect: most noise that passes the check
+        // "corrects" that way, into a wrong word, while a clean signal rarely needs more than one.
+        val suspect = BooleanArray(WORDS)
         for (i in 0 until WORDS) {
             val c = PagerBch.correct(raw[i])
-            if (c == null) bad[i] = true else w[i] = PagerBch.flexData(c)
+            if (c == null) { bad[i] = true; suspect[i] = true }
+            else { w[i] = PagerBch.flexData(c); suspect[i] = Integer.bitCount(raw[i] xor c) >= 2 }
         }
+        this.suspect = suspect
         if (bad[0]) return
         val biw = w[0]
         if (biw == 0 || biw == 0x1FFFFF || !checksumOk(biw)) return
@@ -157,6 +162,9 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
         }
     }
 
+    /** The current phase's suspect words (see [decodePhase]). */
+    private var suspect = BooleanArray(WORDS)
+
     private fun page(w: IntArray, bad: BooleanArray, j: Int, cap: Long, long: Boolean, where: String) {
         val viw = w[j]
         val type = (viw ushr 4) and 7
@@ -170,9 +178,12 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
                 val a = if (long) alpha(w, bad, mw1 - 1, mw2 - 1) else alpha(w, bad, mw1, mw2)
                 val kind = if (type == T_SECURE) PageKind.SECURE else PageKind.ALPHA
                 when {
-                    a.frag == 3 && a.more == 0 -> emit(cap, kind, a.text, where)
-                    a.more == 1 -> { val prev = if (a.frag == 3) "" else pieces[cap]?.text.orEmpty(); pieces[cap] = Piece(prev + a.text, frames, rate, where) }
-                    else -> { val prev = pieces.remove(cap)?.text.orEmpty(); emit(cap, kind, prev + a.text, where) }
+                    a.frag == 3 && a.more == 0 -> emit(cap, kind, a.text, where, a.errors)
+                    a.more == 1 -> {
+                        val prev = if (a.frag == 3) null else pieces[cap]
+                        pieces[cap] = Piece(prev?.text.orEmpty() + a.text, frames, rate, where, (prev?.errors ?: 0) + a.errors)
+                    }
+                    else -> { val prev = pieces.remove(cap); emit(cap, kind, prev?.text.orEmpty() + a.text, where, (prev?.errors ?: 0) + a.errors) }
                 }
             }
             T_NUM, T_SNUM, T_NNUM -> numeric(w, bad, j, type == T_NNUM, long)?.let { emit(cap, PageKind.NUMERIC, it, where) }
@@ -202,14 +213,23 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
         }
     }
 
-    private fun emit(cap: Long, kind: PageKind, text: String, where: String) =
-        sink.onPage(PagerPage("FLEX", rateLabel(), cap, kind, text, where))
+    private fun emit(cap: Long, kind: PageKind, text: String, where: String, errors: Int = 0) =
+        sink.onPage(PagerPage("FLEX", rateLabel(), cap, kind, text, where, errors))
 
-    private class Alpha(val text: String, val frag: Int, val more: Int)
+    /** [errors]: message words that failed or were suspect. A page cut short where the noise began ends in " …". */
+    private class Alpha(val text: String, val frag: Int, val more: Int, val errors: Int)
 
     private fun alpha(w: IntArray, bad: BooleanArray, first: Int, last: Int): Alpha {
         var frag = 3; var more = 0
         if (first in 0 until WORDS && !bad[first]) { val h = w[first]; more = (h ushr 10) and 1; frag = (h ushr 11) and 3 }
+        // Two suspect words in a row is where the signal was lost (a fade, or the symbol clock slipping), and
+        // nothing after it in this phase can be trusted: the text stops there rather than running on as noise.
+        // A lone failed word inside good text stays a '???'; a lone two-bit fix is most likely right and is kept.
+        fun sus(k: Int) = k !in 0 until WORDS || suspect[k]
+        var cutAt = last + 1
+        for (k in first + 1..last) if (sus(k) && (k == last || sus(k + 1))) { cutAt = k; break }
+        var errors = 0
+        for (k in first + 1..last) if (sus(k)) errors++
         val chars = ArrayList<Int>()
         fun put(c: Int, isBad: Boolean) {
             when {
@@ -218,7 +238,7 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
                 c == 0x03 || c == 0x00 -> chars.add(-1)   // padding: dropped at the end, '?' in the middle
             }
         }
-        for (k in first + 1..last) {
+        for (k in first + 1 until cutAt) {
             val b = k !in 0 until WORDS || bad[k]
             val d = if (b) 0 else w[k]
             if (k > first + 1) put(d and 0x7F, b)
@@ -228,7 +248,9 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
         val end = chars.indexOfLast { it != -1 }
         val sb = StringBuilder()
         for (k in 0..end) sb.append(if (chars[k] == -1) '?' else chars[k].toChar())
-        return Alpha(sb.toString(), frag, more)
+        var text = sb.toString().trimEnd()
+        if (cutAt <= last) text = if (text.length < 3) "" else "$text …"
+        return Alpha(text, frag, more, errors)
     }
 
     private fun numeric(w: IntArray, bad: BooleanArray, j: Int, numbered: Boolean, long: Boolean): String? {

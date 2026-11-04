@@ -181,7 +181,7 @@ class PagerDecodersTest {
         return w
     }
 
-    private fun flexFrame(code: Int, baud: Int, levels4: Boolean, phaseA: IntArray): List<Double> {
+    private fun flexFrame(code: Int, baud: Int, levels4: Boolean, phaseA: IntArray, flip: Map<Int, Int> = emptyMap()): List<Double> {
         val out = ArrayList<Double>()
         repeat(96) { out += if (it % 2 == 0) 3.0 else -3.0 }                      // bit sync
         val sync = (code.toLong() shl 48) or (0xA6C6AAAAL shl 16) or (code.inv().toLong() and 0xFFFF)
@@ -197,7 +197,7 @@ class PagerDecodersTest {
             val bit = if (i >= s2 - 32) (tail ushr (s2 - 1 - i)) and 1 else i and 1
             out += if (bit == 1) 3.0 else -3.0
         }
-        val air = Array(4) { p -> IntArray(88) { i -> if (p == 0) PagerBch.flexWord(phaseA[i]) else 0 } }
+        val air = Array(4) { p -> IntArray(88) { i -> if (p == 0) PagerBch.flexWord(phaseA[i]) xor (flip[i] ?: 0) else 0 } }
         fun bit(p: Int, c: Int): Int { val idx = (c ushr 8) * 8 + (c and 7); val pos = (c ushr 3) and 31; return (air[p][idx] ushr (31 - pos)) and 1 }
         fun level(a: Int, b: Int) = if (!levels4) (if (a == 1) 3.0 else -3.0) else when { a == 1 && b == 0 -> 3.0; a == 1 -> 1.0; b == 1 -> -1.0; else -> -3.0 }
         for (c in 0 until 11 * 256) {
@@ -229,6 +229,36 @@ class PagerDecodersTest {
     @Test fun flex3200FourLevel() = flexRun(0xB068, 1600, true, "3200", 12)
     @Test fun flex3200TwoLevel() = flexRun(0x7B18, 3200, false, "3200", 13)
     @Test fun flex6400() = flexRun(0xDEA0, 3200, true, "6400", 14)
+
+    /** Words lost partway through a page: the text stops where the damage starts instead of running on as noise. */
+    @Test fun flexCutsAPageWhereTheNoiseStarts() {
+        val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
+        // content words start at 6 (the header is 5); the first holds two characters, the rest three each
+        val flip = mapOf(6 + 6 to 0x0F000000, 6 + 7 to 0x00F00000, 6 + 8 to 0x000F0000)
+        val frame = flexFrame(0x870C, 1600, false, phase, flip)
+        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(21))
+        val c = Collect()
+        FlexDecoder(c, 48_000.0).push(sig, sig.size)
+        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
+        assertTrue("alpha missing: ${c.pages}", alpha != null)
+        assertEquals("STATION 7 RESPOND …", alpha!!.text)
+        assertTrue("errors: ${alpha.errors}", alpha.errors >= 2)
+        assertEquals("5551234", c.pages.first { it.capcode == 765432L }.text)
+    }
+
+    /** One failed word inside good text stays a gap; the rest of the page is kept. */
+    @Test fun flexKeepsAPageWithOneLostWord() {
+        val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
+        // three bit errors: past what the code corrects, and never close enough to another word to miscorrect
+        val frame = flexFrame(0x870C, 1600, false, phase, mapOf(6 + 3 to 0x0E000000))
+        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(22))
+        val c = Collect()
+        FlexDecoder(c, 48_000.0).push(sig, sig.size)
+        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
+        assertTrue("alpha missing: ${c.pages}", alpha != null)
+        assertEquals("STATION ???ESPOND TO ROOM 38 NOW PLEASE", alpha!!.text)   // the word held "7 R"
+        assertEquals(1, alpha.errors)
+    }
 
     // ---------------------------------------------------------------- the whole channel path
 

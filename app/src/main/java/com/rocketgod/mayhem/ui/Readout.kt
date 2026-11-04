@@ -43,6 +43,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
@@ -55,7 +56,9 @@ import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.Scanner
 import com.rocketgod.mayhem.core.SdrEngine
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
+private const val DOT_WIDTH = 0.5f
 private val GROUPS = listOf(listOf(1_000_000_000L) to "GHz", listOf(100_000_000L, 10_000_000L, 1_000_000L) to "MHz",
     listOf(100_000L, 10_000L, 1_000L) to "kHz", listOf(100L, 10L, 1L) to "Hz")
 
@@ -94,15 +97,17 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Colo
     // digit past 9 still carries into it. The digits fill the width they are given, between 26 sp (about the least a
     // fingertip can hit digit by digit) and a ceiling, so every screen's digits are tappable one by one.
     val groups = if (hz >= 1_000_000_000L) GROUPS else GROUPS.drop(1)
-    val chars = groups.sumOf { it.first.size } + groups.size - 1
+    // the separators take half a digit's width, so the digits get the rest
+    val chars = groups.sumOf { it.first.size } + (groups.size - 1) * DOT_WIDTH
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-    val fit = if (constraints.hasBoundedWidth && digit100 > 0f) constraints.maxWidth * 0.96f / chars / digit100 * 100f else 99f
-    val fs = fit.coerceIn(26f, if (big) 64f else 52f).sp
+    val fit = if (constraints.hasBoundedWidth && digit100 > 0f) constraints.maxWidth * 0.98f / chars / digit100 * 100f else 99f
+    val fs = fit.coerceIn(26f, if (big) 72f else 60f).sp
     val fsPx = with(density) { fs.toPx() }
     var lead = true
     Row(verticalAlignment = Alignment.Bottom) {
         groups.forEachIndexed { gi, (weights, unit) ->
-            if (gi > 0) Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs, modifier = Modifier.padding(bottom = d.dp(12f)))
+            if (gi > 0) Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs, modifier = Modifier.padding(bottom = d.dp(12f))
+                .layout { m, c -> val p = m.measure(c); val w = (p.width * DOT_WIDTH).roundToInt(); layout(w, p.height) { p.place((w - p.width) / 2, 0) } })
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row {
                     for (w in weights) key(w) {
@@ -206,15 +211,8 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
     val freq = preview ?: tuned
     val tint = if (preview != null) Palette.accent2 else accent
     if (keying) FreqEntryDialog(tuned, accent) { f -> keying = false; if (f != null) onTune?.invoke(f) }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        FreqDigits(freq, big, tint, preview != null, modifier = Modifier.weight(1f), onTune = onTune)
-        if (onTune != null) Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
-            val fav = marks.firstOrNull { abs(it.hz - tuned) < 50 }
-            Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
-                modifier = Modifier.clickable { Bookmarks.star(tuned, mode) }.padding(horizontal = 4.dp))
-            Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = 4.dp))
-        }
-    }
+    // the digits take the whole width; ☆ and ⌨ sit either side of the level bar under them
+    FreqDigits(freq, big, tint, preview != null, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = onTune)
     if (squelch > 0 || scanning) {
         val badge = if (scanning) (if (sqOpen) "SCAN · SIGNAL" else "SCAN") else if (sqOpen) "OPEN" else "SQL"
         val c = if (sqOpen) Palette.ok else Palette.muted
@@ -223,7 +221,15 @@ fun FreqReadout(accent: Color, sub: String = "", big: Boolean = false, channelHz
                 modifier = Modifier.border(1.dp, c, RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
         }
     }
-    LevelBar(level, tint, Modifier.fillMaxWidth().padding(horizontal = d.dp(24f), vertical = d.dp(3f)).height(d.dp(4f)))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (onTune != null) {
+            val fav = marks.firstOrNull { abs(it.hz - tuned) < 50 }
+            Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
+                modifier = Modifier.clickable { Bookmarks.star(tuned, mode) }.padding(horizontal = d.dp(8f), vertical = d.dp(2f)))
+        }
+        LevelBar(level, tint, Modifier.weight(1f).padding(horizontal = d.dp(if (onTune != null) 4f else 24f), vertical = d.dp(3f)).height(d.dp(4f)))
+        if (onTune != null) Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = d.dp(8f), vertical = d.dp(2f)))
+    }
     // the radio's own status line is not shown under the digits any more: the readout is the frequency, nothing else
 
     val radio by Radio.kind.collectAsState()

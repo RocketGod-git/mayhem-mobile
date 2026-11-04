@@ -167,7 +167,7 @@ private fun PagerHunterView(accent: Color) {
     val spark = d.wide || d.heightDp >= 700
     AdaptivePane(
         // the face, then a strip of waterfall: the feed under them is what this app is for
-        visualHeightNarrow = minOf(d.dp(if (spark) 330f else 280f), maxOf(240.dp, (d.heightDp * 0.42f).dp)),
+        visualHeightNarrow = minOf(d.dp(if (spark) 345f else 295f), maxOf(250.dp, (d.heightDp * 0.43f).dp)),
         visual = { m ->
             Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 HunterFace(accent, freq, status, channels, messages, capcodes, spark)
@@ -200,8 +200,9 @@ private fun HunterFace(accent: Color, freq: Long, status: PagerEngine.Status, ch
     Column(Modifier.faceCard(accent, d)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FaceTag(if (status.hunting) "HUNT" else "PINNED", accent)
-            Text("FLEX · POCSAG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
+            Text("FLEX · POCSAG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+            DialActions(accent, freq)
             when {
                 !status.hunting -> Lamp("PINNED ${status.pinned}", Palette.ok)
                 decoding > 0 -> Lamp("DECODING $decoding", Palette.ok)
@@ -269,7 +270,14 @@ private fun ActivityStrip(messages: List<PagerMessage>, accent: Color, modifier:
 }
 
 /** Pager display settings shared by the feed and Settings › FLEX. */
-object PagerUi { var fold by mutableStateOf(true) }
+object PagerUi {
+    var fold by mutableStateOf(true)
+    /** Show pages that came in too damaged to read anything (hidden unless asked for). */
+    var noise by mutableStateOf(false)
+}
+
+/** A text page the decoder gave up on: its words were lost before any readable text came through. */
+private fun unreadable(m: PagerMessage) = m.page.errors > 0 && m.page.text.isBlank() && (m.page.kind == PageKind.ALPHA || m.page.kind == PageKind.SECURE)
 
 /** What the MULTI feed is narrowed to. One instance serves the inline feed and the full-screen one, so both agree. */
 private class PagerFilter {
@@ -287,7 +295,7 @@ private class PagerFilter {
         set(v) { PagerUi.fold = v }
 
     fun keeps(m: PagerMessage): Boolean =
-        (capcode == null || m.page.capcode == capcode) && (hz == null || m.hz == hz) &&
+        (PagerUi.noise || !unreadable(m)) && (capcode == null || m.page.capcode == capcode) && (hz == null || m.hz == hz) &&
             (protocol == null || m.page.protocol == protocol) && when (kind) {
                 1 -> m.page.kind == PageKind.ALPHA && m.page.text.isNotBlank()
                 2 -> m.alert
@@ -330,6 +338,7 @@ private fun PagerFeed(messages: List<PagerMessage>, f: PagerFilter, accent: Colo
     val d = rememberDims()
     val alerts = remember(messages) { messages.count { it.alert } }
     val flex = remember(messages) { messages.count { it.page.protocol == "FLEX" } }
+    val noise = remember(messages) { messages.count(::unreadable) }
     Column(modifier) {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             SegBar(listOf("ALL ${messages.size}", "TEXT", "CALL-OUTS $alerts"), f.kind, accent, Modifier.weight(1f).fillMaxHeight(),
@@ -343,10 +352,11 @@ private fun PagerFeed(messages: List<PagerMessage>, f: PagerFilter, accent: Colo
             TogglePill("FLEX $flex", f.protocol != "POCSAG", accent) { f.protocol = if (f.protocol == null) "POCSAG" else null }
             TogglePill("POCSAG ${messages.size - flex}", f.protocol != "FLEX", accent) { f.protocol = if (f.protocol == null) "FLEX" else null }
             TogglePill("FOLD", f.fold, accent) { f.fold = !f.fold }
+            if (noise > 0) TogglePill("NOISE $noise", PagerUi.noise, accent) { PagerUi.noise = !PagerUi.noise }
             f.capcode?.let { cap -> OnlyChip("CAP $cap", accent) { f.capcode = null } }
             f.hz?.let { hz -> OnlyChip("%.4f MHz".format(hz / 1e6), accent) { f.hz = null } }
         }
-        val rows = remember(messages, f.kind, f.protocol, f.capcode, f.hz, f.fold) { foldPages(messages.filter(f::keeps), f.fold) }
+        val rows = remember(messages, f.kind, f.protocol, f.capcode, f.hz, f.fold, PagerUi.noise) { foldPages(messages.filter(f::keeps), f.fold) }
         if (rows.isEmpty()) {
             EmptyFeed(if (messages.isEmpty()) "hunting the span for pager carriers…\npages land here the moment one decodes"
                       else "nothing matches these filters yet", hunting = messages.isEmpty(), Modifier.fillMaxWidth().weight(1f))
@@ -406,6 +416,8 @@ private fun PageCard(r: PageRow, accent: Color, f: PagerFilter) {
                         .padding(horizontal = 6.dp, vertical = 1.dp))
                 Text("  " + PAGE_TIME.get()!!.format(Date(m.at)), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
                 if (r.repeats > 1) Text("  ×${r.repeats}", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(10f))
+                // some of its words were lost on the air: the text stops where the damage began
+                if (p.errors > 0 && p.text.isNotBlank()) Box(Modifier.padding(start = d.dp(6f))) { Pill("PARTIAL", Palette.accent2) }
                 Spacer(Modifier.weight(1f))
                 Text("${p.protocol} ${p.rate}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
             }
@@ -424,6 +436,7 @@ private fun PageCard(r: PageRow, accent: Color, f: PagerFilter) {
             val body = when {
                 p.text.isNotBlank() -> p.text
                 p.kind == PageKind.TONE -> "tone only (beep)"
+                p.errors > 0 -> "unreadable: too much of it was lost on the air"
                 else -> "no message"
             }
             Text(body, color = if (p.text.isBlank()) Palette.muted else Palette.ink, fontFamily = Mono, fontSize = d.sp(13.5f), lineHeight = d.sp(18f),

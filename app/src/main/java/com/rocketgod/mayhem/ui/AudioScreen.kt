@@ -178,6 +178,7 @@ private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
             FaceTag(mode.name, accent)
             Text(bandTitle(Tuning.previewHz ?: freq), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+            DialActions(accent, freq)
             SquelchLamp(squelch, sqOpen, scanning)
         }
         Box(Modifier.padding(top = d.dp(6f))) { DialRow(accent, freq) }
