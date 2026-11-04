@@ -85,20 +85,10 @@ private fun TrafficFrame(
         // the card keeps its height; the waterfall and the map or list split the rest evenly
         share = true,
         face = {
-            Column(Modifier.faceCard(accent, d)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FaceTag(tag, accent)
-                    Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                    if (tunable) DialActions(accent, freq)
-                    if (count > 0) Lamp("$count $unit", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true)
-                }
-                Box(Modifier.padding(top = d.dp(2f))) {
-                    if (tunable) DialRow(accent, freq, big = false)
-                    else FreqDigits(freq, false, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
-                }
-                LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
-            }
+            FreqCard(accent, tag = tag, title = title, freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+                right = if (count > 0) "$count ${unit.lowercase()}" else "listening",
+                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f) }) else null,
+                lamp = { if (count > 0) Lamp("$count $unit", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {

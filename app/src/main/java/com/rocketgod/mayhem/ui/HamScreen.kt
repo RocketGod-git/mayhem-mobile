@@ -174,74 +174,34 @@ internal fun BandChips(accent: Color, channel: Long, onPick: (Band) -> Unit) {
     }
 }
 
-/** Channel frequency, where it sits in the band plan, and (with [meter]) the S-meter and the squelch / AGC line. */
+/** Channel frequency, where it sits in the band plan, the S-meter and the squelch / AGC line: HAM's [FreqCard]. */
 @Composable
 internal fun HamReadout(accent: Color, meter: Boolean = true) {
-    val d = rememberDims()
     val s by Ham.state.collectAsState()
     val m by Ham.demod.meter.collectAsState()
     val dbm = Ham.dbm(m.db)
     val playing = com.rocketgod.mayhem.core.Apps.playing() == com.rocketgod.mayhem.core.MayhemApp.HAM
     val marks by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
-
-    Column(Modifier.faceCard(accent, d)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            FaceTag(s.mode.name, accent)
-            Text((segmentOf(s.channel).ifEmpty { "outside the amateur bands" } + if (s.rev) " · reverse" else "").uppercase(),
-                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+    // S0 at the left, 6 dB an S-unit to S9 (54 dB), then dB over to S9+60 at the right
+    fun at(units: Float) = units / 114f
+    FreqCard(accent, tag = s.mode.name,
+        title = (segmentOf(s.channel).ifEmpty { "outside the amateur bands" } + if (s.rev) " · reverse" else "").uppercase(),
+        freq = s.channel, meter = Ham.meterFrac(dbm, s.channel),
+        scale = listOf(at(6f) to "S1", at(18f) to "3", at(30f) to "5", at(42f) to "7", at(54f) to "9", at(74f) to "+20", at(94f) to "+40", 1f to "+60"),
+        left = "%s · %.0f dBm".format(Ham.sUnits(dbm, s.channel), dbm), right = Ham.statusLine(m, s),
+        rightColor = if (s.mode == Mode.NFM && m.open) accent else Palette.muted,
+        onTune = { Ham.tune(it) },
+        actions = {
             DialActions(accent, s.channel, star = playing, starred = marks.any { kotlin.math.abs(it.hz - s.channel) < 50 },
                 onStar = { com.rocketgod.mayhem.core.Bookmarks.star(s.channel, SdrEngine.Mode.NFM, s.mode.name, Ham.favourite()) }) { Ham.tune(it) }
+        },
+        lamp = {
             when {
                 s.mode == Mode.NFM && s.squelch > 0 && !m.open -> Lamp("SQUELCHED", Palette.muted)
                 s.mode == Mode.NFM && s.squelch > 0 -> Lamp("OPEN", Palette.ok)
                 else -> Lamp("RX", Palette.ok)
             }
-        }
-        Box(Modifier.padding(top = d.dp(4f))) { DialRow(accent, s.channel, big = false) { Ham.tune(it) } }
-        if (!meter) return@Column
-
-        // S-meter: S0 at the left, S9 a little short of half way, S9+60 at the right edge
-        SMeter(Ham.meterFrac(dbm, s.channel), accent, Modifier.fillMaxWidth().padding(top = d.dp(6f)))
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(3f)), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("%s · %.0f dBm".format(Ham.sUnits(dbm, s.channel), dbm), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f))
-            Text(Ham.statusLine(m, s), color = if (s.mode == Mode.NFM && m.open) accent else Palette.muted,
-                fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = d.dp(8f)))
-        }
-    }
-}
-
-/** Thirty-two LEDs from S0 to S9+60: blue to S9, then green, amber and red by twenties, scaled S1–S9 and +20–+60. */
-@Composable
-private fun SMeter(frac: Float, accent: Color, modifier: Modifier) {
-    val d = rememberDims()
-    val n = 32
-    val lit = (frac * n).roundToInt().coerceIn(0, n)
-    val off = Palette.line.copy(alpha = 0.7f)
-    val ok = Palette.ok; val amber = Palette.accent2; val red = Palette.danger
-    fun at(units: Float) = units / 114f   // 6 dB an S-unit to S9 (54 dB), then dB over
-    Column(modifier) {
-        Canvas(Modifier.fillMaxWidth().height(d.dp(12f))) {
-            val gap = 2.dp.toPx()
-            val w = (size.width - gap * (n - 1)) / n
-            val r = CornerRadius(2.dp.toPx())
-            for (i in 0 until n) {
-                val f = (i + 0.5f) / n
-                val c = if (i >= lit) off else when { f < at(54f) -> accent; f < at(74f) -> ok; f < at(94f) -> amber; else -> red }
-                val x = i * (w + gap)
-                if (i < lit) drawRoundRect(c.copy(alpha = 0.3f), Offset(x - 1.dp.toPx(), -1.dp.toPx()), Size(w + 2.dp.toPx(), size.height + 2.dp.toPx()), r)
-                drawRoundRect(c, Offset(x, 0f), Size(w, size.height), r)
-            }
-        }
-        BoxWithConstraints(Modifier.fillMaxWidth().height(d.dp(12f)).padding(top = 2.dp)) {
-            val w = maxWidth
-            for ((label, u) in listOf("S1" to 6f, "3" to 18f, "5" to 30f, "7" to 42f, "9" to 54f, "+20" to 74f, "+40" to 94f)) {
-                Text(label, color = if (label == "9") Palette.ink else Palette.muted, fontFamily = Mono, fontSize = d.sp(8f),
-                    modifier = Modifier.offset(x = w * at(u) - 3.dp))
-            }
-            Text("+60", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), modifier = Modifier.align(Alignment.TopEnd))
-        }
-    }
+        })
 }
 
 /** The panadapter: centred on the LO, with the receiver's pass band shaded where the channel actually sits. */

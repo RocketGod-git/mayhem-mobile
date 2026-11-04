@@ -122,20 +122,10 @@ private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Strin
         // the card keeps its height; the waterfall and the log split the rest evenly
         share = true,
         face = {
-            Column(Modifier.faceCard(accent, d)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FaceTag(tag, accent)
-                    Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                    if (tunable) DialActions(accent, freq)
-                    if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true)
-                }
-                Box(Modifier.padding(top = d.dp(2f))) {
-                    if (tunable) DialRow(accent, freq, big = false)
-                    else FreqDigits(freq, false, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
-                }
-                LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
-            }
+            FreqCard(accent, tag = tag, title = title, freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+                right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
+                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f) }) else null,
+                lamp = { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->
             Column(m) {
@@ -233,27 +223,25 @@ private fun HunterFace(accent: Color, freq: Long, status: PagerEngine.Status, ch
     val d = rememberDims()
     val decoding = channels.count { it.listening && it.protocol.isNotEmpty() }
     val alerts = remember(messages) { messages.count { it.alert } }
-    Column(Modifier.faceCard(accent, d)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            FaceTag(if (status.hunting) "HUNT" else "PINNED", accent)
-            Text("FLEX · POCSAG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-            DialActions(accent, freq)
+    val level by SdrEngine.levelDb.collectAsState()
+    FreqCard(accent, tag = if (status.hunting) "HUNT" else "PINNED", title = "FLEX · POCSAG", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+        right = status.text,
+        lamp = {
             when {
                 !status.hunting -> Lamp("PINNED ${status.pinned}", Palette.ok)
                 decoding > 0 -> Lamp("DECODING $decoding", Palette.ok)
                 else -> Lamp("HUNTING", Palette.accent2, blink = true)
             }
-        }
-        Box(Modifier.padding(top = d.dp(2f), bottom = d.dp(4f))) { DialRow(accent, freq, big = false) }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            StatTile("${messages.size}", "PAGES", accent, Modifier.weight(1f))
-            StatTile("$capcodes", "CAPCODES", accent, Modifier.weight(1f))
-            StatTile("$alerts", "CALL-OUTS", Palette.danger, Modifier.weight(1f))
-            StatTile("$decoding / ${channels.size}", "CHANNELS", accent, Modifier.weight(1f))
-        }
-        if (spark) ActivityStrip(messages, accent, Modifier.fillMaxWidth().padding(top = d.dp(6f)))
-    }
+        },
+        footer = {
+            Row(Modifier.fillMaxWidth().padding(top = d.dp(8f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                StatTile("${messages.size}", "PAGES", accent, Modifier.weight(1f))
+                StatTile("$capcodes", "CAPCODES", accent, Modifier.weight(1f))
+                StatTile("$alerts", "CALL-OUTS", Palette.danger, Modifier.weight(1f))
+                StatTile("$decoding / ${channels.size}", "CHANNELS", accent, Modifier.weight(1f))
+            }
+            if (spark) ActivityStrip(messages, accent, Modifier.fillMaxWidth().padding(top = d.dp(6f)))
+        })
 }
 
 @Composable
@@ -383,7 +371,8 @@ private fun PagerFeed(messages: List<PagerMessage>, f: PagerFilter, accent: Colo
             IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { PagerEngine.clear(); f.capcode = null; f.hz = null }
         }
         // a lit toggle is shown; tapping the only one lit can't hide everything, so it lights the other again
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = d.dp(6f)),
+        val toggles = rememberScrollState()
+        Row(Modifier.fillMaxWidth().scrollGlow(toggles, horizontal = true).horizontalScroll(toggles).padding(vertical = d.dp(6f)),
             horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
             TogglePill("FLEX $flex", f.protocol != "POCSAG", accent) { f.protocol = if (f.protocol == null) "POCSAG" else null }
             TogglePill("POCSAG ${messages.size - flex}", f.protocol != "FLEX", accent) { f.protocol = if (f.protocol == null) "FLEX" else null }
@@ -521,7 +510,8 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
     val pins = PagerEngine.pinnedList().toHashSet()
     val pulse by rememberInfiniteTransition(label = "live").animateFloat(1f, 0.3f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "pulse")
     // the tiles share the tallest one's height; the intrinsic is taken inside the scroller, not across it
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = d.dp(8f))) { Row(Modifier.height(IntrinsicSize.Min),
+    val chanScroll = rememberScrollState()
+    Row(Modifier.fillMaxWidth().scrollGlow(chanScroll, horizontal = true).horizontalScroll(chanScroll).padding(top = d.dp(8f))) { Row(Modifier.height(IntrinsicSize.Min),
         horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         val shape = RoundedCornerShape(d.dp(12f))
         val auto = status.hunting

@@ -75,21 +75,20 @@ private fun RangeChips(accent: Color, sp: SweepProcessor?) {
 @Composable
 private fun SweepFace(accent: Color, tag: String, s: SweepProcessor?, progress: Int, sweeps: Int, note: String?) {
     val d = rememberDims()
-    Column(Modifier.faceCard(accent, d)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            FaceTag(tag, accent)
-            Text(note ?: if (s == null) "NO SWEEP" else "%.1f – %.1f MHZ".format(s.startHz / 1e6, s.endHz / 1e6),
-                color = if (note != null) Palette.accent2 else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-            if (s == null) Lamp("IDLE", Palette.muted) else if (sweeps == 0) Lamp("FIRST PASS", Palette.accent2, blink = true) else Lamp("PASS ${sweeps + 1}", Palette.ok)
-        }
-        if (s != null) {
-            Row(Modifier.fillMaxWidth().padding(top = d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-                LedMeter(if (s.steps > 0) progress.toFloat() / s.steps else 0f, accent, Modifier.weight(1f))
-                Text("  $progress / ${s.steps}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
+    FreqCard(accent, tag = tag, title = note ?: if (s == null) "NO SWEEP" else "SWEEPING THE RANGE", titleColor = if (note != null) Palette.accent2 else Palette.muted,
+        freq = 0L, onTune = null, meter = if (s != null && s.steps > 0) progress.toFloat() / s.steps else 0f,
+        scale = listOf(0f to "0", 0.5f to "50%", 1f to "100%"),
+        left = if (s == null) "—" else "SLICE $progress / ${s.steps}", right = if (s == null) "" else "%.1f MHz wide".format((s.endHz - s.startHz) / 1e6),
+        lamp = { if (s == null) Lamp("IDLE", Palette.muted) else if (sweeps == 0) Lamp("FIRST PASS", Palette.accent2, blink = true) else Lamp("PASS ${sweeps + 1}", Palette.ok) },
+        // a sweep has a range, not one frequency: the range in the dial's place, the same size and glow
+        digits = {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(if (s == null) "—" else "%.1f–%.1f".format(s.startHz / 1e6, s.endHz / 1e6), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black,
+                    fontSize = d.sp(40f), maxLines = 1, softWrap = false,
+                    style = androidx.compose.ui.text.TextStyle(shadow = androidx.compose.ui.graphics.Shadow(accent.copy(alpha = 0.6f), blurRadius = 24f)))
+                Text("MHz", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
             }
-        }
-    }
+        })
 }
 
 /** A sweep row as 0..1 columns and the dB its 0 sits at. */

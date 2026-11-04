@@ -80,16 +80,9 @@ fun TrollScreen(defaultAccent: Color) {
             return@ScrollColumn
         }
 
-        Column(Modifier.faceCard(accent, d)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                FaceTag("TROLL", accent)
-                Text(status.ifEmpty { "idle" }.uppercase(), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                DialActions(accent, freq)
-                if (active) Lamp("ON AIR", accent, blink = true) else Lamp("IDLE", Palette.muted)
-            }
-            Box(Modifier.padding(top = d.dp(2f))) { DialRow(accent, freq) }
-        }
+        FreqCard(accent, tag = "TROLL", title = status.ifEmpty { "idle" }.uppercase(), freq = freq, meter = gain / 47f, scale = listOf(0f to "0", 10f / 47f to "10", 20f / 47f to "20", 30f / 47f to "30", 1f to "47 dB"),
+            left = "GAIN $gain dB", right = if (amp) "AMP +14 dB" else "AMP off", rightColor = if (amp) accent else Palette.muted,
+            lamp = { if (active) Lamp("ON AIR", accent, blink = true) else Lamp("IDLE", Palette.muted) })
         Note("Everything here transmits unless noted — use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live.")
 
         // IF gain 0–47 dB; AMP adds 14 dB

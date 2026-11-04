@@ -209,7 +209,8 @@ private fun AppScroller(current: MayhemApp?) {
     Column(Modifier.fillMaxWidth().background(Palette.surface)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
         Box(Modifier.fillMaxWidth().height(d.dp(50f))) {
-            Row(Modifier.fillMaxSize().horizontalScroll(scroll).padding(horizontal = edge, vertical = d.dp(6f)),
+            // the same breathing edge glow as every other scroller says there are more apps past the edge
+            Row(Modifier.fillMaxSize().scrollGlow(scroll, horizontal = true).horizontalScroll(scroll).padding(horizontal = edge, vertical = d.dp(6f)),
                 horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
                 for (app in bar) {
                     val blocked = Radio.blockedBecause(app).isNotEmpty()
@@ -224,27 +225,7 @@ private fun AppScroller(current: MayhemApp?) {
                     }
                 }
             }
-            val more = scroll.maxValue > 4
-            if (more && scroll.value > 4) EdgeHint("‹", Alignment.CenterStart, edge, fromStart = true)
-            if (more && scroll.value < scroll.maxValue - 4) EdgeHint("›", Alignment.CenterEnd, edge, fromStart = false)
-            if (more) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = edge, end = edge, bottom = 3.dp).height(2.dp)
-                .clip(RoundedCornerShape(1.dp)).background(Palette.line)) {
-                val total = (scroll.viewportSize + scroll.maxValue).coerceAtLeast(1)
-                val frac = scroll.viewportSize.toFloat() / total
-                val at = if (scroll.maxValue > 0) scroll.value.toFloat() / scroll.maxValue * (1f - frac) else 0f
-                Box(Modifier.fillMaxWidth(frac).fillMaxHeight().graphicsLayer { translationX = at * size.width / frac }.background(Palette.accent))
-            }
         }
-    }
-}
-
-/** An arrow over a fade at the scroller's edge: there is more this way. */
-@Composable
-private fun androidx.compose.foundation.layout.BoxScope.EdgeHint(glyph: String, align: Alignment, width: androidx.compose.ui.unit.Dp, fromStart: Boolean) {
-    val d = rememberDims()
-    val fade = if (fromStart) listOf(Palette.surface, Palette.surface.copy(alpha = 0f)) else listOf(Palette.surface.copy(alpha = 0f), Palette.surface)
-    Box(Modifier.align(align).width(width).fillMaxHeight().background(androidx.compose.ui.graphics.Brush.horizontalGradient(fade)), contentAlignment = Alignment.Center) {
-        Text(glyph, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f))
     }
 }
 
