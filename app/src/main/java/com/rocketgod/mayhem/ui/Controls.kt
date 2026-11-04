@@ -182,23 +182,6 @@ fun LevelBar(levelDb: Float, accent: Color, modifier: Modifier = Modifier) {
     }
 }
 
-/** Fine-tuning steppers. */
-@Composable
-fun StepperRow(accent: Color, steps: LongArray = longArrayOf(1_000_000L, 100_000L, 10_000L)) {
-    val d = rememberDims()
-    SectionLabel("TUNE · MHz")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for (s in steps) Chip("−" + stepLabel(s), false, accent, Modifier.weight(1f)) { SdrEngine.nudge(-s) }
-        for (s in steps.reversedArray()) Chip("+" + stepLabel(s), false, accent, Modifier.weight(1f)) { SdrEngine.nudge(s) }
-    }
-}
-
-/** A step in MHz, written exactly: 25 kHz is .025 and 2.5 kHz .0025, not cut down to the decade below. */
-internal fun stepLabel(hz: Long): String {
-    val s = java.math.BigDecimal.valueOf(hz).movePointLeft(6).stripTrailingZeros().toPlainString()
-    return if (s.startsWith("0.")) s.substring(1) else s
-}
-
 /** Frequency presets: label → Hz. */
 @Composable
 fun PresetRow(accent: Color, presets: List<Pair<String, Long>>, title: String = "PRESETS", onPick: (Long) -> Unit = { SdrEngine.tune(it) }) {

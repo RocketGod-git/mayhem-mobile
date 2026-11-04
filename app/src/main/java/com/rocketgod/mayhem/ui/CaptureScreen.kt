@@ -58,15 +58,14 @@ fun CaptureScreen(accent: Color) {
     }
     val recTint = if (recording) Palette.danger else accent
     AdaptivePane(
-        visualHeightNarrow = d.dp(200f),
+        visualHeightNarrow = d.dp(260f),
         visual = { m ->
             Column(m) {
-                FreqReadout(if (recording) Palette.danger else accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
+                FreqReadout(if (recording) Palette.danger else accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
                 ReceiverScope(recTint, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = if (d.wide) 160 else 100, traceFrac = 0.35f, fitMode = false)
             }
         }
     ) {
-        StepperRow(accent)
         GainRow(accent)
         if (rec != null) {
             val bytes by rec.bytes.collectAsState()

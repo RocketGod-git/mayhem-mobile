@@ -86,7 +86,7 @@ fun AudioScreen(accent: Color) {
 
     AdaptivePane(
         // a receiver is mostly for looking at: on a phone the waterfall gets the larger share
-        visualHeightNarrow = (d.heightDp * 0.46f).dp,
+        visualHeightNarrow = (d.heightDp * 0.53f).dp,
         visual = { m ->
             Column(m) {
                 alert?.header?.let { h -> SameBanner(h) }
@@ -123,7 +123,6 @@ fun AudioScreen(accent: Color) {
                 Chip("RDS", selected = rdsWanted, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setRds(!rdsWanted) }
                 Chip("HD", selected = hdWanted, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setHd(!hdWanted) }
             }
-            StepperRow(accent)
             PresetRow(accent, listOf("FM 92.3" to 92_300_000L, "AIR 121.5" to 121_500_000L, "NOAA 162.4" to 162_400_000L, "ISM 433.92" to 433_920_000L)) { hz ->
                 SdrEngine.setMode(when (hz) { 92_300_000L -> SdrEngine.Mode.WFM; 121_500_000L -> SdrEngine.Mode.AM; else -> SdrEngine.Mode.NFM })
                 SdrEngine.tune(hz)

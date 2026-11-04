@@ -68,10 +68,10 @@ fun DevicesScreen(accent: Color) {
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        visualHeightNarrow = d.dp(170f),
+        visualHeightNarrow = d.dp(230f),
         visual = { m ->
             Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)
+                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
                     rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = onPreview, onTapFrac = onTune)
@@ -85,7 +85,6 @@ fun DevicesScreen(accent: Color) {
         Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for ((label, hz) in Devices.BANDS.drop(5)) Chip(label, selected = freq == hz, accent = accent, modifier = Modifier.weight(1f)) { Devices.pickFreq(hz) }
         }
-        StepperRow(accent, longArrayOf(1_000_000L, 100_000L, 10_000L))
         SectionLabel("LISTEN ACROSS · narrower hears weaker devices, wider finds ones off the dial")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
             for ((label, hz) in Devices.SPANS) Chip(label, selected = span == hz, accent = accent, modifier = Modifier.weight(1f)) { Devices.setSpan(hz) }
