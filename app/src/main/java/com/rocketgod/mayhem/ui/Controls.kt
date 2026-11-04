@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -25,6 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -48,6 +50,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -182,6 +187,27 @@ fun LevelBar(levelDb: Float, accent: Color, modifier: Modifier = Modifier) {
     }
 }
 
+/** A [Chip]-sized button holding an icon instead of a word. */
+@Composable
+fun IconChip(icon: ImageVector, description: String, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    Box(
+        modifier.control(accent, false).clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
+            .padding(vertical = d.dp(8f), horizontal = d.dp(10f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = description, tint = Palette.ink, modifier = Modifier.size(d.dp(18f)))
+    }
+}
+
+/** Material's full-screen and exit-full-screen glyphs (Apache-2.0), kept as path data so no icon library is pulled in. */
+val FullscreenIcon: ImageVector by lazy { pathIcon("Fullscreen", "M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z") }
+val FullscreenExitIcon: ImageVector by lazy { pathIcon("FullscreenExit", "M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z") }
+
+private fun pathIcon(name: String, path: String): ImageVector =
+    ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).addPath(addPathNodes(path), fill = SolidColor(Color.Black)).build()
+
 /** Frequency presets: label → Hz. */
 @Composable
 fun PresetRow(accent: Color, presets: List<Pair<String, Long>>, title: String = "PRESETS", onPick: (Long) -> Unit = { SdrEngine.tune(it) }) {
@@ -266,8 +292,9 @@ fun NewestPill(f: FollowNewest, list: LazyListState, fresh: Int, accent: Color, 
 }
 
 /**
- * A full-screen sheet for a log: its title, any extra [actions], CLOSE, then the content filling the rest. Back
- * closes it too. The content is the same composable the inline view uses, so filters and state carry over.
+ * A full-screen sheet for a log: its title, any extra [actions], the exit-full-screen button, then the content
+ * filling the rest. Back closes it too. The content is the same composable the inline view uses, so filters and
+ * state carry over.
  */
 @Composable
 fun FullscreenPanel(title: String, accent: Color, onClose: () -> Unit, actions: @Composable RowScope.() -> Unit = {},
@@ -280,7 +307,7 @@ fun FullscreenPanel(title: String, accent: Color, onClose: () -> Unit, actions: 
                 Text(title, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp,
                     maxLines = 1, modifier = Modifier.weight(1f))
                 actions()
-                Chip("CLOSE", selected = false, accent = accent) { onClose() }
+                IconChip(FullscreenExitIcon, "Exit full screen", accent) { onClose() }
             }
             content()
         }
