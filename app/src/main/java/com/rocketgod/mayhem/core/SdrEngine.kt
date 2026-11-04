@@ -209,9 +209,6 @@ object SdrEngine {
     /** Squelch threshold in dB above the tracked channel noise floor; 0 = off. */
     private val _squelchDb = MutableStateFlow(0)
     val squelchDb: StateFlow<Int> = _squelchDb.asStateFlow()
-    /** Channel power over the squelch's noise floor, in dB: what the squelch opens on, for the Audio meter. */
-    private val _channelDb = MutableStateFlow(0f)
-    val channelDb: StateFlow<Float> = _channelDb.asStateFlow()
     private val _squelchOpen = MutableStateFlow(true)
     val squelchOpen: StateFlow<Boolean> = _squelchOpen.asStateFlow()
     @Volatile private var sqOpen = true
@@ -808,7 +805,6 @@ object SdrEngine {
                             sqFloor = if (sqFloor.isNaN()) db else if (db < sqFloor) sqFloor + 0.2f * (db - sqFloor) else sqFloor + 0.002f * (db - sqFloor)
                             val thr = _squelchDb.value
                             val open = thr == 0 || db > sqFloor + thr
-                            _channelDb.value = Math.round((db - sqFloor) * 2f).coerceAtLeast(0) / 2f   // half-dB steps, so the meter only redraws on a change it can show
                             if (open != sqOpen) { sqOpen = open; _squelchOpen.value = open }
                         }
                     }

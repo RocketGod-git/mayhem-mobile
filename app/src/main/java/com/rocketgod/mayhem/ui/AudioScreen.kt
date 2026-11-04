@@ -63,6 +63,8 @@ import com.rocketgod.mayhem.core.audio.HdReport
 import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameHeader
 import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /** Audio receiver (Mayhem "Audio" / analog_audio_app): tuner face, waterfall, WFM/NFM/AM/USB/LSB, bands, squelch and scan. */
@@ -84,10 +86,10 @@ fun AudioScreen(accent: Color) {
     val station = mode == SdrEngine.Mode.WFM && rdsWanted
 
     AdaptivePane(
-        // the controls need about 170 dp under the app's own bars; the face and the waterfall get the rest
-        visualHeightNarrow = (d.heightDp - 300f).coerceIn(d.heightDp * 0.5f, d.heightDp * 0.66f).dp,
+        // the controls take their own height and the waterfall flexes into whatever is left, on any phone
+        visualHeightNarrow = null,
         visual = { m ->
-            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 alert?.header?.let { h -> SameBanner(h) }
                 TunerFace(accent, freq, mode)
                 if (station) StationStrip(rds, accent)
@@ -101,13 +103,13 @@ fun AudioScreen(accent: Color) {
         // Three rows: how to listen, where, and squelch with SCAN. The digits, ⌨ and the waterfall tune; ☆ saves and
         // FAVES recalls; RDS and HD Radio are switches in Settings while Audio is open.
         ScrollColumn(Modifier.fillMaxWidth()) {
-            Column(Modifier.fillMaxWidth().padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(2f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 SegBar(MODES.map { it.name }, MODES.indexOf(mode), accent) { SdrEngine.setMode(MODES[it]) }
                 BandTiles(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
                     Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
                     SegBar(SQL_STEPS.map { if (it == 0) "OFF" else "$it dB" }, SQL_STEPS.indexOf(squelch), accent, Modifier.weight(1f)) { SdrEngine.setSquelch(SQL_STEPS[it]) }
-                    ScanButton(scanning, bookmarks.isEmpty(), Modifier.width(d.dp(96f)).height(d.dp(44f))) {
+                    ScanButton(scanning, bookmarks.isEmpty(), Modifier.width(d.dp(96f)).height(d.dp(40f))) {
                         if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES — star a few with ☆ beside the frequency first" else Scanner.toggle()
                     }
                 }
@@ -118,8 +120,29 @@ fun AudioScreen(accent: Color) {
 
 private val MODES = listOf(SdrEngine.Mode.WFM, SdrEngine.Mode.NFM, SdrEngine.Mode.AM, SdrEngine.Mode.USB, SdrEngine.Mode.LSB)
 private val SQL_STEPS = listOf(0, 6, 12, 20)
-/** The meter's full scale: dB of channel power over the noise floor, the same measure the squelch opens on. */
+/** The meter's full scale, in dB over the noise floor. */
 private const val METER_DB = 40f
+
+/**
+ * How far the tuned channel stands over the noise, in dB: the mean power of the spectrum bins inside the channel
+ * against the median bin of the whole span. The squelch's own floor slowly rises to meet a carrier that stays up,
+ * so it can't drive a meter; the spectrum's median doesn't.
+ */
+private fun channelOverNoise(spec: FloatArray, rate: Int, offset: Int, mode: SdrEngine.Mode): Float {
+    val n = spec.size
+    if (n < 16 || rate <= 0) return 0f
+    val (a, b) = when (mode) {
+        SdrEngine.Mode.WFM -> -100_000 to 100_000; SdrEngine.Mode.NFM -> -6_250 to 6_250; SdrEngine.Mode.AM -> -5_000 to 5_000
+        SdrEngine.Mode.USB -> 0 to 3_000; SdrEngine.Mode.LSB -> -3_000 to 0; SdrEngine.Mode.NONE -> return 0f
+    }
+    val i0 = ((0.5 + (offset + a).toDouble() / rate) * n).toInt().coerceIn(0, n - 1)
+    val i1 = ((0.5 + (offset + b).toDouble() / rate) * n).toInt().coerceIn(i0, n - 1)
+    var sum = 0.0
+    for (i in i0..i1) sum += 10.0.pow(spec[i] * SdrEngine.SPEC_RANGE_DB / 10.0)
+    val chDb = 10.0 * log10(sum / (i1 - i0 + 1))
+    val median = spec.copyOf().also { it.sort() }[n / 2] * SdrEngine.SPEC_RANGE_DB
+    return (chDb - median).toFloat().coerceAtLeast(0f)
+}
 
 /** What the tuned frequency is, in a few words; the band chip's description where nothing more particular fits. */
 private fun bandTitle(hz: Long): String = when (hz) {
@@ -143,7 +166,10 @@ private fun bandTitle(hz: Long): String = when (hz) {
 @Composable
 private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
     val d = rememberDims()
-    val channelDb by SdrEngine.channelDb.collectAsState()
+    val spec by SdrEngine.spectrum.collectAsState()
+    val rate by SdrEngine.rateHz.collectAsState()
+    val offset by SdrEngine.offsetHz.collectAsState()
+    val channelDb = remember(spec, rate, offset, mode) { channelOverNoise(spec, rate, offset, mode) }
     val squelch by SdrEngine.squelchDb.collectAsState()
     val sqOpen by SdrEngine.squelchOpen.collectAsState()
     val scanning by Scanner.active.collectAsState()
@@ -292,7 +318,7 @@ private fun SegBar(labels: List<String>, selected: Int, accent: Color, modifier:
                 }.background(accent, inner) else Modifier)
                 .clip(inner)
                 .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(i) }
-                .padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
+                .padding(vertical = d.dp(8f)), contentAlignment = Alignment.Center) {
                 Text(label, color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
                     letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
             }
@@ -329,7 +355,7 @@ private fun BandTiles(accent: Color, hz: Long, onPick: (ListenBand) -> Unit) {
                     }
                 }
                 .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(b) }
-                .padding(horizontal = d.dp(8f), vertical = d.dp(7f))) {
+                .padding(horizontal = d.dp(8f), vertical = d.dp(6f))) {
                 Text(b.name, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 1.sp, maxLines = 1)
                 Text("%d–%d".format(b.lo / 1_000_000, b.hi / 1_000_000), color = if (on) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
             }
