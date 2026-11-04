@@ -56,7 +56,8 @@ fun MayhemScreen(status: String, connected: Boolean) {
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = d.pad, vertical = d.dp(6f))) {
             Header(status, connected, current, showLog, showTools, accent, onLog = { showLog = !showLog }, onTools = { showTools = !showTools })
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            // a little air under the header: the readout's top chevrons sat right against it
+            Box(Modifier.weight(1f).fillMaxWidth().padding(top = d.dp(8f))) {
                 when (current) {
                     null -> Launcher(accent)
                     MayhemApp.HAM -> HamScreen(accent)
