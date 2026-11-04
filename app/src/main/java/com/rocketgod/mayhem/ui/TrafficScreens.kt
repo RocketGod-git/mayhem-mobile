@@ -76,8 +76,8 @@ private fun TrafficFrame(
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        // the card needs the room more than the waterfall does on a phone
-        visualHeightNarrow = d.dp(if (cardOpen) 120f else 170f),
+        // the waterfall and the list under it split the screen evenly
+        share = true,
         visual = { m ->
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = d.wide)

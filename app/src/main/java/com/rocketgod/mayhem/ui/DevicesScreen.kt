@@ -68,7 +68,8 @@ fun DevicesScreen(accent: Color) {
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        visualHeightNarrow = d.dp(230f),
+        // the waterfall and the list under it split the screen evenly
+        share = true,
         visual = { m ->
             Column(m) {
                 FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)

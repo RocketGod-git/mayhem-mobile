@@ -58,7 +58,8 @@ fun CaptureScreen(accent: Color) {
     }
     val recTint = if (recording) Palette.danger else accent
     AdaptivePane(
-        visualHeightNarrow = d.dp(260f),
+        // the waterfall and the list under it split the screen evenly
+        share = true,
         visual = { m ->
             Column(m) {
                 FreqReadout(if (recording) Palette.danger else accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)

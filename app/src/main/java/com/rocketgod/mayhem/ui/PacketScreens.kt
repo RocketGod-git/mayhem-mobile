@@ -119,28 +119,29 @@ private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Strin
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
     AdaptivePane(
-        // the face and a strip of waterfall; the log under them is what these apps are for
-        // up to 36% of a short phone: the face card has to keep a strip of waterfall under it
-        visualHeightNarrow = minOf(d.dp(if (roomy) 300f else 270f), maxOf(200.dp, (d.heightDp * 0.36f).dp)),
-        visual = { m ->
-            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                Column(Modifier.faceCard(accent, d)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        FaceTag(tag, accent)
-                        Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
-                        if (tunable) DialActions(accent, freq)
-                        if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true)
-                    }
-                    Box(Modifier.padding(top = d.dp(2f))) {
-                        if (tunable) DialRow(accent, freq, big = false)
-                        else FreqDigits(freq, false, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
-                    }
-                    LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
+        // the card keeps its height; the waterfall and the log split the rest evenly
+        share = true,
+        face = {
+            Column(Modifier.faceCard(accent, d)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    FaceTag(tag, accent)
+                    Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+                    if (tunable) DialActions(accent, freq)
+                    if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true)
                 }
+                Box(Modifier.padding(top = d.dp(2f))) {
+                    if (tunable) DialRow(accent, freq, big = false)
+                    else FreqDigits(freq, false, accent, false, glow = accent, modifier = Modifier.fillMaxWidth(), onTune = null)
+                }
+                LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
+            }
+        },
+        visual = { m ->
+            Column(m) {
                 Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                        rows = if (d.wide) 160 else 70, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
+                        rows = if (d.wide) 160 else 90, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
                         onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
                 }
             }
@@ -201,11 +202,11 @@ private fun PagerHunterView(accent: Color) {
     // a short phone drops the activity strip, so the feed keeps its room
     val spark = d.wide || d.heightDp >= 700
     AdaptivePane(
-        // the face, then a strip of waterfall: the feed under them is what this app is for
-        visualHeightNarrow = minOf(d.dp(if (spark) 345f else 295f), maxOf(250.dp, (d.heightDp * 0.43f).dp)),
+        // the card keeps its height; the waterfall and the feed split the rest evenly
+        share = true,
+        face = { HunterFace(accent, freq, status, channels, messages, capcodes, spark) },
         visual = { m ->
-            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                HunterFace(accent, freq, status, channels, messages, capcodes, spark)
+            Column(m) {
                 Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                         rows = if (d.wide) 160 else 70, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),

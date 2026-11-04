@@ -174,7 +174,8 @@ fun SearchScreen(accent: Color) {
     val floorDb = if (now.floorDb.isNaN()) done.floorDb else now.floorDb
     val rowPx = maxOf(1, (2 * LocalDensity.current.density).toInt())
     AdaptivePane(
-        visualHeightNarrow = d.dp(200f),
+        // the waterfall and the list under it split the screen evenly
+        share = true,
         visual = { m ->
             Column(m) {
                 SweepTitle(s, progress, sweeps, " · ${hits.size} hits", accent)
