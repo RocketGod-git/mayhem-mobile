@@ -89,33 +89,39 @@ fun Lamp(label: String, c: Color, blink: Boolean = false) {
 }
 
 /**
- * The glowing digits with ☆ and ⌨ beside them, and a warning under them when the radio can't reach the frequency.
- * A waterfall gesture in progress shows where it would land, in the second accent.
+ * The glowing digits across the card's whole width, and a warning under them when the radio can't reach the
+ * frequency. A waterfall gesture in progress shows where it would land, in the second accent. ☆ and ⌨ are
+ * [DialActions], in the card's header.
  */
 @Composable
 fun DialRow(accent: Color, freq: Long, big: Boolean = true, onTune: (Long) -> Unit = { SdrEngine.tune(it) }) {
     val d = rememberDims()
-    val mode by SdrEngine.mode.collectAsState()
-    val marks by Bookmarks.list.collectAsState()
     val radio by Radio.kind.collectAsState()
-    var keying by remember { mutableStateOf(false) }
     val preview = Tuning.previewHz
     val shown = preview ?: freq
-    if (keying) FreqEntryDialog(freq, accent) { f -> keying = false; if (f != null) onTune(f) }
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            FreqDigits(shown, big, if (preview != null) Palette.accent2 else accent, preview != null, glow = accent, modifier = Modifier.weight(1f)) { onTune(it) }
-            Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
-                val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
-                Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
-                    modifier = Modifier.clickable { Bookmarks.star(freq, mode) }.padding(horizontal = 4.dp))
-                Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = 4.dp))
-            }
-        }
+        FreqDigits(shown, big, if (preview != null) Palette.accent2 else accent, preview != null, glow = accent, modifier = Modifier.fillMaxWidth()) { onTune(it) }
         val lim = Radio.limits
         if (radio != Radio.Kind.NONE && !Radio.canTune(lim, shown))
             Text("outside this ${Radio.name}'s %d–%d MHz".format(lim.minHz / 1_000_000, lim.maxHz / 1_000_000),
                 color = Palette.danger, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth().padding(top = 4.dp), maxLines = 1, textAlign = TextAlign.Center)
+    }
+}
+
+/** ☆ (save to FAVES, ★ once saved) and ⌨ (key a frequency in), for a face's header. */
+@Composable
+fun DialActions(accent: Color, freq: Long, onTune: (Long) -> Unit = { SdrEngine.tune(it) }) {
+    val d = rememberDims()
+    val mode by SdrEngine.mode.collectAsState()
+    val marks by Bookmarks.list.collectAsState()
+    var keying by remember { mutableStateOf(false) }
+    if (keying) FreqEntryDialog(freq, accent) { f -> keying = false; if (f != null) onTune(f) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
+        Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(17f),
+            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { Bookmarks.star(freq, mode) }.padding(horizontal = d.dp(6f)))
+        Text("⌨", color = Palette.muted, fontSize = d.sp(16f),
+            modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { keying = true }.padding(horizontal = d.dp(6f)))
     }
 }
 
