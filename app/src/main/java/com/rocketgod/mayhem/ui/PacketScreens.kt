@@ -97,7 +97,7 @@ private fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp)
 
 /** A short muted note under a row of controls: what the app decodes, and how to get the most from it. */
 @Composable
-private fun Note(text: String) {
+private fun AppNote(text: String) {
     val d = rememberDims()
     Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f), modifier = Modifier.padding(top = d.dp(6f)))
 }
@@ -578,7 +578,7 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
 fun TpmsScreen(accent: Color) {
     PacketFrame(accent, Apps.tpmsLog, tag = "TPMS", title = "TYRE SENSORS", controls = {
         PresetTiles(accent, listOf(Preset("315.000", "US", 315_000_000L), Preset("433.920", "EU", 433_920_000L)))
-        Note("Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.")
+        AppNote("Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.")
     })
 }
 
@@ -587,7 +587,7 @@ fun AcarsScreen(accent: Color) {
     PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, controls = {
         PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
             Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)))
-        Note("Registration, flight, label and text from each message, CRC checked.")
+        AppNote("Registration, flight, label and text from each message, CRC checked.")
     })
 }
 
