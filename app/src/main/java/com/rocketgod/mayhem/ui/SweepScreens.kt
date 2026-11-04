@@ -1,5 +1,10 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,47 +30,64 @@ import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.apps.SweepProcessor
 import kotlinx.coroutines.flow.MutableStateFlow
 
+/** Sweep ranges: a tile's name, the line under it, and the span. */
 private val RANGES = listOf(
-    "FM 88-108" to (88_000_000L to 108_000_000L),
-    "AIR 118-137" to (118_000_000L to 137_000_000L),
-    "2m 144-148" to (144_000_000L to 148_000_000L),
-    "70cm 420-450" to (420_000_000L to 450_000_000L),
-    "ISM 902-928" to (902_000_000L to 928_000_000L),
-    "GSM 925-960" to (925_000_000L to 960_000_000L),
-    "1.2-1.6G" to (1_200_000_000L to 1_600_000_000L),
-    "2.4G ISM" to (2_400_000_000L to 2_483_000_000L),
-    "0.1-1 GHz" to (100_000_000L to 1_000_000_000L),
-    "1-3 GHz" to (1_000_000_000L to 3_000_000_000L),
-    "3-6 GHz" to (3_000_000_000L to 6_000_000_000L),
+    Triple("FM", "88–108", 88_000_000L to 108_000_000L),
+    Triple("AIR", "118–137", 118_000_000L to 137_000_000L),
+    Triple("2 m", "144–148", 144_000_000L to 148_000_000L),
+    Triple("70 cm", "420–450", 420_000_000L to 450_000_000L),
+    Triple("ISM", "902–928", 902_000_000L to 928_000_000L),
+    Triple("GSM", "925–960", 925_000_000L to 960_000_000L),
+    Triple("L-BAND", "1.2–1.6 G", 1_200_000_000L to 1_600_000_000L),
+    Triple("2.4 G", "ISM", 2_400_000_000L to 2_483_000_000L),
+    Triple("0.1–1 G", "wide", 100_000_000L to 1_000_000_000L),
+    Triple("1–3 G", "wide", 1_000_000_000L to 3_000_000_000L),
+    Triple("3–6 G", "wide", 3_000_000_000L to 6_000_000_000L),
 )
 
 private val emptyRow = MutableStateFlow(FloatArray(0))
 private val zero = MutableStateFlow(0)
 
+/** The ranges as tiles (wider spans sweep slower), then the slice width (wider is faster, if the radio keeps up). */
 @Composable
 private fun RangeChips(accent: Color, sp: SweepProcessor?) {
     val d = rememberDims()
     val rate by SdrEngine.rateHz.collectAsState()
-    SectionLabel("RANGE · wider spans sweep slower")
     // FULL is the whole radio: hundreds of steps and slow, but it is the "what is out there anywhere" view
-    val chips = RANGES + ("FULL 1M-6G" to (SdrEngine.FREQ_MIN_HZ to SdrEngine.FREQ_MAX_HZ))
-    for ((i, row) in chips.chunked(4).withIndex()) {
-        Row(Modifier.fillMaxWidth().padding(top = if (i > 0) d.dp(4f) else 0.dp), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-            for ((label, r) in row) {
-                val why = com.rocketgod.mayhem.core.Radio.tuneWhy(r.first, r.second)
-                Chip(label, selected = sp?.startHz == r.first && sp?.endHz == r.second, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(),
-                    onClick = gated(why) { Apps.startSweep(r.first, r.second) })
-            }
+    val all = RANGES + Triple("FULL", "1 M–6 G", SdrEngine.FREQ_MIN_HZ to SdrEngine.FREQ_MAX_HZ)
+    val whys = all.map { com.rocketgod.mayhem.core.Radio.tuneWhy(it.third.first, it.third.second) }
+    TileRow(all.mapIndexed { i, (name, sub, r) -> Tile(name, sub, sp?.startHz == r.first && sp?.endHz == r.second, dim = whys[i].isNotEmpty()) }, accent, width = 84.dp) { i ->
+        val r = all[i].third
+        gated(whys[i]) { Apps.startSweep(r.first, r.second) }()
+    }
+    val rates = listOf(2_000_000, 4_000_000, 8_000_000, 16_000_000)
+    val rateWhys = rates.map { com.rocketgod.mayhem.core.Radio.rateWhy(it) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+        RowLabel("SLICE")
+        SegBar(rates.map { "${it / 1_000_000} MHz" }, rates.indexOf(rate), accent, Modifier.weight(1f),
+            tints = rateWhys.map { if (it.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null }) { i ->
+            gated(rateWhys[i]) { Apps.sweepRate = rates[i]; if (sp != null) Apps.startSweep(sp.startHz, sp.endHz) }()
         }
     }
-    SectionLabel("SLICE WIDTH · wider = faster, if the HackRF keeps up")
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for (r in intArrayOf(2_000_000, 4_000_000, 8_000_000, 16_000_000)) {
-            val why = com.rocketgod.mayhem.core.Radio.rateWhy(r)
-            Chip("${r / 1_000_000} MHz", selected = rate == r, accent = accent, modifier = Modifier.weight(1f), dim = why.isNotEmpty(), onClick = gated(why) {
-                Apps.sweepRate = r
-                if (sp != null) Apps.startSweep(sp.startHz, sp.endHz)
-            })
+}
+
+/** The sweep's card: what it is, the range, a lamp counting passes, and how far through this pass it is. */
+@Composable
+private fun SweepFace(accent: Color, tag: String, s: SweepProcessor?, progress: Int, sweeps: Int, note: String?) {
+    val d = rememberDims()
+    Column(Modifier.faceCard(accent, d)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            FaceTag(tag, accent)
+            Text(note ?: if (s == null) "NO SWEEP" else "%.1f – %.1f MHZ".format(s.startHz / 1e6, s.endHz / 1e6),
+                color = if (note != null) Palette.accent2 else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+            if (s == null) Lamp("IDLE", Palette.muted) else if (sweeps == 0) Lamp("FIRST PASS", Palette.accent2, blink = true) else Lamp("PASS ${sweeps + 1}", Palette.ok)
+        }
+        if (s != null) {
+            Row(Modifier.fillMaxWidth().padding(top = d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                LedMeter(if (s.steps > 0) progress.toFloat() / s.steps else 0f, accent, Modifier.weight(1f))
+                Text("  $progress / ${s.steps}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
+            }
         }
     }
 }
@@ -130,13 +152,13 @@ fun LookingGlassScreen(accent: Color) {
     val rowPx = maxOf(1, (2 * LocalDensity.current.density).toInt())
     var previewHz by remember { mutableStateOf<Long?>(null) }
     AdaptivePane(
+        face = { SweepFace(accent, "GLASS", s, progress, sweeps, previewHz?.let { "LISTEN %.3f MHZ · LIFT TO TUNE".format(it / 1e6) }) },
         visual = { m ->
-            Column(m) {
-                SweepTitle(s, progress, sweeps, if (previewHz != null) " · LISTEN %.3f MHz — lift to tune".format(previewHz!! / 1e6) else "", if (previewHz != null) Palette.accent2 else accent)
+            Column(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 // a new sweep starts a new history: rows from another range would mislead
                 key(s) {
                     WaterfallView(
-                        done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 64, traceFrac = 0.3f,
+                        done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f), rows = 64, traceFrac = 0.3f,
                         centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
                         onPreviewFrac = { f -> previewHz = if (f != null && s != null) s.startHz + (s.coverHz * f.toDouble()).toLong() else null },
                         live = now.spec, scale = floorDb to SWEEP_RANGE_DB, labelAt = s?.let { sweepLabel(it) }, rowPx = rowPx,
@@ -151,7 +173,7 @@ fun LookingGlassScreen(accent: Color) {
         }
     ) {
         ScrollColumn(Modifier.fillMaxWidth()) {
-            RangeChips(accent, s)
+            Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { RangeChips(accent, s) }
         }
     }
 }
@@ -176,12 +198,12 @@ fun SearchScreen(accent: Color) {
     AdaptivePane(
         // the waterfall and the list under it split the screen evenly
         share = true,
+        face = { SweepFace(accent, "SEARCH", s, progress, sweeps, null) },
         visual = { m ->
-            Column(m) {
-                SweepTitle(s, progress, sweeps, " · ${hits.size} hits", accent)
+            Column(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 key(s) {
                     WaterfallView(
-                        done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)), rows = 64, traceFrac = 0.35f,
+                        done.spec, cols, accent, Modifier.fillMaxWidth().weight(1f), rows = 64, traceFrac = 0.35f,
                         centreMarker = false, centerHz0 = 0L, spanHz0 = 0, labels = if (s != null) rangeLabels(s.startHz, s.startHz + s.coverHz, if (d.wide) 7 else 5) else emptyList(),
                         live = now.spec, scale = floorDb to SWEEP_RANGE_DB, labelAt = s?.let { sweepLabel(it) }, rowPx = rowPx,
                     )
@@ -189,12 +211,15 @@ fun SearchScreen(accent: Color) {
             }
         }
     ) {
-        SectionLabel("THRESHOLD · above noise floor")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-            for (t in intArrayOf(10, 15, 20, 30)) Chip("+$t dB", selected = threshold == t, accent = accent, modifier = Modifier.weight(1f)) { threshold = t }
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            RangeChips(accent, s)
+            val ts = listOf(10, 15, 20, 30)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("ABOVE")
+                SegBar(ts.map { "+$it dB" }, ts.indexOf(threshold), accent, Modifier.weight(1f)) { threshold = ts[it] }
+            }
+            Text("${hits.size} HITS · TAP ONE TO LISTEN", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp)
         }
-        RangeChips(accent, s)
-        SectionLabel("HITS · tap to listen")
         LogList(hits, Modifier.fillMaxWidth().weight(1f), empty = "sweeping… hits appear after the first full pass") { line ->
             val mhz = line.trim().split(" ")[0].toDoubleOrNull()
             if (mhz != null) Apps.listen((mhz * 1e6).toLong(), if (mhz in 87.0..108.0) SdrEngine.Mode.WFM else SdrEngine.Mode.NFM)

@@ -1,5 +1,10 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -67,45 +72,52 @@ fun DevicesScreen(accent: Color) {
 
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
+    val level by SdrEngine.levelDb.collectAsState()
     AdaptivePane(
-        // the waterfall and the list under it split the screen evenly
+        // the card keeps its height; the waterfall and the device list split the rest evenly
         share = true,
+        face = {
+            Column(Modifier.faceCard(accent, d)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    FaceTag("DEVICES", accent)
+                    Text(if (rep.span > 0) "${rep.protocols} PROTOCOLS · ${rep.decoded} DECODED" else "SENSORS · METERS · REMOTES", color = Palette.muted, fontFamily = Mono,
+                        fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+                    DialActions(accent, freq)
+                    when {
+                        hop -> Lamp("HOPPING", Palette.accent2, blink = true)
+                        heard.isNotEmpty() -> Lamp("${heard.size} HEARD", Palette.ok)
+                        else -> Lamp("LISTENING", Palette.accent2, blink = true)
+                    }
+                }
+                Box(Modifier.padding(top = d.dp(2f))) { DialRow(accent, freq, big = false) }
+                LedMeter(level / 45f, accent, Modifier.fillMaxWidth().padding(top = d.dp(4f)))
+            }
+        },
         visual = { m ->
-            Column(m) {
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
-                WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f)),
-                    rows = if (d.wide) 160 else 70, traceFrac = 0.35f, labels = centredLabels(freq, SdrEngine.currentRate()),
+            Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
+                WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
+                    rows = if (d.wide) 160 else 80, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = onPreview, onTapFrac = onTune)
             }
         }
     ) {
-        SectionLabel("BAND · MHz · the American four span 14 MHz, wider than one slice, so hearing them all means visiting each")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for ((label, hz) in Devices.BANDS.take(5)) Chip(label, selected = freq == hz, accent = accent, modifier = Modifier.weight(1f)) { Devices.pickFreq(hz) }
-        }
-        Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for ((label, hz) in Devices.BANDS.drop(5)) Chip(label, selected = freq == hz, accent = accent, modifier = Modifier.weight(1f)) { Devices.pickFreq(hz) }
-        }
-        SectionLabel("LISTEN ACROSS · narrower hears weaker devices, wider finds ones off the dial")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-            for ((label, hz) in Devices.SPANS) Chip(label, selected = span == hz, accent = accent, modifier = Modifier.weight(1f)) { Devices.setSpan(hz) }
-            Chip(if (hop) "HOP ON" else "HOP OFF", selected = hop, accent = accent, modifier = Modifier.weight(1f)) { Devices.setHop(!hop) }
-        }
-        val stats = if (rep.span > 0) buildString {
-            append("${Devices.BANDS[band].first} MHz · ${rep.protocols} protocols · ${rep.bursts} bursts (${rep.ook} keyed, ${rep.fsk} shifted) · ${rep.decoded} decoded")
-            if (rep.badChecksum > 0) append(" · ${rep.badChecksum} failed their checksum")
-            append(" · listening across ${Devices.spanLabel(rep.span)} · noise ${rep.noise}, triggers above ${rep.trigger}")
-        } else "listening…"
-        Text(stats, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(6f)))
-        Row(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(4f)), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            val count = if (showProtocols) "${Devices.protocols.size} PROTOCOLS · ALL RUNNING"
-                else "${heard.size} DEVICE${if (heard.size == 1) "" else "S"}"
-            Text(count, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, modifier = Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                Chip(if (showProtocols) "DEVICES" else "PROTOCOLS ${Devices.protocols.size}", selected = showProtocols, accent = accent) { showProtocols = !showProtocols }
-                Chip("PAUSE", selected = paused != null, accent = accent) { paused = if (paused == null) live else null }
-                Chip("CLEAR", selected = false, accent = accent) { Devices.proc.clear(); if (paused != null) paused = emptyList() }
+        Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            // the American bands span 14 MHz, wider than one slice, so hearing them all means visiting each (HOP)
+            TileRow(Devices.BANDS.map { (label, hz) -> Tile(label, "MHz", freq == hz) }, accent, width = 84.dp) { Devices.pickFreq(Devices.BANDS[it].second) }
+            // narrower hears weaker devices, wider finds ones off the dial
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                SegBar(Devices.SPANS.map { it.first.replace(" kHz", "k").replace(" MHz", "M") }, Devices.SPANS.indexOfFirst { it.second == span }, accent,
+                    Modifier.weight(1f).fillMaxHeight()) { Devices.setSpan(Devices.SPANS[it].second) }
+                ToggleBox("HOP", hop, accent, Modifier.fillMaxHeight()) { Devices.setHop(!hop) }
             }
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                SegBar(listOf("${heard.size} DEVICES", "${Devices.protocols.size} PROTOCOLS"), if (showProtocols) 1 else 0, accent,
+                    Modifier.weight(1f).fillMaxHeight()) { showProtocols = it == 1 }
+                ToggleBox(if (paused != null) "RESUME" else "PAUSE", paused != null, accent, Modifier.fillMaxHeight()) { paused = if (paused == null) live else null }
+                IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { Devices.proc.clear(); if (paused != null) paused = emptyList() }
+            }
+            if (rep.span > 0) Text("${rep.bursts} bursts · ${rep.ook} keyed · ${rep.fsk} shifted" + (if (rep.badChecksum > 0) " · ${rep.badChecksum} bad checksum" else "") +
+                " · across ${Devices.spanLabel(rep.span)}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (showProtocols) ProtocolList(Devices.protocols, Modifier.fillMaxWidth().weight(1f))
         else DeviceList(heard, accent, Modifier.fillMaxWidth().weight(1f))
