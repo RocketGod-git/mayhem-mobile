@@ -75,6 +75,13 @@ const RTL_XTAL = 28_800_000;
 /** Where the tuner puts the wanted signal. Low-side injection, so the demodulator inverts the spectrum back. */
 const R82XX_IF_HZ = 3_570_000;
 
+/**
+ * Below 24 MHz the R82xx tracking filter runs out, so HF is reached another way: an R820T/R820T2 by direct
+ * sampling (the tuner bypassed, the ADC read straight), the V4L's R828S by its onboard upconverter, which lifts
+ * HF up by the RTL crystal's 28.8 MHz into the tuner's range. The R828D and unknown sticks have neither.
+ */
+const RTL_HF_MAX_HZ = 24_000_000, RTL_UPCONVERT_HZ = 28_800_000;
+
 const R820T_ADDR = 0x34;
 /** The R828D in the RTL-SDR Blog V4 and the Astrometa sticks. Same tuner core, different address and crystal. */
 const R828D_ADDR = 0x74;
@@ -253,7 +260,8 @@ export class RtlSdr implements Radio {
   targetGainTenthDb = 496;
 
   running = false;
-  readonly limits = RTL_LIMITS;
+  // A per-instance copy of the limits: once an HF-capable tuner is found its lower bound drops below 24 MHz.
+  readonly limits: RadioLimits = { ...RTL_LIMITS };
   tuner = '';
   label = 'RTL-SDR';
 
@@ -267,6 +275,8 @@ export class RtlSdr implements Radio {
   /** Two on an R820T, one on an R828D. Sets how far the synthesizer's integer divider may go. */
   private vcoPowerRef = 2;
   private appliedFreq = 0; private appliedRate = 0; private appliedGain = Number.MAX_SAFE_INTEGER;
+  /** Direct sampling engaged (R820T/R820T2 below 24 MHz); the V4L's upconverter in circuit (R828S below 24 MHz). */
+  private directSampling = false; private upconvert = false;
   private dbgBuffers = 0;
   /** The last transfer error, kept so the give-up message can say what actually went wrong. */
   private lastError: string | null = null;
@@ -306,6 +316,7 @@ export class RtlSdr implements Radio {
     if (this.running) return;
     this.running = true; this.stopFlag = false; this.dbgBuffers = 0;
     this.appliedFreq = 0; this.appliedRate = 0; this.appliedGain = Number.MAX_SAFE_INTEGER;
+    this.directSampling = false; this.upconvert = false;
     this.reopenTimes = []; this.quietRetune = false; this.retuneAfter = 0;
     try {
       this.ev.onLog('=== RTL-SDR bring-up (RTL2832U + R82xx, WebUSB) ===');
@@ -594,10 +605,55 @@ export class RtlSdr implements Radio {
     await this.writeReg(USBB, USB_EPA_CTL, 0x0000, 2);
   }
 
+  /**
+   * Tune. From 24 MHz up this is the ordinary tuner path, unchanged. Below it, where the R82xx tracking filter
+   * runs out, HF is reached according to the stick: an R820T/R820T2 (the Blog V3 and every generic R820T) drops
+   * into direct sampling and the wanted frequency is read straight off the ADC's Q branch by the demodulator's
+   * own downconverter; the V4L's R828S keeps its tuner but switches the aerial through the onboard upconverter
+   * (GPIO5 low) and tunes 28.8 MHz high. An R828D or an unknown stick has neither, so a sub-24 MHz ask there
+   * simply will not lock.
+   */
   private async setCenterFreq(freqHz: number): Promise<void> {
+    if (freqHz < RTL_HF_MAX_HZ && this.tuner === 'R820T/R820T2') {
+      if (!this.directSampling) await this.enterDirectSampling();
+      await this.setIfFreq(freqHz);
+      return;
+    }
+    if (freqHz < RTL_HF_MAX_HZ && this.tuner === 'R828S') {
+      if (this.directSampling) await this.leaveDirectSampling();
+      if (!this.upconvert) { await this.setGpio(5, false); this.upconvert = true; }
+      await this.setI2cRepeater(true);
+      await this.r82xxSetFreq(freqHz + RTL_UPCONVERT_HZ, true);
+      await this.setI2cRepeater(false);
+      return;
+    }
+    if (this.directSampling) await this.leaveDirectSampling();
+    if (this.upconvert) { await this.setGpio(5, true); this.upconvert = false; }
     await this.setI2cRepeater(true);
     await this.r82xxSetFreq(freqHz);
     await this.setI2cRepeater(false);
+  }
+
+  /**
+   * Direct sampling (librtlsdr rtlsdr_set_direct_sampling): bypass the tuner and read the ADC itself, with the
+   * demodulator's downconverter moved onto the wanted HF frequency by setIfFreq. The Blog V3 brings its HF port
+   * in on the Q branch, so the I/Q ADC inputs are swapped (register 0x06 = 0x90). A fixed spur sits 96 kHz above
+   * wherever it is tuned — inherent to reading the ADC this way; tune a few kHz to one side of it.
+   */
+  private async enterDirectSampling(): Promise<void> {
+    await this.demodWrite(1, 0x15, 0x00, 1);        // spectrum inversion off
+    await this.demodWrite(1, 0xb1, 0x1a, 1);        // zero-IF off (already so for an R82xx)
+    await this.demodWrite(DEMODB, 0x08, 0x4d, 1);   // in-phase ADC input enabled
+    await this.demodWrite(DEMODB, 0x06, 0x90, 1);   // swap I/Q so the Q-branch ADC is the one read
+    this.directSampling = true;
+  }
+
+  /** Back to the tuner path: the 3.57 MHz IF and the spectrum inversion the R82xx front end expects. */
+  private async leaveDirectSampling(): Promise<void> {
+    await this.demodWrite(DEMODB, 0x06, 0x80, 1);
+    await this.setIfFreq(R82XX_IF_HZ);
+    await this.demodWrite(1, 0x15, 0x01, 1);
+    this.directSampling = false;
   }
 
   // ---- I2C to the tuner -----------------------------------------------------------------------------------
@@ -710,6 +766,8 @@ export class RtlSdr implements Radio {
       this.ev.onLog('RTL-SDR: RTL-SDR Blog V4L (R828S)');
     }
     this.label = this.tuner === 'R828S' ? 'RTL-SDR Blog V4L' : `RTL-SDR · ${this.tuner}`;
+    // An R820T/R820T2 (direct sampling) or an R828S (the V4L's upconverter) can reach below the 24 MHz floor.
+    if (this.tuner === 'R820T/R820T2' || this.tuner === 'R828S') this.limits.minHz = 1_000_000;
 
     for (let i = 0; i < R82XX_INIT.length; i++) this.tunerRegs[5 + i] = R82XX_INIT[i];
     await this.tunerWrite(0x05, R82XX_INIT);
@@ -829,7 +887,7 @@ export class RtlSdr implements Radio {
     return true;
   }
 
-  private async r82xxSetFreq(rfHz: number): Promise<void> {
+  private async r82xxSetFreq(rfHz: number, hf = false): Promise<void> {
     const lo = rfHz + R82XX_IF_HZ;                      // low-side injection; the demodulator un-inverts
     await this.setMux(lo);
     // The R828D (RTL-SDR Blog V4, Astrometa) has three RF inputs, and the aerial sits on the air-in below
@@ -837,9 +895,9 @@ export class RtlSdr implements Radio {
     // init block leaves it at 0x00 (cable-in), so on a V4 nothing below 345 MHz — FM, APRS, air, 2 m — ever
     // reached the mixer, which read as a dead aerial. An R820T/R820T2 has one input and ignores this bit.
     if (this.tuner === 'R828D') await this.tunerWriteMask(0x05, rfHz > 345_000_000 ? 0x00 : 0x60, 0x60);
-    // The V4L's R828S has one input fewer: cable-1 for HF (0x05 bit 6) and the air-in for everything else, with
-    // the air-in enabled by clearing bit 5. Above HF both bits are clear (librtlsdr r82xx_set_freq, V4L branch).
-    if (this.tuner === 'R828S') await this.tunerWriteMask(0x05, 0x00, 0x60);
+    // The V4L's R828S has one input fewer: cable-1 for HF (0x05 bit 6) carries the upconverter's output, the
+    // air-in (both bits clear) everything else (librtlsdr r82xx_set_freq, V4L branch).
+    if (this.tuner === 'R828S') await this.tunerWriteMask(0x05, hf ? 0x40 : 0x00, 0x60);
     if (!(await this.r82xxSetPll(lo))) {
       this.ev.onLog(`RTL-SDR: PLL did not lock at ${(rfHz / 1e6).toFixed(3)} MHz`);
     }

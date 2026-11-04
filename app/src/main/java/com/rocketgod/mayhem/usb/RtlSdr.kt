@@ -39,6 +39,10 @@ object RtlSdr {
 
     const val MIN_HZ = 24_000_000L
     const val MAX_HZ = 1_766_000_000L
+    /** Below this the R82xx tracking filter runs out; an R820T/R820T2 or R828S reaches HF another way instead. */
+    private const val HF_MAX_HZ = 24_000_000L
+    /** The V4L's onboard upconverter lifts HF up by the RTL crystal's 28.8 MHz into the tuner's normal range. */
+    private const val UPCONVERT_HZ = 28_800_000L
     /** The most the tuner's stages add up to, in dB (not the 49.6 librtlsdr's table claims). */
     const val MAX_GAIN_DB = 48.8
 
@@ -164,6 +168,10 @@ object RtlSdr {
     @Volatile private var appliedRate = 0
     @Volatile private var appliedGain = Int.MAX_VALUE
     @Volatile private var appliedBiasTee = false
+    /** Direct sampling engaged (R820T/R820T2 below 24 MHz): the tuner is bypassed and the ADC read straight. */
+    @Volatile private var directSampling = false
+    /** The V4L's upconverter is in circuit (R828S below 24 MHz, GPIO5 low). */
+    @Volatile private var upconvert = false
 
     /** Apply a pending bias-tee change on the USB thread (GPIO0), between buffers. Independent of retune. */
     private fun applyBias() {
@@ -180,6 +188,7 @@ object RtlSdr {
         if (running) return
         running = true; stop = false
         appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; appliedBiasTee = false; dbgBuffers = 0
+        directSampling = false; upconvert = false
         quietRetune = false; needQuietRetune = false; retuneAfter = 0L
         SdrEngine.syncDriver()
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -439,7 +448,54 @@ object RtlSdr {
 
     private fun resetBuffer() { writeReg(USBB, USB_EPA_CTL, 0x1002, 2); writeReg(USBB, USB_EPA_CTL, 0x0000, 2) }
 
-    private fun setCenterFreq(freqHz: Long) { i2cRepeater(true); r82xxSetFreq(freqHz); i2cRepeater(false) }
+    /**
+     * Tune. From 24 MHz up this is the ordinary tuner path, unchanged. Below it, where the R82xx tracking filter
+     * runs out, HF is reached according to the stick: an R820T/R820T2 (the Blog V3 and every generic R820T) drops
+     * into direct sampling and the wanted frequency is read straight off the ADC's Q branch by the demodulator's
+     * own downconverter; the V4L's R828S keeps its tuner but switches the aerial through the onboard upconverter
+     * (GPIO5 low) and tunes 28.8 MHz high. An R828D or an unknown stick has neither, so a sub-24 MHz ask there
+     * simply will not lock — the same static as before.
+     */
+    private fun setCenterFreq(freqHz: Long) {
+        when {
+            freqHz < HF_MAX_HZ && tuner == "R820T/R820T2" -> {
+                if (!directSampling) enterDirectSampling()
+                setIfFreq(freqHz)
+            }
+            freqHz < HF_MAX_HZ && tuner == "R828S" -> {
+                if (directSampling) leaveDirectSampling()
+                if (!upconvert) { setGpio(5, false); upconvert = true }
+                i2cRepeater(true); r82xxSetFreq(freqHz + UPCONVERT_HZ, hf = true); i2cRepeater(false)
+            }
+            else -> {
+                if (directSampling) leaveDirectSampling()
+                if (upconvert) { setGpio(5, true); upconvert = false }
+                i2cRepeater(true); r82xxSetFreq(freqHz); i2cRepeater(false)
+            }
+        }
+    }
+
+    /**
+     * Direct sampling (librtlsdr rtlsdr_set_direct_sampling): bypass the tuner and read the ADC itself, with the
+     * demodulator's downconverter moved onto the wanted HF frequency by [setIfFreq]. The Blog V3 brings its HF
+     * port in on the Q branch, so the I/Q ADC inputs are swapped (register 0x06 = 0x90). A fixed spur sits 96 kHz
+     * above wherever it is tuned — inherent to reading the ADC this way; tune a few kHz to one side of it.
+     */
+    private fun enterDirectSampling() {
+        demodWrite(1, 0x15, 0x00, 1)        // spectrum inversion off
+        demodWrite(1, 0xb1, 0x1a, 1)        // zero-IF off (already so for an R82xx)
+        demodWrite(DEMODB, 0x08, 0x4d, 1)   // in-phase ADC input enabled
+        demodWrite(DEMODB, 0x06, 0x90, 1)   // swap I/Q so the Q-branch ADC is the one read
+        directSampling = true
+    }
+
+    /** Back to the tuner path: the 3.57 MHz IF and the spectrum inversion the R82xx front end expects. */
+    private fun leaveDirectSampling() {
+        demodWrite(DEMODB, 0x06, 0x80, 1)
+        setIfFreq(IF_HZ)
+        demodWrite(1, 0x15, 0x01, 1)
+        directSampling = false
+    }
 
     // ---- I2C to the tuner -------------------------------------------------------------------------------------
     /** Raw read from the tuner's address. Nothing at the address stalls rather than answering: that is an answer. */
@@ -584,13 +640,13 @@ object RtlSdr {
         return true
     }
 
-    private fun r82xxSetFreq(rfHz: Long) {
+    private fun r82xxSetFreq(rfHz: Long, hf: Boolean = false) {
         val lo = rfHz + IF_HZ
         setMux(lo)
         // the R828D's aerial is on the air input below ~345 MHz and the cable input above; the init leaves cable
         if (tuner == "R828D") tunerWriteMask(0x05, if (rfHz > 345_000_000L) 0x00 else 0x60, 0x60)
-        // the V4L's R828S has cable-1 for HF (bit 6) and the air-in (enabled by clearing bit 5) for the rest
-        if (tuner == "R828S") tunerWriteMask(0x05, 0x00, 0x60)
+        // the V4L's R828S takes HF on cable-1 (bit 6) from the upconverter and everything else on the air-in
+        if (tuner == "R828S") tunerWriteMask(0x05, if (hf) 0x40 else 0x00, 0x60)
         if (!setPll(lo)) Diag.log("RTL-SDR: PLL did not lock at %.3f MHz".format(rfHz / 1e6))
     }
 
