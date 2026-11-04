@@ -1,40 +1,71 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Bookmarks
+import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.Scanner
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.audio.HdReport
 import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameHeader
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
-/** Audio receiver (Mayhem "Audio" / analog_audio_app): waterfall, slide-to-tune, WFM/NFM/AM/USB/LSB, bands, squelch and scan. */
+/** Audio receiver (Mayhem "Audio" / analog_audio_app): tuner face, waterfall, WFM/NFM/AM/USB/LSB, bands, squelch and scan. */
 @Composable
 fun AudioScreen(accent: Color) {
     val d = rememberDims()
@@ -42,7 +73,6 @@ fun AudioScreen(accent: Color) {
     val offset by SdrEngine.offsetHz.collectAsState()
     val freq = lo + offset
     val mode by SdrEngine.mode.collectAsState()
-    val health by SdrEngine.rxHealth.collectAsState()
     val squelch by SdrEngine.squelchDb.collectAsState()
     val bookmarks by Bookmarks.list.collectAsState()
     val scanning by Scanner.active.collectAsState()
@@ -51,69 +81,289 @@ fun AudioScreen(accent: Color) {
     val rds by SdrEngine.rds.collectAsState()
     val hd by SdrEngine.hd.collectAsState()
     val alert by SdrEngine.same.collectAsState()
+    val station = mode == SdrEngine.Mode.WFM && rdsWanted
 
     AdaptivePane(
-        // a receiver is mostly for looking at: on a phone the waterfall gets most of the screen, the controls four rows
-        visualHeightNarrow = (d.heightDp * 0.58f).dp,
+        // the controls need about 170 dp under the app's own bars; the face and the waterfall get the rest
+        visualHeightNarrow = (d.heightDp - 300f).coerceIn(d.heightDp * 0.5f, d.heightDp * 0.66f).dp,
         visual = { m ->
-            Column(m) {
+            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                 alert?.header?.let { h -> SameBanner(h) }
-                FreqReadout(accent, if (health.isNotEmpty()) health else "waiting for IQ…", big = true)
-                Box(Modifier.fillMaxWidth().weight(1f).padding(vertical = d.dp(6f))) {
+                TunerFace(accent, freq, mode)
+                if (station) StationStrip(rds, accent)
+                Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     ReceiverScope(accent, Modifier.fillMaxSize(), rows = 200)
-                    if (mode == SdrEngine.Mode.WFM && rdsWanted) RdsBar(rds, accent, Modifier.align(Alignment.TopCenter))
-                    if (mode == SdrEngine.Mode.WFM && hdWanted) HdBadge(hd, Modifier.align(Alignment.TopEnd).padding(top = d.dp(if (rdsWanted) 30f else 4f), end = d.dp(4f)))
+                    if (mode == SdrEngine.Mode.WFM && hdWanted) HdBadge(hd, Modifier.align(Alignment.TopStart).padding(d.dp(6f)))
                 }
             }
         }
     ) {
-        // Four rows: how to listen, where (the bands), and squelch with SCAN. Everything else has a better home —
-        // the digits, ⌨ and the waterfall tune; ☆ saves and FAVES recalls; RDS and HD are switches in Settings › Audio.
+        // Three rows: how to listen, where, and squelch with SCAN. The digits, ⌨ and the waterfall tune; ☆ saves and
+        // FAVES recalls; RDS and HD Radio are switches in Settings while Audio is open.
         ScrollColumn(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-                for (m in listOf(SdrEngine.Mode.WFM, SdrEngine.Mode.NFM, SdrEngine.Mode.AM, SdrEngine.Mode.USB, SdrEngine.Mode.LSB)) {
-                    Chip(m.name, selected = mode == m, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setMode(m) }
-                }
-            }
-            ListenBandChips(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap), verticalAlignment = Alignment.CenterVertically) {
-                Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp)
-                for (s in intArrayOf(0, 6, 12, 20)) Chip(if (s == 0) "OFF" else "$s dB", selected = squelch == s, accent = accent, modifier = Modifier.weight(1f)) { SdrEngine.setSquelch(s) }
-                // SCAN hops your FAVES and holds wherever the squelch opens
-                Chip(if (scanning) "SCANNING" else "SCAN", selected = scanning, accent = accent, modifier = Modifier.weight(1.5f), dim = bookmarks.isEmpty()) {
-                    if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES — star a few with ☆ beside the frequency first" else Scanner.toggle()
+            Column(Modifier.fillMaxWidth().padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                SegBar(MODES.map { it.name }, MODES.indexOf(mode), accent) { SdrEngine.setMode(MODES[it]) }
+                BandTiles(accent, freq) { b -> SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                    Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
+                    SegBar(SQL_STEPS.map { if (it == 0) "OFF" else "$it dB" }, SQL_STEPS.indexOf(squelch), accent, Modifier.weight(1f)) { SdrEngine.setSquelch(SQL_STEPS[it]) }
+                    ScanButton(scanning, bookmarks.isEmpty(), Modifier.width(d.dp(96f)).height(d.dp(44f))) {
+                        if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES — star a few with ☆ beside the frequency first" else Scanner.toggle()
+                    }
                 }
             }
         }
     }
 }
 
-/** Everything RDS gave, station identity first and RadioText last, scrolling as one line when it overflows. */
-@OptIn(ExperimentalFoundationApi::class)
+private val MODES = listOf(SdrEngine.Mode.WFM, SdrEngine.Mode.NFM, SdrEngine.Mode.AM, SdrEngine.Mode.USB, SdrEngine.Mode.LSB)
+private val SQL_STEPS = listOf(0, 6, 12, 20)
+/** The meter's full scale: dB of channel power over the noise floor, the same measure the squelch opens on. */
+private const val METER_DB = 40f
+
+/** What the tuned frequency is, in a few words; the band chip's description where nothing more particular fits. */
+private fun bandTitle(hz: Long): String = when (hz) {
+    in 87_500_000L..108_000_000L -> "FM BROADCAST"
+    in 108_000_001L..117_999_999L -> "AIR NAVIGATION"
+    in 118_000_000L..137_000_000L -> "AIRBAND"
+    in 144_000_000L..146_000_000L -> "2 M AMATEUR"
+    in 156_000_000L..162_025_000L -> "MARINE VHF"
+    in 162_400_000L..162_550_000L -> "NOAA WEATHER"
+    in 433_050_000L..434_790_000L -> "ISM 433"
+    in 430_000_000L..440_000_000L -> "70 CM AMATEUR"
+    in 902_000_000L..928_000_000L -> "ISM 915"
+    in 1_089_000_000L..1_091_000_000L -> "ADS-B"
+    else -> bandAt(hz)?.what?.uppercase() ?: "GENERAL COVERAGE"
+}
+
+/**
+ * The top card: the mode, what the band is and the squelch lamp; the digits with ☆ and ⌨; then the signal meter,
+ * with a tick where the squelch is set so you can see a signal clear it.
+ */
 @Composable
-private fun RdsBar(r: RdsState?, accent: Color, modifier: Modifier) {
+private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
     val d = rememberDims()
-    val text = buildAnnotatedString {
-        val fields = ArrayList<Pair<String, String>>()
-        if (r != null) {
-            if (r.ps.isNotBlank()) fields.add("" to r.ps.trim())
-            if (r.ptyName.isNotEmpty() && r.ptyName != "None") fields.add("" to r.ptyName)
-            r.pi?.let { fields.add("PI" to "%04X".format(it)) }
-            if (r.rt.isNotBlank()) fields.add("" to r.rt.trim())
-            if (r.af.isNotEmpty()) fields.add("AF" to r.af.joinToString(" ") { "%.1f".format(it) })
+    val channelDb by SdrEngine.channelDb.collectAsState()
+    val squelch by SdrEngine.squelchDb.collectAsState()
+    val sqOpen by SdrEngine.squelchOpen.collectAsState()
+    val scanning by Scanner.active.collectAsState()
+    val marks by Bookmarks.list.collectAsState()
+    var keying by remember { mutableStateOf(false) }
+    val preview = Tuning.previewHz
+    val shown = preview ?: freq
+    val tint = if (preview != null) Palette.accent2 else accent
+    if (keying) FreqEntryDialog(freq, accent) { f -> keying = false; if (f != null) SdrEngine.tune(f) }
+    val shape = RoundedCornerShape(d.dp(16f))
+    Column(
+        Modifier.fillMaxWidth().clip(shape)
+            .background(Brush.verticalGradient(listOf(Palette.panel, Palette.surface)))
+            .drawBehind { drawRect(Brush.radialGradient(listOf(accent.copy(alpha = 0.18f), Color.Transparent), center = Offset(size.width / 2, 0f), radius = size.width * 0.75f)) }
+            .border(1.dp, Palette.line, shape)
+            .padding(horizontal = d.dp(12f), vertical = d.dp(10f))
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(mode.name, color = inkOn(accent), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.5.sp,
+                modifier = Modifier.background(accent, RoundedCornerShape(5.dp)).padding(horizontal = 7.dp, vertical = 2.dp))
+            Text(bandTitle(shown), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
+            SquelchLamp(squelch, sqOpen, scanning)
         }
-        if (fields.isEmpty()) withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(if (r?.synced == true) "RDS · reading…" else "RDS · listening…") }
-        fields.forEachIndexed { i, (k, v) ->
-            if (i > 0) withStyle(SpanStyle(color = Palette.muted)) { append("  ·  ") }
-            if (k.isNotEmpty()) withStyle(SpanStyle(color = Palette.muted)) { append("$k ") }
-            withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = if (i == 0) accent else Palette.ink)) { append(v) }
+        Row(Modifier.fillMaxWidth().padding(top = d.dp(6f)), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            FreqDigits(shown, true, tint, preview != null, { SdrEngine.tune(it) }, glow = accent)
+            Column(Modifier.padding(start = d.dp(6f)), horizontalAlignment = Alignment.CenterHorizontally) {
+                val fav = marks.firstOrNull { abs(it.hz - freq) < 50 }
+                Text(if (fav != null) "★" else "☆", color = if (fav != null) Palette.accent2 else Palette.muted, fontSize = d.sp(18f),
+                    modifier = Modifier.clickable { Bookmarks.star(freq, mode) }.padding(horizontal = 4.dp))
+                Text("⌨", color = Palette.muted, fontSize = d.sp(16f), modifier = Modifier.clickable { keying = true }.padding(horizontal = 4.dp))
+            }
+        }
+        SignalMeter(channelDb, squelch, accent, Modifier.fillMaxWidth().padding(top = d.dp(8f)))
+        val lim = Radio.limits
+        if (Radio.kind.collectAsState().value != Radio.Kind.NONE && !Radio.canTune(lim, shown))
+            Text("outside this ${Radio.name}'s %d–%d MHz".format(lim.minHz / 1_000_000, lim.maxHz / 1_000_000),
+                color = Palette.danger, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.fillMaxWidth().padding(top = 4.dp), maxLines = 1, textAlign = TextAlign.Center)
+    }
+}
+
+/** OPEN (green), SQUELCHED (hollow) or SCAN (amber, blinking): the one word that says whether you'd hear anything. */
+@Composable
+private fun SquelchLamp(squelch: Int, open: Boolean, scanning: Boolean) {
+    val d = rememberDims()
+    val blink by rememberInfiniteTransition(label = "lamp").animateFloat(1f, 0.25f, infiniteRepeatable(tween(500), RepeatMode.Reverse), label = "blink")
+    val (label, c) = when {
+        scanning -> (if (open && squelch > 0) "SCAN · SIGNAL" else "SCAN") to Palette.accent2
+        squelch > 0 && !open -> "SQUELCHED" to Palette.muted
+        else -> "OPEN" to Palette.ok
+    }
+    val lit = c != Palette.muted
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).alpha(if (scanning) blink else 1f).then(
+            if (lit) Modifier.drawBehind { drawCircle(c.copy(alpha = 0.35f), radius = size.minDimension) }.background(c, CircleShape)
+            else Modifier.border(1.5.dp, c, CircleShape)))
+        Text(label, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
+            modifier = Modifier.padding(start = 6.dp))
+    }
+}
+
+/** Thirty-two LEDs, blue then green, amber and red, over 0–40 dB above the noise floor; a white tick at the squelch. */
+@Composable
+private fun SignalMeter(db: Float, squelch: Int, accent: Color, modifier: Modifier) {
+    val d = rememberDims()
+    val n = 32
+    val lit = ((db / METER_DB) * n).roundToInt().coerceIn(0, n)
+    val off = Palette.line.copy(alpha = 0.7f)
+    val ink = Palette.ink
+    Column(modifier) {
+        Canvas(Modifier.fillMaxWidth().height(d.dp(12f))) {
+            val gap = 2.dp.toPx()
+            val w = (size.width - gap * (n - 1)) / n
+            val r = CornerRadius(2.dp.toPx())
+            for (i in 0 until n) {
+                val c = if (i >= lit) off else when { i < 14 -> accent; i < 22 -> Palette.ok; i < 28 -> Palette.accent2; else -> Palette.danger }
+                val x = i * (w + gap)
+                if (i < lit) drawRoundRect(c.copy(alpha = 0.3f), Offset(x - 1.dp.toPx(), -1.dp.toPx()), Size(w + 2.dp.toPx(), size.height + 2.dp.toPx()), r)
+                drawRoundRect(c, Offset(x, 0f), Size(w, size.height), r)
+            }
+            if (squelch > 0) {
+                val x = (squelch / METER_DB).coerceIn(0f, 1f) * size.width
+                drawLine(Color.Black.copy(alpha = 0.6f), Offset(x, -3.dp.toPx()), Offset(x, size.height + 3.dp.toPx()), 4.dp.toPx(), StrokeCap.Round)
+                drawLine(ink, Offset(x, -3.dp.toPx()), Offset(x, size.height + 3.dp.toPx()), 2.dp.toPx(), StrokeCap.Round)
+            }
+        }
+        // 0, 10, 20 and 30 dB sit at a quarter of the scale each; the squelch setting reads out at the right
+        Row(Modifier.fillMaxWidth().padding(top = 3.dp)) {
+            for (v in listOf(0, 10, 20)) Text("$v", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), modifier = Modifier.weight(1f))
+            Row(Modifier.weight(1f)) {
+                Text("30", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), modifier = Modifier.weight(1f))
+                Text(if (squelch > 0) "SQL $squelch dB" else "SQL OFF", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+            }
         }
     }
-    // Dimmed until a station's data actually locks.
-    Text(text, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(12f), maxLines = 1,
-        modifier = modifier.fillMaxWidth().alpha(if (r?.synced == true) 1f else 0.55f)
-            .background(Palette.surface.copy(alpha = 0.82f), RoundedCornerShape(4.dp))
-            .padding(horizontal = d.dp(8f), vertical = d.dp(4f)).basicMarquee(iterations = Int.MAX_VALUE))
+}
+
+/** What RDS says about the station: its name large, then programme type, traffic and PI, and the radiotext scrolling. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StationStrip(r: RdsState?, accent: Color) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(12f))
+    val locked = r?.synced == true
+    Row(Modifier.fillMaxWidth().background(Palette.surface, shape).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(10f), vertical = d.dp(8f)),
+        verticalAlignment = Alignment.CenterVertically) {
+        val ps = r?.ps?.trim().orEmpty()
+        Text(ps.ifEmpty { "RDS" }, color = if (ps.isEmpty()) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black,
+            fontSize = d.sp(19f), letterSpacing = 3.sp, maxLines = 1)
+        Column(Modifier.weight(1f).padding(start = d.dp(10f))) {
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Pill(if (locked) "LOCKED" else "LISTENING", if (locked) Palette.ok else Palette.muted)
+                if (r != null && r.ptyName.isNotEmpty() && r.ptyName != "None") Pill(r.ptyName.uppercase(), Palette.muted)
+                if (r?.tp == true) Pill("TP", accent)
+                r?.pi?.let { Pill("PI %04X".format(it), Palette.muted) }
+            }
+            val rt = r?.rt?.trim().orEmpty()
+            Text(rt.ifEmpty { if (locked) "no radiotext from this station" else "reading the station's data…" }, color = Palette.muted, fontFamily = Mono,
+                fontSize = d.sp(11f), maxLines = 1, modifier = Modifier.padding(top = 3.dp).basicMarquee(iterations = Int.MAX_VALUE))
+        }
+    }
+}
+
+@Composable
+private fun Pill(text: String, c: Color) {
+    val d = rememberDims()
+    Text(text, color = c, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1,
+        modifier = Modifier.border(1.dp, if (c == Palette.muted) Palette.line else c, RoundedCornerShape(20.dp)).padding(horizontal = 6.dp, vertical = 1.dp))
+}
+
+/** One rounded bar of equal segments, the chosen one filled and lit. */
+@Composable
+private fun SegBar(labels: List<String>, selected: Int, accent: Color, modifier: Modifier = Modifier, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val outer = RoundedCornerShape(d.dp(12f))
+    val inner = RoundedCornerShape(d.dp(9f))
+    Row(modifier.fillMaxWidth().background(Palette.surface, outer).border(1.dp, Palette.line, outer).padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        labels.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(Modifier.weight(1f)
+                .then(if (on) Modifier.drawBehind {
+                    // a soft halo just outside the lit segment
+                    drawRoundRect(accent.copy(alpha = 0.28f), Offset(-2.dp.toPx(), -2.dp.toPx()), Size(size.width + 4.dp.toPx(), size.height + 4.dp.toPx()), CornerRadius(11.dp.toPx()))
+                }.background(accent, inner) else Modifier)
+                .clip(inner)
+                .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(i) }
+                .padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
+                Text(label, color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
+                    letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
+            }
+        }
+    }
+}
+
+/** The bands as a scrolling row of tiles, each with its range; the one you're in is lit and scrolled into view. */
+@Composable
+private fun BandTiles(accent: Color, hz: Long, onPick: (ListenBand) -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val lit = bandAt(hz)
+    val scroll = rememberScrollState()
+    val tileW = d.dp(74f)
+    val gap = d.dp(6f)
+    val stepPx = with(LocalDensity.current) { (tileW + gap).toPx() }
+    LaunchedEffect(lit) {
+        val i = LISTEN_BANDS.indexOf(lit)
+        if (i >= 0) scroll.animateScrollTo(((i - 1) * stepPx).roundToInt().coerceAtLeast(0))
+    }
+    Row(Modifier.fillMaxWidth().horizontalScroll(scroll), horizontalArrangement = Arrangement.spacedBy(gap)) {
+        for (b in LISTEN_BANDS) {
+            val on = b == lit
+            val shape = RoundedCornerShape(d.dp(12f))
+            Column(Modifier.width(tileW).clip(shape)
+                .background(if (on) Brush.verticalGradient(listOf(accent.copy(alpha = 0.24f), Palette.surface)) else Brush.verticalGradient(listOf(Palette.surface, Palette.surface)))
+                .border(1.dp, if (on) accent else Palette.line, shape)
+                .drawBehind {
+                    if (on) {
+                        val inset = 10.dp.toPx(); val h = 2.dp.toPx()
+                        drawRoundRect(accent.copy(alpha = 0.35f), Offset(inset - 2.dp.toPx(), size.height - h * 3), Size(size.width - inset * 2 + 4.dp.toPx(), h * 3), CornerRadius(h * 2))
+                        drawRoundRect(accent, Offset(inset, size.height - h), Size(size.width - inset * 2, h), CornerRadius(h))
+                    }
+                }
+                .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(b) }
+                .padding(horizontal = d.dp(8f), vertical = d.dp(7f))) {
+                Text(b.name, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 1.sp, maxLines = 1)
+                Text("%d–%d".format(b.lo / 1_000_000, b.hi / 1_000_000), color = if (on) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
+            }
+        }
+    }
+}
+
+/** SCAN with a radar glyph: amber and sweeping while it runs, dimmed until there are FAVES to hop. */
+@Composable
+private fun ScanButton(scanning: Boolean, empty: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(d.dp(12f))
+    val angle by rememberInfiniteTransition(label = "radar").animateFloat(0f, 360f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "sweep")
+    val bg = if (scanning) Palette.accent2 else Palette.surface
+    val fg = if (scanning) inkOn(Palette.accent2) else Palette.ink
+    Row(modifier.alpha(if (empty && !scanning) 0.45f else 1f)
+        .then(if (scanning) Modifier.drawBehind {
+            drawRoundRect(Palette.accent2.copy(alpha = 0.3f), Offset(-3.dp.toPx(), -3.dp.toPx()), Size(size.width + 6.dp.toPx(), size.height + 6.dp.toPx()), CornerRadius(15.dp.toPx()))
+        } else Modifier)
+        .clip(shape).background(bg).border(1.dp, if (scanning) Palette.accent2 else Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(d.dp(18f))) {
+            val c = center; val r = size.minDimension / 2
+            val sw = 1.6.dp.toPx()
+            drawCircle(fg.copy(alpha = 0.5f), r - sw / 2, c, style = Stroke(sw))
+            drawCircle(fg.copy(alpha = 0.7f), r * 0.5f, c, style = Stroke(sw))
+            rotate(if (scanning) angle else 0f, c) { drawLine(fg, c, Offset(c.x, c.y - r + sw), sw * 1.2f, StrokeCap.Round) }
+            drawCircle(fg, sw, c)
+        }
+        Text("SCAN", color = fg, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp,
+            modifier = Modifier.padding(start = d.dp(7f)))
+    }
 }
 
 /** Whether the station carries HD Radio sidebands beside its analog signal. */
