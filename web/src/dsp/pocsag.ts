@@ -46,6 +46,8 @@ export class PocsagDecoder implements IqProcessor {
   private syncs: BitSync[] = [];
   private fmRate = 0;
   private readonly shift = new Int32Array(3);
+  /** The 32 bits before [shift]: where a transmission's preamble sits when its first sync arrives. */
+  private readonly before = new Int32Array(3);
   private locked = -1;
   private inverted = false;
   private cw = 0; private bitCount = 0; private cwCount = 0;
@@ -67,7 +69,12 @@ export class PocsagDecoder implements IqProcessor {
         for (let b = 0; b < 3; b++) {
           const bit = this.syncs[b].push(x);
           if (bit < 0) continue;
+          this.before[b] = (this.before[b] << 1) | (this.shift[b] >>> 31);
           this.shift[b] = (this.shift[b] << 1) | bit;
+          // A transmission opens with at least 576 bits of 1010 preamble before its first sync, so a sync is taken only
+          // straight after it. A near-match to the sync inside other traffic (a FLEX channel's data) is not.
+          const pre = popcount32(this.before[b] ^ 0x55555555);
+          if (pre > 3 && pre < 29) continue;
           if (popcount32(this.shift[b] ^ SYNC) <= 2) { this.locked = b; this.inverted = false; this.cw = 0; this.bitCount = 0; this.cwCount = 0; this.synced(); }
           else if (popcount32(this.shift[b] ^ ~SYNC) <= 2) { this.locked = b; this.inverted = true; this.cw = 0; this.bitCount = 0; this.cwCount = 0; this.synced(); }
         }
@@ -84,7 +91,7 @@ export class PocsagDecoder implements IqProcessor {
   private unlock(): void {
     this.endMessage();
     this.locked = -1; this.cw = 0; this.bitCount = 0; this.cwCount = 0;
-    this.shift.fill(0);
+    this.shift.fill(0); this.before.fill(0);
     for (const s of this.syncs) s.reset();
   }
 
