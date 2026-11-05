@@ -94,6 +94,8 @@ const state = {
     tab: 'rx' as 'rx' | 'monitor' | 'digi' | 'sat' | 'tx' | 'log', mon: { spacing: 12_500, threshold: 8, mode: 'mix' as 'mix' | 'latest' | 'lock', lock: -1, wide: false, first: 0, count: 0, snr: new Float32Array(0), open: [] as number[], listening: [] as number[], tones: {} as Record<number, number>, dcs: {} as Record<number, number>, since: [] as number[], log: [] as string[] } },
   sweepRate: 8_000_000, sweep: null as { start: number; end: number; steps: number } | null,
   btleCh: 37, threshold: 15, pager: 'flex' as 'flex' | 'pocsag' | 'both',
+  /** The pager app's mode, as on Android: MULTI hunts the span's carriers, SINGLE decodes the tuned channel. */
+  pagerMulti: true,
   ism: { weather: true, remotes: true, cars: true },
   r433: { heard: [] as HeardDevice[], stats: null as R433Report | null, hop: false, band: 0,
     protocols: [] as R433Protocol[], showProtocols: false, span: 250_000 }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
@@ -750,7 +752,10 @@ function open(app: AppId | null): void {
     case 'sat': satAppOpen(); return;
     case 'ais': configure('NFM', 161_975_000, 2e6, 32, 32, false, 'ais'); requestGeo(); break;
     case 'aprs': configure('NFM', 144_390_000, 2e6, 24, 24, false, 'aprs'); requestGeo(); break;
-    case 'pager': configure('NFM', 929_612_500, 2e6, 32, 32, false, 'pager'); worker?.postMessage({ type: 'pager', which: state.pager }); break;
+    case 'pager':
+      if (state.pagerMulti) configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt');
+      else { configure('NFM', 929_612_500, 2e6, 32, 32, false, 'pager'); worker?.postMessage({ type: 'pager', which: state.pager }); }
+      break;
     case 'ert': configure('NONE', 911_600_000, 2e6, 32, 40, true, 'ert'); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
@@ -1502,7 +1507,8 @@ function render(app: AppId | null): void {
     case 'adsb': renderAdsb(view); break;
     case 'ais': renderAis(view); break;
     case 'aprs': renderAprs(view); break;
-    case 'pager': case 'ert': case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
+    case 'pager': if (state.pagerMulti) renderHunt(view); else renderPacket(view, app); break;
+    case 'ert': case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
     case 'capture': renderCapture(view); break;
@@ -2979,6 +2985,154 @@ function drawR433Protocols(): void {
       + '</div>').join('');
 }
 
+// ---- pager MULTI: the hunter (the Android app's pager screen) ----------------------------------------------------
+interface HuntPage { protocol: string; rate: string; cap: number; kind: string; text: string; errors: number; where: string }
+interface HuntMsg { id: number; at: number; hz: number; page: HuntPage; alert: boolean; line?: string }
+interface HuntChan { hz: number; db: number; listening: boolean; protocol: string; rate: string; pages: number }
+/** Words that make a page a call-out: fire, EMS, police, hospital codes. */
+const HUNT_ALERT = /\b(FIRE|EMS|MEDIC|AMBULANCE|CARDIAC|ARREST|STROKE|TRAUMA|CODE (BLUE|RED|3|STEMI)|STEMI|STRUCTURE|MVA|MVC|ACCIDENT|SHOOTING|SHOTS|STABBING|OVERDOSE|UNRESPONSIVE|RESCUE|HAZMAT|ALARM|POLICE|SWAT|ENGINE \d+|LADDER \d+|BATTALION|MEDIC \d+|RESPOND|STAT)\b/;
+/** Networks send the same text again and again; folding keeps the newest copy with a count. */
+const HUNT_FOLD_MS = 120_000;
+const hunt = {
+  messages: [] as HuntMsg[], caps: new Set<number>(), nextId: 1,
+  channels: [] as HuntChan[], text: 'Waiting for the radio', hunting: true, pinned: [] as number[],
+  kind: 0, protocol: null as string | null, capcode: null as number | null, hz: null as number | null,
+  fold: true, noise: false, full: false, drawn: 0,
+};
+const FULL_SVG = '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
+const EXIT_SVG = '<svg viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>';
+const RADAR_SVG = '<svg class="radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.8" opacity=".5"/><circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="1.8" opacity=".7"/><line class="sweep" x1="12" y1="12" x2="12" y2="3" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/></svg>';
+/** A page the decoder gave up on: its words were lost before anything readable came through. */
+const huntUnreadable = (m: HuntMsg) => m.page.errors > 0 && !m.page.text.trim() && (m.page.kind === 'ALPHA' || m.page.kind === 'SECURE' || m.page.kind === 'BIN');
+
+function onHuntPage(m: { hz: number; page: HuntPage; line?: string; replaces?: string }): void {
+  // another transmission that filled words an earlier copy lost takes that card's place
+  if (m.replaces) hunt.messages = hunt.messages.filter(x => x.line !== m.replaces);
+  hunt.messages.unshift({ id: hunt.nextId++, at: Date.now(), hz: m.hz, page: m.page, alert: HUNT_ALERT.test(m.page.text.toUpperCase()), line: m.line });
+  if (hunt.messages.length > 400) hunt.messages.length = 400;
+  hunt.caps.add(m.page.cap);
+  refreshHunt();
+}
+function onHuntState(m: { text: string; hunting: boolean; pinned: number[]; channels: HuntChan[] }): void {
+  hunt.text = m.text; hunt.hunting = m.hunting; hunt.pinned = m.pinned; hunt.channels = m.channels;
+  refreshHunt();
+}
+
+function renderHunt(view: HTMLElement): void {
+  view.classList.toggle('hfull', hunt.full);
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}<div id="scope" class="panel"></div></section>
+    <section class="controls hunt">
+      ${hsHtml('<div id="hchans" class="tiles"></div>')}
+      <div class="ctlrow hfeedhead">${segHtml([`<button data-hk="0">ALL</button>`, `<button data-hk="1">TEXT</button>`, `<button data-hk="2" class="red">CALL-OUTS</button>`])}<button id="hfullb" class="ib" title="full screen" aria-label="full screen">${hunt.full ? EXIT_SVG : FULL_SVG}</button><button id="hclear" class="ib" title="clear" aria-label="clear">${CLEAR_SVG}</button></div>
+      ${hsHtml('<div id="htogs" class="pills"></div>')}
+      <div id="hfeed" class="hfeed"></div>
+    </section>`;
+  q('.face')?.insertAdjacentHTML('beforeend', `<div class="hstats"><div><b id="hs-p">0</b><small>PAGES</small></div><div><b id="hs-c">0</b><small>CAPCODES</small></div><div class="red"><b id="hs-a">0</b><small>CALL-OUTS</small></div><div><b id="hs-ch">0 / 0</b><small>CHANNELS</small></div></div><div class="hspark"><div id="hspark"></div><div class="hspark-l"><span>−30 MIN</span><span>PAGES / MIN</span><span>NOW</span></div></div>`);
+  scope = attach(tunableScope('scope', 70, 60));
+  qa<HTMLButtonElement>('[data-hk]', view).forEach(b => b.onclick = () => { hunt.kind = Number(b.dataset.hk); refreshHunt(); });
+  $('hfullb').onclick = () => { hunt.full = !hunt.full; render('pager'); };
+  $('hclear').onclick = () => { hunt.messages = []; hunt.caps.clear(); hunt.capcode = null; hunt.hz = null; refreshHunt(); };
+  $('hchans').onclick = (e) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-hch],[data-hauto]'); if (!t) return;
+    if (t.dataset.hauto !== undefined) worker?.postMessage({ type: 'hunt', cmd: 'auto' });
+    else { const hz = Number(t.dataset.hch); worker?.postMessage({ type: 'hunt', cmd: hunt.pinned.includes(hz) ? 'unpin' : 'pin', hz }); }
+  };
+  $('htogs').onclick = (e) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-ht]'); if (!t) return;
+    switch (t.dataset.ht) {
+      // a lit toggle is shown; the only one lit can't hide everything, so tapping it lights the other again
+      case 'flex': hunt.protocol = hunt.protocol === null ? 'POCSAG' : null; break;
+      case 'pocsag': hunt.protocol = hunt.protocol === null ? 'FLEX' : null; break;
+      case 'fold': hunt.fold = !hunt.fold; break;
+      case 'noise': hunt.noise = !hunt.noise; break;
+      case 'cap': hunt.capcode = null; break;
+      case 'hz': hunt.hz = null; break;
+    }
+    refreshHunt();
+  };
+  $('hfeed').onclick = (e) => {
+    const el = e.target as HTMLElement;
+    const cap = el.closest<HTMLElement>('[data-hcap]'), hz = el.closest<HTMLElement>('[data-hhz]'), card = el.closest<HTMLElement>('[data-hid]');
+    if (cap) { const c = Number(cap.dataset.hcap); hunt.capcode = hunt.capcode === c ? null : c; refreshHunt(); return; }
+    if (hz) { const h = Number(hz.dataset.hhz); hunt.hz = hunt.hz === h ? null : h; refreshHunt(); return; }
+    if (card) {
+      const m = hunt.messages.find(x => x.id === Number(card.dataset.hid)); if (!m) return;
+      void navigator.clipboard?.writeText(m.page.text.trim() || `CAP ${m.page.cap}`).then(() => setStatus('copied', false), () => undefined);
+    }
+  };
+  hunt.drawn = 0;
+  refreshHunt();
+}
+
+let huntFrame = 0;
+/** Redraw the hunter, at most once a frame however fast pages land. */
+function refreshHunt(): void {
+  if (huntFrame) return;
+  huntFrame = requestAnimationFrame(() => { huntFrame = 0; drawHunt(); });
+}
+function drawHunt(): void {
+  if (state.app !== 'pager' || !state.pagerMulti || !q('#hfeed')) return;
+  const msgs = hunt.messages, chans = hunt.channels;
+  const decoding = chans.filter(c => c.listening && c.protocol).length;
+  const alerts = msgs.filter(m => m.alert).length, flexN = msgs.filter(m => m.page.protocol === 'FLEX').length, noise = msgs.filter(huntUnreadable).length;
+  // the card
+  setFace(hunt.hunting ? 'HUNT' : 'PINNED', 'FLEX · POCSAG', hunt.text);
+  if (!hunt.hunting) setLamp(`PINNED ${hunt.pinned.length}`, 'ok');
+  else if (decoding) setLamp(`DECODING ${decoding}`, 'ok');
+  else setLamp(state.connected ? 'HUNTING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
+  const set = (id: string, v: string) => { const e = q('#' + id); if (e && e.textContent !== v) e.textContent = v; };
+  set('hs-p', String(msgs.length)); set('hs-c', String(hunt.caps.size)); set('hs-a', String(alerts)); set('hs-ch', `${decoding} / ${chans.length}`);
+  // pages a minute over the last thirty, oldest at the left; a minute with a call-out in it is red
+  const counts = new Array(30).fill(0), red = new Array(30).fill(false), end = Date.now();
+  for (const m of msgs) { const ago = Math.floor((end - m.at) / 60_000); if (ago >= 0 && ago < 30) { counts[29 - ago]++; if (m.alert) red[29 - ago] = true; } }
+  const top = Math.max(1, ...counts);
+  const sp = q('#hspark'); if (sp) sp.innerHTML = counts.map((c, i) => `<i class="${c ? (red[i] ? 'r' : 'on') : ''}" style="height:${c ? Math.max(25, 100 * c / top) : 17}%"></i>`).join('');
+  // the carriers: AUTO, then each one; a carrier decoding has a live dot, a pinned one is lit
+  const ch = q('#hchans');
+  if (ch) ch.innerHTML = `<button class="tl hauto ${hunt.hunting ? 'on' : ''}" data-hauto>${RADAR_SVG}<span><b>AUTO</b><small>${hunt.hunting ? 'hunting' : 'tap to hunt'}</small></span></button>` + chans.map(c => {
+    const pinned = hunt.pinned.includes(c.hz), live = c.listening && !!c.protocol;
+    const sub = c.protocol ? `${c.protocol} ${c.rate}${c.pages ? ` · ${c.pages}p` : ''}` : c.listening ? 'trying' : `${c.db.toFixed(0)} dB`;
+    const bars = Math.max(0, Math.min(5, Math.round(c.db / 6)));
+    return `<button class="tl hch ${pinned ? 'on' : ''} ${live ? 'live' : ''}" data-hch="${c.hz}"><b>${live ? '<i class="dot"></i>' : ''}${(c.hz / 1e6).toFixed(4)}</b><small>${sub}</small><span class="bars">${[0, 1, 2, 3, 4].map(i => `<i class="${i < bars ? 'on' : ''}"></i>`).join('')}</span></button>`;
+  }).join('');
+  // the feed's head
+  qa<HTMLButtonElement>('[data-hk]').forEach(b => { const k = Number(b.dataset.hk); b.classList.toggle('on', k === hunt.kind); b.textContent = k === 0 ? `ALL ${msgs.length}` : k === 1 ? 'TEXT' : `CALL-OUTS${alerts ? ` ${alerts}` : ''}`; });
+  const tg = q('#htogs');
+  if (tg) tg.innerHTML = `<button class="pill ${hunt.protocol !== 'POCSAG' ? 'on' : ''}" data-ht="flex">FLEX ${flexN}</button><button class="pill ${hunt.protocol !== 'FLEX' ? 'on' : ''}" data-ht="pocsag">POCSAG ${msgs.length - flexN}</button><button class="pill ${hunt.fold ? 'on' : ''}" data-ht="fold">FOLD</button>`
+    + (noise ? `<button class="pill ${hunt.noise ? 'on' : ''}" data-ht="noise">NOISE ${noise}</button>` : '')
+    + (hunt.capcode !== null ? `<button class="pill only" data-ht="cap">CAP ${hunt.capcode} ✕</button>` : '')
+    + (hunt.hz !== null ? `<button class="pill only" data-ht="hz">${(hunt.hz / 1e6).toFixed(4)} MHz ✕</button>` : '');
+  // the cards
+  const keep = (m: HuntMsg) => (hunt.noise || !huntUnreadable(m)) && (hunt.capcode === null || m.page.cap === hunt.capcode) && (hunt.hz === null || m.hz === hunt.hz)
+    && (hunt.protocol === null || m.page.protocol === hunt.protocol) && (hunt.kind === 1 ? m.page.kind === 'ALPHA' && !!m.page.text.trim() : hunt.kind === 2 ? m.alert : true);
+  const rows: { m: HuntMsg; n: number; caps: Set<number> }[] = [];
+  const open = new Map<string, number>();
+  for (const m of msgs) {
+    if (!keep(m)) continue;
+    const t = m.page.text.trim(), at = hunt.fold && t ? open.get(t) : undefined;
+    if (at !== undefined && rows[at].m.at - m.at <= HUNT_FOLD_MS) { rows[at].n++; rows[at].caps.add(m.page.cap); continue; }
+    rows.push({ m, n: 1, caps: new Set([m.page.cap]) });
+    if (t && hunt.fold) open.set(t, rows.length - 1);
+  }
+  const feed = q('#hfeed'); if (!feed) return;
+  if (!rows.length) {
+    feed.innerHTML = `<div class="hempty">${msgs.length ? '' : RADAR_SVG}<span>${msgs.length ? 'nothing matches these filters yet' : 'hunting the span for pager carriers…<br>pages land here the moment one decodes'}</span></div>`;
+    return;
+  }
+  const atTop = feed.scrollTop < 8;
+  feed.innerHTML = rows.map(({ m, n, caps }) => {
+    const p = m.page, kind = m.alert ? 'alert' : p.kind === 'ALPHA' ? 'alpha' : p.kind === 'NUM' ? 'num' : 'other';
+    const body = p.text.trim() ? p.text : p.kind === 'TONE' ? 'tone only (beep)' : p.errors > 0 ? 'unreadable: too much of it was lost on the air' : 'no message';
+    const time = new Date(m.at).toTimeString().slice(0, 8);
+    return `<div class="pcard ${kind}" data-hid="${m.id}"><div class="pc-h"><span class="pc-b">${m.alert ? '⚠ CALL-OUT' : p.kind}</span><span class="pc-t">${time}</span>${n > 1 ? `<span class="pc-x">×${n}</span>` : ''}${p.errors > 0 && p.text.trim() ? '<span class="pill a2">PARTIAL</span>' : ''}<span class="pc-r">${p.protocol} ${p.rate}</span></div>`
+      + `<div class="pc-m"><button class="${hunt.capcode === p.cap ? 'on' : ''}" data-hcap="${p.cap}">CAP ${p.cap}${caps.size > 1 ? ` +${caps.size - 1}` : ''}</button><button class="hz ${hunt.hz === m.hz ? 'on' : ''}" data-hhz="${m.hz}">${(m.hz / 1e6).toFixed(4)}</button></div>`
+      + `<div class="pc-body ${p.text.trim() ? '' : 'muted'}">${esc(body)}</div></div>`;
+  }).join('');
+  if (atTop) feed.scrollTop = 0;
+}
+setInterval(() => { if (state.app === 'pager' && state.pagerMulti) refreshHunt(); }, 20_000);
+
 function renderPacket(view: HTMLElement, app: AppId): void {
   let controls = '';
   switch (app) {
@@ -3378,7 +3532,8 @@ function thisAppRows(app: AppId | null): string {
         + (h.mode === 'CW' ? srow('CW pitch', 'Hz', segHtml([500, 600, 700, 800].map(p => `<button data-setpitch="${p}" class="${h.pitch === p ? 'on' : ''}">${p}</button>`))) : '')
         + srow('Volume', `${Math.round(h.volume * 100)} %`, `<input id="set-vol" type="range" min="0" max="2" step="0.05" value="${h.volume}">`);
     }
-    case 'pager': return srow('Decoder', 'What the channel is decoded as', segHtml((['flex', 'pocsag', 'both'] as const).map(w => `<button data-setpager="${w}" class="${state.pager === w ? 'on' : ''}">${w === 'both' ? 'BOTH' : w.toUpperCase()}</button>`)));
+    case 'pager': return srow('Mode', 'MULTI decodes up to four channels across the span at once; SINGLE the tuned one', segHtml([['0', 'SINGLE'], ['1', 'MULTI']].map(([v, l]) => `<button data-setmulti="${v}" class="${(v === '1') === state.pagerMulti ? 'on' : ''}">${l}</button>`)))
+      + srow('Fold repeats', 'The same text sent again within two minutes is one card with a count', swHtml('set-fold', hunt.fold));
     default: return '';
   }
 }
@@ -3460,7 +3615,8 @@ function bindSettings(view: HTMLElement): void {
   const pbt = q<HTMLInputElement>('#set-pbt', view); if (pbt) pbt.oninput = () => { h.shift = Number(pbt.value); hamSend(); const d = pbt.closest('.srow')?.querySelector('small'); if (d) d.textContent = `${h.shift} Hz`; };
   const vol = q<HTMLInputElement>('#set-vol', view); if (vol) vol.oninput = () => { h.volume = Number(vol.value); hamSend(); const d = vol.closest('.srow')?.querySelector('small'); if (d) d.textContent = `${Math.round(h.volume * 100)} %`; };
   qa<HTMLButtonElement>('[data-setpitch]', view).forEach(b => b.onclick = () => { h.pitch = Number(b.dataset.setpitch); hamSend(); render('settings'); });
-  qa<HTMLButtonElement>('[data-setpager]', view).forEach(b => b.onclick = () => { state.pager = b.dataset.setpager as typeof state.pager; worker?.postMessage({ type: 'pager', which: state.pager }); render('settings'); });
+  qa<HTMLButtonElement>('[data-setmulti]', view).forEach(b => b.onclick = () => { state.pagerMulti = b.dataset.setmulti === '1'; render('settings'); });
+  const sf = q('#set-fold'); if (sf) sf.onclick = () => { hunt.fold = !hunt.fold; sf.classList.toggle('on', hunt.fold); };
   qa<HTMLButtonElement>('[data-jump]', view).forEach(b => b.onclick = () => q(`#sec-${b.dataset.jump}`, view)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   const search = q<HTMLInputElement>('#set-search', view);
   if (search) search.oninput = () => {
@@ -3878,6 +4034,8 @@ function ensureWorker(): Worker {
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
+      case 'huntPage': onHuntPage(m); break;
+      case 'huntState': onHuntState(m); break;
       case 'tune': tune(m.hz as number); break;
       case 'geoscan': {
         const g = state.psat.pic;

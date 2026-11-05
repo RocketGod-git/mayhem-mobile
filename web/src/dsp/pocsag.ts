@@ -66,8 +66,8 @@ export class PocsagDecoder implements IqProcessor {
           const bit = this.syncs[b].push(x);
           if (bit < 0) continue;
           this.shift[b] = (this.shift[b] << 1) | bit;
-          if (popcount32(this.shift[b] ^ SYNC) <= 2) { this.locked = b; this.inverted = false; this.cw = 0; this.bitCount = 0; this.cwCount = 0; }
-          else if (popcount32(this.shift[b] ^ ~SYNC) <= 2) { this.locked = b; this.inverted = true; this.cw = 0; this.bitCount = 0; this.cwCount = 0; }
+          if (popcount32(this.shift[b] ^ SYNC) <= 2) { this.locked = b; this.inverted = false; this.cw = 0; this.bitCount = 0; this.cwCount = 0; this.synced(); }
+          else if (popcount32(this.shift[b] ^ ~SYNC) <= 2) { this.locked = b; this.inverted = true; this.cw = 0; this.bitCount = 0; this.cwCount = 0; this.synced(); }
         }
       } else {
         const raw = this.syncs[this.locked].push(x);
@@ -75,6 +75,9 @@ export class PocsagDecoder implements IqProcessor {
       }
     }
   }
+
+  /** A sync codeword: this channel really is POCSAG (the hunter keeps a carrier that says so). */
+  private synced(): void { this.emit({ type: 'sync', protocol: 'POCSAG', rate: String(this.bauds[this.locked]) }); }
 
   private unlock(): void {
     this.endMessage();
@@ -88,7 +91,7 @@ export class PocsagDecoder implements IqProcessor {
     if (++this.bitCount < 32) return;
     this.bitCount = 0;
     if (this.cwCount >= 16) {
-      if (popcount32(this.cw ^ SYNC) <= 2) this.cwCount = 0; else this.unlock();
+      if (popcount32(this.cw ^ SYNC) <= 2) { this.cwCount = 0; this.synced(); } else this.unlock();
       return;
     }
     this.processCodeword(this.cwCount, this.cw);
@@ -117,11 +120,12 @@ export class PocsagDecoder implements IqProcessor {
     if (this.address < 0) return;
     const baud = this.locked >= 0 ? this.bauds[this.locked] : 0;
     const head = `RIC ${String(this.address).padStart(7, '0')} F${this.func} ${String(baud).padStart(4)}bps`;
-    if (this.msgBitCount === 0) this.emit({ type: 'packet', line: `${head} TONE` });
+    const page = (kind: string, text: string) => ({ protocol: 'POCSAG', rate: String(baud), cap: this.address, kind, text, errors: 0, where: `F${this.func}` });
+    if (this.msgBitCount === 0) this.emit({ type: 'packet', line: `${head} TONE`, page: page('TONE', '') });
     else {
       const alpha = this.decodeAlpha(), numeric = this.decodeNumeric();
       const useNumeric = this.msgCodewords >= 8 ? false : this.func === 0 ? true : !PocsagDecoder.looksAlpha(alpha);
-      this.emit({ type: 'packet', line: useNumeric ? `${head} NUM: ${numeric}` : `${head} ALPHA: ${alpha}` });
+      this.emit({ type: 'packet', line: useNumeric ? `${head} NUM: ${numeric}` : `${head} ALPHA: ${alpha}`, page: useNumeric ? page('NUM', numeric.trim()) : page('ALPHA', alpha) });
     }
     this.address = -1; this.msgBitCount = 0; this.msgCodewords = 0;
   }

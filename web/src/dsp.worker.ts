@@ -12,6 +12,7 @@ import { BtleDecoder } from './dsp/btle.js';
 import { ErtDecoder } from './dsp/ert.js';
 import { PocsagDecoder } from './dsp/pocsag.js';
 import { FlexDecoder } from './dsp/flex.js';
+import { PagerHunter } from './dsp/pagerhunt.js';
 import { SweepProcessor } from './dsp/sweep.js';
 import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
@@ -68,6 +69,20 @@ const pager: IqProcessor = {
   reset() { pocsag.reset(); flex.reset(); },
   onIq() {},
   onFm(sm, n, r) { if (pagerWhich !== 'pocsag') flex.onFm(sm, n, r); if (pagerWhich !== 'flex') pocsag.onFm(sm, n, r); },
+};
+/** The pager app's MULTI: up to four channels across the span at once, the heard one through the speaker. */
+const hunter = new PagerHunter(emit);
+let huntPhase = 0;
+hunter.onAudio = (xs, n, r) => {
+  // the channel's discriminator, resampled to the audio rate: the data's buzz, as on Android
+  const step = AUDIO_RATE / r;
+  for (let i = 0; i < n; i++) {
+    huntPhase += step;
+    if (huntPhase < 1) continue;
+    huntPhase -= 1;
+    audioBuf[audioLen++] = Math.max(-1, Math.min(1, xs[i] * 0.28));
+    if (audioLen >= audioBuf.length) flushAudio();
+  }
 };
 const ert = new ErtDecoder(emit);
 const btle = new BtleDecoder(emit);
@@ -256,6 +271,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'hd': hdOn = !!m.on; if (!hdOn) hd.reset(); break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
     case 'pager': pagerWhich = m.which; pocsag.reset(); flex.reset(); break;
+    case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;
     case 'ismFamilies': ism.weather = !!m.weather; ism.remotes = !!m.remotes; ism.cars = !!m.cars; break;
     // Every list screen's CLEAR: whichever decoder is running forgets its table, if it keeps one.
     case 'clear': (processor as { clear?: () => void } | null)?.clear?.(); break;
@@ -284,6 +300,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'aprs': return aprs;
     case 'pocsag': return pocsag;
     case 'pager': return pager;
+    case 'pagerhunt': hunter.reset(); return hunter;
     case 'ert': return ert;
     case 'btle': return btle;
     case 'tpms': return tpms;
@@ -459,6 +476,7 @@ function process(iq: Int8Array): void {
       if (open !== sqOpen || now - sqLastReport > 250) { sqOpen = open; sqLastReport = now; post({ type: 'sq', open, db, floor: sqFloor }); }
     }
   }
+  if (p === hunter) hunter.centerHz = centreHz;
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
 
