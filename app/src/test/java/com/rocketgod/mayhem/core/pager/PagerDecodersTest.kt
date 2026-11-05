@@ -465,4 +465,17 @@ class PagerDecodersTest {
         while (p < n) { val m = minOf(131_072, n - p); rx.process(iq.copyOfRange(p, p + m), qq.copyOfRange(p, p + m), m); p += m }
         assertEquals("pages: ${c.pages}", "TEST PAGE OFF CENTER", c.pages.firstOrNull { it.capcode == 1234567L }?.text)
     }
+
+    @Test fun textFilterKeepsWritingAndDropsDataFeeds() {
+        for (s in listOf("MSN 012 Hello Message from NOC PCB2 3102174981 [53]",
+                "THIS IS A TEST PERIODIC PAGE SEQUENTIAL NUMBER  6763",
+                "From: WebCTRL@ngc.com Subject: VAV-1-07 Control Room - High Zone Temp: Alarm (ZTMP_HI)  [86]",
+                "CALL 555-1212 RE: PT IN RM 4 *URGENT*"))
+            assertTrue(s, PocsagDecoder.readsAsText(s))
+        for (s in listOf("~G1\$+#^aXaV`UbUbU\$!!!!Pueblo CO       . [68]",
+                "~G1 +#`d]e]f]h^h_\"\"!!!Bakersfield CA  . [18]",
+                "~&=\$#SAaXaV`UbUbU\$!!!!PUB [39]",
+                "~G1!+#glemeidhdga\$&\$&&Brownsville TX  . [27]"))
+            assertTrue(s, !PocsagDecoder.readsAsText(s))
+    }
 }
