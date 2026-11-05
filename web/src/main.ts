@@ -719,6 +719,7 @@ function applyLauncherView(): void {
   scope?.setLabels(centredLabels(state.freq, state.rate));
 }
 
+const ACARS_SPAN_HZ = 130_800_000;
 function open(app: AppId | null): void {
   if (app === 'settings') { openSettings(); return; }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
@@ -768,8 +769,9 @@ function open(app: AppId | null): void {
     case 'ert': configure('NONE', 911_600_000, 2e6, 32, 40, true, 'ert'); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
-    // The span sits 300 kHz off the channel, so the channel is cut out away from the radio's DC spike.
-    case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = 131_550_000 + 300_000; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
+    // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
+    // none of them on the radio's DC spike; 131.550 is the one heard.
+    case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = ACARS_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is

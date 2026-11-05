@@ -21,13 +21,54 @@ import kotlin.math.sqrt
  * How a tone maps to a data bit is read three ways at once: the tone as the bit, and the two differential readings
  * (a coherent MSK receiver like acarsdec's sees the bit repeat on one tone and flip on the other, depending on its
  * sign convention). Each reading hunts for SYN SYN SOH in both polarities; whichever finds it collects the frame.
- * The same receiver as the web app's (web/src/dsp/acars.ts).
+ *
+ * Like acarsdec, every known ACARS channel inside the span is decoded at once (the tuned one first, then the US
+ * set, then the rest, up to [MAX_CHANNELS]), each by its own receiver, and every message says which channel it
+ * came in on. The same receiver as the web app's (web/src/dsp/acars.ts).
  */
 class AcarsDecoder(private val log: PacketLog) : IqProcessor {
+    /** The span centre and the tuned channel; the app points these at the engine. */
+    var centerOf: () -> Long = { 0L }
+    var tunedOf: () -> Long = { 0L }
+    /** Where decoded frames' readings and CRCs are reported (the diagnostics log). */
+    var onNote: ((String) -> Unit)? = null
+    private var key = ""
+    private var rx = emptyList<AcarsChannel>()
+    /** The channels decoded now. */
+    fun channels(): List<Long> = rx.map { it.hz }
+
+    override fun reset(rate: Int) { key = ""; rx = emptyList() }
+
+    override fun onIq(iq: ByteArray, len: Int, rate: Int) {
+        val center = centerOf(); val tuned = tunedOf()
+        val k = "$center|$tuned|$rate"
+        if (k != key) {
+            key = k
+            val reach = rate / 2 - 50_000
+            val want = (listOf(tuned) + CHANNELS).distinct().filter { it > 0 && kotlin.math.abs(it - center) < reach }.take(MAX_CHANNELS)
+            rx = want.map { hz -> rx.firstOrNull { it.hz == hz } ?: AcarsChannel(hz, log) { onNote?.invoke(it) } }
+            for (r in rx) r.offsetHz = (r.hz - center).toInt()
+            onNote?.invoke("ACARS: decoding ${rx.joinToString(", ") { "%.3f".format(it.hz / 1e6) }} MHz")
+        }
+        for (r in rx) r.onIq(iq, len, rate)
+    }
+
+    companion object {
+        /** The radio sits this far from the tuned channel: with 131.550 tuned the span is centred on 130.8 MHz, so
+         *  every US channel (130.025-131.550) is inside it and none is on the DC spike. */
+        const val LO_SHIFT = -750_000L
+        private const val MAX_CHANNELS = 6
+        /** ACARS channels: the tuned one goes first, then these in order of preference. */
+        val CHANNELS = listOf(131_550_000L, 130_025_000L, 130_425_000L, 130_450_000L, 131_125_000L,   // US
+            131_525_000L, 131_725_000L, 131_825_000L, 136_900_000L, 136_750_000L,                     // Europe
+            131_450_000L, 131_950_000L, 129_125_000L, 131_475_000L)                                   // Japan, others
+    }
+}
+
+/** One ACARS channel's receiver. */
+private class AcarsChannel(val hz: Long, private val log: PacketLog, private val note: (String) -> Unit) : IqProcessor {
     /** The channel's offset from the span centre. */
     @Volatile var offsetHz = 0
-    /** Where a decoded frame's reading and CRC are reported (the diagnostics log). */
-    var onNote: ((String) -> Unit)? = null
 
     private var rate = 0; private var lastOffset = Int.MIN_VALUE
     private var cr = 1.0; private var ci = 0.0; private var dr = 1.0; private var di = 0.0
@@ -182,17 +223,15 @@ class AcarsDecoder(private val log: PacketLog) : IqProcessor {
         }
         val text = StringBuilder()
         while (p < n) { val c = bytes[p++]; if (c == ETX || c == ETB) break; text.append(if (c in 0x20..0x7e) c.toChar() else if (c == 0x0a || c == 0x0d) ' ' else '·') }
-        val head = "ACARS ${if (down) "↓" else "↑"} $reg  $label  blk $blk  ack $ack${if (msn.isNotEmpty()) "  #$msn $flight" else ""}${if (ok) "" else "  CRC?"}${if (mode != '2') "  mode $mode" else ""}"
+        val head = "ACARS ${"%.3f".format(hz / 1e6)} ${if (down) "↓" else "↑"} $reg  $label  blk $blk  ack $ack${if (msn.isNotEmpty()) "  #$msn $flight" else ""}${if (ok) "" else "  CRC?"}${if (mode != '2') "  mode $mode" else ""}"
         val body = text.toString().trim()
         log.add(if (body.isEmpty()) head else "$head\n$body")
-        onNote?.invoke("ACARS frame read as ${LANE_NAMES[l.kind]}${if (l.polarity == 1) " (inverted)" else ""}, CRC ${if (ok) "good" else "bad"}, ${l.parityErrors} parity errors")
+        note("ACARS ${"%.3f".format(hz / 1e6)}: frame read as ${LANE_NAMES[l.kind]}${if (l.polarity == 1) " (inverted)" else ""}, CRC ${if (ok) "good" else "bad"}, ${l.parityErrors} parity errors")
         // the other readings are not hunting this frame any more
         for (o in lanes) if (o !== l && o.collecting) { o.collecting = false; o.window = 0 }
     }
 
     companion object {
-        /** The radio sits this far above the channel, so the channel is cut out away from the DC spike. */
-        const val LO_SHIFT = 300_000L
         private const val STX = 0x02; private const val ETX = 0x03; private const val ETB = 0x17; private const val DEL = 0x7f
         private val LANE_NAMES = arrayOf("tone", "diff-a", "diff-b")
         /** SYN SYN SOH as received, oldest bit first, each byte LSB first. */

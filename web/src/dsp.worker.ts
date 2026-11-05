@@ -477,7 +477,7 @@ function process(iq: Int8Array): void {
     }
   }
   if (p === hunter) hunter.centerHz = centreHz;
-  if (p === acars) acars.offsetHz = offsetHz;
+  if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
 

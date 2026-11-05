@@ -138,10 +138,12 @@ object Apps {
             MayhemApp.ERT -> SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, r, 32, 40, true, ert)
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
-            // the radio sits LO_SHIFT above the channel, off its DC spike; the AM audio and the decoder use the offset
+            // the radio sits LO_SHIFT from the channel (130.8 MHz for 131.550), so every US channel is in the span and
+            // decoded at once; the AM audio plays the tuned one through the offset
             MayhemApp.ACARS -> {
                 SdrEngine.configure(SdrEngine.Mode.AM, 131_550_000L + AcarsDecoder.LO_SHIFT, r, 32, 32, false, acars)
-                SdrEngine.setOffset(-AcarsDecoder.LO_SHIFT.toInt()); acars.offsetHz = -AcarsDecoder.LO_SHIFT.toInt()
+                SdrEngine.setOffset(-AcarsDecoder.LO_SHIFT.toInt())
+                acars.centerOf = { SdrEngine.freqHz.value }; acars.tunedOf = { SdrEngine.channelHz() }
                 acars.onNote = { com.rocketgod.mayhem.Diag.log(it) }
             }
             MayhemApp.SUBGHZ -> SdrEngine.configure(SdrEngine.Mode.NONE, 433_920_000L, r, 32, 40, true, ism)

@@ -56,7 +56,7 @@ button { font: inherit; }
 /* The log is a window, not a strip: full screen by default, or a small panel dragged by its title bar
    over whatever app is open, so a decode can be watched while the log scrolls. */
 .logwin { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
-  background: var(--bg); border: 1px solid var(--accent); }
+  background: var(--paper); border: 1px solid var(--accent); }
 .logwin[hidden] { display: none; }
 .logwin.pip { inset: auto; width: min(340px, 86vw); height: min(260px, 42vh); border-radius: 8px;
   box-shadow: 0 10px 30px rgba(0,0,0,.6); }

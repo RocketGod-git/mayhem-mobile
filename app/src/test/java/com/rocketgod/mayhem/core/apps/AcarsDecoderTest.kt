@@ -54,13 +54,13 @@ class AcarsDecoderTest {
             iq[2 * i] = ((a + 127.4).roundToInt().coerceIn(0, 255)).toByte(); iq[2 * i + 1] = ((b + 127.4).roundToInt().coerceIn(0, 255)).toByte()
         }
         val log = PacketLog(); val d = AcarsDecoder(log)
-        d.reset(rate); d.offsetHz = off
+        d.reset(rate); d.centerOf = { 131_300_000L }; d.tunedOf = { 131_300_000L + off }
         var p = 0
         while (p < n) { val m = minOf(131_072, n - p); d.onIq(iq.copyOfRange(2 * p, 2 * (p + m)), 2 * m, rate); p += m }
         val lines = log.lines.value
         assertEquals("kind $kind inv $invert: one message $lines", 1, lines.size)
         return lines.firstOrNull()?.also {
-            assertTrue("kind $kind inv $invert: $it", it.contains("N12345") && it.contains("H1") && it.contains("#M01A UA1234") && it.contains(text) && !it.contains("CRC?"))
+            assertTrue("kind $kind inv $invert: $it", it.contains("131.550") && it.contains("N12345") && it.contains("H1") && it.contains("#M01A UA1234") && it.contains(text) && !it.contains("CRC?"))
         }
     }
 
@@ -68,9 +68,39 @@ class AcarsDecoderTest {
 
     @Test fun acarsNoiseGivesNothing() {
         val log = PacketLog(); val d = AcarsDecoder(log); val rate = 2_000_000
-        d.reset(rate); d.offsetHz = 250_000
+        d.reset(rate); d.centerOf = { 130_800_000L }; d.tunedOf = { 131_550_000L }
         val r = java.util.Random(99); val buf = ByteArray(2 * 131_072)
         repeat(60) { for (i in buf.indices) buf[i] = (127 + r.nextInt(21) - 10).toByte(); d.onIq(buf, buf.size, rate) }
         assertTrue("noise gave ${log.lines.value}", log.lines.value.isEmpty())
+    }
+    /** Two channels at once inside one span centred on 130.8 MHz: each message comes out, tagged with its channel. */
+    @Test fun acarsTwoChannelsAtOnce() {
+        val rate = 2_000_000; val center = 130_800_000L
+        val chans = listOf(Triple(130_025_000L, "FIRST CHANNEL MSG", 1), Triple(131_550_000L, "SECOND CHANNEL MSG", 2))
+        val tss = chans.map { (_, text, kind) -> tones(frame(text), kind, 0) + List(40) { 1 } }
+        val r = java.util.Random(77); val lead = (0.05 * rate).toInt()
+        val n = lead + Math.ceil(tss.maxOf { it.size } / 2400.0 * rate).toInt() + 4000
+        val iq = ByteArray(2 * n); val aph = DoubleArray(2); val cph = DoubleArray(2)
+        for (i in 0 until n) {
+            var a = 0.0; var b = 0.0
+            for (c in 0..1) {
+                val k = Math.floor((i - lead).toDouble() / rate * 2400).toInt(); val ts = tss[c]; val on = k >= 0 && k < ts.size
+                if (on) aph[c] += 2 * PI * (if (ts[k] == 1) 2400 else 1200) / rate
+                cph[c] += 2 * PI * (chans[c].first - center) / rate
+                val amp = if (on) 16 * (1 + 0.7 * cos(aph[c])) else 0.0
+                a += amp * cos(cph[c]); b += amp * sin(cph[c])
+            }
+            iq[2 * i] = ((a + 3 * r.nextGaussian() + 127.4).roundToInt().coerceIn(0, 255)).toByte()
+            iq[2 * i + 1] = ((b + 3 * r.nextGaussian() + 127.4).roundToInt().coerceIn(0, 255)).toByte()
+        }
+        val log = PacketLog(); val d = AcarsDecoder(log)
+        d.reset(rate); d.centerOf = { center }; d.tunedOf = { 131_550_000L }
+        var p = 0
+        while (p < n) { val m = minOf(131_072, n - p); d.onIq(iq.copyOfRange(2 * p, 2 * (p + m)), 2 * m, rate); p += m }
+        val lines = log.lines.value
+        assertTrue("$lines", lines.any { it.contains("130.025") && it.contains("FIRST CHANNEL MSG") })
+        assertTrue("$lines", lines.any { it.contains("131.550") && it.contains("SECOND CHANNEL MSG") })
+        assertEquals("$lines", 2, lines.size)
+        assertEquals(131_550_000L, d.channels().first())
     }
 }
