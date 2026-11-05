@@ -3866,7 +3866,11 @@ function ensureWorker(): Worker {
       case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
-        const id = state.app ?? 'x'; (logs[id] ??= []).unshift(m.line); if (logs[id].length > 300) logs[id].length = 300; counts[id] = (counts[id] ?? 0) + 1; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); break; }
+        const id = state.app ?? 'x', list = (logs[id] ??= []);
+        // a repeat that completed a partial page takes the old line's place rather than adding a second
+        const was = typeof m.replaces === 'string' ? list.indexOf(m.replaces) : -1;
+        if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
+        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); break; }
       case 'rds': lastRds = m as typeof lastRds; drawRds(); break;
       case 'hd': lastHd = m as typeof lastHd; console.log('[hd]', JSON.stringify(m)); drawHd(); break;
       case 'same': onSameAlert(m); break;
