@@ -892,3 +892,4 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .launch-grid .tile-title { font-size: 15px; }
   .launch-grid .tile-blurb { font-size: 9.5px; max-height: 2.6em; }
 }
+.launch-line { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 0.5px; margin: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
