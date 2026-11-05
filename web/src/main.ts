@@ -2572,7 +2572,7 @@ function renderPtt(view: HTMLElement, tabs: string): void {
       <button id="ptt" class="chip ptt">PUSH TO TALK</button>
       <div id="tx-status" class="health">idle</div>
       <div class="caption">DEVIATION · CTCSS</div><div class="row bandstrip">${[2500, 5000].map(d => `<button class="chip" data-dev="${d}">±${d / 1000} kHz</button>`).join('')}${[0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5].map(t => `<button class="chip" data-tone="${t}">${t ? t.toFixed(1) : 'no tone'}</button>`).join('')}</div>
-      <div class="caption">TX GAIN · IF 0–47 dB · AMP +14 dB</div><div class="row">${[0, 10, 20, 30, 47].map(g => `<button class="chip" data-txg="${g}">${g}</button>`).join('')}<button id="tx-amp" class="chip">amp</button></div>
+      ${txGainHtml()}
       <div style="margin-top:6px">${hamBandTiles()}</div>
       <div class="caption">MODE (receive between overs)</div><div class="row">${(['NFM', 'USB', 'LSB'] as HamMode[]).map(m => `<button class="chip" data-hmode="${m}">${m}</button>`).join('')}</div>
     </section>`;
@@ -3103,7 +3103,7 @@ function renderTroll(view: HTMLElement): void {
     <section class="controls trollctl">
       <div class="trollintro">Everything here <b>transmits</b> unless noted — use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live. Harmless fun, your call.</div>
       ${stepHtml([1e6, 1e5, 1e4])}
-      <div class="trollgain"><span class="trolllabel">TX&nbsp;GAIN</span><div class="row">${[0, 10, 20, 30, 47].map(g => `<button class="chip" data-txg="${g}">${g}</button>`).join('')}<button id="tx-amp" class="chip">amp</button></div></div>
+      ${txGainHtml()}
 
       <div class="trollcard sub">
         <div class="trollhead"><span class="ico">📡</span><b>ON THE DIAL</b><small>fires on the frequency tuned above</small></div>
@@ -3143,8 +3143,8 @@ function renderTroll(view: HTMLElement): void {
   const setg = () => qa('[data-txg]').forEach(b => b.classList.toggle('on', Number(b.dataset.txg) === tx.gain));
   qa<HTMLButtonElement>('[data-txg]', view).forEach(b => b.onclick = () => { tx.gain = Number(b.dataset.txg); setg(); });
   setg();
-  const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp); ampb.textContent = tx.amp ? 'AMP' : 'amp';
-  ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); ampb.textContent = tx.amp ? 'AMP' : 'amp'; };
+  const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp);
+  ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); };
   // STOP belongs to the card of the tool that is transmitting, not a bar at the foot of the page. Remember the last
   // card tapped, and while a transmission runs, move the status + STOP strip into that card.
   const ctl = view.querySelector('.trollctl') as HTMLElement;
@@ -3218,6 +3218,11 @@ function showTxSafetyPrompt(): void {
   $('tx-cancel').onclick = () => { close(); open(null); };
 }
 
+/** The transmit modes, each with what it sends (the Android app's tiles). */
+const TX_MODES: [string, string][] = [['Signal', 'test carrier'], ['Tones', 'DTMF'], ['POCSAG', 'pager'], ['RTTY', '45 baud'], ['APRS', 'AX.25'], ['Morse', 'CW'], ['OOK', 'PT2262'],
+  ['MDC', 'PTT-ID'], ['QC-II', 'two-tone'], ['SubGHz', 'Flipper .sub'], ['KeeLoq', 'HCS301'], ['Noise', 'OOK noise'], ['Brute', 'PT2262'], ['Hopper', 'hop list'], ['ADS-B', 'DF17']];
+/** TX gain as one bar, IF 0–47 dB, with the +14 dB amp beside it. */
+const txGainHtml = () => `<div class="ctlrow"><span class="rl">GAIN</span>${segHtml([0, 10, 20, 30, 47].map(g => `<button data-txg="${g}">${g}</button>`))}<button id="tx-amp" class="tog" title="the amp adds +14 dB">AMP</button></div>`;
 function renderTx(view: HTMLElement): void {
   tx.onStatus = txStatus;
   if (!tx.enabled) {
@@ -3230,10 +3235,8 @@ function renderTx(view: HTMLElement): void {
     <section class="visual">${readoutHtml()}</section>
     <section class="controls">
       ${stepHtml([1e6, 1e5, 1e4])}
-      <div class="caption">TX GAIN · IF 0–47 dB  ·  AMP +14 dB</div>
-      <div class="row">${[0, 10, 20, 30, 47].map(g => `<button class="chip" data-txg="${g}">${g}</button>`).join('')}<button id="tx-amp" class="chip">amp</button></div>
-      <div class="caption">MODE</div>
-      <div class="wrap">${['Signal', 'Tones', 'POCSAG', 'RTTY', 'APRS', 'Morse', 'OOK', 'MDC', 'QC-II', 'SubGHz', 'KeeLoq', 'Noise', 'Brute', 'Hopper', 'ADS-B'].map((t, i) => `<button class="chip" data-txtab="${i}">${t}</button>`).join('')}</div>
+      ${txGainHtml()}
+      <div class="tgrid">${TX_MODES.map(([t, sub], i) => `<button class="tl" data-txtab="${i}"><b>${t.toUpperCase()}</b><small>${sub}</small></button>`).join('')}</div>
       <div id="tx-body"></div>
       <div class="health" id="tx-status" style="margin-top:8px">idle</div>
       <button id="tx-stop" class="chip rec" style="margin-top:8px" hidden>■ STOP</button>
@@ -3241,8 +3244,8 @@ function renderTx(view: HTMLElement): void {
   const setg = () => qa('[data-txg]').forEach(b => b.classList.toggle('on', Number(b.dataset.txg) === tx.gain));
   qa<HTMLButtonElement>('[data-txg]', view).forEach(b => b.onclick = () => { tx.gain = Number(b.dataset.txg); setg(); });
   setg();
-  const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp); ampb.textContent = tx.amp ? 'AMP' : 'amp';
-  ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); ampb.textContent = tx.amp ? 'AMP' : 'amp'; };
+  const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp);
+  ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); };
   $('tx-stop').onclick = () => tx.stop();
   let tab = 0;
   const body = $('tx-body');

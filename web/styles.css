@@ -152,9 +152,6 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 /* Troll app: grouped, accented cards instead of one long stack of full-width buttons. */
 .trollintro { font-size: 11px; color: var(--muted); line-height: 1.45; margin: 2px 2px 8px; }
 .trollintro b { color: var(--danger); letter-spacing: 1px; }
-.trollgain { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; }
-.trollgain .trolllabel { flex: none; font-size: 10px; letter-spacing: 2px; color: var(--muted); }
-.trollgain .row { flex: 1; }
 .trollcard { position: relative; background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, transparent), var(--paper)); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; padding: 11px 13px 13px; margin: 12px 0; }
 .trollcard.ble { border-left-color: var(--accent); }
 .trollcard.sub { border-left-color: var(--accent2); }
@@ -853,3 +850,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.sat .controls > *, .view.adsb .controls > *, .view.ais .controls > *, .view.aprs .controls > * { flex-shrink: 0; }
 }
 @media (max-width: 719.98px) { .view.sat .about { font-size: 12px; line-height: 1.45; color: var(--muted); } }
+/* The transmit modes: four tiles to a row. */
+.tgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.tgrid .tl { width: auto; min-width: 0; }
+.tgrid .tl b { font-size: 12px; }
+.grid-tx .chip { border-radius: 12px; border-color: var(--line); background: var(--surface); }
+/* Transmit and Troll wear the danger colour, as on Android. */
+.view.transmit, .view.troll { --accent: var(--danger); }
