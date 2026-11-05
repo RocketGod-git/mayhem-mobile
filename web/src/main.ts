@@ -199,6 +199,7 @@ function setStatus(s: string, connected: boolean): void {
   $('status').textContent = s;
   $('dot').className = 'dot ' + (connected ? 'on' : 'off');
   $('board').textContent = state.board ? `${state.board} · ${state.firmware}` : 'no device';
+  if ($('topnav')) refreshShell();
 }
 
 // ---- radio / engine control -----------------------------------------------------------------------------------
@@ -313,6 +314,12 @@ function setSquelch(db: number): void {
   if (db === 0) { state.sqOpen = true; refreshSquelch(); }
 }
 function refreshSquelch(): void {
+  if (state.app === 'audio') {
+    if (state.scanning) setLamp(state.sqOpen && state.squelch > 0 ? 'SCAN · SIGNAL' : 'SCAN', 'amber', true);
+    else if (state.squelch > 0 && !state.sqOpen) setLamp('SQUELCHED');
+    else setLamp('OPEN', 'ok');
+    const r = q('#capr'); if (r) r.textContent = state.squelch ? `SQL ${state.squelch} dB` : 'SQL OFF';
+  }
   const el = q('#sq'); if (!el) return;
   el.hidden = state.squelch === 0 && !state.scanning;
   el.classList.toggle('open', state.sqOpen);
@@ -383,6 +390,7 @@ function setMode(m: Mode): void {
   if (tunesInSpan() && m !== 'NONE') state.radioMode = m;
   worker?.postMessage({ type: 'config', mode: m });
   qa('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  if (state.app === 'audio') setFace(m, bandTitle(tunedHz()));
   refreshChannel();
   if (m !== 'WFM') { lastRds = null; lastHd = null; }
   drawRds(); drawHd();
@@ -607,6 +615,40 @@ const LAUNCH_BANDS: LaunchBand[] = [
  * is for, which is to find something and then pick the app to listen with.
  */
 /** The band chips (FM / AIR / VHF / 315 / UHF / 433 / 915 / 1090), shared by the launcher and the receiver apps. */
+/** The bands as tiles, each with its range, for a receiver's tile row (the launcher keeps its chips). */
+function bandTilesHtml(): string {
+  return `<div class="tiles">${LAUNCH_BANDS.map(b => `<button class="tl" data-lband="${b.id}"><b>${b.name}</b><small>${(b.lo / 1e6).toFixed(0)}–${(b.hi / 1e6).toFixed(0)}</small></button>`).join('')}</div>`;
+}
+/** What the tuned frequency is, in a few words (the Android app's band title). */
+function bandTitle(hz: number): string {
+  if (hz >= 87.5e6 && hz <= 108e6) return 'FM BROADCAST';
+  if (hz > 108e6 && hz < 118e6) return 'AIR NAVIGATION';
+  if (hz >= 118e6 && hz <= 137e6) return 'AIRBAND';
+  if (hz >= 144e6 && hz <= 146e6) return '2 M AMATEUR';
+  if (hz >= 156e6 && hz <= 162.025e6) return 'MARINE VHF';
+  if (hz >= 162.4e6 && hz <= 162.55e6) return 'NOAA WEATHER';
+  if (hz >= 433.05e6 && hz <= 434.79e6) return 'ISM 433';
+  if (hz >= 430e6 && hz <= 440e6) return '70 CM AMATEUR';
+  if (hz >= 902e6 && hz <= 928e6) return 'ISM 915';
+  if (hz >= 1089e6 && hz <= 1091e6) return 'ADS-B';
+  return LAUNCH_BANDS.find(b => hz >= b.lo && hz <= b.hi)?.what.toUpperCase() ?? 'GENERAL COVERAGE';
+}
+/**
+ * How far the tuned channel stands over the noise, in dB: the mean power of the spectrum bins inside the channel
+ * against the median bin of the whole span. (The squelch's own floor rises to meet a carrier that stays up, so it
+ * can't drive a meter; the median doesn't.)
+ */
+function channelOverNoise(bins: Float32Array): number {
+  const n = bins.length; if (n < 16 || state.rate <= 0) return 0;
+  const half: Record<string, [number, number]> = { WFM: [-100e3, 100e3], NFM: [-6250, 6250], AM: [-5000, 5000], USB: [0, 3000], LSB: [-3000, 0] };
+  const [a, b] = half[state.mode] ?? [0, 0]; if (a === b) return 0;
+  const off = tunedHz() - spanCenter();
+  const i0 = Math.max(0, Math.min(n - 1, Math.floor((0.5 + (off + a) / state.rate) * n)));
+  const i1 = Math.max(i0, Math.min(n - 1, Math.floor((0.5 + (off + b) / state.rate) * n)));
+  let sum = 0; for (let i = i0; i <= i1; i++) sum += Math.pow(10, bins[i] / 10);
+  const sorted = Float32Array.from(bins).sort();
+  return Math.max(0, 10 * Math.log10(sum / (i1 - i0 + 1)) - sorted[n >> 1]);
+}
 function bandChipsHtml(): string {
   return LAUNCH_BANDS.map(b => `<button class="chip" data-lband="${b.id}" title="${esc(b.name)} · ${esc(b.what)} · ${(b.lo / 1e6).toFixed(0)}–${(b.hi / 1e6).toFixed(0)} MHz">${b.name}</button>`).join('');
 }
@@ -1274,10 +1316,40 @@ function tintHex(cat: string): string { const s = currentSkin(); return cat === 
 const FREQ_GROUPS: [number[], string][] = [[[1e9], 'GHz'], [[1e8, 1e7, 1e6], 'MHz'], [[1e5, 1e4, 1e3], 'kHz'], [[1e2, 1e1, 1], 'Hz']];
 const freqDigitsHtml = () => FREQ_GROUPS.map(([ws, unit], gi) =>
   `${gi ? '<span class="fsep">.</span>' : ''}<span class="fgrp"><span class="fds">${ws.map(w => `<span class="fd" data-w="${w}" tabindex="0" role="spinbutton" aria-label="${unit} digit">0</span>`).join('')}</span><span class="funit">${unit}</span></span>`).join('');
-const readoutHtml = () => `<div class="readout"><div id="freq" class="freq">${freqDigitsHtml()}</div><button id="fkey" class="fav" title="type a frequency">⌨</button><button id="fav" class="fav" title="save this to favorites">☆</button><span id="sq" class="sq" hidden>SQL</span></div><div class="levelbar"><div id="level"></div></div><div id="health" class="health">waiting for IQ…</div>`;
+/** The 0–40 dB scale a signal meter reads in, unless an app gives its own (fractions of the meter, labels). */
+const DB_SCALE: [number, string][] = [[0, '0'], [0.25, '10'], [0.5, '20'], [0.75, '30'], [1, '40 dB']];
+const scaleHtml = (sc: [number, string][]) => sc.map(([at, l]) => at >= 0.98 ? `<span class="end">${l}</span>` : `<span style="left:${at * 100}%">${l}</span>`).join('');
+/**
+ * The frequency card, the same on every app (the Android app's): a tag, a title, ☆ and ⌨, a lamp; the digits
+ * across the full width; a 32-LED meter with its scale; a caption line. setFace / setLamp / setMeter fill it.
+ */
+const readoutHtml = () => `<div class="face"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><button id="fav" class="fact" title="save this to FAVES">☆</button><button id="fkey" class="fact" title="type a frequency">⌨</button><span id="lamp" class="lamp"><i></i><b></b></span><span id="sq" hidden></span></div><div class="readout"><div id="freq" class="freq">${freqDigitsHtml()}</div></div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale">${scaleHtml(DB_SCALE)}</div><div class="fcap"><b id="capl">SIGNAL —</b><span id="capr"></span></div><div id="health" class="health">waiting for IQ…</div></div>`;
+/** What the card says: its tag, its title, and (optionally) the caption's right side. */
+function setFace(tag: string, title: string, right?: string): void {
+  const t = q('#ftag'); if (t) t.textContent = tag;
+  const ti = q('#ftitle'); if (ti) ti.textContent = title;
+  if (right !== undefined) { const r = q('#capr'); if (r) r.textContent = right; }
+}
+/** The card's lamp: a word and its colour ('ok' green, 'amber', 'red', or muted when none), blinking while searching. */
+function setLamp(text: string, tone: '' | 'ok' | 'amber' | 'red' = '', blink = false): void {
+  const l = q('#lamp'); if (!l) return;
+  l.className = `lamp ${tone}${tone ? ' lit' : ''}${blink ? ' blink' : ''}`;
+  const b = l.querySelector('b'); if (b && b.textContent !== text) b.textContent = text;
+}
+/** Light the meter to [frac] of full scale, with a threshold mark at [tick] (both 0..1), and its caption's left side. */
+function setMeter(frac: number, left: string, tick: number | null = null, scale?: [number, string][]): void {
+  const ls = qa<HTMLElement>('#leds i'); if (!ls.length) return;
+  const lit = Math.max(0, Math.min(32, Math.round(frac * 32)));
+  ls.forEach((e, i) => { const c = i >= lit ? '' : i < 14 ? 'l1' : i < 22 ? 'l2' : i < 28 ? 'l3' : 'l4'; if (e.className !== c) e.className = c; });
+  const m = q<HTMLElement>('#leds s'); if (m) { m.hidden = tick === null; if (tick !== null) m.style.left = `${Math.max(0, Math.min(1, tick)) * 100}%`; }
+  const c = q('#capl'); if (c && c.textContent !== left) c.textContent = left;
+  if (scale) { const sc = q('#lscale'); if (sc) sc.innerHTML = scaleHtml(scale); }
+}
 /** Paint hz into the digit readout (leading zeros dimmed down to the MHz units digit). */
 function setFreqDisplay(hz: number): void {
   const ds = qa<HTMLElement>('#freq .fd'); if (!ds.length) return;
+  // below 1 GHz the GHz digit is a zero nobody taps, so it goes and the digits get its width
+  q('#freq')?.classList.toggle('noghz', hz < 1e9);
   let lead = true;
   for (const d of ds) {
     const w = Number(d.dataset.w);
@@ -1322,10 +1394,31 @@ function freqEntry(seed = ''): void {
   inp.onblur = () => close(true);
 }
 const isAndroid = () => /android/i.test(navigator.userAgent);
-const gainHtml = () => `<div class="caption" id="gain-cap">GAIN</div><div class="row"><button id="agc" class="chip">AGC</button><button id="amp" class="chip">AMP OFF</button><button id="biast" class="chip" hidden>BIAS-T</button><div class="stepper"><button id="lna-minus">−</button><span id="lna">LNA</span><button id="lna-plus">+</button></div><div class="stepper"><button id="vga-minus">−</button><span id="vga">VGA</span><button id="vga-plus">+</button></div></div>`;
-const stepHtml = (steps: number[]) => `<div class="caption">TUNE · MHz</div><div class="row">${steps.map(s => `<button class="chip" data-step="${-s}">−${stepLabel(s)}</button>`).join('')}${[...steps].reverse().map(s => `<button class="chip" data-step="${s}">+${stepLabel(s)}</button>`).join('')}</div>`;
-const presetHtml = (title: string, presets: [string, number, Mode?][]) => `<div class="caption">${title}</div><div class="row">${presets.map(([l, hz, m]) => `<button class="chip" data-preset="${hz}" ${m ? `data-pmode="${m}"` : ''}>${l}</button>`).join('')}</div>`;
-function stepLabel(hz: number): string { return hz >= 1e6 ? `${hz / 1e6}` : hz >= 1e5 ? `.${hz / 1e5}` : hz >= 1e4 ? `.0${hz / 1e4}` : hz >= 1e3 ? `.00${hz / 1e3}` : `.000${hz / 100}`; }
+const gainHtml = () => `<div class="gainwrap"><div class="caption" id="gain-cap">GAIN</div><div class="row"><button id="agc" class="chip">AGC</button><button id="amp" class="chip">AMP OFF</button><button id="biast" class="chip" hidden>BIAS-T</button><div class="stepper"><button id="lna-minus">−</button><span id="lna">LNA</span><button id="lna-plus">+</button></div><div class="stepper"><button id="vga-minus">−</button><span id="vga">VGA</span><button id="vga-plus">+</button></div></div></div>`;
+/** Tune steps went with the Android app's redesign: every digit tunes itself. Kept so the call sites read the same. */
+const stepHtml = (_steps: number[]) => '';
+/** A sideways scroller whose edges glow while there is more past them (wired by bindHs). */
+const hsHtml = (inner: string, cls = '') => `<div class="hs ${cls}"><div class="hs-in">${inner}</div></div>`;
+/** Presets as a tile row: the number large, what it is under it ("FM 92.3" → 92.3 / FM, "315.000 · US" → 315.000 / US). */
+const presetHtml = (_title: string, presets: [string, number, Mode?][]) => hsHtml(`<div class="tiles wide">${presets.map(([l, hz, m]) => {
+  const parts = l.replace(' · ', ' ').split(' ');
+  const num = parts.find(x => /^[0-9.]+$/.test(x)) ?? (hz / 1e6).toFixed(3);
+  const sub = parts.filter(x => x !== num).join(' ') || 'MHz';
+  return `<button class="tl" data-preset="${hz}" ${m ? `data-pmode="${m}"` : ''}><b>${num}</b><small>${sub}</small></button>`;
+}).join('')}</div>`);
+/** One bar of equal segments for a single choice; the buttons keep their data attributes, so their wiring is unchanged. */
+const segHtml = (buttons: string[], cls = '') => `<div class="seg ${cls}">${buttons.join('')}</div>`;
+/** Every .hs under [root]: glow an edge while there is more to scroll that way. */
+function bindHs(root: ParentNode = document): void {
+  qa<HTMLElement>('.hs', root as HTMLElement).forEach(w => {
+    const inner = w.querySelector<HTMLElement>('.hs-in'); if (!inner || inner.dataset.hs) return;
+    inner.dataset.hs = '1';
+    const upd = () => { w.classList.toggle('mL', inner.scrollLeft > 4); w.classList.toggle('mR', inner.scrollLeft < inner.scrollWidth - inner.clientWidth - 4); };
+    inner.addEventListener('scroll', upd, { passive: true }); new ResizeObserver(upd).observe(inner); upd();
+    // the tile you are on, in view
+    const on = inner.querySelector<HTMLElement>('.on'); if (on) inner.scrollLeft = Math.max(0, on.offsetLeft - inner.offsetLeft - 60);
+  });
+}
 /** The line over every decode list. PAUSE holds the screen still so a row can be read while packets keep
  *  landing underneath; CLEAR forgets them. Both are wired by id in wireCommon, whichever screen they are on. */
 const countRowHtml = (id: string, count: string, extra = '') => `<div class="countrow"><span id="count-${id}" class="count">${count}</span><span class="row">${extra}<button class="link" id="pause-${id}">PAUSE</button><button class="link" id="clear-${id}">CLEAR</button></span></div>`;
@@ -1399,8 +1492,17 @@ function render(app: AppId | null): void {
     case 'troll': renderTroll(view); break;
     case 'settings': renderSettings(view); break;
   }
+  if (app && app !== 'settings') {
+    const def = APPS.find(a => a.id === app)!;
+    const title = CARD_TITLE[app];
+    if (!q('#ftag')?.textContent) setFace(title?.[0] ?? barLabel(app), title?.[1] ?? def.blurb.toUpperCase());
+    if (!q('#lamp b')?.textContent) setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
+  } else if (!app) { setFace('HOME', 'TAP THE WATERFALL TO LISTEN'); setLamp(state.connected ? 'LIVE' : 'NO RADIO', state.connected ? 'ok' : ''); }
+  if (app !== 'settings') settingsOver = app;
   wireCommon(view);
+  bindHs(view);
   refreshReadout(); setGains(state.lna, state.vga, state.amp); setMode(state.mode);
+  refreshShell();
   window.scrollTo(0, 0);
 }
 
@@ -2476,30 +2578,24 @@ async function portapackToHackRf(): Promise<boolean> {
 }
 
 function renderAudio(view: HTMLElement): void {
+  // The Android app's Audio: the card, RDS as its own strip, the waterfall; then three rows — how to listen,
+  // where (the bands), and squelch with SCAN. RDS and HD Radio are switches in Settings; gain is in Settings too.
   view.innerHTML = `
-    <section class="visual"><div id="same-alert" class="samealert" hidden></div>${readoutHtml()}<div id="scope" class="panel"></div></section>
+    <section class="visual"><div id="same-alert" class="samealert" hidden></div>${readoutHtml()}<div id="rds" class="rdsbar station" hidden></div><div id="scope" class="panel"></div></section>
     <section class="controls">
-      <div class="caption">MODE</div><div class="row">${['WFM', 'NFM', 'AM', 'USB', 'LSB'].map(m => `<button class="chip" data-mode="${m}">${m}</button>`).join('')}<button class="chip" id="rds-toggle">RDS</button><button class="chip" id="hd-toggle" title="look for an HD Radio digital signal beside this station">HD</button></div>
-      ${stepHtml([1e6, 1e5, 1e4])}
-      ${presetHtml('PRESETS', [['FM 92.3', 92_300_000, 'WFM'], ['AIR 121.5', 121_500_000, 'AM'], ['NOAA 162.4', 162_400_000, 'NFM'], ['ISM 433.92', 433_920_000, 'NFM']])}
-      <div class="caption">BANDS</div><div class="row wrap bandrow">${bandChipsHtml()}</div>
-      <div class="caption">SQUELCH · dB above the noise floor</div><div class="row">${[0, 6, 12, 20].map(d => `<button class="chip" data-sql="${d}">${d ? `${d} dB` : 'OFF'}</button>`).join('')}</div>
+      ${segHtml(['WFM', 'NFM', 'AM', 'USB', 'LSB'].map(m => `<button data-mode="${m}">${m}</button>`))}
+      <div style="margin-top:6px">${hsHtml(bandTilesHtml())}</div>
+      <div class="ctlrow"><span class="rl">SQL</span>${segHtml([0, 6, 12, 20].map(d => `<button data-sql="${d}">${d ? `${d} dB` : 'OFF'}</button>`))}<button id="scan" class="tog">SCAN</button></div>
       ${gainHtml()}
-      <div class="countrow"><span class="count">BOOKMARKS</span><span><button id="save-bm" class="link">★ SAVE</button><button id="scan" class="link">⟳ SCAN</button></span></div>
-      <div id="bookmarks" class="wrap"></div>
     </section>`;
   scope = attach(tunableScope('scope', 200));
   // The RDS ticker overlays the waterfall itself (the scope box is position:relative), so the scope stays a direct
   // child of .visual and keeps the flex-fill height every other app's waterfall gets — no wrapper to break it.
-  const rdsEl = document.createElement('div'); rdsEl.id = 'rds'; rdsEl.className = 'rdsbar'; rdsEl.hidden = true; $('scope').appendChild(rdsEl);
   qa<HTMLButtonElement>('[data-sql]', view).forEach(b => b.onclick = () => setSquelch(Number(b.dataset.sql)));
   setSquelch(state.squelch);
-  $('save-bm').onclick = addBookmark;
-  $('scan').onclick = () => setScanning(!state.scanning);
+  $('scan').onclick = () => { if (bookmarks.length < 2) { log('SCAN hops your FAVES — star a few with ☆ beside the frequency first'); showHint(new Error('SCAN hops your FAVES — star a few with ☆ beside the frequency first')); return; } setScanning(!state.scanning); };
   $('scan').classList.toggle('on', state.scanning);
-  $('rds-toggle').onclick = () => { rdsWanted = !rdsWanted; if (!rdsWanted) lastRds = null; sendRds(); drawRds(); };
   const hdEl = document.createElement('div'); hdEl.id = 'hd'; hdEl.className = 'hdbadge'; hdEl.hidden = true; $('scope').appendChild(hdEl);
-  $('hd-toggle').onclick = () => { hdWanted = !hdWanted; if (!hdWanted) lastHd = null; sendHd(); drawHd(); };
   refreshBookmarks(); refreshSquelch();
   sendRds(); drawRds(); sendHd(); drawHd();
 }
@@ -2849,12 +2945,12 @@ function drawR433Protocols(): void {
 function renderPacket(view: HTMLElement, app: AppId): void {
   let controls = '';
   switch (app) {
-    case 'pager': controls = `<div class="caption">DECODER · FLEX 1600/3200 2L/4L · POCSAG 512/1200/2400</div><div class="row">${(['flex', 'pocsag', 'both'] as const).map(w => `<button class="chip" data-pager="${w}">${w === 'both' ? 'FLEX + POCSAG' : w.toUpperCase()}</button>`).join('')}</div>` + presetHtml('CHANNEL · MHz', [['929.6125', 929_612_500], ['929.6625', 929_662_500], ['931.9375', 931_937_500], ['466.175', 466_175_000]]) + stepHtml([1e5, 12_500, 2_500]); break;
-    case 'ert': controls = presetHtml('CENTER · MHz', [['911.6', 911_600_000], ['915.0', 915_000_000], ['920.0', 920_000_000]]) + `<div class="caption">IQ RATE</div><div class="row"><button class="chip" data-rate="2000000">2.0 Msps</button><button class="chip" data-rate="4194304">4.194 Msps · Mayhem</button></div>`; break;
-    case 'tpms': controls = presetHtml('BAND · MHz', [['315.000 · US', 315_000_000], ['433.920 · EU', 433_920_000]]) + `<div class="caption">DECODES · FSK 19.2k Schrader FLM 64/72/80 · OOK 8.192k Schrader · OOK 8.4k GMC — readings repeat every minute or so</div>`; break;
-    case 'acars': controls = presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]]) + stepHtml([1e6, 25_000, 5_000]) + `<div class="caption">AM · 2400 bps MSK · registration, label, block, message number, flight, text · CRC-16 checked</div>`; break;
-    case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + stepHtml([1e6, 1e5, 1e4]) + `<div class="caption">FAMILIES · every protocol runs at once; tap to mute a family</div><div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? 'WEATHER 26' : f === 'remotes' ? 'REMOTES 47' : 'CAR KEYS 11'}</button>`).join('')}</div>`; break;
-    case 'btle': controls = `<div class="caption">ADVERTISING CHANNEL</div><div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>`; break;
+    case 'pager': controls = `<div class="row">${(['flex', 'pocsag', 'both'] as const).map(w => `<button class="chip" data-pager="${w}">${w === 'both' ? 'FLEX + POCSAG' : w.toUpperCase()}</button>`).join('')}</div>` + presetHtml('CHANNEL · MHz', [['929.6125', 929_612_500], ['929.6625', 929_662_500], ['931.9375', 931_937_500], ['466.175', 466_175_000]]) + stepHtml([1e5, 12_500, 2_500]); break;
+    case 'ert': controls = presetHtml('CENTER · MHz', [['911.6', 911_600_000], ['915.0', 915_000_000], ['920.0', 920_000_000]]) + `<div class="row"><button class="chip" data-rate="2000000">2.0 Msps</button><button class="chip" data-rate="4194304">4.194 Msps</button></div>`; break;
+    case 'tpms': controls = presetHtml('BAND · MHz', [['315.000 · US', 315_000_000], ['433.920 · EU', 433_920_000]]) + `<div class="note">Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.</div>`; break;
+    case 'acars': controls = presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]]) + `<div class="note">Registration, flight, label and text from each message, CRC checked.</div>`; break;
+    case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + `<div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? 'WEATHER 26' : f === 'remotes' ? 'REMOTES 47' : 'CAR KEYS 11'}</button>`).join('')}</div>`; break;
+    case 'btle': controls = `<div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>`; break;
   }
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
@@ -3364,6 +3460,7 @@ function wireCommon(view: HTMLElement): void {
 
 function refreshReadout(): void {
   setFreqDisplay(state.freq);
+  if (state.app === 'audio') setFace(state.mode, bandTitle(tunedHz()));
   scope?.setLabels(centredLabels(spanCenter(), state.rate));
   refreshSpanBar();
   document.body.classList.toggle('offspan', channelOff());
@@ -3372,8 +3469,10 @@ function refreshReadout(): void {
   highlightBands();
   refreshFav();
   const h = q('#health'); if (h && lastHealth) h.textContent = lastHealth;
-  const l = q('#level'); if (l) l.style.width = `${Math.min(100, Math.max(0, lastLevel / 45 * 100))}%`;
+  if (!meterOwned()) setMeter(lastLevel / 40, `SIGNAL +${Math.max(0, Math.round(lastLevel))} dB`);
 }
+/** Apps that drive the card's meter themselves (Audio's channel over the noise, HAM's S-meter, sweeps' progress). */
+const meterOwned = () => state.app === 'audio' || state.app === 'ham' || state.app === 'sat' || state.app === 'lookingglass' || state.app === 'search' || state.app === 'prowl' || state.app === 'transmit' || state.app === 'troll';
 /** Screens held still by their PAUSE button. Decoding carries on underneath; the rows catch up on RESUME. */
 const paused = new Set<string>();
 function togglePause(id: string): void {
@@ -3411,6 +3510,11 @@ function clearApp(id: string): void {
 }
 function refreshList(id: string): void {
   const c = q(`#count-${id}`); if (c) c.textContent = `${counts[id] ?? 0} DECODED`;
+  if (id === state.app) {
+    const n = counts[id] ?? 0;
+    if (n > 0) setLamp(`${n} DECODED`, 'ok'); else setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
+    const r = q('#capr'); if (r) r.textContent = n > 0 ? `${n} decoded` : 'nothing decoded yet';
+  }
   const el = q(`#list-${id}`); if (!el || paused.has(id)) return;
   const lines = logs[id] ?? [];
   el.innerHTML = lines.length ? lines.map((l, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${esc(l)}</div>`).join('') : '<div class="empty">listening…</div>';
@@ -3665,7 +3769,9 @@ function ensureWorker(): Worker {
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data;
     switch (m.type) {
-      case 'spectrum': if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); } break;
+      case 'spectrum': if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
+        if (state.app === 'audio') { const db = channelOverNoise(m.bins as Float32Array); setMeter(db / 40, `+${Math.round(db)} dB over the noise`, state.squelch ? state.squelch / 40 : null); }
+        break;
       // a sweep steers its gain from the 'sweep' message instead: see there
       case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
@@ -4098,6 +4204,71 @@ function bindDesktop(): void {
 // ---- boot -----------------------------------------------------------------------------------------------------
 let versionText = 'dev build', apkUrl = './mayhem.apk', releaseUrl = 'https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest';
 
+// ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
+/** The app bar's order: the six a newcomer meets first, then the rest as the launcher lists them. */
+const BAR_FIRST: AppId[] = ['audio', 'pager', 'adsb', 'ham', 'devices', 'sat'];
+const barApps = (): AppId[] => [...BAR_FIRST, ...APPS.map(a => a.id).filter(id => id !== 'settings' && !BAR_FIRST.includes(id))];
+const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', btle: 'BLE', transmit: 'TX' };
+const barLabel = (id: AppId) => BAR_LABEL[id] ?? APPS.find(a => a.id === id)!.title.toUpperCase();
+function initShell(): void {
+  const bar = $('appbar-in');
+  bar.innerHTML = barApps().map(id => { const a = APPS.find(x => x.id === id)!; return `<button data-bar="${id}" style="--seg:${tint(a.cat)}">${barLabel(id)}</button>`; }).join('');
+  qa<HTMLButtonElement>('[data-bar]', bar).forEach(b => b.onclick = () => {
+    const id = b.dataset.bar as AppId;
+    if (state.app === 'settings' && settingsOver === id) { open(id); return; }
+    if (state.app !== id) open(id);
+  });
+  bindHs($('appbar').parentElement!);
+  $('nav-home').onclick = () => { if (state.app) open(null); };
+  $('nav-settings').onclick = () => { if (state.app === 'settings') open(settingsOver); else { settingsOver = state.app; open('settings'); } };
+  $('nav-mute').onclick = () => { toggleMute(); refreshShell(); };
+  $('nav-faves').onclick = () => showFaves(true);
+  $('faves-done').onclick = () => showFaves(false);
+  $('faves').onclick = (e) => { if (e.target === $('faves')) showFaves(false); };
+  $('rm-connect').onclick = () => $('connect').click();
+  refreshShell();
+}
+/** Each app's card tag and title (the Android app's). */
+const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
+  pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TYRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  ert: ['ERT', 'UTILITY METERS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
+  devices: ['DEVICES', 'SENSORS · METERS · REMOTES'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
+  search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
+};
+/** The app Settings was opened over, so leaving Settings goes back to it. */
+let settingsOver: AppId | null = null;
+function refreshShell(): void {
+  const here = state.app === 'settings' ? settingsOver : state.app;
+  qa<HTMLButtonElement>('[data-bar]').forEach(b => {
+    const id = b.dataset.bar as AppId;
+    b.classList.toggle('on', id === here);
+    b.classList.toggle('dim', !!radio && !!blockedBecause(APP_NEEDS[id], radio.limits));
+  });
+  const on = q<HTMLElement>(`[data-bar="${here}"]`), bar = $('appbar-in');
+  if (on) bar.scrollTo({ left: on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
+  $('nav-home').classList.toggle('on', state.app === null);
+  $('nav-settings').classList.toggle('on', state.app === 'settings');
+  $('nav-mute').classList.toggle('muted', state.muted);
+  $('nav-mute-t').textContent = state.muted ? 'MUTED' : 'MUTE';
+  $('nav-mute-ico').setAttribute('d', state.muted
+    ? 'M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z'
+    : 'M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z');
+  $('nav-dot').classList.toggle('on', state.connected);
+  $('radiomiss').hidden = state.connected;
+}
+/** FAVES: the frequencies starred with ☆. A tap brings one back in its own app, as it was heard. */
+function showFaves(open: boolean): void {
+  const sh = $('faves'); sh.hidden = !open; if (!open) return;
+  const list = $('faves-list');
+  list.innerHTML = bookmarks.length ? bookmarks.map((b, i) => `<div class="fav-row" data-fv="${i}"><div><b>${(b.hz / 1e6).toFixed(4)} MHz</b><small>${esc(b.name)} · ${b.app ? barLabel(b.app) : b.mode}</small></div><button class="x" data-fvx="${i}">✕</button></div>`).join('')
+    : '<div class="empty">No FAVES yet. Tune something and tap ☆ beside the frequency.</div>';
+  qa<HTMLElement>('[data-fv]', list).forEach(r => r.onclick = (e) => {
+    const i = Number(r.dataset.fv);
+    if ((e.target as HTMLElement).dataset.fvx !== undefined) { removeBookmark(i); showFaves(true); return; }
+    showFaves(false); openBookmark(bookmarks[i]);
+  });
+}
+
 function init(): void {
   loadSkin();
   const supported = 'usb' in navigator;
@@ -4109,6 +4280,7 @@ function init(): void {
   $('mute').onclick = toggleMute;
   $('home').onclick = () => { if (state.app) open(null); };
   $('settings-btn').onclick = () => open('settings');
+  initShell();
   setTools(true);
   $('hint').onclick = () => hideHint();
   bindDesktop();

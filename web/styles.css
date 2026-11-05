@@ -655,3 +655,142 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .txin { width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--ink); font: inherit; padding: 9px; }
 .grid-tx { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .grid-tx .chip { text-align: center; }
+
+/* ==== The Android app's look: one frequency card, segmented bars, tiles, toggles, a breathing edge glow ==== */
+
+/* The frequency card every app opens with: tag, title, ☆ ⌨, lamp; the digits across the width; a 32-LED meter,
+ * its scale and a caption line. */
+.face { container-type: inline-size; position: relative; border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 60%), linear-gradient(180deg, var(--panel), var(--surface)); }
+.fhead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ftag { flex: none; background: var(--accent); color: #fff; font-weight: 700; font-size: 10px; letter-spacing: 1.5px; padding: 2px 7px; border-radius: 5px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); white-space: nowrap; }
+.ftag:empty { display: none; }
+.ftitle { flex: 1; min-width: 0; color: var(--muted); font-size: 10px; letter-spacing: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fact { flex: none; background: none; border: 0; color: var(--muted); font-size: 17px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.fact.on { color: var(--accent2); text-shadow: 0 0 10px var(--accent2); }
+.lamp { flex: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 10px; letter-spacing: 2px; color: var(--muted); white-space: nowrap; }
+.lamp i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; box-sizing: border-box; }
+.lamp.lit i { background: currentColor; border: 0; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 35%, transparent); }
+.lamp.ok { color: var(--ok); } .lamp.amber { color: var(--accent2); } .lamp.red { color: var(--danger); }
+.lamp.blink i { animation: lampblink 1s ease-in-out infinite alternate; }
+@keyframes lampblink { to { opacity: 0.25; } }
+.face .readout { margin: 2px 0 0; text-align: center; }
+.face .freq { display: flex; justify-content: center; font-size: clamp(26px, calc(100cqw / 7.9), 72px); padding: 0.5em 0 0.1em; }
+.face .freq.noghz { font-size: clamp(26px, calc(100cqw / 6.9), 72px); }
+.face .freq.noghz > .fgrp:first-child, .face .freq.noghz > .fgrp:first-child + .fsep { display: none; }
+.face .fd:not(.dim) { text-shadow: 0 0 0.45em color-mix(in srgb, var(--accent) 60%, transparent); }
+.face .fgrp:nth-of-type(n+5) .fd:not(.dim) { color: var(--accent); }
+.face .fsep { width: 0.3em; }
+.leds { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; height: 12px; margin-top: 6px; position: relative; }
+.leds i { border-radius: 2px; background: color-mix(in srgb, var(--line) 70%, transparent); }
+.leds i.l1 { background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 60%, transparent); }
+.leds i.l2 { background: var(--ok); box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 60%, transparent); }
+.leds i.l3 { background: var(--accent2); box-shadow: 0 0 5px color-mix(in srgb, var(--accent2) 60%, transparent); }
+.leds i.l4 { background: var(--danger); box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 60%, transparent); }
+.leds s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--ink); border-radius: 1px; box-shadow: 0 0 0 1px rgba(0,0,0,.6); text-decoration: none; }
+.lscale { position: relative; height: 11px; margin-top: 2px; font-size: 8px; color: var(--muted); }
+.lscale span { position: absolute; top: 0; white-space: nowrap; }
+.lscale span.end { right: 0; }
+.fcap { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; }
+.fcap b { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fcap span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.face .health { display: none; }
+
+/* One rounded bar of equal segments, the chosen one filled and lit. */
+.seg { display: flex; gap: 3px; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.seg > button { flex: 1; min-width: 0; background: none; border: 0; border-radius: 9px; color: var(--muted); font-weight: 700; font-size: 12px; letter-spacing: 1.5px;
+  padding: 8px 2px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg > button.on { background: var(--accent); color: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+.seg > button.red { color: var(--danger); } .seg > button.red.on { background: var(--danger); color: #fff; }
+.ctlrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.ctlrow > .seg { flex: 1; }
+.rl { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 2px; }
+/* An on/off box the height of a bar, lit and glowing when on; an icon box; the one filled action of a panel. */
+.tog { background: var(--surface); color: var(--muted); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; font-weight: 700; font-size: 12px; letter-spacing: 1.5px; cursor: pointer; white-space: nowrap; }
+.tog.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
+.ib { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.ib svg { width: 18px; height: 18px; fill: currentColor; }
+.act { background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 80%, transparent)); color: #fff; border: 0; border-radius: 12px; padding: 11px 14px; font-weight: 900; font-size: 13px; letter-spacing: 2px; cursor: pointer;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); white-space: nowrap; }
+/* Tiles in one scrolling row (bands, presets, channels); the one you are on lit, with a glowing underline. */
+.tiles { display: flex; gap: 6px; }
+.tl { flex: none; width: 82px; position: relative; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; cursor: pointer; color: var(--ink); overflow: hidden; }
+.tl b { display: block; font-size: 14px; letter-spacing: 1px; white-space: nowrap; }
+.tl small { display: block; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl.on { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 24%, var(--surface)), var(--surface)); }
+.tl.on small { color: var(--accent); }
+.tl.on::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.tl.dim { opacity: 0.4; }
+
+/* Any sideways scroller with more past an edge: that edge glows in the accent, breathing, instead of an arrow. */
+.hs { position: relative; min-width: 0; }
+.hs-in { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.hs-in::-webkit-scrollbar { display: none; }
+.hs::before, .hs::after { content: ''; position: absolute; top: 0; bottom: 0; width: 22px; pointer-events: none; opacity: 0; z-index: 3; transition: opacity 0.2s; }
+.hs::before { left: 0; border-left: 2px solid var(--accent); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 34%, transparent), color-mix(in srgb, var(--accent) 10%, transparent) 50%, transparent); }
+.hs::after { right: 0; border-right: 2px solid var(--accent); background: linear-gradient(270deg, color-mix(in srgb, var(--accent) 34%, transparent), color-mix(in srgb, var(--accent) 10%, transparent) 50%, transparent); }
+.hs.mL::before, .hs.mR::after { opacity: 1; animation: glowbreath 1.1s ease-in-out infinite alternate; }
+@keyframes glowbreath { from { opacity: 0.55; } to { opacity: 1; } }
+
+/* The phone shell. Hidden on a wide screen, where the header bar and the launcher stay as they are. */
+.topnav, .appbar, .radiomiss { display: none; }
+.sheet { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
+.sheet-card { width: min(520px, 100%); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px 16px 0 0; padding: 12px; }
+.sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.sheet-head b { color: var(--accent); letter-spacing: 3px; }
+.sheet-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.fav-row { display: flex; align-items: center; gap: 8px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; cursor: pointer; }
+.fav-row div { flex: 1; min-width: 0; }
+.fav-row b { display: block; font-size: 14px; } .fav-row small { color: var(--muted); font-size: 10px; }
+.fav-row .x { background: none; border: 0; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px 8px; }
+@media (max-width: 719.98px) {
+  body { padding: 0; }
+  header.bar { display: none !important; }
+  .topnav { display: flex; flex: none; justify-content: space-between; padding: 4px 10px; background: var(--surface); border-bottom: 1px solid var(--line); }
+  .tnb { position: relative; display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--muted); font-size: 11px; letter-spacing: 1.5px; padding: 10px 6px; cursor: pointer; }
+  .tnb svg { width: 20px; height: 20px; fill: currentColor; }
+  .tnb.on { color: var(--ink); } .tnb.on svg { fill: var(--accent); }
+  .tnb.muted { color: var(--danger); }
+  #nav-dot { position: absolute; top: 6px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  #nav-dot.on { background: var(--ok); }
+  .radiomiss { display: flex; flex: none; align-items: center; gap: 10px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid var(--accent2); border-radius: 12px; background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+  .radiomiss[hidden] { display: none; }
+  .radiomiss div { flex: 1; min-width: 0; } .radiomiss b { display: block; color: var(--accent2); letter-spacing: 2px; font-size: 11px; }
+  .radiomiss span { color: var(--muted); font-size: 10px; }
+  main#view { margin: 0; padding: 10px 10px 6px; }
+  .appbar { display: block; flex: none; background: var(--surface); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  .appbar .hs-in { display: flex; gap: 2px; padding: 6px 24px; }
+  .appbar button { flex: none; background: none; border: 0; color: var(--ink); font-weight: 700; font-size: 12px; letter-spacing: 1.5px; padding: 10px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+  .appbar button.dim { opacity: 0.4; }
+  .appbar button.on { background: var(--seg, var(--accent)); color: #fff; box-shadow: 0 0 14px color-mix(in srgb, var(--seg, var(--accent)) 45%, transparent); }
+  /* the launcher is a home for discovery, under the same bars: its own tile strip stays, the header's job is the top bar */
+  .visual > .face { flex: none; margin-bottom: 6px; }
+  .controls { max-height: 58%; }
+}
+
+/* RDS as its own strip under the card (the Android app's), not an overlay on the waterfall */
+.rdsbar.station { position: relative; left: auto; right: auto; top: auto; margin-bottom: 6px; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.rdsbar.station b:first-of-type { font-size: 15px; letter-spacing: 3px; color: var(--ink); }
+@media (max-width: 719.98px) {
+  /* gain lives in Settings on a phone, as in the Android app */
+  .view:not(.settings) .gainwrap { display: none; }
+  .visual > .rdsbar.station { flex: none; }
+}
+
+/* Every row of chips in an app's controls reads as one segmented bar, and the decode-list header's links as
+ * toggles, so screens not yet rebuilt on .seg / .tog still look the part. */
+.controls .row:not(.wrap):not(.ctlrow) { gap: 3px; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; }
+.controls .row:not(.wrap):not(.ctlrow) > .chip { border: 0; background: none; color: var(--muted); border-radius: 9px; letter-spacing: 1.5px; padding: 8px 2px; }
+.controls .row:not(.wrap):not(.ctlrow) > .chip.on { background: var(--accent); color: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+.controls .row:not(.wrap):not(.ctlrow) > .chip.primary { background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 80%, transparent)); color: #fff; }
+.controls .row:not(.wrap):not(.ctlrow) > .chip.rec { background: var(--danger); color: #fff; }
+.controls .row:not(.wrap):not(.ctlrow) > .txin { border-radius: 9px; }
+.controls .row.wrap > .chip { border-radius: 12px; border-color: var(--line); }
+.controls .row.wrap > .chip.on { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 24%, var(--surface)), var(--surface)); color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+.countrow { display: flex; align-items: center; gap: 6px; }
+.countrow .count { color: var(--accent); font-weight: 700; letter-spacing: 2px; }
+.countrow .link { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--muted); font-weight: 700; letter-spacing: 1.5px; padding: 7px 10px; }
+.countrow .link.on { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+.tiles.wide .tl { width: 98px; }
+.note { color: var(--muted); font-size: 10px; line-height: 1.4; margin: 6px 2px 0; }
