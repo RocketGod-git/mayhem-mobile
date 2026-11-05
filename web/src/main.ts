@@ -1657,7 +1657,11 @@ function tunableScope(id: string, rows: number, spectrumHeight?: number): Scope 
   const target = (f: number) => { const hz = hzAt(f), s = signalAt(hz); return s ? { hz: signalDial(s), s } : { hz: Math.round(hz / snap) * snap, s: null }; };
   return new Scope($(id), 0, {
     rows, spectrumHeight,
-    onTap: f => { const t = target(f); if (t.s) fitSignal(t.s); tune(t.hz, true); wakeAudio(); },
+    onTap: f => {
+      // the hunter's span stays put: a tap picks the carrier there for its own receiver (and turns AUTO off)
+      if (state.app === 'pager' && state.pagerMulti) { worker?.postMessage({ type: 'hunt', cmd: 'pick', hz: hzAt(f) }); wakeAudio(); return; }
+      const t = target(f); if (t.s) fitSignal(t.s); tune(t.hz, true); wakeAudio();
+    },
     onPreview: f => previewFreq(f === null ? null : target(f).hz),
     labelAt: (f, zoom = 1) => ((spanCenter() + (f - 0.5) * state.rate) / 1e6).toFixed(zoom >= 8 ? 5 : zoom >= 2 ? 4 : 3),
     onChannel: state.app === 'ham' ? hamChannelEdges : undefined,
@@ -1788,7 +1792,7 @@ function hamChannelEdges(loF: number, hiF: number, which: 'lo' | 'hi'): void {
 }
 /** Demodulated channel width per mode, shown as a shaded band on the waterfall. */
 const CHANNEL_BW: Record<Mode, number> = { WFM: 200_000, NFM: 12_500, AM: 10_000, USB: 3_000, LSB: 3_000, NONE: 0 };
-function refreshChannel(): void { if (state.app === 'ham') { refreshHamChannel(); return; } scope?.setChannel(state.mode === 'NONE' ? null : CHANNEL_BW[state.mode] / state.rate, tunesInSpan() ? 0.5 + (state.freq - state.viewLo) / state.rate : 0.5); }
+function refreshChannel(): void { if (state.app === 'ham') { refreshHamChannel(); return; } if (state.app === 'pager' && state.pagerMulti) { huntChannel(); return; } scope?.setChannel(state.mode === 'NONE' ? null : CHANNEL_BW[state.mode] / state.rate, tunesInSpan() ? 0.5 + (state.freq - state.viewLo) / state.rate : 0.5); }
 
 // ---- HAM ---------------------------------------------------------------------------------------------------------
 const HAM_RATE = 1_920_000, HAM_GUARD = 120_000, HAM_LO_OFFSET = 250_000;
@@ -2991,13 +2995,13 @@ interface HuntPage { protocol: string; rate: string; cap: number; kind: string; 
 interface HuntMsg { id: number; at: number; hz: number; page: HuntPage; alert: boolean; line?: string }
 interface HuntChan { hz: number; db: number; listening: boolean; protocol: string; rate: string; pages: number }
 /** Words that make a page a call-out: fire, EMS, police, hospital codes. */
-const HUNT_ALERT = /\b(FIRE|EMS|MEDIC|AMBULANCE|CARDIAC|ARREST|STROKE|TRAUMA|CODE (BLUE|RED|3|STEMI)|STEMI|STRUCTURE|MVA|MVC|ACCIDENT|SHOOTING|SHOTS|STABBING|OVERDOSE|UNRESPONSIVE|RESCUE|HAZMAT|ALARM|POLICE|SWAT|ENGINE \d+|LADDER \d+|BATTALION|MEDIC \d+|RESPOND|STAT)\b/;
+const HUNT_ALERT = /\b(FIRE|EMS|MEDIC|AMBULANCE|CARDIAC|ARREST|STROKE|TRAUMA|CODE|STEMI|WARNING|CRITICAL|PATIENT|STRUCTURE|MVA|MVC|ACCIDENT|SHOOTING|SHOTS|STABBING|OVERDOSE|UNRESPONSIVE|RESCUE|HAZMAT|ALARM|POLICE|SWAT|ENGINE \d+|LADDER \d+|BATTALION|MEDIC \d+|RESPOND|STAT)\b/;
 /** Networks send the same text again and again; folding keeps the newest copy with a count. */
 const HUNT_FOLD_MS = 120_000;
 const hunt = {
   messages: [] as HuntMsg[], caps: new Set<number>(), nextId: 1,
-  channels: [] as HuntChan[], text: 'Waiting for the radio', hunting: true, pinned: [] as number[],
-  kind: 0, protocol: null as string | null, capcode: null as number | null, hz: null as number | null,
+  channels: [] as HuntChan[], text: 'Waiting for the radio', hunting: true, pinned: [] as number[], heardHz: null as number | null,
+  kind: 1, protocol: null as string | null, capcode: null as number | null, hz: null as number | null,
   fold: true, noise: false, full: false, drawn: 0,
 };
 const FULL_SVG = '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
@@ -3026,9 +3030,17 @@ function onHuntPage(m: { hz: number; page: HuntPage; line?: string; replaces?: s
   hunt.caps.add(m.page.cap);
   refreshHunt();
 }
-function onHuntState(m: { text: string; hunting: boolean; pinned: number[]; channels: HuntChan[] }): void {
-  hunt.text = m.text; hunt.hunting = m.hunting; hunt.pinned = m.pinned; hunt.channels = m.channels;
+function onHuntState(m: { text: string; hunting: boolean; pinned: number[]; channels: HuntChan[]; heardHz?: number | null }): void {
+  hunt.text = m.text; hunt.hunting = m.hunting; hunt.pinned = m.pinned; hunt.channels = m.channels; hunt.heardHz = m.heardHz ?? null;
+  huntChannel();
   refreshHunt();
+}
+
+/** Each hunter receiver passes ±10 kHz around its carrier; the waterfall shades that around the channel being heard. */
+const HUNT_CHANNEL_BW = 20_000;
+function huntChannel(): void {
+  const hz = hunt.heardHz;
+  scope?.setChannel(hz === null ? null : HUNT_CHANNEL_BW / state.rate, hz === null ? 0.5 : 0.5 + (hz - spanCenter()) / state.rate);
 }
 
 function renderHunt(view: HTMLElement): void {
@@ -3042,7 +3054,7 @@ function renderHunt(view: HTMLElement): void {
       <div id="hfeed" class="hfeed"></div>
     </section>`;
   q('.face')?.insertAdjacentHTML('beforeend', `<div class="hstats"><div><b id="hs-p">0</b><small>PAGES</small></div><div><b id="hs-c">0</b><small>CAPCODES</small></div><div class="red"><b id="hs-a">0</b><small>CALL-OUTS</small></div><div><b id="hs-ch">0 / 0</b><small>CHANNELS</small></div></div><div class="hspark"><div id="hspark"></div><div class="hspark-l"><span>−30 MIN</span><span>PAGES / MIN</span><span>NOW</span></div></div>`);
-  scope = attach(tunableScope('scope', 70, 60));
+  scope = attach(tunableScope('scope', 70, 60)); huntChannel();
   qa<HTMLButtonElement>('[data-hk]', view).forEach(b => b.onclick = () => { hunt.kind = Number(b.dataset.hk); refreshHunt(); });
   $('hfullb').onclick = () => { hunt.full = !hunt.full; render('pager'); };
   $('hclear').onclick = () => { hunt.messages = []; hunt.caps.clear(); hunt.capcode = null; hunt.hz = null; refreshHunt(); };
@@ -3090,8 +3102,8 @@ function drawHunt(): void {
   const decoding = chans.filter(c => c.listening && c.protocol).length;
   const alerts = msgs.filter(m => m.alert).length, flexN = msgs.filter(m => m.page.protocol === 'FLEX').length, noise = msgs.filter(huntUnreadable).length;
   // the card
-  setFace(hunt.hunting ? 'HUNT' : 'PINNED', 'FLEX · POCSAG', hunt.text);
-  if (!hunt.hunting) setLamp(`PINNED ${hunt.pinned.length}`, 'ok');
+  setFace(hunt.hunting ? 'HUNT' : hunt.pinned.length ? 'PINNED' : 'MANUAL', 'FLEX · POCSAG', hunt.text);
+  if (!hunt.hunting) setLamp(hunt.pinned.length ? `PINNED ${hunt.pinned.length}` : 'AUTO OFF', hunt.pinned.length || decoding ? 'ok' : 'amber');
   else if (decoding) setLamp(`DECODING ${decoding}`, 'ok');
   else setLamp(state.connected ? 'HUNTING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
   const set = (id: string, v: string) => { const e = q('#' + id); if (e && e.textContent !== v) e.textContent = v; };
@@ -3103,7 +3115,7 @@ function drawHunt(): void {
   const sp = q('#hspark'); if (sp) sp.innerHTML = counts.map((c, i) => `<i class="${c ? (red[i] ? 'r' : 'on') : ''}" style="height:${c ? Math.max(25, 100 * c / top) : 17}%"></i>`).join('');
   // the carriers: AUTO, then each one; a carrier decoding has a live dot, a pinned one is lit
   const ch = q('#hchans');
-  if (ch) ch.innerHTML = `<button class="tl hauto ${hunt.hunting ? 'on' : ''}" data-hauto>${RADAR_SVG}<span><b>AUTO</b><small>${hunt.hunting ? 'hunting' : 'tap to hunt'}</small></span></button>` + chans.map(c => {
+  if (ch) ch.innerHTML = `<button class="tl hauto ${hunt.hunting ? 'on' : ''}" data-hauto>${RADAR_SVG}<span><b>AUTO</b><small>${hunt.hunting ? 'hunting' : 'off · tap to hunt'}</small></span></button>` + chans.map(c => {
     const pinned = hunt.pinned.includes(c.hz), live = c.listening && !!c.protocol;
     const sub = c.protocol ? `${c.protocol} ${c.rate}${c.pages ? ` · ${c.pages}p` : ''}` : c.listening ? 'trying' : `${c.db.toFixed(0)} dB`;
     const bars = Math.max(0, Math.min(5, Math.round(c.db / 6)));

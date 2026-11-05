@@ -5,6 +5,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -477,5 +478,55 @@ class PagerDecodersTest {
                 "~&=\$#SAaXaV`UbUbU\$!!!!PUB [39]",
                 "~G1!+#glemeidhdga\$&\$&&Brownsville TX  . [27]"))
             assertTrue(s, !PocsagDecoder.readsAsText(s))
+    }
+    /** The hunter's controls on a span with two steady carriers: a waterfall tap a few kHz off one pins that carrier
+     *  and turns AUTO off, only it keeps a receiver, AUTO toggles, and letting the last pin go leaves AUTO off. */
+    @Test fun hunterControls() {
+        val rate = 1_000_000; val center = 929_600_000L
+        val tones = longArrayOf(929_400_000L, 929_912_500L)
+        val e = PagerEngine
+        var t = 1_700_000_000_000L   // the engine's clock is the wall clock
+        e.clock = { t }
+        e.setHunting(true); e.start()
+        val n = 65_536; val buf = ByteArray(2 * n); var k0 = 0L
+        val r = java.util.Random(5)
+        fun feed(ms: Long) {
+            val end = t + ms
+            while (t < end) {
+                for (k in 0 until n) {
+                    var a = r.nextGaussian() * 3; var b = r.nextGaussian() * 3
+                    for (f in tones) { val ph = 2 * PI * (f - center) * (k0 + k) / rate; a += 25 * cos(ph); b += 25 * sin(ph) }
+                    buf[2 * k] = (a + 127.4).roundToInt().coerceIn(0, 255).toByte(); buf[2 * k + 1] = (b + 127.4).roundToInt().coerceIn(0, 255).toByte()
+                }
+                k0 += n; t += n * 1000L / rate
+                e.onIq(buf, 2 * n, rate, center)
+            }
+        }
+        fun listening() = e.channels.value.filter { it.listening }.map { it.hz }
+        feed(4000)
+        assertEquals("AUTO gives both carriers a receiver: ${e.channels.value}", 2, listening().size)
+        e.pick(929_404_100L); feed(100)
+        val pins = e.pinnedList()
+        assertTrue("a tap 4 kHz off a carrier pins the carrier: $pins", pins.size == 1 && abs(pins[0] - 929_400_000L) <= 2500)
+        assertTrue("a tap turns AUTO off", !e.status.value.hunting)
+        assertEquals("only the picked carrier keeps a receiver", listOf(pins[0]), listening())
+        assertEquals("the picked carrier is heard and shaded", pins[0], e.status.value.heardHz)
+        e.toggleAuto(); feed(100)
+        assertTrue("AUTO while off turns it on and forgets the pins", e.status.value.hunting && e.pinnedList().isEmpty())
+        feed(3000)
+        e.toggleAuto(); feed(100)
+        assertTrue("AUTO while on turns it off, holding what was decoding: ${e.status.value} ${listening()}",
+            !e.status.value.hunting && e.pinnedList().isEmpty() && listening().size == 2 && e.status.value.text.startsWith("AUTO off"))
+        e.pick(929_912_000L); feed(100)
+        assertEquals("picking one keeps just it", 1, listening().size)
+        e.unpin(e.pinnedList()[0]); feed(100)
+        assertTrue("letting the last pin go stops it and leaves AUTO off: ${listening()}", !e.status.value.hunting && listening().isEmpty())
+        e.stop(); e.setHunting(true)
+    }
+
+    @Test fun callOutWords() {
+        val re = PagerEngine.isCallOut("Subj:Low WARNING 68") && PagerEngine.isCallOut("critical lab value") &&
+            PagerEngine.isCallOut("PATIENT: Richard B") && PagerEngine.isCallOut("CODE TEST") && !PagerEngine.isCallOut("Bed Clean - Routine")
+        assertTrue("WARNING, CRITICAL, PATIENT and CODE make a call-out; routine traffic does not", re)
     }
 }
