@@ -145,39 +145,82 @@ class PagerDecodersTest {
         return body or ((0xF - (s and 0xF)) and 0xF)
     }
 
-    /** Phase words (data fields) for an alphanumeric and a numeric page. */
-    private fun flexPhase(alphaCap: Long, text: String, numCap: Long, digits: String): IntArray {
+    private fun groups(d: Int) = (d and 0xFF) + ((d ushr 8) and 0xFF) + ((d ushr 16) and 0x1F)
+
+    /**
+     * An alphanumeric message as a transmitter builds it (ARIB STD-43A 3.10.1.3): the header (K, C, F, N), then the
+     * characters three to a word, the first word of a first fragment opening with the signature S. K is the ones'
+     * complement of the header's and every message word's 8 + 8 + 5 bit groups.
+     */
+    private fun alphaWords(text: String, n: Int, frag: Int = 3, more: Int = 0): IntArray {
+        val chars = text.map { it.code }
+        val content = ArrayList<Int>()
+        var k = 0
+        var first = frag == 3
+        val sig = chars.sum().inv() and 0x7F
+        while (k < chars.size) {
+            val c = IntArray(3) { 3 }
+            val start = if (first) 1 else 0
+            for (s in start until 3) if (k < chars.size) c[s] = chars[k++]
+            if (first) c[0] = sig
+            content += c[0] or (c[1] shl 7) or (c[2] shl 14)
+            first = false
+        }
+        var h = (more shl 10) or (frag shl 11) or (n shl 13)
+        var s = groups(h)
+        for (d in content) s += groups(d)
+        h = h or (s.inv() and 0x3FF)
+        return intArrayOf(h) + content.toIntArray()
+    }
+
+    /** A numeric message (3.10.1.1): two checksum bits, BCD digits low bit first, space fill; K3-K0 goes in the vector. */
+    private fun numericWords(digits: String): Pair<IntArray, Int> {
+        val bits = arrayListOf(0, 0)
+        for (ch in digits) { val d = "0123456789.U -][".indexOf(ch); for (b in 0 until 4) bits += (d ushr b) and 1 }
+        while (bits.size % 21 != 0) bits += (0xC ushr ((bits.size - 2) % 4)) and 1
+        val words = IntArray(bits.size / 21) { i -> var v = 0; for (b in 0 until 21) v = v or (bits[i * 21 + b] shl b); v }
+        var sum = 0
+        for (d in words) sum += groups(d)
+        val s = sum and 0xFF
+        val k6 = ((s and 0x3F) + (s ushr 6)).inv() and 0x3F
+        words[0] = words[0] or ((k6 ushr 4) and 3)
+        return words to (k6 and 0xF)
+    }
+
+    /** Phase words for an alphanumeric page and a numeric page on short addresses. Text starts at word 6. */
+    private fun flexPhase(alphaCap: Long, text: String, numCap: Long, digits: String, n: Int = 5, frag: Int = 3, more: Int = 0): IntArray {
         val w = IntArray(88)
         val aOff = 1; val vOff = 3
         w[0] = withChecksum((vOff shl 10) or ((aOff - 1) shl 8))
         w[1] = (alphaCap + 0x8000).toInt()
         w[2] = (numCap + 0x8000).toInt()
-        // alphanumeric: header word, then the text (first content word carries two characters, the rest three)
         val msg = 5
-        val chars = text.map { it.code }.toMutableList()
-        val content = ArrayList<Int>()
-        var k = 0
-        var first = true
-        while (k < chars.size) {
-            val c = IntArray(3) { 3 }
-            val start = if (first) 1 else 0
-            for (s in start until 3) if (k < chars.size) c[s] = chars[k++]
-            if (first) c[0] = 0
-            content += c[0] or (c[1] shl 7) or (c[2] shl 14)
-            first = false
-        }
-        w[msg] = 3 shl 11                     // single fragment, no more to follow
-        for (i in content.indices) w[msg + 1 + i] = content[i]
-        val len = 1 + content.size
-        w[vOff] = withChecksum((5 shl 4) or (msg shl 7) or (len shl 14))
-        // numeric: two filler bits, then BCD digits low bit first, padded with spaces
-        val nStart = msg + len
-        val bits = arrayListOf(0, 0)
-        for (ch in digits) { val d = "0123456789.U -][".indexOf(ch); for (b in 0 until 4) bits += (d ushr b) and 1 }
-        while (bits.size % 21 != 0) bits += (0xC ushr ((bits.size - 2) % 4)) and 1
-        val nWords = bits.size / 21
-        for (i in 0 until nWords) { var v = 0; for (b in 0 until 21) v = v or (bits[i * 21 + b] shl b); w[nStart + i] = v }
-        w[vOff + 1] = withChecksum((3 shl 4) or (nStart shl 7) or ((nWords - 1) shl 14))
+        val a = alphaWords(text, n, frag, more)
+        for (i in a.indices) w[msg + i] = a[i]
+        w[vOff] = withChecksum((5 shl 4) or (msg shl 7) or (a.size shl 14))
+        val nStart = msg + a.size
+        val (num, k30) = numericWords(digits)
+        for (i in num.indices) w[nStart + i] = num[i]
+        w[vOff + 1] = withChecksum((3 shl 4) or (nStart shl 7) or ((num.size - 1) shl 14) or (k30 shl 17))
+        return w
+    }
+
+    /** A long (two-word) address page: its header rides in the second vector word, the text from word 9. */
+    private fun flexPhaseLong(cap: Long, text: String): IntArray {
+        val w = IntArray(88)
+        val aOff = 1; val vOff = 3
+        w[0] = withChecksum((vOff shl 10) or ((aOff - 1) shl 8))
+        // set 1-2: capcode = aw1 + (2097151 - aw2) * 32768 + 2068480
+        val q = (cap - 2068480) / 32768
+        w[1] = (cap - 2068480 - q * 32768).toInt()
+        w[2] = (2097151 - q).toInt()
+        // the message field starts further on, after other traffic, so the word before it is not the header
+        val msg = 9
+        for (k in 5 until msg) w[k] = 0x0A5A5 + k
+        val a = alphaWords(text, 9)
+        w[vOff + 1] = a[0]
+        for (i in 1 until a.size) w[msg + i - 1] = a[i]
+        w[vOff] = withChecksum((5 shl 4) or (msg shl 7) or (a.size shl 14))
         return w
     }
 
@@ -210,6 +253,16 @@ class PagerDecodersTest {
         return out
     }
 
+    /** Frames at 1600 baud, two-level, one after another through one decoder. */
+    private fun decode1600(seed: Int, vararg frames: List<Double>): Pair<Collect, FlexDecoder> {
+        val sym = frames.flatMap { it }
+        val sig = fsk(sym, { 1600 }, 1600.0, 48_000.0, Random(seed))
+        val c = Collect()
+        val dec = FlexDecoder(c, 48_000.0)
+        dec.push(sig, sig.size)
+        return c to dec
+    }
+
     private fun flexRun(code: Int, baud: Int, levels4: Boolean, rateLabel: String, seed: Int) {
         val phase = flexPhase(1234567L, "CODE 3 MVA I-75 NB MM 12", 765432L, "5551234")
         val frame = flexFrame(code, baud, levels4, phase)
@@ -222,10 +275,12 @@ class PagerDecodersTest {
         val num = c.pages.firstOrNull { it.capcode == 765432L }
         assertTrue("FLEX $rateLabel alpha missing (syncs ${c.syncs}): ${c.pages}", alpha != null)
         assertEquals("CODE 3 MVA I-75 NB MM 12", alpha!!.text)
+        assertEquals(0, alpha.errors)
         assertEquals(rateLabel, alpha.rate)
         assertTrue("where: ${alpha.where}", alpha.where.startsWith("C03 F005 A"))
         assertTrue("FLEX $rateLabel numeric missing: ${c.pages}", num != null)
         assertEquals("5551234", num!!.text)
+        assertEquals(0, num.errors)
     }
 
     @Test fun flex1600() = flexRun(0x870C, 1600, false, "1600", 11)
@@ -233,125 +288,152 @@ class PagerDecodersTest {
     @Test fun flex3200TwoLevel() = flexRun(0x7B18, 3200, false, "3200", 13)
     @Test fun flex6400() = flexRun(0xDEA0, 3200, true, "6400", 14)
 
-    /** Words lost partway through a page: the text stops where the damage starts instead of running on as noise. */
-    @Test fun flexCutsAPageWhereTheNoiseStarts() {
-        val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
-        // content words start at 6 (the header is 5); the first holds two characters, the rest three each
-        // three bit errors a word: past what the code corrects, and never close enough to another word to miscorrect
-        val flip = mapOf(6 + 6 to 0x0E000000, 6 + 7 to 0x00E00000, 6 + 8 to 0x000E0000)
-        val frame = flexFrame(0x870C, 1600, false, phase, flip)
-        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(21))
-        val c = Collect()
-        FlexDecoder(c, 48_000.0).push(sig, sig.size)
-        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
-        assertTrue("alpha missing: ${c.pages}", alpha != null)
-        assertEquals("STATION 7 RESPOND …", alpha!!.text)
+    private val TEXT = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
+    /** [TEXT] with the characters of message words [from]..[to] (counting the first text word as 0) lost. */
+    private fun lostWords(from: Int, to: Int): String {
+        fun at(word: Int) = if (word == 0) 0 else 2 + (word - 1) * 3
+        val a = at(from); val b = minOf(TEXT.length, at(to + 1))
+        return TEXT.substring(0, a) + "?".repeat(b - a) + TEXT.substring(b)
+    }
+
+    /** A long address's header is in its second vector word: the page and its capcode both come out. */
+    @Test fun flexLongAddressPage() {
+        val (c, _) = decode1600(15, flexFrame(0x870C, 1600, false, flexPhaseLong(420167049L, "CLASS 2 21 Y/O M MVC ETA 8 MIN")))
+        val p = c.pages.firstOrNull { it.capcode == 420167049L }
+        assertTrue("long page missing: ${c.pages}", p != null)
+        assertEquals("CLASS 2 21 Y/O M MVC ETA 8 MIN", p!!.text)
+        assertEquals(0, p.errors)
+    }
+
+    /** One failed word inside good text stays a gap; the rest of the page is kept. */
+    @Test fun flexKeepsAPageWithOneLostWord() {
+        // three bit errors: past what the code corrects, and never close enough to another word to miscorrect
+        val (c, _) = decode1600(22, flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"), mapOf(6 + 3 to 0x0E000000)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals("STATION ???ESPOND TO ROOM 38 NOW PLEASE", alpha.text)   // the word held "7 R"
+        assertEquals(1, alpha.errors)
+    }
+
+    /** Several words lost together (a fade): the gap shows, and the text after it is kept, not thrown away. */
+    @Test fun flexKeepsTheTextAfterAFade() {
+        val (c, _) = decode1600(21, flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"),
+            mapOf(6 + 6 to 0x0E000000, 6 + 7 to 0x00E00000, 6 + 8 to 0x000E0000)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals(lostWords(6, 8), alpha.text)
         assertEquals(3, alpha.errors)
         assertEquals("5551234", c.pages.first { it.capcode == 765432L }.text)
     }
 
-    // ---------------------------------------------------------------- repeats
-
-    private fun alphaPage(text: String, errors: Int, cap: Long = 1234567L) = PagerPage("FLEX", "1600", cap, PageKind.ALPHA, text, "", errors)
-
-    /** A cut-short copy, then the whole page sent again: the whole one stands. */
-    @Test fun mergeTakesTheWholeCopy() {
-        val m = PageMerge.merge(alphaPage("STATION 7 RESPOND TO ROOM …", 2), alphaPage("STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 0))
-        assertEquals("STATION 7 RESPOND TO ROOM 38 NOW PLEASE", m!!.text)
-        assertEquals(0, m.errors)
-    }
-
-    /** Two copies each missing a different word: together they make the page. */
-    @Test fun mergeFillsGapsFromEachCopy() {
-        val m = PageMerge.merge(alphaPage("STATION ???ESPOND TO ROOM 38 NOW PLEASE", 1), alphaPage("STATION 7 RESPOND TO ???M 38 NOW PLEASE", 1))
-        assertEquals("STATION 7 RESPOND TO ROOM 38 NOW PLEASE", m!!.text)
-        assertEquals(0, m.errors)
-    }
-
-    /** Two copies both cut short, at different places: the one that ran further sets the length, still marked cut. */
-    @Test fun mergeExtendsACutCopy() {
-        val m = PageMerge.merge(alphaPage("STATION 7 RESPOND …", 2), alphaPage("STATION ???ESPOND TO ROOM 38 …", 3))
-        assertEquals("STATION 7 RESPOND TO ROOM 38 …", m!!.text)
-        assertTrue(m.errors > 0)
-    }
-
-    /** The same pager, two different pages: no merge. And two whole copies are the feed's fold, not a merge. */
-    @Test fun mergeLeavesDifferentPagesAlone() {
-        assertNull(PageMerge.merge(alphaPage("STATION 7 RESPOND TO ROOM 38 …", 1), alphaPage("SHIFT CHANGE AT 7 PM IN THE LOBBY", 0)))
-        assertNull(PageMerge.merge(alphaPage("STATION 7 RESPOND", 0), alphaPage("STATION 7 RESPOND", 0)))
-        assertNull(PageMerge.merge(alphaPage("STATION 7 RESPOND …", 1), alphaPage("STATION 7 RESPOND TO ROOM 38", 0, cap = 99L)))
-    }
-
-    /** Four bits of one word lost in a fade: past what BCH fixes, but the receiver knew they were weak. */
+    /** Four bits of one word lost in a fade: past what BCH fixes, but the receiver knew they were weak; K confirms it. */
     @Test fun flexRecoversAFadedWord() {
-        val text = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
-        val phase = flexPhase(1234567L, text, 765432L, "5551234")
-        val frame = flexFrame(0x870C, 1600, false, phase, fade = mapOf(6 + 3 to 0x48210000))
-        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(31))
-        val c = Collect()
-        val dec = FlexDecoder(c, 48_000.0)
-        dec.push(sig, sig.size)
-        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
-        assertTrue("alpha missing: ${c.pages}", alpha != null)
-        assertEquals(text, alpha!!.text)
+        val (c, dec) = decode1600(31, flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"), fade = mapOf(6 + 3 to 0x48210000)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals(TEXT, alpha.text)
         assertEquals(0, alpha.errors)
         assertTrue("recovered ${dec.recovered}", dec.recovered >= 1)
     }
 
     /** A fade across two neighbouring words (five weak bits in one, three in the next): both come back whole. */
     @Test fun flexRecoversAFadeAcrossWords() {
-        val text = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
-        val phase = flexPhase(1234567L, text, 765432L, "5551234")
-        val frame = flexFrame(0x870C, 1600, false, phase, fade = mapOf(6 + 5 to 0x41208400, 6 + 6 to 0x00E00000))
-        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(32))
-        val c = Collect()
-        FlexDecoder(c, 48_000.0).push(sig, sig.size)
-        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
-        assertTrue("alpha missing: ${c.pages}", alpha != null)
-        assertEquals(text, alpha!!.text)
+        val (c, _) = decode1600(32, flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"), fade = mapOf(6 + 5 to 0x41208400, 6 + 6 to 0x00E00000)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals(TEXT, alpha.text)
         assertEquals(0, alpha.errors)
     }
 
     /** A word wrong by six confident bits is not "recovered" into something else: it stays lost. */
     @Test fun flexDoesNotInventFromConfidentErrors() {
-        val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
-        val frame = flexFrame(0x870C, 1600, false, phase, flip = mapOf(6 + 3 to 0x3F000000))
-        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(33))
-        val c = Collect()
-        FlexDecoder(c, 48_000.0).push(sig, sig.size)
-        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
-        assertTrue("alpha missing: ${c.pages}", alpha != null)
-        assertEquals("STATION ???ESPOND TO ROOM 38 NOW PLEASE", alpha!!.text)
+        val (c, _) = decode1600(33, flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"), flip = mapOf(6 + 3 to 0x3F000000)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals("STATION ???ESPOND TO ROOM 38 NOW PLEASE", alpha.text)
         assertEquals(1, alpha.errors)
     }
 
-    /** A word that needed two bits fixed is kept, even the last: on a real signal they are common and right. */
+    /** Words that needed two bits fixed are kept when K confirms the page, even the last. */
     @Test fun flexKeepsTwoBitFixes() {
-        val text = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
-        val phase = flexPhase(1234567L, text, 765432L, "5551234")
-        val lastWord = 6 + (text.length - 2 + 2) / 3   // two characters in the first word, three in each after
-        val frame = flexFrame(0x870C, 1600, false, phase, mapOf(6 + 4 to 0x00000006, lastWord to 0x60000000))
-        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(23))
-        val c = Collect()
-        FlexDecoder(c, 48_000.0).push(sig, sig.size)
-        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
-        assertTrue("alpha missing: ${c.pages}", alpha != null)
-        assertEquals(text, alpha!!.text)
+        val lastWord = 6 + (TEXT.length - 2 + 2) / 3
+        val (c, _) = decode1600(23, flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"), mapOf(6 + 4 to 0x00000006, lastWord to 0x60000000)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals(TEXT, alpha.text)
         assertEquals(0, alpha.errors)
     }
 
-    /** One failed word inside good text stays a gap; the rest of the page is kept. */
-    @Test fun flexKeepsAPageWithOneLostWord() {
-        val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
-        // three bit errors: past what the code corrects, and never close enough to another word to miscorrect
-        val frame = flexFrame(0x870C, 1600, false, phase, mapOf(6 + 3 to 0x0E000000))
-        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(22))
-        val c = Collect()
-        FlexDecoder(c, 48_000.0).push(sig, sig.size)
-        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
-        assertTrue("alpha missing: ${c.pages}", alpha != null)
-        assertEquals("STATION ???ESPOND TO ROOM 38 NOW PLEASE", alpha!!.text)   // the word held "7 R"
+    /** Noise that the check "corrects" into a wrong word (two bits from another codeword): K catches it, the word is lost. */
+    @Test fun flexChecksumCatchesAMiscorrectedWord() {
+        val phase = flexPhase(1234567L, TEXT, 765432L, "5551234")
+        val wrong = phase.copyOf(); wrong[6 + 4] = phase[6 + 4] xor 0x0A5A5   // another valid word, the page's K unchanged
+        val (c, _) = decode1600(24, flexFrame(0x870C, 1600, false, wrong, mapOf(6 + 4 to 0x00000006)))
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals(lostWords(4, 4), alpha.text)
         assertEquals(1, alpha.errors)
+    }
+
+    /** A page in two fragments (same message number): joined, the continuation's first character included. */
+    @Test fun flexJoinsFragmentsByMessageNumber() {
+        val f1 = flexFrame(0x870C, 1600, false, flexPhase(1234567L, "PART ONE OF THE ", 765432L, "5551234", n = 7, frag = 3, more = 1))
+        val f2 = flexFrame(0x870C, 1600, false, flexPhase(1234567L, "MESSAGE ENDS HERE", 765432L, "5551234", n = 7, frag = 0, more = 0))
+        val (c, _) = decode1600(41, f1, f2)
+        val alpha = c.pages.filter { it.capcode == 1234567L }
+        assertEquals("pages: $alpha", 1, alpha.size)
+        assertEquals("PART ONE OF THE MESSAGE ENDS HERE", alpha[0].text)
+        assertEquals(0, alpha[0].errors)
+    }
+
+    /** A continuation with a different message number belongs to another message: not joined. */
+    @Test fun flexDoesNotJoinDifferentMessages() {
+        val f1 = flexFrame(0x870C, 1600, false, flexPhase(1234567L, "PART ONE OF THE ", 765432L, "5551234", n = 7, frag = 3, more = 1))
+        val f2 = flexFrame(0x870C, 1600, false, flexPhase(1234567L, "SOMETHING ELSE", 765432L, "5551234", n = 8, frag = 0, more = 0))
+        val (c, _) = decode1600(42, f1, f2)
+        val alpha = c.pages.filter { it.capcode == 1234567L }
+        assertTrue("pages: $alpha", alpha.none { it.text.contains("PART ONE OF THE SOMETHING") })
+        val orphan = alpha.first { it.text.contains("SOMETHING ELSE") }
+        assertTrue("orphan: $orphan", orphan.text.startsWith("<…>") && orphan.errors > 0)
+    }
+
+    /** A fragment missing from the sequence (F jumps): the gap is marked and the page is partial. */
+    @Test fun flexMarksAMissingFragment() {
+        val f1 = flexFrame(0x870C, 1600, false, flexPhase(1234567L, "FIRST PIECE ", 765432L, "5551234", n = 3, frag = 3, more = 1))
+        val f3 = flexFrame(0x870C, 1600, false, flexPhase(1234567L, "LAST PIECE", 765432L, "5551234", n = 3, frag = 1, more = 0))
+        val (c, _) = decode1600(43, f1, f3)
+        val alpha = c.pages.first { it.capcode == 1234567L }
+        assertEquals("FIRST PIECE <…>LAST PIECE", alpha.text)
+        assertTrue(alpha.errors > 0)
+    }
+
+    /** Two transmissions of a page, each losing a different word: the second fills the first, and a third adds nothing. */
+    @Test fun flexCombinesRepeatsWordByWord() {
+        val phase = flexPhase(1234567L, TEXT, 765432L, "5551234")
+        val (c, _) = decode1600(44,
+            flexFrame(0x870C, 1600, false, phase, mapOf(6 + 3 to 0x0E000000)),
+            flexFrame(0x870C, 1600, false, phase, mapOf(6 + 9 to 0x0E000000)),
+            flexFrame(0x870C, 1600, false, phase))
+        val alpha = c.pages.filter { it.capcode == 1234567L }
+        assertEquals("pages: $alpha", 3, alpha.size)
+        assertEquals(lostWords(3, 3), alpha[0].text); assertEquals(0, alpha[0].repeat)
+        assertEquals(TEXT, alpha[1].text); assertEquals(0, alpha[1].errors); assertEquals(2, alpha[1].repeat)
+        assertEquals(1, alpha[2].repeat)
+        assertEquals(alpha[0].key, alpha[1].key)
+    }
+
+    /** The same capcode and number but words that disagree where both copies read them: a different page, kept apart. */
+    @Test fun flexDoesNotCombineDifferentPages() {
+        val (c, _) = decode1600(45,
+            flexFrame(0x870C, 1600, false, flexPhase(1234567L, TEXT, 765432L, "5551234"), mapOf(6 + 3 to 0x0E000000)),
+            flexFrame(0x870C, 1600, false, flexPhase(1234567L, "STATION 9 RESPOND TO ROOM 12 NOW PLEASE", 765432L, "5551234")))
+        val alpha = c.pages.filter { it.capcode == 1234567L }
+        assertEquals("STATION 9 RESPOND TO ROOM 12 NOW PLEASE", alpha[1].text)
+        assertEquals(0, alpha[1].repeat)
+    }
+
+    /** A numeric word "corrected" into a wrong one: the numeric checksum catches it. */
+    @Test fun flexNumericChecksum() {
+        val phase = flexPhase(1234567L, TEXT, 765432L, "5551234")
+        val nStart = 5 + alphaWords(TEXT, 5).size
+        val wrong = phase.copyOf(); wrong[nStart] = phase[nStart] xor 0x0A5A0
+        val (c, _) = decode1600(46, flexFrame(0x870C, 1600, false, wrong, mapOf(nStart to 0x00000006)))
+        assertEquals(1, c.pages.first { it.capcode == 765432L }.errors)
+        val (c2, _) = decode1600(47, flexFrame(0x870C, 1600, false, phase))
+        assertEquals(0, c2.pages.first { it.capcode == 765432L }.errors)
     }
 
     // ---------------------------------------------------------------- the whole channel path
