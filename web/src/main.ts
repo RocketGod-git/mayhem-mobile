@@ -653,18 +653,19 @@ function bandTitle(hz: number): string {
 /**
  * How far the tuned channel stands over the noise, in dB: the mean power of the spectrum bins inside the channel
  * against the median bin of the whole span. (The squelch's own floor rises to meet a carrier that stays up, so it
- * can't drive a meter; the median doesn't.)
+ * can't drive a meter; the median doesn't.) The spectrum arrives scaled 0..1 across [rangeDb] for drawing, so it is
+ * put back in dB first, as the Android app does.
  */
-function channelOverNoise(bins: Float32Array): number {
+function channelOverNoise(bins: Float32Array, rangeDb: number): number {
   const n = bins.length; if (n < 16 || state.rate <= 0) return 0;
   const half: Record<string, [number, number]> = { WFM: [-100e3, 100e3], NFM: [-6250, 6250], AM: [-5000, 5000], USB: [0, 3000], LSB: [-3000, 0] };
   const [a, b] = half[state.mode] ?? [0, 0]; if (a === b) return 0;
   const off = tunedHz() - spanCenter();
   const i0 = Math.max(0, Math.min(n - 1, Math.floor((0.5 + (off + a) / state.rate) * n)));
   const i1 = Math.max(i0, Math.min(n - 1, Math.floor((0.5 + (off + b) / state.rate) * n)));
-  let sum = 0; for (let i = i0; i <= i1; i++) sum += Math.pow(10, bins[i] / 10);
+  let sum = 0; for (let i = i0; i <= i1; i++) sum += Math.pow(10, bins[i] * rangeDb / 10);
   const sorted = Float32Array.from(bins).sort();
-  return Math.max(0, 10 * Math.log10(sum / (i1 - i0 + 1)) - sorted[n >> 1]);
+  return Math.max(0, 10 * Math.log10(sum / (i1 - i0 + 1)) - sorted[n >> 1] * rangeDb);
 }
 function bandChipsHtml(): string {
   return LAUNCH_BANDS.map(b => `<button class="chip" data-lband="${b.id}" title="${esc(b.name)} · ${esc(b.what)} · ${(b.lo / 1e6).toFixed(0)}–${(b.hi / 1e6).toFixed(0)} MHz">${b.name}</button>`).join('');
@@ -4015,8 +4016,10 @@ function ensureWorker(): Worker {
   worker.onmessage = (e: MessageEvent) => {
     const m = e.data;
     switch (m.type) {
-      case 'spectrum': if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
-        if (state.app === 'audio') { const db = channelOverNoise(m.bins as Float32Array); setMeter(db / 40, `+${Math.round(db)} dB over the noise`, state.squelch ? state.squelch / 40 : null); }
+      case 'spectrum':
+        // the meter reads the bins before the waterfall takes them
+        if (state.app === 'audio') { const db = channelOverNoise(m.bins as Float32Array, m.rangeDb as number); setMeter(db / 40, `+${Math.round(db)} dB over the noise`, state.squelch ? state.squelch / 40 : null); }
+        if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
       case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
