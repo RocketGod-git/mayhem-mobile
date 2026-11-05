@@ -2011,6 +2011,20 @@ function sUnits(dbm: number, hz: number): string {
   if (dbm >= s9) return `S9+${Math.round(dbm - s9)}`;
   return `S${Math.max(0, Math.min(9, Math.round(9 + (dbm - s9) / 6)))}`;
 }
+/** The S-meter's scale on the card: S0 at the left, 6 dB an S-unit to S9, then dB over to S9+60. */
+const HAM_SCALE: [number, string][] = ([[6, 'S1'], [18, '3'], [30, '5'], [42, '7'], [54, '9'], [74, '+20'], [94, '+40'], [114, '+60']] as [number, string][]).map(([u, l]) => [u / 114, l]);
+function refreshHamCard(): void {
+  if (state.app !== 'ham' && state.app !== 'sat') return;
+  const h = state.ham, dbm = hamDbm(), s9 = h.freq >= 30e6 ? -93 : -73;
+  if (state.app === 'ham') setFace(h.mode, ((segmentOf(h.freq) || 'outside the amateur bands') + (h.rev ? ' · reverse' : '')).toUpperCase());
+  if (!q('#lscale span')?.textContent?.startsWith('S1')) setMeter(0, '', null, HAM_SCALE);
+  setMeter(Math.min(1, Math.max(0, (dbm - (s9 - 54)) / 114)), `${sUnits(dbm, h.freq)} · ${dbm.toFixed(0)} dBm`);
+  const tone = q('#ham-tone'), r = q('#capr'); if (r && tone) r.textContent = tone.textContent ?? '';
+  if (!state.connected) setLamp('NO RADIO');
+  else if (h.mode === 'NFM' && h.squelch > 0 && !h.open) setLamp('SQUELCHED');
+  else if (h.mode === 'NFM' && h.squelch > 0) setLamp('OPEN', 'ok');
+  else setLamp('RX', 'ok');
+}
 function refreshHamMeter(): void {
   const h = state.ham, bar = q('#sbar'), val = q('#sval'), tone = q('#ham-tone');
   if (bar) { const dbm = hamDbm(); const s9 = h.freq >= 30e6 ? -93 : -73; const frac = Math.min(1, Math.max(0, (dbm - (s9 - 54)) / 114)); bar.style.width = `${(frac * 100).toFixed(1)}%`; bar.classList.toggle('hot', dbm > s9 + 30); }
@@ -2022,6 +2036,7 @@ function refreshHamMeter(): void {
     tone.textContent = parts.join(' · ');
     tone.classList.toggle('open', h.mode === 'NFM' && h.open);
   }
+  refreshHamCard();
 }
 function refreshHamUi(): void {
   const h = state.ham;
@@ -2031,7 +2046,7 @@ function refreshHamUi(): void {
     const ssb = h.mode === 'USB' || h.mode === 'LSB';
     const boxes = ssb ? `<span class="fbox"><input class="txin num" data-fw="lo" value="${h.lo}" inputmode="numeric" title="low edge, Hz"> – <input class="txin num" data-fw="hi" value="${h.hi}" inputmode="numeric" title="high edge, Hz"> Hz</span>`
       : `<span class="fbox"><input class="txin num" data-fw="w" value="${hamWidth()}" inputmode="numeric" title="filter width, Hz"> Hz${h.mode === 'CW' ? '' : ' wide'}</span>`;
-    widths.innerHTML = HAM_WIDTHS[h.mode].map(([l, w]) => `<button class="chip ${hamWidth() === w ? 'on' : ''}" data-hw="${w}">${l}</button>`).join('') + boxes;
+    widths.innerHTML = HAM_WIDTHS[h.mode].map(([l, w]) => `<button class="${hamWidth() === w ? 'on' : ''}" data-hw="${w}">${l}</button>`).join('') + boxes;
     qa<HTMLButtonElement>('[data-hw]').forEach(b => b.onclick = () => hamSetWidth(Number(b.dataset.hw)));
     qa<HTMLInputElement>('[data-fw]', widths).forEach(i => {
       const apply = () => {
@@ -2042,7 +2057,7 @@ function refreshHamUi(): void {
       i.onchange = apply; i.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); i.blur(); } };
     });
   }
-  const fcap = q('#ham-filter-cap'); if (fcap) fcap.textContent = h.mode === 'USB' || h.mode === 'LSB' ? `FILTER · ${h.lo}–${h.hi} Hz` : h.mode === 'CW' ? `FILTER · ${hamWidth()} Hz` : `FILTER · ${hamWidth()} Hz wide (±${h.hi})`;
+  const agcRow = q('#ham-agcrow'); if (agcRow) (agcRow as HTMLElement).hidden = h.mode === 'NFM';
   qa('[data-agc]').forEach(b => b.classList.toggle('on', b.dataset.agc === h.agc));
   qa('[data-hsq]').forEach(b => b.classList.toggle('on', Number(b.dataset.hsq) === h.squelch));
   qa('[data-pitch]').forEach(b => b.classList.toggle('on', Number(b.dataset.pitch) === h.pitch));
@@ -2055,13 +2070,18 @@ function refreshHamUi(): void {
   qa('[data-band]').forEach(b => b.classList.toggle('on', b.dataset.band === band?.id));
   const seg = q('#ham-seg'); if (seg) seg.textContent = segmentOf(h.freq) || 'outside the amateur bands';
   const rep = q('#ham-rep'), rin = repeaterInput(h.freq);
-  if (rep) { (rep as HTMLElement).hidden = rin === null || h.mode !== 'NFM'; if (rin !== null) rep.textContent = `${h.rev ? 'LISTENING ON INPUT' : 'REV'} · input ${(rin / 1e6).toFixed(4)}`; rep.classList.toggle('on', h.rev); }
+  if (rep) { (rep as HTMLElement).hidden = rin === null || h.mode !== 'NFM'; rep.textContent = 'REV'; rep.title = rin !== null ? `input ${(rin / 1e6).toFixed(4)} MHz` : ''; rep.classList.toggle('on', h.rev); }
   const steps = q('#ham-steps'); if (steps) { const st = band?.step ?? (h.freq < 30e6 ? 500 : 12_500); steps.innerHTML = [[-st * 10], [-st], [st], [st * 10]].map(([s]) => `<button class="chip" data-step="${s}">${s > 0 ? '+' : '−'}${Math.abs(s) >= 1e6 ? `${Math.abs(s) / 1e6}M` : Math.abs(s) >= 1e3 ? `${Math.abs(s) / 1e3}k` : Math.abs(s)}</button>`).join(''); qa<HTMLButtonElement>('[data-step]', steps).forEach(b => b.onclick = () => tune(state.freq + Number(b.dataset.step))); }
   refreshHamMeter();
 }
+/** HAM's bands as tiles with their ranges. */
+function hamBandTiles(): string {
+  const mhz = (hz: number) => hz < 30e6 ? (hz / 1e6).toFixed(1) : String(Math.round(hz / 1e6));
+  return hsHtml(`<div class="tiles">${[...BANDS, ...NON_HAM].map(b => `<button class="tl" data-band="${b.id}"><b>${b.name}</b><small>${mhz(b.lo)}–${mhz(b.hi)}</small></button>`).join('')}</div>`);
+}
 function renderHam(view: HTMLElement): void {
   const h = state.ham;
-  const tabs = `<div class="row tabs bandstrip">${([['rx', 'RECEIVE'], ['monitor', 'MONITOR'], ['digi', 'DIGITAL'], ['tx', 'TRANSMIT'], ['log', 'LOGBOOK']] as const).map(([id, l]) => `<button class="chip ${h.tab === id ? 'on' : ''}" data-hamtab="${id}">${l}</button>`).join('')}</div>`;
+  const tabs = segHtml(([['rx', 'RX'], ['monitor', 'MONITOR'], ['digi', 'DIGITAL'], ['tx', 'TX'], ['log', 'LOG']] as const).map(([id, l]) => `<button class="${h.tab === id ? 'on' : ''}" data-hamtab="${id}">${l}</button>`), 'hamtabs');
   if (h.tab === 'tx') { renderPtt(view, tabs); return; }
   if (h.tab === 'log') { renderLog(view, tabs); return; }
   if (h.tab === 'digi') {
@@ -2084,7 +2104,6 @@ function renderHam(view: HTMLElement): void {
         <div id="sstv-panel" hidden>${imgPanelHtml()}<div class="caption">SSTV FREQUENCIES</div><div class="row bandstrip">${[['20m 14.230', 14_230_000, 'USB'], ['20m 14.233', 14_233_000, 'USB'], ['10m 28.680', 28_680_000, 'USB'], ['40m 7.171', 7_171_000, 'LSB'], ['ISS 145.800', 145_800_000, 'NFM']].map(([l, f, md]) => `<button class="chip" data-sstvf="${f}" data-sstvm="${md}">${l}</button>`).join('')}</div></div>
         <div id="ft8-panel"><div class="caption">FT8 · <span id="ft8-clock"></span> · UTC  SNR  DT  Hz  message</div><div id="ft8-list" class="panel list"></div>
           <div class="caption">FT8 FREQUENCIES</div><div class="row bandstrip">${[['160m', 1_840_000], ['80m', 3_573_000], ['40m', 7_074_000], ['30m', 10_136_000], ['20m', 14_074_000], ['17m', 18_100_000], ['15m', 21_074_000], ['12m', 24_915_000], ['10m', 28_074_000], ['6m', 50_313_000], ['2m', 144_174_000]].map(([l, f]) => `<button class="chip" data-ft8f="${f}">${l}</button>`).join('')}</div></div>
-        <div class="caption">TUNE</div><div id="ham-steps" class="row"></div>
         ${gainHtml()}
       </section>`;
     scope = attach(tunableScope('scope', 200));
@@ -2114,7 +2133,7 @@ function renderHam(view: HTMLElement): void {
         <div class="caption">OPEN NOW</div><div id="mon-list" class="panel list short"></div>
         <div class="caption">LISTEN</div><div class="row">${(['mix', 'latest', 'lock'] as const).map(m => `<button class="chip" data-monmode="${m}">${m.toUpperCase()}</button>`).join('')}</div>
         <div class="caption">RASTER · THRESHOLD · SPAN</div><div class="row">${[12_500, 25_000].map(s => `<button class="chip" data-monsp="${s}">${s / 1e3} kHz</button>`).join('')}${[6, 8, 12].map(t => `<button class="chip" data-monthr="${t}">+${t} dB</button>`).join('')}<button id="mon-wide" class="chip" ${window.innerWidth >= 720 ? '' : 'hidden'}>3.84 MHz</button></div>
-        <div class="caption">BAND</div><div class="row bandstrip">${[...BANDS, ...NON_HAM].map(b => `<button class="chip" data-band="${b.id}">${b.name}</button>`).join('')}</div>
+        <div style="margin-top:6px">${hamBandTiles()}</div>
         <div class="caption">ACTIVITY</div><div id="mon-log" class="panel list short"></div>
         ${gainHtml()}
       </section>`;
@@ -2135,15 +2154,14 @@ function renderHam(view: HTMLElement): void {
       <div class="hamline"><span id="ham-seg" class="seg"></span><span id="ham-tone" class="sq">—</span></div>
       <div id="scope" class="panel"></div></section>
     <section class="controls">${tabs}
-      <div class="caption">BAND</div><div class="row bandstrip">${[...BANDS, ...NON_HAM].map(b => `<button class="chip" data-band="${b.id}">${b.name}</button>`).join('')}</div>
-      <div class="caption">MODE</div><div class="row">${(['LSB', 'USB', 'CW', 'AM', 'NFM', 'WFM'] as HamMode[]).map(m => `<button class="chip" data-hmode="${m}">${m}</button>`).join('')}</div>
-      <div class="caption">TUNE</div><div id="ham-steps" class="row"></div>
-      <div class="caption" id="ham-filter-cap">FILTER · Hz</div><div id="ham-widths" class="row"></div>
-      <div id="ham-pbt"><div class="caption">PASSBAND SHIFT · <span id="pbt-val">0</span> Hz</div><input id="pbt" type="range" min="-600" max="600" step="50" value="${h.shift}"></div>
-      <div id="ham-cw"><div class="caption">CW PITCH · Hz</div><div class="row">${[500, 600, 700, 800].map(p => `<button class="chip" data-pitch="${p}">${p}</button>`).join('')}</div></div>
-      <div class="caption">AGC · DSP</div><div class="row">${(['off', 'fast', 'slow'] as AgcMode[]).map(a => `<button class="chip" data-agc="${a}">AGC ${a.toUpperCase()}</button>`).join('')}<button id="ham-nr" class="chip">NR</button><button id="ham-anf" class="chip">NOTCH</button></div>
-      <div id="ham-sq"><div class="caption">SQUELCH · dB over floor</div><div class="row">${[0, 3, 6, 10, 15].map(d => `<button class="chip" data-hsq="${d}">${d ? d : 'OFF'}</button>`).join('')}<button id="ham-rep" class="chip" hidden>REV</button></div></div>
-      <div class="caption">VOLUME</div><input id="ham-vol" type="range" min="0" max="2" step="0.05" value="${h.volume}">
+      <div style="margin-top:6px">${hamBandTiles()}</div>
+      <div style="margin-top:6px">${segHtml((['LSB', 'USB', 'CW', 'AM', 'NFM', 'WFM'] as HamMode[]).map(m => `<button data-hmode="${m}">${m}</button>`))}</div>
+      <div class="ctlrow"><span class="rl" id="ham-filter-cap">FILTER</span><div id="ham-widths" class="seg"></div></div>
+      <div id="ham-pbt" class="hamfine"><div class="caption">PASSBAND SHIFT · <span id="pbt-val">0</span> Hz</div><input id="pbt" type="range" min="-600" max="600" step="50" value="${h.shift}"></div>
+      <div id="ham-cw" class="hamfine"><div class="caption">CW PITCH · Hz</div><div class="row">${[500, 600, 700, 800].map(p => `<button class="chip" data-pitch="${p}">${p}</button>`).join('')}</div></div>
+      <div class="ctlrow" id="ham-agcrow"><span class="rl">AGC</span>${segHtml((['off', 'fast', 'slow'] as AgcMode[]).map(a => `<button data-agc="${a}">${a.toUpperCase()}</button>`))}<button id="ham-nr" class="tog">NR</button><button id="ham-anf" class="tog">NOTCH</button></div>
+      <div id="ham-sq" class="ctlrow"><span class="rl">SQL</span>${segHtml([0, 3, 6, 10, 15].map(d => `<button data-hsq="${d}">${d ? d : 'OFF'}</button>`))}<button id="ham-rep" class="tog" hidden>REV</button></div>
+      <div class="hamfine"><div class="caption">VOLUME</div><input id="ham-vol" type="range" min="0" max="2" step="0.05" value="${h.volume}"></div>
       ${gainHtml()}
     </section>`;
   scope = attach(tunableScope('scope', 200));
@@ -2539,9 +2557,8 @@ function renderPtt(view: HTMLElement, tabs: string): void {
       <div id="tx-status" class="health">idle</div>
       <div class="caption">DEVIATION · CTCSS</div><div class="row bandstrip">${[2500, 5000].map(d => `<button class="chip" data-dev="${d}">±${d / 1000} kHz</button>`).join('')}${[0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5].map(t => `<button class="chip" data-tone="${t}">${t ? t.toFixed(1) : 'no tone'}</button>`).join('')}</div>
       <div class="caption">TX GAIN · IF 0–47 dB · AMP +14 dB</div><div class="row">${[0, 10, 20, 30, 47].map(g => `<button class="chip" data-txg="${g}">${g}</button>`).join('')}<button id="tx-amp" class="chip">amp</button></div>
-      <div class="caption">BAND</div><div class="row bandstrip">${[...BANDS, ...NON_HAM].map(b => `<button class="chip" data-band="${b.id}">${b.name}</button>`).join('')}</div>
+      <div style="margin-top:6px">${hamBandTiles()}</div>
       <div class="caption">MODE (receive between overs)</div><div class="row">${(['NFM', 'USB', 'LSB'] as HamMode[]).map(m => `<button class="chip" data-hmode="${m}">${m}</button>`).join('')}</div>
-      <div class="caption">TUNE</div><div id="ham-steps" class="row"></div>
     </section>`;
   scope = attach(tunableScope('scope', 200));
   qa<HTMLButtonElement>('[data-hamtab]', view).forEach(b => b.onclick = () => { pttStop(); h.tab = b.dataset.hamtab as typeof h.tab; open('ham'); });

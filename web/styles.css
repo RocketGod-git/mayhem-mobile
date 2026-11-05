@@ -794,3 +794,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .countrow .link.on { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
 .tiles.wide .tl { width: 98px; }
 .note { color: var(--muted); font-size: 10px; line-height: 1.4; margin: 6px 2px 0; }
+
+@media (max-width: 719.98px) {
+  /* HAM: the card carries the S-meter and the band line; the fine controls (typed filter edges, shift, CW pitch,
+   * volume) live in Settings as on Android */
+  .view.ham .visual > .smeter, .view.ham .visual > .hamline, .view.sat .visual > .smeter { display: none; }
+  .view.ham .fbox, .view.ham .hamfine { display: none !important; }
+}
+.seg .fbox { display: none; }
+.seg.hamtabs { margin-bottom: 6px; }
