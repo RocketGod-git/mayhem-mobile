@@ -231,10 +231,11 @@ object PagerEngine {
     private fun status() { _status.value = Status(statusText(), hunting, pinnedList().size) }
 
     private fun publish() {
-        val listening = slots.map { it.hz }.toHashSet()
+        // a carrier's estimate wanders a raster step or two between surveys: within 10 kHz of a channel, it is that channel
+        fun near(a: Long, b: Long) = abs(a - b) < 10_000
         val cs = ArrayList<Chan>()
-        for (s in slots) cs += Chan(s.hz, carriers.firstOrNull { it.hz == s.hz }?.db ?: 0f, true, s.protocol, s.rate, s.pages, s.lastSync)
-        for (c in carriers) if (c.hz !in listening && cs.size < 12) cs += Chan(c.hz, c.db, false, "", "", 0, 0L)
+        for (s in slots) cs += Chan(s.hz, carriers.firstOrNull { near(it.hz, s.hz) }?.db ?: 0f, true, s.protocol, s.rate, s.pages, s.lastSync)
+        for (c in carriers) if (slots.none { near(it.hz, c.hz) } && cs.size < 12) cs += Chan(c.hz, c.db, false, "", "", 0, 0L)
         _channels.value = cs
         status()
     }

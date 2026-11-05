@@ -47,7 +47,9 @@ function render(chars: number[]): string {
   for (let k = 0; k <= end; k++) { const c = chars[k]; s += c >= 0x20 || c === 0x0A || c === 0x0D ? String.fromCharCode(c) : '?'; }
   return s;
 }
-interface Stream { head: string; cap: number; text: string; errors: number; words: number; lostWords: number; expectF: number; at: number }
+interface Stream { head: string; page: Record<string, unknown>; cap: number; text: string; errors: number; words: number; lostWords: number; expectF: number; at: number }
+/** Page kinds by FLEX type (8 is the short message vector's tone or numeric). */
+const KIND: Record<number, string> = { 0: 'SECURE', 1: 'INSTR', 2: 'TONE', 3: 'NUM', 4: 'NUM', 5: 'ALPHA', 6: 'BIN', 7: 'NUM', 8: 'TONE' };
 interface SeenPage { cap: number; type: number; n: number; words: number[]; gone: boolean[]; at: number; line: string }
 
 /*
@@ -132,7 +134,7 @@ export class FlexDecoder implements IqProcessor {
   private seen: SeenPage[] = [];
   private phaseToggle = 0; private dataBitCounter = 0;
   // decode
-  private capcode = 0; private addrType = 0; private isPriority = 0;
+  private capcode = 0; private phaseNo = 'A'; private addrType = 0; private isPriority = 0;
   private frames = 0; private lastStat = 0;
 
   constructor(private readonly emit: Emit) {}
@@ -216,6 +218,7 @@ export class FlexDecoder implements IqProcessor {
     const c = bchCorrect(bitReverse32(this.fiwRaw) | 0);
     if (c === null) return false;
     const f = bitReverse32(c >>> 0);
+    if (checksumOk(f & 0x1FFFFF)) this.emit({ type: 'sync', protocol: 'FLEX', rate: String(this.syncBaud * (this.syncLevels === 4 ? 2 : 1)) });
     this.cycleNo = (f >>> 4) & 0xF; this.frameNo = (f >>> 8) & 0x7F;
     let cs = (f & 0xF) + ((f >>> 4) & 0xF) + ((f >>> 8) & 0xF) + ((f >>> 12) & 0xF) + ((f >>> 16) & 0xF) + ((f >>> 20) & 1);
     return (cs & 0xF) === 0xF;
@@ -363,17 +366,26 @@ export class FlexDecoder implements IqProcessor {
     return `FLEX ${bitrate}/${this.syncLevels}L C${this.cycleNo}F${String(this.frameNo).padStart(3, '0')} CAP ${cap}${at}${pri} ${TYPE_NAMES[type]}`;
   }
   private static line(head: string, text: string, errors: number): string { return `${head}${errors ? ' PARTIAL' : ''}${text ? ': ' + text : ''}`; }
-  /** [errors]: message words lost (or 1 when the page could not be confirmed whole). A page with nothing readable is noise: logged, not shown. */
+  /** The page as the hunter's feed takes it. */
+  private pageOf(type: number, text: string, errors: number) {
+    return { protocol: 'FLEX', rate: String(this.syncBaud * (this.syncLevels === 4 ? 2 : 1)), cap: this.capcode, kind: KIND[type] ?? 'DATA', text, errors, where: `C${this.cycleNo}F${String(this.frameNo).padStart(3, '0')} ${this.phaseNo}` };
+  }
+  /** [errors]: message words lost (or 1 when the page could not be confirmed whole). A page with nothing readable is
+   *  noise: logged, and sent only to the hunter, which counts it. */
   private packet(type: number, message: string, errors = 0, replaces?: string): string | undefined {
-    if (errors > 0 && !message.trim()) { this.emit({ type: 'log', line: `FLEX CAP ${this.capcode}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` }); return undefined; }
-    const line = FlexDecoder.line(this.head(type), message, errors);
-    this.emit(replaces ? { type: 'packet', line, replaces } : { type: 'packet', line });
+    if (errors > 0 && !message.trim()) {
+      this.emit({ type: 'log', line: `FLEX CAP ${this.capcode}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` });
+      this.emit({ type: 'pagerNoise', page: this.pageOf(type, '', errors) });
+      return undefined;
+    }
+    const line = FlexDecoder.line(this.head(type), message, errors), page = this.pageOf(type, message, errors);
+    this.emit(replaces ? { type: 'packet', line, replaces, page } : { type: 'packet', line, page });
     return line;
   }
 
   private decodePhase(pi: number): void {
     const p = this.ph[pi];
-    const phaseNo = 'ABCD'[pi];
+    const phaseNo = this.phaseNo = 'ABCD'[pi];
     let allIdle = true;
     for (let i = 0; i < 88; i++) if (p[i] !== 0xFFFFFFFF && p[i] !== 0) { allIdle = false; break; }
     if (allIdle) return;
@@ -530,12 +542,12 @@ export class FlexDecoder implements IqProcessor {
     if (first) {
       // the first of several: a new stream (an unfinished one with this number is sent as it stands)
       const old = this.streams.get(key); if (old) { this.streams.delete(key); this.finish(old, CUT, false); }
-      this.streams.set(key, { head: this.head(type === PT.SECURE ? 0 : 5), cap, text, errors: lostWords, words: len, lostWords, expectF: 0, at: this.heardS });
+      this.streams.set(key, { head: this.head(type === PT.SECURE ? 0 : 5), page: this.pageOf(type === PT.SECURE ? 0 : 5, '', 0), cap, text, errors: lostWords, words: len, lostWords, expectF: 0, at: this.heardS });
       return;
     }
     // a continuation: F runs 0, 1, 2, 0 ... after the first; a break in it is a fragment that never arrived
     let s = this.streams.get(key);
-    if (!s) { s = { head: this.head(type === PT.SECURE ? 0 : 5), cap, text: GAP, errors: 1, words: 0, lostWords: 0, expectF: frag, at: this.heardS }; this.streams.set(key, s); }
+    if (!s) { s = { head: this.head(type === PT.SECURE ? 0 : 5), page: this.pageOf(type === PT.SECURE ? 0 : 5, '', 0), cap, text: GAP, errors: 1, words: 0, lostWords: 0, expectF: frag, at: this.heardS }; this.streams.set(key, s); }
     if (frag !== s.expectF) { s.text += GAP; s.errors++; }
     s.text += text; s.errors += lostWords; s.words += len; s.lostWords += lostWords;
     s.expectF = (frag + 1) % 3;
@@ -546,8 +558,9 @@ export class FlexDecoder implements IqProcessor {
   private finish(s: Stream, tail: string, complete: boolean): void {
     const errors = s.errors + (complete ? 0 : 1);
     const text = s.lostWords * 2 > s.words ? '' : s.text.trimEnd() + tail;
-    if (errors > 0 && !text.trim()) { this.emit({ type: 'log', line: `FLEX CAP ${s.cap}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` }); return; }
-    this.emit({ type: 'packet', line: FlexDecoder.line(s.head, text, errors) });
+    const page = { ...s.page, text, errors };
+    if (errors > 0 && !text.trim()) { this.emit({ type: 'log', line: `FLEX CAP ${s.cap}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` }); this.emit({ type: 'pagerNoise', page }); return; }
+    this.emit({ type: 'packet', line: FlexDecoder.line(s.head, text, errors), page });
   }
 
   /** Binary pages (Section 3.10.1.2) as hex, the second header word left out of a first fragment. */
