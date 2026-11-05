@@ -305,7 +305,7 @@ private fun unreadable(m: PagerMessage) = m.page.errors > 0 && m.page.text.isBla
 
 /** What the MULTI feed is narrowed to. One instance serves the inline feed and the full-screen one, so both agree. */
 private class PagerFilter {
-    /** 0 everything · 1 pages with text · 2 call-outs only. */
+    /** 0 everything · 1 pages that read as words · 2 call-outs only. */
     var kind by mutableIntStateOf(0)
     /** "FLEX", "POCSAG", or null for both. */
     var protocol by mutableStateOf<String?>(null)
@@ -321,7 +321,8 @@ private class PagerFilter {
     fun keeps(m: PagerMessage): Boolean =
         (PagerUi.noise || !unreadable(m)) && (capcode == null || m.page.capcode == capcode) && (hz == null || m.hz == hz) &&
             (protocol == null || m.page.protocol == protocol) && when (kind) {
-                1 -> m.page.kind == PageKind.ALPHA && m.page.text.isNotBlank()
+                // text a person reads: machine data and encoded payloads sent as alpha stay under ALL
+                1 -> m.page.kind == PageKind.ALPHA && com.rocketgod.mayhem.core.pager.PocsagDecoder.looksLikeText(m.page.text.trim())
                 2 -> m.alert
                 else -> true
             }

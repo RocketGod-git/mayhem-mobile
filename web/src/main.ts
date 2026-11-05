@@ -3003,6 +3003,14 @@ const hunt = {
 const FULL_SVG = '<svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
 const EXIT_SVG = '<svg viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>';
 const RADAR_SVG = '<svg class="radar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.8" opacity=".5"/><circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="1.8" opacity=".7"/><line class="sweep" x1="12" y1="12" x2="12" y2="3" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/></svg>';
+/** TEXT shows what a person reads: letters, digits, spaces and ordinary punctuation make up at least 85% of it (the
+ *  Android app's rule). Machine data and encoded payloads sent as alpha stay under ALL. */
+function readsAsText(s: string): boolean {
+  if (!s) return false;
+  let good = 0;
+  for (const c of s) if (/[\p{L}\p{N} .,:;!?\-\/()#@'"&\n]/u.test(c)) good++;
+  return good * 100 >= s.length * 85;
+}
 /** A page the decoder gave up on: its words were lost before anything readable came through. */
 const huntUnreadable = (m: HuntMsg) => m.page.errors > 0 && !m.page.text.trim() && (m.page.kind === 'ALPHA' || m.page.kind === 'SECURE' || m.page.kind === 'BIN');
 
@@ -3106,7 +3114,7 @@ function drawHunt(): void {
     + (hunt.hz !== null ? `<button class="pill only" data-ht="hz">${(hunt.hz / 1e6).toFixed(4)} MHz ✕</button>` : '');
   // the cards
   const keep = (m: HuntMsg) => (hunt.noise || !huntUnreadable(m)) && (hunt.capcode === null || m.page.cap === hunt.capcode) && (hunt.hz === null || m.hz === hunt.hz)
-    && (hunt.protocol === null || m.page.protocol === hunt.protocol) && (hunt.kind === 1 ? m.page.kind === 'ALPHA' && !!m.page.text.trim() : hunt.kind === 2 ? m.alert : true);
+    && (hunt.protocol === null || m.page.protocol === hunt.protocol) && (hunt.kind === 1 ? m.page.kind === 'ALPHA' && readsAsText(m.page.text.trim()) : hunt.kind === 2 ? m.alert : true);
   const rows: { m: HuntMsg; n: number; caps: Set<number> }[] = [];
   const open = new Map<string, number>();
   for (const m of msgs) {
