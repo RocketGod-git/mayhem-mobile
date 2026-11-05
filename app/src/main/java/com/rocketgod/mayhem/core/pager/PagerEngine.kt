@@ -23,7 +23,8 @@ object PagerEngine {
 
     data class Chan(val hz: Long, val snrDb: Float, val listening: Boolean, val protocol: String, val rate: String,
                     val pages: Int, val lastSync: Long)
-    data class Status(val text: String, val hunting: Boolean, val pinned: Int)
+    /** [heardHz]: the channel whose audio plays, shaded on the waterfall (null before any has a receiver). */
+    data class Status(val text: String, val hunting: Boolean, val pinned: Int, val heardHz: Long? = null)
 
     private val _status = MutableStateFlow(Status("Waiting for the radio", true, 0))
     val status: StateFlow<Status> = _status.asStateFlow()
@@ -34,24 +35,33 @@ object PagerEngine {
     private val _capcodes = MutableStateFlow(0)
     val capcodes: StateFlow<Int> = _capcodes.asStateFlow()
 
-    /** HUNT: track the span's busiest carriers. PINNED: keep only [pinned]. */
+    /** AUTO: track the span's busiest carriers. Off: keep only [pinned], or with none pinned, what was decoding. */
     @Volatile var hunting = true; private set
-    /** AUTO: forget the pins and hunt again; the heard channel goes back to whichever synced last. */
+    /** The AUTO tile. On: forget the pins and hunt; the heard channel goes back to whichever synced last. Off: the
+     *  channels being decoded stay until a signal is picked. */
     fun setHunting(on: Boolean) {
-        if (on) { synchronized(pinned) { pinned.clear() }; listenHz = null }
-        hunting = on; status()
+        synchronized(pinned) { pinned.clear(); held.clear() }; listenHz = null
+        if (!on) holdNow = true
+        hunting = on; lastManage = 0L; status()
     }
+    fun toggleAuto() = setHunting(!hunting)
     /** The channel whose audio plays (tap a channel); null = whichever synced last. */
     @Volatile var listenHz: Long? = null
     /** Carriers the user pinned (tap an active frequency to stay on it). */
     private val pinned = LinkedHashSet<Long>()
-    fun pin(hz: Long) { synchronized(pinned) { pinned.add(hz) }; hunting = false; listenHz = hz; status() }
-    /** Let a pinned carrier go. With nothing left pinned there is nothing to decode, so it hunts again. */
+    /** AUTO off with nothing pinned: the channels that were decoding when it went off. */
+    private val held = HashSet<Long>()
+    @Volatile private var holdNow = false
+    /** A waterfall tap waiting for the DSP thread to snap it onto the carrier there. */
+    @Volatile private var pickHz = 0L
+    fun pin(hz: Long) { synchronized(pinned) { pinned.add(hz); held.clear() }; hunting = false; listenHz = hz; lastManage = 0L; status() }
+    /** A tap on the waterfall: the carrier under the finger is pinned (snapped onto it on the DSP thread), AUTO off. */
+    fun pick(hz: Long) { pickHz = hz; hunting = false; lastManage = 0L; status() }
+    /** Let a pinned carrier go: its receiver stops. AUTO stays off; the AUTO tile turns it back on. */
     fun unpin(hz: Long) {
-        val none = synchronized(pinned) { pinned.remove(hz); pinned.isEmpty() }
+        synchronized(pinned) { pinned.remove(hz); held.remove(hz) }
         if (listenHz == hz) listenHz = null
-        if (none) hunting = true
-        status()
+        lastManage = 0L; status()
     }
     fun pinnedList(): List<Long> = synchronized(pinned) { pinned.toList() }
 
@@ -78,7 +88,7 @@ object PagerEngine {
     private var center = 0L
     private var rateHz = 0
     private var spanStart = 0L
-    private var lastManage = 0L
+    @Volatile private var lastManage = 0L
     private var lastPublish = 0L
     private var peak = FloatArray(0)
     private var carriers = emptyList<Carrier>()
@@ -109,6 +119,9 @@ object PagerEngine {
         }
         if (t - spanStart < SETTLE_MS) return
         scan(buf, len)
+        if (holdNow) { holdNow = false; synchronized(pinned) { held.clear(); slots.forEach { held += it.hz } } }
+        val p = pickHz
+        if (p != 0L) { pickHz = 0L; val at = snap(p); synchronized(pinned) { pinned.add(at); held.clear() }; listenHz = at; lastManage = 0L }
         if (slots.isNotEmpty()) {
             val n = len / 2
             if (iq.size < n) { iq = FloatArray(n); qq = FloatArray(n) }
@@ -116,7 +129,9 @@ object PagerEngine {
             heard = listenHz?.let { h -> slots.firstOrNull { it.hz == h } } ?: slots.maxByOrNull { it.lastSync }
             for (s in slots) { s.rx.configure(center, rate); s.rx.process(iq, qq, n) }
         }
-        if (t - spanStart >= SETTLE_MS + SURVEY_MS && t - lastManage > 2000) { lastManage = t; manage(t) }
+        // a control changed (lastManage reset) with AUTO off: the receivers follow it now, not after the survey
+        val asked = lastManage == 0L && !hunting
+        if (asked || (t - spanStart >= SETTLE_MS + SURVEY_MS && t - lastManage > 2000)) { lastManage = t; manage(t) }
         if (t - lastPublish > 500) { lastPublish = t; publish() }
     }
 
@@ -180,6 +195,33 @@ object PagerEngine {
         return out.sortedByDescending { it.db }.take(16)
     }
 
+    /**
+     * The carrier at a tapped frequency: a listed carrier within half a 25 kHz channel of it, else the power centroid
+     * of the held spectrum within 12 kHz of it (a carrier the survey ranked too low to list), else the tap itself;
+     * all on the 2.5 kHz raster the survey uses.
+     */
+    internal fun snap(hz: Long): Long {
+        carriers(center, rateHz).filter { abs(it.hz - hz) <= 12_500 }.minByOrNull { abs(it.hz - hz) }?.let { return it.hz }
+        val n = peak.size
+        if (n > 0 && rateHz > 0) {
+            val bin = rateHz.toDouble() / n
+            val k0 = ((hz - center) / bin + n / 2).roundToLong().toInt()
+            val reach = maxOf(1, (12_000 / bin).toInt())
+            val lo = maxOf(0, k0 - reach); val hi = minOf(n - 1, k0 + reach)
+            if (lo <= hi) {
+                var top = -Float.MAX_VALUE
+                for (j in lo..hi) top = maxOf(top, peak[j])
+                val floor = peak.copyOf().also { it.sort() }[n / 2]
+                if (top > floor + 6f) {
+                    var wsum = 0.0; var isum = 0.0
+                    for (j in lo..hi) if (peak[j] > top - 10f) { val lin = Math.pow(10.0, (peak[j] - top) / 10.0); wsum += lin; isum += lin * j }
+                    return ((center + (isum / wsum - n / 2) * bin) / 2500.0).roundToLong() * 2500
+                }
+            }
+        }
+        return (hz / 2500.0).roundToLong() * 2500
+    }
+
     // ---------------------------------------------------------------- slots
 
     private fun newSlot(hz: Long, t: Long): Slot {
@@ -197,7 +239,8 @@ object PagerEngine {
 
     private fun manage(t: Long) {
         carriers = carriers(center, rateHz)
-        val want: List<Long> = if (hunting) carriers.take(SLOTS).map { it.hz } else pinnedList()
+        val want: List<Long> = if (hunting) carriers.take(SLOTS).map { it.hz }
+            else synchronized(pinned) { if (pinned.isNotEmpty()) pinned.toList() else held.toList() }
         // evict: in HUNT, carriers that had their trial and never proved; in PINNED, anything no longer pinned
         val gone = slots.filter { s ->
             if (!hunting) s.hz !in want
@@ -211,13 +254,14 @@ object PagerEngine {
             if (hunting && t - (tried[hz] ?: 0L) < RETRY_MS) continue
             slots += newSlot(hz, t)
         }
-        status()
+        publish()
     }
 
     private fun statusText(): String {
         if (!hunting) {
             val np = pinnedList().size
-            return if (np == 0) "Pinned · tap an active frequency to listen" else "Pinned $np channel${if (np == 1) "" else "s"}"
+            if (np > 0) return "Pinned $np channel${if (np == 1) "" else "s"}"
+            return if (slots.isNotEmpty()) "AUTO off · holding ${slots.size} · tap a signal to keep just it" else "AUTO off · tap a signal to decode it"
         }
         val dec = slots.count { now() - it.lastSync < PROVEN_MS && it.syncs > 0 }
         return when {
@@ -228,7 +272,7 @@ object PagerEngine {
         }
     }
 
-    private fun status() { _status.value = Status(statusText(), hunting, pinnedList().size) }
+    private fun status() { _status.value = Status(statusText(), hunting, pinnedList().size, listenHz ?: heard?.hz) }
 
     private fun publish() {
         // a carrier's estimate wanders a raster step or two between surveys: within 10 kHz of a channel, it is that channel
@@ -250,7 +294,7 @@ object PagerEngine {
             if (p.repeat == 1 && earlier != null) return
             if (earlier != null) cur = cur.filter { it.id != earlier.id }
         }
-        val m = PagerMessage(nextId++, t, hz, p, ALERT.containsMatchIn(p.text.uppercase()))
+        val m = PagerMessage(nextId++, t, hz, p, isCallOut(p.text))
         _messages.value = if (cur.size >= MAX_MESSAGES) listOf(m) + cur.subList(0, MAX_MESSAGES - 1) else listOf(m) + cur
         synchronized(caps) { caps += p.capcode; _capcodes.value = caps.size }
     }
@@ -280,9 +324,12 @@ object PagerEngine {
         }
     }
 
-    /** Words that make a page a call-out: fire, EMS, police, hospital codes. */
+    /** A page with one of [ALERT]'s words in it. */
+    internal fun isCallOut(text: String) = ALERT.containsMatchIn(text.uppercase())
+
+    /** Words that make a page a call-out: fire, EMS, police, hospital codes, warnings, critical results, patients. */
     private val ALERT = Regex(
-        "\\b(FIRE|EMS|MEDIC|AMBULANCE|CARDIAC|ARREST|STROKE|TRAUMA|CODE (BLUE|RED|3|STEMI)|STEMI|STRUCTURE|MVA|MVC|ACCIDENT|" +
+        "\\b(FIRE|EMS|MEDIC|AMBULANCE|CARDIAC|ARREST|STROKE|TRAUMA|CODE|STEMI|WARNING|CRITICAL|PATIENT|STRUCTURE|MVA|MVC|ACCIDENT|" +
             "SHOOTING|SHOTS|STABBING|OVERDOSE|UNRESPONSIVE|RESCUE|HAZMAT|ALARM|POLICE|SWAT|ENGINE \\d+|LADDER \\d+|" +
             "BATTALION|MEDIC \\d+|RESPOND|STAT)\\b")
 }

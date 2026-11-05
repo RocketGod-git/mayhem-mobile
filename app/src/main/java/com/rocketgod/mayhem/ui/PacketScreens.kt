@@ -174,6 +174,9 @@ private fun PagerSingleView(accent: Color) {
     })
 }
 
+/** The width a hunter receiver passes (its channel filter cuts at ±10 kHz). */
+private const val HUNT_CHANNEL_HZ = 20_000
+
 /** The multi-channel hunter: tune to a pager band and it decodes the busiest carriers in the span (AUTO), or only
  *  the ones you tap. Audio for the focused channel plays through the normal path, so the global mute rules it. */
 @Composable
@@ -188,7 +191,14 @@ private fun PagerHunterView(accent: Color) {
     val filter = remember { PagerFilter() }
     var full by remember { mutableStateOf(false) }
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
+    // the hunter's span stays put: a tap picks the carrier there for its own receiver (and turns AUTO off)
+    val onPick: (Float) -> Unit = { frac -> PagerEngine.pick(spanHz(freq, SdrEngine.currentRate(), frac)) }
+    // each receiver passes ±10 kHz around its carrier: that band is shaded around the channel being heard
+    val rate = SdrEngine.currentRate()
+    val channel = status.heardHz?.takeIf { rate > 0 }?.let { hz ->
+        val c = 0.5f + (hz - freq).toFloat() / rate; val half = HUNT_CHANNEL_HZ / 2f / rate
+        c - half to c + half
+    }
     // a short phone drops the activity strip, so the feed keeps its room
     val spark = d.wide || d.heightDp >= 700
     AdaptivePane(
@@ -199,8 +209,8 @@ private fun PagerHunterView(accent: Color) {
             Column(m) {
                 Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                        rows = if (d.wide) 160 else 70, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
-                        onPreviewFrac = onPreview, onTapFrac = onTune)
+                        rows = if (d.wide) 160 else 70, traceFrac = 0.38f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
+                        onPreviewFrac = onPreview, onTapFrac = onPick)
                 }
             }
         }
@@ -224,11 +234,12 @@ private fun HunterFace(accent: Color, freq: Long, status: PagerEngine.Status, ch
     val decoding = channels.count { it.listening && it.protocol.isNotEmpty() }
     val alerts = remember(messages) { messages.count { it.alert } }
     val level by SdrEngine.levelDb.collectAsState()
-    FreqCard(accent, tag = if (status.hunting) "HUNT" else "PINNED", title = "FLEX · POCSAG", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+    FreqCard(accent, tag = if (status.hunting) "HUNT" else if (status.pinned > 0) "PINNED" else "MANUAL", title = "FLEX · POCSAG", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
         right = status.text,
         lamp = {
             when {
-                !status.hunting -> Lamp("PINNED ${status.pinned}", Palette.ok)
+                !status.hunting && status.pinned > 0 -> Lamp("PINNED ${status.pinned}", Palette.ok)
+                !status.hunting -> Lamp("AUTO OFF", Palette.accent2)
                 decoding > 0 -> Lamp("DECODING $decoding", Palette.ok)
                 else -> Lamp("HUNTING", Palette.accent2, blink = true)
             }
@@ -305,8 +316,8 @@ private fun unreadable(m: PagerMessage) = m.page.errors > 0 && m.page.text.isBla
 
 /** What the MULTI feed is narrowed to. One instance serves the inline feed and the full-screen one, so both agree. */
 private class PagerFilter {
-    /** 0 everything · 1 pages that read as words · 2 call-outs only. */
-    var kind by mutableIntStateOf(0)
+    /** 0 everything · 1 pages that read as words (the default: it keeps machine data out) · 2 call-outs only. */
+    var kind by mutableIntStateOf(1)
     /** "FLEX", "POCSAG", or null for both. */
     var protocol by mutableStateOf<String?>(null)
     /** Follow one pager: only this capcode. */
@@ -501,8 +512,8 @@ private val PAGE_TIME: ThreadLocal<SimpleDateFormat> = ThreadLocal.withInitial {
 
 /**
  * The span's carriers as one scrolling row of tiles: AUTO first, then each carrier. AUTO hunts the busiest by
- * itself; tapping a carrier pins it (and plays it), tapping it again lets it go, and letting the last one go goes
- * back to AUTO. A carrier that is decoding has a pulsing dot and a lit edge; a pinned one is filled.
+ * itself, and tapping it turns it off (what was decoding stays until a signal is picked) or back on; tapping a
+ * carrier, or the waterfall, pins it (and plays it), and tapping it again lets it go. A carrier that is decoding has a pulsing dot and a lit edge; a pinned one is filled.
  */
 @Composable
 private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status: PagerEngine.Status) {
@@ -521,13 +532,13 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
                 drawRoundRect(Palette.accent2.copy(alpha = 0.3f), Offset(-2.dp.toPx(), -2.dp.toPx()), Size(size.width + 4.dp.toPx(), size.height + 4.dp.toPx()), CornerRadius(14.dp.toPx()))
             } else Modifier)
             .clip(shape).background(if (auto) Palette.accent2 else Palette.surface).border(1.dp, if (auto) Palette.accent2 else Palette.line, shape)
-            .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); PagerEngine.setHunting(true) }
+            .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); PagerEngine.toggleAuto() }
             .padding(horizontal = d.dp(10f), vertical = d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
             val fg = if (auto) inkOn(Palette.accent2) else Palette.ink
             RadarGlyph(fg, auto, Modifier.size(d.dp(20f)))
             Column(Modifier.padding(start = d.dp(7f))) {
                 Text("AUTO", color = fg, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1)
-                Text(if (auto) "hunting" else "tap to hunt", color = fg.copy(alpha = 0.7f), fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
+                Text(if (auto) "hunting" else "off · tap to hunt", color = fg.copy(alpha = 0.7f), fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
             }
         }
         for (c in channels) {

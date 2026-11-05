@@ -151,6 +151,26 @@ for (const c of carriers) {
 const state = events.filter(e => e.type === 'huntState').pop();
 ok(state && state.channels.filter(ch => ch.listening && ch.protocol === 'FLEX').length === 2, 'both channels report decoding FLEX', JSON.stringify(state));
 ok(state && /Decoding 2 channels/.test(state.text), 'the status says so', state?.text);
+
+// The controls. A tap on the waterfall a few kHz off a carrier snaps onto it, pins it and turns AUTO off; only it
+// keeps a receiver. AUTO toggles: on forgets the pins, off holds what is decoding until a signal is picked. Letting
+// the last pin go leaves AUTO off.
+const last = () => events.filter(e => e.type === 'huntState').pop();
+const listening = () => last().channels.filter(ch => ch.listening).map(ch => ch.hz);
+hunter.command('pick', 929_404_100);
+ok(Math.abs(last().pinned[0] - 929_400_000) <= 2500 && last().pinned.length === 1, 'a tap 4 kHz off a carrier pins the carrier', JSON.stringify(last().pinned));
+ok(!last().hunting, 'a tap turns AUTO off', String(last().hunting));
+ok(listening().length === 1 && listening()[0] === last().pinned[0], 'only the picked carrier keeps a receiver', JSON.stringify(listening()));
+ok(last().heardHz === last().pinned[0], 'the picked carrier is the one heard (and shaded on the waterfall)', String(last().heardHz));
+ok(hunter.snap(929_750_000) === 929_750_000, 'a tap on empty spectrum stays where it landed, on the raster', String(hunter.snap(929_750_000)));
+hunter.command('auto');
+ok(last().hunting && last().pinned.length === 0, 'AUTO while off turns it on and forgets the pins', JSON.stringify(last()));
+hunter.command('auto');
+ok(!last().hunting && last().pinned.length === 0 && listening().length === 1, 'AUTO while on turns it off, holding what was decoding', JSON.stringify(last()));
+ok(/AUTO off/.test(last().text), 'the status says AUTO is off', last().text);
+hunter.command('pick', 929_912_000); const kept = last().pinned[0];
+hunter.command('unpin', kept);
+ok(!last().hunting && listening().length === 0, 'letting the last pin go stops it and leaves AUTO off', JSON.stringify(last()));
 if (process.env.DEBUG) { console.log(JSON.stringify(events.filter(e => e.type === 'huntState').slice(-1)[0], null, 0)); console.log(pages.map(p => `${p.hz} ${p.page.cap} ${p.page.text}`).join('\n')); }
 console.log(`${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

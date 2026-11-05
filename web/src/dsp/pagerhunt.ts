@@ -139,12 +139,48 @@ export class PagerHunter implements IqProcessor {
   constructor(private readonly post: Emit) {}
   reset(): void { this.restart = true; }
 
-  /** From the page: AUTO (hunt again), pin a carrier, or let one go. */
+  /**
+   * From the page. 'auto' turns AUTO off (the channels being decoded stay until one is picked) or back on (the pins
+   * are forgotten). 'pin' keeps a carrier and turns AUTO off; 'unpin' lets it go and stops decoding it. 'pick' is a
+   * tap on the waterfall: the frequency under the finger snaps onto the carrier there, which is then pinned.
+   */
   command(cmd: string, hz?: number): void {
-    if (cmd === 'auto') { this.pinned.clear(); this.listenHz = null; this.hunting = true; }
-    else if (cmd === 'pin' && hz) { this.pinned.add(hz); this.hunting = false; this.listenHz = hz; }
-    else if (cmd === 'unpin' && hz) { this.pinned.delete(hz); if (this.listenHz === hz) this.listenHz = null; if (!this.pinned.size) this.hunting = true; }
-    this.lastManage = 0; this.publish();
+    if (cmd === 'auto') {
+      this.pinned.clear(); this.listenHz = null; this.hunting = !this.hunting;
+    } else if (cmd === 'pin' && hz) { this.pinned.add(hz); this.hunting = false; this.listenHz = hz; }
+    else if (cmd === 'pick' && hz) { const at = this.snap(hz); this.pinned.add(at); this.hunting = false; this.listenHz = at; }
+    else if (cmd === 'unpin' && hz) {
+      this.pinned.delete(hz); if (this.listenHz === hz) this.listenHz = null;
+      this.slots = this.slots.filter(s => s.hz !== hz); if (this.heard?.hz === hz) this.heard = null;
+    }
+    this.lastManage = 0;
+    // a pick wants its receiver now, not at the next survey
+    if (!this.hunting && this.rate && this.clock() - this.spanStart >= SETTLE_MS) this.fill(this.clock());
+    if (this.heard && !this.slots.includes(this.heard)) this.heard = null;
+    this.publish();
+  }
+
+  /**
+   * The carrier at a tapped frequency: a listed carrier within half a 25 kHz channel of it, else the power centroid
+   * of the held spectrum within 12 kHz of it (a carrier the survey ranked too low to list), else the tap itself;
+   * all on the 2.5 kHz raster the survey uses.
+   */
+  snap(hz: number): number {
+    const listed = this.carriers().reduce<Carrier | null>((a, c) => Math.abs(c.hz - hz) <= 12_500 && (!a || Math.abs(c.hz - hz) < Math.abs(a.hz - hz)) ? c : a, null);
+    if (listed) return listed.hz;
+    const peak = this.peak, n = peak.length;
+    if (n && this.rate) {
+      const bin = this.rate / n, k0 = Math.round((hz - this.center) / bin + n / 2), reach = Math.max(1, Math.floor(12_000 / bin));
+      let top = -Infinity;
+      for (let j = Math.max(0, k0 - reach); j <= Math.min(n - 1, k0 + reach); j++) top = Math.max(top, peak[j]);
+      const floor = Float32Array.from(peak).sort()[n >> 1];
+      if (top > floor + 6) {
+        let wsum = 0, isum = 0;
+        for (let j = Math.max(0, k0 - reach); j <= Math.min(n - 1, k0 + reach); j++) if (peak[j] > top - 10) { const lin = 10 ** ((peak[j] - top) / 10); wsum += lin; isum += lin * j; }
+        return Math.round((this.center + (isum / wsum - n / 2) * bin) / 2500) * 2500;
+      }
+    }
+    return Math.round(hz / 2500) * 2500;
   }
 
   onIq(iq: Int8Array, rate: number): void {
@@ -221,6 +257,12 @@ export class PagerHunter implements IqProcessor {
 
   private manage(t: number): void {
     this.carrierList = this.carriers();
+    this.fill(t);
+  }
+
+  /** Who gets a receiver: AUTO, the busiest carriers; AUTO off with pins, only those; AUTO off without, whoever has one. */
+  private fill(t: number): void {
+    if (!this.hunting && !this.pinned.size) { this.publish(); return; }
     const want = this.hunting ? this.carrierList.slice(0, SLOTS).map(c => c.hz) : [...this.pinned];
     // evict: in AUTO, carriers that had their trial and never proved; pinned, anything no longer pinned
     const gone = this.slots.filter(s => !this.hunting ? !want.includes(s.hz) : t - s.since > TRIAL_MS && t - s.lastSync > PROVEN_MS && !want.includes(s.hz));
@@ -235,7 +277,11 @@ export class PagerHunter implements IqProcessor {
   }
 
   private statusText(): string {
-    if (!this.hunting) { const np = this.pinned.size; return np === 0 ? 'Pinned · tap an active frequency to listen' : `Pinned ${np} channel${np === 1 ? '' : 's'}`; }
+    if (!this.hunting) {
+      const np = this.pinned.size;
+      if (np) return `Pinned ${np} channel${np === 1 ? '' : 's'}`;
+      return this.slots.length ? `AUTO off · holding ${this.slots.length} · tap a signal to keep just it` : 'AUTO off · tap a signal to decode it';
+    }
     const now = this.clock(), dec = this.slots.filter(s => now - s.lastSync < PROVEN_MS && s.syncs > 0).length;
     if (!this.peak.length) return 'Surveying the span';
     if (!this.slots.length) return 'Watching · no carriers yet (tune to a pager band)';
@@ -248,6 +294,6 @@ export class PagerHunter implements IqProcessor {
     const near = (a: number, b: number) => Math.abs(a - b) < 10_000;
     const channels = this.slots.map(s => ({ hz: s.hz, db: this.carrierList.find(c => near(c.hz, s.hz))?.db ?? 0, listening: true, protocol: s.protocol, rate: s.rate, pages: s.pages }));
     for (const c of this.carrierList) if (!this.slots.some(s => near(s.hz, c.hz)) && channels.length < 12) channels.push({ hz: c.hz, db: c.db, listening: false, protocol: '', rate: '', pages: 0 });
-    this.post({ type: 'huntState', text: this.statusText(), hunting: this.hunting, pinned: [...this.pinned], channels });
+    this.post({ type: 'huntState', text: this.statusText(), hunting: this.hunting, pinned: [...this.pinned], channels, heardHz: this.listenHz ?? this.heard?.hz ?? null });
   }
 }
