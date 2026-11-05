@@ -1017,3 +1017,40 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.pager.hfull { grid-template-columns: minmax(0, 1fr); }
   .view.pager.hfull .controls.hunt .hfeed { max-height: none; }
 }
+
+/* ADS-B aircraft rows: the registry photo, who it is, and how high / fast / far. */
+#adsb-list { padding: 4px; }
+.acrow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; border: 1px solid transparent; cursor: pointer; }
+.acrow + .acrow { margin-top: 2px; }
+.acrow:hover { background: var(--panel); }
+.acrow.gold { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+.acrow.nopos { opacity: 0.6; }
+.acth { flex: none; width: 76px; height: 48px; border-radius: 8px; overflow: hidden; background: var(--paper); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: var(--accent); }
+.acth img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.acmid { flex: 1; min-width: 0; line-height: 1.3; }
+.acmid b { font-size: 14px; letter-spacing: 1px; }
+.achex { color: var(--muted); font-size: 10px; letter-spacing: 1px; }
+.acid { color: var(--accent); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acop { color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acnum { flex: none; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; font-size: 11px; color: var(--muted); }
+.acnum b { color: var(--ink); font-size: 13px; } .acnum b i { font-style: normal; color: var(--ok); font-size: 10px; }
+.acnum small { font-size: 10px; }
+
+/* The full-screen map: over the whole window, the selected aircraft and the list in a sidebar. */
+.view.adsb.mapfull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; }
+.view.adsb.mapfull > .visual, .view.adsb.mapfull > .controls > .sh, .view.adsb.mapfull .gainwrap { display: none; }
+.view.adsb.mapfull > .controls { height: 100%; max-height: none; overflow: hidden; display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); grid-template-rows: auto auto minmax(0, 1fr); gap: 8px 12px; padding: 0; }
+.view.adsb.mapfull > .controls > .countrow { grid-column: 1; grid-row: 1; align-self: center; margin: 0; border: 0; padding: 0; }
+.view.adsb.mapfull > .controls > .ctlrow { grid-column: 2; grid-row: 1; margin: 0; }
+.view.adsb.mapfull > .controls > .ctlrow .seg { visibility: hidden; }
+.view.adsb.mapfull #adsb-map { grid-column: 1; grid-row: 2 / 4; height: auto; min-height: 0; margin: 0; }
+.view.adsb.mapfull #adsb-card { grid-column: 2; grid-row: 2; margin: 0; overflow: auto; max-height: 46vh; }
+.view.adsb.mapfull #adsb-list { grid-column: 2; grid-row: 3; height: auto; max-height: none; min-height: 0; overflow-y: auto; margin: 0; }
+@media (max-width: 719.98px) {
+  .view.adsb.mapfull > .controls { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1.4fr) auto minmax(0, 1fr); }
+  .view.adsb.mapfull > .controls > .countrow { grid-column: 1; grid-row: 1; }
+  .view.adsb.mapfull > .controls > .ctlrow { grid-column: 1; grid-row: 2; }
+  .view.adsb.mapfull #adsb-map { grid-column: 1; grid-row: 3; }
+  .view.adsb.mapfull #adsb-card { grid-column: 1; grid-row: 4; max-height: 30vh; }
+  .view.adsb.mapfull #adsb-list { grid-column: 1; grid-row: 5; }
+}

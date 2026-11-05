@@ -3199,6 +3199,9 @@ function renderAdsb(view: HTMLElement): void {
       <div id="adsb-list" class="panel list"></div>
       ${gainHtml()}</section>`;
   scope = attach(new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }));
+  q('#pause-adsb')?.insertAdjacentHTML('beforebegin', `<button id="adsb-full" class="ib" title="full-screen map" aria-label="full-screen map">${adsbFull ? EXIT_SVG : FULL_SVG}</button>`);
+  $('adsb-full').onclick = () => setAdsbFull(!adsbFull);
+  view.classList.toggle('mapfull', adsbFull);
   qa<HTMLButtonElement>('[data-adsbview]', view).forEach(b => b.onclick = () => { state.adsbView = b.dataset.adsbview as 'map' | 'list'; refreshAdsb(); });
   geo = new GeoMap($('adsb-map'), { home: state.home, onPick: id => { state.adsbSel = id; refreshAdsb(); }, onFollow: on => { state.adsbFollow = on; }, log });
   geo.setFollow(state.adsbFollow);
@@ -3828,16 +3831,76 @@ function refreshAprs(): void {
   geo?.update(state.aprsStations.filter(s => s.lat !== undefined && s.lon !== undefined).map(s => ({ id: s.call, lat: s.lat!, lon: s.lon!, heading: s.course, label: s.call, kind: (s.kind === 'station' ? 'station' : 'object') as GeoItem['kind'] })), state.aprsSel);
 }
 function refreshBtle(): void { qa('[data-btle]').forEach(b => b.classList.toggle('on', Number(b.dataset.btle) === state.btleCh)); }
+/** The map over the whole window with the selected aircraft and the list beside it (Esc or ⛶ again leaves). */
+let adsbFull = false;
+function setAdsbFull(on: boolean): void {
+  adsbFull = on;
+  const v = q('.view.adsb'); if (!v) return;
+  v.classList.toggle('mapfull', on);
+  const b = q('#adsb-full'); if (b) { b.innerHTML = on ? EXIT_SVG : FULL_SVG; b.title = on ? 'leave the full-screen map' : 'full-screen map'; }
+  refreshAdsb();
+  // Leaflet measures its box once; tell it the box changed after the layout settles
+  requestAnimationFrame(() => geo?.invalidate());
+}
+/**
+ * One aircraft in the list: its photo (from the registry, a plane glyph until one comes), callsign, registration and
+ * type, operator, then altitude, speed and distance. Rows are kept per aircraft and updated in place, so a photo is
+ * loaded once rather than every frame.
+ */
+function acRowFill(row: HTMLElement, a: Aircraft): void {
+  lookupAircraft(a);
+  const info = acInfo.get(a.icao);
+  const set = (k: string, v: string) => { const e = row.querySelector<HTMLElement>(`[data-r="${k}"]`); if (e && e.textContent !== v) e.textContent = v; };
+  const th = row.querySelector<HTMLElement>('.acth')!;
+  const photo = info?.photo ?? '';
+  if (th.dataset.src !== photo) {
+    th.dataset.src = photo;
+    th.innerHTML = photo ? `<img src="${esc(photo)}" alt="" loading="lazy" onerror="this.parentElement.dataset.src='';this.remove()">` : glyph('adsb', 'currentColor', 26);
+  }
+  const call = (a.flight ?? '').trim();
+  set('call', call || a.icao.toUpperCase());
+  set('hex', call ? a.icao.toUpperCase() : '');
+  set('id', [info?.reg, info?.typeIcao].filter(Boolean).join(' · ') || (info && !info.done ? 'looking up…' : ''));
+  set('op', info?.owner ?? [info?.maker, info?.type].filter(Boolean).join(' '));
+  set('alt', a.alt !== undefined ? `${a.alt.toLocaleString()} ft` : '— ft');
+  set('gs', a.gs !== undefined ? `${a.gs} kt` : '— kt');
+  let far = a.lat === undefined ? 'no position' : '';
+  if (!far && state.home && a.lon !== undefined) { const d = distanceBearing(state.home.lat, state.home.lon, a.lat!, a.lon); far = `${(d.km * 0.539957).toFixed(0)} nmi · ${Math.round(d.deg)}°`; }
+  set('far', far);
+  const climb = a.vr === undefined ? '' : a.vr > 300 ? '▲' : a.vr < -300 ? '▼' : '';
+  set('vr', climb);
+  row.classList.toggle('gold', a.icao === state.adsbSel);
+  row.classList.toggle('nopos', a.lat === undefined);
+}
 function refreshAdsb(): void {
   const c = q('#adsb-count'); if (c) c.textContent = `✈ ${state.frames} FRAMES · ${state.aircraft.length} AIRCRAFT`;
   qa('[data-adsbview]').forEach(b => b.classList.toggle('on', b.dataset.adsbview === state.adsbView));
   const el = q('#adsb-list'), mapEl = q('#adsb-map'); if (!el || !mapEl) return;
-  el.hidden = state.adsbView !== 'list'; mapEl.hidden = state.adsbView !== 'map';
+  el.hidden = !adsbFull && state.adsbView !== 'list'; mapEl.hidden = !adsbFull && state.adsbView !== 'map';
   renderAcCard(state.aircraft.find(a => a.icao === state.adsbSel));
   if (paused.has('adsb')) { qa<HTMLElement>('[data-icao]', el).forEach(d => d.classList.toggle('gold', d.dataset.icao === state.adsbSel)); return; }
-  el.innerHTML = state.aircraft.length ? state.aircraft.map((a, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${a.icao === state.adsbSel ? 'gold' : ''}" data-icao="${a.icao}"><b>${a.icao.toUpperCase()} ${esc(a.flight ?? '')}</b><span>${a.alt !== undefined ? a.alt + 'ft' : ''} ${a.gs !== undefined ? a.gs + 'kt' : ''} ${a.track !== undefined ? a.track + '°' : ''} ${a.lat !== undefined && a.lon !== undefined ? a.lat.toFixed(3) + ',' + a.lon.toFixed(3) : 'no pos'}</span></div>`).join('') : '<div class="empty">listening on 1090 MHz…</div>';
-  qa<HTMLElement>('[data-icao]', el).forEach(d => d.onclick = () => { state.adsbSel = d.dataset.icao!; const a = state.aircraft.find(x => x.icao === state.adsbSel); if (a?.lat !== undefined) state.adsbView = 'map'; refreshAdsb(); });
-  if (state.adsbView === 'map') geo?.invalidate();
+  if (!state.aircraft.length) el.innerHTML = '<div class="empty">listening on 1090 MHz…</div>';
+  else {
+    el.querySelector('.empty')?.remove();
+    const rows = new Map(qa<HTMLElement>('[data-icao]', el).map(r => [r.dataset.icao!, r]));
+    state.aircraft.forEach((a) => {
+      let row = rows.get(a.icao);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'acrow tap'; row.dataset.icao = a.icao;
+        row.innerHTML = '<div class="acth"></div><div class="acmid"><div><b data-r="call"></b> <span class="achex" data-r="hex"></span></div><div class="acid" data-r="id"></div><div class="acop" data-r="op"></div></div><div class="acnum"><b><span data-r="alt"></span> <i data-r="vr"></i></b><span data-r="gs"></span><small data-r="far"></small></div>';
+        row.onclick = () => {
+          state.adsbSel = row!.dataset.icao!; const p = state.aircraft.find(x => x.icao === state.adsbSel);
+          if (p?.lat !== undefined && p.lon !== undefined) { if (!adsbFull) state.adsbView = 'map'; refreshAdsb(); geo?.center(p.lat, p.lon); } else refreshAdsb();
+        };
+      }
+      rows.delete(a.icao);
+      acRowFill(row, a);
+      el.appendChild(row);   // moves an existing row into the current order
+    });
+    for (const r of rows.values()) r.remove();
+  }
+  if (state.adsbView === 'map' || adsbFull) geo?.invalidate();
   geo?.update(state.aircraft.filter(a => a.lat !== undefined && a.lon !== undefined).map(a => ({ id: a.icao, lat: a.lat!, lon: a.lon!, heading: a.track, label: (a.flight ?? '').trim() || a.icao.toUpperCase(), kind: 'plane' as const })), state.adsbSel);
 }
 // ---- AIS vessel card: everything the station has said about itself ----------------------------------------------------
@@ -4437,7 +4500,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (settingsOpen()) closeSettings(); else if (state.app) open(null); break;
+      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (state.app) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
