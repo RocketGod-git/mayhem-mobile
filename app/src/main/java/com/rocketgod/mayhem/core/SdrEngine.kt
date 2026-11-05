@@ -95,6 +95,9 @@ object SdrEngine {
     private var agcLast = 0L; private var agcSaidMax = 0L
     /** The sweep pass the AGC last stepped on. */
     private var agcPass = -1
+    /** The pager's levels over the last [PAGER_HOLD_MS] (time, rms) and when its gain last stepped down. */
+    private val pagerLevels = ArrayDeque<Pair<Long, Double>>(); private var pagerDown = 0L
+    private const val PAGER_HOLD_MS = 12_000L
 
     fun loadGains(ctx: android.content.Context) {
         val p = ctx.getSharedPreferences("mayhem", android.content.Context.MODE_PRIVATE); prefs = p
@@ -172,6 +175,31 @@ object SdrEngine {
         val lo = minOf(24.0, 7 * scale); val hi = minOf(34.0, 22 * scale)
         val l = _radioLna.value; val v = _radioVga.value
         val vMax = vgaMax(); val hasLna = Radio.kind.value != Radio.Kind.RTLSDR
+        // Pager transmitters key up for a burst and drop again, so the one-second level swings by tens of dB, and
+        // stepping on each second pumped the gain: every step shifts the whole waterfall, and a step up just before
+        // the next key-up clips the front end across the span. The pager steps down at once when a burst is too
+        // strong, and up only when nothing in the last [PAGER_HOLD_MS] has come near the target.
+        if (Apps.playing() == MayhemApp.PAGER) {
+            pagerLevels.addLast(now to rms); while (pagerLevels.isNotEmpty() && now - pagerLevels.first().first >= PAGER_HOLD_MS) pagerLevels.removeFirst()
+            if (rms > hi) {
+                pagerDown = now
+                when {
+                    v > 0 -> _radioVga.value = maxOf(0, v - when { rms > hi * 2 -> 8; rms > hi * 1.4 -> 4; else -> 2 })
+                    hasLna && l > 0 -> _radioLna.value = l - LNA_STEP
+                }
+            } else if (now - pagerDown > PAGER_HOLD_MS && pagerLevels.size >= 10 && pagerLevels.maxOf { it.second } < lo) {
+                when {
+                    v < vMax -> _radioVga.value = minOf(vMax, v + 2)
+                    hasLna && l < LNA_MAX -> _radioLna.value = l + LNA_STEP
+                }
+                pagerLevels.clear()
+            }
+            if (_radioLna.value != l || _radioVga.value != v) {
+                Diag.log("AGC: LNA %d / VGA %d → LNA %d / VGA %d (level %.1f counts)".format(l, v, _radioLna.value, _radioVga.value, rms))
+                syncDriver()
+            }
+            return
+        }
         if (rms < lo) {
             when {
                 // far off moves in big steps, so a radio that starts deaf is listening within a few seconds

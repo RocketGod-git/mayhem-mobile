@@ -478,10 +478,34 @@ function agcTargets(): [number, number] {
   const scale = Math.min(3.2, Math.sqrt(state.rate / RX_RATE));
   return [Math.min(24, AGC_LO * scale), Math.min(34, AGC_HI * scale)];
 }
+/**
+ * The pager's level over the last [PAGER_HOLD_MS]. Pager transmitters key up for a burst and drop again, so the
+ * one-second level swings by tens of dB; stepping the gain on each second pumped it (every step shifts the whole
+ * waterfall, and a step up just before the next key-up clips the front end across the span). The pager steps down
+ * at once when a burst is too strong, and up only when nothing in the hold has come near the target.
+ */
+const PAGER_HOLD_MS = 12_000;
+let pagerLevels: [number, number][] = [], pagerDown = 0;
 function agcStep(rms: number): void {
   if (!state.agc || !radio || tx.active || state.app === 'transmit' || !Number.isFinite(rms)) return;
   const now = performance.now(); if (now - agcLast < 900) return; agcLast = now;
   const [lo, hi] = agcTargets();
+  if (state.app === 'pager') {
+    pagerLevels.push([now, rms]); pagerLevels = pagerLevels.filter(([t]) => now - t < PAGER_HOLD_MS);
+    const was = `LNA ${state.lna} / ${radio.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}`;
+    if (rms > hi) {
+      pagerDown = now;
+      if (state.vga > 0) setGains(state.lna, state.vga - (rms > hi * 2 ? 8 : 2), state.amp);
+      else if (state.lna > 0) setGains(state.lna - 8, state.vga, state.amp);
+    } else if (now - pagerDown > PAGER_HOLD_MS && pagerLevels.length >= 10 && Math.max(...pagerLevels.map(([, r]) => r)) < lo) {
+      if (state.vga < 62) setGains(state.lna, state.vga + 2, state.amp);
+      else if (state.lna < 40) setGains(state.lna + 8, state.vga, state.amp);
+      pagerLevels = [];
+    }
+    const now2 = `LNA ${state.lna} / ${radio.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}`;
+    if (now2 !== was) log(`AGC: ${was} → ${now2} (level ${rms.toFixed(1)} counts)`);
+    return;
+  }
   if (rms < lo) {
     if (state.vga < 62) setGains(state.lna, state.vga + (rms < 2 ? 8 : 2), state.amp);
     else if (state.lna < 40) setGains(state.lna + 8, state.vga, state.amp);
