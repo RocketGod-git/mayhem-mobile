@@ -143,5 +143,16 @@ class PocsagDecoder(private val sink: PagerSink, fs: Double) {
             val good = s.count { it.isLetterOrDigit() || it == ' ' || it in ".,:;!?-/()#@'\"&\n" }
             return good * 100 >= s.length * 85
         }
+
+        /** What the feed's TEXT filter shows: text by [looksLikeText], and not an encoded payload. Data feeds sent as
+         *  alpha pages are mostly letters but carry symbols ordinary writing hardly uses (~ ^ ` [ ] \ _ = + $ ...);
+         *  three or more of them, not counting a network's trailing "[nn]" sequence number, mark the page as data. */
+        fun readsAsText(s: String): Boolean {
+            if (!looksLikeText(s)) return false
+            val body = SEQ_TAG.replace(s, "")
+            return body.count { it in ODD } < 3
+        }
+        private const val ODD = "~^`[]\\{}|_=+<>$%*"
+        private val SEQ_TAG = Regex("\\s*\\[\\d+]$")
     }
 }

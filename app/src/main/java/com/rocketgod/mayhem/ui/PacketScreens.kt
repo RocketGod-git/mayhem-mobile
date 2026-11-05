@@ -322,7 +322,7 @@ private class PagerFilter {
         (PagerUi.noise || !unreadable(m)) && (capcode == null || m.page.capcode == capcode) && (hz == null || m.hz == hz) &&
             (protocol == null || m.page.protocol == protocol) && when (kind) {
                 // text a person reads: machine data and encoded payloads sent as alpha stay under ALL
-                1 -> m.page.kind == PageKind.ALPHA && com.rocketgod.mayhem.core.pager.PocsagDecoder.looksLikeText(m.page.text.trim())
+                1 -> m.page.kind == PageKind.ALPHA && com.rocketgod.mayhem.core.pager.PocsagDecoder.readsAsText(m.page.text.trim())
                 2 -> m.alert
                 else -> true
             }
