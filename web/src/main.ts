@@ -768,7 +768,8 @@ function open(app: AppId | null): void {
     case 'ert': configure('NONE', 911_600_000, 2e6, 32, 40, true, 'ert'); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
-    case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); break;
+    // The span sits 300 kHz off the channel, so the channel is cut out away from the radio's DC spike.
+    case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = 131_550_000 + 300_000; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is

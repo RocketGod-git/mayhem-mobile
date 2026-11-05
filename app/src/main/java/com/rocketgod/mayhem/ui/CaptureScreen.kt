@@ -76,7 +76,7 @@ fun CaptureScreen(accent: Color) {
         },
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, if (recording) Palette.danger else Palette.line, RoundedCornerShape(d.dp(12f)))) {
-                ReceiverScope(recTint, Modifier.fillMaxSize(), rows = if (d.wide) 160 else 100, traceFrac = 0.38f, fitMode = false)
+                ReceiverScope(recTint, Modifier.fillMaxSize(), rows = if (d.wide) 160 else 100, traceFrac = 0.26f, fitMode = false)
             }
         }
     ) {
