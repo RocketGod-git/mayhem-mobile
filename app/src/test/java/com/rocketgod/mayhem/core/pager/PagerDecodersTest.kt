@@ -181,7 +181,7 @@ class PagerDecodersTest {
         return w
     }
 
-    private fun flexFrame(code: Int, baud: Int, levels4: Boolean, phaseA: IntArray, flip: Map<Int, Int> = emptyMap()): List<Double> {
+    private fun flexFrame(code: Int, baud: Int, levels4: Boolean, phaseA: IntArray, flip: Map<Int, Int> = emptyMap(), fade: Map<Int, Int> = emptyMap()): List<Double> {
         val out = ArrayList<Double>()
         repeat(96) { out += if (it % 2 == 0) 3.0 else -3.0 }                      // bit sync
         val sync = (code.toLong() shl 48) or (0xA6C6AAAAL shl 16) or (code.inv().toLong() and 0xFFFF)
@@ -200,7 +200,10 @@ class PagerDecodersTest {
         val air = Array(4) { p -> IntArray(88) { i -> if (p == 0) PagerBch.flexWord(phaseA[i]) xor (flip[i] ?: 0) else 0 } }
         fun bit(p: Int, c: Int): Int { val idx = (c ushr 8) * 8 + (c and 7); val pos = (c ushr 3) and 31; return (air[p][idx] ushr (31 - pos)) and 1 }
         fun level(a: Int, b: Int) = if (!levels4) (if (a == 1) 3.0 else -3.0) else when { a == 1 && b == 0 -> 3.0; a == 1 -> 1.0; b == 1 -> -1.0; else -> -3.0 }
+        // a faded bit (two-level only): sent the wrong way, but weakly, close to the decision line
+        fun faded(c: Int): Boolean { val idx = (c ushr 8) * 8 + (c and 7); val pos = (c ushr 3) and 31; return ((fade[idx] ?: 0) ushr (31 - pos)) and 1 == 1 }
         for (c in 0 until 11 * 256) {
+            if (!levels4 && baud == 1600 && faded(c)) { out += if (bit(0, c) == 1) -0.6 else 0.6; continue }
             if (baud == 1600) out += level(bit(0, c), bit(1, c))
             else { out += level(bit(0, c), bit(1, c)); out += level(bit(2, c), bit(3, c)) }
         }
@@ -245,6 +248,81 @@ class PagerDecodersTest {
         assertEquals("STATION 7 RESPOND …", alpha!!.text)
         assertEquals(3, alpha.errors)
         assertEquals("5551234", c.pages.first { it.capcode == 765432L }.text)
+    }
+
+    // ---------------------------------------------------------------- repeats
+
+    private fun alphaPage(text: String, errors: Int, cap: Long = 1234567L) = PagerPage("FLEX", "1600", cap, PageKind.ALPHA, text, "", errors)
+
+    /** A cut-short copy, then the whole page sent again: the whole one stands. */
+    @Test fun mergeTakesTheWholeCopy() {
+        val m = PageMerge.merge(alphaPage("STATION 7 RESPOND TO ROOM …", 2), alphaPage("STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 0))
+        assertEquals("STATION 7 RESPOND TO ROOM 38 NOW PLEASE", m!!.text)
+        assertEquals(0, m.errors)
+    }
+
+    /** Two copies each missing a different word: together they make the page. */
+    @Test fun mergeFillsGapsFromEachCopy() {
+        val m = PageMerge.merge(alphaPage("STATION ???ESPOND TO ROOM 38 NOW PLEASE", 1), alphaPage("STATION 7 RESPOND TO ???M 38 NOW PLEASE", 1))
+        assertEquals("STATION 7 RESPOND TO ROOM 38 NOW PLEASE", m!!.text)
+        assertEquals(0, m.errors)
+    }
+
+    /** Two copies both cut short, at different places: the one that ran further sets the length, still marked cut. */
+    @Test fun mergeExtendsACutCopy() {
+        val m = PageMerge.merge(alphaPage("STATION 7 RESPOND …", 2), alphaPage("STATION ???ESPOND TO ROOM 38 …", 3))
+        assertEquals("STATION 7 RESPOND TO ROOM 38 …", m!!.text)
+        assertTrue(m.errors > 0)
+    }
+
+    /** The same pager, two different pages: no merge. And two whole copies are the feed's fold, not a merge. */
+    @Test fun mergeLeavesDifferentPagesAlone() {
+        assertNull(PageMerge.merge(alphaPage("STATION 7 RESPOND TO ROOM 38 …", 1), alphaPage("SHIFT CHANGE AT 7 PM IN THE LOBBY", 0)))
+        assertNull(PageMerge.merge(alphaPage("STATION 7 RESPOND", 0), alphaPage("STATION 7 RESPOND", 0)))
+        assertNull(PageMerge.merge(alphaPage("STATION 7 RESPOND …", 1), alphaPage("STATION 7 RESPOND TO ROOM 38", 0, cap = 99L)))
+    }
+
+    /** Four bits of one word lost in a fade: past what BCH fixes, but the receiver knew they were weak. */
+    @Test fun flexRecoversAFadedWord() {
+        val text = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
+        val phase = flexPhase(1234567L, text, 765432L, "5551234")
+        val frame = flexFrame(0x870C, 1600, false, phase, fade = mapOf(6 + 3 to 0x48210000))
+        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(31))
+        val c = Collect()
+        val dec = FlexDecoder(c, 48_000.0)
+        dec.push(sig, sig.size)
+        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
+        assertTrue("alpha missing: ${c.pages}", alpha != null)
+        assertEquals(text, alpha!!.text)
+        assertEquals(0, alpha.errors)
+        assertTrue("recovered ${dec.recovered}", dec.recovered >= 1)
+    }
+
+    /** A fade across two neighbouring words (five weak bits in one, three in the next): both come back whole. */
+    @Test fun flexRecoversAFadeAcrossWords() {
+        val text = "STATION 7 RESPOND TO ROOM 38 NOW PLEASE"
+        val phase = flexPhase(1234567L, text, 765432L, "5551234")
+        val frame = flexFrame(0x870C, 1600, false, phase, fade = mapOf(6 + 5 to 0x41208400, 6 + 6 to 0x00E00000))
+        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(32))
+        val c = Collect()
+        FlexDecoder(c, 48_000.0).push(sig, sig.size)
+        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
+        assertTrue("alpha missing: ${c.pages}", alpha != null)
+        assertEquals(text, alpha!!.text)
+        assertEquals(0, alpha.errors)
+    }
+
+    /** A word wrong by six confident bits is not "recovered" into something else: it stays lost. */
+    @Test fun flexDoesNotInventFromConfidentErrors() {
+        val phase = flexPhase(1234567L, "STATION 7 RESPOND TO ROOM 38 NOW PLEASE", 765432L, "5551234")
+        val frame = flexFrame(0x870C, 1600, false, phase, flip = mapOf(6 + 3 to 0x3F000000))
+        val sig = fsk(frame, { 1600 }, 1600.0, 48_000.0, Random(33))
+        val c = Collect()
+        FlexDecoder(c, 48_000.0).push(sig, sig.size)
+        val alpha = c.pages.firstOrNull { it.capcode == 1234567L }
+        assertTrue("alpha missing: ${c.pages}", alpha != null)
+        assertEquals("STATION ???ESPOND TO ROOM 38 NOW PLEASE", alpha!!.text)
+        assertEquals(1, alpha.errors)
     }
 
     /** A word that needed two bits fixed is kept, even the last: on a real signal they are common and right. */

@@ -26,9 +26,14 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
     private var s2reg = 0
     private var env = 0.0
     private val phases = Array(4) { IntArray(WORDS) }
+    /** How sure each received bit is, 0 (on the decision line) to 1 (a clean symbol): word × 32, MSB at index 31. */
+    private val sure = Array(4) { FloatArray(WORDS * 32) }
+    private val got = Array(4) { IntArray(WORDS) }
     private var bitCounter = 0
     private var odd = false
     private var frames = 0L
+    /** Words the plain BCH check could not fix that soft decoding brought back (for tests and the log). */
+    var recovered = 0; private set
     private class Piece(val text: String, val at: Long, val rate: String, val where: String, val errors: Int)
     private val pieces = HashMap<Long, Piece>()
 
@@ -71,28 +76,64 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
                 val invC = count >= 16 && Integer.bitCount(s2reg xor 0x127B) <= 2 && abs(count - nominal) <= 1
                 if (invC || count == nominal) {
                     for (p in phases) p.fill(0)
+                    for (g in got) g.fill(0)
                     bitCounter = 0; odd = false; st = DATA; count = 0
                 }
             }
             DATA -> {
                 val r = rect(v)
                 val a: Int; val b: Int
+                // how far each bit's decision sat from its line, in units of a clean symbol's distance
+                val sa: Float; val sb: Float
                 if (levels == 4) {
                     val thr = env * 2.0 / 3.0
                     val sym = if (r > thr) 3 else if (r > 0) 2 else if (r > -thr) 1 else 0
                     a = if (sym > 1) 1 else 0
                     b = if (sym == 1 || sym == 2) 1 else 0
-                } else { a = if (r > 0) 1 else 0; b = 0 }
-                if (baud == 1600 || !odd) { put(0, a); put(1, b) } else { put(2, a); put(3, b) }
+                    val unit = (env / 3.0).coerceAtLeast(1e-9)
+                    sa = (abs(r) / unit).coerceAtMost(1.0).toFloat()
+                    sb = (abs(abs(r) - thr) / unit).coerceAtMost(1.0).toFloat()
+                } else { a = if (r > 0) 1 else 0; b = 0; sa = (abs(r) / env.coerceAtLeast(1e-9)).coerceAtMost(1.0).toFloat(); sb = 1f }
+                if (baud == 1600 || !odd) { put(0, a, sa); put(1, b, sb) } else { put(2, a, sa); put(3, b, sb) }
                 if (baud == 1600) bitCounter++ else { if (odd) bitCounter++; odd = !odd }
                 if (++count == baud * 1760 / 1000) { decodeFrame(); restart() }
             }
         }
     }
 
-    private fun put(phase: Int, bit: Int) {
+    private fun put(phase: Int, bit: Int, conf: Float) {
         val idx = (bitCounter ushr 8) * 8 + (bitCounter and 7)   // 8 words per 256-bit block, bit-interleaved
-        if (idx < WORDS) phases[phase][idx] = (phases[phase][idx] shl 1) or bit
+        if (idx < WORDS) {
+            phases[phase][idx] = (phases[phase][idx] shl 1) or bit
+            val k = got[phase][idx]++
+            if (k < 32) sure[phase][idx * 32 + 31 - k] = conf
+        }
+    }
+
+    /**
+     * A word the BCH check gave up on, decoded again with what the receiver knew about each bit. The least sure bits
+     * (up to five, each under [WEAK]) are treated as erasures: every way of flipping them is tried, and a flip that
+     * lands within BCH reach of a codeword is kept if the errors outside those bits stay inside what the code can
+     * still guarantee with that many erasures (2 errors + erasures < 6, the distance of BCH(31,21) with parity).
+     * Inside that bound the answer is unique, so this recovers words lost in a fade without inventing any from
+     * noise, which the plain check cannot tell apart. The cheapest answer (least total sureness flipped) wins.
+     */
+    private fun recover(raw: Int, conf: FloatArray, base: Int): Int? {
+        val weak = (0 until 32).filter { conf[base + it] < WEAK }.sortedBy { conf[base + it] }.take(5)
+        if (weak.isEmpty()) return null
+        var best: Int? = null; var bestCost = Float.MAX_VALUE
+        for (m in 1 until (1 shl weak.size)) {
+            var flip = 0; var cost = 0f
+            for (j in weak.indices) if ((m ushr j) and 1 == 1) { flip = flip or (1 shl weak[j]); cost += conf[base + weak[j]] }
+            val c = PagerBch.correct(raw xor flip) ?: continue
+            var outside = c xor raw xor flip
+            for (bit in weak) outside = outside and (1 shl bit).inv()
+            val extra = Integer.bitCount(outside)
+            if (2 * extra + weak.size >= 6) continue
+            for (bit in 0 until 32) if ((outside ushr bit) and 1 == 1) cost += conf[base + bit]
+            if (cost < bestCost) { bestCost = cost; best = c }
+        }
+        return best
     }
 
     private fun restart() {
@@ -109,13 +150,13 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
             levels == 2 -> intArrayOf(0, 2)
             else -> intArrayOf(0, 1, 2, 3)
         }
-        for (p in list) decodePhase(phases[p], "ABCD"[p])
+        for (p in list) decodePhase(phases[p], "ABCD"[p], sure[p])
         // A split page whose next piece never came: show what arrived.
         val stale = pieces.filterValues { frames - it.at > 8 }
         for ((cap, pc) in stale) { pieces.remove(cap); sink.onPage(PagerPage("FLEX", pc.rate, cap, PageKind.ALPHA, pc.text + " …", pc.where, pc.errors)) }
     }
 
-    private fun decodePhase(raw: IntArray, letter: Char) {
+    private fun decodePhase(raw: IntArray, letter: Char, conf: FloatArray) {
         if (raw.all { it == 0 || it == -1 }) return
         val w = IntArray(WORDS)
         val bad = BooleanArray(WORDS)
@@ -124,8 +165,10 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
         val suspect = BooleanArray(WORDS)
         for (i in 0 until WORDS) {
             val c = PagerBch.correct(raw[i])
-            if (c == null) { bad[i] = true; suspect[i] = true }
-            else { w[i] = PagerBch.flexData(c); suspect[i] = Integer.bitCount(raw[i] xor c) >= 2 }
+            if (c != null) { w[i] = PagerBch.flexData(c); suspect[i] = Integer.bitCount(raw[i] xor c) >= 2; continue }
+            // past what the check fixes on its own: try again with the bits it was least sure of
+            val r = recover(raw[i], conf, i * 32)
+            if (r != null) { w[i] = PagerBch.flexData(r); recovered++ } else { bad[i] = true; suspect[i] = true }
         }
         this.suspect = suspect
         if (bad[0]) return
@@ -286,6 +329,8 @@ class FlexDecoder(private val sink: PagerSink, fs: Double) {
 
     companion object {
         private const val WORDS = 88
+        /** A bit decided closer to its line than this (of a clean symbol's distance) may be wrong: an erasure. */
+        private const val WEAK = 0.45f
         private const val SYNC1 = 0; private const val FIW = 1; private const val SYNC2 = 2; private const val DATA = 3
         private const val MARKER = 0xA6C6AAAA.toInt()
         /** Sync 1 mode codes → (baud, levels): 1600/2, 3200/4 (1600 baud), 3200/2, 6400/4 (two codes on air). */

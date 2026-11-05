@@ -65,6 +65,8 @@ object PagerEngine {
     private const val RETRY_MS = 90_000L       // before an evicted carrier is tried again
     private const val PROVEN_MS = 180_000L     // a carrier that synced this recently keeps its slot
     private const val MAX_MESSAGES = 400
+    /** How far back a repeat of a partial page is looked for. */
+    private const val REPEAT_MS = 10 * 60_000L
     private const val AUDIO_GAIN = 9000f / 32000f   // match PagerAudio's level into the ±1 audio path
 
     private class Slot(val hz: Long, val rx: PagerChannelRx, val since: Long) {
@@ -237,9 +239,20 @@ object PagerEngine {
         status()
     }
 
-    private fun addPage(hz: Long, p: PagerPage) {
-        val m = PagerMessage(nextId++, now(), hz, p, ALERT.containsMatchIn(p.text.uppercase()))
-        val cur = _messages.value
+    private fun addPage(hz: Long, p0: PagerPage) {
+        val t = now()
+        var p = p0
+        var cur = _messages.value
+        // Another copy of a page this pager got a little while ago, one of them partial: they become one, the more
+        // complete, in place of the old card. A partial copy of a page already whole adds nothing and is dropped.
+        val earlier = cur.firstOrNull { it.at >= t - REPEAT_MS && PageMerge.merge(it.page, p) != null }
+        if (earlier != null) {
+            val merged = PageMerge.merge(earlier.page, p)!!
+            if (earlier.page.errors == 0 && merged.text == earlier.page.text) return
+            cur = cur.filter { it.id != earlier.id }
+            p = merged
+        }
+        val m = PagerMessage(nextId++, t, hz, p, ALERT.containsMatchIn(p.text.uppercase()))
         _messages.value = if (cur.size >= MAX_MESSAGES) listOf(m) + cur.subList(0, MAX_MESSAGES - 1) else listOf(m) + cur
         synchronized(caps) { caps += p.capcode; _capcodes.value = caps.size }
     }
