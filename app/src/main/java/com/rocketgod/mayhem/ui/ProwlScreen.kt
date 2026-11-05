@@ -79,7 +79,7 @@ fun ProwlScreen(accent: Color) {
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                    rows = if (d.wide) 160 else 80, traceFrac = 0.38f, centreMarker = offset == 0, channel = channel,
+                    rows = if (d.wide) 160 else 80, traceFrac = 0.26f, centreMarker = offset == 0, channel = channel,
                     labels = centredLabels(lo, rate),
                     onPreviewFrac = { f -> Tuning.previewHz = f?.let { spanHz(lo, rate, it) } },
                     onTapFrac = { frac -> Prowl.holdAt(spanHz(lo, rate, frac).toDouble()) })

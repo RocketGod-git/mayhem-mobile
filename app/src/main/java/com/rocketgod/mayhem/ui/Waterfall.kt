@@ -448,7 +448,7 @@ fun WaterfallView(
     /** Columns to start with until the view has been measured; after that it has one per pixel. */
     cols: Int, accent: Color, modifier: Modifier = Modifier,
     /** Fewest history rows; the history is otherwise one row per pixel of waterfall height. */
-    rows: Int = 140, traceFrac: Float = 0.38f, centreMarker: Boolean = true,
+    rows: Int = 140, traceFrac: Float = 0.26f, centreMarker: Boolean = true,
     channel: Pair<Float, Float>? = null,
     labels: List<Pair<Float, String>> = emptyList(), onPreviewFrac: ((Float?) -> Unit)? = null,
     /** The span the spectrum covers; -1 takes the engine's own, 0 means a sweep (no fixed span to label or slide). */
@@ -823,7 +823,7 @@ private fun fmtSpan(hz: Int) = if (hz % 1_000_000 == 0) "${hz / 1_000_000} MHz" 
  * [wholeRange] the span bar covers everything the radio tunes.
  */
 @Composable
-fun ReceiverScope(accent: Color, modifier: Modifier, rows: Int = 160, traceFrac: Float = 0.38f, fitMode: Boolean = true, wholeRange: Boolean = false) {
+fun ReceiverScope(accent: Color, modifier: Modifier, rows: Int = 160, traceFrac: Float = 0.26f, fitMode: Boolean = true, wholeRange: Boolean = false) {
     val spec by SdrEngine.spectrum.collectAsState()
     val lo by SdrEngine.freqHz.collectAsState()
     val rate by SdrEngine.rateHz.collectAsState()

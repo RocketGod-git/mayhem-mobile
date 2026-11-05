@@ -90,9 +90,9 @@ internal class Preset(val title: String, val sub: String, val hz: Long)
 
 /** Presets as a tile row, the one the radio sits on lit. */
 @Composable
-internal fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp) {
+internal fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp, shift: Long = 0L) {
     val freq by SdrEngine.freqHz.collectAsState()
-    TileRow(presets.map { Tile(it.title, it.sub, freq == it.hz) }, accent, width) { SdrEngine.tune(presets[it].hz) }
+    TileRow(presets.map { Tile(it.title, it.sub, freq - shift == it.hz) }, accent, width) { SdrEngine.tune(presets[it].hz + shift) }
 }
 
 /** A short muted note under a row of controls: what the app decodes, and how to get the most from it. */
@@ -108,6 +108,8 @@ private fun AppNote(text: String) {
  */
 @Composable
 private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: String, tunable: Boolean = true, roomy: Boolean = false,
+                        /** The radio sits this far above the channel (ACARS): the card shows the channel, a tap tunes to it. */
+                        shift: Long = 0L,
                         controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
@@ -117,21 +119,23 @@ private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Strin
     var held by remember { mutableStateOf<List<String>?>(null) }
     var full by remember { mutableStateOf(false) }
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
+    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac) + shift) }
+    val rate = SdrEngine.currentRate()
+    val channel = if (shift != 0L && rate > 0) { val c = 0.5f - shift.toFloat() / rate; val half = 6_000f / rate; c - half to c + half } else null
     AdaptivePane(
         // the card keeps its height; the waterfall and the log split the rest evenly
         share = true,
         face = {
-            FreqCard(accent, tag = tag, title = title, freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+            FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
                 right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
-                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f) }) else null,
+                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f + shift) }) else null,
                 lamp = { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->
             Column(m) {
                 Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                        rows = if (d.wide) 160 else 90, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
+                        rows = if (d.wide) 160 else 90, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                         onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
                 }
             }
@@ -209,7 +213,7 @@ private fun PagerHunterView(accent: Color) {
             Column(m) {
                 Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                        rows = if (d.wide) 160 else 70, traceFrac = 0.38f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
+                        rows = if (d.wide) 160 else 70, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                         onPreviewFrac = onPreview, onTapFrac = onPick)
                 }
             }
@@ -588,9 +592,10 @@ fun TpmsScreen(accent: Color) {
 
 @Composable
 fun AcarsScreen(accent: Color) {
-    PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, controls = {
+    val shift = com.rocketgod.mayhem.core.apps.AcarsDecoder.LO_SHIFT
+    PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, shift = shift, controls = {
         PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
-            Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)))
+            Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)), shift = shift)
         AppNote("Registration, flight, label and text from each message, CRC checked.")
     })
 }

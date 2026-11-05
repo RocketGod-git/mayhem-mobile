@@ -93,7 +93,7 @@ private fun TrafficFrame(
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                    rows = if (d.wide) 160 else 80, traceFrac = 0.38f, labels = centredLabels(freq, SdrEngine.currentRate()),
+                    rows = if (d.wide) 160 else 80, traceFrac = 0.26f, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
             }
         }
