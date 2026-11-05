@@ -568,14 +568,29 @@ function startSweep(start: number, end: number): void {
   state.sweep = { start, end, steps };
   lastSweepRow = new Float32Array(0); sweepLiveRow = new Float32Array(0);
   configure('NONE', start + state.sweepRate / 2, state.sweepRate, 24, 24, false, 'sweep', { start, end, slice: state.sweepRate });
-  const t = q('#sweep-title'); if (t) t.textContent = sweepTitle(0, 0);
+  refreshSweepCard(0, 0);
   sweepScope?.clear();
   qa('[data-range]').forEach(b => b.classList.toggle('on', Number(b.dataset.range) === start));
 }
-function sweepTitle(progress: number, sweeps: number): string {
-  const s = state.sweep; if (!s) return 'no sweep';
-  const mhz = (hz: number) => (hz / 1e6).toFixed(hz % 1e6 ? 1 : 0);
-  return `${mhz(s.start)}–${mhz(s.end)} MHz · ${progress}/${s.steps} · #${sweeps}`;
+const sweepMhz = (hz: number) => hz >= 1e9 ? `${+(hz / 1e9).toFixed(2)}G` : `${+(hz / 1e6).toFixed(1)}`;
+/** The range being swept, where the digits sit on the other apps' cards. */
+function sweepTitle(): string {
+  const s = state.sweep; if (!s) return 'NO SWEEP';
+  return `${sweepMhz(s.start)}–${sweepMhz(s.end)}${s.end < 1e9 ? ' MHz' : ''}`;
+}
+/** A range as a tile: the span large, its name under it. */
+function rangeTile(l: string, a: number, b: number): string {
+  const sub = l.replace(/[\d.]+-[\d.]+\s*G?(Hz)?/, '').replace(/^[\d.]+G\s*/, '').trim() || (b >= 1e9 ? 'GHz' : 'MHz');
+  return `<button class="tl" data-range="${a}" data-end="${b}"><b>${sweepMhz(a)}–${sweepMhz(b)}</b><small>${sub}</small></button>`;
+}
+/** The sweeps' card: the Android app's, with the range in place of the digits and the pass on the meter. */
+const sweepCardHtml = () => `<div class="face sweep"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><span id="lamp" class="lamp"><i></i><b></b></span></div><div id="sweep-title" class="srange">${sweepTitle()}</div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale"></div><div class="fcap"><b id="capl">PASS —</b><span id="capr"></span></div></div>`;
+function refreshSweepCard(progress: number, sweeps: number): void {
+  const s = state.sweep, t = q('#sweep-title');
+  if (t && !t.classList.contains('preview')) t.textContent = sweepTitle();
+  if (!s) return;
+  setMeter(s.steps ? progress / s.steps : 0, `SLICE ${progress}/${s.steps} · PASS ${sweeps}`, null, [[0, sweepMhz(s.start)], [1, sweepMhz(s.end)]]);
+  setLamp(state.connected ? 'SWEEPING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
 }
 function listen(hz: number, mode: Mode): void {
   state.radioFreq = Math.round(hz / 10_000) * 10_000; state.radioMode = mode;
@@ -1421,7 +1436,10 @@ function bindHs(root: ParentNode = document): void {
 }
 /** The line over every decode list. PAUSE holds the screen still so a row can be read while packets keep
  *  landing underneath; CLEAR forgets them. Both are wired by id in wireCommon, whichever screen they are on. */
-const countRowHtml = (id: string, count: string, extra = '') => `<div class="countrow"><span id="count-${id}" class="count">${count}</span><span class="row">${extra}<button class="link" id="pause-${id}">PAUSE</button><button class="link" id="clear-${id}">CLEAR</button></span></div>`;
+/** The clear-all icon the Android app puts beside PAUSE. */
+const CLEAR_SVG = '<svg viewBox="0 0 24 24"><path d="M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z"/></svg>';
+const pauseClearHtml = (id: string) => `<button class="tog" id="pause-${id}">PAUSE</button><button class="ib" id="clear-${id}" title="clear" aria-label="clear">${CLEAR_SVG}</button>`;
+const countRowHtml = (id: string, count: string, extra = '') => `<div class="countrow"><span id="count-${id}" class="count">${count}</span><span class="row">${extra}${pauseClearHtml(id)}</span></div>`;
 const listHtml = (id: string, title: string) => `<div class="panel list" id="list-${id}"><div class="empty">${title}</div></div>`;
 const logHtml = (id: string, title: string) => countRowHtml(id, '0 DECODED') + listHtml(id, title);
 
@@ -1831,10 +1849,7 @@ function satAppOpen(): void {
 /** The halves of the satellite app: tracking what is overhead, packet cubesats, and the ORBCOMM fleet. */
 function satStrip(): string {
   const v = state.ham.sat.view;
-  return `<div class="row tabs bandstrip">` +
-    `<button class="chip ${v === 'track' ? 'on' : ''}" data-satview="track">TRACK &amp; LISTEN</button>` +
-    `<button class="chip ${v === 'packet' ? 'on' : ''}" data-satview="packet">PACKET</button>` +
-    `<button class="chip ${v === 'orbcomm' ? 'on' : ''}" data-satview="orbcomm">ORBCOMM</button></div>`;
+  return segHtml([['track', 'TRACK'], ['packet', 'PACKET'], ['orbcomm', 'ORBCOMM']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-satview="${k}">${l}</button>`), 'sattabs');
 }
 
 function hamOpen(): void {
@@ -2233,7 +2248,7 @@ function satRefresh(recomputePasses = false): void {
   qa('[data-sat]').forEach(b => b.classList.toggle('on', Number(b.dataset.sat) === s.sel));
   const svcRow = q('#sat-services');
   if (svcRow && cur) {
-    const want = cur.def.services.map((x, i) => `<button class="chip ${i === s.svc ? 'on' : ''}" data-svc="${i}">${x.name.toUpperCase()}</button>`).join('');
+    const want = cur.def.services.map((x, i) => `<button class="tl ${i === s.svc ? 'on' : ''}" data-svc="${i}"><b>${x.name.toUpperCase()}</b><small>${(x.down / 1e6).toFixed(3)} MHz</small></button>`).join('');
     if (svcRow.innerHTML !== want) { svcRow.innerHTML = want; qa<HTMLButtonElement>('[data-svc]', svcRow).forEach(b => b.onclick = () => { s.svc = Number(b.dataset.svc); satApplyService(); satRefresh(); }); }
   }
   const trk = q('#sat-track'); if (trk) { trk.classList.toggle('on', s.track); trk.textContent = s.track ? 'LISTENING · DOPPLER ON' : 'LISTEN · TRACK DOPPLER'; }
@@ -2319,15 +2334,16 @@ function renderSat(view: HTMLElement, tabs: string): void {
   const h = state.ham, s = h.sat;
   view.innerHTML = `
     <section class="visual">${readoutHtml()}
-      <div class="hamline"><span id="sat-status" class="seg">${s.status}</span><span id="ham-tone" class="sq">—</span></div>
+      <span id="ham-tone" hidden>—</span>
       <div id="scope" class="panel"></div></section>
     <section class="controls">${tabs}
-      <div class="caption">SATELLITE</div><div class="row bandstrip">${SATS.map(x => `<button class="chip" data-sat="${x.norad}">${x.name}</button>`).join('')}</div>
+      ${hsHtml(`<div class="tiles auto">${SATS.map(x => `<button class="tl" data-sat="${x.norad}"><b>${x.name}</b><small>${x.services.map(v => v.name).join(' · ')}</small></button>`).join('')}</div>`)}
       <div id="sat-what" class="about"></div>
-      <div class="caption">WHAT IT OFFERS · tap to set the receiver up for it</div><div id="sat-services" class="row bandstrip"></div>
+      <div class="rl offers">WHAT IT OFFERS · tap to set the receiver up for it</div>${hsHtml('<div id="sat-services" class="tiles auto"></div>')}
       <div id="sat-how" class="about"></div>
-      <div id="sat-note" class="health"></div>
-      <div class="row"><button id="sat-track" class="chip primary" style="flex:2">LISTEN · TRACK DOPPLER</button><button id="sat-refresh" class="chip">REFRESH TLE</button></div>
+      <div id="sat-note" class="note"></div>
+      <div class="ctlrow"><button id="sat-track" class="act grow">LISTEN · TRACK DOPPLER</button><button id="sat-refresh" class="tog">TLE ↻</button></div>
+      <div id="sat-status" class="note">${s.status}</div>
       <button id="sat-ptt" class="chip ptt" hidden>PUSH TO TALK · UPLINK</button>
       <div id="tx-status" class="health"></div>
       <div id="sat-now" class="panel about"></div>
@@ -2790,14 +2806,11 @@ function renderR433(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      <div class="caption">BAND &middot; MHz &middot; 433.92 carries most of the protocol set; the American four are spread over 14 MHz, wider than one span, so hearing them all means visiting each in turn</div>
-      <div class="row wrap">${R433_BANDS.map(([l, hz]) => `<button class="chip" data-preset="${hz}">${l}</button>`).join('')}</div>
-      ${stepHtml([1e6, 1e5, 1e4])}
-      <div class="caption">LISTEN ACROSS &middot; narrower hears weaker devices, wider finds ones off the dial</div>
-      <div class="row">${[['250 kHz', 250_000], ['500 kHz', 500_000], ['1 MHz', 1_000_000], ['2 MHz', 2_000_000]]
-        .map(([l, hz]) => `<button class="chip" data-span="${hz}">${l}</button>`).join('')}<button id="r433-hop" class="chip">HOP OFF</button></div>
-      <div id="r433-stats" class="health">listening&hellip;</div>
-      <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="chip" id="r433-ptoggle">PROTOCOLS</button><button class="chip" id="pause-devices">PAUSE</button><button class="chip" id="clear-devices">CLEAR</button></span></div>
+      ${presetHtml('BAND', R433_BANDS)}
+      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([['250k', 250_000], ['500k', 500_000], ['1M', 1_000_000], ['2M', 2_000_000]].map(([l, hz]) => `<button data-span="${hz}">${l}</button>`))}<button id="r433-hop" class="tog">HOP</button></div>
+      <div class="note">433.92 carries most of the protocol set; the American four sit 14 MHz apart, so HOP visits each in turn. A narrower span hears weaker devices.</div>
+      <div id="r433-stats" class="note">listening&hellip;</div>
+      <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="tog" id="r433-ptoggle">PROTOCOLS</button>${pauseClearHtml('devices')}</span></div>
       <div id="r433-list" class="panel devtable"></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
       <div class="gainwrap">${gainHtml()}</div>
@@ -2816,7 +2829,6 @@ function renderR433(view: HTMLElement): void {
   pt.onclick = () => { state.r433.showProtocols = !state.r433.showProtocols; drawR433(); };
   const hop = $('r433-hop');
   hop.classList.toggle('on', state.r433.hop);
-  hop.textContent = state.r433.hop ? 'HOP ON' : 'HOP OFF';
   hop.onclick = () => { state.r433.hop = !state.r433.hop; r433Hop(); render('devices'); };
   r433Hop();
   drawR433();
@@ -2979,9 +2991,9 @@ function renderPacket(view: HTMLElement, app: AppId): void {
   refreshList(app); refreshAis(); refreshBtle();
 }
 
-/** MAP / LIST / LOG chips + count line shared by the three map apps. */
+/** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
 function geoHeadHtml(id: string, glyphText: string, views: string[]): string {
-  return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span><span class="row">${views.map(v => `<button class="chip" data-${id}view="${v}">${v.toUpperCase()}</button>`).join('')}<button class="link" id="pause-${id}">PAUSE</button><button class="link" id="clear-${id}">CLEAR</button></span></div>`;
+  return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span></div><div class="ctlrow">${segHtml(views.map(v => `<button data-${id}view="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml(id)}</div>`;
 }
 function renderAdsb(view: HTMLElement): void {
   view.innerHTML = `
@@ -3034,19 +3046,18 @@ function renderAprs(view: HTMLElement): void {
 function renderSweep(view: HTMLElement, app: AppId): void {
   const search = app === 'search';
   view.innerHTML = `
-    <section class="visual"><div id="sweep-title" class="count center">${sweepTitle(0, 0)}</div><div id="sweep-scope" class="panel ${search ? 'short' : ''}"></div></section>
+    <section class="visual">${sweepCardHtml()}<div id="sweep-scope" class="panel ${search ? 'short' : ''}"></div></section>
     <section class="controls">
-      ${search ? `<div class="caption">THRESHOLD · above noise floor</div><div class="row">${[10, 15, 20, 30].map(t => `<button class="chip" data-thr="${t}">+${t} dB</button>`).join('')}</div>` : ''}
-      <div class="caption">RANGE · wider spans sweep slower</div><div class="row">${RANGES.slice(0, 4).map(([l, a, b]) => `<button class="chip" data-range="${a}" data-end="${b}">${l}</button>`).join('')}</div>
-      <div class="row" style="margin-top:4px">${RANGES.slice(4, 8).map(([l, a, b]) => `<button class="chip" data-range="${a}" data-end="${b}">${l}</button>`).join('')}</div>
-      <div class="row" style="margin-top:4px">${RANGES.slice(8).map(([l, a, b]) => `<button class="chip" data-range="${a}" data-end="${b}">${l}</button>`).join('')}<button class="chip" id="sweep-full">FULL · 1M–6G</button></div>
-      <div class="caption">SLICE WIDTH · wider = faster</div><div class="row">${[2e6, 4e6, 8e6, 16e6].map(r => `<button class="chip" data-slice="${r}">${r / 1e6} MHz</button>`).join('')}</div>
+      ${hsHtml(`<div class="tiles wide">${RANGES.map(([l, a, b]) => rangeTile(l, a, b)).join('')}<button class="tl" id="sweep-full"><b>1M–6G</b><small>FULL · SLOW</small></button></div>`)}
+      <div class="ctlrow"><span class="rl">SLICE</span>${segHtml([2e6, 4e6, 8e6, 16e6].map(r => `<button data-slice="${r}">${r / 1e6}M</button>`))}</div>
+      ${search ? `<div class="ctlrow"><span class="rl">ABOVE</span>${segHtml([10, 15, 20, 30].map(t => `<button data-thr="${t}">+${t} dB</button>`))}</div>` : ''}
+      <div class="note">Wider ranges sweep slower; a wider slice is faster.</div>
       ${gainHtml()}
       ${search ? `<div class="caption">HITS · tap to listen</div><div id="hits" class="panel list"><div class="empty">sweeping… hits appear after the first full pass</div></div>` : ''}
     </section>`;
   const sweepLabel = (f: number) => { const s = state.sweep; return s ? ((s.start + (s.end - s.start) * f) / 1e6).toFixed(3) : ''; };
   sweepScope = new Scope($('sweep-scope'), 0, { rows: search ? 140 : 300, center: false, spectrumHeight: search ? 60 : 90, rowPx: 2, labelAt: sweepLabel, onTap: search ? undefined : f => { const s = state.sweep; if (s) { const hz = s.start + (s.end - s.start) * f; listen(hz, hz > 87e6 && hz < 108e6 ? 'WFM' : 'NFM'); } },
-    onPreview: search ? undefined : f => { const t = q('#sweep-title'), s = state.sweep; if (!t || !s) return; if (f === null) { t.classList.remove('preview'); t.textContent = sweepTitle(0, 0); } else { t.classList.add('preview'); t.textContent = `LISTEN ${((s.start + (s.end - s.start) * f) / 1e6).toFixed(3)} MHz — lift to tune`; } } });
+    onPreview: search ? undefined : f => { const t = q('#sweep-title'), s = state.sweep; if (!t || !s) return; if (f === null) { t.classList.remove('preview'); t.textContent = sweepTitle(); } else { t.classList.add('preview'); t.textContent = `${((s.start + (s.end - s.start) * f) / 1e6).toFixed(3)} MHz`; } } });
   qa<HTMLButtonElement>('[data-range]', view).forEach(b => b.onclick = () => startSweep(Number(b.dataset.range), Number(b.dataset.end)));
   // FULL sweeps the whole radio (a HackRF Pro reaches higher than a plain one); it is slow — hundreds of steps —
   // but it is the "what is out there anywhere" view.
@@ -3815,7 +3826,7 @@ function refreshHits(): void {
   hits.sort((a, b) => b[0] - a[0]);
   el.innerHTML = hits.length ? hits.slice(0, 200).map(([, l], i) => `<div class="li tap ${i % 2 ? 'alt' : ''}" data-hit="${l.split(' ')[0]}">${l}</div>`).join('') : '<div class="empty">nothing above the threshold yet</div>';
   qa<HTMLElement>('[data-hit]', el).forEach(d => d.onclick = () => { const mhz = Number(d.dataset.hit); listen(mhz * 1e6, mhz > 87 && mhz < 108 ? 'WFM' : 'NFM'); });
-  const t = q('#sweep-title'); if (t) t.textContent = t.textContent!.replace(/( · \d+ hits)?$/, ` · ${hits.length} hits`);
+  const r = q('#capr'); if (r) r.textContent = `${hits.length} HITS`;
 }
 function refreshCapture(): void {
   const b = q('#rec'), info = q('#rec-info'), el = q('#captures');
@@ -3928,7 +3939,7 @@ function ensureWorker(): Worker {
       case 'lrpt': onLrpt(m); break;
       case 'lrptStats': onLrptStats(m); break;
       case 'ham': Object.assign(state.ham, { db: m.db, floor: m.floor, open: m.open, tone: m.tone, toneDb: m.toneDb, dcs: m.dcs, dcsInv: m.dcsInv, gain: m.gain, audioPeak: m.audioPeak }); refreshHamMeter(); break;
-      case 'sweepProgress': { if (state.sweep) state.sweep.steps = m.steps as number; const t = q('#sweep-title'); if (t) t.textContent = sweepTitle(m.progress, m.sweeps) + (state.app === 'search' ? t.textContent!.replace(/^.*?(?= · \d+ hits|$)/, '') : ''); break; }
+      case 'sweepProgress': { if (state.sweep) state.sweep.steps = m.steps as number; refreshSweepCard(m.progress, m.sweeps); break; }
       case 'sweepLive': {
         const s = sweepScope; if (!s) break;
         const slice = m.slice as Float32Array, keep = slice.length, steps = m.steps as number;
@@ -3958,7 +3969,7 @@ function ensureWorker(): Worker {
           s.setScale(sorted[sorted.length >> 1] - 4, 30);
           s.push(rowToSpec(m.row, s.cols)); s.setLabels(rangeLabels(m.startHz, m.endHz, s.cols > 900 ? 7 : 5));
         }
-        const t = q('#sweep-title'); if (t) t.textContent = sweepTitle(0, m.sweeps); refreshHits(); break;
+        refreshSweepCard(0, m.sweeps); refreshHits(); break;
       }
       case 'capture': state.capturing = m.recording; state.captureName = m.name; state.captureBytes = m.bytes; refreshCapture(); break;
       case 'captures': state.captures = m.files; refreshCapture(); break;

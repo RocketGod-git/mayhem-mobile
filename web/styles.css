@@ -830,3 +830,26 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.settings { overflow-y: auto; }
   .view.settings .controls { max-height: none; overflow: visible; }
 }
+
+/* Toggles and the clear icon beside a count, the height of a segment bar. */
+.countrow .row .tog { padding: 7px 10px; font-size: 11px; }
+.countrow .row .ib, .ctlrow > .ib { align-self: stretch; padding: 0 10px; }
+.ctlrow > .tog { align-self: stretch; }
+/* The sweeps' card: the range where the digits sit on the other cards. */
+.face .srange { text-align: center; font-weight: 700; color: var(--ink); letter-spacing: 1px; font-size: clamp(24px, calc(100cqw / 9), 56px); padding: 0.45em 0 0.35em;
+  text-shadow: 0 0 0.45em color-mix(in srgb, var(--accent) 60%, transparent); white-space: nowrap; }
+.face .srange.preview { color: var(--accent2); }
+.tiles.wide .tl[data-range], .tiles.wide #sweep-full { width: 112px; }
+/* A count line's buttons stand on their own, not inside a segment bar. */
+.controls .countrow > span.row:not(.wrap) { background: none; border: 0; padding: 0; margin-top: 0; gap: 6px; }
+/* Satellites and their services as tiles, wide enough for their names. */
+.tiles.auto .tl { width: auto; min-width: 98px; max-width: 220px; }
+.tl b { overflow: hidden; text-overflow: ellipsis; }
+.seg.sattabs { margin-bottom: 6px; }
+.act.grow { flex: 1; }
+.act.on { background: linear-gradient(180deg, var(--ok, #3fd07a), color-mix(in srgb, var(--ok, #3fd07a) 80%, transparent)); }
+.rl.offers { display: block; margin: 10px 2px 2px; }
+@media (max-width: 719.98px) {
+  .view.sat .controls > *, .view.adsb .controls > *, .view.ais .controls > *, .view.aprs .controls > * { flex-shrink: 0; }
+}
+@media (max-width: 719.98px) { .view.sat .about { font-size: 12px; line-height: 1.45; color: var(--muted); } }
