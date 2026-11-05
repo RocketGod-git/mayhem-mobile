@@ -464,15 +464,15 @@ export class FlexDecoder implements IqProcessor {
       if (r) this.packet(type === PT.SPECIAL_NUMERIC ? 4 : type === PT.NUMBERED_NUMERIC ? 7 : 3, r.text, r.errors);
     } else if (type === PT.TONE) {
       const t = (viw >>> 7) & 3, d = (viw >>> 9) & 0xFFF;
-      let msg: string;
-      if (t === 0 && d === 0xCCC && (!long || j + 1 >= 88 || (p[j + 1] & 0xFFFFF) === 0xCCCCC)) msg = 'TONE';
+      // the short message vector (3.9.6), as the Android app shows it: a tone, a few digits, or the tone's source
+      if (t === 0 && d === 0xCCC && (!long || j + 1 >= 88 || (p[j + 1] & 0xFFFFF) === 0xCCCCC)) this.packet(2, '');
       else if (t === 0) {
-        msg = 'NUM ' + FLEX_BCD[d & 0xF] + FLEX_BCD[(d >>> 4) & 0xF] + FLEX_BCD[(d >>> 8) & 0xF];
-        if (long && j + 1 < 88 && !bad[j + 1]) { const vy = p[j + 1]; for (let s = 0; s < 20; s += 4) msg += FLEX_BCD[(vy >>> s) & 0xF]; }
-      } else if (t === 1) msg = `SRC ${d & 7}`;
-      else if (t === 2) msg = `SRC ${d & 7} N=${(d >>> 3) & 0x3F} R=${(d >>> 9) & 1}`;
-      else msg = `RESERVED ${hex(d, 3)}`;
-      this.packet(8, msg);
+        let digits = FLEX_BCD[d & 0xF] + FLEX_BCD[(d >>> 4) & 0xF] + FLEX_BCD[(d >>> 8) & 0xF];
+        if (long && j + 1 < 88 && !bad[j + 1]) { const vy = p[j + 1]; for (let s = 0; s < 20; s += 4) digits += FLEX_BCD[(vy >>> s) & 0xF]; }
+        this.packet(3, digits.trim());
+      } else if (t === 1) this.packet(8, `SRC ${d & 7}`);
+      else if (t === 2) this.packet(8, `SRC ${d & 7} N=${(d >>> 3) & 0x3F} R=${(d >>> 9) & 1}`);
+      else this.packet(8, `RESERVED ${hex(d, 3)}`);
     } else if (type === PT.SHORT_INSTRUCTION) {
       const d = (viw >>> 7) & 0x3FFF, it = d & 7;
       this.packet(1, it === 0 ? `i=temp|slot=${(d >>> 10) & 0xF}|target=${(d >>> 3) & 0x7F}` : it === 1 ? `i=event|flags=${hex((d >>> 3) & 0x7FF, 3)}` : `i=rsvd|type=${it}|raw=${hex(d, 4)}`);

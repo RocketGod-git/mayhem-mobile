@@ -172,6 +172,12 @@ for (const [baud, inv, seed] of [[512, false, 2], [1200, false, 3], [2400, false
   ok(!got.some(m => m.page.cap === 1234567), 'a page that is mostly lost codewords is not sent', JSON.stringify(got.map(m => m.page)));
 }
 {
+  // the same batches with the preamble replaced by random bits: no preamble, no lock
+  const r = rng(77), bits = pocsagBits(PAGES);
+  for (let i = 0; i < 576; i++) bits[i] = r() < 0.5 ? 1 : 0;
+  eq(run(bits.map(b => b === 1 ? -1 : 1), 1200, 8).length, 0, 'a sync with no preamble before it opens nothing');
+}
+{
   // FLEX traffic at all four speeds, and plain noise, must give no POCSAG pages at all
   let flexPages = 0;
   for (const [code, baud, four, seed] of [[0x870C, 1600, false, 11], [0xB068, 1600, true, 12], [0x7B18, 3200, false, 13], [0xDEA0, 3200, true, 14]]) {
