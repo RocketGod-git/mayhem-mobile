@@ -2107,18 +2107,19 @@ function renderHam(view: HTMLElement): void {
         <div class="hamline"><span id="digi-status" class="seg">${g.mode === 'off' ? 'pick a decoder' : g.mode.toUpperCase()}</span><span id="ham-tone" class="sq" hidden></span></div>
         <div id="scope" class="panel"></div></section>
       <section class="controls">${tabs}
-        <div class="caption">DECODER · AUTO picks whichever modem is making sense</div><div class="row bandstrip">${(['auto', 'cw', 'rtty', 'psk31', 'ft8', 'sstv', 'dmr', 'p25', 'off'] as const).map(m => `<button class="chip" data-digi="${m}">${m.toUpperCase()}</button>`).join('')}</div>
-        <div class="row bandstrip"><button class="chip" data-hmode="USB">USB</button><button class="chip" data-hmode="LSB">LSB</button><button class="chip" data-hmode="CW">CW</button><button class="chip" data-hmode="NFM">NFM</button><button id="digi-clear" class="chip">CLEAR</button></div>
+        <div class="tgrid c3">${DIGI_TILES.map(([m, sub]) => `<button class="tl" data-digi="${m}"><b>${m.toUpperCase()}</b><small>${sub}</small></button>`).join('')}</div>
+        <div class="ctlrow"><span class="rl">MODE</span>${segHtml((['USB', 'LSB', 'CW', 'NFM'] as const).map(m => `<button data-hmode="${m}">${m}</button>`))}<button id="digi-clear" class="ib" title="clear" aria-label="clear">${CLEAR_SVG}</button></div>
         <div id="p25-panel" hidden><div class="caption">P25 · <span id="p25-head">searching for sync</span></div>
           <div class="panel dmrslot" id="p25-call"></div></div>
         <div id="dmr-panel" hidden><div class="caption">DMR · <span id="dmr-head">searching for sync</span></div>
           <div class="dmrslots"><div class="panel dmrslot" id="dmr-s1"></div><div class="panel dmrslot" id="dmr-s2"></div></div>
-          <div class="caption">AUDIO FOLLOWS · both time slots are decoded, you hear one</div><div class="row bandstrip">${[['0', 'AUTO (latest caller)'], ['1', 'SLOT 1'], ['2', 'SLOT 2']].map(([v, l]) => `<button class="chip" data-dmrslot="${v}">${l}</button>`).join('')}</div></div>
-        <div class="caption">PSK31 AUDIO CENTER · RTTY BAUD/SHIFT</div><div class="row bandstrip">${[500, 1000, 1500, 2000].map(f => `<button class="chip" data-pskhz="${f}">${f}</button>`).join('')}${[['45.45', '170'], ['50', '170'], ['75', '170'], ['45.45', '450'], ['50', '850']].map(([b, s]) => `<button class="chip" data-rtty="${b}/${s}">${b}/${s}</button>`).join('')}<button id="rtty-rev" class="chip">REV</button></div>
+          <div class="ctlrow"><span class="rl">HEAR</span>${segHtml([['0', 'LATEST'], ['1', 'SLOT 1'], ['2', 'SLOT 2']].map(([v, l]) => `<button data-dmrslot="${v}">${l}</button>`))}</div><div class="note">Both time slots are decoded; you hear one.</div></div>
+        <div class="ctlrow"><span class="rl">PSK Hz</span>${segHtml([500, 1000, 1500, 2000].map(f => `<button data-pskhz="${f}">${f}</button>`))}</div>
+        <div class="ctlrow"><span class="rl">RTTY</span>${segHtml([['45.45', '170'], ['50', '170'], ['75', '170'], ['45.45', '450'], ['50', '850']].map(([b, s]) => `<button data-rtty="${b}/${s}">${b === '45.45' ? '45' : b}/${s}</button>`), 'tight')}<button id="rtty-rev" class="tog">REV</button></div>
         <div class="caption">TEXT</div><pre id="digi-text" class="panel digitext">${g.text}</pre>
-        <div id="sstv-panel" hidden>${imgPanelHtml()}<div class="caption">SSTV FREQUENCIES</div><div class="row bandstrip">${[['20m 14.230', 14_230_000, 'USB'], ['20m 14.233', 14_233_000, 'USB'], ['10m 28.680', 28_680_000, 'USB'], ['40m 7.171', 7_171_000, 'LSB'], ['ISS 145.800', 145_800_000, 'NFM']].map(([l, f, md]) => `<button class="chip" data-sstvf="${f}" data-sstvm="${md}">${l}</button>`).join('')}</div></div>
+        <div id="sstv-panel" hidden>${imgPanelHtml()}${hsHtml(`<div class="tiles wide">${[['20m 14.230', 14_230_000, 'USB'], ['20m 14.233', 14_233_000, 'USB'], ['10m 28.680', 28_680_000, 'USB'], ['40m 7.171', 7_171_000, 'LSB'], ['ISS 145.800', 145_800_000, 'NFM']].map(([l, f, md]) => `<button class="tl" data-sstvf="${f}" data-sstvm="${md}"><b>${String(l).split(' ')[1]}</b><small>SSTV · ${String(l).split(' ')[0]} ${md}</small></button>`).join('')}</div>`)}</div>
         <div id="ft8-panel"><div class="caption">FT8 · <span id="ft8-clock"></span> · UTC  SNR  DT  Hz  message</div><div id="ft8-list" class="panel list"></div>
-          <div class="caption">FT8 FREQUENCIES</div><div class="row bandstrip">${[['160m', 1_840_000], ['80m', 3_573_000], ['40m', 7_074_000], ['30m', 10_136_000], ['20m', 14_074_000], ['17m', 18_100_000], ['15m', 21_074_000], ['12m', 24_915_000], ['10m', 28_074_000], ['6m', 50_313_000], ['2m', 144_174_000]].map(([l, f]) => `<button class="chip" data-ft8f="${f}">${l}</button>`).join('')}</div></div>
+          ${hsHtml(`<div class="tiles">${[['160m', 1_840_000], ['80m', 3_573_000], ['40m', 7_074_000], ['30m', 10_136_000], ['20m', 14_074_000], ['17m', 18_100_000], ['15m', 21_074_000], ['12m', 24_915_000], ['10m', 28_074_000], ['6m', 50_313_000], ['2m', 144_174_000]].map(([l, f]) => `<button class="tl" data-ft8f="${f}"><b>${l}</b><small>${(Number(f) / 1e6).toFixed(3)}</small></button>`).join('')}</div>`)}</div>
         ${gainHtml()}
       </section>`;
     scope = attach(tunableScope('scope', 200));
@@ -2500,12 +2501,12 @@ function renderLog(view: HTMLElement, tabs: string): void {
     <section class="controls">${tabs}
       <div class="caption">STATION · ${s.call ? `${s.call}${s.name ? ` · ${s.name}` : ''} · grid ${myGrid() || '?'}` : 'set your callsign and grid in Settings'}${s.license ? ` · ${s.license}` : ''}</div>
       <div class="caption">CONTACT · <span id="log-when"></span></div>
-      <div class="row"><input id="q-call" class="txin" style="flex:2" placeholder="CALLSIGN" autocapitalize="characters" spellcheck="false" autocomplete="off"><button id="q-lookup" class="chip">LOOKUP</button><button id="q-qrz" class="chip">QRZ ↗</button></div>
+      <div class="row"><input id="q-call" class="txin" style="flex:2" placeholder="CALLSIGN" autocapitalize="characters" spellcheck="false" autocomplete="off"><button id="q-lookup" class="tog">LOOKUP</button><button id="q-qrz" class="tog">QRZ ↗</button></div>
       <div id="q-info" class="panel about small"></div>
       <div class="row"><input id="q-rsts" class="txin" placeholder="RST sent"><input id="q-rstr" class="txin" placeholder="RST rcvd"><input id="q-name" class="txin" style="flex:2" placeholder="name"></div>
       <div class="row"><input id="q-qth" class="txin" style="flex:2" placeholder="QTH"><input id="q-grid" class="txin" placeholder="grid" autocapitalize="characters"></div>
       <input id="q-notes" class="txin" placeholder="notes">
-      <div class="row"><button id="q-save" class="chip primary" style="flex:2">LOG IT</button><button id="q-clear" class="chip">CLEAR</button></div>
+      <div class="ctlrow"><button id="q-save" class="act grow">LOG IT</button><button id="q-clear" class="tog">CLEAR</button></div>
       <div class="caption">LOGBOOK · <span id="log-stats"></span> · tap a contact to edit it</div><div id="log-list" class="panel list"></div>
       <div class="caption">MAP · contacts by grid square, the callsign you are looking up in gold</div><div id="log-map" class="panel map"></div>
       <div class="row bandstrip"><button id="log-export" class="chip">EXPORT ADIF</button><button id="log-import" class="chip">IMPORT ADIF</button><button id="log-csv" class="chip">EXPORT CSV</button><button id="log-wipe" class="chip">DELETE ALL</button></div>
@@ -2561,6 +2562,9 @@ function pttStart(freqHz?: number, toneHz?: number, button?: HTMLElement): void 
   });
 }
 function pttStop(): void { const h = state.ham; if (!h.ptt.on) return; tx.stop(); h.ptt.on = false; const b = pttButton; if (b) { b.classList.remove('on'); b.textContent = b.id === 'sat-ptt' ? 'PUSH TO TALK · UPLINK' : 'PUSH TO TALK'; } }
+/** The digital decoders as tiles, with what each one is for. */
+const DIGI_TILES: [string, string][] = [['auto', 'picks one'], ['cw', 'morse'], ['rtty', 'teletype'], ['psk31', 'keyboard chat'], ['ft8', '15 s slots'], ['sstv', 'pictures'],
+  ['dmr', 'digital voice'], ['p25', 'digital voice'], ['off', 'audio only']];
 function renderPtt(view: HTMLElement, tabs: string): void {
   const h = state.ham, rin = repeaterInput(h.freq);
   view.innerHTML = `
@@ -2571,10 +2575,11 @@ function renderPtt(view: HTMLElement, tabs: string): void {
       <div class="caption">TX · ${rin !== null ? `repeater input ${(rin / 1e6).toFixed(4)} MHz (offset applied)` : 'simplex on the dial frequency'} · hold the button</div>
       <button id="ptt" class="chip ptt">PUSH TO TALK</button>
       <div id="tx-status" class="health">idle</div>
-      <div class="caption">DEVIATION · CTCSS</div><div class="row bandstrip">${[2500, 5000].map(d => `<button class="chip" data-dev="${d}">±${d / 1000} kHz</button>`).join('')}${[0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5].map(t => `<button class="chip" data-tone="${t}">${t ? t.toFixed(1) : 'no tone'}</button>`).join('')}</div>
+      <div class="ctlrow"><span class="rl">DEV</span>${segHtml([2500, 5000].map(d => `<button data-dev="${d}">±${d / 1000} kHz</button>`))}</div>
+      <div class="rl offers">CTCSS TONE</div>${hsHtml(`<div class="tiles">${[0, 67.0, 71.9, 77.0, 88.5, 100.0, 103.5, 107.2, 114.8, 123.0, 131.8, 141.3, 151.4, 162.2, 173.8, 186.2, 203.5].map(t => `<button class="tl" data-tone="${t}"><b>${t ? t.toFixed(1) : 'OFF'}</b><small>${t ? 'Hz' : 'no tone'}</small></button>`).join('')}</div>`)}
       ${txGainHtml()}
       <div style="margin-top:6px">${hamBandTiles()}</div>
-      <div class="caption">MODE (receive between overs)</div><div class="row">${(['NFM', 'USB', 'LSB'] as HamMode[]).map(m => `<button class="chip" data-hmode="${m}">${m}</button>`).join('')}</div>
+      <div class="ctlrow"><span class="rl">RX</span>${segHtml((['NFM', 'USB', 'LSB'] as HamMode[]).map(m => `<button data-hmode="${m}">${m}</button>`))}</div><div class="note">The mode heard between overs.</div>
     </section>`;
   scope = attach(tunableScope('scope', 200));
   qa<HTMLButtonElement>('[data-hamtab]', view).forEach(b => b.onclick = () => { pttStop(); h.tab = b.dataset.hamtab as typeof h.tab; open('ham'); });

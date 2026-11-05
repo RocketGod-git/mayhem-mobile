@@ -857,3 +857,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .grid-tx .chip { border-radius: 12px; border-color: var(--line); background: var(--surface); }
 /* Transmit and Troll wear the danger colour, as on Android. */
 .view.transmit, .view.troll { --accent: var(--danger); }
+/* Rows that hold form fields are just rows. */
+.controls .row.row.row:has(input, textarea, select) { background: none; border: 0; padding: 0; gap: 6px; }
+.controls .row > .txin { min-width: 0; flex: 1; }
+.tgrid.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg.tight > button { letter-spacing: 0; font-size: 11px; }
+.ctlrow > .ib { flex: none; }
