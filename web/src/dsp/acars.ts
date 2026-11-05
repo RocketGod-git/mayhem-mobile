@@ -11,6 +11,10 @@
  * (a coherent MSK receiver like acarsdec's sees the bit repeat on one tone and flip on the other, depending on its
  * sign convention). Each reading hunts for SYN SYN SOH in both polarities; whichever finds it collects the frame,
  * so a wrong reading costs nothing but a sync search.
+ *
+ * Like acarsdec, every known ACARS channel inside the span is decoded at once (the tuned one first, then the US
+ * set, then the rest, up to [MAX_CHANNELS]), each by its own receiver, and every message says which channel it
+ * came in on.
  */
 import { type Emit, type IqProcessor } from './core.js';
 
@@ -38,8 +42,40 @@ class Lane {
   constructor(readonly kind: number) {}
 }
 
+/** ACARS channels (VHF data link mode A): the tuned one goes first, then these in order of preference. */
+export const ACARS_CHANNELS = [131_550_000, 130_025_000, 130_425_000, 130_450_000, 131_125_000,   // US
+  131_525_000, 131_725_000, 131_825_000, 136_900_000, 136_750_000,                              // Europe
+  131_450_000, 131_950_000, 129_125_000, 131_475_000];                                          // Japan, others
+const MAX_CHANNELS = 6;
+
+/** Every ACARS channel in the span at once. */
 export class AcarsDecoder implements IqProcessor {
-  /** The channel's offset from the span centre (set by the worker before each buffer). */
+  /** The span centre and the tuned channel (set by the worker before each buffer). */
+  centerHz = 0; tunedHz = 0;
+  private key = '';
+  private rx: AcarsChannel[] = [];
+  constructor(private readonly emit: Emit) {}
+  reset(_rate: number): void { this.key = ''; this.rx = []; }
+  /** The channels decoded now (for the page and the tests). */
+  channels(): number[] { return this.rx.map(r => r.hz); }
+  onIq(iq: Int8Array, rate: number): void {
+    const key = `${this.centerHz}|${this.tunedHz}|${rate}`;
+    if (key !== this.key) {
+      this.key = key;
+      const reach = rate / 2 - 50_000, inSpan = (hz: number) => Math.abs(hz - this.centerHz) < reach;
+      const want = [...new Set([this.tunedHz, ...ACARS_CHANNELS])].filter(hz => hz > 0 && inSpan(hz)).slice(0, MAX_CHANNELS);
+      const keep = this.rx.filter(r => want.includes(r.hz));
+      this.rx = want.map(hz => keep.find(r => r.hz === hz) ?? new AcarsChannel(hz, this.emit));
+      for (const r of this.rx) r.offsetHz = r.hz - this.centerHz;
+      this.emit({ type: 'log', line: `ACARS: decoding ${this.rx.map(r => (r.hz / 1e6).toFixed(3)).join(', ')} MHz` });
+    }
+    for (const r of this.rx) r.onIq(iq, rate);
+  }
+}
+
+/** One ACARS channel's receiver. */
+class AcarsChannel implements IqProcessor {
+  /** The channel's offset from the span centre. */
   offsetHz = 0;
   private rate = 0; private lastOffset = NaN;
   // channel cut: oscillator, FIR to ~240 kHz, FIR to ~24 kHz
@@ -56,7 +92,7 @@ export class AcarsDecoder implements IqProcessor {
   private clk = 0; private clkInc = 0; private lastF = 0;
   private lanes = [new Lane(0), new Lane(1), new Lane(2)];
 
-  constructor(private readonly emit: Emit) {}
+  constructor(readonly hz: number, private readonly emit: Emit) {}
 
   reset(rate: number): void {
     this.rate = rate; this.lastOffset = NaN;
@@ -196,10 +232,10 @@ export class AcarsDecoder implements IqProcessor {
     }
     let text = '';
     while (p < n) { const c = B[p++]; if (c === ETX || c === ETB) break; text += (c >= 0x20 && c <= 0x7e) ? String.fromCharCode(c) : (c === 0x0a || c === 0x0d) ? ' ' : '·'; }
-    const head = `ACARS ${down ? '↓' : '↑'} ${reg}  ${label}  blk ${blk}  ack ${ack}${msn ? `  #${msn} ${flight}` : ''}${ok ? '' : '  CRC?'}${mode !== '2' ? `  mode ${mode}` : ''}`;
+    const head = `ACARS ${(this.hz / 1e6).toFixed(3)} ${down ? '↓' : '↑'} ${reg}  ${label}  blk ${blk}  ack ${ack}${msn ? `  #${msn} ${flight}` : ''}${ok ? '' : '  CRC?'}${mode !== '2' ? `  mode ${mode}` : ''}`;
     const body = text.trim();
     this.emit({ type: 'packet', line: body ? `${head}\n${body}` : head });
-    this.emit({ type: 'log', line: `ACARS frame read as ${LANE_NAMES[l.kind]}${l.polarity ? ' (inverted)' : ''}, CRC ${ok ? 'good' : 'bad'}, ${l.parityErrors} parity errors` });
+    this.emit({ type: 'log', line: `ACARS ${(this.hz / 1e6).toFixed(3)}: frame read as ${LANE_NAMES[l.kind]}${l.polarity ? ' (inverted)' : ''}, CRC ${ok ? 'good' : 'bad'}, ${l.parityErrors} parity errors` });
     // the other readings are not hunting this frame any more
     for (const o of this.lanes) if (o !== l && o.collecting) { o.collecting = false; o.window = 0; }
   }

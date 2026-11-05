@@ -48,21 +48,49 @@ function run(kind, invert, seed) {
   }
   const out = [];
   const d = new AcarsDecoder(m => out.push(m));
-  d.reset(rate); d.offsetHz = off;
+  d.reset(rate); d.centerHz = 131_300_000; d.tunedHz = 131_300_000 + off;
   for (let p = 0; p < n; p += 131072) d.onIq(iq.subarray(2 * p, 2 * Math.min(n, p + 131072)), rate);
   const pk = out.filter(m => m.type === 'packet');
+  if (kind === 0 && invert === 0) ok(d.channels().length >= 4 && d.channels()[0] === 131_550_000, 'every ACARS channel in the span gets a receiver, the tuned one first', JSON.stringify(d.channels()));
   const name = `${['tone', 'diff-a', 'diff-b'][kind]}${invert ? ' inverted' : ''}`;
   ok(pk.length === 1, `${name}: one message`, JSON.stringify(out.map(m => m.line)));
   const line = pk[0]?.line ?? '';
-  ok(line.includes('N12345') && line.includes('H1') && line.includes('#M01A UA1234') && line.includes(text) && !line.includes('CRC?'), `${name}: registration, label, flight, text, CRC good`, line);
+  ok(line.includes('131.550') && line.includes('N12345') && line.includes('H1') && line.includes('#M01A UA1234') && line.includes(text) && !line.includes('CRC?'), `${name}: registration, label, flight, text, CRC good`, line);
 }
 let seed = 1;
 for (const kind of [0, 1, 2]) for (const inv of [0, 1]) run(kind, inv, seed++);
 
+// two channels at once: 130.025 and 131.550 inside one span centred on 130.8 MHz, each with its own message
+{
+  const center = 130_800_000, chans = [[130_025_000, 'FIRST CHANNEL MSG', 1], [131_550_000, 'SECOND CHANNEL MSG', 2]];
+  const tss = chans.map(([, text, kind]) => [...tones(frameBytes(text), kind, 0), ...new Array(40).fill(1)]);
+  const r = rng(77), lead = Math.floor(0.05 * rate), n = lead + Math.ceil(Math.max(...tss.map(t => t.length)) / 2400 * rate) + 4000;
+  const iq = new Int8Array(2 * n), aph = [0, 0], cph = [0, 0];
+  for (let i = 0; i < n; i++) {
+    let a = 0, b = 0;
+    chans.forEach(([hz], c) => {
+      const k = Math.floor((i - lead) / rate * 2400), ts = tss[c], on = k >= 0 && k < ts.length;
+      if (on) aph[c] += 2 * Math.PI * (ts[k] ? 2400 : 1200) / rate;
+      cph[c] += 2 * Math.PI * (hz - center) / rate;
+      const amp = on ? 16 * (1 + 0.7 * Math.cos(aph[c])) : 0;
+      a += amp * Math.cos(cph[c]); b += amp * Math.sin(cph[c]);
+    });
+    const g = () => { let u = 0; while (u === 0) u = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * r()); };
+    iq[2 * i] = Math.max(-127, Math.min(127, Math.round(a + 3 * g()))); iq[2 * i + 1] = Math.max(-127, Math.min(127, Math.round(b + 3 * g())));
+  }
+  const out = [], d = new AcarsDecoder(m => out.push(m));
+  d.reset(rate); d.centerHz = center; d.tunedHz = 131_550_000;
+  for (let p = 0; p < n; p += 131072) d.onIq(iq.subarray(2 * p, 2 * Math.min(n, p + 131072)), rate);
+  const lines = out.filter(m => m.type === 'packet').map(m => m.line);
+  ok(lines.some(l => l.includes('130.025') && l.includes('FIRST CHANNEL MSG')), 'the message on 130.025 comes out, tagged with its channel', JSON.stringify(lines));
+  ok(lines.some(l => l.includes('131.550') && l.includes('SECOND CHANNEL MSG')), 'and the one on 131.550 at the same time', JSON.stringify(lines));
+  ok(lines.length === 2, 'two messages, no doubles from neighbouring channels', JSON.stringify(lines));
+}
+
 // noise alone: nothing
 {
   const d = new AcarsDecoder(m => { if (m.type === 'packet') bad.push(m); }), bad = [], r = rng(99), n = 4 * rate;
-  d.reset(rate); d.offsetHz = off;
+  d.reset(rate); d.centerHz = 130_800_000; d.tunedHz = 131_550_000;
   const iq = new Int8Array(2 * 131072);
   for (let p = 0; p < n; p += 131072) { for (let i = 0; i < iq.length; i++) iq[i] = Math.round((r() - 0.5) * 20); d.onIq(iq, rate); }
   ok(bad.length === 0, 'four seconds of noise give no message', JSON.stringify(bad));
