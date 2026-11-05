@@ -1,5 +1,6 @@
 /** POCSAG pager decoder (Mayhem proc_pocsag2 + pocsag.cpp; port of core/apps/PocsagDecoder.kt). */
 import { BitSync, popcount32, type Emit, type IqProcessor } from './core.js';
+import { bchCorrect } from './flex.js';
 
 const SYNC = 0x7CD215D8, IDLE = 0x7A89C197;
 const NUMERIC_CHARS = '0123456789RU -][';
@@ -51,7 +52,8 @@ export class PocsagDecoder implements IqProcessor {
   private address = -1; private func = 0;
   private readonly msgBits = new Uint8Array(8192);
   private msgBitCount = 0; private msgCodewords = 0;
-  private readonly ecc = new PocsagEcc();
+  /** Message codewords the check could not fix, and how many in a row. */
+  private errs = 0; private badRun = 0;
 
   constructor(private readonly emit: Emit) {}
   reset(): void { this.fmRate = 0; this.unlock(); }
@@ -91,43 +93,54 @@ export class PocsagDecoder implements IqProcessor {
     if (++this.bitCount < 32) return;
     this.bitCount = 0;
     if (this.cwCount >= 16) {
-      if (popcount32(this.cw ^ SYNC) <= 2) { this.cwCount = 0; this.synced(); } else this.unlock();
+      // the next batch's sync, allowed a little more damage than the first, as on Android: it is expected right here
+      if (popcount32(this.cw ^ SYNC) <= 4) { this.cwCount = 0; this.synced(); } else this.unlock();
       return;
     }
     this.processCodeword(this.cwCount, this.cw);
     this.cwCount++;
   }
 
+  /**
+   * As the Android app does it: the parity-checked BCH fixes up to two bits; a codeword it cannot fix keeps its place
+   * (its bits stand in, counted as an error) so the rest of the message stays aligned, and four failures in a row end
+   * the page. A page that is mostly failed codewords is not sent.
+   */
   private processCodeword(idx: number, raw: number): void {
-    const errs = this.ecc.correct(raw);
-    const c = this.ecc.out;
-    if (errs >= 3) return;
-    if (c === IDLE) { this.endMessage(); return; }
-    const isAddress = (c & (1 << 31)) === 0;
-    if (isAddress) {
+    const c = bchCorrect(raw | 0);
+    if (c === null) {
+      if (this.address >= 0) { this.addChunk((raw >>> 11) & 0xFFFFF); this.errs++; if (++this.badRun >= 4) this.endMessage(); }
+      return;
+    }
+    this.badRun = 0;
+    if ((c >>> 0) === IDLE) { this.endMessage(); return; }
+    if ((c >>> 31) === 0) {
       this.endMessage();
       this.address = (((c >>> 13) & 0x3FFFF) << 3) | (idx >> 1);
       this.func = (c >>> 11) & 3;
-    } else {
-      if (this.address < 0) return;
-      if (this.msgBitCount + 20 > this.msgBits.length) return;
-      for (let b = 30; b >= 11; b--) this.msgBits[this.msgBitCount++] = (c >>> b) & 1;
-      this.msgCodewords++;
-    }
+    } else if (this.address >= 0) this.addChunk((c >>> 11) & 0xFFFFF);
+  }
+
+  private addChunk(v: number): void {
+    if (this.msgBitCount + 20 > this.msgBits.length) return;
+    for (let b = 19; b >= 0; b--) this.msgBits[this.msgBitCount++] = (v >>> b) & 1;
+    this.msgCodewords++;
   }
 
   private endMessage(): void {
     if (this.address < 0) return;
-    const baud = this.locked >= 0 ? this.bauds[this.locked] : 0;
+    const baud = this.locked >= 0 ? this.bauds[this.locked] : 0, errs = this.errs, n = this.msgCodewords;
     const head = `RIC ${String(this.address).padStart(7, '0')} F${this.func} ${String(baud).padStart(4)}bps`;
-    const page = (kind: string, text: string) => ({ protocol: 'POCSAG', rate: String(baud), cap: this.address, kind, text, errors: 0, where: `F${this.func}` });
-    if (this.msgBitCount === 0) this.emit({ type: 'packet', line: `${head} TONE`, page: page('TONE', '') });
+    const page = (kind: string, text: string) => ({ protocol: 'POCSAG', rate: String(baud), cap: this.address, kind, text, errors: errs, where: `F${this.func}` });
+    if (n > 0 && errs * 2 > n + 1) this.emit({ type: 'log', line: `${head}: unreadable, ${errs} of ${n} codewords lost` });   // mostly unreadable: not worth showing
+    else if (n === 0) this.emit({ type: 'packet', line: `${head} TONE`, page: page('TONE', '') });
     else {
       const alpha = this.decodeAlpha(), numeric = this.decodeNumeric();
-      const useNumeric = this.msgCodewords >= 8 ? false : this.func === 0 ? true : !PocsagDecoder.looksAlpha(alpha);
-      this.emit({ type: 'packet', line: useNumeric ? `${head} NUM: ${numeric}` : `${head} ALPHA: ${alpha}`, page: useNumeric ? page('NUM', numeric.trim()) : page('ALPHA', alpha) });
+      const isAlpha = this.func === 3 || (this.func !== 0 && alpha.length >= 2 && PocsagDecoder.looksAlpha(alpha));
+      const part = errs ? ' PARTIAL' : '';
+      this.emit({ type: 'packet', line: isAlpha ? `${head} ALPHA${part}: ${alpha}` : `${head} NUM${part}: ${numeric}`, page: isAlpha ? page('ALPHA', alpha) : page('NUM', numeric.trim()) });
     }
-    this.address = -1; this.msgBitCount = 0; this.msgCodewords = 0;
+    this.address = -1; this.msgBitCount = 0; this.msgCodewords = 0; this.errs = 0; this.badRun = 0;
   }
 
   private decodeAlpha(): string {
@@ -135,12 +148,11 @@ export class PocsagDecoder implements IqProcessor {
     for (let i = 0; i + 7 <= this.msgBitCount; i += 7) {
       let ch = 0;
       for (let b = 0; b < 7; b++) ch |= this.msgBits[i + b] << b;
-      if (ch === 0) continue;
-      if (ch >= 0x20 && ch <= 0x7e) s += String.fromCharCode(ch);
-      else if (ch === 0x0a || ch === 0x0d) s += ' ';
-      else s += '·';
+      if (ch === 0x00 || ch === 0x03 || ch === 0x04 || ch === 0x17) break;   // end of text, or padding
+      if (ch === 0x0a || ch === 0x0d) s += '\n';
+      else if (ch >= 0x20) s += String.fromCharCode(ch);
     }
-    return s.trimEnd();
+    return s.trim();
   }
   private decodeNumeric(): string {
     let s = '';
@@ -150,10 +162,11 @@ export class PocsagDecoder implements IqProcessor {
     }
     return s.trimEnd();
   }
+  /** Reads as text: letters, digits, spaces and ordinary punctuation make up at least 85% of it (the Android rule). */
   private static looksAlpha(s: string): boolean {
     if (!s) return false;
     let good = 0;
-    for (const c of s) if (/[A-Za-z0-9 .,:\-\/]/.test(c)) good++;
-    return good * 10 >= s.length * 7;
+    for (const c of s) if (/[\p{L}\p{N} .,:;!?\-\/()#@'"&\n]/u.test(c)) good++;
+    return good * 100 >= s.length * 85;
   }
 }
