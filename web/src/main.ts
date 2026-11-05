@@ -1526,9 +1526,12 @@ function render(app: AppId | null): void {
 
 function renderLauncher(view: HTMLElement): void {
   view.innerHTML = `
-    <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div></section>
-    <section class="controls launch-side"><div class="grid launch-grid">${APPS.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><div class="tile-top">${glyph(a.id, tintHex(a.cat), 36)}<span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb">${a.blurb}</div></button>`).join('')}</div>
-    <div class="launch-radio"><div class="caption">BANDS</div><div class="row wrap bandrow">${bandChipsHtml()}</div><div class="launch-gain">${gainHtml()}</div></div>
+    <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div><div id="launch-line" class="launch-line"></div></section>
+    <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
+      const apps = APPS.filter(a => a.cat === c); if (!apps.length) return '';
+      return `<div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div>` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><div class="tile-top">${glyph(a.id, tintHex(a.cat), 36)}<span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb">${a.blurb}</div></button>`).join('');
+    }).join('')}</div>
+    <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain">${gainHtml()}</div></div>
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));
   scope.setLabels(centredLabels(state.freq, state.rate));
@@ -3555,6 +3558,7 @@ function refreshReadout(): void {
   highlightBands();
   refreshFav();
   const h = q('#health'); if (h && lastHealth) h.textContent = lastHealth;
+  const ll = q('#launch-line'); if (ll) ll.textContent = lastHealth ? `${(state.freq / 1e6).toFixed(3)} MHz${state.mode === 'NONE' ? '' : ` ${state.mode}`} · ${lastHealth}` : 'no IQ yet — connect a HackRF or an RTL-SDR';
   if (!meterOwned()) setMeter(lastLevel / 40, `SIGNAL +${Math.max(0, Math.round(lastLevel))} dB`);
 }
 /** Apps that drive the card's meter themselves (Audio's channel over the noise, HAM's S-meter, sweeps' progress). */

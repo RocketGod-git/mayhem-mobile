@@ -863,3 +863,32 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tgrid.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .seg.tight > button { letter-spacing: 0; font-size: 11px; }
 .ctlrow > .ib { flex: none; }
+
+/* Category headers in the app grid: the phone's (Android's) grouping; a wide screen keeps its flat grid. */
+.gcat { display: none; }
+@media (min-width: 720px) { .bandhs .hs-in { overflow: visible; } }
+@media (max-width: 719.98px) {
+  /* No radio: one quiet line under the top bar, with the connect button a browser needs. */
+  .radiomiss { margin: 0; padding: 5px 16px; gap: 8px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .radiomiss > span { flex: 1; min-width: 0; color: var(--ink); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .radiomiss > .tog { padding: 4px 10px; font-size: 10px; }
+  /* Home, as on Android: the waterfall, what it is hearing, the bands, then every app two to a row by what it does. */
+  .view.launcher { display: flex; flex-direction: column; min-height: 0; }
+  .launch-visual > .face { display: none; }
+  .visual.launch-visual { flex: none; }
+  .visual.launch-visual > .launch-scope { flex: none; height: 240px; min-height: 0; margin-top: 6px; }
+  .launch-line { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 0.5px; margin: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .launch-side { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; scroll-snap-type: none; padding: 0 0 12px; max-height: none; }
+  .launch-side .launch-radio { order: -1; flex: none; width: auto; margin-bottom: 4px; }
+  .launch-side .launch-radio > .caption { display: none; }
+  .launch-side .bandhs .bandrow { flex-wrap: nowrap; width: max-content; margin: 0; gap: 6px; }
+  .launch-side .bandrow > .chip { flex: none; }
+  .launch-grid { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-columns: auto; gap: 8px; padding: 0; }
+  .launch-grid .gcat { display: block; grid-column: 1 / -1; font-weight: 700; font-size: 10px; letter-spacing: 3px; margin: 6px 2px 0; }
+  .launch-grid .tile { width: auto; aspect-ratio: 1.3; padding: 12px; scroll-snap-align: none; }
+  .launch-grid .tile .cat { display: none; }
+  .launch-grid .tile-top svg { width: 36px; height: 36px; }
+  .launch-grid .tile-title { font-size: 15px; }
+  .launch-grid .tile-blurb { font-size: 9.5px; max-height: 2.6em; }
+}
