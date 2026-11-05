@@ -3339,45 +3339,52 @@ function renderCapture(view: HTMLElement): void {
   refreshCapture();
 }
 
+/** A Settings row: what it is (and a line saying why) on the left, its control on the right. */
+const srow = (label: string, desc: string, control: string, keys = '') => `<div class="srow" data-keys="${esc((label + ' ' + desc + ' ' + keys).toLowerCase())}"><div class="srl"><b>${label}</b>${desc ? `<small>${desc}</small>` : ''}</div><div class="src">${control}</div></div>`;
+const swHtml = (id: string, on: boolean) => `<button id="${id}" class="sw ${on ? 'on' : ''}" role="switch" aria-checked="${on}"><i></i></button>`;
+const secHtml = (id: string, title: string, body: string) => body ? `<section class="sset" id="sec-${id}"><div class="sset-h">${title}</div>${body}</section>` : '';
+/** The rows Settings shows for the app it was opened over (the Android app's "This app" section). */
+function thisAppRows(app: AppId | null): string {
+  const h = state.ham;
+  switch (app) {
+    case 'audio': return srow('RDS', 'Station name and radiotext on broadcast FM', swHtml('set-rds', rdsWanted)) + srow('HD Radio', 'The digital sidebands, where a station has them', swHtml('set-hd', hdWanted));
+    case 'ham': {
+      const ssb = h.mode === 'USB' || h.mode === 'LSB';
+      return (ssb ? srow('Filter edges', 'Low and high edge of the pass band, Hz', `<input class="txin num" id="set-lo" value="${h.lo}" inputmode="numeric"> – <input class="txin num" id="set-hi" value="${h.hi}" inputmode="numeric">`)
+          + srow('Passband shift', `${h.shift} Hz`, `<input id="set-pbt" type="range" min="-600" max="600" step="50" value="${h.shift}">`)
+        : srow('Filter width', 'Hz', `<input class="txin num" id="set-w" value="${hamWidth()}" inputmode="numeric">`))
+        + (h.mode === 'CW' ? srow('CW pitch', 'Hz', segHtml([500, 600, 700, 800].map(p => `<button data-setpitch="${p}" class="${h.pitch === p ? 'on' : ''}">${p}</button>`))) : '')
+        + srow('Volume', `${Math.round(h.volume * 100)} %`, `<input id="set-vol" type="range" min="0" max="2" step="0.05" value="${h.volume}">`);
+    }
+    case 'pager': return srow('Decoder', 'What the channel is decoded as', segHtml((['flex', 'pocsag', 'both'] as const).map(w => `<button data-setpager="${w}" class="${state.pager === w ? 'on' : ''}">${w === 'both' ? 'BOTH' : w.toUpperCase()}</button>`)));
+    default: return '';
+  }
+}
 function renderSettings(view: HTMLElement): void {
+  const over = settingsOver;
+  const radioLine = radio ? (radio.kind === 'rtlsdr' ? radio.label : `HackRF · ${state.board || 'HackRF'}${state.firmware ? ' · fw ' + state.firmware : ''}`) : 'No radio attached';
+  const appRows = thisAppRows(over);
+  const jumps: [string, string][] = [...(appRows ? [['app', over ? barLabel(over) : 'APP'] as [string, string]] : []), ['radio', 'RADIO'], ['look', 'LOOK'], ['station', 'STATION'], ['tx', 'TRANSMIT'], ['how', 'HOW IT WORKS'], ['log', 'LOG'], ['about', 'ABOUT']];
   view.innerHTML = `
-    <div class="caption">THEME · the PortaPack Mayhem firmware skins, plus the mobile default</div>
-    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>
-    <div class="caption">STATION · your license details — the logbook, ADIF export and the transmit apps use these</div>
+    <section class="controls settings-page">
+    <input id="set-search" class="txin set-search" placeholder="Search settings" autocomplete="off" spellcheck="false">
+    <div class="radiocard ${radio ? 'on' : ''}"><div><b>${radio ? 'RADIO CONNECTED' : 'NO RADIO'}</b><small>${esc(radioLine)}</small></div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
+    <div class="set-jumps">${hsHtml(`<div class="tiles">${jumps.map(([id, l]) => `<button class="pill" data-jump="${id}">${l}</button>`).join('')}</div>`)}</div>
+    ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
+    ${secHtml('radio', 'RADIO', gainHtml())}
+    <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
+    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div></section>
+    <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
     <div class="panel about" id="station">
       <div class="row"><input class="txin" data-st="call" placeholder="CALLSIGN" value="${state.ham.station.call}" autocapitalize="characters" spellcheck="false"><input class="txin" data-st="license" placeholder="license class (Technician, General…)" value="${state.ham.station.license}"></div>
       <div class="row"><input class="txin" data-st="name" placeholder="name" value="${state.ham.station.name}"><input class="txin" data-st="grid" placeholder="${state.home ? `grid ${latLonToGrid(state.home.lat, state.home.lon)} (from GPS)` : 'grid square, e.g. DM04og'}" value="${state.ham.station.grid}" autocapitalize="characters"></div>
       <div class="row"><input class="txin" data-st="dmrId" placeholder="DMR ID (radioid.net)" value="${state.ham.station.dmrId}" inputmode="numeric"><input class="txin" data-st="aprsSsid" placeholder="APRS SSID (9 = mobile)" value="${state.ham.station.aprsSsid}" inputmode="numeric"></div>
       <div class="kv"><span>Where it goes</span><span>ADIF STATION_CALLSIGN / MY_GRIDSQUARE, the APRS beacon source, CW and RTTY message defaults, the logbook's distance and bearing. Nothing is sent anywhere else.</span></div>
-    </div>
-    <div class="caption">APP</div>
-    <div class="panel about">
-      <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button>${isAndroid() ? `<a class="chip primary" href="https://play.google.com/store/apps/details?id=com.rocketgod.mayhem">GET IT ON GOOGLE PLAY</a><a id="apk" class="chip" href="${apkUrl}" download="mayhem.apk">DOWNLOAD APK</a>` : ''}</div>
-      ${isAndroid() ? `<div class="kv"><span>APK</span><span>The native app auto-launches when the HackRF is plugged in and keeps running in the background. It is served from this site, built from the same commit as the page you are reading, so it needs no GitHub account and can never be a different version from this one.</span></div>` : ''}
-      <div class="kv"><span>Mayhem Mobile</span><span>${versionText} — one build, two shells: this desktop web app in any Chrome/Edge browser, and an APK that installs on Android phones</span></div>
-      <div class="kv"><span>Device</span><span>${state.board ? (radio?.kind === 'rtlsdr' ? state.board : `${state.board} · fw ${state.firmware}`) : 'no radio attached'}</span></div>
-      <div class="kv"><span>What it is</span><span>PortaPack Mayhem's receivers ported to run in the browser from raw HackRF IQ over WebUSB</span></div>
-      <div class="kv"><span>Source</span><span><a href="https://github.com/RocketGod-git/mayhem-mobile">github.com/RocketGod-git/mayhem-mobile</a></span></div>
-      <div class="kv"><span>Upstream</span><span><a href="https://github.com/portapack-mayhem/mayhem-firmware">portapack-mayhem/mayhem-firmware</a></span></div>
-      <div class="kv"><span>License</span><span>GPL-3.0 (Mayhem-derived)</span></div>
-    </div>
-    <div class="caption">TRANSMIT · on by default with a safety prompt — you are responsible for what you send</div>
-    <div class="panel about tx-gate ${tx.enabled ? 'on' : ''}">
-      <div class="apk-card" style="padding:0">
-        <div><div class="apk-title">${tx.enabled ? 'TX ENABLED' : 'TX DISABLED'}</div><div class="apk-sub">Enables the Transmit app (signal generator, Morse, OOK remotes). Most bands require a license; always use a dummy load or an antenna rated for the frequency.</div></div>
-        <button id="tx-toggle" class="chip ${tx.enabled ? 'rec' : ''}">${tx.enabled ? 'ON' : 'OFF'}</button>
-      </div>
-    </div>
-    <div class="caption">MADE BY</div>
-    <div class="panel about">
-      <div class="kv"><span>RocketGod</span><span><a href="https://rocketgod.dev">RocketGod.dev</a></span></div>
-      <div class="kv"><span>Crew</span><span>The Pirates' Plunder — <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></span></div>
-    </div>
-    <div class="caption">CREDITS · who wrote what this app is built from · drag to steer</div>
-    <div class="panel credits" id="credits"><div class="credits-roll" id="credits-roll">${(() => { const inner = CREDITS.map(([h, t]) => h ? `<h4>${esc(t)}</h4>` : `<p>${esc(t)}</p>`).join(''); return `<div class="credits-copy">${inner}</div><div class="credits-copy" aria-hidden="true">${inner}</div>`; })()}</div></div>
-    <div class="caption">FIELD NOTES</div>
-    <div class="panel about">
-      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the APK is the recommended route.</span></div>
+    </div></section>
+    <section class="sset" id="sec-tx"><div class="sset-h">TRANSMIT</div>
+      ${srow('Transmit', 'The transmit apps. Most bands need a license: use a dummy load or an antenna rated for the frequency.', swHtml('tx-toggle', tx.enabled), 'tx enable')}
+    </section>
+    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the APK is the recommended route.</span></div>
       <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies — use a powered OTG hub if RX reads all zeros</span></div>
       <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
       <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
@@ -3388,15 +3395,58 @@ function renderSettings(view: HTMLElement): void {
       <div class="kv"><span>Windows</span><span>bind the HackRF to the WinUSB driver (Zadig), the same step hackrf_transfer needs; libusbK / libusb-win32 bindings hide it from the browser</span></div>
       <div class="kv"><span>macOS</span><span>nothing to install — just close any other SDR program that has the HackRF open</span></div>
       <div class="kv"><span>Linux</span><span>the udev rule from the hackrf package (53-hackrf.rules) grants access; replug after adding it</span></div>
-      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · T toolbar · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div>
-    </div>`;
+      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · T toolbar · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div></div></section>
+    <section class="sset" id="sec-log"><div class="sset-h">LOG</div>${srow('Log', 'Everything the radio and the decoders reported, to read, save or share', '<button id="set-log" class="tog">OPEN</button>')}</section>
+    <section class="sset" id="sec-about"><div class="sset-h">ABOUT</div>
+    <div class="panel about">
+      <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button>${isAndroid() ? `<a class="chip primary" href="https://play.google.com/store/apps/details?id=com.rocketgod.mayhem">GET IT ON GOOGLE PLAY</a><a id="apk" class="chip" href="${apkUrl}" download="mayhem.apk">DOWNLOAD APK</a>` : ''}</div>
+      ${isAndroid() ? `<div class="kv"><span>APK</span><span>The native app auto-launches when the HackRF is plugged in and keeps running in the background. It is served from this site, built from the same commit as the page you are reading, so it needs no GitHub account and can never be a different version from this one.</span></div>` : ''}
+      <div class="kv"><span>Mayhem Mobile</span><span>${versionText} — one build, two shells: this desktop web app in any Chrome/Edge browser, and an APK that installs on Android phones</span></div>
+      <div class="kv"><span>Device</span><span>${state.board ? (radio?.kind === 'rtlsdr' ? state.board : `${state.board} · fw ${state.firmware}`) : 'no radio attached'}</span></div>
+      <div class="kv"><span>What it is</span><span>PortaPack Mayhem's receivers ported to run in the browser from raw HackRF IQ over WebUSB</span></div>
+      <div class="kv"><span>Source</span><span><a href="https://github.com/RocketGod-git/mayhem-mobile">github.com/RocketGod-git/mayhem-mobile</a></span></div>
+      <div class="kv"><span>Upstream</span><span><a href="https://github.com/portapack-mayhem/mayhem-firmware">portapack-mayhem/mayhem-firmware</a></span></div>
+      <div class="kv"><span>License</span><span>GPL-3.0 (Mayhem-derived)</span></div>
+    </div>
+    <div class="panel about">
+      <div class="kv"><span>RocketGod</span><span><a href="https://rocketgod.dev">RocketGod.dev</a></span></div>
+      <div class="kv"><span>Crew</span><span>The Pirates' Plunder — <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></span></div>
+    </div>
+    <div class="sset-sub">CREDITS · drag to steer</div>
+    <div class="panel credits" id="credits"><div class="credits-roll" id="credits-roll">${(() => { const inner = CREDITS.map(([h, t]) => h ? `<h4>${esc(t)}</h4>` : `<p>${esc(t)}</p>`).join(''); return `<div class="credits-copy">${inner}</div><div class="credits-copy" aria-hidden="true">${inner}</div>`; })()}</div></div>
+    </section></section>`;
   qa<HTMLInputElement>('[data-st]', view).forEach(i => i.oninput = () => { const k = i.dataset.st as keyof Station; const v = k === 'call' || k === 'grid' ? i.value.toUpperCase() : i.value; if (k === 'call' || k === 'grid') i.value = v; state.ham.station[k] = v; saveStation(); });
   qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); render('settings'); });
   const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); render('settings'); };
+  bindSettings(view);
   $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; render('settings'); } };
   attachCreditsScroller($('credits'), $('credits-roll'));
 }
 
+/** Settings' own controls: search, jumps, the radio card, and the rows for the app it was opened over. */
+function bindSettings(view: HTMLElement): void {
+  const on = (id: string, f: () => void) => { const el = q<HTMLElement>('#' + id, view); if (el) el.onclick = f; };
+  on('set-connect', () => $('connect').click());
+  on('set-log', () => $('log-toggle').click());
+  on('set-rds', () => { rdsWanted = !rdsWanted; if (!rdsWanted) lastRds = null; sendRds(); render('settings'); });
+  on('set-hd', () => { hdWanted = !hdWanted; if (!hdWanted) lastHd = null; sendHd(); render('settings'); });
+  const h = state.ham;
+  const num = (id: string, f: (v: number) => void) => { const el = q<HTMLInputElement>('#' + id, view); if (el) el.onchange = () => { const v = Math.round(Number(el.value)); if (Number.isFinite(v)) f(v); }; };
+  num('set-lo', v => { h.lo = Math.max(0, Math.min(5000, v)); h.hi = Math.max(h.lo + 100, h.hi); h.shift = 0; hamSend(); render('settings'); });
+  num('set-hi', v => { h.hi = Math.max(h.lo + 100, Math.min(6000, v)); h.shift = 0; hamSend(); render('settings'); });
+  num('set-w', v => { hamSetWidth(Math.max(50, Math.min(50_000, v))); render('settings'); });
+  const pbt = q<HTMLInputElement>('#set-pbt', view); if (pbt) pbt.oninput = () => { h.shift = Number(pbt.value); hamSend(); const d = pbt.closest('.srow')?.querySelector('small'); if (d) d.textContent = `${h.shift} Hz`; };
+  const vol = q<HTMLInputElement>('#set-vol', view); if (vol) vol.oninput = () => { h.volume = Number(vol.value); hamSend(); const d = vol.closest('.srow')?.querySelector('small'); if (d) d.textContent = `${Math.round(h.volume * 100)} %`; };
+  qa<HTMLButtonElement>('[data-setpitch]', view).forEach(b => b.onclick = () => { h.pitch = Number(b.dataset.setpitch); hamSend(); render('settings'); });
+  qa<HTMLButtonElement>('[data-setpager]', view).forEach(b => b.onclick = () => { state.pager = b.dataset.setpager as typeof state.pager; worker?.postMessage({ type: 'pager', which: state.pager }); render('settings'); });
+  qa<HTMLButtonElement>('[data-jump]', view).forEach(b => b.onclick = () => q(`#sec-${b.dataset.jump}`, view)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  const search = q<HTMLInputElement>('#set-search', view);
+  if (search) search.oninput = () => {
+    const t = search.value.trim().toLowerCase();
+    qa<HTMLElement>('.srow', view).forEach(r => { r.hidden = !!t && !(r.dataset.keys ?? '').includes(t); });
+    qa<HTMLElement>('.sset', view).forEach(sec => { sec.hidden = !!t && !sec.textContent!.toLowerCase().includes(t); });
+  };
+}
 /** Endless-loop credits scroller. Content is rendered twice; a rAF loop translates the roll upward at a steady
  *  pixels/sec, and when it crosses one copy's height it wraps back — so there's no visible seam or pause. Pointer
  *  drag on the panel takes over: the roll follows the finger, and the auto-scroll resumes on release, keeping any
@@ -4271,7 +4321,7 @@ function refreshShell(): void {
     ? 'M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z'
     : 'M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z');
   $('nav-dot').classList.toggle('on', state.connected);
-  $('radiomiss').hidden = state.connected;
+  $('radiomiss').hidden = state.connected || state.app === 'settings';
 }
 /** FAVES: the frequencies starred with ☆. A tap brings one back in its own app, as it was heard. */
 function showFaves(open: boolean): void {

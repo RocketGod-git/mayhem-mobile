@@ -803,3 +803,30 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 }
 .seg .fbox { display: none; }
 .seg.hamtabs { margin-bottom: 6px; }
+
+/* Settings, as the Android app lays it out: a radio card, jump pills, sections of label-left / control-right rows */
+.settings-page { max-width: 760px; margin: 0 auto; }
+.set-search { width: 100%; margin-bottom: 8px; }
+.radiocard { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+.radiocard.on { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--surface)); }
+.radiocard div { flex: 1; min-width: 0; } .radiocard b { display: block; letter-spacing: 2px; font-size: 11px; color: var(--accent2); } .radiocard.on b { color: var(--ok); }
+.radiocard small { color: var(--muted); font-size: 10px; }
+.set-jumps { margin: 8px 0 4px; }
+.pill { flex: none; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 50px; padding: 6px 12px; font-size: 10px; letter-spacing: 1.5px; font-weight: 700; cursor: pointer; }
+.sset { margin-top: 14px; scroll-margin-top: 8px; }
+.sset-h { color: var(--accent); font-weight: 900; letter-spacing: 3px; font-size: 11px; margin: 0 2px 6px; }
+.sset-sub { color: var(--muted); font-size: 9px; letter-spacing: 2px; margin: 10px 2px 4px; }
+.srow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; }
+.srl { flex: 1; min-width: 0; } .srl b { display: block; font-size: 13px; } .srl small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; }
+.src { flex: none; display: flex; align-items: center; gap: 6px; max-width: 62%; }
+.src .seg { min-width: 200px; }
+.src input[type=range] { width: 160px; accent-color: var(--accent); }
+.src .txin.num { width: 76px; }
+.sw { position: relative; width: 46px; height: 26px; border-radius: 13px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; padding: 0; }
+.sw i { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--muted); transition: left 0.15s, background 0.15s; }
+.sw.on { background: var(--accent); border-color: var(--accent); } .sw.on i { left: 23px; background: #fff; }
+.settings-page .gainwrap .row { margin-top: 0; }
+@media (max-width: 719.98px) {
+  .view.settings { overflow-y: auto; }
+  .view.settings .controls { max-height: none; overflow: visible; }
+}
