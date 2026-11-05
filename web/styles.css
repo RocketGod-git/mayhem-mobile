@@ -974,3 +974,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .hfeedhead .seg > button { letter-spacing: 1px; padding-left: 2px; padding-right: 2px; }
 .hfeedhead .seg > button { font-size: 11px; }
 .hfeedhead .seg > button:nth-child(3) { flex: 1.7; }
+@media (min-width: 720px) {
+  /* the feed takes the column down to the bottom of the window */
+  .view.pager .controls.hunt { overflow: hidden; }
+  .view.pager .controls.hunt .hfeed { flex: 1 1 0; min-height: 0; max-height: none; }
+  .view.pager.hfull { grid-template-columns: minmax(0, 1fr); }
+  .view.pager.hfull .controls.hunt .hfeed { max-height: none; }
+}
