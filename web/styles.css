@@ -15,9 +15,27 @@ button { font: inherit; }
 .stripe { height: 2px; background: var(--accent); }
 .bar-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; }
 .chip.icon { padding: 6px 11px; font-size: 15px; line-height: 1; }
-.toolbar { display: flex; gap: 6px; padding: 0 8px; max-height: 0; overflow: hidden; transition: max-height 0.22s ease, padding 0.22s ease; }
-.toolbar.open { max-height: 60px; padding: 0 8px 8px; }
-.toolbar .chip { flex: 1; min-width: 0; text-align: center; padding: 8px 2px; font-size: 11px; letter-spacing: 0; }
+/* The header's actions: an icon over a word, always there, whatever app is open. */
+.hacts { display: flex; align-items: center; gap: 2px; flex: none; }
+.hacts #connect { margin-right: 6px; }
+.hb { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; min-width: 58px; background: none; border: 1px solid transparent; border-radius: 10px; color: var(--muted); font-size: 9.5px; letter-spacing: 1.4px; padding: 5px 6px 4px; cursor: pointer; }
+.hb svg { width: 20px; height: 20px; fill: currentColor; }
+.hb:hover { color: var(--ink); background: var(--panel); }
+.hb.on { color: var(--ink); border-color: var(--line); background: var(--panel); } .hb.on svg { fill: var(--accent); }
+.hb.muted { color: var(--danger); } .hb.muted svg { fill: var(--danger); }
+/* Settings over the running app: a card on a wide screen, the whole screen on a phone. */
+.setmodal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); backdrop-filter: blur(3px); padding: 24px; }
+.setcard { width: min(980px, 100%); height: min(88vh, 1100px); display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0,0,0,.55); overflow: hidden; }
+.sethead { display: flex; align-items: center; gap: 10px; flex: none; padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.sethead b { color: var(--accent); letter-spacing: 3px; font-size: 14px; }
+.sethead span { flex: 1; color: var(--muted); letter-spacing: 2px; font-size: 11px; }
+#setview { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 12px 16px 20px; display: block; }
+#setview .settings-page { overflow: visible; }
+@media (max-width: 719.98px) {
+  .setmodal { padding: 0; align-items: stretch; }
+  .setcard { width: 100%; height: 100%; border-radius: 0; border: 0; }
+  #setview { padding: 10px; }
+}
 .brand { cursor: pointer; min-width: 0; }
 .wordmark { font-weight: 900; letter-spacing: 3px; font-size: 17px; white-space: nowrap; }
 .wordmark span { color: var(--accent); font-weight: 300; font-size: 12px; margin-left: 6px; }
@@ -494,15 +512,32 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .devhead span:nth-child(4), .devrow .c-time { grid-column: 3; }
 }
 
-/* Desktop layout: side-by-side visual + controls, waterfall fills the visual pane. Height budget accounts for the
- * header (bar + optional 40 px toolbar) and 8 px of body padding above and below. */
+/* Desktop layout: side-by-side visual + controls, waterfall fills the visual pane. */
 @media (min-width: 720px) {
   /* The page is a flex column the height of the viewport: header, then main fills what is left and the app views
    * fill main. Long views (Settings, Transmit) scroll inside main. No viewport-height arithmetic anywhere. */
   html, body { height: 100%; }
   body { font-size: 14px; padding: 10px; box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-  header.bar { position: static; flex: none; }
-  #hint, #unsupported, #log-panel { flex: none; }
+  header.bar { position: static; flex: none; order: 0; }
+  #hint, #unsupported, #log-panel { flex: none; order: 2; }
+  main#view { order: 2; }
+  /* The dock: the apps along the top, under the header, grouped by what they do. One click from any app to any
+   * other; the open one is lit in its group's colour. */
+  .appbar { display: block; order: 1; flex: none; margin-top: 8px; background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 70%, var(--paper))); border: 1px solid var(--line); border-radius: 14px; }
+  .appbar .hs-in { display: flex; align-items: stretch; gap: 0; padding: 4px 6px 6px; }
+  .agrp { display: flex; flex-direction: column; flex: none; padding: 0 6px; }
+  .agrp + .agrp { border-left: 1px solid var(--line); }
+  .agrp small { color: var(--seg); font-size: 8.5px; font-weight: 700; letter-spacing: 2.2px; padding: 2px 4px 3px; opacity: 0.85; }
+  .agrp-in { display: flex; gap: 2px; }
+  .appbar button { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 62px; background: none; border: 1px solid transparent; color: var(--ink); padding: 6px 6px 5px; border-radius: 11px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, background .12s ease, box-shadow .12s ease, border-color .12s ease; }
+  .appbar .ag { color: var(--seg); display: flex; filter: drop-shadow(0 0 0 transparent); transition: filter .12s ease; }
+  .appbar .al { font-weight: 700; font-size: 10px; letter-spacing: 1.3px; color: color-mix(in srgb, var(--ink) 85%, var(--muted)); }
+  .appbar button:hover { transform: translateY(-1px); background: color-mix(in srgb, var(--seg) 12%, transparent); border-color: color-mix(in srgb, var(--seg) 40%, transparent); }
+  .appbar button:hover .ag { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--seg) 70%, transparent)); }
+  .appbar button.dim { opacity: 0.35; }
+  .appbar button.on { background: linear-gradient(180deg, color-mix(in srgb, var(--seg) 95%, #fff), var(--seg)); border-color: var(--seg); box-shadow: 0 0 18px color-mix(in srgb, var(--seg) 55%, transparent), inset 0 1px 0 rgba(255,255,255,.25); }
+  .appbar button.on .ag, .appbar button.on .al { color: #fff; }
+  .appbar button.on::after { content: ''; position: absolute; left: 22%; right: 22%; bottom: -4px; height: 2px; border-radius: 2px; background: var(--seg); box-shadow: 0 0 8px var(--seg); }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; }
   .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
@@ -731,7 +766,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 @keyframes glowbreath { from { opacity: 0.55; } to { opacity: 1; } }
 
 /* The phone shell. Hidden on a wide screen, where the header bar and the launcher stay as they are. */
-.topnav, .appbar, .radiomiss { display: none; }
+.topnav, .radiomiss { display: none; }
 .sheet { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
 .sheet-card { width: min(520px, 100%); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px 16px 0 0; padding: 12px; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
@@ -761,6 +796,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .appbar button { flex: none; background: none; border: 0; color: var(--ink); font-weight: 700; font-size: 12px; letter-spacing: 1.5px; padding: 10px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
   .appbar button.dim { opacity: 0.4; }
   .appbar button.on { background: var(--seg, var(--accent)); color: #fff; box-shadow: 0 0 14px color-mix(in srgb, var(--seg, var(--accent)) 45%, transparent); }
+  .appbar .ag { display: none; }
   /* the launcher is a home for discovery, under the same bars: its own tile strip stays, the header's job is the top bar */
   .visual > .face { flex: none; margin-bottom: 6px; }
   .controls { max-height: 58%; }

@@ -185,18 +185,12 @@ function logHeader(): string {
 }
 
 function logText(): string { return logHeader() + '\n\n' + diag.join('\n'); }
-function setTools(open: boolean): void {
-  $('toolbar').classList.toggle('open', open);
-  $('tools').textContent = open ? '✕' : '☰';
-  $('tools').classList.toggle('on', open);
-}
 function toggleMute(): void {
   state.muted = !state.muted;
   if (muteGain) muteGain.gain.value = state.muted ? 0 : 1;
-  const b = q('#mute'); if (b) { b.textContent = state.muted ? 'UNMUTE' : 'MUTE'; b.classList.toggle('on', state.muted); }
+  refreshShell();
 }
 function setStatus(s: string, connected: boolean): void {
-  if (connected !== state.connected) setTools(!connected);
   state.connected = connected;
   $('status').textContent = s;
   $('dot').className = 'dot ' + (connected ? 'on' : 'off');
@@ -431,13 +425,9 @@ function saveGains(): void {
 function setGains(lna: number, vga: number, amp: boolean): void {
   state.lna = Math.max(0, Math.min(40, lna)) & ~7; state.vga = Math.max(0, Math.min(62, vga)) & ~1; state.amp = amp;
   radio?.setGain(state.lna, state.vga, state.amp);
-  const l = q('#lna'), v = q('#vga'), a = q('#amp');
   // Say who is driving these. With the automatic gain on they are an output, not a setting, and a value typed in
   // by hand lasts until the next second — which is exactly what it looks like when they spring back to maximum.
-  const auto = state.agc ? ' AUTO' : '';
-  if (l) { l.textContent = `LNA ${state.lna}${auto}`; l.classList.toggle('auto', state.agc); }
-  if (v) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${auto}`; v.classList.toggle('auto', state.agc); }
-  if (a) { a.textContent = state.amp ? 'AMP +14' : 'AMP OFF'; a.classList.toggle('on', state.amp); }
+  for (const a of qa('#amp')) { a.textContent = state.amp ? 'AMP +14' : 'AMP OFF'; a.classList.toggle('on', state.amp); }
   refreshAgcChip();
   refreshGainUi();
 }
@@ -450,23 +440,17 @@ function setGains(lna: number, vga: number, amp: boolean): void {
  */
 function refreshGainUi(): void {
   const rtl = radio?.kind === 'rtlsdr';
-  const lnaStep = q('#lna')?.closest('.stepper') as HTMLElement | null;
-  const amp = q('#amp') as HTMLElement | null;
-  const biast = q('#biast') as HTMLElement | null;
-  const cap = q('#gain-cap');
-  if (lnaStep) lnaStep.hidden = rtl;
-  if (amp) amp.hidden = rtl;
+  for (const l of qa('#lna')) { const st = l.closest('.stepper') as HTMLElement | null; if (st) st.hidden = rtl; }
+  for (const amp of qa('#amp')) amp.hidden = rtl;
   // Bias tee is an RTL-SDR Blog feature; it takes the slot the (hidden) amp button leaves on a dongle.
-  if (biast) { biast.hidden = !rtl; biast.classList.toggle('on', state.biast); biast.textContent = state.biast ? 'BIAS-T ON' : 'BIAS-T'; }
-  if (cap) cap.textContent = rtl ? 'GAIN · AGC / TUNER · 0–48.8 dB' : 'GAIN';
+  for (const biast of qa('#biast')) { biast.hidden = !rtl; biast.classList.toggle('on', state.biast); biast.textContent = state.biast ? 'BIAS-T ON' : 'BIAS-T'; }
+  for (const cap of qa('#gain-cap')) cap.textContent = rtl ? 'GAIN · AGC / TUNER · 0–48.8 dB' : 'GAIN';
 }
 
 function refreshAgcChip(): void {
-  const b = q('#agc');
-  if (b) { b.textContent = state.agc ? 'AGC SETS GAIN' : 'GAIN IS MINE'; b.classList.toggle('on', state.agc); }
-  const l = q('#lna'), v = q('#vga');
-  if (l) { l.textContent = `LNA ${state.lna}${state.agc ? ' AUTO' : ''}`; l.classList.toggle('auto', state.agc); }
-  if (v) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${state.agc ? ' AUTO' : ''}`; v.classList.toggle('auto', state.agc); }
+  for (const b of qa('#agc')) { b.textContent = state.agc ? 'AGC SETS GAIN' : 'GAIN IS MINE'; b.classList.toggle('on', state.agc); }
+  for (const l of qa('#lna')) { l.textContent = `LNA ${state.lna}${state.agc ? ' AUTO' : ''}`; l.classList.toggle('auto', state.agc); }
+  for (const v of qa('#vga')) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${state.agc ? ' AUTO' : ''}`; v.classList.toggle('auto', state.agc); }
 }
 function setAgc(on: boolean): void { state.agc = on; refreshAgcChip(); if (on) agcLast = 0; }
 /** The AGC and AMP chips are the user speaking, so what they leave behind is remembered too. */
@@ -712,6 +696,7 @@ function applyLauncherView(): void {
 }
 
 function open(app: AppId | null): void {
+  if (app === 'settings') { openSettings(); return; }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
   if (state.scanning && app !== 'audio') setScanning(false);
   if (state.prowl.on && app !== 'prowl') prowlStop();       // the hunt owns the receiver; anything else takes it back
@@ -730,7 +715,6 @@ function open(app: AppId | null): void {
     // No gain UI here, so ride AGC so the wide band isn't a wall of static (the HackRF amp default is handled in
     // configure, and stays off if the user has turned it off).
     case null: { const v = launcherView(); configure(v.mode, v.center, v.rate, 32, 32, false, 'none'); setAgc(true); launchPicked = false; launchTapped = false; break; }
-    case 'settings': configure('NONE', dial, RX_RATE, 24, 24, false, 'none'); break;
     case 'ham': hamOpen(); return;
     // Arriving from the launcher is "take me to what I am looking at": open on the station the launcher has
     // (its auto-pick of the strongest, or one you tapped), state.freq. From anywhere else, keep the shared dial —
@@ -1523,7 +1507,6 @@ function render(app: AppId | null): void {
     if (!q('#ftag')?.textContent) setFace(title?.[0] ?? barLabel(app), title?.[1] ?? def.blurb.toUpperCase());
     if (!q('#lamp b')?.textContent) setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
   } else if (!app) { setFace('HOME', 'TAP THE WATERFALL TO LISTEN'); setLamp(state.connected ? 'LIVE' : 'NO RADIO', state.connected ? 'ok' : ''); }
-  if (app !== 'settings') settingsOver = app;
   wireCommon(view);
   bindHs(view);
   refreshReadout(); setGains(state.lna, state.vga, state.amp); setMode(state.mode);
@@ -3597,7 +3580,7 @@ function renderSettings(view: HTMLElement): void {
       <div class="kv"><span>Windows</span><span>bind the HackRF to the WinUSB driver (Zadig), the same step hackrf_transfer needs; libusbK / libusb-win32 bindings hide it from the browser</span></div>
       <div class="kv"><span>macOS</span><span>nothing to install — just close any other SDR program that has the HackRF open</span></div>
       <div class="kv"><span>Linux</span><span>the udev rule from the hackrf package (53-hackrf.rules) grants access; replug after adding it</span></div>
-      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · T toolbar · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div></div></section>
+      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc closes Settings, then goes home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div></div></section>
     <section class="sset" id="sec-log"><div class="sset-h">LOG</div>${srow('Log', 'Everything the radio and the decoders reported, to read, save or share', '<button id="set-log" class="tog">OPEN</button>')}</section>
     <section class="sset" id="sec-about"><div class="sset-h">ABOUT</div>
     <div class="panel about">
@@ -3618,10 +3601,10 @@ function renderSettings(view: HTMLElement): void {
     <div class="panel credits" id="credits"><div class="credits-roll" id="credits-roll">${(() => { const inner = CREDITS.map(([h, t]) => h ? `<h4>${esc(t)}</h4>` : `<p>${esc(t)}</p>`).join(''); return `<div class="credits-copy">${inner}</div><div class="credits-copy" aria-hidden="true">${inner}</div>`; })()}</div></div>
     </section></section>`;
   qa<HTMLInputElement>('[data-st]', view).forEach(i => i.oninput = () => { const k = i.dataset.st as keyof Station; const v = k === 'call' || k === 'grid' ? i.value.toUpperCase() : i.value; if (k === 'call' || k === 'grid') i.value = v; state.ham.station[k] = v; saveStation(); });
-  qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); render('settings'); });
-  const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); render('settings'); };
+  qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); refreshSettings(); });
+  const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); refreshSettings(); };
   bindSettings(view);
-  $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; render('settings'); } };
+  $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; refreshSettings(); } };
   attachCreditsScroller($('credits'), $('credits-roll'));
 }
 
@@ -3630,17 +3613,21 @@ function bindSettings(view: HTMLElement): void {
   const on = (id: string, f: () => void) => { const el = q<HTMLElement>('#' + id, view); if (el) el.onclick = f; };
   on('set-connect', () => $('connect').click());
   on('set-log', () => $('log-toggle').click());
-  on('set-rds', () => { rdsWanted = !rdsWanted; if (!rdsWanted) lastRds = null; sendRds(); render('settings'); });
-  on('set-hd', () => { hdWanted = !hdWanted; if (!hdWanted) lastHd = null; sendHd(); render('settings'); });
+  on('set-rds', () => { rdsWanted = !rdsWanted; if (!rdsWanted) lastRds = null; sendRds(); refreshSettings(); });
+  on('set-hd', () => { hdWanted = !hdWanted; if (!hdWanted) lastHd = null; sendHd(); refreshSettings(); });
   const h = state.ham;
   const num = (id: string, f: (v: number) => void) => { const el = q<HTMLInputElement>('#' + id, view); if (el) el.onchange = () => { const v = Math.round(Number(el.value)); if (Number.isFinite(v)) f(v); }; };
-  num('set-lo', v => { h.lo = Math.max(0, Math.min(5000, v)); h.hi = Math.max(h.lo + 100, h.hi); h.shift = 0; hamSend(); render('settings'); });
-  num('set-hi', v => { h.hi = Math.max(h.lo + 100, Math.min(6000, v)); h.shift = 0; hamSend(); render('settings'); });
-  num('set-w', v => { hamSetWidth(Math.max(50, Math.min(50_000, v))); render('settings'); });
+  num('set-lo', v => { h.lo = Math.max(0, Math.min(5000, v)); h.hi = Math.max(h.lo + 100, h.hi); h.shift = 0; hamSend(); refreshSettings(); });
+  num('set-hi', v => { h.hi = Math.max(h.lo + 100, Math.min(6000, v)); h.shift = 0; hamSend(); refreshSettings(); });
+  num('set-w', v => { hamSetWidth(Math.max(50, Math.min(50_000, v))); refreshSettings(); });
   const pbt = q<HTMLInputElement>('#set-pbt', view); if (pbt) pbt.oninput = () => { h.shift = Number(pbt.value); hamSend(); const d = pbt.closest('.srow')?.querySelector('small'); if (d) d.textContent = `${h.shift} Hz`; };
   const vol = q<HTMLInputElement>('#set-vol', view); if (vol) vol.oninput = () => { h.volume = Number(vol.value); hamSend(); const d = vol.closest('.srow')?.querySelector('small'); if (d) d.textContent = `${Math.round(h.volume * 100)} %`; };
-  qa<HTMLButtonElement>('[data-setpitch]', view).forEach(b => b.onclick = () => { h.pitch = Number(b.dataset.setpitch); hamSend(); render('settings'); });
-  qa<HTMLButtonElement>('[data-setmulti]', view).forEach(b => b.onclick = () => { state.pagerMulti = b.dataset.setmulti === '1'; render('settings'); });
+  qa<HTMLButtonElement>('[data-setpitch]', view).forEach(b => b.onclick = () => { h.pitch = Number(b.dataset.setpitch); hamSend(); refreshSettings(); });
+  qa<HTMLButtonElement>('[data-setmulti]', view).forEach(b => b.onclick = () => {
+    const multi = b.dataset.setmulti === '1'; if (multi === state.pagerMulti) return;
+    state.pagerMulti = multi; if (state.app === 'pager') open('pager');   // the pager under the overlay switches now
+    refreshSettings();
+  });
   const sf = q('#set-fold'); if (sf) sf.onclick = () => { hunt.fold = !hunt.fold; sf.classList.toggle('on', hunt.fold); };
   qa<HTMLButtonElement>('[data-jump]', view).forEach(b => b.onclick = () => q(`#sec-${b.dataset.jump}`, view)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   const search = q<HTMLInputElement>('#set-search', view);
@@ -4426,8 +4413,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 't': case 'T': $('tools').click(); break;
-      case 'Escape': if (state.app) open(null); break;
+      case 'Escape': if (settingsOpen()) closeSettings(); else if (state.app) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
@@ -4489,18 +4475,36 @@ const BAR_FIRST: AppId[] = ['audio', 'pager', 'adsb', 'ham', 'devices', 'sat'];
 const barApps = (): AppId[] => [...BAR_FIRST, ...APPS.map(a => a.id).filter(id => id !== 'settings' && !BAR_FIRST.includes(id))];
 const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', btle: 'BLE', transmit: 'TX' };
 const barLabel = (id: AppId) => BAR_LABEL[id] ?? APPS.find(a => a.id === id)!.title.toUpperCase();
-function initShell(): void {
+/** A wide screen: the app bar sits under the header as a grouped dock with each app's glyph. */
+const wideShell = matchMedia('(min-width: 720px)');
+const BAR_CATS: AppDef['cat'][] = ['Receive', 'Analyze', 'Tools', 'Transmit'];
+/**
+ * The apps bar. On a phone, the Android app's strip of names in its order. On a wide screen, a dock grouped by
+ * what the apps do (receive, analyze, tools, transmit), each app its line-art glyph over its name in the group's
+ * colour, the blurb on hover.
+ */
+function buildBar(): void {
   const bar = $('appbar-in');
-  bar.innerHTML = barApps().map(id => { const a = APPS.find(x => x.id === id)!; return `<button data-bar="${id}" style="--seg:${tint(a.cat)}">${barLabel(id)}</button>`; }).join('');
+  const btn = (id: AppId) => { const a = APPS.find(x => x.id === id)!; return `<button data-bar="${id}" style="--seg:${tint(a.cat)}" title="${esc(a.title)} · ${esc(a.blurb)}"><span class="ag">${glyph(id, 'currentColor', 24)}</span><span class="al">${barLabel(id)}</span></button>`; };
+  bar.innerHTML = wideShell.matches
+    ? BAR_CATS.map(c => { const ids = barApps().filter(id => APPS.find(a => a.id === id)!.cat === c); return ids.length ? `<div class="agrp" style="--seg:${tint(c)}"><small>${c.toUpperCase()}</small><div class="agrp-in">${ids.map(btn).join('')}</div></div>` : ''; }).join('')
+    : barApps().map(btn).join('');
   qa<HTMLButtonElement>('[data-bar]', bar).forEach(b => b.onclick = () => {
     const id = b.dataset.bar as AppId;
-    if (state.app === 'settings' && settingsOver === id) { open(id); return; }
+    closeSettings();
     if (state.app !== id) open(id);
   });
+  refreshShell();
+}
+function initShell(): void {
+  buildBar();
+  wideShell.addEventListener('change', buildBar);
   bindHs($('appbar').parentElement!);
-  $('nav-home').onclick = () => { if (state.app) open(null); };
-  $('nav-settings').onclick = () => { if (state.app === 'settings') open(settingsOver); else { settingsOver = state.app; open('settings'); } };
-  $('nav-mute').onclick = () => { toggleMute(); refreshShell(); };
+  $('nav-home').onclick = () => { closeSettings(); if (state.app) open(null); };
+  $('nav-settings').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
+  $('set-close').onclick = closeSettings;
+  $('setmodal').onclick = (e) => { if (e.target === $('setmodal')) closeSettings(); };
+  $('nav-mute').onclick = toggleMute;
   $('nav-faves').onclick = () => showFaves(true);
   $('faves-done').onclick = () => showFaves(false);
   $('faves').onclick = (e) => { if (e.target === $('faves')) showFaves(false); };
@@ -4514,10 +4518,32 @@ const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   devices: ['DEVICES', 'SENSORS · METERS · REMOTES'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };
-/** The app Settings was opened over, so leaving Settings goes back to it. */
+/** The app Settings was opened over: its rows lead the page, and it keeps running underneath. */
 let settingsOver: AppId | null = null;
+const settingsOpen = () => !$('setmodal').hidden;
+/** Settings over the running app, which keeps receiving underneath; DONE, Esc or a click outside closes it. */
+function openSettings(): void {
+  settingsOver = state.app;
+  $('setmodal').hidden = false;
+  $('set-over').textContent = state.app ? `· ${barLabel(state.app)}` : '';
+  drawSettings();
+  refreshShell();
+}
+function closeSettings(): void {
+  if (!settingsOpen()) return;
+  $('setmodal').hidden = true; $('setview').innerHTML = '';
+  refreshShell();
+}
+function drawSettings(): void {
+  const view = $('setview'), top = view.scrollTop;
+  renderSettings(view); wireCommon(view); bindHs(view);
+  setGains(state.lna, state.vga, state.amp);
+  view.scrollTop = top;
+}
+/** A setting changed: redraw the overlay in place. */
+function refreshSettings(): void { if (settingsOpen()) drawSettings(); }
 function refreshShell(): void {
-  const here = state.app === 'settings' ? settingsOver : state.app;
+  const here = state.app, setOn = settingsOpen();
   qa<HTMLButtonElement>('[data-bar]').forEach(b => {
     const id = b.dataset.bar as AppId;
     b.classList.toggle('on', id === here);
@@ -4525,15 +4551,20 @@ function refreshShell(): void {
   });
   const on = q<HTMLElement>(`[data-bar="${here}"]`), bar = $('appbar-in');
   if (on) bar.scrollTo({ left: on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
-  $('nav-home').classList.toggle('on', state.app === null);
-  $('nav-settings').classList.toggle('on', state.app === 'settings');
+  $('nav-home').classList.toggle('on', state.app === null && !setOn);
+  $('nav-settings').classList.toggle('on', setOn);
+  $('home').classList.toggle('on', state.app === null && !setOn);
+  $('settings-btn').classList.toggle('on', setOn);
+  $('mute').classList.toggle('muted', state.muted);
+  $('mute').querySelector('span')!.textContent = state.muted ? 'MUTED' : 'MUTE';
   $('nav-mute').classList.toggle('muted', state.muted);
   $('nav-mute-t').textContent = state.muted ? 'MUTED' : 'MUTE';
   $('nav-mute-ico').setAttribute('d', state.muted
     ? 'M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z'
     : 'M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z');
+  $('mute-ico').setAttribute('d', $('nav-mute-ico').getAttribute('d')!);
   $('nav-dot').classList.toggle('on', state.connected);
-  $('radiomiss').hidden = state.connected || state.app === 'settings';
+  $('radiomiss').hidden = state.connected;
 }
 /** FAVES: the frequencies starred with ☆. A tap brings one back in its own app, as it was heard. */
 function showFaves(open: boolean): void {
@@ -4555,12 +4586,12 @@ function init(): void {
   $<HTMLButtonElement>('connect').disabled = !supported;
   if (!supported) setStatus('WebUSB not available in this browser', false);
   $('connect').onclick = () => connect();
-  $('tools').onclick = () => setTools(!$('toolbar').classList.contains('open'));
   $('mute').onclick = toggleMute;
-  $('home').onclick = () => { if (state.app) open(null); };
-  $('settings-btn').onclick = () => open('settings');
+  $('home').onclick = () => { closeSettings(); if (state.app) open(null); };
+  $('brand').onclick = () => { closeSettings(); if (state.app) open(null); };
+  $('faves-btn').onclick = () => showFaves(true);
+  $('settings-btn').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
   initShell();
-  setTools(true);
   $('hint').onclick = () => hideHint();
   bindDesktop();
   scrollHints();
@@ -4605,7 +4636,6 @@ function init(): void {
     panel.style.top = `${Math.max(0, Math.min(innerHeight - panel.offsetHeight, e.clientY - dy))}px`;
   });
   bar.addEventListener('pointerup', () => { dragging = false; });
-  $('title').onclick = () => { if (state.app) open(null); };
   window.addEventListener('popstate', () => { if (state.app) open(null); });
   window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e as Event & { prompt: () => Promise<void> }; });
