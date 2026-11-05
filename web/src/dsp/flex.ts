@@ -3,12 +3,11 @@
  * FSK, sync + FIW + block-interleaved BCH(32,21) phases, BIW / address / vector parsing for alphanumeric, numeric
  * (standard, special, numbered), short-message, tone, hex and instruction pages. Rides on the NFM discriminator.
  *
- * On top of that, the Android app's handling of a weak signal: words the check cannot fix are tried again with the
- * bits the receiver was least sure of, a page stops where its words were lost rather than running on as noise, a
- * split page is joined, and a repeat of a partial page fills it in.
+ * Message layout follows ARIB STD-43A, the published FLEX standard (section numbers below are its): pages split
+ * across frames are joined by message number, each page's checksum K is checked, and a page sent more than once is
+ * combined word by word. Words the check cannot fix are tried again with the bits the receiver was least sure of.
  */
 import { popcount32, type Emit, type IqProcessor } from './core.js';
-import { mergePages } from './pagemerge.js';
 
 const DC_OFFSET_FILTER = 0.010, PHASE_LOCKED_RATE = 0.045, PHASE_UNLOCKED_RATE = 0.050, LOCK_LEN = 24, IDLE_THRESHOLD = 0, DEMOD_TIMEOUT = 100;
 const FLEX_SYNC_MARKER = 0xA6C6AAAA, SLICE_THRESHOLD = 0.667;
@@ -20,8 +19,36 @@ const TYPE_NAMES = ['SEC', 'INS', 'TONE', 'NUM', 'SNUM', 'ALN', 'HEX', 'NNUM', '
 const ADDR_NAMES = ['', 'long', 'temp', 'oper', 'net', 'info', 'rsvd', 'unk'];
 /** A bit decided closer to its line than this (of a clean symbol's distance) may be wrong: an erasure. */
 const WEAK = 0.45;
-/** How long a page is remembered for a repeat to fill it in. */
-const REPEAT_MS = 10 * 60_000;
+/** How long a split page waits for its next piece, and a page is kept for a repeat: 128 frames, 4 minutes. */
+const HOLD_S = 240;
+/** [fix] for a word soft decoding brought back: as uncertain as a two-bit fix. */
+const SOFT = 3;
+/** A character slot of a lost word. */
+const LOST = -2;
+/** The end of a page whose last fragment never came; where a fragment is missing inside a page. */
+const CUT = ' …', GAP = '<…>';
+/** The three bit groups of a 21-bit word (0-7, 8-15, 16-20) that FLEX's message checksums add up. */
+const groups = (d: number) => (d & 0xFF) + ((d >>> 8) & 0xFF) + ((d >>> 16) & 0x1F);
+/** An address word that opens a long (two-word) address: LA1 or LA2 (LA3 and LA4 only ever come second). */
+const isLong = (aw: number) => (aw >= 1 && aw <= 0x8000) || (aw >= 0x1F7FFF && aw <= 0x1FFFFE);
+/** A long address's capcode from its two words (ARIB STD-43A Table 3.8.2.2-1), or -1. */
+function longCapcode(aw1: number, aw2: number): number {
+  if (aw1 >= 1 && aw1 <= 0x8000 && aw2 >= 0x1F7FFF && aw2 <= 0x1FFFFE) return aw1 + (0x1FFFFF - aw2) * 32768 + 2068480;
+  if (aw1 >= 1 && aw1 <= 0x8000 && aw2 >= 0x1E0001 && aw2 <= 0x1F0000) return aw1 + (aw2 - 1933312) * 32768 + 2068480;
+  if (aw1 >= 0x1F7FFF && aw1 <= 0x1FFFFE && aw2 >= 0x1E0001 && aw2 <= 0x1F0000) return (aw1 - 2064383) + (aw2 - 1867776) * 32768 + 2068479;
+  return -1;
+}
+/** Characters to text: ETX and NUL are fill (dropped at the end, '?' between); a lost word's slots are '?'. Spaces at
+ *  the end are kept: a fragment may end in one. */
+function render(chars: number[]): string {
+  let end = chars.length - 1;
+  while (end >= 0 && (chars[end] === 0x03 || chars[end] === 0x00)) end--;
+  let s = '';
+  for (let k = 0; k <= end; k++) { const c = chars[k]; s += c >= 0x20 || c === 0x0A || c === 0x0D ? String.fromCharCode(c) : '?'; }
+  return s;
+}
+interface Stream { head: string; cap: number; text: string; errors: number; words: number; lostWords: number; expectF: number; at: number }
+interface SeenPage { cap: number; type: number; n: number; words: number[]; gone: boolean[]; at: number; line: string }
 
 /*
  * BCH(31,21) plus an even parity bit, as received MSB first: bits 31..11 carry the 21 data bits, 10..1 the check
@@ -93,17 +120,19 @@ export class FlexDecoder implements IqProcessor {
   /** How sure each received bit is, 0 (on the decision line) to 1 (a clean symbol): word × 32, MSB-first index. */
   private readonly sure = [new Float32Array(88 * 32), new Float32Array(88 * 32), new Float32Array(88 * 32), new Float32Array(88 * 32)];
   private readonly got = [new Uint8Array(88), new Uint8Array(88), new Uint8Array(88), new Uint8Array(88)];
-  /** The current phase's words that needed two bits fixed, or failed: where noise "corrected" into a wrong word hides. */
-  private suspect = new Uint8Array(88);
+  /** The current phase's words: how many bits the check fixed (0-2), [SOFT] if soft decoding brought it back. */
+  private fix = new Uint8Array(88);
+  /** Seconds of signal heard: the clock a split page's hold and a repeat's window run on. */
+  private heardS = 0;
   /** Words the plain check could not fix that soft decoding brought back (for tests and the log). */
   recovered = 0;
-  /** A split page waiting for its next piece, by capcode. */
-  private readonly pieces = new Map<number, { text: string; at: number; errors: number; head: string; type: number }>();
-  /** Pages sent lately, for a repeat to be merged into. */
-  private recent: { cap: number; type: number; text: string; errors: number; at: number; line: string }[] = [];
+  /** Pages arriving in fragments, by capcode, type and message number N (Section 3.10.1.3). */
+  private readonly streams = new Map<string, Stream>();
+  /** Whole pages heard lately, word by word, so another transmission can fill words a copy lost. */
+  private seen: SeenPage[] = [];
   private phaseToggle = 0; private dataBitCounter = 0;
   // decode
-  private dType = PT.ALPHANUMERIC; private longAddress = 0; private capcode = 0; private addrType = 0; private isPriority = 0;
+  private capcode = 0; private addrType = 0; private isPriority = 0;
   private frames = 0; private lastStat = 0;
 
   constructor(private readonly emit: Emit) {}
@@ -111,6 +140,7 @@ export class FlexDecoder implements IqProcessor {
   onIq(): void {}
 
   onFm(samples: Float32Array, n: number, rate: number): void {
+    this.heardS += n / rate;
     if (rate !== this.fmRate) { this.fmRate = rate; this.sampleFreq = rate; this.locked = 0; this.st = St.SYNC1; this.zero = 0; this.phase = 0; }
     for (let i = 0; i < n; i++) this.demodulate(samples[i]);
     const now = performance.now();
@@ -319,8 +349,9 @@ export class FlexDecoder implements IqProcessor {
     if (this.syncBaud === 1600) { this.decodePhase(0); if (this.syncLevels === 4) this.decodePhase(1); }
     else if (this.syncLevels === 2) { this.decodePhase(0); this.decodePhase(2); }
     else for (let p = 0; p < 4; p++) this.decodePhase(p);
-    // A split page whose next piece never came: show what arrived.
-    for (const [cap, pc] of this.pieces) if (this.frames - pc.at > 8) { this.pieces.delete(cap); this.out(cap, pc.type, pc.head, pc.text + ' …', pc.errors || 1); }
+    // A split page whose remaining fragments never came within the hold time: what arrived, marked as unfinished.
+    for (const [key, s] of this.streams) if (this.heardS - s.at > HOLD_S) { this.streams.delete(key); this.finish(s, CUT, false); }
+    this.seen = this.seen.filter(e => this.heardS - e.at <= HOLD_S);
   }
 
   /** The line's start: rate, cycle and frame, capcode and its flags, the page type. */
@@ -331,36 +362,13 @@ export class FlexDecoder implements IqProcessor {
     const pri = this.isPriority ? ' PRI' : '';
     return `FLEX ${bitrate}/${this.syncLevels}L C${this.cycleNo}F${String(this.frameNo).padStart(3, '0')} CAP ${cap}${at}${pri} ${TYPE_NAMES[type]}`;
   }
-  /** [errors]: message words that failed the check. A page with nothing readable left is noise, logged but not shown. */
-  private packet(type: number, message: string, extra = '', errors = 0): void {
-    if (errors > 0 && !message.trim()) { this.emit({ type: 'log', line: `FLEX CAP ${this.capcode}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` }); return; }
-    this.out(this.capcode, type, this.head(type) + extra, message, errors);
-  }
   private static line(head: string, text: string, errors: number): string { return `${head}${errors ? ' PARTIAL' : ''}${text ? ': ' + text : ''}`; }
-  /**
-   * Send a page, or fold it into another copy of the same page heard lately when one of them is partial: the two
-   * become one, the more complete, sent with the line it replaces. A partial copy of a page already whole adds
-   * nothing and is dropped.
-   */
-  private out(cap: number, type: number, head: string, text: string, errors: number): void {
-    const now = performance.now();
-    this.recent = this.recent.filter(r => now - r.at < REPEAT_MS);
-    for (let k = 0; k < this.recent.length; k++) {
-      const e = this.recent[k];
-      if (e.cap !== cap || e.type !== type) continue;
-      const m = mergePages(e, { text, errors });
-      if (!m) continue;
-      if (e.errors === 0 && m.text === e.text) return;
-      this.recent.splice(k, 1);
-      const line = FlexDecoder.line(head, m.text, m.errors);
-      this.recent.unshift({ cap, type, text: m.text, errors: m.errors, at: now, line });
-      this.emit({ type: 'packet', line, replaces: e.line });
-      return;
-    }
-    const line = FlexDecoder.line(head, text, errors);
-    this.recent.unshift({ cap, type, text, errors, at: now, line });
-    if (this.recent.length > 64) this.recent.length = 64;
-    this.emit({ type: 'packet', line });
+  /** [errors]: message words lost (or 1 when the page could not be confirmed whole). A page with nothing readable is noise: logged, not shown. */
+  private packet(type: number, message: string, errors = 0, replaces?: string): string | undefined {
+    if (errors > 0 && !message.trim()) { this.emit({ type: 'log', line: `FLEX CAP ${this.capcode}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` }); return undefined; }
+    const line = FlexDecoder.line(this.head(type), message, errors);
+    this.emit(replaces ? { type: 'packet', line, replaces } : { type: 'packet', line });
+    return line;
   }
 
   private decodePhase(pi: number): void {
@@ -369,112 +377,193 @@ export class FlexDecoder implements IqProcessor {
     let allIdle = true;
     for (let i = 0; i < 88; i++) if (p[i] !== 0xFFFFFFFF && p[i] !== 0) { allIdle = false; break; }
     if (allIdle) return;
-    const bad = new Uint8Array(88);
-    // A word that needed two bits fixed (the parity bit counts) is suspect: most noise that passes the check
-    // "corrects" that way, into a wrong word, while a clean signal rarely needs more than one.
-    const suspect = new Uint8Array(88), conf = this.sure[pi];
+    const bad = new Uint8Array(88), fix = new Uint8Array(88), conf = this.sure[pi];
     for (let i = 0; i < 88; i++) {
       const raw = bitReverse32(p[i]) | 0;
       let c = bchCorrect(raw);
-      if (c !== null) suspect[i] = popcount32(raw ^ c) >= 2 ? 1 : 0;
+      if (c !== null) fix[i] = popcount32(raw ^ c);
       else {
         // past what the check fixes on its own: try again with the bits it was least sure of
         c = this.recover(raw, conf, i * 32);
-        if (c !== null) this.recovered++; else { bad[i] = 1; suspect[i] = 1; }
+        if (c !== null) { fix[i] = SOFT; this.recovered++; } else bad[i] = 1;
       }
       p[i] = c === null ? 0 : bitReverse32(c >>> 0) & 0x001FFFFF;
     }
-    this.suspect = suspect;
+    this.fix = fix;
     if (bad[0]) return;
     const biw = p[0];
     if (biw === 0 || biw === 0x001FFFFF || !checksumOk(biw)) return;
     const voffset = (biw >>> 10) & 0x3f;
     const aoffset = ((biw >>> 8) & 3) + 1;
     const prioCount = (biw >>> 4) & 0xF;
-    if (voffset < aoffset || voffset >= 88) return;
+    if (voffset <= aoffset || voffset >= 88) return;
     for (let bw = 1; bw < aoffset && bw < 88; bw++) {
       if (bad[bw]) continue;
       const w = p[bw], bt = (w >>> 4) & 7;
       if (bt === 1) this.emit({ type: 'log', line: `FLEX system date ${((w >>> 7) & 0x1F) + 1994}-${String((w >>> 17) & 0xF).padStart(2, '0')}-${String((w >>> 12) & 0x1F).padStart(2, '0')} (phase ${phaseNo})` });
       else if (bt === 2) this.emit({ type: 'log', line: `FLEX system time ${String((w >>> 7) & 0x1F).padStart(2, '0')}:${String((w >>> 12) & 0x3F).padStart(2, '0')} (phase ${phaseNo})` });
     }
-    let nValidVecs = 0;
-    for (let vi = 0; vi < voffset - aoffset; vi++) {
-      const wi = voffset + vi; if (wi >= 88) break;
-      if (!bad[wi] && checksumOk(p[wi])) nValidVecs = vi + 1;
-    }
-    if (voffset <= aoffset) return;
-    let vecCount = 0, addrCount = 0;
-    for (let i = aoffset; i < voffset; i++) {
-      let j = voffset + vecCount;
-      if (j >= 88) break;
-      if (p[i] === 0 || p[i] === 0x001FFFFF) continue;
-      this.isPriority = addrCount < prioCount ? 1 : 0;
-      this.parseCapcode(p[i]);
-      addrCount++;
-      if (this.longAddress) {
-        if (i + 1 >= voffset) break;
-        const aw1 = p[i], aw2 = p[i + 1];
-        if (aw2 === 0 || aw2 === 0x001FFFFF) { i++; addrCount++; vecCount += 2; continue; }
-        let cap: number;
-        if (aw1 >= 1 && aw1 <= 0x8000 && aw2 >= 0x1F7FFF && aw2 <= 0x1FFFFE) cap = aw1 + (0x1FFFFF - aw2) * 32768 + 2068480;
-        else if (aw1 >= 1 && aw1 <= 0x8000 && aw2 >= 0x1E0001 && aw2 <= 0x1F0000) cap = aw1 + (aw2 - 1933312) * 32768 + 2068480;
-        else if (aw1 >= 0x1F7FFF && aw1 <= 0x1FFFFE && aw2 >= 0x1E0001 && aw2 <= 0x1F0000) cap = (aw1 - 2064383) + (aw2 - 1867776) * 32768 + 2068479;
-        else { i++; addrCount++; vecCount += 2; continue; }
+    // Vectors pair with addresses in order; an address with no vector (past the last valid one) is tone only.
+    let validVecs = 0;
+    for (let k = 0; k < voffset - aoffset; k++) { const wi = voffset + k; if (wi < 88 && !bad[wi] && checksumOk(p[wi])) validVecs = k + 1; }
+    let vec = 0;
+    for (let i = aoffset; i < voffset;) {
+      const aw = p[i];
+      // a long address takes two address words and two vector words, whether or not this one can be read
+      const long = isLong(aw);
+      const j = voffset + vec;
+      vec += long ? 2 : 1;
+      const next = i + (long ? 2 : 1);
+      const at = i; i = next;
+      if (bad[at] || aw === 0 || aw === 0x001FFFFF) continue;
+      this.isPriority = at - aoffset < prioCount ? 1 : 0;
+      this.parseCapcode(aw);
+      if (long) {
+        if (at + 1 >= voffset || bad[at + 1]) continue;
+        const cap = longCapcode(aw, p[at + 1]);
+        if (cap <= 0) continue;
         this.capcode = cap;
-        i++; addrCount++;
-        vecCount += 2;
-        j = voffset + vecCount - 2;
-      } else {
-        if (this.capcode > 4297068542 || this.capcode <= 0) continue;
-        if (vecCount >= nValidVecs) { if (this.capcode !== 1) this.packet(2, ''); continue; }
-        vecCount++;
       }
-      if (bad[j]) continue;
-      const viw = p[j];
-      const typeVal = (viw >>> 4) & 7;
-      this.dType = typeVal as PT;
-      const mw1 = (viw >>> 7) & 0x7F;
-      const len = (typeVal === 3 || typeVal === 4 || typeVal === 7) ? ((viw >>> 14) & 7) + 1 : (viw >>> 14) & 0x7F;
-      const mw2 = mw1 + (len - 1);
-      if (mw1 === 0 && mw2 === 0) continue;
-      if (this.dType === PT.ALPHANUMERIC || this.dType === PT.SECURE) {
-        if (mw1 > 87 || mw2 > 87) continue;
-        if (this.longAddress) this.parseAlpha(p, bad, mw1 - 1, mw2 - 1); else this.parseAlpha(p, bad, mw1, mw2);
-      } else if (this.dType === PT.STANDARD_NUMERIC || this.dType === PT.SPECIAL_NUMERIC || this.dType === PT.NUMBERED_NUMERIC) {
-        this.parseNumeric(p, bad, j);
-      } else if (this.dType === PT.TONE) {
-        const t = (viw >>> 7) & 3, d = (viw >>> 9) & 0xFFF;
-        let msg: string;
-        if (t === 0 && d === 0xCCC && (!this.longAddress || j + 1 >= 88 || (p[j + 1] & 0xFFFFF) === 0xCCCCC)) msg = 'TONE';
-        else if (t === 0) {
-          msg = 'NUM ' + FLEX_BCD[d & 0xF] + FLEX_BCD[(d >>> 4) & 0xF] + FLEX_BCD[(d >>> 8) & 0xF];
-          if (this.longAddress && j + 1 < 88) { const vy = p[j + 1]; for (let s = 0; s < 20; s += 4) msg += FLEX_BCD[(vy >>> s) & 0xF]; }
-        } else if (t === 1) msg = `SRC ${d & 7}`;
-        else if (t === 2) msg = `SRC ${d & 7} N=${(d >>> 3) & 0x3F} R=${(d >>> 9) & 1}`;
-        else msg = `RESERVED ${hex(d, 3)}`;
-        this.packet(8, msg);
-      } else if (this.dType === PT.BINARY) {
-        if (mw1 > 87 || mw2 > 87) continue;
-        let f = 0, dataStart = mw1 + 1;
-        if (!bad[mw1]) f = (p[mw1] >>> 13) & 3;
-        if (f === 3 && mw1 + 1 <= mw2 && !bad[mw1 + 1]) dataStart = mw1 + 2;
-        const parts: string[] = [];
-        let lost = 0;
-        for (let w = dataStart; w <= mw2; w++) { if (bad[w]) lost++; parts.push(bad[w] ? '??????' : hex(p[w] & 0x1FFFFF, 6)); }
-        // a binary page that is mostly lost words is noise
-        this.packet(6, lost * 2 > parts.length ? '' : parts.join(' '), '', lost);
-      } else if (this.dType === PT.SHORT_INSTRUCTION) {
-        const d = (viw >>> 7) & 0x3FFF, it = d & 7;
-        const msg = it === 0 ? `i=temp|slot=${(d >>> 10) & 0xF}|target=${(d >>> 3) & 0x7F}` : it === 1 ? `i=event|flags=${hex((d >>> 3) & 0x7FF, 3)}` : `i=rsvd|type=${it}|raw=${hex(d, 4)}`;
-        this.packet(1, msg);
-      }
+      if (this.capcode <= 0 || this.capcode > 4297068542) continue;
+      if (j - voffset >= validVecs || j >= 88) { if (!long && this.capcode !== 1) this.packet(2, ''); continue; }
+      if (bad[j] || (long && (j + 1 >= 88 || bad[j + 1]))) continue;
+      this.page(p, bad, j, long);
     }
   }
 
+  private page(p: Uint32Array, bad: Uint8Array, j: number, long: boolean): void {
+    const viw = p[j];
+    const type = (viw >>> 4) & 7;
+    const b = (viw >>> 7) & 0x7F;
+    if (type === PT.ALPHANUMERIC || type === PT.SECURE || type === PT.BINARY) {
+      // Section 3.9: n counts the message's words, its header included. A short address's header is the first
+      // message word; a long address carries it in its second vector word instead.
+      let len = (viw >>> 14) & 0x7F;
+      let hdr: number, mw = b;
+      if (long) hdr = j + 1; else { hdr = b; mw = b + 1; }
+      if (len >= 1) len--;
+      if (b === 0 || hdr >= 88 || mw > 88) return;
+      if (mw + len > 88) len = 88 - mw;
+      const secureData = type === PT.SECURE && !bad[hdr] && ((p[hdr] >>> 19) & 3) !== 0;
+      if (type === PT.BINARY || secureData) this.binary(p, bad, hdr, mw, len, type);
+      else this.alpha(p, bad, hdr, mw, len, type);
+    } else if (type === PT.STANDARD_NUMERIC || type === PT.SPECIAL_NUMERIC || type === PT.NUMBERED_NUMERIC) {
+      const r = this.numeric(p, bad, j, type === PT.NUMBERED_NUMERIC, long);
+      if (r) this.packet(type === PT.SPECIAL_NUMERIC ? 4 : type === PT.NUMBERED_NUMERIC ? 7 : 3, r.text, r.errors);
+    } else if (type === PT.TONE) {
+      const t = (viw >>> 7) & 3, d = (viw >>> 9) & 0xFFF;
+      let msg: string;
+      if (t === 0 && d === 0xCCC && (!long || j + 1 >= 88 || (p[j + 1] & 0xFFFFF) === 0xCCCCC)) msg = 'TONE';
+      else if (t === 0) {
+        msg = 'NUM ' + FLEX_BCD[d & 0xF] + FLEX_BCD[(d >>> 4) & 0xF] + FLEX_BCD[(d >>> 8) & 0xF];
+        if (long && j + 1 < 88 && !bad[j + 1]) { const vy = p[j + 1]; for (let s = 0; s < 20; s += 4) msg += FLEX_BCD[(vy >>> s) & 0xF]; }
+      } else if (t === 1) msg = `SRC ${d & 7}`;
+      else if (t === 2) msg = `SRC ${d & 7} N=${(d >>> 3) & 0x3F} R=${(d >>> 9) & 1}`;
+      else msg = `RESERVED ${hex(d, 3)}`;
+      this.packet(8, msg);
+    } else if (type === PT.SHORT_INSTRUCTION) {
+      const d = (viw >>> 7) & 0x3FFF, it = d & 7;
+      this.packet(1, it === 0 ? `i=temp|slot=${(d >>> 10) & 0xF}|target=${(d >>> 3) & 0x7F}` : it === 1 ? `i=event|flags=${hex((d >>> 3) & 0x7FF, 3)}` : `i=rsvd|type=${it}|raw=${hex(d, 4)}`);
+    }
+  }
+
+  /**
+   * An alphanumeric (or secure text) page, per Section 3.10.1.3. Its header word: K, a 10-bit checksum (bits 0-9);
+   * C, more fragments follow (10); F, the fragment number (11-12, 3 for the first); N, the message number (13-18);
+   * R and M, retrieval and mail-drop flags (19, 20). Characters are 7-bit, three to a word, except the first word of
+   * a first fragment, whose low seven bits are the signature S.
+   */
+  private alpha(p: Uint32Array, bad: Uint8Array, hdr: number, mw: number, len: number, type: number): void {
+    const known = !bad[hdr], h = known ? p[hdr] : 0;
+    const more = (h >>> 10) & 1, frag = known ? (h >>> 11) & 3 : 3, n = (h >>> 13) & 0x3F, first = frag === 3;
+    const cap = this.capcode;
+    const words = Array.from({ length: len }, (_, k) => p[mw + k]);
+    const gone = Array.from({ length: len }, (_, k) => bad[mw + k] === 1);
+    const fixed = Array.from({ length: len }, (_, k) => this.fix[mw + k]);
+    // K: the ones' complement of the sum of the header (K zeroed) and the message words. When it does not come out,
+    // or cannot be worked out because a word was lost, the words the check fixed at its limit (two bits, or brought
+    // back by soft decoding) are the likely culprits: noise "corrected" into a wrong word. They count as lost unless
+    // another copy confirms them. A word fixed by one bit or none is kept: being wrong would take five or more errors.
+    const kOk = () => {
+      if (!known || gone.some(g => g)) return false;
+      let s = groups(h & ~0x3FF);
+      for (const d of words) s += groups(d);
+      return ((~s) & 0x3FF) === (h & 0x3FF);
+    };
+    if (!kOk()) {
+      const anyGone = gone.some(g => g);
+      const near = gone.map((_, k) => (k > 0 && gone[k - 1]) || (k + 1 < len && gone[k + 1]));
+      for (let k = 0; k < len; k++) if (!gone[k] && fixed[k] >= 2 && (!anyGone || near[k])) gone[k] = true;
+    }
+    // Another transmission of the same whole page (Section 3.4.2): same capcode, type, message number and length, and
+    // every word both copies read agrees. Words one copy lost are taken from the other; a copy adding nothing is a
+    // repeat, not a new page.
+    let replaces: string | undefined, seenAt: SeenPage | undefined;
+    if (known && first && more === 0 && len > 0) {
+      const s = this.seen.find(e => e.cap === cap && e.type === type && e.n === n && e.words.length === len && !e.words.some((v, k) => !e.gone[k] && !gone[k] && v !== words[k]));
+      if (!s) { seenAt = { cap, type, n, words: words.slice(), gone: gone.slice(), at: this.heardS, line: '' }; this.seen.unshift(seenAt); if (this.seen.length > 32) this.seen.length = 32; }
+      else {
+        const adds = s.gone.some((g, k) => g && !gone[k]);
+        for (let k = 0; k < len; k++) if (gone[k] && !s.gone[k]) { words[k] = s.words[k]; gone[k] = false; }
+        for (let k = 0; k < len; k++) if (s.gone[k] && !gone[k]) { s.words[k] = words[k]; s.gone[k] = false; }
+        s.at = this.heardS;
+        if (!adds) return;   // nothing new: already on the feed
+        replaces = s.line; seenAt = s;
+      }
+    }
+    const chars: number[] = [];
+    let lostWords = 0;
+    for (let k = 0; k < len; k++) {
+      const d = words[k], sigWord = k === 0 && first;   // the first word of a first fragment opens with S
+      if (gone[k]) { for (let r = sigWord ? 2 : 3; r > 0; r--) chars.push(LOST); lostWords++; continue; }
+      for (const s of sigWord ? [7, 14] : [0, 7, 14]) chars.push((d >>> s) & 0x7F);
+    }
+    const text = render(chars);
+    if (!known || (first && more === 0)) {
+      // the whole page in one piece; with its header lost, its fragment and number are unknown, so it is partial
+      const errors = known ? lostWords : Math.max(1, lostWords);
+      const line = this.packet(type === PT.SECURE ? 0 : 5, lostWords * 2 > len ? '' : text.trimEnd(), errors, replaces);
+      if (seenAt && line) seenAt.line = line;
+      return;
+    }
+    const key = `${cap}/${type}/${n}`;
+    if (first) {
+      // the first of several: a new stream (an unfinished one with this number is sent as it stands)
+      const old = this.streams.get(key); if (old) { this.streams.delete(key); this.finish(old, CUT, false); }
+      this.streams.set(key, { head: this.head(type === PT.SECURE ? 0 : 5), cap, text, errors: lostWords, words: len, lostWords, expectF: 0, at: this.heardS });
+      return;
+    }
+    // a continuation: F runs 0, 1, 2, 0 ... after the first; a break in it is a fragment that never arrived
+    let s = this.streams.get(key);
+    if (!s) { s = { head: this.head(type === PT.SECURE ? 0 : 5), cap, text: GAP, errors: 1, words: 0, lostWords: 0, expectF: frag, at: this.heardS }; this.streams.set(key, s); }
+    if (frag !== s.expectF) { s.text += GAP; s.errors++; }
+    s.text += text; s.errors += lostWords; s.words += len; s.lostWords += lostWords;
+    s.expectF = (frag + 1) % 3;
+    if (more === 0) { this.streams.delete(key); this.finish(s, '', true); }
+  }
+
+  /** Send a fragmented page: whole when its last piece came, unfinished (marked [CUT]) when the hold ran out. */
+  private finish(s: Stream, tail: string, complete: boolean): void {
+    const errors = s.errors + (complete ? 0 : 1);
+    const text = s.lostWords * 2 > s.words ? '' : s.text.trimEnd() + tail;
+    if (errors > 0 && !text.trim()) { this.emit({ type: 'log', line: `FLEX CAP ${s.cap}: unreadable page, ${errors} word${errors === 1 ? '' : 's'} lost` }); return; }
+    this.emit({ type: 'packet', line: FlexDecoder.line(s.head, text, errors) });
+  }
+
+  /** Binary pages (Section 3.10.1.2) as hex, the second header word left out of a first fragment. */
+  private binary(p: Uint32Array, bad: Uint8Array, hdr: number, mw: number, len: number, type: number): void {
+    if (len <= 0) return;
+    const from = type === PT.BINARY && !bad[hdr] && ((p[hdr] >>> 13) & 3) === 3 ? 1 : 0;
+    const parts: string[] = [];
+    let lost = 0;
+    for (let k = from; k < len; k++) { if (bad[mw + k]) lost++; parts.push(bad[mw + k] ? '??????' : hex(p[mw + k] & 0x1FFFFF, 6)); }
+    // a binary page that is mostly lost words is noise
+    this.packet(type === PT.SECURE ? 0 : 6, !parts.length || lost * 2 > parts.length ? '' : parts.join(' '), lost);
+  }
+
   private parseCapcode(aw1: number): void {
-    this.longAddress = 0; this.addrType = 0;
-    if ((aw1 >= 1 && aw1 <= 0x8000) || (aw1 >= 0x1E0001 && aw1 <= 0x1F0000) || (aw1 >= 0x1F7FFF && aw1 <= 0x1FFFFE)) { this.longAddress = 1; this.addrType = 1; }
+    this.addrType = 0;
+    if (isLong(aw1)) this.addrType = 1;
     else if (aw1 >= 0x1F7800 && aw1 <= 0x1F780F) this.addrType = 2;
     else if (aw1 >= 0x1F7810 && aw1 <= 0x1F781F) this.addrType = 3;
     else if (aw1 >= 0x1F6800 && aw1 <= 0x1F77FF) this.addrType = 4;
@@ -485,78 +574,32 @@ export class FlexDecoder implements IqProcessor {
     this.capcode = aw1 - 0x8000;
   }
 
-  private parseAlpha(p: Uint32Array, bad: Uint8Array, first: number, last: number): void {
-    let frag = 3, more = 0;
-    if (first >= 0 && first < 88 && !bad[first]) { const h = p[first]; more = (h >>> 10) & 1; frag = (h >>> 11) & 3; }
-    // A failed word with another failure right after it, or one word on, is where the signal was lost (a fade, or
-    // the symbol clock slipping): nothing after it in this phase can be trusted, so the text stops there rather
-    // than running on as noise, and so do any two-bit fixes leading into it, which are that noise "corrected". A
-    // lone failed word inside good text stays a '???'. A two-bit fix on its own is kept: on a real signal they are
-    // common and nearly always right.
-    const lost = (k: number) => k < 0 || k >= 88 || bad[k] === 1;
-    let cutAt = last + 1;
-    for (let k = first + 1; k <= last; k++) if (lost(k) && k < last && (lost(k + 1) || (k + 2 <= last && lost(k + 2)))) { cutAt = k; break; }
-    if (cutAt <= last) while (cutAt > first + 1 && this.suspect[cutAt - 1]) cutAt--;
-    let errors = 0;
-    for (let k = first + 1; k <= last; k++) if (lost(k)) errors++;
-    const chars: number[] = [];
-    const put = (ch: number, isBad: boolean) => { if (isBad) chars.push(63); else if (ch >= 0x20 || ch === 0x0A || ch === 0x0D) chars.push(ch); else if (ch === 3 || ch === 0) chars.push(3); };
-    for (let i = first + 1; i < cutAt; i++) {
-      const isBad = lost(i), dw = isBad ? 0 : p[i];
-      if (i > first + 1) put(dw & 0x7F, isBad);
-      put((dw >>> 7) & 0x7F, isBad);
-      put((dw >>> 14) & 0x7F, isBad);
+  /**
+   * Numeric pages (Section 3.10.1.1): BCD digits, low bit first, after 2 checksum bits (10 bits for numbered numeric:
+   * checksum, N, R, S). The first message word is the second vector word for a long address. K is six bits: K3-K0 in
+   * the vector (bits 17-20) and K5K4 in the first word (bits 0-1), over every message word.
+   */
+  private numeric(p: Uint32Array, bad: Uint8Array, j: number, numbered: boolean, long: boolean): { text: string; errors: number } | null {
+    const viw = p[j], w1 = (viw >>> 7) & 0x7F, n = (viw >>> 14) & 7;
+    if (w1 >= 88 || (long && j + 1 >= 88)) return null;
+    const body0 = long ? j + 1 : w1;
+    const list = [body0];
+    const start = long ? w1 : w1 + 1, end = Math.min(long ? w1 + n - 1 : w1 + n, 87);
+    for (let k = start; k <= end; k++) list.push(k);
+    let msg = '', digit = 0, left = 4 + (numbered ? 10 : 2), lost = 0, sum = 0;
+    list.forEach((k, idx) => {
+      if (k < 0 || k >= 88 || bad[k]) { msg += '?????'; digit = 0; left = 4; lost++; return; }
+      let d = p[k];
+      sum += groups(idx === 0 ? d & ~3 : d);
+      for (let b = 0; b < 21; b++) { digit = (digit >>> 1) | ((d & 1) << 3); d >>>= 1; if (--left === 0) { msg += FLEX_BCD[digit]; left = 4; } }
+    });
+    let errors = lost;
+    if (!lost) {
+      const s = sum & 0xFF, k6 = (~((s & 0x3F) + (s >>> 6))) & 0x3F;
+      const rx = ((p[body0] & 3) << 4) | ((viw >>> 17) & 0xF);
+      // as for text, a failed K condemns only a word fixed at the code's limit
+      if (k6 !== rx && list.some(k => this.fix[k] >= 2)) errors = 1;
     }
-    let end = -1;
-    for (let k = 0; k < chars.length; k++) if (chars[k] !== 3) end = k;
-    let text = '';
-    for (let k = 0; k <= end; k++) text += chars[k] === 3 ? '?' : String.fromCharCode(chars[k]);
-    text = text.trimEnd();
-    if (cutAt <= last) text = text.length < 3 ? '' : `${text} …`;
-    // a page split across frames: the pieces are joined, and one whose next piece never comes is sent as it stands
-    const type = this.dType === PT.SECURE ? 0 : 5, cap = this.capcode;
-    if (frag === 3 && more === 0) this.packet(type, text, '', errors);
-    else if (more === 1) {
-      const prev = frag === 3 ? undefined : this.pieces.get(cap);
-      this.pieces.set(cap, { text: (prev?.text ?? '') + text, at: this.frames, errors: (prev?.errors ?? 0) + errors, head: this.head(type), type });
-    } else {
-      const prev = this.pieces.get(cap); this.pieces.delete(cap);
-      this.packet(type, (prev?.text ?? '') + text, '', (prev?.errors ?? 0) + errors);
-    }
-  }
-
-  private parseNumeric(p: Uint32Array, bad: Uint8Array, j: number): void {
-    const isNnum = this.dType === PT.NUMBERED_NUMERIC;
-    let w1 = p[j] >>> 7;
-    let w2 = w1 >>> 7;
-    w1 &= 0x7F;
-    const nField = w2 & 7;
-    w2 = nField + w1;
-    if (w1 > 87) return;
-    if (w2 > 87) w2 = 87;
-    const body0 = this.longAddress && nField > 0 ? j + 1 : w1;
-    if (body0 < 0 || body0 >= 88) return;
-    let dw = p[body0];
-    let digit = 0, count = 4 + (isNnum ? 10 : 2);
-    let msg = '';
-    if (bad[body0]) { let lost = Math.floor((21 - (count - 4)) / 4); while (lost-- > 0) msg += '?'; count = 4; digit = 0; }
-    else {
-      for (let k = 0; k < 21; k++) {
-        digit = (digit >>> 1) & 0xF; if (dw & 1) digit ^= 8; dw >>>= 1;
-        if (--count === 0) { msg += FLEX_BCD[digit]; count = 4; }
-      }
-    }
-    const start = this.longAddress ? w1 : w1 + 1;
-    const end = this.longAddress ? w1 + nField - 1 : w2;
-    for (let i = start; i <= end && i < 88; i++) {
-      if (bad[i]) { msg += '?????'; count = 4; digit = 0; continue; }
-      dw = p[i];
-      for (let k = 0; k < 21; k++) {
-        digit = (digit >>> 1) & 0xF; if (dw & 1) digit ^= 8; dw >>>= 1;
-        if (--count === 0) { msg += FLEX_BCD[digit]; count = 4; }
-      }
-    }
-    msg = msg.replace(/ +$/, '');
-    this.packet(this.dType === PT.SPECIAL_NUMERIC ? 4 : isNnum ? 7 : 3, msg);
+    return { text: msg.replace(/ +$/, ''), errors };
   }
 }
