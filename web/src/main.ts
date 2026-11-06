@@ -624,7 +624,7 @@ const LAUNCH_BANDS: LaunchBand[] = [
   { id: 'air', name: 'AIR', lo: 118_000_000, hi: 137_000_000, what: 'airband AM', mode: 'AM' },
   { id: 'vhf', name: 'VHF', lo: 144_000_000, hi: 163_000_000, what: 'two meters, marine, weather', mode: 'NFM' },
   { id: 'ism3', name: '315', lo: 314_000_000, hi: 316_000_000, what: 'American remotes and sensors', mode: 'NONE' },
-  { id: 'uhf', name: 'UHF', lo: 430_000_000, hi: 450_000_000, what: 'seventy centimetres', mode: 'NFM' },
+  { id: 'uhf', name: 'UHF', lo: 430_000_000, hi: 450_000_000, what: 'seventy centimeters', mode: 'NFM' },
   { id: 'ism4', name: '433', lo: 433_000_000, hi: 435_000_000, what: 'European remotes and sensors', mode: 'NONE' },
   { id: 'ism9', name: '915', lo: 902_000_000, hi: 928_000_000, what: 'meters and telemetry', mode: 'NONE' },
   // Nothing at 1090 is worth hearing, and the digital bands would only put a wall of noise through the
@@ -708,7 +708,7 @@ function launcherView(): { center: number; rate: number; mode: Mode } {
 /** Re-point the launcher, for when the band changes or a radio arrives that can show more of it. */
 function applyLauncherView(): void {
   if (state.app) return;
-  launchPicked = false; launchTapped = false;
+  launchPicked = false; launchTapped = false; pickArm();
   const v = launcherView();
   configure(v.mode, v.center, v.rate, 24, 24, false, 'none');
   // The band's midpoint is where the launcher LOOKS, not a choice the user made: it must never overwrite the
@@ -739,7 +739,7 @@ function open(app: AppId | null): void {
     // tap retune the radio rather than slide a channel about inside the span.
     // No gain UI here, so ride AGC so the wide band isn't a wall of static (the HackRF amp default is handled in
     // configure, and stays off if the user has turned it off).
-    case null: { const v = launcherView(); configure(v.mode, v.center, v.rate, 32, 32, false, 'none'); setAgc(true); launchPicked = false; launchTapped = false; break; }
+    case null: { const v = launcherView(); configure(v.mode, v.center, v.rate, 32, 32, false, 'none'); setAgc(true); launchPicked = false; launchTapped = false; pickArm(); break; }
     case 'ham': hamOpen(); return;
     // Arriving from the launcher is "take me to what I am looking at": open on the station the launcher has
     // (its auto-pick of the strongest, or one you tapped), state.freq. From anywhere else, keep the shared dial —
@@ -752,7 +752,7 @@ function open(app: AppId | null): void {
       audioPick = false;
       if (prev === null && !launchTapped && !launchPicked) {
         const known = bandBest.get(state.launchBand);
-        if (known) f = known; else audioPick = true;
+        if (known) f = known; else { audioPick = true; pick.viewed = false; pickArm(); }
       }
       configure(state.radioMode, f, RX_RATE, 24, 24, false, 'none');
       break;
@@ -1472,28 +1472,77 @@ let launchTapped = false;
 const bandBest = new Map<string, number>();
 /** Audio opened with nothing better to go on: take the strongest station in its own view once signals arrive. */
 let audioPick = false;
+/** The span was widened or narrowed by hand this visit (− / +): the start-up pick leaves it alone. */
+let spanByHand = false;
+/**
+ * The start-up pick's clock and memory (the same rules as the iPad and Android apps). Nothing counts for 1.5 s
+ * after it is armed (lists from the old view still in flight, the AGC settling), then it waits 2.5 s more, and a
+ * station has to be in the list a second ago as well as now, so a burst of noise in one frame never wins.
+ */
+const pick = { armedAt: 0, firstSeen: 0, earlier: [] as SeenSignal[], earlierAt: 0, viewed: false };
+function pickArm(): void { pick.armedAt = performance.now(); pick.firstSeen = 0; pick.earlier = []; pick.earlierAt = 0; }
+/** One look at the newest list: 'stay' (a good station is already tuned, or it gave up), a station, or null (not yet). */
+function pickStep(here: number): SeenSignal | 'stay' | null {
+  const now = performance.now();
+  if (now - pick.armedAt < 1500 || !lastSignals.length) return null;
+  if (!pick.firstSeen) { pick.firstSeen = now; return null; }
+  if (now - pick.firstSeen > 30_000) return 'stay';
+  const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
+  // in view, and not the radio's own spike at the middle of the span (a HackRF's DC offset)
+  const inView = lastSignals.filter(s => Math.abs(s.hz - c) <= half && Math.abs(s.hz - c) > 30_000);
+  // broadcast: a real station is wide; a radio's own spur (a HackRF's clock line at an exact megahertz) is a
+  // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones
+  const pool = state.mode === 'WFM' ? inView.filter(s => s.bw > 60_000) : inView;
+  // already on a good station: stay there, never trade it for another
+  const on = pool.find(s => Math.abs(s.hz - here) <= Math.max(50_000, s.bw / 2));
+  if (on && on.snr >= 15) return 'stay';
+  if (now - pick.earlierAt < 1000) return null;
+  const prev = pick.earlier; pick.earlier = pool; pick.earlierAt = now;
+  if (now - pick.firstSeen < 2500 || !prev.length) return null;
+  let best: SeenSignal | null = null;
+  for (const s of pool) if (prev.some(p => Math.abs(p.hz - s.hz) <= 50_000) && (!best || s.snr > best.snr)) best = s;
+  return best;
+}
 function launchAutoPick(): void {
   if (state.app !== null || launchPicked || !lastSignals.length) return;
-  const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
-  let best: SeenSignal | null = null;
-  for (const s of lastSignals) { if (Math.abs(s.hz - c) > half) continue; if (!best || s.snr > best.snr) best = s; }
+  const r = pickStep(state.freq);
+  if (!r) return;
+  launchPicked = true;
+  if (r === 'stay') return;
   // An automatic pick is a suggestion on screen, not the user's choice: it must not become the shared dial.
-  if (best) {
-    launchPicked = true; bandBest.set(state.launchBand, best.hz);
-    silentTune = true; try { tune(best.hz, true); } finally { silentTune = false; }
-  }
+  bandBest.set(state.launchBand, r.hz);
+  silentTune = true; try { tune(r.hz, true); } finally { silentTune = false; }
 }
-/** Audio's own pick, for when it opened before the launcher knew the band's strongest station. A broadcast
- *  receiver prefers broadcast stations over whatever else is loud in the span. */
+/**
+ * Audio opened with nothing better to go on (it is the desktop's first screen): once the radio is up, look across
+ * the band the dial is in. A radio that sees most of it in one span (a HackRF) shows it all, zoomed out; a narrow
+ * one (an RTL-SDR) stays on the dial as wide as it goes. A span set by hand is left alone.
+ */
+function audioViewBand(): void {
+  if (!radio || spanByHand) return;
+  const b = LAUNCH_BANDS.find(x => state.freq >= x.lo && state.freq <= x.hi);
+  if (!b) return;
+  const widest = Math.max(...radio.limits.rates.map(([, hi]) => hi));
+  if (widest * 2 < b.hi - b.lo) { setRate(widest); scope?.clear(); refreshChannel(); return; }
+  const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)];
+  const fits = RX_RATES.filter(r => r <= Math.min(cap, widest));
+  const rate = fits.find(r => r >= b.hi - b.lo) ?? fits[fits.length - 1] ?? RX_RATE;
+  setRate(rate);
+  // the band's middle, when the dial is still inside the view from there
+  const mid = Math.round((b.lo + b.hi) / 2);
+  state.viewLo = Math.abs(state.freq - mid) <= state.rate / 2 - VIEW_GUARD ? mid : state.freq;
+  if (radio) radio.targetFreqHz = state.viewLo;
+  scope?.clear(); sendOffset(); refreshChannel(); refreshReadout();
+}
+/** Audio's own pick: the strongest steady station in view, then centered in the waterfall. */
 function audioAutoPick(): void {
   if (state.app !== 'audio' || !audioPick || !lastSignals.length) return;
-  const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
-  const inView = lastSignals.filter(s => Math.abs(s.hz - c) <= half);
-  const wide = state.mode === 'WFM' ? inView.filter(s => s.cls === 'WFM' || s.bw > 60_000) : [];
-  const pool = wide.length ? wide : inView;
-  let best: SeenSignal | null = null;
-  for (const s of pool) if (!best || s.snr > best.snr) best = s;
-  if (best) { audioPick = false; silentTune = true; try { tune(best.hz); } finally { silentTune = false; } }
+  if (!pick.viewed) { pick.viewed = true; audioViewBand(); pickArm(); return; }
+  const r = pickStep(state.freq);
+  if (!r) return;
+  audioPick = false;
+  if (r !== 'stay') { silentTune = true; try { tune(r.hz); } finally { silentTune = false; } }
+  if (!spanByHand) recentreView();
 }
 function render(app: AppId | null): void {
   const view = $('view');
@@ -1823,8 +1872,11 @@ function spanStep(dir: -1 | 1): boolean {
     return true;
   }
   if (state.app === 'audio') {
-    const cur = Math.max(0, RX_RATES.indexOf(state.rate)), i = Math.min(maxRateIdx(), Math.max(0, cur - dir));
-    if (i === cur) return false;
+    // the rung at or above the span now (an RTL-SDR's 2.4 Msps sits between two)
+    const at = RX_RATES.findIndex(r => r >= state.rate), cur = at < 0 ? RX_RATES.length - 1 : at;
+    const i = Math.min(maxRateIdx(), Math.max(0, cur - dir));
+    if (i === cur && RX_RATES[i] === state.rate) return false;
+    spanByHand = true;
     setRate(RX_RATES[i]); scope?.clear(); refreshChannel();
     return true;
   }

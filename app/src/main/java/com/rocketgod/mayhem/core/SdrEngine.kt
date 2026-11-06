@@ -359,7 +359,7 @@ object SdrEngine {
         HackRfOne.targetFreqHz = _freqHz.value
         // A dongle has one tuner gain where a HackRF has three stages; the VGA is that knob, which is also the one
         // the AGC moves first, so the automatic gain drives a dongle with no special case.
-        RtlSdr.targetRateHz = Radio.nearestRate(Radio.RTLSDR, _rateHz.value)
+        RtlSdr.targetRateHz = if (wideScan) WIDE_SCAN_RTL else Radio.nearestRate(Radio.RTLSDR, _rateHz.value)
         RtlSdr.targetFreqHz = _freqHz.value
         RtlSdr.targetGainTenthDb = (_radioVga.value * 10).coerceIn(0, (RtlSdr.MAX_GAIN_DB * 10).toInt())
     }
@@ -370,6 +370,7 @@ object SdrEngine {
     /** A radio arrived or left: hold the rate and gain to what it can do, so the screen never shows what it is not doing. */
     fun onRadio(kind: Radio.Kind) {
         Radio.attached(kind)
+        wideScan = false
         _rateHz.value = Radio.nearestRate(Radio.limits, _rateHz.value)
         _radioVga.value = minOf(_radioVga.value, vgaMax())
         _biasTee.value = false; RtlSdr.targetBiasTee = false   // a dongle powers up with the tee off; keep it that way until asked
@@ -462,13 +463,20 @@ object SdrEngine {
 
 
     /** Zoom past 1×: −1 widens the span a rung, +1 narrows it; false at either end of what this radio and screen allow. */
+    /** The span was widened or narrowed by hand this run (− / +): the start-up pick leaves it alone. */
+    @Volatile var spanByHand = false
+
     fun stepSpan(dir: Int, cap: Int): Boolean {
-        val ladder = RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
+        // an RTL-SDR zooms 1.92 → 2.4 → 3.2 MHz; 3.2 is where it opens for the start-up pick
+        val rtl = Radio.kind.value == Radio.Kind.RTLSDR
+        val ladder = if (rtl) listOf(1_920_000, 2_400_000, WIDE_SCAN_RTL)
+                     else RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
         if (ladder.isEmpty()) return false
         val cur = ladder.indexOfFirst { it >= _rateHz.value }.let { if (it < 0) ladder.size - 1 else it }
         val next = (cur - dir).coerceIn(0, ladder.size - 1)
         if (ladder[next] == _rateHz.value) return false
-        setRate(ladder[next])
+        spanByHand = true
+        if (rtl && ladder[next] == WIDE_SCAN_RTL) setWideScan(true) else setRate(ladder[next])
         // narrowed past the channel: bring the span back over it
         if (kotlin.math.abs(_offsetHz.value.toLong()) > _rateHz.value / 2 - VIEW_GUARD) recentre()
         return true
@@ -479,7 +487,22 @@ object SdrEngine {
 
     fun setRate(rate: Int) { _rateHz.value = clampRate(rate); syncDriver() }
 
+    /**
+     * An RTL-SDR opens at 3.2 Msps for the start-up pick and listens there too; the zoom steps back to 2.4 or 1.92
+     * by hand. It is past the 2.4 a dongle holds for certain, so it is never an app's rate: any other rate ends it.
+     */
+    const val WIDE_SCAN_RTL = 3_200_000
+    @Volatile var wideScan = false; private set
+    fun setWideScan(on: Boolean) {
+        if (on == wideScan) return
+        if (on) {
+            if (Radio.kind.value != Radio.Kind.RTLSDR) return
+            wideScan = true; _rateHz.value = WIDE_SCAN_RTL; syncDriver()
+        } else { wideScan = false; setRate(2_400_000) }
+    }
+
     private fun clampRate(rate: Int): Int {
+        wideScan = false        // any ordinary rate (an app's, a zoom step) ends the RTL-SDR's 3.2 Msps view
         val r = Radio.nearestRate(Radio.limits, rate)
         if (r != rate && Radio.kind.value != Radio.Kind.NONE)
             Diag.log("%.2f Msps is out of range for this ${Radio.name} — using %.2f".format(rate / 1e6, r / 1e6))
