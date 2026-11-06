@@ -129,7 +129,7 @@ object Apps {
                 SdrEngine.listening() -> {}
                 SdrEngine.plain() -> SdrEngine.setMode(SdrEngine.radioMode, silent = true)
                 // another app had the radio (ADS-B, AIS...): back on the dial, and onto the strongest station in view
-                else -> { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.arm() }
+                else -> { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.armBand() }
             }
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
@@ -191,7 +191,7 @@ object Apps {
         // Back from an app that moved the radio (ADS-B, AIS...): the launcher listens again, and lands on the
         // strongest station in view rather than the old dial. The pick is silent, so it never becomes the dial,
         // and anything the user tunes first cancels it.
-        if (!SdrEngine.listening()) { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.arm() }
+        if (!SdrEngine.listening()) { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.armBand() }
         // the launcher has no gain controls of its own, so it rides the AGC unless the gain has been set by hand
         SdrEngine.rideAgc()
     }

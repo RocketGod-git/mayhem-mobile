@@ -83,6 +83,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // the auto-pick shows the whole listening band the dial is in, as wide as the band chips show it on this
+        // screen, before it picks
+        com.rocketgod.mayhem.core.AutoPick.viewWholeBand = {
+            val cap = if (resources.configuration.screenWidthDp >= 600) 19_200_000 else 7_680_000
+            com.rocketgod.mayhem.ui.bandAt(SdrEngine.channelHz())?.let { b -> SdrEngine.viewBand(b.lo, b.hi, b.mode, cap) }
+        }
         Apps.init(this)
         com.rocketgod.mayhem.ui.Skins.load(this)
         SdrEngine.loadGains(this)
@@ -99,7 +105,7 @@ class MainActivity : ComponentActivity() {
                 // Home is the front door, unless the user asked to come back to the app they last used
                 val last = if (com.rocketgod.mayhem.core.NavBar.opensOnLast.value) com.rocketgod.mayhem.core.NavBar.lastApp() else null
                 if (last != null && com.rocketgod.mayhem.core.Radio.blockedBecause(last).isEmpty()) Apps.open(last)
-                else { Apps.home(); com.rocketgod.mayhem.core.AutoPick.arm() }
+                else { Apps.home(); com.rocketgod.mayhem.core.AutoPick.armBand() }
             }
             Diag.clear()
             Diag.log("Mayhem Android ${BuildConfig.VERSION_NAME} · ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
@@ -223,7 +229,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun engage(d: UsbDevice) {
-        if (radioRunning()) { Diag.log("engage: a radio is already running, ignoring"); return }
+        // the launch intent and onResume's check can both land here before the first radio thread has set its running
+        // flag: one radio thread at a time, or the loser returns at once and marks the app disconnected while the
+        // winner streams (the "no radio" banner over a working radio)
+        if (radioRunning() || rxThread?.isAlive == true) { Diag.log("engage: a radio is already running, ignoring"); return }
         val rtl = RtlSdr.isRtlSdr(d)
         SdrEngine.onRadio(if (rtl) com.rocketgod.mayhem.core.Radio.Kind.RTLSDR else com.rocketgod.mayhem.core.Radio.Kind.HACKRF)
         status.value = "${if (rtl) "RTL-SDR" else "HackRF"} · opening ${HackRfUsb.describe(d)}"
