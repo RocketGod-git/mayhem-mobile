@@ -64,6 +64,15 @@ console.log('synthesizer: the frequency it plans is the frequency it was asked f
     near(pllFreq(plan, R828D_XTAL), lo, 500, `R828D at ${(rf / 1e6).toFixed(2)} MHz: lands within 500 Hz`);
   }
 
+  // HF on a Blog V4 goes through its upconverter: the tuner is set 28.8 MHz above the wanted frequency, from the
+  // RTL's own 28.8 MHz reference with the R828D's VCO power reference of one. Every HF band has to land.
+  for (const rf of [1_000_000, 3_573_000, 7_074_000, 10_000_000, 14_074_000, 21_074_000, 27_185_000, 28_000_000]) {
+    const lo = rf + 28_800_000 + IF;
+    const plan = pllPlan(lo, RTL_XTAL, 2, 1);
+    ok(plan.ok, `Blog V4 HF at ${(rf / 1e6).toFixed(3)} MHz: the upconverted LO is reachable`);
+    if (plan.ok) near(pllFreq(plan, RTL_XTAL), lo, 500, `  Blog V4 HF at ${(rf / 1e6).toFixed(3)} MHz: lands within 500 Hz`);
+  }
+
   // The fine-tune reading shifts the divider, which must not silently move the frequency.
   const a = pllPlan(437_490_000, RTL_XTAL, 1), b = pllPlan(437_490_000, RTL_XTAL, 3);
   eq(a.divNum, b.divNum + 2, 'the VCO fine-tune reading moves the divider either way');
