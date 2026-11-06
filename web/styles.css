@@ -533,6 +533,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .agrp + .agrp { border-left: 1px solid var(--line); }
   .agrp small { color: var(--seg); font-size: 8.5px; font-weight: 700; letter-spacing: 2.2px; padding: 2px 4px 3px; opacity: 0.85; }
   .agrp-in { display: flex; gap: 2px; }
+  /* No top bar on the desktop: the dock carries FAVES · LOG · MUTE · SETTINGS at its far end, and a missing radio
+   * gets the phone's one quiet line (with CONNECT) under the dock. */
+  header.bar { display: none !important; }
+  .appbar { display: flex !important; align-items: stretch; }
+  .appbar .bar-pill { flex: 1; min-width: 0; }
+  .dock-acts { --seg: var(--accent); display: flex; flex: none; align-items: center; gap: 2px; padding: 4px 6px; border-left: 1px solid var(--line); }
+  .appbar [data-act] .ag { color: var(--muted); }
+  .appbar [data-act].muted .ag, .appbar [data-act].muted .al { color: var(--danger); }
+  .appbar [data-act] .adot { position: absolute; top: 5px; right: 9px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .appbar [data-act] .adot.on { background: var(--ok); }
+  body .radiomiss { display: flex; flex: none; order: 1; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
+  body .radiomiss[hidden] { display: none; }
+  .radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .radiomiss > span { flex: 1; min-width: 0; color: var(--ink); font-size: 11px; }
+  .radiomiss > .tog { padding: 4px 12px; font-size: 11px; }
   .appbar button { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 62px; background: none; border: 1px solid transparent; color: var(--ink); padding: 6px 6px 5px; border-radius: 11px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, background .12s ease, box-shadow .12s ease, border-color .12s ease; }
   .appbar .ag { color: var(--seg); display: flex; filter: drop-shadow(0 0 0 transparent); transition: filter .12s ease; }
   .appbar .al { font-weight: 700; font-size: 10px; letter-spacing: 1.3px; color: color-mix(in srgb, var(--ink) 85%, var(--muted)); }
@@ -771,6 +786,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* The phone shell. Hidden on a wide screen, where the header bar and the launcher stay as they are. */
 .topnav, .radiomiss { display: none; }
+.dock-acts:empty { display: none; }
 .sheet { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
 .sheet-card { width: min(520px, 100%); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px 16px 0 0; padding: 12px; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }

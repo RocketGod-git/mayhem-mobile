@@ -3415,7 +3415,7 @@ function showTxSafetyPrompt(): void {
   document.body.appendChild(el);
   const close = () => el.remove();
   $('tx-ack').onclick = () => { tx.acknowledgeSafety(); close(); };
-  $('tx-cancel').onclick = () => { close(); open(null); };
+  $('tx-cancel').onclick = () => { close(); open(homeApp()); };
 }
 
 /** The transmit modes, each with what it sends (the Android app's tiles). */
@@ -4503,7 +4503,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (state.app) open(null); break;
+      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (state.app && !wideShell.matches) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
@@ -4567,6 +4567,11 @@ const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 
 const barLabel = (id: AppId) => BAR_LABEL[id] ?? APPS.find(a => a.id === id)!.title.toUpperCase();
 /** A wide screen: the app bar sits under the header as a grouped dock with each app's glyph. */
 const wideShell = matchMedia('(min-width: 720px)');
+/**
+ * Where "home" is. A phone has the launcher (the Android app's front door). The desktop has no Home page and no
+ * back: every app is always in the dock, so it opens straight into Audio and stays wherever you click.
+ */
+const homeApp = (): AppId | null => wideShell.matches ? 'audio' : null;
 const BAR_CATS: AppDef['cat'][] = ['Receive', 'Analyze', 'Tools', 'Transmit'];
 /**
  * The apps bar. On a phone, the Android app's strip of names in its order. On a wide screen, a dock grouped by
@@ -4579,6 +4584,7 @@ function buildBar(): void {
   // phone: the keys sit in a hairline pill behind one fill that slides to the open app (see placeFill)
   bar.innerHTML = wideShell.matches
     ? BAR_CATS.map(c => { const ids = barApps().filter(id => APPS.find(a => a.id === id)!.cat === c); return ids.length ? `<div class="agrp" style="--seg:${tint(c)}"><small>${c.toUpperCase()}</small><div class="agrp-in">${ids.map(btn).join('')}</div></div>` : ''; }).join('')
+
     : '<i class="afill"></i>' + barApps().map(btn).join('');
   fillPlaced = false;
   qa<HTMLButtonElement>('[data-bar]', bar).forEach(b => b.onclick = () => {
@@ -4586,11 +4592,30 @@ function buildBar(): void {
     closeSettings();
     if (state.app !== id) open(id);
   });
+  // FAVES · LOG · MUTE · SETTINGS pinned at the dock's right end, outside its scroller; they press the header's own
+  // buttons (the header is not shown on a wide screen)
+  const acts = $('appbar-acts');
+  acts.innerHTML = wideShell.matches ? DOCK_ACTS.map(([act, label, , tip]) =>
+    `<button data-act="${act}" title="${tip}"><span class="ag">${dockIcon(act)}</span><span class="al">${label}</span>${act === 'settings' ? '<i class="adot"></i>' : ''}</button>`).join('') : '';
+  qa<HTMLButtonElement>('[data-act]', acts).forEach(b => b.onclick = () => { $(DOCK_ACTS.find(a => a[0] === b.dataset.act)![2]).click(); refreshShell(); });
   refreshShell();
 }
+/** FAVES · LOG · MUTE · SETTINGS at the end of the desktop dock: [act, label, the header button it presses, hover]. */
+const DOCK_ACTS: [string, string, string, string][] = [
+  ['faves', 'FAVES', 'faves-btn', 'Your starred frequencies'],
+  ['log', 'LOG', 'log-toggle', 'The diagnostics log'],
+  ['mute', 'MUTE', 'mute', 'Mute the speaker'],
+  ['settings', 'SETTINGS', 'settings-btn', 'The radio, the look, and everything about each app'],
+];
+/** The header button's own icon, so the dock and the phone bar draw the same glyphs. */
+const dockIcon = (act: string): string => {
+  const svg = document.querySelector(`#${DOCK_ACTS.find(a => a[0] === act)![2]} svg`);
+  return svg ? svg.outerHTML.replace('<svg ', '<svg width="24" height="24" ').replace(/ id="[^"]*"/g, '') : '';
+};
 function initShell(): void {
   buildBar();
-  wideShell.addEventListener('change', buildBar);
+  // the desktop has no Home page: widening the window from a phone's launcher lands in Audio
+  wideShell.addEventListener('change', () => { buildBar(); if (wideShell.matches && state.app === null) open('audio'); });
   bindHs($('appbar').parentElement!);
   $('nav-home').onclick = () => { closeSettings(); if (state.app) open(null); };
   $('nav-settings').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
@@ -4671,6 +4696,16 @@ function refreshShell(): void {
     : 'M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z');
   $('mute-ico').setAttribute('d', $('nav-mute-ico').getAttribute('d')!);
   $('nav-dot').classList.toggle('on', state.connected);
+  const act = (a: string) => q<HTMLElement>(`[data-act="${a}"]`);
+  act('settings')?.classList.toggle('on', setOn);
+  act('settings')?.querySelector('.adot')?.classList.toggle('on', state.connected);
+  act('log')?.classList.toggle('on', !$('log-panel').hidden);
+  const mu = act('mute');
+  if (mu) {
+    mu.classList.toggle('muted', state.muted);
+    mu.querySelector('.al')!.textContent = state.muted ? 'MUTED' : 'MUTE';
+    mu.querySelector('path')?.setAttribute('d', $('nav-mute-ico').getAttribute('d')!);
+  }
   $('radiomiss').hidden = state.connected;
 }
 /** FAVES: the frequencies starred with ☆. A tap brings one back in its own app, as it was heard. */
@@ -4705,7 +4740,7 @@ function init(): void {
   const panel = $('log-panel'), body = $('log');
   const refreshLog = () => { $('log-head').textContent = logHeader(); body.textContent = diag.join('\n'); if (logFollow) body.scrollTop = body.scrollHeight; };
   $('log-toggle').onclick = () => { panel.hidden = !panel.hidden; $('log-toggle').classList.toggle('on', !panel.hidden); if (!panel.hidden) refreshLog(); };
-  $('log-close').onclick = () => { panel.hidden = true; $('log-toggle').classList.remove('on'); };
+  $('log-close').onclick = () => { panel.hidden = true; $('log-toggle').classList.remove('on'); refreshShell(); };
   $('log-clear').onclick = () => { diag.length = 0; refreshLog(); };
   $('log-pip').onclick = () => {
     const pip = panel.classList.toggle('pip');
@@ -4743,7 +4778,7 @@ function init(): void {
     panel.style.top = `${Math.max(0, Math.min(innerHeight - panel.offsetHeight, e.clientY - dy))}px`;
   });
   bar.addEventListener('pointerup', () => { dragging = false; });
-  window.addEventListener('popstate', () => { if (state.app) open(null); });
+  window.addEventListener('popstate', () => { if (state.app && !wideShell.matches) open(null); });
   window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e as Event & { prompt: () => Promise<void> }; });
   fetch('./version.json', { cache: 'no-store' }).then(r => r.json()).then((v: { version: string; commit: string; apk: string; release: string }) => {
@@ -4756,7 +4791,7 @@ function init(): void {
   // the first view with whatever the defaults happened to be - mode WFM and a span centre of zero - so the
   // frequency picker computed its taps against nothing and appeared not to work until you had entered an app
   // and come back.
-  open(null);
+  open(homeApp());
   if (supported) {
     // Already granted to this origin: open it without waiting to be asked. WebUSB allows that for a device the
     // user has permitted before, so the receiver is running by the time the page has finished settling.
