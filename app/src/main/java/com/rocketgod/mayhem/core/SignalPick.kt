@@ -107,14 +107,15 @@ object AutoPick {
         // in view, and not the radio's own spike at the middle of the span (a HackRF's DC offset)
         val inView = list.filter { abs(it.hz - lo) <= half && abs(it.hz - lo) > 30_000 }
         // broadcast: a real station is wide; a radio's own spur (a HackRF's clock line at an exact megahertz) is a
-        // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones
-        val pool = if (SdrEngine.mode.value == SdrEngine.Mode.WFM) inView.filter { it.bw6 > 60_000 } else inView
+        // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones; and
+        // a broad noise hump (read as a "station" megahertz wide) is not one either
+        val pool = if (SdrEngine.mode.value == SdrEngine.Mode.WFM) inView.filter { it.bw6 > 60_000 && it.bw6 < 400_000 } else inView
         // already on a good station (the dial the app came back to): stay there, never trade it for another
         val here = SdrEngine.channelHz().toDouble()
-        val on = pool.firstOrNull { abs(it.hz - here) <= max(50_000.0, it.bw6 / 2) }
+        val on = pool.firstOrNull { abs(it.hz - here) <= max(50_000.0, minOf(it.bw6, 300_000.0) / 2) }
         if (on != null && on.snr >= 15) {
             armed = false
-            com.rocketgod.mayhem.Diag.log("start-up: staying on the station already tuned, %.3f MHz %.0f dB".format(on.hz / 1e6, on.snr))
+            com.rocketgod.mayhem.Diag.log("start-up: staying on the station already tuned, %.3f MHz %.0f dB %.0f kHz wide".format(on.hz / 1e6, on.snr, on.bw6 / 1e3))
             return
         }
         if (now - earlierAt < 1000) return
@@ -126,6 +127,6 @@ object AutoPick {
         armed = false
         modeFor(best)?.let { if (it != SdrEngine.mode.value) SdrEngine.setMode(it, silent = true) }
         SdrEngine.tune(signalDial(best, rasterFor(SdrEngine.mode.value)), silent = true)
-        com.rocketgod.mayhem.Diag.log("start-up: tuned the strongest steady signal in view, %.3f MHz %s %.0f dB".format(best.hz / 1e6, best.cls, best.snr))
+        com.rocketgod.mayhem.Diag.log("start-up: tuned the strongest steady signal in view, %.3f MHz %s %.0f dB %.0f kHz wide".format(best.hz / 1e6, best.cls, best.snr, best.bw6 / 1e3))
     }
 }

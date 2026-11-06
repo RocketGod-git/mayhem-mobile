@@ -1491,16 +1491,18 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
   // in view, and not the radio's own spike at the middle of the span (a HackRF's DC offset)
   const inView = lastSignals.filter(s => Math.abs(s.hz - c) <= half && Math.abs(s.hz - c) > 30_000);
   // broadcast: a real station is wide; a radio's own spur (a HackRF's clock line at an exact megahertz) is a
-  // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones
-  const pool = state.mode === 'WFM' ? inView.filter(s => s.bw > 60_000) : inView;
+  // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones; and
+  // a broad noise hump (read as a "station" megahertz wide) is not one either
+  const pool = state.mode === 'WFM' ? inView.filter(s => s.bw > 60_000 && s.bw < 400_000) : inView;
   // already on a good station: stay there, never trade it for another
-  const on = pool.find(s => Math.abs(s.hz - here) <= Math.max(50_000, s.bw / 2));
-  if (on && on.snr >= 15) return 'stay';
+  const on = pool.find(s => Math.abs(s.hz - here) <= Math.max(50_000, Math.min(s.bw, 300_000) / 2));
+  if (on && on.snr >= 15) { log(`start-up: staying on the station already tuned, ${(on.hz / 1e6).toFixed(3)} MHz ${Math.round(on.snr)} dB ${Math.round(on.bw / 1e3)} kHz wide`); return 'stay'; }
   if (now - pick.earlierAt < 1000) return null;
   const prev = pick.earlier; pick.earlier = pool; pick.earlierAt = now;
   if (now - pick.firstSeen < 2500 || !prev.length) return null;
   let best: SeenSignal | null = null;
   for (const s of pool) if (prev.some(p => Math.abs(p.hz - s.hz) <= 50_000) && (!best || s.snr > best.snr)) best = s;
+  if (best) log(`start-up: tuned the strongest steady signal in view, ${(best.hz / 1e6).toFixed(3)} MHz ${best.cls} ${Math.round(best.snr)} dB ${Math.round(best.bw / 1e3)} kHz wide`);
   return best;
 }
 function launchAutoPick(): void {
