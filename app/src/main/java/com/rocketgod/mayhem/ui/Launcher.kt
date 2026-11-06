@@ -3,6 +3,8 @@ package com.rocketgod.mayhem.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -48,12 +51,18 @@ import com.rocketgod.mayhem.core.SdrEngine
 
 fun tintFor(app: MayhemApp): Color = when (app.category) { "Receive" -> Palette.accent; "Analyze" -> Palette.accent2; "Transmit" -> Palette.danger; else -> Palette.muted }
 
-/** The front door: a spectrum browser over the app grid; side by side when a phone is on its side. */
+/**
+ * The front door: a spectrum browser over the app grid; side by side when a phone is on its side. On a tablet the
+ * apps ride one sideways row along the bottom, so the waterfall takes all the height above it.
+ */
 @Composable
 fun Launcher(accent: Color) {
     val d = rememberDims()
     val side = d.wide && d.heightDp < 520
-    if (side) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+    if (d.cls != ScreenClass.COMPACT && !side) Column(Modifier.fillMaxSize()) {
+        Browser(accent, Modifier.fillMaxWidth().weight(1f), stretch = true)
+        AppRail(Modifier.fillMaxWidth().padding(top = d.dp(6f)))
+    } else if (side) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
         Browser(accent, Modifier.weight(1f).fillMaxHeight(), stretch = true)
         AppGrid(Modifier.weight(1.2f).fillMaxHeight())
     } else Column(Modifier.fillMaxSize()) {
@@ -86,7 +95,7 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
     }
     Column(modifier) {
         ReceiverScope(accent,
-            (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 240f))).padding(top = d.dp(6f)),
+            (if (stretch) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().height(d.dp(if (d.wide) 200f else 240f))).padding(top = if (stretch) 0.dp else d.dp(6f)),
             rows = 70, traceFrac = 0.32f, wholeRange = true)
         Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
             Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
@@ -131,6 +140,37 @@ private fun AppGrid(modifier: Modifier) {
                     modifier = Modifier.padding(top = d.dp(6f), start = d.dp(2f)))
             }
             items(apps) { app -> AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.open(app) } }
+        }
+    }
+}
+
+/** Where the tablet's app row was scrolled to, kept while an app is open so coming back lands in the same place. */
+private object RailSpot { var x = 0 }
+
+/** The apps as one sideways row (tablet home): each group's name over its tiles, the same tiles as the grid. */
+@Composable
+private fun AppRail(modifier: Modifier) {
+    val d = rememberDims()
+    var asking by remember { mutableStateOf<MayhemApp?>(null) }
+    asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
+    val scroll = rememberScrollState(RailSpot.x)
+    DisposableEffect(Unit) { onDispose { RailSpot.x = scroll.value } }
+    // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
+    val groups = MayhemApp.entries
+        .filter { it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL }
+        .groupBy { it.category }
+    Row(modifier.scrollGlow(scroll, horizontal = true).horizontalScroll(scroll).padding(bottom = d.dp(6f)),
+        horizontalArrangement = Arrangement.spacedBy(d.dp(14f))) {
+        for ((cat, apps) in listOf("Receive", "Analyze", "Transmit", "Tools").mapNotNull { c -> groups[c]?.let { c to it } }) {
+            Column(verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+                Text(cat.uppercase(), color = tintFor(apps.first()), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
+                    modifier = Modifier.padding(start = d.dp(2f)))
+                Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                    for (app in apps) Box(Modifier.width(d.tileMin)) {
+                        AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.open(app) }
+                    }
+                }
+            }
         }
     }
 }
