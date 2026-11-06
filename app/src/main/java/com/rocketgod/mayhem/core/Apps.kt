@@ -105,6 +105,8 @@ object Apps {
         }
         under = null
         recorder?.stop()
+        // the start-up pick belongs to the receiver: another app taking the radio calls it off
+        if (app != MayhemApp.AUDIO) AutoPick.stop()
         // one tap in the bar now switches app; a transmission never outlives the app that started it
         if (app != MayhemApp.TRANSMIT && app != MayhemApp.TROLL) Tx.stop()
         if (app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH) _sweep.value = null

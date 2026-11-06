@@ -85,9 +85,17 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // the auto-pick shows the whole listening band the dial is in, as wide as the band chips show it on this
         // screen, before it picks
-        com.rocketgod.mayhem.core.AutoPick.viewWholeBand = {
-            val cap = if (resources.configuration.screenWidthDp >= 600) 19_200_000 else 7_680_000
-            com.rocketgod.mayhem.ui.bandAt(SdrEngine.channelHz())?.let { b -> SdrEngine.viewBand(b.lo, b.hi, b.mode, cap) }
+        com.rocketgod.mayhem.core.AutoPick.viewWholeBand = viewWholeBand@{
+            val b = com.rocketgod.mayhem.ui.bandAt(SdrEngine.channelHz()) ?: return@viewWholeBand
+            // a span the user set by hand stays as it is: the pick looks across what they chose to see
+            if (SdrEngine.spanByHand) return@viewWholeBand
+            // A radio that sees most of the band in one span (a HackRF: 19.2 of FM's 20 MHz) shows it, as wide as
+            // the band chips show it on this screen. A much narrower one (an RTL-SDR) stays on the dial at 3.2 Msps.
+            val widest = SdrEngine.RX_RATES.filter { com.rocketgod.mayhem.core.Radio.canSample(com.rocketgod.mayhem.core.Radio.limits, it) }.maxOrNull() ?: SdrEngine.RX_RATE
+            if (widest.toLong() * 2 >= b.hi - b.lo) {
+                val cap = if (resources.configuration.screenWidthDp >= 600) 19_200_000 else 7_680_000
+                SdrEngine.viewBand(b.lo, b.hi, b.mode, cap)
+            } else { SdrEngine.setWideScan(true); SdrEngine.recentre() }
         }
         Apps.init(this)
         com.rocketgod.mayhem.ui.Skins.load(this)
