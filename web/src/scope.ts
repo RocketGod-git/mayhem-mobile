@@ -132,6 +132,7 @@ export class Scope {
     this.wf = host.querySelector('.wf') as HTMLCanvasElement;
     this.sp = host.querySelector('.sp') as HTMLCanvasElement;
     this.axis = host.querySelector('.axis') as HTMLElement;
+    host.classList.add('underlap');
     this.fixedCols = cols > 0;
     this.cols = cols || this.fitCols(host);
     this.rows = this.fitRows(opts.rows ?? 160);
@@ -286,12 +287,14 @@ export class Scope {
       el.addEventListener('pointerup', up); el.addEventListener('pointercancel', lost);
       el.style.touchAction = opts.onTap ? 'pan-y' : 'pan-y'; el.style.cursor = opts.onTap ? 'crosshair' : 'default';
     }
+    this.underlap();
     this.draw();
   }
 
   /** Re-size the canvases to the host (window resized, pane resized); the history is rescaled into the new ring. */
   private refit(host: HTMLElement): void {
     if (!host.isConnected) return;
+    this.underlap();
     const cols = this.fixedCols ? this.cols : this.fitCols(host);
     const rows = this.fitRows(this.rows / this.dpr);
     if (cols === this.cols && rows === this.rows) { this.draw(); return; }
@@ -319,7 +322,7 @@ export class Scope {
     this.wf.width = cols; this.wf.height = rows;
     this.rowImg = this.ringCtx.createImageData(cols, 1);
     this.last = new Float32Array(0);
-    this.wfCtx.drawImage(this.ring, 0, 0);
+    this.blit();
     this.overlay(); this.draw();
     this.onResize?.(this.bins);
   }
@@ -362,9 +365,7 @@ export class Scope {
     this.drawBar();
     this.applyLabels();
     this.onResize?.(this.bins);
-    const below = rows - this.head;
-    this.wfCtx.drawImage(this.ring, 0, this.head, cols, below, 0, 0, cols, below);
-    if (this.head > 0) this.wfCtx.drawImage(this.ring, 0, 0, cols, this.head, 0, below, cols, this.head);
+    this.blit();
     this.overlay(); this.draw();
   }
   /** Where the span sits on the span bar (fractions of the bar), the bar's end labels, and what to call the span at 1×. */
@@ -408,9 +409,7 @@ export class Scope {
     const peak = new Float32Array(cols);
     for (let x = 0; x < cols; x++) { const from = x + sx; peak[x] = from >= 0 && from < cols ? this.peak[from] : 0; }
     this.peak = peak; this.last = new Float32Array(0);
-    const below = rows - this.head;
-    this.wfCtx.drawImage(this.ring, 0, this.head, cols, below, 0, 0, cols, below);
-    if (this.head > 0) this.wfCtx.drawImage(this.ring, 0, 0, cols, this.head, 0, below, cols, this.head);
+    this.blit();
     this.overlay(); this.draw();
   }
   /** Display position (0..1) of a full-span fraction, or null when it is outside the window. */
@@ -503,9 +502,7 @@ export class Scope {
       this.stamps[this.head] = now;
       if (this.filled < this.rows) this.filled++;
     }
-    const below = this.rows - this.head;
-    this.wfCtx.drawImage(this.ring, 0, this.head, cols, below, 0, 0, cols, below);
-    if (this.head > 0) this.wfCtx.drawImage(this.ring, 0, 0, cols, this.head, 0, below, cols, this.head);
+    this.blit();
     this.overlay();
     this.draw();
   }
@@ -605,6 +602,26 @@ export class Scope {
   }
 
   /** Channel edges and a seconds ruler drawn over the freshly blitted waterfall. */
+  /**
+   * How many rows the waterfall spreads over its height: until the ring has filled, the rows it has stretch over
+   * the whole height (no black band under a fresh history); it settles to one row per line as it fills.
+   */
+  private shown(): number { return this.rows > 0 ? Math.min(this.rows, Math.max(this.filled, 24)) : 0; }
+  /** Lay the ring onto the visible waterfall, newest row at the top. */
+  private blit(): void {
+    const g = this.wfCtx, cols = this.cols, rows = this.rows, n = this.shown();
+    if (n <= 0) return;
+    const k = rows / n, first = Math.min(n, rows - this.head);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(this.ring, 0, this.head, cols, first, 0, 0, cols, first * k);
+    if (n > first) g.drawImage(this.ring, 0, 0, cols, n - first, 0, first * k, cols, rows - first * k);
+  }
+  /** The waterfall runs on down under the spectrum pane, which fades it out; keep it that much taller. */
+  private underlap(): void {
+    const h = this.sp.offsetHeight;
+    this.wf.style.marginBottom = h > 0 ? `-${h}px` : '';
+  }
+
   private overlay(): void {
     const g = this.wfCtx, w = this.cols, h = this.rows, dpr = this.ui();
     if (this.channel !== null && this.center) {
@@ -624,7 +641,11 @@ export class Scope {
     if (this.filled > 2 && this.rows >= 56 * dpr) {                  // a short strip has no room for a ruler
       const now = performance.now();
       const oldest = (now - this.stamps[(this.head + this.filled - 1) % this.rows]) / 1000;
-      const secPerPx = Math.max(1e-3, oldest / this.filled);
+      const rowH = this.rows / Math.max(1, this.shown());
+      const secPerPx = Math.max(1e-3, oldest / this.filled / rowH);
+      const wr = this.wf.getBoundingClientRect();
+      const under = wr.height > 0 ? this.sp.getBoundingClientRect().height / wr.height * this.rows : 0;
+      const lowest = this.rows - under - 9 * dpr;
       const minPx = 40 * dpr;
       let ivl = 5; for (const c of [5, 10, 15, 30, 60, 120, 300, 600]) { ivl = c; if (c / secPerPx >= minPx) break; }
       const label = (s: number) => s >= 120 ? `-${Math.round(s / 60)}m` : `-${s}s`;
@@ -632,7 +653,8 @@ export class Scope {
       let prevMark = -1;
       for (let y = 0; y < this.filled; y++) {
         const mark = Math.floor((now - this.stamps[(this.head + y) % this.rows]) / 1000 / ivl);
-        if (prevMark >= 0 && mark !== prevMark && mark > 0) { g.fillRect(0, y, 6 * dpr, 1); g.fillText(label(mark * ivl), 8 * dpr, y); }
+        const yy = y * rowH;
+        if (prevMark >= 0 && mark !== prevMark && mark > 0 && yy < lowest) { g.fillRect(0, yy, 6 * dpr, 1); g.fillText(label(mark * ivl), 8 * dpr, yy); }
         prevMark = mark;
       }
     }
