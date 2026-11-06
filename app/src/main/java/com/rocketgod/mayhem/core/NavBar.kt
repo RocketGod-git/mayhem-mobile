@@ -17,9 +17,6 @@ object NavBar {
     private const val KEY_LAST = "nav_last"
     private const val KEY_BIAS_OK = "bias_ok"
 
-    /** The receivers people reach for first: they lead the bar on a fresh install. */
-    val STARTER = listOf(MayhemApp.AUDIO, MayhemApp.PAGER, MayhemApp.ADSB, MayhemApp.HAM, MayhemApp.DEVICES, MayhemApp.SAT)
-
     /** Every app the bar can hold: all of them but Settings (it has its own button), and Troll only where it ships. */
     fun all(): List<MayhemApp> = MayhemApp.entries.filter {
         it != MayhemApp.SETTINGS && (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL)
@@ -41,7 +38,8 @@ object NavBar {
 
     private var ctx: Context? = null
 
-    private fun defaultOrder() = STARTER + all().filter { it !in STARTER }
+    /** A fresh install's bar matches the home screen: Receive, Analyze, Transmit, Tools, each in app order. */
+    private fun defaultOrder() = listOf("Receive", "Analyze", "Transmit", "Tools").flatMap { c -> all().filter { it.category == c } }
 
     fun load(c: Context) {
         ctx = c.applicationContext
