@@ -95,6 +95,9 @@ button { font: inherit; }
 .scope { display: flex; flex-direction: column; overflow: hidden; position: relative; }
 .scope .wf { width: 100%; flex: 1; min-height: 120px; image-rendering: pixelated; display: block; }
 .scope .sp { width: 100%; display: block; background: color-mix(in srgb, var(--paper) 85%, transparent); }
+/* The waterfall history runs the whole scope height and fades out down the spectrum pane: see-through at its top,
+ * nearly solid paper by the floor, instead of stopping at a hard edge. */
+.scope.underlap .sp { position: relative; z-index: 1; background: linear-gradient(180deg, color-mix(in srgb, var(--paper) 15%, transparent), color-mix(in srgb, var(--paper) 72%, transparent) 45%, color-mix(in srgb, var(--paper) 92%, transparent)); }
 .scope .axis { position: relative; height: 16px; color: var(--muted); font-size: 9px; background: var(--surface); border-top: 1px solid var(--line); }
 .scope .axis span { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; }
 .scope .axis span:first-child { transform: none; margin-left: 3px; }
@@ -525,6 +528,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
    * other; the open one is lit in its group's colour. */
   .appbar { display: block; order: 1; flex: none; margin-top: 8px; background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 70%, var(--paper))); border: 1px solid var(--line); border-radius: 14px; }
   .appbar .hs-in { display: flex; align-items: stretch; gap: 0; padding: 4px 6px 6px; }
+  .appbar .bar-gear { display: none; }
   .agrp { display: flex; flex-direction: column; flex: none; padding: 0 6px; }
   .agrp + .agrp { border-left: 1px solid var(--line); }
   .agrp small { color: var(--seg); font-size: 8.5px; font-weight: 700; letter-spacing: 2.2px; padding: 2px 4px 3px; opacity: 0.85; }
@@ -791,12 +795,23 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .radiomiss div { flex: 1; min-width: 0; } .radiomiss b { display: block; color: var(--accent2); letter-spacing: 2px; font-size: 11px; }
   .radiomiss span { color: var(--muted); font-size: 10px; }
   main#view { margin: 0; padding: 10px 10px 6px; }
-  .appbar { display: block; flex: none; background: var(--surface); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
-  .appbar .hs-in { display: flex; gap: 2px; padding: 6px 24px; }
-  .appbar button { flex: none; background: none; border: 0; color: var(--ink); font-weight: 700; font-size: 12px; letter-spacing: 1.5px; padding: 10px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
-  .appbar button.dim { opacity: 0.4; }
-  .appbar button.on { background: var(--seg, var(--accent)); color: #fff; box-shadow: 0 0 14px color-mix(in srgb, var(--seg, var(--accent)) 45%, transparent); }
+  /* The app picker, drawn as a tool strip: a gear square (Settings), then one key per app in a hairline pill. Each
+   * key is faintly lit in its own tint; the open app wears a glowing fill that slides between keys. The keys
+   * stretch to fill the pill when they fit and scroll with the glowing edges when they do not. */
+  .appbar { display: flex; align-items: center; gap: 8px; flex: none; height: 44px; padding: 0 8px; box-sizing: content-box; background: var(--paper); padding-bottom: env(safe-area-inset-bottom); }
+  .bar-gear { flex: none; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; transition: transform .12s ease; }
+  .bar-gear svg { width: 20px; height: 20px; fill: var(--accent); }
+  .bar-gear:active { transform: scale(.92); }
+  .bar-pill { flex: 1; height: 36px; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .appbar .hs-in { position: relative; display: flex; gap: 4px; height: 100%; padding: 3px; box-sizing: border-box; }
+  .appbar .hs-in button { position: relative; z-index: 1; flex: 1 0 auto; min-width: 48px; background: color-mix(in srgb, var(--seg) 7%, transparent); border: 1px solid color-mix(in srgb, var(--seg) 22%, transparent); color: color-mix(in srgb, var(--ink) 82%, transparent); font-weight: 700; font-size: 13px; letter-spacing: 1px; padding: 0 14px; border-radius: 5px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, color .2s ease; }
+  .appbar .hs-in button:active { transform: scale(.94); }
+  .appbar .hs-in button.dim:not(.on) { opacity: 0.45; }
+  .appbar .hs-in button.on { color: #fff; }
   .appbar .ag { display: none; }
+  .afill { position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 5px; background: var(--seg, var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--seg, var(--accent)) 55%, transparent); opacity: 0; pointer-events: none; transition: opacity .2s ease, background-color .24s ease; }
+  .afill.show { opacity: 1; }
+  .afill.slide { transition: left .36s cubic-bezier(.3, 1.25, .5, 1), width .36s cubic-bezier(.3, 1.25, .5, 1), opacity .2s ease, background-color .24s ease; }
   /* the launcher is a home for discovery, under the same bars: its own tile strip stays, the header's job is the top bar */
   .visual > .face { flex: none; margin-bottom: 6px; }
   .controls { max-height: 58%; }

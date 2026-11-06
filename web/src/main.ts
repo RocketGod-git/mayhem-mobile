@@ -4576,9 +4576,11 @@ const BAR_CATS: AppDef['cat'][] = ['Receive', 'Analyze', 'Tools', 'Transmit'];
 function buildBar(): void {
   const bar = $('appbar-in');
   const btn = (id: AppId) => { const a = APPS.find(x => x.id === id)!; return `<button data-bar="${id}" style="--seg:${tint(a.cat)}" title="${esc(a.title)} · ${esc(a.blurb)}"><span class="ag">${glyph(id, 'currentColor', 24)}</span><span class="al">${barLabel(id)}</span></button>`; };
+  // phone: the keys sit in a hairline pill behind one fill that slides to the open app (see placeFill)
   bar.innerHTML = wideShell.matches
     ? BAR_CATS.map(c => { const ids = barApps().filter(id => APPS.find(a => a.id === id)!.cat === c); return ids.length ? `<div class="agrp" style="--seg:${tint(c)}"><small>${c.toUpperCase()}</small><div class="agrp-in">${ids.map(btn).join('')}</div></div>` : ''; }).join('')
-    : barApps().map(btn).join('');
+    : '<i class="afill"></i>' + barApps().map(btn).join('');
+  fillPlaced = false;
   qa<HTMLButtonElement>('[data-bar]', bar).forEach(b => b.onclick = () => {
     const id = b.dataset.bar as AppId;
     closeSettings();
@@ -4592,6 +4594,8 @@ function initShell(): void {
   bindHs($('appbar').parentElement!);
   $('nav-home').onclick = () => { closeSettings(); if (state.app) open(null); };
   $('nav-settings').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
+  $('bar-gear').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
+  new ResizeObserver(() => placeFill(false)).observe($('appbar-in'));
   $('set-close').onclick = closeSettings;
   $('setmodal').onclick = (e) => { if (e.target === $('setmodal')) closeSettings(); };
   $('nav-mute').onclick = toggleMute;
@@ -4632,6 +4636,18 @@ function drawSettings(): void {
 }
 /** A setting changed: redraw the overlay in place. */
 function refreshSettings(): void { if (settingsOpen()) drawSettings(); }
+/** The phone strip's fill has been put somewhere yet (the first placing jumps; later ones slide). */
+let fillPlaced = false;
+/** Move the phone strip's fill under the open app's key, sliding there when [slide]; on Home it fades away. */
+function placeFill(slide: boolean): void {
+  const fill = q<HTMLElement>('#appbar-in .afill'); if (!fill) return;
+  const on = q<HTMLElement>(`#appbar-in [data-bar="${state.app}"]`);
+  if (!on || !on.offsetWidth) { fill.classList.remove('show'); fillPlaced = false; return; }
+  fill.classList.toggle('slide', slide && fillPlaced);
+  fill.style.setProperty('--seg', on.style.getPropertyValue('--seg'));
+  fill.style.left = `${on.offsetLeft}px`; fill.style.width = `${on.offsetWidth}px`;
+  fill.classList.add('show'); fillPlaced = true;
+}
 function refreshShell(): void {
   const here = state.app, setOn = settingsOpen();
   qa<HTMLButtonElement>('[data-bar]').forEach(b => {
@@ -4641,6 +4657,7 @@ function refreshShell(): void {
   });
   const on = q<HTMLElement>(`[data-bar="${here}"]`), bar = $('appbar-in');
   if (on) bar.scrollTo({ left: on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
+  placeFill(true);
   $('nav-home').classList.toggle('on', state.app === null && !setOn);
   $('nav-settings').classList.toggle('on', setOn);
   $('home').classList.toggle('on', state.app === null && !setOn);
