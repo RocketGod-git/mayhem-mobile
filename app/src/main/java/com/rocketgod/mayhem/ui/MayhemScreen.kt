@@ -1,6 +1,31 @@
 package com.rocketgod.mayhem.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Constraints
+import kotlinx.coroutines.launch
+import kotlin.math.max
+import kotlin.math.roundToInt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,7 +45,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,8 +67,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -86,7 +108,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
             TopBar(current, connected, accent, favesOpen = faves) { faves = true }
             if (!connected) RadioMissing(status)
             // a little air under the bar: the readout's top chevrons sat right against it
-            Box(Modifier.weight(1f).fillMaxWidth().padding(start = d.pad, end = d.pad, top = d.dp(10f))) {
+            Box(Modifier.weight(1f).fillMaxWidth().padding(start = d.pad, end = d.pad, top = d.dp(if (d.cls != ScreenClass.COMPACT) 6f else 10f))) {
                 when (current) {
                     null -> Launcher(accent)
                     MayhemApp.HAM -> HamScreen(accent)
@@ -149,9 +171,11 @@ private fun TopBar(current: MayhemApp?, connected: Boolean, accent: Color, faves
     val d = rememberDims()
     val muted by SdrEngine.muted.collectAsState()
     val onSettings = current == MayhemApp.SETTINGS
+    // tablets: a slimmer bar than the phone's, so the screen below starts higher
+    val slim = d.cls != ScreenClass.COMPACT
     Column(Modifier.fillMaxWidth().background(Palette.surface)) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(accent))
-        Row(Modifier.fillMaxWidth().height(d.dp(44f)).padding(horizontal = d.dp(8f)), verticalAlignment = Alignment.CenterVertically,
+        Row(Modifier.fillMaxWidth().height(d.dp(if (slim) 32f else 44f)).padding(horizontal = d.dp(8f)), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
             TopButton(AppsIcon, "HOME", on = current == null, accent = accent, modifier = Modifier.weight(1f)) { if (current != null) Apps.home() }
             TopButton(StarIcon, "FAVES", on = favesOpen, accent = accent, modifier = Modifier.weight(1f)) { onFaves() }
@@ -175,7 +199,7 @@ private fun TopButton(icon: androidx.compose.ui.graphics.vector.ImageVector, lab
     val haptic = LocalHapticFeedback.current
     val c = if (warn) Palette.danger else if (on) accent else Palette.ink
     Row(
-        modifier.height(d.dp(34f)).clip(RoundedCornerShape(8.dp)).background(if (on) Palette.panel else Color.Transparent)
+        modifier.height(d.dp(if (d.cls != ScreenClass.COMPACT) 27f else 34f)).clip(RoundedCornerShape(8.dp)).background(if (on) Palette.panel else Color.Transparent)
             .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
         horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
     ) {
@@ -187,8 +211,11 @@ private fun TopButton(icon: androidx.compose.ui.graphics.vector.ImageVector, lab
 }
 
 /**
- * The apps ticked in Settings › Bar, in their order, edge to edge along the bottom. It scrolls sideways and keeps the
- * open app in view; the edges fade, an arrow shows on whichever side has more, and a thin track says where you are.
+ * The apps ticked in Settings › Bar, in their order, along the bottom, drawn as a tool strip: a ⚙ square at the left
+ * (which apps the bar shows, Settings › Bar), then one short uppercase key per app in a hairline pill. Each key is
+ * faintly lit in its own tint; the open app (or the one Settings is open over) wears a glowing fill that slides
+ * between keys. When the keys outgrow the row they scroll sideways with the open one kept centered and the edges glow
+ * (as every scroller here does); when they fit they stretch to fill the pill. On Home nothing is lit.
  */
 @Composable
 private fun AppScroller(current: MayhemApp?) {
@@ -197,35 +224,149 @@ private fun AppScroller(current: MayhemApp?) {
     Radio.kind.collectAsState().value
     var asking by remember { mutableStateOf<MayhemApp?>(null) }
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
-    val scroll = rememberScrollState()
-    val spots = remember { HashMap<String, Pair<Int, Int>>() }
-    val here = when (current) { null -> ""; MayhemApp.SETTINGS -> Apps.settingsOver()?.name ?: ""; else -> current!!.name }
-    LaunchedEffect(here, bar) {
-        val (x, w) = spots[here] ?: return@LaunchedEffect
-        scroll.animateScrollTo((x - (scroll.viewportSize - w) / 2).coerceIn(0, scroll.maxValue))
-    }
     val onSettings = current == MayhemApp.SETTINGS
-    val edge = d.dp(24f)
-    Column(Modifier.fillMaxWidth().background(Palette.surface)) {
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
-        Box(Modifier.fillMaxWidth().height(d.dp(50f))) {
-            // the same breathing edge glow as every other scroller says there are more apps past the edge
-            Row(Modifier.fillMaxSize().scrollGlow(scroll, horizontal = true).horizontalScroll(scroll).padding(horizontal = edge, vertical = d.dp(6f)),
-                horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                for (app in bar) {
-                    val blocked = Radio.blockedBecause(app).isNotEmpty()
-                    BarSeg(barLabel(app), on = current == app, tint = tintFor(app), key = app.name, spots = spots, dim = blocked) {
-                        when {
-                            current == app -> {}
-                            // the app Settings is open over: just close Settings, don't start it again
-                            onSettings && Apps.settingsOver() == app -> Apps.back()
-                            blocked -> asking = app
-                            else -> Apps.open(app)
-                        }
-                    }
-                }
+    val lit = if (onSettings) Apps.settingsOver() else current
+    Row(Modifier.fillMaxWidth().background(Palette.paper).height(StripGeo.band).padding(horizontal = d.pad),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StripGear { SettingsNav.open("bar") }
+        StripSegments(bar, lit, Modifier.weight(1f)) { app ->
+            when {
+                current == app -> {}
+                // the app Settings is open over: just close Settings, don't start it again
+                onSettings && Apps.settingsOver() == app -> Apps.back()
+                Radio.blockedBecause(app).isNotEmpty() -> asking = app
+                else -> Apps.open(app)
             }
         }
+    }
+}
+
+/** The strip's measurements: the touch band, the visible pill and ⚙ square inside it, and the keys. */
+private object StripGeo {
+    val band = 44.dp
+    val pill = 36.dp
+    val inset = 3.dp
+    val gap = 4.dp
+    val segMin = 48.dp
+    val segPad = 14.dp
+    val corner = 8.dp
+}
+
+/** Shrinks a little while held, as a key does. */
+@Composable
+private fun pressScale(source: MutableInteractionSource, to: Float): Float {
+    val pressed by source.collectIsPressedAsState()
+    return animateFloatAsState(if (pressed) to else 1f, tween(120), label = "press").value
+}
+
+@Composable
+private fun StripGear(onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val src = remember { MutableInteractionSource() }
+    val k = pressScale(src, 0.92f)
+    val shape = RoundedCornerShape(StripGeo.corner)
+    Box(Modifier.size(StripGeo.pill, StripGeo.band).semantics { contentDescription = "Choose apps"; role = Role.Button }
+        .clickable(src, indication = null) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() },
+        contentAlignment = Alignment.Center) {
+        Box(Modifier.size(StripGeo.pill).graphicsLayer { scaleX = k; scaleY = k }.clip(shape).background(Palette.surface)
+            .border(1.dp, Palette.line, shape), contentAlignment = Alignment.Center) {
+            Icon(GearIcon, contentDescription = null, tint = Palette.accent, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+/** Where each key sits along the row (px), written as the row is measured and read by the fill and the scroll. */
+private class KeySpots { var x = IntArray(0); var w = IntArray(0) }
+
+@Composable
+private fun StripSegments(apps: List<MayhemApp>, selected: MayhemApp?, modifier: Modifier, onPick: (MayhemApp) -> Unit) {
+    val pill = RoundedCornerShape(StripGeo.corner)
+    BoxWithConstraints(modifier.height(StripGeo.pill).clip(pill).background(Palette.surface).border(1.dp, Palette.line, pill)) {
+        val density = LocalDensity.current
+        val viewport = constraints.maxWidth
+        val scroll = rememberScrollState()
+        val spots = remember { KeySpots() }
+        var rowW by remember { mutableIntStateOf(0) }
+        val idx = apps.indexOf(selected)
+        val fillX = remember { Animatable(0f) }
+        val fillW = remember { Animatable(0f) }
+        var fillOn by remember { mutableStateOf(false) }
+        val tint by animateColorAsState(if (selected != null) tintFor(selected) else Palette.accent, tween(240), label = "fill")
+        // the fill springs to the open key and the row scrolls it to the middle; from Home it appears in place
+        LaunchedEffect(idx, apps, rowW, viewport) {
+            if (idx < 0 || idx >= spots.x.size) { fillOn = false; return@LaunchedEffect }
+            val x = spots.x[idx].toFloat(); val w = spots.w[idx].toFloat()
+            val target = (x + w / 2 - viewport / 2f).roundToInt().coerceIn(0, max(0, rowW - viewport))
+            launch { scroll.animateScrollTo(target, tween(320)) }
+            if (!fillOn) { fillX.snapTo(x); fillW.snapTo(w); fillOn = true }
+            else {
+                val sp = spring<Float>(dampingRatio = 0.82f, stiffness = 300f)
+                launch { fillW.animateTo(w, sp) }
+                fillX.animateTo(x, sp)
+            }
+        }
+        Box(Modifier.fillMaxSize().scrollGlow(scroll, horizontal = true).horizontalScroll(scroll)) {
+            val inset = with(density) { (StripGeo.inset + 1.dp).roundToPx() }
+            val gap = with(density) { StripGeo.gap.roundToPx() }
+            val segMin = with(density) { StripGeo.segMin.roundToPx() }
+            Layout(
+                content = {
+                    for (app in apps) StripSeg(barLabel(app), active = app == selected, tint = tintFor(app),
+                        dim = Radio.blockedBecause(app).isNotEmpty()) { onPick(app) }
+                },
+                modifier = Modifier.fillMaxHeight().onSizeChanged { rowW = it.width }.drawBehind {
+                    if (!fillOn || selected == null) return@drawBehind
+                    // the open key: filled with its tint, glowing softly
+                    val r = (StripGeo.corner - StripGeo.inset).toPx()
+                    val top = inset.toFloat(); val hh = size.height - 2 * inset
+                    for (k in 3 downTo 1) {
+                        val g = k * 2.dp.toPx()
+                        drawRoundRect(tint.copy(alpha = 0.12f), Offset(fillX.value - g, top - g), Size(fillW.value + 2 * g, hh + 2 * g), CornerRadius(r + g))
+                    }
+                    drawRoundRect(tint, Offset(fillX.value, top), Size(fillW.value, hh), CornerRadius(r))
+                },
+            ) { ms, c ->
+                val h = max(0, c.maxHeight - 2 * inset)
+                val natural = IntArray(ms.size) { max(segMin, ms[it].maxIntrinsicWidth(h)) }
+                // keys that fit stretch to fill the pill: an equal share each, any wider key keeping its own width
+                val room = viewport - 2 * inset - gap * max(0, ms.size - 1)
+                val widths = natural.copyOf()
+                if (ms.isNotEmpty() && natural.sum() < room) {
+                    val wide = BooleanArray(ms.size)
+                    while (true) {
+                        val free = ms.indices.filter { !wide[it] }
+                        if (free.isEmpty()) break
+                        val share = (room - ms.indices.filter { wide[it] }.sumOf { natural[it] }) / free.size
+                        val over = free.filter { natural[it] > share }
+                        if (over.isEmpty()) { free.forEach { widths[it] = share }; break }
+                        over.forEach { wide[it] = true }
+                    }
+                }
+                val ps = ms.mapIndexed { i, m -> m.measure(Constraints.fixed(widths[i], h)) }
+                val xs = IntArray(ps.size); var x = inset
+                for (i in ps.indices) { xs[i] = x; x += widths[i] + if (i < ps.size - 1) gap else 0 }
+                spots.x = xs; spots.w = widths
+                layout(max(x + inset, viewport), c.maxHeight) { ps.forEachIndexed { i, p -> p.place(xs[i], inset) } }
+            }
+        }
+    }
+}
+
+/** One key: a single-line uppercase label on a faintly lit key of its own tint, ink-on-tint while open. */
+@Composable
+private fun StripSeg(label: String, active: Boolean, tint: Color, dim: Boolean, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val src = remember { MutableInteractionSource() }
+    val k = pressScale(src, 0.94f)
+    val key = RoundedCornerShape(StripGeo.corner - StripGeo.inset)
+    Box(Modifier.graphicsLayer { scaleX = k; scaleY = k; alpha = if (dim && !active) 0.45f else 1f }
+        .semantics { role = Role.Button; selected = active }
+        // every key: a breath of its tint and a hairline, so the strip reads as controls, not a list
+        .clip(key).background(tint.copy(alpha = 0.07f)).border(1.dp, tint.copy(alpha = 0.22f), key)
+        .clickable(src, indication = null) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
+        .padding(horizontal = StripGeo.segPad), contentAlignment = Alignment.Center) {
+        Text(label, color = if (active) inkOn(tint) else Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontWeight = FontWeight.Bold,
+            fontSize = 13.sp, letterSpacing = 1.sp, maxLines = 1, softWrap = false)
     }
 }
 
@@ -264,20 +405,5 @@ private fun FavesSheet(accent: Color, onClose: () -> Unit) {
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun BarSeg(label: String, on: Boolean, tint: Color, key: String, spots: HashMap<String, Pair<Int, Int>>, dim: Boolean = false, onClick: () -> Unit) {
-    val d = rememberDims()
-    val haptic = LocalHapticFeedback.current
-    Box(
-        Modifier.fillMaxHeight().widthIn(min = d.dp(48f)).onGloballyPositioned { spots[key] = it.positionInParent().x.toInt() to it.size.width }
-            .clip(RoundedCornerShape(6.dp)).background(if (on) tint else Color.Transparent).alpha(if (dim && !on) 0.45f else 1f)
-            .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(horizontal = d.dp(12f)),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(label, color = if (on) inkOn(tint) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
-            letterSpacing = 0.5.sp, maxLines = 1, softWrap = false)
     }
 }
