@@ -224,7 +224,10 @@ private class WfHistory {
             resample(spec, memVals, 0f, nb.toFloat() / cols)
             for (x in 0 until cols) memArgb[x] = lut[(memVals[x] * 255f).toInt().coerceIn(0, 255)]
         }
-        repeat(n.coerceIn(1, rows)) {
+        // Until the ring is full each spectrum lays its row down four times, so the stretched drop-in of a fresh
+        // history is over four times as fast (a slow one was hard to watch); after that, one row per spectrum.
+        val times = if (filled < rows) n * 4 else n
+        repeat(times.coerceIn(1, rows)) {
             head = (head - 1 + rows) % rows
             b.setPixels(rowArgb, 0, cols, 0, head, cols, 1)
             // the memory's slot goes black right across first: beyond the span it holds a row from a whole history ago
