@@ -39,9 +39,9 @@ object RtlSdr {
 
     const val MIN_HZ = 24_000_000L
     const val MAX_HZ = 1_766_000_000L
-    /** Below this the R82xx tracking filter runs out; an R820T/R820T2 or R828S reaches HF another way instead. */
+    /** Below this the R82xx tracking filter runs out; an R820T/R820T2, R828S or Blog V4 reaches HF another way. */
     private const val HF_MAX_HZ = 24_000_000L
-    /** The V4L's onboard upconverter lifts HF up by the RTL crystal's 28.8 MHz into the tuner's normal range. */
+    /** The V4 and V4L's onboard upconverter lifts HF up by the RTL crystal's 28.8 MHz into the tuner's range. */
     private const val UPCONVERT_HZ = 28_800_000L
     /** The most the tuner's stages add up to, in dB (not the 49.6 librtlsdr's table claims). */
     const val MAX_GAIN_DB = 48.8
@@ -60,6 +60,10 @@ object RtlSdr {
     /** What it turned out to be, for the screen. */
     @Volatile var label = "RTL-SDR"; private set
     @Volatile var tuner = ""; private set
+    /** An RTL-SDR Blog V4: an R828D with the HF upconverter and three switched inputs, told apart by its USB strings. */
+    @Volatile var blogV4 = false; private set
+    /** Whether this stick reaches below 24 MHz: direct sampling on an R820T/R820T2, the upconverter on a V4 or V4L. */
+    val hfReady get() = tuner == "R820T/R820T2" || tuner == "R828S" || blogV4
 
     private const val DEMODB = 0; private const val USBB = 1; private const val SYSB = 2; private const val IICB = 6
     private const val USB_SYSCTL = 0x2000; private const val USB_EPA_CTL = 0x2148; private const val USB_EPA_MAXPKT = 0x2158
@@ -70,7 +74,7 @@ object RtlSdr {
      * The RTL-SDR Blog V4L. The R828D went out of production and the V4L carries an R828S, which answers at the
      * R820T's address with the R820T's check value; only the USB strings tell it apart, as in librtlsdr.
      */
-    private const val BLOG_MAKER = "RTLSDRBlog"; private const val BLOG_V4L = "Blog V4L"
+    private const val BLOG_MAKER = "RTLSDRBlog"; private const val BLOG_V4L = "Blog V4L"; private const val BLOG_V4 = "Blog V4"
     private const val RTL_XTAL = 28_800_000L
     /** Where the tuner puts the wanted signal: low-side injection, which the demodulator inverts back. */
     private const val IF_HZ = 3_570_000L
@@ -453,11 +457,15 @@ object RtlSdr {
      * runs out, HF is reached according to the stick: an R820T/R820T2 (the Blog V3 and every generic R820T) drops
      * into direct sampling and the wanted frequency is read straight off the ADC's Q branch by the demodulator's
      * own downconverter; the V4L's R828S keeps its tuner but switches the aerial through the onboard upconverter
-     * (GPIO5 low) and tunes 28.8 MHz high. An R828D or an unknown stick has neither, so a sub-24 MHz ask there
-     * simply will not lock — the same static as before.
+     * (GPIO5 low) and tunes 28.8 MHz high. The Blog V4 does the same below 28.8 MHz, its HF arriving on cable-2.
+     * Another R828D or an unknown stick has neither, so a sub-24 MHz ask there simply will not lock.
      */
     private fun setCenterFreq(freqHz: Long) {
         when {
+            freqHz < UPCONVERT_HZ && blogV4 -> {
+                if (!upconvert) { setGpio(5, false); upconvert = true }
+                i2cRepeater(true); r82xxSetFreq(freqHz + UPCONVERT_HZ, hf = true); i2cRepeater(false)
+            }
             freqHz < HF_MAX_HZ && tuner == "R820T/R820T2" -> {
                 if (!directSampling) enterDirectSampling()
                 setIfFreq(freqHz)
@@ -554,7 +562,10 @@ object RtlSdr {
             tuner = "R828S"; vcoPowerRef = 1
             Diag.log("RTL-SDR: RTL-SDR Blog V4L (R828S)")
         }
-        label = if (tuner == "R828S") "RTL-SDR Blog V4L" else "RTL-SDR · $tuner"
+        blogV4 = found && tuner == "R828D" && dev != null &&
+            usbString(dev.manufacturerName) == BLOG_MAKER && usbString(dev.productName) == BLOG_V4
+        if (blogV4) Diag.log("RTL-SDR: RTL-SDR Blog V4 (R828D, HF upconverter)")
+        label = if (tuner == "R828S") "RTL-SDR Blog V4L" else if (blogV4) "RTL-SDR Blog V4" else "RTL-SDR · $tuner"
         for (i in R82XX_INIT.indices) tunerRegs[5 + i] = R82XX_INIT[i]
         tunerWrite(0x05, R82XX_INIT)
         if (found && tuner == "R828D") pickR828dReference()
@@ -647,7 +658,26 @@ object RtlSdr {
         if (tuner == "R828D") tunerWriteMask(0x05, if (rfHz > 345_000_000L) 0x00 else 0x60, 0x60)
         // the V4L's R828S takes HF on cable-1 (bit 6) from the upconverter and everything else on the air-in
         if (tuner == "R828S") tunerWriteMask(0x05, if (hf) 0x40 else 0x00, 0x60)
+        if (blogV4) v4Input(rfHz, hf)
         if (!setPll(lo)) Diag.log("RTL-SDR: PLL did not lock at %.3f MHz".format(rfHz / 1e6))
+    }
+
+    /**
+     * The Blog V4's HF input (librtlsdr-blog r82xx_set_freq, V4 branch). HF comes in on cable-2 (0x06 bit 3) from
+     * the upconverter, with cable-1 and the air-in off and the tracking filter bypassed; below 2.2 MHz the notch
+     * filters are off too. Leaving HF only clears cable-2: the inputs above it stay as the R828D rule sets them.
+     */
+    private fun v4Input(rfHz: Long, hf: Boolean) {
+        if (!hf) {
+            if ((tunerRegs[0x06] and 0x08) != 0) tunerWriteMask(0x06, 0x00, 0x08)
+            return
+        }
+        val wanted = rfHz - UPCONVERT_HZ
+        tunerWriteMask(0x17, if (wanted <= 2_200_000L) 0x00 else 0x08, 0x08)
+        tunerWriteMask(0x1a, 0x40, 0xc3)
+        tunerWriteReg(0x1b, 0x00)
+        tunerWriteMask(0x05, 0x20, 0x60)
+        tunerWriteMask(0x06, 0x08, 0x08)
     }
 
     /** Two uneven 16-step stages walked to the asked total; the tuner's own auto mode is not used (it parks near minimum). */

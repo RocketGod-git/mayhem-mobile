@@ -142,7 +142,7 @@ fun SettingsScreen(accent: Color) {
         else -> emptyList()
     }
     val rtl = radio == Radio.Kind.RTLSDR
-    val hfTuner = rtl && RtlSdr.tuner.let { it == "R820T/R820T2" || it == "R828S" }
+    val hfTuner = rtl && RtlSdr.hfReady
     val radioRows = when (radio) {
         Radio.Kind.NONE -> listOf(SRow("radio none") { ValueRow("No radio attached", "plug in", "A HackRF or an RTL-SDR over USB-OTG.") })
         Radio.Kind.RTLSDR -> listOf(
@@ -286,7 +286,7 @@ private fun RadioCard(accent: Color) {
         }
         if (up) LevelBar(level, accent, Modifier.fillMaxWidth().height(d.dp(5f)))
         val badges = buildList {
-            if (rtl && RtlSdr.tuner.let { it == "R820T/R820T2" || it == "R828S" }) add("HF READY" to true)
+            if (rtl && RtlSdr.hfReady) add("HF READY" to true)
             if (bias) add("BIAS-T ON" to true)
             if (!rtl && up && amp) add("AMP +14" to true)
             if (muted) add("MUTED" to true)

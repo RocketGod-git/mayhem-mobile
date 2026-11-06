@@ -77,8 +77,9 @@ const R82XX_IF_HZ = 3_570_000;
 
 /**
  * Below 24 MHz the R82xx tracking filter runs out, so HF is reached another way: an R820T/R820T2 by direct
- * sampling (the tuner bypassed, the ADC read straight), the V4L's R828S by its onboard upconverter, which lifts
- * HF up by the RTL crystal's 28.8 MHz into the tuner's range. The R828D and unknown sticks have neither.
+ * sampling (the tuner bypassed, the ADC read straight), the Blog V4 and V4L by their onboard upconverter, which
+ * lifts HF up by the RTL crystal's 28.8 MHz into the tuner's range. Other R828D sticks and unknown ones have
+ * neither. The V4 upconverts everything below 28.8 MHz, as librtlsdr-blog does.
  */
 const RTL_HF_MAX_HZ = 24_000_000, RTL_UPCONVERT_HZ = 28_800_000;
 
@@ -92,7 +93,7 @@ const R828D_XTAL = 16_000_000;
  * librtlsdr goes by the USB strings the EEPROM programs, and so does this. Compared after trimming, since some
  * stacks hand the strings back with a trailing NUL.
  */
-const BLOG_MAKER = 'RTLSDRBlog', BLOG_V4L = 'Blog V4L';
+const BLOG_MAKER = 'RTLSDRBlog', BLOG_V4L = 'Blog V4L', BLOG_V4 = 'Blog V4';
 const usbString = (s: string | undefined): string => (s ?? '').replace(/\0/g, '').trim();
 /** What either part answers at register zero. The one reliable way to tell a tuner is really there. */
 const R82XX_CHECK_VAL = 0x69;
@@ -277,6 +278,8 @@ export class RtlSdr implements Radio {
   private appliedFreq = 0; private appliedRate = 0; private appliedGain = Number.MAX_SAFE_INTEGER;
   /** Direct sampling engaged (R820T/R820T2 below 24 MHz); the V4L's upconverter in circuit (R828S below 24 MHz). */
   private directSampling = false; private upconvert = false;
+  /** An RTL-SDR Blog V4: an R828D with the HF upconverter and three switched inputs, told apart by its USB strings. */
+  private blogV4 = false;
   private dbgBuffers = 0;
   /** The last transfer error, kept so the give-up message can say what actually went wrong. */
   private lastError: string | null = null;
@@ -610,10 +613,17 @@ export class RtlSdr implements Radio {
    * runs out, HF is reached according to the stick: an R820T/R820T2 (the Blog V3 and every generic R820T) drops
    * into direct sampling and the wanted frequency is read straight off the ADC's Q branch by the demodulator's
    * own downconverter; the V4L's R828S keeps its tuner but switches the aerial through the onboard upconverter
-   * (GPIO5 low) and tunes 28.8 MHz high. An R828D or an unknown stick has neither, so a sub-24 MHz ask there
-   * simply will not lock.
+   * (GPIO5 low) and tunes 28.8 MHz high. The Blog V4 does the same below 28.8 MHz, its HF arriving on cable-2.
+   * Another R828D or an unknown stick has neither, so a sub-24 MHz ask there simply will not lock.
    */
   private async setCenterFreq(freqHz: number): Promise<void> {
+    if (freqHz < RTL_UPCONVERT_HZ && this.blogV4) {
+      if (!this.upconvert) { await this.setGpio(5, false); this.upconvert = true; }
+      await this.setI2cRepeater(true);
+      await this.r82xxSetFreq(freqHz + RTL_UPCONVERT_HZ, true);
+      await this.setI2cRepeater(false);
+      return;
+    }
     if (freqHz < RTL_HF_MAX_HZ && this.tuner === 'R820T/R820T2') {
       if (!this.directSampling) await this.enterDirectSampling();
       await this.setIfFreq(freqHz);
@@ -765,9 +775,12 @@ export class RtlSdr implements Radio {
       this.tuner = 'R828S'; this.vcoPowerRef = 1;
       this.ev.onLog('RTL-SDR: RTL-SDR Blog V4L (R828S)');
     }
-    this.label = this.tuner === 'R828S' ? 'RTL-SDR Blog V4L' : `RTL-SDR · ${this.tuner}`;
-    // An R820T/R820T2 (direct sampling) or an R828S (the V4L's upconverter) can reach below the 24 MHz floor.
-    if (this.tuner === 'R820T/R820T2' || this.tuner === 'R828S') this.limits.minHz = 1_000_000;
+    this.blogV4 = found && this.tuner === 'R828D'
+      && usbString(this.dev.manufacturerName) === BLOG_MAKER && usbString(this.dev.productName) === BLOG_V4;
+    if (this.blogV4) this.ev.onLog('RTL-SDR: RTL-SDR Blog V4 (R828D, HF upconverter)');
+    this.label = this.tuner === 'R828S' ? 'RTL-SDR Blog V4L' : this.blogV4 ? 'RTL-SDR Blog V4' : `RTL-SDR · ${this.tuner}`;
+    // An R820T/R820T2 (direct sampling) or a Blog V4 / V4L (the upconverter) can reach below the 24 MHz floor.
+    if (this.tuner === 'R820T/R820T2' || this.tuner === 'R828S' || this.blogV4) this.limits.minHz = 1_000_000;
 
     for (let i = 0; i < R82XX_INIT.length; i++) this.tunerRegs[5 + i] = R82XX_INIT[i];
     await this.tunerWrite(0x05, R82XX_INIT);
@@ -898,9 +911,28 @@ export class RtlSdr implements Radio {
     // The V4L's R828S has one input fewer: cable-1 for HF (0x05 bit 6) carries the upconverter's output, the
     // air-in (both bits clear) everything else (librtlsdr r82xx_set_freq, V4L branch).
     if (this.tuner === 'R828S') await this.tunerWriteMask(0x05, hf ? 0x40 : 0x00, 0x60);
+    if (this.blogV4) await this.v4Input(rfHz, hf);
     if (!(await this.r82xxSetPll(lo))) {
       this.ev.onLog(`RTL-SDR: PLL did not lock at ${(rfHz / 1e6).toFixed(3)} MHz`);
     }
+  }
+
+  /**
+   * The Blog V4's HF input (librtlsdr-blog r82xx_set_freq, V4 branch). HF comes in on cable-2 (0x06 bit 3) from
+   * the upconverter, with cable-1 and the air-in off and the tracking filter bypassed; below 2.2 MHz the notch
+   * filters are off too. Leaving HF only clears cable-2: the inputs above it stay as the R828D rule sets them.
+   */
+  private async v4Input(rfHz: number, hf: boolean): Promise<void> {
+    if (!hf) {
+      if (this.tunerRegs[0x06] & 0x08) await this.tunerWriteMask(0x06, 0x00, 0x08);
+      return;
+    }
+    const wanted = rfHz - RTL_UPCONVERT_HZ;
+    await this.tunerWriteMask(0x17, wanted <= 2_200_000 ? 0x00 : 0x08, 0x08);
+    await this.tunerWriteMask(0x1a, 0x40, 0xc3);
+    await this.tunerWriteReg(0x1b, 0x00);
+    await this.tunerWriteMask(0x05, 0x20, 0x60);
+    await this.tunerWriteMask(0x06, 0x08, 0x08);
   }
 
   /**
