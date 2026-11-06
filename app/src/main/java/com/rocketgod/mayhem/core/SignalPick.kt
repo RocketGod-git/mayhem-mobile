@@ -114,7 +114,6 @@ object AutoPick {
         val on = pool.firstOrNull { abs(it.hz - here) <= max(50_000.0, it.bw6 / 2) }
         if (on != null && on.snr >= 15) {
             armed = false
-            SdrEngine.recentre()
             com.rocketgod.mayhem.Diag.log("start-up: staying on the station already tuned, %.3f MHz %.0f dB".format(on.hz / 1e6, on.snr))
             return
         }
@@ -127,8 +126,6 @@ object AutoPick {
         armed = false
         modeFor(best)?.let { if (it != SdrEngine.mode.value) SdrEngine.setMode(it, silent = true) }
         SdrEngine.tune(signalDial(best, rasterFor(SdrEngine.mode.value)), silent = true)
-        // the pick sits in the middle of the waterfall, not off at the side (the span stays as wide as it was)
-        if (!SdrEngine.spanByHand) SdrEngine.recentre()
         com.rocketgod.mayhem.Diag.log("start-up: tuned the strongest steady signal in view, %.3f MHz %s %.0f dB".format(best.hz / 1e6, best.cls, best.snr))
     }
 }

@@ -1534,7 +1534,7 @@ function audioViewBand(): void {
   if (radio) radio.targetFreqHz = state.viewLo;
   scope?.clear(); sendOffset(); refreshChannel(); refreshReadout();
 }
-/** Audio's own pick: the strongest steady station in view, then centered in the waterfall. */
+/** Audio's own pick: the strongest steady station in view, tuned where it shows (no recentering: the retune chops). */
 function audioAutoPick(): void {
   if (state.app !== 'audio' || !audioPick || !lastSignals.length) return;
   if (!pick.viewed) { pick.viewed = true; audioViewBand(); pickArm(); return; }
@@ -1542,7 +1542,6 @@ function audioAutoPick(): void {
   if (!r) return;
   audioPick = false;
   if (r !== 'stay') { silentTune = true; try { tune(r.hz); } finally { silentTune = false; } }
-  if (!spanByHand) recentreView();
 }
 function render(app: AppId | null): void {
   const view = $('view');
