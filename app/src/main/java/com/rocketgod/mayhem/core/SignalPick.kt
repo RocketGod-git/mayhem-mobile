@@ -55,6 +55,13 @@ object AutoPick {
     /** Wait for a station; the clock starts when the first signals arrive, so a radio plugged in later still gets one. */
     fun arm() { armed = true; firstSeen = 0L; channel = SdrEngine.channelHz() }
 
+    /**
+     * Show the whole listening band the dial is in (as the band chips do), so the pick is the strongest station
+     * anywhere in the band, not just in the span around the dial. The app sets it (the bands are UI data).
+     */
+    @Volatile var viewWholeBand: (() -> Unit)? = null
+    fun armBand() { viewWholeBand?.invoke(); arm() }
+
     /** Called with each new set of signals; picks at most once per [arm]. */
     fun onSignals(list: List<Signal>) {
         if (!armed) return

@@ -322,9 +322,20 @@ private class WfHistory {
         if (h0 > 0) { src.set(0, 0, b.width, h0); dst.set(dl, below * k, dr, dh); c.drawBitmap(b, src, dst, p) }
     }
 
+    /**
+     * How many rows the view spreads over its height: until the ring has filled, the rows it has stretch over the
+     * whole height (no black band under a fresh history); it settles to the full ring as it fills.
+     */
+    fun shown(): Int = if (rows > 0) min(rows, max(filled, 24)) else 0
+
     fun drawTo(c: android.graphics.Canvas, w: Float, h: Float, p: android.graphics.Paint) {
         val b = ring ?: return
-        unroll(c, b, head, rows, 0f, w, h, p)
+        val n = shown()
+        if (n <= 0) return
+        val k = h / n
+        val first = min(n, rows - head)
+        src.set(0, head, b.width, head + first); dst.set(0f, 0f, w, first * k); c.drawBitmap(b, src, dst, p)
+        if (n > first) { src.set(0, 0, b.width, n - first); dst.set(0f, first * k, w, h); c.drawBitmap(b, src, dst, p) }
     }
 }
 
@@ -660,25 +671,27 @@ fun WaterfallView(
             val traceBase = bodyH
             fun toView(f: Float): Float? { val v = (f - start) * zoom; return if (v >= -0.001f && v <= 1.001f) v else null }
 
-            // waterfall: the ring, newest row at the top, and a seconds ruler down its left edge
+            // waterfall: the ring, newest row at the top, and a seconds ruler down its left edge. The history runs the
+            // whole body height and fades into the spectrum pane at the bottom instead of stopping at a hard edge.
+            val histH = bodyH
             drawIntoCanvas { c ->
                 val can = c.nativeCanvas
-                bmpPaint.isFilterBitmap = hist.rows > wfH + 1f
-                hist.drawTo(can, w, wfH, bmpPaint)
+                bmpPaint.isFilterBitmap = hist.shown() > histH + 1f
+                hist.drawTo(can, w, histH, bmpPaint)
                 // a tick and label wherever the history crosses a whole interval, picked from the rows' actual pace so
                 // labels stay at least 40 dp apart (a sweep's row can be seconds)
                 val n = hist.filled; val r = hist.rows
                 if (n > 2 && wfH >= 56 * dp) {
                     val now = System.currentTimeMillis()
                     val st = hist.stamps; val hd = hist.head
-                    val rowH = wfH / r
+                    val rowH = histH / max(1, hist.shown())
                     val secPerRow = max(1e-3f, (now - st[(hd + n - 1) % r]) / 1000f / n)
                     var ivl = RULER_S[0]
                     for (s in RULER_S) { ivl = s; if (s / secPerRow * rowH >= 40 * dp) break }
                     var prev = -1L
                     for (y in 0 until n) {
                         val mark = (now - st[(hd + y) % r]) / 1000L / ivl
-                        if (prev >= 0 && mark != prev && mark > 0) {
+                        if (prev >= 0 && mark != prev && mark > 0 && y * rowH < wfH - textPx) {
                             val yy = y * rowH
                             can.drawRect(0f, yy, 6 * dp, yy + max(1f, dp / 2), rulerPaint)
                             val secs = mark * ivl
@@ -693,7 +706,9 @@ fun WaterfallView(
                 drawRect(Color.White.copy(alpha = 0.05f), Offset(min(x0, x1), 0f), Size(max(2f, abs(x1 - x0)), wfH))
             }
             // spectrum pane and its dB grid against the floor
-            drawRect(Palette.paper.copy(alpha = 0.9f), Offset(0f, wfH), Size(w, traceBase - wfH))
+            // the history fades out down the spectrum pane: see-through at its top, the old 90% paper by the floor
+            drawRect(Brush.verticalGradient(0f to Palette.paper.copy(alpha = 0.15f), 0.45f to Palette.paper.copy(alpha = 0.72f),
+                1f to Palette.paper.copy(alpha = 0.92f), startY = wfH, endY = traceBase), Offset(0f, wfH), Size(w, traceBase - wfH))
             val steps = max(2, (rangeDb / 10f).roundToInt())
             axisPaint.color = Palette.muted.toArgb(); axisPaint.textAlign = android.graphics.Paint.Align.RIGHT
             for (k in 1 until steps) {
