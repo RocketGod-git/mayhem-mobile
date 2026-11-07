@@ -56,8 +56,8 @@ export interface ScopeOpts {
 }
 
 /** The most a scope's canvases are drawn at, however big the window: width, and total pixels. */
-const MAX_BACK_W = 1920;
-const MAX_BACK_PX = 1920 * 1080;
+const MAX_BACK_W = 3840;
+const MAX_BACK_PX = 3840 * 1100;
 
 export class Scope {
   cols: number;
@@ -67,6 +67,9 @@ export class Scope {
   private readonly sp: HTMLCanvasElement;
   private readonly axis: HTMLElement;
   private readonly wfCtx: CanvasRenderingContext2D;
+  /** Full-resolution layer over a capped waterfall for the channel lines and the seconds ruler. */
+  private readonly ov: HTMLCanvasElement;
+  private readonly ovCtx: CanvasRenderingContext2D;
   private ring: HTMLCanvasElement;
   private ringCtx: CanvasRenderingContext2D;
   private rowImg: ImageData;
@@ -113,9 +116,10 @@ export class Scope {
   private readonly fixedCols: boolean;
   private readonly dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
   /**
-   * Canvas pixels per CSS pixel: the screen's, unless the scope is huge (a full-screen ultrawide), where the
-   * canvases are drawn at most ~1920 wide and ~2 megapixels and the browser scales them up. Full screen then costs
-   * no more to draw than a normal window, instead of stuttering.
+   * Waterfall pixels per CSS pixel: the screen's, unless the scope is huge (a full-screen ultrawide), where the
+   * waterfall image is drawn at most 3840 wide and ~4.2 megapixels and the browser scales it up smoothly. The
+   * spectrum, its trace and labels, the channel lines and the seconds ruler stay at the screen's own resolution
+   * (the ruler and lines on a layer of their own over the waterfall), so only the history image is ever scaled.
    */
   private eff = this.dpr;
   private fitEff(host: HTMLElement): number {
@@ -132,9 +136,23 @@ export class Scope {
   /** Device pixels per CSS pixel *as laid out*, i.e. devicePixelRatio × any CSS zoom on the page — the unit for
    *  canvas text and line widths so they match the surrounding UI on zoomed ultra-wide layouts. */
   private ui(): number {
-    const cw = this.wf.clientWidth; if (!cw) return this.eff;
+    const cw = this.wf.clientWidth; if (!cw) return this.dpr;
     const r = this.wf.getBoundingClientRect();
-    return r.width > 0 ? this.eff * (r.width / cw) : this.eff;
+    return r.width > 0 ? this.dpr * (r.width / cw) : this.dpr;
+  }
+  /** The same, in the waterfall image's own (possibly capped) pixels: the overlay draws in those units. */
+  private uiWf(): number { return this.ui() * this.eff / this.dpr; }
+  /** The waterfall image is drawn below the screen's resolution (a full-screen ultrawide). */
+  private get capped(): boolean { return this.eff < this.dpr - 0.01; }
+  /** Lay the full-resolution overlay layer exactly over the waterfall, or hide it when nothing is capped. */
+  private placeOverlay(): void {
+    const ov = this.ov, wf = this.wf;
+    if (!this.capped) { ov.style.display = 'none'; return; }
+    ov.style.display = 'block';
+    ov.style.left = `${wf.offsetLeft}px`; ov.style.top = `${wf.offsetTop}px`;
+    ov.style.width = `${wf.clientWidth}px`; ov.style.height = `${wf.clientHeight}px`;
+    const w = Math.round(wf.clientWidth * this.dpr), h = Math.round(wf.clientHeight * this.dpr);
+    if (ov.width !== w || ov.height !== h) { ov.width = w; ov.height = h; }
   }
   private fitCols(host: HTMLElement): number { return Math.max(256, Math.min(8192, Math.round(Scope.measure(host, 512) * this.eff))); }
   private fitRows(fallback: number): number { const r = this.wf.getBoundingClientRect(); return Math.max(64, Math.min(4096, Math.round((r.height > 0 ? r.height : fallback) * this.eff))); }
@@ -143,8 +161,10 @@ export class Scope {
   constructor(host: HTMLElement, cols: number, opts: ScopeOpts = {}) {
     this.host = host;
     host.classList.add('scope');
-    host.innerHTML = `<canvas class="wf"></canvas><canvas class="sp" style="height:${opts.spectrumHeight ?? 90}px"></canvas><div class="axis"></div>`;
+    host.innerHTML = `<canvas class="wf"></canvas><canvas class="ov"></canvas><canvas class="sp" style="height:${opts.spectrumHeight ?? 90}px"></canvas><div class="axis"></div>`;
     this.wf = host.querySelector('.wf') as HTMLCanvasElement;
+    this.ov = host.querySelector('.ov') as HTMLCanvasElement;
+    this.ovCtx = this.ov.getContext('2d')!;
     this.sp = host.querySelector('.sp') as HTMLCanvasElement;
     this.axis = host.querySelector('.axis') as HTMLElement;
     host.classList.add('underlap');
@@ -313,7 +333,8 @@ export class Scope {
     if (!host.isConnected) return;
     this.eff = this.fitEff(host);
     // drawn below the screen's resolution: scale up smoothly rather than in blocks
-    this.wf.style.imageRendering = this.eff < this.dpr - 0.01 ? 'auto' : '';
+    this.wf.style.imageRendering = this.capped ? 'auto' : '';
+    this.placeOverlay();
     this.underlap();
     const cols = this.fixedCols ? this.cols : this.fitCols(host);
     const rows = this.fitRows(this.rows / this.eff);
@@ -649,7 +670,15 @@ export class Scope {
   }
 
   private overlay(): void {
-    const g = this.wfCtx, w = this.cols, h = this.rows, dpr = this.ui();
+    // capped: draw on the full-resolution layer, in the waterfall's own units (a transform maps them to its pixels)
+    let g = this.wfCtx;
+    if (this.capped) {
+      this.placeOverlay();
+      g = this.ovCtx;
+      g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, this.ov.width, this.ov.height);
+      g.setTransform(this.ov.width / this.cols, 0, 0, this.ov.height / this.rows, 0, 0);
+    }
+    const w = this.cols, h = this.rows, dpr = this.uiWf();
     if (this.channel !== null && this.center) {
       const ca = (this.channelAt - this.start) * this.zoom, cw = this.channel * this.zoom;
       const x0 = Math.round(w * (ca - cw / 2)), x1 = Math.round(w * (ca + cw / 2));
@@ -690,7 +719,7 @@ export class Scope {
     const c = this.sp;
     const cr = c.getBoundingClientRect();
     const cssW = cr.width || c.clientWidth || 300, cssH = cr.height || c.clientHeight || 90;
-    if (c.width !== Math.round(cssW * this.eff) || c.height !== Math.round(cssH * this.eff)) { c.width = Math.round(cssW * this.eff); c.height = Math.round(cssH * this.eff); }
+    if (c.width !== Math.round(cssW * this.dpr) || c.height !== Math.round(cssH * this.dpr)) { c.width = Math.round(cssW * this.dpr); c.height = Math.round(cssH * this.dpr); }
     const dpr = this.ui();
     const g = c.getContext('2d')!;
     const w = c.width, h = c.height;
