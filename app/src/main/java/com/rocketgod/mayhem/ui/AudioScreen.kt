@@ -85,24 +85,10 @@ fun AudioScreen(accent: Color) {
     val alert by SdrEngine.same.collectAsState()
     val station = mode == SdrEngine.Mode.WFM && rdsWanted
 
-    AdaptivePane(
-        // the controls take their own height and the waterfall flexes into whatever is left, on any phone
-        visualHeightNarrow = null,
-        visual = { m ->
-            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                alert?.header?.let { h -> SameBanner(h) }
-                TunerFace(accent, freq, mode)
-                if (station) StationStrip(rds, accent)
-                Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
-                    ReceiverScope(accent, Modifier.fillMaxSize(), rows = 200)
-                    if (mode == SdrEngine.Mode.WFM && hdWanted) HdBadge(hd, Modifier.align(Alignment.TopStart).padding(d.dp(6f)))
-                }
-            }
-        }
-    ) {
-        // Three rows: how to listen, where, and squelch with SCAN. The digits, ⌨ and the waterfall tune; ☆ saves and
-        // FAVES recalls; RDS and HD Radio are switches in Settings while Audio is open.
-        ScrollColumn(Modifier.fillMaxWidth()) {
+    // Three rows: how to listen, where, and squelch with SCAN. The digits, ⌨ and the waterfall tune; ☆ saves and
+    // FAVES recalls; RDS and HD Radio are switches in Settings while Audio is open.
+    val controls: @Composable (Modifier) -> Unit = { m ->
+        ScrollColumn(m) {
             Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(2f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 SegBar(MODES.map { it.name }, MODES.indexOf(mode), accent) { SdrEngine.setMode(MODES[it]) }
                 val lit = bandAt(freq)
@@ -119,6 +105,41 @@ fun AudioScreen(accent: Color) {
             }
         }
     }
+    val scope: @Composable (Modifier) -> Unit = { m ->
+        Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
+            ReceiverScope(accent, Modifier.fillMaxSize(), rows = 200)
+            if (mode == SdrEngine.Mode.WFM && hdWanted) HdBadge(hd, Modifier.align(Alignment.TopStart).padding(d.dp(6f)))
+        }
+    }
+
+    if (d.wide) {
+        // Landscape / tablet: the dial and the controls side by side along the top, the waterfall the full width
+        // below (Audio's controls are short, so a side pane of their own left most of the screen empty).
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+                Column(Modifier.weight(1.35f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                    alert?.header?.let { h -> SameBanner(h) }
+                    TunerFace(accent, freq, mode)
+                    if (station) StationStrip(rds, accent)
+                }
+                controls(Modifier.weight(1f))
+            }
+            scope(Modifier.fillMaxWidth().weight(1f))
+        }
+        return
+    }
+    AdaptivePane(
+        // the controls take their own height and the waterfall flexes into whatever is left, on any phone
+        visualHeightNarrow = null,
+        visual = { m ->
+            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                alert?.header?.let { h -> SameBanner(h) }
+                TunerFace(accent, freq, mode)
+                if (station) StationStrip(rds, accent)
+                scope(Modifier.fillMaxWidth().weight(1f))
+            }
+        }
+    ) { controls(Modifier.fillMaxWidth()) }
 }
 
 private val MODES = listOf(SdrEngine.Mode.WFM, SdrEngine.Mode.NFM, SdrEngine.Mode.AM, SdrEngine.Mode.USB, SdrEngine.Mode.LSB)

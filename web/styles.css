@@ -1085,3 +1085,17 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.adsb.mapfull #adsb-card { grid-column: 1; grid-row: 4; max-height: 30vh; }
   .view.adsb.mapfull #adsb-list { grid-column: 1; grid-row: 5; }
 }
+
+/* Audio on a wide screen (as on the iPad and Android tablets): the dial and the controls side by side along the
+ * top, the waterfall the full width below. Audio's controls are short, so a side pane of their own left most of
+ * the window empty. */
+@media (min-width: 720px) {
+  main#view.view.audio { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); column-gap: 12px; row-gap: 0; }
+  main#view.view.audio > .visual { display: contents; }
+  main#view.view.audio > .visual > * { grid-column: 1; }
+  main#view.view.audio > .visual > .samealert { grid-row: 1; margin-bottom: 6px; }
+  main#view.view.audio > .visual > .face { grid-row: 2; }
+  main#view.view.audio > .visual > .rdsbar { grid-row: 3; margin-top: 6px; }
+  main#view.view.audio > .visual > #scope { grid-row: 4; grid-column: 1 / -1; min-height: 0; height: auto; margin-top: 8px; }
+  main#view.view.audio > .controls { grid-column: 2; grid-row: 1 / 4; align-self: start; max-height: 100%; }
+}
