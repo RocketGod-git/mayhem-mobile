@@ -94,7 +94,6 @@ button { font: inherit; }
 
 .scope { display: flex; flex-direction: column; overflow: hidden; position: relative; }
 .scope .wf { width: 100%; flex: 1; min-height: 120px; image-rendering: pixelated; display: block; }
-.scope .ov { position: absolute; display: none; pointer-events: none; }
 .scope .sp { width: 100%; display: block; background: color-mix(in srgb, var(--paper) 85%, transparent); }
 /* The waterfall history runs the whole scope height and fades out down the spectrum pane: see-through at its top,
  * nearly solid paper by the floor, instead of stopping at a hard edge. */
