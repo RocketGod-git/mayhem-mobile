@@ -1,0 +1,1104 @@
+:root {
+  --paper: #0a0d13; --surface: #121722; --panel: #1a2130; --line: #2a3348;
+  --ink: #e8ecf4; --muted: #8d97ab; --accent: #4c8dff; --accent2: #ffaf00; --hold: #ffaf00;
+  --ok: #3ddc84; --danger: #ff5b52;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace; font-size: 13px; }
+body { padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); min-height: 100vh; }
+a { color: var(--accent); text-decoration: none; }
+button { font: inherit; }
+[hidden] { display: none !important; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.bar { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.stripe { height: 2px; background: var(--accent); }
+.bar-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; }
+.chip.icon { padding: 6px 11px; font-size: 15px; line-height: 1; }
+/* The header's actions: an icon over a word, always there, whatever app is open. */
+.hacts { display: flex; align-items: center; gap: 2px; flex: none; }
+.hacts #connect { margin-right: 6px; }
+.hb { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; min-width: 58px; background: none; border: 1px solid transparent; border-radius: 10px; color: var(--muted); font-size: 9.5px; letter-spacing: 1.4px; padding: 5px 6px 4px; cursor: pointer; }
+.hb svg { width: 20px; height: 20px; fill: currentColor; }
+.hb:hover { color: var(--ink); background: var(--panel); }
+.hb.on { color: var(--ink); border-color: var(--line); background: var(--panel); } .hb.on svg { fill: var(--accent); }
+.hb.muted { color: var(--danger); } .hb.muted svg { fill: var(--danger); }
+/* Settings over the running app: a card on a wide screen, the whole screen on a phone. */
+.setmodal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.6); backdrop-filter: blur(3px); padding: 24px; }
+.setcard { width: min(980px, 100%); height: min(88vh, 1100px); display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px rgba(0,0,0,.55); overflow: hidden; }
+.sethead { display: flex; align-items: center; gap: 10px; flex: none; padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.sethead b { color: var(--accent); letter-spacing: 3px; font-size: 14px; }
+.sethead span { flex: 1; color: var(--muted); letter-spacing: 2px; font-size: 11px; }
+#setview { flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 12px 16px 20px; display: block; }
+#setview .settings-page { overflow: visible; }
+@media (max-width: 719.98px) {
+  .setmodal { padding: 0; align-items: stretch; }
+  .setcard { width: 100%; height: 100%; border-radius: 0; border: 0; }
+  #setview { padding: 10px; }
+}
+.brand { cursor: pointer; min-width: 0; }
+.wordmark { font-weight: 900; letter-spacing: 3px; font-size: 17px; white-space: nowrap; }
+.wordmark span { color: var(--accent); font-weight: 300; font-size: 12px; margin-left: 6px; }
+.tag { color: var(--accent2); font-size: 8.5px; letter-spacing: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.sub { color: var(--muted); font-size: 8.5px; letter-spacing: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.state { flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 6px; color: var(--muted); font-size: 9.5px; min-width: 0; }
+.state #status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.on { background: var(--ok); } .dot.off { background: var(--danger); }
+
+.chip { background: var(--surface); color: var(--ink); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 6px; padding: 9px 6px; font-weight: 700; font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip.on, .chip.primary { background: var(--accent); color: #05080a; border-color: var(--accent); }
+.chip.rec { background: var(--danger); border-color: var(--danger); color: #fff; }
+.chip:disabled { opacity: 0.4; cursor: default; }
+.link { background: none; border: 0; color: var(--muted); letter-spacing: 2px; font-size: 10px; cursor: pointer; padding: 4px 6px; }
+.row { display: flex; gap: 6px; }
+.row > .chip, .row > .stepper { flex: 1; min-width: 0; text-align: center; }
+/* The log is a window, not a strip: full screen by default, or a small panel dragged by its title bar
+   over whatever app is open, so a decode can be watched while the log scrolls. */
+.logwin { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  background: var(--paper); border: 1px solid var(--accent); }
+.logwin[hidden] { display: none; }
+.logwin.pip { inset: auto; width: min(340px, 86vw); height: min(260px, 42vh); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.6); }
+.logwin-bar { display: flex; gap: 6px; align-items: center; padding: 6px; border-bottom: 1px solid var(--line);
+  cursor: grab; touch-action: none; }
+.logwin.pip .logwin-bar { cursor: grab; }
+.logwin-bar .chip { padding: 6px 8px; font-size: 11px; }
+.logwin-title { color: var(--accent); font-weight: 900; letter-spacing: 2px; font-size: 12px; padding: 0 4px; }
+.logwin-head { margin: 0; padding: 6px 8px; color: var(--accent2); font-size: 10px; line-height: 1.5;
+  border-bottom: 1px solid var(--line); white-space: pre-wrap; }
+.logwin-body { margin: 0; padding: 8px; flex: 1; overflow: auto; color: var(--ink); font-size: 11px;
+  line-height: 1.45; white-space: pre-wrap; }
+
+/* For rows with more buttons than fit a phone: wrap instead of squeezing each into an ellipsis. */
+.row.wrap { flex-wrap: wrap; }
+.row.wrap > .chip { flex: 1 1 30%; }   /* a basis of a third gives three to a row, evenly, at any width */
+.stepper { display: flex; align-items: center; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 6px; overflow: hidden; }
+.stepper button { flex: 1; background: none; border: 0; color: var(--accent); font-weight: 700; font-size: 16px; padding: 7px 0; cursor: pointer; }
+.stepper span { flex: 2; font-weight: 700; font-size: 12px; text-align: center; }
+.caption { color: var(--muted); font-size: 9px; letter-spacing: 2px; margin: 10px 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notice { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--accent2); border-radius: 8px; background: color-mix(in srgb, var(--accent2) 8%, transparent); }
+.info { flex: 2; align-self: center; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.log { margin-top: 6px; padding: 8px; }
+.log pre { margin: 0; font-size: 9px; line-height: 1.35; white-space: pre-wrap; color: color-mix(in srgb, var(--ink) 85%, transparent); }
+
+.view { margin-top: 8px; }
+.readout { text-align: center; line-height: 1; margin-top: 4px; }
+.readout .whole { font-size: 34px; font-weight: 900; }
+.readout .frac { font-size: 20px; font-weight: 700; color: var(--accent); }
+.readout .unit { font-size: 12px; color: var(--muted); }
+.levelbar { height: 4px; background: var(--line); border-radius: 2px; margin: 6px 24px; overflow: hidden; }
+.levelbar div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+.health { text-align: center; color: var(--muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; }
+
+.scope { display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.scope .wf { width: 100%; flex: 1; min-height: 120px; image-rendering: pixelated; display: block; }
+.scope .sp { width: 100%; display: block; background: color-mix(in srgb, var(--paper) 85%, transparent); }
+/* The waterfall history runs the whole scope height and fades out down the spectrum pane: see-through at its top,
+ * nearly solid paper by the floor, instead of stopping at a hard edge. */
+.scope.underlap .sp { position: relative; z-index: 1; background: linear-gradient(180deg, color-mix(in srgb, var(--paper) 15%, transparent), color-mix(in srgb, var(--paper) 72%, transparent) 45%, color-mix(in srgb, var(--paper) 92%, transparent)); }
+.scope .axis { position: relative; height: 16px; color: var(--muted); font-size: 9px; background: var(--surface); border-top: 1px solid var(--line); }
+.scope .axis span { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; }
+.scope .axis span:first-child { transform: none; margin-left: 3px; }
+.scope .axis span:last-child { transform: translateX(-100%); margin-left: -3px; }
+.scope .zoomctl { position: absolute; top: 6px; right: 6px; display: flex; align-items: center; gap: 2px; background: color-mix(in srgb, var(--surface) 80%, transparent); border: 1px solid var(--line); border-radius: 6px; padding: 1px; z-index: 2; opacity: 0.55; transition: opacity 0.2s; }
+.scope:hover .zoomctl, .scope.zoomed .zoomctl { opacity: 1; }
+.scope .zoomctl button { background: none; border: 0; color: var(--ink); font-size: 14px; width: 24px; height: 22px; cursor: pointer; border-radius: 4px; }
+.scope .zoomctl button:hover { background: var(--accent); color: #fff; }
+/* re-center the view on the tuned channel: only offered while the channel has been slid off the screen */
+.scope .zoomctl [data-c] { display: none; color: var(--accent2); font-size: 16px; }
+body.offspan .scope .zoomctl [data-c] { display: inline-block; }
+.scope .zoomctl span { font-size: 10px; min-width: 26px; padding: 0 3px; text-align: center; color: var(--accent2); letter-spacing: 1px; white-space: nowrap; }
+.scope .spanbar { position: relative; height: 16px; background: var(--surface); border-top: 1px solid var(--line); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; overflow: hidden; }
+.scope .spanbar.drag { cursor: grabbing; }
+.scope .spanbar .thumb { position: absolute; top: 3px; bottom: 3px; min-width: 14px; background: color-mix(in srgb, var(--accent) 40%, transparent); border: 1px solid var(--accent); border-radius: 3px; box-sizing: border-box; pointer-events: none; }
+.scope .spanbar:hover .thumb, .scope .spanbar.drag .thumb { background: color-mix(in srgb, var(--accent) 65%, transparent); }
+.scope .spanbar .thumb i { position: absolute; top: 0; bottom: 0; background: var(--accent2); opacity: 0.8; }
+/* The end labels can end up under the thumb - at 1 MHz on a bar that runs to 6 GHz they sit on top of each
+ * other. A chip of the bar's own background keeps them legible without moving anything. */
+.scope .spanbar span { position: absolute; top: 2px; font-size: 9px; color: var(--muted); pointer-events: none; z-index: 2; background: color-mix(in srgb, var(--surface) 88%, transparent); padding: 0 3px; border-radius: 2px; }
+.scope .spanbar .l { left: 3px; } .scope .spanbar .r { right: 3px; }
+.scope.hasbar .guide { bottom: 33px; }
+.scope .guide { position: absolute; top: 0; bottom: 16px; width: 2px; margin-left: -1px; background: var(--accent2); box-shadow: 0 0 0 1px rgba(0,0,0,0.5); pointer-events: none; }
+.readout.preview .whole, .readout.preview .frac { color: var(--accent2); }
+/* A find the speech test turned down: still tappable, but clearly not one of the keepers. */
+/* A gain the automatic loop is driving: shown, but not something you are setting. */
+.stepper span.auto { color: var(--muted); font-style: italic; }
+.chip.faded { opacity: 0.55; border-color: color-mix(in srgb, var(--muted) 45%, transparent); }
+.fav { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 3px; font-size: 13px; line-height: 1;
+  border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; vertical-align: middle; }
+.fav.on { border-color: var(--hold); color: var(--hold); }
+.fav:active { transform: scale(0.9); }
+.sq { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 3px; font-size: 9px; letter-spacing: 1px; border: 1px solid var(--line); color: var(--muted); }
+.sq.open { border-color: var(--ok); color: var(--ok); }
+.wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+.wrap .bm { display: inline-flex; align-items: center; gap: 4px; padding: 6px 4px 6px 10px; }
+.wrap .bm i { font-style: normal; color: var(--muted); padding: 0 6px; cursor: pointer; }
+.wrap .bm.on i { color: #05080a; }
+.visual > .scope { min-height: 300px; height: 52vh; }
+.visual > .scope.short { min-height: 0; height: 190px; }
+/* (3 classes: outranks `.visual > .scope`, which the Scope widget's class would otherwise pull in at 52vh) */
+.visual.launch-visual > .launch-scope { height: 190px; min-height: 0; }
+.launch-scope .wf { min-height: 60px; }
+
+/* Phone launcher: three compact columns, five rows, the whole menu on one screen under the waterfall strip. */
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.tile { --tint: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--tint) 45%, transparent); border-radius: 12px; padding: 8px 9px; text-align: left; color: var(--ink); cursor: pointer; aspect-ratio: 1.05; display: flex; flex-direction: column; min-width: 0; }
+/* An app the connected radio cannot serve. Dimmed, never disabled: a dongle owner may still want two-metre
+ * HAM and should be allowed to try. Nothing carries this class unless a radio is connected that lacks what the
+ * app needs, so a HackRF session never sees it. */
+.tile.limited { opacity: 0.38; filter: saturate(0.35); }
+/* The launcher's band strip: where the front door is pointing. One swiping row, so a narrow phone shows the
+ * first few and the rest are a thumb away rather than stacked into the tiles' space. */
+.launch-bands { flex: none; gap: 4px; margin-top: 6px; overflow-x: auto; scroll-snap-type: x proximity; }
+.launch-bands > .chip { flex: 0 0 auto; padding: 7px 12px; font-size: 11px; scroll-snap-align: start; }
+/* Band chips as a wrapping grid (in the audio controls and the launcher's side column): four to a row, tidy. */
+.bandrow { gap: 5px; }
+.bandrow > .chip { flex: 1 1 21%; padding: 7px 4px; font-size: 11px; }
+.tile.limited:hover { opacity: 0.6; }
+.tile:active { background: var(--panel); }
+.tile-top { display: flex; justify-content: space-between; align-items: flex-start; }
+.tile-top svg { width: 30px; height: 30px; }
+.tile .cat { color: var(--muted); font-size: 7px; letter-spacing: 1.5px; }
+.tile-title { margin-top: auto; font-weight: 700; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-blurb { color: var(--muted); font-size: 8px; line-height: 1.25; margin-top: 2px; max-height: 2.5em; overflow: hidden; }
+
+/* SAME / EAS weather alert: a loud banner across the top of the audio app; tap to dismiss. */
+.samealert { background: color-mix(in srgb, var(--danger) 24%, var(--surface)); border: 1px solid var(--danger);
+  color: var(--ink); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; font-size: 12px; font-weight: 700;
+  letter-spacing: 1px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scopewrap { position: relative; }
+
+/* Troll app: grouped, accented cards instead of one long stack of full-width buttons. */
+.trollintro { font-size: 11px; color: var(--muted); line-height: 1.45; margin: 2px 2px 8px; }
+.trollintro b { color: var(--danger); letter-spacing: 1px; }
+.trollcard { position: relative; background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, transparent), var(--paper)); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 12px; padding: 11px 13px 13px; margin: 12px 0; }
+.trollcard.ble { border-left-color: var(--accent); }
+.trollcard.sub { border-left-color: var(--accent2); }
+.trollcard.audio { border-left-color: var(--ok); }
+.trollhead { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding-bottom: 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.trollhead .ico { font-size: 15px; line-height: 1; filter: saturate(1.2); }
+.trollhead b { font-size: 12px; letter-spacing: 2.5px; white-space: nowrap; flex: none; }
+.trollhead small { margin-left: auto; color: var(--muted); font-size: 10px; letter-spacing: 0.5px; text-align: right; line-height: 1.3; }
+.trollsub { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: color-mix(in srgb, var(--accent2) 80%, var(--ink)); margin: 12px 2px 6px; }
+.trollcard.ble .trollsub { color: color-mix(in srgb, var(--accent) 75%, var(--ink)); }
+.trollcard.audio .trollsub { color: color-mix(in srgb, var(--ok) 70%, var(--ink)); }
+.trollsub:first-of-type { margin-top: 0; }
+.trollsub em { font-style: normal; text-transform: none; letter-spacing: 0.3px; color: var(--muted); font-size: 10px; }
+.trollgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); gap: 6px; }
+.trollgrid.two { grid-template-columns: 1fr 1fr; }
+.trollgrid.band { grid-template-columns: repeat(4, 1fr); }
+.trollgrid .chip { padding: 9px 6px; font-size: 11px; }
+.trollgrid .chip.wide { grid-column: 1 / -1; letter-spacing: 2px; }
+.row.tight { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.row.tight > .chip { flex: 1; }
+.row.tight > .chip.wide2 { flex: 2; }
+.row.tight > .txin { flex: 1; min-width: 0; }
+.row.tight > .unit { flex: none; font-size: 11px; color: var(--muted); letter-spacing: 1px; }
+.trollcard .txin.mono { width: 100%; margin-top: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+/* The running/STOP strip lives inside whichever card is transmitting (moved there in JS), under its buttons. */
+.trollrun { display: flex; align-items: center; gap: 10px; margin-top: 11px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.trollrun .health { flex: 1; margin: 0; font-size: 11px; color: var(--danger); font-weight: 700; letter-spacing: 1px; }
+.trollrun .chip.rec { flex: none; padding: 9px 20px; }
+.trollcard.spoof { border-left-color: var(--danger); }
+.trollcard.cart { border-left-color: var(--ok); }
+.trollcard.spoof .trollsub { color: color-mix(in srgb, var(--danger) 70%, var(--ink)); }
+.trollcard.cart .trollsub { color: color-mix(in srgb, var(--ok) 70%, var(--ink)); }
+.trollgrid.band3 { grid-template-columns: repeat(3, 1fr); }
+.trollnote { font-size: 10px; color: var(--muted); line-height: 1.4; margin: 8px 2px 0; }
+.trolldivide { height: 1px; background: color-mix(in srgb, var(--line) 80%, transparent); margin: 18px 2px; }
+.cartbrands { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cartbrand { display: flex; flex-direction: column; gap: 7px; align-items: stretch; }
+.cartbrand img { display: block; margin: 0 auto; height: 68px; width: auto; max-width: 100%; object-fit: contain; }
+.cartname { font-size: 10px; letter-spacing: 1px; color: var(--muted); text-align: center; }
+.cartcredit { font-size: 10px; color: var(--muted); text-align: center; margin-top: 10px; }
+.cartcredit b { color: color-mix(in srgb, var(--ok) 70%, var(--ink)); font-weight: 700; }
+/* RDS ticker: a slim strip across the TOP of the audio waterfall, inside the scope box (which is position:relative)
+   so the scope stays a direct child of .visual and keeps its flex-fill height. Right edge clears the zoom control;
+   out of the way until a station's name and RadioText come through, dimmed while the decoder hunts for lock. */
+.rdsbar { position: absolute; left: 0; right: 76px; top: 0; z-index: 1; padding: 4px 10px; font-size: 11px; letter-spacing: 1px;
+  color: var(--accent2); background: color-mix(in srgb, var(--surface) 78%, transparent); border-bottom: 1px solid var(--line);
+  white-space: nowrap; overflow: hidden; pointer-events: none; }
+.rdsbar .rdsline { display: inline-block; white-space: nowrap; }        /* one measured run: static when it fits, a marquee when it does not */
+.rdsbar i { font-style: normal; color: var(--muted); font-weight: 700; margin-right: 4px; }   /* field label (PI) */
+.rdsbar b { color: var(--accent2); font-weight: 700; }                  /* field value */
+.rdsbar em { font-style: normal; color: var(--muted); opacity: 0.7; margin: 0 8px; }           /* separator */
+.rdsbar.dim b { color: var(--muted); }
+/* HD Radio badge: under the zoom control, out of the way of the RDS bar. */
+.hdbadge { position: absolute; top: 34px; right: 6px; z-index: 2; font-size: 10px; letter-spacing: 1px; padding: 2px 7px; border-radius: 5px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--muted); pointer-events: none; white-space: nowrap; }
+.hdbadge.on { color: var(--ok); border-color: var(--ok); }
+.rdsbar.dim i, .rdsbar.dim em { opacity: 0.6; }
+.countrow { display: flex; justify-content: space-between; align-items: center; margin: 10px 2px 4px; }
+.link.on { color: var(--accent2); }
+.count.preview { color: var(--accent2); }
+.wrap .empty { color: var(--muted); font-size: 10px; padding: 4px 2px; }
+.count { color: var(--accent); font-weight: 700; font-size: 11px; letter-spacing: 2px; }
+.count.center { display: block; text-align: center; margin: 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.about.small { font-size: 11px; padding: 8px 10px; line-height: 1.5; }
+.about.small .dim { color: var(--muted); }
+.about.small .gold { color: var(--accent2); }
+.list .x { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 11px; }
+.list .x:hover { color: var(--danger); }
+.row > .txin { width: auto; min-width: 0; flex: 1; }
+.fbox { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.fbox .txin.num { width: 64px; padding: 4px 6px; text-align: right; font-variant-numeric: tabular-nums; }
+/* Tall enough to look like a picture frame before anything has arrived, and it grows to whatever the decoder
+   makes the canvas once lines start coming in. */
+.imgwrap { overflow: auto; min-height: 150px; max-height: 60vh; padding: 4px; background: #000; display: grid; place-items: center; }
+.imgwrap canvas { display: block; max-width: 100%; height: auto; image-rendering: pixelated; }
+.dmrslots { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.dmrslot { padding: 6px 8px; font-size: 11px; min-height: 52px; display: flex; flex-direction: column; gap: 2px; }
+.dmrslot b { font-size: 12px; letter-spacing: 1px; }
+.dmrslot .dim { color: var(--muted); }
+.dmrslot.voice { border-color: var(--ok); }
+.dmrslot.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.list { padding: 4px 6px; min-height: 120px; max-height: 40vh; overflow-y: auto; font-size: 11px; }
+.list .li { padding: 3px 4px; border-radius: 3px; white-space: pre-wrap; word-break: break-word; }
+.list .li.alt { background: color-mix(in srgb, var(--panel) 60%, transparent); }
+.list .li.gold { color: var(--accent2); }
+.list .li.tap, .tap { cursor: pointer; }
+/* The sensors list: one device per row, tappable to show every field it sent. */
+.list .li.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.list .faint { color: var(--muted); }
+.list .li.faded { opacity: 0.55; }
+
+/* ---- Devices table -------------------------------------------------------
+ * One transmission per row, four columns that line up down the whole list, and the reading held to a single
+ * line so twenty devices can be taken in at a glance. Everything else moves into the card a tap opens. The
+ * columns are declared per row rather than on a wrapping grid so an opened card can span the full width
+ * without breaking the alignment above and below it — `fr` resolves against the same width in every row, so
+ * they line up regardless. */
+.devtable { padding: 0; min-height: 120px; max-height: 46vh; overflow-y: auto; font-size: 11px; }
+.devhead, .devrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.4fr) 30px 56px;
+  gap: 0 8px; align-items: baseline; padding: 4px 8px;
+}
+.devhead {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel); color: var(--muted);
+  font-size: 8.5px; letter-spacing: 1.4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.devhead span:nth-child(3), .devhead span:nth-child(4), .devrow .c-n, .devrow .c-time { text-align: right; }
+.devrow { border-bottom: 1px solid transparent; }
+.devrow.alt { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+/* Every cell is one line and clips; the whole value is in the card and in the tooltip. */
+.devrow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-name b { font-weight: 600; }
+.c-name i, .c-code { color: var(--muted); font-style: normal; }
+.c-name i { margin-left: 5px; font-family: ui-monospace, monospace; font-size: 10px; }
+.c-read { color: color-mix(in srgb, var(--ink) 82%, transparent); }
+.c-n, .c-time { color: var(--muted); font-family: ui-monospace, monospace; font-size: 10px; }
+/* A single glyph carrying whether the reading is provable: a tick means the device's own check passed, a
+ * question mark means there was no check to pass. Nothing else in the row says this. */
+.devrow .tag { margin-left: 5px; font-style: normal; font-size: 9px; }
+.devrow .tag.ok { color: var(--ok); }
+.devrow .tag.q { color: var(--accent2); }
+.devrow.anon { opacity: 0.8; }
+.devrow.anon .c-name b { font-weight: 400; font-style: italic; color: var(--muted); }
+.devtable .empty { color: var(--muted); padding: 10px 8px; }
+
+/* A protocol row is not a table row. The names and descriptions are long, there is nothing meaningful to line
+ * up against between them, and four columns on a phone left every field ending in an ellipsis. Each one is a
+ * small block that wraps instead, so the whole name, the whole description and the bands are all readable. */
+.devrow.p { display: block; padding: 6px 8px; }
+.devrow.p .p-name { font-size: 11px; line-height: 1.35; }
+.devrow.p .p-name b { font-weight: 600; }
+.devrow.p .p-name i { margin-left: 5px; font-style: normal; font-family: ui-monospace, monospace; font-size: 10px; color: var(--muted); }
+.devrow.p .p-what { color: color-mix(in srgb, var(--ink) 72%, transparent); font-size: 10px; line-height: 1.4; }
+.devrow.p .p-meta { color: var(--muted); font-size: 10px; line-height: 1.4; }
+
+/* Everything the device sent, under its own row and always visible. Kept a size down and dimmer than the line
+ * above it, so a column of these still reads as a list rather than as a wall. */
+.devdetail { grid-column: 1 / -1; margin-top: 2px; font-size: 10px; }
+.devfields { display: flex; flex-wrap: wrap; gap: 1px 10px; }
+.devfields b { color: color-mix(in srgb, var(--ink) 50%, transparent); font-weight: 400; }
+.devfields > span { color: color-mix(in srgb, var(--ink) 70%, transparent); }
+.devfields .faint { color: var(--muted); }
+.devfields .warn { color: var(--accent2); }
+.devnote { color: var(--muted); font-size: 10px; line-height: 1.45; margin-bottom: 5px; }
+.devnote.warn { color: var(--accent2); }
+.devnote b { color: inherit; }
+/* The receiver's own summary is a long sentence of numbers; let it wrap rather than lose its tail. */
+.view.devices #r433-stats, .view.devices .health.near { white-space: normal; line-height: 1.5; }
+.health.near { color: var(--accent2); margin-top: -3px; }
+.r433-detail { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; padding-top: 4px; border-top: 1px solid color-mix(in srgb, var(--ink) 15%, transparent); }
+.r433-detail b { color: var(--muted); font-weight: 400; }
+/* Raw frames and long arrays get a line of their own, and wrap rather than stretching the panel. */
+.r433-raw { flex: 1 0 100%; margin-top: 2px; font-family: ui-monospace, monospace; font-size: 10px; word-break: break-all; color: var(--muted); }
+.r433-raw b { color: color-mix(in srgb, var(--ink) 70%, transparent); font-weight: 400; }
+.list .row2 { display: flex; justify-content: space-between; gap: 8px; }
+.list .row2 span { color: color-mix(in srgb, var(--ink) 80%, transparent); text-align: right; }
+.list .empty { color: var(--muted); padding: 6px 4px; }
+.list.table { margin-bottom: 6px; border-color: color-mix(in srgb, var(--accent2) 60%, transparent); }
+
+input[type=range] { width: 100%; accent-color: var(--accent); }
+
+.apk-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-top: 10px; }
+.apk-card > div { flex: 1; min-width: 0; }
+.apk-title { font-weight: 700; }
+.apk-sub { color: var(--muted); font-size: 9.5px; margin-top: 3px; }
+.apk-card .chip { flex: none; padding: 10px 14px; display: inline-block; }
+.foot { color: var(--muted); font-size: 9px; margin: 10px 0; text-align: center; }
+
+.skins { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.skin { border: 1px solid; border-radius: 8px; padding: 10px; text-align: left; cursor: pointer; }
+.skin-head { display: flex; justify-content: space-between; font-weight: 700; font-size: 11px; }
+.swatches { display: flex; gap: 4px; margin-top: 8px; }
+.swatches i { flex: 1; height: 14px; border-radius: 3px; }
+.skin-readout { margin-top: 8px; border: 1px solid; border-radius: 4px; padding: 5px; text-align: center; font-weight: 700; font-size: 10px; }
+.about { padding: 10px; }
+.about .row { margin-bottom: 8px; }
+.kv { display: flex; gap: 8px; padding: 3px 0; font-size: 10px; }
+.kv span:first-child { flex: none; width: 92px; color: var(--muted); }
+.kv span:last-child { flex: 1; }
+
+/* Frequency readout: ten individually tunable digits. Hover (or focus) a digit and chevrons appear above and below
+ * it; the top half / wheel-up adds one, the bottom half / wheel-down subtracts one. Leading zeros are dimmed. */
+.freq { display: inline-flex; align-items: flex-start; gap: 0; font-family: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace; font-weight: 800; font-size: 30px; line-height: 1; user-select: none; -webkit-user-select: none; padding: 0.55em 0 0.15em; }
+.fgrp { display: inline-flex; flex-direction: column; align-items: center; }
+.fds { display: inline-flex; }
+.fd { position: relative; display: inline-block; width: 0.66em; text-align: center; border-radius: 0.12em; cursor: ns-resize; touch-action: none; outline: none; color: var(--ink); transition: color 0.12s, background 0.12s, transform 0.12s; }
+.fd.dim { color: color-mix(in srgb, var(--ink) 22%, transparent); }
+.fd::before, .fd::after { content: '▲'; position: absolute; left: 0; right: 0; font-size: 0.28em; line-height: 1; color: var(--accent2); opacity: 0; transition: opacity 0.12s, transform 0.12s; pointer-events: none; }
+.fd::before { top: -0.5em; }
+.fd::after { content: '▼'; bottom: -0.55em; }
+.fd:hover, .fd:focus-visible { color: var(--accent2); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.fd:hover::before, .fd:hover::after, .fd:focus-visible::before, .fd:focus-visible::after { opacity: 0.9; }
+.fd.up { animation: fd-up 0.25s ease-out; } .fd.down { animation: fd-down 0.25s ease-out; }
+@keyframes fd-up { from { transform: translateY(-0.12em); color: var(--accent2); } to { transform: none; } }
+@keyframes fd-down { from { transform: translateY(0.12em); color: var(--accent2); } to { transform: none; } }
+.fsep { display: inline-block; width: 0.35em; text-align: center; color: var(--muted); }
+.funit { font-size: 0.26em; letter-spacing: 0.15em; color: var(--muted); margin-top: 0.35em; font-weight: 700; }
+.readout.preview .fd:not(.dim) { color: var(--accent2); }
+.readout .sq { vertical-align: top; margin-top: 0.4em; }
+.readout .fentry { width: 11ch; max-width: 60vw; margin: 0.6em 0 0.2em; padding: 6px 8px; text-align: center; font-family: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace; font-weight: 800; font-size: 24px; border-color: var(--accent2); }
+@media (hover: none) { .fd::before, .fd::after { opacity: 0.35; } }
+
+/* HAM: S-meter under the readout, band strip that scrolls sideways, sub-audible tone / squelch readout. */
+.smeter { display: flex; align-items: center; gap: 8px; margin: 2px 14px 0; }
+.sbar { position: relative; flex: 1; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.sbar div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent) 47%, var(--accent2) 47%, var(--accent2) 75%, #ff5b52); transition: width 0.12s; }
+.sbar i { position: absolute; top: -1px; font-style: normal; font-size: 7px; color: var(--muted); transform: translateX(-50%); }
+.sval { flex: none; font-size: 9px; color: var(--muted); white-space: nowrap; }
+.hamline { display: flex; justify-content: space-between; align-items: center; margin: 3px 14px 4px; gap: 8px; }
+.hamline .seg { font-size: 9px; color: var(--muted); letter-spacing: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.hamline .sq { flex: none; margin: 0; }
+/* chip strips scroll by touch / mouse drag; the edge glow says when there is more, so no scrollbar under them */
+.bandstrip { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+.bandstrip::-webkit-scrollbar { display: none; height: 0; }
+.bandstrip.dragging { cursor: grabbing; scroll-behavior: auto; }
+.bandstrip.dragging .chip { pointer-events: none; }
+/* scroll hints: zero-size sticky children of a scroller; when the scroller says an edge has more behind it, the
+ * child's ::after paints an accent glow over that edge (see scrollHints() in main.ts) */
+.readout { position: relative; }
+.sh { flex: none; position: sticky; z-index: 3; pointer-events: none; opacity: 0; transition: opacity 0.25s; }
+.sh::after { content: ''; position: absolute; --glow: color-mix(in srgb, var(--accent) 22%, transparent); --glow2: color-mix(in srgb, var(--accent) 6%, transparent); --edge: color-mix(in srgb, var(--accent) 40%, transparent); }
+.sh-l, .sh-r { display: block; width: 0; align-self: stretch; }
+.sh-t, .sh-b { display: none; }
+.sh-can-l > .sh-l, .sh-can-r > .sh-r { opacity: 1; }
+.sh-can-t > .sh-t, .sh-can-b > .sh-b { display: block; height: 0; width: 100%; opacity: 1; }
+.sh-l { left: 0; } .sh-r { right: 0; }
+/* in the gapped chip rows the zero-width hints would still add a gap each: cancel it (containers without a gap keep 0) */
+.row > .sh-l { margin-right: -6px; } .row > .sh-r { margin-left: -6px; }
+.sh-t { top: 0; } .sh-b { bottom: 0; }
+.sh-l::after { left: 0; top: 0; bottom: 0; width: 18px; background: linear-gradient(to right, var(--glow), var(--glow2) 50%, transparent); border-left: 1px solid var(--edge); }
+.sh-r::after { right: 0; top: 0; bottom: 0; width: 18px; background: linear-gradient(to left, var(--glow), var(--glow2) 50%, transparent); border-right: 1px solid var(--edge); }
+.sh-t::after { left: 0; right: 0; top: 0; height: 16px; background: linear-gradient(to bottom, var(--glow), var(--glow2) 50%, transparent); border-top: 1px solid var(--edge); }
+.sh-b::after { left: 0; right: 0; bottom: 0; height: 16px; background: linear-gradient(to top, var(--glow), var(--glow2) 50%, transparent); border-bottom: 1px solid var(--edge); }
+/* our own scroll zones show no scrollbar at all: the edge glow says there is more, and they scroll by touch, wheel or drag */
+.controls, .list, .imgwrap, .digitext, .launch-side, #log-panel { scrollbar-width: none; }
+.controls::-webkit-scrollbar, .list::-webkit-scrollbar, .imgwrap::-webkit-scrollbar, .digitext::-webkit-scrollbar, .launch-side::-webkit-scrollbar, #log-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
+/* themed scrollbars everywhere else (Chromium / WebKit); Firefox uses scrollbar-color */
+* { scrollbar-width: thin; scrollbar-color: var(--accent) color-mix(in srgb, var(--surface) 70%, transparent); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: color-mix(in srgb, var(--surface) 70%, transparent); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent2); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+.tabs { margin-bottom: 4px; }
+.tabs .chip { letter-spacing: 2px; }
+.mongrid { display: block; width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.ptt { display: block; width: 100%; margin: 10px 0; padding: 26px 12px; font-size: 18px; letter-spacing: 3px; border-color: var(--danger); color: var(--danger); touch-action: none; user-select: none; -webkit-user-select: none; }
+.ptt.on { background: var(--danger); color: #fff; }
+.digitext { min-height: 90px; max-height: 30vh; overflow-y: auto; margin: 0; padding: 8px 10px; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+.list.short { min-height: 60px; max-height: 26vh; }
+.bandstrip .chip { flex: none; }
+.view.ham .visual > .smeter, .view.ham .visual > .hamline { flex: none; }
+
+/* Phone layout (portrait, under 720 px): app-like, no page scroll. The readout + waterfall fill the screen; the
+ * receiver controls scroll in their own sheet under it; the launcher's app menu is one swipeable row of tiles. */
+@media (max-width: 719.98px) {
+  html, body { height: 100%; }
+  body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  header.bar, #hint, #unsupported, #log-panel { flex: none; }
+  main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; }
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .visual > .readout, .visual > .health, .visual > .levelbar, .visual > .count, .visual > .launch-bands { flex: none; }
+  .visual > .scope, .visual > .scope.short, .visual.launch-visual > .launch-scope { flex: 1; height: auto; min-height: 90px; max-height: none; }
+  .controls { flex: none; max-height: 38vh; overflow-y: auto; padding: 8px 0 4px; }
+  /* Transmit-style screens (no waterfall to keep pinned) just scroll the whole page; the 38vh cap above is a
+     bottom-sheet for the flex-column waterfall apps and would otherwise strand these in a short box with a void
+     under it. These views stay block-flow so main#view's own scroll carries them. */
+  .view.troll .controls, .view.transmit .controls, .view.settings .controls { max-height: none; overflow: visible; padding-bottom: 12px; }
+  .scope .sp { height: 64px !important; }
+  .scope .wf { min-height: 90px; }
+  .visual > .scope, .visual > .scope.short { min-height: 120px; }
+  /* screens that are about a map, a list or a form, not the waterfall: a short waterfall strip and the sheet gets the room */
+  .view.adsb .visual, .view.sat .visual, .view.ais .visual, .view.aprs .visual, .view.ham[data-tab="log"] .visual, .view.ham[data-tab="sat"] .visual { flex: none; }
+  .view.adsb .visual > .scope, .view.sat .visual > .scope, .view.ais .visual > .scope, .view.aprs .visual > .scope, .view.ham[data-tab="log"] .visual > .scope, .view.ham[data-tab="sat"] .visual > .scope { flex: none; height: 96px; min-height: 96px; }
+  .view.adsb .scope .sp, .view.sat .scope .sp, .view.ais .scope .sp, .view.aprs .scope .sp, .view.ham[data-tab="log"] .scope .sp, .view.ham[data-tab="sat"] .scope .sp { height: 40px !important; }
+  .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls, .view.ham[data-tab="log"] .controls, .view.ham[data-tab="sat"] .controls { flex: 1; max-height: none; min-height: 0; }
+  .view.ham[data-tab="log"] .map, .view.ham[data-tab="sat"] .map { height: 36vh; min-height: 200px; }
+  .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls { display: flex; flex-direction: column; }
+  .view.adsb .map, .view.ais .map, .view.aprs .map { flex: none; height: 30vh; min-height: 180px; }
+  /* Passes are only a handful — let the list grow to show them all rather than trapping them in a little scroll
+     box inside the sheet. The sheet itself scrolls, so it is one scroll, not a window within a window. */
+  .view.sat #sat-passes { flex: none; max-height: none; min-height: 0; overflow: visible; }
+  /* launcher: one horizontally swiping row of compact tiles, snapping per tile */
+  .launch-side { flex: none; display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; padding: 8px 0 6px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+  /* `.grid` sets three explicit 1fr columns; in column flow they collapse to 0 px and swallow the first three tiles, so drop them */
+  .launch-grid { display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 108px; gap: 6px; margin: 0; padding: 0 2px; }
+  .launch-grid .tile { width: 108px; aspect-ratio: 1.1; scroll-snap-align: start; }
+  .launch-side .foot, .launch-gain { display: none; }
+  /* The bands card is the last item in that swipe row. Nothing was setting its width, so it shrank to the
+     chips' own minimum (~39 px) and every label truncated to a single letter; two tiles' worth of width
+     gives three readable columns. */
+  .launch-side .launch-radio { flex: 0 0 222px; width: 222px; }
+  .launch-side .bandrow > .chip { flex: 1 1 30%; }
+  .freq { font-size: 32px; }
+  /* Section captions carry a description after the label, which does not fit a phone on one line.
+     Ellipsising it hid the half that explains the section, so let it wrap instead. */
+  .caption { white-space: normal; overflow: visible; text-overflow: clip; letter-spacing: 1.4px; }
+  /* Two text inputs to a row leaves ~165px each, which clips placeholders mid-word
+     ("license class (Tec", "DMR ID (radioid.ne"). One per row at this width. */
+  .row > .txin { flex: 1 1 100%; min-width: 0; }
+  .view.settings .row:has(> .txin) { flex-wrap: wrap; }
+  .countrow .count { letter-spacing: 1px; font-size: 10px; }
+  /* Devices on a phone: the sheet is the app, so it gets most of the screen and the waterfall becomes a strip.
+   * Same table, narrower — the count column folds away and the reading gets the width back. */
+  .view.devices .visual { flex: none; }
+  .view.devices .visual > .scope, .view.devices .visual > .scope.short { flex: none; height: 88px; min-height: 88px; }
+  .view.devices .scope .sp { height: 36px !important; }
+  /* The sheet scrolls as one. Everything that sets the radio up sits together at the top - gain included,
+   * which used to be stranded below the list where a single decode could push it off the bottom of a screen
+   * that had no way to scroll - and the list comes last, where it can have the room.
+   *
+   * Swiping up brings the list to the top of the sheet and it fills the screen; it scrolls inside itself from
+   * there, and scrolling back past its first row carries on into the controls, which is what the browser's own
+   * scroll chaining does as long as nothing asks it not to. The snap point is `proximity`, so it helps the
+   * gesture land without ever fighting it. */
+  /* The whole screen is the scroller, waterfall included, so swiping up carries it away and leaves the list
+   * the full height rather than the two thirds under a pinned waterfall. */
+  .view.devices { overflow-y: auto; scroll-snap-type: y proximity; }
+  .view.devices .controls { flex: none; max-height: none; min-height: 0; display: flex; flex-direction: column; overflow: visible; }
+  .view.devices .controls > * { flex: none; }
+  .view.devices .gainwrap { order: 1; }
+  .view.devices #r433-stats, .view.devices #r433-near { order: 2; }
+  .view.devices .countrow { order: 3; scroll-snap-align: start; }
+  .view.devices #r433-list, .view.devices #r433-protocols { order: 4; }
+  /* Grows with what has been heard, then stops and scrolls inside itself. */
+  .view.devices .devtable { min-height: 120px; max-height: 86vh; overflow-y: auto; }
+  /* Nine bands stacked three-deep would take a third of the screen from the list. One swiping row instead,
+   * 433.92 first, the same gesture the launcher uses. */
+  .view.devices .row.wrap { flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+  .view.devices .row.wrap > .chip { flex: 0 0 auto; min-width: 74px; scroll-snap-align: start; }
+  .view.devices .devtable { min-height: 150px; }
+  .devhead, .devrow { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.2fr) 50px; padding: 6px 8px; }
+  .devhead span:nth-child(3), .devrow .c-n { display: none; }
+  .devhead span:nth-child(4), .devrow .c-time { grid-column: 3; }
+}
+
+/* Desktop layout: side-by-side visual + controls, waterfall fills the visual pane. */
+@media (min-width: 720px) {
+  /* The page is a flex column the height of the viewport: header, then main fills what is left and the app views
+   * fill main. Long views (Settings, Transmit) scroll inside main. No viewport-height arithmetic anywhere. */
+  html, body { height: 100%; }
+  body { font-size: 14px; padding: 10px; box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  header.bar { position: static; flex: none; order: 0; }
+  #hint, #unsupported, #log-panel { flex: none; order: 2; }
+  main#view { order: 2; }
+  /* The dock: the apps along the top, under the header, grouped by what they do. One click from any app to any
+   * other; the open one is lit in its group's colour. */
+  .appbar { display: block; order: 1; flex: none; margin-top: 8px; background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 70%, var(--paper))); border: 1px solid var(--line); border-radius: 14px; }
+  .appbar .hs-in { display: flex; align-items: stretch; gap: 0; padding: 4px 6px 6px; }
+  .appbar .bar-gear { display: none; }
+  .agrp { display: flex; flex-direction: column; flex: none; padding: 0 6px; }
+  .agrp + .agrp { border-left: 1px solid var(--line); }
+  .agrp small { color: var(--seg); font-size: 8.5px; font-weight: 700; letter-spacing: 2.2px; padding: 2px 4px 3px; opacity: 0.85; }
+  .agrp-in { display: flex; gap: 2px; }
+  /* No top bar on the desktop: the dock carries FAVES · LOG · MUTE · SETTINGS at its far end, and a missing radio
+   * gets the phone's one quiet line (with CONNECT) under the dock. */
+  header.bar { display: none !important; }
+  .appbar { display: flex !important; align-items: stretch; }
+  .appbar .bar-pill { flex: 1; min-width: 0; }
+  .dock-acts { --seg: var(--accent); display: flex; flex: none; align-items: center; gap: 2px; padding: 4px 6px; border-left: 1px solid var(--line); }
+  .appbar [data-act] .ag { color: var(--muted); }
+  .appbar [data-act].muted .ag, .appbar [data-act].muted .al { color: var(--danger); }
+  .appbar [data-act] .adot { position: absolute; top: 5px; right: 9px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .appbar [data-act] .adot.on { background: var(--ok); }
+  body .radiomiss { display: flex; flex: none; order: 1; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
+  body .radiomiss[hidden] { display: none; }
+  .radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .radiomiss > span { flex: 1; min-width: 0; color: var(--ink); font-size: 11px; }
+  .radiomiss > .tog { padding: 4px 12px; font-size: 11px; }
+  .appbar button { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 62px; background: none; border: 1px solid transparent; color: var(--ink); padding: 6px 6px 5px; border-radius: 11px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, background .12s ease, box-shadow .12s ease, border-color .12s ease; }
+  .appbar .ag { color: var(--seg); display: flex; filter: drop-shadow(0 0 0 transparent); transition: filter .12s ease; }
+  .appbar .al { font-weight: 700; font-size: 10px; letter-spacing: 1.3px; color: color-mix(in srgb, var(--ink) 85%, var(--muted)); }
+  .appbar button:hover { transform: translateY(-1px); background: color-mix(in srgb, var(--seg) 12%, transparent); border-color: color-mix(in srgb, var(--seg) 40%, transparent); }
+  .appbar button:hover .ag { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--seg) 70%, transparent)); }
+  .appbar button.dim { opacity: 0.35; }
+  .appbar button.on { background: linear-gradient(180deg, color-mix(in srgb, var(--seg) 95%, #fff), var(--seg)); border-color: var(--seg); box-shadow: 0 0 18px color-mix(in srgb, var(--seg) 55%, transparent), inset 0 1px 0 rgba(255,255,255,.25); }
+  .appbar button.on .ag, .appbar button.on .al { color: #fff; }
+  .appbar button.on::after { content: ''; position: absolute; left: 22%; right: 22%; bottom: -4px; height: 2px; border-radius: 2px; background: var(--seg); box-shadow: 0 0 8px var(--seg); }
+  /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
+  main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; }
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
+    display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
+  }
+  .visual { display: flex; flex-direction: column; min-height: 0; }
+  .visual > .scope, .visual > .scope.short { flex: 1; height: auto; min-height: 0; }
+  .controls { overflow-y: auto; min-height: 0; padding-right: 4px; }
+  /* Desktop has room to breathe, so the control column reads as clean labeled sections: each caption is a group
+   * header set off by a hairline above it and a legible label, instead of a dense ladder of tiny eyebrows. The
+   * first header in a panel has no rule above it; section headers that are countrows (BOOKMARKS, CAPTURES…) match. */
+  .controls .caption { font-size: 10.5px; letter-spacing: 1.4px; color: color-mix(in srgb, var(--muted) 80%, var(--ink)); border-top: 1px solid var(--line); margin: 14px 2px 7px; padding-top: 13px; }
+  /* The first real header carries no rule. Panels open with sticky scroll-shadow <i class="sh">, so the first
+   * caption is a sibling after .sh, not literally :first-child — cover both. */
+  .controls > .caption:first-child, .controls > .sh + .caption { border-top: 0; margin-top: 2px; padding-top: 2px; }
+  .controls .countrow { border-top: 1px solid var(--line); margin: 14px 2px 6px; padding-top: 12px; }
+  .controls > .countrow:first-child { border-top: 0; padding-top: 2px; }
+  .list { max-height: none; flex: 1; overflow-y: auto; }
+  /* Devices: the column is a flex stack the height of the waterfall beside it. The table takes whatever the
+   * fixed rows leave and scrolls inside itself, which puts the gain sliders on the same baseline as the bottom
+   * of the waterfall however many devices have been heard. */
+  .view.devices .controls { display: flex; flex-direction: column; overflow: hidden; }
+  .view.devices .controls > * { flex: none; }
+  .view.devices .devtable { flex: 1; min-height: 90px; max-height: none; overflow-y: auto; }
+  .view.devices .gainwrap { margin-top: 8px; }
+  /* HAM lists (FT8 decodes, logbook, packets, passes) sit among other controls: cap them so they scroll inside the column rather than growing it */
+  .view.ham .list { flex: none; max-height: 34vh; }
+  .view.ham .list.short { max-height: 24vh; }
+  .freq { font-size: 42px; }
+  /* Launcher: the waterfall owns the left pane top to bottom, the app grid scrolls in a side column. */
+  .view.launcher { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); gap: 12px; flex: 1; min-height: 0; align-items: stretch; }
+  .launch-visual { display: flex; flex-direction: column; min-height: 0; }
+  .visual.launch-visual > .launch-scope { flex: 1; height: auto; min-height: 260px; max-height: none; }
+  .launch-visual > .health { flex: none; }
+  .launch-side { display: flex; flex-direction: column; }
+  /* Gain controls sit at the very bottom of the app column, pushed down past the tiles. */
+  .launch-side .launch-radio { margin-top: auto; }   /* bands + gain drop to the bottom together as one radio-controls group */
+  .launch-side .launch-gain { padding-top: 4px; }
+  /* Fixed-size tiles: three even columns that stay the same size however wide the window gets. */
+  .launch-side .grid { grid-template-columns: repeat(auto-fill, 150px); justify-content: start; gap: 8px; margin-top: 0; }
+  .launch-side .tile { width: 150px; aspect-ratio: 1.45; padding: 10px 11px; }
+  .launch-side .tile-title { font-size: 13px; }
+  .launch-side .tile-blurb { font-size: 8.5px; }
+  .launch-side .apk-card { margin-top: auto; }
+  .tile { aspect-ratio: 1.5; padding: 12px; }
+  .tile-top svg { width: 36px; height: 36px; }
+  .tile .cat { font-size: 8px; letter-spacing: 2px; }
+  .tile-title { font-size: 15px; white-space: normal; }
+  .tile-blurb { font-size: 9.5px; max-height: none; }
+  .visual > .readout, .visual > .health, .visual > .levelbar, .visual > .launch-bands { flex: none; }
+  /* Transmit has no waterfall — a centered control panel reads far better than the waterfall split's empty pane. */
+  .view.transmit { display: grid; grid-template-columns: minmax(0, 760px); justify-content: center; align-content: start; gap: 4px; }
+  .view.transmit .visual { text-align: center; }
+  .view.transmit .controls { overflow: visible; padding-right: 0; }
+}
+@media (min-width: 1100px) {
+  body { font-size: 15px; padding: 14px; }
+  .chip { font-size: 13px; }
+  .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
+  /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
+  }
+  .view.transmit { grid-template-columns: minmax(0, 820px); }
+  .freq { font-size: 52px; }
+}
+@media (min-width: 1500px) {
+  /* No width cap: ultra-wide screens get an ultra-wide waterfall. Only the Transmit panel stays centered. */
+  main#view { max-width: none; margin: 12px 0 0; }
+}
+/* Ultra-wide windows are not zoomed: the controls keep their half-screen size and every extra pixel goes to the
+ * waterfall. (The canvases still measure themselves through getBoundingClientRect, so a browser zoom is fine.) */
+
+.countrow .row { gap: 4px; flex: none; }
+.countrow .row .chip { padding: 5px 10px; font-size: 10px; flex: none; }
+.countrow .count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel { color: var(--accent2); font-weight: 700; font-size: 11px; padding: 2px 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ADS-B details card: a header bar (callsign · hex · buttons), then the identity lines beside the photo with the
+ * route under it, then the live numbers */
+.accard { background: var(--surface); border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px 9px; margin: 4px 0 6px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 4px 18px rgba(0,0,0,0.35); }
+.accard-bar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.accard-bar b { font-size: 19px; letter-spacing: 1px; color: var(--accent2); flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.accard-hex { font-size: 10px; color: var(--muted); letter-spacing: 1.5px; white-space: nowrap; flex: none; }
+.accard-btns { margin-left: auto; display: flex; gap: 4px; }
+.accard-btns .chip { padding: 4px 8px; font-size: 10px; }
+.accard-body { display: flex; gap: 12px; align-items: flex-start; padding-top: 8px; }
+.accard-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.accard-id > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.accard-reg { font-size: 15px; font-weight: 700; letter-spacing: 1px; }
+.accard-reg span { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; margin-left: 4px; vertical-align: 2px; letter-spacing: 1px; }
+.accard-model { font-size: 12px; font-weight: 700; }
+.accard-op { font-size: 12px; }
+.accard-country { font-size: 10px; color: var(--muted); }
+.accard-side { flex: none; width: 128px; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.accard-photo { width: 128px; max-height: 84px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.accard-route { font-size: 14px; font-weight: 700; letter-spacing: 1px; color: var(--accent2); }
+.accard-route small { display: block; font-size: 9px; color: var(--muted); letter-spacing: 0.5px; font-weight: 400; white-space: normal; }
+.accard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 5px 10px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11px; }
+.accard-grid .k { display: block; color: var(--muted); font-size: 7.5px; letter-spacing: 1.5px; }
+.accard-grid .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-width: 719.98px) { .view.adsb .map, .view.ais .map, .view.aprs .map { height: 26vh; } .accard-side, .accard-photo { width: 112px; } .accard-photo { max-height: 72px; } .accard-route { font-size: 12px; } .accard-grid { grid-template-columns: repeat(2, 1fr); } }
+.map { position: relative; height: 46vh; min-height: 260px; overflow: hidden; background: var(--paper); z-index: 0; }
+.map .follow { position: absolute; right: 8px; bottom: 8px; z-index: 800; width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 18px; cursor: pointer; }
+.map .follow.on { background: var(--accent); color: #05080a; border-color: var(--accent); }
+.dark-tiles { filter: invert(1) hue-rotate(180deg) saturate(0.35) brightness(0.85) contrast(0.95); }
+/* Leaflet's stylesheet is fetched at run time and lands after this one, so its own `.leaflet-container` rule
+   would win on equal specificity and paint the map's surround light gray. Naming the class twice takes it back,
+   which keeps the area outside the world dark instead of showing white bars above and below it. */
+.leaflet-container.leaflet-container { background: var(--paper); font-family: inherit; }
+.leaflet-bar a, .leaflet-bar a:hover, .leaflet-bar a:focus { background: var(--surface); color: var(--ink); border-bottom-color: var(--line); }
+.leaflet-bar a.leaflet-disabled { background: var(--panel); color: var(--muted); }
+.leaflet-touch .leaflet-bar, .leaflet-bar { border-color: var(--line); }
+.leaflet-control-attribution { background: color-mix(in srgb, var(--paper) 70%, transparent) !important; color: var(--muted) !important; font-size: 8px !important; }
+.leaflet-control-attribution a { color: var(--accent) !important; }
+.leaflet-bar a { background: var(--surface) !important; color: var(--ink) !important; border-color: var(--line) !important; }
+.geo-wrap { background: none; border: 0; }
+.geo { width: 60px; height: 60px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.geo svg { width: 28px; height: 28px; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 70%, transparent)); }
+.geo.ship svg, .geo.aton svg, .geo.object svg { width: 22px; height: 22px; }
+.geo.station svg { width: 18px; height: 18px; }
+.geo.sat svg { width: 30px; height: 30px; }
+.geo.qso svg { width: 14px; height: 14px; }
+.view.ham .map { height: 34vh; min-height: 220px; margin-top: 4px; }
+.geo.sel svg { filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 8px var(--accent)); }
+.geo span { margin-top: -4px; font-size: 9px; font-weight: 700; color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; white-space: nowrap; }
+.geo.home { width: 14px; height: 14px; border: 2px solid var(--accent2); border-radius: 50%; box-shadow: 0 0 6px var(--accent2); }
+.list .li small { color: var(--muted); font-weight: 400; font-size: 9px; }
+@media (min-width: 720px) { .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls { display: flex; flex-direction: column; } .map { flex: 1; height: auto; min-height: 300px; } .view.ais .list, .view.aprs .list { flex: 1; } }
+
+.credits { height: 240px; overflow: hidden; position: relative; padding: 0 12px; user-select: none; -webkit-user-select: none; }
+.credits-roll { position: absolute; left: 12px; right: 12px; top: 0; text-align: center; will-change: transform; }
+.credits-copy { padding: 8px 0 20px; }
+.credits-roll h4 { color: var(--accent); font-size: 11px; letter-spacing: 2px; margin: 16px 0 4px; }
+.credits-roll p { margin: 3px 0; font-size: 10px; line-height: 1.45; }
+
+.tx-off { border-color: var(--danger); }
+.tx-gate.on { border-color: var(--danger); }
+/* The readout's RX health line + level meter are meaningless on Transmit — the TX status line carries state there. */
+.view.transmit .visual .health, .view.transmit .visual .levelbar { display: none; }
+.modal { position: fixed; inset: 0; background: color-mix(in srgb, var(--paper) 80%, transparent); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
+.modal-card { background: var(--surface); border: 2px solid var(--danger); border-radius: 10px; max-width: 460px; width: 100%; padding: 18px; box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6); }
+.modal-card h3 { color: var(--danger); margin: 0 0 8px; font-size: 15px; letter-spacing: 2px; }
+.modal-card p { margin: 0 0 8px; font-size: 12px; color: var(--ink); }
+.modal-card ul { margin: 0 0 12px 18px; padding: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-actions .chip.primary { background: var(--danger); color: #fff; border-color: var(--danger); }
+.txin { width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--ink); font: inherit; padding: 9px; }
+.grid-tx { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.grid-tx .chip { text-align: center; }
+
+/* ==== The Android app's look: one frequency card, segmented bars, tiles, toggles, a breathing edge glow ==== */
+
+/* The frequency card every app opens with: tag, title, ☆ ⌨, lamp; the digits across the width; a 32-LED meter,
+ * its scale and a caption line. */
+.face { container-type: inline-size; position: relative; border: 1px solid var(--line); border-radius: 16px; padding: 10px 12px; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--accent) 18%, transparent) 0%, transparent 60%), linear-gradient(180deg, var(--panel), var(--surface)); }
+.fhead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ftag { flex: none; background: var(--accent); color: #fff; font-weight: 700; font-size: 10px; letter-spacing: 1.5px; padding: 2px 7px; border-radius: 5px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); white-space: nowrap; }
+.ftag:empty { display: none; }
+.ftitle { flex: 1; min-width: 0; color: var(--muted); font-size: 10px; letter-spacing: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fact { flex: none; background: none; border: 0; color: var(--muted); font-size: 17px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.fact.on { color: var(--accent2); text-shadow: 0 0 10px var(--accent2); }
+.lamp { flex: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 10px; letter-spacing: 2px; color: var(--muted); white-space: nowrap; }
+.lamp i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; box-sizing: border-box; }
+.lamp.lit i { background: currentColor; border: 0; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 35%, transparent); }
+.lamp.ok { color: var(--ok); } .lamp.amber { color: var(--accent2); } .lamp.red { color: var(--danger); }
+.lamp.blink i { animation: lampblink 1s ease-in-out infinite alternate; }
+@keyframes lampblink { to { opacity: 0.25; } }
+.face .readout { margin: 2px 0 0; text-align: center; }
+.face .freq { display: flex; justify-content: center; font-size: clamp(26px, calc(100cqw / 7.9), 72px); padding: 0.5em 0 0.1em; }
+.face .freq.noghz { font-size: clamp(26px, calc(100cqw / 6.9), 72px); }
+.face .freq.noghz > .fgrp:first-child, .face .freq.noghz > .fgrp:first-child + .fsep { display: none; }
+.face .fd:not(.dim) { text-shadow: 0 0 0.45em color-mix(in srgb, var(--accent) 60%, transparent); }
+.face .fgrp:nth-of-type(n+5) .fd:not(.dim) { color: var(--accent); }
+.face .fsep { width: 0.3em; }
+.leds { display: grid; grid-template-columns: repeat(32, 1fr); gap: 2px; height: 12px; margin-top: 6px; position: relative; }
+.leds i { border-radius: 2px; background: color-mix(in srgb, var(--line) 70%, transparent); }
+.leds i.l1 { background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 60%, transparent); }
+.leds i.l2 { background: var(--ok); box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 60%, transparent); }
+.leds i.l3 { background: var(--accent2); box-shadow: 0 0 5px color-mix(in srgb, var(--accent2) 60%, transparent); }
+.leds i.l4 { background: var(--danger); box-shadow: 0 0 5px color-mix(in srgb, var(--danger) 60%, transparent); }
+.leds s { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--ink); border-radius: 1px; box-shadow: 0 0 0 1px rgba(0,0,0,.6); text-decoration: none; }
+.lscale { position: relative; height: 11px; margin-top: 2px; font-size: 8px; color: var(--muted); }
+.lscale span { position: absolute; top: 0; white-space: nowrap; }
+.lscale span.end { right: 0; }
+.fcap { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; }
+.fcap b { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fcap span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.face .health { display: none; }
+
+/* One rounded bar of equal segments, the chosen one filled and lit. */
+.seg { display: flex; gap: 3px; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+.seg > button { flex: 1; min-width: 0; background: none; border: 0; border-radius: 9px; color: var(--muted); font-weight: 700; font-size: 12px; letter-spacing: 1.5px;
+  padding: 8px 2px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg > button.on { background: var(--accent); color: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+.seg > button.red { color: var(--danger); } .seg > button.red.on { background: var(--danger); color: #fff; }
+.ctlrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.ctlrow > .seg { flex: 1; }
+.rl { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 2px; }
+/* An on/off box the height of a bar, lit and glowing when on; an icon box; the one filled action of a panel. */
+.tog { background: var(--surface); color: var(--muted); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; font-weight: 700; font-size: 12px; letter-spacing: 1.5px; cursor: pointer; white-space: nowrap; }
+.tog.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
+.ib { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.ib svg { width: 18px; height: 18px; fill: currentColor; }
+.act { background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 80%, transparent)); color: #fff; border: 0; border-radius: 12px; padding: 11px 14px; font-weight: 900; font-size: 13px; letter-spacing: 2px; cursor: pointer;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); white-space: nowrap; }
+/* Tiles in one scrolling row (bands, presets, channels); the one you are on lit, with a glowing underline. */
+.tiles { display: flex; gap: 6px; }
+.tl { flex: none; width: 82px; position: relative; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; cursor: pointer; color: var(--ink); overflow: hidden; }
+.tl b { display: block; font-size: 14px; letter-spacing: 1px; white-space: nowrap; }
+.tl small { display: block; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl.on { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 24%, var(--surface)), var(--surface)); }
+.tl.on small { color: var(--accent); }
+.tl.on::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.tl.dim { opacity: 0.4; }
+
+/* Any sideways scroller with more past an edge: that edge glows in the accent, breathing, instead of an arrow. */
+.hs { position: relative; min-width: 0; }
+.hs-in { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.hs-in::-webkit-scrollbar { display: none; }
+.hs::before, .hs::after { content: ''; position: absolute; top: 0; bottom: 0; width: 22px; pointer-events: none; opacity: 0; z-index: 3; transition: opacity 0.2s; }
+.hs::before { left: 0; border-left: 2px solid var(--accent); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 34%, transparent), color-mix(in srgb, var(--accent) 10%, transparent) 50%, transparent); }
+.hs::after { right: 0; border-right: 2px solid var(--accent); background: linear-gradient(270deg, color-mix(in srgb, var(--accent) 34%, transparent), color-mix(in srgb, var(--accent) 10%, transparent) 50%, transparent); }
+.hs.mL::before, .hs.mR::after { opacity: 1; animation: glowbreath 1.1s ease-in-out infinite alternate; }
+@keyframes glowbreath { from { opacity: 0.55; } to { opacity: 1; } }
+
+/* The phone shell. Hidden on a wide screen, where the header bar and the launcher stay as they are. */
+.topnav, .radiomiss { display: none; }
+.dock-acts:empty { display: none; }
+.sheet { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
+.sheet-card { width: min(520px, 100%); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px 16px 0 0; padding: 12px; }
+.sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.sheet-head b { color: var(--accent); letter-spacing: 3px; }
+.sheet-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.fav-row { display: flex; align-items: center; gap: 8px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; cursor: pointer; }
+.fav-row div { flex: 1; min-width: 0; }
+.fav-row b { display: block; font-size: 14px; } .fav-row small { color: var(--muted); font-size: 10px; }
+.fav-row .x { background: none; border: 0; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px 8px; }
+@media (max-width: 719.98px) {
+  body { padding: 0; }
+  header.bar { display: none !important; }
+  .topnav { display: flex; flex: none; justify-content: space-between; padding: 4px 10px; background: var(--surface); border-bottom: 1px solid var(--line); }
+  .tnb { position: relative; display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--muted); font-size: 11px; letter-spacing: 1.5px; padding: 10px 6px; cursor: pointer; }
+  .tnb svg { width: 20px; height: 20px; fill: currentColor; }
+  .tnb.on { color: var(--ink); } .tnb.on svg { fill: var(--accent); }
+  .tnb.muted { color: var(--danger); }
+  #nav-dot { position: absolute; top: 6px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  #nav-dot.on { background: var(--ok); }
+  .radiomiss { display: flex; flex: none; align-items: center; gap: 10px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid var(--accent2); border-radius: 12px; background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+  .radiomiss[hidden] { display: none; }
+  .radiomiss div { flex: 1; min-width: 0; } .radiomiss b { display: block; color: var(--accent2); letter-spacing: 2px; font-size: 11px; }
+  .radiomiss span { color: var(--muted); font-size: 10px; }
+  main#view { margin: 0; padding: 10px 10px 6px; }
+  /* The app picker, drawn as a tool strip: a gear square (Settings), then one key per app in a hairline pill. Each
+   * key is faintly lit in its own tint; the open app wears a glowing fill that slides between keys. The keys
+   * stretch to fill the pill when they fit and scroll with the glowing edges when they do not. */
+  .appbar { display: flex; align-items: center; gap: 8px; flex: none; height: 44px; padding: 0 8px; box-sizing: content-box; background: var(--paper); padding-bottom: env(safe-area-inset-bottom); }
+  .bar-gear { flex: none; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; transition: transform .12s ease; }
+  .bar-gear svg { width: 20px; height: 20px; fill: var(--accent); }
+  .bar-gear:active { transform: scale(.92); }
+  .bar-pill { flex: 1; height: 36px; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .appbar .hs-in { position: relative; display: flex; gap: 4px; height: 100%; padding: 3px; box-sizing: border-box; }
+  .appbar .hs-in button { position: relative; z-index: 1; flex: 1 0 auto; min-width: 48px; background: color-mix(in srgb, var(--seg) 7%, transparent); border: 1px solid color-mix(in srgb, var(--seg) 22%, transparent); color: color-mix(in srgb, var(--ink) 82%, transparent); font-weight: 700; font-size: 13px; letter-spacing: 1px; padding: 0 14px; border-radius: 5px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, color .2s ease; }
+  .appbar .hs-in button:active { transform: scale(.94); }
+  .appbar .hs-in button.dim:not(.on) { opacity: 0.45; }
+  .appbar .hs-in button.on { color: #fff; }
+  .appbar .ag { display: none; }
+  .afill { position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 5px; background: var(--seg, var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--seg, var(--accent)) 55%, transparent); opacity: 0; pointer-events: none; transition: opacity .2s ease, background-color .24s ease; }
+  .afill.show { opacity: 1; }
+  .afill.slide { transition: left .36s cubic-bezier(.3, 1.25, .5, 1), width .36s cubic-bezier(.3, 1.25, .5, 1), opacity .2s ease, background-color .24s ease; }
+  /* the launcher is a home for discovery, under the same bars: its own tile strip stays, the header's job is the top bar */
+  .visual > .face { flex: none; margin-bottom: 6px; }
+  .controls { max-height: 58%; }
+}
+
+/* RDS as its own strip under the card (the Android app's), not an overlay on the waterfall */
+.rdsbar.station { position: relative; left: auto; right: auto; top: auto; margin-bottom: 6px; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.rdsbar.station b:first-of-type { font-size: 15px; letter-spacing: 3px; color: var(--ink); }
+@media (max-width: 719.98px) {
+  /* gain lives in Settings on a phone, as in the Android app */
+  .view:not(.settings) .gainwrap { display: none; }
+  .visual > .rdsbar.station { flex: none; }
+}
+
+/* Every row of chips in an app's controls reads as one segmented bar, and the decode-list header's links as
+ * toggles, so screens not yet rebuilt on .seg / .tog still look the part. */
+.controls .row:not(.wrap):not(.ctlrow) { gap: 3px; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; }
+.controls .row:not(.wrap):not(.ctlrow) > .chip { border: 0; background: none; color: var(--muted); border-radius: 9px; letter-spacing: 1.5px; padding: 8px 2px; }
+.controls .row:not(.wrap):not(.ctlrow) > .chip.on { background: var(--accent); color: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+.controls .row:not(.wrap):not(.ctlrow) > .chip.primary { background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 80%, transparent)); color: #fff; }
+.controls .row:not(.wrap):not(.ctlrow) > .chip.rec { background: var(--danger); color: #fff; }
+.controls .row:not(.wrap):not(.ctlrow) > .txin { border-radius: 9px; }
+.controls .row.wrap > .chip { border-radius: 12px; border-color: var(--line); }
+.controls .row.wrap > .chip.on { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 24%, var(--surface)), var(--surface)); color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+.countrow { display: flex; align-items: center; gap: 6px; }
+.countrow .count { color: var(--accent); font-weight: 700; letter-spacing: 2px; }
+.countrow .link { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--muted); font-weight: 700; letter-spacing: 1.5px; padding: 7px 10px; }
+.countrow .link.on { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); }
+.tiles.wide .tl { width: 98px; }
+.note { color: var(--muted); font-size: 10px; line-height: 1.4; margin: 6px 2px 0; }
+
+@media (max-width: 719.98px) {
+  /* HAM: the card carries the S-meter and the band line; the fine controls (typed filter edges, shift, CW pitch,
+   * volume) live in Settings as on Android */
+  .view.ham .visual > .smeter, .view.ham .visual > .hamline, .view.sat .visual > .smeter { display: none; }
+  .view.ham .fbox, .view.ham .hamfine { display: none !important; }
+}
+.seg .fbox { display: none; }
+.seg.hamtabs { margin-bottom: 6px; }
+
+/* Settings, as the Android app lays it out: a radio card, jump pills, sections of label-left / control-right rows */
+.settings-page { max-width: 760px; margin: 0 auto; }
+.set-search { width: 100%; margin-bottom: 8px; }
+.radiocard { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+.radiocard.on { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--surface)); }
+.radiocard div { flex: 1; min-width: 0; } .radiocard b { display: block; letter-spacing: 2px; font-size: 11px; color: var(--accent2); } .radiocard.on b { color: var(--ok); }
+.radiocard small { color: var(--muted); font-size: 10px; }
+.set-jumps { margin: 8px 0 4px; }
+.pill { flex: none; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 50px; padding: 6px 12px; font-size: 10px; letter-spacing: 1.5px; font-weight: 700; cursor: pointer; }
+.sset { margin-top: 14px; scroll-margin-top: 8px; }
+.sset-h { color: var(--accent); font-weight: 900; letter-spacing: 3px; font-size: 11px; margin: 0 2px 6px; }
+.sset-sub { color: var(--muted); font-size: 9px; letter-spacing: 2px; margin: 10px 2px 4px; }
+.srow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; }
+.srl { flex: 1; min-width: 0; } .srl b { display: block; font-size: 13px; } .srl small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; }
+.src { flex: none; display: flex; align-items: center; gap: 6px; max-width: 62%; }
+.src .seg { min-width: 200px; }
+.src input[type=range] { width: 160px; accent-color: var(--accent); }
+.src .txin.num { width: 76px; }
+.sw { position: relative; width: 46px; height: 26px; border-radius: 13px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; padding: 0; }
+.sw i { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--muted); transition: left 0.15s, background 0.15s; }
+.sw.on { background: var(--accent); border-color: var(--accent); } .sw.on i { left: 23px; background: #fff; }
+.settings-page .gainwrap .row { margin-top: 0; }
+@media (max-width: 719.98px) {
+  .view.settings { overflow-y: auto; }
+  .view.settings .controls { max-height: none; overflow: visible; }
+}
+
+/* Toggles and the clear icon beside a count, the height of a segment bar. */
+.countrow .row .tog { padding: 7px 10px; font-size: 11px; }
+.countrow .row .ib, .ctlrow > .ib { align-self: stretch; padding: 0 10px; }
+.ctlrow > .tog { align-self: stretch; }
+/* The sweeps' card: the range where the digits sit on the other cards. */
+.face .srange { text-align: center; font-weight: 700; color: var(--ink); letter-spacing: 1px; font-size: clamp(24px, calc(100cqw / 9), 56px); padding: 0.45em 0 0.35em;
+  text-shadow: 0 0 0.45em color-mix(in srgb, var(--accent) 60%, transparent); white-space: nowrap; }
+.face .srange.preview { color: var(--accent2); }
+.tiles.wide .tl[data-range], .tiles.wide #sweep-full { width: 112px; }
+/* A count line's buttons stand on their own, not inside a segment bar. */
+.controls .countrow > span.row:not(.wrap) { background: none; border: 0; padding: 0; margin-top: 0; gap: 6px; }
+/* Satellites and their services as tiles, wide enough for their names. */
+.tiles.auto .tl { width: auto; min-width: 98px; max-width: 220px; }
+.tl b { overflow: hidden; text-overflow: ellipsis; }
+.seg.sattabs { margin-bottom: 6px; }
+.act.grow { flex: 1; }
+.act.on { background: linear-gradient(180deg, var(--ok, #3fd07a), color-mix(in srgb, var(--ok, #3fd07a) 80%, transparent)); }
+.rl.offers { display: block; margin: 10px 2px 2px; }
+@media (max-width: 719.98px) {
+  .view.sat .controls > *, .view.adsb .controls > *, .view.ais .controls > *, .view.aprs .controls > * { flex-shrink: 0; }
+}
+@media (max-width: 719.98px) { .view.sat .about { font-size: 12px; line-height: 1.45; color: var(--muted); } }
+/* The transmit modes: four tiles to a row. */
+.tgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.tgrid .tl { width: auto; min-width: 0; }
+.tgrid .tl b { font-size: 12px; }
+.grid-tx .chip { border-radius: 12px; border-color: var(--line); background: var(--surface); }
+/* Transmit and Troll wear the danger colour, as on Android. */
+.view.transmit, .view.troll { --accent: var(--danger); }
+/* Rows that hold form fields are just rows. */
+.controls .row.row.row:has(input, textarea, select) { background: none; border: 0; padding: 0; gap: 6px; }
+.controls .row > .txin { min-width: 0; flex: 1; }
+.tgrid.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg.tight > button { letter-spacing: 0; font-size: 11px; }
+.ctlrow > .ib { flex: none; }
+
+/* Category headers in the app grid: the phone's (Android's) grouping; a wide screen keeps its flat grid. */
+.gcat { display: none; }
+@media (min-width: 720px) { .bandhs .hs-in { overflow: visible; } }
+@media (max-width: 719.98px) {
+  /* No radio: one quiet line under the top bar, with the connect button a browser needs. */
+  .radiomiss { margin: 0; padding: 5px 16px; gap: 8px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+  .radiomiss > span { flex: 1; min-width: 0; color: var(--ink); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .radiomiss > .tog { padding: 4px 10px; font-size: 10px; }
+  /* Home, as on Android: the waterfall, what it is hearing, the bands, then every app two to a row by what it does. */
+  .view.launcher { display: flex; flex-direction: column; min-height: 0; }
+  .launch-visual > .face { display: none; }
+  .visual.launch-visual { flex: none; }
+  .visual.launch-visual > .launch-scope { flex: none; height: 240px; min-height: 0; margin-top: 6px; }
+  .launch-line { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 0.5px; margin: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .launch-side { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; scroll-snap-type: none; padding: 0 0 12px; max-height: none; }
+  .launch-side .launch-radio { order: -1; flex: none; width: auto; margin-bottom: 4px; }
+  .launch-side .launch-radio > .caption { display: none; }
+  .launch-side .bandhs .bandrow { flex-wrap: nowrap; width: max-content; margin: 0; gap: 6px; }
+  .launch-side .bandrow > .chip { flex: none; }
+  .launch-grid { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-columns: auto; gap: 8px; padding: 0; }
+  .launch-grid .gcat { display: block; grid-column: 1 / -1; font-weight: 700; font-size: 10px; letter-spacing: 3px; margin: 6px 2px 0; }
+  .launch-grid .tile { width: auto; aspect-ratio: 1.3; padding: 12px; scroll-snap-align: none; }
+  .launch-grid .tile .cat { display: none; }
+  .launch-grid .tile-top svg { width: 36px; height: 36px; }
+  .launch-grid .tile-title { font-size: 15px; }
+  .launch-grid .tile-blurb { font-size: 9.5px; max-height: 2.6em; }
+}
+.launch-line { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 0.5px; margin: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- pager MULTI: the hunter (the Android app's pager screen) ---- */
+.hstats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.hstats > div { background: color-mix(in srgb, var(--paper) 60%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 4px 7px; min-width: 0; }
+.hstats b { display: block; font-size: 16px; font-weight: 900; color: var(--ink); text-shadow: 0 0 14px color-mix(in srgb, var(--accent) 55%, transparent); white-space: nowrap; }
+.hstats .red b { color: var(--danger); text-shadow: 0 0 14px color-mix(in srgb, var(--danger) 55%, transparent); }
+.hstats small { display: block; font-size: 8px; letter-spacing: 1px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hspark { margin-top: 6px; }
+#hspark { display: flex; align-items: flex-end; gap: 2px; height: 12px; }
+#hspark i { flex: 1; background: var(--line); border-radius: 1px; }
+#hspark i.on { background: var(--accent); box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 50%, transparent); }
+#hspark i.r { background: var(--danger); box-shadow: 0 0 4px color-mix(in srgb, var(--danger) 50%, transparent); }
+.hspark-l { display: flex; justify-content: space-between; margin-top: 2px; font-size: 8px; letter-spacing: 1px; color: var(--muted); }
+.controls.hunt { display: flex; flex-direction: column; }
+.controls.hunt > * { flex: none; }
+#hchans { gap: 6px; padding-top: 2px; }
+.tl.hauto { display: flex; align-items: center; gap: 7px; width: auto; padding: 6px 10px; }
+.tl.hauto b { font-size: 13px; }
+.tl.hauto.on { background: var(--accent2); border-color: var(--accent2); color: #111; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent2) 30%, transparent); }
+.tl.hauto.on small { color: rgba(0, 0, 0, 0.65); }
+.tl.hauto.on::after { display: none; }
+.radar { width: 20px; height: 20px; flex: none; }
+.tl.hauto.on .radar .sweep, .hempty .radar .sweep { transform-origin: 12px 12px; animation: radarsweep 1.4s linear infinite; }
+@keyframes radarsweep { to { transform: rotate(360deg); } }
+.tl.hch { width: auto; min-width: 92px; }
+.tl.hch b { font-size: 13px; display: flex; align-items: center; gap: 5px; }
+.tl.hch.live { border-color: var(--accent); }
+.tl.hch.live small { color: var(--accent); }
+.tl.hch .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); animation: livepulse 1.2s ease-in-out infinite alternate; }
+@keyframes livepulse { from { opacity: 1; } to { opacity: 0.3; } }
+.tl.hch .bars { display: flex; gap: 2px; margin-top: 4px; width: 55px; }
+.tl.hch .bars i { flex: 1; height: 3px; border-radius: 1px; background: var(--line); }
+.tl.hch .bars i.on { background: var(--accent); }
+.hfeedhead { margin-top: 8px; }
+.hfeedhead .seg button.red:not(.on) { color: var(--danger); }
+#htogs { display: flex; gap: 6px; padding: 6px 0; width: max-content; }
+.pill { font: inherit; font-size: 10px; letter-spacing: 1px; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.pill.on { color: var(--ink); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.pill.only { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.pill.a2 { color: var(--accent2); border-color: var(--accent2); padding: 0 6px; font-size: 8.5px; cursor: default; }
+.hfeed { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 120px; max-height: 60vh; scrollbar-width: none; }
+.hfeed::-webkit-scrollbar { display: none; }
+.hempty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; color: var(--muted); font-size: 11px; line-height: 1.5; border: 1px dashed var(--line); border-radius: 12px; padding: 16px; min-height: 140px; }
+.hempty .radar { width: 56px; height: 56px; color: var(--accent2); }
+.pcard { position: relative; flex: none; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px 8px 14px; cursor: pointer; overflow: hidden; }
+.pcard::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--muted); }
+.pcard.alpha::before { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.pcard.num::before { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
+.pcard.alert { border-color: color-mix(in srgb, var(--danger) 75%, transparent); background: linear-gradient(90deg, color-mix(in srgb, var(--danger) 16%, var(--surface)), var(--surface) 70%); }
+.pcard.alert::before { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.pc-h { display: flex; align-items: center; gap: 8px; font-size: 10px; }
+.pc-b { font-weight: 900; letter-spacing: 1px; padding: 1px 6px; border-radius: 4px; background: var(--panel); color: var(--muted); }
+.pcard.alpha .pc-b { color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.pcard.num .pc-b { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 20%, transparent); }
+.pcard.alert .pc-b { color: #fff; background: var(--danger); }
+.pc-t { color: var(--muted); }
+.pc-x { color: var(--accent2); font-weight: 900; }
+.pc-r { margin-left: auto; color: var(--muted); white-space: nowrap; }
+.pc-m { display: flex; gap: 6px; margin-top: 5px; }
+.pc-m button { font: inherit; font-size: 10px; font-weight: 700; color: var(--ink); background: var(--panel); border: 0; border-radius: 5px; padding: 2px 6px; cursor: pointer; }
+.pc-m button.hz { font-weight: 400; color: var(--muted); }
+.pc-m button.on { background: var(--accent); color: #fff; }
+.pc-body { margin-top: 5px; font-size: 13.5px; line-height: 18px; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.pc-body.muted { color: var(--muted); }
+@media (max-width: 719.98px) {
+  /* the card keeps its height; the waterfall and the feed split the rest */
+  .view.pager .visual { flex: 1 1 0; }
+  .view.pager .controls.hunt { flex: 1 1 0; max-height: none; min-height: 0; overflow: hidden; padding-top: 4px; }
+  .view.pager .controls.hunt .hfeed { flex: 1 1 0; min-height: 0; max-height: none; }
+  .view.pager .face .hstats b { font-size: 15px; }
+  /* full screen: the feed alone */
+  .view.pager.hfull .visual, .view.pager.hfull .controls.hunt > .hs:first-child { display: none; }
+  .view.pager.hfull .controls.hunt { flex: 1; }
+}
+@media (min-width: 720px) {
+  .view.pager.hfull .visual { display: none; }
+  .view.pager.hfull .controls.hunt .hfeed { max-height: 80vh; }
+}
+.hfeedhead .seg > button { letter-spacing: 1px; padding-left: 2px; padding-right: 2px; }
+.hfeedhead .seg > button { font-size: 11px; }
+.hfeedhead .seg > button:nth-child(3) { flex: 1.7; }
+@media (min-width: 720px) {
+  /* the feed takes the column down to the bottom of the window */
+  .view.pager .controls.hunt { overflow: hidden; }
+  .view.pager .controls.hunt .hfeed { flex: 1 1 0; min-height: 0; max-height: none; }
+  .view.pager.hfull { grid-template-columns: minmax(0, 1fr); }
+  .view.pager.hfull .controls.hunt .hfeed { max-height: none; }
+}
+
+/* ADS-B aircraft rows: the registry photo, who it is, and how high / fast / far. */
+#adsb-list { padding: 4px; }
+.acrow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; border: 1px solid transparent; cursor: pointer; }
+.acrow + .acrow { margin-top: 2px; }
+.acrow:hover { background: var(--panel); }
+.acrow.gold { border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+.acrow.nopos { opacity: 0.6; }
+.acth { flex: none; width: 76px; height: 48px; border-radius: 8px; overflow: hidden; background: var(--paper); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: var(--accent); }
+.acth img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.acmid { flex: 1; min-width: 0; line-height: 1.3; }
+.acmid b { font-size: 14px; letter-spacing: 1px; }
+.achex { color: var(--muted); font-size: 10px; letter-spacing: 1px; }
+.acid { color: var(--accent); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acop { color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acnum { flex: none; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; font-size: 11px; color: var(--muted); }
+.acnum b { color: var(--ink); font-size: 13px; } .acnum b i { font-style: normal; color: var(--ok); font-size: 10px; }
+.acnum small { font-size: 10px; }
+
+/* The full-screen map: over the whole window, the selected aircraft and the list in a sidebar. */
+.view.adsb.mapfull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; }
+.view.adsb.mapfull > .visual, .view.adsb.mapfull > .controls > .sh, .view.adsb.mapfull .gainwrap { display: none; }
+.view.adsb.mapfull > .controls { height: 100%; max-height: none; overflow: hidden; display: grid !important; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); grid-template-rows: auto auto minmax(0, 1fr); gap: 8px 12px; padding: 0; }
+.view.adsb.mapfull > .controls > .countrow { grid-column: 1; grid-row: 1; align-self: center; margin: 0; border: 0; padding: 0; }
+.view.adsb.mapfull > .controls > .ctlrow { grid-column: 2; grid-row: 1; margin: 0; }
+.view.adsb.mapfull > .controls > .ctlrow .seg { visibility: hidden; }
+.view.adsb.mapfull #adsb-map { grid-column: 1; grid-row: 2 / 4; height: auto; min-height: 0; margin: 0; }
+.view.adsb.mapfull #adsb-card { grid-column: 2; grid-row: 2; margin: 0; overflow: auto; max-height: 46vh; }
+.view.adsb.mapfull #adsb-list { grid-column: 2; grid-row: 3; height: auto; max-height: none; min-height: 0; overflow-y: auto; margin: 0; }
+@media (max-width: 719.98px) {
+  .view.adsb.mapfull > .controls { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1.4fr) auto minmax(0, 1fr); }
+  .view.adsb.mapfull > .controls > .countrow { grid-column: 1; grid-row: 1; }
+  .view.adsb.mapfull > .controls > .ctlrow { grid-column: 1; grid-row: 2; }
+  .view.adsb.mapfull #adsb-map { grid-column: 1; grid-row: 3; }
+  .view.adsb.mapfull #adsb-card { grid-column: 1; grid-row: 4; max-height: 30vh; }
+  .view.adsb.mapfull #adsb-list { grid-column: 1; grid-row: 5; }
+}
+
+/* Apps with short controls on a wide screen (Audio, Looking Glass, Capture; as on the iPad and Android tablets):
+ * the dial card and the controls side by side along the top, the waterfall the full width below. A side pane of
+ * their own left most of the window empty. */
+@media (min-width: 720px) {
+  main#view.view.stack { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); column-gap: 12px; row-gap: 0; }
+  main#view.view.stack > .visual { display: contents; }
+  main#view.view.stack > .visual > * { grid-column: 1; margin-bottom: 6px; }
+  main#view.view.stack > .visual > .scope { grid-row: 4; grid-column: 1 / -1; min-height: 0; height: auto; margin: 2px 0 0; }
+  /* RDS gets its own row the full width, between the dial-and-controls row and the waterfall (no empty half beside it) */
+  main#view.view.stack > .visual > .rdsbar { grid-row: 3; grid-column: 1 / -1; }
+  main#view.view.stack > .controls { grid-column: 2; grid-row: 1 / 3; align-self: start; max-height: 46vh; }
+}
+
+/* The RDS strip arrives with its data: it fades and slides in under the dial the moment a name or RadioText is read. */
+@keyframes rdsin { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.rdsbar.station:not([hidden]) { animation: rdsin 0.3s ease-out; }

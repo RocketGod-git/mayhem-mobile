@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Mayhem Mobile</title>
+<style>
+  :root { --bg:#05070a; --panel:#0b1119; --cyan:#00e5ff; --txt:#c7d6e5; --muted:#5f7285; --line:#1a2634; }
+  * { box-sizing:border-box }
+  body {
+    margin:0; padding:32px 16px 64px; background:var(--bg); color:var(--txt);
+    font-family:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    font-size:14px; line-height:1.65;
+  }
+  main { max-width:760px; margin:0 auto }
+  h1 { color:var(--cyan); font-size:20px; letter-spacing:2px; margin:0 0 4px }
+  h2 { color:var(--cyan); font-size:14px; letter-spacing:1.5px; margin:28px 0 8px; text-transform:uppercase }
+  .sub { color:var(--muted); margin:0 0 28px }
+  p, li { color:var(--txt) }
+  ul { padding-left:20px }
+  a { color:var(--cyan) }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px 20px; margin:16px 0 }
+  footer { color:var(--muted); border-top:1px solid var(--line); margin-top:36px; padding-top:16px; font-size:12px }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mayhem Mobile — Privacy Policy</h1>
+  <p class="sub">Effective October 28, 2026</p>
+
+  <div class="panel">
+    <strong>Mayhem Mobile collects nothing.</strong> There are no accounts, no analytics, no
+    advertising, no crash reporting and no tracking of any kind. Nothing you do in the app is
+    sent to its developer, because the app has nowhere to send it.
+  </div>
+
+  <h2>What the permissions are for</h2>
+  <ul>
+    <li><strong>USB</strong> — to talk to the SDR hardware you plug in. This is the whole point of the app.</li>
+    <li><strong>Location</strong> — used on the device to center the map and as the reference position
+      that aircraft position messages are decoded against. Your location is never transmitted by
+      the app and is not stored anywhere outside it.</li>
+    <li><strong>Microphone</strong> — only while you hold push-to-talk to transmit your voice through a
+      HackRF (HAM Radio and Satellites). The audio goes straight to the radio. It is never recorded,
+      stored or sent anywhere else. Receive-only use never asks for it.</li>
+    <li><strong>Internet</strong> — map tiles and the optional lookups listed below.</li>
+  </ul>
+
+  <h2>Network requests</h2>
+  <p>
+    The app has no server of its own. It talks to these public services, and only when you use
+    the feature that needs them:
+  </p>
+  <ul>
+    <li><strong>Map tiles</strong> from <a href="https://www.openstreetmap.org/">OpenStreetMap</a>,
+      when a map is on screen. The tile request reveals which part of the world you are looking at, the same
+      as any map in a browser (<a href="https://osmfoundation.org/wiki/Privacy_Policy">OpenStreetMap
+      Foundation privacy policy</a>).</li>
+    <li><strong>Aircraft details</strong> (type, registration, operator) from
+      <a href="https://www.adsbdb.com/">adsbdb</a>, by the aircraft's broadcast address.</li>
+    <li><strong>Amateur callsign lookups</strong> from <a href="https://www.hamqth.com/">HamQTH</a>,
+      <a href="https://hamdb.org/">HamDB</a> and <a href="https://callook.info/">Callook</a>, for the
+      callsign you look up or log. Tapping QRZ opens qrz.com in your browser.</li>
+    <li><strong>Satellite orbits</strong> from <a href="https://celestrak.org/">CelesTrak</a>. Passes are
+      worked out on the phone; your location is not sent.</li>
+    <li><strong>Update checks</strong>: a copy installed from Google Play is updated by Play. A copy
+      installed from the APK on this site asks GitHub whether a newer build exists.</li>
+  </ul>
+  <p>
+    Each request tells that service your IP address and what was asked for. None of them receive an
+    account, an identifier, your location or anything about you beyond the lookup itself.
+  </p>
+
+  <h2>The browser version</h2>
+  <p>
+    The browser version of Mayhem Mobile, on this same site, makes the same lookups and also
+    loads its charting library from a public CDN. Everything else above applies to it too.
+  </p>
+
+  <h2>What stays on your device</h2>
+  <p>
+    Recorded IQ files, decoded packet logs, received messages and your settings are written to the
+    app's own storage on your phone. They are never uploaded. Removing the app removes them.
+  </p>
+
+  <h2>Radio reception</h2>
+  <p>
+    The app decodes radio signals that are already being broadcast around you — aircraft, ships,
+    pagers, utility meters, tire-pressure sensors and similar. That data is shown to you and
+    written to the local logs described above. It is not forwarded anywhere.
+  </p>
+
+  <h2>Children</h2>
+  <p>This app is not directed at children and collects no data from anyone, including children.</p>
+
+  <h2>Changes</h2>
+  <p>
+    If this policy changes, the updated version appears at this address with a new effective date.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions: open an issue at
+    <a href="https://github.com/RocketGod-git/mayhem-mobile">github.com/RocketGod-git/mayhem-mobile</a>
+    or find us on <a href="https://discord.gg/thepirates">discord.gg/thepirates</a>.
+  </p>
+
+  <footer>
+    Mayhem Mobile · <a href="./">back to the app</a> · GPL-3.0
+  </footer>
+</main>
+</body>
+</html>
