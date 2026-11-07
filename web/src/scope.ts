@@ -55,6 +55,10 @@ export interface ScopeOpts {
   rowPx?: number;
 }
 
+/** The most a scope's canvases are drawn at, however big the window: width, and total pixels. */
+const MAX_BACK_W = 1920;
+const MAX_BACK_PX = 1920 * 1080;
+
 export class Scope {
   cols: number;
   /** Called after the scope re-sizes itself to a new column count (the app forwards it to the worker). */
@@ -108,6 +112,17 @@ export class Scope {
   private readonly rowPx: number;
   private readonly fixedCols: boolean;
   private readonly dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  /**
+   * Canvas pixels per CSS pixel: the screen's, unless the scope is huge (a full-screen ultrawide), where the
+   * canvases are drawn at most ~1920 wide and ~2 megapixels and the browser scales them up. Full screen then costs
+   * no more to draw than a normal window, instead of stuttering.
+   */
+  private eff = this.dpr;
+  private fitEff(host: HTMLElement): number {
+    const r = host.getBoundingClientRect();
+    const w = Math.max(1, r.width), h = Math.max(1, r.height), d = this.dpr;
+    return d * Math.min(1, MAX_BACK_W / (w * d), Math.sqrt(MAX_BACK_PX / (w * h * d * d)));
+  }
 
   /** Device pixels across the host, honouring any CSS zoom on the page. */
   private static measure(el: HTMLElement, fallback: number): number {
@@ -117,12 +132,12 @@ export class Scope {
   /** Device pixels per CSS pixel *as laid out*, i.e. devicePixelRatio × any CSS zoom on the page — the unit for
    *  canvas text and line widths so they match the surrounding UI on zoomed ultra-wide layouts. */
   private ui(): number {
-    const cw = this.wf.clientWidth; if (!cw) return this.dpr;
+    const cw = this.wf.clientWidth; if (!cw) return this.eff;
     const r = this.wf.getBoundingClientRect();
-    return r.width > 0 ? this.dpr * (r.width / cw) : this.dpr;
+    return r.width > 0 ? this.eff * (r.width / cw) : this.eff;
   }
-  private fitCols(host: HTMLElement): number { return Math.max(256, Math.min(8192, Math.round(Scope.measure(host, 512) * this.dpr))); }
-  private fitRows(fallback: number): number { const r = this.wf.getBoundingClientRect(); return Math.max(64, Math.min(4096, Math.round((r.height > 0 ? r.height : fallback) * this.dpr))); }
+  private fitCols(host: HTMLElement): number { return Math.max(256, Math.min(8192, Math.round(Scope.measure(host, 512) * this.eff))); }
+  private fitRows(fallback: number): number { const r = this.wf.getBoundingClientRect(); return Math.max(64, Math.min(4096, Math.round((r.height > 0 ? r.height : fallback) * this.eff))); }
 
   /** cols = 0 picks one column per device pixel of the host (256..8192) and follows the host when it resizes. */
   constructor(host: HTMLElement, cols: number, opts: ScopeOpts = {}) {
@@ -134,6 +149,8 @@ export class Scope {
     this.axis = host.querySelector('.axis') as HTMLElement;
     host.classList.add('underlap');
     this.fixedCols = cols > 0;
+    this.eff = this.fitEff(host);
+    if (this.eff < this.dpr - 0.01) this.wf.style.imageRendering = 'auto';
     this.cols = cols || this.fitCols(host);
     this.rows = this.fitRows(opts.rows ?? 160);
     this.wf.width = this.cols; this.wf.height = this.rows;
@@ -294,9 +311,12 @@ export class Scope {
   /** Re-size the canvases to the host (window resized, pane resized); the history is rescaled into the new ring. */
   private refit(host: HTMLElement): void {
     if (!host.isConnected) return;
+    this.eff = this.fitEff(host);
+    // drawn below the screen's resolution: scale up smoothly rather than in blocks
+    this.wf.style.imageRendering = this.eff < this.dpr - 0.01 ? 'auto' : '';
     this.underlap();
     const cols = this.fixedCols ? this.cols : this.fitCols(host);
-    const rows = this.fitRows(this.rows / this.dpr);
+    const rows = this.fitRows(this.rows / this.eff);
     if (cols === this.cols && rows === this.rows) { this.draw(); return; }
     // unroll the old ring into time order (newest first), scale it into a new ring of the new size
     const ordered = document.createElement('canvas'); ordered.width = this.cols; ordered.height = this.rows;
@@ -670,7 +690,7 @@ export class Scope {
     const c = this.sp;
     const cr = c.getBoundingClientRect();
     const cssW = cr.width || c.clientWidth || 300, cssH = cr.height || c.clientHeight || 90;
-    if (c.width !== Math.round(cssW * this.dpr) || c.height !== Math.round(cssH * this.dpr)) { c.width = Math.round(cssW * this.dpr); c.height = Math.round(cssH * this.dpr); }
+    if (c.width !== Math.round(cssW * this.eff) || c.height !== Math.round(cssH * this.eff)) { c.width = Math.round(cssW * this.eff); c.height = Math.round(cssH * this.eff); }
     const dpr = this.ui();
     const g = c.getContext('2d')!;
     const w = c.width, h = c.height;

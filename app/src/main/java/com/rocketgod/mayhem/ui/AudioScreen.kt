@@ -135,10 +135,11 @@ fun AudioScreen(accent: Color) {
                 Column(Modifier.weight(1.35f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                     alert?.header?.let { h -> SameBanner(h) }
                     TunerFace(accent, freq, mode, rdsTitle)
-                    strip()
                 }
                 controls(Modifier.weight(1f))
             }
+            // RDS gets its own row the full width, between the dial-and-controls row and the waterfall
+            strip()
             scope(Modifier.fillMaxWidth().weight(1f))
         }
         return
