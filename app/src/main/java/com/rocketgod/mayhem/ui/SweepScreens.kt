@@ -151,6 +151,7 @@ fun LookingGlassScreen(accent: Color) {
     val rowPx = maxOf(1, (2 * LocalDensity.current.density).toInt())
     var previewHz by remember { mutableStateOf<Long?>(null) }
     AdaptivePane(
+        stacked = true,
         face = { SweepFace(accent, "GLASS", s, progress, sweeps, previewHz?.let { "LISTEN %.3f MHZ · LIFT TO TUNE".format(it / 1e6) }) },
         visual = { m ->
             Column(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {

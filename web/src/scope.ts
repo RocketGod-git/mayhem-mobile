@@ -494,8 +494,11 @@ export class Scope {
     // newest row goes at ring[head], head walks upwards; the visible image is ring[head..) then ring[0..head)
     const now = performance.now();
     // Until the ring is full each spectrum lays its row down four times, so the stretched drop-in of a fresh
-    // history is over four times as fast (a slow one was hard to watch); after that, one row per spectrum.
-    const times = Math.min(this.rows, this.filled < this.rows ? this.rowPx * 4 : this.rowPx);
+    // history is over four times as fast (a slow one was hard to watch); after that, one row per spectrum. A tall
+    // desktop canvas holds far more rows than a phone's 600, so it lays proportionally more: the drop-in takes the
+    // same number of spectra (about 150) on any screen.
+    const fill = Math.max(this.rowPx * 4, Math.ceil(this.rows * 4 / 600));
+    const times = Math.min(this.rows, this.filled < this.rows ? fill : this.rowPx);
     for (let k = 0; k < times; k++) {
       this.head = (this.head - 1 + this.rows) % this.rows;
       this.ringCtx.putImageData(this.rowImg, 0, this.head);

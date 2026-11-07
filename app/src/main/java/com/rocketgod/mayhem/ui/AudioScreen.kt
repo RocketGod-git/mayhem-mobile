@@ -1,5 +1,10 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -84,6 +89,16 @@ fun AudioScreen(accent: Color) {
     val hd by SdrEngine.hd.collectAsState()
     val alert by SdrEngine.same.collectAsState()
     val station = mode == SdrEngine.Mode.WFM && rdsWanted
+    // RDS has something to show: the strip only appears then (no empty "reading…" row taking a line of the
+    // screen); until then the dial's title says RDS is listening, and once the station is named it names it
+    val rdsHas = rds?.let { it.ps.isNotBlank() || it.rt.isNotBlank() } == true
+    val rdsTitle = if (!station) null else rds?.ps?.trim().orEmpty().let { ps ->
+        if (ps.isEmpty()) "FM BROADCAST · RDS…"
+        else rds?.ptyName.orEmpty().let { pty -> if (pty.isNotEmpty() && pty != "None") "$ps · ${pty.uppercase()}" else ps }
+    }
+    val strip: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
+        AnimatedVisibility(station && rdsHas, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) { StationStrip(rds, accent) }
+    }
 
     // Three rows: how to listen, where, and squelch with SCAN. The digits, ⌨ and the waterfall tune; ☆ saves and
     // FAVES recalls; RDS and HD Radio are switches in Settings while Audio is open.
@@ -119,8 +134,8 @@ fun AudioScreen(accent: Color) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
                 Column(Modifier.weight(1.35f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                     alert?.header?.let { h -> SameBanner(h) }
-                    TunerFace(accent, freq, mode)
-                    if (station) StationStrip(rds, accent)
+                    TunerFace(accent, freq, mode, rdsTitle)
+                    strip()
                 }
                 controls(Modifier.weight(1f))
             }
@@ -134,8 +149,8 @@ fun AudioScreen(accent: Color) {
         visual = { m ->
             Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 alert?.header?.let { h -> SameBanner(h) }
-                TunerFace(accent, freq, mode)
-                if (station) StationStrip(rds, accent)
+                TunerFace(accent, freq, mode, rdsTitle)
+                strip()
                 scope(Modifier.fillMaxWidth().weight(1f))
             }
         }
@@ -188,7 +203,7 @@ private fun bandTitle(hz: Long): String = when (hz) {
  * with a tick where the squelch is set so you can see a signal clear it.
  */
 @Composable
-private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
+private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode, rdsTitle: String? = null) {
     val spec by SdrEngine.spectrum.collectAsState()
     val rate by SdrEngine.rateHz.collectAsState()
     val offset by SdrEngine.offsetHz.collectAsState()
@@ -196,7 +211,8 @@ private fun TunerFace(accent: Color, freq: Long, mode: SdrEngine.Mode) {
     val squelch by SdrEngine.squelchDb.collectAsState()
     val sqOpen by SdrEngine.squelchOpen.collectAsState()
     val scanning by Scanner.active.collectAsState()
-    FreqCard(accent, tag = mode.name, title = bandTitle(Tuning.previewHz ?: freq), freq = freq,
+    val preview = Tuning.previewHz
+    FreqCard(accent, tag = mode.name, title = if (preview != null) bandTitle(preview) else rdsTitle ?: bandTitle(freq), freq = freq,
         meter = channelDb / METER_DB, tick = if (squelch > 0) squelch / METER_DB else null,
         left = "+%.0f dB over the noise".format(channelDb), right = if (squelch > 0) "SQL $squelch dB" else "SQL OFF",
         lamp = { SquelchLamp(squelch, sqOpen, scanning) })

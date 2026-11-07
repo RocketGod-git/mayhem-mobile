@@ -386,7 +386,7 @@ function setMode(m: Mode): void {
   if (tunesInSpan() && m !== 'NONE') state.radioMode = m;
   worker?.postMessage({ type: 'config', mode: m });
   qa('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
-  if (state.app === 'audio') setFace(m, bandTitle(tunedHz()));
+  if (state.app === 'audio') setFace(m, audioTitle());
   refreshChannel();
   if (m !== 'WFM') { lastRds = null; lastHd = null; }
   drawRds(); drawHd();
@@ -1554,7 +1554,9 @@ function render(app: AppId | null): void {
     : radio.kind === 'rtlsdr' ? radio.label
     : `HackRF · ${state.board || 'HackRF'}${state.firmware ? ' · ' + state.firmware : ''}`;
   scope = null; sweepScope = null;
-  view.className = 'view ' + (app ?? 'launcher');
+  // Audio, Looking Glass and Capture have short controls: on a wide screen they sit beside the card, over a
+  // full-width waterfall (the .stack layout)
+  view.className = 'view ' + (app ?? 'launcher') + (app === 'audio' || app === 'lookingglass' || app === 'capture' ? ' stack' : '');
   view.dataset.tab = app === 'ham' ? state.ham.tab : '';   // phones size the waterfall by what the tab is for
   switch (app) {
     case null: renderLauncher(view); break;
@@ -2755,11 +2757,24 @@ function sendRds(): void { worker?.postMessage({ type: 'rds', on: rdsWanted }); 
 let rdsAnim: Animation | null = null;
 let rdsShownKey = '';
 let rdsAnimLw = 0;   // the line width the running marquee was aimed at, so a name tick (tiny width change) does not rebuild it
+/**
+ * The Audio card's title. With RDS on and broadcast FM tuned it is the station: "NAME · PROGRAM TYPE" once the name
+ * is known, "FM BROADCAST · RDS…" while RDS is still listening; otherwise what the band is.
+ */
+function audioTitle(): string {
+  if (!rdsWanted || state.mode !== 'WFM') return bandTitle(tunedHz());
+  const ps = lastRds?.ps.trim() ?? '';
+  if (!ps) return 'FM BROADCAST · RDS…';
+  const pty = lastRds?.ptyName && lastRds.ptyName !== 'None' ? lastRds.ptyName : '';
+  return pty ? `${ps} · ${pty.toUpperCase()}` : ps;
+}
 function drawRds(): void {
   const t = q('#rds-toggle'); if (t) t.classList.toggle('on', rdsWanted);
+  if (state.app === 'audio') setFace(state.mode, audioTitle());
   const el = q('#rds'); if (!el) return;
-  // RDS only rides the broadcast-FM subcarrier; on any other mode there is nothing to read.
-  if (!rdsWanted || state.mode !== 'WFM' || !lastRds) { el.hidden = true; el.classList.remove('ticker'); rdsAnim?.cancel(); rdsAnim = null; rdsShownKey = ''; return; }
+  // RDS only rides the broadcast-FM subcarrier; on any other mode there is nothing to read. The strip appears only
+  // once there is a name or RadioText to show (the card's title says RDS is listening until then).
+  if (!rdsWanted || state.mode !== 'WFM' || !lastRds || !(lastRds.ps.trim() || lastRds.rt.trim())) { el.hidden = true; el.classList.remove('ticker'); rdsAnim?.cancel(); rdsAnim = null; rdsShownKey = ''; return; }
   el.hidden = false;
   el.classList.toggle('dim', !lastRds.synced);   // dim until a station's data actually locks
   const r = lastRds;
@@ -3800,7 +3815,7 @@ function wireCommon(view: HTMLElement): void {
 
 function refreshReadout(): void {
   setFreqDisplay(state.freq);
-  if (state.app === 'audio') setFace(state.mode, bandTitle(tunedHz()));
+  if (state.app === 'audio') setFace(state.mode, audioTitle());
   scope?.setLabels(centredLabels(spanCenter(), state.rate));
   refreshSpanBar();
   document.body.classList.toggle('offspan', channelOff());
