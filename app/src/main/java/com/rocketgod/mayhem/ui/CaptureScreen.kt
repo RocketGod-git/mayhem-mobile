@@ -67,6 +67,7 @@ fun CaptureScreen(accent: Color) {
     AdaptivePane(
         // the waterfall and the list under it split the screen evenly
         share = true,
+        stacked = true,
         face = {
             val bytes = rec?.bytes?.collectAsState()?.value ?: 0L
             val level by SdrEngine.levelDb.collectAsState()

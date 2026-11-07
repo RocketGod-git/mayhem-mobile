@@ -315,17 +315,33 @@ fun FullscreenPanel(title: String, accent: Color, onClose: () -> Unit, actions: 
  *
  * [face] is a card that keeps its own height above the visual (the frequency card), so the even split is between
  * the waterfall and the log, not the card and the log.
+ *
+ * [stacked]: on a wide screen, short controls go beside the face along the top and the visual takes the full width
+ * below, instead of a tall controls pane that sits mostly empty (Looking Glass, Capture).
  */
 @Composable
 fun AdaptivePane(
     visualHeightNarrow: Dp? = null,
     share: Boolean = false,
     face: (@Composable () -> Unit)? = null,
+    stacked: Boolean = false,
     visual: @Composable (Modifier) -> Unit,
     controls: @Composable ColumnScope.() -> Unit
 ) {
     val d = rememberDims()
-    if (d.wide) {
+    if (d.wide && stacked) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // a list among the controls ([share]) needs a height to fill: the top gets 45%, the visual the rest
+            val top = if (share) Modifier.fillMaxWidth().height(maxHeight * 0.45f) else Modifier.fillMaxWidth()
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                Row(top, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+                    Column(Modifier.weight(1.35f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { face?.invoke() }
+                    Column(Modifier.weight(1f).then(if (share) Modifier.fillMaxHeight() else Modifier)) { controls() }
+                }
+                Box(Modifier.fillMaxWidth().weight(1f)) { visual(Modifier.fillMaxSize()) }
+            }
+        }
+    } else if (d.wide) {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Column(Modifier.weight(1.35f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 face?.invoke()
