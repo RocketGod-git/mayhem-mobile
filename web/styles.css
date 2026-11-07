@@ -1094,7 +1094,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   main#view.view.stack > .visual { display: contents; }
   main#view.view.stack > .visual > * { grid-column: 1; margin-bottom: 6px; }
   main#view.view.stack > .visual > .scope { grid-row: 4; grid-column: 1 / -1; min-height: 0; height: auto; margin: 2px 0 0; }
-  main#view.view.stack > .controls { grid-column: 2; grid-row: 1 / 4; align-self: start; max-height: 46vh; }
+  /* RDS gets its own row the full width, between the dial-and-controls row and the waterfall (no empty half beside it) */
+  main#view.view.stack > .visual > .rdsbar { grid-row: 3; grid-column: 1 / -1; }
+  main#view.view.stack > .controls { grid-column: 2; grid-row: 1 / 3; align-self: start; max-height: 46vh; }
 }
 
 /* The RDS strip arrives with its data: it fades and slides in under the dial the moment a name or RadioText is read. */
