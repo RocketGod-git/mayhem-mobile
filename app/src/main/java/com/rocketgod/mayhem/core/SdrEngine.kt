@@ -371,6 +371,7 @@ object SdrEngine {
     @Volatile private var dropTotal = 0L
     private var bufSeen = 0L
     private var dropSeen = 0L
+    private var skipSeen = 0L
 
     private const val QUEUE_SECONDS = 0.2
 
@@ -787,9 +788,11 @@ object SdrEngine {
                             val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs floor %.0fdB (Δ%.0f)".format(
                                 sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median)
                             val nb = bufTotal - bufSeen; val nd = dropTotal - dropSeen; bufSeen += nb; dropSeen += nd
-                            val lora = (p as? com.rocketgod.mayhem.core.lora.LoraScanner)?.busy
+                            val ls = p as? com.rocketgod.mayhem.core.lora.LoraScanner
+                            val sk = (ls?.skipped ?: 0L) - skipSeen; skipSeen += sk
                             Diag.log(health + (if (nd > 0) " · DROPPED %d of %d buffers (falling behind)".format(nd, nb) else "") +
-                                (if (lora != null) " · LoRa scanner %.0f%% of real time".format(lora * 100) else ""))
+                                (if (ls != null) " · LoRa scanner %.0f%% of real time".format(ls.busy * 100) else "") +
+                                (if (sk > 0) " · LoRa channels SKIPPED %.0f ms (fell behind)".format(sk * 1000.0 / rate) else ""))
                             _rxHealth.value = health
                             _levelDb.value = peak - median
                             agcStep(rms, now)

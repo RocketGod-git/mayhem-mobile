@@ -34,6 +34,8 @@ class LoraScanner : IqProcessor {
     /** Off for replays and tests, which run at their own pace (and decode inline). */
     var shedding = true
     var busy = 0.0; private set
+    /** Samples a channel receiver threw away because it fell too far behind (a frame passing through is lost). */
+    @Volatile var skipped = 0L; private set
 
     // ---- detection ----
     private var rate = 0; private var N = 2048; private var HOP = 10_000
@@ -393,7 +395,7 @@ class LoraScanner : IqProcessor {
         val behind = ringMask.toLong() - rate / 50; val back = (ringMask / 2).toLong()
         val jobs = list.map { e ->
             Callable {
-                if (upTo - e.pos > behind) e.pos = upTo - back   // fell behind
+                if (upTo - e.pos > behind) { skipped += (upTo - back) - e.pos; e.pos = upTo - back }   // fell behind
                 val end = min(upTo, e.until)
                 if (end > e.pos) e.run(end, r, mask)
             }

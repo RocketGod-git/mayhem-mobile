@@ -166,4 +166,35 @@ class LoraAppTest {
         println("bursts ${hub.bursts.value}")
         assertTrue(hub.bursts.value in 1..4)
     }
+
+    /**
+     * A real off-air recording through the whole receiver, as the radio would feed it. Runs only when
+     * MAYHEM_LORA_IQ names an offset-128 u8 file called iq_<rate>_<centerHz>.u8 (MAYHEM_LORA_SECS caps the length).
+     * Prints every event and how many bursts were heard, to compare with the iPad/Mac decoder on the same file.
+     */
+    @Test fun replayRecording() {
+        val path = System.getenv("MAYHEM_LORA_IQ") ?: return
+        val m = Regex("""iq_(\d+)_(\d+)""").find(java.io.File(path).name) ?: error("name must be iq_<rate>_<center>.u8")
+        val rate = m.groupValues[1].toInt(); val center = m.groupValues[2].toLong()
+        val secs = System.getenv("MAYHEM_LORA_SECS")?.toDouble() ?: 1e9
+        val hub = LoraHub(PacketLog())
+        hub.scanner.shedding = false
+        hub.scanner.centerOf = { center }
+        val got = ArrayList<LoraEvent>()
+        val out = java.io.File("$path.android.txt").printWriter()
+        hub.onHeard = { _, e -> got.add(e); out.println("EVENT %.1fs %s".format(e.ms / 1000.0, e.line)) }
+        hub.scanner.reset(rate)
+        val limit = (secs * rate * 2).toLong()
+        var done = 0L
+        val t0 = System.nanoTime()
+        java.io.FileInputStream(path).use { f ->
+            val buf = ByteArray(262_144)
+            while (done < limit) {
+                val n = f.read(buf); if (n <= 0) break
+                hub.scanner.onIq(buf, n, rate); done += n
+            }
+        }
+        out.println("REPLAY %.1f s of air in %.1f s · %d events · bursts %d · nodes %d".format(done / 2.0 / rate, (System.nanoTime() - t0) / 1e9, got.size, hub.bursts.value, hub.nodes.value.size))
+        out.close()
+    }
 }
