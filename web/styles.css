@@ -436,7 +436,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   html, body { height: 100%; }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
-  main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; }
+  main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
   .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -471,8 +471,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* The bands card is the last item in that swipe row. Nothing was setting its width, so it shrank to the
      chips' own minimum (~39 px) and every label truncated to a single letter; two tiles' worth of width
      gives three readable columns. */
-  .launch-side .launch-radio { flex: 0 0 222px; width: 222px; }
-  .launch-side .bandrow > .chip { flex: 1 1 30%; }
+  .launch-radio { flex: 0 0 222px; width: 222px; }
+  .launch-radio .bandrow > .chip { flex: 1 1 30%; }
   .freq { font-size: 32px; }
   /* Section captions carry a description after the label, which does not fit a phone on one line.
      Ellipsising it hid the half that explains the section, so let it wrap instead. */
@@ -522,44 +522,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
    * fill main. Long views (Settings, Transmit) scroll inside main. No viewport-height arithmetic anywhere. */
   html, body { height: 100%; }
   body { font-size: 14px; padding: 10px; box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-  header.bar { position: static; flex: none; order: 0; }
-  #hint, #unsupported, #log-panel { flex: none; order: 2; }
-  main#view { order: 2; }
-  /* The dock: the apps along the top, under the header, grouped by what they do. One click from any app to any
-   * other; the open one is lit in its group's colour. */
-  .appbar { display: block; order: 1; flex: none; margin-top: 8px; background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 70%, var(--paper))); border: 1px solid var(--line); border-radius: 14px; }
-  .appbar .hs-in { display: flex; align-items: stretch; gap: 0; padding: 4px 6px 6px; }
-  .appbar .bar-gear { display: none; }
-  .agrp { display: flex; flex-direction: column; flex: none; padding: 0 6px; }
-  .agrp + .agrp { border-left: 1px solid var(--line); }
-  .agrp small { color: var(--seg); font-size: 8.5px; font-weight: 700; letter-spacing: 2.2px; padding: 2px 4px 3px; opacity: 0.85; }
-  .agrp-in { display: flex; gap: 2px; }
-  /* No top bar on the desktop: the dock carries FAVES · LOG · MUTE · SETTINGS at its far end, and a missing radio
-   * gets the phone's one quiet line (with CONNECT) under the dock. */
+  /* One shell at every width, the native apps' own: HOME · FAVES · MUTE · SETTINGS across the top, the apps in
+   * a strip along the bottom. */
+  body { padding: 0; }
   header.bar { display: none !important; }
-  .appbar { display: flex !important; align-items: stretch; }
-  .appbar .bar-pill { flex: 1; min-width: 0; }
-  .dock-acts { --seg: var(--accent); display: flex; flex: none; align-items: center; gap: 2px; padding: 4px 6px; border-left: 1px solid var(--line); }
-  .appbar [data-act] .ag { color: var(--muted); }
-  .appbar [data-act].muted .ag, .appbar [data-act].muted .al { color: var(--danger); }
-  .appbar [data-act] .adot { position: absolute; top: 5px; right: 9px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
-  .appbar [data-act] .adot.on { background: var(--ok); }
-  body .radiomiss { display: flex; flex: none; order: 1; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
-  body .radiomiss[hidden] { display: none; }
-  .radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
-  .radiomiss > span { flex: 1; min-width: 0; color: var(--ink); font-size: 11px; }
-  .radiomiss > .tog { padding: 4px 12px; font-size: 11px; }
-  .appbar button { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 62px; background: none; border: 1px solid transparent; color: var(--ink); padding: 6px 6px 5px; border-radius: 11px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, background .12s ease, box-shadow .12s ease, border-color .12s ease; }
-  .appbar .ag { color: var(--seg); display: flex; filter: drop-shadow(0 0 0 transparent); transition: filter .12s ease; }
-  .appbar .al { font-weight: 700; font-size: 10px; letter-spacing: 1.3px; color: color-mix(in srgb, var(--ink) 85%, var(--muted)); }
-  .appbar button:hover { transform: translateY(-1px); background: color-mix(in srgb, var(--seg) 12%, transparent); border-color: color-mix(in srgb, var(--seg) 40%, transparent); }
-  .appbar button:hover .ag { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--seg) 70%, transparent)); }
-  .appbar button.dim { opacity: 0.35; }
-  .appbar button.on { background: linear-gradient(180deg, color-mix(in srgb, var(--seg) 95%, #fff), var(--seg)); border-color: var(--seg); box-shadow: 0 0 18px color-mix(in srgb, var(--seg) 55%, transparent), inset 0 1px 0 rgba(255,255,255,.25); }
-  .appbar button.on .ag, .appbar button.on .al { color: #fff; }
-  .appbar button.on::after { content: ''; position: absolute; left: 22%; right: 22%; bottom: -4px; height: 2px; border-radius: 2px; background: var(--seg); box-shadow: 0 0 8px var(--seg); }
+  #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
-  main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; }
+  main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
   .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
@@ -587,21 +556,25 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.ham .list { flex: none; max-height: 34vh; }
   .view.ham .list.short { max-height: 24vh; }
   .freq { font-size: 42px; }
-  /* Launcher: the waterfall owns the left pane top to bottom, the app grid scrolls in a side column. */
-  .view.launcher { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); gap: 12px; flex: 1; min-height: 0; align-items: stretch; }
-  .launch-visual { display: flex; flex-direction: column; min-height: 0; }
-  .visual.launch-visual > .launch-scope { flex: 1; height: auto; min-height: 260px; max-height: none; }
-  .launch-visual > .health { flex: none; }
-  .launch-side { display: flex; flex-direction: column; }
-  /* Gain controls sit at the very bottom of the app column, pushed down past the tiles. */
-  .launch-side .launch-radio { margin-top: auto; }   /* bands + gain drop to the bottom together as one radio-controls group */
-  .launch-side .launch-gain { padding-top: 4px; }
-  /* Fixed-size tiles: three even columns that stay the same size however wide the window gets. */
-  .launch-side .grid { grid-template-columns: repeat(auto-fill, 150px); justify-content: start; gap: 8px; margin-top: 0; }
-  .launch-side .tile { width: 150px; aspect-ratio: 1.45; padding: 10px 11px; }
-  .launch-side .tile-title { font-size: 13px; }
-  .launch-side .tile-blurb { font-size: 8.5px; }
-  .launch-side .apk-card { margin-top: auto; }
+  /* Home, as on iPad and the Mac: the waterfall takes all the height, then what it hears, the bands as one even
+   * row, and the apps in one sideways row along the bottom, each group's name over its tiles. */
+  .view.launcher { display: flex; flex-direction: column; gap: 0; flex: 1; min-height: 0; }
+  .visual.launch-visual { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .launch-visual > .face { display: none; }
+  .visual.launch-visual > .launch-scope { flex: 1; height: auto; min-height: 200px; max-height: none; }
+  .launch-radio { flex: none; }
+  .launch-radio > .caption, .launch-radio .launch-gain { display: none; }
+  .launch-radio .bandrow { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; margin: 0; }
+  .launch-radio .bandrow > .chip { min-width: 0; padding: 8px 2px; text-align: center; }
+  .launch-side { flex: none; overflow-x: auto; overflow-y: hidden; padding: 8px 0 4px; scrollbar-width: none; max-height: none; }
+  .launch-side::-webkit-scrollbar { display: none; }
+  .launch-grid { display: flex; gap: 14px; margin: 0; width: max-content; }
+  .lgrp { display: flex; flex-direction: column; gap: 4px; }
+  .lgrp .gcat { display: block; font-weight: 700; font-size: 10px; letter-spacing: 3px; margin-left: 2px; }
+  .lgrp-in { display: flex; gap: 8px; }
+  .launch-side .tile { width: 150px; aspect-ratio: 1.3; padding: 12px; }
+  .launch-side .tile .cat { display: none; }
+  .launch-side .foot { display: none; }
   .tile { aspect-ratio: 1.5; padding: 12px; }
   .tile-top svg { width: 36px; height: 36px; }
   .tile .cat { font-size: 8px; letter-spacing: 2px; }
@@ -626,7 +599,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 }
 @media (min-width: 1500px) {
   /* No width cap: ultra-wide screens get an ultra-wide waterfall. Only the Transmit panel stays centered. */
-  main#view { max-width: none; margin: 12px 0 0; }
+  main#view { max-width: none; }
 }
 /* Ultra-wide windows are not zoomed: the controls keep their half-screen size and every extra pixel goes to the
  * waterfall. (The canvases still measure themselves through getBoundingClientRect, so a browser zoom is fine.) */
@@ -785,8 +758,44 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .hs.mL::before, .hs.mR::after { opacity: 1; animation: glowbreath 1.1s ease-in-out infinite alternate; }
 @keyframes glowbreath { from { opacity: 0.55; } to { opacity: 1; } }
 
-/* The phone shell. Hidden on a wide screen, where the header bar and the launcher stay as they are. */
-.topnav, .radiomiss { display: none; }
+/* The shell, the native apps' own at every width: the top bar, the no-radio line, and the app strip. */
+.topnav { display: flex; flex: none; justify-content: space-between; padding: 4px 10px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.tnb { position: relative; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: none; border: 0; color: var(--muted); font-size: 11px; letter-spacing: 1.5px; padding: 10px 6px; cursor: pointer; }
+.tnb svg { width: 20px; height: 20px; fill: currentColor; }
+.tnb.on { color: var(--ink); } .tnb.on svg { fill: var(--accent); }
+.tnb.muted { color: var(--danger); }
+#nav-dot { position: absolute; top: 6px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+#nav-dot.on { background: var(--ok); }
+.radiomiss { display: flex; flex: none; align-items: center; gap: 10px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid var(--accent2); border-radius: 12px; background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
+.radiomiss[hidden] { display: none; }
+.radiomiss div { flex: 1; min-width: 0; } .radiomiss b { display: block; color: var(--accent2); letter-spacing: 2px; font-size: 11px; }
+.radiomiss span { color: var(--muted); font-size: 10px; }
+/* The app picker, drawn as a tool strip: a gear square (Settings), then one key per app in a hairline pill. Each
+ * key is faintly lit in its own tint; the open app wears a glowing fill that slides between keys. The keys
+ * stretch to fill the pill when they fit and scroll with the glowing edges when they do not. */
+.appbar { display: flex; align-items: center; gap: 8px; flex: none; height: 44px; padding: 0 8px; box-sizing: content-box; background: var(--paper); padding-bottom: env(safe-area-inset-bottom); }
+.bar-gear { flex: none; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; transition: transform .12s ease; }
+.bar-gear svg { width: 20px; height: 20px; fill: var(--accent); }
+.bar-gear:active { transform: scale(.92); }
+.bar-pill { flex: 1; height: 36px; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.appbar .hs-in { position: relative; display: flex; gap: 4px; height: 100%; padding: 3px; box-sizing: border-box; }
+.appbar .hs-in button { position: relative; z-index: 1; flex: 1 0 auto; min-width: 48px; background: color-mix(in srgb, var(--seg) 7%, transparent); border: 1px solid color-mix(in srgb, var(--seg) 22%, transparent); color: color-mix(in srgb, var(--ink) 82%, transparent); font-weight: 700; font-size: 13px; letter-spacing: 1px; padding: 0 14px; border-radius: 5px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, color .2s ease; }
+.appbar .hs-in button:active { transform: scale(.94); }
+.appbar .hs-in button.dim:not(.on) { opacity: 0.45; }
+.appbar .hs-in button.on { color: #fff; }
+/* each key carries its app's glyph beside its name, the same line art as the Home tiles */
+.appbar .hs-in button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.appbar .ag { display: flex; flex: none; color: var(--seg); }
+.appbar .ag svg { width: 15px; height: 15px; }
+.appbar .hs-in button.on .ag { color: #fff; }
+.afill { position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 5px; background: var(--seg, var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--seg, var(--accent)) 55%, transparent); opacity: 0; pointer-events: none; transition: opacity .2s ease, background-color .24s ease; }
+.afill.show { opacity: 1; }
+.afill.slide { transition: left .36s cubic-bezier(.3, 1.25, .5, 1), width .36s cubic-bezier(.3, 1.25, .5, 1), opacity .2s ease, background-color .24s ease; }
+/* No radio: one quiet line under the top bar, with the connect button a browser needs. */
+.radiomiss { margin: 0; padding: 5px 16px; gap: 8px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+.radiomiss > span { flex: 1; min-width: 0; color: var(--ink); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.radiomiss > .tog { padding: 4px 10px; font-size: 10px; }
 .dock-acts:empty { display: none; }
 .sheet { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
 .sheet-card { width: min(520px, 100%); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-radius: 16px 16px 0 0; padding: 12px; }
@@ -800,35 +809,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 719.98px) {
   body { padding: 0; }
   header.bar { display: none !important; }
-  .topnav { display: flex; flex: none; justify-content: space-between; padding: 4px 10px; background: var(--surface); border-bottom: 1px solid var(--line); }
-  .tnb { position: relative; display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--muted); font-size: 11px; letter-spacing: 1.5px; padding: 10px 6px; cursor: pointer; }
-  .tnb svg { width: 20px; height: 20px; fill: currentColor; }
-  .tnb.on { color: var(--ink); } .tnb.on svg { fill: var(--accent); }
-  .tnb.muted { color: var(--danger); }
-  #nav-dot { position: absolute; top: 6px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
-  #nav-dot.on { background: var(--ok); }
-  .radiomiss { display: flex; flex: none; align-items: center; gap: 10px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid var(--accent2); border-radius: 12px; background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
-  .radiomiss[hidden] { display: none; }
-  .radiomiss div { flex: 1; min-width: 0; } .radiomiss b { display: block; color: var(--accent2); letter-spacing: 2px; font-size: 11px; }
-  .radiomiss span { color: var(--muted); font-size: 10px; }
-  main#view { margin: 0; padding: 10px 10px 6px; }
-  /* The app picker, drawn as a tool strip: a gear square (Settings), then one key per app in a hairline pill. Each
-   * key is faintly lit in its own tint; the open app wears a glowing fill that slides between keys. The keys
-   * stretch to fill the pill when they fit and scroll with the glowing edges when they do not. */
-  .appbar { display: flex; align-items: center; gap: 8px; flex: none; height: 44px; padding: 0 8px; box-sizing: content-box; background: var(--paper); padding-bottom: env(safe-area-inset-bottom); }
-  .bar-gear { flex: none; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; transition: transform .12s ease; }
-  .bar-gear svg { width: 20px; height: 20px; fill: var(--accent); }
-  .bar-gear:active { transform: scale(.92); }
-  .bar-pill { flex: 1; height: 36px; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .appbar .hs-in { position: relative; display: flex; gap: 4px; height: 100%; padding: 3px; box-sizing: border-box; }
-  .appbar .hs-in button { position: relative; z-index: 1; flex: 1 0 auto; min-width: 48px; background: color-mix(in srgb, var(--seg) 7%, transparent); border: 1px solid color-mix(in srgb, var(--seg) 22%, transparent); color: color-mix(in srgb, var(--ink) 82%, transparent); font-weight: 700; font-size: 13px; letter-spacing: 1px; padding: 0 14px; border-radius: 5px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, color .2s ease; }
-  .appbar .hs-in button:active { transform: scale(.94); }
-  .appbar .hs-in button.dim:not(.on) { opacity: 0.45; }
-  .appbar .hs-in button.on { color: #fff; }
-  .appbar .ag { display: none; }
-  .afill { position: absolute; z-index: 0; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 5px; background: var(--seg, var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--seg, var(--accent)) 55%, transparent); opacity: 0; pointer-events: none; transition: opacity .2s ease, background-color .24s ease; }
-  .afill.show { opacity: 1; }
-  .afill.slide { transition: left .36s cubic-bezier(.3, 1.25, .5, 1), width .36s cubic-bezier(.3, 1.25, .5, 1), opacity .2s ease, background-color .24s ease; }
   /* the launcher is a home for discovery, under the same bars: its own tile strip stays, the header's job is the top bar */
   .visual > .face { flex: none; margin-bottom: 6px; }
   .controls { max-height: 58%; }
@@ -839,7 +819,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .rdsbar.station b:first-of-type { font-size: 15px; letter-spacing: 3px; color: var(--ink); }
 @media (max-width: 719.98px) {
   /* gain lives in Settings on a phone, as in the Android app */
-  .view:not(.settings) .gainwrap { display: none; }
+  .view:not(.settings):not(.audio):not(.aprs) .gainwrap { display: none; }
   .visual > .rdsbar.station { flex: none; }
 }
 
@@ -935,6 +915,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* Category headers in the app grid: the phone's (Android's) grouping; a wide screen keeps its flat grid. */
 .gcat { display: none; }
+/* on a phone the groups melt into the two-up grid, their names spanning it */
+@media (max-width: 719.98px) { .lgrp, .lgrp-in { display: contents; } }
 @media (min-width: 720px) { .bandhs .hs-in { overflow: visible; } }
 @media (max-width: 719.98px) {
   /* No radio: one quiet line under the top bar, with the connect button a browser needs. */
@@ -949,10 +931,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .visual.launch-visual > .launch-scope { flex: none; height: 240px; min-height: 0; margin-top: 6px; }
   .launch-line { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 0.5px; margin: 4px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .launch-side { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; scroll-snap-type: none; padding: 0 0 12px; max-height: none; }
-  .launch-side .launch-radio { order: -1; flex: none; width: auto; margin-bottom: 4px; }
-  .launch-side .launch-radio > .caption { display: none; }
-  .launch-side .bandhs .bandrow { flex-wrap: nowrap; width: max-content; margin: 0; gap: 6px; }
-  .launch-side .bandrow > .chip { flex: none; }
+  .launch-radio { flex: none; width: auto; margin-bottom: 4px; }
+  .launch-radio > .caption { display: none; }
+  .launch-radio .bandhs .bandrow { flex-wrap: nowrap; width: max-content; margin: 0; gap: 6px; }
+  .launch-radio .bandrow > .chip { flex: none; }
   .launch-grid { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-columns: auto; gap: 8px; padding: 0; }
   .launch-grid .gcat { display: block; grid-column: 1 / -1; font-weight: 700; font-size: 10px; letter-spacing: 3px; margin: 6px 2px 0; }
   .launch-grid .tile { width: auto; aspect-ratio: 1.3; padding: 12px; scroll-snap-align: none; }

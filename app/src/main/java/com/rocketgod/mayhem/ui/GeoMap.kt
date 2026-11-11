@@ -183,20 +183,28 @@ fun GeoMapView(
     focus: Pair<Double, Double>? = null, focusKey: Int = 0,
     /** Start on [home] at street level, and keep it in view with the items when fitting (meters around you). */
     fitHome: Boolean = false,
+    /** Keep [home] in every fit, so the map shows your area and what you have heard around it (APRS). */
+    withHome: Boolean = false,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
     var overlayRef by remember { mutableStateOf<ItemsOverlay?>(null) }
     var following by remember { mutableStateOf(true) }
+    // the first fix centers the map on your area once (it usually lands after the map opened on the world)
+    var homed by remember { mutableStateOf(false) }
 
     fun fitTo(mv: MapView) {
         val f = follow?.let { id -> items.firstOrNull { it.id == id } }
         if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
         // home only counts when something is drawn from it
         val pts = items.map { it.lat to it.lon } + layers.track +
-            (if (layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
-        if (pts.isEmpty()) return
+            (if (withHome || layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
+        if (pts.isEmpty()) {
+            if (home != null && !homed) { homed = true; mv.controller.animateTo(GeoPoint(home.first, home.second), maxOf(mv.zoomLevelDouble, 9.0), null) }
+            return
+        }
+        homed = true
         val n = pts.maxOf { it.first }; val s = pts.minOf { it.first }; val e = pts.maxOf { it.second }; val w = pts.minOf { it.second }
         // one point (or several on the same spot): glide there and zoom in as part of the glide (a setZoom after
         // animateTo stops the glide, which left the map zoomed in on its starting point, far from the pin)
@@ -241,8 +249,9 @@ fun GeoMapView(
                     setMultiTouchControls(true)
                     setTilesScaledToDpi(true)
                     isHorizontalMapRepetitionEnabled = true
-                    zoomController.setVisibility(CustomZoomButtonsController.Visibility.SHOW_AND_FADEOUT)
-                    controller.setZoom(if (fitHome && home != null) 13.0 else 3.0)
+                    // our own − / + below, the same on every platform
+                    zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
+                    controller.setZoom(if (home == null) 3.0 else if (fitHome) 13.0 else 9.0)
                     controller.setCenter(if (home != null) GeoPoint(home.first, home.second) else GeoPoint(30.0, -40.0))
                     // a drag (past the touch slop, so a tap on a marker does not count) hands the view to the user
                     val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop.toFloat()
@@ -262,6 +271,16 @@ fun GeoMapView(
                 }
             }
         )
+        // + / − zoom, top left (the web map's): a zoom by hand stops the follow, as a drag does
+        androidx.compose.foundation.layout.Column(Modifier.align(Alignment.TopStart).padding(6.dp)) {
+            for ((label, step) in listOf("+" to 1.0, "−" to -1.0)) {
+                Box(
+                    Modifier.padding(bottom = 4.dp).size(30.dp).background(Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
+                        .clickable { val mv = mapRef ?: return@clickable; following = false; mv.controller.setZoom((mv.zoomLevelDouble + step).coerceIn(2.0, 19.0)) },
+                    contentAlignment = Alignment.Center
+                ) { Text(label, color = Palette.ink, fontFamily = Mono, fontSize = 16.sp) }
+            }
+        }
         Box(
             Modifier.align(Alignment.BottomEnd).padding(6.dp).size(30.dp)
                 .background(if (following) accent else Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))

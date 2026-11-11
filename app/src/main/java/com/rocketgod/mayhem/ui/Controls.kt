@@ -89,7 +89,33 @@ fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = M
     }
 }
 
-/** A HackRF gain-stage stepper: [−] LABEL <value> [+]. */
+/**
+ * The radio's gain where you listen, the same row in every app (web, iPad, Mac, Android): AGC, the amp, then the
+ * LNA and VGA steppers (a dongle has one tuner gain and no amp). A − or + takes the gain by hand, AGC hands it back.
+ */
+@Composable
+fun GainRow(accent: Color) {
+    val d = rememberDims()
+    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
+    val agc by SdrEngine.agc.collectAsState()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    val rtl = radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        SectionLabel("GAIN")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
+            Chip("AGC", agc, accent, Modifier.weight(1f)) { SdrEngine.setAgc(!agc) }
+            if (!rtl) Chip(if (amp) "AMP +14" else "AMP OFF", amp, accent, Modifier.weight(1f)) { SdrEngine.toggleRadioAmp() }
+            if (!rtl) GainStepper("LNA", lna, accent, Modifier.weight(1.4f), auto = agc,
+                onMinus = { SdrEngine.setRadioLna(lna - SdrEngine.LNA_STEP) }, onPlus = { SdrEngine.setRadioLna(lna + SdrEngine.LNA_STEP) })
+            GainStepper(if (rtl) "GAIN" else "VGA", vga, accent, Modifier.weight(1.4f), auto = agc,
+                onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) }, onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
+        }
+    }
+}
+
+/** A gain-stage stepper: [−] LABEL <value> [+], muted and marked AUTO while the AGC is driving it. */
 @Composable
 fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, auto: Boolean = false, onMinus: () -> Unit, onPlus: () -> Unit) {
     val d = rememberDims()
@@ -97,8 +123,9 @@ fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, au
         Box(Modifier.weight(1f).clickable { onMinus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
             Text("−", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
         }
-        Text("$label $value", color = if (auto) Palette.accent2 else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
-            maxLines = 1, modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
+        Text(if (auto) "$label $value AUTO" else "$label $value", color = if (auto) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
+            fontStyle = if (auto) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
+            fontSize = d.sp(12f), maxLines = 1, softWrap = false, modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
         Box(Modifier.weight(1f).clickable { onPlus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
             Text("+", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
         }

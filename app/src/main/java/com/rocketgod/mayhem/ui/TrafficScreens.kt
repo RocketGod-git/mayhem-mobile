@@ -337,7 +337,7 @@ fun AprsScreen(accent: Color) {
             View.MAP -> GeoMapView(
                 stations.mapNotNull { x -> val la = x.lat; val lo = x.lon; if (la == null || lo == null) null else
                     GeoItem(x.call, la, lo, x.call, if (x.kind == "station") GeoItem.Kind.STATION else GeoItem.Kind.OBJECT, heading = x.course?.toDouble()) },
-                accent, m.panel(), home = home, selected = sel,
+                accent, m.panel(), home = home, selected = sel, withHome = true,
                 focus = s?.let { x -> x.lat?.let { la -> x.lon?.let { la to it } } }, focusKey = focusKey) { sel = it }
             View.LIST -> TwoLineList(stations, { it.call }, sel, m, "no stations yet",
                 top = { x -> x.call + if (x.kind != "station") "  ${x.kind} by ${x.owner ?: "?"}" else "" },
@@ -350,6 +350,7 @@ fun AprsScreen(accent: Color) {
                 Regex("^([A-Za-z0-9-]+)>").find(l)?.let { sel = it.groupValues[1] }
             }
         }
+        GainRow(accent)
     }
 }
 

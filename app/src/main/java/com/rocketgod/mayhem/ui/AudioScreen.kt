@@ -117,6 +117,7 @@ fun AudioScreen(accent: Color) {
                         if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES — star a few with ☆ beside the frequency first" else Scanner.toggle()
                     }
                 }
+                GainRow(accent)
             }
         }
     }

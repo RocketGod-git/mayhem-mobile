@@ -460,7 +460,7 @@ function refreshGainUi(): void {
 }
 
 function refreshAgcChip(): void {
-  for (const b of qa('#agc')) { b.textContent = state.agc ? 'AGC SETS GAIN' : 'GAIN IS MINE'; b.classList.toggle('on', state.agc); }
+  for (const b of qa('#agc')) { b.textContent = 'AGC'; b.classList.toggle('on', state.agc); b.title = state.agc ? 'The automatic gain sets the gain' : 'The gain is yours; tap to hand it to the AGC'; }
   for (const l of qa('#lna')) { l.textContent = `LNA ${state.lna}${state.agc ? ' AUTO' : ''}`; l.classList.toggle('auto', state.agc); }
   for (const v of qa('#vga')) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${state.agc ? ' AUTO' : ''}`; v.classList.toggle('auto', state.agc); }
 }
@@ -1674,12 +1674,13 @@ function render(app: AppId | null): void {
 
 function renderLauncher(view: HTMLElement): void {
   view.innerHTML = `
-    <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div><div id="launch-line" class="launch-line"></div></section>
+    <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div><div id="launch-line" class="launch-line"></div>
+    <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain">${gainHtml()}</div></div></section>
     <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
       const apps = APPS.filter(a => a.cat === c); if (!apps.length) return '';
-      return `<div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div>` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><div class="tile-top">${glyph(a.id, tintHex(a.cat), 36)}<span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb">${a.blurb}</div></button>`).join('');
+      // each group's name over its tiles: a grid two to a row on a phone, one sideways row when wide (as on iPad)
+      return `<div class="lgrp"><div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div><div class="lgrp-in">` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><div class="tile-top">${glyph(a.id, tintHex(a.cat), 36)}<span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb">${a.blurb}</div></button>`).join('') + '</div></div>';
     }).join('')}</div>
-    <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain">${gainHtml()}</div></div>
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));
   scope.setLabels(centredLabels(state.freq, state.rate));
@@ -3747,12 +3748,13 @@ function renderAprs(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      ${geoHeadHtml('aprs', '📡 0 PACKETS · 0 STATIONS', ['map', 'list', 'log'])}
+      ${presetHtml('REGION', [['144.390 N. America', 144_390_000], ['144.800 Europe', 144_800_000], ['145.175 Australia', 145_175_000], ['144.640 Japan', 144_640_000]])}
+      <div class="ctlrow">${segHtml(['map', 'list', 'log'].map(v => `<button data-aprsview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('aprs')}</div>
       <div id="aprs-card" class="accard" hidden></div>
       <div id="aprs-map" class="panel map"></div>
       <div id="aprs-list" class="panel list"></div>
       <div id="aprs-log">${listHtml('aprs', 'listening on the APRS frequency…')}</div>
-      ${presetHtml('REGION', [['NA 144.39', 144_390_000], ['EU 144.80', 144_800_000], ['AU 145.175', 145_175_000], ['JP 144.64', 144_640_000]])}${gainHtml()}</section>`;
+      ${gainHtml()}</section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-aprsview]', view).forEach(b => b.onclick = () => { state.aprsView = b.dataset.aprsview as typeof state.aprsView; refreshAprs(); });
   q('#list-aprs')?.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.li'); const mm = li?.textContent?.match(/^([A-Za-z0-9-]+)>/); if (mm) { state.aprsSel = mm[1]; refreshAprs(); } });
@@ -4343,7 +4345,8 @@ function refreshAis(): void {
 }
 function refreshAprs(): void {
   if (state.app !== 'aprs') return;
-  const c = q('#aprs-count'); if (c) c.textContent = `📡 ${counts['aprs'] ?? 0} PACKETS · ${state.aprsStations.length} STATIONS`;
+  // the packet count rides in the card's title, as in the native apps
+  if (state.app === 'aprs') setFace('APRS', `${counts['aprs'] ?? 0} PACKETS`);
   qa('[data-aprsview]').forEach(b => b.classList.toggle('on', b.dataset.aprsview === state.aprsView));
   const list = q('#aprs-list'), mapEl = q('#aprs-map'), logEl = q('#aprs-log'); if (!list || !mapEl || !logEl) return;
   list.hidden = state.aprsView !== 'list'; mapEl.hidden = state.aprsView !== 'map'; logEl.hidden = state.aprsView !== 'log';
@@ -5033,7 +5036,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app && !wideShell.matches) open(null); break;
+      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
@@ -5090,62 +5093,35 @@ function bindDesktop(): void {
 let versionText = 'dev build', apkUrl = './mayhem.apk', releaseUrl = 'https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest';
 
 // ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
-/** The app bar's order: the six a newcomer meets first, then the rest as the launcher lists them. */
-const BAR_FIRST: AppId[] = ['audio', 'pager', 'adsb', 'ham', 'devices', 'sat'];
-const barApps = (): AppId[] => [...BAR_FIRST, ...APPS.map(a => a.id).filter(id => id !== 'settings' && !BAR_FIRST.includes(id))];
+/** The app bar's order, the native apps' default: by what they do (receive, analyze, transmit, tools), as Home lists them. */
+const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings').map(a => a.id));
 const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', btle: 'BLE', transmit: 'TX' };
 const barLabel = (id: AppId) => BAR_LABEL[id] ?? APPS.find(a => a.id === id)!.title.toUpperCase();
-/** A wide screen: the app bar sits under the header as a grouped dock with each app's glyph. */
+/** A wide screen (tablet or desktop): Home lays the waterfall over one sideways row of app tiles, as on iPad. */
 const wideShell = matchMedia('(min-width: 720px)');
+/** Where "home" is: the launcher at every width, as in the native apps. */
+const homeApp = (): AppId | null => null;
 /**
- * Where "home" is. A phone has the launcher (the Android app's front door). The desktop has no Home page and no
- * back: every app is always in the dock, so it opens straight into Audio and stays wherever you click.
- */
-const homeApp = (): AppId | null => wideShell.matches ? 'audio' : null;
-const BAR_CATS: AppDef['cat'][] = ['Receive', 'Analyze', 'Tools', 'Transmit'];
-/**
- * The apps bar. On a phone, the Android app's strip of names in its order. On a wide screen, a dock grouped by
- * what the apps do (receive, analyze, tools, transmit), each app its line-art glyph over its name in the group's
- * colour, the blurb on hover.
+ * The apps bar, the native apps' strip at every width: a gear, then each app's glyph and short name in the bar's
+ * order, the open one lit in its group's color, the blurb on hover.
  */
 function buildBar(): void {
   const bar = $('appbar-in');
   const btn = (id: AppId) => { const a = APPS.find(x => x.id === id)!; return `<button data-bar="${id}" style="--seg:${tint(a.cat)}" title="${esc(a.title)} · ${esc(a.blurb)}"><span class="ag">${glyph(id, 'currentColor', 24)}</span><span class="al">${barLabel(id)}</span></button>`; };
   // phone: the keys sit in a hairline pill behind one fill that slides to the open app (see placeFill)
-  bar.innerHTML = wideShell.matches
-    ? BAR_CATS.map(c => { const ids = barApps().filter(id => APPS.find(a => a.id === id)!.cat === c); return ids.length ? `<div class="agrp" style="--seg:${tint(c)}"><small>${c.toUpperCase()}</small><div class="agrp-in">${ids.map(btn).join('')}</div></div>` : ''; }).join('')
-
-    : '<i class="afill"></i>' + barApps().map(btn).join('');
+  bar.innerHTML = '<i class="afill"></i>' + barApps().map(btn).join('');
   fillPlaced = false;
   qa<HTMLButtonElement>('[data-bar]', bar).forEach(b => b.onclick = () => {
     const id = b.dataset.bar as AppId;
     closeSettings();
     if (state.app !== id) open(id);
   });
-  // FAVES · LOG · MUTE · SETTINGS pinned at the dock's right end, outside its scroller; they press the header's own
-  // buttons (the header is not shown on a wide screen)
-  const acts = $('appbar-acts');
-  acts.innerHTML = wideShell.matches ? DOCK_ACTS.map(([act, label, , tip]) =>
-    `<button data-act="${act}" title="${tip}"><span class="ag">${dockIcon(act)}</span><span class="al">${label}</span>${act === 'settings' ? '<i class="adot"></i>' : ''}</button>`).join('') : '';
-  qa<HTMLButtonElement>('[data-act]', acts).forEach(b => b.onclick = () => { $(DOCK_ACTS.find(a => a[0] === b.dataset.act)![2]).click(); refreshShell(); });
   refreshShell();
 }
-/** FAVES · LOG · MUTE · SETTINGS at the end of the desktop dock: [act, label, the header button it presses, hover]. */
-const DOCK_ACTS: [string, string, string, string][] = [
-  ['faves', 'FAVES', 'faves-btn', 'Your starred frequencies'],
-  ['log', 'LOG', 'log-toggle', 'The diagnostics log'],
-  ['mute', 'MUTE', 'mute', 'Mute the speaker'],
-  ['settings', 'SETTINGS', 'settings-btn', 'The radio, the look, and everything about each app'],
-];
-/** The header button's own icon, so the dock and the phone bar draw the same glyphs. */
-const dockIcon = (act: string): string => {
-  const svg = document.querySelector(`#${DOCK_ACTS.find(a => a[0] === act)![2]} svg`);
-  return svg ? svg.outerHTML.replace('<svg ', '<svg width="24" height="24" ').replace(/ id="[^"]*"/g, '') : '';
-};
 function initShell(): void {
   buildBar();
-  // the desktop has no Home page: widening the window from a phone's launcher lands in Audio
-  wideShell.addEventListener('change', () => { buildBar(); if (wideShell.matches && state.app === null) open('audio'); });
+  // Home's layout follows the width (a waterfall over a tile row when wide, the phone's grid when narrow)
+  wideShell.addEventListener('change', () => { if (state.app === null) open(null); });
   bindHs($('appbar').parentElement!);
   $('nav-home').onclick = () => { closeSettings(); if (state.app) open(null); };
   $('nav-settings').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
@@ -5312,7 +5288,7 @@ function init(): void {
     panel.style.top = `${Math.max(0, Math.min(innerHeight - panel.offsetHeight, e.clientY - dy))}px`;
   });
   bar.addEventListener('pointerup', () => { dragging = false; });
-  window.addEventListener('popstate', () => { if (state.app && !wideShell.matches) open(null); });
+  window.addEventListener('popstate', () => { if (state.app) open(null); });
   window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e as Event & { prompt: () => Promise<void> }; });
   fetch('./version.json', { cache: 'no-store' }).then(r => r.json()).then((v: { version: string; commit: string; apk: string; release: string }) => {

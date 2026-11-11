@@ -312,7 +312,7 @@ private fun StripSegments(apps: List<MayhemApp>, selected: MayhemApp?, modifier:
             val segMin = with(density) { StripGeo.segMin.roundToPx() }
             Layout(
                 content = {
-                    for (app in apps) StripSeg(barLabel(app), active = app == selected, tint = tintFor(app),
+                    for (app in apps) StripSeg(app, barLabel(app), active = app == selected, tint = tintFor(app),
                         dim = Radio.blockedBecause(app).isNotEmpty()) { onPick(app) }
                 },
                 modifier = Modifier.fillMaxHeight().onSizeChanged { rowW = it.width }.drawBehind {
@@ -355,7 +355,7 @@ private fun StripSegments(apps: List<MayhemApp>, selected: MayhemApp?, modifier:
 
 /** One key: a single-line uppercase label on a faintly lit key of its own tint, ink-on-tint while open. */
 @Composable
-private fun StripSeg(label: String, active: Boolean, tint: Color, dim: Boolean, onClick: () -> Unit) {
+private fun StripSeg(app: MayhemApp, label: String, active: Boolean, tint: Color, dim: Boolean, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     val src = remember { MutableInteractionSource() }
     val k = pressScale(src, 0.94f)
@@ -366,8 +366,13 @@ private fun StripSeg(label: String, active: Boolean, tint: Color, dim: Boolean, 
         .clip(key).background(tint.copy(alpha = 0.07f)).border(1.dp, tint.copy(alpha = 0.22f), key)
         .clickable(src, indication = null) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
         .padding(horizontal = StripGeo.segPad), contentAlignment = Alignment.Center) {
-        Text(label, color = if (active) inkOn(tint) else Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontWeight = FontWeight.Bold,
-            fontSize = 13.sp, letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+        // the app's own glyph (the Home tile's) beside its name, so the strip reads at a glance
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AppGlyph(app, if (active) inkOn(tint) else tint, Modifier.size(15.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(label, color = if (active) inkOn(tint) else Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontWeight = FontWeight.Bold,
+                fontSize = 13.sp, letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+        }
     }
 }
 
