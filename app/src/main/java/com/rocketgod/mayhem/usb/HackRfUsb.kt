@@ -74,7 +74,11 @@ object HackRfUsb {
         val out = (0 until dataIf.endpointCount).map { dataIf.getEndpoint(it) }
             .firstOrNull { it.type == UsbConstants.USB_ENDPOINT_XFER_BULK && it.direction == UsbConstants.USB_DIR_OUT }
             ?: run { Diag.log("PortaPack: no serial OUT endpoint — tap HackRF on its screen"); return false }
-        val c = manager(ctx).openDevice(d) ?: run { Diag.log("PortaPack: could not open ${describe(d)} — tap HackRF on its screen"); return false }
+        // The shell echoes and prints its prompt on the IN pipe; Mayhem only reboots into HackRF mode once that output
+        // has drained, so the IN pipe must be read (a kernel serial driver does this on its own; we have to).
+        val inEp = (0 until dataIf.endpointCount).map { dataIf.getEndpoint(it) }
+            .firstOrNull { it.type == UsbConstants.USB_ENDPOINT_XFER_BULK && it.direction == UsbConstants.USB_DIR_IN }
+        val c =manager(ctx).openDevice(d) ?: run { Diag.log("PortaPack: could not open ${describe(d)} — tap HackRF on its screen"); return false }
         try {
             if (!c.claimInterface(dataIf, true)) { Diag.log("PortaPack: could not claim its serial interface — tap HackRF on its screen"); return false }
             comm?.let { ci ->
@@ -86,8 +90,18 @@ object HackRfUsb {
                 val rcState = c.controlTransfer(0x21, 0x22, 0x03, ci.id, null, 0, 500)
                 Diag.log("PortaPack: serial line coding rc=$rcLine, line state rc=$rcState")
             }
-            val cmd = "hackrf\r\n".toByteArray(Charsets.US_ASCII)
+            val rx = ByteArray(512)
+            fun drain(ms: Long) {
+                if (inEp == null) { Thread.sleep(ms); return }
+                val end = System.currentTimeMillis() + ms; var fails = 0
+                while (System.currentTimeMillis() < end) {
+                    if (c.bulkTransfer(inEp, rx, rx.size, 100) < 0) { if (++fails > 30) return } else fails = 0
+                }
+            }
+            drain(300)   // let the shell print its banner and prompt first
+            val cmd = "\r\nhackrf\r\n".toByteArray(Charsets.US_ASCII)
             val n = c.bulkTransfer(out, cmd, cmd.size, 1000)
+            if (n == cmd.size) drain(3000)
             return if (n == cmd.size) {
                 Diag.log("PortaPack: sent \"hackrf\" — it is rebooting into HackRF mode and should come back as a HackRF in a few seconds")
                 true

@@ -91,8 +91,14 @@ object SdrEngine {
     private val _agc = MutableStateFlow(true)
     val agc: StateFlow<Boolean> = _agc.asStateFlow()
     private var prefs: android.content.SharedPreferences? = null
-    /** A gain the user set by hand outranks every app's own default until it is changed again. */
-    private var gainPref: IntArray? = null
+    /**
+     * A gain the user set by hand outranks every app's own default until it is changed again. Kept per board family:
+     * a Pro needs about 28 dB more VGA than a One for the same level, so one shared setting left a Pro flat.
+     */
+    private var gainPrefOne: IntArray? = null
+    private var gainPrefPro: IntArray? = null
+    private val gainPref: IntArray? get() = if (isPro()) gainPrefPro else gainPrefOne
+    private fun gainKey() = if (isPro()) "gains_pro" else "gains"
     private var agcLast = 0L; private var agcSaidMax = 0L
     /** The sweep pass the AGC last stepped on. */
     private var agcPass = -1
@@ -102,9 +108,9 @@ object SdrEngine {
 
     fun loadGains(ctx: android.content.Context) {
         val p = ctx.getSharedPreferences("mayhem", android.content.Context.MODE_PRIVATE); prefs = p
-        p.getString("gains", null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 4 }?.let { g ->
-            gainPref = g.toIntArray(); _agc.value = g[3] == 1
-        }
+        fun read(k: String) = p.getString(k, null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 4 }?.toIntArray()
+        gainPrefOne = read("gains"); gainPrefPro = read("gains_pro")
+        gainPrefOne?.let { _agc.value = it[3] == 1 }
         val dial = p.getLong("dial", 0L)
         if (dial in FREQ_MIN_HZ..FREQ_MAX_HZ) {
             radioFreqHz = dial; dialSaved = true
@@ -122,8 +128,8 @@ object SdrEngine {
     }
     private fun saveGains() {
         val g = intArrayOf(_radioLna.value, _radioVga.value, if (_radioAmp.value) 1 else 0, if (_agc.value) 1 else 0)
-        gainPref = g
-        prefs?.edit()?.putString("gains", g.joinToString(","))?.apply()
+        if (isPro()) gainPrefPro = g else gainPrefOne = g
+        prefs?.edit()?.putString(gainKey(), g.joinToString(","))?.apply()
     }
     fun setAgc(on: Boolean) { _agc.value = on; agcLast = 0; saveGains() }
     /** AGC on without touching the saved gains: a screen that has no gain controls of its own rides it. */
@@ -151,9 +157,10 @@ object SdrEngine {
         return Triple(maxOf(l, 32), maxOf(v, 32), true)
     }
 
-    /** The board is known now: a Pro gets its stages raised unless the user has set them. */
+    /** The board is known now: a Pro gets its own saved gain, or its stages raised if none was saved on a Pro. */
     fun onBoard() {
-        if (gainPref != null || !isPro()) return
+        if (!isPro()) return
+        _agc.value = gainPrefPro?.let { it[3] == 1 } ?: true; agcLast = 0
         val (l, v, a) = startGains(preset.first, preset.second, preset.third)
         _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; _radioAmp.value = a; syncDriver()
     }

@@ -413,17 +413,26 @@ function setRate(r: number): void {
  * Saved after the board's own scaling, so it is re-applied exactly and never scaled twice.
  */
 interface GainPref { lna: number; vga: number; amp: boolean; agc: boolean }
+// Kept per board family: a Pro needs roughly 28 dB more VGA than a One for the same level, so one remembered setting
+// would leave a Pro flat (One gains sit under 1 ADC count) or a One clipping (Pro gains).
+const gainKey = () => (isPro() ? 'mayhem.gain.pro' : 'mayhem.gain');
 let gainPref: GainPref | null = loadGains();
-function loadGains(): GainPref | null {
+let gainPrefKey = 'mayhem.gain';
+function currentGainPref(): GainPref | null {
+  if (gainKey() !== gainPrefKey) { gainPrefKey = gainKey(); gainPref = loadGains(gainPrefKey); }
+  return gainPref;
+}
+function loadGains(key = 'mayhem.gain'): GainPref | null {
   try {
-    const v = JSON.parse(localStorage.getItem('mayhem.gain') ?? 'null');
+    const v = JSON.parse(localStorage.getItem(key) ?? 'null');
     if (v && typeof v.lna === 'number' && typeof v.vga === 'number') return { lna: v.lna, vga: v.vga, amp: !!v.amp, agc: v.agc !== false };
   } catch { /* ignore */ }
   return null;
 }
 function saveGains(): void {
+  gainPrefKey = gainKey();
   gainPref = { lna: state.lna, vga: state.vga, amp: state.amp, agc: state.agc };
-  try { localStorage.setItem('mayhem.gain', JSON.stringify(gainPref)); } catch { /* ignore */ }
+  try { localStorage.setItem(gainPrefKey, JSON.stringify(gainPref)); } catch { /* ignore */ }
 }
 function setGains(lna: number, vga: number, amp: boolean): void {
   state.lna = Math.max(0, Math.min(40, lna)) & ~7; state.vga = Math.max(0, Math.min(62, vga)) & ~1; state.amp = amp;
@@ -547,7 +556,8 @@ function configure(mode: Mode, freq: number, rate: number, lna: number, vga: num
   if (!radio || radio.kind === 'hackrf') { [lna, vga, amp] = boardGains(lna, vga, amp); state.gainsScaled = isPro(); }
   // A gain set by hand outranks the app's own default, on every app, until it is changed again. Before there
   // is one, no app starts below 32 on either stage; each app's own amplifier choice still stands.
-  if (gainPref) { lna = gainPref.lna; vga = gainPref.vga; amp = gainPref.amp; state.agc = gainPref.agc; }
+  const pref = currentGainPref();
+  if (pref) { lna = pref.lna; vga = pref.vga; amp = pref.amp; state.agc = pref.agc; }
   // Before the user has touched gain: floor both stages at 32 and, on a HackRF, run the front-end amp on. It is a
   // receive-safe preamp and AGC (on by default) trims the stages if a strong signal would clip, so the whole app
   // set starts sensitive; the moment they tap AMP off it is saved and honoured everywhere. Not on an RTL-SDR,
@@ -2694,16 +2704,66 @@ function renderPtt(view: HTMLElement, tabs: string): void {
   refreshHamUi();
 }
 
-// ---- PortaPack in Mayhem mode: switch it to HackRF mode over its USB serial shell (desktop Chrome / Edge) --------
-async function portapackToHackRf(): Promise<boolean> {
-  const serial = (navigator as unknown as { serial?: { requestPort: (o: unknown) => Promise<{ open: (o: unknown) => Promise<void>; writable: WritableStream<Uint8Array> | null; close: () => Promise<void> }> } }).serial;
+// ---- PortaPack in Mayhem mode: switch it to HackRF mode over its USB serial shell -----------------------------------
+// The shell echoes and prints a prompt; Mayhem only reboots into HackRF mode once that output has been read, so both
+// routes keep reading after the command. WebUSB first (Android Chrome, where no OS serial driver holds the port), then
+// Web Serial (desktop Chrome / Edge, where the OS driver owns it and WebUSB cannot claim it).
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function portapackViaWebUsb(d: USBDevice): Promise<boolean> {
+  try {
+    const ifs = d.configuration?.interfaces ?? [];
+    const data = ifs.find((i) => i.alternate.interfaceClass === 0x0a);
+    const comm = ifs.find((i) => i.alternate.interfaceClass === 0x02);
+    const out = data?.alternate.endpoints.find((e) => e.direction === 'out' && e.type === 'bulk');
+    const inp = data?.alternate.endpoints.find((e) => e.direction === 'in' && e.type === 'bulk');
+    if (!data || !out) return false;
+    await d.open();
+    if (!d.configuration) await d.selectConfiguration(1);
+    await d.claimInterface(data.interfaceNumber);
+    if (comm) {
+      await d.claimInterface(comm.interfaceNumber).catch(() => undefined);
+      const idx = comm.interfaceNumber;
+      await d.controlTransferOut({ requestType: 'class', recipient: 'interface', request: 0x20, value: 0, index: idx }, new Uint8Array([0x00, 0xc2, 0x01, 0x00, 0, 0, 8])).catch(() => undefined);
+      await d.controlTransferOut({ requestType: 'class', recipient: 'interface', request: 0x22, value: 0x03, index: idx }).catch(() => undefined);
+    }
+    let gone = false;
+    const drain = async (ms: number) => {
+      const end = Date.now() + ms;
+      while (!gone && Date.now() < end) {
+        if (!inp) { await sleepMs(100); continue; }
+        await Promise.race([d.transferIn(inp.endpointNumber, 512).catch(() => { gone = true; }), sleepMs(150)]);
+      }
+    };
+    await drain(300);
+    await d.transferOut(out.endpointNumber, new TextEncoder().encode('\r\nhackrf\r\n'));
+    await drain(3000);
+    await d.close().catch(() => undefined);
+    return true;
+  } catch (e) {
+    log(`PortaPack over WebUSB: ${(e as Error).message}`);
+    await d.close().catch(() => undefined);
+    return false;
+  }
+}
+async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
+  if (d && (await portapackViaWebUsb(d))) {
+    log('PortaPack: sent "hackrf" — it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
+    setStatus('PortaPack switching to HackRF mode… tap CONNECT in 5 s', false);
+    return true;
+  }
+  type SerialPortLike = { open: (o: unknown) => Promise<void>; writable: WritableStream<Uint8Array> | null; readable: ReadableStream<Uint8Array> | null; close: () => Promise<void> };
+  const serial = (navigator as unknown as { serial?: { requestPort: (o: unknown) => Promise<SerialPortLike> } }).serial;
   if (!serial) { log('PortaPack: this browser has no Web Serial — tap HackRF mode on the PortaPack instead.'); return false; }
   try {
     const port = await serial.requestPort({ filters: [{ usbVendorId: 0x1d50, usbProductId: 0x6018 }] });
     await port.open({ baudRate: 115200 });
+    const r = port.readable?.getReader();
+    const reading = (async () => { try { for (;;) { const { done } = await r!.read(); if (done) break; } } catch { /* board rebooted */ } })();
+    await sleepMs(300);
     const w = port.writable!.getWriter();
-    await w.write(new TextEncoder().encode('hackrf\r\n'));
+    await w.write(new TextEncoder().encode('\r\nhackrf\r\n'));
     w.releaseLock();
+    if (r) { await Promise.race([reading, sleepMs(3000)]); await r.cancel().catch(() => undefined); r.releaseLock(); }
     await port.close().catch(() => undefined);
     log('PortaPack: sent "hackrf" — it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
     setStatus('PortaPack switching to HackRF mode… tap CONNECT in 5 s', false);
@@ -4728,7 +4788,7 @@ async function connect(dev?: USBDevice): Promise<void> {
     if (isMayhemSerial(d)) {
       log('That is a PortaPack in Mayhem serial mode.');
       setStatus('PortaPack in Mayhem mode — switching…', false);
-      if (!(await portapackToHackRf())) { setStatus('PortaPack in serial mode — tap HackRF on its screen', false); showHint(new Error('PortaPack in Mayhem mode. On the PortaPack, choose HackRF mode; on a desktop browser CONNECT can do it for you over the serial shell.')); }
+      if (!(await portapackToHackRf(d))) { setStatus('PortaPack in serial mode — tap HackRF on its screen', false); showHint(new Error('PortaPack in Mayhem mode. CONNECT could not switch it. On the PortaPack, choose HackRF mode.')); }
       return;
     }
     await ensureAudio();
@@ -4754,7 +4814,13 @@ async function connect(dev?: USBDevice): Promise<void> {
         state.board = r.board; state.firmware = r.firmware; setStatus(s, true);
         if (!state.app) $('sub').textContent = `HackRF · ${r.board} · ${r.firmware}`;
         // The board is only known after bring-up: re-scale the One-flavoured gains once for a Pro.
-        if (newBoard && isPro() && !state.gainsScaled) { const [l, v, a] = boardGains(state.lna, state.vga, state.amp); state.gainsScaled = true; setGains(l, v, a); log(`HackRF Pro: gains scaled to LNA ${l} / VGA ${v}${a ? ' / amp' : ''} (One presets sit under 1 ADC count on a Pro)`); }
+        if (newBoard && isPro() && !state.gainsScaled) {
+          const pref = currentGainPref();
+          const [l, v, a] = pref ? [pref.lna, pref.vga, pref.amp] as [number, number, boolean] : boardGains(state.lna, state.vga, state.amp);
+          setAgc(pref ? pref.agc : true);
+          state.gainsScaled = true; setGains(l, v, a);
+          log(`HackRF Pro: gains LNA ${l} / VGA ${v}${a ? ' / amp' : ''} (${pref ? 'your saved Pro gain' : 'scaled up: One presets sit under 1 ADC count on a Pro'})`);
+        }
       },
     });
     r.targetFreqHz = state.freq; r.targetRateHz = state.rate; r.setGain(state.lna, state.vga, state.amp);
