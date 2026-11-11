@@ -1,16 +1,6 @@
 /** Every ported protocol, instantiated fresh (twin of ism/IsmProtos.kt). */
 import type { FProto } from './base.js';
 import { CBmwV0 } from './c-bmw_v0.js';
-import { CFiatV0 } from './c-fiat_v0.js';
-import { CFordV0 } from './c-ford_v0.js';
-import { CKiaV0 } from './c-kia_v0.js';
-import { CKiaV1 } from './c-kia_v1.js';
-import { CKiaV2 } from './c-kia_v2.js';
-import { CKiaV3V4 } from './c-kia_v3v4.js';
-import { CKiaV5 } from './c-kia_v5.js';
-import { CSubaru } from './c-subaru.js';
-import { CSuzuki } from './c-suzuki.js';
-import { CVw } from './c-vw.js';
 import { SBett } from './s-bett.js';
 import { SCame } from './s-came.js';
 import { SCameAtomo } from './s-came_atomo.js';
@@ -85,16 +75,6 @@ import { WWendoxW6726 } from './w-wendox-w6726.js';
 export function allProtos(): FProto[] {
   return [
     new CBmwV0(),
-    new CFiatV0(),
-    new CFordV0(),
-    new CKiaV0(),
-    new CKiaV1(),
-    new CKiaV2(),
-    new CKiaV3V4(),
-    new CKiaV5(),
-    new CSubaru(),
-    new CSuzuki(),
-    new CVw(),
     new SBett(),
     new SCame(),
     new SCameAtomo(),
