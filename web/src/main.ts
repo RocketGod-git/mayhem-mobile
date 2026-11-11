@@ -5203,6 +5203,8 @@ function placeFill(slide: boolean): void {
   fill.style.left = `${on.offsetLeft}px`; fill.style.width = `${on.offsetWidth}px`;
   fill.classList.add('show'); fillPlaced = true;
 }
+/** The app the bar was last scrolled to, so a refresh does not undo the user's own scrolling. */
+let barCentered: AppId | null | undefined;
 function refreshShell(): void {
   const here = state.app, setOn = settingsOpen();
   qa<HTMLButtonElement>('[data-bar]').forEach(b => {
@@ -5210,8 +5212,10 @@ function refreshShell(): void {
     b.classList.toggle('on', id === here);
     b.classList.toggle('dim', !!radio && !!blockedBecause(APP_NEEDS[id], radio.limits));
   });
+  // bring the app you are on into view only when it changes: this runs on every status update, and re-centering
+  // each time snapped the strip back as soon as you slid it to look for another app
   const on = q<HTMLElement>(`[data-bar="${here}"]`), bar = $('appbar-in');
-  if (on) bar.scrollTo({ left: on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' });
+  if (on && here !== barCentered) { barCentered = here; bar.scrollTo({ left: on.offsetLeft - (bar.clientWidth - on.offsetWidth) / 2, behavior: 'smooth' }); }
   placeFill(true);
   $('nav-home').classList.toggle('on', state.app === null && !setOn);
   $('nav-settings').classList.toggle('on', setOn);
