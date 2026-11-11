@@ -404,7 +404,9 @@ class LoraScanner : IqProcessor {
             if (shedding && busy > 0.8) return false
             if (open.size >= 10 || (s == null && open.count { it.s == null } >= 4)) return false
         }
-        val from = maxOf(from0, written - ringMask + rate / 50, 0L)
+        // at most three quarters of the ring back: one started at its very end was overwritten before it ran, skipped
+        // half a ring ahead (and lost its preamble), and counted as a channel falling behind
+        val from = maxOf(from0, written - ringMask * 3L / 4, 0L)
         val sfs = if (sf != null) listOf(sf) else (7..12).toList()
         nextId++
         val e = Extractor(nextId, rate, (hz - centerOf()).toDouble(), bw, hz, from, sfs, inverted, if (s != null) 4 else 2)
