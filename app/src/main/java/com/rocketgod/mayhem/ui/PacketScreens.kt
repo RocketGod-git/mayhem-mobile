@@ -107,10 +107,12 @@ private fun AppNote(text: String) {
  * decodes, the digits and the level) over the waterfall, then [controls], the log header and the decoded log.
  */
 @Composable
-private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: String, tunable: Boolean = true, roomy: Boolean = false,
+internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: String, tunable: Boolean = true, roomy: Boolean = false,
                         /** The radio sits this far above the channel (ACARS): the card shows the channel, a tap tunes to it. */
                         shift: Long = 0L,
-                        controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null) {
+                        controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null,
+                        /** The list's share of the height against the log's 1 (null: the list takes only what it needs). */
+                        listWeight: Float? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -153,7 +155,7 @@ private fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Strin
             IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
             logActions()
         }
-        if (list != null) list()
+        if (list != null) { if (listWeight != null) Box(Modifier.fillMaxWidth().weight(listWeight)) { list() } else list() }
         LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent)
         if (full) FullscreenPanel("${snap.total} DECODED", accent, onClose = { full = false }, actions = { Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) { logActions() } }) {
             LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent)
@@ -614,23 +616,6 @@ fun SubGhzScreen(accent: Color) {
             ToggleBox("WEATHER", wx, accent, Modifier.weight(1f).fillMaxHeight()) { wx = !wx; Apps.ism.weather = wx }
             ToggleBox("REMOTES", rc, accent, Modifier.weight(1f).fillMaxHeight()) { rc = !rc; Apps.ism.remotes = rc }
             ToggleBox("CAR KEYS", car, accent, Modifier.weight(1f).fillMaxHeight()) { car = !car; Apps.ism.cars = car }
-        }
-    })
-}
-
-@Composable
-fun ErtScreen(accent: Color) {
-    val d = rememberDims()
-    val rate by SdrEngine.rateHz.collectAsState()
-    PacketFrame(accent, Apps.ertLog, tag = "ERT", title = "UTILITY METERS", controls = {
-        PresetTiles(accent, listOf(Preset("911.6", "low", 911_600_000L), Preset("915.0", "centre", 915_000_000L), Preset("920.0", "high", 920_000_000L)))
-        val why = com.rocketgod.mayhem.core.Radio.rateWhy(4_194_304)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-            RowLabel("RATE")
-            SegBar(listOf("2.0 Msps", "4.194 Msps"), if (rate == 4_194_304) 1 else if (rate == 2_000_000) 0 else -1, accent, Modifier.weight(1f),
-                tints = listOf(null, if (why.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null)) {
-                if (it == 0) SdrEngine.setRate(2_000_000) else gated(why) { SdrEngine.setRate(4_194_304) }()
-            }
         }
     })
 }

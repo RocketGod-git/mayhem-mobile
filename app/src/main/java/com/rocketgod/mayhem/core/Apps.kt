@@ -7,6 +7,8 @@ import com.rocketgod.mayhem.core.apps.AprsDecoder
 import com.rocketgod.mayhem.core.apps.BtleDecoder
 import com.rocketgod.mayhem.core.apps.ErtDecoder
 import com.rocketgod.mayhem.core.apps.IqRecorder
+import com.rocketgod.mayhem.core.apps.MeshDecoder
+import com.rocketgod.mayhem.core.apps.MetersProcessor
 import com.rocketgod.mayhem.core.apps.PagerDecoder
 import com.rocketgod.mayhem.core.apps.SweepProcessor
 import com.rocketgod.mayhem.core.apps.TpmsDecoder
@@ -26,7 +28,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     AIS("AIS", "ships, 162 MHz", "Receive"),
     APRS("APRS", "packet radio, 144.39 MHz", "Receive"),
     PAGER("FLEX", "pager RX · FLEX, or POCSAG too", "Receive"),
-    ERT("ERT", "utility meters, 915 MHz", "Receive"),
+    ERT("Meters", "utility meters: ERT, mesh networks, Gridstream", "Receive"),
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
     TPMS("TPMS", "tire pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
@@ -66,7 +68,9 @@ object Apps {
     const val NARROW_SHIFT = 250_000L
     val aisLog = PacketLog(); val ais = AisDecoder(aisLog)
     val aprsLog = PacketLog(); val aprs = AprsDecoder(aprsLog)
-    val ertLog = PacketLog(); val ert = ErtDecoder(ertLog)
+    /** Meters: ERT and the mesh networks on the same samples, into one log (the app keeps ERT's name in settings). */
+    val metersLog = PacketLog(); val ert = ErtDecoder(metersLog); val mesh = MeshDecoder(metersLog)
+    val meters = MetersProcessor(ert, mesh)
     val btleLog = PacketLog(); val btle = BtleDecoder(btleLog)
     val tpmsLog = PacketLog(); val tpms = TpmsDecoder(tpmsLog)
     val acarsLog = PacketLog(); val acars = AcarsDecoder(acarsLog)
@@ -141,8 +145,17 @@ object Apps {
             MayhemApp.AIS -> { SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L + NARROW_SHIFT, r, 32, 32, false, ais); SdrEngine.setOffset(-NARROW_SHIFT.toInt()) }
             MayhemApp.APRS -> { SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L + NARROW_SHIFT, r, 24, 24, false, aprs); SdrEngine.setOffset(-NARROW_SHIFT.toInt()) }
             MayhemApp.PAGER -> startPager()
-            // Mayhem's rate and center: 128 samples a chip, and a 3.5 MHz filter that takes in 910-913 MHz
-            MayhemApp.ERT -> SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, if (Radio.canSample(Radio.limits, ErtDecoder.RATE)) ErtDecoder.RATE else r, 32, 40, true, ert)
+            // as wide as the radio goes (19.2 Msps on a HackRF hears 118 hopping channels and about six times the meters
+            // of Mayhem's 4.19 Msps ERT span), centered where the ERT meters sit
+            MayhemApp.ERT -> {
+                val wide = when {
+                    Radio.canSample(Radio.limits, MeshDecoder.WIDE) -> MeshDecoder.WIDE
+                    Radio.canSample(Radio.limits, ErtDecoder.RATE) -> ErtDecoder.RATE
+                    else -> r
+                }
+                SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, wide, 32, 40, true, meters)
+                mesh.centerOf = { SdrEngine.freqHz.value }
+            }
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
             // the radio sits LO_SHIFT from the channel (130.8 MHz for 131.550), so every US channel is in the span and

@@ -180,7 +180,10 @@ fun GeoMapView(
     items: List<GeoItem>, accent: Color, modifier: Modifier = Modifier, home: Pair<Double, Double>? = null,
     selected: String? = null, layers: GeoLayers = GeoLayers(), follow: String? = null,
     /** Centre on this point whenever [focusKey] changes (the MAP button on a detail card). */
-    focus: Pair<Double, Double>? = null, focusKey: Int = 0, onPick: (String) -> Unit = {},
+    focus: Pair<Double, Double>? = null, focusKey: Int = 0,
+    /** Start on [home] at street level, and keep it in view with the items when fitting (meters around you). */
+    fitHome: Boolean = false,
+    onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
@@ -192,12 +195,17 @@ fun GeoMapView(
         if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
         // home only counts when something is drawn from it
         val pts = items.map { it.lat to it.lon } + layers.track +
-            (if (layers.track.isNotEmpty() || layers.lines.isNotEmpty()) listOfNotNull(home) else emptyList())
+            (if (layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
         if (pts.isEmpty()) return
         val n = pts.maxOf { it.first }; val s = pts.minOf { it.first }; val e = pts.maxOf { it.second }; val w = pts.minOf { it.second }
-        if (n - s < 1e-6 && e - w < 1e-6) { mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second)); return }
-        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, (40 * mv.resources.displayMetrics.density).toInt()) }
-        if (mv.zoomLevelDouble > 11.0) mv.controller.setZoom(11.0)
+        if (n - s < 1e-6 && e - w < 1e-6) {
+            if (fitHome) mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), 15.0, null)
+            else mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second))
+            return
+        }
+        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitHome) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }
+        val maxZoom = if (fitHome) 17.0 else 11.0
+        if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
     }
 
     LaunchedEffect(mapRef, items, layers, selected, home, following) {
@@ -233,7 +241,7 @@ fun GeoMapView(
                     setTilesScaledToDpi(true)
                     isHorizontalMapRepetitionEnabled = true
                     zoomController.setVisibility(CustomZoomButtonsController.Visibility.SHOW_AND_FADEOUT)
-                    controller.setZoom(3.0)
+                    controller.setZoom(if (fitHome && home != null) 13.0 else 3.0)
                     controller.setCenter(if (home != null) GeoPoint(home.first, home.second) else GeoPoint(30.0, -40.0))
                     // a drag (past the touch slop, so a tap on a marker does not count) hands the view to the user
                     val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop.toFloat()

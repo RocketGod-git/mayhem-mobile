@@ -96,7 +96,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
         heard.maxByOrNull { it.lastSeen }?.let { "${it.model} · ${Devices.summary(it.data)}" } ?: "${heard.size} devices"
     }
     MayhemApp.PAGER -> lastLine(Apps.pagerLog)
-    MayhemApp.ERT -> lastLine(Apps.ertLog)
+    MayhemApp.ERT -> lastLine(Apps.metersLog)
     MayhemApp.BTLE -> lastLine(Apps.btleLog)
     MayhemApp.TPMS -> lastLine(Apps.tpmsLog)
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)
