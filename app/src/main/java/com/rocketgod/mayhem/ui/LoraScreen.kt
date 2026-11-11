@@ -90,7 +90,7 @@ fun LoraScreen(accent: Color) {
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-            SegBar(listOf("NODES · ${nodes.size}", "MAP · ${mapItems.size}", "MESSAGES · ${messages.size}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
+            SegBar(listOf("NODES · ${nodes.size}", "MAP · ${mapItems.size}", "CHAT · ${messages.size}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
         }
     }
@@ -162,7 +162,7 @@ fun LoraScreen(accent: Color) {
             stage(Modifier.fillMaxWidth().weight(1f))
         }
     })
-    if (full) FullscreenPanel(listOf("LORA · ${nodes.size} NODES", "LORA · MAP", "LORA · MESSAGES")[view], accent, onClose = { full = false },
+    if (full) FullscreenPanel(listOf("LORA · ${nodes.size} NODES", "LORA · MAP", "LORA · CHAT")[view], accent, onClose = { full = false },
         actions = { switcher(false, Modifier.width(d.dp(380f))) }) {
         stage(Modifier.fillMaxWidth().weight(1f))
     }

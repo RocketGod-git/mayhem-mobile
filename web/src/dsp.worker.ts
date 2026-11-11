@@ -298,7 +298,14 @@ function dropQueued(): void { queue.length = 0; }
 self.onmessage = (e: MessageEvent) => {
   const m = e.data;
   switch (m.type) {
-    case 'iq': if (queue.length < QUEUE_MAX) queue.push(new Int8Array(m.buf as ArrayBuffer)); armDrain(); break;
+    case 'iq': {
+      // at most about 0.2 s of samples waits (whatever the buffer size and rate): the oldest go first, so a slow
+      // start never leaves the waterfall and decoders seconds behind
+      const b = new Int8Array(m.buf as ArrayBuffer);
+      const cap = Math.max(8, Math.min(QUEUE_MAX, Math.ceil(0.2 * rate * 2 / Math.max(b.length, 1))));
+      while (queue.length >= cap) queue.shift();
+      queue.push(b); armDrain(); break;
+    }
     case 'config':
       if (typeof m.rate === 'number' && m.rate !== rate) dropQueued();
       if (typeof m.centreHz === 'number' && m.centreHz !== centreHz) dropQueued();

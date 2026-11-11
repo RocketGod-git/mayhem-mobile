@@ -321,9 +321,8 @@ object SdrEngine {
     @Volatile var sourceLabel = "HackRF"
     @Volatile var processor: IqProcessor? = null; private set
     @Volatile private var worker: Thread? = null
-    // 512 x 16 KB: 210 ms at 20 Msps. Eight held only 3 ms at 19.2 Msps: a LoRa frame's channel catching up from its
-    // start takes 60-80 ms now and then, and USB delivers in bursts. It sits empty while the processing keeps up,
-    // so it adds no delay then.
+    // Room for about 0.2 s of samples (onIq caps it by time): eight buffers held only 3 ms at 19.2 Msps, while a
+    // LoRa frame's channel catching up from its start takes 60-80 ms now and then and USB delivers in bursts.
     private val queue = ArrayBlockingQueue<ByteArray>(512)
     private val pool = ArrayBlockingQueue<ByteArray>(512)
 
@@ -345,11 +344,17 @@ object SdrEngine {
     fun onIq(buf: ByteArray, len: Int) {
         val dst = pool.poll()?.takeIf { it.size == len } ?: ByteArray(len)
         System.arraycopy(buf, 0, dst, 0, len)
+        // at most about 0.2 s of samples waits, whatever the buffer size and rate: a deeper backlog (a phone's first
+        // seconds, before the code is warm) would leave the waterfall and the decoders that far behind
+        val cap = (QUEUE_SECONDS * sampleRate * 2 / maxOf(len, 1)).toInt().coerceIn(8, 512)
+        while (queue.size >= cap) queue.poll()?.let { pool.offer(it) } ?: break
         if (!queue.offer(dst)) {
             queue.poll()?.let { pool.offer(it) }
             queue.offer(dst)
         }
     }
+
+    private const val QUEUE_SECONDS = 0.2
 
     fun currentRate(): Int = sampleRate
 
