@@ -2,6 +2,9 @@ package com.rocketgod.mayhem.core.apps.ism
 
 import com.rocketgod.mayhem.core.IqProcessor
 import com.rocketgod.mayhem.core.PacketLog
+import com.rocketgod.mayhem.core.apps.ism.pirate.PPDecoder
+import com.rocketgod.mayhem.core.apps.ism.pirate.PPHit
+import com.rocketgod.mayhem.core.apps.ism.pirate.PPProtos
 
 /**
  * Sub-GHz OOK receiver (Mayhem proc_weather / proc_subghzd / proc_subcar, rtl_433 style): raw IQ → 500 kHz →
@@ -23,6 +26,21 @@ class IsmDecoder(private val log: PacketLog) : IqProcessor {
     private var currentDurationNs = 0L; private var currentHiLow = false
     private val seen = HashMap<String, Long>()
     private var hits = 0
+    // ProtoPirate's car-key decoders: AM ones on the OOK pulses, FM ones on the FSK pulses (both polarities, since
+    // which tone a fob calls "high" varies)
+    private val pirAm: List<PPDecoder>
+    private val pirFm: List<PPDecoder>
+    private val pirFmInv: List<PPDecoder>
+    // FSK front end: phase step between decimated samples, smoothed, sliced around its own running middle
+    private var fmPrevI = 0f; private var fmPrevQ = 0f; private var fmLP = 0f; private var fmMid = 0f
+    private var fmWasPresent = false; private var fmLevel = false
+    private var fmDurNs = 0L
+
+    init {
+        val pp = PPProtos.all()
+        pirAm = pp.first; pirFm = pp.second; pirFmInv = PPProtos.all().second
+        for (p in pirAm + pirFm + pirFmInv) p.onHit = { h -> onPirate(h) }
+    }
 
     override fun reset(rate: Int) {
         dec = (rate / 500_000).coerceAtLeast(1)
@@ -42,6 +60,7 @@ class IsmDecoder(private val log: PacketLog) : IqProcessor {
             if (++accN < dec) continue
             val ci = accI / accN; val cq = accQ / accN; accI = 0f; accQ = 0f; accN = 0
             sample(ci * ci + cq * cq)
+            if (cars) fmSample(ci, cq)
         }
     }
 
@@ -90,11 +109,55 @@ class IsmDecoder(private val log: PacketLog) : IqProcessor {
         }
     }
 
+    /**
+     * One decimated sample through the FSK slicer: while a carrier is up (the OOK tracker says so), the smoothed
+     * phase step above its running middle is "high"; pulses of each level go to the FM decoders.
+     */
+    private fun fmSample(ci: Float, cq: Float) {
+        val d = kotlin.math.atan2(ci * fmPrevQ - cq * fmPrevI, ci * fmPrevI + cq * fmPrevQ)
+        fmPrevI = ci; fmPrevQ = cq
+        fmLP += 0.5f * (d - fmLP)
+        val present = state != STATE_IDLE
+        var level = false
+        if (present) {
+            if (!fmWasPresent) fmMid = fmLP
+            fmMid += 0.01f * (fmLP - fmMid)
+            level = fmLP > fmMid
+        }
+        fmWasPresent = present
+        if (level == fmLevel && fmDurNs < 30_000_000L) fmDurNs += nsPerSamp
+        else {
+            val us = (fmDurNs / 1000L).toInt()
+            for (p in pirFm) p.feed(fmLevel, us)
+            for (p in pirFmInv) p.feed(!fmLevel, us)
+            fmDurNs = nsPerSamp
+            fmLevel = level
+        }
+    }
+
+    /** A ProtoPirate decode, shown once per frame (the same key within 1.2 s is a repeat). */
+    private fun onPirate(h: PPHit) {
+        val key = "pp:${h.name}:${h.key}"
+        val now = System.currentTimeMillis()
+        if (now - (seen[key] ?: 0L) < 1200) return
+        seen[key] = now
+        if (seen.size > 500) seen.clear()
+        hits++
+        val sb = StringBuilder("CAR ${h.name}")
+        h.serial?.let { sb.append("  serial %X".format(it)) }
+        h.btn?.let { if (it.isNotEmpty()) sb.append("  btn $it") }
+        h.cnt?.let { sb.append("  cnt $it") }
+        sb.append("  key ${h.key} (${h.bits} bits)")
+        for (f in h.fields) sb.append("  ${f.name.lowercase()} ${f.value}")
+        log.add(sb.toString())
+    }
+
     private fun feed(level: Boolean, durationUs: Int) {
         for (p in protos) {
             val on = when (p.family) { Fam.WEATHER -> weather; Fam.REMOTE -> remotes; else -> cars }
             if (on) p.feed(level, durationUs)
         }
+        if (cars) for (p in pirAm) p.feed(level, durationUs)
     }
 
     private fun onHit(p: FProto) {

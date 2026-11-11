@@ -3,17 +3,8 @@ package com.rocketgod.mayhem.core.apps.ism
 /** Every ported protocol, instantiated fresh. */
 object IsmProtos {
     fun all(): List<FProto> = listOf(
+        // car keys: ProtoPirate's decoders (PPProtos) cover the rest; BMW is the one they don't
         CBmwV0(),
-        CFiatV0(),
-        CFordV0(),
-        CKiaV0(),
-        CKiaV1(),
-        CKiaV2(),
-        CKiaV3V4(),
-        CKiaV5(),
-        CSubaru(),
-        CSuzuki(),
-        CVw(),
         SBett(),
         SCame(),
         SCameAtomo(),
