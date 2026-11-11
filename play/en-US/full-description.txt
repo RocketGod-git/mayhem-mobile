@@ -1,6 +1,6 @@
 Plug a HackRF or an RTL-SDR into your phone and it becomes a full software-defined radio. The waterfall, the demodulators and every decoder run on the phone itself. No laptop, no PortaPack screen, no account, and nothing gets sent anywhere.
 
-I'm one of the devs on Mayhem, the PortaPack firmware. Mayhem Mobile takes its receivers to Android, then keeps going.
+Mayhem Mobile brings the receivers of Mayhem, the PortaPack firmware, to Android, then keeps going.
 
 WORKS WITH
 • RTL-SDR dongles, including the RTL-SDR Blog V3, V4 and V4L (receive, 24 MHz to 1.7 GHz)
