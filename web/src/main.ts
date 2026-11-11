@@ -770,7 +770,9 @@ function open(app: AppId | null): void {
     case 'ais': configure('NFM', 161_975_000, 2e6, 32, 32, false, 'ais'); narrowShift(); requestGeo(); break;
     case 'aprs': configure('NFM', 144_390_000, 2e6, 24, 24, false, 'aprs'); narrowShift(); requestGeo(); break;
     case 'pager':
-      if (state.pagerMulti) configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt');
+      // MULTI where the radio can take 3.84 Msps: the whole US pager band (929.0-932.0 MHz) from its middle,
+      // instead of half of it at 2 Msps
+      if (state.pagerMulti) { if (radioCan(3_840_000)) configure('NONE', 930_500_000, 3_840_000, 32, 40, true, 'pagerhunt'); else configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt'); }
       else { configure('NFM', 929_612_500, 2e6, 32, 32, false, 'pager'); worker?.postMessage({ type: 'pager', which: state.pager }); }
       break;
     // Meters: as wide as the radio goes (19.2 Msps on a HackRF hears 118 hopping channels and about six times the
