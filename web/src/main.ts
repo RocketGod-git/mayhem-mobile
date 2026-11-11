@@ -25,6 +25,7 @@ import { aprsSymbolName } from './aprs-info.js';
 import { GeoMap, type GeoItem } from './geomap.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
+import { BANDS as LORA_BANDS, NARROW_TILES as LORA_TILES, NARROW_SHIFT as LORA_SHIFT, homeBand as loraHomeBand } from './dsp/lora/plan.js';
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
 
@@ -37,7 +38,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'btle' | 'tpms' | 'acars' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -50,6 +51,7 @@ const APPS: AppDef[] = [
   { id: 'aprs', title: 'APRS', blurb: 'packet radio, 144.39 MHz', cat: 'Receive' },
   { id: 'pager', title: 'FLEX', blurb: 'pager RX · FLEX, or POCSAG too', cat: 'Receive' },
   { id: 'ert', title: 'Meters', blurb: 'utility meters: ERT, mesh networks, Gridstream', cat: 'Receive' },
+  { id: 'lora', title: 'LoRa', blurb: 'Meshtastic · MeshCore · LoRaWAN, 915 MHz', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
   { id: 'tpms', title: 'TPMS', blurb: 'tire pressure, 315 / 433 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
@@ -778,6 +780,7 @@ function open(app: AppId | null): void {
     // Meters: as wide as the radio goes (19.2 Msps on a HackRF hears 118 hopping channels and about six times the
     // meters of Mayhem's 4.19 Msps ERT span), else Mayhem's ERT rate, else 2 Msps; centered where the ERT meters sit
     case 'ert': configure('NONE', 911_600_000, radioCan(METERS_WIDE) ? METERS_WIDE : radioCan(METERS_RATE) ? METERS_RATE : 2e6, 32, 40, true, 'ert'); break;
+    case 'lora': loraOpen(); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
@@ -1584,6 +1587,7 @@ function render(app: AppId | null): void {
     case 'aprs': renderAprs(view); break;
     case 'pager': if (state.pagerMulti) renderHunt(view); else renderPacket(view, app); break;
     case 'ert': renderMeters(view); break;
+    case 'lora': renderLora(view); break;
     case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
@@ -3411,7 +3415,7 @@ function refreshMeters(force = false): void {
   const sum = q('#mt-sum');
   if (sum) sum.innerHTML = (nets.length === 0 && ertN === 0 ? `<div class="muted">${snap && snap.bursts > 0 ? `${snap.bursts} bursts heard, no network locked yet` : 'watching the band for meters'}</div>` : '')
     + nets.slice(0, 3).map(metersNetLine).join('') + (ertN ? `<div>ERT · ${ertN} meters</div>` : '');
-  qa<HTMLButtonElement>('[data-mtview]').forEach(b => { const v = b.dataset.mtview; b.classList.toggle('on', v === meters.view); b.textContent = v === 'cards' ? `DEVICES · ${devs.length}` : v === 'map' ? `MAP · ${pins.length}` : 'LOG'; b.hidden = v === 'log' && meters.full; });
+  qa<HTMLButtonElement>('[data-mtview]').forEach(b => { const v = b.dataset.mtview; b.classList.toggle('on', v === meters.view); b.textContent = v === 'cards' ? `DEVICES ${devs.length}` : v === 'map' ? `MAP ${pins.length}` : 'LOG'; b.hidden = v === 'log' && meters.full; });
   const cards = q('#mt-cards'), mapEl = q('#mt-map'), logEl = q('#mt-log'), nopos = q('#mt-nopos'), det = q('#mt-detail'), stage = q('#mt-stage');
   if (!cards || !mapEl || !logEl || !nopos || !det || !stage) return;
   cards.hidden = meters.view !== 'cards'; mapEl.hidden = meters.view !== 'map';
@@ -3435,6 +3439,151 @@ function refreshMeters(force = false): void {
   }
   const n = devs.length;
   if (n > 0) setLamp(`${n} DEVICE${n === 1 ? '' : 'S'}`, 'ok');
+}
+
+// ---- LoRa: every Meshtastic, MeshCore and LoRaWAN node heard across the span ------------------------------------
+const LORA_WIDE = 20_000_000, LORA_NARROW = 2_000_000;
+interface LoraNodeRow { key: string; proto: string; label: string; name: string | null; kind: string; lat: number | null; lon: number | null; firstMs: number; lastMs: number; packets: number; snr: number[]; fields: { name: string; value: string }[]; last: string; hz: number; modem: string; texts: string[] }
+interface LoraEventRow { id: number; ms: number; proto: string; from: string | null; nodeKey: string | null; text: string | null; channel: string | null }
+interface LoraSnap { nodes: LoraNodeRow[]; messages: LoraEventRow[]; bursts: number; frames: number; rate: number; centerHz: number; wide: boolean; busy: number; open: number;
+  channels: { name: string; hz: number; standing: boolean; active: boolean; hotAgoMs: number | null; frames: number }[] }
+/** The LoRa screen: NODES shows every node live; MAP puts the ones that broadcast a position where they say they are;
+ *  MESSAGES is the text traffic in order. A tap on a card or a pin opens everything decoded from that node. */
+const loraUi = { snap: null as LoraSnap | null, view: 'nodes' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, tall: false, drawn: 0, timer: 0, drawPending: 0 };
+const loraClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
+const loraPins = (): GeoItem[] => (loraUi.snap?.nodes ?? []).filter(n => n.lat !== null && n.lon !== null).map(n => ({ id: n.key, lat: n.lat!, lon: n.lon!, label: n.label, kind: 'station' as GeoItem['kind'] }));
+/** LoRa opens on the band of the browser's own region setting (its locale, not its location): the whole 20 MHz band
+ *  where the radio can sample it, else that band's main channel with the radio 300 kHz above it. */
+function loraOpen(): void {
+  const band = loraHomeBand(), wide = radioCan(LORA_WIDE);
+  configure('NONE', wide ? band.center : band.narrow + LORA_SHIFT, wide ? LORA_WIDE : LORA_NARROW, 32, 40, true, 'lora');
+}
+function loraSpan(wide: boolean): void {
+  if (wide === state.rate >= 10_000_000) return;
+  if (wide) {
+    if (!radioCan(LORA_WIDE)) { log(`${radio?.label ?? 'this radio'} cannot sample 20 MHz`); return; }
+    const b = [...LORA_BANDS].sort((x, y) => Math.abs(x.center - state.freq) - Math.abs(y.center - state.freq))[0] ?? loraHomeBand();
+    setRate(LORA_WIDE); tune(b.center);
+  } else {
+    const b = LORA_BANDS.find(x => x.center === state.freq) ?? loraHomeBand();
+    setRate(LORA_NARROW); tune(b.narrow + LORA_SHIFT);
+  }
+  render("lora");
+}
+function renderLora(view: HTMLElement): void {
+  const wide = state.rate >= 10_000_000;
+  const tiles = wide ? hsHtml(`<div class="tiles wide">${LORA_BANDS.map(b => `<button class="tl" data-preset="${b.center}"><b>${b.title}</b><small>${b.sub}</small></button>`).join('')}</div>`)
+    // one channel at a time: the radio sits 300 kHz above it, clear of the spike at the center
+    : hsHtml(`<div class="tiles wide">${LORA_TILES.map(t => `<button class="tl" data-preset="${t.hz + LORA_SHIFT}"><b>${t.title}</b><small>${t.sub}</small></button>`).join('')}</div>`);
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="lr-sum" class="mt-sum"></div>
+      <div class="ctlrow">${segHtml(['nodes', 'map', 'messages', 'log'].map(v => `<button data-lrview="${v}">${v.toUpperCase()}</button>`))}<button id="lr-full" class="ib" title="full screen" aria-label="full screen">${loraUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('lora')}</div>
+      <div id="lr-stage" class="mt-stage"><div id="lr-cards" class="mt-cards"></div><div id="lr-map" class="panel map"></div><div id="lr-msgs" class="lr-msgs"></div><div id="lr-nopos" class="mt-nopos">no positions yet</div><div id="lr-detail" class="mt-detail" hidden></div></div>
+      <div id="lr-log">${logHtml('lora', 'listening for LoRa…')}</div>
+      <div id="lr-chans" class="lr-chans"></div>
+      ${tiles}
+      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([`<button data-lrspan="0" class="${wide ? '' : 'on'}">2 MHz</button>`, `<button data-lrspan="1" class="${wide ? 'on' : ''} ${radioCan(LORA_WIDE) ? '' : 'off'}">20 MHz</button>`])}</div>
+      <div class="note">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 902–928 MHz in the US, and every other region's band from its tile. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
+      ${gainHtml()}</section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-lrview]', view).forEach(b => b.onclick = () => { loraUi.view = b.dataset.lrview as typeof loraUi.view; refreshLora(true); });
+  qa<HTMLButtonElement>('[data-lrspan]', view).forEach(b => b.onclick = () => loraSpan(b.dataset.lrspan === '1'));
+  $('lr-full').onclick = () => setLoraFull(!loraUi.full);
+  const pick = (e: Event) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-lnode]'); if (c && (loraUi.snap?.nodes ?? []).some(n => n.key === c.dataset.lnode)) { loraUi.sel = loraUi.sel === c.dataset.lnode ? '' : c.dataset.lnode!; refreshLora(true); } };
+  $('lr-cards').onclick = pick; $('lr-msgs').onclick = pick;
+  $('lr-detail').onclick = (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ldo]'); if (!b) return;
+    const what = b.dataset.ldo;
+    if (what === 'close') loraUi.sel = '';
+    else if (what === 'tall') loraUi.tall = !loraUi.tall;
+    else if (what === 'map') {
+      loraUi.view = 'map'; refreshLora(true);
+      const n = loraUi.snap?.nodes.find(x => x.key === loraUi.sel);
+      if (n && n.lat !== null && n.lon !== null) geo?.center(n.lat, n.lon, 15);
+      return;
+    } else if (what === 'cards') loraUi.view = 'nodes';
+    refreshLora(true);
+  };
+  view.classList.toggle('lorafull', loraUi.full);
+  geo = new GeoMap($('lr-map'), { home: null, fitPins: true, onPick: id => { loraUi.sel = id; refreshLora(true); }, log });
+  clearInterval(loraUi.timer);
+  loraUi.timer = window.setInterval(() => { if (state.app !== 'lora') { clearInterval(loraUi.timer); return; } refreshLora(); }, 1000);
+  refreshLora(true);
+}
+function setLoraFull(on: boolean): void {
+  loraUi.full = on;
+  const v = q('.view.lora'); if (!v) return;
+  v.classList.toggle('lorafull', on);
+  const b = q('#lr-full'); if (b) { b.innerHTML = on ? EXIT_SVG : FULL_SVG; b.title = on ? 'leave full screen' : 'full screen'; }
+  refreshLora(true);
+  requestAnimationFrame(() => geo?.invalidate());
+}
+/** One node, live: its name, what it is, how it was last heard, its signal over the recent packets. */
+function loraCard(n: LoraNodeRow, now: number): string {
+  const age = (now - n.lastMs) / 1000, flash = Math.max(0, 1 - age / 0.9);
+  // nodes speak every few minutes: lit for ten, and once heard a node stays on the board
+  const live = age < 600;
+  const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
+  const v = n.snr, lastV = v[v.length - 1];
+  let spark = '<div class="mt-spark"></div>';
+  if (v.length) {
+    const W = 300, H = 22, lo = Math.min(...v) - 3, hi = Math.max(...v) + 3, sp = Math.max(hi - lo, 1);
+    const pts = v.length >= 2 ? v.map((x, i) => `${(W * i / (v.length - 1)).toFixed(1)},${(H - H * (x - lo) / sp).toFixed(1)}`) : [];
+    spark = `<div class="mt-spark"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${pts.length ? `<polygon points="${pts.join(' ')} ${W},${H} 0,${H}" class="f"/><polyline points="${pts.join(' ')}" class="p"/>` : ''}</svg><b>${lastV >= 0 ? '+' : ''}${lastV} dB</b></div>`;
+  }
+  return `<div class="mt-card ${loraUi.sel === n.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-lnode="${esc(n.key)}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-id ${n.label.length > 6 ? '' : 'big'}" style="font-size:${n.label.length > 6 ? 16 : 24}px">${esc(n.label)}</span><span class="mt-k"><b>${esc(n.proto.toUpperCase())}</b><small class="${n.lat !== null ? 'pos' : ''}">${esc(n.kind)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
+    + (n.name && n.name !== n.label ? `<div class="lr-name">${esc(n.name)}</div>` : '')
+    + `<div class="mt-clk"><b>${n.packets}</b><small>${n.packets === 1 ? 'PACKET' : 'PACKETS'}</small><em>${(n.hz / 1e6).toFixed(3)} · ${esc(n.modem.split(' · CR')[0])}</em></div>`
+    + spark + `<div class="lr-last">${esc(n.last)}</div></div>`;
+}
+/** One text message: who, where it went, when, and what it said. */
+function loraMessage(e: LoraEventRow): string {
+  return `<div class="lr-msg" ${e.nodeKey ? `data-lnode="${esc(e.nodeKey)}"` : ''}><div class="lr-mh"><b>${esc(e.from ?? '?')}</b><span>${esc(e.proto.toUpperCase() + (e.channel ? ` · ${e.channel}` : ''))}</span><i>${loraClock(e.ms)}</i></div><div class="lr-mt">${esc(e.text ?? '')}</div></div>`;
+}
+/** Everything decoded from one node, field by field, its recent messages, with MAP when it has a position. */
+function loraDetail(n: LoraNodeRow, onMap: boolean): string {
+  const all = [{ name: 'FIRST HEARD', value: loraClock(n.firstMs) }, { name: 'LAST HEARD', value: loraClock(n.lastMs) }, { name: 'PACKETS', value: `${n.packets}` },
+    { name: 'FREQUENCY', value: `${(n.hz / 1e6).toFixed(4)} MHz` }, { name: 'MODEM', value: n.modem }, ...n.fields];
+  return `<div class="mt-dh"><b>${esc(n.label)}</b><span>${esc(`${n.proto.toUpperCase()} · ${n.kind}`)}</span>${onMap ? '<button class="chip" data-ldo="map">MAP</button>' : ''}${loraUi.view !== 'nodes' ? '<button class="chip" data-ldo="cards">CARDS</button>' : ''}<button class="chip" data-ldo="tall">${loraUi.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-ldo="close">✕</button></div>`
+    + `<div class="mt-fields ${loraUi.tall ? 'tall' : ''}">${all.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
+    + [...n.texts].reverse().map(t => `<p class="lr-q">“${esc(t)}”</p>`).join('') + '</div>';
+}
+function refreshLora(force = false): void {
+  if (state.app !== 'lora') return;
+  const now = Date.now();
+  if (!force && now - loraUi.drawn < 240) { clearTimeout(loraUi.drawPending); loraUi.drawPending = window.setTimeout(() => refreshLora(true), 250); return; }
+  loraUi.drawn = now;
+  const snap = loraUi.snap, nodes = snap?.nodes ?? [], msgs = snap?.messages ?? [], pins = loraPins();
+  if (loraUi.full && loraUi.view === 'log') loraUi.view = 'nodes';
+  const by = new Map<string, number>(); for (const n of nodes) by.set(n.proto, (by.get(n.proto) ?? 0) + 1);
+  const parts = ['Meshtastic', 'MeshCore', 'LoRaWAN'].filter(p => by.has(p)).map(p => `${p.toUpperCase()} ${by.get(p)}`);
+  const sum = q('#lr-sum');
+  if (sum) sum.innerHTML = parts.length ? `<div>${parts.join(' · ')} · ${snap?.frames ?? 0} frames</div>` : `<div class="muted">${snap && snap.bursts > 0 ? `${snap.bursts} LoRa bursts heard · ${snap.frames} frames` : 'listening for LoRa'}</div>`;
+  qa<HTMLButtonElement>('[data-lrview]').forEach(b => { const v = b.dataset.lrview; b.classList.toggle('on', v === loraUi.view); b.textContent = v === 'nodes' ? `NODES ${nodes.length}` : v === 'map' ? `MAP ${pins.length}` : v === 'messages' ? `MSGS ${msgs.length}` : 'LOG'; b.hidden = v === 'log' && loraUi.full; });
+  const cards = q('#lr-cards'), mapEl = q('#lr-map'), chat = q('#lr-msgs'), logEl = q('#lr-log'), nopos = q('#lr-nopos'), det = q('#lr-detail'), stage = q('#lr-stage');
+  if (!cards || !mapEl || !chat || !logEl || !nopos || !det || !stage) return;
+  cards.hidden = loraUi.view !== 'nodes'; mapEl.hidden = loraUi.view !== 'map'; chat.hidden = loraUi.view !== 'messages';
+  logEl.hidden = loraUi.view !== 'log'; stage.hidden = loraUi.view === 'log';
+  nopos.hidden = loraUi.view !== 'map' || pins.length > 0;
+  const held = paused.has('lora');
+  if (loraUi.view === 'nodes' && !held) {
+    const top = cards.scrollTop;
+    cards.innerHTML = nodes.length ? [...nodes].sort((a, b) => b.lastMs - a.lastMs).map(n => loraCard(n, now)).join('') : '<div class="empty">no nodes yet</div>';
+    cards.scrollTop = top;
+  }
+  if (loraUi.view === 'messages' && !held) chat.innerHTML = msgs.length ? msgs.map(loraMessage).join('') : '<div class="empty">no messages yet</div>';
+  const picked = nodes.find(n => n.key === loraUi.sel);
+  det.hidden = !picked;
+  if (picked) { const top = q('.mt-fields', det)?.scrollTop ?? 0; det.innerHTML = loraDetail(picked, pins.some(p => p.id === picked.key)); const f = q('.mt-fields', det); if (f) f.scrollTop = top; }
+  if (loraUi.view === 'map') { geo?.invalidate(); geo?.update(pins, loraUi.sel); }
+  // the known channels in the span: lit while heard, with what they have decoded
+  const ch = q('#lr-chans');
+  if (ch) ch.innerHTML = (snap?.channels ?? []).map(c => { const hot = c.hotAgoMs !== null && c.hotAgoMs < 1500; return `<span class="${c.active && !c.standing ? 'on' : ''} ${hot ? 'hot' : ''}" title="${(c.hz / 1e6).toFixed(4)} MHz${c.standing ? ' · always on' : ''}">${esc(c.name)}${c.frames ? ` · ${c.frames}` : ''}</span>`; }).join('')
+    + (snap && snap.busy > 1.05 ? `<span class="warn">behind the radio: ${Math.round(100 * snap.busy)}% of real time</span>` : '');
+  if (nodes.length > 0) setLamp(`${nodes.length} NODE${nodes.length === 1 ? '' : 'S'}`, 'ok');
 }
 
 /** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
@@ -4027,6 +4176,7 @@ function redraw(id: string): void {
     case 'devices': drawR433(); break;
     case 'psat': refreshPacketSats(); break;
     case 'ert': refreshList(id); refreshMeters(true); break;
+    case 'lora': refreshList(id); refreshLora(true); break;
     default: refreshList(id);
   }
 }
@@ -4042,6 +4192,7 @@ function clearApp(id: string): void {
     case 'devices': state.r433.heard = []; break;
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
+    case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
   }
   worker?.postMessage({ type: 'clear' });
   // a cleared screen shows empty even while paused - the freeze is for reading rows, and there are none now
@@ -4388,6 +4539,7 @@ function ensureWorker(): Worker {
       case 'table': state.aisTable = m.rows; refreshAis(); break;
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
       case 'meters': meters.snap = m as MetersSnap; refreshMeters(); break;
+      case 'lora': loraUi.snap = m as LoraSnap; refreshLora(); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
       case 'huntPage': onHuntPage(m); break;
@@ -4735,7 +4887,7 @@ function bindDesktop(): void {
     // drop the radio mid-session.
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'acars' || state.app === 'tpms' || state.app === 'subghz' || state.app === 'devices';
+    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'tpms' || state.app === 'subghz' || state.app === 'devices';
     // start typing a number (or F) to key in a frequency; a focused readout digit already took its own keystroke
     if ((tunable || state.app === 'ham') && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9.,fF]$/.test(e.key)) {
       freqEntry(/[fF]/.test(e.key) ? '' : e.key); e.preventDefault(); return;
@@ -4755,7 +4907,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (state.app && !wideShell.matches) open(null); break;
+      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app && !wideShell.matches) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
@@ -4885,7 +5037,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TYRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
-  ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
+  ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'SENSORS · METERS · REMOTES'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };

@@ -436,7 +436,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -559,7 +559,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .appbar button.on::after { content: ''; position: absolute; left: 22%; right: 22%; bottom: -4px; height: 2px; border-radius: 2px; background: var(--seg); box-shadow: 0 0 8px var(--seg); }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -617,7 +617,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -1107,7 +1107,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .mt-sum { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--accent); margin: 8px 2px 2px; display: flex; flex-direction: column; gap: 2px; }
 .mt-sum > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-sum .muted { color: var(--muted); font-weight: 400; }
-.mt-stage { position: relative; min-height: 220px; }
+.mt-stage { position: relative; min-height: 220px; flex: none; }
 .mt-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; max-height: 60vh; overflow-y: auto; padding: 2px 0 6px; }
 .mt-stage .map { height: 46vh; min-height: 220px; }
 .mt-nopos { position: absolute; left: 10px; bottom: 10px; font-size: 10px; color: var(--muted); pointer-events: none; z-index: 500; }
@@ -1166,3 +1166,28 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .view.ert.metersfull .mt-stage { flex: 1; min-height: 0; }
 .view.ert.metersfull .mt-cards { max-height: none; height: 100%; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .view.ert.metersfull .mt-stage .map { height: 100%; }
+
+/* ---- LoRa: node cards, map, messages (shares the Meters card styles) ---- */
+.lr-name { font-size: 13px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-last { font-size: 10px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lr-msgs { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; padding-bottom: 6px; }
+.lr-msg { border-radius: 10px; padding: 9px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); cursor: pointer; }
+.lr-mh { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.lr-mh b { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-mh span { font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--muted); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-mh i { font-style: normal; font-size: 9px; color: var(--muted); flex: none; }
+.lr-mt { font-size: 12px; color: var(--ink); user-select: text; overflow-wrap: anywhere; margin-top: 3px; }
+.mt-fields p.lr-q { font-size: 11px; color: var(--ink); }
+.lr-chans { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+.lr-chans span { font-size: 9px; letter-spacing: 1px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
+.lr-chans span.on { border-color: var(--accent); color: var(--ink); }
+.lr-chans span.hot { color: var(--ok); border-color: var(--ok); }
+.lr-chans span.warn { color: var(--danger); border-color: var(--danger); }
+.view.lora.lorafull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; overflow: hidden; }
+.view.lora.lorafull > .visual, .view.lora.lorafull > .controls > :not(.ctlrow):not(.mt-stage):not(.mt-sum) { display: none !important; }
+.view.lora.lorafull > .controls > .ctlrow ~ .ctlrow { display: none !important; }
+.view.lora.lorafull > .controls { height: 100%; max-height: none; display: flex !important; flex-direction: column; overflow: hidden; padding: 0; }
+.view.lora.lorafull .mt-stage { flex: 1; min-height: 0; }
+.view.lora.lorafull .mt-cards, .view.lora.lorafull .lr-msgs { max-height: none; height: 100%; }
+.view.lora.lorafull .mt-cards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.view.lora.lorafull .mt-stage .map { height: 100%; }

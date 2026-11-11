@@ -29,6 +29,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   aprs: { d: 'M50 12 L28 92 M50 12 L72 92 M38 55 L62 55 M33 74 L67 74 ' + arc(50, 14, 14, -150, -30) + arc(50, 14, 24, -150, -30) },
   pager: { d: 'M18 28 H82 Q88 28 88 34 V70 Q88 76 82 76 H18 Q12 76 12 70 V34 Q12 28 18 28 Z M22 42 L78 42 M22 54 L60 54 M70 66 L78 66' },
   ert: { d: arc(50, 55, 38, 150, 390) + 'M50 55 L74 30', dot: [50, 55, 5] },
+  // three up-chirps, each sweeping the band and wrapping
+  lora: { d: 'M10 80 L37 20 L37 80 L63 20 L63 80 L90 20' },
   btle: { d: 'M32 30 L68 68 L50 88 L50 12 L68 32 L32 70' },
   prowl: { d: arc(50, 64.8, 40.8, -158.8, -21.2, 11.47) + arc(50, 35.2, 40.8, 21.2, 158.8, 11.47) + 'M50 30 Q57 50 50 70 Q43 50 50 30 Z' },
   subghz: { d: 'M50 92 L50 42 M50 35 A7 7 0 1 0 50 49 A7 7 0 1 0 50 35 Z ' + 'M32.7 32 A20 20 0 0 1 67.3 32 M22.3 26 A32 32 0 0 1 77.7 26 M20 92 L80 92' },

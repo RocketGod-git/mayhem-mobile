@@ -11,6 +11,8 @@ import { AprsDecoder } from './dsp/aprs.js';
 import { BtleDecoder } from './dsp/btle.js';
 import { ErtDecoder } from './dsp/ert.js';
 import { MeshDecoder, MetersProcessor } from './dsp/mesh.js';
+import { LoraHub } from './dsp/lora/hub.js';
+import { POOL_WORKER_NAME, WorkerPool, startPoolWorker } from './dsp/lora/pool.js';
 import { PocsagDecoder } from './dsp/pocsag.js';
 import { FlexDecoder } from './dsp/flex.js';
 import { PagerHunter } from './dsp/pagerhunt.js';
@@ -90,6 +92,23 @@ const ert = new ErtDecoder(emit);
 /** Meters: ERT and the mesh networks (Gridstream among them) on the same samples. */
 const mesh = new MeshDecoder(emit);
 const meters = new MetersProcessor(ert, mesh);
+/** LoRa: Meshtastic, MeshCore, LoRaWAN and any other LoRa across one wide span. */
+const lora = new LoraHub(emit);
+/**
+ * At 20 Msps the standing LoRa channels (nine in a US span, about 40 % of a core each) cannot all run on this worker:
+ * they go to a pool of workers of their own, made the first time a wide span needs them.
+ */
+let loraPool: WorkerPool | null = null;
+function loraPoolFor(r: number): WorkerPool | null {
+  if (r < 10_000_000 || typeof Worker === 'undefined') return null;
+  if (!loraPool) {
+    const cores = (navigator as { hardwareConcurrency?: number }).hardwareConcurrency ?? 4;
+    // the pool workers are this same script, started under the pool's name (one bundle to ship)
+    try { loraPool = new WorkerPool(new URL(import.meta.url), Math.max(2, Math.min(6, cores - 1))); emit({ type: 'log', line: `LoRa: ${loraPool.size} channel workers for the standing channels` }); }
+    catch (e) { emit({ type: 'log', line: `LoRa: no channel workers (${(e as Error).message}), the standing channels run inline` }); return null; }
+  }
+  return loraPool.failed ? null : loraPool;
+}
 const btle = new BtleDecoder(emit);
 const tpms = new TpmsDecoder(emit);
 const acars = new AcarsDecoder(emit);
@@ -332,6 +351,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'pager': return pager;
     case 'pagerhunt': hunter.reset(); return hunter;
     case 'ert': mesh.centerHz = centreHz; mesh.flush(); return meters;
+    case 'lora': lora.setCenter(centreHz); lora.flush(); return lora;
     case 'btle': return btle;
     case 'tpms': return tpms;
     case 'acars': return acars;
@@ -526,6 +546,7 @@ function process(iq: Int8Array): void {
   }
   if (p === hunter) hunter.centerHz = centreHz;
   if (p === meters) mesh.centerHz = centreHz;
+  if (p === lora) { lora.setCenter(centreHz); lora.scanner.pool = loraPoolFor(rate); }
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
@@ -534,3 +555,6 @@ function flushAudio(): void {
   if (audioPort) { const chunk = audioBuf.slice(0, audioLen); audioPort.postMessage(chunk, [chunk.buffer]); }
   audioLen = 0;
 }
+
+// Started as one of the LoRa pool's workers: that is all this script does then.
+if ((self as unknown as { name?: string }).name === POOL_WORKER_NAME) startPoolWorker();
