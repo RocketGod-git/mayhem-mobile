@@ -198,9 +198,10 @@ fun GeoMapView(
             (if (layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
         if (pts.isEmpty()) return
         val n = pts.maxOf { it.first }; val s = pts.minOf { it.first }; val e = pts.maxOf { it.second }; val w = pts.minOf { it.second }
-        if (n - s < 1e-6 && e - w < 1e-6) {
-            if (fitHome) mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), 15.0, null)
-            else mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second))
+        // one point (or several on the same spot): glide there and zoom in as part of the glide (a setZoom after
+        // animateTo stops the glide, which left the map zoomed in on its starting point, far from the pin)
+        if (pts.size == 1 || (n - s < 1e-6 && e - w < 1e-6)) {
+            mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), if (fitHome) 15.0 else maxOf(mv.zoomLevelDouble, 11.0), null)
             return
         }
         runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitHome) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }

@@ -16,6 +16,9 @@ object NavBar {
     private const val KEY_OPENS_LAST = "nav_opens_last"
     private const val KEY_LAST = "nav_last"
     private const val KEY_BIAS_OK = "bias_ok"
+    private const val KEY_KNOWN = "nav_known"
+    /** Apps added after the bar first saved its choices (a bar saved before this list existed knew all but these). */
+    private val ADDED = listOf(MayhemApp.LORA)
 
     /** Every app the bar can hold: all of them but Settings (it has its own button), and Troll only where it ships. */
     fun all(): List<MayhemApp> = MayhemApp.entries.filter {
@@ -41,17 +44,43 @@ object NavBar {
     /** A fresh install's bar matches the home screen: Receive, Analyze, Transmit, Tools, each in app order. */
     private fun defaultOrder() = listOf("Receive", "Analyze", "Transmit", "Tools").flatMap { c -> all().filter { it.category == c } }
 
+    /**
+     * The saved order with each app it lacks placed right after its nearest predecessor in the default order (first
+     * if it has none there).
+     */
+    fun withNew(saved: List<MayhemApp>, def: List<MayhemApp>): List<MayhemApp> {
+        val out = saved.toMutableList()
+        for ((i, a) in def.withIndex()) {
+            if (a in out) continue
+            val prev = def.subList(0, i).lastOrNull { it in out }
+            if (prev != null) out.add(out.indexOf(prev) + 1, a) else out.add(0, a)
+        }
+        return out
+    }
+
     fun load(c: Context) {
         ctx = c.applicationContext
         val p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val known = all()
-        val saved = p.getString(KEY_ORDER, null)?.split(",")?.mapNotNull { n -> known.firstOrNull { it.name == n.trim() } }?.distinct()
-        // an app added in an update, not yet in the saved order, keeps its default place at the end
-        _order.value = if (saved.isNullOrEmpty()) defaultOrder() else saved + known.filter { it !in saved }
-        p.getString(KEY_CHECKED, null)?.let { s -> _checked.value = s.split(",").mapNotNull { n -> known.firstOrNull { it.name == n.trim() } }.toSet() }
+        var saved = p.getString(KEY_ORDER, null)?.split(",")?.mapNotNull { n -> known.firstOrNull { it.name == n.trim() } }?.distinct()
+        // once: LoRa went in at the end of saved orders before new apps took their default place; move it there
+        if (!p.getBoolean("nav_lora_placed", false)) {
+            saved = saved?.filter { it != MayhemApp.LORA }
+            p.edit().putBoolean("nav_lora_placed", true).apply()
+        }
+        // an app added in an update, not yet in the saved order, goes in after the app it follows by default (LoRa
+        // after Meters, with the other receivers), not at the end
+        _order.value = if (saved.isNullOrEmpty()) defaultOrder() else withNew(saved, defaultOrder())
+        p.getString(KEY_CHECKED, null)?.let { s ->
+            val ch = s.split(",").mapNotNull { n -> known.firstOrNull { it.name == n.trim() } }.toMutableSet()
+            // an app new since the bar was saved starts ticked, as it would on a fresh install
+            val seen = p.getString(KEY_KNOWN, null)?.split(",")?.map { it.trim() }?.toSet() ?: known.filter { it !in ADDED }.map { it.name }.toSet()
+            for (a in known) if (a.name !in seen) ch.add(a)
+            _checked.value = ch
+        }
         _opensOnLast.value = p.getBoolean(KEY_OPENS_LAST, false)
         biasOk = p.getBoolean(KEY_BIAS_OK, false)
-        sync(save = false)
+        sync(save = true)
     }
 
     fun toggle(app: MayhemApp) {
@@ -90,6 +119,7 @@ object NavBar {
         if (save) prefs()?.edit()
             ?.putString(KEY_ORDER, _order.value.joinToString(",") { it.name })
             ?.putString(KEY_CHECKED, _checked.value.joinToString(",") { it.name })
+            ?.putString(KEY_KNOWN, all().joinToString(",") { it.name })
             ?.apply()
     }
 }
