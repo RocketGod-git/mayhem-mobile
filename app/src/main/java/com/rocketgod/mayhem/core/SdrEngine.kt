@@ -166,6 +166,9 @@ object SdrEngine {
     }
 
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
+    /** LoRa's last few one-second levels, for [agcStep]. */
+    private val burstLevels = ArrayDeque<Double>()
+
     private fun agcStep(sampled: Double, now: Long) {
         // held for as long as Transmit is open, not just while it sends: the receive level there means nothing
         if (!_agc.value || HackRfOne.txActive || Apps.playing() == MayhemApp.TRANSMIT || now - agcLast < 900) return
@@ -208,10 +211,20 @@ object SdrEngine {
             }
             return
         }
+        // LoRa's 20 MHz is full of short strong bursts (meters, every second): a single second's level is whichever
+        // burst it caught, 5 counts one second and 90 the next, and stepping on it moved the gain 6-10 dB nearly every
+        // second (dark bands across the waterfall, weak frames pushed under). It steers by the middle of the last few
+        // seconds instead, in small steps.
+        val bursty = Apps.playing() == MayhemApp.LORA
+        if (bursty) {
+            burstLevels.addLast(rms); while (burstLevels.size > 8) burstLevels.removeFirst()
+            if (burstLevels.size < 4) return
+            rms = burstLevels.sorted()[burstLevels.size / 2]
+        } else burstLevels.clear()
         if (rms < lo) {
             when {
                 // far off moves in big steps, so a radio that starts deaf is listening within a few seconds
-                v < vMax -> _radioVga.value = minOf(vMax, v + when { rms < 2 -> 8; rms < lo / 2 -> 6; else -> 2 })
+                v < vMax -> _radioVga.value = minOf(vMax, v + when { rms < 2 -> 8; bursty -> 2; rms < lo / 2 -> 6; else -> 2 })
                 hasLna && l < LNA_MAX -> _radioLna.value = l + LNA_STEP
                 _mode.value != Mode.NONE && now - agcSaidMax > 20_000 -> {
                     agcSaidMax = now
@@ -221,7 +234,7 @@ object SdrEngine {
         } else if (rms > hi) {
             when {
                 // too hot: step down by how far over it is (up to 16 dB at once), so a radio that opens overloaded settles in a step or two
-                v > 0 -> _radioVga.value = maxOf(0, v - ((20 * kotlin.math.log10(rms / hi) + 2) / 2).toInt().times(2).coerceIn(2, 16))
+                v > 0 -> _radioVga.value = maxOf(0, v - if (bursty && rms < 2 * hi) 2 else ((20 * kotlin.math.log10(rms / hi) + 2) / 2).toInt().times(2).coerceIn(2, 16))
                 hasLna && l > 0 -> _radioLna.value = l - LNA_STEP
             }
         }
@@ -603,6 +616,8 @@ object SdrEngine {
 
     // ---- DSP worker ---------------------------------------------------------------------------------------
     private fun workerLoop() {
+        // ahead of every decoder's own threads: a buffer this thread can't take in time is thrown away
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
         var track: AudioTrack? = null
         var fftN = FFT_N; var specBins = SPEC_BINS
         var fre = FloatArray(fftN); var fim = FloatArray(fftN); var win = hann(fftN)
@@ -690,9 +705,10 @@ object SdrEngine {
                     }
 
                     // ---- spectrum (~25 fps): every whole FFT frame in this buffer is accumulated (a short buffer gives one
-                    // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed ----
+                    // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed, the
+                    // widest (a phone at 20 Msps, where this thread also feeds every decoder) about 1.2 M ----
                     val now = System.currentTimeMillis()
-                    val skip = max(1, Math.round(rate / 2_400_000.0).toInt())
+                    val skip = max(1, Math.round(rate / (if (rate > 8_000_000) 1_200_000.0 else 2_400_000.0)).toInt())
                     val wantBins = specBinsFor(specBinsWanted)
                     if (wantBins != specBins) {
                         // twice as many transform points as bins, never fewer than FFT_N
@@ -790,6 +806,7 @@ object SdrEngine {
                             val nb = bufTotal - bufSeen; val nd = dropTotal - dropSeen; bufSeen += nb; dropSeen += nd
                             val ls = p as? com.rocketgod.mayhem.core.lora.LoraScanner
                             val sk = (ls?.skipped ?: 0L) - skipSeen; skipSeen += sk
+                            ls?.load(if (nb > 0) nd.toDouble() / nb else 0.0, sk.toDouble() / rate)
                             Diag.log(health + (if (nd > 0) " · DROPPED %d of %d buffers (falling behind)".format(nd, nb) else "") +
                                 (if (ls != null) " · LoRa scanner %.0f%% of real time".format(ls.busy * 100) else "") +
                                 (if (sk > 0) " · LoRa channels SKIPPED %.0f ms (fell behind)".format(sk * 1000.0 / rate) else ""))

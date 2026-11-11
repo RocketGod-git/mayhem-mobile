@@ -205,6 +205,10 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
     private val kinds = HashSet<String>()
     /** Sync words of the networks with enough frames to be sure of. */
     private val established = ArrayList<Int>()
+    /** Each network's first two payload bytes, counted: the most common pair follows its sync on the air. */
+    private val heads = HashMap<Int, HashMap<Int, Int>>()
+    /** Frames thrown away as a slipped read of an established network (see [slipOf]). */
+    var slips = 0; private set
     private var lastPublish = 0L
     /** Every decoded frame, for tests and tools. */
     var onFrame: ((MeshFrame) -> Unit)? = null
@@ -548,13 +552,18 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
     private val extraFrames = ArrayList<MeshFrame>()
 
     // ---- results ----
-    private fun publish(frame: MeshFrame) {
+    /** Every decoded frame comes through here (internal so tests can feed frames directly). */
+    internal fun publish(frame: MeshFrame) {
         if (isPreamble(frame.sync)) return
         val f = frame.copy()
         // a sync word a bit or two off an established network's is that network with bit errors
         if (f.sync != GRIDSTREAM && (netMap[f.sync]?.frames ?: 0) < MIN_FRAMES) {
             val near = netMap.values.filter { it.sync != GRIDSTREAM && it.frames >= 5 && Integer.bitCount(it.sync xor f.sync) <= 2 }.maxByOrNull { it.frames }
             if (near != null) f.sync = near.sync
+            // not a few flipped bits but a slipped one: the sync search locked a bit or two early or late (or on
+            // the preamble's tail), so the word read is a window of an established network's own bit stream, and
+            // the bytes after it are misaligned too. One busy network turned into thousands of "networks" this way.
+            else if (slipOf(f.sync) != null) { slips++; return }
         }
         onFrame?.invoke(f)
         val net = netMap[f.sync] ?: MeshNet(f.sync)
@@ -566,6 +575,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         net.lastMs = f.ms; net.bestSnr = max(net.bestSnr, f.snrDb)
         if (f.sync == GRIDSTREAM && f.crcOk && f.bytes.size >= 30 && f.bytes[2] == 0x2A && f.bytes[3] == 0x55) net.meters = net.meters + u32(f.bytes, 26)
         netMap[f.sync] = net
+        if (f.sync != GRIDSTREAM && f.bytes.size >= 2) heads.getOrPut(f.sync) { HashMap() }.merge((f.bytes[0] shl 8) or f.bytes[1], 1, Int::plus)
         if (net.frames == 20 && f.sync != GRIDSTREAM && !established.contains(f.sync)) established.add(f.sync)
         if (net.frames >= MIN_FRAMES || f.sync == GRIDSTREAM) track(f)
         // the debug log gets each new kind of frame (network, first byte, length), and every long one: readings
@@ -582,6 +592,26 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             lastPublish = f.ms
             flush()
         }
+    }
+
+    /**
+     * The established network [sync] is a slipped read of, if any: within edit distance 2 (a slip is an insertion and
+     * a deletion; a bit error is a substitution) of some 24-bit window of what that network sends, its preamble's
+     * tail, its sync, and the two payload bytes that most often follow. A random word comes this close about 0.2%
+     * of the time, so a real second network is not swallowed.
+     */
+    private fun slipOf(sync: Int): Int? {
+        val p = IntArray(24) { (sync shr (23 - it)) and 1 }
+        for (e in established) {
+            if (e == sync) continue
+            val head = heads[e]?.maxByOrNull { it.value }?.key
+            val ctx = ArrayList<Int>(64)
+            for (i in 15 downTo 0) ctx.add((0x5555 shr i) and 1)
+            for (i in 23 downTo 0) ctx.add((e shr i) and 1)
+            if (head != null) for (i in 15 downTo 0) ctx.add((head shr i) and 1)
+            if (editIn(p, ctx) <= 2) return e
+        }
+        return null
     }
 
     /**
@@ -889,6 +919,16 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
 
         fun syncName(s: Int): String = if (s == GRIDSTREAM) "Gridstream" else "%06X".format(s)
 
+        /** The least edit distance between [p] and any stretch of [t] (Sellers' approximate substring match). */
+        fun editIn(p: IntArray, t: List<Int>): Int {
+            var prev = IntArray(t.size + 1)
+            for (i in 1..p.size) {
+                val cur = IntArray(t.size + 1); cur[0] = i
+                for (j in 1..t.size) cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + if (p[i - 1] == t[j - 1]) 0 else 1)
+                prev = cur
+            }
+            return prev.min()
+        }
         /** A "sync word" that is mostly alternating bits is the preamble read a few bits late, not a network. */
         fun isPreamble(sync: Int): Boolean = sync >= 0 && Integer.bitCount((sync xor (sync shr 1)) and 0x7F_FFFF) >= 18
 

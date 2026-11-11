@@ -5,7 +5,6 @@ import kotlin.math.ceil
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -16,7 +15,7 @@ data class Signal(val hz: Double, val db: Double, val snr: Double, val bw6: Doub
  * Signal finder and modulation classifier over an averaged power spectrum (dB per bin, fftshifted).
  *
  * Each call peak-holds with decay, smooths, and takes every hump at least [minSnr] dB over the median floor. A hump is
- * measured (−6 / −20 dB widths, how far its top stands over its band, left/right energy skew, two-tone top) and matched
+ * measured (âˆ’6 / âˆ’20 dB widths, how far its top stands over its band, left/right energy skew, two-tone top) and matched
  * to a track holding its last few seconds. The track is what gets classified: widths as an 80th percentile so a station
  * stays "wide" through a quiet bar, the frequency band as a prior on what can live there, and a decaying vote so a
  * label only changes when a challenger clearly out-votes it for a couple of seconds.
@@ -25,6 +24,8 @@ class Classifier {
     var minSnr = 6.0
     private var hold = FloatArray(0)
     private var smooth = FloatArray(0)
+    /** [hold] in linear power, worked out once a call: the per-signal sums below would otherwise take a pow per bin per peak. */
+    private var lin = DoubleArray(0)
     private var tracks = ArrayList<Track>()
     private var frame = 0
 
@@ -43,6 +44,9 @@ class Classifier {
         if (hold.size != n) { hold = pdb.copyOf(); smooth = FloatArray(n) }
         val hold = hold
         for (i in 0 until n) hold[i] = if (pdb[i] > hold[i]) pdb[i] else hold[i] - 0.6f
+        if (lin.size != n) lin = DoubleArray(n)
+        val lin = lin
+        for (i in 0 until n) lin[i] = Math.exp(hold[i] * LN10_10)
         val rad = max(1, (600 / binHz).roundToInt())
         val sm = smooth
         var acc = 0.0
@@ -69,7 +73,7 @@ class Classifier {
             val bw6 = (w6.second - w6.first + 1) * binHz; val bw20 = (w20.second - w20.first + 1) * binHz
             var sumL = 0.0; var sumR = 0.0; var sum = 0.0; var cnt = 0; var mx = -1e9
             for (k in w20.first..w20.second) {
-                val v = 10.0.pow(hold[k] / 10.0); sum += v; cnt++
+                val v = lin[k]; sum += v; cnt++
                 if (k < center) sumL += v else sumR += v
                 if (hold[k] > mx) mx = hold[k].toDouble()
             }
@@ -77,10 +81,10 @@ class Classifier {
             val peakiness = mx - 10 * log10(mean + 1e-12)
             val skew = (sumR - sumL) / (sum + 1e-12)
             val bimodal = isBimodal(hold, w6.first, w6.second, pk)
-            // The power centroid of the −6 dB band sits on the carrier for AM, NFM and broadcast FM alike, and holds
+            // The power centroid of the âˆ’6 dB band sits on the carrier for AM, NFM and broadcast FM alike, and holds
             // still when FM pushes one shoulder in and out.
             var cenNum = 0.0; var cenDen = 0.0
-            for (k in w6.first..w6.second) { val v = 10.0.pow(hold[k] / 10.0); cenNum += k * v; cenDen += v }
+            for (k in w6.first..w6.second) { val v = lin[k]; cenNum += k * v; cenDen += v }
             val hz = centreHz + ((if (cenDen > 0) cenNum / cenDen else center) - n / 2) * binHz
             if (abs(hz - centreHz) < 2500) continue                 // the HackRF's own DC spike at the LO
             val t = track(hz, pk, bw6, bw20, peakiness, skew, bimodal)
@@ -123,11 +127,14 @@ class Classifier {
 
     companion object {
         private const val HIST = 12
+        private const val LN10_10 = 0.23025850929940458    // ln(10) / 10: dB to linear power
 
         private fun push(a: ArrayList<Double>, v: Double, maxN: Int) { a.add(v); if (a.size > maxN) a.removeAt(0) }
         private fun pct(a: List<Double>, p: Double): Double {
             if (a.isEmpty()) return 0.0
-            val s = a.sorted()
+            // a few values, sorted in place on primitives (this runs for every track at every peak)
+            val s = DoubleArray(a.size) { a[it] }
+            for (i in 1 until s.size) { val v = s[i]; var j = i - 1; while (j >= 0 && s[j] > v) { s[j + 1] = s[j]; j-- }; s[j + 1] = v }
             return s[min(s.size - 1, max(0, ceil(p * s.size).toInt() - 1))]
         }
         private fun avg(a: List<Double>) = if (a.isEmpty()) 0.0 else a.sum() / a.size

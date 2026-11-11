@@ -131,6 +131,8 @@ fun LoraScreen(accent: Color) {
 
     PacketFrame(accent, Apps.loraLog, tag = "LORA", title = "MESHTASTIC · MESHCORE · LORAWAN", roomy = true, listWeight = 3.2f, controls = {
         val wide = rate >= 10_000_000
+        val narrowed by Apps.lora.narrowed.collectAsState()
+        val midSpan = rate in 2_400_001 until LoraScanner.RATE
         if (wide) {
             PresetTiles(accent, LoraPlan.bands.map { Preset(it.title, it.sub, it.center) }, width = 132.dp)
         } else {
@@ -142,15 +144,18 @@ fun LoraScreen(accent: Color) {
         val whyWide = Radio.rateWhy(LoraScanner.RATE)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             RowLabel("SPAN")
-            SegBar(listOf("2 MHz", "20 MHz"), if (wide) 1 else 0, accent, Modifier.weight(1f),
+            SegBar(listOf("2 MHz", if (midSpan) "${rate / 1_000_000} MHz" else "20 MHz"), if (rate > 2_400_000) 1 else 0, accent, Modifier.weight(1f),
                 tints = listOf(null, if (whyWide.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null)) {
                 if (it == 0) {
-                    if (wide) { SdrEngine.setRate(2_000_000); SdrEngine.tune((LoraPlan.bands.firstOrNull { b -> b.center == freq }?.narrow ?: LoraPlan.homeBand().narrow) + 300_000) }
+                    if (rate > 2_400_000) { SdrEngine.setRate(2_000_000); SdrEngine.tune((LoraPlan.bands.firstOrNull { b -> b.center == freq }?.narrow ?: LoraPlan.homeBand().narrow) + 300_000) }
                 } else gated(whyWide) {
-                    if (!wide) { SdrEngine.setRate(LoraScanner.RATE); SdrEngine.tune(LoraPlan.bands.minByOrNull { b -> abs(b.center - freq) }?.center ?: LoraPlan.homeBand().center) }
+                    if (rate < LoraScanner.RATE) { Apps.lora.narrowed.value = 0; SdrEngine.setRate(LoraScanner.RATE); SdrEngine.tune(LoraPlan.bands.minByOrNull { b -> abs(b.center - freq) }?.center ?: LoraPlan.homeBand().center) }
                 }()
             }
         }
+        if (narrowed != 0 && narrowed == rate)
+            Text("Span narrowed to ${rate / 1_000_000} MHz: this device fell behind at a wider one. Tap 20 MHz to try again.",
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }, list = {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             val by = nodes.groupingBy { it.proto }.eachCount()

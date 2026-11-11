@@ -60,6 +60,15 @@ android {
                 "proguard-rules.pro"
             )
         }
+        // A side-by-side test build ("Mayhem Test", package com.rocketgod.mayhem.test): release-optimized so its
+        // performance matches what ships, signed with the local debug key, installed over adb next to the Play app.
+        create("qa") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

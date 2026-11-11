@@ -7,29 +7,62 @@ import kotlin.math.sin
 
 /** Shared DSP primitives: radix-2 FFT, IQ windowing, power spectrum. */
 object Dsp {
+    /** What a transform of one size needs, worked out once: the bit-reversal swaps and the twiddles (exact, from a table). */
+    private class Plan(n: Int) {
+        val swaps: IntArray
+        val cosT = FloatArray(n / 2) { cos(-2.0 * Math.PI * it / n).toFloat() }
+        val sinT = FloatArray(n / 2) { sin(-2.0 * Math.PI * it / n).toFloat() }
+        init {
+            val sw = ArrayList<Int>()
+            var j = 0
+            for (i in 1 until n) {
+                var bit = n shr 1
+                while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
+                j = j or bit
+                if (i < j) { sw.add(i); sw.add(j) }
+            }
+            swaps = sw.toIntArray()
+        }
+    }
+    /** By log2 of the size; a plan never changes once made, so threads share them freely. */
+    private val plans = arrayOfNulls<Plan>(31)
+
     /** In-place iterative radix-2 FFT (N power of two). */
     fun fft(re: FloatArray, im: FloatArray) {
         val n = re.size
-        var j = 0
-        for (i in 1 until n) {
-            var bit = n shr 1
-            while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
-            j = j or bit
-            if (i < j) { val tr = re[i]; re[i] = re[j]; re[j] = tr; val ti = im[i]; im[i] = im[j]; im[j] = ti }
+        if (n < 2) return
+        val lg = Integer.numberOfTrailingZeros(n)
+        val plan = plans[lg] ?: Plan(n).also { plans[lg] = it }
+        val sw = plan.swaps
+        var s = 0
+        while (s < sw.size) {
+            val i = sw[s]; val j = sw[s + 1]
+            val tr = re[i]; re[i] = re[j]; re[j] = tr; val ti = im[i]; im[i] = im[j]; im[j] = ti
+            s += 2
         }
-        var len = 2
+        // the first pass has no twiddles
+        var i0 = 0
+        while (i0 < n) {
+            val ar = re[i0]; val ai = im[i0]; val br = re[i0 + 1]; val bi = im[i0 + 1]
+            re[i0] = ar + br; im[i0] = ai + bi; re[i0 + 1] = ar - br; im[i0 + 1] = ai - bi
+            i0 += 2
+        }
+        val ct = plan.cosT; val st = plan.sinT
+        var len = 4
         while (len <= n) {
-            val ang = -2.0 * Math.PI / len
-            val wr = cos(ang).toFloat(); val wi = sin(ang).toFloat()
+            val half = len / 2; val step = n / len
             var i = 0
             while (i < n) {
-                var cr = 1f; var ci = 0f
-                for (k in 0 until len / 2) {
-                    val a = i + k; val b = i + k + len / 2
-                    val tr = cr * re[b] - ci * im[b]; val ti = cr * im[b] + ci * re[b]
-                    re[b] = re[a] - tr; im[b] = im[a] - ti
-                    re[a] += tr; im[a] += ti
-                    val ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr
+                var t = 0
+                for (k in 0 until half) {
+                    val a = i + k; val b = a + half
+                    val cr = ct[t]; val ci = st[t]
+                    val xr = re[b]; val xi = im[b]
+                    val tr = cr * xr - ci * xi; val ti = cr * xi + ci * xr
+                    val ar = re[a]; val ai = im[a]
+                    re[b] = ar - tr; im[b] = ai - ti
+                    re[a] = ar + tr; im[a] = ai + ti
+                    t += step
                 }
                 i += len
             }

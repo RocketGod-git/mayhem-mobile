@@ -171,6 +171,18 @@ object Apps {
                 val band = com.rocketgod.mayhem.core.lora.LoraPlan.homeBand()
                 SdrEngine.configure(SdrEngine.Mode.NONE, if (wide) band.center else band.narrow + 300_000, if (wide) com.rocketgod.mayhem.core.lora.LoraScanner.RATE else 2_000_000, 32, 40, true, lora.scanner)
                 lora.scanner.centerOf = { SdrEngine.freqHz.value }
+                lora.narrowed.value = 0
+                lora.scanner.onTooMuch = onTooMuch@{ r ->
+                    // the next span down this radio can sample, still holding the band's main channel
+                    val next = intArrayOf(10_000_000, 5_000_000, 2_000_000).firstOrNull { it < r && Radio.canSample(Radio.limits, it) } ?: return@onTooMuch
+                    val c = if (next <= 2_400_000) band.narrow + 300_000
+                        else if (band.center >= band.narrow) minOf(band.center, band.narrow + (0.45 * next).toLong())
+                        else maxOf(band.center, band.narrow - (0.45 * next).toLong())
+                    com.rocketgod.mayhem.Diag.log("LoRa: this device fell behind at %.0f MHz, narrowing the span to %.0f MHz".format(r / 1e6, next / 1e6))
+                    lora.narrowed.value = next
+                    // off the engine's thread, which is the one asking
+                    kotlin.concurrent.thread(isDaemon = true, name = "lora-narrow") { SdrEngine.setRate(next); SdrEngine.tune(c) }
+                }
             }
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)

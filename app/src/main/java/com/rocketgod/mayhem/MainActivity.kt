@@ -198,7 +198,7 @@ class MainActivity : ComponentActivity() {
      * `--es open AUDIO` opens an app, so every screen can be reached and photographed from adb.
      */
     private fun debugExtras(i: Intent?) {
-        if (!BuildConfig.DEBUG || i == null) return
+        if ((!BuildConfig.DEBUG && BuildConfig.BUILD_TYPE != "qa") || i == null) return
         if (i.getBooleanExtra("demo", false) && !radioRunning()) {
             com.rocketgod.mayhem.core.DemoIq.start()
             connected.value = true; status.value = "demo signal"
@@ -247,6 +247,8 @@ class MainActivity : ComponentActivity() {
         connected.value = true
         val appCtx = applicationContext
         rxThread = Thread({
+            // the USB reads come first: a late one is a lost buffer, whatever the decoders are doing
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) }
             if (rtl) RtlSdr.run(appCtx, d) { s -> status.value = s } else HackRfOne.run(appCtx, d) { s -> status.value = s }
             SdrEngine.onRadio(com.rocketgod.mayhem.core.Radio.Kind.NONE)
             connected.value = false

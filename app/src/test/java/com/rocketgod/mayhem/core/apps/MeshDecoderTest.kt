@@ -178,4 +178,25 @@ class MeshDecoderTest {
         assertEquals(33.18, oncor.lat, 0.01)
         assertEquals(-96.70, oncor.lon, 0.01)
     }
+
+    /**
+     * A busy network's misread syncs are a bit slipped (the search locked early or late, or on the preamble's tail),
+     * not a few bits flipped: these six came off the air here as F6E56B frames. They must not found networks of their
+     * own; on the air one network was listed as about a hundred.
+     */
+    @Test fun slippedSyncsAreNotNewNetworks() {
+        val d = MeshDecoder(PacketLog()); d.shedding = false
+        var ms = 1_000L
+        fun frame(sync: Int) = MeshFrame(ms, 915_000_000L, 20, sync, 9600, listOf(0xD7, 0xF5, 0x39, 0x12), 10.0).also { ms += 10 }
+        repeat(30) { d.publish(frame(0xF6E56B)) }
+        val ghosts = listOf(0xF56BD7, 0xB95AD7, 0x95AD7F, 0xD557DB, 0xD57DB9, 0xFB95AF)
+        repeat(25) { for (g in ghosts) d.publish(frame(g)) }
+        ms += 2_000; d.publish(frame(0xF6E56B))
+        assertEquals(listOf(0xF6E56B), d.nets.value.map { it.sync })
+        assertEquals(25 * ghosts.size, d.slips)
+        // a real second network nowhere near F6E56B's stream still gets listed
+        repeat(25) { d.publish(frame(0x3C9A41)) }
+        ms += 2_000; d.publish(frame(0xF6E56B))
+        assertTrue(d.nets.value.any { it.sync == 0x3C9A41 })
+    }
 }

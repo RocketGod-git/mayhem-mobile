@@ -7,7 +7,6 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -54,7 +53,10 @@ fun complexBandpassTaps(loHz: Double, hiHz: Double, rate: Double, taps: Int): Fl
 
 /** Complex FIR (real taps) with integer decimation. */
 class ComplexFirDecimator(private val h: FloatArray, private val decim: Int) {
-    private val hist = FloatArray(h.size * 2)   // circular, interleaved I/Q
+    // circular, interleaved I/Q, written twice (at p and p + taps) so a dot product never wraps mid-loop
+    private val hist = FloatArray(h.size * 4)
+    // a windowed sinc's taps mirror about the middle: each pair of samples shares one multiply
+    private val sym = h.size % 2 == 1 && (0 until h.size / 2).all { abs(h[it] - h[h.size - 1 - it]) <= 1e-7f * (abs(h[it]) + 1e-12f) + 1e-12f }
     private var pos = 0
     private var phase = 0
 
@@ -63,16 +65,30 @@ class ComplexFirDecimator(private val h: FloatArray, private val decim: Int) {
     /** [inp]: interleaved I/Q, [n] complex samples. Returns the complex outputs written to [out]. */
     fun process(inp: FloatArray, n: Int, out: FloatArray): Int {
         val taps = h.size
+        val hs = hist; val hh = h
         var o = 0; var p = pos; var ph = phase
         for (i in 0 until n) {
-            hist[2 * p] = inp[2 * i]; hist[2 * p + 1] = inp[2 * i + 1]
+            val xi = inp[2 * i]; val xq = inp[2 * i + 1]
+            hs[2 * p] = xi; hs[2 * p + 1] = xq
+            hs[2 * (p + taps)] = xi; hs[2 * (p + taps) + 1] = xq
             if (++ph >= decim) {
                 ph = 0
-                var sI = 0f; var sQ = 0f; var k = p
-                for (t in 0 until taps) {
-                    val c = h[t]
-                    sI += c * hist[2 * k]; sQ += c * hist[2 * k + 1]
-                    if (--k < 0) k = taps - 1
+                var sI = 0f; var sQ = 0f
+                var k = 2 * (p + taps)
+                if (sym) {
+                    // newest at k, oldest at k - 2 (taps - 1)
+                    var j = k - 2 * (taps - 1)
+                    for (t in 0 until taps / 2) {
+                        val c = hh[t]
+                        sI += c * (hs[k] + hs[j]); sQ += c * (hs[k + 1] + hs[j + 1])
+                        k -= 2; j += 2
+                    }
+                    val c = hh[taps / 2]
+                    sI += c * hs[k]; sQ += c * hs[k + 1]
+                } else for (t in 0 until taps) {
+                    val c = hh[t]
+                    sI += c * hs[k]; sQ += c * hs[k + 1]
+                    k -= 2
                 }
                 out[2 * o] = sI; out[2 * o + 1] = sQ; o++
             }
@@ -158,7 +174,8 @@ class ChannelDecimator(want: Int) {
         if (mid.size < 2 * nMid) mid = FloatArray(2 * nMid)
         var o = 0
         for (i in 0 until n) {
-            i1r += (inp[2 * i] * 256).roundToLong(); i1i += (inp[2 * i + 1] * 256).roundToLong()
+            // truncation (one instruction) instead of rounding: under 1/256 of an input step, far below the 8-bit ADC's own
+            i1r += (inp[2 * i] * 256f).toLong(); i1i += (inp[2 * i + 1] * 256f).toLong()
             i2r += i1r; i2i += i1i
             i3r += i2r; i3i += i2i
             if (++ph >= cicD) {
@@ -173,7 +190,57 @@ class ChannelDecimator(want: Int) {
         return f.process(mid, o, out)
     }
 
+    /**
+     * The channel's mixer fused into the CIC, in integers: raw offset-128 bytes from [ring] (interleaved, [mask] its
+     * sample mask) starting at sample [from], times the oscillator table [osc] (interleaved cos, sin at [OSC_ONE]
+     * full scale, one period, starting at [oscAt]). No float is made until the CIC's output, which is the same as
+     * [process] would give for the float mix. Needs [cicD] > 1.
+     */
+    fun processMix(ring: ByteArray, mask: Int, from: Long, n: Int, osc: IntArray, oscAt: Int, out: FloatArray): Int {
+        val nMid = n / cicD + 2
+        if (mid.size < 2 * nMid) mid = FloatArray(2 * nMid)
+        val period = osc.size / 2
+        val g = gain * 256f / OSC_ONE
+        var o = 0; var k = oscAt
+        var p = (from and mask.toLong()).toInt()
+        for (i in 0 until n) {
+            // 127.4 is the radio's own DC offset in the old float path; the integer path keeps 127 and the 0.4 lands
+            // on a tone at the channel's offset away from the channel, outside its filter
+            val xi = (ring[2 * p].toInt() and 0xff) - 127; val xq = (ring[2 * p + 1].toInt() and 0xff) - 127
+            val c = osc[2 * k]; val s = osc[2 * k + 1]
+            i1r += (xi * c - xq * s).toLong(); i1i += (xi * s + xq * c).toLong()
+            i2r += i1r; i2i += i1i
+            i3r += i2r; i3i += i2i
+            if (++k >= period) k = 0
+            p = (p + 1) and mask
+            if (++ph >= cicD) {
+                ph = 0
+                val y1r = i3r - c1r; val y1i = i3i - c1i; c1r = i3r; c1i = i3i
+                val y2r = y1r - c2r; val y2i = y1i - c2i; c2r = y1r; c2i = y1i
+                val y3r = y2r - c3r; val y3i = y2i - c3i; c3r = y2r; c3i = y2i
+                mid[2 * o] = y3r * g; mid[2 * o + 1] = y3i * g; o++
+            }
+        }
+        val f = fir ?: run { System.arraycopy(mid, 0, out, 0, 2 * o); return o }
+        return f.process(mid, o, out)
+    }
+
     companion object {
+        /** Full scale of an integer oscillator table for [processMix]. */
+        const val OSC_ONE = 16384
+        /**
+         * One period of the oscillator for a channel [offHz] from the center at [rate], as [processMix] wants it, or
+         * null when the period would be long (an offset not a round number of Hz against the rate).
+         */
+        fun oscTable(offHz: Long, rate: Int, maxPeriod: Int = 40_000): IntArray? {
+            var a = rate.toLong(); var b = kotlin.math.abs(offHz)
+            while (b != 0L) { val t = a % b; a = b; b = t }
+            val period = (rate / a).toInt()
+            if (period > maxPeriod) return null
+            val w = -2 * Math.PI * offHz / rate
+            return IntArray(2 * period) { j -> val ph = w * (j / 2); kotlin.math.round(OSC_ONE * (if (j % 2 == 0) kotlin.math.cos(ph) else kotlin.math.sin(ph))).toInt() }
+        }
+
         /** The largest decimation no larger than [want] that splits into a CIC part and a FIR part of 3-6 (FIR only up to 6). */
         fun split(want: Int): Pair<Int, Int> {
             if (want <= 1) return 1 to 1

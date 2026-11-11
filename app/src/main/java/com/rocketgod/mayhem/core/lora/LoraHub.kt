@@ -56,6 +56,8 @@ class LoraHub(val log: PacketLog) {
     val nodes: StateFlow<List<LoraNode>> = _nodes.asStateFlow()
     private val _events = MutableStateFlow<List<LoraEvent>>(emptyList())
     val events: StateFlow<List<LoraEvent>> = _events.asStateFlow()
+    /** The span this device was stepped down to because it couldn't keep up with a wider one (0: never). */
+    val narrowed = MutableStateFlow(0)
     private val _bursts = MutableStateFlow(0)
     /** Bursts that got a channel of their own. */
     val bursts: StateFlow<Int> = _bursts.asStateFlow()

@@ -192,6 +192,10 @@ export class MeshDecoder implements IqProcessor {
   private kinds = new Set<string>();
   /** Sync words of the networks with enough frames to be sure of. */
   private established: number[] = [];
+  /** Each network's first two payload bytes, counted: the most common pair follows its sync on the air. */
+  private heads = new Map<number, Map<number, number>>();
+  /** Frames thrown away as a slipped read of an established network (see slipOf). */
+  slips = 0;
   private lastPublish = 0;
   /** The tables as last published. */
   nets: MeshNet[] = [];
@@ -238,7 +242,7 @@ export class MeshDecoder implements IqProcessor {
   }
 
   clear(): void {
-    this.established = []; this.netMap.clear(); this.devMap.clear(); this.linkSet.clear(); this.lastLog.clear(); this.kinds.clear();
+    this.established = []; this.heads.clear(); this.slips = 0; this.netMap.clear(); this.devMap.clear(); this.linkSet.clear(); this.lastLog.clear(); this.kinds.clear();
     this.count = 0; this.nets = []; this.devices = []; this.links = []; this.bursts = 0; this.dcwReports = 0;
     this.post();
   }
@@ -526,10 +530,41 @@ export class MeshDecoder implements IqProcessor {
 
   // ---- results ----
   static syncName(s: number): string { return s === GRIDSTREAM ? 'Gridstream' : s.toString(16).toUpperCase().padStart(6, '0'); }
+  /**
+   * The established network sync is a slipped read of, if any: within edit distance 2 (a slip is an insertion and a
+   * deletion; a bit error is a substitution) of some 24-bit window of what that network sends, its preamble's tail,
+   * its sync, and the two payload bytes that most often follow. A random word comes this close about 0.2% of the
+   * time, so a real second network is not swallowed.
+   */
+  private slipOf(sync: number): number | null {
+    const p = Array.from({ length: 24 }, (_, i) => (sync >> (23 - i)) & 1);
+    for (const e of this.established) {
+      if (e === sync) continue;
+      const ctx = [...Array.from({ length: 16 }, (_, i) => (0x5555 >> (15 - i)) & 1), ...Array.from({ length: 24 }, (_, i) => (e >> (23 - i)) & 1)];
+      let head = -1, best = 0;
+      for (const [k, n] of this.heads.get(e) ?? []) if (n > best) { best = n; head = k; }
+      if (head >= 0) for (let i = 15; i >= 0; i--) ctx.push((head >> i) & 1);
+      if (MeshDecoder.editIn(p, ctx) <= 2) return e;
+    }
+    return null;
+  }
+
+  /** The least edit distance between p and any stretch of t (Sellers' approximate substring match). */
+  static editIn(p: number[], t: number[]): number {
+    let prev = new Array<number>(t.length + 1).fill(0);
+    for (let i = 1; i <= p.length; i++) {
+      const cur = new Array<number>(t.length + 1); cur[0] = i;
+      for (let j = 1; j <= t.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (p[i - 1] === t[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return Math.min(...prev);
+  }
+
   /** A "sync word" that is mostly alternating bits is the preamble read a few bits late, not a network. */
   static isPreamble(sync: number): boolean { return sync >= 0 && pc((sync ^ (sync >> 1)) & 0x7F_FFFF) >= 18; }
 
-  private publish(frame: MeshFrame): void {
+  /** Every decoded frame comes through here (public so tests can feed frames directly). */
+  publish(frame: MeshFrame): void {
     if (MeshDecoder.isPreamble(frame.sync)) return;
     const f = { ...frame };
     // a sync word a bit or two off an established network's is that network with bit errors
@@ -537,6 +572,10 @@ export class MeshDecoder implements IqProcessor {
       let near: MeshNet | null = null;
       for (const v of this.netMap.values()) if (v.sync !== GRIDSTREAM && v.frames >= 5 && pc(v.sync ^ f.sync) <= 2 && (!near || v.frames > near.frames)) near = v;
       if (near) f.sync = near.sync;
+      // not a few flipped bits but a slipped one: the sync search locked a bit or two early or late (or on the
+      // preamble's tail), so the word read is a window of an established network's own bit stream, and the bytes
+      // after it are misaligned too. One busy network turned into thousands of "networks" this way.
+      else if (this.slipOf(f.sync) !== null) { this.slips++; return; }
     }
     this.onFrame?.(f);
     const net = this.netMap.get(f.sync) ?? { sync: f.sync, frames: 0, types: {}, channels: [], loHz: Number.MAX_SAFE_INTEGER, hiHz: 0, lastHex: '', lastMs: 0, bestSnr: 0, meters: [] };
@@ -550,6 +589,10 @@ export class MeshDecoder implements IqProcessor {
       const id = u32(f.bytes, 26); if (!net.meters.includes(id)) net.meters.push(id);
     }
     this.netMap.set(f.sync, net);
+    if (f.sync !== GRIDSTREAM && f.bytes.length >= 2) {
+      const h = this.heads.get(f.sync) ?? new Map<number, number>(); const k = (f.bytes[0] << 8) | f.bytes[1];
+      h.set(k, (h.get(k) ?? 0) + 1); this.heads.set(f.sync, h);
+    }
     if (net.frames === 20 && f.sync !== GRIDSTREAM && !this.established.includes(f.sync)) this.established.push(f.sync);
     if (net.frames >= MeshDecoder.MIN_FRAMES || f.sync === GRIDSTREAM) this.track(f);
     // the debug log gets each new kind of frame (network, first byte, length), and every long one: readings arrive

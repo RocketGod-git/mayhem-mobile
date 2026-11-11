@@ -3,7 +3,6 @@ package com.rocketgod.mayhem.core.lora
 import com.rocketgod.mayhem.core.Dsp
 import com.rocketgod.mayhem.core.IqProcessor
 import com.rocketgod.mayhem.core.ham.ChannelDecimator
-import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import kotlin.math.abs
@@ -36,6 +35,24 @@ class LoraScanner : IqProcessor {
     var busy = 0.0; private set
     /** Samples a channel receiver threw away because it fell too far behind (a frame passing through is lost). */
     @Volatile var skipped = 0L; private set
+
+    /**
+     * Asked for a narrower span than [rate] when this device can't keep up with it: a slower phone (or one that has
+     * heated up) still decodes what a narrower span holds, where a span it can't keep up with decodes nothing.
+     */
+    @Volatile var onTooMuch: ((Int) -> Unit)? = null
+    private var strain = 0
+    @Volatile private var channelCount = 0
+
+    /**
+     * Once a second, from the engine: the share of the radio's buffers it threw away and the channel time skipped.
+     * Five seconds out of the last few behind asks for less; after that it waits a while to see the narrower span settle.
+     */
+    fun load(dropShare: Double, skippedSec: Double) {
+        val behind = dropShare > 0.05 || skippedSec / max(1, channelCount) > 0.25 || busy > 1.0
+        strain = if (behind) strain + 1 else max(0, strain - 1)
+        if (strain >= 5) { strain = -15; onTooMuch?.invoke(rate) }
+    }
 
     // ---- detection ----
     private var rate = 0; private var N = 2048; private var HOP = 10_000
@@ -87,7 +104,7 @@ class LoraScanner : IqProcessor {
     private val lock = Any()
     private val inbox = ArrayList<Extractor>()
     private val untils = HashMap<Int, Long>()
-    private var latest = 0L
+    @Volatile private var latest = 0L
     private var scheduled = false
     /** Channels the worker has retired since the radio thread last looked. */
     private val finished = ArrayList<Int>()
@@ -96,6 +113,16 @@ class LoraScanner : IqProcessor {
     private val recent = ArrayList<LongArray>()      // (payload hash, sample) of frames already reported
 
     override fun reset(rate: Int) {
+        // the detect thread owns everything below: a reset from the radio's thread waits for it to take it
+        if (shedding && Thread.currentThread().name != DETECT_NAME) {
+            feed.clear()
+            runCatching { detect.submit { resetHere(rate) }.get() }
+            return
+        }
+        resetHere(rate)
+    }
+
+    private fun resetHere(rate: Int) {
         this.rate = rate
         N = 256; while (rate.toDouble() / N > 10_000) N = N shl 1
         HOP = max(N, rate / 2000)
@@ -113,8 +140,38 @@ class LoraScanner : IqProcessor {
         written = 0; nextFrame = n.toLong(); regions.clear(); owners.clear(); slots.clear(); slotCenter = -1
     }
 
+    /**
+     * Radio's thread: hand the buffer to the detect thread and return. Everything the scanner does per look ran here
+     * before, and at 20 Msps on a phone that held this thread past real time, so the engine dropped over half the
+     * radio's buffers. If the detect thread falls behind in turn, the hand-off queue overflows and the lost samples
+     * count as skipped (the health line says so).
+     */
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
-        if (ringSize == 0 || rate != this.rate) reset(rate)
+        if (!shedding) { process(iq, len, rate); return }
+        val b = spare.poll()?.takeIf { it.size == len } ?: ByteArray(len)
+        System.arraycopy(iq, 0, b, 0, len)
+        if (!feed.offer(Chunk(b, len, rate))) { skipped += len / 2; spare.offer(b) }
+        if (draining.compareAndSet(false, true)) detect.execute(drain)
+    }
+
+    /** Detect thread: everything queued, then a last look so a buffer offered while it was finishing isn't stranded. */
+    private val drain = Runnable {
+        while (true) {
+            while (true) { val c = feed.poll() ?: break; runCatching { process(c.b, c.len, c.rate) }; spare.offer(c.b) }
+            draining.set(false)
+            if (feed.isEmpty() || !draining.compareAndSet(false, true)) break
+        }
+    }
+
+    private class Chunk(val b: ByteArray, val len: Int, val rate: Int)
+    /** Buffers waiting for the detect thread (about 0.4 s at 20 Msps), and spent ones for reuse. */
+    private val feed = java.util.concurrent.ArrayBlockingQueue<Chunk>(1024)
+    private val spare = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
+    private val draining = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Detect thread (or inline for replays and tests): the ring, the looks, and the hand-off to the channels. */
+    private fun process(iq: ByteArray, len: Int, rate: Int) {
+        if (ringSize == 0 || rate != this.rate) resetHere(rate)
         val t0 = System.nanoTime()
         val n = len / 2
         var k = 0
@@ -174,27 +231,32 @@ class LoraScanner : IqProcessor {
         val dc = (15_000 / binHz).toInt() + 1
         var top = 0f
         for (k in 0 until n) {
-            val b = (k + n / 2) % n
+            val b = (k + n / 2) and (n - 1)
             val p = re[k] * re[k] + im[k] * im[k]
             re[k] = p
             var f = floorP[b]
             if (frames <= 8) f = if (frames == 1) p else f + 0.3f * (p - f)
             else if (p < f * 4) f += 0.02f * (p - f) else f += 0.0005f * (p - f)
             floorP[b] = f
+            // each bin's occupancy decays and its level follows, in the same pass
+            occ[b] *= 0.992f; lvl[b] += 0.008f * (p - lvl[b])
             if (frames > 8 && abs(b - n / 2) > dc && p > f * 14) { hot.add(b); top = max(top, p) }
         }
         // a transmitter right beside the radio overloads it and splashes across the whole span: only what is within
         // 30 dB of the strongest signal in this look counts
-        hot.removeAll { re[(it + n / 2) % n] < top * 1e-3f }
+        hot.removeAll { re[(it + n / 2) and (n - 1)] < top * 1e-3f }
         hot.sort()
-        for (b in 0 until n) { occ[b] *= 0.992f; lvl[b] += 0.008f * (re[(b + n / 2) % n] - lvl[b]) }
-        for (b in hot) { occ[b] += 1f; hotAt[b] = written }
+        // unboxed from here: every known channel looks through these each look
+        val hh = hot.toIntArray(); val hn = hh.size
+        for (b in hh) { occ[b] += 1f; hotAt[b] = written }
         // each known channel's strongest hot bin this look, for the chirp test
-        if (hot.isNotEmpty()) {
+        if (hn > 0) {
             for (sl in slots) {
                 if (sl.active) continue
                 var best = -1; var bp = 0f
-                for (b in hot) if (b >= sl.lo && b <= sl.hi) { val p = re[(b + n / 2) % n]; if (p > bp) { bp = p; best = b } }
+                // the first hot bin at or above the channel's bottom, then only its own
+                var q = java.util.Arrays.binarySearch(hh, sl.lo); if (q < 0) q = -q - 1
+                while (q < hn && hh[q] <= sl.hi) { val b = hh[q]; val p = re[(b + n / 2) and (n - 1)]; if (p > bp) { bp = p; best = b }; q++ }
                 if (best < 0) continue
                 if (written - sl.lastHot > (rate * 0.015).toLong() || sl.track.isEmpty()) { sl.track.clear(); sl.trackLook = frames - 1 }
                 // the latest looks, not the first: a spur or a neighbor's splash can hold the strongest bin at a
@@ -211,12 +273,12 @@ class LoraScanner : IqProcessor {
         // the channels no plan knows: clusters of hot bins grouped into bursts
         var i = 0
         val gap = 2
-        while (i < hot.size) {
+        while (i < hn) {
             var j = i + 1
-            while (j < hot.size && hot[j] - hot[j - 1] <= 2) j++
-            val lo = hot[i]; val hi = hot[j - 1]
+            while (j < hn && hh[j] - hh[j - 1] <= 2) j++
+            val lo = hh[i]; val hi = hh[j - 1]
             var peakBin = lo; var pp = 0f
-            for (q in i until j) { val v = re[(hot[q] + n / 2) % n]; if (v > pp) { pp = v; peakBin = hot[q] } }
+            for (q in i until j) { val v = re[(hh[q] + n / 2) and (n - 1)]; if (v > pp) { pp = v; peakBin = hh[q] } }
             val r = regions.firstOrNull { lo <= it.hi + gap && hi >= it.lo - gap && (max(hi, it.hi) - min(lo, it.lo)) * binHz <= 520_000 }
             if (r != null) {
                 if (lo < r.lo || hi > r.hi) { r.lo = min(r.lo, lo); r.hi = max(r.hi, hi); r.grew = written }
@@ -328,7 +390,8 @@ class LoraScanner : IqProcessor {
         r.spawned.add(bw to off)
         // a known channel on the air here already has its own receivers
         if (slots.any { it.active && it.hi >= r.lo && it.lo <= r.hi }) return
-        val hz = centerOf() + off.toLong()
+        // to the kHz: well inside what a LoRa receiver corrects, and it keeps the channel's oscillator table short
+        val hz = centerOf() + Math.round(off / 1000.0) * 1000
         val from = r.start - (rate * 0.01).toLong()
         spawn(hz, bw, null, true, from, r, null, null)
     }
@@ -390,20 +453,28 @@ class LoraScanner : IqProcessor {
             for (e in extractors) untils[e.id]?.let { e.until = it }
             scheduled = false
         }
-        // each channel is independent: they run side by side, one core each
+        // each channel is independent: they run side by side, one core each, and never wait for one another (a
+        // slow channel held back every other one when they ran in rounds, with cores sitting idle)
         val list = extractors.toList(); val r = ring; val mask = ringMask
+        channelCount = list.size
         val behind = ringMask.toLong() - rate / 50; val back = (ringMask / 2).toLong()
-        val jobs = list.map { e ->
-            Callable {
-                if (upTo - e.pos > behind) { skipped += (upTo - back) - e.pos; e.pos = upTo - back }   // fell behind
-                val end = min(upTo, e.until)
-                if (end > e.pos) e.run(end, r, mask)
+        for (e in list) {
+            val job = Runnable {
+                try {
+                    // the newest written sample when it starts, not when it was queued
+                    val top = latest
+                    if (top - e.pos > behind) { skipped += (top - back) - e.pos; e.pos = top - back }   // fell behind
+                    val end = min(top, e.until)
+                    if (end > e.pos) e.run(end, r, mask)
+                } catch (_: Throwable) {
+                } finally { e.busy.set(false) }
             }
+            if (!shedding) { e.busy.set(true); job.run() }
+            else if (e.busy.compareAndSet(false, true)) pool.execute(job)
         }
-        if (jobs.size <= 1 || !shedding) jobs.forEach { it.call() }
-        else pool.invokeAll(jobs).forEach { runCatching { it.get() } }
         val gone = ArrayList<Int>()
         extractors.removeAll { e ->
+            if (e.busy.get()) return@removeAll false
             val done = (e.pos >= e.until && upTo >= e.until) || (e.until < Long.MAX_VALUE / 8 && upTo - e.born > rate.toLong() * 8)
             if (done) {
                 gone.add(e.id)
@@ -433,6 +504,8 @@ class LoraScanner : IqProcessor {
     // ---- a channel ----
     private inner class Extractor(val id: Int, rate: Int, offHz: Double, val bw: Int, val hz: Long, from: Long, sfs: List<Int>, inverted: Boolean, private val phases: Int) {
         @Volatile var pos = from
+        /** On a core now; the worker hands it more only once it is done. */
+        val busy = java.util.concurrent.atomic.AtomicBoolean(false)
         val born = from
         @Volatile var until = 0L
         var tapped = false
@@ -444,9 +517,12 @@ class LoraScanner : IqProcessor {
         private var t = (TAPS / 2).toDouble()
         private var subK = 0
         private var y = FloatArray(0); private var yLen = 0      // resampler input, interleaved
-        private var cr = 1.0; private var ci = 0.0
-        private val sr: Double; private val si: Double
+        // the channel's oscillator in floats: this loop runs once a sample per channel at the full span rate
+        private var cr = 1f; private var ci = 0f
+        private val sr: Float; private val si: Float
         private var mixed = FloatArray(0); private var mid = FloatArray(0)
+        /** The oscillator as an integer table when the offset repeats soon enough: the mixer then runs fused into the CIC. */
+        private val osc: IntArray? = if (dec.cicD > 1 && offHz == Math.rint(offHz)) ChannelDecimator.oscTable(offHz.toLong(), rate) else null
         /**
          * Receivers by (spreading factor, inverted, timing phase): a chip sampled a fraction off its center loses a
          * lot of a critically sampled chirp, so each one also listens a half (and quarter) chip later.
@@ -475,10 +551,10 @@ class LoraScanner : IqProcessor {
             }
             poly = h
             val w = -2 * Math.PI * offHz / rate
-            sr = cos(w); si = sin(w)
+            sr = cos(w).toFloat(); si = sin(w).toFloat()
             // the oscillator starts at the phase the absolute sample count gives, so it doesn't matter where it begins
             val ph0 = w * (from % rate)
-            cr = cos(ph0); ci = sin(ph0)
+            cr = cos(ph0).toFloat(); ci = sin(ph0).toFloat()
             for (sf in sfs) for (inv in if (inverted) listOf(false, true) else listOf(false)) for (ph in 0 until phases) {
                 val rcv = LoraReceiver(sf, bw)
                 rcv.onFrame = { f -> heard(f, this, inv) }
@@ -491,14 +567,25 @@ class LoraScanner : IqProcessor {
         fun run(end: Long, ring: ByteArray, mask: Int) {
             while (pos < end) {
                 val n = min(end - pos, 65_536L).toInt()
+                val ot = osc
+                if (ot != null) {
+                    if (mid.size < dec.outSize(n)) mid = FloatArray(dec.outSize(n))
+                    // the table's phase follows the absolute sample count, so a channel that skipped ahead stays in step
+                    val m = dec.processMix(ring, mask, pos, n, ot, (pos % (ot.size / 2)).toInt(), mid)
+                    pos += n
+                    if (yLen + 2 * m > y.size) y = y.copyOf(max(2 * y.size, yLen + 2 * m))
+                    System.arraycopy(mid, 0, y, yLen, 2 * m); yLen += 2 * m
+                    resample()
+                    continue
+                }
                 if (mixed.size < 2 * n) mixed = FloatArray(2 * n)
                 for (k in 0 until n) {
                     val p = ((pos + k) and mask.toLong()).toInt() * 2
-                    val i = (ring[p].toInt() and 0xff) - 127.4; val q = (ring[p + 1].toInt() and 0xff) - 127.4
-                    mixed[2 * k] = (i * cr - q * ci).toFloat(); mixed[2 * k + 1] = (i * ci + q * cr).toFloat()
+                    val i = (ring[p].toInt() and 0xff) - 127.4f; val q = (ring[p + 1].toInt() and 0xff) - 127.4f
+                    mixed[2 * k] = i * cr - q * ci; mixed[2 * k + 1] = i * ci + q * cr
                     val tr = cr * sr - ci * si; ci = cr * si + ci * sr; cr = tr
                     count++
-                    if (count and 1023 == 0) { val g = 1 / sqrt(cr * cr + ci * ci); cr *= g; ci *= g }
+                    if (count and 255 == 0) { val g = 1f / sqrt(cr * cr + ci * ci); cr *= g; ci *= g }
                 }
                 pos += n
                 if (mid.size < dec.outSize(n)) mid = FloatArray(dec.outSize(n))
@@ -569,10 +656,22 @@ class LoraScanner : IqProcessor {
         private const val TAPS = 32
         private const val PHASES = 128
 
-        private fun daemon(name: String) = ThreadFactory { r -> Thread(r, name).apply { isDaemon = true; priority = Thread.NORM_PRIORITY + 1 } }
+        /**
+         * The radio's threads run ahead of all of these (a buffer they can't take in time is lost to everyone), the
+         * looks next (they feed every channel), the channels at the normal level: one falling behind skips, nothing drops.
+         */
+        private fun daemon(name: String, nice: Int) = ThreadFactory { r ->
+            Thread({ runCatching { android.os.Process.setThreadPriority(nice) }; r.run() }, name).apply { isDaemon = true }
+        }
+        private const val DETECT_NAME = "mayhem-lora-detect"
+        /** The looks, off the radio's thread. */
+        private val detect = Executors.newSingleThreadExecutor(daemon(DETECT_NAME, -4))
         /** The channel worker, behind the radio's thread. */
-        private val worker = Executors.newSingleThreadExecutor(daemon("mayhem-lora-channels"))
-        /** The cores the channels run on, side by side. */
-        private val pool = Executors.newFixedThreadPool(max(1, Runtime.getRuntime().availableProcessors() - 1), daemon("mayhem-lora-channel"))
+        private val worker = Executors.newSingleThreadExecutor(daemon("mayhem-lora-channels", -2))
+        /**
+         * The cores the channels run on, side by side: all but three, which stay free for the radio's USB reads, the
+         * engine and the looks (a channel that can't keep up skips; a radio buffer nobody takes is lost to everything).
+         */
+        private val pool = Executors.newFixedThreadPool(max(1, Runtime.getRuntime().availableProcessors() - 3), daemon("mayhem-lora-channel", 0))
     }
 }
