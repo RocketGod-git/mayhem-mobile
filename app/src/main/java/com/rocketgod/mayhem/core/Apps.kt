@@ -58,7 +58,11 @@ object Apps {
     private fun startPager() {
         val r = SdrEngine.IQ_RATE
         if (_pagerMulti.value) {
-            SdrEngine.configure(SdrEngine.Mode.NONE, 929_612_500L, r, 32, 40, true, hunter); com.rocketgod.mayhem.core.pager.PagerEngine.start()
+            // the hunter decodes every carrier in view: where the radio can take 3.84 Msps the span covers the whole
+            // US pager band (929.0-932.0 MHz) from its middle, instead of half of it at 2 Msps
+            if (Radio.canSample(Radio.limits, 3_840_000)) SdrEngine.configure(SdrEngine.Mode.NONE, 930_500_000L, 3_840_000, 32, 40, true, hunter)
+            else SdrEngine.configure(SdrEngine.Mode.NONE, 929_612_500L, r, 32, 40, true, hunter)
+            com.rocketgod.mayhem.core.pager.PagerEngine.start()
         } else {
             com.rocketgod.mayhem.core.pager.PagerEngine.stop()
             SdrEngine.configure(SdrEngine.Mode.NFM, 929_612_500L, r, 32, 32, false, pager)
