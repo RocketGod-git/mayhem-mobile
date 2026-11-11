@@ -39,7 +39,7 @@ data class Vessel(
  */
 class AisDecoder(private val log: PacketLog) : IqProcessor {
     override val wantsFm: Boolean get() = true
-    override val fmChannelHz: Int get() = 10_000      // 9600 baud GMSK wants the whole channel
+    override val fmChannelHz: Int get() = 7_500       // 9600 baud GMSK is about ±6 kHz wide; Mayhem passes ±5.5 kHz
 
     private var fmRate = 0
     private var sync = BitSync(9600.0, 48000.0)

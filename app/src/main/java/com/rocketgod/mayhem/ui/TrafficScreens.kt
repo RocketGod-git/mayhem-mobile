@@ -72,7 +72,10 @@ private enum class View { MAP, LIST, LOG }
 @Composable
 private fun TrafficFrame(
     accent: Color, tunable: Boolean, tag: String, title: String, count: Int, unit: String, views: List<View>, view: View, onView: (View) -> Unit,
-    paused: Boolean, onPause: () -> Unit, onClear: () -> Unit, extra: @Composable ColumnScope.() -> Unit = {},
+    paused: Boolean, onPause: () -> Unit, onClear: () -> Unit,
+    /** The radio sits this far above the channel (AIS, APRS): the card shows the channel, a tap tunes to it. */
+    shift: Long = 0L,
+    extra: @Composable ColumnScope.() -> Unit = {},
     body: @Composable ColumnScope.() -> Unit,
 ) {
     val d = rememberDims()
@@ -80,20 +83,25 @@ private fun TrafficFrame(
     val freq by SdrEngine.freqHz.collectAsState()
     val level by SdrEngine.levelDb.collectAsState()
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
+    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac) + shift) }
+    val rate = SdrEngine.currentRate()
+    val channel: Pair<Float, Float>? = if (shift != 0L && rate > 0) {
+        val c = 0.5f - shift.toFloat() / rate; val half = 6_000f / rate
+        (c - half) to (c + half)
+    } else null
     AdaptivePane(
         // the card keeps its height; the waterfall and the map or list split the rest evenly
         share = true,
         face = {
-            FreqCard(accent, tag = tag, title = title, freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+            FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
                 right = if (count > 0) "$count ${unit.lowercase()}" else "listening",
-                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f) }) else null,
+                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f + shift) }) else null,
                 lamp = { if (count > 0) Lamp("$count $unit", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
-                    rows = if (d.wide) 160 else 80, traceFrac = 0.26f, labels = centredLabels(freq, SdrEngine.currentRate()),
+                    rows = if (d.wide) 160 else 80, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
             }
         }
@@ -232,7 +240,8 @@ fun AisScreen(accent: Color) {
         views = View.entries, view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
         onClear = { Apps.ais.clear(); Apps.aisLog.clear(); sel = 0; if (frozen != null) frozen = emptyList() },
-        extra = { PresetTiles(accent, listOf(Preset("161.975", "AIS A", 161_975_000L), Preset("162.025", "AIS B", 162_025_000L))) }) {
+        shift = Apps.NARROW_SHIFT,
+        extra = { PresetTiles(accent, listOf(Preset("161.975", "AIS A", 161_975_000L), Preset("162.025", "AIS B", 162_025_000L)), shift = Apps.NARROW_SHIFT) }) {
         if (v != null) VesselCard(v, home, now, onMap = if (v.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = 0 }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {
@@ -319,8 +328,9 @@ fun AprsScreen(accent: Color) {
         views = View.entries, view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
         onClear = { Apps.aprs.clear(); Apps.aprsLog.clear(); sel = ""; if (frozen != null) frozen = emptyList() },
+        shift = Apps.NARROW_SHIFT,
         extra = { PresetTiles(accent, listOf(Preset("144.390", "N. America", 144_390_000L), Preset("144.800", "Europe", 144_800_000L),
-            Preset("145.175", "Australia", 145_175_000L), Preset("144.640", "Japan", 144_640_000L))) }) {
+            Preset("145.175", "Australia", 145_175_000L), Preset("144.640", "Japan", 144_640_000L)), shift = Apps.NARROW_SHIFT) }) {
         if (s != null) StationCard(s, home, now, onMap = if (s.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = "" }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {

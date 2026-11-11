@@ -4,7 +4,12 @@ import com.rocketgod.mayhem.core.PacketLog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.rocketgod.mayhem.core.TxEncoders
+import java.util.Random
+import kotlin.math.pow
+import kotlin.math.sin
 
 /** The APRS payload, read the way APRS clients do, from packets taken from the specification's own examples. */
 class AprsDecoderTest {
@@ -64,4 +69,40 @@ class AprsDecoderTest {
         val s = heard("W1AW" to ">one", "W1AW" to ">two").first()
         assertEquals(2, s.packets); assertEquals("two", s.status)
     }
+    /**
+     * AFSK straight into the decoder as discriminator output at 48 kHz, one tone [tiltDb] louder than the other (as
+     * pre-emphasis and radio audio leave it), with noise. Returns how many of [n] packets came through.
+     */
+    private fun afskPackets(tiltDb: Double, noise: Double, n: Int = 10): Int {
+        val log = PacketLog(); val d = AprsDecoder(log)
+        val rate = 48_000; val rng = Random(11)
+        val space = 10.0.pow(tiltDb / 20)
+        var ph = 0.0
+        val buf = FloatArray(4_800)
+        var at = 0
+        fun push(x: Float) { buf[at++] = x; if (at == buf.size) { d.onFm(buf, at, rate); at = 0 } }
+        for (k in 0 until n) {
+            val frame = TxEncoders.ax25Aprs("N0CALL-$k", "!3415.00N/11847.00W>tilt test packet $k")
+            val bits = TxEncoders.ax25Bits(frame, 24)
+            repeat(2_400) { push((noise * rng.nextGaussian()).toFloat()) }
+            var acc = 0.0
+            for (b in bits) {
+                acc += 40.0; val m = acc.toInt(); acc -= m
+                repeat(m) {
+                    ph += 2 * Math.PI * (if (b) 1200.0 else 2200.0) / rate
+                    val a = (if (b) 1.0 else space) * sin(ph)
+                    // discriminator output: radians a sample, 3 kHz deviation, plus noise
+                    val x = 2 * Math.PI * 3000 * a / rate
+                    push((x + noise * rng.nextGaussian()).toFloat())
+                }
+            }
+        }
+        repeat(4_800) { push(0f) }
+        return log.lines.value.toSet().size
+    }
+
+    @Test fun afskFlat() { assertEquals(10, afskPackets(0.0, 0.05)) }
+    @Test fun afskSpaceTiltedUp() { assertTrue(afskPackets(6.0, 0.05) >= 9) }
+    @Test fun afskSpaceTiltedDown() { assertTrue(afskPackets(-6.0, 0.05) >= 9) }
+    @Test fun afskNoisy() { println("APRS noisy: ${afskPackets(-4.0, 0.25)} of 10") }
 }

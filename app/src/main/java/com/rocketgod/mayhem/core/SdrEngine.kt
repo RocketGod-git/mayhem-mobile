@@ -12,6 +12,7 @@ import com.rocketgod.mayhem.core.audio.SameDecoder
 import com.rocketgod.mayhem.core.audio.SameEvent
 import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.RtlSdr
+import com.rocketgod.mayhem.core.ham.ChannelDecimator
 import java.util.concurrent.ArrayBlockingQueue
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -320,8 +321,11 @@ object SdrEngine {
     @Volatile var sourceLabel = "HackRF"
     @Volatile var processor: IqProcessor? = null; private set
     @Volatile private var worker: Thread? = null
-    private val queue = ArrayBlockingQueue<ByteArray>(8)
-    private val pool = ArrayBlockingQueue<ByteArray>(8)
+    // 512 x 16 KB: 210 ms at 20 Msps. Eight held only 3 ms at 19.2 Msps: a LoRa frame's channel catching up from its
+    // start takes 60-80 ms now and then, and USB delivers in bursts. It sits empty while the processing keeps up,
+    // so it adds no delay then.
+    private val queue = ArrayBlockingQueue<ByteArray>(512)
+    private val pool = ArrayBlockingQueue<ByteArray>(512)
 
     fun setActive(on: Boolean) {
         _active.value = on
@@ -445,6 +449,7 @@ object SdrEngine {
     /** Move the radio itself, leaving the channel offset alone. */
     fun tuneLo(hz: Long) {
         val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
+        if (f != _freqHz.value) dropQueued()
         _freqHz.value = f
         HackRfOne.targetFreqHz = f
         RtlSdr.targetFreqHz = f
@@ -485,7 +490,19 @@ object SdrEngine {
     /** ⌖: bring the view back to the channel. */
     fun recentre() { val ch = channelHz(); _offsetHz.value = 0; tuneLo(ch) }
 
-    fun setRate(rate: Int) { _rateHz.value = clampRate(rate); syncDriver() }
+    fun setRate(rate: Int) {
+        val r = clampRate(rate)
+        if (r != _rateHz.value) dropQueued()
+        _rateHz.value = r; syncDriver()
+    }
+
+    /**
+     * Everything still queued was taken on the old tuning: a sweep's next slice, or the signal finder, must never
+     * read it as the new one (the queue is deep enough to hold a fifth of a second).
+     */
+    private fun dropQueued() {
+        while (true) { val b = queue.poll() ?: break; pool.offer(b) }
+    }
 
     /**
      * An RTL-SDR opens at 3.2 Msps for the start-up pick and listens there too; the zoom steps back to 2.4 or 1.92
@@ -569,7 +586,9 @@ object SdrEngine {
         var wph = 0.0                                   // SSB (Weaver) BFO phase
         var lpI1 = 0f; var lpI2 = 0f; var lpQ1 = 0f; var lpQ2 = 0f   // SSB low-pass memories
         var decAcc = 0f; var decCnt = 0                 // stage-2 (audio) decimator accumulator
-        var s1I = 0f; var s1Q = 0f; var s1n = 0        // stage-1 complex channel-filter (boxcar) accumulator
+        var s1I = 0f; var s1Q = 0f; var s1n = 0        // stage-1 WFM average accumulator
+        var chanDec: ChannelDecimator? = null; var chanKey = 0   // stage-1 for the narrow modes, rebuilt with the rate
+        var mixBuf = FloatArray(0); var chanBuf = FloatArray(0)
         val audioBuf = ShortArray(8192); var audioLen = 0
         val fmBuf = FloatArray(4096); var fmN = 0
         var lastSpec = 0L; var lastDiag = 0L
@@ -609,7 +628,7 @@ object SdrEngine {
                     if (m != prevMode) {
                         prevI = 0f; prevQ = 0f; deemph = 0f; amDc = 0f; wph = 0.0
                         lpI1 = 0f; lpI2 = 0f; lpQ1 = 0f; lpQ2 = 0f
-                        decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0
+                        decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0; chanDec = null
                         rdsN = 0; sameN = 0
                         if (m != Mode.WFM) { rdsDec.reset(); hdDet.reset(); _rds.value = null; _hd.value = null }
                         prevMode = m
@@ -753,10 +772,11 @@ object SdrEngine {
 
                     // ---- demod → audio (+ FM tap for packet processors) ----
                     if (m != Mode.NONE && abs(_offsetHz.value) < rate / 2 - 40_000) {     // a channel slid off the span is silent
-                        // Two-stage decimation. Stage 1 is the channel filter (complex boxcar) down to an intermediate
-                        // rate near the channel bandwidth: WFM → ~240 kHz, everything else → ~48 kHz. Stage 2 decimates
-                        // the demodulated audio to 48 kHz.
-                        val stage1 = if (m == Mode.WFM) max(1, rate / 240_000) else max(1, rate / AUDIO_RATE)
+                        // Two-stage decimation. Stage 1 brings the IQ down to an intermediate rate near the channel: WFM ->
+                        // ~240 kHz by a plain average, everything else -> ~48 kHz through a CIC + FIR (ChannelDecimator)
+                        // that keeps neighbors from folding onto the channel. Stage 2 decimates the audio to 48 kHz.
+                        if (m != Mode.WFM && (chanDec == null || chanKey != rate)) { chanDec = ChannelDecimator(max(1, rate / AUDIO_RATE)); chanKey = rate }
+                        val stage1 = if (m == Mode.WFM) max(1, rate / 240_000) else chanDec!!.total
                         val interRate = rate / stage1
                         val stage2 = max(1, interRate / AUDIO_RATE)
                         val wantFm = p != null && p.wantsFm
@@ -778,18 +798,32 @@ object SdrEngine {
                         val wInc = 2.0 * Math.PI * 1500.0 / interRate
                         val off = _offsetHz.value
                         val stepR = cos(-2.0 * Math.PI * off / rate).toFloat(); val stepI = sin(-2.0 * Math.PI * off / rate).toFloat()
-                        var i = 0
-                        while (i < nSamp) {
+                        // the channel mixed to DC
+                        if (mixBuf.size < 2 * nSamp) mixBuf = FloatArray(2 * nSamp)
+                        for (i in 0 until nSamp) {
                             val iv = (item[2 * i].toInt() and 0xff) - 127.4f
                             val qv = (item[2 * i + 1].toInt() and 0xff) - 127.4f
                             if (off != 0) {
-                                s1I += iv * ncoR - qv * ncoI; s1Q += iv * ncoI + qv * ncoR
+                                mixBuf[2 * i] = iv * ncoR - qv * ncoI; mixBuf[2 * i + 1] = iv * ncoI + qv * ncoR
                                 val nr = ncoR * stepR - ncoI * stepI; ncoI = ncoR * stepI + ncoI * stepR; ncoR = nr
                                 if (++ncoN >= 4096) { ncoN = 0; val g = 1f / sqrt(ncoR * ncoR + ncoI * ncoI); ncoR *= g; ncoI *= g }
-                            } else { s1I += iv; s1Q += qv }
-                            s1n++
-                            if (s1n >= stage1) {
-                                var ci = s1I / s1n; var cq = s1Q / s1n; s1I = 0f; s1Q = 0f; s1n = 0
+                            } else { mixBuf[2 * i] = iv; mixBuf[2 * i + 1] = qv }
+                        }
+                        var nChan = 0
+                        if (m == Mode.WFM) {
+                            if (chanBuf.size < 2 * (nSamp / stage1 + 2)) chanBuf = FloatArray(2 * (nSamp / stage1 + 2))
+                            for (i in 0 until nSamp) {
+                                s1I += mixBuf[2 * i]; s1Q += mixBuf[2 * i + 1]; s1n++
+                                if (s1n >= stage1) { chanBuf[2 * nChan] = s1I / s1n; chanBuf[2 * nChan + 1] = s1Q / s1n; nChan++; s1I = 0f; s1Q = 0f; s1n = 0 }
+                            }
+                        } else {
+                            val cd = chanDec!!
+                            if (chanBuf.size < cd.outSize(nSamp)) chanBuf = FloatArray(cd.outSize(nSamp))
+                            nChan = cd.process(mixBuf, nSamp, chanBuf)
+                        }
+                        for (j in 0 until nChan) {
+                            run {
+                                var ci = chanBuf[2 * j]; var cq = chanBuf[2 * j + 1]
                                 if (filtered) for (k in 0..1) {
                                     val o = 5 * k; val z = 4 * k
                                     val oi = bq[o] * ci + bz[z]; bz[z] = bq[o + 1] * ci - bq[o + 3] * oi + bz[z + 1]; bz[z + 1] = bq[o + 2] * ci - bq[o + 4] * oi
@@ -844,7 +878,6 @@ object SdrEngine {
                                     if (audioLen >= audioBuf.size) { emit(audioBuf, audioLen); audioLen = 0 }
                                 }
                             }
-                            i++
                         }
                         if (voiceOn && now - lastVoice > 250L) { lastVoice = now; _voice.value = voiceDet.read() }
                         if (wantFm && fmN > 0) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }

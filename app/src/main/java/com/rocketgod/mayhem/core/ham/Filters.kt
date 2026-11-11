@@ -7,6 +7,7 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -114,6 +115,76 @@ class Cic3Decimator(private val d: Int, private val scale: Int = 256) {
             }
         }
         return o
+    }
+}
+
+/**
+ * The engine's first decimation for narrow modes, raw IQ down to about 48 kHz: a third-order CIC to 3-6x the output
+ * rate, then a windowed-sinc FIR the rest of the way. It stands in for a plain average (a boxcar), whose -13 dB
+ * sidelobes folded every station 48 kHz away straight onto the channel. Here the worst alias into ±16 kHz is
+ * below -55 dB, the way Mayhem's own CIC + FIR baseband chain behaves. 64-bit integrators, so a decimation of a
+ * few hundred (20 Msps) never overflows.
+ */
+class ChannelDecimator(want: Int) {
+    /** The whole decimation, its CIC and FIR parts (cicD * firD == total). */
+    val cicD: Int
+    val firD: Int
+    val total: Int
+    private val fir: ComplexFirDecimator?
+    private var mid = FloatArray(0)
+    private var i1r = 0L; private var i1i = 0L; private var i2r = 0L; private var i2i = 0L; private var i3r = 0L; private var i3i = 0L
+    private var c1r = 0L; private var c1i = 0L; private var c2r = 0L; private var c2i = 0L; private var c3r = 0L; private var c3i = 0L
+    private var ph = 0
+    private val gain: Float
+
+    init {
+        val (c, f) = split(want)
+        cicD = c; firD = f; total = c * f
+        // transition from 1/3 of the output rate to 2/3 (aliases fold onto ±1/3): 24 taps per decimation step
+        fir = if (firD > 1) ComplexFirDecimator(lowpassTaps(0.5 / firD, 24 * firD + 1), firD) else null
+        gain = 1.0f / (256f * cicD.toFloat() * cicD.toFloat() * cicD.toFloat())
+    }
+
+    /** Output capacity (interleaved floats) [process] needs for [n] input samples. */
+    fun outSize(n: Int): Int = 2 * (n / total + 2)
+
+    /** [inp]: interleaved I/Q, [n] complex samples; the decimated samples go to [out] (at least [outSize] long). */
+    fun process(inp: FloatArray, n: Int, out: FloatArray): Int {
+        if (cicD == 1) {
+            val f = fir ?: run { System.arraycopy(inp, 0, out, 0, 2 * n); return n }
+            return f.process(inp, n, out)
+        }
+        val nMid = n / cicD + 2
+        if (mid.size < 2 * nMid) mid = FloatArray(2 * nMid)
+        var o = 0
+        for (i in 0 until n) {
+            i1r += (inp[2 * i] * 256).roundToLong(); i1i += (inp[2 * i + 1] * 256).roundToLong()
+            i2r += i1r; i2i += i1i
+            i3r += i2r; i3i += i2i
+            if (++ph >= cicD) {
+                ph = 0
+                val y1r = i3r - c1r; val y1i = i3i - c1i; c1r = i3r; c1i = i3i
+                val y2r = y1r - c2r; val y2i = y1i - c2i; c2r = y1r; c2i = y1i
+                val y3r = y2r - c3r; val y3i = y2i - c3i; c3r = y2r; c3i = y2i
+                mid[2 * o] = y3r * gain; mid[2 * o + 1] = y3i * gain; o++
+            }
+        }
+        val f = fir ?: run { System.arraycopy(mid, 0, out, 0, 2 * o); return o }
+        return f.process(mid, o, out)
+    }
+
+    companion object {
+        /** The largest decimation no larger than [want] that splits into a CIC part and a FIR part of 3-6 (FIR only up to 6). */
+        fun split(want: Int): Pair<Int, Int> {
+            if (want <= 1) return 1 to 1
+            if (want <= 6) return 1 to want
+            var t = want
+            while (t > 6) {
+                for (f in intArrayOf(4, 5, 6, 3)) if (t % f == 0) return (t / f) to f
+                t--
+            }
+            return 1 to t
+        }
     }
 }
 

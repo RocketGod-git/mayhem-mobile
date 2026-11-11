@@ -78,6 +78,11 @@ private class AcarsChannel(val hz: Long, private val log: PacketLog, private val
     private var fs = 24_000.0; private var envDc = 0f
     private var ph = 0.0; private var phInc = 0.0
     private var mfI = FloatArray(10); private var mfQ = FloatArray(10); private var mfPos = 0; private var sI = 0f; private var sQ = 0f
+    /**
+     * A second one-bit filter over the first, for the clock only: on the first filter alone the frequency sign
+     * flips several times a bit (the mixer's image at -3 to -4 kHz gets through), so the clock chased noise.
+     */
+    private var m2I = FloatArray(10); private var m2Q = FloatArray(10); private var tI = 0f; private var tQ = 0f
     private var pI = 0f; private var pQ = 0f; private var bI = 0f; private var bQ = 0f
     private var clk = 0.0; private var clkInc = 0.0; private var lastF = 0f
     private var lanes = Array(3) { Lane(it) }
@@ -96,12 +101,13 @@ private class AcarsChannel(val hz: Long, private val log: PacketLog, private val
         d2 = maxOf(1, (inter / 24_000.0).roundToInt())
         fs = inter / d2
         t1 = lowpass(5 * d1 + 1, 50_000.0 / rate)
-        t2 = lowpass(127, 6_000.0 / inter)
+        t2 = lowpass(127, 9_000.0 / inter)   // wide enough that a carrier a few kHz off keeps both sidebands
         h1i = FloatArray(t1.size * 2); h1q = FloatArray(t1.size * 2); p1 = 0; c1 = 0
         h2i = FloatArray(t2.size * 2); h2q = FloatArray(t2.size * 2); p2 = 0; c2 = 0
         phInc = 2 * PI * 1800.0 / fs
         val mf = maxOf(2, (fs / 2400.0).roundToInt())
         mfI = FloatArray(mf); mfQ = FloatArray(mf); mfPos = 0; sI = 0f; sQ = 0f
+        m2I = FloatArray(mf); m2Q = FloatArray(mf); tI = 0f; tQ = 0f
         clkInc = 2400.0 / fs; clk = 0.0
         lanes = Array(3) { Lane(it) }
     }
@@ -139,13 +145,14 @@ private class AcarsChannel(val hz: Long, private val log: PacketLog, private val
     private fun audio(a: Float) {
         ph += phInc; if (ph > 2 * PI) ph -= 2 * PI
         val mi = a * cos(ph).toFloat(); val mq = -a * sin(ph).toFloat()
-        sI += mi - mfI[mfPos]; sQ += mq - mfQ[mfPos]; mfI[mfPos] = mi; mfQ[mfPos] = mq; if (++mfPos >= mfI.size) mfPos = 0
-        // Instantaneous frequency about 1800 Hz: its sign changes where the tone does. The one-bit filter puts that
-        // change half a bit after the edge, and the bit is read when the filter holds exactly one bit, half a bit
-        // after that: so a sign change should land at half a clock.
-        val f = sQ * pI - sI * pQ
-        pI = sI; pQ = sQ
-        if ((f > 0f) != (lastF > 0f)) clk -= 0.25 * (clk - 0.5)
+        sI += mi - mfI[mfPos]; sQ += mq - mfQ[mfPos]; mfI[mfPos] = mi; mfQ[mfPos] = mq
+        tI += sI - m2I[mfPos]; tQ += sQ - m2Q[mfPos]; m2I[mfPos] = sI; m2Q[mfPos] = sQ
+        if (++mfPos >= mfI.size) mfPos = 0
+        // Instantaneous frequency about 1800 Hz, taken after both filters: its sign changes once where the tone does,
+        // and the bit read from the first filter is cleanest when that change lands at half a clock.
+        val f = tQ * pI - tI * pQ
+        pI = tI; pQ = tQ
+        if ((f > 0f) != (lastF > 0f)) clk -= 0.1 * (clk - 0.5)
         lastF = f
         clk += clkInc
         if (clk < 1.0) return

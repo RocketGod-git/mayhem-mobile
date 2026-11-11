@@ -64,7 +64,7 @@ class PacketLog(private val cap: Int = 300) {
  * toward zero-crossings of the input (transitions happen on bit boundaries). Feed one sample at a time; a
  * completed bit comes back as 0/1, otherwise -1.
  */
-class BitSync(baud: Double, rate: Double) {
+class BitSync(baud: Double, rate: Double, private val gain: Double = 0.25) {   // gain: how much of the timing error each zero crossing corrects
     private val inc = baud / rate
     private var phase = 0.0
     private var acc = 0f
@@ -75,7 +75,7 @@ class BitSync(baud: Double, rate: Double) {
         val pos = x > 0f
         if (!first && pos != lastPos) {
             val err = if (phase < 0.5) phase else phase - 1.0   // distance from the nearest bit boundary
-            phase -= err * 0.25
+            phase -= err * gain
         }
         first = false
         lastPos = pos
@@ -93,14 +93,17 @@ class BitSync(baud: Double, rate: Double) {
     fun reset() { phase = 0.0; acc = 0f; first = true }
 }
 
-/** Big-endian bit reader over a byte array whose bits are stored LSB-first per byte (HDLC transmission order). */
+/**
+ * Big-endian bit reader over HDLC frame bytes (first bit received in bit 0 of each byte). AIS sends each octet of its
+ * message LSB first, so message bit k is bit 7 - k%8 of byte k/8, as Mayhem's BitRemapByteReverse reads it.
+ */
 class BitReader(private val b: ByteArray) {
     val bitCount: Int get() = b.size * 8
     fun read(start: Int, len: Int): Int {
         var v = 0
         for (i in 0 until len) {
             val k = start + i
-            val bit = if (k < bitCount) (b[k shr 3].toInt() shr (k and 7)) and 1 else 0
+            val bit = if (k < bitCount) (b[k shr 3].toInt() shr (7 - (k and 7))) and 1 else 0
             v = (v shl 1) or bit
         }
         return v

@@ -12,6 +12,7 @@ import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 data class AprsWx(
     val windDir: Int? = null, val windMph: Int? = null, val gustMph: Int? = null, val tempF: Int? = null,
@@ -44,12 +45,19 @@ data class AprsStation(
 private val MICE_MSG = listOf("Emergency", "Priority", "Special", "Committed", "Returning", "In service", "En route", "Off duty")
 
 /**
- * APRS receiver (Mayhem proc_aprsrx): Bell 202 AFSK (1200 / 2200 Hz) on the NFM discriminator, demodulated with a
- * sliding one-bit tone correlator, NRZI + AX.25 framed and FCS-checked. The payload is read the way APRS clients do:
+ * APRS receiver (framing after Mayhem proc_aprsrx): Bell 202 AFSK (1200 / 2200 Hz) on the NFM discriminator,
+ * demodulated with a sliding one-bit tone correlator, NRZI + AX.25 framed and FCS-checked. Pre-emphasis and radio
+ * audio paths leave one tone up to several dB louder than the other, which pushes a single slicer's decisions off,
+ * so (as Dire Wolf does) several slicers run side by side, each weighting the 2200 Hz tone differently, each with its
+ * own clock and deframer; a frame any of them gets through the FCS is kept once. The payload is read the way APRS clients do:
  * uncompressed, compressed (base-91) and Mic-E positions with course, speed and altitude, status, messages, objects
  * and items, weather, and third-party (IGate) wrapping. Every station heard keeps a record.
  */
 class AprsDecoder(private val log: PacketLog) : IqProcessor {
+    companion object {
+        /** 2200 Hz tone weights, ±6 dB in even steps. */
+        private val GAINS = floatArrayOf(0.5f, 0.63f, 0.79f, 1.0f, 1.26f, 1.59f, 2.0f)
+    }
     override val wantsFm: Boolean get() = true
 
     private var fmRate = 0
@@ -60,15 +68,18 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
     private var w1 = 0.0; private var w2 = 0.0
     private var c1 = 0.0; private var s1 = 0.0; private var c2 = 0.0; private var s2 = 0.0
     private var sinceRecompute = 0
-    private var sync = BitSync(1200.0, 48000.0)
+    private var syncs: List<BitSync> = emptyList()
+    private val framers: List<HdlcFramer> = GAINS.map { _ -> HdlcFramer(400) { f -> onSliced(f) } }
+    /** Sample clock and the recent frames (by FCS), so a frame two slicers both got is logged once. */
+    private var clock = 0L
+    private val recent = ArrayList<LongArray>()   // [fcs, at]
     private var filt = DiscFilter(3200.0, 48000.0)
-    private val framer = HdlcFramer(400) { onFrame(it) }
     private val stations = HashMap<String, AprsStation>()
     private val _stations = MutableStateFlow<List<AprsStation>>(emptyList())
     /** Most recently heard first. */
     val table: StateFlow<List<AprsStation>> = _stations.asStateFlow()
 
-    override fun reset(rate: Int) { fmRate = 0; framer.reset() }
+    override fun reset(rate: Int) { fmRate = 0; for (f in framers) f.reset() }
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {}
 
     fun clear() { synchronized(stations) { stations.clear() }; _stations.value = emptyList() }
@@ -79,9 +90,10 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
         ring = FloatArray(spb); ri = 0
         w1 = 2.0 * Math.PI * 1200.0 / rate; w2 = 2.0 * Math.PI * 2200.0 / rate
         ph1 = 0.0; ph2 = 0.0; c1 = 0.0; s1 = 0.0; c2 = 0.0; s2 = 0.0; sinceRecompute = 0
-        sync = BitSync(1200.0, rate.toDouble())
+        syncs = GAINS.map { _ -> BitSync(1200.0, rate.toDouble(), gain = 0.15) }
         filt = DiscFilter(3200.0, rate.toDouble())
-        framer.reset()
+        for (f in framers) f.reset()
+        recent.clear()
     }
 
     override fun onFm(samples: FloatArray, n: Int, rate: Int) {
@@ -99,9 +111,12 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
             ph1 += w1; if (ph1 >= twoPi) ph1 -= twoPi
             ph2 += w2; if (ph2 >= twoPi) ph2 -= twoPi
             if (++sinceRecompute >= 4096) { sinceRecompute = 0; recompute() }
-            val d = ((c1 * c1 + s1 * s1) - (c2 * c2 + s2 * s2)).toFloat()   // mark (1200) positive
-            val b = sync.push(d)
-            if (b >= 0) framer.pushRaw(b)
+            clock++
+            val mark = sqrt(c1 * c1 + s1 * s1).toFloat(); val space = sqrt(c2 * c2 + s2 * s2).toFloat()
+            for (k in syncs.indices) {
+                val b = syncs[k].push(mark - GAINS[k] * space)   // mark (1200) positive
+                if (b >= 0) framers[k].pushRaw(b)
+            }
         }
     }
 
@@ -117,8 +132,17 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
         }
     }
 
-    private fun onFrame(f: ByteArray) {
+    private fun onSliced(f: ByteArray) {
         if (f.size < 18 || !HdlcFramer.fcsOk(f)) return
+        val fcs = (((f[f.size - 2].toInt() and 0xff) shl 8) or (f[f.size - 1].toInt() and 0xff)).toLong()
+        val window = fmRate.toLong() * 2
+        recent.removeAll { clock - it[1] > window }
+        if (recent.any { it[0] == fcs }) return
+        recent.add(longArrayOf(fcs, clock))
+        onFrame(f)
+    }
+
+    private fun onFrame(f: ByteArray) {
         // AX.25 addresses: 7 bytes each, characters shifted left one; the low bit of the last byte ends the list.
         var p = 0
         val addrs = ArrayList<String>()

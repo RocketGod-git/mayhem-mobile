@@ -62,6 +62,8 @@ object Apps {
             SdrEngine.configure(SdrEngine.Mode.NFM, 929_612_500L, r, 32, 32, false, pager)
         }
     }
+    /** AIS and APRS: how far above the channel the radio sits, clear of the DC spike at the center of the span. */
+    const val NARROW_SHIFT = 250_000L
     val aisLog = PacketLog(); val ais = AisDecoder(aisLog)
     val aprsLog = PacketLog(); val aprs = AprsDecoder(aprsLog)
     val ertLog = PacketLog(); val ert = ErtDecoder(ertLog)
@@ -134,10 +136,13 @@ object Apps {
                 else -> { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.armBand() }
             }
             MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
-            MayhemApp.AIS -> SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L, r, 32, 32, false, ais)
-            MayhemApp.APRS -> SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L, r, 24, 24, false, aprs)
+            // the radio sits NARROW_SHIFT above the channel, as Mayhem keeps its channels off the DC spike, and the
+            // engine mixes the channel back down through the offset
+            MayhemApp.AIS -> { SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L + NARROW_SHIFT, r, 32, 32, false, ais); SdrEngine.setOffset(-NARROW_SHIFT.toInt()) }
+            MayhemApp.APRS -> { SdrEngine.configure(SdrEngine.Mode.NFM, 144_390_000L + NARROW_SHIFT, r, 24, 24, false, aprs); SdrEngine.setOffset(-NARROW_SHIFT.toInt()) }
             MayhemApp.PAGER -> startPager()
-            MayhemApp.ERT -> SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, r, 32, 40, true, ert)
+            // Mayhem's rate and center: 128 samples a chip, and a 3.5 MHz filter that takes in 910-913 MHz
+            MayhemApp.ERT -> SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, if (Radio.canSample(Radio.limits, ErtDecoder.RATE)) ErtDecoder.RATE else r, 32, 40, true, ert)
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
             // the radio sits LO_SHIFT from the channel (130.8 MHz for 131.550), so every US channel is in the span and
