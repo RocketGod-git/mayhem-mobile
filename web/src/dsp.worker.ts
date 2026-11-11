@@ -10,6 +10,7 @@ import { AisDecoder } from './dsp/ais.js';
 import { AprsDecoder } from './dsp/aprs.js';
 import { BtleDecoder } from './dsp/btle.js';
 import { ErtDecoder } from './dsp/ert.js';
+import { MeshDecoder, MetersProcessor } from './dsp/mesh.js';
 import { PocsagDecoder } from './dsp/pocsag.js';
 import { FlexDecoder } from './dsp/flex.js';
 import { PagerHunter } from './dsp/pagerhunt.js';
@@ -86,6 +87,9 @@ hunter.onAudio = (xs, n, r) => {
   }
 };
 const ert = new ErtDecoder(emit);
+/** Meters: ERT and the mesh networks (Gridstream among them) on the same samples. */
+const mesh = new MeshDecoder(emit);
+const meters = new MetersProcessor(ert, mesh);
 const btle = new BtleDecoder(emit);
 const tpms = new TpmsDecoder(emit);
 const acars = new AcarsDecoder(emit);
@@ -327,7 +331,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'pocsag': return pocsag;
     case 'pager': return pager;
     case 'pagerhunt': hunter.reset(); return hunter;
-    case 'ert': return ert;
+    case 'ert': mesh.centerHz = centreHz; mesh.flush(); return meters;
     case 'btle': return btle;
     case 'tpms': return tpms;
     case 'acars': return acars;
@@ -521,6 +525,7 @@ function process(iq: Int8Array): void {
     }
   }
   if (p === hunter) hunter.centerHz = centreHz;
+  if (p === meters) mesh.centerHz = centreHz;
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }

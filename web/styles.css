@@ -1102,3 +1102,67 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* The RDS strip arrives with its data: it fades and slides in under the dial the moment a name or RadioText is read. */
 @keyframes rdsin { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 .rdsbar.station:not([hidden]) { animation: rdsin 0.3s ease-out; }
+
+/* ---- Meters: live device cards, a map of positions decoded off the air, a details overlay, full screen ---- */
+.mt-sum { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--accent); margin: 8px 2px 2px; display: flex; flex-direction: column; gap: 2px; }
+.mt-sum > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-sum .muted { color: var(--muted); font-weight: 400; }
+.mt-stage { position: relative; min-height: 220px; }
+.mt-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 8px; max-height: 60vh; overflow-y: auto; padding: 2px 0 6px; }
+.mt-stage .map { height: 46vh; min-height: 220px; }
+.mt-nopos { position: absolute; left: 10px; bottom: 10px; font-size: 10px; color: var(--muted); pointer-events: none; z-index: 500; }
+.mt-card { position: relative; cursor: pointer; border-radius: 14px; padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) calc(10% + 14% * var(--flash)), var(--surface)), var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) calc(22% + 70% * var(--flash)), transparent);
+  box-shadow: 0 0 calc(12px * var(--flash)) color-mix(in srgb, var(--accent) 50%, transparent); }
+.mt-card.sel { border: 2px solid var(--accent); }
+.mt-card.dim { opacity: 0.8; }
+.mt-h { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mt-id { font-size: 18px; font-weight: 700; color: var(--accent); flex: none; }
+.mt-id.big { font-size: 30px; }
+.mt-k { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.mt-k b { font-size: 9px; letter-spacing: 2px; color: var(--ink); }
+.mt-k small { font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-k small.pos { color: var(--accent); }
+.mt-k i { font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--accent); }
+.mt-live { display: flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--muted); flex: none; }
+.mt-live i { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.mt-live.on { color: var(--ok); }
+.mt-live.on i { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.mt-clk { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mt-clk b { font-size: 22px; color: var(--ink); }
+.mt-clk small { font-size: 9px; letter-spacing: 1px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-clk em { margin-left: auto; font-style: normal; font-size: 10px; font-weight: 700; color: var(--ink); flex: none; }
+.mt-trail { width: 100%; height: 46px; display: block; border-radius: 6px; background: color-mix(in srgb, var(--paper) 55%, transparent); }
+.mt-trail .g line { stroke: var(--line); stroke-opacity: 0.35; stroke-width: 0.5; }
+.mt-trail .p { fill: none; stroke: var(--accent); stroke-opacity: 0.22; stroke-width: 1; }
+.mt-trail circle { fill: var(--accent); }
+.mt-trail circle.ring { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.mt-spark { position: relative; height: 24px; }
+.mt-spark.cons { height: 34px; }
+.mt-spark svg { width: 100%; height: 100%; display: block; }
+.mt-spark .p { fill: none; stroke: var(--accent); stroke-opacity: 0.9; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.mt-spark .f { fill: var(--accent); fill-opacity: 0.18; }
+.mt-spark b { position: absolute; right: 2px; top: 0; font-size: 9px; color: var(--ink); }
+.mt-wait { height: 34px; font-size: 9px; color: var(--muted); display: flex; align-items: center; }
+.mt-hex { font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-detail { position: absolute; left: 6px; right: 6px; bottom: 6px; z-index: 600; border-radius: 14px; padding: 11px; border: 1.5px solid var(--accent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--surface)), var(--surface)); box-shadow: 0 4px 18px rgba(0,0,0,0.45); }
+.mt-dh { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; min-width: 0; }
+.mt-dh b { font-size: 22px; color: var(--accent); flex: none; }
+.mt-dh span { font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--ink); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-dh .chip { padding: 4px 8px; font-size: 10px; flex: none; }
+.mt-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 10px; max-height: 170px; overflow-y: auto; }
+.mt-fields.tall { max-height: 420px; }
+.mt-fields > div { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.mt-fields b { width: 96px; flex: none; font-size: 9px; letter-spacing: 1px; color: var(--muted); }
+.mt-fields span { font-size: 10px; color: var(--ink); user-select: text; overflow-wrap: anywhere; }
+.mt-fields p { grid-column: 1 / -1; font-size: 9px; color: var(--muted); margin: 4px 0 0; }
+.seg button.off { opacity: 0.45; }
+.view.ert.metersfull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; overflow: hidden; }
+.view.ert.metersfull > .visual, .view.ert.metersfull > .controls > :not(.ctlrow):not(.mt-stage):not(.mt-sum) { display: none !important; }
+.view.ert.metersfull > .controls > .ctlrow ~ .ctlrow { display: none !important; }
+.view.ert.metersfull > .controls { height: 100%; max-height: none; display: flex !important; flex-direction: column; overflow: hidden; padding: 0; }
+.view.ert.metersfull .mt-stage { flex: 1; min-height: 0; }
+.view.ert.metersfull .mt-cards { max-height: none; height: 100%; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.view.ert.metersfull .mt-stage .map { height: 100%; }

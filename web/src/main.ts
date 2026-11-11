@@ -49,7 +49,7 @@ const APPS: AppDef[] = [
   { id: 'ais', title: 'AIS', blurb: 'ships, 162 MHz', cat: 'Receive' },
   { id: 'aprs', title: 'APRS', blurb: 'packet radio, 144.39 MHz', cat: 'Receive' },
   { id: 'pager', title: 'FLEX', blurb: 'pager RX · FLEX, or POCSAG too', cat: 'Receive' },
-  { id: 'ert', title: 'ERT', blurb: 'utility meters, 915 MHz', cat: 'Receive' },
+  { id: 'ert', title: 'Meters', blurb: 'utility meters: ERT, mesh networks, Gridstream', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
   { id: 'tpms', title: 'TPMS', blurb: 'tire pressure, 315 / 433 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
@@ -773,8 +773,9 @@ function open(app: AppId | null): void {
       if (state.pagerMulti) configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt');
       else { configure('NFM', 929_612_500, 2e6, 32, 32, false, 'pager'); worker?.postMessage({ type: 'pager', which: state.pager }); }
       break;
-    // Mayhem's rate and center: 128 samples a chip, and a 3.5 MHz filter that takes in 910-913 MHz
-    case 'ert': configure('NONE', 911_600_000, radioCan(4_194_304) ? 4_194_304 : 2e6, 32, 40, true, 'ert'); break;
+    // Meters: as wide as the radio goes (19.2 Msps on a HackRF hears 118 hopping channels and about six times the
+    // meters of Mayhem's 4.19 Msps ERT span), else Mayhem's ERT rate, else 2 Msps; centered where the ERT meters sit
+    case 'ert': configure('NONE', 911_600_000, radioCan(METERS_WIDE) ? METERS_WIDE : radioCan(METERS_RATE) ? METERS_RATE : 2e6, 32, 40, true, 'ert'); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
@@ -1580,7 +1581,8 @@ function render(app: AppId | null): void {
     case 'ais': renderAis(view); break;
     case 'aprs': renderAprs(view); break;
     case 'pager': if (state.pagerMulti) renderHunt(view); else renderPacket(view, app); break;
-    case 'ert': case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
+    case 'ert': renderMeters(view); break;
+    case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
     case 'capture': renderCapture(view); break;
@@ -3248,7 +3250,6 @@ function renderPacket(view: HTMLElement, app: AppId): void {
   let controls = '';
   switch (app) {
     case 'pager': controls = `<div class="row">${(['flex', 'pocsag', 'both'] as const).map(w => `<button class="chip" data-pager="${w}">${w === 'both' ? 'FLEX + POCSAG' : w.toUpperCase()}</button>`).join('')}</div>` + presetHtml('CHANNEL · MHz', [['929.6125', 929_612_500], ['929.6625', 929_662_500], ['931.9375', 931_937_500], ['466.175', 466_175_000]]) + stepHtml([1e5, 12_500, 2_500]); break;
-    case 'ert': controls = presetHtml('CENTER · MHz', [['911.6', 911_600_000], ['915.0', 915_000_000], ['920.0', 920_000_000]]) + `<div class="row"><button class="chip" data-rate="2000000">2.0 Msps</button><button class="chip" data-rate="4194304">4.194 Msps</button></div>`; break;
     case 'tpms': controls = presetHtml('BAND · MHz', [['315.000 · US', 315_000_000], ['433.920 · EU', 433_920_000]]) + `<div class="note">Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.</div>`; break;
     case 'acars': controls = presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]]) + `<div class="note">Registration, flight, label and text from each message, CRC checked.</div>`; break;
     case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + `<div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? 'WEATHER 26' : f === 'remotes' ? 'REMOTES 47' : 'CAR KEYS 11'}</button>`).join('')}</div>`; break;
@@ -3262,6 +3263,176 @@ function renderPacket(view: HTMLElement, app: AppId): void {
   qa<HTMLButtonElement>('[data-pager]', view).forEach(b => { b.classList.toggle('on', b.dataset.pager === state.pager); b.onclick = () => { state.pager = b.dataset.pager as typeof state.pager; worker?.postMessage({ type: 'pager', which: state.pager }); qa('[data-pager]').forEach(x => x.classList.toggle('on', x === b)); }; });
   qa<HTMLButtonElement>('[data-btle]', view).forEach(b => b.onclick = () => { state.btleCh = Number(b.dataset.btle); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); tune(btleChannelFreq(state.btleCh)); refreshBtle(); });
   refreshList(app); refreshAis(); refreshBtle();
+}
+
+// ---- Meters: ERT meters, the hopping mesh networks and Gridstream meters, all heard at once ----------------------
+const METERS_RATE = 4_194_304, METERS_WIDE = 19_200_000;
+const MESH_GRIDSTREAM = -1, MESH_ERT = -2;
+interface MeshDev {
+  key: string; net: number; id: number; label: string; frames: number; firstMs: number; lastMs: number;
+  hops: { hz: number; ms: number }[]; snr: number[]; clock: number; clockMs: number; clockRate: number; lastHex: string;
+  address: number; uptimeS: number; uptimeMs: number; ertKind: string; commodity: string; consFirst: number; cons: number;
+  consHistory: number[]; lat: number | null; lon: number | null; wanVotes: Record<string, number>; fields: { name: string; value: string }[];
+}
+interface MeshNetRow { sync: number; frames: number; channels: number[]; loHz: number; hiHz: number }
+interface MetersSnap { nets: MeshNetRow[]; devices: MeshDev[]; links: { a: number; b: number }[]; bursts: number }
+/** The Meters screen: CARDS shows every device live; MAP puts the ones that broadcast a position where they say they
+ *  are (only positions decoded off the air), with the mesh links between them. A tap on a card or a pin opens
+ *  everything decoded from that device. */
+const meters = { snap: null as MetersSnap | null, view: 'cards' as 'cards' | 'map' | 'log', sel: '', full: false, tall: false, drawn: 0, timer: 0, drawPending: 0 };
+const meshSync = (s: number) => s === MESH_GRIDSTREAM ? 'Gridstream' : s.toString(16).toUpperCase().padStart(6, '0');
+const hx = (v: number, w: number) => v.toString(16).toUpperCase().padStart(w, '0');
+function meshClockAt(d: MeshDev, ms: number): number {
+  if (d.clock < 0) return -1;
+  const v = d.clock + Math.round(d.clockRate * (ms - d.clockMs) / 1000);
+  return d.net === MESH_GRIDSTREAM ? ((v % 16_800) + 16_800) % 16_800 : v & 0xFFFF;
+}
+function meshPerSecond(d: MeshDev): number {
+  const h = d.hops; if (h.length < 2 || h[h.length - 1].ms <= h[0].ms) return 0;
+  return (h.length - 1) / ((h[h.length - 1].ms - h[0].ms) / 1000);
+}
+/** Positioned devices: only positions decoded off the air (this device's own location is not used). */
+const metersPins = (): GeoItem[] => (meters.snap?.devices ?? []).filter(d => d.lat !== null && d.lon !== null).map(d => ({ id: d.key, lat: d.lat!, lon: d.lon!, label: d.label, kind: 'station' as GeoItem['kind'] }));
+function renderMeters(view: HTMLElement): void {
+  const off = (r: number) => radioCan(r) ? '' : 'off';
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="mt-sum" class="mt-sum"></div>
+      <div class="ctlrow">${segHtml(['cards', 'map', 'log'].map(v => `<button data-mtview="${v}">${v.toUpperCase()}</button>`))}<button id="mt-full" class="ib" title="full screen" aria-label="full screen">${meters.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('ert')}</div>
+      <div id="mt-stage" class="mt-stage"><div id="mt-cards" class="mt-cards"></div><div id="mt-map" class="panel map"></div><div id="mt-nopos" class="mt-nopos">no positions yet</div><div id="mt-detail" class="mt-detail" hidden></div></div>
+      <div id="mt-log">${logHtml('ert', 'watching the band for meters…')}</div>
+      ${presetHtml('CENTER', [['904.0', 904_000_000], ['911.6', 911_600_000], ['916.0', 916_000_000], ['920.0', 920_000_000], ['925.0', 925_000_000]])}
+      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml(([[2_000_000, '2 MHz'], [METERS_RATE, '4.2 MHz'], [METERS_WIDE, '19.2 MHz']] as [number, string][]).map(([r, l]) => `<button data-rate="${r}" class="${off(r)}">${l}</button>`))}</div>
+      <div class="note">Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) and Neptune R900 water meters with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), and Landis+Gyr Gridstream meters with their IDs, uptime and position. 902–928 MHz. A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band.</div>
+      ${gainHtml()}</section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-mtview]', view).forEach(b => b.onclick = () => { meters.view = b.dataset.mtview as typeof meters.view; refreshMeters(true); });
+  $('mt-full').onclick = () => setMetersFull(!meters.full);
+  $('mt-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-mdev]'); if (c) { meters.sel = meters.sel === c.dataset.mdev ? '' : c.dataset.mdev!; refreshMeters(true); } };
+  $('mt-detail').onclick = (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-mdo]'); if (!b) return;
+    const what = b.dataset.mdo;
+    if (what === 'close') meters.sel = '';
+    else if (what === 'tall') meters.tall = !meters.tall;
+    else if (what === 'map') {
+      meters.view = 'map'; refreshMeters(true);
+      const d = meters.snap?.devices.find(x => x.key === meters.sel);
+      if (d && d.lat !== null && d.lon !== null) geo?.center(d.lat, d.lon, 15);
+      return;
+    } else if (what === 'cards') meters.view = 'cards';
+    refreshMeters(true);
+  };
+  view.classList.toggle('metersfull', meters.full);
+  // the map fits the pins themselves, never this device's own location (the meters' positions come off the air)
+  geo = new GeoMap($('mt-map'), { home: null, fitPins: true, onPick: id => { meters.sel = id; refreshMeters(true); }, log });
+  clearInterval(meters.timer);
+  // the cards run their clocks and ages on between frames
+  meters.timer = window.setInterval(() => { if (state.app !== 'ert') { clearInterval(meters.timer); return; } refreshMeters(); }, 500);
+  refreshMeters(true);
+}
+function setMetersFull(on: boolean): void {
+  meters.full = on;
+  const v = q('.view.ert'); if (!v) return;
+  v.classList.toggle('metersfull', on);
+  const b = q('#mt-full'); if (b) { b.innerHTML = on ? EXIT_SVG : FULL_SVG; b.title = on ? 'leave full screen' : 'full screen'; }
+  refreshMeters(true);
+  requestAnimationFrame(() => geo?.invalidate());
+}
+function metersNetLine(n: MeshNetRow): string {
+  const span = n.hiHz > n.loHz ? `${(n.loHz / 1e6).toFixed(2)}–${(n.hiHz / 1e6).toFixed(2)} MHz` : `${(n.loHz / 1e6).toFixed(3)} MHz`;
+  return `<div>${n.sync === MESH_GRIDSTREAM ? 'GRIDSTREAM' : `NETWORK ${meshSync(n.sync)}`} · ${n.frames} frames · ${n.channels.length} channels · ${span}</div>`;
+}
+/** Each recent hop at its frequency across the span; time runs down the strip, joined by a faint path. */
+function meshHopTrail(d: MeshDev, now: number): string {
+  const lo = spanCenter() - state.rate / 2, span = Math.max(state.rate, 1), n = d.hops.length, W = 300, H = 46;
+  const grid = Array.from({ length: 7 }, (_, k) => `<line x1="${W * (k + 1) / 8}" y1="2" x2="${W * (k + 1) / 8}" y2="${H - 2}"/>`).join('');
+  if (!n) return `<svg class="mt-trail" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g class="g">${grid}</g></svg>`;
+  const pts = d.hops.map((h, i) => [W * Math.min(Math.max((h.hz - lo) / span, 0), 1), n === 1 ? H / 2 : 4 + (H - 8) * i / (n - 1)]);
+  const dots = pts.map(([x, y], i) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${i === n - 1 ? 3.6 : 2.2}" opacity="${(0.15 + 0.85 * (i + 1) / n).toFixed(2)}"/>`).join('');
+  const fresh = Math.max(0, 1 - (now - d.lastMs) / 900), last = pts[n - 1];
+  return `<svg class="mt-trail" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g class="g">${grid}</g><polyline points="${pts.map(p => p.map(v => v.toFixed(1)).join(',')).join(' ')}" class="p"/>${dots}${fresh > 0 ? `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="${(4 + 9 * (1 - fresh)).toFixed(1)}" class="ring" opacity="${(0.8 * fresh).toFixed(2)}"/>` : ''}</svg>`;
+}
+/** A line over recent values: an ERT meter's consumption (rising), or the signal of a transmitter's recent frames. */
+function meshSpark(v: number[], fill: boolean, label: string): string {
+  if (v.length < 2) return fill ? '<div class="mt-spark"></div>' : '<div class="mt-wait">waiting for the next reading</div>';
+  const W = 300, H = fill ? 24 : 34;
+  const lo = Math.min(...v) - (fill ? 3 : 0), hi = Math.max(...v) + (fill ? 3 : 0), sp = Math.max(hi - lo, 1);
+  const pts = v.map((x, i) => `${(W * i / (v.length - 1)).toFixed(1)},${(H - H * (x - lo) / sp).toFixed(1)}`);
+  return `<div class="mt-spark ${fill ? '' : 'cons'}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${fill ? `<polygon points="${pts.join(' ')} ${W},${H} 0,${H}" class="f"/>` : ''}<polyline points="${pts.join(' ')}" class="p"/></svg>${label ? `<b>${label}</b>` : ''}</div>`;
+}
+/** One transmitter, live: its id, its hop clock running on between frames, a trail of where its last hops landed
+ *  across the span (newest at the bottom, brightest), its signal over the recent frames, and the last frame. The
+ *  card lights up as each frame arrives. */
+function meshCard(d: MeshDev, now: number): string {
+  const age = d.lastMs > 0 ? (now - d.lastMs) / 1000 : 1e9, flash = Math.max(0, 1 - age / 0.7);
+  // bursty senders go quiet for a while between bursts: a device stays lit for a minute, and once found it stays on
+  // the board, dimmed only a little
+  const live = age < 60, ertM = d.net === MESH_ERT, gs = d.net === MESH_GRIDSTREAM;
+  const kind = ertM ? 'ERT METER' : gs ? 'GRIDSTREAM METER' : 'TRANSMITTER';
+  const sub = ertM ? `${d.ertKind} · ${d.commodity}` : gs ? (d.lat !== null ? 'POSITION ON AIR' : 'LANDIS+GYR') : `NET ${meshSync(d.net)}`;
+  const status = live ? 'LIVE' : d.lastMs === 0 ? 'ADDRESSED' : age < 120 ? `${Math.floor(age)} s ago` : `${Math.floor(age / 60)} min ago`;
+  let clock: string;
+  if (ertM) clock = `<b>${d.cons}</b><small>${d.cons > d.consFirst ? `+${d.cons - d.consFirst} SINCE HEARD` : 'CONSUMPTION'}</small><em>${d.frames} readings</em>`;
+  else {
+    const c = meshClockAt(d, now);
+    if (gs) {
+      const up = d.uptimeS < 0 ? -1 : d.uptimeS + Math.trunc((now - d.uptimeMs) / 1000);
+      const p2 = (x: number) => String(x).padStart(2, '0');
+      clock = `<b>${c >= 0 ? (c / 100).toFixed(2).padStart(6, '0') : '---.--'}</b><small>${up >= 0 ? `HOP s · UP ${Math.floor(up / 86400)}d ${p2(Math.floor(up / 3600) % 24)}h ${p2(Math.floor(up / 60) % 60)}m ${p2(up % 60)}s` : 'HOP s'}</small>`;
+    } else clock = `<b>${c >= 0 ? hx(c, 4) : '----'}</b><small>${d.clockRate !== 0 ? `HOP CLOCK ${d.clockRate >= 0 ? '+' : ''}${d.clockRate.toFixed(0)}/s` : 'HOP CLOCK'}</small>`;
+    clock += `<em>${d.frames} · ${meshPerSecond(d).toFixed(1)}/s</em>`;
+  }
+  return `<div class="mt-card ${meters.sel === d.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-mdev="${esc(d.key)}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-id ${d.label.length > 2 ? '' : 'big'}">${esc(d.label)}</span><span class="mt-k"><b>${kind}</b><small class="${d.lat !== null ? 'pos' : ''}">${esc(sub)}</small>${d.address >= 0 ? `<i>NODE ID ${hx(d.address, 6)} · ${d.address}</i>` : ''}</span><span class="mt-live ${live ? 'on' : ''}"><i></i>${status}</span></div>`
+    + `<div class="mt-clk">${clock}</div>`
+    + (ertM ? meshSpark(d.consHistory, false, '') : meshHopTrail(d, now) + meshSpark(d.snr, true, d.snr.length ? `+${d.snr[d.snr.length - 1]} dB` : ''))
+    + `<div class="mt-hex">${esc(d.lastHex)}</div></div>`;
+}
+/** Everything decoded from one device, field by field, with MAP when it has a position. */
+function meshDetail(d: MeshDev, onMap: boolean): string {
+  const kind = d.net === MESH_ERT ? 'ERT METER' : d.net === MESH_GRIDSTREAM ? 'GRIDSTREAM METER' : `MESH NODE · ${meshSync(d.net)}`;
+  const votes = Object.values(d.wanVotes);
+  return `<div class="mt-dh"><b>${esc(d.label)}</b><span>${kind}</span>${onMap ? '<button class="chip" data-mdo="map">MAP</button>' : ''}${meters.view === 'map' ? '<button class="chip" data-mdo="cards">CARDS</button>' : ''}<button class="chip" data-mdo="tall">${meters.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-mdo="close">✕</button></div>`
+    + `<div class="mt-fields ${meters.tall ? 'tall' : ''}">${d.fields.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
+    + (d.net === MESH_GRIDSTREAM && votes.length > 1 ? `<p>position heard ${Math.max(...votes)}× of ${votes.reduce((a, b) => a + b, 0)} beacons (the most-heard one is shown)</p>` : '') + '</div>';
+}
+function refreshMeters(force = false): void {
+  if (state.app !== 'ert') return;
+  const now = Date.now();
+  // the cards repaint at most four times a second
+  if (!force && now - meters.drawn < 240) { clearTimeout(meters.drawPending); meters.drawPending = window.setTimeout(() => refreshMeters(true), 250); return; }
+  meters.drawn = now;
+  const snap = meters.snap, devs = snap?.devices ?? [], nets = snap?.nets ?? [];
+  const ertN = devs.filter(d => d.net === MESH_ERT).length, pins = metersPins();
+  if (meters.full && meters.view === 'log') meters.view = 'cards';
+  const sum = q('#mt-sum');
+  if (sum) sum.innerHTML = (nets.length === 0 && ertN === 0 ? `<div class="muted">${snap && snap.bursts > 0 ? `${snap.bursts} bursts heard, no network locked yet` : 'watching the band for meters'}</div>` : '')
+    + nets.slice(0, 3).map(metersNetLine).join('') + (ertN ? `<div>ERT · ${ertN} meters</div>` : '');
+  qa<HTMLButtonElement>('[data-mtview]').forEach(b => { const v = b.dataset.mtview; b.classList.toggle('on', v === meters.view); b.textContent = v === 'cards' ? `DEVICES · ${devs.length}` : v === 'map' ? `MAP · ${pins.length}` : 'LOG'; b.hidden = v === 'log' && meters.full; });
+  const cards = q('#mt-cards'), mapEl = q('#mt-map'), logEl = q('#mt-log'), nopos = q('#mt-nopos'), det = q('#mt-detail'), stage = q('#mt-stage');
+  if (!cards || !mapEl || !logEl || !nopos || !det || !stage) return;
+  cards.hidden = meters.view !== 'cards'; mapEl.hidden = meters.view !== 'map';
+  logEl.hidden = meters.view !== 'log'; stage.hidden = meters.view === 'log';
+  nopos.hidden = meters.view !== 'map' || pins.length > 0;
+  if (meters.view === 'cards' && !paused.has('ert')) {
+    const top = cards.scrollTop;
+    const list = [...devs].sort((a, b) => a.firstMs - b.firstMs || (a.key < b.key ? -1 : 1));
+    cards.innerHTML = list.length ? list.map(d => meshCard(d, now)).join('') : '<div class="empty">no devices yet</div>';
+    cards.scrollTop = top;
+  }
+  const picked = devs.find(d => d.key === meters.sel);
+  det.hidden = !picked;
+  if (picked) { const top = q('.mt-fields', det)?.scrollTop ?? 0; det.innerHTML = meshDetail(picked, pins.some(p => p.id === picked.key)); const f = q('.mt-fields', det); if (f) f.scrollTop = top; }
+  if (meters.view === 'map') {
+    geo?.invalidate();
+    geo?.update(pins, meters.sel);
+    const at = new Map<number, [number, number]>();
+    for (const d of devs) if (d.net === MESH_GRIDSTREAM && d.lat !== null && d.lon !== null) at.set(d.id, [d.lat, d.lon]);
+    geo?.setLines((snap?.links ?? []).filter(l => at.has(l.a) && at.has(l.b)).map(l => [at.get(l.a)!, at.get(l.b)!]));
+  }
+  const n = devs.length;
+  if (n > 0) setLamp(`${n} DEVICE${n === 1 ? '' : 'S'}`, 'ok');
 }
 
 /** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
@@ -3853,6 +4024,7 @@ function redraw(id: string): void {
     case 'adsb': refreshAdsb(); break;
     case 'devices': drawR433(); break;
     case 'psat': refreshPacketSats(); break;
+    case 'ert': refreshList(id); refreshMeters(true); break;
     default: refreshList(id);
   }
 }
@@ -3867,6 +4039,7 @@ function clearApp(id: string): void {
     case 'adsb': state.aircraft = []; state.frames = 0; state.adsbSel = ''; break;
     case 'devices': state.r433.heard = []; break;
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
+    case 'ert': meters.snap = null; meters.sel = ''; break;
   }
   worker?.postMessage({ type: 'clear' });
   // a cleared screen shows empty even while paused - the freeze is for reading rows, and there are none now
@@ -4212,6 +4385,7 @@ function ensureWorker(): Worker {
       case 'same': onSameAlert(m); break;
       case 'table': state.aisTable = m.rows; refreshAis(); break;
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
+      case 'meters': meters.snap = m as MetersSnap; refreshMeters(); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
       case 'huntPage': onHuntPage(m); break;
@@ -4579,7 +4753,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (state.app && !wideShell.matches) open(null); break;
+      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (state.app && !wideShell.matches) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
@@ -4709,7 +4883,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TYRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
-  ert: ['ERT', 'UTILITY METERS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
+  ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'SENSORS · METERS · REMOTES'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };

@@ -13,6 +13,8 @@ export interface GeoOpts {
   onPick: (id: string) => void;
   onFollow?: (on: boolean) => void;
   log?: (line: string) => void;
+  /** Fit the pins themselves, close in (meters a few hundred meters apart): one pin zooms right in on it. */
+  fitPins?: boolean;
 }
 
 let leafletReady: Promise<void> | null = null;
@@ -94,8 +96,10 @@ export class GeoMap {
     const pts: [number, number][] = this.items.map(i => [i.lat, i.lon] as [number, number]).concat(this.trackPts);
     if (this.opts.home && (this.trackPts.length || this.lines.length)) pts.push([this.opts.home.lat, this.opts.home.lon]);
     if (!pts.length) return;
-    if (pts.length === 1) { this.map.panTo(pts[0]); return; }
-    this.map.fitBounds(pts, { padding: [40, 40], maxZoom: 11 });
+    // one point (or several on the same spot): glide there and zoom in as part of the glide
+    const same = pts.every(p => Math.abs(p[0] - pts[0][0]) < 1e-6 && Math.abs(p[1] - pts[0][1]) < 1e-6);
+    if (same) { this.map.flyTo(pts[0], this.opts.fitPins ? 15 : Math.max(this.map.getZoom(), 11)); return; }
+    this.map.fitBounds(pts, { padding: this.opts.fitPins ? [70, 70] : [40, 40], maxZoom: this.opts.fitPins ? 17 : 11 });
   }
   center(lat: number, lon: number, minZoom = 9): void {
     if (!this.map) return;
