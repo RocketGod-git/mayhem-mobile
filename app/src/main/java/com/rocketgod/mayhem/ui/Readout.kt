@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -106,8 +107,16 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Colo
     var lead = true
     Row(verticalAlignment = Alignment.Bottom) {
         groups.forEachIndexed { gi, (weights, unit) ->
-            if (gi > 0) Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs, modifier = Modifier.padding(bottom = d.dp(12f))
-                .layout { m, c -> val p = m.measure(c); val w = (p.width * DOT_WIDTH).roundToInt(); layout(w, p.height) { p.place((w - p.width) / 2, 0) } })
+            // built like a digit group (a digit-sized cell over a unit-label line) so the dot sits on the digits' baseline
+            // whatever the font size; a fixed bottom padding put it too high
+            if (gi > 0) Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier
+                .layout { m, c -> val p = m.measure(c.copy(minWidth = 0)); val w = (p.width * DOT_WIDTH).roundToInt(); layout(w, p.height) { p.place((w - p.width) / 2, 0) } }) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("0", color = Color.Transparent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs)
+                    Text(".", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = fs)
+                }
+                Text(" ", color = Color.Transparent, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
+            }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row {
                     for (w in weights) key(w) {

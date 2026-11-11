@@ -359,7 +359,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* Frequency readout: ten individually tunable digits. Hover (or focus) a digit and chevrons appear above and below
  * it; the top half / wheel-up adds one, the bottom half / wheel-down subtracts one. Leading zeros are dimmed. */
-.freq { display: inline-flex; align-items: flex-start; gap: 0; font-family: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace; font-weight: 800; font-size: 30px; line-height: 1; user-select: none; -webkit-user-select: none; padding: 0.55em 0 0.15em; }
+.freq { display: inline-flex; align-items: baseline; gap: 0; font-family: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace; font-weight: 800; font-size: 30px; line-height: 1; user-select: none; -webkit-user-select: none; padding: 0.55em 0 0.15em; }
 .fgrp { display: inline-flex; flex-direction: column; align-items: center; }
 .fds { display: inline-flex; }
 .fd { position: relative; display: inline-block; width: 0.66em; text-align: center; border-radius: 0.12em; cursor: ns-resize; touch-action: none; outline: none; color: var(--ink); transition: color 0.12s, background 0.12s, transform 0.12s; }
