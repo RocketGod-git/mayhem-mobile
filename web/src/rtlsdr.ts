@@ -246,9 +246,10 @@ export const RTL_LIMITS: RadioLimits = {
   // not a matter of sensitivity; the tuner simply will not go there.
   minHz: 24_000_000,
   maxHz: 1_766_000_000,
-  // Two windows, exactly as the hardware defines them. Between 300 kHz and 900 kHz the resampler produces
-  // nothing usable, and above 2.4 Msps the USB link starts dropping samples rather than slowing down.
-  rates: [[225_001, 300_000], [900_001, 2_400_000]],
+  // Two windows, as the hardware defines them. Between 300 kHz and 900 kHz the resampler produces nothing usable.
+  // The RTL2832U goes to 3.2 Msps; past about 2.56 some dongles and USB hosts drop the odd buffer, which costs a
+  // decode now and then but shows far more of the band (all of a pager cluster, more of FM broadcast).
+  rates: [[225_001, 300_000], [900_001, 3_200_000]],
   canTransmit: false,
 };
 

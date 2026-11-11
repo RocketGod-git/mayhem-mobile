@@ -24,8 +24,14 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
     val stepHz: Double = sliceHz.toDouble() * KEEP / BINS
     val binHz: Double = sliceHz.toDouble() / BINS
     val steps: Int = ceil((endHz - startHz) / stepHz).toInt().coerceAtLeast(1)
-    /** How far a row reaches from [startHz]: whole steps, so up to one step past [endHz]. */
-    val coverHz: Long = (steps * stepHz).toLong()
+    /** Bins of a row that fall inside the range asked for: the last slice usually runs past [endHz]. */
+    val bins: Int = minOf(steps * KEEP, ceil((endHz - startHz) / binHz).toInt())
+    /** How far a row reaches from [startHz]: the range asked for, to the bin. */
+    val coverHz: Long = (bins * binHz).toLong()
+    /** Running noise floor across slices: every slice is shifted onto it, so a pass reads as one picture rather than
+     *  a patchwork of slices each at its own level (gain, filter ripple and the AGC all move a slice's floor). */
+    private var refFloor = Float.NaN
+    private val sortBuf = FloatArray(KEEP)
     private val re = FloatArray(FFT); private val im = FloatArray(FFT)
     private val acc = DoubleArray(FFT)
     private val win = FloatArray(FFT) { (0.5 - 0.5 * cos(2.0 * Math.PI * it / (FFT - 1))).toFloat() }
@@ -100,13 +106,19 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         slice[c] = (slice[c - 2] + slice[c + 2]) * 0.5f
         slice[c - 1] = slice[c - 2]
         slice[c + 1] = slice[c + 2]
+        // level this slice's floor (its 30th percentile) onto the running floor
+        System.arraycopy(slice, KEEP0, sortBuf, 0, KEEP); sortBuf.sort()
+        val fl = sortBuf[(KEEP * 3) / 10]
+        refFloor = if (refFloor.isNaN()) fl else refFloor + 0.05f * (fl - refFloor)
+        val shift = refFloor - fl
+        for (k in KEEP0 until KEEP1) slice[k] += shift
         System.arraycopy(slice, KEEP0, work, step * KEEP, KEEP)
         val now = System.currentTimeMillis()
-        if (now - lastLive >= LIVE_MS) { lastLive = now; _live.value = work.copyOf() }
+        if (now - lastLive >= LIVE_MS) { lastLive = now; _live.value = work.copyOf(bins) }
         step++
         if (step >= steps) {
             step = 0
-            _row.value = work.copyOf()
+            _row.value = work.copyOf(bins)
             passPeakRms = kotlin.math.sqrt(peakSq); peakSq = 0.0
             _sweeps.value = _sweeps.value + 1
         }

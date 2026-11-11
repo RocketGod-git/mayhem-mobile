@@ -30,6 +30,12 @@ export class SweepProcessor implements IqProcessor {
   private sweeps = 0;
   /** Mean square (counts²) of the loudest slice so far this pass: the AGC steers a sweep by it. */
   private peakSq = 0;
+  /** Running noise floor across slices: every slice is shifted onto it, so a pass reads as one picture rather than
+   *  a patchwork of slices each sitting at its own level (gain, filter ripple and the AGC all move a slice's floor). */
+  private refFloor = NaN;
+  private readonly sortBuf = new Float32Array(SWEEP_KEEP);
+  /** Bins that fall inside the range asked for: the last slice usually runs past its end. */
+  readonly bins: number;
 
   readonly stepHz: number;
   readonly binHz: number;
@@ -38,6 +44,7 @@ export class SweepProcessor implements IqProcessor {
     this.binHz = sliceHz / SWEEP_BINS;
     this.steps = Math.max(1, Math.ceil((endHz - startHz) / this.stepHz));
     this.work = new Float32Array(this.steps * SWEEP_KEEP);
+    this.bins = Math.min(this.work.length, Math.ceil((endHz - startHz) / this.binHz));
   }
   /** Tune so the kept (inner) part of slice i covers [start + i·step, start + (i+1)·step). */
   centerOf(i: number): number { return this.startHz + this.stepHz / 2 + i * this.stepHz; }
@@ -60,18 +67,24 @@ export class SweepProcessor implements IqProcessor {
     powerDbFrom(this.acc, frames, this.slice);
     const c = SWEEP_BINS / 2;
     this.slice[c] = (this.slice[c - 2] + this.slice[c + 2]) * 0.5; this.slice[c - 1] = this.slice[c - 2]; this.slice[c + 1] = this.slice[c + 2];
+    // level this slice's floor (its 30th percentile) onto the running floor
+    this.sortBuf.set(this.slice.subarray(KEEP0, KEEP1)); this.sortBuf.sort();
+    const fl = this.sortBuf[Math.floor(SWEEP_KEEP * 0.3)];
+    this.refFloor = Number.isNaN(this.refFloor) ? fl : this.refFloor + 0.05 * (fl - this.refFloor);
+    const shift = this.refFloor - fl;
+    for (let k = KEEP0; k < KEEP1; k++) this.slice[k] += shift;
     this.work.set(this.slice.subarray(KEEP0, KEEP1), this.step * SWEEP_KEEP);
     // Hand the slice we just measured up to the display right away, so the spectrum trace paints across the span as
     // the radio steps rather than sitting frozen until the whole pass finishes. The waterfall row still lands once
     // a full pass completes, below.
     const live = this.slice.slice(KEEP0, KEEP1);
-    this.emit({ type: 'sweepLive', slice: live, step: this.step, steps: this.steps }, [live.buffer]);
+    this.emit({ type: 'sweepLive', slice: live, step: this.step, steps: this.steps, bins: this.bins }, [live.buffer]);
     this.step++;
     if (this.step >= this.steps) {
       this.step = 0; this.sweeps++;
-      const row = this.work.slice();
+      const row = this.work.slice(0, this.bins);
       const peakRms = Math.sqrt(this.peakSq); this.peakSq = 0;
-      this.emit({ type: 'sweep', row, peakRms, steps: this.steps, sweeps: this.sweeps, startHz: this.startHz, endHz: this.startHz + this.steps * this.stepHz, binHz: this.binHz, progress: 0 }, [row.buffer]);
+      this.emit({ type: 'sweep', row, peakRms, steps: this.steps, sweeps: this.sweeps, startHz: this.startHz, endHz: this.startHz + this.bins * this.binHz, binHz: this.binHz, progress: 0 }, [row.buffer]);
     } else this.emit({ type: 'sweepProgress', progress: this.step, steps: this.steps, sweeps: this.sweeps });
     this.emit({ type: 'tune', hz: this.centerOf(this.step) });
     const bufMs = nSamp * 1000 / rate;

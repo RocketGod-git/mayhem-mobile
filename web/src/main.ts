@@ -28,6 +28,7 @@ import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS, NARROW_TILES as LORA_TILES, NARROW_SHIFT as LORA_SHIFT, homeBand as loraHomeBand } from './dsp/lora/plan.js';
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
+import { ISM_COUNTS } from './dsp/ism/counts.js';
 
 type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
 /**
@@ -394,7 +395,7 @@ function setMode(m: Mode): void {
   drawRds(); drawHd();
 }
 function setRate(r: number): void {
-  // An RTL-SDR tops out at 2.4 Msps and has a hole between 300 and 900 kHz. Clamping to the nearest rate it
+  // An RTL-SDR tops out at 3.2 Msps and has a hole between 300 and 900 kHz. Clamping to the nearest rate it
   // will accept beats letting the app ask for something the hardware answers with silence.
   if (radio) {
     const ok = nearestRate(radio.limits, r);
@@ -774,7 +775,7 @@ function open(app: AppId | null): void {
     case 'pager':
       // MULTI where the radio can take 3.84 Msps: the whole US pager band (929.0-932.0 MHz) from its middle,
       // instead of half of it at 2 Msps
-      if (state.pagerMulti) { if (radioCan(3_840_000)) configure('NONE', 930_500_000, 3_840_000, 32, 40, true, 'pagerhunt'); else configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt'); }
+      if (state.pagerMulti) { if (radioCan(3_840_000)) configure('NONE', 930_500_000, 3_840_000, 32, 40, true, 'pagerhunt'); else if (radioCan(3_200_000)) configure('NONE', 930_200_000, 3_200_000, 32, 40, true, 'pagerhunt'); else configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt'); }
       else { configure('NFM', 929_612_500, 2e6, 32, 32, false, 'pager'); worker?.postMessage({ type: 'pager', which: state.pager }); }
       break;
     // Meters: as wide as the radio goes (19.2 Msps on a HackRF hears 118 hopping channels and about six times the
@@ -3258,12 +3259,15 @@ function renderPacket(view: HTMLElement, app: AppId): void {
     case 'pager': controls = `<div class="row">${(['flex', 'pocsag', 'both'] as const).map(w => `<button class="chip" data-pager="${w}">${w === 'both' ? 'FLEX + POCSAG' : w.toUpperCase()}</button>`).join('')}</div>` + presetHtml('CHANNEL · MHz', [['929.6125', 929_612_500], ['929.6625', 929_662_500], ['931.9375', 931_937_500], ['466.175', 466_175_000]]) + stepHtml([1e5, 12_500, 2_500]); break;
     case 'tpms': controls = presetHtml('BAND · MHz', [['315.000 · US', 315_000_000], ['433.920 · EU', 433_920_000]]) + `<div class="note">Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.</div>`; break;
     case 'acars': controls = presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]]) + `<div class="note">Registration, flight, label and text from each message, CRC checked.</div>`; break;
-    case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + `<div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? 'WEATHER 26' : f === 'remotes' ? 'REMOTES 47' : 'CAR KEYS 11'}</button>`).join('')}</div>`; break;
+    case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + `<div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? `WEATHER ${ISM_COUNTS.weather}` : f === 'remotes' ? `REMOTES ${ISM_COUNTS.remotes}` : `CAR KEYS ${ISM_COUNTS.cars}`}</button>`).join('')}</div>`; break;
     case 'btle': controls = `<div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>`; break;
   }
+  // A radio that cannot reach this app's band says so right on the screen, not just in a passing status line.
+  const why = radio ? blockedBecause(APP_NEEDS[app], radio.limits) : '';
+  if (why) controls = `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` + controls;
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
-    <section class="controls">${controls}${gainHtml()}${logHtml(app, 'listening…')}</section>`;
+    <section class="controls">${controls}${gainHtml()}${logHtml(app, why ? 'out of range for this radio' : 'listening…')}</section>`;
   scope = attach(app === 'btle' ? new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }) : tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-ism]', view).forEach(b => { const f = b.dataset.ism as keyof typeof state.ism; b.classList.toggle('on', state.ism[f]); b.onclick = () => { state.ism[f] = !state.ism[f]; b.classList.toggle('on', state.ism[f]); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); }; });
   qa<HTMLButtonElement>('[data-pager]', view).forEach(b => { b.classList.toggle('on', b.dataset.pager === state.pager); b.onclick = () => { state.pager = b.dataset.pager as typeof state.pager; worker?.postMessage({ type: 'pager', which: state.pager }); qa('[data-pager]').forEach(x => x.classList.toggle('on', x === b)); }; });
@@ -4633,8 +4637,8 @@ function ensureWorker(): Worker {
         if (now - lastLiveSpec > 110) {
           lastLiveSpec = now;
           const sorted = Float32Array.from(sweepLiveRow).sort();
-          s.setScale(sorted[sorted.length >> 1] - 4, 30);
-          s.setSpectrum(rowToSpec(sweepLiveRow, s.cols));
+          s.setScale(sorted[sorted.length >> 1] + 1, 32);
+          s.setSpectrum(rowToSpec(typeof m.bins === 'number' ? sweepLiveRow.subarray(0, m.bins as number) : sweepLiveRow, s.cols));
         }
         break;
       }
@@ -4648,7 +4652,7 @@ function ensureWorker(): Worker {
         const s = sweepScope;
         if (s) {
           const sorted = Float32Array.from(m.row as Float32Array).sort();
-          s.setScale(sorted[sorted.length >> 1] - 4, 30);
+          s.setScale(sorted[sorted.length >> 1] + 1, 32);
           s.push(rowToSpec(m.row, s.cols)); s.setLabels(rangeLabels(m.startHz, m.endHz, s.cols > 900 ? 7 : 5));
         }
         refreshSweepCard(0, m.sweeps); refreshHits(); break;

@@ -94,30 +94,31 @@ private fun SweepFace(accent: Color, tag: String, s: SweepProcessor?, progress: 
 /** A sweep row as 0..1 columns and the dB its 0 sits at. */
 private class SweepSpec(val spec: FloatArray, val floorDb: Float)
 private val noSpec = SweepSpec(FloatArray(0), Float.NaN)
-private const val SWEEP_RANGE_DB = 30f
+private const val SWEEP_RANGE_DB = 32f
 
 /**
- * Downsample a sweep row (steps × KEEP dB, NaN where not yet measured) to at most [cols] columns by max. The median
- * is the floor, sitting 4 dB up a 30 dB scale, so a sweep reads like the live waterfall; it is taken over at most
- * ~4096 samples of the row, which a full-range row (150 k bins) would otherwise have to sort on every live update.
+ * Downsample a sweep row (KEEP-bin slices stitched, NaN where not yet measured) to at most [cols] columns. Each
+ * column keeps the loudest of its bins so a narrow carrier never vanishes between columns; the floor is then read
+ * from those column peaks (their median, plus 1 dB), not from the raw bins: peak-picking lifts the noise a few dB,
+ * and a floor from the raw median left the background a bright speckle. Noise sits near black, stations stand out.
  */
 private fun rowToSpec(row: FloatArray, cols: Int = 8192): SweepSpec {
     if (row.isEmpty()) return noSpec
-    val stride = maxOf(1, row.size / 4096)
-    val sample = FloatArray((row.size + stride - 1) / stride)
-    var m = 0; var i = 0
-    while (i < row.size) { val v = row[i]; if (!v.isNaN()) sample[m++] = v; i += stride }
-    if (m == 0) return noSpec
-    java.util.Arrays.sort(sample, 0, m)
-    val floor = sample[m / 2] - 4f
     val n = minOf(cols, row.size)
-    val out = FloatArray(n)
+    val peaks = FloatArray(n)
+    var m = 0
+    val sample = FloatArray(n)
     for (c in 0 until n) {
         val a = (c.toLong() * row.size / n).toInt(); val b = ((c + 1).toLong() * row.size / n).toInt().coerceAtLeast(a + 1)
-        var peak = -999f
-        for (k in a until minOf(b, row.size)) if (row[k] > peak) peak = row[k]
-        out[c] = ((peak - floor) / SWEEP_RANGE_DB).coerceIn(0f, 1f)
+        var peak = Float.NaN
+        for (k in a until minOf(b, row.size)) { val v = row[k]; if (!v.isNaN() && (peak.isNaN() || v > peak)) peak = v }
+        peaks[c] = peak
+        if (!peak.isNaN()) sample[m++] = peak
     }
+    if (m == 0) return noSpec
+    java.util.Arrays.sort(sample, 0, m)
+    val floor = sample[m / 2] + 1f
+    val out = FloatArray(n) { c -> val p = peaks[c]; if (p.isNaN()) 0f else ((p - floor) / SWEEP_RANGE_DB).coerceIn(0f, 1f) }
     return SweepSpec(out, floor)
 }
 

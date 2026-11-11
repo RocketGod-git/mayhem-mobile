@@ -131,8 +131,8 @@ console.log('limits: what each radio will and will not do');
   ok(!canSample(RTL_LIMITS, 600_000), 'nor anywhere in the hole between 300 and 900 kHz');
 
   eq(nearestRate(RTL_LIMITS, 2_000_000), 2_000_000, 'a rate it can do is left alone');
-  eq(nearestRate(RTL_LIMITS, 4_000_000), 2_400_000, 'a rate too high is pulled down to the ceiling');
-  eq(nearestRate(RTL_LIMITS, 19_200_000), 2_400_000, "HAM's fastest setting clamps rather than failing");
+  eq(nearestRate(RTL_LIMITS, 4_000_000), 3_200_000, 'a rate too high is pulled down to the ceiling');
+  eq(nearestRate(RTL_LIMITS, 19_200_000), 3_200_000, "HAM's fastest setting clamps rather than failing");
   eq(nearestRate(RTL_LIMITS, 250_000), 250_000, 'the Devices span is native');
 
   eq(whyNot(RTL_LIMITS, 433_920_000, 2_000_000), '', 'Devices works on a dongle');
@@ -186,7 +186,7 @@ console.log('a dongle dims exactly what it should, and nothing else');
   }
   ok(blockedBecause(APP_NEEDS.transmit, RTL_LIMITS).includes('receives only'), 'Transmit says why');
   // A sweep slice a dongle cannot sample is pulled to one it can, rather than leaving unswept gaps.
-  eq(nearestRate(RTL_LIMITS, 4_000_000), 2_400_000, 'a 4 MHz sweep slice comes down');
+  eq(nearestRate(RTL_LIMITS, 4_000_000), 3_200_000, 'a 4 MHz sweep slice comes down');
   eq(nearestRate(RTL_LIMITS, 2_000_000), 2_000_000, 'a 2 MHz slice is already fine');
 }
 

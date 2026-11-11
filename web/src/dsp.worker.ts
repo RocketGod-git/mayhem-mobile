@@ -256,7 +256,7 @@ function chanDesign(cutoffHz: number, fs: number): void {
     chan.s.push({ b0: (1 - c) / 2 / a0, b1: (1 - c) / a0, b2: (1 - c) / 2 / a0, a1: -2 * c / a0, a2: (1 - alpha) / a0, zi1: 0, zi2: 0, zq1: 0, zq2: 0 });
   }
 }
-let decAcc = 0, decCnt = 0, s1I = 0, s1Q = 0, s1n = 0;
+let decAcc = 0, decCnt = 0, decPhase = 0, s1I = 0, s1Q = 0, s1n = 0;
 /** Stage 1 for the narrow modes (CIC + FIR, rebuilt with the rate), and the mixed / decimated sample buffers. */
 let chanDec: ChannelDecimator | null = null, chanKey = 0;
 let mixBuf = new Float32Array(0), boxBuf = new Float32Array(0);
@@ -454,7 +454,7 @@ function process(iq: Int8Array): void {
     if (mode !== 'WFM' && (!chanDec || chanKey !== rate)) { chanDec = new ChannelDecimator(Math.max(1, Math.floor(rate / AUDIO_RATE))); chanKey = rate; }
     const stage1 = mode === 'WFM' ? Math.max(1, Math.floor(rate / 240_000)) : chanDec!.total;
     const interRate = rate / stage1;
-    const stage2 = Math.max(1, Math.floor(interRate / AUDIO_RATE));
+    const audioStep = Math.max(1, interRate / AUDIO_RATE);
     const wantFm = !!(p && p.wantsFm && p.onFm);
     const wInc = 2 * Math.PI * 1500 / interRate;
     // Channel width before the discriminator. AIS is 9.6 kbaud GMSK in a 25 kHz channel. ORBCOMM is 4.8 kbaud
@@ -529,8 +529,12 @@ function process(iq: Int8Array): void {
             if (fmTapN >= fmTap.length || performance.now() > fmBurstEnd) { const t = fmTap.slice(0, fmTapN); fmTap = null; post({ type: 'fmTap', rate: fmTapRate, samples: t, bursts: fmBurstCount }, [t.buffer]); }
           }
         }
-        decAcc += s; decCnt++;
-        if (decCnt >= stage2) {
+        // Stage 2 lands on exactly 48 kHz at any rate: whole-number rates average a fixed run as before; any
+        // other (2 Msps gives 50 kHz, an RTL-SDR's 2.56 or 3.2 Msps worse) alternates run lengths, so the player
+        // is fed what it plays and never overfills.
+        decAcc += s; decCnt++; decPhase += 1;
+        if (decPhase >= audioStep) {
+          decPhase -= audioStep;
           let v = decAcc / decCnt; decAcc = 0; decCnt = 0;
           if (mode === 'WFM') { deemph += 0.28 * (v - deemph); v = deemph * 9000; }
           else if (mode === 'NFM') v *= 16000;

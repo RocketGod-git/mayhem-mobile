@@ -800,13 +800,17 @@ export function rangeLabels(startHz: number, endHz: number, n = 5): AxisLabel[] 
 export function rowToSpec(row: Float32Array, cols: number): Float32Array {
   const out = new Float32Array(cols);
   if (!row.length) return out;
-  const sorted = Float32Array.from(row).sort();
-  const floor = sorted[sorted.length >> 1] - 4;
+  // Each column keeps the loudest of its bins (a narrow carrier must not vanish between columns), so the floor is
+  // read from those column peaks, not the raw bins: peak-picking lifts the noise a few dB, and a floor from the raw
+  // median left the whole background a bright purple speckle. Noise now sits near black and stations stand out.
   for (let c = 0; c < cols; c++) {
     const a = Math.floor(c * row.length / cols), b = Math.max(a + 1, Math.floor((c + 1) * row.length / cols));
     let peak = -999;
     for (let i = a; i < Math.min(b, row.length); i++) if (row[i] > peak) peak = row[i];
-    out[c] = Math.min(1, Math.max(0, (peak - floor) / 30));
+    out[c] = peak;
   }
+  const sorted = Float32Array.from(out).sort();
+  const floor = sorted[sorted.length >> 1] + 1;
+  for (let c = 0; c < cols; c++) out[c] = Math.min(1, Math.max(0, (out[c] - floor) / 32));
   return out;
 }
