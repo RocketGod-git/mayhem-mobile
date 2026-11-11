@@ -346,7 +346,7 @@ object SdrEngine {
         System.arraycopy(buf, 0, dst, 0, len)
         // at most about 0.2 s of samples waits, whatever the buffer size and rate: a deeper backlog (a phone's first
         // seconds, before the code is warm) would leave the waterfall and the decoders that far behind
-        val cap = (QUEUE_SECONDS * sampleRate * 2 / maxOf(len, 1)).toInt().coerceIn(8, 512)
+        val cap = if (deepQueue) (QUEUE_SECONDS * sampleRate * 2 / maxOf(len, 1)).toInt().coerceIn(8, 512) else 8
         while (queue.size >= cap) queue.poll()?.let { pool.offer(it) } ?: break
         if (!queue.offer(dst)) {
             queue.poll()?.let { pool.offer(it) }
@@ -355,6 +355,10 @@ object SdrEngine {
     }
 
     private const val QUEUE_SECONDS = 0.2
+
+    /** Only LoRa queues deeper (about 0.2 s; its channels catch up from a frame's start in bursts, and a retune
+     *  throws the old tuning's samples away). Every other app keeps the original 8 buffers, dropping the oldest. */
+    @Volatile var deepQueue = false
 
     fun currentRate(): Int = sampleRate
 
@@ -454,7 +458,7 @@ object SdrEngine {
     /** Move the radio itself, leaving the channel offset alone. */
     fun tuneLo(hz: Long) {
         val f = hz.coerceIn(FREQ_MIN_HZ, FREQ_MAX_HZ)
-        if (f != _freqHz.value) dropQueued()
+        if (deepQueue && f != _freqHz.value) dropQueued()
         _freqHz.value = f
         HackRfOne.targetFreqHz = f
         RtlSdr.targetFreqHz = f
@@ -497,7 +501,7 @@ object SdrEngine {
 
     fun setRate(rate: Int) {
         val r = clampRate(rate)
-        if (r != _rateHz.value) dropQueued()
+        if (deepQueue && r != _rateHz.value) dropQueued()
         _rateHz.value = r; syncDriver()
     }
 

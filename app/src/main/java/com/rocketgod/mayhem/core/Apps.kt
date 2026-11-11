@@ -130,6 +130,7 @@ object Apps {
         if (!(app == MayhemApp.PAGER && _pagerMulti.value)) com.rocketgod.mayhem.core.pager.PagerEngine.stop()
         // the signal finder labels every waterfall; the sweeps have no fixed span to label
         SdrEngine.watchSignals = app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH
+        SdrEngine.deepQueue = app == MayhemApp.LORA
         SdrEngine.sameOn = app == MayhemApp.AUDIO
         cameFrom = _current.value
         _current.value = app
@@ -220,6 +221,7 @@ object Apps {
         com.rocketgod.mayhem.core.ham.Ham.stopPtt()
         com.rocketgod.mayhem.core.sat.Sats.close()
         SdrEngine.watchSignals = true
+        SdrEngine.deepQueue = false
         SdrEngine.sameOn = true
         _current.value = null
         _sweep.value = null
@@ -235,6 +237,7 @@ object Apps {
     fun listen(freqHz: Long, mode: SdrEngine.Mode) {
         _sweep.value = null
         SdrEngine.watchSignals = true
+        SdrEngine.deepQueue = false
         SdrEngine.sameOn = true
         _current.value = MayhemApp.AUDIO
         SdrEngine.configure(mode, freqHz, SdrEngine.RX_RATE, 24, 24, false, null)

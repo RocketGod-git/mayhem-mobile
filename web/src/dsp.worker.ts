@@ -302,13 +302,16 @@ self.onmessage = (e: MessageEvent) => {
       // at most about 0.2 s of samples waits (whatever the buffer size and rate): the oldest go first, so a slow
       // start never leaves the waterfall and decoders seconds behind
       const b = new Int8Array(m.buf as ArrayBuffer);
+      // only LoRa queues (its channels catch up in bursts); every other app processes each buffer as it arrives,
+      // exactly as before the queue existed
+      if (processor !== lora && queue.length === 0) { process(b); break; }
       const cap = Math.max(8, Math.min(QUEUE_MAX, Math.ceil(0.2 * rate * 2 / Math.max(b.length, 1))));
       while (queue.length >= cap) queue.shift();
       queue.push(b); armDrain(); break;
     }
     case 'config':
-      if (typeof m.rate === 'number' && m.rate !== rate) dropQueued();
-      if (typeof m.centreHz === 'number' && m.centreHz !== centreHz) dropQueued();
+      if (processor === lora && typeof m.rate === 'number' && m.rate !== rate) dropQueued();
+      if (processor === lora && typeof m.centreHz === 'number' && m.centreHz !== centreHz) dropQueued();
       if (typeof m.rate === 'number') rate = m.rate;
       if (typeof m.specBins === 'number') setSpecBins(m.specBins);
       if (typeof m.centreHz === 'number') centreHz = m.centreHz;
