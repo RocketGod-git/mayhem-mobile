@@ -120,6 +120,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.APRS -> AprsScreen(accent)
                     MayhemApp.PAGER -> PagerScreen(accent)
                     MayhemApp.ERT -> MetersScreen(accent)
+                    MayhemApp.LORA -> LoraScreen(accent)
                     MayhemApp.BTLE -> BtleScreen(accent)
                     MayhemApp.TPMS -> TpmsScreen(accent)
                     MayhemApp.ACARS -> AcarsScreen(accent)

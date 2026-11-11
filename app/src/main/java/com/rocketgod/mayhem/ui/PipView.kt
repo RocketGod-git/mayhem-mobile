@@ -97,6 +97,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     }
     MayhemApp.PAGER -> lastLine(Apps.pagerLog)
     MayhemApp.ERT -> lastLine(Apps.metersLog)
+    MayhemApp.LORA -> lastLine(Apps.loraLog)
     MayhemApp.BTLE -> lastLine(Apps.btleLog)
     MayhemApp.TPMS -> lastLine(Apps.tpmsLog)
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)

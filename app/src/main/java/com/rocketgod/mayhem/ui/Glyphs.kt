@@ -132,6 +132,10 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.5f, 0.55f); path.l(0.74f, 0.3f)
                 dot = Triple(0.5f, 0.55f, 0.05f)
             }
+            MayhemApp.LORA -> {
+                // three up-chirps, each sweeping the band and wrapping
+                path.m(0.1f, 0.8f); path.l(0.37f, 0.2f); path.l(0.37f, 0.8f); path.l(0.63f, 0.2f); path.l(0.63f, 0.8f); path.l(0.9f, 0.2f)
+            }
             MayhemApp.BTLE -> {
                 path.m(0.32f, 0.3f); path.l(0.68f, 0.68f); path.l(0.5f, 0.88f); path.l(0.5f, 0.12f); path.l(0.68f, 0.32f); path.l(0.32f, 0.7f)
             }

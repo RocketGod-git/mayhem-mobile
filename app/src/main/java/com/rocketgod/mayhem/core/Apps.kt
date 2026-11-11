@@ -29,6 +29,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     APRS("APRS", "packet radio, 144.39 MHz", "Receive"),
     PAGER("FLEX", "pager RX · FLEX, or POCSAG too", "Receive"),
     ERT("Meters", "utility meters: ERT, mesh networks, Gridstream", "Receive"),
+    LORA("LoRa", "Meshtastic · MeshCore · LoRaWAN, 915 MHz", "Receive"),
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
     TPMS("TPMS", "tire pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
@@ -75,6 +76,8 @@ object Apps {
     /** Meters: ERT and the mesh networks on the same samples, into one log (the app keeps ERT's name in settings). */
     val metersLog = PacketLog(); val ert = ErtDecoder(metersLog); val mesh = MeshDecoder(metersLog)
     val meters = MetersProcessor(ert, mesh)
+    /** LoRa: Meshtastic, MeshCore, LoRaWAN and any other LoRa across one wide span. */
+    val loraLog = PacketLog(); val lora = com.rocketgod.mayhem.core.lora.LoraHub(loraLog)
     val btleLog = PacketLog(); val btle = BtleDecoder(btleLog)
     val tpmsLog = PacketLog(); val tpms = TpmsDecoder(tpmsLog)
     val acarsLog = PacketLog(); val acars = AcarsDecoder(acarsLog)
@@ -159,6 +162,14 @@ object Apps {
                 }
                 SdrEngine.configure(SdrEngine.Mode.NONE, 911_600_000L, wide, 32, 40, true, meters)
                 mesh.centerOf = { SdrEngine.freqHz.value }
+            }
+            MayhemApp.LORA -> {
+                val wide = Radio.canSample(Radio.limits, com.rocketgod.mayhem.core.lora.LoraScanner.RATE)
+                // the band for this device's region setting; a radio that can't sample 20 MHz sits on that band's main
+                // channel, 300 kHz off it (clear of the spike at the center)
+                val band = com.rocketgod.mayhem.core.lora.LoraPlan.homeBand()
+                SdrEngine.configure(SdrEngine.Mode.NONE, if (wide) band.center else band.narrow + 300_000, if (wide) com.rocketgod.mayhem.core.lora.LoraScanner.RATE else 2_000_000, 32, 40, true, lora.scanner)
+                lora.scanner.centerOf = { SdrEngine.freqHz.value }
             }
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
