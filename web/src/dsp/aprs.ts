@@ -31,13 +31,19 @@ export class AprsDecoder implements IqProcessor {
   private ph1 = 0; private ph2 = 0; private w1 = 0; private w2 = 0;
   private c1 = 0; private s1 = 0; private c2 = 0; private s2 = 0;
   private sinceRecompute = 0;
-  private sync = new BitSync(1200, 48000);
+  /** 2200 Hz tone weights, ±6 dB in even steps (Dire Wolf's multiple slicers: pre-emphasis and radio audio paths
+   *  leave one tone up to several dB louder than the other). Each has its own clock and deframer. */
+  private static readonly GAINS = [0.5, 0.63, 0.79, 1.0, 1.26, 1.59, 2.0];
+  private syncs: BitSync[] = [];
+  /** Sample clock and the recent frames (by FCS), so a frame two slicers both got is logged once. */
+  private clock = 0;
+  private recent: { fcs: number; at: number }[] = [];
   private filt = new DiscFilter(3200, 48000);
-  private readonly framer = new HdlcFramer(400, f => this.onFrame(f));
+  private readonly framers = AprsDecoder.GAINS.map(() => new HdlcFramer(400, f => this.onSliced(f)));
   private readonly stations = new Map<string, AprsStation>();
 
   constructor(private readonly emit: Emit) {}
-  reset(): void { this.fmRate = 0; this.framer.reset(); }
+  reset(): void { this.fmRate = 0; for (const f of this.framers) f.reset(); }
   /** CLEAR on the screen: forget every station, and say so, or the next packet re-sends the whole table. */
   clear(): void { this.stations.clear(); this.emit({ type: 'stations', rows: [] }); }
   onIq(): void {}
@@ -48,9 +54,10 @@ export class AprsDecoder implements IqProcessor {
     this.ring = new Float32Array(this.spb); this.ri = 0;
     this.w1 = 2 * Math.PI * 1200 / rate; this.w2 = 2 * Math.PI * 2200 / rate;
     this.ph1 = this.ph2 = this.c1 = this.s1 = this.c2 = this.s2 = 0; this.sinceRecompute = 0;
-    this.sync = new BitSync(1200, rate);
+    this.syncs = AprsDecoder.GAINS.map(() => new BitSync(1200, rate, 0.15));
     this.filt = new DiscFilter(3200, rate);
-    this.framer.reset();
+    for (const f of this.framers) f.reset();
+    this.recent = [];
   }
 
   onFm(samples: Float32Array, n: number, rate: number): void {
@@ -68,9 +75,12 @@ export class AprsDecoder implements IqProcessor {
       this.ph1 += this.w1; if (this.ph1 >= twoPi) this.ph1 -= twoPi;
       this.ph2 += this.w2; if (this.ph2 >= twoPi) this.ph2 -= twoPi;
       if (++this.sinceRecompute >= 4096) { this.sinceRecompute = 0; this.recompute(); }
-      const d = (this.c1 * this.c1 + this.s1 * this.s1) - (this.c2 * this.c2 + this.s2 * this.s2);
-      const b = this.sync.push(d);
-      if (b >= 0) this.framer.pushRaw(b);
+      this.clock++;
+      const mark = Math.sqrt(this.c1 * this.c1 + this.s1 * this.s1), space = Math.sqrt(this.c2 * this.c2 + this.s2 * this.s2);
+      for (let k = 0; k < this.syncs.length; k++) {
+        const b = this.syncs[k].push(mark - AprsDecoder.GAINS[k] * space);   // mark (1200) positive
+        if (b >= 0) this.framers[k].pushRaw(b);
+      }
     }
   }
 
@@ -85,8 +95,17 @@ export class AprsDecoder implements IqProcessor {
     }
   }
 
-  private onFrame(f: Uint8Array): void {
+  private onSliced(f: Uint8Array): void {
     if (f.length < 18 || !HdlcFramer.fcsOk(f)) return;
+    const fcs = (f[f.length - 2] << 8) | f[f.length - 1];
+    const window = this.fmRate * 2;
+    this.recent = this.recent.filter(r => this.clock - r.at <= window);
+    if (this.recent.some(r => r.fcs === fcs)) return;
+    this.recent.push({ fcs, at: this.clock });
+    this.onFrame(f);
+  }
+
+  private onFrame(f: Uint8Array): void {
     let p = 0;
     const addrs: string[] = [];
     let last = false;

@@ -36,6 +36,7 @@ import { SstvDecoder } from './dsp/ham/sstv.js';
 import { AptDecoder } from './dsp/ham/apt.js';
 import { LrptDecoder } from './dsp/ham/lrpt.js';
 import type { FmTap } from './dsp/ham/demod.js';
+import { ChannelDecimator } from './dsp/ham/filters.js';
 
 type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
 
@@ -233,6 +234,9 @@ function chanDesign(cutoffHz: number, fs: number): void {
   }
 }
 let decAcc = 0, decCnt = 0, s1I = 0, s1Q = 0, s1n = 0;
+/** Stage 1 for the narrow modes (CIC + FIR, rebuilt with the rate), and the mixed / decimated sample buffers. */
+let chanDec: ChannelDecimator | null = null, chanKey = 0;
+let mixBuf = new Float32Array(0), boxBuf = new Float32Array(0);
 /** Channel offset from the span center for the plain receiver (the view can be slid while the dial stays put). */
 let offsetHz = 0, offCr = 1, offCi = 0;
 const audioBuf = new Float32Array(2048); let audioLen = 0, audioPeak = 0;
@@ -248,11 +252,33 @@ let squelchDb = 0, sqFloor = NaN, sqOpen = true, sqLastReport = 0, chPow = 0, ch
 const voice = new VoiceDetector();
 let voiceOn = false, voiceLast = 0;
 
+/**
+ * The sample queue. Radio buffers land here as they arrive and are worked off in their own tasks, so a retune or a
+ * rate change (which arrive as messages between them) can throw away everything still queued from the old tuning:
+ * a sweep's next slice, or the signal finder, must never read it as the new one. 128 x 64 KB holds about 210 ms at
+ * 20 Msps; it sits empty while the processing keeps up, so it adds no delay then. A full queue drops the newest.
+ */
+const QUEUE_MAX = 128;
+const queue: Int8Array[] = [];
+let drainArmed = false;
+const drainPort = new MessageChannel();
+drainPort.port1.onmessage = () => {
+  drainArmed = false;
+  // a few buffers per task, so retunes and commands get in between
+  const t0 = performance.now();
+  while (queue.length && performance.now() - t0 < 8) process(queue.shift()!);
+  armDrain();
+};
+function armDrain(): void { if (!drainArmed && queue.length) { drainArmed = true; drainPort.port2.postMessage(0); } }
+function dropQueued(): void { queue.length = 0; }
+
 self.onmessage = (e: MessageEvent) => {
   const m = e.data;
   switch (m.type) {
-    case 'iq': process(new Int8Array(m.buf as ArrayBuffer)); break;
+    case 'iq': if (queue.length < QUEUE_MAX) queue.push(new Int8Array(m.buf as ArrayBuffer)); armDrain(); break;
     case 'config':
+      if (typeof m.rate === 'number' && m.rate !== rate) dropQueued();
+      if (typeof m.centreHz === 'number' && m.centreHz !== centreHz) dropQueued();
       if (typeof m.rate === 'number') rate = m.rate;
       if (typeof m.specBins === 'number') setSpecBins(m.specBins);
       if (typeof m.centreHz === 'number') centreHz = m.centreHz;
@@ -333,7 +359,7 @@ function process(iq: Int8Array): void {
   const p = processor;
   if (p && (p !== lastProc || rate !== lastProcRate)) { try { p.reset(rate); } catch (e) { emit({ type: 'log', line: `processor reset: ${(e as Error).message}` }); } lastProc = p; lastProcRate = rate; }
   else if (!p) lastProc = null;
-  if (mode !== prevMode) { prevI = prevQ = deemph = amDc = wph = 0; dcFmI = dcFmQ = 0; lpI1 = lpI2 = lpQ1 = lpQ2 = 0; decAcc = 0; decCnt = 0; s1I = s1Q = 0; s1n = 0; audioLen = 0; rdsN = 0; sameN = 0; if (mode !== 'WFM') { rds.reset(); hd.reset(); } prevMode = mode; }
+  if (mode !== prevMode) { prevI = prevQ = deemph = amDc = wph = 0; dcFmI = dcFmQ = 0; lpI1 = lpI2 = lpQ1 = lpQ2 = 0; decAcc = 0; decCnt = 0; s1I = s1Q = 0; s1n = 0; chanDec = null; audioLen = 0; rdsN = 0; sameN = 0; if (mode !== 'WFM') { rds.reset(); hd.reset(); } prevMode = mode; }
 
   const now = performance.now();
   // accumulate every whole FFT frame in this buffer (a short buffer contributes one zero-padded frame)
@@ -388,7 +414,11 @@ function process(iq: Int8Array): void {
   if (hdOn && mode === 'WFM' && Math.abs(offsetHz) < rate / 2 - 240_000) hd.push(iq, nSamp, rate, offsetHz);
   if (mode !== 'NONE' && Math.abs(offsetHz) < rate / 2 - 40_000) {       // a channel slid off the span is silent
     const mixing = offsetHz !== 0, offW = -2 * Math.PI * offsetHz / rate, offDr = Math.cos(offW), offDi = Math.sin(offW);
-    const stage1 = mode === 'WFM' ? Math.max(1, Math.floor(rate / 240_000)) : Math.max(1, Math.floor(rate / AUDIO_RATE));
+    // Two-stage decimation. Stage 1 brings the IQ down to an intermediate rate near the channel: WFM -> ~240 kHz by
+    // a plain average, everything else -> ~48 kHz through a CIC + FIR (ChannelDecimator) that keeps neighbors from
+    // folding onto the channel. Stage 2 decimates the audio to 48 kHz.
+    if (mode !== 'WFM' && (!chanDec || chanKey !== rate)) { chanDec = new ChannelDecimator(Math.max(1, Math.floor(rate / AUDIO_RATE))); chanKey = rate; }
+    const stage1 = mode === 'WFM' ? Math.max(1, Math.floor(rate / 240_000)) : chanDec!.total;
     const interRate = rate / stage1;
     const stage2 = Math.max(1, Math.floor(interRate / AUDIO_RATE));
     const wantFm = !!(p && p.wantsFm && p.onFm);
@@ -397,19 +427,33 @@ function process(iq: Int8Array): void {
     // and only about 10 kHz wide, but it is in low orbit and swings +-3.1 kHz with Doppler across a pass, so
     // it needs the room. Everything else is NFM voice or 1200 baud packet.
     const filtered = mode === 'NFM' || mode === 'AM';
-    const wideDigital = p === ais || satKind === 'g3ruh' || satKind === 'geoscan';   // 9600 baud wants the whole channel
-    if (filtered) chanDesign(wideDigital ? 10_000 : p === orbcomm ? 9_000 : mode === 'AM' ? 5_000 : 6_500, interRate);
+    const wideDigital = satKind === 'g3ruh' || satKind === 'geoscan';   // 9600 baud wants the whole channel
+    // AIS: 9600 baud GMSK is about ±6 kHz wide; Mayhem passes ±5.5 kHz
+    if (filtered) chanDesign(p === ais ? 7_500 : wideDigital ? 10_000 : p === orbcomm ? 9_000 : mode === 'AM' ? 5_000 : 6_500, interRate);
     const cs = chan.s;
+    // the channel mixed to DC
+    if (mixBuf.length < 2 * nSamp) mixBuf = new Float32Array(2 * nSamp);
     for (let i = 0; i < nSamp; i++) {
-      let a = iq[2 * i], b = iq[2 * i + 1];
+      const a = iq[2 * i], b = iq[2 * i + 1];
       if (mixing) {                                                        // shift the channel to DC first
-        const ri = a * offCr - b * offCi, rq = a * offCi + b * offCr; a = ri; b = rq;
+        mixBuf[2 * i] = a * offCr - b * offCi; mixBuf[2 * i + 1] = a * offCi + b * offCr;
         const nr = offCr * offDr - offCi * offDi; offCi = offCr * offDi + offCi * offDr; offCr = nr;
         if ((i & 1023) === 1023) { const g = 1 / Math.sqrt(offCr * offCr + offCi * offCi); offCr *= g; offCi *= g; }
+      } else { mixBuf[2 * i] = a; mixBuf[2 * i + 1] = b; }
+    }
+    let chanOut: Float32Array, nChan = 0;
+    if (mode === 'WFM') {
+      const need = 2 * (Math.floor(nSamp / stage1) + 2);
+      if (boxBuf.length < need) boxBuf = new Float32Array(need);
+      for (let i = 0; i < nSamp; i++) {
+        s1I += mixBuf[2 * i]; s1Q += mixBuf[2 * i + 1]; s1n++;
+        if (s1n >= stage1) { boxBuf[2 * nChan] = s1I / s1n; boxBuf[2 * nChan + 1] = s1Q / s1n; nChan++; s1I = 0; s1Q = 0; s1n = 0; }
       }
-      s1I += a; s1Q += b; s1n++;
-      if (s1n >= stage1) {
-        let ci = s1I / s1n, cq = s1Q / s1n; s1I = 0; s1Q = 0; s1n = 0;
+      chanOut = boxBuf;
+    } else { const r = chanDec!.process(mixBuf, nSamp); chanOut = r.out; nChan = r.n; }
+    for (let j = 0; j < nChan; j++) {
+      {
+        let ci = chanOut[2 * j], cq = chanOut[2 * j + 1];
         if (filtered) for (const f of cs) {
           const oi = f.b0 * ci + f.zi1; f.zi1 = f.b1 * ci - f.a1 * oi + f.zi2; f.zi2 = f.b2 * ci - f.a2 * oi;
           const oq = f.b0 * cq + f.zq1; f.zq1 = f.b1 * cq - f.a1 * oq + f.zq2; f.zq2 = f.b2 * cq - f.a2 * oq;

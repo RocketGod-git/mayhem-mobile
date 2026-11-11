@@ -92,6 +92,79 @@ export class Cic3Decimator {
   }
 }
 
+/**
+ * The engine's first decimation for narrow modes, raw IQ down to about 48 kHz: a third-order CIC to 3-6x the output
+ * rate, then a windowed-sinc FIR the rest of the way. It stands in for a plain average (a boxcar), whose -13 dB
+ * sidelobes folded every station 48 kHz away straight onto the channel. Here the worst alias into ±16 kHz is
+ * below -55 dB, the way Mayhem's own CIC + FIR baseband chain behaves. The integrators wrap in 32 bits, so the
+ * input is quantized with as much scale as the CIC's growth leaves room for (256 at small decimations, down to a
+ * few counts at 20 Msps, where the int8 input is whole numbers anyway).
+ */
+export class ChannelDecimator {
+  /** The whole decimation, its CIC and FIR parts (cicD * firD === total). */
+  readonly total: number; readonly cicD: number; readonly firD: number;
+  private readonly fir: ComplexFirDecimator | null;
+  private mid = new Float32Array(0);
+  private i1r = 0; private i1i = 0; private i2r = 0; private i2i = 0; private i3r = 0; private i3i = 0;
+  private c1r = 0; private c1i = 0; private c2r = 0; private c2i = 0; private c3r = 0; private c3i = 0;
+  private ph = 0;
+  private readonly scale: number;
+  private readonly gain: number;
+
+  /** The largest decimation no larger than `want` that splits into a CIC part and a FIR part of 3-6 (FIR only up to 6). */
+  static split(want: number): [number, number] {
+    if (want <= 1) return [1, 1];
+    if (want <= 6) return [1, want];
+    let t = want;
+    while (t > 6) {
+      for (const f of [4, 5, 6, 3]) if (t % f === 0) return [t / f, f];
+      t--;
+    }
+    return [1, t];
+  }
+
+  constructor(want: number) {
+    [this.cicD, this.firD] = ChannelDecimator.split(Math.floor(want));
+    this.total = this.cicD * this.firD;
+    // transition from 1/3 of the output rate to 2/3 (aliases fold onto ±1/3): 24 taps per decimation step
+    this.fir = this.firD > 1 ? new ComplexFirDecimator(lowpassTaps(0.5 / this.firD, 24 * this.firD + 1), this.firD) : null;
+    // |input| <= 182 (a mixed int8 sample); the CIC's output is up to D^3 times that and must fit in 31 bits
+    const d3 = this.cicD ** 3;
+    this.scale = Math.max(1, Math.min(256, Math.floor(2 ** 31 / (182 * d3))));
+    this.gain = 1 / (this.scale * d3);
+  }
+
+  /** `inp`: interleaved I/Q, `n` complex samples; returns the decimated samples (a view, valid until the next call). */
+  process(inp: Float32Array, n: number): { out: Float32Array; n: number } {
+    const need = 2 * (Math.floor(n / this.total) + 2);
+    if (this.cicD === 1) {
+      if (!this.fir) return { out: inp, n };
+      if (this.mid.length < need) this.mid = new Float32Array(need);
+      return { out: this.mid, n: this.fir.process(inp, n, this.mid) };
+    }
+    const nMid = Math.floor(n / this.cicD) + 2;
+    if (this.mid.length < 2 * nMid) this.mid = new Float32Array(2 * nMid);
+    const mid = this.mid, D = this.cicD, s = this.scale, g = this.gain;
+    let i1r = this.i1r, i1i = this.i1i, i2r = this.i2r, i2i = this.i2i, i3r = this.i3r, i3i = this.i3i, ph = this.ph, o = 0;
+    for (let i = 0; i < n; i++) {
+      i1r = (i1r + Math.round(inp[2 * i] * s)) | 0; i1i = (i1i + Math.round(inp[2 * i + 1] * s)) | 0;
+      i2r = (i2r + i1r) | 0; i2i = (i2i + i1i) | 0;
+      i3r = (i3r + i2r) | 0; i3i = (i3i + i2i) | 0;
+      if (++ph >= D) {
+        ph = 0;
+        const y1r = (i3r - this.c1r) | 0, y1i = (i3i - this.c1i) | 0; this.c1r = i3r; this.c1i = i3i;
+        const y2r = (y1r - this.c2r) | 0, y2i = (y1i - this.c2i) | 0; this.c2r = y1r; this.c2i = y1i;
+        const y3r = (y2r - this.c3r) | 0, y3i = (y2i - this.c3i) | 0; this.c3r = y2r; this.c3i = y2i;
+        mid[2 * o] = y3r * g; mid[2 * o + 1] = y3i * g; o++;
+      }
+    }
+    this.i1r = i1r; this.i1i = i1i; this.i2r = i2r; this.i2i = i2i; this.i3r = i3r; this.i3i = i3i; this.ph = ph;
+    if (!this.fir) return { out: mid, n: o };
+    // the FIR writes in place behind its reads: output index k <= input index k * firD
+    return { out: mid, n: this.fir.process(mid, o, mid) };
+  }
+}
+
 /** Complex FIR with complex taps (interleaved), no decimation; outputs the real part only (SSB audio). */
 export class ComplexBandpassToReal {
   private readonly hist: Float32Array;

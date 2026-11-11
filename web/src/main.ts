@@ -1,7 +1,7 @@
 /** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
 import { HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
 import { RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
-import { APP_NEEDS, blockedBecause, canTune, nearestRate, whyNot, type Radio } from './radio.js';
+import { APP_NEEDS, blockedBecause, canSample, canTune, nearestRate, whyNot, type Radio } from './radio.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
 import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
@@ -230,7 +230,7 @@ function tune(hz: number, hold = false): void {
   if (tunesInSpan()) {
     // the channel moves inside the view; only when it leaves the view does the radio follow it
     const prevLo = state.viewLo;
-    if (Math.abs(state.freq - state.viewLo) > state.rate / 2 - VIEW_GUARD) state.viewLo = state.freq;
+    if (Math.abs(state.freq - state.viewLo) > state.rate / 2 - VIEW_GUARD) state.viewLo = state.freq + (state.app === 'ais' || state.app === 'aprs' ? NARROW_SHIFT : 0);
     // When the LO does move, slide the waterfall history by the same amount so the spectrum that was already
     // painted stays under its true frequency. Only the genuinely new sliver at the leading edge comes up black,
     // instead of the whole picture restarting empty from the top when you step to a station outside the window.
@@ -720,6 +720,13 @@ function applyLauncherView(): void {
 }
 
 const ACARS_SPAN_HZ = 130_800_000;
+/** AIS and APRS: how far above the channel the radio sits, clear of the DC spike at the center of the span. */
+const NARROW_SHIFT = 250_000;
+/** Whether the radio can sample at `hz` (with no radio yet, a HackRF is assumed: it takes every rate on offer). */
+const radioCan = (hz: number) => !radio || canSample(radio.limits, hz);
+/** Put the radio NARROW_SHIFT above the channel, as Mayhem keeps its channels off the DC spike; the engine mixes the
+ *  channel back down through the offset. */
+function narrowShift(): void { state.viewLo = state.freq + NARROW_SHIFT; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); }
 function open(app: AppId | null): void {
   if (app === 'settings') { openSettings(); return; }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
@@ -760,13 +767,14 @@ function open(app: AppId | null): void {
     case 'prowl': configure('NFM', state.prowl.target ? state.freq : dial, Math.max(RX_RATE, state.rate), 24, 24, false, 'none'); break;
     case 'adsb': configure('NONE', 1_090_000_000, 2e6, 32, 32, true, 'adsb'); requestGeo(); break;
     case 'sat': satAppOpen(); return;
-    case 'ais': configure('NFM', 161_975_000, 2e6, 32, 32, false, 'ais'); requestGeo(); break;
-    case 'aprs': configure('NFM', 144_390_000, 2e6, 24, 24, false, 'aprs'); requestGeo(); break;
+    case 'ais': configure('NFM', 161_975_000, 2e6, 32, 32, false, 'ais'); narrowShift(); requestGeo(); break;
+    case 'aprs': configure('NFM', 144_390_000, 2e6, 24, 24, false, 'aprs'); narrowShift(); requestGeo(); break;
     case 'pager':
       if (state.pagerMulti) configure('NONE', 929_612_500, 2e6, 32, 40, true, 'pagerhunt');
       else { configure('NFM', 929_612_500, 2e6, 32, 32, false, 'pager'); worker?.postMessage({ type: 'pager', which: state.pager }); }
       break;
-    case 'ert': configure('NONE', 911_600_000, 2e6, 32, 40, true, 'ert'); break;
+    // Mayhem's rate and center: 128 samples a chip, and a 3.5 MHz filter that takes in 910-913 MHz
+    case 'ert': configure('NONE', 911_600_000, radioCan(4_194_304) ? 4_194_304 : 2e6, 32, 40, true, 'ert'); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,

@@ -11,6 +11,21 @@ let pass = 0, fail = 0;
 const ok = (c, what, extra = '') => { if (c) pass++; else { fail++; console.log(`  FAIL ${what}${extra ? ' — ' + extra : ''}`); } };
 console.log('ACARS: MSK on AM, channel cut out of a wide span, every bit-to-tone mapping');
 
+/** java.util.Random (iOS JRandom), so the two-channel case below sees exactly the noise the iOS and Android tests do. */
+function jrandom(seed) {
+  const M = (1n << 48n) - 1n;
+  let st = (BigInt(seed) ^ 0x5DEECE66Dn) & M, have = false, keep = 0;
+  const next = (bits) => { st = (st * 0x5DEECE66Dn + 0xBn) & M; return Number(BigInt.asIntN(32, st >> BigInt(48 - bits))); };
+  const dbl = () => (next(26) * 2 ** 27 + next(27)) * 2 ** -53;
+  return () => {
+    if (have) { have = false; return keep; }
+    let v1, v2, s;
+    do { v1 = 2 * dbl() - 1; v2 = 2 * dbl() - 1; s = v1 * v1 + v2 * v2; } while (s >= 1 || s === 0);
+    const mul = Math.sqrt(-2 * Math.log(s) / s);
+    keep = v2 * mul; have = true;
+    return v1 * mul;
+  };
+}
 function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 const odd = (c) => { let n = 0; for (let i = 0; i < 7; i++) n += (c >> i) & 1; return n % 2 === 0 ? c | 0x80 : c; };
 function crcKermit(bytes) { let r = 0; for (let v of bytes) { for (let k = 0; k < 8; k++) { const l = (r ^ v) & 1; r >>>= 1; if (l) r ^= 0x8408; v >>>= 1; } } return r; }
@@ -64,7 +79,7 @@ for (const kind of [0, 1, 2]) for (const inv of [0, 1]) run(kind, inv, seed++);
 {
   const center = 130_800_000, chans = [[130_025_000, 'FIRST CHANNEL MSG', 1], [131_550_000, 'SECOND CHANNEL MSG', 2]];
   const tss = chans.map(([, text, kind]) => [...tones(frameBytes(text), kind, 0), ...new Array(40).fill(1)]);
-  const r = rng(77), lead = Math.floor(0.05 * rate), n = lead + Math.ceil(Math.max(...tss.map(t => t.length)) / 2400 * rate) + 4000;
+  const gauss = jrandom(77), lead = Math.floor(0.05 * rate), n = lead + Math.ceil(Math.max(...tss.map(t => t.length)) / 2400 * rate) + 4000;
   const iq = new Int8Array(2 * n), aph = [0, 0], cph = [0, 0];
   for (let i = 0; i < n; i++) {
     let a = 0, b = 0;
@@ -75,8 +90,7 @@ for (const kind of [0, 1, 2]) for (const inv of [0, 1]) run(kind, inv, seed++);
       const amp = on ? 16 * (1 + 0.7 * Math.cos(aph[c])) : 0;
       a += amp * Math.cos(cph[c]); b += amp * Math.sin(cph[c]);
     });
-    const g = () => { let u = 0; while (u === 0) u = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * r()); };
-    iq[2 * i] = Math.max(-127, Math.min(127, Math.round(a + 3 * g()))); iq[2 * i + 1] = Math.max(-127, Math.min(127, Math.round(b + 3 * g())));
+    iq[2 * i] = Math.max(-127, Math.min(127, Math.round(a + 3 * gauss()))); iq[2 * i + 1] = Math.max(-127, Math.min(127, Math.round(b + 3 * gauss())));
   }
   const out = [], d = new AcarsDecoder(m => out.push(m));
   d.reset(rate); d.centerHz = center; d.tunedHz = 131_550_000;

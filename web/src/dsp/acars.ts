@@ -87,6 +87,9 @@ class AcarsChannel implements IqProcessor {
   private fs = 24_000; private envDc = 0;
   private ph = 0; private phInc = 0;
   private mfI = new Float32Array(10); private mfQ = new Float32Array(10); private mfPos = 0; private sI = 0; private sQ = 0;
+  /** A second one-bit filter over the first, for the clock only: on the first filter alone the frequency sign flips
+   *  several times a bit (the mixer's image at -3 to -4 kHz gets through), so the clock chased noise. */
+  private m2I = new Float32Array(10); private m2Q = new Float32Array(10); private tI = 0; private tQ = 0;
   private pI = 0; private pQ = 0; private bI = 0; private bQ = 0;
   // bit clock: sign changes of the instantaneous frequency mark bit edges
   private clk = 0; private clkInc = 0; private lastF = 0;
@@ -101,12 +104,13 @@ class AcarsChannel implements IqProcessor {
     this.d2 = Math.max(1, Math.round(inter / 24_000));
     this.fs = inter / this.d2;
     this.t1 = lowpass(5 * this.d1 + 1, 50_000 / rate);
-    this.t2 = lowpass(127, 6_000 / inter);
+    this.t2 = lowpass(127, 9_000 / inter);   // wide enough that a carrier a few kHz off keeps both sidebands
     this.h1i = new Float32Array(this.t1.length * 2); this.h1q = new Float32Array(this.t1.length * 2); this.p1 = 0; this.c1 = 0;
     this.h2i = new Float32Array(this.t2.length * 2); this.h2q = new Float32Array(this.t2.length * 2); this.p2 = 0; this.c2 = 0;
     this.phInc = 2 * Math.PI * 1800 / this.fs;
     const mf = Math.max(2, Math.round(this.fs / 2400));
     this.mfI = new Float32Array(mf); this.mfQ = new Float32Array(mf); this.mfPos = 0; this.sI = this.sQ = 0;
+    this.m2I = new Float32Array(mf); this.m2Q = new Float32Array(mf); this.tI = this.tQ = 0;
     this.clkInc = 2400 / this.fs; this.clk = 0;
     this.lanes = [new Lane(0), new Lane(1), new Lane(2)];
   }
@@ -147,13 +151,14 @@ class AcarsChannel implements IqProcessor {
     this.ph += this.phInc; if (this.ph > 2 * Math.PI) this.ph -= 2 * Math.PI;
     const mi = a * Math.cos(this.ph), mq = -a * Math.sin(this.ph);
     this.sI += mi - this.mfI[this.mfPos]; this.sQ += mq - this.mfQ[this.mfPos];
-    this.mfI[this.mfPos] = mi; this.mfQ[this.mfPos] = mq; if (++this.mfPos >= this.mfI.length) this.mfPos = 0;
-    // Instantaneous frequency about 1800 Hz: its sign changes where the tone does. The one-bit filter puts that
-    // change half a bit after the edge, and the bit is read when the filter holds exactly one bit, half a bit after
-    // that: so a sign change should land at half a clock.
-    const f = this.sQ * this.pI - this.sI * this.pQ;
-    this.pI = this.sI; this.pQ = this.sQ;
-    if ((f > 0) !== (this.lastF > 0)) this.clk -= 0.25 * (this.clk - 0.5);
+    this.mfI[this.mfPos] = mi; this.mfQ[this.mfPos] = mq;
+    this.tI += this.sI - this.m2I[this.mfPos]; this.tQ += this.sQ - this.m2Q[this.mfPos]; this.m2I[this.mfPos] = this.sI; this.m2Q[this.mfPos] = this.sQ;
+    if (++this.mfPos >= this.mfI.length) this.mfPos = 0;
+    // Instantaneous frequency about 1800 Hz, taken after both filters: its sign changes once where the tone does,
+    // and the bit read from the first filter is cleanest when that change lands at half a clock.
+    const f = this.tQ * this.pI - this.tI * this.pQ;
+    this.pI = this.tI; this.pQ = this.tQ;
+    if ((f > 0) !== (this.lastF > 0)) this.clk -= 0.1 * (this.clk - 0.5);
     this.lastF = f;
     this.clk += this.clkInc;
     if (this.clk < 1) return;

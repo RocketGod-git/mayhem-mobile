@@ -51,12 +51,13 @@ export class BitSync {
   private acc = 0;
   private lastPos = false;
   private first = true;
-  constructor(baud: number, rate: number) { this.inc = baud / rate; }
+  /** `gain` is how much of the timing error each zero crossing corrects. */
+  constructor(baud: number, rate: number, private readonly gain = 0.25) { this.inc = baud / rate; }
   push(x: number): number {
     const pos = x > 0;
     if (!this.first && pos !== this.lastPos) {
       const err = this.phase < 0.5 ? this.phase : this.phase - 1;
-      this.phase -= err * 0.25;
+      this.phase -= err * this.gain;
     }
     this.first = false;
     this.lastPos = pos;
@@ -73,7 +74,8 @@ export class BitSync {
   reset(): void { this.phase = 0; this.acc = 0; this.first = true; }
 }
 
-/** Big-endian bit reader over bytes whose bits are stored LSB-first (HDLC transmission order). */
+/** Big-endian bit reader over HDLC frame bytes (first bit received in bit 0 of each byte). AIS sends each octet of its
+ *  message LSB first, so message bit k is bit 7 - k%8 of byte k/8, as Mayhem's BitRemapByteReverse reads it. */
 export class BitReader {
   constructor(private readonly b: Uint8Array) {}
   get bitCount(): number { return this.b.length * 8; }
@@ -81,7 +83,7 @@ export class BitReader {
     let v = 0;
     for (let i = 0; i < len; i++) {
       const k = start + i;
-      const bit = k < this.bitCount ? (this.b[k >> 3] >> (k & 7)) & 1 : 0;
+      const bit = k < this.bitCount ? (this.b[k >> 3] >> (7 - (k & 7))) & 1 : 0;
       v = (v * 2) + bit;   // multiply, not shift: fields can be 30 bits
     }
     return v;
