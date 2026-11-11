@@ -1518,7 +1518,8 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
   // broadcast: a real station is wide; a radio's own spur (a HackRF's clock line at an exact megahertz) is a
   // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones; and
   // a broad noise hump (read as a "station" megahertz wide) is not one either
-  const pool = state.mode === 'WFM' ? inView.filter(s => s.bw > 60_000 && s.bw < 400_000) : inView;
+  // (a strong station can read only ~50 kHz at -6 dB: a 60 kHz floor threw out the strongest station in view)
+  const pool = state.mode === 'WFM' ? inView.filter(s => s.bw > 25_000 && s.bw < 400_000) : inView;
   // already on a good station: stay there, never trade it for another
   const on = pool.find(s => Math.abs(s.hz - here) <= Math.max(50_000, Math.min(s.bw, 300_000) / 2));
   if (on && on.snr >= 15) { log(`start-up: staying on the station already tuned, ${(on.hz / 1e6).toFixed(3)} MHz ${Math.round(on.snr)} dB ${Math.round(on.bw / 1e3)} kHz wide`); return 'stay'; }
@@ -1756,6 +1757,7 @@ function tunableScope(id: string, rows: number, spectrumHeight?: number): Scope 
     onChannel: state.app === 'ham' ? hamChannelEdges : undefined,
     onSlide: (f, done) => { const r = spanBarRange(); slideSpan(r.lo + f * (r.hi - r.lo), done); },
     onSpanStep: spanStep,
+    canSpanStep: (dir) => spanStep(dir, true),
     onCenter: recentreView,
     onDragSpan: (delta, done) => {
       // Two fingers across a span already showing everything cannot pan within the view, so it moves the view
@@ -1892,12 +1894,13 @@ let hamRateIdx = 0;
 /** Phones stop at 3.84 Msps (the JS front end and the USB link would not keep up); desktops may go all the way. */
 const maxRateIdx = () => /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? 1 : HAM_RATES.length - 1;
 /** The zoom control went past 1×: widen (−1) or narrow (+1) the span by moving one rung on the rate ladder. */
-function spanStep(dir: -1 | 1): boolean {
+function spanStep(dir: -1 | 1, dry = false): boolean {
   if (state.app === 'ham') {
     const h = state.ham;
-    if (h.tab === 'monitor') { if (window.innerWidth < 720 || h.mon.wide === (dir < 0)) return false; h.mon.wide = dir < 0; open('ham'); return true; }
+    if (h.tab === 'monitor') { if (window.innerWidth < 720 || h.mon.wide === (dir < 0)) return false; if (dry) return true; h.mon.wide = dir < 0; open('ham'); return true; }
     const i = Math.min(maxRateIdx(), Math.max(0, hamRateIdx - dir));
     if (i === hamRateIdx) return false;
+    if (dry) return true;
     hamRateIdx = i; setRate(HAM_RATES[i]); scope?.clear(); hamSend(); refreshHamUi(); refreshChannel();
     return true;
   }
@@ -1906,6 +1909,7 @@ function spanStep(dir: -1 | 1): boolean {
     const at = RX_RATES.findIndex(r => r >= state.rate), cur = at < 0 ? RX_RATES.length - 1 : at;
     const i = Math.min(maxRateIdx(), Math.max(0, cur - dir));
     if (i === cur && RX_RATES[i] === state.rate) return false;
+    if (dry) return true;
     spanByHand = true;
     setRate(RX_RATES[i]); scope?.clear(); refreshChannel();
     return true;

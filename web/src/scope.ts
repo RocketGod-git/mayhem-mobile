@@ -42,6 +42,8 @@ export interface ScopeOpts {
   onSlide?: (frac: number, done: boolean) => void;
   /** Zooming past 1×: −1 = the app should widen the span (raise the sample rate), +1 = narrow it. Returns true when it did. */
   onSpanStep?: (dir: -1 | 1) => boolean;
+  /** Whether onSpanStep has a rung that way, without taking it: the − / + buttons dim at either end. */
+  canSpanStep?: (dir: -1 | 1) => boolean;
   /**
    * A two-finger drag when the view is already showing the whole span, as a fraction of the width moved since
    * the gesture began. There is nothing to pan to inside the view, so the host slides the span instead.
@@ -101,6 +103,7 @@ export class Scope {
   private fullLabels: AxisLabel[] = [];
   private readonly adjustable: boolean;
   private zoomText: HTMLElement | null = null;
+  private zoomBtns: { out: HTMLButtonElement; in: HTMLButtonElement; can?: (dir: -1 | 1) => boolean; step: boolean } | null = null;
   private lastGesture = 0;                    // when the user last worked the waterfall; the view holds still after
   private thumb: HTMLElement | null = null;
   private barLabels: HTMLElement[] = [];
@@ -166,6 +169,7 @@ export class Scope {
     // zoom control in the corner; ctrl+wheel (or a pinch) zooms about the pointer, shift-drag / two-finger drag pans, the span bar slides the span
     const zc = document.createElement('div'); zc.className = 'zoomctl'; zc.innerHTML = '<button data-c title="back to the tuned channel">⌖</button><button data-z="-" title="zoom out">−</button><span>1×</span><button data-z="+" title="zoom in">+</button>'; host.appendChild(zc);
     this.zoomText = zc.querySelector('span');
+    this.zoomBtns = { out: zc.querySelector('[data-z="-"]')!, in: zc.querySelector('[data-z="+"]')!, can: opts.canSpanStep, step: !!opts.onSpanStep };
     zc.querySelector('[data-c]')!.addEventListener('click', (e) => { e.stopPropagation(); opts.onCenter?.(); });
     zc.querySelector('[data-z="-"]')!.addEventListener('click', (e) => { e.stopPropagation(); if (this.zoom <= 1) { opts.onSpanStep?.(-1); return; } this.setView(this.zoom / 2); });
     zc.querySelector('[data-z="+"]')!.addEventListener('click', (e) => { e.stopPropagation(); if (this.zoom <= 1 && opts.onSpanStep?.(1)) return; this.setView(this.zoom * 2); });
@@ -374,8 +378,15 @@ export class Scope {
     if (this.barLabels.length === 2) { this.barLabels[0].textContent = left; this.barLabels[1].textContent = right; }
     this.drawBar();
   }
+  /** Dimmed and inert at either end: − at the widest span with no zoom left to undo, + at the deepest zoom. */
+  refreshZoomBtns(): void {
+    const z = this.zoomBtns; if (!z) return;
+    z.out.disabled = !(this.zoom > 1 || (z.step && z.can?.(-1) !== false));
+    z.in.disabled = this.zoom >= 32;
+  }
   private drawBar(): void {
     if (this.zoomText) this.zoomText.textContent = this.zoom > 1 ? `${this.zoom}×` : this.spanText;
+    this.refreshZoomBtns();
     const t = this.thumb; if (!t) return;
     // Keep the thumb on screen and grabbable however small or off-edge the view is against the bar. On the
     // launcher the bar is the whole 1 MHz–6 GHz range, so a 20 MHz view is a hair — without a floor and an

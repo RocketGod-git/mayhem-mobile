@@ -252,6 +252,7 @@ private fun HamPanadapter(accent: Color, modifier: Modifier, spec: FloatArray, s
         onSlide = { slideTo(it) },
         onRecentre = { monTo = null; Ham.recentre() },
         onSpanStep = { dir -> Ham.spanStep(dir) },
+        canSpanStep = { dir -> Ham.spanStep(dir, dry = true) },
     ) { frac ->
         val (hz, sig) = target(frac)
         if (sig != null) Ham.fitSignal(sig)

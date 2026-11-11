@@ -263,16 +263,18 @@ object Ham {
      * Zoom past 1×: −1 widens the span a rung of [RATES], +1 narrows it; false when there is no rung that way on this
      * radio and screen. The monitor has two spans, 1.92 and (on a wide screen) 3.84 MHz.
      */
-    fun spanStep(dir: Int): Boolean {
+    fun spanStep(dir: Int, dry: Boolean = false): Boolean {
         if (monitoring) {
             val wide = dir < 0
             if (!wideScreen || _mon.value.wide == wide || (wide && !Radio.canSample(Radio.limits, MON_WIDE))) return false
+            if (dry) return true
             monitorWide(wide)
             return true
         }
         val top = (0..(if (wideScreen) RATES.lastIndex else 1)).lastOrNull { Radio.canSample(Radio.limits, RATES[it]) } ?: 0
         val i = (rateIdx - dir).coerceIn(0, top)
         if (i == rateIdx) return false
+        if (dry) return true
         rateIdx = i
         SdrEngine.setRate(rate)
         // narrowed past the channel: put the LO back beside it

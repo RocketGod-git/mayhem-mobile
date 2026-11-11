@@ -473,6 +473,8 @@ fun WaterfallView(
     onRecentre: (() -> Unit)? = null,
     /** Zooming out past 1× (−1) widens the span itself, and zooming in from a wide span (+1) narrows it; true when it did. */
     onSpanStep: ((Int) -> Boolean)? = null,
+    /** Whether [onSpanStep] has a rung that way, without taking it: the − / + buttons dim at either end. */
+    canSpanStep: ((Int) -> Boolean)? = null,
     showSignals: Boolean = true,
     /** A trace to show without laying down a row: a sweep's pass as it is measured, slice by slice. */
     live: FloatArray? = null,
@@ -820,17 +822,20 @@ fun WaterfallView(
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp).background(Palette.surface.copy(alpha = 0.82f), RoundedCornerShape(6.dp)),
             verticalAlignment = Alignment.CenterVertically) {
             if (onRecentre != null && offSpan) ZoomBtn("⌖", Palette.accent2) { onRecentre(); setView(zoom, 0.5f) }
-            ZoomBtn("−") { if (zoom <= 1.001f) onSpanStep?.invoke(-1) else setView(zoom / 2) }
+            // dimmed and inert at either end: − at the widest span with no zoom left to undo, + at the deepest zoom
+            val canOut = zoom > 1.001f || (onSpanStep != null && canSpanStep?.invoke(-1) != false)
+            val canIn = zoom < 31.99f
+            ZoomBtn("−", enabled = canOut) { if (zoom <= 1.001f) onSpanStep?.invoke(-1) else setView(zoom / 2) }
             Text(if (zoom > 1.001f) "${zoom.roundToInt()}×" else if (spanHz > 0) fmtSpan(spanHz) else "1×", color = Palette.muted, fontFamily = Mono, fontSize = 10.sp)
-            ZoomBtn("+") { if (zoom <= 1.001f && onSpanStep?.invoke(1) == true) return@ZoomBtn; val c = channel; setView(zoom * 2, c?.let { (it.first + it.second) / 2 }) }
+            ZoomBtn("+", enabled = canIn) { if (zoom <= 1.001f && onSpanStep?.invoke(1) == true) return@ZoomBtn; val c = channel; setView(zoom * 2, c?.let { (it.first + it.second) / 2 }) }
         }
     }
 }
 
 @Composable
-private fun ZoomBtn(t: String, color: Color = Palette.ink, onClick: () -> Unit) =
-    Text(t, color = color, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 13.sp,
-        modifier = Modifier.clickable { onClick() }.padding(horizontal = 9.dp, vertical = 4.dp))
+private fun ZoomBtn(t: String, color: Color = Palette.ink, enabled: Boolean = true, onClick: () -> Unit) =
+    Text(t, color = if (enabled) color else color.copy(alpha = 0.3f), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+        modifier = Modifier.clickable(enabled = enabled) { onClick() }.padding(horizontal = 9.dp, vertical = 4.dp))
 
 private fun fmtMhz(hz: Long, dec: Int) = "%.${dec}f".format(hz / 1e6)
 private fun fmtSpan(hz: Int) = if (hz % 1_000_000 == 0) "${hz / 1_000_000} MHz" else "%.2f MHz".format(hz / 1e6)
@@ -863,6 +868,7 @@ fun ReceiverScope(accent: Color, modifier: Modifier, rows: Int = 160, traceFrac:
         onPreviewFrac = { f -> Tuning.previewHz = f?.let { target(it).first } },
         onSlide = { SdrEngine.slideSpan(it) }, onRecentre = { SdrEngine.recentre() },
         onSpanStep = { dir -> SdrEngine.stepSpan(dir, if (wide) 20_000_000 else 10_000_000) },
+        canSpanStep = { dir -> SdrEngine.stepSpan(dir, if (wide) 20_000_000 else 10_000_000, dry = true) },
         wholeRange = wholeRange,
     ) { f ->
         val (hz, s) = target(f)

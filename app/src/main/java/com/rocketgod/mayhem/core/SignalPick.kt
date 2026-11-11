@@ -109,7 +109,9 @@ object AutoPick {
         // broadcast: a real station is wide; a radio's own spur (a HackRF's clock line at an exact megahertz) is a
         // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones; and
         // a broad noise hump (read as a "station" megahertz wide) is not one either
-        val pool = if (SdrEngine.mode.value == SdrEngine.Mode.WFM) inView.filter { it.bw6 > 60_000 && it.bw6 < 400_000 } else inView
+        // (a strong station can read only ~50 kHz at -6 dB, so a spur is told apart by being narrower than 25 kHz at -6 dB
+        // AND under 80 kHz at -20 dB, not by a 60 kHz floor that threw out the strongest station in view)
+        val pool = if (SdrEngine.mode.value == SdrEngine.Mode.WFM) inView.filter { (it.bw6 > 25_000 || it.bw20 > 80_000) && it.bw6 < 400_000 } else inView
         // already on a good station (the dial the app came back to): stay there, never trade it for another
         val here = SdrEngine.channelHz().toDouble()
         val on = pool.firstOrNull { abs(it.hz - here) <= max(50_000.0, minOf(it.bw6, 300_000.0) / 2) }
@@ -125,6 +127,8 @@ object AutoPick {
         // held for a second: in the list a second ago as well as now
         val best = pool.filter { s -> prev.any { abs(it.hz - s.hz) <= 50_000 } }.maxByOrNull { it.snr } ?: return
         armed = false
+        val top = inView.sortedByDescending { it.snr }.take(5).joinToString(" ") { "%.3f/%.0fdB/%.0fk".format(it.hz / 1e6, it.snr, it.bw6 / 1e3) }
+        com.rocketgod.mayhem.Diag.log("start-up: candidates in view (MHz/SNR/width) $top")
         modeFor(best)?.let { if (it != SdrEngine.mode.value) SdrEngine.setMode(it, silent = true) }
         SdrEngine.tune(signalDial(best, rasterFor(SdrEngine.mode.value)), silent = true)
         com.rocketgod.mayhem.Diag.log("start-up: tuned the strongest steady signal in view, %.3f MHz %s %.0f dB %.0f kHz wide".format(best.hz / 1e6, best.cls, best.snr, best.bw6 / 1e3))

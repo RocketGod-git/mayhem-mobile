@@ -106,6 +106,7 @@ button { font: inherit; }
 .scope:hover .zoomctl, .scope.zoomed .zoomctl { opacity: 1; }
 .scope .zoomctl button { background: none; border: 0; color: var(--ink); font-size: 14px; width: 24px; height: 22px; cursor: pointer; border-radius: 4px; }
 .scope .zoomctl button:hover { background: var(--accent); color: #fff; }
+.scope .zoomctl button:disabled { opacity: 0.3; cursor: default; background: none; color: var(--ink); }
 /* re-center the view on the tuned channel: only offered while the channel has been slid off the screen */
 .scope .zoomctl [data-c] { display: none; color: var(--accent2); font-size: 16px; }
 body.offspan .scope .zoomctl [data-c] { display: inline-block; }

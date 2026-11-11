@@ -487,7 +487,8 @@ object SdrEngine {
     /** The span was widened or narrowed by hand this run (− / +): the start-up pick leaves it alone. */
     @Volatile var spanByHand = false
 
-    fun stepSpan(dir: Int, cap: Int): Boolean {
+    /** [dry]: only say whether there is a rung that way (for dimming the button), change nothing. */
+    fun stepSpan(dir: Int, cap: Int, dry: Boolean = false): Boolean {
         // an RTL-SDR zooms 1.92 → 2.4 → 3.2 MHz; 3.2 is where it opens for the start-up pick
         val rtl = Radio.kind.value == Radio.Kind.RTLSDR
         val ladder = if (rtl) listOf(1_920_000, 2_400_000, WIDE_SCAN_RTL)
@@ -496,6 +497,7 @@ object SdrEngine {
         val cur = ladder.indexOfFirst { it >= _rateHz.value }.let { if (it < 0) ladder.size - 1 else it }
         val next = (cur - dir).coerceIn(0, ladder.size - 1)
         if (ladder[next] == _rateHz.value) return false
+        if (dry) return true
         spanByHand = true
         if (rtl && ladder[next] == WIDE_SCAN_RTL) setWideScan(true) else setRate(ladder[next])
         // narrowed past the channel: bring the span back over it
