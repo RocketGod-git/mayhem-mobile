@@ -220,7 +220,8 @@ object SdrEngine {
             }
         } else if (rms > hi) {
             when {
-                v > 0 -> _radioVga.value = maxOf(0, v - when { rms > hi * 2 -> 8; rms > hi * 1.4 -> 4; else -> 2 })
+                // too hot: step down by how far over it is (up to 16 dB at once), so a radio that opens overloaded settles in a step or two
+                v > 0 -> _radioVga.value = maxOf(0, v - ((20 * kotlin.math.log10(rms / hi) + 2) / 2).toInt().times(2).coerceIn(2, 16))
                 hasLna && l > 0 -> _radioLna.value = l - LNA_STEP
             }
         }
@@ -451,14 +452,20 @@ object SdrEngine {
      * Point a plain receiver at a whole band: the span is the band's own width (as wide as this radio and screen
      * take in one shot) centred on its middle, heard in the band's mode.
      */
-    fun viewBand(lo: Long, hi: Long, mode: Mode, cap: Int) {
+    /**
+     * [keepDial]: the start-up view leaves the dial on the station the app came back to (when it is in view), so the
+     * pick can see it is already on a good one; a band chip puts the dial at the band's middle.
+     */
+    fun viewBand(lo: Long, hi: Long, mode: Mode, cap: Int, keepDial: Boolean = false) {
         val widest = RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
         val want = (hi - lo).toInt()
         val rate = widest.firstOrNull { it >= want } ?: widest.lastOrNull() ?: RX_RATE
+        val ch = channelHz(); val mid = (lo + hi) / 2
         _offsetHz.value = 0
         _mode.value = mode
         setRate(rate)
-        tuneLo((lo + hi) / 2)
+        tuneLo(mid)
+        if (keepDial && kotlin.math.abs(ch - mid) <= rate / 2 - VIEW_GUARD) _offsetHz.value = (ch - mid).toInt()
     }
     fun nudge(deltaHz: Long) = tune(channelHz() + deltaHz)
 
@@ -751,7 +758,7 @@ object SdrEngine {
                             if (++specFrame % 3 == 0 && now >= clsQuietUntil) {
                                 val sigs = runCatching { classifier.update(pdb, rate.toDouble(), lo.toDouble(), median.toDouble()) }.getOrElse { emptyList() }
                                 _signals.value = sigs
-                                runCatching { AutoPick.onSignals(sigs) }
+                                runCatching { AutoPick.onSignals(sigs, pdb, median) }
                             }
                         } else if (clsRate != 0) { clsRate = 0; _signals.value = emptyList() }
 

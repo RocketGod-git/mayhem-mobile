@@ -4,6 +4,7 @@
  * objects and items, weather reports, third-party (IGate) wrapping. Every station heard keeps a record for the UI.
  */
 import { BitSync, DiscFilter, HdlcFramer, type Emit, type IqProcessor } from './core.js';
+import { ChannelDecimator } from './ham/filters.js';
 
 export interface AprsWx { windDir?: number; windMph?: number; gustMph?: number; tempF?: number; rain1h?: number; rain24h?: number; rainMidnight?: number; humidity?: number; pressureMb?: number }
 export interface AprsStation {
@@ -22,8 +23,38 @@ export interface AprsStation {
 
 const MICE_MSG = ['Emergency', 'Priority', 'Special', 'Committed', 'Returning', 'In service', 'En route', 'Off duty'];
 
+/** 4th-order Butterworth low-pass on a complex (I/Q) stream; i, q hold the last output. */
+class CplxLowpass {
+  private b0 = [0, 0]; private b1 = [0, 0]; private b2 = [0, 0]; private a1 = [0, 0]; private a2 = [0, 0];
+  private zi = [0, 0, 0, 0]; private zq = [0, 0, 0, 0];
+  i = 0; q = 0;
+  constructor(cutHz: number, rate: number) {
+    const w0 = 2 * Math.PI * Math.min(0.45 * rate, cutHz) / rate, c = Math.cos(w0);
+    [0.5412, 1.3066].forEach((qq, k) => {
+      const alpha = Math.sin(w0) / (2 * qq), a0 = 1 + alpha;
+      this.b0[k] = (1 - c) / 2 / a0; this.b1[k] = (1 - c) / a0; this.b2[k] = (1 - c) / 2 / a0; this.a1[k] = -2 * c / a0; this.a2[k] = (1 - alpha) / a0;
+    });
+  }
+  push(xi: number, xq: number): void {
+    let x = xi, y = xq;
+    for (let k = 0; k < 2; k++) {
+      const oi = this.b0[k] * x + this.zi[2 * k]; this.zi[2 * k] = this.b1[k] * x - this.a1[k] * oi + this.zi[2 * k + 1]; this.zi[2 * k + 1] = this.b2[k] * x - this.a2[k] * oi;
+      const oq = this.b0[k] * y + this.zq[2 * k]; this.zq[2 * k] = this.b1[k] * y - this.a1[k] * oq + this.zq[2 * k + 1]; this.zq[2 * k + 1] = this.b2[k] * y - this.a2[k] * oq;
+      x = oi; y = oq;
+    }
+    this.i = x; this.q = y;
+  }
+}
+
 export class AprsDecoder implements IqProcessor {
-  readonly wantsFm = true;
+  /**
+   * The APRS app's decoder tunes its own channel from the raw IQ (onIq), so it can follow each packet's carrier: a
+   * digipeater heard here sat 3 kHz low, which pushed its packets half out of a fixed ±5 kHz channel, and widening
+   * the channel to take them in only let in the noise that broke them. The satellite one is fed FM directly.
+   */
+  readonly wantsFm = false;
+  /** Where the channel sits in the span (Hz from its center); the worker sets it before each buffer. */
+  offsetHz = 0;
   private fmRate = 0;
   private spb = 40;
   private ring = new Float32Array(40);
@@ -43,10 +74,73 @@ export class AprsDecoder implements IqProcessor {
   private readonly stations = new Map<string, AprsStation>();
 
   constructor(private readonly emit: Emit) {}
-  reset(): void { this.fmRate = 0; for (const f of this.framers) f.reset(); }
+  reset(): void { this.fmRate = 0; this.chDec = null; for (const f of this.framers) f.reset(); }
   /** CLEAR on the screen: forget every station, and say so, or the next packet re-sends the whole table. */
   clear(): void { this.stations.clear(); this.emit({ type: 'stations', rows: [] }); }
-  onIq(): void {}
+  // ---- own channel with per-packet carrier tracking ----
+  // Wide path (±12 kHz) finds the packet: the discriminator is steady through a packet and random between them, so
+  // 10 ms blocks whose RMS drops well under the running noise level are a packet, and their mean is its carrier.
+  // Narrow path (±5 kHz, what Bell 202 at ±3 kHz deviation needs) is shifted onto that carrier and demodulated.
+  private chDec: ChannelDecimator | null = null;
+  private chRate = 0; private chKey = 0;
+  private mixBuf = new Float32Array(0);
+  private ncoR = 1; private ncoI = 0; private ncoN = 0;
+  private wide = new CplxLowpass(12_000, 48_000); private narrow = new CplxLowpass(5_000, 48_000);
+  private pwI = 1; private pwQ = 0; private pnI = 1; private pnQ = 0;
+  private afcHz = 0; private afcPh = 0;
+  private blkN = 0; private blkSum = 0; private blkSq = 0; private noiseRms = 0;
+  private runN = 0; private runSum = 0; private runSq = 0;
+  private one = new Float32Array(1);
+
+  onIq(iq: Int8Array, rate: number): void {
+    const n = iq.length >> 1, off = this.offsetHz;
+    if (n <= 0 || Math.abs(off) > rate / 2 - 20_000) return;
+    if (!this.chDec || this.chKey !== rate) {
+      this.chDec = new ChannelDecimator(Math.max(1, Math.floor(rate / 48_000))); this.chKey = rate; this.chRate = rate / this.chDec.total;
+      this.wide = new CplxLowpass(12_000, this.chRate); this.narrow = new CplxLowpass(5_000, this.chRate);
+      this.afcHz = 0; this.noiseRms = 0; this.runN = 0;
+    }
+    if (this.mixBuf.length < 2 * n) this.mixBuf = new Float32Array(2 * n);
+    const stepR = Math.cos(-2 * Math.PI * off / rate), stepI = Math.sin(-2 * Math.PI * off / rate);
+    for (let i = 0; i < n; i++) {
+      const iv = iq[2 * i], qv = iq[2 * i + 1];
+      this.mixBuf[2 * i] = iv * this.ncoR - qv * this.ncoI; this.mixBuf[2 * i + 1] = iv * this.ncoI + qv * this.ncoR;
+      const nr = this.ncoR * stepR - this.ncoI * stepI; this.ncoI = this.ncoR * stepI + this.ncoI * stepR; this.ncoR = nr;
+      if (++this.ncoN >= 4096) { this.ncoN = 0; const g = 1 / Math.hypot(this.ncoR, this.ncoI); this.ncoR *= g; this.ncoI *= g; }
+    }
+    const { out, n: m } = this.chDec.process(this.mixBuf, n);
+    if (this.chRate !== this.fmRate) this.configure(this.chRate);
+    const twoPi = 2 * Math.PI;
+    for (let j = 0; j < m; j++) {
+      const ci = out[2 * j], cq = out[2 * j + 1];
+      // wide: find the packet and its carrier
+      this.wide.push(ci, cq); const wi = this.wide.i, wq = this.wide.q;
+      const dw = Math.atan2(wq * this.pwI - wi * this.pwQ, wi * this.pwI + wq * this.pwQ); this.pwI = wi; this.pwQ = wq;
+      this.carrierBlock(dw);
+      // narrow: on the packet's carrier
+      const c = Math.cos(-this.afcPh), sn = Math.sin(-this.afcPh);
+      this.afcPh += twoPi * this.afcHz / this.chRate; if (this.afcPh > twoPi) this.afcPh -= twoPi; else if (this.afcPh < 0) this.afcPh += twoPi;
+      this.narrow.push(ci * c - cq * sn, ci * sn + cq * c); const ni = this.narrow.i, nq = this.narrow.q;
+      this.one[0] = Math.atan2(nq * this.pnI - ni * this.pnQ, ni * this.pnI + nq * this.pnQ); this.pnI = ni; this.pnQ = nq;
+      this.onFm(this.one, 1, this.chRate);
+    }
+  }
+
+  private carrierBlock(v: number): void {
+    this.blkN++; this.blkSum += v; this.blkSq += v * v;
+    if (this.blkN < this.chRate / 100) return;
+    const mean = this.blkSum / this.blkN, rms = Math.sqrt(this.blkSq / this.blkN);
+    this.blkN = 0; this.blkSum = 0; this.blkSq = 0;
+    this.noiseRms = this.noiseRms === 0 ? rms : this.noiseRms + 0.01 * (rms - this.noiseRms);
+    if (rms < 0.82 * this.noiseRms) {
+      this.runN++; this.runSum += mean; this.runSq += mean * mean;
+      if (this.runN >= 4) {
+        const mu = this.runSum / this.runN, sd = Math.sqrt(Math.max(0, this.runSq / this.runN - mu * mu));
+        const hz = mu * this.chRate / (2 * Math.PI);
+        if (sd * this.chRate / (2 * Math.PI) < 1200 && Math.abs(hz) < 7_000) this.afcHz = hz;
+      }
+    } else { this.runN = 0; this.runSum = 0; this.runSq = 0; }
+  }
 
   private configure(rate: number): void {
     this.fmRate = rate;

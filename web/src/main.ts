@@ -526,7 +526,8 @@ function agcStep(rms: number): void {
     // ~1.4 counts. Crying "check the antenna" there is a false alarm, so hold it for the voice modes.
     else if (state.mode !== 'NONE' && now - agcSaidMax > 20_000) { agcSaidMax = now; log(`AGC is at maximum and the level is still ${rms.toFixed(1)} counts — check the antenna, or turn AGC off if you want to set the gain yourself`); }
   } else if (rms > hi) {
-    if (state.vga > 0) setGains(state.lna, state.vga - (rms > hi * 2 ? 8 : 2), state.amp);
+    // too hot: step down by how far over it is (up to 16 dB at once), so a radio that opens overloaded settles in a step or two
+    if (state.vga > 0) setGains(state.lna, state.vga - Math.min(16, Math.max(2, Math.trunc((20 * Math.log10(rms / hi) + 2) / 2) * 2)), state.amp);
     else if (state.lna > 0) setGains(state.lna - 8, state.vga, state.amp);
   }
 }
@@ -1501,33 +1502,83 @@ let audioPick = false;
 let spanByHand = false;
 /**
  * The start-up pick's clock and memory (the same rules as the iPad and Android apps). Nothing counts for 1.5 s
- * after it is armed (lists from the old view still in flight, the AGC settling), then it waits 2.5 s more, and a
- * station has to be in the list a second ago as well as now, so a burst of noise in one frame never wins.
+ * after it is armed (lists from the old view still in flight, the AGC settling), then it waits 2.5 s more, and for
+ * the gain to hold within 3 dB for 1 s (a pick taken while the AGC steps measures stations through an overloaded
+ * front end). On broadcast FM the pick is the 160 kHz channel with the most level across it on the averaged
+ * spectrum: the classifier's verdict on a strong station swings frame to frame (47 kHz to 1.8 MHz wide as its HD
+ * sidebands merge in, its center wandering 200 kHz) and a HackRF's clock line at an exact megahertz sometimes passes
+ * for a station, while a real station fills the channel and a clock line is one bin however tall. Elsewhere it is
+ * the strongest signal seen in at least a third of the frames since the gain settled.
  */
-const pick = { armedAt: 0, firstSeen: 0, earlier: [] as SeenSignal[], earlierAt: 0, viewed: false };
-function pickArm(): void { pick.armedAt = performance.now(); pick.firstSeen = 0; pick.earlier = []; pick.earlierAt = 0; }
+const pick = { armedAt: 0, firstSeen: 0, tally: new Map<number, [number, SeenSignal]>(), frames: 0, viewed: false, gainAt: -1, gainSince: 0, specAcc: null as Float64Array | null, specN: 0 };
+function pickArm(): void { pick.armedAt = performance.now(); pick.firstSeen = 0; pick.tally.clear(); pick.frames = 0; pick.gainAt = -1; pick.specAcc = null; pick.specN = 0; }
+/** The newest averaged spectrum (dB above its own median), for the broadcast pick. */
+let pickSpec: Float32Array | null = null;
+function notePickSpectrum(bins: Float32Array, rangeDb: number): void {
+  const db = Float32Array.from(bins, v => v * rangeDb);
+  const sorted = Float32Array.from(db).sort(); const med = sorted[sorted.length >> 1];
+  for (let k = 0; k < db.length; k++) db[k] = Math.max(0, db[k] - med);
+  pickSpec = db;
+}
 /** One look at the newest list: 'stay' (a good station is already tuned, or it gave up), a station, or null (not yet). */
 function pickStep(here: number): SeenSignal | 'stay' | null {
   const now = performance.now();
   if (now - pick.armedAt < 1500 || !lastSignals.length) return null;
   if (!pick.firstSeen) { pick.firstSeen = now; return null; }
   if (now - pick.firstSeen > 30_000) return 'stay';
+  const gain = state.lna + state.vga + (state.amp ? 14 : 0);
+  if (pick.gainAt < 0 || Math.abs(gain - pick.gainAt) > 3) { pick.gainAt = gain; pick.gainSince = now; pick.tally.clear(); pick.frames = 0; pick.specAcc = null; pick.specN = 0; return null; }
   const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
+  const broadcast = state.mode === 'WFM';
   // in view, and not the radio's own spike at the middle of the span (a HackRF's DC offset)
   const inView = lastSignals.filter(s => Math.abs(s.hz - c) <= half && Math.abs(s.hz - c) > 30_000);
-  // broadcast: a real station is wide; a radio's own spur (a HackRF's clock line at an exact megahertz) is a
-  // single bin even when the classifier calls it WFM, so width decides, with no fall-back to narrow ones; and
-  // a broad noise hump (read as a "station" megahertz wide) is not one either
-  // (a strong station can read only ~50 kHz at -6 dB: a 60 kHz floor threw out the strongest station in view)
-  const pool = state.mode === 'WFM' ? inView.filter(s => s.bw > 25_000 && s.bw < 400_000) : inView;
-  // already on a good station: stay there, never trade it for another
-  const on = pool.find(s => Math.abs(s.hz - here) <= Math.max(50_000, Math.min(s.bw, 300_000) / 2));
-  if (on && on.snr >= 15) { log(`start-up: staying on the station already tuned, ${(on.hz / 1e6).toFixed(3)} MHz ${Math.round(on.snr)} dB ${Math.round(on.bw / 1e3)} kHz wide`); return 'stay'; }
-  if (now - pick.earlierAt < 1000) return null;
-  const prev = pick.earlier; pick.earlier = pool; pick.earlierAt = now;
-  if (now - pick.firstSeen < 2500 || !prev.length) return null;
+  const pool = broadcast ? inView.filter(s => s.bw > 25_000 && (s.bw < 400_000 || (s.snr >= 25 && s.bw < 1_000_000))) : inView;
+  // already on a good station: stay there, never trade it for another (broadcast decides this from the channel
+  // levels below: a dial on the radio's own DC spike passed for a 17 dB station here)
+  if (!broadcast) {
+    const on = pool.find(s => Math.abs(s.hz - here) <= Math.max(50_000, Math.min(s.bw, 300_000) / 2));
+    if (on && on.snr >= 15) { log(`start-up: staying on the station already tuned, ${(on.hz / 1e6).toFixed(3)} MHz ${Math.round(on.snr)} dB ${Math.round(on.bw / 1e3)} kHz wide`); return 'stay'; }
+  }
+  pick.frames++;
+  const seen = new Set<number>();
+  for (const s of [...pool].sort((a, b) => b.snr - a.snr)) {
+    const k = Math.round(s.hz / 100_000);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const t = pick.tally.get(k);
+    pick.tally.set(k, [(t?.[0] ?? 0) + 1, !t || s.snr > t[1].snr ? s : t[1]]);
+  }
+  if (broadcast && pickSpec) {
+    if (!pick.specAcc || pick.specAcc.length !== pickSpec.length) { pick.specAcc = new Float64Array(pickSpec.length); pick.specN = 0; }
+    for (let k = 0; k < pickSpec.length; k++) pick.specAcc[k] += pickSpec[k];
+    pick.specN++;
+  }
+  if (now - pick.firstSeen < 2500 || now - pick.gainSince < 1000 || pick.frames < 3) return null;
+  if (broadcast && pick.specAcc && pick.specN >= 3) {
+    // every 100 kHz raster channel in view (clear of the DC spike at the middle), scored by the average level
+    // summed across ±80 kHz of it
+    const acc = pick.specAcc, n = acc.length, binHz = state.rate / n, w = Math.max(1, Math.floor(80_000 / binHz)), start = c - state.rate / 2;
+    const score = (f: number): number => {
+      const mid = Math.floor((f - start) / binHz); let sum = 0;
+      for (let k = Math.max(0, mid - w); k <= Math.min(n - 1, mid + w); k++) sum += acc[k];
+      return sum / pick.specN;
+    };
+    const scores: [number, number][] = [];
+    for (let f = Math.ceil((c - half) / 100_000) * 100_000; f <= c + half; f += 100_000) if (Math.abs(f - c) > 60_000) scores.push([f, score(f)]);
+    if (!scores.length) return null;
+    const best = scores.reduce((a, b) => (b[1] > a[1] ? b : a));
+    // already on a good station: stay unless it is under a third of the best one; a dial on the DC spike at the
+    // middle of the span cannot be judged, so it is not kept
+    if (Math.abs(here - c) > 60_000 && Math.abs(here - c) <= half) {
+      const mine = score(here);
+      if (mine >= best[1] / 3) { log(`start-up: staying on the station already tuned, ${(here / 1e6).toFixed(3)} MHz (level ${Math.round(mine)}, best in view ${(best[0] / 1e6).toFixed(1)} MHz ${Math.round(best[1])})`); return 'stay'; }
+    }
+    log(`start-up: channels by level across 160 kHz (MHz/score, ${pick.specN} frames) ${[...scores].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([f, v]) => `${(f / 1e6).toFixed(1)}/${Math.round(v)}`).join(' ')}`);
+    log(`start-up: tuned the strongest station in view, ${(best[0] / 1e6).toFixed(1)} MHz`);
+    return { hz: best[0], db: 0, snr: best[1], bw: 200_000, cls: 'WFM', conf: 1, val: 0 };
+  }
   let best: SeenSignal | null = null;
-  for (const s of pool) if (prev.some(p => Math.abs(p.hz - s.hz) <= 50_000) && (!best || s.snr > best.snr)) best = s;
+  for (const [n, s] of pick.tally.values()) if (n * 3 >= pick.frames && (!best || s.snr > best.snr)) best = s;
   if (best) log(`start-up: tuned the strongest steady signal in view, ${(best.hz / 1e6).toFixed(3)} MHz ${best.cls} ${Math.round(best.snr)} dB ${Math.round(best.bw / 1e3)} kHz wide`);
   return best;
 }
@@ -4590,6 +4641,7 @@ function ensureWorker(): Worker {
       case 'spectrum':
         // the meter reads the bins before the waterfall takes them
         if (state.app === 'audio') { const db = channelOverNoise(m.bins as Float32Array, m.rangeDb as number); setMeter(db / 40, `+${Math.round(db)} dB over the noise`, state.squelch ? state.squelch / 40 : null); }
+        if (pick.armedAt && (launchPicked === false || audioPick)) notePickSpectrum(m.bins as Float32Array, m.rangeDb as number);
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there

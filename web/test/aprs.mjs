@@ -81,5 +81,33 @@ ok(wx.stations.some(x => x.call === 'W6XYZ' && x.wx && x.wx.tempF === 72 && x.wx
 const noisy = run('N0CALL-9', '!4903.50N/07201.75W-Test', { noise: 0.25 });
 ok(noisy.packets.length >= 1, 'decodes through moderate noise');
 
+// --- the whole receive path from raw IQ (the APRS app tunes its own channel) -------------------------------------
+// Bell 202 FM-modulated at ±3 kHz with the carrier offHz off the channel (a digipeater heard here sat 3 kHz low),
+// Gaussian noise, signed 8-bit samples as the HackRF gives them. At this noise (about 11 dB SNR in the ±5 kHz channel)
+// a fixed channel loses every packet 3 kHz off; tracking each packet's carrier keeps them all.
+const iqRun = (offHz, n = 4, amp = 20, noise = 40) => {
+  const rate = 960_000, rnd = rng(5), g = () => { let u = 0; for (let i = 0; i < 12; i++) u += rnd(); return u; };
+  const packets = [];
+  const dec = new AprsDecoder(m => { if (m.type === 'packet') packets.push(m.line); });
+  dec.reset(rate); dec.offsetHz = 0;
+  const buf = new Int8Array(2 * 16384); let at = 0, phRf = 0, phTone = 0;
+  const q = v => Math.max(-128, Math.min(127, Math.round(v)));
+  const push = (i, qq) => { buf[at] = q(i + noise * g()); buf[at + 1] = q(qq + noise * g()); at += 2; if (at === buf.length) { dec.onIq(buf, rate); at = 0; } };
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < rate / 10; i++) push(0, 0);
+    for (const b of ax25Bits(ax25Aprs(`N0CALL-${k}`, `!3415.00N/11847.00W>offset test packet ${k}`), 32)) {
+      for (let i = 0; i < rate / 1200; i++) {
+        phTone += 2 * Math.PI * (b ? MARK : SPACE) / rate;
+        phRf += 2 * Math.PI * (offHz + 3000 * Math.sin(phTone)) / rate;
+        push(amp * Math.cos(phRf), amp * Math.sin(phRf));
+      }
+    }
+  }
+  for (let i = 0; i < rate / 5; i++) push(0, 0);
+  if (at > 0) dec.onIq(buf.subarray(0, at), rate);
+  return new Set(packets).size;
+};
+for (const off of [0, -3000, 3000, -4000, 4000]) { const got = iqRun(off); ok(got === 4, `raw IQ, carrier ${off} Hz off: 4 of 4`, `got ${got}`); }
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

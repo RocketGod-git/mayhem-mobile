@@ -58,7 +58,12 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
         /** 2200 Hz tone weights, ±6 dB in even steps. */
         private val GAINS = floatArrayOf(0.5f, 0.63f, 0.79f, 1.0f, 1.26f, 1.59f, 2.0f)
     }
-    override val wantsFm: Boolean get() = true
+    /**
+     * It tunes its own channel from the raw IQ (onIq), so it can follow each packet's carrier: a digipeater heard here
+     * sat 3 kHz low, which pushed its packets half out of a fixed ±5 kHz channel, and widening the channel to take
+     * them in only let in the noise that broke them.
+     */
+    override val wantsFm: Boolean get() = false
 
     private var fmRate = 0
     private var spb = 40
@@ -79,8 +84,74 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
     /** Most recently heard first. */
     val table: StateFlow<List<AprsStation>> = _stations.asStateFlow()
 
-    override fun reset(rate: Int) { fmRate = 0; for (f in framers) f.reset() }
-    override fun onIq(iq: ByteArray, len: Int, rate: Int) {}
+    override fun reset(rate: Int) { fmRate = 0; chDec = null; for (f in framers) f.reset() }
+
+    // ---- own channel with per-packet carrier tracking ----
+    // Wide path (±12 kHz) finds the packet: the discriminator is steady through a packet and random between them, so
+    // 10 ms blocks whose RMS drops well under the running noise level are a packet, and their mean is its carrier.
+    // Narrow path (±5 kHz, what Bell 202 at ±3 kHz deviation needs) is shifted onto that carrier and demodulated.
+    private var chDec: com.rocketgod.mayhem.core.ham.ChannelDecimator? = null
+    private var chRate = 0; private var chKey = 0
+    private var mixBuf = FloatArray(0); private var chBuf = FloatArray(0)
+    private var ncoR = 1f; private var ncoI = 0f; private var ncoN = 0
+    private var wide = CplxLowpass(12_000.0, 48_000.0); private var narrow = CplxLowpass(5_000.0, 48_000.0)
+    private var pwI = 1f; private var pwQ = 0f; private var pnI = 1f; private var pnQ = 0f
+    private var afcHz = 0.0; private var afcPh = 0.0
+    private var blkN = 0; private var blkSum = 0.0; private var blkSq = 0.0; private var noiseRms = 0.0
+    private var runN = 0; private var runSum = 0.0; private var runSq = 0.0
+
+    override fun onIq(iq: ByteArray, len: Int, rate: Int) {
+        val n = len / 2
+        val off = com.rocketgod.mayhem.core.SdrEngine.offsetHz.value
+        if (n <= 0 || kotlin.math.abs(off) > rate / 2 - 20_000) return
+        if (chDec == null || chKey != rate) {
+            val d = com.rocketgod.mayhem.core.ham.ChannelDecimator(maxOf(1, rate / 48_000)); chDec = d; chKey = rate; chRate = rate / d.total
+            wide = CplxLowpass(12_000.0, chRate.toDouble()); narrow = CplxLowpass(5_000.0, chRate.toDouble())
+            afcHz = 0.0; noiseRms = 0.0; runN = 0
+        }
+        val dec = chDec!!
+        if (mixBuf.size < 2 * n) mixBuf = FloatArray(2 * n)
+        if (chBuf.size < dec.outSize(n)) chBuf = FloatArray(dec.outSize(n))
+        val stepR = cos(-2.0 * Math.PI * off / rate).toFloat(); val stepI = sin(-2.0 * Math.PI * off / rate).toFloat()
+        for (i in 0 until n) {
+            val iv = (iq[2 * i].toInt() and 0xff) - 127.4f; val qv = (iq[2 * i + 1].toInt() and 0xff) - 127.4f
+            mixBuf[2 * i] = iv * ncoR - qv * ncoI; mixBuf[2 * i + 1] = iv * ncoI + qv * ncoR
+            val nr = ncoR * stepR - ncoI * stepI; ncoI = ncoR * stepI + ncoI * stepR; ncoR = nr
+            if (++ncoN >= 4096) { ncoN = 0; val g = 1f / sqrt(ncoR * ncoR + ncoI * ncoI); ncoR *= g; ncoI *= g }
+        }
+        val m = dec.process(mixBuf, n, chBuf)
+        if (chRate != fmRate) configure(chRate)
+        val twoPi = 2.0 * Math.PI
+        for (j in 0 until m) {
+            val ci = chBuf[2 * j]; val cq = chBuf[2 * j + 1]
+            // wide: find the packet and its carrier
+            wide.push(ci, cq); val wi = wide.i; val wq = wide.q
+            val dw = kotlin.math.atan2(wq * pwI - wi * pwQ, wi * pwI + wq * pwQ); pwI = wi; pwQ = wq
+            carrierBlock(dw.toDouble())
+            // narrow: on the packet's carrier
+            val c = cos(-afcPh).toFloat(); val sn = sin(-afcPh).toFloat()
+            afcPh += twoPi * afcHz / chRate; if (afcPh > twoPi) afcPh -= twoPi else if (afcPh < 0) afcPh += twoPi
+            narrow.push(ci * c - cq * sn, ci * sn + cq * c); val ni = narrow.i; val nq = narrow.q
+            val dn = kotlin.math.atan2(nq * pnI - ni * pnQ, ni * pnI + nq * pnQ); pnI = ni; pnQ = nq
+            step(dn)
+        }
+    }
+
+    private fun carrierBlock(v: Double) {
+        blkN++; blkSum += v; blkSq += v * v
+        if (blkN < chRate / 100) return
+        val mean = blkSum / blkN; val rms = sqrt(blkSq / blkN)
+        blkN = 0; blkSum = 0.0; blkSq = 0.0
+        noiseRms = if (noiseRms == 0.0) rms else noiseRms + 0.01 * (rms - noiseRms)
+        if (rms < 0.82 * noiseRms) {
+            runN++; runSum += mean; runSq += mean * mean
+            if (runN >= 4) {
+                val mu = runSum / runN; val sd = sqrt(maxOf(0.0, runSq / runN - mu * mu))
+                val hz = mu * chRate / (2 * Math.PI)
+                if (sd * chRate / (2 * Math.PI) < 1200 && kotlin.math.abs(hz) < 7_000) afcHz = hz
+            }
+        } else { runN = 0; runSum = 0.0; runSq = 0.0 }
+    }
 
     fun clear() { synchronized(stations) { stations.clear() }; _stations.value = emptyList() }
 
@@ -98,9 +169,14 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
 
     override fun onFm(samples: FloatArray, n: Int, rate: Int) {
         if (rate != fmRate) configure(rate)
+        for (i in 0 until n) step(samples[i])
+    }
+
+    /** One discriminator sample (radians/sample) through the tone correlators, the slicers and the deframers. */
+    private fun step(v: Float) {
         val twoPi = 2.0 * Math.PI
-        for (i in 0 until n) {
-            val x = filt.push(samples[i].toDouble()).toFloat()
+        run {
+            val x = filt.push(v.toDouble()).toFloat()
             val old = ring[ri]
             ring[ri] = x
             ri = if (ri + 1 >= spb) 0 else ri + 1
@@ -309,4 +385,30 @@ internal fun parseWx(t0: String): AprsWx {
     val h = num("h", 2)?.toInt()?.let { if (it == 0) 100 else it }
     return AprsWx(dir, spd, num("g", 3)?.toInt(), num("t", 3)?.toInt(), num("r", 3)?.toInt(), num("p", 3)?.toInt(), num("P", 3)?.toInt(),
         h, num("b", 5)?.let { it / 10 })
+}
+
+/** 4th-order Butterworth low-pass on a complex (I/Q) stream; [i], [q] hold the last output. */
+class CplxLowpass(cutHz: Double, rate: Double) {
+    private val b0 = FloatArray(2); private val b1 = FloatArray(2); private val b2 = FloatArray(2)
+    private val a1 = FloatArray(2); private val a2 = FloatArray(2)
+    private val zi = FloatArray(4); private val zq = FloatArray(4)
+    var i = 0f; private set
+    var q = 0f; private set
+    init {
+        val w0 = 2 * Math.PI * minOf(0.45 * rate, cutHz) / rate; val c = cos(w0)
+        for ((k, qq) in doubleArrayOf(0.5412, 1.3066).withIndex()) {
+            val alpha = sin(w0) / (2 * qq); val a0 = 1 + alpha
+            b0[k] = ((1 - c) / 2 / a0).toFloat(); b1[k] = ((1 - c) / a0).toFloat(); b2[k] = ((1 - c) / 2 / a0).toFloat()
+            a1[k] = (-2 * c / a0).toFloat(); a2[k] = ((1 - alpha) / a0).toFloat()
+        }
+    }
+    fun push(xi: Float, xq: Float) {
+        var x = xi; var y = xq
+        for (k in 0 until 2) {
+            val oi = b0[k] * x + zi[2 * k]; zi[2 * k] = b1[k] * x - a1[k] * oi + zi[2 * k + 1]; zi[2 * k + 1] = b2[k] * x - a2[k] * oi
+            val oq = b0[k] * y + zq[2 * k]; zq[2 * k] = b1[k] * y - a1[k] * oq + zq[2 * k + 1]; zq[2 * k + 1] = b2[k] * y - a2[k] * oq
+            x = oi; y = oq
+        }
+        i = x; q = y
+    }
 }

@@ -101,6 +101,45 @@ class AprsDecoderTest {
         return log.lines.value.toSet().size
     }
 
+    /**
+     * The whole receive path from raw IQ (the decoder tunes its own channel): Bell 202 FM-modulated at ±3 kHz with
+     * the carrier [offsetHz] off the channel (a digipeater heard here sat 3 kHz low), Gaussian noise, quantized to
+     * offset-128 bytes as a HackRF delivers them. At the default noise (about 11 dB SNR in the ±5 kHz channel) a fixed
+     * channel loses every packet 3 kHz off; tracking keeps them all. Returns how many of [n] packets came through.
+     */
+    private fun iqPackets(offsetHz: Double, n: Int = 4, amp: Double = 20.0, noise: Double = 40.0): Int {
+        val log = PacketLog(); val d = AprsDecoder(log)
+        val rate = 960_000; val rng = Random(5)
+        d.reset(rate)
+        val buf = ByteArray(2 * 16_384); var at = 0
+        var phRf = 0.0; var phTone = 0.0
+        fun q(v: Double): Byte = (127.5 + v).let { Math.round(it).coerceIn(0, 255).toInt().toByte() }
+        fun push(i: Double, qq: Double) {
+            buf[at] = q(i + noise * rng.nextGaussian()); buf[at + 1] = q(qq + noise * rng.nextGaussian()); at += 2
+            if (at == buf.size) { d.onIq(buf, at, rate); at = 0 }
+        }
+        for (k in 0 until n) {
+            repeat(rate / 10) { push(0.0, 0.0) }                       // 100 ms of noise between packets
+            val frame = TxEncoders.ax25Aprs("N0CALL-$k", "!3415.00N/11847.00W>offset test packet $k")
+            for (b in TxEncoders.ax25Bits(frame, 32)) {
+                repeat(rate / 1200) {
+                    phTone += 2 * Math.PI * (if (b) 1200.0 else 2200.0) / rate
+                    phRf += 2 * Math.PI * (offsetHz + 3000 * sin(phTone)) / rate
+                    push(amp * kotlin.math.cos(phRf), amp * sin(phRf))
+                }
+            }
+        }
+        repeat(rate / 5) { push(0.0, 0.0) }
+        if (at > 0) d.onIq(buf, at, rate)
+        return log.lines.value.toSet().size
+    }
+
+    @Test fun iqOnChannel() { assertEquals(4, iqPackets(0.0)) }
+    @Test fun iqThreeKhzLow() { assertEquals(4, iqPackets(-3_000.0)) }
+    @Test fun iqThreeKhzHigh() { assertEquals(4, iqPackets(3_000.0)) }
+    @Test fun iqFourKhzLow() { assertEquals(4, iqPackets(-4_000.0)) }
+    @Test fun iqFourKhzHigh() { assertEquals(4, iqPackets(4_000.0)) }
+
     @Test fun afskFlat() { assertEquals(10, afskPackets(0.0, 0.05)) }
     @Test fun afskSpaceTiltedUp() { assertTrue(afskPackets(6.0, 0.05) >= 9) }
     @Test fun afskSpaceTiltedDown() { assertTrue(afskPackets(-6.0, 0.05) >= 9) }

@@ -562,6 +562,7 @@ function process(iq: Int8Array): void {
   if (p === meters) mesh.centerHz = centreHz;
   if (p === lora) { lora.setCenter(centreHz); lora.scanner.pool = loraPoolFor(rate); }
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
+  if (p === aprs) aprs.offsetHz = offsetHz;
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
 

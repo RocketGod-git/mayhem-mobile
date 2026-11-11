@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
             val widest = SdrEngine.RX_RATES.filter { com.rocketgod.mayhem.core.Radio.canSample(com.rocketgod.mayhem.core.Radio.limits, it) }.maxOrNull() ?: SdrEngine.RX_RATE
             if (widest.toLong() * 2 >= b.hi - b.lo) {
                 val cap = if (resources.configuration.screenWidthDp >= 600) 19_200_000 else 7_680_000
-                SdrEngine.viewBand(b.lo, b.hi, b.mode, cap)
+                SdrEngine.viewBand(b.lo, b.hi, b.mode, cap, keepDial = true)
             } else { SdrEngine.setWideScan(true); SdrEngine.recentre() }
         }
         Apps.init(this)
