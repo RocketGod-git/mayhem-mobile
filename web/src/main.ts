@@ -3579,9 +3579,9 @@ function refreshLora(force = false): void {
   det.hidden = !picked;
   if (picked) { const top = q('.mt-fields', det)?.scrollTop ?? 0; det.innerHTML = loraDetail(picked, pins.some(p => p.id === picked.key)); const f = q('.mt-fields', det); if (f) f.scrollTop = top; }
   if (loraUi.view === 'map') { geo?.invalidate(); geo?.update(pins, loraUi.sel); }
-  // the known channels in the span: lit while heard, with what they have decoded
+  // the known channels in the span that matter now (always-on, open, heard): lit while heard, with what they decoded
   const ch = q('#lr-chans');
-  if (ch) ch.innerHTML = (snap?.channels ?? []).map(c => { const hot = c.hotAgoMs !== null && c.hotAgoMs < 1500; return `<span class="${c.active && !c.standing ? 'on' : ''} ${hot ? 'hot' : ''}" title="${(c.hz / 1e6).toFixed(4)} MHz${c.standing ? ' · always on' : ''}">${esc(c.name)}${c.frames ? ` · ${c.frames}` : ''}</span>`; }).join('')
+  if (ch) ch.innerHTML = (snap?.channels ?? []).filter(c => c.standing || c.active || c.frames > 0 || (c.hotAgoMs !== null && c.hotAgoMs < 1500)).map(c => { const hot = c.hotAgoMs !== null && c.hotAgoMs < 1500; return `<span class="${c.active && !c.standing ? 'on' : ''} ${hot ? 'hot' : ''}" title="${(c.hz / 1e6).toFixed(4)} MHz${c.standing ? ' · always on' : ''}">${esc(c.name)}${c.frames ? ` · ${c.frames}` : ''}</span>`; }).join('')
     + (snap && snap.busy > 1.05 ? `<span class="warn">behind the radio: ${Math.round(100 * snap.busy)}% of real time</span>` : '');
   if (nodes.length > 0) setLamp(`${nodes.length} NODE${nodes.length === 1 ? '' : 'S'}`, 'ok');
 }
