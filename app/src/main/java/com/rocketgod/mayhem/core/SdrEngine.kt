@@ -350,17 +350,27 @@ object SdrEngine {
     /** Raw IQ from the USB thread (uint8 I,Q interleaved). Copies into an exact-size pooled buffer and enqueues;
      *  drops oldest on overrun to stay near-real-time. */
     fun onIq(buf: ByteArray, len: Int) {
+        bufTotal++
         val dst = pool.poll()?.takeIf { it.size == len } ?: ByteArray(len)
         System.arraycopy(buf, 0, dst, 0, len)
         // at most about 0.2 s of samples waits, whatever the buffer size and rate: a deeper backlog (a phone's first
         // seconds, before the code is warm) would leave the waterfall and the decoders that far behind
         val cap = if (deepQueue) (QUEUE_SECONDS * sampleRate * 2 / maxOf(len, 1)).toInt().coerceIn(8, 512) else 8
-        while (queue.size >= cap) queue.poll()?.let { pool.offer(it) } ?: break
+        while (queue.size >= cap) { val old = queue.poll() ?: break; pool.offer(old); dropTotal++ }
         if (!queue.offer(dst)) {
-            queue.poll()?.let { pool.offer(it) }
+            queue.poll()?.let { pool.offer(it); dropTotal++ }
             queue.offer(dst)
         }
     }
+
+    /**
+     * Buffers in from the radio, and those thrown away because processing fell behind. A drop is silent otherwise, and
+     * it tears a hole in anything long being received (a LoRa frame is hundreds of milliseconds), so the health line says.
+     */
+    @Volatile private var bufTotal = 0L
+    @Volatile private var dropTotal = 0L
+    private var bufSeen = 0L
+    private var dropSeen = 0L
 
     private const val QUEUE_SECONDS = 0.2
 
@@ -776,7 +786,10 @@ object SdrEngine {
                             val offKhz = (peakIdx - FFT_N / 2) * (rate.toDouble() / FFT_N) / 1000.0
                             val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs floor %.0fdB (Δ%.0f)".format(
                                 sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median)
-                            Diag.log(health)
+                            val nb = bufTotal - bufSeen; val nd = dropTotal - dropSeen; bufSeen += nb; dropSeen += nd
+                            val lora = (p as? com.rocketgod.mayhem.core.lora.LoraScanner)?.busy
+                            Diag.log(health + (if (nd > 0) " · DROPPED %d of %d buffers (falling behind)".format(nd, nb) else "") +
+                                (if (lora != null) " · LoRa scanner %.0f%% of real time".format(lora * 100) else ""))
                             _rxHealth.value = health
                             _levelDb.value = peak - median
                             agcStep(rms, now)
