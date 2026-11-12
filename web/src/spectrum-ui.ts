@@ -68,6 +68,8 @@ interface Settings {
   vbwAuto: boolean; vbw: number;
   window: WindowKind;
   ref: number; div: number;
+  /** REF follows the signal: up when a trace goes over the top, reframed when the floor drops off the bottom. */
+  refAuto: boolean;
   unit: 'dBm' | 'dBFS';
   det: Detector;
   cal: number;
@@ -84,7 +86,7 @@ interface Settings {
 function defaults(dial: number): Settings {
   return {
     mode: 'FREQ', center: dial || 433.92e6, span: 2e6, startStop: false, rbwAuto: true, rbw: 3000, vbwAuto: true, vbw: 3000, window: 'HANN',
-    ref: -20, div: 10, unit: 'dBm', det: 'PEAK', cal: 0,
+    ref: -20, div: 10, refAuto: true, unit: 'dBm', det: 'PEAK', cal: 0,
     traces: defaultTraces().map(t => ({ mode: t.mode, avgN: 10 })),
     markers: defaultMarkers(), active: 0, meas: 'OFF', chBw: 25_000, spacing: 25_000, persist: false,
     zsFreq: dial || 433.92e6, zsBw: 100_000, zsTime: 0.02, trig: 'FREE', single: false, level: -60, pre: 0.1,
@@ -285,6 +287,12 @@ export class SpectrumUi {
       this.rangeChecked = true;
       const q = Float32Array.from(live).sort(), med = q[q.length >> 1];
       if (med > this.s.ref || med < this.s.ref - this.s.div * 10) this.autoScaleNow();
+    } else if (whole && this.s.refAuto) {
+      // AUTO REF: any trace over the top raises REF to fit it; a floor fallen off the bottom reframes the screen
+      let top = -Infinity;
+      for (const t of this.traces) if (t.data && t.mode !== 'OFF') for (let i = 0; i < t.data.length; i++) if (t.data[i] > top) top = t.data[i];
+      const q = Float32Array.from(live).sort(), med = q[q.length >> 1];
+      if (top > this.s.ref || med < this.s.ref - this.s.div * 10) this.autoScaleNow(true);
     }
     if (rbwMoved) this.tiles();
     this.draw();
@@ -350,7 +358,7 @@ export class SpectrumUi {
       const t = b.dataset.t!, d = b.dataset;
       if (d.k === 'dn' || d.k === 'up') this.turn(t, d.k === 'up' ? 1 : -1);
       else if (d.k === 'auto') this.toggle(t === 'rbw' ? 'rbwa' : 'vbwa');
-      else if (d.k === 'pad' && t === 'ref' && (e.target as HTMLElement).tagName === 'B') this.autoScaleNow();
+      else if (d.k === 'pad' && t === 'ref' && (e.target as HTMLElement).tagName === 'B') { if (this.s.mode === 'FREQ') this.s.refAuto = true; this.autoScaleNow(); }
       else if (d.k === 'edge') { this.s.trig = this.s.trig === 'RISE' ? 'FALL' : 'RISE'; this.controls(); this.update(); }
       else this.openPad(t);
     };
@@ -390,9 +398,16 @@ export class SpectrumUi {
       ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div · AUTO`]];
   }
   /** Set REF and dB/div to frame the measured trace. */
-  private autoScaleNow(): void {
-    // zero span frames its amplitude trace; the frequency view frames the trace the measurements read
-    const y = this.s.mode === 'ZERO' ? this.zcap?.amp : (this.traceFor(this.s.markers[this.s.active].trace) ?? this.traces.find(x => x.data))?.data;
+  private autoScaleNow(allTraces = false): void {
+    // zero span frames its amplitude trace; the frequency view frames the trace the measurements read (or, following
+    // the signal, the live trace's floor under the highest of all the traces)
+    let y = this.s.mode === 'ZERO' ? this.zcap?.amp : (this.traceFor(this.s.markers[this.s.active].trace) ?? this.traces.find(x => x.data))?.data;
+    if (allTraces && this.s.mode === 'FREQ') {
+      const live = this.traces.find(t => t.data && t.mode === 'LIVE')?.data ?? y;
+      let top = -Infinity;
+      for (const t of this.traces) if (t.data && t.mode !== 'OFF') for (const v of t.data) if (v > top) top = v;
+      if (live && Number.isFinite(top)) { y = Float32Array.from(live); y[0] = top; }
+    }
     if (!y) return;
     const a = autoScale(y, DIVS);
     this.s.ref = a.ref; this.s.div = a.div; this.persist?.clear();
@@ -401,9 +416,10 @@ export class SpectrumUi {
 
   private tiles(): void {
     const el = this.root?.querySelector<HTMLElement>('#sp-tiles'); if (!el) return;
+    const s = this.s;
     el.innerHTML = this.tileList().map(([id, label, v, unit, badge]) => `
       <div class="sp-tile" data-tile="${id}">
-        <div class="sp-tl"><span>${label}</span>${badge ? `<b data-t="${id}" data-k="${badge === 'AUTO' || badge === 'MAN' ? 'auto' : badge.startsWith('RISE') || badge.startsWith('FALL') ? 'edge' : 'pad'}" class="${badge === 'AUTO' ? 'on' : ''}">${badge}</b>` : ''}</div>
+        <div class="sp-tl"><span>${label}</span>${badge ? `<b data-t="${id}" data-k="${badge === 'AUTO' || badge === 'MAN' ? 'auto' : badge.startsWith('RISE') || badge.startsWith('FALL') ? 'edge' : 'pad'}" class="${badge === 'AUTO' || (id === 'ref' && s.refAuto && s.mode === 'FREQ') ? 'on' : ''}">${badge}</b>` : ''}</div>
         <button class="sp-tv" data-t="${id}" data-k="pad" title="Tap to type a value; the wheel turns it">${esc(v)}<small>${esc(unit)}</small></button>
         <div class="sp-knob"><button data-t="${id}" data-k="dn" aria-label="${label} down">‹</button><i></i><button data-t="${id}" data-k="up" aria-label="${label} up">›</button></div>
       </div>`).join('');
@@ -420,7 +436,7 @@ export class SpectrumUi {
       case 'span': this.setSpan(s.center, step125(s.span, dir)); return;
       case 'rbw': s.rbw = stepBw(this.frame?.rbw ?? this.rbwHz(), dir); s.rbwAuto = false; this.controls(); this.restart(); return;
       case 'vbw': s.vbw = stepBw(s.vbwAuto ? this.vbwHz() : s.vbw, dir); s.vbwAuto = false; break;
-      case 'ref': s.ref += dir * (s.div >= 5 ? 5 : 1); this.persist?.clear(); break;
+      case 'ref': s.ref += dir * (s.div >= 5 ? 5 : 1); s.refAuto = false; this.persist?.clear(); break;
       case 'zf': s.zsFreq += dir * s.zsBw / 4; this.restart(); return;
       case 'zbw': { const b = this.zsBws(), i = Math.max(0, Math.min(b.length - 1, b.indexOf(s.zsBw) + dir)); s.zsBw = b[i]; this.controls(); this.restart(); return; }
       case 'zst': this.stepper('zst', dir); return;
@@ -483,7 +499,7 @@ export class SpectrumUi {
       case 'stop': { const a = this.start; this.setSpan((a + v) / 2, v - a); return; }
       case 'rbw': s.rbw = Math.max(1, v); s.rbwAuto = false; this.restart(); return;
       case 'vbw': s.vbw = Math.max(1, v); s.vbwAuto = false; break;
-      case 'ref': s.ref = Math.round(v); this.persist?.clear(); break;
+      case 'ref': s.ref = Math.round(v); s.refAuto = false; this.persist?.clear(); break;
       case 'lvl': s.level = Math.round(v); break;
       case 'zf': s.zsFreq = Math.max(MIN_HZ, Math.min(MAX_HZ, v)); this.restart(); return;
       case 'zbw': { const b = this.zsBws(); s.zsBw = b.reduce((a, x) => (Math.abs(Math.log(x / v)) < Math.abs(Math.log(a / v)) ? x : a), b[0]); this.controls(); this.restart(); return; }
@@ -580,7 +596,7 @@ export class SpectrumUi {
     const s = this.s;
     const idx = <T>(list: T[], v: T) => Math.max(0, list.indexOf(v));
     switch (id) {
-      case 'div': s.div = DIVS[Math.max(0, Math.min(DIVS.length - 1, idx(DIVS, s.div) + dir))]; this.persist?.clear(); break;
+      case 'div': s.div = DIVS[Math.max(0, Math.min(DIVS.length - 1, idx(DIVS, s.div) + dir))]; s.refAuto = false; this.persist?.clear(); break;
       case 'cal': s.cal = Math.max(-40, Math.min(40, s.cal + dir)); break;
       case 'chbw': s.chBw = Math.min(stepBw(s.chBw, dir), Math.max(1000, s.span)); break;
       case 'spacing': s.spacing = stepBw(s.spacing, dir); break;
