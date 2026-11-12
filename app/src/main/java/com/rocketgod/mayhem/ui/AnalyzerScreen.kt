@@ -419,9 +419,10 @@ private fun FilterRow(accent: Color) {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
             TxField(minMs, accent, "MIN ms", Modifier.weight(1f), kb = Kb.DECIMAL) { minMs = decimalOf(it); apply { x -> x.copy(minMs = numOf(minMs)) } }
             TxField(maxMs, accent, "MAX ms", Modifier.weight(1f), kb = Kb.DECIMAL) { maxMs = decimalOf(it); apply { x -> x.copy(maxMs = numOf(maxMs)) } }
+            ToggleBox("WITH DATA", f.dataOnly, accent) { apply { x -> x.copy(dataOnly = !x.dataOnly) } }
             ToggleBox("ONLY UNKNOWN", f.unknownOnly, accent) { apply { x -> x.copy(unknownOnly = !x.unknownOnly) } }
         }
-        Text("kept bursts must pass every limit set; blank is no limit. A recording with no frequency in its name skips the MHz test.",
+        Text("kept bursts must pass every limit set; blank is no limit. WITH DATA skips spurs, plain carriers and blips with no bits. A recording with no frequency in its name skips the MHz test.",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
     }
 }

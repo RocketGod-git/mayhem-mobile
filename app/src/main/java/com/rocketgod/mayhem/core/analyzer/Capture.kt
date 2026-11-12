@@ -289,8 +289,26 @@ data class CaptureFilter(
     val minMs: Double = 0.0, val maxMs: Double = 0.0,
     /** Skip bursts a Devices decoder already claims. */
     val unknownOnly: Boolean = false,
+    /** Keep only bursts that carry data (see [hasData]): on by default, so spurs and blips don't flood the list. */
+    val dataOnly: Boolean = false,
 )
 val NO_FILTER = CaptureFilter()
+val DEFAULT_FILTER = CaptureFilter(dataOnly = true)
+
+/**
+ * Whether a burst looks like a transmission rather than a spur or a blip: a Devices decoder claims it, or it lasts at
+ * least 2 ms and reads as 16 or more bits at a plausible rate for a remote or a sensor (100 kbit/s or less), and those
+ * bits span at least a quarter of it. A plain carrier, two tones with no bits, a 1 ms tick read as 170 kbit/s, or a
+ * few stray bits in 50 ms of noise all fail. Twin of the web app's hasData().
+ */
+fun hasData(frames: List<Frame>, baud: Double, ms: Double, matches: List<String>): Boolean {
+    if (matches.isNotEmpty()) return true
+    val bits = frames.sumOf { it.bits.length }
+    if (!(ms >= 2 && bits >= 16 && baud > 0 && baud <= 100_000)) return false
+    // the bits must fill a fair share of the burst: noise reads as a few stray bits spread over 50 ms, while real
+    // frames (repeats and the gaps between them included) cover 40% of it or more
+    return bits / baud * 1000 >= 0.25 * ms
+}
 
 /** Whether a burst heard with the radio at `center` gets through. A file with no known center skips the frequency test. */
 fun passes(f: CaptureFilter, hz: Double, snr: Double, ms: Double, matches: List<String>, center: Long): Boolean {

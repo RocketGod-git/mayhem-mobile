@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  * The Analyzer end to end: synthetic bursts of every modulation and line coding, made into I/Q, found by the burst
  * front end anywhere in the span, then read back with nothing set by hand. Then repeated frames lined up bit by bit,
  * the fixed and changing columns checked, and the file formats round-tripped. Twin of web/test/analyzer.mjs, check
- * for check (112 of them), with the same signals and the same PRNG.
+ * for check (117 of them), with the same signals and the same PRNG.
  *
  * No real key is in here: the synthetic frames use made-up bytes, and the Land Rover check uses the ProtoPirate-style
  * fixture already in the repo (resources/pirate/land_rover_fsk.txt), turned back into samples.
@@ -103,7 +103,7 @@ class AnalyzerTest {
         pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); counterAndCheck(); bundleAndFilter(); chirpyOok(); unevenManchester(); phaseAndTrim(); grouping(); small()
         println("analyzer: $pass passed, $fail failed")
         assertTrue("failed: ${failures.joinToString(" | ")}", fail == 0)
-        assertEquals("check count", 112, pass + fail)
+        assertEquals("check count", 117, pass + fail)
     }
 
     // ---- OOK, pulse width: a PT2262-style 24-bit remote, four repeats ------------------------------------------------
@@ -392,6 +392,13 @@ class AnalyzerTest {
         check(!ok(NO_FILTER.copy(minSnr = 15.0), 0) && !ok(NO_FILTER.copy(maxMs = 10.0), 0) && !ok(NO_FILTER.copy(minMs = 30.0), 0), "filter: SNR and length")
         check(!ok(NO_FILTER.copy(unknownOnly = true), 0, listOf("remote: x")) && ok(NO_FILTER.copy(unknownOnly = true), 0), "filter: only unknown")
         check(ok(NO_FILTER.copy(loHz = 434e6), 0), "filter: a file with no center skips the frequency test")
+        fun fr(n: Int) = listOf(Frame(0, 0, "1".repeat(n)))
+        val none = emptyList<String>()
+        check(!hasData(emptyList(), 0.0, 1.0, none) && !hasData(fr(18), 169_000.0, 1.1, none), "data only: a carrier and a 1 ms tick are dropped")
+        check(!hasData(fr(38), 105_000.0, 70.0, none) && !hasData(fr(10), 2000.0, 20.0, none), "data only: an implausible rate or too few bits are dropped")
+        check(!hasData(fr(17), 2800.0, 56.0, none) && hasData(fr(393), 7808.0, 123.0, none), "data only: a few stray bits in 56 ms of noise are dropped, gapped repeats are kept")
+        check(hasData(fr(64), 7800.0, 20.0, none) && hasData(emptyList(), 0.0, 1.0, listOf("remote: x")), "data only: a real frame, or anything a decoder claims, is kept")
+        check(DEFAULT_FILTER.dataOnly && !NO_FILTER.dataOnly, "data only: on by default")
     }
 
     // ---- Manchester phase and sync trim ---------------------------------------------------------------------------
