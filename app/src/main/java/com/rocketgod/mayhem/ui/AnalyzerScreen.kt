@@ -128,6 +128,30 @@ import com.rocketgod.mayhem.core.analyzer.recognize
 import com.rocketgod.mayhem.core.analyzer.similar
 import com.rocketgod.mayhem.core.analyzer.suggest
 import com.rocketgod.mayhem.core.r433.Devices
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
+import com.rocketgod.mayhem.core.analyzer.FrameSeg
+import com.rocketgod.mayhem.core.analyzer.INNER
+import com.rocketgod.mayhem.core.analyzer.Levels
+import com.rocketgod.mayhem.core.analyzer.PulseTable
+import com.rocketgod.mayhem.core.analyzer.classCsv
+import com.rocketgod.mayhem.core.analyzer.clockDrift
+import com.rocketgod.mayhem.core.analyzer.edgesOf
+import com.rocketgod.mayhem.core.analyzer.eyeStarts
+import com.rocketgod.mayhem.core.analyzer.frameSegments
+import com.rocketgod.mayhem.core.analyzer.framesCsv
+import com.rocketgod.mayhem.core.analyzer.levels
+import com.rocketgod.mayhem.core.analyzer.pulseCsv
+import com.rocketgod.mayhem.core.analyzer.pulseTable
+import com.rocketgod.mayhem.core.analyzer.samplesCsv
+import com.rocketgod.mayhem.core.analyzer.selectionCsv
+import com.rocketgod.mayhem.core.analyzer.signalOf
+import com.rocketgod.mayhem.core.analyzer.symbolFit
+import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
@@ -175,8 +199,17 @@ private fun bestOf(a: Analysis): Frame? = a.frames.maxByOrNull { it.bits.length 
 private class PendingSave(val bytes: ByteArray)
 
 /** What the screen keeps between bursts and visits: the view, the text format, and the list's toggles. */
-private object UiState {
+internal object UiState {
     var view by mutableStateOf(0)
+    /** SELECT, MEASURE or PAN. */
+    var tool by mutableStateOf(0)
+    var samplesAxis by mutableStateOf(false)
+    var durations by mutableStateOf(false)
+    var clock by mutableStateOf(false)
+    /** Vertical zoom by view (amplitude, frequency, I/Q): 1 (AUTO), 2, 4 … 64. */
+    val yZoom = mutableStateMapOf<Int, Int>()
+    /** Which panels are open, by title. */
+    val open = mutableStateMapOf<String, Boolean>()
     var fmt by mutableStateOf(1)
     var selOnly by mutableStateOf(false)
     var starredOnly by mutableStateOf(false)
@@ -592,14 +625,7 @@ private fun BurstCard(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, selec
 // ---- the detail ---------------------------------------------------------------------------------------------
 
 /** Bits [b0, b1) of frame [frame] lit on the trace, the bit strip and the decoded text. */
-private data class Hl(val frame: Int, val b0: Int, val b1: Int)
-
-/** What the trace shows: the zoom if there is one, else the burst itself with a little either side. */
-private fun shownOf(x: AnBurst, zoom: Pair<Int, Int>?): Pair<Int, Int> {
-    if (zoom != null) return zoom
-    val a = x.auto; val pad = max(16, ((a.to - a.from) * 0.06).roundToInt())
-    return if (a.to > a.from) max(0, a.from - pad) to min(x.b.n, a.to + pad) else 0 to x.b.n
-}
+internal data class Hl(val frame: Int, val b0: Int, val b1: Int)
 
 /** The samples bits [b0, b1) of a frame span. */
 private fun spanOf(f: Frame, b0: Int, b1: Int): Pair<Int, Int>? {
@@ -634,22 +660,29 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
                         onCompare: () -> Unit, onClose: () -> Unit, onBack: (() -> Unit)?, onTx: (Analysis) -> Unit) {
     val d = rememberDims()
     val b = x.b
+    val clip = LocalClipboardManager.current
+    val ctx = LocalContext.current
+    fun copy(text: String) { clip.setText(AnnotatedString(text)); Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show() }
     val overs by Analyzer.over.collectAsState()
-    var zoom by remember(b.id) { mutableStateOf<Pair<Int, Int>?>(null) }
+    val ts = remember(b.id) { TraceState(b.n, fitOf(x)) }
+    // the zoom history: a state is kept once the view has held still for 400 ms
+    LaunchedEffect(ts, ts.a0, ts.a1) { delay(400); ts.record() }
     var pick by remember(b.id) { mutableStateOf<Pair<Int, Int>?>(null) }
     var hl by remember(b.id) { mutableStateOf<Hl?>(null) }
     val o = overs[b.id] ?: Overrides()
     val selOnly = UiState.selOnly
-    val range = pick ?: zoom
-    val a: Analysis = remember(b.id, o, selOnly, range) {
-        val oo = if (selOnly && range != null) o.copy(from = range.first.toDouble(), to = range.second.toDouble()) else o
+    val a: Analysis = remember(b.id, o, selOnly, pick) {
+        val p = pick
+        val oo = if (selOnly && p != null) o.copy(from = p.first.toDouble(), to = p.second.toDouble()) else o
         if (oo == Overrides()) x.auto else analyze(b.env, b.fm, b.n, b.rate, oo)
     }
     fun setOver(f: (Overrides) -> Overrides) = Analyzer.setOver(b.id, f(o))
-    val shown = shownOf(x, zoom)
     val hlSpan = hl?.let { h -> a.frames.getOrNull(h.frame)?.let { spanOf(it, h.b0, h.b1) } }
+    val meas = remember(a, b.id) { Measured(a, b) }
     val screenH = LocalConfiguration.current.screenHeightDp
-    val traceH = max(240f, screenH * 0.38f).coerceAtMost(screenH * 0.5f)
+    val traceH = max(200f, screenH * 0.30f).coerceAtMost(screenH * 0.45f)
+    // the symbol for counting a selection: the hand setting, else the whole burst's own (not the selection's)
+    val symUs = o.symUs ?: x.auto.symUs
     Column(Modifier.fillMaxSize().padding(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
         // header: where, when, how long and strong, the name and star, and what to do with it
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -666,12 +699,24 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
             ToggleBox("COMPARE", false, c, Modifier.weight(1f).fillMaxHeight()) { onCompare() }
             ToggleBox("SEND TO TX", false, Palette.danger, Modifier.weight(1f).fillMaxHeight(), dim = a.runs.isEmpty()) { if (a.runs.isNotEmpty()) onTx(a) }
         }
-        SegBar(listOf("AMPLITUDE", "FREQUENCY", "I/Q", "SPECTRUM"), UiState.view, c) { UiState.view = it }
-        WaveCanvas(x, a, UiState.view, shown, pick, hlSpan, c, Modifier.fillMaxWidth().height(d.dp(traceH)), onTapAt = { at -> hl = bitAt(a, at) }) { pick = it }
-        BitStrip(a, shown, hl, c, Modifier.fillMaxWidth().height(d.dp(22f))) { hl = it }
+        // the views, and the tools and zoom (rows that scroll sideways on a narrow screen)
+        ChipRow { (if (d.wide) VIEWS else VIEWS_SHORT).forEachIndexed { i, v -> ToggleBox(v, UiState.view == i, c, Modifier.fillMaxHeight()) { UiState.view = i } } }
+        ChipRow {
+            SegBar(listOf("SELECT", "MEASURE", "PAN"), UiState.tool, c, Modifier.width(d.dp(270f))) { UiState.tool = it }
+            ToggleBox("−", false, c, Modifier.fillMaxHeight()) { ts.zoomBy(1 / 1.25 / 1.25, 0.5) }
+            ToggleBox("+", false, c, Modifier.fillMaxHeight()) { ts.zoomBy(1.25 * 1.25, 0.5) }
+            ToggleBox("FIT", false, c, Modifier.fillMaxHeight()) { val f = fitOf(x); ts.set(f.first.toDouble(), f.second.toDouble()) }
+            ToggleBox("FULL", false, c, Modifier.fillMaxHeight()) { ts.set(0.0, b.n.toDouble()) }
+            ToggleBox("ZOOM", false, c, Modifier.fillMaxHeight(), dim = pick == null) { pick?.let { ts.set(it.first.toDouble(), it.second.toDouble()); pick = null } }
+            ToggleBox("◀", false, c, Modifier.fillMaxHeight(), dim = !ts.canBack()) { ts.back() }
+            ToggleBox("▶", false, c, Modifier.fillMaxHeight(), dim = !ts.canForward()) { ts.forward() }
+        }
+        OverviewStrip(x, ts, c, Modifier.fillMaxWidth().height(d.dp(30f)))
+        WaveCanvas(x, a, meas, ts, pick, hlSpan, c, Modifier.fillMaxWidth().height(d.dp(traceH)), onTapAt = { at -> hl = bitAt(a, at) }) { pick = it }
+        BitStrip(a, ts.a0 to ts.a1, hl, c, Modifier.fillMaxWidth().height(d.dp(22f))) { hl = it }
         // the decoded output, pinned under the trace
         SegBar(listOf("BITS", "HEX", "ASCII"), UiState.fmt, c) { UiState.fmt = it }
-        Box(Modifier.fillMaxWidth().heightIn(max = d.dp(110f)).panel().padding(d.dp(6f))) {
+        Box(Modifier.fillMaxWidth().heightIn(max = d.dp(96f)).panel().padding(d.dp(6f))) {
             if (a.frames.isEmpty()) Text("no frames: set the modulation, symbol or cut by hand, or select the part that carries data", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
             else Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                 a.frames.forEachIndexed { i, f ->
@@ -685,14 +730,31 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
         }
         // the rest scrolls
         Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                ToggleBox("ZOOM", false, c, Modifier.fillMaxHeight(), dim = pick == null) { pick?.let { zoom = it; pick = null } }
-                ToggleBox("FULL", false, c, Modifier.fillMaxHeight()) { zoom = 0 to b.n; pick = null }
-                val r = pick ?: zoom
-                Text(if (r != null) fmt("%.3f ms · %.1f symbols", (r.second - r.first) / b.rate * 1000, (r.second - r.first) / b.rate * 1e6 / max(1.0, a.symUs))
-                    else "drag across the trace to select; tap or drag the bit strip, tap or long-press-drag the text",
-                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), modifier = Modifier.weight(1f), maxLines = 2)
+            // what is selected, counted in the burst's own symbol
+            val r = pick
+            Text(if (r != null) fmt("%.3f ms · %.1f symbols at %.0f µs", (r.second - r.first) / b.rate * 1000, (r.second - r.first) / b.rate * 1e6 / max(1e-9, symUs), symUs)
+                else when (UiState.tool) {
+                    1 -> "MEASURE: tap to place cursor A, then B; tap or drag again to move the nearer one"
+                    2 -> "PAN: drag to move along; pinch to zoom; two fingers pan in any mode"
+                    else -> "SELECT: drag across the trace to select; tap to light a bit; tap the sliced row for the lengths at an edge"
+                }, color = if (r != null) Palette.ink else Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2)
+            ChipRow {
+                SegBar(listOf("TIME", "SAMPLES"), if (UiState.samplesAxis) 1 else 0, c, Modifier.width(d.dp(190f))) { UiState.samplesAxis = it == 1 }
+                ToggleBox("DURATIONS", UiState.durations, c, Modifier.fillMaxHeight()) { UiState.durations = !UiState.durations }
+                ToggleBox("CLOCK", UiState.clock, c, Modifier.fillMaxHeight()) { UiState.clock = !UiState.clock }
+                if (UiState.view <= 2) {
+                    val z = UiState.yZoom[UiState.view] ?: 1
+                    ToggleBox("Y−", false, c, Modifier.fillMaxHeight(), dim = z <= 1) { UiState.yZoom[UiState.view] = max(1, z / 2) }
+                    ToggleBox("Y+", false, c, Modifier.fillMaxHeight(), dim = z >= 64) { UiState.yZoom[UiState.view] = min(64, z * 2) }
+                    ToggleBox(if (z == 1) "Y AUTO" else "Y ×$z", z == 1, c, Modifier.fillMaxHeight()) { UiState.yZoom[UiState.view] = 1 }
+                }
             }
+            Section("CURSORS", c, copyText = cursorText(x, ts, UiState.view, symUs)?.let { t -> { copy(t) } }) {
+                Text(cursorText(x, ts, UiState.view, symUs) ?: "switch to MEASURE and tap the trace to place cursors A and B", color = if (ts.curA != null) Palette.ink else Palette.muted,
+                    fontFamily = Mono, fontSize = d.sp(10f))
+                if (ts.curA != null) ToggleBox("CLEAR CURSORS", false, c) { ts.curA = null; ts.curB = null; ts.cross = null }
+            }
+            Section("DEMODULATION", c) {
             CtlRow("MOD") {
                 val opts = listOf<Mod?>(null) + MODS
                 SegBar(opts.map { it?.name ?: "AUTO" }, opts.indexOf(o.mod), c, Modifier.weight(1f)) { i -> setOver { it.copy(mod = opts[i], thr = null) } }
@@ -719,11 +781,26 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
                 ToggleBox("INVERT", o.invert, c, Modifier.fillMaxHeight()) { setOver { it.copy(invert = !it.invert) } }
                 ToggleBox("SELECTION ONLY", selOnly, c, Modifier.fillMaxHeight()) { UiState.selOnly = !selOnly }
             }
+            }
             val why = "${a.mod} (${a.why}) · ${a.coding} · symbol ${fmt("%.1f", a.symUs)} µs · ${rateLabel(a.baud)}" + if (a.mod == Mod.FSK) fmt(" · shift %.1f kHz", a.shiftHz / 1e3) else ""
             Text(why, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+            val fit = meas.fit
+            if (fit.runs > 0) Text(fmt("symbol %.1f µs ± %.1f%% over %d runs · %s", fit.symUs, fit.errPct, fit.runs, rateLabel(fit.baud)), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
             if (a.runs.size > 2) {
                 Text("PULSE LENGTHS", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
-                HistogramView(a, b.rate, c, Modifier.fillMaxWidth().height(d.dp(90f)))
+                HistogramView(a, b.rate, meas.table, c, Modifier.fillMaxWidth().height(d.dp(90f)))
+            }
+            Section("PULSES", c, copyText = { copy(classCsv(meas.table) + "\n\n" + pulseCsv(meas.table)) }) { PulsePanel(meas.table, c) }
+            if (UiState.clock || meas.drift.isNotEmpty()) Section("CLOCK", c) {
+                Text(if (UiState.clock) "the symbol grid is drawn over the trace" else "CLOCK draws the symbol grid over the trace", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+                for (dr in meas.drift) Text(fmt("F%d  worst %.0f%%  mean %.0f%% of a symbol", dr.frame + 1, dr.worstPct, dr.meanPct), color = if (dr.worstPct > 35) Palette.danger else Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+            }
+            Section("FRAMES", c, copyText = { copy(framesCsv(meas.segs)) }) { FramesPanel(meas.segs) }
+            Section("LEVELS", c, copyText = { copy(levelsText(a, meas.lv)) }) { LevelsPanel(a, meas.lv, c) }
+            ToggleBox("SELECTION .CSV", false, c) {
+                val (s0, s1) = pick ?: (ts.a0 to ts.a1)
+                save(Analyzer.nameFor(x, "csv").replace(".csv", "_${s0}-${s1}.csv"),
+                    selectionCsv(samplesCsv(b.iq, b.env, b.fm, b.rate, s0, min(b.n, s1)), pulseCsv(meas.table), classCsv(meas.table), framesCsv(meas.segs)).toByteArray(Charsets.UTF_8))
             }
             Text(if (b.matches.isNotEmpty()) "DEVICES DECODERS: ${b.matches.joinToString(" · ")}" else "no Devices decoder claimed it",
                 color = if (b.matches.isNotEmpty()) Palette.ok else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
@@ -740,6 +817,154 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
             }
             Text(fmt("%.0f kHz I/Q, %d samples", b.rate / 1e3, b.n), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
         }
+    }
+}
+
+private val VIEWS = listOf("AMPLITUDE", "FREQUENCY", "I/Q", "SPECTROGRAM", "EYE", "CONSTELLATION")
+private val VIEWS_SHORT = listOf("AMP", "FREQ", "I/Q", "SPEC", "EYE", "I×Q")
+
+/** A row of chips that scrolls sideways when it does not fit. */
+@Composable
+private fun ChipRow(content: @Composable RowScope.() -> Unit) {
+    val d = rememberDims()
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
+        verticalAlignment = Alignment.CenterVertically, content = content)
+}
+
+/** A collapsible panel with an optional COPY. */
+@Composable
+private fun Section(title: String, c: Color, copyText: (() -> Unit)? = null, content: @Composable () -> Unit) {
+    val d = rememberDims()
+    val open = UiState.open[title] ?: (d.wide || title == "DEMODULATION")
+    Column(Modifier.fillMaxWidth().panel(if (open) c.copy(alpha = 0.5f) else Palette.line).padding(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        Row(Modifier.fillMaxWidth().clickable { UiState.open[title] = !open }, verticalAlignment = Alignment.CenterVertically) {
+            Text((if (open) "▾ " else "▸ ") + title, color = if (open) c else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, modifier = Modifier.weight(1f))
+            if (copyText != null && open) Text("COPY", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { copyText() }.padding(horizontal = d.dp(8f), vertical = d.dp(2f)))
+        }
+        if (open) content()
+    }
+}
+
+/** Everything measured on a reading, worked out once. */
+internal class Measured(a: Analysis, b: com.rocketgod.mayhem.core.analyzer.Burst) {
+    val table = pulseTable(a, b.rate, b.env)
+    /** Each run's edges at the halfway level, for lengths edge to edge (as the pulse table measures them). */
+    val edges = edgesOf(a, b.env)
+    val fit = symbolFit(a, b.rate)
+    val drift = clockDrift(a, b.rate)
+    val segs = frameSegments(a, b.rate)
+    val lv = levels(a, b.env, b.fm, b.rate)
+    val eye = eyeStarts(a, b.rate)
+}
+
+@Composable
+private fun PulsePanel(t: PulseTable, c: Color) {
+    val d = rememberDims()
+    val s = d.sp(9.5f)
+    @Composable fun row(cells: List<String>, color: Color, bold: Boolean = false) {
+        Row(Modifier.fillMaxWidth()) {
+            val w = listOf(34f, 42f, 50f, 50f, 50f, 42f, 46f, 40f)
+            cells.forEachIndexed { i, v -> Text(v, color = color, fontFamily = Mono, fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal, fontSize = s, maxLines = 1, modifier = Modifier.width(d.dp(w.getOrElse(i) { 44f }))) }
+        }
+    }
+    Column(Modifier.horizontalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
+        row(listOf("CLASS", "COUNT", "MEAN", "MIN", "MAX", "σ", "JIT%", "SYM"), Palette.muted, true)
+        for ((hi, list) in listOf(true to t.marks, false to t.spaces)) list.forEachIndexed { i, k ->
+            row(listOf("${if (hi) "M" else "G"}${i + 1}", "${k.count}", fmt("%.0f", k.mean), fmt("%.0f", k.min), fmt("%.0f", k.max), fmt("%.0f", k.sd), fmt("%.1f", k.jitterPct), fmt("%.2f", k.symbols)),
+                if (hi) c else Palette.accent2)
+        }
+    }
+    Text("MARK CUTS ${t.markCuts.joinToString(" ") { fmt("%.0f µs", it) }.ifEmpty { "none" }} · GAP CUTS ${t.spaceCuts.joinToString(" ") { fmt("%.0f µs", it) }.ifEmpty { "none" }}",
+        color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+    Text("EVERY PULSE (${t.pulses.size})", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
+    Column(Modifier.fillMaxWidth().heightIn(max = d.dp(160f)).verticalScroll(rememberScrollState())) {
+        for (p in t.pulses.take(2000)) Text(fmt("F%-3d #%-4d %-4s %8.1f µs  %s%d", p.frame + 1, p.index, if (p.hi) "mark" else "gap", p.us, if (p.hi) "M" else "G", p.cls + 1),
+            color = if (p.hi) Palette.ink else Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1)
+    }
+}
+
+@Composable
+private fun FramesPanel(segs: List<FrameSeg>) {
+    val d = rememberDims()
+    if (segs.isEmpty()) { Text("no frames", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f)); return }
+    val h0 = segs[0].hex
+    Column(Modifier.horizontalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
+        Text(fmt("%-4s %9s %8s %8s %9s %5s  %s", "", "START ms", "LEN ms", "GAP ms", "EVERY ms", "BITS", "HEX (differences from F1 lit)"), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), softWrap = false)
+        for (s in segs) {
+            val line = buildAnnotatedString {
+                append(fmt("%-4s %9.3f %8.3f %8.3f %9.3f %5d  ", "F${s.index + 1}", s.startMs, s.endMs - s.startMs, s.gapMs, s.intervalMs, s.bits))
+                for (k in s.hex.indices) {
+                    val diff = s.index > 0 && (k >= h0.length || h0[k] != s.hex[k])
+                    if (diff) withStyle(SpanStyle(color = Palette.accent2, fontWeight = FontWeight.Bold)) { append(s.hex[k]) } else append(s.hex[k])
+                }
+            }
+            Text(line, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), softWrap = false, maxLines = 1)
+        }
+    }
+}
+
+private fun levelsText(a: Analysis, lv: Levels): String = buildString {
+    append(fmt("mark %.1f dBFS · gap %.1f dBFS · depth %.1f dB", lv.markDbfs, lv.spaceDbfs, lv.depthDb))
+    if (a.mod != Mod.FSK) append(fmt("\nrise %.1f µs · fall %.1f µs\ncarrier %+.1f kHz from the channel center", lv.riseUs, lv.fallUs, lv.carrierHz / 1e3))
+    if (a.mod == Mod.FSK) append(fmt("\ntones %+.1f / %+.1f kHz · center %+.1f kHz · deviation %.1f kHz", lv.toneLoHz / 1e3, lv.toneHiHz / 1e3, lv.centerHz / 1e3, lv.deviationHz / 1e3))
+    if (a.mod == Mod.ASK) append(fmt("\nASK levels %.1f / %.1f dBFS", lv.askLoDbfs, lv.askHiDbfs))
+}
+
+@Composable
+private fun LevelsPanel(a: Analysis, lv: Levels, c: Color) {
+    val d = rememberDims()
+    Text(levelsText(a, lv), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+    if (a.mod == Mod.FSK) {
+        // the tone histogram: 2 kHz bins from −60 to +60 kHz
+        val measurer = rememberTextMeasurer()
+        val label = TextStyle(color = Palette.muted, fontFamily = Mono, fontSize = 9.sp)
+        val paper = Palette.paper
+        Canvas(Modifier.fillMaxWidth().height(d.dp(70f)).clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp))) {
+            drawRect(paper)
+            val h = lv.toneHist; val pk = max(1, h.maxOrNull() ?: 1)
+            val axisH = 12.dp.toPx(); val ph = size.height - axisH - 2.dp.toPx(); val bw = size.width / h.size
+            for (i in h.indices) { val v = h[i].toFloat() / pk * ph; if (v > 0) drawRect(c, Offset(i * bw, 2.dp.toPx() + ph - v), Size(max(1f, bw - 1f), v)) }
+            drawText(measurer, "−60 kHz", Offset(2f, size.height - axisH), label)
+            val mid = measurer.measure("0", label); drawText(mid, topLeft = Offset(size.width / 2 - mid.size.width / 2, size.height - axisH))
+            val e = measurer.measure("+60 kHz", label); drawText(e, topLeft = Offset(size.width - e.size.width - 2f, size.height - axisH))
+        }
+    }
+}
+
+/** The cursors' readout: where A and B are, the time and samples between them, and the values there in this view. */
+private fun cursorText(x: AnBurst, ts: TraceState, view: Int, symUs: Double): String? {
+    val b = x.b
+    val ca = ts.curA ?: return null
+    fun t(s: Int) = timeLabel(s / b.rate)
+    val sb = StringBuilder("A ${t(ca)}")
+    ts.curB?.let { cb ->
+        val dt = abs(cb - ca) / b.rate
+        sb.append(" · B ${t(cb)} · Δt ${timeLabel(dt)}")
+        if (dt > 0) sb.append(fmt(" · 1/Δt %s", hzLabel(1 / dt)))
+        sb.append(fmt(" · Δ %d samples · %.2f symbols", abs(cb - ca), dt * 1e6 / max(1e-9, symUs)))
+    }
+    sb.append(" · A ${valueAt(b, view, ca)}")
+    ts.curB?.let { sb.append(" · B ${valueAt(b, view, it)}") }
+    return sb.toString()
+}
+
+private fun hzLabel(hz: Double) = when { hz >= 1e6 -> fmt("%.3f MHz", hz / 1e6); hz >= 1e3 -> fmt("%.2f kHz", hz / 1e3); else -> fmt("%.1f Hz", hz) }
+
+/** A time in seconds as text, in s, ms or µs. */
+internal fun timeLabel(s: Double): String = when {
+    abs(s) >= 1 -> fmt("%.4f s", s)
+    abs(s) >= 1e-3 -> fmt("%.3f ms", s * 1e3)
+    else -> fmt("%.1f µs", s * 1e6)
+}
+
+/** The value at a sample in a view: dBFS for amplitude, kHz for frequency, I and Q otherwise. */
+private fun valueAt(b: com.rocketgod.mayhem.core.analyzer.Burst, view: Int, s: Int): String {
+    val i = s.coerceIn(0, max(0, b.n - 1))
+    return when (view) {
+        0 -> fmt("%.1f dBFS", 20 * log10(max(1.0, b.env[i].toDouble()) / 16384))
+        1 -> fmt("%+.1f kHz", b.fm[i] / FM_SCALE * b.rate / (2 * PI) / 1e3)
+        else -> "I ${b.iq[2 * i]} Q ${b.iq[2 * i + 1]}"
     }
 }
 
@@ -850,206 +1075,6 @@ private fun BitStrip(a: Analysis, shown: Pair<Int, Int>, hl: Hl?, c: Color, modi
             }
         }
     }
-}
-
-/** URH's pulse-length histogram: marks in the burst's color, gaps in the second accent, symbol multiples faint. */
-@Composable
-private fun HistogramView(a: Analysis, rate: Double, c: Color, modifier: Modifier) {
-    val h = remember(a) { histogram(a, rate) }
-    val measurer = rememberTextMeasurer()
-    val label = TextStyle(color = Palette.muted, fontFamily = Mono, fontSize = 9.sp)
-    val gap = Palette.accent2; val muted = Palette.muted; val paper = Palette.paper
-    Canvas(modifier.clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp))) {
-        drawRect(paper)
-        val W = size.width; val axisH = 13.dp.toPx(); val plotH = size.height - axisH - 3.dp.toPx(); val top = 3.dp.toPx()
-        val bins = h.marks.size
-        val peak = max(1, max(h.marks.maxOrNull() ?: 0, h.spaces.maxOrNull() ?: 0))
-        val bw = W / bins
-        val maxUs = h.binUs * bins
-        // the symbol and its multiples
-        if (a.symUs > 0) { var k = 1; while (k * a.symUs < maxUs && k <= 40) { val x = (k * a.symUs / maxUs * W).toFloat(); drawLine(muted.copy(alpha = 0.25f), Offset(x, top), Offset(x, top + plotH), 1f); k++ } }
-        for (i in 0 until bins) {
-            val hm = h.marks[i].toFloat() / peak * plotH; val hs = h.spaces[i].toFloat() / peak * plotH
-            if (hm > 0) drawRect(c, Offset(i * bw, top + plotH - hm), Size(max(1f, bw / 2 - 0.5f), hm))
-            if (hs > 0) drawRect(gap.copy(alpha = 0.8f), Offset(i * bw + bw / 2, top + plotH - hs), Size(max(1f, bw / 2 - 0.5f), hs))
-        }
-        drawText(measurer, "0 µs", Offset(2f, size.height - axisH), label)
-        val mid = fmt("%.0f µs", maxUs / 2); val mw = measurer.measure(mid, label).size.width
-        drawText(measurer, mid, Offset(W / 2 - mw / 2, size.height - axisH), label)
-        val end = fmt("%.0f µs", maxUs); val ew = measurer.measure(end, label).size.width
-        drawText(measurer, end, Offset(W - ew - 2f, size.height - axisH), label)
-        drawText(measurer, "marks", Offset(W - 92.dp.toPx(), top), label.copy(color = c))
-        drawText(measurer, "gaps", Offset(W - 44.dp.toPx(), top), label.copy(color = gap))
-    }
-}
-
-// ---- the waveform -------------------------------------------------------------------------------------------
-
-/**
- * The selected burst's trace: the envelope, the discriminator (only where the carrier is up), I and Q as two
- * traces, or the raw I/Q as a spectrogram; the frames shaded, the cut line on the view that is sliced, the sliced
- * line under it all, the bits lit from the strip or the text, and the part dragged across. [onPick] gets a
- * selection in samples, or null.
- */
-@Composable
-private fun WaveCanvas(x: AnBurst, a: Analysis, view: Int, shown: Pair<Int, Int>, pick: Pair<Int, Int>?, hlSpan: Pair<Int, Int>?, c: Color, modifier: Modifier,
-                       onTapAt: (Double) -> Unit, onPick: (Pair<Int, Int>?) -> Unit) {
-    val b = x.b
-    val (a0, a1) = shown
-    val len = max(1, a1 - a0)
-    val on = remember(b.id) { carrierOf(b.env, b.n, noiseOf(b.env, b.n, b.rate)) }
-    val paper = Palette.paper; val ink = Palette.ink; val muted = Palette.muted; val accent2 = Palette.accent2
-    val spectro = if (view == 3) remember(b.id, a0, a1, paper, c, accent2) { spectrogram(b.iq, b.n, a0, a1, paper, c, accent2) } else null
-    val measurer = rememberTextMeasurer()
-    val label = TextStyle(color = muted, fontFamily = Mono, fontSize = 10.sp)
-    val shownNow by rememberUpdatedState(shown)
-    val pickNow by rememberUpdatedState(onPick)
-    val tapNow by rememberUpdatedState(onTapAt)
-    Canvas(modifier.clip(RoundedCornerShape(8.dp)).border(1.dp, Palette.line, RoundedCornerShape(8.dp)).pointerInput(b.id) {
-        // a tap (no drag) lights the bit under it
-        detectTapGestures { p -> val (s0, s1) = shownNow; tapNow(s0 + (p.x / size.width).coerceIn(0f, 1f).toDouble() * (s1 - s0)) }
-    }.pointerInput(b.id) {
-        var from = -1
-        fun at(px: Float): Int { val (s0, s1) = shownNow; return (s0 + (px / size.width).coerceIn(0f, 1f) * (s1 - s0)).roundToInt() }
-        var last: Pair<Int, Int>? = null
-        detectDragGestures(
-            onDragStart = { p -> from = at(p.x); last = null },
-            onDragEnd = { if (last != null && last!!.second - last!!.first < 4) pickNow(null); from = -1 },
-            onDragCancel = { from = -1 },
-        ) { change, _ ->
-            if (from < 0) return@detectDragGestures
-            val to = at(change.position.x)
-            last = if (to == from) null else min(from, to) to max(from, to)
-            pickNow(last)
-        }
-    }) {
-        val W = size.width; val H = size.height
-        drawRect(paper)
-        fun xOf(i: Int) = (i - a0).toFloat() / len * W
-        val axisH = 14.dp.toPx(); val digH = 18.dp.toPx(); val top = 4.dp.toPx()
-        val plotH = H - digH - axisH - top
-        // frames, shaded behind everything
-        for (f in a.frames) drawRect(c.copy(alpha = 0.1f), Offset(xOf(f.start), 0f), Size(max(1f, xOf(f.end) - xOf(f.start)), H - axisH))
-        // the bits lit from the strip or the text
-        if (hlSpan != null) drawRect(accent2.copy(alpha = 0.28f), Offset(xOf(hlSpan.first), 0f), Size(max(2f, xOf(hlSpan.second) - xOf(hlSpan.first)), H - axisH))
-        if (view == 3 && spectro != null) {
-            drawImage(spectro, IntOffset.Zero, IntSize(spectro.width, spectro.height), IntOffset(0, top.roundToInt()), IntSize(W.roundToInt(), plotH.roundToInt()), filterQuality = FilterQuality.None)
-            drawText(measurer, fmt("+%.0f kHz", b.rate / 2e3), Offset(4f, top + 2f), label.copy(color = Color.White.copy(alpha = 0.7f)))
-            drawText(measurer, fmt("−%.0f kHz", b.rate / 2e3), Offset(4f, top + plotH - 16.dp.toPx()), label.copy(color = Color.White.copy(alpha = 0.7f)))
-            // a tick at either FSK tone
-            if (a.mod == Mod.FSK && a.shiftHz > 0) for (s in listOf(1, -1)) {
-                val y = (top + plotH * (0.5 - s * a.shiftHz / 2 / b.rate)).toFloat()
-                drawLine(Color.White, Offset(W - 14.dp.toPx(), y), Offset(W, y), 2.dp.toPx())
-            }
-        } else if (view == 2) {
-            // I and Q, each scaled to the peak in view
-            var pk = 1
-            for (i in a0 until min(a1, b.n)) { pk = max(pk, abs(b.iq[2 * i].toInt())); pk = max(pk, abs(b.iq[2 * i + 1].toInt())) }
-            fun yOf(v: Int) = top + plotH / 2 - v.toFloat() / pk * plotH / 2 * 0.95f
-            drawLine(muted.copy(alpha = 0.4f), Offset(0f, yOf(0)), Offset(W, yOf(0)), 1f)
-            val cols = W.toInt()
-            val stroke = max(1f, 1.dp.toPx() * 0.6f)
-            for (ch in 0..1) {
-                val col = if (ch == 0) c else accent2.copy(alpha = 0.85f)
-                if (len <= cols) {
-                    val p = Path()
-                    for (i in a0 until min(a1, b.n)) { val xx = xOf(i); val yy = yOf(b.iq[2 * i + ch].toInt()); if (i == a0) p.moveTo(xx, yy) else p.lineTo(xx, yy) }
-                    drawPath(p, col, style = Stroke(stroke))
-                } else for (px in 0 until cols) {
-                    val i0 = a0 + floor(px.toDouble() * len / cols).toInt(); val i1 = max(i0 + 1, a0 + floor((px + 1).toDouble() * len / cols).toInt())
-                    var mn = 127; var mx = -128; var i = i0
-                    while (i < i1 && i < b.n) { val v = b.iq[2 * i + ch].toInt(); if (v < mn) mn = v; if (v > mx) mx = v; i++ }
-                    if (mn > mx) continue
-                    drawLine(col, Offset(px + 0.5f, yOf(mx)), Offset(px + 0.5f, yOf(mn) + 0.5f), stroke)
-                }
-            }
-            drawText(measurer, "I", Offset(4.dp.toPx(), top), label.copy(color = c))
-            drawText(measurer, "Q", Offset(16.dp.toPx(), top), label.copy(color = accent2))
-        } else {
-            val sig = if (view == 0) b.env else b.fm
-            val gate = if (view == 1) on else null
-            var lo = Double.POSITIVE_INFINITY; var hi = Double.NEGATIVE_INFINITY
-            for (i in a0 until min(a1, b.n)) { if (gate != null && !gate[i]) continue; val v = sig[i].toDouble(); if (v < lo) lo = v; if (v > hi) hi = v }
-            if (lo == Double.POSITIVE_INFINITY) { lo = -1.0; hi = 1.0 }
-            if (view == 1) { val m = max(max(abs(lo), abs(hi)), 1.0); lo = -m; hi = m } else lo = 0.0
-            if (hi <= lo) hi = lo + 1
-            fun yOf(v: Double) = (top + plotH - (v - lo) / (hi - lo) * plotH).toFloat()
-            if (view == 1) drawLine(muted.copy(alpha = 0.4f), Offset(0f, yOf(0.0)), Offset(W, yOf(0.0)), 1f)
-            val cols = W.toInt()
-            val stroke = max(1f, 1.dp.toPx() * 0.6f)
-            if (len <= cols) {
-                // fewer samples than pixels: join them with a line (broken where the carrier is down)
-                val p = Path(); var pen = false
-                for (i in a0 until min(a1, b.n)) {
-                    if (gate != null && !gate[i]) { pen = false; continue }
-                    val xx = xOf(i); val yy = yOf(sig[i].toDouble())
-                    if (pen) p.lineTo(xx, yy) else p.moveTo(xx, yy); pen = true
-                }
-                drawPath(p, c, style = Stroke(stroke))
-            } else for (px in 0 until cols) {
-                val i0 = a0 + floor(px.toDouble() * len / cols).toInt(); val i1 = max(i0 + 1, a0 + floor((px + 1).toDouble() * len / cols).toInt())
-                var mn = Double.POSITIVE_INFINITY; var mx = Double.NEGATIVE_INFINITY
-                var i = i0
-                while (i < i1 && i < b.n) { if (gate == null || gate[i]) { val v = sig[i].toDouble(); if (v < mn) mn = v; if (v > mx) mx = v }; i++ }
-                if (mn == Double.POSITIVE_INFINITY) continue
-                drawLine(c, Offset(px + 0.5f, yOf(mx)), Offset(px + 0.5f, yOf(mn) + 0.5f), stroke)
-            }
-            // the cut line, when this view is the one sliced
-            val sliced = (view == 1) == (a.mod == Mod.FSK)
-            if (sliced && a.runs.isNotEmpty()) drawLine(accent2, Offset(0f, yOf(a.cut)), Offset(W, yOf(a.cut)), 1.dp.toPx(),
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())))
-            val note = if (view == 1) fmt("±%.0f kHz", hi / FM_SCALE * b.rate / (2 * PI) / 1e3) else fmt("%.0f dBFS peak", 20 * log10(max(1.0, hi) / 16384))
-            drawText(measurer, note, Offset(4.dp.toPx(), top), label)
-        }
-        // the sliced line, under the trace
-        val y0 = H - axisH - 3.dp.toPx(); val y1 = y0 - digH + 6.dp.toPx()
-        val path = Path(); path.moveTo(0f, y0)
-        var pos = a.from; var lvl = false
-        for (r in a.runs) {
-            val x0 = xOf(pos); val x1 = xOf(pos + r.n)
-            if (x1 >= 0 && x0 <= W) { val y = if (r.hi) y1 else y0; if (r.hi != lvl) path.lineTo(max(0f, x0), y); path.lineTo(min(W, x1), y) }
-            lvl = r.hi; pos += r.n
-        }
-        drawPath(path, ink, style = Stroke(width = max(1f, 1.dp.toPx() * 0.7f)))
-        // the selection
-        if (pick != null) {
-            val x0 = xOf(pick.first); val x1 = xOf(pick.second)
-            drawRect(accent2.copy(alpha = 0.18f), Offset(x0, 0f), Size(x1 - x0, H - axisH))
-            drawRect(accent2, Offset(x0, 0f), Size(x1 - x0, H - axisH), style = Stroke(1f))
-        }
-        // time axis
-        val dec = if (len / b.rate < 0.01) "%.3f ms" else "%.1f ms"
-        drawText(measurer, fmt(dec, a0 / b.rate * 1000), Offset(2f, H - axisH), label)
-        val t = fmt(dec, a1 / b.rate * 1000)
-        val tw = measurer.measure(t, label).size.width
-        drawText(measurer, t, Offset(W - tw - 2f, H - axisH), label)
-    }
-}
-
-/** The raw I/Q as a spectrogram: 64-point transforms (Hann) spread over the range, frequency up, in dB. */
-private fun spectrogram(iq: ByteArray, n: Int, a0: Int, a1: Int, paper: Color, mid: Color, hi: Color): ImageBitmap {
-    val nn = 64
-    val win = FloatArray(nn) { (0.5 - 0.5 * kotlin.math.cos(2 * PI * it / (nn - 1))).toFloat() }
-    val re = FloatArray(nn); val im = FloatArray(nn)
-    // 64-point transforms every 16 samples, or fewer spread across the range when it is long
-    val cols = max(1, min(600, (a1 - a0) / 16))
-    val mags = Array(cols) { FloatArray(nn) }
-    var peak = 1e-9f
-    for (col in 0 until cols) {
-        val m0 = a0 + ((col + 0.5) * (a1 - a0) / cols).roundToInt()
-        for (k in 0 until nn) { val i = (m0 - nn / 2 + k).coerceIn(0, max(0, n - 1)); re[k] = iq[2 * i] * win[k]; im[k] = iq[2 * i + 1] * win[k] }
-        Dsp.fft(re, im)
-        for (k in 0 until nn) { val v = re[k] * re[k] + im[k] * im[k]; mags[col][k] = v; if (v > peak) peak = v }
-    }
-    val px = IntArray(cols * nn)
-    for (col in 0 until cols) for (k in 0 until nn) {
-        val bin = (k + nn / 2) % nn                        // negative frequencies at the bottom
-        val db = 10 * log10(mags[col][bin] / peak + 1e-12)
-        val t = ((db + 45) / 45).coerceIn(0.0, 1.0).pow(1.6).toFloat()
-        val color = if (t < 0.6f) lerp(paper, mid, t / 0.6f) else lerp(mid, hi, (t - 0.6f) / 0.4f)
-        px[(nn - 1 - k) * cols + col] = color.toArgb()
-    }
-    return android.graphics.Bitmap.createBitmap(px, cols, nn, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap()
 }
 
 // ---- compare ------------------------------------------------------------------------------------------------

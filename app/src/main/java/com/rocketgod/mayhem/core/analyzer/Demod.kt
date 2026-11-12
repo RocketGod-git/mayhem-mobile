@@ -89,7 +89,9 @@ private const val OFF_K = 2.2
 /** Less shift than this between the tones (about 4.6 kHz at 250 kHz) is not FSK. */
 private const val MIN_FSK_SPREAD = 1200
 /** A rest this many symbols long ends a frame. */
-private const val GAP_SYMBOLS = 20
+internal const val GAP_SYMBOLS = 20
+/** Samples either side a carrier must hold for the discriminator there to count (32 µs at 250 kHz): clear of the keying spikes. */
+const val INNER = 8
 /** Frames shorter than this are fragments, not frames. */
 private const val MIN_FRAME_BITS = 8
 
@@ -186,14 +188,17 @@ fun symbolOf(runs: List<Run>): Double {
     val s = inner.copyOf(); s.sort()
     // the lengths that recur: runs within 20% of each other, each group at least 5% of all of them; the symbol is one
     // of these or a half or third of one
-    val cands = ArrayList<Double>()
+    val cands = ArrayList<Double>(); val centers = ArrayList<Double>()
     var i = 0
     while (i < s.size) {
         var j = i; var sum = 0.0
         while (j < s.size && s[j] <= s[i] * 1.2) { sum += s[j]; j++ }
-        if (j - i >= max(2.0, s.size * 0.05)) { val c = sum / (j - i); cands.add(c); cands.add(c / 2); cands.add(c / 3) }
+        if (j - i >= max(2.0, s.size * 0.05)) { val c = sum / (j - i); centers.add(c); cands.add(c); cands.add(c / 2); cands.add(c / 3) }
         i = j
     }
+    // a transmitter that holds its marks a little long and its gaps a little short splits one length into two
+    // (100 and 140 µs for a 120 µs symbol): the middle of each neighboring pair is a candidate too
+    for (k in 0 until centers.size - 1) if (centers[k + 1] < centers[k] * 1.6) { val c = (centers[k] + centers[k + 1]) / 2; cands.add(c); cands.add(c / 2) }
     if (cands.isEmpty()) cands.add(s[s.size shr 1].toDouble())
     // The longest symbol that the frame is a whole number of (any shorter one would fit it too). Measured as the
     // longest unbroken stretch of runs that fit, so noise before the preamble, which fits nothing for long, has no say.
@@ -207,6 +212,23 @@ fun symbolOf(runs: List<Run>): Double {
         if (sk != 0L) u = sr / sk
     }
     return u
+}
+
+/**
+ * How regular a sliced line is: the share of its runs (rests and the two ends left out) that are close to a whole
+ * number of its own symbol, divided by how many symbols those runs average. A shorter symbol always "fits" more runs
+ * (a third of any symbol fits whatever the symbol fits), so on its own the share would reward slicing noise finely;
+ * dividing by the run length in symbols makes a code that runs one or two symbols at a time beat that. Nothing for
+ * fewer than 8 runs.
+ */
+@Suppress("UNUSED_PARAMETER")
+fun regularity(runs: List<Run>, usPer: Double): Double {
+    if (runs.size < 10) return 0.0
+    val inner = runs.subList(1, runs.size - 1)
+    val u = symbolOf(runs)
+    var ok = 0; var all = 0; var ks = 0L
+    for (r in inner) { val x = r.n / u; val k = Math.round(x); if (k > GAP_SYMBOLS) continue; all++; if (k >= 1 && abs(x - k) < 0.25 + 0.03 * k) { ok++; ks += k } }
+    return if (all != 0 && ok != 0) (ok.toDouble() / all) / (ks.toDouble() / ok) else 0.0
 }
 
 /** The longest unbroken stretch of runs that are close to a whole number (1..16) of symbols `u`; rests are skipped. */
@@ -412,15 +434,16 @@ fun analyze(env: ShortArray, fm: ShortArray, n: Int, rate: Double, o: Overrides 
     // the envelope and the discriminator, measured where the carrier is up; the discriminator away from the edges of
     // each mark, where it swings in from the noise
     val envOn = DoubleBuf(to - from); val fmOn = DoubleBuf(to - from)
+    val innerAt = BooleanArray(n)
     var offN = 0; var edges = 0
     for (i in from until to) {
         if (!on[i]) { offN++; continue }
         envOn.add(env[i].toDouble())
         if (i > 0 && !on[i - 1]) edges++
         var inner = true
-        var dd = -4
-        while (dd <= 4 && inner) { val j = i + dd; if (j < from || j >= to || !on[j]) inner = false; dd++ }
-        if (inner) fmOn.add(fm[i].toDouble())
+        var dd = -INNER
+        while (dd <= INNER && inner) { val j = i + dd; if (j < from || j >= to || !on[j]) inner = false; dd++ }
+        if (inner) { innerAt[i] = true; fmOn.add(fm[i].toDouble()) }
     }
     val span = to - from
     val offFrac = offN.toDouble() / span
@@ -430,38 +453,61 @@ fun analyze(env: ShortArray, fm: ShortArray, n: Int, rate: Double, o: Overrides 
     val askLike = envOn.size >= 32 && envT.a > 0 && envT.a / envT.b > 0.15 && envT.a / envT.b < 0.75 && (envT.b - envT.a) > 3 * envT.sd && envT.share > 0.1 && envT.share < 0.9
     val ookLike = offFrac >= 0.1 && edges >= 3
     // FSK switches tones far more often than the carrier stops; an OOK burst does the opposite
+    // Tone changes counted only well inside the carrier, with the slicer's hysteresis: an on-off keyed transmitter
+    // pulls its frequency as each mark keys up, and those spikes at the edges are not a second tone. FSK changes tone
+    // many times inside each stretch of carrier; OOK hardly ever does.
     var fmEdges = 0
     if (fskLike) {
-        val t = (fmT.a + fmT.b) / 2; var l = fm[from] > t
-        for (i in from until to) { if (!on[i]) continue; val x = fm[i] > t; if (x != l) { fmEdges++; l = x } }
+        val t = (fmT.a + fmT.b) / 2; val h = fmSpread * 0.15
+        var l = 0
+        for (i in from until to) {
+            if (!innerAt[i]) continue
+            val x = if (fm[i] > t + h) 1 else if (fm[i] < t - h) -1 else 0
+            if (x != 0 && x != l) { if (l != 0) fmEdges++; l = x }
+        }
     }
-    var modAuto = Mod.OOK; val why: String
-    if (fskLike && fmEdges > 2 * edges + 4) { modAuto = Mod.FSK; why = "two tones ${f1((fmSpread / FM_SCALE) * rate / (2 * PI) / 1e3)} kHz apart" }
-    else if (ookLike) { modAuto = Mod.OOK; why = "carrier keyed on and off (${Math.round(offFrac * 100)}% off)" }
-    else if (askLike) { modAuto = Mod.ASK; why = "two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper" }
-    else if (fskLike) { modAuto = Mod.FSK; why = "two tones" }
-    else why = "a plain carrier: nothing keyed"
-    val mod = o.mod ?: modAuto
-
-    // the two levels to slice between, and where
-    val sig = signalOf(mod, env, fm)
-    var lo: Double; var hi: Double
-    if (mod == Mod.FSK) { lo = fmT.a; hi = fmT.b }
-    else if (mod == Mod.ASK) { lo = envT.a; hi = envT.b }
-    else {
-        lo = noise
-        hi = if (envOn.size > 0) { var s = 0.0; for (k in 0 until envOn.size) s += envOn.a[k]; s / envOn.size } else noise * ON_K
-        if (envT.share < 0.9 && askLike) hi = envT.b
-    }
-    if (hi <= lo) hi = lo + 1
-    val thrAuto = if (mod == Mod.OOK) min(0.5, max(0.15, (noise * ON_K - lo) / (hi - lo))) else 0.5
-    val thr = o.thr ?: thrAuto
-    val cut = lo + thr * (hi - lo)
-    // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits
-    // near the noise, and a band that wide would reach below it
-    val hyst = (hi - lo) * (if (mod == Mod.FSK) 0.12 else 0.08)
+    // the line sliced as a given modulation: the two levels, where to cut, and the runs
     val minRun = max(2, Math.round(12 / usPer).toInt())
-    val runs = deglitch(sliceRuns(sig, from, to, cut, hyst, if (mod == Mod.FSK) on else null), minRun)
+    class Sliced(val lo: Double, val hi: Double, val thrAuto: Double, val thr: Double, val cut: Double, val runs: List<Run>)
+    fun sliceAs(m: Mod, thrO: Double?): Sliced {
+        var lo: Double; var hi: Double
+        if (m == Mod.FSK) { lo = fmT.a; hi = fmT.b }
+        else if (m == Mod.ASK) { lo = envT.a; hi = envT.b }
+        else {
+            lo = noise
+            hi = if (envOn.size > 0) { var s = 0.0; for (k in 0 until envOn.size) s += envOn.a[k]; s / envOn.size } else noise * ON_K
+            if (envT.share < 0.9 && askLike) hi = envT.b
+        }
+        if (hi <= lo) hi = lo + 1
+        val thrAuto = if (m == Mod.OOK) min(0.5, max(0.15, (noise * ON_K - lo) / (hi - lo))) else 0.5
+        val thr = thrO ?: thrAuto
+        val cut = lo + thr * (hi - lo)
+        // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits
+        // near the noise, and a band that wide would reach below it
+        val hyst = (hi - lo) * (if (m == Mod.FSK) 0.12 else 0.08)
+        val runs = deglitch(sliceRuns(signalOf(m, env, fm), from, to, cut, hyst, if (m == Mod.FSK) on else null), minRun)
+        return Sliced(lo, hi, thrAuto, thr, cut, runs)
+    }
+    // When more than one reading is plausible, each is sliced and the one whose pulses come out regular (whole numbers
+    // of one symbol) wins: noise sliced as a second "tone" gives a scatter of tiny runs, a real code does not. This is
+    // what keeps a weak on-off sensor, whose discriminator wanders a few kHz, from reading as FSK at a 6 µs symbol.
+    val cands = ArrayList<Mod>()
+    if (fskLike && fmEdges >= max(8, 2 * edges)) cands.add(Mod.FSK)
+    if (ookLike) cands.add(Mod.OOK)
+    if (askLike) cands.add(Mod.ASK)
+    if (cands.isEmpty() && fskLike) cands.add(Mod.FSK)
+    var modAuto = cands.firstOrNull() ?: Mod.OOK
+    if (cands.size > 1) {
+        var best = -1.0
+        for (m in cands) { val sc = regularity(sliceAs(m, null).runs, usPer); if (sc > best + 0.02) { best = sc; modAuto = m } }
+    }
+    val why = if (cands.isEmpty()) "a plain carrier: nothing keyed"
+        else if (modAuto == Mod.FSK) "two tones ${f1((fmSpread / FM_SCALE) * rate / (2 * PI) / 1e3)} kHz apart"
+        else if (modAuto == Mod.OOK) "carrier keyed on and off (${Math.round(offFrac * 100)}% off)"
+        else "two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper"
+    val mod = o.mod ?: modAuto
+    val sl = sliceAs(mod, o.thr)
+    val lo = sl.lo; val hi = sl.hi; val thrAuto = sl.thrAuto; val thr = sl.thr; val cut = sl.cut; val runs = sl.runs
 
     // symbol, frames and coding
     val uAuto = symbolOf(runs)
