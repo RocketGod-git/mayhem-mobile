@@ -221,6 +221,8 @@ object Spectrum {
     var measText = ""; private set
     /** The span on screen while a zoom or pan is being made (it is applied when the gesture settles). */
     var view: Pair<Double, Double>? = null; private set
+    /** Whether the scale has been checked against the first whole frame since the app opened or the span moved. */
+    private var rangeChecked = false
     /** The keypad entry, while the keypad is open. */
     var pad: SpPad? = null; private set
     /** The plot's size in pixels at its last draw: the density display is kept at that resolution. */
@@ -315,6 +317,7 @@ object Spectrum {
         frame = null; zcap = null; zstats = null; armed = true; view = null
         // the marker averages belong to the old span's traces
         for (a in mkAvg) a.n = 0
+        rangeChecked = false
         for (t in traces) t.clear()
         persistence?.clear()
         // a frame from a processor that has since been replaced belongs to the old settings, and is dropped
@@ -380,6 +383,13 @@ object Spectrum {
         for (t in traces) if (t.mode == TraceMode.LIVE || whole) t.update(live, mx, mn, m.f0, m.binHz)
         if (s.persist && whole && view == null) addDensity(live, m.f0, m.binHz)
         for (k in s.markers.indices) smoothMarker(k)
+        // A scale left from another radio or span can put the whole trace off the screen: the first whole frame checks
+        // it, and if most of the trace is above the top or below the bottom, AUTO SCALE runs once. Then REF is the user's.
+        if (whole && !rangeChecked) {
+            rangeChecked = true
+            val q = live.copyOf().also { it.sort() }; val med = q[q.size / 2]
+            if (med > s.ref || med < s.ref - s.div * 10) autoScaleNow()
+        }
         changed()
     }
 

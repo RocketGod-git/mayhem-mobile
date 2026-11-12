@@ -162,6 +162,8 @@ export class SpectrumUi {
   private gesture: { kind: 'tap' | 'pan' | 'pinch' | 'pinchT' | 'marker' | 'cursor'; x0: number; center0: number; span0: number; d0: number; which: number } | null = null;
   private pad: Pad | null = null;
   private densityCanvas: HTMLCanvasElement | null = null;
+  /** Whether the scale has been checked against the first whole frame since the app opened or the span moved. */
+  private rangeChecked = false;
   /** The sweep time a zero-span pinch is making (the SWEEP tile shows it while the fingers move). */
   private pinchTime = NaN;
   /** Each marker's level, averaged over the last few frames (a live trace on noise jumps several dB a frame). */
@@ -217,6 +219,7 @@ export class SpectrumUi {
     this.frame = null; this.zcap = null; this.zstats = null; this.armed = true; this.view = null;
     // the marker averages belong to the old span's traces
     for (const a of this.mkAvg) a.n = 0;
+    this.rangeChecked = false;
     for (const t of this.traces) t.clear();
     this.persist?.clear();
     if (cfg.mode === 'ZERO') this.host.start(cfg.tuneHz, this.zsRate(), cfg);
@@ -276,6 +279,13 @@ export class SpectrumUi {
     this.traces.forEach(t => { if (t.mode === 'LIVE' || whole) t.update(live, max, min, m.f0, m.binHz); });
     if (this.s.persist && whole && !this.view) this.addDensity(live, m.f0, m.binHz);
     this.s.markers.forEach((_, k) => this.smoothMarker(k));
+    // A scale left from another radio or span can put the whole trace off the screen: the first whole frame checks it,
+    // and if most of the trace is above the top or below the bottom, AUTO SCALE runs once. After that REF is the user's.
+    if (whole && !this.rangeChecked) {
+      this.rangeChecked = true;
+      const q = Float32Array.from(live).sort(), med = q[q.length >> 1];
+      if (med > this.s.ref || med < this.s.ref - this.s.div * 10) this.autoScaleNow();
+    }
     if (rbwMoved) this.tiles();
     this.draw();
   }
