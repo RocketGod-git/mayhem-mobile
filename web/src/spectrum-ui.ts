@@ -357,7 +357,7 @@ export class SpectrumUi {
         ['zbw', 'FILTER', ...bigHz(s.zsBw), ''],
         ['zst', 'SWEEP', ...(fmtSec(this.zcap?.sweepSec ?? s.zsTime).split(' ') as [string, string]), ''],
         ['lvl', 'TRIGGER', s.trig === 'FREE' ? 'FREE' : String(s.level), s.trig === 'FREE' ? 'RUN' : u, s.trig === 'FREE' ? '' : s.trig === 'RISE' ? 'RISE ↑' : 'FALL ↓'],
-        ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div`],
+        ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div · AUTO`],
       ];
     }
     const rbw = this.frame?.rbw ?? this.rbwHz();
