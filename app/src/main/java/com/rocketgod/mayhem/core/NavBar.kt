@@ -110,7 +110,7 @@ object NavBar {
         prefs()?.edit()?.putString(KEY_LAST, app.name)?.apply()
     }
 
-    fun lastApp(): MayhemApp? = prefs()?.getString(KEY_LAST, null)?.let { n -> all().firstOrNull { it.name == n } }
+    fun lastApp(): MayhemApp? = prefs()?.getString(KEY_LAST, null)?.let { n -> MayhemApp.byName(n)?.takeIf { it in all() } }
 
     private fun prefs() = ctx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 

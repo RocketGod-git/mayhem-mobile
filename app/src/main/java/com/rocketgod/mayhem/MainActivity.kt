@@ -206,7 +206,7 @@ class MainActivity : ComponentActivity() {
         // `--es radio RTLSDR` dresses the demo as a dongle, to see the receive-only screens
         i.getStringExtra("radio")?.let { k -> runCatching { SdrEngine.onRadio(com.rocketgod.mayhem.core.Radio.Kind.valueOf(k)) } }
         i.getStringExtra("open")?.let { name ->
-            runCatching { if (name == "HOME") Apps.home() else Apps.open(MayhemApp.valueOf(name)) }
+            runCatching { if (name == "HOME") Apps.home() else Apps.open(MayhemApp.byName(name) ?: MayhemApp.valueOf(name)) }
                 .onFailure { android.util.Log.e("Mayhem", "debug open $name failed", it); Diag.log("debug open $name failed: $it") }
         }
     }

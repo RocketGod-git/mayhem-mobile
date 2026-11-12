@@ -125,7 +125,6 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.TPMS -> TpmsScreen(accent)
                     MayhemApp.ACARS -> AcarsScreen(accent)
                     MayhemApp.TRAINS -> TrainsScreen(accent)
-                    MayhemApp.SUBGHZ -> SubGhzScreen(accent)
                     MayhemApp.PROWL -> ProwlScreen(accent)
                     MayhemApp.LOOKING_GLASS -> LookingGlassScreen(accent)
                     MayhemApp.SEARCH -> SearchScreen(accent)
@@ -148,7 +147,6 @@ fun MayhemScreen(status: String, connected: Boolean) {
 internal fun barLabel(app: MayhemApp): String = when (app) {
     MayhemApp.LOOKING_GLASS -> "GLASS"
     MayhemApp.SAT -> "SATS"
-    MayhemApp.SUBGHZ -> "SUB-GHZ"
     MayhemApp.BTLE -> "BLE"
     MayhemApp.TRANSMIT -> "TX"
     else -> app.title.uppercase()
@@ -397,7 +395,7 @@ private fun FavesSheet(accent: Color, onClose: () -> Unit) {
             else Column(Modifier.verticalScroll(rememberScrollState()).clip(RoundedCornerShape(10.dp)).border(1.dp, Palette.line, RoundedCornerShape(10.dp))) {
                 list.forEachIndexed { i, b ->
                     if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
-                    val app = b.app?.let { n -> runCatching { MayhemApp.valueOf(n) }.getOrNull() }
+                    val app = b.app?.let { n -> MayhemApp.byName(n) }
                     Row(Modifier.fillMaxWidth().clickable { onClose(); com.rocketgod.mayhem.core.Bookmarks.open(b) }.heightIn(min = d.dp(52f))
                         .padding(start = d.dp(12f), end = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {

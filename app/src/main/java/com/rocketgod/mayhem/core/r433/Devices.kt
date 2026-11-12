@@ -17,7 +17,6 @@ object Devices {
         "318.00" to 318_000_000L, "303.875" to 303_875_000L, "868.30" to 868_300_000L, "912.60" to 912_600_000L, "915.00" to 915_000_000L)
     /** Most of these sensors report every thirty to sixty seconds. */
     const val DWELL_MS = 20_000L
-    val SPANS = listOf("250 kHz" to 250_000, "500 kHz" to 500_000, "1 MHz" to 1_000_000, "2 MHz" to 2_000_000)
 
     val proc = R433Processor()
     val protocols: List<R433Protocol> by lazy { protocolList() }
@@ -26,22 +25,19 @@ object Devices {
 
     private val _band = MutableStateFlow(0)
     val band: StateFlow<Int> = _band.asStateFlow()
-    private val _span = MutableStateFlow(250_000)
-    val span: StateFlow<Int> = _span.asStateFlow()
     private val _hop = MutableStateFlow(false)
     val hop: StateFlow<Boolean> = _hop.asStateFlow()
 
     /** Always open on 433.92, whatever the last visit left: that band carries most of the protocol set. */
     fun open() {
         _band.value = 0
-        proc.setSpan(_span.value)
+        proc.centerOf = { SdrEngine.freqHz.value }
         SdrEngine.configure(SdrEngine.Mode.NONE, BANDS[0].second, SdrEngine.IQ_RATE, 32, 40, true, proc)
     }
 
     fun pickBand(i: Int) { _band.value = i; SdrEngine.tune(BANDS[i].second) }
     fun pickFreq(hz: Long) { BANDS.indexOfFirst { it.second == hz }.takeIf { it >= 0 }?.let { _band.value = it }; SdrEngine.tune(hz) }
     fun nextBand() = pickBand((_band.value + 1) % BANDS.size)
-    fun setSpan(hz: Int) { _span.value = hz; proc.setSpan(hz) }
     fun setHop(on: Boolean) { _hop.value = on }
 
     /** Units, so a number is never shown bare. */
@@ -106,4 +102,77 @@ object Devices {
     }
 
     fun spanLabel(hz: Int) = if (hz >= 1_000_000) "${fmtValue(hz / 1e6)} MHz" else "${(hz / 1e3).roundToInt()} kHz"
+
+    /** What a card calls a thing heard. */
+    enum class Kind(val label: String, val group: Filter) {
+        CAR_KEY("CAR KEY", Filter.KEY), REMOTE("REMOTE", Filter.REMOTE), TIRE("TIRE SENSOR", Filter.SENSOR), WEATHER("WEATHER", Filter.SENSOR),
+        SECURITY("SECURITY", Filter.SENSOR), METER("METER", Filter.SENSOR), SENSOR("SENSOR", Filter.SENSOR),
+    }
+    /** The filter row over the cards. */
+    enum class Filter(val label: String) { ALL("ALL"), KEY("KEYS"), REMOTE("REMOTES"), SENSOR("SENSORS") }
+
+    private val TIRE = Regex("tpms|tire|tyre")
+    private val WEATHERISH = Regex("weather|thermo|temperature|humidity|rain|wind|lightning|hygro|soil|pool|bbq|meat|grill")
+    private val SECURITYISH = Regex("door|window|motion|pir|smoke|alarm|security|leak|water|glass|siren|contact")
+    private val METERISH = Regex("meter|energy|power|gas|current|consumption|ert")
+    private val REMOTEISH = Regex("remote|switch|button|doorbell|bell|keyfob|key fob|gate|garage|blind|shutter|outlet|plug|dimmer")
+
+    /** What a card calls the thing, from who decoded it and what its protocol says it is. */
+    fun kind(h: HeardDevice): Kind {
+        when (h.family) { "key" -> return Kind.CAR_KEY; "remote" -> return Kind.REMOTE; "weather" -> return Kind.WEATHER }
+        val t = "${h.model} ${h.what} ${h.data["type"]?.let { fmtValue(it) } ?: ""}".lowercase()
+        return when {
+            TIRE.containsMatchIn(t) -> Kind.TIRE
+            WEATHERISH.containsMatchIn(t) -> Kind.WEATHER
+            SECURITYISH.containsMatchIn(t) -> Kind.SECURITY
+            METERISH.containsMatchIn(t) -> Kind.METER
+            REMOTEISH.containsMatchIn(t) -> Kind.REMOTE
+            else -> Kind.SENSOR
+        }
+    }
+
+    fun shows(f: Filter, h: HeardDevice) = f == Filter.ALL || kind(h).group == f
+
+    /** How long a device counts as live: a key or remote is a press, a sensor reports every half minute or so. */
+    fun liveMs(k: Kind): Long = if (k == Kind.CAR_KEY || k == Kind.REMOTE) 15_000L else 120_000L
+
+    fun ago(ms: Long): String {
+        val s = maxOf(0L, (ms / 1000.0).roundToInt().toLong())
+        return if (s < 60) "${s}s ago" else if (s < 3600) "${s / 60}m ago" else "${s / 3600}h ${s / 60 % 60}m ago"
+    }
+
+    fun mhz(hz: Long) = "%.3f MHz".format(java.util.Locale.US, hz / 1e6)
+
+    private fun num(v: Any?): Double? = when (v) {
+        is Number -> v.toDouble()
+        is String -> v.trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
+        else -> null
+    }
+
+    /** The big line on a card, and the small one under it: what this thing just said, in the fewest words. */
+    fun headline(h: HeardDevice, k: Kind = kind(h)): Pair<String, String> {
+        val v = h.data
+        if (k == Kind.CAR_KEY || k == Kind.REMOTE) {
+            val big = (v["button"] ?: v["btn"] ?: v["cmd"] ?: v["state"])?.let { fmtValue(it) } ?: "PRESS"
+            return big to (v["counter"]?.let { "counter ${fmtValue(it)}" } ?: "")
+        }
+        val kpa = num(v["pressure_kPa"]); val psiRaw = num(v["pressure_PSI"]); val bar = num(v["pressure_bar"])
+        val tcRaw = num(v["temperature_C"]); val tf = num(v["temperature_F"])
+        val tc = tcRaw ?: tf?.let { (it - 32) * 5 / 9 }
+        if (k == Kind.TIRE) {
+            val psi = psiRaw ?: kpa?.let { it * 0.1450377 } ?: bar?.let { it * 14.50377 }
+            return (psi?.let { "%.1f psi".format(java.util.Locale.US, it) } ?: "TIRE") to (tc?.let { "%.0f °F".format(java.util.Locale.US, it * 9 / 5 + 32) } ?: "")
+        }
+        if (tc != null) return "%.1f °F".format(java.util.Locale.US, tc * 9 / 5 + 32) to (v["humidity"]?.let { "${fmtValue(it)}% humidity" } ?: "")
+        val temp = v["temperature"]
+        if (temp is String) return temp.split(" · ").last() to (v["humidity"]?.let { "${fmtValue(it)} humidity" } ?: "")
+        val sum = summary(v).split(" · ")
+        return sum[0].ifEmpty { k.label } to sum.drop(1).joinToString(" · ")
+    }
+
+    /** One line per reading, for the history in the detail panel. */
+    fun historyLine(h: HeardDevice, data: R433Data): String {
+        val (a, b) = headline(h.copy(data = data))
+        return listOf(a, b).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { summary(data) }
+    }
 }

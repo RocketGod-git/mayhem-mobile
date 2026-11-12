@@ -88,6 +88,12 @@ class PulseDetect(private var sampleRate: Double) {
     private val ook = PulseData(PD_MAX_PULSES + 1, sampleRate, false)
     private val fskPulses = PulseData(PD_MAX_PULSES + 1, sampleRate, true)
 
+    fun setSampleRate(rate: Double) {
+        sampleRate = rate
+        ook.sampleRate = rate
+        fskPulses.sampleRate = rate
+    }
+
     fun reset() {
         ookState = 0; pulseLength = 0; maxPulse = 0; leadIn = 0; lowEstimate = 0; highEstimate = 0
         fsk.reset(); ook.clear(); fskPulses.clear()
@@ -169,6 +175,32 @@ class PulseDetect(private var sampleRate: Double) {
         }
     }
 
+    /** Close whatever is in flight, at the end of a burst's channel or when retuning. */
+    fun flush(onBurst: BurstFn) {
+        if (ookState == 0) return
+        if (ookState == 1) {
+            if (pulseLength < PD_MIN_PULSE_SAMPLES) {
+                if (ook.numPulses <= 1) { ookState = 0; return }
+                ookState = 3
+            } else {
+                ook.pulse[ook.numPulses] = pulseLength
+                if (pulseLength > maxPulse) maxPulse = pulseLength
+                pulseLength = 0
+                ookState = 2
+            }
+        }
+        if (ookState == 2) {
+            ookState = 3
+            if (fskPulses.numPulses > PD_MIN_PULSES) { ookState = 0; onBurst(true, fskPulses); return }
+        }
+        if (ookState == 3) {
+            ook.gap[ook.numPulses] = pulseLength
+            ook.numPulses += 1
+            ookState = 0
+            onBurst(false, ook)
+        }
+    }
+
     /** The noise floor the trigger has settled on, and the magnitude a burst must exceed. */
     fun levels(): Pair<Int, Int> {
         val threshold = (lowEstimate + min(highEstimate, OOK_MAX_HIGH_LEVEL)) / 2
@@ -194,9 +226,8 @@ private fun fastAtan2(y: Double, x: Double): Double {
 }
 
 /**
- * Raw samples to the envelope and discriminator streams. Not channelised: the whole sampled span at once, which is
- * how one receiver hears every device in a band. [decim] narrows that span with a two-stage CIC (worth ~5 dB on a
- * weak sensor, since the envelope detector takes in the noise of everything it is given).
+ * Raw samples to the envelope and discriminator streams. [BurstChannels] runs one of these per burst it follows, on
+ * samples already mixed down to that burst; [decim] narrows them with a two-stage CIC to the channel's rate.
  */
 class Baseband {
     var env = ShortArray(0); private set

@@ -22,7 +22,7 @@ object Credits {
         false to "ACARS — proc_acars, acars_app: Jared Boone, Furrtek · bit decision after acarsdec by Thierry Leconte",
         false to "Transmit — proc_siggen, proc_morse, proc_ook, proc_replay, pocsag_tx, rtty_tx (ITA2 Baudot), aprs_tx (AX.25), tones/DTMF: Jared Boone, Furrtek, htotoo and Mayhem contributors",
         false to "Transmit apps — ui_mdc_tx (MDC-1200 PTT-ID), ui_test (Quick-Call II two-tone), ui_flippertx (SubGHz .sub replay), ui_keyfob (KeeLoq HCS301), ui_jammer (OOK noise), ookbrute, ui_lge (frequency hopper), ui_adsb_tx (Mode-S DF17): Mayhem contributors (htotoo, Furrtek, Kyle Reed, jimilinuxguy and others); KeeLoq cipher after Flipper Devices / rtl_433; ADS-B after dump1090.",
-        false to "Sub-GHz (weather, remotes, car keys) — proc_weather, proc_subghzd, proc_subcar, fprotos/: Mayhem contributors (htotoo and others), after the Flipper Zero firmware SubGhz protocols (Flipper Devices) and rtl_433 (Benjamin Larsson and contributors)",
+        false to "Devices: weather, remotes, car keys — proc_weather, proc_subghzd, proc_subcar, fprotos/: Mayhem contributors (htotoo and others), after the Flipper Zero firmware SubGhz protocols (Flipper Devices) and rtl_433 (Benjamin Larsson and contributors)",
         false to "Looking Glass — ui_looking_glass_app: Jared Boone, euquiq, gullradriel (Nilorea Studio)",
         false to "Search — ui_search: Jared Boone, Furrtek",
         false to "Bookmarks + Scanner — ui_freqman, ui_scanner: Jared Boone, Furrtek, Kyle Reed",

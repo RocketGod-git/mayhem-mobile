@@ -122,15 +122,6 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 for (k in 0..12) { val t = k / 12f; val x = 0.5f + 0.07f * sin(Math.PI * t).toFloat(); val y = 0.30f + 0.40f * t; if (k == 0) path.m(x, y) else path.l(x, y) }
                 for (k in 1..12) { val t = 1f - k / 12f; path.l(0.5f - 0.07f * sin(Math.PI * t).toFloat(), 0.30f + 0.40f * t) }
             }
-            MayhemApp.SUBGHZ -> {
-                path.m(0.5f, 0.92f); path.l(0.5f, 0.42f)
-                circles.add(Triple(0.5f, 0.42f, 0.07f))
-                for (r in floatArrayOf(0.2f, 0.32f)) {
-                    var a = -150.0; var first = true
-                    while (a <= -30.0) { val x = 0.5f + r * cos(Math.toRadians(a)).toFloat(); val y = 0.42f + r * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
-                }
-                path.m(0.2f, 0.92f); path.l(0.8f, 0.92f)
-            }
             MayhemApp.ERT -> {
                 var a = 150.0; var first = true
                 while (a <= 390.0) {

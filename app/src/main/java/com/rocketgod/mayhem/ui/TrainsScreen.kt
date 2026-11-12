@@ -147,9 +147,9 @@ fun TrainsScreen(accent: Color) {
                     } else items(hots.take(30), key = { "h${it.ms}" }, span = { GridItemSpan(maxLineSpan) }) { HotRow(it, accent, now) }
                 }
             }
-            if (pickedUnit != null && view == 0) TrainDetail(eotFields(pickedUnit, now), "${pickedUnit.unit}", if (pickedUnit.channel == "DPU") "DISTRIBUTED POWER" else "END OF TRAIN", accent,
+            if (pickedUnit != null && view == 0) FieldDetail(eotFields(pickedUnit, now), "${pickedUnit.unit}", if (pickedUnit.channel == "DPU") "DISTRIBUTED POWER" else "END OF TRAIN", accent,
                 Modifier.align(Alignment.BottomCenter).padding(d.dp(6f))) { sel = null }
-            if (pickedStation != null && view == 1) TrainDetail(ptcFields(pickedStation, now), "%.4f".format(pickedStation.hz / 1e6), pickedStation.kind.label,
+            if (pickedStation != null && view == 1) FieldDetail(ptcFields(pickedStation, now), "%.4f".format(pickedStation.hz / 1e6), pickedStation.kind.label,
                 if (pickedStation.kind == PtcStation.Kind.LOCOMOTIVE) Palette.danger else accent, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f))) { sel = null }
         }
     }
@@ -660,9 +660,13 @@ private fun ptcFields(s: PtcStation, now: Long): List<Pair<String, String>> {
     )
 }
 
-/** A card's full decode, field by field, over the cards. */
+/**
+ * A card's full decode, field by field, over the cards (Trains and Devices). [history], when there is one, follows
+ * the fields: when, and what was heard then, newest first.
+ */
 @Composable
-private fun TrainDetail(fields: List<Pair<String, String>>, title: String, kind: String, accent: Color, modifier: Modifier, onClose: () -> Unit) {
+internal fun FieldDetail(fields: List<Pair<String, String>>, title: String, kind: String, accent: Color, modifier: Modifier,
+                         history: List<Pair<String, String>> = emptyList(), onClose: () -> Unit) {
     val d = rememberDims()
     var tall by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(d.dp(14f))
@@ -683,6 +687,14 @@ private fun TrainDetail(fields: List<Pair<String, String>>, title: String, kind:
                 for ((k, v) in fields) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                     Text(k, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.width(d.dp(112f)))
                     Text(v, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+                }
+                if (history.isNotEmpty()) {
+                    Text("EVERY TIME IT WAS HEARD", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp,
+                        modifier = Modifier.padding(top = d.dp(4f)))
+                    for ((t, v) in history) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                        Text(t, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(112f)))
+                        Text(v, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+                    }
                 }
             }
         }

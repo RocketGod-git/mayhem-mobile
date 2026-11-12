@@ -12,7 +12,6 @@ import com.rocketgod.mayhem.core.apps.MetersProcessor
 import com.rocketgod.mayhem.core.apps.PagerDecoder
 import com.rocketgod.mayhem.core.apps.SweepProcessor
 import com.rocketgod.mayhem.core.apps.TpmsDecoder
-import com.rocketgod.mayhem.core.apps.ism.IsmDecoder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,7 +21,7 @@ import java.io.File
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
     HAM("HAM", "SSB · CW · AM · NFM · repeaters · CTCSS", "Receive"),
     AUDIO("Audio", "WFM · NFM · AM · SSB receiver", "Receive"),
-    DEVICES("Devices", "alarms, meters, remotes, tire sensors, weather", "Receive"),
+    DEVICES("Devices", "car keys, remotes, tire sensors, weather, alarms", "Receive"),
     SAT("Satellites", "track, listen to and decode what is overhead", "Receive"),
     ADSB("ADS-B", "aircraft, 1090 MHz", "Receive"),
     AIS("AIS", "ships, 162 MHz", "Receive"),
@@ -34,7 +33,6 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     TPMS("TPMS", "tire pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
     TRAINS("Trains", "end-of-train telemetry · PTC train control", "Receive"),
-    SUBGHZ("Sub-GHz", "weather · remotes · car keys, rtl_433 style", "Receive"),
     PROWL("Prowl", "hunts live voice across the bands", "Receive"),
     LOOKING_GLASS("Looking Glass", "wideband sweep waterfall", "Analyze"),
     SEARCH("Search", "find active frequencies", "Analyze"),
@@ -42,6 +40,11 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     TRANSMIT("Transmit", "signal gen · morse · OOK · replay", "Transmit"),
     TROLL("Troll", "novelty transmitters · jingles · cart sounds", "Transmit"),
     SETTINGS("Settings", "theme · about", "Tools");
+
+    companion object {
+        /** An app by its saved name; Sub-GHz is part of Devices now, so a bookmark or bar saved with it opens Devices. */
+        fun byName(name: String): MayhemApp? = if (name == "SUBGHZ") DEVICES else entries.firstOrNull { it.name == name }
+    }
 }
 
 /** Wires each app to its engine configuration and baseband processor (Mayhem's receiver_model per app). */
@@ -82,7 +85,6 @@ object Apps {
     val btleLog = PacketLog(); val btle = BtleDecoder(btleLog)
     val tpmsLog = PacketLog(); val tpms = TpmsDecoder(tpmsLog)
     val acarsLog = PacketLog(); val acars = AcarsDecoder(acarsLog)
-    val ismLog = PacketLog(); val ism = IsmDecoder(ismLog)
     /** Trains: end-of-train / head-of-train telemetry, or the PTC network; BOTH takes turns between them. */
     val trainsLog = PacketLog(); val trains = com.rocketgod.mayhem.core.trains.TrainsProcessor(trainsLog)
     // it opens on BOTH, starting where the traffic is: PTC beacons every few seconds, a rear unit only with a train
@@ -227,7 +229,6 @@ object Apps {
                 acars.centerOf = { SdrEngine.freqHz.value }; acars.tunedOf = { SdrEngine.channelHz() }
                 acars.onNote = { com.rocketgod.mayhem.Diag.log(it) }
             }
-            MayhemApp.SUBGHZ -> SdrEngine.configure(SdrEngine.Mode.NONE, 433_920_000L, r, 32, 40, true, ism)
             MayhemApp.TRAINS -> startTrains()
             MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)

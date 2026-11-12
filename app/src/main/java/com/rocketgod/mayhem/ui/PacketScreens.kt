@@ -608,24 +608,6 @@ fun AcarsScreen(accent: Color) {
 }
 
 @Composable
-fun SubGhzScreen(accent: Color) {
-    val d = rememberDims()
-    var wx by remember { mutableStateOf(Apps.ism.weather) }
-    var rc by remember { mutableStateOf(Apps.ism.remotes) }
-    var car by remember { mutableStateOf(Apps.ism.cars) }
-    PacketFrame(accent, Apps.ismLog, tag = "SUB-GHZ", title = "SENSORS · REMOTES · KEYS", roomy = true, controls = {
-        PresetTiles(accent, listOf(Preset("433.92", "EU · US", 433_920_000L), Preset("315.00", "US", 315_000_000L), Preset("868.35", "EU", 868_350_000L),
-            Preset("915.00", "US", 915_000_000L), Preset("303.875", "US", 303_875_000L)))
-        // every protocol runs at once; a family switched off is muted
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            ToggleBox("WEATHER", wx, accent, Modifier.weight(1f).fillMaxHeight()) { wx = !wx; Apps.ism.weather = wx }
-            ToggleBox("REMOTES", rc, accent, Modifier.weight(1f).fillMaxHeight()) { rc = !rc; Apps.ism.remotes = rc }
-            ToggleBox("CAR KEYS", car, accent, Modifier.weight(1f).fillMaxHeight()) { car = !car; Apps.ism.cars = car }
-        }
-    })
-}
-
-@Composable
 fun BtleScreen(accent: Color) {
     val freq by SdrEngine.freqHz.collectAsState()
     PacketFrame(accent, Apps.btleLog, tag = "BLE", title = "ADVERTISING", tunable = false, controls = {

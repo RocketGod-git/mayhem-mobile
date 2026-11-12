@@ -80,7 +80,7 @@ object Bookmarks {
 
     /** Recall a favourite the way it was heard: the right app, its gain and squelch, then the frequency. */
     fun open(b: Bookmark) {
-        val app = b.app?.let { runCatching { MayhemApp.valueOf(it) }.getOrNull() }
+        val app = b.app?.let { MayhemApp.byName(it) }
         if (app != null && app != Apps.current.value) Apps.open(app)
         b.gains?.let { g -> SdrEngine.applyGains(g[0], g[1], g[2] == 1, g[3] == 1) }
         if (app == MayhemApp.HAM && b.ham != null) { hamRecall?.invoke(b); return }
