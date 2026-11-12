@@ -31,15 +31,41 @@ object Geo {
         override fun onProviderDisabled(provider: String) {}
     }
 
+    private const val PREFS = "geo"
+    private var prefs: android.content.SharedPreferences? = null
+    /** The last position this device reported, kept between visits (null when there never was one). */
+    @Volatile private var last: Pair<Double, Double>? = null
+
+    /** Load the last position known, so a map can open there before (or without) a fix. */
+    fun init(ctx: Context) {
+        if (prefs != null) return
+        val p = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).also { prefs = it }
+        val la = p.getString("lat", null)?.toDoubleOrNull(); val lo = p.getString("lon", null)?.toDoubleOrNull()
+        if (la != null && lo != null && la.isFinite() && lo.isFinite()) last = la to lo
+    }
+    fun lastKnownPos(): Pair<Double, Double>? = last
+    fun saveLastPos(p: Pair<Double, Double>) {
+        last = p
+        prefs?.edit()?.putString("lat", p.first.toString())?.putString("lon", p.second.toString())?.apply()
+    }
+
     private fun set(l: Location) {
         val first = _fix.value == null
         _fix.value = l.latitude to l.longitude
+        saveLastPos(l.latitude to l.longitude)
         if (first) Diag.log("GPS reference %.3f,%.3f for single-frame CPR".format(l.latitude, l.longitude))
     }
 
     fun granted(ctx: Context): Boolean =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    /** Ask for it from a screen that wants it (ADS-B, AIS, APRS); only when it is not already allowed. */
+    fun ask(ctx: Context) {
+        var c: Context? = ctx
+        while (c is android.content.ContextWrapper && c !is Activity) c = c.baseContext
+        if (c is Activity) request(c) else start(ctx)
+    }
 
     /** Ask once (the result comes back through [start] again from the activity). */
     fun request(activity: Activity) {

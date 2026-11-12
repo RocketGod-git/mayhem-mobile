@@ -96,7 +96,7 @@ fun CaptureScreen(accent: Color) {
             // SHARE sends the recording and its sidecar to any app
             Text("${files.size} CAPTURES", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp,
                 modifier = Modifier.padding(top = d.dp(10f), bottom = d.dp(6f)))
-            if (files.isEmpty()) Text("no captures yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(4f)))
+            if (files.isEmpty()) Box(Modifier.fillMaxWidth().weight(1f).panel()) { EmptyState("capture", Modifier.fillMaxSize(), accent) }
             else LazyColumn(Modifier.fillMaxWidth().weight(1f).panel().padding(d.dp(4f))) {
                 items(files, key = { it.name }) { f ->
                     Row(Modifier.fillMaxWidth().padding(vertical = d.dp(3f)), verticalAlignment = Alignment.CenterVertically) {

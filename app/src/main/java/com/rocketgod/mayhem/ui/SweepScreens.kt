@@ -221,7 +221,7 @@ fun SearchScreen(accent: Color) {
             }
             Text("${hits.size} HITS · TAP ONE TO LISTEN", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 2.sp)
         }
-        LogList(hits, Modifier.fillMaxWidth().weight(1f), empty = "sweeping… hits appear after the first full pass") { line ->
+        LogList(hits, Modifier.fillMaxWidth().weight(1f), empty = "sweeping… hits appear after the first full pass", accent = accent, emptyKey = "search") { line ->
             val mhz = line.trim().split(" ")[0].toDoubleOrNull()
             if (mhz != null) Apps.listen((mhz * 1e6).toLong(), if (mhz in 87.0..108.0) SdrEngine.Mode.WFM else SdrEngine.Mode.NFM)
         }

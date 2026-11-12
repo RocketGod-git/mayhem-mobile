@@ -11,6 +11,9 @@ import kotlin.math.ln
  */
 class BtleDecoder(private val log: PacketLog) : IqProcessor {
     @Volatile var channel = 37
+    /** Each good packet's whole PDU (header to the end of the payload), its level in dB and its channel, for the device
+     *  cards (BleDevices reads it). Set by Apps; called on the radio's thread. */
+    @Volatile var onAdv: ((ByteArray, Double, Int) -> Unit)? = null
 
     private var sps = 2
     private var dcI = 127.4f; private var dcQ = 127.4f
@@ -138,6 +141,8 @@ class BtleDecoder(private val log: PacketLog) : IqProcessor {
             }
         }
         log.add(sb.toString())
+        // the whole PDU too, for the device cards (BleDevices.kt reads it)
+        onAdv?.invoke(pdu.copyOfRange(0, end), db, channel)
     }
 
     companion object {

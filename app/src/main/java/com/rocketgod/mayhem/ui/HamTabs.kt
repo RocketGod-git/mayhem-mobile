@@ -94,7 +94,7 @@ internal fun HamMonitor(accent: Color) {
         ChannelGrid(r, m.lock, accent) { Ham.monitorLock(it) }
         SectionLabel("OPEN NOW")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(6f))) {
-            if (r.open.isEmpty()) Text("nothing open — watching every channel", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
+            if (r.open.isEmpty()) EmptyState("ham", Modifier.fillMaxWidth(), accent)
             for ((i, k) in r.open.withIndex()) {
                 val hz = r.first + k.toLong() * r.spacing
                 val sub = r.tones[k]?.let { "CTCSS %.1f".format(it) } ?: r.dcs[k]?.let { "DCS %03d".format(it) } ?: "—"

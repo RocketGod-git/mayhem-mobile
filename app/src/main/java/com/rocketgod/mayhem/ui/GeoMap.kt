@@ -1,6 +1,10 @@
 package com.rocketgod.mayhem.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,6 +52,37 @@ data class GeoLayers(
     /** Centre lat, lon and radius in km. */
     val footprint: Triple<Double, Double, Double>? = null,
 )
+
+/** Regional zoom: a couple of hundred kilometers across, where ships, stations and aircraft near you show up. */
+const val REGION_ZOOM = 8.0
+
+/** Where a map opens before anything is plotted. [standIn]: there is no position at all, so it is the middle of the US. */
+data class MapStart(val lat: Double, val lon: Double, val zoom: Double, val standIn: Boolean)
+
+/** Where a map opens: your position, else the last one known, else the middle of the US; always at regional zoom. */
+fun mapStart(home: Pair<Double, Double>?): MapStart {
+    val p = home ?: com.rocketgod.mayhem.core.Geo.lastKnownPos()
+    return if (p != null) MapStart(p.first, p.second, REGION_ZOOM, false) else MapStart(39.5, -98.35, REGION_ZOOM - 3, true)
+}
+
+/** The second line of a map's empty overlay: what will show up, and where the map is centered. */
+fun mapEmptySub(what: String, home: Pair<Double, Double>?): String =
+    "$what. " + if (home != null) "Centered on you." else if (mapStart(null).standIn) "No location yet: allow it to center the map on you." else "Centered where you were last."
+
+/** Over a map until its first contact: a centered translucent box with [title] and [sub] under it. */
+@Composable
+fun MapEmptyOverlay(title: String, sub: String, modifier: Modifier = Modifier) {
+    if (title.isEmpty()) return
+    val shape = RoundedCornerShape(12.dp)
+    androidx.compose.foundation.layout.Column(
+        modifier.widthIn(max = 320.dp).background(Palette.surface.copy(alpha = 0.86f), shape).border(1.dp, Palette.line, shape)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)
+    ) {
+        Text(title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.2.sp, textAlign = TextAlign.Center)
+        if (sub.isNotEmpty()) Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = 10.sp, lineHeight = 14.sp, textAlign = TextAlign.Center)
+    }
+}
 
 private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int, private val onPick: (String) -> Unit) : Overlay() {
     @Volatile var items: List<GeoItem> = emptyList()
@@ -185,6 +220,10 @@ fun GeoMapView(
     fitHome: Boolean = false,
     /** Keep [home] in every fit, so the map shows your area and what you have heard around it (APRS). */
     withHome: Boolean = false,
+    /** Where it opens before anything is plotted ([mapStart]); a fix arriving later moves it only while nothing is. */
+    start: MapStart? = null,
+    /** Shown over the map until its first contact ("" hides it), with [emptySub] under it. */
+    emptyTitle: String = "", emptySub: String = "",
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -200,6 +239,11 @@ fun GeoMapView(
         // home only counts when something is drawn from it
         val pts = items.map { it.lat to it.lon } + layers.track +
             (if (withHome || layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
+        // nothing plotted yet: a map with a start point stays at regional zoom, recentered once when a fix comes in
+        if (start != null && items.isEmpty() && layers.track.isEmpty()) {
+            if (home != null && !homed) { homed = true; mv.controller.animateTo(GeoPoint(home.first, home.second), REGION_ZOOM, null) }
+            return
+        }
         if (pts.isEmpty()) {
             if (home != null && !homed) { homed = true; mv.controller.animateTo(GeoPoint(home.first, home.second), maxOf(mv.zoomLevelDouble, 9.0), null) }
             return
@@ -251,8 +295,11 @@ fun GeoMapView(
                     isHorizontalMapRepetitionEnabled = true
                     // our own − / + below, the same on every platform
                     zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
-                    controller.setZoom(if (home == null) 3.0 else if (fitHome) 13.0 else 9.0)
-                    controller.setCenter(if (home != null) GeoPoint(home.first, home.second) else GeoPoint(30.0, -40.0))
+                    if (start != null) { controller.setZoom(start.zoom); controller.setCenter(GeoPoint(start.lat, start.lon)) }
+                    else {
+                        controller.setZoom(if (home == null) 3.0 else if (fitHome) 13.0 else 9.0)
+                        controller.setCenter(if (home != null) GeoPoint(home.first, home.second) else GeoPoint(30.0, -40.0))
+                    }
                     // a drag (past the touch slop, so a tap on a marker does not count) hands the view to the user
                     val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop.toFloat()
                     var downX = 0f; var downY = 0f
@@ -271,6 +318,7 @@ fun GeoMapView(
                 }
             }
         )
+        MapEmptyOverlay(emptyTitle, emptySub, Modifier.align(Alignment.Center).padding(16.dp))
         // + / − zoom, top left (the web map's): a zoom by hand stops the follow, as a drag does
         androidx.compose.foundation.layout.Column(Modifier.align(Alignment.TopStart).padding(6.dp)) {
             for ((label, step) in listOf("+" to 1.0, "−" to -1.0)) {

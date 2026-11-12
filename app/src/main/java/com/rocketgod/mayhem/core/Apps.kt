@@ -2,8 +2,13 @@ package com.rocketgod.mayhem.core
 
 import android.content.Context
 import com.rocketgod.mayhem.core.apps.AcarsDecoder
+import com.rocketgod.mayhem.core.apps.AcarsPlane
+import com.rocketgod.mayhem.core.apps.AcarsPlanes
 import com.rocketgod.mayhem.core.apps.AisDecoder
 import com.rocketgod.mayhem.core.apps.AprsDecoder
+import com.rocketgod.mayhem.core.apps.BleDevice
+import com.rocketgod.mayhem.core.apps.BlePos
+import com.rocketgod.mayhem.core.apps.BleTracker
 import com.rocketgod.mayhem.core.apps.BtleDecoder
 import com.rocketgod.mayhem.core.apps.ErtDecoder
 import com.rocketgod.mayhem.core.apps.IqRecorder
@@ -11,7 +16,6 @@ import com.rocketgod.mayhem.core.apps.MeshDecoder
 import com.rocketgod.mayhem.core.apps.MetersProcessor
 import com.rocketgod.mayhem.core.apps.PagerDecoder
 import com.rocketgod.mayhem.core.apps.SweepProcessor
-import com.rocketgod.mayhem.core.apps.TpmsDecoder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,7 +34,6 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     ERT("Meters", "utility meters: ERT, mesh networks, Gridstream", "Receive"),
     LORA("LoRa", "Meshtastic · MeshCore · LoRaWAN, 915 MHz", "Receive"),
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
-    TPMS("TPMS", "tire pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
     TRAINS("Trains", "end-of-train telemetry · PTC train control", "Receive"),
     PROWL("Prowl", "hunts live voice across the bands", "Receive"),
@@ -42,8 +45,9 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     SETTINGS("Settings", "theme · about", "Tools");
 
     companion object {
-        /** An app by its saved name; Sub-GHz is part of Devices now, so a bookmark or bar saved with it opens Devices. */
-        fun byName(name: String): MayhemApp? = if (name == "SUBGHZ") DEVICES else entries.firstOrNull { it.name == name }
+        /** An app by its saved name; Sub-GHz and TPMS are part of Devices now, so a bookmark, bar or last app saved with
+         *  either opens Devices. */
+        fun byName(name: String): MayhemApp? = if (name == "SUBGHZ" || name == "TPMS") DEVICES else entries.firstOrNull { it.name == name }
     }
 }
 
@@ -83,8 +87,35 @@ object Apps {
     /** LoRa: Meshtastic, MeshCore, LoRaWAN and any other LoRa across one wide span. */
     val loraLog = PacketLog(); val lora = com.rocketgod.mayhem.core.lora.LoraHub(loraLog)
     val btleLog = PacketLog(); val btle = BtleDecoder(btleLog)
-    val tpmsLog = PacketLog(); val tpms = TpmsDecoder(tpmsLog)
+    /** BLE RX's devices: one per advertiser, fed the whole PDU of every good packet. Read through [bleDevices]. */
+    private val bleTracker = BleTracker()
+    private val _bleTick = MutableStateFlow(0L)
+    /** Bumped with each advertisement, so the screen knows to look again. */
+    val bleTick: StateFlow<Long> = _bleTick.asStateFlow()
+    /** Where you are, for the tracker alert's 500 m rule: only a fix the app already has (location already allowed). */
+    @Volatile var blePos: BlePos? = null
+    /** The devices as of now (copies, safe to read while packets keep arriving): alerted first, then first heard. */
+    fun bleDevices(): List<BleDevice> = synchronized(bleTracker) { bleTracker.list().map { it.snapshot() } }
+    fun bleClear() { synchronized(bleTracker) { bleTracker.clear() }; btleLog.clear(); _bleTick.value++ }
     val acarsLog = PacketLog(); val acars = AcarsDecoder(acarsLog)
+    /** ACARS's aircraft: every decoded line grouped by registration (else flight). Read through [acarsPlaneList]. */
+    private val acarsPlanes = AcarsPlanes()
+    private val _acarsTick = MutableStateFlow(0L)
+    val acarsTick: StateFlow<Long> = _acarsTick.asStateFlow()
+    fun acarsPlaneList(): List<AcarsPlane> = synchronized(acarsPlanes) { acarsPlanes.list().map { it.snapshot() } }
+    fun acarsClear() { synchronized(acarsPlanes) { acarsPlanes.clear() }; acarsLog.clear(); _acarsTick.value++ }
+    /** An aircraft ADS-B should open on (ACARS's ADS-B button): ADS-B keeps what it has heard instead of starting clean. */
+    @Volatile var adsbPick: String? = null
+    init {
+        btle.onAdv = { pdu, db, ch ->
+            val a = com.rocketgod.mayhem.core.apps.parseAdv(pdu, db, ch)
+            if (a != null) { synchronized(bleTracker) { bleTracker.add(a, System.currentTimeMillis(), blePos) }; _bleTick.value++ }
+        }
+        acarsLog.onAdd = { line ->
+            val m = com.rocketgod.mayhem.core.apps.parseAcarsLine(line, System.currentTimeMillis())
+            if (m != null) { synchronized(acarsPlanes) { acarsPlanes.add(m) }; _acarsTick.value++ }
+        }
+    }
     /** Trains: end-of-train / head-of-train telemetry, or the PTC network; BOTH takes turns between them. */
     val trainsLog = PacketLog(); val trains = com.rocketgod.mayhem.core.trains.TrainsProcessor(trainsLog)
     // it opens on BOTH, starting where the traffic is: PTC beacons every few seconds, a rear unit only with a train
@@ -133,6 +164,7 @@ object Apps {
 
     fun init(ctx: Context) {
         if (recorder == null) recorder = IqRecorder(File(ctx.getExternalFilesDir(null), "captures"))
+        Geo.init(ctx)
         Bookmarks.load(ctx)
     }
 
@@ -182,7 +214,7 @@ object Apps {
                 // another app had the radio (ADS-B, AIS...): back on the dial, and onto the strongest station in view
                 else -> { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.armBand() }
             }
-            MayhemApp.ADSB -> { AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
+            MayhemApp.ADSB -> { if (adsbPick == null) AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             // the radio sits NARROW_SHIFT above the channel, as Mayhem keeps its channels off the DC spike, and the
             // engine mixes the channel back down through the offset
             MayhemApp.AIS -> { SdrEngine.configure(SdrEngine.Mode.NFM, 161_975_000L + NARROW_SHIFT, r, 32, 32, false, ais); SdrEngine.setOffset(-NARROW_SHIFT.toInt()) }
@@ -220,7 +252,6 @@ object Apps {
                 }
             }
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
-            MayhemApp.TPMS -> SdrEngine.configure(SdrEngine.Mode.NONE, 315_000_000L, r, 32, 40, true, tpms)
             // the radio sits LO_SHIFT from the channel (130.8 MHz for 131.550), so every US channel is in the span and
             // decoded at once; the AM audio plays the tuned one through the offset
             MayhemApp.ACARS -> {

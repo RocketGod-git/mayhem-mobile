@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -166,26 +167,29 @@ fun SettingsScreen(accent: Color) {
     val logKeys = "log diagnostics share save problem"
     val aboutKeys = "about version license source credits made by rocketgod pirates"
 
-    Column(
-        Modifier.fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
-            .verticalScroll(scroll),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Column(Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
+    // section shortcuts: plain pills that jump; on a phone a sideways row under the radio card, at desktop widths a
+    // column down the left that stays put while the sections scroll beside it
+    val keys = buildList {
+        if (over != null && appRows.isNotEmpty()) add("app" to over.title.uppercase())
+        add("radio" to "RADIO"); add("bar" to "BAR"); add("look" to "LOOK"); add("station" to "STATION")
+        add("transmit" to "TRANSMIT"); add("how" to "HOW IT WORKS"); add("log" to "LOG"); add("about" to "ABOUT")
+    }
+    val desk = d.widthDp >= 1100
+    @Composable
+    fun pill(k: String, l: String, modifier: Modifier = Modifier) {
+        val shape = RoundedCornerShape(if (desk) 10.dp else 50.dp)
+        Text(l, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
+            modifier = modifier.clip(shape).border(1.dp, accent.copy(alpha = 0.6f), shape)
+                .clickable { SettingsNav.jump = k }.padding(horizontal = d.dp(if (desk) 14f else 12f), vertical = d.dp(if (desk) 11f else 6f)))
+    }
+    @Composable
+    fun sections(showPills: Boolean) {
             SearchField(q, accent) { q = it }
             Spacer(Modifier.height(d.dp(10f)))
             RadioCard(accent)
-            // section shortcuts: plain pills that jump; they don't stick over the card
-            val keys = buildList {
-                if (over != null && appRows.isNotEmpty()) add("app" to over.title.uppercase())
-                add("radio" to "RADIO"); add("bar" to "BAR"); add("look" to "LOOK"); add("station" to "STATION")
-                add("transmit" to "TRANSMIT"); add("how" to "HOW IT WORKS"); add("log" to "LOG"); add("about" to "ABOUT")
-            }
             val pills = rememberScrollState()
-            if (term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).scrollGlow(pills, horizontal = true).horizontalScroll(pills), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                for ((k, l) in keys) Text(l, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
-                    modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, accent.copy(alpha = 0.6f), RoundedCornerShape(50))
-                        .clickable { SettingsNav.jump = k }.padding(horizontal = d.dp(12f), vertical = d.dp(6f)))
+            if (showPills && term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).scrollGlow(pills, horizontal = true).horizontalScroll(pills), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                for ((k, l) in keys) pill(k, l)
             }
 
             if (over != null) Section("app", over.title.uppercase(), "this app", tops, folds, appRows.filter { hit(it.keys + " " + over.title) })
@@ -207,7 +211,7 @@ fun SettingsScreen(accent: Color) {
             if (hit(stationKeys)) SectionHead("station", "STATION", "for the HAM logbook, APRS and FT8", tops, folds) { StationGroup(accent) }
             if (hit(txKeys)) SectionHead("transmit", "TRANSMIT", null, tops, folds) {
                 Group(listOf(SRow(txKeys) {
-                    SwitchRow("Transmit", txOn, "Signal generator, Morse, OOK. Most bands need a licence; use a dummy load or a rated antenna.", tint = Palette.danger) {
+                    SwitchRow("Transmit", txOn, "Signal generator, Morse, OOK. Most bands need a license; use a dummy load or a rated antenna.", tint = Palette.danger) {
                         com.rocketgod.mayhem.core.Tx.setEnabled(ctx, it)
                     }
                 }))
@@ -239,7 +243,28 @@ fun SettingsScreen(accent: Color) {
             }
             if (hit(aboutKeys)) SectionHead("about", "ABOUT", null, tops, folds) { AboutGroup(accent) }
             Spacer(Modifier.height(d.dp(16f)))
+    }
+
+    if (desk) {
+        // desktop widths: a wider page, the section list as a column down the left, the sections beside it, and inside
+        // an open section the rows two to a line
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Row(Modifier.widthIn(max = 1280.dp).fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Column(Modifier.width(210.dp).padding(top = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (term.isEmpty()) for ((k, l) in keys) pill(k, l, Modifier.fillMaxWidth())
+                }
+                CompositionLocalProvider(LocalSettingsPairs provides true) {
+                    Column(Modifier.weight(1f).fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
+                        .verticalScroll(scroll)) { sections(showPills = false) }
+                }
+            }
         }
+    } else Column(
+        Modifier.fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
+            .verticalScroll(scroll),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Column(Modifier.widthIn(max = 720.dp).fillMaxWidth()) { sections(showPills = true) }
     }
 }
 
@@ -500,6 +525,8 @@ private class Folds(val opened: MutableList<String>, val searching: Boolean) {
 
 /** True inside the RADIO panel, which is red all through so it never reads as the general Settings. */
 private val LocalRadioRed = staticCompositionLocalOf { false }
+/** Settings at desktop widths: a group's rows sit two to a line. */
+private val LocalSettingsPairs = staticCompositionLocalOf { false }
 
 /** The accent a row's switch, slider or choice takes: the theme's, or red in the RADIO panel. */
 @Composable
@@ -553,7 +580,16 @@ private fun Group(rows: List<SRow>) {
     val bg = if (red) lerp(Palette.surface, Palette.danger, 0.05f) else Palette.surface
     val line = if (red) lerp(Palette.line, Palette.danger, 0.22f) else Palette.line
     Column(Modifier.fillMaxWidth().clip(shape).background(bg).border(1.dp, line, shape)) {
-        rows.forEachIndexed { i, r ->
+        if (LocalSettingsPairs.current && !red && rows.size > 1) {
+            rows.chunked(2).forEachIndexed { i, pair ->
+                if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(line))
+                Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                    Box(Modifier.weight(1f)) { pair[0].content() }
+                    Box(Modifier.width(1.dp).fillMaxHeight().background(line))
+                    Box(Modifier.weight(1f)) { pair.getOrNull(1)?.content?.invoke() }
+                }
+            }
+        } else rows.forEachIndexed { i, r ->
             if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(line))
             r.content()
         }
@@ -845,7 +881,6 @@ private val HOW: Map<MayhemApp, List<String>> = mapOf(
     MayhemApp.ERT to listOf("Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), and Landis+Gyr Gridstream meters with their IDs, uptime and position.", "902–928 MHz", "A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band."),
     MayhemApp.LORA to listOf("LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames.", "902–928 MHz", "A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time."),
     MayhemApp.BTLE to listOf("Bluetooth Low Energy advertising: the beacons phones, trackers and wearables send.", "2.402 · 2.426 · 2.480 GHz", "Needs a HackRF: 2.4 GHz is above an RTL-SDR's range."),
-    MayhemApp.TPMS to listOf("Tire pressure sensors: each wheel reports its pressure and temperature.", "315 MHz US · 433.92 MHz EU", "Walk or drive past parked cars."),
     MayhemApp.ACARS to listOf("Text messages between aircraft and their airline: position reports, weather, maintenance.", "131.550 US · 131.525 / 131.725 EU · 131.450 JP", ""),
     MayhemApp.TRAINS to listOf("The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns.", "457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC", "A rear unit reports about once a minute and on every brake change; a locomotive on PTC means a train is close. A HackRF hears both EOT channels or all of PTC at once."),
     MayhemApp.PROWL to listOf("Hunts across the bands for live voice and stops on it.", "the bands you choose", "Good for finding what is busy near you."),
