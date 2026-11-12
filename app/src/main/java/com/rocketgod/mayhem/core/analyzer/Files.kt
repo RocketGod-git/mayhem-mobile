@@ -132,3 +132,58 @@ fun synthesize(pulses: List<Int>, fsk: Boolean, rate: Int = 1_000_000): ByteArra
 /** A name for an exported burst: where it was, the rate, and which one. */
 fun exportName(freqHz: Double, rate: Double, id: Int, ext: String): String =
     "analyzer_${String.format(Locale.US, "%.3f", freqHz / 1e6)}MHz_${Math.round(rate / 1e3)}k_$id.$ext"
+
+/**
+ * A session bundle: every kept burst with its name, star and note, and the saved protocols, in one file
+ * (`.mmanalyzer`) that any of the three apps can open. Layout: the line `MMANALYZER1`, a 4-byte little-endian
+ * length, that many bytes of JSON (`{ version, bursts: [...], protocols: [...] }`, each burst carrying its sample
+ * count `n`), then for each burst in order its envelope and discriminator (n little-endian 16-bit values each) and
+ * its I/Q (2n signed bytes).
+ */
+const val BUNDLE_MAGIC = "MMANALYZER1\n"
+
+class BundleArrays(val env: ShortArray, val fm: ShortArray, val iq: ByteArray)
+
+/** A session bundle read back: its JSON and each burst's samples, in order. */
+class Bundle(val meta: org.json.JSONObject, val arrays: List<BundleArrays>)
+
+fun encodeBundle(meta: org.json.JSONObject, arrays: List<BundleArrays>): ByteArray {
+    val json = meta.toString().toByteArray(Charsets.UTF_8)
+    val magic = BUNDLE_MAGIC.toByteArray(Charsets.UTF_8)
+    var size = magic.size + 4 + json.size
+    for (a in arrays) size += a.env.size * 4 + a.iq.size
+    val bb = java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    bb.put(magic)
+    bb.putInt(json.size)
+    bb.put(json)
+    for (a in arrays) {
+        for (v in a.env) bb.putShort(v)
+        for (v in a.fm) bb.putShort(v)
+        bb.put(a.iq)
+    }
+    return bb.array()
+}
+
+/** Read a session bundle back. Null when the bytes are not one. */
+fun decodeBundle(bytes: ByteArray): Bundle? {
+    val magic = BUNDLE_MAGIC.toByteArray(Charsets.UTF_8)
+    if (bytes.size < magic.size + 4) return null
+    for (i in magic.indices) if (bytes[i] != magic[i]) return null
+    val bb = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+    bb.position(magic.size)
+    val len = bb.int.toLong() and 0xFFFFFFFFL
+    if (bb.position() + len > bytes.size) return null
+    val meta = runCatching { org.json.JSONObject(String(bytes, bb.position(), len.toInt(), Charsets.UTF_8)) }.getOrNull() ?: return null
+    bb.position(bb.position() + len.toInt())
+    val arrays = ArrayList<BundleArrays>()
+    val list = meta.optJSONArray("bursts") ?: org.json.JSONArray()
+    for (k in 0 until list.length()) {
+        val n = list.optJSONObject(k)?.optInt("n", -1) ?: -1
+        if (n < 0 || bb.remaining().toLong() < n.toLong() * 6) return null
+        val env = ShortArray(n) { bb.short }
+        val fm = ShortArray(n) { bb.short }
+        val iq = ByteArray(2 * n); bb.get(iq)
+        arrays.add(BundleArrays(env, fm, iq))
+    }
+    return Bundle(meta, arrays)
+}

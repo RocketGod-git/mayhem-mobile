@@ -39,6 +39,16 @@ object Tx {
     val needsPrompt: StateFlow<Boolean> = _needsPrompt.asStateFlow()
     fun acknowledgeSafety() { _needsPrompt.value = false }
 
+    /**
+     * A Flipper .sub handed over by another app (the Analyzer's SEND TO TX) for the SubGHz tab to load: the file, the
+     * frequency to replay it on (0 = the dial's), and a line saying where it came from. Nothing is sent until REPLAY
+     * is pressed there, behind the same safety prompt as everything else.
+     */
+    class SubHandoff(val text: String, val freqHz: Long, val note: String)
+    private val _handoff = MutableStateFlow<SubHandoff?>(null)
+    val handoff: StateFlow<SubHandoff?> = _handoff.asStateFlow()
+    fun handOff(h: SubHandoff?) { _handoff.value = h }
+
     fun load(ctx: Context) { _enabled.value = ctx.getSharedPreferences("mayhem", Context.MODE_PRIVATE).getBoolean("tx_enabled", true) }
     fun setEnabled(ctx: Context, on: Boolean) {
         _enabled.value = on

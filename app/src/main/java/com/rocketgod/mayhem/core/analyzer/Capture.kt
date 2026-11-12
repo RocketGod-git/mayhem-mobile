@@ -73,6 +73,11 @@ private const val HOLD_S = 0.15
 
 private val nextId = AtomicInteger(1)
 
+/** A fresh burst id (for one read back from a session file). */
+fun newBurstId(): Int = nextId.getAndIncrement()
+/** Keep new ids above [id]: bursts restored from the last session already hold ids up to it. */
+fun reserveBurstIds(id: Int) { nextId.updateAndGet { max(it, id + 1) } }
+
 /** What a decoder said, in a few words. */
 fun matchLabel(r: KeyReading): String {
     val what = if (r.family == "key") "car key" else if (r.family == "remote") "remote" else "weather"
@@ -275,3 +280,27 @@ fun captureFile(iq: ByteArray, rate: Int, src: String, onBurst: (Burst) -> Unit)
     cap.finish()
     return count
 }
+
+/** What the person keeps: bursts outside these are dropped as they arrive (counted, not shown). */
+data class CaptureFilter(
+    /** Absolute frequency range, Hz (0 = no limit). */
+    val loHz: Double = 0.0, val hiHz: Double = 0.0,
+    val minSnr: Double = 0.0,
+    val minMs: Double = 0.0, val maxMs: Double = 0.0,
+    /** Skip bursts a Devices decoder already claims. */
+    val unknownOnly: Boolean = false,
+)
+val NO_FILTER = CaptureFilter()
+
+/** Whether a burst heard with the radio at `center` gets through. A file with no known center skips the frequency test. */
+fun passes(f: CaptureFilter, hz: Double, snr: Double, ms: Double, matches: List<String>, center: Long): Boolean {
+    val abs = center + hz
+    if (center != 0L && f.loHz != 0.0 && abs < f.loHz) return false
+    if (center != 0L && f.hiHz != 0.0 && abs > f.hiHz) return false
+    if (f.minSnr != 0.0 && snr < f.minSnr) return false
+    if (f.minMs != 0.0 && ms < f.minMs) return false
+    if (f.maxMs != 0.0 && ms > f.maxMs) return false
+    if (f.unknownOnly && matches.isNotEmpty()) return false
+    return true
+}
+fun passes(f: CaptureFilter, b: Burst, center: Long): Boolean = passes(f, b.hz, b.snr, b.ms, b.matches, center)

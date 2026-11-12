@@ -54,6 +54,9 @@ fun TxScreen(defaultAccent: Color) {
     val needsPrompt by Tx.needsPrompt.collectAsState()
     val accent = Palette.danger
     var tab by remember { mutableStateOf(0) }
+    // a .sub handed over by the Analyzer opens on the SubGHz tab
+    val handoff by Tx.handoff.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(handoff) { if (handoff != null) tab = 10 }
 
     val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
     val canTx = radio != com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
@@ -299,8 +302,17 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
 
 @Composable private fun SubGhzTab(accent: Color, freq: Long, active: Boolean) {
     val d = rememberDims()
-    var raw by remember { mutableStateOf("") }
+    val handoff by Tx.handoff.collectAsState()
+    var raw by remember(handoff) { mutableStateOf(handoff?.text ?: "") }
     var reps by remember { mutableStateOf(3) }
+    // the Analyzer's burst replays on its own frequency, not the dial's
+    val h = handoff
+    val txFreq = if (h != null && h.freqHz > 0 && raw == h.text) h.freqHz else freq
+    if (h != null) Column(Modifier.fillMaxWidth().panel(accent).padding(d.dp(10f)).padding(bottom = d.gap)) {
+        Text("FROM ANALYZER · %.3f MHz".format(java.util.Locale.US, txFreq / 1e6), color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp)
+        Text(h.note, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
+        Box(Modifier.padding(top = d.dp(6f))) { ToggleBox("DISMISS", false, accent) { Tx.handOff(null) } }
+    }
     TxField(raw, accent, "Flipper .sub file", placeholder = "Paste a Flipper .sub file here — Protocol: RAW / RAW_Data: 340 -1020 …", lines = 5) { raw = it }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         val repOpts = listOf(1, 3, 5, 10, 20)
@@ -308,7 +320,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
         SegBar(repOpts.map { "×$it" }, repOpts.indexOf(reps), accent, Modifier.weight(1f)) { reps = repOpts[it] }
     }
     Box(Modifier.padding(top = d.dp(10f))) {
-        ActionButton("▶ REPLAY", accent, Modifier.fillMaxWidth()) { if (!active) Tx.subghzReplay(raw, freq, reps) }
+        ActionButton("▶ REPLAY", accent, Modifier.fillMaxWidth()) { if (!active) Tx.subghzReplay(raw, txFreq, reps) }
     }
     Note("Replay a Flipper Zero .sub file's RAW pulses as OOK, 2 Msps — remotes on your own equipment.")
 }

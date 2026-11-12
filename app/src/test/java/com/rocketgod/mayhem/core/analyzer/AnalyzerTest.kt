@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.core.analyzer
 
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,7 +19,7 @@ import kotlin.math.sqrt
  * The Analyzer end to end: synthetic bursts of every modulation and line coding, made into I/Q, found by the burst
  * front end anywhere in the span, then read back with nothing set by hand. Then repeated frames lined up bit by bit,
  * the fixed and changing columns checked, and the file formats round-tripped. Twin of web/test/analyzer.mjs, check
- * for check (60 of them), with the same signals and the same PRNG.
+ * for check (83 of them), with the same signals and the same PRNG.
  *
  * No real key is in here: the synthetic frames use made-up bytes, and the Land Rover check uses the ProtoPirate-style
  * fixture already in the repo (resources/pirate/land_rover_fsk.txt), turned back into samples.
@@ -98,10 +100,10 @@ class AnalyzerTest {
 
     @Test
     fun analyzerEndToEnd() {
-        pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); small()
+        pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); counterAndCheck(); bundleAndFilter(); small()
         println("analyzer: $pass passed, $fail failed")
         assertTrue("failed: ${failures.joinToString(" | ")}", fail == 0)
-        assertEquals("check count", 60, pass + fail)
+        assertEquals("check count", 83, pass + fail)
     }
 
     // ---- OOK, pulse width: a PT2262-style 24-bit remote, four repeats ------------------------------------------------
@@ -126,6 +128,15 @@ class AnalyzerTest {
         check(a.frames.all { it.bits.startsWith(code) }, "PWM: every frame reads the code (${a.frames.joinToString(" ") { it.bits }} vs $code)")
         check(b.matches.any { Regex("princeton|remote", RegexOption.IGNORE_CASE).containsMatchIn(it) }, "PWM: the Devices decoders recognize it (${b.matches.joinToString(", ")})")
         check(near(a.baud, 1e6 / 1400, 40.0), "PWM: rate ${f0(a.baud)} bits/s")
+        // every bit knows where it lies: a pulse-width bit spans its mark and its gap, 1.4 ms
+        val fr = a.frames[0]
+        check(fr.spans.size == 2 * fr.bits.length, "spans: one per bit (${fr.spans.size / 2} for ${fr.bits.length})")
+        check(fr.spans[0] >= fr.start - 2 && fr.spans[fr.spans.size - 1] <= fr.end + 400, "spans: inside the frame")
+        val bitUs = (fr.spans[1] - fr.spans[0]) / b.rate * 1e6
+        check(near(bitUs, 1400.0, 60.0), "spans: a PWM bit is 1.4 ms (${f0(bitUs)} us)")
+        val h = histogram(a, b.rate)
+        val pm = h.marks.withIndex().sortedByDescending { it.value }.take(2).map { (it.index + 0.5) * h.binUs }.sorted()
+        check(near(pm[0], 350.0, 100.0) && near(pm[1], 1050.0, 100.0), "histogram: marks at 350 and 1050 us (${pm.map { f0(it) }})")
         val inv = read(b, Overrides(invert = true))
         check(inv.frames[0].bits.substring(0, 24) == flip(code), "PWM: invert flips the bits")
         // the Flipper file: same pulses out and back
@@ -228,6 +239,8 @@ class AnalyzerTest {
         check(reads.all { near(it.baud, 7812.5, 300.0) }, "Manchester: 7.8 kbit/s (${reads.map { f0(it.baud) }})")
         val frames = reads.map { it.frames.lastOrNull()?.bits ?: "" }
         check(frames.withIndex().all { (i, f) -> i < packets.size && f.contains(packets[i].bits.substring(0, 140)) }, "Manchester: every packet reads back")
+        val mf = reads[0].frames.last()
+        check(near((mf.spans[2 * 40 + 1] - mf.spans[2 * 40]) / bursts[0].rate * 1e6, 128.0, 8.0), "spans: a Manchester bit is two half bits")
         // line them up
         val al = align(frames)
         check(al.preamble != null && al.preamble.second - al.preamble.first >= 16, "align: preamble found (${al.preamble})")
@@ -298,6 +311,59 @@ class AnalyzerTest {
         check(f5, "Land Rover: bytes 0..4 fixed")
         var hop = 0; for (c in base + 64 until base + 128) if (st(al, c) == 0) hop++
         check(hop > 56, "Land Rover: the hop changes ($hop/64)")
+        // the checksum finder: CRC-16/XMODEM over bytes 4..15, stored in 16..17 (as worked out by hand from the recordings)
+        val start = dataStart(al)
+        val crc = findCheck(fromStart(al, start))
+        check(crc != null && crc.name.contains("XMODEM") && crc.from == 4 && crc.to == 16 && crc.at == 16 && !crc.little, "Land Rover: CRC found (${crc?.name} over ${crc?.from}..${crc?.to} at ${crc?.at})")
+        val sg = suggest(al)
+        val kinds = sg.fields.map { it.kind }
+        check(FieldKind.Preamble in kinds && FieldKind.Sync in kinds && FieldKind.Crc in kinds && FieldKind.Id in kinds, "Land Rover: fields suggested (${sg.fields.joinToString(" ") { "${it.kind.key}:${it.from}-${it.to}" }})")
+        // saved as a protocol, it is recognized in a later frame, with the CRC checked
+        val proto = Protocol("Land Rover", al.sync!!.bits, "FSK", "Manchester", 64.0, sg.fields, sg.check)
+        val hit = recognize(listOf(proto), frames[0], "FSK", "Manchester")
+        check(hit != null && hit.protocol.name == "Land Rover", "protocol: recognized by its sync")
+        check(hit != null && checkHolds(proto, frames[0], hit.start) == true, "protocol: its CRC holds on a real frame")
+        val hs = hit?.start ?: 0
+        val broken = frames[0].substring(0, hs + 50) + (if (frames[0][hs + 50] == '1') '0' else '1') + frames[0].substring(hs + 51)
+        check(checkHolds(proto, broken, hs) == false, "protocol: a flipped bit fails the CRC")
+        check(fieldValue(frames[0], hs, sg.fields.first { it.kind == FieldKind.Sync }).startsWith("D3683C0E"), "protocol: field values read")
+        check(recognize(listOf(proto), frames[0], "OOK", "PWM") == null, "protocol: another modulation is not it")
+    }
+
+    // ---- counter and checksum on made-up frames ------------------------------------------------------------------
+    private fun counterAndCheck() {
+        val sync = hexBits("2DD4"); val id = hexBits("A1B2")
+        val rows = ArrayList<String>()
+        for (k in 0 until 6) {
+            val cnt = Integer.toBinaryString(40 + (k shr 1)).padStart(8, '0')            // two repeats per press
+            val body = id + cnt + randBits(16)
+            val crc = Integer.toBinaryString(checkOf(CheckSpec(CheckKind.Crc, 8, 0x07, 0, false, 0), bytesOf(body), 0, 5)).padStart(8, '0')
+            rows.add("1010".repeat(4) + sync + body + crc)
+        }
+        val al = align(rows)
+        val sg = suggest(al)
+        val cnt = sg.fields.firstOrNull { it.kind == FieldKind.Counter }
+        check(cnt != null && cnt.from == 32 && cnt.to == 40, "counter suggested (${cnt?.from}-${cnt?.to})")
+        check(sg.check != null && sg.check.name.contains("CRC-8") && sg.check.at == 7, "CRC-8 found (${sg.check?.name} at ${sg.check?.at})")
+        check(findCounter(fromStart(al, dataStart(al)).reversed(), listOf(Segment(32, 40, false))) == null, "a counter that runs backward in time is not one")
+    }
+
+    // ---- session bundle and capture filter -----------------------------------------------------------------------
+    private fun bundleAndFilter() {
+        val env = shortArrayOf(1, -2, 300, 32767); val fm = shortArrayOf(-32768, 5, 6, 7); val iq = byteArrayOf(1, -1, 2, -2, 127, -128, 0, 5)
+        val meta = JSONObject().put("version", 1)
+            .put("bursts", JSONArray().put(JSONObject().put("n", 4).put("id", 7).put("name", "gate").put("star", true).put("note", "left button")))
+            .put("protocols", JSONArray().put(JSONObject().put("name", "p")))
+        val back = decodeBundle(encodeBundle(meta, listOf(BundleArrays(env, fm, iq))))
+        check(back != null && back.meta.getJSONArray("bursts").getJSONObject(0).getString("name") == "gate" && back.meta.getJSONArray("protocols").length() == 1, "bundle: names and protocols round trip")
+        check(back != null && back.arrays[0].env.contentEquals(env) && back.arrays[0].fm.contentEquals(fm) && back.arrays[0].iq.contentEquals(iq), "bundle: samples round trip")
+        check(decodeBundle(byteArrayOf(1, 2, 3)) == null, "bundle: other bytes are not one")
+        fun ok(f: CaptureFilter, center: Long, matches: List<String> = emptyList()) = passes(f, 50_000.0, 12.0, 20.0, matches, center)
+        check(ok(NO_FILTER, 433_920_000), "filter: none lets everything through")
+        check(!ok(NO_FILTER.copy(loHz = 434e6), 433_920_000) && ok(NO_FILTER.copy(loHz = 433.9e6, hiHz = 434e6), 433_920_000), "filter: frequency range")
+        check(!ok(NO_FILTER.copy(minSnr = 15.0), 0) && !ok(NO_FILTER.copy(maxMs = 10.0), 0) && !ok(NO_FILTER.copy(minMs = 30.0), 0), "filter: SNR and length")
+        check(!ok(NO_FILTER.copy(unknownOnly = true), 0, listOf("remote: x")) && ok(NO_FILTER.copy(unknownOnly = true), 0), "filter: only unknown")
+        check(ok(NO_FILTER.copy(loHz = 434e6), 0), "filter: a file with no center skips the frequency test")
     }
 
     // ---- small things ---------------------------------------------------------------------------------------------

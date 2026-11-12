@@ -33,8 +33,11 @@ val CODINGS: List<Coding> = Coding.entries
 /** One run of the sliced line: high or low, for `n` samples. */
 class Run(val hi: Boolean, var n: Int)
 
-/** One frame: where it lies in the burst (samples) and its bits as a string of 0 and 1. */
-data class Frame(val start: Int, val end: Int, val bits: String)
+/**
+ * One frame: where it lies in the burst (samples) and its bits as a string of 0 and 1. [spans] says where each bit
+ * lies in the burst: samples [spans[2i], spans[2i+1]) carry bit i. For the trace and its link to the text.
+ */
+class Frame(val start: Int, val end: Int, val bits: String, val spans: IntArray = IntArray(0))
 
 /** What the person has set by hand. Anything left out (null) is worked out. */
 data class Overrides(
@@ -277,31 +280,72 @@ fun codingOf(frames: List<FrameRuns>, u: Double): Coding {
 }
 
 /** The bits of one frame. */
-fun decodeFrame(runs: List<Run>, coding: Coding, u: Double, marks: TwoMeans, spaces: TwoMeans): String {
+fun decodeFrame(runs: List<Run>, coding: Coding, u: Double, marks: TwoMeans, spaces: TwoMeans): String =
+    decodeSpans(runs, 0, coding, u, marks, spaces).bits
+
+/** A frame's bits and where each one lies (two samples per bit: [start, end)). */
+class Spans(val bits: String, val spans: IntArray)
+
+/** A growable list of ints without boxing. */
+internal class IntBuf(cap: Int = 64) {
+    var a = IntArray(max(1, cap)); private set
+    var size = 0; private set
+    fun add(x: Int) { if (size == a.size) a = a.copyOf(a.size * 2); a[size++] = x }
+    operator fun get(i: Int) = a[i]
+    fun toArray(): IntArray = a.copyOf(size)
+}
+
+/**
+ * The bits of one frame and where each one lies: the frame's first run starts at sample `at`. NRZ splits each run
+ * into its whole symbols; a Manchester bit is its two halves; a pulse-width or pulse-position bit runs from its
+ * mark to the start of the next.
+ */
+fun decodeSpans(runs: List<Run>, at: Int, coding: Coding, u: Double, marks: TwoMeans, spaces: TwoMeans): Spans {
     val bits = StringBuilder()
+    val spans = IntBuf()
     if (coding == Coding.NRZ || coding == Coding.Manchester) {
         val half = StringBuilder()
-        for (r in runs) { val c = if (r.hi) '1' else '0'; repeat(max(1L, Math.round(r.n / u)).toInt()) { half.append(c) } }
-        if (coding == Coding.NRZ) return half.toString()
+        val hs = IntBuf()
+        var pos = at.toDouble()
+        for (r in runs) {
+            val k = max(1L, Math.round(r.n / u)).toInt()
+            for (j in 0 until k) { half.append(if (r.hi) '1' else '0'); hs.add(jsRound(pos + j * r.n.toDouble() / k)); hs.add(jsRound(pos + (j + 1) * r.n.toDouble() / k)) }
+            pos += r.n
+        }
+        if (coding == Coding.NRZ) return Spans(half.toString(), hs.toArray())
         // pairs of half bits: high then low is 1, low then high is 0; a pair that is neither slips one half bit, which
         // finds the bit boundary on its own wherever the frame starts
         var i = 0
         while (i + 1 < half.length) {
             val p0 = half[i]; val p1 = half[i + 1]
-            if (p0 == '1' && p1 == '0') { bits.append('1'); i += 2 } else if (p0 == '0' && p1 == '1') { bits.append('0'); i += 2 } else i += 1
+            if (p0 != p1) { bits.append(if (p0 == '1') '1' else '0'); spans.add(hs[2 * i]); spans.add(hs[2 * i + 3]); i += 2 } else i += 1
         }
-        return bits.toString()
+        return Spans(bits.toString(), spans.toArray())
     }
+    val starts = IntArray(runs.size)
+    var pos = at
+    for (k in runs.indices) { starts[k] = pos; pos += runs[k].n }
     if (coding == Coding.PWM) {
         val mid = (marks.a + marks.b) / 2
-        for (r in runs) if (r.hi) bits.append(if (r.n > mid) '1' else '0')
-        return bits.toString()
+        for (i in runs.indices) {
+            if (!runs[i].hi) continue
+            bits.append(if (runs[i].n > mid) '1' else '0')
+            spans.add(starts[i]); spans.add(if (i + 1 < runs.size) starts[i + 1] + runs[i + 1].n else starts[i] + runs[i].n)
+        }
+        return Spans(bits.toString(), spans.toArray())
     }
     // PPM: the gap after each mark, the last mark ending the frame
     val mid = (spaces.a + spaces.b) / 2
-    for (i in 0 until runs.size - 1) if (runs[i].hi) bits.append(if (runs[i + 1].n > mid) '1' else '0')
-    return bits.toString()
+    for (i in 0 until runs.size - 1) {
+        if (!runs[i].hi) continue
+        bits.append(if (runs[i + 1].n > mid) '1' else '0')
+        spans.add(starts[i]); spans.add(starts[i + 1] + runs[i + 1].n)
+    }
+    return Spans(bits.toString(), spans.toArray())
 }
+
+/** Math.round as JavaScript does it (halves up), so spans land on the same samples as the web's. */
+private fun jsRound(x: Double): Int = Math.floor(x + 0.5).toInt()
 
 /** Bits as hex, four to a digit, the last digit padded with zeros on the right. */
 fun bitsToHex(bits: String): String {
@@ -405,11 +449,12 @@ fun analyze(env: ShortArray, fm: ShortArray, n: Int, rate: Double, o: Overrides 
     val mk = twoMeans(ps.marks); val sp = twoMeans(ps.spaces)
     val frames = ArrayList<Frame>()
     for (f in frames0) {
-        var bits = decodeFrame(f.runs, coding, u, mk, sp)
+        val dd = decodeSpans(f.runs, from + f.start, coding, u, mk, sp)
+        var bits = dd.bits
         if (o.invert) bits = buildString(bits.length) { for (c in bits) append(if (c == '0') '1' else if (c == '1') '0' else c) }
         if (bits.length < MIN_FRAME_BITS) continue
         val len = f.runs.sumOf { it.n }
-        frames.add(Frame(from + f.start, from + f.start + len, bits))
+        frames.add(Frame(from + f.start, from + f.start + len, bits, dd.spans))
     }
     val period = if (ps.periods.isNotEmpty()) ps.periods.copyOf().also { it.sort() }[ps.periods.size shr 1] else 2 * u
     val baud = if (coding == Coding.Manchester) rate / (2 * u) else if (coding == Coding.NRZ) rate / u else rate / period
@@ -432,4 +477,23 @@ fun pulsesUs(a: Analysis, rate: Double): List<Int> {
     }
     while (out.isNotEmpty() && out[out.size - 1] < 0) out.removeAt(out.size - 1)
     return out
+}
+
+/** The pulse-length histogram: bins [binUs] wide, the marks' and the gaps' counts in each. */
+class Histogram(val binUs: Double, val marks: IntArray, val spaces: IntArray)
+
+/**
+ * How long the marks and the gaps last, as URH draws it: run lengths in microseconds, binned. Bins are `binUs`
+ * wide up to `maxUs`; anything longer goes in the last. The frame-ending rests are left out.
+ */
+fun histogram(a: Analysis, rate: Double, bins: Int = 48): Histogram {
+    val usPer = 1e6 / rate
+    val inner = (if (a.runs.size > 2) a.runs.subList(1, a.runs.size - 1) else emptyList()).filter { it.n * usPer < a.symUs * GAP_SYMBOLS }
+    var maxUs = a.symUs * 6
+    for (r in inner) maxUs = max(maxUs, r.n * usPer)
+    maxUs *= 1.02
+    val binUs = maxUs / bins
+    val marks = IntArray(bins); val spaces = IntArray(bins)
+    for (r in inner) { val i = min(bins - 1, Math.floor(r.n * usPer / binUs).toInt()); if (r.hi) marks[i]++ else spaces[i]++ }
+    return Histogram(binUs, marks, spaces)
 }
