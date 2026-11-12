@@ -1,21 +1,23 @@
 /**
  * Land Rover FSK: a receive-only decoder for a Land Rover key fob that ProtoPirate does not cover (its "Land Rover V0"
- * is an alias of Honda V2, a different protocol). Worked out from recordings of a real fob at 315 MHz; not a port
+ * is an alias of Honda V2, a different protocol). Worked out from recordings of two real keys at 315 MHz; not a port
  * of any C source. Twin of pirate/PPLandRoverFsk.kt.
  *
  * On air: 2-FSK, about +-23 kHz deviation, Manchester at 64 us per half bit (7.8 kbit/s). One press sends each frame
- * on three channels about 318 kHz apart (around 314.69, 315.005 and 315.32 MHz), each after a 50 ms bare carrier.
- * A frame is a run of 1010 preamble bits, then 144 bits (18 bytes, MSB first, a half bit high then low = 1):
+ * on three channels about 318 kHz apart (around 315.005, 314.69 and 315.32 MHz), each after a 50 ms bare carrier,
+ * and a press sends two frames (two hop values). A frame is a run of 1010 preamble bits, then 144 bits (18 bytes,
+ * MSB first, a half bit high then low = 1):
  *
- *   bytes 0..4   fixed (D3 68 3C 0E 24 on the fob this was built from)
- *   byte  5      channel << 3: 0 = 315.005, 1 = the lower channel, 2 = the upper channel
- *   bytes 6..7   fixed (A8 24)
- *   bytes 8..15  hop: 64 bits that change on every repeat; encrypted, shown as received, never decrypted
+ *   bytes 0..4   fixed: D3 68 3C 0E 24 on both keys recorded (a sync word or a vehicle code: not a key ID)
+ *   byte  5      bits 3..4: channel (0 = 315.005, 1 = the lower channel, 2 = the upper); the other bits belong to
+ *                the key ID
+ *   bytes 6..7   key ID with the rest of byte 5 (00 A8 24 and C0 E3 2F on the two keys recorded), shown as serial
+ *   bytes 8..15  hop: 64 bits that change on every frame; encrypted, shown as received, never decrypted
  *   bytes 16..17 CRC-16 (poly 0x1021, init 0) over bytes 4..15
  *
- * The frame starts on the first repeated bit after at least 8 alternating preamble bits. Whether bytes 0..4 are a
- * per-fob ID or a sync word shared by every fob of this type is not known, so no serial is claimed; no button or
- * counter is visible in the clear. The same hop heard again on another channel is not shown again.
+ * Lock, unlock, approach lights, trunk and panic all leave bytes 0..7 unchanged and no hop bit follows the button,
+ * so the button (and any counter) is inside the encrypted hop: none is shown. The frame starts on the first repeated
+ * bit after at least 8 alternating preamble bits. The same hop heard again on another channel is not shown again.
  */
 import { PPDecoder, PPModulation, ppConst, PPMath, hx, ppField, type PPHit } from './pp-base.js';
 
@@ -48,7 +50,7 @@ export class PPLandRoverFsk extends PPDecoder {
     return out;
   }
 
-  /** The 18 bytes from bit `start`, or null when a pair is broken, the channel byte is not one of the three, or the CRC fails. */
+  /** The 18 bytes from bit `start`, or null when a pair is broken, the channel field is not one of the three, or the CRC fails. */
   private frameAt(bits: Int8Array, start: number): number[] | null {
     const f = new Array<number>(FRAME_BYTES).fill(0);
     for (let i = 0; i < FRAME_BITS; i++) {
@@ -56,7 +58,7 @@ export class PPLandRoverFsk extends PPDecoder {
       if (b < 0) return null;
       if (b) f[i >> 3] |= 0x80 >> (i & 7);
     }
-    if ((f[5] & 0xE7) !== 0 || (f[5] >> 3) > 2) return null;
+    if (((f[5] >> 3) & 3) === 3) return null;
     if (PPMath.crc16(f.slice(4, 16), 0x1021, 0) !== ((f[16] << 8) | f[17])) return null;
     return f;
   }
@@ -78,9 +80,9 @@ export class PPLandRoverFsk extends PPDecoder {
   }
 
   private commit(f: number[]): void {
-    // The same frame on another channel differs only in byte 5 and the CRC.
+    // The same frame on another channel differs only in the channel bits of byte 5 and the CRC.
     let same = this.lastValid;
-    for (let i = 0; same && i < 16; i++) if (i !== 5 && f[i] !== this.last[i]) same = false;
+    for (let i = 0; same && i < 16; i++) if ((i === 5 ? (f[i] ^ this.last[i]) & 0xE7 : f[i] ^ this.last[i]) !== 0) same = false;
     if (same) return;
     this.frame = f; this.last = f.slice(); this.lastValid = true;
     this.dataCountBit = FRAME_BITS;
@@ -101,13 +103,14 @@ export class PPLandRoverFsk extends PPDecoder {
 
   override describe(): PPHit {
     const k = this.frame;
-    return { name: this.name, bits: this.dataCountBit, key: hexBytes(k, 0, 17), serial: null, btn: null, cnt: null,
-      fields: [{ name: 'Fixed', value: hexBytes(k, 0, 4) + ' ' + hexBytes(k, 6, 7) }, { name: 'Ch', value: String(k[5] >> 3) },
+    const keyId = ((k[5] & 0xE7) << 16) | (k[6] << 8) | k[7];
+    return { name: this.name, bits: this.dataCountBit, key: hexBytes(k, 0, 17), serial: BigInt(keyId), btn: null, cnt: null,
+      fields: [{ name: 'Fixed', value: hexBytes(k, 0, 4) }, { name: 'Ch', value: String((k[5] >> 3) & 3) },
         { name: 'Hop', value: hexBytes(k, 8, 15) }, { name: 'Crc', value: hexBytes(k, 16, 17) }] };
   }
 
   override cString(h: PPHit): string {
-    return `${h.name} ${h.bits}bit | Key:${h.key} | Fixed:${ppField(h, 'Fixed')} Ch:${ppField(h, 'Ch')} | ` +
+    return `${h.name} ${h.bits}bit | Key:${h.key} | ` + hx('Sn:%06X', h.serial ?? 0n) + ` Fixed:${ppField(h, 'Fixed')} Ch:${ppField(h, 'Ch')} | ` +
       `Hop:${ppField(h, 'Hop')} Crc:${ppField(h, 'Crc')}`;
   }
 }
