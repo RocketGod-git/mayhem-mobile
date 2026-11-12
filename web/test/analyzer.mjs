@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar } from '../dist/dsp/analyzer/index.js';
+import { AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER } from '../dist/dsp/analyzer/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -77,6 +77,15 @@ const read = (b, o) => analyze(b.env, b.fm, b.n, b.rate, o);
   check(a.frames.every(f => f.bits.startsWith(code)), `PWM: every frame reads the code (${a.frames.map(f => f.bits).join(' ')} vs ${code})`);
   check(b.matches.some(m => /princeton|remote/i.test(m)), `PWM: the Devices decoders recognize it (${b.matches.join(', ')})`);
   check(near(a.baud, 1e6 / 1400, 40), `PWM: rate ${a.baud.toFixed(0)} bits/s`);
+  // every bit knows where it lies: a pulse-width bit spans its mark and its gap, 1.4 ms
+  const f0 = a.frames[0];
+  check(f0.spans.length === 2 * f0.bits.length, `spans: one per bit (${f0.spans.length / 2} for ${f0.bits.length})`);
+  check(f0.spans[0] >= f0.start - 2 && f0.spans[f0.spans.length - 1] <= f0.end + 400, 'spans: inside the frame');
+  check(near((f0.spans[1] - f0.spans[0]) / b.rate * 1e6, 1400, 60), `spans: a PWM bit is 1.4 ms (${((f0.spans[1] - f0.spans[0]) / b.rate * 1e6).toFixed(0)} us)`);
+  const h = histogram(a, b.rate);
+  const peak = (v) => { const m = [...v].map((x, i) => [x, i]).sort((x, y) => y[0] - x[0]); return [m[0][1], m[1][1]].map(i => (i + 0.5) * h.binUs).sort((x, y) => x - y); };
+  const pm = peak(h.marks);
+  check(near(pm[0], 350, 100) && near(pm[1], 1050, 100), `histogram: marks at 350 and 1050 us (${pm.map(x => x.toFixed(0))})`);
   const inv = read(b, { invert: true });
   check(inv.frames[0].bits.slice(0, 24) === code.replace(/./g, c => (c === '1' ? '0' : '1')), 'PWM: invert flips the bits');
   // the Flipper file: same pulses out and back
@@ -180,6 +189,8 @@ const packets = [];
   check(reads.every(a => near(a.baud, 7812.5, 300)), `Manchester: 7.8 kbit/s (${reads.map(a => a.baud.toFixed(0))})`);
   const frames = reads.map(a => a.frames[a.frames.length - 1]?.bits ?? '');
   check(frames.every((f, i) => f.includes(packets[i].bits.slice(0, 140))), 'Manchester: every packet reads back');
+  const mf = reads[0].frames[reads[0].frames.length - 1];
+  check(near((mf.spans[2 * 40 + 1] - mf.spans[2 * 40]) / bursts[0].rate * 1e6, 128, 8), 'spans: a Manchester bit is two half bits');
   // line them up
   const al = align(frames);
   check(al.preamble !== null && al.preamble[1] - al.preamble[0] >= 16, `align: preamble found (${al.preamble})`);
@@ -246,6 +257,56 @@ const packets = [];
   check(f5, 'Land Rover: bytes 0..4 fixed');
   let hop = 0; for (let c = base + 64; c < base + 128; c++) if (al.state[c] === 0) hop++;
   check(hop > 56, `Land Rover: the hop changes (${hop}/64)`);
+  // the checksum finder: CRC-16/XMODEM over bytes 4..15, stored in 16..17 (as worked out by hand from the recordings)
+  const start = dataStart(al);
+  const crc = findCheck(fromStart(al, start));
+  check(crc && /XMODEM/.test(crc.name) && crc.from === 4 && crc.to === 16 && crc.at === 16 && !crc.little, `Land Rover: CRC found (${crc?.name} over ${crc?.from}..${crc?.to} at ${crc?.at})`);
+  const sg = suggest(al);
+  const kinds = sg.fields.map(f => f.kind);
+  check(kinds.includes('preamble') && kinds.includes('sync') && kinds.includes('crc') && kinds.includes('id'), `Land Rover: fields suggested (${sg.fields.map(f => `${f.kind}:${f.from}-${f.to}`).join(' ')})`);
+  // saved as a protocol, it is recognized in a later frame, with the CRC checked
+  const proto = { name: 'Land Rover', sync: al.sync.bits, mod: 'FSK', coding: 'Manchester', symUs: 64, fields: sg.fields, check: sg.check };
+  const hit = recognize([proto], frames[0], 'FSK', 'Manchester');
+  check(hit && hit.protocol.name === 'Land Rover', 'protocol: recognized by its sync');
+  check(hit && checkHolds(proto, frames[0], hit.start) === true, 'protocol: its CRC holds on a real frame');
+  const broken = frames[0].slice(0, hit.start + 50) + (frames[0][hit.start + 50] === '1' ? '0' : '1') + frames[0].slice(hit.start + 51);
+  check(checkHolds(proto, broken, hit.start) === false, 'protocol: a flipped bit fails the CRC');
+  check(fieldValue(frames[0], hit.start, sg.fields.find(f => f.kind === 'sync')).startsWith('D3683C0E'), 'protocol: field values read');
+  check(recognize([proto], frames[0], 'OOK', 'PWM') === null, 'protocol: another modulation is not it');
+}
+
+// ---- counter and checksum on made-up frames ------------------------------------------------------------------
+{
+  const sync = hexBits('2DD4'), id = hexBits('A1B2');
+  const rows = [];
+  for (let k = 0; k < 6; k++) {
+    const cnt = (40 + (k >> 1)).toString(2).padStart(8, '0');            // two repeats per press
+    const body = id + cnt + randBits(16);
+    const crc = checkOf({ kind: 'crc', width: 8, poly: 0x07, init: 0, refl: false, xorout: 0 }, bytesOf(body), 0, 5).toString(2).padStart(8, '0');
+    rows.push('1010'.repeat(4) + sync + body + crc);
+  }
+  const al = align(rows);
+  const sg = suggest(al);
+  const cnt = sg.fields.find(f => f.kind === 'counter');
+  check(cnt && cnt.from === 32 && cnt.to === 40, `counter suggested (${cnt?.from}-${cnt?.to})`);
+  check(sg.check && /CRC-8/.test(sg.check.name) && sg.check.at === 7, `CRC-8 found (${sg.check?.name} at ${sg.check?.at})`);
+  check(findCounter(fromStart(al, dataStart(al)).reverse(), [{ from: 32, to: 40 }]) === null, 'a counter that runs backward in time is not one');
+}
+
+// ---- session bundle and capture filter -----------------------------------------------------------------------
+{
+  const env = Int16Array.from([1, -2, 300, 32767]), fm = Int16Array.from([-32768, 5, 6, 7]), iq = Int8Array.from([1, -1, 2, -2, 127, -128, 0, 5]);
+  const meta = { version: 1, bursts: [{ n: 4, id: 7, name: 'gate', star: true, note: 'left button' }], protocols: [{ name: 'p' }] };
+  const back = decodeBundle(encodeBundle(meta, [{ env, fm, iq }]));
+  check(back && back.meta.bursts[0].name === 'gate' && back.meta.protocols.length === 1, 'bundle: names and protocols round trip');
+  check(back && back.arrays[0].env.every((v, i) => v === env[i]) && back.arrays[0].fm.every((v, i) => v === fm[i]) && back.arrays[0].iq.every((v, i) => v === iq[i]), 'bundle: samples round trip');
+  check(decodeBundle(new Uint8Array([1, 2, 3])) === null, 'bundle: other bytes are not one');
+  const b = { hz: 50_000, snr: 12, ms: 20, matches: [] };
+  check(passes(NO_FILTER, b, 433_920_000), 'filter: none lets everything through');
+  check(!passes({ ...NO_FILTER, loHz: 434e6 }, b, 433_920_000) && passes({ ...NO_FILTER, loHz: 433.9e6, hiHz: 434e6 }, b, 433_920_000), 'filter: frequency range');
+  check(!passes({ ...NO_FILTER, minSnr: 15 }, b, 0) && !passes({ ...NO_FILTER, maxMs: 10 }, b, 0) && !passes({ ...NO_FILTER, minMs: 30 }, b, 0), 'filter: SNR and length');
+  check(!passes({ ...NO_FILTER, unknownOnly: true }, { ...b, matches: ['remote: x'] }, 0) && passes({ ...NO_FILTER, unknownOnly: true }, b, 0), 'filter: only unknown');
+  check(passes({ ...NO_FILTER, loHz: 434e6 }, b, 0), 'filter: a file with no center skips the frequency test');
 }
 
 // ---- small things -------------------------------------------------------------------------------------------------

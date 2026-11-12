@@ -244,3 +244,26 @@ export function captureFile(iq: Int8Array, rate: number, src: string, onBurst: (
   cap.finish();
   return count;
 }
+
+/** What the person keeps: bursts outside these are dropped as they arrive (counted, not shown). */
+export interface CaptureFilter {
+  /** Absolute frequency range, Hz (0 = no limit). */
+  loHz: number; hiHz: number;
+  minSnr: number;
+  minMs: number; maxMs: number;
+  /** Skip bursts a Devices decoder already claims. */
+  unknownOnly: boolean;
+}
+export const NO_FILTER: CaptureFilter = { loHz: 0, hiHz: 0, minSnr: 0, minMs: 0, maxMs: 0, unknownOnly: false };
+
+/** Whether a burst heard with the radio at `center` gets through. A file with no known center skips the frequency test. */
+export function passes(f: CaptureFilter, b: { hz: number; snr: number; ms: number; matches: string[] }, center: number): boolean {
+  const hz = center + b.hz;
+  if (center && f.loHz && hz < f.loHz) return false;
+  if (center && f.hiHz && hz > f.hiHz) return false;
+  if (f.minSnr && b.snr < f.minSnr) return false;
+  if (f.minMs && b.ms < f.minMs) return false;
+  if (f.maxMs && b.ms > f.maxMs) return false;
+  if (f.unknownOnly && b.matches.length) return false;
+  return true;
+}

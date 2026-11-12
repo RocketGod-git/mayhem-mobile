@@ -25,7 +25,11 @@ export const CODINGS: Coding[] = ['NRZ', 'Manchester', 'PWM', 'PPM'];
 export interface Run { hi: boolean; n: number }
 
 /** One frame: where it lies in the burst (samples) and its bits as a string of 0 and 1. */
-export interface Frame { start: number; end: number; bits: string }
+export interface Frame {
+  start: number; end: number; bits: string;
+  /** Where each bit lies in the burst: samples [spans[2i], spans[2i+1]) carry bit i. For the trace and its link to the text. */
+  spans: Int32Array;
+}
 
 /** What the person has set by hand. Anything left out is worked out. */
 export interface Overrides {
@@ -242,28 +246,55 @@ export function codingOf(frames: { runs: Run[] }[], u: number): Coding {
 
 /** The bits of one frame. */
 export function decodeFrame(runs: Run[], coding: Coding, u: number, marks: { a: number; b: number }, spaces: { a: number; b: number }): string {
+  return decodeSpans(runs, 0, coding, u, marks, spaces).bits;
+}
+
+/**
+ * The bits of one frame and where each one lies: the frame's first run starts at sample `at`. NRZ splits each run
+ * into its whole symbols; a Manchester bit is its two halves; a pulse-width or pulse-position bit runs from its
+ * mark to the start of the next.
+ */
+export function decodeSpans(runs: Run[], at: number, coding: Coding, u: number, marks: { a: number; b: number }, spaces: { a: number; b: number }): { bits: string; spans: number[] } {
   let bits = '';
+  const spans: number[] = [];
   if (coding === 'NRZ' || coding === 'Manchester') {
     let half = '';
-    for (const r of runs) half += (r.hi ? '1' : '0').repeat(Math.max(1, Math.round(r.n / u)));
-    if (coding === 'NRZ') return half;
+    const hs: number[] = [];
+    let pos = at;
+    for (const r of runs) {
+      const k = Math.max(1, Math.round(r.n / u));
+      for (let j = 0; j < k; j++) { half += r.hi ? '1' : '0'; hs.push(Math.round(pos + j * r.n / k), Math.round(pos + (j + 1) * r.n / k)); }
+      pos += r.n;
+    }
+    if (coding === 'NRZ') return { bits: half, spans: hs };
     // pairs of half bits: high then low is 1, low then high is 0; a pair that is neither slips one half bit, which
     // finds the bit boundary on its own wherever the frame starts
     for (let i = 0; i + 1 < half.length;) {
       const p = half[i] + half[i + 1];
-      if (p === '10') { bits += '1'; i += 2; } else if (p === '01') { bits += '0'; i += 2; } else i += 1;
+      if (p === '10' || p === '01') { bits += p === '10' ? '1' : '0'; spans.push(hs[2 * i], hs[2 * i + 3]); i += 2; } else i += 1;
     }
-    return bits;
+    return { bits, spans };
   }
+  const starts: number[] = [];
+  let pos = at;
+  for (const r of runs) { starts.push(pos); pos += r.n; }
   if (coding === 'PWM') {
     const mid = (marks.a + marks.b) / 2;
-    for (const r of runs) if (r.hi) bits += r.n > mid ? '1' : '0';
-    return bits;
+    for (let i = 0; i < runs.length; i++) {
+      if (!runs[i].hi) continue;
+      bits += runs[i].n > mid ? '1' : '0';
+      spans.push(starts[i], i + 1 < runs.length ? starts[i + 1] + runs[i + 1].n : starts[i] + runs[i].n);
+    }
+    return { bits, spans };
   }
   // PPM: the gap after each mark, the last mark ending the frame
   const mid = (spaces.a + spaces.b) / 2;
-  for (let i = 0; i + 1 < runs.length; i++) if (runs[i].hi) bits += runs[i + 1].n > mid ? '1' : '0';
-  return bits;
+  for (let i = 0; i + 1 < runs.length; i++) {
+    if (!runs[i].hi) continue;
+    bits += runs[i + 1].n > mid ? '1' : '0';
+    spans.push(starts[i], starts[i + 1] + runs[i + 1].n);
+  }
+  return { bits, spans };
 }
 
 /** Bits as hex, four to a digit, the last digit padded with zeros on the right. */
@@ -358,11 +389,12 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
   const mk = twoMeans(ps.marks), sp = twoMeans(ps.spaces);
   const frames: Frame[] = [];
   for (const f of frames0) {
-    let bits = decodeFrame(f.runs, coding, u, mk, sp);
+    const d = decodeSpans(f.runs, from + f.start, coding, u, mk, sp);
+    let bits = d.bits;
     if (o.invert) bits = bits.replace(/[01]/g, c => (c === '0' ? '1' : '0'));
     if (bits.length < MIN_FRAME_BITS) continue;
     const len = f.runs.reduce((a, r) => a + r.n, 0);
-    frames.push({ start: from + f.start, end: from + f.start + len, bits });
+    frames.push({ start: from + f.start, end: from + f.start + len, bits, spans: Int32Array.from(d.spans) });
   }
   const period = ps.periods.length ? ps.periods.slice().sort((a, b) => a - b)[ps.periods.length >> 1] : 2 * u;
   const baud = coding === 'Manchester' ? rate / (2 * u) : coding === 'NRZ' ? rate / u : rate / period;
@@ -385,4 +417,18 @@ export function pulsesUs(a: Analysis, rate: number): number[] {
   }
   while (out.length && out[out.length - 1] < 0) out.pop();
   return out;
+}
+
+/**
+ * How long the marks and the gaps last, as URH draws it: run lengths in microseconds, binned. Bins are `binUs`
+ * wide up to `maxUs`; anything longer goes in the last. The frame-ending rests are left out.
+ */
+export function histogram(a: Analysis, rate: number, bins = 48): { binUs: number; marks: number[]; spaces: number[] } {
+  const usPer = 1e6 / rate;
+  const inner = a.runs.slice(1, -1).filter(r => r.n * usPer < a.symUs * GAP_SYMBOLS);
+  const maxUs = Math.max(a.symUs * 6, ...inner.map(r => r.n * usPer)) * 1.02;
+  const binUs = maxUs / bins;
+  const marks = new Array<number>(bins).fill(0), spaces = new Array<number>(bins).fill(0);
+  for (const r of inner) { const i = Math.min(bins - 1, Math.floor(r.n * usPer / binUs)); (r.hi ? marks : spaces)[i]++; }
+  return { binUs, marks, spaces };
 }

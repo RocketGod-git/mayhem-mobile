@@ -100,3 +100,55 @@ export function synthesize(pulses: number[], fsk: boolean, rate = 1_000_000): In
 export function exportName(freqHz: number, rate: number, id: number, ext: string): string {
   return `analyzer_${(freqHz / 1e6).toFixed(3)}MHz_${Math.round(rate / 1e3)}k_${id}.${ext}`;
 }
+
+/**
+ * A session bundle: every kept burst with its name, star and note, and the saved protocols, in one file
+ * (`.mmanalyzer`) that any of the three apps can open. Layout: the line `MMANALYZER1`, a 4-byte little-endian
+ * length, that many bytes of JSON (`{ version, bursts: [...], protocols: [...] }`, each burst carrying its sample
+ * count `n`), then for each burst in order its envelope and discriminator (n little-endian 16-bit values each) and
+ * its I/Q (2n signed bytes).
+ */
+export const BUNDLE_MAGIC = 'MMANALYZER1\n';
+
+export interface BundleArrays { env: Int16Array; fm: Int16Array; iq: Int8Array }
+
+export function encodeBundle(meta: { bursts: { n: number }[] } & Record<string, unknown>, arrays: BundleArrays[]): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(meta));
+  const magic = new TextEncoder().encode(BUNDLE_MAGIC);
+  let size = magic.length + 4 + json.length;
+  for (const a of arrays) size += a.env.length * 4 + a.iq.length;
+  const out = new Uint8Array(size), dv = new DataView(out.buffer);
+  out.set(magic, 0);
+  let p = magic.length;
+  dv.setUint32(p, json.length, true); p += 4;
+  out.set(json, p); p += json.length;
+  for (const a of arrays) {
+    for (let i = 0; i < a.env.length; i++, p += 2) dv.setInt16(p, a.env[i], true);
+    for (let i = 0; i < a.fm.length; i++, p += 2) dv.setInt16(p, a.fm[i], true);
+    for (let i = 0; i < a.iq.length; i++) out[p++] = a.iq[i] & 0xff;
+  }
+  return out;
+}
+
+/** Read a session bundle back. Null when the bytes are not one. */
+export function decodeBundle(bytes: Uint8Array): { meta: { version: number; bursts: ({ n: number } & Record<string, unknown>)[]; protocols?: unknown[] } & Record<string, unknown>; arrays: BundleArrays[] } | null {
+  const magic = new TextEncoder().encode(BUNDLE_MAGIC);
+  if (bytes.length < magic.length + 4 || magic.some((c, i) => bytes[i] !== c)) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let p = magic.length;
+  const len = dv.getUint32(p, true); p += 4;
+  if (p + len > bytes.length) return null;
+  const meta = JSON.parse(new TextDecoder().decode(bytes.subarray(p, p + len)));
+  p += len;
+  const arrays: BundleArrays[] = [];
+  for (const b of meta.bursts as { n: number }[]) {
+    const n = b.n;
+    if (p + n * 6 > bytes.length) return null;
+    const env = new Int16Array(n), fm = new Int16Array(n), iq = new Int8Array(2 * n);
+    for (let i = 0; i < n; i++, p += 2) env[i] = dv.getInt16(p, true);
+    for (let i = 0; i < n; i++, p += 2) fm[i] = dv.getInt16(p, true);
+    for (let i = 0; i < 2 * n; i++) iq[i] = (bytes[p++] << 24) >> 24;
+    arrays.push({ env, fm, iq });
+  }
+  return { meta, arrays };
+}
