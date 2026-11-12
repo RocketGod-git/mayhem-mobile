@@ -587,6 +587,8 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
     val gap = 12 * k; val ph = (g.h - gap * (panes.size - 1)) / panes.size
     val len = z?.amp?.size ?: 1; val rate = z?.rate ?: 1.0; val total = if (z != null) len / rate else s.zsTime
     val t0 = if (z != null && z.trig >= 0) -z.trig / rate else 0.0
+    // the level frequency and phase are drawn above: 10 dB over the median of the window (the noise between bursts)
+    val gate = if (z == null) 0f else z.amp.copyOf().also { it.sort() }.let { it[it.size / 2] + 10f }
     cv.drawText("${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}", g.l, 13 * k, paint(Palette.ink, k, text = 12f))
     cv.drawText("REF ${s.ref} $u · ${s.div} dB/div · ${if (s.trig == TrigMode.FREE) "FREE RUN" else "${if (s.trig == TrigMode.RISE) "RISING" else "FALLING"} ${s.level} $u"}", g.l, 26 * k, paint(muted, k, text = 11f))
     panes.forEachIndexed { q, p ->
@@ -608,23 +610,38 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
         cv.save(); cv.clipRect(g.l, top, g.l + g.w, top + ph)
         if (p == "amp" && s.trig != TrigMode.FREE) cv.drawLine(g.l, yOf(s.level.toDouble()), g.l + g.w, yOf(s.level.toDouble()),
             paint(SP_ACTIVE, k, stroke = 1f).apply { pathEffect = DashPathEffect(floatArrayOf(5 * k, 4 * k), 0f) })
+        // Frequency and phase mean something only while there is a signal: they are drawn where the amplitude stands
+        // 10 dB over the noise and left blank in the noise between.
+        fun gated(i: Int) = p == "amp" || z.amp[i] >= gate
         val cols = max(2, g.w.roundToInt())
-        val path = android.graphics.Path()
+        val band = android.graphics.Path(); val trace = android.graphics.Path()
+        var pen = false
         if (arr.size > cols * 2) {
-            // min / max per column so a dense trace keeps its envelope
+            // dense: each column's spread as a faint band, and a crisp line through its peak (amplitude) or its middle
             for (c in 0 until cols) {
                 val a = (c.toLong() * arr.size / cols).toInt(); val b = max(a + 1, ((c + 1).toLong() * arr.size / cols).toInt())
-                var mn = Float.POSITIVE_INFINITY; var mx = Float.NEGATIVE_INFINITY
-                for (i in a until min(b, arr.size)) { if (arr[i] < mn) mn = arr[i]; if (arr[i] > mx) mx = arr[i] }
-                val x = g.l + c + 0.5f; path.moveTo(x, yOf(mx.toDouble())); path.lineTo(x, yOf(mn.toDouble()) + 0.6f * k)
+                var mn = Float.POSITIVE_INFINITY; var mx = Float.NEGATIVE_INFINITY; var sum = 0.0; var n = 0
+                for (i in a until min(b, arr.size)) { if (!gated(i)) continue; val v = arr[i]; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; n++ }
+                val x = g.l + c + 0.5f
+                if (n == 0) { pen = false; continue }
+                band.moveTo(x, yOf(mx.toDouble())); band.lineTo(x, yOf(mn.toDouble()) + 0.6f * k)
+                val y = yOf(when (p) { "amp" -> mx.toDouble(); "fm" -> sum / n; else -> arr[min(arr.size - 1, (a + b) / 2)].toDouble() })
+                if (pen) trace.lineTo(x, y) else trace.moveTo(x, y)
+                pen = true
             }
         } else {
-            for (i in arr.indices) { val x = g.l + (i + 0.5f) / arr.size * g.w; val y = yOf(arr[i].toDouble()); if (i > 0) path.lineTo(x, y) else path.moveTo(x, y) }
+            for (i in arr.indices) {
+                if (!gated(i)) { pen = false; continue }
+                val x = g.l + (i + 0.5f) / arr.size * g.w; val y = yOf(arr[i].toDouble())
+                if (pen) trace.lineTo(x, y) else trace.moveTo(x, y)
+                pen = true
+            }
         }
         // a preview (waiting for the trigger) is drawn dimmed: it is the channel now, not a capture
         val dim = if (z.preview) 0.4f else 1f
-        cv.drawPath(path, paint(col.copy(alpha = 0x30 / 255f * dim), k, stroke = 5f))
-        cv.drawPath(path, paint(col.copy(alpha = dim), k, stroke = 1.3f))
+        cv.drawPath(band, paint(col.copy(alpha = 0.22f * dim), k, stroke = 1f))
+        cv.drawPath(trace, paint(col.copy(alpha = 0x30 / 255f * dim), k, stroke = 4f))
+        cv.drawPath(trace, paint(col.copy(alpha = dim), k, stroke = 1.4f))
         if (z.trig >= 0) {
             val x = g.l + z.trig.toFloat() / len * g.w
             cv.drawLine(x, top, x, top + ph, paint(SP_ACTIVE, k, stroke = 1f))

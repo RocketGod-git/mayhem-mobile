@@ -980,6 +980,8 @@ export class SpectrumUi {
     const gap = 12, ph = (g.h - gap * (panes.length - 1)) / panes.length;
     const len = z ? z.amp.length : 1, rate = z?.rate ?? 1, total = z ? len / rate : s.zsTime;
     const t0 = z && z.trig >= 0 ? -z.trig / rate : 0;
+    // the level frequency and phase are drawn above: 10 dB over the median of the window (the noise between bursts)
+    const gate = !z ? 0 : (() => { const q = Float32Array.from(z.amp).sort(); return q[q.length >> 1] + 10; })();
     ctx.textAlign = 'left'; ctx.fillStyle = ink; ctx.font = '700 12px ui-monospace, monospace';
     ctx.fillText(`${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}`, g.l, 13);
     ctx.fillStyle = muted; ctx.font = '600 11px ui-monospace, monospace';
@@ -1002,22 +1004,39 @@ export class SpectrumUi {
       const yOf = (v: number) => top + (hi - v) / (hi - lo) * ph;
       ctx.save(); ctx.beginPath(); ctx.rect(g.l, top, g.w, ph); ctx.clip();
       if (p === 'amp' && s.trig !== 'FREE') { ctx.strokeStyle = ACTIVE; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(g.l, yOf(s.level)); ctx.lineTo(g.l + g.w, yOf(s.level)); ctx.stroke(); ctx.setLineDash([]); }
+      // Frequency and phase mean something only while there is a signal: they are drawn where the amplitude stands
+      // 10 dB over the noise and left blank in the noise between.
+      const gated = (i: number) => p === 'amp' || z.amp[i] >= gate;
       const cols = Math.max(2, Math.round(g.w));
-      const path = new Path2D();
+      const band = new Path2D(), trace = new Path2D();
+      let pen = false;
       if (arr.length > cols * 2) {
-        // min / max per column so a dense trace keeps its envelope
+        // dense: each column's spread as a faint band, and a crisp line through its peak (amplitude) or its middle
         for (let c = 0; c < cols; c++) {
           const a = Math.floor(c * arr.length / cols), b = Math.max(a + 1, Math.floor((c + 1) * arr.length / cols));
-          let mn = Infinity, mx = -Infinity; for (let i = a; i < b; i++) { if (arr[i] < mn) mn = arr[i]; if (arr[i] > mx) mx = arr[i]; }
-          const x = g.l + c + 0.5; path.moveTo(x, yOf(mx)); path.lineTo(x, yOf(mn) + 0.6);
+          let mn = Infinity, mx = -Infinity, sum = 0, n = 0;
+          for (let i = a; i < b; i++) { if (!gated(i)) continue; const v = arr[i]; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; n++; }
+          const x = g.l + c + 0.5;
+          if (!n) { pen = false; continue; }
+          band.moveTo(x, yOf(mx)); band.lineTo(x, yOf(mn) + 0.6);
+          const y = yOf(p === 'amp' ? mx : p === 'fm' ? sum / n : arr[Math.floor((a + b) / 2)]);
+          if (pen) trace.lineTo(x, y); else trace.moveTo(x, y);
+          pen = true;
         }
       } else {
-        for (let i = 0; i < arr.length; i++) { const x = g.l + (i + 0.5) / arr.length * g.w, y = yOf(arr[i]); if (i) path.lineTo(x, y); else path.moveTo(x, y); }
+        for (let i = 0; i < arr.length; i++) {
+          if (!gated(i)) { pen = false; continue; }
+          const x = g.l + (i + 0.5) / arr.length * g.w, y = yOf(arr[i]);
+          if (pen) trace.lineTo(x, y); else trace.moveTo(x, y);
+          pen = true;
+        }
       }
       // a preview (waiting for the trigger) is drawn dimmed: it is the channel now, not a capture
-      ctx.globalAlpha = z.preview ? 0.4 : 1;
-      ctx.strokeStyle = col + '30'; ctx.lineWidth = 5; ctx.stroke(path);
-      ctx.strokeStyle = col; ctx.lineWidth = 1.3; ctx.stroke(path);
+      const dim = z.preview ? 0.4 : 1;
+      ctx.globalAlpha = 0.22 * dim; ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke(band);
+      ctx.globalAlpha = dim;
+      ctx.strokeStyle = col + '30'; ctx.lineWidth = 4; ctx.stroke(trace);
+      ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.stroke(trace);
       ctx.globalAlpha = 1;
       if (z.trig >= 0) { const x = g.l + z.trig / len * g.w; ctx.strokeStyle = ACTIVE; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); if (k === 0) { ctx.fillStyle = ACTIVE; ctx.beginPath(); ctx.moveTo(x - 6, top); ctx.lineTo(x + 6, top); ctx.lineTo(x, top + 8); ctx.fill(); } }
       if (s.cursors) for (const [c, l] of [[s.curA, 'A'], [s.curB, 'B']] as [number, string][]) {
