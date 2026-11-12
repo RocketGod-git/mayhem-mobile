@@ -5,3 +5,4 @@ export { align, bestShift, similar, type Alignment, type AlignedRow, type Segmen
 export { BUNDLE_MAGIC, decodeBundle, encodeBundle, exportName, freqFromName, fromIqFile, parseSub, rateFromName, subPreset, synthesize, toCs8, toCu8, toSub, type BundleArrays, type SubFile } from './files.js';
 export { bytesOf, checkHolds, checkOf, checkSpecs, dataStart, fieldValue, findCheck, findCounter, fromStart, recognize, specName, suggest, FIELD_KINDS, type CheckFound, type CheckSpec, type Field, type FieldKind, type Protocol } from './fields.js';
 export { groupPresses, sameFrame, type GroupIn, type Transmission } from './group.js';
+export { classCsv, classify, clockDrift, eyeStarts, frameSegments, framesCsv, levels, pulseCsv, pulseTable, samplesCsv, selectionCsv, symbolFit, type FrameSeg, type Levels, type Pulse, type PulseClass, type PulseTable } from './measure.js';

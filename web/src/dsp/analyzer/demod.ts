@@ -78,6 +78,8 @@ const ON_K = 3.2, OFF_K = 2.2;
 const MIN_FSK_SPREAD = 1200;
 /** A rest this many symbols long ends a frame. */
 const GAP_SYMBOLS = 20;
+/** Samples either side a carrier must hold for the discriminator there to count (32 µs at 250 kHz): clear of the keying spikes. */
+const INNER = 8;
 /** Frames shorter than this are fragments, not frames. */
 const MIN_FRAME_BITS = 8;
 
@@ -358,13 +360,15 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
   // the envelope and the discriminator, measured where the carrier is up; the discriminator away from the edges of
   // each mark, where it swings in from the noise
   const envOn: number[] = [], fmOn: number[] = [];
+  const innerAt = new Uint8Array(n);
   let offN = 0, edges = 0;
   for (let i = from; i < to; i++) {
     if (!on[i]) { offN++; continue; }
     envOn.push(env[i]);
     if (i > 0 && !on[i - 1]) edges++;
     let inner = true;
-    for (let d = -4; d <= 4 && inner; d++) { const j = i + d; if (j < from || j >= to || !on[j]) inner = false; }
+    for (let d = -INNER; d <= INNER && inner; d++) { const j = i + d; if (j < from || j >= to || !on[j]) inner = false; }
+    if (inner) innerAt[i] = 1;
     if (inner) fmOn.push(fm[i]);
   }
   const span = to - from;
@@ -375,10 +379,21 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
   const askLike = envOn.length >= 32 && envT.a > 0 && envT.a / envT.b > 0.15 && envT.a / envT.b < 0.75 && (envT.b - envT.a) > 3 * envT.sd && envT.share > 0.1 && envT.share < 0.9;
   const ookLike = offFrac >= 0.1 && edges >= 3;
   // FSK switches tones far more often than the carrier stops; an OOK burst does the opposite
+  // Tone changes counted only well inside the carrier, with the slicer's hysteresis: an on-off keyed transmitter
+  // pulls its frequency as each mark keys up, and those spikes at the edges are not a second tone. FSK changes tone
+  // many times inside each stretch of carrier; OOK hardly ever does.
   let fmEdges = 0;
-  if (fskLike) { const t = (fmT.a + fmT.b) / 2; let l = fm[from] > t; for (let i = from; i < to; i++) { if (!on[i]) continue; const x = fm[i] > t; if (x !== l) { fmEdges++; l = x; } } }
+  if (fskLike) {
+    const t = (fmT.a + fmT.b) / 2, h = fmSpread * 0.15;
+    let l = 0;
+    for (let i = from; i < to; i++) {
+      if (!innerAt[i]) continue;
+      const x = fm[i] > t + h ? 1 : fm[i] < t - h ? -1 : 0;
+      if (x && x !== l) { if (l) fmEdges++; l = x; }
+    }
+  }
   let modAuto: Mod = 'OOK', why = '';
-  if (fskLike && fmEdges > 2 * edges + 4) { modAuto = 'FSK'; why = `two tones ${((fmSpread / FM_SCALE) * rate / (2 * Math.PI) / 1e3).toFixed(1)} kHz apart`; }
+  if (fskLike && fmEdges >= Math.max(8, 2 * edges)) { modAuto = 'FSK'; why = `two tones ${((fmSpread / FM_SCALE) * rate / (2 * Math.PI) / 1e3).toFixed(1)} kHz apart`; }
   else if (ookLike) { modAuto = 'OOK'; why = `carrier keyed on and off (${Math.round(offFrac * 100)}% off)`; }
   else if (askLike) { modAuto = 'ASK'; why = `two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper`; }
   else if (fskLike) { modAuto = 'FSK'; why = 'two tones'; }

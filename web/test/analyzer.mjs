@@ -9,10 +9,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { groupPresses, sameFrame, syncTrim, AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER } from '../dist/dsp/analyzer/index.js';
+import { pulseTable, symbolFit, clockDrift, frameSegments, levels, eyeStarts, pulseCsv, classCsv, framesCsv, samplesCsv, selectionCsv, groupPresses, sameFrame, syncTrim, AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER } from '../dist/dsp/analyzer/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
+const NL = String.fromCharCode(10);
 const check = (ok, what) => { if (ok) pass++; else { fail++; console.log('FAIL', what); } };
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
@@ -86,6 +87,28 @@ const read = (b, o) => analyze(b.env, b.fm, b.n, b.rate, o);
   const peak = (v) => { const m = [...v].map((x, i) => [x, i]).sort((x, y) => y[0] - x[0]); return [m[0][1], m[1][1]].map(i => (i + 0.5) * h.binUs).sort((x, y) => x - y); };
   const pm = peak(h.marks);
   check(near(pm[0], 350, 100) && near(pm[1], 1050, 100), `histogram: marks at 350 and 1050 us (${pm.map(x => x.toFixed(0))})`);
+  // measurements: the two mark lengths and two gap lengths as classes, the threshold between them, the fit of the
+  // symbol, the four repeats with their spacing, and the levels
+  const pt = pulseTable(a, b.rate);
+  check(pt.marks.length === 2 && pt.spaces.length === 2, `pulses: two mark and two gap classes (${pt.marks.length}, ${pt.spaces.length})`);
+  check(pt.marks[0].count + pt.marks[1].count === 100, `pulses: 100 marks in four frames (${pt.marks.map(c => c.count)})`);
+  check(near(pt.marks[0].mean, 350, 80) && near(pt.marks[1].mean, 1050, 80) && pt.marks.every(c => c.jitterPct < 15), `pulses: classes ${pt.marks.map(c => `${c.mean.toFixed(0)}±${c.sd.toFixed(0)}`)}`);
+  check(pt.markCuts.length === 1 && pt.markCuts[0] > 450 && pt.markCuts[0] < 950, `pulses: the cut between short and long (${pt.markCuts.map(x => x.toFixed(0))})`);
+  check(pt.pulses.every(p => p.hi ? p.cls === (p.us > pt.markCuts[0] ? 1 : 0) : true), 'pulses: each mark in its class');
+  const fit = symbolFit(a, b.rate);
+  check(fit.errPct < 20 && fit.runs > 150, `symbol fit: error ${fit.errPct.toFixed(1)}% over ${fit.runs} runs`);
+  const drift = clockDrift(a, b.rate);
+  check(drift.length === 4 && drift.every(d => d.worstPct < 35), `clock: edges stay near the ticks (${drift.map(d => d.worstPct.toFixed(0))}%)`);
+  const segs = frameSegments(a, b.rate);
+  check(segs.length === 4 && segs.slice(1).every(s => near(s.intervalMs, 44.8, 1.5) && s.diff.length === 0), `frames: four repeats every 44.8 ms, identical (${segs.map(s => s.intervalMs.toFixed(1))})`);
+  check(segs.slice(1).every(s => near(s.gapMs, 10.85, 1)), `frames: 10.85 ms between them (${segs.map(s => s.gapMs.toFixed(2))})`);
+  const lv = levels(a, b.env, b.fm, b.rate);
+  check(lv.depthDb > 20 && lv.markDbfs < 0 && lv.riseUs > 0 && lv.riseUs < 200, `levels: OOK depth ${lv.depthDb.toFixed(0)} dB, rise ${lv.riseUs.toFixed(0)} us`);
+  check(near(lv.carrierHz, 0, 6000), `levels: carrier on the channel (${lv.carrierHz.toFixed(0)} Hz)`);
+  const eye = eyeStarts(a, b.rate);
+  check(eye.starts.length > 300 && near(eye.len, 2 * 350 * b.rate / 1e6, 4), `eye: a trace per symbol (${eye.starts.length})`);
+  const csv = selectionCsv({ samples: samplesCsv(b.iq, b.env, b.fm, b.rate, 0, 10), pulses: pulseCsv(pt), classes: classCsv(pt), frames: framesCsv(segs) });
+  check(csv.startsWith('# samples' + NL + 'sample,t_us,i,q,envelope,freq_hz' + NL + '0,') && csv.includes('# pulses' + NL + 'frame,index,level') && csv.includes(NL + 'M2,mark,') && csv.includes('# frames' + NL + 'frame,start_ms'), 'csv: four sections');
   const inv = read(b, { invert: true });
   check(inv.frames[0].bits.slice(0, 24) === code.replace(/./g, c => (c === '1' ? '0' : '1')), 'PWM: invert flips the bits');
   // the Flipper file: same pulses out and back
@@ -193,6 +216,9 @@ const packets = [];
   check(frames.every(f => bitsToHex(f).includes('34A5C33C96')), `phase: every copy shows the sync on a byte (${frames.map(f => bitsToHex(f).slice(0, 14)).join(' ')})`);
   const mf = reads[0].frames[reads[0].frames.length - 1];
   check(near((mf.spans[2 * 40 + 1] - mf.spans[2 * 40]) / bursts[0].rate * 1e6, 128, 8), 'spans: a Manchester bit is two half bits');
+  const lvf = levels(reads[1], bursts[1].env, bursts[1].fm, bursts[1].rate);
+  check(near(lvf.deviationHz, 23_000, 4000) && near(lvf.centerHz, 0, 30_000), `levels: FSK deviation ${lvf.deviationHz.toFixed(0)} Hz, center ${lvf.centerHz.toFixed(0)} Hz`);
+  check(lvf.toneHist.reduce((x, y) => x + y, 0) > 1000, 'levels: tone histogram filled');
   // line them up
   const al = align(frames);
   check(al.preamble !== null && al.preamble[1] - al.preamble[0] >= 16, `align: preamble found (${al.preamble})`);
@@ -309,6 +335,30 @@ const packets = [];
   check(!passes({ ...NO_FILTER, minSnr: 15 }, b, 0) && !passes({ ...NO_FILTER, maxMs: 10 }, b, 0) && !passes({ ...NO_FILTER, minMs: 30 }, b, 0), 'filter: SNR and length');
   check(!passes({ ...NO_FILTER, unknownOnly: true }, { ...b, matches: ['remote: x'] }, 0) && passes({ ...NO_FILTER, unknownOnly: true }, b, 0), 'filter: only unknown');
   check(passes({ ...NO_FILTER, loHz: 434e6 }, b, 0), 'filter: a file with no center skips the frequency test');
+}
+
+// ---- OOK whose transmitter pulls its frequency at every mark: still OOK ------------------------------------------
+{
+  // a cheap 315 MHz remote (a fog machine's): its frequency swings ±60 kHz as each mark keys up and down, so the discriminator spikes at
+  // every edge; read as FSK it gave a 6 us "symbol" instead of its real 400 us
+  const code = randBits(24);
+  const air = new Air();
+  air.quiet(60);
+  for (let r = 0; r < 5; r++) {
+    for (const c of code) {
+      const mark = c === '1' ? 1200 : 400, space = c === '1' ? 400 : 1200;
+      const wobble = () => { for (let k = 0; k < 3; k++) { air.seg(4, 50, -200_000 + 60_000); air.seg(4, 50, -200_000 - 60_000); } };
+      wobble(); air.seg(mark - 48, 50, -200_000); wobble();
+      air.seg(space, 0, 0);
+    }
+    air.seg(400, 50, -200_000); air.quiet(12);
+  }
+  air.quiet(150);
+  const bursts = capture(air);
+  const a = bursts.length ? read(bursts[0]) : null;
+  check(a && a.mod === 'OOK', `chirpy OOK: read as OOK (${a?.mod}, ${a?.why})`);
+  check(a && near(a.symUs, 400, 60), `chirpy OOK: symbol 400 us (${a?.symUs.toFixed(1)})`);
+  check(a && a.frames.length === 5 && a.frames.every(f => f.bits.startsWith(code)), `chirpy OOK: five frames read the code (${a?.frames.length})`);
 }
 
 // ---- Manchester phase and sync trim -----------------------------------------------------------------------------
