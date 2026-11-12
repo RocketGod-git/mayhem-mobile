@@ -104,6 +104,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.1f, 0.32f); path.l(0.5f, 0.56f); path.l(0.9f, 0.32f)
                 path.m(0.5f, 0.06f); path.l(0.5f, 0.2f); path.m(0.38f, 0.14f); path.l(0.62f, 0.14f)
             }
+            MayhemApp.TRAINS -> {
+                // a locomotive head-on: the cab, its windshield, two headlights, and the rails running away under it
+                val a = p(0.24f, 0.08f); val b = p(0.76f, 0.7f)
+                path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.1f, s * 0.1f))
+                path.m(0.32f, 0.2f); path.l(0.68f, 0.2f); path.l(0.68f, 0.38f); path.l(0.32f, 0.38f); path.l(0.32f, 0.2f)
+                circles.add(Triple(0.36f, 0.56f, 0.05f)); circles.add(Triple(0.64f, 0.56f, 0.05f))
+                path.m(0.38f, 0.7f); path.l(0.16f, 0.94f); path.m(0.62f, 0.7f); path.l(0.84f, 0.94f)
+                path.m(0.3f, 0.82f); path.l(0.7f, 0.82f)
+            }
             MayhemApp.PROWL -> {
                 // a cat's eye: two arcs meeting at the corners, and a slit pupil
                 for ((cy, a0, a1) in listOf(Triple(0.648f, -158.8, -21.2), Triple(0.352f, 21.2, 158.8))) {

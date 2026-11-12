@@ -101,6 +101,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     MayhemApp.BTLE -> lastLine(Apps.btleLog)
     MayhemApp.TPMS -> lastLine(Apps.tpmsLog)
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)
+    MayhemApp.TRAINS -> lastLine(Apps.trainsLog)
     MayhemApp.SUBGHZ -> lastLine(Apps.ismLog)
     else -> app?.blurb ?: ""
 }

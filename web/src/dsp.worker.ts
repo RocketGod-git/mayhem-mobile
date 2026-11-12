@@ -19,6 +19,7 @@ import { PagerHunter } from './dsp/pagerhunt.js';
 import { SweepProcessor } from './dsp/sweep.js';
 import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
+import { TrainsProcessor } from './dsp/trains.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
 import { R433Processor, protocolList } from './dsp/r433/index.js';
 import { IqRecorder } from './dsp/capture.js';
@@ -112,6 +113,7 @@ function loraPoolFor(r: number): WorkerPool | null {
 const btle = new BtleDecoder(emit);
 const tpms = new TpmsDecoder(emit);
 const acars = new AcarsDecoder(emit);
+const trains = new TrainsProcessor(emit);
 const ism = new IsmDecoder(emit);
 /** The rtl_433 port: every registered protocol, run over every burst found anywhere in the sampled span. */
 const r433 = new R433Processor(emit);
@@ -326,6 +328,8 @@ self.onmessage = (e: MessageEvent) => {
     case 'app': processor = makeProcessor(m.app as string, m); break;
     case 'geo': adsb.ref = { lat: m.lat as number, lon: m.lon as number }; break;
     case 'btleChannel': btle.channel = m.ch as number; break;
+    case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
+    case 'trainsClear': trains.clear(); break;
     case 'rds': rdsOn = !!m.on; if (!rdsOn) { rds.reset(); rdsN = 0; } break;
     case 'hd': hdOn = !!m.on; if (!hdOn) hd.reset(); break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
@@ -365,6 +369,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'btle': return btle;
     case 'tpms': return tpms;
     case 'acars': return acars;
+    case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'subghz': return ism;
     case 'r433': return r433;
     case 'sweep': return new SweepProcessor(m.start as number, m.end as number, m.slice as number, emit);
@@ -562,6 +567,7 @@ function process(iq: Int8Array): void {
   if (p === meters) mesh.centerHz = centreHz;
   if (p === lora) { lora.setCenter(centreHz); lora.scanner.pool = loraPoolFor(rate); }
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
+  if (p === trains) trains.centerHz = centreHz;
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }

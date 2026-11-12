@@ -29,6 +29,7 @@ import { BANDS as LORA_BANDS, NARROW_TILES as LORA_TILES, NARROW_SHIFT as LORA_S
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
 import { ISM_COUNTS } from './dsp/ism/counts.js';
+import { EOT_CENTER as TR_EOT_CENTER, EOT_RATE as TR_EOT_RATE, EOT_NARROW as TR_EOT_NARROW, PTC_CENTER as TR_PTC_CENTER, PTC_RATE as TR_PTC_RATE, PTC_NARROW as TR_PTC_NARROW, PTC_KIND_LABEL, stationPeriod, stationVaries, symHex, type EotUnit, type HotHeard, type PtcStation } from './dsp/trains.js';
 
 type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
 /**
@@ -39,7 +40,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'trains' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -56,6 +57,7 @@ const APPS: AppDef[] = [
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
   { id: 'tpms', title: 'TPMS', blurb: 'tire pressure, 315 / 433 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
+  { id: 'trains', title: 'Trains', blurb: 'end-of-train telemetry · PTC train control', cat: 'Receive' },
   { id: 'subghz', title: 'Sub-GHz', blurb: 'weather · remotes · car keys, rtl_433 style', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice across the bands', cat: 'Receive' },
   { id: 'lookingglass', title: 'Looking Glass', blurb: 'wideband sweep waterfall', cat: 'Analyze' },
@@ -798,6 +800,7 @@ function open(app: AppId | null): void {
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
     // none of them on the radio's DC spike; 131.550 is the one heard.
     case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = ACARS_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
+    case 'trains': trainsTune(); if (trainsUi.auto) trainsCycle(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is
@@ -1651,6 +1654,7 @@ function render(app: AppId | null): void {
     case 'pager': if (state.pagerMulti) renderHunt(view); else renderPacket(view, app); break;
     case 'ert': renderMeters(view); break;
     case 'lora': renderLora(view); break;
+    case 'trains': renderTrains(view); break;
     case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
@@ -3561,6 +3565,260 @@ function refreshMeters(force = false): void {
   if (n > 0) setLamp(`${n} DEVICE${n === 1 ? '' : 'S'}`, 'ok');
 }
 
+// ---- Trains: end-of-train telemetry and the PTC train-control network (receive only) ----------------------------
+interface TrainsSnap { band: 'EOT' | 'PTC'; hears: string[]; units: EotUnit[]; hots: HotHeard[]; stations: PtcStation[]; activity: Record<string, number>; other: number }
+const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '', tall: false, waterfall: null as boolean | null };
+/** Tunes for the band: as wide as it needs where the radio can (both EOT channels, or all of 216-222.5 MHz), else the
+ *  channels heard most, from 2 MHz. */
+function trainsTune(): void {
+  if (trainsUi.band === 'EOT') {
+    const wide = radioCan(TR_EOT_RATE);
+    configure('NONE', wide ? TR_EOT_CENTER : TR_EOT_NARROW, wide ? TR_EOT_RATE : 2e6, 32, 40, true, 'trains', { band: 'EOT' });
+  } else {
+    const wide = radioCan(TR_PTC_RATE);
+    configure('NONE', wide ? TR_PTC_CENTER : TR_PTC_NARROW, wide ? TR_PTC_RATE : 2e6, 32, 40, true, 'trains', { band: 'PTC' });
+  }
+}
+/** BOTH: the radio takes turns, 30 s on PTC (a wayside speaks every ~46 s) and 20 s on EOT, while the app is open. */
+function trainsCycle(): void {
+  clearTimeout(trainsUi.cycle);
+  trainsUi.cycle = window.setTimeout(() => {
+    if (state.app !== 'trains' || !trainsUi.auto) return;
+    trainsUi.band = trainsUi.band === 'EOT' ? 'PTC' : 'EOT'; trainsTune(); render('trains'); trainsCycle();
+  }, trainsUi.band === 'PTC' ? 30_000 : 20_000);
+}
+function trainsSetBand(b: 'EOT' | 'PTC' | 'BOTH'): void {
+  clearTimeout(trainsUi.cycle);
+  trainsUi.auto = b === 'BOTH';
+  if (b !== 'BOTH') trainsUi.band = b;
+  // BOTH: the radio takes turns, 20 s on each band, while the app is open
+  if (trainsUi.auto) trainsCycle();
+  if (state.app === 'trains') { trainsTune(); render('trains'); }
+}
+/** The strongest burst in the last 4 s: 20 ms PTC bursts and 0.2 s EOT frames barely move the band's average, so the
+ *  meter follows the bursts themselves. */
+function trainsBurst(): number | null {
+  const s = trainsUi.snap; if (!s) return null;
+  const now = Date.now();
+  const v = [...s.stations.filter(x => now - x.lastMs < 4000).map(x => x.snr[x.snr.length - 1]), ...s.units.filter(u => now - u.lastMs < 4000).map(u => u.snr[u.snr.length - 1])].filter(x => x !== undefined);
+  return v.length ? Math.max(...v) : null;
+}
+const trAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : `${Math.floor(ms / 3_600_000)} h ago`;
+const trClock = (ms: number) => new Date(ms).toLocaleTimeString();
+const trPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span class="tr-pill ${tone}">${esc(text)}</span>`;
+
+/** What the rear unit's brake pipe says: a drop from where it was charged is a brake application, the line vented near
+ *  zero is an emergency, and pressure coming back is the release. */
+function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
+  const p = u.last.psig, peak = u.pressure.filter(x => u.lastMs - x[0] < 600_000).reduce((m, x) => Math.max(m, x[1]), p);
+  const prev = u.pressure.length >= 2 ? u.pressure[u.pressure.length - 2][1] : p;
+  if (p < 15 && peak >= 40) return ['EMERGENCY · LINE VENTED', 'red'];
+  if (peak - p >= 6 && p <= prev) return [`BRAKES APPLIED −${peak - p} PSI`, 'red'];
+  if (p - prev >= 3) return [`RELEASING +${p - prev} PSI`, 'ok'];
+  return null;
+}
+
+/** The waterfall at 8 MHz shows little of a 20 ms burst: a phone-width window leaves it out for the cards (the band
+ *  strip shows the bursts), a wider one keeps it, and the WATERFALL button overrides either. */
+const trainsWaterfall = () => trainsUi.waterfall ?? window.innerWidth >= 700;
+function renderTrains(view: HTMLElement): void {
+  view.innerHTML = `
+    <section class="visual ${trainsWaterfall() ? '' : 'tr-nowf'}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div class="ctlrow">${segHtml(([['EOT', 'EOT'], ['PTC', 'PTC'], ['BOTH', 'BOTH']] as [string, string][]).map(([k, l]) => `<button data-trband="${k}">${l}</button>`))}<button id="tr-wf" class="tog ${trainsWaterfall() ? 'on' : ''}">WATERFALL</button></div>
+      <div id="tr-lamps" class="tr-lamps"></div>
+      <div id="tr-banner" class="tr-banner"></div>
+      <div id="tr-strip" class="tr-strip"></div>
+      <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}${pauseClearHtml('trains')}</div>
+      <div class="tr-stage"><div id="tr-cards" class="mt-cards tr-cards"></div><div id="tr-detail" class="mt-detail" hidden></div></div>
+      <div id="tr-log">${logHtml('trains', 'listening for trains…')}</div>
+      <div class="note">The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns. 457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC. A HackRF hears both EOT channels or all of PTC at once. Tap a card for everything decoded from it.</div>
+      ${gainHtml()}</section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-trband]', view).forEach(b => b.onclick = () => trainsSetBand(b.dataset.trband as 'EOT' | 'PTC' | 'BOTH'));
+  $('tr-wf').onclick = () => { trainsUi.waterfall = !trainsWaterfall(); render('trains'); };
+  qa<HTMLButtonElement>('[data-trview]', view).forEach(b => b.onclick = () => { trainsUi.view = b.dataset.trview as typeof trainsUi.view; trainsUi.picked = true; trainsUi.sel = ''; refreshTrains(true); });
+  $('tr-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-trsel]'); if (c) { trainsUi.sel = trainsUi.sel === c.dataset.trsel ? '' : c.dataset.trsel!; refreshTrains(true); } };
+  $('tr-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-trdo]'); if (!b) return; if (b.dataset.trdo === 'close') trainsUi.sel = ''; else trainsUi.tall = !trainsUi.tall; refreshTrains(true); };
+  clearInterval(trainsUi.timer);
+  // the cards run their ages, countdowns and timelines on between reports
+  trainsUi.timer = window.setInterval(() => { if (state.app !== 'trains') { clearInterval(trainsUi.timer); return; } refreshTrains(); }, 250);
+  refreshTrains(true);
+}
+
+/** Brake pipe pressure, 0-127 psig, on an arc; a charged train line is about 90. */
+function trGauge(psig: number, red: boolean): string {
+  const f = Math.max(0, Math.min(1, psig / 127)), a = Math.PI * (1 + f), x = 42 + 34 * Math.cos(a), y = 52 + 34 * Math.sin(a);
+  const t = Math.PI * (1 + 90 / 127);
+  return `<svg class="tr-gauge ${red ? 'red' : ''}" viewBox="0 0 84 60"><path class="t" d="M8 52 A34 34 0 0 1 76 52"/><path class="v" d="M8 52 A34 34 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)}"/>`
+    + `<line x1="${(42 + 29 * Math.cos(t)).toFixed(1)}" y1="${(52 + 29 * Math.sin(t)).toFixed(1)}" x2="${(42 + 39 * Math.cos(t)).toFixed(1)}" y2="${(52 + 39 * Math.sin(t)).toFixed(1)}"/>`
+    + `<text x="42" y="46" class="n">${psig}</text><text x="42" y="57" class="u">PSIG</text></svg>`;
+}
+/** The rear unit's brake pipe pressure across its reports: a drop is the brakes going on. */
+function trPressure(u: EotUnit): string {
+  const v = u.pressure;
+  if (v.length < 2) return '<div class="mt-wait">pressure history builds with each report</div>';
+  const t0 = v[0][0], t1 = Math.max(v[v.length - 1][0], t0 + 1), lo = Math.min(...v.map(p => p[1])) - 4, hi = Math.max(...v.map(p => p[1])) + 4;
+  const pts = v.map(([t, p]) => `${(100 * (t - t0) / (t1 - t0)).toFixed(2)},${(34 - 34 * (p - lo) / Math.max(hi - lo, 1)).toFixed(2)}`);
+  return `<div class="mt-spark cons"><svg viewBox="0 0 100 34" preserveAspectRatio="none"><polygon class="f" points="0,34 ${pts.join(' ')} 100,34"/><polyline class="p" points="${pts.join(' ')}"/></svg></div>`;
+}
+function trUnitCard(u: EotUnit, now: number): string {
+  const age = now - u.lastMs, flash = Math.max(0, 1 - age / 900), live = age < 120_000, p = u.last, br = trBrake(u);
+  const batt = p.batteryCond === 'OK' ? 'ok' : p.batteryCond === 'NOT MONITORED' ? '' : 'red';
+  return `<div class="mt-card tr-card ${trainsUi.sel === 'u' + u.unit ? 'sel' : ''} ${live ? '' : 'dim'}" data-trsel="u${u.unit}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-k"><span class="tr-id">${u.unit}</span><b>${u.channel === 'DPU' ? 'DISTRIBUTED POWER' : 'END OF TRAIN'}</b><small>${u.frames} report${u.frames === 1 ? '' : 's'} · first ${trAgo(now - u.firstMs)}</small></span>${trGauge(p.psig, br?.[1] === 'red')}</div>`
+    + `<div class="tr-pills">${br ? trPill(br[0], br[1]) : ''}${trPill(p.motion ? 'MOVING' : 'STOPPED', p.motion ? 'acc' : '')}${trPill(p.markerLight ? 'MARKER ON' : 'MARKER OFF', p.markerLight ? 'ok' : '')}${trPill(`BATT ${p.batteryPct}%`, batt)}${p.arm !== 'NORMAL' ? trPill(p.arm, 'red') : ''}${u.hotMs > 0 && now - u.hotMs < 600_000 ? trPill('HOT LINK', 'acc') : ''}</div>`
+    + trPressure(u)
+    + `<div class="tr-foot"><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE · ' : ''}${trAgo(age)}</span><small>battery ${p.batteryCond.toLowerCase()} · turbine ${p.turbine ? 'on' : 'off'}${u.snr.length ? ` · +${u.snr[u.snr.length - 1]} dB` : ''}</small></div></div>`;
+}
+/** One PTC station: where, what it is, how often it speaks, when it should speak next, whether its message changes,
+ *  and the last five minutes. */
+function trStationCard(s: PtcStation, now: number): string {
+  const age = now - s.lastMs, flash = Math.max(0, 1 - age / 700), per = stationPeriod(s), live = age < Math.max(30_000, per * 2500);
+  const changed = s.lastChangeMs > 0 && now - s.lastChangeMs < 60_000, loco = s.kind === 'LOCOMOTIVE';
+  const status = changed ? trPill(`STATUS CHANGED ${trAgo(now - s.lastChangeMs)}`, 'red') : stationVaries(s) ? trPill('NEW CONTENT EVERY BURST') : s.steady >= 1 ? trPill(`SAME STATUS ×${s.steady + 1}`, 'ok') : trPill('LISTENING');
+  let next = '';
+  // BOTH has the radio on the EOT channels for a while: nothing is late, it just isn't being heard
+  if (per > 0 && trainsUi.band !== 'PTC') next = '<div class="tr-next"><b class="muted">ON EOT · BACK SOON</b></div>';
+  else if (per > 0) {
+    const el = age / 1000, late = el > per * 1.3;
+    next = `<div class="tr-next ${late ? 'late' : ''}"><span><i style="width:${(100 * Math.min(1, el / per)).toFixed(1)}%"></i></span><b>${late ? `OVERDUE ${(el - per).toFixed(0)} s` : `NEXT IN ${(per - el).toFixed(1)} s`}</b></div>`;
+  }
+  const ticks = s.times.map(t => {
+    const x = 100 * (1 - (now - t) / 300_000); if (x < 0) return '';
+    const fr = Math.max(0, 1 - (now - t) / 1500);
+    return `<line x1="${x.toFixed(2)}" x2="${x.toFixed(2)}" y1="3" y2="17" style="stroke-opacity:${(0.55 + 0.45 * fr).toFixed(2)};stroke-width:${(1.4 + 2 * fr).toFixed(1)}"/>`;
+  }).join('');
+  const shades = [0.18, 0.42, 0.66, 0.95], w = 100 / Math.max(1, s.print.length);
+  const print = s.print.map((v, i) => `<rect x="${(i * w).toFixed(2)}" width="${(w - 0.6).toFixed(2)}" y="0" height="12" style="fill-opacity:${shades[v & 3]}"/>`).join('');
+  return `<div class="mt-card tr-card ${loco ? 'loco' : ''} ${changed || trainsUi.sel === 's' + s.hz ? 'sel' : ''} ${live ? '' : 'dim'}" data-trsel="s${s.hz}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-k"><span class="tr-id">${(s.hz / 1e6).toFixed(4)}</span><b>${PTC_KIND_LABEL[s.kind]}</b></span><span class="tr-per"><b>${per > 0 ? per.toFixed(per < 10 ? 2 : 1) + ' s' : s.bursts === 1 ? 'HEARD ONCE' : '—'}</b><small>${per > 0 ? `EVERY · ${s.bursts} BURSTS` : `${s.bursts} BURST${s.bursts === 1 ? '' : 'S'}`}</small></span></div>`
+    + `<div class="tr-pills">${status}${s.changes > 0 && !changed ? trPill(`${s.changes} CHANGE${s.changes > 1 ? 'S' : ''}`, 'acc') : ''}${trPill(`${s.lastSymbols} SYM`)}</div>`
+    + next
+    + `<svg class="tr-time" viewBox="0 0 100 20" preserveAspectRatio="none"><g class="g">${[20, 40, 60, 80].map(x => `<line x1="${x}" x2="${x}" y1="1" y2="19"/>`).join('')}</g>${ticks}</svg>`
+    + `<svg class="tr-print" viewBox="0 0 100 12" preserveAspectRatio="none">${print}</svg>`
+    + `<div class="tr-foot"><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE · ' : ''}${trAgo(age)}</span><small>π/4-DQPSK 16 kbps${s.snr.length ? ` · +${s.snr[s.snr.length - 1]} dB` : ''}</small></div></div>`;
+}
+function trHotRow(h: HotHeard, now: number): string {
+  return `<div class="tr-hot panel"><b>HOT</b><span><em>command ${h.data.toString(16).toUpperCase().padStart(8, '0')}${h.unit !== null ? ` → unit ${h.unit}` : ''}</em><small>sync ${h.sync24.toString(16).toUpperCase().padStart(6, '0')} · ${h.agree} of 3 copies agree${h.parityOk ? '' : ' · parity?'} · +${h.snrDb} dB</small></span><small>${trAgo(now - h.ms)}</small></div>`;
+}
+/** The PTC band, 216-222.5 MHz: the wayside, base and locomotive sub-bands, and every station heard as a mark at its
+ *  frequency that flares on each burst. The waterfall at 8 MHz can't show a 20 ms burst; this can. */
+function trStrip(stations: PtcStation[], now: number): string {
+  const x = (mhz: number) => 100 * (mhz - 216) / 6.5;
+  const zones = ([[217, 220, 'w'], [220, 221, 'b'], [221, 222, 'l']] as [number, number, string][]).map(([a, b, k]) => `<rect class="z ${k}" x="${x(a)}" width="${x(b) - x(a)}" y="0" height="40"/><line class="u ${k}" x1="${x(a)}" x2="${x(b)}" y1="39" y2="39"/>`).join('');
+  const grid = [217, 218, 219, 220, 221, 222].map(m => `<line class="g" x1="${x(m)}" x2="${x(m)}" y1="0" y2="40"/>`).join('');
+  const marks = stations.map(s => {
+    const fr = Math.max(0, 1 - (now - s.lastMs) / 1200), px = x(s.hz / 1e6), k = s.kind === 'LOCOMOTIVE' ? 'l' : s.kind === 'WAYSIDE' ? 'w' : 'b';
+    return (fr > 0 ? `<ellipse class="f ${k}" cx="${px.toFixed(2)}" cy="18" rx="${(1 + 3 * (1 - fr)).toFixed(2)}" ry="${(6 + 14 * (1 - fr)).toFixed(1)}" style="fill-opacity:${(0.35 * fr).toFixed(2)}"/>` : '')
+      + `<line class="m ${k}" x1="${px.toFixed(2)}" x2="${px.toFixed(2)}" y1="5" y2="33" style="stroke-width:${(2 + 2.5 * fr).toFixed(1)};stroke-opacity:${(0.55 + 0.45 * fr).toFixed(2)}"/>`;
+  }).join('');
+  const labels = [217, 218, 219, 220, 221, 222].map(m => `<span style="left:${x(m).toFixed(2)}%">${m}</span>`).join('');
+  return `<svg viewBox="0 0 100 40" preserveAspectRatio="none">${zones}${grid}${marks}</svg><div class="tr-scale">${labels}</div>`;
+}
+/** Every field the rear unit's frame carries, and what the receiver made of it. */
+function trEotFields(u: EotUnit, now: number): [string, string][] {
+  const p = u.last, lo = Math.min(...u.pressure.map(x => x[1])), hi = Math.max(...u.pressure.map(x => x[1]));
+  let hex = ''; for (let i = 0; i < p.bits.length; i += 4) hex += parseInt(p.bits.slice(i, i + 4).padEnd(4, '0'), 2).toString(16).toUpperCase();
+  return [
+    ['UNIT ID', `${p.unit}  (0x${p.unit.toString(16).toUpperCase().padStart(5, '0')})`], ['CHANNEL', u.channel === 'DPU' ? 'DPU 457.925 MHz' : 'EOT 457.9375 MHz'],
+    ['BRAKE PIPE', `${p.psig} psig`], ['RANGE HEARD', `${lo} – ${hi} psig over ${u.pressure.length} reports`], ['BRAKES', trBrake(u)?.[0] ?? 'released / steady'],
+    ['MOTION', p.motion ? 'moving' : 'stopped'], ['MARKER LIGHT', p.markerLight ? 'on' : 'off'], ['MARKER BATTERY', p.markerBattery ? 'ok' : 'weak'],
+    ['BATTERY', `${p.batteryPct}% · ${p.batteryCond.toLowerCase()}`], ['AIR TURBINE', p.turbine ? 'generating' : 'off'], ['VALVE CIRCUIT', p.valve ? '1 (ready)' : '0'],
+    ['ARM STATUS', p.arm.toLowerCase()], ['MESSAGE TYPE', `${p.type} (${p.type.toString(2).padStart(3, '0')})`], ['CONFIRM BIT', p.confirm ? '1' : '0'],
+    ['HEAD UNIT LINK', u.hotMs > 0 ? `command heard ${trAgo(now - u.hotMs)}` : 'none heard'], ['REPORTS', `${u.frames}`],
+    ['FIRST HEARD', trClock(u.firstMs)], ['LAST HEARD', `${trClock(u.lastMs)} · ${trAgo(now - u.lastMs)}`],
+    ['SIGNAL', u.snr.length ? `+${u.snr[u.snr.length - 1]} dB (best +${Math.max(...u.snr)} dB)` : '—'], ['CHECK', 'BCH(63,45) passed'], ['FRAME', hex],
+  ];
+}
+/** Everything that can be read off a PTC station without the network's keys. */
+function trPtcFields(s: PtcStation, now: number): [string, string][] {
+  const per = stationPeriod(s);
+  const role = s.kind === 'WAYSIDE' ? 'wayside interface unit (217–220 MHz): signals and switches on its block' : s.kind === 'BASE' ? "base station (220–221 MHz): the network's beacon" : s.kind === 'LOCOMOTIVE' ? 'locomotive (221–222 MHz): a PTC train in range' : 'PTC, outside the usual sub-bands';
+  return [
+    ['FREQUENCY', `${(s.hz / 1e6).toFixed(4)} MHz`], ['ROLE', role],
+    ['PERIOD', per > 0 ? `${per.toFixed(2)} s (${s.gaps.slice(-4).map(g => g.toFixed(1)).join(' · ')})` : '—'], ['BURSTS', `${s.bursts}`],
+    ['MESSAGE LENGTHS', s.lengths.map(n => `${n} sym`).join(' · ')], ['CONTENT', stationVaries(s) ? 'new every burst (a running counter or time)' : s.steady >= 1 ? `same ×${s.steady + 1}` : '—'],
+    ['STATUS CHANGES', s.changes > 0 ? `${s.changes} · last ${trAgo(now - s.lastChangeMs)}` : 'none'], ['STATION HEADER', symHex(s.last, 0, 16)],
+    ['CARRIER', `${s.carrierHz >= 0 ? '+' : ''}${s.carrierHz.toFixed(0)} Hz off channel (its own crystal)`], ['SIGNAL', `+${s.snr[s.snr.length - 1] ?? 0} dB (best +${s.snrMax} dB)`],
+    ['FIRST HEARD', trClock(s.firstMs)], ['LAST HEARD', `${trClock(s.lastMs)} · ${trAgo(now - s.lastMs)}`],
+    ['MODULATION', 'π/4-DQPSK · 8000 sym/s · 16 kbps · 25 kHz'], ['SYNC', '9-symbol preamble + shared 30-symbol word'], ['MESSAGE', symHex(s.last)],
+  ];
+}
+function trDetail(title: string, kind: string, fields: [string, string][], red: boolean): string {
+  return `<div class="mt-dh ${red ? 'red' : ''}"><b>${esc(title)}</b><span>${esc(kind)}</span><button class="chip" data-trdo="tall">${trainsUi.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-trdo="close">✕</button></div>`
+    + `<div class="mt-fields tr-fields ${trainsUi.tall ? 'tall' : ''}">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
+}
+const TRAIN_SCENE = '<svg class="tr-scene" viewBox="0 0 92 40"><line class="rail" x1="0" y1="37.6" x2="92" y2="37.6"/><g class="ties">'
+  + Array.from({ length: 12 }, (_, i) => `<line x1="${i * 10.2 - 10}" y1="36" x2="${i * 10.2 - 12.5}" y2="40"/>`).join('')
+  + '</g><rect class="body" x="5.5" y="11.2" width="57" height="16.8" rx="3"/><rect x="41" y="2.4" width="17" height="8.8" rx="2"/><path d="M62.5 14.6 L71.7 20.4 L71.7 28 L62.5 28"/>'
+  + '<circle class="lamp" cx="71.7" cy="21.6" r="2.4"/><path class="beam" d="M71.7 21.6 L92 10.4 L92 30.4 Z"/>'
+  + '<g class="w"><circle cx="16" cy="32" r="4.8"/><circle cx="34.3" cy="32" r="4.8"/><circle cx="52.6" cy="32" r="4.8"/></g></svg>';
+function refreshTrains(force = false): void {
+  if (state.app !== 'trains') return;
+  const now = Date.now();
+  if (!force && now - trainsUi.drawn < 240) { clearTimeout(trainsUi.pending); trainsUi.pending = window.setTimeout(() => refreshTrains(true), 250); return; }
+  trainsUi.drawn = now;
+  const s = trainsUi.snap, units = s?.units ?? [], stations = s?.stations ?? [], hots = s?.hots ?? [], band = trainsUi.band;
+  // whoever is heard first picks the view: a unit's card, else the PTC stations
+  if (!trainsUi.picked && units.length === 0 && stations.length > 0 && trainsUi.view === 'units') trainsUi.view = 'ptc';
+  qa<HTMLButtonElement>('[data-trband]').forEach(b => b.classList.toggle('on', trainsUi.auto ? b.dataset.trband === 'BOTH' : b.dataset.trband === band));
+  qa<HTMLButtonElement>('[data-trview]').forEach(b => { const v = b.dataset.trview; b.classList.toggle('on', v === trainsUi.view); b.textContent = v === 'units' ? `EOT · ${units.length}` : v === 'ptc' ? `PTC · ${stations.length}` : `HOT · ${hots.length}`; });
+  const lamps = q('#tr-lamps');
+  if (lamps) {
+    const hears = s?.hears ?? [], act = s?.activity ?? {};
+    lamps.innerHTML = band === 'EOT'
+      ? ([['EOT', '457.9375'], ['HOT', '452.9375'], ['DPU', '457.925']] as [string, string][]).map(([n, mhz]) => { const on = hears.includes(n), lit = on && now - (act[n] ?? 0) < 1500; return `<span class="tr-lamp ${lit ? 'lit' : on ? 'on' : ''}"><i></i>${n} ${mhz}</span>`; }).join('') + (hears.includes('HOT') || !s ? '' : '<small>HOT needs a radio 6 MHz wide</small>')
+      : '<span class="tr-lamp on"><i></i>WAYSIDE 217</span><span class="tr-lamp on"><i></i>BASE 220</span><span class="tr-lamp on"><i></i>LOCO 221</span>';
+  }
+  // the headline: a train nearby (a rear unit, a locomotive on PTC, or a head unit's command in the last two minutes),
+  // moving, stopped or braking; a PTC locomotive or the brakes going on turn it red
+  const recent = units.filter(u => now - u.lastMs < 120_000), loco = stations.filter(x => x.kind === 'LOCOMOTIVE' && now - x.lastMs < 120_000), hot = hots.find(h => now - h.ms < 120_000);
+  const train = recent.length > 0 || loco.length > 0 || !!hot, moving = recent.some(u => u.last.motion);
+  const braking = recent.map(trBrake).find(b => b !== null) ?? null;
+  const red = braking?.[1] === 'red' || loco.length > 0;
+  const head = braking?.[1] === 'red' ? (braking[0].startsWith('EMERGENCY') ? 'EMERGENCY BRAKING' : 'TRAIN BRAKING') : train && moving ? 'TRAIN NEARBY · MOVING' : recent.length ? 'TRAIN NEARBY · STOPPED' : loco.length ? 'PTC TRAIN APPROACHING' : train ? 'TRAIN NEARBY' : stations.length ? 'PTC TERRITORY' : 'LISTENING FOR TRAINS';
+  const bits: string[] = [];
+  if (recent[0]) bits.push(`rear unit ${recent[0].unit} · ${recent[0].last.psig} psig`);
+  if (loco.length) bits.push(`${loco.length} locomotive${loco.length > 1 ? 's' : ''} on PTC`);
+  if (hot) bits.push(`head unit command ${trAgo(now - hot.ms)}`);
+  // a wayside's status changing is the signal and switch logic reacting to a train on its block
+  const way = stations.filter(x => x.kind === 'WAYSIDE' && x.lastChangeMs > 0 && now - x.lastChangeMs < 120_000).sort((a, b) => b.lastChangeMs - a.lastChangeMs)[0];
+  if (way) bits.push(`wayside ${(way.hz / 1e6).toFixed(4)} changed ${trAgo(now - way.lastChangeMs)}`);
+  if (!bits.length) { const base = stations.filter(x => x.kind === 'BASE').length, wn = stations.filter(x => x.kind === 'WAYSIDE').length; bits.push(stations.length ? `${base} base · ${wn} wayside station${wn === 1 ? '' : 's'} heard` : 'end-of-train units and the PTC network'); }
+  const banner = q('#tr-banner');
+  if (banner) {
+    banner.className = `tr-banner ${train ? 'train' : ''} ${red ? 'red' : ''} ${moving || (loco.length && !recent.length) ? 'rolling' : ''}`;
+    if (!banner.firstElementChild) banner.innerHTML = `${TRAIN_SCENE}<span><b></b><small></small></span>`;
+    q('b', banner)!.textContent = head; q('small', banner)!.textContent = bits.join(' · ');
+  }
+  const strip = q('#tr-strip');
+  if (strip) { strip.hidden = !(band === 'PTC' || trainsUi.auto || stations.length > 0); if (!strip.hidden) strip.innerHTML = trStrip(stations, now); }
+  const cards = q('#tr-cards'), det = q('#tr-detail');
+  if (cards && !paused.has('trains')) {
+    const top = cards.scrollTop, v = trainsUi.view;
+    cards.innerHTML = v === 'units'
+      ? (units.length ? [...units].sort((a, b) => a.firstMs - b.firstMs).map(u => trUnitCard(u, now)).join('') : `<div class="empty">${band === 'EOT' || trainsUi.auto ? 'no end-of-train unit heard yet · they report about once a minute and on every brake change' : 'switch to EOT · HOT to hear the rear units'}</div>`)
+      : v === 'ptc'
+        // in the order first heard: a new station joins at the end, so nothing the eye is on moves
+        ? (stations.length ? [...stations].sort((a, b) => a.firstMs - b.firstMs).map(x => trStationCard(x, now)).join('') : `<div class="empty">${band === 'PTC' || trainsUi.auto ? `watching 216–222.5 MHz for the train-control network${s && s.other > 0 ? ` · ${s.other} other bursts` : ''}` : 'switch to PTC 220 to watch the train-control network'}</div>`)
+        : (hots.length ? hots.map(h => trHotRow(h, now)).join('') : '<div class="empty">no head-of-train command heard yet · a locomotive sends one when it checks on its rear unit or brakes</div>');
+    cards.scrollTop = top;
+  }
+  if (det) {
+    const u = trainsUi.view === 'units' ? units.find(x => 'u' + x.unit === trainsUi.sel) : undefined;
+    const st = trainsUi.view === 'ptc' ? stations.find(x => 's' + x.hz === trainsUi.sel) : undefined;
+    det.hidden = !u && !st;
+    const top = q('.mt-fields', det)?.scrollTop ?? 0;
+    if (u) det.innerHTML = trDetail(`${u.unit}`, u.channel === 'DPU' ? 'DISTRIBUTED POWER' : 'END OF TRAIN', trEotFields(u, now), false);
+    else if (st) det.innerHTML = trDetail((st.hz / 1e6).toFixed(4), PTC_KIND_LABEL[st.kind], trPtcFields(st, now), st.kind === 'LOCOMOTIVE');
+    const f = q('.mt-fields', det); if (f) f.scrollTop = top;
+  }
+  const b = trainsBurst();
+  if (b !== null) setMeter(b / 40, `BURST +${b} dB`);
+  if (train) setLamp('TRAIN NEARBY', 'amber', true); else if (stations.length) setLamp(`${stations.length} PTC STATION${stations.length === 1 ? '' : 'S'}`, 'ok');
+}
+
 // ---- LoRa: every Meshtastic, MeshCore and LoRaWAN node heard across the span ------------------------------------
 const LORA_WIDE = 20_000_000, LORA_NARROW = 2_000_000;
 interface LoraNodeRow { key: string; proto: string; label: string; name: string | null; kind: string; lat: number | null; lon: number | null; firstMs: number; lastMs: number; packets: number; snr: number[]; fields: { name: string; value: string }[]; last: string; hz: number; modem: string; texts: string[] }
@@ -4279,7 +4537,7 @@ function refreshReadout(): void {
   if (!meterOwned()) setMeter(lastLevel / 40, `SIGNAL +${Math.max(0, Math.round(lastLevel))} dB`);
 }
 /** Apps that drive the card's meter themselves (Audio's channel over the noise, HAM's S-meter, sweeps' progress). */
-const meterOwned = () => state.app === 'audio' || state.app === 'ham' || state.app === 'sat' || state.app === 'lookingglass' || state.app === 'search' || state.app === 'prowl' || state.app === 'transmit' || state.app === 'troll';
+const meterOwned = () => (state.app === 'trains' && trainsBurst() !== null) || state.app === 'audio' || state.app === 'ham' || state.app === 'sat' || state.app === 'lookingglass' || state.app === 'search' || state.app === 'prowl' || state.app === 'transmit' || state.app === 'troll';
 /** Screens held still by their PAUSE button. Decoding carries on underneath; the rows catch up on RESUME. */
 const paused = new Set<string>();
 function togglePause(id: string): void {
@@ -4298,6 +4556,7 @@ function redraw(id: string): void {
     case 'psat': refreshPacketSats(); break;
     case 'ert': refreshList(id); refreshMeters(true); break;
     case 'lora': refreshList(id); refreshLora(true); break;
+    case 'trains': refreshList(id); refreshTrains(true); break;
     default: refreshList(id);
   }
 }
@@ -4314,6 +4573,7 @@ function clearApp(id: string): void {
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
+    case 'trains': trainsUi.snap = null; break;
   }
   worker?.postMessage({ type: 'clear' });
   // a cleared screen shows empty even while paused - the freeze is for reading rows, and there are none now
@@ -4663,6 +4923,7 @@ function ensureWorker(): Worker {
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
       case 'meters': meters.snap = m as MetersSnap; refreshMeters(); break;
       case 'lora': loraUi.snap = m as LoraSnap; refreshLora(); break;
+      case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
       case 'huntPage': onHuntPage(m); break;
@@ -5138,7 +5399,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TYRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TYRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'SENSORS · METERS · REMOTES'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

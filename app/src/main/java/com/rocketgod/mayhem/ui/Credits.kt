@@ -43,6 +43,7 @@ object Credits {
         true to "ALSO",
         false to "Wardrive Go — the HackRF driver, SDR engine and ADS-B map started there",
         false to "PDW — FLEX and POCSAG on one channel",
+        false to "Trains — end-of-train field layout and BCH check after PyEOT by Eric Reuter; the PTC waveform worked out from recordings",
         false to "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid",
     )
 }
