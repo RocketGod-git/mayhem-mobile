@@ -98,6 +98,8 @@ fun MayhemScreen(status: String, connected: Boolean) {
     var faves by remember { mutableStateOf(false) }
     SideEffect { RadioStatus.text = status; RadioStatus.connected = connected }
     BackHandler(enabled = current != null) { Apps.back() }
+    // registered after, so it wins: back closes the RADIO panel before it leaves the app under it
+    BackHandler(enabled = RadioUi.open) { RadioUi.open = false }
     // every screen, Home included, is a live receiver: none of them may dim and lock mid-listen
     val view = LocalView.current
     DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
@@ -134,6 +136,8 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.TROLL -> TrollScreen(accent)
                     MayhemApp.SETTINGS -> SettingsScreen(accent)
                 }
+                // over the app, which keeps running and receiving underneath
+                if (RadioUi.open) RadioPanel(accent)
             }
             AppScroller(current)
         }
@@ -167,24 +171,33 @@ private fun RadioMissing(status: String) {
     }
 }
 
-/** HOME · FAVES · MUTE · SETTINGS, icon and word on one line: everything here works from any screen. */
+/** HOME · FAVES · MUTE · RADIO · SETTINGS, icon and word on one line: everything here works from any screen. */
 @Composable
 private fun TopBar(current: MayhemApp?, connected: Boolean, accent: Color, favesOpen: Boolean, onFaves: () -> Unit) {
     val d = rememberDims()
     val muted by SdrEngine.muted.collectAsState()
     val onSettings = current == MayhemApp.SETTINGS
+    val radioOpen = RadioUi.open
+    // a longer word gets a wider button, so SETTINGS fits beside four short ones on a phone
+    fun w(label: String) = maxOf(1f, label.length / 5f)
     // tablets: a slimmer bar than the phone's, so the screen below starts higher
     val slim = d.cls != ScreenClass.COMPACT
     Column(Modifier.fillMaxWidth().background(Palette.surface)) {
         Box(Modifier.fillMaxWidth().height(2.dp).background(accent))
         Row(Modifier.fillMaxWidth().height(d.dp(if (slim) 32f else 44f)).padding(horizontal = d.dp(8f)), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-            TopButton(AppsIcon, "HOME", on = current == null, accent = accent, modifier = Modifier.weight(1f)) { if (current != null) Apps.home() }
-            TopButton(StarIcon, "FAVES", on = favesOpen, accent = accent, modifier = Modifier.weight(1f)) { onFaves() }
+            TopButton(AppsIcon, "HOME", on = current == null && !radioOpen, accent = accent, modifier = Modifier.weight(w("HOME"))) {
+                RadioUi.open = false; if (current != null) Apps.home()
+            }
+            TopButton(StarIcon, "FAVES", on = favesOpen, accent = accent, modifier = Modifier.weight(w("FAVES"))) { onFaves() }
             TopButton(if (muted) SpeakerOffIcon else SpeakerIcon, if (muted) "MUTED" else "MUTE", on = false, accent = accent,
-                warn = muted, modifier = Modifier.weight(1f)) { SdrEngine.toggleMute() }
-            Box(Modifier.weight(1f)) {
-                TopButton(GearIcon, "SETTINGS", on = onSettings, accent = accent, modifier = Modifier.fillMaxWidth()) {
+                warn = muted, modifier = Modifier.weight(w("MUTED"))) { SdrEngine.toggleMute() }
+            TopButton(TuneIcon, "RADIO", on = radioOpen, accent = accent, modifier = Modifier.weight(w("RADIO"))) {
+                if (radioOpen) RadioUi.open = false else RadioUi.show()
+            }
+            Box(Modifier.weight(w("SETTINGS"))) {
+                TopButton(GearIcon, "SETTINGS", on = onSettings && !radioOpen, accent = accent, modifier = Modifier.fillMaxWidth()) {
+                    RadioUi.open = false
                     if (onSettings) Apps.back() else Apps.open(MayhemApp.SETTINGS)
                 }
                 Box(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp).size(6.dp).background(if (connected) Palette.ok else Palette.danger, CircleShape))
@@ -232,6 +245,7 @@ private fun AppScroller(current: MayhemApp?) {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StripGear { SettingsNav.open("bar") }
         StripSegments(bar, lit, Modifier.weight(1f)) { app ->
+            RadioUi.open = false
             when {
                 current == app -> {}
                 // the app Settings is open over: just close Settings, don't start it again

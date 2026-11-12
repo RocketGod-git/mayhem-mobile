@@ -78,10 +78,48 @@ object SdrEngine {
     val radioVga: StateFlow<Int> = _radioVga.asStateFlow()
     private val _radioAmp = MutableStateFlow(false)
     val radioAmp: StateFlow<Boolean> = _radioAmp.asStateFlow()
-    /** RTL-SDR Blog bias tee (GPIO0, DC out the antenna port). Off by default; the UI gates the first enable. */
+    /**
+     * DC out the antenna port for an inline LNA: an RTL-SDR Blog bias tee (GPIO0, 4.5 V) or a HackRF's antenna power
+     * (ANTENNA_ENABLE, 3.3 V). Off at every connect; the UI gates the first enable behind a warning.
+     */
     private val _biasTee = MutableStateFlow(false)
     val biasTee: StateFlow<Boolean> = _biasTee.asStateFlow()
-    fun setBiasTee(on: Boolean) { _biasTee.value = on; RtlSdr.targetBiasTee = on }
+    fun setBiasTee(on: Boolean) { _biasTee.value = on; RtlSdr.targetBiasTee = on; HackRfOne.biasT = on }
+
+    // ---- The rest of what the RADIO panel sets: each lands on the driver, which applies it between buffers ----
+    /** The R82xx tuner's own automatic gain. It and the app's AGC cannot both drive one knob, so each turns the other off. */
+    private val _tunerAgc = MutableStateFlow(false)
+    val tunerAgc: StateFlow<Boolean> = _tunerAgc.asStateFlow()
+    fun setTunerAgc(on: Boolean) {
+        _tunerAgc.value = on; RtlSdr.tunerAgc = on
+        // Two automatic gains fighting over one knob would hunt, so the tuner's takes over from the app's.
+        if (on && _agc.value) { _agc.value = false; agcLast = 0; saveGains(); Diag.log("tuner AGC on, so the app's AGC is off") }
+    }
+    private fun tunerAgcOff(why: String?) {
+        if (!_tunerAgc.value) return
+        _tunerAgc.value = false; RtlSdr.tunerAgc = false
+        if (why != null) Diag.log(why)
+    }
+    /** The RTL2832U's digital AGC. */
+    private val _rtlAgc = MutableStateFlow(false)
+    val rtlAgc: StateFlow<Boolean> = _rtlAgc.asStateFlow()
+    fun setRtlAgc(on: Boolean) { _rtlAgc.value = on; RtlSdr.rtlAgc = on }
+    /** An RTL-SDR's crystal correction in parts per million, remembered across launches. */
+    private val _ppm = MutableStateFlow(0)
+    val ppm: StateFlow<Int> = _ppm.asStateFlow()
+    fun setPpm(v: Int) {
+        val p = v.coerceIn(-200, 200)
+        _ppm.value = p; RtlSdr.ppm = p
+        prefs?.edit()?.putInt("rtl_ppm", p)?.apply()
+    }
+    /** Whether an R820T/R820T2 may drop into direct sampling below 24 MHz. */
+    private val _directSampling = MutableStateFlow(true)
+    val directSampling: StateFlow<Boolean> = _directSampling.asStateFlow()
+    fun setDirectSampling(on: Boolean) { _directSampling.value = on; RtlSdr.setDirectSampling(on) }
+    /** A HackRF's baseband filter in hertz, or 0 for AUTO (the largest under the sample rate). */
+    private val _bbFilterHz = MutableStateFlow(0)
+    val bbFilterHz: StateFlow<Int> = _bbFilterHz.asStateFlow()
+    fun setBbFilter(hz: Int) { _bbFilterHz.value = hz; HackRfOne.bbFilterHz = hz }
 
     /**
      * Automatic gain, on by default: hold the ADC level (iqRMS, once a second) where the 8-bit converter has both
@@ -117,6 +155,7 @@ object SdrEngine {
             radioMode = runCatching { Mode.valueOf(p.getString("dial_mode", null) ?: "") }.getOrDefault(radioMode)
         }
         rdsOn = p.getBoolean("rds", true); _rdsWanted.value = rdsOn
+        _ppm.value = p.getInt("rtl_ppm", 0).coerceIn(-200, 200); RtlSdr.ppm = _ppm.value
     }
 
     /** Remember where the receivers are tuned, for the other apps and the next launch. */
@@ -131,9 +170,11 @@ object SdrEngine {
         if (isPro()) gainPrefPro = g else gainPrefOne = g
         prefs?.edit()?.putString(gainKey(), g.joinToString(","))?.apply()
     }
-    fun setAgc(on: Boolean) { _agc.value = on; agcLast = 0; saveGains() }
-    /** AGC on without touching the saved gains: a screen that has no gain controls of its own rides it. */
-    fun rideAgc() { if (gainPref == null && !_agc.value) { _agc.value = true; agcLast = 0 } }
+    /** The app's AGC and the tuner's own cannot both drive one knob: handing it to the app takes it from the tuner. */
+    fun setAgc(on: Boolean) { if (on) tunerAgcOff(null); _agc.value = on; agcLast = 0; saveGains() }
+    /** AGC on without touching the saved gains: a screen that has no gain controls of its own rides it. The tuner's
+     *  own AGC, when the user turned it on, is left alone. */
+    fun rideAgc() { if (gainPref == null && !_agc.value && !_tunerAgc.value) { _agc.value = true; agcLast = 0 } }
 
     private fun isPro() = HackRfOne.boardLabel.contains("Pro", ignoreCase = true)
     /**
@@ -418,7 +459,8 @@ object SdrEngine {
         wideScan = false
         _rateHz.value = Radio.nearestRate(Radio.limits, _rateHz.value)
         _radioVga.value = minOf(_radioVga.value, vgaMax())
-        _biasTee.value = false; RtlSdr.targetBiasTee = false   // a dongle powers up with the tee off; keep it that way until asked
+        // antenna power is off at every connect (a dongle powers up with its tee off); keep it that way until asked
+        _biasTee.value = false; RtlSdr.targetBiasTee = false; HackRfOne.biasT = false
         syncDriver()
     }
 
@@ -579,10 +621,12 @@ object SdrEngine {
     /** A hand on the LNA or VGA switches the AGC off so the setting sticks, and is remembered for every app. */
     fun setRadioLna(db: Int) {
         if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
+        tunerAgcOff("gain set by hand, so the tuner AGC is off")
         _agc.value = false; _radioLna.value = (db.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; syncDriver(); saveGains()
     }
     fun setRadioVga(db: Int) {
         if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
+        tunerAgcOff("gain set by hand, so the tuner AGC is off")
         _agc.value = false; _radioVga.value = (db.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; syncDriver(); saveGains()
     }
     fun toggleRadioAmp() { _radioAmp.value = !_radioAmp.value; syncDriver(); saveGains() }
@@ -592,6 +636,7 @@ object SdrEngine {
         _radioLna.value = (lna.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP
         _radioVga.value = (vga.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP
         _radioAmp.value = amp; _agc.value = agc; agcLast = 0
+        tunerAgcOff(null)   // a favorite's gain, automatic or not, is the app's
         syncDriver()
         if (!agc) saveGains()
     }

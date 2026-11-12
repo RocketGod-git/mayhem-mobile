@@ -36,6 +36,51 @@ object Radio {
         Kind.NONE -> ""
     }
 
+    /**
+     * The settings a radio can take beyond frequency, one flag per control on the RADIO panel. A control whose flag
+     * is false is not drawn at all: a switch that moves and changes nothing is worse than no switch.
+     */
+    data class Caps(
+        /** A HackRF's two receive stages: LNA 0-40 dB in 8s and VGA 0-62 dB in 2s. */
+        val stagedGain: Boolean,
+        /** An RTL-SDR's single tuner gain, 0-48.8 dB. */
+        val tunerGain: Boolean,
+        /** The HackRF's +14 dB front-end amplifier. */
+        val amp: Boolean,
+        /** DC on the antenna port for an inline LNA: HackRF antenna power (3.3 V), RTL-SDR Blog bias tee (4.5 V). */
+        val biasT: Boolean,
+        /** Volts the bias tee puts out, for the warning. */
+        val biasVolts: Double,
+        /** The R82xx tuner's own automatic gain. */
+        val tunerAgc: Boolean,
+        /** The RTL2832U's digital AGC. */
+        val rtlAgc: Boolean,
+        /** Crystal correction in parts per million. */
+        val ppm: Boolean,
+        /** HF by direct sampling of the ADC's Q branch (R820T/R820T2 only). */
+        val directSampling: Boolean,
+        /** The MAX2837's baseband filter bandwidths, in hertz; empty when the radio has no choice. */
+        val bbFilters: List<Int>,
+    )
+
+    /** Everything a HackRF (One, r9, Pro, or a PortaPack in HackRF mode) can be told besides frequency. */
+    val HACKRF_CAPS by lazy {
+        Caps(stagedGain = true, tunerGain = false, amp = true, biasT = true, biasVolts = 3.3,
+            tunerAgc = false, rtlAgc = false, ppm = false, directSampling = false, bbFilters = com.rocketgod.mayhem.usb.HackRfOne.BB_FILTER_BW.toList())
+    }
+
+    /** What the attached radio can be told, for the RADIO panel; null with nothing attached. Only what bring-up has found is listed. */
+    val caps: Caps? get() = when (_kind.value) {
+        Kind.HACKRF -> HACKRF_CAPS
+        Kind.RTLSDR -> Caps(stagedGain = false, tunerGain = true, amp = false, biasT = true, biasVolts = 4.5,
+            tunerAgc = true, rtlAgc = true, ppm = true, directSampling = com.rocketgod.mayhem.usb.RtlSdr.canDirectSample, bbFilters = emptyList())
+        Kind.NONE -> null
+    }
+
+    /** Sample rates worth offering by hand, highest first; each radio shows the ones it accepts. */
+    val RATE_CHOICES = listOf(20_000_000, 16_000_000, 12_500_000, 10_000_000, 8_000_000, 4_000_000, 3_200_000, 2_800_000,
+        2_400_000, 2_048_000, 2_000_000, 1_800_000, 1_400_000, 1_024_000, 250_000)
+
     fun canTune(l: Limits, hz: Long) = hz in l.minHz..l.maxHz
     fun canSample(l: Limits, hz: Int) = l.rates.any { hz in it }
 

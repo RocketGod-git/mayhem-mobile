@@ -72,6 +72,7 @@ import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.NavBar
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.RtlSdr
 import kotlinx.coroutines.delay
 import com.rocketgod.mayhem.core.ham.Ham
@@ -82,6 +83,7 @@ import kotlin.math.roundToInt
 object SettingsNav {
     var jump by mutableStateOf<String?>(null)
     fun open(section: String) {
+        RadioUi.open = false
         jump = section
         if (Apps.current.value != MayhemApp.SETTINGS) Apps.open(MayhemApp.SETTINGS)
     }
@@ -104,21 +106,13 @@ fun SettingsScreen(accent: Color) {
     val edges = remember { floatArrayOf(0f, 0f) }   // the scroll viewport's top and bottom in the window, for drag auto-scroll
     var q by remember { mutableStateOf("") }
     val over = Apps.settingsOver()
-    val radio by Radio.kind.collectAsState()
-    val agc by SdrEngine.agc.collectAsState()
-    val lna by SdrEngine.radioLna.collectAsState()
-    val vga by SdrEngine.radioVga.collectAsState()
-    val amp by SdrEngine.radioAmp.collectAsState()
-    val bias by SdrEngine.biasTee.collectAsState()
     val multi by Apps.pagerMulti.collectAsState()
     val rdsOn by SdrEngine.rdsWanted.collectAsState()
     val hdOn by SdrEngine.hdWanted.collectAsState()
     val ham by Ham.state.collectAsState()
     val opensLast by NavBar.opensOnLast.collectAsState()
     val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
-    var askBias by remember { mutableStateOf(false) }
     var how by remember { mutableStateOf<MayhemApp?>(null) }
-    if (askBias) BiasTeeDialog(accent, onConfirm = { NavBar.acceptBias(); SdrEngine.setBiasTee(true); askBias = false }, onCancel = { askBias = false })
     LaunchedEffect(SettingsNav.jump) {
         val j = SettingsNav.jump ?: return@LaunchedEffect
         delay(80)
@@ -141,26 +135,12 @@ fun SettingsScreen(accent: Color) {
         )
         else -> emptyList()
     }
-    val rtl = radio == Radio.Kind.RTLSDR
-    val hfTuner = rtl && RtlSdr.hfReady
-    val radioRows = when (radio) {
-        Radio.Kind.NONE -> listOf(SRow("radio none") { ValueRow("No radio attached", "plug in", "A HackRF or an RTL-SDR over USB-OTG.") })
-        Radio.Kind.RTLSDR -> listOf(
-            SRow("agc automatic gain") { SwitchRow("AGC", agc) { SdrEngine.setAgc(it) } },
-            SRow("gain db tuner") { SliderRow("Gain", vga, 0, SdrEngine.vgaMax(), SdrEngine.VGA_STEP, "dB", auto = agc) { SdrEngine.setRadioVga(it) } },
-            SRow("bias tee lna power dc") { SwitchRow("Bias tee", bias) { on -> if (!on) SdrEngine.setBiasTee(false) else if (NavBar.biasOk) SdrEngine.setBiasTee(true) else askBias = true } },
-            SRow("hf shortwave below 24 direct sampling upconverter") {
-                ValueRow("HF below 24 MHz", if (hfTuner) "Automatic" else "Not on this tuner",
-                    if (hfTuner) "Upconverter on a V4L, direct sampling on a V3." else null)
-            },
-        )
-        else -> listOf(
-            SRow("agc automatic gain") { SwitchRow("AGC", agc) { SdrEngine.setAgc(it) } },
-            SRow("amp rf amplifier 14") { SwitchRow("Amp", amp, "+14 dB ahead of everything") { if (it != amp) SdrEngine.toggleRadioAmp() } },
-            SRow("lna gain") { SliderRow("LNA", lna, 0, SdrEngine.LNA_MAX, SdrEngine.LNA_STEP, "dB", auto = agc) { SdrEngine.setRadioLna(it) } },
-            SRow("vga gain") { SliderRow("VGA", vga, 0, SdrEngine.VGA_MAX, SdrEngine.VGA_STEP, "dB", auto = agc) { SdrEngine.setRadioVga(it) } },
-        )
-    }
+    // The radio's own settings live under RADIO in the top bar; this one row is where a search for gain lands.
+    val radioRows = listOf(SRow("gain lna vga amp agc bias tee ppm sample rate filter") {
+        SRowLayout("Radio settings", "Gain, AGC, amp, bias tee, filters, sample rate and the rest of what the connected radio can do now live under RADIO at the top.") {
+            SmallButton("OPEN", accent) { RadioUi.show() }
+        }
+    })
     val barRows = listOf(
         SRow("opens on start home last") { SegRow("Opens on", listOf("home" to "HOME", "last" to "LAST APP"), if (opensLast) "last" else "home") { NavBar.setOpensOnLast(it == "last") } },
     )
@@ -313,6 +293,172 @@ private fun Badge(text: String, hot: Boolean = false) {
         modifier = Modifier.border(1.dp, if (hot) c else Palette.line, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp))
 }
 
+// ---------------------------------------------------------------- RADIO: the connected radio's own settings
+
+/** The RADIO panel: open over whatever is running, which keeps receiving underneath. */
+object RadioUi {
+    var open by mutableStateOf(false)
+    /** Open it; Settings closes first (it is an app here, so leaving it goes back to what it was open over). */
+    fun show() {
+        if (Apps.current.value == MayhemApp.SETTINGS) Apps.back()
+        open = true
+    }
+}
+
+/**
+ * Everything the connected radio can be told besides frequency, in one place apart from Settings. Each radio lists
+ * what it really has ([Radio.Caps]), and only those controls are drawn: a HackRF gets LNA, VGA, the amp, antenna power
+ * and the baseband filter; an RTL-SDR gets its tuner gain, the tuner's and the RTL's AGCs, the bias tee, crystal
+ * correction and, on an R820T, direct sampling. Every control applies to the radio at once.
+ */
+@Composable
+fun RadioPanel(accent: Color) {
+    val d = rememberDims()
+    val radio by Radio.kind.collectAsState()
+    val agc by SdrEngine.agc.collectAsState()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    val bias by SdrEngine.biasTee.collectAsState()
+    val tunerAgc by SdrEngine.tunerAgc.collectAsState()
+    val rtlAgc by SdrEngine.rtlAgc.collectAsState()
+    val ppm by SdrEngine.ppm.collectAsState()
+    val ds by SdrEngine.directSampling.collectAsState()
+    val bb by SdrEngine.bbFilterHz.collectAsState()
+    val rate by SdrEngine.rateHz.collectAsState()
+    // the driver's status line changes once bring-up has named the board or tuner, which is when the caps are known
+    @Suppress("UNUSED_VARIABLE") val status = RadioStatus.text
+    val over = Apps.playing()
+    val caps = Radio.caps
+    val rtl = radio == Radio.Kind.RTLSDR
+    var askBias by remember { mutableStateOf(false) }
+    if (askBias) BiasTeeDialog(accent, caps?.biasVolts ?: 4.5, if (rtl) "RTL-SDR" else "HackRF",
+        onConfirm = { NavBar.acceptBias(); SdrEngine.setBiasTee(true); askBias = false }, onCancel = { askBias = false })
+    // Bias tee pushes DC out the antenna port, so it is off by default and the first enable asks first.
+    fun toggleBias(on: Boolean) { if (!on) SdrEngine.setBiasTee(false) else if (NavBar.biasOk) SdrEngine.setBiasTee(true) else askBias = true }
+
+    // an opaque sheet over the app: nothing under it takes a touch while it is open
+    Column(Modifier.fillMaxSize().background(Palette.paper).pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }) {
+        Row(Modifier.fillMaxWidth().padding(vertical = d.dp(8f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            Text("RADIO", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 3.sp)
+            Text(if (over != null) "· ${barLabel(over)}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), letterSpacing = 2.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            SmallButton("DONE", accent) { RadioUi.open = false }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(top = d.dp(10f), bottom = d.dp(16f))) {
+                if (caps == null) PanelCard("NO RADIO", "Plug in a HackRF, a PortaPack in HackRF mode, or an RTL-SDR to see what it can be set to.", false)
+                else {
+                    val sub = if (rtl) "${RtlSdr.label} · tuner ${RtlSdr.tuner.ifEmpty { "?" }}"
+                              else HackRfOne.boardLabel.ifEmpty { "HackRF" } + if (HackRfOne.firmware.isNotEmpty()) " · fw ${HackRfOne.firmware}" else ""
+                    PanelCard(if (rtl) "RTL-SDR" else "HACKRF", sub, true)
+
+                    val gain = buildList {
+                        add(SRow("agc") { SwitchRow("AGC", agc, "The app keeps the level right by stepping the gain${if (caps.stagedGain) " (VGA first, then LNA)" else ""}. Moving a gain by hand turns it off.") { SdrEngine.setAgc(it) } })
+                        if (caps.stagedGain) {
+                            add(SRow("lna") { SliderRow("LNA", lna, 0, SdrEngine.LNA_MAX, SdrEngine.LNA_STEP, "dB · 0–40 in 8s", auto = agc) { SdrEngine.setRadioLna(it) } })
+                            add(SRow("vga") { SliderRow("VGA", vga, 0, SdrEngine.VGA_MAX, SdrEngine.VGA_STEP, "dB · 0–62 in 2s", auto = agc) { SdrEngine.setRadioVga(it) } })
+                        }
+                        if (caps.tunerGain) add(SRow("tuner gain") {
+                            SliderRow("Tuner gain", minOf(48, vga), 0, 48, SdrEngine.VGA_STEP, "dB · 0–${RtlSdr.MAX_GAIN_DB}", auto = agc || tunerAgc,
+                                autoText = if (tunerAgc) "TUNER AGC" else "AUTO") { SdrEngine.setRadioVga(it) }
+                        })
+                        if (caps.amp) add(SRow("amp") { SwitchRow("Amp", amp, "The +14 dB front-end amplifier. Strong local signals can overload it.") { if (it != amp) SdrEngine.toggleRadioAmp() } })
+                        if (caps.tunerAgc) add(SRow("tuner agc") { SwitchRow("Tuner AGC", tunerAgc, "The R82xx tuner's own automatic gain, in place of the app's") { SdrEngine.setTunerAgc(it) } })
+                        if (caps.rtlAgc) add(SRow("rtl agc") { SwitchRow("RTL AGC", rtlAgc, "The RTL2832U's digital AGC, which evens out the level after the converter") { SdrEngine.setRtlAgc(it) } })
+                    }
+                    val front = buildList {
+                        if (caps.biasT) add(SRow("bias") { SwitchRow(if (rtl) "Bias tee" else "Antenna power", bias, "${caps.biasVolts} V DC out the antenna port, for an inline LNA. Off at every connect.") { toggleBias(it) } })
+                        if (caps.bbFilters.isNotEmpty()) add(SRow("bb") {
+                            PickRow("Baseband filter", if (bb > 0) "Set by hand" else "AUTO follows the sample rate: ${mhzText(HackRfOne.bbFilterRoundDownLt(rate))} now",
+                                listOf(0 to "AUTO") + caps.bbFilters.map { it to mhzText(it) }, bb, accent) { SdrEngine.setBbFilter(it) }
+                        })
+                    }
+                    val rates = (Radio.RATE_CHOICES.filter { Radio.canSample(Radio.limits, it) } + rate).distinct().sortedDescending()
+                    val samp = buildList {
+                        add(SRow("rate") { PickRow("Sample rate", "Each app opens at its own rate. A change here lasts until you open another app.", rates.map { it to mspsText(it) }, rate, accent) { SdrEngine.setRate(it) } })
+                        if (caps.ppm) add(SRow("ppm") { PpmRow(ppm, accent) })
+                        if (caps.directSampling) add(SRow("ds") { SwitchRow("Direct sampling", ds, "HF below 24 MHz read straight off the ADC (Q branch). Off, the dongle stops at 24 MHz.") { SdrEngine.setDirectSampling(it) } })
+                    }
+                    PanelSection("GAIN", gain)
+                    PanelSection("FRONT END", front)
+                    PanelSection("SAMPLING", samp)
+                    if (rtl) Text("No offset tuning: R82xx tuners have no offset mode (librtlsdr refuses it for them too).", color = Palette.muted, fontFamily = Mono,
+                        fontSize = d.sp(10f), lineHeight = d.sp(15f), modifier = Modifier.padding(start = d.dp(4f), end = d.dp(4f), top = d.dp(12f)))
+                }
+            }
+        }
+    }
+}
+
+private fun mhzText(hz: Int) = "%.3f".format(java.util.Locale.US, hz / 1e6).trimEnd('0').trimEnd('.') + " MHz"
+private fun mspsText(hz: Int) = "%.3f".format(java.util.Locale.US, hz / 1e6).trimEnd('0').trimEnd('.') + " Msps"
+
+@Composable
+private fun PanelCard(title: String, sub: String, on: Boolean) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(12.dp)
+    Row(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, Palette.line, shape).padding(d.dp(12f)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        Box(Modifier.size(8.dp).background(if (on) Palette.ok else Palette.danger, CircleShape))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 1.sp, maxLines = 1)
+            Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f))
+        }
+    }
+}
+
+@Composable
+private fun PanelSection(title: String, rows: List<SRow>) {
+    if (rows.isEmpty()) return
+    val d = rememberDims()
+    Text(title, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
+        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(16f), bottom = d.dp(6f)))
+    Group(rows)
+}
+
+/** A choice from a list: the current one on the right, the rest in a menu under it. */
+@Composable
+private fun PickRow(label: String, desc: String?, options: List<Pair<Int, String>>, selected: Int, accent: Color, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    var open by remember { mutableStateOf(false) }
+    SRowLayout(label, desc) {
+        Box {
+            Text((options.firstOrNull { it.first == selected }?.second ?: "") + "  ▾", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
+                fontSize = d.sp(11f), maxLines = 1, softWrap = false,
+                modifier = Modifier.clip(RoundedCornerShape(6.dp)).border(1.dp, accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp)).clickable { open = true }
+                    .padding(horizontal = d.dp(12f), vertical = d.dp(7f)))
+            androidx.compose.material3.DropdownMenu(open, onDismissRequest = { open = false }, modifier = Modifier.background(Palette.surface)) {
+                for ((v, l) in options) androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(l, color = if (v == selected) accent else Palette.ink, fontFamily = Mono, fontWeight = if (v == selected) FontWeight.Bold else FontWeight.Medium, fontSize = d.sp(12f)) },
+                    onClick = { open = false; if (v != selected) onPick(v) })
+            }
+        }
+    }
+}
+
+/** An RTL-SDR's crystal correction: − and + a part per million at a time, or typed. */
+@Composable
+private fun PpmRow(ppm: Int, accent: Color) {
+    val d = rememberDims()
+    var txt by remember(ppm) { mutableStateOf(ppm.toString()) }
+    SRowLayout("Frequency correction", "Crystal error in parts per million. Remembered on this device.") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            SmallButton("−", accent) { SdrEngine.setPpm(ppm - 1) }
+            BasicTextField(txt, { v ->
+                    val f = v.filterIndexed { i, c -> c.isDigit() || (i == 0 && c == '-') }.take(4)
+                    txt = f
+                    f.toIntOrNull()?.let { SdrEngine.setPpm(it) }
+                }, singleLine = true, cursorBrush = SolidColor(accent),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                textStyle = TextStyle(color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), textAlign = TextAlign.Center),
+                modifier = Modifier.width(d.dp(56f)).clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp)).padding(vertical = d.dp(7f)))
+            SmallButton("+", accent) { SdrEngine.setPpm(ppm + 1) }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- building blocks
 
 @Composable
@@ -426,14 +572,14 @@ private fun Seg(options: List<Pair<String, String>>, selected: String, onSelect:
 
 /** A level: its value on the right, the slider under it. Under AGC it reads AUTO; moving it takes the gain back by hand. */
 @Composable
-private fun SliderRow(label: String, value: Int, min: Int, max: Int, step: Int, unit: String, auto: Boolean, onChange: (Int) -> Unit) {
+private fun SliderRow(label: String, value: Int, min: Int, max: Int, step: Int, unit: String, auto: Boolean, autoText: String = "AUTO", onChange: (Int) -> Unit) {
     val d = rememberDims()
     var dragging by remember { mutableStateOf<Float?>(null) }
     val shown = dragging?.roundToInt() ?: value
     Column(Modifier.fillMaxWidth().padding(horizontal = d.dp(14f), vertical = d.dp(8f))) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = d.sp(13f), modifier = Modifier.weight(1f).alpha(if (auto) 0.5f else 1f))
-            Text(if (auto && dragging == null) "AUTO" else "$shown $unit", color = if (auto && dragging == null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f))
+            Text(if (auto && dragging == null) autoText else "$shown $unit", color = if (auto && dragging == null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f))
         }
         Slider(
             value = (dragging ?: value.toFloat()).coerceIn(min.toFloat(), max.toFloat()),
@@ -660,7 +806,7 @@ private val TIPS = listOf(
     "Faves" to "Tap ☆ beside the digits to keep a frequency; FAVES in the top bar brings it back in its own app, as it was heard.",
     "Tuning" to "Drag the digits up or down, tap ⌨ to type a frequency, or press the waterfall and slide; the radio retunes when you lift.",
     "Mute" to "MUTE in the top bar silences Mayhem from any screen; the phone's volume buttons set how loud.",
-    "Gain" to "AGC sets the gain for you. To set it by hand, open SETTINGS from any app — it lands on that app, with Radio right under it.",
+    "Gain" to "AGC sets the gain for you. To set it by hand, tap RADIO in the top bar from any app: gain, bias tee and everything else the radio can do.",
     "Floating window" to "Press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing.",
     "Maps" to "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, and ⌖ re-arms it.",
     "Squelch and scan" to "Squelch gates audio against a tracked noise floor; SCAN in Audio hops your FAVES and holds where the squelch opens.",
