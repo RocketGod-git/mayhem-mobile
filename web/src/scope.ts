@@ -57,6 +57,12 @@ export interface ScopeOpts {
   rowPx?: number;
 }
 
+/**
+ * A box over the waterfall history: from `t0` to `t1` (performance.now() milliseconds, the clock the rows are stamped
+ * with), centered on `frac` of the full span and `w` of it wide. The Analyzer marks each captured burst this way.
+ */
+export interface ScopeMark { id: number; t0: number; t1: number; frac: number; w: number; color: string; bold?: boolean }
+
 export class Scope {
   cols: number;
   /** Called after the scope re-sizes itself to a new column count (the app forwards it to the worker). */
@@ -94,6 +100,8 @@ export class Scope {
   private readonly host: HTMLElement;
   private pushes = 0;
   private signals: { frac: number; val: number; text: string }[] | null = null;
+  /** Boxes over the history (the Analyzer's captured bursts): when, where, and in what color. */
+  private marks: ScopeMark[] = [];
   private prefix = new Float64Array(0);
   private smooth = new Float32Array(0);
   private stamps: Float64Array;
@@ -462,6 +470,42 @@ export class Scope {
 
   /** Labels found by the worker's classifier (frac across the span, 0..1 height, text). null = detect locally. */
   setSignals(list: { frac: number; val: number; text: string }[] | null): void { this.signals = list; }
+  /** The boxes to draw over the history; they scroll down with it and drop off its bottom. */
+  setMarks(marks: ScopeMark[]): void { this.marks = marks; }
+
+  /** The row (canvas pixels from the top) where the history reached time `t`, or null past either end of it. */
+  private yAt(t: number): number | null {
+    if (this.filled < 2) return null;
+    const rowH = this.rows / Math.max(1, this.shown());
+    const at = (y: number) => this.stamps[(this.head + y) % this.rows];
+    if (t > at(0) + 1000 || t < at(this.filled - 1)) return null;
+    let lo = 0, hi = this.filled - 1;                                // newest at 0, stamps falling as y grows
+    while (lo < hi) { const m = (lo + hi) >> 1; if (at(m) > t) lo = m + 1; else hi = m; }
+    return lo * rowH;
+  }
+  /** Each mark's box on the waterfall canvas, in canvas pixels. */
+  private markBoxes(): { m: ScopeMark; x: number; y: number; w: number; h: number }[] {
+    const out: { m: ScopeMark; x: number; y: number; w: number; h: number }[] = [];
+    const W = this.cols, min = 6 * this.ui();
+    for (const m of this.marks) {
+      const y1 = this.yAt(m.t0), y0 = this.yAt(m.t1) ?? (m.t1 > performance.now() - 50 ? 0 : null);
+      if (y0 === null && y1 === null) continue;
+      const top = y0 ?? 0, bot = y1 ?? this.rows;
+      const cx = (m.frac - this.start) * this.zoom * W, w = Math.max(min, m.w * this.zoom * W);
+      if (cx + w / 2 < 0 || cx - w / 2 > W) continue;
+      const h = Math.max(min, bot - top);
+      out.push({ m, x: cx - w / 2, y: top + (bot - top) / 2 - h / 2, w, h });
+    }
+    return out;
+  }
+  /** The mark under a point on screen (client pixels), if any. */
+  markAt(clientX: number, clientY: number): number | null {
+    const r = this.wf.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const x = (clientX - r.left) / r.width * this.cols, y = (clientY - r.top) / r.height * this.rows, pad = 4 * this.ui();
+    for (const b of this.markBoxes().reverse()) if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return b.m.id;
+    return null;
+  }
 
   /** dB scale the incoming 0..1 rows are normalized against (for the spectrum grid labels). */
   setScale(floorDb: number, rangeDb: number): void { this.floorDb = floorDb; this.rangeDb = rangeDb; }
@@ -641,6 +685,11 @@ export class Scope {
 
   private overlay(): void {
     const g = this.wfCtx, w = this.cols, h = this.rows, dpr = this.ui();
+    for (const b of this.markBoxes()) {
+      g.strokeStyle = b.m.color; g.lineWidth = (b.m.bold ? 2.5 : 1.25) * dpr;
+      g.strokeRect(b.x, b.y, b.w, b.h);
+      if (b.m.bold) { g.fillStyle = b.m.color; g.globalAlpha = 0.18; g.fillRect(b.x, b.y, b.w, b.h); g.globalAlpha = 1; }
+    }
     if (this.channel !== null && this.center) {
       const ca = (this.channelAt - this.start) * this.zoom, cw = this.channel * this.zoom;
       const x0 = Math.round(w * (ca - cw / 2)), x1 = Math.round(w * (ca + cw / 2));

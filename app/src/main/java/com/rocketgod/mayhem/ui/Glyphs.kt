@@ -153,6 +153,13 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.7f, 0.5f); path.l(0.92f, 0.5f)
                 dot = Triple(0.5f, 0.5f, 0.05f)
             }
+            MayhemApp.ANALYZER -> {
+                // a square-wave pulse train over a baseline
+                val xs = floatArrayOf(0.08f, 0.22f, 0.22f, 0.36f, 0.36f, 0.46f, 0.46f, 0.54f, 0.54f, 0.66f, 0.66f, 0.84f, 0.84f, 0.92f)
+                val ys = floatArrayOf(0.70f, 0.70f, 0.32f, 0.32f, 0.70f, 0.70f, 0.32f, 0.32f, 0.70f, 0.70f, 0.32f, 0.32f, 0.70f, 0.70f)
+                path.m(xs[0], ys[0]); for (i in 1 until xs.size) path.l(xs[i], ys[i])
+                path.m(0.08f, 0.86f); path.l(0.92f, 0.86f)
+            }
             MayhemApp.CAPTURE -> {
                 circles.add(Triple(0.5f, 0.5f, 0.36f))
                 dot = Triple(0.5f, 0.5f, 0.2f)

@@ -35,8 +35,11 @@ data class BurstChannel(
     val fresh: Boolean,
 )
 
-/** One block of a channel: its envelope and discriminator, [n] samples of each. */
-typealias ChannelSink = (ch: BurstChannel, env: ShortArray, fm: ShortArray, n: Int) -> Unit
+/**
+ * One block of a channel: its envelope and discriminator, [n] samples of each. `iq` is the channel's own samples
+ * (interleaved I, Q as signed bytes at the channel rate), only when `keepIq` is set.
+ */
+typealias ChannelSink = (ch: BurstChannel, env: ShortArray, fm: ShortArray, n: Int, iq: ByteArray?) -> Unit
 typealias ChannelEnd = (ch: BurstChannel) -> Unit
 
 /** How many bursts can be followed at once. */
@@ -66,7 +69,7 @@ private const val LOOKS = 4
 private const val FINDER_BUDGET = 2_400_000
 
 class BurstChannels(private val onChannel: ChannelSink, private val onEnd: ChannelEnd) {
-    private class Open(val slot: Int, val hz: Double, var lastLit: Long, var pos: Long, val bb: Baseband, var phase: Double, var fresh: Boolean)
+    private class Open(val slot: Int, val hz: Double, var lastLit: Long, var pos: Long, val start: Long, val bb: Baseband, var phase: Double, var fresh: Boolean)
 
     private var rate = 0
     private var n = 256
@@ -89,6 +92,12 @@ class BurstChannels(private val onChannel: ChannelSink, private val onEnd: Chann
     private var decim = 8
     /** How many channels opened since the start, for the status line. */
     @Volatile var opened = 0; private set
+    /** Hand each channel's raw samples to the sink as well (the Analyzer keeps them); off for the Devices app. */
+    var keepIq = false
+    /** Absolute index of the next sample to arrive, so a caller can say when a channel opened. */
+    val samples: Long get() = written
+    /** The absolute sample a channel's first block starts at (its look-back included). */
+    fun startOf(slot: Int): Long = open.firstOrNull { it.slot == slot }?.start ?: 0L
 
     fun reset(rate: Int) {
         this.rate = rate
@@ -232,10 +241,10 @@ class BurstChannels(private val onChannel: ChannelSink, private val onEnd: Chann
             if (o != null) { o.lastLit = absStart + nn; continue }
             if (free.isEmpty()) continue
             val slot = free.removeAt(free.size - 1)
-            val bb = Baseband(); bb.decim = decim
+            val bb = Baseband(); bb.decim = decim; bb.keepIq = keepIq
             val back = (rate * LOOKBACK_MS / 1000.0).roundToInt()
             val pos = maxOf(absStart - back, written - (ring.size shr 1) + 1, 0L)
-            open.add(Open(slot, hz, absStart + nn, pos, bb, 0.0, true))
+            open.add(Open(slot, hz, absStart + nn, pos, pos, bb, 0.0, true))
             opened++
         }
     }
@@ -270,7 +279,7 @@ class BurstChannels(private val onChannel: ChannelSink, private val onEnd: Chann
         val m = o.bb.process(out, count * 2)
         val ch = channel(o)
         o.fresh = false
-        onChannel(ch, o.bb.env, o.bb.fm, m)
+        onChannel(ch, o.bb.env, o.bb.fm, m, if (keepIq) o.bb.iq else null)
     }
 
     private fun channel(o: Open) = BurstChannel(o.slot, o.hz, rate.toDouble() / decim, o.fresh)

@@ -232,6 +232,13 @@ private fun fastAtan2(y: Double, x: Double): Double {
 class Baseband {
     var env = ShortArray(0); private set
     var fm = ShortArray(0); private set
+    /** The decimated samples, interleaved I, Q as signed bytes, when [keepIq] is set; reused between calls. */
+    var iq = ByteArray(0); private set
+    /**
+     * Also hand out the decimated samples themselves (interleaved I, Q, rounded to bytes), for a caller that keeps
+     * the raw channel (the Analyzer's waterfall and IQ export). Off by default: nothing else needs them.
+     */
+    var keepIq = false
     private var envX = 0.0; private var envY = 0.0
     private var xr = 0.0; private var xi = 0.0; private var xf = 0.0; private var yf = 0.0
     private var i1 = 0; private var i2 = 0; private var q1 = 0; private var q2 = 0
@@ -241,13 +248,15 @@ class Baseband {
 
     fun reset() { envX = 0.0; envY = 0.0; xr = 0.0; xi = 0.0; xf = 0.0; yf = 0.0; i1 = 0; i2 = 0; q1 = 0; q2 = 0; c1i = 0; c2i = 0; c1q = 0; c2q = 0; accN = 0 }
 
-    /** Offset-128 IQ bytes in; returns how many samples [env] / [fm] now hold. */
+    /** Offset-128 IQ bytes in; returns how many samples [env] / [fm] (and [iq], with [keepIq]) now hold. */
     fun process(iq: ByteArray, len: Int): Int {
         val total = len / 2
         val dc = if (decim < 1) 1 else decim
         val cap = ceil((total + dc).toDouble() / dc).toInt()
         if (env.size < cap) { env = ShortArray(cap); fm = ShortArray(cap) }
-        val e = env; val f = fm
+        val keep = keepIq
+        if (keep && this.iq.size < cap * 2) this.iq = ByteArray(cap * 2)
+        val e = env; val f = fm; val out = this.iq
         var ex = envX; var ey = envY
         var x1r = xr; var x1i = xi; var x1f = xf; var y1f = yf
         var a1 = i1; var a2 = i2; var b1 = q1; var b2 = q2
@@ -267,6 +276,10 @@ class Baseband {
             val d2q = d1q - cq2; cq2 = d1q
             val ir = d2i / gain; val ii = d2q / gain
             val i = n++
+            if (keep) {
+                out[2 * i] = (if (ir > 127) 127 else if (ir < -128) -128 else Math.round(ir).toInt()).toByte()
+                out[2 * i + 1] = (if (ii > 127) 127 else if (ii < -128) -128 else Math.round(ii).toInt()).toByte()
+            }
             // magnitude without a square root: 122/128 of the larger plus 51/128 of the smaller, full scale ≈ 16384
             val ax = abs(ir); val ay = abs(ii)
             val mag = if (ax > ay) 122 * ax + 51 * ay else 122 * ay + 51 * ax

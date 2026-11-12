@@ -22,6 +22,8 @@ import { AcarsDecoder } from './dsp/acars.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
 import { R433Processor, protocolList } from './dsp/r433/index.js';
+import { AnalyzerProcessor, captureFile } from './dsp/analyzer/capture.js';
+import { fromIqFile, parseSub, rateFromName, synthesize } from './dsp/analyzer/files.js';
 import { IqRecorder } from './dsp/capture.js';
 import { HamDemod } from './dsp/ham/demod.js';
 import { BandMonitor } from './dsp/ham/monitor.js';
@@ -117,6 +119,8 @@ const trains = new TrainsProcessor(emit);
 const ism = new IsmDecoder(emit);
 /** The rtl_433 port: every registered protocol, run over every burst found anywhere in the sampled span. */
 const r433 = new R433Processor(emit);
+/** The Analyzer: the same burst front end, every burst kept whole for the interface to read. */
+const analyzer = new AnalyzerProcessor(emit);
 // RDS rides the WFM composite: it is not a `processor`, it taps the discriminator output in the audio path when a
 // broadcast station is tuned, so the audio app can show a station-name / RadioText ticker without a mode of its own.
 const rds = new RdsDecoder(st => post({ type: 'rds', ps: st.ps, rt: st.rt, pty: st.pty, ptyName: st.ptyName, pi: st.pi, tp: st.tp, ta: st.ta, af: st.af, synced: st.synced }));
@@ -346,6 +350,10 @@ self.onmessage = (e: MessageEvent) => {
       else if (m.cmd === 'list') post({ type: 'r433list', protocols: protocolList() });
       else if (m.cmd === 'span') r433.setSpan(m.hz as number);
       break;
+    case 'analyzer':
+      if (m.cmd === 'pause') analyzer.capture.paused = !!m.on;
+      else if (m.cmd === 'import') analyzerImport(m.name as string, new Uint8Array(m.bytes as ArrayBuffer));
+      break;
     case 'capture': void captureCmd(m); break;
     case 'hamParams': ham.set(m.params); break;
     case 'monitorParams': monitor.set(m.params); break;
@@ -372,6 +380,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'subghz': return ism;
     case 'r433': return r433;
+    case 'analyzer': return analyzer;
     case 'sweep': return new SweepProcessor(m.start as number, m.end as number, m.slice as number, emit);
     case 'capture': return recorder;
     case 'ham': return ham;
@@ -579,3 +588,22 @@ function flushAudio(): void {
 
 // Started as one of the LoRa pool's workers: that is all this script does then.
 if ((self as unknown as { name?: string }).name === POOL_WORKER_NAME) startPoolWorker();
+
+/**
+ * A file opened in the Analyzer: a recording (.cu8 .u8 .iq unsigned, .cs8 signed; the rate from its name, else 2 Msps)
+ * or a Flipper .sub RAW file, turned back into samples. Every burst in it comes back as if heard off the air.
+ */
+function analyzerImport(name: string, bytes: Uint8Array): void {
+  const send = (b: Parameters<Parameters<typeof captureFile>[3]>[0]) => emit({ type: 'anburst', burst: b, file: true }, [b.env.buffer, b.fm.buffer, b.iq.buffer]);
+  let count = 0, note = '';
+  if (/\.sub$/i.test(name)) {
+    const sub = parseSub(new TextDecoder().decode(bytes));
+    if (!sub) note = 'not a RAW .sub file (a decoded .sub holds a key, not pulses)';
+    else count = captureFile(synthesize(sub.pulses, sub.fsk), 1_000_000, name, send);
+  } else {
+    const rate = rateFromName(name) ?? 2_000_000;
+    count = captureFile(fromIqFile(bytes, name), rate, name, send);
+    note = `${(rate / 1e6).toFixed(rate % 1e6 ? 3 : 0)} Msps`;
+  }
+  emit({ type: 'animport', name, count, note });
+}

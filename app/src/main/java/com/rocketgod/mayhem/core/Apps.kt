@@ -36,6 +36,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     PROWL("Prowl", "hunts live voice across the bands", "Receive"),
     LOOKING_GLASS("Looking Glass", "wideband sweep waterfall", "Analyze"),
     SEARCH("Search", "find active frequencies", "Analyze"),
+    ANALYZER("Analyzer", "capture bursts, read the bits, compare repeats", "Analyze"),
     CAPTURE("Capture", "record raw IQ to file", "Tools"),
     TRANSMIT("Transmit", "signal gen · morse · OOK · replay", "Transmit"),
     TROLL("Troll", "novelty transmitters · jingles · cart sounds", "Transmit"),
@@ -233,6 +234,7 @@ object Apps {
             MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
+            MayhemApp.ANALYZER -> com.rocketgod.mayhem.core.analyzer.Analyzer.open()
             MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, recorder)
             MayhemApp.TRANSMIT -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
             MayhemApp.TROLL -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)

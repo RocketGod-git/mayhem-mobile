@@ -27,7 +27,8 @@ export interface BurstChannel {
   fresh: boolean;
 }
 
-export type ChannelSink = (ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number) => void;
+/** `iq` is the channel's own samples (interleaved I, Q at the channel rate), only when `keepIq` is set. */
+export type ChannelSink = (ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number, iq?: Int8Array) => void;
 export type ChannelEnd = (ch: BurstChannel) => void;
 
 /** How many bursts can be followed at once. */
@@ -56,7 +57,7 @@ const LOOKS = 4;
 /** The finder looks at about this many samples a second at most; a burst lasts milliseconds, so it misses none. */
 const FINDER_BUDGET = 2_400_000;
 
-interface Open { slot: number; hz: number; lastLit: number; pos: number; bb: Baseband; phase: number; fresh: boolean }
+interface Open { slot: number; hz: number; lastLit: number; pos: number; start: number; bb: Baseband; phase: number; fresh: boolean }
 
 export class BurstChannels {
   private rate = 0;
@@ -80,6 +81,12 @@ export class BurstChannels {
   private decim = 8;
   /** How many channels opened since the start, for the status line. */
   opened = 0;
+  /** Hand each channel's raw samples to the sink as well (the Analyzer keeps them); off for the Devices app. */
+  keepIq = false;
+  /** Absolute index of the next sample to arrive, so a caller can say when a channel opened. */
+  get samples(): number { return this.written; }
+  /** The absolute sample a channel's first block starts at (its look-back included). */
+  startOf(slot: number): number { return this.open.find(o => o.slot === slot)?.start ?? 0; }
 
   constructor(private readonly onChannel: ChannelSink, private readonly onEnd: ChannelEnd) {}
 
@@ -214,10 +221,10 @@ export class BurstChannels {
       if (o) { o.lastLit = absStart + N; continue; }
       if (!this.free.length) continue;
       const slot = this.free.pop()!;
-      const bb = new Baseband(); bb.decim = this.decim;
+      const bb = new Baseband(); bb.decim = this.decim; bb.keepIq = this.keepIq;
       const back = Math.round(this.rate * LOOKBACK_MS / 1000);
       const pos = Math.max(absStart - back, this.written - (this.ring.length >> 1) + 1, 0);
-      this.open.push({ slot, hz, lastLit: absStart + N, pos, bb, phase: 0, fresh: true });
+      this.open.push({ slot, hz, lastLit: absStart + N, pos, start: pos, bb, phase: 0, fresh: true });
       this.opened++;
     }
   }
@@ -251,7 +258,7 @@ export class BurstChannels {
     const res = o.bb.process(out.subarray(0, count * 2));
     const ch = this.channel(o);
     o.fresh = false;
-    this.onChannel(ch, res.env, res.fm, res.n);
+    this.onChannel(ch, res.env, res.fm, res.n, this.keepIq ? res.iq : undefined);
   }
 
   private channel(o: Open): BurstChannel {

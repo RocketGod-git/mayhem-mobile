@@ -128,6 +128,12 @@ private fun resample(bins: FloatArray, out: FloatArray, lo: Float, span: Float) 
 }
 
 /**
+ * A box over the waterfall history: from [t0] to [t1] (wall-clock ms, the clock the rows are stamped with),
+ * centered on [frac] of the full span and [w] of it wide. The Analyzer marks each captured burst this way.
+ */
+class WfMark(val id: Int, val t0: Long, val t1: Long, val frac: Float, val w: Float, val color: Color, val bold: Boolean = false)
+
+/**
  * A waterfall's pixels. The ring is what the view shows, one column per screen pixel and [rows] rows with the
  * newest at [head], so a new row is one row written. The memory holds the whole span at 1× resolution, two spans
  * wide and anchored to frequency; it repaints exactly what the ring has no rows for (the sliver a pan or a slide
@@ -331,6 +337,16 @@ private class WfHistory {
      */
     fun shown(): Int = if (rows > 0) min(rows, max(filled, 24)) else 0
 
+    /** The row (0 = newest) laid down at wall-clock [t] ms, or null past either end of the history. */
+    fun rowAt(t: Long): Int? {
+        if (filled < 2 || rows == 0) return null
+        fun at(y: Int) = stamps[(head + y) % rows]
+        if (t > at(0) + 1000 || t < at(filled - 1)) return null
+        var lo = 0; var hi = filled - 1                       // newest at 0, stamps falling as y grows
+        while (lo < hi) { val m = (lo + hi) ushr 1; if (at(m) > t) lo = m + 1 else hi = m }
+        return lo
+    }
+
     fun drawTo(c: android.graphics.Canvas, w: Float, h: Float, p: android.graphics.Paint) {
         val b = ring ?: return
         val n = shown()
@@ -486,6 +502,10 @@ fun WaterfallView(
     rowPx: Int = 1,
     /** The span bar covers everything the radio tunes rather than a window around the span. */
     wholeRange: Boolean = false,
+    /** Boxes over the history; they scroll down with it and drop off its bottom. */
+    boxes: List<WfMark> = emptyList(),
+    /** A tap on a box: its id (instead of [onTapFrac]). */
+    onBox: ((Int) -> Unit)? = null,
     onTapFrac: ((Float) -> Unit)? = null,
 ) {
     val engineLo by SdrEngine.freqHz.collectAsState()
@@ -589,6 +609,26 @@ fun WaterfallView(
     // the gesture reads these as they are now, without restarting (and dropping a drag) every time one changes
     val channelNow = rememberUpdatedState(channel); val centerNow = rememberUpdatedState(centerHz); val spanNow = rememberUpdatedState(spanHz)
     val tapNow = rememberUpdatedState(onTapFrac); val previewNow = rememberUpdatedState(onPreviewFrac)
+    val boxesNow = rememberUpdatedState(boxes); val onBoxNow = rememberUpdatedState(onBox)
+    /** Each box on the canvas ([w] wide, history [hh] tall, the waterfall part [wfH]): (mark, left, top, width, height). */
+    fun boxRects(w: Float, hh: Float, wfH: Float): List<Pair<WfMark, android.graphics.RectF>> {
+        val list = boxesNow.value
+        if (list.isEmpty()) return emptyList()
+        val rowH = hh / max(1, hist.shown()); val minPx = 6 * dp
+        val now = System.currentTimeMillis()
+        val out = ArrayList<Pair<WfMark, android.graphics.RectF>>()
+        for (m in list) {
+            val r1 = hist.rowAt(m.t0); val r0 = hist.rowAt(m.t1) ?: (if (m.t1 > now - 50) 0 else null)
+            if (r0 == null && r1 == null) continue
+            val top = (r0 ?: 0) * rowH; val bot = min(wfH, (r1?.let { it + 1 } ?: hist.filled) * rowH)
+            if (top >= wfH) continue
+            val cx = (m.frac - start) * zoom * w; val bw = max(minPx, m.w * zoom * w)
+            if (cx + bw / 2 < 0 || cx - bw / 2 > w) continue
+            val bh = max(minPx, bot - top); val cy = (top + bot) / 2
+            out.add(m to android.graphics.RectF(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2))
+        }
+        return out
+    }
     val edgeNow = rememberUpdatedState(onChannelEdge); val slideNow = rememberUpdatedState(onSlide)
     Box(modifier.panel(accent.copy(alpha = 0.7f), RoundedCornerShape(8.dp)).clipToBounds()) {
         Canvas(Modifier.fillMaxSize().onSizeChanged { boxW = it.width; boxH = it.height }.pointerInput(Unit) {
@@ -665,7 +705,20 @@ fun WaterfallView(
                 }
                 gestureAt[0] = SystemClock.uptimeMillis()
                 val f = dragFrac
-                if (f != null) { dragFrac = null; onPreviewFrac?.invoke(null); if (!multi) onTapFrac?.invoke(f) }
+                val boxTap = onBoxNow.value
+                if (f != null) {
+                    dragFrac = null; onPreviewFrac?.invoke(null)
+                    if (!multi) {
+                        // a box under the finger opens that burst rather than tuning to it
+                        val axisH2 = if (labels.isEmpty() && centerNow.value == 0L) 0f else textPx * 1.6f
+                        val bodyH2 = h - axisH2 - barH
+                        val pad = 4 * dp
+                        val p = down.position
+                        val hit = if (boxTap != null) boxRects(w, bodyH2, bodyH2 * (1f - traceFrac)).lastOrNull { (_, r) ->
+                            p.x >= r.left - pad && p.x <= r.right + pad && p.y >= r.top - pad && p.y <= r.bottom + pad } else null
+                        if (hit != null) boxTap?.invoke(hit.first.id) else onTapFrac?.invoke(f)
+                    }
+                }
             }
         }) {
             frame
@@ -705,6 +758,10 @@ fun WaterfallView(
                         prev = mark
                     }
                 }
+            }
+            for ((m, r) in boxRects(w, histH, wfH)) {
+                if (m.bold) drawRect(m.color.copy(alpha = 0.18f), Offset(r.left, r.top), Size(r.width(), r.height()))
+                drawRect(m.color, Offset(r.left, r.top), Size(r.width(), r.height()), style = Stroke((if (m.bold) 2.5f else 1.25f) * dp))
             }
             channel?.let { (a, b) ->
                 val x0 = (a - start) * zoom * w; val x1 = (b - start) * zoom * w

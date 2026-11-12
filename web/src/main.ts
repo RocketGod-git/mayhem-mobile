@@ -16,6 +16,8 @@ import { PACKET_SATS } from './packet-sats.js';
 import { GEOSCAN_SATS } from './dsp/geoscan.js';
 import type { HeardDevice, R433Data, R433Protocol, R433Report } from './dsp/r433/index.js';
 import { CREDITS } from './credits.js';
+import { AnalyzerUi } from './analyzer-ui.js';
+import type { Burst } from './dsp/analyzer/capture.js';
 import { Tx, type SigMode } from './tx.js';
 import * as Apps from './tx-apps.js';
 import type { Aircraft } from './dsp/adsb.js';
@@ -40,7 +42,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'trains' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'trains' | 'subghz' | 'devices' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -59,6 +61,7 @@ const APPS: AppDef[] = [
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'end-of-train telemetry · PTC train control', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice across the bands', cat: 'Receive' },
+  { id: 'analyzer', title: 'Analyzer', blurb: 'capture bursts, read the bits, compare repeats', cat: 'Analyze' },
   { id: 'lookingglass', title: 'Looking Glass', blurb: 'wideband sweep waterfall', cat: 'Analyze' },
   { id: 'search', title: 'Search', blurb: 'find active frequencies', cat: 'Analyze' },
   { id: 'capture', title: 'Capture', blurb: 'record raw IQ to file', cat: 'Tools' },
@@ -821,6 +824,8 @@ function open(app: AppId | null): void {
       // whether or not a radio is plugged in.
       ensureWorker().postMessage({ type: 'r433', cmd: 'list' });
       worker?.postMessage({ type: 'r433', cmd: 'span', hz: state.r433.span }); break;
+    // the Devices front end with every burst kept: the same bands, gains and rate as Devices
+    case 'analyzer': configure('NONE', R433_BANDS[0][1], 2e6, 32, 40, true, 'analyzer'); break;
     case 'lookingglass': render(app); startSweep(88e6, 108e6); return;
     case 'search': render(app); startSweep(400e6, 470e6); return;
     case 'capture': configure('NONE', dial, RX_RATE, 24, 24, false, 'capture'); worker?.postMessage({ type: 'capture', cmd: 'list' }); break;
@@ -1666,6 +1671,7 @@ function render(app: AppId | null): void {
     case 'trains': renderTrains(view); break;
     case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
+    case 'analyzer': renderAnalyzer(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
     case 'capture': renderCapture(view); break;
     case 'transmit': renderTx(view); break;
@@ -3045,6 +3051,31 @@ function r433Summary(d: R433Data): string {
   return parts.join(' · ');
 }
 
+/** The Analyzer: its screen lives in analyzer-ui.ts; this is the shell around it, as every receiver has. */
+const analyzerUi = new AnalyzerUi({
+  center: () => spanCenter(),
+  rate: () => state.rate,
+  post: (msg, transfer) => ensureWorker().postMessage(msg, transfer ?? []),
+  showing: () => state.app === 'analyzer',
+  log,
+  scope: () => scope,
+  // into Transmit's own .sub replay, tuned to the burst; Transmit asks its safety question as it always does
+  sendToTx: (sub, hz, fsk) => { txHandoff = { sub, hz, fsk }; open('transmit'); tune(hz); },
+});
+/** A burst the Analyzer handed to Transmit: its .sub text, where to send it, and whether it was FSK. */
+let txHandoff: { sub: string; hz: number; fsk: boolean } | null = null;
+function renderAnalyzer(view: HTMLElement): void {
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      ${presetHtml('BAND', R433_BANDS)}
+      ${analyzerUi.html()}
+      <div class="gainwrap">${gainHtml()}</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  analyzerUi.mount(view);
+}
+
 function renderR433(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
@@ -4282,7 +4313,8 @@ function renderTx(view: HTMLElement): void {
   const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp);
   ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); };
   $('tx-stop').onclick = () => tx.stop();
-  let tab = 0;
+  // a burst handed over from the Analyzer opens on the .sub replay, filled in
+  let tab = txHandoff ? 9 : 0;
   const body = $('tx-body');
   const drawTab = () => {
     qa('[data-txtab]').forEach(b => b.classList.toggle('on', Number(b.dataset.txtab) === tab));
@@ -4369,6 +4401,12 @@ function renderTx(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-txtab]', view).forEach(b => b.onclick = () => { tab = Number(b.dataset.txtab); drawTab(); });
   drawTab();
   txStatus(tx.active ? 'transmitting' : 'idle');
+  if (txHandoff && tab === 9) {
+    const h = txHandoff; txHandoff = null;
+    const ta = q<HTMLTextAreaElement>('#s-text');
+    if (ta) ta.value = h.sub;
+    txStatus(`from the Analyzer: ${(h.hz / 1e6).toFixed(3)} MHz${h.fsk ? ' · this burst is FSK and the replay keys it as OOK, so it will not sound the same' : ''} · press REPLAY to send`);
+  }
 }
 
 function renderCapture(view: HTMLElement): void {
@@ -5044,6 +5082,9 @@ function ensureWorker(): Worker {
         refreshR433();
         break;
       }
+      case 'anburst': analyzerUi.onBurst(m.burst as Burst, !!m.file); break;
+      case 'anstats': analyzerUi.onStats(m as unknown as Parameters<typeof analyzerUi.onStats>[0]); break;
+      case 'animport': analyzerUi.onImport(m as unknown as Parameters<typeof analyzerUi.onImport>[0]); break;
       case 'r433stats': {
         state.r433.stats = m as unknown as R433Report;
         refreshR433();
@@ -5370,11 +5411,12 @@ function scrollHints(): void {
 }
 function bindDesktop(): void {
   window.addEventListener('keydown', (e) => {
+    if (state.app === 'analyzer' && analyzerUi.onKey(e)) { e.preventDefault(); return; }
     // Any field you type into keeps its keys: a textarea or select passing a 'c' through would toggle CONNECT and
     // drop the radio mid-session.
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'tpms' || state.app === 'subghz' || state.app === 'devices';
+    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'tpms' || state.app === 'subghz' || state.app === 'devices' || state.app === 'analyzer';
     // start typing a number (or F) to key in a frequency; a focused readout digit already took its own keystroke
     if ((tunable || state.app === 'ham') && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9.,fF]$/.test(e.key)) {
       freqEntry(/[fF]/.test(e.key) ? '' : e.key); e.preventDefault(); return;
@@ -5514,7 +5556,7 @@ function initShell(): void {
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TIRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
-  devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
+  devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };
 /** The app Settings was opened over: its rows lead the page, and it keeps running underneath. */
