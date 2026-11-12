@@ -1338,7 +1338,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   font: inherit; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--ink); background: color-mix(in srgb, var(--accent) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 999px; padding: 3px 8px; }
 .fgain:hover { border-color: var(--accent); }
-@media (max-width: 420px) { .fgain { max-width: 38%; } }
+/* a phone: the chip takes the subtitle's room (the tag still names the app) */
+@media (max-width: 480px) { .fhead .ftitle { display: none; } .fhead .fgain { max-width: none; min-width: 0; flex: 0 1 auto; margin-right: auto; } }
 
 /* ---- BLE device cards ---- */
 .ble-k { flex: none; font-size: 8px; font-weight: 700; letter-spacing: 1px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); border-radius: 6px; padding: 3px 5px; max-width: 92px; text-align: center; line-height: 1.2; }

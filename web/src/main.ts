@@ -837,7 +837,7 @@ function open(app: AppId | null): void {
 const mapEmptySub = (what: string) => `${what}. ${state.home ? 'Centered on you.' : mapStart(null).standIn ? 'No location yet: allow it to center the map on you.' : 'Centered where you were last.'}`;
 function requestGeo(): void {
   if (!('geolocation' in navigator)) return;
-  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
+  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); if (state.app === 'ais') refreshAis(); else if (state.app === 'aprs') refreshAprs(); else if (state.app === 'adsb') refreshAdsb(); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
 }
 
 
