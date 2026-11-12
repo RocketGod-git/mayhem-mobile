@@ -117,7 +117,7 @@ fun ProwlScreen(accent: Color) {
                 IconBox(ClearIcon, "Clear") { Prowl.clearLog() }
             }
             if (v.log.isEmpty()) {
-                Text("nothing heard yet, press HUNT", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(2.dp))
+                EmptyState("prowl", Modifier.fillMaxWidth(), accent)
             } else {
                 // Everything it stopped on, kept or not: tap one to hold the receiver there.
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {

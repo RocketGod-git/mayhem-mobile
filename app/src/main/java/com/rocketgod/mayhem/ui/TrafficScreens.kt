@@ -121,6 +121,8 @@ private fun TrafficFrame(
 @Composable
 private fun EmptyPanel(text: String, modifier: Modifier) {
     val d = rememberDims()
+    // an app with an empty state (adsb, ais, aprs) shows it; anything else its line of text
+    if (EMPTY.containsKey(text)) { Box(modifier.panel()) { EmptyState(text, Modifier.fillMaxSize()) }; return }
     Box(modifier.panel()) { Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f))) }
 }
 
@@ -147,11 +149,11 @@ private fun <T> TwoLineList(items: List<T>, key: (T) -> String, selected: String
 
 /** The packet log, frozen while paused. A tapped line selects whoever sent it, as the list and the map do. */
 @Composable
-private fun FrozenLog(log: PacketLog, paused: Boolean, modifier: Modifier, empty: String, onTap: ((String) -> Unit)? = null) {
+private fun FrozenLog(log: PacketLog, paused: Boolean, modifier: Modifier, empty: String, emptyKey: String? = null, onTap: ((String) -> Unit)? = null) {
     val lines by log.lines.collectAsState()
     var held by remember { mutableStateOf<List<String>?>(null) }
     LaunchedEffect(paused) { held = if (paused) lines else null }
-    LogList(held ?: lines, modifier, empty = empty, onTap = onTap)
+    LogList(held ?: lines, modifier, empty = empty, onTap = onTap, emptyKey = emptyKey)
 }
 
 /** Recomposes once a second, for "heard 12 s ago". */
@@ -166,9 +168,12 @@ fun AdsbScreen(accent: Color) {
     val frames by AdsbStore.frames.collectAsState()
     val home by Geo.fix.collectAsState()
     val ctx = LocalContext.current
-    LaunchedEffect(Unit) { Geo.start(ctx) }
+    // the map opens on you: ask for the location here if it is not allowed yet
+    LaunchedEffect(Unit) { Geo.ask(ctx) }
     var view by rememberSaveable { mutableStateOf(View.MAP) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
+    // ACARS's ADS-B button: open on that aircraft
+    LaunchedEffect(Unit) { Apps.adsbPick?.let { sel = it; Apps.adsbPick = null } }
     var frozen by remember { mutableStateOf<List<Aircraft>?>(null) }
     var focusKey by remember { mutableStateOf(0) }
     val planes = frozen ?: live
@@ -180,8 +185,10 @@ fun AdsbScreen(accent: Color) {
         if (a != null) AircraftCard(a, home, now, onMap = if (a.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = null }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {
-            View.MAP -> AdsbMap(planes, accent, home, sel, m.panel(), focus = a?.let { p -> p.lat?.let { la -> p.lon?.let { la to it } } }, focusKey = focusKey) { sel = it }
-            else -> TwoLineList(planes.sortedByDescending { it.seenAtMs }, { it.icao }, sel, m, "listening on 1090 MHz…",
+            View.MAP -> AdsbMap(planes, accent, home, sel, m.panel(), focus = a?.let { p -> p.lat?.let { la -> p.lon?.let { la to it } } }, focusKey = focusKey,
+                emptyTitle = if (planes.any { it.lat != null }) "" else "NOTHING HEARD YET",
+                emptySub = mapEmptySub("aircraft appear here once each one sends its position", home)) { sel = it }
+            else -> TwoLineList(planes.sortedByDescending { it.seenAtMs }, { it.icao }, sel, m, "adsb",
                 top = { "${it.icao.uppercase()} ${it.flight?.trim() ?: ""}" },
                 bottom = { p -> listOfNotNull(p.altBaro?.let { "%,d ft".format(it) }, p.gs?.let { "$it kt" }, p.track?.let { "$it°" },
                     if (p.lat != null && p.lon != null) "%.3f,%.3f".format(p.lat, p.lon) else "no pos").joinToString(" · ") }) { p ->
@@ -228,7 +235,8 @@ fun AisScreen(accent: Color) {
     val count by Apps.aisLog.count.collectAsState()
     val home by Geo.fix.collectAsState()
     val ctx = LocalContext.current
-    LaunchedEffect(Unit) { Geo.start(ctx) }
+    // the map opens on you: ask for the location here if it is not allowed yet
+    LaunchedEffect(Unit) { Geo.ask(ctx) }
     var view by rememberSaveable { mutableStateOf(View.MAP) }
     var sel by rememberSaveable { mutableStateOf(0) }
     var frozen by remember { mutableStateOf<List<Vessel>?>(null) }
@@ -250,16 +258,18 @@ fun AisScreen(accent: Color) {
                     GeoItem(x.mmsi.toString(), la, lo, x.name?.takeIf { it.isNotEmpty() } ?: x.mmsi.toString(),
                         when (x.cls) { "AtoN" -> GeoItem.Kind.ATON; "base" -> GeoItem.Kind.OBJECT; else -> GeoItem.Kind.SHIP },
                         heading = (x.hdg?.toDouble() ?: x.cog)?.takeIf { (x.sog ?: 0.0) > 0.3 || x.hdg != null }) },
-                accent, m.panel(), home = home, selected = sel.toString(),
+                accent, m.panel(), home = home, selected = sel.toString(), start = remember { mapStart(home) },
+                emptyTitle = if (vessels.any { it.lat != null }) "" else "NOTHING HEARD YET",
+                emptySub = mapEmptySub("ships and buoys appear here as their AIS position reports come in", home),
                 focus = v?.let { x -> x.lat?.let { la -> x.lon?.let { la to it } } }, focusKey = focusKey) { sel = it.toIntOrNull() ?: 0 }
-            View.LIST -> TwoLineList(vessels, { it.mmsi.toString() }, sel.toString(), m, "no vessels yet",
+            View.LIST -> TwoLineList(vessels, { it.mmsi.toString() }, sel.toString(), m, "ais",
                 top = { it.name?.takeIf { n -> n.isNotEmpty() } ?: it.mmsi.toString() },
                 bottom = { x -> listOfNotNull(if (!x.name.isNullOrEmpty()) "${x.mmsi}" else null,
                     if (x.lat != null && x.lon != null) "%.3f,%.3f".format(x.lat, x.lon) else "no fix", x.sog?.let { "%.1f kn".format(it) },
                     shipTypeName(x.shipType).takeIf { it.isNotEmpty() }).joinToString(" · ") }) { x ->
                 sel = x.mmsi; if (x.lat != null) view = View.MAP
             }
-            View.LOG -> FrozenLog(Apps.aisLog, frozen != null, m, "listening on the AIS channel…") { l ->
+            View.LOG -> FrozenLog(Apps.aisLog, frozen != null, m, "listening on the AIS channel…", "ais") { l ->
                 Regex("MMSI (\\d+)").find(l)?.groupValues?.get(1)?.toIntOrNull()?.let { sel = it }
             }
         }
@@ -316,7 +326,8 @@ fun AprsScreen(accent: Color) {
     val count by Apps.aprsLog.count.collectAsState()
     val home by Geo.fix.collectAsState()
     val ctx = LocalContext.current
-    LaunchedEffect(Unit) { Geo.start(ctx) }
+    // the map opens on you: ask for the location here if it is not allowed yet
+    LaunchedEffect(Unit) { Geo.ask(ctx) }
     var view by rememberSaveable { mutableStateOf(View.MAP) }
     var sel by rememberSaveable { mutableStateOf("") }
     var frozen by remember { mutableStateOf<List<AprsStation>?>(null) }
@@ -337,20 +348,21 @@ fun AprsScreen(accent: Color) {
             View.MAP -> GeoMapView(
                 stations.mapNotNull { x -> val la = x.lat; val lo = x.lon; if (la == null || lo == null) null else
                     GeoItem(x.call, la, lo, x.call, if (x.kind == "station") GeoItem.Kind.STATION else GeoItem.Kind.OBJECT, heading = x.course?.toDouble()) },
-                accent, m.panel(), home = home, selected = sel, withHome = true,
+                accent, m.panel(), home = home, selected = sel, withHome = true, start = remember { mapStart(home) },
+                emptyTitle = if (stations.any { it.lat != null }) "" else "NOTHING HEARD YET",
+                emptySub = mapEmptySub("stations, objects and weather reports appear here as their packets come in", home),
                 focus = s?.let { x -> x.lat?.let { la -> x.lon?.let { la to it } } }, focusKey = focusKey) { sel = it }
-            View.LIST -> TwoLineList(stations, { it.call }, sel, m, "no stations yet",
+            View.LIST -> TwoLineList(stations, { it.call }, sel, m, "aprs",
                 top = { x -> x.call + if (x.kind != "station") "  ${x.kind} by ${x.owner ?: "?"}" else "" },
                 bottom = { x -> listOfNotNull(aprsSymbolName(x.table, x.symbol).takeIf { it.isNotEmpty() },
                     if (x.lat != null && x.lon != null) "%.3f,%.3f".format(x.lat, x.lon) else null,
                     x.speed?.takeIf { it > 0 }?.let { "%.0f kn".format(it) }).joinToString(" · ") }) { x ->
                 sel = x.call; if (x.lat != null) view = View.MAP
             }
-            View.LOG -> FrozenLog(Apps.aprsLog, frozen != null, m, "listening on the APRS frequency…") { l ->
+            View.LOG -> FrozenLog(Apps.aprsLog, frozen != null, m, "listening on the APRS frequency…", "aprs") { l ->
                 Regex("^([A-Za-z0-9-]+)>").find(l)?.let { sel = it.groupValues[1] }
             }
         }
-        GainRow(accent)
     }
 }
 

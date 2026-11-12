@@ -98,7 +98,7 @@ fun LoraScreen(accent: Color) {
     fun stage(modifier: Modifier) {
         Box(modifier) {
             when (view) {
-                0 -> LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(),
+                0 -> if (nodes.isEmpty()) EmptyState("lora", Modifier.fillMaxSize().panel(), accent) else LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                     items(nodes.sortedByDescending { it.lastMs }, key = { it.key }) { n ->
                         LoraNodeCard(n, accent, now, selected = sel == n.key) { sel = if (sel == n.key) null else n.key }
@@ -109,12 +109,13 @@ fun LoraScreen(accent: Color) {
                     val focus = if (pla != null && plo != null) pla to plo else null
                     Box(Modifier.fillMaxSize()) {
                         GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = null, selected = sel, layers = GeoLayers(),
+                            start = remember { mapStart(com.rocketgod.mayhem.core.Geo.fix.value) },
                             focus = focus, focusKey = focusKey, fitHome = true) { sel = it }
                         if (mapItems.isEmpty()) Text("no positions yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
                             modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
                     }
                 }
-                else -> LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                else -> if (messages.isEmpty()) EmptyState("loramsg", Modifier.fillMaxSize().panel(), accent) else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                     items(messages, key = { it.id }) { e ->
                         LoraMessageRow(e, accent) { val k = e.nodeKey; if (k != null && nodes.any { it.key == k }) sel = k }
                     }

@@ -89,49 +89,6 @@ fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = M
     }
 }
 
-/**
- * The radio's gain where you listen, the same row in every app (web, iPad, Mac, Android): AGC, the amp, then the
- * LNA and VGA steppers (a dongle has one tuner gain and no amp). A − or + takes the gain by hand, AGC hands it back.
- */
-@Composable
-fun GainRow(accent: Color) {
-    val d = rememberDims()
-    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
-    val agc by SdrEngine.agc.collectAsState()
-    val lna by SdrEngine.radioLna.collectAsState()
-    val vga by SdrEngine.radioVga.collectAsState()
-    val amp by SdrEngine.radioAmp.collectAsState()
-    val rtl = radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        SectionLabel("GAIN")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
-            Chip("AGC", agc, accent, Modifier.weight(1f)) { SdrEngine.setAgc(!agc) }
-            if (!rtl) Chip(if (amp) "AMP +14" else "AMP OFF", amp, accent, Modifier.weight(1f)) { SdrEngine.toggleRadioAmp() }
-            if (!rtl) GainStepper("LNA", lna, accent, Modifier.weight(1.4f), auto = agc,
-                onMinus = { SdrEngine.setRadioLna(lna - SdrEngine.LNA_STEP) }, onPlus = { SdrEngine.setRadioLna(lna + SdrEngine.LNA_STEP) })
-            GainStepper(if (rtl) "GAIN" else "VGA", vga, accent, Modifier.weight(1.4f), auto = agc,
-                onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) }, onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
-        }
-    }
-}
-
-/** A gain-stage stepper: [−] LABEL <value> [+], muted and marked AUTO while the AGC is driving it. */
-@Composable
-fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, auto: Boolean = false, onMinus: () -> Unit, onPlus: () -> Unit) {
-    val d = rememberDims()
-    Row(modifier.control(accent, false), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f).clickable { onMinus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
-            Text("−", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
-        }
-        Text(if (auto) "$label $value AUTO" else "$label $value", color = if (auto) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
-            fontStyle = if (auto) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
-            fontSize = d.sp(12f), maxLines = 1, softWrap = false, modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
-        Box(Modifier.weight(1f).clickable { onPlus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
-            Text("+", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
-        }
-    }
-}
-
 /** Where a transmit control would be, on a radio that cannot transmit: says so, and what would. */
 @Composable
 fun ReceiveOnlyNote(accent: Color) {
@@ -248,11 +205,15 @@ fun PresetRow(accent: Color, presets: List<Pair<String, Long>>, title: String = 
  */
 @Composable
 fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = "listening…", total: Int? = null,
-            accent: Color = Palette.accent, onTap: ((String) -> Unit)? = null) {
+            accent: Color = Palette.accent,
+            /** An [EMPTY] key: the list waits with that app's empty state (glyph, title, tips) instead of [empty]. */
+            emptyKey: String? = null, onTap: ((String) -> Unit)? = null) {
     val d = rememberDims()
     val state = rememberLazyListState()
     Box(modifier.panel()) {
-        if (lines.isEmpty()) {
+        if (lines.isEmpty() && emptyKey != null && EMPTY.containsKey(emptyKey)) {
+            EmptyState(emptyKey, Modifier.fillMaxSize(), accent)
+        } else if (lines.isEmpty()) {
             Text(empty, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
         } else {
             val follow = rememberFollowNewest(state, (total ?: 0).toLong(), enabled = total != null)

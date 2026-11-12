@@ -299,7 +299,7 @@ private fun SatOrbcomm(accent: Color) {
             GeoItem(s.id.toString(), s.lat!!, s.lon!!, "${o.named[s.id]?.first ?: "0x%X".format(s.id)} · %.0f km".format(s.altKm ?: 0.0), GeoItem.Kind.SAT)
         }
         SectionLabel("MAP · each satellite where it says it is")
-        GeoMapView(items, accent, Modifier.fillMaxWidth().height(d.dp(260f)).panel(), home = home, selected = o.sel.toString()) { Sats.orbSelect(it.toIntOrNull() ?: -1) }
+        GeoMapView(items, accent, Modifier.fillMaxWidth().height(d.dp(260f)).panel(), home = home, selected = o.sel.toString(), start = remember { mapStart(home) }) { Sats.orbSelect(it.toIntOrNull() ?: -1) }
         Text("The message packets are encrypted and are not decoded. What is shown is each satellite's own report of where it is, which it sends every four seconds, plus its clock and speed.",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.gap))
         Spacer(Modifier.height(d.dp(12f)))

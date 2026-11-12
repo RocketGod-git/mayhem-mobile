@@ -105,7 +105,9 @@ fun MetersScreen(accent: Color) {
     @Composable
     fun stage(modifier: Modifier) {
         Box(modifier) {
-            if (view == 0) {
+            if (view == 0 && devices.isEmpty()) {
+                EmptyState("ert", Modifier.fillMaxSize().panel(), accent)
+            } else if (view == 0) {
                 val sorted = devices.sortedWith(compareBy<MeshDevice> { it.firstMs }.thenBy { it.key })
                 LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
@@ -118,6 +120,7 @@ fun MetersScreen(accent: Color) {
                 val focus = if (pla != null && plo != null) pla to plo else null
                 Box(Modifier.fillMaxSize()) {
                     GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = null, selected = sel, layers = mapLayers,
+                        start = remember { mapStart(com.rocketgod.mayhem.core.Geo.fix.value) },
                         focus = focus, focusKey = focusKey, fitHome = true) { sel = it }
                     if (mapItems.isEmpty()) Text("no positions yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
                         modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))

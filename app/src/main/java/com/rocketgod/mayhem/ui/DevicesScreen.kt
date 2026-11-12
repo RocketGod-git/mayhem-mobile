@@ -134,8 +134,6 @@ fun DevicesScreen(accent: Color) {
         }
         if (showProtocols) ProtocolList(Devices.protocols, Modifier.fillMaxWidth().weight(1f))
         else DeviceCards(heard, filter, sel, now, Modifier.fillMaxWidth().weight(1f)) { sel = it }
-        // the gain is the first thing to reach for when nothing is heard, so it sits here, not only in Settings
-        GainRow(accent)
     }
 }
 
@@ -269,7 +267,8 @@ private fun ProtocolList(protocols: List<R433Protocol>, modifier: Modifier) {
                 Text("Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys " +
                     "(ProtoPirate), gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (rtl_433, listed here). " +
                     "A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio " +
-                    "here spans, so HOP takes turns. Tap a card for everything it sent.",
+                    "here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute " +
+                    "and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.",
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.padding(horizontal = d.dp(4f), vertical = d.dp(6f)))
             }
             itemsIndexed(protocols, key = { _, p -> p.num }) { i, p ->
