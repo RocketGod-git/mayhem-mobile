@@ -49,6 +49,10 @@ object HackRfOne {
     @Volatile var ovrLnaDb = 24
     @Volatile var ovrVgaDb = 24
     @Volatile var ovrAmp = 0                      // 1=on, 0=off, -1=derive from targetGainTenthDb
+    /** Antenna port power (libhackrf hackrf_set_antenna_enable): 3.3 V for an inline LNA. Off at every connect. */
+    @Volatile var biasT = false
+    /** Baseband filter in hertz, or 0 to follow the sample rate (the largest bandwidth under it, as libhackrf does). */
+    @Volatile var bbFilterHz = 0
 
     /** Board id / firmware string read at bring-up, for the UI. */
     @Volatile var boardLabel = ""; private set
@@ -75,6 +79,7 @@ object HackRfOne {
     private const val REQ_AMP_ENABLE = 17
     private const val REQ_SET_LNA_GAIN = 19
     private const val REQ_SET_VGA_GAIN = 20
+    private const val REQ_ANTENNA_ENABLE = 23
     private const val REQ_SET_HW_SYNC_MODE = 29
     private const val TRANSCEIVER_MODE_OFF = 0
     private const val TRANSCEIVER_MODE_RECEIVE = 1
@@ -86,8 +91,8 @@ object HackRfOne {
     private const val CTRL_TIMEOUT = 300
     private const val FREQ_ONE_MHZ = 1_000_000L
 
-    // MAX2837 baseband low-pass filter bandwidths the HackRF supports (Hz), ascending (hackrf.c).
-    private val BB_FILTER_BW = intArrayOf(
+    /** The MAX2837's baseband filter bandwidths (libhackrf max2837_ft), in hertz, ascending. */
+    val BB_FILTER_BW = intArrayOf(
         1_750_000, 2_500_000, 3_500_000, 5_000_000, 5_500_000, 6_000_000, 7_000_000, 8_000_000,
         9_000_000, 10_000_000, 12_000_000, 14_000_000, 15_000_000, 20_000_000, 24_000_000, 28_000_000
     )
@@ -100,6 +105,8 @@ object HackRfOne {
     @Volatile private var appliedOvrLna = Int.MIN_VALUE   // track the gain OVERRIDE too, so a mode switch that changes
     @Volatile private var appliedOvrVga = Int.MIN_VALUE   // only the override (ADS-B 32/32/amp-on) actually re-applies
     @Volatile private var appliedOvrAmp = Int.MIN_VALUE
+    @Volatile private var appliedBias = -1
+    @Volatile private var appliedBb = -1
     private var dbgBuffers = 0    // one-shot raw-buffer probe counter (first few RX buffers logged)
     private var zeroHintShown = false   // one-shot "all-zero RX" hint per connect
 
@@ -110,6 +117,7 @@ object HackRfOne {
         running = true; stop = false
         appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; dbgBuffers = 0; zeroHintShown = false
         appliedOvrLna = Int.MIN_VALUE; appliedOvrVga = Int.MIN_VALUE; appliedOvrAmp = Int.MIN_VALUE
+        appliedBias = -1; appliedBb = -1
         SdrEngine.syncDriver()   // pull the engine's current mode/freq/gain into our target fields before bring-up
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
         val c = mgr.openDevice(device) ?: run { onStatus("HackRF: couldn't open device"); running = false; return }
@@ -156,6 +164,8 @@ object HackRfOne {
         } finally {
             SdrEngine.setActive(false)
             runCatching { setTransceiverMode(TRANSCEIVER_MODE_OFF) }
+            // Never leave DC on the antenna port after we let go of the radio.
+            if (biasT) runCatching { ctrl(CTRL_OUT, REQ_ANTENNA_ENABLE, 0, 0, null, 0, "ANTPOWER") }
             runCatching { c.close() }
             running = false
             Diag.log("HackRF: RX loop stopped")
@@ -176,7 +186,8 @@ object HackRfOne {
         // front-end config doesn't land, the ADC streams near-zero IQ (the "all-zeros, iqRMS≈0.85, gain has no
         // effect" symptom).
         val rcSr = setSampleRate(targetRateHz); appliedRate = targetRateHz
-        val rcBb = setBasebandFilter(bbFilterRoundDownLt(targetRateHz))
+        appliedBias = -1
+        val rcBb = setBasebandFilter(bbFor(targetRateHz)); appliedBb = bbFilterHz
         val rcFq = setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
         val (rcAmp, rcLna, rcVga) = applyGainStages(targetGainTenthDb); appliedGain = targetGainTenthDb
         val rcRx = setTransceiverMode(TRANSCEIVER_MODE_RECEIVE)
@@ -193,6 +204,7 @@ object HackRfOne {
         val rcFq2 = setCenterFreq(targetFreqHz)     // real target → re-runs tuning AFTER RX → re-programs the FPGA quarter shift
         val (rcAmp2, rcLna2, rcVga2) = applyGainStages(targetGainTenthDb)
         appliedOvrLna = ovrLnaDb; appliedOvrVga = ovrVgaDb; appliedOvrAmp = ovrAmp
+        applyBias()
         Thread.sleep(60)   // RFFC5072 LO relock + FPGA quarter-shift/decim recompute settle before RX reads
         Diag.log("HackRF cfg rc (>=0 ok, <0 FAILED): sampleRate=$rcSr basebandFilter=$rcBb setFreq=$rcFq amp=$rcAmp lna=$rcLna vga=$rcVga rxMode=$rcRx · post-RX cachebust+reassert(freq=$rcFq2 amp=$rcAmp2 lna=$rcLna2 vga=$rcVga2)")
         SdrEngine.sourceLabel = boardLabel
@@ -327,11 +339,19 @@ object HackRfOne {
         val freqChanged = targetFreqHz != appliedFreq
         val gainChanged = targetGainTenthDb != appliedGain ||
             ovrLnaDb != appliedOvrLna || ovrVgaDb != appliedOvrVga || ovrAmp != appliedOvrAmp
-        if (!rateChanged && !freqChanged && !gainChanged) return
+        val biasChanged = (if (biasT) 1 else 0) != appliedBias
+        val bbChanged = bbFilterHz != appliedBb
+        if (!rateChanged && !freqChanged && !gainChanged && !biasChanged && !bbChanged) return
         if (rateChanged) {
-            runCatching { setSampleRate(targetRateHz); setBasebandFilter(bbFilterRoundDownLt(targetRateHz)); SdrEngine.onSource(targetRateHz) }
+            runCatching { setSampleRate(targetRateHz); SdrEngine.onSource(targetRateHz) }
             appliedRate = targetRateHz
         }
+        if (rateChanged || bbChanged) {
+            val bb = bbFilterHz
+            runCatching { setBasebandFilter(bbFor(targetRateHz)) }
+            appliedBb = bb
+        }
+        if (biasChanged) runCatching { applyBias() }
         // Any freq or rate change → CACHE-BUST re-tune (off-target then target) so the Pro's FPGA quarter-shift is
         // re-programmed. Without this a mid-stream mode switch (e.g. radio→ADS-B) retunes to 1090 but leaves the
         // quarter-shift stale → no aircraft. Same trick as bring-up; here it also covers a plain rate change.
@@ -403,10 +423,20 @@ object HackRfOne {
     private fun setBasebandFilter(bwHz: Int): Int =
         ctrl(CTRL_OUT, REQ_BASEBAND_FILTER_BW_SET, bwHz and 0xffff, (bwHz shr 16) and 0xffff, null, 0, "BBFILTER")
     /** Largest supported baseband bandwidth strictly less than [rate] (falls back to the smallest). */
-    private fun bbFilterRoundDownLt(rate: Int): Int {
+    fun bbFilterRoundDownLt(rate: Int): Int {
         var chosen = BB_FILTER_BW[0]
         for (bw in BB_FILTER_BW) { if (bw < rate) chosen = bw else break }
         return chosen
+    }
+
+    /** The baseband filter for a rate: the one set by hand, else the largest under the rate (libhackrf's rule). */
+    private fun bbFor(rate: Int): Int = if (bbFilterHz > 0) bbFilterHz else bbFilterRoundDownLt(rate)
+
+    /** Antenna port power on or off (ANTENNA_ENABLE, OUT with the value in wValue and no data stage). */
+    private fun applyBias() {
+        val on = biasT
+        ctrl(CTRL_OUT, REQ_ANTENNA_ENABLE, if (on) 1 else 0, 0, null, 0, "ANTPOWER")
+        appliedBias = if (on) 1 else 0
     }
 
     /** SET_FREQ carries {uint32 freq_mhz, uint32 freq_hz} little-endian (freq = mhz*1e6 + hz). */

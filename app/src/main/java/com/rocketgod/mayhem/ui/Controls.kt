@@ -142,9 +142,9 @@ fun ReceiveOnlyNote(accent: Color) {
     }
 }
 
-/** First-enable warning for the RTL-SDR bias tee — it puts DC on the antenna port and can damage the wrong gear. */
+/** First-enable warning for a bias tee (RTL-SDR 4.5 V, HackRF antenna power 3.3 V): DC on the antenna port can damage the wrong gear. */
 @Composable
-internal fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () -> Unit) {
+internal fun BiasTeeDialog(accent: Color, volts: Double, radioName: String, onConfirm: () -> Unit, onCancel: () -> Unit) {
     AlertDialog(
         onDismissRequest = onCancel,
         containerColor = Palette.surface,
@@ -153,7 +153,7 @@ internal fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () ->
         title = { Text("Bias-tee: DC on the antenna port", fontFamily = Mono, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("This puts about 4.5 V DC on the dongle's antenna input to power an inline LNA.", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
+                Text("This puts about $volts V DC on the $radioName's antenna port to power an inline LNA.", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
                 Text("• Only turn it on with a bias-tee-ready LNA or feed.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
                 Text("• Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
             }
@@ -202,6 +202,8 @@ val SpeakerOffIcon: ImageVector by lazy { pathIcon("SpeakerOff", "M16.5 12A4.5 4
 /** Material's apps grid and star, for HOME and FAVES in the top bar. */
 val AppsIcon: ImageVector by lazy { pathIcon("Apps", "M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z") }
 val StarIcon: ImageVector by lazy { pathIcon("Star", "M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z") }
+/** Material's tune (sliders) glyph, for RADIO in the top bar. */
+val TuneIcon: ImageVector by lazy { pathIcon("Tune", "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z") }
 /** Material's settings gear. */
 val GearIcon: ImageVector by lazy { pathIcon("Gear", "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z") }
 

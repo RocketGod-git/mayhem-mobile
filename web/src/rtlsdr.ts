@@ -27,7 +27,7 @@
  * HackRF delivers signed ones, so every buffer is rebased before the rest of the app sees it.
  */
 
-import type { Radio, RadioEvents, RadioLimits } from './radio.js';
+import type { RadioCaps, Radio, RadioEvents, RadioLimits } from './radio.js';
 
 /**
  * Whether to offer RTL-SDR support to users yet. Currently no.
@@ -263,6 +263,14 @@ export class RtlSdr implements Radio {
   targetRateHz = 2_000_000;
   /** Tuner gain in tenths of a decibel, or GAIN_AUTO. Near-maximum by default: too little gain reads as static. */
   targetGainTenthDb = 496;
+  /** The R82xx's own automatic gain in place of [targetGainTenthDb]. */
+  tunerAgc = false;
+  /** The RTL2832U's digital AGC (librtlsdr rtlsdr_set_agc_mode). */
+  rtlAgc = false;
+  /** Crystal correction in parts per million (librtlsdr rtlsdr_set_freq_correction). */
+  ppm = 0;
+  /** Whether an R820T/R820T2 may drop into direct sampling for HF below 24 MHz. */
+  directSamplingAllowed = true;
 
   running = false;
   // A per-instance copy of the limits: once an HF-capable tuner is found its lower bound drops below 24 MHz.
@@ -280,6 +288,7 @@ export class RtlSdr implements Radio {
   /** Two on an R820T, one on an R828D. Sets how far the synthesizer's integer divider may go. */
   private vcoPowerRef = 2;
   private appliedFreq = 0; private appliedRate = 0; private appliedGain = Number.MAX_SAFE_INTEGER;
+  private appliedRtlAgc = -1; private appliedPpm = Number.NaN;
   /** Direct sampling engaged (R820T/R820T2 below 24 MHz); the V4L's upconverter in circuit (R828S below 24 MHz). */
   private directSampling = false; private upconvert = false;
   /** An RTL-SDR Blog V4: an R828D with the HF upconverter and three switched inputs, told apart by its USB strings. */
@@ -299,6 +308,24 @@ export class RtlSdr implements Radio {
   private reopenTimes: number[] = [];
 
   constructor(private dev: USBDevice, private ev: RadioEvents) {}
+
+  /** What this dongle can be told. Direct sampling is an R820T/R820T2 thing, so it is known after bring-up. */
+  get caps(): RadioCaps {
+    return {
+      stagedGain: false, tunerGain: true, amp: false, biasT: true, biasVolts: 4.5,
+      tunerAgc: true, rtlAgc: true, ppm: true, directSampling: this.tuner === 'R820T/R820T2', bbFilters: [],
+    };
+  }
+
+  /** Allow or refuse direct sampling. Off, the dongle's floor goes back to 24 MHz. */
+  setDirectSampling(on: boolean): void {
+    this.directSamplingAllowed = on;
+    if (this.tuner === 'R820T/R820T2') this.limits.minHz = on ? 1_000_000 : RTL_LIMITS.minHz;
+    this.appliedFreq = 0;   // retune, so the path in use follows the switch at once
+  }
+
+  /** The gain the tuner should be running: its own AGC, or the fixed figure. */
+  private wantGain(): number { return this.tunerAgc ? GAIN_AUTO : this.targetGainTenthDb; }
 
   static async remembered(): Promise<USBDevice | undefined> {
     return (await navigator.usb.getDevices()).find(isRtlSdr);
@@ -323,6 +350,7 @@ export class RtlSdr implements Radio {
     if (this.running) return;
     this.running = true; this.stopFlag = false; this.dbgBuffers = 0;
     this.appliedFreq = 0; this.appliedRate = 0; this.appliedGain = Number.MAX_SAFE_INTEGER;
+    this.appliedRtlAgc = -1; this.appliedPpm = Number.NaN;
     this.directSampling = false; this.upconvert = false;
     this.reopenTimes = []; this.quietRetune = false; this.retuneAfter = 0;
     try {
@@ -361,11 +389,13 @@ export class RtlSdr implements Radio {
   private async bringUp(): Promise<void> {
     // A dongle left running by another program halts its endpoint; clear it before touching anything.
     try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
+    this.appliedPpm = this.ppm;   // everything below tunes against the corrected crystal
     await this.initBaseband();
     await this.initTuner();
     await this.setSampleRate(this.targetRateHz); this.appliedRate = this.targetRateHz;
     await this.setCenterFreq(this.targetFreqHz); this.appliedFreq = this.targetFreqHz;
-    await this.applyGain(this.targetGainTenthDb); this.appliedGain = this.targetGainTenthDb;
+    await this.applyGain(this.wantGain()); this.appliedGain = this.wantGain();
+    await this.applyRtlAgc();
     await this.resetBuffer();
     this.ev.onLog(`RTL-SDR: streaming ${(this.targetFreqHz / 1e6).toFixed(3)} MHz @ ${(this.targetRateHz / 1e6).toFixed(3)} Msps`);
   }
@@ -477,7 +507,8 @@ export class RtlSdr implements Radio {
   /** Whether a frequency or gain change is waiting. Rate changes are not here: they reset the bulk FIFO and so
    *  are handled in stream(), which first drains the reads in flight. */
   private pending(): boolean {
-    return this.targetFreqHz !== this.appliedFreq || this.targetGainTenthDb !== this.appliedGain;
+    return this.targetFreqHz !== this.appliedFreq || this.wantGain() !== this.appliedGain
+      || (this.rtlAgc ? 1 : 0) !== this.appliedRtlAgc || this.ppm !== this.appliedPpm;
   }
 
   /** Apply a pending frequency and gain. True when both landed; on a failure the applied value stays stale. */
@@ -488,14 +519,24 @@ export class RtlSdr implements Radio {
     // tries again; a dongle that really has gone still ends the loop through its failed bulk reads.
     try {
       const before = this.ctlFails;
+      if (this.ppm !== this.appliedPpm) {
+        // New crystal correction: the resampler's correction registers now, the tuner's synthesizer and the
+        // demodulator's IF by retuning against the corrected reference.
+        const p = this.ppm;
+        this.appliedPpm = p;
+        await this.setPpmRegs();
+        if (!this.directSampling) await this.setIfFreq(R82XX_IF_HZ);
+        this.appliedFreq = 0;
+      }
+      if ((this.rtlAgc ? 1 : 0) !== this.appliedRtlAgc) await this.applyRtlAgc();
       if (this.targetFreqHz !== this.appliedFreq) {
         const f = this.targetFreqHz;
         await this.setCenterFreq(f);
         if (this.ctlFails !== before) throw new Error('the dongle refused a control transfer');
         this.appliedFreq = f;
       }
-      if (this.targetGainTenthDb !== this.appliedGain) {
-        const g = this.targetGainTenthDb;
+      if (this.wantGain() !== this.appliedGain) {
+        const g = this.wantGain();
         await this.applyGain(g);
         if (this.ctlFails !== before) throw new Error('the dongle refused a control transfer');
         this.appliedGain = g;
@@ -549,6 +590,22 @@ export class RtlSdr implements Radio {
    *  (librtlsdr rtlsdr_set_bias_tee). It never touches the receive path; the caller gates it behind a warning. */
   async setBiasTee(on: boolean): Promise<void> { await this.setGpio(0, on); }
 
+  /** The demodulator's digital AGC: register 0x19 of page 0, 0x25 on and 0x05 off (librtlsdr). */
+  private async applyRtlAgc(): Promise<void> {
+    await this.demodWrite(0, 0x19, this.rtlAgc ? 0x25 : 0x05, 1);
+    this.appliedRtlAgc = this.rtlAgc ? 1 : 0;
+  }
+
+  /** A crystal frequency with the current correction applied (librtlsdr's corrected rtl_xtal / tun_xtal). */
+  private corrected(xtal: number): number { return Math.round(xtal * (1 + this.appliedPpm / 1e6)); }
+
+  /** The resampler's crystal correction (librtlsdr rtlsdr_set_sample_freq_correction). */
+  private async setPpmRegs(): Promise<void> {
+    const offs = Math.trunc((-this.appliedPpm * (1 << 24)) / 1_000_000);
+    await this.demodWrite(1, 0x3f, offs & 0xff, 1);
+    await this.demodWrite(1, 0x3e, (offs >> 8) & 0x3f, 1);
+  }
+
   private async demodWrite(page: number, addr: number, val: number, len: number): Promise<void> {
     const data = len === 1 ? new Uint8Array([val & 0xff]) : new Uint8Array([(val >> 8) & 0xff, val & 0xff]);
     await this.ctlOut({ requestType: 'vendor', recipient: 'device', request: 0, value: (addr << 8) | 0x20, index: 0x10 | page }, data);
@@ -589,7 +646,7 @@ export class RtlSdr implements Radio {
   }
 
   private async setIfFreq(freqHz: number): Promise<void> {
-    const ifFreq = -Math.trunc((freqHz * 0x400000) / RTL_XTAL);
+    const ifFreq = -Math.trunc((freqHz * 0x400000) / this.corrected(RTL_XTAL));
     await this.demodWrite(1, 0x19, (ifFreq >> 16) & 0x3f, 1);
     await this.demodWrite(1, 0x1a, (ifFreq >> 8) & 0xff, 1);
     await this.demodWrite(1, 0x1b, ifFreq & 0xff, 1);
@@ -599,7 +656,7 @@ export class RtlSdr implements Radio {
     const rsamp = Math.trunc((RTL_XTAL * 0x400000) / rate) & 0x0ffffffc;
     await this.demodWrite(1, 0x9f, (rsamp >> 16) & 0xffff, 2);
     await this.demodWrite(1, 0xa1, rsamp & 0xffff, 2);
-    await this.demodWrite(1, 0x3e, 0, 1); await this.demodWrite(1, 0x3f, 0, 1);   // no crystal correction
+    await this.setPpmRegs();
     await this.demodWrite(1, 0x01, 0x14, 1); await this.demodWrite(1, 0x01, 0x10, 1);
   }
 
@@ -628,7 +685,7 @@ export class RtlSdr implements Radio {
       await this.setI2cRepeater(false);
       return;
     }
-    if (freqHz < RTL_HF_MAX_HZ && this.tuner === 'R820T/R820T2') {
+    if (freqHz < RTL_HF_MAX_HZ && this.tuner === 'R820T/R820T2' && this.directSamplingAllowed) {
       if (!this.directSampling) await this.enterDirectSampling();
       await this.setIfFreq(freqHz);
       return;
@@ -784,7 +841,7 @@ export class RtlSdr implements Radio {
     if (this.blogV4) this.ev.onLog('RTL-SDR: RTL-SDR Blog V4 (R828D, HF upconverter)');
     this.label = this.tuner === 'R828S' ? 'RTL-SDR Blog V4L' : this.blogV4 ? 'RTL-SDR Blog V4' : `RTL-SDR · ${this.tuner}`;
     // An R820T/R820T2 (direct sampling) or a Blog V4 / V4L (the upconverter) can reach below the 24 MHz floor.
-    if (this.tuner === 'R820T/R820T2' || this.tuner === 'R828S' || this.blogV4) this.limits.minHz = 1_000_000;
+    if ((this.tuner === 'R820T/R820T2' && this.directSamplingAllowed) || this.tuner === 'R828S' || this.blogV4) this.limits.minHz = 1_000_000;
 
     for (let i = 0; i < R82XX_INIT.length; i++) this.tunerRegs[5 + i] = R82XX_INIT[i];
     await this.tunerWrite(0x05, R82XX_INIT);
@@ -862,7 +919,7 @@ export class RtlSdr implements Radio {
 
   /** The fractional-N synthesizer. Returns false when it will not lock, which is worth saying out loud. */
   private async r82xxSetPll(freqHz: number, quiet = false): Promise<boolean> {
-    const pllRef = this.tunerXtal;
+    const pllRef = this.corrected(this.tunerXtal);
     const VCO_CURR_MIN = 0x80, VCO_CURR_MAX = 0x60;
 
     await this.tunerWriteMask(0x10, 0x00, 0x10);        // reference divider of one
