@@ -95,9 +95,9 @@ object Apps {
         _trainsBand.value = b
         if (playing() == MayhemApp.TRAINS) startTrains()
     }
-    /** Whether Trains shows the waterfall (off: the band strip shows the bursts, and the cards get the room). */
-    private val _trainsWaterfall = MutableStateFlow(false)
-    val trainsWaterfall: StateFlow<Boolean> = _trainsWaterfall.asStateFlow()
+    /** Whether Trains shows the waterfall, once chosen; null: by screen size (a phone leaves it out for the cards). */
+    private val _trainsWaterfall = MutableStateFlow<Boolean?>(null)
+    val trainsWaterfall: StateFlow<Boolean?> = _trainsWaterfall.asStateFlow()
     fun setTrainsWaterfall(on: Boolean) { _trainsWaterfall.value = on }
     fun setTrainsAuto() { _trainsAuto.value = true; if (playing() == MayhemApp.TRAINS) startTrains() }
     private fun startTrains() {

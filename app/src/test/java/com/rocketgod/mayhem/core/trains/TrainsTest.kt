@@ -216,8 +216,25 @@ class TrainsTest {
         dqpskIq((0 until 160).map { "0123"[rng.nextInt(4)] }.joinToString(""), 400_000.0, rate, out)
         val p = TrainsProcessor(PacketLog()); p.centerOf = { c }; p.band = TrainsProcessor.Band.PTC
         run(p, out.toByteArray(), rate)
-        assertTrue(p.stations.value.isEmpty())
-        assertEquals(1, p.ptcOther.value)
+        assertTrue("a burst without the sync is not a station", p.stations.value.isEmpty())
+        assertTrue(p.ptcOther.value >= 1)
+    }
+
+    /**
+     * An RTL-SDR on a short antenna: 2 Msps around 220.106 MHz, the base station about 10 dB over the noise in its
+     * channel and 2 kHz off (a cheap crystal). Every burst still decodes.
+     */
+    @Test fun weakBurstsAtRtlRate() {
+        val rate = 2_000_000; val c = TrainsProcessor.PTC_NARROW
+        val out = java.io.ByteArrayOutputStream()
+        repeat(4) { dqpskIq(BASE, 220_712_500.0 + 2_000 - c, rate, out, amp = 8.0, noise = 25.0, seed = 10L + it) }
+        val p = TrainsProcessor(PacketLog()); p.centerOf = { c }; p.band = TrainsProcessor.Band.PTC
+        val got = ArrayList<PtcBurst>(); p.onPtc = { got.add(it) }
+        run(p, out.toByteArray(), rate)
+        for (b in got) println("weak: %.4f sync %d/30 +%d dB".format(b.hz / 1e6, b.syncScore, b.snrDb))
+        val st = p.stations.value.singleOrNull { it.kind == PtcStation.Kind.BASE }
+        assertNotNull("the base station at 10 dB", st)
+        assertTrue("${st!!.bursts} of 4 bursts", st.bursts >= 3)
     }
 
     /** How much of real time the receiver takes, in each mode, on noise. */

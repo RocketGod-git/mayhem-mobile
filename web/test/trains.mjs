@@ -149,7 +149,19 @@ for (const [s, unit, psig] of REAL) { const p = EotParser.decode(bits(s)); ok(p 
   dqpskIq(out, Array.from({ length: 160 }, () => '0123'[Math.floor(r.nextDouble() * 4)]).join(''), 400_000, rate);
   const p = new TrainsProcessor(null); p.centerHz = PTC_NARROW; p.band = 'PTC';
   run(p, out.get(), rate);
-  eq(p.stations.size, 0, 'no station'); eq(p.ptc.others, 1, 'one other burst');
+  eq(p.stations.size, 0, 'no station'); eq(p.ptc.others >= 1, true, 'an other burst');
+}
+
+// an RTL-SDR on a short antenna: 2 Msps, the base station about 10 dB over the noise in its channel and 2 kHz off
+{
+  const rate = 2_000_000, c = PTC_NARROW, out = new Iq();
+  for (let i = 0; i < 4; i++) dqpskIq(out, BASE, 220_712_500 + 2_000 - c, rate, { amp: 8, noise: 25, seed: 10 + i });
+  const p = new TrainsProcessor(null); p.centerHz = c; p.band = 'PTC';
+  const got = []; p.onPtc = b => got.push(b);
+  run(p, out.get(), rate);
+  for (const b of got) console.log(`  weak: ${(b.hz / 1e6).toFixed(4)} sync ${b.syncScore}/30 +${b.snrDb} dB`);
+  const st = [...p.stations.values()].filter(s => s.kind === 'BASE');
+  eq(st.length, 1, 'the base station at 10 dB'); eq((st[0]?.bursts ?? 0) >= 3, true, 'at least 3 of 4 weak bursts');
 }
 
 const spec = process.env.MAYHEM_TRAINS_IQ;

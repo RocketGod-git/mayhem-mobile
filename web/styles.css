@@ -1179,6 +1179,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* ---- Trains: the headline, channel lamps, end-of-train and PTC station cards ---- */
 .tr-lamps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 6px 2px; font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }
 .tr-lamps small { font-weight: 400; letter-spacing: 0; font-size: 9px; }
+.ctlrow > .tr-lamps { flex: 1; margin: 0 2px; }
 .tr-lamp { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .tr-lamp i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); box-sizing: border-box; }
 .tr-lamp.on { color: color-mix(in srgb, var(--ok) 75%, var(--muted)); }
