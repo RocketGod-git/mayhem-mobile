@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (126 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (127 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -89,7 +89,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 126, checks)
+        assertEquals("checks run", 127, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -443,7 +443,7 @@ class SpectrumTest {
         val rate = 2e6; val off = 400_000.0; val bw = 100_000.0
         val zcfg = ZsConfig(offsetHz = off, bwHz = bw, sweepSec = 0.02, trigger = TrigMode.RISE, single = false, levelDb = -30.0, pre = 0.25)
         val caps = ArrayList<ZsCapture>()
-        val z = ZeroSpan(rate, zcfg) { caps.add(it) }
+        val z = ZeroSpan(rate, zcfg) { if (!it.preview) caps.add(it) }
         val s = pulsed(rate, 0.06, off, 60.0, 0.001, 0.004, 0.0105, Mulberry(5))
         z.pushFloat(s.i, s.q)
         ok(caps.size >= 1, "RISE triggers on the pulses (${caps.size} captures)")
@@ -465,14 +465,14 @@ class SpectrumTest {
             }
         }
         // FALL triggers on the falling edge
-        val caps2 = ArrayList<ZsCapture>(); val z2 = ZeroSpan(rate, zcfg.copy(trigger = TrigMode.FALL)) { caps2.add(it) }
+        val caps2 = ArrayList<ZsCapture>(); val z2 = ZeroSpan(rate, zcfg.copy(trigger = TrigMode.FALL)) { if (!it.preview) caps2.add(it) }
         z2.pushFloat(s.i, s.q)
         val c2 = caps2.firstOrNull()
         ok(c2 != null && c2.amp[c2.trig - 3] > -30 && c2.amp[c2.trig + 2] < -30, "FALL triggers on the falling edge")
         // SINGLE takes one capture and waits to be armed again
         val caps3 = ArrayList<ZsCapture>(); val done3 = ArrayList<Boolean>()
         var z3h: ZeroSpan? = null
-        val z3 = ZeroSpan(rate, zcfg.copy(single = true)) { caps3.add(it); done3.add(z3h!!.done) }
+        val z3 = ZeroSpan(rate, zcfg.copy(single = true)) { if (!it.preview) { caps3.add(it); done3.add(z3h!!.done) } }
         z3h = z3
         z3.pushFloat(s.i, s.q)
         ok(caps3.size == 1 && z3.done, "SINGLE takes one capture")
@@ -485,9 +485,11 @@ class SpectrumTest {
         z4.pushFloat(quiet.i, quiet.q)
         ok(caps4.size >= 4 && caps4.all { it.roll && it.trig == -1 }, "FREE rolls without a trigger (${caps4.size})")
         // no trigger on a quiet channel
-        val caps5 = ArrayList<ZsCapture>(); val z5 = ZeroSpan(rate, zcfg) { caps5.add(it) }
-        z5.pushFloat(quiet.i, quiet.q)
+        val caps5 = ArrayList<ZsCapture>(); val prev5 = ArrayList<ZsCapture>(); val z5 = ZeroSpan(rate, zcfg) { (if (it.preview) prev5 else caps5).add(it) }
+        val quiet1 = pulsed(rate, 1.0, off, 0.0, 0.0, 1.0, 2.0, Mulberry(19))
+        z5.pushFloat(quiet1.i, quiet1.q)
         ok(caps5.size == 0, "RISE waits on a quiet channel")
+        ok(prev5.size in 4..6 && prev5.all { it.roll && it.trig == -1 }, "and shows a preview of it while it waits, about 5 a second (${prev5.size} in 1 s)")
         // instantaneous frequency: a carrier 12 kHz above the channel reads +12 kHz
         val caps6 = ArrayList<ZsCapture>(); val z6 = ZeroSpan(rate, zcfg.copy(trigger = TrigMode.FREE, sweepSec = 0.005)) { caps6.add(it) }
         val fm = pulsed(rate, 0.02, off + 12_000, 50.0, 1.0, 1.0, 0.0, Mulberry(4))

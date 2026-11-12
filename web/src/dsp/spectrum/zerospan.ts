@@ -8,7 +8,8 @@
  *
  * Triggering: FREE runs as a roll (the newest window, redrawn as it moves); RISE and FALL wait for the amplitude to
  * cross the trigger level that way (1 dB of hysteresis) and capture a window with `pre` of it before the trigger;
- * SINGLE disarms after one capture until it is armed again.
+ * SINGLE disarms after one capture until it is armed again. While a trigger waits, a preview of the newest window goes
+ * out five times a second (flagged `preview`), so the screen is never blank while nothing has crossed the level.
  */
 
 export type TrigMode = 'FREE' | 'RISE' | 'FALL';
@@ -61,6 +62,8 @@ export interface ZsCapture {
   /** The trigger's index in the arrays, or -1 for a roll. */
   trig: number;
   roll: boolean;
+  /** A look at the channel while a trigger waits (5 a second, the newest window, not a capture): drawn dimmed. */
+  preview: boolean;
 }
 
 /** The decimation plan for a filter at a rate: boxcar by d1, FIR by d2, to outRate. */
@@ -188,7 +191,10 @@ export class ZeroSpan {
     }
     const pre = Math.round(Math.max(0, Math.min(0.9, c.pre)) * this.window);
     if (this.trigAt < 0) {
-      if (!this.armed || this.done || now < this.nextAllowed) return;
+      if (!this.armed || this.done) return;
+      // while it waits, a dimmed look at the channel now and then, so the level can be set against what is there
+      if (now - this.lastRoll >= 4 * gap) { this.lastRoll = now; const len = Math.min(now, this.window); this.emit(now - len, len, -1, true, true); }
+      if (now < this.nextAllowed) return;
       const crossed = c.trigger === 'RISE' ? (!wasAbove && this.above) : (wasAbove && !this.above);
       if (!crossed || now - 1 < pre) return;
       this.trigAt = now - 1;
@@ -203,7 +209,7 @@ export class ZeroSpan {
     }
   }
 
-  private emit(start: number, len: number, trig: number, roll: boolean): void {
+  private emit(start: number, len: number, trig: number, roll: boolean, preview = false): void {
     const k = Math.max(1, Math.ceil(len / ZS_SHOW_POINTS));
     const m = Math.ceil(len / k);
     const amp = new Float32Array(m), fm = new Float32Array(m), ph = new Float32Array(m);
@@ -214,6 +220,6 @@ export class ZeroSpan {
       for (let j = j0; j < Math.min(start + len, j0 + k); j++) { const v = this.rAmp[j % this.cap]; if (v > a) a = v; }
       amp[o] = a; fm[o] = this.rFm[j0 % this.cap]; ph[o] = this.rPh[j0 % this.cap];
     }
-    this.onCapture({ amp, fm, ph, rate: this.outRate / k, trig: trig < 0 ? -1 : Math.round(trig / k), roll });
+    this.onCapture({ amp, fm, ph, rate: this.outRate / k, trig: trig < 0 ? -1 : Math.round(trig / k), roll, preview });
   }
 }

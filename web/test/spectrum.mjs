@@ -362,7 +362,7 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
   const rate = 2e6, off = 400_000, bw = 100_000;
   const zcfg = { offsetHz: off, bwHz: bw, sweepSec: 0.02, trigger: 'RISE', single: false, levelDb: -30, pre: 0.25 };
   const caps = [];
-  const z = new S.ZeroSpan(rate, zcfg, c => caps.push(c));
+  const z = new S.ZeroSpan(rate, zcfg, c => { if (!c.preview) caps.push(c); });
   const s = pulsed(rate, 0.06, off, 60, 0.001, 0.004, 0.0105, mulberry32(5));
   z.pushFloat(s.i, s.q);
   ok(caps.length >= 1, `RISE triggers on the pulses (${caps.length} captures)`);
@@ -384,12 +384,12 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
     }
   }
   // FALL triggers on the falling edge
-  const caps2 = []; const z2 = new S.ZeroSpan(rate, { ...zcfg, trigger: 'FALL' }, cc => caps2.push(cc));
+  const caps2 = []; const z2 = new S.ZeroSpan(rate, { ...zcfg, trigger: 'FALL' }, cc => { if (!cc.preview) caps2.push(cc); });
   z2.pushFloat(s.i, s.q);
   const c2 = caps2[0];
   ok(c2 && c2.amp[c2.trig - 3] > -30 && c2.amp[c2.trig + 2] < -30, 'FALL triggers on the falling edge');
   // SINGLE takes one capture and waits to be armed again
-  const caps3 = [], done3 = []; const z3 = new S.ZeroSpan(rate, { ...zcfg, single: true }, cc => { caps3.push(cc); done3.push(z3.done); });
+  const caps3 = [], done3 = []; const z3 = new S.ZeroSpan(rate, { ...zcfg, single: true }, cc => { if (cc.preview) return; caps3.push(cc); done3.push(z3.done); });
   z3.pushFloat(s.i, s.q);
   ok(caps3.length === 1 && z3.done, 'SINGLE takes one capture');
   ok(done3[0] === true, 'and is already done when its capture goes out (the screen shows DONE, not ARMED)');
@@ -401,9 +401,11 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
   z4.pushFloat(quiet.i, quiet.q);
   ok(caps4.length >= 4 && caps4.every(cc => cc.roll && cc.trig === -1), `FREE rolls without a trigger (${caps4.length})`);
   // no trigger on a quiet channel
-  const caps5 = []; const z5 = new S.ZeroSpan(rate, zcfg, cc => caps5.push(cc));
-  z5.pushFloat(quiet.i, quiet.q);
+  const caps5 = [], prev5 = []; const z5 = new S.ZeroSpan(rate, zcfg, cc => (cc.preview ? prev5 : caps5).push(cc));
+  const quiet1 = pulsed(rate, 1.0, off, 0, 0, 1, 2, mulberry32(19));
+  z5.pushFloat(quiet1.i, quiet1.q);
   ok(caps5.length === 0, 'RISE waits on a quiet channel');
+  ok(prev5.length >= 4 && prev5.length <= 6 && prev5.every(cc => cc.roll && cc.trig === -1), `and shows a preview of it while it waits, about 5 a second (${prev5.length} in 1 s)`);
   // instantaneous frequency: a carrier 12 kHz above the channel reads +12 kHz
   const caps6 = []; const z6 = new S.ZeroSpan(rate, { ...zcfg, trigger: 'FREE', sweepSec: 0.005 }, cc => caps6.push(cc));
   const fm = pulsed(rate, 0.02, off + 12_000, 50, 1, 1, 0, mulberry32(4));

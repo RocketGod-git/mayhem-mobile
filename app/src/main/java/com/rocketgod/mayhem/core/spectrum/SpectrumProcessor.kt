@@ -48,7 +48,7 @@ class SpFrame(
 /** One zero-span window (`zscap`). */
 class ZsCap(
     val amp: FloatArray, val fm: FloatArray, val ph: FloatArray,
-    val rate: Double, val trig: Int, val roll: Boolean, val sweepSec: Double, val armed: Boolean,
+    val rate: Double, val trig: Int, val roll: Boolean, val sweepSec: Double, val armed: Boolean, val preview: Boolean = false,
 ) : SpectrumEvent
 
 /** Frames per second to the screen at most. */
@@ -118,7 +118,7 @@ class SpectrumProcessor(
         when (c.mode) {
             SpecMode.FFT -> fftE = FftEngine(fftSizeFor(rate.toDouble(), c.rbwHz, c.window), c.window, rate.toDouble(), c.vbwHz, c.dcPatch)
             SpecMode.ZERO -> zs = ZeroSpan(rate.toDouble(), c.zs!!) { cap ->
-                emit(ZsCap(cap.amp, cap.fm, cap.ph, cap.rate, cap.trig, cap.roll, zs?.sweepSec ?: 0.0, !(zs?.done ?: false)))
+                emit(ZsCap(cap.amp, cap.fm, cap.ph, cap.rate, cap.trig, cap.roll, zs?.sweepSec ?: 0.0, !(zs?.done ?: false), cap.preview))
             }
             SpecMode.SWEEP -> startSweep()
         }

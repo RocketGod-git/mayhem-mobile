@@ -73,6 +73,8 @@ class ZsCapture(
     /** The trigger's index in the arrays, or -1 for a roll. */
     val trig: Int,
     val roll: Boolean,
+    /** A look at the channel while a trigger waits (5 a second, the newest window, not a capture): drawn dimmed. */
+    val preview: Boolean = false,
 )
 
 /** The decimation plan for a filter at a rate: boxcar by d1, FIR by d2, to outRate. */
@@ -201,7 +203,10 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
         }
         val pre = Math.round(max(0.0, min(0.9, c.pre)) * window).toInt()
         if (trigAt < 0) {
-            if (!armed || done || now < nextAllowed) return
+            if (!armed || done) return
+            // while it waits, a dimmed look at the channel now and then, so the level can be set against what is there
+            if (now - lastRoll >= 4 * gap) { lastRoll = now; val len = min(now, window.toLong()).toInt(); emit(now - len, len, -1, true, true) }
+            if (now < nextAllowed) return
             val crossed = if (c.trigger == TrigMode.RISE) (!wasAbove && above) else (wasAbove && !above)
             if (!crossed || now - 1 < pre) return
             trigAt = now - 1
@@ -216,7 +221,7 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
         }
     }
 
-    private fun emit(start: Long, len: Int, trig: Int, roll: Boolean) {
+    private fun emit(start: Long, len: Int, trig: Int, roll: Boolean, preview: Boolean = false) {
         val k = max(1, ceil(len.toDouble() / ZS_SHOW_POINTS).toInt())
         val m = ceil(len.toDouble() / k).toInt()
         val amp = FloatArray(m); val fm = FloatArray(m); val ph = FloatArray(m)
@@ -227,6 +232,6 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
             for (j in j0 until min(start + len, j0 + k)) { val v = rAmp[(j % cap).toInt()]; if (v > a) a = v }
             amp[o] = a; fm[o] = rFm[(j0 % cap).toInt()]; ph[o] = rPh[(j0 % cap).toInt()]
         }
-        onCapture(ZsCapture(amp, fm, ph, outRate / k, if (trig < 0) -1 else Math.round(trig.toDouble() / k).toInt(), roll))
+        onCapture(ZsCapture(amp, fm, ph, outRate / k, if (trig < 0) -1 else Math.round(trig.toDouble() / k).toInt(), roll, preview))
     }
 }

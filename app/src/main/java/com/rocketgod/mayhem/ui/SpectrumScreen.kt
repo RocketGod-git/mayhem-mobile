@@ -612,8 +612,10 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
         } else {
             for (i in arr.indices) { val x = g.l + (i + 0.5f) / arr.size * g.w; val y = yOf(arr[i].toDouble()); if (i > 0) path.lineTo(x, y) else path.moveTo(x, y) }
         }
-        cv.drawPath(path, paint(col.a(0x30), k, stroke = 5f))
-        cv.drawPath(path, paint(col, k, stroke = 1.3f))
+        // a preview (waiting for the trigger) is drawn dimmed: it is the channel now, not a capture
+        val dim = if (z.preview) 0.4f else 1f
+        cv.drawPath(path, paint(col.copy(alpha = 0x30 / 255f * dim), k, stroke = 5f))
+        cv.drawPath(path, paint(col.copy(alpha = dim), k, stroke = 1.3f))
         if (z.trig >= 0) {
             val x = g.l + z.trig.toFloat() / len * g.w
             cv.drawLine(x, top, x, top + ph, paint(SP_ACTIVE, k, stroke = 1f))
@@ -635,8 +637,11 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
     cv.drawText("${fmtSec(total / 10)}/div", g.l + g.w / 2, yb, paint(muted, k, text = 11f, align = Paint.Align.CENTER))
     val mid = paint(muted, k, text = 13f, align = Paint.Align.CENTER).apply { typeface = Typeface.SANS_SERIF }
     if (!Spectrum.connected()) cv.drawText("Connect a radio to measure", g.l + g.w / 2, g.t + g.h / 2, mid)
-    else if (z == null) cv.drawText(if (s.trig == TrigMode.FREE) "Starting…" else "Waiting for the trigger (${if (s.trig == TrigMode.RISE) "rising" else "falling"} through ${s.level} $u)",
-        g.l + g.w / 2, g.t + g.h / 2, mid)
+    else if (z == null || z.preview) {
+        val msg = if (s.trig == TrigMode.FREE) "Starting…" else "Waiting for the trigger (${if (s.trig == TrigMode.RISE) "rising" else "falling"} through ${s.level} $u)"
+        // with a preview on screen the dimmed trace says it all (the status line says ARMED); text only on an empty plot
+        if (z == null) cv.drawText(msg, g.l + g.w / 2, g.t + g.h / 2, mid)
+    }
 }
 
 /** The plot with its settings and readouts, as a PNG (1600 px wide, as on the web). */

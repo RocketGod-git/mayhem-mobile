@@ -146,7 +146,7 @@ class SpSettings(var dial: Double) {
 /** The frame as the screen keeps it: where its bins are. */
 class SpFrameInfo(val f0: Double, val binHz: Double, val rbw: Double, val sweep: Boolean, val step: Int, val steps: Int)
 /** A zero-span window as the screen keeps it, in display units. */
-class ZsView(val amp: FloatArray, val fm: FloatArray, val ph: FloatArray, val rate: Double, val trig: Int, val roll: Boolean, val sweepSec: Double, val off: Double)
+class ZsView(val amp: FloatArray, val fm: FloatArray, val ph: FloatArray, val rate: Double, val trig: Int, val roll: Boolean, val sweepSec: Double, val off: Double, val preview: Boolean = false)
 
 fun db1(v: Double): String = if (v.isFinite()) String.format(Locale.US, "%.1f", v) else "—"
 /** A JavaScript-style number: no trailing zeros. */
@@ -385,11 +385,13 @@ object Spectrum {
 
     private fun onCapture(m: ZsCap) {
         if (s.mode != SpMode.ZERO) return
+        // a preview (the channel while a trigger waits) never covers a capture already taken
+        if (m.preview && zcap?.preview == false) return
         val off = offset()
         for (i in m.amp.indices) m.amp[i] = (m.amp[i] + off).toFloat()
-        zcap = ZsView(m.amp, m.fm, m.ph, m.rate, m.trig, m.roll, m.sweepSec, off)
+        zcap = ZsView(m.amp, m.fm, m.ph, m.rate, m.trig, m.roll, m.sweepSec, off, m.preview)
         armed = m.armed
-        zstats = pulseStats(m.amp, m.rate)
+        zstats = if (m.preview) null else pulseStats(m.amp, m.rate)
         changed()
     }
 
@@ -840,7 +842,7 @@ object Spectrum {
         if (s.mode == SpMode.ZERO) {
             val z = zcap; val st = zstats
             if (st == null) return SpMeasCard("PULSE", "", null, emptyList(), false,
-                if (z != null) "No pulses in this window: it needs two distinct levels at least 10 dB apart." else "Waiting for samples.")
+                if (z?.preview == true) "Waiting for the trigger: the channel is shown dimmed until something crosses the level." else if (z != null) "No pulses in this window: it needs two distinct levels at least 10 dB apart." else "Waiting for samples.")
             fun cell(l: String, v: String): SpBig { val i = v.lastIndexOf(' '); return if (i < 0) SpBig(l, v, "") else SpBig(l, v.substring(0, i), v.substring(i + 1)) }
             val cells = listOf(cell("WIDTH", fmtSec(st.width)), cell("PERIOD", fmtSec(st.period)),
                 cell("DUTY", if (st.duty.isFinite()) String.format(Locale.US, "%.1f %%", st.duty * 100) else "—"), cell("RISE", fmtSec(st.rise)),

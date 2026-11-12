@@ -143,7 +143,7 @@ export class SpectrumUi {
   readonly traces: Trace[] = defaultTraces();
   private frame: Frame | null = null;
   private persist: Persistence | null = null;
-  private zcap: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number } | null = null;
+  private zcap: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number; preview?: boolean } | null = null;
   private zstats: PulseStats | null = null;
   private armed = true;
   private plan: SpanPlan | null = null;
@@ -280,14 +280,16 @@ export class SpectrumUi {
     this.draw();
   }
 
-  onCapture(m: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number; armed: boolean }): void {
+  onCapture(m: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number; armed: boolean; preview?: boolean }): void {
     if (this.s.mode !== 'ZERO') return;
+    // a preview (the channel while a trigger waits) never covers a capture already taken
+    if (m.preview && this.zcap && !this.zcap.preview) return;
     const off = this.offset();
     for (let i = 0; i < m.amp.length; i++) m.amp[i] += off;
     this.zcap = m;
     const was = this.armed;
     this.armed = m.armed;
-    this.zstats = pulseStats(m.amp, m.rate);
+    this.zstats = m.preview ? null : pulseStats(m.amp, m.rate);
     if (was !== this.armed) this.tiles();
     this.draw();
   }
@@ -1014,8 +1016,11 @@ export class SpectrumUi {
       } else {
         for (let i = 0; i < arr.length; i++) { const x = g.l + (i + 0.5) / arr.length * g.w, y = yOf(arr[i]); if (i) path.lineTo(x, y); else path.moveTo(x, y); }
       }
+      // a preview (waiting for the trigger) is drawn dimmed: it is the channel now, not a capture
+      ctx.globalAlpha = z.preview ? 0.4 : 1;
       ctx.strokeStyle = col + '30'; ctx.lineWidth = 5; ctx.stroke(path);
       ctx.strokeStyle = col; ctx.lineWidth = 1.3; ctx.stroke(path);
+      ctx.globalAlpha = 1;
       if (z.trig >= 0) { const x = g.l + z.trig / len * g.w; ctx.strokeStyle = ACTIVE; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); if (k === 0) { ctx.fillStyle = ACTIVE; ctx.beginPath(); ctx.moveTo(x - 6, top); ctx.lineTo(x + 6, top); ctx.lineTo(x, top + 8); ctx.fill(); } }
       if (s.cursors) for (const [c, l] of [[s.curA, 'A'], [s.curB, 'B']] as [number, string][]) {
         const x = g.l + c * g.w; ctx.strokeStyle = '#ffffff'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); ctx.setLineDash([]);
@@ -1029,7 +1034,11 @@ export class SpectrumUi {
     ctx.textAlign = 'center'; ctx.fillText(`${fmtSec(total / 10)}/div`, g.l + g.w / 2, g.t + g.h + 16);
     ctx.font = '600 13px sans-serif';
     if (!this.host.connected()) ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2);
-    else if (!z) ctx.fillText(s.trig === 'FREE' ? 'Starting…' : `Waiting for the trigger (${s.trig === 'RISE' ? 'rising' : 'falling'} through ${s.level} ${this.unitLabel()})`, g.l + g.w / 2, g.t + g.h / 2);
+    else if (!z || z.preview) {
+      const msg = s.trig === 'FREE' ? 'Starting…' : `Waiting for the trigger (${s.trig === 'RISE' ? 'rising' : 'falling'} through ${s.level} ${this.unitLabel()})`;
+      // with a preview on screen the dimmed trace says it all (the status line says ARMED); text only on an empty plot
+      if (!z) ctx.fillText(msg, g.l + g.w / 2, g.t + g.h / 2);
+    }
   }
 
   /** The trace the measurements read: the active marker's, else the first with data. */
@@ -1050,7 +1059,7 @@ export class SpectrumUi {
         const cells: [string, string][] = [['WIDTH', fmtSec(st.width)], ['PERIOD', fmtSec(st.period)], ['DUTY', Number.isFinite(st.duty) ? `${(st.duty * 100).toFixed(1)} %` : '—'], ['RISE', fmtSec(st.rise)], ['FALL', fmtSec(st.fall)], ['PULSES', `${st.pulses} `]];
         h += `<div class="sp-bigs">${cells.map(([l, v]) => { const [a, b] = split(v); return big(l, a, b); }).join('')}</div>
           <div class="sp-msub">top ${db1(st.top)} ${u} · base ${db1(st.base)} ${u} · ${db1(st.top - st.base)} dB on/off</div>`;
-      } else h += `<div class="sp-msub">${z ? 'No pulses in this window: it needs two distinct levels at least 10 dB apart.' : 'Waiting for samples.'}</div>`;
+      } else h += `<div class="sp-msub">${z?.preview ? 'Waiting for the trigger: the channel is shown dimmed until something crosses the level.' : z ? 'No pulses in this window: it needs two distinct levels at least 10 dB apart.' : 'Waiting for samples.'}</div>`;
       meas.innerHTML = h;
       if (s.cursors && z) {
         const len = z.amp.length, at = (c: number) => Math.max(0, Math.min(len - 1, Math.round(c * (len - 1))));
