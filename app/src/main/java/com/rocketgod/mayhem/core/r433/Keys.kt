@@ -53,6 +53,21 @@ private const val RECENT = 32
 private fun hex(v: Long): String = java.lang.Long.toHexString(v).uppercase(Locale.US)
 
 /**
+ * A 24-bit frame as the 12 tri-state symbols of a PT2262-style encoder, when it is one: every bit pair is 00 (0),
+ * 11 (1) or 01 (F, floating). A 10 pair means it is not tri-state (an EV1527-style 20-bit ID and 4-bit button).
+ */
+fun triState(data: Long, bits: Int): String? {
+    if (bits != 24) return null
+    val sb = StringBuilder()
+    var i = 22
+    while (i >= 0) {
+        when (((data shr i) and 3L).toInt()) { 0 -> sb.append('0'); 3 -> sb.append('1'); 1 -> sb.append('F'); else -> return null }
+        i -= 2
+    }
+    return sb.toString()
+}
+
+/**
  * Levels and durations from one channel. A carrier is present while the envelope stands about ten decibels over
  * the noise (seven to let go, so a dip does not chop a mark in two); while it is, the frequency is "high" above
  * its own running middle, which tracks wherever in the channel the transmitter actually sits.
@@ -221,6 +236,15 @@ class KeyDecoders(private val onReading: (KeyReading) -> Unit) {
             }
             Fam.REMOTE -> {
                 val r = RemoteFields.parse(p.sensorType, p.decodeData, p.dataCountBit)
+                val tri = if (r.name == "Princeton") triState(p.decodeData, p.dataCountBit) else null
+                if (tri != null) {
+                // A PT2262-style remote: 8 address symbols (its DIP switches) and 4 data symbols (the pins its buttons
+                // drive). Split 20+4 bits instead, one remote's buttons read as different remotes with odd button numbers.
+                    val code = hex(p.decodeData).padStart(6, '0')
+                    onReading(KeyReading("remote", "Princeton PT2262", tri.substring(0, 8),
+                        listOf("BUTTON" to tri.substring(8), "DIP SWITCHES" to tri.substring(0, 8), "CODE" to "$code (tri-state $tri)"), raw, p.dataCountBit))
+                    return
+                }
                 val fields = ArrayList<Pair<String, String>>()
                 r.btn?.let { fields.add("BUTTON" to it.toString()) }
                 r.cnt?.let { fields.add("COUNTER" to it.toString()) }

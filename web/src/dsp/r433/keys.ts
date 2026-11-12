@@ -41,6 +41,21 @@ const MIN_SPREAD = 500;
 const LAG = 5;
 const RECENT = 32;
 
+/**
+ * A 24-bit frame as the 12 tri-state symbols of a PT2262-style encoder, when it is one: every bit pair is 00 (0),
+ * 11 (1) or 01 (F, floating). A 10 pair means it is not tri-state (an EV1527-style 20-bit ID and 4-bit button).
+ */
+export function triState(data: bigint, bits: number): string | null {
+  if (bits !== 24) return null;
+  let out = '';
+  for (let i = 22; i >= 0; i -= 2) {
+    const pair = Number((data >> BigInt(i)) & 3n);
+    if (pair === 2) return null;
+    out += pair === 0 ? '0' : pair === 3 ? '1' : 'F';
+  }
+  return out;
+}
+
 const hex = (v: bigint, w = 1) => v.toString(16).toUpperCase().padStart(w, '0');
 
 /**
@@ -207,6 +222,14 @@ export class KeyDecoders {
       this.onReading({ family: 'weather', model: w.name, id: w.id.toString(), fields, raw, bits: p.dataCountBit });
     } else if (p.family === Fam.REMOTE) {
       const r = parseRemote(p.sensorType, p.decodeData, p.dataCountBit);
+      const tri = r.name === 'Princeton' ? triState(p.decodeData, p.dataCountBit) : null;
+      if (tri) {
+        // A PT2262-style remote: 8 address symbols (its DIP switches) and 4 data symbols (the pins its buttons
+        // drive). Split 20+4 bits instead, one remote's buttons read as different remotes with odd button numbers.
+        const fields: [string, string][] = [['BUTTON', tri.slice(8)], ['DIP SWITCHES', tri.slice(0, 8)], ['CODE', `${hex(p.decodeData, 6)} (tri-state ${tri})`]];
+        this.onReading({ family: 'remote', model: 'Princeton PT2262', id: tri.slice(0, 8), fields, raw, bits: p.dataCountBit });
+        return;
+      }
       const fields: [string, string][] = [];
       if (r.btn !== null) fields.push(['BUTTON', String(r.btn)]);
       if (r.cnt !== null) fields.push(['COUNTER', String(r.cnt)]);
