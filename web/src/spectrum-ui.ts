@@ -371,9 +371,10 @@ export class SpectrumUi {
   }
   /** Set REF and dB/div to frame the measured trace. */
   private autoScaleNow(): void {
-    const t = this.traceFor(this.s.markers[this.s.active].trace) ?? this.traces.find(x => x.data);
-    if (!t?.data) return;
-    const a = autoScale(t.data, DIVS);
+    // zero span frames its amplitude trace; the frequency view frames the trace the measurements read
+    const y = this.s.mode === 'ZERO' ? this.zcap?.amp : (this.traceFor(this.s.markers[this.s.active].trace) ?? this.traces.find(x => x.data))?.data;
+    if (!y) return;
+    const a = autoScale(y, DIVS);
     this.s.ref = a.ref; this.s.div = a.div; this.persist?.clear();
     this.controls(); this.update();
   }
