@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  * The Analyzer end to end: synthetic bursts of every modulation and line coding, made into I/Q, found by the burst
  * front end anywhere in the span, then read back with nothing set by hand. Then repeated frames lined up bit by bit,
  * the fixed and changing columns checked, and the file formats round-tripped. Twin of web/test/analyzer.mjs, check
- * for check (83 of them), with the same signals and the same PRNG.
+ * for check (117 of them), with the same signals and the same PRNG.
  *
  * No real key is in here: the synthetic frames use made-up bytes, and the Land Rover check uses the ProtoPirate-style
  * fixture already in the repo (resources/pirate/land_rover_fsk.txt), turned back into samples.
@@ -100,10 +100,10 @@ class AnalyzerTest {
 
     @Test
     fun analyzerEndToEnd() {
-        pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); counterAndCheck(); bundleAndFilter(); small()
+        pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); counterAndCheck(); bundleAndFilter(); chirpyOok(); unevenManchester(); phaseAndTrim(); grouping(); small()
         println("analyzer: $pass passed, $fail failed")
         assertTrue("failed: ${failures.joinToString(" | ")}", fail == 0)
-        assertEquals("check count", 83, pass + fail)
+        assertEquals("check count", 117, pass + fail)
     }
 
     // ---- OOK, pulse width: a PT2262-style 24-bit remote, four repeats ------------------------------------------------
@@ -137,6 +137,29 @@ class AnalyzerTest {
         val h = histogram(a, b.rate)
         val pm = h.marks.withIndex().sortedByDescending { it.value }.take(2).map { (it.index + 0.5) * h.binUs }.sorted()
         check(near(pm[0], 350.0, 100.0) && near(pm[1], 1050.0, 100.0), "histogram: marks at 350 and 1050 us (${pm.map { f0(it) }})")
+        // measurements: the two mark lengths and two gap lengths as classes, the threshold between them, the fit of the
+        // symbol, the four repeats with their spacing, and the levels
+        val pt = pulseTable(a, b.rate, b.env)
+        check(pt.marks.size == 2 && pt.spaces.size == 2, "pulses: two mark and two gap classes (${pt.marks.size}, ${pt.spaces.size})")
+        check(pt.marks.size == 2 && pt.marks[0].count + pt.marks[1].count == 100, "pulses: 100 marks in four frames (${pt.marks.map { it.count }})")
+        check(pt.marks.size == 2 && pt.spaces.size == 2 && near(pt.marks[0].mean, 350.0, 25.0) && near(pt.marks[1].mean, 1050.0, 25.0) && near(pt.spaces[0].mean, 350.0, 25.0) && near(pt.spaces[1].mean, 1050.0, 25.0) && pt.marks.all { it.jitterPct < 10 },
+            "pulses: lengths true to 25 us, edge to edge (marks ${pt.marks.map { f0(it.mean) }}, gaps ${pt.spaces.map { f0(it.mean) }}); classes ${pt.marks.map { "${f0(it.mean)}±${f0(it.sd)}" }}")
+        check(pt.markCuts.size == 1 && pt.markCuts[0] > 450 && pt.markCuts[0] < 950, "pulses: the cut between short and long (${pt.markCuts.map { f0(it) }})")
+        check(pt.markCuts.isNotEmpty() && pt.pulses.all { p -> if (p.hi) p.cls == (if (p.us > pt.markCuts[0]) 1 else 0) else true }, "pulses: each mark in its class")
+        val fit = symbolFit(a, b.rate)
+        check(fit.errPct < 20 && fit.runs > 150, "symbol fit: error ${f1(fit.errPct)}% over ${fit.runs} runs")
+        val drift = clockDrift(a, b.rate)
+        check(drift.size == 4 && drift.all { it.worstPct < 35 }, "clock: edges stay near the ticks (${drift.map { f0(it.worstPct) }}%)")
+        val segs = frameSegments(a, b.rate)
+        check(segs.size == 4 && segs.drop(1).all { near(it.intervalMs, 44.8, 1.5) && it.diff.isEmpty() }, "frames: four repeats every 44.8 ms, identical (${segs.map { f1(it.intervalMs) }})")
+        check(segs.drop(1).all { near(it.gapMs, 10.85, 1.0) }, "frames: 10.85 ms between them (${segs.map { String.format(Locale.US, "%.2f", it.gapMs) }})")
+        val lv = levels(a, b.env, b.fm, b.rate)
+        check(lv.depthDb > 20 && lv.markDbfs < 0 && lv.riseUs > 0 && lv.riseUs < 200, "levels: OOK depth ${f0(lv.depthDb)} dB, rise ${f0(lv.riseUs)} us")
+        check(near(lv.carrierHz, 0.0, 6000.0), "levels: carrier on the channel (${f0(lv.carrierHz)} Hz)")
+        val eye = eyeStarts(a, b.rate)
+        check(eye.starts.size > 300 && near(eye.len.toDouble(), 2 * 350 * b.rate / 1e6, 4.0), "eye: a trace per symbol (${eye.starts.size})")
+        val csv = selectionCsv(samplesCsv(b.iq, b.env, b.fm, b.rate, 0, 10), pulseCsv(pt), classCsv(pt), framesCsv(segs))
+        check(csv.startsWith("# samples\nsample,t_us,i,q,envelope,freq_hz\n0,") && csv.contains("# pulses\nframe,index,level") && csv.contains("\nM2,mark,") && csv.contains("# frames\nframe,start_ms"), "csv: four sections")
         val inv = read(b, Overrides(invert = true))
         check(inv.frames[0].bits.substring(0, 24) == flip(code), "PWM: invert flips the bits")
         // the Flipper file: same pulses out and back
@@ -202,7 +225,7 @@ class AnalyzerTest {
         check(near(a.symUs, us, 4.0), "FSK NRZ: symbol ${f1(us)} us (${f1(a.symUs)})")
         check(near(a.shiftHz, 60_000.0, 12_000.0), "FSK NRZ: shift 60 kHz (${f0(a.shiftHz)})")
         val bits = a.frames.firstOrNull()?.bits ?: ""
-        check(bits.contains(code.substring(4, code.length - 2)), "FSK NRZ: bits read (${bits.length} bits)")
+        check(bits.contains(code.substring(8, code.length - 2)), "FSK NRZ: bits read (${bits.length} bits)")
     }
 
     // ---- FSK, Manchester: a hopping key, six packets on three channels ---------------------------------------------
@@ -239,8 +262,13 @@ class AnalyzerTest {
         check(reads.all { near(it.baud, 7812.5, 300.0) }, "Manchester: 7.8 kbit/s (${reads.map { f0(it.baud) }})")
         val frames = reads.map { it.frames.lastOrNull()?.bits ?: "" }
         check(frames.withIndex().all { (i, f) -> i < packets.size && f.contains(packets[i].bits.substring(0, 140)) }, "Manchester: every packet reads back")
+        // copies of one frame with different preamble lengths read the same hex from the sync on
+        check(frames.all { bitsToHex(it).contains("34A5C33C96") }, "phase: every copy shows the sync on a byte (${frames.joinToString(" ") { bitsToHex(it).take(14) }})")
         val mf = reads[0].frames.last()
         check(near((mf.spans[2 * 40 + 1] - mf.spans[2 * 40]) / bursts[0].rate * 1e6, 128.0, 8.0), "spans: a Manchester bit is two half bits")
+        val lvf = levels(reads[1], bursts[1].env, bursts[1].fm, bursts[1].rate)
+        check(near(lvf.deviationHz, 23_000.0, 4000.0) && near(lvf.centerHz, 0.0, 30_000.0), "levels: FSK deviation ${f0(lvf.deviationHz)} Hz, center ${f0(lvf.centerHz)} Hz")
+        check(lvf.toneHist.sum() > 1000, "levels: tone histogram filled")
         // line them up
         val al = align(frames)
         check(al.preamble != null && al.preamble.second - al.preamble.first >= 16, "align: preamble found (${al.preamble})")
@@ -364,6 +392,101 @@ class AnalyzerTest {
         check(!ok(NO_FILTER.copy(minSnr = 15.0), 0) && !ok(NO_FILTER.copy(maxMs = 10.0), 0) && !ok(NO_FILTER.copy(minMs = 30.0), 0), "filter: SNR and length")
         check(!ok(NO_FILTER.copy(unknownOnly = true), 0, listOf("remote: x")) && ok(NO_FILTER.copy(unknownOnly = true), 0), "filter: only unknown")
         check(ok(NO_FILTER.copy(loHz = 434e6), 0), "filter: a file with no center skips the frequency test")
+        fun fr(n: Int) = listOf(Frame(0, 0, "1".repeat(n)))
+        val none = emptyList<String>()
+        check(!hasData(emptyList(), 0.0, 1.0, none) && !hasData(fr(18), 169_000.0, 1.1, none), "data only: a carrier and a 1 ms tick are dropped")
+        check(!hasData(fr(38), 105_000.0, 70.0, none) && !hasData(fr(10), 2000.0, 20.0, none), "data only: an implausible rate or too few bits are dropped")
+        check(!hasData(fr(17), 2800.0, 56.0, none) && hasData(fr(393), 7808.0, 123.0, none), "data only: a few stray bits in 56 ms of noise are dropped, gapped repeats are kept")
+        check(hasData(fr(64), 7800.0, 20.0, none) && hasData(emptyList(), 0.0, 1.0, listOf("remote: x")), "data only: a real frame, or anything a decoder claims, is kept")
+        check(DEFAULT_FILTER.dataOnly && !NO_FILTER.dataOnly, "data only: on by default")
+    }
+
+    // ---- Manchester phase and sync trim ---------------------------------------------------------------------------
+    // ---- OOK whose transmitter pulls its frequency at every mark: still OOK ----------------------------------------
+    private fun chirpyOok() {
+        // a cheap 315 MHz remote (a fog machine's): its frequency swings ±60 kHz as each mark keys up and down, so the
+        // discriminator spikes at every edge; read as FSK it gave a 6 us "symbol" instead of its real 400 us
+        val code = randBits(24)
+        val air = Air()
+        air.quiet(60.0)
+        fun wobble() { for (k in 0 until 3) { air.seg(4.0, 50.0, -200_000.0 + 60_000); air.seg(4.0, 50.0, -200_000.0 - 60_000) } }
+        for (r in 0 until 5) {
+            for (c in code) {
+                val mark = if (c == '1') 1200.0 else 400.0; val space = if (c == '1') 400.0 else 1200.0
+                wobble(); air.seg(mark - 48, 50.0, -200_000.0); wobble()
+                air.seg(space, 0.0, 0.0)
+            }
+            air.seg(400.0, 50.0, -200_000.0); air.quiet(12.0)
+        }
+        air.quiet(150.0)
+        val bursts = capture(air)
+        val a = if (bursts.isNotEmpty()) read(bursts[0]) else null
+        check(a != null && a.mod == Mod.OOK, "chirpy OOK: read as OOK (${a?.mod}, ${a?.why})")
+        check(a != null && near(a.symUs, 400.0, 60.0), "chirpy OOK: symbol 400 us (${a?.symUs?.let { f1(it) }})")
+        check(a != null && a.frames.size == 5 && a.frames.all { it.bits.startsWith(code) }, "chirpy OOK: five frames read the code (${a?.frames?.size})")
+    }
+
+    // ---- a sensor whose marks run short and gaps long, with a carrier that never fully keys off -------------------
+    private fun unevenManchester() {
+        // Manchester at a 120 us half bit, every mark 20 us short and every gap 20 us long, the off level up to 45% (a
+        // fob seen on the owner's Mac): cut low as plain OOK the lengths smear; read right it is 120 us Manchester
+        val data = "1010".repeat(6) + "0110" + randBits(64)
+        val half = ArrayList<Boolean>()
+        for (c in data) { half.add(c == '1'); half.add(c != '1') }
+        val lv = ArrayList<Pair<Boolean, Double>>()
+        for (h in half) { if (lv.isNotEmpty() && lv.last().first == h) lv[lv.size - 1] = h to lv.last().second + 120 else lv.add(h to 120.0) }
+        for (k in lv.indices) lv[k] = lv[k].first to lv[k].second + if (lv[k].first) -20 else 20
+        val air = Air()
+        air.quiet(60.0)
+        // the off level wanders between nothing and 45% of the mark, so the carrier seems to stop for part of each gap
+        fun gap(us: Double) { var t = 0.0; while (t < us) { air.seg(min(10.0, us - t), Math.round(rnd() * 27).toDouble(), 260_000.0); t += 10 } }
+        for (rep in 0 until 2) { for ((h, us) in lv) { if (h) air.seg(us, 60.0, 260_000.0) else gap(us) }; gap(3000.0) }
+        air.quiet(150.0)
+        val bursts = capture(air)
+        val a = if (bursts.isNotEmpty()) read(bursts[0]) else null
+        check(a != null && a.coding == Coding.Manchester && near(a.symUs, 120.0, 10.0), "uneven Manchester: read at 120 us (${a?.mod} ${a?.coding} ${a?.symUs?.let { f1(it) }})")
+        check(a != null && a.frames.any { it.bits.contains(data.substring(26, 88)) }, "uneven Manchester: the data reads back")
+    }
+
+    private fun phaseAndTrim() {
+        // a frame opening with a long run of ones reads the same on either half-bit phase for a while; the phase that
+        // reads the whole frame cleanly is the right one, so the run must not come out inverted
+        val data = "1".repeat(24) + randBits(80)
+        val air = Air()
+        air.quiet(60.0)
+        val lv = ArrayList<Pair<Boolean, Double>>()
+        for (c in data) { lv.add(if (c == '1') true to 64.0 else false to 64.0); lv.add(if (c == '1') false to 64.0 else true to 64.0) }
+        air.fsk(lv, 120_000.0, 23_000.0)
+        air.quiet(150.0)
+        val bursts = capture(air)
+        val a = if (bursts.isNotEmpty()) read(bursts[0], Overrides(coding = Coding.Manchester)) else null
+        val f = a?.frames?.lastOrNull()?.bits ?: ""
+        check(f.contains(data.substring(4, 100)) && !f.contains("0".repeat(16)), "phase: a run of ones reads as ones (${bitsToHex(f).take(12)})")
+        check(syncTrim("10".repeat(9) + "1" + "1101") == 19 % 8 && syncTrim("0" + "10".repeat(10) + "0110") == 21 % 8 && syncTrim("1100110011110000") == 0, "sync trim: to the break in the training run")
+    }
+
+    // ---- one press, many bursts: grouped into a transmission -------------------------------------------------------
+    private fun grouping() {
+        val k = "car key: Land Rover FSK A824"; val f1 = randBits(160); val f2 = randBits(160); val other = randBits(160)
+        fun flipAt(s: String, i: Int) = s.substring(0, i) + (if (s[i] == '1') '0' else '1') + s.substring(i + 1)
+        val hz3 = doubleArrayOf(314.708e6, 315.020e6, 315.342e6)
+        val bursts = ArrayList<GroupIn>()
+        // a press: two hop values, each on three channels, about 100 ms apart
+        for (i in 0 until 6) bursts.add(GroupIn(i + 1, 10 + i * 0.1016, 0.072, hz3[i % 3], listOf(k), if (i < 3) f1 else f2))
+        // the same key pressed again two seconds later
+        bursts.add(GroupIn(7, 12.5, 0.072, 315.020e6, listOf(k), f2))
+        // an unclaimed remote sending one frame four times (one copy with a bit error), then something else at once
+        for (i in 0 until 4) bursts.add(GroupIn(10 + i, 20 + i * 0.03, 0.02, 433.92e6, emptyList(), if (i == 2) flipAt(other, 50) else other))
+        bursts.add(GroupIn(20, 20.15, 0.02, 433.92e6, emptyList(), randBits(160)))
+        // the same frame, but from a file: never grouped with the air
+        bursts.add(GroupIn(30, 20.05, 0.02, 433.92e6, emptyList(), other, "x.sub"))
+        val tx = groupPresses(bursts)
+        check(tx.size == 5, "grouping: five transmissions (${tx.joinToString(" | ") { it.ids.joinToString("+") }})")
+        check(tx[0].ids.size == 6 && tx[0].label == k && tx[0].freqs.size == 3, "grouping: one press, 6 frames on 3 channels (${tx[0].ids.size}, ${tx[0].freqs.map { String.format(Locale.US, "%.3f", it / 1e6) }})")
+        check(tx.getOrNull(1)?.ids?.joinToString(",") == "7", "grouping: the next press is its own")
+        check(tx.any { it.ids.joinToString(",") == "10,11,12,13" && it.label == "" }, "grouping: unclaimed repeats group by their bits, a bit error and all")
+        check(tx.any { it.ids.joinToString(",") == "20" } && tx.any { it.ids.joinToString(",") == "30" }, "grouping: a different frame, or a file, stays apart")
+        check(sameFrame(other, flipAt(other, 3)) && !sameFrame(other, randBits(160)), "sameFrame")
     }
 
     // ---- small things ---------------------------------------------------------------------------------------------

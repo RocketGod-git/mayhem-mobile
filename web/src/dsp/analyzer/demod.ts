@@ -78,6 +78,8 @@ const ON_K = 3.2, OFF_K = 2.2;
 const MIN_FSK_SPREAD = 1200;
 /** A rest this many symbols long ends a frame. */
 const GAP_SYMBOLS = 20;
+/** Samples either side a carrier must hold for the discriminator there to count (32 µs at 250 kHz): clear of the keying spikes. */
+const INNER = 8;
 /** Frames shorter than this are fragments, not frames. */
 const MIN_FRAME_BITS = 8;
 
@@ -166,13 +168,16 @@ export function symbolOf(runs: Run[]): number {
   const s = inner.slice().sort((x, y) => x - y);
   // the lengths that recur: runs within 20% of each other, each group at least 5% of all of them; the symbol is one
   // of these or a half or third of one
-  const cands: number[] = [];
+  const cands: number[] = [], centers: number[] = [];
   for (let i = 0; i < s.length;) {
     let j = i, sum = 0;
     while (j < s.length && s[j] <= s[i] * 1.2) { sum += s[j]; j++; }
-    if (j - i >= Math.max(2, s.length * 0.05)) { const c = sum / (j - i); cands.push(c, c / 2, c / 3); }
+    if (j - i >= Math.max(2, s.length * 0.05)) { const c = sum / (j - i); centers.push(c); cands.push(c, c / 2, c / 3); }
     i = j;
   }
+  // a transmitter that holds its marks a little long and its gaps a little short splits one length into two
+  // (100 and 140 µs for a 120 µs symbol): the middle of each neighboring pair is a candidate too
+  for (let i = 0; i + 1 < centers.length; i++) if (centers[i + 1] < centers[i] * 1.6) { const c = (centers[i] + centers[i + 1]) / 2; cands.push(c, c / 2); }
   if (!cands.length) cands.push(s[s.length >> 1]);
   // The longest symbol that the frame is a whole number of (any shorter one would fit it too). Measured as the
   // longest unbroken stretch of runs that fit, so noise before the preamble, which fits nothing for long, has no say.
@@ -186,6 +191,23 @@ export function symbolOf(runs: Run[]): number {
     if (sk) u = sr / sk;
   }
   return u;
+}
+
+/**
+ * How regular a sliced line is: the share of its runs (rests and the two ends left out) that are close to a whole
+ * number of its own symbol, divided by how many symbols those runs average. A shorter symbol always "fits" more runs
+ * (a third of any symbol fits whatever the symbol fits), so on its own the share would reward slicing noise finely;
+ * dividing by the run length in symbols makes a code that runs one or two symbols at a time beat that. Nothing for
+ * fewer than 8 runs.
+ */
+export function regularity(runs: Run[], usPer: number): number {
+  const inner = runs.slice(1, -1).map(r => r.n);
+  if (inner.length < 8) return 0;
+  const u = symbolOf(runs);
+  let ok = 0, all = 0, ks = 0;
+  for (const n of inner) { const x = n / u, k = Math.round(x); if (k > GAP_SYMBOLS) continue; all++; if (k >= 1 && Math.abs(x - k) < 0.25 + 0.03 * k) { ok++; ks += k; } }
+  void usPer;
+  return all && ok ? (ok / all) / (ks / ok) : 0;
 }
 
 /** The longest unbroken stretch of runs that are close to a whole number (1..16) of symbols `u`; rests are skipped. */
@@ -267,11 +289,18 @@ export function decodeSpans(runs: Run[], at: number, coding: Coding, u: number, 
       pos += r.n;
     }
     if (coding === 'NRZ') return { bits: half, spans: hs };
-    // pairs of half bits: high then low is 1, low then high is 0; a pair that is neither slips one half bit, which
-    // finds the bit boundary on its own wherever the frame starts
-    for (let i = 0; i + 1 < half.length;) {
-      const p = half[i] + half[i + 1];
-      if (p === '10' || p === '01') { bits += p === '10' ? '1' : '0'; spans.push(hs[2 * i], hs[2 * i + 3]); i += 2; } else i += 1;
+    // Pairs of half bits: high then low is 1, low then high is 0. Which half bit a pair starts on (the phase) is the
+    // one that makes more of the frame's pairs valid: a run of equal bits reads validly on both phases, and read on
+    // the wrong one it comes out inverted, so picking it from the start (as a greedy reader does) can get a whole
+    // copy wrong. A pair that is neither is skipped; the phase only moves when the other phase reads cleanly for
+    // the next four pairs and this one does not, a real half-bit slip.
+    const ok = (i: number) => i + 1 < half.length && half[i] !== half[i + 1];
+    let v0 = 0, v1 = 0;
+    for (let i = 0; i + 1 < half.length; i += 2) { if (ok(i)) v0++; if (ok(i + 1)) v1++; }
+    const clean = (i: number) => { let n = 0; for (let k = 0; k < 4; k++) if (ok(i + 2 * k)) n++; return n; };
+    for (let i = v1 > v0 ? 1 : 0; i + 1 < half.length;) {
+      if (ok(i)) { bits += half[i] === '1' ? '1' : '0'; spans.push(hs[2 * i], hs[2 * i + 3]); i += 2; continue; }
+      if (clean(i + 1) === 4 && clean(i) < 3) i += 1; else i += 2;
     }
     return { bits, spans };
   }
@@ -295,6 +324,22 @@ export function decodeSpans(runs: Run[], at: number, coding: Coding, u: number, 
     spans.push(starts[i], starts[i + 1] + runs[i + 1].n);
   }
   return { bits, spans };
+}
+
+/**
+ * How many leading bits to drop so a frame's sync word starts on a byte boundary: when the frame opens with a
+ * training run (1010…, at least 16 bits, starting in its first 8), the sync is taken to start at the bit that breaks
+ * the run (…10101 1101…: the Land Rover's D3 starts at the repeated 1, as align() reads it), and the bits before it are trimmed
+ * to a whole number of bytes. Frames without one are left alone.
+ */
+export function syncTrim(bits: string): number {
+  for (let s = 0; s < 8 && s < bits.length; s++) {
+    let e = s + 1;
+    while (e < bits.length && bits[e] !== bits[e - 1]) e++;
+    if (e - s < 16 || e >= bits.length) continue;
+    return e % 8;
+  }
+  return 0;
 }
 
 /** Bits as hex, four to a digit, the last digit padded with zeros on the right. */
@@ -335,13 +380,15 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
   // the envelope and the discriminator, measured where the carrier is up; the discriminator away from the edges of
   // each mark, where it swings in from the noise
   const envOn: number[] = [], fmOn: number[] = [];
+  const innerAt = new Uint8Array(n);
   let offN = 0, edges = 0;
   for (let i = from; i < to; i++) {
     if (!on[i]) { offN++; continue; }
     envOn.push(env[i]);
     if (i > 0 && !on[i - 1]) edges++;
     let inner = true;
-    for (let d = -4; d <= 4 && inner; d++) { const j = i + d; if (j < from || j >= to || !on[j]) inner = false; }
+    for (let d = -INNER; d <= INNER && inner; d++) { const j = i + d; if (j < from || j >= to || !on[j]) inner = false; }
+    if (inner) innerAt[i] = 1;
     if (inner) fmOn.push(fm[i]);
   }
   const span = to - from;
@@ -352,31 +399,55 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
   const askLike = envOn.length >= 32 && envT.a > 0 && envT.a / envT.b > 0.15 && envT.a / envT.b < 0.75 && (envT.b - envT.a) > 3 * envT.sd && envT.share > 0.1 && envT.share < 0.9;
   const ookLike = offFrac >= 0.1 && edges >= 3;
   // FSK switches tones far more often than the carrier stops; an OOK burst does the opposite
+  // Tone changes counted only well inside the carrier, with the slicer's hysteresis: an on-off keyed transmitter
+  // pulls its frequency as each mark keys up, and those spikes at the edges are not a second tone. FSK changes tone
+  // many times inside each stretch of carrier; OOK hardly ever does.
   let fmEdges = 0;
-  if (fskLike) { const t = (fmT.a + fmT.b) / 2; let l = fm[from] > t; for (let i = from; i < to; i++) { if (!on[i]) continue; const x = fm[i] > t; if (x !== l) { fmEdges++; l = x; } } }
-  let modAuto: Mod = 'OOK', why = '';
-  if (fskLike && fmEdges > 2 * edges + 4) { modAuto = 'FSK'; why = `two tones ${((fmSpread / FM_SCALE) * rate / (2 * Math.PI) / 1e3).toFixed(1)} kHz apart`; }
-  else if (ookLike) { modAuto = 'OOK'; why = `carrier keyed on and off (${Math.round(offFrac * 100)}% off)`; }
-  else if (askLike) { modAuto = 'ASK'; why = `two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper`; }
-  else if (fskLike) { modAuto = 'FSK'; why = 'two tones'; }
-  else why = 'a plain carrier: nothing keyed';
-  const mod = o.mod ?? modAuto;
-
-  // the two levels to slice between, and where
-  const sig = signalOf(mod, env, fm);
-  let lo: number, hi: number;
-  if (mod === 'FSK') { lo = fmT.a; hi = fmT.b; }
-  else if (mod === 'ASK') { lo = envT.a; hi = envT.b; }
-  else { lo = noise; hi = envOn.length ? envOn.reduce((a, b) => a + b, 0) / envOn.length : noise * ON_K; if (envT.share < 0.9 && askLike) hi = envT.b; }
-  if (hi <= lo) hi = lo + 1;
-  const thrAuto = mod === 'OOK' ? Math.min(0.5, Math.max(0.15, (noise * ON_K - lo) / (hi - lo))) : 0.5;
-  const thr = o.thr ?? thrAuto;
-  const cut = lo + thr * (hi - lo);
-  // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits
-  // near the noise, and a band that wide would reach below it
-  const hyst = (hi - lo) * (mod === 'FSK' ? 0.12 : 0.08);
+  if (fskLike) {
+    const t = (fmT.a + fmT.b) / 2, h = fmSpread * 0.15;
+    let l = 0;
+    for (let i = from; i < to; i++) {
+      if (!innerAt[i]) continue;
+      const x = fm[i] > t + h ? 1 : fm[i] < t - h ? -1 : 0;
+      if (x && x !== l) { if (l) fmEdges++; l = x; }
+    }
+  }
+  // the line sliced as a given modulation: the two levels, where to cut, and the runs
   const minRun = Math.max(2, Math.round(12 / usPer));
-  const runs = deglitch(sliceRuns(sig, from, to, cut, hyst, mod === 'FSK' ? on : null), minRun);
+  const sliceAs = (m: Mod, thrO?: number) => {
+    let lo: number, hi: number;
+    if (m === 'FSK') { lo = fmT.a; hi = fmT.b; }
+    else if (m === 'ASK') { lo = envT.a; hi = envT.b; }
+    else { lo = noise; hi = envOn.length ? envOn.reduce((x, y) => x + y, 0) / envOn.length : noise * ON_K; if (envT.share < 0.9 && askLike) hi = envT.b; }
+    if (hi <= lo) hi = lo + 1;
+    const thrAuto = m === 'OOK' ? Math.min(0.5, Math.max(0.15, (noise * ON_K - lo) / (hi - lo))) : 0.5;
+    const thr = thrO ?? thrAuto;
+    const cut = lo + thr * (hi - lo);
+    // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits
+    // near the noise, and a band that wide would reach below it
+    const hyst = (hi - lo) * (m === 'FSK' ? 0.12 : 0.08);
+    const runs = deglitch(sliceRuns(signalOf(m, env, fm), from, to, cut, hyst, m === 'FSK' ? on : null), minRun);
+    return { lo, hi, thrAuto, thr, cut, runs };
+  };
+  // When more than one reading is plausible, each is sliced and the one whose pulses come out regular (whole numbers
+  // of one symbol) wins: noise sliced as a second "tone" gives a scatter of tiny runs, a real code does not. This is
+  // what keeps a weak on-off sensor, whose discriminator wanders a few kHz, from reading as FSK at a 6 µs symbol.
+  const cands: Mod[] = [];
+  if (fskLike && fmEdges >= Math.max(8, 2 * edges)) cands.push('FSK');
+  if (ookLike) cands.push('OOK');
+  if (askLike) cands.push('ASK');
+  if (!cands.length && fskLike) cands.push('FSK');
+  let modAuto: Mod = cands[0] ?? 'OOK';
+  if (cands.length > 1) {
+    let best = -1;
+    for (const m of cands) { const sc = regularity(sliceAs(m).runs, usPer); if (sc > best + 0.02) { best = sc; modAuto = m; } }
+  }
+  const why = !cands.length ? 'a plain carrier: nothing keyed'
+    : modAuto === 'FSK' ? `two tones ${((fmSpread / FM_SCALE) * rate / (2 * Math.PI) / 1e3).toFixed(1)} kHz apart`
+    : modAuto === 'OOK' ? `carrier keyed on and off (${Math.round(offFrac * 100)}% off)`
+    : `two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper`;
+  const mod = o.mod ?? modAuto;
+  const { lo, hi, thrAuto, thr, cut, runs } = sliceAs(mod, o.thr);
 
   // symbol, frames and coding
   const uAuto = symbolOf(runs);
@@ -392,9 +463,14 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
     const d = decodeSpans(f.runs, from + f.start, coding, u, mk, sp);
     let bits = d.bits;
     if (o.invert) bits = bits.replace(/[01]/g, c => (c === '0' ? '1' : '0'));
+    // copies of one frame often carry a few more or fewer training bits; trimmed so the sync starts on a byte,
+    // every copy reads as the same hex
+    const cut = syncTrim(bits);
+    bits = bits.slice(cut);
     if (bits.length < MIN_FRAME_BITS) continue;
     const len = f.runs.reduce((a, r) => a + r.n, 0);
-    frames.push({ start: from + f.start, end: from + f.start + len, bits, spans: Int32Array.from(d.spans) });
+    const spans = Int32Array.from(d.spans.slice(2 * cut));
+    frames.push({ start: spans.length ? spans[0] : from + f.start, end: from + f.start + len, bits, spans });
   }
   const period = ps.periods.length ? ps.periods.slice().sort((a, b) => a - b)[ps.periods.length >> 1] : 2 * u;
   const baud = coding === 'Manchester' ? rate / (2 * u) : coding === 'NRZ' ? rate / u : rate / period;

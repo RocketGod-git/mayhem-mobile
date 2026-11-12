@@ -131,7 +131,13 @@ private fun resample(bins: FloatArray, out: FloatArray, lo: Float, span: Float) 
  * A box over the waterfall history: from [t0] to [t1] (wall-clock ms, the clock the rows are stamped with),
  * centered on [frac] of the full span and [w] of it wide. The Analyzer marks each captured burst this way.
  */
-class WfMark(val id: Int, val t0: Long, val t1: Long, val frac: Float, val w: Float, val color: Color, val bold: Boolean = false)
+class WfMark(
+    val id: Int, val t0: Long, val t1: Long, val frac: Float, val w: Float, val color: Color, val bold: Boolean = false,
+    /** Text at the box's top-right (where it was, what it is). */
+    val label: String = "",
+    /** The box fades out over this long after [t1] (0: never). */
+    val fadeMs: Long = 0L,
+)
 
 /**
  * A waterfall's pixels. The ring is what the view shows, one column per screen pixel and [rows] rows with the
@@ -536,6 +542,7 @@ fun WaterfallView(
     val axisPaint = remember(textPx) { android.graphics.Paint().apply { textSize = textPx; typeface = android.graphics.Typeface.MONOSPACE; isAntiAlias = true } }
     val rulerPaint = remember(textPx) { android.graphics.Paint().apply { textSize = textPx; typeface = android.graphics.Typeface.MONOSPACE; isAntiAlias = true; color = 0x8CFFFFFF.toInt() } }
     val bmpPaint = remember { android.graphics.Paint() }
+    val boxPaint = remember(textPx) { android.graphics.Paint().apply { textSize = textPx; typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD); isAntiAlias = true; setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt()) } }
     val fillPath = remember { Path() }; val linePath = remember { Path() }; val holdPath = remember { Path() }
 
     val barH = if (onSlide != null) 16 * dp else 0f
@@ -614,10 +621,11 @@ fun WaterfallView(
     fun boxRects(w: Float, hh: Float, wfH: Float): List<Pair<WfMark, android.graphics.RectF>> {
         val list = boxesNow.value
         if (list.isEmpty()) return emptyList()
-        val rowH = hh / max(1, hist.shown()); val minPx = 6 * dp
+        val rowH = hh / max(1, hist.shown()); val minPx = 10 * dp
         val now = System.currentTimeMillis()
         val out = ArrayList<Pair<WfMark, android.graphics.RectF>>()
         for (m in list) {
+            if (m.fadeMs > 0 && now - m.t1 > m.fadeMs) continue
             val r1 = hist.rowAt(m.t0); val r0 = hist.rowAt(m.t1) ?: (if (m.t1 > now - 50) 0 else null)
             if (r0 == null && r1 == null) continue
             val top = (r0 ?: 0) * rowH; val bot = min(wfH, (r1?.let { it + 1 } ?: hist.filled) * rowH)
@@ -759,9 +767,16 @@ fun WaterfallView(
                     }
                 }
             }
+            val nowMs = System.currentTimeMillis()
             for ((m, r) in boxRects(w, histH, wfH)) {
-                if (m.bold) drawRect(m.color.copy(alpha = 0.18f), Offset(r.left, r.top), Size(r.width(), r.height()))
-                drawRect(m.color, Offset(r.left, r.top), Size(r.width(), r.height()), style = Stroke((if (m.bold) 2.5f else 1.25f) * dp))
+                // fading over its time, never quite out until it is dropped
+                val al = if (m.fadeMs > 0) max(0.15f, 1f - (nowMs - m.t1).toFloat() / m.fadeMs) else 1f
+                if (m.bold) drawRect(m.color.copy(alpha = 0.2f * al), Offset(r.left, r.top), Size(r.width(), r.height()))
+                drawRect(m.color.copy(alpha = al), Offset(r.left, r.top), Size(r.width(), r.height()), style = Stroke((if (m.bold) 3f else 2f) * dp))
+                if (m.label.isNotEmpty()) drawIntoCanvas { c ->
+                    boxPaint.color = m.color.copy(alpha = al).toArgb()
+                    c.nativeCanvas.drawText(m.label, min(r.right + 3 * dp, w - boxPaint.measureText(m.label) - 2 * dp), max(textPx, r.top - 2 * dp), boxPaint)
+                }
             }
             channel?.let { (a, b) ->
                 val x0 = (a - start) * zoom * w; val x1 = (b - start) * zoom * w

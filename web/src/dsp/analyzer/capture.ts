@@ -253,8 +253,26 @@ export interface CaptureFilter {
   minMs: number; maxMs: number;
   /** Skip bursts a Devices decoder already claims. */
   unknownOnly: boolean;
+  /** Keep only bursts that carry data (see hasData): on by default, so spurs and blips don't flood the list. */
+  dataOnly: boolean;
 }
-export const NO_FILTER: CaptureFilter = { loHz: 0, hiHz: 0, minSnr: 0, minMs: 0, maxMs: 0, unknownOnly: false };
+export const NO_FILTER: CaptureFilter = { loHz: 0, hiHz: 0, minSnr: 0, minMs: 0, maxMs: 0, unknownOnly: false, dataOnly: false };
+export const DEFAULT_FILTER: CaptureFilter = { ...NO_FILTER, dataOnly: true };
+
+/**
+ * Whether a burst looks like a transmission rather than a spur or a blip: a Devices decoder claims it, or it lasts at
+ * least 2 ms and reads as 16 or more bits at a plausible rate for a remote or a sensor (100 kbit/s or less), and those
+ * bits span at least a quarter of it. A plain carrier, two tones with no bits, a 1 ms tick read as 170 kbit/s, or a
+ * few stray bits in 50 ms of noise all fail.
+ */
+export function hasData(a: { frames: { bits: string }[]; baud: number }, b: { ms: number; matches: string[] }): boolean {
+  if (b.matches.length) return true;
+  const bits = a.frames.reduce((n, f) => n + f.bits.length, 0);
+  if (!(b.ms >= 2 && bits >= 16 && a.baud > 0 && a.baud <= 100_000)) return false;
+  // the bits must fill a fair share of the burst: noise reads as a few stray bits spread over 50 ms, while real frames
+  // (repeats and the gaps between them included) cover 40% of it or more
+  return bits / a.baud * 1000 >= 0.25 * b.ms;
+}
 
 /** Whether a burst heard with the radio at `center` gets through. A file with no known center skips the frequency test. */
 export function passes(f: CaptureFilter, b: { hz: number; snr: number; ms: number; matches: string[] }, center: number): boolean {

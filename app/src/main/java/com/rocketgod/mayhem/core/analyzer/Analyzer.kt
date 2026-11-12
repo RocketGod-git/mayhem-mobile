@@ -52,7 +52,7 @@ object Analyzer {
     val over: StateFlow<Map<Int, Overrides>> = _over.asStateFlow()
     private val _protocols = MutableStateFlow<List<Protocol>>(emptyList())
     val protocols: StateFlow<List<Protocol>> = _protocols.asStateFlow()
-    private val _filter = MutableStateFlow(NO_FILTER)
+    private val _filter = MutableStateFlow(DEFAULT_FILTER)
     val filter: StateFlow<CaptureFilter> = _filter.asStateFlow()
     private val _filtered = MutableStateFlow(0)
     /** Bursts the filter dropped since the app started. */
@@ -139,12 +139,15 @@ object Analyzer {
     /** A burst off the air: through the filter, then kept. */
     private fun arrive(b: Burst, center: Long) {
         if (!passes(_filter.value, b, center)) { _filtered.value++; return }
-        add(b, center)
+        val x = readBurst(b, center)
+        if (_filter.value.dataOnly && !hasData(x.auto.frames, x.auto.baud, b.ms, b.matches)) { _filtered.value++; return }
+        keep(x)
     }
 
     /** Read a burst with nothing set and keep it. */
-    private fun add(b: Burst, center: Long, store: Boolean = true): AnBurst {
-        val x = readBurst(b, center)
+    private fun add(b: Burst, center: Long, store: Boolean = true): AnBurst = keep(readBurst(b, center), store)
+
+    private fun keep(x: AnBurst, store: Boolean = true): AnBurst {
         val next = ArrayList(_bursts.value)
         next.add(x)
         trim(next)
@@ -352,7 +355,7 @@ object Analyzer {
         val j = JSONObject().put("version", 1)
             .put("bursts", JSONArray().also { a -> for (x in _bursts.value) a.put(burstJson(x)) })
             .put("protocols", JSONArray().also { a -> for (p in _protocols.value) a.put(p.toJson()) })
-            .put("filter", JSONObject().put("loHz", f.loHz).put("hiHz", f.hiHz).put("minSnr", f.minSnr).put("minMs", f.minMs).put("maxMs", f.maxMs).put("unknownOnly", f.unknownOnly))
+            .put("filter", JSONObject().put("loHz", f.loHz).put("hiHz", f.hiHz).put("minSnr", f.minSnr).put("minMs", f.minMs).put("maxMs", f.maxMs).put("unknownOnly", f.unknownOnly).put("dataOnly", f.dataOnly))
         runCatching {
             val tmp = File(d, "session.json.tmp")
             tmp.writeText(j.toString(), Charsets.UTF_8)
@@ -366,7 +369,7 @@ object Analyzer {
         val j = runCatching { JSONObject(f.readText(Charsets.UTF_8)) }.getOrNull()
         if (j == null) { d.listFiles()?.forEach { if (it.name.endsWith(".bin")) it.delete() }; return }
         j.optJSONObject("filter")?.let { o ->
-            _filter.value = CaptureFilter(o.optDouble("loHz", 0.0), o.optDouble("hiHz", 0.0), o.optDouble("minSnr", 0.0), o.optDouble("minMs", 0.0), o.optDouble("maxMs", 0.0), o.optBoolean("unknownOnly"))
+            _filter.value = CaptureFilter(o.optDouble("loHz", 0.0), o.optDouble("hiHz", 0.0), o.optDouble("minSnr", 0.0), o.optDouble("minMs", 0.0), o.optDouble("maxMs", 0.0), o.optBoolean("unknownOnly"), o.optBoolean("dataOnly", true))
         }
         val ps = j.optJSONArray("protocols") ?: JSONArray()
         _protocols.value = (0 until ps.length()).mapNotNull { k -> ps.optJSONObject(k)?.let { runCatching { Protocol.fromJson(it) }.getOrNull() } }

@@ -61,7 +61,7 @@ export interface ScopeOpts {
  * A box over the waterfall history: from `t0` to `t1` (performance.now() milliseconds, the clock the rows are stamped
  * with), centered on `frac` of the full span and `w` of it wide. The Analyzer marks each captured burst this way.
  */
-export interface ScopeMark { id: number; t0: number; t1: number; frac: number; w: number; color: string; bold?: boolean }
+export interface ScopeMark { id: number; t0: number; t1: number; frac: number; w: number; color: string; bold?: boolean; label?: string; alpha?: number }
 
 export class Scope {
   cols: number;
@@ -486,7 +486,7 @@ export class Scope {
   /** Each mark's box on the waterfall canvas, in canvas pixels. */
   private markBoxes(): { m: ScopeMark; x: number; y: number; w: number; h: number }[] {
     const out: { m: ScopeMark; x: number; y: number; w: number; h: number }[] = [];
-    const W = this.cols, min = 6 * this.ui();
+    const W = this.cols, min = 10 * this.ui();
     for (const m of this.marks) {
       const y1 = this.yAt(m.t0), y0 = this.yAt(m.t1) ?? (m.t1 > performance.now() - 50 ? 0 : null);
       if (y0 === null && y1 === null) continue;
@@ -686,9 +686,20 @@ export class Scope {
   private overlay(): void {
     const g = this.wfCtx, w = this.cols, h = this.rows, dpr = this.ui();
     for (const b of this.markBoxes()) {
-      g.strokeStyle = b.m.color; g.lineWidth = (b.m.bold ? 2.5 : 1.25) * dpr;
+      const a = b.m.alpha ?? 1;
+      if (a <= 0) continue;
+      g.globalAlpha = a;
+      g.strokeStyle = b.m.color; g.lineWidth = (b.m.bold ? 3 : 2) * dpr;
       g.strokeRect(b.x, b.y, b.w, b.h);
-      if (b.m.bold) { g.fillStyle = b.m.color; g.globalAlpha = 0.18; g.fillRect(b.x, b.y, b.w, b.h); g.globalAlpha = 1; }
+      g.fillStyle = b.m.color;
+      if (b.m.bold) { g.globalAlpha = a * 0.2; g.fillRect(b.x, b.y, b.w, b.h); g.globalAlpha = a; }
+      if (b.m.label) {
+        g.font = `bold ${Math.round(10 * dpr)}px ui-monospace, Menlo, Consolas, monospace`; g.textAlign = 'left'; g.textBaseline = 'top';
+        const tw = g.measureText(b.m.label).width, x = Math.min(w - tw - 3 * dpr, b.x + b.w + 3 * dpr), y = Math.max(0, b.y);
+        g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(x - 2 * dpr, y, tw + 4 * dpr, 12 * dpr);
+        g.fillStyle = b.m.color; g.fillText(b.m.label, x, y + dpr);
+      }
+      g.globalAlpha = 1;
     }
     if (this.channel !== null && this.center) {
       const ca = (this.channelAt - this.start) * this.zoom, cw = this.channel * this.zoom;

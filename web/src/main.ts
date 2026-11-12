@@ -1533,6 +1533,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   adsb: ['adsb', 'No aircraft yet', ['Aircraft send on 1090 MHz several times a second: a window with a view of the sky helps', 'A 1090 MHz antenna (about 6.9 cm) reaches 100+ miles']],
   ais: ['ais', 'No vessels yet', ['Ships under way report every 2–10 s, at anchor every 3 minutes', 'AIS is VHF: you need a line of sight to the water']],
   aprs: ['aprs', 'No stations yet', ['North America uses 144.390 MHz: cars and digipeaters beacon every few minutes', 'An antenna up high hears much farther']],
+  analyzer: ['analyzer', 'No bursts yet', ['Press a key fob or a remote near the antenna', 'Or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)']],
   pager: ['pager', 'No pages yet', ['US FLEX networks sit around 929–932 MHz: try the presets', 'POCSAG is common on 152–158 and 466 MHz']],
 };
 function emptyState(key: string, title?: string, tips?: string[]): string {
@@ -3146,6 +3147,7 @@ const analyzerUi = new AnalyzerUi({
   showing: () => state.app === 'analyzer',
   log,
   scope: () => scope,
+  empty: (title, tips) => emptyState('analyzer', title, tips),
   // into Transmit's own .sub replay, tuned to the burst; Transmit asks its safety question as it always does
   sendToTx: (sub, hz, fsk) => { txHandoff = { sub, hz, fsk }; open('transmit'); tune(hz); },
 });
