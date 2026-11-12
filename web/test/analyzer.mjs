@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER } from '../dist/dsp/analyzer/index.js';
+import { groupPresses, sameFrame, syncTrim, AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER } from '../dist/dsp/analyzer/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -155,7 +155,7 @@ const read = (b, o) => analyze(b.env, b.fm, b.n, b.rate, o);
   check(near(a.symUs, us, 4), `FSK NRZ: symbol ${us.toFixed(1)} us (${a.symUs.toFixed(1)})`);
   check(near(a.shiftHz, 60_000, 12_000), `FSK NRZ: shift 60 kHz (${a.shiftHz.toFixed(0)})`);
   const bits = a.frames[0]?.bits ?? '';
-  check(bits.includes(code.slice(4, -2)), `FSK NRZ: bits read (${bits.length} bits)`);
+  check(bits.includes(code.slice(8, -2)), `FSK NRZ: bits read (${bits.length} bits)`);
 }
 
 // ---- FSK, Manchester: a hopping key, six packets on three channels ----------------------------------------------
@@ -189,6 +189,8 @@ const packets = [];
   check(reads.every(a => near(a.baud, 7812.5, 300)), `Manchester: 7.8 kbit/s (${reads.map(a => a.baud.toFixed(0))})`);
   const frames = reads.map(a => a.frames[a.frames.length - 1]?.bits ?? '');
   check(frames.every((f, i) => f.includes(packets[i].bits.slice(0, 140))), 'Manchester: every packet reads back');
+  // copies of one frame with different preamble lengths read the same hex from the sync on
+  check(frames.every(f => bitsToHex(f).includes('34A5C33C96')), `phase: every copy shows the sync on a byte (${frames.map(f => bitsToHex(f).slice(0, 14)).join(' ')})`);
   const mf = reads[0].frames[reads[0].frames.length - 1];
   check(near((mf.spans[2 * 40 + 1] - mf.spans[2 * 40]) / bursts[0].rate * 1e6, 128, 8), 'spans: a Manchester bit is two half bits');
   // line them up
@@ -307,6 +309,48 @@ const packets = [];
   check(!passes({ ...NO_FILTER, minSnr: 15 }, b, 0) && !passes({ ...NO_FILTER, maxMs: 10 }, b, 0) && !passes({ ...NO_FILTER, minMs: 30 }, b, 0), 'filter: SNR and length');
   check(!passes({ ...NO_FILTER, unknownOnly: true }, { ...b, matches: ['remote: x'] }, 0) && passes({ ...NO_FILTER, unknownOnly: true }, b, 0), 'filter: only unknown');
   check(passes({ ...NO_FILTER, loHz: 434e6 }, b, 0), 'filter: a file with no center skips the frequency test');
+}
+
+// ---- Manchester phase and sync trim -----------------------------------------------------------------------------
+{
+  // a frame opening with a long run of ones reads the same on either half-bit phase for a while; the phase that
+  // reads the whole frame cleanly is the right one, so the run must not come out inverted
+  const data = '1'.repeat(24) + randBits(80);
+  const air = new Air();
+  air.quiet(60);
+  const lv = [];
+  for (const c of data) lv.push(c === '1' ? [true, 64] : [false, 64], c === '1' ? [false, 64] : [true, 64]);
+  air.fsk(lv, 120_000, 23_000);
+  air.quiet(150);
+  const bursts = capture(air);
+  const a = bursts.length ? read(bursts[0], { coding: 'Manchester' }) : null;
+  const f = a?.frames[a.frames.length - 1]?.bits ?? '';
+  check(f.includes(data.slice(4, 100)) && !f.includes('0'.repeat(16)), `phase: a run of ones reads as ones (${bitsToHex(f).slice(0, 12)})`);
+  check(syncTrim('10'.repeat(9) + '1' + '1101') === 19 % 8 && syncTrim('0' + '10'.repeat(10) + '0110') === 21 % 8 && syncTrim('1100110011110000') === 0, 'sync trim: to the break in the training run');
+}
+
+// ---- one press, many bursts: grouped into a transmission ---------------------------------------------------------
+{
+  const k = 'car key: Land Rover FSK A824', f1 = randBits(160), f2 = randBits(160), other = randBits(160);
+  const flip = (s, i) => s.slice(0, i) + (s[i] === '1' ? '0' : '1') + s.slice(i + 1);
+  const bursts = [
+    // a press: two hop values, each on three channels, about 100 ms apart
+    ...[0, 1, 2, 3, 4, 5].map(i => ({ id: i + 1, t: 10 + i * 0.1016, dur: 0.072, hz: [314.708e6, 315.020e6, 315.342e6][i % 3], matches: [k], bits: i < 3 ? f1 : f2 })),
+    // the same key pressed again two seconds later
+    { id: 7, t: 12.5, dur: 0.072, hz: 315.020e6, matches: [k], bits: f2 },
+    // an unclaimed remote sending one frame four times (one copy with a bit error), then something else at once
+    ...[0, 1, 2, 3].map(i => ({ id: 10 + i, t: 20 + i * 0.03, dur: 0.02, hz: 433.92e6, matches: [], bits: i === 2 ? flip(other, 50) : other })),
+    { id: 20, t: 20.15, dur: 0.02, hz: 433.92e6, matches: [], bits: randBits(160) },
+    // the same frame, but from a file: never grouped with the air
+    { id: 30, t: 20.05, dur: 0.02, hz: 433.92e6, matches: [], bits: other, src: 'x.sub' },
+  ];
+  const tx = groupPresses(bursts);
+  check(tx.length === 5, `grouping: five transmissions (${tx.map(t => t.ids.join('+')).join(' | ')})`);
+  check(tx[0].ids.length === 6 && tx[0].label === k && tx[0].freqs.length === 3, `grouping: one press, 6 frames on 3 channels (${tx[0].ids.length}, ${tx[0].freqs.map(f => (f / 1e6).toFixed(3))})`);
+  check(tx[1].ids.join() === '7', 'grouping: the next press is its own');
+  check(tx.some(t => t.ids.join() === '10,11,12,13' && t.label === ''), 'grouping: unclaimed repeats group by their bits, a bit error and all');
+  check(tx.some(t => t.ids.join() === '20') && tx.some(t => t.ids.join() === '30'), 'grouping: a different frame, or a file, stays apart');
+  check(sameFrame(other, flip(other, 3)) && !sameFrame(other, randBits(160)), 'sameFrame');
 }
 
 // ---- small things -------------------------------------------------------------------------------------------------

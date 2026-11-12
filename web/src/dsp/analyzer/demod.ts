@@ -267,11 +267,18 @@ export function decodeSpans(runs: Run[], at: number, coding: Coding, u: number, 
       pos += r.n;
     }
     if (coding === 'NRZ') return { bits: half, spans: hs };
-    // pairs of half bits: high then low is 1, low then high is 0; a pair that is neither slips one half bit, which
-    // finds the bit boundary on its own wherever the frame starts
-    for (let i = 0; i + 1 < half.length;) {
-      const p = half[i] + half[i + 1];
-      if (p === '10' || p === '01') { bits += p === '10' ? '1' : '0'; spans.push(hs[2 * i], hs[2 * i + 3]); i += 2; } else i += 1;
+    // Pairs of half bits: high then low is 1, low then high is 0. Which half bit a pair starts on (the phase) is the
+    // one that makes more of the frame's pairs valid: a run of equal bits reads validly on both phases, and read on
+    // the wrong one it comes out inverted, so picking it from the start (as a greedy reader does) can get a whole
+    // copy wrong. A pair that is neither is skipped; the phase only moves when the other phase reads cleanly for
+    // the next four pairs and this one does not, a real half-bit slip.
+    const ok = (i: number) => i + 1 < half.length && half[i] !== half[i + 1];
+    let v0 = 0, v1 = 0;
+    for (let i = 0; i + 1 < half.length; i += 2) { if (ok(i)) v0++; if (ok(i + 1)) v1++; }
+    const clean = (i: number) => { let n = 0; for (let k = 0; k < 4; k++) if (ok(i + 2 * k)) n++; return n; };
+    for (let i = v1 > v0 ? 1 : 0; i + 1 < half.length;) {
+      if (ok(i)) { bits += half[i] === '1' ? '1' : '0'; spans.push(hs[2 * i], hs[2 * i + 3]); i += 2; continue; }
+      if (clean(i + 1) === 4 && clean(i) < 3) i += 1; else i += 2;
     }
     return { bits, spans };
   }
@@ -295,6 +302,22 @@ export function decodeSpans(runs: Run[], at: number, coding: Coding, u: number, 
     spans.push(starts[i], starts[i + 1] + runs[i + 1].n);
   }
   return { bits, spans };
+}
+
+/**
+ * How many leading bits to drop so a frame's sync word starts on a byte boundary: when the frame opens with a
+ * training run (1010…, at least 16 bits, starting in its first 8), the sync is taken to start at the bit that breaks
+ * the run (…10101 1101…: the Land Rover's D3 starts at the repeated 1, as align() reads it), and the bits before it are trimmed
+ * to a whole number of bytes. Frames without one are left alone.
+ */
+export function syncTrim(bits: string): number {
+  for (let s = 0; s < 8 && s < bits.length; s++) {
+    let e = s + 1;
+    while (e < bits.length && bits[e] !== bits[e - 1]) e++;
+    if (e - s < 16 || e >= bits.length) continue;
+    return e % 8;
+  }
+  return 0;
 }
 
 /** Bits as hex, four to a digit, the last digit padded with zeros on the right. */
@@ -392,9 +415,14 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
     const d = decodeSpans(f.runs, from + f.start, coding, u, mk, sp);
     let bits = d.bits;
     if (o.invert) bits = bits.replace(/[01]/g, c => (c === '0' ? '1' : '0'));
+    // copies of one frame often carry a few more or fewer training bits; trimmed so the sync starts on a byte,
+    // every copy reads as the same hex
+    const cut = syncTrim(bits);
+    bits = bits.slice(cut);
     if (bits.length < MIN_FRAME_BITS) continue;
     const len = f.runs.reduce((a, r) => a + r.n, 0);
-    frames.push({ start: from + f.start, end: from + f.start + len, bits, spans: Int32Array.from(d.spans) });
+    const spans = Int32Array.from(d.spans.slice(2 * cut));
+    frames.push({ start: spans.length ? spans[0] : from + f.start, end: from + f.start + len, bits, spans });
   }
   const period = ps.periods.length ? ps.periods.slice().sort((a, b) => a - b)[ps.periods.length >> 1] : 2 * u;
   const baud = coding === 'Manchester' ? rate / (2 * u) : coding === 'NRZ' ? rate / u : rate / period;
