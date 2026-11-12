@@ -313,12 +313,20 @@ fun decodeSpans(runs: List<Run>, at: Int, coding: Coding, u: Double, marks: TwoM
             pos += r.n
         }
         if (coding == Coding.NRZ) return Spans(half.toString(), hs.toArray())
-        // pairs of half bits: high then low is 1, low then high is 0; a pair that is neither slips one half bit, which
-        // finds the bit boundary on its own wherever the frame starts
-        var i = 0
+        // Pairs of half bits: high then low is 1, low then high is 0. Which half bit a pair starts on (the phase) is the
+        // one that makes more of the frame's pairs valid: a run of equal bits reads validly on both phases, and read on
+        // the wrong one it comes out inverted, so picking it from the start (as a greedy reader does) can get a whole
+        // copy wrong. A pair that is neither is skipped; the phase only moves when the other phase reads cleanly for
+        // the next four pairs and this one does not, a real half-bit slip.
+        fun ok(i: Int) = i + 1 < half.length && half[i] != half[i + 1]
+        var v0 = 0; var v1 = 0
+        var j = 0
+        while (j + 1 < half.length) { if (ok(j)) v0++; if (ok(j + 1)) v1++; j += 2 }
+        fun clean(i: Int): Int { var n = 0; for (k in 0 until 4) if (ok(i + 2 * k)) n++; return n }
+        var i = if (v1 > v0) 1 else 0
         while (i + 1 < half.length) {
-            val p0 = half[i]; val p1 = half[i + 1]
-            if (p0 != p1) { bits.append(if (p0 == '1') '1' else '0'); spans.add(hs[2 * i]); spans.add(hs[2 * i + 3]); i += 2 } else i += 1
+            if (ok(i)) { bits.append(if (half[i] == '1') '1' else '0'); spans.add(hs[2 * i]); spans.add(hs[2 * i + 3]); i += 2; continue }
+            if (clean(i + 1) == 4 && clean(i) < 3) i += 1 else i += 2
         }
         return Spans(bits.toString(), spans.toArray())
     }
@@ -346,6 +354,23 @@ fun decodeSpans(runs: List<Run>, at: Int, coding: Coding, u: Double, marks: TwoM
 
 /** Math.round as JavaScript does it (halves up), so spans land on the same samples as the web's. */
 private fun jsRound(x: Double): Int = Math.floor(x + 0.5).toInt()
+
+/**
+ * How many leading bits to drop so a frame's sync word starts on a byte boundary: when the frame opens with a
+ * training run (1010…, at least 16 bits, starting in its first 8), the sync is taken to start at the bit that breaks
+ * the run (…10101 1101…: the Land Rover's D3 starts at the repeated 1, as align() reads it), and the bits before it
+ * are trimmed to a whole number of bytes. Frames without one are left alone.
+ */
+fun syncTrim(bits: String): Int {
+    var s = 0
+    while (s < 8 && s < bits.length) {
+        var e = s + 1
+        while (e < bits.length && bits[e] != bits[e - 1]) e++
+        if (e - s < 16 || e >= bits.length) { s++; continue }
+        return e % 8
+    }
+    return 0
+}
 
 /** Bits as hex, four to a digit, the last digit padded with zeros on the right. */
 fun bitsToHex(bits: String): String {
@@ -452,9 +477,14 @@ fun analyze(env: ShortArray, fm: ShortArray, n: Int, rate: Double, o: Overrides 
         val dd = decodeSpans(f.runs, from + f.start, coding, u, mk, sp)
         var bits = dd.bits
         if (o.invert) bits = buildString(bits.length) { for (c in bits) append(if (c == '0') '1' else if (c == '1') '0' else c) }
+        // copies of one frame often carry a few more or fewer training bits; trimmed so the sync starts on a byte,
+        // every copy reads as the same hex
+        val cut = syncTrim(bits)
+        bits = bits.substring(cut)
         if (bits.length < MIN_FRAME_BITS) continue
         val len = f.runs.sumOf { it.n }
-        frames.add(Frame(from + f.start, from + f.start + len, bits, dd.spans))
+        val spans = if (2 * cut <= dd.spans.size) dd.spans.copyOfRange(2 * cut, dd.spans.size) else IntArray(0)
+        frames.add(Frame(if (spans.isNotEmpty()) spans[0] else from + f.start, from + f.start + len, bits, spans))
     }
     val period = if (ps.periods.isNotEmpty()) ps.periods.copyOf().also { it.sort() }[ps.periods.size shr 1] else 2 * u
     val baud = if (coding == Coding.Manchester) rate / (2 * u) else if (coding == Coding.NRZ) rate / u else rate / period

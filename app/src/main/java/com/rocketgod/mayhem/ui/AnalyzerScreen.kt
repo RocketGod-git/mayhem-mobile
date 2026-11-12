@@ -104,6 +104,10 @@ import com.rocketgod.mayhem.core.analyzer.FM_SCALE
 import com.rocketgod.mayhem.core.analyzer.Field
 import com.rocketgod.mayhem.core.analyzer.FieldKind
 import com.rocketgod.mayhem.core.analyzer.Frame
+import com.rocketgod.mayhem.core.analyzer.GroupIn
+import com.rocketgod.mayhem.core.analyzer.Transmission
+import com.rocketgod.mayhem.core.analyzer.groupPresses
+import com.rocketgod.mayhem.core.analyzer.sameFrame
 import com.rocketgod.mayhem.core.analyzer.MODS
 import com.rocketgod.mayhem.core.analyzer.Mod
 import com.rocketgod.mayhem.core.analyzer.Overrides
@@ -196,7 +200,14 @@ fun AnalyzerScreen(accent: Color) {
     val filtered by Analyzer.filtered.collectAsState()
     var sel by rememberSaveable { mutableStateOf(0) }
     var comparing by rememberSaveable { mutableStateOf(false) }
+    /** The transmission open in the sheet (its first burst's id), 0 for none. */
+    var openTx by rememberSaveable { mutableStateOf(0) }
     val picked = bursts.firstOrNull { it.b.id == sel }
+    // one press is many bursts: the list shows transmissions
+    val txs = remember(bursts) { groupPresses(bursts.map { groupInOf(it) }) }
+    val byId = remember(bursts) { bursts.associateBy { it.b.id } }
+    val opened = txs.firstOrNull { it.id == openTx }
+    fun openTransmission(t: Transmission) { comparing = false; if (t.ids.size == 1) { openTx = 0; sel = t.id } else { openTx = t.id; sel = 0 } }
 
     // import: any file the document picker offers; the rate comes from its name, as on the web
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -217,20 +228,26 @@ fun AnalyzerScreen(accent: Color) {
 
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
     val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac)) }
-    // each live burst as a box on the waterfall at its time and frequency (imports have no place in its history)
+    // each live frame as a box on the waterfall at its time and frequency (imports have no place in its history),
+    // labeled with where it was and what it is, fading over 30 s; tapping one opens its transmission
     val rate = SdrEngine.currentRate()
-    val boxes = remember(bursts, sel, freq, rate) {
+    val boxes = remember(bursts, txs, sel, openTx, freq, rate) {
         if (rate <= 0) emptyList() else bursts.filter { it.b.src == null && it.center != 0L }.map { x ->
-            val t1 = x.b.wall - 60; val t0 = t1 - max(1L, x.b.ms.roundToLong())
-            WfMark(x.b.id, t0, t1, (0.5 + (Analyzer.freqOf(x) - freq) / rate).toFloat(), (max(20_000.0, if (x.auto.mod == Mod.FSK) x.auto.shiftHz * 1.6 else 0.0) / rate).toFloat(),
-                modColor(x.auto.mod), bold = x.b.id == sel)
+            // the capture stamps a burst when its channel lets go, about 60 ms after the carrier ends
+            val t1 = x.b.wall - 60
+            val t0 = t1 - Math.round(max(max(x.b.n / x.b.rate * 1000 - 70, x.b.ms), 4.0))
+            val tx = txs.firstOrNull { x.b.id in it.ids }
+            val name = x.b.matches.firstOrNull()?.let { shortLabel(it) } ?: ""
+            WfMark(tx?.id ?: x.b.id, t0, t1, (0.5 + (Analyzer.freqOf(x) - freq) / rate).toFloat(), (max(20_000.0, if (x.auto.mod == Mod.FSK) x.auto.shiftHz * 1.6 else 0.0) / rate).toFloat(),
+                modColor(x.auto.mod), bold = x.b.id == sel || (openTx != 0 && tx?.id == openTx),
+                label = fmt("%.3f", Analyzer.freqOf(x) / 1e6) + if (name.isNotEmpty()) " $name" else "", fadeMs = 30_000L)
         }
     }
     AdaptivePane(
         share = true,
         face = {
             FreqCard(accent, tag = "ANALYZER", title = "CAPTURE · DEMOD · COMPARE", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
-                right = "${bursts.size} captured",
+                right = "${txs.size} transmission${if (txs.size == 1) "" else "s"}",
                 lamp = {
                     when {
                         !capturing -> Lamp("CAPTURE OFF", Palette.muted)
@@ -243,7 +260,7 @@ fun AnalyzerScreen(accent: Color) {
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                     rows = if (d.wide) 160 else 80, traceFrac = 0.26f, labels = centredLabels(freq, SdrEngine.currentRate()),
-                    onPreviewFrac = onPreview, onTapFrac = onTune, boxes = boxes, onBox = { id -> sel = id; comparing = false })
+                    onPreviewFrac = onPreview, onTapFrac = onTune, boxes = boxes, onBox = { id -> txs.firstOrNull { it.id == id }?.let { openTransmission(it) } })
             }
         }
     ) {
@@ -258,36 +275,70 @@ fun AnalyzerScreen(accent: Color) {
                 ToggleBox("EXPORT SESSION", false, accent, Modifier.fillMaxHeight(), dim = bursts.isEmpty() && protocols.isEmpty()) {
                     if (bursts.isNotEmpty() || protocols.isNotEmpty()) save(Analyzer.sessionName(), Analyzer.exportSession())
                 }
-                IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { Analyzer.clear(); if (Analyzer.bursts.value.none { it.b.id == sel }) { sel = 0; comparing = false } }
+                IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { Analyzer.clear(); if (Analyzer.bursts.value.none { it.b.id == sel || it.b.id == openTx }) { sel = 0; openTx = 0; comparing = false } }
             }
             if (UiState.showFilter) FilterRow(accent)
             if (UiState.showProtocols) ProtocolList(protocols, accent)
-            StatusLines(stats, freq, capturing, bursts, note, filtered)
+            StatusLines(stats, freq, capturing, bursts, txs.size, note, filtered)
         }
-        val shown = if (UiState.starredOnly) bursts.filter { meta[it.b.id]?.star == true } else bursts
+        val shown = if (UiState.starredOnly) txs.filter { t -> t.ids.any { meta[it]?.star == true } } else txs
         Box(Modifier.fillMaxWidth().weight(1f)) {
-            BurstCards(shown, meta, protocols, sel, UiState.starredOnly, Modifier.fillMaxSize()) { id -> sel = id; comparing = false }
+            TransmissionCards(shown, byId, meta, protocols, if (openTx != 0) openTx else sel, UiState.starredOnly, Modifier.fillMaxSize()) { openTransmission(it) }
         }
     }
-    if (picked != null) {
-        val c = modColor(picked.auto.mod)
-        Dialog(onDismissRequest = { if (comparing) comparing = false else sel = 0 },
-            properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)) {
+    val members = opened?.ids?.mapNotNull { byId[it] } ?: emptyList()
+    if (picked != null || (opened != null && members.isNotEmpty())) {
+        val c = modColor((picked ?: repOf(members)).auto.mod)
+        // back steps out one level: compare, then the burst, then the transmission
+        val back = { if (comparing) comparing = false else if (picked != null && opened != null) sel = 0 else { sel = 0; openTx = 0 } }
+        val closeAll = { sel = 0; openTx = 0; comparing = false }
+        Dialog(onDismissRequest = back, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)) {
             val shape = RoundedCornerShape(d.dp(14f))
             Box(Modifier.fillMaxSize().padding(d.dp(4f)).clip(shape).background(Palette.paper)
                 .background(Brush.linearGradient(listOf(c.copy(alpha = 0.08f), Palette.paper)))
                 .border(1.5.dp, c.copy(alpha = 0.8f), shape)) {
-                if (comparing) ComparePanel(picked, bursts, protocols, c, onBack = { comparing = false }, onClose = { sel = 0; comparing = false })
-                else BurstDetail(picked, meta[picked.b.id] ?: BurstMeta(), protocols, c, save, onCompare = { comparing = true }, onClose = { sel = 0 },
-                    onTx = { a ->
-                        // closed first: Transmit takes the screen, and the burst must not reopen on the way back
-                        val keep = sel; sel = 0; comparing = false
-                        val why = Analyzer.sendToTx(picked, a)
-                        if (why != null) { sel = keep; Toast.makeText(ctx, why, Toast.LENGTH_LONG).show() }
-                    })
+                when {
+                    // COMPARE from a burst lines up the frames like it; from a transmission, exactly its frames
+                    comparing && picked != null -> ComparePanel(picked, similarTo(picked, bursts), protocols, c, onBack = { comparing = false }, onClose = closeAll)
+                    comparing && opened != null -> repOf(members).let { r ->
+                        ComparePanel(r, similarTo(r, members), protocols, c, onBack = { comparing = false }, onClose = closeAll, title = "frames of one transmission like burst ${r.b.id}")
+                    }
+                    picked != null -> BurstDetail(picked, meta[picked.b.id] ?: BurstMeta(), protocols, c, save, onCompare = { comparing = true }, onClose = closeAll,
+                        onBack = if (opened != null) ({ sel = 0 }) else null,
+                        onTx = { a ->
+                            // closed first: Transmit takes the screen, and the burst must not reopen on the way back
+                            val keep = sel; val keepTx = openTx; sel = 0; openTx = 0; comparing = false
+                            val why = Analyzer.sendToTx(picked, a)
+                            if (why != null) { sel = keep; openTx = keepTx; Toast.makeText(ctx, why, Toast.LENGTH_LONG).show() }
+                        })
+                    opened != null -> TransmissionView(opened, members, meta, protocols, c, onCompare = { comparing = true }, onClose = closeAll) { sel = it }
+                }
             }
         }
     }
+}
+
+/** What grouping needs of a kept burst: when (file time, or wall clock less its length), how long, where, and its bits. */
+private fun groupInOf(x: AnBurst): GroupIn {
+    val dur = x.b.n / x.b.rate
+    return GroupIn(x.b.id, if (x.b.src != null) x.b.t else x.b.wall / 1000.0 - dur, dur, Analyzer.freqOf(x), x.b.matches, x.best, x.b.src)
+}
+
+/** A decoder's reading without its family ("car key: Land Rover FSK A824" → "Land Rover FSK A824"). */
+private fun shortLabel(m: String): String = m.substringAfter(": ", m)
+
+/**
+ * The frame that stands for a transmission: the member most of the others are the same frame as (ties: the stronger).
+ * The first is often an FSK key's bare carrier, not a packet.
+ */
+private fun repOf(ms: List<AnBurst>): AnBurst =
+    ms.maxWithOrNull(compareBy<AnBurst>({ x -> ms.count { y -> y !== x && sameFrame(x.best, y.best) } }, { it.b.snr })) ?: ms.first()
+
+/** The frames read like this one, for COMPARE from a burst. */
+private fun similarTo(sel: AnBurst, bursts: List<AnBurst>): List<AnBurst> {
+    if (sel.best.isEmpty()) return listOf(sel)
+    val sum = bursts.filter { it.best.isNotEmpty() }.map { Cand(it, it.auto.mod, it.auto.coding, it.auto.symUs, it.best.length) }
+    return similar(sum, sum.first { it.x.b.id == sel.b.id }).map { it.x }
 }
 
 private fun Double.roundToLong(): Long = Math.round(this)
@@ -298,14 +349,14 @@ private fun displayName(ctx: Context, uri: Uri): String =
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "import.cu8"
 
 @Composable
-private fun StatusLines(s: com.rocketgod.mayhem.core.analyzer.AnalyzerStats?, center: Long, capturing: Boolean, bursts: List<AnBurst>, note: String, filtered: Int) {
+private fun StatusLines(s: com.rocketgod.mayhem.core.analyzer.AnalyzerStats?, center: Long, capturing: Boolean, bursts: List<AnBurst>, nTx: Int, note: String, filtered: Int) {
     val d = rememberDims()
     val matched = bursts.count { it.b.matches.isNotEmpty() }
     val top = if (s != null) fmt("WATCHING %.2f–%.2f MHz", (center - s.span / 2) / 1e6, (center + s.span / 2) / 1e6) +
         (if (s.channels > 0) " · TUNED TO ${s.channels} BURST${if (s.channels == 1) "" else "S"} NOW" else "") + (if (capturing) "" else " · CAPTURE OFF")
         else if (capturing) "listening…" else "CAPTURE OFF"
     Text(top, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    Text("${bursts.size} captured · $matched matched a Devices decoder" + (if (filtered > 0) " · $filtered filtered out" else "") +
+    Text("$nTx transmission${if (nTx == 1) "" else "s"} (${bursts.size} frame${if (bursts.size == 1) "" else "s"}) · $matched matched a Devices decoder" + (if (filtered > 0) " · $filtered filtered out" else "") +
         (if (s != null) " · ${s.followed} bursts followed" else "") +
         (if (note.isNotEmpty()) " · $note" else ""), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, overflow = TextOverflow.Ellipsis)
 }
@@ -374,22 +425,115 @@ private fun ProtocolList(protocols: List<Protocol>, accent: Color) {
 // ---- the cards ------------------------------------------------------------------------------------------------
 
 @Composable
-private fun BurstCards(bursts: List<AnBurst>, meta: Map<Int, BurstMeta>, protocols: List<Protocol>, sel: Int, starredOnly: Boolean, modifier: Modifier, onSel: (Int) -> Unit) {
+private fun TransmissionCards(txs: List<Transmission>, byId: Map<Int, AnBurst>, meta: Map<Int, BurstMeta>, protocols: List<Protocol>, sel: Int, starredOnly: Boolean,
+                              modifier: Modifier, onOpen: (Transmission) -> Unit) {
     val d = rememberDims()
     Box(modifier) {
-        if (bursts.isEmpty()) {
+        if (txs.isEmpty()) {
             Box(Modifier.fillMaxSize().panel(), contentAlignment = Alignment.Center) {
                 Text(if (starredOnly) "no starred bursts: open one and tap ☆ to keep it through CLEAR"
                     else "nothing yet. Press a key fob or a remote near the antenna, or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)",
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.padding(d.dp(14f)))
             }
         } else {
-            val shown = remember(bursts) { bursts.asReversed().toList() }
+            val shown = remember(txs) { txs.asReversed().toList() }
             LazyVerticalGrid(GridCells.Adaptive(d.dp(230f)), Modifier.fillMaxSize(),
                 horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                 // unkeyed on purpose: keyed, the grid keeps the card on screen anchored while newer ones are added above
                 // it, so a fresh import opened scrolled to its oldest burst instead of its newest
-                items(shown) { a -> BurstCard(a, meta[a.b.id] ?: BurstMeta(), protocols, sel == a.b.id) { onSel(a.b.id) } }
+                items(shown) { t ->
+                    val ms = t.ids.mapNotNull { byId[it] }
+                    if (ms.size == 1) BurstCard(ms[0], meta[ms[0].b.id] ?: BurstMeta(), protocols, sel == t.id) { onOpen(t) }
+                    else if (ms.isNotEmpty()) TxCard(t, ms, meta, protocols, sel == t.id) { onOpen(t) }
+                }
+            }
+        }
+    }
+}
+
+/** The channels a transmission was sent on, as text: "314.695 / 315.014 / 315.314 MHz". */
+private fun channelsText(t: Transmission, first: AnBurst): String =
+    if (first.center == 0L) t.freqs.joinToString(" / ") { fmt("%+.0f", it / 1e3) } + " kHz" else t.freqs.joinToString(" / ") { fmt("%.3f", it / 1e6) } + " MHz"
+
+/** One press heard as several frames: what it is, how many frames on how many channels, and where. */
+@Composable
+private fun TxCard(t: Transmission, ms: List<AnBurst>, meta: Map<Int, BurstMeta>, protocols: List<Protocol>, selected: Boolean, onClick: () -> Unit) {
+    val d = rememberDims()
+    val x = remember(ms) { repOf(ms) }
+    val a = x.auto
+    val c = modColor(a.mod)
+    val star = ms.any { meta[it.b.id]?.star == true }
+    val name = ms.firstNotNullOfOrNull { meta[it.b.id]?.name?.takeIf { n -> n.isNotEmpty() } }
+    val proto = remember(ms, protocols) { ms.firstNotNullOfOrNull { Analyzer.recognized(it, protocols) } }
+    val big = if (t.label.isNotEmpty()) shortLabel(t.label) else "${a.mod} · ${a.coding.name.uppercase()}"
+    val sub = "${ms.size} frames on ${t.freqs.size} channel${if (t.freqs.size == 1) "" else "s"} · ${channelsText(t, x)}"
+    val best = x.best
+    val shape = RoundedCornerShape(d.dp(14f))
+    Column(Modifier.fillMaxWidth().clip(shape)
+        .background(Brush.linearGradient(listOf(c.copy(alpha = 0.10f), Palette.panel)))
+        .border(if (selected) 2.5.dp else 1.dp, c.copy(alpha = if (selected) 1f else 0.3f), shape)
+        .clickable { onClick() }.padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            WaveGlyph(c)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
+                Text(if (x.center != 0L) mhzOf(t.freqs.first()) else whereOf(x), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
+                Text(name ?: x.b.src ?: "transmission ${t.id}", color = if (name != null) Palette.ink else Palette.muted, fontFamily = Mono,
+                    fontWeight = if (name != null) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (star) Text("★", color = Palette.accent2, fontSize = d.sp(14f))
+            Text(whenOf(x), color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
+            Text(big, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (best.isNotEmpty()) Text(bitsToHex(best), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (proto != null) Pill("PROTOCOL: ${proto.protocol.name}", Palette.accent2)
+        if (t.label.isNotEmpty()) Pill(t.label, Palette.ok)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(fmt("%.0f ms in all", (t.end - t.t) * 1000), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
+            Text(fmt("%.0f dB SNR best", ms.maxOf { it.b.snr }), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
+        }
+    }
+}
+
+/** A transmission opened: what it is, its frames (tap one for its detail), and COMPARE over exactly these frames. */
+@Composable
+private fun TransmissionView(t: Transmission, ms: List<AnBurst>, meta: Map<Int, BurstMeta>, protocols: List<Protocol>, c: Color,
+                             onCompare: () -> Unit, onClose: () -> Unit, onOpen: (Int) -> Unit) {
+    val d = rememberDims()
+    val x = remember(ms) { repOf(ms) }
+    val proto = remember(ms, protocols) { ms.firstNotNullOfOrNull { Analyzer.recognized(it, protocols) } }
+    Column(Modifier.fillMaxSize().padding(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            Column(Modifier.weight(1f)) {
+                Text("TRANSMISSION", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
+                Text(if (t.label.isNotEmpty()) shortLabel(t.label) else "${x.auto.mod} · ${x.auto.coding.name.uppercase()}", color = c, fontFamily = Mono,
+                    fontWeight = FontWeight.Bold, fontSize = d.sp(16f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${ms.size} frames on ${t.freqs.size} channel${if (t.freqs.size == 1) "" else "s"} · ${channelsText(t, x)}", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+                Text((if (x.b.src != null) "${x.b.src} · ${whenOf(x)}" else whenOf(x)) + fmt(" · %.0f ms in all", (t.end - t.t) * 1000),
+                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            ToggleBox("✕", false, c, Modifier.fillMaxHeight()) { onClose() }
+        }
+        ToggleBox("COMPARE", false, c, Modifier.fillMaxWidth()) { onCompare() }
+        if (proto != null) Pill("PROTOCOL: ${proto.protocol.name}", Palette.accent2)
+        Text("FRAMES (tap one to open it)", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            for (m in ms) {
+                val mc = modColor(m.auto.mod)
+                val mm = meta[m.b.id]
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(d.dp(10f))).background(Palette.panel).border(1.dp, mc.copy(alpha = 0.35f), RoundedCornerShape(d.dp(10f)))
+                    .clickable { onOpen(m.b.id) }.padding(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalAlignment = Alignment.CenterVertically) {
+                        Text(whereOf(m), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f))
+                        Text(fmt("%.1f ms · %.0f dB SNR", m.b.ms, m.b.snr), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), modifier = Modifier.weight(1f))
+                        if (mm?.star == true) Text("★", color = Palette.accent2, fontSize = d.sp(12f))
+                        Text(whenOf(m), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+                    }
+                    if (m.best.isNotEmpty()) Text(bitsToHex(m.best), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    else Text(m.auto.why, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
+                }
             }
         }
     }
@@ -487,7 +631,7 @@ private fun charsOf(fmtI: Int, b0: Int, b1: Int): Pair<Int, Int> = when (fmtI) {
 
 @Composable
 private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: Color, save: (String, ByteArray) -> Unit,
-                        onCompare: () -> Unit, onClose: () -> Unit, onTx: (Analysis) -> Unit) {
+                        onCompare: () -> Unit, onClose: () -> Unit, onBack: (() -> Unit)?, onTx: (Analysis) -> Unit) {
     val d = rememberDims()
     val b = x.b
     val overs by Analyzer.over.collectAsState()
@@ -514,6 +658,7 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
                 Text((if (b.src != null) "${b.src} · ${whenOf(x)}" else whenOf(x)) + fmt(" · %.1f ms · %.0f dB SNR", b.ms, b.snr),
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            if (onBack != null) ToggleBox("BACK", false, c, Modifier.fillMaxHeight()) { onBack() }
             ToggleBox(if (m.star) "★" else "☆", m.star, Palette.accent2, Modifier.fillMaxHeight()) { Analyzer.setMeta(b.id) { it.copy(star = !it.star) } }
             ToggleBox("✕", false, c, Modifier.fillMaxHeight()) { onClose() }
         }
@@ -925,14 +1070,8 @@ private object CompareState {
  * fixed bits plain and changing ones in the accent, the named fields in a bar over them.
  */
 @Composable
-private fun ComparePanel(sel: AnBurst, bursts: List<AnBurst>, protocols: List<Protocol>, c: Color, onBack: () -> Unit, onClose: () -> Unit) {
+private fun ComparePanel(sel: AnBurst, group: List<AnBurst>, protocols: List<Protocol>, c: Color, onBack: () -> Unit, onClose: () -> Unit, title: String? = null) {
     val d = rememberDims()
-    val group = remember(bursts, sel.b.id) {
-        if (sel.best.isEmpty()) emptyList() else {
-            val sum = bursts.filter { it.best.isNotEmpty() }.map { Cand(it, it.auto.mod, it.auto.coding, it.auto.symUs, it.best.length) }
-            similar(sum, sum.first { it.x.b.id == sel.b.id }).map { it.x }
-        }
-    }
     val rows = group.filter { leftOut[it.b.id] != true || it.b.id == sel.b.id }
     val al = remember(rows) { align(rows.map { it.best }) }
     val id = sel.b.id
@@ -948,7 +1087,7 @@ private fun ComparePanel(sel: AnBurst, bursts: List<AnBurst>, protocols: List<Pr
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             Column(Modifier.weight(1f)) {
                 Text("COMPARE", color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f))
-                Text("${rows.size} frame${if (rows.size == 1) "" else "s"} like burst ${sel.b.id} · ${sel.auto.mod} · ${sel.auto.coding} · ${fmt("%.0f", sel.auto.symUs)} µs",
+                Text((title ?: "${rows.size} frame${if (rows.size == 1) "" else "s"} like burst ${sel.b.id}") + " · ${sel.auto.mod} · ${sel.auto.coding} · ${fmt("%.0f", sel.auto.symUs)} µs",
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2)
             }
             ToggleBox("BACK", false, c, Modifier.fillMaxHeight()) { onBack() }

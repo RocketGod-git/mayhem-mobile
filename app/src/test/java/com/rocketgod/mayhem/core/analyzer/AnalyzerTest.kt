@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  * The Analyzer end to end: synthetic bursts of every modulation and line coding, made into I/Q, found by the burst
  * front end anywhere in the span, then read back with nothing set by hand. Then repeated frames lined up bit by bit,
  * the fixed and changing columns checked, and the file formats round-tripped. Twin of web/test/analyzer.mjs, check
- * for check (83 of them), with the same signals and the same PRNG.
+ * for check (92 of them), with the same signals and the same PRNG.
  *
  * No real key is in here: the synthetic frames use made-up bytes, and the Land Rover check uses the ProtoPirate-style
  * fixture already in the repo (resources/pirate/land_rover_fsk.txt), turned back into samples.
@@ -100,10 +100,10 @@ class AnalyzerTest {
 
     @Test
     fun analyzerEndToEnd() {
-        pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); counterAndCheck(); bundleAndFilter(); small()
+        pwm(); ppm(); ask(); fskNrz(); manchester(); shifted(); landRover(); counterAndCheck(); bundleAndFilter(); phaseAndTrim(); grouping(); small()
         println("analyzer: $pass passed, $fail failed")
         assertTrue("failed: ${failures.joinToString(" | ")}", fail == 0)
-        assertEquals("check count", 83, pass + fail)
+        assertEquals("check count", 92, pass + fail)
     }
 
     // ---- OOK, pulse width: a PT2262-style 24-bit remote, four repeats ------------------------------------------------
@@ -202,7 +202,7 @@ class AnalyzerTest {
         check(near(a.symUs, us, 4.0), "FSK NRZ: symbol ${f1(us)} us (${f1(a.symUs)})")
         check(near(a.shiftHz, 60_000.0, 12_000.0), "FSK NRZ: shift 60 kHz (${f0(a.shiftHz)})")
         val bits = a.frames.firstOrNull()?.bits ?: ""
-        check(bits.contains(code.substring(4, code.length - 2)), "FSK NRZ: bits read (${bits.length} bits)")
+        check(bits.contains(code.substring(8, code.length - 2)), "FSK NRZ: bits read (${bits.length} bits)")
     }
 
     // ---- FSK, Manchester: a hopping key, six packets on three channels ---------------------------------------------
@@ -239,6 +239,8 @@ class AnalyzerTest {
         check(reads.all { near(it.baud, 7812.5, 300.0) }, "Manchester: 7.8 kbit/s (${reads.map { f0(it.baud) }})")
         val frames = reads.map { it.frames.lastOrNull()?.bits ?: "" }
         check(frames.withIndex().all { (i, f) -> i < packets.size && f.contains(packets[i].bits.substring(0, 140)) }, "Manchester: every packet reads back")
+        // copies of one frame with different preamble lengths read the same hex from the sync on
+        check(frames.all { bitsToHex(it).contains("34A5C33C96") }, "phase: every copy shows the sync on a byte (${frames.joinToString(" ") { bitsToHex(it).take(14) }})")
         val mf = reads[0].frames.last()
         check(near((mf.spans[2 * 40 + 1] - mf.spans[2 * 40]) / bursts[0].rate * 1e6, 128.0, 8.0), "spans: a Manchester bit is two half bits")
         // line them up
@@ -364,6 +366,48 @@ class AnalyzerTest {
         check(!ok(NO_FILTER.copy(minSnr = 15.0), 0) && !ok(NO_FILTER.copy(maxMs = 10.0), 0) && !ok(NO_FILTER.copy(minMs = 30.0), 0), "filter: SNR and length")
         check(!ok(NO_FILTER.copy(unknownOnly = true), 0, listOf("remote: x")) && ok(NO_FILTER.copy(unknownOnly = true), 0), "filter: only unknown")
         check(ok(NO_FILTER.copy(loHz = 434e6), 0), "filter: a file with no center skips the frequency test")
+    }
+
+    // ---- Manchester phase and sync trim ---------------------------------------------------------------------------
+    private fun phaseAndTrim() {
+        // a frame opening with a long run of ones reads the same on either half-bit phase for a while; the phase that
+        // reads the whole frame cleanly is the right one, so the run must not come out inverted
+        val data = "1".repeat(24) + randBits(80)
+        val air = Air()
+        air.quiet(60.0)
+        val lv = ArrayList<Pair<Boolean, Double>>()
+        for (c in data) { lv.add(if (c == '1') true to 64.0 else false to 64.0); lv.add(if (c == '1') false to 64.0 else true to 64.0) }
+        air.fsk(lv, 120_000.0, 23_000.0)
+        air.quiet(150.0)
+        val bursts = capture(air)
+        val a = if (bursts.isNotEmpty()) read(bursts[0], Overrides(coding = Coding.Manchester)) else null
+        val f = a?.frames?.lastOrNull()?.bits ?: ""
+        check(f.contains(data.substring(4, 100)) && !f.contains("0".repeat(16)), "phase: a run of ones reads as ones (${bitsToHex(f).take(12)})")
+        check(syncTrim("10".repeat(9) + "1" + "1101") == 19 % 8 && syncTrim("0" + "10".repeat(10) + "0110") == 21 % 8 && syncTrim("1100110011110000") == 0, "sync trim: to the break in the training run")
+    }
+
+    // ---- one press, many bursts: grouped into a transmission -------------------------------------------------------
+    private fun grouping() {
+        val k = "car key: Land Rover FSK A824"; val f1 = randBits(160); val f2 = randBits(160); val other = randBits(160)
+        fun flipAt(s: String, i: Int) = s.substring(0, i) + (if (s[i] == '1') '0' else '1') + s.substring(i + 1)
+        val hz3 = doubleArrayOf(314.708e6, 315.020e6, 315.342e6)
+        val bursts = ArrayList<GroupIn>()
+        // a press: two hop values, each on three channels, about 100 ms apart
+        for (i in 0 until 6) bursts.add(GroupIn(i + 1, 10 + i * 0.1016, 0.072, hz3[i % 3], listOf(k), if (i < 3) f1 else f2))
+        // the same key pressed again two seconds later
+        bursts.add(GroupIn(7, 12.5, 0.072, 315.020e6, listOf(k), f2))
+        // an unclaimed remote sending one frame four times (one copy with a bit error), then something else at once
+        for (i in 0 until 4) bursts.add(GroupIn(10 + i, 20 + i * 0.03, 0.02, 433.92e6, emptyList(), if (i == 2) flipAt(other, 50) else other))
+        bursts.add(GroupIn(20, 20.15, 0.02, 433.92e6, emptyList(), randBits(160)))
+        // the same frame, but from a file: never grouped with the air
+        bursts.add(GroupIn(30, 20.05, 0.02, 433.92e6, emptyList(), other, "x.sub"))
+        val tx = groupPresses(bursts)
+        check(tx.size == 5, "grouping: five transmissions (${tx.joinToString(" | ") { it.ids.joinToString("+") }})")
+        check(tx[0].ids.size == 6 && tx[0].label == k && tx[0].freqs.size == 3, "grouping: one press, 6 frames on 3 channels (${tx[0].ids.size}, ${tx[0].freqs.map { String.format(Locale.US, "%.3f", it / 1e6) }})")
+        check(tx.getOrNull(1)?.ids?.joinToString(",") == "7", "grouping: the next press is its own")
+        check(tx.any { it.ids.joinToString(",") == "10,11,12,13" && it.label == "" }, "grouping: unclaimed repeats group by their bits, a bit error and all")
+        check(tx.any { it.ids.joinToString(",") == "20" } && tx.any { it.ids.joinToString(",") == "30" }, "grouping: a different frame, or a file, stays apart")
+        check(sameFrame(other, flipAt(other, 3)) && !sameFrame(other, randBits(160)), "sameFrame")
     }
 
     // ---- small things ---------------------------------------------------------------------------------------------
