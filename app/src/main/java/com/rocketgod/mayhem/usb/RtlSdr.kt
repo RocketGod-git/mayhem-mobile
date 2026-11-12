@@ -45,6 +45,8 @@ object RtlSdr {
     private const val UPCONVERT_HZ = 28_800_000L
     /** The most the tuner's stages add up to, in dB (not the 49.6 librtlsdr's table claims). */
     const val MAX_GAIN_DB = 48.8
+    /** [targetGainTenthDb] value that hands the gain to the R82xx's own automatic gain. */
+    const val GAIN_AUTO = -1
 
     @Volatile var running = false; private set
     @Volatile private var stop = false
@@ -56,6 +58,14 @@ object RtlSdr {
     @Volatile var targetGainTenthDb = 400
     /** RTL-SDR Blog bias tee (GPIO0 → ~4.5 V on the antenna port for an inline LNA). Off unless the user turns it on. */
     @Volatile var targetBiasTee = false
+    /** The R82xx's own automatic gain in place of [targetGainTenthDb]. */
+    @Volatile var tunerAgc = false
+    /** The RTL2832U's digital AGC (librtlsdr rtlsdr_set_agc_mode). */
+    @Volatile var rtlAgc = false
+    /** Crystal correction in parts per million (librtlsdr rtlsdr_set_freq_correction). */
+    @Volatile var ppm = 0
+    /** Whether an R820T/R820T2 may drop into direct sampling for HF below 24 MHz. */
+    @Volatile var directSamplingAllowed = true; private set
 
     /** What it turned out to be, for the screen. */
     @Volatile var label = "RTL-SDR"; private set
@@ -63,7 +73,18 @@ object RtlSdr {
     /** An RTL-SDR Blog V4: an R828D with the HF upconverter and three switched inputs, told apart by its USB strings. */
     @Volatile var blogV4 = false; private set
     /** Whether this stick reaches below 24 MHz: direct sampling on an R820T/R820T2, the upconverter on a V4 or V4L. */
-    val hfReady get() = tuner == "R820T/R820T2" || tuner == "R828S" || blogV4
+    val hfReady get() = (tuner == "R820T/R820T2" && directSamplingAllowed) || tuner == "R828S" || blogV4
+    /** Direct sampling is an R820T/R820T2 thing, so whether to offer the switch is known after bring-up. */
+    val canDirectSample get() = tuner == "R820T/R820T2"
+
+    /** Allow or refuse direct sampling. Off, the dongle's floor goes back to 24 MHz. */
+    fun setDirectSampling(on: Boolean) {
+        directSamplingAllowed = on
+        appliedFreq = 0L   // retune, so the path in use follows the switch at once
+    }
+
+    /** The gain the tuner should be running: its own AGC, or the fixed figure. */
+    private fun wantGain(): Int = if (tunerAgc) GAIN_AUTO else targetGainTenthDb
 
     private const val DEMODB = 0; private const val USBB = 1; private const val SYSB = 2; private const val IICB = 6
     private const val USB_SYSCTL = 0x2000; private const val USB_EPA_CTL = 0x2148; private const val USB_EPA_MAXPKT = 0x2158
@@ -172,6 +193,8 @@ object RtlSdr {
     @Volatile private var appliedRate = 0
     @Volatile private var appliedGain = Int.MAX_VALUE
     @Volatile private var appliedBiasTee = false
+    @Volatile private var appliedRtlAgc = -1
+    @Volatile private var appliedPpm = 0
     /** Direct sampling engaged (R820T/R820T2 below 24 MHz): the tuner is bypassed and the ADC read straight. */
     @Volatile private var directSampling = false
     /** The V4L's upconverter is in circuit (R828S below 24 MHz, GPIO5 low). */
@@ -192,6 +215,7 @@ object RtlSdr {
         if (running) return
         running = true; stop = false
         appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; appliedBiasTee = false; dbgBuffers = 0
+        appliedRtlAgc = -1
         directSampling = false; upconvert = false
         quietRetune = false; needQuietRetune = false; retuneAfter = 0L
         SdrEngine.syncDriver()
@@ -212,11 +236,13 @@ object RtlSdr {
             runCatching { c.controlTransfer(0x02, 0x01, 0x00, ep.address, null, 0, 500) }
             Diag.log("=== RTL-SDR bring-up (RTL2832U + R82xx) === RX endpoint=0x%02x".format(ep.address))
             onStatus("RTL-SDR · initializing…")
+            appliedPpm = ppm   // everything below tunes against the corrected crystal
             initBaseband()
             initTuner()
             setSampleRate(targetRateHz); appliedRate = targetRateHz
             setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
-            applyGain(targetGainTenthDb); appliedGain = targetGainTenthDb
+            val g = wantGain(); applyGain(g); appliedGain = g
+            applyRtlAgc()
             resetBuffer()
             SdrEngine.sourceLabel = label
             SdrEngine.onSource(targetRateHz)
@@ -340,7 +366,8 @@ object RtlSdr {
         if (mx - mn < 3) { Diag.log("RTL-SDR: the samples barely move — check the aerial and try another USB port"); onStatus("RTL-SDR: no signal — check aerial / cable") }
     }
 
-    private fun pending() = targetFreqHz != appliedFreq || targetGainTenthDb != appliedGain
+    private fun pending() = targetFreqHz != appliedFreq || wantGain() != appliedGain ||
+        (if (rtlAgc) 1 else 0) != appliedRtlAgc || ppm != appliedPpm
 
     /**
      * Apply a pending frequency and gain, between buffers. True when both landed. Marked applied only once it
@@ -350,13 +377,30 @@ object RtlSdr {
      */
     private fun applyPending(): Boolean {
         var ok = true
+        if (ppm != appliedPpm) {
+            // New crystal correction: the resampler's correction registers now, the tuner's synthesizer and the
+            // demodulator's IF by retuning against the corrected reference.
+            val p = ppm; val before = writeFails
+            appliedPpm = p
+            runCatching {
+                setPpmRegs()
+                if (!directSampling) setIfFreq(IF_HZ)
+                check(writeFails == before) { "control transfer refused" }
+            }.onSuccess { Diag.log("RTL-SDR: frequency correction %+d ppm".format(p)) }.onFailure { retuneFailed(it); ok = false }
+            appliedFreq = 0L
+        }
+        if ((if (rtlAgc) 1 else 0) != appliedRtlAgc) {
+            val before = writeFails
+            runCatching { applyRtlAgc(); check(writeFails == before) { "control transfer refused" } }
+                .onFailure { appliedRtlAgc = -1; retuneFailed(it); ok = false }
+        }
         if (targetFreqHz != appliedFreq) {
             val f = targetFreqHz; val before = writeFails
             runCatching { setCenterFreq(f); check(writeFails == before) { "control transfer refused" } }
                 .onSuccess { appliedFreq = f }.onFailure { retuneFailed(it); ok = false }
         }
-        if (targetGainTenthDb != appliedGain) {
-            val g = targetGainTenthDb; val before = writeFails
+        if (wantGain() != appliedGain) {
+            val g = wantGain(); val before = writeFails
             runCatching { applyGain(g); check(writeFails == before) { "control transfer refused" } }
                 .onSuccess { appliedGain = g }.onFailure { retuneFailed(it); ok = false }
         }
@@ -433,8 +477,25 @@ object RtlSdr {
         demodWrite(DEMODB, 0x0d, 0x83, 1)                                       // no clock on TP_CK0
     }
 
+    /** The demodulator's digital AGC: register 0x19 of page 0, 0x25 on and 0x05 off (librtlsdr). */
+    private fun applyRtlAgc() {
+        val on = rtlAgc
+        demodWrite(0, 0x19, if (on) 0x25 else 0x05, 1)
+        appliedRtlAgc = if (on) 1 else 0
+    }
+
+    /** A crystal frequency with the current correction applied (librtlsdr's corrected rtl_xtal / tun_xtal). */
+    private fun corrected(xtal: Long): Long = correctedXtal(xtal, appliedPpm)
+
+    /** The resampler's crystal correction (librtlsdr rtlsdr_set_sample_freq_correction). */
+    private fun setPpmRegs() {
+        val offs = ppmOffs(appliedPpm)
+        demodWrite(1, 0x3f, offs and 0xff, 1)
+        demodWrite(1, 0x3e, (offs shr 8) and 0x3f, 1)
+    }
+
     private fun setIfFreq(freqHz: Long) {
-        val ifFreq = -((freqHz * 0x400000L) / RTL_XTAL).toInt()
+        val ifFreq = -((freqHz * 0x400000L) / corrected(RTL_XTAL)).toInt()
         demodWrite(1, 0x19, (ifFreq shr 16) and 0x3f, 1)
         demodWrite(1, 0x1a, (ifFreq shr 8) and 0xff, 1)
         demodWrite(1, 0x1b, ifFreq and 0xff, 1)
@@ -444,7 +505,7 @@ object RtlSdr {
         val rsamp = ((RTL_XTAL * 0x400000L) / rate).toInt() and 0x0ffffffc
         demodWrite(1, 0x9f, (rsamp shr 16) and 0xffff, 2)
         demodWrite(1, 0xa1, rsamp and 0xffff, 2)
-        demodWrite(1, 0x3e, 0, 1); demodWrite(1, 0x3f, 0, 1)                   // no crystal correction
+        setPpmRegs()
         demodWrite(1, 0x01, 0x14, 1); demodWrite(1, 0x01, 0x10, 1)
     }
 
@@ -466,7 +527,7 @@ object RtlSdr {
                 if (!upconvert) { setGpio(5, false); upconvert = true }
                 i2cRepeater(true); r82xxSetFreq(freqHz + UPCONVERT_HZ, hf = true); i2cRepeater(false)
             }
-            freqHz < HF_MAX_HZ && tuner == "R820T/R820T2" -> {
+            freqHz < HF_MAX_HZ && tuner == "R820T/R820T2" && directSamplingAllowed -> {
                 if (!directSampling) enterDirectSampling()
                 setIfFreq(freqHz)
             }
@@ -628,7 +689,7 @@ object RtlSdr {
         tunerWriteMask(0x1a, 0x00, 0x0c)        // 128 kHz autotune while settling
         tunerWriteMask(0x12, 0x80, 0xe0)        // VCO current minimum
         val fine = (r82xxRead(5)[4] and 0x30) shr 4
-        val plan = pllPlan(freqHz, tunerXtal, fine, vcoPowerRef)
+        val plan = pllPlan(freqHz, corrected(tunerXtal), fine, vcoPowerRef)
         tunerWriteMask(0x10, plan.divNum shl 5, 0xe0)
         if (!plan.ok) { if (!quiet) Diag.log("RTL-SDR: PLL integer out of range at %.3f MHz".format(freqHz / 1e6)); return false }
         val ni = (plan.nint - 13) / 4
@@ -680,15 +741,30 @@ object RtlSdr {
         tunerWriteMask(0x06, 0x08, 0x08)
     }
 
-    /** Two uneven 16-step stages walked to the asked total; the tuner's own auto mode is not used (it parks near minimum). */
+    /**
+     * Two uneven 16-step stages walked to the asked total, or with [GAIN_AUTO] the tuner's own automatic gain. The
+     * app's AGC never uses the tuner's (it parks near minimum); it is there when the user asks for it.
+     */
     private fun applyGain(tenthDb: Int) {
         i2cRepeater(true)
-        val (lna, mix, _) = gainSteps(tenthDb)
-        tunerWriteMask(0x05, 0x10, 0x10)        // LNA manual
-        tunerWriteMask(0x07, 0x00, 0x10)        // mixer manual
-        tunerWriteMask(0x05, lna, 0x0f)
-        tunerWriteMask(0x07, mix, 0x0f)
-        tunerWriteMask(0x0c, 0x08, 0x9f)        // output stage fixed at about 13.5 dB
+        if (tenthDb == GAIN_AUTO) {
+            tunerWriteMask(0x05, 0x00, 0x10)    // LNA automatic
+            tunerWriteMask(0x07, 0x10, 0x10)    // mixer automatic
+            tunerWriteMask(0x0c, 0x0b, 0x9f)    // output stage fixed mid-scale
+        } else {
+            val (lna, mix, _) = gainSteps(tenthDb)
+            tunerWriteMask(0x05, 0x10, 0x10)    // LNA manual
+            tunerWriteMask(0x07, 0x00, 0x10)    // mixer manual
+            tunerWriteMask(0x05, lna, 0x0f)
+            tunerWriteMask(0x07, mix, 0x0f)
+            tunerWriteMask(0x0c, 0x08, 0x9f)    // output stage fixed at about 13.5 dB
+        }
         i2cRepeater(false)
     }
+
+    /** The resampler correction for [ppm]: trunc(-ppm * 2^24 / 1e6), as librtlsdr writes it to registers 0x3f / 0x3e. */
+    fun ppmOffs(ppm: Int): Int = ((-ppm.toLong() * (1L shl 24)) / 1_000_000L).toInt()
+
+    /** A crystal corrected by [ppm] parts per million: xtal * (1 + ppm / 1e6), rounded. */
+    fun correctedXtal(xtal: Long, ppm: Int): Long = Math.round(xtal * (1 + ppm / 1e6))
 }

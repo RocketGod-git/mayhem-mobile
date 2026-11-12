@@ -52,7 +52,40 @@ export interface Radio {
    * it does have and says so in its own control panel, rather than silently ignoring one.
    */
   setGain(lnaDb: number, vgaDb: number, amp: boolean): void;
+  /** Which knobs this radio really has, for the RADIO panel. Only what bring-up has found is listed. */
+  readonly caps: RadioCaps;
 }
+
+/**
+ * The settings a radio can take beyond frequency, one flag per control on the RADIO panel. A control whose flag
+ * is false is not drawn at all: a switch that moves and changes nothing is worse than no switch.
+ */
+export interface RadioCaps {
+  /** A HackRF's two receive stages: LNA 0-40 dB in 8s and VGA 0-62 dB in 2s. */
+  stagedGain: boolean;
+  /** An RTL-SDR's single tuner gain, 0-48.8 dB. */
+  tunerGain: boolean;
+  /** The HackRF's +14 dB front-end amplifier. */
+  amp: boolean;
+  /** DC on the antenna port for an inline LNA: HackRF antenna power (3.3 V), RTL-SDR Blog bias tee (4.5 V). */
+  biasT: boolean;
+  /** Volts the bias tee puts out, for the warning. */
+  biasVolts: number;
+  /** The R82xx tuner's own automatic gain. */
+  tunerAgc: boolean;
+  /** The RTL2832U's digital AGC. */
+  rtlAgc: boolean;
+  /** Crystal correction in parts per million. */
+  ppm: boolean;
+  /** HF by direct sampling of the ADC's Q branch (R820T/R820T2 only). */
+  directSampling: boolean;
+  /** The MAX2837's baseband filter bandwidths, in hertz; empty when the radio has no choice. */
+  bbFilters: number[];
+}
+
+/** Sample rates worth offering by hand, highest first; each radio shows the ones it accepts. */
+export const RATE_CHOICES = [20_000_000, 16_000_000, 12_500_000, 10_000_000, 8_000_000, 4_000_000, 3_200_000, 2_800_000,
+  2_400_000, 2_048_000, 2_000_000, 1_800_000, 1_400_000, 1_024_000, 250_000];
 
 /** Whether a radio will tune here at all. */
 export function canTune(r: RadioLimits, hz: number): boolean {
