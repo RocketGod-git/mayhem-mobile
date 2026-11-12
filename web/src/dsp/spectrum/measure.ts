@@ -73,3 +73,18 @@ export function noiseAt(y: ArrayLike<number>, i: number, rbwHz: number, half = 4
   for (let j = Math.max(0, i - half); j <= Math.min(y.length - 1, i + half); j++) { s += dbToLin(y[j]); k++; }
   return linToDb(s / Math.max(1, k)) - 10 * Math.log10(rbwHz);
 }
+
+/**
+ * A reference level and scale that frame a trace (dB): the top 5 dB over its highest point, rounded up to 5 dB, and the
+ * smallest dB/div (of `divs`) that still keeps the noise floor two divisions above the bottom.
+ */
+export function autoScale(y: ArrayLike<number>, divs = [1, 2, 5, 10, 20]): { ref: number; div: number } {
+  let peak = -Infinity;
+  for (let i = 0; i < y.length; i++) if (Number.isFinite(y[i]) && y[i] > peak) peak = y[i];
+  if (!Number.isFinite(peak)) return { ref: -20, div: 10 };
+  const floor = noiseFloor(y, 1).floor;
+  const ref = Math.ceil((peak + 5) / 5) * 5;
+  const need = ref - (floor - 5);
+  const div = divs.find(d => d * 8 >= need) ?? divs[divs.length - 1];
+  return { ref, div };
+}

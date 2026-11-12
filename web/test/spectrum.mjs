@@ -262,6 +262,14 @@ function ifft(re, im) {
   for (let k = 0; k < n; k++) { re[k] /= n; im[k] = -im[k] / n; }
 }
 
+{
+  const y = new Float32Array(200).fill(-118); y[100] = -62;
+  const a = S.autoScale(y);
+  ok(a.ref === -55 && a.div === 10, `AUTO SCALE frames a -62 dBm peak over a -118 floor (${a.ref}, ${a.div})`);
+  const b = S.autoScale(Float32Array.from([-80, -79, -81, -40]));
+  ok(b.ref === -35 && b.div === 10, `and a small trace (${b.ref}, ${b.div})`);
+}
+
 // ---- calibration and span plans -----------------------------------------------------------------------------
 {
   const g = { kind: 'hackrf', pro: false, lna: 32, vga: 20, amp: true, tunerDb: NaN };
