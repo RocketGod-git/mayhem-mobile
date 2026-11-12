@@ -4378,7 +4378,7 @@ function renderSettings(view: HTMLElement): void {
     <div class="radiocard ${radio ? 'on' : ''}"><div><b>${radio ? 'RADIO CONNECTED' : 'NO RADIO'}</b><small>${esc(radioLine)}</small></div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
     <div class="set-jumps">${hsHtml(`<div class="tiles">${jumps.map(([id, l]) => `<button class="pill" data-jump="${id}">${l}</button>`).join('')}</div>`)}</div>
     ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
-    ${secHtml('radio', 'RADIO', srow('Radio settings', 'Gain, AGC, amp, bias tee, filters, sample rate and the rest of what the connected radio can do now live under RADIO at the top.', '<button id="set-radio" class="tog">OPEN</button>', 'gain lna vga amp agc bias tee ppm sample rate filter'))}
+    ${secHtml('radio', 'RADIO', srow('Radio settings', '', '<button id="set-radio" class="tog">OPEN</button>', 'gain lna vga amp agc bias tee ppm sample rate filter'))}
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
     <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div></section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
@@ -4452,12 +4452,37 @@ function bindSettings(view: HTMLElement): void {
     refreshSettings();
   });
   const sf = q('#set-fold'); if (sf) sf.onclick = () => { hunt.fold = !hunt.fold; sf.classList.toggle('on', hunt.fold); };
-  qa<HTMLButtonElement>('[data-jump]', view).forEach(b => b.onclick = () => q(`#sec-${b.dataset.jump}`, view)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  // Every group starts folded so the page reads as a short list of headings; the ones opened stay open across redraws.
+  const fold = (sec: HTMLElement) => sec.classList.toggle('fold', !setOpen.has(sec.id));
+  qa<HTMLElement>('.sset', view).forEach(sec => {
+    // an accordion: the heading stays, everything under it goes into a body that slides open and shut
+    const h = q<HTMLElement>('.sset-h', sec); if (!h) return;
+    const body = document.createElement('div'); body.className = 'sset-body';
+    const inner = document.createElement('div'); inner.className = 'sset-in';
+    while (h.nextSibling) inner.appendChild(h.nextSibling);
+    body.appendChild(inner); sec.appendChild(body);
+    sec.classList.add('noanim'); fold(sec); requestAnimationFrame(() => sec.classList.remove('noanim'));
+    h.setAttribute('role', 'button'); h.tabIndex = 0;
+    const flip = () => { if (setOpen.has(sec.id)) setOpen.delete(sec.id); else setOpen.add(sec.id); fold(sec); h.setAttribute('aria-expanded', String(setOpen.has(sec.id))); };
+    h.setAttribute('aria-expanded', String(setOpen.has(sec.id)));
+    h.onclick = flip;
+    h.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } };
+  });
+  qa<HTMLButtonElement>('[data-jump]', view).forEach(b => b.onclick = () => {
+    const sec = q<HTMLElement>(`#sec-${b.dataset.jump}`, view); if (!sec) return;
+    setOpen.add(sec.id); fold(sec);
+    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   const search = q<HTMLInputElement>('#set-search', view);
   if (search) search.oninput = () => {
     const t = search.value.trim().toLowerCase();
     qa<HTMLElement>('.srow', view).forEach(r => { r.hidden = !!t && !(r.dataset.keys ?? '').includes(t); });
-    qa<HTMLElement>('.sset', view).forEach(sec => { sec.hidden = !!t && !sec.textContent!.toLowerCase().includes(t); });
+    // while searching, every group with a hit is open; clearing the search puts the folds back as they were
+    qa<HTMLElement>('.sset', view).forEach(sec => {
+      const hit = !!t && (sec.textContent!.toLowerCase().includes(t) || qa<HTMLElement>('.srow', sec).some(r => (r.dataset.keys ?? '').includes(t)));
+      sec.hidden = !!t && !hit;
+      if (t) sec.classList.toggle('fold', !hit); else fold(sec);
+    });
   };
 }
 /** Endless-loop credits scroller. Content is rendered twice; a rAF loop translates the roll upward at a steady
@@ -5440,10 +5465,13 @@ const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
 };
 /** The app Settings was opened over: its rows lead the page, and it keeps running underneath. */
 let settingsOver: AppId | null = null;
+/** The Settings groups opened this visit (all start folded). */
+const setOpen = new Set<string>();
 const settingsOpen = () => !$('setmodal').hidden;
 /** Settings over the running app, which keeps receiving underneath; DONE, Esc or a click outside closes it. */
 function openSettings(): void {
   closeRadioPanel();
+  setOpen.clear();
   settingsOver = state.app;
   $('setmodal').hidden = false;
   $('set-over').textContent = state.app ? `· ${barLabel(state.app)}` : '';
