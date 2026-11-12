@@ -105,6 +105,7 @@ fun fmtHz(hz: Double, digits: Int = 6): String {
 fun fmtSec(s: Double): String {
     if (!s.isFinite()) return "—"
     val a = abs(s)
+    if (a == 0.0) return "0 s"
     if (a >= 1) return "${fixed(s, 3)} s"
     if (a >= 1e-3) return "${fixed(s * 1e3, 3)} ms"
     if (a >= 1e-6) return "${fixed(s * 1e6, 2)} µs"

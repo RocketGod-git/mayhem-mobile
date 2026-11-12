@@ -6,7 +6,7 @@ import kotlin.math.pow
 /**
  * Spectrum: automatic pulse measurements on a zero-span amplitude trace (dB), on the linear envelope as an
  * oscilloscope measures them. The top and base levels are the medians of the samples above and below the halfway
- * point between the trace's extremes; edges are where the envelope crosses 50 % of the way from base to top (with 5 %
+ * point between the trace's extremes; edges are where the envelope crosses 50 % of the way from base to top (with 10 %
  * hysteresis), interpolated between samples. Width = rise to fall, period = rise to rise, duty = width / period,
  * rise time = 10 % to 90 %, fall time = 90 % to 10 %. Each is the mean over every complete instance in the trace.
  */
@@ -21,13 +21,19 @@ data class PulseStats(
     val pulses: Int,
 )
 
+/** How far the top must sit above the base for the trace to count as pulsed. */
+const val PULSE_MIN_DB = 10.0
+
 private fun pulseMedian(a: List<Double>): Double {
     val s = a.sorted()
     return if (s.isNotEmpty()) (if (s.size and 1 != 0) s[s.size shr 1] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2) else Double.NaN
 }
 private fun pulseMean(a: List<Double>): Double = if (a.isNotEmpty()) a.sum() / a.size else Double.NaN
 
-/** Pulse statistics for an amplitude trace in dB sampled at `rate`; null when there is no on/off structure (under 6 dB). */
+/**
+ * Pulse statistics for an amplitude trace in dB sampled at `rate`; null when there is no on/off structure: top and base
+ * under PULSE_MIN_DB apart (a steady carrier's noise and fading dips are not pulses).
+ */
 fun pulseStats(ampDb: FloatArray, rate: Double): PulseStats? {
     val n = ampDb.size
     if (n < 4) return null
@@ -38,9 +44,9 @@ fun pulseStats(ampDb: FloatArray, rate: Double): PulseStats? {
     val ups = ArrayList<Double>(); val downs = ArrayList<Double>()
     for (i in 0 until n) (if (v[i] > mid) ups else downs).add(v[i])
     val top = pulseMedian(ups); val base = pulseMedian(downs)
-    if (!(top > 2 * base) || ups.isEmpty() || downs.isEmpty()) return null
+    if (ups.isEmpty() || downs.isEmpty() || !(20 * log10(top / base) >= PULSE_MIN_DB)) return null
     fun at(f: Double) = base + f * (top - base)
-    val l10 = at(0.1); val l50 = at(0.5); val l90 = at(0.9); val hy = 0.05 * (top - base)
+    val l10 = at(0.1); val l50 = at(0.5); val l90 = at(0.9); val hy = 0.1 * (top - base)
     /** Where the trace crosses `lvl` between samples i-1 and i, in samples. */
     fun cross(i: Int, lvl: Double): Double { val a = v[i - 1]; val b = v[i]; return if (b == a) i.toDouble() else i - 1 + (lvl - a) / (b - a) }
     val rises = ArrayList<Double>(); val falls = ArrayList<Double>(); val riseT = ArrayList<Double>(); val fallT = ArrayList<Double>()

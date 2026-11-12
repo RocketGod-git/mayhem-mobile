@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (117 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (119 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -88,7 +88,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 117, checks)
+        assertEquals("checks run", 119, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -488,6 +488,13 @@ class SpectrumTest {
         for (k in 1 until ph.size) { var d = ph[k].toDouble() - ph[k - 1]; if (d > 180) d -= 360; if (d < -180) d += 360; unwrapped += d }
         near(unwrapped / ((ph.size - 1) / prate) / 360, 12_000.0, 50.0, "phase turns at the offset frequency")
         ok(pulseStats(FloatArray(100) { -40f }, 1e5) == null, "a steady trace has no pulses")
+        run {
+            // a steady carrier in noise with a few fading dips: 6 dB between its noise peaks and its dips is not a pulse train
+            val rnd = Mulberry(21); val y = FloatArray(4000)
+            for (k in y.indices) y[k] = (-60 + 3 * gauss(rnd) - (if (k % 97 == 0) 25 else 0)).toFloat()
+            ok(pulseStats(y, 1e5) == null, "a noisy steady carrier with fading dips has no pulses")
+        }
+        ok(fmtSec(0.0) == "0 s", "zero time prints as 0 s")
         // long windows are reduced for the screen with the amplitude peak-held
         val big = ArrayList<ZsCapture>(); val zb = ZeroSpan(rate, zcfg.copy(bwHz = 300_000.0, sweepSec = 0.2, trigger = TrigMode.FREE)) { big.add(it) }
         ok(zb.window <= ZS_MAX_POINTS, "a window is capped")

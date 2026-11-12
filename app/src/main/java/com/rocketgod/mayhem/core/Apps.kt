@@ -34,6 +34,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
     TRAINS("Trains", "end-of-train telemetry · PTC train control", "Receive"),
     PROWL("Prowl", "hunts live voice across the bands", "Receive"),
+    SPECTRUM("Spectrum", "spectrum analyzer: markers, traces, channel power, zero span", "Analyze"),
     LOOKING_GLASS("Looking Glass", "wideband sweep waterfall", "Analyze"),
     SEARCH("Search", "find active frequencies", "Analyze"),
     ANALYZER("Analyzer", "capture bursts, read the bits, compare repeats", "Analyze"),
@@ -135,7 +136,12 @@ object Apps {
     fun init(ctx: Context) {
         if (recorder == null) recorder = IqRecorder(File(ctx.getExternalFilesDir(null), "captures"))
         Bookmarks.load(ctx)
+        com.rocketgod.mayhem.core.spectrum.Spectrum.load(ctx)
     }
+
+    /** A frequency another app (Spectrum) asked the next app to open on, used once (Analyzer and Devices take it). */
+    @Volatile var handoffHz: Long? = null
+    fun takeHandoff(): Long? { val h = handoffHz; handoffHz = null; return h }
 
     /** The app open before the current one; null is the launcher. */
     @Volatile var cameFrom: MayhemApp? = null; private set
@@ -235,6 +241,8 @@ object Apps {
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
             MayhemApp.ANALYZER -> com.rocketgod.mayhem.core.analyzer.Analyzer.open()
+            // the processor starts on the span and plan the settings call for (Spectrum.restart)
+            MayhemApp.SPECTRUM -> com.rocketgod.mayhem.core.spectrum.Spectrum.open()
             MayhemApp.CAPTURE -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, recorder)
             MayhemApp.TRANSMIT -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
             MayhemApp.TROLL -> SdrEngine.configure(SdrEngine.Mode.NONE, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null)
