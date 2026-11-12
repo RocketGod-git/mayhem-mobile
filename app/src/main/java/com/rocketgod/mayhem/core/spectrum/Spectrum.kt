@@ -22,6 +22,10 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
@@ -141,16 +145,14 @@ class SpSettings(var dial: Double) {
 class SpFrameInfo(val f0: Double, val binHz: Double, val rbw: Double, val sweep: Boolean, val step: Int, val steps: Int)
 /** A zero-span window as the screen keeps it, in display units. */
 class ZsView(val amp: FloatArray, val fm: FloatArray, val ph: FloatArray, val rate: Double, val trig: Int, val roll: Boolean, val sweepSec: Double, val off: Double)
-/** One readout row: a bold label, the text, an optional trace tag, lit when it is the active marker's. */
-class ReadRow(val label: String, val text: String, val tag: String = "", val on: Boolean = false, val dim: Boolean = false, val meas: Boolean = false)
 
 fun db1(v: Double): String = if (v.isFinite()) String.format(Locale.US, "%.1f", v) else "—"
 /** A JavaScript-style number: no trailing zeros. */
-private fun jsTrim(v: Double, digits: Int): String {
+internal fun jsTrim(v: Double, digits: Int): String {
     val s = String.format(Locale.US, "%.${digits}f", v)
     return if (s.contains('.')) s.trimEnd('0').trimEnd('.') else s
 }
-fun bwText(hz: Double): String = if (hz >= 1e6) "${jsTrim(hz / 1e6, 2)} MHz" else if (hz >= 1e3) "${jsTrim(hz / 1e3, 2)} kHz" else "${jsTrim(hz, 1)} Hz"
+fun bwText(hz: Double): String = if (hz >= 1e6) "${jsTrim(hz / 1e6, 3)} MHz" else if (hz >= 1e3) "${jsTrim(hz / 1e3, 2)} kHz" else "${jsTrim(hz, 1)} Hz"
 private fun stamp(): String = SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
 
 /**
@@ -165,7 +167,43 @@ class SpectrumRunner(val proc: SpectrumProcessor) : IqProcessor {
     override fun onIq(iq: ByteArray, len: Int, rate: Int) { drain(); proc.onIq(iq, len, rate) }
 }
 
+/** A readout tile: its id, label, the value and unit as shown big, and the badge in its corner (AUTO, MAN, RISE ↑...). */
+class SpTile(val id: String, val label: String, val value: String, val unit: String, val badge: String)
+/** A keypad entry in progress: which tile, its label, what kind of number, and the text typed so far. */
+class SpPad(val tile: String, val label: String, val kind: String, var text: String = "")
+/** One big number in the measurement card. */
+class SpBig(val label: String, val value: String, val unit: String, val hot: Boolean = false)
+/** The measurement card: title, trace tag, the main result (large), the others, and a line under them. */
+class SpMeasCard(val title: String, val tag: String, val xl: SpBig?, val bigs: List<SpBig>, val three: Boolean, val sub: String, val warn: String = "")
+/** One row of the marker table (or the cursor table in zero span). */
+class SpMkRow(val k: Int, val chip: String, val active: Boolean, val trace: Int, val x: String, val y: String, val noise: String, val extra: String = "")
+
+/** A frequency split for a big readout: the digits grouped in threes, and the unit. */
+fun bigHz(hz: Double): Pair<String, String> {
+    val a = abs(hz)
+    val (v, u) = when { a >= 1e9 -> hz / 1e9 to "GHz"; a >= 1e6 -> hz / 1e6 to "MHz"; a >= 1e3 -> hz / 1e3 to "kHz"; else -> hz to "Hz" }
+    var t = String.format(Locale.US, if (u == "Hz") "%.0f" else "%.6f", v)
+    if (t.contains('.')) t = t.trimEnd('0').trimEnd('.')
+    val dot = t.indexOf('.')
+    if (dot >= 0) { val i = t.substring(0, dot); val f = t.substring(dot + 1); t = "$i." + f.chunked(3).joinToString(" ") }
+    return t to u
+}
+/** 1-2-5 steps, for the span. */
+fun step125(v: Double, dir: Int): Double {
+    val e = floor(log10(v)).toInt(); val m = v / 10.0.pow(e)
+    val ms = doubleArrayOf(1.0, 2.0, 5.0, 10.0)
+    var i = ms.indexOfFirst { it >= m - 1e-9 }; if (i < 0) i = 3
+    if (dir < 0 && ms[i] > m + 1e-9) i--
+    i += dir
+    val k = if (i < 0) -1 else if (i > 2) 1 else 0
+    return ms[(i + 3) % 3] * 10.0.pow(e + k)
+}
+private fun sgn(v: Double) = if (v >= 0) "+" else "−"
+
 object Spectrum {
+    const val MIN_SPAN = 1000.0
+    const val MAX_HZ = 6e9
+    const val MIN_HZ = 1e6
     private var prefs: SharedPreferences? = null
     var s = SpSettings(0.0); private set
     val traces: List<Trace> = defaultTraces()
@@ -176,8 +214,15 @@ object Spectrum {
     var armed = true; private set
     var plan: SpanPlan? = null; private set
     var calNote = ""; private set
+    var calOk = false; private set
     /** The measurement's last readout, kept for the export. */
     var measText = ""; private set
+    /** The span on screen while a zoom or pan is being made (it is applied when the gesture settles). */
+    var view: Pair<Double, Double>? = null; private set
+    /** The keypad entry, while the keypad is open. */
+    var pad: SpPad? = null; private set
+    /** The plot's size in pixels at its last draw: the density display is kept at that resolution. */
+    @Volatile var plotW = 0; @Volatile var plotH = 0
     private var runner: SpectrumRunner? = null
     private val main = Handler(Looper.getMainLooper())
     private var loaded = false
@@ -201,6 +246,9 @@ object Spectrum {
 
     val start: Double get() = s.center - s.span / 2
     val stop: Double get() = s.center + s.span / 2
+    /** The span drawn: the settled one, or the one a gesture is making. */
+    fun vCenter(): Double = view?.first ?: s.center
+    fun vSpan(): Double = view?.second ?: s.span
     fun rbwHz(): Double = if (s.rbwAuto) autoRbw(s.span) else s.rbw
     fun vbwHz(): Double = if (s.vbwAuto) frame?.rbw ?: rbwHz() else s.vbw
 
@@ -252,12 +300,12 @@ object Spectrum {
     }
 
     /** Open the app: the settings from the last visit, and the processor started on them. */
-    fun open() { restart() }
+    fun open() { pad = null; restart() }
 
     /** Retune and restart the processor (span, RBW, mode or window changed). */
     fun restart() {
         val cfg = config()
-        frame = null; zcap = null; zstats = null; armed = true
+        frame = null; zcap = null; zstats = null; armed = true; view = null
         for (t in traces) t.clear()
         persistence?.clear()
         // a frame from a processor that has since been replaced belongs to the old settings, and is dropped
@@ -279,13 +327,21 @@ object Spectrum {
         save(); changed()
     }
     private fun rearmProc() { runner?.post { it.rearm() } }
+    /** Set the span (clamped to what a radio reaches) and restart. */
+    fun setSpan(center0: Double, span0: Double) {
+        val span = max(MIN_SPAN, min(MAX_HZ - MIN_HZ, span0))
+        val center = max(MIN_HZ + span / 2, min(MAX_HZ - span / 2, center0))
+        s.center = center; s.span = span
+        restart()
+    }
 
     // ---- the dBm scale ----------------------------------------------------------------------------------------
 
     /** dBFS to the display unit. */
     fun offset(): Double {
-        if (s.unit == SpUnit.DBFS) { calNote = "dBFS: relative to the converter's full scale"; return 0.0 }
+        if (s.unit == SpUnit.DBFS) { calNote = "dBFS: relative to the converter's full scale"; calOk = true; return 0.0 }
         val o = dbmOffset(gain(), s.cal.toDouble())
+        calOk = o.ok
         calNote = if (o.ok) "dBm ${o.note}${if (s.cal != 0) " · CAL ${if (s.cal > 0) "+" else ""}${s.cal} dB" else ""} · approximate" else "dBm uncalibrated: ${o.note}"
         return o.offset
     }
@@ -300,7 +356,6 @@ object Spectrum {
     // ---- what the processor sends ------------------------------------------------------------------------------
 
     private fun onEvent(ev: SpectrumEvent) {
-        // a frame from a processor that has been replaced is from the old settings
         if (Apps.playing() != MayhemApp.SPECTRUM) return
         when (ev) { is SpFrame -> onFrame(ev); is ZsCap -> onCapture(ev) }
     }
@@ -311,10 +366,10 @@ object Spectrum {
         fun shift(a: FloatArray?): FloatArray? { if (a == null) return null; for (i in a.indices) a[i] += off; return a }
         val live = shift(m.live)!!; val mx = shift(m.max); val mn = shift(m.min)
         frame = SpFrameInfo(m.f0, m.binHz, m.rbw, m.sweep, m.step, m.steps)
-        // a sweep row is redrawn while it fills: only its finished passes feed the holds and the average
+        // a sweep row is redrawn while it fills: only its finished passes feed the holds, the average and the density
         val whole = !m.sweep || m.step == m.steps
         for (t in traces) if (t.mode == TraceMode.LIVE || whole) t.update(live, mx, mn, m.f0, m.binHz)
-        if (s.persist && whole) { val p = persistence ?: Persistence(400, 160).also { persistence = it }; p.add(live, s.ref.toDouble(), s.div * 10.0) }
+        if (s.persist && whole && view == null) addDensity(live, m.f0, m.binHz)
         changed()
     }
 
@@ -328,10 +383,162 @@ object Spectrum {
         changed()
     }
 
+    /** The density display at the plot's own resolution: each frame reduced to columns, joined column to column. */
+    private fun addDensity(live: FloatArray, f0: Double, binHz: Double) {
+        if (plotW <= 0 || plotH <= 0) return
+        val cols = max(64, min(1600, plotW)); val rows = max(64, min(600, plotH))
+        val p = persistence?.takeIf { it.cols == cols && it.rows == rows } ?: Persistence(cols, rows, 0.9).also { persistence = it }
+        // the frame's bins placed on the screen's columns (it may not fill the span exactly)
+        val y = FloatArray(cols) { -1e9f }
+        val x0 = (f0 - binHz / 2 - start) / s.span * cols; val x1 = (f0 + (live.size - 0.5) * binHz - start) / s.span * cols
+        val a = max(0, ceil(x0).toInt()); val b = min(cols, floor(x1).toInt())
+        if (b - a < 2) return
+        System.arraycopy(toColumns(live, b - a, Detector.PEAK), 0, y, a, b - a)
+        p.addColumns(y, s.ref.toDouble(), s.div * 10.0)
+    }
+
+    // ---- the readout tiles ------------------------------------------------------------------------------------
+
+    /** The tiles for the mode. */
+    fun tiles(): List<SpTile> {
+        val u = unitLabel()
+        fun t(id: String, label: String, p: Pair<String, String>, badge: String = "") = SpTile(id, label, p.first, p.second, badge)
+        if (s.mode == SpMode.ZERO) {
+            val sw = fmtSec(zcap?.sweepSec ?: s.zsTime).split(" ")
+            return listOf(
+                t("zf", "FREQUENCY", bigHz(s.zsFreq)),
+                t("zbw", "FILTER", bigHz(s.zsBw)),
+                SpTile("zst", "SWEEP", sw[0], sw.getOrElse(1) { "" }, ""),
+                SpTile("lvl", "TRIGGER", if (s.trig == TrigMode.FREE) "FREE" else "${s.level}", if (s.trig == TrigMode.FREE) "RUN" else u,
+                    if (s.trig == TrigMode.FREE) "" else if (s.trig == TrigMode.RISE) "RISE ↑" else "FALL ↓"),
+                SpTile("ref", "REF LEVEL", "${s.ref}", u, "${s.div} dB/div"),
+            )
+        }
+        val v = view
+        val rbw = frame?.rbw ?: rbwHz()
+        val a = if (s.startStop) listOf(t("start", "START", bigHz(start)), t("stop", "STOP", bigHz(stop)))
+            // the CENTER and SPAN tiles follow a zoom or pan as it is made
+            else listOf(t("center", "CENTER", bigHz(v?.first ?: s.center)), t("span", "SPAN", bigHz(v?.second ?: s.span)))
+        return a + listOf(
+            t("rbw", "RBW", bigHz(rbw), if (s.rbwAuto) "AUTO" else "MAN"),
+            t("vbw", "VBW", if (s.vbwAuto) bigHz(rbw) else bigHz(s.vbw), if (s.vbwAuto) "AUTO" else "MAN"),
+            SpTile("ref", "REF LEVEL", "${s.ref}", u, "${s.div} dB/div"),
+        )
+    }
+
+    /** A tap on a tile's badge: AUTO/MAN toggles RBW or VBW auto, RISE/FALL flips the edge. */
+    fun badge(id: String) {
+        when (id) {
+            "rbw" -> toggle("rbwa")
+            "vbw" -> toggle("vbwa")
+            "lvl" -> { s.trig = if (s.trig == TrigMode.RISE) TrigMode.FALL else TrigMode.RISE; update() }
+        }
+    }
+
+    /** One click of a tile's knob. */
+    fun turn(id: String, dir: Int) {
+        when (id) {
+            "center" -> { setSpan(s.center + dir * s.span / 10, s.span); return }
+            "start" -> { setSpan(s.center + dir * s.span / 20, s.span - dir * s.span / 10); return }
+            "stop" -> { setSpan(s.center + dir * s.span / 20, s.span + dir * s.span / 10); return }
+            "span" -> { setSpan(s.center, step125(s.span, dir)); return }
+            "rbw" -> { s.rbw = stepBw(frame?.rbw ?: rbwHz(), dir); s.rbwAuto = false; restart(); return }
+            "vbw" -> { s.vbw = stepBw(if (s.vbwAuto) vbwHz() else s.vbw, dir); s.vbwAuto = false }
+            "ref" -> { s.ref += dir * (if (s.div >= 5) 5 else 1); persistence?.clear() }
+            "zf" -> { s.zsFreq += dir * s.zsBw / 4; restart(); return }
+            "zbw" -> { val b = zsBws(); if (b.isEmpty()) return; val i = max(0, min(b.size - 1, b.indexOf(s.zsBw) + dir)); s.zsBw = b[i]; restart(); return }
+            "zst" -> { stepper("zst", dir); return }
+            // in FREE RUN the knob arms a rising trigger at the level shown; after that it moves the level
+            "lvl" -> if (s.trig == TrigMode.FREE) s.trig = TrigMode.RISE else s.level += dir
+            else -> { stepper(id, dir); return }
+        }
+        update()
+    }
+
+    // ---- keypad -----------------------------------------------------------------------------------------------
+
+    fun openPad(tile: String) {
+        val t = tiles().firstOrNull { it.id == tile } ?: return
+        if (tile == "lvl" && s.trig == TrigMode.FREE) { turn("lvl", 1); return }
+        val kind = when (tile) { "ref", "lvl" -> "db"; "zst" -> "sec"; "rbw", "vbw", "span", "zbw" -> "bw"; else -> "hz" }
+        pad = SpPad(tile, t.label, kind); changed()
+    }
+    fun closePad() { pad = null; changed() }
+    /** The units the keypad offers for its entry, with their multipliers. */
+    fun padUnits(): List<Pair<String, Double>> = when (pad?.kind) {
+        "db" -> listOf(unitLabel() to 1.0)
+        "sec" -> listOf("s" to 1.0, "ms" to 1e-3, "µs" to 1e-6)
+        else -> listOf("GHz" to 1e9, "MHz" to 1e6, "kHz" to 1e3, "Hz" to 1.0)
+    }
+    fun padKey(k: String) {
+        val p = pad ?: return
+        when {
+            k == "bs" -> p.text = p.text.dropLast(1)
+            k == "C" -> p.text = ""
+            k == "±" -> p.text = if (p.text.startsWith("-")) p.text.drop(1) else "-" + p.text
+            k == "." -> if (!p.text.contains('.')) p.text += k
+            k.length == 1 && k[0].isDigit() -> p.text += k
+        }
+        changed()
+    }
+    /** Apply the keypad's number times a unit multiplier. */
+    fun enterPad(mult: Double) {
+        val p = pad ?: return
+        val v = (p.text.toDoubleOrNull() ?: Double.NaN) * mult
+        pad = null; changed()
+        if (p.text.isEmpty() || !v.isFinite()) return
+        when (p.tile) {
+            "center" -> { setSpan(v, s.span); return }
+            "span" -> { setSpan(s.center, v); return }
+            "start" -> { val st = stop; setSpan((v + st) / 2, st - v); return }
+            "stop" -> { val a = start; setSpan((a + v) / 2, v - a); return }
+            "rbw" -> { s.rbw = max(1.0, v); s.rbwAuto = false; restart(); return }
+            "vbw" -> { s.vbw = max(1.0, v); s.vbwAuto = false }
+            "ref" -> { s.ref = Math.round(v).toInt(); persistence?.clear() }
+            "lvl" -> s.level = Math.round(v).toInt()
+            "zf" -> { s.zsFreq = max(MIN_HZ, min(MAX_HZ, v)); restart(); return }
+            "zbw" -> { val b = zsBws(); if (b.isEmpty()) return; s.zsBw = b.minByOrNull { abs(ln(it / v)) } ?: b[0]; restart(); return }
+            "zst" -> { val most = ZS_MAX_POINTS / zsPlan(zsRate(), s.zsBw).outRate; s.zsTime = max(1e-5, min(most, v)); restart(); return }
+        }
+        update()
+    }
+    /** A key on a keyboard while the keypad is open; true when it was used. */
+    fun padHardKey(key: String): Boolean {
+        val p = pad ?: return false
+        when {
+            key == "esc" -> closePad()
+            key == "enter" -> enterPad(if (p.kind == "db" || p.kind == "sec") 1.0 else 1e6)
+            key == "bs" -> padKey("bs")
+            key == "-" -> padKey("±")
+            key == "." || (key.length == 1 && key[0].isDigit()) -> padKey(key)
+            key in listOf("g", "m", "k") && p.kind != "db" -> enterPad(if (p.kind == "sec") (if (key == "m") 1e-3 else 1.0) else when (key) { "g" -> 1e9; "m" -> 1e6; else -> 1e3 })
+        }
+        return true
+    }
+
+    /** The line under the tiles: how the span is taken, the window and detector, the gain; and the dBm note. */
+    fun status(): Pair<String, String> {
+        val f = frame
+        val parts = ArrayList<String>()
+        if (s.mode == SpMode.FREQ) {
+            val p = plan
+            parts.add(when (p) {
+                is SpanPlan.Sweep -> "SWEEP · ${if (f != null) "${f.steps} STEPS" else "…"}"
+                is SpanPlan.Fft -> "FFT · ${jsTrim(p.rate / 1e6, 3)} Msps${if (p.dcPatch) "" else " · OFF DC"}"
+                null -> ""
+            })
+            parts.add("${if (s.window == WindowKind.HANN) "HANN" else "FLAT TOP"} · ${s.det.name}")
+        } else {
+            parts.add("ZERO SPAN${if (s.single) (if (armed) " · SINGLE ARMED" else " · SINGLE DONE") else ""}${if (s.trig != TrigMode.FREE) " · PRE ${(s.pre * 100).roundToInt()} %" else ""}")
+        }
+        parts.add(gainText())
+        offset()
+        return parts.filter { it.isNotEmpty() }.joinToString(" · ") to calNote
+    }
+
     // ---- controls ---------------------------------------------------------------------------------------------
 
     fun setMode(m: SpMode) { s.mode = m; restart() }
-    fun setSpan(hz: Double) { s.span = hz; restart() }
     fun setUnit(u: SpUnit) { s.unit = u; for (t in traces) t.clear(); persistence?.clear(); update() }
     fun setWindow(w: WindowKind) { s.window = w; restart() }
     fun setDet(d: Detector) { s.det = d; save(); changed() }
@@ -343,35 +550,19 @@ object Spectrum {
     fun clearTrace(i: Int) { traces[i].clear(); changed() }
     fun setTraceMode(i: Int, m: TraceMode) { traces[i].setMode(m); s.traces[i].mode = traces[i].mode; save(); changed() }
 
-    /** A frequency typed in a field (center, span, start, stop, zero-span frequency). */
-    fun setField(id: String, text: String) {
-        val hz = parseHz(text)
-        if (hz != null && hz > 0) when (id) {
-            "center" -> s.center = hz
-            "span" -> s.span = max(1000.0, hz)
-            "start" -> { val st = stop; s.center = (hz + st) / 2; s.span = max(1000.0, st - hz) }
-            "stop" -> { val a = start; s.center = (a + hz) / 2; s.span = max(1000.0, hz - a) }
-            "zf" -> s.zsFreq = hz
-        }
-        restart()
-    }
-
     fun stepper(id: String, dir: Int) {
         fun <T> idx(list: List<T>, v: T) = max(0, list.indexOf(v))
         when (id) {
-            "rbw" -> { s.rbw = stepBw(frame?.rbw ?: rbwHz(), dir); s.rbwAuto = false; restart(); return }
-            "vbw" -> { s.vbw = stepBw(if (s.vbwAuto) vbwHz() else s.vbw, dir); s.vbwAuto = false }
-            "ref" -> s.ref += dir * (if (s.div >= 5) 5 else 1)
             "div" -> { s.div = DIVS[max(0, min(DIVS.size - 1, idx(DIVS, s.div) + dir))]; persistence?.clear() }
             "cal" -> s.cal = max(-40, min(40, s.cal + dir))
-            "chbw" -> s.chBw = stepBw(s.chBw, dir)
+            "chbw" -> s.chBw = min(stepBw(s.chBw, dir), max(1000.0, s.span))
             "spacing" -> s.spacing = stepBw(s.spacing, dir)
             "zst" -> {
                 val plan = zsPlan(zsRate(), s.zsBw); val most = ZS_MAX_POINTS / plan.outRate
-                s.zsTime = min(most, SWEEP_TIMES[max(0, min(SWEEP_TIMES.size - 1, idx(SWEEP_TIMES, s.zsTime) + dir))])
+                val i = SWEEP_TIMES.indexOfFirst { it >= s.zsTime * 0.999 }
+                s.zsTime = min(most, SWEEP_TIMES[max(0, min(SWEEP_TIMES.size - 1, (if (i < 0) SWEEP_TIMES.size - 1 else i) + dir))])
                 restart(); return
             }
-            "lvl" -> s.level += dir
             "pre" -> s.pre = max(0.0, min(0.9, Math.round((s.pre + dir * 0.1) * 10) / 10.0))
             else -> if (id.startsWith("avg")) {
                 val i = id.removePrefix("avg").toInt(); val t = traces[i]
@@ -387,7 +578,7 @@ object Spectrum {
         when (id) {
             "ss" -> s.startStop = !s.startStop
             "rbwa" -> { s.rbwAuto = !s.rbwAuto; restart(); return }
-            "vbwa" -> s.vbwAuto = !s.vbwAuto
+            "vbwa" -> { s.vbwAuto = !s.vbwAuto; update(); return }
             "mkon" -> { m.on = !m.on; if (m.on && m.hz == 0.0) markerTo(s.active, "peak") }
             "mkd" -> { m.delta = !m.delta; if (m.delta && !s.markers[0].on) { s.markers[0].on = true; s.markers[0].hz = m.hz } }
             "persist" -> { s.persist = !s.persist; persistence = null }
@@ -400,12 +591,18 @@ object Spectrum {
         save(); changed()
     }
 
-    /** PEAK, NEXT PEAK, ◀ NEXT, NEXT ▶, MKR → CENTER, ALL OFF, ARM. */
+    /** PEAK, NEXT PEAK, ◀ NEXT, NEXT ▶, MKR → CENTER, ALL OFF, AUTO LEVEL, ARM. */
     fun action(id: String) {
         when (id) {
             "peak", "next", "left", "right" -> markerTo(s.active, id)
-            "mkcf" -> { val m = s.markers[s.active]; if (m.on) { s.center = m.hz; restart() }; return }
+            "mkcf" -> { val m = s.markers[s.active]; if (m.on) setSpan(m.hz, s.span); return }
             "mkoff" -> for (m in s.markers) { m.on = false; m.delta = false }
+            // the trigger level from what is on screen: the noise between bursts plus 12 dB (arming RISE from FREE RUN)
+            "autolvl" -> {
+                val z = zcap ?: return; val l = autoLevel(z.amp); if (!l.isFinite()) return
+                s.level = l.toInt(); if (s.trig == TrigMode.FREE) s.trig = TrigMode.RISE
+                update(); return
+            }
             "arm" -> { armed = true; rearmProc() }
         }
         save(); changed()
@@ -440,49 +637,121 @@ object Spectrum {
         m.hz = t.f0 + (i + r.offset) * t.binHz; m.on = true
     }
 
-    /** A tap or drag on the plot at [fx] (0..1 across it); [down] starts a drag. */
-    private var drag = -1
-    fun pointer(fx: Double, down: Boolean) {
+    // ---- gestures on the plot (x in pixels across the plot area, [l] its left edge, [w] its width) ---------------
+
+    private enum class G { TAP, PAN, PINCH, MARKER, CURSOR }
+    private class Gesture(var kind: G, val x0: Float, val center0: Double, val span0: Double, val d0: Float, val which: Int)
+    private var gesture: Gesture? = null
+    private val commit = Runnable { val v = view; if (v != null && gesture == null) setSpan(v.first, v.second) }
+
+    fun hzAt(x: Float, l: Float, w: Float): Double = vCenter() - vSpan() / 2 + (x - l) / w * vSpan()
+    fun xOfHz(hz: Double, l: Float, w: Float): Float = (l + (hz - (vCenter() - vSpan() / 2)) / vSpan() * w).toFloat()
+
+    /** A finger (or the mouse) went down at [x]. */
+    fun down(x: Float, l: Float, w: Float) {
+        main.removeCallbacks(commit)
         if (s.mode == SpMode.ZERO) {
             if (!s.cursors) return
-            if (down) drag = if (abs(fx - s.curA) < abs(fx - s.curB)) 0 else 1
-            if (drag == 0) s.curA = max(0.0, min(1.0, fx)) else s.curB = max(0.0, min(1.0, fx))
-            changed(); return
+            val fx = (x - l) / w
+            gesture = Gesture(G.CURSOR, x, 0.0, 0.0, 0f, if (abs(fx - s.curA) < abs(fx - s.curB)) 0 else 1)
+            move(listOf(x), l, w); return
         }
-        val m = s.markers[s.active]
-        m.on = true; m.hz = start + max(0.0, min(1.0, fx)) * s.span
-        drag = 0
+        // on a marker: drag it; anywhere else: a tap drops the active marker, a drag pans
+        val near = s.markers.indexOfFirst { it.on && abs(xOfHz(it.hz, l, w) - x) < 12 * density }
+        if (near >= 0) { s.active = near; gesture = Gesture(G.MARKER, x, 0.0, 0.0, 0f, near); changed(); return }
+        gesture = Gesture(G.TAP, x, vCenter(), vSpan(), 0f, 0)
+    }
+    /** A second finger: the gesture becomes a pinch about the two. */
+    fun pinch(a: Float, b: Float) {
+        if (s.mode != SpMode.FREQ) return
+        gesture = Gesture(G.PINCH, (a + b) / 2, vCenter(), vSpan(), max(10f, abs(a - b)), 0)
+    }
+    /** The pointers moved to [xs]. */
+    fun move(xs: List<Float>, l: Float, w: Float) {
+        val gs = gesture ?: return
+        val x = xs.firstOrNull() ?: return
+        when (gs.kind) {
+            G.CURSOR -> { val fx = max(0.0, min(1.0, ((x - l) / w).toDouble())); if (gs.which == 0) s.curA = fx else s.curB = fx; changed() }
+            G.MARKER -> { val m = s.markers[gs.which]; m.hz = max(start, min(stop, hzAt(x, l, w))); changed() }
+            G.PINCH -> if (xs.size >= 2) {
+                val d = max(10f, abs(xs[0] - xs[1]))
+                val anchor = gs.center0 - gs.span0 / 2 + (gs.x0 - l) / w * gs.span0
+                val span = max(MIN_SPAN, gs.span0 * gs.d0 / d)
+                val mid = (xs[0] + xs[1]) / 2
+                preview(anchor - ((mid - l) / w - 0.5) * span, span)
+            }
+            G.TAP, G.PAN -> {
+                if (gs.kind == G.TAP && abs(x - gs.x0) > 6 * density) gs.kind = G.PAN
+                if (gs.kind == G.PAN) preview(gs.center0 - (x - gs.x0) / w * gs.span0, gs.span0)
+            }
+        }
+    }
+    /** Every pointer is up; [x] is where the last one left. */
+    fun up(x: Float, l: Float, w: Float) {
+        val gs = gesture ?: return
+        gesture = null
+        when (gs.kind) {
+            G.PINCH, G.PAN -> commitSoon(0)
+            G.TAP -> if (s.mode == SpMode.FREQ) {
+                val m = s.markers[s.active]
+                m.on = true; m.hz = hzAt(x, l, w)
+                // a tap snaps to the peak under the finger when there is one within a few pixels
+                val t = traceFor(m.trace); val y = t?.data
+                if (t != null && y != null) {
+                    val half = max(1, Math.round(8 * density / w * s.span / t.binHz).toInt())
+                    val c = binOf(m.hz, t.f0, t.binHz, y.size)
+                    var best = c
+                    for (i in max(0, c - half)..min(y.size - 1, c + half)) if (y[i] > y[best]) best = i
+                    m.hz = t.f0 + (best + refinePeak(y, best).offset) * t.binHz
+                }
+                save(); changed()
+            }
+            G.MARKER, G.CURSOR -> { save(); changed() }
+        }
+    }
+    /** A mouse wheel notch over the plot: zoom about the pointer, or (sideways) pan by a tenth of the span. */
+    fun wheel(x: Float, dy: Float, dx: Float, l: Float, w: Float) {
+        if (s.mode != SpMode.FREQ) return
+        val span = vSpan(); val center = vCenter()
+        if (abs(dx) > abs(dy)) preview(center + (if (dx > 0) 1 else -1) * span / 10, span)
+        else {
+            val k = if (dy > 0) 1.25 else 0.8
+            val anchor = hzAt(x, l, w); val fx = (x - l) / w
+            val ns = max(MIN_SPAN, min(MAX_HZ - MIN_HZ, span * k))
+            preview(anchor - (fx - 0.5) * ns, ns)
+        }
+        commitSoon(350)
+    }
+    /** +/− on a keyboard: one 1-2-5 step of span. */
+    fun zoomKey(dir: Int) { if (s.mode == SpMode.FREQ) setSpan(s.center, step125(s.span, dir)) }
+
+    /** Draw the span a gesture is making, with what is already measured shifted under it. */
+    private fun preview(center0: Double, span0: Double) {
+        val span = max(MIN_SPAN, min(MAX_HZ - MIN_HZ, span0))
+        val center = max(MIN_HZ + span / 2, min(MAX_HZ - span / 2, center0))
+        view = center to span
         changed()
     }
-    fun pointerUp() { drag = -1; save() }
+    /** Apply the gesture's span once it settles. */
+    private fun commitSoon(ms: Long) { main.removeCallbacks(commit); main.postDelayed(commit, ms) }
+    /** Pixels per dp on this screen, for the touch distances. */
+    @Volatile var density = 1f
 
-    /** A key on a keyboard: ←/→ next peak left/right, P peak, N next peak. */
+    /** A key on a keyboard: the keypad when it is open; else ←/→ next peak, P peak, N next peak, +/− zoom. */
     fun onKey(key: String): Boolean {
+        if (pad != null) return padHardKey(key)
         if (s.mode != SpMode.FREQ) return false
-        when (key) { "left", "right", "peak", "next" -> markerTo(s.active, key); else -> return false }
+        when (key) {
+            "left", "right", "peak", "next" -> markerTo(s.active, key)
+            "+" -> { zoomKey(-1); return true }
+            "-" -> { zoomKey(1); return true }
+            else -> return false
+        }
         save(); changed()
         return true
     }
 
-    // ---- what the screen shows --------------------------------------------------------------------------------
-
-    /** The header: the big frequency, and the line of settings under it. */
-    fun header(): Pair<String, String> {
-        val f = frame
-        if (s.mode == SpMode.ZERO) {
-            val z = zcap
-            val trig = if (s.trig == TrigMode.FREE) "FREE RUN" else "${if (s.trig == TrigMode.RISE) "RISING" else "FALLING"} ${s.level} ${unitLabel()} · PRE ${(s.pre * 100).roundToInt()} %"
-            return fmtHz(s.zsFreq) to "ZERO SPAN · FILTER ${bwText(s.zsBw)} · SWEEP ${fmtSec(z?.sweepSec ?: s.zsTime)} · $trig" +
-                (if (s.single) (if (armed) " · SINGLE ARMED" else " · SINGLE DONE") else "")
-        }
-        val p = plan
-        val how = when (p) {
-            is SpanPlan.Sweep -> "SWEEP ${if (f != null) "${f.steps} STEPS" else ""}"
-            is SpanPlan.Fft -> "${String.format(Locale.US, if (p.rate % 1e6 != 0.0) "%.2f" else "%.0f", p.rate / 1e6)} Msps"
-            null -> ""
-        }
-        return fmtHz(s.center) to "SPAN ${bwText(s.span)} · RBW ${bwText(f?.rbw ?: rbwHz())} · VBW ${if (s.vbwAuto) "AUTO" else bwText(s.vbw)} · REF ${s.ref} ${unitLabel()} · ${s.div} dB/div · $how"
-    }
+    // ---- what the side panel shows ----------------------------------------------------------------------------
 
     private fun markerLevel(k: Int): Double {
         val m = s.markers[k]; val t = traceFor(m.trace) ?: return Double.NaN
@@ -492,52 +761,101 @@ object Spectrum {
     /** The level of marker `k` on its trace, for the plot. */
     fun markerY(k: Int): Double = markerLevel(k)
 
-    /** The readout rows under the plot: markers and the measurement, or the pulse and the cursors. */
-    fun readout(): List<ReadRow> {
+    /** The active marker as the plot prints it, top right: head (MKRn / ΔMKRn), frequency, level; null when it is off. */
+    fun activeReadout(): Triple<String, String, String>? {
+        val am = s.markers[s.active]
+        if (!am.on) return null
+        val lv = markerLevel(s.active)
+        val d = am.delta && s.active > 0 && s.markers[0].on
+        val ref = if (d) markerLevel(0) else 0.0
+        val head = if (d) "ΔMKR${s.active + 1}" else "MKR${s.active + 1}"
+        val fx = if (d) "${sgn(am.hz - s.markers[0].hz)}${fmtHz(abs(am.hz - s.markers[0].hz), 6)}" else fmtHz(am.hz, 6)
+        val fy = if (d) "${sgn(lv - ref)}${db1(abs(lv - ref))} dB" else "${db1(lv)} ${unitLabel()}"
+        return Triple(head, fx, fy)
+    }
+
+    private fun splitBw(hz: Double): Pair<String, String> { val t = bwText(hz); val i = t.lastIndexOf(' '); return t.substring(0, i) to t.substring(i + 1) }
+
+    /** The measurement card (or the pulse card in zero span). */
+    fun measCard(): SpMeasCard {
         val u = unitLabel()
-        val rows = ArrayList<ReadRow>()
         if (s.mode == SpMode.ZERO) {
             val z = zcap; val st = zstats
-            if (st != null) rows.add(ReadRow("PULSE", "width ${fmtSec(st.width)} · period ${fmtSec(st.period)} · duty ${if (st.duty.isFinite()) String.format(Locale.US, "%.1f %%", st.duty * 100) else "—"} · rise ${fmtSec(st.rise)} · fall ${fmtSec(st.fall)} · top ${db1(st.top)} $u · base ${db1(st.base)} $u · ${st.pulses} pulse${if (st.pulses == 1) "" else "s"}"))
-            else if (z != null) rows.add(ReadRow("PULSE", "no on/off pattern in this window (it needs 10 dB between on and off)"))
-            if (s.cursors && z != null && z.amp.isNotEmpty()) {
-                val len = z.amp.size
-                fun at(c: Double) = max(0, min(len - 1, Math.round(c * (len - 1)).toInt()))
-                val a = at(s.curA); val b = at(s.curB); val dt = (b - a) / z.rate
-                fun t(i: Int) = (i - max(0, z.trig)) / z.rate
-                fun side(v: Float) = if (v < 0) "below" else "above"
-                rows.add(ReadRow("A", "${fmtSec(t(a))} · ${db1(z.amp[a].toDouble())} $u · ${bwText(abs(z.fm[a].toDouble()))} ${side(z.fm[a])} · ${String.format(Locale.US, "%.0f", z.ph[a])}°"))
-                rows.add(ReadRow("B", "${fmtSec(t(b))} · ${db1(z.amp[b].toDouble())} $u · ${bwText(abs(z.fm[b].toDouble()))} ${side(z.fm[b])} · ${String.format(Locale.US, "%.0f", z.ph[b])}°"))
-                rows.add(ReadRow("B−A", "Δt ${fmtSec(dt)}${if (dt != 0.0) " · 1/Δt ${bwText(abs(1 / dt))}" else ""} · Δ ${db1(z.amp[b].toDouble() - z.amp[a])} dB"))
-            }
-            return rows
+            if (st == null) return SpMeasCard("PULSE", "", null, emptyList(), false,
+                if (z != null) "No pulses in this window: it needs two distinct levels at least 10 dB apart." else "Waiting for samples.")
+            fun cell(l: String, v: String): SpBig { val i = v.lastIndexOf(' '); return if (i < 0) SpBig(l, v, "") else SpBig(l, v.substring(0, i), v.substring(i + 1)) }
+            val cells = listOf(cell("WIDTH", fmtSec(st.width)), cell("PERIOD", fmtSec(st.period)),
+                cell("DUTY", if (st.duty.isFinite()) String.format(Locale.US, "%.1f %%", st.duty * 100) else "—"), cell("RISE", fmtSec(st.rise)),
+                cell("FALL", fmtSec(st.fall)), SpBig("PULSES", "${st.pulses}", ""))
+            return SpMeasCard("PULSE", "", null, cells, false, "top ${db1(st.top)} $u · base ${db1(st.base)} $u · ${db1(st.top - st.base)} dB on/off")
         }
-        val m1 = s.markers[0]; val ref = markerLevel(0)
-        s.markers.forEachIndexed { k, m ->
-            if (!m.on) return@forEachIndexed
-            val lv = markerLevel(k)
-            val t = traceFor(m.trace); val y = t?.data; val f = frame
-            val nd = if (y != null && f != null) noiseAt(y, binOf(m.hz, t.f0, t.binHz, y.size), f.rbw) else Double.NaN
-            if (m.delta && k > 0 && m1.on) rows.add(ReadRow("Δ${k + 1}", "${if (m.hz - m1.hz >= 0) "+" else "−"}${fmtHz(abs(m.hz - m1.hz))} · ${if (lv - ref >= 0) "+" else ""}${db1(lv - ref)} dB", "T${m.trace + 1}", k == s.active))
-            else rows.add(ReadRow("M${k + 1}", "${fmtHz(m.hz)} · ${db1(lv)} $u · ${db1(nd)} $u/Hz", "T${m.trace + 1}", k == s.active))
-        }
-        val t = measTrace(); val f = frame
+        val t = measTrace(); val f = frame; val y = t?.data
         measText = ""
-        val y = t?.data
-        if (t != null && y != null && f != null && s.meas != Meas.OFF) {
-            val rbw = f.rbw
-            measText = when (s.meas) {
-                Meas.CHP -> { val p = channelPower(y, t.f0, t.binHz, rbw, s.center, s.chBw); "channel power ${db1(p)} $u in ${bwText(s.chBw)} · ${db1(p - 10 * log10(s.chBw))} $u/Hz" }
-                Meas.OBW -> { val o = occupiedBw(y, t.f0, t.binHz, rbw); "99 % occupied bandwidth ${bwText(o.bw)} (${fmtHz(o.lo, 4)} to ${fmtHz(o.hi, 4)}) · total ${db1(o.total)} $u" }
-                Meas.ACPR -> { val a = acpr(y, t.f0, t.binHz, rbw, s.center, s.chBw, s.spacing); "main ${db1(a.main)} $u · lower ${db1(a.lowerDbc)} dBc · upper ${db1(a.upperDbc)} dBc (${bwText(s.chBw)} channels ${bwText(s.spacing)} apart)" }
-                Meas.NOISE -> { val n = noiseFloor(y, rbw); "noise floor ${db1(n.floor)} $u per ${bwText(rbw)} · ${db1(n.density)} $u/Hz" }
-                Meas.OFF -> ""
+        val title = when (s.meas) { Meas.CHP -> "CHANNEL POWER"; Meas.OBW -> "OCCUPIED BANDWIDTH 99 %"; Meas.ACPR -> "ADJACENT CHANNEL POWER"; Meas.NOISE -> "NOISE FLOOR"; Meas.OFF -> "MEASURE" }
+        if (s.meas == Meas.OFF) return SpMeasCard(title, "", null, emptyList(), false, "Pick CH PWR, OBW, ACPR or NOISE below for a measurement here.")
+        if (t == null || y == null || f == null) return SpMeasCard(title, "", null, emptyList(), false, "Waiting for a trace.")
+        val rbw = f.rbw; val tag = "T${traces.indexOf(t) + 1}"
+        return when (s.meas) {
+            Meas.CHP -> {
+                val p = channelPower(y, t.f0, t.binHz, rbw, s.center, s.chBw); val d = p - 10 * log10(s.chBw)
+                measText = "channel power ${db1(p)} $u in ${bwText(s.chBw)} · ${db1(d)} $u/Hz"
+                val c = splitBw(s.chBw)
+                SpMeasCard(title, tag, SpBig("POWER", db1(p), u), listOf(SpBig("DENSITY", db1(d), "$u/Hz"), SpBig("CHANNEL", c.first, c.second)), false, "")
             }
-            val label = when (s.meas) { Meas.CHP -> "CH POWER"; Meas.OBW -> "OBW 99%"; Meas.ACPR -> "ACPR"; Meas.NOISE -> "NOISE"; Meas.OFF -> "" }
-            rows.add(ReadRow(label, measText, "T${traces.indexOf(t) + 1}", meas = true))
+            Meas.OBW -> {
+                val o = occupiedBw(y, t.f0, t.binHz, rbw)
+                measText = "99 % occupied bandwidth ${bwText(o.bw)} (${fmtHz(o.lo, 4)} to ${fmtHz(o.hi, 4)}) · total ${db1(o.total)} $u"
+                val b = splitBw(o.bw); val c = bigHz((o.lo + o.hi) / 2)
+                SpMeasCard(title, tag, SpBig("OCCUPIED", b.first, b.second), listOf(SpBig("TOTAL POWER", db1(o.total), u), SpBig("CENTER", c.first, c.second)), false,
+                    "${fmtHz(o.lo, 4)} to ${fmtHz(o.hi, 4)}")
+            }
+            Meas.ACPR -> {
+                val a = acpr(y, t.f0, t.binHz, rbw, s.center, s.chBw, s.spacing)
+                measText = "main ${db1(a.main)} $u · lower ${db1(a.lowerDbc)} dBc · upper ${db1(a.upperDbc)} dBc (${bwText(s.chBw)} channels ${bwText(s.spacing)} apart)"
+                SpMeasCard(title, tag, null, listOf(SpBig("LOWER", db1(a.lowerDbc), "dBc"), SpBig("MAIN", db1(a.main), u, hot = true), SpBig("UPPER", db1(a.upperDbc), "dBc")), true,
+                    "${bwText(s.chBw)} channels, ${bwText(s.spacing)} apart · lower ${db1(a.lower)} $u · upper ${db1(a.upper)} $u")
+            }
+            Meas.NOISE -> {
+                val n = noiseFloor(y, rbw)
+                measText = "noise floor ${db1(n.floor)} $u per ${bwText(rbw)} · ${db1(n.density)} $u/Hz"
+                val r = splitBw(rbw)
+                // a dBm floor under thermal noise is the scale being wrong, not a quiet band: say so
+                val warn = if (s.unit == SpUnit.DBM && n.density < THERMAL_DBM_HZ)
+                    "Below thermal noise (${jsTrim(THERMAL_DBM_HZ, 0)} dBm/Hz): the dBm scale reads ${db1(THERMAL_DBM_HZ - n.density)} dB or more low on this radio here. Raise CAL to correct it." else ""
+                SpMeasCard(title, tag, SpBig("DENSITY", db1(n.density), "$u/Hz"), listOf(SpBig("FLOOR", db1(n.floor), u), SpBig("PER RBW", r.first, r.second)), false, "", warn)
+            }
+            Meas.OFF -> SpMeasCard(title, "", null, emptyList(), false, "")
         }
-        if (rows.isEmpty()) rows.add(ReadRow("", "Tap the trace to put a marker there, or PEAK. $calNote.", dim = true))
-        return rows
+    }
+
+    /** The marker table's rows (empty when no marker is on). */
+    fun markerRows(): List<SpMkRow> {
+        val u = unitLabel(); val f = frame
+        val m1 = s.markers[0]; val ref = markerLevel(0)
+        return s.markers.withIndex().filter { it.value.on }.map { (k, m) ->
+            val lv = markerLevel(k); val tr = traceFor(m.trace); val y = tr?.data
+            val nd = if (y != null && f != null) noiseAt(y, binOf(m.hz, tr.f0, tr.binHz, y.size), f.rbw) else Double.NaN
+            val d = m.delta && k > 0 && m1.on
+            SpMkRow(k, "${if (d) "Δ" else ""}${k + 1}", k == s.active, m.trace,
+                if (d) "${sgn(m.hz - m1.hz)}${fmtHz(abs(m.hz - m1.hz), 6)}" else fmtHz(m.hz, 6),
+                if (d) "${sgn(lv - ref)}${db1(abs(lv - ref))} dB" else "${db1(lv)} $u",
+                if (d) "" else db1(nd))
+        }
+    }
+
+    /** The zero-span cursor table: A, B, then B−A (x = time, y = amplitude, noise = frequency, extra = phase). */
+    fun cursorRows(): List<SpMkRow> {
+        val z = zcap ?: return emptyList()
+        if (!s.cursors || z.amp.isEmpty()) return emptyList()
+        val u = unitLabel(); val len = z.amp.size
+        fun at(c: Double) = max(0, min(len - 1, Math.round(c * (len - 1)).toInt()))
+        val a = at(s.curA); val b = at(s.curB); val dt = (b - a) / z.rate
+        fun t(i: Int) = (i - max(0, z.trig)) / z.rate
+        fun row(k: String, i: Int) = SpMkRow(-1, k, false, 0, fmtSec(t(i)), "${db1(z.amp[i].toDouble())} $u", "${sgn(z.fm[i].toDouble())}${bwText(abs(z.fm[i].toDouble()))}",
+            "${String.format(Locale.US, "%.0f", z.ph[i])}°")
+        val dA = z.amp[b].toDouble() - z.amp[a]
+        return listOf(row("A", a), row("B", b),
+            SpMkRow(-2, "B−A", false, 0, fmtSec(dt), "${sgn(dA)}${db1(abs(dA))} dB", if (dt != 0.0) "1/Δt ${bwText(abs(1 / dt))}" else "", ""))
     }
 
     // ---- export -----------------------------------------------------------------------------------------------
@@ -562,7 +880,9 @@ object Spectrum {
         val f = frame
         lines.add("# center ${num(s.center)} Hz · span ${num(s.span)} Hz · RBW ${f?.let { String.format(Locale.US, "%.1f", it.rbw) } ?: ""} Hz · VBW ${if (s.vbwAuto) "auto" else num(s.vbw)} · ${s.window.name} window")
         lines.add("# $calNote")
+        measCard()
         if (measText.isNotEmpty()) lines.add("# $measText")
+        s.markers.forEachIndexed { k, m -> if (m.on) lines.add("# marker ${k + 1}: ${String.format(Locale.US, "%.1f", m.hz)} Hz ${db1(markerLevel(k))} $u") }
         val ts = traces.withIndex().filter { it.value.data != null && it.value.mode != TraceMode.OFF }
         lines.add((listOf("frequency_hz") + ts.map { "T${it.index + 1}_${it.value.mode.name}_$u" }).joinToString(","))
         val n = ts.maxOfOrNull { it.value.data!!.size } ?: 0

@@ -28,7 +28,14 @@ data class GainState(
 /** Input level (dBm) at full scale with 0 dB of gain: typical, not measured. */
 val FULL_SCALE_DBM: Map<RadioKind, Double> = mapOf(RadioKind.HACKRF to -10.0, RadioKind.RTLSDR to -5.0, RadioKind.NONE to 0.0)
 const val HACKRF_AMP_DB = 14
-const val HACKRF_PRO_DB = 28
+/**
+ * A HackRF Pro reads lower than a One at the same gains. 28 dB brings its ADC level in line (the per-board gain note in
+ * SdrEngine); on the bench (2026-11-12, amp on, 100-460 MHz, antenna connected) that still left its noise floor at
+ * -170 to -177 dBm/Hz, under thermal noise, so 8 dB more puts the floor near kTB plus a typical 9 dB noise figure.
+ */
+const val HACKRF_PRO_DB = 36
+/** Thermal noise at room temperature, dBm/Hz: no receiver's floor reads under it. */
+const val THERMAL_DBM_HZ = -174.0
 
 /** dBm = dBFS + offset, the note on how it was worked out, and whether it can be trusted at all. */
 data class DbmOffset(val offset: Double, val note: String, val ok: Boolean)

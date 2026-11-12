@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (119 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (124 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -88,7 +88,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 119, checks)
+        assertEquals("checks run", 124, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -340,7 +340,7 @@ class SpectrumTest {
     private fun cal() {
         val g = GainState(RadioKind.HACKRF, pro = false, lna = 32, vga = 20, amp = true, tunerDb = Double.NaN)
         near(dbmOffset(g).offset, -10.0 - 66, 1e-9, "HackRF dBm offset follows LNA + VGA + amp")
-        near(dbmOffset(g.copy(pro = true)).offset - dbmOffset(g).offset, 28.0, 1e-9, "a Pro reads 28 dB lower at the same settings")
+        near(dbmOffset(g.copy(pro = true)).offset - dbmOffset(g).offset, HACKRF_PRO_DB.toDouble(), 1e-9, "a Pro is offset by its own figure at the same settings")
         near(dbmOffset(g, 3.0).offset - dbmOffset(g).offset, 3.0, 1e-9, "the CAL trim adds")
         near(dbmOffset(GainState(RadioKind.RTLSDR, false, 0, 0, false, 29.7)).offset, -5 - 29.7, 1e-9, "RTL-SDR offset follows the tuner gain")
         ok(!dbmOffset(GainState(RadioKind.RTLSDR, false, 0, 0, false, Double.NaN)).ok, "the tuner AGC leaves the scale uncalibrated")
@@ -461,9 +461,13 @@ class SpectrumTest {
         val c2 = caps2.firstOrNull()
         ok(c2 != null && c2.amp[c2.trig - 3] > -30 && c2.amp[c2.trig + 2] < -30, "FALL triggers on the falling edge")
         // SINGLE takes one capture and waits to be armed again
-        val caps3 = ArrayList<ZsCapture>(); val z3 = ZeroSpan(rate, zcfg.copy(single = true)) { caps3.add(it) }
+        val caps3 = ArrayList<ZsCapture>(); val done3 = ArrayList<Boolean>()
+        var z3h: ZeroSpan? = null
+        val z3 = ZeroSpan(rate, zcfg.copy(single = true)) { caps3.add(it); done3.add(z3h!!.done) }
+        z3h = z3
         z3.pushFloat(s.i, s.q)
         ok(caps3.size == 1 && z3.done, "SINGLE takes one capture")
+        ok(done3.firstOrNull() == true, "and is already done when its capture goes out (the screen shows DONE, not ARMED)")
         z3.rearm(); z3.pushFloat(s.i, s.q)
         ok(caps3.size == 2, "and one more once re-armed")
         // FREE rolls: windows come at least 20 times a second of signal, without waiting for a trigger
@@ -494,7 +498,19 @@ class SpectrumTest {
             for (k in y.indices) y[k] = (-60 + 3 * gauss(rnd) - (if (k % 97 == 0) 25 else 0)).toFloat()
             ok(pulseStats(y, 1e5) == null, "a noisy steady carrier with fading dips has no pulses")
         }
+        run {
+            // the envelope of noise alone fades deeply and often, but it is not a pulse train
+            val rnd = Mulberry(22); val y = FloatArray(20000)
+            for (k in y.indices) { val a = 5 * gauss(rnd); val b = 5 * gauss(rnd); y[k] = (10 * log10((a * a + b * b) / (128 * 128) + 1e-20)).toFloat() }
+            ok(pulseStats(y, 1e6) == null && twoLevels(y) == null, "noise alone has no pulses")
+            // a weak pulse train only 15 dB over that same noise still reads
+            val rp = Mulberry(23); val yp = FloatArray(20000)
+            for (k in yp.indices) { val on = (k % 400) < 100; val a = 5 * gauss(rp) + (if (on) 28 else 0); val b = 5 * gauss(rp); yp[k] = (10 * log10((a * a + b * b) / (128 * 128) + 1e-20)).toFloat() }
+            val sp = pulseStats(yp, 1e6)
+            ok(sp != null && abs(sp.period - 400e-6) < 5e-6 && abs(sp.duty - 0.25) < 0.03, "a pulse train 15 dB over the noise reads (${sp?.let { f1(it.period * 1e6) }} µs, ${sp?.duty})")
+        }
         ok(fmtSec(0.0) == "0 s", "zero time prints as 0 s")
+        ok(autoLevel(fa(-90.0, -88.0, -89.0, -40.0, -91.0)) == -77.0, "AUTO LEVEL sits 12 dB over the median")
         // long windows are reduced for the screen with the amplitude peak-held
         val big = ArrayList<ZsCapture>(); val zb = ZeroSpan(rate, zcfg.copy(bwHz = 300_000.0, sweepSec = 0.2, trigger = TrigMode.FREE)) { big.add(it) }
         ok(zb.window <= ZS_MAX_POINTS, "a window is capped")
@@ -508,6 +524,9 @@ class SpectrumTest {
         p.add(fa(-10.0, -10.0, -50.0, -95.0), 0.0, 100.0)
         p.add(fa(-10.0, -10.0, -50.0, -95.0), 0.0, 100.0)
         ok(p.hits[1 * 4 + 0] == 1.5f && p.hits[5 * 4 + 2] == 1.5f && p.hits[9 * 4 + 3] == 1.5f, "persistence drops hits where the trace is, old ones fading")
+        val pc = Persistence(3, 10, 1.0)
+        pc.addColumns(fa(-15.0, -55.0, -55.0), 0.0, 100.0)
+        ok(pc.hits[1 * 3 + 0] == 1f && pc.hits[5 * 3 + 1] == 1f && abs(pc.hits[3 * 3 + 1] - 0.35f) < 1e-6 && abs(pc.hits[1 * 3 + 1] - 0.35f) < 1e-6 && pc.hits[5 * 3 + 2] == 1f, "addColumns joins a column to the last with a run")
         val lv = p.level(); ok(abs(lv[4] - 1) < 1e-6 && lv[0] == 0f, "brightness is scaled to the busiest cell")
     }
 

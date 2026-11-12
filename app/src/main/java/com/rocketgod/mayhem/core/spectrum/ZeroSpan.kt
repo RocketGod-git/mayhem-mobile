@@ -114,7 +114,7 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
     private var nextAllowed = 0L
     private var above = false
     private var lastRoll = 0L
-    /** True once a SINGLE capture has been taken (until rearm). */
+    /** True once a SINGLE capture has been taken (until rearm); already true when that capture is handed out. */
     var done = false
 
     init {
@@ -207,10 +207,12 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
             trigAt = now - 1
         }
         if (now - trigAt >= window - pre) {
-            emit(trigAt - pre, window, pre, false)
-            nextAllowed = trigAt + (window - pre) + gap
-            trigAt = -1L
+            // a SINGLE is done before its capture goes out, so the capture says so
             if (c.single) { done = true; armed = false }
+            val at = trigAt
+            nextAllowed = at + (window - pre) + gap
+            trigAt = -1L
+            emit(at - pre, window, pre, false)
         }
     }
 
