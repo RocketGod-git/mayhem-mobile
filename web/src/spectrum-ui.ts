@@ -18,7 +18,7 @@
  */
 
 import {
-  acpr, autoLevel, autoRbw, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
+  acpr, autoLevel, autoRbw, autoScale, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
   noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
   DETECTORS, THERMAL_DBM_HZ, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
   type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
@@ -206,6 +206,8 @@ export class SpectrumUi {
   /** Retune and restart the processor (span, RBW, mode or window changed). */
   restart(): void {
     const cfg = this.config();
+    // a marker the new span leaves behind goes off rather than reading the trace's edge
+    for (const m of this.s.markers) if (m.hz < this.start || m.hz > this.stop) { m.on = false; m.delta = false; m.hz = 0; }
     this.frame = null; this.zcap = null; this.zstats = null; this.armed = true; this.view = null;
     for (const t of this.traces) t.clear();
     this.persist?.clear();
@@ -323,6 +325,7 @@ export class SpectrumUi {
       const t = b.dataset.t!, d = b.dataset;
       if (d.k === 'dn' || d.k === 'up') this.turn(t, d.k === 'up' ? 1 : -1);
       else if (d.k === 'auto') this.toggle(t === 'rbw' ? 'rbwa' : 'vbwa');
+      else if (d.k === 'pad' && t === 'ref' && (e.target as HTMLElement).tagName === 'B') this.autoScaleNow();
       else if (d.k === 'edge') { this.s.trig = this.s.trig === 'RISE' ? 'FALL' : 'RISE'; this.controls(); this.update(); }
       else this.openPad(t);
     };
@@ -359,7 +362,15 @@ export class SpectrumUi {
     return [...a,
       ['rbw', 'RBW', ...bigHz(rbw), s.rbwAuto ? 'AUTO' : 'MAN'],
       ['vbw', 'VBW', ...(s.vbwAuto ? bigHz(rbw) : bigHz(s.vbw)), s.vbwAuto ? 'AUTO' : 'MAN'],
-      ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div`]];
+      ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div · AUTO`]];
+  }
+  /** Set REF and dB/div to frame the measured trace. */
+  private autoScaleNow(): void {
+    const t = this.traceFor(this.s.markers[this.s.active].trace) ?? this.traces.find(x => x.data);
+    if (!t?.data) return;
+    const a = autoScale(t.data, DIVS);
+    this.s.ref = a.ref; this.s.div = a.div; this.persist?.clear();
+    this.controls(); this.update();
   }
 
   private tiles(): void {
@@ -497,7 +508,7 @@ export class SpectrumUi {
       <div class="caption">MARKERS</div>
       <div class="ctlrow sp-row">${seg(s.markers.map((m, i) => [String(i), `M${i + 1}${m.on ? (m.delta ? ' Δ' : ' ◆') : ''}`] as [string, string]), String(s.active), 'mk')}${tog('mkon', 'ON', s.markers[s.active].on)}${s.active ? tog('mkd', 'DELTA', s.markers[s.active].delta) : ''}</div>
       <div class="ctlrow sp-row">${seg([0, 1, 2, 3].map(i => [String(i), `READS T${i + 1}`] as [string, string]), String(s.markers[s.active].trace), 'mkt')}</div>
-      <div class="ctlrow sp-row sp-pk">${act('peak', 'PEAK', 'hot')}${act('next', 'NEXT PEAK')}${act('left', '◀ NEXT')}${act('right', 'NEXT ▶')}${act('mkcf', 'MKR → CENTER')}${act('mkoff', 'ALL OFF')}</div>
+      <div class="ctlrow sp-row sp-pk">${act('peak', 'PEAK', 'hot')}${act('next', 'NEXT PEAK')}${act('left', '◀ NEXT')}${act('right', 'NEXT ▶')}${act('mkcf', 'MKR → CENTER')}${act('mkoff', 'ALL OFF')}${act('autoscale', 'AUTO SCALE')}</div>
       <div class="caption">MEASURE</div>
       <div class="ctlrow sp-row">${seg(MEAS, s.meas, 'meas')}${tog('persist', 'PERSISTENCE', s.persist)}</div>
       ${s.meas === 'CHP' || s.meas === 'ACPR' ? `<div class="ctlrow sp-row">${step('chbw', 'CHANNEL', bwText(s.chBw))}${s.meas === 'ACPR' ? step('spacing', 'SPACING', bwText(s.spacing)) : ''}</div>` : ''}`;
@@ -568,7 +579,8 @@ export class SpectrumUi {
       case 'ss': s.startStop = !s.startStop; this.tiles(); break;
       case 'rbwa': s.rbwAuto = !s.rbwAuto; this.controls(); this.restart(); return;
       case 'vbwa': s.vbwAuto = !s.vbwAuto; this.controls(); this.update(); return;
-      case 'mkon': m.on = !m.on; if (m.on && !m.hz) this.markerTo(s.active, 'peak'); break;
+      // a marker switched on with nowhere in the span to be starts on the highest peak
+      case 'mkon': m.on = !m.on; if (m.on && !(m.hz >= this.start && m.hz <= this.stop)) { m.on = false; this.markerTo(s.active, 'peak'); } break;
       case 'mkd': m.delta = !m.delta; if (m.delta && !s.markers[0].on) { s.markers[0].on = true; s.markers[0].hz = m.hz; } break;
       case 'persist': s.persist = !s.persist; this.persist = null; break;
       case 'single': s.single = !s.single; this.controls(); this.update(); if (!s.single) this.host.post({ type: 'spectrum', cmd: 'rearm' }); return;
@@ -586,6 +598,7 @@ export class SpectrumUi {
       case 'peak': case 'next': case 'left': case 'right': this.markerTo(s.active, id); break;
       case 'mkcf': { const m = s.markers[s.active]; if (m.on) this.setSpan(m.hz, s.span); return; }
       case 'mkoff': for (const m of s.markers) { m.on = false; m.delta = false; } break;
+      case 'autoscale': this.autoScaleNow(); return;
       // the trigger level from what is on screen: the noise between bursts plus 12 dB (arming RISE from FREE RUN)
       case 'autolvl': { const z = this.zcap; if (!z) return; const l = autoLevel(z.amp); if (!Number.isFinite(l)) return; s.level = l; if (s.trig === 'FREE') s.trig = 'RISE'; this.controls(); this.update(); return; }
       case 'arm': this.armed = true; this.host.post({ type: 'spectrum', cmd: 'rearm' }); this.tiles(); break;
@@ -617,7 +630,9 @@ export class SpectrumUi {
     const m = this.s.markers[k], t = this.traceFor(m.trace);
     if (!t?.data) return;
     const n = t.data.length, cur = binOf(m.hz, t.f0, t.binHz, n);
-    const i = !m.on || how === 'peak' ? peakSearch(t.data) : how === 'next' ? nextPeak(t.data, cur) : how === 'left' ? nextPeakLeft(t.data, cur) : nextPeakRight(t.data, cur);
+    // a marker off, or left outside the trace, starts from a peak search whatever was asked
+    const inside = m.hz >= t.f0 - t.binHz && m.hz <= t.f0 + n * t.binHz;
+    const i = !m.on || !inside || how === 'peak' ? peakSearch(t.data) : how === 'next' ? nextPeak(t.data, cur) : how === 'left' ? nextPeakLeft(t.data, cur) : nextPeakRight(t.data, cur);
     const r = refinePeak(t.data, i);
     m.hz = t.f0 + (i + r.offset) * t.binHz; m.on = true;
   }
@@ -1068,6 +1083,7 @@ export class SpectrumUi {
   private markerLevel(k: number): number {
     const m = this.s.markers[k], t = this.traceFor(m.trace);
     if (!t?.data) return NaN;
+    if (m.hz < t.f0 - t.binHz || m.hz > t.f0 + t.data.length * t.binHz) return NaN;
     const i = binOf(m.hz, t.f0, t.binHz, t.data.length);
     return t.data[i];
   }
