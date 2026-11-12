@@ -142,7 +142,8 @@ private class PendingBytes(val name: String, val bytes: ByteArray)
 fun SpectrumScreen(accent: Color) {
     val d = rememberDims()
     val ctx = LocalContext.current
-    @Suppress("UNUSED_VARIABLE") val ver by Spectrum.ver.collectAsState()
+    // read, not just collected: a State nobody reads subscribes nobody, and the screen would never redraw
+    Spectrum.ver.collectAsState().value
     val lna by SdrEngine.radioLna.collectAsState()
     val vga by SdrEngine.radioVga.collectAsState()
     val amp by SdrEngine.radioAmp.collectAsState()
@@ -189,6 +190,8 @@ fun SpectrumScreen(accent: Color) {
 
 @Composable
 private fun SpTiles(accent: Color) {
+    // read so this part redraws with every frame (a State nobody reads subscribes nobody)
+    @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val d = rememberDims()
     val tiles = Spectrum.tiles()
     if (d.wide) {
@@ -254,6 +257,8 @@ private fun spLerp(a: Color, b: Color, f: Float) = androidx.compose.ui.graphics.
 
 @Composable
 private fun SpStatus() {
+    // read so this part redraws with every frame (a State nobody reads subscribes nobody)
+    @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val d = rememberDims()
     val (left, note) = Spectrum.status()
     Text(buildAnnotatedString {
@@ -267,6 +272,8 @@ private fun SpStatus() {
 
 @Composable
 private fun SpKeypad(accent: Color) {
+    // read so this part redraws with every frame (a State nobody reads subscribes nobody)
+    @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val d = rememberDims()
     val p = Spectrum.pad ?: return
     val focus = remember { FocusRequester() }
@@ -334,7 +341,8 @@ private fun SpPlotBox(modifier: Modifier) {
 
 @Composable
 private fun SpPlot() {
-    @Suppress("UNUSED_VARIABLE") val ver by Spectrum.ver.collectAsState()
+    // read so this part redraws with every frame (a State nobody reads subscribes nobody)
+    @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val k = LocalDensity.current.density
     val focus = remember { FocusRequester() }
     var size by remember { mutableStateOf(android.util.Size(1, 1)) }
@@ -380,6 +388,8 @@ private fun SpPlot() {
                 }
             }
         }) {
+        // the frame counter, read here so every new frame redraws the plot
+        if (ver < 0) return@Canvas
         if (size.width != this.size.width.toInt() || size.height != this.size.height.toInt()) size = android.util.Size(this.size.width.toInt(), this.size.height.toInt())
         val gg = geom(this.size.width, this.size.height, k)
         Spectrum.plotW = gg.w.roundToInt(); Spectrum.plotH = gg.h.roundToInt()
@@ -645,6 +655,8 @@ private fun pngBytes(): ByteArray {
 
 @Composable
 private fun SpSide(accent: Color) {
+    // read so this part redraws with every frame (a State nobody reads subscribes nobody)
+    @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val d = rememberDims()
     val card = Spectrum.measCard()
     val shape = RoundedCornerShape(d.dp(12f))
@@ -762,6 +774,7 @@ private fun SpStep(label: String, value: String, accent: Color, modifier: Modifi
 
 @Composable
 private fun ColumnScope.SpControls(accent: Color, exportCsv: () -> Unit, exportPng: () -> Unit) {
+    @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val d = rememberDims()
     val s = Spectrum.s
     fun sgnI(v: Int) = if (v > 0) "+$v" else "$v"
