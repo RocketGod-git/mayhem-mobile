@@ -133,6 +133,8 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
     private val runPos = ArrayList<Long>(); private val runK = ArrayList<Int>()
     private val re = FloatArray(n); private val im = FloatArray(n)
     var onFrame: ((LoraFrame) -> Unit)? = null
+    /** A LoRa preamble found and its timing solved: a real LoRa transmission, decodable or not. */
+    var onAligned: (() -> Unit)? = null
     /** Debug: each stage of each frame attempt. */
     var trace: ((String) -> Unit)? = null
 
@@ -227,8 +229,10 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
         var bestQ = 0f; var k2 = -1
         for (m in 1..6) { val k = peak(last + m * n, up); if (lastQ > bestQ) { bestQ = lastQ; k2 = k } }
         runPos.clear(); runK.clear()
+        Stats.preambles.incrementAndGet()
         trace?.invoke("preamble $p0 k1 $k1 k2 $k2 q2 $bestQ")
         if (bestQ < THRESH) return
+        Stats.downChirps.incrementAndGet()
         var bestSol = Double.MAX_VALUE; var c = 0.0; var d = 0.0
         for (half in doubleArrayOf(0.0, n / 2.0)) {
             var cc = ((k1 + k2) / 2.0 + half).rem(n.toDouble()); if (cc > n / 2.0) cc -= n
@@ -246,6 +250,8 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
         }
         trace?.invoke("align c $c d $d best $bestScore@$bestP")
         if (bestScore < 3) return
+        Stats.aligned.incrementAndGet()
+        onAligned?.invoke()
         val p = bestP
         // what is left once the whole bins are taken out: the frequency error's fraction and the timing's, which the
         // data symbols (up-chirps, like the preamble) carry exactly as the preamble does
@@ -263,6 +269,7 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
         }
         trace?.invoke("sfd m $m")
         if (m >= 30) return
+        Stats.sfd.incrementAndGet()
         val sync = listOf(2, 1).map { j -> peak(p + (m - j) * n, down, cf) }
         // the dechirped peak over the noise bins is 1 + N x the signal-to-noise ratio (power, per sample)
         peak(p + 2 * n, down, cf)
@@ -278,6 +285,7 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
         // (a strong or clipped signal can leave the estimate a quarter or half a bin out)
         var fallback: LoraFrame? = null
         var consumed = start
+        var hdr = false
         for (dc in doubleArrayOf(0.0, -0.5, 0.5, -0.25, 0.25)) {
             val c = pd.c + dc
             fun sym(i: Int): Int = ((peak(start + i.toLong() * n, down, c) - 1) % n + n) % n
@@ -286,6 +294,7 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
             val hs = IntArray(8) { ((sym(it) + 2) / 4) % (n / 4) }
             if (dc == 0.0) trace?.invoke("header syms ${hs.toList()}")
             val h = LoraCodec.header(hs, sf) ?: continue
+            hdr = true
             val total = LoraCodec.symbolCount(sf, ldro, h)
             if (start + total.toLong() * n > end) {
                 if (dc == 0.0) trace?.invoke("waiting for ${start + total.toLong() * n - end} of $total symbols, base $base buf ${bufLen / 2}")
@@ -296,6 +305,7 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
             consumed = max(consumed, start + total.toLong() * n)
             val f = LoraFrame(sf, bw, h.cr, data, ok, c * bw / n, pd.snr, pd.sync)
             if (ok != false) {
+                Stats.headers.incrementAndGet(); Stats.good.incrementAndGet()
                 trace?.invoke("frame at correction $dc")
                 pending = null; grid = max(grid, start + total.toLong() * n)
                 onFrame?.invoke(f)
@@ -305,8 +315,23 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
         }
         pending = null
         grid = max(grid, consumed)
+        if (hdr) Stats.headers.incrementAndGet()
+        if (fallback != null) Stats.crcFailed.incrementAndGet()
         fallback?.let { onFrame?.invoke(it) }
         return true
+    }
+
+    /**
+     * How far the receivers get, summed over all of them (diagnostics): preamble runs ended, down-chirps found after
+     * them, timing aligned, start-of-frame found, a header that checks, a CRC that holds, and frames whose CRC failed.
+     */
+    object Stats {
+        val preambles = java.util.concurrent.atomic.AtomicLong(); val downChirps = java.util.concurrent.atomic.AtomicLong()
+        val aligned = java.util.concurrent.atomic.AtomicLong(); val sfd = java.util.concurrent.atomic.AtomicLong()
+        val headers = java.util.concurrent.atomic.AtomicLong(); val good = java.util.concurrent.atomic.AtomicLong()
+        val crcFailed = java.util.concurrent.atomic.AtomicLong()
+        fun line() = "preambles %d · down-chirps %d · aligned %d · start-of-frame %d · header ok %d · CRC ok %d · CRC failed %d".format(
+            preambles.get(), downChirps.get(), aligned.get(), sfd.get(), headers.get(), good.get(), crcFailed.get())
     }
 
     companion object {

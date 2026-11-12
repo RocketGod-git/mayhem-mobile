@@ -78,7 +78,7 @@ class LoraHub(val log: PacketLog) {
 
     init {
         scanner.onHeard = { h -> heard(h) }
-        scanner.onBurst = { _, _, _ -> _bursts.value = _bursts.value + 1 }
+        scanner.onLora = { _, _ -> _bursts.value = _bursts.value + 1 }
     }
 
     fun clear() = synchronized(lock) {

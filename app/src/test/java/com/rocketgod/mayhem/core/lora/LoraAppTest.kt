@@ -183,6 +183,10 @@ class LoraAppTest {
         val got = ArrayList<LoraEvent>()
         val out = java.io.File("$path.android.txt").printWriter()
         hub.onHeard = { _, e -> got.add(e); out.println("EVENT %.1fs %s".format(e.ms / 1000.0, e.line)) }
+        val hubHeard = hub.scanner.onHeard
+        hub.scanner.onHeard = { h -> hubHeard?.invoke(h); out.println("FRAME %.4f MHz SF%d/%d crc %s len %d inv %s head %s".format(h.hz / 1e6, h.frame.sf, h.frame.bw, h.frame.crcOk, h.frame.payload.size, h.inverted, h.frame.payload.take(6).joinToString("") { "%02X".format(it) })) }
+        val hubBurst = hub.scanner.onBurst
+        hub.scanner.onBurst = { hz, bw, name -> hubBurst?.invoke(hz, bw, name); out.println("BURST %.4f MHz bw %d %s".format(hz / 1e6, bw, name ?: "-")) }
         hub.scanner.reset(rate)
         val limit = (secs * rate * 2).toLong()
         var done = 0L
@@ -194,6 +198,7 @@ class LoraAppTest {
                 hub.scanner.onIq(buf, n, rate); done += n
             }
         }
+        out.println("STAGES " + LoraReceiver.Stats.line())
         out.println("REPLAY %.1f s of air in %.1f s · %d events · bursts %d · nodes %d".format(done / 2.0 / rate, (System.nanoTime() - t0) / 1e9, got.size, hub.bursts.value, hub.nodes.value.size))
         out.close()
     }

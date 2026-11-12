@@ -30,6 +30,12 @@ class LoraScanner : IqProcessor {
     var onHeard: ((LoraHeard) -> Unit)? = null
     /** Each burst that got a channel of its own: (Hz, bandwidth, plan name or null). */
     var onBurst: ((Long, Int, String?) -> Unit)? = null
+    /**
+     * Each transmission a receiver confirmed as LoRa (a preamble with its timing solved): (Hz, bandwidth). A channel
+     * opened for a burst ([onBurst]) is often not LoRa at all (the band's meters hop through it all the time), so this
+     * is what "LoRa bursts heard" counts.
+     */
+    var onLora: ((Long, Int) -> Unit)? = null
     /** Off for replays and tests, which run at their own pace (and decode inline). */
     var shedding = true
     var busy = 0.0; private set
@@ -511,6 +517,8 @@ class LoraScanner : IqProcessor {
         val born = from
         @Volatile var until = 0L
         var tapped = false
+        /** A receiver of this channel has found a LoRa preamble. */
+        var confirmed = false
         val bad = ArrayList<Triple<LoraFrame, Boolean, Long>>()
         val goodAt = ArrayList<Long>()
         private val dec = ChannelDecimator(max(1, rate / (2 * bw)))
@@ -560,6 +568,8 @@ class LoraScanner : IqProcessor {
             for (sf in sfs) for (inv in if (inverted) listOf(false, true) else listOf(false)) for (ph in 0 until phases) {
                 val rcv = LoraReceiver(sf, bw)
                 rcv.onFrame = { f -> heard(f, this, inv) }
+                // once a channel: its timing phases all see the same transmission
+                rcv.onAligned = { if (!confirmed) { confirmed = true; onLora?.invoke(hz, bw) } }
                 rx.add(Triple(rcv, inv, ph))
             }
         }
