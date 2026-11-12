@@ -258,7 +258,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
     }
 
     private fun doClear() {
-        established.clear(); netMap.clear(); devMap.clear(); linkSet = LinkedHashSet(); lastLog.clear(); kinds.clear(); count = 0
+        established.clear(); slipCache.clear(); syncFrames = 0; netMap.clear(); devMap.clear(); linkSet = LinkedHashSet(); lastLog.clear(); kinds.clear(); count = 0
         _links.value = emptyList(); _devices.value = emptyList(); _nets.value = emptyList(); _bursts.value = 0
     }
 
@@ -566,6 +566,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             else if (slipOf(f.sync) != null) { slips++; return }
         }
         onFrame?.invoke(f)
+        if (f.sync != GRIDSTREAM) syncFrames++
         val net = netMap[f.sync] ?: MeshNet(f.sync)
         net.frames++
         f.bytes.firstOrNull()?.let { t -> net.types = net.types + (t to (net.types[t] ?: 0) + 1) }
@@ -595,23 +596,58 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
     }
 
     /**
-     * The established network [sync] is a slipped read of, if any: within edit distance 2 (a slip is an insertion and
-     * a deletion; a bit error is a substitution) of some 24-bit window of what that network sends, its preamble's
-     * tail, its sync, and the two payload bytes that most often follow. A random word comes this close about 0.2%
-     * of the time, so a real second network is not swallowed.
+     * The dominant network [sync] is a slipped read of, if any. Only a network carrying at least 1% of all frames is
+     * a candidate: the ghosts come from the busy one, and each extra candidate is another chance to swallow a real
+     * small network (checked against all networks with 5+ frames, 10 of 60 injected random networks vanished; against
+     * the dominant ones only, none). [sync] is that network's slip when, for one of its 16 commonest two-byte heads,
+     * it is within 2 bit errors of a 24-bit window of its preamble's tail, sync and head (shifted -8 to +16), or
+     * exactly a one-bit slip of sync and head, or within edit distance 2 of that whole stretch. Replayed over 1.59 M
+     * real frames: 97 listed networks without this, 49 with it.
      */
     private fun slipOf(sync: Int): Int? {
         val p = IntArray(24) { (sync shr (23 - it)) and 1 }
-        for (e in established) {
-            if (e == sync) continue
-            val head = heads[e]?.maxByOrNull { it.value }?.key
-            val ctx = ArrayList<Int>(64)
-            for (i in 15 downTo 0) ctx.add((0x5555 shr i) and 1)
-            for (i in 23 downTo 0) ctx.add((e shr i) and 1)
-            if (head != null) for (i in 15 downTo 0) ctx.add((head shr i) and 1)
-            if (editIn(p, ctx) <= 2) return e
+        for (net in netMap.values) {
+            val e = net.sync
+            if (e == GRIDSTREAM || e == sync || net.frames < 5 || net.frames < 0.01 * syncFrames) continue
+            val hs = heads[e]?.entries?.sortedByDescending { it.value }?.take(16)?.map { it.key } ?: emptyList()
+            val w = slipWords(e, net.frames, hs)
+            for (x in w) if (Integer.bitCount(x xor sync) <= 2) return e
+            for (h in hs) {
+                val ctx = ArrayList<Int>(56)
+                for (i in 15 downTo 0) ctx.add((0x5555 shr i) and 1)
+                for (i in 23 downTo 0) ctx.add((e shr i) and 1)
+                for (i in 15 downTo 0) ctx.add((h shr i) and 1)
+                if (editIn(p, ctx) <= 2) return e
+            }
         }
         return null
+    }
+
+    /** Frames of every network but Gridstream, for the 1% share [slipOf] asks of a candidate. */
+    private var syncFrames = 0L
+    /** Per network: the slip words of its preamble, sync and heads, and the frame count they were worked out at. */
+    private val slipCache = HashMap<Int, Pair<Int, IntArray>>()
+
+    private fun slipWords(e: Int, frames: Int, hs: List<Int>): IntArray {
+        slipCache[e]?.let { (at, w) -> if (frames < 2 * at) return w }
+        val out = HashSet<Int>()
+        fun word(b: IntArray, from: Int): Int { var v = 0; for (i in 0 until 24) v = (v shl 1) or b[from + i]; return v }
+        for (h in hs) {
+            val s = IntArray(56)
+            for (i in 0 until 16) s[i] = (0x5555 shr (15 - i)) and 1
+            for (i in 0 until 24) s[16 + i] = (e shr (23 - i)) and 1
+            for (i in 0 until 16) s[40 + i] = (h shr (15 - i)) and 1
+            for (sh in -8..16) out.add(word(s, 16 + sh))
+            val sb = s.copyOfRange(16, 56)
+            for (k in 0 until 24) {
+                // a bit lost at k, or one gained there (either value)
+                out.add(word(sb.copyOfRange(0, k) + sb.copyOfRange(k + 1, sb.size), 0))
+                for (x in 0..1) out.add(word(sb.copyOfRange(0, k) + intArrayOf(x) + sb.copyOfRange(k, sb.size), 0))
+            }
+        }
+        val w = out.toIntArray()
+        slipCache[e] = maxOf(1, frames) to w
+        return w
     }
 
     /**

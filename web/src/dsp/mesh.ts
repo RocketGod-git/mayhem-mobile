@@ -242,7 +242,7 @@ export class MeshDecoder implements IqProcessor {
   }
 
   clear(): void {
-    this.established = []; this.heads.clear(); this.slips = 0; this.netMap.clear(); this.devMap.clear(); this.linkSet.clear(); this.lastLog.clear(); this.kinds.clear();
+    this.established = []; this.slipCache.clear(); this.syncFrames = 0; this.heads.clear(); this.slips = 0; this.netMap.clear(); this.devMap.clear(); this.linkSet.clear(); this.lastLog.clear(); this.kinds.clear();
     this.count = 0; this.nets = []; this.devices = []; this.links = []; this.bursts = 0; this.dcwReports = 0;
     this.post();
   }
@@ -531,22 +531,58 @@ export class MeshDecoder implements IqProcessor {
   // ---- results ----
   static syncName(s: number): string { return s === GRIDSTREAM ? 'Gridstream' : s.toString(16).toUpperCase().padStart(6, '0'); }
   /**
-   * The established network sync is a slipped read of, if any: within edit distance 2 (a slip is an insertion and a
-   * deletion; a bit error is a substitution) of some 24-bit window of what that network sends, its preamble's tail,
-   * its sync, and the two payload bytes that most often follow. A random word comes this close about 0.2% of the
-   * time, so a real second network is not swallowed.
+   * The dominant network sync is a slipped read of, if any. Only a network carrying at least 1% of all frames is a
+   * candidate: the ghosts come from the busy one, and each extra candidate is another chance to swallow a real small
+   * network (checked against all networks with 5+ frames, 10 of 60 injected random networks vanished; against the
+   * dominant ones only, none). sync is that network's slip when, for one of its 16 commonest two-byte heads, it is
+   * within 2 bit errors of a 24-bit window of its preamble's tail, sync and head (shifted -8 to +16), or exactly a
+   * one-bit slip of sync and head, or within edit distance 2 of that whole stretch. Replayed over 1.59 M real frames:
+   * 97 listed networks without this, 49 with it.
    */
   private slipOf(sync: number): number | null {
     const p = Array.from({ length: 24 }, (_, i) => (sync >> (23 - i)) & 1);
-    for (const e of this.established) {
-      if (e === sync) continue;
-      const ctx = [...Array.from({ length: 16 }, (_, i) => (0x5555 >> (15 - i)) & 1), ...Array.from({ length: 24 }, (_, i) => (e >> (23 - i)) & 1)];
-      let head = -1, best = 0;
-      for (const [k, n] of this.heads.get(e) ?? []) if (n > best) { best = n; head = k; }
-      if (head >= 0) for (let i = 15; i >= 0; i--) ctx.push((head >> i) & 1);
-      if (MeshDecoder.editIn(p, ctx) <= 2) return e;
+    for (const net of this.netMap.values()) {
+      const e = net.sync;
+      if (e === GRIDSTREAM || e === sync || net.frames < 5 || net.frames < 0.01 * this.syncFrames) continue;
+      const hs = [...(this.heads.get(e) ?? new Map<number, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 16).map((x) => x[0]);
+      for (const x of this.slipWords(e, net.frames, hs)) if (pc(x ^ sync) <= 2) return e;
+      for (const h of hs) {
+        const ctx: number[] = [];
+        for (let i = 15; i >= 0; i--) ctx.push((0x5555 >> i) & 1);
+        for (let i = 23; i >= 0; i--) ctx.push((e >> i) & 1);
+        for (let i = 15; i >= 0; i--) ctx.push((h >> i) & 1);
+        if (MeshDecoder.editIn(p, ctx) <= 2) return e;
+      }
     }
     return null;
+  }
+
+  /** Frames of every network but Gridstream, for the 1% share slipOf asks of a candidate. */
+  private syncFrames = 0;
+  /** Per network: the slip words of its preamble, sync and heads, and the frame count they were worked out at. */
+  private slipCache = new Map<number, [number, number[]]>();
+
+  private slipWords(e: number, frames: number, hs: number[]): number[] {
+    const c = this.slipCache.get(e);
+    if (c && frames < 2 * c[0]) return c[1];
+    const word = (b: number[]): number => { let v = 0; for (let i = 0; i < 24; i++) v = ((v << 1) | b[i]) >>> 0; return v; };
+    const out = new Set<number>();
+    for (const h of hs) {
+      const s: number[] = [];
+      for (let i = 15; i >= 0; i--) s.push((0x5555 >> i) & 1);
+      for (let i = 23; i >= 0; i--) s.push((e >> i) & 1);
+      for (let i = 15; i >= 0; i--) s.push((h >> i) & 1);
+      for (let sh = -8; sh <= 16; sh++) out.add(word(s.slice(16 + sh)));
+      const sb = s.slice(16);
+      for (let k = 0; k < 24; k++) {
+        // a bit lost at k, or one gained there (either value)
+        out.add(word([...sb.slice(0, k), ...sb.slice(k + 1)]));
+        for (const x of [0, 1]) out.add(word([...sb.slice(0, k), x, ...sb.slice(k)]));
+      }
+    }
+    const w = [...out];
+    this.slipCache.set(e, [Math.max(1, frames), w]);
+    return w;
   }
 
   /** The least edit distance between p and any stretch of t (Sellers' approximate substring match). */
@@ -578,6 +614,7 @@ export class MeshDecoder implements IqProcessor {
       else if (this.slipOf(f.sync) !== null) { this.slips++; return; }
     }
     this.onFrame?.(f);
+    if (f.sync !== GRIDSTREAM) this.syncFrames++;
     const net = this.netMap.get(f.sync) ?? { sync: f.sync, frames: 0, types: {}, channels: [], loHz: Number.MAX_SAFE_INTEGER, hiHz: 0, lastHex: '', lastMs: 0, bestSnr: 0, meters: [] };
     net.frames++;
     if (f.bytes.length) net.types[f.bytes[0]] = (net.types[f.bytes[0]] ?? 0) + 1;
