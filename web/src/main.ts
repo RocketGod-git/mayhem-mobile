@@ -3134,7 +3134,7 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
     fields.push([key.replace(/_/g, ' ').toUpperCase(), r433Value(key, v), R433_MEANING[key] ?? '']);
   }
   if (d.hz) fields.push(['FREQUENCY', `${r433Mhz(d.hz)} (${d.offsetHz >= 0 ? '+' : ''}${(d.offsetHz / 1e3).toFixed(0)} kHz from the dial)`]);
-  fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'frequency shift' : 'on-off keyed') : 'read from both on-off and frequency shift']);
+  fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'FSK (frequency shift)' : 'OOK (on-off)') : 'OOK or FSK, both are tried']);
   fields.push(['DECODER', d.family === 'key' ? 'ProtoPirate car keys' : d.family === 'sensor' ? `rtl_433 protocol ${d.num} · ${d.what}` : 'Mayhem sub-GHz']);
   fields.push(['HEARD', `${d.count} time${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
   if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);

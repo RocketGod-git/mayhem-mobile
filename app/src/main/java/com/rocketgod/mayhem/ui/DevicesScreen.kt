@@ -134,6 +134,8 @@ fun DevicesScreen(accent: Color) {
         }
         if (showProtocols) ProtocolList(Devices.protocols, Modifier.fillMaxWidth().weight(1f))
         else DeviceCards(heard, filter, sel, now, Modifier.fillMaxWidth().weight(1f)) { sel = it }
+        // the gain is the first thing to reach for when nothing is heard, so it sits here, not only in Settings
+        GainRow(accent)
     }
 }
 
@@ -249,7 +251,7 @@ private fun detailFields(h: HeardDevice): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>()
     for ((k, v) in h.data) { if (k == "model") continue; out.add(k.replace('_', ' ').uppercase() to Devices.value(k, v)) }
     if (h.hz > 0) out.add("FREQUENCY" to "${Devices.mhz(h.hz)} (${if (h.offsetHz >= 0) "+" else "-"}${"%.0f".format(abs(h.offsetHz) / 1e3)} kHz from the dial)")
-    out.add("MODULATION" to if (h.family == "sensor") (if (h.fsk) "frequency shift" else "on-off keyed") else "read from both on-off and frequency shift")
+    out.add("MODULATION" to if (h.family == "sensor") (if (h.fsk) "FSK (frequency shift)" else "OOK (on-off)") else "OOK or FSK, both are tried")
     out.add("DECODER" to when (h.family) { "key" -> "ProtoPirate car keys"; "sensor" -> "rtl_433 protocol ${h.num} · ${h.what}"; else -> "Mayhem sub-GHz" })
     out.add("HEARD" to "${h.count} time${if (h.count == 1) "" else "s"} · first ${Devices.clock(h.firstSeen)} · last ${Devices.clock(h.lastSeen)}")
     if (h.num in Devices.doubtful) out.add("NOTE" to "this protocol has no checksum, so nothing in the frame proves the reading")
