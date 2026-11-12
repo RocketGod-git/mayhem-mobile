@@ -17,6 +17,7 @@ import { GEOSCAN_SATS } from './dsp/geoscan.js';
 import type { HeardDevice, R433Data, R433Protocol, R433Report } from './dsp/r433/index.js';
 import { CREDITS } from './credits.js';
 import { AnalyzerUi } from './analyzer-ui.js';
+import { SpectrumUi } from './spectrum-ui.js';
 import type { Burst } from './dsp/analyzer/capture.js';
 import { Tx, type SigMode } from './tx.js';
 import * as Apps from './tx-apps.js';
@@ -42,7 +43,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'trains' | 'subghz' | 'devices' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'trains' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -61,6 +62,7 @@ const APPS: AppDef[] = [
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'end-of-train telemetry · PTC train control', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice across the bands', cat: 'Receive' },
+  { id: 'spectrum', title: 'Spectrum', blurb: 'spectrum analyzer: markers, traces, channel power, zero span', cat: 'Analyze' },
   { id: 'analyzer', title: 'Analyzer', blurb: 'capture bursts, read the bits, compare repeats', cat: 'Analyze' },
   { id: 'lookingglass', title: 'Looking Glass', blurb: 'wideband sweep waterfall', cat: 'Analyze' },
   { id: 'search', title: 'Search', blurb: 'find active frequencies', cat: 'Analyze' },
@@ -446,6 +448,7 @@ function setGains(lna: number, vga: number, amp: boolean): void {
   for (const a of qa('#amp')) { a.textContent = state.amp ? 'AMP +14' : 'AMP OFF'; a.classList.toggle('on', state.amp); }
   refreshAgcChip();
   refreshGainUi();
+  if (state.app === 'spectrum') spectrumUi.gainChanged();
 }
 /**
  * Show the gain controls the connected radio actually has.
@@ -586,7 +589,7 @@ function configure(mode: Mode, freq: number, rate: number, lna: number, vga: num
  *  sweep's target tells the worker the reads still in flight are the last stale ones - it can stop discarding
  *  on a generous fixed timer and count those down instead. */
 function ackTune(s: string): void {
-  if (!radio || (state.app !== 'lookingglass' && state.app !== 'search')) return;
+  if (!radio || (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum')) return;
   const m = /(\d+\.\d+) MHz/.exec(s); if (!m) return;
   if (Math.abs(Number(m[1]) * 1e6 - radio.targetFreqHz) < 600) worker?.postMessage({ type: 'tuned' });
 }
@@ -819,13 +822,15 @@ function open(app: AppId | null): void {
       // up, and the hop moves it along on its own, so without this a session that wandered to 915 would come
       // back there — when what is wanted on opening is the band that carries most of the protocol set.
       state.r433.band = 0;
-      configure('NONE', R433_BANDS[0][1], 2e6, 32, 40, true, 'r433');
+      configure('NONE', takeHandoff() ?? R433_BANDS[0][1], 2e6, 32, 40, true, 'r433');
       // The worker is normally created on connect; ask for it here so the protocol list is available
       // whether or not a radio is plugged in.
       ensureWorker().postMessage({ type: 'r433', cmd: 'list' });
       worker?.postMessage({ type: 'r433', cmd: 'span', hz: state.r433.span }); break;
     // the Devices front end with every burst kept: the same bands, gains and rate as Devices
-    case 'analyzer': configure('NONE', R433_BANDS[0][1], 2e6, 32, 40, true, 'analyzer'); break;
+    case 'analyzer': configure('NONE', takeHandoff() ?? R433_BANDS[0][1], 2e6, 32, 40, true, 'analyzer'); break;
+    // the processor starts once the screen is up and has worked out its span (SpectrumUi.restart → spectrumStart)
+    case 'spectrum': render(app); return;
     case 'lookingglass': render(app); startSweep(88e6, 108e6); return;
     case 'search': render(app); startSweep(400e6, 470e6); return;
     case 'capture': configure('NONE', dial, RX_RATE, 24, 24, false, 'capture'); worker?.postMessage({ type: 'capture', cmd: 'list' }); break;
@@ -1672,6 +1677,7 @@ function render(app: AppId | null): void {
     case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'analyzer': renderAnalyzer(view); break;
+    case 'spectrum': renderSpectrum(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
     case 'capture': renderCapture(view); break;
     case 'transmit': renderTx(view); break;
@@ -3049,6 +3055,36 @@ function r433Summary(d: R433Data): string {
     }
   }
   return parts.join(' · ');
+}
+
+/** A frequency another app (Spectrum) asked the next app to open on, used once. */
+let handoffHz: number | null = null;
+function takeHandoff(): number | null { const h = handoffHz; handoffHz = null; return h; }
+/** The rates this radio does well: an RTL-SDR drops samples above 2.4 Msps. */
+function goodRates(): number[] {
+  const all = RATE_CHOICES.filter(r => !radio || canSample(radio.limits, r));
+  return radio?.kind === 'rtlsdr' ? all.filter(r => r <= 2_400_000) : all;
+}
+/** Spectrum: its screen lives in spectrum-ui.ts; this is the radio around it. */
+const spectrumUi = new SpectrumUi({
+  post: (msg, transfer) => ensureWorker().postMessage(msg, transfer ?? []),
+  showing: () => state.app === 'spectrum',
+  log,
+  gain: () => {
+    const rtl = rtlRadio();
+    return { kind: radio ? radio.kind as 'hackrf' | 'rtlsdr' : 'none', pro: isPro(), lna: state.lna, vga: state.vga, amp: state.amp, tunerDb: rtl ? (rtl.tunerAgc ? NaN : rtlGainDb()) : NaN };
+  },
+  rates: goodRates,
+  connected: () => state.connected,
+  start: (tuneHz, rate, cfg) => configure('NONE', tuneHz, rate, 32, 40, true, 'spectrum', { cfg }),
+  openApp: (app, hz) => { handoffHz = hz; open(app); },
+  openRadio: () => openRadioPanel(),
+  dial: () => state.dial || state.radioFreq,
+});
+function renderSpectrum(view: HTMLElement): void {
+  view.innerHTML = spectrumUi.html();
+  scope = null;
+  spectrumUi.mount(view);
 }
 
 /** The Analyzer: its screen lives in analyzer-ui.ts; this is the shell around it, as every receiver has. */
@@ -5036,7 +5072,7 @@ function ensureWorker(): Worker {
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
-      case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
+      case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
         const id = state.app ?? 'x', list = (logs[id] ??= []);
@@ -5082,6 +5118,8 @@ function ensureWorker(): Worker {
         refreshR433();
         break;
       }
+      case 'spframe': spectrumUi.onFrame(m); break;
+      case 'zscap': spectrumUi.onCapture(m); break;
       case 'anburst': analyzerUi.onBurst(m.burst as Burst, !!m.file); break;
       case 'anstats': analyzerUi.onStats(m as unknown as Parameters<typeof analyzerUi.onStats>[0]); break;
       case 'animport': analyzerUi.onImport(m as unknown as Parameters<typeof analyzerUi.onImport>[0]); break;
@@ -5412,6 +5450,7 @@ function scrollHints(): void {
 function bindDesktop(): void {
   window.addEventListener('keydown', (e) => {
     if (state.app === 'analyzer' && analyzerUi.onKey(e)) { e.preventDefault(); return; }
+    if (state.app === 'spectrum' && spectrumUi.onKey(e)) { e.preventDefault(); return; }
     // Any field you type into keeps its keys: a textarea or select passing a 'c' through would toggle CONNECT and
     // drop the radio mid-session.
     const t = e.target as HTMLElement | null;
@@ -5556,7 +5595,7 @@ function initShell(): void {
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TIRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
-  devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
+  devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };
 /** The app Settings was opened over: its rows lead the page, and it keeps running underneath. */

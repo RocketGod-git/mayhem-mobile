@@ -1,0 +1,719 @@
+/**
+ * The Spectrum screen: a bench spectrum analyzer and its zero-span (waveform) mode.
+ *
+ * FREQ: center and span (or start and stop), RBW, VBW, reference level and scale, four traces (live, max hold, min
+ * hold, average, view), four markers with delta and peak search, channel power, occupied bandwidth, ACPR and the noise
+ * floor, and a persistence display. Spans wider than the radio sweep, with the Looking Glass's stepping.
+ * ZERO SPAN: one frequency through a chosen filter, its amplitude, instantaneous frequency and phase over time, with a
+ * level trigger, pre-trigger, single shot, two cursors and pulse measurements.
+ *
+ * The DSP runs in the worker (`dsp/spectrum/processor.ts`); the traces, markers and measurements are done here on
+ * what it sends (`dsp/spectrum/*`). main.ts supplies the radio around it through `Host`.
+ * Twin of the Android ui/SpectrumScreen.kt and the iPad/Mac App/ui/SpectrumScreen.swift.
+ */
+
+import {
+  acpr, autoRbw, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
+  noiseAt, noiseFloor, occupiedBw, parseHz, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
+  DETECTORS, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
+  type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
+} from './dsp/spectrum/index.js';
+
+/** What the screen needs from the app around it. */
+export interface Host {
+  post(msg: Record<string, unknown>, transfer?: Transferable[]): void;
+  showing(): boolean;
+  log(line: string): void;
+  /** The radio's gain now, for the dBm scale. */
+  gain(): GainState;
+  /** The sample rates this radio does well. */
+  rates(): number[];
+  /** Whether a radio is connected. */
+  connected(): boolean;
+  /** Tune the radio and start the spectrum processor at this rate with this configuration. */
+  start(tuneHz: number, rate: number, cfg: SpecConfig): void;
+  /** Open another app on a frequency. */
+  openApp(app: 'analyzer' | 'devices', hz: number): void;
+  /** Open the RADIO panel (the gain lives there). */
+  openRadio(): void;
+  /** The frequency in the app's own dial, for the first visit. */
+  dial(): number;
+}
+
+type Mode = 'FREQ' | 'ZERO';
+type Meas = 'OFF' | 'CHP' | 'OBW' | 'ACPR' | 'NOISE';
+const MEAS: [Meas, string][] = [['OFF', 'OFF'], ['CHP', 'CH PWR'], ['OBW', 'OBW'], ['ACPR', 'ACPR'], ['NOISE', 'NOISE']];
+/** Trace colors (a bench analyzer's yellow, cyan, magenta, green). */
+export const TRACE_COLOR = ['#ffd400', '#3fd0c9', '#ff5dd8', '#3fd07a'];
+const MARKER_COLOR = '#ffffff';
+const SPAN_PRESETS: [string, number][] = [['100k', 1e5], ['1M', 1e6], ['2M', 2e6], ['10M', 1e7], ['20M', 2e7], ['100M', 1e8], ['1G', 1e9]];
+const DIVS = [1, 2, 5, 10, 20];
+const SWEEP_TIMES = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1, 0.2, 0.5, 1, 2, 5, 10];
+const KEY = 'mayhem.spectrum';
+
+interface Settings {
+  mode: Mode;
+  center: number; span: number;
+  startStop: boolean;
+  rbwAuto: boolean; rbw: number;
+  vbwAuto: boolean; vbw: number;
+  window: WindowKind;
+  ref: number; div: number;
+  unit: 'dBm' | 'dBFS';
+  det: Detector;
+  cal: number;
+  traces: { mode: TraceMode; avgN: number }[];
+  markers: Marker[];
+  active: number;
+  meas: Meas; chBw: number; spacing: number;
+  persist: boolean;
+  // zero span
+  zsFreq: number; zsBw: number; zsTime: number; trig: TrigMode; single: boolean; level: number; pre: number;
+  showAmp: boolean; showFm: boolean; showPh: boolean; cursors: boolean; curA: number; curB: number;
+}
+
+function defaults(dial: number): Settings {
+  return {
+    mode: 'FREQ', center: dial || 433.92e6, span: 2e6, startStop: false, rbwAuto: true, rbw: 3000, vbwAuto: true, vbw: 3000, window: 'HANN',
+    ref: -20, div: 10, unit: 'dBm', det: 'PEAK', cal: 0,
+    traces: defaultTraces().map(t => ({ mode: t.mode, avgN: 10 })),
+    markers: defaultMarkers(), active: 0, meas: 'OFF', chBw: 25_000, spacing: 25_000, persist: false,
+    zsFreq: dial || 433.92e6, zsBw: 100_000, zsTime: 0.02, trig: 'FREE', single: false, level: -60, pre: 0.1,
+    showAmp: true, showFm: true, showPh: false, cursors: false, curA: 0.25, curB: 0.75,
+  };
+}
+
+const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+const db1 = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : '—');
+const bwText = (hz: number) => (hz >= 1e6 ? `${+(hz / 1e6).toFixed(2)} MHz` : hz >= 1e3 ? `${+(hz / 1e3).toFixed(2)} kHz` : `${+hz.toFixed(1)} Hz`);
+const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+/** The frame as the screen keeps it: in display units, and where its bins are. */
+interface Frame { f0: number; binHz: number; rbw: number; sweep: boolean; step: number; steps: number; }
+
+export class SpectrumUi {
+  s: Settings;
+  readonly traces: Trace[] = defaultTraces();
+  private frame: Frame | null = null;
+  private persist: Persistence | null = null;
+  private zcap: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number; off: number } | null = null;
+  private zstats: PulseStats | null = null;
+  private armed = true;
+  private plan: SpanPlan | null = null;
+  private root: HTMLElement | null = null;
+  private cv: HTMLCanvasElement | null = null;
+  private drawQueued = false;
+  private drag = -1;
+  private calNote = '';
+  /** The measurement's last readout, kept for the export. */
+  private measText = '';
+
+  constructor(private readonly host: Host) {
+    this.s = defaults(host.dial());
+    try {
+      const v = JSON.parse(localStorage.getItem(KEY) ?? 'null');
+      if (v && typeof v === 'object') this.s = { ...this.s, ...v, markers: Array.isArray(v.markers) && v.markers.length === 4 ? v.markers : this.s.markers, traces: Array.isArray(v.traces) && v.traces.length === 4 ? v.traces : this.s.traces };
+    } catch { /* first visit */ }
+    this.s.traces.forEach((t, i) => { this.traces[i].mode = t.mode; this.traces[i].avgN = t.avgN; });
+  }
+  private save(): void { try { localStorage.setItem(KEY, JSON.stringify(this.s)); } catch { /* ignore */ } }
+
+  // ---- span and plan ------------------------------------------------------------------------------------------
+
+  get start(): number { return this.s.center - this.s.span / 2; }
+  get stop(): number { return this.s.center + this.s.span / 2; }
+  rbwHz(): number { return this.s.rbwAuto ? autoRbw(this.s.span) : this.s.rbw; }
+  vbwHz(): number { return this.s.vbwAuto ? this.frame?.rbw ?? this.rbwHz() : this.s.vbw; }
+
+  /** The zero-span rate: the smallest rate (from 2 Msps up, the HackRF's floor) whose span holds the filter clear of DC. */
+  private zsRate(): number {
+    const rates = [...this.host.rates()].sort((a, b) => a - b);
+    return rates.find(r => r >= Math.min(2e6, rates[rates.length - 1]) && zsMaxBw(r) >= this.s.zsBw) ?? rates[rates.length - 1] ?? 2e6;
+  }
+  /** Filter bandwidths this radio can do. */
+  zsBws(): number[] { const top = Math.max(...this.host.rates(), 2e6); return ZS_BWS.filter(b => b <= zsMaxBw(top)); }
+
+  private config(): SpecConfig {
+    const s = this.s;
+    const zsRate = this.zsRate(), zsTune = s.zsFreq - ZS_OFFSET * zsRate;
+    const base: SpecConfig = {
+      mode: 'FFT', tuneHz: 0, startHz: this.start, stopHz: this.stop, rbwHz: this.rbwHz(), window: s.window,
+      vbwHz: s.vbwAuto ? 1e12 : s.vbw, dcPatch: false, sliceRate: 0,
+      zs: { offsetHz: s.zsFreq - zsTune, bwHz: s.zsBw, sweepSec: s.zsTime, trigger: s.trig, single: s.single, levelDb: s.level - this.offset(), pre: s.pre },
+    };
+    if (s.mode === 'ZERO') return { ...base, mode: 'ZERO', tuneHz: zsTune };
+    const p = this.plan = planSpan(this.start, this.stop, this.host.rates());
+    if (p.kind === 'FFT') return { ...base, tuneHz: p.tuneHz, dcPatch: p.dcPatch };
+    return { ...base, mode: 'SWEEP', sliceRate: p.sliceRate };
+  }
+
+  /** Retune and restart the processor (span, RBW, mode or window changed). */
+  restart(): void {
+    const cfg = this.config();
+    this.frame = null; this.zcap = null; this.zstats = null; this.armed = true;
+    for (const t of this.traces) t.clear();
+    this.persist?.clear();
+    if (cfg.mode === 'ZERO') this.host.start(cfg.tuneHz, this.zsRate(), cfg);
+    else if (cfg.mode === 'SWEEP') this.host.start(cfg.startHz + cfg.sliceRate / 2, cfg.sliceRate, cfg);
+    else this.host.start(cfg.tuneHz, (this.plan as { rate: number }).rate, cfg);
+    this.save(); this.draw();
+  }
+  /** Settings the processor takes in place (VBW, trigger, level). */
+  private update(): void {
+    const cfg = this.config();
+    this.host.post({ type: 'spectrum', cmd: 'set', cfg });
+    this.save(); this.draw();
+  }
+
+  // ---- the dBm scale ------------------------------------------------------------------------------------------
+
+  /** dBFS to the display unit. */
+  offset(): number {
+    if (this.s.unit === 'dBFS') { this.calNote = 'dBFS: relative to the converter\'s full scale'; return 0; }
+    const o = dbmOffset(this.host.gain(), this.s.cal);
+    this.calNote = o.ok ? `dBm ${o.note}${this.s.cal ? ` · CAL ${this.s.cal > 0 ? '+' : ''}${this.s.cal} dB` : ''} · approximate` : `dBm uncalibrated: ${o.note}`;
+    return o.offset;
+  }
+  unitLabel(): string { return this.s.unit === 'dBm' ? 'dBm' : 'dBFS'; }
+
+  /** The radio's gain moved (RADIO panel): the chip says so, and a trigger level in dBm keeps its meaning. */
+  gainChanged(): void {
+    const b = this.root?.querySelector<HTMLElement>('[data-act="radio"]');
+    const g = this.host.gain();
+    if (b) b.textContent = `RADIO · ${g.kind === 'rtlsdr' ? (Number.isFinite(g.tunerDb) ? `GAIN ${g.tunerDb} dB` : 'TUNER AGC') : g.kind === 'hackrf' ? `LNA ${g.lna} · VGA ${g.vga}${g.amp ? ' · AMP' : ''}` : 'NO RADIO'}`;
+    if (this.s.mode === 'ZERO' && this.s.trig !== 'FREE') this.update();
+  }
+
+  // ---- what the worker sends ----------------------------------------------------------------------------------
+
+  onFrame(m: { live: Float32Array; max: Float32Array | null; min: Float32Array | null; f0: number; binHz: number; rbw: number; sweep: boolean; step: number; steps: number }): void {
+    if (this.s.mode !== 'FREQ') return;
+    const off = this.offset();
+    const shift = (a: Float32Array | null) => { if (!a) return null; for (let i = 0; i < a.length; i++) a[i] += off; return a; };
+    const live = shift(m.live)!, max = shift(m.max), min = shift(m.min);
+    const rbwMoved = this.frame?.rbw !== m.rbw;
+    this.frame = { f0: m.f0, binHz: m.binHz, rbw: m.rbw, sweep: m.sweep, step: m.step, steps: m.steps };
+    // the RBW really in use shows on its stepper (unless a field is being typed into)
+    if (rbwMoved && !(document.activeElement instanceof HTMLInputElement)) this.controls();
+    // a sweep row is redrawn while it fills: only its finished passes feed the holds and the average
+    const whole = !m.sweep || m.step === m.steps;
+    this.traces.forEach(t => { if (t.mode === 'LIVE' || whole) t.update(live, max, min, m.f0, m.binHz); });
+    if (this.s.persist && whole) { this.persist ??= new Persistence(400, 160); this.persist.add(live, this.s.ref, this.s.div * 10); }
+    this.draw();
+  }
+
+  onCapture(m: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number; armed: boolean }): void {
+    if (this.s.mode !== 'ZERO') return;
+    const off = this.offset();
+    for (let i = 0; i < m.amp.length; i++) m.amp[i] += off;
+    this.zcap = { ...m, off };
+    this.armed = m.armed;
+    this.zstats = pulseStats(m.amp, m.rate);
+    this.draw();
+  }
+
+  // ---- screen -------------------------------------------------------------------------------------------------
+
+  html(): string {
+    return `
+    <section class="visual sp-visual">
+      <div id="sp-head" class="sp-head"></div>
+      <div class="sp-screen"><canvas id="sp-cv"></canvas></div>
+      <div id="sp-read" class="sp-read"></div>
+    </section>
+    <section class="controls sp-controls" id="sp-ctl"></section>`;
+  }
+
+  mount(root: HTMLElement): void {
+    this.root = root;
+    this.cv = root.querySelector<HTMLCanvasElement>('#sp-cv');
+    const cv = this.cv!;
+    cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); this.pointer(e, true); };
+    cv.onpointermove = (e) => { if (this.drag >= 0) this.pointer(e, false); };
+    cv.onpointerup = () => { this.drag = -1; };
+    this.controls();
+    this.restart();
+  }
+
+  private ctl(): HTMLElement | null { return this.root?.querySelector<HTMLElement>('#sp-ctl') ?? null; }
+
+  /** Build the controls for the mode (redrawn when the mode or a structural choice changes). */
+  controls(): void {
+    const c = this.ctl(); if (!c) return;
+    const s = this.s;
+    const seg = (items: [string, string][], cur: string, attr: string) => `<div class="seg sp-seg">${items.map(([v, l]) => `<button data-${attr}="${v}" class="${v === cur ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+    const step = (id: string, label: string, val: string) => `<div class="stepper sp-step"><button data-dn="${id}">−</button><span><i>${label}</i> ${val}</span><button data-up="${id}">+</button></div>`;
+    const tog = (id: string, label: string, on: boolean) => `<button data-tog="${id}" class="tog${on ? ' on' : ''}">${label}</button>`;
+    const act = (id: string, label: string) => `<button data-act="${id}" class="chip">${label}</button>`;
+    const g = this.host.gain();
+    const gainTxt = g.kind === 'rtlsdr' ? (Number.isFinite(g.tunerDb) ? `GAIN ${g.tunerDb} dB` : 'TUNER AGC') : g.kind === 'hackrf' ? `LNA ${g.lna} · VGA ${g.vga}${g.amp ? ' · AMP' : ''}` : 'NO RADIO';
+    const common = `
+      <div class="caption">RADIO · EXPORT · OPEN IN</div>
+      <div class="ctlrow sp-row">${act('radio', `RADIO · ${gainTxt}`)}${act('csv', 'CSV')}${act('png', 'PNG')}${act('analyzer', 'ANALYZER')}${act('devices', 'DEVICES')}</div>
+      <div class="note">Gain is set in RADIO and held while Spectrum is open (the AGC does not move it under a measurement). ${esc(this.calNote)}. ANALYZER and DEVICES open on ${s.mode === 'ZERO' ? 'the zero-span frequency' : 'the active marker (or the center)'}.</div>`;
+    let body = `<div class="ctlrow sp-row">${seg([['FREQ', 'FREQUENCY'], ['ZERO', 'ZERO SPAN']], s.mode, 'mode')}</div>`;
+    if (s.mode === 'FREQ') {
+      const f = (id: string, label: string, hz: number) => `<label class="sp-in"><i>${label}</i><input id="${id}" class="txin" value="${esc(fmtHz(hz))}" inputmode="decimal" spellcheck="false"></label>`;
+      body += `
+      <div class="caption">FREQUENCY</div>
+      <div class="ctlrow sp-row">${s.startStop ? f('sp-start', 'START', this.start) + f('sp-stop', 'STOP', this.stop) : f('sp-center', 'CENTER', s.center) + f('sp-span', 'SPAN', s.span)}${tog('ss', s.startStop ? 'START/STOP' : 'CENTER/SPAN', s.startStop)}</div>
+      <div class="ctlrow sp-row sp-presets">${SPAN_PRESETS.map(([l, v]) => `<button data-span="${v}" class="chip${s.span === v ? ' on' : ''}">${l}</button>`).join('')}</div>
+      <div class="caption">BANDWIDTH · SCALE</div>
+      <div class="ctlrow sp-row">${step('rbw', 'RBW', s.rbwAuto ? `AUTO ${bwText(this.frame?.rbw ?? this.rbwHz())}` : bwText(this.frame?.rbw ?? s.rbw))}${tog('rbwa', 'AUTO', s.rbwAuto)}${step('vbw', 'VBW', s.vbwAuto ? 'AUTO = RBW' : bwText(s.vbw))}${tog('vbwa', 'AUTO', s.vbwAuto)}</div>
+      <div class="ctlrow sp-row">${step('ref', 'REF', `${s.ref} ${this.unitLabel()}`)}${step('div', 'SCALE', `${s.div} dB/div`)}${seg([['dBm', 'dBm'], ['dBFS', 'dBFS']], s.unit, 'unit')}</div>
+      <div class="ctlrow sp-row">${seg([['HANN', 'HANN'], ['FLATTOP', 'FLAT TOP']], s.window, 'win')}${seg(DETECTORS.map(d => [d, d] as [string, string]), s.det, 'det')}${step('cal', 'CAL', `${s.cal > 0 ? '+' : ''}${s.cal} dB`)}</div>
+      <div class="caption">TRACES</div>
+      ${this.traces.map((t, i) => `<div class="ctlrow sp-row sp-trace" style="--tc:${TRACE_COLOR[i]}"><b>T${i + 1}</b>${seg(TRACE_MODES.map(m => [m, m] as [string, string]), t.mode, `tr${i}`)}${t.mode === 'AVG' ? step(`avg${i}`, 'N', String(t.avgN)) : ''}<button data-clr="${i}" class="tog">CLEAR</button></div>`).join('')}
+      <div class="caption">MARKERS</div>
+      <div class="ctlrow sp-row">${seg(s.markers.map((m, i) => [String(i), `M${i + 1}${m.on ? (m.delta ? ' Δ' : ' ●') : ''}`] as [string, string]), String(s.active), 'mk')}${tog('mkon', 'ON', s.markers[s.active].on)}${s.active ? tog('mkd', 'DELTA', s.markers[s.active].delta) : ''}${seg([0, 1, 2, 3].map(i => [String(i), `T${i + 1}`] as [string, string]), String(s.markers[s.active].trace), 'mkt')}</div>
+      <div class="ctlrow sp-row">${act('peak', 'PEAK')}${act('next', 'NEXT PEAK')}${act('left', '◀ NEXT')}${act('right', 'NEXT ▶')}${act('mkcf', 'MKR → CENTER')}${act('mkoff', 'ALL OFF')}</div>
+      <div class="caption">MEASURE</div>
+      <div class="ctlrow sp-row">${seg(MEAS, s.meas, 'meas')}${tog('persist', 'PERSISTENCE', s.persist)}</div>
+      ${s.meas === 'CHP' || s.meas === 'ACPR' ? `<div class="ctlrow sp-row">${step('chbw', 'CHANNEL', bwText(s.chBw))}${s.meas === 'ACPR' ? step('spacing', 'SPACING', bwText(s.spacing)) : ''}</div>` : ''}`;
+    } else {
+      const bws = this.zsBws();
+      body += `
+      <div class="caption">FREQUENCY · FILTER</div>
+      <div class="ctlrow sp-row"><label class="sp-in"><i>FREQ</i><input id="sp-zf" class="txin" value="${esc(fmtHz(s.zsFreq))}" inputmode="decimal" spellcheck="false"></label>${step('zst', 'SWEEP', fmtSec(s.zsTime))}</div>
+      <div class="ctlrow sp-row">${seg(bws.map(b => [String(b), bwText(b).replace(' ', '')] as [string, string]), String(s.zsBw), 'zbw')}</div>
+      <div class="caption">TRIGGER</div>
+      <div class="ctlrow sp-row">${seg(TRIG_MODES.map(m => [m, m === 'FREE' ? 'FREE RUN' : m === 'RISE' ? 'RISING' : 'FALLING'] as [string, string]), s.trig, 'trig')}${tog('single', 'SINGLE', s.single)}${s.single ? act('arm', this.armed ? 'ARMED' : 'ARM') : ''}</div>
+      ${s.trig !== 'FREE' ? `<div class="ctlrow sp-row">${step('lvl', 'LEVEL', `${s.level} ${this.unitLabel()}`)}${step('pre', 'PRE-TRIGGER', `${Math.round(s.pre * 100)} %`)}</div>` : ''}
+      <div class="caption">VIEW · SCALE</div>
+      <div class="ctlrow sp-row">${tog('vamp', 'AMPLITUDE', s.showAmp)}${tog('vfm', 'FREQUENCY', s.showFm)}${tog('vph', 'PHASE', s.showPh)}${tog('cur', 'CURSORS', s.cursors)}</div>
+      <div class="ctlrow sp-row">${step('ref', 'REF', `${s.ref} ${this.unitLabel()}`)}${step('div', 'SCALE', `${s.div} dB/div`)}${seg([['dBm', 'dBm'], ['dBFS', 'dBFS']], s.unit, 'unit')}</div>`;
+    }
+    c.innerHTML = body + common;
+    this.bind(c);
+  }
+
+  private bind(c: HTMLElement): void {
+    const s = this.s;
+    c.onclick = (e) => {
+      const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
+      const d = b.dataset;
+      if (d.mode) { s.mode = d.mode as Mode; this.controls(); this.restart(); return; }
+      if (d.span) { s.span = Number(d.span); this.controls(); this.restart(); return; }
+      if (d.unit) { s.unit = d.unit as 'dBm' | 'dBFS'; for (const t of this.traces) t.clear(); this.persist?.clear(); this.controls(); this.update(); return; }
+      if (d.win) { s.window = d.win as WindowKind; this.controls(); this.restart(); return; }
+      if (d.det) { s.det = d.det as Detector; this.controls(); this.draw(); return; }
+      if (d.meas) { s.meas = d.meas as Meas; this.controls(); this.draw(); return; }
+      if (d.mk) { s.active = Number(d.mk); this.controls(); this.draw(); return; }
+      if (d.mkt) { s.markers[s.active].trace = Number(d.mkt); this.controls(); this.draw(); this.save(); return; }
+      if (d.zbw) { s.zsBw = Number(d.zbw); this.controls(); this.restart(); return; }
+      if (d.trig) { s.trig = d.trig as TrigMode; this.controls(); this.update(); return; }
+      if (d.clr !== undefined) { this.traces[Number(d.clr)].clear(); this.draw(); return; }
+      for (let i = 0; i < 4; i++) if (d[`tr${i}`]) { this.traces[i].setMode(d[`tr${i}`] as TraceMode); s.traces[i].mode = this.traces[i].mode; this.controls(); this.save(); this.draw(); return; }
+      if (d.up || d.dn) { this.stepper((d.up || d.dn)!, d.up ? 1 : -1); return; }
+      if (d.tog) { this.toggle(d.tog); return; }
+      if (d.act) { this.action(d.act); return; }
+    };
+    const freqIn = (id: string, set: (hz: number) => void) => {
+      const el = c.querySelector<HTMLInputElement>('#' + id); if (!el) return;
+      el.onkeydown = (e) => { if (e.key === 'Enter') el.blur(); e.stopPropagation(); };
+      el.onchange = () => { const hz = parseHz(el.value); if (hz !== null && hz > 0) set(hz); this.controls(); this.restart(); };
+    };
+    freqIn('sp-center', hz => { s.center = hz; });
+    freqIn('sp-span', hz => { s.span = Math.max(1000, hz); });
+    freqIn('sp-start', hz => { const st = this.stop; s.center = (hz + st) / 2; s.span = Math.max(1000, st - hz); });
+    freqIn('sp-stop', hz => { const a = this.start; s.center = (a + hz) / 2; s.span = Math.max(1000, hz - a); });
+    freqIn('sp-zf', hz => { s.zsFreq = hz; });
+  }
+
+  private stepper(id: string, dir: number): void {
+    const s = this.s;
+    const idx = <T>(list: T[], v: T) => Math.max(0, list.indexOf(v));
+    switch (id) {
+      case 'rbw': s.rbw = stepBw(this.frame?.rbw ?? this.rbwHz(), dir); s.rbwAuto = false; this.controls(); this.restart(); return;
+      case 'vbw': s.vbw = stepBw(s.vbwAuto ? this.vbwHz() : s.vbw, dir); s.vbwAuto = false; break;
+      case 'ref': s.ref += dir * (s.div >= 5 ? 5 : 1); break;
+      case 'div': s.div = DIVS[Math.max(0, Math.min(DIVS.length - 1, idx(DIVS, s.div) + dir))]; this.persist?.clear(); break;
+      case 'cal': s.cal = Math.max(-40, Math.min(40, s.cal + dir)); break;
+      case 'chbw': s.chBw = stepBw(s.chBw, dir); break;
+      case 'spacing': s.spacing = stepBw(s.spacing, dir); break;
+      case 'zst': {
+        const plan = zsPlan(this.zsRate(), s.zsBw), max = ZS_MAX_POINTS / plan.outRate;
+        s.zsTime = Math.min(max, SWEEP_TIMES[Math.max(0, Math.min(SWEEP_TIMES.length - 1, idx(SWEEP_TIMES, s.zsTime) + dir))]);
+        this.controls(); this.restart(); return;
+      }
+      case 'lvl': s.level += dir; break;
+      case 'pre': s.pre = Math.max(0, Math.min(0.9, Math.round((s.pre + dir * 0.1) * 10) / 10)); break;
+      default: {
+        const m = /^avg(\d)$/.exec(id);
+        if (m) { const t = this.traces[Number(m[1])]; t.avgN = Math.max(2, Math.min(1000, t.avgN < 10 ? t.avgN + dir : Math.round(t.avgN * (dir > 0 ? 2 : 0.5)))); s.traces[Number(m[1])].avgN = t.avgN; t.clear(); }
+      }
+    }
+    this.controls(); this.update();
+  }
+
+  private toggle(id: string): void {
+    const s = this.s, m = s.markers[s.active];
+    switch (id) {
+      case 'ss': s.startStop = !s.startStop; break;
+      case 'rbwa': s.rbwAuto = !s.rbwAuto; this.controls(); this.restart(); return;
+      case 'vbwa': s.vbwAuto = !s.vbwAuto; break;
+      case 'mkon': m.on = !m.on; if (m.on && !m.hz) this.markerTo(s.active, 'peak'); break;
+      case 'mkd': m.delta = !m.delta; if (m.delta && !s.markers[0].on) { s.markers[0].on = true; s.markers[0].hz = m.hz; } break;
+      case 'persist': s.persist = !s.persist; this.persist = null; break;
+      case 'single': s.single = !s.single; this.controls(); this.update(); if (!s.single) this.host.post({ type: 'spectrum', cmd: 'rearm' }); return;
+      case 'vamp': s.showAmp = !s.showAmp; break;
+      case 'vfm': s.showFm = !s.showFm; break;
+      case 'vph': s.showPh = !s.showPh; break;
+      case 'cur': s.cursors = !s.cursors; break;
+    }
+    this.controls(); this.save(); this.draw();
+  }
+
+  private action(id: string): void {
+    const s = this.s;
+    switch (id) {
+      case 'peak': case 'next': case 'left': case 'right': this.markerTo(s.active, id); break;
+      case 'mkcf': { const m = s.markers[s.active]; if (m.on) { s.center = m.hz; this.controls(); this.restart(); } return; }
+      case 'mkoff': for (const m of s.markers) { m.on = false; m.delta = false; } break;
+      case 'arm': this.armed = true; this.host.post({ type: 'spectrum', cmd: 'rearm' }); break;
+      case 'radio': this.host.openRadio(); return;
+      case 'csv': this.exportCsv(); return;
+      case 'png': this.exportPng(); return;
+      case 'analyzer': case 'devices': this.host.openApp(id, this.selectedHz()); return;
+    }
+    this.controls(); this.save(); this.draw();
+  }
+
+  /** The frequency the OPEN IN buttons hand over. */
+  selectedHz(): number {
+    const s = this.s;
+    if (s.mode === 'ZERO') return s.zsFreq;
+    const m = s.markers[s.active];
+    return m.on ? m.hz : s.center;
+  }
+
+  /** The trace a marker reads, falling back to the first one with data. */
+  private traceFor(i: number): Trace | null {
+    const t = this.traces[i];
+    if (t.data && t.mode !== 'OFF') return t;
+    return this.traces.find(x => x.data && x.mode !== 'OFF') ?? null;
+  }
+
+  /** Peak search for marker `k`. */
+  markerTo(k: number, how: 'peak' | 'next' | 'left' | 'right'): void {
+    const m = this.s.markers[k], t = this.traceFor(m.trace);
+    if (!t?.data) return;
+    const n = t.data.length, cur = binOf(m.hz, t.f0, t.binHz, n);
+    const i = !m.on || how === 'peak' ? peakSearch(t.data) : how === 'next' ? nextPeak(t.data, cur) : how === 'left' ? nextPeakLeft(t.data, cur) : nextPeakRight(t.data, cur);
+    const r = refinePeak(t.data, i);
+    m.hz = t.f0 + (i + r.offset) * t.binHz; m.on = true;
+  }
+
+  private pointer(e: PointerEvent, down: boolean): void {
+    const cv = this.cv!, r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    const g = this.geom();
+    const fx = (x * r.width - g.l) / g.w;
+    if (this.s.mode === 'ZERO') {
+      if (!this.s.cursors) return;
+      if (down) this.drag = Math.abs(fx - this.s.curA) < Math.abs(fx - this.s.curB) ? 0 : 1;
+      if (this.drag === 0) this.s.curA = Math.max(0, Math.min(1, fx)); else this.s.curB = Math.max(0, Math.min(1, fx));
+      this.draw(); return;
+    }
+    const m = this.s.markers[this.s.active];
+    m.on = true; m.hz = this.start + Math.max(0, Math.min(1, fx)) * this.s.span;
+    this.drag = 0;
+    if (down) this.controls();
+    this.draw();
+  }
+
+  // ---- drawing ------------------------------------------------------------------------------------------------
+
+  draw(): void {
+    if (this.drawQueued) return;
+    this.drawQueued = true;
+    requestAnimationFrame(() => { this.drawQueued = false; this.paint(); });
+  }
+
+  /** The plot area inside the canvas, in CSS pixels. */
+  private geom(): { l: number; t: number; w: number; h: number; W: number; H: number } {
+    const cv = this.cv!, W = cv.clientWidth || 600, H = cv.clientHeight || 300;
+    const l = 46, t = 8, r = 8, b = 22;
+    return { l, t, w: W - l - r, h: H - t - b, W, H };
+  }
+
+  private paint(): void {
+    const cv = this.cv; if (!cv || !this.host.showing()) return;
+    const dpr = window.devicePixelRatio || 1;
+    const g = this.geom();
+    if (cv.width !== Math.round(g.W * dpr) || cv.height !== Math.round(g.H * dpr)) { cv.width = Math.round(g.W * dpr); cv.height = Math.round(g.H * dpr); }
+    const ctx = cv.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.render(ctx, g);
+    this.header();
+    this.readout();
+  }
+
+  /** Draw the whole plot into a context (the screen, or the PNG export). */
+  render(ctx: CanvasRenderingContext2D, g: { l: number; t: number; w: number; h: number; W: number; H: number }): void {
+    const css = getComputedStyle(document.documentElement);
+    const paper = css.getPropertyValue('--paper').trim() || '#0a0d13', line = css.getPropertyValue('--line').trim() || '#2a3348', muted = css.getPropertyValue('--muted').trim() || '#8d97ab';
+    ctx.fillStyle = paper; ctx.fillRect(0, 0, g.W, g.H);
+    ctx.font = '10px ui-monospace, monospace';
+    if (this.s.mode === 'ZERO') { this.renderZero(ctx, g, line, muted); return; }
+    const s = this.s, top = s.ref, range = s.div * 10;
+    const yOf = (v: number) => g.t + (top - v) / range * g.h;
+    // persistence under everything
+    if (s.persist && this.persist) {
+      const p = this.persist, lv = p.level();
+      const img = ctx.createImageData(p.cols, p.rows);
+      for (let i = 0; i < lv.length; i++) {
+        const v = lv[i]; if (!v) continue;
+        // dark blue → cyan → yellow → white
+        const r = v < 0.5 ? 0 : (v - 0.5) * 2 * 255, gg = Math.min(255, v * 2 * 255), b = v < 0.5 ? 120 + v * 270 : 255 - (v - 0.5) * 300;
+        img.data.set([r, gg, Math.max(0, b), Math.min(255, 60 + v * 400)], i * 4);
+      }
+      const off = document.createElement('canvas'); off.width = p.cols; off.height = p.rows;
+      off.getContext('2d')!.putImageData(img, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(off, g.l, g.t, g.w, g.h);
+    }
+    // graticule: 10 by 10
+    ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.fillStyle = muted;
+    for (let k = 0; k <= 10; k++) {
+      const x = Math.round(g.l + k * g.w / 10) + 0.5, y = Math.round(g.t + k * g.h / 10) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.t + g.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.l + g.w, y); ctx.stroke();
+      ctx.textAlign = 'right'; ctx.fillText(String(+(top - k * s.div).toFixed(1)), g.l - 4, y + 3);
+    }
+    ctx.textAlign = 'left'; ctx.fillText(fmtHz(this.start, 3), g.l, g.t + g.h + 14);
+    ctx.textAlign = 'center'; ctx.fillText(fmtHz(s.center, 3), g.l + g.w / 2, g.t + g.h + 14);
+    ctx.textAlign = 'right'; ctx.fillText(fmtHz(this.stop, 3), g.l + g.w, g.t + g.h + 14);
+    const xOf = (hz: number) => g.l + (hz - this.start) / s.span * g.w;
+    ctx.save(); ctx.beginPath(); ctx.rect(g.l, g.t, g.w, g.h); ctx.clip();
+    // measurement bands
+    const t0 = this.measTrace();
+    if (t0 && s.meas !== 'OFF' && s.meas !== 'NOISE') {
+      ctx.fillStyle = 'rgba(76,141,255,0.16)';
+      const band = (c: number, bw: number) => ctx.fillRect(xOf(c - bw / 2), g.t, Math.max(1, xOf(c + bw / 2) - xOf(c - bw / 2)), g.h);
+      if (s.meas === 'CHP') band(s.center, s.chBw);
+      if (s.meas === 'ACPR') { band(s.center, s.chBw); ctx.fillStyle = 'rgba(255,175,0,0.14)'; band(s.center - s.spacing, s.chBw); band(s.center + s.spacing, s.chBw); }
+      if (s.meas === 'OBW' && t0.data) {
+        const o = occupiedBw(t0.data, t0.f0, t0.binHz, this.frame?.rbw ?? 1);
+        ctx.fillRect(xOf(o.lo), g.t, Math.max(1, xOf(o.hi) - xOf(o.lo)), g.h);
+        ctx.strokeStyle = '#4c8dff'; ctx.beginPath(); ctx.moveTo(xOf(o.lo), g.t); ctx.lineTo(xOf(o.lo), g.t + g.h); ctx.moveTo(xOf(o.hi), g.t); ctx.lineTo(xOf(o.hi), g.t + g.h); ctx.stroke();
+      }
+    }
+    // traces
+    const cols = Math.max(2, Math.round(g.w));
+    this.traces.forEach((t, i) => {
+      if (!t.data || t.mode === 'OFF') return;
+      // the columns the trace's bins cover
+      const x0 = xOf(t.f0 - t.binHz / 2), x1 = xOf(t.f0 + (t.data.length - 0.5) * t.binHz);
+      const n = Math.max(2, Math.min(cols, Math.round(x1 - x0)));
+      const y = toColumns(t.data, n, s.det);
+      ctx.strokeStyle = TRACE_COLOR[i]; ctx.lineWidth = 1.25; ctx.beginPath();
+      for (let c = 0; c < n; c++) { const x = x0 + (c + 0.5) * (x1 - x0) / n, yy = yOf(y[c]); if (c) ctx.lineTo(x, yy); else ctx.moveTo(x, yy); }
+      ctx.stroke();
+    });
+    // a sweep's position
+    const f = this.frame;
+    if (f?.sweep && f.steps > 1 && f.step < f.steps) { ctx.fillStyle = '#ffaf00'; ctx.fillRect(g.l + g.w * f.step / f.steps - 1, g.t + g.h - 4, 3, 4); }
+    // markers
+    s.markers.forEach((m, k) => {
+      if (!m.on) return;
+      const t = this.traceFor(m.trace);
+      const lvl = t?.data ? t.data[binOf(m.hz, t.f0, t.binHz, t.data.length)] : NaN;
+      const x = xOf(m.hz), y = Number.isFinite(lvl) ? Math.max(g.t + 6, Math.min(g.t + g.h, yOf(lvl))) : g.t + 10;
+      ctx.fillStyle = k === s.active ? '#ffaf00' : MARKER_COLOR; ctx.strokeStyle = '#000';
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 5, y - 8); ctx.lineTo(x + 5, y - 8); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.textAlign = 'center'; ctx.fillText(`${m.delta ? 'Δ' : ''}${k + 1}`, x, y - 11);
+    });
+    ctx.restore();
+    if (!this.host.connected()) { ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.font = '12px sans-serif'; ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2); }
+  }
+
+  private renderZero(ctx: CanvasRenderingContext2D, g: { l: number; t: number; w: number; h: number; W: number; H: number }, line: string, muted: string): void {
+    const s = this.s, z = this.zcap;
+    const panes: ('amp' | 'fm' | 'ph')[] = [];
+    if (s.showAmp) panes.push('amp'); if (s.showFm) panes.push('fm'); if (s.showPh) panes.push('ph');
+    if (!panes.length) panes.push('amp');
+    const gap = 10, ph = (g.h - gap * (panes.length - 1)) / panes.length;
+    // time axis: the trigger at 0, the window's start at -pre
+    const len = z ? z.amp.length : 1, rate = z?.rate ?? 1, total = z ? len / rate : s.zsTime;
+    const t0 = z && z.trig >= 0 ? -z.trig / rate : 0;
+    panes.forEach((p, k) => {
+      const top = g.t + k * (ph + gap);
+      ctx.strokeStyle = line; ctx.fillStyle = muted; ctx.lineWidth = 1;
+      for (let d = 0; d <= 10; d++) { const x = Math.round(g.l + d * g.w / 10) + 0.5; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); }
+      const rows = p === 'amp' ? 10 : 4;
+      let lo: number, hi: number, unit: string;
+      if (p === 'amp') { hi = s.ref; lo = s.ref - s.div * 10; unit = this.unitLabel(); }
+      else if (p === 'fm') { hi = s.zsBw / 2; lo = -s.zsBw / 2; unit = 'Hz'; }
+      else { hi = 180; lo = -180; unit = '°'; }
+      for (let d = 0; d <= rows; d++) {
+        const y = Math.round(top + d * ph / rows) + 0.5;
+        ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.l + g.w, y); ctx.stroke();
+        const v = hi - d * (hi - lo) / rows;
+        ctx.textAlign = 'right'; ctx.fillText(p === 'fm' ? bwText(Math.abs(v)).replace(' ', '').replace(/^/, v < 0 ? '-' : v > 0 ? '+' : '') : String(+v.toFixed(0)), g.l - 4, y + 3);
+      }
+      ctx.textAlign = 'left'; ctx.fillText(p === 'amp' ? `AMPLITUDE ${unit}` : p === 'fm' ? 'FREQUENCY' : 'PHASE °', g.l + 4, top + 11);
+      if (!z) return;
+      const arr = p === 'amp' ? z.amp : p === 'fm' ? z.fm : z.ph;
+      const yOf = (v: number) => top + (hi - v) / (hi - lo) * ph;
+      ctx.save(); ctx.beginPath(); ctx.rect(g.l, top, g.w, ph); ctx.clip();
+      if (p === 'amp' && s.trig !== 'FREE') { ctx.strokeStyle = '#ffaf00'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(g.l, yOf(s.level)); ctx.lineTo(g.l + g.w, yOf(s.level)); ctx.stroke(); ctx.setLineDash([]); }
+      ctx.strokeStyle = TRACE_COLOR[k]; ctx.lineWidth = 1.25;
+      const cols = Math.max(2, Math.round(g.w));
+      ctx.beginPath();
+      if (arr.length > cols * 2) {
+        // min / max per column so a dense trace keeps its envelope
+        for (let c = 0; c < cols; c++) {
+          const a = Math.floor(c * arr.length / cols), b = Math.max(a + 1, Math.floor((c + 1) * arr.length / cols));
+          let mn = Infinity, mx = -Infinity; for (let i = a; i < b; i++) { if (arr[i] < mn) mn = arr[i]; if (arr[i] > mx) mx = arr[i]; }
+          const x = g.l + c + 0.5; ctx.moveTo(x, yOf(mx)); ctx.lineTo(x, yOf(mn) + 0.5);
+        }
+      } else {
+        for (let i = 0; i < arr.length; i++) { const x = g.l + (i + 0.5) / arr.length * g.w, y = yOf(arr[i]); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+      }
+      ctx.stroke();
+      if (z.trig >= 0) { const x = g.l + z.trig / len * g.w; ctx.strokeStyle = '#ffaf00'; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); if (k === 0) { ctx.fillStyle = '#ffaf00'; ctx.textAlign = 'center'; ctx.fillText('T', x, top + 10); } }
+      if (s.cursors) for (const [c, l] of [[s.curA, 'A'], [s.curB, 'B']] as [number, string][]) { const x = g.l + c * g.w; ctx.strokeStyle = '#fff'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); ctx.setLineDash([]); if (k === 0) { ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(l, x, top + 22); } }
+      ctx.restore();
+    });
+    ctx.fillStyle = muted; ctx.textAlign = 'left'; ctx.fillText(fmtSec(t0), g.l, g.t + g.h + 14);
+    ctx.textAlign = 'right'; ctx.fillText(fmtSec(t0 + total), g.l + g.w, g.t + g.h + 14);
+    ctx.textAlign = 'center'; ctx.fillText(`${fmtSec(total / 10)}/div`, g.l + g.w / 2, g.t + g.h + 14);
+    if (!this.host.connected()) { ctx.textAlign = 'center'; ctx.font = '12px sans-serif'; ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2); }
+    else if (!z) { ctx.textAlign = 'center'; ctx.font = '12px sans-serif'; ctx.fillText(s.trig === 'FREE' ? 'Starting…' : `Waiting for the trigger (${s.trig === 'RISE' ? 'rising' : 'falling'} through ${s.level} ${this.unitLabel()})`, g.l + g.w / 2, g.t + g.h / 2); }
+  }
+
+  /** The trace the measurements read: the active marker's, else the first with data. */
+  private measTrace(): Trace | null { return this.traceFor(this.s.markers[this.s.active].trace); }
+
+  private header(): void {
+    const el = this.root?.querySelector<HTMLElement>('#sp-head'); if (!el) return;
+    const s = this.s, f = this.frame;
+    if (s.mode === 'ZERO') {
+      const z = this.zcap;
+      el.innerHTML = `<b>${esc(fmtHz(s.zsFreq))}</b><span>ZERO SPAN · FILTER ${bwText(s.zsBw)} · SWEEP ${fmtSec(z?.sweepSec ?? s.zsTime)} · ${s.trig === 'FREE' ? 'FREE RUN' : `${s.trig === 'RISE' ? 'RISING' : 'FALLING'} ${s.level} ${this.unitLabel()} · PRE ${Math.round(s.pre * 100)} %`}${s.single ? (this.armed ? ' · SINGLE ARMED' : ' · SINGLE DONE') : ''}</span>`;
+      return;
+    }
+    const how = this.plan?.kind === 'SWEEP' ? `SWEEP ${f ? `${f.steps} STEPS` : ''}` : this.plan?.kind === 'FFT' ? `${(this.plan.rate / 1e6).toFixed(this.plan.rate % 1e6 ? 2 : 0)} Msps` : '';
+    el.innerHTML = `<b>${esc(fmtHz(s.center))}</b><span>SPAN ${bwText(s.span)} · RBW ${bwText(f?.rbw ?? this.rbwHz())} · VBW ${s.vbwAuto ? 'AUTO' : bwText(s.vbw)} · REF ${s.ref} ${this.unitLabel()} · ${s.div} dB/div · ${how}</span>`;
+  }
+
+  private readout(): void {
+    const el = this.root?.querySelector<HTMLElement>('#sp-read'); if (!el) return;
+    const s = this.s, u = this.unitLabel();
+    const rows: string[] = [];
+    if (s.mode === 'ZERO') {
+      const z = this.zcap, st = this.zstats;
+      if (st) rows.push(`<div class="sp-mr"><b>PULSE</b><span>width ${fmtSec(st.width)} · period ${fmtSec(st.period)} · duty ${Number.isFinite(st.duty) ? (st.duty * 100).toFixed(1) + ' %' : '—'} · rise ${fmtSec(st.rise)} · fall ${fmtSec(st.fall)} · top ${db1(st.top)} ${u} · base ${db1(st.base)} ${u} · ${st.pulses} pulse${st.pulses === 1 ? '' : 's'}</span></div>`);
+      else if (z) rows.push(`<div class="sp-mr"><b>PULSE</b><span>no on/off pattern in this window (it needs 6 dB between on and off)</span></div>`);
+      if (s.cursors && z) {
+        const len = z.amp.length, at = (c: number) => Math.max(0, Math.min(len - 1, Math.round(c * (len - 1))));
+        const a = at(s.curA), b = at(s.curB), dt = (b - a) / z.rate;
+        const t = (i: number) => (i - Math.max(0, z.trig)) / z.rate;
+        rows.push(`<div class="sp-mr"><b>A</b><span>${fmtSec(t(a))} · ${db1(z.amp[a])} ${u} · ${bwText(Math.abs(z.fm[a]))} ${z.fm[a] < 0 ? 'below' : 'above'} · ${z.ph[a].toFixed(0)}°</span></div>`);
+        rows.push(`<div class="sp-mr"><b>B</b><span>${fmtSec(t(b))} · ${db1(z.amp[b])} ${u} · ${bwText(Math.abs(z.fm[b]))} ${z.fm[b] < 0 ? 'below' : 'above'} · ${z.ph[b].toFixed(0)}°</span></div>`);
+        rows.push(`<div class="sp-mr"><b>B−A</b><span>Δt ${fmtSec(dt)}${dt ? ` · 1/Δt ${bwText(Math.abs(1 / dt))}` : ''} · Δ ${db1(z.amp[b] - z.amp[a])} dB</span></div>`);
+      }
+      el.innerHTML = rows.join('');
+      return;
+    }
+    const m1 = s.markers[0], ref = this.markerLevel(0);
+    s.markers.forEach((m, k) => {
+      if (!m.on) return;
+      const lv = this.markerLevel(k);
+      const t = this.traceFor(m.trace);
+      const nd = t?.data && this.frame ? noiseAt(t.data, binOf(m.hz, t.f0, t.binHz, t.data.length), this.frame.rbw) : NaN;
+      if (m.delta && k > 0 && m1.on) rows.push(`<div class="sp-mr${k === s.active ? ' on' : ''}"><b>Δ${k + 1}</b><span>${m.hz - m1.hz >= 0 ? '+' : '−'}${esc(fmtHz(Math.abs(m.hz - m1.hz)))} · ${lv - ref >= 0 ? '+' : ''}${db1(lv - ref)} dB</span><i>T${m.trace + 1}</i></div>`);
+      else rows.push(`<div class="sp-mr${k === s.active ? ' on' : ''}"><b>M${k + 1}</b><span>${esc(fmtHz(m.hz))} · ${db1(lv)} ${u} · ${db1(nd)} ${u}/Hz</span><i>T${m.trace + 1}</i></div>`);
+    });
+    const t = this.measTrace(), f = this.frame;
+    this.measText = '';
+    if (t?.data && f && s.meas !== 'OFF') {
+      const y = t.data, rbw = f.rbw;
+      if (s.meas === 'CHP') { const p = channelPower(y, t.f0, t.binHz, rbw, s.center, s.chBw); this.measText = `channel power ${db1(p)} ${u} in ${bwText(s.chBw)} · ${db1(p - 10 * Math.log10(s.chBw))} ${u}/Hz`; }
+      if (s.meas === 'OBW') { const o = occupiedBw(y, t.f0, t.binHz, rbw); this.measText = `99 % occupied bandwidth ${bwText(o.bw)} (${esc(fmtHz(o.lo, 4))} to ${esc(fmtHz(o.hi, 4))}) · total ${db1(o.total)} ${u}`; }
+      if (s.meas === 'ACPR') { const a = acpr(y, t.f0, t.binHz, rbw, s.center, s.chBw, s.spacing); this.measText = `main ${db1(a.main)} ${u} · lower ${db1(a.lowerDbc)} dBc · upper ${db1(a.upperDbc)} dBc (${bwText(s.chBw)} channels ${bwText(s.spacing)} apart)`; }
+      if (s.meas === 'NOISE') { const n = noiseFloor(y, rbw); this.measText = `noise floor ${db1(n.floor)} ${u} per ${bwText(rbw)} · ${db1(n.density)} ${u}/Hz`; }
+      rows.push(`<div class="sp-mr meas"><b>${({ CHP: 'CH POWER', OBW: 'OBW 99%', ACPR: 'ACPR', NOISE: 'NOISE', OFF: '' } as Record<Meas, string>)[s.meas]}</b><span>${this.measText}</span><i>T${this.traces.indexOf(t) + 1}</i></div>`);
+    }
+    if (!rows.length) rows.push(`<div class="sp-mr dim"><span>Tap the trace to put a marker there, or PEAK. ${esc(this.calNote)}.</span></div>`);
+    el.innerHTML = rows.join('');
+  }
+
+  private markerLevel(k: number): number {
+    const m = this.s.markers[k], t = this.traceFor(m.trace);
+    if (!t?.data) return NaN;
+    const i = binOf(m.hz, t.f0, t.binHz, t.data.length);
+    return t.data[i];
+  }
+
+  // ---- export -------------------------------------------------------------------------------------------------
+
+  private name(ext: string): string {
+    const hz = this.s.mode === 'ZERO' ? this.s.zsFreq : this.s.center;
+    return `spectrum_${(hz / 1e6).toFixed(3)}MHz_${this.s.mode === 'ZERO' ? 'zerospan_' : ''}${stamp()}.${ext}`;
+  }
+
+  /** The trace(s) or the zero-span window as CSV, with the settings in comment lines. */
+  csv(): string {
+    const s = this.s, u = this.unitLabel(), lines: string[] = ['# Mayhem Mobile · Spectrum'];
+    if (s.mode === 'ZERO') {
+      const z = this.zcap;
+      lines.push(`# zero span ${s.zsFreq} Hz · filter ${s.zsBw} Hz · trigger ${s.trig}${s.trig !== 'FREE' ? ` ${s.level} ${u} pre ${s.pre}` : ''}`, `# ${this.calNote}`);
+      lines.push(`time_s,amplitude_${u},frequency_offset_hz,phase_deg`);
+      if (z) for (let i = 0; i < z.amp.length; i++) lines.push(`${((i - Math.max(0, z.trig)) / z.rate).toExponential(6)},${z.amp[i].toFixed(2)},${z.fm[i].toFixed(1)},${z.ph[i].toFixed(1)}`);
+      return lines.join('\n') + '\n';
+    }
+    const f = this.frame;
+    lines.push(`# center ${s.center} Hz · span ${s.span} Hz · RBW ${f?.rbw.toFixed(1) ?? ''} Hz · VBW ${s.vbwAuto ? 'auto' : s.vbw} · ${s.window} window`, `# ${this.calNote}`);
+    if (this.measText) lines.push(`# ${this.measText.replace(/&[a-z]+;/g, '')}`);
+    const ts = this.traces.map((t, i) => ({ t, i })).filter(x => x.t.data && x.t.mode !== 'OFF');
+    lines.push(['frequency_hz', ...ts.map(x => `T${x.i + 1}_${x.t.mode}_${u}`)].join(','));
+    const n = ts.length ? Math.max(...ts.map(x => x.t.data!.length)) : 0;
+    const t0 = ts[0]?.t;
+    for (let k = 0; k < n && t0; k++) lines.push([(t0.f0 + k * t0.binHz).toFixed(1), ...ts.map(x => (x.t.data![k] ?? NaN).toFixed(2))].join(','));
+    return lines.join('\n') + '\n';
+  }
+
+  private exportCsv(): void { this.download(new Blob([this.csv()], { type: 'text/csv' }), this.name('csv')); }
+
+  /** The plot with its header and readouts, as a PNG. */
+  private exportPng(): void {
+    const W = 1400, plotH = 640, head = 54, read = 22 * Math.max(1, (this.root?.querySelectorAll('.sp-mr').length ?? 1));
+    const c = document.createElement('canvas'); c.width = W; c.height = head + plotH + read + 12;
+    const ctx = c.getContext('2d')!;
+    const css = getComputedStyle(document.documentElement);
+    ctx.fillStyle = css.getPropertyValue('--paper').trim() || '#0a0d13'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = css.getPropertyValue('--ink').trim() || '#e8ecf4';
+    ctx.font = 'bold 20px ui-monospace, monospace';
+    const hd = this.root?.querySelector('#sp-head');
+    ctx.fillText(hd?.querySelector('b')?.textContent ?? '', 12, 26);
+    ctx.font = '13px ui-monospace, monospace'; ctx.fillStyle = css.getPropertyValue('--muted').trim() || '#8d97ab';
+    ctx.fillText((hd?.querySelector('span')?.textContent ?? '') + `  ·  ${this.calNote}`, 12, 46);
+    ctx.save(); ctx.translate(0, head);
+    this.render(ctx, { l: 56, t: 8, w: W - 56 - 12, h: plotH - 8 - 26, W, H: plotH });
+    ctx.restore();
+    ctx.font = '13px ui-monospace, monospace'; ctx.fillStyle = css.getPropertyValue('--ink').trim() || '#e8ecf4';
+    let y = head + plotH + 16;
+    this.root?.querySelectorAll('.sp-mr').forEach(r => { ctx.fillText(r.textContent?.replace(/\s+/g, ' ').trim() ?? '', 12, y); y += 22; });
+    c.toBlob(b => { if (b) this.download(b, this.name('png')); }, 'image/png');
+  }
+
+  private download(b: Blob, name: string): void {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    this.host.log(`Spectrum: saved ${name}`);
+  }
+
+  /** Arrow keys move the active marker to the next peak (left / right); P is peak search. */
+  onKey(e: KeyboardEvent): boolean {
+    if (this.s.mode !== 'FREQ') return false;
+    if (e.key === 'ArrowLeft') { this.markerTo(this.s.active, 'left'); }
+    else if (e.key === 'ArrowRight') { this.markerTo(this.s.active, 'right'); }
+    else if (e.key === 'p' || e.key === 'P') { this.markerTo(this.s.active, 'peak'); }
+    else if (e.key === 'n' || e.key === 'N') { this.markerTo(this.s.active, 'next'); }
+    else return false;
+    this.controls(); this.save(); this.draw();
+    return true;
+  }
+}
