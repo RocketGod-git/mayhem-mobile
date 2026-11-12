@@ -155,7 +155,7 @@ object Analyzer {
 
     private fun readBurst(b: Burst, center: Long): AnBurst {
         val auto = analyze(b.env, b.fm, b.n, b.rate)
-        val best = auto.frames.fold("") { a, f -> if (f.bits.length > a.length) f.bits else a }
+        val best = bestFrame(auto.frames)
         return AnBurst(b, center, auto, best)
     }
 
@@ -392,4 +392,21 @@ object Analyzer {
         _bursts.value = restored + _bursts.value
         Diag.log("Analyzer: ${restored.size} bursts and ${_protocols.value.size} protocols from the last session")
     }
+}
+
+/**
+ * The frame a card shows and protocols are matched on: the longest one that carries information. A key that sends an
+ * all-ones wake-up frame between its data frames would otherwise show the wake-up (FFFF…) whenever it is a bit longer.
+ * Twin of the web app's bestOf().
+ */
+fun bestFrame(frames: List<Frame>): String {
+    fun longest(fs: List<Frame>) = fs.fold("") { a, f -> if (f.bits.length > a.length) f.bits else a }
+    return longest(frames.filter { informative(it.bits) }).ifEmpty { longest(frames) }
+}
+
+/** Whether a frame is more than one long run: both values, and changes at least every 16 bits on average. */
+fun informative(bits: String): Boolean {
+    var t = 0
+    for (i in 1 until bits.length) if (bits[i] != bits[i - 1]) t++
+    return t >= maxOf(2.0, bits.length / 16.0)
 }

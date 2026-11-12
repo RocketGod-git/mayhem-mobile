@@ -93,6 +93,7 @@ import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.analyzer.AnBurst
 import com.rocketgod.mayhem.core.analyzer.Alignment as BitAlignment
 import com.rocketgod.mayhem.core.analyzer.Analysis
+import com.rocketgod.mayhem.core.analyzer.informative
 import com.rocketgod.mayhem.core.analyzer.Analyzer
 import com.rocketgod.mayhem.core.analyzer.BurstMeta
 import com.rocketgod.mayhem.core.analyzer.CODINGS
@@ -193,7 +194,7 @@ private fun whereOf(a: AnBurst): String =
 private fun whenOf(a: AnBurst): String = if (a.b.src != null) fmt("+%.3f s", a.b.t) else Devices.clock(a.b.wall)
 
 /** The longest frame of a reading. */
-private fun bestOf(a: Analysis): Frame? = a.frames.maxByOrNull { it.bits.length }
+private fun bestOf(a: Analysis): Frame? = a.frames.filter { informative(it.bits) }.maxByOrNull { it.bits.length } ?: a.frames.maxByOrNull { it.bits.length }
 
 /** What a pick in the detail panel is waiting to save, for the document picker. */
 private class PendingSave(val bytes: ByteArray)

@@ -1078,7 +1078,19 @@ function repOf(t: Tx): AnBurst {
   }
   return best;
 }
-function bestOf(a: Analysis): string { return a.frames.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), ''); }
+/**
+ * The frame a card shows and protocols are matched on: the longest one that carries information. A key that sends an
+ * all-ones wake-up frame between its data frames would otherwise show the wake-up (FFFF…) whenever it is a bit longer.
+ */
+function bestOf(a: Analysis): string {
+  const longest = (fs: { bits: string }[]) => fs.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), '');
+  return longest(a.frames.filter(f => informative(f.bits))) || longest(a.frames);
+}
+/** Whether a frame is more than one long run: both values, and changes at least every 16 bits on average. */
+function informative(bits: string): boolean {
+  let t = 0; for (let i = 1; i < bits.length; i++) if (bits[i] !== bits[i - 1]) t++;
+  return t >= Math.max(2, bits.length / 16);
+}
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
 
