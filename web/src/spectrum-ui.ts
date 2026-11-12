@@ -605,7 +605,7 @@ export class SpectrumUi {
     if (s.mode === 'ZERO') {
       const z = this.zcap, st = this.zstats;
       if (st) rows.push(`<div class="sp-mr"><b>PULSE</b><span>width ${fmtSec(st.width)} · period ${fmtSec(st.period)} · duty ${Number.isFinite(st.duty) ? (st.duty * 100).toFixed(1) + ' %' : '—'} · rise ${fmtSec(st.rise)} · fall ${fmtSec(st.fall)} · top ${db1(st.top)} ${u} · base ${db1(st.base)} ${u} · ${st.pulses} pulse${st.pulses === 1 ? '' : 's'}</span></div>`);
-      else if (z) rows.push(`<div class="sp-mr"><b>PULSE</b><span>no on/off pattern in this window (it needs 6 dB between on and off)</span></div>`);
+      else if (z) rows.push(`<div class="sp-mr"><b>PULSE</b><span>no on/off pattern in this window (it needs 10 dB between on and off)</span></div>`);
       if (s.cursors && z) {
         const len = z.amp.length, at = (c: number) => Math.max(0, Math.min(len - 1, Math.round(c * (len - 1))));
         const a = at(s.curA), b = at(s.curB), dt = (b - a) / z.rate;

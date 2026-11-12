@@ -408,6 +408,13 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
   for (let k = 1; k < ph.length; k++) { let d = ph[k] - ph[k - 1]; if (d > 180) d -= 360; if (d < -180) d += 360; unwrapped += d; }
   near(unwrapped / ((ph.length - 1) / prate) / 360, 12_000, 50, 'phase turns at the offset frequency');
   ok(S.pulseStats(new Float32Array(100).fill(-40), 1e5) === null, 'a steady trace has no pulses');
+  {
+    // a steady carrier in noise with a few fading dips: 6 dB between its noise peaks and its dips is not a pulse train
+    const rnd = mulberry32(21), y = new Float32Array(4000);
+    for (let k = 0; k < y.length; k++) y[k] = -60 + 3 * gauss(rnd) - (k % 97 === 0 ? 25 : 0);
+    ok(S.pulseStats(y, 1e5) === null, 'a noisy steady carrier with fading dips has no pulses');
+  }
+  ok(S.fmtSec(0) === '0 s', 'zero time prints as 0 s');
   // long windows are reduced for the screen with the amplitude peak-held
   const big = []; const zb = new S.ZeroSpan(rate, { ...zcfg, bwHz: 300_000, sweepSec: 0.2, trigger: 'FREE' }, cc => big.push(cc));
   ok(zb.window <= S.ZS_MAX_POINTS, 'a window is capped');
