@@ -56,6 +56,8 @@ const SPAN_PRESETS: [string, number][] = [['100k', 1e5], ['1M', 1e6], ['2M', 2e6
 const DIVS = [1, 2, 5, 10, 20];
 const SWEEP_TIMES = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1, 0.2, 0.5, 1, 2, 5, 10];
 const MIN_SPAN = 1000, MAX_HZ = 6e9, MIN_HZ = 1e6;
+/** Frames a marker's readout averages over: steady to read, still quick to follow a change. */
+const MARKER_AVG = 16;
 const KEY = 'mayhem.spectrum';
 
 interface Settings {
@@ -160,6 +162,8 @@ export class SpectrumUi {
   private gesture: { kind: 'tap' | 'pan' | 'pinch' | 'marker' | 'cursor'; x0: number; center0: number; span0: number; d0: number; which: number } | null = null;
   private pad: Pad | null = null;
   private densityCanvas: HTMLCanvasElement | null = null;
+  /** Each marker's level, averaged over the last few frames (a live trace on noise jumps several dB a frame). */
+  private readonly mkAvg: { hz: number; trace: Trace | null; lin: number; n: number }[] = Array.from({ length: 4 }, () => ({ hz: NaN, trace: null, lin: 0, n: 0 }));
 
   constructor(private readonly host: Host) {
     this.s = defaults(host.dial());
@@ -265,6 +269,7 @@ export class SpectrumUi {
     const whole = !m.sweep || m.step === m.steps;
     this.traces.forEach(t => { if (t.mode === 'LIVE' || whole) t.update(live, max, min, m.f0, m.binHz); });
     if (this.s.persist && whole && !this.view) this.addDensity(live, m.f0, m.binHz);
+    this.s.markers.forEach((_, k) => this.smoothMarker(k));
     if (rbwMoved) this.tiles();
     this.draw();
   }
@@ -1080,7 +1085,27 @@ export class SpectrumUi {
     mkt.querySelectorAll<HTMLElement>('[data-row]').forEach(r => { r.onclick = () => { s.active = Number(r.dataset.row); this.controls(); this.draw(); }; });
   }
 
+  /** Fold this frame's level at marker k into its running average (power mean of about the last MARKER_AVG frames). */
+  private smoothMarker(k: number): void {
+    const a = this.mkAvg[k], m = this.s.markers[k];
+    const raw = this.rawLevel(k);
+    if (!m.on || !Number.isFinite(raw)) { a.n = 0; return; }
+    const t = this.traceFor(m.trace);
+    if (a.hz !== m.hz || a.trace !== t) { a.hz = m.hz; a.trace = t; a.n = 0; }
+    const p = 10 ** (raw / 10);
+    a.n = Math.min(a.n + 1, MARKER_AVG);
+    a.lin += (p - a.lin) / a.n;
+  }
+
+  /** A marker's level as shown: its running average once it has one, else the trace under it. */
   private markerLevel(k: number): number {
+    const a = this.mkAvg[k], m = this.s.markers[k];
+    if (a.n > 0 && a.hz === m.hz && a.trace === this.traceFor(m.trace)) return 10 * Math.log10(a.lin + 1e-30);
+    return this.rawLevel(k);
+  }
+
+  /** The trace's value under marker k this frame. */
+  private rawLevel(k: number): number {
     const m = this.s.markers[k], t = this.traceFor(m.trace);
     if (!t?.data) return NaN;
     if (m.hz < t.f0 - t.binHz || m.hz > t.f0 + t.data.length * t.binHz) return NaN;
