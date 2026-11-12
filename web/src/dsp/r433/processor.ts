@@ -112,6 +112,8 @@ function keyOf(model: string, d: R433Data): string {
 }
 
 const STATS_MS = 1000;
+/** Car-key decoders whose frames carry too little checking to trust a single one. */
+const WEAK_KEYS = new Set(['Honda Static']);
 
 export class R433Processor implements IqProcessor {
   private readonly channels: BurstChannels;
@@ -121,6 +123,8 @@ export class R433Processor implements IqProcessor {
   private curSlot = 0;
   /** Milliseconds of radio time since the start, for telling a repeat from a new press. */
   private airMs = 0;
+  /** Weak-check presses heard once, waiting for a second hearing. */
+  private readonly unconfirmed = new Map<string, { press: string; at: number }>();
   private radio = new R433();
   private rate = 0;
   private lastStats = 0;
@@ -179,6 +183,7 @@ export class R433Processor implements IqProcessor {
   clear(): void {
     this.heard.clear();
     this.lastPayload.clear();
+    this.unconfirmed.clear();
     this.unknownSeen.clear();
   }
 
@@ -227,6 +232,13 @@ export class R433Processor implements IqProcessor {
     const press = field('HOP') || field('COUNTER') || r.raw;
     const key = `${r.family}/${r.model}/${id || r.raw}`;
     const now = Date.now();
+    // Decoders with little or no integrity check (Honda Static's reversed path never compares its checksum, and
+    // fixed-code remotes have none) can read noise as a key. A real fob repeats every press several times, so
+    // these are shown only once the same press has been heard twice within a second and a half.
+    if (r.family === 'remote' || WEAK_KEYS.has(r.model)) {
+      const seen = this.unconfirmed.get(key);
+      if (!seen || seen.press !== press || this.airMs - seen.at > 1500) { this.unconfirmed.set(key, { press, at: this.airMs }); if (this.unconfirmed.size > 500) this.unconfirmed.clear(); return; }
+    }
     // one press sends the same frame several times: within 1.2 s of radio time it is the same press
     const last = this.lastPayload.get(key);
     if (last && last.json === press && this.airMs - last.at < 1200) return;

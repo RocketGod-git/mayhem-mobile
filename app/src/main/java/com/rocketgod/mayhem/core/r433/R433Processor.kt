@@ -98,6 +98,8 @@ class R433Processor : IqProcessor {
     // worker side: the channels a checksum-verified sensor claimed
     private val verified = HashSet<Int>()
     private val lastPayload = HashMap<String, Pair<String, Double>>()
+    /** Weak-check presses heard once, waiting for a second hearing. */
+    private val unconfirmed = HashMap<String, Pair<String, Double>>()
     private val unknownSeen = HashMap<String, Long>()
     private val heard = LinkedHashMap<String, HeardDevice>()
     private val _devices = MutableStateFlow<List<HeardDevice>>(emptyList())
@@ -136,7 +138,7 @@ class R433Processor : IqProcessor {
     /** Every burst in the span is tuned to on its own, so the span watched is all of it. */
     fun span(): Int = rate
 
-    fun clear() { worker.execute { resetBluelineId(); resetSparsnasSensorId(); heard.clear(); lastPayload.clear(); unknownSeen.clear(); _devices.value = emptyList() } }
+    fun clear() { worker.execute { resetBluelineId(); resetSparsnasSensorId(); heard.clear(); lastPayload.clear(); unconfirmed.clear(); unknownSeen.clear(); _devices.value = emptyList() } }
 
     /** Waits until the worker has decoded and reported everything sent to it so far (for the tests). */
     fun settle() { worker.submit {}.get() }
@@ -211,6 +213,17 @@ class R433Processor : IqProcessor {
         val press = field("HOP").ifEmpty { field("COUNTER") }.ifEmpty { r.raw }
         val key = "${r.family}/${r.model}/${id.ifEmpty { r.raw }}"
         val now = System.currentTimeMillis()
+        // Decoders with little or no integrity check (Honda Static's reversed path never compares its checksum, and
+        // fixed-code remotes have none) can read noise as a key. A real fob repeats every press several times, so
+        // these are shown only once the same press has been heard twice within a second and a half.
+        if (r.family == "remote" || r.model in WEAK_KEYS) {
+            val seen = unconfirmed[key]
+            if (seen == null || seen.first != press || air - seen.second > 1500) {
+                unconfirmed[key] = press to air
+                if (unconfirmed.size > 500) unconfirmed.clear()
+                return
+            }
+        }
         // one press sends the same frame several times: within 1.2 s of radio time it is the same press
         val last = lastPayload[key]
         if (last != null && last.first == press && air - last.second < 1200) return
@@ -259,3 +272,6 @@ class R433Processor : IqProcessor {
 }
 
 private val NON_WORD = Regex("[^a-z0-9]+")
+
+/** Car-key decoders whose frames carry too little checking to trust a single one. */
+private val WEAK_KEYS = setOf("Honda Static")
