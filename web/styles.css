@@ -1496,3 +1496,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sp-padu button { flex: 1; height: auto; min-height: 40px; color: #05080a; background: var(--accent); border-color: var(--accent); font-size: 14px; letter-spacing: 1px; }
 .sp-padu button[data-p="bs"] { background: var(--surface); color: var(--ink); border-color: var(--line); }
 .sp-padk button:active, .sp-padu button:active { transform: translateY(1px); }
+/* a phone: each tile's arrows either side of its value, one line, so the tiles leave room for the plot */
+@media (max-width: 860px) {
+  .sp-tile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "tl tl tl" "dn tv up"; column-gap: 6px; align-items: center; padding: 6px 8px; }
+  .sp-tl { grid-area: tl; }
+  .sp-tv { grid-area: tv; font-size: 19px; padding: 0; }
+  .sp-knob { display: contents; }
+  .sp-knob i { display: none; }
+  .sp-knob button:first-child { grid-area: dn; } .sp-knob button:last-child { grid-area: up; }
+  .sp-knob button { width: 30px; height: 30px; }
+}

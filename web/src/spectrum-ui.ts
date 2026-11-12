@@ -159,9 +159,11 @@ export class SpectrumUi {
   private commitTimer = 0;
   /** Pointers down on the plot, and what the gesture is. */
   private readonly pts = new Map<number, { x: number; y: number }>();
-  private gesture: { kind: 'tap' | 'pan' | 'pinch' | 'marker' | 'cursor'; x0: number; center0: number; span0: number; d0: number; which: number } | null = null;
+  private gesture: { kind: 'tap' | 'pan' | 'pinch' | 'pinchT' | 'marker' | 'cursor'; x0: number; center0: number; span0: number; d0: number; which: number } | null = null;
   private pad: Pad | null = null;
   private densityCanvas: HTMLCanvasElement | null = null;
+  /** The sweep time a zero-span pinch is making (the SWEEP tile shows it while the fingers move). */
+  private pinchTime = NaN;
   /** Each marker's level, averaged over the last few frames (a live trace on noise jumps several dB a frame). */
   private readonly mkAvg: { hz: number; trace: Trace | null; lin: number; n: number }[] = Array.from({ length: 4 }, () => ({ hz: NaN, trace: null, lin: 0, n: 0 }));
 
@@ -227,6 +229,8 @@ export class SpectrumUi {
     this.host.post({ type: 'spectrum', cmd: 'set', cfg: this.config() });
     this.save(); this.tiles(); this.draw();
   }
+  /** The longest zero-span window this filter allows. */
+  private zsMostSec(): number { return ZS_MAX_POINTS / zsPlan(this.zsRate(), this.s.zsBw).outRate; }
   /** Set the span (clamped to what a radio reaches) and restart. */
   private setSpan(center: number, span: number): void {
     span = Math.max(MIN_SPAN, Math.min(MAX_HZ - MIN_HZ, span));
@@ -357,7 +361,7 @@ export class SpectrumUi {
       return [
         ['zf', 'FREQUENCY', fv, fu, ''],
         ['zbw', 'FILTER', ...bigHz(s.zsBw), ''],
-        ['zst', 'SWEEP', ...(fmtSec(this.zcap?.sweepSec ?? s.zsTime).split(' ') as [string, string]), ''],
+        ['zst', 'SWEEP', ...(fmtSec(Number.isFinite(this.pinchTime) ? this.pinchTime : this.zcap?.sweepSec ?? s.zsTime).split(' ') as [string, string]), ''],
         ['lvl', 'TRIGGER', s.trig === 'FREE' ? 'FREE' : String(s.level), s.trig === 'FREE' ? 'RUN' : u, s.trig === 'FREE' ? '' : s.trig === 'RISE' ? 'RISE ↑' : 'FALL ↓'],
         ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div · AUTO`],
       ];
@@ -661,6 +665,12 @@ export class SpectrumUi {
     this.pts.set(e.pointerId, p);
     const g = this.geom();
     if (this.s.mode === 'ZERO') {
+      // two fingers stretch the time axis (the sweep time), applied when they lift
+      if (this.pts.size === 2) {
+        const [a, b] = [...this.pts.values()];
+        this.gesture = { kind: 'pinchT', x0: (a.x + b.x) / 2, center0: 0, span0: this.s.zsTime, d0: Math.max(10, Math.abs(a.x - b.x)), which: 0 };
+        this.pinchTime = this.s.zsTime; return;
+      }
       if (!this.s.cursors) return;
       const fx = (p.x - g.l) / g.w;
       this.gesture = { kind: 'cursor', x0: p.x, center0: 0, span0: 0, d0: 0, which: Math.abs(fx - this.s.curA) < Math.abs(fx - this.s.curB) ? 0 : 1 };
@@ -682,6 +692,12 @@ export class SpectrumUi {
     const p = this.local(e);
     this.pts.set(e.pointerId, p);
     const g = this.geom(), gs = this.gesture;
+    if (gs.kind === 'pinchT') {
+      if (this.pts.size < 2) return;
+      const [a, b] = [...this.pts.values()];
+      this.pinchTime = Math.max(SWEEP_TIMES[0], Math.min(this.zsMostSec(), gs.span0 * gs.d0 / Math.max(10, Math.abs(a.x - b.x))));
+      this.tiles(); return;
+    }
     if (gs.kind === 'cursor') {
       const fx = Math.max(0, Math.min(1, (p.x - g.l) / g.w));
       if (gs.which === 0) this.s.curA = fx; else this.s.curB = fx;
@@ -707,6 +723,14 @@ export class SpectrumUi {
     this.pts.delete(e.pointerId);
     if (!gs) return;
     if (gs.kind === 'pinch') { if (this.pts.size < 2) { this.gesture = null; this.commitSoon(0); } return; }
+    if (gs.kind === 'pinchT') {
+      if (this.pts.size >= 2) return;
+      this.gesture = null;
+      // snap to the nearest 1-2-5 sweep time
+      const want = this.pinchTime; this.pinchTime = NaN;
+      if (Number.isFinite(want)) { this.s.zsTime = Math.min(this.zsMostSec(), SWEEP_TIMES.reduce((p, x) => (Math.abs(Math.log(x / want)) < Math.abs(Math.log(p / want)) ? x : p))); this.controls(); this.restart(); }
+      return;
+    }
     this.gesture = null;
     if (gs.kind === 'tap' && p && this.s.mode === 'FREQ') {
       const m = this.s.markers[this.s.active];

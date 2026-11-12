@@ -226,12 +226,24 @@ private fun SpTileView(t: SpTile, first: Boolean, accent: Color, modifier: Modif
                         .clickable { Spectrum.badge(t.id) }.padding(horizontal = 6.dp, vertical = 2.dp))
             }
         }
-        Text(buildAnnotatedString {
-            append(t.value)
-            withStyle(SpanStyle(color = Palette.muted, fontSize = d.sp(12f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)) { append(" " + t.unit) }
-        }, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (d.wide) 24f else 22f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
-            style = TextStyle(shadow = Shadow(tint.copy(alpha = 0.45f), blurRadius = 28f)),
-            modifier = Modifier.fillMaxWidth().clickable { Spectrum.openPad(t.id) }.padding(top = 2.dp))
+        val value = @Composable { mod: Modifier ->
+            Text(buildAnnotatedString {
+                append(t.value)
+                withStyle(SpanStyle(color = Palette.muted, fontSize = d.sp(if (d.wide) 12f else 10f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)) { append(" " + t.unit) }
+            }, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (d.wide) 24f else 18f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                style = TextStyle(shadow = Shadow(tint.copy(alpha = 0.45f), blurRadius = 28f)),
+                modifier = mod.clickable { Spectrum.openPad(t.id) }.padding(top = 2.dp))
+        }
+        if (!d.wide) {
+            // a phone: the knob's arrows either side of the value, one line, so five tiles leave room for the plot
+            Row(Modifier.fillMaxWidth().padding(top = d.dp(2f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+                SpKnob("‹", accent, compact = true) { Spectrum.turn(t.id, -1) }
+                value(Modifier.weight(1f))
+                SpKnob("›", accent, compact = true) { Spectrum.turn(t.id, 1) }
+            }
+            return@Column
+        }
+        value(Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth().padding(top = d.dp(4f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             SpKnob("‹", accent) { Spectrum.turn(t.id, -1) }
             Canvas(Modifier.weight(1f).height(2.dp)) {
@@ -244,10 +256,10 @@ private fun SpTileView(t: SpTile, first: Boolean, accent: Color, modifier: Modif
 }
 
 @Composable
-private fun SpKnob(label: String, accent: Color, onClick: () -> Unit) {
+private fun SpKnob(label: String, accent: Color, compact: Boolean = false, onClick: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(8.dp)
-    Box(Modifier.width(d.dp(40f)).height(d.dp(28f)).clip(shape).background(Palette.paper).border(1.dp, Palette.line, shape).clickable { onClick() }, contentAlignment = Alignment.Center) {
+    Box(Modifier.width(d.dp(if (compact) 30f else 40f)).height(d.dp(if (compact) 30f else 28f)).clip(shape).background(Palette.paper).border(1.dp, Palette.line, shape).clickable { onClick() }, contentAlignment = Alignment.Center) {
         Text(label, color = accent, fontWeight = FontWeight.Black, fontSize = d.sp(18f))
     }
 }

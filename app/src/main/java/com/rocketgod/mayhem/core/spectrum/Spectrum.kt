@@ -414,7 +414,7 @@ object Spectrum {
         val u = unitLabel()
         fun t(id: String, label: String, p: Pair<String, String>, badge: String = "") = SpTile(id, label, p.first, p.second, badge)
         if (s.mode == SpMode.ZERO) {
-            val sw = fmtSec(zcap?.sweepSec ?: s.zsTime).split(" ")
+            val sw = fmtSec(if (pinchTime.isFinite()) pinchTime else zcap?.sweepSec ?: s.zsTime).split(" ")
             return listOf(
                 t("zf", "FREQUENCY", bigHz(s.zsFreq)),
                 t("zbw", "FILTER", bigHz(s.zsBw)),
@@ -662,7 +662,7 @@ object Spectrum {
 
     // ---- gestures on the plot (x in pixels across the plot area, [l] its left edge, [w] its width) ---------------
 
-    private enum class G { TAP, PAN, PINCH, MARKER, CURSOR }
+    private enum class G { TAP, PAN, PINCH, PINCH_T, MARKER, CURSOR }
     private class Gesture(var kind: G, val x0: Float, val center0: Double, val span0: Double, val d0: Float, val which: Int)
     private var gesture: Gesture? = null
     private val commit = Runnable { val v = view; if (v != null && gesture == null) setSpan(v.first, v.second) }
@@ -686,9 +686,14 @@ object Spectrum {
     }
     /** A second finger: the gesture becomes a pinch about the two. */
     fun pinch(a: Float, b: Float) {
-        if (s.mode != SpMode.FREQ) return
+        // zero span: the pinch stretches the time axis (the sweep time), applied when the fingers lift
+        if (s.mode == SpMode.ZERO) { gesture = Gesture(G.PINCH_T, (a + b) / 2, 0.0, s.zsTime, max(10f, abs(a - b)), 0); pinchTime = s.zsTime; return }
         gesture = Gesture(G.PINCH, (a + b) / 2, vCenter(), vSpan(), max(10f, abs(a - b)), 0)
     }
+    /** The sweep time a zero-span pinch is making (shown on the SWEEP tile while the fingers move). */
+    var pinchTime = Double.NaN; private set
+    /** The longest window this filter allows. */
+    private fun zsMostSec(): Double = ZS_MAX_POINTS / zsPlan(zsRate(), s.zsBw).outRate
     /** The pointers moved to [xs]. */
     fun move(xs: List<Float>, l: Float, w: Float) {
         val gs = gesture ?: return
@@ -703,6 +708,10 @@ object Spectrum {
                 val mid = (xs[0] + xs[1]) / 2
                 preview(anchor - ((mid - l) / w - 0.5) * span, span)
             }
+            G.PINCH_T -> if (xs.size >= 2) {
+                val d = max(10f, abs(xs[0] - xs[1]))
+                pinchTime = max(SWEEP_TIMES.first(), min(zsMostSec(), gs.span0 * gs.d0 / d)); changed()
+            }
             G.TAP, G.PAN -> {
                 if (gs.kind == G.TAP && abs(x - gs.x0) > 6 * density) gs.kind = G.PAN
                 if (gs.kind == G.PAN) preview(gs.center0 - (x - gs.x0) / w * gs.span0, gs.span0)
@@ -715,6 +724,11 @@ object Spectrum {
         gesture = null
         when (gs.kind) {
             G.PINCH, G.PAN -> commitSoon(0)
+            G.PINCH_T -> {
+                // snap to the nearest 1-2-5 sweep time
+                val want = pinchTime; pinchTime = Double.NaN
+                if (want.isFinite()) { s.zsTime = min(zsMostSec(), SWEEP_TIMES.minByOrNull { abs(ln(it / want)) }!!); restart() } else changed()
+            }
             G.TAP -> if (s.mode == SpMode.FREQ) {
                 val m = s.markers[s.active]
                 m.on = true; m.hz = hzAt(x, l, w)
