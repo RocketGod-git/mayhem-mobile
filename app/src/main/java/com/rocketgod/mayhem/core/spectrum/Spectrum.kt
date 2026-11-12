@@ -313,6 +313,8 @@ object Spectrum {
         // a marker the new span leaves behind goes off rather than reading the trace's edge
         for (m in s.markers) if (m.hz < start || m.hz > stop) { m.on = false; m.delta = false; m.hz = 0.0 }
         frame = null; zcap = null; zstats = null; armed = true; view = null
+        // the marker averages belong to the old span's traces
+        for (a in mkAvg) a.n = 0
         for (t in traces) t.clear()
         persistence?.clear()
         // a frame from a processor that has since been replaced belongs to the old settings, and is dropped
@@ -556,7 +558,7 @@ object Spectrum {
     // ---- controls ---------------------------------------------------------------------------------------------
 
     fun setMode(m: SpMode) { s.mode = m; restart() }
-    fun setUnit(u: SpUnit) { s.unit = u; for (t in traces) t.clear(); persistence?.clear(); update() }
+    fun setUnit(u: SpUnit) { s.unit = u; for (t in traces) t.clear(); for (a in mkAvg) a.n = 0; persistence?.clear(); update() }
     fun setWindow(w: WindowKind) { s.window = w; restart() }
     fun setDet(d: Detector) { s.det = d; save(); changed() }
     fun setMeas(m: Meas) { s.meas = m; save(); changed() }
@@ -564,7 +566,7 @@ object Spectrum {
     fun setMarkerTrace(t: Int) { s.markers[s.active].trace = t; save(); changed() }
     fun setZsBw(b: Double) { s.zsBw = b; restart() }
     fun setTrig(t: TrigMode) { s.trig = t; update() }
-    fun clearTrace(i: Int) { traces[i].clear(); changed() }
+    fun clearTrace(i: Int) { traces[i].clear(); for (a in mkAvg) a.n = 0; changed() }
     fun setTraceMode(i: Int, m: TraceMode) { traces[i].setMode(m); s.traces[i].mode = traces[i].mode; save(); changed() }
 
     fun stepper(id: String, dir: Int) {

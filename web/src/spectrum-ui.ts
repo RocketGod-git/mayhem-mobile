@@ -213,6 +213,8 @@ export class SpectrumUi {
     // a marker the new span leaves behind goes off rather than reading the trace's edge
     for (const m of this.s.markers) if (m.hz < this.start || m.hz > this.stop) { m.on = false; m.delta = false; m.hz = 0; }
     this.frame = null; this.zcap = null; this.zstats = null; this.armed = true; this.view = null;
+    // the marker averages belong to the old span's traces
+    for (const a of this.mkAvg) a.n = 0;
     for (const t of this.traces) t.clear();
     this.persist?.clear();
     if (cfg.mode === 'ZERO') this.host.start(cfg.tuneHz, this.zsRate(), cfg);
@@ -548,7 +550,7 @@ export class SpectrumUi {
       if (d.mkt) { s.markers[s.active].trace = Number(d.mkt); this.controls(); this.draw(); this.save(); return; }
       if (d.zbw) { s.zsBw = Number(d.zbw); this.controls(); this.restart(); return; }
       if (d.trig) { s.trig = d.trig as TrigMode; this.controls(); this.update(); return; }
-      if (d.clr !== undefined) { this.traces[Number(d.clr)].clear(); this.draw(); return; }
+      if (d.clr !== undefined) { this.traces[Number(d.clr)].clear(); for (const a of this.mkAvg) a.n = 0; this.draw(); return; }
       for (let i = 0; i < 4; i++) if (d[`tr${i}`]) { this.traces[i].setMode(d[`tr${i}`] as TraceMode); s.traces[i].mode = this.traces[i].mode; this.controls(); this.save(); this.draw(); return; }
       if (d.up || d.dn) { this.stepper((d.up || d.dn)!, d.up ? 1 : -1); return; }
       if (d.tog) { this.toggle(d.tog); return; }
