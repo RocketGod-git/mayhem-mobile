@@ -1,7 +1,7 @@
 /** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
 import { HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
 import { RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
-import { APP_NEEDS, blockedBecause, canSample, canTune, nearestRate, whyNot, type Radio } from './radio.js';
+import { APP_NEEDS, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
 import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
@@ -710,7 +710,7 @@ function highlightBands(): void {
 function launcherView(): { center: number; rate: number; mode: Mode } {
   const b = LAUNCH_BANDS.find(x => x.id === state.launchBand) ?? LAUNCH_BANDS[0];
   // With nothing connected there is no point asking for a span nothing will fill.
-  const widest = radio ? Math.max(...radio.limits.rates.map(([, hi]) => hi)) : RX_RATE;
+  const widest = radio ? cleanWidest(radio.limits) : RX_RATE;
   // The same ceiling the HAM screen uses, and for the same reason: past it the front end and the USB link stop
   // keeping up, and a phone gives up sooner than a desktop. A launcher that stutters is worse than a narrow one.
   const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)];
@@ -1604,7 +1604,7 @@ function audioViewBand(): void {
   if (!radio || spanByHand) return;
   const b = LAUNCH_BANDS.find(x => state.freq >= x.lo && state.freq <= x.hi);
   if (!b) return;
-  const widest = Math.max(...radio.limits.rates.map(([, hi]) => hi));
+  const widest = cleanWidest(radio.limits);
   if (widest * 2 < b.hi - b.lo) { setRate(widest); scope?.clear(); refreshChannel(); return; }
   const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)];
   const fits = RX_RATES.filter(r => r <= Math.min(cap, widest));

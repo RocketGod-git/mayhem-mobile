@@ -192,6 +192,22 @@ class TrainsTest {
         assertEquals("the wayside unit's did not", 0, way.changes)
     }
 
+    /** An RTL-SDR: 2 Msps on the narrow PTC tuning still hears the base station and the wayside unit beside it. */
+    @Test fun ptcStationsOnANarrowRadio() {
+        val rate = 2_000_000; val c = TrainsProcessor.PTC_NARROW
+        val out = java.io.ByteArrayOutputStream()
+        dqpskIq(BASE, 220_712_500.0 - c, rate, out, seed = 1)
+        dqpskIq(WAYSIDE, 219_512_500.0 - c, rate, out, seed = 2)
+        dqpskIq(BASE, 220_712_500.0 - c, rate, out, seed = 3)
+        val log = PacketLog()
+        val p = TrainsProcessor(log); p.centerOf = { c }; p.band = TrainsProcessor.Band.PTC
+        val got = ArrayList<PtcBurst>(); p.onPtc = { got.add(it) }; p.ptcTrace = { println(it) }
+        run(p, out.toByteArray(), rate)
+        for (b in got) println("narrow burst %.4f %d sym sync %d/30 snr %d".format(b.hz / 1e6, b.symbols, b.syncScore, b.snrDb))
+        assertEquals(3, got.count { it.isPtc })
+        assertEquals(2, p.stations.value.size)
+    }
+
     @Test fun noiseIsNotPtc() {
         val rate = 2_000_000; val c = TrainsProcessor.PTC_NARROW
         val out = java.io.ByteArrayOutputStream()

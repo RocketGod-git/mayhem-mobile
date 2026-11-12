@@ -16,6 +16,17 @@ export interface RadioLimits {
   /** Sample rates the part will accept, as inclusive ranges in hertz. */
   rates: [number, number][];
   canTransmit: boolean;
+  /**
+   * The widest span the views open at on their own: clean across its whole width and with no dropped buffers. An
+   * app that needs more can still ask for any rate in [rates].
+   */
+  cleanRate?: number;
+}
+
+/** The widest rate a view should open at on this radio (see [RadioLimits.cleanRate]). */
+export function cleanWidest(r: RadioLimits): number {
+  const widest = Math.max(...r.rates.map(([, hi]) => hi));
+  return Math.min(widest, r.cleanRate ?? widest);
 }
 
 /** Where samples and news about the radio go. Both drivers emit signed eight-bit IQ, whatever the wire carries. */

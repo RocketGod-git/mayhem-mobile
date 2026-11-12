@@ -251,6 +251,9 @@ export const RTL_LIMITS: RadioLimits = {
   // decode now and then but shows far more of the band (all of a pager cluster, more of FM broadcast).
   rates: [[225_001, 300_000], [900_001, 3_200_000]],
   canTransmit: false,
+  // What the views open at: at 3.2 Msps a Blog V4's edges fall outside the tuner's filter (a black strip on one
+  // side, a fade on the other) and the USB link drops buffers; 2.4 Msps is clean edge to edge.
+  cleanRate: 2_400_000,
 };
 
 export class RtlSdr implements Radio {

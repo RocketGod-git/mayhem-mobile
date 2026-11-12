@@ -520,9 +520,9 @@ object SdrEngine {
 
     /** [dry]: only say whether there is a rung that way (for dimming the button), change nothing. */
     fun stepSpan(dir: Int, cap: Int, dry: Boolean = false): Boolean {
-        // an RTL-SDR zooms 1.92 → 2.4 → 3.2 MHz; 3.2 is where it opens for the start-up pick
+        // an RTL-SDR zooms 1.92 → 2.4 MHz; 2.4 is where it opens for the start-up pick
         val rtl = Radio.kind.value == Radio.Kind.RTLSDR
-        val ladder = if (rtl) listOf(1_920_000, 2_400_000, WIDE_SCAN_RTL)
+        val ladder = if (rtl) listOf(1_920_000, WIDE_SCAN_RTL)
                      else RX_RATES.filter { it <= cap && Radio.canSample(Radio.limits, it) }
         if (ladder.isEmpty()) return false
         val cur = ladder.indexOfFirst { it >= _rateHz.value }.let { if (it < 0) ladder.size - 1 else it }
@@ -554,10 +554,11 @@ object SdrEngine {
     }
 
     /**
-     * An RTL-SDR opens at 3.2 Msps for the start-up pick and listens there too; the zoom steps back to 2.4 or 1.92
-     * by hand. It is past the 2.4 a dongle holds for certain, so it is never an app's rate: any other rate ends it.
+     * An RTL-SDR opens at 2.4 Msps for the start-up pick and listens there too; the zoom steps back to 1.92 by hand.
+     * Not 3.2: there a Blog V4's edges fall outside the tuner's filter (a black strip down one side of the
+     * waterfall, a fade down the other) and the USB link drops buffers. Any other rate ends this view.
      */
-    const val WIDE_SCAN_RTL = 3_200_000
+    const val WIDE_SCAN_RTL = 2_400_000
     @Volatile var wideScan = false; private set
     fun setWideScan(on: Boolean) {
         if (on == wideScan) return
@@ -568,7 +569,7 @@ object SdrEngine {
     }
 
     private fun clampRate(rate: Int): Int {
-        wideScan = false        // any ordinary rate (an app's, a zoom step) ends the RTL-SDR's 3.2 Msps view
+        wideScan = false        // any ordinary rate (an app's, a zoom step) ends the RTL-SDR's start-up view
         val r = Radio.nearestRate(Radio.limits, rate)
         if (r != rate && Radio.kind.value != Radio.Kind.NONE)
             Diag.log("%.2f Msps is out of range for this ${Radio.name} — using %.2f".format(rate / 1e6, r / 1e6))
