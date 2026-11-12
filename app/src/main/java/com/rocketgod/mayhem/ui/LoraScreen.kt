@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -194,31 +193,25 @@ private fun LoraMessageRow(event: LoraEvent, accent: Color, onClick: () -> Unit)
 @Composable
 private fun LoraDetail(node: LoraNode, accent: Color, modifier: Modifier, onMap: (() -> Unit)?, onCards: (() -> Unit)?, onClose: () -> Unit) {
     val d = rememberDims()
-    var tall by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(d.dp(14f))
+    val scroll = rememberScrollState()
     Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.94f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
-        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             Text(node.label, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f), maxLines = 1)
             Text("${node.proto.uppercase()} · ${node.kind}", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
                 letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (onMap != null) ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
             if (onCards != null) ToggleBox("CARDS", false, accent, Modifier.fillMaxHeight()) { onCards() }
-            ToggleBox(if (tall) "LESS" else "MORE", false, accent, Modifier.fillMaxHeight()) { tall = !tall }
             ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
         }
         val all = listOf(MeshField("FIRST HEARD", LoraHub.clock(node.firstMs)), MeshField("LAST HEARD", LoraHub.clock(node.lastMs)),
             MeshField("PACKETS", "${node.packets}"), MeshField("FREQUENCY", LoraHub.mhz(node.hz)), MeshField("MODEM", node.modem)) + node.fields
-        val scroll = rememberScrollState()
         SelectionContainer {
-            Column(Modifier.fillMaxWidth().heightIn(max = d.dp(if (tall) 420f else 170f)).scrollGlow(scroll).verticalScroll(scroll),
-                verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                for (f in all) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                    Text(f.name, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
-                        modifier = Modifier.width(d.dp(96f)))
-                    Text(f.value, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
-                }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+                FieldGrid(all.map { it.name to it.value }, labelWidth = 96f, minColumn = 220f)
                 for (t in node.texts.reversed()) Text("“$t”", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f))
             }
         }

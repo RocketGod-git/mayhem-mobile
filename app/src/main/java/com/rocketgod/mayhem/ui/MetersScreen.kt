@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -180,8 +179,8 @@ private fun NetLine(n: MeshNet, accent: Color) {
 @Composable
 private fun MeshDetail(dev: MeshDevice, accent: Color, modifier: Modifier, onMap: (() -> Unit)?, onCards: (() -> Unit)?, onClose: () -> Unit) {
     val d = rememberDims()
-    var tall by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(d.dp(14f))
+    val scroll = rememberScrollState()
     val kind = when (dev.net) {
         MeshDecoder.ERT -> "ERT METER"
         MeshDecoder.GRIDSTREAM -> "GRIDSTREAM METER"
@@ -189,25 +188,19 @@ private fun MeshDetail(dev: MeshDevice, accent: Color, modifier: Modifier, onMap
     }
     Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.94f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
-        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             Text(dev.label, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
             Text(kind, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (onMap != null) ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
             if (onCards != null) ToggleBox("CARDS", false, accent, Modifier.fillMaxHeight()) { onCards() }
-            ToggleBox(if (tall) "LESS" else "MORE", false, accent, Modifier.fillMaxHeight()) { tall = !tall }
             ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
         }
-        val scroll = rememberScrollState()
         SelectionContainer {
-            Column(Modifier.fillMaxWidth().heightIn(max = d.dp(if (tall) 420f else 170f)).scrollGlow(scroll).verticalScroll(scroll),
-                verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                for (f in dev.fields) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                    Text(f.name, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
-                        modifier = Modifier.width(d.dp(96f)))
-                    Text(f.value, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
-                }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+                FieldGrid(dev.fields.map { it.name to it.value }, labelWidth = 96f, minColumn = 220f)
                 if (dev.net == MeshDecoder.GRIDSTREAM && dev.wanVotes.size > 1) {
                     Text("position heard ${dev.wanVotes.values.maxOrNull() ?: 0}× of ${dev.wanVotes.values.sum()} beacons (the most-heard one is shown)",
                         color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))

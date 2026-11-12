@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.sp
 
 /**
  * The selected aircraft, vessel or station: a name bar with MAP and close, who or what it is one fact to a line, an
- * optional photo, and a grid of live readings.
+ * optional photo, and a grid of live readings. Nothing is cut short: every line and reading wraps to show in full.
  */
 @Composable
 fun DetailCard(
@@ -44,7 +44,7 @@ fun DetailCard(
             Column(Modifier.weight(1f)) {
                 lines.forEachIndexed { i, l ->
                     Text(l, color = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.8f), fontFamily = Mono,
-                        fontWeight = if (i == 0) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(11f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        fontWeight = if (i == 0) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(11f))
                 }
             }
             if (photo != null) Image(photo, null, contentScale = ContentScale.Crop,
@@ -55,7 +55,7 @@ fun DetailCard(
             Row(Modifier.fillMaxWidth().padding(top = d.dp(4f))) {
                 for ((k, v) in row) Column(Modifier.weight(1f)) {
                     Text(k, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1)
-                    Text(v, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(v, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f))
                 }
                 repeat(cols - row.size) { Column(Modifier.weight(1f)) {} }
             }

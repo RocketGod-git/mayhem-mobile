@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -33,7 +34,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import com.rocketgod.mayhem.core.trains.PtcScanner
 import androidx.compose.material3.Text
@@ -662,38 +662,61 @@ private fun ptcFields(s: PtcStation, now: Long): List<Pair<String, String>> {
 
 /**
  * A card's full decode, field by field, over the cards (Trains and Devices). [history], when there is one, follows
- * the fields: when, and what was heard then, newest first.
+ * the fields: when, and what was heard then, newest first. Every field shows at once: the panel is as tall as its
+ * fields, up to the space over the cards, and only past that does the whole panel scroll.
  */
 @Composable
 internal fun FieldDetail(fields: List<Pair<String, String>>, title: String, kind: String, accent: Color, modifier: Modifier,
                          history: List<Pair<String, String>> = emptyList(), onClose: () -> Unit) {
     val d = rememberDims()
-    var tall by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(d.dp(14f))
+    val scroll = rememberScrollState()
     Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
-        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             Text(title, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
             Text(kind, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            ToggleBox(if (tall) "LESS" else "MORE", false, accent, Modifier.fillMaxHeight()) { tall = !tall }
             ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
         }
-        val scroll = rememberScrollState()
         SelectionContainer {
-            Column(Modifier.fillMaxWidth().heightIn(max = d.dp(if (tall) 440f else 190f)).scrollGlow(scroll).verticalScroll(scroll),
-                verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                for ((k, v) in fields) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                    Text(k, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.width(d.dp(112f)))
-                    Text(v, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
-                }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+                FieldGrid(fields, labelWidth = 112f, minColumn = 320f)
                 if (history.isNotEmpty()) {
                     Text("EVERY TIME IT WAS HEARD", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp,
                         modifier = Modifier.padding(top = d.dp(4f)))
                     for ((t, v) in history) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                         Text(t, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(112f)))
                         Text(v, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Name/value rows in as many columns as the width holds (each at least [minColumn] wide), filled row by row like
+ * the web's field grid: a phone gets one column, a tablet or a full-screen panel two or more.
+ */
+@Composable
+internal fun FieldGrid(fields: List<Pair<String, String>>, labelWidth: Float, minColumn: Float) {
+    val d = rememberDims()
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val gap = d.dp(10f)
+        val cols = ((maxWidth + gap) / (d.dp(minColumn) + gap)).toInt().coerceAtLeast(1)
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            for (row in fields.chunked(cols)) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                for (i in 0 until cols) {
+                    val f = row.getOrNull(i)
+                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                        if (f != null) {
+                            Text(f.first, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
+                                modifier = Modifier.width(d.dp(labelWidth)))
+                            Text(f.second, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+                        }
                     }
                 }
             }
