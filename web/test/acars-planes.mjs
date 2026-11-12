@@ -39,6 +39,7 @@ function line({ mhz = '131.550', down = true, reg = 'N12345', label = 'H1', blk 
   eq(u.text, '', 'no text');
   const sp = parseAcarsLine(line({ msn: 'M02B', flight: '' }), 5);
   eq(sp.flight, '', 'message number without a flight');
+  eq(parseAcarsLine(line({ mhz: '131,550' }), 0).mhz, '131.550', 'a decimal comma (a device locale) reads the same');
   eq(parseAcarsLine('ACARS: decoding 131.550 MHz', 0), null, 'not a message line');
   eq(parseAcarsLine('POCSAG 1200 …', 0), null, 'another decoder line');
 }

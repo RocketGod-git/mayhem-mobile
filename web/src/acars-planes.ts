@@ -17,13 +17,13 @@ export interface AcarsMsg {
  * Reads one decoder line: `ACARS 131.550 ↓ N12345  H1  blk 3  ack NAK  #M01A UA1234  CRC?  mode 2` with the text on
  * the next line (the CRC and mode parts only when they say something). Null for any other line.
  */
-const HEAD = /^ACARS (\d+\.\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\S*))?(  CRC\?)?(?:  mode (.))?$/;
+const HEAD = /^ACARS (\d+[.,]\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\S*))?(  CRC\?)?(?:  mode (.))?$/;
 export function parseAcarsLine(line: string, ms: number): AcarsMsg | null {
   const nl = line.indexOf('\n');
   const head = nl >= 0 ? line.slice(0, nl) : line, text = nl >= 0 ? line.slice(nl + 1) : '';
   const m = HEAD.exec(head);
   if (!m) return null;
-  return { mhz: m[1], down: m[2] === '↓', reg: m[3].trim(), label: m[4], blk: m[5], ack: m[6], msn: m[7] ?? '', flight: (m[8] ?? '').trim(),
+  return { mhz: m[1].replace(',', '.'), down: m[2] === '↓', reg: m[3].trim(), label: m[4], blk: m[5], ack: m[6], msn: m[7] ?? '', flight: (m[8] ?? '').trim(),
     crcOk: !m[9], mode: m[10] ?? '2', text, ms };
 }
 
