@@ -43,6 +43,8 @@ export class FftEngine {
   readonly video: VideoFilter;
   readonly max: Float32Array;
   readonly min: Float32Array;
+  /** The video-filtered frames since the last take, summed in linear power: the screen's frame is their mean. */
+  private readonly sum: Float32Array;
   /** Frames folded in since the last take(). */
   framesSince = 0;
   /** Frames transformed since the engine was made. */
@@ -62,6 +64,7 @@ export class FftEngine {
     this.video = new VideoFilter(n);
     this.max = new Float32Array(n).fill(-Infinity);
     this.min = new Float32Array(n).fill(Infinity);
+    this.sum = new Float32Array(n);
     this.skip = Math.max(0, Math.ceil(rate / FFT_BUDGET) - 1);
   }
 
@@ -99,17 +102,21 @@ export class FftEngine {
     if (this.dcPatch) patchDc(this.power, h, dcHalfWidth(this.kind));
     this.video.push(this.power, videoAlpha(this.vbwHz, this.frameSec));
     const y = this.video.y;
-    for (let i = 0; i < n; i++) { const d = toDb(y[i]); if (d > this.max[i]) this.max[i] = d; if (d < this.min[i]) this.min[i] = d; }
+    for (let i = 0; i < n; i++) { const d = toDb(y[i]); if (d > this.max[i]) this.max[i] = d; if (d < this.min[i]) this.min[i] = d; this.sum[i] += y[i]; }
     this.framesSince++; this.frames++;
   }
 
-  /** The video-filtered spectrum and the highest and lowest frames since the last take, bins a..b (inclusive), in dB. */
+  /**
+   * The spectrum since the last take, bins a..b (inclusive), in dB: `live` is the power mean of every video-filtered
+   * frame since then (an FFT analyzer's displayed frame: one lone frame of noise swings 20 dB bin to bin, dozens
+   * averaged read steady), `max` and `min` the highest and lowest single frames (so a short burst is never lost).
+   */
   take(a = 0, b = this.n - 1): { live: Float32Array; max: Float32Array; min: Float32Array; frames: number } {
     const len = b - a + 1;
     const live = new Float32Array(len), mx = new Float32Array(len), mn = new Float32Array(len);
-    for (let i = 0; i < len; i++) { live[i] = toDb(this.video.y[a + i]); mx[i] = this.max[a + i]; mn[i] = this.min[a + i]; }
-    const frames = this.framesSince;
-    this.max.fill(-Infinity); this.min.fill(Infinity); this.framesSince = 0;
+    const frames = this.framesSince, k = 1 / Math.max(1, frames);
+    for (let i = 0; i < len; i++) { live[i] = toDb(frames ? this.sum[a + i] * k : this.video.y[a + i]); mx[i] = this.max[a + i]; mn[i] = this.min[a + i]; }
+    this.max.fill(-Infinity); this.min.fill(Infinity); this.sum.fill(0); this.framesSince = 0;
     return { live, max: mx, min: mn, frames };
   }
 }

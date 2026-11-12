@@ -117,8 +117,14 @@ ok(S.stepBw(3000, 1) === 10000 && S.stepBw(3000, -1) === 1000 && S.stepBw(2900, 
   const t = e.take();
   near(t.max[128 + 20], dbfs(100), 0.05, 'the frame max between takes keeps the loud frame');
   near(t.min[128 + 20], dbfs(10), 0.05, 'the frame min keeps the quiet one');
-  near(t.live[128 + 20], dbfs(10), 0.05, 'live is the latest frame');
+  near(t.live[128 + 20], 10 * Math.log10(((100 / 128) ** 2 + (10 / 128) ** 2) / 2), 0.05, 'live is the power mean of the frames since the last take');
   ok(t.frames === 2, 'take counts the frames it folded');
+  // dozens of noise frames between two takes read steady: the shown frame is their mean, not the last one
+  const en = new S.FftEngine(512, 'HANN', 2e6, 1e9, false), rn = mulberry32(13);
+  for (let f = 0; f < 64; f++) { const s = signal(512, [], 8, rn); en.pushFloat(s.i, s.q); }
+  const y = en.take().live, m = y.reduce((a, b) => a + b, 0) / y.length;
+  const sd = Math.sqrt(y.reduce((a, b) => a + (b - m) ** 2, 0) / y.length);
+  ok(sd < 1, `64 noise frames averaged per screen frame hold within ${sd.toFixed(2)} dB`);
 }
 // The DC patch lays the DC spike on a line.
 {
