@@ -5318,11 +5318,14 @@ function bindDesktop(): void {
       case 'Escape': if (radioPanelOpen()) closeRadioPanel(); else if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app) open(null); break;
     }
   });
-  // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
+  // chip strips, the app strips and lists scroll with a held mouse button (touch already pans natively); a real drag
+  // swallows the click
+  const DRAG_SCROLL = '.bandstrip, .launch-side, .hs-in, .list, .imgwrap, .digitext';
   let drag: { el: HTMLElement; x: number; y: number; left: number; top: number; moved: boolean } | null = null;
   document.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'mouse' || e.button !== 0) return;
-    const el = (e.target as HTMLElement).closest?.('.bandstrip, .list, .imgwrap, .digitext') as HTMLElement | null;
+    if ((e.target as HTMLElement).closest?.('input, select, textarea')) return;
+    const el = (e.target as HTMLElement).closest?.(DRAG_SCROLL) as HTMLElement | null;
     if (!el || (el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight)) return;
     drag = { el, x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop, moved: false };
   });
@@ -5353,6 +5356,16 @@ function bindDesktop(): void {
   // mouse wheel over a digit steps that digit; over any scope it tunes in the current step (ctrl+wheel changes the step)
   window.addEventListener('wheel', (e) => {
     const t = e.target as HTMLElement;
+    // A strip that only scrolls sideways (the Home app strip, the app bar, band chips) takes the ordinary vertical
+    // wheel as sideways, since a mouse has no other way to move it. It lets go at either end.
+    const strip = t.closest?.('.launch-side, .hs-in, .bandstrip') as HTMLElement | null;
+    if (strip && !e.ctrlKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)
+        && strip.scrollWidth > strip.clientWidth + 1 && strip.scrollHeight <= strip.clientHeight + 1) {
+      const before = strip.scrollLeft;
+      strip.scrollLeft += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
+      if (strip.scrollLeft !== before) e.preventDefault();
+      return;
+    }
     const d = t.closest?.('.fd') as HTMLElement | null;
     if (d) { e.preventDefault(); nudgeDigit(d, e.deltaY < 0 ? 1 : -1); return; }
     if (!t.closest?.('.scope') || state.app === 'lookingglass' || state.app === 'search' || state.app === 'adsb' || state.app === 'btle') return;
