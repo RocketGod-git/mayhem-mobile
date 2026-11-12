@@ -542,7 +542,7 @@ export class SpectrumUi {
       const d = b.dataset;
       if (d.mode) { s.mode = d.mode as Mode; this.controls(); this.restart(); return; }
       if (d.span) { this.setSpan(s.center, Number(d.span)); return; }
-      if (d.unit) { s.unit = d.unit as 'dBm' | 'dBFS'; for (const t of this.traces) t.clear(); this.persist?.clear(); this.controls(); this.update(); return; }
+      if (d.unit) { s.unit = d.unit as 'dBm' | 'dBFS'; for (const t of this.traces) t.clear(); for (const a of this.mkAvg) a.n = 0; this.persist?.clear(); this.controls(); this.update(); return; }
       if (d.win) { s.window = d.win as WindowKind; this.controls(); this.restart(); return; }
       if (d.det) { s.det = d.det as Detector; this.controls(); this.tiles(); this.draw(); return; }
       if (d.meas) { s.meas = d.meas as Meas; this.controls(); this.draw(); return; }
