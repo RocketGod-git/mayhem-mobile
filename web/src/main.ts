@@ -102,7 +102,7 @@ const state = {
   pagerMulti: true,
   ism: { weather: true, remotes: true, cars: true },
   r433: { heard: [] as HeardDevice[], stats: null as R433Report | null, hop: false, band: 0,
-    protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', tall: false, hist: new Map<string, { t: number; s: string; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
+    protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', hist: new Map<string, { t: number; s: string; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
   capturing: false, captureName: '', captureBytes: 0, captures: [] as { name: string; size: number }[],
   aircraft: [] as Aircraft[], frames: 0, aisTable: [] as Vessel[], aisSel: 0, aisView: 'map' as 'map' | 'list' | 'log',
   aprsStations: [] as AprsStation[], aprsSel: '', aprsView: 'map' as 'map' | 'list' | 'log',
@@ -3057,7 +3057,7 @@ function renderR433(view: HTMLElement): void {
   hop.classList.toggle('on', state.r433.hop);
   hop.onclick = () => { state.r433.hop = !state.r433.hop; r433Hop(); render('devices'); };
   $('r433-list').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-dv]'); if (c) { state.r433.sel = state.r433.sel === c.dataset.dv ? '' : c.dataset.dv!; drawR433(); } };
-  $('r433-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-dvdo]'); if (!b) return; if (b.dataset.dvdo === 'close') state.r433.sel = ''; else state.r433.tall = !state.r433.tall; drawR433(); };
+  $('r433-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-dvdo]'); if (!b) return; if (b.dataset.dvdo === 'close') { state.r433.sel = ''; drawR433(); } };
   r433Hop();
   clearInterval(r433Tick);
   // ages and the live dots run on between readings
@@ -3140,8 +3140,8 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
   if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);
   const hist = state.r433.hist.get(d.key) ?? [];
   const rows = hist.slice().reverse().map(h => `<div><b>${r433Clock(h.t)}</b><span>${esc(h.s)}${h.hz ? ` · ${r433Mhz(h.hz)}` : ''}</span></div>`).join('');
-  return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${k} · ${esc(d.model)}</span><button class="chip" data-dvdo="tall">${state.r433.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-dvdo="close">✕</button></div>`
-    + `<div class="mt-fields ${state.r433.tall ? 'tall' : ''}">${fields.map(([a, b, m]) => `<div${m ? ` title="${esc(m)}"` : ''}><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}`
+  return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${k} · ${esc(d.model)}</span><button class="chip" data-dvdo="close">✕</button></div>`
+    + `<div class="mt-fields">${fields.map(([a, b, m]) => `<div${m ? ` title="${esc(m)}"` : ''}><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}`
     + (rows ? `<p>EVERY TIME IT WAS HEARD</p>${rows}` : '') + '</div>';
 }
 /** One line per reading for the history in the detail panel. */
@@ -3220,7 +3220,7 @@ function drawR433(): void {
   if (det) {
     const sel = r.heard.find(d => d.key === r.sel);
     det.hidden = !sel;
-    if (sel) det.innerHTML = r433DetailPanel(sel, doubtful.has(sel.num));
+    if (sel) { const top = det.scrollTop; det.innerHTML = r433DetailPanel(sel, doubtful.has(sel.num)); det.scrollTop = top; }
   }
 }
 
@@ -3452,7 +3452,7 @@ interface MetersSnap { nets: MeshNetRow[]; devices: MeshDev[]; links: { a: numbe
 /** The Meters screen: CARDS shows every device live; MAP puts the ones that broadcast a position where they say they
  *  are (only positions decoded off the air), with the mesh links between them. A tap on a card or a pin opens
  *  everything decoded from that device. */
-const meters = { snap: null as MetersSnap | null, view: 'cards' as 'cards' | 'map' | 'log', sel: '', full: false, tall: false, drawn: 0, timer: 0, drawPending: 0 };
+const meters = { snap: null as MetersSnap | null, view: 'cards' as 'cards' | 'map' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
 const meshSync = (s: number) => s === MESH_GRIDSTREAM ? 'Gridstream' : s.toString(16).toUpperCase().padStart(6, '0');
 const hx = (v: number, w: number) => v.toString(16).toUpperCase().padStart(w, '0');
 function meshClockAt(d: MeshDev, ms: number): number {
@@ -3487,7 +3487,6 @@ function renderMeters(view: HTMLElement): void {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-mdo]'); if (!b) return;
     const what = b.dataset.mdo;
     if (what === 'close') meters.sel = '';
-    else if (what === 'tall') meters.tall = !meters.tall;
     else if (what === 'map') {
       meters.view = 'map'; refreshMeters(true);
       const d = meters.snap?.devices.find(x => x.key === meters.sel);
@@ -3566,8 +3565,8 @@ function meshCard(d: MeshDev, now: number): string {
 function meshDetail(d: MeshDev, onMap: boolean): string {
   const kind = d.net === MESH_ERT ? 'ERT METER' : d.net === MESH_GRIDSTREAM ? 'GRIDSTREAM METER' : `MESH NODE · ${meshSync(d.net)}`;
   const votes = Object.values(d.wanVotes);
-  return `<div class="mt-dh"><b>${esc(d.label)}</b><span>${kind}</span>${onMap ? '<button class="chip" data-mdo="map">MAP</button>' : ''}${meters.view === 'map' ? '<button class="chip" data-mdo="cards">CARDS</button>' : ''}<button class="chip" data-mdo="tall">${meters.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-mdo="close">✕</button></div>`
-    + `<div class="mt-fields ${meters.tall ? 'tall' : ''}">${d.fields.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
+  return `<div class="mt-dh"><b>${esc(d.label)}</b><span>${kind}</span>${onMap ? '<button class="chip" data-mdo="map">MAP</button>' : ''}${meters.view === 'map' ? '<button class="chip" data-mdo="cards">CARDS</button>' : ''}<button class="chip" data-mdo="close">✕</button></div>`
+    + `<div class="mt-fields">${d.fields.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
     + (d.net === MESH_GRIDSTREAM && votes.length > 1 ? `<p>position heard ${Math.max(...votes)}× of ${votes.reduce((a, b) => a + b, 0)} beacons (the most-heard one is shown)</p>` : '') + '</div>';
 }
 function refreshMeters(force = false): void {
@@ -3596,7 +3595,7 @@ function refreshMeters(force = false): void {
   }
   const picked = devs.find(d => d.key === meters.sel);
   det.hidden = !picked;
-  if (picked) { const top = q('.mt-fields', det)?.scrollTop ?? 0; det.innerHTML = meshDetail(picked, pins.some(p => p.id === picked.key)); const f = q('.mt-fields', det); if (f) f.scrollTop = top; }
+  if (picked) { const top = det.scrollTop; det.innerHTML = meshDetail(picked, pins.some(p => p.id === picked.key)); det.scrollTop = top; }
   if (meters.view === 'map') {
     geo?.invalidate();
     geo?.update(pins, meters.sel);
@@ -3610,7 +3609,7 @@ function refreshMeters(force = false): void {
 
 // ---- Trains: end-of-train telemetry and the PTC train-control network (receive only) ----------------------------
 interface TrainsSnap { band: 'EOT' | 'PTC'; hears: string[]; units: EotUnit[]; hots: HotHeard[]; stations: PtcStation[]; activity: Record<string, number>; other: number }
-const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '', tall: false, waterfall: null as boolean | null };
+const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '', waterfall: null as boolean | null };
 /** Tunes for the band: as wide as it needs where the radio can (both EOT channels, or all of 216-222.5 MHz), else the
  *  channels heard most, from 2 MHz. */
 function trainsTune(): void {
@@ -3682,7 +3681,7 @@ function renderTrains(view: HTMLElement): void {
   $('tr-wf').onclick = () => { trainsUi.waterfall = !trainsWaterfall(); render('trains'); };
   qa<HTMLButtonElement>('[data-trview]', view).forEach(b => b.onclick = () => { trainsUi.view = b.dataset.trview as typeof trainsUi.view; trainsUi.picked = true; trainsUi.sel = ''; refreshTrains(true); });
   $('tr-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-trsel]'); if (c) { trainsUi.sel = trainsUi.sel === c.dataset.trsel ? '' : c.dataset.trsel!; refreshTrains(true); } };
-  $('tr-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-trdo]'); if (!b) return; if (b.dataset.trdo === 'close') trainsUi.sel = ''; else trainsUi.tall = !trainsUi.tall; refreshTrains(true); };
+  $('tr-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-trdo]'); if (!b) return; if (b.dataset.trdo === 'close') { trainsUi.sel = ''; refreshTrains(true); } };
   clearInterval(trainsUi.timer);
   // the cards run their ages, countdowns and timelines on between reports
   trainsUi.timer = window.setInterval(() => { if (state.app !== 'trains') { clearInterval(trainsUi.timer); return; } refreshTrains(); }, 250);
@@ -3789,8 +3788,8 @@ function trPtcFields(s: PtcStation, now: number): [string, string][] {
   ];
 }
 function trDetail(title: string, kind: string, fields: [string, string][], red: boolean): string {
-  return `<div class="mt-dh ${red ? 'red' : ''}"><b>${esc(title)}</b><span>${esc(kind)}</span><button class="chip" data-trdo="tall">${trainsUi.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-trdo="close">✕</button></div>`
-    + `<div class="mt-fields tr-fields ${trainsUi.tall ? 'tall' : ''}">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
+  return `<div class="mt-dh ${red ? 'red' : ''}"><b>${esc(title)}</b><span>${esc(kind)}</span><button class="chip" data-trdo="close">✕</button></div>`
+    + `<div class="mt-fields tr-fields">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
 }
 const TRAIN_SCENE = '<svg class="tr-scene" viewBox="0 0 92 40"><line class="rail" x1="0" y1="37.6" x2="92" y2="37.6"/><g class="ties">'
   + Array.from({ length: 12 }, (_, i) => `<line x1="${i * 10.2 - 10}" y1="36" x2="${i * 10.2 - 12.5}" y2="40"/>`).join('')
@@ -3852,10 +3851,10 @@ function refreshTrains(force = false): void {
     const u = trainsUi.view === 'units' ? units.find(x => 'u' + x.unit === trainsUi.sel) : undefined;
     const st = trainsUi.view === 'ptc' ? stations.find(x => 's' + x.hz === trainsUi.sel) : undefined;
     det.hidden = !u && !st;
-    const top = q('.mt-fields', det)?.scrollTop ?? 0;
+    const top = det.scrollTop;
     if (u) det.innerHTML = trDetail(`${u.unit}`, u.channel === 'DPU' ? 'DISTRIBUTED POWER' : 'END OF TRAIN', trEotFields(u, now), false);
     else if (st) det.innerHTML = trDetail((st.hz / 1e6).toFixed(4), PTC_KIND_LABEL[st.kind], trPtcFields(st, now), st.kind === 'LOCOMOTIVE');
-    const f = q('.mt-fields', det); if (f) f.scrollTop = top;
+    det.scrollTop = top;
   }
   const b = trainsBurst();
   if (b !== null) setMeter(b / 40, `BURST +${b} dB`);
@@ -3870,7 +3869,7 @@ interface LoraSnap { nodes: LoraNodeRow[]; messages: LoraEventRow[]; bursts: num
   channels: { name: string; hz: number; standing: boolean; active: boolean; hotAgoMs: number | null; frames: number }[] }
 /** The LoRa screen: NODES shows every node live; MAP puts the ones that broadcast a position where they say they are;
  *  MESSAGES is the text traffic in order. A tap on a card or a pin opens everything decoded from that node. */
-const loraUi = { snap: null as LoraSnap | null, view: 'nodes' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, tall: false, drawn: 0, timer: 0, drawPending: 0 };
+const loraUi = { snap: null as LoraSnap | null, view: 'nodes' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
 const loraClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 const loraPins = (): GeoItem[] => (loraUi.snap?.nodes ?? []).filter(n => n.lat !== null && n.lon !== null).map(n => ({ id: n.key, lat: n.lat!, lon: n.lon!, label: n.label, kind: 'station' as GeoItem['kind'] }));
 /** LoRa opens on the band of the browser's own region setting (its locale, not its location): the whole 20 MHz band
@@ -3918,7 +3917,6 @@ function renderLora(view: HTMLElement): void {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ldo]'); if (!b) return;
     const what = b.dataset.ldo;
     if (what === 'close') loraUi.sel = '';
-    else if (what === 'tall') loraUi.tall = !loraUi.tall;
     else if (what === 'map') {
       loraUi.view = 'map'; refreshLora(true);
       const n = loraUi.snap?.nodes.find(x => x.key === loraUi.sel);
@@ -3968,8 +3966,8 @@ function loraMessage(e: LoraEventRow): string {
 function loraDetail(n: LoraNodeRow, onMap: boolean): string {
   const all = [{ name: 'FIRST HEARD', value: loraClock(n.firstMs) }, { name: 'LAST HEARD', value: loraClock(n.lastMs) }, { name: 'PACKETS', value: `${n.packets}` },
     { name: 'FREQUENCY', value: `${(n.hz / 1e6).toFixed(4)} MHz` }, { name: 'MODEM', value: n.modem }, ...n.fields];
-  return `<div class="mt-dh"><b>${esc(n.label)}</b><span>${esc(`${n.proto.toUpperCase()} · ${n.kind}`)}</span>${onMap ? '<button class="chip" data-ldo="map">MAP</button>' : ''}${loraUi.view !== 'nodes' ? '<button class="chip" data-ldo="cards">CARDS</button>' : ''}<button class="chip" data-ldo="tall">${loraUi.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-ldo="close">✕</button></div>`
-    + `<div class="mt-fields ${loraUi.tall ? 'tall' : ''}">${all.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
+  return `<div class="mt-dh"><b>${esc(n.label)}</b><span>${esc(`${n.proto.toUpperCase()} · ${n.kind}`)}</span>${onMap ? '<button class="chip" data-ldo="map">MAP</button>' : ''}${loraUi.view !== 'nodes' ? '<button class="chip" data-ldo="cards">CARDS</button>' : ''}<button class="chip" data-ldo="close">✕</button></div>`
+    + `<div class="mt-fields">${all.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
     + [...n.texts].reverse().map(t => `<p class="lr-q">“${esc(t)}”</p>`).join('') + '</div>';
 }
 function refreshLora(force = false): void {
@@ -3998,7 +3996,7 @@ function refreshLora(force = false): void {
   if (loraUi.view === 'messages' && !held) chat.innerHTML = msgs.length ? msgs.map(loraMessage).join('') : '<div class="empty">no messages yet</div>';
   const picked = nodes.find(n => n.key === loraUi.sel);
   det.hidden = !picked;
-  if (picked) { const top = q('.mt-fields', det)?.scrollTop ?? 0; det.innerHTML = loraDetail(picked, pins.some(p => p.id === picked.key)); const f = q('.mt-fields', det); if (f) f.scrollTop = top; }
+  if (picked) { const top = det.scrollTop; det.innerHTML = loraDetail(picked, pins.some(p => p.id === picked.key)); det.scrollTop = top; }
   if (loraUi.view === 'map') { geo?.invalidate(); geo?.update(pins, loraUi.sel); }
   // the known channels in the span that matter now (always-on, open, heard): lit while heard, with what they decoded
   const ch = q('#lr-chans');
