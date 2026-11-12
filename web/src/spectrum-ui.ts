@@ -3,9 +3,14 @@
  *
  * FREQ: center and span (or start and stop), RBW, VBW, reference level and scale, four traces (live, max hold, min
  * hold, average, view), four markers with delta and peak search, channel power, occupied bandwidth, ACPR and the noise
- * floor, and a persistence display. Spans wider than the radio sweep, with the Looking Glass's stepping.
+ * floor, and a persistence (density) display. Spans wider than the radio sweep, with the Looking Glass's stepping.
  * ZERO SPAN: one frequency through a chosen filter, its amplitude, instantaneous frequency and phase over time, with a
  * level trigger, pre-trigger, single shot, two cursors and pulse measurements.
+ *
+ * The instrument: big readout tiles for the settings (a +/- knob each, the mouse wheel turns it, a tap opens a keypad),
+ * the plot with glowing traces, marker diamonds and the active marker's readout, a marker table and a measurement
+ * panel with its results large. On the plot: scroll or pinch to zoom the span, drag to pan, tap to drop a marker, drag
+ * a marker to move it.
  *
  * The DSP runs in the worker (`dsp/spectrum/processor.ts`); the traces, markers and measurements are done here on
  * what it sends (`dsp/spectrum/*`). main.ts supplies the radio around it through `Host`.
@@ -14,7 +19,7 @@
 
 import {
   acpr, autoRbw, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
-  noiseAt, noiseFloor, occupiedBw, parseHz, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
+  noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
   DETECTORS, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
   type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
 } from './dsp/spectrum/index.js';
@@ -43,12 +48,14 @@ export interface Host {
 type Mode = 'FREQ' | 'ZERO';
 type Meas = 'OFF' | 'CHP' | 'OBW' | 'ACPR' | 'NOISE';
 const MEAS: [Meas, string][] = [['OFF', 'OFF'], ['CHP', 'CH PWR'], ['OBW', 'OBW'], ['ACPR', 'ACPR'], ['NOISE', 'NOISE']];
+const MEAS_TITLE: Record<Meas, string> = { OFF: '', CHP: 'CHANNEL POWER', OBW: 'OCCUPIED BANDWIDTH 99 %', ACPR: 'ADJACENT CHANNEL POWER', NOISE: 'NOISE FLOOR' };
 /** Trace colors (a bench analyzer's yellow, cyan, magenta, green). */
 export const TRACE_COLOR = ['#ffd400', '#3fd0c9', '#ff5dd8', '#3fd07a'];
-const MARKER_COLOR = '#ffffff';
+const ACTIVE = '#ffaf00';
 const SPAN_PRESETS: [string, number][] = [['100k', 1e5], ['1M', 1e6], ['2M', 2e6], ['10M', 1e7], ['20M', 2e7], ['100M', 1e8], ['1G', 1e9]];
 const DIVS = [1, 2, 5, 10, 20];
 const SWEEP_TIMES = [1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1, 0.2, 0.5, 1, 2, 5, 10];
+const MIN_SPAN = 1000, MAX_HZ = 6e9, MIN_HZ = 1e6;
 const KEY = 'mayhem.spectrum';
 
 interface Settings {
@@ -85,28 +92,74 @@ function defaults(dial: number): Settings {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 const db1 = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : '—');
-const bwText = (hz: number) => (hz >= 1e6 ? `${+(hz / 1e6).toFixed(2)} MHz` : hz >= 1e3 ? `${+(hz / 1e3).toFixed(2)} kHz` : `${+hz.toFixed(1)} Hz`);
+const sgn = (v: number) => (v >= 0 ? '+' : '−');
+const bwText = (hz: number) => (hz >= 1e6 ? `${+(hz / 1e6).toFixed(3)} MHz` : hz >= 1e3 ? `${+(hz / 1e3).toFixed(2)} kHz` : `${+hz.toFixed(1)} Hz`);
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+/** A frequency split for a big readout: the digits grouped in threes, and the unit. */
+function bigHz(hz: number): [string, string] {
+  const a = Math.abs(hz);
+  const [v, u] = a >= 1e9 ? [hz / 1e9, 'GHz'] : a >= 1e6 ? [hz / 1e6, 'MHz'] : a >= 1e3 ? [hz / 1e3, 'kHz'] : [hz, 'Hz'];
+  let t = v.toFixed(u === 'Hz' ? 0 : 6).replace(/0+$/, '').replace(/\.$/, '');
+  const [i, f] = t.split('.');
+  t = f ? `${i}.${f.replace(/(\d{3})(?=\d)/g, '$1 ')}` : i;
+  return [t, u];
+}
+/** 1-2-5 steps, for the span. */
+function step125(v: number, dir: number): number {
+  const e = Math.floor(Math.log10(v)), m = v / 10 ** e;
+  const ms = [1, 2, 5, 10];
+  let i = ms.findIndex(x => x >= m - 1e-9); if (i < 0) i = 3;
+  if (dir < 0 && ms[i] > m + 1e-9) i--;
+  i += dir;
+  const k = i < 0 ? -1 : i > 2 ? 1 : 0;
+  return ms[(i + 3) % 3] * 10 ** (e + k);
+}
 
-/** The frame as the screen keeps it: in display units, and where its bins are. */
+/** A 256-step palette for the density display: night blue, violet, red, orange, yellow, white. */
+const PALETTE = (() => {
+  const stops: [number, number, number, number][] = [[0, 8, 12, 40], [0.2, 60, 20, 120], [0.45, 190, 30, 110], [0.65, 250, 110, 30], [0.85, 255, 210, 60], [1, 255, 255, 235]];
+  const lut = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let k = 0; while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    const [t0, r0, g0, b0] = stops[k], [t1, r1, g1, b1] = stops[k + 1];
+    const f = (t - t0) / (t1 - t0);
+    const r = r0 + f * (r1 - r0), g = g0 + f * (g1 - g0), b = b0 + f * (b1 - b0), a = Math.min(255, 40 + t * 600);
+    lut[i] = (Math.round(a) << 24) | (Math.round(b) << 16) | (Math.round(g) << 8) | Math.round(r);   // ABGR, little endian
+  }
+  return lut;
+})();
+
+/** The frame as the screen keeps it: where its bins are. */
 interface Frame { f0: number; binHz: number; rbw: number; sweep: boolean; step: number; steps: number; }
+/** A keypad entry in progress. */
+interface Pad { tile: string; label: string; kind: 'hz' | 'db' | 'sec' | 'pct' | 'bw'; text: string; }
+type Geom = { l: number; t: number; w: number; h: number; W: number; H: number };
 
 export class SpectrumUi {
   s: Settings;
   readonly traces: Trace[] = defaultTraces();
   private frame: Frame | null = null;
   private persist: Persistence | null = null;
-  private zcap: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number; off: number } | null = null;
+  private zcap: { amp: Float32Array; fm: Float32Array; ph: Float32Array; rate: number; trig: number; roll: boolean; sweepSec: number } | null = null;
   private zstats: PulseStats | null = null;
   private armed = true;
   private plan: SpanPlan | null = null;
   private root: HTMLElement | null = null;
   private cv: HTMLCanvasElement | null = null;
   private drawQueued = false;
-  private drag = -1;
   private calNote = '';
+  private calOk = false;
   /** The measurement's last readout, kept for the export. */
   private measText = '';
+  /** The span on screen while a zoom or pan is being made (it is applied when the gesture settles). */
+  private view: { center: number; span: number } | null = null;
+  private commitTimer = 0;
+  /** Pointers down on the plot, and what the gesture is. */
+  private readonly pts = new Map<number, { x: number; y: number }>();
+  private gesture: { kind: 'tap' | 'pan' | 'pinch' | 'marker' | 'cursor'; x0: number; center0: number; span0: number; d0: number; which: number } | null = null;
+  private pad: Pad | null = null;
+  private densityCanvas: HTMLCanvasElement | null = null;
 
   constructor(private readonly host: Host) {
     this.s = defaults(host.dial());
@@ -122,6 +175,9 @@ export class SpectrumUi {
 
   get start(): number { return this.s.center - this.s.span / 2; }
   get stop(): number { return this.s.center + this.s.span / 2; }
+  /** The span drawn: the settled one, or the one a gesture is making. */
+  private vCenter(): number { return this.view?.center ?? this.s.center; }
+  private vSpan(): number { return this.view?.span ?? this.s.span; }
   rbwHz(): number { return this.s.rbwAuto ? autoRbw(this.s.span) : this.s.rbw; }
   vbwHz(): number { return this.s.vbwAuto ? this.frame?.rbw ?? this.rbwHz() : this.s.vbw; }
 
@@ -150,27 +206,34 @@ export class SpectrumUi {
   /** Retune and restart the processor (span, RBW, mode or window changed). */
   restart(): void {
     const cfg = this.config();
-    this.frame = null; this.zcap = null; this.zstats = null; this.armed = true;
+    this.frame = null; this.zcap = null; this.zstats = null; this.armed = true; this.view = null;
     for (const t of this.traces) t.clear();
     this.persist?.clear();
     if (cfg.mode === 'ZERO') this.host.start(cfg.tuneHz, this.zsRate(), cfg);
     else if (cfg.mode === 'SWEEP') this.host.start(cfg.startHz + cfg.sliceRate / 2, cfg.sliceRate, cfg);
     else this.host.start(cfg.tuneHz, (this.plan as { rate: number }).rate, cfg);
-    this.save(); this.draw();
+    this.save(); this.tiles(); this.draw();
   }
   /** Settings the processor takes in place (VBW, trigger, level). */
   private update(): void {
-    const cfg = this.config();
-    this.host.post({ type: 'spectrum', cmd: 'set', cfg });
-    this.save(); this.draw();
+    this.host.post({ type: 'spectrum', cmd: 'set', cfg: this.config() });
+    this.save(); this.tiles(); this.draw();
+  }
+  /** Set the span (clamped to what a radio reaches) and restart. */
+  private setSpan(center: number, span: number): void {
+    span = Math.max(MIN_SPAN, Math.min(MAX_HZ - MIN_HZ, span));
+    center = Math.max(MIN_HZ + span / 2, Math.min(MAX_HZ - span / 2, center));
+    this.s.center = center; this.s.span = span;
+    this.controls(); this.restart();
   }
 
   // ---- the dBm scale ------------------------------------------------------------------------------------------
 
   /** dBFS to the display unit. */
   offset(): number {
-    if (this.s.unit === 'dBFS') { this.calNote = 'dBFS: relative to the converter\'s full scale'; return 0; }
+    if (this.s.unit === 'dBFS') { this.calNote = 'dBFS: relative to the converter\'s full scale'; this.calOk = true; return 0; }
     const o = dbmOffset(this.host.gain(), this.s.cal);
+    this.calOk = o.ok;
     this.calNote = o.ok ? `dBm ${o.note}${this.s.cal ? ` · CAL ${this.s.cal > 0 ? '+' : ''}${this.s.cal} dB` : ''} · approximate` : `dBm uncalibrated: ${o.note}`;
     return o.offset;
   }
@@ -179,9 +242,12 @@ export class SpectrumUi {
   /** The radio's gain moved (RADIO panel): the chip says so, and a trigger level in dBm keeps its meaning. */
   gainChanged(): void {
     const b = this.root?.querySelector<HTMLElement>('[data-act="radio"]');
-    const g = this.host.gain();
-    if (b) b.textContent = `RADIO · ${g.kind === 'rtlsdr' ? (Number.isFinite(g.tunerDb) ? `GAIN ${g.tunerDb} dB` : 'TUNER AGC') : g.kind === 'hackrf' ? `LNA ${g.lna} · VGA ${g.vga}${g.amp ? ' · AMP' : ''}` : 'NO RADIO'}`;
+    if (b) b.textContent = `RADIO · ${this.gainText()}`;
     if (this.s.mode === 'ZERO' && this.s.trig !== 'FREE') this.update();
+  }
+  private gainText(): string {
+    const g = this.host.gain();
+    return g.kind === 'rtlsdr' ? (Number.isFinite(g.tunerDb) ? `GAIN ${g.tunerDb} dB` : 'TUNER AGC') : g.kind === 'hackrf' ? `LNA ${g.lna} · VGA ${g.vga}${g.amp ? ' · AMP' : ''}` : 'NO RADIO';
   }
 
   // ---- what the worker sends ----------------------------------------------------------------------------------
@@ -193,12 +259,11 @@ export class SpectrumUi {
     const live = shift(m.live)!, max = shift(m.max), min = shift(m.min);
     const rbwMoved = this.frame?.rbw !== m.rbw;
     this.frame = { f0: m.f0, binHz: m.binHz, rbw: m.rbw, sweep: m.sweep, step: m.step, steps: m.steps };
-    // the RBW really in use shows on its stepper (unless a field is being typed into)
-    if (rbwMoved && !(document.activeElement instanceof HTMLInputElement)) this.controls();
-    // a sweep row is redrawn while it fills: only its finished passes feed the holds and the average
+    // a sweep row is redrawn while it fills: only its finished passes feed the holds, the average and the density
     const whole = !m.sweep || m.step === m.steps;
     this.traces.forEach(t => { if (t.mode === 'LIVE' || whole) t.update(live, max, min, m.f0, m.binHz); });
-    if (this.s.persist && whole) { this.persist ??= new Persistence(400, 160); this.persist.add(live, this.s.ref, this.s.div * 10); }
+    if (this.s.persist && whole && !this.view) this.addDensity(live, m.f0, m.binHz);
+    if (rbwMoved) this.tiles();
     this.draw();
   }
 
@@ -206,10 +271,26 @@ export class SpectrumUi {
     if (this.s.mode !== 'ZERO') return;
     const off = this.offset();
     for (let i = 0; i < m.amp.length; i++) m.amp[i] += off;
-    this.zcap = { ...m, off };
+    this.zcap = m;
+    const was = this.armed;
     this.armed = m.armed;
     this.zstats = pulseStats(m.amp, m.rate);
+    if (was !== this.armed) this.tiles();
     this.draw();
+  }
+
+  /** The density display at the plot's own resolution: each frame reduced to columns, joined column to column. */
+  private addDensity(live: Float32Array, f0: number, binHz: number): void {
+    const g = this.cv ? this.geom() : null; if (!g) return;
+    const cols = Math.max(64, Math.min(1600, Math.round(g.w))), rows = Math.max(64, Math.min(600, Math.round(g.h)));
+    if (!this.persist || this.persist.cols !== cols || this.persist.rows !== rows) this.persist = new Persistence(cols, rows, 0.9);
+    // the frame's bins placed on the screen's columns (it may not fill the span exactly)
+    const y = new Float32Array(cols).fill(-1e9);
+    const x0 = (f0 - binHz / 2 - this.start) / this.s.span * cols, x1 = (f0 + (live.length - 0.5) * binHz - this.start) / this.s.span * cols;
+    const a = Math.max(0, Math.ceil(x0)), b = Math.min(cols, Math.floor(x1));
+    if (b - a < 2) return;
+    y.set(toColumns(live, b - a, 'PEAK'), a);
+    this.persist.addColumns(y, this.s.ref, this.s.div * 10);
   }
 
   // ---- screen -------------------------------------------------------------------------------------------------
@@ -217,25 +298,177 @@ export class SpectrumUi {
   html(): string {
     return `
     <section class="visual sp-visual">
-      <div id="sp-head" class="sp-head"></div>
-      <div class="sp-screen"><canvas id="sp-cv"></canvas></div>
-      <div id="sp-read" class="sp-read"></div>
+      <div id="sp-tiles" class="sp-tiles"></div>
+      <div id="sp-status" class="sp-status"></div>
+      <div class="sp-main">
+        <div class="sp-screen"><canvas id="sp-cv"></canvas></div>
+        <aside class="sp-side"><div id="sp-meas" class="sp-meas"></div><div id="sp-mkt" class="sp-mkt"></div></aside>
+      </div>
     </section>
-    <section class="controls sp-controls" id="sp-ctl"></section>`;
+    <section class="controls sp-controls" id="sp-ctl"></section>
+    <div id="sp-pad" class="sp-padwrap" hidden></div>`;
   }
 
   mount(root: HTMLElement): void {
     this.root = root;
     this.cv = root.querySelector<HTMLCanvasElement>('#sp-cv');
     const cv = this.cv!;
-    cv.onpointerdown = (e) => { cv.setPointerCapture(e.pointerId); this.pointer(e, true); };
-    cv.onpointermove = (e) => { if (this.drag >= 0) this.pointer(e, false); };
-    cv.onpointerup = () => { this.drag = -1; };
+    cv.onpointerdown = (e) => this.down(e);
+    cv.onpointermove = (e) => this.move(e);
+    cv.onpointerup = cv.onpointercancel = (e) => this.up(e);
+    cv.onwheel = (e) => this.wheel(e);
+    const tiles = root.querySelector<HTMLElement>('#sp-tiles')!;
+    tiles.onclick = (e) => {
+      const b = (e.target as HTMLElement).closest('[data-t]') as HTMLElement | null; if (!b) return;
+      const t = b.dataset.t!, d = b.dataset;
+      if (d.k === 'dn' || d.k === 'up') this.turn(t, d.k === 'up' ? 1 : -1);
+      else if (d.k === 'auto') this.toggle(t === 'rbw' ? 'rbwa' : 'vbwa');
+      else this.openPad(t);
+    };
+    tiles.onwheel = (e) => {
+      const b = (e.target as HTMLElement).closest('[data-tile]') as HTMLElement | null; if (!b) return;
+      e.preventDefault();
+      this.turn(b.dataset.tile!, e.deltaY < 0 ? 1 : -1);
+    };
     this.controls();
     this.restart();
   }
 
   private ctl(): HTMLElement | null { return this.root?.querySelector<HTMLElement>('#sp-ctl') ?? null; }
+
+  // ---- the readout tiles: big values with a knob each ---------------------------------------------------------
+
+  /** The tiles for the mode: [id, label, value, unit, badge]. */
+  private tileList(): [string, string, string, string, string][] {
+    const s = this.s, u = this.unitLabel();
+    if (s.mode === 'ZERO') {
+      const [fv, fu] = bigHz(s.zsFreq);
+      return [
+        ['zf', 'FREQUENCY', fv, fu, ''],
+        ['zbw', 'FILTER', ...bigHz(s.zsBw), ''],
+        ['zst', 'SWEEP', ...(fmtSec(this.zcap?.sweepSec ?? s.zsTime).split(' ') as [string, string]), ''],
+        ['lvl', 'TRIGGER', s.trig === 'FREE' ? 'FREE' : String(s.level), s.trig === 'FREE' ? 'RUN' : u, s.trig === 'FREE' ? '' : s.trig === 'RISE' ? 'RISE' : 'FALL'],
+        ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div`],
+      ];
+    }
+    const rbw = this.frame?.rbw ?? this.rbwHz();
+    const a: [string, string, string, string, string][] = s.startStop
+      ? [['start', 'START', ...bigHz(this.start), ''], ['stop', 'STOP', ...bigHz(this.stop), '']]
+      : [['center', 'CENTER', ...bigHz(s.center), ''], ['span', 'SPAN', ...bigHz(s.span), '']];
+    return [...a,
+      ['rbw', 'RBW', ...bigHz(rbw), s.rbwAuto ? 'AUTO' : 'MAN'],
+      ['vbw', 'VBW', ...(s.vbwAuto ? bigHz(rbw) : bigHz(s.vbw)), s.vbwAuto ? 'AUTO' : 'MAN'],
+      ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div`]];
+  }
+
+  private tiles(): void {
+    const el = this.root?.querySelector<HTMLElement>('#sp-tiles'); if (!el) return;
+    el.innerHTML = this.tileList().map(([id, label, v, unit, badge]) => `
+      <div class="sp-tile" data-tile="${id}">
+        <div class="sp-tl"><span>${label}</span>${badge ? `<b data-t="${id}" data-k="${badge === 'AUTO' || badge === 'MAN' ? 'auto' : 'pad'}" class="${badge === 'AUTO' ? 'on' : ''}">${badge}</b>` : ''}</div>
+        <button class="sp-tv" data-t="${id}" data-k="pad" title="Tap to type a value; the wheel turns it">${esc(v)}<small>${esc(unit)}</small></button>
+        <div class="sp-knob"><button data-t="${id}" data-k="dn" aria-label="${label} down">‹</button><i></i><button data-t="${id}" data-k="up" aria-label="${label} up">›</button></div>
+      </div>`).join('');
+    this.status();
+  }
+
+  /** One click of a tile's knob. */
+  private turn(id: string, dir: number): void {
+    const s = this.s;
+    switch (id) {
+      case 'center': this.setSpan(s.center + dir * s.span / 10, s.span); return;
+      case 'start': this.setSpan(s.center + dir * s.span / 20, s.span - dir * s.span / 10); return;
+      case 'stop': this.setSpan(s.center + dir * s.span / 20, s.span + dir * s.span / 10); return;
+      case 'span': this.setSpan(s.center, step125(s.span, dir)); return;
+      case 'rbw': s.rbw = stepBw(this.frame?.rbw ?? this.rbwHz(), dir); s.rbwAuto = false; this.controls(); this.restart(); return;
+      case 'vbw': s.vbw = stepBw(s.vbwAuto ? this.vbwHz() : s.vbw, dir); s.vbwAuto = false; break;
+      case 'ref': s.ref += dir * (s.div >= 5 ? 5 : 1); this.persist?.clear(); break;
+      case 'zf': s.zsFreq += dir * s.zsBw / 4; this.restart(); return;
+      case 'zbw': { const b = this.zsBws(), i = Math.max(0, Math.min(b.length - 1, b.indexOf(s.zsBw) + dir)); s.zsBw = b[i]; this.controls(); this.restart(); return; }
+      case 'zst': this.stepper('zst', dir); return;
+      case 'lvl': if (s.trig === 'FREE') return; s.level += dir; break;
+      default: this.stepper(id, dir); return;
+    }
+    this.controls(); this.update();
+  }
+
+  // ---- keypad -------------------------------------------------------------------------------------------------
+
+  private openPad(tile: string): void {
+    const t = this.tileList().find(x => x[0] === tile); if (!t) return;
+    if (tile === 'lvl' && this.s.trig === 'FREE') return;
+    const kind: Pad['kind'] = tile === 'ref' || tile === 'lvl' ? 'db' : tile === 'zst' ? 'sec' : tile === 'rbw' || tile === 'vbw' || tile === 'span' || tile === 'zbw' ? 'bw' : 'hz';
+    this.pad = { tile, label: t[1], kind, text: '' };
+    this.drawPad();
+  }
+  private drawPad(): void {
+    const el = this.root?.querySelector<HTMLElement>('#sp-pad'); if (!el) return;
+    const p = this.pad;
+    el.hidden = !p;
+    if (!p) { el.innerHTML = ''; return; }
+    const units: [string, string][] = p.kind === 'db' ? [[this.unitLabel(), '1']] : p.kind === 'sec' ? [['s', '1'], ['ms', '1e-3'], ['µs', '1e-6']] : [['GHz', '1e9'], ['MHz', '1e6'], ['kHz', '1e3'], ['Hz', '1']];
+    const keys = ['7', '8', '9', '4', '5', '6', '1', '2', '3', '0', '.', p.kind === 'db' ? '±' : 'C'];
+    el.innerHTML = `<div class="sp-pad" role="dialog" aria-label="${p.label}">
+      <div class="sp-padh"><span>${p.label}</span><button data-p="esc" aria-label="Close">✕</button></div>
+      <div class="sp-padv">${esc(p.text || ' ')}<i></i></div>
+      <div class="sp-padg"><div class="sp-padk">${keys.map(k => `<button data-p="${k}">${k}</button>`).join('')}</div>
+      <div class="sp-padu">${units.map(([l, m]) => `<button data-p="u" data-m="${m}">${l}</button>`).join('')}<button data-p="bs">⌫</button></div></div></div>`;
+    el.onclick = (e) => {
+      if (e.target === el) { this.pad = null; this.drawPad(); return; }
+      const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b || !this.pad) return;
+      const k = b.dataset.p!;
+      if (k === 'esc') { this.pad = null; this.drawPad(); return; }
+      if (k === 'u') { this.enterPad(Number(b.dataset.m)); return; }
+      this.padKey(k);
+    };
+  }
+  private padKey(k: string): void {
+    const p = this.pad; if (!p) return;
+    if (k === 'bs') p.text = p.text.slice(0, -1);
+    else if (k === 'C') p.text = '';
+    else if (k === '±') p.text = p.text.startsWith('-') ? p.text.slice(1) : '-' + p.text;
+    else if (k === '.' ? !p.text.includes('.') : /^\d$/.test(k)) p.text += k;
+    const v = this.root?.querySelector('.sp-padv'); if (v) v.innerHTML = `${esc(p.text || ' ')}<i></i>`;
+  }
+  /** Apply the keypad's number times a unit multiplier. */
+  private enterPad(mult: number): void {
+    const p = this.pad; if (!p) return;
+    const v = Number(p.text) * mult;
+    this.pad = null; this.drawPad();
+    if (!p.text || !Number.isFinite(v)) return;
+    const s = this.s;
+    switch (p.tile) {
+      case 'center': this.setSpan(v, s.span); return;
+      case 'span': this.setSpan(s.center, v); return;
+      case 'start': { const st = this.stop; this.setSpan((v + st) / 2, st - v); return; }
+      case 'stop': { const a = this.start; this.setSpan((a + v) / 2, v - a); return; }
+      case 'rbw': s.rbw = Math.max(1, v); s.rbwAuto = false; this.restart(); return;
+      case 'vbw': s.vbw = Math.max(1, v); s.vbwAuto = false; break;
+      case 'ref': s.ref = Math.round(v); this.persist?.clear(); break;
+      case 'lvl': s.level = Math.round(v); break;
+      case 'zf': s.zsFreq = Math.max(MIN_HZ, Math.min(MAX_HZ, v)); this.restart(); return;
+      case 'zbw': { const b = this.zsBws(); s.zsBw = b.reduce((a, x) => (Math.abs(Math.log(x / v)) < Math.abs(Math.log(a / v)) ? x : a), b[0]); this.controls(); this.restart(); return; }
+      case 'zst': { const max = ZS_MAX_POINTS / zsPlan(this.zsRate(), s.zsBw).outRate; s.zsTime = Math.max(1e-5, Math.min(max, v)); this.restart(); return; }
+    }
+    this.controls(); this.update();
+  }
+
+  /** The line under the tiles: how the span is taken, the scale's calibration, the gain. */
+  private status(): void {
+    const el = this.root?.querySelector<HTMLElement>('#sp-status'); if (!el) return;
+    const s = this.s, f = this.frame;
+    const parts: string[] = [];
+    if (s.mode === 'FREQ') {
+      parts.push(this.plan?.kind === 'SWEEP' ? `SWEEP · ${f ? `${f.steps} STEPS` : '…'}` : this.plan?.kind === 'FFT' ? `FFT · ${+(this.plan.rate / 1e6).toFixed(3)} Msps${this.plan.dcPatch ? '' : ' · OFF DC'}` : '');
+      parts.push(`${s.window === 'HANN' ? 'HANN' : 'FLAT TOP'} · ${s.det}`);
+    } else {
+      parts.push(`ZERO SPAN${s.single ? (this.armed ? ' · SINGLE ARMED' : ' · SINGLE DONE') : ''}${s.trig !== 'FREE' ? ` · PRE ${Math.round(s.pre * 100)} %` : ''}`);
+    }
+    parts.push(this.gainText());
+    el.innerHTML = `${parts.filter(Boolean).map(esc).join(' · ')}<span class="${this.calOk ? '' : 'warn'}">${esc(this.calNote)}</span>`;
+  }
+
+  // ---- the controls under the instrument ----------------------------------------------------------------------
 
   /** Build the controls for the mode (redrawn when the mode or a structural choice changes). */
   controls(): void {
@@ -244,44 +477,38 @@ export class SpectrumUi {
     const seg = (items: [string, string][], cur: string, attr: string) => `<div class="seg sp-seg">${items.map(([v, l]) => `<button data-${attr}="${v}" class="${v === cur ? 'on' : ''}">${l}</button>`).join('')}</div>`;
     const step = (id: string, label: string, val: string) => `<div class="stepper sp-step"><button data-dn="${id}">−</button><span><i>${label}</i> ${val}</span><button data-up="${id}">+</button></div>`;
     const tog = (id: string, label: string, on: boolean) => `<button data-tog="${id}" class="tog${on ? ' on' : ''}">${label}</button>`;
-    const act = (id: string, label: string) => `<button data-act="${id}" class="chip">${label}</button>`;
-    const g = this.host.gain();
-    const gainTxt = g.kind === 'rtlsdr' ? (Number.isFinite(g.tunerDb) ? `GAIN ${g.tunerDb} dB` : 'TUNER AGC') : g.kind === 'hackrf' ? `LNA ${g.lna} · VGA ${g.vga}${g.amp ? ' · AMP' : ''}` : 'NO RADIO';
+    const act = (id: string, label: string, cls = '') => `<button data-act="${id}" class="chip ${cls}">${label}</button>`;
     const common = `
       <div class="caption">RADIO · EXPORT · OPEN IN</div>
-      <div class="ctlrow sp-row">${act('radio', `RADIO · ${gainTxt}`)}${act('csv', 'CSV')}${act('png', 'PNG')}${act('analyzer', 'ANALYZER')}${act('devices', 'DEVICES')}</div>
-      <div class="note">Gain is set in RADIO and held while Spectrum is open (the AGC does not move it under a measurement). ${esc(this.calNote)}. ANALYZER and DEVICES open on ${s.mode === 'ZERO' ? 'the zero-span frequency' : 'the active marker (or the center)'}.</div>`;
+      <div class="ctlrow sp-row">${act('radio', `RADIO · ${this.gainText()}`)}${act('csv', 'CSV')}${act('png', 'PNG')}${act('analyzer', 'OPEN IN ANALYZER')}${act('devices', 'OPEN IN DEVICES')}</div>
+      <div class="note">Gain is set in RADIO and held while Spectrum is open (the AGC does not move it under a measurement). The dBm scale follows the gain and is approximate; CAL trims it against a known source. ANALYZER and DEVICES open on ${s.mode === 'ZERO' ? 'the zero-span frequency' : 'the active marker (or the center)'}. On the plot: scroll or pinch to zoom, drag to pan, tap to drop the active marker, drag a marker to move it.</div>`;
     let body = `<div class="ctlrow sp-row">${seg([['FREQ', 'FREQUENCY'], ['ZERO', 'ZERO SPAN']], s.mode, 'mode')}</div>`;
     if (s.mode === 'FREQ') {
-      const f = (id: string, label: string, hz: number) => `<label class="sp-in"><i>${label}</i><input id="${id}" class="txin" value="${esc(fmtHz(hz))}" inputmode="decimal" spellcheck="false"></label>`;
       body += `
-      <div class="caption">FREQUENCY</div>
-      <div class="ctlrow sp-row">${s.startStop ? f('sp-start', 'START', this.start) + f('sp-stop', 'STOP', this.stop) : f('sp-center', 'CENTER', s.center) + f('sp-span', 'SPAN', s.span)}${tog('ss', s.startStop ? 'START/STOP' : 'CENTER/SPAN', s.startStop)}</div>
-      <div class="ctlrow sp-row sp-presets">${SPAN_PRESETS.map(([l, v]) => `<button data-span="${v}" class="chip${s.span === v ? ' on' : ''}">${l}</button>`).join('')}</div>
-      <div class="caption">BANDWIDTH · SCALE</div>
-      <div class="ctlrow sp-row">${step('rbw', 'RBW', s.rbwAuto ? `AUTO ${bwText(this.frame?.rbw ?? this.rbwHz())}` : bwText(this.frame?.rbw ?? s.rbw))}${tog('rbwa', 'AUTO', s.rbwAuto)}${step('vbw', 'VBW', s.vbwAuto ? 'AUTO = RBW' : bwText(s.vbw))}${tog('vbwa', 'AUTO', s.vbwAuto)}</div>
-      <div class="ctlrow sp-row">${step('ref', 'REF', `${s.ref} ${this.unitLabel()}`)}${step('div', 'SCALE', `${s.div} dB/div`)}${seg([['dBm', 'dBm'], ['dBFS', 'dBFS']], s.unit, 'unit')}</div>
-      <div class="ctlrow sp-row">${seg([['HANN', 'HANN'], ['FLATTOP', 'FLAT TOP']], s.window, 'win')}${seg(DETECTORS.map(d => [d, d] as [string, string]), s.det, 'det')}${step('cal', 'CAL', `${s.cal > 0 ? '+' : ''}${s.cal} dB`)}</div>
+      <div class="caption">SPAN</div>
+      <div class="ctlrow sp-row sp-presets">${SPAN_PRESETS.map(([l, v]) => `<button data-span="${v}" class="chip${s.span === v ? ' on' : ''}">${l}</button>`).join('')}${tog('ss', 'START/STOP', s.startStop)}</div>
+      <div class="caption">SCALE · RESOLUTION</div>
+      <div class="ctlrow sp-row">${step('div', 'SCALE', `${s.div} dB/div`)}${seg([['dBm', 'dBm'], ['dBFS', 'dBFS']], s.unit, 'unit')}${step('cal', 'CAL', `${s.cal > 0 ? '+' : ''}${s.cal} dB`)}</div>
+      <div class="ctlrow sp-row">${seg([['HANN', 'HANN'], ['FLATTOP', 'FLAT TOP']], s.window, 'win')}${seg(DETECTORS.map(d => [d, d] as [string, string]), s.det, 'det')}</div>
       <div class="caption">TRACES</div>
       ${this.traces.map((t, i) => `<div class="ctlrow sp-row sp-trace" style="--tc:${TRACE_COLOR[i]}"><b>T${i + 1}</b>${seg(TRACE_MODES.map(m => [m, m] as [string, string]), t.mode, `tr${i}`)}${t.mode === 'AVG' ? step(`avg${i}`, 'N', String(t.avgN)) : ''}<button data-clr="${i}" class="tog">CLEAR</button></div>`).join('')}
       <div class="caption">MARKERS</div>
-      <div class="ctlrow sp-row">${seg(s.markers.map((m, i) => [String(i), `M${i + 1}${m.on ? (m.delta ? ' Δ' : ' ●') : ''}`] as [string, string]), String(s.active), 'mk')}${tog('mkon', 'ON', s.markers[s.active].on)}${s.active ? tog('mkd', 'DELTA', s.markers[s.active].delta) : ''}${seg([0, 1, 2, 3].map(i => [String(i), `T${i + 1}`] as [string, string]), String(s.markers[s.active].trace), 'mkt')}</div>
-      <div class="ctlrow sp-row">${act('peak', 'PEAK')}${act('next', 'NEXT PEAK')}${act('left', '◀ NEXT')}${act('right', 'NEXT ▶')}${act('mkcf', 'MKR → CENTER')}${act('mkoff', 'ALL OFF')}</div>
+      <div class="ctlrow sp-row">${seg(s.markers.map((m, i) => [String(i), `M${i + 1}${m.on ? (m.delta ? ' Δ' : ' ◆') : ''}`] as [string, string]), String(s.active), 'mk')}${tog('mkon', 'ON', s.markers[s.active].on)}${s.active ? tog('mkd', 'DELTA', s.markers[s.active].delta) : ''}</div>
+      <div class="ctlrow sp-row">${seg([0, 1, 2, 3].map(i => [String(i), `READS T${i + 1}`] as [string, string]), String(s.markers[s.active].trace), 'mkt')}</div>
+      <div class="ctlrow sp-row sp-pk">${act('peak', 'PEAK', 'hot')}${act('next', 'NEXT PEAK')}${act('left', '◀ NEXT')}${act('right', 'NEXT ▶')}${act('mkcf', 'MKR → CENTER')}${act('mkoff', 'ALL OFF')}</div>
       <div class="caption">MEASURE</div>
       <div class="ctlrow sp-row">${seg(MEAS, s.meas, 'meas')}${tog('persist', 'PERSISTENCE', s.persist)}</div>
       ${s.meas === 'CHP' || s.meas === 'ACPR' ? `<div class="ctlrow sp-row">${step('chbw', 'CHANNEL', bwText(s.chBw))}${s.meas === 'ACPR' ? step('spacing', 'SPACING', bwText(s.spacing)) : ''}</div>` : ''}`;
     } else {
-      const bws = this.zsBws();
       body += `
-      <div class="caption">FREQUENCY · FILTER</div>
-      <div class="ctlrow sp-row"><label class="sp-in"><i>FREQ</i><input id="sp-zf" class="txin" value="${esc(fmtHz(s.zsFreq))}" inputmode="decimal" spellcheck="false"></label>${step('zst', 'SWEEP', fmtSec(s.zsTime))}</div>
-      <div class="ctlrow sp-row">${seg(bws.map(b => [String(b), bwText(b).replace(' ', '')] as [string, string]), String(s.zsBw), 'zbw')}</div>
+      <div class="caption">FILTER</div>
+      <div class="ctlrow sp-row">${seg(this.zsBws().map(b => [String(b), bwText(b).replace(' ', '')] as [string, string]), String(s.zsBw), 'zbw')}</div>
       <div class="caption">TRIGGER</div>
-      <div class="ctlrow sp-row">${seg(TRIG_MODES.map(m => [m, m === 'FREE' ? 'FREE RUN' : m === 'RISE' ? 'RISING' : 'FALLING'] as [string, string]), s.trig, 'trig')}${tog('single', 'SINGLE', s.single)}${s.single ? act('arm', this.armed ? 'ARMED' : 'ARM') : ''}</div>
-      ${s.trig !== 'FREE' ? `<div class="ctlrow sp-row">${step('lvl', 'LEVEL', `${s.level} ${this.unitLabel()}`)}${step('pre', 'PRE-TRIGGER', `${Math.round(s.pre * 100)} %`)}</div>` : ''}
+      <div class="ctlrow sp-row">${seg(TRIG_MODES.map(m => [m, m === 'FREE' ? 'FREE RUN' : m === 'RISE' ? 'RISING' : 'FALLING'] as [string, string]), s.trig, 'trig')}${tog('single', 'SINGLE', s.single)}${s.single ? act('arm', this.armed ? 'ARMED' : 'ARM', this.armed ? 'hot' : '') : ''}</div>
+      ${s.trig !== 'FREE' ? `<div class="ctlrow sp-row">${step('pre', 'PRE-TRIGGER', `${Math.round(s.pre * 100)} %`)}</div>` : ''}
       <div class="caption">VIEW · SCALE</div>
       <div class="ctlrow sp-row">${tog('vamp', 'AMPLITUDE', s.showAmp)}${tog('vfm', 'FREQUENCY', s.showFm)}${tog('vph', 'PHASE', s.showPh)}${tog('cur', 'CURSORS', s.cursors)}</div>
-      <div class="ctlrow sp-row">${step('ref', 'REF', `${s.ref} ${this.unitLabel()}`)}${step('div', 'SCALE', `${s.div} dB/div`)}${seg([['dBm', 'dBm'], ['dBFS', 'dBFS']], s.unit, 'unit')}</div>`;
+      <div class="ctlrow sp-row">${step('div', 'SCALE', `${s.div} dB/div`)}${seg([['dBm', 'dBm'], ['dBFS', 'dBFS']], s.unit, 'unit')}</div>`;
     }
     c.innerHTML = body + common;
     this.bind(c);
@@ -293,10 +520,10 @@ export class SpectrumUi {
       const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
       const d = b.dataset;
       if (d.mode) { s.mode = d.mode as Mode; this.controls(); this.restart(); return; }
-      if (d.span) { s.span = Number(d.span); this.controls(); this.restart(); return; }
+      if (d.span) { this.setSpan(s.center, Number(d.span)); return; }
       if (d.unit) { s.unit = d.unit as 'dBm' | 'dBFS'; for (const t of this.traces) t.clear(); this.persist?.clear(); this.controls(); this.update(); return; }
       if (d.win) { s.window = d.win as WindowKind; this.controls(); this.restart(); return; }
-      if (d.det) { s.det = d.det as Detector; this.controls(); this.draw(); return; }
+      if (d.det) { s.det = d.det as Detector; this.controls(); this.tiles(); this.draw(); return; }
       if (d.meas) { s.meas = d.meas as Meas; this.controls(); this.draw(); return; }
       if (d.mk) { s.active = Number(d.mk); this.controls(); this.draw(); return; }
       if (d.mkt) { s.markers[s.active].trace = Number(d.mkt); this.controls(); this.draw(); this.save(); return; }
@@ -308,35 +535,22 @@ export class SpectrumUi {
       if (d.tog) { this.toggle(d.tog); return; }
       if (d.act) { this.action(d.act); return; }
     };
-    const freqIn = (id: string, set: (hz: number) => void) => {
-      const el = c.querySelector<HTMLInputElement>('#' + id); if (!el) return;
-      el.onkeydown = (e) => { if (e.key === 'Enter') el.blur(); e.stopPropagation(); };
-      el.onchange = () => { const hz = parseHz(el.value); if (hz !== null && hz > 0) set(hz); this.controls(); this.restart(); };
-    };
-    freqIn('sp-center', hz => { s.center = hz; });
-    freqIn('sp-span', hz => { s.span = Math.max(1000, hz); });
-    freqIn('sp-start', hz => { const st = this.stop; s.center = (hz + st) / 2; s.span = Math.max(1000, st - hz); });
-    freqIn('sp-stop', hz => { const a = this.start; s.center = (a + hz) / 2; s.span = Math.max(1000, hz - a); });
-    freqIn('sp-zf', hz => { s.zsFreq = hz; });
   }
 
   private stepper(id: string, dir: number): void {
     const s = this.s;
     const idx = <T>(list: T[], v: T) => Math.max(0, list.indexOf(v));
     switch (id) {
-      case 'rbw': s.rbw = stepBw(this.frame?.rbw ?? this.rbwHz(), dir); s.rbwAuto = false; this.controls(); this.restart(); return;
-      case 'vbw': s.vbw = stepBw(s.vbwAuto ? this.vbwHz() : s.vbw, dir); s.vbwAuto = false; break;
-      case 'ref': s.ref += dir * (s.div >= 5 ? 5 : 1); break;
       case 'div': s.div = DIVS[Math.max(0, Math.min(DIVS.length - 1, idx(DIVS, s.div) + dir))]; this.persist?.clear(); break;
       case 'cal': s.cal = Math.max(-40, Math.min(40, s.cal + dir)); break;
-      case 'chbw': s.chBw = stepBw(s.chBw, dir); break;
+      case 'chbw': s.chBw = Math.min(stepBw(s.chBw, dir), Math.max(1000, s.span)); break;
       case 'spacing': s.spacing = stepBw(s.spacing, dir); break;
       case 'zst': {
         const plan = zsPlan(this.zsRate(), s.zsBw), max = ZS_MAX_POINTS / plan.outRate;
-        s.zsTime = Math.min(max, SWEEP_TIMES[Math.max(0, Math.min(SWEEP_TIMES.length - 1, idx(SWEEP_TIMES, s.zsTime) + dir))]);
+        const i = SWEEP_TIMES.findIndex(x => x >= s.zsTime * 0.999);
+        s.zsTime = Math.min(max, SWEEP_TIMES[Math.max(0, Math.min(SWEEP_TIMES.length - 1, (i < 0 ? SWEEP_TIMES.length - 1 : i) + dir))]);
         this.controls(); this.restart(); return;
       }
-      case 'lvl': s.level += dir; break;
       case 'pre': s.pre = Math.max(0, Math.min(0.9, Math.round((s.pre + dir * 0.1) * 10) / 10)); break;
       default: {
         const m = /^avg(\d)$/.exec(id);
@@ -349,9 +563,9 @@ export class SpectrumUi {
   private toggle(id: string): void {
     const s = this.s, m = s.markers[s.active];
     switch (id) {
-      case 'ss': s.startStop = !s.startStop; break;
+      case 'ss': s.startStop = !s.startStop; this.tiles(); break;
       case 'rbwa': s.rbwAuto = !s.rbwAuto; this.controls(); this.restart(); return;
-      case 'vbwa': s.vbwAuto = !s.vbwAuto; break;
+      case 'vbwa': s.vbwAuto = !s.vbwAuto; this.controls(); this.update(); return;
       case 'mkon': m.on = !m.on; if (m.on && !m.hz) this.markerTo(s.active, 'peak'); break;
       case 'mkd': m.delta = !m.delta; if (m.delta && !s.markers[0].on) { s.markers[0].on = true; s.markers[0].hz = m.hz; } break;
       case 'persist': s.persist = !s.persist; this.persist = null; break;
@@ -368,9 +582,9 @@ export class SpectrumUi {
     const s = this.s;
     switch (id) {
       case 'peak': case 'next': case 'left': case 'right': this.markerTo(s.active, id); break;
-      case 'mkcf': { const m = s.markers[s.active]; if (m.on) { s.center = m.hz; this.controls(); this.restart(); } return; }
+      case 'mkcf': { const m = s.markers[s.active]; if (m.on) this.setSpan(m.hz, s.span); return; }
       case 'mkoff': for (const m of s.markers) { m.on = false; m.delta = false; } break;
-      case 'arm': this.armed = true; this.host.post({ type: 'spectrum', cmd: 'rearm' }); break;
+      case 'arm': this.armed = true; this.host.post({ type: 'spectrum', cmd: 'rearm' }); this.tiles(); break;
       case 'radio': this.host.openRadio(); return;
       case 'csv': this.exportCsv(); return;
       case 'png': this.exportPng(); return;
@@ -404,22 +618,126 @@ export class SpectrumUi {
     m.hz = t.f0 + (i + r.offset) * t.binHz; m.on = true;
   }
 
-  private pointer(e: PointerEvent, down: boolean): void {
-    const cv = this.cv!, r = cv.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width;
+  // ---- gestures on the plot -----------------------------------------------------------------------------------
+
+  private local(e: PointerEvent | WheelEvent): { x: number; y: number } {
+    const r = this.cv!.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  /** Plot x (CSS px) to hertz on the span drawn. */
+  private hzAt(x: number): number { const g = this.geom(); return this.vCenter() - this.vSpan() / 2 + (x - g.l) / g.w * this.vSpan(); }
+  private xOfHz(hz: number): number { const g = this.geom(); return g.l + (hz - (this.vCenter() - this.vSpan() / 2)) / this.vSpan() * g.w; }
+
+  private down(e: PointerEvent): void {
+    const cv = this.cv!; cv.setPointerCapture(e.pointerId);
+    const p = this.local(e);
+    this.pts.set(e.pointerId, p);
     const g = this.geom();
-    const fx = (x * r.width - g.l) / g.w;
     if (this.s.mode === 'ZERO') {
       if (!this.s.cursors) return;
-      if (down) this.drag = Math.abs(fx - this.s.curA) < Math.abs(fx - this.s.curB) ? 0 : 1;
-      if (this.drag === 0) this.s.curA = Math.max(0, Math.min(1, fx)); else this.s.curB = Math.max(0, Math.min(1, fx));
+      const fx = (p.x - g.l) / g.w;
+      this.gesture = { kind: 'cursor', x0: p.x, center0: 0, span0: 0, d0: 0, which: Math.abs(fx - this.s.curA) < Math.abs(fx - this.s.curB) ? 0 : 1 };
+      this.move(e); return;
+    }
+    if (this.pts.size === 2) {
+      const [a, b] = [...this.pts.values()];
+      this.gesture = { kind: 'pinch', x0: (a.x + b.x) / 2, center0: this.vCenter(), span0: this.vSpan(), d0: Math.max(10, Math.abs(a.x - b.x)), which: 0 };
+      return;
+    }
+    // on a marker: drag it; anywhere else: a tap drops the active marker, a drag pans
+    const near = this.s.markers.findIndex(m => m.on && Math.abs(this.xOfHz(m.hz) - p.x) < 12);
+    if (near >= 0) { this.s.active = near; this.gesture = { kind: 'marker', x0: p.x, center0: 0, span0: 0, d0: 0, which: near }; this.controls(); return; }
+    this.gesture = { kind: 'tap', x0: p.x, center0: this.vCenter(), span0: this.vSpan(), d0: 0, which: 0 };
+  }
+
+  private move(e: PointerEvent): void {
+    if (!this.pts.has(e.pointerId) || !this.gesture) return;
+    const p = this.local(e);
+    this.pts.set(e.pointerId, p);
+    const g = this.geom(), gs = this.gesture;
+    if (gs.kind === 'cursor') {
+      const fx = Math.max(0, Math.min(1, (p.x - g.l) / g.w));
+      if (gs.which === 0) this.s.curA = fx; else this.s.curB = fx;
       this.draw(); return;
     }
-    const m = this.s.markers[this.s.active];
-    m.on = true; m.hz = this.start + Math.max(0, Math.min(1, fx)) * this.s.span;
-    this.drag = 0;
-    if (down) this.controls();
+    if (gs.kind === 'marker') { const m = this.s.markers[gs.which]; m.hz = Math.max(this.start, Math.min(this.stop, this.hzAt(p.x))); this.draw(); return; }
+    if (gs.kind === 'pinch' && this.pts.size >= 2) {
+      const [a, b] = [...this.pts.values()];
+      const d = Math.max(10, Math.abs(a.x - b.x));
+      const anchor = gs.center0 - gs.span0 / 2 + (gs.x0 - g.l) / g.w * gs.span0;
+      const span = Math.max(MIN_SPAN, gs.span0 * gs.d0 / d);
+      const mid = (a.x + b.x) / 2;
+      this.preview(anchor - ((mid - g.l) / g.w - 0.5) * span, span);
+      return;
+    }
+    if (gs.kind === 'tap' && Math.abs(p.x - gs.x0) > 6) gs.kind = 'pan';
+    if (gs.kind === 'pan') this.preview(gs.center0 - (p.x - gs.x0) / g.w * gs.span0, gs.span0);
+  }
+
+  private up(e: PointerEvent): void {
+    const gs = this.gesture;
+    const p = this.pts.get(e.pointerId);
+    this.pts.delete(e.pointerId);
+    if (!gs) return;
+    if (gs.kind === 'pinch') { if (this.pts.size < 2) { this.gesture = null; this.commitSoon(0); } return; }
+    this.gesture = null;
+    if (gs.kind === 'tap' && p && this.s.mode === 'FREQ') {
+      const m = this.s.markers[this.s.active];
+      m.on = true; m.hz = this.hzAt(p.x);
+      // a tap snaps to the peak under the finger when there is one within a few pixels
+      const t = this.traceFor(m.trace);
+      if (t?.data) {
+        const g = this.geom(), half = Math.max(1, Math.round(8 / g.w * this.s.span / t.binHz));
+        const c = binOf(m.hz, t.f0, t.binHz, t.data.length);
+        let best = c; for (let i = Math.max(0, c - half); i <= Math.min(t.data.length - 1, c + half); i++) if (t.data[i] > t.data[best]) best = i;
+        m.hz = t.f0 + (best + refinePeak(t.data, best).offset) * t.binHz;
+      }
+      this.controls(); this.save(); this.draw();
+    } else if (gs.kind === 'pan') this.commitSoon(0);
+    else if (gs.kind === 'marker' || gs.kind === 'cursor') { this.save(); this.draw(); }
+  }
+
+  private wheel(e: WheelEvent): void {
+    if (this.s.mode !== 'FREQ') return;
+    e.preventDefault();
+    const g = this.geom(), p = this.local(e);
+    const span = this.vSpan(), center = this.vCenter();
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      // sideways: pan by a tenth of the span per notch
+      const d = (e.shiftKey ? e.deltaY : e.deltaX) > 0 ? 1 : -1;
+      this.preview(center + d * span / 10, span);
+    } else {
+      // zoom about the frequency under the pointer
+      const k = e.deltaY > 0 ? 1.25 : 0.8;
+      const anchor = this.hzAt(p.x), fx = (p.x - g.l) / g.w;
+      const ns = Math.max(MIN_SPAN, Math.min(MAX_HZ - MIN_HZ, span * k));
+      this.preview(anchor - (fx - 0.5) * ns, ns);
+    }
+    this.commitSoon(350);
+  }
+
+  /** Draw the span a gesture is making, with what is already measured shifted under it. */
+  private preview(center: number, span: number): void {
+    span = Math.max(MIN_SPAN, Math.min(MAX_HZ - MIN_HZ, span));
+    center = Math.max(MIN_HZ + span / 2, Math.min(MAX_HZ - span / 2, center));
+    this.view = { center, span };
+    this.tilesPreview();
     this.draw();
+  }
+  /** The CENTER and SPAN tiles follow a gesture as it is made. */
+  private tilesPreview(): void {
+    const v = this.view; if (!v || this.s.startStop) return;
+    const put = (id: string, hz: number) => { const b = this.root?.querySelector(`[data-tile="${id}"] .sp-tv`); if (b) { const [t, u] = bigHz(hz); b.innerHTML = `${esc(t)}<small>${u}</small>`; } };
+    put('center', v.center); put('span', v.span);
+  }
+  /** Apply the gesture's span once it settles. */
+  private commitSoon(ms: number): void {
+    clearTimeout(this.commitTimer);
+    this.commitTimer = window.setTimeout(() => {
+      if (!this.view || this.gesture) return;
+      const v = this.view;
+      this.setSpan(v.center, v.span);
+    }, ms);
   }
 
   // ---- drawing ------------------------------------------------------------------------------------------------
@@ -431,9 +749,9 @@ export class SpectrumUi {
   }
 
   /** The plot area inside the canvas, in CSS pixels. */
-  private geom(): { l: number; t: number; w: number; h: number; W: number; H: number } {
+  private geom(): Geom {
     const cv = this.cv!, W = cv.clientWidth || 600, H = cv.clientHeight || 300;
-    const l = 46, t = 8, r = 8, b = 22;
+    const l = 48, t = 30, r = 10, b = 24;
     return { l, t, w: W - l - r, h: H - t - b, W, H };
   }
 
@@ -445,199 +763,300 @@ export class SpectrumUi {
     const ctx = cv.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.render(ctx, g);
-    this.header();
-    this.readout();
+    this.side();
   }
 
   /** Draw the whole plot into a context (the screen, or the PNG export). */
-  render(ctx: CanvasRenderingContext2D, g: { l: number; t: number; w: number; h: number; W: number; H: number }): void {
+  render(ctx: CanvasRenderingContext2D, g: Geom): void {
     const css = getComputedStyle(document.documentElement);
-    const paper = css.getPropertyValue('--paper').trim() || '#0a0d13', line = css.getPropertyValue('--line').trim() || '#2a3348', muted = css.getPropertyValue('--muted').trim() || '#8d97ab';
+    const paper = css.getPropertyValue('--paper').trim() || '#0a0d13', line = css.getPropertyValue('--line').trim() || '#2a3348', muted = css.getPropertyValue('--muted').trim() || '#8d97ab', ink = css.getPropertyValue('--ink').trim() || '#e8ecf4', accent = css.getPropertyValue('--accent').trim() || '#4c8dff';
     ctx.fillStyle = paper; ctx.fillRect(0, 0, g.W, g.H);
-    ctx.font = '10px ui-monospace, monospace';
-    if (this.s.mode === 'ZERO') { this.renderZero(ctx, g, line, muted); return; }
+    // the screen: a faint glass gradient inside the graticule
+    const bg = ctx.createLinearGradient(0, g.t, 0, g.t + g.h);
+    bg.addColorStop(0, 'rgba(76,141,255,0.07)'); bg.addColorStop(1, 'rgba(76,141,255,0.015)');
+    ctx.fillStyle = bg; ctx.fillRect(g.l, g.t, g.w, g.h);
+    if (this.s.mode === 'ZERO') { this.renderZero(ctx, g, line, muted, ink); return; }
     const s = this.s, top = s.ref, range = s.div * 10;
+    const vs = this.vSpan(), vStart = this.vCenter() - vs / 2;
     const yOf = (v: number) => g.t + (top - v) / range * g.h;
-    // persistence under everything
-    if (s.persist && this.persist) {
-      const p = this.persist, lv = p.level();
-      const img = ctx.createImageData(p.cols, p.rows);
-      for (let i = 0; i < lv.length; i++) {
-        const v = lv[i]; if (!v) continue;
-        // dark blue → cyan → yellow → white
-        const r = v < 0.5 ? 0 : (v - 0.5) * 2 * 255, gg = Math.min(255, v * 2 * 255), b = v < 0.5 ? 120 + v * 270 : 255 - (v - 0.5) * 300;
-        img.data.set([r, gg, Math.max(0, b), Math.min(255, 60 + v * 400)], i * 4);
-      }
-      const off = document.createElement('canvas'); off.width = p.cols; off.height = p.rows;
-      off.getContext('2d')!.putImageData(img, 0, 0);
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(off, g.l, g.t, g.w, g.h);
-    }
-    // graticule: 10 by 10
-    ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.fillStyle = muted;
-    for (let k = 0; k <= 10; k++) {
-      const x = Math.round(g.l + k * g.w / 10) + 0.5, y = Math.round(g.t + k * g.h / 10) + 0.5;
-      ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.t + g.h); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.l + g.w, y); ctx.stroke();
-      ctx.textAlign = 'right'; ctx.fillText(String(+(top - k * s.div).toFixed(1)), g.l - 4, y + 3);
-    }
-    ctx.textAlign = 'left'; ctx.fillText(fmtHz(this.start, 3), g.l, g.t + g.h + 14);
-    ctx.textAlign = 'center'; ctx.fillText(fmtHz(s.center, 3), g.l + g.w / 2, g.t + g.h + 14);
-    ctx.textAlign = 'right'; ctx.fillText(fmtHz(this.stop, 3), g.l + g.w, g.t + g.h + 14);
-    const xOf = (hz: number) => g.l + (hz - this.start) / s.span * g.w;
+    const xOf = (hz: number) => g.l + (hz - vStart) / vs * g.w;
+    // the density display, under everything (it is drawn for the settled span only)
+    if (s.persist && this.persist && !this.view) this.renderDensity(ctx, g);
+    this.graticule(ctx, g, line, muted, (k) => String(+(top - k * s.div).toFixed(1)));
+    ctx.font = '600 11px ui-monospace, monospace'; ctx.fillStyle = muted;
+    const wide = g.w >= 560;
+    ctx.textAlign = 'left'; ctx.fillText(`${wide ? 'START ' : ''}${fmtHz(vStart, 4)}`, g.l, g.t + g.h + 16);
+    ctx.textAlign = 'center'; ctx.fillText(wide ? `${fmtHz(vStart + vs / 2, 6)}  ·  ${bwText(vs / 10)}/div` : `${bwText(vs / 10)}/div`, g.l + g.w / 2, g.t + g.h + 16);
+    ctx.textAlign = 'right'; ctx.fillText(`${wide ? 'STOP ' : ''}${fmtHz(vStart + vs, 4)}`, g.l + g.w, g.t + g.h + 16);
+    // top-left: the scale
+    ctx.textAlign = 'left'; ctx.fillStyle = ink; ctx.font = '700 12px ui-monospace, monospace';
+    ctx.fillText(`REF ${s.ref} ${this.unitLabel()}`, g.l, 13);
+    ctx.fillStyle = muted; ctx.font = '600 11px ui-monospace, monospace';
+    // a narrow plot (a phone) leaves the second line to the marker: RBW and VBW are on the tiles anyway
+    const narrow = g.w < 560;
+    if (!narrow) ctx.fillText(`${s.div} dB/div · RBW ${bwText(this.frame?.rbw ?? this.rbwHz())} · VBW ${s.vbwAuto ? 'AUTO' : bwText(s.vbw)}`, g.l, 26);
+    else { ctx.textAlign = 'left'; ctx.fillText(`${s.div} dB/div`, g.l + ctx.measureText(`REF ${s.ref} ${this.unitLabel()}  `).width + 12, 13); }
     ctx.save(); ctx.beginPath(); ctx.rect(g.l, g.t, g.w, g.h); ctx.clip();
     // measurement bands
     const t0 = this.measTrace();
     if (t0 && s.meas !== 'OFF' && s.meas !== 'NOISE') {
-      ctx.fillStyle = 'rgba(76,141,255,0.16)';
-      const band = (c: number, bw: number) => ctx.fillRect(xOf(c - bw / 2), g.t, Math.max(1, xOf(c + bw / 2) - xOf(c - bw / 2)), g.h);
-      if (s.meas === 'CHP') band(s.center, s.chBw);
-      if (s.meas === 'ACPR') { band(s.center, s.chBw); ctx.fillStyle = 'rgba(255,175,0,0.14)'; band(s.center - s.spacing, s.chBw); band(s.center + s.spacing, s.chBw); }
-      if (s.meas === 'OBW' && t0.data) {
-        const o = occupiedBw(t0.data, t0.f0, t0.binHz, this.frame?.rbw ?? 1);
-        ctx.fillRect(xOf(o.lo), g.t, Math.max(1, xOf(o.hi) - xOf(o.lo)), g.h);
-        ctx.strokeStyle = '#4c8dff'; ctx.beginPath(); ctx.moveTo(xOf(o.lo), g.t); ctx.lineTo(xOf(o.lo), g.t + g.h); ctx.moveTo(xOf(o.hi), g.t); ctx.lineTo(xOf(o.hi), g.t + g.h); ctx.stroke();
-      }
+      const band = (c: number, bw: number, col: string) => {
+        const a = xOf(c - bw / 2), b = xOf(c + bw / 2);
+        ctx.fillStyle = col; ctx.fillRect(a, g.t, Math.max(1, b - a), g.h);
+        ctx.strokeStyle = col.replace(/[\d.]+\)$/, '0.7)'); ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(a, g.t); ctx.lineTo(a, g.t + g.h); ctx.moveTo(b, g.t); ctx.lineTo(b, g.t + g.h); ctx.stroke(); ctx.setLineDash([]);
+      };
+      if (s.meas === 'CHP') band(s.center, s.chBw, 'rgba(76,141,255,0.16)');
+      if (s.meas === 'ACPR') { band(s.center, s.chBw, 'rgba(76,141,255,0.16)'); band(s.center - s.spacing, s.chBw, 'rgba(255,175,0,0.13)'); band(s.center + s.spacing, s.chBw, 'rgba(255,175,0,0.13)'); }
+      if (s.meas === 'OBW' && t0.data) { const o = occupiedBw(t0.data, t0.f0, t0.binHz, this.frame?.rbw ?? 1); band((o.lo + o.hi) / 2, o.bw, 'rgba(76,141,255,0.16)'); }
     }
-    // traces
+    // traces: a soft glow under a crisp line, the live trace filled down to the floor
     const cols = Math.max(2, Math.round(g.w));
-    this.traces.forEach((t, i) => {
-      if (!t.data || t.mode === 'OFF') return;
-      // the columns the trace's bins cover
+    for (let i = this.traces.length - 1; i >= 0; i--) {
+      const t = this.traces[i];
+      if (!t.data || t.mode === 'OFF') continue;
       const x0 = xOf(t.f0 - t.binHz / 2), x1 = xOf(t.f0 + (t.data.length - 0.5) * t.binHz);
-      const n = Math.max(2, Math.min(cols, Math.round(x1 - x0)));
-      const y = toColumns(t.data, n, s.det);
-      ctx.strokeStyle = TRACE_COLOR[i]; ctx.lineWidth = 1.25; ctx.beginPath();
-      for (let c = 0; c < n; c++) { const x = x0 + (c + 0.5) * (x1 - x0) / n, yy = yOf(y[c]); if (c) ctx.lineTo(x, yy); else ctx.moveTo(x, yy); }
-      ctx.stroke();
-    });
-    // a sweep's position
+      const a = Math.max(g.l - 2, x0), b = Math.min(g.l + g.w + 2, x1);
+      if (b <= a) continue;
+      // the bins visible on screen, one column per pixel
+      const n = Math.max(2, Math.min(cols, Math.round(b - a)));
+      const i0 = Math.max(0, Math.floor((a - x0) / (x1 - x0) * t.data.length)), i1 = Math.min(t.data.length, Math.ceil((b - x0) / (x1 - x0) * t.data.length));
+      if (i1 - i0 < 1) continue;
+      const y = toColumns(t.data.subarray(i0, i1), n, s.det);
+      const xa = x0 + i0 / t.data.length * (x1 - x0), xb = x0 + i1 / t.data.length * (x1 - x0);
+      const path = new Path2D();
+      for (let c = 0; c < n; c++) { const x = xa + (c + 0.5) * (xb - xa) / n, yy = yOf(y[c]); if (c) path.lineTo(x, yy); else path.moveTo(x, yy); }
+      const col = TRACE_COLOR[i];
+      if (t.mode === 'LIVE' && !s.persist) {
+        const fill = new Path2D(path); fill.lineTo(xb, g.t + g.h); fill.lineTo(xa, g.t + g.h); fill.closePath();
+        const gr = ctx.createLinearGradient(0, g.t, 0, g.t + g.h);
+        gr.addColorStop(0, col + '2e'); gr.addColorStop(0.6, col + '0c'); gr.addColorStop(1, col + '00');
+        ctx.fillStyle = gr; ctx.fill(fill);
+      }
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = col + '22'; ctx.lineWidth = 7; ctx.stroke(path);
+      ctx.strokeStyle = col + '55'; ctx.lineWidth = 3.5; ctx.stroke(path);
+      ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.stroke(path);
+    }
+    // a sweep's position: a thin bright line where the radio is now
     const f = this.frame;
-    if (f?.sweep && f.steps > 1 && f.step < f.steps) { ctx.fillStyle = '#ffaf00'; ctx.fillRect(g.l + g.w * f.step / f.steps - 1, g.t + g.h - 4, 3, 4); }
-    // markers
+    if (f?.sweep && f.steps > 1 && f.step < f.steps && !this.view) {
+      const x = g.l + g.w * f.step / f.steps;
+      const gr = ctx.createLinearGradient(x - 18, 0, x, 0); gr.addColorStop(0, 'rgba(255,175,0,0)'); gr.addColorStop(1, 'rgba(255,175,0,0.25)');
+      ctx.fillStyle = gr; ctx.fillRect(x - 18, g.t, 18, g.h);
+      ctx.fillStyle = ACTIVE; ctx.fillRect(x - 1, g.t, 2, g.h);
+    }
+    ctx.restore();
+    // markers: a diamond on the trace and a numbered tag over it
     s.markers.forEach((m, k) => {
       if (!m.on) return;
-      const t = this.traceFor(m.trace);
-      const lvl = t?.data ? t.data[binOf(m.hz, t.f0, t.binHz, t.data.length)] : NaN;
-      const x = xOf(m.hz), y = Number.isFinite(lvl) ? Math.max(g.t + 6, Math.min(g.t + g.h, yOf(lvl))) : g.t + 10;
-      ctx.fillStyle = k === s.active ? '#ffaf00' : MARKER_COLOR; ctx.strokeStyle = '#000';
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 5, y - 8); ctx.lineTo(x + 5, y - 8); ctx.closePath(); ctx.fill(); ctx.stroke();
-      ctx.textAlign = 'center'; ctx.fillText(`${m.delta ? 'Δ' : ''}${k + 1}`, x, y - 11);
+      const lvl = this.markerLevel(k);
+      const x = xOf(m.hz);
+      if (x < g.l - 1 || x > g.l + g.w + 1) return;
+      const y = Number.isFinite(lvl) ? Math.max(g.t + 4, Math.min(g.t + g.h - 4, yOf(lvl))) : g.t + 12;
+      const col = k === s.active ? ACTIVE : '#ffffff';
+      ctx.save();
+      ctx.shadowColor = col; ctx.shadowBlur = 10;
+      ctx.fillStyle = col; ctx.strokeStyle = '#05080a'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 7); ctx.lineTo(x - 6, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
+      const tag = `${m.delta && k ? 'Δ' : ''}${k + 1}`;
+      ctx.font = '800 11px ui-monospace, monospace';
+      const tw = ctx.measureText(tag).width + 8, ty = Math.max(g.t + 2, y - 26);
+      ctx.fillStyle = col; this.roundRect(ctx, x - tw / 2, ty, tw, 15, 4); ctx.fill();
+      ctx.fillStyle = '#05080a'; ctx.textAlign = 'center'; ctx.fillText(tag, x, ty + 11);
     });
-    ctx.restore();
-    if (!this.host.connected()) { ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.font = '12px sans-serif'; ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2); }
+    // top-right: the active marker, large, as a bench analyzer prints it
+    const am = s.markers[s.active];
+    if (am.on) {
+      const lv = this.markerLevel(s.active);
+      const d = am.delta && s.active > 0 && s.markers[0].on;
+      const ref = d ? this.markerLevel(0) : 0;
+      const head = d ? `ΔMKR${s.active + 1}` : `MKR${s.active + 1}`;
+      const fx = d ? `${sgn(am.hz - s.markers[0].hz)}${fmtHz(Math.abs(am.hz - s.markers[0].hz), 6)}` : fmtHz(am.hz, 6);
+      const fy = d ? `${sgn(lv - ref)}${db1(Math.abs(lv - ref))} dB` : `${db1(lv)} ${this.unitLabel()}`;
+      ctx.textAlign = 'right';
+      ctx.font = '700 11px ui-monospace, monospace'; ctx.fillStyle = ACTIVE; ctx.fillText(head, g.l + g.w, 13);
+      ctx.font = `800 ${g.w < 560 ? 13 : 15}px ui-monospace, monospace`; ctx.fillStyle = ink; ctx.fillText(`${fx}   ${fy}`, g.l + g.w, 27);
+    }
+    if (!this.host.connected()) { ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.font = '600 13px sans-serif'; ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2); }
+    void accent;
   }
 
-  private renderZero(ctx: CanvasRenderingContext2D, g: { l: number; t: number; w: number; h: number; W: number; H: number }, line: string, muted: string): void {
+  private graticule(ctx: CanvasRenderingContext2D, g: Geom, line: string, muted: string, label: (k: number) => string, rows = 10): void {
+    ctx.lineWidth = 1;
+    for (let k = 0; k <= 10; k++) {
+      const x = Math.round(g.l + k * g.w / 10) + 0.5;
+      ctx.strokeStyle = k === 5 ? line : line + 'aa';
+      ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.t + g.h); ctx.stroke();
+    }
+    ctx.font = '600 10px ui-monospace, monospace'; ctx.fillStyle = muted; ctx.textAlign = 'right';
+    for (let k = 0; k <= rows; k++) {
+      const y = Math.round(g.t + k * g.h / rows) + 0.5;
+      ctx.strokeStyle = k === rows / 2 ? line : line + 'aa';
+      ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.l + g.w, y); ctx.stroke();
+      ctx.fillText(label(k), g.l - 5, y + 3);
+    }
+    // minor ticks along the center lines, as on a bench screen
+    ctx.strokeStyle = line;
+    for (let k = 0; k <= 50; k++) { const x = Math.round(g.l + k * g.w / 50) + 0.5, y = g.t + g.h / 2; ctx.beginPath(); ctx.moveTo(x, y - 2); ctx.lineTo(x, y + 2); ctx.stroke(); }
+    for (let k = 0; k <= rows * 5; k++) { const y = Math.round(g.t + k * g.h / (rows * 5)) + 0.5, x = g.l + g.w / 2; ctx.beginPath(); ctx.moveTo(x - 2, y); ctx.lineTo(x + 2, y); ctx.stroke(); }
+  }
+
+  private renderDensity(ctx: CanvasRenderingContext2D, g: Geom): void {
+    const p = this.persist!;
+    const lv = p.level();
+    const c = this.densityCanvas ??= document.createElement('canvas');
+    if (c.width !== p.cols || c.height !== p.rows) { c.width = p.cols; c.height = p.rows; }
+    const cc = c.getContext('2d')!;
+    const img = cc.createImageData(p.cols, p.rows);
+    const px = new Uint32Array(img.data.buffer);
+    for (let i = 0; i < lv.length; i++) { const v = lv[i]; px[i] = v > 0.003 ? PALETTE[Math.min(255, Math.round(Math.sqrt(v) * 255))] : 0; }
+    cc.putImageData(img, 0, 0);
+    ctx.save(); ctx.imageSmoothingEnabled = true; ctx.globalCompositeOperation = 'lighter';
+    ctx.drawImage(c, g.l, g.t, g.w, g.h);
+    ctx.restore();
+  }
+
+  private roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+
+  private renderZero(ctx: CanvasRenderingContext2D, g: Geom, line: string, muted: string, ink: string): void {
     const s = this.s, z = this.zcap;
     const panes: ('amp' | 'fm' | 'ph')[] = [];
     if (s.showAmp) panes.push('amp'); if (s.showFm) panes.push('fm'); if (s.showPh) panes.push('ph');
     if (!panes.length) panes.push('amp');
-    const gap = 10, ph = (g.h - gap * (panes.length - 1)) / panes.length;
-    // time axis: the trigger at 0, the window's start at -pre
+    const gap = 12, ph = (g.h - gap * (panes.length - 1)) / panes.length;
     const len = z ? z.amp.length : 1, rate = z?.rate ?? 1, total = z ? len / rate : s.zsTime;
     const t0 = z && z.trig >= 0 ? -z.trig / rate : 0;
+    ctx.textAlign = 'left'; ctx.fillStyle = ink; ctx.font = '700 12px ui-monospace, monospace';
+    ctx.fillText(`${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}`, g.l, 13);
+    ctx.fillStyle = muted; ctx.font = '600 11px ui-monospace, monospace';
+    ctx.fillText(`REF ${s.ref} ${this.unitLabel()} · ${s.div} dB/div · ${s.trig === 'FREE' ? 'FREE RUN' : `${s.trig === 'RISE' ? 'RISING' : 'FALLING'} ${s.level} ${this.unitLabel()}`}`, g.l, 26);
     panes.forEach((p, k) => {
       const top = g.t + k * (ph + gap);
-      ctx.strokeStyle = line; ctx.fillStyle = muted; ctx.lineWidth = 1;
-      for (let d = 0; d <= 10; d++) { const x = Math.round(g.l + d * g.w / 10) + 0.5; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); }
       const rows = p === 'amp' ? 10 : 4;
-      let lo: number, hi: number, unit: string;
-      if (p === 'amp') { hi = s.ref; lo = s.ref - s.div * 10; unit = this.unitLabel(); }
-      else if (p === 'fm') { hi = s.zsBw / 2; lo = -s.zsBw / 2; unit = 'Hz'; }
-      else { hi = 180; lo = -180; unit = '°'; }
-      for (let d = 0; d <= rows; d++) {
-        const y = Math.round(top + d * ph / rows) + 0.5;
-        ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.l + g.w, y); ctx.stroke();
-        const v = hi - d * (hi - lo) / rows;
-        ctx.textAlign = 'right'; ctx.fillText(p === 'fm' ? bwText(Math.abs(v)).replace(' ', '').replace(/^/, v < 0 ? '-' : v > 0 ? '+' : '') : String(+v.toFixed(0)), g.l - 4, y + 3);
-      }
-      ctx.textAlign = 'left'; ctx.fillText(p === 'amp' ? `AMPLITUDE ${unit}` : p === 'fm' ? 'FREQUENCY' : 'PHASE °', g.l + 4, top + 11);
+      let lo: number, hi: number;
+      if (p === 'amp') { hi = s.ref; lo = s.ref - s.div * 10; }
+      else if (p === 'fm') { hi = s.zsBw / 2; lo = -s.zsBw / 2; }
+      else { hi = 180; lo = -180; }
+      const pg: Geom = { ...g, t: top, h: ph };
+      if (k > 0) { ctx.fillStyle = 'rgba(76,141,255,0.05)'; ctx.fillRect(g.l, top, g.w, ph); }
+      this.graticule(ctx, pg, line, muted, (d) => { const v = hi - d * (hi - lo) / rows; return p === 'fm' ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${bwText(Math.abs(v)).replace(' ', '')}` : String(+v.toFixed(0)); }, rows);
+      const col = TRACE_COLOR[p === 'amp' ? 0 : p === 'fm' ? 1 : 2];
+      ctx.textAlign = 'left'; ctx.fillStyle = col; ctx.font = '700 10px ui-monospace, monospace';
+      ctx.fillText(p === 'amp' ? `AMPLITUDE ${this.unitLabel()}` : p === 'fm' ? 'FREQUENCY' : 'PHASE °', g.l + 5, top + 12);
       if (!z) return;
       const arr = p === 'amp' ? z.amp : p === 'fm' ? z.fm : z.ph;
       const yOf = (v: number) => top + (hi - v) / (hi - lo) * ph;
       ctx.save(); ctx.beginPath(); ctx.rect(g.l, top, g.w, ph); ctx.clip();
-      if (p === 'amp' && s.trig !== 'FREE') { ctx.strokeStyle = '#ffaf00'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(g.l, yOf(s.level)); ctx.lineTo(g.l + g.w, yOf(s.level)); ctx.stroke(); ctx.setLineDash([]); }
-      ctx.strokeStyle = TRACE_COLOR[k]; ctx.lineWidth = 1.25;
+      if (p === 'amp' && s.trig !== 'FREE') { ctx.strokeStyle = ACTIVE; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(g.l, yOf(s.level)); ctx.lineTo(g.l + g.w, yOf(s.level)); ctx.stroke(); ctx.setLineDash([]); }
       const cols = Math.max(2, Math.round(g.w));
-      ctx.beginPath();
+      const path = new Path2D();
       if (arr.length > cols * 2) {
         // min / max per column so a dense trace keeps its envelope
         for (let c = 0; c < cols; c++) {
           const a = Math.floor(c * arr.length / cols), b = Math.max(a + 1, Math.floor((c + 1) * arr.length / cols));
           let mn = Infinity, mx = -Infinity; for (let i = a; i < b; i++) { if (arr[i] < mn) mn = arr[i]; if (arr[i] > mx) mx = arr[i]; }
-          const x = g.l + c + 0.5; ctx.moveTo(x, yOf(mx)); ctx.lineTo(x, yOf(mn) + 0.5);
+          const x = g.l + c + 0.5; path.moveTo(x, yOf(mx)); path.lineTo(x, yOf(mn) + 0.6);
         }
       } else {
-        for (let i = 0; i < arr.length; i++) { const x = g.l + (i + 0.5) / arr.length * g.w, y = yOf(arr[i]); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+        for (let i = 0; i < arr.length; i++) { const x = g.l + (i + 0.5) / arr.length * g.w, y = yOf(arr[i]); if (i) path.lineTo(x, y); else path.moveTo(x, y); }
       }
-      ctx.stroke();
-      if (z.trig >= 0) { const x = g.l + z.trig / len * g.w; ctx.strokeStyle = '#ffaf00'; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); if (k === 0) { ctx.fillStyle = '#ffaf00'; ctx.textAlign = 'center'; ctx.fillText('T', x, top + 10); } }
-      if (s.cursors) for (const [c, l] of [[s.curA, 'A'], [s.curB, 'B']] as [number, string][]) { const x = g.l + c * g.w; ctx.strokeStyle = '#fff'; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); ctx.setLineDash([]); if (k === 0) { ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(l, x, top + 22); } }
+      ctx.strokeStyle = col + '30'; ctx.lineWidth = 5; ctx.stroke(path);
+      ctx.strokeStyle = col; ctx.lineWidth = 1.3; ctx.stroke(path);
+      if (z.trig >= 0) { const x = g.l + z.trig / len * g.w; ctx.strokeStyle = ACTIVE; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); if (k === 0) { ctx.fillStyle = ACTIVE; ctx.beginPath(); ctx.moveTo(x - 6, top); ctx.lineTo(x + 6, top); ctx.lineTo(x, top + 8); ctx.fill(); } }
+      if (s.cursors) for (const [c, l] of [[s.curA, 'A'], [s.curB, 'B']] as [number, string][]) {
+        const x = g.l + c * g.w; ctx.strokeStyle = '#ffffff'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); ctx.setLineDash([]);
+        if (k === 0) { ctx.fillStyle = '#ffffff'; this.roundRect(ctx, x - 8, top + 2, 16, 15, 4); ctx.fill(); ctx.fillStyle = '#05080a'; ctx.textAlign = 'center'; ctx.font = '800 11px ui-monospace, monospace'; ctx.fillText(l, x, top + 13); }
+      }
       ctx.restore();
     });
-    ctx.fillStyle = muted; ctx.textAlign = 'left'; ctx.fillText(fmtSec(t0), g.l, g.t + g.h + 14);
-    ctx.textAlign = 'right'; ctx.fillText(fmtSec(t0 + total), g.l + g.w, g.t + g.h + 14);
-    ctx.textAlign = 'center'; ctx.fillText(`${fmtSec(total / 10)}/div`, g.l + g.w / 2, g.t + g.h + 14);
-    if (!this.host.connected()) { ctx.textAlign = 'center'; ctx.font = '12px sans-serif'; ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2); }
-    else if (!z) { ctx.textAlign = 'center'; ctx.font = '12px sans-serif'; ctx.fillText(s.trig === 'FREE' ? 'Starting…' : `Waiting for the trigger (${s.trig === 'RISE' ? 'rising' : 'falling'} through ${s.level} ${this.unitLabel()})`, g.l + g.w / 2, g.t + g.h / 2); }
+    ctx.fillStyle = muted; ctx.font = '600 11px ui-monospace, monospace';
+    ctx.textAlign = 'left'; ctx.fillText(fmtSec(t0), g.l, g.t + g.h + 16);
+    ctx.textAlign = 'right'; ctx.fillText(fmtSec(t0 + total), g.l + g.w, g.t + g.h + 16);
+    ctx.textAlign = 'center'; ctx.fillText(`${fmtSec(total / 10)}/div`, g.l + g.w / 2, g.t + g.h + 16);
+    ctx.font = '600 13px sans-serif';
+    if (!this.host.connected()) ctx.fillText('Connect a radio to measure', g.l + g.w / 2, g.t + g.h / 2);
+    else if (!z) ctx.fillText(s.trig === 'FREE' ? 'Starting…' : `Waiting for the trigger (${s.trig === 'RISE' ? 'rising' : 'falling'} through ${s.level} ${this.unitLabel()})`, g.l + g.w / 2, g.t + g.h / 2);
   }
 
   /** The trace the measurements read: the active marker's, else the first with data. */
   private measTrace(): Trace | null { return this.traceFor(this.s.markers[this.s.active].trace); }
 
-  private header(): void {
-    const el = this.root?.querySelector<HTMLElement>('#sp-head'); if (!el) return;
-    const s = this.s, f = this.frame;
-    if (s.mode === 'ZERO') {
-      const z = this.zcap;
-      el.innerHTML = `<b>${esc(fmtHz(s.zsFreq))}</b><span>ZERO SPAN · FILTER ${bwText(s.zsBw)} · SWEEP ${fmtSec(z?.sweepSec ?? s.zsTime)} · ${s.trig === 'FREE' ? 'FREE RUN' : `${s.trig === 'RISE' ? 'RISING' : 'FALLING'} ${s.level} ${this.unitLabel()} · PRE ${Math.round(s.pre * 100)} %`}${s.single ? (this.armed ? ' · SINGLE ARMED' : ' · SINGLE DONE') : ''}</span>`;
-      return;
-    }
-    const how = this.plan?.kind === 'SWEEP' ? `SWEEP ${f ? `${f.steps} STEPS` : ''}` : this.plan?.kind === 'FFT' ? `${(this.plan.rate / 1e6).toFixed(this.plan.rate % 1e6 ? 2 : 0)} Msps` : '';
-    el.innerHTML = `<b>${esc(fmtHz(s.center))}</b><span>SPAN ${bwText(s.span)} · RBW ${bwText(f?.rbw ?? this.rbwHz())} · VBW ${s.vbwAuto ? 'AUTO' : bwText(s.vbw)} · REF ${s.ref} ${this.unitLabel()} · ${s.div} dB/div · ${how}</span>`;
-  }
+  // ---- the side panel: the measurement, large, and the marker table --------------------------------------------
 
-  private readout(): void {
-    const el = this.root?.querySelector<HTMLElement>('#sp-read'); if (!el) return;
+  private side(): void {
+    const meas = this.root?.querySelector<HTMLElement>('#sp-meas'), mkt = this.root?.querySelector<HTMLElement>('#sp-mkt');
+    if (!meas || !mkt) return;
     const s = this.s, u = this.unitLabel();
-    const rows: string[] = [];
+    const big = (label: string, v: string, unit: string, cls = '') => `<div class="sp-big ${cls}"><span>${label}</span><b>${esc(v)}<small>${esc(unit)}</small></b></div>`;
     if (s.mode === 'ZERO') {
       const z = this.zcap, st = this.zstats;
-      if (st) rows.push(`<div class="sp-mr"><b>PULSE</b><span>width ${fmtSec(st.width)} · period ${fmtSec(st.period)} · duty ${Number.isFinite(st.duty) ? (st.duty * 100).toFixed(1) + ' %' : '—'} · rise ${fmtSec(st.rise)} · fall ${fmtSec(st.fall)} · top ${db1(st.top)} ${u} · base ${db1(st.base)} ${u} · ${st.pulses} pulse${st.pulses === 1 ? '' : 's'}</span></div>`);
-      else if (z) rows.push(`<div class="sp-mr"><b>PULSE</b><span>no on/off pattern in this window (it needs 10 dB between on and off)</span></div>`);
+      const split = (t: string) => { const i = t.lastIndexOf(' '); return i < 0 ? [t, ''] : [t.slice(0, i), t.slice(i + 1)]; };
+      let h = `<div class="sp-mh">PULSE</div>`;
+      if (st) {
+        const cells: [string, string][] = [['WIDTH', fmtSec(st.width)], ['PERIOD', fmtSec(st.period)], ['DUTY', Number.isFinite(st.duty) ? `${(st.duty * 100).toFixed(1)} %` : '—'], ['RISE', fmtSec(st.rise)], ['FALL', fmtSec(st.fall)], ['PULSES', `${st.pulses} `]];
+        h += `<div class="sp-bigs">${cells.map(([l, v]) => { const [a, b] = split(v); return big(l, a, b); }).join('')}</div>
+          <div class="sp-msub">top ${db1(st.top)} ${u} · base ${db1(st.base)} ${u} · ${db1(st.top - st.base)} dB on/off</div>`;
+      } else h += `<div class="sp-msub">${z ? 'No pulses in this window: it needs two distinct levels at least 10 dB apart.' : 'Waiting for samples.'}</div>`;
+      meas.innerHTML = h;
       if (s.cursors && z) {
         const len = z.amp.length, at = (c: number) => Math.max(0, Math.min(len - 1, Math.round(c * (len - 1))));
         const a = at(s.curA), b = at(s.curB), dt = (b - a) / z.rate;
         const t = (i: number) => (i - Math.max(0, z.trig)) / z.rate;
-        rows.push(`<div class="sp-mr"><b>A</b><span>${fmtSec(t(a))} · ${db1(z.amp[a])} ${u} · ${bwText(Math.abs(z.fm[a]))} ${z.fm[a] < 0 ? 'below' : 'above'} · ${z.ph[a].toFixed(0)}°</span></div>`);
-        rows.push(`<div class="sp-mr"><b>B</b><span>${fmtSec(t(b))} · ${db1(z.amp[b])} ${u} · ${bwText(Math.abs(z.fm[b]))} ${z.fm[b] < 0 ? 'below' : 'above'} · ${z.ph[b].toFixed(0)}°</span></div>`);
-        rows.push(`<div class="sp-mr"><b>B−A</b><span>Δt ${fmtSec(dt)}${dt ? ` · 1/Δt ${bwText(Math.abs(1 / dt))}` : ''} · Δ ${db1(z.amp[b] - z.amp[a])} dB</span></div>`);
-      }
-      el.innerHTML = rows.join('');
+        const row = (k: string, i: number) => `<tr><td><b class="sp-dot" style="--c:#fff">${k}</b></td><td>${fmtSec(t(i))}</td><td>${db1(z.amp[i])} ${u}</td><td>${sgn(z.fm[i])}${bwText(Math.abs(z.fm[i]))}</td><td>${z.ph[i].toFixed(0)}°</td></tr>`;
+        mkt.innerHTML = `<table><thead><tr><th>CUR</th><th>TIME</th><th>AMPLITUDE</th><th>FREQ</th><th>PHASE</th></tr></thead><tbody>${row('A', a)}${row('B', b)}
+          <tr class="d"><td><b>B−A</b></td><td>${fmtSec(dt)}</td><td>${sgn(z.amp[b] - z.amp[a])}${db1(Math.abs(z.amp[b] - z.amp[a]))} dB</td><td colspan="2">${dt ? `1/Δt ${bwText(Math.abs(1 / dt))}` : ''}</td></tr></tbody></table>`;
+      } else mkt.innerHTML = `<div class="sp-msub">CURSORS (below) puts two time cursors on the trace.</div>`;
       return;
     }
-    const m1 = s.markers[0], ref = this.markerLevel(0);
-    s.markers.forEach((m, k) => {
-      if (!m.on) return;
-      const lv = this.markerLevel(k);
-      const t = this.traceFor(m.trace);
-      const nd = t?.data && this.frame ? noiseAt(t.data, binOf(m.hz, t.f0, t.binHz, t.data.length), this.frame.rbw) : NaN;
-      if (m.delta && k > 0 && m1.on) rows.push(`<div class="sp-mr${k === s.active ? ' on' : ''}"><b>Δ${k + 1}</b><span>${m.hz - m1.hz >= 0 ? '+' : '−'}${esc(fmtHz(Math.abs(m.hz - m1.hz)))} · ${lv - ref >= 0 ? '+' : ''}${db1(lv - ref)} dB</span><i>T${m.trace + 1}</i></div>`);
-      else rows.push(`<div class="sp-mr${k === s.active ? ' on' : ''}"><b>M${k + 1}</b><span>${esc(fmtHz(m.hz))} · ${db1(lv)} ${u} · ${db1(nd)} ${u}/Hz</span><i>T${m.trace + 1}</i></div>`);
-    });
+    // the measurement
     const t = this.measTrace(), f = this.frame;
     this.measText = '';
-    if (t?.data && f && s.meas !== 'OFF') {
+    let h = '';
+    if (s.meas === 'OFF') h = `<div class="sp-mh">MEASURE</div><div class="sp-msub">Pick CH PWR, OBW, ACPR or NOISE below for a measurement here.</div>`;
+    else if (!t?.data || !f) h = `<div class="sp-mh">${MEAS_TITLE[s.meas]}</div><div class="sp-msub">Waiting for a trace.</div>`;
+    else {
       const y = t.data, rbw = f.rbw;
-      if (s.meas === 'CHP') { const p = channelPower(y, t.f0, t.binHz, rbw, s.center, s.chBw); this.measText = `channel power ${db1(p)} ${u} in ${bwText(s.chBw)} · ${db1(p - 10 * Math.log10(s.chBw))} ${u}/Hz`; }
-      if (s.meas === 'OBW') { const o = occupiedBw(y, t.f0, t.binHz, rbw); this.measText = `99 % occupied bandwidth ${bwText(o.bw)} (${esc(fmtHz(o.lo, 4))} to ${esc(fmtHz(o.hi, 4))}) · total ${db1(o.total)} ${u}`; }
-      if (s.meas === 'ACPR') { const a = acpr(y, t.f0, t.binHz, rbw, s.center, s.chBw, s.spacing); this.measText = `main ${db1(a.main)} ${u} · lower ${db1(a.lowerDbc)} dBc · upper ${db1(a.upperDbc)} dBc (${bwText(s.chBw)} channels ${bwText(s.spacing)} apart)`; }
-      if (s.meas === 'NOISE') { const n = noiseFloor(y, rbw); this.measText = `noise floor ${db1(n.floor)} ${u} per ${bwText(rbw)} · ${db1(n.density)} ${u}/Hz`; }
-      rows.push(`<div class="sp-mr meas"><b>${({ CHP: 'CH POWER', OBW: 'OBW 99%', ACPR: 'ACPR', NOISE: 'NOISE', OFF: '' } as Record<Meas, string>)[s.meas]}</b><span>${this.measText}</span><i>T${this.traces.indexOf(t) + 1}</i></div>`);
+      h = `<div class="sp-mh">${MEAS_TITLE[s.meas]}<i>T${this.traces.indexOf(t) + 1}</i></div>`;
+      if (s.meas === 'CHP') {
+        const p = channelPower(y, t.f0, t.binHz, rbw, s.center, s.chBw), d = p - 10 * Math.log10(s.chBw);
+        this.measText = `channel power ${db1(p)} ${u} in ${bwText(s.chBw)} · ${db1(d)} ${u}/Hz`;
+        h += big('POWER', db1(p), u, 'xl') + `<div class="sp-bigs">${big('DENSITY', db1(d), `${u}/Hz`)}${big('CHANNEL', ...(bwText(s.chBw).split(' ') as [string, string]))}</div>`;
+      }
+      if (s.meas === 'OBW') {
+        const o = occupiedBw(y, t.f0, t.binHz, rbw);
+        this.measText = `99 % occupied bandwidth ${bwText(o.bw)} (${fmtHz(o.lo, 4)} to ${fmtHz(o.hi, 4)}) · total ${db1(o.total)} ${u}`;
+        h += big('OCCUPIED', ...(bwText(o.bw).split(' ') as [string, string]), 'xl') + `<div class="sp-bigs">${big('TOTAL POWER', db1(o.total), u)}${big('CENTER', ...bigHz((o.lo + o.hi) / 2))}</div>
+          <div class="sp-msub">${esc(fmtHz(o.lo, 4))} to ${esc(fmtHz(o.hi, 4))}</div>`;
+      }
+      if (s.meas === 'ACPR') {
+        const a = acpr(y, t.f0, t.binHz, rbw, s.center, s.chBw, s.spacing);
+        this.measText = `main ${db1(a.main)} ${u} · lower ${db1(a.lowerDbc)} dBc · upper ${db1(a.upperDbc)} dBc (${bwText(s.chBw)} channels ${bwText(s.spacing)} apart)`;
+        h += `<div class="sp-bigs three">${big('LOWER', db1(a.lowerDbc), 'dBc')}${big('MAIN', db1(a.main), u, 'hot')}${big('UPPER', db1(a.upperDbc), 'dBc')}</div>
+          <div class="sp-msub">${bwText(s.chBw)} channels, ${bwText(s.spacing)} apart · lower ${db1(a.lower)} ${u} · upper ${db1(a.upper)} ${u}</div>`;
+      }
+      if (s.meas === 'NOISE') {
+        const n = noiseFloor(y, rbw);
+        this.measText = `noise floor ${db1(n.floor)} ${u} per ${bwText(rbw)} · ${db1(n.density)} ${u}/Hz`;
+        h += big('DENSITY', db1(n.density), `${u}/Hz`, 'xl') + `<div class="sp-bigs">${big('FLOOR', db1(n.floor), u)}${big('PER RBW', ...(bwText(rbw).split(' ') as [string, string]))}</div>`;
+      }
     }
-    if (!rows.length) rows.push(`<div class="sp-mr dim"><span>Tap the trace to put a marker there, or PEAK. ${esc(this.calNote)}.</span></div>`);
-    el.innerHTML = rows.join('');
+    meas.innerHTML = h;
+    // the marker table
+    const on = s.markers.map((m, k) => ({ m, k })).filter(x => x.m.on);
+    if (!on.length) { mkt.innerHTML = `<div class="sp-msub">Tap the trace to drop a marker, or PEAK below.</div>`; return; }
+    const m1 = s.markers[0], ref = this.markerLevel(0);
+    mkt.innerHTML = `<table><thead><tr><th>MKR</th><th>TRC</th><th>X</th><th>Y</th><th>NOISE</th></tr></thead><tbody>${on.map(({ m, k }) => {
+      const lv = this.markerLevel(k), tr = this.traceFor(m.trace);
+      const nd = tr?.data && f ? noiseAt(tr.data, binOf(m.hz, tr.f0, tr.binHz, tr.data.length), f.rbw) : NaN;
+      const d = m.delta && k > 0 && m1.on;
+      return `<tr class="${k === s.active ? 'on' : ''}" data-row="${k}"><td><b class="sp-dot" style="--c:${k === s.active ? ACTIVE : '#fff'}">${d ? 'Δ' : ''}${k + 1}</b></td><td style="color:${TRACE_COLOR[m.trace]}">T${m.trace + 1}</td>
+        <td>${d ? `${sgn(m.hz - m1.hz)}${esc(fmtHz(Math.abs(m.hz - m1.hz), 6))}` : esc(fmtHz(m.hz, 6))}</td>
+        <td>${d ? `${sgn(lv - ref)}${db1(Math.abs(lv - ref))} dB` : `${db1(lv)} ${u}`}</td><td>${d ? '' : `${db1(nd)}<small> ${u}/Hz</small>`}</td></tr>`;
+    }).join('')}</tbody></table>`;
+    mkt.querySelectorAll<HTMLElement>('[data-row]').forEach(r => { r.onclick = () => { s.active = Number(r.dataset.row); this.controls(); this.draw(); }; });
   }
 
   private markerLevel(k: number): number {
@@ -666,7 +1085,8 @@ export class SpectrumUi {
     }
     const f = this.frame;
     lines.push(`# center ${s.center} Hz · span ${s.span} Hz · RBW ${f?.rbw.toFixed(1) ?? ''} Hz · VBW ${s.vbwAuto ? 'auto' : s.vbw} · ${s.window} window`, `# ${this.calNote}`);
-    if (this.measText) lines.push(`# ${this.measText.replace(/&[a-z]+;/g, '')}`);
+    if (this.measText) lines.push(`# ${this.measText}`);
+    for (const [k, m] of s.markers.entries()) if (m.on) lines.push(`# marker ${k + 1}: ${m.hz.toFixed(1)} Hz ${db1(this.markerLevel(k))} ${u}`);
     const ts = this.traces.map((t, i) => ({ t, i })).filter(x => x.t.data && x.t.mode !== 'OFF');
     lines.push(['frequency_hz', ...ts.map(x => `T${x.i + 1}_${x.t.mode}_${u}`)].join(','));
     const n = ts.length ? Math.max(...ts.map(x => x.t.data!.length)) : 0;
@@ -677,25 +1097,28 @@ export class SpectrumUi {
 
   private exportCsv(): void { this.download(new Blob([this.csv()], { type: 'text/csv' }), this.name('csv')); }
 
-  /** The plot with its header and readouts, as a PNG. */
+  /** The plot with its settings and readouts, as a PNG. */
   private exportPng(): void {
-    const W = 1400, plotH = 640, head = 54, read = 22 * Math.max(1, (this.root?.querySelectorAll('.sp-mr').length ?? 1));
-    const c = document.createElement('canvas'); c.width = W; c.height = head + plotH + read + 12;
+    const W = 1600, plotH = 720, head = 64;
+    const rows = this.root?.querySelectorAll('#sp-mkt tbody tr').length ?? 0;
+    const foot = 34 + 22 * (rows + (this.measText ? 1 : 0));
+    const c = document.createElement('canvas'); c.width = W; c.height = head + plotH + foot;
     const ctx = c.getContext('2d')!;
     const css = getComputedStyle(document.documentElement);
+    const ink = css.getPropertyValue('--ink').trim() || '#e8ecf4', muted = css.getPropertyValue('--muted').trim() || '#8d97ab';
     ctx.fillStyle = css.getPropertyValue('--paper').trim() || '#0a0d13'; ctx.fillRect(0, 0, c.width, c.height);
-    ctx.fillStyle = css.getPropertyValue('--ink').trim() || '#e8ecf4';
-    ctx.font = 'bold 20px ui-monospace, monospace';
-    const hd = this.root?.querySelector('#sp-head');
-    ctx.fillText(hd?.querySelector('b')?.textContent ?? '', 12, 26);
-    ctx.font = '13px ui-monospace, monospace'; ctx.fillStyle = css.getPropertyValue('--muted').trim() || '#8d97ab';
-    ctx.fillText((hd?.querySelector('span')?.textContent ?? '') + `  ·  ${this.calNote}`, 12, 46);
+    ctx.fillStyle = ink; ctx.font = '800 24px ui-monospace, monospace';
+    const tl = this.tileList().map(([, l, v, u2]) => `${l} ${v} ${u2}`).join('   ');
+    ctx.fillText(tl, 16, 30);
+    ctx.font = '13px ui-monospace, monospace'; ctx.fillStyle = muted;
+    ctx.fillText(`Mayhem Mobile · Spectrum · ${new Date().toLocaleString('en-US')} · ${this.calNote}`, 16, 52);
     ctx.save(); ctx.translate(0, head);
-    this.render(ctx, { l: 56, t: 8, w: W - 56 - 12, h: plotH - 8 - 26, W, H: plotH });
+    this.render(ctx, { l: 60, t: 34, w: W - 60 - 14, h: plotH - 34 - 28, W, H: plotH });
     ctx.restore();
-    ctx.font = '13px ui-monospace, monospace'; ctx.fillStyle = css.getPropertyValue('--ink').trim() || '#e8ecf4';
-    let y = head + plotH + 16;
-    this.root?.querySelectorAll('.sp-mr').forEach(r => { ctx.fillText(r.textContent?.replace(/\s+/g, ' ').trim() ?? '', 12, y); y += 22; });
+    ctx.font = '15px ui-monospace, monospace'; ctx.fillStyle = ink;
+    let y = head + plotH + 24;
+    if (this.measText) { ctx.fillText(this.measText, 16, y); y += 22; }
+    this.root?.querySelectorAll('#sp-mkt tbody tr').forEach(r => { ctx.fillText([...r.querySelectorAll('td')].map(td => td.textContent?.trim()).join('   '), 16, y); y += 22; });
     c.toBlob(b => { if (b) this.download(b, this.name('png')); }, 'image/png');
   }
 
@@ -705,13 +1128,24 @@ export class SpectrumUi {
     this.host.log(`Spectrum: saved ${name}`);
   }
 
-  /** Arrow keys move the active marker to the next peak (left / right); P is peak search. */
+  /** Keys: the keypad when it is open; otherwise ←/→ next peak left/right, P peak, N next peak, +/- zoom. */
   onKey(e: KeyboardEvent): boolean {
+    if (this.pad) {
+      if (e.key === 'Escape') { this.pad = null; this.drawPad(); }
+      else if (e.key === 'Enter') this.enterPad(this.pad.kind === 'db' || this.pad.kind === 'sec' ? 1 : 1e6);
+      else if (e.key === 'Backspace') this.padKey('bs');
+      else if (e.key === '-') this.padKey('±');
+      else if (/^[0-9.]$/.test(e.key)) this.padKey(e.key);
+      else if (/^[gmk]$/i.test(e.key) && this.pad.kind !== 'db') this.enterPad(this.pad.kind === 'sec' ? (e.key.toLowerCase() === 'm' ? 1e-3 : 1) : ({ g: 1e9, m: 1e6, k: 1e3 } as Record<string, number>)[e.key.toLowerCase()]);
+      return true;
+    }
     if (this.s.mode !== 'FREQ') return false;
-    if (e.key === 'ArrowLeft') { this.markerTo(this.s.active, 'left'); }
-    else if (e.key === 'ArrowRight') { this.markerTo(this.s.active, 'right'); }
-    else if (e.key === 'p' || e.key === 'P') { this.markerTo(this.s.active, 'peak'); }
-    else if (e.key === 'n' || e.key === 'N') { this.markerTo(this.s.active, 'next'); }
+    if (e.key === 'ArrowLeft') this.markerTo(this.s.active, 'left');
+    else if (e.key === 'ArrowRight') this.markerTo(this.s.active, 'right');
+    else if (e.key === 'p' || e.key === 'P') this.markerTo(this.s.active, 'peak');
+    else if (e.key === 'n' || e.key === 'N') this.markerTo(this.s.active, 'next');
+    else if (e.key === '+' || e.key === '=') { this.setSpan(this.s.center, step125(this.s.span, -1)); return true; }
+    else if (e.key === '-') { this.setSpan(this.s.center, step125(this.s.span, 1)); return true; }
     else return false;
     this.controls(); this.save(); this.draw();
     return true;
