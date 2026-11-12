@@ -352,6 +352,8 @@ fun AdaptivePane(
     share: Boolean = false,
     face: (@Composable () -> Unit)? = null,
     stacked: Boolean = false,
+    /** No waterfall at all: the controls (and their list) take its room. */
+    noVisual: Boolean = false,
     visual: @Composable (Modifier) -> Unit,
     controls: @Composable ColumnScope.() -> Unit
 ) {
@@ -365,14 +367,14 @@ fun AdaptivePane(
                     Column(Modifier.weight(1.35f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { face?.invoke() }
                     Column(Modifier.weight(1f).then(if (share) Modifier.fillMaxHeight() else Modifier)) { controls() }
                 }
-                Box(Modifier.fillMaxWidth().weight(1f)) { visual(Modifier.fillMaxSize()) }
+                if (!noVisual) Box(Modifier.fillMaxWidth().weight(1f)) { visual(Modifier.fillMaxSize()) }
             }
         }
     } else if (d.wide) {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Column(Modifier.weight(1.35f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 face?.invoke()
-                Box(Modifier.fillMaxWidth().weight(1f)) { visual(Modifier.fillMaxSize()) }
+                if (!noVisual) Box(Modifier.fillMaxWidth().weight(1f)) { visual(Modifier.fillMaxSize()) }
             }
             // A phone on its side is too short for a controls pane with a list or a map in it, so the pane scrolls
             // and is laid out as if it had a tablet's height: lists and maps keep real room instead of collapsing.
@@ -388,7 +390,7 @@ fun AdaptivePane(
             Column(Modifier.fillMaxSize()) {
                 if (face != null) Box(Modifier.fillMaxWidth().padding(bottom = d.dp(6f))) { face() }
                 if (share) {
-                    visual(Modifier.fillMaxWidth().weight(1f))
+                    if (!noVisual) visual(Modifier.fillMaxWidth().weight(1f))
                     controls()
                 } else {
                     // an upright tablet has the height for a real waterfall: at least a third of the screen

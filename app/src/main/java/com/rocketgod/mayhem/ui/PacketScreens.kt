@@ -112,7 +112,11 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         shift: Long = 0L,
                         controls: @Composable () -> Unit, list: (@Composable () -> Unit)? = null,
                         /** The list's share of the height against the log's 1 (null: the list takes only what it needs). */
-                        listWeight: Float? = null) {
+                        listWeight: Float? = null,
+                        /** A bursty signal's own strength for the meter (the band's average power hides 20 ms bursts); null: the band's level. */
+                        burstDb: Float? = null,
+                        /** Leave the waterfall out (an app whose bursts it can't show), giving its room to the list. */
+                        waterfall: Boolean = true) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -126,9 +130,10 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
     val channel = if (shift != 0L && rate > 0) { val c = 0.5f - shift.toFloat() / rate; val half = 6_000f / rate; c - half to c + half } else null
     AdaptivePane(
         // the card keeps its height; the waterfall and the log split the rest evenly
-        share = true,
+        share = true, noVisual = !waterfall,
         face = {
-            FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+            FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = (burstDb ?: level) / 40f,
+                left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
                 right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
                 onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f + shift) }) else null,
                 lamp = { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })

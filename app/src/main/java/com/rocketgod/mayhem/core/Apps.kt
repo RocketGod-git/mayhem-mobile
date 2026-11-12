@@ -33,6 +33,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
     TPMS("TPMS", "tire pressure, 315 / 433 MHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
+    TRAINS("Trains", "end-of-train telemetry · PTC train control", "Receive"),
     SUBGHZ("Sub-GHz", "weather · remotes · car keys, rtl_433 style", "Receive"),
     PROWL("Prowl", "hunts live voice across the bands", "Receive"),
     LOOKING_GLASS("Looking Glass", "wideband sweep waterfall", "Analyze"),
@@ -82,6 +83,38 @@ object Apps {
     val tpmsLog = PacketLog(); val tpms = TpmsDecoder(tpmsLog)
     val acarsLog = PacketLog(); val acars = AcarsDecoder(acarsLog)
     val ismLog = PacketLog(); val ism = IsmDecoder(ismLog)
+    /** Trains: end-of-train / head-of-train telemetry, or the PTC network; BOTH takes turns between them. */
+    val trainsLog = PacketLog(); val trains = com.rocketgod.mayhem.core.trains.TrainsProcessor(trainsLog)
+    // it opens on BOTH, starting where the traffic is: PTC beacons every few seconds, a rear unit only with a train
+    private val _trainsBand = MutableStateFlow(com.rocketgod.mayhem.core.trains.TrainsProcessor.Band.PTC)
+    val trainsBand: StateFlow<com.rocketgod.mayhem.core.trains.TrainsProcessor.Band> = _trainsBand.asStateFlow()
+    private val _trainsAuto = MutableStateFlow(true)
+    val trainsAuto: StateFlow<Boolean> = _trainsAuto.asStateFlow()
+    fun setTrainsBand(b: com.rocketgod.mayhem.core.trains.TrainsProcessor.Band, keepAuto: Boolean = false) {
+        if (!keepAuto) _trainsAuto.value = false
+        _trainsBand.value = b
+        if (playing() == MayhemApp.TRAINS) startTrains()
+    }
+    /** Whether Trains shows the waterfall (off: the band strip shows the bursts, and the cards get the room). */
+    private val _trainsWaterfall = MutableStateFlow(false)
+    val trainsWaterfall: StateFlow<Boolean> = _trainsWaterfall.asStateFlow()
+    fun setTrainsWaterfall(on: Boolean) { _trainsWaterfall.value = on }
+    fun setTrainsAuto() { _trainsAuto.value = true; if (playing() == MayhemApp.TRAINS) startTrains() }
+    private fun startTrains() {
+        val t = com.rocketgod.mayhem.core.trains.TrainsProcessor
+        val b = _trainsBand.value
+        trains.band = b
+        trains.centerOf = { SdrEngine.freqHz.value }
+        // as wide as the band needs where the radio can (both EOT channels, or all of 216-222.5 MHz); else the channels
+        // heard most, from 2 MHz
+        if (b == com.rocketgod.mayhem.core.trains.TrainsProcessor.Band.EOT) {
+            if (Radio.canSample(Radio.limits, t.EOT_RATE)) SdrEngine.configure(SdrEngine.Mode.NONE, t.EOT_CENTER, t.EOT_RATE, 32, 40, true, trains)
+            else SdrEngine.configure(SdrEngine.Mode.NONE, t.EOT_NARROW, 2_000_000, 32, 40, true, trains)
+        } else {
+            if (Radio.canSample(Radio.limits, t.PTC_RATE)) SdrEngine.configure(SdrEngine.Mode.NONE, t.PTC_CENTER, t.PTC_RATE, 32, 40, true, trains)
+            else SdrEngine.configure(SdrEngine.Mode.NONE, t.PTC_NARROW, 2_000_000, 32, 40, true, trains)
+        }
+    }
     @Volatile var recorder: IqRecorder? = null; private set
 
     private val _sweep = MutableStateFlow<SweepProcessor?>(null)
@@ -183,6 +216,7 @@ object Apps {
                 acars.onNote = { com.rocketgod.mayhem.Diag.log(it) }
             }
             MayhemApp.SUBGHZ -> SdrEngine.configure(SdrEngine.Mode.NONE, 433_920_000L, r, 32, 40, true, ism)
+            MayhemApp.TRAINS -> startTrains()
             MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)

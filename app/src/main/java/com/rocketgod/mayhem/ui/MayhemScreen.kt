@@ -124,6 +124,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.BTLE -> BtleScreen(accent)
                     MayhemApp.TPMS -> TpmsScreen(accent)
                     MayhemApp.ACARS -> AcarsScreen(accent)
+                    MayhemApp.TRAINS -> TrainsScreen(accent)
                     MayhemApp.SUBGHZ -> SubGhzScreen(accent)
                     MayhemApp.PROWL -> ProwlScreen(accent)
                     MayhemApp.LOOKING_GLASS -> LookingGlassScreen(accent)
