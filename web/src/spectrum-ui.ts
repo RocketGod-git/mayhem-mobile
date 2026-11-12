@@ -330,7 +330,9 @@ export class SpectrumUi {
     const cv = this.cv!;
     cv.onpointerdown = (e) => this.down(e);
     cv.onpointermove = (e) => this.move(e);
-    cv.onpointerup = cv.onpointercancel = (e) => this.up(e);
+    cv.onpointerup = (e) => this.up(e);
+    // the browser took the touch for a scroll of the page (the canvas allows vertical panning): forget the gesture
+    cv.onpointercancel = (e) => { this.pts.delete(e.pointerId); this.gesture = null; };
     cv.onwheel = (e) => this.wheel(e);
     const tiles = root.querySelector<HTMLElement>('#sp-tiles')!;
     tiles.onclick = (e) => {
@@ -667,16 +669,11 @@ export class SpectrumUi {
     this.pts.set(e.pointerId, p);
     const g = this.geom();
     if (this.s.mode === 'ZERO') {
-      // two fingers stretch the time axis (the sweep time), applied when they lift
-      if (this.pts.size === 2) {
-        const [a, b] = [...this.pts.values()];
-        this.gesture = { kind: 'pinchT', x0: (a.x + b.x) / 2, center0: 0, span0: this.s.zsTime, d0: Math.max(10, Math.abs(a.x - b.x)), which: 0 };
-        this.pinchTime = this.s.zsTime; return;
-      }
-      if (!this.s.cursors) return;
+      // zero span takes no pinch (the plot is left to a capture); the nearer cursor follows a drag or jumps to a tap
+      if (!this.s.cursors || this.pts.size > 1) return;
       const fx = (p.x - g.l) / g.w;
       this.gesture = { kind: 'cursor', x0: p.x, center0: 0, span0: 0, d0: 0, which: Math.abs(fx - this.s.curA) < Math.abs(fx - this.s.curB) ? 0 : 1 };
-      this.move(e); return;
+      return;
     }
     if (this.pts.size === 2) {
       const [a, b] = [...this.pts.values()];
@@ -747,7 +744,8 @@ export class SpectrumUi {
       }
       this.controls(); this.save(); this.draw();
     } else if (gs.kind === 'pan') this.commitSoon(0);
-    else if (gs.kind === 'marker' || gs.kind === 'cursor') { this.save(); this.draw(); }
+    else if (gs.kind === 'cursor' && p) { const g = this.geom(), fx = Math.max(0, Math.min(1, (p.x - g.l) / g.w)); if (gs.which === 0) this.s.curA = fx; else this.s.curB = fx; this.save(); this.draw(); }
+    else if (gs.kind === 'marker') { this.save(); this.draw(); }
   }
 
   private wheel(e: WheelEvent): void {

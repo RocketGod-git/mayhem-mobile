@@ -672,14 +672,17 @@ object Spectrum {
     fun hzAt(x: Float, l: Float, w: Float): Double = vCenter() - vSpan() / 2 + (x - l) / w * vSpan()
     fun xOfHz(hz: Double, l: Float, w: Float): Float = (l + (hz - (vCenter() - vSpan() / 2)) / vSpan() * w).toFloat()
 
+    /** The page took the gesture (a scroll): forget it, leaving the plot as it was. */
+    fun cancel() { gesture = null }
     /** A finger (or the mouse) went down at [x]. */
     fun down(x: Float, l: Float, w: Float) {
         main.removeCallbacks(commit)
         if (s.mode == SpMode.ZERO) {
             if (!s.cursors) return
             val fx = (x - l) / w
+            // the nearer cursor follows a sideways drag, or jumps to a tap (not to a finger that starts a scroll)
             gesture = Gesture(G.CURSOR, x, 0.0, 0.0, 0f, if (abs(fx - s.curA) < abs(fx - s.curB)) 0 else 1)
-            move(listOf(x), l, w); return
+            return
         }
         // on a marker: drag it; anywhere else: a tap drops the active marker, a drag pans
         val near = s.markers.indexOfFirst { it.on && abs(xOfHz(it.hz, l, w) - x) < 12 * density }
@@ -688,8 +691,8 @@ object Spectrum {
     }
     /** A second finger: the gesture becomes a pinch about the two. */
     fun pinch(a: Float, b: Float) {
-        // zero span: the pinch stretches the time axis (the sweep time), applied when the fingers lift
-        if (s.mode == SpMode.ZERO) { gesture = Gesture(G.PINCH_T, (a + b) / 2, 0.0, s.zsTime, max(10f, abs(a - b)), 0); pinchTime = s.zsTime; return }
+        // zero span takes no pinch: the plot is left to a capture (and to the page's scroll)
+        if (s.mode == SpMode.ZERO) { gesture = null; return }
         gesture = Gesture(G.PINCH, (a + b) / 2, vCenter(), vSpan(), max(10f, abs(a - b)), 0)
     }
     /** The sweep time a zero-span pinch is making (shown on the SWEEP tile while the fingers move). */
@@ -745,7 +748,8 @@ object Spectrum {
                 }
                 save(); changed()
             }
-            G.MARKER, G.CURSOR -> { save(); changed() }
+            G.CURSOR -> { move(listOf(x), l, w); save(); changed() }
+            G.MARKER -> { save(); changed() }
         }
     }
     /** A mouse wheel notch over the plot: zoom about the pointer, or (sideways) pan by a tenth of the span. */

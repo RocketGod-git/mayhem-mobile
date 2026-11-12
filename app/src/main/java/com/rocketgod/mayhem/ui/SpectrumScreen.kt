@@ -380,23 +380,32 @@ private fun SpPlot() {
             }
         }
         .pointerInput(Unit) {
+            // The plot fills most of a phone, so it must not trap the page: a finger moving up or down is left to the
+            // page's scroll (nothing here consumes it); the plot takes a gesture only once it is clearly sideways (pan,
+            // a marker or a cursor), two fingers (a pinch), or a tap.
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
                 runCatching { focus.requestFocus() }
                 val gg = g()
                 Spectrum.down(down.position.x, gg.l, gg.w)
-                down.consume()
-                var pinching = false
+                val slop = viewConfiguration.touchSlop
+                var pinching = false; var decided = false; var vertical = false
                 var lastX = down.position.x
                 while (true) {
                     val ev = awaitPointerEvent()
                     val pressed = ev.changes.filter { it.pressed }
-                    if (pressed.isEmpty()) { Spectrum.up(lastX, gg.l, gg.w); break }
+                    if (pressed.isEmpty()) { if (vertical) Spectrum.cancel() else Spectrum.up(lastX, gg.l, gg.w); break }
+                    if (vertical) continue
                     val xs = pressed.map { it.position.x }
-                    if (xs.size >= 2 && !pinching) { pinching = true; Spectrum.pinch(xs[0], xs[1]) }
+                    if (xs.size >= 2 && !pinching) { pinching = true; decided = true; Spectrum.pinch(xs[0], xs[1]) }
+                    if (!decided) {
+                        val p = pressed[0].position
+                        val dx = abs(p.x - down.position.x); val dy = abs(p.y - down.position.y)
+                        if (dy > slop && dy > dx) { vertical = true; Spectrum.cancel(); continue }
+                        if (dx > slop) decided = true
+                    }
                     lastX = xs[0]
-                    Spectrum.move(xs, gg.l, gg.w)
-                    ev.changes.forEach { it.consume() }
+                    if (decided) { Spectrum.move(xs, gg.l, gg.w); ev.changes.forEach { it.consume() } }
                 }
             }
         }) {
