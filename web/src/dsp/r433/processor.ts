@@ -219,14 +219,20 @@ export class R433Processor implements IqProcessor {
 
   /** A car key, remote or weather sensor read by Mayhem's and ProtoPirate's decoders. */
   private reportKey(r: KeyReading): void {
-    const key = `${r.family}/${r.model}/${r.id || r.raw}`;
+    // A key with no serial of its own is known by the part of its frame that never changes, when the decoder
+    // names one; and one press is known by its rolling code, which stays the same when a key repeats the press
+    // on another of its channels (the channel byte changes the rest of the frame).
+    const field = (n: string) => r.fields.find(([k]) => k === n)?.[1] ?? '';
+    const id = r.id || field('FIXED');
+    const press = field('HOP') || field('COUNTER') || r.raw;
+    const key = `${r.family}/${r.model}/${id || r.raw}`;
     const now = Date.now();
     // one press sends the same frame several times: within 1.2 s of radio time it is the same press
     const last = this.lastPayload.get(key);
-    if (last && last.json === r.raw && this.airMs - last.at < 1200) return;
-    this.lastPayload.set(key, { json: r.raw, at: this.airMs });
+    if (last && last.json === press && this.airMs - last.at < 1200) return;
+    this.lastPayload.set(key, { json: press, at: this.airMs });
     const data: R433Data = { model: r.model };
-    if (r.id) data.id = r.id;
+    if (id) data.id = id;
     for (const [k, v] of r.fields) data[k.toLowerCase().replace(/[^a-z0-9]+/g, '_')] = v;
     data.code = r.raw; data.bits = r.bits;
     const prev = this.heard.get(key);

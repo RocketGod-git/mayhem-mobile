@@ -203,15 +203,21 @@ class R433Processor : IqProcessor {
 
     /** A car key, remote or weather sensor read by Mayhem's and ProtoPirate's decoders. */
     private fun reportKey(r: KeyReading, hz: Double, air: Double) {
-        val key = "${r.family}/${r.model}/${r.id.ifEmpty { r.raw }}"
+        // A key with no serial of its own is known by the part of its frame that never changes, when the decoder
+        // names one; and one press is known by its rolling code, which stays the same when a key repeats the press
+        // on another of its channels (the channel byte changes the rest of the frame).
+        fun field(n: String) = r.fields.firstOrNull { it.first == n }?.second ?: ""
+        val id = r.id.ifEmpty { field("FIXED") }
+        val press = field("HOP").ifEmpty { field("COUNTER") }.ifEmpty { r.raw }
+        val key = "${r.family}/${r.model}/${id.ifEmpty { r.raw }}"
         val now = System.currentTimeMillis()
         // one press sends the same frame several times: within 1.2 s of radio time it is the same press
         val last = lastPayload[key]
-        if (last != null && last.first == r.raw && air - last.second < 1200) return
-        lastPayload[key] = r.raw to air
+        if (last != null && last.first == press && air - last.second < 1200) return
+        lastPayload[key] = press to air
         val data = R433Data()
         data["model"] = r.model
-        if (r.id.isNotEmpty()) data["id"] = r.id
+        if (id.isNotEmpty()) data["id"] = id
         for ((k, v) in r.fields) data[k.lowercase().replace(NON_WORD, "_")] = v
         data["code"] = r.raw; data["bits"] = r.bits
         val prev = heard[key]
