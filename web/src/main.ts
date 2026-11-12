@@ -3648,6 +3648,8 @@ function renderTrains(view: HTMLElement): void {
   clearInterval(trainsUi.timer);
   // the cards run their ages, countdowns and timelines on between reports
   trainsUi.timer = window.setInterval(() => { if (state.app !== 'trains') { clearInterval(trainsUi.timer); return; } refreshTrains(); }, 250);
+  // the screen is drawn again on every band switch (BOTH takes turns): the log's count and rows with it
+  refreshList('trains');
   refreshTrains(true);
 }
 
