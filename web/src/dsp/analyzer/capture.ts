@@ -110,6 +110,10 @@ export class AnalyzerCapture implements IqProcessor {
     this.release(false);
   }
 
+  /** Bursts being followed right now, and how many have been since the start, for the status line. */
+  active(): number { return this.channels.active(); }
+  followed(): number { return this.channels.opened; }
+
   /** Let every open channel go and pass on everything held: the end of an imported file. */
   finish(): void { this.channels.reset(this.rate); this.release(true); }
 
@@ -199,14 +203,26 @@ export class AnalyzerCapture implements IqProcessor {
   }
 }
 
-/** The capture as a worker processor: each burst goes to the interface, its arrays handed over rather than copied. */
+/**
+ * The capture as a worker processor: each burst goes to the interface, its arrays handed over rather than copied,
+ * and once a second a status line.
+ */
 export class AnalyzerProcessor implements IqProcessor {
   readonly capture: AnalyzerCapture;
-  constructor(emit: Emit) {
-    this.capture = new AnalyzerCapture(b => emit({ type: 'anburst', burst: b }, [b.env.buffer, b.fm.buffer, b.iq.buffer]));
+  private lastStats = 0;
+  private captured = 0;
+  constructor(private readonly emit: Emit) {
+    this.capture = new AnalyzerCapture(b => { this.captured++; emit({ type: 'anburst', burst: b }, [b.env.buffer, b.fm.buffer, b.iq.buffer]); });
   }
   reset(rate: number): void { this.capture.reset(rate); }
-  onIq(iq: Int8Array, rate: number): void { this.capture.onIq(iq, rate); }
+  onIq(iq: Int8Array, rate: number): void {
+    this.capture.onIq(iq, rate);
+    const now = Date.now();
+    if (now - this.lastStats >= 1000) {
+      this.lastStats = now;
+      this.emit({ type: 'anstats', channels: this.capture.active(), followed: this.capture.followed(), captured: this.captured, span: rate });
+    }
+  }
 }
 
 /**
