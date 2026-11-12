@@ -46,7 +46,7 @@ interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'An
 const APPS: AppDef[] = [
   { id: 'ham', title: 'HAM', blurb: 'SSB · CW · AM · NFM · repeaters · CTCSS', cat: 'Receive' },
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB receiver', cat: 'Receive' },
-  { id: 'devices', title: 'Devices', blurb: 'alarms, meters, remotes, tire sensors, weather', cat: 'Receive' },
+  { id: 'devices', title: 'Devices', blurb: 'car keys, remotes, tire sensors, weather, alarms', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track, listen to and decode what is overhead', cat: 'Receive' },
   { id: 'adsb', title: 'ADS-B', blurb: 'aircraft, 1090 MHz', cat: 'Receive' },
   { id: 'ais', title: 'AIS', blurb: 'ships, 162 MHz', cat: 'Receive' },
@@ -58,7 +58,6 @@ const APPS: AppDef[] = [
   { id: 'tpms', title: 'TPMS', blurb: 'tire pressure, 315 / 433 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'end-of-train telemetry · PTC train control', cat: 'Receive' },
-  { id: 'subghz', title: 'Sub-GHz', blurb: 'weather · remotes · car keys, rtl_433 style', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice across the bands', cat: 'Receive' },
   { id: 'lookingglass', title: 'Looking Glass', blurb: 'wideband sweep waterfall', cat: 'Analyze' },
   { id: 'search', title: 'Search', blurb: 'find active frequencies', cat: 'Analyze' },
@@ -103,7 +102,7 @@ const state = {
   pagerMulti: true,
   ism: { weather: true, remotes: true, cars: true },
   r433: { heard: [] as HeardDevice[], stats: null as R433Report | null, hop: false, band: 0,
-    protocols: [] as R433Protocol[], showProtocols: false, span: 250_000 }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
+    protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', tall: false, hist: new Map<string, { t: number; s: string; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
   capturing: false, captureName: '', captureBytes: 0, captures: [] as { name: string; size: number }[],
   aircraft: [] as Aircraft[], frames: 0, aisTable: [] as Vessel[], aisSel: 0, aisView: 'map' as 'map' | 'list' | 'log',
   aprsStations: [] as AprsStation[], aprsSel: '', aprsView: 'map' as 'map' | 'list' | 'log',
@@ -744,6 +743,7 @@ const radioCan = (hz: number) => !radio || canSample(radio.limits, hz);
  *  channel back down through the offset. */
 function narrowShift(): void { state.viewLo = state.freq + NARROW_SHIFT; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); }
 function open(app: AppId | null): void {
+  if ((app as string) === 'subghz') app = 'devices';      // Sub-GHz is part of Devices now
   if (app === 'settings') { openSettings(); return; }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
   if (state.scanning && app !== 'audio') setScanning(false);
@@ -3041,31 +3041,113 @@ function renderR433(view: HTMLElement): void {
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       ${presetHtml('BAND', R433_BANDS)}
-      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([['250k', 250_000], ['500k', 500_000], ['1M', 1_000_000], ['2M', 2_000_000]].map(([l, hz]) => `<button data-span="${hz}">${l}</button>`))}<button id="r433-hop" class="tog">HOP</button></div>
-      <div class="note">433.92 carries most of the protocol set; the American four sit 14 MHz apart, so HOP visits each in turn. A narrower span hears weaker devices.</div>
-      <div id="r433-stats" class="note">listening&hellip;</div>
+      <div class="ctlrow">${segHtml((['all', 'key', 'remote', 'sensor'] as R433Filter[]).map(f => `<button data-r433f="${f}"></button>`))}<button id="r433-hop" class="tog">HOP</button></div>
+      <div id="r433-stats" class="mt-sum"><div>listening&hellip;</div></div>
       <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="tog" id="r433-ptoggle">PROTOCOLS</button>${pauseClearHtml('devices')}</span></div>
-      <div id="r433-list" class="panel devtable"></div>
+      <div class="mt-stage dv-stage"><div id="r433-list" class="mt-cards dv-cards"></div><div id="r433-detail" class="mt-detail" hidden></div></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
+      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys (ProtoPirate), gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (rtl_433). A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tap a card for everything it sent.</div>
       <div class="gainwrap">${gainHtml()}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
-  qa<HTMLButtonElement>('[data-span]', view).forEach(b => {
-    const hz = Number(b.dataset.span);
-    b.classList.toggle('on', hz === state.r433.span);
-    b.onclick = () => {
-      state.r433.span = hz;
-      worker?.postMessage({ type: 'r433', cmd: 'span', hz });
-      qa('[data-span]').forEach(x => x.classList.toggle('on', x === b));
-    };
-  });
+  qa<HTMLButtonElement>('[data-r433f]', view).forEach(b => b.onclick = () => { state.r433.filter = b.dataset.r433f as R433Filter; state.r433.sel = ''; drawR433(); });
   const pt = $('r433-ptoggle');
   pt.onclick = () => { state.r433.showProtocols = !state.r433.showProtocols; drawR433(); };
   const hop = $('r433-hop');
   hop.classList.toggle('on', state.r433.hop);
   hop.onclick = () => { state.r433.hop = !state.r433.hop; r433Hop(); render('devices'); };
+  $('r433-list').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-dv]'); if (c) { state.r433.sel = state.r433.sel === c.dataset.dv ? '' : c.dataset.dv!; drawR433(); } };
+  $('r433-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-dvdo]'); if (!b) return; if (b.dataset.dvdo === 'close') state.r433.sel = ''; else state.r433.tall = !state.r433.tall; drawR433(); };
   r433Hop();
+  clearInterval(r433Tick);
+  // ages and the live dots run on between readings
+  r433Tick = window.setInterval(() => { if (state.app !== 'devices') { clearInterval(r433Tick); return; } refreshR433(); }, 1000);
   drawR433();
+}
+let r433Tick = 0;
+
+type R433Filter = 'all' | 'key' | 'remote' | 'sensor';
+type R433Kind = 'CAR KEY' | 'REMOTE' | 'TIRE SENSOR' | 'WEATHER' | 'SECURITY' | 'METER' | 'SENSOR';
+/** What a card calls the thing, from who decoded it and what its protocol says it is. */
+function r433Kind(d: HeardDevice): R433Kind {
+  if (d.family === 'key') return 'CAR KEY';
+  if (d.family === 'remote') return 'REMOTE';
+  if (d.family === 'weather') return 'WEATHER';
+  const t = `${d.model} ${d.what} ${d.data.type ?? ''}`.toLowerCase();
+  if (/tpms|tire|tyre/.test(t)) return 'TIRE SENSOR';
+  if (/weather|thermo|temperature|humidity|rain|wind|lightning|hygro|soil|pool|bbq|meat|grill/.test(t)) return 'WEATHER';
+  if (/door|window|motion|pir|smoke|alarm|security|leak|water|glass|siren|contact/.test(t)) return 'SECURITY';
+  if (/meter|energy|power|gas|current|consumption|ert/.test(t)) return 'METER';
+  if (/remote|switch|button|doorbell|bell|keyfob|key fob|gate|garage|blind|shutter|outlet|plug|dimmer/.test(t)) return 'REMOTE';
+  return 'SENSOR';
+}
+const R433_GROUP: Record<R433Kind, R433Filter> = { 'CAR KEY': 'key', REMOTE: 'remote', 'TIRE SENSOR': 'sensor', WEATHER: 'sensor', SECURITY: 'sensor', METER: 'sensor', SENSOR: 'sensor' };
+const R433_FILTER_LABEL: Record<R433Filter, string> = { all: 'ALL', key: 'KEYS', remote: 'REMOTES', sensor: 'SENSORS' };
+/** How long a device counts as live: a key or remote is a press, a sensor reports every half minute or so. */
+const r433LiveMs = (k: R433Kind) => (k === 'CAR KEY' || k === 'REMOTE' ? 15_000 : 120_000);
+function r433Ago(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m ago`;
+}
+const r433Mhz = (hz: number) => `${(hz / 1e6).toFixed(3)} MHz`;
+const r433Num = (v: unknown): number | null => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v)) ? Number(v) : null);
+/** The big line on a card: what this thing just said, in the fewest words. */
+function r433Headline(d: HeardDevice, k: R433Kind): [string, string] {
+  const v = d.data;
+  if (k === 'CAR KEY' || k === 'REMOTE') return [String(v.button ?? v.btn ?? v.cmd ?? v.state ?? 'PRESS'), v.counter !== undefined ? `counter ${v.counter}` : ''];
+  const kpaRaw = r433Num(v.pressure_kPa), psiRaw = r433Num(v.pressure_PSI), barRaw = r433Num(v.pressure_bar);
+  const tcRaw = r433Num(v.temperature_C), tfRaw = r433Num(v.temperature_F);
+  const tc = tcRaw !== null ? tcRaw : tfRaw !== null ? (tfRaw - 32) * 5 / 9 : null;
+  if (k === 'TIRE SENSOR') {
+    const psi = psiRaw !== null ? psiRaw : kpaRaw !== null ? kpaRaw * 0.1450377 : barRaw !== null ? barRaw * 14.50377 : null;
+    return [psi !== null ? `${psi.toFixed(1)} psi` : 'TIRE', tc !== null ? `${(tc * 9 / 5 + 32).toFixed(0)} °F` : ''];
+  }
+  if (tc !== null) return [`${(tc * 9 / 5 + 32).toFixed(1)} °F`, v.humidity !== undefined ? `${v.humidity}% humidity` : ''];
+  if (typeof v.temperature === 'string') return [v.temperature.split(' · ').pop() ?? v.temperature, v.humidity !== undefined ? `${v.humidity} humidity` : ''];
+  const sum = r433Summary(v).split(' · ');
+  return [sum[0] || k, sum.slice(1).join(' · ')];
+}
+function r433Card(d: HeardDevice & { hz?: number }, now: number): string {
+  const k = r433Kind(d), age = now - d.lastSeen, live = age < r433LiveMs(k);
+  const flash = Math.max(0, 1 - age / 2500);
+  const [big, sub] = r433Headline(d, k);
+  const id = d.data.id !== undefined ? String(d.data.id) : '';
+  return `<div class="mt-card dv-card k-${k.replace(/ /g, '').toLowerCase()} ${state.r433.sel === d.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-dv="${esc(d.key)}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="dv-glyph">${R433_GLYPH[k]}</span><span class="mt-k"><b>${k}</b><small>${esc(d.model)}</small>${id ? `<i>ID ${esc(id)}</i>` : ''}</span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : r433Ago(age)}</span></div>`
+    + `<div class="mt-clk"><b>${esc(big)}</b><small>${esc(sub)}</small><em>${d.count}×</em></div>`
+    + `<div class="dv-foot"><span>${d.hz ? r433Mhz(d.hz) : ''}</span><span>${live ? r433Ago(age) : r433Clock(d.lastSeen)}</span></div></div>`;
+}
+const R433_GLYPH: Record<R433Kind, string> = {
+  'CAR KEY': '<svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4.5"/><path d="M12.5 12H21v3M18 12v2.5"/></svg>',
+  REMOTE: '<svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="3"/><circle cx="12" cy="8.5" r="1.6"/><path d="M10 14h4M10 17h4"/></svg>',
+  'TIRE SENSOR': '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.5v5M12 15.5v5M3.5 12h5M15.5 12h5"/></svg>',
+  WEATHER: '<svg viewBox="0 0 24 24"><path d="M10 4v10.5a3.5 3.5 0 1 0 4 0V4a2 2 0 0 0-4 0z"/><path d="M12 9v7"/></svg>',
+  SECURITY: '<svg viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6z"/></svg>',
+  METER: '<svg viewBox="0 0 24 24"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l4-5"/></svg>',
+  SENSOR: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></svg>',
+};
+function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): string {
+  const k = r433Kind(d);
+  const fields: [string, string, string?][] = [];
+  for (const [key, v] of Object.entries(d.data)) {
+    if (key === 'model') continue;
+    fields.push([key.replace(/_/g, ' ').toUpperCase(), r433Value(key, v), R433_MEANING[key] ?? '']);
+  }
+  if (d.hz) fields.push(['FREQUENCY', `${r433Mhz(d.hz)} (${d.offsetHz >= 0 ? '+' : ''}${(d.offsetHz / 1e3).toFixed(0)} kHz from the dial)`]);
+  fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'frequency shift' : 'on-off keyed') : 'read from both on-off and frequency shift']);
+  fields.push(['DECODER', d.family === 'key' ? 'ProtoPirate car keys' : d.family === 'sensor' ? `rtl_433 protocol ${d.num} · ${d.what}` : 'Mayhem sub-GHz']);
+  fields.push(['HEARD', `${d.count} time${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
+  if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);
+  const hist = state.r433.hist.get(d.key) ?? [];
+  const rows = hist.slice().reverse().map(h => `<div><b>${r433Clock(h.t)}</b><span>${esc(h.s)}${h.hz ? ` · ${r433Mhz(h.hz)}` : ''}</span></div>`).join('');
+  return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${k} · ${esc(d.model)}</span><button class="chip" data-dvdo="tall">${state.r433.tall ? 'LESS' : 'MORE'}</button><button class="chip" data-dvdo="close">✕</button></div>`
+    + `<div class="mt-fields ${state.r433.tall ? 'tall' : ''}">${fields.map(([a, b, m]) => `<div${m ? ` title="${esc(m)}"` : ''}><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}`
+    + (rows ? `<p>EVERY TIME IT WAS HEARD</p>${rows}` : '') + '</div>';
+}
+/** One line per reading for the history in the detail panel. */
+function r433HistLine(d: HeardDevice): string {
+  const k = r433Kind(d), [a, b] = r433Headline(d, k);
+  return [a, b].filter(Boolean).join(' · ') || r433Summary(d.data);
 }
 
 /** Start or stop the band walk. Tuning happens through the normal path, so the waterfall follows. */
@@ -3094,91 +3176,52 @@ function r433Clock(t: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
-/** Fields too long for the wrapped list; each gets its own monospaced line in the card. */
-const R433_LONG = new Set(['raw', 'raw_msg', 'code', 'summary', 'DifferentialConsumptionIntervals']);
-
-/**
- * Everything the device sent, under its row.
- *
- * Always shown rather than hidden behind a tap. These readings are mostly two or three numbers and a frame of
- * hex; a device that reports a wind gust and a rain total and a battery voltage has nothing worth hiding, and
- * having to open each one in turn to compare two sensors is worse than a longer list you can scroll.
- */
-function r433Detail(d: HeardDevice, doubtful: boolean): string {
-  const entries = Object.entries(d.data).filter(([k]) => k !== 'model');
-  const shape = d.shape;
-
-  const fields = entries.filter(([k]) => !R433_LONG.has(k)).map(([k, v]) => {
-    // A couple of values already read as a sentence; repeating the field name in front of them would give
-    // "battery ok battery ok".
-    const speaks = k === 'battery_ok' || k === 'leak_detected';
-    const label = speaks ? '' : `<b>${esc(k.replace(/_/g, ' '))}</b> `;
-    return `<span${R433_MEANING[k] ? ` title="${esc(R433_MEANING[k])}"` : ''}>${label}${esc(r433Value(k, v))}</span>`;
-  }).join('');
-
-  // One short line rather than a paragraph, because it repeats on every row of its kind. The tooltip on the
-  // row's own marker carries the longer explanation.
-  const note = d.num === 0
-    ? `<span class="warn" title="no protocol in the set recognized this transmission — most likely a device this port does not cover yet, possibly interference that keyed hard enough to look deliberate">nothing claimed this${shape && shape.coding ? ` — timings look like ${esc(shape.coding)}` : ' — the timings do not settle how the bits are carried'}</span>`
-    : doubtful
-      ? '<span class="warn" title="rtl_433 ships this protocol switched off for exactly this reason; an implausible reading from it is almost certainly another device’s transmission being misread">no checksum — nothing in the frame proves this reading</span>'
-      : '';
-
-  const marks = shape
-    ? `<div class="r433-raw"><b>marks</b> ${shape.mark.map(c => `${c.us} µs ×${c.n}`).join(' · ') || 'none recurring'}   <b>gaps</b> ${shape.space.map(c => `${c.us} µs ×${c.n}`).join(' · ') || 'none recurring'}</div>`
-    : '';
-  const long = entries.filter(([k]) => R433_LONG.has(k) && k !== 'summary').map(([k, v]) =>
-    `<div class="r433-raw"${R433_MEANING[k] ? ` title="${esc(R433_MEANING[k])}"` : ''}><b>${esc(k.replace(/_/g, ' '))}</b> ${esc(String(v))}</div>`).join('');
-
-  return `<div class="devdetail"><div class="devfields">${fields}<span class="faint">${esc(d.what)}${d.num ? ` · rtl_433 protocol ${d.num}` : ''} · first heard ${r433Clock(d.firstSeen)}</span>${note}</div>${marks}${long}</div>`;
-}
-
 function drawR433(): void {
   const r = state.r433;
   const st = q('#r433-stats');
   if (st) {
     const s = r.stats;
-    st.textContent = s
-      ? `${R433_BANDS[r.band][0]} MHz · ${s.protocols} protocols · ${s.bursts} bursts (${s.ook} keyed, ${s.fsk} shifted) · ${s.decoded} decoded${s.badChecksum ? ` · ${s.badChecksum} failed their checksum` : ''} · listening across ${s.span >= 1e6 ? `${s.span / 1e6} MHz` : `${Math.round(s.span / 1e3)} kHz`} · noise ${s.noise}, triggers above ${s.trigger}`
-      : 'listening…';
+    const lo = (state.freq - (s?.span ?? state.rate) / 2) / 1e6, hi = (state.freq + (s?.span ?? state.rate) / 2) / 1e6;
+    st.innerHTML = s
+      ? `<div>WATCHING ${lo.toFixed(2)}–${hi.toFixed(2)} MHz${s.channels ? ` · TUNED TO ${s.channels} BURST${s.channels === 1 ? '' : 'S'} NOW` : ''}</div>`
+        + `<div class="muted">${s.followed} bursts followed · ${s.decoded} decoded · ${s.protocols} sensor protocols and every car key and remote run on each${s.badChecksum ? ` · ${s.badChecksum} near misses` : ''}</div>`
+      : '<div>listening…</div>';
   }
-  const named = r.heard.filter(d => d.num !== 0).length;
   const c = q('#r433-count');
   // Whichever list is showing is what this counts. Saying "4 devices" over a list of 82 protocols was simply
   // describing the wrong thing.
   if (c) {
     c.textContent = r.showProtocols
       ? `${r.protocols.length} PROTOCOLS · ALL RUNNING`
-      : `${named} DEVICE${named === 1 ? '' : 'S'}${r.heard.length > named ? ` · ${r.heard.length - named} UNKNOWN` : ''}`;
+      : `${r.heard.length} DEVICE${r.heard.length === 1 ? '' : 'S'}`;
   }
   drawR433Protocols();
   const el = q('#r433-list');
   if (!el) return;
   (el as HTMLElement).hidden = r.showProtocols;
   if (r.showProtocols || paused.has('devices')) return;
-  if (!r.heard.length) { el.innerHTML = '<div class="empty">nothing yet — most of these report every thirty to sixty seconds, so give it a minute</div>'; return; }
-
-  // Which protocols rtl_433 ships switched off for having no checksum. A reading from one of those is worth
-  // marking: nothing in the frame proves it is not another maker's transmission being read wrongly.
+  const now = Date.now();
   const doubtful = new Set(r.protocols.filter(p => p.doubtful).map(p => p.num));
-  const rows = [...r.heard].sort((a, b) => b.lastSeen - a.lastSeen);
-  el.innerHTML = '<div class="devhead"><span>DEVICE</span><span>READING</span><span>SEEN</span><span>LAST</span></div>'
-    + rows.map((d, i) => {
-      const iffy = doubtful.has(d.num);
-      const mic = d.data.mic ? String(d.data.mic) : '';
-      const tag = d.num === 0 ? '<i class="tag q" title="no protocol claimed this transmission">?</i>'
-        : iffy ? '<i class="tag q" title="this protocol has no checksum — the reading is unverified">?</i>'
-          : mic ? `<i class="tag ok" title="passed the device’s own ${esc(mic)} check">✓</i>` : '';
-      const id = d.num === 0 ? '' : [d.data.id !== undefined ? String(d.data.id) : '', d.data.channel !== undefined ? `ch ${d.data.channel}` : ''].filter(Boolean).join(' ');
-      const reading = d.num === 0 ? String(d.data.summary ?? '') : r433Summary(d.data);
-      return `<div class="devrow${i % 2 ? ' alt' : ''}${d.num === 0 ? ' anon' : ''}">`
-        + `<span class="c-name" title="${esc(d.model)}${id ? ` ${esc(id)}` : ''} — ${esc(d.what)}"><b>${esc(d.model)}</b>${id ? `<i>${esc(id)}</i>` : ''}${tag}</span>`
-        + `<span class="c-read" title="${esc(reading)}">${esc(reading)}</span>`
-        + `<span class="c-n">${d.count}×</span>`
-        + `<span class="c-time">${r433Clock(d.lastSeen)}</span>`
-        + r433Detail(d, iffy)
-        + '</div>';
-    }).join('');
+  qa<HTMLButtonElement>('[data-r433f]').forEach(b => {
+    const f = b.dataset.r433f as R433Filter;
+    const n = f === 'all' ? r.heard.length : r.heard.filter(d => R433_GROUP[r433Kind(d)] === f).length;
+    b.classList.toggle('on', r.filter === f);
+    b.textContent = `${R433_FILTER_LABEL[f]} · ${n}`;
+  });
+  const shown = r.heard.filter(d => r.filter === 'all' || R433_GROUP[r433Kind(d)] === r.filter);
+  if (!shown.length) {
+    el.innerHTML = `<div class="mt-wait dv-empty">${r.heard.length ? 'nothing of this kind yet' : 'nothing yet. Press a key fob or a remote near the antenna, or wait: sensors report every thirty to sixty seconds'}</div>`;
+  } else {
+    const top = el.scrollTop;
+    el.innerHTML = [...shown].sort((a, b) => b.lastSeen - a.lastSeen).map(d => r433Card(d, now)).join('');
+    el.scrollTop = top;
+  }
+  const det = q('#r433-detail') as HTMLElement | null;
+  if (det) {
+    const sel = r.heard.find(d => d.key === r.sel);
+    det.hidden = !sel;
+    if (sel) det.innerHTML = r433DetailPanel(sel, doubtful.has(sel.num));
+  }
 }
 
 /** Everything the receiver can recognise, so it is possible to tell "nothing there" from "not supported". */
@@ -4943,9 +4986,14 @@ function ensureWorker(): Worker {
       }
       case 'r433': {
         const r = state.r433;
-        const d = m as unknown as HeardDevice;
+        const d = m as unknown as HeardDevice & { hz?: number };
+        d.hz = state.freq + (d.offsetHz ?? 0);
         const i = r.heard.findIndex(x => x.key === d.key);
         if (i >= 0) r.heard[i] = d; else r.heard.push(d);
+        const h = r.hist.get(d.key) ?? [];
+        h.push({ t: d.lastSeen, s: r433HistLine(d), hz: d.hz });
+        if (h.length > 40) h.shift();
+        r.hist.set(d.key, h);
         refreshR433();
         break;
       }
@@ -5401,7 +5449,7 @@ function initShell(): void {
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TIRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
-  devices: ['DEVICES', 'SENSORS · METERS · REMOTES'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
+  devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };
 /** The app Settings was opened over: its rows lead the page, and it keeps running underneath. */

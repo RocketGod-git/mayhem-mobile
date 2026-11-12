@@ -1272,3 +1272,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .mt-fields.tr-fields { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .tr-next b.muted { color: var(--muted); }
 .visual.tr-nowf #scope { display: none; }
+
+/* Devices: one card per thing heard, a glyph and color per kind */
+.dv-cards { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.dv-card { --kind: var(--accent); }
+.dv-card.k-carkey { --kind: #ffb020; }
+.dv-card.k-remote { --kind: #b48cff; }
+.dv-card.k-tiresensor { --kind: #3fd0c9; }
+.dv-card.k-weather { --kind: #5fb3ff; }
+.dv-card.k-security { --kind: #ff6b6b; }
+.dv-card.k-meter { --kind: #8fd14f; }
+.dv-card .mt-k b { color: var(--kind); }
+.dv-card.sel { border-color: var(--kind); }
+.dv-card { box-shadow: 0 0 calc(18px * var(--flash, 0)) color-mix(in srgb, var(--kind) calc(70% * var(--flash, 0)), transparent); }
+.dv-glyph { width: 34px; height: 34px; flex: none; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--kind) 16%, transparent); }
+.dv-glyph svg { width: 22px; height: 22px; fill: none; stroke: var(--kind); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.dv-card .mt-clk b { color: var(--kind); }
+.dv-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 9px; letter-spacing: 1px; color: var(--muted); }
+.dv-empty { height: auto; padding: 18px 6px; line-height: 1.5; }

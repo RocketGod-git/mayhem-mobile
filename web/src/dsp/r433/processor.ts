@@ -12,8 +12,9 @@
  */
 
 import type { Emit, IqProcessor } from '../core.js';
-import { Baseband } from './baseband.js';
 import { PulseDetect, PulseKind } from './detect.js';
+import { BurstChannels, MAX_CHANNELS, type BurstChannel } from './channels.js';
+import { KeyDecoders, type KeyReading } from './keys.js';
 import { R433 } from './runner.js';
 import { REGISTRY, type R433Data, type RDevice } from './device.js';
 import { describeBurst, shapeSummary, type BurstShape } from './analyze.js';
@@ -32,6 +33,9 @@ export interface R433Report extends R433Stats {
   trigger: number;
   /** How wide a slice of the span is actually being listened across, in hertz. */
   span: number;
+  /** Bursts being followed right now, and how many have been since the start. */
+  channels: number;
+  followed: number;
 }
 
 /** One line about a protocol, for the list the app shows of everything it can hear. */
@@ -91,6 +95,12 @@ export interface HeardDevice {
    * decoder output to show. A reading and a shape never both appear.
    */
   shape?: BurstShape;
+  /** What kind of thing it is: an rtl_433 sensor, a car key, a gate or garage remote, or a weather sensor read by Mayhem's decoders. */
+  family: 'sensor' | 'key' | 'remote' | 'weather';
+  /** Where it was heard, as an offset from the radio's center in hertz. */
+  offsetHz: number;
+  /** Frequency shift keyed rather than on-off keyed. */
+  fsk: boolean;
 }
 
 /** How a reading is named. Devices with an identity keep it; those without are grouped by model alone. */
@@ -104,51 +114,55 @@ function keyOf(model: string, d: R433Data): string {
 const STATS_MS = 1000;
 
 export class R433Processor implements IqProcessor {
-  private readonly baseband = new Baseband();
-  private detect = new PulseDetect(2_000_000);
+  private readonly channels: BurstChannels;
+  /** One rtl_433 detector and one set of key decoders per channel slot, reused as bursts come and go. */
+  private readonly slots: { pd: PulseDetect; keys: KeyDecoders; pending: { r: KeyReading; hz: number }[]; verified: boolean }[] = [];
+  /** Which slot is being read right now. */
+  private curSlot = 0;
+  /** Milliseconds of radio time since the start, for telling a repeat from a new press. */
+  private airMs = 0;
   private radio = new R433();
   private rate = 0;
   private lastStats = 0;
+  /** The offset of the channel being read right now, so a reading knows where it was heard. */
+  private curHz = 0;
   /** Everything heard since the app was opened, newest reading kept per device. */
   readonly heard = new Map<string, HeardDevice>();
   /** The last reading of each device, so an identical repeat within a second is not reported twice. */
   private readonly lastPayload = new Map<string, { json: string; at: number }>();
   /** When each unidentified shape was last passed to the interface, so a busy band does not redraw constantly. */
   private readonly unknownSeen = new Map<string, number>();
+  private readonly sink = (kind: PulseKind, pulses: Parameters<typeof this.radio.run>[1]) => {
+    const found = this.radio.run(kind, pulses);
+    // The checksumless protocols rtl_433 ships switched off will "decode" a sensor they were never meant for
+    // into nonsense — the phantom Jansite reading 132 °C that sits next to the real Renault reading of the very
+    // same burst. When a checksum-verified protocol has already claimed this burst, drop those unverified
+    // matches rather than listing a device that is not there.
+    const verified = found.some(r => !r.dev.disabled);
+    if (verified) this.slots[this.curSlot].verified = true;
+    for (const res of found) { if (verified && res.dev.disabled) continue; this.report(res.dev, res.data, kind); }
+    if (!found.length) this.reportUnknown(pulses);
+  };
 
-  /**
-   * How wide a slice of the sampled span to actually listen across, in hertz.
-   *
-   * Narrower hears weaker devices — the envelope detector takes in the noise of everything it is given, so
-   * halving the span takes three decibels off the noise without touching the wanted signal. Wider hears devices
-   * that sit off the dial. A quarter of a megahertz is what rtl_433 asks its own radio for, and covers
-   * essentially everything that calls itself a 433.92 device.
-   */
-  private wantSpan = 250_000;
-
-  constructor(private readonly emit: Emit) {}
+  constructor(private readonly emit: Emit) {
+    this.channels = new BurstChannels((ch, env, fm, n) => this.onChannel(ch, env, fm, n), (ch) => this.onChannelEnd(ch));
+    for (let i = 0; i < MAX_CHANNELS; i++) {
+      const slot = { pd: new PulseDetect(250_000), keys: new KeyDecoders((r) => slot.pending.push({ r, hz: this.curHz })), pending: [] as { r: KeyReading; hz: number }[], verified: false };
+      this.slots.push(slot);
+    }
+  }
 
   reset(rate: number): void {
     this.rate = rate;
-    this.baseband.reset();
-    // Whole powers of two only, so the averaging stays exact and the decimated rate stays a round number.
-    let decim = 1;
-    while (rate / (decim * 2) >= this.wantSpan) decim *= 2;
-    this.baseband.decim = decim;
-    this.detect = new PulseDetect(Math.round(rate / decim));
+    this.channels.reset(rate);
     this.lastStats = 0;
   }
 
-  /** Choose how wide to listen. Takes effect on the next block of samples. */
-  setSpan(hz: number): void {
-    this.wantSpan = hz;
-    if (this.rate) this.reset(this.rate);
-  }
+  /** Kept for the interface; every burst in the span is now tuned to on its own, so there is no slice to choose. */
+  setSpan(_hz: number): void { /* the whole span is always watched */ }
 
-  /** The span actually in use, which is the sample rate divided by a whole power of two. */
-  span(): number {
-    return this.rate ? Math.round(this.rate / (this.baseband.decim || 1)) : 0;
-  }
+  /** The span watched: all of it. */
+  span(): number { return this.rate; }
 
   /**
    * Narrow the protocols in use. An empty list means everything registered, which is the default: every
@@ -170,31 +184,59 @@ export class R433Processor implements IqProcessor {
 
   onIq(iq: Int8Array, rate: number): void {
     if (rate !== this.rate) this.reset(rate);
-    const { env, fm, n } = this.baseband.process(iq);
-
-    const sink = (kind: PulseKind, pulses: Parameters<typeof this.radio.run>[1]) => {
-      const found = this.radio.run(kind, pulses);
-      // The checksumless protocols rtl_433 ships switched off will "decode" a sensor they were never meant for
-      // into nonsense — the phantom Jansite reading 132 °C that sits next to the real Renault reading of the very
-      // same burst. When a checksum-verified protocol has already claimed this burst, drop those unverified
-      // matches rather than listing a device that is not there. A lone unverified match still shows (flagged),
-      // since with nothing to compare it against it might be the real thing.
-      const verified = found.some(r => !r.dev.disabled);
-      for (const res of found) { if (verified && res.dev.disabled) continue; this.report(res.dev, res.data, kind); }
-      if (!found.length) this.reportUnknown(pulses);
-    };
-    this.detect.process(env, fm, n, sink);
-
+    this.channels.process(iq);
+    this.airMs += (iq.length >> 1) / rate * 1000;
     const now = Date.now();
     if (now - this.lastStats >= STATS_MS) {
       this.lastStats = now;
-      const lv = this.detect.levels();
+      const lv = this.slots[0].pd.levels();
       const report: R433Report = {
         ...this.radio.stats, devices: this.heard.size, protocols: this.radio.devices.length,
-        noise: lv.noise, trigger: lv.trigger, span: this.span(),
+        noise: lv.noise, trigger: lv.trigger, span: this.span(), channels: this.channels.active(), followed: this.channels.opened,
       };
       this.emit({ type: 'r433stats', ...report });
     }
+  }
+
+  private onChannel(ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number): void {
+    const s = this.slots[ch.slot];
+    if (ch.fresh) { s.pd.setSampleRate(ch.rate); s.pd.reset(); s.keys.slicer.reset(ch.rate); s.keys.slicer.flush(); s.keys.reset(); s.pending.length = 0; s.verified = false; }
+    this.curHz = ch.hz; this.curSlot = ch.slot;
+    s.pd.process(env, fm, n, this.sink);
+    s.keys.slicer.process(env, fm, n);
+  }
+
+  private onChannelEnd(ch: BurstChannel): void {
+    const s = this.slots[ch.slot];
+    this.curHz = ch.hz; this.curSlot = ch.slot;
+    s.pd.flush(this.sink);
+    s.keys.slicer.flush();
+    // Keys and remotes carry little or no checksum, so a sensor's burst can read as one by chance. When a
+    // checksum-verified sensor claimed this burst, what the key decoders made of it is noise.
+    if (!s.verified) for (const k of s.pending) { this.curHz = k.hz; this.reportKey(k.r); }
+    s.pending.length = 0; s.verified = false;
+  }
+
+  /** A car key, remote or weather sensor read by Mayhem's and ProtoPirate's decoders. */
+  private reportKey(r: KeyReading): void {
+    const key = `${r.family}/${r.model}/${r.id || r.raw}`;
+    const now = Date.now();
+    // one press sends the same frame several times: within 1.2 s of radio time it is the same press
+    const last = this.lastPayload.get(key);
+    if (last && last.json === r.raw && this.airMs - last.at < 1200) return;
+    this.lastPayload.set(key, { json: r.raw, at: this.airMs });
+    const data: R433Data = { model: r.model };
+    if (r.id) data.id = r.id;
+    for (const [k, v] of r.fields) data[k.toLowerCase().replace(/[^a-z0-9]+/g, '_')] = v;
+    data.code = r.raw; data.bits = r.bits;
+    const prev = this.heard.get(key);
+    const entry: HeardDevice = {
+      key, model: r.model, num: 0, what: r.family === 'key' ? 'car key' : r.family === 'remote' ? 'gate or garage remote' : 'weather sensor',
+      count: (prev?.count ?? 0) + 1, firstSeen: prev?.firstSeen ?? now, lastSeen: now, data,
+      family: r.family, offsetHz: Math.round(this.curHz), fsk: false,
+    };
+    this.heard.set(key, entry);
+    this.emit({ type: 'r433', ...entry });
   }
 
   /**
@@ -247,8 +289,11 @@ export class R433Processor implements IqProcessor {
       firstSeen: prev?.firstSeen ?? now,
       lastSeen: now,
       data,
+      family: 'sensor',
+      offsetHz: Math.round(this.curHz),
+      fsk: kind === PulseKind.FSK,
     };
     this.heard.set(key, entry);
-    this.emit({ type: 'r433', ...entry, fsk: kind === PulseKind.FSK });
+    this.emit({ type: 'r433', ...entry });
   }
 }
