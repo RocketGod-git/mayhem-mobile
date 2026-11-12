@@ -68,18 +68,43 @@ function stats(us: number[], ids: number[], hi: boolean, symUs: number): PulseCl
   return { hi, count: v.length, mean, min: Math.min(...v), max: Math.max(...v), sd, jitterPct: mean ? sd / mean * 100 : 0, symbols: symUs ? mean / symUs : 0 };
 }
 
-/** Every mark and gap inside the frames, and the classes of their lengths. */
-export function pulseTable(a: Analysis, rate: number): PulseTable {
+/**
+ * Where each edge of the sliced line really is. The slicer cuts an OOK burst low (just over the noise), and the
+ * envelope is smoothed, so its edges land early on the rise and late on the fall: every mark reads long and every gap
+ * short by the same amount. Measured here at the halfway point between the gap and mark levels instead (linear
+ * between samples), which the smoothing delays equally on both edges. FSK edges are already cut halfway.
+ */
+export function edgesOf(a: Analysis, env: Int16Array | null): number[] {
+  const out: number[] = [];
+  let pos = a.from;
+  for (const r of a.runs) { out.push(pos); pos += r.n; }
+  out.push(pos);
+  if (!env || a.mod === 'FSK') return out;
+  const mid = (a.lo + a.hi) / 2, w = 40;
+  for (let k = 1; k < out.length - 1; k++) {
+    const e = out[k], rising = a.runs[k].hi;
+    for (let i = Math.max(1, e - w); i < Math.min(env.length, e + w); i++) {
+      const p = env[i - 1], q = env[i];
+      if (rising ? p < mid && q >= mid : p >= mid && q < mid) { out[k] = i - 1 + (mid - p) / (q - p); break; }
+    }
+  }
+  return out;
+}
+
+/** Every mark and gap inside the frames (lengths measured edge to edge, see `edgesOf`), and the classes of their lengths. */
+export function pulseTable(a: Analysis, rate: number, env: Int16Array | null = null): PulseTable {
   const usPer = 1e6 / rate;
   const pulses: Pulse[] = [];
-  let pos = a.from, frame = -1, index = 0;
+  const edges = edgesOf(a, env);
+  let pos = a.from, frame = -1, index = 0, ri = 0;
   const fr = a.frames;
   for (const r of a.runs) {
+    const len = edges[ri + 1] - edges[ri]; ri++;
     // a run is in a frame when it overlaps it (a frame trimmed onto its sync may start part way into a run)
     const f = fr.findIndex(x => pos < x.end && pos + r.n > x.start);
     if (f >= 0) {
       if (f !== frame) { frame = f; index = 0; }
-      pulses.push({ frame: f, index: index++, hi: r.hi, start: pos, n: r.n, us: r.n * usPer, cls: 0 });
+      pulses.push({ frame: f, index: index++, hi: r.hi, start: pos, n: r.n, us: len * usPer, cls: 0 });
     }
     pos += r.n;
   }

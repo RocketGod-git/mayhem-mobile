@@ -9,15 +9,16 @@
  * Twin of the Android ui/AnalyzerScreen.kt and the iPad/Mac App/ui/AnalyzerScreen.swift.
  */
 
-import { fft, hann } from './fft.js';
 import type { Scope, ScopeMark } from './scope.js';
-import { analyze, carrierOf, noiseOf, bitsToAscii, bitsToHex, histogram, pulsesUs, CODINGS, FM_SCALE, MODS, type Analysis, type Coding, type Mod, type Overrides } from './dsp/analyzer/demod.js';
+import { analyze, carrierOf, noiseOf, bitsToAscii, bitsToHex, pulsesUs, CODINGS, MODS, type Analysis, type Coding, type Mod, type Overrides } from './dsp/analyzer/demod.js';
 import { align, similar, type Alignment } from './dsp/analyzer/align.js';
 import { decodeBundle, encodeBundle, exportName, freqFromName, toCs8, toCu8, toSub } from './dsp/analyzer/files.js';
 import { checkHolds, dataStart, fieldValue, recognize, suggest, FIELD_KINDS, type CheckFound, type Field, type FieldKind, type Protocol } from './dsp/analyzer/fields.js';
 import { NO_FILTER, passes, type Burst, type CaptureFilter } from './dsp/analyzer/capture.js';
 import { groupPresses, sameFrame, type Transmission } from './dsp/analyzer/group.js';
 import { store, type StoredBurst } from './analyzer-store.js';
+import { classCsv, clockDrift, frameSegments, framesCsv, levels, pulseCsv, pulseTable, samplesCsv, selectionCsv, symbolFit, type FrameSeg, type Levels, type PulseClass, type PulseTable } from './dsp/analyzer/measure.js';
+import { fmtTime, innerMask, paintHistogram, paintMini, paintTrace, valueAt, type View } from './analyzer-paint.js';
 
 /** What the screen needs from the app around it. */
 export interface Host {
@@ -52,7 +53,10 @@ export interface AnBurst extends Burst {
   proto: { protocol: Protocol; start: number } | null;
 }
 
-type View = 'amp' | 'freq' | 'iq' | 'spec';
+type Tool = 'select' | 'measure' | 'pan';
+const VIEW_LABEL: Record<View, string> = { amp: 'AMPLITUDE', freq: 'FREQUENCY', iq: 'I/Q', spec: 'SPECTROGRAM', eye: 'EYE', const: 'CONSTELLATION' };
+/** The same, for a phone's width. */
+const VIEW_SHORT: Record<View, string> = { amp: 'AMP', freq: 'FREQ', iq: 'I/Q', spec: 'SPEC', eye: 'EYE', const: 'I×Q' };
 /** One press: its bursts, kept in time order. */
 type Tx = Transmission & { members: AnBurst[] };
 /** A decoder's reading without its family ("car key: Land Rover FSK A824" → "Land Rover FSK A824"). */
@@ -90,6 +94,23 @@ export class AnalyzerUi {
   /** The bits under the pointer: frame, first bit, one past the last. */
   private hl: { f: number; b0: number; b1: number } | null = null;
   private selOnly = false;
+  /** What a drag on the trace does, the A/B cursors (samples), the pointer, and the trace's switches. */
+  private tool: Tool = 'select';
+  private cursors: [number | null, number | null] = [null, null];
+  private hover: { x: number; y: number } | null = null;
+  private yz: Record<View, number> = { amp: 1, freq: 1, iq: 1, spec: 1, eye: 1, const: 1 };
+  private samplesAxis = false;
+  private showDur = false;
+  private showClock = false;
+  /** Zoom history: each window shown for a moment (null: the burst itself). */
+  private hist: ([number, number] | null)[] = [null];
+  private histAt = 0;
+  private histTimer = 0;
+  /** The panels open in the burst view: all of them on a wide screen, only the demodulation on a phone. */
+  private readonly openSec = new Set<string>(window.innerWidth > 700 ? ['demod', 'pulses', 'frames', 'levels'] : ['demod']);
+  private readonly innerCache = new Map<number, Uint8Array>();
+  private ptCache: { a: Analysis; t: PulseTable } | null = null;
+  private readCache: { key: string; a: Analysis } | null = null;
   private comparing = false;
   /** The transmission open in the full-screen view (its first burst's id), and whether one of its frames is open in it. */
   private txOpen = 0;
@@ -247,7 +268,7 @@ export class AnalyzerUi {
   }
 
   private openBurst(id: number): void {
-    if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; }
+    if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; this.cursors = [null, null]; this.hist = [null]; this.histAt = 0; }
     this.comparing = false;
     this.opened = true;
     this.draw();
@@ -290,7 +311,10 @@ export class AnalyzerUi {
   private reading(b: AnBurst): Analysis {
     const o = { ...b.over };
     if (this.selOnly && (this.pick || this.zoom)) { const r = this.pick ?? this.zoom!; o.from = r[0]; o.to = r[1]; }
-    return Object.keys(o).length ? analyze(b.env, b.fm, b.n, b.rate, o) : b.auto;
+    if (!Object.keys(o).length) return b.auto;
+    const key = `${b.id}:${JSON.stringify(o)}`;
+    if (this.readCache?.key !== key) this.readCache = { key, a: analyze(b.env, b.fm, b.n, b.rate, o) };
+    return this.readCache.a;
   }
 
   /** Each live burst boxed on the waterfall, while the radio sits where it was heard. */
@@ -434,33 +458,255 @@ export class AnalyzerUi {
     const a = this.reading(b), o = b.over;
     const hz = b.center ? mhz(b.center + b.hz) : `${(b.hz / 1e3).toFixed(1)} kHz off center`;
     const seg = (name: string, vals: string[], cur: string, label = (v: string) => v) => `<div class="seg an-seg">${vals.map(v => `<button data-an${name}="${v}" class="${cur === v ? 'on' : ''}">${label(v)}</button>`).join('')}</div>`;
-    const r = this.pick ?? this.zoom;
-    const selTxt = r ? `${((r[1] - r[0]) / b.rate * 1000).toFixed(3)} ms · ${((r[1] - r[0]) / b.rate * 1e6 / Math.max(1, a.symUs)).toFixed(1)} symbols` : 'drag across the trace to select · hover a bit to find it in the text';
     const why = `${a.mod} (${esc(a.why)}) · ${a.coding} · symbol ${a.symUs.toFixed(1)} µs · ${rateLabel(a.baud)}${a.mod === 'FSK' ? ` · shift ${(a.shiftHz / 1e3).toFixed(1)} kHz` : ''}`;
     const proto = b.proto;
     const fieldsHtml = proto ? (() => {
       const p = proto.protocol, ok = checkHolds(p, b.best, proto.start);
       return `<div class="an-sub">◆ ${esc(p.name.toUpperCase())}${ok === null ? '' : ok ? ' · CHECK ✓' : ' · CHECK ✗'}</div><div class="an-fields">${p.fields.map(f => `<div><i style="background:${KIND_COLOR[f.kind]}"></i><b>${esc(f.name)}</b><span>${esc(fieldValue(b.best, proto.start, f))}</span></div>`).join('')}</div>`;
     })() : '';
+    const fit = symbolFit(a, b.rate), drift = clockDrift(a, b.rate);
+    const pt = this.pulsesOf(b, a), segs = frameSegments(a, b.rate), lv = levels(a, b.env, b.fm, b.rate);
+    const sec = (id: string, title: string, body: string, copy = true) => `<details class="an-sec" data-ansec="${id}" ${this.openSec.has(id) ? 'open' : ''}><summary><b>${title}</b>${copy ? `<button class="chip" data-ancopy="${id}">COPY</button>` : ''}</summary>${body}</details>`;
+    const histHtml = `<div class="an-sub">PULSE LENGTHS <i class="mk">marks</i> <i class="sp">gaps</i> · dashed: the threshold between classes</div><canvas id="an-hist" class="an-hist"></canvas>`;
     return `<div class="an-head"><b>${esc(hz)}</b><span>${b.name ? `<em class="an-name">${esc(b.name)}</em> · ` : ''}${b.src ? esc(b.src) + ' · +' + b.t.toFixed(3) + ' s' : clock(b.wall)} · ${b.ms.toFixed(1)} ms · ${b.snr.toFixed(0)} dB SNR</span>`
       + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button><button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button>${this.txOpen ? '<button class="chip" data-ando="back">BACK</button>' : ''}<button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
-      + `<div class="ctlrow">${seg('view', ['amp', 'freq', 'iq', 'spec'], this.view, v => ({ amp: 'AMPLITUDE', freq: 'FREQUENCY', iq: 'I/Q', spec: 'SPECTROGRAM' }[v]!))}</div>`
+      + `<div class="ctlrow">${seg('view', ['amp', 'freq', 'iq', 'spec', 'eye', 'const'], this.view, v => `<span class="lg">${VIEW_LABEL[v as View]}</span><span class="sh">${VIEW_SHORT[v as View]}</span>`)}</div>`
+      + `<div class="an-tools">${seg('tool', ['select', 'measure', 'pan'], this.tool, v => v.toUpperCase())}`
+      + `<span class="an-btns"><button class="chip" data-annav="out" title="zoom out (wheel)">−</button><button class="chip" data-annav="in" title="zoom in (wheel)">+</button><button class="chip" data-annav="fit" title="the burst">FIT</button><button class="chip" data-annav="full" title="the whole capture">FULL</button><button class="chip" data-annav="sel" ${this.pick ? '' : 'disabled'} title="zoom to the selection">ZOOM</button><button class="chip" data-annav="back" ${this.histAt > 0 ? '' : 'disabled'} title="previous zoom">◀</button><button class="chip" data-annav="fwd" ${this.histAt < this.hist.length - 1 ? '' : 'disabled'} title="next zoom">▶</button></span>`
+      + `<span class="an-btns"><button class="chip" data-annav="ydn" title="vertical zoom out (Alt+wheel)">Y−</button><button class="chip" data-annav="yup" title="vertical zoom in (Alt+wheel)">Y+</button><button class="chip ${this.yz[this.view] === 1 ? 'on' : ''}" data-annav="yauto">Y AUTO</button></span>`
+      + `<span class="an-btns"><button class="tog ${this.samplesAxis ? 'on' : ''}" data-annav="axis">${this.samplesAxis ? 'SAMPLES' : 'TIME'}</button><button class="tog ${this.showDur ? 'on' : ''}" data-annav="dur">DURATIONS</button><button class="tog ${this.showClock ? 'on' : ''}" data-annav="clock">CLOCK</button></span></div>`
+      + `<canvas id="an-mini" class="an-mini" title="the whole burst: drag the box to pan, click to jump"></canvas>`
       + `<div class="an-wave"><canvas id="an-canvas"></canvas></div>`
-      + `<div class="an-zoom"><button class="chip" data-ando="zoom" ${this.pick ? '' : 'disabled'}>ZOOM</button><button class="chip" data-ando="full">FULL</button><span id="an-selinfo">${selTxt}</span><span class="an-grow"></span>${seg('fmt', ['bits', 'hex', 'ascii'], this.fmt, v => v.toUpperCase())}</div>`
+      + `<div class="an-cur" id="an-cur">${this.cursorText(b, a)}</div>`
+      + `<div class="an-zoom"><span id="an-selinfo">${this.selText(b, a)}</span><span class="an-grow"></span>${seg('fmt', ['bits', 'hex', 'ascii'], this.fmt, v => v.toUpperCase())}</div>`
       + `<div class="an-out" id="an-out">${this.outHtml(a)}</div>`
       + `<div class="an-scroll">`
-      + `<div class="an-ctl"><span class="rl">MOD</span>${seg('mod', ['AUTO', ...MODS], o.mod ?? 'AUTO')}<span class="rl">CODING</span>${seg('coding', ['AUTO', ...CODINGS], o.coding ?? 'AUTO', v => (v === 'AUTO' ? v : CODING_LABEL[v as Coding]))}</div>`
-      + `<div class="an-ctl"><span class="rl">SYMBOL</span><div class="stepper an-step"><button data-ando="sym-">−</button><b>${a.symUs.toFixed(1)} µs</b><button data-ando="sym+">+</button></div><button class="tog ${o.symUs ? '' : 'on'}" data-ando="symauto">AUTO</button>`
-      + `<span class="rl">CUT</span><input id="an-thr" type="range" min="2" max="98" value="${Math.round(a.thr * 100)}"><b class="an-pct">${Math.round(a.thr * 100)}%</b><button class="tog ${o.thr !== undefined ? '' : 'on'}" data-ando="thrauto">AUTO</button>`
-      + `<button class="tog ${o.invert ? 'on' : ''}" data-ando="invert">INVERT</button><button class="tog ${this.selOnly ? 'on' : ''}" data-ando="selonly">SELECTION ONLY</button></div>`
-      + `<div class="an-why">${why}</div>`
-      + `<div class="an-sub">PULSE LENGTHS <i class="mk">marks</i> <i class="sp">gaps</i></div><canvas id="an-hist" class="an-hist"></canvas>`
+      + sec('demod', 'DEMODULATION', `<div class="an-ctl"><span class="rl">MOD</span>${seg('mod', ['AUTO', ...MODS], o.mod ?? 'AUTO')}<span class="rl">CODING</span>${seg('coding', ['AUTO', ...CODINGS], o.coding ?? 'AUTO', v => (v === 'AUTO' ? v : CODING_LABEL[v as Coding]))}</div>`
+        + `<div class="an-ctl"><span class="rl">SYMBOL</span><div class="stepper an-step"><button data-ando="sym-">−</button><b>${a.symUs.toFixed(1)} µs</b><button data-ando="sym+">+</button></div><button class="tog ${o.symUs ? '' : 'on'}" data-ando="symauto">AUTO</button>`
+        + `<span class="rl">CUT</span><input id="an-thr" type="range" min="2" max="98" value="${Math.round(a.thr * 100)}"><b class="an-pct">${Math.round(a.thr * 100)}%</b><button class="tog ${o.thr !== undefined ? '' : 'on'}" data-ando="thrauto">AUTO</button>`
+        + `<button class="tog ${o.invert ? 'on' : ''}" data-ando="invert">INVERT</button><button class="tog ${this.selOnly ? 'on' : ''}" data-ando="selonly">SELECTION ONLY</button></div>`
+        + `<div class="an-why">${why}</div>`
+        + `<div class="an-why">SYMBOL ${fit.symUs.toFixed(1)} µs ± ${fit.errPct.toFixed(1)}% over ${fit.runs} runs · ${rateLabel(fit.baud)}${drift.length ? ` · CLOCK DRIFT worst ${Math.max(...drift.map(d => d.worstPct)).toFixed(0)}%, mean ${(drift.reduce((s, d) => s + d.meanPct, 0) / drift.length).toFixed(0)}% of a symbol` : ''}</div>`)
+      + sec('pulses', `PULSES · ${pt.pulses.length}`, histHtml + this.pulsesHtml(pt))
+      + sec('frames', `FRAMES · ${segs.length}`, this.framesHtml(segs))
+      + sec('levels', 'LEVELS', this.levelsHtml(a, lv))
       + fieldsHtml
       + `<div class="an-why">${b.matches.length ? `DEVICES DECODERS: ${b.matches.map(esc).join(' · ')}` : 'no Devices decoder claimed it'}</div>`
       + `<div class="an-ctl"><span class="rl">NAME</span><input id="an-nm" class="txin an-grow" maxlength="60" value="${esc(b.name)}" placeholder="what it is (gate, left key, lock…)"></div>`
       + `<div class="an-ctl"><span class="rl">NOTE</span><textarea id="an-nt" class="txin an-grow" rows="2" maxlength="500" placeholder="anything worth remembering about it">${esc(b.note)}</textarea></div>`
-      + `<div class="an-ctl"><span class="rl">EXPORT</span><button class="chip" data-ando="cu8">.CU8</button><button class="chip" data-ando="cs8">.CS8</button><button class="chip" data-ando="sub" ${a.runs.length ? '' : 'disabled'}>.SUB</button><span class="an-dim">${(b.rate / 1e3).toFixed(0)} kHz I/Q, ${b.n} samples</span></div>`
+      + `<div class="an-ctl"><span class="rl">EXPORT</span><button class="chip" data-ando="cu8">.CU8</button><button class="chip" data-ando="cs8">.CS8</button><button class="chip" data-ando="sub" ${a.runs.length ? '' : 'disabled'}>.SUB</button><button class="chip" data-ando="csv">${this.pick ? 'SELECTION' : 'VIEW'} .CSV</button><span class="an-dim">${(b.rate / 1e3).toFixed(0)} kHz I/Q, ${b.n} samples</span></div>`
       + `</div>`;
+  }
+
+  // ---- measurements -------------------------------------------------------------------------------------------
+
+  /** The pulse table, computed once per reading. */
+  private pulsesOf(b: AnBurst, a: Analysis): PulseTable {
+    if (this.ptCache && this.ptCache.a === a) return this.ptCache.t;
+    const t = pulseTable(a, b.rate, b.env);
+    this.ptCache = { a, t };
+    return t;
+  }
+
+  private pulsesHtml(t: PulseTable): string {
+    const row = (c: PulseClass, i: number) => `<tr><td><b class="${c.hi ? 'mk' : 'sp'}">${c.hi ? 'M' : 'G'}${i + 1}</b></td><td>${c.count}</td><td>${c.mean.toFixed(1)}</td><td>${c.min.toFixed(1)}</td><td>${c.max.toFixed(1)}</td><td>${c.sd.toFixed(1)}</td><td>${c.jitterPct.toFixed(1)}%</td><td>${c.symbols.toFixed(2)}</td></tr>`;
+    const classes = `<table class="an-tbl"><thead><tr><th>CLASS</th><th>COUNT</th><th>MEAN µs</th><th>MIN</th><th>MAX</th><th>σ</th><th>JITTER</th><th>SYMBOLS</th></tr></thead><tbody>${t.marks.map(row).join('')}${t.spaces.map(row).join('')}</tbody></table>`;
+    const cuts = `<div class="an-why">THRESHOLDS · marks ${t.markCuts.map(x => `${x.toFixed(0)} µs`).join(', ') || 'one class'} · gaps ${t.spaceCuts.map(x => `${x.toFixed(0)} µs`).join(', ') || 'one class'}</div>`;
+    const list = `<div class="an-plist">${t.pulses.slice(0, 2000).map(p => `<span class="${p.hi ? 'mk' : 'sp'}" title="F${p.frame + 1} #${p.index} · sample ${p.start}">${p.us.toFixed(0)}<i>${p.hi ? 'M' : 'G'}${p.cls + 1}</i></span>`).join('')}</div>`;
+    return classes + cuts + list;
+  }
+
+  private framesHtml(segs: FrameSeg[]): string {
+    if (!segs.length) return '<div class="mt-wait">no frames</div>';
+    const hexDiff = (s: FrameSeg) => { const d = new Set(s.diff.map(k => k >> 2)); return [...s.hex].map((ch, i) => (d.has(i) ? `<em>${ch}</em>` : ch)).join(''); };
+    return `<table class="an-tbl an-ftbl"><thead><tr><th>FRAME</th><th>START ms</th><th>LENGTH ms</th><th>GAP ms</th><th>INTERVAL ms</th><th>BITS</th><th>HEX · differences from F1 lit</th></tr></thead><tbody>`
+      + segs.map(s => `<tr><td><b>F${s.index + 1}</b></td><td>${s.startMs.toFixed(3)}</td><td>${(s.endMs - s.startMs).toFixed(3)}</td><td>${s.index ? s.gapMs.toFixed(3) : '—'}</td><td>${s.index ? s.intervalMs.toFixed(3) : '—'}</td><td>${s.bits}</td><td class="hx">${hexDiff(s)}${s.index ? (s.diff.length ? ` <small>${s.diff.length} bits differ</small>` : ' <small>same as F1</small>') : ''}</td></tr>`).join('')
+      + '</tbody></table>';
+  }
+
+  private levelsHtml(a: Analysis, lv: Levels): string {
+    const kv = (k: string, v: string) => `<div><b>${k}</b><span>${v}</span></div>`;
+    const rows: string[] = [];
+    if (a.mod !== 'FSK') {
+      rows.push(kv('MARK', `${lv.markDbfs.toFixed(1)} dBFS`), kv('GAP', `${lv.spaceDbfs.toFixed(1)} dBFS`), kv(a.mod === 'OOK' ? 'OOK DEPTH' : 'DEPTH', `${lv.depthDb.toFixed(1)} dB`));
+      rows.push(kv('RISE 10→90%', `${lv.riseUs.toFixed(1)} µs`), kv('FALL 90→10%', `${lv.fallUs.toFixed(1)} µs`), kv('CARRIER OFFSET', `${(lv.carrierHz / 1e3).toFixed(2)} kHz`));
+      if (a.mod === 'ASK') rows.push(kv('ASK LEVELS', `${lv.askLoDbfs.toFixed(1)} / ${lv.askHiDbfs.toFixed(1)} dBFS`));
+    } else {
+      rows.push(kv('LOW TONE', `${(lv.toneLoHz / 1e3).toFixed(2)} kHz`), kv('HIGH TONE', `${(lv.toneHiHz / 1e3).toFixed(2)} kHz`), kv('CENTER OFFSET', `${(lv.centerHz / 1e3).toFixed(2)} kHz`));
+      rows.push(kv('DEVIATION', `±${(lv.deviationHz / 1e3).toFixed(2)} kHz`), kv('LEVEL', `${lv.markDbfs.toFixed(1)} dBFS`));
+    }
+    const m = Math.max(1, ...lv.toneHist);
+    const bars = lv.toneHist.map((v, i) => `<i style="height:${(v / m * 100).toFixed(0)}%" title="${(i - 30) * 2} kHz: ${v}"></i>`).join('');
+    return `<div class="an-kv">${rows.join('')}</div><div class="an-sub">TONES INSIDE THE CARRIER · −60 … +60 kHz, 2 kHz bins</div><div class="an-tones">${bars}</div>`;
+  }
+
+  private cursorText(b: AnBurst, a: Analysis): string {
+    const [A, B] = this.cursors;
+    if (A === null && B === null) return `<span class="an-dim">${this.tool === 'measure' ? 'click the trace to place cursor A, then B; drag a cursor to move it' : 'MEASURE: place cursors A and B · wheel or pinch to zoom · shift-drag or PAN to move'}</span>`;
+    const parts: string[] = [];
+    const at = (s: number) => (this.samplesAxis ? `#${s}` : fmtTime(s / b.rate, 1e-6));
+    if (A !== null) parts.push(`<b class="ca">A</b> ${at(A)} · ${valueAt(this.view, b, A)}`);
+    if (B !== null) parts.push(`<b class="cb">B</b> ${at(B)} · ${valueAt(this.view, b, B)}`);
+    if (A !== null && B !== null) {
+      const d = Math.abs(B - A), dt = d / b.rate;
+      parts.push(`Δt ${fmtTime(dt, 1e-6)} · 1/Δt ${dt ? (1 / dt >= 1000 ? `${(1 / dt / 1000).toFixed(3)} kHz` : `${(1 / dt).toFixed(1)} Hz`) : '—'} · Δ ${d} samples · ${a.symUs ? (dt * 1e6 / a.symUs).toFixed(2) : '—'} symbols`);
+    }
+    return parts.join(' <i>·</i> ') + ` <button class="chip" data-ancopy="cursors">COPY</button><button class="chip" data-annav="nocur">CLEAR</button>`;
+  }
+
+  private selText(b: AnBurst, a: Analysis): string {
+    const r = this.pick;
+    if (!r) { const [a0, a1] = this.shown(b); return `showing ${fmtTime((a1 - a0) / b.rate, 1e-6)} of ${fmtTime(b.n / b.rate, 1e-6)} · drag to select · hover a bit to find it in the text`; }
+    const us = (r[1] - r[0]) / b.rate * 1e6;
+    return `selected ${fmtTime(us / 1e6, 1e-6)} · ${a.symUs ? (us / a.symUs).toFixed(1) : '—'} symbols at ${a.symUs.toFixed(1)} µs`;
+  }
+
+  /** Text of a panel, for the clipboard. */
+  private copyText(b: AnBurst, what: string): string {
+    const a = this.reading(b), pt = this.pulsesOf(b, a);
+    if (what === 'pulses') return `${classCsv(pt)}\n\n${pulseCsv(pt)}`;
+    if (what === 'frames') return framesCsv(frameSegments(a, b.rate));
+    if (what === 'levels') { const lv = levels(a, b.env, b.fm, b.rate); return Object.entries(lv).filter(([k]) => k !== 'toneHist').map(([k, v]) => `${k},${typeof v === 'number' ? v.toFixed(3) : v}`).join('\n'); }
+    if (what === 'demod') { const f = symbolFit(a, b.rate); return `modulation,${a.mod}\ncoding,${a.coding}\nsymbol_us,${a.symUs.toFixed(2)}\nsymbol_fit_error_pct,${f.errPct.toFixed(2)}\nbaud,${a.baud.toFixed(1)}\nshift_hz,${a.shiftHz.toFixed(0)}\nthreshold,${a.thr.toFixed(3)}`; }
+    if (what === 'cursors') { const d = document.createElement('div'); d.innerHTML = this.cursorText(b, a); d.querySelectorAll('button').forEach(x => x.remove()); return d.textContent?.trim() ?? ''; }
+    return '';
+  }
+
+  // ---- navigation ---------------------------------------------------------------------------------------------
+
+  /** Show [a0, a1) (at least 16 samples, at most the burst), and remember it in the zoom history a moment later. */
+  private setView(b: AnBurst, a0: number, a1: number, record = true): void {
+    const len = Math.max(16, Math.min(b.n, a1 - a0));
+    let s = Math.max(0, Math.min(b.n - len, a0));
+    if (!Number.isFinite(s)) s = 0;
+    this.zoom = [Math.round(s), Math.round(s + len)];
+    if (record) this.remember();
+  }
+  private zoomAt(b: AnBurst, center: number, factor: number): void {
+    const [a0, a1] = this.shown(b), len = (a1 - a0) * factor, f = (center - a0) / Math.max(1, a1 - a0);
+    this.setView(b, center - f * len, center - f * len + len);
+  }
+  private remember(): void {
+    clearTimeout(this.histTimer);
+    this.histTimer = window.setTimeout(() => {
+      const z = this.zoom ? [...this.zoom] as [number, number] : null;
+      const cur = this.hist[this.histAt];
+      if (cur !== undefined && JSON.stringify(cur) === JSON.stringify(z)) return;
+      this.hist = this.hist.slice(0, this.histAt + 1); this.hist.push(z);
+      if (this.hist.length > 50) this.hist.shift();
+      this.histAt = this.hist.length - 1;
+      this.navButtons();
+    }, 400);
+  }
+  private navButtons(): void {
+    const r = this.root;
+    const bk = r?.querySelector<HTMLButtonElement>('[data-annav="back"]'), fw = r?.querySelector<HTMLButtonElement>('[data-annav="fwd"]'), sl = r?.querySelector<HTMLButtonElement>('[data-annav="sel"]');
+    if (bk) bk.disabled = this.histAt <= 0;
+    if (fw) fw.disabled = this.histAt >= this.hist.length - 1;
+    if (sl) sl.disabled = !this.pick;
+  }
+  /** Redraw the trace, the strip and the readouts without rebuilding the view around them. */
+  private repaint(b: AnBurst): void {
+    const r = this.root;
+    const cv = r?.querySelector<HTMLCanvasElement>('#an-canvas'), mini = r?.querySelector<HTMLCanvasElement>('#an-mini');
+    if (cv) this.paint(cv, b);
+    if (mini) { const [a0, a1] = this.shown(b); paintMini(mini, b, a0, a1, this.pick); }
+    const a = this.reading(b);
+    const cur = r?.querySelector<HTMLElement>('#an-cur'); if (cur) { cur.innerHTML = this.cursorText(b, a); this.wireCursorBar(cur, b); }
+    const si = r?.querySelector<HTMLElement>('#an-selinfo'); if (si) si.textContent = this.selText(b, a).replace(/<[^>]+>/g, '');
+    this.navButtons();
+  }
+  private wireCursorBar(el: HTMLElement, b: AnBurst): void {
+    el.querySelector<HTMLButtonElement>('[data-annav="nocur"]')?.addEventListener('click', () => { this.cursors = [null, null]; this.repaint(b); });
+    el.querySelector<HTMLButtonElement>('[data-ancopy]')?.addEventListener('click', (e) => this.copy(b, 'cursors', e.currentTarget as HTMLButtonElement));
+  }
+  private copy(b: AnBurst, what: string, btn: HTMLButtonElement): void {
+    const text = this.copyText(b, what);
+    void navigator.clipboard?.writeText(text).then(() => { btn.textContent = 'COPIED'; setTimeout(() => { btn.textContent = 'COPY'; }, 1200); }, () => { btn.textContent = 'NO CLIPBOARD'; });
+  }
+
+  private wireDetail(det: HTMLElement, b: AnBurst): void {
+    det.querySelectorAll<HTMLButtonElement>('[data-anview]').forEach(x => x.onclick = () => { this.view = x.dataset.anview as View; this.draw(); });
+    det.querySelectorAll<HTMLButtonElement>('[data-antool]').forEach(x => x.onclick = () => { this.tool = x.dataset.antool as Tool; this.draw(); });
+    det.querySelectorAll<HTMLButtonElement>('[data-anfmt]').forEach(x => x.onclick = () => { this.fmt = x.dataset.anfmt as Fmt; this.draw(); });
+    det.querySelectorAll<HTMLButtonElement>('[data-anmod]').forEach(x => x.onclick = () => this.setOver(b, o => { o.mod = x.dataset.anmod === 'AUTO' ? undefined : x.dataset.anmod as Mod; o.thr = undefined; }));
+    det.querySelectorAll<HTMLButtonElement>('[data-ancoding]').forEach(x => x.onclick = () => this.setOver(b, o => { o.coding = x.dataset.ancoding === 'AUTO' ? undefined : x.dataset.ancoding as Coding; }));
+    det.querySelectorAll<HTMLElement>('details[data-ansec]').forEach(d => d.addEventListener('toggle', () => { const id = d.dataset.ansec!; if ((d as HTMLDetailsElement).open) this.openSec.add(id); else this.openSec.delete(id); if (id === 'pulses' && (d as HTMLDetailsElement).open) { const hc = det.querySelector<HTMLCanvasElement>('#an-hist'); if (hc) paintHistogram(hc, this.reading(b), b.rate, this.pulsesOf(b, this.reading(b))); } }));
+    det.querySelectorAll<HTMLButtonElement>('summary [data-ancopy]').forEach(x => x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); this.copy(b, x.dataset.ancopy!, x); });
+    const thr = det.querySelector<HTMLInputElement>('#an-thr');
+    if (thr) { thr.oninput = () => { const pct = det.querySelector('.an-pct'); if (pct) pct.textContent = `${thr.value}%`; }; thr.onchange = () => this.setOver(b, o => { o.thr = +thr.value / 100; }); }
+    const nm = det.querySelector<HTMLInputElement>('#an-nm'), nt = det.querySelector<HTMLTextAreaElement>('#an-nt');
+    if (nm) nm.onchange = () => { b.name = nm.value.trim(); this.save(b); this.draw(false); };
+    if (nt) nt.onchange = () => { b.note = nt.value.trim(); this.save(b); this.draw(false); };
+    det.querySelectorAll<HTMLButtonElement>('[data-annav]').forEach(x => x.onclick = () => {
+      const [a0, a1] = this.shown(b), mid = (a0 + a1) / 2;
+      switch (x.dataset.annav) {
+        case 'in': this.zoomAt(b, mid, 0.5); break;
+        case 'out': this.zoomAt(b, mid, 2); break;
+        case 'fit': this.zoom = null; this.remember(); break;
+        case 'full': this.setView(b, 0, b.n); break;
+        case 'sel': if (this.pick) { this.setView(b, this.pick[0], this.pick[1]); this.pick = null; } break;
+        case 'back': if (this.histAt > 0) { this.histAt--; this.zoom = this.hist[this.histAt]; } break;
+        case 'fwd': if (this.histAt < this.hist.length - 1) { this.histAt++; this.zoom = this.hist[this.histAt]; } break;
+        case 'yup': this.yz[this.view] = Math.min(64, this.yz[this.view] * 2); this.draw(); return;
+        case 'ydn': this.yz[this.view] = Math.max(1, this.yz[this.view] / 2); this.draw(); return;
+        case 'yauto': this.yz[this.view] = 1; this.draw(); return;
+        case 'axis': this.samplesAxis = !this.samplesAxis; this.draw(); return;
+        case 'dur': this.showDur = !this.showDur; this.draw(); return;
+        case 'clock': this.showClock = !this.showClock; this.draw(); return;
+        case 'nocur': this.cursors = [null, null]; break;
+      }
+      this.repaint(b);
+    });
+    det.querySelectorAll<HTMLButtonElement>('[data-ando]').forEach(x => x.onclick = () => {
+      const a = this.reading(b);
+      switch (x.dataset.ando) {
+        case 'close': this.close(); break;
+        case 'star': b.star = !b.star; this.save(b); this.draw(); break;
+        case 'back': this.back(); break;
+        case 'compare': this.cmpTx = 0; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.draw(); break;
+        case 'sym-': this.setOver(b, o => { o.symUs = a.symUs / 1.05; }); break;
+        case 'sym+': this.setOver(b, o => { o.symUs = a.symUs * 1.05; }); break;
+        case 'symauto': this.setOver(b, o => { o.symUs = undefined; }); break;
+        case 'thrauto': this.setOver(b, o => { o.thr = undefined; }); break;
+        case 'invert': this.setOver(b, o => { o.invert = o.invert ? undefined : true; }); break;
+        case 'selonly': this.selOnly = !this.selOnly; this.draw(); break;
+        case 'cu8': save(exportName(b.center + b.hz, b.rate, b.id, 'cu8'), toCu8(b.iq)); break;
+        case 'cs8': save(exportName(b.center + b.hz, b.rate, b.id, 'cs8'), toCs8(b.iq)); break;
+        case 'sub': save(exportName(b.center + b.hz, b.rate, b.id, 'sub'), new TextEncoder().encode(this.subOf(b, a))); break;
+        case 'csv': {
+          const [s0, s1] = this.pick ?? this.shown(b), pt = this.pulsesOf(b, a);
+          const text = selectionCsv({ samples: samplesCsv(b.iq, b.env, b.fm, b.rate, s0, s1), pulses: pulseCsv({ ...pt, pulses: pt.pulses.filter(p => p.start + p.n > s0 && p.start < s1) }), classes: classCsv(pt), frames: framesCsv(frameSegments(a, b.rate)) });
+          save(exportName(b.center + b.hz, b.rate, b.id, 'csv').replace('.csv', `_${s0}-${s1}.csv`), new TextEncoder().encode(text));
+          break;
+        }
+        case 'tx': this.opened = false; this.host.sendToTx(this.subOf(b, a), b.center ? b.center + b.hz : this.host.center() + b.hz, a.mod === 'FSK'); break;
+      }
+    });
+    const cv = det.querySelector<HTMLCanvasElement>('#an-canvas');
+    if (cv) { this.paint(cv, b); this.wireTrace(cv, b); }
+    const mini = det.querySelector<HTMLCanvasElement>('#an-mini');
+    if (mini) { const [a0, a1] = this.shown(b); paintMini(mini, b, a0, a1, this.pick); this.wireMini(mini, b); }
+    const hc = det.querySelector<HTMLCanvasElement>('#an-hist');
+    if (hc) paintHistogram(hc, this.reading(b), b.rate, this.pulsesOf(b, this.reading(b)));
+    const cur = det.querySelector<HTMLElement>('#an-cur');
+    if (cur) this.wireCursorBar(cur, b);
+    const out = det.querySelector<HTMLElement>('#an-out');
+    if (out && cv) this.wireOut(out, cv, b);
+  }
+
+  /** The overview strip: drag the box to pan, click elsewhere to jump there. */
+  private wireMini(cv: HTMLCanvasElement, b: AnBurst): void {
+    let drag = false, off = 0;
+    const at = (e: PointerEvent) => { const r = cv.getBoundingClientRect(); return (e.clientX - r.left) / r.width * b.n; };
+    cv.onpointerdown = (e) => {
+      const s = at(e), [a0, a1] = this.shown(b);
+      cv.setPointerCapture(e.pointerId); drag = true;
+      if (s < a0 || s > a1) { this.setView(b, s - (a1 - a0) / 2, s + (a1 - a0) / 2, false); off = (a1 - a0) / 2; } else off = s - a0;
+      this.repaint(b);
+    };
+    cv.onpointermove = (e) => { if (!drag) return; const [a0, a1] = this.shown(b); const s = at(e) - off; this.setView(b, s, s + (a1 - a0), false); this.repaint(b); };
+    cv.onpointerup = () => { if (drag) { drag = false; this.remember(); } };
   }
 
   /** The frames as text, every character tagged with the frame and bits it stands for. */
@@ -482,45 +728,6 @@ export class AnalyzerUi {
     this.draw();
   }
 
-  private wireDetail(det: HTMLElement, b: AnBurst): void {
-    det.querySelectorAll<HTMLButtonElement>('[data-anview]').forEach(x => x.onclick = () => { this.view = x.dataset.anview as View; this.draw(); });
-    det.querySelectorAll<HTMLButtonElement>('[data-anfmt]').forEach(x => x.onclick = () => { this.fmt = x.dataset.anfmt as Fmt; this.draw(); });
-    det.querySelectorAll<HTMLButtonElement>('[data-anmod]').forEach(x => x.onclick = () => this.setOver(b, o => { o.mod = x.dataset.anmod === 'AUTO' ? undefined : x.dataset.anmod as Mod; o.thr = undefined; }));
-    det.querySelectorAll<HTMLButtonElement>('[data-ancoding]').forEach(x => x.onclick = () => this.setOver(b, o => { o.coding = x.dataset.ancoding === 'AUTO' ? undefined : x.dataset.ancoding as Coding; }));
-    const thr = det.querySelector<HTMLInputElement>('#an-thr');
-    if (thr) { thr.oninput = () => { const pct = det.querySelector('.an-pct'); if (pct) pct.textContent = `${thr.value}%`; }; thr.onchange = () => this.setOver(b, o => { o.thr = +thr.value / 100; }); }
-    const nm = det.querySelector<HTMLInputElement>('#an-nm'), nt = det.querySelector<HTMLTextAreaElement>('#an-nt');
-    if (nm) nm.onchange = () => { b.name = nm.value.trim(); this.save(b); this.draw(false); };
-    if (nt) nt.onchange = () => { b.note = nt.value.trim(); this.save(b); this.draw(false); };
-    det.querySelectorAll<HTMLButtonElement>('[data-ando]').forEach(x => x.onclick = () => {
-      const a = this.reading(b);
-      switch (x.dataset.ando) {
-        case 'close': this.close(); break;
-        case 'star': b.star = !b.star; this.save(b); this.draw(); break;
-        case 'back': this.back(); break;
-        case 'compare': this.cmpTx = 0; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.draw(); break;
-        case 'zoom': if (this.pick) { this.zoom = this.pick; this.pick = null; this.draw(); } break;
-        case 'full': this.zoom = [0, b.n]; this.pick = null; this.draw(); break;
-        case 'sym-': this.setOver(b, o => { o.symUs = a.symUs / 1.05; }); break;
-        case 'sym+': this.setOver(b, o => { o.symUs = a.symUs * 1.05; }); break;
-        case 'symauto': this.setOver(b, o => { o.symUs = undefined; }); break;
-        case 'thrauto': this.setOver(b, o => { o.thr = undefined; }); break;
-        case 'invert': this.setOver(b, o => { o.invert = o.invert ? undefined : true; }); break;
-        case 'selonly': this.selOnly = !this.selOnly; this.draw(); break;
-        case 'cu8': save(exportName(b.center + b.hz, b.rate, b.id, 'cu8'), toCu8(b.iq)); break;
-        case 'cs8': save(exportName(b.center + b.hz, b.rate, b.id, 'cs8'), toCs8(b.iq)); break;
-        case 'sub': save(exportName(b.center + b.hz, b.rate, b.id, 'sub'), new TextEncoder().encode(this.subOf(b, a))); break;
-        case 'tx': this.opened = false; this.host.sendToTx(this.subOf(b, a), b.center ? b.center + b.hz : this.host.center() + b.hz, a.mod === 'FSK'); break;
-      }
-    });
-    const cv = det.querySelector<HTMLCanvasElement>('#an-canvas');
-    if (cv) { this.paint(cv, b); this.wireTrace(cv, b); }
-    const hc = det.querySelector<HTMLCanvasElement>('#an-hist');
-    if (hc) paintHistogram(hc, this.reading(b), b.rate);
-    const out = det.querySelector<HTMLElement>('#an-out');
-    if (out && cv) this.wireOut(out, cv, b);
-  }
-
   private subOf(b: AnBurst, a: Analysis): string { return toSub(pulsesUs(a, b.rate), b.center ? b.center + b.hz : 433_920_000, a.mod === 'FSK', a.shiftHz); }
 
   /** The bit (frame, index) whose span holds sample `i`, if any. */
@@ -535,40 +742,91 @@ export class AnalyzerUi {
     return null;
   }
 
-  /** Drag across the trace to select a stretch of it; hover to find a bit in the text. */
+  /**
+   * The trace's pointer: the wheel (or a trackpad pinch) zooms around the pointer, Shift+wheel pans, Alt+wheel zooms
+   * vertically; two fingers pinch and pan; one pointer selects, measures or pans by the tool; hovering draws the
+   * crosshair and finds the bit under it.
+   */
   private wireTrace(cv: HTMLCanvasElement, b: AnBurst): void {
-    const at = (e: PointerEvent) => { const r = cv.getBoundingClientRect(), [a0, a1] = this.shown(b); return Math.round(a0 + Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (a1 - a0)); };
-    let from = -1;
-    cv.onpointerdown = (e) => { from = at(e); cv.setPointerCapture(e.pointerId); };
+    const dpr = window.devicePixelRatio || 1;
+    const pts = new Map<number, { x: number; y: number }>();
+    let mode: 'none' | 'select' | 'pan' | 'cursor' | 'pinch' = 'none';
+    let from = -1, cur = 0, panX = 0, panWin: [number, number] = [0, 0], pinchD = 0, pinchWin: [number, number] = [0, 0], pinchMid = 0, pinchX = 0, downX = 0;
+    const sampleAt = (clientX: number) => { const r = cv.getBoundingClientRect(), [a0, a1] = this.shown(b); return a0 + Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * (a1 - a0); };
+    const twoFinger = () => { const [p, q] = [...pts.values()]; return { d: Math.hypot(p.x - q.x, p.y - q.y), mid: (p.x + q.x) / 2 }; };
+    cv.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const r = cv.getBoundingClientRect(), [a0, a1] = this.shown(b);
+      if (e.altKey) { this.yz[this.view] = Math.max(1, Math.min(64, this.yz[this.view] * (e.deltaY < 0 ? 2 : 0.5))); this.repaint(b); return; }
+      const sideways = e.shiftKey ? e.deltaY || e.deltaX : Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0;
+      if (sideways) { const s = sideways / r.width * (a1 - a0); this.setView(b, a0 + s, a1 + s); }
+      else this.zoomAt(b, sampleAt(e.clientX), Math.exp(Math.max(-2, Math.min(2, e.deltaY * (e.deltaMode ? 0.05 : 0.0025)))));
+      this.repaint(b);
+    }, { passive: false });
+    cv.onpointerdown = (e) => {
+      cv.setPointerCapture(e.pointerId);
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      downX = e.clientX;
+      if (pts.size === 2) { mode = 'pinch'; const t = twoFinger(); pinchD = t.d; pinchX = t.mid; pinchMid = sampleAt(t.mid); pinchWin = this.shown(b); this.pick = null; return; }
+      if (pts.size > 2) return;
+      if (e.shiftKey || this.tool === 'pan' || e.button === 1) { mode = 'pan'; panX = e.clientX; panWin = this.shown(b); return; }
+      const s = Math.round(sampleAt(e.clientX));
+      if (this.tool === 'measure') {
+        mode = 'cursor';
+        const [A, B] = this.cursors, r = cv.getBoundingClientRect(), [a0, a1] = this.shown(b), px = (v: number) => (v - a0) / (a1 - a0) * r.width;
+        cur = A === null ? 0 : B === null ? 1 : Math.abs(px(A) - (e.clientX - r.left)) <= Math.abs(px(B) - (e.clientX - r.left)) ? 0 : 1;
+        this.cursors[cur] = s; this.repaint(b);
+        return;
+      }
+      mode = 'select'; from = s;
+    };
     cv.onpointermove = (e) => {
-      const i = at(e);
-      if (from < 0) {
+      const r = cv.getBoundingClientRect();
+      if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (mode === 'pinch' && pts.size >= 2) {
+        const t = twoFinger(), len = (pinchWin[1] - pinchWin[0]) * pinchD / Math.max(10, t.d);
+        const f = (pinchX - r.left) / r.width, s = pinchMid - f * len - (t.mid - pinchX) / r.width * len;
+        this.setView(b, s, s + len, false); this.repaint(b);
+        return;
+      }
+      if (mode === 'pan') { const s = -(e.clientX - panX) / r.width * (panWin[1] - panWin[0]); this.setView(b, panWin[0] + s, panWin[1] + s, false); this.repaint(b); return; }
+      if (mode === 'cursor') { this.cursors[cur] = Math.round(sampleAt(e.clientX)); this.repaint(b); return; }
+      const i = Math.round(sampleAt(e.clientX));
+      this.hover = { x: (e.clientX - r.left) * (cv.width / r.width), y: (e.clientY - r.top) * (cv.height / r.height) };
+      if (mode === 'none') {
         const hit = this.bitAt(this.reading(b), i);
         const next = hit ? { f: hit.f, b0: hit.b, b1: hit.b + 1 } : null;
-        if (JSON.stringify(next) !== JSON.stringify(this.hl)) { this.hl = next; this.paint(cv, b); this.markOut(); }
+        if (JSON.stringify(next) !== JSON.stringify(this.hl)) { this.hl = next; this.markOut(); }
+        this.paint(cv, b);
         return;
       }
       this.pick = i === from ? null : [Math.min(from, i), Math.max(from, i)];
       this.paint(cv, b);
-      const info = this.root?.querySelector('#an-selinfo');
-      if (info && this.pick) info.textContent = `${((this.pick[1] - this.pick[0]) / b.rate * 1000).toFixed(3)} ms · ${((this.pick[1] - this.pick[0]) / b.rate * 1e6 / Math.max(1, this.reading(b).symUs)).toFixed(1)} symbols`;
+      const si = this.root?.querySelector<HTMLElement>('#an-selinfo'); if (si) si.textContent = this.selText(b, this.reading(b));
     };
-    cv.onpointerup = (e) => {
-      if (from < 0) return;
-      const tap = Math.abs(at(e) - from) < 4;
-      from = -1;
+    const up = (e: PointerEvent) => {
+      pts.delete(e.pointerId);
+      if (mode === 'pinch') { if (pts.size < 2) { mode = pts.size ? 'none' : 'none'; this.remember(); } return; }
+      if (mode === 'pan') { mode = 'none'; this.remember(); return; }
+      if (mode === 'cursor') { mode = 'none'; return; }
+      if (mode !== 'select') return;
+      mode = 'none';
+      const tap = Math.abs(e.clientX - downX) < 4 * Math.max(1, dpr / 2);
       if (tap) {
-        // a tap on touch lights the bit under the finger, as hovering does with a mouse
+        // a tap lights the bit under it (on touch there is no hover to do it)
         this.pick = null;
-        const hit = this.bitAt(this.reading(b), at(e));
+        const hit = this.bitAt(this.reading(b), Math.round(sampleAt(e.clientX)));
         this.hl = hit ? { f: hit.f, b0: hit.b, b1: hit.b + 1 } : null;
-        this.paint(cv, b); this.markOut();
+        this.markOut(); this.repaint(b);
         return;
       }
-      this.draw();
+      if (this.pick && this.pick[1] - this.pick[0] < 4) this.pick = null;
+      this.repaint(b);
     };
-    cv.onpointerleave = () => { if (from < 0 && this.hl) { this.hl = null; this.paint(cv, b); this.markOut(); } };
-    cv.ondblclick = () => { this.zoom = [0, b.n]; this.pick = null; this.draw(); };
+    cv.onpointerup = up;
+    cv.onpointercancel = up;
+    cv.onpointerleave = () => { if (mode === 'none') { this.hover = null; if (this.hl) { this.hl = null; this.markOut(); } this.paint(cv, b); } };
+    cv.ondblclick = () => { this.zoom = null; this.remember(); this.repaint(b); };
   }
 
   /** The text side of the link: hover a character to light its bits on the trace, drag across characters to select their samples. */
@@ -789,160 +1047,19 @@ export class AnalyzerUi {
 
   // ---- the waveform -------------------------------------------------------------------------------------------
 
-  private paint(cv: HTMLCanvasElement, b: AnBurst): void {
-    const dpr = window.devicePixelRatio || 1;
-    const W = Math.max(200, Math.round(cv.clientWidth * dpr)), H = Math.round((cv.clientHeight || 260) * dpr);
-    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
-    const g = cv.getContext('2d')!;
-    const css = getComputedStyle(cv);
-    const ink = css.getPropertyValue('--ink').trim() || '#e8ecf4', accent = css.getPropertyValue('--accent').trim() || '#4c8dff';
-    const accent2 = css.getPropertyValue('--accent2').trim() || '#ffaf00', muted = css.getPropertyValue('--muted').trim() || '#8d97ab';
-    const paper = css.getPropertyValue('--paper').trim() || '#0a0d13';
-    g.fillStyle = paper; g.fillRect(0, 0, W, H);
-    const [a0, a1] = this.shown(b);
-    const len = Math.max(1, a1 - a0);
-    const xOf = (i: number) => (i - a0) / len * W;
-    const a = this.reading(b);
-    const axisH = 14 * dpr, bitH = 18 * dpr, digH = 16 * dpr, top = 4 * dpr;
-    const plotH = H - axisH - bitH - digH - top - 4 * dpr;
-
-    // frames, shaded behind everything
-    g.fillStyle = color(accent, 0.08);
-    for (const f of a.frames) g.fillRect(xOf(f.start), 0, Math.max(1, xOf(f.end) - xOf(f.start)), top + plotH + digH);
-
-    if (this.view === 'spec') this.paintSpec(g, b, a, a0, a1, W, top, plotH, paper, accent, accent2);
-    else if (this.view === 'iq') {
-      let m = 1;
-      for (let i = a0; i < a1; i++) m = Math.max(m, Math.abs(b.iq[2 * i]), Math.abs(b.iq[2 * i + 1]));
-      const yOf = (v: number) => top + plotH / 2 - v / m * plotH / 2;
-      g.strokeStyle = color(muted, 0.4); g.lineWidth = 1; g.beginPath(); g.moveTo(0, yOf(0)); g.lineTo(W, yOf(0)); g.stroke();
-      for (const [k, col] of [[0, accent], [1, accent2]] as [number, string][]) {
-        g.strokeStyle = col; g.lineWidth = Math.max(1, dpr); g.globalAlpha = 0.85; g.beginPath();
-        for (let x = 0; x < W; x++) {
-          const i0 = a0 + Math.floor(x * len / W), i1 = Math.max(i0 + 1, a0 + Math.floor((x + 1) * len / W));
-          let mn = 127, mx = -128;
-          for (let i = i0; i < i1 && i < b.n; i++) { const v = b.iq[2 * i + k]; if (v < mn) mn = v; if (v > mx) mx = v; }
-          if (len < W) { if (x === 0) g.moveTo(x, yOf(b.iq[2 * i0 + k])); else g.lineTo(x, yOf(b.iq[2 * i0 + k])); } else { g.moveTo(x + 0.5, yOf(mx)); g.lineTo(x + 0.5, yOf(mn) + 0.5); }
-        }
-        g.stroke(); g.globalAlpha = 1;
-      }
-      g.font = `${10 * dpr}px ui-monospace, monospace`;
-      g.fillStyle = accent; g.fillText('I', 4 * dpr, top + 10 * dpr); g.fillStyle = accent2; g.fillText('Q', 14 * dpr, top + 10 * dpr);
-    } else {
-      const sig = this.view === 'amp' ? b.env : b.fm;
-      // the discriminator is only worth drawing where there is a carrier: elsewhere it is noise from rail to rail
-      const on = this.view === 'freq' ? carrierOf(b.env, b.n, noiseOf(b.env, b.n, b.rate)) : null;
-      let lo = Infinity, hi = -Infinity;
-      for (let i = a0; i < a1; i++) { if (on && !on[i]) continue; const v = sig[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
-      if (lo === Infinity) { lo = -1; hi = 1; }
-      if (this.view === 'freq') { const m = Math.max(Math.abs(lo), Math.abs(hi), 1); lo = -m; hi = m; } else lo = 0;
-      if (hi <= lo) hi = lo + 1;
-      const yOf = (v: number) => top + plotH - (v - lo) / (hi - lo) * plotH;
-      if (this.view === 'freq') { g.strokeStyle = color(muted, 0.4); g.lineWidth = 1; g.beginPath(); g.moveTo(0, yOf(0)); g.lineTo(W, yOf(0)); g.stroke(); }
-      g.strokeStyle = accent; g.lineWidth = Math.max(1, dpr);
-      g.beginPath();
-      if (len < W) {
-        // zoomed in past a sample a pixel: join the samples up, or the trace falls apart into dots
-        let pen = false;
-        for (let i = a0; i <= a1 && i < b.n; i++) {
-          if (on && !on[i]) { pen = false; continue; }
-          const x = xOf(i + 0.5), y = yOf(sig[i]);
-          if (pen) g.lineTo(x, y); else g.moveTo(x, y);
-          pen = true;
-        }
-      } else for (let x = 0; x < W; x++) {
-        const i0 = a0 + Math.floor(x * len / W), i1 = Math.max(i0 + 1, a0 + Math.floor((x + 1) * len / W));
-        let mn = Infinity, mx = -Infinity;
-        for (let i = i0; i < i1 && i < b.n; i++) { if (on && !on[i]) continue; const v = sig[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
-        if (mn === Infinity) continue;
-        g.moveTo(x + 0.5, yOf(mx)); g.lineTo(x + 0.5, yOf(mn) + 0.5);
-      }
-      g.stroke();
-      const sliced = (this.view === 'freq') === (a.mod === 'FSK');
-      if (sliced && a.runs.length) { g.strokeStyle = accent2; g.setLineDash([6 * dpr, 4 * dpr]); g.beginPath(); g.moveTo(0, yOf(a.cut)); g.lineTo(W, yOf(a.cut)); g.stroke(); g.setLineDash([]); }
-      g.fillStyle = muted; g.font = `${10 * dpr}px ui-monospace, monospace`;
-      const toKhz = (v: number) => v / FM_SCALE * b.rate / (2 * Math.PI) / 1e3;
-      g.fillText(this.view === 'freq' ? `±${toKhz(hi).toFixed(0)} kHz` : `${(20 * Math.log10(Math.max(1, hi) / 16384)).toFixed(0)} dBFS peak`, 4 * dpr, top + 10 * dpr);
-    }
-
-    // the sliced line, under the trace
-    const y0 = top + plotH + digH - 3 * dpr, y1 = top + plotH + 4 * dpr;
-    g.strokeStyle = ink; g.lineWidth = Math.max(1, dpr);
-    g.beginPath();
-    let pos = a.from, lvl = false;
-    g.moveTo(0, y0);
-    for (const r of a.runs) {
-      const x0 = xOf(pos), x1 = xOf(pos + r.n);
-      if (x1 >= 0 && x0 <= W) { const y = r.hi ? y1 : y0; if (r.hi !== lvl) g.lineTo(Math.max(0, x0), y); g.lineTo(Math.min(W, x1), y); }
-      lvl = r.hi; pos += r.n;
-    }
-    g.stroke();
-
-    // the bits: each bit's span as a cell, its value written in when there is room, the highlighted ones lit
-    const by = top + plotH + digH + 2 * dpr;
-    g.font = `${11 * dpr}px ui-monospace, monospace`; g.textAlign = 'center'; g.textBaseline = 'middle';
-    for (let fi = 0; fi < a.frames.length; fi++) {
-      const f = a.frames[fi], s = f.spans;
-      if (!s.length || xOf(s[s.length - 1]) < 0 || xOf(s[0]) > W) continue;
-      const per = (xOf(s[s.length - 1]) - xOf(s[0])) / Math.max(1, f.bits.length);
-      for (let k = 0; k < f.bits.length; k++) {
-        const x0 = xOf(s[2 * k]), x1 = xOf(s[2 * k + 1]);
-        if (x1 < 0 || x0 > W) continue;
-        const lit = this.hl && this.hl.f === fi && k >= this.hl.b0 && k < this.hl.b1;
-        if (lit) { g.fillStyle = color(accent2, 0.85); g.fillRect(x0, by, Math.max(1, x1 - x0), bitH); g.fillStyle = color(accent2, 0.16); g.fillRect(x0, 0, Math.max(1, x1 - x0), by); }
-        else if (k % 2) { g.fillStyle = color(muted, 0.12); g.fillRect(x0, by, Math.max(1, x1 - x0), bitH); }
-        if (per >= 3) { g.fillStyle = color(muted, 0.5); g.fillRect(x0, by, 1, bitH); }
-        if (per >= 7 * dpr) { g.fillStyle = lit ? paper : f.bits[k] === '1' ? ink : muted; g.fillText(f.bits[k], (x0 + x1) / 2, by + bitH / 2); }
-      }
-    }
-    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-
-    if (this.pick) {
-      g.fillStyle = color(accent2, 0.18); g.strokeStyle = accent2;
-      const x0 = xOf(this.pick[0]), x1 = xOf(this.pick[1]);
-      g.fillRect(x0, 0, x1 - x0, H - axisH); g.strokeRect(x0 + 0.5, 0.5, x1 - x0 - 1, H - axisH - 1);
-    }
-    g.fillStyle = muted; g.font = `${10 * dpr}px ui-monospace, monospace`;
-    const ms = (i: number) => `${(i / b.rate * 1000).toFixed(len / b.rate < 0.01 ? 3 : 1)} ms`;
-    g.fillText(ms(a0), 2 * dpr, H - 3 * dpr);
-    const t = ms(a1); g.fillText(t, W - g.measureText(t).width - 2 * dpr, H - 3 * dpr);
+  /** Samples well inside the carrier, once per burst: what the frequency view draws at full strength. */
+  private innerOf(b: AnBurst): Uint8Array {
+    let m = this.innerCache.get(b.id);
+    if (!m) { m = innerMask(b.n, carrierOf(b.env, b.n, noiseOf(b.env, b.n, b.rate))); this.innerCache.set(b.id, m); if (this.innerCache.size > 20) this.innerCache.delete(this.innerCache.keys().next().value!); }
+    return m;
   }
 
-  /** The burst as a spectrogram: 64-point transforms spread across the width, frequency up, the FSK tones ticked. */
-  private paintSpec(g: CanvasRenderingContext2D, b: AnBurst, a: Analysis, a0: number, a1: number, W: number, top: number, h: number, paper: string, accent: string, accent2: string): void {
-    const N = 64, win = hann(N), re = new Float32Array(N), im = new Float32Array(N);
-    const cols = Math.min(W, Math.max(1, Math.floor((a1 - a0) / 2)));
-    const img = g.createImageData(cols, N);
-    const mags: Float32Array[] = [];
-    let peak = 1e-9;
-    for (let c = 0; c < cols; c++) {
-      const mid = a0 + Math.round((c + 0.5) * (a1 - a0) / cols);
-      for (let k = 0; k < N; k++) { const i = Math.max(0, Math.min(b.n - 1, mid - N / 2 + k)); re[k] = b.iq[2 * i] * win[k]; im[k] = b.iq[2 * i + 1] * win[k]; }
-      fft(re, im);
-      const m = new Float32Array(N);
-      for (let k = 0; k < N; k++) { const v = re[k] * re[k] + im[k] * im[k]; m[k] = v; if (v > peak) peak = v; }
-      mags.push(m);
-    }
-    const lo = rgb(paper), mid = rgb(accent), hi = rgb(accent2);
-    for (let c = 0; c < cols; c++) for (let k = 0; k < N; k++) {
-      const bin = (k + N / 2) % N;
-      const db = 10 * Math.log10(mags[c][bin] / peak + 1e-12);
-      const t = Math.pow(Math.max(0, Math.min(1, (db + 45) / 45)), 1.6);
-      const [r, gg, bb] = t < 0.6 ? mix(lo, mid, t / 0.6) : mix(mid, hi, (t - 0.6) / 0.4);
-      const p = ((N - 1 - k) * cols + c) * 4;
-      img.data[p] = r; img.data[p + 1] = gg; img.data[p + 2] = bb; img.data[p + 3] = 255;
-    }
-    const tmp = document.createElement('canvas'); tmp.width = cols; tmp.height = N;
-    tmp.getContext('2d')!.putImageData(img, 0, 0);
-    g.imageSmoothingEnabled = false;
-    g.drawImage(tmp, 0, top, W, h);
-    const dpr = window.devicePixelRatio || 1;
-    g.fillStyle = 'rgba(255,255,255,0.75)'; g.font = `${10 * dpr}px ui-monospace, monospace`;
-    g.fillText(`+${(b.rate / 2e3).toFixed(0)} kHz`, 4 * dpr, top + 12 * dpr); g.fillText(`−${(b.rate / 2e3).toFixed(0)} kHz`, 4 * dpr, top + h - 4 * dpr);
-    if (a.mod === 'FSK') {
-      const toHz = (v: number) => v / FM_SCALE * b.rate / (2 * Math.PI);
-      for (const v of [a.lo, a.hi]) { const y = top + h / 2 - toHz(v) / b.rate * h; g.fillStyle = accent2; g.fillRect(W - 10 * dpr, y - dpr, 10 * dpr, 2 * dpr); g.fillText(`${(toHz(v) / 1e3).toFixed(1)} kHz`, W - 70 * dpr, y - 3 * dpr); }
-    }
+  private paint(cv: HTMLCanvasElement, b: AnBurst): void {
+    const [a0, a1] = this.shown(b), a = this.reading(b);
+    paintTrace(cv, {
+      b, a, view: this.view, a0, a1, yz: this.yz[this.view], pick: this.pick, hl: this.hl, cursors: this.cursors, hover: this.hover,
+      showDur: this.showDur, showClock: this.showClock, samplesAxis: this.samplesAxis, inner: this.innerOf(b), pulses: this.pulsesOf(b, a),
+    });
   }
 }
 
@@ -959,29 +1076,6 @@ function repOf(t: Tx): AnBurst {
 function bestOf(a: Analysis): string { return a.frames.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), ''); }
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
-/** URH's pulse-length histogram: marks above the line, gaps below it, the symbol multiples as faint guides. */
-function paintHistogram(cv: HTMLCanvasElement, a: Analysis, rate: number): void {
-  const dpr = window.devicePixelRatio || 1;
-  const W = Math.max(200, Math.round(cv.clientWidth * dpr)), H = Math.round((cv.clientHeight || 90) * dpr);
-  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
-  const g = cv.getContext('2d')!, css = getComputedStyle(cv);
-  const paper = css.getPropertyValue('--paper').trim() || '#0a0d13', muted = css.getPropertyValue('--muted').trim() || '#8d97ab';
-  const markC = '#3fd07a', gapC = css.getPropertyValue('--accent2').trim() || '#ffaf00';
-  g.fillStyle = paper; g.fillRect(0, 0, W, H);
-  if (!a.runs.length) return;
-  const h = histogram(a, rate);
-  const n = h.marks.length, bw = W / n, mid = (H - 12 * dpr) / 2, max = Math.max(1, ...h.marks, ...h.spaces);
-  g.strokeStyle = color(muted, 0.35); g.lineWidth = 1;
-  for (let k = 1; k * a.symUs < h.binUs * n; k++) { const x = k * a.symUs / h.binUs * bw; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - 12 * dpr); g.stroke(); }
-  for (let i = 0; i < n; i++) {
-    const hm = h.marks[i] / max * (mid - 2), hs = h.spaces[i] / max * (mid - 2);
-    g.fillStyle = markC; g.fillRect(i * bw + 1, mid - hm, Math.max(1, bw - 2), hm);
-    g.fillStyle = gapC; g.fillRect(i * bw + 1, mid, Math.max(1, bw - 2), hs);
-  }
-  g.fillStyle = muted; g.font = `${10 * dpr}px ui-monospace, monospace`;
-  for (let k = 1; k * a.symUs < h.binUs * n && k <= 8; k++) g.fillText(`${(k * a.symUs).toFixed(0)}`, k * a.symUs / h.binUs * bw + 2 * dpr, H - 2 * dpr);
-  g.fillText('µs', W - 16 * dpr, H - 2 * dpr);
-}
 
 /** The card glyph: a pulse train. */
 const WAVE_GLYPH = '<svg viewBox="0 0 24 24"><path d="M2 17h3V7h3.5v10H11V7h1.8v10h3V7H20v10h2"/></svg>';
@@ -992,12 +1086,3 @@ function save(name: string, bytes: Uint8Array): void {
   a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
-
-function rgb(c: string): [number, number, number] {
-  const m = /^#([0-9a-f]{6})$/i.exec(c.trim());
-  if (m) { const v = parseInt(m[1], 16); return [v >> 16, (v >> 8) & 255, v & 255]; }
-  const r = /rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)/.exec(c);
-  return r ? [+r[1], +r[2], +r[3]] : [0, 0, 0];
-}
-const mix = (a: [number, number, number], b: [number, number, number], t: number): [number, number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-function color(c: string, alpha: number): string { const [r, g, b] = rgb(c); return `rgba(${r},${g},${b},${alpha})`; }

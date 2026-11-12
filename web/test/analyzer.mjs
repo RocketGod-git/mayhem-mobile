@@ -89,10 +89,10 @@ const read = (b, o) => analyze(b.env, b.fm, b.n, b.rate, o);
   check(near(pm[0], 350, 100) && near(pm[1], 1050, 100), `histogram: marks at 350 and 1050 us (${pm.map(x => x.toFixed(0))})`);
   // measurements: the two mark lengths and two gap lengths as classes, the threshold between them, the fit of the
   // symbol, the four repeats with their spacing, and the levels
-  const pt = pulseTable(a, b.rate);
+  const pt = pulseTable(a, b.rate, b.env);
   check(pt.marks.length === 2 && pt.spaces.length === 2, `pulses: two mark and two gap classes (${pt.marks.length}, ${pt.spaces.length})`);
   check(pt.marks[0].count + pt.marks[1].count === 100, `pulses: 100 marks in four frames (${pt.marks.map(c => c.count)})`);
-  check(near(pt.marks[0].mean, 350, 80) && near(pt.marks[1].mean, 1050, 80) && pt.marks.every(c => c.jitterPct < 15), `pulses: classes ${pt.marks.map(c => `${c.mean.toFixed(0)}±${c.sd.toFixed(0)}`)}`);
+  check(near(pt.marks[0].mean, 350, 25) && near(pt.marks[1].mean, 1050, 25) && near(pt.spaces[0].mean, 350, 25) && near(pt.spaces[1].mean, 1050, 25) && pt.marks.every(c => c.jitterPct < 10), `pulses: lengths true to 25 us, edge to edge (marks ${pt.marks.map(c => c.mean.toFixed(0))}, gaps ${pt.spaces.map(c => c.mean.toFixed(0))}); classes ${pt.marks.map(c => `${c.mean.toFixed(0)}±${c.sd.toFixed(0)}`)}`);
   check(pt.markCuts.length === 1 && pt.markCuts[0] > 450 && pt.markCuts[0] < 950, `pulses: the cut between short and long (${pt.markCuts.map(x => x.toFixed(0))})`);
   check(pt.pulses.every(p => p.hi ? p.cls === (p.us > pt.markCuts[0] ? 1 : 0) : true), 'pulses: each mark in its class');
   const fit = symbolFit(a, b.rate);
