@@ -87,6 +87,7 @@ export function fmtHz(hz: number, digits = 6): string {
 export function fmtSec(s: number): string {
   if (!Number.isFinite(s)) return '—';
   const a = Math.abs(s);
+  if (a === 0) return '0 s';
   if (a >= 1) return `${s.toFixed(3)} s`;
   if (a >= 1e-3) return `${(s * 1e3).toFixed(3)} ms`;
   if (a >= 1e-6) return `${(s * 1e6).toFixed(2)} µs`;

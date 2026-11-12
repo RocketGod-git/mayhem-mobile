@@ -1,7 +1,7 @@
 /**
  * Spectrum: automatic pulse measurements on a zero-span amplitude trace (dB), on the linear envelope as an
  * oscilloscope measures them. The top and base levels are the medians of the samples above and below the halfway
- * point between the trace's extremes; edges are where the envelope crosses 50 % of the way from base to top (with 5 %
+ * point between the trace's extremes; edges are where the envelope crosses 50 % of the way from base to top (with 10 %
  * hysteresis), interpolated between samples. Width = rise to fall, period = rise to rise, duty = width / period,
  * rise time = 10 % to 90 %, fall time = 90 % to 10 %. Each is the mean over every complete instance in the trace.
  */
@@ -16,10 +16,16 @@ export interface PulseStats {
   pulses: number;
 }
 
+/** How far the top must sit above the base for the trace to count as pulsed. */
+export const PULSE_MIN_DB = 10;
+
 const median = (a: number[]) => { const s = a.slice().sort((x, y) => x - y); return s.length ? (s.length & 1 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : NaN; };
 const mean = (a: number[]) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
 
-/** Pulse statistics for an amplitude trace in dB sampled at `rate`; null when there is no on/off structure (under 6 dB). */
+/**
+ * Pulse statistics for an amplitude trace in dB sampled at `rate`; null when there is no on/off structure: top and base
+ * under PULSE_MIN_DB apart (a steady carrier's noise and fading dips are not pulses).
+ */
 export function pulseStats(ampDb: ArrayLike<number>, rate: number): PulseStats | null {
   const n = ampDb.length;
   if (n < 4) return null;
@@ -30,9 +36,9 @@ export function pulseStats(ampDb: ArrayLike<number>, rate: number): PulseStats |
   const ups: number[] = [], downs: number[] = [];
   for (let i = 0; i < n; i++) (v[i] > mid ? ups : downs).push(v[i]);
   const top = median(ups), base = median(downs);
-  if (!(top > 2 * base) || !ups.length || !downs.length) return null;
+  if (!ups.length || !downs.length || !(20 * Math.log10(top / base) >= PULSE_MIN_DB)) return null;
   const at = (f: number) => base + f * (top - base);
-  const l10 = at(0.1), l50 = at(0.5), l90 = at(0.9), hy = 0.05 * (top - base);
+  const l10 = at(0.1), l50 = at(0.5), l90 = at(0.9), hy = 0.1 * (top - base);
   /** Where the trace crosses `lvl` between samples i-1 and i, in samples. */
   const cross = (i: number, lvl: number) => { const a = v[i - 1], b = v[i]; return b === a ? i : i - 1 + (lvl - a) / (b - a); };
   const rises: number[] = [], falls: number[] = [], riseT: number[] = [], fallT: number[] = [];
