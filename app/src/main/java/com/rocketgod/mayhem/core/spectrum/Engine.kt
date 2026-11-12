@@ -54,6 +54,8 @@ class FftEngine(val n: Int, val kind: WindowKind, val rate: Double, var vbwHz: D
     val video = VideoFilter(n)
     val max = FloatArray(n) { Float.NEGATIVE_INFINITY }
     val min = FloatArray(n) { Float.POSITIVE_INFINITY }
+    /** The video-filtered frames since the last take, summed in linear power: the screen's frame is their mean. */
+    private val sum = DoubleArray(n)
     /** Frames folded in since the last take(). */
     var framesSince = 0
     /** Frames transformed since the engine was made. */
@@ -106,17 +108,21 @@ class FftEngine(val n: Int, val kind: WindowKind, val rate: Double, var vbwHz: D
         if (dcPatch) patchDc(power, h, dcHalfWidth(kind))
         video.push(power, videoAlpha(vbwHz, frameSec))
         val y = video.y
-        for (i in 0 until n) { val d = toDb(y[i].toDouble()).toFloat(); if (d > max[i]) max[i] = d; if (d < min[i]) min[i] = d }
+        for (i in 0 until n) { val d = toDb(y[i].toDouble()).toFloat(); if (d > max[i]) max[i] = d; if (d < min[i]) min[i] = d; sum[i] += y[i] }
         framesSince++; frames++
     }
 
-    /** The video-filtered spectrum and the highest and lowest frames since the last take, bins a..b (inclusive), in dB. */
+    /**
+     * The spectrum since the last take, bins a..b (inclusive), in dB: `live` is the power mean of every video-filtered
+     * frame since then (an FFT analyzer's displayed frame: one lone frame of noise swings 20 dB bin to bin, dozens
+     * averaged read steady), `max` and `min` the highest and lowest single frames (so a short burst is never lost).
+     */
     fun take(a: Int = 0, b: Int = n - 1): Take {
         val len = b - a + 1
         val live = FloatArray(len); val mx = FloatArray(len); val mn = FloatArray(len)
-        for (i in 0 until len) { live[i] = toDb(video.y[a + i].toDouble()).toFloat(); mx[i] = max[a + i]; mn[i] = min[a + i] }
-        val frames = framesSince
-        max.fill(Float.NEGATIVE_INFINITY); min.fill(Float.POSITIVE_INFINITY); framesSince = 0
+        val frames = framesSince; val k = 1.0 / kotlin.math.max(1, frames)
+        for (i in 0 until len) { live[i] = toDb(if (frames > 0) sum[a + i] * k else video.y[a + i].toDouble()).toFloat(); mx[i] = max[a + i]; mn[i] = min[a + i] }
+        max.fill(Float.NEGATIVE_INFINITY); min.fill(Float.POSITIVE_INFINITY); sum.fill(0.0); framesSince = 0
         return Take(live, mx, mn, frames)
     }
 }

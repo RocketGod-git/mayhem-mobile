@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (129 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (130 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -89,7 +89,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 129, checks)
+        assertEquals("checks run", 130, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -182,8 +182,16 @@ class SpectrumTest {
             val t = e.take()
             near(t.max[128 + 20].toDouble(), dbfs(100.0), 0.05, "the frame max between takes keeps the loud frame")
             near(t.min[128 + 20].toDouble(), dbfs(10.0), 0.05, "the frame min keeps the quiet one")
-            near(t.live[128 + 20].toDouble(), dbfs(10.0), 0.05, "live is the latest frame")
+            near(t.live[128 + 20].toDouble(), 10 * log10(((100.0 / 128).pow(2) + (10.0 / 128).pow(2)) / 2), 0.05, "live is the power mean of the frames since the last take")
             ok(t.frames == 2, "take counts the frames it folded")
+            // dozens of noise frames between two takes read steady: the shown frame is their mean, not the last one
+            run {
+                val en = FftEngine(512, WindowKind.HANN, 2e6, 1e9, false); val rn = Mulberry(13)
+                for (f in 0 until 64) { val sg = signal(512, emptyList(), 8.0, rn); en.pushFloat(sg.i, sg.q) }
+                val y = en.take().live; val m = y.average()
+                val sd = kotlin.math.sqrt(y.sumOf { (it - m) * (it - m) } / y.size)
+                ok(sd < 1, "64 noise frames averaged per screen frame hold within ${"%.2f".format(sd)} dB")
+            }
         }
         // The DC patch lays the DC spike on a line.
         run {

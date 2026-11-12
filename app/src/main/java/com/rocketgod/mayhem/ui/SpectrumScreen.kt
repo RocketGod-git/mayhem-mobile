@@ -220,7 +220,7 @@ private fun SpTileView(t: SpTile, first: Boolean, accent: Color, modifier: Modif
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(t.label, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1, modifier = Modifier.weight(1f))
             if (t.badge.isNotEmpty()) {
-                val on = t.badge == "AUTO"
+                val on = t.badge == "AUTO" || (t.id == "ref" && Spectrum.s.refAuto && Spectrum.s.mode == SpMode.FREQ)
                 Text(t.badge, color = if (on) SP_BLACK else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1,
                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) accent else Color.Transparent).border(1.dp, if (on) accent else Palette.line, RoundedCornerShape(6.dp))
                         .clickable { Spectrum.badge(t.id) }.padding(horizontal = 6.dp, vertical = 2.dp))

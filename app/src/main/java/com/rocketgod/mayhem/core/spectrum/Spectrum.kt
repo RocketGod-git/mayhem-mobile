@@ -72,6 +72,8 @@ class SpSettings(var dial: Double) {
     var vbwAuto = true; var vbw = 3000.0
     var window = WindowKind.HANN
     var ref = -20; var div = 10
+    /** REF follows the signal: up when a trace goes over the top, reframed when the floor drops off the bottom. */
+    var refAuto = true
     var unit = SpUnit.DBM
     var det = Detector.PEAK
     var cal = 0
@@ -389,6 +391,12 @@ object Spectrum {
             rangeChecked = true
             val q = live.copyOf().also { it.sort() }; val med = q[q.size / 2]
             if (med > s.ref || med < s.ref - s.div * 10) autoScaleNow()
+        } else if (whole && s.refAuto) {
+            // AUTO REF: any trace over the top raises REF to fit it; a floor fallen off the bottom reframes the screen
+            var top = Float.NEGATIVE_INFINITY
+            for (t in traces) { val d = t.data ?: continue; if (t.mode == TraceMode.OFF) continue; for (v in d) if (v > top) top = v }
+            val q = live.copyOf().also { it.sort() }; val med = q[q.size / 2]
+            if (top > s.ref || med < s.ref - s.div * 10) autoScaleNow(true)
         }
         changed()
     }
@@ -449,8 +457,17 @@ object Spectrum {
     }
 
     /** Set REF and dB/div to frame the measured trace. */
-    fun autoScaleNow() {
-        val y = (traceFor(s.markers[s.active].trace) ?: traces.firstOrNull { it.data != null })?.data ?: return
+    fun autoScaleNow(allTraces: Boolean = false) {
+        // zero span frames its amplitude trace; the frequency view frames the trace the measurements read (or, following
+        // the signal, the live trace's floor under the highest of all the traces)
+        var y = if (s.mode == SpMode.ZERO) zcap?.amp else (traceFor(s.markers[s.active].trace) ?: traces.firstOrNull { it.data != null })?.data
+        if (allTraces && s.mode == SpMode.FREQ) {
+            val live = traces.firstOrNull { it.data != null && it.mode == TraceMode.LIVE }?.data ?: y
+            var top = Float.NEGATIVE_INFINITY
+            for (t in traces) { val d = t.data ?: continue; if (t.mode == TraceMode.OFF) continue; for (v in d) if (v > top) top = v }
+            if (live != null && top.isFinite()) y = live.copyOf().also { it[0] = top }
+        }
+        if (y == null) return
         val a = autoScale(y, DIVS)
         s.ref = a.ref; s.div = a.div; persistence?.clear()
         update()
@@ -462,7 +479,7 @@ object Spectrum {
             "rbw" -> toggle("rbwa")
             "vbw" -> toggle("vbwa")
             "lvl" -> { s.trig = if (s.trig == TrigMode.RISE) TrigMode.FALL else TrigMode.RISE; update() }
-            "ref" -> autoScaleNow()
+            "ref" -> { if (s.mode == SpMode.FREQ) s.refAuto = true; autoScaleNow() }
         }
     }
 
@@ -475,7 +492,7 @@ object Spectrum {
             "span" -> { setSpan(s.center, step125(s.span, dir)); return }
             "rbw" -> { s.rbw = stepBw(frame?.rbw ?: rbwHz(), dir); s.rbwAuto = false; restart(); return }
             "vbw" -> { s.vbw = stepBw(if (s.vbwAuto) vbwHz() else s.vbw, dir); s.vbwAuto = false }
-            "ref" -> { s.ref += dir * (if (s.div >= 5) 5 else 1); persistence?.clear() }
+            "ref" -> { s.ref += dir * (if (s.div >= 5) 5 else 1); s.refAuto = false; persistence?.clear() }
             "zf" -> { s.zsFreq += dir * s.zsBw / 4; restart(); return }
             "zbw" -> { val b = zsBws(); if (b.isEmpty()) return; val i = max(0, min(b.size - 1, b.indexOf(s.zsBw) + dir)); s.zsBw = b[i]; restart(); return }
             "zst" -> { stepper("zst", dir); return }
@@ -525,7 +542,7 @@ object Spectrum {
             "stop" -> { val a = start; setSpan((a + v) / 2, v - a); return }
             "rbw" -> { s.rbw = max(1.0, v); s.rbwAuto = false; restart(); return }
             "vbw" -> { s.vbw = max(1.0, v); s.vbwAuto = false }
-            "ref" -> { s.ref = Math.round(v).toInt(); persistence?.clear() }
+            "ref" -> { s.ref = Math.round(v).toInt(); s.refAuto = false; persistence?.clear() }
             "lvl" -> s.level = Math.round(v).toInt()
             "zf" -> { s.zsFreq = max(MIN_HZ, min(MAX_HZ, v)); restart(); return }
             "zbw" -> { val b = zsBws(); if (b.isEmpty()) return; s.zsBw = b.minByOrNull { abs(ln(it / v)) } ?: b[0]; restart(); return }
@@ -584,7 +601,7 @@ object Spectrum {
     fun stepper(id: String, dir: Int) {
         fun <T> idx(list: List<T>, v: T) = max(0, list.indexOf(v))
         when (id) {
-            "div" -> { s.div = DIVS[max(0, min(DIVS.size - 1, idx(DIVS, s.div) + dir))]; persistence?.clear() }
+            "div" -> { s.div = DIVS[max(0, min(DIVS.size - 1, idx(DIVS, s.div) + dir))]; s.refAuto = false; persistence?.clear() }
             "cal" -> s.cal = max(-40, min(40, s.cal + dir))
             "chbw" -> s.chBw = min(stepBw(s.chBw, dir), max(1000.0, s.span))
             "spacing" -> s.spacing = stepBw(s.spacing, dir)
