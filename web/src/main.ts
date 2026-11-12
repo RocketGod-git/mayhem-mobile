@@ -4378,7 +4378,7 @@ function renderSettings(view: HTMLElement): void {
     <div class="radiocard ${radio ? 'on' : ''}"><div><b>${radio ? 'RADIO CONNECTED' : 'NO RADIO'}</b><small>${esc(radioLine)}</small></div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
     <div class="set-jumps">${hsHtml(`<div class="tiles">${jumps.map(([id, l]) => `<button class="pill" data-jump="${id}">${l}</button>`).join('')}</div>`)}</div>
     ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
-    ${secHtml('radio', 'RADIO', srow('Radio settings', '', '<button id="set-radio" class="tog">OPEN</button>', 'gain lna vga amp agc bias tee ppm sample rate filter'))}
+    <section class="sset fold link" id="sec-radio" data-keys="radio gain lna vga amp agc bias tee ppm sample rate filter"><div class="sset-h">RADIO</div></section>
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
     <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div></section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
@@ -4435,7 +4435,6 @@ function bindSettings(view: HTMLElement): void {
   const on = (id: string, f: () => void) => { const el = q<HTMLElement>('#' + id, view); if (el) el.onclick = f; };
   on('set-connect', () => $('connect').click());
   on('set-log', () => $('log-toggle').click());
-  on('set-radio', () => openRadioPanel());
   on('set-rds', () => { rdsWanted = !rdsWanted; if (!rdsWanted) lastRds = null; sendRds(); refreshSettings(); });
   on('set-hd', () => { hdWanted = !hdWanted; if (!hdWanted) lastHd = null; sendHd(); refreshSettings(); });
   const h = state.ham;
@@ -4453,16 +4452,22 @@ function bindSettings(view: HTMLElement): void {
   });
   const sf = q('#set-fold'); if (sf) sf.onclick = () => { hunt.fold = !hunt.fold; sf.classList.toggle('on', hunt.fold); };
   // Every group starts folded so the page reads as a short list of headings; the ones opened stay open across redraws.
-  const fold = (sec: HTMLElement) => sec.classList.toggle('fold', !setOpen.has(sec.id));
+  const fold = (sec: HTMLElement) => sec.classList.toggle('fold', sec.classList.contains('link') || !setOpen.has(sec.id));
   qa<HTMLElement>('.sset', view).forEach(sec => {
     // an accordion: the heading stays, everything under it goes into a body that slides open and shut
     const h = q<HTMLElement>('.sset-h', sec); if (!h) return;
+    h.setAttribute('role', 'button'); h.tabIndex = 0;
+    // a link group (RADIO) has no body: its heading opens the panel it names
+    if (sec.classList.contains('link')) {
+      h.onclick = () => openRadioPanel();
+      h.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openRadioPanel(); } };
+      return;
+    }
     const body = document.createElement('div'); body.className = 'sset-body';
     const inner = document.createElement('div'); inner.className = 'sset-in';
     while (h.nextSibling) inner.appendChild(h.nextSibling);
     body.appendChild(inner); sec.appendChild(body);
     sec.classList.add('noanim'); fold(sec); requestAnimationFrame(() => sec.classList.remove('noanim'));
-    h.setAttribute('role', 'button'); h.tabIndex = 0;
     const flip = () => { if (setOpen.has(sec.id)) setOpen.delete(sec.id); else setOpen.add(sec.id); fold(sec); h.setAttribute('aria-expanded', String(setOpen.has(sec.id))); };
     h.setAttribute('aria-expanded', String(setOpen.has(sec.id)));
     h.onclick = flip;
@@ -4470,6 +4475,7 @@ function bindSettings(view: HTMLElement): void {
   });
   qa<HTMLButtonElement>('[data-jump]', view).forEach(b => b.onclick = () => {
     const sec = q<HTMLElement>(`#sec-${b.dataset.jump}`, view); if (!sec) return;
+    if (sec.classList.contains('link')) { openRadioPanel(); return; }
     setOpen.add(sec.id); fold(sec);
     sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
@@ -4479,9 +4485,9 @@ function bindSettings(view: HTMLElement): void {
     qa<HTMLElement>('.srow', view).forEach(r => { r.hidden = !!t && !(r.dataset.keys ?? '').includes(t); });
     // while searching, every group with a hit is open; clearing the search puts the folds back as they were
     qa<HTMLElement>('.sset', view).forEach(sec => {
-      const hit = !!t && (sec.textContent!.toLowerCase().includes(t) || qa<HTMLElement>('.srow', sec).some(r => (r.dataset.keys ?? '').includes(t)));
+      const hit = !!t && (sec.textContent!.toLowerCase().includes(t) || (sec.dataset.keys ?? '').includes(t) || qa<HTMLElement>('.srow', sec).some(r => (r.dataset.keys ?? '').includes(t)));
       sec.hidden = !!t && !hit;
-      if (t) sec.classList.toggle('fold', !hit); else fold(sec);
+      if (t && !sec.classList.contains('link')) sec.classList.toggle('fold', !hit); else fold(sec);
     });
   };
 }
