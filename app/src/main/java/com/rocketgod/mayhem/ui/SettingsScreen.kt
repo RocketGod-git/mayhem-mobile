@@ -128,6 +128,8 @@ fun SettingsScreen(accent: Color) {
     val opened = remember { mutableStateListOf<String>() }
     LaunchedEffect(SettingsNav.jump) {
         val j = SettingsNav.jump ?: return@LaunchedEffect
+        // RADIO has no body: its pill (and anything sent to it) opens the RADIO panel itself
+        if (j == "radio") { SettingsNav.jump = null; RadioUi.show(); return@LaunchedEffect }
         if (j !in opened) opened.add(j)
         delay(80)
         tops[j]?.let { scroll.animateScrollTo(it) }
@@ -151,12 +153,8 @@ fun SettingsScreen(accent: Color) {
         )
         else -> emptyList()
     }
-    // The radio's own settings live under RADIO in the top bar; this one row is where a search for gain lands.
-    val radioRows = listOf(SRow("gain lna vga amp agc bias tee ppm sample rate filter") {
-        SRowLayout("Radio settings") {
-            SmallButton("OPEN", accent) { RadioUi.show() }
-        }
-    })
+    // The radio's own settings live in the RADIO panel; its heading here opens it, and a search for gain lands on it.
+    val radioKeys = "radio gain lna vga amp agc bias tee ppm sample rate filter"
     val barRows = listOf(
         SRow("opens on start home last") { SegRow("Opens on", listOf("home" to "HOME", "last" to "LAST APP"), if (opensLast) "last" else "home") { NavBar.setOpensOnLast(it == "last") } },
     )
@@ -191,7 +189,7 @@ fun SettingsScreen(accent: Color) {
             }
 
             if (over != null) Section("app", over.title.uppercase(), "this app", tops, folds, appRows.filter { hit(it.keys + " " + over.title) })
-            Section("radio", "RADIO", Radio.label.ifEmpty { null }, tops, folds, radioRows.filter { hit(it.keys + " radio") })
+            if (hit(radioKeys)) SectionHead("radio", "RADIO", Radio.label.ifEmpty { null }, tops, folds, link = { RadioUi.show() }) {}
 
             val showBarList = hit(barKeys)
             val barShown = barRows.filter { hit(it.keys) }
@@ -514,17 +512,21 @@ private fun Section(key: String, title: String, sub: String?, tops: HashMap<Stri
     SectionHead(key, title, sub, tops, folds) { Group(rows) }
 }
 
-/** One group as an accordion card: the heading row always shown, the body sliding open and shut beneath it. */
+/**
+ * One group as an accordion card: the heading row always shown, the body sliding open and shut beneath it. A [link]
+ * group has no body: it stays folded and its heading opens what it names (RADIO opens the RADIO panel).
+ */
 @Composable
-private fun SectionHead(key: String, title: String, sub: String?, tops: HashMap<String, Int>, folds: Folds, content: @Composable ColumnScope.() -> Unit) {
+private fun SectionHead(key: String, title: String, sub: String?, tops: HashMap<String, Int>, folds: Folds, link: (() -> Unit)? = null,
+                        content: @Composable ColumnScope.() -> Unit) {
     val d = rememberDims()
-    val open = folds.isOpen(key)
+    val open = link == null && folds.isOpen(key)
     val shape = RoundedCornerShape(14.dp)
     val edge by animateColorAsState(if (open) lerp(Palette.line, Palette.accent, 0.45f) else Palette.line, label = "setEdge")
     val turn by animateFloatAsState(if (open) 0f else -90f, label = "setChevron")
     Column(Modifier.fillMaxWidth().onGloballyPositioned { tops[key] = it.positionInParent().y.roundToInt() }.padding(top = d.dp(8f))) {
         Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, edge, shape)) {
-            Row(Modifier.fillMaxWidth().clickable { folds.flip(key) }.padding(horizontal = d.dp(16f), vertical = d.dp(14f)),
+            Row(Modifier.fillMaxWidth().clickable { if (link != null) link() else folds.flip(key) }.padding(horizontal = d.dp(16f), vertical = d.dp(14f)),
                 verticalAlignment = Alignment.CenterVertically) {
                 Text(title, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 3.sp)
                 Text(if (sub != null) "  ·  $sub" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1,
