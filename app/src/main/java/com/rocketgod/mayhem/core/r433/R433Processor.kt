@@ -190,7 +190,18 @@ class R433Processor : IqProcessor {
         // matches of the same burst rather than listing a phantom device next to the real one.
         val ok = found.any { !it.dev.disabled }
         if (ok) verified.add(gen)
-        for (r in found) { if (ok && r.dev.disabled) continue; report(r.dev, r.data, fsk, hz) }
+        // Two checksum-verified protocols can both claim one burst with the same ID and read it differently (two
+        // Schrader TPMS formats, 30 psi and 37.5 psi). The protocols run in rtl_433's priority order, so the first
+        // one to claim an ID in a burst is the reading kept. And a reading no device could give (a tire at 290 °F)
+        // is a misread, whatever its checksum said.
+        val ids = HashSet<String>()
+        for (r in found) {
+            if (ok && r.dev.disabled) continue
+            if (!plausible(r.data)) continue
+            val id = r.data["id"]?.let { fmtValue(it) } ?: ""
+            if (id.isNotEmpty() && !ids.add(id)) continue
+            report(r.dev, r.data, fsk, hz)
+        }
         if (found.isEmpty()) reportUnknown(pulses)
     }
 
@@ -278,3 +289,14 @@ private val NON_WORD = Regex("[^a-z0-9]+")
 
 /** Car-key decoders whose frames carry too little checking to trust a single one. */
 private val WEAK_KEYS = setOf("Honda Static")
+
+/** Readings no real device gives: a tire or sensor outside -40..125 °C, or a tire above 100 psi. */
+private fun plausible(d: R433Data): Boolean {
+    fun n(v: Any?): Double = when (v) { is Number -> v.toDouble(); is String -> v.trim().toDoubleOrNull() ?: Double.NaN; else -> Double.NaN }
+    val tc = n(d["temperature_C"]).takeIf { !it.isNaN() } ?: (n(d["temperature_F"]) - 32) * 5 / 9
+    val tire = Regex("tpms|tire|tyre|pressure", RegexOption.IGNORE_CASE).containsMatchIn("${d["model"] ?: ""} ${d["type"] ?: ""}")
+    if (tire && !tc.isNaN() && (tc < -40 || tc > 125)) return false
+    val psi = n(d["pressure_PSI"]).takeIf { !it.isNaN() } ?: n(d["pressure_kPa"]).takeIf { !it.isNaN() }?.times(0.1450377) ?: n(d["pressure_bar"]) * 14.50377
+    if (tire && !psi.isNaN() && psi > 100) return false
+    return true
+}

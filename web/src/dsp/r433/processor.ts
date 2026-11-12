@@ -112,6 +112,16 @@ function keyOf(model: string, d: R433Data): string {
 }
 
 const STATS_MS = 1000;
+/** Readings no real device gives: a tire or sensor outside -40..125 °C, or a tire above 100 psi. */
+function plausible(d: R433Data): boolean {
+  const n = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+  const tc = !isNaN(n(d.temperature_C)) ? n(d.temperature_C) : !isNaN(n(d.temperature_F)) ? (n(d.temperature_F) - 32) * 5 / 9 : NaN;
+  const tire = /tpms|tire|tyre|pressure/i.test(`${d.model} ${d.type ?? ''}`);
+  if (tire && !isNaN(tc) && (tc < -40 || tc > 125)) return false;
+  const psi = !isNaN(n(d.pressure_PSI)) ? n(d.pressure_PSI) : !isNaN(n(d.pressure_kPa)) ? n(d.pressure_kPa) * 0.1450377 : !isNaN(n(d.pressure_bar)) ? n(d.pressure_bar) * 14.50377 : NaN;
+  if (tire && !isNaN(psi) && psi > 100) return false;
+  return true;
+}
 /** Car-key decoders whose frames carry too little checking to trust a single one. */
 const WEAK_KEYS = new Set(['Honda Static']);
 
@@ -146,7 +156,18 @@ export class R433Processor implements IqProcessor {
     // matches rather than listing a device that is not there.
     const verified = found.some(r => !r.dev.disabled);
     if (verified) this.slots[this.curSlot].verified = true;
-    for (const res of found) { if (verified && res.dev.disabled) continue; this.report(res.dev, res.data, kind); }
+    // Two checksum-verified protocols can both claim one burst with the same ID and read it differently (two
+    // Schrader TPMS formats, 30 psi and 37.5 psi). The protocols run in rtl_433's priority order, so the first
+    // one to claim an ID in a burst is the reading kept. And a reading no device could give (a tire at 290 °F)
+    // is a misread, whatever its checksum said.
+    const ids = new Set<string>();
+    for (const res of found) {
+      if (verified && res.dev.disabled) continue;
+      if (!plausible(res.data)) continue;
+      const id = res.data.id !== undefined ? String(res.data.id) : '';
+      if (id) { if (ids.has(id)) continue; ids.add(id); }
+      this.report(res.dev, res.data, kind);
+    }
     if (!found.length) this.reportUnknown(pulses);
   };
 
