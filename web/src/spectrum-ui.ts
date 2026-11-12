@@ -20,7 +20,7 @@
 import {
   acpr, autoLevel, autoRbw, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
   noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
-  DETECTORS, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
+  DETECTORS, THERMAL_DBM_HZ, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
   type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
 } from './dsp/spectrum/index.js';
 
@@ -1045,6 +1045,8 @@ export class SpectrumUi {
         const n = noiseFloor(y, rbw);
         this.measText = `noise floor ${db1(n.floor)} ${u} per ${bwText(rbw)} · ${db1(n.density)} ${u}/Hz`;
         h += big('DENSITY', db1(n.density), `${u}/Hz`, 'xl') + `<div class="sp-bigs">${big('FLOOR', db1(n.floor), u)}${big('PER RBW', ...(bwText(rbw).split(' ') as [string, string]))}</div>`;
+        // a dBm floor under thermal noise is the scale being wrong, not a quiet band: say so
+        if (s.unit === 'dBm' && n.density < THERMAL_DBM_HZ) h += `<div class="sp-msub warn">Below thermal noise (${THERMAL_DBM_HZ} dBm/Hz): the dBm scale reads ${db1(THERMAL_DBM_HZ - n.density)} dB or more low on this radio here. Raise CAL to correct it.</div>`;
       }
     }
     meas.innerHTML = h;

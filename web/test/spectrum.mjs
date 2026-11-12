@@ -266,7 +266,7 @@ function ifft(re, im) {
 {
   const g = { kind: 'hackrf', pro: false, lna: 32, vga: 20, amp: true, tunerDb: NaN };
   near(S.dbmOffset(g).offset, -10 - 66, 1e-9, 'HackRF dBm offset follows LNA + VGA + amp');
-  near(S.dbmOffset({ ...g, pro: true }).offset - S.dbmOffset(g).offset, 28, 1e-9, 'a Pro reads 28 dB lower at the same settings');
+  near(S.dbmOffset({ ...g, pro: true }).offset - S.dbmOffset(g).offset, S.HACKRF_PRO_DB, 1e-9, 'a Pro is offset by its own figure at the same settings');
   near(S.dbmOffset(g, 3).offset - S.dbmOffset(g).offset, 3, 1e-9, 'the CAL trim adds');
   near(S.dbmOffset({ kind: 'rtlsdr', pro: false, lna: 0, vga: 0, amp: false, tunerDb: 29.7 }).offset, -5 - 29.7, 1e-9, 'RTL-SDR offset follows the tuner gain');
   ok(!S.dbmOffset({ kind: 'rtlsdr', pro: false, lna: 0, vga: 0, amp: false, tunerDb: NaN }).ok, 'the tuner AGC leaves the scale uncalibrated');

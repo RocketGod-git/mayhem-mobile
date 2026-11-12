@@ -22,7 +22,14 @@ export interface GainState {
 /** Input level (dBm) at full scale with 0 dB of gain: typical, not measured. */
 export const FULL_SCALE_DBM: Record<RadioKind, number> = { hackrf: -10, rtlsdr: -5, none: 0 };
 export const HACKRF_AMP_DB = 14;
-export const HACKRF_PRO_DB = 28;
+/**
+ * A HackRF Pro reads lower than a One at the same gains. 28 dB brings its ADC level in line (the per-board gain note in
+ * main.ts); on the bench (2026-11-12, amp on, 100-460 MHz, antenna connected) that still left its noise floor at
+ * -170 to -177 dBm/Hz, under thermal noise, so 8 dB more puts the floor near kTB plus a typical 9 dB noise figure.
+ */
+export const HACKRF_PRO_DB = 36;
+/** Thermal noise at room temperature, dBm/Hz: no receiver's floor reads under it. */
+export const THERMAL_DBM_HZ = -174;
 
 /** dBm = dBFS + offset, and why it is only approximate. */
 export function dbmOffset(g: GainState, trimDb = 0): { offset: number; note: string; ok: boolean } {
