@@ -1548,3 +1548,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .bp-row b { font-size: 11px; font-weight: 600; }
 .bp-rep { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--accent2); }
 .bp-none { font-size: 11px; color: var(--muted); }
+
+/* the Analyzer's waterfall keeps its height: without it the growing burst list squeezed it a little with every card */
+.view.analyzer .visual { flex: none; }
+.view.analyzer .visual > .scope, .view.analyzer .visual > .scope.short { flex: none; height: clamp(200px, 34vh, 420px); min-height: 200px; }

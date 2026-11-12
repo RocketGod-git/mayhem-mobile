@@ -14,7 +14,7 @@ import { analyze, carrierOf, noiseOf, bitsToAscii, bitsToHex, pulsesUs, CODINGS,
 import { align, similar, type Alignment } from './dsp/analyzer/align.js';
 import { decodeBundle, encodeBundle, exportName, freqFromName, toCs8, toCu8, toSub } from './dsp/analyzer/files.js';
 import { checkHolds, dataStart, fieldValue, recognize, suggest, FIELD_KINDS, type CheckFound, type Field, type FieldKind, type Protocol } from './dsp/analyzer/fields.js';
-import { NO_FILTER, passes, type Burst, type CaptureFilter } from './dsp/analyzer/capture.js';
+import { DEFAULT_FILTER, NO_FILTER, hasData, passes, type Burst, type CaptureFilter } from './dsp/analyzer/capture.js';
 import { groupPresses, sameFrame, type Transmission } from './dsp/analyzer/group.js';
 import { store, type StoredBurst } from './analyzer-store.js';
 import { classCsv, clockDrift, frameSegments, framesCsv, levels, pulseCsv, pulseTable, samplesCsv, selectionCsv, symbolFit, type FrameSeg, type Levels, type PulseClass, type PulseTable } from './dsp/analyzer/measure.js';
@@ -83,7 +83,7 @@ const rateLabel = (bps: number) => (bps >= 1000 ? `${(bps / 1000).toFixed(2)} kb
 export class AnalyzerUi {
   readonly bursts: AnBurst[] = [];
   protocols: Protocol[] = [];
-  filter: CaptureFilter = { ...NO_FILTER };
+  filter: CaptureFilter = { ...DEFAULT_FILTER };
   private filtered = 0;
   private lastId = 0;
   private sel = 0;
@@ -140,7 +140,7 @@ export class AnalyzerUi {
 
   private async restore(): Promise<void> {
     this.protocols = (await store.get<Protocol[]>('protocols')) ?? [];
-    this.filter = { ...NO_FILTER, ...((await store.get<CaptureFilter>('filter')) ?? {}) };
+    this.filter = { ...DEFAULT_FILTER, ...((await store.get<CaptureFilter>('filter')) ?? {}) };
     const saved = (await store.allBursts()).sort((a, b) => a.id - b.id);
     for (const s of saved) {
       const b = s as unknown as AnBurst;
@@ -165,6 +165,8 @@ export class AnalyzerUi {
     const center = fromFile ? (freqFromName(raw.src ?? '') ?? 0) : this.host.center();
     if (!passes(this.filter, raw, center)) { this.filtered++; this.refresh(); return; }
     const auto = analyze(raw.env, raw.fm, raw.n, raw.rate);
+    // a file's bursts are the person's own choice: only live ones are held to carrying data
+    if (this.filter.dataOnly && !fromFile && !hasData(auto, raw)) { this.filtered++; this.refresh(); return; }
     const b: AnBurst = { ...raw, id: ++this.lastId, center, auto, best: bestOf(auto), name: '', star: false, note: '', over: {}, seenAt: fromFile ? 0 : performance.now(), proto: null };
     b.proto = recognize(this.protocols, b.best, auto.mod, auto.coding);
     this.bursts.push(b);
@@ -343,7 +345,7 @@ export class AnalyzerUi {
     const root = this.root;
     if (!root || !root.isConnected) return;
     const $ = (id: string) => root.querySelector<HTMLElement>('#' + id);
-    $('an-filt')?.classList.toggle('on', this.showFilter || !sameFilter(this.filter, NO_FILTER));
+    $('an-filt')?.classList.toggle('on', this.showFilter || !sameFilter(this.filter, DEFAULT_FILTER));
     $('an-star')?.classList.toggle('on', this.starredOnly);
     const st = $('an-stats');
     if (st) {
@@ -441,15 +443,16 @@ export class AnalyzerUi {
     return `<span class="rl">FREQ MHz</span>${num('anf-lo', mhzv(f.loHz), 'from')}${num('anf-hi', mhzv(f.hiHz), 'to')}`
       + `<span class="rl">SNR ≥ dB</span>${num('anf-snr', f.minSnr ? String(f.minSnr) : '', 'any')}`
       + `<span class="rl">LENGTH ms</span>${num('anf-min', f.minMs ? String(f.minMs) : '', 'min')}${num('anf-max', f.maxMs ? String(f.maxMs) : '', 'max')}`
-      + `<button class="tog ${f.unknownOnly ? 'on' : ''}" id="anf-unk">ONLY UNKNOWN</button><button class="tog" id="anf-reset">NO FILTER</button>`;
+      + `<button class="tog ${f.dataOnly ? 'on' : ''}" id="anf-data" title="skip spurs, plain carriers and blips with no bits">ONLY WITH DATA</button><button class="tog ${f.unknownOnly ? 'on' : ''}" id="anf-unk">ONLY UNKNOWN</button><button class="tog" id="anf-reset">NO FILTER</button>`;
   }
   private wireFilter(el: HTMLElement): void {
     const v = (id: string) => parseFloat((el.querySelector<HTMLInputElement>('#' + id)!.value || '').replace(',', '.')) || 0;
     const apply = () => {
-      this.filter = { loHz: Math.round(v('anf-lo') * 1e6), hiHz: Math.round(v('anf-hi') * 1e6), minSnr: v('anf-snr'), minMs: v('anf-min'), maxMs: v('anf-max'), unknownOnly: this.filter.unknownOnly };
+      this.filter = { loHz: Math.round(v('anf-lo') * 1e6), hiHz: Math.round(v('anf-hi') * 1e6), minSnr: v('anf-snr'), minMs: v('anf-min'), maxMs: v('anf-max'), unknownOnly: this.filter.unknownOnly, dataOnly: this.filter.dataOnly };
       void store.set('filter', this.filter); this.draw(false);
     };
     el.querySelectorAll<HTMLInputElement>('input').forEach(i => i.onchange = apply);
+    el.querySelector<HTMLElement>('#anf-data')!.onclick = () => { this.filter = { ...this.filter, dataOnly: !this.filter.dataOnly }; void store.set('filter', this.filter); this.draw(); };
     el.querySelector<HTMLElement>('#anf-unk')!.onclick = () => { this.filter = { ...this.filter, unknownOnly: !this.filter.unknownOnly }; void store.set('filter', this.filter); this.draw(); };
     el.querySelector<HTMLElement>('#anf-reset')!.onclick = () => { this.filter = { ...NO_FILTER }; void store.set('filter', this.filter); this.draw(); };
   }

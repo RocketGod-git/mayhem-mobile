@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { pulseTable, symbolFit, clockDrift, frameSegments, levels, eyeStarts, pulseCsv, classCsv, framesCsv, samplesCsv, selectionCsv, groupPresses, sameFrame, syncTrim, AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER } from '../dist/dsp/analyzer/index.js';
+import { pulseTable, symbolFit, clockDrift, frameSegments, levels, eyeStarts, pulseCsv, classCsv, framesCsv, samplesCsv, selectionCsv, groupPresses, sameFrame, syncTrim, AnalyzerCapture, captureFile, analyze, align, bitsToHex, bitsToAscii, pulsesUs, toSub, parseSub, synthesize, toCu8, fromIqFile, rateFromName, freqFromName, similar, histogram, findCheck, findCounter, suggest, dataStart, fromStart, recognize, fieldValue, checkHolds, checkOf, bytesOf, encodeBundle, decodeBundle, passes, NO_FILTER, DEFAULT_FILTER, hasData } from '../dist/dsp/analyzer/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 let pass = 0, fail = 0;
@@ -335,6 +335,12 @@ const packets = [];
   check(!passes({ ...NO_FILTER, minSnr: 15 }, b, 0) && !passes({ ...NO_FILTER, maxMs: 10 }, b, 0) && !passes({ ...NO_FILTER, minMs: 30 }, b, 0), 'filter: SNR and length');
   check(!passes({ ...NO_FILTER, unknownOnly: true }, { ...b, matches: ['remote: x'] }, 0) && passes({ ...NO_FILTER, unknownOnly: true }, b, 0), 'filter: only unknown');
   check(passes({ ...NO_FILTER, loHz: 434e6 }, b, 0), 'filter: a file with no center skips the frequency test');
+  const fr = (n) => [{ bits: '1'.repeat(n) }];
+  check(!hasData({ frames: [], baud: 0 }, { ms: 1, matches: [] }) && !hasData({ frames: fr(18), baud: 169_000 }, { ms: 1.1, matches: [] }), 'data only: a carrier and a 1 ms tick are dropped');
+  check(!hasData({ frames: fr(38), baud: 105_000 }, { ms: 70, matches: [] }) && !hasData({ frames: fr(10), baud: 2000 }, { ms: 20, matches: [] }), 'data only: an implausible rate or too few bits are dropped');
+  check(!hasData({ frames: fr(17), baud: 2800 }, { ms: 56, matches: [] }) && hasData({ frames: fr(393), baud: 7808 }, { ms: 123, matches: [] }), 'data only: a few stray bits in 56 ms of noise are dropped, gapped repeats are kept');
+  check(hasData({ frames: fr(64), baud: 7800 }, { ms: 20, matches: [] }) && hasData({ frames: [], baud: 0 }, { ms: 1, matches: ['remote: x'] }), 'data only: a real frame, or anything a decoder claims, is kept');
+  check(DEFAULT_FILTER.dataOnly && !NO_FILTER.dataOnly, 'data only: on by default');
 }
 
 // ---- OOK whose transmitter pulls its frequency at every mark: still OOK ------------------------------------------
