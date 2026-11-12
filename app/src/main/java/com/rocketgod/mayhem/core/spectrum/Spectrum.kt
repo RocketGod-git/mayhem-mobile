@@ -56,6 +56,8 @@ val DIVS: List<Int> = listOf(1, 2, 5, 10, 20)
 /** Zero-span sweep times, s (1-2-5 from 100 µs to 10 s). */
 val SWEEP_TIMES: List<Double> = listOf(1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
 private const val KEY = "mayhem.spectrum"
+/** Frames a marker's readout averages over: steady to read, still quick to follow a change. */
+const val MARKER_AVG = 16
 
 /** One trace's saved settings. */
 class TraceSet(var mode: TraceMode, var avgN: Int)
@@ -224,6 +226,9 @@ object Spectrum {
     /** The plot's size in pixels at its last draw: the density display is kept at that resolution. */
     @Volatile var plotW = 0; @Volatile var plotH = 0
     private var runner: SpectrumRunner? = null
+    /** Each marker's level, averaged over the last few frames (a live trace on noise jumps several dB a frame). */
+    private class MkAvg(var hz: Double = Double.NaN, var trace: Trace? = null, var lin: Double = 0.0, var n: Int = 0)
+    private val mkAvg = List(MARKER_COUNT) { MkAvg() }
     private val main = Handler(Looper.getMainLooper())
     private var loaded = false
 
@@ -305,6 +310,8 @@ object Spectrum {
     /** Retune and restart the processor (span, RBW, mode or window changed). */
     fun restart() {
         val cfg = config()
+        // a marker the new span leaves behind goes off rather than reading the trace's edge
+        for (m in s.markers) if (m.hz < start || m.hz > stop) { m.on = false; m.delta = false; m.hz = 0.0 }
         frame = null; zcap = null; zstats = null; armed = true; view = null
         for (t in traces) t.clear()
         persistence?.clear()
@@ -370,6 +377,7 @@ object Spectrum {
         val whole = !m.sweep || m.step == m.steps
         for (t in traces) if (t.mode == TraceMode.LIVE || whole) t.update(live, mx, mn, m.f0, m.binHz)
         if (s.persist && whole && view == null) addDensity(live, m.f0, m.binHz)
+        for (k in s.markers.indices) smoothMarker(k)
         changed()
     }
 
@@ -422,8 +430,16 @@ object Spectrum {
         return a + listOf(
             t("rbw", "RBW", bigHz(rbw), if (s.rbwAuto) "AUTO" else "MAN"),
             t("vbw", "VBW", if (s.vbwAuto) bigHz(rbw) else bigHz(s.vbw), if (s.vbwAuto) "AUTO" else "MAN"),
-            SpTile("ref", "REF LEVEL", "${s.ref}", u, "${s.div} dB/div"),
+            SpTile("ref", "REF LEVEL", "${s.ref}", u, "${s.div} dB/div · AUTO"),
         )
+    }
+
+    /** Set REF and dB/div to frame the measured trace. */
+    fun autoScaleNow() {
+        val y = (traceFor(s.markers[s.active].trace) ?: traces.firstOrNull { it.data != null })?.data ?: return
+        val a = autoScale(y, DIVS)
+        s.ref = a.ref; s.div = a.div; persistence?.clear()
+        update()
     }
 
     /** A tap on a tile's badge: AUTO/MAN toggles RBW or VBW auto, RISE/FALL flips the edge. */
@@ -432,6 +448,7 @@ object Spectrum {
             "rbw" -> toggle("rbwa")
             "vbw" -> toggle("vbwa")
             "lvl" -> { s.trig = if (s.trig == TrigMode.RISE) TrigMode.FALL else TrigMode.RISE; update() }
+            "ref" -> autoScaleNow()
         }
     }
 
@@ -579,7 +596,8 @@ object Spectrum {
             "ss" -> s.startStop = !s.startStop
             "rbwa" -> { s.rbwAuto = !s.rbwAuto; restart(); return }
             "vbwa" -> { s.vbwAuto = !s.vbwAuto; update(); return }
-            "mkon" -> { m.on = !m.on; if (m.on && m.hz == 0.0) markerTo(s.active, "peak") }
+            // a marker switched on with nowhere in the span to be starts on the highest peak
+            "mkon" -> { m.on = !m.on; if (m.on && !(m.hz >= start && m.hz <= stop)) { m.on = false; markerTo(s.active, "peak") } }
             "mkd" -> { m.delta = !m.delta; if (m.delta && !s.markers[0].on) { s.markers[0].on = true; s.markers[0].hz = m.hz } }
             "persist" -> { s.persist = !s.persist; persistence = null }
             "single" -> { s.single = !s.single; update(); if (!s.single) rearmProc(); return }
@@ -597,6 +615,7 @@ object Spectrum {
             "peak", "next", "left", "right" -> markerTo(s.active, id)
             "mkcf" -> { val m = s.markers[s.active]; if (m.on) setSpan(m.hz, s.span); return }
             "mkoff" -> for (m in s.markers) { m.on = false; m.delta = false }
+            "autoscale" -> { autoScaleNow(); return }
             // the trigger level from what is on screen: the noise between bursts plus 12 dB (arming RISE from FREE RUN)
             "autolvl" -> {
                 val z = zcap ?: return; val l = autoLevel(z.amp); if (!l.isFinite()) return
@@ -632,7 +651,9 @@ object Spectrum {
         val m = s.markers[k]; val t = traceFor(m.trace) ?: return
         val y = t.data ?: return
         val cur = binOf(m.hz, t.f0, t.binHz, y.size)
-        val i = if (!m.on || how == "peak") peakSearch(y) else when (how) { "next" -> nextPeak(y, cur); "left" -> nextPeakLeft(y, cur); else -> nextPeakRight(y, cur) }
+        // a marker off, or left outside the trace, starts from a peak search whatever was asked
+        val inside = m.hz >= t.f0 - t.binHz && m.hz <= t.f0 + y.size * t.binHz
+        val i = if (!m.on || !inside || how == "peak") peakSearch(y) else when (how) { "next" -> nextPeak(y, cur); "left" -> nextPeakLeft(y, cur); else -> nextPeakRight(y, cur) }
         val r = refinePeak(y, i)
         m.hz = t.f0 + (i + r.offset) * t.binHz; m.on = true
     }
@@ -753,9 +774,30 @@ object Spectrum {
 
     // ---- what the side panel shows ----------------------------------------------------------------------------
 
+    /** Fold this frame's level at marker k into its running average (power mean of about the last MARKER_AVG frames). */
+    private fun smoothMarker(k: Int) {
+        val a = mkAvg[k]; val m = s.markers[k]
+        val raw = rawLevel(k)
+        if (!m.on || !raw.isFinite()) { a.n = 0; return }
+        val t = traceFor(m.trace)
+        if (a.hz != m.hz || a.trace !== t) { a.hz = m.hz; a.trace = t; a.n = 0 }
+        val p = 10.0.pow(raw / 10)
+        a.n = min(a.n + 1, MARKER_AVG)
+        a.lin += (p - a.lin) / a.n
+    }
+
+    /** A marker's level as shown: its running average once it has one, else the trace under it. */
     private fun markerLevel(k: Int): Double {
+        val a = mkAvg[k]; val m = s.markers[k]
+        if (a.n > 0 && a.hz == m.hz && a.trace === traceFor(m.trace)) return 10 * log10(a.lin + 1e-30)
+        return rawLevel(k)
+    }
+
+    /** The trace's value under marker k this frame. */
+    private fun rawLevel(k: Int): Double {
         val m = s.markers[k]; val t = traceFor(m.trace) ?: return Double.NaN
         val y = t.data ?: return Double.NaN
+        if (m.hz < t.f0 - t.binHz || m.hz > t.f0 + y.size * t.binHz) return Double.NaN
         return y[binOf(m.hz, t.f0, t.binHz, y.size)].toDouble()
     }
     /** The level of marker `k` on its trace, for the plot. */

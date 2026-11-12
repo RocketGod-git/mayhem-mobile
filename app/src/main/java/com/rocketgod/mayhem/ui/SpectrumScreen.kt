@@ -220,7 +220,7 @@ private fun SpTileView(t: SpTile, first: Boolean, accent: Color, modifier: Modif
                 val on = t.badge == "AUTO"
                 Text(t.badge, color = if (on) SP_BLACK else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1,
                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) accent else Color.Transparent).border(1.dp, if (on) accent else Palette.line, RoundedCornerShape(6.dp))
-                        .clickable { if (t.badge.contains("dB/div")) Spectrum.openPad(t.id) else Spectrum.badge(t.id) }.padding(horizontal = 6.dp, vertical = 2.dp))
+                        .clickable { Spectrum.badge(t.id) }.padding(horizontal = 6.dp, vertical = 2.dp))
             }
         }
         Text(buildAnnotatedString {
@@ -801,7 +801,7 @@ private fun ColumnScope.SpControls(accent: Color, exportCsv: () -> Unit, exportP
         SegBar((0 until 4).map { "READS T${it + 1}" }, mk.trace, accent) { Spectrum.setMarkerTrace(it) }
         SpScrollLine {
             ToggleBox("PEAK", true, SP_ACTIVE, Modifier.fillMaxHeight()) { Spectrum.action("peak") }
-            for ((id, l) in listOf("next" to "NEXT PEAK", "left" to "◀ NEXT", "right" to "NEXT ▶", "mkcf" to "MKR → CENTER", "mkoff" to "ALL OFF"))
+            for ((id, l) in listOf("next" to "NEXT PEAK", "left" to "◀ NEXT", "right" to "NEXT ▶", "mkcf" to "MKR → CENTER", "mkoff" to "ALL OFF", "autoscale" to "AUTO SCALE"))
                 ToggleBox(l, false, accent, Modifier.fillMaxHeight()) { Spectrum.action(id) }
         }
         SectionLabel("MEASURE")

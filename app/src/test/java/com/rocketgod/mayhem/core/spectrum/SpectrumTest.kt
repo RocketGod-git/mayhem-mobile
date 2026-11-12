@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (124 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (126 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -81,6 +81,7 @@ class SpectrumTest {
         traces()
         markers()
         power()
+        scale()
         cal()
         sweep()
         fftMode()
@@ -88,7 +89,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 124, checks)
+        assertEquals("checks run", 126, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -334,6 +335,14 @@ class SpectrumTest {
             len = len shl 1
         }
         for (k in 0 until n) { re[k] = (re[k].toDouble() / n).toFloat(); im[k] = (-im[k].toDouble() / n).toFloat() }
+    }
+
+    private fun scale() {
+        val y = FloatArray(200) { -118f }; y[100] = -62f
+        val a = autoScale(y)
+        ok(a.ref == -55 && a.div == 10, "AUTO SCALE frames a -62 dBm peak over a -118 floor (${a.ref}, ${a.div})")
+        val b = autoScale(fa(-80.0, -79.0, -81.0, -40.0))
+        ok(b.ref == -35 && b.div == 10, "and a small trace (${b.ref}, ${b.div})")
     }
 
     // ---- calibration and span plans -----------------------------------------------------------------------------

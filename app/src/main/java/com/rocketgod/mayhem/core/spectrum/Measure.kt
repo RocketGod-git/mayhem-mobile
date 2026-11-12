@@ -90,3 +90,21 @@ fun noiseAt(y: FloatArray, i: Int, rbwHz: Double, half: Int = 4): Double {
     for (j in max(0, i - half)..min(y.size - 1, i + half)) { s += dbToLin(y[j].toDouble()); k++ }
     return linToDb(s / max(1, k)) - 10 * log10(rbwHz)
 }
+
+/** A reference level and dB/div that frame a trace. */
+data class AutoScale(val ref: Int, val div: Int)
+
+/**
+ * A reference level and scale that frame a trace (dB): the top 5 dB over its highest point, rounded up to 5 dB, and the
+ * smallest dB/div (of `divs`) that still keeps the noise floor two divisions above the bottom.
+ */
+fun autoScale(y: FloatArray, divs: List<Int> = listOf(1, 2, 5, 10, 20)): AutoScale {
+    var peak = Double.NEGATIVE_INFINITY
+    for (i in y.indices) if (y[i].isFinite() && y[i] > peak) peak = y[i].toDouble()
+    if (!peak.isFinite()) return AutoScale(-20, 10)
+    val floor = noiseFloor(y, 1.0).floor
+    val ref = ceil((peak + 5) / 5) * 5
+    val need = ref - (floor - 5)
+    val div = divs.firstOrNull { it * 8 >= need } ?: divs.last()
+    return AutoScale(ref.toInt(), div)
+}
