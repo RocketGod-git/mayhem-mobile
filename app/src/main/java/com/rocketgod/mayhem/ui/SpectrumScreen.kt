@@ -590,7 +590,9 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
     // the level frequency and phase are drawn above: 10 dB over the median of the window (the noise between bursts)
     val gate = if (z == null) 0f else z.amp.copyOf().also { it.sort() }.let { it[it.size / 2] + 10f }
     // the frequency pane fits the signal's swing (an FSK tone may sit past half the filter), in 1-2-2.5-5 steps
-    val fmHalf = if (z != null) com.rocketgod.mayhem.core.spectrum.fmScale(z.fm, z.amp, gate, s.zsBw) else s.zsBw / 2
+    // steady samples only: a carrier switching on or off (about one filter response, rate / bandwidth samples) is left out
+    val steady = if (z != null) com.rocketgod.mayhem.core.spectrum.steadyMask(z.amp, gate, max(1, Math.round(z.rate / s.zsBw).toInt())) else ByteArray(0)
+    val fmHalf = if (z != null) com.rocketgod.mayhem.core.spectrum.fmScale(z.fm, z.amp, gate, s.zsBw, steady) else s.zsBw / 2
     cv.drawText("${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}", g.l, 13 * k, paint(Palette.ink, k, text = 12f))
     cv.drawText("REF ${s.ref} $u · ${s.div} dB/div · ${if (s.trig == TrigMode.FREE) "FREE RUN" else "${if (s.trig == TrigMode.RISE) "RISING" else "FALLING"} ${s.level} $u"}", g.l, 26 * k, paint(muted, k, text = 11f))
     panes.forEachIndexed { q, p ->
@@ -614,7 +616,7 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
             paint(SP_ACTIVE, k, stroke = 1f).apply { pathEffect = DashPathEffect(floatArrayOf(5 * k, 4 * k), 0f) })
         // Frequency and phase mean something only while there is a signal: they are drawn where the amplitude stands
         // 10 dB over the noise and left blank in the noise between.
-        fun gated(i: Int) = p == "amp" || z.amp[i] >= gate
+        fun gated(i: Int) = p == "amp" || steady[i].toInt() == 1
         val cols = max(2, g.w.roundToInt())
         val band = android.graphics.Path(); val trace = android.graphics.Path()
         var pen = false

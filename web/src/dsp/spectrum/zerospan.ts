@@ -229,13 +229,29 @@ export class ZeroSpan {
  * at or over `gate` (the signal, not the noise between bursts), so an FSK swing fits whatever the filter. With no
  * signal in the window it is half the filter bandwidth.
  */
-export function fmScale(fm: ArrayLike<number>, amp: ArrayLike<number>, gate: number, bwHz: number): number {
+export function fmScale(fm: ArrayLike<number>, amp: ArrayLike<number>, gate: number, bwHz: number, mask?: Uint8Array): number {
   const a: number[] = [];
-  for (let i = 0; i < fm.length; i++) if (amp[i] >= gate && Number.isFinite(fm[i])) a.push(Math.abs(fm[i]));
+  for (let i = 0; i < fm.length; i++) if ((mask ? mask[i] : amp[i] >= gate) && Number.isFinite(fm[i])) a.push(Math.abs(fm[i]));
   if (a.length < 8) return bwHz / 2;
   a.sort((x, y) => x - y);
   const want = Math.max(1000, a[Math.min(a.length - 1, Math.floor(a.length * 0.99))] * 1.05);
   const e = 10 ** Math.floor(Math.log10(want));
   for (const m of [1, 2, 2.5, 5, 10]) if (m * e >= want) return m * e;
   return 10 * e;
+}
+
+/**
+ * Where frequency and phase mean something: samples whose amplitude stands at or over `gate`, and whose neighbors within
+ * `guard` samples do too, so a carrier switching on or off (where the frequency estimate is meaningless) is left out.
+ */
+export function steadyMask(amp: ArrayLike<number>, gate: number, guard: number): Uint8Array {
+  const n = amp.length, m = new Uint8Array(n);
+  let run = 0;
+  // the length of the run of samples at or over the gate ending at i, then the same from the right
+  const left = new Int32Array(n), right = new Int32Array(n);
+  for (let i = 0; i < n; i++) { run = amp[i] >= gate ? run + 1 : 0; left[i] = run; }
+  run = 0;
+  for (let i = n - 1; i >= 0; i--) { run = amp[i] >= gate ? run + 1 : 0; right[i] = run; }
+  for (let i = 0; i < n; i++) m[i] = left[i] > guard && right[i] > guard ? 1 : 0;
+  return m;
 }

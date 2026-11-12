@@ -20,7 +20,7 @@
 import {
   acpr, autoLevel, autoRbw, autoScale, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
   noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
-  DETECTORS, THERMAL_DBM_HZ, fmScale, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
+  DETECTORS, THERMAL_DBM_HZ, fmScale, steadyMask, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
   type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
 } from './dsp/spectrum/index.js';
 
@@ -1009,7 +1009,9 @@ export class SpectrumUi {
     // the level frequency and phase are drawn above: 10 dB over the median of the window (the noise between bursts)
     const gate = !z ? 0 : (() => { const q = Float32Array.from(z.amp).sort(); return q[q.length >> 1] + 10; })();
     // the frequency pane fits the signal's swing (an FSK tone may sit past half the filter), in 1-2-5 steps
-    const fmHalf = z ? fmScale(z.fm, z.amp, gate, s.zsBw) : s.zsBw / 2;
+    // steady samples only: a carrier switching on or off (about one filter response, rate / bandwidth samples) is left out
+    const steady = z ? steadyMask(z.amp, gate, Math.max(1, Math.round(z.rate / s.zsBw))) : new Uint8Array(0);
+    const fmHalf = z ? fmScale(z.fm, z.amp, gate, s.zsBw, steady) : s.zsBw / 2;
     ctx.textAlign = 'left'; ctx.fillStyle = ink; ctx.font = '700 12px ui-monospace, monospace';
     ctx.fillText(`${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}`, g.l, 13);
     ctx.fillStyle = muted; ctx.font = '600 11px ui-monospace, monospace';
@@ -1034,7 +1036,7 @@ export class SpectrumUi {
       if (p === 'amp' && s.trig !== 'FREE') { ctx.strokeStyle = ACTIVE; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(g.l, yOf(s.level)); ctx.lineTo(g.l + g.w, yOf(s.level)); ctx.stroke(); ctx.setLineDash([]); }
       // Frequency and phase mean something only while there is a signal: they are drawn where the amplitude stands
       // 10 dB over the noise and left blank in the noise between.
-      const gated = (i: number) => p === 'amp' || z.amp[i] >= gate;
+      const gated = (i: number) => p === 'amp' || steady[i] === 1;
       const cols = Math.max(2, Math.round(g.w));
       const band = new Path2D(), trace = new Path2D();
       let pen = false;

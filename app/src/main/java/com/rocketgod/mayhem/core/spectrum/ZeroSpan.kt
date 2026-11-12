@@ -241,13 +241,28 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
  * stands at or over [gate] (the signal, not the noise between bursts), so an FSK swing fits whatever the filter. With
  * no signal in the window it is half the filter bandwidth.
  */
-fun fmScale(fm: FloatArray, amp: FloatArray, gate: Float, bwHz: Double): Double {
+fun fmScale(fm: FloatArray, amp: FloatArray, gate: Float, bwHz: Double, mask: ByteArray? = null): Double {
     val a = ArrayList<Double>()
-    for (i in fm.indices) if (amp[i] >= gate && fm[i].isFinite()) a.add(kotlin.math.abs(fm[i].toDouble()))
+    for (i in fm.indices) if ((if (mask != null) mask[i].toInt() == 1 else amp[i] >= gate) && fm[i].isFinite()) a.add(kotlin.math.abs(fm[i].toDouble()))
     if (a.size < 8) return bwHz / 2
     a.sort()
     val want = kotlin.math.max(1000.0, a[kotlin.math.min(a.size - 1, (a.size * 0.99).toInt())] * 1.05)
     val e = Math.pow(10.0, kotlin.math.floor(kotlin.math.log10(want)))
     for (m in listOf(1.0, 2.0, 2.5, 5.0, 10.0)) if (m * e >= want) return m * e
     return 10 * e
+}
+
+/**
+ * Where frequency and phase mean something: samples whose amplitude stands at or over [gate], and whose neighbors
+ * within [guard] samples do too, so a carrier switching on or off (where the frequency estimate is meaningless) is left out.
+ */
+fun steadyMask(amp: FloatArray, gate: Float, guard: Int): ByteArray {
+    val n = amp.size; val m = ByteArray(n)
+    val left = IntArray(n); val right = IntArray(n)
+    var run = 0
+    for (i in 0 until n) { run = if (amp[i] >= gate) run + 1 else 0; left[i] = run }
+    run = 0
+    for (i in n - 1 downTo 0) { run = if (amp[i] >= gate) run + 1 else 0; right[i] = run }
+    for (i in 0 until n) m[i] = if (left[i] > guard && right[i] > guard) 1 else 0
+    return m
 }

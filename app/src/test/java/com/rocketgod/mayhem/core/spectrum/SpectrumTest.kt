@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (130 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (131 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -89,7 +89,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 130, checks)
+        assertEquals("checks run", 131, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -535,6 +535,8 @@ class SpectrumTest {
             for (k in 0 until n) { val on = k % 200 < 100; amp[k] = if (on) -60f else -120f; fm[k] = if (on) (if (k % 20 < 10) 23000f else -23000f) else (90000 * (r.next() - 0.5)).toFloat() }
             ok(fmScale(fm, amp, -110f, 30000.0) == 25000.0, "the frequency pane fits a ±23 kHz FSK swing (${fmScale(fm, amp, -110f, 30000.0)})")
             ok(fmScale(fm, FloatArray(n) { -130f }, -110f, 30000.0) == 15000.0, "with no signal it is half the filter")
+            val mk = steadyMask(floatArrayOf(-120f, -60f, -60f, -60f, -60f, -60f, -120f), -100f, 1)
+            ok(mk.joinToString(",") == "0,0,1,1,1,0,0", "steadyMask leaves out the samples where a carrier switches on or off")
         }
         ok(autoLevel(fa(-90.0, -88.0, -89.0, -40.0, -91.0)) == -77.0, "AUTO LEVEL sits 12 dB over the median")
         // long windows are reduced for the screen with the amplitude peak-held

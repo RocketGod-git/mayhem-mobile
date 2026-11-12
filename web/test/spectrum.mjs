@@ -449,6 +449,8 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
     for (let k = 0; k < n; k++) { const on = k % 200 < 100; amp[k] = on ? -60 : -120; fm[k] = on ? (k % 20 < 10 ? 23000 : -23000) : 90000 * (Math.random() - 0.5); }
     ok(S.fmScale(fm, amp, -110, 30000) === 25000, `the frequency pane fits a ±23 kHz FSK swing (${S.fmScale(fm, amp, -110, 30000)})`);
     ok(S.fmScale(fm, new Float32Array(n).fill(-130), -110, 30000) === 15000, 'with no signal it is half the filter');
+    const mk = S.steadyMask(Float32Array.from([-120, -60, -60, -60, -60, -60, -120]), -100, 1);
+    ok(mk.join() === '0,0,1,1,1,0,0', 'steadyMask leaves out the samples where a carrier switches on or off');
   }
   ok(S.autoLevel(Float32Array.from([-90, -88, -89, -40, -91])) === -77, 'AUTO LEVEL sits 12 dB over the median');
   // long windows are reduced for the screen with the amplitude peak-held
