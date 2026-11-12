@@ -1,7 +1,7 @@
 /** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
-import { HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
-import { RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
-import { APP_NEEDS, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
+import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
+import { RTL_MAX_GAIN_DB, RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
+import { APP_NEEDS, RATE_CHOICES, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
 import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
@@ -462,16 +462,25 @@ function refreshGainUi(): void {
 }
 
 function refreshAgcChip(): void {
+  syncRadioPanel();
   for (const b of qa('#agc')) { b.textContent = 'AGC'; b.classList.toggle('on', state.agc); b.title = state.agc ? 'The automatic gain sets the gain' : 'The gain is yours; tap to hand it to the AGC'; }
   for (const l of qa('#lna')) { l.textContent = `LNA ${state.lna}${state.agc ? ' AUTO' : ''}`; l.classList.toggle('auto', state.agc); }
   for (const v of qa('#vga')) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${state.agc ? ' AUTO' : ''}`; v.classList.toggle('auto', state.agc); }
 }
-function setAgc(on: boolean): void { state.agc = on; refreshAgcChip(); if (on) agcLast = 0; }
+function setAgc(on: boolean): void {
+  state.agc = on;
+  // The app's AGC and the tuner's own cannot both drive one knob: handing it to the app takes it from the tuner.
+  const rtl = on && radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null;
+  if (rtl) rtl.tunerAgc = false;
+  refreshAgcChip(); if (on) agcLast = 0;
+}
 /** The AGC and AMP chips are the user speaking, so what they leave behind is remembered too. */
 const userAgc = (on: boolean) => { setAgc(on); saveGains(); };
 /** Manual LNA / VGA taps switch the AGC off so the user's setting sticks. */
 const manualGains = (lna: number, vga: number, amp: boolean) => {
   if (state.agc) log('gain set by hand, so the automatic gain is off — tap AGC to hand it back');
+  const rtl = radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null;
+  if (rtl?.tunerAgc) { rtl.tunerAgc = false; log('gain set by hand, so the tuner AGC is off'); }
   setAgc(false); setGains(lna, vga, amp); saveGains();
 };
 let agcLast = 0, agcSaidMax = 0;
@@ -4168,20 +4177,26 @@ function renderTroll(view: HTMLElement): void {
 let biasAcked = false;
 /** Bias-tee pushes DC out the antenna port, so it is off by default and the first enable each session asks first. */
 function toggleBiasTee(): void {
-  const rtl = radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null;
-  if (!rtl) return;
-  if (state.biast) { state.biast = false; void rtl.setBiasTee(false); refreshGainUi(); return; }
+  if (!radio || !radio.caps.biasT) return;
+  if (state.biast) { applyBiasTee(false); return; }
   if (!biasAcked) { showBiasWarn(); return; }
-  state.biast = true; void rtl.setBiasTee(true); refreshGainUi();
+  applyBiasTee(true);
+}
+/** Put the bias tee where the UI says it is, on whichever radio is connected. */
+function applyBiasTee(on: boolean): void {
+  state.biast = on;
+  if (radio?.kind === 'rtlsdr') void (radio as RtlSdr).setBiasTee(on);
+  else if (radio?.kind === 'hackrf') (radio as HackRf).biasT = on;
+  refreshGainUi(); syncRadioPanel();
 }
 function showBiasWarn(): void {
   if (q('#bias-warn')) return;
   const el = document.createElement('div');
   el.id = 'bias-warn'; el.className = 'modal';
-  el.innerHTML = `<div class="modal-card"><h3>Bias-tee: DC on the antenna port</h3><p>This puts about 4.5 V DC on the RTL-SDR's antenna input to power an inline LNA.</p><ul><li>Only turn it on with a bias-tee-ready LNA or feed.</li><li>Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked — the DC can damage it.</li></ul><div class="modal-actions"><button id="bias-cancel" class="chip">CANCEL</button><button id="bias-ok" class="chip primary">ENABLE BIAS-T</button></div></div>`;
+  el.innerHTML = `<div class="modal-card"><h3>Bias-tee: DC on the antenna port</h3><p>This puts about ${radio?.caps.biasVolts ?? 4.5} V DC on the ${radio?.kind === 'hackrf' ? 'HackRF' : 'RTL-SDR'}'s antenna port to power an inline LNA.</p><ul><li>Only turn it on with a bias-tee-ready LNA or feed.</li><li>Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked — the DC can damage it.</li></ul><div class="modal-actions"><button id="bias-cancel" class="chip">CANCEL</button><button id="bias-ok" class="chip primary">ENABLE BIAS-T</button></div></div>`;
   document.body.appendChild(el);
   const close = () => el.remove();
-  $('bias-ok').onclick = () => { biasAcked = true; state.biast = true; const rtl = radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null; if (rtl) void rtl.setBiasTee(true); refreshGainUi(); close(); };
+  $('bias-ok').onclick = () => { biasAcked = true; applyBiasTee(true); close(); };
   $('bias-cancel').onclick = close;
 }
 function showTxSafetyPrompt(): void {
@@ -4363,7 +4378,7 @@ function renderSettings(view: HTMLElement): void {
     <div class="radiocard ${radio ? 'on' : ''}"><div><b>${radio ? 'RADIO CONNECTED' : 'NO RADIO'}</b><small>${esc(radioLine)}</small></div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
     <div class="set-jumps">${hsHtml(`<div class="tiles">${jumps.map(([id, l]) => `<button class="pill" data-jump="${id}">${l}</button>`).join('')}</div>`)}</div>
     ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
-    ${secHtml('radio', 'RADIO', gainHtml())}
+    ${secHtml('radio', 'RADIO', srow('Radio settings', 'Gain, AGC, amp, bias tee, filters, sample rate and the rest of what the connected radio can do now live under RADIO at the top.', '<button id="set-radio" class="tog">OPEN</button>', 'gain lna vga amp agc bias tee ppm sample rate filter'))}
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
     <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div></section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
@@ -4420,6 +4435,7 @@ function bindSettings(view: HTMLElement): void {
   const on = (id: string, f: () => void) => { const el = q<HTMLElement>('#' + id, view); if (el) el.onclick = f; };
   on('set-connect', () => $('connect').click());
   on('set-log', () => $('log-toggle').click());
+  on('set-radio', () => openRadioPanel());
   on('set-rds', () => { rdsWanted = !rdsWanted; if (!rdsWanted) lastRds = null; sendRds(); refreshSettings(); });
   on('set-hd', () => { hdWanted = !hdWanted; if (!hdWanted) lastHd = null; sendHd(); refreshSettings(); });
   const h = state.ham;
@@ -5144,6 +5160,7 @@ async function connect(dev?: USBDevice): Promise<void> {
       },
     });
     r.targetFreqHz = state.freq; r.targetRateHz = state.rate; r.setGain(state.lna, state.vga, state.amp);
+    state.biast = false;   // antenna power is off at every connect; keep the UI honest
     radio = r; radioDev = d;
     refreshLauncherLimits();
     applyLauncherView();          // now we know how wide it can go, show the whole band rather than a slice
@@ -5181,6 +5198,7 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   r.targetFreqHz = state.freq;
   r.targetRateHz = nearestRate(r.limits, state.rate);
   r.setGain(state.lna, state.vga, state.amp);
+  r.ppm = savedPpm();
   state.biast = false;   // the dongle powers up with the bias tee off; keep the UI honest
   radio = r; radioDev = d;
   refreshLauncherLimits();
@@ -5297,7 +5315,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app) open(null); break;
+      case 'Escape': if (radioPanelOpen()) closeRadioPanel(); else if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app) open(null); break;
     }
   });
   // chip strips and lists scroll with a held mouse button (touch already pans natively); a real drag swallows the click
@@ -5386,6 +5404,9 @@ function initShell(): void {
   bindHs($('appbar').parentElement!);
   $('nav-home').onclick = () => { closeSettings(); if (state.app) open(null); };
   $('nav-settings').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
+  $('nav-radio').onclick = () => (radioPanelOpen() ? closeRadioPanel() : openRadioPanel());
+  $('radio-close').onclick = closeRadioPanel;
+  $('radiomodal').onclick = (e) => { if (e.target === $('radiomodal')) closeRadioPanel(); };
   $('bar-gear').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
   new ResizeObserver(() => placeFill(false)).observe($('appbar-in'));
   $('set-close').onclick = closeSettings;
@@ -5409,6 +5430,7 @@ let settingsOver: AppId | null = null;
 const settingsOpen = () => !$('setmodal').hidden;
 /** Settings over the running app, which keeps receiving underneath; DONE, Esc or a click outside closes it. */
 function openSettings(): void {
+  closeRadioPanel();
   settingsOver = state.app;
   $('setmodal').hidden = false;
   $('set-over').textContent = state.app ? `· ${barLabel(state.app)}` : '';
@@ -5423,11 +5445,164 @@ function closeSettings(): void {
 function drawSettings(): void {
   const view = $('setview'), top = view.scrollTop;
   renderSettings(view); wireCommon(view); bindHs(view);
-  setGains(state.lna, state.vga, state.amp);
   view.scrollTop = top;
 }
 /** A setting changed: redraw the overlay in place. */
 function refreshSettings(): void { if (settingsOpen()) drawSettings(); }
+
+// ---- RADIO: the connected radio's own settings -------------------------------------------------------------
+/**
+ * Everything the connected radio can be told besides frequency, in one place apart from Settings. Each radio lists
+ * what it really has (RadioCaps), and only those controls are drawn: a HackRF gets LNA, VGA, the amp, antenna power
+ * and the baseband filter; an RTL-SDR gets its tuner gain, the tuner's and the RTL's AGCs, the bias tee, crystal
+ * correction and, on an R820T, direct sampling. Every control applies to the radio at once.
+ */
+const radioPanelOpen = () => !$('radiomodal').hidden;
+/** What the panel was drawn for; when the radio changes under it, it is drawn again rather than patched. */
+let radioPanelKey = '';
+/** The slider being dragged, which a sync must not move under the finger. */
+let rpDrag = '';
+function openRadioPanel(): void {
+  closeSettings();
+  $('radiomodal').hidden = false;
+  $('radio-over').textContent = state.app ? `· ${barLabel(state.app)}` : '';
+  drawRadioPanel();
+  refreshShell();
+}
+function closeRadioPanel(): void {
+  if (!radioPanelOpen()) return;
+  $('radiomodal').hidden = true; $('radioview').innerHTML = ''; radioPanelKey = '';
+  refreshShell();
+}
+const rtlRadio = (): RtlSdr | null => (radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null);
+const hackRadio = (): HackRf | null => (radio && radio.kind === 'hackrf' ? radio as HackRf : null);
+const mhzTxt = (hz: number) => `${+(hz / 1e6).toFixed(3)} MHz`;
+const msps = (hz: number) => `${+(hz / 1e6).toFixed(3)} Msps`;
+/** The tuner gain an RTL-SDR is actually running: the app's VGA figure, capped at what the tuner can do. */
+const rtlGainDb = () => Math.min(state.vga, RTL_MAX_GAIN_DB);
+function radioPanelKeyNow(): string {
+  return radio ? `${radio.kind}|${radio.label}|${radio.caps.directSampling}` : 'none';
+}
+function drawRadioPanel(): void {
+  const view = $('radioview'), top = view.scrollTop;
+  radioPanelKey = radioPanelKeyNow();
+  if (!radio) {
+    view.innerHTML = `<section class="controls settings-page"><div class="radiocard"><div><b>NO RADIO</b><small>Plug in a HackRF, a PortaPack in HackRF mode, or an RTL-SDR to see what it can be set to.</small></div><button id="rp-connect" class="act">CONNECT</button></div></section>`;
+    q<HTMLElement>('#rp-connect', view)!.onclick = () => $('connect').click();
+    return;
+  }
+  const c = radio.caps, rtl = rtlRadio(), hrf = hackRadio();
+  const sub = rtl ? `${rtl.label} · tuner ${rtl.tuner || '?'}` : `${state.board || 'HackRF'}${state.firmware ? ` · fw ${state.firmware}` : ''}`;
+  const range = (id: string, min: number, max: number, step: number, v: number) => `<input id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${v}">`;
+  const val = (id: string, text: string) => `<span id="${id}">${text}</span>`;
+  let gain = srow('AGC', `The app keeps the level right by stepping the gain${c.stagedGain ? ' (VGA first, then LNA)' : ''}. Moving a gain by hand turns it off.`, swHtml('rp-agc', state.agc), 'automatic gain');
+  if (c.stagedGain) {
+    gain += srow('LNA', val('rp-lna-v', `${state.lna} dB · 0–40 in 8s`), range('rp-lna', 0, 40, 8, state.lna), 'rf gain low noise amplifier')
+      + srow('VGA', val('rp-vga-v', `${state.vga} dB · 0–62 in 2s`), range('rp-vga', 0, 62, 2, state.vga), 'baseband if gain');
+  }
+  if (c.tunerGain) gain += srow('Tuner gain', val('rp-tg-v', tunerGainText()), range('rp-tg', 0, 48, 2, Math.min(48, state.vga)), 'rf gain');
+  if (c.amp) gain += srow('Amp', 'The +14 dB front-end amplifier. Strong local signals can overload it.', swHtml('rp-amp', state.amp), 'amplifier preamp');
+  if (c.tunerAgc && rtl) gain += srow('Tuner AGC', 'The R82xx tuner\'s own automatic gain, in place of the app\'s', swHtml('rp-tagc', rtl.tunerAgc), 'hardware agc');
+  if (c.rtlAgc && rtl) gain += srow('RTL AGC', 'The RTL2832U\'s digital AGC, which evens out the level after the converter', swHtml('rp-ragc', rtl.rtlAgc), 'digital agc');
+  let front = '';
+  if (c.biasT) front += srow(rtl ? 'Bias tee' : 'Antenna power', `${c.biasVolts} V DC out the antenna port, for an inline LNA. Off at every connect.`, swHtml('rp-bias', state.biast), 'bias-t bias tee dc lna');
+  if (c.bbFilters.length && hrf) {
+    const opts = [`<option value="0"${hrf.bbFilterHz ? '' : ' selected'}>AUTO</option>`, ...c.bbFilters.map(b => `<option value="${b}"${hrf.bbFilterHz === b ? ' selected' : ''}>${mhzTxt(b)}</option>`)].join('');
+    front += srow('Baseband filter', val('rp-bb-v', bbDesc(hrf)), `<select id="rp-bb" class="txin">${opts}</select>`, 'bandwidth filter');
+  }
+  const rates = RATE_CHOICES.filter(r => canSample(radio!.limits, r));
+  if (!rates.includes(state.rate)) rates.push(state.rate);
+  rates.sort((a, b) => b - a);
+  let samp = srow('Sample rate', 'Each app opens at its own rate. A change here lasts until you open another app.', `<select id="rp-rate" class="txin">${rates.map(r => `<option value="${r}"${r === state.rate ? ' selected' : ''}>${msps(r)}</option>`).join('')}</select>`, 'bandwidth span');
+  if (c.ppm && rtl) samp += srow('Frequency correction', 'Crystal error in parts per million. Remembered for this browser.', `<button id="rp-ppm-m" class="tog">−</button><input id="rp-ppm" class="txin num" type="number" step="1" min="-200" max="200" value="${rtl.ppm}"><button id="rp-ppm-p" class="tog">+</button>`, 'ppm offset crystal');
+  if (c.directSampling && rtl) samp += srow('Direct sampling', 'HF below 24 MHz read straight off the ADC (Q branch). Off, the dongle stops at 24 MHz.', swHtml('rp-ds', rtl.directSamplingAllowed), 'hf direct');
+  const missing = rtl ? 'No offset tuning: R82xx tuners have no offset mode (librtlsdr refuses it for them too).' : '';
+  view.innerHTML = `<section class="controls settings-page">
+    <div class="radiocard on"><div><b>${radio.kind === 'rtlsdr' ? 'RTL-SDR' : 'HACKRF'}</b><small>${esc(sub)}</small></div></div>
+    ${secHtml('rgain', 'GAIN', gain)}${secHtml('rfront', 'FRONT END', front)}${secHtml('rsamp', 'SAMPLING', samp)}
+    ${missing ? `<div class="rp-note">${missing}</div>` : ''}</section>`;
+  bindRadioPanel(view);
+  view.scrollTop = top;
+}
+function tunerGainText(): string {
+  return `${rtlRadio()?.tunerAgc ? 'tuner AGC' : `${rtlGainDb()} dB`} · 0–${RTL_MAX_GAIN_DB}`;
+}
+function bbDesc(h: HackRf): string {
+  return h.bbFilterHz ? 'Set by hand' : `AUTO follows the sample rate: ${mhzTxt(bbAuto(state.rate))} now`;
+}
+/** The filter libhackrf picks for a rate: the widest one under it. */
+function bbAuto(rate: number): number {
+  let chosen = BB_FILTER_BW[0];
+  for (const bw of BB_FILTER_BW) { if (bw < rate) chosen = bw; else break; }
+  return chosen;
+}
+function bindRadioPanel(view: HTMLElement): void {
+  const el = <T extends HTMLElement>(id: string) => q<T>('#' + id, view);
+  const click = (id: string, f: () => void) => { const e = el(id); if (e) e.onclick = f; };
+  const slide = (id: string, f: (v: number) => void) => {
+    const r = el<HTMLInputElement>(id); if (!r) return;
+    r.onpointerdown = () => { rpDrag = id; };
+    r.oninput = () => { rpDrag = id; f(Number(r.value)); };
+    r.onchange = () => { rpDrag = ''; f(Number(r.value)); };
+  };
+  click('rp-agc', () => userAgc(!state.agc));
+  slide('rp-lna', v => manualGains(v, state.vga, state.amp));
+  slide('rp-vga', v => manualGains(state.lna, v, state.amp));
+  slide('rp-tg', v => manualGains(state.lna, v, state.amp));
+  click('rp-amp', () => { setGains(state.lna, state.vga, !state.amp); saveGains(); });
+  click('rp-tagc', () => {
+    const r = rtlRadio(); if (!r) return;
+    r.tunerAgc = !r.tunerAgc;
+    // Two automatic gains fighting over one knob would hunt, so the tuner's takes over from the app's.
+    if (r.tunerAgc && state.agc) { setAgc(false); saveGains(); log('tuner AGC on, so the app\'s AGC is off'); }
+    syncRadioPanel();
+  });
+  click('rp-ragc', () => { const r = rtlRadio(); if (r) { r.rtlAgc = !r.rtlAgc; syncRadioPanel(); } });
+  click('rp-bias', () => { toggleBiasTee(); syncRadioPanel(); });
+  const bb = el<HTMLSelectElement>('rp-bb');
+  if (bb) bb.onchange = () => { const h = hackRadio(); if (h) { h.bbFilterHz = Number(bb.value); syncRadioPanel(); } };
+  const rate = el<HTMLSelectElement>('rp-rate');
+  if (rate) rate.onchange = () => { setRate(Number(rate.value)); rate.blur(); syncRadioPanel(); };
+  const ppm = el<HTMLInputElement>('rp-ppm');
+  const setPpm = (v: number) => {
+    const r = rtlRadio(); if (!r || !Number.isFinite(v)) return;
+    r.ppm = Math.max(-200, Math.min(200, Math.round(v)));
+    try { localStorage.setItem(PPM_KEY, String(r.ppm)); } catch { /* ignore */ }
+    if (ppm) ppm.value = String(r.ppm);
+  };
+  if (ppm) ppm.onchange = () => setPpm(Number(ppm.value));
+  click('rp-ppm-m', () => setPpm((rtlRadio()?.ppm ?? 0) - 1));
+  click('rp-ppm-p', () => setPpm((rtlRadio()?.ppm ?? 0) + 1));
+  click('rp-ds', () => {
+    const r = rtlRadio(); if (!r) return;
+    r.setDirectSampling(!r.directSamplingAllowed);
+    refreshLauncherLimits();
+    syncRadioPanel();
+  });
+}
+/** Where an RTL-SDR's crystal correction is remembered. */
+const PPM_KEY = 'mayhem.rtl.ppm';
+function savedPpm(): number {
+  try { const v = Number(localStorage.getItem(PPM_KEY)); return Number.isFinite(v) ? Math.max(-200, Math.min(200, Math.round(v))) : 0; } catch { return 0; }
+}
+/** Bring the panel up to date in place: the AGC moves the gains every second, and that must not redraw the page. */
+function syncRadioPanel(): void {
+  if (!radioPanelOpen()) return;
+  if (radioPanelKeyNow() !== radioPanelKey) { drawRadioPanel(); return; }
+  const view = $('radioview');
+  const sw = (id: string, on: boolean) => { const e = q('#' + id, view); if (e) { e.classList.toggle('on', on); e.setAttribute('aria-checked', String(on)); } };
+  const txt = (id: string, t: string) => { const e = q('#' + id, view); if (e) e.textContent = t; };
+  const put = (id: string, v: number) => { const e = q<HTMLInputElement>('#' + id, view); if (e && rpDrag !== id) e.value = String(v); };
+  const rtl = rtlRadio(), hrf = hackRadio();
+  sw('rp-agc', state.agc); sw('rp-amp', state.amp); sw('rp-bias', state.biast);
+  put('rp-lna', state.lna); txt('rp-lna-v', `${state.lna} dB · 0–40 in 8s`);
+  put('rp-vga', state.vga); txt('rp-vga-v', `${state.vga} dB · 0–62 in 2s`);
+  put('rp-tg', Math.min(48, state.vga)); txt('rp-tg-v', tunerGainText());
+  if (rtl) { sw('rp-tagc', rtl.tunerAgc); sw('rp-ragc', rtl.rtlAgc); sw('rp-ds', rtl.directSamplingAllowed); }
+  if (hrf) txt('rp-bb-v', bbDesc(hrf));
+  const rate = q<HTMLSelectElement>('#rp-rate', view);
+  if (rate && document.activeElement !== rate && rate.value !== String(state.rate)) drawRadioPanel();
+}
 /** The phone strip's fill has been put somewhere yet (the first placing jumps; later ones slide). */
 let fillPlaced = false;
 /** Move the phone strip's fill under the open app's key, sliding there when [slide]; on Home it fades away. */
@@ -5456,6 +5631,9 @@ function refreshShell(): void {
   placeFill(true);
   $('nav-home').classList.toggle('on', state.app === null && !setOn);
   $('nav-settings').classList.toggle('on', setOn);
+  $('nav-radio').classList.toggle('on', radioPanelOpen());
+  $('radio-btn').classList.toggle('on', radioPanelOpen());
+  syncRadioPanel();
   $('home').classList.toggle('on', state.app === null && !setOn);
   $('settings-btn').classList.toggle('on', setOn);
   $('mute').classList.toggle('muted', state.muted);
@@ -5504,6 +5682,7 @@ function init(): void {
   $('brand').onclick = () => { closeSettings(); if (state.app) open(null); };
   $('faves-btn').onclick = () => showFaves(true);
   $('settings-btn').onclick = () => (settingsOpen() ? closeSettings() : openSettings());
+  $('radio-btn').onclick = () => (radioPanelOpen() ? closeRadioPanel() : openRadioPanel());
   initShell();
   $('hint').onclick = () => hideHint();
   bindDesktop();
