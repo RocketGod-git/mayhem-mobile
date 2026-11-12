@@ -36,6 +36,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -97,7 +98,7 @@ internal fun PresetTiles(accent: Color, presets: List<Preset>, width: Dp = 92.dp
 
 /** A short muted note under a row of controls: what the app decodes, and how to get the most from it. */
 @Composable
-private fun AppNote(text: String) {
+internal fun AppNote(text: String) {
     val d = rememberDims()
     Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f), modifier = Modifier.padding(top = d.dp(6f)))
 }
@@ -116,7 +117,13 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         /** A bursty signal's own strength for the meter (the band's average power hides 20 ms bursts); null: the band's level. */
                         burstDb: Float? = null,
                         /** Leave the waterfall out (an app whose bursts it can't show), giving its room to the list. */
-                        waterfall: Boolean = true) {
+                        waterfall: Boolean = true,
+                        /** An [EMPTY] key for the log's empty state. */
+                        emptyKey: String? = null,
+                        /** The lamp, in place of LISTENING / n DECODED. */
+                        lamp: (@Composable () -> Unit)? = null,
+                        /** Everything under [controls], in place of the log header and the log (BLE and ACARS: their cards or the log). */
+                        body: (@Composable ColumnScope.() -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -136,7 +143,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                 left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
                 right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
                 onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f + shift) }) else null,
-                lamp = { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
+                lamp = lamp ?: { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->
             Column(m) {
@@ -149,6 +156,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
         }
     ) {
         Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { controls() }
+        if (body != null) { body(); return@AdaptivePane }
         // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
         val logActions: @Composable () -> Unit = {
             ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent, Modifier.fillMaxHeight()) { held = if (held == null) snap.lines else null }
@@ -161,9 +169,9 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
             logActions()
         }
         if (list != null) { if (listWeight != null) Box(Modifier.fillMaxWidth().weight(listWeight)) { list() } else list() }
-        LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent)
+        LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent, emptyKey = emptyKey)
         if (full) FullscreenPanel("${snap.total} DECODED", accent, onClose = { full = false }, actions = { Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) { logActions() } }) {
-            LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent)
+            LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent, emptyKey = emptyKey)
         }
     }
 }
@@ -177,7 +185,7 @@ fun PagerScreen(accent: Color) {
 @Composable
 private fun PagerSingleView(accent: Color) {
     val which by Apps.pager.which.collectAsState()
-    PacketFrame(accent, Apps.pagerLog, tag = "PAGER", title = "ONE CHANNEL", roomy = true, controls = {
+    PacketFrame(accent, Apps.pagerLog, tag = "PAGER", title = "ONE CHANNEL", roomy = true, emptyKey = "pager", controls = {
         val all = PagerDecoder.Which.entries
         SegBar(all.map { it.label }, all.indexOf(which), accent) { Apps.pager.select(all[it]) }
         PresetTiles(accent, listOf(Preset("929.6125", "FLEX", 929_612_500L), Preset("929.6625", "FLEX", 929_662_500L),
@@ -405,7 +413,9 @@ private fun PagerFeed(messages: List<PagerMessage>, f: PagerFilter, accent: Colo
             f.hz?.let { hz -> OnlyChip("%.4f MHz".format(hz / 1e6), accent) { f.hz = null } }
         }
         val rows = remember(messages, f.kind, f.protocol, f.capcode, f.hz, f.fold, PagerUi.noise) { foldPages(messages.filter(f::keeps), f.fold) }
-        if (rows.isEmpty()) {
+        if (rows.isEmpty() && messages.isEmpty()) {
+            Box(Modifier.fillMaxWidth().weight(1f).panel()) { EmptyState("pager", Modifier.fillMaxSize(), accent) }
+        } else if (rows.isEmpty()) {
             EmptyFeed(if (messages.isEmpty()) "hunting the span for pager carriers…\npages land here the moment one decodes"
                       else "nothing matches these filters yet", hunting = messages.isEmpty(), Modifier.fillMaxWidth().weight(1f))
         } else {
@@ -587,33 +597,4 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
         }
     }
     }
-}
-
-@Composable
-fun TpmsScreen(accent: Color) {
-    PacketFrame(accent, Apps.tpmsLog, tag = "TPMS", title = "TIRE SENSORS", controls = {
-        PresetTiles(accent, listOf(Preset("315.000", "US", 315_000_000L), Preset("433.920", "EU", 433_920_000L)))
-        AppNote("Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.")
-    })
-}
-
-@Composable
-fun AcarsScreen(accent: Color) {
-    val shift = com.rocketgod.mayhem.core.apps.AcarsDecoder.LO_SHIFT
-    PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, shift = shift, controls = {
-        PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
-            Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)), shift = shift)
-        AppNote("Registration, flight, label and text from each message, CRC checked.")
-    })
-}
-
-@Composable
-fun BtleScreen(accent: Color) {
-    val freq by SdrEngine.freqHz.collectAsState()
-    PacketFrame(accent, Apps.btleLog, tag = "BLE", title = "ADVERTISING", tunable = false, controls = {
-        val chans = intArrayOf(37, 38, 39)
-        TileRow(chans.map { ch -> val hz = BtleDecoder.channelFreq(ch); Tile("CH $ch", "${hz / 1_000_000} MHz", freq == hz) }, accent, width = 104.dp) { i ->
-            val ch = chans[i]; Apps.btle.channel = ch; SdrEngine.tune(BtleDecoder.channelFreq(ch))
-        }
-    })
 }

@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
@@ -328,9 +329,12 @@ fun FreqCard(
     Column(Modifier.faceCard(accent, d)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FaceTag(tag, accent)
-            Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            // a phone's header is too narrow for both: the subtitle gives way so the gain pill shows in full
+            if (d.widthDp <= 480) Spacer(Modifier.weight(1f))
+            else Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
             if (actions != null) actions() else if (onTune != null) DialActions(accent, freq, onTune = onTune)
+            GainChip(accent)
             lamp()
         }
         Box(Modifier.fillMaxWidth().padding(top = d.dp(2f))) {
@@ -357,6 +361,40 @@ fun FreqCard(
         }
         footer?.invoke(this)
     }
+}
+
+/**
+ * The gain as one line ("AGC · LNA 24 VGA 50 · AMP"): MANUAL when the AGC is off, TUNER AGC while an RTL-SDR's own
+ * AGC runs, AMP and BIAS-T only when on. Twin of the web app's gainSummary().
+ */
+fun gainSummary(rtl: Boolean, agc: Boolean, tunerAgc: Boolean, lna: Int, vga: Int, amp: Boolean, biasTee: Boolean): String {
+    val who = if (rtl && tunerAgc) "TUNER AGC" else if (agc) "AGC" else "MANUAL"
+    return if (rtl) "$who · GAIN ${minOf(vga, com.rocketgod.mayhem.usb.RtlSdr.MAX_GAIN_DB.toInt())} dB${if (biasTee) " · BIAS-T" else ""}"
+    else "$who · LNA $lna VGA $vga${if (amp) " · AMP" else ""}"
+}
+
+/**
+ * The gain in every app's card header, as a pill; a tap opens RADIO, where every gain control lives. No screen has a
+ * gain row of its own.
+ */
+@Composable
+fun GainChip(accent: Color) {
+    val d = rememberDims()
+    val radio by Radio.kind.collectAsState()
+    val agc by SdrEngine.agc.collectAsState()
+    val tunerAgc by SdrEngine.tunerAgc.collectAsState()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    val bias by SdrEngine.biasTee.collectAsState()
+    val text = gainSummary(radio == Radio.Kind.RTLSDR, agc, tunerAgc, lna, vga, amp, bias)
+    val shape = RoundedCornerShape(50)
+    // capped (half a phone, under a third of a wider card), so the lamp always fits beside it
+    Text(text, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1,
+        overflow = TextOverflow.Ellipsis, softWrap = false,
+        modifier = Modifier.padding(horizontal = d.dp(6f)).widthIn(max = (d.widthDp * if (d.widthDp <= 480) 0.5f else 0.3f).dp)
+            .clip(shape).background(accent.copy(alpha = 0.12f)).border(1.dp, accent.copy(alpha = 0.45f), shape)
+            .clickable { RadioUi.show() }.padding(horizontal = d.dp(8f), vertical = d.dp(3f)))
 }
 
 /** Tiles in a grid of [columns], for a set that should all be in view at once (TX's modes). */

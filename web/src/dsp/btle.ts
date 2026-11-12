@@ -122,5 +122,7 @@ export class BtleDecoder implements IqProcessor {
       }
     }
     this.emit({ type: 'packet', line: s });
+    // the whole PDU too, for the device cards (ble.ts reads it)
+    this.emit({ type: 'ble', pdu: Array.from(p.subarray(0, end)), db, ch: this.channel });
   }
 }
