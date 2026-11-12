@@ -13,6 +13,52 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
+ * The retune bookkeeping every sweep shares (Looking Glass, Search, Spectrum): ask for a frequency, then throw reads
+ * away until the radio has got there - counted down on a fixed timer, or cut short once the driver reports the
+ * frequency applied ([applied], polled on every read) or the owner calls [tuned].
+ *
+ * [tune] moves the radio (the radio only: a sweep's slices are not the dial, so they are never saved as the station
+ * to come back to); tests hand in their own [tune] and [applied].
+ */
+class Retuner(
+    private val tune: (Long) -> Unit = { SdrEngine.tuneLo(it) },
+    private val applied: (Long) -> Boolean = { HackRfOne.appliedFreq == it || RtlSdr.appliedFreq == it },
+) {
+    private var settle = 0
+    /** The frequency asked for and not yet confirmed by the driver; 0 once it has been. */
+    private var awaiting = 0L
+
+    /** Ask for the first frequency of a sweep (a short fixed settle). */
+    fun start(hz: Long) { settle = 8; awaiting = hz; tune(hz) }
+
+    /** Ask for the next step's frequency after a read of [nSamp] samples at [rate]. */
+    fun next(hz: Long, nSamp: Int, rate: Int) {
+        awaiting = hz
+        tune(hz)
+        // Retune settle: the driver sleeps ~50 ms after a tune and the USB pipeline holds ~12 buffers of stale IQ.
+        val bufMs = nSamp * 1000.0 / rate
+        settle = ceil(SETTLE_MS / bufMs).toInt().coerceIn(2, 500)
+    }
+
+    /** The radio has confirmed the frequency asked for: only the reads already in flight are stale now. */
+    fun tuned() { if (awaiting == 0L) return; awaiting = 0L; settle = minOf(settle, INFLIGHT_STALE) }
+
+    /** Whether this read is still on the old frequency (and so must be dropped). */
+    fun stale(): Boolean {
+        // once the driver confirms the retune, only the reads already in flight are stale, not the whole settle time
+        if (awaiting != 0L && applied(awaiting)) tuned()
+        if (settle > 0) { settle--; return true }
+        return false
+    }
+
+    companion object {
+        private const val SETTLE_MS = 130.0
+        /** Twelve bulk reads in flight in the driver, up to eight queued for the DSP thread, and the one being filled. */
+        private const val INFLIGHT_STALE = 21
+    }
+}
+
+/**
  * Wideband sweep (Mayhem Looking Glass / Search): steps the radio across [startHz]..[endHz] one IQ-bandwidth slice
  * at a time. After each retune settles, every 1024-point frame of a buffer is power-averaged into [BINS] bins and
  * the inner [KEEP] of them are kept: the baseband filter rolls the outer bins off, so slices step by the kept width
@@ -20,7 +66,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * completes ([row]). Search runs on the rows.
  */
 class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqProcessor {
-    /** Distance between slice centres: the kept part of a slice. */
+    /** Distance between slice centers: the kept part of a slice. */
     val stepHz: Double = sliceHz.toDouble() * KEEP / BINS
     val binHz: Double = sliceHz.toDouble() / BINS
     val steps: Int = ceil((endHz - startHz) / stepHz).toInt().coerceAtLeast(1)
@@ -39,9 +85,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
     // NaN until a slice has been measured, so the first pass's live trace does not drag the floor down
     private val work = FloatArray(steps * KEEP) { Float.NaN }
     private var step = 0
-    private var settle = 0
-    /** The centre asked for and not yet confirmed by the driver; 0 once it has been. */
-    private var awaiting = 0L
+    private val retune = Retuner()
     private var lastLive = 0L
     private var peakSq = 0.0
     /** RMS (counts) of the loudest slice in the last complete pass: what the AGC steers a sweep by. */
@@ -65,15 +109,11 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
 
     override fun reset(rate: Int) {
         step = 0
-        settle = 8
-        awaiting = centerOf(0)
-        SdrEngine.tuneLo(awaiting)
+        retune.start(centerOf(0))
     }
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
-        // once the driver confirms the retune, only the reads already in flight are stale, not the whole settle time
-        if (awaiting != 0L && (HackRfOne.appliedFreq == awaiting || RtlSdr.appliedFreq == awaiting)) { awaiting = 0L; settle = minOf(settle, INFLIGHT_STALE) }
-        if (settle > 0) { settle--; return }
+        if (retune.stale()) return
         val nSamp = len / 2
         acc.fill(0.0)
         var frames = 0
@@ -101,7 +141,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
             for (j in 0 until g) { val v = acc[b * g + j]; if (v > pk) pk = v }
             slice[b] = (10.0 * log10(pk / frames + 1e-9)).toFloat()
         }
-        // The DC spike sits in the centre bins: replace with the neighbours.
+        // The DC spike sits in the center bins: replace with the neighbors.
         val c = BINS / 2
         slice[c] = (slice[c - 2] + slice[c + 2]) * 0.5f
         slice[c - 1] = slice[c - 2]
@@ -123,12 +163,7 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
             _sweeps.value = _sweeps.value + 1
         }
         _progress.value = step
-        awaiting = centerOf(step)
-        // the radio only: a sweep's slices are not the dial, so they are never saved as the station to come back to
-        SdrEngine.tuneLo(awaiting)
-        // Retune settle: the driver sleeps ~50 ms after a tune and the USB pipeline holds ~12 buffers of stale IQ.
-        val bufMs = nSamp * 1000.0 / rate
-        settle = ceil(SETTLE_MS / bufMs).toInt().coerceIn(2, 500)
+        retune.next(centerOf(step), nSamp, rate)
     }
 
     companion object {
@@ -137,9 +172,6 @@ class SweepProcessor(val startHz: Long, val endHz: Long, val sliceHz: Int) : IqP
         private const val KEEP1 = 460
         const val KEEP = KEEP1 - KEEP0
         private const val FFT = 1024
-        private const val SETTLE_MS = 130.0
-        /** Twelve bulk reads in flight in the driver, up to eight queued for the DSP thread, and the one being filled. */
-        private const val INFLIGHT_STALE = 21
         /** The live trace is republished at most this often; the completed pass corrects everything. */
         private const val LIVE_MS = 110L
     }

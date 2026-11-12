@@ -153,6 +153,14 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.7f, 0.5f); path.l(0.92f, 0.5f)
                 dot = Triple(0.5f, 0.5f, 0.05f)
             }
+            MayhemApp.SPECTRUM -> {
+                // a spectrum peak over a baseline, a marker chevron over it: a bench analyzer's screen
+                path.m(0.08f, 0.86f); path.l(0.92f, 0.86f)
+                val xs = floatArrayOf(0.08f, 0.26f, 0.34f, 0.40f, 0.46f, 0.50f, 0.54f, 0.60f, 0.66f, 0.74f, 0.92f)
+                val ys = floatArrayOf(0.78f, 0.76f, 0.72f, 0.60f, 0.28f, 0.18f, 0.28f, 0.60f, 0.72f, 0.76f, 0.78f)
+                path.m(xs[0], ys[0]); for (i in 1 until xs.size) path.l(xs[i], ys[i])
+                path.m(0.42f, 0.04f); path.l(0.50f, 0.11f); path.l(0.58f, 0.04f)
+            }
             MayhemApp.ANALYZER -> {
                 // a square-wave pulse train over a baseline
                 val xs = floatArrayOf(0.08f, 0.22f, 0.22f, 0.36f, 0.36f, 0.46f, 0.46f, 0.54f, 0.54f, 0.66f, 0.66f, 0.84f, 0.84f, 0.92f)

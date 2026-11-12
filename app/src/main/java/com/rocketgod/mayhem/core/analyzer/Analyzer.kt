@@ -71,10 +71,13 @@ object Analyzer {
 
     val proc = AnalyzerProcessor({ b -> val c = SdrEngine.freqHz.value; work.execute { arrive(b, c) } }, { _stats.value = it })
 
-    /** Always open on 433.92 at 2 Msps with the Devices gains: that band carries most of what there is to read. */
+    /**
+     * Always open on 433.92 at 2 Msps with the Devices gains: that band carries most of what there is to read. Opened
+     * from Spectrum, it opens on the frequency Spectrum handed over instead.
+     */
     fun open() {
         proc.capture.paused = !_capturing.value
-        SdrEngine.configure(SdrEngine.Mode.NONE, BANDS[0].second, SdrEngine.IQ_RATE, 32, 40, true, proc)
+        SdrEngine.configure(SdrEngine.Mode.NONE, Apps.takeHandoff() ?: BANDS[0].second, SdrEngine.IQ_RATE, 32, 40, true, proc)
     }
 
     fun pickFreq(hz: Long) = SdrEngine.tune(hz)

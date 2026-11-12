@@ -28,11 +28,15 @@ object Devices {
     private val _hop = MutableStateFlow(false)
     val hop: StateFlow<Boolean> = _hop.asStateFlow()
 
-    /** Always open on 433.92, whatever the last visit left: that band carries most of the protocol set. */
+    /**
+     * Always open on 433.92, whatever the last visit left: that band carries most of the protocol set. Opened from
+     * Spectrum, it opens on the frequency Spectrum handed over instead.
+     */
     fun open() {
-        _band.value = 0
+        val hz = com.rocketgod.mayhem.core.Apps.takeHandoff() ?: BANDS[0].second
+        _band.value = BANDS.indexOfFirst { it.second == hz }.coerceAtLeast(0)
         proc.centerOf = { SdrEngine.freqHz.value }
-        SdrEngine.configure(SdrEngine.Mode.NONE, BANDS[0].second, SdrEngine.IQ_RATE, 32, 40, true, proc)
+        SdrEngine.configure(SdrEngine.Mode.NONE, hz, SdrEngine.IQ_RATE, 32, 40, true, proc)
     }
 
     fun pickBand(i: Int) { _band.value = i; SdrEngine.tune(BANDS[i].second) }

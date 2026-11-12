@@ -213,6 +213,8 @@ object SdrEngine {
     private fun agcStep(sampled: Double, now: Long) {
         // held for as long as Transmit is open, not just while it sends: the receive level there means nothing
         if (!_agc.value || HackRfOne.txActive || Apps.playing() == MayhemApp.TRANSMIT || now - agcLast < 900) return
+        // Spectrum holds the gain set in RADIO: a gain step under a measurement would move every level on the screen
+        if (Apps.playing() == MayhemApp.SPECTRUM) return
         // A sweep's slices take turns being loud and quiet, and the once-a-second sample lands on whichever is
         // current: steering by it put part of every pass at another gain, dark bands across Looking Glass. So a
         // sweep's gain moves once a pass, by its loudest slice, and every slice of a pass shares one gain.
