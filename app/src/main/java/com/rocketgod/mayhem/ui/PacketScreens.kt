@@ -591,7 +591,7 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
 
 @Composable
 fun TpmsScreen(accent: Color) {
-    PacketFrame(accent, Apps.tpmsLog, tag = "TPMS", title = "TYRE SENSORS", controls = {
+    PacketFrame(accent, Apps.tpmsLog, tag = "TPMS", title = "TIRE SENSORS", controls = {
         PresetTiles(accent, listOf(Preset("315.000", "US", 315_000_000L), Preset("433.920", "EU", 433_920_000L)))
         AppNote("Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.")
     })
