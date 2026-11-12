@@ -16,6 +16,29 @@ const SETTLE_MS = 130;
  *  eight in flight; one more covers the read that was filling while the synthesizer moved. */
 const INFLIGHT_STALE = 9;
 
+/**
+ * The retune bookkeeping every sweep shares (Looking Glass, Search, Spectrum): ask for a frequency, then throw reads
+ * away until the radio has got there - counted down on a fixed timer, or cut short by the radio's `tuned()`.
+ */
+export class Retuner {
+  private settle = 0;
+  private awaitingTune = false;
+  constructor(private readonly emit: Emit) {}
+  /** Ask for the first frequency of a sweep (a short fixed settle). */
+  start(hz: number): void { this.settle = 8; this.awaitingTune = true; this.emit({ type: 'tune', hz }); }
+  /** Ask for the next step's frequency after a read of nSamp samples at rate. */
+  next(hz: number, nSamp: number, rate: number): void {
+    this.emit({ type: 'tune', hz });
+    const bufMs = nSamp * 1000 / rate;
+    this.settle = Math.min(500, Math.max(2, Math.ceil(SETTLE_MS / bufMs)));
+    this.awaitingTune = true;
+  }
+  /** The radio has confirmed the frequency asked for: only the reads already in flight are stale now. */
+  tuned(): void { if (!this.awaitingTune) return; this.awaitingTune = false; this.settle = Math.min(this.settle, INFLIGHT_STALE); }
+  /** Whether this read is still on the old frequency (and so must be dropped). */
+  stale(): boolean { if (this.settle > 0) { this.settle--; return true; } return false; }
+}
+
 export class SweepProcessor implements IqProcessor {
   readonly steps: number;
   private readonly re = new Float32Array(1024);
@@ -25,8 +48,7 @@ export class SweepProcessor implements IqProcessor {
   private readonly slice = new Float32Array(SWEEP_BINS);
   private readonly work: Float32Array;
   private step = 0;
-  private settle = 0;
-  private awaitingTune = false;
+  private readonly retune: Retuner;
   private sweeps = 0;
   /** Mean square (counts²) of the loudest slice so far this pass: the AGC steers a sweep by it. */
   private peakSq = 0;
@@ -45,17 +67,18 @@ export class SweepProcessor implements IqProcessor {
     this.steps = Math.max(1, Math.ceil((endHz - startHz) / this.stepHz));
     this.work = new Float32Array(this.steps * SWEEP_KEEP);
     this.bins = Math.min(this.work.length, Math.ceil((endHz - startHz) / this.binHz));
+    this.retune = new Retuner(emit);
   }
   /** Tune so the kept (inner) part of slice i covers [start + i·step, start + (i+1)·step). */
   centerOf(i: number): number { return this.startHz + this.stepHz / 2 + i * this.stepHz; }
   freqOfBin(idx: number): number { return this.startHz + idx * this.binHz; }
 
-  reset(): void { this.step = 0; this.settle = 8; this.awaitingTune = true; this.emit({ type: 'tune', hz: this.centerOf(0) }); }
+  reset(): void { this.step = 0; this.retune.start(this.centerOf(0)); }
   /** The radio has confirmed the frequency asked for: only the reads already in flight are stale now. */
-  tuned(): void { if (!this.awaitingTune) return; this.awaitingTune = false; this.settle = Math.min(this.settle, INFLIGHT_STALE); }
+  tuned(): void { this.retune.tuned(); }
 
   onIq(iq: Int8Array, rate: number): void {
-    if (this.settle > 0) { this.settle--; return; }
+    if (this.retune.stale()) return;
     const nSamp = iq.length >> 1;
     // power-average every whole 1024-point frame in the buffer (32 at 64 KiB) so a slice is not one noisy shot
     this.acc.fill(0); let frames = 0;
@@ -86,9 +109,6 @@ export class SweepProcessor implements IqProcessor {
       const peakRms = Math.sqrt(this.peakSq); this.peakSq = 0;
       this.emit({ type: 'sweep', row, peakRms, steps: this.steps, sweeps: this.sweeps, startHz: this.startHz, endHz: this.startHz + this.bins * this.binHz, binHz: this.binHz, progress: 0 }, [row.buffer]);
     } else this.emit({ type: 'sweepProgress', progress: this.step, steps: this.steps, sweeps: this.sweeps });
-    this.emit({ type: 'tune', hz: this.centerOf(this.step) });
-    const bufMs = nSamp * 1000 / rate;
-    this.settle = Math.min(500, Math.max(2, Math.ceil(SETTLE_MS / bufMs)));
-    this.awaitingTune = true;
+    this.retune.next(this.centerOf(this.step), nSamp, rate);
   }
 }
