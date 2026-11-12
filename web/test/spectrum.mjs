@@ -437,6 +437,13 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
     ok(sp !== null && Math.abs(sp.period - 400e-6) < 5e-6 && Math.abs(sp.duty - 0.25) < 0.03, `a pulse train 15 dB over the noise reads (${sp && (sp.period * 1e6).toFixed(1)} µs, ${sp && sp.duty.toFixed(3)})`);
   }
   ok(S.fmtSec(0) === '0 s', 'zero time prints as 0 s');
+  {
+    // the frequency pane fits an FSK swing of ±23 kHz (past half a 30 kHz filter), ignoring the noise between bursts
+    const n = 1000, fm = new Float32Array(n), amp = new Float32Array(n);
+    for (let k = 0; k < n; k++) { const on = k % 200 < 100; amp[k] = on ? -60 : -120; fm[k] = on ? (k % 20 < 10 ? 23000 : -23000) : 90000 * (Math.random() - 0.5); }
+    ok(S.fmScale(fm, amp, -110, 30000) === 25000, `the frequency pane fits a ±23 kHz FSK swing (${S.fmScale(fm, amp, -110, 30000)})`);
+    ok(S.fmScale(fm, new Float32Array(n).fill(-130), -110, 30000) === 15000, 'with no signal it is half the filter');
+  }
   ok(S.autoLevel(Float32Array.from([-90, -88, -89, -40, -91])) === -77, 'AUTO LEVEL sits 12 dB over the median');
   // long windows are reduced for the screen with the amplitude peak-held
   const big = []; const zb = new S.ZeroSpan(rate, { ...zcfg, bwHz: 300_000, sweepSec: 0.2, trigger: 'FREE' }, cc => big.push(cc));

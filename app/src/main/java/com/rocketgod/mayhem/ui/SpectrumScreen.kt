@@ -589,13 +589,15 @@ private fun renderZero(cv: android.graphics.Canvas, g: Geom, k: Float) {
     val t0 = if (z != null && z.trig >= 0) -z.trig / rate else 0.0
     // the level frequency and phase are drawn above: 10 dB over the median of the window (the noise between bursts)
     val gate = if (z == null) 0f else z.amp.copyOf().also { it.sort() }.let { it[it.size / 2] + 10f }
+    // the frequency pane fits the signal's swing (an FSK tone may sit past half the filter), in 1-2-2.5-5 steps
+    val fmHalf = if (z != null) com.rocketgod.mayhem.core.spectrum.fmScale(z.fm, z.amp, gate, s.zsBw) else s.zsBw / 2
     cv.drawText("${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}", g.l, 13 * k, paint(Palette.ink, k, text = 12f))
     cv.drawText("REF ${s.ref} $u · ${s.div} dB/div · ${if (s.trig == TrigMode.FREE) "FREE RUN" else "${if (s.trig == TrigMode.RISE) "RISING" else "FALLING"} ${s.level} $u"}", g.l, 26 * k, paint(muted, k, text = 11f))
     panes.forEachIndexed { q, p ->
         val top = g.t + q * (ph + gap)
         val rows = if (p == "amp") 10 else 4
         val hi: Double; val lo: Double
-        when (p) { "amp" -> { hi = s.ref.toDouble(); lo = s.ref - s.div * 10.0 }; "fm" -> { hi = s.zsBw / 2; lo = -s.zsBw / 2 }; else -> { hi = 180.0; lo = -180.0 } }
+        when (p) { "amp" -> { hi = s.ref.toDouble(); lo = s.ref - s.div * 10.0 }; "fm" -> { hi = fmHalf; lo = -fmHalf }; else -> { hi = 180.0; lo = -180.0 } }
         val pg = Geom(g.l, top, g.w, ph, g.fullW, g.fullH)
         if (q > 0) cv.drawRect(g.l, top, g.l + g.w, top + ph, paint(Color(0x0D4C8DFF), k))
         spGraticule(cv, pg, k, { dd ->

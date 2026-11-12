@@ -235,3 +235,19 @@ class ZeroSpan(val rate: Double, var cfg: ZsConfig, private val onCapture: (ZsCa
         onCapture(ZsCapture(amp, fm, ph, outRate / k, if (trig < 0) -1 else Math.round(trig.toDouble() / k).toInt(), roll, preview))
     }
 }
+
+/**
+ * The frequency pane's half range, Hz: a 1-2-2.5-5 step over the 99th percentile of |frequency| where the amplitude
+ * stands at or over [gate] (the signal, not the noise between bursts), so an FSK swing fits whatever the filter. With
+ * no signal in the window it is half the filter bandwidth.
+ */
+fun fmScale(fm: FloatArray, amp: FloatArray, gate: Float, bwHz: Double): Double {
+    val a = ArrayList<Double>()
+    for (i in fm.indices) if (amp[i] >= gate && fm[i].isFinite()) a.add(kotlin.math.abs(fm[i].toDouble()))
+    if (a.size < 8) return bwHz / 2
+    a.sort()
+    val want = kotlin.math.max(1000.0, a[kotlin.math.min(a.size - 1, (a.size * 0.99).toInt())] * 1.05)
+    val e = Math.pow(10.0, kotlin.math.floor(kotlin.math.log10(want)))
+    for (m in listOf(1.0, 2.0, 2.5, 5.0, 10.0)) if (m * e >= want) return m * e
+    return 10 * e
+}

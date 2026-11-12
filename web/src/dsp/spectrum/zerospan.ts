@@ -223,3 +223,19 @@ export class ZeroSpan {
     this.onCapture({ amp, fm, ph, rate: this.outRate / k, trig: trig < 0 ? -1 : Math.round(trig / k), roll, preview });
   }
 }
+
+/**
+ * The frequency pane's half range, Hz: a 1-2-2.5-5 step over the 99th percentile of |frequency| where the amplitude stands
+ * at or over `gate` (the signal, not the noise between bursts), so an FSK swing fits whatever the filter. With no
+ * signal in the window it is half the filter bandwidth.
+ */
+export function fmScale(fm: ArrayLike<number>, amp: ArrayLike<number>, gate: number, bwHz: number): number {
+  const a: number[] = [];
+  for (let i = 0; i < fm.length; i++) if (amp[i] >= gate && Number.isFinite(fm[i])) a.push(Math.abs(fm[i]));
+  if (a.length < 8) return bwHz / 2;
+  a.sort((x, y) => x - y);
+  const want = Math.max(1000, a[Math.min(a.length - 1, Math.floor(a.length * 0.99))] * 1.05);
+  const e = 10 ** Math.floor(Math.log10(want));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * e >= want) return m * e;
+  return 10 * e;
+}

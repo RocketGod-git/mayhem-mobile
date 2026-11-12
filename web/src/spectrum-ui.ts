@@ -20,7 +20,7 @@
 import {
   acpr, autoLevel, autoRbw, autoScale, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
   noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
-  DETECTORS, THERMAL_DBM_HZ, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
+  DETECTORS, THERMAL_DBM_HZ, fmScale, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
   type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
 } from './dsp/spectrum/index.js';
 
@@ -982,6 +982,8 @@ export class SpectrumUi {
     const t0 = z && z.trig >= 0 ? -z.trig / rate : 0;
     // the level frequency and phase are drawn above: 10 dB over the median of the window (the noise between bursts)
     const gate = !z ? 0 : (() => { const q = Float32Array.from(z.amp).sort(); return q[q.length >> 1] + 10; })();
+    // the frequency pane fits the signal's swing (an FSK tone may sit past half the filter), in 1-2-5 steps
+    const fmHalf = z ? fmScale(z.fm, z.amp, gate, s.zsBw) : s.zsBw / 2;
     ctx.textAlign = 'left'; ctx.fillStyle = ink; ctx.font = '700 12px ui-monospace, monospace';
     ctx.fillText(`${fmtHz(s.zsFreq, 6)} · FILTER ${bwText(s.zsBw)}`, g.l, 13);
     ctx.fillStyle = muted; ctx.font = '600 11px ui-monospace, monospace';
@@ -991,7 +993,7 @@ export class SpectrumUi {
       const rows = p === 'amp' ? 10 : 4;
       let lo: number, hi: number;
       if (p === 'amp') { hi = s.ref; lo = s.ref - s.div * 10; }
-      else if (p === 'fm') { hi = s.zsBw / 2; lo = -s.zsBw / 2; }
+      else if (p === 'fm') { hi = fmHalf; lo = -fmHalf; }
       else { hi = 180; lo = -180; }
       const pg: Geom = { ...g, t: top, h: ph };
       if (k > 0) { ctx.fillStyle = 'rgba(76,141,255,0.05)'; ctx.fillRect(g.l, top, g.w, ph); }

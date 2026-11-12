@@ -20,7 +20,7 @@ import kotlin.math.sqrt
  * Spectrum: RBW / VBW, the FFT's level scale, trace math, marker peak search, channel power, occupied bandwidth,
  * ACPR, noise floor, the sweep's stitching and zero span (filter, trigger, pulse measurements), all on synthetic
  * signals made here with a fixed PRNG (mulberry32) so every run, and every port, sees the same samples. Twin of
- * web/test/spectrum.mjs, check for check (127 of them), with the same signals and tolerances.
+ * web/test/spectrum.mjs, check for check (129 of them), with the same signals and tolerances.
  */
 class SpectrumTest {
     private var checks = 0
@@ -89,7 +89,7 @@ class SpectrumTest {
         persistence()
         println("spectrum: ${checks - failed}/$checks checks passed")
         assertTrue("failures: $failures", failed == 0)
-        assertEquals("checks run", 127, checks)
+        assertEquals("checks run", 129, checks)
     }
 
     // ---- RBW ----------------------------------------------------------------------------------------------------
@@ -521,6 +521,13 @@ class SpectrumTest {
             ok(sp != null && abs(sp.period - 400e-6) < 5e-6 && abs(sp.duty - 0.25) < 0.03, "a pulse train 15 dB over the noise reads (${sp?.let { f1(it.period * 1e6) }} µs, ${sp?.duty})")
         }
         ok(fmtSec(0.0) == "0 s", "zero time prints as 0 s")
+        run {
+            // the frequency pane fits an FSK swing of ±23 kHz (past half a 30 kHz filter), ignoring the noise between bursts
+            val n = 1000; val fm = FloatArray(n); val amp = FloatArray(n); val r = Mulberry(31)
+            for (k in 0 until n) { val on = k % 200 < 100; amp[k] = if (on) -60f else -120f; fm[k] = if (on) (if (k % 20 < 10) 23000f else -23000f) else (90000 * (r.next() - 0.5)).toFloat() }
+            ok(fmScale(fm, amp, -110f, 30000.0) == 25000.0, "the frequency pane fits a ±23 kHz FSK swing (${fmScale(fm, amp, -110f, 30000.0)})")
+            ok(fmScale(fm, FloatArray(n) { -130f }, -110f, 30000.0) == 15000.0, "with no signal it is half the filter")
+        }
         ok(autoLevel(fa(-90.0, -88.0, -89.0, -40.0, -91.0)) == -77.0, "AUTO LEVEL sits 12 dB over the median")
         // long windows are reduced for the screen with the amplitude peak-held
         val big = ArrayList<ZsCapture>(); val zb = ZeroSpan(rate, zcfg.copy(bwHz = 300_000.0, sweepSec = 0.2, trigger = TrigMode.FREE)) { big.add(it) }
