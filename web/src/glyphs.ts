@@ -38,6 +38,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   // a locomotive head-on: the cab, its windshield, two headlights, and the rails running away under it
   trains: { d: 'M34 8 H66 Q76 8 76 18 V70 H24 V18 Q24 8 34 8 Z M32 20 H68 V38 H32 Z M38 70 L16 94 M62 70 L84 94 M30 82 H70', circles: [[36, 56, 5], [64, 56, 5]] },
   acars: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M10 32 L50 56 L90 32 M50 6 L50 20 M38 14 L62 14' },
+  // a spectrum peak over a baseline, a marker chevron over it: a bench analyzer's screen
+  spectrum: { d: 'M8 86 H92 M8 78 L26 76 L34 72 L40 60 L46 28 L50 18 L54 28 L60 60 L66 72 L74 76 L92 78 M42 4 L50 11 L58 4' },
   // a pulse train over a baseline: what a captured burst looks like once it is sliced
   analyzer: { d: 'M8 70 H22 V32 H36 V70 H46 V32 H54 V70 H66 V32 H84 V70 H92 M8 86 H92' },
   lookingglass: { d: 'M61 61 L90 90 ' + wave(28, 56, 42, -12, 10, 1.1), circles: [[42, 42, 26]] },

@@ -1418,3 +1418,33 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .an-protos b { color: var(--accent); font-size: 12px; }
 .an-protos span { font-size: 10px; color: var(--muted); flex: 1; min-width: 160px; }
 .an-protos .chip { padding: 4px 8px; font-size: 10px; }
+
+/* ---- Spectrum: a bench analyzer's screen, its readouts and its controls ---- */
+.sp-visual { display: flex; flex-direction: column; gap: 6px; }
+.sp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 2px 4px; }
+.sp-head b { font-size: 20px; letter-spacing: 1px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.sp-head span { font-size: 10px; letter-spacing: 1px; color: var(--muted); }
+.sp-screen { position: relative; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper); }
+.sp-screen canvas { display: block; width: 100%; height: clamp(260px, 46vh, 560px); touch-action: none; cursor: crosshair; }
+.sp-read { display: flex; flex-direction: column; gap: 2px; font-family: ui-monospace, monospace; font-size: 12px; }
+.sp-mr { display: flex; gap: 10px; align-items: baseline; padding: 3px 6px; border-radius: 6px; }
+.sp-mr.on { background: color-mix(in srgb, var(--accent2) 14%, transparent); }
+.sp-mr.meas { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sp-mr.dim span { color: var(--muted); font-family: inherit; font-size: 11px; }
+.sp-mr b { width: 70px; flex: none; color: var(--accent2); font-size: 11px; letter-spacing: 1px; }
+.sp-mr span { flex: 1; color: var(--ink); overflow-wrap: anywhere; }
+.sp-mr i { font-style: normal; color: var(--muted); font-size: 10px; }
+.sp-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; min-width: 0; }
+.sp-row .seg { flex: 1 1 260px; min-width: 0; }
+.sp-seg > button { padding: 7px 4px; font-size: 11px; letter-spacing: 1px; }
+.sp-row .tog { padding: 7px 10px; font-size: 11px; }
+.sp-row .chip { padding: 7px 10px; font-size: 11px; flex: none; }
+.sp-presets .chip { flex: 1; min-width: 44px; }
+.sp-step { flex: 1; min-width: 150px; }
+.sp-step span { flex: 3; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sp-step span i { font-style: normal; color: var(--muted); font-size: 9px; letter-spacing: 1px; margin-right: 4px; }
+.sp-in { flex: 1; min-width: 160px; display: flex; align-items: center; gap: 6px; }
+.sp-in i { font-style: normal; color: var(--muted); font-size: 9px; letter-spacing: 1px; }
+.sp-in .txin { font-variant-numeric: tabular-nums; padding: 7px 9px; }
+.sp-trace b { width: 22px; color: var(--tc); font-size: 12px; }
+.sp-trace .seg > button.on { background: var(--tc); color: #05080a; }

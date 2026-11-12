@@ -23,6 +23,7 @@ import { TrainsProcessor } from './dsp/trains.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
 import { R433Processor, protocolList } from './dsp/r433/index.js';
 import { AnalyzerProcessor, captureFile } from './dsp/analyzer/capture.js';
+import { SpectrumProcessor, type SpecConfig } from './dsp/spectrum/processor.js';
 import { fromIqFile, parseSub, rateFromName, synthesize } from './dsp/analyzer/files.js';
 import { IqRecorder } from './dsp/capture.js';
 import { HamDemod } from './dsp/ham/demod.js';
@@ -350,6 +351,9 @@ self.onmessage = (e: MessageEvent) => {
       else if (m.cmd === 'list') post({ type: 'r433list', protocols: protocolList() });
       else if (m.cmd === 'span') r433.setSpan(m.hz as number);
       break;
+    case 'spectrum':
+      if (processor instanceof SpectrumProcessor) { if (m.cmd === 'set') processor.set(m.cfg as SpecConfig); else if (m.cmd === 'rearm') processor.rearm(); }
+      break;
     case 'analyzer':
       if (m.cmd === 'pause') analyzer.capture.paused = !!m.on;
       else if (m.cmd === 'import') analyzerImport(m.name as string, new Uint8Array(m.bytes as ArrayBuffer));
@@ -381,6 +385,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'subghz': return ism;
     case 'r433': return r433;
     case 'analyzer': return analyzer;
+    case 'spectrum': return new SpectrumProcessor(m.cfg as SpecConfig, emit);
     case 'sweep': return new SweepProcessor(m.start as number, m.end as number, m.slice as number, emit);
     case 'capture': return recorder;
     case 'ham': return ham;
