@@ -4,7 +4,7 @@
  * that make each C decoder fire, exactly what its get_string printed on every callback. A port passes when it prints
  * the same lines, in the same order, on the same pulses (the same check the iOS and Android ports run).
  *
- * `node test/pirate.mjs` runs all 26; `node test/pirate.mjs kia_v2 vag` runs only those slugs.
+ * `node test/pirate.mjs` runs all 27; `node test/pirate.mjs kia_v2 vag` runs only those slugs.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,6 +34,7 @@ const SUITE = [
   ['kia_v5', 'kia-v5', 'PPKiaV5'],
   ['kia_v6', 'kia-v6', 'PPKiaV6'],
   ['kia_v7', 'kia-v7', 'PPKiaV7'],
+  ['land_rover_fsk', 'land-rover-fsk', 'PPLandRoverFsk'],
   ['mazda_v0', 'mazda-v0', 'PPMazdaV0'],
   ['psa', 'psa', 'PPPsa'],
   ['renault_v0', 'renault-v0', 'PPRenaultV0'],

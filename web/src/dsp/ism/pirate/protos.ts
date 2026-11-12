@@ -22,6 +22,7 @@ import { PPKiaV3V4 } from './kia-v3v4.js';
 import { PPKiaV5 } from './kia-v5.js';
 import { PPKiaV6 } from './kia-v6.js';
 import { PPKiaV7 } from './kia-v7.js';
+import { PPLandRoverFsk } from './land-rover-fsk.js';
 import { PPMazdaV0 } from './mazda-v0.js';
 import { PPPsa } from './psa.js';
 import { PPRenaultV0 } from './renault-v0.js';
@@ -36,6 +37,6 @@ export function ppAll(): { am: PPDecoder[]; fm: PPDecoder[] } {
   const am: PPDecoder[] = [new PPChryslerV0(), new PPFiatV0(), new PPFiatV1(), new PPFiatV2(), new PPFordV0(), new PPHondaV1(), new PPKiaV1(),
     new PPKiaV2(), new PPMazdaV0(), new PPPsa(), new PPRenaultV0(), new PPRenaultV1(), new PPStarLine(), new PPSubaru(), new PPVag()];
   const fm: PPDecoder[] = [new PPFordV1(), new PPFordV2(), new PPFordV3(), new PPHondaStatic(), new PPHondaV2(), new PPKiaV0(), new PPKiaV3V4(),
-    new PPKiaV5(), new PPKiaV6(), new PPKiaV7(), new PPScherKhan(), new PPMazdaV0(), new PPPsa(), new PPRenaultV1()];
+    new PPKiaV5(), new PPKiaV6(), new PPKiaV7(), new PPScherKhan(), new PPMazdaV0(), new PPPsa(), new PPRenaultV1(), new PPLandRoverFsk()];
   return { am, fm };
 }
