@@ -463,11 +463,8 @@ private fun TransmissionCards(txs: List<Transmission>, byId: Map<Int, AnBurst>, 
     val d = rememberDims()
     Box(modifier) {
         if (txs.isEmpty()) {
-            Box(Modifier.fillMaxSize().panel(), contentAlignment = Alignment.Center) {
-                Text(if (starredOnly) "no starred bursts: open one and tap ☆ to keep it through CLEAR"
-                    else "nothing yet. Press a key fob or a remote near the antenna, or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)",
-                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.padding(d.dp(14f)))
-            }
+            if (starredOnly) EmptyState("analyzer", Modifier.fillMaxSize().panel(), title = "Nothing starred yet", tips = listOf("Open a burst and tap ☆ to keep it here"))
+            else EmptyState("analyzer", Modifier.fillMaxSize().panel())
         } else {
             val shown = remember(txs) { txs.asReversed().toList() }
             LazyVerticalGrid(GridCells.Adaptive(d.dp(230f)), Modifier.fillMaxSize(),

@@ -122,6 +122,7 @@ private fun HamReceive(accent: Color) {
                     ToggleBox("NOTCH", s.anf, accent, Modifier.fillMaxHeight()) { Ham.toggleAnf() }
                 }
             }
+            HamBandPlan(accent)
         }
     }
 }

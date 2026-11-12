@@ -1,6 +1,12 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -33,6 +40,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,9 +48,11 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +61,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
@@ -72,6 +84,7 @@ import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.NavBar
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.RtlSdr
 import kotlinx.coroutines.delay
 import com.rocketgod.mayhem.core.ham.Ham
@@ -82,6 +95,7 @@ import kotlin.math.roundToInt
 object SettingsNav {
     var jump by mutableStateOf<String?>(null)
     fun open(section: String) {
+        RadioUi.open = false
         jump = section
         if (Apps.current.value != MayhemApp.SETTINGS) Apps.open(MayhemApp.SETTINGS)
     }
@@ -104,29 +118,28 @@ fun SettingsScreen(accent: Color) {
     val edges = remember { floatArrayOf(0f, 0f) }   // the scroll viewport's top and bottom in the window, for drag auto-scroll
     var q by remember { mutableStateOf("") }
     val over = Apps.settingsOver()
-    val radio by Radio.kind.collectAsState()
-    val agc by SdrEngine.agc.collectAsState()
-    val lna by SdrEngine.radioLna.collectAsState()
-    val vga by SdrEngine.radioVga.collectAsState()
-    val amp by SdrEngine.radioAmp.collectAsState()
-    val bias by SdrEngine.biasTee.collectAsState()
     val multi by Apps.pagerMulti.collectAsState()
     val rdsOn by SdrEngine.rdsWanted.collectAsState()
     val hdOn by SdrEngine.hdWanted.collectAsState()
     val ham by Ham.state.collectAsState()
     val opensLast by NavBar.opensOnLast.collectAsState()
     val txOn = com.rocketgod.mayhem.core.Tx.enabled.collectAsState().value
-    var askBias by remember { mutableStateOf(false) }
     var how by remember { mutableStateOf<MayhemApp?>(null) }
-    if (askBias) BiasTeeDialog(accent, onConfirm = { NavBar.acceptBias(); SdrEngine.setBiasTee(true); askBias = false }, onCancel = { askBias = false })
+    // Every group starts folded each time Settings opens, so the page reads as a short list of headings.
+    val opened = remember { mutableStateListOf<String>() }
     LaunchedEffect(SettingsNav.jump) {
         val j = SettingsNav.jump ?: return@LaunchedEffect
+        // RADIO has no body: its pill (and anything sent to it) opens the RADIO panel itself
+        if (j == "radio") { SettingsNav.jump = null; RadioUi.show(); return@LaunchedEffect }
+        if (j !in opened) opened.add(j)
         delay(80)
         tops[j]?.let { scroll.animateScrollTo(it) }
         SettingsNav.jump = null
     }
     val term = q.trim()
     fun hit(keys: String) = term.isEmpty() || keys.contains(term, ignoreCase = true)
+    // while searching, every group with a hit is open; clearing the search puts the folds back as they were
+    val folds = Folds(opened, term.isNotEmpty())
 
     // ---- the rows, by section ----
     val appRows = when (over) {
@@ -141,26 +154,8 @@ fun SettingsScreen(accent: Color) {
         )
         else -> emptyList()
     }
-    val rtl = radio == Radio.Kind.RTLSDR
-    val hfTuner = rtl && RtlSdr.hfReady
-    val radioRows = when (radio) {
-        Radio.Kind.NONE -> listOf(SRow("radio none") { ValueRow("No radio attached", "plug in", "A HackRF or an RTL-SDR over USB-OTG.") })
-        Radio.Kind.RTLSDR -> listOf(
-            SRow("agc automatic gain") { SwitchRow("AGC", agc) { SdrEngine.setAgc(it) } },
-            SRow("gain db tuner") { SliderRow("Gain", vga, 0, SdrEngine.vgaMax(), SdrEngine.VGA_STEP, "dB", auto = agc) { SdrEngine.setRadioVga(it) } },
-            SRow("bias tee lna power dc") { SwitchRow("Bias tee", bias) { on -> if (!on) SdrEngine.setBiasTee(false) else if (NavBar.biasOk) SdrEngine.setBiasTee(true) else askBias = true } },
-            SRow("hf shortwave below 24 direct sampling upconverter") {
-                ValueRow("HF below 24 MHz", if (hfTuner) "Automatic" else "Not on this tuner",
-                    if (hfTuner) "Upconverter on a V4L, direct sampling on a V3." else null)
-            },
-        )
-        else -> listOf(
-            SRow("agc automatic gain") { SwitchRow("AGC", agc) { SdrEngine.setAgc(it) } },
-            SRow("amp rf amplifier 14") { SwitchRow("Amp", amp, "+14 dB ahead of everything") { if (it != amp) SdrEngine.toggleRadioAmp() } },
-            SRow("lna gain") { SliderRow("LNA", lna, 0, SdrEngine.LNA_MAX, SdrEngine.LNA_STEP, "dB", auto = agc) { SdrEngine.setRadioLna(it) } },
-            SRow("vga gain") { SliderRow("VGA", vga, 0, SdrEngine.VGA_MAX, SdrEngine.VGA_STEP, "dB", auto = agc) { SdrEngine.setRadioVga(it) } },
-        )
-    }
+    // The radio's own settings live in the RADIO panel; its heading here opens it, and a search for gain lands on it.
+    val radioKeys = "radio gain lna vga amp agc bias tee ppm sample rate filter"
     val barRows = listOf(
         SRow("opens on start home last") { SegRow("Opens on", listOf("home" to "HOME", "last" to "LAST APP"), if (opensLast) "last" else "home") { NavBar.setOpensOnLast(it == "last") } },
     )
@@ -172,34 +167,37 @@ fun SettingsScreen(accent: Color) {
     val logKeys = "log diagnostics share save problem"
     val aboutKeys = "about version license source credits made by rocketgod pirates"
 
-    Column(
-        Modifier.fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
-            .verticalScroll(scroll),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Column(Modifier.widthIn(max = 720.dp).fillMaxWidth()) {
+    // section shortcuts: plain pills that jump; on a phone a sideways row under the radio card, at desktop widths a
+    // column down the left that stays put while the sections scroll beside it
+    val keys = buildList {
+        if (over != null && appRows.isNotEmpty()) add("app" to over.title.uppercase())
+        add("radio" to "RADIO"); add("bar" to "BAR"); add("look" to "LOOK"); add("station" to "STATION")
+        add("transmit" to "TRANSMIT"); add("how" to "HOW IT WORKS"); add("log" to "LOG"); add("about" to "ABOUT")
+    }
+    val desk = d.widthDp >= 1100
+    @Composable
+    fun pill(k: String, l: String, modifier: Modifier = Modifier) {
+        val shape = RoundedCornerShape(if (desk) 10.dp else 50.dp)
+        Text(l, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
+            modifier = modifier.clip(shape).border(1.dp, accent.copy(alpha = 0.6f), shape)
+                .clickable { SettingsNav.jump = k }.padding(horizontal = d.dp(if (desk) 14f else 12f), vertical = d.dp(if (desk) 11f else 6f)))
+    }
+    @Composable
+    fun sections(showPills: Boolean) {
             SearchField(q, accent) { q = it }
             Spacer(Modifier.height(d.dp(10f)))
             RadioCard(accent)
-            // section shortcuts: plain pills that jump; they don't stick over the card
-            val keys = buildList {
-                if (over != null && appRows.isNotEmpty()) add("app" to over.title.uppercase())
-                add("radio" to "RADIO"); add("bar" to "BAR"); add("look" to "LOOK"); add("station" to "STATION")
-                add("transmit" to "TRANSMIT"); add("how" to "HOW IT WORKS"); add("log" to "LOG"); add("about" to "ABOUT")
-            }
             val pills = rememberScrollState()
-            if (term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).scrollGlow(pills, horizontal = true).horizontalScroll(pills), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                for ((k, l) in keys) Text(l, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
-                    modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, accent.copy(alpha = 0.6f), RoundedCornerShape(50))
-                        .clickable { SettingsNav.jump = k }.padding(horizontal = d.dp(12f), vertical = d.dp(6f)))
+            if (showPills && term.isEmpty()) Row(Modifier.fillMaxWidth().padding(top = d.dp(10f)).scrollGlow(pills, horizontal = true).horizontalScroll(pills), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                for ((k, l) in keys) pill(k, l)
             }
 
-            if (over != null) Section("app", over.title.uppercase(), "this app", tops, appRows.filter { hit(it.keys + " " + over.title) })
-            Section("radio", "RADIO", Radio.label.ifEmpty { null }, tops, radioRows.filter { hit(it.keys + " radio") })
+            if (over != null) Section("app", over.title.uppercase(), "this app", tops, folds, appRows.filter { hit(it.keys + " " + over.title) })
+            if (hit(radioKeys)) SectionHead("radio", "RADIO", Radio.label.ifEmpty { null }, tops, folds, link = { RadioUi.show() }) {}
 
             val showBarList = hit(barKeys)
             val barShown = barRows.filter { hit(it.keys) }
-            if (barShown.isNotEmpty() || showBarList) SectionHead("bar", "BAR", null, tops) {
+            if (barShown.isNotEmpty() || showBarList) SectionHead("bar", "BAR", null, tops, folds) {
                 if (barShown.isNotEmpty()) Group(barShown)
                 if (showBarList) {
                     Spacer(Modifier.height(d.dp(8f)))
@@ -209,11 +207,11 @@ fun SettingsScreen(accent: Color) {
                 }
             }
 
-            if (hit(lookKeys)) SectionHead("look", "LOOK", null, tops) { LookGroup(ctx) }
-            if (hit(stationKeys)) SectionHead("station", "STATION", "for the HAM logbook, APRS and FT8", tops) { StationGroup(accent) }
-            if (hit(txKeys)) SectionHead("transmit", "TRANSMIT", null, tops) {
+            if (hit(lookKeys)) SectionHead("look", "LOOK", null, tops, folds) { LookGroup(ctx) }
+            if (hit(stationKeys)) SectionHead("station", "STATION", "for the HAM logbook, APRS and FT8", tops, folds) { StationGroup(accent) }
+            if (hit(txKeys)) SectionHead("transmit", "TRANSMIT", null, tops, folds) {
                 Group(listOf(SRow(txKeys) {
-                    SwitchRow("Transmit", txOn, "Signal generator, Morse, OOK. Most bands need a licence; use a dummy load or a rated antenna.", tint = Palette.danger) {
+                    SwitchRow("Transmit", txOn, "Signal generator, Morse, OOK. Most bands need a license; use a dummy load or a rated antenna.", tint = Palette.danger) {
                         com.rocketgod.mayhem.core.Tx.setEnabled(ctx, it)
                     }
                 }))
@@ -221,7 +219,7 @@ fun SettingsScreen(accent: Color) {
 
             val howShown = howApps.filter { a -> hit("how it works help " + a.title + " " + a.blurb + " " + (HOW[a]?.joinToString(" ") ?: "")) }
             val tipsShown = TIPS.filter { (k, v) -> hit("tips field notes $k $v") }
-            if (howShown.isNotEmpty() || tipsShown.isNotEmpty()) SectionHead("how", "HOW IT WORKS", null, tops) {
+            if (howShown.isNotEmpty() || tipsShown.isNotEmpty()) SectionHead("how", "HOW IT WORKS", null, tops, folds) {
                 for (cat in listOf("Receive", "Analyze", "Transmit", "Tools")) {
                     val apps = howShown.filter { it.category == cat }
                     if (apps.isEmpty()) continue
@@ -236,16 +234,37 @@ fun SettingsScreen(accent: Color) {
                 }
             }
 
-            if (hit(logKeys)) SectionHead("log", "LOG", null, tops) {
+            if (hit(logKeys)) SectionHead("log", "LOG", null, tops, folds) {
                 Group(listOf(SRow(logKeys) {
                     SRowLayout("Diagnostics log", "What the radio and decoders are doing. Share it when reporting a problem.") {
                         SmallButton("OPEN", accent) { LogUi.open = true }
                     }
                 }))
             }
-            if (hit(aboutKeys)) SectionHead("about", "ABOUT", null, tops) { AboutGroup(accent) }
+            if (hit(aboutKeys)) SectionHead("about", "ABOUT", null, tops, folds) { AboutGroup(accent) }
             Spacer(Modifier.height(d.dp(16f)))
+    }
+
+    if (desk) {
+        // desktop widths: a wider page, the section list as a column down the left, the sections beside it, and inside
+        // an open section the rows two to a line
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Row(Modifier.widthIn(max = 1280.dp).fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Column(Modifier.width(210.dp).padding(top = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (term.isEmpty()) for ((k, l) in keys) pill(k, l, Modifier.fillMaxWidth())
+                }
+                CompositionLocalProvider(LocalSettingsPairs provides true) {
+                    Column(Modifier.weight(1f).fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
+                        .verticalScroll(scroll)) { sections(showPills = false) }
+                }
+            }
         }
+    } else Column(
+        Modifier.fillMaxSize().onGloballyPositioned { val y = it.positionInWindow().y; edges[0] = y; edges[1] = y + it.size.height }
+            .verticalScroll(scroll),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Column(Modifier.widthIn(max = 720.dp).fillMaxWidth()) { sections(showPills = true) }
     }
 }
 
@@ -313,6 +332,178 @@ private fun Badge(text: String, hot: Boolean = false) {
         modifier = Modifier.border(1.dp, if (hot) c else Palette.line, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 3.dp))
 }
 
+// ---------------------------------------------------------------- RADIO: the connected radio's own settings
+
+/** The RADIO panel: open over whatever is running, which keeps receiving underneath. */
+object RadioUi {
+    var open by mutableStateOf(false)
+    /** Open it; Settings closes first (it is an app here, so leaving it goes back to what it was open over). */
+    fun show() {
+        if (Apps.current.value == MayhemApp.SETTINGS) Apps.back()
+        open = true
+    }
+}
+
+/**
+ * Everything the connected radio can be told besides frequency, in one place apart from Settings. Each radio lists
+ * what it really has ([Radio.Caps]), and only those controls are drawn: a HackRF gets LNA, VGA, the amp, antenna power
+ * and the baseband filter; an RTL-SDR gets its tuner gain, the tuner's and the RTL's AGCs, the bias tee, crystal
+ * correction and, on an R820T, direct sampling. Every control applies to the radio at once.
+ */
+@Composable
+fun RadioPanel() {
+    val d = rememberDims()
+    // RADIO is red all through (title, headings, switches, sliders, pickers), so it never reads as the general Settings
+    val red = Palette.danger
+    val radio by Radio.kind.collectAsState()
+    val agc by SdrEngine.agc.collectAsState()
+    val lna by SdrEngine.radioLna.collectAsState()
+    val vga by SdrEngine.radioVga.collectAsState()
+    val amp by SdrEngine.radioAmp.collectAsState()
+    val bias by SdrEngine.biasTee.collectAsState()
+    val tunerAgc by SdrEngine.tunerAgc.collectAsState()
+    val rtlAgc by SdrEngine.rtlAgc.collectAsState()
+    val ppm by SdrEngine.ppm.collectAsState()
+    val ds by SdrEngine.directSampling.collectAsState()
+    val bb by SdrEngine.bbFilterHz.collectAsState()
+    val rate by SdrEngine.rateHz.collectAsState()
+    // the driver's status line changes once bring-up has named the board or tuner, which is when the caps are known
+    @Suppress("UNUSED_VARIABLE") val status = RadioStatus.text
+    val over = Apps.playing()
+    val caps = Radio.caps
+    val rtl = radio == Radio.Kind.RTLSDR
+    var askBias by remember { mutableStateOf(false) }
+    if (askBias) BiasTeeDialog(red, caps?.biasVolts ?: 4.5, if (rtl) "RTL-SDR" else "HackRF",
+        onConfirm = { NavBar.acceptBias(); SdrEngine.setBiasTee(true); askBias = false }, onCancel = { askBias = false })
+    // Bias tee pushes DC out the antenna port, so it is off by default and the first enable asks first.
+    fun toggleBias(on: Boolean) { if (!on) SdrEngine.setBiasTee(false) else if (NavBar.biasOk) SdrEngine.setBiasTee(true) else askBias = true }
+
+    // an opaque sheet over the app: nothing under it takes a touch while it is open
+    // a red edge and a faint red wash on the sheet; the heading strip a shade stronger
+    CompositionLocalProvider(LocalRadioRed provides true) {
+    Column(Modifier.fillMaxSize().background(lerp(Palette.paper, red, 0.07f)).border(1.dp, red)
+        .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }) {
+        Row(Modifier.fillMaxWidth().background(lerp(Palette.surface, red, 0.14f)).padding(horizontal = d.dp(8f), vertical = d.dp(8f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            Text("RADIO", color = red, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 3.sp)
+            Text(if (over != null) "· ${barLabel(over)}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), letterSpacing = 2.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            SmallButton("DONE", red) { RadioUi.open = false }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(lerp(Palette.line, red, 0.45f)))
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(top = d.dp(10f), bottom = d.dp(16f))) {
+                if (caps == null) PanelCard("NO RADIO", "Plug in a HackRF, a PortaPack in HackRF mode, or an RTL-SDR to see what it can be set to.", false)
+                else {
+                    val sub = if (rtl) "${RtlSdr.label} · tuner ${RtlSdr.tuner.ifEmpty { "?" }}"
+                              else HackRfOne.boardLabel.ifEmpty { "HackRF" } + if (HackRfOne.firmware.isNotEmpty()) " · fw ${HackRfOne.firmware}" else ""
+                    PanelCard(if (rtl) "RTL-SDR" else "HACKRF", sub, true)
+
+                    val gain = buildList {
+                        add(SRow("agc") { SwitchRow("AGC", agc, "The app keeps the level right by stepping the gain${if (caps.stagedGain) " (VGA first, then LNA)" else ""}. Moving a gain by hand turns it off.") { SdrEngine.setAgc(it) } })
+                        if (caps.stagedGain) {
+                            add(SRow("lna") { SliderRow("LNA", lna, 0, SdrEngine.LNA_MAX, SdrEngine.LNA_STEP, "dB · 0–40 in 8s", auto = agc) { SdrEngine.setRadioLna(it) } })
+                            add(SRow("vga") { SliderRow("VGA", vga, 0, SdrEngine.VGA_MAX, SdrEngine.VGA_STEP, "dB · 0–62 in 2s", auto = agc) { SdrEngine.setRadioVga(it) } })
+                        }
+                        if (caps.tunerGain) add(SRow("tuner gain") {
+                            SliderRow("Tuner gain", minOf(48, vga), 0, 48, SdrEngine.VGA_STEP, "dB · 0–${RtlSdr.MAX_GAIN_DB}", auto = agc || tunerAgc,
+                                autoText = if (tunerAgc) "TUNER AGC" else "AUTO") { SdrEngine.setRadioVga(it) }
+                        })
+                        if (caps.amp) add(SRow("amp") { SwitchRow("Amp", amp, "The +14 dB front-end amplifier. Strong local signals can overload it.") { if (it != amp) SdrEngine.toggleRadioAmp() } })
+                        if (caps.tunerAgc) add(SRow("tuner agc") { SwitchRow("Tuner AGC", tunerAgc, "The R82xx tuner's own automatic gain, in place of the app's") { SdrEngine.setTunerAgc(it) } })
+                        if (caps.rtlAgc) add(SRow("rtl agc") { SwitchRow("RTL AGC", rtlAgc, "The RTL2832U's digital AGC, which evens out the level after the converter") { SdrEngine.setRtlAgc(it) } })
+                    }
+                    val front = buildList {
+                        if (caps.biasT) add(SRow("bias") { SwitchRow(if (rtl) "Bias tee" else "Antenna power", bias, "${caps.biasVolts} V DC out the antenna port, for an inline LNA. Off at every connect.") { toggleBias(it) } })
+                        if (caps.bbFilters.isNotEmpty()) add(SRow("bb") {
+                            PickRow("Baseband filter", if (bb > 0) "Set by hand" else "AUTO follows the sample rate: ${mhzText(HackRfOne.bbFilterRoundDownLt(rate))} now",
+                                listOf(0 to "AUTO") + caps.bbFilters.map { it to mhzText(it) }, bb, red) { SdrEngine.setBbFilter(it) }
+                        })
+                    }
+                    val rates = (Radio.RATE_CHOICES.filter { Radio.canSample(Radio.limits, it) } + rate).distinct().sortedDescending()
+                    val samp = buildList {
+                        add(SRow("rate") { PickRow("Sample rate", "Each app opens at its own rate. A change here lasts until you open another app.", rates.map { it to mspsText(it) }, rate, red) { SdrEngine.setRate(it) } })
+                        if (caps.ppm) add(SRow("ppm") { PpmRow(ppm, red) })
+                        if (caps.directSampling) add(SRow("ds") { SwitchRow("Direct sampling", ds, "HF below 24 MHz read straight off the ADC (Q branch). Off, the dongle stops at 24 MHz.") { SdrEngine.setDirectSampling(it) } })
+                    }
+                    PanelSection("GAIN", gain)
+                    PanelSection("FRONT END", front)
+                    PanelSection("SAMPLING", samp)
+                    if (rtl) Text("No offset tuning: R82xx tuners have no offset mode (librtlsdr refuses it for them too).", color = Palette.muted, fontFamily = Mono,
+                        fontSize = d.sp(10f), lineHeight = d.sp(15f), modifier = Modifier.padding(start = d.dp(4f), end = d.dp(4f), top = d.dp(12f)))
+                }
+            }
+        }
+    }
+    }
+}
+
+private fun mhzText(hz: Int) = "%.3f".format(java.util.Locale.US, hz / 1e6).trimEnd('0').trimEnd('.') + " MHz"
+private fun mspsText(hz: Int) = "%.3f".format(java.util.Locale.US, hz / 1e6).trimEnd('0').trimEnd('.') + " Msps"
+
+@Composable
+private fun PanelCard(title: String, sub: String, on: Boolean) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(12.dp)
+    Row(Modifier.fillMaxWidth().clip(shape).background(lerp(Palette.surface, Palette.danger, 0.05f)).border(1.dp, lerp(Palette.line, Palette.danger, 0.22f), shape).padding(d.dp(12f)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        Box(Modifier.size(8.dp).background(if (on) Palette.ok else Palette.danger, CircleShape))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 1.sp, maxLines = 1)
+            Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f))
+        }
+    }
+}
+
+@Composable
+private fun PanelSection(title: String, rows: List<SRow>) {
+    if (rows.isEmpty()) return
+    val d = rememberDims()
+    Text(title, color = rowAccent(), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
+        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(16f), bottom = d.dp(6f)))
+    Group(rows)
+}
+
+/** A choice from a list: the current one on the right, the rest in a menu under it. */
+@Composable
+private fun PickRow(label: String, desc: String?, options: List<Pair<Int, String>>, selected: Int, accent: Color, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    var open by remember { mutableStateOf(false) }
+    SRowLayout(label, desc) {
+        Box {
+            Text((options.firstOrNull { it.first == selected }?.second ?: "") + "  ▾", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
+                fontSize = d.sp(11f), maxLines = 1, softWrap = false,
+                modifier = Modifier.clip(RoundedCornerShape(6.dp)).border(1.dp, accent.copy(alpha = 0.7f), RoundedCornerShape(6.dp)).clickable { open = true }
+                    .padding(horizontal = d.dp(12f), vertical = d.dp(7f)))
+            androidx.compose.material3.DropdownMenu(open, onDismissRequest = { open = false }, modifier = Modifier.background(Palette.surface)) {
+                for ((v, l) in options) androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(l, color = if (v == selected) accent else Palette.ink, fontFamily = Mono, fontWeight = if (v == selected) FontWeight.Bold else FontWeight.Medium, fontSize = d.sp(12f)) },
+                    onClick = { open = false; if (v != selected) onPick(v) })
+            }
+        }
+    }
+}
+
+/** An RTL-SDR's crystal correction: − and + a part per million at a time, or typed. */
+@Composable
+private fun PpmRow(ppm: Int, accent: Color) {
+    val d = rememberDims()
+    var txt by remember(ppm) { mutableStateOf(ppm.toString()) }
+    SRowLayout("Frequency correction", "Crystal error in parts per million. Remembered on this device.") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            SmallButton("−", accent) { SdrEngine.setPpm(ppm - 1) }
+            BasicTextField(txt, { v ->
+                    val f = v.filterIndexed { i, c -> c.isDigit() || (i == 0 && c == '-') }.take(4)
+                    txt = f
+                    f.toIntOrNull()?.let { SdrEngine.setPpm(it) }
+                }, singleLine = true, cursorBrush = SolidColor(accent),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                textStyle = TextStyle(color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), textAlign = TextAlign.Center),
+                modifier = Modifier.width(d.dp(56f)).clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp)).padding(vertical = d.dp(7f)))
+            SmallButton("+", accent) { SdrEngine.setPpm(ppm + 1) }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- building blocks
 
 @Composable
@@ -326,31 +517,80 @@ private fun SearchField(value: String, accent: Color, onChange: (String) -> Unit
     }
 }
 
-/** A section title with its rows; nothing at all when a search leaves it empty. */
-@Composable
-private fun Section(key: String, title: String, sub: String?, tops: HashMap<String, Int>, rows: List<SRow>) {
-    if (rows.isEmpty()) return
-    SectionHead(key, title, sub, tops) { Group(rows) }
+/** Which Settings groups are open: the ones tapped open this visit, or every one with a hit while searching. */
+private class Folds(val opened: MutableList<String>, val searching: Boolean) {
+    fun isOpen(key: String) = searching || key in opened
+    fun flip(key: String) { if (key in opened) opened.remove(key) else opened.add(key) }
 }
 
+/** True inside the RADIO panel, which is red all through so it never reads as the general Settings. */
+private val LocalRadioRed = staticCompositionLocalOf { false }
+/** Settings at desktop widths: a group's rows sit two to a line. */
+private val LocalSettingsPairs = staticCompositionLocalOf { false }
+
+/** The accent a row's switch, slider or choice takes: the theme's, or red in the RADIO panel. */
 @Composable
-private fun SectionHead(key: String, title: String, sub: String?, tops: HashMap<String, Int>, content: @Composable ColumnScope.() -> Unit) {
+private fun rowAccent(): Color = if (LocalRadioRed.current) Palette.danger else Palette.accent
+
+/** A section title with its rows; nothing at all when a search leaves it empty. */
+@Composable
+private fun Section(key: String, title: String, sub: String?, tops: HashMap<String, Int>, folds: Folds, rows: List<SRow>) {
+    if (rows.isEmpty()) return
+    SectionHead(key, title, sub, tops, folds) { Group(rows) }
+}
+
+/**
+ * One group as an accordion card: the heading row always shown, the body sliding open and shut beneath it. A [link]
+ * group has no body: it stays folded and its heading opens what it names (RADIO opens the RADIO panel).
+ */
+@Composable
+private fun SectionHead(key: String, title: String, sub: String?, tops: HashMap<String, Int>, folds: Folds, link: (() -> Unit)? = null,
+                        content: @Composable ColumnScope.() -> Unit) {
     val d = rememberDims()
-    Column(Modifier.fillMaxWidth().onGloballyPositioned { tops[key] = it.positionInParent().y.roundToInt() }.padding(top = d.dp(16f))) {
-        Row(Modifier.padding(start = d.dp(4f), bottom = d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
-            Text(title, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp)
-            if (sub != null) Text("  ·  $sub", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    val open = link == null && folds.isOpen(key)
+    val shape = RoundedCornerShape(14.dp)
+    val edge by animateColorAsState(if (open) lerp(Palette.line, Palette.accent, 0.45f) else Palette.line, label = "setEdge")
+    val turn by animateFloatAsState(if (open) 0f else -90f, label = "setChevron")
+    Column(Modifier.fillMaxWidth().onGloballyPositioned { tops[key] = it.positionInParent().y.roundToInt() }.padding(top = d.dp(8f))) {
+        Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, edge, shape)) {
+            Row(Modifier.fillMaxWidth().clickable { if (link != null) link() else folds.flip(key) }.padding(horizontal = d.dp(16f), vertical = d.dp(14f)),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(title, color = Palette.accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 3.sp)
+                Text(if (sub != null) "  ·  $sub" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                val tint = Palette.accent
+                androidx.compose.foundation.Canvas(Modifier.size(d.dp(12f)).graphicsLayer { rotationZ = turn }) {
+                    val w = size.width; val h = size.height; val sw = 2.dp.toPx()
+                    drawLine(tint, androidx.compose.ui.geometry.Offset(w * 0.15f, h * 0.35f), androidx.compose.ui.geometry.Offset(w * 0.5f, h * 0.7f), sw, StrokeCap.Round)
+                    drawLine(tint, androidx.compose.ui.geometry.Offset(w * 0.5f, h * 0.7f), androidx.compose.ui.geometry.Offset(w * 0.85f, h * 0.35f), sw, StrokeCap.Round)
+                }
+            }
+            AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Column(Modifier.fillMaxWidth().padding(start = d.dp(10f), end = d.dp(10f), bottom = d.dp(10f))) { content() }
+            }
         }
-        content()
     }
 }
 
 @Composable
 private fun Group(rows: List<SRow>) {
     val shape = RoundedCornerShape(12.dp)
-    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, Palette.line, shape)) {
-        rows.forEachIndexed { i, r ->
-            if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
+    val red = LocalRadioRed.current
+    // in RADIO the rows take a faint red wash and edge
+    val bg = if (red) lerp(Palette.surface, Palette.danger, 0.05f) else Palette.surface
+    val line = if (red) lerp(Palette.line, Palette.danger, 0.22f) else Palette.line
+    Column(Modifier.fillMaxWidth().clip(shape).background(bg).border(1.dp, line, shape)) {
+        if (LocalSettingsPairs.current && !red && rows.size > 1) {
+            rows.chunked(2).forEachIndexed { i, pair ->
+                if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(line))
+                Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min)) {
+                    Box(Modifier.weight(1f)) { pair[0].content() }
+                    Box(Modifier.width(1.dp).fillMaxHeight().background(line))
+                    Box(Modifier.weight(1f)) { pair.getOrNull(1)?.content?.invoke() }
+                }
+            }
+        } else rows.forEachIndexed { i, r ->
+            if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(line))
             r.content()
         }
     }
@@ -390,7 +630,7 @@ private fun hamRows(s: Ham.State): List<SRow> {
 }
 
 @Composable
-private fun SwitchRow(label: String, on: Boolean, desc: String? = null, tint: Color = Palette.accent, onChange: (Boolean) -> Unit) {
+private fun SwitchRow(label: String, on: Boolean, desc: String? = null, tint: Color = rowAccent(), onChange: (Boolean) -> Unit) {
     SRowLayout(label, desc) {
         Switch(on, onChange, colors = SwitchDefaults.colors(
             checkedThumbColor = inkOn(tint), checkedTrackColor = tint, checkedBorderColor = tint,
@@ -413,12 +653,13 @@ private fun SegRow(label: String, options: List<Pair<String, String>>, selected:
 private fun Seg(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(6.dp)
+    val tint = rowAccent()
     Row(Modifier.clip(shape).border(1.dp, Palette.line, shape)) {
         for ((v, l) in options) {
             val on = v == selected
-            Box(Modifier.background(if (on) Palette.accent else Color.Transparent).clickable { onSelect(v) }
+            Box(Modifier.background(if (on) tint else Color.Transparent).clickable { onSelect(v) }
                 .padding(horizontal = d.dp(11f), vertical = d.dp(7f)), contentAlignment = Alignment.Center) {
-                Text(l, color = if (on) inkOn(Palette.accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
+                Text(l, color = if (on) inkOn(tint) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
             }
         }
     }
@@ -426,14 +667,15 @@ private fun Seg(options: List<Pair<String, String>>, selected: String, onSelect:
 
 /** A level: its value on the right, the slider under it. Under AGC it reads AUTO; moving it takes the gain back by hand. */
 @Composable
-private fun SliderRow(label: String, value: Int, min: Int, max: Int, step: Int, unit: String, auto: Boolean, onChange: (Int) -> Unit) {
+private fun SliderRow(label: String, value: Int, min: Int, max: Int, step: Int, unit: String, auto: Boolean, autoText: String = "AUTO", onChange: (Int) -> Unit) {
     val d = rememberDims()
     var dragging by remember { mutableStateOf<Float?>(null) }
     val shown = dragging?.roundToInt() ?: value
+    val tint = rowAccent()
     Column(Modifier.fillMaxWidth().padding(horizontal = d.dp(14f), vertical = d.dp(8f))) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = d.sp(13f), modifier = Modifier.weight(1f).alpha(if (auto) 0.5f else 1f))
-            Text(if (auto && dragging == null) "AUTO" else "$shown $unit", color = if (auto && dragging == null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f))
+            Text(if (auto && dragging == null) autoText else "$shown $unit", color = if (auto && dragging == null) Palette.accent2 else Palette.ink, fontFamily = Mono, fontSize = d.sp(12f))
         }
         Slider(
             value = (dragging ?: value.toFloat()).coerceIn(min.toFloat(), max.toFloat()),
@@ -441,7 +683,7 @@ private fun SliderRow(label: String, value: Int, min: Int, max: Int, step: Int, 
             onValueChangeFinished = { dragging?.let { onChange(it.roundToInt()) }; dragging = null },
             valueRange = min.toFloat()..max.toFloat(),
             steps = ((max - min) / step - 1).coerceAtLeast(0),
-            colors = SliderDefaults.colors(thumbColor = Palette.accent, activeTrackColor = if (auto) Palette.muted else Palette.accent,
+            colors = SliderDefaults.colors(thumbColor = tint, activeTrackColor = if (auto) Palette.muted else tint,
                 inactiveTrackColor = Palette.line, activeTickColor = Color.Transparent, inactiveTickColor = Color.Transparent),
             modifier = Modifier.alpha(if (auto) 0.6f else 1f)
         )
@@ -639,7 +881,6 @@ private val HOW: Map<MayhemApp, List<String>> = mapOf(
     MayhemApp.ERT to listOf("Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), and Landis+Gyr Gridstream meters with their IDs, uptime and position.", "902–928 MHz", "A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band."),
     MayhemApp.LORA to listOf("LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames.", "902–928 MHz", "A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time."),
     MayhemApp.BTLE to listOf("Bluetooth Low Energy advertising: the beacons phones, trackers and wearables send.", "2.402 · 2.426 · 2.480 GHz", "Needs a HackRF: 2.4 GHz is above an RTL-SDR's range."),
-    MayhemApp.TPMS to listOf("Tire pressure sensors: each wheel reports its pressure and temperature.", "315 MHz US · 433.92 MHz EU", "Walk or drive past parked cars."),
     MayhemApp.ACARS to listOf("Text messages between aircraft and their airline: position reports, weather, maintenance.", "131.550 US · 131.525 / 131.725 EU · 131.450 JP", ""),
     MayhemApp.TRAINS to listOf("The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns.", "457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC", "A rear unit reports about once a minute and on every brake change; a locomotive on PTC means a train is close. A HackRF hears both EOT channels or all of PTC at once."),
     MayhemApp.PROWL to listOf("Hunts across the bands for live voice and stops on it.", "the bands you choose", "Good for finding what is busy near you."),
@@ -659,7 +900,7 @@ private val TIPS = listOf(
     "Faves" to "Tap ☆ beside the digits to keep a frequency; FAVES in the top bar brings it back in its own app, as it was heard.",
     "Tuning" to "Drag the digits up or down, tap ⌨ to type a frequency, or press the waterfall and slide; the radio retunes when you lift.",
     "Mute" to "MUTE in the top bar silences Mayhem from any screen; the phone's volume buttons set how loud.",
-    "Gain" to "AGC sets the gain for you. To set it by hand, open SETTINGS from any app — it lands on that app, with Radio right under it.",
+    "Gain" to "AGC sets the gain for you. To set it by hand, tap RADIO in the top bar from any app: gain, bias tee and everything else the radio can do.",
     "Floating window" to "Press home while an app is open and it keeps going in a small window with the waterfall and what it is hearing.",
     "Maps" to "ADS-B, AIS and APRS plot on OpenStreetMap; each map follows the traffic until you drag, and ⌖ re-arms it.",
     "Squelch and scan" to "Squelch gates audio against a tracked noise floor; SCAN in Audio hops your FAVES and holds where the squelch opens.",

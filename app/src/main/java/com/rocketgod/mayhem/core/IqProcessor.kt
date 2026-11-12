@@ -48,6 +48,9 @@ class PacketLog(private val cap: Int = 300) {
     private val _snapshot = MutableStateFlow(Snapshot(emptyList(), 0))
     val snapshot: StateFlow<Snapshot> = _snapshot.asStateFlow()
 
+    /** Called with each line as it is added (on the decoder's thread): ACARS groups its lines by aircraft from here. */
+    @Volatile var onAdd: ((String) -> Unit)? = null
+
     fun add(s: String) {
         val cur = _lines.value
         val next = if (cur.size >= cap) listOf(s) + cur.subList(0, cap - 1) else listOf(s) + cur
@@ -55,6 +58,7 @@ class PacketLog(private val cap: Int = 300) {
         _lines.value = next
         _count.value = total
         _snapshot.value = Snapshot(next, total)
+        onAdd?.invoke(s)
     }
     fun clear() { _lines.value = emptyList(); _count.value = 0; _snapshot.value = Snapshot(emptyList(), 0) }
 }

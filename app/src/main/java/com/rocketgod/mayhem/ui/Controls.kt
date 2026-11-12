@@ -89,49 +89,6 @@ fun Chip(label: String, selected: Boolean, accent: Color, modifier: Modifier = M
     }
 }
 
-/**
- * The radio's gain where you listen, the same row in every app (web, iPad, Mac, Android): AGC, the amp, then the
- * LNA and VGA steppers (a dongle has one tuner gain and no amp). A − or + takes the gain by hand, AGC hands it back.
- */
-@Composable
-fun GainRow(accent: Color) {
-    val d = rememberDims()
-    val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
-    val agc by SdrEngine.agc.collectAsState()
-    val lna by SdrEngine.radioLna.collectAsState()
-    val vga by SdrEngine.radioVga.collectAsState()
-    val amp by SdrEngine.radioAmp.collectAsState()
-    val rtl = radio == com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        SectionLabel("GAIN")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
-            Chip("AGC", agc, accent, Modifier.weight(1f)) { SdrEngine.setAgc(!agc) }
-            if (!rtl) Chip(if (amp) "AMP +14" else "AMP OFF", amp, accent, Modifier.weight(1f)) { SdrEngine.toggleRadioAmp() }
-            if (!rtl) GainStepper("LNA", lna, accent, Modifier.weight(1.4f), auto = agc,
-                onMinus = { SdrEngine.setRadioLna(lna - SdrEngine.LNA_STEP) }, onPlus = { SdrEngine.setRadioLna(lna + SdrEngine.LNA_STEP) })
-            GainStepper(if (rtl) "GAIN" else "VGA", vga, accent, Modifier.weight(1.4f), auto = agc,
-                onMinus = { SdrEngine.setRadioVga(vga - SdrEngine.VGA_STEP) }, onPlus = { SdrEngine.setRadioVga(vga + SdrEngine.VGA_STEP) })
-        }
-    }
-}
-
-/** A gain-stage stepper: [−] LABEL <value> [+], muted and marked AUTO while the AGC is driving it. */
-@Composable
-fun GainStepper(label: String, value: Int, accent: Color, modifier: Modifier, auto: Boolean = false, onMinus: () -> Unit, onPlus: () -> Unit) {
-    val d = rememberDims()
-    Row(modifier.control(accent, false), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f).clickable { onMinus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
-            Text("−", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
-        }
-        Text(if (auto) "$label $value AUTO" else "$label $value", color = if (auto) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
-            fontStyle = if (auto) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
-            fontSize = d.sp(12f), maxLines = 1, softWrap = false, modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
-        Box(Modifier.weight(1f).clickable { onPlus() }.padding(vertical = d.dp(9f)), contentAlignment = Alignment.Center) {
-            Text("+", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f))
-        }
-    }
-}
-
 /** Where a transmit control would be, on a radio that cannot transmit: says so, and what would. */
 @Composable
 fun ReceiveOnlyNote(accent: Color) {
@@ -142,9 +99,9 @@ fun ReceiveOnlyNote(accent: Color) {
     }
 }
 
-/** First-enable warning for the RTL-SDR bias tee — it puts DC on the antenna port and can damage the wrong gear. */
+/** First-enable warning for a bias tee (RTL-SDR 4.5 V, HackRF antenna power 3.3 V): DC on the antenna port can damage the wrong gear. */
 @Composable
-internal fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () -> Unit) {
+internal fun BiasTeeDialog(accent: Color, volts: Double, radioName: String, onConfirm: () -> Unit, onCancel: () -> Unit) {
     AlertDialog(
         onDismissRequest = onCancel,
         containerColor = Palette.surface,
@@ -153,7 +110,7 @@ internal fun BiasTeeDialog(accent: Color, onConfirm: () -> Unit, onCancel: () ->
         title = { Text("Bias-tee: DC on the antenna port", fontFamily = Mono, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("This puts about 4.5 V DC on the dongle's antenna input to power an inline LNA.", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
+                Text("This puts about $volts V DC on the $radioName's antenna port to power an inline LNA.", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
                 Text("• Only turn it on with a bias-tee-ready LNA or feed.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
                 Text("• Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
             }
@@ -202,6 +159,8 @@ val SpeakerOffIcon: ImageVector by lazy { pathIcon("SpeakerOff", "M16.5 12A4.5 4
 /** Material's apps grid and star, for HOME and FAVES in the top bar. */
 val AppsIcon: ImageVector by lazy { pathIcon("Apps", "M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z") }
 val StarIcon: ImageVector by lazy { pathIcon("Star", "M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z") }
+/** Material's tune (sliders) glyph, for RADIO in the top bar. */
+val TuneIcon: ImageVector by lazy { pathIcon("Tune", "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z") }
 /** Material's settings gear. */
 val GearIcon: ImageVector by lazy { pathIcon("Gear", "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z") }
 
@@ -246,11 +205,15 @@ fun PresetRow(accent: Color, presets: List<Pair<String, Long>>, title: String = 
  */
 @Composable
 fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = "listening…", total: Int? = null,
-            accent: Color = Palette.accent, onTap: ((String) -> Unit)? = null) {
+            accent: Color = Palette.accent,
+            /** An [EMPTY] key: the list waits with that app's empty state (glyph, title, tips) instead of [empty]. */
+            emptyKey: String? = null, onTap: ((String) -> Unit)? = null) {
     val d = rememberDims()
     val state = rememberLazyListState()
     Box(modifier.panel()) {
-        if (lines.isEmpty()) {
+        if (lines.isEmpty() && emptyKey != null && EMPTY.containsKey(emptyKey)) {
+            EmptyState(emptyKey, Modifier.fillMaxSize(), accent)
+        } else if (lines.isEmpty()) {
             Text(empty, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
         } else {
             val follow = rememberFollowNewest(state, (total ?: 0).toLong(), enabled = total != null)

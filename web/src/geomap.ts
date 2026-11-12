@@ -15,6 +15,24 @@ export interface GeoOpts {
   log?: (line: string) => void;
   /** Fit the pins themselves, close in (meters a few hundred meters apart): one pin zooms right in on it. */
   fitPins?: boolean;
+  /** Where the map opens before anything is plotted (your position, the last one known, or a stand-in). */
+  start?: { lat: number; lon: number; zoom: number } | null;
+}
+/** Regional zoom: a couple of hundred kilometers across, where ships, stations and aircraft near you show up. */
+export const REGION_ZOOM = 8;
+const LAST_POS_KEY = 'mm.lastPos';
+/** The last position this device reported, kept between visits (null when there never was one). */
+export function lastKnownPos(): { lat: number; lon: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAST_POS_KEY) ?? 'null');
+    return v && Number.isFinite(v.lat) && Number.isFinite(v.lon) ? { lat: v.lat, lon: v.lon } : null;
+  } catch { return null; }
+}
+export function saveLastPos(p: { lat: number; lon: number }): void { try { localStorage.setItem(LAST_POS_KEY, JSON.stringify(p)); } catch { /* private window */ } }
+/** Where a map opens: your position, else the last one known, else the middle of the US; always at regional zoom. */
+export function mapStart(home: { lat: number; lon: number } | null): { lat: number; lon: number; zoom: number; standIn: boolean } {
+  const p = home ?? lastKnownPos();
+  return p ? { ...p, zoom: REGION_ZOOM, standIn: false } : { lat: 39.5, lon: -98.35, zoom: REGION_ZOOM - 3, standIn: true };
 }
 
 let leafletReady: Promise<void> | null = null;
@@ -48,16 +66,18 @@ export class GeoMap {
   private items: GeoItem[] = []; private sel = '';
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
   private readonly btn: HTMLButtonElement;
+  private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
-    host.innerHTML = '<button class="follow" title="follow the traffic">⌖</button>';
+    host.innerHTML = '<button class="follow" title="follow the traffic">⌖</button><div class="geo-empty" hidden></div>';
     this.btn = host.querySelector('.follow')!;
+    this.emptyEl = host.querySelector('.geo-empty')!;
     this.btn.onclick = () => this.setFollow(!this.follow);
     this.btn.classList.toggle('on', this.follow);
     void ensureLeaflet(opts.log).then(() => { if (host.isConnected) this.build(); }).catch(() => undefined);
   }
   private build(): void {
-    const home = this.opts.home;
-    this.map = L.map(this.host, { zoomControl: true, attributionControl: true }).setView(home ? [home.lat, home.lon] : [39.5, -98.35], home ? 9 : 4);
+    const home = this.opts.home, st = this.opts.start;
+    this.map = L.map(this.host, { zoomControl: true, attributionControl: true }).setView(st ? [st.lat, st.lon] : home ? [home.lat, home.lon] : [39.5, -98.35], st ? st.zoom : home ? 9 : 4);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors', className: 'dark-tiles' }).addTo(this.map);
     this.map.on('dragstart', () => { if (this.follow) this.setFollow(false); });
     this.setHome(home ?? null);
@@ -107,6 +127,16 @@ export class GeoMap {
     this.map.invalidateSize(); this.map.setView([lat, lon], Math.max(this.map.getZoom(), minZoom));
   }
   invalidate(): void { this.map?.invalidateSize(); }
+  /** The overlay shown over the map until the first contact ('' hides it): a title and a line under it. */
+  setEmpty(title: string, sub = ''): void {
+    this.emptyEl.hidden = !title;
+    if (title) this.emptyEl.innerHTML = `<b>${esc(title)}</b>${sub ? `<small>${esc(sub)}</small>` : ''}`;
+  }
+  /** Move the opening view (a position fix came in) while nothing is plotted yet. */
+  recenter(lat: number, lon: number, zoom = REGION_ZOOM): void {
+    if (!this.map || this.items.length || this.trackPts.length) return;
+    this.map.setView([lat, lon], zoom);
+  }
   /** A ground track (or any path): split where it crosses the antimeridian so Leaflet does not draw a line around the world. */
   setTrack(points: [number, number][]): void {
     this.trackPts = points;

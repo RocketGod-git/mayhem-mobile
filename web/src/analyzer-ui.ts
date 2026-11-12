@@ -34,6 +34,8 @@ export interface Host {
   scope(): Scope | null;
   /** Hand a Flipper .sub to the Transmit app's replay, tuned to `hz` (Transmit's own safety prompt still applies). */
   sendToTx(sub: string, hz: number, fsk: boolean): void;
+  /** The app's empty state (glyph, title, tips), as every list in the app draws it. */
+  empty(title?: string, tips?: string[]): string;
 }
 
 /** A captured burst as the screen keeps it. */
@@ -358,7 +360,7 @@ export class AnalyzerUi {
       const shown = this.txs().filter(t => !this.starredOnly || t.members.some(m => m.star));
       list.innerHTML = shown.length
         ? [...shown].reverse().map(t => (t.members.length === 1 ? this.card(t.members[0]) : this.txCard(t))).join('')
-        : `<div class="mt-wait dv-empty">${this.starredOnly ? 'nothing starred yet: open a burst and tap ☆' : 'nothing yet. Press a key fob or a remote near the antenna, or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)'}</div>`;
+        : (this.starredOnly ? this.host.empty('Nothing starred yet', ['Open a burst and tap ☆ to keep it here']) : this.host.empty());
       list.scrollTop = top;
     }
     this.marks();

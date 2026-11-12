@@ -4,7 +4,7 @@
  * including the Pro's post-RECEIVE cache-busting re-tune (see the comment at the bring-up).
  */
 
-import type { Radio, RadioEvents, RadioLimits } from './radio.js';
+import type { Radio, RadioCaps, RadioEvents, RadioLimits } from './radio.js';
 
 export const HACKRF_FILTERS: USBDeviceFilter[] = [
   { vendorId: 0x1d50, productId: 0x6089 },   // HackRF One / One r9 / HackRF Pro
@@ -22,10 +22,11 @@ export function isMayhemSerial(d: USBDevice): boolean {
 
 const REQ = {
   SET_TRANSCEIVER_MODE: 1, SAMPLE_RATE_SET: 6, BASEBAND_FILTER_BW_SET: 7, BOARD_ID_READ: 14, VERSION_STRING_READ: 15,
-  SET_FREQ: 16, AMP_ENABLE: 17, SET_LNA_GAIN: 19, SET_VGA_GAIN: 20, SET_TXVGA_GAIN: 21, SET_HW_SYNC_MODE: 29, BOARD_REV_READ: 45,
+  SET_FREQ: 16, AMP_ENABLE: 17, SET_LNA_GAIN: 19, SET_VGA_GAIN: 20, SET_TXVGA_GAIN: 21, ANTENNA_ENABLE: 23, SET_HW_SYNC_MODE: 29, BOARD_REV_READ: 45,
 } as const;
 const MODE_OFF = 0, MODE_RECEIVE = 1, MODE_TRANSMIT = 2;
-const BB_FILTER_BW = [1750000, 2500000, 3500000, 5000000, 5500000, 6000000, 7000000, 8000000, 9000000, 10000000,
+/** The MAX2837's baseband filter bandwidths (libhackrf max2837_ft). */
+export const BB_FILTER_BW = [1750000, 2500000, 3500000, 5000000, 5500000, 6000000, 7000000, 8000000, 9000000, 10000000,
   12000000, 14000000, 15000000, 20000000, 24000000, 28000000];
 
 export function boardName(id: number): string {
@@ -54,9 +55,16 @@ export const HACKRF_LIMITS: RadioLimits = {
   canTransmit: true,
 };
 
+/** Everything a HackRF (One, r9, Pro, or a PortaPack in HackRF mode) can be told besides frequency. */
+export const HACKRF_CAPS: RadioCaps = {
+  stagedGain: true, tunerGain: false, amp: true, biasT: true, biasVolts: 3.3,
+  tunerAgc: false, rtlAgc: false, ppm: false, directSampling: false, bbFilters: BB_FILTER_BW,
+};
+
 export class HackRf implements Radio {
   readonly kind = 'hackrf' as const;
   readonly limits = HACKRF_LIMITS;
+  readonly caps = HACKRF_CAPS;
   /** What to call it on screen. Only known once bring-up has read the board id. */
   get label(): string { return this.board || 'HackRF'; }
 
@@ -70,6 +78,10 @@ export class HackRf implements Radio {
   lnaDb = 24;
   vgaDb = 24;
   amp = false;
+  /** Antenna port power (libhackrf hackrf_set_antenna_enable): 3.3 V for an inline LNA. Off at every connect. */
+  biasT = false;
+  /** Baseband filter in hertz, or 0 to follow the sample rate (the largest bandwidth under it, as libhackrf does). */
+  bbFilterHz = 0;
 
   board = '';
   firmware = '';
@@ -83,6 +95,7 @@ export class HackRf implements Radio {
   private stopFlag = false;
   private appliedFreq = 0; private appliedRate = 0;
   private appliedLna = -1; private appliedVga = -1; private appliedAmp = -1;
+  private appliedBias = -1; private appliedBb = -1;
   private dbgBuffers = 0;
 
   constructor(private dev: USBDevice, private ev: HackRfEvents) {}
@@ -113,7 +126,7 @@ export class HackRf implements Radio {
   async run(): Promise<void> {
     if (this.running) return;
     this.running = true; this.stopFlag = false; this.dbgBuffers = 0;
-    this.appliedFreq = 0; this.appliedRate = 0; this.appliedLna = -1; this.appliedVga = -1; this.appliedAmp = -1;
+    this.appliedFreq = 0; this.appliedRate = 0; this.appliedLna = -1; this.appliedVga = -1; this.appliedAmp = -1; this.appliedBias = -1; this.appliedBb = -1;
     try {
       this.ev.onLog('=== HackRF bring-up (WebUSB, libhackrf protocol) ===');
       this.ev.onStatus('HackRF · initializing…');
@@ -138,6 +151,8 @@ export class HackRf implements Radio {
       this.ev.onStatus(`HackRF stopped: ${(e as Error).message}`);
     } finally {
       try { await this.setTransceiverMode(MODE_OFF); } catch { /* device may be gone */ }
+      // Never leave DC on the antenna port after we let go of the radio.
+      if (this.biasT) { try { await this.ctrlOut(REQ.ANTENNA_ENABLE, 0, 0, undefined, 'ANTPOWER'); } catch { /* gone */ } }
       try { await this.dev.releaseInterface(0); } catch { /* ignore */ }
       try { await this.dev.close(); } catch { /* ignore */ }
       this.running = false;
@@ -155,11 +170,11 @@ export class HackRf implements Radio {
   abortTx(): void { this.txCancel = true; }
 
   private async bringUpRx(): Promise<void> {
-    this.appliedFreq = 0; this.appliedRate = 0; this.appliedLna = -1; this.appliedVga = -1; this.appliedAmp = -1;
+    this.appliedFreq = 0; this.appliedRate = 0; this.appliedLna = -1; this.appliedVga = -1; this.appliedAmp = -1; this.appliedBias = -1; this.appliedBb = -1;
     await this.setTransceiverMode(MODE_OFF); await sleep(100);
     await this.setHwSync(false);
     await this.setSampleRate(this.targetRateHz); this.appliedRate = this.targetRateHz;
-    await this.setBasebandFilter(bbFilterRoundDownLt(this.targetRateHz));
+    await this.setBasebandFilter(this.bbFor(this.targetRateHz)); this.appliedBb = this.bbFilterHz;
     await this.setFreq(this.targetFreqHz); this.appliedFreq = this.targetFreqHz;
     await this.applyGains();
     await this.setTransceiverMode(MODE_RECEIVE);
@@ -168,6 +183,7 @@ export class HackRf implements Radio {
     await this.setFreq(this.targetFreqHz + 1_000_000);
     await this.setFreq(this.targetFreqHz);
     await this.applyGains();
+    await this.applyBias();
     await sleep(60);
     this.ev.onLog(`HackRF: streaming IQ @ ${(this.targetFreqHz / 1e6).toFixed(3)} MHz, ${(this.targetRateHz / 1e6).toFixed(2)} Msps`);
     this.ev.onStatus(`${this.board} · ${(this.targetFreqHz / 1e6).toFixed(3)} MHz`);
@@ -248,12 +264,18 @@ export class HackRf implements Radio {
     const freqChanged = this.targetFreqHz !== this.appliedFreq;
     const ampV = this.amp ? 1 : 0;
     const gainChanged = this.lnaDb !== this.appliedLna || this.vgaDb !== this.appliedVga || ampV !== this.appliedAmp;
-    if (!rateChanged && !freqChanged && !gainChanged) return;
+    const biasChanged = (this.biasT ? 1 : 0) !== this.appliedBias;
+    const bbChanged = this.bbFilterHz !== this.appliedBb;
+    if (!rateChanged && !freqChanged && !gainChanged && !biasChanged && !bbChanged) return;
     if (rateChanged) {
       await this.setSampleRate(this.targetRateHz);
-      await this.setBasebandFilter(bbFilterRoundDownLt(this.targetRateHz));
       this.appliedRate = this.targetRateHz;
     }
+    if (rateChanged || bbChanged) {
+      await this.setBasebandFilter(this.bbFor(this.targetRateHz));
+      this.appliedBb = this.bbFilterHz;
+    }
+    if (biasChanged) await this.applyBias();
     if (freqChanged || rateChanged) {
       // cache-bust retune so the Pro's quarter shift is re-programmed
       await this.setFreq(this.targetFreqHz + 1_000_000);
@@ -298,6 +320,12 @@ export class HackRf implements Radio {
     const mhz = Math.floor(hz / 1_000_000), rem = hz - mhz * 1_000_000;
     const d = new DataView(new ArrayBuffer(8)); d.setUint32(0, mhz, true); d.setUint32(4, rem, true);
     return this.ctrlOut(REQ.SET_FREQ, 0, 0, d.buffer, 'SETFREQ');
+  }
+  /** The baseband filter for a rate: the one set by hand, else the largest under the rate (libhackrf's rule). */
+  private bbFor(rate: number): number { return this.bbFilterHz || bbFilterRoundDownLt(rate); }
+  private async applyBias(): Promise<void> {
+    await this.ctrlOut(REQ.ANTENNA_ENABLE, this.biasT ? 1 : 0, 0, undefined, 'ANTPOWER');
+    this.appliedBias = this.biasT ? 1 : 0;
   }
   private async applyGains(): Promise<[number, number, number]> {
     const lna = Math.min(40, Math.max(0, this.lnaDb)) & ~7;

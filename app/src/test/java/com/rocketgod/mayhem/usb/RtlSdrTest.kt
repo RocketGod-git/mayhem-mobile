@@ -92,4 +92,29 @@ class RtlSdrTest {
         assertTrue(MayhemApp.entries.all { Radio.blockedBecause(it, Radio.HACKRF).isEmpty() })
         assertTrue(Radio.blockedBecause(MayhemApp.TRANSMIT, Radio.RTLSDR).contains("receives only"))
     }
+
+    /** Crystal correction as librtlsdr writes it: trunc(-ppm * 2^24 / 1e6) into 0x3f (low byte) and 0x3e (six high bits). */
+    @Test fun ppmCorrectionMatchesLibrtlsdr() {
+        assertEquals(0, RtlSdr.ppmOffs(0))
+        assertEquals(-16, RtlSdr.ppmOffs(1))          // -16.777 truncates toward zero
+        assertEquals(16, RtlSdr.ppmOffs(-1))
+        assertEquals(-3355, RtlSdr.ppmOffs(200))
+        assertEquals(3355, RtlSdr.ppmOffs(-200))
+        val offs = RtlSdr.ppmOffs(50)                 // -838
+        assertEquals(0xba, offs and 0xff)
+        assertEquals(0x3c, (offs shr 8) and 0x3f)
+        assertEquals(rtlXtal, RtlSdr.correctedXtal(rtlXtal, 0))
+        assertEquals(28_801_440L, RtlSdr.correctedXtal(rtlXtal, 50))
+        assertEquals(15_999_200L, RtlSdr.correctedXtal(r828dXtal, -50))
+    }
+
+    /** The RADIO panel offers each radio only what it has. */
+    @Test fun hackRfCapsListTheMax2837Filters() {
+        val c = Radio.HACKRF_CAPS
+        assertTrue(c.stagedGain && c.amp && c.biasT && !c.tunerGain && !c.ppm)
+        assertEquals(3.3, c.biasVolts, 0.0)
+        assertEquals(16, c.bbFilters.size)
+        assertEquals(1_750_000, HackRfOne.bbFilterRoundDownLt(2_000_000))
+        assertEquals(15_000_000, HackRfOne.bbFilterRoundDownLt(20_000_000))
+    }
 }

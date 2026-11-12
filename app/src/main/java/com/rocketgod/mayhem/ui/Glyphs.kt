@@ -94,10 +94,6 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.22f, 0.54f); path.l(0.6f, 0.54f)
                 path.m(0.7f, 0.66f); path.l(0.78f, 0.66f)
             }
-            MayhemApp.TPMS -> {
-                circles.add(Triple(0.5f, 0.5f, 0.4f)); circles.add(Triple(0.5f, 0.5f, 0.2f))
-                for (k in 0 until 4) { val a = Math.toRadians(45.0 + k * 90.0); val c = cos(a).toFloat(); val sn = sin(a).toFloat(); path.m(0.5f + 0.2f * c, 0.5f + 0.2f * sn); path.l(0.5f + 0.4f * c, 0.5f + 0.4f * sn) }
-            }
             MayhemApp.ACARS -> {
                 val a = p(0.1f, 0.3f); val b = p(0.9f, 0.78f)
                 path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.06f, s * 0.06f))

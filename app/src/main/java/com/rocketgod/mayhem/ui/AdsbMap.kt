@@ -115,7 +115,9 @@ private class PlanesOverlay(private val accentInt: Int, @Volatile var planes: Li
  */
 @Composable
 fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, selected: String?, modifier: Modifier = Modifier,
-            focus: Pair<Double, Double>? = null, focusKey: Int = 0, onTapPlane: (String) -> Unit) {
+            focus: Pair<Double, Double>? = null, focusKey: Int = 0, emptyTitle: String = "", emptySub: String = "", onTapPlane: (String) -> Unit) {
+    // your position, the last one known or a stand-in, at regional zoom (never the whole world)
+    val start = remember { mapStart(home) }
     val accentInt = accent.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
     var overlayRef by remember { mutableStateOf<PlanesOverlay?>(null) }
@@ -145,7 +147,8 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
     }
     LaunchedEffect(mapRef, home, planes.isEmpty()) {
         val mv = mapRef ?: return@LaunchedEffect
-        if (planes.isEmpty() && !seeded && home != null) { mv.controller.setZoom(9.0); mv.controller.setCenter(GeoPoint(home.first, home.second)); seeded = true }
+        // a fix that comes in later moves the view only while nothing is plotted
+        if (planes.none { it.lat != null } && !seeded && home != null) { mv.controller.setZoom(REGION_ZOOM); mv.controller.setCenter(GeoPoint(home.first, home.second)); seeded = true }
     }
 
     Box(modifier.clipToBounds()) {
@@ -162,8 +165,9 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
                     setMultiTouchControls(true)
                     setTilesScaledToDpi(true)
                     zoomController.setVisibility(CustomZoomButtonsController.Visibility.SHOW_AND_FADEOUT)
-                    controller.setZoom(9.0)
-                    controller.setCenter(if (home != null) GeoPoint(home.first, home.second).also { seeded = true } else GeoPoint(39.5, -98.35))
+                    controller.setZoom(start.zoom)
+                    controller.setCenter(GeoPoint(start.lat, start.lon))
+                    if (home != null) seeded = true
                     @Suppress("ClickableViewAccessibility")
                     setOnTouchListener { v, ev ->
                         when (ev.actionMasked) {
@@ -179,6 +183,7 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
                 }
             }
         )
+        MapEmptyOverlay(emptyTitle, emptySub, Modifier.align(Alignment.Center).padding(16.dp))
         Box(
             Modifier.align(Alignment.BottomEnd).padding(6.dp).size(30.dp)
                 .background(if (follow) accent else Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
