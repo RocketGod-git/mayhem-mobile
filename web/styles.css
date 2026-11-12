@@ -1459,6 +1459,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sp-bigs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
 .sp-bigs.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .sp-msub { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+.sp-msub.warn { color: var(--warn, #f5a524); }
 .sp-mkt table { width: 100%; border-collapse: collapse; font: 600 12px ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .sp-mkt th { text-align: left; font-size: 9px; letter-spacing: 1.5px; color: var(--muted); padding: 0 4px 5px; border-bottom: 1px solid var(--line); }
 .sp-mkt td { padding: 5px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); color: var(--ink); white-space: nowrap; }
