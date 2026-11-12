@@ -3044,11 +3044,17 @@ function r433Summary(d: R433Data): string {
 
 /** The Analyzer: its screen lives in analyzer-ui.ts; this is the shell around it, as every receiver has. */
 const analyzerUi = new AnalyzerUi({
-  center: () => state.freq,
+  center: () => spanCenter(),
+  rate: () => state.rate,
   post: (msg, transfer) => ensureWorker().postMessage(msg, transfer ?? []),
   showing: () => state.app === 'analyzer',
   log,
+  scope: () => scope,
+  // into Transmit's own .sub replay, tuned to the burst; Transmit asks its safety question as it always does
+  sendToTx: (sub, hz, fsk) => { txHandoff = { sub, hz, fsk }; open('transmit'); tune(hz); },
 });
+/** A burst the Analyzer handed to Transmit: its .sub text, where to send it, and whether it was FSK. */
+let txHandoff: { sub: string; hz: number; fsk: boolean } | null = null;
 function renderAnalyzer(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
@@ -4292,7 +4298,8 @@ function renderTx(view: HTMLElement): void {
   const ampb = $('tx-amp'); ampb.classList.toggle('on', tx.amp);
   ampb.onclick = () => { tx.amp = !tx.amp; ampb.classList.toggle('on', tx.amp); };
   $('tx-stop').onclick = () => tx.stop();
-  let tab = 0;
+  // a burst handed over from the Analyzer opens on the .sub replay, filled in
+  let tab = txHandoff ? 9 : 0;
   const body = $('tx-body');
   const drawTab = () => {
     qa('[data-txtab]').forEach(b => b.classList.toggle('on', Number(b.dataset.txtab) === tab));
@@ -4379,6 +4386,12 @@ function renderTx(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-txtab]', view).forEach(b => b.onclick = () => { tab = Number(b.dataset.txtab); drawTab(); });
   drawTab();
   txStatus(tx.active ? 'transmitting' : 'idle');
+  if (txHandoff && tab === 9) {
+    const h = txHandoff; txHandoff = null;
+    const ta = q<HTMLTextAreaElement>('#s-text');
+    if (ta) ta.value = h.sub;
+    txStatus(`from the Analyzer: ${(h.hz / 1e6).toFixed(3)} MHz${h.fsk ? ' · this burst is FSK and the replay keys it as OOK, so it will not sound the same' : ''} · press REPLAY to send`);
+  }
 }
 
 function renderCapture(view: HTMLElement): void {
@@ -5349,6 +5362,7 @@ function scrollHints(): void {
 }
 function bindDesktop(): void {
   window.addEventListener('keydown', (e) => {
+    if (state.app === 'analyzer' && analyzerUi.onKey(e)) { e.preventDefault(); return; }
     // Any field you type into keeps its keys: a textarea or select passing a 'c' through would toggle CONNECT and
     // drop the radio mid-session.
     const t = e.target as HTMLElement | null;
