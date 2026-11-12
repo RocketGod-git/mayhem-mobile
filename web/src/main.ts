@@ -9,6 +9,8 @@ import { SKINS, applySkin, currentSkin, loadSkin } from './theme.js';
 import { glyph } from './glyphs.js';
 import { Scope, centredLabels, rangeLabels, rowToSpec } from './scope.js';
 import { btleChannelFreq } from './dsp/btle.js';
+import { BleTracker, KIND_LABEL, parseAdv, type BleDevice } from './ble.js';
+import { AcarsPlanes, labelMeaning, normReg, parseAcarsLine, type AcarsPlane } from './acars-planes.js';
 import { ORBCOMM_CHANNELS, type OrbcommSat } from './dsp/orbcomm.js';
 import type { PacketFrame } from './dsp/g3ruh.js';
 import { fetchGroup } from './sat.js';
@@ -22,7 +24,7 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import { GeoMap, type GeoItem } from './geomap.js';
+import { GeoMap, type GeoItem, mapStart, saveLastPos } from './geomap.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS, NARROW_TILES as LORA_TILES, NARROW_SHIFT as LORA_SHIFT, homeBand as loraHomeBand } from './dsp/lora/plan.js';
@@ -40,7 +42,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'tpms' | 'acars' | 'trains' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'acars' | 'trains' | 'subghz' | 'devices' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -55,7 +57,6 @@ const APPS: AppDef[] = [
   { id: 'ert', title: 'Meters', blurb: 'utility meters: ERT, mesh networks, Gridstream', cat: 'Receive' },
   { id: 'lora', title: 'LoRa', blurb: 'Meshtastic · MeshCore · LoRaWAN, 915 MHz', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
-  { id: 'tpms', title: 'TPMS', blurb: 'tire pressure, 315 / 433 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'end-of-train telemetry · PTC train control', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice across the bands', cat: 'Receive' },
@@ -462,6 +463,8 @@ function refreshGainUi(): void {
 
 function refreshAgcChip(): void {
   syncRadioPanel();
+  const g = gainSummary();
+  for (const b of qa('.fgain')) if (b.textContent !== g) b.textContent = g;
   for (const b of qa('#agc')) { b.textContent = 'AGC'; b.classList.toggle('on', state.agc); b.title = state.agc ? 'The automatic gain sets the gain' : 'The gain is yours; tap to hand it to the AGC'; }
   for (const l of qa('#lna')) { l.textContent = `LNA ${state.lna}${state.agc ? ' AUTO' : ''}`; l.classList.toggle('auto', state.agc); }
   for (const v of qa('#vga')) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${state.agc ? ' AUTO' : ''}`; v.classList.toggle('auto', state.agc); }
@@ -618,7 +621,7 @@ function rangeTile(l: string, a: number, b: number): string {
   return `<button class="tl" data-range="${a}" data-end="${b}"><b>${sweepMhz(a)}–${sweepMhz(b)}</b><small>${sub}</small></button>`;
 }
 /** The sweeps' card: the Android app's, with the range in place of the digits and the pass on the meter. */
-const sweepCardHtml = () => `<div class="face sweep"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><span id="lamp" class="lamp"><i></i><b></b></span></div><div id="sweep-title" class="srange">${sweepTitle()}</div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale"></div><div class="fcap"><b id="capl">PASS —</b><span id="capr"></span></div></div>`;
+const sweepCardHtml = () => `<div class="face sweep"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span>${gainChipHtml()}<span id="lamp" class="lamp"><i></i><b></b></span></div><div id="sweep-title" class="srange">${sweepTitle()}</div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale"></div><div class="fcap"><b id="capl">PASS —</b><span id="capr"></span></div></div>`;
 function refreshSweepCard(progress: number, sweeps: number): void {
   const s = state.sweep, t = q('#sweep-title');
   if (t && !t.classList.contains('preview')) t.textContent = sweepTitle();
@@ -752,7 +755,7 @@ const radioCan = (hz: number) => !radio || canSample(radio.limits, hz);
  *  channel back down through the offset. */
 function narrowShift(): void { state.viewLo = state.freq + NARROW_SHIFT; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); }
 function open(app: AppId | null): void {
-  if ((app as string) === 'subghz') app = 'devices';      // Sub-GHz is part of Devices now
+  if ((app as string) === 'subghz' || (app as string) === 'tpms') app = 'devices';      // Sub-GHz and TPMS are part of Devices now
   if (app === 'settings') { openSettings(); return; }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
   if (state.scanning && app !== 'audio') setScanning(false);
@@ -805,7 +808,6 @@ function open(app: AppId | null): void {
     case 'ert': configure('NONE', 911_600_000, radioCan(METERS_WIDE) ? METERS_WIDE : radioCan(METERS_RATE) ? METERS_RATE : 2e6, 32, 40, true, 'ert'); break;
     case 'lora': loraOpen(); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
-    case 'tpms': configure('NONE', 315_000_000, 2e6, 32, 40, true, 'tpms'); break;
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
     // none of them on the radio's DC spike; 131.550 is the one heard.
     case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = ACARS_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
@@ -831,9 +833,11 @@ function open(app: AppId | null): void {
   // SAME weather-alert decoding belongs to the audio app (NOAA weather radio); scope it so no other NFM app pays for it.
   worker?.postMessage({ type: 'same', on: app === 'audio' });
 }
+/** The second line of a map's empty overlay: what will show up, and where the map is centered. */
+const mapEmptySub = (what: string) => `${what}. ${state.home ? 'Centered on you.' : mapStart(null).standIn ? 'No location yet: allow it to center the map on you.' : 'Centered where you were last.'}`;
 function requestGeo(): void {
   if (!('geolocation' in navigator)) return;
-  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; geo?.setHome(state.home); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
+  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
 }
 
 
@@ -1068,7 +1072,6 @@ function renderProwl(view: HTMLElement): void {
       <div class="row">${[1.92e6, 7.68e6, 19.2e6].map(r => `<button class="chip" data-prate="${r}">${r / 1e6} MHz</button>`).join('')}</div>
       <div class="caption">WHEN THIS SPAN GOES QUIET</div>
       <div class="row"><button class="chip" id="prowl-sweep" style="flex:1"></button></div>
-      ${gainHtml()}
       <div class="countrow"><span class="count">HEARD</span><span><button id="prowl-clear" class="link">CLEAR</button></span></div>
       <div id="prowl-log" class="wrap"></div>
     </section>`;
@@ -1108,7 +1111,7 @@ function refreshProwl(): void {
   if (!el) return;
   el.innerHTML = p.log.length
     ? p.log.map((h, i) => `<button class="chip bm${h.kept ? ' on' : ''}${h.kept ? '' : ' faded'}" data-ph="${i}" title="tap to hold here &middot; ${esc(h.kept ? 'speech' : h.why || 'not speech')} &middot; speech score ${h.score.toFixed(2)}">${esc(mhz(h.hz))} &middot; ${h.secs.toFixed(0)}s &middot; ${h.score.toFixed(2)}<i data-phx="${i}">✕</i></button>`).join('')
-    : '<span class="empty">nothing heard yet, press HUNT</span>';
+    : emptyState('prowl');
   // Tapping one holds the receiver on it.
   qa<HTMLButtonElement>('[data-ph]', el).forEach(b => b.onclick = (ev) => {
     const i = Number(b.dataset.ph);
@@ -1147,10 +1150,9 @@ function renderOrbcomm(view: HTMLElement): void {
       <div id="orb-list" class="panel list short"></div>
       <div class="about">The message packets are encrypted and are not decoded. What is shown is each satellite's
         own report of where it is, which it sends every four seconds, plus its clock and speed.</div>
-      ${gainHtml()}
     </section>`;
   scope = attach(tunableScope('scope', 90, 70));
-  geo = new GeoMap($('orb-map'), { home: state.home, onPick: id => { o.sel = Number(id); refreshOrbcomm(); }, log });
+  geo = new GeoMap($('orb-map'), { home: state.home, start: mapStart(state.home), onPick: id => { o.sel = Number(id); refreshOrbcomm(); }, log });
   qa<HTMLButtonElement>('[data-orb]', view).forEach(b => b.onclick = () => { o.hunt = false; orbTune(Number(b.dataset.orb)); });
   $('orb-hunt').onclick = () => { o.hunt = !o.hunt; o.huntAt = performance.now(); refreshOrbcomm(); };
   clearInterval(orbTimer);
@@ -1281,7 +1283,6 @@ function renderPacketSats(view: HTMLElement): void {
       <div class="about">Ordinary AX.25 at 9600 baud, scrambled the way James Miller's modem does it. The payload is
         usually binary telemetry rather than text, so the callsigns are the part you read: they tell you which
         satellite you just heard.</div>
-      ${gainHtml()}
     </section>`;
   scope = attach(tunableScope('scope', 110, 80));
   clearInterval(packetTimer);
@@ -1393,7 +1394,7 @@ const scaleHtml = (sc: [number, string][]) => sc.map(([at, l]) => at >= 0.98 ? `
  * The frequency card, the same on every app (the Android app's): a tag, a title, ☆ and ⌨, a lamp; the digits
  * across the full width; a 32-LED meter with its scale; a caption line. setFace / setLamp / setMeter fill it.
  */
-const readoutHtml = () => `<div class="face"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><button id="fav" class="fact" title="save this to FAVES">☆</button><button id="fkey" class="fact" title="type a frequency">⌨</button><span id="lamp" class="lamp"><i></i><b></b></span><span id="sq" hidden></span></div><div class="readout"><div id="freq" class="freq">${freqDigitsHtml()}</div></div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale">${scaleHtml(DB_SCALE)}</div><div class="fcap"><b id="capl">SIGNAL —</b><span id="capr"></span></div><div id="health" class="health">waiting for IQ…</div></div>`;
+const readoutHtml = () => `<div class="face"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><button id="fav" class="fact" title="save this to FAVES">☆</button><button id="fkey" class="fact" title="type a frequency">⌨</button>${gainChipHtml()}<span id="lamp" class="lamp"><i></i><b></b></span><span id="sq" hidden></span></div><div class="readout"><div id="freq" class="freq">${freqDigitsHtml()}</div></div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale">${scaleHtml(DB_SCALE)}</div><div class="fcap"><b id="capl">SIGNAL —</b><span id="capr"></span></div><div id="health" class="health">waiting for IQ…</div></div>`;
 /** What the card says: its tag, its title, and (optionally) the caption's right side. */
 function setFace(tag: string, title: string, right?: string): void {
   const t = q('#ftag'); if (t) t.textContent = tag;
@@ -1464,7 +1465,17 @@ function freqEntry(seed = ''): void {
   inp.onblur = () => close(true);
 }
 const isAndroid = () => /android/i.test(navigator.userAgent);
-const gainHtml = () => `<div class="gainwrap"><div class="caption" id="gain-cap">GAIN</div><div class="row"><button id="agc" class="chip">AGC</button><button id="amp" class="chip">AMP OFF</button><button id="biast" class="chip" hidden>BIAS-T</button><div class="stepper"><button id="lna-minus">−</button><span id="lna">LNA</span><button id="lna-plus">+</button></div><div class="stepper"><button id="vga-minus">−</button><span id="vga">VGA</span><button id="vga-plus">+</button></div></div></div>`;
+/**
+ * The gain as one line in each app's card header ("AGC · LNA 24 VGA 50 · AMP"); a tap opens RADIO, where every gain
+ * control lives. No screen has a gain row of its own.
+ */
+function gainSummary(): string {
+  const rtl = rtlRadio();
+  const who = rtl?.tunerAgc ? 'TUNER AGC' : state.agc ? 'AGC' : 'MANUAL';
+  if (rtl) return `${who} · GAIN ${rtlGainDb()} dB${state.biast ? ' · BIAS-T' : ''}`;
+  return `${who} · LNA ${state.lna} VGA ${state.vga}${state.amp ? ' · AMP' : ''}`;
+}
+const gainChipHtml = () => `<button class="fgain" title="Gain: tap for RADIO">${gainSummary()}</button>`;
 /** Tune steps went with the Android app's redesign: every digit tunes itself. Kept so the call sites read the same. */
 const stepHtml = (_steps: number[]) => '';
 /** A sideways scroller whose edges glow while there is more past them (wired by bindHs). */
@@ -1495,7 +1506,30 @@ function bindHs(root: ParentNode = document): void {
 const CLEAR_SVG = '<svg viewBox="0 0 24 24"><path d="M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z"/></svg>';
 const pauseClearHtml = (id: string) => `<button class="tog" id="pause-${id}">PAUSE</button><button class="ib" id="clear-${id}" title="clear" aria-label="clear">${CLEAR_SVG}</button>`;
 const countRowHtml = (id: string, count: string, extra = '') => `<div class="countrow"><span id="count-${id}" class="count">${count}</span><span class="row">${extra}${pauseClearHtml(id)}</span></div>`;
-const listHtml = (id: string, title: string) => `<div class="panel list" id="list-${id}"><div class="empty">${title}</div></div>`;
+/**
+ * What an empty list or card stage says, centered: the app's glyph, what it is waiting for, and one or two concrete
+ * things to try. Keyed by app (and a few sub-lists).
+ */
+const EMPTY: Record<string, [string, string, string[]]> = {
+  prowl: ['prowl', 'Nothing heard yet', ['Press HUNT: it lands on anyone talking and moves on when they stop', 'A wider SPAN watches more at once; a narrower one hears weak voices better']],
+  search: ['search', 'No active frequencies yet', ['Pick a range above: AIR 118–137 and 2m 144–148 are busy almost everywhere', 'Set ABOVE to +10 dB to catch weaker signals']],
+  capture: ['capture', 'No captures yet', ['Tune to a signal and press ● REC', 'Keep it short: 2 Msps fills about 4 MB a second']],
+  acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
+  btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
+  lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'A wider SPAN (20 MHz on a HackRF) covers all of 902–928 MHz']],
+  loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
+  ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
+  ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
+  adsb: ['adsb', 'No aircraft yet', ['Aircraft send on 1090 MHz several times a second: a window with a view of the sky helps', 'A 1090 MHz antenna (about 6.9 cm) reaches 100+ miles']],
+  ais: ['ais', 'No vessels yet', ['Ships under way report every 2–10 s, at anchor every 3 minutes', 'AIS is VHF: you need a line of sight to the water']],
+  aprs: ['aprs', 'No stations yet', ['North America uses 144.390 MHz: cars and digipeaters beacon every few minutes', 'An antenna up high hears much farther']],
+  pager: ['pager', 'No pages yet', ['US FLEX networks sit around 929–932 MHz: try the presets', 'POCSAG is common on 152–158 and 466 MHz']],
+};
+function emptyState(key: string, title?: string, tips?: string[]): string {
+  const e = EMPTY[key]; if (!e) return `<div class="empty">${esc(title ?? 'listening…')}</div>`;
+  return `<div class="es"><span class="es-g">${glyph(e[0], 'currentColor', 44)}</span><b>${esc(title ?? e[1])}</b><ul>${(tips ?? e[2]).map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>`;
+}
+const listHtml = (id: string, title: string) => `<div class="panel list" id="list-${id}">${EMPTY[id] ? emptyState(id) : `<div class="empty">${title}</div>`}</div>`;
 const logHtml = (id: string, title: string) => countRowHtml(id, '0 DECODED') + listHtml(id, title);
 
 /** Where the launcher's app strip was scrolled to, kept across app visits so returning home does not snap it back. */
@@ -1664,7 +1698,9 @@ function render(app: AppId | null): void {
     case 'ert': renderMeters(view); break;
     case 'lora': renderLora(view); break;
     case 'trains': renderTrains(view); break;
-    case 'btle': case 'tpms': case 'acars': case 'subghz': renderPacket(view, app); break;
+    case 'btle': renderBle(view); break;
+    case 'acars': renderAcars(view); break;
+    case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'lookingglass': case 'search': renderSweep(view, app); break;
     case 'capture': renderCapture(view); break;
@@ -1688,7 +1724,7 @@ function render(app: AppId | null): void {
 function renderLauncher(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div><div id="launch-line" class="launch-line"></div>
-    <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain">${gainHtml()}</div></div></section>
+    <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain"></div></div></section>
     <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
       const apps = APPS.filter(a => a.cat === c); if (!apps.length) return '';
       // each group's name over its tiles: a grid two to a row on a phone, one sideways row when wide (as on iPad)
@@ -2133,7 +2169,7 @@ function refreshMonitor(): void {
     if (open) g.fillText(mon.tones[k] ? mon.tones[k].toFixed(1) : mon.dcs[k] ? `D${String(mon.dcs[k]).padStart(3, '0')}` : `+${Math.round(snr)}`, x + cellW / 2, y + 18);
   }
   const list = q('#mon-list');
-  if (list) list.innerHTML = mon.open.length ? mon.open.map((k, i) => { const hz = mon.first + k * mon.spacing; return `<div class="li tap ${i % 2 ? 'alt' : ''}" data-monk="${k}"><span class="row2"><span>${(hz / 1e6).toFixed(4)} MHz${mon.listening.includes(k) ? ' 🔊' : ''}</span><span>+${Math.round(mon.snr[k])} dB · ${mon.tones[k] ? `CTCSS ${mon.tones[k].toFixed(1)}` : mon.dcs[k] ? `DCS ${String(mon.dcs[k]).padStart(3, '0')}` : '—'} · ${Math.round((mon.since[i] ?? 0) / 1000)}s</span></span></div>`; }).join('') : '<div class="empty">nothing open — watching every channel</div>';
+  if (list) list.innerHTML = mon.open.length ? mon.open.map((k, i) => { const hz = mon.first + k * mon.spacing; return `<div class="li tap ${i % 2 ? 'alt' : ''}" data-monk="${k}"><span class="row2"><span>${(hz / 1e6).toFixed(4)} MHz${mon.listening.includes(k) ? ' 🔊' : ''}</span><span>+${Math.round(mon.snr[k])} dB · ${mon.tones[k] ? `CTCSS ${mon.tones[k].toFixed(1)}` : mon.dcs[k] ? `DCS ${String(mon.dcs[k]).padStart(3, '0')}` : '—'} · ${Math.round((mon.since[i] ?? 0) / 1000)}s</span></span></div>`; }).join('') : emptyState('ham');
   qa<HTMLElement>('[data-monk]', list ?? document).forEach(d => d.onclick = () => monitorLock(Number(d.dataset.monk)));
   const lg = q('#mon-log'); if (lg) lg.innerHTML = mon.log.length ? mon.log.slice(0, 30).map((l, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${l}</div>`).join('') : '<div class="empty">activity log</div>';
   const st = q('#mon-status'); if (st) st.textContent = `${n} channels @ ${mon.spacing / 1e3} kHz · ${mon.open.length} open · ${mon.listening.length} playing`;
@@ -2259,10 +2295,28 @@ function refreshHamUi(): void {
   const band = bandOf(h.freq);
   qa('[data-band]').forEach(b => b.classList.toggle('on', b.dataset.band === band?.id));
   const seg = q('#ham-seg'); if (seg) seg.textContent = segmentOf(h.freq) || 'outside the amateur bands';
+  const bp = q('#ham-bp'), bpKey = `${h.freq}|${h.tone}`; if (bp && bp.dataset.k !== bpKey) { bp.dataset.k = bpKey; bp.innerHTML = hamBandPlanHtml(h.freq); }
   const rep = q('#ham-rep'), rin = repeaterInput(h.freq);
   if (rep) { (rep as HTMLElement).hidden = rin === null || h.mode !== 'NFM'; rep.textContent = 'REV'; rep.title = rin !== null ? `input ${(rin / 1e6).toFixed(4)} MHz` : ''; rep.classList.toggle('on', h.rev); }
   const steps = q('#ham-steps'); if (steps) { const st = band?.step ?? (h.freq < 30e6 ? 500 : 12_500); steps.innerHTML = [[-st * 10], [-st], [st], [st * 10]].map(([s]) => `<button class="chip" data-step="${s}">${s > 0 ? '+' : '−'}${Math.abs(s) >= 1e6 ? `${Math.abs(s) / 1e6}M` : Math.abs(s) >= 1e3 ? `${Math.abs(s) / 1e3}k` : Math.abs(s)}</button>`).join(''); qa<HTMLButtonElement>('[data-step]', steps).forEach(b => b.onclick = () => tune(state.freq + Number(b.dataset.step))); }
   refreshHamMeter();
+}
+/**
+ * The band plan for the band the receiver is in: a strip of its segments with the tuned frequency marked, and each
+ * segment as a row (tap one to go there); in a repeater segment, the pair the tuned frequency belongs to.
+ */
+function hamBandPlanHtml(hz: number): string {
+  const b = bandOf(hz);
+  const mhz = (v: number) => (v / 1e6).toFixed(v < 30e6 ? 3 : 3);
+  if (!b) return `<div class="bp-none">${(hz / 1e6).toFixed(4)} MHz is outside the amateur bands: pick a band above</div>`;
+  const span = b.hi - b.lo, at = (v: number) => Math.max(0, Math.min(100, (v - b.lo) / span * 100));
+  const inSeg = (s: [number, number, string]) => hz >= s[0] && hz <= s[1];
+  const bar = b.segments.map((s, i) => `<i class="s${i % 4}${inSeg(s) ? ' on' : ''}" style="left:${at(s[0]).toFixed(2)}%;width:${Math.max(0.8, at(s[1]) - at(s[0])).toFixed(2)}%"></i>`).join('')
+    + `<em style="left:${at(hz).toFixed(2)}%"></em>`;
+  const rows = b.segments.map((s, i) => `<button class="bp-row${inSeg(s) ? ' on' : ''}" data-bpf="${s[0] === s[1] ? s[0] : s[0]}"><i class="s${i % 4}"></i><span>${s[0] === s[1] ? mhz(s[0]) : `${mhz(s[0])}–${mhz(s[1])}`}</span><b>${esc(s[2])}</b></button>`).join('');
+  const rin = repeaterInput(hz);
+  const rep = rin !== null ? `<div class="bp-rep">REPEATER PAIR · out ${(hz / 1e6).toFixed(4)} · in ${(rin / 1e6).toFixed(4)} · ${rin > hz ? '+' : '−'}${Math.abs(rin - hz) / 1e6 >= 1 ? `${Math.abs(rin - hz) / 1e6} MHz` : `${Math.abs(rin - hz) / 1e3} kHz`}${state.ham.tone ? ` · tone ${state.ham.tone.toFixed(1)}` : ''}</div>` : '';
+  return `<div class="bp-head"><b>${esc(b.name)}</b><span>${mhz(b.lo)}–${mhz(b.hi)} MHz · ${b.mode}${b.offset ? ` · repeaters ${b.offset > 0 ? '+' : '−'}${Math.abs(b.offset) >= 1e6 ? `${Math.abs(b.offset) / 1e6} MHz` : `${Math.abs(b.offset) / 1e3} kHz`}` : ''}</span></div><div class="bp-bar">${bar}</div>${rep}<div class="bp-rows">${rows}</div>`;
 }
 /** HAM's bands as tiles with their ranges. */
 function hamBandTiles(): string {
@@ -2295,7 +2349,6 @@ function renderHam(view: HTMLElement): void {
         <div id="sstv-panel" hidden>${imgPanelHtml()}${hsHtml(`<div class="tiles wide">${[['20m 14.230', 14_230_000, 'USB'], ['20m 14.233', 14_233_000, 'USB'], ['10m 28.680', 28_680_000, 'USB'], ['40m 7.171', 7_171_000, 'LSB'], ['ISS 145.800', 145_800_000, 'NFM']].map(([l, f, md]) => `<button class="tl" data-sstvf="${f}" data-sstvm="${md}"><b>${String(l).split(' ')[1]}</b><small>SSTV · ${String(l).split(' ')[0]} ${md}</small></button>`).join('')}</div>`)}</div>
         <div id="ft8-panel"><div class="caption">FT8 · <span id="ft8-clock"></span> · UTC  SNR  DT  Hz  message</div><div id="ft8-list" class="panel list"></div>
           ${hsHtml(`<div class="tiles">${[['160m', 1_840_000], ['80m', 3_573_000], ['40m', 7_074_000], ['30m', 10_136_000], ['20m', 14_074_000], ['17m', 18_100_000], ['15m', 21_074_000], ['12m', 24_915_000], ['10m', 28_074_000], ['6m', 50_313_000], ['2m', 144_174_000]].map(([l, f]) => `<button class="tl" data-ft8f="${f}"><b>${l}</b><small>${(Number(f) / 1e6).toFixed(3)}</small></button>`).join('')}</div>`)}</div>
-        ${gainHtml()}
       </section>`;
     scope = attach(tunableScope('scope', 200));
     qa<HTMLButtonElement>('[data-hamtab]', view).forEach(b => b.onclick = () => { h.tab = b.dataset.hamtab as typeof h.tab; open('ham'); });
@@ -2326,7 +2379,6 @@ function renderHam(view: HTMLElement): void {
         <div class="caption">RASTER · THRESHOLD · SPAN</div><div class="row">${[12_500, 25_000].map(s => `<button class="chip" data-monsp="${s}">${s / 1e3} kHz</button>`).join('')}${[6, 8, 12].map(t => `<button class="chip" data-monthr="${t}">+${t} dB</button>`).join('')}<button id="mon-wide" class="chip" ${window.innerWidth >= 720 ? '' : 'hidden'}>3.84 MHz</button></div>
         <div style="margin-top:6px">${hamBandTiles()}</div>
         <div class="caption">ACTIVITY</div><div id="mon-log" class="panel list short"></div>
-        ${gainHtml()}
       </section>`;
     scope = attach(tunableScope('scope', 200));
     qa<HTMLButtonElement>('[data-hamtab]', view).forEach(b => b.onclick = () => { h.tab = b.dataset.hamtab as typeof h.tab; open('ham'); });
@@ -2353,7 +2405,7 @@ function renderHam(view: HTMLElement): void {
       <div class="ctlrow" id="ham-agcrow"><span class="rl">AGC</span>${segHtml((['off', 'fast', 'slow'] as AgcMode[]).map(a => `<button data-agc="${a}">${a.toUpperCase()}</button>`))}<button id="ham-nr" class="tog">NR</button><button id="ham-anf" class="tog">NOTCH</button></div>
       <div id="ham-sq" class="ctlrow"><span class="rl">SQL</span>${segHtml([0, 3, 6, 10, 15].map(d => `<button data-hsq="${d}">${d ? d : 'OFF'}</button>`))}<button id="ham-rep" class="tog" hidden>REV</button></div>
       <div class="hamfine"><div class="caption">VOLUME</div><input id="ham-vol" type="range" min="0" max="2" step="0.05" value="${h.volume}"></div>
-      ${gainHtml()}
+      <div class="caption">BAND PLAN · tap a segment to go there</div><div id="ham-bp" class="bandplan"></div>
     </section>`;
   scope = attach(tunableScope('scope', 200));
   qa<HTMLButtonElement>('[data-hamtab]', view).forEach(b => b.onclick = () => { h.tab = b.dataset.hamtab as typeof h.tab; open('ham'); });
@@ -2367,6 +2419,7 @@ function renderHam(view: HTMLElement): void {
   $('ham-rep').onclick = () => { if (!h.rev) { const rin = repeaterInput(h.freq); if (rin === null) return; h.back = h.freq; h.rev = true; hamTune(rin); } else { h.rev = false; hamTune(h.back || h.freq); } };
   $<HTMLInputElement>('pbt').oninput = (e) => { h.shift = Number((e.target as HTMLInputElement).value); $('pbt-val').textContent = String(h.shift); hamSend(); };
   $<HTMLInputElement>('ham-vol').oninput = (e) => { h.volume = Number((e.target as HTMLInputElement).value); hamSend(); };
+  $('ham-bp').onclick = (e) => { const r = (e.target as HTMLElement).closest<HTMLElement>('[data-bpf]'); if (r) { h.rev = false; hamTune(Number(r.dataset.bpf)); } };
   refreshHamUi();
 }
 
@@ -2526,7 +2579,6 @@ function renderSat(view: HTMLElement, tabs: string): void {
       <div id="sat-map" class="panel map"></div>
       <div id="sat-panel" hidden><div id="sat-packets" hidden><div class="caption">PACKETS HEARD</div><div id="sat-packet-list" class="panel list short"></div></div><div id="sat-image" hidden>${imgPanelHtml()}</div></div>
       <div class="caption">PASSES · next 24 h · local time</div><div id="sat-passes" class="panel list short"></div>
-      ${gainHtml()}
     </section>`;
   scope = attach(tunableScope('scope', 200));
   qa<HTMLButtonElement>('[data-hamtab]', view).forEach(b => b.onclick = () => { pttStop(); worker?.postMessage({ type: 'satService', kind: 'none' }); h.tab = b.dataset.hamtab as typeof h.tab; open('ham'); });
@@ -2849,7 +2901,6 @@ function renderAudio(view: HTMLElement): void {
       ${segHtml(['WFM', 'NFM', 'AM', 'USB', 'LSB'].map(m => `<button data-mode="${m}">${m}</button>`))}
       <div style="margin-top:6px">${hsHtml(bandTilesHtml())}</div>
       <div class="ctlrow"><span class="rl">SQL</span>${segHtml([0, 6, 12, 20].map(d => `<button data-sql="${d}">${d ? `${d} dB` : 'OFF'}</button>`))}<button id="scan" class="tog">SCAN</button></div>
-      ${gainHtml()}
     </section>`;
   scope = attach(tunableScope('scope', 200));
   // The RDS ticker overlays the waterfall itself (the scope box is position:relative), so the scope stays a direct
@@ -3055,8 +3106,7 @@ function renderR433(view: HTMLElement): void {
       <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="tog" id="r433-ptoggle">PROTOCOLS</button>${pauseClearHtml('devices')}</span></div>
       <div class="mt-stage dv-stage"><div id="r433-list" class="mt-cards dv-cards"></div><div id="r433-detail" class="mt-detail" hidden></div></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
-      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys (ProtoPirate), gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (rtl_433). A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tap a card for everything it sent.</div>
-      <div class="gainwrap">${gainHtml()}</div>
+      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys (ProtoPirate), gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (rtl_433). A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-r433f]', view).forEach(b => b.onclick = () => { state.r433.filter = b.dataset.r433f as R433Filter; state.r433.sel = ''; drawR433(); });
@@ -3429,7 +3479,6 @@ function renderPacket(view: HTMLElement, app: AppId): void {
   let controls = '';
   switch (app) {
     case 'pager': controls = `<div class="row">${(['flex', 'pocsag', 'both'] as const).map(w => `<button class="chip" data-pager="${w}">${w === 'both' ? 'FLEX + POCSAG' : w.toUpperCase()}</button>`).join('')}</div>` + presetHtml('CHANNEL · MHz', [['929.6125', 929_612_500], ['929.6625', 929_662_500], ['931.9375', 931_937_500], ['466.175', 466_175_000]]) + stepHtml([1e5, 12_500, 2_500]); break;
-    case 'tpms': controls = presetHtml('BAND · MHz', [['315.000 · US', 315_000_000], ['433.920 · EU', 433_920_000]]) + `<div class="note">Schrader, FLM and GMC sensors. Drive past parked cars: each one repeats every minute or so.</div>`; break;
     case 'acars': controls = presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]]) + `<div class="note">Registration, flight, label and text from each message, CRC checked.</div>`; break;
     case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + `<div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? `WEATHER ${ISM_COUNTS.weather}` : f === 'remotes' ? `REMOTES ${ISM_COUNTS.remotes}` : `CAR KEYS ${ISM_COUNTS.cars}`}</button>`).join('')}</div>`; break;
     case 'btle': controls = `<div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>`; break;
@@ -3439,12 +3488,176 @@ function renderPacket(view: HTMLElement, app: AppId): void {
   if (why) controls = `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` + controls;
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
-    <section class="controls">${controls}${gainHtml()}${logHtml(app, why ? 'out of range for this radio' : 'listening…')}</section>`;
+    <section class="controls">${controls}${logHtml(app, why ? 'out of range for this radio' : 'listening…')}</section>`;
   scope = attach(app === 'btle' ? new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }) : tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-ism]', view).forEach(b => { const f = b.dataset.ism as keyof typeof state.ism; b.classList.toggle('on', state.ism[f]); b.onclick = () => { state.ism[f] = !state.ism[f]; b.classList.toggle('on', state.ism[f]); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); }; });
   qa<HTMLButtonElement>('[data-pager]', view).forEach(b => { b.classList.toggle('on', b.dataset.pager === state.pager); b.onclick = () => { state.pager = b.dataset.pager as typeof state.pager; worker?.postMessage({ type: 'pager', which: state.pager }); qa('[data-pager]').forEach(x => x.classList.toggle('on', x === b)); }; });
   qa<HTMLButtonElement>('[data-btle]', view).forEach(b => b.onclick = () => { state.btleCh = Number(b.dataset.btle); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); tune(btleChannelFreq(state.btleCh)); refreshBtle(); });
   refreshList(app); refreshAis(); refreshBtle();
+}
+
+// ---- BLE RX: one card per advertiser, the raw log one tap away -----------------------------------------------
+/** The BLE screen: CARDS shows one card per device (name, maker, type, signal, packets, last heard), a tap opens every
+ *  field and its raw advertisements; LOG is the decoder's line per packet. A tracker-type device that stays with you
+ *  raises an alert on its card and in the banner. */
+const bleUi = { tracker: new BleTracker(), view: 'cards' as 'cards' | 'log', sel: '', drawn: 0, pending: 0, timer: 0, watch: -1, pos: null as { lat: number; lon: number } | null };
+const bleAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : `${Math.floor(ms / 3_600_000)} h ago`;
+/** Live while it keeps advertising: phones and tags send several times a second, so ten quiet seconds means gone. */
+const BLE_LIVE_MS = 10_000;
+function bleCard(d: BleDevice, now: number): string {
+  const age = now - d.lastMs, live = age < BLE_LIVE_MS, flash = Math.max(0, 1 - age / 700);
+  const title = d.name || KIND_LABEL[d.kind];
+  return `<div class="mt-card ble ${bleUi.sel === d.mac ? 'sel' : ''} ${live ? '' : 'dim'} ${d.alert ? 'alert' : ''}" data-ble="${esc(d.mac)}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="ble-k ${d.tracker ? 'trk' : ''}">${esc(KIND_LABEL[d.kind].toUpperCase())}</span><span class="mt-k"><b>${esc(title)}</b><small>${esc(d.maker || 'unknown maker')}${d.name ? ` · ${esc(KIND_LABEL[d.kind])}` : ''}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : bleAgo(age)}</span></div>`
+    + (d.alert ? `<div class="ble-warn">⚠ ${esc(d.alert)}</div>` : '')
+    + `<div class="mt-clk"><b>${d.rssi[d.rssi.length - 1] ?? '—'} dB</b><small>SIGNAL</small><em>${d.count} packets</em></div>`
+    + meshSpark(d.rssi, true, '')
+    + `<div class="mt-hex">${esc(d.mac)} · ${d.random ? 'random' : 'public'} · first ${bleAgo(now - d.firstMs)}</div></div>`;
+}
+function bleDetail(d: BleDevice, now: number): string {
+  const rows = [...d.history].reverse().map(h => `<div><span>${new Date(h.ms).toLocaleTimeString()}</span><span>CH ${h.ch}</span><span>${Math.round(h.db)} dB</span><span>${esc(h.pduType)}</span><code>${esc(h.raw)}</code></div>`).join('');
+  const more = [{ name: 'First heard', value: `${trClock(d.firstMs)} · ${bleAgo(now - d.firstMs)}` }, { name: 'Last heard', value: `${trClock(d.lastMs)} · ${bleAgo(now - d.lastMs)}` },
+    ...(d.firstPos ? [{ name: 'Moved with you', value: `${Math.round(d.movedM)} m` }] : [])];
+  return `<div class="mt-dh ${d.alert ? 'red' : ''}"><b>${esc(d.name || KIND_LABEL[d.kind])}</b><span>${esc(d.maker || 'UNKNOWN MAKER')} · ${esc(KIND_LABEL[d.kind].toUpperCase())}</span><button class="chip" data-bdo="close">✕</button></div>`
+    + (d.alert ? `<div class="ble-warn">⚠ ${esc(d.alert)}. Look for it in your bag, car or clothes, or check it with a tracker-finder app.</div>` : '')
+    + `<div class="mt-fields">${[...d.fields, ...more].map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}</div>`
+    + `<div class="caption">RAW ADVERTISEMENTS · newest first · ${d.history.length} kept</div><div class="ble-raw">${rows}</div>`;
+}
+function renderBle(view: HTMLElement): void {
+  const why = radio ? blockedBecause(APP_NEEDS.btle, radio.limits) : '';
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
+      <div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>
+      <div id="ble-alert" class="ble-warn big" hidden></div>
+      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-bleview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('btle')}</div>
+      <div id="ble-stage" class="mt-stage"><div id="ble-cards" class="mt-cards"></div><div id="ble-detail" class="mt-detail" hidden></div></div>
+      <div id="ble-log">${logHtml('btle', 'listening…')}</div>
+      <div class="note">One card per device, by its address: the maker from its manufacturer ID, the type from what it advertises (Find My, Tile, SmartTag, Find Hub, iBeacon, Eddystone, Fast Pair, AirPods, phones, watches). A tracker that stays near you for 20 minutes, or is still there after you move 500 m (with location allowed), is flagged. Phones and tags change their random address every 15 minutes or so, so one phone can show up as several cards over time.</div>
+    </section>`;
+  scope = attach(new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }));
+  qa<HTMLButtonElement>('[data-btle]', view).forEach(b => b.onclick = () => { state.btleCh = Number(b.dataset.btle); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); tune(btleChannelFreq(state.btleCh)); refreshBtle(); });
+  qa<HTMLButtonElement>('[data-bleview]', view).forEach(b => b.onclick = () => { bleUi.view = b.dataset.bleview as typeof bleUi.view; refreshBle(true); });
+  $('ble-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-ble]'); if (c) { bleUi.sel = bleUi.sel === c.dataset.ble ? '' : c.dataset.ble!; refreshBle(true); } };
+  $('ble-detail').onclick = (e) => { if ((e.target as HTMLElement).closest('[data-bdo="close"]')) { bleUi.sel = ''; refreshBle(true); } };
+  // where you are, so a tracker still heard after you have moved is flagged too; only when location is already allowed
+  if (bleUi.watch < 0 && 'geolocation' in navigator && navigator.permissions) {
+    void navigator.permissions.query({ name: 'geolocation' as PermissionName }).then(p => {
+      if (p.state === 'granted' && bleUi.watch < 0) bleUi.watch = navigator.geolocation.watchPosition(x => { bleUi.pos = { lat: x.coords.latitude, lon: x.coords.longitude }; }, () => undefined, { maximumAge: 30_000 });
+    }).catch(() => undefined);
+  }
+  clearInterval(bleUi.timer);
+  // ages and live dots run on between packets
+  bleUi.timer = window.setInterval(() => {
+    if (state.app !== 'btle') { clearInterval(bleUi.timer); if (bleUi.watch >= 0) { navigator.geolocation.clearWatch(bleUi.watch); bleUi.watch = -1; } return; }
+    refreshBle();
+  }, 1000);
+  refreshList('btle'); refreshBtle(); refreshBle(true);
+}
+function onBleAdv(m: { pdu: number[]; db: number; ch: number }): void {
+  const a = parseAdv(m.pdu, m.db, m.ch); if (!a) return;
+  bleUi.tracker.add(a, Date.now(), bleUi.pos);
+  if (state.app === 'btle') refreshBle();
+}
+function refreshBle(force = false): void {
+  if (state.app !== 'btle') return;
+  const now = Date.now();
+  if (!force && now - bleUi.drawn < 240) { clearTimeout(bleUi.pending); bleUi.pending = window.setTimeout(() => refreshBle(true), 250); return; }
+  bleUi.drawn = now;
+  const devs = bleUi.tracker.list(), alerts = devs.filter(d => d.alert);
+  qa<HTMLButtonElement>('[data-bleview]').forEach(b => { const v = b.dataset.bleview; b.classList.toggle('on', v === bleUi.view); b.textContent = v === 'cards' ? `DEVICES ${devs.length}` : `LOG ${counts.btle ?? 0}`; });
+  const stage = q('#ble-stage'), cards = q('#ble-cards'), det = q('#ble-detail'), logEl = q('#ble-log'), banner = q('#ble-alert');
+  if (!stage || !cards || !det || !logEl || !banner) return;
+  stage.hidden = bleUi.view !== 'cards'; logEl.hidden = bleUi.view !== 'log';
+  banner.hidden = !alerts.length;
+  if (alerts.length) banner.textContent = alerts.length === 1 ? `⚠ ${alerts[0].alert}` : `⚠ ${alerts.length} TRACKERS ARE STAYING NEAR YOU`;
+  if (bleUi.view === 'cards' && !paused.has('btle')) {
+    const top = cards.scrollTop;
+    cards.innerHTML = devs.length ? devs.map(d => bleCard(d, now)).join('') : emptyState('btle');
+    cards.scrollTop = top;
+  }
+  const picked = bleUi.tracker.devices.get(bleUi.sel);
+  det.hidden = !picked;
+  if (picked) { const top = det.scrollTop; det.innerHTML = bleDetail(picked, now); det.scrollTop = top; }
+  if (alerts.length) setLamp(`${alerts.length} TRACKER${alerts.length === 1 ? '' : 'S'}`, 'red');
+  else if (devs.length) setLamp(`${devs.length} DEVICE${devs.length === 1 ? '' : 'S'}`, 'ok');
+}
+
+// ---- ACARS: one card per aircraft, its messages in the panel, a link to the same aircraft in ADS-B ------------
+const acarsUi = { planes: new AcarsPlanes(), view: 'cards' as 'cards' | 'log', sel: '', drawn: 0, pending: 0, timer: 0 };
+/** The same aircraft in the ADS-B list: by ICAO address (from a US registration), the registration looked up for an
+ *  ADS-B aircraft, or the flight number against its callsign. */
+function acarsAdsbMatch(p: AcarsPlane): Aircraft | undefined {
+  const reg = normReg(p.reg), fl = p.flight.replace(/\s/g, '').toUpperCase();
+  return state.aircraft.find(a => (p.icao !== '' && a.icao.toUpperCase() === p.icao)
+    || (reg !== '' && normReg(acInfo.get(a.icao)?.reg ?? '') === reg)
+    || (fl !== '' && (a.flight ?? '').replace(/\s/g, '').toUpperCase() === fl));
+}
+function acarsCard(p: AcarsPlane, now: number): string {
+  const age = now - p.lastMs, live = age < 120_000, flash = Math.max(0, 1 - age / 700), last = p.msgs[0];
+  const ads = acarsAdsbMatch(p), what = labelMeaning(last.label);
+  const sub = [p.icao ? `ICAO ${p.icao}` : '', ads ? 'ON ADS-B' : ''].filter(Boolean).join(' · ');
+  return `<div class="mt-card ${acarsUi.sel === p.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-acp="${esc(p.key)}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-id">${esc(p.reg || p.flight)}</span><span class="mt-k"><b>${esc(p.flight && p.reg ? `FLIGHT ${p.flight}` : p.reg ? 'NO FLIGHT NUMBER' : 'NO REGISTRATION')}</b><small class="${ads ? 'pos' : ''}">${esc(sub)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : bleAgo(age)}</span></div>`
+    + `<div class="mt-clk"><b>${p.count}</b><small>MESSAGE${p.count === 1 ? '' : 'S'} · LAST ${esc(last.label)}${what ? ` ${esc(what.toUpperCase())}` : ''}</small><em>${last.mhz}</em></div>`
+    + `<div class="mt-hex">${esc(last.text || '(no text)')}</div></div>`;
+}
+function acarsDetail(p: AcarsPlane): string {
+  const ads = acarsAdsbMatch(p);
+  const msgs = p.msgs.map(m => `<div class="ac-msg"><div><b>${new Date(m.ms).toLocaleTimeString()}</b><span>${m.down ? '↓ from the aircraft' : '↑ to the aircraft'} · ${esc(m.label)}${labelMeaning(m.label) ? ` ${esc(labelMeaning(m.label))}` : ''} · blk ${esc(m.blk)}${m.msn ? ` · #${esc(m.msn)}` : ''} · ${m.mhz}${m.crcOk ? '' : ' · CRC?'}</span></div>${m.text ? `<pre>${esc(m.text)}</pre>` : ''}</div>`).join('');
+  const fields: [string, string][] = [['Registration', p.reg || '—'], ['Flight', p.flight || '—'], ['ICAO', p.icao || '—'], ['Messages', String(p.count)], ['First heard', trClock(p.firstMs)], ['Last heard', trClock(p.lastMs)],
+    ['ADS-B', ads ? `${ads.icao.toUpperCase()}${ads.flight ? ` · ${ads.flight.trim()}` : ''}${ads.alt !== undefined ? ` · ${ads.alt} ft` : ''}` : 'not seen (open ADS-B to look for it)']];
+  return `<div class="mt-dh"><b>${esc(p.reg || p.flight)}</b><span>${esc([p.flight && `FLIGHT ${p.flight}`, p.icao && `ICAO ${p.icao}`].filter(Boolean).join(' · ') || 'ACARS')}</span>${ads ? '<button class="chip" data-ado="adsb">ADS-B</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
+    + `<div class="mt-fields">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`
+    + `<div class="caption">MESSAGES · newest first</div><div class="ac-msgs">${msgs}</div>`;
+}
+function renderAcars(view: HTMLElement): void {
+  const why = radio ? blockedBecause(APP_NEEDS.acars, radio.limits) : '';
+  view.innerHTML = `
+    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
+      ${presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
+      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('acars')}</div>
+      <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
+      <div id="ac-log">${logHtml('acars', 'listening…')}</div>
+      <div class="note">One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-acview]', view).forEach(b => b.onclick = () => { acarsUi.view = b.dataset.acview as typeof acarsUi.view; refreshAcars(true); });
+  $('ac-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { acarsUi.sel = acarsUi.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
+  $('ac-detail').onclick = (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ado]'); if (!b) return;
+    if (b.dataset.ado === 'close') { acarsUi.sel = ''; refreshAcars(true); return; }
+    const p = acarsUi.planes.planes.get(acarsUi.sel), a = p && acarsAdsbMatch(p);
+    if (a) { state.adsbSel = a.icao; open('adsb'); }
+  };
+  clearInterval(acarsUi.timer);
+  acarsUi.timer = window.setInterval(() => { if (state.app !== 'acars') { clearInterval(acarsUi.timer); return; } refreshAcars(); }, 2000);
+  refreshList('acars'); refreshAcars(true);
+}
+function onAcarsLine(line: string): void {
+  const m = parseAcarsLine(line, Date.now()); if (m) acarsUi.planes.add(m);
+  if (state.app === 'acars') refreshAcars();
+}
+function refreshAcars(force = false): void {
+  if (state.app !== 'acars') return;
+  const now = Date.now();
+  if (!force && now - acarsUi.drawn < 240) { clearTimeout(acarsUi.pending); acarsUi.pending = window.setTimeout(() => refreshAcars(true), 250); return; }
+  acarsUi.drawn = now;
+  const planes = acarsUi.planes.list();
+  qa<HTMLButtonElement>('[data-acview]').forEach(b => { const v = b.dataset.acview; b.classList.toggle('on', v === acarsUi.view); b.textContent = v === 'cards' ? `AIRCRAFT ${planes.length}` : `LOG ${counts.acars ?? 0}`; });
+  const stage = q('#ac-stage'), cards = q('#ac-cards'), det = q('#ac-detail'), logEl = q('#ac-log');
+  if (!stage || !cards || !det || !logEl) return;
+  stage.hidden = acarsUi.view !== 'cards'; logEl.hidden = acarsUi.view !== 'log';
+  if (acarsUi.view === 'cards' && !paused.has('acars')) {
+    const top = cards.scrollTop;
+    cards.innerHTML = planes.length ? planes.map(p => acarsCard(p, now)).join('') : emptyState('acars');
+    cards.scrollTop = top;
+  }
+  const picked = acarsUi.planes.planes.get(acarsUi.sel);
+  det.hidden = !picked;
+  if (picked) { const top = det.scrollTop; det.innerHTML = acarsDetail(picked); det.scrollTop = top; }
+  if (planes.length) setLamp(`${planes.length} AIRCRAFT`, 'ok');
 }
 
 // ---- Meters: ERT meters, the hopping mesh networks and Gridstream meters, all heard at once ----------------------
@@ -3487,7 +3700,7 @@ function renderMeters(view: HTMLElement): void {
       ${presetHtml('CENTER', [['904.0', 904_000_000], ['911.6', 911_600_000], ['916.0', 916_000_000], ['920.0', 920_000_000], ['925.0', 925_000_000]])}
       <div class="ctlrow"><span class="rl">SPAN</span>${segHtml(([[2_000_000, '2 MHz'], [METERS_RATE, '4.2 MHz'], [METERS_WIDE, '19.2 MHz']] as [number, string][]).map(([r, l]) => `<button data-rate="${r}" class="${off(r)}">${l}</button>`))}</div>
       <div class="note">Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) and Neptune R900 water meters with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), and Landis+Gyr Gridstream meters with their IDs, uptime and position. 902–928 MHz. A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band.</div>
-      ${gainHtml()}</section>`;
+      </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-mtview]', view).forEach(b => b.onclick = () => { meters.view = b.dataset.mtview as typeof meters.view; refreshMeters(true); });
   $('mt-full').onclick = () => setMetersFull(!meters.full);
@@ -3506,7 +3719,7 @@ function renderMeters(view: HTMLElement): void {
   };
   view.classList.toggle('metersfull', meters.full);
   // the map fits the pins themselves, never this device's own location (the meters' positions come off the air)
-  geo = new GeoMap($('mt-map'), { home: null, fitPins: true, onPick: id => { meters.sel = id; refreshMeters(true); }, log });
+  geo = new GeoMap($('mt-map'), { home: null, start: mapStart(state.home), fitPins: true, onPick: id => { meters.sel = id; refreshMeters(true); }, log });
   clearInterval(meters.timer);
   // the cards run their clocks and ages on between frames
   meters.timer = window.setInterval(() => { if (state.app !== 'ert') { clearInterval(meters.timer); return; } refreshMeters(); }, 500);
@@ -3599,7 +3812,7 @@ function refreshMeters(force = false): void {
   if (meters.view === 'cards' && !paused.has('ert')) {
     const top = cards.scrollTop;
     const list = [...devs].sort((a, b) => a.firstMs - b.firstMs || (a.key < b.key ? -1 : 1));
-    cards.innerHTML = list.length ? list.map(d => meshCard(d, now)).join('') : '<div class="empty">no devices yet</div>';
+    cards.innerHTML = list.length ? list.map(d => meshCard(d, now)).join('') : emptyState('ert');
     cards.scrollTop = top;
   }
   const picked = devs.find(d => d.key === meters.sel);
@@ -3684,7 +3897,7 @@ function renderTrains(view: HTMLElement): void {
       <div class="tr-stage"><div id="tr-cards" class="mt-cards tr-cards"></div><div id="tr-detail" class="mt-detail" hidden></div></div>
       <div id="tr-log">${logHtml('trains', 'listening for trains…')}</div>
       <div class="note">The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns. 457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC. A HackRF hears both EOT channels or all of PTC at once. Tap a card for everything decoded from it.</div>
-      ${gainHtml()}</section>`;
+      </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-trband]', view).forEach(b => b.onclick = () => trainsSetBand(b.dataset.trband as 'EOT' | 'PTC' | 'BOTH'));
   $('tr-wf').onclick = () => { trainsUi.waterfall = !trainsWaterfall(); render('trains'); };
@@ -3915,7 +4128,7 @@ function renderLora(view: HTMLElement): void {
       ${tiles}
       <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([`<button data-lrspan="0" class="${wide ? '' : 'on'}">2 MHz</button>`, `<button data-lrspan="1" class="${wide ? 'on' : ''} ${radioCan(LORA_WIDE) ? '' : 'off'}">20 MHz</button>`])}</div>
       <div class="note">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 902–928 MHz in the US, and every other region's band from its tile. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
-      ${gainHtml()}</section>`;
+      </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-lrview]', view).forEach(b => b.onclick = () => { loraUi.view = b.dataset.lrview as typeof loraUi.view; refreshLora(true); });
   qa<HTMLButtonElement>('[data-lrspan]', view).forEach(b => b.onclick = () => loraSpan(b.dataset.lrspan === '1'));
@@ -3935,7 +4148,7 @@ function renderLora(view: HTMLElement): void {
     refreshLora(true);
   };
   view.classList.toggle('lorafull', loraUi.full);
-  geo = new GeoMap($('lr-map'), { home: null, fitPins: true, onPick: id => { loraUi.sel = id; refreshLora(true); }, log });
+  geo = new GeoMap($('lr-map'), { home: null, start: mapStart(state.home), fitPins: true, onPick: id => { loraUi.sel = id; refreshLora(true); }, log });
   clearInterval(loraUi.timer);
   loraUi.timer = window.setInterval(() => { if (state.app !== 'lora') { clearInterval(loraUi.timer); return; } refreshLora(); }, 1000);
   refreshLora(true);
@@ -3999,10 +4212,10 @@ function refreshLora(force = false): void {
   const held = paused.has('lora');
   if (loraUi.view === 'nodes' && !held) {
     const top = cards.scrollTop;
-    cards.innerHTML = nodes.length ? [...nodes].sort((a, b) => b.lastMs - a.lastMs).map(n => loraCard(n, now)).join('') : '<div class="empty">no nodes yet</div>';
+    cards.innerHTML = nodes.length ? [...nodes].sort((a, b) => b.lastMs - a.lastMs).map(n => loraCard(n, now)).join('') : emptyState('lora');
     cards.scrollTop = top;
   }
-  if (loraUi.view === 'messages' && !held) chat.innerHTML = msgs.length ? msgs.map(loraMessage).join('') : '<div class="empty">no messages yet</div>';
+  if (loraUi.view === 'messages' && !held) chat.innerHTML = msgs.length ? msgs.map(loraMessage).join('') : emptyState('loramsg');
   const picked = nodes.find(n => n.key === loraUi.sel);
   det.hidden = !picked;
   if (picked) { const top = det.scrollTop; det.innerHTML = loraDetail(picked, pins.some(p => p.id === picked.key)); det.scrollTop = top; }
@@ -4026,13 +4239,14 @@ function renderAdsb(view: HTMLElement): void {
       <div id="adsb-card" class="accard" hidden></div>
       <div id="adsb-map" class="panel map"></div>
       <div id="adsb-list" class="panel list"></div>
-      ${gainHtml()}</section>`;
+      </section>`;
   scope = attach(new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }));
   q('#pause-adsb')?.insertAdjacentHTML('beforebegin', `<button id="adsb-full" class="ib" title="full-screen map" aria-label="full-screen map">${adsbFull ? EXIT_SVG : FULL_SVG}</button>`);
   $('adsb-full').onclick = () => setAdsbFull(!adsbFull);
   view.classList.toggle('mapfull', adsbFull);
   qa<HTMLButtonElement>('[data-adsbview]', view).forEach(b => b.onclick = () => { state.adsbView = b.dataset.adsbview as 'map' | 'list'; refreshAdsb(); });
-  geo = new GeoMap($('adsb-map'), { home: state.home, onPick: id => { state.adsbSel = id; refreshAdsb(); }, onFollow: on => { state.adsbFollow = on; }, log });
+  if (!state.home) requestGeo();
+  geo = new GeoMap($('adsb-map'), { home: state.home, start: mapStart(state.home), onPick: id => { state.adsbSel = id; refreshAdsb(); }, onFollow: on => { state.adsbFollow = on; }, log });
   geo.setFollow(state.adsbFollow);
   refreshAdsb();
 }
@@ -4045,11 +4259,12 @@ function renderAis(view: HTMLElement): void {
       <div id="ais-map" class="panel map"></div>
       <div id="ais-list" class="panel list"></div>
       <div id="ais-log">${listHtml('ais', 'listening on the AIS channel…')}</div>
-      ${presetHtml('CHANNEL', [['AIS A 161.975', 161_975_000], ['AIS B 162.025', 162_025_000]])}${gainHtml()}</section>`;
+      ${presetHtml('CHANNEL', [['AIS A 161.975', 161_975_000], ['AIS B 162.025', 162_025_000]])}</section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-aisview]', view).forEach(b => b.onclick = () => { state.aisView = b.dataset.aisview as typeof state.aisView; refreshAis(); });
   q('#list-ais')?.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.li'); const mm = li?.textContent?.match(/MMSI (\d+)/); if (mm) { state.aisSel = Number(mm[1]); refreshAis(); } });
-  geo = new GeoMap($('ais-map'), { home: state.home, onPick: id => { state.aisSel = Number(id); refreshAis(); }, log });
+  if (!state.home) requestGeo();
+  geo = new GeoMap($('ais-map'), { home: state.home, start: mapStart(state.home), onPick: id => { state.aisSel = Number(id); refreshAis(); }, log });
   refreshAis();
 }
 function renderAprs(view: HTMLElement): void {
@@ -4062,11 +4277,12 @@ function renderAprs(view: HTMLElement): void {
       <div id="aprs-map" class="panel map"></div>
       <div id="aprs-list" class="panel list"></div>
       <div id="aprs-log">${listHtml('aprs', 'listening on the APRS frequency…')}</div>
-      ${gainHtml()}</section>`;
+      </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-aprsview]', view).forEach(b => b.onclick = () => { state.aprsView = b.dataset.aprsview as typeof state.aprsView; refreshAprs(); });
   q('#list-aprs')?.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.li'); const mm = li?.textContent?.match(/^([A-Za-z0-9-]+)>/); if (mm) { state.aprsSel = mm[1]; refreshAprs(); } });
-  geo = new GeoMap($('aprs-map'), { home: state.home, onPick: id => { state.aprsSel = id; refreshAprs(); }, log });
+  if (!state.home) requestGeo();
+  geo = new GeoMap($('aprs-map'), { home: state.home, start: mapStart(state.home), onPick: id => { state.aprsSel = id; refreshAprs(); }, log });
   refreshAprs();
 }
 
@@ -4079,8 +4295,7 @@ function renderSweep(view: HTMLElement, app: AppId): void {
       <div class="ctlrow"><span class="rl">SLICE</span>${segHtml([2e6, 4e6, 8e6, 16e6].map(r => `<button data-slice="${r}">${r / 1e6}M</button>`))}</div>
       ${search ? `<div class="ctlrow"><span class="rl">ABOVE</span>${segHtml([10, 15, 20, 30].map(t => `<button data-thr="${t}">+${t} dB</button>`))}</div>` : ''}
       <div class="note">Wider ranges sweep slower; a wider slice is faster.</div>
-      ${gainHtml()}
-      ${search ? `<div class="caption">HITS · tap to listen</div><div id="hits" class="panel list"><div class="empty">sweeping… hits appear after the first full pass</div></div>` : ''}
+      ${search ? `<div class="caption">HITS · tap to listen</div><div id="hits" class="panel list">${emptyState('search')}</div>` : ''}
     </section>`;
   const sweepLabel = (f: number) => { const s = state.sweep; return s ? ((s.start + (s.end - s.start) * f) / 1e6).toFixed(3) : ''; };
   sweepScope = new Scope($('sweep-scope'), 0, { rows: search ? 140 : 300, center: false, spectrumHeight: search ? 60 : 90, rowPx: 2, labelAt: sweepLabel, onTap: search ? undefined : f => { const s = state.sweep; if (s) { const hz = s.start + (s.end - s.start) * f; listen(hz, hz > 87e6 && hz < 108e6 ? 'WFM' : 'NFM'); } },
@@ -4373,10 +4588,10 @@ function renderCapture(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      ${stepHtml([1e6, 1e5, 1e4])}${gainHtml()}
+      ${stepHtml([1e6, 1e5, 1e4])}
       <div class="caption">RECORD · signed 8-bit I/Q (.c8) + .txt sidecar, stored in the browser</div>
       <div class="row"><button id="rec" class="chip">● REC</button><span id="rec-info" class="info"></span></div>
-      <div class="caption">CAPTURES · tap to download, ✕ to delete</div><div id="captures" class="panel list"><div class="empty">no captures yet</div></div>
+      <div class="caption">CAPTURES · tap to download, ✕ to delete</div><div id="captures" class="panel list">${emptyState('capture')}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   $('rec').onclick = () => {
@@ -4602,6 +4817,7 @@ function wireCommon(view: HTMLElement): void {
   on('amp', () => { setGains(state.lna, state.vga, !state.amp); saveGains(); });
   on('biast', () => toggleBiasTee());
   on('agc', () => userAgc(!state.agc)); refreshAgcChip(); refreshGainUi();
+  qa<HTMLButtonElement>('.fgain', view).forEach(b => b.onclick = () => openRadioPanel());
   // by id, whatever screen they are on. The old loop keyed off `logs`, which only the first packet creates, so
   // a CLEAR tapped on a screen opened before anything arrived was never wired at all.
   qa<HTMLButtonElement>('[id^="clear-"]', view).forEach(b => b.onclick = () => clearApp(b.id.slice(6)));
@@ -4645,6 +4861,8 @@ function redraw(id: string): void {
     case 'ert': refreshList(id); refreshMeters(true); break;
     case 'lora': refreshList(id); refreshLora(true); break;
     case 'trains': refreshList(id); refreshTrains(true); break;
+    case 'btle': refreshList(id); refreshBle(true); break;
+    case 'acars': refreshList(id); refreshAcars(true); break;
     default: refreshList(id);
   }
 }
@@ -4658,6 +4876,8 @@ function clearApp(id: string): void {
     case 'aprs': state.aprsStations = []; state.aprsSel = ''; break;
     case 'adsb': state.aircraft = []; state.frames = 0; state.adsbSel = ''; break;
     case 'devices': state.r433.heard = []; break;
+    case 'btle': bleUi.tracker.clear(); bleUi.sel = ''; break;
+    case 'acars': acarsUi.planes.clear(); acarsUi.sel = ''; break;
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
@@ -4676,7 +4896,7 @@ function refreshList(id: string): void {
   }
   const el = q(`#list-${id}`); if (!el || paused.has(id)) return;
   const lines = logs[id] ?? [];
-  el.innerHTML = lines.length ? lines.map((l, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${esc(l)}</div>`).join('') : '<div class="empty">listening…</div>';
+  el.innerHTML = lines.length ? lines.map((l, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${esc(l)}</div>`).join('') : emptyState(id);
 }
 function refreshAis(): void {
   if (state.app !== 'ais') return;
@@ -4685,10 +4905,11 @@ function refreshAis(): void {
   const list = q('#ais-list'), mapEl = q('#ais-map'), logEl = q('#ais-log'); if (!list || !mapEl || !logEl) return;
   list.hidden = state.aisView !== 'list'; mapEl.hidden = state.aisView !== 'map'; logEl.hidden = state.aisView !== 'log';
   if (paused.has('ais')) { qa<HTMLElement>('[data-mmsi]', list).forEach(d => d.classList.toggle('gold', Number(d.dataset.mmsi) === state.aisSel)); renderShipCard(state.aisTable.find(v => v.mmsi === state.aisSel)); return; }
-  list.innerHTML = state.aisTable.length ? state.aisTable.map((v, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${v.mmsi === state.aisSel ? 'gold' : ''}" data-mmsi="${v.mmsi}"><b>${esc(v.name || String(v.mmsi))}</b><span>${v.name ? v.mmsi + ' · ' : ''}${v.lat !== undefined && v.lon !== undefined ? `${v.lat.toFixed(3)},${v.lon.toFixed(3)}` : 'no fix'}${v.sog !== undefined ? ` · ${v.sog.toFixed(1)} kn` : ''}</span></div>`).join('') : '<div class="empty">no vessels yet</div>';
+  list.innerHTML = state.aisTable.length ? state.aisTable.map((v, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${v.mmsi === state.aisSel ? 'gold' : ''}" data-mmsi="${v.mmsi}"><b>${esc(v.name || String(v.mmsi))}</b><span>${v.name ? v.mmsi + ' · ' : ''}${v.lat !== undefined && v.lon !== undefined ? `${v.lat.toFixed(3)},${v.lon.toFixed(3)}` : 'no fix'}${v.sog !== undefined ? ` · ${v.sog.toFixed(1)} kn` : ''}</span></div>`).join('') : emptyState('ais');
   qa<HTMLElement>('[data-mmsi]', list).forEach(d => d.onclick = () => { state.aisSel = Number(d.dataset.mmsi); const v = state.aisTable.find(x => x.mmsi === state.aisSel); if (v?.lat !== undefined) state.aisView = 'map'; refreshAis(); });
   renderShipCard(state.aisTable.find(v => v.mmsi === state.aisSel));
   if (state.aisView === 'map') geo?.invalidate();
+  geo?.setEmpty(state.aisTable.some(v => v.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('ships and buoys appear here as their AIS position reports come in'));
   geo?.update(state.aisTable.filter(v => v.lat !== undefined && v.lon !== undefined).map(v => ({ id: String(v.mmsi), lat: v.lat!, lon: v.lon!, heading: v.hdg ?? v.cog, label: v.name || String(v.mmsi), kind: (v.cls === 'AtoN' ? 'aton' : v.cls === 'base' ? 'object' : 'ship') as GeoItem['kind'] })), String(state.aisSel));
 }
 function refreshAprs(): void {
@@ -4699,10 +4920,11 @@ function refreshAprs(): void {
   const list = q('#aprs-list'), mapEl = q('#aprs-map'), logEl = q('#aprs-log'); if (!list || !mapEl || !logEl) return;
   list.hidden = state.aprsView !== 'list'; mapEl.hidden = state.aprsView !== 'map'; logEl.hidden = state.aprsView !== 'log';
   if (paused.has('aprs')) { qa<HTMLElement>('[data-call]', list).forEach(d => d.classList.toggle('gold', d.dataset.call === state.aprsSel)); renderStationCard(state.aprsStations.find(s => s.call === state.aprsSel)); return; }
-  list.innerHTML = state.aprsStations.length ? state.aprsStations.map((s, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${s.call === state.aprsSel ? 'gold' : ''}" data-call="${esc(s.call)}"><b>${esc(s.call)}${s.kind !== 'station' ? ` <small>${s.kind} by ${esc(s.owner ?? '?')}</small>` : ''}</b><span>${esc(aprsSymbolName(s.table, s.symbol))}${s.lat !== undefined && s.lon !== undefined ? ` · ${s.lat.toFixed(3)},${s.lon.toFixed(3)}` : ''}${s.speed ? ` · ${Math.round(s.speed)} kn` : ''}</span></div>`).join('') : '<div class="empty">no stations yet</div>';
+  list.innerHTML = state.aprsStations.length ? state.aprsStations.map((s, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${s.call === state.aprsSel ? 'gold' : ''}" data-call="${esc(s.call)}"><b>${esc(s.call)}${s.kind !== 'station' ? ` <small>${s.kind} by ${esc(s.owner ?? '?')}</small>` : ''}</b><span>${esc(aprsSymbolName(s.table, s.symbol))}${s.lat !== undefined && s.lon !== undefined ? ` · ${s.lat.toFixed(3)},${s.lon.toFixed(3)}` : ''}${s.speed ? ` · ${Math.round(s.speed)} kn` : ''}</span></div>`).join('') : emptyState('aprs');
   qa<HTMLElement>('[data-call]', list).forEach(d => d.onclick = () => { state.aprsSel = d.dataset.call!; const s = state.aprsStations.find(x => x.call === state.aprsSel); if (s?.lat !== undefined) state.aprsView = 'map'; refreshAprs(); });
   renderStationCard(state.aprsStations.find(s => s.call === state.aprsSel));
   if (state.aprsView === 'map') geo?.invalidate();
+  geo?.setEmpty(state.aprsStations.some(s => s.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('stations, objects and weather reports appear here as their packets come in'));
   geo?.update(state.aprsStations.filter(s => s.lat !== undefined && s.lon !== undefined).map(s => ({ id: s.call, lat: s.lat!, lon: s.lon!, heading: s.course, label: s.call, kind: (s.kind === 'station' ? 'station' : 'object') as GeoItem['kind'] })), state.aprsSel);
 }
 function refreshBtle(): void { qa('[data-btle]').forEach(b => b.classList.toggle('on', Number(b.dataset.btle) === state.btleCh)); }
@@ -4754,7 +4976,7 @@ function refreshAdsb(): void {
   el.hidden = !adsbFull && state.adsbView !== 'list'; mapEl.hidden = !adsbFull && state.adsbView !== 'map';
   renderAcCard(state.aircraft.find(a => a.icao === state.adsbSel));
   if (paused.has('adsb')) { qa<HTMLElement>('[data-icao]', el).forEach(d => d.classList.toggle('gold', d.dataset.icao === state.adsbSel)); return; }
-  if (!state.aircraft.length) el.innerHTML = '<div class="empty">listening on 1090 MHz…</div>';
+  if (!state.aircraft.length) el.innerHTML = emptyState('adsb');
   else {
     el.querySelector('.empty')?.remove();
     const rows = new Map(qa<HTMLElement>('[data-icao]', el).map(r => [r.dataset.icao!, r]));
@@ -4776,6 +4998,7 @@ function refreshAdsb(): void {
     for (const r of rows.values()) r.remove();
   }
   if (state.adsbView === 'map' || adsbFull) geo?.invalidate();
+  geo?.setEmpty(state.aircraft.some(a => a.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('aircraft appear here once each one sends its position'));
   geo?.update(state.aircraft.filter(a => a.lat !== undefined && a.lon !== undefined).map(a => ({ id: a.icao, lat: a.lat!, lon: a.lon!, heading: a.track, label: (a.flight ?? '').trim() || a.icao.toUpperCase(), kind: 'plane' as const })), state.adsbSel);
 }
 // ---- AIS vessel card: everything the station has said about itself ----------------------------------------------------
@@ -4966,7 +5189,7 @@ function refreshHits(): void {
     } else i++;
   }
   hits.sort((a, b) => b[0] - a[0]);
-  el.innerHTML = hits.length ? hits.slice(0, 200).map(([, l], i) => `<div class="li tap ${i % 2 ? 'alt' : ''}" data-hit="${l.split(' ')[0]}">${l}</div>`).join('') : '<div class="empty">nothing above the threshold yet</div>';
+  el.innerHTML = hits.length ? hits.slice(0, 200).map(([, l], i) => `<div class="li tap ${i % 2 ? 'alt' : ''}" data-hit="${l.split(' ')[0]}">${l}</div>`).join('') : emptyState('search');
   qa<HTMLElement>('[data-hit]', el).forEach(d => d.onclick = () => { const mhz = Number(d.dataset.hit); listen(mhz * 1e6, mhz > 87 && mhz < 108 ? 'WFM' : 'NFM'); });
   const r = q('#capr'); if (r) r.textContent = `${hits.length} HITS`;
 }
@@ -4974,7 +5197,7 @@ function refreshCapture(): void {
   const b = q('#rec'), info = q('#rec-info'), el = q('#captures');
   if (b) { b.textContent = state.capturing ? '■ STOP' : '● REC'; b.classList.toggle('rec', state.capturing); }
   if (info) info.textContent = state.capturing ? `${(state.captureBytes / 1e6).toFixed(1)} MB · ${state.captureName}` : `${state.rate / 1e6} Msps · ${(state.rate * 2 / 1e6).toFixed(1)} MB/s`;
-  if (el) el.innerHTML = state.captures.length ? state.captures.map((f, i) => `<div class="li row2 ${i % 2 ? 'alt' : ''}"><span class="tap" data-dl="${f.name}">${f.name}  ${(f.size / 1e6).toFixed(1)} MB</span><button class="link" data-del="${f.name}">✕</button></div>`).join('') : '<div class="empty">no captures yet</div>';
+  if (el) el.innerHTML = state.captures.length ? state.captures.map((f, i) => `<div class="li row2 ${i % 2 ? 'alt' : ''}"><span class="tap" data-dl="${f.name}">${f.name}  ${(f.size / 1e6).toFixed(1)} MB</span><button class="link" data-del="${f.name}">✕</button></div>`).join('') : emptyState('capture');
   qa<HTMLElement>('[data-dl]').forEach(d => d.onclick = () => worker?.postMessage({ type: 'capture', cmd: 'get', name: d.dataset.dl }));
   qa<HTMLElement>('[data-del]').forEach(d => d.onclick = () => worker?.postMessage({ type: 'capture', cmd: 'remove', name: d.dataset.del }));
 }
@@ -5003,7 +5226,8 @@ function ensureWorker(): Worker {
         // a repeat that completed a partial page takes the old line's place rather than adding a second
         const was = typeof m.replaces === 'string' ? list.indexOf(m.replaces) : -1;
         if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
-        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); break; }
+        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars') onAcarsLine(m.line as string); else if (id === 'btle') refreshBle(); break; }
+      case 'ble': onBleAdv(m as { pdu: number[]; db: number; ch: number }); break;
       case 'rds': lastRds = m as typeof lastRds; drawRds(); break;
       case 'hd': lastHd = m as typeof lastHd; console.log('[hd]', JSON.stringify(m)); drawHd(); break;
       case 'same': onSameAlert(m); break;
@@ -5372,7 +5596,7 @@ function bindDesktop(): void {
     // drop the radio mid-session.
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'tpms' || state.app === 'subghz' || state.app === 'devices';
+    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'subghz' || state.app === 'devices';
     // start typing a number (or F) to key in a frequency; a focused readout digit already took its own keystroke
     if ((tunable || state.app === 'ham') && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9.,fF]$/.test(e.key)) {
       freqEntry(/[fF]/.test(e.key) ? '' : e.key); e.preventDefault(); return;
@@ -5510,7 +5734,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  pager: ['PAGER', 'FLEX · POCSAG'], tpms: ['TPMS', 'TIRE SENSORS'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

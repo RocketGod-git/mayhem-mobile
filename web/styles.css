@@ -1315,3 +1315,83 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .dv-card .mt-clk b { color: var(--kind); }
 .dv-foot { display: flex; justify-content: space-between; gap: 8px; font-size: 9px; letter-spacing: 1px; color: var(--muted); }
 .dv-empty { height: auto; padding: 18px 6px; line-height: 1.5; }
+
+/* ---- empty states: the app's glyph, what it waits for, what to try (centered in the empty area) ---- */
+.es { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px;
+  min-height: 180px; height: 100%; padding: 22px 16px; color: var(--muted); box-sizing: border-box; grid-column: 1 / -1; }
+.es-g { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); opacity: .9; line-height: 0; }
+.es b { color: var(--ink); font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+.es ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; max-width: 420px; }
+.es li { font-size: 11px; line-height: 1.45; }
+.es li::before { content: '→ '; color: var(--accent); }
+.list:has(> .es) { display: flex; flex-direction: column; }
+/* a map with nothing on it yet says so over the tiles */
+.map .geo-empty { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 700; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 16px; border-radius: 12px; max-width: 80%;
+  background: color-mix(in srgb, var(--surface) 86%, transparent); border: 1px solid var(--line); text-align: center; }
+.map .geo-empty[hidden] { display: none; }
+.map .geo-empty b { font-size: 12px; letter-spacing: .1em; color: var(--ink); }
+.map .geo-empty small { font-size: 10px; color: var(--muted); line-height: 1.4; }
+
+/* ---- the gain readout in each card header: tap for RADIO ---- */
+.fgain { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+  font: inherit; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--ink); background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 999px; padding: 3px 8px; }
+.fgain:hover { border-color: var(--accent); }
+@media (max-width: 420px) { .fgain { max-width: 38%; } }
+
+/* ---- BLE device cards ---- */
+.ble-k { flex: none; font-size: 8px; font-weight: 700; letter-spacing: 1px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); border-radius: 6px; padding: 3px 5px; max-width: 92px; text-align: center; line-height: 1.2; }
+.ble-k.trk { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 60%, transparent); }
+.mt-card.ble .mt-k b { font-size: 12px; letter-spacing: .5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-card.alert { border: 2px solid var(--danger); }
+.ble-warn { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border-radius: 8px; padding: 5px 8px; }
+.ble-warn.big { font-size: 11px; padding: 8px 10px; border: 1px solid var(--danger); }
+.ble-warn[hidden] { display: none; }
+.ble-raw { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; font-size: 9px; }
+.ble-raw > div { display: grid; grid-template-columns: 70px 40px 44px 110px minmax(0, 1fr); gap: 6px; color: var(--muted); }
+.ble-raw code { color: var(--ink); overflow-wrap: anywhere; user-select: text; }
+@media (max-width: 560px) { .ble-raw > div { grid-template-columns: 62px 36px 40px minmax(0, 1fr); } .ble-raw > div > span:nth-child(4) { display: none; } }
+
+/* ---- ACARS messages in an aircraft's panel ---- */
+.ac-msgs { display: flex; flex-direction: column; gap: 6px; }
+.ac-msg { border-top: 1px solid var(--line); padding-top: 5px; }
+.ac-msg > div { display: flex; gap: 8px; align-items: baseline; font-size: 10px; }
+.ac-msg > div b { color: var(--accent); flex: none; }
+.ac-msg > div span { color: var(--muted); }
+.ac-msg pre { margin: 3px 0 0; font-size: 11px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+
+/* ---- Settings at desktop widths: a wider card, the section list down the left, the sections beside it ---- */
+@media (min-width: 1100px) {
+  #setmodal .setcard { width: min(1280px, 100%); }
+  #setview .settings-page { max-width: none; display: grid; grid-template-columns: 210px minmax(0, 1fr); column-gap: 20px; align-items: start; }
+  #setview .settings-page > * { grid-column: 2; }
+  #setview .settings-page > .set-jumps { grid-column: 1; grid-row: 1 / span 40; position: sticky; top: 0; margin: 0; }
+  #setview .set-jumps .hs::before, #setview .set-jumps .hs::after { display: none; }
+  #setview .set-jumps .hs-in { overflow: visible; }
+  #setview .set-jumps .tiles { display: flex; flex-direction: column; gap: 6px; }
+  #setview .set-jumps .pill { text-align: left; padding: 11px 14px; border-radius: 10px; font-size: 11px; }
+  /* rows two to a line inside an open section, so a wide window is not one long thin list */
+  #setview .sset-in { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 8px; align-content: start; }
+  #setview .sset-in > :not(.srow) { grid-column: 1 / -1; }
+}
+
+/* ---- HAM: the band plan for the band you are in ---- */
+.bandplan { display: flex; flex-direction: column; gap: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.bp-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.bp-head b { color: var(--accent); font-size: 13px; letter-spacing: 1px; flex: none; }
+.bp-head span { color: var(--muted); font-size: 10px; letter-spacing: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bp-bar { position: relative; height: 18px; border-radius: 6px; background: color-mix(in srgb, var(--paper) 70%, transparent); overflow: hidden; }
+.bp-bar i { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; opacity: .55; }
+.bp-bar i.on { opacity: 1; }
+.bp-bar em { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--ink); box-shadow: 0 0 6px var(--ink); }
+.bandplan .s0 { background: var(--accent); } .bandplan .s1 { background: var(--accent2); } .bandplan .s2 { background: var(--ok); } .bandplan .s3 { background: color-mix(in srgb, var(--accent) 50%, var(--danger)); }
+.bp-rows { display: flex; flex-direction: column; gap: 2px; }
+.bp-row { display: grid; grid-template-columns: 10px 130px minmax(0, 1fr); gap: 8px; align-items: center; text-align: left; font: inherit; background: none; border: 1px solid transparent; border-radius: 8px; padding: 5px 6px; color: var(--ink); cursor: pointer; }
+.bp-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.bp-row.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bp-row i { width: 10px; height: 10px; border-radius: 3px; }
+.bp-row span { font-size: 10px; color: var(--muted); }
+.bp-row b { font-size: 11px; font-weight: 600; }
+.bp-rep { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--accent2); }
+.bp-none { font-size: 11px; color: var(--muted); }
