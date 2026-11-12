@@ -18,7 +18,7 @@
  */
 
 import {
-  acpr, autoRbw, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
+  acpr, autoLevel, autoRbw, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
   noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
   DETECTORS, TRACE_MODES, TRIG_MODES, ZS_BWS, ZS_MAX_POINTS, ZS_OFFSET, zsPlan,
   type Detector, type GainState, type Marker, type PulseStats, type SpanPlan, type SpecConfig, type Trace, type TraceMode, type TrigMode, type WindowKind,
@@ -323,6 +323,7 @@ export class SpectrumUi {
       const t = b.dataset.t!, d = b.dataset;
       if (d.k === 'dn' || d.k === 'up') this.turn(t, d.k === 'up' ? 1 : -1);
       else if (d.k === 'auto') this.toggle(t === 'rbw' ? 'rbwa' : 'vbwa');
+      else if (d.k === 'edge') { this.s.trig = this.s.trig === 'RISE' ? 'FALL' : 'RISE'; this.controls(); this.update(); }
       else this.openPad(t);
     };
     tiles.onwheel = (e) => {
@@ -347,7 +348,7 @@ export class SpectrumUi {
         ['zf', 'FREQUENCY', fv, fu, ''],
         ['zbw', 'FILTER', ...bigHz(s.zsBw), ''],
         ['zst', 'SWEEP', ...(fmtSec(this.zcap?.sweepSec ?? s.zsTime).split(' ') as [string, string]), ''],
-        ['lvl', 'TRIGGER', s.trig === 'FREE' ? 'FREE' : String(s.level), s.trig === 'FREE' ? 'RUN' : u, s.trig === 'FREE' ? '' : s.trig === 'RISE' ? 'RISE' : 'FALL'],
+        ['lvl', 'TRIGGER', s.trig === 'FREE' ? 'FREE' : String(s.level), s.trig === 'FREE' ? 'RUN' : u, s.trig === 'FREE' ? '' : s.trig === 'RISE' ? 'RISE ↑' : 'FALL ↓'],
         ['ref', 'REF LEVEL', String(s.ref), u, `${s.div} dB/div`],
       ];
     }
@@ -365,7 +366,7 @@ export class SpectrumUi {
     const el = this.root?.querySelector<HTMLElement>('#sp-tiles'); if (!el) return;
     el.innerHTML = this.tileList().map(([id, label, v, unit, badge]) => `
       <div class="sp-tile" data-tile="${id}">
-        <div class="sp-tl"><span>${label}</span>${badge ? `<b data-t="${id}" data-k="${badge === 'AUTO' || badge === 'MAN' ? 'auto' : 'pad'}" class="${badge === 'AUTO' ? 'on' : ''}">${badge}</b>` : ''}</div>
+        <div class="sp-tl"><span>${label}</span>${badge ? `<b data-t="${id}" data-k="${badge === 'AUTO' || badge === 'MAN' ? 'auto' : badge.startsWith('RISE') || badge.startsWith('FALL') ? 'edge' : 'pad'}" class="${badge === 'AUTO' ? 'on' : ''}">${badge}</b>` : ''}</div>
         <button class="sp-tv" data-t="${id}" data-k="pad" title="Tap to type a value; the wheel turns it">${esc(v)}<small>${esc(unit)}</small></button>
         <div class="sp-knob"><button data-t="${id}" data-k="dn" aria-label="${label} down">‹</button><i></i><button data-t="${id}" data-k="up" aria-label="${label} up">›</button></div>
       </div>`).join('');
@@ -386,7 +387,8 @@ export class SpectrumUi {
       case 'zf': s.zsFreq += dir * s.zsBw / 4; this.restart(); return;
       case 'zbw': { const b = this.zsBws(), i = Math.max(0, Math.min(b.length - 1, b.indexOf(s.zsBw) + dir)); s.zsBw = b[i]; this.controls(); this.restart(); return; }
       case 'zst': this.stepper('zst', dir); return;
-      case 'lvl': if (s.trig === 'FREE') return; s.level += dir; break;
+      // in FREE RUN the knob arms a rising trigger at the level shown; after that it moves the level
+      case 'lvl': if (s.trig === 'FREE') s.trig = 'RISE'; else s.level += dir; break;
       default: this.stepper(id, dir); return;
     }
     this.controls(); this.update();
@@ -396,7 +398,7 @@ export class SpectrumUi {
 
   private openPad(tile: string): void {
     const t = this.tileList().find(x => x[0] === tile); if (!t) return;
-    if (tile === 'lvl' && this.s.trig === 'FREE') return;
+    if (tile === 'lvl' && this.s.trig === 'FREE') { this.turn('lvl', 1); return; }
     const kind: Pad['kind'] = tile === 'ref' || tile === 'lvl' ? 'db' : tile === 'zst' ? 'sec' : tile === 'rbw' || tile === 'vbw' || tile === 'span' || tile === 'zbw' ? 'bw' : 'hz';
     this.pad = { tile, label: t[1], kind, text: '' };
     this.drawPad();
@@ -504,7 +506,7 @@ export class SpectrumUi {
       <div class="caption">FILTER</div>
       <div class="ctlrow sp-row">${seg(this.zsBws().map(b => [String(b), bwText(b).replace(' ', '')] as [string, string]), String(s.zsBw), 'zbw')}</div>
       <div class="caption">TRIGGER</div>
-      <div class="ctlrow sp-row">${seg(TRIG_MODES.map(m => [m, m === 'FREE' ? 'FREE RUN' : m === 'RISE' ? 'RISING' : 'FALLING'] as [string, string]), s.trig, 'trig')}${tog('single', 'SINGLE', s.single)}${s.single ? act('arm', this.armed ? 'ARMED' : 'ARM', this.armed ? 'hot' : '') : ''}</div>
+      <div class="ctlrow sp-row">${seg(TRIG_MODES.map(m => [m, m === 'FREE' ? 'FREE RUN' : m === 'RISE' ? 'RISING' : 'FALLING'] as [string, string]), s.trig, 'trig')}${tog('single', 'SINGLE', s.single)}${s.single ? act('arm', this.armed ? 'ARMED' : 'ARM', this.armed ? 'hot' : '') : ''}${act('autolvl', 'AUTO LEVEL')}</div>
       ${s.trig !== 'FREE' ? `<div class="ctlrow sp-row">${step('pre', 'PRE-TRIGGER', `${Math.round(s.pre * 100)} %`)}</div>` : ''}
       <div class="caption">VIEW · SCALE</div>
       <div class="ctlrow sp-row">${tog('vamp', 'AMPLITUDE', s.showAmp)}${tog('vfm', 'FREQUENCY', s.showFm)}${tog('vph', 'PHASE', s.showPh)}${tog('cur', 'CURSORS', s.cursors)}</div>
@@ -584,6 +586,8 @@ export class SpectrumUi {
       case 'peak': case 'next': case 'left': case 'right': this.markerTo(s.active, id); break;
       case 'mkcf': { const m = s.markers[s.active]; if (m.on) this.setSpan(m.hz, s.span); return; }
       case 'mkoff': for (const m of s.markers) { m.on = false; m.delta = false; } break;
+      // the trigger level from what is on screen: the noise between bursts plus 12 dB (arming RISE from FREE RUN)
+      case 'autolvl': { const z = this.zcap; if (!z) return; const l = autoLevel(z.amp); if (!Number.isFinite(l)) return; s.level = l; if (s.trig === 'FREE') s.trig = 'RISE'; this.controls(); this.update(); return; }
       case 'arm': this.armed = true; this.host.post({ type: 'spectrum', cmd: 'rearm' }); this.tiles(); break;
       case 'radio': this.host.openRadio(); return;
       case 'csv': this.exportCsv(); return;
@@ -629,7 +633,7 @@ export class SpectrumUi {
   private xOfHz(hz: number): number { const g = this.geom(); return g.l + (hz - (this.vCenter() - this.vSpan() / 2)) / this.vSpan() * g.w; }
 
   private down(e: PointerEvent): void {
-    const cv = this.cv!; cv.setPointerCapture(e.pointerId);
+    try { this.cv!.setPointerCapture(e.pointerId); } catch { /* a pointer the page did not see go down */ }
     const p = this.local(e);
     this.pts.set(e.pointerId, p);
     const g = this.geom();

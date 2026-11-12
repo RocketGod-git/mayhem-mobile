@@ -381,9 +381,10 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
   const c2 = caps2[0];
   ok(c2 && c2.amp[c2.trig - 3] > -30 && c2.amp[c2.trig + 2] < -30, 'FALL triggers on the falling edge');
   // SINGLE takes one capture and waits to be armed again
-  const caps3 = []; const z3 = new S.ZeroSpan(rate, { ...zcfg, single: true }, cc => caps3.push(cc));
+  const caps3 = [], done3 = []; const z3 = new S.ZeroSpan(rate, { ...zcfg, single: true }, cc => { caps3.push(cc); done3.push(z3.done); });
   z3.pushFloat(s.i, s.q);
   ok(caps3.length === 1 && z3.done, 'SINGLE takes one capture');
+  ok(done3[0] === true, 'and is already done when its capture goes out (the screen shows DONE, not ARMED)');
   z3.rearm(); z3.pushFloat(s.i, s.q);
   ok(caps3.length === 2, 'and one more once re-armed');
   // FREE rolls: windows come at least 20 times a second of signal, without waiting for a trigger
@@ -426,6 +427,7 @@ function pulsed(rate, secs, off, a, onS, perS, lead, rnd, noise = 0.5) {
     ok(sp !== null && Math.abs(sp.period - 400e-6) < 5e-6 && Math.abs(sp.duty - 0.25) < 0.03, `a pulse train 15 dB over the noise reads (${sp && (sp.period * 1e6).toFixed(1)} µs, ${sp && sp.duty.toFixed(3)})`);
   }
   ok(S.fmtSec(0) === '0 s', 'zero time prints as 0 s');
+  ok(S.autoLevel(Float32Array.from([-90, -88, -89, -40, -91])) === -77, 'AUTO LEVEL sits 12 dB over the median');
   // long windows are reduced for the screen with the amplitude peak-held
   const big = []; const zb = new S.ZeroSpan(rate, { ...zcfg, bwHz: 300_000, sweepSec: 0.2, trigger: 'FREE' }, cc => big.push(cc));
   ok(zb.window <= S.ZS_MAX_POINTS, 'a window is capped');

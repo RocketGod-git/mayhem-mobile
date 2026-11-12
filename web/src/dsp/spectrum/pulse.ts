@@ -111,3 +111,9 @@ export function pulseStats(ampDb: ArrayLike<number>, rate: number): PulseStats |
     width, period, duty: width / period, rise: mean(riseT) / rate, fall: mean(fallT) / rate, pulses: widths.length,
   };
 }
+
+/** A trigger level for a trace (dB): its median (the noise, between bursts) plus `marginDb`, rounded to 1 dB. */
+export function autoLevel(ampDb: ArrayLike<number>, marginDb = 12): number {
+  const s = Float32Array.from(ampDb as ArrayLike<number>).filter(Number.isFinite).sort();
+  return s.length ? Math.round(s[s.length >> 1] + marginDb) : NaN;
+}

@@ -101,7 +101,7 @@ export class ZeroSpan {
   private nextAllowed = 0;
   private above = false;
   private lastRoll = 0;
-  /** True once a SINGLE capture has been taken (until rearm). */
+  /** True once a SINGLE capture has been taken (until rearm); already true when that capture is handed out. */
   done = false;
 
   constructor(readonly rate: number, public cfg: ZsConfig, private readonly onCapture: (c: ZsCapture) => void) {
@@ -194,10 +194,12 @@ export class ZeroSpan {
       this.trigAt = now - 1;
     }
     if (now - this.trigAt >= this.window - pre) {
-      this.emit(this.trigAt - pre, this.window, pre, false);
-      this.nextAllowed = this.trigAt + (this.window - pre) + gap;
-      this.trigAt = -1;
+      // a SINGLE is done before its capture goes out, so the capture says so
       if (c.single) { this.done = true; this.armed = false; }
+      const at = this.trigAt;
+      this.nextAllowed = at + (this.window - pre) + gap;
+      this.trigAt = -1;
+      this.emit(at - pre, this.window, pre, false);
     }
   }
 
