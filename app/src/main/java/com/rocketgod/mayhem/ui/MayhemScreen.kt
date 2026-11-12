@@ -137,7 +137,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.SETTINGS -> SettingsScreen(accent)
                 }
                 // over the app, which keeps running and receiving underneath
-                if (RadioUi.open) RadioPanel(accent)
+                if (RadioUi.open) RadioPanel()
             }
             AppScroller(current)
         }
@@ -192,7 +192,8 @@ private fun TopBar(current: MayhemApp?, connected: Boolean, accent: Color, faves
             TopButton(StarIcon, "FAVES", on = favesOpen, accent = accent, modifier = Modifier.weight(w("FAVES"))) { onFaves() }
             TopButton(if (muted) SpeakerOffIcon else SpeakerIcon, if (muted) "MUTED" else "MUTE", on = false, accent = accent,
                 warn = muted, modifier = Modifier.weight(w("MUTED"))) { SdrEngine.toggleMute() }
-            TopButton(TuneIcon, "RADIO", on = radioOpen, accent = accent, modifier = Modifier.weight(w("RADIO"))) {
+            // red while the panel is open, as the panel itself is
+            TopButton(TuneIcon, "RADIO", on = radioOpen, accent = Palette.danger, labelTint = Palette.danger, modifier = Modifier.weight(w("RADIO"))) {
                 if (radioOpen) RadioUi.open = false else RadioUi.show()
             }
             Box(Modifier.weight(w("SETTINGS"))) {
@@ -209,7 +210,7 @@ private fun TopBar(current: MayhemApp?, connected: Boolean, accent: Color, faves
 
 @Composable
 private fun TopButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, on: Boolean, accent: Color, modifier: Modifier,
-                      warn: Boolean = false, onClick: () -> Unit) {
+                      warn: Boolean = false, labelTint: Color? = null, onClick: () -> Unit) {
     val d = rememberDims()
     val haptic = LocalHapticFeedback.current
     val c = if (warn) Palette.danger else if (on) accent else Palette.ink
@@ -220,7 +221,7 @@ private fun TopButton(icon: androidx.compose.ui.graphics.vector.ImageVector, lab
     ) {
         Icon(icon, contentDescription = null, tint = c, modifier = Modifier.size(d.dp(18f)))
         Spacer(Modifier.width(d.dp(6f)))
-        Text(label, color = if (warn) Palette.danger else if (on) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold,
+        Text(label, color = if (warn) Palette.danger else if (on) labelTint ?: Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold,
             fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
     }
 }
