@@ -1,24 +1,26 @@
 // Land Rover FSK: a receive-only decoder for a Land Rover key fob that ProtoPirate does not cover (its "Land Rover V0"
-// is an alias of Honda V2, a different protocol). Worked out from recordings of a real fob at 315 MHz; not a port of
+// is an alias of Honda V2, a different protocol). Worked out from recordings of two real keys at 315 MHz; not a port of
 // any C source.
 package com.rocketgod.mayhem.core.apps.ism.pirate
 
 import com.rocketgod.mayhem.core.apps.MeshField
 
 /**
- * On air: 2-FSK, about ±23 kHz deviation, Manchester at 64 µs per half bit (7.8 kbit/s). One press sends each frame
- * on three channels about 318 kHz apart (around 314.69, 315.005 and 315.32 MHz), each after a 50 ms bare carrier.
- * A frame is a run of 1010 preamble bits, then 144 bits (18 bytes, MSB first, a half bit high then low = 1):
+ * On air: 2-FSK, about ±23 kHz deviation, Manchester at 64 us per half bit (7.8 kbit/s). One press sends each frame
+ * on three channels about 318 kHz apart (around 315.005, 314.69 and 315.32 MHz), each after a 50 ms bare carrier,
+ * and a press sends two frames (two hop values). A frame is a run of 1010 preamble bits, then 144 bits (18 bytes,
+ * MSB first, a half bit high then low = 1):
  *
- *   bytes 0..4   fixed (D3 68 3C 0E 24 on the fob this was built from)
- *   byte  5      channel << 3: 0 = 315.005, 1 = the lower channel, 2 = the upper channel
- *   bytes 6..7   fixed (A8 24)
- *   bytes 8..15  hop: 64 bits that change on every repeat; encrypted, shown as received, never decrypted
+ *   bytes 0..4   fixed: D3 68 3C 0E 24 on both keys recorded (a sync word or a vehicle code: not a key ID)
+ *   byte  5      bits 3..4: channel (0 = 315.005, 1 = the lower channel, 2 = the upper); the other bits belong to
+ *                the key ID
+ *   bytes 6..7   key ID with the rest of byte 5 (00 A8 24 and C0 E3 2F on the two keys recorded), shown as serial
+ *   bytes 8..15  hop: 64 bits that change on every frame; encrypted, shown as received, never decrypted
  *   bytes 16..17 CRC-16 (poly 0x1021, init 0) over bytes 4..15
  *
- * The frame starts on the first repeated bit after at least 8 alternating preamble bits. Whether bytes 0..4 are a
- * per-fob ID or a sync word shared by every fob of this type is not known, so no serial is claimed; no button or
- * counter is visible in the clear. The same hop heard again on another channel is not shown again.
+ * Lock, unlock, approach lights, trunk and panic all leave bytes 0..7 unchanged and no hop bit follows the button,
+ * so the button (and any counter) is inside the encrypted hop: none is shown. The frame starts on the first repeated
+ * bit after at least 8 alternating preamble bits. The same hop heard again on another channel is not shown again.
  */
 class PPLandRoverFsk : PPDecoder("Land Rover FSK", PPModulation.FM, PPConst(64, 128, 32, 144)) {
     companion object {
@@ -47,7 +49,7 @@ class PPLandRoverFsk : PPDecoder("Land Rover FSK", PPModulation.FM, PPConst(64, 
         }
     }
 
-    /** The 18 bytes from bit [start], or null when a pair is broken, the channel byte is not one of the three, or the CRC fails. */
+    /** The 18 bytes from bit [start], or null when a pair is broken, the channel field is not one of the three, or the CRC fails. */
     private fun frameAt(bits: IntArray, start: Int): IntArray? {
         val f = IntArray(FRAME_BYTES)
         for (i in 0 until FRAME_BITS) {
@@ -55,7 +57,7 @@ class PPLandRoverFsk : PPDecoder("Land Rover FSK", PPModulation.FM, PPConst(64, 
             if (b < 0) return null
             if (b != 0) f[i shr 3] = f[i shr 3] or (0x80 ushr (i and 7))
         }
-        if (f[5] and 0xE7 != 0 || (f[5] shr 3) > 2) return null
+        if (((f[5] shr 3) and 3) == 3) return null
         if (PPMath.crc16(f.copyOfRange(4, 16), 0x1021, 0) != ((f[16] shl 8) or f[17])) return null
         return f
     }
@@ -80,10 +82,10 @@ class PPLandRoverFsk : PPDecoder("Land Rover FSK", PPModulation.FM, PPConst(64, 
     }
 
     private fun commit(f: IntArray) {
-        // The same frame on another channel differs only in byte 5 and the CRC.
+        // The same frame on another channel differs only in the channel bits of byte 5 and the CRC.
         var same = lastValid
         var i = 0
-        while (same && i < 16) { if (i != 5 && f[i] != last[i]) same = false; i++ }
+        while (same && i < 16) { if ((if (i == 5) (f[i] xor last[i]) and 0xE7 else f[i] xor last[i]) != 0) same = false; i++ }
         if (same) return
         frame = f; last = f.copyOf(); lastValid = true
         dataCountBit = FRAME_BITS
@@ -104,12 +106,13 @@ class PPLandRoverFsk : PPDecoder("Land Rover FSK", PPModulation.FM, PPConst(64, 
 
     override fun describe(): PPHit {
         val k = frame
-        return PPHit(name, dataCountBit, hexBytes(k, 0, 17), null, null, null,
-            listOf(MeshField("Fixed", hexBytes(k, 0, 4) + " " + hexBytes(k, 6, 7)), MeshField("Ch", (k[5] shr 3).toString()),
+        val keyId = ((k[5] and 0xE7).toLong() shl 16) or (k[6].toLong() shl 8) or k[7].toLong()
+        return PPHit(name, dataCountBit, hexBytes(k, 0, 17), keyId, null, null,
+            listOf(MeshField("Fixed", hexBytes(k, 0, 4)), MeshField("Ch", ((k[5] shr 3) and 3).toString()),
                 MeshField("Hop", hexBytes(k, 8, 15)), MeshField("Crc", hexBytes(k, 16, 17))))
     }
 
     override fun cString(h: PPHit): String =
-        "${h.name} ${h.bits}bit | Key:${h.key} | Fixed:${h.field("Fixed")} Ch:${h.field("Ch")} | " +
+        "${h.name} ${h.bits}bit | Key:${h.key} | " + hx("Sn:%06X", h.serial ?: 0L) + " Fixed:${h.field("Fixed")} Ch:${h.field("Ch")} | " +
             "Hop:${h.field("Hop")} Crc:${h.field("Crc")}"
 }
