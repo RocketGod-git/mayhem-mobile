@@ -1397,3 +1397,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .an-protos b { color: var(--accent); font-size: 12px; }
 .an-protos span { font-size: 10px; color: var(--muted); flex: 1; min-width: 160px; }
 .an-protos .chip { padding: 4px 8px; font-size: 10px; }
+
+/* a transmission: one press, each frame it was sent as */
+.an-txrows { display: flex; flex-direction: column; gap: 4px; }
+.an-txrow { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 2px 12px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+.an-txrow:hover, .an-txrow.me { border-color: var(--accent); }
+.an-txrow b { color: var(--accent); font-size: 13px; }
+.an-txrow span { font-size: 10px; letter-spacing: 1px; color: var(--muted); align-self: center; }
+.an-txrow code { grid-column: 1 / -1; font-family: ui-monospace, monospace; font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }

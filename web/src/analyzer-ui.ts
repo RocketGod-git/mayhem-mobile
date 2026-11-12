@@ -16,6 +16,7 @@ import { align, similar, type Alignment } from './dsp/analyzer/align.js';
 import { decodeBundle, encodeBundle, exportName, freqFromName, toCs8, toCu8, toSub } from './dsp/analyzer/files.js';
 import { checkHolds, dataStart, fieldValue, recognize, suggest, FIELD_KINDS, type CheckFound, type Field, type FieldKind, type Protocol } from './dsp/analyzer/fields.js';
 import { NO_FILTER, passes, type Burst, type CaptureFilter } from './dsp/analyzer/capture.js';
+import { groupPresses, sameFrame, type Transmission } from './dsp/analyzer/group.js';
 import { store, type StoredBurst } from './analyzer-store.js';
 
 /** What the screen needs from the app around it. */
@@ -52,6 +53,12 @@ export interface AnBurst extends Burst {
 }
 
 type View = 'amp' | 'freq' | 'iq' | 'spec';
+/** One press: its bursts, kept in time order. */
+type Tx = Transmission & { members: AnBurst[] };
+/** A decoder's reading without its family ("car key: Land Rover FSK A824" → "Land Rover FSK A824"). */
+const shortLabel = (l: string) => l.replace(/^(car key|remote|weather): /, '');
+/** Waterfall boxes fade out over this long after their burst. */
+const MARK_FADE_MS = 30_000;
 type Fmt = 'bits' | 'hex' | 'ascii';
 
 /** Bursts kept: the oldest unstarred go first. */
@@ -84,6 +91,11 @@ export class AnalyzerUi {
   private hl: { f: number; b0: number; b1: number } | null = null;
   private selOnly = false;
   private comparing = false;
+  /** The transmission open in the full-screen view (its first burst's id), and whether one of its frames is open in it. */
+  private txOpen = 0;
+  private txBurst = false;
+  /** COMPARE lines up this transmission's frames; 0: every burst that reads alike. */
+  private cmpTx = 0;
   private starredOnly = false;
   private showFilter = false;
   private readonly left = new Set<number>();
@@ -204,14 +216,14 @@ export class AnalyzerUi {
     $('an-clear').onclick = () => this.clear();
     $('an-list').onclick = (e) => {
       const c = (e.target as HTMLElement).closest<HTMLElement>('[data-an]');
-      if (c) this.openBurst(+c.dataset.an!);
+      if (c) this.openTransmission(+c.dataset.an!);
     };
     $('an-modal').onclick = (e) => { if (e.target === $('an-modal')) this.close(); };
     // a box on the waterfall opens its burst; the waterfall's own tap (tuning) is left alone everywhere else
     const sc = root.querySelector<HTMLElement>('#scope');
     sc?.addEventListener('pointerdown', (e) => {
       const id = this.host.scope()?.markAt(e.clientX, e.clientY);
-      if (id) { e.stopPropagation(); e.preventDefault(); this.openBurst(id); }
+      if (id) { e.stopPropagation(); e.preventDefault(); this.openTransmission(id); }
     }, true);
     clearInterval(this.marksTimer);
     this.marksTimer = window.setInterval(() => { if (!this.host.showing()) { clearInterval(this.marksTimer); this.host.scope()?.setMarks([]); return; } this.marks(); }, 500);
@@ -222,17 +234,40 @@ export class AnalyzerUi {
   /** Keys while the full-screen view is open: Esc steps back out of it. */
   onKey(e: KeyboardEvent): boolean {
     if (!this.opened || e.key !== 'Escape') return false;
-    if (this.comparing) this.comparing = false; else this.opened = false;
-    this.draw();
+    this.back();
     return true;
   }
 
+  /** One step back: compare → what it was opened from; a frame → its transmission; the rest closes. */
+  private back(): void {
+    if (this.comparing) { this.comparing = false; this.colPick = null; }
+    else if (this.txOpen && this.txBurst) this.txBurst = false;
+    else { this.close(); return; }
+    this.draw();
+  }
+
   private openBurst(id: number): void {
-    if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; this.comparing = false; }
+    if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; }
+    this.comparing = false;
     this.opened = true;
     this.draw();
   }
-  private close(): void { this.opened = false; this.comparing = false; this.colPick = null; this.draw(); }
+  /** Open the transmission a burst belongs to: its frames, or the burst itself when it was sent once. */
+  private openTransmission(id: number): void {
+    const t = this.txs().find(x => x.ids.includes(id));
+    if (!t || t.ids.length === 1) { this.txOpen = 0; this.txBurst = false; this.openBurst(t ? t.ids[0] : id); return; }
+    this.txOpen = t.id; this.txBurst = false; this.comparing = false; this.opened = true;
+    if (!t.ids.includes(this.sel)) { this.sel = t.ids[0]; this.zoom = this.pick = null; this.hl = null; }
+    this.draw();
+  }
+  private close(): void { this.opened = false; this.comparing = false; this.txOpen = 0; this.txBurst = false; this.colPick = null; this.draw(); }
+
+  /** The kept bursts as transmissions: each press once, its copies and channels together. */
+  private txs(): Tx[] {
+    const byId = new Map(this.bursts.map(b => [b.id, b]));
+    return groupPresses(this.bursts.map(b => ({ id: b.id, t: b.src ? b.t : b.wall / 1000 - b.n / b.rate, dur: b.n / b.rate, hz: b.center ? b.center + b.hz : b.hz, matches: b.matches, bits: b.best, src: b.src })))
+      .map(t => ({ ...t, members: t.ids.map(i => byId.get(i)!) }));
+  }
 
   private flash(s: string): void { const st = this.root?.querySelector('#an-stats'); if (st) st.innerHTML = `<div>${esc(s)}</div>`; }
 
@@ -262,13 +297,18 @@ export class AnalyzerUi {
   private marks(): void {
     const sc = this.host.scope();
     if (!sc) return;
-    const c = this.host.center(), rate = this.host.rate();
+    const c = this.host.center(), rate = this.host.rate(), now = performance.now();
+    const open = this.opened ? (this.txOpen ? this.txs().find(t => t.id === this.txOpen)?.ids ?? [] : [this.sel]) : [];
     const out: ScopeMark[] = [];
     for (const b of this.bursts) {
       if (!b.seenAt || b.center !== c) continue;
-      const t1 = b.seenAt - 210, t0 = t1 - Math.max(b.ms, 4);
+      const alpha = 1 - (now - b.seenAt) / MARK_FADE_MS;
+      if (alpha <= 0) continue;
+      // the whole stretch the burst was heard over, from the look-back to the end of its carrier
+      const t1 = b.seenAt - 210, t0 = t1 - Math.max(b.n / b.rate * 1000 - 70, b.ms, 4);
       const w = Math.max(20_000, b.auto.mod === 'FSK' ? b.auto.shiftHz * 1.6 : 0) / rate;
-      out.push({ id: b.id, t0, t1, frac: 0.5 + b.hz / rate, w, color: MOD_COLOR[b.auto.mod], bold: b.id === this.sel });
+      const label = `${((c + b.hz) / 1e6).toFixed(3)}${b.matches.length ? ` ${shortLabel(b.matches[0])}` : b.proto ? ` ${b.proto.protocol.name}` : ''}`;
+      out.push({ id: b.id, t0, t1, frac: 0.5 + b.hz / rate, w, color: MOD_COLOR[b.auto.mod], bold: open.includes(b.id), label, alpha: Math.max(0.15, alpha) });
     }
     sc.setMarks(out);
   }
@@ -282,30 +322,33 @@ export class AnalyzerUi {
     const st = $('an-stats');
     if (st) {
       const s = this.stats, c = this.host.center();
-      const matched = this.bursts.filter(b => b.matches.length).length, protos = this.bursts.filter(b => b.proto).length;
+      const txs = this.txs(), matched = txs.filter(t => t.label).length, protos = txs.filter(t => t.members.some(m => m.proto)).length;
       st.innerHTML = (s ? `<div>WATCHING ${((c - s.span / 2) / 1e6).toFixed(2)}–${((c + s.span / 2) / 1e6).toFixed(2)} MHz${s.channels ? ` · TUNED TO ${s.channels} BURST${s.channels === 1 ? '' : 'S'} NOW` : ''}${this.capturing ? '' : ' · CAPTURE OFF'}</div>` : `<div>${this.capturing ? 'listening…' : 'CAPTURE OFF'}</div>`)
-        + `<div class="muted">${this.bursts.length} captured · ${matched} matched a Devices decoder${protos ? ` · ${protos} a saved protocol` : ''}${this.filtered ? ` · ${this.filtered} filtered out` : ''}${s ? ` · ${s.followed} bursts followed` : ''}</div>`;
+        + `<div class="muted">${txs.length} transmission${txs.length === 1 ? '' : 's'} (${this.bursts.length} frame${this.bursts.length === 1 ? '' : 's'}) · ${matched} matched a Devices decoder${protos ? ` · ${protos} a saved protocol` : ''}${this.filtered ? ` · ${this.filtered} filtered out` : ''}${s ? ` · ${s.followed} bursts followed` : ''}</div>`;
     }
     const fl = $('an-filter');
     if (fl) { fl.hidden = !this.showFilter; if (this.showFilter && full) { fl.innerHTML = this.filterHtml(); this.wireFilter(fl); } }
     const list = $('an-list');
     if (list) {
       const top = list.scrollTop;
-      const shown = this.bursts.filter(b => !this.starredOnly || b.star);
+      const shown = this.txs().filter(t => !this.starredOnly || t.members.some(m => m.star));
       list.innerHTML = shown.length
-        ? [...shown].reverse().map(b => this.card(b)).join('')
+        ? [...shown].reverse().map(t => (t.members.length === 1 ? this.card(t.members[0]) : this.txCard(t))).join('')
         : `<div class="mt-wait dv-empty">${this.starredOnly ? 'nothing starred yet: open a burst and tap ☆' : 'nothing yet. Press a key fob or a remote near the antenna, or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)'}</div>`;
       list.scrollTop = top;
     }
     this.marks();
     const modal = $('an-modal'), det = $('an-detail');
     const b = this.selected();
+    const tx = this.txOpen ? this.txs().find(t => t.id === this.txOpen) : undefined;
+    if (this.txOpen && !tx) { this.txOpen = 0; this.txBurst = false; }
     if (modal && det) {
-      modal.hidden = !(this.opened && b);
+      modal.hidden = !(this.opened && (b || tx));
       // a new burst arriving must not rebuild the open view under the person's hands
-      if (this.opened && b && full) {
-        det.innerHTML = this.comparing ? this.compareHtml(b) : this.detailHtml(b);
-        if (this.comparing) this.wireCompare(det, b); else this.wireDetail(det, b);
+      if (this.opened && full) {
+        if (this.comparing && b) { det.innerHTML = this.compareHtml(b); this.wireCompare(det, b); }
+        else if (tx && !this.txBurst) { det.innerHTML = this.txHtml(tx); this.wireTx(det, tx); }
+        else if (b) { det.innerHTML = this.detailHtml(b); this.wireDetail(det, b); }
       }
     }
   }
@@ -323,6 +366,45 @@ export class AnalyzerUi {
       + (b.matches.length || b.proto ? `<div class="an-match">${b.proto ? `<span class="p">◆ ${esc(b.proto.protocol.name)}</span>` : ''}${b.matches.map(m => `<span>${esc(m)}</span>`).join('')}</div>` : '')
       + (b.note ? `<div class="an-note">${esc(b.note)}</div>` : '')
       + `<div class="dv-foot"><span>${b.ms.toFixed(1)} ms</span><span>${b.dbfs.toFixed(0)} dBFS · ${b.snr.toFixed(0)} dB SNR</span></div></div>`;
+  }
+
+  /** A press sent several times: what it is, how often and where. */
+  private txCard(t: Tx): string {
+    const m0 = t.members[0], rep = repOf(t), a = rep.auto;
+    const name = t.members.find(x => x.name)?.name ?? '';
+    const proto = t.members.find(x => x.proto)?.proto?.protocol.name ?? '';
+    const big = t.label ? shortLabel(t.label) : proto || (a.frames.length ? `${a.mod} · ${a.coding.toUpperCase()}` : a.mod);
+    const when = m0.src ? `+${m0.t.toFixed(3)} s` : clock(m0.wall);
+    const chans = `${t.freqs.length} channel${t.freqs.length === 1 ? '' : 's'}`;
+    const snr = Math.max(...t.members.map(x => x.snr));
+    const open = this.opened && this.txOpen === t.id;
+    return `<div class="mt-card dv-card an-card an-txcard k-${a.mod.toLowerCase()} ${open || t.ids.includes(this.sel) ? 'sel' : ''}" data-an="${t.id}">`
+      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${t.freqs.map(f => (f / 1e6).toFixed(3)).join(' / ')} MHz</b><small>${name ? `<em class="an-name">${esc(name)}</em>` : m0.src ? esc(m0.src) : `${a.mod} · ${a.coding}`}</small></span><span class="mt-live">${t.members.some(x => x.star) ? '<i class="an-starred">★</i>' : ''}${esc(when)}</span></div>`
+      + `<div class="mt-clk"><b>${esc(big)}</b><small>${t.ids.length} frames on ${chans}</small></div>`
+      + (rep.best ? `<div class="mt-hex">${esc(bitsToHex(rep.best))}</div>` : '')
+      + (proto && t.label ? `<div class="an-match"><span class="p">◆ ${esc(proto)}</span></div>` : '')
+      + `<div class="dv-foot"><span>${((t.end - t.t) * 1000).toFixed(0)} ms in all</span><span>up to ${snr.toFixed(0)} dB SNR</span></div></div>`;
+  }
+
+  /** The transmission view: one press, each frame it was sent as, and a COMPARE across them. */
+  private txHtml(t: Tx): string {
+    const m0 = t.members[0];
+    const rows = t.members.map(m => {
+      const hz = m.center ? mhz(m.center + m.hz) : `${(m.hz / 1e3).toFixed(1)} kHz`;
+      const off = m.src ? `+${m.t.toFixed(3)} s` : `+${((m.wall - m0.wall) / 1000).toFixed(3)} s`;
+      return `<div class="an-txrow ${m.id === this.sel ? 'me' : ''}" data-anf="${m.id}"><b>${esc(hz)}</b><span>${off} · ${m.auto.mod} · ${m.auto.coding} · ${m.ms.toFixed(1)} ms · ${m.snr.toFixed(0)} dB</span><code>${esc(bitsToHex(m.best)) || '—'}</code></div>`;
+    }).join('');
+    return `<div class="an-head"><b>${esc(t.label ? shortLabel(t.label) : 'TRANSMISSION')}</b><span>${t.ids.length} frames on ${t.freqs.length} channel${t.freqs.length === 1 ? '' : 's'} · ${t.freqs.map(f => (f / 1e6).toFixed(3)).join(' / ')} MHz · ${m0.src ? esc(m0.src) : clock(m0.wall)}</span>`
+      + `<button class="chip" data-ando="txcompare">COMPARE</button><button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
+      + `<div class="an-scroll"><div class="an-sub">EACH FRAME AS IT WAS HEARD · TAP ONE TO OPEN IT</div><div class="an-txrows">${rows}</div>`
+      + `${t.label ? `<div class="an-why">DEVICES DECODERS: ${esc(t.label)}</div>` : ''}</div>`;
+  }
+  private wireTx(det: HTMLElement, t: Tx): void {
+    det.querySelectorAll<HTMLElement>('[data-anf]').forEach(r => r.onclick = () => { const id = +r.dataset.anf!; if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; } this.txBurst = true; this.draw(); });
+    det.querySelectorAll<HTMLButtonElement>('[data-ando]').forEach(x => x.onclick = () => {
+      if (x.dataset.ando === 'close') this.close();
+      else { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.sel = repOf(t).id; this.draw(); }
+    });
   }
 
   // ---- the capture filter -------------------------------------------------------------------------------------
@@ -361,7 +443,7 @@ export class AnalyzerUi {
       return `<div class="an-sub">◆ ${esc(p.name.toUpperCase())}${ok === null ? '' : ok ? ' · CHECK ✓' : ' · CHECK ✗'}</div><div class="an-fields">${p.fields.map(f => `<div><i style="background:${KIND_COLOR[f.kind]}"></i><b>${esc(f.name)}</b><span>${esc(fieldValue(b.best, proto.start, f))}</span></div>`).join('')}</div>`;
     })() : '';
     return `<div class="an-head"><b>${esc(hz)}</b><span>${b.name ? `<em class="an-name">${esc(b.name)}</em> · ` : ''}${b.src ? esc(b.src) + ' · +' + b.t.toFixed(3) + ' s' : clock(b.wall)} · ${b.ms.toFixed(1)} ms · ${b.snr.toFixed(0)} dB SNR</span>`
-      + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button><button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button><button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
+      + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button><button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button>${this.txOpen ? '<button class="chip" data-ando="back">BACK</button>' : ''}<button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
       + `<div class="ctlrow">${seg('view', ['amp', 'freq', 'iq', 'spec'], this.view, v => ({ amp: 'AMPLITUDE', freq: 'FREQUENCY', iq: 'I/Q', spec: 'SPECTROGRAM' }[v]!))}</div>`
       + `<div class="an-wave"><canvas id="an-canvas"></canvas></div>`
       + `<div class="an-zoom"><button class="chip" data-ando="zoom" ${this.pick ? '' : 'disabled'}>ZOOM</button><button class="chip" data-ando="full">FULL</button><span id="an-selinfo">${selTxt}</span><span class="an-grow"></span>${seg('fmt', ['bits', 'hex', 'ascii'], this.fmt, v => v.toUpperCase())}</div>`
@@ -415,7 +497,8 @@ export class AnalyzerUi {
       switch (x.dataset.ando) {
         case 'close': this.close(); break;
         case 'star': b.star = !b.star; this.save(b); this.draw(); break;
-        case 'compare': this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.draw(); break;
+        case 'back': this.back(); break;
+        case 'compare': this.cmpTx = 0; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.draw(); break;
         case 'zoom': if (this.pick) { this.zoom = this.pick; this.pick = null; this.draw(); } break;
         case 'full': this.zoom = [0, b.n]; this.pick = null; this.draw(); break;
         case 'sym-': this.setOver(b, o => { o.symUs = a.symUs / 1.05; }); break;
@@ -534,6 +617,15 @@ export class AnalyzerUi {
   /** The bursts that read like the selected one: the comparison's candidates, in time order. */
   private group(): AnBurst[] {
     const b = this.selected();
+    if (this.cmpTx) {
+      // the press's frames that read like its main one (an FSK key's bare carriers read as something else)
+      const t = this.txs().find(x => x.id === this.cmpTx);
+      if (t) {
+        const sum = t.members.filter(x => x.best).map(x => ({ x, mod: x.auto.mod, coding: x.auto.coding, symUs: x.auto.symUs, bits: x.best.length }));
+        const me = sum.find(q => q.x === repOf(t));
+        return me ? similar(sum, me).map(q => q.x) : sum.map(q => q.x);
+      }
+    }
     if (!b || !b.best) return [];
     const sum = this.bursts.filter(x => x.best).map(x => ({ x, mod: x.auto.mod, coding: x.auto.coding, symUs: x.auto.symUs, bits: x.best.length }));
     const me = sum.find(s => s.x.id === b.id)!;
@@ -543,7 +635,7 @@ export class AnalyzerUi {
   private compareHtml(b: AnBurst): string {
     const cands = this.group();
     const rows = cands.filter(x => !this.left.has(x.id) || x.id === b.id);
-    const head = `<div class="an-head"><b>COMPARE</b><span>${rows.length} of ${cands.length} frame${cands.length === 1 ? '' : 's'} like burst ${b.id} · ${b.auto.mod} · ${b.auto.coding} · ${b.auto.symUs.toFixed(0)} µs</span>`
+    const head = `<div class="an-head"><b>COMPARE</b><span>${rows.length} of ${cands.length} frame${cands.length === 1 ? '' : 's'} ${this.cmpTx ? 'of this transmission' : `like burst ${b.id}`} · ${b.auto.mod} · ${b.auto.coding} · ${b.auto.symUs.toFixed(0)} µs</span>`
       + `<button class="chip" data-ando="suggest">SUGGEST</button><button class="chip" data-ando="saveproto" ${this.fields.length ? '' : 'disabled'}>SAVE AS PROTOCOL</button><button class="chip ${this.showProtocols ? 'on' : ''}" data-ando="protocols">PROTOCOLS ${this.protocols.length}</button><button class="chip" data-ando="back">BACK</button><button class="chip" data-ando="close">✕</button></div>`;
     const inout = `<div class="an-sub">FRAMES · TAP TO LEAVE ONE OUT</div><div class="an-inout">${cands.map(x => `<button class="chip ${this.left.has(x.id) && x.id !== b.id ? '' : 'on'}" data-anin="${x.id}">${x.id}${x.name ? ` ${esc(x.name)}` : ''}</button>`).join('')}</div>`;
     const protos = this.showProtocols ? `<div class="an-protos">${this.protocols.length ? this.protocols.map((p, i) => `<div><b>${esc(p.name)}</b><span>${p.mod} · ${p.coding} · sync ${bitsToHex(p.sync)} · ${p.fields.length} fields${p.check ? ` · ${esc(p.check.name.split(' (')[0])}` : ''} · ${this.bursts.filter(x => x.proto?.protocol === p).length} heard</span><button class="chip" data-anprn="${i}">RENAME</button><button class="chip" data-anprd="${i}">DELETE</button></div>`).join('') : '<div class="mt-wait">no saved protocols yet: SUGGEST or drag out fields here, then SAVE AS PROTOCOL</div>'}</div>` : '';
@@ -609,7 +701,7 @@ export class AnalyzerUi {
     det.querySelectorAll<HTMLButtonElement>('[data-ando]').forEach(x => x.onclick = () => {
       switch (x.dataset.ando) {
         case 'close': this.close(); break;
-        case 'back': this.comparing = false; this.colPick = null; this.draw(); break;
+        case 'back': this.back(); break;
         case 'protocols': this.showProtocols = !this.showProtocols; this.draw(); break;
         case 'suggest': if (al) { const s = suggest(al); this.fields = s.fields; this.check = s.check; } this.draw(); break;
         case 'nopick': this.colPick = null; this.draw(); break;
@@ -854,6 +946,16 @@ export class AnalyzerUi {
   }
 }
 
+/** The frame a transmission is best shown by: the one most of its copies agree with (ties: the strongest). */
+function repOf(t: Tx): AnBurst {
+  let best = t.members[0], bestN = -1;
+  for (const m of t.members) {
+    if (!m.best) continue;
+    const n = t.members.filter(x => x !== m && sameFrame(x.best, m.best)).length;
+    if (n > bestN || (n === bestN && m.snr > best.snr)) { best = m; bestN = n; }
+  }
+  return best;
+}
 function bestOf(a: Analysis): string { return a.frames.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), ''); }
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
