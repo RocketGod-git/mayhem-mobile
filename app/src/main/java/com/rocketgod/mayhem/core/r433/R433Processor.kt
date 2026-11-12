@@ -123,7 +123,7 @@ class R433Processor : IqProcessor {
     }
 
     init {
-        channels = BurstChannels({ ch, env, fm, n -> onChannel(ch, env, fm, n) }, { ch -> onChannelEnd(ch) })
+        channels = BurstChannels({ ch, env, fm, n, _ -> onChannel(ch, env, fm, n) }, { ch -> onChannelEnd(ch) })
         for (i in 0 until MAX_CHANNELS) {
             val slot = Slot(PulseDetect(250_000.0))
             slot.keys = KeyDecoders { r -> slot.pending.add(r to curHz) }
