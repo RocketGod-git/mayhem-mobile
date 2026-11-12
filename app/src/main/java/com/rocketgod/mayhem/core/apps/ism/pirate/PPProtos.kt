@@ -8,7 +8,7 @@ object PPProtos {
         val am = listOf<PPDecoder>(PPChryslerV0(), PPFiatV0(), PPFiatV1(), PPFiatV2(), PPFordV0(), PPHondaV1(), PPKiaV1(), PPKiaV2(),
             PPMazdaV0(), PPPsa(), PPRenaultV0(), PPRenaultV1(), PPStarLine(), PPSubaru(), PPVag())
         val fm = listOf<PPDecoder>(PPFordV1(), PPFordV2(), PPFordV3(), PPHondaStatic(), PPHondaV2(), PPKiaV0(), PPKiaV3V4(), PPKiaV5(),
-            PPKiaV6(), PPKiaV7(), PPScherKhan(), PPMazdaV0(), PPPsa(), PPRenaultV1())
+            PPKiaV6(), PPKiaV7(), PPScherKhan(), PPMazdaV0(), PPPsa(), PPRenaultV1(), PPLandRoverFsk())
         return Pair(am, fm)
     }
 }
