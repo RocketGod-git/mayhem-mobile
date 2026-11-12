@@ -168,13 +168,16 @@ export function symbolOf(runs: Run[]): number {
   const s = inner.slice().sort((x, y) => x - y);
   // the lengths that recur: runs within 20% of each other, each group at least 5% of all of them; the symbol is one
   // of these or a half or third of one
-  const cands: number[] = [];
+  const cands: number[] = [], centers: number[] = [];
   for (let i = 0; i < s.length;) {
     let j = i, sum = 0;
     while (j < s.length && s[j] <= s[i] * 1.2) { sum += s[j]; j++; }
-    if (j - i >= Math.max(2, s.length * 0.05)) { const c = sum / (j - i); cands.push(c, c / 2, c / 3); }
+    if (j - i >= Math.max(2, s.length * 0.05)) { const c = sum / (j - i); centers.push(c); cands.push(c, c / 2, c / 3); }
     i = j;
   }
+  // a transmitter that holds its marks a little long and its gaps a little short splits one length into two
+  // (100 and 140 µs for a 120 µs symbol): the middle of each neighboring pair is a candidate too
+  for (let i = 0; i + 1 < centers.length; i++) if (centers[i + 1] < centers[i] * 1.6) { const c = (centers[i] + centers[i + 1]) / 2; cands.push(c, c / 2); }
   if (!cands.length) cands.push(s[s.length >> 1]);
   // The longest symbol that the frame is a whole number of (any shorter one would fit it too). Measured as the
   // longest unbroken stretch of runs that fit, so noise before the preamble, which fits nothing for long, has no say.
@@ -188,6 +191,23 @@ export function symbolOf(runs: Run[]): number {
     if (sk) u = sr / sk;
   }
   return u;
+}
+
+/**
+ * How regular a sliced line is: the share of its runs (rests and the two ends left out) that are close to a whole
+ * number of its own symbol, divided by how many symbols those runs average. A shorter symbol always "fits" more runs
+ * (a third of any symbol fits whatever the symbol fits), so on its own the share would reward slicing noise finely;
+ * dividing by the run length in symbols makes a code that runs one or two symbols at a time beat that. Nothing for
+ * fewer than 8 runs.
+ */
+export function regularity(runs: Run[], usPer: number): number {
+  const inner = runs.slice(1, -1).map(r => r.n);
+  if (inner.length < 8) return 0;
+  const u = symbolOf(runs);
+  let ok = 0, all = 0, ks = 0;
+  for (const n of inner) { const x = n / u, k = Math.round(x); if (k > GAP_SYMBOLS) continue; all++; if (k >= 1 && Math.abs(x - k) < 0.25 + 0.03 * k) { ok++; ks += k; } }
+  void usPer;
+  return all && ok ? (ok / all) / (ks / ok) : 0;
 }
 
 /** The longest unbroken stretch of runs that are close to a whole number (1..16) of symbols `u`; rests are skipped. */
@@ -392,29 +412,42 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
       if (x && x !== l) { if (l) fmEdges++; l = x; }
     }
   }
-  let modAuto: Mod = 'OOK', why = '';
-  if (fskLike && fmEdges >= Math.max(8, 2 * edges)) { modAuto = 'FSK'; why = `two tones ${((fmSpread / FM_SCALE) * rate / (2 * Math.PI) / 1e3).toFixed(1)} kHz apart`; }
-  else if (ookLike) { modAuto = 'OOK'; why = `carrier keyed on and off (${Math.round(offFrac * 100)}% off)`; }
-  else if (askLike) { modAuto = 'ASK'; why = `two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper`; }
-  else if (fskLike) { modAuto = 'FSK'; why = 'two tones'; }
-  else why = 'a plain carrier: nothing keyed';
-  const mod = o.mod ?? modAuto;
-
-  // the two levels to slice between, and where
-  const sig = signalOf(mod, env, fm);
-  let lo: number, hi: number;
-  if (mod === 'FSK') { lo = fmT.a; hi = fmT.b; }
-  else if (mod === 'ASK') { lo = envT.a; hi = envT.b; }
-  else { lo = noise; hi = envOn.length ? envOn.reduce((a, b) => a + b, 0) / envOn.length : noise * ON_K; if (envT.share < 0.9 && askLike) hi = envT.b; }
-  if (hi <= lo) hi = lo + 1;
-  const thrAuto = mod === 'OOK' ? Math.min(0.5, Math.max(0.15, (noise * ON_K - lo) / (hi - lo))) : 0.5;
-  const thr = o.thr ?? thrAuto;
-  const cut = lo + thr * (hi - lo);
-  // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits
-  // near the noise, and a band that wide would reach below it
-  const hyst = (hi - lo) * (mod === 'FSK' ? 0.12 : 0.08);
+  // the line sliced as a given modulation: the two levels, where to cut, and the runs
   const minRun = Math.max(2, Math.round(12 / usPer));
-  const runs = deglitch(sliceRuns(sig, from, to, cut, hyst, mod === 'FSK' ? on : null), minRun);
+  const sliceAs = (m: Mod, thrO?: number) => {
+    let lo: number, hi: number;
+    if (m === 'FSK') { lo = fmT.a; hi = fmT.b; }
+    else if (m === 'ASK') { lo = envT.a; hi = envT.b; }
+    else { lo = noise; hi = envOn.length ? envOn.reduce((x, y) => x + y, 0) / envOn.length : noise * ON_K; if (envT.share < 0.9 && askLike) hi = envT.b; }
+    if (hi <= lo) hi = lo + 1;
+    const thrAuto = m === 'OOK' ? Math.min(0.5, Math.max(0.15, (noise * ON_K - lo) / (hi - lo))) : 0.5;
+    const thr = thrO ?? thrAuto;
+    const cut = lo + thr * (hi - lo);
+    // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits
+    // near the noise, and a band that wide would reach below it
+    const hyst = (hi - lo) * (m === 'FSK' ? 0.12 : 0.08);
+    const runs = deglitch(sliceRuns(signalOf(m, env, fm), from, to, cut, hyst, m === 'FSK' ? on : null), minRun);
+    return { lo, hi, thrAuto, thr, cut, runs };
+  };
+  // When more than one reading is plausible, each is sliced and the one whose pulses come out regular (whole numbers
+  // of one symbol) wins: noise sliced as a second "tone" gives a scatter of tiny runs, a real code does not. This is
+  // what keeps a weak on-off sensor, whose discriminator wanders a few kHz, from reading as FSK at a 6 µs symbol.
+  const cands: Mod[] = [];
+  if (fskLike && fmEdges >= Math.max(8, 2 * edges)) cands.push('FSK');
+  if (ookLike) cands.push('OOK');
+  if (askLike) cands.push('ASK');
+  if (!cands.length && fskLike) cands.push('FSK');
+  let modAuto: Mod = cands[0] ?? 'OOK';
+  if (cands.length > 1) {
+    let best = -1;
+    for (const m of cands) { const sc = regularity(sliceAs(m).runs, usPer); if (sc > best + 0.02) { best = sc; modAuto = m; } }
+  }
+  const why = !cands.length ? 'a plain carrier: nothing keyed'
+    : modAuto === 'FSK' ? `two tones ${((fmSpread / FM_SCALE) * rate / (2 * Math.PI) / 1e3).toFixed(1)} kHz apart`
+    : modAuto === 'OOK' ? `carrier keyed on and off (${Math.round(offFrac * 100)}% off)`
+    : `two levels, the lower ${Math.round(envT.a / envT.b * 100)}% of the upper`;
+  const mod = o.mod ?? modAuto;
+  const { lo, hi, thrAuto, thr, cut, runs } = sliceAs(mod, o.thr);
 
   // symbol, frames and coding
   const uAuto = symbolOf(runs);

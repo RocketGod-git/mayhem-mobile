@@ -361,6 +361,28 @@ const packets = [];
   check(a && a.frames.length === 5 && a.frames.every(f => f.bits.startsWith(code)), `chirpy OOK: five frames read the code (${a?.frames.length})`);
 }
 
+// ---- a sensor whose marks run short and gaps long, with a carrier that never fully keys off ---------------------
+{
+  // Manchester at a 120 us half bit, every mark 20 us short and every gap 20 us long, the off level up to 45% (a fob
+  // seen on the owner's Mac): cut low as plain OOK the lengths smear; read right it is 120 us Manchester
+  const data = '1010'.repeat(6) + '0110' + randBits(64);
+  const half = [];
+  for (const c of data) half.push(c === '1' ? 1 : 0, c === '1' ? 0 : 1);
+  const lv = [];
+  for (const h of half) { if (lv.length && lv[lv.length - 1][0] === !!h) lv[lv.length - 1][1] += 120; else lv.push([!!h, 120]); }
+  for (const r of lv) r[1] += r[0] ? -20 : 20;
+  const air = new Air();
+  air.quiet(60);
+  // the off level wanders between nothing and 45% of the mark, so the carrier seems to stop for part of each gap
+  const gap = (us) => { for (let t = 0; t < us; t += 10) air.seg(Math.min(10, us - t), Math.round(rnd() * 27), 260_000); };
+  for (let rep = 0; rep < 2; rep++) { for (const [h, us] of lv) { if (h) air.seg(us, 60, 260_000); else gap(us); } gap(3000); }
+  air.quiet(150);
+  const bursts = capture(air);
+  const a = bursts.length ? read(bursts[0]) : null;
+  check(a && a.coding === 'Manchester' && near(a.symUs, 120, 10), `uneven Manchester: read at 120 us (${a?.mod} ${a?.coding} ${a?.symUs.toFixed(1)})`);
+  check(a && a.frames.some(f => f.bits.includes(data.slice(26, 88))), 'uneven Manchester: the data reads back');
+}
+
 // ---- Manchester phase and sync trim -----------------------------------------------------------------------------
 {
   // a frame opening with a long run of ones reads the same on either half-bit phase for a while; the phase that
