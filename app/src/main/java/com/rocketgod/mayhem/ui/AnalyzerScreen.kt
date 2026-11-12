@@ -206,7 +206,7 @@ fun AnalyzerScreen(accent: Color) {
             if (picked != null) {
                 val shape = RoundedCornerShape(d.dp(14f))
                 val c = modColor(picked.auto.mod)
-                Box(Modifier.fillMaxSize().padding(d.dp(2f)).clip(shape).background(Palette.panel.copy(alpha = 0.97f))
+                Box(Modifier.fillMaxSize().padding(d.dp(2f)).clip(shape).background(Palette.panel)
                     .background(Brush.linearGradient(listOf(c.copy(alpha = 0.10f), Palette.panel)))
                     .border(1.5.dp, c.copy(alpha = 0.8f), shape)) {
                     if (comparing) ComparePanel(picked, bursts, c, onBack = { comparing = false }, onClose = { sel = 0; comparing = false })
@@ -249,7 +249,9 @@ private fun BurstCards(bursts: List<AnBurst>, sel: Int, modifier: Modifier, onSe
             val shown = remember(bursts) { bursts.asReversed().toList() }
             LazyVerticalGrid(GridCells.Adaptive(d.dp(230f)), Modifier.fillMaxSize(),
                 horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                items(shown, key = { it.b.id }) { a -> BurstCard(a, sel == a.b.id) { onSel(a.b.id) } }
+                // unkeyed on purpose: keyed, the grid keeps the card on screen anchored while newer ones are added above
+                // it, so a fresh import opened scrolled to its oldest burst instead of its newest
+                items(shown) { a -> BurstCard(a, sel == a.b.id) { onSel(a.b.id) } }
             }
         }
     }
