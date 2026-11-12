@@ -154,7 +154,7 @@ object Devices {
         val v = h.data
         if (k == Kind.CAR_KEY || k == Kind.REMOTE) {
             val big = (v["button"] ?: v["btn"] ?: v["cmd"] ?: v["state"])?.let { fmtValue(it) } ?: "PRESS"
-            return big to (v["counter"]?.let { "counter ${fmtValue(it)}" } ?: "")
+            return big to (v["counter"]?.let { "counter ${fmtValue(it)}" } ?: v["hop"]?.let { "code ${fmtValue(it).take(8)}" } ?: "")
         }
         val kpa = num(v["pressure_kPa"]); val psiRaw = num(v["pressure_PSI"]); val bar = num(v["pressure_bar"])
         val tcRaw = num(v["temperature_C"]); val tf = num(v["temperature_F"])

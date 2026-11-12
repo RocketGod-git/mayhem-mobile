@@ -113,7 +113,7 @@ fun DevicesScreen(accent: Color) {
             TileRow(Devices.BANDS.map { (label, hz) -> Tile(label, "MHz", freq == hz) }, accent, width = 84.dp) { Devices.pickFreq(Devices.BANDS[it].second) }
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 val filters = Devices.Filter.entries
-                SegBar(filters.map { f -> "${f.label} · ${heard.count { Devices.shows(f, it) }}" }, filters.indexOf(filter), accent,
+                SegBar(filters.map { f -> "${f.label} ${heard.count { Devices.shows(f, it) }}" }, filters.indexOf(filter), accent,
                     Modifier.weight(1f).fillMaxHeight()) { filter = filters[it]; sel = null }
                 ToggleBox("HOP", hop, accent, Modifier.fillMaxHeight()) { Devices.setHop(!hop) }
             }

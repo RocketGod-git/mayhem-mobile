@@ -100,6 +100,8 @@ class R433Processor : IqProcessor {
     private val lastPayload = HashMap<String, Pair<String, Double>>()
     /** Weak-check presses heard once, waiting for a second hearing. */
     private val unconfirmed = HashMap<String, Pair<String, Double>>()
+    /** Key, remote and weather readings shown, for the decoded count beside rtl_433's. */
+    @Volatile private var keysDecoded = 0
     private val unknownSeen = HashMap<String, Long>()
     private val heard = LinkedHashMap<String, HeardDevice>()
     private val _devices = MutableStateFlow<List<HeardDevice>>(emptyList())
@@ -152,7 +154,7 @@ class R433Processor : IqProcessor {
             lastStats = now
             val (noise, trigger) = slots[0].pd.levels()
             val s = radio.stats
-            _report.value = R433Report(s.bursts, s.ook, s.fsk, s.decoded, s.badChecksum, HashMap(s.near), heard.size, radio.devices.size, noise, trigger, span(),
+            _report.value = R433Report(s.bursts, s.ook, s.fsk, s.decoded + keysDecoded, s.badChecksum, HashMap(s.near), heard.size, radio.devices.size, noise, trigger, span(),
                 channels.active(), channels.opened)
         }
     }
@@ -228,6 +230,7 @@ class R433Processor : IqProcessor {
         val last = lastPayload[key]
         if (last != null && last.first == press && air - last.second < 1200) return
         lastPayload[key] = press to air
+        keysDecoded++
         val data = R433Data()
         data["model"] = r.model
         if (id.isNotEmpty()) data["id"] = id

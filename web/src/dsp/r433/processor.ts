@@ -123,6 +123,8 @@ export class R433Processor implements IqProcessor {
   private curSlot = 0;
   /** Milliseconds of radio time since the start, for telling a repeat from a new press. */
   private airMs = 0;
+  /** Key, remote and weather readings shown, for the decoded count beside rtl_433's. */
+  private keysDecoded = 0;
   /** Weak-check presses heard once, waiting for a second hearing. */
   private readonly unconfirmed = new Map<string, { press: string; at: number }>();
   private radio = new R433();
@@ -198,6 +200,7 @@ export class R433Processor implements IqProcessor {
       const report: R433Report = {
         ...this.radio.stats, devices: this.heard.size, protocols: this.radio.devices.length,
         noise: lv.noise, trigger: lv.trigger, span: this.span(), channels: this.channels.active(), followed: this.channels.opened,
+        decoded: this.radio.stats.decoded + this.keysDecoded,
       };
       this.emit({ type: 'r433stats', ...report });
     }
@@ -243,6 +246,7 @@ export class R433Processor implements IqProcessor {
     const last = this.lastPayload.get(key);
     if (last && last.json === press && this.airMs - last.at < 1200) return;
     this.lastPayload.set(key, { json: press, at: this.airMs });
+    this.keysDecoded++;
     const data: R433Data = { model: r.model };
     if (id) data.id = id;
     for (const [k, v] of r.fields) data[k.toLowerCase().replace(/[^a-z0-9]+/g, '_')] = v;

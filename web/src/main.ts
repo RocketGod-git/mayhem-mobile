@@ -3094,7 +3094,7 @@ const r433Num = (v: unknown): number | null => (typeof v === 'number' ? v : type
 /** The big line on a card: what this thing just said, in the fewest words. */
 function r433Headline(d: HeardDevice, k: R433Kind): [string, string] {
   const v = d.data;
-  if (k === 'CAR KEY' || k === 'REMOTE') return [String(v.button ?? v.btn ?? v.cmd ?? v.state ?? 'PRESS'), v.counter !== undefined ? `counter ${v.counter}` : ''];
+  if (k === 'CAR KEY' || k === 'REMOTE') return [String(v.button ?? v.btn ?? v.cmd ?? v.state ?? 'PRESS'), v.counter !== undefined ? `counter ${v.counter}` : v.hop !== undefined ? `code ${String(v.hop).slice(0, 8)}` : ''];
   const kpaRaw = r433Num(v.pressure_kPa), psiRaw = r433Num(v.pressure_PSI), barRaw = r433Num(v.pressure_bar);
   const tcRaw = r433Num(v.temperature_C), tfRaw = r433Num(v.temperature_F);
   const tc = tcRaw !== null ? tcRaw : tfRaw !== null ? (tfRaw - 32) * 5 / 9 : null;
@@ -3206,7 +3206,7 @@ function drawR433(): void {
     const f = b.dataset.r433f as R433Filter;
     const n = f === 'all' ? r.heard.length : r.heard.filter(d => R433_GROUP[r433Kind(d)] === f).length;
     b.classList.toggle('on', r.filter === f);
-    b.textContent = `${R433_FILTER_LABEL[f]} · ${n}`;
+    b.textContent = `${R433_FILTER_LABEL[f]} ${n}`;
   });
   const shown = r.heard.filter(d => r.filter === 'all' || R433_GROUP[r433Kind(d)] === r.filter);
   if (!shown.length) {
