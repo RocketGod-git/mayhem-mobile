@@ -137,7 +137,7 @@ object Analyzer {
     private fun arrive(b: Burst, center: Long) {
         if (!passes(_filter.value, b, center)) { _filtered.value++; return }
         val x = readBurst(b, center)
-        if (_filter.value.dataOnly && !hasData(x.auto.frames, x.auto.baud, b.ms, b.matches)) { _filtered.value++; return }
+        if (_filter.value.dataOnly && !hasData(x.auto, b)) { _filtered.value++; return }
         keep(x)
     }
 

@@ -1556,3 +1556,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* FULL LIST: the readout, the waterfall and the band tiles step aside, and the burst list takes the screen */
 .view.analyzer.an-listfull .visual, .view.analyzer.an-listfull .controls > .hs:has(.tiles.wide) { display: none; }
 .view.analyzer.an-listfull .an-cards { max-height: none; }
+
+/* the gain chip: in full where there is room, in short on a phone ("AGC 46 dB"), never cut off */
+.fgain .gs { display: none; }
+@media (max-width: 480px) { .fgain .gl { display: none; } .fgain .gs { display: inline; } }
+/* the Analyzer's toolbar wraps on a phone; the clear button ends the row */
+.an-ctlrow #an-clear { margin-left: auto; }

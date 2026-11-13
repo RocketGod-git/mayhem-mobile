@@ -17,6 +17,7 @@ import { PulseDetect, type PulseKind } from '../r433/detect.js';
 import { R433 } from '../r433/runner.js';
 import type { PulseData } from '../r433/slicers.js';
 import { carrierOf, noiseOf, twoMeans } from './demod.js';
+import { informative } from './group.js';
 import '../r433/devices/index.js';
 
 export interface Burst {
@@ -276,18 +277,57 @@ export const NO_FILTER: CaptureFilter = { loHz: 0, hiHz: 0, minSnr: 0, minMs: 0,
 export const DEFAULT_FILTER: CaptureFilter = { ...NO_FILTER, dataOnly: true };
 
 /**
- * Whether a burst looks like a transmission rather than a spur or a blip: a Devices decoder claims it, or it lasts at
- * least 2 ms and reads as 16 or more bits at a plausible rate for a remote or a sensor (100 kbit/s or less), and those
- * bits span at least a quarter of it. A plain carrier, two tones with no bits, a 1 ms tick read as 170 kbit/s, or a
- * few stray bits in 50 ms of noise all fail.
+ * Whether a burst looks like a transmission rather than a spur, a blip, or the ripple on a steady signal. A Devices
+ * decoder claiming it settles it. Otherwise it must:
+ *  - start from quiet: its level while keyed at least 6 dB over its look-back (a carrier that was already on, with
+ *    a ripple or sidebands riding on it, is not keyed up from nothing; every decoded burst on record clears 8 dB);
+ *  - end: not run to the capture's length limit (a carrier that never stops);
+ *  - last 2 ms or more and read as 16 or more bits at 100 kbit/s or less, those bits spanning a quarter of it;
+ *  - carry data: at least one frame that is not one short pattern over and over (a ripple sliced into bits reads as
+ *    1010… or all ones);
+ *  - be keyed in whole symbols: 70% of its pulses within a quarter of a whole number of symbols (every decoded burst
+ *    on record does; flicker on a steady signal does not).
+ * A plain carrier, two tones with no bits, a 1 ms tick read as 170 kbit/s, a few stray bits in 50 ms of noise, or a
+ * steady emitter's modulation all fail.
  */
-export function hasData(a: { frames: { bits: string }[]; baud: number }, b: { ms: number; matches: string[] }): boolean {
+export function hasData(a: { frames: { bits: string }[]; baud: number; from?: number; to?: number; runs?: { n: number }[]; symUs?: number },
+                        b: { ms: number; matches: string[]; env?: Int16Array; n?: number; rate?: number }): boolean {
   if (b.matches.length) return true;
   const bits = a.frames.reduce((n, f) => n + f.bits.length, 0);
   if (!(b.ms >= 2 && bits >= 16 && a.baud > 0 && a.baud <= 100_000)) return false;
   // the bits must fill a fair share of the burst: noise reads as a few stray bits spread over 50 ms, while real frames
   // (repeats and the gaps between them included) cover 40% of it or more
-  return bits / a.baud * 1000 >= 0.25 * b.ms;
+  if (bits / a.baud * 1000 < 0.25 * b.ms) return false;
+  if (!a.frames.some(f => f.bits.length >= 16 && informative(f.bits))) return false;
+  if (b.env && b.n && b.rate) {
+    if (b.n / b.rate >= MAX_BURST_S * 0.95) return false;
+    if (a.runs && a.symUs && fitShare(a.runs, a.symUs * b.rate / 1e6) < 0.7) return false;
+    if (!fromQuiet(b.env, b.n, b.rate, a.from ?? 0, a.to ?? b.n)) return false;
+  }
+  return true;
+}
+
+/** The share of a burst's pulses (gaps of more than 8 symbols aside) within a quarter of a whole number of symbols `u`. */
+export function fitShare(runs: { n: number }[], u: number): number {
+  if (!(u > 0)) return 0;
+  let ok = 0, all = 0;
+  for (const r of runs) {
+    const k = r.n / u;
+    if (k > 8.5) continue;
+    all++;
+    const w = Math.max(1, Math.round(k));
+    if (Math.abs(k - w) <= 0.25 * w) ok++;
+  }
+  return all ? ok / all : 0;
+}
+
+/** Whether the burst's keyed level (the median of its upper half, where it is read) is 6 dB over its look-back. */
+export function fromQuiet(env: Int16Array, n: number, rate: number, from: number, to: number): boolean {
+  const quiet = noiseOf(env, n, rate);
+  const v = Array.from(env.subarray(Math.max(0, from), Math.min(n, Math.max(from + 1, to)))).sort((x, y) => x - y);
+  if (!v.length) return false;
+  const keyed = v[Math.floor(v.length * 0.75)];
+  return keyed >= quiet * 2; // 6 dB, in amplitude
 }
 
 /** Whether a burst heard with the radio at `center` gets through. A file with no known center skips the frequency test. */

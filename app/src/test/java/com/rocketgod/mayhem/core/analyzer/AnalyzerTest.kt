@@ -392,7 +392,7 @@ class AnalyzerTest {
         check(!ok(NO_FILTER.copy(minSnr = 15.0), 0) && !ok(NO_FILTER.copy(maxMs = 10.0), 0) && !ok(NO_FILTER.copy(minMs = 30.0), 0), "filter: SNR and length")
         check(!ok(NO_FILTER.copy(unknownOnly = true), 0, listOf("remote: x")) && ok(NO_FILTER.copy(unknownOnly = true), 0), "filter: only unknown")
         check(ok(NO_FILTER.copy(loHz = 434e6), 0), "filter: a file with no center skips the frequency test")
-        fun fr(n: Int) = listOf(Frame(0, 0, "1".repeat(n)))
+        fun fr(n: Int) = listOf(Frame(0, 0, "1101001110100010".repeat((n + 15) / 16).take(n)))
         val none = emptyList<String>()
         check(!hasData(emptyList(), 0.0, 1.0, none) && !hasData(fr(18), 169_000.0, 1.1, none), "data only: a carrier and a 1 ms tick are dropped")
         check(!hasData(fr(38), 105_000.0, 70.0, none) && !hasData(fr(10), 2000.0, 20.0, none), "data only: an implausible rate or too few bits are dropped")

@@ -335,12 +335,13 @@ const packets = [];
   check(!passes({ ...NO_FILTER, minSnr: 15 }, b, 0) && !passes({ ...NO_FILTER, maxMs: 10 }, b, 0) && !passes({ ...NO_FILTER, minMs: 30 }, b, 0), 'filter: SNR and length');
   check(!passes({ ...NO_FILTER, unknownOnly: true }, { ...b, matches: ['remote: x'] }, 0) && passes({ ...NO_FILTER, unknownOnly: true }, b, 0), 'filter: only unknown');
   check(passes({ ...NO_FILTER, loHz: 434e6 }, b, 0), 'filter: a file with no center skips the frequency test');
-  const fr = (n) => [{ bits: '1'.repeat(n) }];
+  const fr = (n) => [{ bits: '1101001110100010'.repeat(Math.ceil(n / 16)).slice(0, n) }];
   check(!hasData({ frames: [], baud: 0 }, { ms: 1, matches: [] }) && !hasData({ frames: fr(18), baud: 169_000 }, { ms: 1.1, matches: [] }), 'data only: a carrier and a 1 ms tick are dropped');
   check(!hasData({ frames: fr(38), baud: 105_000 }, { ms: 70, matches: [] }) && !hasData({ frames: fr(10), baud: 2000 }, { ms: 20, matches: [] }), 'data only: an implausible rate or too few bits are dropped');
   check(!hasData({ frames: fr(17), baud: 2800 }, { ms: 56, matches: [] }) && hasData({ frames: fr(393), baud: 7808 }, { ms: 123, matches: [] }), 'data only: a few stray bits in 56 ms of noise are dropped, gapped repeats are kept');
   check(hasData({ frames: fr(64), baud: 7800 }, { ms: 20, matches: [] }) && hasData({ frames: [], baud: 0 }, { ms: 1, matches: ['remote: x'] }), 'data only: a real frame, or anything a decoder claims, is kept');
   check(DEFAULT_FILTER.dataOnly && !NO_FILTER.dataOnly, 'data only: on by default');
+  check(!hasData({ frames: [{ bits: '10'.repeat(40) }], baud: 4000 }, { ms: 20, matches: [] }), 'data only: a frame that is one short pattern over and over (a ripple, a preamble) is not data');
 }
 
 // ---- one press, one stale label: grouped by protocol, named by the majority; another button 2 s later stays apart --
@@ -373,6 +374,31 @@ const packets = [];
   const at = (hz) => got.some(b => Math.abs(b.hz - hz) < 30e3);
   check(at(100e3) && !at(500e3), 'overload: the copy 20 dB down at the same instant is dropped');
   check(at(-400e3), 'overload: a weak key of its own, later, is kept');
+}
+
+// ---- a steady emitter with a comb of sidebands: switched on and off, or on throughout, never a capture -----------
+{
+  let sd = 3; const rnd = () => { sd = (sd + 0x6D2B79F5) | 0; let t = sd; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const kept = (on, rough) => {
+    const rate = 2e6, n = rate * 1.5, iq = new Int8Array(n * 2);
+    let flick = 1;
+    for (let i = 0; i < n; i++) {
+      const t = i / rate; let I = (rnd() - 0.5) * 4, Q = (rnd() - 0.5) * 4;
+      if (rough ? rnd() < 1 / 60 : i % 200 === 0) flick = rough ? 0.35 + 0.65 * rnd() : 0.85 + 0.3 * rnd();
+      if (on(t)) {
+        const am = flick * (1 + 0.6 * Math.cos(2 * Math.PI * 30e3 * t) + 0.25 * Math.cos(2 * Math.PI * 61e3 * t));
+        const ph = 2 * Math.PI * 5e3 * t; I += 40 * am * Math.cos(ph); Q += 40 * am * Math.sin(ph);
+      }
+      iq[2 * i] = Math.max(-127, Math.min(127, Math.round(I))); iq[2 * i + 1] = Math.max(-127, Math.min(127, Math.round(Q)));
+    }
+    const got = []; const cap = new AnalyzerCapture(b => got.push(b)); cap.reset(rate);
+    for (let o = 0; o < iq.length; o += 262144) cap.onIq(iq.subarray(o, o + 262144), rate);
+    cap.finish();
+    return got.filter(b => hasData(analyze(b.env, b.fm, b.n, b.rate), b)).length;
+  };
+  check(kept(() => true, false) === 0 && kept(() => true, true) === 0, 'steady emitter: on throughout, with sidebands and flicker, gives no captures');
+  check(kept(t => (t % 0.5) < 0.3, false) === 0 && kept(t => (t % 0.5) < 0.3, true) === 0, 'steady emitter: switched on and off, its ripple gives no captures');
+  check(kept(t => t > 0.4, true) === 0, 'steady emitter: one that comes on mid-capture and stays gives no captures');
 }
 
 // ---- OOK whose transmitter pulls its frequency at every mark: still OOK ------------------------------------------
