@@ -369,8 +369,11 @@ private fun shortLabel(m: String): String = m.substringAfter(": ", m)
  * The frame that stands for a transmission: the member most of the others are the same frame as (ties: the stronger).
  * The first is often an FSK key's bare carrier, not a packet.
  */
-private fun repOf(ms: List<AnBurst>): AnBurst =
-    ms.maxWithOrNull(compareBy<AnBurst>({ x -> ms.count { y -> y !== x && sameFrame(x.best, y.best) } }, { it.b.snr })) ?: ms.first()
+private fun repOf(ms: List<AnBurst>): AnBurst {
+    // a key's wake-ups agree with each other too: among copies that carry data when any do
+    val pool = ms.filter { informative(it.best) }.ifEmpty { ms }
+    return pool.maxWithOrNull(compareBy<AnBurst>({ x -> ms.count { y -> y !== x && sameFrame(x.best, y.best) } }, { it.b.snr })) ?: ms.first()
+}
 
 /** The frames read like this one, for COMPARE from a burst. */
 private fun similarTo(sel: AnBurst, bursts: List<AnBurst>): List<AnBurst> {

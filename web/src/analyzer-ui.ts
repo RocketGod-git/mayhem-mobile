@@ -1084,9 +1084,11 @@ export class AnalyzerUi {
 
 /** The frame a transmission is best shown by: the one most of its copies agree with (ties: the strongest). */
 function repOf(t: Tx): AnBurst {
+  // a key's wake-ups agree with each other too: among copies that carry data when any do
+  const data = t.members.some(m => informative(m.best));
   let best = t.members[0], bestN = -1;
   for (const m of t.members) {
-    if (!m.best) continue;
+    if (!m.best || (data && !informative(m.best))) continue;
     const n = t.members.filter(x => x !== m && sameFrame(x.best, m.best)).length;
     if (n > bestN || (n === bestN && m.snr > best.snr)) { best = m; bestN = n; }
   }
@@ -1100,10 +1102,18 @@ function bestOf(a: Analysis): string {
   const longest = (fs: { bits: string }[]) => fs.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), '');
   return longest(a.frames.filter(f => informative(f.bits))) || longest(a.frames);
 }
-/** Whether a frame is more than one long run: both values, and changes at least every 16 bits on average. */
+/**
+ * Whether a frame carries data: it changes at least every 16 bits on average, and is not one short pattern over and
+ * over (a wake-up preamble: 1010…, 1100…), which repeats with a period of 8 bits or less across 90% of it.
+ */
 function informative(bits: string): boolean {
   let t = 0; for (let i = 1; i < bits.length; i++) if (bits[i] !== bits[i - 1]) t++;
-  return t >= Math.max(2, bits.length / 16);
+  if (t < Math.max(2, bits.length / 16)) return false;
+  for (let p = 1; p <= 8 && p < bits.length; p++) {
+    let same = 0; for (let i = p; i < bits.length; i++) if (bits[i] === bits[i - p]) same++;
+    if (same >= 0.9 * (bits.length - p)) return false;
+  }
+  return true;
 }
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
