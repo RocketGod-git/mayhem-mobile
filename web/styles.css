@@ -496,7 +496,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* Devices on a phone: the sheet is the app, so it gets most of the screen and the waterfall becomes a strip.
    * Same table, narrower — the count column folds away and the reading gets the width back. */
   .view.devices .visual { flex: none; }
-  .view.devices .visual > .scope, .view.devices .visual > .scope.short { flex: none; height: 88px; min-height: 88px; }
+  .view.devices .visual > .scope, .view.devices .visual > .scope.short { flex: none; height: 150px; min-height: 150px; }
   .view.devices .scope .sp { height: 36px !important; }
   /* The sheet scrolls as one. Everything that sets the radio up sits together at the top - gain included,
    * which used to be stranded below the list where a single decode could push it off the bottom of a screen
@@ -508,7 +508,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
    * gesture land without ever fighting it. */
   /* The whole screen is the scroller, waterfall included, so swiping up carries it away and leaves the list
    * the full height rather than the two thirds under a pinned waterfall. */
-  .view.devices { overflow-y: auto; scroll-snap-type: y proximity; }
+  .view.devices { overflow-y: auto; }
   .view.devices .controls { flex: none; max-height: none; min-height: 0; display: flex; flex-direction: column; overflow: visible; }
   .view.devices .controls > * { flex: none; }
   .view.devices .gainwrap { order: 1; }
@@ -823,6 +823,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* the launcher is a home for discovery, under the same bars: its own tile strip stays, the header's job is the top bar */
   .visual > .face { flex: none; margin-bottom: 6px; }
   .controls { max-height: 58%; }
+  /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
+   * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
+  .view.ert .controls, .view.lora .controls, .view.btle .controls, .view.acars .controls, .view.trains:has(.visual:not(.tr-nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
+  /* Trains with its waterfall off: the readout keeps its own height and the log takes everything under it. */
+  .view.trains .visual.tr-nowf { flex: none; }
+  .view.trains:has(.visual.tr-nowf) .controls { flex: 1; max-height: none; min-height: 0; }
+  /* Tabs that carry a count fit their labels: less tracking, and each tab as wide as its label needs. */
+  .seg > button { letter-spacing: .6px; padding: 8px 4px; flex: 1 1 auto; }
+  .ctlrow { gap: 6px; }
+  /* Spectrum's marker actions wrap onto a second line rather than squeezing every label to an ellipsis. */
+  .sp-row.sp-pk > .chip { flex: 1 0 auto; }
+  /* Troll's two-up buttons wrap a long label instead of cutting it. */
+  .trollgrid .chip { white-space: normal; line-height: 1.2; }
 }
 
 /* RDS as its own strip under the card (the Android app's), not an overlay on the waterfall */

@@ -1542,6 +1542,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   ais: ['ais', 'No vessels yet', ['Ships under way report every 2–10 s, at anchor every 3 minutes', 'AIS is VHF: you need a line of sight to the water']],
   aprs: ['aprs', 'No stations yet', ['North America uses 144.390 MHz: cars and digipeaters beacon every few minutes', 'An antenna up high hears much farther']],
   analyzer: ['analyzer', 'No bursts yet', ['Press a key fob or a remote near the antenna', 'Or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)']],
+  devices: ['devices', 'Nothing heard yet', ['Press a key fob or a remote near the antenna', 'Sensors report every 30 to 60 seconds; tire sensors wake when a car moves', 'HOP takes turns between 315 and 433.92']],
   pager: ['pager', 'No pages yet', ['US FLEX networks sit around 929–932 MHz: try the presets', 'POCSAG is common on 152–158 and 466 MHz']],
 };
 function emptyState(key: string, title?: string, tips?: string[]): string {
@@ -1740,7 +1741,12 @@ function render(app: AppId | null): void {
   refreshReadout(); setGains(state.lna, state.vga, state.amp); setMode(state.mode);
   refreshShell();
   window.scrollTo(0, 0);
+  // every app shares this one scroller; a new app opens at its top, not where the last one was left (a redraw of
+  // the same app keeps its place)
+  if (app !== renderedApp) view.scrollTop = 0;
+  renderedApp = app;
 }
+let renderedApp: AppId | null | undefined;
 
 function renderLauncher(view: HTMLElement): void {
   view.innerHTML = `
@@ -3345,7 +3351,7 @@ function drawR433(): void {
   });
   const shown = r.heard.filter(d => r.filter === 'all' || R433_GROUP[r433Kind(d)] === r.filter);
   if (!shown.length) {
-    el.innerHTML = `<div class="mt-wait dv-empty">${r.heard.length ? 'nothing of this kind yet' : 'nothing yet. Press a key fob or a remote near the antenna, or wait: sensors report every thirty to sixty seconds'}</div>`;
+    el.innerHTML = r.heard.length ? emptyState('devices', `No ${R433_FILTER_LABEL[r.filter].toLowerCase()} yet`, ['Others have been heard: ALL shows them']) : emptyState('devices');
   } else {
     const top = el.scrollTop;
     el.innerHTML = [...shown].sort((a, b) => b.lastSeen - a.lastSeen).map(d => r433Card(d, now)).join('');
