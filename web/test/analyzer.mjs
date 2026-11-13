@@ -343,6 +343,27 @@ const packets = [];
   check(DEFAULT_FILTER.dataOnly && !NO_FILTER.dataOnly, 'data only: on by default');
 }
 
+// ---- an overloaded radio: a strong key's weaker copy elsewhere in the span is dropped, a weak key of its own is not --
+{
+  // its own generator, so the shared one's sequence (and every test after this) is unchanged
+  let sd = 7; const rnd = () => { sd = (sd + 0x6D2B79F5) | 0; let t = sd; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const rate = 2e6, n = rate * 0.5, iq = new Int8Array(n * 2);
+  const tone = (t, f, a) => [a * Math.cos(2 * Math.PI * f * t), a * Math.sin(2 * Math.PI * f * t)];
+  for (let i = 0; i < n; i++) {
+    const t = i / rate; let I = (rnd() - 0.5) * 4, Q = (rnd() - 0.5) * 4;
+    const key = (t0) => t > t0 && t < t0 + 0.04 && Math.floor((t - t0) / 0.0005) % 2 === 0;
+    if (key(0.1)) { let [a, b] = tone(t, 100e3, 90); I += a; Q += b; [a, b] = tone(t, 500e3, 9); I += a; Q += b; }
+    if (key(0.3)) { const [a, b] = tone(t, -400e3, 9); I += a; Q += b; }
+    iq[2 * i] = Math.max(-127, Math.min(127, Math.round(I))); iq[2 * i + 1] = Math.max(-127, Math.min(127, Math.round(Q)));
+  }
+  const got = []; const cap = new AnalyzerCapture(b => got.push(b)); cap.reset(rate);
+  for (let o = 0; o < iq.length; o += 262144) cap.onIq(iq.subarray(o, o + 262144), rate);
+  cap.finish();
+  const at = (hz) => got.some(b => Math.abs(b.hz - hz) < 30e3);
+  check(at(100e3) && !at(500e3), 'overload: the copy 20 dB down at the same instant is dropped');
+  check(at(-400e3), 'overload: a weak key of its own, later, is kept');
+}
+
 // ---- OOK whose transmitter pulls its frequency at every mark: still OOK ------------------------------------------
 {
   // a cheap 315 MHz remote (a fog machine's): its frequency swings ±60 kHz as each mark keys up and down, so the discriminator spikes at
