@@ -266,15 +266,19 @@ fun AnalyzerScreen(accent: Color) {
     // labeled with where it was and what it is, fading over 30 s; tapping one opens its transmission
     val rate = SdrEngine.currentRate()
     val boxes = remember(bursts, txs, sel, openTx, freq, rate) {
+        // one label per press, on its strongest frame: what it is, or (unnamed) where it is; the rest are boxed only,
+        // so a key heard on three channels does not stack six copies of its name
+        val top = txs.associate { t -> t.id to (bursts.filter { it.b.id in t.ids }.maxByOrNull { it.b.snr }?.b?.id ?: -1) }
         if (rate <= 0) emptyList() else bursts.filter { it.b.src == null && it.center != 0L }.map { x ->
             // the capture stamps a burst when its channel lets go, about 60 ms after the carrier ends
             val t1 = x.b.wall - 60
             val t0 = t1 - Math.round(max(max(x.b.n / x.b.rate * 1000 - 70, x.b.ms), 4.0))
             val tx = txs.firstOrNull { x.b.id in it.ids }
-            val name = x.b.matches.firstOrNull()?.let { shortLabel(it) } ?: ""
+            val lead = tx == null || top[tx.id] == x.b.id
+            val name = tx?.label?.takeIf { it.isNotEmpty() }?.let { shortLabel(it) } ?: x.b.matches.firstOrNull()?.let { shortLabel(it) } ?: ""
             WfMark(tx?.id ?: x.b.id, t0, t1, (0.5 + (Analyzer.freqOf(x) - freq) / rate).toFloat(), (max(20_000.0, if (x.auto.mod == Mod.FSK) x.auto.shiftHz * 1.6 else 0.0) / rate).toFloat(),
                 modColor(x.auto.mod), bold = x.b.id == sel || (openTx != 0 && tx?.id == openTx),
-                label = fmt("%.3f", Analyzer.freqOf(x) / 1e6) + if (name.isNotEmpty()) " $name" else "", fadeMs = 30_000L)
+                label = if (!lead) "" else name.ifEmpty { fmt("%.3f", Analyzer.freqOf(x) / 1e6) }, fadeMs = 30_000L)
         }
     }
     AdaptivePane(

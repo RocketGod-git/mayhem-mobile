@@ -768,6 +768,8 @@ fun WaterfallView(
                 }
             }
             val nowMs = System.currentTimeMillis()
+            // labels never pile up: each goes right of its box, else under it, else is left off
+            val placed = ArrayList<android.graphics.RectF>()
             for ((m, r) in boxRects(w, histH, wfH)) {
                 // fading over its time, never quite out until it is dropped
                 val al = if (m.fadeMs > 0) max(0.15f, 1f - (nowMs - m.t1).toFloat() / m.fadeMs) else 1f
@@ -775,7 +777,14 @@ fun WaterfallView(
                 drawRect(m.color.copy(alpha = al), Offset(r.left, r.top), Size(r.width(), r.height()), style = Stroke((if (m.bold) 3f else 2f) * dp))
                 if (m.label.isNotEmpty()) drawIntoCanvas { c ->
                     boxPaint.color = m.color.copy(alpha = al).toArgb()
-                    c.nativeCanvas.drawText(m.label, min(r.right + 3 * dp, w - boxPaint.measureText(m.label) - 2 * dp), max(textPx, r.top - 2 * dp), boxPaint)
+                    val tw = boxPaint.measureText(m.label); val lh = textPx + 2 * dp
+                    val spots = listOf(min(r.right + 3 * dp, w - tw - 2 * dp) to max(textPx, r.top - 2 * dp),
+                        max(2 * dp, min(r.left, w - tw - 2 * dp)) to min(wfH - 2 * dp, r.bottom + textPx + 2 * dp))
+                    val at = spots.firstOrNull { (x, y) -> val q = android.graphics.RectF(x - dp, y - textPx, x + tw + dp, y - textPx + lh); placed.none { android.graphics.RectF.intersects(it, q) } }
+                    if (at != null) {
+                        placed.add(android.graphics.RectF(at.first - dp, at.second - textPx, at.first + tw + dp, at.second - textPx + lh))
+                        c.nativeCanvas.drawText(m.label, at.first, at.second, boxPaint)
+                    }
                 }
             }
             channel?.let { (a, b) ->
