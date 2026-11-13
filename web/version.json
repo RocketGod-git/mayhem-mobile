@@ -1,1 +1,1 @@
-{ "version": "dev", "commit": "local", "apk": "https://github.com/RocketGod-git/mayhem-mobile/releases/download/latest/mayhem.apk", "release": "https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest" }
+{ "version": "dev", "commit": "local", "play": "https://play.google.com/store/apps/details?id=com.rocketgod.mayhem", "release": "https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest" }

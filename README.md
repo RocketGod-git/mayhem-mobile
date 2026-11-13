@@ -133,9 +133,9 @@ POCSAG with BCH, FLEX, ERT, BLE, sweeps), IQ capture into the browser's private 
 launcher and screens, and the same theme skins. It runs in Chrome / Edge on Android, Windows, macOS and Linux;
 Safari (iPhone / iPad) and Firefox have no WebUSB. It is an installable PWA.
 
-**Versioning is shared.** `release.yml` builds the APK and deploys the site from the same commit; the site reads
-`version.json` (version, commit, APK URL) and shows a *Download APK* button that always points at that same
-build. The APK's Settings → About shows the same version and commit. Bump `versionName` / `versionCode` in
+**Versioning is shared.** `release.yml` builds the app and deploys the site from the same commit; the site reads
+`version.json` (version, commit) and sends Android users to the app on Google Play. The app's Settings → About
+shows the same version and commit. Bump `versionName` / `versionCode` in
 `app/build.gradle.kts` and everything follows.
 
 Live at https://rocketgod-git.github.io/mayhem-mobile/ — the release workflow pushes the built site to the

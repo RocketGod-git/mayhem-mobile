@@ -1,12 +1,8 @@
 name: Release
 
 # One release per push to main: the Android APK + AAB go to the rolling "latest" GitHub release (or a v* tag's
-# release), then the web app is deployed to GitHub Pages FROM THE SAME COMMIT, with that very same APK copied
-# into the site. The page and the APK a visitor downloads from it are therefore always the same build.
-#
-# The APK is served from the site rather than linked to the GitHub release on purpose. This repository is
-# private, so release assets sit behind a GitHub sign-in; the Pages site is public, so an APK next to it is
-# public too. Anyone can download it, with no account and without leaving the site.
+# release), then the web app is deployed to GitHub Pages from the same commit. The app is on Google Play, so the
+# site sends Android users there; it no longer carries an APK of its own.
 #
 # Signing: with ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD (optional
 # ANDROID_KEY_ALIAS) set as repo secrets the APK is release-signed; without them it is debug-signed and still
@@ -92,16 +88,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release delete latest --yes --cleanup-tag || true
 
-      # The web job copies this into the published site, so the download link on the page is same-origin and
-      # needs no GitHub account - release assets on a private repository are behind a sign-in, the site is not.
-      - name: Hand the APK to the web job
-        uses: actions/upload-artifact@v7
-        with:
-          name: mayhem-apk
-          path: mayhem.apk
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3
         with:
@@ -134,12 +120,7 @@ jobs:
           npm ci
           npm run build
 
-      - name: Fetch the APK built by the android job
-        uses: actions/download-artifact@v8
-        with:
-          name: mayhem-apk
-
-      - name: Assemble site (with version.json naming the APK from this same commit)
+      - name: Assemble site (with version.json naming this commit and the Play listing)
         run: |
           set -e
           mkdir -p site/build
@@ -147,8 +128,6 @@ jobs:
           # The page and the DSP worker are bundled (npm run bundle): two files instead of ~600 modules a visit.
           cp web/build/app.js web/build/dsp-worker.js site/build/
           if [ -d web/assets ]; then mkdir -p site/assets && cp -r web/assets/. site/assets/; fi
-          cp mayhem.apk site/mayhem.apk
-          ls -la site/mayhem.apk
           TAG='${{ needs.android.outputs.tag }}'
           cat > site/version.json <<JSON
           {
@@ -156,7 +135,7 @@ jobs:
             "versionCode": ${{ needs.android.outputs.code }},
             "commit": "${GITHUB_SHA::7}",
             "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "apk": "./mayhem.apk",
+            "play": "https://play.google.com/store/apps/details?id=com.rocketgod.mayhem",
             "release": "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
           }
           JSON

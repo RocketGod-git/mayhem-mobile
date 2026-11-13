@@ -4766,7 +4766,7 @@ function renderSettings(view: HTMLElement): void {
     <section class="sset" id="sec-tx"><div class="sset-h">TRANSMIT</div>
       ${srow('Transmit', 'The transmit apps. Most bands need a license: use a dummy load or an antenna rated for the frequency.', swHtml('tx-toggle', tx.enabled), 'tx enable')}
     </section>
-    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the APK is the recommended route.</span></div>
+    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
       <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies — use a powered OTG hub if RX reads all zeros</span></div>
       <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
       <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
@@ -4781,9 +4781,9 @@ function renderSettings(view: HTMLElement): void {
     <section class="sset" id="sec-log"><div class="sset-h">LOG</div>${srow('Log', 'Everything the radio and the decoders reported, to read, save or share', '<button id="set-log" class="tog">OPEN</button>')}</section>
     <section class="sset" id="sec-about"><div class="sset-h">ABOUT</div>
     <div class="panel about">
-      <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button>${isAndroid() ? `<a class="chip primary" href="https://play.google.com/store/apps/details?id=com.rocketgod.mayhem">GET IT ON GOOGLE PLAY</a><a id="apk" class="chip" href="${apkUrl}" download="mayhem.apk">DOWNLOAD APK</a>` : ''}</div>
-      ${isAndroid() ? `<div class="kv"><span>APK</span><span>The native app auto-launches when the HackRF is plugged in and keeps running in the background. It is served from this site, built from the same commit as the page you are reading, so it needs no GitHub account and can never be a different version from this one.</span></div>` : ''}
-      <div class="kv"><span>Mayhem Mobile</span><span>${versionText} — one build, two shells: this desktop web app in any Chrome/Edge browser, and an APK that installs on Android phones</span></div>
+      <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button><a class="chip primary" href="https://play.google.com/store/apps/details?id=com.rocketgod.mayhem" target="_blank" rel="noopener">GET IT ON GOOGLE PLAY</a></div>
+      ${isAndroid() ? `<div class="kv"><span>Android app</span><span>On Google Play. It opens by itself when the radio is plugged in and keeps running in the background.</span></div>` : ''}
+      <div class="kv"><span>Mayhem Mobile</span><span>${versionText} — one build, two shells: this web app in any Chrome/Edge browser, and the Android app on Google Play</span></div>
       <div class="kv"><span>Device</span><span>${state.board ? (radio?.kind === 'rtlsdr' ? state.board : `${state.board} · fw ${state.firmware}`) : 'no radio attached'}</span></div>
       <div class="kv"><span>What it is</span><span>PortaPack Mayhem's receivers ported to run in the browser from raw HackRF IQ over WebUSB</span></div>
       <div class="kv"><span>Source</span><span><a href="https://github.com/RocketGod-git/mayhem-mobile">github.com/RocketGod-git/mayhem-mobile</a></span></div>
@@ -5842,7 +5842,7 @@ function initFullscreen(): void {
 }
 
 // ---- boot -----------------------------------------------------------------------------------------------------
-let versionText = 'dev build', apkUrl = './mayhem.apk', releaseUrl = 'https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest';
+let versionText = 'dev build', releaseUrl = 'https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest';
 
 // ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
 /** The app bar's order, the native apps' default: by what they do (receive, analyze, transmit, tools), as Home lists them. */
@@ -6208,10 +6208,9 @@ function init(): void {
   window.addEventListener('popstate', () => { if (state.app) open(null); });
   window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e as Event & { prompt: () => Promise<void> }; });
-  fetch('./version.json', { cache: 'no-store' }).then(r => r.json()).then((v: { version: string; commit: string; apk: string; release: string }) => {
-    versionText = `v${v.version} · ${v.commit}`; apkUrl = v.apk; releaseUrl = v.release;
+  fetch('./version.json', { cache: 'no-store' }).then(r => r.json()).then((v: { version: string; commit: string; release: string }) => {
+    versionText = `v${v.version} · ${v.commit}`; releaseUrl = v.release;
     const ve = q('#version'); if (ve) ve.textContent = versionText;
-    const a = q<HTMLAnchorElement>('#apk'); if (a) a.href = apkUrl;
     const rl = q<HTMLAnchorElement>('#release-link'); if (rl) rl.href = releaseUrl;
   }).catch(() => undefined);
   // Not `render(null)`: the launcher needs the same configuration going Home gives it. Rendering alone left
