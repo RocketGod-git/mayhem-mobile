@@ -462,7 +462,8 @@ export class SpectrumUi {
     el.hidden = !p;
     if (!p) { el.innerHTML = ''; return; }
     const units: [string, string][] = p.kind === 'db' ? [[this.unitLabel(), '1']] : p.kind === 'sec' ? [['s', '1'], ['ms', '1e-3'], ['µs', '1e-6']] : [['GHz', '1e9'], ['MHz', '1e6'], ['kHz', '1e3'], ['Hz', '1']];
-    const keys = ['7', '8', '9', '4', '5', '6', '1', '2', '3', '0', '.', p.kind === 'db' ? '±' : 'C'];
+    // counting order, 1 2 3 on top (the Android keypad is laid out the same)
+    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '.', p.kind === 'db' ? '±' : 'C'];
     el.innerHTML = `<div class="sp-pad" role="dialog" aria-label="${p.label}">
       <div class="sp-padh"><span>${p.label}</span><button data-p="esc" aria-label="Close">✕</button></div>
       <div class="sp-padv">${esc(p.text || ' ')}<i></i></div>

@@ -305,7 +305,8 @@ private fun SpKeypad(accent: Color) {
                     style = TextStyle(shadow = Shadow(accent.copy(alpha = 0.4f), blurRadius = 24f)), modifier = Modifier.weight(1f))
                 Box(Modifier.padding(start = 3.dp).width(3.dp).height(d.dp(30f)).alpha(blink).background(SP_ACTIVE))
             }
-            val keys = listOf("7", "8", "9", "4", "5", "6", "1", "2", "3", "0", ".", if (p.kind == "db") "±" else "C")
+            // counting order, 1 2 3 on top (the web keypad is laid out the same)
+            val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", ".", if (p.kind == "db") "±" else "C")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                 Column(Modifier.weight(3f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                     for (row in keys.chunked(3)) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {

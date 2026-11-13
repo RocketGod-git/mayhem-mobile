@@ -1729,3 +1729,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   main#view:not(.launcher):not(.metersfull):not(.lorafull):not(.hfull):not(.mapfull):not(.an-listfull) :is(.mt-cards, .an-cards, .list, .lr-msgs, .hfeed, .devtable) { max-height: none !important; overflow: visible !important; }
   #setview :is(.list, .devtable) { max-height: none !important; overflow: visible !important; }
 }
+
+/* ---- the camera and the screen's rounded corners -------------------------------------------------------------------
+ * The page is drawn edge to edge (viewport-fit=cover), so full screen on a phone puts its top under the camera hole:
+ * the top bar (and every layer that fills the screen) starts below the cutout and clear of it at the sides. */
+.topnav { padding-top: max(4px, env(safe-area-inset-top)); padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
+.logwin, .view.adsb.mapfull, .view.ert.metersfull, .view.lora.lorafull, .an-modal { padding-top: max(10px, env(safe-area-inset-top)); }
+@media (max-width: 719.98px) { .setcard { padding-top: env(safe-area-inset-top); } }
