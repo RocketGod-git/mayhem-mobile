@@ -4755,7 +4755,7 @@ function renderSettings(view: HTMLElement): void {
     ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
     <section class="sset fold link" id="sec-radio" data-keys="radio gain lna vga amp agc bias tee ppm sample rate filter"><div class="sset-h">RADIO</div></section>
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
-    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsWanted()), 'full screen fullscreen status bar address bar') : ''}</section>
+    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsOn()), 'full screen fullscreen status bar address bar') : ''}</section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
     <div class="panel about" id="station">
       <div class="row"><input class="txin" data-st="call" placeholder="CALLSIGN" value="${state.ham.station.call}" autocapitalize="characters" spellcheck="false"><input class="txin" data-st="license" placeholder="license class (Technician, General…)" value="${state.ham.station.license}"></div>
@@ -4800,7 +4800,7 @@ function renderSettings(view: HTMLElement): void {
   qa<HTMLInputElement>('[data-st]', view).forEach(i => i.oninput = () => { const k = i.dataset.st as keyof Station; const v = k === 'call' || k === 'grid' ? i.value.toUpperCase() : i.value; if (k === 'call' || k === 'grid') i.value = v; state.ham.station[k] = v; saveStation(); });
   qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); refreshSettings(); });
   const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); refreshSettings(); };
-  const fs = q('#fs-toggle'); if (fs) fs.onclick = () => { setFsWanted(!fsWanted()); refreshSettings(); };
+  const fs = q('#fs-toggle'); if (fs) fs.onclick = () => { setFsWanted(!fsOn()); setTimeout(refreshSettings, 300); };
   bindSettings(view);
   $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; refreshSettings(); } };
   attachCreditsScroller($('credits'), $('credits-roll'));
@@ -5812,8 +5812,10 @@ function bindDesktop(): void {
 
 // ---- full screen -----------------------------------------------------------------------------------------------
 /* On a phone the app runs full screen: no address bar or status bar in the way, and a swipe down from the top shows
- * them for a moment. A browser only goes full screen from a tap, so the first tap takes it, and the first tap after
- * the back gesture has left it. Settings › LOOK turns it off. Installed, the manifest asks for full screen itself. */
+ * them for a moment. A browser only goes full screen from a tap, so the first tap of a visit takes it. Chrome shows
+ * its own "swipe to exit" notice each time full screen starts and a page cannot hide it, so once full screen has been
+ * left (an edge swipe, back) it is not taken again that visit: the switch in Settings › LOOK brings it back. Installed
+ * to the home screen, the manifest opens the app full screen with no notice at all, and nothing is asked here. */
 const FS_KEY = 'mm.fullscreen';
 const fsCan = () => !!document.documentElement.requestFullscreen;
 function fsWanted(): boolean {
@@ -5826,15 +5828,21 @@ function setFsWanted(on: boolean): void {
   if (on) enterFullscreen();
   else if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
 }
+/** The switch in Settings shows whether the app is full screen now (left with a swipe, it reads off and a tap returns). */
+const fsOn = () => !!document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches;
 function enterFullscreen(): void {
   if (!fsCan() || document.fullscreenElement) return;
   void document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
 }
 /** Taps that open a chooser (the USB picker, a file) keep their gesture: full screen waits for the next tap. */
 const FS_SKIP = '#connect, #set-connect, #rm-connect, #rp-connect, #an-imp, #log-import, input[type=file], #fs-toggle';
+/** Full screen was taken once this visit, or the app already runs full screen as an installed app. */
+let fsTaken = false;
 function initFullscreen(): void {
+  if (matchMedia('(display-mode: fullscreen)').matches) fsTaken = true;
+  document.addEventListener('fullscreenchange', () => { if (document.fullscreenElement) fsTaken = true; });
   document.addEventListener('click', (e) => {
-    if (!fsWanted() || (e.target as Element | null)?.closest?.(FS_SKIP)) return;
+    if (fsTaken || !fsWanted() || (e.target as Element | null)?.closest?.(FS_SKIP)) return;
     enterFullscreen();
   });
   // Safari ignores user-scalable=no; its own pinch gesture is turned away here
@@ -6093,7 +6101,20 @@ function placeFill(slide: boolean): void {
 }
 /** The app the bar was last scrolled to, so a refresh does not undo the user's own scrolling. */
 let barCentered: AppId | null | undefined;
+/** The top bar on a phone fits whatever the text size: a phone with larger text (or a narrow screen) gets less letter
+ *  spacing first, then the icons alone (each keeps its name as its label for touch and screen readers). */
+function fitTopnav(): void {
+  const nav = document.getElementById('topnav');
+  if (!nav || !nav.offsetWidth) return;
+  for (const b of nav.querySelectorAll<HTMLElement>('.tnb')) if (!b.getAttribute('aria-label')) b.setAttribute('aria-label', (b.textContent ?? '').trim());
+  nav.classList.remove('tight', 'icons');
+  const over = () => nav.scrollWidth > nav.clientWidth + 1 || [...nav.querySelectorAll<HTMLElement>('.tnb')].some(b => b.scrollWidth > b.clientWidth + 1);
+  if (over()) nav.classList.add('tight');
+  if (over()) nav.classList.add('icons');
+}
+
 function refreshShell(): void {
+  requestAnimationFrame(fitTopnav);
   const here = state.app, setOn = settingsOpen();
   qa<HTMLButtonElement>('[data-bar]').forEach(b => {
     const id = b.dataset.bar as AppId;
@@ -6206,7 +6227,8 @@ function init(): void {
   });
   bar.addEventListener('pointerup', () => { dragging = false; });
   window.addEventListener('popstate', () => { if (state.app) open(null); });
-  window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); });
+  window.addEventListener('resize', () => { scope?.draw(); sweepScope?.draw(); fitTopnav(); });
+  void document.fonts?.ready.then(fitTopnav);
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e as Event & { prompt: () => Promise<void> }; });
   fetch('./version.json', { cache: 'no-store' }).then(r => r.json()).then((v: { version: string; commit: string; release: string }) => {
     versionText = `v${v.version} · ${v.commit}`; releaseUrl = v.release;

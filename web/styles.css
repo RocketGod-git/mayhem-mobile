@@ -775,6 +775,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tnb svg { width: 20px; height: 20px; fill: currentColor; }
 .tnb.on { color: var(--ink); } .tnb.on svg { fill: var(--accent); }
 .tnb.muted { color: var(--danger); }
+.tnb { min-width: 0; white-space: nowrap; }
+.topnav.tight .tnb { letter-spacing: .4px; gap: 3px; padding: 10px 2px; }
+.topnav.icons .tnb { font-size: 0; gap: 0; }
+.topnav.icons .tnb svg { width: 22px; height: 22px; }
 #nav-dot { position: absolute; top: 6px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
 #nav-dot.on { background: var(--ok); }
 .radiomiss { display: flex; flex: none; align-items: center; gap: 10px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid var(--accent2); border-radius: 12px; background: color-mix(in srgb, var(--accent2) 10%, var(--surface)); }
@@ -836,8 +840,17 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* Four tabs and the row's buttons don't share one phone-width line: the tabs get their own, the buttons sit under them. */
   .ctlrow:has(> .seg > button:nth-child(4)) { flex-wrap: wrap; justify-content: flex-end; }
   .ctlrow:has(> .seg > button:nth-child(4)) > .seg { flex: 1 1 100%; }
+  /* A row of tabs and buttons: the tabs never cut their labels; when they and the buttons don't fit on one line
+   * (a narrow phone, or larger text) the buttons drop to a second line under them. */
+  .ctlrow:has(> .seg):has(> .tog, > .ib) { flex-wrap: wrap; justify-content: flex-end; }
+  .ctlrow:has(> .seg):has(> .tog, > .ib) > .seg { flex: 1 1 auto; }
+  .ctlrow:has(> .seg):has(> .tog, > .ib) > .seg > button { min-width: max-content; }
+  /* chips keep their labels on a narrow phone: less padding and tracking before any ellipsis */
+  .chip { padding-left: 4px; padding-right: 4px; letter-spacing: .2px; }
+  /* a row of equal chips (BLE's channels) wraps a long label onto two lines rather than cutting it */
+  .row > .chip { white-space: normal; line-height: 1.25; }
   /* Spectrum's marker actions wrap onto a second line rather than squeezing every label to an ellipsis. */
-  .sp-row.sp-pk > .chip { flex: 1 0 auto; }
+  .ctlrow.sp-row > .chip { flex: 1 0 auto; }
   /* Troll's two-up buttons wrap a long label instead of cutting it. */
   .trollgrid .chip { white-space: normal; line-height: 1.2; }
 }
