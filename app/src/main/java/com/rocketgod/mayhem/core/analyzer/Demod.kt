@@ -282,6 +282,15 @@ private fun cv(v: DoubleArray): Double {
     var s = 0.0; for (x in v) s += (x - m) * (x - m)
     return sqrt(s / v.size) / m
 }
+/**
+ * Whether most of a set of periods are one length: 85% of them within 15% of the median. Robust to the few long gaps
+ * (a frame's sync) that a plain spread measure would let swamp a steady pulse-width code.
+ */
+private fun steady(v: DoubleArray): Boolean {
+    if (v.size < 4) return false
+    val m = v.sorted()[v.size / 2]
+    return v.count { abs(it - m) <= 0.15 * m } >= 0.85 * v.size
+}
 /** Two widths, each at least 15% of the whole, the longer at least 1.5 times the shorter. */
 private fun twoWidths(v: DoubleArray): Boolean {
     if (v.size < 4) return false
@@ -292,7 +301,7 @@ private fun twoWidths(v: DoubleArray): Boolean {
 /** Which line coding fits the runs, measured against symbol `u` (samples). */
 fun codingOf(frames: List<FrameRuns>, u: Double): Coding {
     val ps = pairStats(frames)
-    if (twoWidths(ps.marks) && cv(ps.periods) < 0.15) return Coding.PWM
+    if (twoWidths(ps.marks) && steady(ps.periods)) return Coding.PWM
     var one = 0; var two = 0; var all = 0
     for (f in frames) for (r in f.runs) { val k = Math.round(r.n / u); all++; if (k <= 1) one++ else if (k == 2L) two++ }
     // (a frame that is mostly preamble is nearly all double runs: a couple of single ones are enough)
