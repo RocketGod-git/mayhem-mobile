@@ -220,70 +220,118 @@ object RtlSdr {
         quietRetune = false; needQuietRetune = false; retuneAfter = 0L
         SdrEngine.syncDriver()
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
-        val c = mgr.openDevice(device) ?: run { onStatus("RTL-SDR: couldn't open device"); running = false; return }
+        var c = mgr.openDevice(device) ?: run { onStatus("RTL-SDR: couldn't open device"); running = false; return }
         conn = c
         this.device = device
+        val reopenTimes = ArrayList<Long>()
         try {
-            val intf = device.getInterface(0)
-            c.claimInterface(intf, true)
-            var rx: UsbEndpoint? = null
-            for (i in 0 until intf.endpointCount) {
-                val ep = intf.getEndpoint(i)
-                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.direction == UsbConstants.USB_DIR_IN) { rx = ep; break }
-            }
-            val ep = rx ?: run { Diag.log("RTL-SDR: no bulk-IN endpoint"); onStatus("RTL-SDR: no IQ endpoint"); return }
-            // a dongle another app left streaming can have its endpoint halted; clear it before touching anything
-            runCatching { c.controlTransfer(0x02, 0x01, 0x00, ep.address, null, 0, 500) }
+            var ep = claim(c, device) ?: run { Diag.log("RTL-SDR: no bulk-IN endpoint"); onStatus("RTL-SDR: no IQ endpoint"); return }
             Diag.log("=== RTL-SDR bring-up (RTL2832U + R82xx) === RX endpoint=0x%02x".format(ep.address))
             onStatus("RTL-SDR · initializing…")
-            appliedPpm = ppm   // everything below tunes against the corrected crystal
-            initBaseband()
-            initTuner()
-            setSampleRate(targetRateHz); appliedRate = targetRateHz
-            setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
-            val g = wantGain(); applyGain(g); appliedGain = g
-            applyRtlAgc()
-            resetBuffer()
-            SdrEngine.sourceLabel = label
-            SdrEngine.onSource(targetRateHz)
-            SdrEngine.setActive(true)
-            Diag.log("RTL-SDR: streaming %.3f MHz @ %.3f Msps".format(targetFreqHz / 1e6, targetRateHz / 1e6))
-            onStatus("$label · %.3f MHz".format(targetFreqHz / 1e6))
+            bringUp(c, ep, onStatus)
             while (!stop) {
-                streamUntilRateChange(c, ep, onStatus)
+                val stalled = streamUntilRateChange(c, ep, onStatus)
                 if (stop) break
+                var reopen = stalled
                 // Nothing is in flight here, so this is where a retune that failed live gets its second try.
-                if (needQuietRetune) {
+                if (!reopen && needQuietRetune) {
                     needQuietRetune = false
                     val ok = applyPending()
                     runCatching { resetBuffer() }
-                    if (!ok) retuneAfter = System.currentTimeMillis() + 1000
+                    if (!ok) reopen = true
                     else if (!quietRetune) {
                         quietRetune = true
                         Diag.log("RTL-SDR: this USB stack rejects retunes during streaming — retuning between drained reads from now on")
                     }
                 }
                 // A rate change resets the bulk FIFO, so it waits until nothing is in flight.
-                if (targetRateHz != appliedRate) {
+                if (!reopen && targetRateHz != appliedRate) {
                     runCatching { setSampleRate(targetRateHz); resetBuffer(); SdrEngine.onSource(targetRateHz) }
                         .onFailure { Diag.log("RTL-SDR: rate change failed — ${it.message}") }
                     appliedRate = targetRateHz
                 }
+                // the reads were cancelled and the FIFO may have been reset: either can leave the endpoint halted
+                clearHalt(c, ep)
+                if (!reopen) continue
+                // A retune that will not land even with the bus quiet, or a stream that stopped delivering: only a
+                // fresh open of the dongle has been seen to fix either (it is what reconnecting by hand did), so close
+                // it and bring it up again where the app asked, as the web app does. Each reopen that brings the
+                // dongle up IS the fix working; only a burst (more than 6 in 10 s) means it has really failed.
+                val now = System.currentTimeMillis()
+                reopenTimes.removeAll { now - it >= 10_000L }
+                reopenTimes.add(now)
+                if (reopenTimes.size > 6) { Diag.log("RTL-SDR: reopened the dongle 6 times in 10 s and it still fails — stopping"); break }
+                Diag.log(if (stalled) "RTL-SDR: no samples for 2 s — reopening the dongle"
+                         else "RTL-SDR: retune to %.3f MHz would not land — reopening the dongle there".format(targetFreqHz / 1e6))
+                runCatching { c.releaseInterface(device.getInterface(0)) }
+                runCatching { c.close() }
+                Thread.sleep(100)
+                val nc = mgr.openDevice(device)
+                if (nc == null) { Diag.log("RTL-SDR: could not reopen the dongle"); onStatus("RTL-SDR: lost the dongle — replug it"); break }
+                c = nc; conn = nc
+                ep = claim(nc, device) ?: run { Diag.log("RTL-SDR: no bulk-IN endpoint after reopening"); null } ?: break
+                bringUp(nc, ep, onStatus)
             }
         } catch (t: Throwable) {
             Diag.log("RTL-SDR error: ${t.message}")
             onStatus("RTL-SDR stopped: ${t.message}")
         } finally {
             SdrEngine.setActive(false)
-            runCatching { c.close() }
+            val last = c
+            runCatching { last.close() }
             running = false
             Diag.log("RTL-SDR: RX loop stopped")
         }
     }
 
-    /** Stream with a pool of requests in flight; returns when the rate must change (or on stop). */
-    private fun streamUntilRateChange(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
-        val nbuf = 12; val bufSz = 16384
+    /** Claim interface 0 and find its bulk-IN endpoint. */
+    private fun claim(c: UsbDeviceConnection, device: UsbDevice): UsbEndpoint? {
+        val intf = device.getInterface(0)
+        c.claimInterface(intf, true)
+        for (i in 0 until intf.endpointCount) {
+            val ep = intf.getEndpoint(i)
+            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.direction == UsbConstants.USB_DIR_IN) return ep
+        }
+        return null
+    }
+
+    /** CLEAR_FEATURE(ENDPOINT_HALT) on the IQ endpoint (the web app's clearHalt). */
+    private fun clearHalt(c: UsbDeviceConnection, ep: UsbEndpoint) {
+        runCatching { c.controlTransfer(0x02, 0x01, 0x00, ep.address, null, 0, 500) }
+    }
+
+    /** Configure the dongle from cold at the current targets; also how a reopen picks up where the app is. */
+    private fun bringUp(c: UsbDeviceConnection, ep: UsbEndpoint, onStatus: (String) -> Unit) {
+        // a dongle another app left streaming can have its endpoint halted; clear it before touching anything
+        clearHalt(c, ep)
+        // a fresh open is a fresh chip: nothing is applied yet
+        appliedFreq = 0L; appliedGain = Int.MAX_VALUE; appliedBiasTee = false; appliedRtlAgc = -1
+        directSampling = false; upconvert = false; dbgBuffers = 0
+        appliedPpm = ppm   // everything below tunes against the corrected crystal
+        initBaseband()
+        initTuner()
+        setSampleRate(targetRateHz); appliedRate = targetRateHz
+        setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
+        val g = wantGain(); applyGain(g); appliedGain = g
+        applyRtlAgc()
+        resetBuffer()
+        SdrEngine.sourceLabel = label
+        SdrEngine.onSource(targetRateHz)
+        SdrEngine.setActive(true)
+        Diag.log("RTL-SDR: streaming %.3f MHz @ %.3f Msps".format(targetFreqHz / 1e6, targetRateHz / 1e6))
+        onStatus("$label · %.3f MHz".format(targetFreqHz / 1e6))
+    }
+
+    private const val STALL_MS = 2000L
+
+    /**
+     * Stream with the web app's reads in flight: eight of 64 KB (Android before 9 caps a queued read at 16 KB, so
+     * there twelve of 16 KB). Returns when the rate must change or on stop, or true when the dongle has delivered
+     * nothing for two seconds, which run() answers by reopening it.
+     */
+    private fun streamUntilRateChange(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit): Boolean {
+        val big = android.os.Build.VERSION.SDK_INT >= 28
+        val nbuf = if (big) 8 else 12; val bufSz = if (big) 65536 else 16384
         val buffers = Array(nbuf) { ByteBuffer.allocateDirect(bufSz) }
         val reqs = ArrayList<UsbRequest>(nbuf)
         for (i in 0 until nbuf) {
@@ -293,9 +341,10 @@ object RtlSdr {
             if (!r.queue(buffers[i])) { r.close(); break }
             reqs.add(r)
         }
-        if (reqs.isEmpty()) { streamSync(c, rx, onStatus); return }
+        if (reqs.isEmpty()) { streamSync(c, rx, onStatus); return false }
         val scratch = ByteArray(bufSz)
         var lastStatus = 0L
+        var lastData = System.currentTimeMillis()
         // A dongle pulled out without a detach arriving fails every wait and every requeue at once, forever;
         // a run of failures means it is gone, not that one transfer was unlucky.
         var fails = 0; var failSince = 0L
@@ -307,6 +356,7 @@ object RtlSdr {
         }
         try {
             while (!stop && targetRateHz == appliedRate) {
+                if (System.currentTimeMillis() - lastData > STALL_MS) return true
                 // Retune live first; where this USB stack has shown it rejects that, or it just failed, leave the
                 // loop so run() cancels every request and retunes with nothing in flight.
                 if (pending() && System.currentTimeMillis() >= retuneAfter) {
@@ -316,9 +366,11 @@ object RtlSdr {
                 val req = try { c.requestWait(100L) } catch (e: TimeoutException) { continue }
                 if (req == null) { if (failed("wait")) break; Thread.sleep(2); continue }
                 val idx = req.clientData as? Int ?: continue
+                if (idx !in 0 until nbuf || req !== reqs.getOrNull(idx)) continue   // a late read from an older pool
                 val b = buffers[idx]
                 val n = b.position()
                 if (n in 1..bufSz) {
+                    lastData = System.currentTimeMillis()
                     b.rewind(); b.get(scratch, 0, n)
                     probe(scratch, n, onStatus)
                     runCatching { SdrEngine.onIq(scratch, n) }
@@ -340,6 +392,7 @@ object RtlSdr {
         } finally {
             UsbRequests.drainAndClose(c, reqs)
         }
+        return false
     }
 
     private fun streamSync(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
