@@ -65,7 +65,8 @@ class TraceSet(var mode: TraceMode, var avgN: Int)
 /** Everything the screen remembers (the web's Settings). */
 class SpSettings(var dial: Double) {
     var mode = SpMode.FREQ
-    var center = if (dial > 0) dial else 433.92e6
+    // opens on 433.92 MHz, the busiest key-fob and sensor band, not wherever another app left the radio (often FM)
+    var center = START_HZ
     var span = 2e6
     var startStop = false
     var rbwAuto = true; var rbw = 3000.0
@@ -83,7 +84,7 @@ class SpSettings(var dial: Double) {
     var meas = Meas.OFF; var chBw = 25_000.0; var spacing = 25_000.0
     var persist = false
     // zero span
-    var zsFreq = if (dial > 0) dial else 433.92e6
+    var zsFreq = START_HZ
     var zsBw = 100_000.0; var zsTime = 0.02; var trig = TrigMode.FREE; var single = false; var level = -60; var pre = 0.1
     var showAmp = true; var showFm = true; var showPh = false; var cursors = false; var curA = 0.25; var curB = 0.75
 
@@ -96,6 +97,7 @@ class SpSettings(var dial: Double) {
         put("active", active); put("meas", meas.name); put("chBw", chBw); put("spacing", spacing); put("persist", persist)
         put("zsFreq", zsFreq); put("zsBw", zsBw); put("zsTime", zsTime); put("trig", trig.name); put("single", single); put("level", level); put("pre", pre)
         put("showAmp", showAmp); put("showFm", showFm); put("showPh", showPh); put("cursors", cursors); put("curA", curA); put("curB", curB)
+        put("v", SETTINGS_V)
     }
 
     /** Whatever of [j] reads cleanly replaces the default (a bad or missing field keeps it). */
@@ -142,6 +144,18 @@ class SpSettings(var dial: Double) {
         opt("cursors") { j.getBoolean(it) }?.let { cursors = it }
         opt("curA") { j.getDouble(it) }?.let { curA = it }
         opt("curB") { j.getDouble(it) }?.let { curB = it }
+        // settings saved before Spectrum had a start frequency of its own: once, start on it
+        if ((opt("v") { j.getInt(it) } ?: 1) < 2) {
+            center = START_HZ; zsFreq = START_HZ
+            for (m in markers) { m.on = false; m.delta = false; m.hz = 0.0 }
+        }
+    }
+
+    companion object {
+        /** Where Spectrum opens the first time. */
+        const val START_HZ = 433.92e6
+        /** Bumped when saved settings need a one-time fix on load; 2: the frequency resets to [START_HZ] once. */
+        const val SETTINGS_V = 2
     }
 }
 
@@ -586,7 +600,11 @@ object Spectrum {
 
     // ---- controls ---------------------------------------------------------------------------------------------
 
-    fun setMode(m: SpMode) { s.mode = m; restart() }
+    /** The frequency is the frequency: tuned in one mode, it is where the other one opens. */
+    fun setMode(m: SpMode) {
+        if (m != s.mode) { if (m == SpMode.ZERO) s.zsFreq = s.center else s.center = s.zsFreq }
+        s.mode = m; restart()
+    }
     fun setUnit(u: SpUnit) { s.unit = u; for (t in traces) t.clear(); for (a in mkAvg) a.n = 0; persistence?.clear(); update() }
     fun setWindow(w: WindowKind) { s.window = w; restart() }
     fun setDet(d: Detector) { s.det = d; save(); changed() }

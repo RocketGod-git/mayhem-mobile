@@ -230,6 +230,8 @@ private fun SpTileView(t: SpTile, first: Boolean, accent: Color, modifier: Modif
             Text(buildAnnotatedString {
                 append(t.value)
                 withStyle(SpanStyle(color = Palette.muted, fontSize = d.sp(if (d.wide) 12f else 10f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)) { append(" " + t.unit) }
+                // a tap types a value in: say so, or nobody tries it
+                withStyle(SpanStyle(color = accent.copy(alpha = 0.6f), fontSize = d.sp(if (d.wide) 12f else 10f))) { append(" ⌨") }
             }, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (d.wide) 24f else 18f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
                 style = TextStyle(shadow = Shadow(tint.copy(alpha = 0.45f), blurRadius = 28f)),
                 modifier = mod.clickable { Spectrum.openPad(t.id) }.padding(top = 2.dp))
@@ -779,13 +781,38 @@ private fun SpStep(label: String, value: String, accent: Color, modifier: Modifi
     }
 }
 
+/**
+ * The two modes as two tabs, each saying what it is: FREQUENCY and ZERO SPAN as one bar read as a single button, and
+ * "zero span" means nothing to someone who has not used a bench analyzer.
+ */
+@Composable
+private fun SpModeTabs(mode: SpMode, accent: Color) {
+    val d = rememberDims()
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        for ((m, title, what) in listOf(
+            Triple(SpMode.FREQ, "FREQUENCY", "signal strength across a band of frequencies"),
+            Triple(SpMode.ZERO, "ZERO SPAN", "one frequency, its strength over time, like an oscilloscope"))) {
+            val on = mode == m
+            val shape = RoundedCornerShape(d.dp(12f))
+            Column(Modifier.weight(1f).fillMaxHeight().clip(shape)
+                .background(if (on) Brush.verticalGradient(listOf(spLerp(Palette.surface, accent, 0.22f), Palette.surface)) else Brush.verticalGradient(listOf(Palette.surface, Palette.surface)))
+                .border(if (on) 1.5.dp else 1.dp, if (on) accent else Palette.line, shape)
+                .clickable { Spectrum.setMode(m) }.padding(horizontal = d.dp(12f), vertical = d.dp(8f)),
+                verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+                Text(title, color = if (on) accent else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(12f), letterSpacing = 2.sp, maxLines = 1)
+                Text(what, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(13f))
+            }
+        }
+    }
+}
+
 @Composable
 private fun ColumnScope.SpControls(accent: Color, exportCsv: () -> Unit, exportPng: () -> Unit) {
     @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
     val d = rememberDims()
     val s = Spectrum.s
     fun sgnI(v: Int) = if (v > 0) "+$v" else "$v"
-    SegBar(listOf("FREQUENCY", "ZERO SPAN"), if (s.mode == SpMode.FREQ) 0 else 1, accent) { Spectrum.setMode(if (it == 0) SpMode.FREQ else SpMode.ZERO) }
+    SpModeTabs(s.mode, accent)
     if (s.mode == SpMode.FREQ) {
         SectionLabel("SPAN")
         SpScrollLine {

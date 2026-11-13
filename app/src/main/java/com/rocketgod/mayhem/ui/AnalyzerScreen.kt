@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -243,7 +244,8 @@ fun AnalyzerScreen(accent: Color) {
     val txs = remember(bursts) { groupPresses(bursts.map { groupInOf(it) }) }
     val byId = remember(bursts) { bursts.associateBy { it.b.id } }
     val opened = txs.firstOrNull { it.id == openTx }
-    fun openTransmission(t: Transmission) { comparing = false; if (t.ids.size == 1) { openTx = 0; sel = t.id } else { openTx = t.id; sel = 0 } }
+    // a press opens straight on its best frame's full view; its other frames are a strip along the top of it
+    fun openTransmission(t: Transmission) { comparing = false; if (t.ids.size == 1) { openTx = 0; sel = t.id } else { openTx = t.id; sel = repOf(t.ids.mapNotNull { byId[it] }).b.id } }
 
     // import: any file the document picker offers; the rate comes from its name, as on the web
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -332,8 +334,8 @@ fun AnalyzerScreen(accent: Color) {
     val members = opened?.ids?.mapNotNull { byId[it] } ?: emptyList()
     if (picked != null || (opened != null && members.isNotEmpty())) {
         val c = modColor((picked ?: repOf(members)).auto.mod)
-        // back steps out one level: compare, then the burst, then the transmission
-        val back = { if (comparing) comparing = false else if (picked != null && opened != null) sel = 0 else { sel = 0; openTx = 0 } }
+        // back steps out of compare to the frame; from a frame it closes (a press's frames are in the strip, not a level up)
+        val back = { if (comparing) { comparing = false; if (sel == 0 && opened != null && members.isNotEmpty()) sel = repOf(members).b.id } else { sel = 0; openTx = 0 } }
         val closeAll = { sel = 0; openTx = 0; comparing = false }
         Dialog(onDismissRequest = back, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)) {
             val shape = RoundedCornerShape(d.dp(14f))
@@ -344,10 +346,11 @@ fun AnalyzerScreen(accent: Color) {
                     // COMPARE from a burst lines up the frames like it; from a transmission, exactly its frames
                     comparing && picked != null -> ComparePanel(picked, similarTo(picked, bursts), protocols, c, onBack = { comparing = false }, onClose = closeAll)
                     comparing && opened != null -> repOf(members).let { r ->
-                        ComparePanel(r, similarTo(r, members), protocols, c, onBack = { comparing = false }, onClose = closeAll, title = "frames of one transmission like burst ${r.b.id}")
+                        ComparePanel(r, similarTo(r, members), protocols, c, onBack = { comparing = false; sel = r.b.id }, onClose = closeAll, title = "frames of one transmission like burst ${r.b.id}")
                     }
                     picked != null -> BurstDetail(picked, meta[picked.b.id] ?: BurstMeta(), protocols, c, save, onCompare = { comparing = true }, onClose = closeAll,
-                        onBack = if (opened != null) ({ sel = 0 }) else null,
+                        onBack = null,
+                        frames = if (opened != null && members.size > 1) members else null, onFrame = { sel = it }, onCompareAll = { sel = 0; comparing = true },
                         onTx = { a ->
                             // closed first: Transmit takes the screen, and the burst must not reopen on the way back
                             val keep = sel; val keepTx = openTx; sel = 0; openTx = 0; comparing = false
@@ -532,13 +535,14 @@ private fun TxCard(t: Transmission, ms: List<AnBurst>, meta: Map<Int, BurstMeta>
                 Text(name ?: x.b.src ?: "transmission ${t.id}", color = if (name != null) Palette.ink else Palette.muted, fontFamily = Mono,
                     fontWeight = if (name != null) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (star) Text("★", color = Palette.accent2, fontSize = d.sp(14f))
             Text(whenOf(x), color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
+            CardStar(star) { val on = !star; for (mm in ms) Analyzer.setMeta(mm.b.id) { it.copy(star = on) } }
         }
         Column(verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
             Text(big, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
+        EnvThumb(x, c)
         if (best.isNotEmpty()) Text(bitsToHex(best), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (proto != null) Pill("PROTOCOL: ${proto.protocol.name}", Palette.accent2)
         if (t.label.isNotEmpty()) Pill(t.label, Palette.ok)
@@ -546,6 +550,7 @@ private fun TxCard(t: Transmission, ms: List<AnBurst>, meta: Map<Int, BurstMeta>
             Text(fmt("%.0f ms in all", (t.end - t.t) * 1000), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
             Text(fmt("%.0f dB SNR best", ms.maxOf { it.b.snr }), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
         }
+        OpenFoot(c, "${ms.size} FRAMES · ")
     }
 }
 
@@ -624,13 +629,14 @@ private fun BurstCard(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, selec
                 Text(m.name.ifEmpty { x.b.src ?: "burst ${x.b.id}" }, color = if (m.name.isNotEmpty()) Palette.ink else Palette.muted, fontFamily = Mono,
                     fontWeight = if (m.name.isNotEmpty()) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (m.star) Text("★", color = Palette.accent2, fontSize = d.sp(14f))
             Text(whenOf(x), color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
+            CardStar(m.star) { Analyzer.setMeta(x.b.id) { it.copy(star = !it.star) } }
         }
         Column(verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
             Text(big, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        EnvThumb(x, c)
         if (x.best.isNotEmpty()) Text(bitsToHex(x.best), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (proto != null) Pill("PROTOCOL: ${proto.protocol.name}", Palette.accent2)
         for (mm in x.b.matches.take(2)) Pill(mm, Palette.ok)
@@ -638,6 +644,51 @@ private fun BurstCard(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, selec
             Text(fmt("%.1f ms", x.b.ms), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
             Text(fmt("%.0f dBFS · %.0f dB SNR", x.b.dbfs, x.b.snr), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
         }
+        OpenFoot(c, "")
+    }
+}
+
+/** A card's star: tap to keep it (through CLEAR, and in STARRED) without opening the card; tap again to let it go. */
+@Composable
+private fun CardStar(on: Boolean, onToggle: () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(10f))
+    Box(Modifier.size(d.dp(34f)).clip(shape).background(if (on) Palette.accent2.copy(alpha = 0.14f) else Palette.surface)
+        .border(1.dp, if (on) Palette.accent2 else Palette.line, shape).clickable { onToggle() }, contentAlignment = Alignment.Center) {
+        Text(if (on) "★" else "☆", color = if (on) Palette.accent2 else Palette.muted, fontSize = d.sp(17f))
+    }
+}
+
+/** A card's thumbnail: the burst's envelope, the peak of each slice, so a card shows it holds a waveform to open. */
+@Composable
+private fun EnvThumb(x: AnBurst, c: Color) {
+    val d = rememberDims()
+    val peaks = remember(x.b.id) {
+        val env = x.b.env; val n = min(x.b.n, env.size); val cols = 240
+        val p = FloatArray(cols); var top = 1f
+        if (n >= 2) for (k in 0 until cols) {
+            val i0 = k * n / cols; val i1 = max(i0 + 1, (k + 1) * n / cols)
+            var mx = 0; for (i in i0 until min(i1, n)) { val v = abs(env[i].toInt()); if (v > mx) mx = v }
+            p[k] = mx.toFloat(); if (mx > top) top = mx.toFloat()
+        }
+        for (k in 0 until cols) p[k] /= top
+        p
+    }
+    Canvas(Modifier.fillMaxWidth().height(d.dp(40f)).clip(RoundedCornerShape(d.dp(6f))).background(c.copy(alpha = 0.07f))) {
+        val w = size.width / peaks.size; val h = size.height - 2f
+        for (k in peaks.indices) { val ph = max(1f, peaks[k] * (h - 2f)); drawRect(c, Offset(k * w, h - ph), Size(max(1f, w), ph)) }
+    }
+}
+
+/** What a tap on a card opens, said on the card: a summary that looks finished does not get tapped. */
+@Composable
+private fun OpenFoot(c: Color, lead: String) {
+    val d = rememberDims()
+    Box(Modifier.fillMaxWidth().height(1.dp).background(c.copy(alpha = 0.3f)))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        Text("${lead}WAVEFORM · BITS · DEMOD · COMPARE", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text("OPEN ›", color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10.5f), letterSpacing = 1.5.sp)
     }
 }
 
@@ -676,7 +727,8 @@ private fun charsOf(fmtI: Int, b0: Int, b1: Int): Pair<Int, Int> = when (fmtI) {
 
 @Composable
 private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: Color, save: (String, ByteArray) -> Unit,
-                        onCompare: () -> Unit, onClose: () -> Unit, onBack: (() -> Unit)?, onTx: (Analysis) -> Unit) {
+                        onCompare: () -> Unit, onClose: () -> Unit, onBack: (() -> Unit)?, onTx: (Analysis) -> Unit,
+                        frames: List<AnBurst>? = null, onFrame: (Int) -> Unit = {}, onCompareAll: () -> Unit = {}) {
     val d = rememberDims()
     val b = x.b
     val clip = LocalClipboardManager.current
@@ -718,6 +770,17 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
             ToggleBox("COMPARE", false, c, Modifier.weight(1f).fillMaxHeight()) { onCompare() }
             ToggleBox("SEND TO TX", false, Palette.danger, Modifier.weight(1f).fillMaxHeight(), dim = a.runs.isEmpty()) { if (a.runs.isNotEmpty()) onTx(a) }
         }
+        // every frame of the press this one belongs to: tap one to read it, or compare them all
+        if (frames != null) ChipRow {
+            Text("${frames.size} FRAMES", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.align(Alignment.CenterVertically))
+            frames.forEachIndexed { i, f ->
+                ToggleBox("F${i + 1} ${if (f.center != 0L) fmt("%.3f", Analyzer.freqOf(f) / 1e6) else whereOf(f)} · ${fmt("%.0f", f.b.snr)} dB", f.b.id == b.id, c, Modifier.fillMaxHeight()) { onFrame(f.b.id) }
+            }
+            ToggleBox("COMPARE ALL ${frames.size}", false, c, Modifier.fillMaxHeight()) { onCompareAll() }
+        }
+        // a wide screen: the trace and its bits on the left at full height, the readings in a column beside them
+        val split = d.wide && LocalConfiguration.current.screenWidthDp >= 1000
+        val tracePart: @Composable ColumnScope.(Boolean) -> Unit = { fill ->
         // the views, and the tools and zoom (rows that scroll sideways on a narrow screen)
         ChipRow { (if (d.wide) VIEWS else VIEWS_SHORT).forEachIndexed { i, v -> ToggleBox(v, UiState.view == i, c, Modifier.fillMaxHeight()) { UiState.view = i } } }
         ChipRow {
@@ -731,7 +794,7 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
             ToggleBox("▶", false, c, Modifier.fillMaxHeight(), dim = !ts.canForward()) { ts.forward() }
         }
         OverviewStrip(x, ts, c, Modifier.fillMaxWidth().height(d.dp(30f)))
-        WaveCanvas(x, a, meas, ts, pick, hlSpan, c, Modifier.fillMaxWidth().height(d.dp(traceH)), onTapAt = { at -> hl = bitAt(a, at) }) { pick = it }
+        WaveCanvas(x, a, meas, ts, pick, hlSpan, c, if (fill) Modifier.fillMaxWidth().weight(1f).heightIn(min = d.dp(220f)) else Modifier.fillMaxWidth().height(d.dp(traceH)), onTapAt = { at -> hl = bitAt(a, at) }) { pick = it }
         BitStrip(a, ts.a0 to ts.a1, hl, c, Modifier.fillMaxWidth().height(d.dp(22f))) { hl = it }
         // the decoded output, pinned under the trace
         SegBar(listOf("BITS", "HEX", "ASCII"), UiState.fmt, c) { UiState.fmt = it }
@@ -747,8 +810,9 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
                 }
             }
         }
-        // the rest scrolls
-        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        }
+        // the readings: under the trace, or beside it on a wide screen
+        val readings: @Composable ColumnScope.() -> Unit = {
             // what is selected, counted in the burst's own symbol
             val r = pick
             Text(if (r != null) fmt("%.3f ms · %.1f symbols at %.0f µs", (r.second - r.first) / b.rate * 1000, (r.second - r.first) / b.rate * 1e6 / max(1e-9, symUs), symUs)
@@ -835,6 +899,16 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
                 ToggleBox(".SUB", false, c, Modifier.fillMaxHeight(), dim = a.runs.isEmpty()) { if (a.runs.isNotEmpty()) save(Analyzer.nameFor(x, "sub"), Analyzer.sub(x, a)) }
             }
             Text(fmt("%.0f kHz I/Q, %d samples", b.rate / 1e3, b.n), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+        }
+        if (split) {
+            Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(d.dp(14f))) {
+                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) { tracePart(true) }
+                Column(Modifier.width(d.dp((LocalConfiguration.current.screenWidthDp * 0.34f).coerceIn(380f, 620f))).fillMaxHeight().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { readings() }
+            }
+        } else {
+            tracePart(false)
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { readings() }
         }
     }
 }
