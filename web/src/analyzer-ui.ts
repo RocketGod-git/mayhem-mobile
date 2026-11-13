@@ -402,37 +402,42 @@ export class AnalyzerUi {
     }
   }
 
+  /** One captured burst: where and when, how it reads in big type, its bits as hex, its name, star and matches (the
+   *  Android card's layout). */
   private card(b: AnBurst): string {
     const a = b.auto;
     const hz = b.center ? mhz(b.center + b.hz) : `${b.hz >= 0 ? '+' : ''}${(b.hz / 1e3).toFixed(0)} kHz`;
     const when = b.src ? `+${b.t.toFixed(3)} s` : clock(b.wall);
     const big = a.frames.length ? `${a.mod} · ${a.coding.toUpperCase()}` : a.mod === 'OOK' && a.why.startsWith('a plain') ? 'CARRIER' : a.mod;
     const sub = a.frames.length ? `${rateLabel(a.baud)} · ${b.best.length} bits${a.frames.length > 1 ? ` · ${a.frames.length} frames` : ''}` : a.why;
+    const pills = (b.proto ? `<span class="p">PROTOCOL: ${esc(b.proto.protocol.name)}</span>` : '') + b.matches.slice(0, 2).map(m => `<span>${esc(m)}</span>`).join('');
     return `<div class="mt-card dv-card an-card k-${a.mod.toLowerCase()} ${this.sel === b.id ? 'sel' : ''}" data-an="${b.id}">`
       + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(hz)}</b><small>${b.name ? `<em class="an-name">${esc(b.name)}</em>` : b.src ? esc(b.src) : `burst ${b.id}`}</small></span><span class="mt-live">${b.star ? '<i class="an-starred">★</i>' : ''}${esc(when)}</span></div>`
-      + `<div class="mt-clk"><b>${esc(big)}</b><small>${esc(sub)}</small></div>`
+      + `<div class="an-big"><b>${esc(big)}</b><small>${esc(sub)}</small></div>`
       + (b.best ? `<div class="mt-hex">${esc(bitsToHex(b.best))}</div>` : '')
-      + (b.matches.length || b.proto ? `<div class="an-match">${b.proto ? `<span class="p">◆ ${esc(b.proto.protocol.name)}</span>` : ''}${b.matches.map(m => `<span>${esc(m)}</span>`).join('')}</div>` : '')
+      + (pills ? `<div class="an-match">${pills}</div>` : '')
       + (b.note ? `<div class="an-note">${esc(b.note)}</div>` : '')
       + `<div class="dv-foot"><span>${b.ms.toFixed(1)} ms</span><span>${b.dbfs.toFixed(0)} dBFS · ${b.snr.toFixed(0)} dB SNR</span></div></div>`;
   }
 
-  /** A press sent several times: what it is, how often and where. */
+  /** A press sent several times: what it is, how many frames on how many channels and where, and what decoded it. */
   private txCard(t: Tx): string {
     const m0 = t.members[0], rep = repOf(t), a = rep.auto;
     const name = t.members.find(x => x.name)?.name ?? '';
     const proto = t.members.find(x => x.proto)?.proto?.protocol.name ?? '';
     const big = t.label ? shortLabel(t.label) : proto || (a.frames.length ? `${a.mod} · ${a.coding.toUpperCase()}` : a.mod);
     const when = m0.src ? `+${m0.t.toFixed(3)} s` : clock(m0.wall);
+    const where = rep.center ? `${t.freqs.map(f => (f / 1e6).toFixed(3)).join(' / ')} MHz` : `${t.freqs.map(f => `${f >= 0 ? '+' : ''}${(f / 1e3).toFixed(0)}`).join(' / ')} kHz`;
     const chans = `${t.freqs.length} channel${t.freqs.length === 1 ? '' : 's'}`;
     const snr = Math.max(...t.members.map(x => x.snr));
     const open = this.opened && this.txOpen === t.id;
+    const pills = (proto ? `<span class="p">PROTOCOL: ${esc(proto)}</span>` : '') + (t.label ? `<span>${esc(t.label)}</span>` : '');
     return `<div class="mt-card dv-card an-card an-txcard k-${a.mod.toLowerCase()} ${open || t.ids.includes(this.sel) ? 'sel' : ''}" data-an="${t.id}">`
-      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${t.freqs.map(f => (f / 1e6).toFixed(3)).join(' / ')} MHz</b><small>${name ? `<em class="an-name">${esc(name)}</em>` : m0.src ? esc(m0.src) : `${a.mod} · ${a.coding}`}</small></span><span class="mt-live">${t.members.some(x => x.star) ? '<i class="an-starred">★</i>' : ''}${esc(when)}</span></div>`
-      + `<div class="mt-clk"><b>${esc(big)}</b><small>${t.ids.length} frames on ${chans}</small></div>`
+      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(rep.center ? mhz(t.freqs[0]) : where)}</b><small>${name ? `<em class="an-name">${esc(name)}</em>` : m0.src ? esc(m0.src) : `transmission ${t.id}`}</small></span><span class="mt-live">${t.members.some(x => x.star) ? '<i class="an-starred">★</i>' : ''}${esc(when)}</span></div>`
+      + `<div class="an-big"><b>${esc(big)}</b><small>${t.ids.length} frames on ${chans} · ${esc(where)}</small></div>`
       + (rep.best ? `<div class="mt-hex">${esc(bitsToHex(rep.best))}</div>` : '')
-      + (proto && t.label ? `<div class="an-match"><span class="p">◆ ${esc(proto)}</span></div>` : '')
-      + `<div class="dv-foot"><span>${((t.end - t.t) * 1000).toFixed(0)} ms in all</span><span>up to ${snr.toFixed(0)} dB SNR</span></div></div>`;
+      + (pills ? `<div class="an-match">${pills}</div>` : '')
+      + `<div class="dv-foot"><span>${((t.end - t.t) * 1000).toFixed(0)} ms in all</span><span>${snr.toFixed(0)} dB SNR best</span></div></div>`;
   }
 
   /** The transmission view: one press, each frame it was sent as, and a COMPARE across them. */

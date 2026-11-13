@@ -1122,9 +1122,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .mt-stage .map { height: 46vh; min-height: 220px; }
 .mt-nopos { position: absolute; left: 10px; bottom: 10px; font-size: 10px; color: var(--muted); pointer-events: none; z-index: 500; }
 .mt-card { position: relative; cursor: pointer; border-radius: 14px; padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; min-width: 0;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) calc(10% + 14% * var(--flash)), var(--surface)), var(--surface));
-  border: 1px solid color-mix(in srgb, var(--accent) calc(22% + 70% * var(--flash)), transparent);
-  box-shadow: 0 0 calc(12px * var(--flash)) color-mix(in srgb, var(--accent) 50%, transparent); }
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) calc(10% + 14% * var(--flash, 0)), var(--surface)), var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) calc(22% + 70% * var(--flash, 0)), transparent);
+  box-shadow: 0 0 calc(12px * var(--flash, 0)) color-mix(in srgb, var(--accent) 50%, transparent); }
 .mt-card.sel { border: 2px solid var(--accent); }
 .mt-card.dim { opacity: 0.8; }
 .mt-h { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -1310,7 +1310,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .dv-card.k-meter { --kind: #8fd14f; }
 .dv-card .mt-k b { color: var(--kind); }
 .dv-card.sel { border-color: var(--kind); }
-.dv-card { box-shadow: 0 0 calc(18px * var(--flash, 0)) color-mix(in srgb, var(--kind) calc(70% * var(--flash, 0)), transparent); }
+.dv-card { box-shadow: 0 0 calc(18px * var(--flash, 0)) color-mix(in srgb, var(--kind) calc(70% * var(--flash, 0)), transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--kind) calc(10% + 16% * var(--flash, 0)), var(--surface)), var(--surface));
+  border: 1px solid color-mix(in srgb, var(--kind) calc(25% + 70% * var(--flash, 0)), transparent); }
+.dv-card.sel { border: 2.5px solid var(--kind); }
 .dv-glyph { width: 34px; height: 34px; flex: none; border-radius: 10px; display: grid; place-items: center; background: color-mix(in srgb, var(--kind) 16%, transparent); }
 .dv-glyph svg { width: 22px; height: 22px; fill: none; stroke: var(--kind); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .dv-card .mt-clk b { color: var(--kind); }
@@ -1321,17 +1324,25 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .an-grow { flex: 1; min-width: 0; }
 .an-ctlrow { flex-wrap: wrap; }
 .an-ctlrow .tog { padding: 7px 10px; font-size: 11px; }
-.an-cards { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); max-height: 62vh; margin-top: 6px; }
+.an-cards { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); max-height: 62vh; margin-top: 6px; align-content: start; }
 .an-card.k-ook { --kind: #ffb020; } .an-card.k-ask { --kind: #b48cff; } .an-card.k-fsk { --kind: #3fd0c9; }
-.an-card .mt-k b { font-size: 12px; letter-spacing: 1px; }
-.an-card .mt-clk b { font-size: 17px; }
-.an-card .mt-hex { font-family: ui-monospace, monospace; }
+/* as on Android: the card tinted and edged in its modulation's color, the place in ink over what it is in big type */
+.an-card { background: linear-gradient(135deg, color-mix(in srgb, var(--kind) 10%, var(--surface)), var(--surface)); border: 1px solid color-mix(in srgb, var(--kind) 30%, transparent); box-shadow: none; }
+.an-card.sel { border: 2.5px solid var(--kind); }
+.an-card .mt-k b { font-size: 12px; letter-spacing: 1px; color: var(--ink); }
+.an-card .mt-k small { font-size: 10px; }
+.an-card .mt-live { font-size: 10px; }
+.an-big { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.an-big b { font-size: 20px; color: var(--kind); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.an-big small { font-size: 10px; letter-spacing: 1px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.an-card .mt-hex { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--ink); }
+.an-card .dv-foot { font-size: 10px; }
 .an-name { font-style: normal; color: var(--ink); font-weight: 700; }
 .an-starred { font-style: normal; color: var(--accent2); margin-right: 6px; }
 .an-note { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .an-match { display: flex; flex-wrap: wrap; gap: 4px; }
-.an-match span { font-size: 9px; letter-spacing: 1px; padding: 2px 6px; border-radius: 6px; color: var(--ok, #3fd07a); border: 1px solid color-mix(in srgb, var(--ok, #3fd07a) 60%, transparent); }
-.an-match span.p { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.an-match span { font-size: 9.5px; letter-spacing: 1px; padding: 1px 7px; border-radius: 20px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ok, #3fd07a); border: 1px solid color-mix(in srgb, var(--ok, #3fd07a) 60%, transparent); }
+.an-match span.p { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 60%, transparent); }
 .an-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .an-filter[hidden] { display: none; }
 .an-filter .txin { width: 78px; padding: 6px; }
@@ -1641,6 +1652,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* the Analyzer's waterfall keeps its height: without it the growing burst list squeezed it a little with every card */
 .view.analyzer .visual { flex: none; }
 .view.analyzer .visual > .scope, .view.analyzer .visual > .scope.short { flex: none; height: clamp(200px, 34vh, 420px); min-height: 200px; }
+
+/* Desktop: the Analyzer is laid out like the other receivers, the readout and waterfall on the left and the controls
+ * beside them, with the cards filling the column under the toolbar and scrolling inside it (on the phone they follow
+ * the waterfall down the page, as before). Once there are cards the long explanation steps aside for them. */
+@media (min-width: 720px) {
+  .view.analyzer { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(360px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch; }
+  .view.analyzer .visual { flex: 1; min-height: 0; }
+  .view.analyzer .visual > .scope, .view.analyzer .visual > .scope.short { flex: 1; height: auto; min-height: 200px; }
+  .view.analyzer .controls { display: flex; flex-direction: column; overflow: hidden; }
+  .view.analyzer .controls > * { flex: none; }
+  .view.analyzer .controls > .an-cards { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+  .view.analyzer .controls > .an-cards:has(.an-card) ~ .note { display: none; }
+  .view.analyzer.an-listfull { grid-template-columns: minmax(0, 1fr); }
+  .view.analyzer.an-listfull .an-cards { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+}
 
 /* FULL LIST: the readout, the waterfall and the band tiles step aside, and the burst list takes the screen */
 .view.analyzer.an-listfull .visual, .view.analyzer.an-listfull .controls > .hs:has(.tiles.wide) { display: none; }
