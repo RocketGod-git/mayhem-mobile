@@ -1714,3 +1714,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 480px) { .fgain .gl { display: none; } .fgain .gs { display: inline; } }
 /* the Analyzer's toolbar wraps on a phone; the clear button ends the row */
 .an-ctlrow #an-clear { margin-left: auto; }
+
+/* ---- one scroll on a phone ----------------------------------------------------------------------------------------
+ * Every app on a phone is one page that scrolls as a whole: the readout and the waterfall at their own height, then the
+ * controls, then every card, list and feed at its full length. Nothing is a box that scrolls inside the page (a finger
+ * landing on a list no longer decides which of two scrolls it moves). The home screen, maps, full-screen panels and
+ * text that follows the newest line (digital modes, the log window) keep their own layout. */
+@media (max-width: 719.98px) {
+  main#view:not(.launcher):not(.metersfull):not(.lorafull):not(.hfull):not(.mapfull) { display: block !important; overflow-y: auto; }
+  :where(main#view:not(.launcher)) > .visual { overflow: visible; }
+  :where(main#view:not(.launcher)) > .visual > .scope { flex: none; height: clamp(170px, 30vh, 320px); }
+  :where(main#view.audio, main#view.ham, main#view.prowl, main#view.lookingglass, main#view.search, main#view.capture) > .visual > .scope { height: clamp(220px, 42vh, 420px); }
+  main#view:not(.launcher):not(.metersfull):not(.lorafull):not(.hfull):not(.mapfull) > .controls { max-height: none !important; overflow: visible !important; }
+  main#view:not(.launcher):not(.metersfull):not(.lorafull):not(.hfull):not(.mapfull):not(.an-listfull) :is(.mt-cards, .an-cards, .list, .lr-msgs, .hfeed, .devtable) { max-height: none !important; overflow: visible !important; }
+  #setview :is(.list, .devtable) { max-height: none !important; overflow: visible !important; }
+}

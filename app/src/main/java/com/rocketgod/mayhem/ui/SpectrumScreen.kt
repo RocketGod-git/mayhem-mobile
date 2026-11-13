@@ -328,7 +328,9 @@ private fun SpPadKey(label: String, c: Color, modifier: Modifier, filled: Boolea
     val shape = RoundedCornerShape(10.dp)
     Box(modifier.height(d.dp(48f)).clip(shape).background(if (filled) c.copy(alpha = 0.18f) else Palette.paper).border(1.dp, if (filled) c else Palette.line, shape).clickable { onClick() },
         contentAlignment = Alignment.Center) {
-        Text(label, color = c, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (label.length > 2) 13f else 18f))
+        // every unit key (GHz, MHz, kHz, Hz, dB...) one size, every digit another: sized by length, "Hz" came out as big as
+        // a digit beside its smaller neighbours
+        Text(label, color = c, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (filled) 14f else 20f), maxLines = 1)
     }
 }
 
