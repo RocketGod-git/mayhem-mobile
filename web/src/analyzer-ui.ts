@@ -211,7 +211,7 @@ export class AnalyzerUi {
   /** The Analyzer's own part of the screen, under the waterfall and the band presets main.ts draws. */
   html(): string {
     return `
-      <div class="ctlrow an-ctlrow"><button id="an-full" class="tog">FULL LIST</button><button id="an-cap" class="tog">CAPTURE</button><button id="an-imp" class="tog">IMPORT</button><button id="an-filt" class="tog">FILTER</button><button id="an-star" class="tog">☆ STARRED</button><button id="an-sess" class="tog">EXPORT SESSION</button><input id="an-file" type="file" accept=".cu8,.cs8,.u8,.iq,.raw,.sub,.mmanalyzer" hidden><span class="row an-grow"></span><button class="ib" id="an-clear" title="clear (starred bursts stay; tap twice to clear them too)" aria-label="clear">✕</button></div>
+      <div class="ctlrow an-ctlrow"><button id="an-full" class="tog">FULL LIST</button><button id="an-cap" class="tog">CAPTURE</button><button id="an-imp" class="tog">IMPORT</button><button id="an-filt" class="tog">FILTER</button><button id="an-star" class="tog">☆ STARRED</button><button id="an-sess" class="tog">EXPORT SESSION</button><input id="an-file" type="file" accept=".cu8,.cs8,.u8,.iq,.raw,.sub,.mmanalyzer" hidden><button class="ib" id="an-clear" title="clear (starred bursts stay; tap twice to clear them too)" aria-label="clear">✕</button></div>
       <div id="an-filter" class="an-filter" hidden></div>
       <div id="an-stats" class="mt-sum"><div>listening&hellip;</div></div>
       <div id="an-list" class="mt-cards an-cards"></div>

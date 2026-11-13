@@ -469,8 +469,8 @@ function refreshGainUi(): void {
 
 function refreshAgcChip(): void {
   syncRadioPanel();
-  const g = gainSummary();
-  for (const b of qa('.fgain')) if (b.textContent !== g) b.textContent = g;
+  const g = gainChipInner();
+  for (const b of qa('.fgain')) if (b.innerHTML !== g) b.innerHTML = g;
   for (const b of qa('#agc')) { b.textContent = 'AGC'; b.classList.toggle('on', state.agc); b.title = state.agc ? 'The automatic gain sets the gain' : 'The gain is yours; tap to hand it to the AGC'; }
   for (const l of qa('#lna')) { l.textContent = `LNA ${state.lna}${state.agc ? ' AUTO' : ''}`; l.classList.toggle('auto', state.agc); }
   for (const v of qa('#vga')) { v.textContent = `${radio?.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}${state.agc ? ' AUTO' : ''}`; v.classList.toggle('auto', state.agc); }
@@ -1485,7 +1485,15 @@ function gainSummary(): string {
   if (rtl) return `${who} · GAIN ${rtlGainDb()} dB${state.biast ? ' · BIAS-T' : ''}`;
   return `${who} · LNA ${state.lna} VGA ${state.vga}${state.amp ? ' · AMP' : ''}`;
 }
-const gainChipHtml = () => `<button class="fgain" title="Gain: tap for RADIO">${gainSummary()}</button>`;
+/** The same in a phone header's width: "AGC 46 dB", "MAN 24/50 +A" (+A: the HackRF's amp is on). */
+function gainShort(): string {
+  const rtl = rtlRadio();
+  const who = rtl?.tunerAgc || state.agc ? 'AGC' : 'MAN';
+  if (rtl) return `${who} ${rtlGainDb()} dB`;
+  return `${who} ${state.lna}/${state.vga}${state.amp ? ' +A' : ''}`;
+}
+const gainChipInner = () => `<span class="gl">${gainSummary()}</span><span class="gs">${gainShort()}</span>`;
+const gainChipHtml = () => `<button class="fgain" title="Gain: tap for RADIO">${gainChipInner()}</button>`;
 /** Tune steps went with the Android app's redesign: every digit tunes itself. Kept so the call sites read the same. */
 const stepHtml = (_steps: number[]) => '';
 /** A sideways scroller whose edges glow while there is more past them (wired by bindHs). */
