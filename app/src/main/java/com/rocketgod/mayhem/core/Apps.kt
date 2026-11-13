@@ -134,6 +134,10 @@ object Apps {
     private val _trainsWaterfall = MutableStateFlow<Boolean?>(null)
     val trainsWaterfall: StateFlow<Boolean?> = _trainsWaterfall.asStateFlow()
     fun setTrainsWaterfall(on: Boolean) { _trainsWaterfall.value = on }
+    /** The apps whose waterfall can be put away (BLE, ADS-B, Meters, LoRa, ACARS): the choice, once made. */
+    private val _waterfalls = MutableStateFlow<Map<MayhemApp, Boolean>>(emptyMap())
+    val waterfalls: StateFlow<Map<MayhemApp, Boolean>> = _waterfalls.asStateFlow()
+    fun setWaterfall(app: MayhemApp, on: Boolean) { _waterfalls.value = _waterfalls.value + (app to on) }
     fun setTrainsAuto() { _trainsAuto.value = true; if (playing() == MayhemApp.TRAINS) startTrains() }
     private fun startTrains() {
         val t = com.rocketgod.mayhem.core.trains.TrainsProcessor

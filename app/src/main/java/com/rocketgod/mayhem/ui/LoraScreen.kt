@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.apps.MeshField
@@ -86,10 +87,12 @@ fun LoraScreen(accent: Color) {
     val messages = events.filter { it.text != null }
     val picked = nodes.firstOrNull { it.key == sel }
 
+    val wf = waterfallOn(MayhemApp.LORA, phoneDefault = true)
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             SegBar(listOf("NODES · ${nodes.size}", "MAP · ${mapItems.size}", "CHAT · ${messages.size}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
+            if (withFull) WaterfallBox(wf, accent, Modifier.fillMaxHeight()) { Apps.setWaterfall(MayhemApp.LORA, !wf) }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
         }
     }
@@ -129,7 +132,7 @@ fun LoraScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.loraLog, tag = "LORA", title = "MESHTASTIC · MESHCORE · LORAWAN", roomy = true, listWeight = 3.2f, controls = {
+    PacketFrame(accent, Apps.loraLog, tag = "LORA", title = "MESHTASTIC · MESHCORE · LORAWAN", roomy = true, listWeight = 3.2f, waterfall = wf, controls = {
         val wide = rate >= 10_000_000
         val narrowed by Apps.lora.narrowed.collectAsState()
         val midSpan = rate in 2_400_001 until LoraScanner.RATE

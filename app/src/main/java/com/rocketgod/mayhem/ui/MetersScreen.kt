@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.apps.MeshDecoder
@@ -93,10 +94,12 @@ fun MetersScreen(accent: Color) {
     }
     val picked = devices.firstOrNull { it.key == sel }
 
+    val wf = waterfallOn(MayhemApp.ERT, phoneDefault = true)
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             SegBar(listOf("DEVICES · ${devices.size}", "MAP · ${mapItems.size}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
+            if (withFull) WaterfallBox(wf, accent, Modifier.fillMaxHeight()) { Apps.setWaterfall(MayhemApp.ERT, !wf) }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
         }
     }
@@ -134,7 +137,7 @@ fun MetersScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM", roomy = true, listWeight = 3.2f, controls = {
+    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM", roomy = true, listWeight = 3.2f, waterfall = wf, controls = {
         PresetTiles(accent, listOf(Preset("904.0", "low", 904_000_000L), Preset("911.6", "lower mid", 911_600_000L), Preset("916.0", "mid", 916_000_000L),
             Preset("920.0", "upper mid", 920_000_000L), Preset("925.0", "high", 925_000_000L)))
         val why = Radio.rateWhy(MeshDecoder.RATE)

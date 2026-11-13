@@ -825,13 +825,17 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .controls { max-height: 58%; }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
-  .view.ert .controls, .view.lora .controls, .view.btle .controls, .view.acars .controls, .view.trains:has(.visual:not(.tr-nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
-  /* Trains with its waterfall off: the readout keeps its own height and the log takes everything under it. */
-  .view.trains .visual.tr-nowf { flex: none; }
-  .view.trains:has(.visual.tr-nowf) .controls { flex: 1; max-height: none; min-height: 0; }
+  .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
+  .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
+  /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
+  .view .visual.nowf { flex: none; }
+  .view:has(> .visual.nowf) > .controls { flex: 1; max-height: none; min-height: 0; }
   /* Tabs that carry a count fit their labels: less tracking, and each tab as wide as its label needs. */
   .seg > button { letter-spacing: .6px; padding: 8px 4px; flex: 1 1 auto; }
   .ctlrow { gap: 6px; }
+  /* Four tabs and the row's buttons don't share one phone-width line: the tabs get their own, the buttons sit under them. */
+  .ctlrow:has(> .seg > button:nth-child(4)) { flex-wrap: wrap; justify-content: flex-end; }
+  .ctlrow:has(> .seg > button:nth-child(4)) > .seg { flex: 1 1 100%; }
   /* Spectrum's marker actions wrap onto a second line rather than squeezing every label to an ellipsis. */
   .sp-row.sp-pk > .chip { flex: 1 0 auto; }
   /* Troll's two-up buttons wrap a long label instead of cutting it. */
@@ -1313,7 +1317,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .tr-strip .z { stroke: none; }
 .mt-fields.tr-fields { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .tr-next b.muted { color: var(--muted); }
-.visual.tr-nowf #scope { display: none; }
+.visual.nowf #scope { display: none; }
+.ib.wf-tog.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.ib.wf-tog:not(.on) { color: var(--muted); }
+/* with its waterfall put away on a wide screen, the readout spans the top and the rest goes under it */
+@media (min-width: 720px) { main#view:has(> .visual.nowf) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); } }
 
 /* Devices: one card per thing heard, a glyph and color per kind */
 .dv-cards { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }

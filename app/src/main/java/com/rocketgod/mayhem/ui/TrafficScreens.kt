@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.AdsbStore
 import com.rocketgod.mayhem.core.AircraftInfo
 import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.Geo
 import com.rocketgod.mayhem.core.PacketLog
 import com.rocketgod.mayhem.core.SdrEngine
@@ -76,6 +77,9 @@ private fun TrafficFrame(
     /** The radio sits this far above the channel (AIS, APRS): the card shows the channel, a tap tunes to it. */
     shift: Long = 0L,
     extra: @Composable ColumnScope.() -> Unit = {},
+    /** Whether the waterfall shows, and the WATERFALL button's action (null: no button, the waterfall always shows). */
+    waterfall: Boolean = true,
+    onWaterfall: (() -> Unit)? = null,
     body: @Composable ColumnScope.() -> Unit,
 ) {
     val d = rememberDims()
@@ -91,7 +95,7 @@ private fun TrafficFrame(
     } else null
     AdaptivePane(
         // the card keeps its height; the waterfall and the map or list split the rest evenly
-        share = true,
+        share = true, noVisual = !waterfall,
         face = {
             FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
                 right = if (count > 0) "$count ${unit.lowercase()}" else "listening",
@@ -110,6 +114,7 @@ private fun TrafficFrame(
             extra()
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 SegBar(views.map { it.name }, views.indexOf(view), accent, Modifier.weight(1f).fillMaxHeight()) { onView(views[it]) }
+                if (onWaterfall != null) WaterfallBox(waterfall, accent, Modifier.fillMaxHeight()) { onWaterfall() }
                 ToggleBox(if (paused) "RESUME" else "PAUSE", paused, accent, Modifier.fillMaxHeight()) { onPause() }
                 IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { onClear() }
             }
@@ -179,7 +184,10 @@ fun AdsbScreen(accent: Color) {
     val planes = frozen ?: live
     val now = ticker()
     val a = live.firstOrNull { it.icao == sel } ?: planes.firstOrNull { it.icao == sel }
+    // 1090 MHz pulses hardly show on a waterfall: a phone gives its room to the map
+    val wf = waterfallOn(MayhemApp.ADSB, phoneDefault = false)
     TrafficFrame(accent, tunable = false, tag = "ADS-B", title = "$frames FRAMES", count = planes.size, unit = "AIRCRAFT",
+        waterfall = wf, onWaterfall = { Apps.setWaterfall(MayhemApp.ADSB, !wf) },
         views = listOf(View.MAP, View.LIST), view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null }, onClear = { AdsbStore.clear(); sel = null; if (frozen != null) frozen = emptyList() }) {
         if (a != null) AircraftCard(a, home, now, onMap = if (a.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = null }

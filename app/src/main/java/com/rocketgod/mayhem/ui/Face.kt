@@ -210,6 +210,19 @@ fun IconBox(icon: ImageVector, description: String, modifier: Modifier = Modifie
     }
 }
 
+/** WATERFALL on / off as an [IconBox]: lit in the accent while the waterfall shows. */
+@Composable
+fun WaterfallBox(on: Boolean, accent: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(d.dp(12f))
+    Box(modifier.clip(shape).background(if (on) accent.copy(alpha = 0.16f) else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }
+        .padding(horizontal = d.dp(10f), vertical = d.dp(8f)), contentAlignment = Alignment.Center) {
+        Icon(WaterfallIcon, contentDescription = if (on) "Hide the waterfall" else "Show the waterfall", tint = if (on) accent else Palette.muted, modifier = Modifier.size(d.dp(18f)))
+    }
+}
+
 /** A label at the start of a control row: FILTER, SQL, AGC. */
 @Composable
 fun RowLabel(text: String) {

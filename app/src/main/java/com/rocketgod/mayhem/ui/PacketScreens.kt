@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.PacketLog
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.apps.BtleDecoder
@@ -174,6 +175,15 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
             LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent, emptyKey = emptyKey)
         }
     }
+}
+
+/** Whether [app] shows its waterfall: the WATERFALL button's choice once made, else shown, except on a phone for an
+ *  app whose bursts it can hardly show ([phoneDefault] false: BLE, ADS-B), where the cards or the map get the room. */
+@Composable
+internal fun waterfallOn(app: MayhemApp, phoneDefault: Boolean): Boolean {
+    val d = rememberDims()
+    val chosen by Apps.waterfalls.collectAsState()
+    return chosen[app] ?: (phoneDefault || d.cls != ScreenClass.COMPACT)
 }
 
 @Composable

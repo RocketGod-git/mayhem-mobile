@@ -3608,11 +3608,11 @@ function bleDetail(d: BleDevice, now: number): string {
 function renderBle(view: HTMLElement): void {
   const why = radio ? blockedBecause(APP_NEEDS.btle, radio.limits) : '';
   view.innerHTML = `
-    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('btle')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
       <div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>
       <div id="ble-alert" class="ble-warn big" hidden></div>
-      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-bleview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('btle')}</div>
+      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-bleview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('btle')}${pauseClearHtml('btle')}</div>
       <div id="ble-stage" class="mt-stage"><div id="ble-cards" class="mt-cards"></div><div id="ble-detail" class="mt-detail" hidden></div></div>
       <div id="ble-log">${logHtml('btle', 'listening…')}</div>
       <div class="note">One card per device, by its address: the maker from its manufacturer ID, the type from what it advertises (Find My, Tile, SmartTag, Find Hub, iBeacon, Eddystone, Fast Pair, AirPods, phones, watches). A tracker that stays near you for 20 minutes, or is still there after you move 500 m (with location allowed), is flagged. Phones and tags change their random address every 15 minutes or so, so one phone can show up as several cards over time.</div>
@@ -3696,10 +3696,10 @@ function acarsDetail(p: AcarsPlane): string {
 function renderAcars(view: HTMLElement): void {
   const why = radio ? blockedBecause(APP_NEEDS.acars, radio.limits) : '';
   view.innerHTML = `
-    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('acars')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
       ${presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
-      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('acars')}</div>
+      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('acars')}${pauseClearHtml('acars')}</div>
       <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
       <div id="ac-log">${logHtml('acars', 'listening…')}</div>
       <div class="note">One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).</div>
@@ -3773,10 +3773,10 @@ const metersPins = (): GeoItem[] => (meters.snap?.devices ?? []).filter(d => d.l
 function renderMeters(view: HTMLElement): void {
   const off = (r: number) => radioCan(r) ? '' : 'off';
   view.innerHTML = `
-    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('ert')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="mt-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(['cards', 'map', 'log'].map(v => `<button data-mtview="${v}">${v.toUpperCase()}</button>`))}<button id="mt-full" class="ib" title="full screen" aria-label="full screen">${meters.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('ert')}</div>
+      <div class="ctlrow">${segHtml(['cards', 'map', 'log'].map(v => `<button data-mtview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('ert')}<button id="mt-full" class="ib" title="full screen" aria-label="full screen">${meters.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('ert')}</div>
       <div id="mt-stage" class="mt-stage"><div id="mt-cards" class="mt-cards"></div><div id="mt-map" class="panel map"></div><div id="mt-nopos" class="mt-nopos">no positions yet</div><div id="mt-detail" class="mt-detail" hidden></div></div>
       <div id="mt-log">${logHtml('ert', 'watching the band for meters…')}</div>
       ${presetHtml('CENTER', [['904.0', 904_000_000], ['911.6', 911_600_000], ['916.0', 916_000_000], ['920.0', 920_000_000], ['925.0', 925_000_000]])}
@@ -3913,7 +3913,7 @@ function refreshMeters(force = false): void {
 
 // ---- Trains: end-of-train telemetry and the PTC train-control network (receive only) ----------------------------
 interface TrainsSnap { band: 'EOT' | 'PTC'; hears: string[]; units: EotUnit[]; hots: HotHeard[]; stations: PtcStation[]; activity: Record<string, number>; other: number }
-const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '', waterfall: null as boolean | null };
+const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '' };
 /** Tunes for the band: as wide as it needs where the radio can (both EOT channels, or all of 216-222.5 MHz), else the
  *  channels heard most, from 2 MHz. */
 /** What the PTC tuning hears, in MHz: a HackRF all of PTC, an RTL-SDR about 2 MHz of it. */
@@ -3971,13 +3971,30 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 
 /** The waterfall at 8 MHz shows little of a 20 ms burst: a phone-width window leaves it out for the cards (the band
  *  strip shows the bursts), a wider one keeps it, and the WATERFALL button overrides either. */
-const trainsWaterfall = () => trainsUi.waterfall ?? window.innerWidth >= 700;
+/* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
+ * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
+ * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
+const WF_PHONE: Partial<Record<AppId, boolean>> = { btle: false, adsb: false, trains: false, ert: true, lora: true, acars: true };
+const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
+function wfShown(app: AppId): boolean {
+  let v: string | null = null;
+  try { v = localStorage.getItem('mm.wf.' + app); } catch { /* storage blocked */ }
+  return v !== null ? v === '1' : window.innerWidth >= 700 || (WF_PHONE[app] ?? true);
+}
+function setWf(app: AppId, on: boolean): void {
+  try { localStorage.setItem('mm.wf.' + app, on ? '1' : '0'); } catch { /* storage blocked */ }
+  render(app);
+}
+/** The visual section's class: without its waterfall when that is put away. */
+const visCls = (app: AppId) => (wfShown(app) ? 'visual' : 'visual nowf');
+/** The WATERFALL on / off button, as an icon in a toolbar row. */
+const wfHtml = (app: AppId) => `<button class="ib wf-tog ${wfShown(app) ? 'on' : ''}" data-wf="${app}" title="${wfShown(app) ? 'hide' : 'show'} the waterfall" aria-label="waterfall" aria-pressed="${wfShown(app)}">${WF_SVG}</button>`;
 function renderTrains(view: HTMLElement): void {
   view.innerHTML = `
-    <section class="visual ${trainsWaterfall() ? '' : 'tr-nowf'}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('trains')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div class="ctlrow">${segHtml(([['EOT', 'EOT · HOT'], ['PTC', 'PTC 220'], ['BOTH', 'BOTH']] as [string, string][]).map(([k, l]) => `<button data-trband="${k}">${l}</button>`))}</div>
-      <div class="ctlrow"><div id="tr-lamps" class="tr-lamps"></div><button id="tr-wf" class="tog ${trainsWaterfall() ? 'on' : ''}">WATERFALL</button></div>
+      <div class="ctlrow"><div id="tr-lamps" class="tr-lamps"></div><button id="tr-wf" class="tog ${wfShown('trains') ? 'on' : ''}" data-wf="trains">WATERFALL</button></div>
       <div id="tr-banner" class="tr-banner"></div>
       <div id="tr-strip" class="tr-strip"></div>
       <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}${pauseClearHtml('trains')}</div>
@@ -3987,7 +4004,6 @@ function renderTrains(view: HTMLElement): void {
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-trband]', view).forEach(b => b.onclick = () => trainsSetBand(b.dataset.trband as 'EOT' | 'PTC' | 'BOTH'));
-  $('tr-wf').onclick = () => { trainsUi.waterfall = !trainsWaterfall(); render('trains'); };
   qa<HTMLButtonElement>('[data-trview]', view).forEach(b => b.onclick = () => { trainsUi.view = b.dataset.trview as typeof trainsUi.view; trainsUi.picked = true; trainsUi.sel = ''; refreshTrains(true); });
   $('tr-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-trsel]'); if (c) { trainsUi.sel = trainsUi.sel === c.dataset.trsel ? '' : c.dataset.trsel!; refreshTrains(true); } };
   $('tr-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-trdo]'); if (!b) return; if (b.dataset.trdo === 'close') { trainsUi.sel = ''; refreshTrains(true); } };
@@ -4214,10 +4230,10 @@ function renderLora(view: HTMLElement): void {
     // one channel at a time: the radio sits 300 kHz above it, clear of the spike at the center
     : hsHtml(`<div class="tiles wide">${LORA_TILES.map(t => `<button class="tl" data-preset="${t.hz + LORA_SHIFT}"><b>${t.title}</b><small>${t.sub}</small></button>`).join('')}</div>`);
   view.innerHTML = `
-    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('lora')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="lr-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(['nodes', 'map', 'messages', 'log'].map(v => `<button data-lrview="${v}">${v.toUpperCase()}</button>`))}<button id="lr-full" class="ib" title="full screen" aria-label="full screen">${loraUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('lora')}</div>
+      <div class="ctlrow">${segHtml(['nodes', 'map', 'messages', 'log'].map(v => `<button data-lrview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('lora')}<button id="lr-full" class="ib" title="full screen" aria-label="full screen">${loraUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('lora')}</div>
       <div id="lr-stage" class="mt-stage"><div id="lr-cards" class="mt-cards"></div><div id="lr-map" class="panel map"></div><div id="lr-msgs" class="lr-msgs"></div><div id="lr-nopos" class="mt-nopos">no positions yet</div><div id="lr-detail" class="mt-detail" hidden></div></div>
       <div id="lr-log">${logHtml('lora', 'listening for LoRa…')}</div>
       <div id="lr-chans" class="lr-chans"></div>
@@ -4324,14 +4340,14 @@ function refreshLora(force = false): void {
 }
 
 /** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
-function geoHeadHtml(id: string, glyphText: string, views: string[]): string {
-  return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span></div><div class="ctlrow">${segHtml(views.map(v => `<button data-${id}view="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml(id)}</div>`;
+function geoHeadHtml(id: string, glyphText: string, views: string[], wf?: AppId): string {
+  return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span></div><div class="ctlrow">${segHtml(views.map(v => `<button data-${id}view="${v}">${v.toUpperCase()}</button>`))}${wf ? wfHtml(wf) : ''}${pauseClearHtml(id)}</div>`;
 }
 function renderAdsb(view: HTMLElement): void {
   view.innerHTML = `
-    <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('adsb')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      ${geoHeadHtml('adsb', `✈ ${state.frames} FRAMES · ${state.aircraft.length} AIRCRAFT`, ['map', 'list'])}
+      ${geoHeadHtml('adsb', `✈ ${state.frames} FRAMES · ${state.aircraft.length} AIRCRAFT`, ['map', 'list'], 'adsb')}
       <div id="adsb-card" class="accard" hidden></div>
       <div id="adsb-map" class="panel map"></div>
       <div id="adsb-list" class="panel list"></div>
@@ -4905,6 +4921,7 @@ function attachCreditsScroller(panel: HTMLElement | null, roll: HTMLElement | nu
 }
 
 function wireCommon(view: HTMLElement): void {
+  qa<HTMLButtonElement>('[data-wf]', view).forEach(b => b.onclick = () => { const a = b.dataset.wf as AppId; setWf(a, !wfShown(a)); });
   const fav = q<HTMLButtonElement>('#fav', view); if (fav) { fav.onclick = toggleFav; refreshFav(); }
   const fkey = q<HTMLButtonElement>('#fkey', view); if (fkey) fkey.onclick = () => freqEntry();
   qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => open(b.dataset.app as AppId));
