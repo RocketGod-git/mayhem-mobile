@@ -248,6 +248,17 @@ export class AnalyzerUi {
     $('an-sess').onclick = () => this.exportSession();
     $('an-clear').onclick = () => this.clear();
     $('an-list').onclick = (e) => {
+      // the card's star stars it where it is (every frame of a press), without opening it
+      const st = (e.target as HTMLElement).closest<HTMLElement>('[data-anstar]');
+      if (st) {
+        e.stopPropagation();
+        const id = +st.dataset.anstar!, t = this.txs().find(x => x.id === id || x.ids.includes(id));
+        const ms = t ? t.members : this.bursts.filter(x => x.id === id);
+        const on = !ms.some(m => m.star);
+        for (const m of ms) { m.star = on; this.save(m); }
+        this.draw();
+        return;
+      }
       const c = (e.target as HTMLElement).closest<HTMLElement>('[data-an]');
       if (c) this.openTransmission(+c.dataset.an!);
     };
@@ -274,7 +285,6 @@ export class AnalyzerUi {
   /** One step back: compare → what it was opened from; a frame → its transmission; the rest closes. */
   private back(): void {
     if (this.comparing) { this.comparing = false; this.colPick = null; }
-    else if (this.txOpen && this.txBurst) this.txBurst = false;
     else { this.close(); return; }
     this.draw();
   }
@@ -289,8 +299,8 @@ export class AnalyzerUi {
   private openTransmission(id: number): void {
     const t = this.txs().find(x => x.ids.includes(id));
     if (!t || t.ids.length === 1) { this.txOpen = 0; this.txBurst = false; this.openBurst(t ? t.ids[0] : id); return; }
-    this.txOpen = t.id; this.txBurst = false; this.comparing = false; this.opened = true;
-    if (!t.ids.includes(this.sel)) { this.sel = t.ids[0]; this.zoom = this.pick = null; this.hl = null; }
+    this.txOpen = t.id; this.txBurst = true; this.comparing = false; this.opened = true;
+    if (!t.ids.includes(this.sel)) { this.sel = repOf(t).id; this.zoom = this.pick = null; this.hl = null; }
     this.draw();
   }
   private close(): void { this.opened = false; this.comparing = false; this.txOpen = 0; this.txBurst = false; this.colPick = null; this.draw(); }
@@ -386,6 +396,8 @@ export class AnalyzerUi {
         ? [...shown].reverse().map(t => (t.members.length === 1 ? this.card(t.members[0]) : this.txCard(t))).join('')
         : (this.starredOnly ? this.host.empty('Nothing starred yet', ['Open a burst and tap ☆ to keep it here']) : this.host.empty());
       list.scrollTop = top;
+      const byId = new Map(this.bursts.map(x => [x.id, x]));
+      list.querySelectorAll<HTMLCanvasElement>('canvas[data-thumb]').forEach(cv => { const x = byId.get(+cv.dataset.thumb!); if (x) paintThumb(cv, x); });
     }
     this.marks();
     const modal = $('an-modal'), det = $('an-detail');
@@ -413,12 +425,14 @@ export class AnalyzerUi {
     const sub = a.frames.length ? `${rateLabel(a.baud)} · ${b.best.length} bits${a.frames.length > 1 ? ` · ${a.frames.length} frames` : ''}` : a.why;
     const pills = (b.proto ? `<span class="p">PROTOCOL: ${esc(b.proto.protocol.name)}</span>` : '') + b.matches.slice(0, 2).map(m => `<span>${esc(m)}</span>`).join('');
     return `<div class="mt-card dv-card an-card k-${a.mod.toLowerCase()} ${this.sel === b.id ? 'sel' : ''}" data-an="${b.id}">`
-      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(hz)}</b><small>${b.name ? `<em class="an-name">${esc(b.name)}</em>` : b.src ? esc(b.src) : `burst ${b.id}`}</small></span><span class="mt-live">${b.star ? '<i class="an-starred">★</i>' : ''}${esc(when)}</span></div>`
+      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(hz)}</b><small>${b.name ? `<em class="an-name">${esc(b.name)}</em>` : b.src ? esc(b.src) : `burst ${b.id}`}</small></span><span class="mt-live">${esc(when)}</span>${starBtn(b.id, b.star)}</div>`
       + `<div class="an-big"><b>${esc(big)}</b><small>${esc(sub)}</small></div>`
+      + `<canvas class="an-thumb" data-thumb="${b.id}"></canvas>`
       + (b.best ? `<div class="mt-hex">${esc(bitsToHex(b.best))}</div>` : '')
       + (pills ? `<div class="an-match">${pills}</div>` : '')
       + (b.note ? `<div class="an-note">${esc(b.note)}</div>` : '')
-      + `<div class="dv-foot"><span>${b.ms.toFixed(1)} ms</span><span>${b.dbfs.toFixed(0)} dBFS · ${b.snr.toFixed(0)} dB SNR</span></div></div>`;
+      + `<div class="dv-foot"><span>${b.ms.toFixed(1)} ms</span><span>${b.dbfs.toFixed(0)} dBFS · ${b.snr.toFixed(0)} dB SNR</span></div>`
+      + `<div class="an-open"><span>WAVEFORM · BITS · DEMOD · COMPARE</span><b>OPEN ›</b></div></div>`;
   }
 
   /** A press sent several times: what it is, how many frames on how many channels and where, and what decoded it. */
@@ -434,11 +448,13 @@ export class AnalyzerUi {
     const open = this.opened && this.txOpen === t.id;
     const pills = (proto ? `<span class="p">PROTOCOL: ${esc(proto)}</span>` : '') + (t.label ? `<span>${esc(t.label)}</span>` : '');
     return `<div class="mt-card dv-card an-card an-txcard k-${a.mod.toLowerCase()} ${open || t.ids.includes(this.sel) ? 'sel' : ''}" data-an="${t.id}">`
-      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(rep.center ? mhz(t.freqs[0]) : where)}</b><small>${name ? `<em class="an-name">${esc(name)}</em>` : m0.src ? esc(m0.src) : `transmission ${t.id}`}</small></span><span class="mt-live">${t.members.some(x => x.star) ? '<i class="an-starred">★</i>' : ''}${esc(when)}</span></div>`
+      + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(rep.center ? mhz(t.freqs[0]) : where)}</b><small>${name ? `<em class="an-name">${esc(name)}</em>` : m0.src ? esc(m0.src) : `transmission ${t.id}`}</small></span><span class="mt-live">${esc(when)}</span>${starBtn(t.id, t.members.some(x => x.star))}</div>`
       + `<div class="an-big"><b>${esc(big)}</b><small>${t.ids.length} frames on ${chans} · ${esc(where)}</small></div>`
+      + `<canvas class="an-thumb" data-thumb="${rep.id}"></canvas>`
       + (rep.best ? `<div class="mt-hex">${esc(bitsToHex(rep.best))}</div>` : '')
       + (pills ? `<div class="an-match">${pills}</div>` : '')
-      + `<div class="dv-foot"><span>${((t.end - t.t) * 1000).toFixed(0)} ms in all</span><span>${snr.toFixed(0)} dB SNR best</span></div></div>`;
+      + `<div class="dv-foot"><span>${((t.end - t.t) * 1000).toFixed(0)} ms in all</span><span>${snr.toFixed(0)} dB SNR best</span></div>`
+      + `<div class="an-open"><span>${t.ids.length} FRAMES · WAVEFORM · BITS · DEMOD · COMPARE</span><b>OPEN ›</b></div></div>`;
   }
 
   /** The transmission view: one press, each frame it was sent as, and a COMPARE across them. */
@@ -460,6 +476,19 @@ export class AnalyzerUi {
       if (x.dataset.ando === 'close') this.close();
       else { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.sel = repOf(t).id; this.draw(); }
     });
+  }
+
+  /** Every frame of the press this burst belongs to, one chip each: tap to read that one, or COMPARE them all. */
+  private frameStrip(b: AnBurst): string {
+    const t = this.txOpen ? this.txs().find(x => x.id === this.txOpen) : undefined;
+    if (!t || t.members.length < 2) return '';
+    const m0 = t.members[0];
+    const chips = t.members.map((m, i) => {
+      const hz = m.center ? ((m.center + m.hz) / 1e6).toFixed(3) : `${(m.hz / 1e3).toFixed(1)}k`;
+      const off = m.src ? m.t - m0.t : (m.wall - m0.wall) / 1000;
+      return `<button class="chip an-fchip ${m.id === b.id ? 'on' : ''}" data-anf="${m.id}" title="+${off.toFixed(3)} s · ${m.auto.mod} · ${m.ms.toFixed(1)} ms"><b>F${i + 1}</b> ${hz} · ${m.snr.toFixed(0)} dB</button>`;
+    }).join('');
+    return `<div class="an-fstrip"><span class="an-dim">${t.members.length} FRAMES OF THIS PRESS</span>${chips}<button class="chip" data-ando="txcompare">COMPARE ALL ${t.members.length}</button></div>`;
   }
 
   // ---- the capture filter -------------------------------------------------------------------------------------
@@ -508,7 +537,11 @@ export class AnalyzerUi {
     const sec = (id: string, title: string, body: string, copy = true) => `<details class="an-sec" data-ansec="${id}" ${this.openSec.has(id) ? 'open' : ''}><summary><b>${title}</b>${copy ? `<button class="chip" data-ancopy="${id}">COPY</button>` : ''}</summary>${body}</details>`;
     const histHtml = `<div class="an-sub">PULSE LENGTHS <i class="mk">marks</i> <i class="sp">gaps</i> · dashed: the threshold between classes</div><canvas id="an-hist" class="an-hist"></canvas>`;
     return `<div class="an-head"><b>${esc(hz)}</b><span>${b.name ? `<em class="an-name">${esc(b.name)}</em> · ` : ''}${b.src ? esc(b.src) + ' · +' + b.t.toFixed(3) + ' s' : clock(b.wall)} · ${b.ms.toFixed(1)} ms · ${b.snr.toFixed(0)} dB SNR</span>`
-      + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button><button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button>${this.txOpen ? '<button class="chip" data-ando="back">BACK</button>' : ''}<button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
+      + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button><button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button><button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
+      + this.frameStrip(b)
+      // on a wide screen the trace and its bits take the left and the readings sit beside them (no scrolling down to
+      // them); on a narrow one the two wrappers fold away (display: contents) and it is one column as before
+      + `<div class="an-body"><div class="an-main">`
       + `<div class="ctlrow">${seg('view', ['amp', 'freq', 'iq', 'spec', 'eye', 'const'], this.view, v => `<span class="lg">${VIEW_LABEL[v as View]}</span><span class="sh">${VIEW_SHORT[v as View]}</span>`)}</div>`
       + `<div class="an-tools">${seg('tool', ['select', 'measure', 'pan'], this.tool, v => v.toUpperCase())}`
       + `<span class="an-btns"><button class="chip" data-annav="out" title="zoom out (wheel)">−</button><button class="chip" data-annav="in" title="zoom in (wheel)">+</button><button class="chip" data-annav="fit" title="the burst">FIT</button><button class="chip" data-annav="full" title="the whole capture">FULL</button><button class="chip" data-annav="sel" ${this.pick ? '' : 'disabled'} title="zoom to the selection">ZOOM</button><button class="chip" data-annav="back" ${this.histAt > 0 ? '' : 'disabled'} title="previous zoom">◀</button><button class="chip" data-annav="fwd" ${this.histAt < this.hist.length - 1 ? '' : 'disabled'} title="next zoom">▶</button></span>`
@@ -519,6 +552,7 @@ export class AnalyzerUi {
       + `<div class="an-cur" id="an-cur">${this.cursorText(b, a)}</div>`
       + `<div class="an-zoom"><span id="an-selinfo">${this.selText(b, a)}</span><span class="an-grow"></span>${seg('fmt', ['bits', 'hex', 'ascii'], this.fmt, v => v.toUpperCase())}</div>`
       + `<div class="an-out" id="an-out">${this.outHtml(a)}</div>`
+      + `</div>`
       + `<div class="an-scroll">`
       + sec('demod', 'DEMODULATION', `<div class="an-ctl"><span class="rl">MOD</span>${seg('mod', ['AUTO', ...MODS], o.mod ?? 'AUTO')}<span class="rl">CODING</span>${seg('coding', ['AUTO', ...CODINGS], o.coding ?? 'AUTO', v => (v === 'AUTO' ? v : CODING_LABEL[v as Coding]))}</div>`
         + `<div class="an-ctl"><span class="rl">SYMBOL</span><div class="stepper an-step"><button data-ando="sym-">−</button><b>${a.symUs.toFixed(1)} µs</b><button data-ando="sym+">+</button></div><button class="tog ${o.symUs ? '' : 'on'}" data-ando="symauto">AUTO</button>`
@@ -534,7 +568,7 @@ export class AnalyzerUi {
       + `<div class="an-ctl"><span class="rl">NAME</span><input id="an-nm" class="txin an-grow" maxlength="60" value="${esc(b.name)}" placeholder="what it is (gate, left key, lock…)"></div>`
       + `<div class="an-ctl"><span class="rl">NOTE</span><textarea id="an-nt" class="txin an-grow" rows="2" maxlength="500" placeholder="anything worth remembering about it">${esc(b.note)}</textarea></div>`
       + `<div class="an-ctl"><span class="rl">EXPORT</span><button class="chip" data-ando="cu8">.CU8</button><button class="chip" data-ando="cs8">.CS8</button><button class="chip" data-ando="sub" ${a.runs.length ? '' : 'disabled'}>.SUB</button><button class="chip" data-ando="csv">${this.pick ? 'SELECTION' : 'VIEW'} .CSV</button><span class="an-dim">${(b.rate / 1e3).toFixed(0)} kHz I/Q, ${b.n} samples</span></div>`
-      + `</div>`;
+      + `</div></div>`;
   }
 
   // ---- measurements -------------------------------------------------------------------------------------------
@@ -665,6 +699,7 @@ export class AnalyzerUi {
   }
 
   private wireDetail(det: HTMLElement, b: AnBurst): void {
+    det.querySelectorAll<HTMLButtonElement>('[data-anf]').forEach(x => x.onclick = () => { const id = +x.dataset.anf!; if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; this.cursors = [null, null]; this.hist = [null]; this.histAt = 0; } this.draw(); });
     det.querySelectorAll<HTMLButtonElement>('[data-anview]').forEach(x => x.onclick = () => { this.view = x.dataset.anview as View; this.draw(); });
     det.querySelectorAll<HTMLButtonElement>('[data-antool]').forEach(x => x.onclick = () => { this.tool = x.dataset.antool as Tool; this.draw(); });
     det.querySelectorAll<HTMLButtonElement>('[data-anfmt]').forEach(x => x.onclick = () => { this.fmt = x.dataset.anfmt as Fmt; this.draw(); });
@@ -704,6 +739,7 @@ export class AnalyzerUi {
         case 'star': b.star = !b.star; this.save(b); this.draw(); break;
         case 'back': this.back(); break;
         case 'compare': this.cmpTx = 0; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.draw(); break;
+        case 'txcompare': { const t = this.txs().find(x => x.id === this.txOpen); if (t) { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.sel = repOf(t).id; this.draw(); } break; }
         case 'sym-': this.setOver(b, o => { o.symUs = a.symUs / 1.05; }); break;
         case 'sym+': this.setOver(b, o => { o.symUs = a.symUs * 1.05; }); break;
         case 'symauto': this.setOver(b, o => { o.symUs = undefined; }); break;
@@ -1128,6 +1164,32 @@ function bestOf(a: Analysis): string {
 }
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
+
+/** A card's thumbnail: the burst's envelope, peak per column, in the card's color, so a card shows it holds a waveform. */
+function paintThumb(cv: HTMLCanvasElement, b: AnBurst): void {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(cv.clientWidth * dpr)), h = Math.max(1, Math.round(cv.clientHeight * dpr));
+  if (cv.width !== w) cv.width = w;
+  if (cv.height !== h) cv.height = h;
+  const g = cv.getContext('2d'), env = b.env;
+  if (!g || !env) return;
+  const n = Math.min(b.n, env.length);
+  g.clearRect(0, 0, w, h);
+  if (n < 2) return;
+  const peaks = new Float32Array(w);
+  let top = 1;
+  for (let x = 0; x < w; x++) {
+    const i0 = Math.floor(x * n / w), i1 = Math.max(i0 + 1, Math.floor((x + 1) * n / w));
+    let m = 0;
+    for (let i = i0; i < i1 && i < n; i++) { const v = Math.abs(env[i]); if (v > m) m = v; }
+    peaks[x] = m; if (m > top) top = m;
+  }
+  g.fillStyle = getComputedStyle(cv).color;
+  for (let x = 0; x < w; x++) { const ph = Math.max(dpr, peaks[x] / top * (h - 2 * dpr)); g.fillRect(x, h - dpr - ph, 1, ph); }
+}
+
+/** A card's star: tap to keep it (through CLEAR, and in STARRED), tap again to let it go. */
+const starBtn = (id: number, on: boolean) => `<button class="an-cstar ${on ? 'on' : ''}" data-anstar="${id}" title="${on ? 'starred: kept through CLEAR · tap to unstar' : 'star: keep it through CLEAR'}" aria-label="${on ? 'unstar' : 'star'}">${on ? '★' : '☆'}</button>`;
 
 /** The card glyph: a pulse train. */
 const WAVE_GLYPH = '<svg viewBox="0 0 24 24"><path d="M2 17h3V7h3.5v10H11V7h1.8v10h3V7H20v10h2"/></svg>';

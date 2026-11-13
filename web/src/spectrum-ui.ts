@@ -62,6 +62,7 @@ const MARKER_AVG = 16;
 const KEY = 'mayhem.spectrum';
 
 interface Settings {
+  v: number;
   mode: Mode;
   center: number; span: number;
   startStop: boolean;
@@ -84,13 +85,19 @@ interface Settings {
   showAmp: boolean; showFm: boolean; showPh: boolean; cursors: boolean; curA: number; curB: number;
 }
 
-function defaults(dial: number): Settings {
+/** Where Spectrum opens the first time: 433.92 MHz, the busiest key-fob and sensor band, not wherever another app left
+ *  the radio (often broadcast FM, which read as a random frequency here). */
+const START_HZ = 433.92e6;
+/** Bumped when saved settings need a one-time fix on load; 2: the frequency resets to [START_HZ] once. */
+const SETTINGS_V = 2;
+
+function defaults(_dial: number): Settings {
   return {
-    mode: 'FREQ', center: dial || 433.92e6, span: 2e6, startStop: false, rbwAuto: true, rbw: 3000, vbwAuto: true, vbw: 3000, window: 'HANN',
+    v: SETTINGS_V, mode: 'FREQ', center: START_HZ, span: 2e6, startStop: false, rbwAuto: true, rbw: 3000, vbwAuto: true, vbw: 3000, window: 'HANN',
     ref: -20, div: 10, refAuto: true, unit: 'dBm', det: 'PEAK', cal: 0,
     traces: defaultTraces().map(t => ({ mode: t.mode, avgN: 10 })),
     markers: defaultMarkers(), active: 0, meas: 'OFF', chBw: 25_000, spacing: 25_000, persist: false,
-    zsFreq: dial || 433.92e6, zsBw: 100_000, zsTime: 0.02, trig: 'FREE', single: false, level: -60, pre: 0.1,
+    zsFreq: START_HZ, zsBw: 100_000, zsTime: 0.02, trig: 'FREE', single: false, level: -60, pre: 0.1,
     showAmp: true, showFm: true, showPh: false, cursors: false, curA: 0.25, curB: 0.75,
   };
 }
@@ -174,7 +181,12 @@ export class SpectrumUi {
     this.s = defaults(host.dial());
     try {
       const v = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-      if (v && typeof v === 'object') this.s = { ...this.s, ...v, markers: Array.isArray(v.markers) && v.markers.length === 4 ? v.markers : this.s.markers, traces: Array.isArray(v.traces) && v.traces.length === 4 ? v.traces : this.s.traces };
+      if (v && typeof v === 'object') {
+        this.s = { ...this.s, ...v, markers: Array.isArray(v.markers) && v.markers.length === 4 ? v.markers : this.s.markers, traces: Array.isArray(v.traces) && v.traces.length === 4 ? v.traces : this.s.traces };
+        // settings saved before there was a start frequency of its own: once, start on it
+        if ((v.v ?? 1) < 2) { this.s.center = START_HZ; this.s.zsFreq = START_HZ; this.s.markers.forEach(m => { m.on = false; m.delta = false; m.hz = 0; }); }
+        this.s.v = SETTINGS_V;
+      }
     } catch { /* first visit */ }
     this.s.traces.forEach((t, i) => { this.traces[i].mode = t.mode; this.traces[i].avgN = t.avgN; });
   }
@@ -419,7 +431,7 @@ export class SpectrumUi {
     el.innerHTML = this.tileList().map(([id, label, v, unit, badge]) => `
       <div class="sp-tile" data-tile="${id}">
         <div class="sp-tl"><span>${label}</span>${badge ? `<b data-t="${id}" data-k="${badge === 'AUTO' || badge === 'MAN' ? 'auto' : badge.startsWith('RISE') || badge.startsWith('FALL') ? 'edge' : 'pad'}" class="${badge === 'AUTO' || (id === 'ref' && s.refAuto && s.mode === 'FREQ') ? 'on' : ''}">${badge}</b>` : ''}</div>
-        <button class="sp-tv" data-t="${id}" data-k="pad" title="Tap to type a value; the wheel turns it">${esc(v)}<small>${esc(unit)}</small></button>
+        <button class="sp-tv" data-t="${id}" data-k="pad" title="Tap to type a value; the wheel turns it">${esc(v)}<small>${esc(unit)}</small><i class="kb" aria-hidden="true">⌨</i></button>
         <div class="sp-knob"><button data-t="${id}" data-k="dn" aria-label="${label} down">‹</button><i></i><button data-t="${id}" data-k="up" aria-label="${label} up">›</button></div>
       </div>`).join('');
     this.status();
@@ -504,7 +516,8 @@ export class SpectrumUi {
       <div class="caption">RADIO · EXPORT · OPEN IN</div>
       <div class="ctlrow sp-row">${act('radio', `RADIO · ${this.gainText()}`)}${act('csv', 'CSV')}${act('png', 'PNG')}${act('analyzer', 'OPEN IN ANALYZER')}${act('devices', 'OPEN IN DEVICES')}</div>
       <div class="note">Gain is set in RADIO and held while Spectrum is open (the AGC does not move it under a measurement). The dBm scale follows the gain and is approximate; CAL trims it against a known source. ANALYZER and DEVICES open on ${s.mode === 'ZERO' ? 'the zero-span frequency' : 'the active marker (or the center)'}. On the plot: scroll or pinch to zoom, drag to pan, tap to drop the active marker, drag a marker to move it.</div>`;
-    let body = `<div class="ctlrow sp-row">${seg([['FREQ', 'FREQUENCY'], ['ZERO', 'ZERO SPAN']], s.mode, 'mode')}</div>`;
+    const modeTab = (m: Mode, title: string, what: string) => `<button data-mode="${m}" class="sp-mode ${s.mode === m ? 'on' : ''}"><b>${title}</b><small>${what}</small></button>`;
+    let body = `<div class="sp-modes">${modeTab('FREQ', 'FREQUENCY', 'signal strength across a band of frequencies')}${modeTab('ZERO', 'ZERO SPAN', 'one frequency, its strength over time, like an oscilloscope')}</div>`;
     if (s.mode === 'FREQ') {
       body += `
       <div class="caption">SPAN</div>
@@ -541,7 +554,12 @@ export class SpectrumUi {
     c.onclick = (e) => {
       const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b) return;
       const d = b.dataset;
-      if (d.mode) { s.mode = d.mode as Mode; this.controls(); this.restart(); return; }
+      if (d.mode) {
+        const to = d.mode as Mode;
+        // the frequency is the frequency: tuned in one mode, it is where the other one opens
+        if (to !== s.mode) { if (to === 'ZERO') s.zsFreq = s.center; else s.center = s.zsFreq; }
+        s.mode = to; this.controls(); this.restart(); return;
+      }
       if (d.span) { this.setSpan(s.center, Number(d.span)); return; }
       if (d.unit) { s.unit = d.unit as 'dBm' | 'dBFS'; for (const t of this.traces) t.clear(); for (const a of this.mkAvg) a.n = 0; this.persist?.clear(); this.controls(); this.update(); return; }
       if (d.win) { s.window = d.win as WindowKind; this.controls(); this.restart(); return; }
@@ -771,7 +789,7 @@ export class SpectrumUi {
   /** The CENTER and SPAN tiles follow a gesture as it is made. */
   private tilesPreview(): void {
     const v = this.view; if (!v || this.s.startStop) return;
-    const put = (id: string, hz: number) => { const b = this.root?.querySelector(`[data-tile="${id}"] .sp-tv`); if (b) { const [t, u] = bigHz(hz); b.innerHTML = `${esc(t)}<small>${u}</small>`; } };
+    const put = (id: string, hz: number) => { const b = this.root?.querySelector(`[data-tile="${id}"] .sp-tv`); if (b) { const [t, u] = bigHz(hz); b.innerHTML = `${esc(t)}<small>${u}</small><i class="kb" aria-hidden="true">⌨</i>`; } };
     put('center', v.center); put('span', v.span);
   }
   /** Apply the gesture's span once it settles. */

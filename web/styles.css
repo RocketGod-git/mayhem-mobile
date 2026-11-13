@@ -1396,7 +1396,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .an-head > span { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; color: var(--ink); flex: 1; min-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .an-head .chip { padding: 6px 10px; font-size: 11px; flex: none; }
 .an-starbtn { font-size: 15px !important; color: var(--accent2); }
-.an-sheet > .ctlrow { margin-top: 0; flex: none; }
+.an-sheet > .ctlrow, .an-main > .ctlrow { margin-top: 0; flex: none; }
 .an-wave { flex: none; }
 .an-wave canvas { width: 100%; height: max(260px, 38vh); display: block; border-radius: 8px; border: 1px solid var(--line); touch-action: none; cursor: crosshair; }
 .an-zoom { display: flex; gap: 6px; align-items: center; flex: none; flex-wrap: wrap; }
@@ -1742,3 +1742,54 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .kp-hint { color: var(--muted); font-size: 0.6em; font-weight: 600; margin-left: 6px; }
 .txin.kpbox { cursor: pointer; text-align: left; min-width: 96px; font: inherit; font-size: 12px; }
 .txin.kpbox.ph { color: var(--muted); }
+
+/* An Analyzer card says what is behind it: the burst's waveform in thumbnail, and a footer naming the views a tap opens.
+ * A card that looks like a summary got read as one; this one looks like the start of something. */
+.an-card { cursor: pointer; transition: border-color 0.15s, transform 0.15s; }
+.an-card:hover { border-color: var(--kind, var(--accent)); }
+.an-card:active { transform: scale(0.99); }
+.an-thumb { display: block; width: 100%; height: 40px; margin: 2px 0; color: var(--kind, var(--accent)); border-radius: 6px;
+  background: color-mix(in srgb, var(--kind, var(--accent)) 7%, transparent); }
+.an-open { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--kind, var(--accent)) 30%, var(--line)); font-size: 9px; letter-spacing: 1.2px; color: var(--muted); }
+.an-open span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.an-open b { flex: none; color: var(--kind, var(--accent)); font-size: 11px; letter-spacing: 1.5px; }
+/* the frames of one press, along the top of its full view: tap one to read it, or compare them all */
+.an-fstrip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: none; }
+.an-fstrip .an-dim { margin-right: 2px; }
+.an-fchip { padding: 5px 10px; font-size: 11px; }
+.an-fchip b { color: var(--accent); margin-right: 4px; }
+.an-fchip.on b { color: inherit; }
+
+/* Spectrum's two modes as two tabs, each saying what it is: one long bar with two words in it read as a single button */
+.sp-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sp-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; text-align: left; padding: 9px 12px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted); cursor: pointer; font: inherit; }
+.sp-mode b { font-size: 12px; letter-spacing: 2px; color: var(--ink); }
+.sp-mode small { font-size: 10px; letter-spacing: 0.5px; line-height: 1.35; }
+.sp-mode:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.sp-mode.on { border-color: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, var(--surface)), var(--surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent), 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent); color: var(--ink); }
+.sp-mode.on b { color: var(--accent); }
+
+/* ⌨ on a value means a tap types one in: whoever does not know a card takes a tap will not try it */
+.sp-tv .kb, .kb-hint { font-style: normal; font-size: 0.5em; opacity: 0.55; margin-left: 6px; vertical-align: middle; color: var(--accent); }
+.sp-tv:hover .kb { opacity: 1; }
+
+/* The burst's full view: one column on a phone or a narrow window. On a wide screen the trace, its zoom and its bits
+ * take the left and fill the height, and the readings (demodulation, pulses, frames, levels, name, export) sit in a
+ * column beside them that scrolls on its own, instead of a screen's worth of scrolling below the trace. */
+.an-body, .an-main { display: contents; }
+@media (min-width: 1280px) {
+  .an-body { display: flex; gap: 14px; flex: 1; min-height: 0; }
+  .an-main { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+  .an-main .an-wave { flex: 1 1 auto; min-height: 260px; display: flex; }
+  .an-main .an-wave canvas { height: auto; flex: 1; min-height: 260px; }
+  .an-main .an-out { max-height: 26vh; }
+  .an-body > .an-scroll { flex: none; width: clamp(440px, 34%, 820px); min-height: 0; overflow: auto; padding-left: 14px; border-left: 1px solid var(--line); }
+}
+/* the star on every Analyzer card: tap to keep it, without opening the card */
+.an-cstar { flex: none; margin-left: 8px; width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; display: grid; place-items: center; padding: 0; }
+.an-cstar:hover { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 60%, var(--line)); }
+.an-cstar.on { color: var(--accent2); border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 14%, var(--surface)); box-shadow: 0 0 12px color-mix(in srgb, var(--accent2) 35%, transparent); }
