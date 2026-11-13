@@ -3902,6 +3902,11 @@ interface TrainsSnap { band: 'EOT' | 'PTC'; hears: string[]; units: EotUnit[]; h
 const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '', waterfall: null as boolean | null };
 /** Tunes for the band: as wide as it needs where the radio can (both EOT channels, or all of 216-222.5 MHz), else the
  *  channels heard most, from 2 MHz. */
+/** What the PTC tuning hears, in MHz: a HackRF all of PTC, an RTL-SDR about 2 MHz of it. */
+function trainsSpan(): [number, number] {
+  const wide = radioCan(TR_PTC_RATE), c = wide ? TR_PTC_CENTER : TR_PTC_NARROW, r = wide ? TR_PTC_RATE : 2e6;
+  return [Math.max(216, (c - r * 0.45) / 1e6), Math.min(222.5, (c + r * 0.45) / 1e6)];
+}
 function trainsTune(): void {
   if (trainsUi.band === 'EOT') {
     const wide = radioCan(TR_EOT_RATE);
@@ -3957,8 +3962,8 @@ function renderTrains(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual ${trainsWaterfall() ? '' : 'tr-nowf'}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      <div class="ctlrow">${segHtml(([['EOT', 'EOT'], ['PTC', 'PTC'], ['BOTH', 'BOTH']] as [string, string][]).map(([k, l]) => `<button data-trband="${k}">${l}</button>`))}<button id="tr-wf" class="tog ${trainsWaterfall() ? 'on' : ''}">WATERFALL</button></div>
-      <div id="tr-lamps" class="tr-lamps"></div>
+      <div class="ctlrow">${segHtml(([['EOT', 'EOT · HOT'], ['PTC', 'PTC 220'], ['BOTH', 'BOTH']] as [string, string][]).map(([k, l]) => `<button data-trband="${k}">${l}</button>`))}</div>
+      <div class="ctlrow"><div id="tr-lamps" class="tr-lamps"></div><button id="tr-wf" class="tog ${trainsWaterfall() ? 'on' : ''}">WATERFALL</button></div>
       <div id="tr-banner" class="tr-banner"></div>
       <div id="tr-strip" class="tr-strip"></div>
       <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}${pauseClearHtml('trains')}</div>
@@ -3975,6 +3980,8 @@ function renderTrains(view: HTMLElement): void {
   clearInterval(trainsUi.timer);
   // the cards run their ages, countdowns and timelines on between reports
   trainsUi.timer = window.setInterval(() => { if (state.app !== 'trains') { clearInterval(trainsUi.timer); return; } refreshTrains(); }, 250);
+  // the screen is drawn again on every band switch (BOTH takes turns): the log's count and rows with it
+  refreshList('trains');
   refreshTrains(true);
 }
 
@@ -4101,7 +4108,14 @@ function refreshTrains(force = false): void {
     const hears = s?.hears ?? [], act = s?.activity ?? {};
     lamps.innerHTML = band === 'EOT'
       ? ([['EOT', '457.9375'], ['HOT', '452.9375'], ['DPU', '457.925']] as [string, string][]).map(([n, mhz]) => { const on = hears.includes(n), lit = on && now - (act[n] ?? 0) < 1500; return `<span class="tr-lamp ${lit ? 'lit' : on ? 'on' : ''}"><i></i>${n} ${mhz}</span>`; }).join('') + (hears.includes('HOT') || !s ? '' : '<small>HOT needs a radio 6 MHz wide</small>')
-      : '<span class="tr-lamp on"><i></i>WAYSIDE 217</span><span class="tr-lamp on"><i></i>BASE 220</span><span class="tr-lamp on"><i></i>LOCO 221</span>';
+      // each sub-band lit where the span reaches it
+      : (() => {
+        const [lo, hi] = trainsSpan();
+        return ([['WAYSIDE', 217, 220], ['BASE', 220, 221], ['LOCO', 221, 222]] as [string, number, number][]).map(([n, a, b]) => {
+          const cover = Math.max(0, Math.min(b, hi) - Math.max(a, lo)) / (b - a);
+          return `<span class="tr-lamp ${cover > 0 ? 'on' : ''}"><i></i>${cover >= 0.99 ? n : cover > 0 ? `${n} PART` : `${n} —`}</span>`;
+        }).join('') + `<small>HEARS ${lo.toFixed(2)}–${hi.toFixed(2)} MHz</small>`;
+      })();
   }
   // the headline: a train nearby (a rear unit, a locomotive on PTC, or a head unit's command in the last two minutes),
   // moving, stopped or braking; a PTC locomotive or the brakes going on turn it red
@@ -4133,7 +4147,7 @@ function refreshTrains(force = false): void {
       ? (units.length ? [...units].sort((a, b) => a.firstMs - b.firstMs).map(u => trUnitCard(u, now)).join('') : `<div class="empty">${band === 'EOT' || trainsUi.auto ? 'no end-of-train unit heard yet · they report about once a minute and on every brake change' : 'switch to EOT · HOT to hear the rear units'}</div>`)
       : v === 'ptc'
         // in the order first heard: a new station joins at the end, so nothing the eye is on moves
-        ? (stations.length ? [...stations].sort((a, b) => a.firstMs - b.firstMs).map(x => trStationCard(x, now)).join('') : `<div class="empty">${band === 'PTC' || trainsUi.auto ? `watching 216–222.5 MHz for the train-control network${s && s.other > 0 ? ` · ${s.other} other bursts` : ''}` : 'switch to PTC 220 to watch the train-control network'}</div>`)
+        ? (stations.length ? [...stations].sort((a, b) => a.firstMs - b.firstMs).map(x => trStationCard(x, now)).join('') : `<div class="empty">${band === 'PTC' || trainsUi.auto ? `watching ${trainsSpan().map(x => x.toFixed(2)).join('–')} MHz for the train-control network${s && s.other > 0 ? ` · ${s.other} other bursts` : ''}` : 'switch to PTC 220 or BOTH to watch the train-control network'}</div>`)
         : (hots.length ? hots.map(h => trHotRow(h, now)).join('') : '<div class="empty">no head-of-train command heard yet · a locomotive sends one when it checks on its rear unit or brakes</div>');
     cards.scrollTop = top;
   }

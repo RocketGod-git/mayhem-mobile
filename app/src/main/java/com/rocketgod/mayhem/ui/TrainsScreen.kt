@@ -95,6 +95,10 @@ fun TrainsScreen(accent: Color) {
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var full by remember { mutableStateOf(false) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(200); value = System.currentTimeMillis() } }.value
+    // what this tuning hears: a HackRF all of PTC (or both EOT channels), an RTL-SDR about 2 MHz of it
+    val tuned by com.rocketgod.mayhem.core.SdrEngine.freqHz.collectAsState()
+    val spanRate by com.rocketgod.mayhem.core.SdrEngine.rateHz.collectAsState()
+    val spanLo = (tuned - spanRate * 0.45) / 1e6; val spanHi = (tuned + spanRate * 0.45) / 1e6
 
     // BOTH: the radio takes turns, 30 s on PTC (a wayside speaks every ~46 s) and 20 s on EOT, while the screen is up
     LaunchedEffect(auto) {
@@ -137,7 +141,7 @@ fun TrainsScreen(accent: Color) {
                         Box(Modifier.clickable { sel = if (sel == "u${u.unit}") null else "u${u.unit}" }) { EotCard(u, accent, now, sel == "u${u.unit}") }
                     }
                     1 -> if (stations.isEmpty()) item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
-                        TrainsEmpty(if (band == TrainsProcessor.Band.PTC || auto) "watching 216–222.5 MHz for the train-control network: a base station beacons every few seconds${if (other > 0) " · $other other bursts" else ""}" else "switch to PTC 220 or BOTH to watch the train-control network", Modifier.fillMaxWidth())
+                        TrainsEmpty(if (band == TrainsProcessor.Band.PTC || auto) "watching %.2f–%.2f MHz for the train-control network: a base station beacons every few seconds".format(maxOf(spanLo, 216.0), minOf(spanHi, 222.5)) + "${if (other > 0) " · $other other bursts" else ""}" else "switch to PTC 220 or BOTH to watch the train-control network", Modifier.fillMaxWidth())
                     // in the order first heard: a new station joins at the end, so nothing the eye is on moves
                     } else items(stations.sortedBy { it.firstMs }, key = { "s${it.hz}" }) { st ->
                         Box(Modifier.clickable { sel = if (sel == "s${st.hz}") null else "s${st.hz}" }) { PtcCard(st, accent, now, sel == "s${st.hz}", band == TrainsProcessor.Band.PTC) }
@@ -157,20 +161,24 @@ fun TrainsScreen(accent: Color) {
     // the meter follows the bursts themselves (20 ms PTC bursts and 0.2 s EOT frames barely move the band's average)
     val burst = (stations.filter { now - it.lastMs < 4000 }.mapNotNull { it.snr.lastOrNull() } + units.filter { now - it.lastMs < 4000 }.mapNotNull { it.snr.lastOrNull() })
         .maxOrNull()?.toFloat()
-    val waterfall by Apps.trainsWaterfall.collectAsState()
+    // the waterfall at 8 MHz shows little of a 20 ms burst: a phone leaves it out for the cards (the band strip shows the
+    // bursts), a bigger screen keeps it, and the WATERFALL toggle overrides either
+    val wfChoice by Apps.trainsWaterfall.collectAsState()
+    val waterfall = wfChoice ?: (d.cls != ScreenClass.COMPACT)
     PacketFrame(accent, Apps.trainsLog, tag = "TRAINS", title = "EOT · PTC", roomy = true, listWeight = if (waterfall) 2.5f else 6f, burstDb = burst, waterfall = waterfall, controls = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-            SegBar(listOf("EOT", "PTC", "BOTH"), if (auto) 2 else if (band == TrainsProcessor.Band.EOT) 0 else 1, accent, Modifier.weight(1f)) {
+            SegBar(listOf("EOT · HOT", "PTC 220", "BOTH"), if (auto) 2 else if (band == TrainsProcessor.Band.EOT) 0 else 1, accent, Modifier.weight(1f)) {
                 when (it) {
                     0 -> Apps.setTrainsBand(TrainsProcessor.Band.EOT)
                     1 -> Apps.setTrainsBand(TrainsProcessor.Band.PTC)
                     else -> Apps.setTrainsAuto()
                 }
             }
-            // the waterfall at 8 MHz shows little of a 20 ms burst: off by default, the band strip does that job
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            ChannelLamps(band, activity, now, accent, spanLo, spanHi, Modifier.weight(1f))
             ToggleBox("WATERFALL", waterfall, accent) { Apps.setTrainsWaterfall(!waterfall) }
         }
-        ChannelLamps(band, activity, now, accent)
     }, list = {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
@@ -196,19 +204,25 @@ private fun TrainsEmpty(text: String, modifier: Modifier) {
 /** Each channel this tuning hears, lit while a carrier is on it. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ChannelLamps(band: TrainsProcessor.Band, activity: Map<String, Long>, now: Long, accent: Color) {
+private fun ChannelLamps(band: TrainsProcessor.Band, activity: Map<String, Long>, now: Long, accent: Color, spanLo: Double, spanHi: Double, modifier: Modifier) {
     val d = rememberDims()
     val hears = remember(band, Apps.trains.hears().joinToString()) { Apps.trains.hears() }
-    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(14f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(14f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         if (band == TrainsProcessor.Band.EOT) {
             for ((name, mhz) in listOf("EOT" to "457.9375", "HOT" to "452.9375", "DPU" to "457.925")) {
                 val on = name in hears
                 val live = on && now - (activity[name] ?: 0L) < 1500
                 Lamp("$name $mhz", if (live) accent else if (on) Palette.ok.copy(alpha = 0.7f) else Palette.muted)
             }
+            // HOT and EOT are 5 MHz apart: a radio narrower than that (an RTL-SDR) hears the rear units and DPU only
             if ("HOT" !in hears) Text("HOT needs a radio 6 MHz wide", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
         } else {
-            Lamp("WAYSIDE 217", Palette.ok.copy(alpha = 0.7f)); Lamp("BASE 220", Palette.ok.copy(alpha = 0.7f)); Lamp("LOCO 221", Palette.ok.copy(alpha = 0.7f))
+            // each sub-band lit where the span reaches it
+            for ((name, a, b) in listOf(Triple("WAYSIDE", 217.0, 220.0), Triple("BASE", 220.0, 221.0), Triple("LOCO", 221.0, 222.0))) {
+                val cover = (minOf(b, spanHi) - maxOf(a, spanLo)).coerceAtLeast(0.0) / (b - a)
+                Lamp(if (cover >= 0.99) name else if (cover > 0) "$name PART" else "$name —", if (cover > 0) Palette.ok.copy(alpha = 0.7f) else Palette.muted)
+            }
+            Text("HEARS %.2f–%.2f MHz".format(maxOf(spanLo, 216.0), minOf(spanHi, 222.5)), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
         }
     }
 }

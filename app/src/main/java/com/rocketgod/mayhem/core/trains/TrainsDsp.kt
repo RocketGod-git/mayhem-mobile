@@ -283,6 +283,31 @@ internal class PtcScanner(private val onBurst: (PtcBurst) -> Unit) {
     var now: () -> Long = { System.currentTimeMillis() }
     private var rate = 0; private var nfft = 256
     private var re = FloatArray(1); private var im = FloatArray(1); private var win = FloatArray(1); private var floorP = FloatArray(1)
+    /** Each bin's power over the last [AVG] blocks (a ring and its running sum): one block's noise is all over the place. */
+    private var hist = Array(AVG) { FloatArray(1) }; private var sumP = FloatArray(1)
+    /** Which 12.5 kHz slot each bin falls in (-1: off the band, on the spike at the center or at the span's edges), each
+     *  slot's raster channel and bins, and each bin's frequency; worked out again when the tuning moves. */
+    private var slotOf = IntArray(1); private var binFreq = DoubleArray(1); private var mapCenter = Long.MIN_VALUE
+    private var slotCh = IntArray(0); private var slotLo = IntArray(0); private var slotHi = IntArray(0)
+    private var slotP = DoubleArray(0); private var slotF = DoubleArray(0); private var slotFloor = DoubleArray(0)
+
+    private fun mapSlots(center: Long) {
+        mapCenter = center
+        val binHz = rate.toDouble() / nfft
+        slotOf = IntArray(nfft) { -1 }; binFreq = DoubleArray(nfft)
+        val chs = ArrayList<Int>(); val los = ArrayList<Int>(); val his = ArrayList<Int>()
+        for (b in 0 until nfft) {
+            val off = (b - nfft / 2) * binHz
+            val hz = center + off
+            binFreq[b] = hz
+            if (abs(off) < 12_000 || abs(off) > rate * 0.45 || hz < BAND_LO || hz > BAND_HI) continue
+            val ch = (hz / 12_500).roundToInt()
+            if (chs.isEmpty() || chs.last() != ch) { chs.add(ch); los.add(b); his.add(b) } else his[his.size - 1] = b
+            slotOf[b] = chs.size - 1
+        }
+        slotCh = chs.toIntArray(); slotLo = los.toIntArray(); slotHi = his.toIntArray()
+        slotP = DoubleArray(chs.size); slotF = DoubleArray(chs.size); slotFloor = DoubleArray(chs.size)
+    }
     private var bufI = FloatArray(1); private var bufQ = FloatArray(1); private var fill = 0
     private var ringI = FloatArray(1); private var ringQ = FloatArray(1); private var abs0 = 0L
     private var blk = 0L
@@ -304,6 +329,7 @@ internal class PtcScanner(private val onBurst: (PtcBurst) -> Unit) {
         nfft = Integer.highestOneBit(max(64, rate / 6000)) * 2
         if (nfft > 4096) nfft = 4096
         re = FloatArray(nfft); im = FloatArray(nfft); floorP = FloatArray(nfft)
+        hist = Array(AVG) { FloatArray(nfft) }; sumP = FloatArray(nfft); mapCenter = Long.MIN_VALUE
         win = FloatArray(nfft) { (0.5 - 0.5 * cos(2 * PI * it / (nfft - 1))).toFloat() }
         bufI = FloatArray(nfft); bufQ = FloatArray(nfft); fill = 0
         val ring = max(nfft * 4, (rate * 0.09).toInt())
@@ -328,27 +354,36 @@ internal class PtcScanner(private val onBurst: (PtcBurst) -> Unit) {
         for (k in 0 until nfft) { re[k] = bufI[k] * win[k]; im[k] = bufQ[k] * win[k] }
         com.rocketgod.mayhem.core.Dsp.fft(re, im)
         val center = centerOf()
-        if (warm < WARM) warm++
-        val binHz = rate.toDouble() / nfft
-        // lit raster slots: power, power x frequency, peak, the floor under the peak
-        val seen = java.util.TreeMap<Int, DoubleArray>()
+        if (center != mapCenter) mapSlots(center)
+        // Each 12.5 kHz slot's power, summed over its bins and averaged over the last few blocks, against the same sum of
+        // the bins' floors: a weak burst (an RTL-SDR on a short antenna) is a few dB over the noise in any one bin and
+        // block, but clearly over it across its channel and a millisecond.
+        val h = hist[(blk % AVG).toInt()]
+        val ns = slotCh.size
+        java.util.Arrays.fill(slotP, 0.0); java.util.Arrays.fill(slotF, 0.0); java.util.Arrays.fill(slotFloor, 0.0)
+        val ready = blk >= AVG
         for (b in 0 until nfft) {
             val idx = (b + nfft / 2) % nfft
             val p = re[idx] * re[idx] + im[idx] * im[idx]
-            val f0 = floorP[b]
-            if (warm < WARM) { floorP[b] = f0 + (p - f0) / (warm + 1); continue }
-            val active = p > f0 * 10
-            // the floor is a mean of the quiet blocks; a bin lit for long (a carrier, not a burst) joins it slowly
+            sumP[b] += p - h[b]; h[b] = p
+            if (!ready) continue
+            val avg = sumP[b] / AVG
+            if (warm < WARM) { floorP[b] += (avg - floorP[b]) / (warm + 1); continue }
+            val sl = slotOf[b]
+            if (sl < 0) continue
+            slotP[sl] += avg; slotF[sl] += avg * binFreq[b]; slotFloor[sl] += floorP[b]
+        }
+        if (ready && warm < WARM) { warm++; blk++; return }
+        if (!ready) { blk++; return }
+        // lit slots: power, power x frequency, peak, the floor under the peak
+        val seen = java.util.TreeMap<Int, DoubleArray>()
+        for (sl in 0 until ns) {
+            if (slotP[sl] <= 0) continue
+            val active = slotP[sl] > slotFloor[sl] * THRESHOLD
+            // the floor is a mean of the quiet blocks; a slot lit for long (a carrier, not a burst) joins it slowly
             // (by a fixed ratio: a step toward a burst's own power would swallow it within a few milliseconds)
-            if (!active) floorP[b] = f0 + 0.02f * (p - f0) else floorP[b] = f0 * 1.003f
-            if (!active) continue
-            val off = (b - nfft / 2) * binHz
-            if (abs(off) < 12_000 || abs(off) > rate * 0.45) continue
-            val hz = center + off
-            if (hz < BAND_LO || hz > BAND_HI) continue
-            val ch = (hz / 12_500).roundToInt()
-            val a = seen.getOrPut(ch) { DoubleArray(4) }
-            a[0] += p; a[1] += p * hz; if (p > a[2]) { a[2] = p.toDouble(); a[3] = f0.toDouble() }
+            for (b in slotLo[sl]..slotHi[sl]) floorP[b] = if (active) floorP[b] * 1.003f else floorP[b] + 0.02f * (sumP[b] / AVG - floorP[b])
+            if (active) seen[slotCh[sl]] = doubleArrayOf(slotP[sl], slotF[sl], slotP[sl], slotFloor[sl])
         }
         // runs of neighboring lit slots are one signal (a 9 kHz burst lights two or three 12.5 kHz slots); each run joins
         // the burst it overlaps, or starts one
@@ -374,10 +409,14 @@ internal class PtcScanner(private val onBurst: (PtcBurst) -> Unit) {
             open.remove(o)
             val nb = o.lastBlk - o.startBlk + 1
             val dur = nb * nfft / rate.toDouble()
-            if (dur < 0.006 || dur > 0.06) continue
+            if (dur < 0.006 || dur > 0.07) continue
+            // a PTC channel is 25 kHz (two or three slots): wider and weak is noise lighting up, not a burst (a strong
+            // burst's skirts light the slots around it, so width alone says nothing)
+            if (o.hi - o.lo > 3 && o.peak < o.peakFloor * 100) continue
             // a burst is lit nearly all the way through; noise speckle that happens to chain up is not
             if (o.lit < nb * 0.7) continue
-            val startAbs = endAbs - (blk - o.startBlk + 1) * nfft - (rate * 0.0007).toLong()
+            // the averaging lights a burst up to AVG blocks late and holds it as long after: start that much earlier
+            val startAbs = endAbs - (blk - o.startBlk + 1 + AVG) * nfft - (rate * 0.0007).toLong()
             val endBurst = endAbs - (blk - o.lastBlk) * nfft + (rate * 0.0007).toLong()
             if (endAbs - startAbs >= ringI.size) continue
             val hz = o.fw / o.pw
@@ -417,8 +456,12 @@ internal class PtcScanner(private val onBurst: (PtcBurst) -> Unit) {
         const val BAND_HI = 222_500_000.0
         /** The sync word every station sends after its 9 preamble symbols (0 = +45°, 1 = +135°, 2 = -135°, 3 = -45°). */
         val SYNC = "020212232332130212131300131203".map { it - '0' }.toIntArray()
-        const val MIN_SYNC = 26
+        /** Sync symbols that must match: a random burst matches about 8 of 30, and 22 is still out of its reach. */
+        const val MIN_SYNC = 22
         private const val WARM = 8
+        /** Blocks each bin is averaged over (about a millisecond at 2-8 Msps), and the slot's power over its floor to light. */
+        private const val AVG = 4
+        private const val THRESHOLD = 3.0
 
         /**
          * The burst's carrier offset from DC: the power-weighted mean of its spectrum (pi/4-DQPSK is symmetric about

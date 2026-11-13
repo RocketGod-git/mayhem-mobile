@@ -225,8 +225,11 @@ export interface PtcBurst { hz: number; ms: number; durMs: number; snrDb: number
 
 /** The sync word every station sends after its 9 preamble symbols (0 = +45°, 1 = +135°, 2 = -135°, 3 = -45°). */
 export const PTC_SYNC = [...'020212232332130212131300131203'].map(Number);
-export const PTC_MIN_SYNC = 26;
+/** Sync symbols that must match: a random burst matches about 8 of 30, and 22 is still out of its reach. */
+export const PTC_MIN_SYNC = 22;
 const BAND_LO = 216_000_000, BAND_HI = 222_500_000, WARM = 8;
+/** Blocks each bin is averaged over (about a millisecond at 2-8 Msps), and the slot's power over its floor to light. */
+const AVG = 4, THRESHOLD = 3.0;
 
 export const snapHz = (hz: number) => Math.round(hz / 12_500) * 12_500;
 
@@ -320,6 +323,30 @@ export class PtcScanner {
   private ringI = new Float32Array(1); private ringQ = new Float32Array(1); private abs0 = 0; private ringAt = 0;
   private blk = 0; private warm = 0;
   private open: Open[] = [];
+  /** Each bin's power over the last AVG blocks (a ring and its running sum): one block's noise is all over the place. */
+  private hist: Float32Array[] = []; private sumP = new Float32Array(1);
+  /** Which 12.5 kHz slot each bin falls in (-1: off the band, on the spike at the center or at the span's edges), each
+   *  slot's raster channel and bins, and each bin's frequency; worked out again when the tuning moves. */
+  private slotOf = new Int32Array(1); private binFreq = new Float64Array(1); private mapCenter = NaN;
+  private slotCh: number[] = []; private slotLo: number[] = []; private slotHi: number[] = [];
+  private slotP = new Float64Array(0); private slotF = new Float64Array(0); private slotFloor = new Float64Array(0);
+
+  private mapSlots(center: number): void {
+    this.mapCenter = center;
+    const n = this.nfft, binHz = this.rate / n;
+    this.slotOf = new Int32Array(n).fill(-1); this.binFreq = new Float64Array(n);
+    const chs: number[] = [], los: number[] = [], his: number[] = [];
+    for (let b = 0; b < n; b++) {
+      const off = (b - n / 2) * binHz, hz = center + off;
+      this.binFreq[b] = hz;
+      if (Math.abs(off) < 12_000 || Math.abs(off) > this.rate * 0.45 || hz < BAND_LO || hz > BAND_HI) continue;
+      const ch = Math.round(hz / 12_500);
+      if (chs.length === 0 || chs[chs.length - 1] !== ch) { chs.push(ch); los.push(b); his.push(b); } else his[his.length - 1] = b;
+      this.slotOf[b] = chs.length - 1;
+    }
+    this.slotCh = chs; this.slotLo = los; this.slotHi = his;
+    this.slotP = new Float64Array(chs.length); this.slotF = new Float64Array(chs.length); this.slotFloor = new Float64Array(chs.length);
+  }
   constructor(private readonly onBurst: (b: PtcBurst) => void) {}
 
   reset(rate: number): void {
@@ -333,6 +360,7 @@ export class PtcScanner {
     const ring = Math.max(n * 4, Math.floor(rate * 0.09));
     this.ringI = new Float32Array(ring); this.ringQ = new Float32Array(ring); this.abs0 = 0; this.ringAt = 0;
     this.blk = 0; this.open = []; this.warm = 0;
+    this.hist = Array.from({ length: AVG }, () => new Float32Array(n)); this.sumP = new Float32Array(n); this.mapCenter = NaN;
   }
 
   push(xi: Float32Array, xq: Float32Array, n: number): void {
@@ -351,26 +379,34 @@ export class PtcScanner {
     for (let k = 0; k < n; k++) { this.re[k] = this.bufI[k] * this.win[k]; this.im[k] = this.bufQ[k] * this.win[k]; }
     fft(this.re, this.im);
     const center = this.centerHz;
-    if (this.warm < WARM) this.warm++;
-    const binHz = this.rate / n;
-    const seen = new Map<number, number[]>();
+    if (center !== this.mapCenter) this.mapSlots(center);
+    // Each 12.5 kHz slot's power, summed over its bins and averaged over the last few blocks, against the same sum of
+    // the bins' floors: a weak burst (an RTL-SDR on a short antenna) is a few dB over the noise in any one bin and
+    // block, but clearly over it across its channel and a millisecond.
+    const h = this.hist[this.blk % AVG], ready = this.blk >= AVG;
+    this.slotP.fill(0); this.slotF.fill(0); this.slotFloor.fill(0);
     for (let b = 0; b < n; b++) {
       const idx = (b + n / 2) % n;
       const p = this.re[idx] * this.re[idx] + this.im[idx] * this.im[idx];
-      const f0 = this.floorP[b];
-      if (this.warm < WARM) { this.floorP[b] = f0 + (p - f0) / (this.warm + 1); continue; }
-      const active = p > f0 * 10;
-      // (by a fixed ratio while lit: a step toward a burst's own power would swallow it within a few milliseconds)
-      this.floorP[b] = active ? f0 * 1.003 : f0 + 0.02 * (p - f0);
-      if (!active) continue;
-      const off = (b - n / 2) * binHz;
-      if (Math.abs(off) < 12_000 || Math.abs(off) > this.rate * 0.45) continue;
-      const hz = center + off;
-      if (hz < BAND_LO || hz > BAND_HI) continue;
-      const ch = Math.round(hz / 12_500);
-      const a = seen.get(ch) ?? [0, 0, 0, 0];
-      a[0] += p; a[1] += p * hz; if (p > a[2]) { a[2] = p; a[3] = f0; }
-      seen.set(ch, a);
+      this.sumP[b] += p - h[b]; h[b] = p;
+      if (!ready) continue;
+      const avg = this.sumP[b] / AVG;
+      if (this.warm < WARM) { this.floorP[b] += (avg - this.floorP[b]) / (this.warm + 1); continue; }
+      const sl = this.slotOf[b];
+      if (sl < 0) continue;
+      this.slotP[sl] += avg; this.slotF[sl] += avg * this.binFreq[b]; this.slotFloor[sl] += this.floorP[b];
+    }
+    if (!ready) { this.blk++; return; }
+    if (this.warm < WARM) { this.warm++; this.blk++; return; }
+    // lit slots: power, power x frequency, peak, the floor under the peak
+    const seen = new Map<number, number[]>();
+    for (let sl = 0; sl < this.slotCh.length; sl++) {
+      if (this.slotP[sl] <= 0) continue;
+      const active = this.slotP[sl] > this.slotFloor[sl] * THRESHOLD;
+      // the floor is a mean of the quiet blocks; a slot lit for long (a carrier, not a burst) joins it slowly
+      // (by a fixed ratio: a step toward a burst's own power would swallow it within a few milliseconds)
+      for (let b = this.slotLo[sl]; b <= this.slotHi[sl]; b++) this.floorP[b] = active ? this.floorP[b] * 1.003 : this.floorP[b] + 0.02 * (this.sumP[b] / AVG - this.floorP[b]);
+      if (active) seen.set(this.slotCh[sl], [this.slotP[sl], this.slotF[sl], this.slotP[sl], this.slotFloor[sl]]);
     }
     let runLo = -1e9, runHi = 0; const acc = [0, 0, 0, 0];
     const flush = () => {
@@ -395,8 +431,12 @@ export class PtcScanner {
     this.open = this.open.filter(o => this.blk - o.lastBlk < 2);
     for (const o of done) {
       const nb = o.lastBlk - o.startBlk + 1, dur = nb * n / this.rate;
-      if (dur < 0.006 || dur > 0.06 || o.lit < nb * 0.7) continue;
-      const startAbs = endAbs - (this.blk - o.startBlk + 1) * n - Math.floor(this.rate * 0.0007);
+      if (dur < 0.006 || dur > 0.07 || o.lit < nb * 0.7) continue;
+      // a PTC channel is 25 kHz (two or three slots): wider and weak is noise lighting up, not a burst (a strong
+      // burst's skirts light the slots around it, so width alone says nothing)
+      if (o.hi - o.lo > 3 && o.peak < o.peakFloor * 100) continue;
+      // the averaging lights a burst up to AVG blocks late and holds it as long after: start that much earlier
+      const startAbs = endAbs - (this.blk - o.startBlk + 1 + AVG) * n - Math.floor(this.rate * 0.0007);
       const endBurst = endAbs - (this.blk - o.lastBlk) * n + Math.floor(this.rate * 0.0007);
       if (endAbs - startAbs >= this.ringI.length) continue;
       const hz = o.fw / o.pw;
