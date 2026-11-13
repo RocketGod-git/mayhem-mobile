@@ -4733,7 +4733,7 @@ function renderSettings(view: HTMLElement): void {
     ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
     <section class="sset fold link" id="sec-radio" data-keys="radio gain lna vga amp agc bias tee ppm sample rate filter"><div class="sset-h">RADIO</div></section>
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
-    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div></section>
+    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsWanted()), 'full screen fullscreen status bar address bar') : ''}</section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
     <div class="panel about" id="station">
       <div class="row"><input class="txin" data-st="call" placeholder="CALLSIGN" value="${state.ham.station.call}" autocapitalize="characters" spellcheck="false"><input class="txin" data-st="license" placeholder="license class (Technician, General…)" value="${state.ham.station.license}"></div>
@@ -4778,6 +4778,7 @@ function renderSettings(view: HTMLElement): void {
   qa<HTMLInputElement>('[data-st]', view).forEach(i => i.oninput = () => { const k = i.dataset.st as keyof Station; const v = k === 'call' || k === 'grid' ? i.value.toUpperCase() : i.value; if (k === 'call' || k === 'grid') i.value = v; state.ham.station[k] = v; saveStation(); });
   qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); refreshSettings(); });
   const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); refreshSettings(); };
+  const fs = q('#fs-toggle'); if (fs) fs.onclick = () => { setFsWanted(!fsWanted()); refreshSettings(); };
   bindSettings(view);
   $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; refreshSettings(); } };
   attachCreditsScroller($('credits'), $('credits-roll'));
@@ -5786,6 +5787,37 @@ function bindDesktop(): void {
   }, { passive: false });
 }
 
+// ---- full screen -----------------------------------------------------------------------------------------------
+/* On a phone the app runs full screen: no address bar or status bar in the way, and a swipe down from the top shows
+ * them for a moment. A browser only goes full screen from a tap, so the first tap takes it, and the first tap after
+ * the back gesture has left it. Settings › LOOK turns it off. Installed, the manifest asks for full screen itself. */
+const FS_KEY = 'mm.fullscreen';
+const fsCan = () => !!document.documentElement.requestFullscreen;
+function fsWanted(): boolean {
+  let v: string | null = null;
+  try { v = localStorage.getItem(FS_KEY); } catch { /* storage blocked */ }
+  return v === null ? matchMedia('(pointer: coarse)').matches : v === '1';
+}
+function setFsWanted(on: boolean): void {
+  try { localStorage.setItem(FS_KEY, on ? '1' : '0'); } catch { /* storage blocked */ }
+  if (on) enterFullscreen();
+  else if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+}
+function enterFullscreen(): void {
+  if (!fsCan() || document.fullscreenElement) return;
+  void document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+}
+/** Taps that open a chooser (the USB picker, a file) keep their gesture: full screen waits for the next tap. */
+const FS_SKIP = '#connect, #set-connect, #rm-connect, #rp-connect, #an-imp, #log-import, input[type=file], #fs-toggle';
+function initFullscreen(): void {
+  document.addEventListener('click', (e) => {
+    if (!fsWanted() || (e.target as Element | null)?.closest?.(FS_SKIP)) return;
+    enterFullscreen();
+  });
+  // Safari ignores user-scalable=no; its own pinch gesture is turned away here
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+}
+
 // ---- boot -----------------------------------------------------------------------------------------------------
 let versionText = 'dev build', apkUrl = './mayhem.apk', releaseUrl = 'https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest';
 
@@ -6093,6 +6125,7 @@ function showFaves(open: boolean): void {
 
 function init(): void {
   loadSkin();
+  initFullscreen();
   const supported = 'usb' in navigator;
   $('unsupported').hidden = supported;
   $<HTMLButtonElement>('connect').disabled = !supported;

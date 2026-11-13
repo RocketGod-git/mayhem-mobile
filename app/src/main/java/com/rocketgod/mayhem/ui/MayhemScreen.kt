@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -106,7 +107,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
     val inPip by Pip.active.collectAsState()
     if (inPip) { PipView(Apps.playing(), accent); return }
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().displayCutoutPadding().navigationBarsPadding()) {
             TopBar(current, connected, accent, favesOpen = faves) { faves = true }
             if (!connected) RadioMissing(status)
             // a little air under the bar: the readout's top chevrons sat right against it

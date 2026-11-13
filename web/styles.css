@@ -4,6 +4,9 @@
   --ok: #3ddc84; --danger: #ff5b52;
 }
 * { box-sizing: border-box; }
+/* The page itself never zooms: a pinch on the waterfall, a map or a trace is theirs, and a stray one anywhere else
+ * used to leave the whole app magnified (or shrunk) behind Settings. Text sizes stay what the layout was made for. */
+html { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace; font-size: 13px; }
 body { padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); min-height: 100vh; }
 a { color: var(--accent); text-decoration: none; }

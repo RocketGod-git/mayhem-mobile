@@ -21,6 +21,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.Geo
@@ -83,6 +86,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        hideStatusBar()
         // the auto-pick shows the whole listening band the dial is in, as wide as the band chips show it on this
         // screen, before it picks
         com.rocketgod.mayhem.core.AutoPick.viewWholeBand = viewWholeBand@{
@@ -179,7 +183,22 @@ class MainActivity : ComponentActivity() {
     /** Back in front: a radio plugged in while the app was away (or whose intent went to another app) is picked up now. */
     override fun onResume() {
         super.onResume()
+        hideStatusBar()
         if (!radioRunning() && !askingPermission) autoConnect(quiet = true)
+    }
+
+    /** Full screen: the status bar stays hidden, and a swipe down from the top shows it for a moment. The system brings
+     *  it back after a dialog or the shade, so it is hidden again whenever the window has focus. */
+    private fun hideStatusBar() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideStatusBar()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

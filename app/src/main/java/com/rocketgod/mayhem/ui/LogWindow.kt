@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -129,7 +130,7 @@ fun LogWindow(onClose: () -> Unit) {
         ) { body(Modifier.fillMaxSize()) }
     } else {
         // clear of the status bar and the gesture bar, like every other screen
-        body(Modifier.fillMaxSize().background(Palette.paper).statusBarsPadding().navigationBarsPadding())
+        body(Modifier.fillMaxSize().background(Palette.paper).statusBarsPadding().displayCutoutPadding().navigationBarsPadding())
     }
 
     // Touching the list stops the auto-follow; the FULL/PIP toggle resumes it.
