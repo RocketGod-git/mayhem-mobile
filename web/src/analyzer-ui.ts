@@ -9,6 +9,7 @@
  * Twin of the Android ui/AnalyzerScreen.kt and the iPad/Mac App/ui/AnalyzerScreen.swift.
  */
 
+import { openKeypad, FREQ_UNITS, freqAuto } from './keypad.js';
 import type { Scope, ScopeMark } from './scope.js';
 import { analyze, carrierOf, noiseOf, bitsToAscii, bitsToHex, pulsesUs, CODINGS, MODS, type Analysis, type Coding, type Mod, type Overrides } from './dsp/analyzer/demod.js';
 import { align, similar, type Alignment } from './dsp/analyzer/align.js';
@@ -466,7 +467,9 @@ export class AnalyzerUi {
   private filterHtml(): string {
     const f = this.filter, mhzv = (hz: number) => (hz ? (hz / 1e6).toString() : '');
     const num = (id: string, v: string, ph: string) => `<input id="${id}" class="txin" inputmode="decimal" value="${esc(v)}" placeholder="${ph}">`;
-    return `<span class="rl">FREQ MHz</span>${num('anf-lo', mhzv(f.loHz), 'from')}${num('anf-hi', mhzv(f.hiHz), 'to')}`
+    // the band edges are frequencies, typed on the app's keypad like every other frequency
+    const fq = (id: string, hz: number, ph: string) => `<button id="${id}" class="txin kpbox ${hz ? '' : 'ph'}">${hz ? `${mhzv(hz)} MHz` : ph}</button>`;
+    return `<span class="rl">FREQ</span>${fq('anf-lo', f.loHz, 'from')}${fq('anf-hi', f.hiHz, 'to')}`
       + `<span class="rl">SNR ≥ dB</span>${num('anf-snr', f.minSnr ? String(f.minSnr) : '', 'any')}`
       + `<span class="rl">LENGTH ms</span>${num('anf-min', f.minMs ? String(f.minMs) : '', 'min')}${num('anf-max', f.maxMs ? String(f.maxMs) : '', 'max')}`
       + `<button class="tog ${f.dataOnly ? 'on' : ''}" id="anf-data" title="skip spurs, plain carriers and blips with no bits">ONLY WITH DATA</button><button class="tog ${f.unknownOnly ? 'on' : ''}" id="anf-unk">ONLY UNKNOWN</button><button class="tog" id="anf-reset">NO FILTER</button>`;
@@ -474,10 +477,15 @@ export class AnalyzerUi {
   private wireFilter(el: HTMLElement): void {
     const v = (id: string) => parseFloat((el.querySelector<HTMLInputElement>('#' + id)!.value || '').replace(',', '.')) || 0;
     const apply = () => {
-      this.filter = { loHz: Math.round(v('anf-lo') * 1e6), hiHz: Math.round(v('anf-hi') * 1e6), minSnr: v('anf-snr'), minMs: v('anf-min'), maxMs: v('anf-max'), unknownOnly: this.filter.unknownOnly, dataOnly: this.filter.dataOnly };
+      this.filter = { loHz: this.filter.loHz, hiHz: this.filter.hiHz, minSnr: v('anf-snr'), minMs: v('anf-min'), maxMs: v('anf-max'), unknownOnly: this.filter.unknownOnly, dataOnly: this.filter.dataOnly };
       void store.set('filter', this.filter); this.draw(false);
     };
     el.querySelectorAll<HTMLInputElement>('input').forEach(i => i.onchange = apply);
+    const edge = (id: string, label: string, key: 'loHz' | 'hiHz') => el.querySelector<HTMLElement>('#' + id)!.onclick = () => openKeypad({
+      label, units: FREQ_UNITS, auto: freqAuto, hint: this.filter[key] ? `${+(this.filter[key] / 1e6).toFixed(6)} MHz` : 'any',
+      onEnter: hz => { this.filter = { ...this.filter, [key]: Math.round(hz) }; void store.set('filter', this.filter); this.draw(); },
+    });
+    edge('anf-lo', 'FROM', 'loHz'); edge('anf-hi', 'TO', 'hiHz');
     el.querySelector<HTMLElement>('#anf-data')!.onclick = () => { this.filter = { ...this.filter, dataOnly: !this.filter.dataOnly }; void store.set('filter', this.filter); this.draw(); };
     el.querySelector<HTMLElement>('#anf-unk')!.onclick = () => { this.filter = { ...this.filter, unknownOnly: !this.filter.unknownOnly }; void store.set('filter', this.filter); this.draw(); };
     el.querySelector<HTMLElement>('#anf-reset')!.onclick = () => { this.filter = { ...NO_FILTER }; void store.set('filter', this.filter); this.draw(); };

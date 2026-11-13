@@ -284,55 +284,12 @@ private fun SpStatus() {
 
 @Composable
 private fun SpKeypad(accent: Color) {
-    // read so this part redraws with every frame (a State nobody reads subscribes nobody)
+    // read so this part redraws with every key (a State nobody reads subscribes nobody)
     @Suppress("UNUSED_VARIABLE") val ver = Spectrum.ver.collectAsState().value
-    val d = rememberDims()
     val p = Spectrum.pad ?: return
-    val focus = remember { FocusRequester() }
-    val blink by rememberInfiniteTransition(label = "caret").animateFloat(1f, 0f, infiniteRepeatable(tween(600, easing = LinearEasing), RepeatMode.Reverse), label = "caret")
-    Dialog(onDismissRequest = { Spectrum.closePad() }) {
-        val shape = RoundedCornerShape(d.dp(16f))
-        Column(Modifier.widthIn(max = d.dp(380f)).clip(shape).background(Palette.surface).border(1.dp, spLerp(Palette.line, accent, 0.5f), shape)
-            .focusRequester(focus).focusable().onKeyEvent { e -> spHardKey(e)?.let { Spectrum.padHardKey(it) } ?: false }
-            .padding(d.dp(14f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(p.label, color = accent, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(12f), letterSpacing = 2.sp, modifier = Modifier.weight(1f))
-                Text("✕", color = Palette.muted, fontSize = d.sp(18f), modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { Spectrum.closePad() }.padding(horizontal = 8.dp))
-            }
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Palette.paper).border(1.dp, Palette.line, RoundedCornerShape(10.dp)).padding(horizontal = d.dp(12f), vertical = d.dp(8f)),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text(p.text.ifEmpty { " " }, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(30f), textAlign = TextAlign.End, maxLines = 1,
-                    style = TextStyle(shadow = Shadow(accent.copy(alpha = 0.4f), blurRadius = 24f)), modifier = Modifier.weight(1f))
-                Box(Modifier.padding(start = 3.dp).width(3.dp).height(d.dp(30f)).alpha(blink).background(SP_ACTIVE))
-            }
-            // counting order, 1 2 3 on top (the web keypad is laid out the same)
-            val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", ".", if (p.kind == "db") "±" else "C")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                Column(Modifier.weight(3f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                    for (row in keys.chunked(3)) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                        for (k in row) SpPadKey(k, Palette.ink, Modifier.weight(1f)) { Spectrum.padKey(k) }
-                    }
-                }
-                Column(Modifier.weight(1.3f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                    for ((l, m) in Spectrum.padUnits()) SpPadKey(l, accent, Modifier.fillMaxWidth(), filled = true) { Spectrum.enterPad(m) }
-                    SpPadKey("⌫", Palette.muted, Modifier.fillMaxWidth()) { Spectrum.padKey("bs") }
-                }
-            }
-        }
-    }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-}
-
-@Composable
-private fun SpPadKey(label: String, c: Color, modifier: Modifier, filled: Boolean = false, onClick: () -> Unit) {
-    val d = rememberDims()
-    val shape = RoundedCornerShape(10.dp)
-    Box(modifier.height(d.dp(48f)).clip(shape).background(if (filled) c.copy(alpha = 0.18f) else Palette.paper).border(1.dp, if (filled) c else Palette.line, shape).clickable { onClick() },
-        contentAlignment = Alignment.Center) {
-        // every unit key (GHz, MHz, kHz, Hz, dB...) one size, every digit another: sized by length, "Hz" came out as big as
-        // a digit beside its smaller neighbours
-        Text(label, color = c, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(if (filled) 14f else 20f), maxLines = 1)
-    }
+    // the app's keypad (every frequency in every app is typed on it), fed by Spectrum's own entry
+    KeypadDialog(p.label, p.text, hint = "", units = Spectrum.padUnits(), signed = p.kind == "db", accent = accent,
+        onKey = { Spectrum.padKey(it) }, onUnit = { Spectrum.enterPad(it) }, onHardKey = { Spectrum.padHardKey(it) }, onClose = { Spectrum.closePad() })
 }
 
 /** A hardware key as the keypad and the plot read it ("0".."9", ".", "-", "+", "enter", "bs", "esc", arrows, letters). */

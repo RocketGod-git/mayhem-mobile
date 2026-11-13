@@ -15,13 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -48,7 +42,6 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,17 +55,6 @@ import kotlin.math.roundToInt
 private const val DOT_WIDTH = 0.5f
 private val GROUPS = listOf(listOf(1_000_000_000L) to "GHz", listOf(100_000_000L, 10_000_000L, 1_000_000L) to "MHz",
     listOf(100_000L, 10_000L, 1_000L) to "kHz", listOf(100L, 10L, 1L) to "Hz")
-
-/**
- * "433.92", "433,92", "144390k", "1.2 GHz", "162550000 Hz": a unit wins; a bare number is MHz, or Hz once it is too
- * big to be MHz. Null when it does not read as a frequency.
- */
-fun parseFreq(s: String): Long? {
-    val m = Regex("^\\s*(\\d+(?:[.,]\\d*)?|[.,]\\d+)\\s*([kmgKMG])?([hH][zZ])?\\s*$").find(s) ?: return null
-    val v = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
-    val mul = when (m.groupValues[2].lowercase()) { "k" -> 1e3; "m" -> 1e6; "g" -> 1e9; else -> if (m.groupValues[3].isNotEmpty() || v >= 1e5) 1.0 else 1e6 }
-    return if (v > 0) Math.round(v * mul) else null
-}
 
 /**
  * The frequency as ten digits from 1 GHz down to 1 Hz, each its own control: tap its top half to add one, its bottom
@@ -173,31 +155,9 @@ fun FreqDigits(hz: Long, big: Boolean, tint: Color, preview: Boolean, glow: Colo
     }
 }
 
-/** Key a frequency in; the phone brings up its number pad. */
+/** Key a frequency in, on the app's keypad (the same one Spectrum's tiles and the web app use). */
 @Composable
-fun FreqEntryDialog(hz: Long, accent: Color, onDone: (Long?) -> Unit) {
-    var text by remember { mutableStateOf("") }
-    var bad by remember { mutableStateOf(false) }
-    val go = { val f = parseFreq(text); if (f != null) onDone(f) else bad = true }
-    AlertDialog(
-        onDismissRequest = { onDone(null) },
-        containerColor = Palette.surface, titleContentColor = Palette.ink, textContentColor = Palette.ink,
-        title = { Text("Tune to", fontFamily = Mono, fontWeight = FontWeight.Bold) },
-        text = {
-            Column {
-                OutlinedTextField(text, { text = it; bad = false }, singleLine = true,
-                    placeholder = { Text("%.4f MHz".format(hz / 1e6), fontFamily = Mono) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), keyboardActions = KeyboardActions(onDone = { go() }),
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Palette.ink, unfocusedTextColor = Palette.ink, focusedBorderColor = accent,
-                        unfocusedBorderColor = Palette.line, cursorColor = accent))
-                Text(if (bad) "that isn't a frequency — try 433.92, 144390k or 1.2G" else "433.92 · 144390k · 1.2G · 162550000 Hz",
-                    color = if (bad) Palette.danger else Palette.muted, fontFamily = Mono, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
-            }
-        },
-        confirmButton = { TextButton({ go() }) { Text("TUNE", color = accent, fontFamily = Mono) } },
-        dismissButton = { TextButton({ onDone(null) }) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
-    )
-}
+fun FreqEntryDialog(hz: Long, accent: Color, onDone: (Long?) -> Unit) = FreqKeypad("FREQUENCY", hz, accent, onDone)
 
 /**
  * The tuned frequency with digit tuning, keypad entry and a favourite star, then the level bar and the RX-health

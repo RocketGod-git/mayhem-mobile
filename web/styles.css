@@ -1547,7 +1547,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sp-padu { display: flex; flex-direction: column; gap: 6px; }
 .sp-padk button, .sp-padu button { height: 48px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: 800 18px ui-monospace, monospace; cursor: pointer; }
 .sp-padu button { flex: 1; height: auto; min-height: 40px; color: #05080a; background: var(--accent); border-color: var(--accent); font-size: 14px; letter-spacing: 1px; }
-.sp-padu button[data-p="bs"] { background: var(--surface); color: var(--ink); border-color: var(--line); }
+.sp-padu button[data-p="bs"] { background: var(--surface); color: var(--ink); border-color: var(--line); font-size: 20px; letter-spacing: 0; }
 .sp-padk button:active, .sp-padu button:active { transform: translateY(1px); }
 /* a phone: each tile's arrows either side of its value, one line, so the tiles leave room for the plot */
 @media (max-width: 860px) {
@@ -1736,3 +1736,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .topnav { padding-top: max(4px, env(safe-area-inset-top)); padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
 .logwin, .view.adsb.mapfull, .view.ert.metersfull, .view.lora.lorafull, .an-modal { padding-top: max(10px, env(safe-area-inset-top)); }
 @media (max-width: 719.98px) { .setcard { padding-top: env(safe-area-inset-top); } }
+
+/* ---- the app's keypad (keypad.ts): above every panel, the value now shown dim until something is typed ---- */
+.sp-padwrap.kp-wrap { z-index: 1000; }
+.kp-hint { color: var(--muted); font-size: 0.6em; font-weight: 600; margin-left: 6px; }
+.txin.kpbox { cursor: pointer; text-align: left; min-width: 96px; font: inherit; font-size: 12px; }
+.txin.kpbox.ph { color: var(--muted); }

@@ -38,7 +38,6 @@ import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.Station
 import com.rocketgod.mayhem.core.Tx
 import com.rocketgod.mayhem.core.TxEncoders
-import kotlin.math.roundToLong
 
 /** Transmit (Mayhem siggen / morse / OOK TX / replay). Gated by the Settings TX switch; red styling as a caution. */
 @Composable
@@ -389,13 +388,21 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
 
 @Composable private fun HopperTab(accent: Color, active: Boolean) {
     val d = rememberDims()
-    var lowMhz by remember { mutableStateOf("433.05") }
-    var highMhz by remember { mutableStateOf("434.79") }
+    // the span's edges are frequencies, typed on the app's keypad
+    var lo by remember { mutableStateOf(433_050_000L) }
+    var hi by remember { mutableStateOf(434_790_000L) }
+    var edge by remember { mutableStateOf<String?>(null) }
     var count by remember { mutableStateOf("16") }
     var dwell by remember { mutableStateOf("20") }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
-        TxField(lowMhz, accent, "low (MHz)", Modifier.weight(1f), Kb.DECIMAL) { lowMhz = decimalOf(it) }
-        TxField(highMhz, accent, "high (MHz)", Modifier.weight(1f), Kb.DECIMAL) { highMhz = decimalOf(it) }
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
+        KeypadField("LOW", keypadMhz(lo), accent, Modifier.weight(1f).fillMaxHeight()) { edge = "lo" }
+        KeypadField("HIGH", keypadMhz(hi), accent, Modifier.weight(1f).fillMaxHeight()) { edge = "hi" }
+    }
+    edge?.let { e ->
+        FreqKeypad(if (e == "lo") "LOW" else "HIGH", if (e == "lo") lo else hi, accent) { hz ->
+            edge = null
+            if (hz != null) { if (e == "lo") lo = hz else hi = hz }
+        }
     }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         TxField(count, accent, "hops", Modifier.weight(1f), Kb.NUMBER) { count = digitsOf(it, 5) }
@@ -403,8 +410,6 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     }
     Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ HOP", accent, Modifier.fillMaxWidth()) {
         if (!active) {
-            val lo = ((lowMhz.toDoubleOrNull() ?: 433.05) * 1e6).roundToLong()
-            val hi = ((highMhz.toDoubleOrNull() ?: 434.79) * 1e6).roundToLong()
             Tx.frequencyHopper(com.rocketgod.mayhem.core.TxApps.hopList(lo, hi, count.toIntOrNull() ?: 16), (dwell.toIntOrNull() ?: 20).coerceAtLeast(1))
         }
     } }

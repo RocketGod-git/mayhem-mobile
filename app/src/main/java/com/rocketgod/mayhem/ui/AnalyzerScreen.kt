@@ -410,23 +410,25 @@ private fun StatusLines(s: com.rocketgod.mayhem.core.analyzer.AnalyzerStats?, ce
 // ---- the capture filter and the protocols -------------------------------------------------------------------------
 
 private fun numOf(s: String): Double = s.trim().toDoubleOrNull() ?: 0.0
-private fun numText(v: Double, scale: Double = 1.0): String = if (v == 0.0) "" else fmt("%s", (v / scale).let { if (it == floor(it)) it.toLong().toString() else fmt("%.3f", it).trimEnd('0') })
+private fun numText(v: Double, scale: Double = 1.0): String = if (v == 0.0) "" else fmt("%s", (v / scale).let { if (it == floor(it)) it.toLong().toString() else fmt("%.3f", it).trimEnd('0').trimEnd('.') })
 
 /** FILTER: what gets kept as bursts arrive. Blank is no limit. */
 @Composable
 private fun FilterRow(accent: Color) {
     val d = rememberDims()
     val f by Analyzer.filter.collectAsState()
-    var lo by remember { mutableStateOf(numText(f.loHz, 1e6)) }
-    var hi by remember { mutableStateOf(numText(f.hiHz, 1e6)) }
+    // the band edges are frequencies, typed on the app's keypad like every other frequency
+    var edge by remember { mutableStateOf<String?>(null) }
     var snr by remember { mutableStateOf(numText(f.minSnr)) }
     var minMs by remember { mutableStateOf(numText(f.minMs)) }
     var maxMs by remember { mutableStateOf(numText(f.maxMs)) }
     fun apply(g: (CaptureFilter) -> CaptureFilter) = Analyzer.setFilter(g(Analyzer.filter.value))
     Column(Modifier.fillMaxWidth().panel(accent.copy(alpha = 0.5f)).padding(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            TxField(lo, accent, "FROM MHz", Modifier.weight(1f), kb = Kb.DECIMAL) { lo = decimalOf(it); apply { x -> x.copy(loHz = numOf(lo) * 1e6) } }
-            TxField(hi, accent, "TO MHz", Modifier.weight(1f), kb = Kb.DECIMAL) { hi = decimalOf(it); apply { x -> x.copy(hiHz = numOf(hi) * 1e6) } }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            KeypadField("FROM", if (f.loHz > 0) numText(f.loHz, 1e6) + " MHz" else null, accent, Modifier.weight(1f).fillMaxHeight(),
+                onClear = { apply { x -> x.copy(loHz = 0.0) } }) { edge = "lo" }
+            KeypadField("TO", if (f.hiHz > 0) numText(f.hiHz, 1e6) + " MHz" else null, accent, Modifier.weight(1f).fillMaxHeight(),
+                onClear = { apply { x -> x.copy(hiHz = 0.0) } }) { edge = "hi" }
             TxField(snr, accent, "MIN SNR dB", Modifier.weight(1f), kb = Kb.DECIMAL) { snr = decimalOf(it); apply { x -> x.copy(minSnr = numOf(snr)) } }
         }
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
@@ -434,6 +436,12 @@ private fun FilterRow(accent: Color) {
             TxField(maxMs, accent, "MAX ms", Modifier.weight(1f), kb = Kb.DECIMAL) { maxMs = decimalOf(it); apply { x -> x.copy(maxMs = numOf(maxMs)) } }
             ToggleBox("WITH DATA", f.dataOnly, accent) { apply { x -> x.copy(dataOnly = !x.dataOnly) } }
             ToggleBox("ONLY UNKNOWN", f.unknownOnly, accent) { apply { x -> x.copy(unknownOnly = !x.unknownOnly) } }
+        }
+        edge?.let { e ->
+            FreqKeypad(if (e == "lo") "FROM" else "TO", (if (e == "lo") f.loHz else f.hiHz).toLong().takeIf { it > 0 }, accent) { hz ->
+                edge = null
+                if (hz != null) apply { x -> if (e == "lo") x.copy(loHz = hz.toDouble()) else x.copy(hiHz = hz.toDouble()) }
+            }
         }
         Text("kept bursts must pass every limit set; blank is no limit. WITH DATA skips spurs, plain carriers and blips with no bits. A recording with no frequency in its name skips the MHz test.",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))

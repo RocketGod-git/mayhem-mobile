@@ -1,4 +1,5 @@
 /** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
+import { openKeypad, FREQ_UNITS, freqAuto } from './keypad.js';
 import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
 import { RTL_MAX_GAIN_DB, RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
 import { APP_NEEDS, RATE_CHOICES, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
@@ -1447,32 +1448,11 @@ function nudgeDigit(el: HTMLElement, dir: 1 | -1): void {
   tune(state.freq + dir * w);
   el.classList.remove('up', 'down'); void el.offsetWidth; el.classList.add(dir > 0 ? 'up' : 'down');
 }
-/**
- * "433.92", "433,92", "144390k", "1.2 GHz", "162550000 Hz": a unit wins; a bare number is MHz, or Hz once it is too
- * big to be MHz. Null when it doesn't read as a frequency at all (tune() clamps the range).
- */
-function parseFreq(s: string): number | null {
-  const m = /^\s*(\d+(?:[.,]\d*)?|[.,]\d+)\s*([kmg])?(hz)?\s*$/i.exec(s); if (!m) return null;
-  const v = Number(m[1].replace(',', '.'));
-  const mul = m[2] ? { k: 1e3, m: 1e6, g: 1e9 }[m[2].toLowerCase() as 'k' | 'm' | 'g'] : m[3] || v >= 1e5 ? 1 : 1e6;
-  return v > 0 ? v * mul : null;
-}
-/** Key a frequency in: the digits give way to a text box (a phone brings up its number pad). Enter or leaving it tunes, Esc backs out. */
+/** Key a frequency in on the app's keypad (the same one Spectrum's tiles and the Android app use): a unit key enters
+ *  it in that unit, Enter in MHz (or Hz when it was typed out in full). A digit typed on a keyboard opens it with that
+ *  digit already in. */
 function freqEntry(seed = ''): void {
-  const fr = q('#freq'); if (!fr || q('#fentry')) return;
-  const inp = document.createElement('input');
-  inp.id = 'fentry'; inp.className = 'txin fentry'; inp.inputMode = 'decimal'; inp.autocomplete = 'off'; inp.enterKeyHint = 'go';
-  inp.placeholder = `${+(tunedHz() / 1e6).toFixed(6)} MHz`; inp.value = seed;
-  fr.hidden = true; fr.after(inp); inp.focus(); inp.setSelectionRange(seed.length, seed.length);
-  let done = false;
-  const close = (ok: boolean) => {
-    if (done) return; done = true;
-    const text = inp.value.trim(), hz = ok ? parseFreq(text) : null;
-    inp.remove(); fr.hidden = false;
-    if (hz) tune(hz); else if (ok && text) log(`"${text}" isn't a frequency — try 433.92, 144390k or 1.2G`);
-  };
-  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); close(true); } else if (e.key === 'Escape') { e.preventDefault(); close(false); } };
-  inp.onblur = () => close(true);
+  openKeypad({ label: 'FREQUENCY', units: FREQ_UNITS, auto: freqAuto, seed, hint: `${+(tunedHz() / 1e6).toFixed(6)} MHz`, onEnter: hz => tune(Math.round(hz)) });
 }
 const isAndroid = () => /android/i.test(navigator.userAgent);
 /**
@@ -4673,10 +4653,15 @@ function renderTx(view: HTMLElement): void {
       body.innerHTML = `<div class="row"><input id="b-bits" class="txin" value="24" style="flex:1"><input id="b-from" class="txin" value="0" style="flex:1"><input id="b-to" class="txin" value="255" style="flex:1"></div><input id="b-te" class="txin" value="350" style="margin-top:6px"><div class="caption">Princeton PT2262 brute-force · bits (12/24/32), start-end (decimal), te µs · a gate you own on ISM</div><button class="chip primary" id="b-send" style="margin-top:6px;width:100%">▶ BRUTE</button>`;
       $('b-send').onclick = () => tx.ookBrute(parseInt(($('b-bits') as HTMLInputElement).value || '24', 10), parseInt(($('b-from') as HTMLInputElement).value || '0', 10), parseInt(($('b-to') as HTMLInputElement).value || '0', 10), parseInt(($('b-te') as HTMLInputElement).value || '350', 10), state.freq);
     } else if (tab === 13) {
-      body.innerHTML = `<div class="row"><input id="h-lo" class="txin" value="433.05" style="flex:1"><input id="h-hi" class="txin" value="434.79" style="flex:1"></div><div class="row" style="margin-top:6px"><input id="h-count" class="txin" value="16" style="flex:1"><input id="h-dwell" class="txin" value="20" style="flex:1"></div><div class="caption">CW frequency hopper · low-high MHz · [count] random hops · dwell ms each · your own bench work only</div><button class="chip primary" id="h-send" style="margin-top:6px;width:100%">▶ HOP</button>`;
+      body.innerHTML = `<div class="row"><button id="h-lo" class="txin kpbox" data-hz="433050000" style="flex:1">433.05 MHz</button><button id="h-hi" class="txin kpbox" data-hz="434790000" style="flex:1">434.79 MHz</button></div><div class="row" style="margin-top:6px"><input id="h-count" class="txin" value="16" style="flex:1"><input id="h-dwell" class="txin" value="20" style="flex:1"></div><div class="caption">CW frequency hopper · low-high MHz · [count] random hops · dwell ms each · your own bench work only</div><button class="chip primary" id="h-send" style="margin-top:6px;width:100%">▶ HOP</button>`;
+      // the span's edges are frequencies, typed on the app's keypad
+      for (const [id, label] of [['h-lo', 'LOW'], ['h-hi', 'HIGH']]) {
+        const b = $(id);
+        b.onclick = () => openKeypad({ label, units: FREQ_UNITS, auto: freqAuto, hint: `${+(Number(b.dataset.hz) / 1e6).toFixed(6)} MHz`,
+          onEnter: hz => { if (hz > 0) { b.dataset.hz = String(Math.round(hz)); b.textContent = `${+(hz / 1e6).toFixed(6)} MHz`; } } });
+      }
       $('h-send').onclick = () => {
-        const lo = Math.round(parseFloat(($('h-lo') as HTMLInputElement).value || '0') * 1e6);
-        const hi = Math.round(parseFloat(($('h-hi') as HTMLInputElement).value || '0') * 1e6);
+        const lo = Number($('h-lo').dataset.hz), hi = Number($('h-hi').dataset.hz);
         const n = parseInt(($('h-count') as HTMLInputElement).value || '16', 10);
         const d = parseInt(($('h-dwell') as HTMLInputElement).value || '20', 10);
         tx.frequencyHopper(Apps.hopList(lo, hi, n), d);
@@ -4923,7 +4908,8 @@ function attachCreditsScroller(panel: HTMLElement | null, roll: HTMLElement | nu
 function wireCommon(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-wf]', view).forEach(b => b.onclick = () => { const a = b.dataset.wf as AppId; setWf(a, !wfShown(a)); });
   const fav = q<HTMLButtonElement>('#fav', view); if (fav) { fav.onclick = toggleFav; refreshFav(); }
-  const fkey = q<HTMLButtonElement>('#fkey', view); if (fkey) fkey.onclick = () => freqEntry();
+  const fkey = q<HTMLButtonElement>('#fkey', view);
+  if (fkey) { if (state.app === 'adsb' || state.app === 'btle') fkey.remove(); else fkey.onclick = () => freqEntry(); }
   qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => open(b.dataset.app as AppId));
   qa<HTMLButtonElement>('[data-satview]', view).forEach(b => b.onclick = () => { state.ham.sat.view = b.dataset.satview as typeof state.ham.sat.view; open('sat'); });
   qa<HTMLButtonElement>('[data-mode]', view).forEach(b => b.onclick = () => setMode(b.dataset.mode as Mode));

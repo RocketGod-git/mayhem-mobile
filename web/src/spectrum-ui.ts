@@ -17,6 +17,7 @@
  * Twin of the Android ui/SpectrumScreen.kt and the iPad/Mac App/ui/SpectrumScreen.swift.
  */
 
+import { openKeypad, FREQ_UNITS } from './keypad.js';
 import {
   acpr, autoLevel, autoRbw, autoScale, binOf, channelPower, dbmOffset, defaultMarkers, defaultTraces, fmtHz, fmtSec, nextPeak, nextPeakLeft, nextPeakRight,
   noiseAt, noiseFloor, occupiedBw, peakSearch, planSpan, pulseStats, refinePeak, stepBw, toColumns, zsMaxBw, Persistence,
@@ -137,7 +138,6 @@ const PALETTE = (() => {
 /** The frame as the screen keeps it: where its bins are. */
 interface Frame { f0: number; binHz: number; rbw: number; sweep: boolean; step: number; steps: number; }
 /** A keypad entry in progress. */
-interface Pad { tile: string; label: string; kind: 'hz' | 'db' | 'sec' | 'pct' | 'bw'; text: string; }
 type Geom = { l: number; t: number; w: number; h: number; W: number; H: number };
 
 export class SpectrumUi {
@@ -162,7 +162,6 @@ export class SpectrumUi {
   /** Pointers down on the plot, and what the gesture is. */
   private readonly pts = new Map<number, { x: number; y: number }>();
   private gesture: { kind: 'tap' | 'pan' | 'pinch' | 'pinchT' | 'marker' | 'cursor'; x0: number; center0: number; span0: number; d0: number; which: number } | null = null;
-  private pad: Pad | null = null;
   private densityCanvas: HTMLCanvasElement | null = null;
   /** Whether the scale has been checked against the first whole frame since the app opened or the span moved. */
   private rangeChecked = false;
@@ -339,7 +338,7 @@ export class SpectrumUi {
       </div>
     </section>
     <section class="controls sp-controls" id="sp-ctl"></section>
-    <div id="sp-pad" class="sp-padwrap" hidden></div>`;
+`;
   }
 
   mount(root: HTMLElement): void {
@@ -449,51 +448,18 @@ export class SpectrumUi {
 
   // ---- keypad -------------------------------------------------------------------------------------------------
 
+  /** A tile tapped: the app's keypad, in this value's units (the same keypad every frequency is typed on). */
   private openPad(tile: string): void {
     const t = this.tileList().find(x => x[0] === tile); if (!t) return;
     if (tile === 'lvl' && this.s.trig === 'FREE') { this.turn('lvl', 1); return; }
-    const kind: Pad['kind'] = tile === 'ref' || tile === 'lvl' ? 'db' : tile === 'zst' ? 'sec' : tile === 'rbw' || tile === 'vbw' || tile === 'span' || tile === 'zbw' ? 'bw' : 'hz';
-    this.pad = { tile, label: t[1], kind, text: '' };
-    this.drawPad();
+    const kind = tile === 'ref' || tile === 'lvl' ? 'db' : tile === 'zst' ? 'sec' : 'hz';
+    const units: [string, number][] = kind === 'db' ? [[this.unitLabel(), 1]] : kind === 'sec' ? [['s', 1], ['ms', 1e-3], ['µs', 1e-6]] : FREQ_UNITS;
+    openKeypad({ label: t[1], units, signed: kind === 'db', enterUnit: kind === 'hz' ? 1 : 0, onEnter: v => this.applyPad(tile, v) });
   }
-  private drawPad(): void {
-    const el = this.root?.querySelector<HTMLElement>('#sp-pad'); if (!el) return;
-    const p = this.pad;
-    el.hidden = !p;
-    if (!p) { el.innerHTML = ''; return; }
-    const units: [string, string][] = p.kind === 'db' ? [[this.unitLabel(), '1']] : p.kind === 'sec' ? [['s', '1'], ['ms', '1e-3'], ['µs', '1e-6']] : [['GHz', '1e9'], ['MHz', '1e6'], ['kHz', '1e3'], ['Hz', '1']];
-    // counting order, 1 2 3 on top (the Android keypad is laid out the same)
-    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '.', p.kind === 'db' ? '±' : 'C'];
-    el.innerHTML = `<div class="sp-pad" role="dialog" aria-label="${p.label}">
-      <div class="sp-padh"><span>${p.label}</span><button data-p="esc" aria-label="Close">✕</button></div>
-      <div class="sp-padv">${esc(p.text || ' ')}<i></i></div>
-      <div class="sp-padg"><div class="sp-padk">${keys.map(k => `<button data-p="${k}">${k}</button>`).join('')}</div>
-      <div class="sp-padu">${units.map(([l, m]) => `<button data-p="u" data-m="${m}">${l}</button>`).join('')}<button data-p="bs">⌫</button></div></div></div>`;
-    el.onclick = (e) => {
-      if (e.target === el) { this.pad = null; this.drawPad(); return; }
-      const b = (e.target as HTMLElement).closest('button') as HTMLElement | null; if (!b || !this.pad) return;
-      const k = b.dataset.p!;
-      if (k === 'esc') { this.pad = null; this.drawPad(); return; }
-      if (k === 'u') { this.enterPad(Number(b.dataset.m)); return; }
-      this.padKey(k);
-    };
-  }
-  private padKey(k: string): void {
-    const p = this.pad; if (!p) return;
-    if (k === 'bs') p.text = p.text.slice(0, -1);
-    else if (k === 'C') p.text = '';
-    else if (k === '±') p.text = p.text.startsWith('-') ? p.text.slice(1) : '-' + p.text;
-    else if (k === '.' ? !p.text.includes('.') : /^\d$/.test(k)) p.text += k;
-    const v = this.root?.querySelector('.sp-padv'); if (v) v.innerHTML = `${esc(p.text || ' ')}<i></i>`;
-  }
-  /** Apply the keypad's number times a unit multiplier. */
-  private enterPad(mult: number): void {
-    const p = this.pad; if (!p) return;
-    const v = Number(p.text) * mult;
-    this.pad = null; this.drawPad();
-    if (!p.text || !Number.isFinite(v)) return;
+  /** The keypad's value for a tile. */
+  private applyPad(tile: string, v: number): void {
     const s = this.s;
-    switch (p.tile) {
+    switch (tile) {
       case 'center': this.setSpan(v, s.span); return;
       case 'span': this.setSpan(s.center, v); return;
       case 'start': { const st = this.stop; this.setSpan((v + st) / 2, st - v); return; }
@@ -1261,15 +1227,6 @@ export class SpectrumUi {
 
   /** Keys: the keypad when it is open; otherwise ←/→ next peak left/right, P peak, N next peak, +/- zoom. */
   onKey(e: KeyboardEvent): boolean {
-    if (this.pad) {
-      if (e.key === 'Escape') { this.pad = null; this.drawPad(); }
-      else if (e.key === 'Enter') this.enterPad(this.pad.kind === 'db' || this.pad.kind === 'sec' ? 1 : 1e6);
-      else if (e.key === 'Backspace') this.padKey('bs');
-      else if (e.key === '-') this.padKey('±');
-      else if (/^[0-9.]$/.test(e.key)) this.padKey(e.key);
-      else if (/^[gmk]$/i.test(e.key) && this.pad.kind !== 'db') this.enterPad(this.pad.kind === 'sec' ? (e.key.toLowerCase() === 'm' ? 1e-3 : 1) : ({ g: 1e9, m: 1e6, k: 1e3 } as Record<string, number>)[e.key.toLowerCase()]);
-      return true;
-    }
     if (this.s.mode !== 'FREQ') return false;
     if (e.key === 'ArrowLeft') this.markerTo(this.s.active, 'left');
     else if (e.key === 'ArrowRight') this.markerTo(this.s.active, 'right');
