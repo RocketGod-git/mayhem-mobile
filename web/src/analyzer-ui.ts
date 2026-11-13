@@ -328,6 +328,20 @@ export class AnalyzerUi {
     const c = this.host.center(), rate = this.host.rate(), now = performance.now();
     const open = this.opened ? (this.txOpen ? this.txs().find(t => t.id === this.txOpen)?.ids ?? [] : [this.sel]) : [];
     const out: ScopeMark[] = [];
+    // one label per press: on its strongest frame, naming what it is (or, unnamed, where it is); its other frames are
+    // boxed but unlabeled, so a key heard on three channels does not stack six copies of its name
+    const live = this.bursts.filter(b => b.seenAt && b.center === c && now - b.seenAt < MARK_FADE_MS);
+    const labelOf = new Map<number, string>();
+    if (live.length) {
+      for (const t of this.txs()) {
+        const ms = t.members.filter(m => live.includes(m));
+        if (!ms.length) continue;
+        const top = ms.reduce((x, y) => (y.snr > x.snr ? y : x));
+        const named = ms.find(m => m.matches.length || m.proto);
+        const name = named ? (named.matches.length ? shortLabel(named.matches[0]) : named.proto!.protocol.name) : '';
+        labelOf.set(top.id, name || `${((c + top.hz) / 1e6).toFixed(3)}`);
+      }
+    }
     for (const b of this.bursts) {
       if (!b.seenAt || b.center !== c) continue;
       const alpha = 1 - (now - b.seenAt) / MARK_FADE_MS;
@@ -335,7 +349,7 @@ export class AnalyzerUi {
       // the whole stretch the burst was heard over, from the look-back to the end of its carrier
       const t1 = b.seenAt - 210, t0 = t1 - Math.max(b.n / b.rate * 1000 - 70, b.ms, 4);
       const w = Math.max(20_000, b.auto.mod === 'FSK' ? b.auto.shiftHz * 1.6 : 0) / rate;
-      const label = `${((c + b.hz) / 1e6).toFixed(3)}${b.matches.length ? ` ${shortLabel(b.matches[0])}` : b.proto ? ` ${b.proto.protocol.name}` : ''}`;
+      const label = labelOf.get(b.id);
       out.push({ id: b.id, t0, t1, frac: 0.5 + b.hz / rate, w, color: MOD_COLOR[b.auto.mod], bold: open.includes(b.id), label, alpha: Math.max(0.15, alpha) });
     }
     sc.setMarks(out);
@@ -1070,15 +1084,37 @@ export class AnalyzerUi {
 
 /** The frame a transmission is best shown by: the one most of its copies agree with (ties: the strongest). */
 function repOf(t: Tx): AnBurst {
+  // a key's wake-ups agree with each other too: among copies that carry data when any do
+  const data = t.members.some(m => informative(m.best));
   let best = t.members[0], bestN = -1;
   for (const m of t.members) {
-    if (!m.best) continue;
+    if (!m.best || (data && !informative(m.best))) continue;
     const n = t.members.filter(x => x !== m && sameFrame(x.best, m.best)).length;
     if (n > bestN || (n === bestN && m.snr > best.snr)) { best = m; bestN = n; }
   }
   return best;
 }
-function bestOf(a: Analysis): string { return a.frames.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), ''); }
+/**
+ * The frame a card shows and protocols are matched on: the longest one that carries information. A key that sends an
+ * all-ones wake-up frame between its data frames would otherwise show the wake-up (FFFF…) whenever it is a bit longer.
+ */
+function bestOf(a: Analysis): string {
+  const longest = (fs: { bits: string }[]) => fs.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), '');
+  return longest(a.frames.filter(f => informative(f.bits))) || longest(a.frames);
+}
+/**
+ * Whether a frame carries data: it changes at least every 16 bits on average, and is not one short pattern over and
+ * over (a wake-up preamble: 1010…, 1100…), which repeats with a period of 8 bits or less across 90% of it.
+ */
+function informative(bits: string): boolean {
+  let t = 0; for (let i = 1; i < bits.length; i++) if (bits[i] !== bits[i - 1]) t++;
+  if (t < Math.max(2, bits.length / 16)) return false;
+  for (let p = 1; p <= 8 && p < bits.length; p++) {
+    let same = 0; for (let i = p; i < bits.length; i++) if (bits[i] === bits[i - p]) same++;
+    if (same >= 0.9 * (bits.length - p)) return false;
+  }
+  return true;
+}
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
 

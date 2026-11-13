@@ -68,6 +68,9 @@ private const val ENV_FULL = 16384.0
  */
 private const val SHADOW_HZ = 150_000
 private const val SHADOW_DB = 3
+/** An overload image: starting within this long of a burst at least this much stronger. */
+private const val IMAGE_ONSET_S = 0.005
+private const val IMAGE_DB = 10.0
 /** Bursts are held this long after they end (seconds), so a stronger one overlapping them can still claim them. */
 private const val HOLD_S = 0.15
 
@@ -111,6 +114,8 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
     /** Ended bursts not yet passed on, and the last few passed on, for the splatter check. */
     private val held = ArrayList<Held>()
     private val recent = ArrayList<Recent>()
+    /** When the last bursts started and how strong they were, kept or not, for telling an overload image. */
+    private val onsets = ArrayList<Pair<Double, Double>>()
 
     init {
         channels = BurstChannels({ ch, env, fm, n, iq -> onChannel(ch, env, fm, n, iq) }, { ch -> onEnd(ch) })
@@ -154,11 +159,22 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
             return held.any { h -> h.b !== b && span(h.b).let { (t0, t1) -> over(t0, t1, h.b.hz) } && beats(h.b.snr, h.spread, b, bSpread) } ||
                 recent.any { r -> over(r.t0, r.t1, r.hz) && beats(r.snr, r.spread, b, bSpread) }
         }
+        // A strong signal close to an overloaded radio (a key held at the antenna, gain up) shows up again a few
+        // hundred kHz away as weaker copies that start at the same instant. A burst starting within a few ms of one at
+        // least 10 dB stronger is such a copy, unless a decoder found something in it.
+        fun image(b: Burst): Boolean {
+            if (b.matches.isNotEmpty()) return false
+            fun near(t: Double, snr: Double) = abs(t - b.t) < IMAGE_ONSET_S && snr >= b.snr + IMAGE_DB
+            return held.any { it.b !== b && near(it.b.t, it.b.snr) } || onsets.any { near(it.first, it.second) }
+        }
         var i = 0
         while (i < held.size) {
             val h = held[i]
             if (!all && now - h.end < HOLD_S) { i++; continue }
-            if (!shadowed(h.b, h.spread)) {
+            val copy = image(h.b)
+            onsets.add(h.b.t to h.b.snr)
+            if (onsets.size > 32) onsets.removeAt(0)
+            if (!copy && !shadowed(h.b, h.spread)) {
                 val (t0, t1) = span(h.b)
                 recent.add(Recent(t0, t1, h.b.hz, h.b.snr, h.spread))
                 if (recent.size > 16) recent.removeAt(0)

@@ -59,6 +59,9 @@ const ENV_FULL = 16384;
  */
 const SHADOW_HZ = 150_000;
 const SHADOW_DB = 3;
+/** An overload image: starting within this long of a burst at least this much stronger. */
+const IMAGE_ONSET_S = 0.005;
+const IMAGE_DB = 10;
 /** Bursts are held this long after they end (seconds), so a stronger one overlapping them can still claim them. */
 const HOLD_S = 0.15;
 
@@ -89,6 +92,8 @@ export class AnalyzerCapture implements IqProcessor {
   /** Ended bursts not yet passed on, and the last few passed on, for the splatter check. */
   private readonly held: { b: Burst; end: number; spread: number }[] = [];
   private readonly recent: { t0: number; t1: number; hz: number; snr: number; spread: number }[] = [];
+  /** When the last bursts started and how strong they were, kept or not, for telling an overload image. */
+  private readonly onsets: { t: number; snr: number }[] = [];
 
   constructor(private readonly onBurst: (b: Burst) => void) {
     this.channels = new BurstChannels((ch, env, fm, n, iq) => this.onChannel(ch, env, fm, n, iq), ch => this.onEnd(ch));
@@ -134,10 +139,21 @@ export class AnalyzerCapture implements IqProcessor {
       return this.held.some(h => h.b !== b && over(...AnalyzerCapture.span(h.b), h.b.hz) && beats(h.b.snr, h.spread, b, bSpread))
         || this.recent.some(r => over(r.t0, r.t1, r.hz) && beats(r.snr, r.spread, b, bSpread));
     };
+    // A strong signal close to an overloaded radio (a key held at the antenna, gain up) shows up again a few hundred
+    // kHz away as weaker copies that start at the same instant. A burst starting within a few ms of one at least
+    // 10 dB stronger is such a copy, unless a decoder found something in it.
+    const image = (b: Burst) => {
+      if (b.matches.length) return false;
+      const near = (t: number, snr: number) => Math.abs(t - b.t) < IMAGE_ONSET_S && snr >= b.snr + IMAGE_DB;
+      return this.held.some(h => h.b !== b && near(h.b.t, h.b.snr)) || this.onsets.some(w => near(w.t, w.snr));
+    };
     for (let i = 0; i < this.held.length;) {
       const h = this.held[i];
       if (!all && now - h.end < HOLD_S) { i++; continue; }
-      if (!shadowed(h.b, h.spread)) {
+      const copy = image(h.b);
+      this.onsets.push({ t: h.b.t, snr: h.b.snr });
+      if (this.onsets.length > 32) this.onsets.shift();
+      if (!copy && !shadowed(h.b, h.spread)) {
         const [t0, t1] = AnalyzerCapture.span(h.b);
         this.recent.push({ t0, t1, hz: h.b.hz, snr: h.b.snr, spread: h.spread });
         if (this.recent.length > 16) this.recent.shift();

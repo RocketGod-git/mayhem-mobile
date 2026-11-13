@@ -685,6 +685,9 @@ export class Scope {
 
   private overlay(): void {
     const g = this.wfCtx, w = this.cols, h = this.rows, dpr = this.ui();
+    // labels never pile up: each goes right of its box, else under it, else is left off
+    const placed: [number, number, number, number][] = [];
+    const free = (x: number, y: number, rw: number, rh: number) => placed.every(([px, py, pw, ph]) => x + rw <= px || px + pw <= x || y + rh <= py || py + ph <= y);
     for (const b of this.markBoxes()) {
       const a = b.m.alpha ?? 1;
       if (a <= 0) continue;
@@ -695,9 +698,15 @@ export class Scope {
       if (b.m.bold) { g.globalAlpha = a * 0.2; g.fillRect(b.x, b.y, b.w, b.h); g.globalAlpha = a; }
       if (b.m.label) {
         g.font = `bold ${Math.round(10 * dpr)}px ui-monospace, Menlo, Consolas, monospace`; g.textAlign = 'left'; g.textBaseline = 'top';
-        const tw = g.measureText(b.m.label).width, x = Math.min(w - tw - 3 * dpr, b.x + b.w + 3 * dpr), y = Math.max(0, b.y);
-        g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(x - 2 * dpr, y, tw + 4 * dpr, 12 * dpr);
-        g.fillStyle = b.m.color; g.fillText(b.m.label, x, y + dpr);
+        const tw = g.measureText(b.m.label).width, lh = 12 * dpr;
+        const spots: [number, number][] = [[Math.min(w - tw - 3 * dpr, b.x + b.w + 3 * dpr), Math.max(0, b.y)], [Math.max(2 * dpr, Math.min(w - tw - 3 * dpr, b.x)), Math.min(h - lh, b.y + b.h + 2 * dpr)]];
+        const at = spots.find(([x, y]) => free(x - 2 * dpr, y, tw + 4 * dpr, lh));
+        if (at) {
+          const [x, y] = at;
+          placed.push([x - 2 * dpr, y, tw + 4 * dpr, lh]);
+          g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(x - 2 * dpr, y, tw + 4 * dpr, lh);
+          g.fillStyle = b.m.color; g.fillText(b.m.label, x, y + dpr);
+        }
       }
       g.globalAlpha = 1;
     }

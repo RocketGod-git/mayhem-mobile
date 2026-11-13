@@ -93,6 +93,7 @@ import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.analyzer.AnBurst
 import com.rocketgod.mayhem.core.analyzer.Alignment as BitAlignment
 import com.rocketgod.mayhem.core.analyzer.Analysis
+import com.rocketgod.mayhem.core.analyzer.informative
 import com.rocketgod.mayhem.core.analyzer.Analyzer
 import com.rocketgod.mayhem.core.analyzer.BurstMeta
 import com.rocketgod.mayhem.core.analyzer.CODINGS
@@ -193,7 +194,7 @@ private fun whereOf(a: AnBurst): String =
 private fun whenOf(a: AnBurst): String = if (a.b.src != null) fmt("+%.3f s", a.b.t) else Devices.clock(a.b.wall)
 
 /** The longest frame of a reading. */
-private fun bestOf(a: Analysis): Frame? = a.frames.maxByOrNull { it.bits.length }
+private fun bestOf(a: Analysis): Frame? = a.frames.filter { informative(it.bits) }.maxByOrNull { it.bits.length } ?: a.frames.maxByOrNull { it.bits.length }
 
 /** What a pick in the detail panel is waiting to save, for the document picker. */
 private class PendingSave(val bytes: ByteArray)
@@ -265,15 +266,19 @@ fun AnalyzerScreen(accent: Color) {
     // labeled with where it was and what it is, fading over 30 s; tapping one opens its transmission
     val rate = SdrEngine.currentRate()
     val boxes = remember(bursts, txs, sel, openTx, freq, rate) {
+        // one label per press, on its strongest frame: what it is, or (unnamed) where it is; the rest are boxed only,
+        // so a key heard on three channels does not stack six copies of its name
+        val top = txs.associate { t -> t.id to (bursts.filter { it.b.id in t.ids }.maxByOrNull { it.b.snr }?.b?.id ?: -1) }
         if (rate <= 0) emptyList() else bursts.filter { it.b.src == null && it.center != 0L }.map { x ->
             // the capture stamps a burst when its channel lets go, about 60 ms after the carrier ends
             val t1 = x.b.wall - 60
             val t0 = t1 - Math.round(max(max(x.b.n / x.b.rate * 1000 - 70, x.b.ms), 4.0))
             val tx = txs.firstOrNull { x.b.id in it.ids }
-            val name = x.b.matches.firstOrNull()?.let { shortLabel(it) } ?: ""
+            val lead = tx == null || top[tx.id] == x.b.id
+            val name = tx?.label?.takeIf { it.isNotEmpty() }?.let { shortLabel(it) } ?: x.b.matches.firstOrNull()?.let { shortLabel(it) } ?: ""
             WfMark(tx?.id ?: x.b.id, t0, t1, (0.5 + (Analyzer.freqOf(x) - freq) / rate).toFloat(), (max(20_000.0, if (x.auto.mod == Mod.FSK) x.auto.shiftHz * 1.6 else 0.0) / rate).toFloat(),
                 modColor(x.auto.mod), bold = x.b.id == sel || (openTx != 0 && tx?.id == openTx),
-                label = fmt("%.3f", Analyzer.freqOf(x) / 1e6) + if (name.isNotEmpty()) " $name" else "", fadeMs = 30_000L)
+                label = if (!lead) "" else name.ifEmpty { fmt("%.3f", Analyzer.freqOf(x) / 1e6) }, fadeMs = 30_000L)
         }
     }
     AdaptivePane(
@@ -364,8 +369,11 @@ private fun shortLabel(m: String): String = m.substringAfter(": ", m)
  * The frame that stands for a transmission: the member most of the others are the same frame as (ties: the stronger).
  * The first is often an FSK key's bare carrier, not a packet.
  */
-private fun repOf(ms: List<AnBurst>): AnBurst =
-    ms.maxWithOrNull(compareBy<AnBurst>({ x -> ms.count { y -> y !== x && sameFrame(x.best, y.best) } }, { it.b.snr })) ?: ms.first()
+private fun repOf(ms: List<AnBurst>): AnBurst {
+    // a key's wake-ups agree with each other too: among copies that carry data when any do
+    val pool = ms.filter { informative(it.best) }.ifEmpty { ms }
+    return pool.maxWithOrNull(compareBy<AnBurst>({ x -> ms.count { y -> y !== x && sameFrame(x.best, y.best) } }, { it.b.snr })) ?: ms.first()
+}
 
 /** The frames read like this one, for COMPARE from a burst. */
 private fun similarTo(sel: AnBurst, bursts: List<AnBurst>): List<AnBurst> {
