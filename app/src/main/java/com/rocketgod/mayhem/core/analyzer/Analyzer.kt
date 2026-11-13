@@ -403,8 +403,12 @@ object Analyzer {
  * Twin of the web app's bestOf().
  */
 fun bestFrame(frames: List<Frame>): String {
-    fun longest(fs: List<Frame>) = fs.fold("") { a, f -> if (f.bits.length > a.length) f.bits else a }
-    return longest(frames.filter { informative(it.bits) }).ifEmpty { longest(frames) }
+    // of the frames that carry data, the one most of them agree with (a remote repeats one code; the first copy often
+    // picks up a stray leading bit), the longer on a tie
+    val pool = frames.map { it.bits }.filter { informative(it) }.ifEmpty { frames.map { it.bits } }
+    var best = ""; var bestN = -1
+    for (f in pool) { val n = pool.count { it == f }; if (n > bestN || (n == bestN && f.length > best.length)) { best = f; bestN = n } }
+    return best
 }
 
 /**

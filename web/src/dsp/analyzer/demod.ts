@@ -251,13 +251,22 @@ function pairStats(frames: { runs: Run[] }[]): { marks: number[]; spaces: number
 }
 
 const cv = (v: number[]) => { if (v.length < 2) return 1; const m = v.reduce((a, b) => a + b, 0) / v.length; let s = 0; for (const x of v) s += (x - m) * (x - m); return Math.sqrt(s / v.length) / m; };
+/**
+ * Whether most of a set of periods are one length: 85% of them within 15% of the median. Robust to the few long gaps
+ * (a frame's sync) that a plain spread measure would let swamp a steady pulse-width code.
+ */
+const steady = (v: number[]) => {
+  if (v.length < 4) return false;
+  const m = [...v].sort((a, b) => a - b)[v.length >> 1];
+  return v.filter(x => Math.abs(x - m) <= 0.15 * m).length >= 0.85 * v.length;
+};
 /** Two widths, each at least 15% of the whole, the longer at least 1.5 times the shorter. */
 const twoWidths = (v: number[]) => { if (v.length < 4) return false; const t = twoMeans(v); return t.b >= t.a * 1.5 && t.share >= 0.15 && t.share <= 0.85; };
 
 /** Which line coding fits the runs, measured against symbol `u` (samples). */
 export function codingOf(frames: { runs: Run[] }[], u: number): Coding {
   const { marks, spaces, periods } = pairStats(frames);
-  if (twoWidths(marks) && cv(periods) < 0.15) return 'PWM';
+  if (twoWidths(marks) && steady(periods)) return 'PWM';
   let one = 0, two = 0, all = 0;
   for (const f of frames) for (const r of f.runs) { const k = Math.round(r.n / u); all++; if (k <= 1) one++; else if (k === 2) two++; }
   // (a frame that is mostly preamble is nearly all double runs: a couple of single ones are enough)
