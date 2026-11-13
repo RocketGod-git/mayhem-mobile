@@ -90,6 +90,8 @@ export class AnalyzerUi {
   private sel = 0;
   /** The full-screen view is open on `sel`. */
   private opened = false;
+  /** The card list as last put on screen, so an unchanged list is not rebuilt. */
+  private listHtml = '';
   private view: View = 'amp';
   private fmt: Fmt = 'hex';
   private zoom: [number, number] | null = null;
@@ -392,12 +394,11 @@ export class AnalyzerUi {
     if (list) {
       const top = list.scrollTop;
       const shown = this.txs().filter(t => !this.starredOnly || t.members.some(m => m.star));
-      list.innerHTML = shown.length
+      const html = shown.length
         ? [...shown].reverse().map(t => (t.members.length === 1 ? this.card(t.members[0]) : this.txCard(t))).join('')
         : (this.starredOnly ? this.host.empty('Nothing starred yet', ['Open a burst and tap ☆ to keep it here']) : this.host.empty());
-      list.scrollTop = top;
-      const byId = new Map(this.bursts.map(x => [x.id, x]));
-      list.querySelectorAll<HTMLCanvasElement>('canvas[data-thumb]').forEach(cv => { const x = byId.get(+cv.dataset.thumb!); if (x) paintThumb(cv, x); });
+      // the stats tick several times a second; rebuilding an unchanged list each time is work the waterfall pays for
+      if (html !== this.listHtml || !list.childElementCount) { this.listHtml = html; list.innerHTML = html; list.scrollTop = top; }
     }
     this.marks();
     const modal = $('an-modal'), det = $('an-detail');
@@ -427,7 +428,7 @@ export class AnalyzerUi {
     return `<div class="mt-card dv-card an-card k-${a.mod.toLowerCase()} ${this.sel === b.id ? 'sel' : ''}" data-an="${b.id}">`
       + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(hz)}</b><small>${b.name ? `<em class="an-name">${esc(b.name)}</em>` : b.src ? esc(b.src) : `burst ${b.id}`}</small></span><span class="mt-live">${esc(when)}</span>${starBtn(b.id, b.star)}</div>`
       + `<div class="an-big"><b>${esc(big)}</b><small>${esc(sub)}</small></div>`
-      + `<canvas class="an-thumb" data-thumb="${b.id}"></canvas>`
+      + `<img class="an-thumb" alt="" src="${thumbUrl(b)}">`
       + (b.best ? `<div class="mt-hex">${esc(bitsToHex(b.best))}</div>` : '')
       + (pills ? `<div class="an-match">${pills}</div>` : '')
       + (b.note ? `<div class="an-note">${esc(b.note)}</div>` : '')
@@ -450,7 +451,7 @@ export class AnalyzerUi {
     return `<div class="mt-card dv-card an-card an-txcard k-${a.mod.toLowerCase()} ${open || t.ids.includes(this.sel) ? 'sel' : ''}" data-an="${t.id}">`
       + `<div class="mt-h"><span class="dv-glyph">${WAVE_GLYPH}</span><span class="mt-k"><b>${esc(rep.center ? mhz(t.freqs[0]) : where)}</b><small>${name ? `<em class="an-name">${esc(name)}</em>` : m0.src ? esc(m0.src) : `transmission ${t.id}`}</small></span><span class="mt-live">${esc(when)}</span>${starBtn(t.id, t.members.some(x => x.star))}</div>`
       + `<div class="an-big"><b>${esc(big)}</b><small>${t.ids.length} frames on ${chans} · ${esc(where)}</small></div>`
-      + `<canvas class="an-thumb" data-thumb="${rep.id}"></canvas>`
+      + `<img class="an-thumb" alt="" src="${thumbUrl(rep)}">`
       + (rep.best ? `<div class="mt-hex">${esc(bitsToHex(rep.best))}</div>` : '')
       + (pills ? `<div class="an-match">${pills}</div>` : '')
       + `<div class="dv-foot"><span>${((t.end - t.t) * 1000).toFixed(0)} ms in all</span><span>${snr.toFixed(0)} dB SNR best</span></div>`
@@ -1165,27 +1166,37 @@ function bestOf(a: Analysis): string {
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 
 
-/** A card's thumbnail: the burst's envelope, peak per column, in the card's color, so a card shows it holds a waveform. */
-function paintThumb(cv: HTMLCanvasElement, b: AnBurst): void {
-  const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(1, Math.round(cv.clientWidth * dpr)), h = Math.max(1, Math.round(cv.clientHeight * dpr));
-  if (cv.width !== w) cv.width = w;
-  if (cv.height !== h) cv.height = h;
-  const g = cv.getContext('2d'), env = b.env;
-  if (!g || !env) return;
-  const n = Math.min(b.n, env.length);
-  g.clearRect(0, 0, w, h);
-  if (n < 2) return;
-  const peaks = new Float32Array(w);
-  let top = 1;
-  for (let x = 0; x < w; x++) {
-    const i0 = Math.floor(x * n / w), i1 = Math.max(i0 + 1, Math.floor((x + 1) * n / w));
-    let m = 0;
-    for (let i = i0; i < i1 && i < n; i++) { const v = Math.abs(env[i]); if (v > m) m = v; }
-    peaks[x] = m; if (m > top) top = m;
+/** The card colors by modulation (the --kind of .an-card.k-*). */
+const KIND_HEX: Record<string, string> = { OOK: '#ffb020', ASK: '#b48cff', FSK: '#3fd0c9' };
+const thumbs = new Map<number, string>();
+/**
+ * A card's thumbnail: the burst's envelope, the peak of each slice, in the card's color, so a card shows it holds a
+ * waveform to open. Drawn ONCE per burst and kept as an image: the list is rebuilt several times a second while the
+ * Analyzer watches, and painting every card's thumbnail from the whole burst each time stalled the page (and the
+ * waterfall with it).
+ */
+function thumbUrl(b: AnBurst): string {
+  let u = thumbs.get(b.id);
+  if (u) return u;
+  const W = 240, H = 40;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d'), env = b.env, n = Math.min(b.n, env?.length ?? 0);
+  if (g && n >= 2) {
+    const peaks = new Float32Array(W);
+    let top = 1;
+    for (let x = 0; x < W; x++) {
+      const i0 = Math.floor(x * n / W), i1 = Math.max(i0 + 1, Math.floor((x + 1) * n / W));
+      let m = 0;
+      for (let i = i0; i < i1 && i < n; i++) { const v = Math.abs(env[i]); if (v > m) m = v; }
+      peaks[x] = m; if (m > top) top = m;
+    }
+    g.fillStyle = KIND_HEX[b.auto.mod] ?? '#4c8dff';
+    for (let x = 0; x < W; x++) { const ph = Math.max(1, peaks[x] / top * (H - 3)); g.fillRect(x, H - 1 - ph, 1, ph); }
   }
-  g.fillStyle = getComputedStyle(cv).color;
-  for (let x = 0; x < w; x++) { const ph = Math.max(dpr, peaks[x] / top * (h - 2 * dpr)); g.fillRect(x, h - dpr - ph, 1, ph); }
+  u = cv.toDataURL();
+  if (thumbs.size > 600) thumbs.delete(thumbs.keys().next().value!);
+  thumbs.set(b.id, u);
+  return u;
 }
 
 /** A card's star: tap to keep it (through CLEAR, and in STARRED), tap again to let it go. */
