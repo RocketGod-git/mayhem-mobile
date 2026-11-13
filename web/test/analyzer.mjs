@@ -343,6 +343,17 @@ const packets = [];
   check(DEFAULT_FILTER.dataOnly && !NO_FILTER.dataOnly, 'data only: on by default');
 }
 
+// ---- one press, one stale label: grouped by protocol, named by the majority; another button 2 s later stays apart --
+{
+  const lr = (id, t, hz, l) => ({ id, t, dur: 0.02, hz, matches: [`car key: Land Rover FSK ${l}`], bits: '1010' });
+  const tx = groupPresses([lr(1, 0, 315.0e6, '80E32F'), lr(2, 0.1, 314.7e6, '80E32F'), lr(3, 2.0, 315.0e6, '80E32F'), lr(4, 2.1, 314.7e6, 'C0E32F'), lr(5, 2.2, 315.3e6, 'C0E32F')]);
+  check(tx.length === 2 && tx[1].ids.length === 3, 'group: a stale label on one copy does not split a press');
+  check(tx[1].label.endsWith('C0E32F') && tx[0].label.endsWith('80E32F'), 'group: a press is named by what most of its copies say');
+  const wake = { id: 9, t: 5.0, dur: 0.12, hz: 315.0e6, matches: [], bits: '10'.repeat(60) };
+  const data = { id: 10, t: 5.2, dur: 0.02, hz: 314.7e6, matches: ['car key: Land Rover FSK C0E32F'], bits: '1101001110100010110100111' };
+  check(groupPresses([wake, data]).length === 1, 'group: an unnamed wake-up preamble goes with the press it is heard in');
+}
+
 // ---- an overloaded radio: a strong key's weaker copy elsewhere in the span is dropped, a weak key of its own is not --
 {
   // its own generator, so the shared one's sequence (and every test after this) is unchanged

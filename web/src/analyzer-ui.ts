@@ -15,7 +15,7 @@ import { align, similar, type Alignment } from './dsp/analyzer/align.js';
 import { decodeBundle, encodeBundle, exportName, freqFromName, toCs8, toCu8, toSub } from './dsp/analyzer/files.js';
 import { checkHolds, dataStart, fieldValue, recognize, suggest, FIELD_KINDS, type CheckFound, type Field, type FieldKind, type Protocol } from './dsp/analyzer/fields.js';
 import { DEFAULT_FILTER, NO_FILTER, hasData, passes, type Burst, type CaptureFilter } from './dsp/analyzer/capture.js';
-import { groupPresses, sameFrame, type Transmission } from './dsp/analyzer/group.js';
+import { groupPresses, informative, sameFrame, type Transmission } from './dsp/analyzer/group.js';
 import { store, type StoredBurst } from './analyzer-store.js';
 import { classCsv, clockDrift, frameSegments, framesCsv, levels, pulseCsv, pulseTable, samplesCsv, selectionCsv, symbolFit, type FrameSeg, type Levels, type PulseClass, type PulseTable } from './dsp/analyzer/measure.js';
 import { fmtTime, innerMask, paintHistogram, paintMini, paintTrace, valueAt, type View } from './analyzer-paint.js';
@@ -211,7 +211,7 @@ export class AnalyzerUi {
   /** The Analyzer's own part of the screen, under the waterfall and the band presets main.ts draws. */
   html(): string {
     return `
-      <div class="ctlrow an-ctlrow"><button id="an-cap" class="tog">CAPTURE</button><button id="an-imp" class="tog">IMPORT</button><button id="an-filt" class="tog">FILTER</button><button id="an-star" class="tog">☆ STARRED</button><button id="an-sess" class="tog">EXPORT SESSION</button><input id="an-file" type="file" accept=".cu8,.cs8,.u8,.iq,.raw,.sub,.mmanalyzer" hidden><span class="row an-grow"></span><button class="ib" id="an-clear" title="clear (starred bursts stay; tap twice to clear them too)" aria-label="clear">✕</button></div>
+      <div class="ctlrow an-ctlrow"><button id="an-full" class="tog">FULL LIST</button><button id="an-cap" class="tog">CAPTURE</button><button id="an-imp" class="tog">IMPORT</button><button id="an-filt" class="tog">FILTER</button><button id="an-star" class="tog">☆ STARRED</button><button id="an-sess" class="tog">EXPORT SESSION</button><input id="an-file" type="file" accept=".cu8,.cs8,.u8,.iq,.raw,.sub,.mmanalyzer" hidden><span class="row an-grow"></span><button class="ib" id="an-clear" title="clear (starred bursts stay; tap twice to clear them too)" aria-label="clear">✕</button></div>
       <div id="an-filter" class="an-filter" hidden></div>
       <div id="an-stats" class="mt-sum"><div>listening&hellip;</div></div>
       <div id="an-list" class="mt-cards an-cards"></div>
@@ -234,6 +234,13 @@ export class AnalyzerUi {
       const bytes = await f.arrayBuffer();
       if (/\.mmanalyzer$/i.test(f.name)) this.importSession(new Uint8Array(bytes), f.name);
       else this.host.post({ type: 'analyzer', cmd: 'import', name: f.name, bytes }, [bytes]);
+    };
+    // the list full screen: the readout and the waterfall step aside for it, and come back
+    $('an-full').onclick = () => {
+      const v = this.root?.closest('.view') ?? document.querySelector('.view.analyzer');
+      const on = !v?.classList.contains('an-listfull');
+      v?.classList.toggle('an-listfull', on);
+      const b = $('an-full'); if (b) { b.textContent = on ? 'WATERFALL' : 'FULL LIST'; b.classList.toggle('on', on); }
     };
     $('an-filt').onclick = () => { this.showFilter = !this.showFilter; this.draw(); };
     $('an-star').onclick = () => { this.starredOnly = !this.starredOnly; this.draw(); };
@@ -1095,25 +1102,16 @@ function repOf(t: Tx): AnBurst {
   return best;
 }
 /**
- * The frame a card shows and protocols are matched on: the longest one that carries information. A key that sends an
- * all-ones wake-up frame between its data frames would otherwise show the wake-up (FFFF…) whenever it is a bit longer.
+ * The frame a card shows and protocols are matched on: of the frames that carry data, the one most of them agree with
+ * (a remote repeats one code; the first copy often picks up a stray leading bit), the longer on a tie. A key's
+ * all-ones or 1010 wake-up never wins over a data frame.
  */
 function bestOf(a: Analysis): string {
-  const longest = (fs: { bits: string }[]) => fs.reduce((s, f) => (f.bits.length > s.length ? f.bits : s), '');
-  return longest(a.frames.filter(f => informative(f.bits))) || longest(a.frames);
-}
-/**
- * Whether a frame carries data: it changes at least every 16 bits on average, and is not one short pattern over and
- * over (a wake-up preamble: 1010…, 1100…), which repeats with a period of 8 bits or less across 90% of it.
- */
-function informative(bits: string): boolean {
-  let t = 0; for (let i = 1; i < bits.length; i++) if (bits[i] !== bits[i - 1]) t++;
-  if (t < Math.max(2, bits.length / 16)) return false;
-  for (let p = 1; p <= 8 && p < bits.length; p++) {
-    let same = 0; for (let i = p; i < bits.length; i++) if (bits[i] === bits[i - p]) same++;
-    if (same >= 0.9 * (bits.length - p)) return false;
-  }
-  return true;
+  const pool = a.frames.map(f => f.bits).filter(informative);
+  const fs = pool.length ? pool : a.frames.map(f => f.bits);
+  let best = '', bestN = -1;
+  for (const f of fs) { const n = fs.filter(g => g === f).length; if (n > bestN || (n === bestN && f.length > best.length)) { best = f; bestN = n; } }
+  return best;
 }
 function sameFilter(a: CaptureFilter, b: CaptureFilter): boolean { return (Object.keys(a) as (keyof CaptureFilter)[]).every(k => a[k] === b[k]); }
 

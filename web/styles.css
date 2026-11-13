@@ -1552,3 +1552,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* the Analyzer's waterfall keeps its height: without it the growing burst list squeezed it a little with every card */
 .view.analyzer .visual { flex: none; }
 .view.analyzer .visual > .scope, .view.analyzer .visual > .scope.short { flex: none; height: clamp(200px, 34vh, 420px); min-height: 200px; }
+
+/* FULL LIST: the readout, the waterfall and the band tiles step aside, and the burst list takes the screen */
+.view.analyzer.an-listfull .visual, .view.analyzer.an-listfull .controls > .hs:has(.tiles.wide) { display: none; }
+.view.analyzer.an-listfull .an-cards { max-height: none; }

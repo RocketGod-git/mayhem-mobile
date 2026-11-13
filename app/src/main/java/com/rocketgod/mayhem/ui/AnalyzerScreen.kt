@@ -214,6 +214,8 @@ internal object UiState {
     var fmt by mutableStateOf(1)
     var selOnly by mutableStateOf(false)
     var starredOnly by mutableStateOf(false)
+    /** The list full screen: the readout and the waterfall step aside for it. */
+    var listFull by mutableStateOf(false)
     var showFilter by mutableStateOf(false)
     var showProtocols by mutableStateOf(false)
 }
@@ -283,7 +285,8 @@ fun AnalyzerScreen(accent: Color) {
     }
     AdaptivePane(
         share = true,
-        face = {
+        noVisual = UiState.listFull,
+        face = if (UiState.listFull) null else ({
             FreqCard(accent, tag = "ANALYZER", title = "CAPTURE · DEMOD · COMPARE", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
                 right = "${txs.size} transmission${if (txs.size == 1) "" else "s"}",
                 lamp = {
@@ -293,7 +296,7 @@ fun AnalyzerScreen(accent: Color) {
                         else -> Lamp("WATCHING", Palette.accent2, blink = true)
                     }
                 })
-        },
+        }),
         visual = { m ->
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
@@ -303,8 +306,10 @@ fun AnalyzerScreen(accent: Color) {
         }
     ) {
         Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            TileRow(Analyzer.BANDS.map { (label, hz) -> Tile(label, "MHz", freq == hz) }, accent, width = 84.dp) { Analyzer.pickFreq(Analyzer.BANDS[it].second) }
+            if (!UiState.listFull) TileRow(Analyzer.BANDS.map { (label, hz) -> Tile(label, "MHz", freq == hz) }, accent, width = 84.dp) { Analyzer.pickFreq(Analyzer.BANDS[it].second) }
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                // first in the row, so it is always in reach: the list full screen, and back to the waterfall
+                ToggleBox(if (UiState.listFull) "WATERFALL" else "FULL LIST", UiState.listFull, accent, Modifier.fillMaxHeight()) { UiState.listFull = !UiState.listFull }
                 ToggleBox("CAPTURE", capturing, accent, Modifier.fillMaxHeight()) { Analyzer.setCapturing(!capturing) }
                 ToggleBox("IMPORT", false, accent, Modifier.fillMaxHeight()) { runCatching { importer.launch(arrayOf("*/*")) } }
                 ToggleBox("FILTER", UiState.showFilter, accent, Modifier.fillMaxHeight()) { UiState.showFilter = !UiState.showFilter }

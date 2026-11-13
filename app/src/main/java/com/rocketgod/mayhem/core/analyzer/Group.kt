@@ -68,10 +68,13 @@ fun groupPresses(bursts: List<GroupIn>, gapS: Double = 0.5): List<Transmission> 
         while (g >= 0 && !joined) {
             val tx = out[g]
             if (b.t - tx.end > gapS || (tx.members[0].src ?: "") != (b.src ?: "")) { if (g < out.size - 4) break; g--; continue }
-            val byDecoder = b.matches.isNotEmpty() && b.matches.any { m -> tx.members.any { x -> m in x.matches } }
+            val byDecoder = b.matches.isNotEmpty() && b.matches.any { m -> tx.members.any { x -> x.matches.any { protocolOf(it) == protocolOf(m) } } }
             val unclaimed = b.matches.isEmpty() || tx.members.all { it.matches.isEmpty() }
             val byFrame = unclaimed && b.bits.isNotEmpty() && tx.members.any { sameFrame(it.bits, b.bits) }
-            if (byDecoder || byFrame) {
+            // a wake-up preamble with no decoder's name on it carries no identity: it goes with the press it is heard in
+            fun blank(x: GroupIn) = x.matches.isEmpty() && !informative(x.bits)
+            val preamble = blank(b) || tx.members.all { blank(it) }
+            if (byDecoder || byFrame || preamble) {
                 tx.members.add(b); tx.ids.add(b.id)
                 tx.end = max(tx.end, b.t + b.dur)
                 if (tx.label.isEmpty() && b.matches.isNotEmpty()) tx.label = b.matches[0]
@@ -86,6 +89,15 @@ fun groupPresses(bursts: List<GroupIn>, gapS: Double = 0.5): List<Transmission> 
         val fs = tx.members.map { it.hz }.sorted()
         val groups = ArrayList<ArrayList<Double>>()
         for (f in fs) { val gg = groups.lastOrNull(); if (gg != null && f - gg.last() <= 30_000) gg.add(f) else groups.add(arrayListOf(f)) }
-        Transmission(tx.id, tx.ids.toList(), tx.label, groups.map { it.sum() / it.size }, tx.t, tx.end)
+        // named by what most of its frames say: one frame's stale or misread label does not name the press
+        val votes = tx.members.mapNotNull { it.matches.firstOrNull() }.groupingBy { it }.eachCount()
+        val label = votes.maxByOrNull { it.value }?.key ?: tx.label
+        Transmission(tx.id, tx.ids.toList(), label, groups.map { it.sum() / it.size }, tx.t, tx.end)
     }
 }
+
+/**
+ * A decoder's reading without the ID or code at its end ("car key: Land Rover FSK 80E32F" → "car key: Land Rover
+ * FSK"): copies of one press go together even when a decoder reads one of them a bit differently.
+ */
+fun protocolOf(label: String): String = label.replace(Regex("\\s+\\S*\\d\\S*$"), "")
