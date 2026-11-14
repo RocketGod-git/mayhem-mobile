@@ -141,8 +141,8 @@ function pocsagBits(pages, damage = {}) {
   for (let i = 0; i < 64; i++) out.push(i & 1);
   return out;
 }
-function run(levels, baud, seed) {
-  const sig = fsk(levels, () => baud, 4500, 48_000, rng(seed));
+function run(levels, baud, seed, offsetHz = 420) {
+  const sig = fsk(levels, () => baud, 4500, 48_000, rng(seed), 0.08, offsetHz);
   const msgs = [];
   const d = new PocsagDecoder((m) => msgs.push(m));
   d.onFm(sig, sig.length, 48_000);
@@ -156,6 +156,12 @@ for (const [baud, inv, seed] of [[512, false, 2], [1200, false, 3], [2400, false
   eq(a?.page.text, FIRE, `POCSAG ${baud}${inv ? ' inverted' : ''}: the alpha page`);
   ok(a?.page.kind === 'ALPHA' && a?.page.rate === String(baud) && a?.page.errors === 0, `POCSAG ${baud}: alpha, its rate, whole`, JSON.stringify(a?.page));
   eq(n?.page.text, '5551234', `POCSAG ${baud}${inv ? ' inverted' : ''}: the numeric page`);
+}
+// a cheap radio's frequency error puts the carrier a kilohertz or two off: the slicer has to follow it
+for (const baud of [512, 1200, 2400]) for (const inv of [false, true]) for (const off of [1500, -2500]) {
+  const got = run(pocsagBits(PAGES).map(b => (b === 1) !== inv ? -1 : 1), baud, baud + off, off);
+  eq(got.find(m => m.page.cap === 1234567)?.page.text, FIRE, `POCSAG ${baud}${inv ? ' inverted' : ''} ${off} Hz off: the alpha page`);
+  eq(got.find(m => m.page.cap === 765432)?.page.text, '5551234', `POCSAG ${baud}${inv ? ' inverted' : ''} ${off} Hz off: the numeric page`);
 }
 {
   // the alpha page's third message codeword wrecked (three bits, past what the code fixes): its place is kept

@@ -71,8 +71,8 @@ const ais = new AisDecoder(emit);
 const aprs = new AprsDecoder(emit);
 const pocsag = new PocsagDecoder(emit);
 const flex = new FlexDecoder(emit);
-/** Pager RX: FLEX first (the default), POCSAG optionally alongside on the same discriminator (what PDW does). */
-let pagerWhich: 'flex' | 'pocsag' | 'both' = 'flex';
+/** Pager RX: FLEX and POCSAG side by side on the same discriminator by default (what PDW does), or just one. */
+let pagerWhich: 'flex' | 'pocsag' | 'both' = 'both';
 const pager: IqProcessor = {
   wantsFm: true,
   reset() { pocsag.reset(); flex.reset(); },

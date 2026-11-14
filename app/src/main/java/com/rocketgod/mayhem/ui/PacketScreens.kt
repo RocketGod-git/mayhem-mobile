@@ -339,7 +339,7 @@ private fun ActivityStrip(messages: List<PagerMessage>, accent: Color, modifier:
     }
 }
 
-/** Pager display settings shared by the feed and Settings › FLEX. */
+/** Pager display settings shared by the feed and Settings › Pagers. */
 object PagerUi {
     var fold by mutableStateOf(true)
     /** Show pages that came in too damaged to read anything (hidden unless asked for). */
@@ -359,7 +359,7 @@ private class PagerFilter {
     var capcode by mutableStateOf<Long?>(null)
     /** Only what came in on this channel. */
     var hz by mutableStateOf<Long?>(null)
-    /** Fold the same text sent again within [FOLD_MS] into one card. One setting: the feed's pill and Settings › FLEX. */
+    /** Fold the same text sent again within [FOLD_MS] into one card. One setting: the feed's pill and Settings › Pagers. */
     var fold: Boolean
         get() = PagerUi.fold
         set(v) { PagerUi.fold = v }

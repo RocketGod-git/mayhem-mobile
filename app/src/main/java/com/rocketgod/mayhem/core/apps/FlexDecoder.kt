@@ -414,19 +414,38 @@ class FlexDecoder(private val log: PacketLog) : IqProcessor {
 }
 
 /** Pager RX: FLEX by default, POCSAG optionally alongside on the same discriminator stream (what PDW does on a PC). */
-class PagerDecoder(log: PacketLog) : IqProcessor {
+class PagerDecoder(private val log: PacketLog) : IqProcessor {
     enum class Which(val label: String) { FLEX("FLEX"), POCSAG("POCSAG"), BOTH("FLEX + POCSAG") }
-    val pocsag = PocsagDecoder(log)
     val flex = FlexDecoder(log)
-    private val _which = MutableStateFlow(Which.FLEX)
+    /** POCSAG goes through the same decoder as the multi-channel hunter: it tracks the carrier's offset (a radio's
+     *  frequency error is a DC on the discriminator), which the older single-channel decoder did not. */
+    private var pocsag: com.rocketgod.mayhem.core.pager.PocsagDecoder? = null
+    private var pocsagRate = 0
+    private val sink = object : com.rocketgod.mayhem.core.pager.PagerSink {
+        override fun onPage(p: com.rocketgod.mayhem.core.pager.PagerPage) {
+            val func = p.where.removePrefix("func ").toIntOrNull() ?: 0
+            val body = when (p.kind) {
+                com.rocketgod.mayhem.core.pager.PageKind.TONE -> "TONE"
+                com.rocketgod.mayhem.core.pager.PageKind.ALPHA -> "ALPHA: ${p.text}"
+                else -> "NUM: ${p.text}"
+            }
+            log.add("RIC %07d F%d %4sbps %s".format(p.capcode, func, p.rate, body))
+        }
+        override fun onSync(protocol: String, rate: String) {}
+    }
+    // Both by default: a channel can carry either, and FLEX alone left POCSAG audible but never decoded.
+    private val _which = MutableStateFlow(Which.BOTH)
     val which: StateFlow<Which> = _which.asStateFlow()
     fun select(w: Which) { _which.value = w }
     override val wantsFm: Boolean get() = true
-    override fun reset(rate: Int) { pocsag.reset(rate); flex.reset(rate) }
+    override fun reset(rate: Int) { pocsag = null; pocsagRate = 0; flex.reset(rate) }
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {}
     override fun onFm(samples: FloatArray, n: Int, rate: Int) {
         val w = _which.value
         if (w != Which.POCSAG) flex.onFm(samples, n, rate)
-        if (w != Which.FLEX) pocsag.onFm(samples, n, rate)
+        if (w != Which.FLEX) {
+            if (pocsag == null || rate != pocsagRate) { pocsagRate = rate; pocsag = com.rocketgod.mayhem.core.pager.PocsagDecoder(sink, rate.toDouble()) }
+            pocsag!!.push(samples, n)
+        }
     }
 }

@@ -138,6 +138,24 @@ class PagerDecodersTest {
     @Test fun pocsag2400() = pocsagRun(2400, false, 4)
     @Test fun pocsag1200Inverted() = pocsagRun(1200, true, 5)
 
+    /** The SINGLE channel mode's decoder on the receiver's FM output, at a carrier offset a cheap radio really has. */
+    private fun singleRun(baud: Int, invert: Boolean, offsetHz: Double, seed: Int): List<String> {
+        val bits = pocsagBits(listOf(Triple(1234567L, 3, "CODE BLUE RM 412 EAST")), setOf(1234567L))
+        val levels = bits.map { if ((it == 1) != invert) -1.0 else 1.0 }
+        val sig = fsk(levels, { baud }, 4500.0, 48_000.0, Random(seed), offsetHz = offsetHz)
+        val log = com.rocketgod.mayhem.core.PacketLog()
+        val d = com.rocketgod.mayhem.core.apps.PagerDecoder(log)
+        d.reset(48_000); d.onFm(sig, sig.size, 48_000)
+        return log.lines.value
+    }
+
+    @Test fun singleChannelDecodesPocsagByDefault() {
+        for (baud in intArrayOf(512, 1200, 2400)) for (inv in listOf(false, true)) for (off in doubleArrayOf(0.0, 1500.0, -2500.0)) {
+            val lines = singleRun(baud, inv, off, baud + off.toInt())
+            assertTrue("SINGLE POCSAG $baud inv=$inv offset $off: $lines", lines.any { "CODE BLUE RM 412 EAST" in it })
+        }
+    }
+
     // ---------------------------------------------------------------- FLEX
 
     private fun withChecksum(d: Int): Int {
@@ -529,4 +547,97 @@ class PagerDecodersTest {
             PagerEngine.isCallOut("PATIENT: Richard B") && PagerEngine.isCallOut("CODE TEST") && !PagerEngine.isCallOut("Bed Clean - Routine")
         assertTrue("WARNING, CRITICAL, PATIENT and CODE make a call-out; routine traffic does not", re)
     }
+
+    // ---------------------------------------------------------------- POCSAG over the air, through the hunter
+
+    /**
+     * A bursty POCSAG transmitter in a wide RTL-SDR-style span (u8 IQ), run through the whole hunter: the span
+     * survey has to find the carrier, give it a receiver, and the receiver has to decode it. Real POCSAG keys up
+     * only to send (unlike FLEX, which never stops), with the radio's own frequency error on top and the data
+     * low-pass shaped by the transmitter. [gapS] is the quiet time between transmissions.
+     */
+    private fun airRun(baud: Int, invert: Boolean, seed: Int, rate: Int = 2_400_000, bursts: Int = 3, gapS: Double = 4.0,
+                       errHz: Double = 1800.0, amp: Double = 20.0, chanOff: Long = 312_500L, devHz: Double = 4500.0): List<PagerPage> {
+        val center = 152_000_000L; val chan = center + chanOff
+        val text = "CODE BLUE RM 412 EAST"
+        val bits = pocsagBits(listOf(Triple(1234567L, 3, text), Triple(765432L, 0, "5551234")), setOf(1234567L))
+        val sps = rate.toDouble() / baud
+        val noise = DoubleArray(1 shl 16).also { val r = Random(seed); for (i in it.indices) it[i] = r.nextGaussian() }
+        var lcg = seed.toLong() * 2654435761L + 1
+        fun nz(): Double { lcg = lcg * 6364136223846793005L + 1442695040888963407L; return noise[(lcg ushr 48).toInt()] }
+        val e = PagerEngine
+        var t = 1_700_000_000_000L
+        e.clock = { t }
+        e.stop(); e.clear(); e.setHunting(true); e.start()
+        val n = 131_072; val buf = ByteArray(2 * n)
+        var ph = 0.0; var shaped = 0.0
+        val alpha = 1.0 - kotlin.math.exp(-2 * PI * 0.6 * baud / rate)   // ~0.6 x baud transmitter low-pass
+        val burstLen = (bits.size * sps).toLong()
+        val gap = (gapS * rate).toLong()
+        val lead = (3.0 * rate).toLong()
+        val total = lead + bursts * (burstLen + gap)
+        var s = 0L
+        while (s < total) {
+            for (k in 0 until n) {
+                val at = s + k
+                var on = false; var dev = 0.0
+                if (at >= lead) {
+                    val q = (at - lead) % (burstLen + gap)
+                    if (q < burstLen) {
+                        on = true
+                        val b = bits[(q / sps).toInt().coerceAtMost(bits.size - 1)]
+                        dev = if ((b == 1) != invert) -devHz else devHz   // POCSAG: a 1 is the low tone
+                    }
+                }
+                shaped += (dev - shaped) * alpha
+                var a = nz() * 4.0 + 5.0; var bq = nz() * 4.0 - 3.0   // with the radio's DC offset
+                if (on) {
+                    ph += 2 * PI * (chan - center + errHz + shaped) / rate
+                    if (ph > PI) ph -= 2 * PI
+                    a += amp * cos(ph); bq += amp * sin(ph)
+                }
+                buf[2 * k] = (a + 127.4).roundToInt().coerceIn(0, 255).toByte(); buf[2 * k + 1] = (bq + 127.4).roundToInt().coerceIn(0, 255).toByte()
+            }
+            s += n; t += n * 1000L / rate
+            e.onIq(buf, 2 * n, rate, center)
+        }
+        val got = e.messages.value.map { it.page }
+        chansSeen = e.channels.value.size
+        e.stop(); e.clear()
+        return got
+    }
+
+    private var chansSeen = 0
+
+    /** Only the radio's noise and DC offset in the span: the survey lists no carriers and nothing decodes. */
+    @Test fun pocsagAirNoiseOnlyFindsNothing() {
+        val pages = airRun(1200, false, 42, amp = 0.0, bursts = 1)
+        assertTrue("pages from noise: $pages", pages.isEmpty())
+        assertEquals("carriers listed from noise alone", 0, chansSeen)
+    }
+
+    /** Every transmission decodes, the first one included: [bursts] alpha and [bursts] numeric pages. */
+    private fun assertAir(baud: Int, invert: Boolean, pages: List<PagerPage>, bursts: Int = 3) {
+        val what = "POCSAG $baud${if (invert) " inverted" else ""} over the air"
+        val alpha = pages.filter { it.capcode == 1234567L }
+        val num = pages.filter { it.capcode == 765432L }
+        assertEquals("$what: alpha pages in $pages", bursts, alpha.size)
+        assertEquals("$what: numeric pages in $pages", bursts, num.size)
+        for (a in alpha) { assertEquals("CODE BLUE RM 412 EAST", a.text); assertEquals("POCSAG", a.protocol); assertEquals(baud.toString(), a.rate) }
+        for (n in num) assertEquals("5551234", n.text)
+    }
+
+    @Test fun pocsagAir512() = assertAir(512, false, airRun(512, false, 31))
+    @Test fun pocsagAir512Inverted() = assertAir(512, true, airRun(512, true, 32))
+    @Test fun pocsagAir1200() = assertAir(1200, false, airRun(1200, false, 33))
+    @Test fun pocsagAir1200Inverted() = assertAir(1200, true, airRun(1200, true, 34))
+    @Test fun pocsagAir2400() = assertAir(2400, false, airRun(2400, false, 35))
+    @Test fun pocsagAir2400Inverted() = assertAir(2400, true, airRun(2400, true, 36))
+    /** Tuned right onto the pager's frequency: the carrier sits on the radio's DC spike. */
+    @Test fun pocsagAirAtTheTunedCenter() = assertAir(1200, false, airRun(1200, false, 37, chanOff = 0L))
+    @Test fun pocsagAirAtTheTunedCenter512Inverted() = assertAir(512, true, airRun(512, true, 38, chanOff = 2500L, amp = 1.4))
+    /** A pager that keys up every half minute, which the survey has long forgotten by the next page. */
+    @Test fun pocsagAirLongGaps() = assertAir(2400, false, airRun(2400, false, 39, rate = 1_024_000, gapS = 30.0))
+    @Test fun pocsagAirNarrowDeviationBigOffset() = assertAir(1200, true, airRun(1200, true, 40, devHz = 2500.0, errHz = 5000.0, rate = 3_840_000))
+    @Test fun pocsagAirWeak() = assertAir(2400, false, airRun(2400, false, 41, amp = 1.4))
 }

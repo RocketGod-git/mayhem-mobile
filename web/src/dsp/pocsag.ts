@@ -1,5 +1,10 @@
-/** POCSAG pager decoder (Mayhem proc_pocsag2 + pocsag.cpp; port of core/apps/PocsagDecoder.kt). */
-import { BitSync, popcount32, type Emit, type IqProcessor } from './core.js';
+/**
+ * POCSAG pager decoder, the twin of the Android app's pager/PocsagDecoder.kt. Three lanes run side by side, one per
+ * speed (512 / 1200 / 2400 baud), each with its own symbol clock ([FskClock]) that tracks the carrier's frequency
+ * error, hunting the sync codeword in either polarity straight after a preamble; a lane that finds it reads batches
+ * until the next sync fails to come. PocsagEcc (the port of Mayhem's EccContainer) stays for anything that uses it.
+ */
+import { popcount32, type Emit, type IqProcessor } from './core.js';
 import { bchCorrect } from './flex.js';
 
 const SYNC = 0x7CD215D8, IDLE = 0x7A89C197;
@@ -40,80 +45,110 @@ export class PocsagEcc {
   }
 }
 
-export class PocsagDecoder implements IqProcessor {
-  readonly wantsFm = true;
-  private readonly bauds = [512, 1200, 2400];
-  private syncs: BitSync[] = [];
-  private fmRate = 0;
-  private readonly shift = new Int32Array(3);
-  /** The 32 bits before [shift]: where a transmission's preamble sits when its first sync arrives. */
-  private readonly before = new Int32Array(3);
-  private locked = -1;
-  private inverted = false;
-  private cw = 0; private bitCount = 0; private cwCount = 0;
+/**
+ * Symbol recovery for pager FSK on FM-discriminator samples (port of FskClock.kt). A fractional phase accumulator
+ * runs at the baud rate; level crossings of a quarter-symbol moving average pull it onto the symbol edges, and each
+ * symbol is the average of its middle 60%. The carrier's frequency error is a slow DC, tracked and removed.
+ */
+export class FskClock {
+  static readonly HUNT_GAIN = 0.08;
+  static readonly LOCK_GAIN = 0.03;
+  private readonly step: number;
+  private phase = 0; private sum = 0; private n = 0; private prev = 0;
+  dc = 0;
+  gain = FskClock.HUNT_GAIN;
+  dcRate: number;
+  value = 0;
+  private readonly ring = new Float64Array(64); private rp = 0; private rsum = 0;
+  private readonly len: number;
+  constructor(fs: number, readonly baud: number) {
+    this.step = baud / fs; this.dcRate = 1 / (0.08 * fs);
+    this.len = Math.max(1, Math.min(this.ring.length - 1, Math.floor(fs / baud / 4)));
+  }
+  push(x: number): boolean {
+    this.dc += (x - this.dc) * this.dcRate;
+    const v = x - this.dc, len = this.len, rl = this.ring.length;
+    this.rsum -= this.ring[(this.rp - len + rl) % rl];
+    this.rsum += v;
+    this.ring[this.rp] = v; this.rp = (this.rp + 1) % rl;
+    const sm = this.rsum / len;
+    if ((this.prev < 0) !== (sm < 0)) {
+      // A crossing belongs on a symbol edge; the smoothing delays it by half its length. Once locked, crossings far
+      // from an edge are noise and ignored; while hunting every one counts, or a clock half a symbol off never pulls in.
+      let err = this.phase - (len - 1) / 2 * this.step;
+      if (err < -0.5) err += 1; else if (err >= 0.5) err -= 1;
+      if (this.gain >= FskClock.HUNT_GAIN || (err > -0.4 && err < 0.4)) this.phase -= err * this.gain;
+    }
+    this.prev = sm;
+    if (this.phase > 0.2 && this.phase < 0.8) { this.sum += v; this.n++; }
+    this.phase += this.step;
+    if (this.phase >= 1) {
+      this.phase -= 1;
+      this.value = this.n > 0 ? this.sum / this.n : v;
+      this.sum = 0; this.n = 0;
+      return true;
+    }
+    return false;
+  }
+}
+
+const HUNT = 0, BATCH = 1;
+
+/** One speed's receiver: its own clock, its own sync hunt, its own page in progress. */
+class Lane {
+  private readonly clock: FskClock;
+  private readonly huntDc: number;
+  private reg = 0; private before = 0;
+  private inv = false;
+  private state = HUNT;
+  private bits = 0; private cw = 0;
   private address = -1; private func = 0;
   private readonly msgBits = new Uint8Array(8192);
   private msgBitCount = 0; private msgCodewords = 0;
   /** Message codewords the check could not fix, and how many in a row. */
   private errs = 0; private badRun = 0;
 
-  constructor(private readonly emit: Emit) {}
-  reset(): void { this.fmRate = 0; this.unlock(); }
-  onIq(): void {}
+  constructor(readonly baud: number, fs: number, private readonly emit: Emit) { this.clock = new FskClock(fs, baud); this.huntDc = this.clock.dcRate; }
 
-  onFm(samples: Float32Array, n: number, rate: number): void {
-    if (rate !== this.fmRate) { this.fmRate = rate; this.syncs = this.bauds.map(b => new BitSync(b, rate)); this.unlock(); }
-    for (let i = 0; i < n; i++) {
-      const x = -samples[i];   // POCSAG '1' = negative deviation
-      if (this.locked < 0) {
-        for (let b = 0; b < 3; b++) {
-          const bit = this.syncs[b].push(x);
-          if (bit < 0) continue;
-          this.before[b] = (this.before[b] << 1) | (this.shift[b] >>> 31);
-          this.shift[b] = (this.shift[b] << 1) | bit;
-          // A transmission opens with at least 576 bits of 1010 preamble before its first sync, so a sync is taken only
-          // straight after it. A near-match to the sync inside other traffic (a FLEX channel's data) is not.
-          const pre = popcount32(this.before[b] ^ 0x55555555);
-          if (pre > 3 && pre < 29) continue;
-          if (popcount32(this.shift[b] ^ SYNC) <= 2) { this.locked = b; this.inverted = false; this.cw = 0; this.bitCount = 0; this.cwCount = 0; this.synced(); }
-          else if (popcount32(this.shift[b] ^ ~SYNC) <= 2) { this.locked = b; this.inverted = true; this.cw = 0; this.bitCount = 0; this.cwCount = 0; this.synced(); }
-        }
-      } else {
-        const raw = this.syncs[this.locked].push(x);
-        if (raw >= 0) this.onBit(this.inverted ? raw ^ 1 : raw);
-      }
-    }
-  }
-
-  /** A sync codeword: this channel really is POCSAG (the hunter keeps a carrier that says so). */
-  private synced(): void { this.emit({ type: 'sync', protocol: 'POCSAG', rate: String(this.bauds[this.locked]) }); }
-
-  private unlock(): void {
-    this.endMessage();
-    this.locked = -1; this.cw = 0; this.bitCount = 0; this.cwCount = 0;
-    this.shift.fill(0); this.before.fill(0);
-    for (const s of this.syncs) s.reset();
-  }
-
-  private onBit(bit: number): void {
-    this.cw = (this.cw << 1) | bit;
-    if (++this.bitCount < 32) return;
-    this.bitCount = 0;
-    if (this.cwCount >= 16) {
-      // the next batch's sync, allowed a little more damage than the first, as on Android: it is expected right here
-      if (popcount32(this.cw ^ SYNC) <= 4) { this.cwCount = 0; this.synced(); } else this.unlock();
+  push(x: number): void {
+    if (!this.clock.push(x)) return;
+    const bit = this.clock.value < 0 ? 1 : 0;   // POCSAG sends a 1 as the low tone
+    this.before = (this.before << 1) | (this.reg >>> 31);
+    this.reg = (this.reg << 1) | bit;
+    if (this.state === HUNT) {
+      // A transmission opens with at least 576 bits of 1010 preamble before its first sync, so a sync is taken only
+      // straight after it. A near-match to the sync inside other traffic (a FLEX channel's data) is not.
+      const pre = popcount32(this.before ^ 0x55555555);
+      if (pre > 3 && pre < 29) return;
+      if (popcount32(this.reg ^ SYNC) <= 2) { this.inv = false; this.startBatch(); }
+      else if (popcount32(this.reg ^ ~SYNC) <= 2) { this.inv = true; this.startBatch(); }
       return;
     }
-    this.processCodeword(this.cwCount, this.cw);
-    this.cwCount++;
+    if (++this.bits < 32) return;
+    this.bits = 0;
+    const w = this.inv ? ~this.reg : this.reg;
+    if (this.cw < 16) { this.codeword(w, this.cw); this.cw++; return; }
+    // the next batch's sync, allowed a little more damage than the first: it is expected right here
+    if (popcount32(w ^ SYNC) <= 4) this.startBatch(); else { this.endMessage(); this.hunt(); }
   }
+
+  reset(): void { this.endMessage(); this.hunt(); this.reg = 0; this.before = 0; }
+
+  private startBatch(): void {
+    this.state = BATCH; this.bits = 0; this.cw = 0;
+    this.clock.gain = FskClock.LOCK_GAIN;
+    this.clock.dcRate = 0;   // the preamble set the carrier's DC; message bits are not balanced, so hold it
+    this.emit({ type: 'sync', protocol: 'POCSAG', rate: String(this.baud) });
+  }
+
+  private hunt(): void { this.state = HUNT; this.clock.gain = FskClock.HUNT_GAIN; this.clock.dcRate = this.huntDc; }
 
   /**
    * As the Android app does it: the parity-checked BCH fixes up to two bits; a codeword it cannot fix keeps its place
    * (its bits stand in, counted as an error) so the rest of the message stays aligned, and four failures in a row end
    * the page. A page that is mostly failed codewords is not sent.
    */
-  private processCodeword(idx: number, raw: number): void {
+  private codeword(raw: number, idx: number): void {
     const c = bchCorrect(raw | 0);
     if (c === null) {
       if (this.address >= 0) { this.addChunk((raw >>> 11) & 0xFFFFF); this.errs++; if (++this.badRun >= 4) this.endMessage(); }
@@ -136,14 +171,14 @@ export class PocsagDecoder implements IqProcessor {
 
   private endMessage(): void {
     if (this.address < 0) return;
-    const baud = this.locked >= 0 ? this.bauds[this.locked] : 0, errs = this.errs, n = this.msgCodewords;
+    const baud = this.baud, errs = this.errs, n = this.msgCodewords;
     const head = `RIC ${String(this.address).padStart(7, '0')} F${this.func} ${String(baud).padStart(4)}bps`;
     const page = (kind: string, text: string) => ({ protocol: 'POCSAG', rate: String(baud), cap: this.address, kind, text, errors: errs, where: `F${this.func}` });
     if (n > 0 && errs * 2 > n + 1) this.emit({ type: 'log', line: `${head}: unreadable, ${errs} of ${n} codewords lost` });   // mostly unreadable: not worth showing
     else if (n === 0) this.emit({ type: 'packet', line: `${head} TONE`, page: page('TONE', '') });
     else {
       const alpha = this.decodeAlpha(), numeric = this.decodeNumeric();
-      const isAlpha = this.func === 3 || (this.func !== 0 && alpha.length >= 2 && PocsagDecoder.looksAlpha(alpha));
+      const isAlpha = this.func === 3 || (this.func !== 0 && alpha.length >= 2 && looksAlpha(alpha));
       const part = errs ? ' PARTIAL' : '';
       this.emit({ type: 'packet', line: isAlpha ? `${head} ALPHA${part}: ${alpha}` : `${head} NUM${part}: ${numeric}`, page: isAlpha ? page('ALPHA', alpha) : page('NUM', numeric.trim()) });
     }
@@ -169,11 +204,27 @@ export class PocsagDecoder implements IqProcessor {
     }
     return s.trimEnd();
   }
-  /** Reads as text: letters, digits, spaces and ordinary punctuation make up at least 85% of it (the Android rule). */
-  private static looksAlpha(s: string): boolean {
-    if (!s) return false;
-    let good = 0;
-    for (const c of s) if (/[\p{L}\p{N} .,:;!?\-\/()#@'"&\n]/u.test(c)) good++;
-    return good * 100 >= s.length * 85;
+}
+
+/** Reads as text: letters, digits, spaces and ordinary punctuation make up at least 85% of it (the Android rule). */
+function looksAlpha(s: string): boolean {
+  if (!s) return false;
+  let good = 0;
+  for (const c of s) if (/[\p{L}\p{N} .,:;!?\-\/()#@'"&\n]/u.test(c)) good++;
+  return good * 100 >= s.length * 85;
+}
+
+export class PocsagDecoder implements IqProcessor {
+  readonly wantsFm = true;
+  private lanes: Lane[] = [];
+  private fmRate = 0;
+
+  constructor(private readonly emit: Emit) {}
+  reset(): void { for (const l of this.lanes) l.reset(); this.fmRate = 0; this.lanes = []; }
+  onIq(): void {}
+
+  onFm(samples: Float32Array, n: number, rate: number): void {
+    if (rate !== this.fmRate) { for (const l of this.lanes) l.reset(); this.fmRate = rate; this.lanes = [512, 1200, 2400].map(b => new Lane(b, rate, this.emit)); }
+    for (const l of this.lanes) for (let i = 0; i < n; i++) l.push(samples[i]);
   }
 }

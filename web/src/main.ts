@@ -58,7 +58,7 @@ const APPS: AppDef[] = [
   { id: 'adsb', title: 'ADS-B', blurb: 'aircraft, 1090 MHz', cat: 'Receive' },
   { id: 'ais', title: 'AIS', blurb: 'ships, 162 MHz', cat: 'Receive' },
   { id: 'aprs', title: 'APRS', blurb: 'packet, 144.39 MHz', cat: 'Receive' },
-  { id: 'pager', title: 'FLEX', blurb: 'FLEX · POCSAG pagers', cat: 'Receive' },
+  { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG pagers', cat: 'Receive' },
   { id: 'ert', title: 'Meters', blurb: 'ERT · Gridstream', cat: 'Receive' },
   { id: 'lora', title: 'LoRa', blurb: 'Meshtastic, MeshCore', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
@@ -105,7 +105,7 @@ const state = {
     ptt: { dev: 2500, tone: 0, on: false },
     tab: 'rx' as 'rx' | 'monitor' | 'digi' | 'sat' | 'tx' | 'log', mon: { spacing: 12_500, threshold: 8, mode: 'mix' as 'mix' | 'latest' | 'lock', lock: -1, wide: false, first: 0, count: 0, snr: new Float32Array(0), open: [] as number[], listening: [] as number[], tones: {} as Record<number, number>, dcs: {} as Record<number, number>, since: [] as number[], log: [] as string[] } },
   sweepRate: 8_000_000, sweep: null as { start: number; end: number; steps: number } | null,
-  btleCh: 37, threshold: 15, pager: 'flex' as 'flex' | 'pocsag' | 'both',
+  btleCh: 37, threshold: 15, pager: 'both' as 'flex' | 'pocsag' | 'both',
   /** The pager app's mode, as on Android: MULTI hunts the span's carriers, SINGLE decodes the tuned channel. */
   pagerMulti: true,
   ism: { weather: true, remotes: true, cars: true },
@@ -5022,7 +5022,7 @@ function renderSettings(view: HTMLElement): void {
       <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
       <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
       <div class="kv"><span>ADS-B map</span><span>aircraft plot live on an OpenStreetMap view (Leaflet loads from the CDN when you open the app); it follows the traffic until you drag, ⌖ re-arms it; allow location so single-frame positions and the map center use your spot</span></div>
-      <div class="kv"><span>FLEX</span><span>the pager app decodes FLEX (1600/3200, 2- and 4-level) by default — messages carry cycle/frame and capcode; switch the decoder to POCSAG (512/1200/2400) or run both on one channel like PDW</span></div>
+      <div class="kv"><span>Pagers</span><span>the Pagers app decodes FLEX (1600/3200/6400, 2- and 4-level) and POCSAG (512/1200/2400) on the same channel, like PDW — messages carry capcode, and FLEX its cycle/frame; in SINGLE mode it can be set to just one of them</span></div>
       <div class="kv"><span>Squelch + scan</span><span>squelch gates audio by channel power against a tracked noise floor; SCAN hops through your bookmarks and holds on any channel where the squelch opens</span></div>
       <div class="kv"><span>Gain</span><span>radio defaults LNA 24 / VGA 24 / amp off (the amp overloads strong FM); ADS-B uses Mayhem's LNA 32 / VGA 32 / amp on</span></div>
       <div class="kv"><span>Windows</span><span>bind the HackRF to the WinUSB driver (Zadig), the same step hackrf_transfer needs; libusbK / libusb-win32 bindings hide it from the browser</span></div>

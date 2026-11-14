@@ -71,6 +71,12 @@ object PagerEngine {
 
     private const val SETTLE_MS = 300L         // ignore the span right after a retune, while the AGC/stream settle
     private const val SURVEY_MS = 2000L        // peak-hold this long before the first carrier list
+    /** How far above the span's noise (its median peak-hold) a carrier must stand. The noise holds flat to a dB
+     *  or two, and a weak 2400 baud POCSAG carrier spreads over a few bins, so 12 dB lost carriers it could decode. */
+    private const val SURVEY_DB = 8f
+    private const val MANAGE_MS = 250L         // how often the carrier list is looked at again
+    private const val HISTORY_S = 1.0          // IQ kept to replay into a new receiver (a POCSAG preamble is ~1.1 s at 512)
+    private const val QUICK_MS = 3000L         // an unproven receiver this old gives way to a new carrier
     private const val TRIAL_MS = 20_000L       // a hunted carrier gets this long to show a sync
     private const val RETRY_MS = 90_000L       // before an evicted carrier is tried again
     private const val PROVEN_MS = 180_000L     // a carrier that synced this recently keeps its slot
@@ -95,6 +101,12 @@ object PagerEngine {
     private val slots = ArrayList<Slot>()
     private val tried = HashMap<Long, Long>()
     private var iq = FloatArray(0); private var qq = FloatArray(0)
+    // The radio's DC offset (LO leakage), tracked per buffer and removed, so a carrier at the tuned center is not
+    // buried under the spike and the center of the span can be hunted like the rest of it.
+    private var dcI = 0f; private var dcQ = 0f; private var dcFresh = true
+    // The last [HISTORY_S] of raw IQ: a carrier found now keyed up a moment ago, and POCSAG (unlike FLEX) only
+    // transmits in bursts, so a new receiver is first fed what it missed, preamble and all.
+    private var hist = ByteArray(0); private var hW = 0; private var hFill = 0
     private var nextId = 1L
     private val caps = HashSet<Long>()
 
@@ -115,23 +127,33 @@ object PagerEngine {
             center = centerHz; rateHz = rate; restart = false
             slots.clear(); tried.clear(); peak = FloatArray(0); carriers = emptyList()
             spanStart = t; lastManage = 0L; heard = null
+            hist = ByteArray(((rate * HISTORY_S).toInt() * 2).coerceAtLeast(2)); hW = 0; hFill = 0
+            dcFresh = true
             status()
         }
+        // the DC estimate follows the radio through the settle time too, so it is right by the first survey
+        val n = len / 2
+        var si = 0.0; var sq = 0.0
+        for (k in 0 until n) { si += (buf[2 * k].toInt() and 0xff) - 127.4f; sq += (buf[2 * k + 1].toInt() and 0xff) - 127.4f }
+        if (n > 0) {
+            val mi = (si / n).toFloat(); val mq = (sq / n).toFloat()
+            if (dcFresh) { dcI = mi; dcQ = mq; dcFresh = false } else { dcI += (mi - dcI) * 0.3f; dcQ += (mq - dcQ) * 0.3f }
+        }
         if (t - spanStart < SETTLE_MS) return
-        scan(buf, len)
+        record(buf, len)
+        if (iq.size < n) { iq = FloatArray(n); qq = FloatArray(n) }
+        for (k in 0 until n) { iq[k] = (buf[2 * k].toInt() and 0xff) - 127.4f - dcI; qq[k] = (buf[2 * k + 1].toInt() and 0xff) - 127.4f - dcQ }
+        scan(n)
         if (holdNow) { holdNow = false; synchronized(pinned) { held.clear(); slots.forEach { held += it.hz } } }
         val p = pickHz
         if (p != 0L) { pickHz = 0L; val at = snap(p); synchronized(pinned) { pinned.add(at); held.clear() }; listenHz = at; lastManage = 0L }
         if (slots.isNotEmpty()) {
-            val n = len / 2
-            if (iq.size < n) { iq = FloatArray(n); qq = FloatArray(n) }
-            for (k in 0 until n) { iq[k] = (buf[2 * k].toInt() and 0xff) - 127.4f; qq[k] = (buf[2 * k + 1].toInt() and 0xff) - 127.4f }
             heard = listenHz?.let { h -> slots.firstOrNull { it.hz == h } } ?: slots.maxByOrNull { it.lastSync }
             for (s in slots) { s.rx.configure(center, rate); s.rx.process(iq, qq, n) }
         }
         // a control changed (lastManage reset) with AUTO off: the receivers follow it now, not after the survey
         val asked = lastManage == 0L && !hunting
-        if (asked || (t - spanStart >= SETTLE_MS + SURVEY_MS && t - lastManage > 2000)) { lastManage = t; manage(t) }
+        if (asked || (t - spanStart >= SETTLE_MS + SURVEY_MS && t - lastManage >= MANAGE_MS)) { lastManage = t; manage(t) }
         if (t - lastPublish > 500) { lastPublish = t; publish() }
     }
 
@@ -141,14 +163,10 @@ object PagerEngine {
     // so a POCSAG transmitter keyed for only a second still shows up.
     private val sre = FloatArray(1024); private val sim = FloatArray(1024)
     private val hann = FloatArray(1024) { (0.5 - 0.5 * kotlin.math.cos(2 * Math.PI * it / 1023)).toFloat() }
-    private fun scan(buf: ByteArray, len: Int) {
-        val n = len / 2
+    private fun scan(n: Int) {
         var start = 0
         while (start + 1024 <= n) {
-            for (k in 0 until 1024) {
-                sre[k] = ((buf[2 * (start + k)].toInt() and 0xff) - 127.4f) * hann[k]
-                sim[k] = ((buf[2 * (start + k) + 1].toInt() and 0xff) - 127.4f) * hann[k]
-            }
+            for (k in 0 until 1024) { sre[k] = iq[start + k] * hann[k]; sim[k] = qq[start + k] * hann[k] }
             Dsp.fft(sre, sim)
             hold(sre, sim)
             start += 4096
@@ -176,9 +194,9 @@ object PagerEngine {
         val out = ArrayList<Carrier>()
         for (k in 0 until n) {
             val off = (k - n / 2) * bin
-            if (abs(off) < 15_000 || abs(off) > rate * 0.45) continue   // the DC spike and the band edges
+            if (abs(off) > rate * 0.45) continue   // the band edges (the DC spike is removed before the survey)
             val p = peak[k]
-            if (p < floor + 12f) continue
+            if (p < floor + SURVEY_DB) continue
             var top = true
             for (j in maxOf(0, k - reach)..minOf(n - 1, k + reach)) if (peak[j] > p || (peak[j] == p && j < k)) { top = false; break }
             if (!top) continue
@@ -234,7 +252,41 @@ object PagerEngine {
         })
         slot = Slot(hz, rx, t)
         rx.tap = { xs, n -> if (heard === slot) pushAudio(xs, n) }
+        rx.configure(center, rateHz)
+        replay(rx)
         return slot
+    }
+
+    private fun record(buf: ByteArray, len: Int) {
+        val cap = hist.size
+        if (cap < 2) return
+        var off = maxOf(0, len - cap)
+        while (off < len) {
+            val m = minOf(len - off, cap - hW)
+            System.arraycopy(buf, off, hist, hW, m)
+            off += m; hW = (hW + m) % cap
+            hFill = minOf(cap, hFill + m)
+        }
+    }
+
+    /** Feeds a new receiver the last [HISTORY_S] of the span, oldest first, with the DC removed as now. */
+    private fun replay(rx: PagerChannelRx) {
+        val cap = hist.size
+        if (hFill < 2) return
+        val chunk = 65_536
+        val fi = FloatArray(chunk); val fq = FloatArray(chunk)
+        var pos = (hW - hFill + cap) % cap
+        var left = hFill / 2
+        while (left > 0) {
+            val m = minOf(chunk, left)
+            for (k in 0 until m) {
+                fi[k] = (hist[pos].toInt() and 0xff) - 127.4f - dcI
+                fq[k] = (hist[pos + 1].toInt() and 0xff) - 127.4f - dcQ
+                pos += 2; if (pos >= cap) pos = 0
+            }
+            rx.process(fi, fq, m)
+            left -= m
+        }
     }
 
     private fun manage(t: Long) {
@@ -242,11 +294,16 @@ object PagerEngine {
         val want: List<Long> = if (hunting) carriers.take(SLOTS).map { it.hz }
             else synchronized(pinned) { if (pinned.isNotEmpty()) pinned.toList() else held.toList() }
         // evict: in HUNT, carriers that had their trial and never proved; in PINNED, anything no longer pinned
+        // A carrier that wants a receiver while all are busy: one that has never synced, has had a few seconds and
+        // is no longer among the wanted gives way (POCSAG keys up for a second; it can't wait out a 20 s trial).
+        val waiting = hunting && slots.size >= SLOTS && want.any { hz -> slots.none { abs(it.hz - hz) < 10_000 } && t - (tried[hz] ?: 0L) >= RETRY_MS }
         val gone = slots.filter { s ->
             if (!hunting) s.hz !in want
-            else t - s.since > TRIAL_MS && t - s.lastSync > PROVEN_MS && s.hz !in want
+            else s.hz !in want && t - s.lastSync > PROVEN_MS &&
+                (t - s.since > TRIAL_MS || (waiting && s.syncs == 0 && t - s.since > QUICK_MS))
         }
-        for (s in gone) { slots.remove(s); if (hunting) tried[s.hz] = t }
+        // only a carrier that never synced waits out RETRY_MS: a pager that went quiet is welcome back at once
+        for (s in gone) { slots.remove(s); if (hunting && s.syncs == 0) tried[s.hz] = t }
         val taken = slots.map { it.hz }.toHashSet()
         for (hz in want) {
             if (slots.size >= SLOTS) break

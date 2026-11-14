@@ -12,6 +12,12 @@ import { PocsagDecoder } from './pocsag.js';
 const SLOTS = 4;
 const SETTLE_MS = 300;        // ignore the span right after a retune, while the AGC and stream settle
 const SURVEY_MS = 2000;       // peak-hold this long before the first carrier list
+const MANAGE_MS = 250;        // how often the carrier list is looked at again
+const HISTORY_S = 1.0;        // IQ kept to replay into a new receiver (a POCSAG preamble is ~1.1 s at 512)
+const QUICK_MS = 3000;        // an unproven receiver this old gives way to a new carrier
+/** How far above the span's noise (its median peak-hold) a carrier must stand. The noise holds flat to a dB or two,
+ *  and a weak 2400 baud POCSAG carrier spreads over a few bins, so 12 dB lost carriers it could decode. */
+const SURVEY_DB = 8;
 const TRIAL_MS = 20_000;      // a hunted carrier gets this long to show a sync
 const RETRY_MS = 90_000;      // before an evicted carrier is tried again
 const PROVEN_MS = 180_000;    // a carrier that synced this recently keeps its slot
@@ -70,14 +76,14 @@ class ChannelRx {
     this.sr = Math.cos(w); this.si = Math.sin(w);
   }
 
-  /** One buffer of signed 8-bit interleaved IQ. */
-  process(iq: Int8Array): void {
+  /** One buffer of signed 8-bit interleaved IQ, less the radio's DC offset ([dcI], [dcQ]). */
+  process(iq: Int8Array, dcI = 0, dcQ = 0): void {
     if (!this.rate) return;
     const n = iq.length >> 1, t1 = this.t1, t2 = this.t2, L1 = t1.length, L2 = t2.length;
     const h1i = this.h1i, h1q = this.h1q, h2i = this.h2i, h2q = this.h2q, sr = this.sr, si = this.si, d1 = this.d1, d2 = this.d2;
     let r = this.pr, s = this.pi, p1 = this.p1, c1 = this.c1, p2 = this.p2, c2 = this.c2;
     for (let k = 0; k < n; k++) {
-      const xi = iq[2 * k], xq = iq[2 * k + 1];
+      const xi = iq[2 * k] - dcI, xq = iq[2 * k + 1] - dcQ;
       const yi = xi * r - xq * s, yq = xi * s + xq * r;
       const nr = r * sr - s * si; s = r * si + s * sr; r = nr;
       // stage 1: keep the last L1 samples (written twice so the window is always contiguous)
@@ -116,7 +122,7 @@ interface Slot { hz: number; rx: ChannelRx; since: number; lastSync: number; syn
 interface Carrier { hz: number; db: number }
 
 export class PagerHunter implements IqProcessor {
-  /** The span's centre, set by the worker before each buffer. */
+  /** The span's center, set by the worker before each buffer. */
   centerHz = 0;
   /** The heard channel's discriminator, for the speaker. */
   onAudio: ((xs: Float32Array, n: number, rate: number) => void) | null = null;
@@ -130,6 +136,12 @@ export class PagerHunter implements IqProcessor {
   private slots: Slot[] = [];
   private readonly tried = new Map<number, number>();
   private heard: Slot | null = null;
+  // The radio's DC offset (LO leakage), tracked per buffer and removed, so a carrier at the tuned center is not
+  // buried under the spike and the center of the span can be hunted like the rest of it.
+  private dcI = 0; private dcQ = 0; private dcFresh = true;
+  // The last HISTORY_S of IQ: a carrier found now keyed up a moment ago, and POCSAG (unlike FLEX) only transmits in
+  // bursts, so a new receiver is first fed what it missed, preamble and all.
+  private hist = new Int8Array(0); private hW = 0; private hFill = 0;
   private readonly re = new Float32Array(1024); private readonly im = new Float32Array(1024);
   private readonly hann = Float32Array.from({ length: 1024 }, (_, k) => 0.5 - 0.5 * Math.cos(2 * Math.PI * k / 1023));
 
@@ -189,25 +201,36 @@ export class PagerHunter implements IqProcessor {
       this.center = this.centerHz; this.rate = rate; this.restart = false;
       this.slots = []; this.tried.clear(); this.peak = new Float32Array(0); this.carrierList = [];
       this.spanStart = t; this.lastManage = 0; this.heard = null;
+      this.hist = new Int8Array(Math.max(2, Math.floor(rate * HISTORY_S) * 2)); this.hW = 0; this.hFill = 0;
+      this.dcFresh = true;
       this.publish();
     }
+    // the DC estimate follows the radio through the settle time too, so it is right by the first survey
+    const n = iq.length >> 1;
+    if (n) {
+      let si = 0, sq = 0;
+      for (let k = 0; k < n; k++) { si += iq[2 * k]; sq += iq[2 * k + 1]; }
+      if (this.dcFresh) { this.dcI = si / n; this.dcQ = sq / n; this.dcFresh = false; }
+      else { this.dcI += (si / n - this.dcI) * 0.3; this.dcQ += (sq / n - this.dcQ) * 0.3; }
+    }
     if (t - this.spanStart < SETTLE_MS) return;
+    this.record(iq);
     this.scan(iq);
     if (this.slots.length) {
       this.heard = (this.listenHz !== null ? this.slots.find(s => s.hz === this.listenHz) : undefined)
         ?? this.slots.reduce<Slot | null>((a, s) => (!a || s.lastSync > a.lastSync ? s : a), null);
-      for (const s of this.slots) { s.rx.configure(this.center, rate); s.rx.process(iq); }
+      for (const s of this.slots) { s.rx.configure(this.center, rate); s.rx.process(iq, this.dcI, this.dcQ); }
     }
-    if (t - this.spanStart >= SETTLE_MS + SURVEY_MS && t - this.lastManage > 2000) { this.lastManage = t; this.manage(t); }
+    if (t - this.spanStart >= SETTLE_MS + SURVEY_MS && t - this.lastManage >= MANAGE_MS) { this.lastManage = t; this.manage(t); }
     if (t - this.lastPublish > 500) { this.lastPublish = t; this.publish(); }
   }
 
   // ---- spectrum: find the carriers. The survey looks at far more of the signal than a waterfall does (every 4th
   // 1024-sample block of every buffer), so a POCSAG transmitter keyed for only a second still shows up.
   private scan(iq: Int8Array): void {
-    const n = iq.length >> 1, re = this.re, im = this.im, hann = this.hann;
+    const n = iq.length >> 1, re = this.re, im = this.im, hann = this.hann, dcI = this.dcI, dcQ = this.dcQ;
     for (let start = 0; start + 1024 <= n; start += 4096) {
-      for (let k = 0; k < 1024; k++) { re[k] = iq[2 * (start + k)] * hann[k]; im[k] = iq[2 * (start + k) + 1] * hann[k]; }
+      for (let k = 0; k < 1024; k++) { re[k] = (iq[2 * (start + k)] - dcI) * hann[k]; im[k] = (iq[2 * (start + k) + 1] - dcQ) * hann[k]; }
       fft(re, im);
       if (this.peak.length !== 1024) this.peak = new Float32Array(1024).fill(-200);
       for (let k = 0; k < 1024; k++) {
@@ -227,13 +250,13 @@ export class PagerHunter implements IqProcessor {
     const out: Carrier[] = [];
     for (let k = 0; k < n; k++) {
       const off = (k - n / 2) * bin;
-      if (Math.abs(off) < 15_000 || Math.abs(off) > this.rate * 0.45) continue;   // the DC spike and the band edges
+      if (Math.abs(off) > this.rate * 0.45) continue;   // the band edges (the DC spike is removed before the survey)
       const p = peak[k];
-      if (p < floor + 12) continue;
+      if (p < floor + SURVEY_DB) continue;
       let top = true;
       for (let j = Math.max(0, k - reach); j <= Math.min(n - 1, k + reach); j++) if (peak[j] > p || (peak[j] === p && j < k)) { top = false; break; }
       if (!top) continue;
-      // A FLEX carrier's spectrum is flat-topped, so its peak bin is not its centre: take the power centroid of the
+      // A FLEX carrier's spectrum is flat-topped, so its peak bin is not its center: take the power centroid of the
       // bins within 10 dB of the top, then snap onto a 2.5 kHz raster.
       let wsum = 0, isum = 0;
       for (let j = Math.max(0, k - reach); j <= Math.min(n - 1, k + reach); j++) if (peak[j] > p - 10) { const lin = 10 ** ((peak[j] - p) / 10); wsum += lin; isum += lin * j; }
@@ -252,7 +275,29 @@ export class PagerHunter implements IqProcessor {
       else if (m.type === 'pagerNoise') this.post({ type: 'huntPage', hz, page: m.page });
     });
     slot.rx.tap = (xs, n, r) => { if (this.heard === slot) this.onAudio?.(xs, n, r); };
+    slot.rx.configure(this.center, this.rate);
+    this.replay(slot.rx);
     return slot;
+  }
+
+  private record(iq: Int8Array): void {
+    const cap = this.hist.length;
+    if (cap < 2) return;
+    let off = Math.max(0, iq.length - cap);
+    while (off < iq.length) {
+      const m = Math.min(iq.length - off, cap - this.hW);
+      this.hist.set(iq.subarray(off, off + m), this.hW);
+      off += m; this.hW = (this.hW + m) % cap; this.hFill = Math.min(cap, this.hFill + m);
+    }
+  }
+
+  /** Feeds a new receiver the last HISTORY_S of the span, oldest first, with the DC removed as now. */
+  private replay(rx: ChannelRx): void {
+    const cap = this.hist.length;
+    if (this.hFill < 2) return;
+    const start = (this.hW - this.hFill + cap) % cap;
+    if (start + this.hFill <= cap) rx.process(this.hist.subarray(start, start + this.hFill), this.dcI, this.dcQ);
+    else { rx.process(this.hist.subarray(start, cap), this.dcI, this.dcQ); rx.process(this.hist.subarray(0, this.hW), this.dcI, this.dcQ); }
   }
 
   private manage(t: number): void {
@@ -264,9 +309,14 @@ export class PagerHunter implements IqProcessor {
   private fill(t: number): void {
     if (!this.hunting && !this.pinned.size) { this.publish(); return; }
     const want = this.hunting ? this.carrierList.slice(0, SLOTS).map(c => c.hz) : [...this.pinned];
-    // evict: in AUTO, carriers that had their trial and never proved; pinned, anything no longer pinned
-    const gone = this.slots.filter(s => !this.hunting ? !want.includes(s.hz) : t - s.since > TRIAL_MS && t - s.lastSync > PROVEN_MS && !want.includes(s.hz));
-    for (const s of gone) { this.slots = this.slots.filter(x => x !== s); if (this.hunting) this.tried.set(s.hz, t); }
+    // evict: in AUTO, carriers that had their trial and never proved; pinned, anything no longer pinned. A carrier
+    // that wants a receiver while all are busy: one that never synced, has had a few seconds and is no longer among
+    // the wanted gives way (POCSAG keys up for a second; it can't wait out a 20 s trial).
+    const waiting = this.hunting && this.slots.length >= SLOTS && want.some(hz => !this.slots.some(s => Math.abs(s.hz - hz) < 10_000) && t - (this.tried.get(hz) ?? -Infinity) >= RETRY_MS);
+    const gone = this.slots.filter(s => !this.hunting ? !want.includes(s.hz)
+      : !want.includes(s.hz) && t - s.lastSync > PROVEN_MS && (t - s.since > TRIAL_MS || (waiting && s.syncs === 0 && t - s.since > QUICK_MS)));
+    // only a carrier that never synced waits out RETRY_MS: a pager that went quiet is welcome back at once
+    for (const s of gone) { this.slots = this.slots.filter(x => x !== s); if (this.hunting && s.syncs === 0) this.tried.set(s.hz, t); }
     for (const hz of want) {
       if (this.slots.length >= SLOTS) break;
       if (this.slots.some(s => Math.abs(s.hz - hz) < 10_000)) continue;
