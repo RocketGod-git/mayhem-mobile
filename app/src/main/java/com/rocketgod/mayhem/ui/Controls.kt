@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -257,6 +258,38 @@ fun rememberFollowNewest(list: LazyListState, newest: Long, enabled: Boolean = t
         if (list.firstVisibleItemIndex != 0) list.animateScrollToItem(0)
     }
     return f
+}
+
+/** [rememberFollowNewest] for a grid of cards (a newest-first grid keeps the card it had at the top, so a card that
+ *  moved up landed above the view). */
+@Composable
+fun rememberFollowNewest(grid: LazyGridState, newest: Long, enabled: Boolean = true): FollowNewest {
+    val f = remember { FollowNewest() }
+    val dragged = grid.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(grid) {
+        snapshotFlow { (grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset < 24) to dragged.value }
+            .collect { (top, drag) -> if (top) f.follow = true else if (drag) f.follow = false }
+    }
+    LaunchedEffect(newest, f.follow, enabled) {
+        if (!enabled || !f.follow) return@LaunchedEffect
+        f.seen = newest
+        if (grid.firstVisibleItemIndex != 0 || grid.firstVisibleItemScrollOffset != 0) grid.animateScrollToItem(0)
+    }
+    return f
+}
+
+/** [NewestPill] over a grid of cards. */
+@Composable
+fun NewestPill(f: FollowNewest, grid: LazyGridState, fresh: Int, accent: Color, modifier: Modifier = Modifier) {
+    val d = rememberDims()
+    val scope = rememberCoroutineScope()
+    val away by remember(grid) { derivedStateOf { grid.firstVisibleItemIndex > 0 } }
+    if (f.follow || !away) return
+    Text(if (fresh > 0) "↑ $fresh NEW" else "↑ NEWEST", color = inkOn(accent), fontFamily = Mono, fontWeight = FontWeight.Bold,
+        fontSize = d.sp(11f), maxLines = 1,
+        modifier = modifier.padding(top = d.dp(6f)).clip(RoundedCornerShape(50)).background(accent)
+            .clickable { f.follow = true; scope.launch { grid.animateScrollToItem(0) } }
+            .padding(horizontal = d.dp(12f), vertical = d.dp(4f)))
 }
 
 /** "↑ 3 NEW" over a newest-first list the reader has scrolled away from; a tap goes back to the top and follows again. */

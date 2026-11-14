@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -99,13 +101,21 @@ fun LoraScreen(accent: Color) {
 
     @Composable
     fun stage(modifier: Modifier) {
+        // each place the stage shows (inline, full screen) keeps its own scroll
+        val cardGrid = rememberLazyGridState(); val chatList = rememberLazyListState()
         Box(modifier) {
             when (view) {
-                0 -> if (nodes.isEmpty()) EmptyState("lora", Modifier.fillMaxSize().panel(), accent) else LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                    items(nodes.sortedByDescending { it.lastMs }, key = { it.key }) { n ->
-                        LoraNodeCard(n, accent, now, selected = sel == n.key) { sel = if (sel == n.key) null else n.key }
+                // newest first, and kept on the newest while the reader is at the top; scrolled down, "↑ NEW" goes back
+                0 -> if (nodes.isEmpty()) EmptyState("lora", Modifier.fillMaxSize().panel(), accent) else Box(Modifier.fillMaxSize()) {
+                    val sorted = nodes.sortedByDescending { it.lastMs }
+                    val follow = rememberFollowNewest(cardGrid, sorted.first().lastMs)
+                    LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(), state = cardGrid,
+                        horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                        items(sorted, key = { it.key }) { n ->
+                            LoraNodeCard(n, accent, now, selected = sel == n.key) { sel = if (sel == n.key) null else n.key }
+                        }
                     }
+                    NewestPill(follow, cardGrid, sorted.count { it.lastMs > follow.seen }, accent, Modifier.align(Alignment.TopCenter))
                 }
                 1 -> {
                     val pla = picked?.lat; val plo = picked?.lon
@@ -118,10 +128,14 @@ fun LoraScreen(accent: Color) {
                             modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
                     }
                 }
-                else -> if (messages.isEmpty()) EmptyState("loramsg", Modifier.fillMaxSize().panel(), accent) else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                    items(messages, key = { it.id }) { e ->
-                        LoraMessageRow(e, accent) { val k = e.nodeKey; if (k != null && nodes.any { it.key == k }) sel = k }
+                else -> if (messages.isEmpty()) EmptyState("loramsg", Modifier.fillMaxSize().panel(), accent) else Box(Modifier.fillMaxSize()) {
+                    val follow = rememberFollowNewest(chatList, messages.first().id.toLong())
+                    LazyColumn(Modifier.fillMaxSize(), state = chatList, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                        items(messages, key = { it.id }) { e ->
+                            LoraMessageRow(e, accent) { val k = e.nodeKey; if (k != null && nodes.any { it.key == k }) sel = k }
+                        }
                     }
+                    NewestPill(follow, chatList, messages.count { it.id > follow.seen }, accent, Modifier.align(Alignment.TopCenter))
                 }
             }
             if (picked != null) {
