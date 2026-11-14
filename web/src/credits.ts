@@ -16,6 +16,7 @@ export const CREDITS: [boolean, string][] = [
   [false, "ERT — proc_ert, ert_packet: Jared Boone, Mark Thompson · after rtlamr by Douglas Hall"],
   [false, "BLE RX — proc_btlerx: Jared Boone, Furrtek, Shao, TJ Baginski"],
   [false, "TPMS — proc_tpms, tpms_packet: Jared Boone, Mark Thompson"],
+  [false, "Sondes — frame formats after the RS radiosonde decoders by zilog80 (rs1729/RS) and radiosonde_auto_rx (Project Horus: Mark Jessop and contributors); Mayhem's sonde app (proc_sonde, sonde_packet): Furrtek and Mayhem contributors"],
   [false, "Trains — end-of-train field layout and BCH check after PyEOT by Eric Reuter; the PTC waveform worked out from recordings"],
   [false, "ACARS — proc_acars, acars_app: Jared Boone, Furrtek · bit decision after acarsdec by Thierry Leconte"],
   [false, "Transmit — proc_siggen, proc_morse, proc_ook, proc_replay, pocsag_tx, rtty_tx (ITA2 Baudot), aprs_tx (AX.25), tones/DTMF: Jared Boone, Furrtek, htotoo and Mayhem contributors"],

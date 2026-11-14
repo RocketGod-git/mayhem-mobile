@@ -33,6 +33,8 @@ import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
 import { LoraLocal } from './dsp/lora/local.js';
+import { SONDE_BANDS, SONDE_WIDE, SONDE_NARROW, wideCenter as sondeWideCenter, narrowWindows as sondeWindows, type SondeChannelRow } from './dsp/sonde/front.js';
+import type { SondeRow } from './dsp/sonde/track.js';
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
 import { ISM_COUNTS } from './dsp/ism/counts.js';
@@ -47,7 +49,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'acars' | 'trains' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -64,6 +66,7 @@ const APPS: AppDef[] = [
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'EOT · PTC telemetry', cat: 'Receive' },
+  { id: 'sondes', title: 'Sondes', blurb: 'weather balloons', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice', cat: 'Receive' },
   { id: 'spectrum', title: 'Spectrum', blurb: 'analyzer, zero span', cat: 'Analyze' },
   { id: 'analyzer', title: 'Analyzer', blurb: 'bursts to bits', cat: 'Analyze' },
@@ -942,6 +945,7 @@ function open(app: AppId | null): void {
     // meters of Mayhem's 4.19 Msps ERT span), else Mayhem's ERT rate, else 2 Msps; centered where the ERT meters sit
     case 'ert': configure('NONE', 911_600_000, radioCan(METERS_WIDE) ? METERS_WIDE : radioCan(METERS_RATE) ? METERS_RATE : 2e6, 32, 40, true, 'ert'); break;
     case 'lora': loraOpen(); break;
+    case 'sondes': sondesOpen(); break;
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
     // none of them on the radio's DC spike; 131.550 is the one heard.
@@ -1643,6 +1647,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
   lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels']],
+  sondes: ['sondes', 'No sondes yet', ['Weather services launch around 00:00 and 12:00 UTC; a sonde climbs for about 90 minutes and is heard 200+ miles out', 'Every type is decoded on its own: leave it running and they show up']],
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
@@ -1833,6 +1838,7 @@ function render(app: AppId | null): void {
     case 'pager': if (state.pagerMulti) renderHunt(view); else renderPacket(view, app); break;
     case 'ert': renderMeters(view); break;
     case 'lora': renderLora(view); break;
+    case 'sondes': renderSondes(view); break;
     case 'trains': renderTrains(view); break;
     case 'btle': renderBle(view); break;
     case 'acars': renderAcars(view); break;
@@ -4092,7 +4098,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { btle: false, adsb: false, trains: false, ert: true, lora: true, acars: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { sondes: false, btle: false, adsb: false, trains: false, ert: true, lora: true, acars: true };
 const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
 function wfShown(app: AppId): boolean {
   let v: string | null = null;
@@ -4472,8 +4478,8 @@ function loraOwnDialog(): void {
  * rest down under the reader), and what arrived since shows as "↑ N NEW" over the list; a tap goes back up.
  * Each item carries data-fk (a key) and data-fms (when it last changed).
  */
-const loraFollow = { cards: 0, msgs: 0 };
-function followNewest(el: HTMLElement, html: string, which: 'cards' | 'msgs'): void {
+const loraFollow = { cards: 0, msgs: 0, sondes: 0 };
+function followNewest(el: HTMLElement, html: string, which: 'cards' | 'msgs' | 'sondes'): void {
   const box = el.getBoundingClientRect();
   const atTop = el.scrollTop < 24;
   const seen = loraFollow[which];
@@ -4583,6 +4589,180 @@ function refreshLora(force = false): void {
   if (ch) ch.innerHTML = (snap?.channels ?? []).filter(c => c.standing || c.active || c.frames > 0 || (c.hotAgoMs !== null && c.hotAgoMs < 1500)).map(c => { const hot = c.hotAgoMs !== null && c.hotAgoMs < 1500; return `<span class="${c.active && !c.standing ? 'on' : ''} ${hot ? 'hot' : ''}" title="${(c.hz / 1e6).toFixed(4)} MHz${c.standing ? ' · always on' : ''}">${esc(c.name)}${c.frames ? ` · ${c.frames}` : ''}</span>`; }).join('')
     + (snap && snap.busy > 1.05 ? `<span class="warn">behind the radio: ${Math.round(100 * snap.busy)}% of real time</span>` : '');
   if (nodes.length > 0) setLamp(`${nodes.length} NODE${nodes.length === 1 ? '' : 'S'}`, 'ok');
+}
+
+// ---- Sondes: weather radiosondes, every type, the whole band
+const SONDE_BAND_KEY = 'mm.sondeBand';
+const sondeUi = { snap: null as SondeSnap | null, view: 'sondes' as 'sondes' | 'map' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
+interface SondeSnap { sondes: SondeRow[]; channels: SondeChannelRow[]; wide: boolean; centerHz: number; band: string; floor: number; window: { ix: number; of: number } | null }
+function sondeBandId(): string { try { return localStorage.getItem(SONDE_BAND_KEY) ?? '400'; } catch { return '400'; } }
+function sondesOpen(): void {
+  const band = SONDE_BANDS.find(b => b.id === sondeBandId()) ?? SONDE_BANDS[0];
+  const wide = radioCan(SONDE_WIDE);
+  configure('NONE', wide ? sondeWideCenter(band) : sondeWindows(band, SONDE_NARROW)[0], wide ? SONDE_WIDE : SONDE_NARROW, 32, 40, true, 'sonde');
+  worker?.postMessage({ type: 'sondeBand', id: band.id });
+  requestGeo();
+}
+function sondeBand(id: string): void {
+  try { localStorage.setItem(SONDE_BAND_KEY, id); } catch { /* storage blocked */ }
+  const band = SONDE_BANDS.find(b => b.id === id) ?? SONDE_BANDS[0];
+  worker?.postMessage({ type: 'sondeBand', id });
+  tune(state.rate >= 6_000_000 ? sondeWideCenter(band) : sondeWindows(band, state.rate)[0]);
+  render('sondes');
+}
+/** Great-circle distance (km) and initial bearing (degrees) from a to b. */
+function distBearing(a: { lat: number; lon: number }, b: { lat: number; lon: number }): [number, number] {
+  const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  const km = 12742 * Math.asin(Math.min(1, Math.sqrt(h)));
+  const y = Math.sin(dLon) * Math.cos(b.lat * r), x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dLon);
+  return [km, (Math.atan2(y, x) / r + 360) % 360];
+}
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const compass = (deg: number) => COMPASS[Math.round(deg / 45) % 8];
+const sondeMins = (s: number) => s < 90 ? `${Math.max(0, Math.round(s))} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+const SONDE_PHASE: Record<string, string> = { ground: 'ON THE GROUND', ascent: 'CLIMBING', descent: 'FALLING', landed: 'LANDED', '': 'NO FIX YET' };
+function sondeFromHere(lat: number, lon: number): string {
+  const me = state.home ?? lastKnownPos(); if (!me) return '';
+  const [km, brg] = distBearing(me, { lat, lon });
+  return `${km < 10 ? km.toFixed(1) : Math.round(km)} km ${compass(brg)}`;
+}
+function sondeCard(s: SondeRow, now: number): string {
+  const age = (now - s.lastMs) / 1000, flash = Math.max(0, 1 - age / 0.9), live = age < 60;
+  const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
+  const climb = s.climb !== undefined ? `${s.climb >= 0 ? '▲' : '▼'} ${Math.abs(s.climb).toFixed(1)} m/s` : '';
+  const ptu = [s.tempC !== undefined ? `${s.tempC.toFixed(1)} °C` : '', s.rh !== undefined ? `${Math.round(s.rh)}% RH` : '', s.hPa !== undefined ? `${s.hPa.toFixed(1)} hPa` : '', s.battV !== undefined ? `${s.battV.toFixed(1)} V` : ''].filter(Boolean).join(' · ');
+  const landFrom = s.predict ? sondeFromHere(s.predict.lat, s.predict.lon) : s.lat !== undefined && s.lon !== undefined ? sondeFromHere(s.lat, s.lon) : '';
+  const land = s.predict ? `lands in ${sondeMins(s.predict.inS)}${landFrom ? ` · ${landFrom} from you` : ''}` : s.phase === 'landed' ? `down${landFrom ? ` · ${landFrom} from you` : ''}` : '';
+  return `<div class="mt-card ${sondeUi.sel === s.serial ? 'sel' : ''} ${live ? '' : 'dim'}" data-sonde="${esc(s.serial)}" data-fk="${esc(s.serial)}" data-fms="${s.lastMs}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-id" style="font-size:${s.serial.length > 8 ? 16 : 20}px">${esc(s.serial)}</span><span class="mt-k"><b>${esc(s.model ?? s.type)}</b><small class="${s.lat !== undefined ? 'pos' : ''}">${esc(SONDE_PHASE[s.phase] ?? '')}${s.burst ? ' · BURST' : ''}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
+    + `<div class="mt-clk"><b>${s.alt !== undefined ? Math.round(s.alt).toLocaleString('en-US') : '—'}</b><small>METERS</small><em>${esc(climb)}</em></div>`
+    + `<div class="lr-name">${(s.hz / 1e6).toFixed(3)} MHz · ${s.frames} ${s.frames === 1 ? 'frame' : 'frames'}${s.vH !== undefined ? ` · ${(s.vH * 3.6).toFixed(0)} km/h ${s.heading !== undefined ? compass(s.heading) : ''}` : ''}</div>`
+    + (ptu ? `<div class="lr-last">${esc(ptu)}</div>` : '')
+    + (land ? `<div class="lr-last">${esc(land)}</div>` : '') + '</div>';
+}
+function sondeDetail(s: SondeRow, onMap: boolean): string {
+  const f = (name: string, value: string | undefined | false) => value ? [{ name, value }] : [];
+  const fix = s.lat !== undefined && s.lon !== undefined;
+  const t = s.timeS !== undefined ? `${String(Math.floor(s.timeS / 3600) % 24).padStart(2, '0')}:${String(Math.floor(s.timeS / 60) % 60).padStart(2, '0')}:${String(Math.floor(s.timeS % 60)).padStart(2, '0')} UTC` : undefined;
+  const all = [
+    ...f('TYPE', s.model ?? s.type), ...f('FREQUENCY', `${(s.hz / 1e6).toFixed(4)} MHz`), ...f('SIGNAL', `+${s.level} dB`),
+    ...f('FIRST HEARD', loraClock(s.firstMs)), ...f('LAST HEARD', loraClock(s.lastMs)), ...f('FRAMES', `${s.frames}`), ...f('FRAME NUMBER', s.frame !== undefined && `${s.frame}`),
+    ...f('GPS TIME', t && (s.date ? `${s.date} ${t}` : t)), ...f('FLIGHT', SONDE_PHASE[s.phase]),
+    ...f('POSITION', fix && `${s.lat!.toFixed(5)}, ${s.lon!.toFixed(5)}`), ...f('FROM YOU', fix && sondeFromHere(s.lat!, s.lon!)),
+    ...f('ALTITUDE', s.alt !== undefined && `${Math.round(s.alt).toLocaleString('en-US')} m`), ...f('HIGHEST', s.maxAlt !== undefined && `${Math.round(s.maxAlt).toLocaleString('en-US')} m`),
+    ...f('CLIMB', s.climb !== undefined && `${s.climb >= 0 ? '+' : ''}${s.climb.toFixed(1)} m/s`), ...f('GROUND SPEED', s.vH !== undefined && `${s.vH.toFixed(1)} m/s (${(s.vH * 3.6).toFixed(0)} km/h)`),
+    ...f('HEADING', s.heading !== undefined && `${Math.round(s.heading)}° ${compass(s.heading)}`), ...f('SATELLITES', s.sats !== undefined && `${s.sats}`),
+    ...f('TEMPERATURE', s.tempC !== undefined && `${s.tempC.toFixed(1)} °C`), ...f('HUMIDITY', s.rh !== undefined && `${s.rh.toFixed(0)} %`), ...f('PRESSURE', s.hPa !== undefined && `${s.hPa.toFixed(1)} hPa`),
+    ...f('BATTERY', s.battV !== undefined && `${s.battV.toFixed(1)} V`), ...f('BURST TIMER', s.killS !== undefined && sondeMins(s.killS)),
+    ...f('BURST', s.burst && `${Math.round(s.burst.alt).toLocaleString('en-US')} m at ${loraClock(s.burst.ms)}`),
+    ...f('PREDICTED LANDING', s.predict && `${s.predict.lat.toFixed(4)}, ${s.predict.lon.toFixed(4)} in ${sondeMins(s.predict.inS)}`),
+    ...f('LANDING FROM YOU', s.predict && sondeFromHere(s.predict.lat, s.predict.lon)),
+    ...f('ASSUMED BURST', s.predict && s.phase === 'ascent' && `${s.predict.burstAlt.toLocaleString('en-US')} m`),
+    ...f('ERRORS FIXED', s.fixed > 0 && `${s.fixed}`), ...s.fields];
+  return `<div class="mt-dh"><b>${esc(s.serial)}</b><span>${esc(`${s.model ?? s.type} · ${SONDE_PHASE[s.phase] ?? ''}`)}</span>${onMap ? '<button class="chip" data-sdo="map">MAP</button>' : ''}${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="close">✕</button></div>`
+    + `<div class="mt-fields">${all.map(x => `<div><b>${esc(x.name)}</b><span>${esc(x.value)}</span></div>`).join('')}</div>`;
+}
+function renderSondes(view: HTMLElement): void {
+  const bandId = sondeBandId();
+  view.innerHTML = `
+    <section class="${visCls('sondes')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="sd-sum" class="mt-sum"></div>
+      <div class="ctlrow">${segHtml(['sondes', 'map', 'log'].map(v => `<button data-sdview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('sondes')}<button id="sd-full" class="ib" title="full screen" aria-label="full screen">${sondeUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('sondes')}</div>
+      <div id="sd-stage" class="mt-stage"><div id="sd-cards" class="mt-cards"></div><div id="sd-map" class="panel map"></div><div id="sd-nopos" class="mt-nopos">no positions yet</div><div id="sd-detail" class="mt-detail" hidden></div><button id="sd-newpill" class="lr-newpill" hidden></button></div>
+      <div id="sd-log">${logHtml('sondes', 'listening for sondes…')}</div>
+      <div id="sd-chans" class="lr-chans"></div>
+      <div class="ctlrow"><span class="rl">BAND</span>${segHtml(SONDE_BANDS.map(b => `<button data-sdband="${b.id}" class="${b.id === bandId ? 'on' : ''}">${b.title}</button>`))}</div>
+      <div class="note">Weather balloons: Vaisala RS41 and RS92, Graw DFM, Meteomodem M10 and M20, InterMet iMet-1, iMet-4 and iMet-54, Lockheed Martin LMS6, Meisei, MRZ and MTS01, each found and decoded on its own: no type to pick. Weather services launch them twice a day, around 00:00 and 12:00 UTC (about an hour before). A HackRF watches the whole 400–406 MHz band at once; an RTL-SDR steps across it and stays on a sonde once it decodes. 1680 MHz is the older US LMS6 band. The landing spot comes from a simple model: the balloon bursts near 30 km and the parachute drifts with the wind the sonde measured on the way up.</div>
+      </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-sdview]', view).forEach(b => b.onclick = () => { sondeUi.view = b.dataset.sdview as typeof sondeUi.view; refreshSondes(true); });
+  qa<HTMLButtonElement>('[data-sdband]', view).forEach(b => b.onclick = () => sondeBand(b.dataset.sdband!));
+  $('sd-newpill').onclick = () => q('#sd-cards')?.scrollTo({ top: 0, behavior: 'smooth' });
+  $('sd-full').onclick = () => setSondeFull(!sondeUi.full);
+  $('sd-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-sonde]'); if (c) { sondeUi.sel = sondeUi.sel === c.dataset.sonde ? '' : c.dataset.sonde!; refreshSondes(true); } };
+  $('sd-cards').onscroll = () => sondePill();
+  $('sd-detail').onclick = (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-sdo]'); if (!b) return;
+    const what = b.dataset.sdo;
+    if (what === 'close') sondeUi.sel = '';
+    else if (what === 'map') {
+      sondeUi.view = 'map'; refreshSondes(true);
+      const s = sondeUi.snap?.sondes.find(x => x.serial === sondeUi.sel);
+      if (s && s.lat !== undefined && s.lon !== undefined) geo?.center(s.lat, s.lon, 11);
+      return;
+    } else if (what === 'cards') sondeUi.view = 'sondes';
+    refreshSondes(true);
+  };
+  view.classList.toggle('sondefull', sondeUi.full);
+  geo = new GeoMap($('sd-map'), { home: state.home, start: mapStart(state.home), onPick: id => { sondeUi.sel = id.replace(/^(land|burst):/, ''); refreshSondes(true); }, log });
+  clearInterval(sondeUi.timer);
+  sondeUi.timer = window.setInterval(() => { if (state.app !== 'sondes') { clearInterval(sondeUi.timer); return; } refreshSondes(); }, 1000);
+  refreshSondes(true);
+}
+function setSondeFull(on: boolean): void {
+  sondeUi.full = on;
+  const v = q('.view.sondes'); if (!v) return;
+  v.classList.toggle('sondefull', on);
+  const b = q('#sd-full'); if (b) { b.innerHTML = on ? EXIT_SVG : FULL_SVG; b.title = on ? 'leave full screen' : 'full screen'; }
+  refreshSondes(true);
+  requestAnimationFrame(() => geo?.invalidate());
+}
+/** The "↑ N NEW" pill over the cards while they are scrolled away from the top. */
+function sondePill(): void {
+  const pill = q<HTMLButtonElement>('#sd-newpill'), el = q('#sd-cards'); if (!pill) return;
+  if (sondeUi.view !== 'sondes' || !el || el.scrollTop < 24) {
+    pill.hidden = true;
+    if (el) loraFollow.sondes = Array.from(el.querySelectorAll<HTMLElement>('[data-fk]')).reduce((m, c) => Math.max(m, Number(c.dataset.fms) || 0), 0);
+    return;
+  }
+  const fresh = Array.from(el.querySelectorAll<HTMLElement>('[data-fk]')).filter(c => Number(c.dataset.fms) > loraFollow.sondes).length;
+  pill.textContent = fresh > 0 ? `↑ ${fresh} NEW` : '↑ NEWEST';
+  pill.hidden = false;
+}
+function refreshSondes(force = false): void {
+  if (state.app !== 'sondes') return;
+  const now = Date.now();
+  if (!force && now - sondeUi.drawn < 240) { clearTimeout(sondeUi.drawPending); sondeUi.drawPending = window.setTimeout(() => refreshSondes(true), 250); return; }
+  sondeUi.drawn = now;
+  const snap = sondeUi.snap, sondes = snap?.sondes ?? [];
+  if (sondeUi.full && sondeUi.view === 'log') sondeUi.view = 'sondes';
+  const withPos = sondes.filter(s => s.lat !== undefined && s.lon !== undefined);
+  const sum = q('#sd-sum');
+  if (sum) {
+    const band = SONDE_BANDS.find(b => b.id === (snap?.band ?? sondeBandId())) ?? SONDE_BANDS[0];
+    const hunt = !snap ? 'waiting for the radio' : snap.wide ? `watching ${band.title}` : `stepping ${band.title} · window ${(snap.window?.ix ?? 0) + 1} of ${snap.window?.of ?? 1}`;
+    sum.innerHTML = sondes.length ? `<div>${sondes.length} SONDE${sondes.length === 1 ? '' : 'S'} · ${esc(hunt)}</div>` : `<div class="muted">${esc(hunt)}${snap?.channels.length ? ` · trying ${snap.channels.length} carrier${snap.channels.length === 1 ? '' : 's'}` : ''}</div>`;
+  }
+  qa<HTMLButtonElement>('[data-sdview]').forEach(b => { const v = b.dataset.sdview; b.classList.toggle('on', v === sondeUi.view); b.textContent = v === 'sondes' ? `SONDES ${sondes.length}` : v === 'map' ? `MAP ${withPos.length}` : 'LOG'; b.hidden = v === 'log' && sondeUi.full; });
+  const cards = q('#sd-cards'), mapEl = q('#sd-map'), logEl = q('#sd-log'), nopos = q('#sd-nopos'), det = q('#sd-detail'), stage = q('#sd-stage');
+  if (!cards || !mapEl || !logEl || !nopos || !det || !stage) return;
+  cards.hidden = sondeUi.view !== 'sondes'; mapEl.hidden = sondeUi.view !== 'map';
+  logEl.hidden = sondeUi.view !== 'log'; stage.hidden = sondeUi.view === 'log';
+  nopos.hidden = sondeUi.view !== 'map' || withPos.length > 0;
+  if (sondeUi.view === 'sondes' && !paused.has('sondes')) followNewest(cards, sondes.length ? sondes.map(s => sondeCard(s, now)).join('') : emptyState('sondes'), 'sondes');
+  sondePill();
+  const picked = sondes.find(s => s.serial === sondeUi.sel);
+  det.hidden = !picked;
+  if (picked) { const top = det.scrollTop; det.innerHTML = sondeDetail(picked, picked.lat !== undefined); det.scrollTop = top; }
+  if (sondeUi.view === 'map') {
+    geo?.invalidate();
+    const items: GeoItem[] = [];
+    const paths: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
+    for (const s of withPos) {
+      const mine = !sondeUi.sel || s.serial === sondeUi.sel;
+      items.push({ id: s.serial, lat: s.lat!, lon: s.lon!, label: `${s.serial}${s.alt !== undefined ? ` ${(s.alt / 1000).toFixed(1)} km` : ''}`, kind: 'sonde' });
+      paths.push({ pts: s.track.map(p => [p[0], p[1]] as [number, number]), faint: !mine });
+      if (s.burst) items.push({ id: `burst:${s.serial}`, lat: s.burst.lat, lon: s.burst.lon, label: 'BURST', kind: 'burst' });
+      if (s.predict && mine) { paths.push({ pts: s.predict.path, dashed: true }); items.push({ id: `land:${s.serial}`, lat: s.predict.lat, lon: s.predict.lon, label: `${s.serial} lands`, kind: 'landing' }); }
+    }
+    geo?.setPaths(paths);
+    geo?.update(items, sondeUi.sel);
+  }
+  const ch = q('#sd-chans');
+  if (ch) ch.innerHTML = (snap?.channels ?? []).map(c => `<span class="${c.decoding ? 'on hot' : ''}" title="+${c.level} dB">${(c.hz / 1e6).toFixed(3)}${c.decoding ? ` · ${esc(c.decoding)}` : ''}${c.frames ? ` · ${c.frames}` : ''}</span>`).join('');
+  if (sondes.length > 0) setLamp(`${sondes.length} SONDE${sondes.length === 1 ? '' : 'S'}`, 'ok');
 }
 
 /** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
@@ -5241,6 +5421,7 @@ function redraw(id: string): void {
     case 'psat': refreshPacketSats(); break;
     case 'ert': refreshList(id); refreshMeters(true); break;
     case 'lora': refreshList(id); refreshLora(true); break;
+    case 'sondes': refreshList(id); refreshSondes(true); break;
     case 'trains': refreshList(id); refreshTrains(true); break;
     case 'btle': refreshList(id); refreshBle(true); break;
     case 'acars': refreshList(id); refreshAcars(true); break;
@@ -5262,6 +5443,7 @@ function clearApp(id: string): void {
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
+    case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
     case 'trains': trainsUi.snap = null; break;
   }
   worker?.postMessage({ type: 'clear' });
@@ -5671,6 +5853,7 @@ function ensureWorker(): Worker {
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
       case 'meters': meters.snap = m as MetersSnap; refreshMeters(); break;
       case 'lora': loraUi.snap = m as LoraSnap; refreshLora(); break;
+      case 'sonde': sondeUi.snap = m as unknown as SondeSnap; refreshSondes(); break;
       case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
@@ -6059,7 +6242,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (radioPanelOpen()) closeRadioPanel(); else if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (state.app) open(null); break;
+      case 'Escape': if (radioPanelOpen()) closeRadioPanel(); else if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (sondeUi.full && state.app === 'sondes') setSondeFull(false); else if (state.app) open(null); break;
     }
   });
   // chip strips, the app strips and lists scroll with a held mouse button (touch already pans natively); a real drag
@@ -6217,7 +6400,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
-  ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
+  ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };

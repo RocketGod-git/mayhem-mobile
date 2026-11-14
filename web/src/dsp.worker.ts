@@ -21,6 +21,7 @@ import { SweepProcessor } from './dsp/sweep.js';
 import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
 import { TrainsProcessor } from './dsp/trains.js';
+import { SondeProcessor } from './dsp/sonde/front.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
 import { R433Processor, protocolList } from './dsp/r433/index.js';
 import { AnalyzerProcessor, captureFile } from './dsp/analyzer/capture.js';
@@ -118,6 +119,8 @@ const btle = new BtleDecoder(emit);
 const tpms = new TpmsDecoder(emit);
 const acars = new AcarsDecoder(emit);
 const trains = new TrainsProcessor(emit);
+/** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
+const sonde = new SondeProcessor(emit);
 const ism = new IsmDecoder(emit);
 /** The rtl_433 port: every registered protocol, run over every burst found anywhere in the sampled span. */
 const r433 = new R433Processor(emit);
@@ -322,7 +325,7 @@ self.onmessage = (e: MessageEvent) => {
       if (processor === lora && typeof m.centreHz === 'number' && m.centreHz !== centreHz) dropQueued();
       if (typeof m.rate === 'number') rate = m.rate;
       if (typeof m.specBins === 'number') setSpecBins(m.specBins);
-      if (typeof m.centreHz === 'number') centreHz = m.centreHz;
+      if (typeof m.centreHz === 'number') { centreHz = m.centreHz; if (processor === sonde) sonde.setCenter(centreHz); }
       // The channel being demodulated is the span center plus the offset, not the span center.
       orbcomm.channelHz = centreHz + offsetHz;
       if (typeof m.offsetHz === 'number') offsetHz = m.offsetHz;
@@ -336,6 +339,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
+    case 'sondeBand': sonde.setBand(m.id as string); break;
     // the channels local to the LoRa area in use (local.ts, on the main thread): the scanner places its channels again
     case 'loraPlan': setLocalChannels(m.channels as LocalChannel[]); lora.scanner.replan(); break;
     case 'rds': rdsOn = !!m.on; if (!rdsOn) { rds.reset(); rdsN = 0; } break;
@@ -384,6 +388,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'btle': return btle;
     case 'tpms': return tpms;
     case 'acars': return acars;
+    case 'sonde': sonde.setCenter(centreHz); return sonde;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'subghz': return ism;
     case 'r433': return r433;

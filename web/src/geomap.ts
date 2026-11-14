@@ -6,7 +6,7 @@ import { currentSkin } from './theme.js';
 
 declare const L: any;
 
-export type GeoKind = 'plane' | 'ship' | 'aton' | 'station' | 'object' | 'sat' | 'qso';
+export type GeoKind = 'plane' | 'ship' | 'aton' | 'station' | 'object' | 'sat' | 'qso' | 'sonde' | 'landing' | 'burst';
 export interface GeoItem { id: string; lat: number; lon: number; heading?: number; label: string; kind: GeoKind }
 export interface GeoOpts {
   home?: { lat: number; lon: number } | null;
@@ -56,6 +56,12 @@ const SHAPES: Record<GeoKind, (heading: number | undefined) => string> = {
   object: () => '<rect x="-0.8" y="-0.8" width="1.6" height="1.6" rx="0.2"/>',
   sat: () => '<rect x="-0.35" y="-0.35" width="0.7" height="0.7"/><rect x="-1.3" y="-0.2" width="0.8" height="0.4"/><rect x="0.5" y="-0.2" width="0.8" height="0.4"/>',
   qso: () => '<circle r="0.6"/>',
+  // a balloon on its line with the sonde under it
+  sonde: () => '<circle cy="-0.55" r="0.62"/><rect x="-0.07" y="0.05" width="0.14" height="0.72" stroke="none"/><rect x="-0.3" y="0.75" width="0.6" height="0.5" rx="0.08"/>',
+  // where it comes down: a target
+  landing: () => '<path fill-rule="evenodd" d="M0 -1.1 A1.1 1.1 0 1 0 0.001 -1.1 Z M0 -0.78 A0.78 0.78 0 1 1 -0.001 -0.78 Z"/><circle r="0.32"/>',
+  // where it burst: a star
+  burst: () => '<path d="M0 -1.2 L0.3 -0.4 L1.15 -0.4 L0.45 0.12 L0.72 0.95 L0 0.45 L-0.72 0.95 L-0.45 0.12 L-1.15 -0.4 L-0.3 -0.4 Z"/>',
 };
 
 export class GeoMap {
@@ -65,6 +71,7 @@ export class GeoMap {
   private homeMarker: any = null;
   private items: GeoItem[] = []; private sel = '';
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
+  private paths: any[] = []; private pathDefs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
   private readonly btn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
@@ -83,6 +90,7 @@ export class GeoMap {
     this.setHome(home ?? null);
     this.update(this.items, this.sel);
     if (this.trackPts.length) this.setTrack(this.trackPts);
+    if (this.pathDefs.length) this.setPaths(this.pathDefs);
   }
   get ready(): boolean { return !!this.map; }
   setFollow(on: boolean): void { this.follow = on; this.btn.classList.toggle('on', on); this.opts.onFollow?.(on); if (on) this.fit(); }
@@ -152,6 +160,14 @@ export class GeoMap {
     if (!this.map) return;
     if (!this.footprint) this.footprint = L.circle([lat, lon], { radius: radiusKm * 1000, color: currentSkin().accent, weight: 1, opacity: 0.7, fillOpacity: 0.08 }).addTo(this.map);
     else { this.footprint.setLatLng([lat, lon]); this.footprint.setRadius(radiusKm * 1000); }
+  }
+  /** Any number of paths (sonde flight tracks solid, predicted descents dashed), replaced as a set. */
+  setPaths(defs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[]): void {
+    this.pathDefs = defs;
+    if (!this.map) return;
+    for (const l of this.paths) this.map.removeLayer(l);
+    const c = currentSkin().accent;
+    this.paths = defs.filter(d => d.pts.length > 1).map(d => L.polyline(d.pts, { color: c, weight: d.dashed ? 2 : 3, opacity: d.faint ? 0.4 : 0.85, dashArray: d.dashed ? '6 6' : undefined, interactive: false }).addTo(this.map));
   }
   /** Straight lines between pairs of points (contacts from home). */
   setLines(lines: [[number, number], [number, number]][]): void {
