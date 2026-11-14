@@ -227,24 +227,36 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
             // each line keeps its own stripe (by its place in the whole log, not on screen, so stripes hold still as
             // lines arrive), the time goes quiet, and its kind (MESHCORE, ERT, POCSAG...) takes a color of its own,
             // repeated as a thin bar down the line's left edge, so a glance tells one line and one kind from the next
+            // A line with parts ("head · detail · detail") is two lines on purpose: the head (time or frequency and
+            // level, the kind, the subject) over its details a size smaller, instead of a long line that wraps a few
+            // characters. Each row's bar is inset top and bottom so rows of one kind still read as separate.
             val row: @Composable (Int, String) -> Unit = { i, l ->
                 val k = logKind(l)
                 val kc = k?.let { logKindColor(it.second, accent) }
                 val n = if (total != null) total - i else lines.size - i
+                val cut = l.indexOf(" · ").let { if (it > 0 && (k == null || it > k.first + k.second.length)) it else -1 }
+                val head = if (cut > 0) l.substring(0, cut) else l
+                val tail = if (cut > 0) l.substring(cut + 3) else null
                 val m = Modifier.fillMaxWidth()
                     .background(if (n % 2 == 0) Palette.ink.copy(alpha = 0.035f) else Color.Transparent, RoundedCornerShape(4.dp))
-                    .drawBehind { if (kc != null) drawRect(kc.copy(alpha = 0.85f), size = Size(2.dp.toPx(), size.height)) }
+                    .drawBehind {
+                        if (kc != null) { val inset = 3.dp.toPx(); drawRect(kc.copy(alpha = 0.85f), topLeft = Offset(0f, inset), size = Size(2.dp.toPx(), size.height - 2 * inset)) }
+                    }
                     .padding(vertical = d.dp(4f), horizontal = d.dp(8f))
+                val base = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.88f)
                 val text = buildAnnotatedString {
-                    val base = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.85f)
-                    if (k == null) withStyle(SpanStyle(color = base)) { append(l) }
+                    if (k == null) withStyle(SpanStyle(color = base)) { append(head) }
                     else {
-                        withStyle(SpanStyle(color = Palette.muted)) { append(l.substring(0, k.first)) }
+                        withStyle(SpanStyle(color = Palette.muted)) { append(head.substring(0, k.first)) }
                         withStyle(SpanStyle(color = kc!!, fontWeight = FontWeight.Bold)) { append(k.second) }
-                        withStyle(SpanStyle(color = base)) { append(l.substring(k.first + k.second.length)) }
+                        withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(head.substring(k.first + k.second.length)) }
                     }
                 }
-                Text(text, fontFamily = Mono, fontSize = d.sp(11f), modifier = if (onTap != null) m.clickable { onTap(l) } else m)
+                Column(if (onTap != null) m.clickable { onTap(l) } else m) {
+                    Text(text, fontFamily = Mono, fontSize = d.sp(11f))
+                    if (tail != null) Text(tail, color = Palette.ink.copy(alpha = 0.6f), fontFamily = Mono, fontSize = d.sp(10f),
+                        modifier = Modifier.padding(top = d.dp(1f)))
+                }
             }
             LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
                 if (total != null) itemsIndexed(lines, key = { i, _ -> total - i }) { i, l -> row(i, l) }

@@ -5289,9 +5289,14 @@ function logKindColor(kind: string): string {
  *  goes quiet, and its kind takes a color of its own, repeated as a thin bar down the line's left edge. */
 function logLineHtml(l: string, n: number): string {
   const k = logKind(l);
-  if (!k) return `<div class="li${n % 2 ? '' : ' alt'}">${esc(l)}</div>`;
+  // a line with parts ("head · detail · detail") is two lines on purpose: the head over its details a size smaller
+  let cut = l.indexOf(' · ');
+  if (cut <= 0 || (k && cut <= k[0] + k[1].length)) cut = -1;
+  const head = cut > 0 ? l.slice(0, cut) : l, tail = cut > 0 ? l.slice(cut + 3) : null;
+  const tl = tail !== null ? `<div class="lt">${esc(tail)}</div>` : '';
+  if (!k) return `<div class="li${n % 2 ? '' : ' alt'}">${esc(head)}${tl}</div>`;
   const c = logKindColor(k[1]);
-  return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${c}"><span class="lq">${esc(l.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b>${esc(l.slice(k[0] + k[1].length))}</div>`;
+  return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${c}"><span class="lq">${esc(head.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b><span class="lh">${esc(head.slice(k[0] + k[1].length))}</span>${tl}</div>`;
 }
 function refreshAis(): void {
   if (state.app !== 'ais') return;
