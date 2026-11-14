@@ -56,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -237,10 +238,16 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
                 val cut = l.indexOf(" · ").let { if (it > 0 && (k == null || it > k.first + k.second.length)) it else -1 }
                 val head = if (cut > 0) l.substring(0, cut) else l
                 val tail = if (cut > 0) l.substring(cut + 3) else null
+                // the subject (a node, a device, a name: what follows the kind) gets a color of its own from its name, so
+                // the same node is the same color every time it repeats; the bar takes it too
+                val rest = if (k != null) head.substring(k.first + k.second.length) else ""
+                val subj = rest.trim().takeIf { it.isNotEmpty() }
+                val sc = subj?.let { logNodeColor(it, kc) }
+                val bar = sc ?: kc
                 val m = Modifier.fillMaxWidth()
                     .background(if (n % 2 == 0) Palette.ink.copy(alpha = 0.035f) else Color.Transparent, RoundedCornerShape(4.dp))
                     .drawBehind {
-                        if (kc != null) { val inset = 3.dp.toPx(); drawRect(kc.copy(alpha = 0.85f), topLeft = Offset(0f, inset), size = Size(2.dp.toPx(), size.height - 2 * inset)) }
+                        if (bar != null) { val inset = 3.dp.toPx(); drawRoundRect(bar, topLeft = Offset(0f, inset), size = Size(3.dp.toPx(), size.height - 2 * inset), cornerRadius = CornerRadius(1.5.dp.toPx())) }
                     }
                     .padding(vertical = d.dp(4f), horizontal = d.dp(8f))
                 val base = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.88f)
@@ -249,7 +256,12 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
                     else {
                         withStyle(SpanStyle(color = Palette.muted)) { append(head.substring(0, k.first)) }
                         withStyle(SpanStyle(color = kc!!, fontWeight = FontWeight.Bold)) { append(k.second) }
-                        withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(head.substring(k.first + k.second.length)) }
+                        if (subj != null && sc != null) {
+                            val lead = rest.length - rest.trimStart().length
+                            append(rest.substring(0, lead))
+                            // a tinted chip: the node's color on a wash of itself
+                            withStyle(SpanStyle(color = sc, fontWeight = FontWeight.Bold, background = sc.copy(alpha = 0.16f))) { append(" $subj ") }
+                        } else withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest) }
                     }
                 }
                 Column(if (onTap != null) m.clickable { onTap(l) } else m) {
@@ -277,10 +289,23 @@ internal fun logKind(l: String): Pair<Int, String>? {
 private val LOG_KIND = Regex("""^\s*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s+)?([A-Z][A-Z0-9_-]{2,})\b""")
 private val LOG_KIND_FREQ = Regex("""^\s*\d+(?:\.\d+)?(?:\s*MHz)?\s+(?:[+-]?\d+(?:\.\d+)?\s*dB\s+)?([A-Za-z0-9][A-Za-z0-9_-]{2,})\b""")
 
-/** One steady color per kind of line, from a small set that reads on the dark panel; the app's accent goes first. */
+/** Twelve saturated colors chosen to stay apart on the dark panel (and from each other) for kinds and nodes. */
+internal val LOG_COLORS = listOf(
+    Color(0xFF4C8DFF), Color(0xFFFFAF00), Color(0xFF3DDC84), Color(0xFF22D3EE), Color(0xFFA78BFA), Color(0xFFF472B6),
+    Color(0xFFFB7185), Color(0xFFFACC15), Color(0xFF2DD4BF), Color(0xFFF97316), Color(0xFFC084FC), Color(0xFF84CC16))
+
+/** One steady color per kind of line; the app's accent goes first. */
 internal fun logKindColor(kind: String, accent: Color): Color {
-    val set = listOf(accent, Palette.accent2, Palette.ok, Color(0xFF4DD0E1), Color(0xFFB388FF), Color(0xFFFF8A80), Color(0xFFFFD54F))
-    return set[Math.floorMod(kind.hashCode(), set.size)]
+    val i = Math.floorMod(kind.hashCode(), LOG_COLORS.size)
+    return if (i == 0) accent else LOG_COLORS[i]
+}
+
+/** One steady color per node (or device, or name), so the same one reads the same every time it repeats. */
+internal fun logNodeColor(name: String, avoid: Color? = null): Color {
+    // never the kind's own color, so the chip stands apart from the word before it
+    var i = Math.floorMod(name.hashCode() * 31 + 7, LOG_COLORS.size)
+    if (LOG_COLORS[i] == avoid) i = (i + 1) % LOG_COLORS.size
+    return LOG_COLORS[i]
 }
 
 /** Whether a newest-first list is following its newest entry, and which entry the reader last had at the top. */

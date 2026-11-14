@@ -5278,25 +5278,39 @@ function logKind(l: string): [number, string] | null {
   const m = LOG_KIND.exec(l) ?? LOG_KIND_FREQ.exec(l);
   return m ? [m[0].length - m[1].length, m[1]] : null;
 }
-/** One steady color per kind, the same as the apps' (Java's String.hashCode picks it); the accent goes first. */
+/** Twelve saturated colors chosen to stay apart on the dark panel (and from each other) for kinds and nodes. */
+const LOG_COLORS = ['#4c8dff', '#ffaf00', '#3ddc84', '#22d3ee', '#a78bfa', '#f472b6', '#fb7185', '#facc15', '#2dd4bf', '#f97316', '#c084fc', '#84cc16'];
+/** Java's String.hashCode, so a kind or a node has the same color as in the apps. */
+function javaHash(s: string): number { let h = 0; for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0; return h; }
+const floorMod = (a: number, n: number) => ((a % n) + n) % n;
+/** One steady color per kind of line; the app's accent goes first. */
 function logKindColor(kind: string): string {
-  const v = (name: string, d: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || d;
-  const set = [v('--accent', '#4c8dff'), v('--accent2', '#ffaf00'), '#3ddc84', '#4dd0e1', '#b388ff', '#ff8a80', '#ffd54f'];
-  let h = 0; for (let i = 0; i < kind.length; i++) h = (Math.imul(h, 31) + kind.charCodeAt(i)) | 0;
-  return set[((h % set.length) + set.length) % set.length];
+  const i = floorMod(javaHash(kind), LOG_COLORS.length);
+  return i === 0 ? (getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || LOG_COLORS[0]) : LOG_COLORS[i];
+}
+/** One steady color per node (or device, or name), so the same one reads the same every time it repeats; never the
+ *  kind's own color, so the chip stands apart from the word before it. */
+function logNodeColor(name: string, avoid: string): string {
+  let i = floorMod((Math.imul(javaHash(name), 31) + 7) | 0, LOG_COLORS.length);
+  if (LOG_COLORS[i] === avoid.toLowerCase()) i = (i + 1) % LOG_COLORS.length;
+  return LOG_COLORS[i];
 }
 /** Each line keeps its own stripe (by its place in the whole log, so stripes hold still as lines arrive), the time
- *  goes quiet, and its kind takes a color of its own, repeated as a thin bar down the line's left edge. */
+ *  goes quiet, its kind takes a color, and its subject (a node, a device, a name) a color of its own from its name,
+ *  as a chip and as the bar down the line's left edge, so the same node reads the same every time it repeats. A line
+ *  with parts ("head · detail · detail") is two lines on purpose: the head over its details a size smaller. */
 function logLineHtml(l: string, n: number): string {
   const k = logKind(l);
-  // a line with parts ("head · detail · detail") is two lines on purpose: the head over its details a size smaller
   let cut = l.indexOf(' · ');
   if (cut <= 0 || (k && cut <= k[0] + k[1].length)) cut = -1;
   const head = cut > 0 ? l.slice(0, cut) : l, tail = cut > 0 ? l.slice(cut + 3) : null;
   const tl = tail !== null ? `<div class="lt">${esc(tail)}</div>` : '';
   if (!k) return `<div class="li${n % 2 ? '' : ' alt'}">${esc(head)}${tl}</div>`;
   const c = logKindColor(k[1]);
-  return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${c}"><span class="lq">${esc(head.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b><span class="lh">${esc(head.slice(k[0] + k[1].length))}</span>${tl}</div>`;
+  const rest = head.slice(k[0] + k[1].length), subj = rest.trim();
+  const sc = subj ? logNodeColor(subj, c) : c;
+  const restHtml = subj ? `${esc(rest.slice(0, rest.length - rest.trimStart().length))}<span class="chip" style="color:${sc};background:${sc}29">${esc(subj)}</span>` : `<span class="lh">${esc(rest)}</span>`;
+  return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${sc}"><span class="lq">${esc(head.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b>${restHtml}${tl}</div>`;
 }
 function refreshAis(): void {
   if (state.app !== 'ais') return;
