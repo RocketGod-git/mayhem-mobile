@@ -75,6 +75,7 @@ fun MetersScreen(accent: Color) {
     val devices by Apps.mesh.devices.collectAsState()
     val bursts by Apps.mesh.bursts.collectAsState()
     val links by Apps.mesh.links.collectAsState()
+    val logSnap by Apps.metersLog.snapshot.collectAsState()
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var focusKey by remember { mutableIntStateOf(0) }
@@ -98,8 +99,8 @@ fun MetersScreen(accent: Color) {
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-            SegBar(listOf("DEVICES · ${devices.size}", "MAP · ${mapItems.size}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
-            if (withFull) WaterfallBox(wf, accent, Modifier.fillMaxHeight()) { Apps.setWaterfall(MayhemApp.ERT, !wf) }
+            // DEVICES, MAP and the decode LOG: one switcher, the same inline and full screen
+            SegBar(listOf("DEVICES · ${devices.size}", "MAP · ${mapItems.size}", "LOG · ${logSnap.total}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
         }
     }
@@ -108,7 +109,9 @@ fun MetersScreen(accent: Color) {
     @Composable
     fun stage(modifier: Modifier) {
         Box(modifier) {
-            if (view == 0 && devices.isEmpty()) {
+            if (view == 2) {
+                LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "watching the band for meters…", total = logSnap.total, accent = accent)
+            } else if (view == 0 && devices.isEmpty()) {
                 EmptyState("ert", Modifier.fillMaxSize().panel(), accent)
             } else if (view == 0) {
                 val sorted = devices.sortedWith(compareBy<MeshDevice> { it.firstMs }.thenBy { it.key })
@@ -132,12 +135,13 @@ fun MetersScreen(accent: Color) {
             if (picked != null) {
                 MeshDetail(picked, accent, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                     onMap = if (mapItems.any { it.id == picked.key }) ({ view = 1; focusKey++ }) else null,
-                    onCards = if (view == 1) ({ view = 0 }) else null) { sel = null }
+                    onCards = if (view != 0) ({ view = 0 }) else null) { sel = null }
             }
         }
     }
 
-    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM", roomy = true, listWeight = 3.2f, waterfall = wf, controls = {
+    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM", roomy = true, waterfall = wf,
+        onWaterfall = { Apps.setWaterfall(MayhemApp.ERT, !wf) }, controls = {
         PresetTiles(accent, listOf(Preset("904.0", "low", 904_000_000L), Preset("911.6", "lower mid", 911_600_000L), Preset("916.0", "mid", 916_000_000L),
             Preset("920.0", "upper mid", 920_000_000L), Preset("925.0", "high", 925_000_000L)))
         val why = Radio.rateWhy(MeshDecoder.RATE)
@@ -154,8 +158,9 @@ fun MetersScreen(accent: Color) {
                 }
             }
         }
-    }, list = {
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+    }, body = {
+        // the log is a tab of its own (LOG), so the cards and the waterfall share the height between them
+        Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
                 if (nets.isEmpty() && ertCount == 0) Text(if (bursts > 0) "$bursts bursts heard, no network locked yet" else "watching the band for meters",
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
@@ -166,8 +171,9 @@ fun MetersScreen(accent: Color) {
             stage(Modifier.fillMaxWidth().weight(1f))
         }
     })
-    if (full) FullscreenPanel(if (view == 0) "METERS · ${devices.size} DEVICES" else "METERS · MAP", accent, onClose = { full = false },
-        actions = { switcher(false, Modifier.width(d.dp(320f))) }) {
+    // full screen: the title and its exit on top (the switcher crowded the exit off a phone's edge), the tabs below
+    if (full) FullscreenPanel(listOf("METERS · ${devices.size} DEVICES", "METERS · MAP", "METERS · LOG")[view], accent, onClose = { full = false }) {
+        switcher(false, Modifier.fillMaxWidth().padding(bottom = d.dp(8f)))
         stage(Modifier.fillMaxWidth().weight(1f))
     }
 }

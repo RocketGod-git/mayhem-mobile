@@ -1824,3 +1824,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; display: grid; place-items: center; padding: 0; }
 .an-cstar:hover { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 60%, var(--line)); }
 .an-cstar.on { color: var(--accent2); border-color: var(--accent2); background: color-mix(in srgb, var(--accent2) 14%, var(--surface)); box-shadow: 0 0 12px color-mix(in srgb, var(--accent2) 35%, transparent); }
+
+/* The waterfall's show/hide: a small button on its top-left corner, or a slim strip where it was while hidden. */
+#scope { position: relative; }
+.wf-tog.on-wf { position: absolute; top: 6px; left: 6px; z-index: 3; width: 26px; height: 26px; padding: 5px; border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); border: 1px solid var(--line); }
+.wf-tog.on-wf svg { width: 14px; height: 14px; color: var(--muted); }
+.wf-tog.wf-strip { display: flex; align-items: center; gap: 8px; width: 100%; height: auto; padding: 5px 10px; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+.wf-tog.wf-strip svg { width: 14px; height: 14px; }

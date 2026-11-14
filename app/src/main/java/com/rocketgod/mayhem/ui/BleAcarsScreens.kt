@@ -93,7 +93,6 @@ private fun StageBar(labels: List<String>, view: Int, accent: Color, paused: Boo
     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f), bottom = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
         verticalAlignment = Alignment.CenterVertically) {
         SegBar(labels, view, accent, Modifier.weight(1f).fillMaxHeight()) { onView(it) }
-        if (waterfall != null) WaterfallBox(waterfall, accent, Modifier.fillMaxHeight()) { onWaterfall() }
         ToggleBox(if (paused) "RESUME" else "PAUSE", paused, accent, Modifier.fillMaxHeight()) { onPause() }
         IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { onClear() }
     }
@@ -220,6 +219,7 @@ fun BtleScreen(accent: Color) {
     // BLE advertisements are sub-millisecond hops across 2.4 GHz: a phone gives the waterfall's room to the cards
     val wf = waterfallOn(MayhemApp.BTLE, phoneDefault = false)
     PacketFrame(accent, Apps.btleLog, tag = "BLE", title = "ADVERTISING", tunable = false, emptyKey = "btle", waterfall = wf,
+        onWaterfall = { Apps.setWaterfall(MayhemApp.BTLE, !wf) },
         lamp = {
             when {
                 alerts.isNotEmpty() -> Lamp("${alerts.size} TRACKER${if (alerts.size == 1) "" else "S"}", Palette.danger)
@@ -238,7 +238,7 @@ fun BtleScreen(accent: Color) {
             StageBar(listOf("DEVICES ${live.size}", "LOG $logCount"), view, accent, held != null || heldLog != null, onView = { view = it },
                 onPause = { if (held == null) { held = live; heldLog = snap.lines } else { held = null; heldLog = null } },
                 onClear = { Apps.bleClear(); sel = ""; if (held != null) { held = emptyList(); heldLog = emptyList() } },
-                waterfall = wf, onWaterfall = { Apps.setWaterfall(MayhemApp.BTLE, !wf) })
+            )
             if (view == 1) {
                 LogList(heldLog ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) snap.total else null, accent = accent, emptyKey = "btle")
             } else Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -361,6 +361,7 @@ fun AcarsScreen(accent: Color) {
 
     val wf = waterfallOn(MayhemApp.ACARS, phoneDefault = true)
     PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, shift = shift, emptyKey = "acars", waterfall = wf,
+        onWaterfall = { Apps.setWaterfall(MayhemApp.ACARS, !wf) },
         lamp = { if (live.isNotEmpty()) Lamp("${live.size} AIRCRAFT", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) },
         controls = {
             PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
@@ -370,7 +371,7 @@ fun AcarsScreen(accent: Color) {
             StageBar(listOf("AIRCRAFT ${live.size}", "LOG $logCount"), view, accent, held != null || heldLog != null, onView = { view = it },
                 onPause = { if (held == null) { held = live; heldLog = snap.lines } else { held = null; heldLog = null } },
                 onClear = { Apps.acarsClear(); sel = ""; if (held != null) { held = emptyList(); heldLog = emptyList() } },
-                waterfall = wf, onWaterfall = { Apps.setWaterfall(MayhemApp.ACARS, !wf) })
+            )
             if (view == 1) {
                 LogList(heldLog ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) snap.total else null, accent = accent, emptyKey = "acars")
             } else Box(Modifier.fillMaxWidth().weight(1f)) {

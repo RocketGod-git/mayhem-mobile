@@ -5173,6 +5173,14 @@ function attachCreditsScroller(panel: HTMLElement | null, roll: HTMLElement | nu
 
 function wireCommon(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-wf]', view).forEach(b => b.onclick = () => { const a = b.dataset.wf as AppId; setWf(a, !wfShown(a)); });
+  // the waterfall's own show/hide sits on the waterfall (a small button on its corner), or, while it is hidden, as a
+  // slim strip where it was, rather than among the list's tabs
+  const wb = q<HTMLButtonElement>('.wf-tog', view);
+  if (wb && state.app) {
+    const sc = q<HTMLElement>('#scope', view), vis = q<HTMLElement>('section.visual', view);
+    if (wfShown(state.app) && sc) { wb.classList.add('on-wf'); sc.appendChild(wb); for (const ev of ['pointerdown', 'pointerup', 'mousedown', 'touchstart'] as const) wb.addEventListener(ev, e => e.stopPropagation()); }
+    else if (vis) { wb.classList.add('wf-strip'); wb.innerHTML = `${WF_SVG}<span>SHOW WATERFALL</span>`; vis.appendChild(wb); }
+  }
   const fav = q<HTMLButtonElement>('#fav', view); if (fav) { fav.onclick = toggleFav; refreshFav(); }
   const fkey = q<HTMLButtonElement>('#fkey', view);
   if (fkey) { if (state.app === 'adsb' || state.app === 'btle') fkey.remove(); else fkey.onclick = () => freqEntry(); }

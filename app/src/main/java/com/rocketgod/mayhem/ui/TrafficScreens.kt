@@ -107,14 +107,16 @@ private fun TrafficFrame(
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                     rows = if (d.wide) 160 else 80, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                     onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
+                // the waterfall's own show/hide sits on its corner
+                if (onWaterfall != null) WaterfallCorner(true, Modifier.align(Alignment.TopStart).padding(d.dp(6f)), onWaterfall)
             }
         }
     ) {
+        if (!waterfall && onWaterfall != null) WaterfallCorner(false, Modifier.fillMaxWidth().padding(top = d.dp(6f)), onWaterfall)
         Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             extra()
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 SegBar(views.map { it.name }, views.indexOf(view), accent, Modifier.weight(1f).fillMaxHeight()) { onView(views[it]) }
-                if (onWaterfall != null) WaterfallBox(waterfall, accent, Modifier.fillMaxHeight()) { onWaterfall() }
                 ToggleBox(if (paused) "RESUME" else "PAUSE", paused, accent, Modifier.fillMaxHeight()) { onPause() }
                 IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { onClear() }
             }
