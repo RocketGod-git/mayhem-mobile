@@ -3200,7 +3200,7 @@ const R433_HIDDEN = new Set(['model', 'id', 'channel', 'subtype', 'type', 'mic',
 const R433_MEANING: Record<string, string> = {
   raw: 'the frame exactly as it arrived, in the notation rtl_433 uses for its own test codes',
   raw_msg: 'the decoded bytes, kept because this family still has bits nobody has explained',
-  protocol: 'rtl_433 protocol number — look this up against that project’s documentation',
+  protocol: 'protocol number: below 1000 it is rtl_433’s, so look it up against that project’s documentation; 1000 and up are this app’s own',
   mic: 'which error check the reading passed',
   exception: 'a bit was set that should not have been; the reading may still be right',
   battery_mV: 'battery voltage as the sensor measures it',
@@ -3392,7 +3392,7 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
   }
   if (d.hz) fields.push(['FREQUENCY', `${r433Mhz(d.hz)} (${d.offsetHz >= 0 ? '+' : ''}${(d.offsetHz / 1e3).toFixed(0)} kHz from the dial)`]);
   fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'FSK (frequency shift)' : 'OOK (on-off)') : 'OOK or FSK, both are tried']);
-  fields.push(['DECODER', d.family === 'key' ? 'ProtoPirate car keys' : d.family === 'sensor' ? `rtl_433 protocol ${d.num} · ${d.what}` : 'Mayhem sub-GHz']);
+  fields.push(['DECODER', d.family === 'key' ? 'ProtoPirate car keys' : d.family === 'sensor' ? (d.num >= 1000 ? `Mayhem Mobile protocol ${d.num} · ${d.what}` : `rtl_433 protocol ${d.num} · ${d.what}`) : 'Mayhem sub-GHz']);
   fields.push(['HEARD', `${d.count} time${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
   if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);
   const hist = state.r433.hist.get(d.key) ?? [];

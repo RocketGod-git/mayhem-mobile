@@ -190,7 +190,7 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
      */
     private val sink: BurstFn = { fsk, pulses ->
         for (r in radio.run(fsk, pulses)) if (!r.dev.disabled) {
-            slots[cur].matches.add("rtl_433 ${r.dev.num}: ${r.data["model"]?.let { fmtValue(it) } ?: r.dev.name}${r.data["id"]?.let { " ${fmtValue(it)}" } ?: ""}")
+            slots[cur].matches.add("${if (r.dev.num >= 1000) "Mayhem Mobile" else "rtl_433"} ${r.dev.num}: ${r.data["model"]?.let { fmtValue(it) } ?: r.dev.name}${r.data["id"]?.let { " ${fmtValue(it)}" } ?: ""}")
         }
     }
 

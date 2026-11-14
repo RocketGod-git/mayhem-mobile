@@ -165,7 +165,7 @@ export class AnalyzerCapture implements IqProcessor {
   }
 
   private readonly sink = (kind: PulseKind, pulses: PulseData) => {
-    for (const r of this.radio.run(kind, pulses)) if (!r.dev.disabled) this.slots[this.cur].matches.add(`rtl_433 ${r.dev.num}: ${r.data.model}${r.data.id !== undefined ? ` ${r.data.id}` : ''}`);
+    for (const r of this.radio.run(kind, pulses)) if (!r.dev.disabled) this.slots[this.cur].matches.add(`${r.dev.num >= 1000 ? 'Mayhem Mobile' : 'rtl_433'} ${r.dev.num}: ${r.data.model}${r.data.id !== undefined ? ` ${r.data.id}` : ''}`);
   };
 
   private onChannel(ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number, iq?: Int8Array): void {
