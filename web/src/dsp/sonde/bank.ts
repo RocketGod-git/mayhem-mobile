@@ -8,7 +8,8 @@ import { makeBankA } from './bank-a.js';
 import { makeBankB } from './bank-b.js';
 import { makeBankC } from './bank-c.js';
 
-export interface ChannelDecoder { readonly name: string; push(x: number): void }
+/** `hz`: a decoder that wants its channel's frequency (iMet IDs are made from it) declares it; the channel keeps it set. */
+export interface ChannelDecoder { readonly name: string; push(x: number): void; hz?: number }
 
 /** A framer and a frame decoder: the shape most types take. */
 export class Framed implements ChannelDecoder {

@@ -45,8 +45,9 @@ export type SondeSink = (f: SondeFrame) => void;
 export class FskFramer {
   private readonly inc: number;
   private phase = 0; private acc = 0; private lastPos = false; private first = true;
-  private sh = 0n; private shN = 0;
-  private readonly hdr: bigint; private readonly hdrInv: bigint; private readonly mask: bigint;
+  /** The last symbols, newest in bit 0 of lo; up to 64 in two 32-bit words. */
+  private hi = 0; private lo = 0; private shN = 0;
+  private readonly hHi: number; private readonly hLo: number; private readonly mHi: number; private readonly mLo: number;
   private collecting = 0; private inv = false;
   private buf: Float32Array; private n = 0;
   /** Running mean of |soft| for scaling; also the DC the slicer is centered on. */
@@ -58,14 +59,18 @@ export class FskFramer {
     private readonly gain = 0.2,
   ) {
     this.inc = baud / rate;
-    let h = 0n; for (const c of header) h = (h << 1n) | (c === '1' ? 1n : 0n);
-    this.hdr = h; this.hdrLen = header.length;
-    this.mask = (1n << BigInt(header.length)) - 1n;
-    this.hdrInv = ~h & this.mask;
+    if (header.length > 64) throw new Error('sync word over 64 symbols');
+    this.hdrLen = header.length;
+    let hh = 0, hl = 0;
+    for (const c of header) { hh = ((hh << 1) | (hl >>> 31)) >>> 0; hl = ((hl << 1) | (c === '1' ? 1 : 0)) >>> 0; }
+    this.hHi = hh; this.hLo = hl;
+    const n = header.length;
+    this.mLo = n >= 32 ? 0xffffffff : ((1 << n) >>> 0) - 1;
+    this.mHi = n >= 64 ? 0xffffffff : n > 32 ? ((1 << (n - 32)) >>> 0) - 1 : 0;
     this.buf = new Float32Array(frameSyms);
   }
   readonly hdrLen: number;
-  reset(): void { this.phase = 0; this.acc = 0; this.first = true; this.sh = 0n; this.shN = 0; this.collecting = 0; this.n = 0; }
+  reset(): void { this.phase = 0; this.acc = 0; this.first = true; this.hi = 0; this.lo = 0; this.shN = 0; this.collecting = 0; this.n = 0; }
   /** One discriminator sample. */
   push(x: number): void {
     // the slicer's center follows the carrier between frames, and holds still inside one (long runs of one
@@ -91,9 +96,12 @@ export class FskFramer {
       if (--this.collecting === 0) this.onFrame(this.buf.slice(0, this.n), this.lastErrs);
       return;
     }
-    this.sh = ((this.sh << 1n) | (s > 0 ? 1n : 0n)) & this.mask;
+    this.hi = (((this.hi << 1) | (this.lo >>> 31)) & this.mHi) >>> 0;
+    this.lo = (((this.lo << 1) | (s > 0 ? 1 : 0)) & this.mLo) >>> 0;
     if (++this.shN < this.hdrLen) return;
-    const e = popBig(this.sh ^ this.hdr), ei = popBig(this.sh ^ this.hdrInv);
+    const dh = (this.hi ^ this.hHi) >>> 0, dl = (this.lo ^ this.hLo) >>> 0;
+    const e = popcount32(dh) + popcount32(dl);
+    const ei = this.hdrLen - e;
     if (e <= this.maxErr || ei <= this.maxErr) {
       this.inv = ei < e; this.lastErrs = Math.min(e, ei);
       this.collecting = this.frameSyms; this.n = 0; this.shN = 0;
@@ -102,7 +110,10 @@ export class FskFramer {
   private lastErrs = 0;
 }
 
-function popBig(x: bigint): number { let n = 0; while (x) { x &= x - 1n; n++; } return n; }
+function popcount32(x: number): number {
+  x = x >>> 0; x = x - ((x >>> 1) & 0x55555555); x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+  return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
 
 /** Hard bits out of soft symbols. */
 export const hard = (s: Float32Array): Uint8Array => Uint8Array.from(s, v => (v > 0 ? 1 : 0));

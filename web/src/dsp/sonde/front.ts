@@ -18,6 +18,8 @@ export const SONDE_BANDS: SondeBand[] = [
   { id: '400', title: '400–406 MHz', lo: 400_000_000, hi: 406_000_000 },
   { id: '1680', title: '1680 MHz', lo: 1_675_000_000, hi: 1_685_000_000 },
 ];
+/** The channel filter half-width and rate per band: LMS6-1680 swings about ±50 kHz, the 400 MHz types a few kHz. */
+const CH_WIDTH: Record<string, [number, number]> = { '400': [11_000, 48_000], '1680': [60_000, 192_000] };
 /** The channel rate every decoder works at. */
 export const SONDE_CH_RATE = 48_000;
 /** The whole-band span (HackRF): 8 Msps around a center off any common channel, so the DC spike sits between sondes. */
@@ -35,14 +37,16 @@ const MAX_CH = 8;
 export interface SondeChannelRow { hz: number; level: number; ageMs: number; decoding: string; frames: number }
 
 class Channel {
-  readonly ddc = new Ddc(11_000, SONDE_CH_RATE, 63);
+  readonly ddc: Ddc;
   private oi = new Float32Array(0); private oq = new Float32Array(0);
   private pi = 0; private pq = 0;
   private afcAcc = 0; private afcN = 0;
   readonly decoders: ChannelDecoder[];
   openedMs: number; lastCarrierMs: number; lastDecodeMs = 0; frames = 0; level = 0; lastType = '';
   private clock = 0;
-  constructor(public hz: number, private center: number, rate: number, now: number, sink: (f: SondeFrame, ch: Channel) => void) {
+  constructor(public hz: number, private center: number, rate: number, now: number, band: string, sink: (f: SondeFrame, ch: Channel) => void) {
+    const [cut, want] = CH_WIDTH[band] ?? CH_WIDTH['400'];
+    this.ddc = new Ddc(cut, want, 63);
     this.ddc.reset(rate);
     this.ddc.offsetHz = hz - center;
     this.openedMs = now; this.lastCarrierMs = now;
@@ -54,6 +58,7 @@ class Channel {
     const m = this.ddc.maxOut(n);
     if (this.oi.length < m) { this.oi = new Float32Array(m); this.oq = new Float32Array(m); }
     const k = this.ddc.push(re, im, n, this.oi, this.oq);
+    for (const dec of this.decoders) if (dec.hz !== undefined) dec.hz = this.hz;
     let pi = this.pi, pq = this.pq;
     for (let i = 0; i < k; i++) {
       const a = this.oi[i], b = this.oq[i];
@@ -97,6 +102,8 @@ export class SondeProcessor implements IqProcessor {
   now(): number { return this.clockBase + this.samples * 1000 / this.rate; }
   constructor(private readonly emit: Emit) { this.retuner = new Retuner(emit); }
 
+  /** Peaks closer than this are one carrier (a wide LMS6-1680 spreads ±50 kHz). */
+  private get mergeHz(): number { return this.band.id === '1680' ? 80_000 : 20_000; }
   get wide(): boolean { return this.rate >= 6_000_000; }
   setBand(id: string): void {
     this.band = SONDE_BANDS.find(b => b.id === id) ?? SONDE_BANDS[0];
@@ -171,17 +178,23 @@ export class SondeProcessor implements IqProcessor {
     // one carrier, one peak: a wide sonde (M10 at 9600 baud) has sideband peaks of its own within ±20 kHz
     const keep: { hz: number; lvl: number }[] = [];
     // and a much weaker peak near a strong carrier is its spur, not a sonde
-    for (const f of found) if (!keep.some(k => Math.abs(k.hz - f.hz) < 20_000 || (Math.abs(k.hz - f.hz) < 100_000 && k.lvl > f.lvl + 18))) keep.push(f);
+    for (const f of found) if (!keep.some(k => Math.abs(k.hz - f.hz) < this.mergeHz || (Math.abs(k.hz - f.hz) < 100_000 && k.lvl > f.lvl + 18))) keep.push(f);
     const seen = new Map<number, number>();
     for (const f of keep) {
-      const ch = this.chans.find(c => Math.abs(c.hz - f.hz) < 20_000);
+      const ch = this.chans.find(c => Math.abs(c.hz - f.hz) < this.mergeHz);
       if (ch) { ch.lastCarrierMs = now; ch.level = f.lvl; continue; }
       const key = Math.round(f.hz / 5000) * 5000;
       if ((this.banned.get(key) ?? 0) > now) continue;
       const times = (this.seen.get(key) ?? 0) + 1;
       seen.set(key, times);
+      if (times >= 2 && this.chans.length >= MAX_CH) {
+        // full: a clearly stronger carrier takes the place of the weakest channel that has not decoded
+        let weak: Channel | null = null;
+        for (const c of this.chans) if (!c.lastDecodeMs && (!weak || c.level < weak.level)) weak = c;
+        if (weak && f.lvl > weak.level + 6) this.chans.splice(this.chans.indexOf(weak), 1);
+      }
       if (times >= 2 && this.chans.length < MAX_CH) {
-        const c = new Channel(f.hz, this.centerHz, this.rate, now, (fr, from) => this.heard(fr, from));
+        const c = new Channel(f.hz, this.centerHz, this.rate, now, this.band.id, (fr, from) => this.heard(fr, from));
         c.level = f.lvl; this.chans.push(c);
         this.emit({ type: 'log', line: `Sondes: carrier at ${(f.hz / 1e6).toFixed(4)} MHz, +${f.lvl.toFixed(0)} dB, listening` });
       }

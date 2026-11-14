@@ -9,7 +9,8 @@ import { geoToEcef, neuToEcefVel } from './types.js';
 /** A small deterministic generator (tests must repeat). */
 export class Prng {
   constructor(private s = 12345) {}
-  next(): number { this.s = (this.s * 1103515245 + 12345) >>> 0; return this.s / 4294967296; }
+  /** mulberry32: an LCG's low bits repeat and put false carriers in the test noise. */
+  next(): number { let t = (this.s = (this.s + 0x6d2b79f5) >>> 0); t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
   gauss(): number { const u = Math.max(1e-12, this.next()), v = this.next(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
 }
 
