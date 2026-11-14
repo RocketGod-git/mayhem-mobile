@@ -704,15 +704,23 @@ object SdrEngine {
         var hdWas = false
         var lastTrackTry = 0L; var lastErr = 0L
         // a write the output refuses means the system has taken it away; drop it and the next buffer opens another
+        // Where the DSP thread's time goes, per stage (ns), and the audio it hands the speaker, logged once a second:
+        // a thread that falls behind the radio says which stage holds it up.
+        var stSpec = 0L; var stHd = 0L; var stDemod = 0L; var stEmit = 0L; var stProc = 0L; var stWait = 0L; var stAll = 0L
+        var stItems = 0; var stAudio = 0L; var stBytes = 0L; var stLast = System.nanoTime()
         fun emit(buf: ShortArray, n: Int) {
             val t = track ?: return
+            val e0 = System.nanoTime()
             val r = try { t.write(buf, 0, n) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
+            stEmit += System.nanoTime() - e0; if (r > 0) stAudio += r
             if (r < 0) { Diag.log("audio output lost (code $r), reopening it"); runCatching { t.release() }; track = null }
         }
         try {
             val me = Thread.currentThread()
             while (worker === me) {
+                val w0 = System.nanoTime()
                 val item = try { queue.take() } catch (e: InterruptedException) { break }
+                val i0 = System.nanoTime(); stWait += i0 - w0; stItems++; stBytes += item.size
                 try {
                     val len = item.size
                     val nSamp = len / 2
@@ -752,6 +760,7 @@ object SdrEngine {
                         } else if (!wantTrack && playing) runCatching { tk.pause(); tk.flush() }
                     }
 
+                    val sp0 = System.nanoTime()
                     // ---- spectrum (~25 fps): every whole FFT frame in this buffer is accumulated (a short buffer gives one
                     // zero-padded frame); wide spans skip frames so about 2.4 M samples a second are transformed, the
                     // widest (a phone at 20 Msps, where this thread also feeds every decoder) about 1.2 M ----
@@ -867,6 +876,7 @@ object SdrEngine {
                         }
                     }
 
+                    stSpec += System.nanoTime() - sp0
                     val wantRds = rdsOn && m == Mode.WFM
                     val tuned = _freqHz.value
                     if (wantRds != rdsWas || (wantRds && tuned != rdsFreq)) { rdsDec.reset(); rdsN = 0; rdsWas = wantRds; rdsFreq = tuned; if (wantRds) _rds.value = null }
@@ -874,7 +884,9 @@ object SdrEngine {
                     if (wantSame != sameWas) { sameDec.reset(0); sameN = 0; sameWas = wantSame }
                     val wantHd = hdOn && m == Mode.WFM
                     if (wantHd != hdWas) { hdDet.reset(); hdWas = wantHd }
+                    val hd0 = System.nanoTime()
                     if (wantHd && abs(_offsetHz.value) < rate / 2 - 240_000) runCatching { hdDet.push(item, nSamp, rate, _offsetHz.value.toDouble()) }
+                    val dm0 = System.nanoTime(); stHd += dm0 - hd0; val em0 = stEmit
 
                     // ---- demod → audio (+ FM tap for packet processors) ----
                     if (m != Mode.NONE && abs(_offsetHz.value) < rate / 2 - 40_000) {     // a channel slid off the span is silent
@@ -998,7 +1010,9 @@ object SdrEngine {
                             if (open != sqOpen) { sqOpen = open; _squelchOpen.value = open }
                         }
                     }
+                    val pr0 = System.nanoTime(); stDemod += pr0 - dm0 - (stEmit - em0)
                     if (p != null) runCatching { p.onIq(item, len, rate) }.onFailure { Diag.log("processor error: ${it.message}") }
+                    stProc += System.nanoTime() - pr0
                     val t = track
                     if (p != null && p.producesAudio && t != null) {
                         val k = p.drainAudio(procAudio, procAudio.size)
@@ -1013,6 +1027,14 @@ object SdrEngine {
                         }
                     }
                     pool.offer(item)
+                    val i1 = System.nanoTime(); stAll += i1 - i0
+                    if (i1 - stLast >= 1_000_000_000L) {
+                        val sec = (i1 - stLast) / 1e9; fun ms(v: Long) = v / 1e6 / sec
+                        Diag.log("DSP per s: %d bufs (%.0f KB) · busy %.0f ms · spectrum %.0f · HD %.0f · demod %.0f · audio write %.0f (%d samples, want %d) · %s %.0f · idle %.0f".format(
+                            (stItems / sec).toInt(), stBytes / 1024.0 / sec, ms(stAll), ms(stSpec), ms(stHd), ms(stDemod), ms(stEmit), (stAudio / sec).toLong(), AUDIO_RATE,
+                            p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)))
+                        stSpec = 0; stHd = 0; stDemod = 0; stEmit = 0; stProc = 0; stWait = 0; stAll = 0; stItems = 0; stAudio = 0; stBytes = 0; stLast = i1
+                    }
                 } catch (e: InterruptedException) {
                     break
                 } catch (t: Throwable) {
