@@ -217,11 +217,13 @@ export class SondeProcessor implements IqProcessor {
     if (this.windows.length < 2) return;
     const decoding = this.chans.some(c => c.lastDecodeMs && now - c.lastDecodeMs < 30_000);
     const trying = this.chans.some(c => !c.lastDecodeMs && now - c.openedMs < 12_000);
-    if (decoding || trying) { this.winSince = now; return; }
-    if (now - this.winSince < 2500) return;
     // a balloon others are hearing (SondeHub) says where to listen: step only through the windows that hold one
-    // (inner ±0.9 MHz), and through the whole band when nothing is reported
+    // (inner ±0.9 MHz), and through the whole band when nothing is reported. A carrier being tried here holds the
+    // window only when this window is one of those (local interference kept it parked away from a reported balloon).
     const told = this.windows.map((w, i) => i).filter(i => this.hints.some(h => Math.abs(h - this.windows[i]) <= 900_000));
+    const away = told.length > 0 && !told.includes(this.winIx);
+    if (decoding || (trying && !away)) { this.winSince = now; return; }
+    if (now - this.winSince < (away ? 0 : 2500)) return;
     if (told.length) {
       const at = told.indexOf(this.winIx);
       if (told.length === 1 && at === 0) { this.winSince = now; return; }
