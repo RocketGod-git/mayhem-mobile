@@ -54,11 +54,11 @@ object SondeFront {
         return out
     }
 
-    /** One log line per frame: time, type, serial, frame, position, height, climb, temperature. */
+    /** One log line per frame: type (upper case, so the log colors each type as its own kind), serial, GPS time,
+     *  frame, position, height, climb, temperature. */
     fun line(f: SondeFrame, hz: Long): String {
-        val ts = f.timeS
-        val t = if (ts != null) "%02d:%02d:%02dZ ".format(Locale.US, floor(ts / 3600).toLong() % 24, floor(ts / 60).toLong() % 60, floor(ts % 60).toLong()) else ""
-        val parts = arrayListOf("$t${f.model ?: f.type} ${f.serial}")
+        val parts = arrayListOf("${(f.model ?: f.type).uppercase(Locale.US)} ${f.serial}")
+        f.timeS?.let { ts -> parts.add("%02d:%02d:%02d UTC".format(Locale.US, floor(ts / 3600).toLong() % 24, floor(ts / 60).toLong() % 60, floor(ts % 60).toLong())) }
         f.frame?.let { parts.add("#$it") }
         val la = f.lat; val lo = f.lon
         if (la != null && lo != null) parts.add("%.5f,%.5f".format(Locale.US, la, lo))

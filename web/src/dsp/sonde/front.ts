@@ -238,8 +238,9 @@ export class SondeProcessor implements IqProcessor {
 
 /** One log line per frame: time, type, serial, frame, position, height, climb, temperature. */
 export function sondeLine(f: SondeFrame, hz: number): string {
-  const t = f.timeS !== undefined ? `${String(Math.floor(f.timeS / 3600) % 24).padStart(2, '0')}:${String(Math.floor(f.timeS / 60) % 60).padStart(2, '0')}:${String(Math.floor(f.timeS % 60)).padStart(2, '0')}Z ` : '';
-  const parts = [`${t}${f.model ?? f.type} ${f.serial}`];
+  // the type leads (upper case), so the log colors each type as its own kind; the GPS time follows as a detail
+  const parts = [`${(f.model ?? f.type).toUpperCase()} ${f.serial}`];
+  if (f.timeS !== undefined) parts.push(`${String(Math.floor(f.timeS / 3600) % 24).padStart(2, '0')}:${String(Math.floor(f.timeS / 60) % 60).padStart(2, '0')}:${String(Math.floor(f.timeS % 60)).padStart(2, '0')} UTC`);
   if (f.frame !== undefined) parts.push(`#${f.frame}`);
   if (f.lat !== undefined && f.lon !== undefined) parts.push(`${f.lat.toFixed(5)},${f.lon.toFixed(5)}`);
   if (f.alt !== undefined) parts.push(`${Math.round(f.alt)} m`);
