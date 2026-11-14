@@ -63,9 +63,9 @@ object Devices {
 
     /** How a field is explained when it is not self-evident; tapping the field on a device row shows it. */
     val MEANING = mapOf(
-        "raw" to "the frame exactly as it arrived, in the notation rtl_433 uses for its own test codes",
+        "raw" to "the frame exactly as it arrived, in the usual hex notation for sensor test codes",
         "raw_msg" to "the decoded bytes, kept because this family still has bits nobody has explained",
-        "protocol" to "protocol number: below 1000 it is rtl_433's, so look it up against that project's documentation; 1000 and up are this app's own",
+        "protocol" to "the number of the decoder that read it",
         "mic" to "which error check the reading passed",
         "exception" to "a bit was set that should not have been; the reading may still be right",
         "battery_mV" to "battery voltage as the sensor measures it",

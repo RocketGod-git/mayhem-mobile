@@ -28,6 +28,8 @@ object S {
     const val NICE_FLORS = 33; const val PHOENIX_V2 = 34; const val POWER_SMART = 35; const val SECPLUS_V1 = 36; const val SECPLUS_V2 = 37
     const val SMC5326 = 38; const val STARLINE = 39; const val X10 = 40; const val SOMFY_KEYTIS = 41; const val SOMFY_TELIS = 42
     const val GANGQI = 43; const val MARANTEC24 = 44; const val HOLTEK_HT6P20B = 45; const val RESTAURANT_PAGER = 46; const val SUPERROLLO = 47
+    // Flipper/Unleashed Sub-GHz remotes Mayhem does not have (this app's own numbers, 48 and up)
+    const val ALLSTAR_FIREFLY = 48; const val ALUTECH_AT_4N = 49; const val ANSONIC = 50; const val BELKORN = 51; const val BENINCA_ARC = 52; const val DICKERT_MAHS = 53; const val DITEC_GOL4 = 54; const val DOORBELL32 = 55; const val ELPLAST = 56; const val FAAC_TM = 57; const val FERON = 58; const val FREEZER = 59; const val HAY21 = 60; const val HOLLARM = 61; const val JAROLIFT = 62; const val KEYFINDER = 63; const val KEYFINDER2 = 64; const val NORD_ICE = 65; const val PROTECO = 66; const val REVERS_RB2 = 67; const val ROGER = 68; const val TELCOMA_EDGE = 69; const val TREADMILL37 = 70
 }
 
 /** Car key types (Mayhem FPROTO_SUBCAR_SENSOR values). */
@@ -113,6 +115,8 @@ abstract class FProto(val family: Int, initialType: Int) {
     var callback: ((FProto) -> Unit)? = null
 
     abstract fun feed(level: Boolean, duration: Int)
+    /** A remote that reads its own fields (frames over 64 bits, or layouts Mayhem never had) returns them here. */
+    open fun remoteInfo(): RemoteInfo? = null
 
     protected fun addBit(bit: Int) { decodeData = (decodeData shl 1) or (bit.toLong() and 1L); decodeCountBit++ }
     protected fun hit() { callback?.invoke(this) }

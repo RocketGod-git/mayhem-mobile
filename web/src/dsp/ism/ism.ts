@@ -173,7 +173,7 @@ export class IsmDecoder implements IqProcessor {
       if (w.humidity !== null) line += `  ${w.humidity}%`;
       if (w.batteryLow !== null) line += w.batteryLow ? '  batt LOW' : '  batt OK';
     } else if (p.family === Fam.REMOTE) {
-      const r = parseRemote(p.sensorType, p.decodeData, p.dataCountBit);
+      const r = p.remoteInfo() ?? parseRemote(p.sensorType, p.decodeData, p.dataCountBit);
       line = `REMOTE ${r.name.padEnd(16)} key ${hex(p.decodeData)} (${p.dataCountBit} bits)`;
       if (r.serial !== 0n) line += `  serial ${hex(r.serial, 1)}`;
       if (r.btn !== null) line += `  btn ${r.btn}`;

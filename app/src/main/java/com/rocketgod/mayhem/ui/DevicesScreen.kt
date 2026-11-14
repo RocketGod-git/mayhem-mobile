@@ -250,7 +250,7 @@ private fun detailFields(h: HeardDevice): List<Pair<String, String>> {
     for ((k, v) in h.data) { if (k == "model") continue; out.add(k.replace('_', ' ').uppercase() to Devices.value(k, v)) }
     if (h.hz > 0) out.add("FREQUENCY" to "${Devices.mhz(h.hz)} (${if (h.offsetHz >= 0) "+" else "-"}${"%.0f".format(abs(h.offsetHz) / 1e3)} kHz from the dial)")
     out.add("MODULATION" to if (h.family == "sensor") (if (h.fsk) "FSK (frequency shift)" else "OOK (on-off)") else "OOK or FSK, both are tried")
-    out.add("DECODER" to when (h.family) { "key" -> "ProtoPirate car keys"; "sensor" -> if (h.num >= 1000) "Mayhem Mobile protocol ${h.num} · ${h.what}" else "rtl_433 protocol ${h.num} · ${h.what}"; else -> "Mayhem sub-GHz" })
+    out.add("DECODER" to when (h.family) { "key" -> "car keys"; "sensor" -> "protocol ${h.num} · ${h.what}"; "remote" -> "gate and garage remotes"; else -> "weather sensors" })
     out.add("HEARD" to "${h.count} time${if (h.count == 1) "" else "s"} · first ${Devices.clock(h.firstSeen)} · last ${Devices.clock(h.lastSeen)}")
     if (h.num in Devices.doubtful) out.add("NOTE" to "this protocol has no checksum, so nothing in the frame proves the reading")
     return out
@@ -265,7 +265,7 @@ private fun ProtocolList(protocols: List<R433Protocol>, modifier: Modifier) {
         LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
             item {
                 Text("Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys " +
-                    "(ProtoPirate), gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (rtl_433, listed here). " +
+                    "gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (listed here). " +
                     "A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio " +
                     "here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute " +
                     "and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.",

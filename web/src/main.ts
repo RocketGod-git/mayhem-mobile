@@ -3198,9 +3198,9 @@ const R433_HIDDEN = new Set(['model', 'id', 'channel', 'subtype', 'type', 'mic',
 
 /** How each field is explained when a device is opened. Anything not here is shown under its own name. */
 const R433_MEANING: Record<string, string> = {
-  raw: 'the frame exactly as it arrived, in the notation rtl_433 uses for its own test codes',
+  raw: 'the frame exactly as it arrived, in the usual hex notation for sensor test codes',
   raw_msg: 'the decoded bytes, kept because this family still has bits nobody has explained',
-  protocol: 'protocol number: below 1000 it is rtl_433’s, so look it up against that project’s documentation; 1000 and up are this app’s own',
+  protocol: 'the number of the decoder that read it',
   mic: 'which error check the reading passed',
   exception: 'a bit was set that should not have been; the reading may still be right',
   battery_mV: 'battery voltage as the sensor measures it',
@@ -3304,7 +3304,7 @@ function renderR433(view: HTMLElement): void {
       <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="tog" id="r433-ptoggle">PROTOCOLS</button>${pauseClearHtml('devices')}</span></div>
       <div class="mt-stage dv-stage"><div id="r433-list" class="mt-cards dv-cards"></div><div id="r433-detail" class="mt-detail" hidden></div></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
-      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys (ProtoPirate), gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (rtl_433). A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
+      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys, gate and garage remotes, tire sensors, weather stations, alarms and hundreds more. A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-r433f]', view).forEach(b => b.onclick = () => { state.r433.filter = b.dataset.r433f as R433Filter; state.r433.sel = ''; drawR433(); });
@@ -3392,7 +3392,7 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
   }
   if (d.hz) fields.push(['FREQUENCY', `${r433Mhz(d.hz)} (${d.offsetHz >= 0 ? '+' : ''}${(d.offsetHz / 1e3).toFixed(0)} kHz from the dial)`]);
   fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'FSK (frequency shift)' : 'OOK (on-off)') : 'OOK or FSK, both are tried']);
-  fields.push(['DECODER', d.family === 'key' ? 'ProtoPirate car keys' : d.family === 'sensor' ? (d.num >= 1000 ? `Mayhem Mobile protocol ${d.num} · ${d.what}` : `rtl_433 protocol ${d.num} · ${d.what}`) : 'Mayhem sub-GHz']);
+  fields.push(['DECODER', d.family === 'key' ? 'car keys' : d.family === 'sensor' ? `protocol ${d.num} · ${d.what}` : d.family === 'remote' ? 'gate and garage remotes' : 'weather sensors']);
   fields.push(['HEARD', `${d.count} time${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
   if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);
   const hist = state.r433.hist.get(d.key) ?? [];
@@ -3501,7 +3501,7 @@ function drawR433Protocols(): void {
     + r.protocols.map((p, i) => `<div class="devrow p${i % 2 ? ' alt' : ''}">`
       + `<div class="p-name"><b>${esc(p.name)}</b><i>${p.num}</i>${p.doubtful ? '<i class="tag q" title="no checksum, so a reading from it is worth a second look">?</i>' : ''}</div>`
       + (p.what ? `<div class="p-what">${esc(p.what)}</div>` : '')
-      + `<div class="p-meta">${esc(p.coding)}${p.bands.length ? ` · ${p.bands.map(b => b.toFixed(2)).join(', ')} MHz` : ''}${p.doubtful ? ' · no checksum — rtl_433 ships this one off; it runs here anyway' : ''}</div>`
+      + `<div class="p-meta">${esc(p.coding)}${p.bands.length ? ` · ${p.bands.map(b => b.toFixed(2)).join(', ')} MHz` : ''}${p.doubtful ? ' · no checksum, so it can misread other traffic; it runs anyway' : ''}</div>`
       + '</div>').join('');
 }
 

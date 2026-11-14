@@ -2,6 +2,29 @@
 import type { FProto } from './base.js';
 import { CBmwV0 } from './c-bmw_v0.js';
 import { SBett } from './s-bett.js';
+import { SAllstarFirefly } from './s-allstar_firefly.js';
+import { SAlutechAt4n } from './s-alutech_at_4n.js';
+import { SAnsonic } from './s-ansonic.js';
+import { SBelkorn } from './s-belkorn.js';
+import { SBenincaArc } from './s-beninca_arc.js';
+import { SDickertMahs } from './s-dickert_mahs.js';
+import { SDitecGol4 } from './s-ditec_gol4.js';
+import { SDoorbell32 } from './s-doorbell32.js';
+import { SElplast } from './s-elplast.js';
+import { SFaacTm } from './s-faac_tm.js';
+import { SFeron } from './s-feron.js';
+import { SFreezer } from './s-freezer.js';
+import { SHay21 } from './s-hay21.js';
+import { SHollarm } from './s-hollarm.js';
+import { SJarolift } from './s-jarolift.js';
+import { SKeyfinder } from './s-keyfinder.js';
+import { SKeyfinder2 } from './s-keyfinder2.js';
+import { SNordIce } from './s-nord_ice.js';
+import { SProteco } from './s-proteco.js';
+import { SReversRb2 } from './s-revers_rb2.js';
+import { SRoger } from './s-roger.js';
+import { STelcomaEdge } from './s-telcoma_edge.js';
+import { STreadmill37 } from './s-treadmill37.js';
 import { SCame } from './s-came.js';
 import { SCameAtomo } from './s-came_atomo.js';
 import { SCameTwee } from './s-came_twee.js';
@@ -120,6 +143,29 @@ export function allProtos(): FProto[] {
     new SStarLine(),
     new SSuperrollo(),
     new SX10(),
+    new SAllstarFirefly(),
+    new SAlutechAt4n(),
+    new SAnsonic(),
+    new SBelkorn(),
+    new SBenincaArc(),
+    new SDickertMahs(),
+    new SDitecGol4(),
+    new SDoorbell32(),
+    new SElplast(),
+    new SFaacTm(),
+    new SFeron(),
+    new SFreezer(),
+    new SHay21(),
+    new SHollarm(),
+    new SJarolift(),
+    new SKeyfinder(),
+    new SKeyfinder2(),
+    new SNordIce(),
+    new SProteco(),
+    new SReversRb2(),
+    new SRoger(),
+    new STelcomaEdge(),
+    new STreadmill37(),
     new WAcurite592Txr(),
     new WAcurite5in1(),
     new WAcurite606Tx(),

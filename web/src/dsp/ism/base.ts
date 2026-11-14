@@ -18,6 +18,8 @@ export const S = {
   NERO_RADIO: 30, NERO_SKETCH: 31, NICE_FLO: 32, NICE_FLORS: 33, PHOENIX_V2: 34, POWER_SMART: 35, SECPLUS_V1: 36, SECPLUS_V2: 37,
   SMC5326: 38, STARLINE: 39, X10: 40, SOMFY_KEYTIS: 41, SOMFY_TELIS: 42, GANGQI: 43, MARANTEC24: 44, HOLTEK_HT6P20B: 45,
   RESTAURANT_PAGER: 46, SUPERROLLO: 47,
+  // Flipper/Unleashed Sub-GHz remotes Mayhem does not have (this app's own numbers, 48 and up)
+  ALLSTAR_FIREFLY: 48, ALUTECH_AT_4N: 49, ANSONIC: 50, BELKORN: 51, BENINCA_ARC: 52, DICKERT_MAHS: 53, DITEC_GOL4: 54, DOORBELL32: 55, ELPLAST: 56, FAAC_TM: 57, FERON: 58, FREEZER: 59, HAY21: 60, HOLLARM: 61, JAROLIFT: 62, KEYFINDER: 63, KEYFINDER2: 64, NORD_ICE: 65, PROTECO: 66, REVERS_RB2: 67, ROGER: 68, TELCOMA_EDGE: 69, TREADMILL37: 70,
 } as const;
 
 /** Car key types (Mayhem FPROTO_SUBCAR_SENSOR values). */
@@ -83,6 +85,8 @@ export const FG = {
 };
 
 /** One protocol decoder. `sensorType` may be changed by a protocol that covers several variants. */
+import type { RemoteInfo } from './remote-fields.js';
+
 export abstract class FProto {
   sensorType: number;
   decodeData = 0n;
@@ -96,6 +100,8 @@ export abstract class FProto {
   callback: ((p: FProto) => void) | null = null;
   constructor(readonly family: number, initialType: number) { this.sensorType = initialType; }
   abstract feed(level: boolean, duration: number): void;
+  /** A remote that reads its own fields (frames over 64 bits, or layouts Mayhem never had) returns them here. */
+  remoteInfo(): RemoteInfo | null { return null; }
   protected addBit(bit: number): void { this.decodeData = ((this.decodeData << 1n) | BigInt(bit & 1)) & MASK64; this.decodeCountBit++; }
   protected hit(): void { this.callback?.(this); }
   protected dd(x: number, y: number): number { return FG.dd(x, y); }

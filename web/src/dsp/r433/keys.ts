@@ -221,7 +221,7 @@ export class KeyDecoders {
       if (w.batteryLow !== null) fields.push(['BATTERY', w.batteryLow ? 'low' : 'OK']);
       this.onReading({ family: 'weather', model: w.name, id: w.id.toString(), fields, raw, bits: p.dataCountBit });
     } else if (p.family === Fam.REMOTE) {
-      const r = parseRemote(p.sensorType, p.decodeData, p.dataCountBit);
+      const r = p.remoteInfo() ?? parseRemote(p.sensorType, p.decodeData, p.dataCountBit);
       const tri = r.name === 'Princeton' ? triState(p.decodeData, p.dataCountBit) : null;
       if (tri) {
         // A PT2262-style remote: 8 address symbols (its DIP switches) and 4 data symbols (the pins its buttons

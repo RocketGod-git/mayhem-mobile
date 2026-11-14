@@ -235,7 +235,7 @@ class KeyDecoders(private val onReading: (KeyReading) -> Unit) {
                 onReading(KeyReading("weather", w.name, w.id.toString(), fields, raw, p.dataCountBit))
             }
             Fam.REMOTE -> {
-                val r = RemoteFields.parse(p.sensorType, p.decodeData, p.dataCountBit)
+                val r = p.remoteInfo() ?: RemoteFields.parse(p.sensorType, p.decodeData, p.dataCountBit)
                 val tri = if (r.name == "Princeton") triState(p.decodeData, p.dataCountBit) else null
                 if (tri != null) {
                 // A PT2262-style remote: 8 address symbols (its DIP switches) and 4 data symbols (the pins its buttons

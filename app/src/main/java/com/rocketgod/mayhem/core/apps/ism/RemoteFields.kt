@@ -24,6 +24,7 @@ object RemoteFields {
         S.SECPLUS_V1 -> "SecPlus V1"; S.SECPLUS_V2 -> "SecPlus V2"; S.SMC5326 -> "SMC5326"; S.STARLINE -> "Star Line"; S.X10 -> "X10"
         S.LEGRAND -> "Legrand"; S.SOMFY_KEYTIS -> "Somfy Keytis"; S.SOMFY_TELIS -> "Somfy Telis"; S.GANGQI -> "GangQi"; S.MARANTEC24 -> "Marantec24"
         S.HOLTEK_HT6P20B -> "Holtek HT6P20B"; S.RESTAURANT_PAGER -> "Rest. Pager"
+        S.ALLSTAR_FIREFLY -> "Allstar Firefly"; S.ALUTECH_AT_4N -> "Alutech AT-4N"; S.ANSONIC -> "Ansonic"; S.BELKORN -> "Belkorn"; S.BENINCA_ARC -> "Beninca ARC"; S.DICKERT_MAHS -> "Dickert MAHS"; S.DITEC_GOL4 -> "Ditec GOL4"; S.DOORBELL32 -> "Doorbell32"; S.ELPLAST -> "Elplast"; S.FAAC_TM -> "Faac TM"; S.FERON -> "Feron"; S.FREEZER -> "Freezer"; S.HAY21 -> "Hay21"; S.HOLLARM -> "Hollarm"; S.JAROLIFT -> "Jarolift"; S.KEYFINDER -> "Keyfinder"; S.KEYFINDER2 -> "Keyfinder 2"; S.NORD_ICE -> "Nord Ice"; S.PROTECO -> "Proteco"; S.REVERS_RB2 -> "Revers RB2"; S.ROGER -> "Roger"; S.TELCOMA_EDGE -> "Telcoma Edge"; S.TREADMILL37 -> "Treadmill37"
         else -> "Unknown"
     }
 

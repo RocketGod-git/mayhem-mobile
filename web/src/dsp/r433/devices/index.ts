@@ -63,4 +63,5 @@ import './stations.js';
 import './thermo3.js';
 import './switches.js';
 import './security3.js';
+import './olympia.js';
 import './tesla.js';
