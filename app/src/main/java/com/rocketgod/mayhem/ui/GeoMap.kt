@@ -42,7 +42,7 @@ import kotlin.math.sin
 
 /** Something to put on a map: a logged contact, a looked-up callsign, a satellite, a sensor. */
 data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: String, val kind: Kind, val heading: Double? = null) {
-    enum class Kind { QSO, OBJECT, SAT, DEVICE, SHIP, ATON, STATION }
+    enum class Kind { QSO, OBJECT, SAT, DEVICE, SHIP, ATON, STATION, SONDE, LANDING, BURST }
 }
 
 /** The map's extra layers: lines home to each contact, a satellite's ground track and radio footprint. */
@@ -51,7 +51,12 @@ data class GeoLayers(
     val track: List<Pair<Double, Double>> = emptyList(),
     /** Centre lat, lon and radius in km. */
     val footprint: Triple<Double, Double, Double>? = null,
+    /** Any number of paths in the accent (sonde flight tracks solid, predicted descents dashed). */
+    val paths: List<GeoPath> = emptyList(),
 )
+
+/** A line through [pts]: dashed for a prediction, faint for one that is not the selected item's. */
+data class GeoPath(val pts: List<Pair<Double, Double>>, val dashed: Boolean = false, val faint: Boolean = false)
 
 /** Regional zoom: a couple of hundred kilometers across, where ships, stations and aircraft near you show up. */
 const val REGION_ZOOM = 8.0
@@ -136,6 +141,22 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
                 p.addRect(x + 0.5f * s, y - 0.2f * s, x + 1.3f * s, y + 0.2f * s, cw)
             }
             GeoItem.Kind.QSO, GeoItem.Kind.DEVICE -> p.addCircle(x, y, 0.6f * s, cw)
+            // a balloon on its line with the sonde under it
+            GeoItem.Kind.SONDE -> {
+                p.addCircle(x, y - 0.55f * s, 0.62f * s, cw)
+                p.addRect(x - 0.07f * s, y + 0.05f * s, x + 0.07f * s, y + 0.77f * s, cw)
+                box.set(x - 0.3f * s, y + 0.75f * s, x + 0.3f * s, y + 1.25f * s); p.addRoundRect(box, 0.08f * s, 0.08f * s, cw)
+            }
+            // where it comes down: a target
+            GeoItem.Kind.LANDING -> {
+                p.addCircle(x, y, 1.1f * s, cw); p.addCircle(x, y, 0.78f * s, android.graphics.Path.Direction.CCW); p.addCircle(x, y, 0.32f * s, cw)
+            }
+            // where it burst: a star
+            GeoItem.Kind.BURST -> {
+                val xs = floatArrayOf(0f, 0.3f, 1.15f, 0.45f, 0.72f, 0f, -0.72f, -0.45f, -1.15f, -0.3f)
+                val ys = floatArrayOf(-1.2f, -0.4f, -0.4f, 0.12f, 0.95f, 0.45f, 0.95f, 0.12f, -0.4f, -0.4f)
+                p.moveTo(x + xs[0] * s, y + ys[0] * s); for (i in 1 until xs.size) p.lineTo(x + xs[i] * s, y + ys[i] * s); p.close()
+            }
         }
     }
 
@@ -156,6 +177,13 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         if (layers.track.isNotEmpty()) {
             line.color = goldInt; line.strokeWidth = 2f * d; line.pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f * d, 4f * d), 0f)
             polyline(c, mv, layers.track, line)
+            line.pathEffect = null
+        }
+        for (pa in layers.paths) {
+            if (pa.pts.size < 2) continue
+            line.color = ((if (pa.faint) 0x66 else 0xD9) shl 24) or rgb; line.strokeWidth = (if (pa.dashed) 2f else 3f) * d
+            line.pathEffect = if (pa.dashed) android.graphics.DashPathEffect(floatArrayOf(6f * d, 6f * d), 0f) else null
+            polyline(c, mv, pa.pts, line)
             line.pathEffect = null
         }
         line.color = (0x66 shl 24) or rgb; line.strokeWidth = 1.2f * d

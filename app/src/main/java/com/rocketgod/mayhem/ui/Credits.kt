@@ -19,6 +19,7 @@ object Credits {
         false to "ERT — proc_ert, ert_packet: Jared Boone, Mark Thompson · after rtlamr by Douglas Hall",
         false to "BLE RX — proc_btlerx: Jared Boone, Furrtek, Shao, TJ Baginski",
         false to "TPMS — proc_tpms, tpms_packet: Jared Boone, Mark Thompson",
+        false to "Sondes — frame formats after the RS radiosonde decoders by zilog80 (rs1729/RS) and radiosonde_auto_rx (Project Horus: Mark Jessop and contributors); Mayhem's sonde app (proc_sonde, sonde_packet): Furrtek and Mayhem contributors",
         false to "ACARS — proc_acars, acars_app: Jared Boone, Furrtek · bit decision after acarsdec by Thierry Leconte",
         false to "Transmit — proc_siggen, proc_morse, proc_ook, proc_replay, pocsag_tx, rtty_tx (ITA2 Baudot), aprs_tx (AX.25), tones/DTMF: Jared Boone, Furrtek, htotoo and Mayhem contributors",
         false to "Transmit apps — ui_mdc_tx (MDC-1200 PTT-ID), ui_test (Quick-Call II two-tone), ui_flippertx (SubGHz .sub replay), ui_keyfob (KeeLoq HCS301), ui_jammer (OOK noise), ookbrute, ui_lge (frequency hopper), ui_adsb_tx (Mode-S DF17): Mayhem contributors (htotoo, Furrtek, Kyle Reed, jimilinuxguy and others); KeeLoq cipher after Flipper Devices / rtl_433; ADS-B after dump1090.",

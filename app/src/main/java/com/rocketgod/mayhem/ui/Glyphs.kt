@@ -109,6 +109,13 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.38f, 0.7f); path.l(0.16f, 0.94f); path.m(0.62f, 0.7f); path.l(0.84f, 0.94f)
                 path.m(0.3f, 0.82f); path.l(0.7f, 0.82f)
             }
+            MayhemApp.SONDES -> {
+                // a balloon on its line, the sonde hanging under it
+                circles.add(Triple(0.5f, 0.3f, 0.22f))
+                path.m(0.5f, 0.52f); path.l(0.5f, 0.74f)
+                path.m(0.4f, 0.74f); path.l(0.6f, 0.74f); path.l(0.6f, 0.92f); path.l(0.4f, 0.92f); path.close()
+                path.m(0.44f, 0.81f); path.l(0.56f, 0.81f)
+            }
             MayhemApp.PROWL -> {
                 // a cat's eye: two arcs meeting at the corners, and a slit pupil
                 for ((cy, a0, a1) in listOf(Triple(0.648f, -158.8, -21.2), Triple(0.352f, 21.2, 158.8))) {

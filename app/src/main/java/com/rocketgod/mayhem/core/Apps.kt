@@ -36,6 +36,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
     ACARS("ACARS", "messages, 131 MHz", "Receive"),
     TRAINS("Trains", "EOT · PTC telemetry", "Receive"),
+    SONDES("Sondes", "weather balloons", "Receive"),
     PROWL("Prowl", "hunts live voice", "Receive"),
     SPECTRUM("Spectrum", "analyzer, zero span", "Analyze"),
     ANALYZER("Analyzer", "bursts to bits", "Analyze"),
@@ -192,6 +193,32 @@ object Apps {
         return (local.narrowChannel(local.area()) ?: com.rocketgod.mayhem.core.lora.LoraPlan.homeBand().narrow) + 300_000
     }
 
+    /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
+    val sondesLog = PacketLog(); val sondes = com.rocketgod.mayhem.core.sonde.SondeProcessor(sondesLog)
+    /** The band Sondes watches, by id ("400" or "1680"), kept across runs. */
+    fun sondeBandId(): String = SdrEngine.savedLong("sonde_band").let { if (it == 0L) "400" else it.toString() }
+    fun setSondeBand(id: String) {
+        SdrEngine.saveLong("sonde_band", id.toLongOrNull() ?: 400L)
+        val f = com.rocketgod.mayhem.core.sonde.SondeFront
+        val band = f.band(id)
+        sondes.setBand(id)
+        if (playing() == MayhemApp.SONDES) {
+            val rate = SdrEngine.rateHz.value
+            SdrEngine.tune(if (rate >= 6_000_000) f.wideCenter(band) else f.narrowWindows(band, rate)[0])
+        }
+    }
+    /** CLEAR: the sondes, their channels and the log. */
+    fun sondesClear() { sondes.clear(); sondesLog.clear() }
+    private fun startSondes() {
+        val f = com.rocketgod.mayhem.core.sonde.SondeFront
+        val band = f.band(sondeBandId())
+        // a radio that samples the whole band watches every carrier at once; a narrower one steps across it in windows
+        val wide = Radio.canSample(Radio.limits, f.WIDE)
+        SdrEngine.configure(SdrEngine.Mode.NONE, if (wide) f.wideCenter(band) else f.narrowWindows(band, f.NARROW)[0], if (wide) f.WIDE else f.NARROW, 32, 40, true, sondes)
+        sondes.centerOf = { SdrEngine.freqHz.value }
+        sondes.onNote = { com.rocketgod.mayhem.Diag.log(it) }
+        sondes.setBand(band.id)
+    }
     /** A frequency another app (Spectrum) asked the next app to open on, used once (Analyzer and Devices take it). */
     @Volatile var handoffHz: Long? = null
     fun takeHandoff(): Long? { val h = handoffHz; handoffHz = null; return h }
@@ -302,6 +329,7 @@ object Apps {
                 acars.onNote = { com.rocketgod.mayhem.Diag.log(it) }
             }
             MayhemApp.TRAINS -> startTrains()
+            MayhemApp.SONDES -> startSondes()
             MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)
             MayhemApp.SEARCH -> startSweep(400_000_000L, 470_000_000L)
