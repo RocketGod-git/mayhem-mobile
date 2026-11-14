@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -182,13 +183,14 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
     Radio.kind.collectAsState().value
     val why = Radio.blockedBecause(app)
     Column(
-        Modifier.fillMaxWidth().aspectRatio(1.3f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { onClick() }.padding(d.dp(12f))
+        // wide and short: the glyph, then the name over a one-line description, with no tall gap between them
+        Modifier.fillMaxWidth().aspectRatio(1.8f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { onClick() }.padding(d.dp(12f))
     ) {
         AppGlyph(app, tint, Modifier.size(d.dp(36f)))
         Box(Modifier.weight(1f))
         Text(app.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
-        Text(if (why.isNotEmpty()) "${Radio.name}: $why" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
-            fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, modifier = Modifier.padding(top = d.dp(3f)))
+        Text(if (why.isNotEmpty()) "needs a HackRF" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
+            fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = d.dp(3f)))
     }
 }
 

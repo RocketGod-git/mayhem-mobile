@@ -156,7 +156,7 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 
 /* Phone launcher: three compact columns, five rows, the whole menu on one screen under the waterfall strip. */
 .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
-.tile { --tint: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--tint) 45%, transparent); border-radius: 12px; padding: 8px 9px; text-align: left; color: var(--ink); cursor: pointer; aspect-ratio: 1.05; display: flex; flex-direction: column; min-width: 0; }
+.tile { --tint: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--tint) 45%, transparent); border-radius: 12px; padding: 8px 9px; text-align: left; color: var(--ink); cursor: pointer; aspect-ratio: 1.5; display: flex; flex-direction: column; min-width: 0; }
 /* An app the connected radio cannot serve. Dimmed, never disabled: a dongle owner may still want two-metre
  * HAM and should be allowed to try. Nothing carries this class unless a radio is connected that lacks what the
  * app needs, so a HackRF session never sees it. */
@@ -174,7 +174,7 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 .tile-top svg { width: 30px; height: 30px; }
 .tile .cat { color: var(--muted); font-size: 7px; letter-spacing: 1.5px; }
 .tile-title { margin-top: auto; font-weight: 700; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile-blurb { color: var(--muted); font-size: 8px; line-height: 1.25; margin-top: 2px; max-height: 2.5em; overflow: hidden; }
+.tile-blurb { color: var(--muted); font-size: 8px; line-height: 1.25; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* SAME / EAS weather alert: a loud banner across the top of the audio app; tap to dismiss. */
 .samealert { background: color-mix(in srgb, var(--danger) 24%, var(--surface)); border: 1px solid var(--danger);
@@ -483,7 +483,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .launch-side { flex: none; display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; padding: 8px 0 6px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
   /* `.grid` sets three explicit 1fr columns; in column flow they collapse to 0 px and swallow the first three tiles, so drop them */
   .launch-grid { display: grid; grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 108px; gap: 6px; margin: 0; padding: 0 2px; }
-  .launch-grid .tile { width: 108px; aspect-ratio: 1.1; scroll-snap-align: start; }
+  .launch-grid .tile { width: 108px; aspect-ratio: 1.4; scroll-snap-align: start; }
   .launch-side .foot, .launch-gain { display: none; }
   /* The bands card is the last item in that swipe row. Nothing was setting its width, so it shrank to the
      chips' own minimum (~39 px) and every label truncated to a single letter; two tiles' worth of width
