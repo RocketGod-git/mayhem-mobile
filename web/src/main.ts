@@ -5267,7 +5267,31 @@ function refreshList(id: string): void {
   }
   const el = q(`#list-${id}`); if (!el || paused.has(id)) return;
   const lines = logs[id] ?? [];
-  el.innerHTML = lines.length ? lines.map((l, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${esc(l)}</div>`).join('') : emptyState(id);
+  const total = counts[id] ?? lines.length;
+  el.innerHTML = lines.length ? lines.map((l, i) => logLineHtml(l, total - i)).join('') : emptyState(id);
+}
+/** A log line's kind: the first all-caps word after its leading time ("12:01:02 MESHCORE ..."), or the first word
+ *  after a leading frequency and level ("910.649 +32 dB F6E56B node D7 ..."), with where it starts. */
+const LOG_KIND = /^\s*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s+)?([A-Z][A-Z0-9_-]{2,})\b/;
+const LOG_KIND_FREQ = /^\s*\d+(?:\.\d+)?(?:\s*MHz)?\s+(?:[+-]?\d+(?:\.\d+)?\s*dB\s+)?([A-Za-z0-9][A-Za-z0-9_-]{2,})\b/;
+function logKind(l: string): [number, string] | null {
+  const m = LOG_KIND.exec(l) ?? LOG_KIND_FREQ.exec(l);
+  return m ? [m[0].length - m[1].length, m[1]] : null;
+}
+/** One steady color per kind, the same as the apps' (Java's String.hashCode picks it); the accent goes first. */
+function logKindColor(kind: string): string {
+  const v = (name: string, d: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || d;
+  const set = [v('--accent', '#4c8dff'), v('--accent2', '#ffaf00'), '#3ddc84', '#4dd0e1', '#b388ff', '#ff8a80', '#ffd54f'];
+  let h = 0; for (let i = 0; i < kind.length; i++) h = (Math.imul(h, 31) + kind.charCodeAt(i)) | 0;
+  return set[((h % set.length) + set.length) % set.length];
+}
+/** Each line keeps its own stripe (by its place in the whole log, so stripes hold still as lines arrive), the time
+ *  goes quiet, and its kind takes a color of its own, repeated as a thin bar down the line's left edge. */
+function logLineHtml(l: string, n: number): string {
+  const k = logKind(l);
+  if (!k) return `<div class="li${n % 2 ? '' : ' alt'}">${esc(l)}</div>`;
+  const c = logKindColor(k[1]);
+  return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${c}"><span class="lq">${esc(l.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b>${esc(l.slice(k[0] + k[1].length))}</div>`;
 }
 function refreshAis(): void {
   if (state.app !== 'ais') return;

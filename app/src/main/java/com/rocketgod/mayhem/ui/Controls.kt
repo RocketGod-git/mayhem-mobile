@@ -56,6 +56,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -220,12 +224,27 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
             Text(empty, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(d.dp(10f)))
         } else {
             val follow = rememberFollowNewest(state, (total ?: 0).toLong(), enabled = total != null)
+            // each line keeps its own stripe (by its place in the whole log, not on screen, so stripes hold still as
+            // lines arrive), the time goes quiet, and its kind (MESHCORE, ERT, POCSAG...) takes a color of its own,
+            // repeated as a thin bar down the line's left edge, so a glance tells one line and one kind from the next
             val row: @Composable (Int, String) -> Unit = { i, l ->
+                val k = logKind(l)
+                val kc = k?.let { logKindColor(it.second, accent) }
+                val n = if (total != null) total - i else lines.size - i
                 val m = Modifier.fillMaxWidth()
-                    .background(if (i % 2 == 0) Color.Transparent else Palette.panel.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
-                    .padding(vertical = d.dp(3f), horizontal = d.dp(4f))
-                Text(l, color = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontSize = d.sp(11f),
-                    modifier = if (onTap != null) m.clickable { onTap(l) } else m)
+                    .background(if (n % 2 == 0) Palette.ink.copy(alpha = 0.035f) else Color.Transparent, RoundedCornerShape(4.dp))
+                    .drawBehind { if (kc != null) drawRect(kc.copy(alpha = 0.85f), size = Size(2.dp.toPx(), size.height)) }
+                    .padding(vertical = d.dp(4f), horizontal = d.dp(8f))
+                val text = buildAnnotatedString {
+                    val base = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.85f)
+                    if (k == null) withStyle(SpanStyle(color = base)) { append(l) }
+                    else {
+                        withStyle(SpanStyle(color = Palette.muted)) { append(l.substring(0, k.first)) }
+                        withStyle(SpanStyle(color = kc!!, fontWeight = FontWeight.Bold)) { append(k.second) }
+                        withStyle(SpanStyle(color = base)) { append(l.substring(k.first + k.second.length)) }
+                    }
+                }
+                Text(text, fontFamily = Mono, fontSize = d.sp(11f), modifier = if (onTap != null) m.clickable { onTap(l) } else m)
             }
             LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
                 if (total != null) itemsIndexed(lines, key = { i, _ -> total - i }) { i, l -> row(i, l) }
@@ -234,6 +253,22 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
             if (total != null) NewestPill(follow, state, (total - follow.seen).toInt(), accent, Modifier.align(Alignment.TopCenter))
         }
     }
+}
+
+/** A log line's kind: the first all-caps word after its leading time ("12:01:02 MESHCORE ..."), with where it starts. */
+internal fun logKind(l: String): Pair<Int, String>? {
+    // "12:01:02 MESHCORE ...", or a line that leads with its frequency and level ("910.649 +32 dB F6E56B node D7 ...",
+    // whose first word after them, a network or a protocol, is its kind)
+    val m = LOG_KIND.find(l) ?: LOG_KIND_FREQ.find(l) ?: return null
+    return m.groups[1]!!.range.first to m.groups[1]!!.value
+}
+private val LOG_KIND = Regex("""^\s*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s+)?([A-Z][A-Z0-9_-]{2,})\b""")
+private val LOG_KIND_FREQ = Regex("""^\s*\d+(?:\.\d+)?(?:\s*MHz)?\s+(?:[+-]?\d+(?:\.\d+)?\s*dB\s+)?([A-Za-z0-9][A-Za-z0-9_-]{2,})\b""")
+
+/** One steady color per kind of line, from a small set that reads on the dark panel; the app's accent goes first. */
+internal fun logKindColor(kind: String, accent: Color): Color {
+    val set = listOf(accent, Palette.accent2, Palette.ok, Color(0xFF4DD0E1), Color(0xFFB388FF), Color(0xFFFF8A80), Color(0xFFFFD54F))
+    return set[Math.floorMod(kind.hashCode(), set.size)]
 }
 
 /** Whether a newest-first list is following its newest entry, and which entry the reader last had at the top. */
