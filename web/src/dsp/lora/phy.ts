@@ -140,6 +140,8 @@ export class LoraReceiver {
   private readonly re: Float32Array;
   private readonly im: Float32Array;
   onFrame: ((f: LoraFrame) => void) | null = null;
+  /** A LoRa preamble found and its timing solved: a real LoRa transmission, decodable or not. */
+  onAligned: (() => void) | null = null;
   /** Debug: each stage of each frame attempt. */
   trace: ((s: string) => void) | null = null;
   private pending: Pending | null = null;
@@ -266,6 +268,7 @@ export class LoraReceiver {
     }
     this.trace?.(`align c ${c} d ${d} best ${best ? `(${best[0]}, ${best[1]})` : 'nil'}`);
     if (!best || best[0] < 3) return;
+    this.onAligned?.();
     const p = best[1];
     // what is left once the whole bins are taken out: the frequency error's fraction and the timing's, which the
     // data symbols (up-chirps, like the preamble) carry exactly as the preamble does

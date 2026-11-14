@@ -16,7 +16,7 @@
 import { fft } from '../../fft.js';
 import { ComplexFirDecimator, lowpassTaps } from '../ham/filters.js';
 import { LoraReceiver, roundAway, type LoraFrame } from './phy.js';
-import { CHANNELS, type LoraChannel } from './plan.js';
+import { planChannels, usableHalf, type LoraChannel } from './plan.js';
 
 /** One LoRa frame the scanner heard: the frame, the channel it came on (Hz, the measured frequency error included),
  *  whether its chirps ran downward (a LoRaWAN downlink), and when (ms since the epoch). */
@@ -148,6 +148,8 @@ export interface StandingSpec { id: number; rate: number; offHz: number; bw: num
  */
 export interface StandingPool {
   onHeard: ((id: number, f: LoraFrame, hz: number, inv: boolean, at: number) => void) | null;
+  /** A receiver there found a LoRa preamble (for the gain: a clip then is a LoRa node's). */
+  onLora: (() => void) | null;
   feed(iq: Int8Array, start: number): void;
   add(spec: StandingSpec): void;
   drop(ids: number[]): void;
@@ -170,9 +172,11 @@ export class LoraScanner {
   /** The span a radio that can't sample 20 MHz gets (an RTL-SDR), from Apps.swift. */
   static readonly NARROW_RATE = 2_000_000;
   static readonly BWS = [62_500, 125_000, 250_000, 500_000];
+  /** How far either side of center a channel can sit (plan.ts usableHalf: measured on a HackRF Pro). */
+  static usableHalf(rate: number): number { return usableHalf(rate); }
   /** Every channel with a known modem, worldwide (LoraPlan). Those inside the span are watched; the standing ones
    *  listened to all the time. */
-  static get plan(): LoraChannel[] { return CHANNELS; }
+  static get plan(): LoraChannel[] { return planChannels(); }
 
   /** Debug: regions and receiver stages. */
   static trace: ((s: string) => void) | null = null;
@@ -181,6 +185,9 @@ export class LoraScanner {
   static tap: ((x: number[]) => void) | null = null;
 
   centerOf: () => number = () => 0;
+  /** The plan changed (another area, the user's own channel): the channels are placed again at the next look. */
+  private replanWanted = false;
+  replan(): void { this.replanWanted = true; }
   onHeard: ((h: LoraHeard) => void) | null = null;
   /** Each burst that got a channel of its own: (Hz, bandwidth, plan name or null). */
   onBurst: ((hz: number, bw: number, name: string | null) => void) | null = null;
@@ -196,7 +203,7 @@ export class LoraScanner {
     // the channels running in the old place stop there
     if (this.remote.size) { this._pool?.drop([...this.remote.keys()]); for (const id of this.remote.keys()) this.owners.delete(id); this.remote.clear(); }
     this._pool = p;
-    if (p) p.onHeard = (id, f, hz, inv, at) => this.remoteHeard(id, f, hz, inv, at);
+    if (p) { p.onHeard = (id, f, hz, inv, at) => this.remoteHeard(id, f, hz, inv, at); p.onLora = () => this.markLora(); }
     this.slotCenter = -1;   // the standing channels are placed again, where they now run
   }
   private _busy = 0;
@@ -220,6 +227,20 @@ export class LoraScanner {
   /** The last 0.4 s of samples (signed int8 IQ), written by onIq and read by the channels behind it. */
   private ring = new Int8Array(2); private ringSize = 0; private ringMask = 0;
   private written = 0; private nextFrame = 0;
+
+  // ---- level, for the LoRa gain control ----
+  /** The strongest sample in the looks since the main thread last read it (counts from center, 0-128), and how many
+   *  looked samples sat at the converter's limit. */
+  private lvPeak = 0; private lvClipped = 0; private lvLooked = 0;
+  /** When a receiver last found a LoRa preamble (ms since the epoch): a clip then is a LoRa node's, not a meter's. */
+  loraAtMs = 0;
+  markLora(): void { this.loraAtMs = Date.now(); }
+  /** Once a second, for the gain: the strongest sample and the share of samples clipped since the last call. */
+  takeLevel(): { peak: number; clipShare: number } {
+    const r = { peak: this.lvPeak, clipShare: this.lvLooked > 0 ? this.lvClipped / this.lvLooked : 0 };
+    this.lvPeak = 0; this.lvClipped = 0; this.lvLooked = 0;
+    return r;
+  }
 
   private regions: Region[] = [];
   private slots: Slot[] = [];
@@ -313,7 +334,7 @@ export class LoraScanner {
     }
     if (this.remote.size) { this._pool?.drop([...this.remote.keys()]); this.remote.clear(); }
     this.slots = [];
-    const half = this.rate / 2 * 0.96;
+    const half = usableHalf(this.rate);
     for (const c of LoraScanner.plan) {
       const off = c.hz - center;
       if (Math.abs(off) + c.bw / 2 > half) continue;
@@ -335,10 +356,18 @@ export class LoraScanner {
     const floor = this.floor, occ = this.occ, lvl = this.lvl, hotAt = this.hotAt, written = this.written;
     const s0 = written - n;
     let p0 = s0 & mask;
+    let pk = 0, clip = 0;
     for (let k = 0; k < n; k++) {
-      re[k] = ring[2 * p0] * win[k]; im[k] = ring[2 * p0 + 1] * win[k];
+      const a = ring[2 * p0], b = ring[2 * p0 + 1];
+      re[k] = a * win[k]; im[k] = b * win[k];
+      // distance from the center, 0-128: at 126 and over the converter is at its limit
+      const m = Math.max(a < 0 ? -a : a, b < 0 ? -b : b);
+      if (m > pk) pk = m;
+      if (m >= 126) clip++;
       p0 = (p0 + 1) & mask;
     }
+    if (pk > this.lvPeak) this.lvPeak = pk;
+    this.lvClipped += clip; this.lvLooked += n;
     fft(re, im);
     this.frames++;
     const frames = this.frames;
@@ -378,7 +407,7 @@ export class LoraScanner {
       }
     }
     const center = this.centerOf();
-    if (center !== this.slotCenter) this.placeSlots(center);
+    if (center !== this.slotCenter || this.replanWanted) { this.replanWanted = false; this.placeSlots(center); }
     if (frames % 4 === 0) this.watchSlots();
 
     // the channels no plan knows: clusters of hot bins grouped into bursts
@@ -574,17 +603,8 @@ export class LoraScanner {
     const upTo = this.latest;
     for (const e of this.extractors) { const u = this.untils.get(e.id); if (u !== undefined) e.until = u; }
     this.scheduled = false;
-    // each channel is independent (on iOS they run side by side, one core each)
-    const r = this.ring, mask = this.ringMask, behind = this.ringMask - Math.trunc(rate / 50), back = Math.trunc(this.ringMask / 2);
-    // (in turn, from a different channel each buffer, so a deadline shares the time out evenly)
-    const list = this.extractors, cnt = list.length;
-    this.turn = cnt > 0 ? (this.turn + 1) % cnt : 0;
-    for (let j = 0; j < cnt; j++) {
-      const e = list[(this.turn + j) % cnt];
-      if (upTo - e.pos > behind) e.pos = upTo - back;   // fell behind
-      const end = Math.min(upTo, e.until);
-      if (end > e.pos) e.run(end, r, mask, this.deadline);
-    }
+    // retire the finished channels first: one handed another turn before this check could be "skipped" past its end
+    // (a fall-behind that never was)
     const gone: number[] = [];
     this.extractors = this.extractors.filter(e => {
       const done = (e.pos >= e.until && upTo >= e.until) || (e.until < FOREVER / 2 && upTo - e.born > rate * 8);
@@ -598,6 +618,20 @@ export class LoraScanner {
       return !done;
     });
     if (gone.length > 0) { for (const id of gone) this.untils.delete(id); this.finished.push(...gone); }
+    // each channel is independent (on iOS they run side by side, one core each)
+    const r = this.ring, mask = this.ringMask, behind = this.ringMask - Math.trunc(rate / 50), back = Math.trunc(this.ringMask / 2);
+    // (in turn, from a different channel each buffer, so a deadline shares the time out evenly)
+    const list = this.extractors, cnt = list.length;
+    this.turn = cnt > 0 ? (this.turn + 1) % cnt : 0;
+    for (let j = 0; j < cnt; j++) {
+      const e = list[(this.turn + j) % cnt];
+      if (e.pos >= e.until) continue;
+      // fell behind: on to half a ring back, never past its own end
+      if (upTo - e.pos > behind) e.pos = Math.min(upTo - back, Math.max(e.pos, e.until));
+      if (e.pos >= e.until) continue;
+      const end = Math.min(upTo, e.until);
+      if (end > e.pos) e.run(end, r, mask, this.deadline);
+    }
   }
 
   /** What the channels report goes through here one at a time. */
@@ -633,7 +667,7 @@ export class LoraScanner {
 }
 
 /** Who an Extractor reports to: the scanner itself, or a pool worker's ChannelRunner. */
-interface HeardSink { heard(f: LoraFrame, e: Extractor, inv: boolean): void }
+interface HeardSink { heard(f: LoraFrame, e: Extractor, inv: boolean): void; markLora(): void }
 
 /**
  * A pool worker's half: its own copy of the raw-sample ring and the standing channels it was given, run to the end
@@ -642,6 +676,8 @@ interface HeardSink { heard(f: LoraFrame, e: Extractor, inv: boolean): void }
  */
 export class ChannelRunner implements HeardSink {
   onHeard: ((id: number, f: LoraFrame, hz: number, inv: boolean, at: number) => void) | null = null;
+  /** A receiver here found a LoRa preamble. */
+  onLora: (() => void) | null = null;
   shedding = true;
   busy = 0;
   private rate = 0; private ring = new Int8Array(2); private ringSize = 0; private ringMask = 0; private written = 0;
@@ -673,6 +709,8 @@ export class ChannelRunner implements HeardSink {
   }
 
   reset(): void { this.list = []; this.written = 0; this.rate = 0; this.ringSize = 0; }
+
+  markLora(): void { this.onLora?.(); }
 
   heard(f: LoraFrame, e: Extractor, inv: boolean): void {
     const at = e.pos;
@@ -767,6 +805,7 @@ class Extractor {
         for (let p = 0; p < phases; p++) {
           const r = new LoraReceiver(sf, bw);
           r.onFrame = f => scanner.heard(f, this, inv);
+          r.onAligned = () => scanner.markLora();
           this.rx.push([r, inv, p]);
         }
       }

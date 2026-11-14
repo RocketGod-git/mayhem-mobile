@@ -12,6 +12,7 @@ export const POOL_WORKER_NAME = 'lora-pool';
 
 export class WorkerPool implements StandingPool {
   onHeard: ((id: number, f: LoraFrame, hz: number, inv: boolean, at: number) => void) | null = null;
+  onLora: (() => void) | null = null;
   private readonly workers: Worker[] = [];
   private readonly load: number[] = [];
   private readonly where = new Map<number, number>();
@@ -30,6 +31,7 @@ export class WorkerPool implements StandingPool {
         const m = e.data;
         if (m.type === 'heard') this.onHeard?.(m.id, m.frame as LoraFrame, m.hz, m.inv, m.at);
         else if (m.type === 'busy') this.busyOf[k] = m.busy;
+        else if (m.type === 'lora') this.onLora?.();
       };
       this.workers.push(w); this.load.push(0); this.busyOf.push(0);
     }
@@ -71,6 +73,9 @@ export function startPoolWorker(): void {
   const post = (self as unknown as { postMessage: (m: unknown) => void }).postMessage.bind(self);
   const runner = new ChannelRunner();
   runner.onHeard = (id, frame, hz, inv, at) => post({ type: 'heard', id, frame, hz, inv, at });
+  // a preamble found (for the gain): a few times a second at most, each receiver phase finds the same one
+  let lastLora = 0;
+  runner.onLora = () => { const t = performance.now(); if (t - lastLora > 200) { lastLora = t; post({ type: 'lora' }); } };
   let lastBusy = 0;
   self.onmessage = (e: MessageEvent) => {
     const m = e.data;

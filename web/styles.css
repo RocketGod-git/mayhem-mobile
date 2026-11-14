@@ -1225,6 +1225,15 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .lr-chans span.on { border-color: var(--accent); color: var(--ink); }
 .lr-chans span.hot { color: var(--ok); border-color: var(--ok); }
 .lr-chans span.warn { color: var(--danger); border-color: var(--danger); }
+/* LoRa: the area picker, your own channel, and "↑ N NEW" over a list scrolled away from the newest */
+.ctlrow > .lr-area { flex: 1; min-width: 0; width: auto; }
+.lr-ownline { margin-top: 4px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.modal-card.lr-owncard { border-color: var(--accent); }
+.modal-card.lr-owncard h3 { color: var(--accent); }
+.modal-card.lr-owncard .ctlrow > .txin { flex: 1; min-width: 0; }
+.modal-card.lr-owncard .modal-actions .chip.primary { background: var(--accent); color: #05080a; border-color: var(--accent); }
+.lr-newpill { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 650; border: 0; border-radius: 999px; padding: 4px 12px; background: var(--accent); color: #05080a; font: 700 11px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; cursor: pointer; white-space: nowrap; }
+.lr-newpill[hidden] { display: none; }
 .view.lora.lorafull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; overflow: hidden; }
 .view.lora.lorafull > .visual, .view.lora.lorafull > .controls > :not(.ctlrow):not(.mt-stage):not(.mt-sum) { display: none !important; }
 .view.lora.lorafull > .controls > .ctlrow ~ .ctlrow { display: none !important; }

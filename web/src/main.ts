@@ -28,10 +28,11 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import { GeoMap, type GeoItem, mapStart, saveLastPos } from './geomap.js';
+import { GeoMap, type GeoItem, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
-import { BANDS as LORA_BANDS, NARROW_TILES as LORA_TILES, NARROW_SHIFT as LORA_SHIFT, homeBand as loraHomeBand } from './dsp/lora/plan.js';
+import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
+import { LoraLocal } from './dsp/lora/local.js';
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
 import { ISM_COUNTS } from './dsp/ism/counts.js';
@@ -59,7 +60,7 @@ const APPS: AppDef[] = [
   { id: 'aprs', title: 'APRS', blurb: 'packet radio, 144.39 MHz', cat: 'Receive' },
   { id: 'pager', title: 'FLEX', blurb: 'pager RX · FLEX, or POCSAG too', cat: 'Receive' },
   { id: 'ert', title: 'Meters', blurb: 'utility meters: ERT, mesh networks, Gridstream', cat: 'Receive' },
-  { id: 'lora', title: 'LoRa', blurb: 'Meshtastic · MeshCore · LoRaWAN, 915 MHz', cat: 'Receive' },
+  { id: 'lora', title: 'LoRa', blurb: 'Meshtastic · MeshCore · LoRaWAN, by area', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'aircraft messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'end-of-train telemetry · PTC train control', cat: 'Receive' },
@@ -522,6 +523,13 @@ function agcStep(rms: number): void {
   if (!state.agc || !radio || tx.active || state.app === 'transmit' || !Number.isFinite(rms)) return;
   const now = performance.now(); if (now - agcLast < 900) return; agcLast = now;
   const [lo, hi] = agcTargets();
+  if (state.app === 'lora' && loraGain.level) {
+    // LoRa's one-second level swings with the bursts: the median of the last few
+    loraGain.rms.push(rms); if (loraGain.rms.length > 8) loraGain.rms.splice(0, loraGain.rms.length - 8);
+    if (loraGain.rms.length < 4) return;
+    loraAgc([...loraGain.rms].sort((a, b) => a - b)[loraGain.rms.length >> 1], now, lo, hi);
+    return;
+  }
   if (state.app === 'pager') {
     pagerLevels.push([now, rms]); pagerLevels = pagerLevels.filter(([t]) => now - t < PAGER_HOLD_MS);
     const was = `LNA ${state.lna} / ${radio.kind === 'rtlsdr' ? 'GAIN' : 'VGA'} ${state.vga}`;
@@ -552,6 +560,117 @@ function agcStep(rms: number): void {
   }
 }
 const isPro = () => /pro/i.test(state.board);
+
+// ---- LoRa's gain ----
+/** How long the gain waits after a clip before it climbs again (doubled each time a step up clips, up to 30 min). */
+const LORA_HOLD_MS = 120_000;
+/** Counts from center the strongest burst may reach after a step up (the converter tops out at 128). */
+const LORA_CEIL = 90;
+const loraGain = {
+  /** The LoRa scanner's strongest sample (counts from center) and clipped share over the last second, and how long
+   *  ago a receiver last found a LoRa preamble (ms, -1: never). */
+  level: null as { peak: number; clipShare: number; agoMs: number } | null,
+  rms: [] as number[],
+  /** The strongest sample of each second since the gain last moved: (ms, counts). */
+  peaks: [] as [number, number][],
+  /** When a burst last clipped, and how long the gain then waits before it climbs again. */
+  clipAt: -Infinity, hold: 0,
+  /** When it last tried a stage up past what the headroom says, and since when the gain has held still. */
+  probeAt: -Infinity, stillSince: 0,
+  /** Its latest reasoning, for the log. */
+  note: 'LoRa gain not started',
+};
+/** Where the gain settles depends on the antenna and the place (a big antenna beside a node clips at a gain a small one
+ *  needs), so what held still for two minutes is kept per board and per 10 MHz of band, and the next LoRa session
+ *  there starts from it instead of finding it again. */
+const loraGainKey = () => `mm.lora.gain.${radio?.kind === 'rtlsdr' ? 'rtl' : isPro() ? 'pro' : 'one'}.${Math.trunc(state.freq / 10_000_000)}`;
+function loraRecall(): void {
+  Object.assign(loraGain, { level: null, rms: [], peaks: [], clipAt: -Infinity, hold: 0, probeAt: -Infinity, stillSince: 0 });
+  if (!state.agc || !radio) return;
+  let g = 0;
+  try { g = Number(localStorage.getItem(loraGainKey()) ?? 0); } catch { /* private window */ }
+  if (!(g > 0)) return;
+  const amp = Math.trunc(g / 1_000_000) === 1, lna = Math.trunc(g / 1000) % 1000, vga = g % 1000;
+  setGains(lna, vga, radio.kind === 'rtlsdr' ? state.amp : amp);
+  log(`LoRa gain: starting where it settled last time here (amp ${state.amp ? 'on' : 'off'} LNA ${state.lna} VGA ${state.vga})`);
+}
+/**
+ * LoRa decodes below the noise, so the average level says little: what matters is the strongest burst. A node close
+ * by (a good antenna in the same house) clips the converter and its frames are lost, while far nodes need the front
+ * end's gain. So the gain comes down a stage when a LoRa frame clips (front-end amp first, then the LNA, then the
+ * VGA) and climbs back, one stage at a time, only once the strongest burst of the last stretch would still fit after
+ * the step. After a clip it waits LORA_HOLD_MS before climbing (doubling each time a step up clips again, up to 30
+ * minutes), so a nearby node that only speaks every few minutes doesn't get clipped again on each of its packets.
+ */
+function loraAgc(rms: number, now: number, lo: number, hi: number): void {
+  const lv = loraGain.level, g = loraGain;
+  if (!lv || !radio) return;
+  const l = state.lna, v = state.vga, a = state.amp;
+  const rtl = radio.kind === 'rtlsdr', hasLna = !rtl, hasAmp = !rtl, vMax = 62, LNA_MAX = 40, LNA_STEP = 8;
+  let nl = l, nv = v, na = a;
+  g.peaks.push([now, lv.peak]); g.peaks = g.peaks.filter(([t]) => now - t <= 60_000);
+  // The band's meters burst every second and some clip; a clip lasts only their burst and costs only them, while
+  // stepping down for it left far nodes under the noise. So it backs off only for a clip while a LoRa frame is being
+  // received (a node close by), or for sustained overload (over 1% of samples).
+  const anyClip = lv.clipShare > 1e-4 || lv.peak >= 126;
+  const loraNow = lv.agoMs >= 0 && lv.agoMs < 1500;
+  const clipped = anyClip && (loraNow || lv.clipShare > 0.01);
+  let why = '';
+  if (clipped) {
+    // a step up that clips within a minute doubles the wait before the next try; any other clip (the first seconds
+    // of stepping down from a gain set by hand, a node keying up) waits the usual time
+    g.hold = now - g.probeAt < 60_000 ? Math.min(1_800_000, Math.max(LORA_HOLD_MS, g.hold * 2)) : LORA_HOLD_MS;
+    g.clipAt = now;
+    if (hasAmp && a) { na = false; why = 'clipped: front-end amp off'; }
+    else if (hasLna && l > 0) { nl = l - LNA_STEP; why = 'clipped: LNA down'; }
+    else if (v > 0) { nv = Math.max(0, v - 6); why = 'clipped: VGA down'; }
+    else why = 'clipped at the lowest gain (a transmitter right beside the antenna)';
+    g.peaks = [];
+  } else if (anyClip && !loraNow && v > vMax / 2 && rms > lo) {
+    // a meter's burst clipped: the VGA alone gives a little back, the front end stays where far nodes need it
+    nv = Math.max(0, v - 2); why = 'clip outside LoRa: VGA down a step';
+  } else if (rms > hi && v > 0) {
+    nv = Math.max(0, v - 2); why = 'noise high: VGA down';
+  } else {
+    const span = g.peaks.length >= 10 ? now - g.peaks[0][0] : 0;
+    const peak = g.peaks.length ? Math.max(...g.peaks.map(([, x]) => x)) : 128;
+    const waiting = now - g.clipAt < g.hold;
+    // step factors: amp about 11 dB, an LNA step 8 dB, a VGA step 2 dB
+    const probeDue = now - Math.max(g.probeAt, g.clipAt) > Math.max(LORA_HOLD_MS, g.hold);
+    if (span < 9_000) why = 'watching the level';
+    else if (waiting) {
+      // only the VGA's small steps while it waits, and only for a quiet radio
+      if (rms < lo && v < vMax && peak * 1.26 < LORA_CEIL) { nv = Math.min(vMax, v + 2); why = 'quiet: VGA up (holding the front end after a clip)'; }
+      else why = `holding ${((g.hold - (now - g.clipAt)) / 1000).toFixed(0)} s after a clip`;
+    } else if (hasAmp && !a && peak * 3.55 < LORA_CEIL) { na = true; why = 'room: front-end amp on'; }
+    else if (hasLna && l < LNA_MAX && peak * 2.5 < LORA_CEIL) { nl = Math.min(LNA_MAX, l + LNA_STEP); why = 'room: LNA up'; }
+    else if (v < vMax && rms * 1.26 < hi && peak * 1.26 < LORA_CEIL) { nv = Math.min(vMax, v + 2); why = 'room: VGA up'; }
+    // No room by the strongest burst (often a meter, not a node): now and then it tries one stage up anyway. A clip
+    // brings it straight back down and makes the next try wait twice as long, so it settles at the most gain this
+    // antenna and place can take.
+    else if (probeDue && hasAmp && !a) { na = true; g.probeAt = now; why = 'trying: front-end amp on'; }
+    else if (probeDue && hasLna && l < LNA_MAX) { nl = Math.min(LNA_MAX, l + LNA_STEP); g.probeAt = now; why = 'trying: LNA up'; }
+    else why = 'settled';
+    if (nl !== l || na !== a) g.peaks = [];
+  }
+  g.note = `${why} · peak ${lv.peak.toFixed(0)} counts, clipped ${(lv.clipShare * 100).toFixed(4)}%, noise ${rms.toFixed(1)} counts`;
+  const moved = nl !== l || nv !== v || na !== a;
+  if (moved) g.stillSince = now;
+  else if (g.stillSince === 0) g.stillSince = now;
+  else if (now - g.stillSince > 120_000 && now - g.clipAt > 600_000) {
+    const val = (a ? 1 : 0) * 1_000_000 + l * 1000 + v;
+    let had = 0;
+    try { had = Number(localStorage.getItem(loraGainKey()) ?? 0); } catch { /* private window */ }
+    if (had !== val) {
+      try { localStorage.setItem(loraGainKey(), String(val)); } catch { /* private window */ }
+      log(`LoRa gain: kept amp ${a ? 'on' : 'off'} LNA ${l} VGA ${v} for this radio and band`);
+    }
+  }
+  if (moved) {
+    setGains(nl, nv, na);
+    log(`LoRa gain: ${why} (amp ${a ? 'on' : 'off'} LNA ${l} VGA ${v} → amp ${state.amp ? 'on' : 'off'} LNA ${state.lna} VGA ${state.vga}; strongest ${lv.peak.toFixed(0)} counts)`);
+  }
+}
 /**
  * Per-app gain presets are written for a HackRF One. Bench-measured on a HackRF Pro (Mayhem n_260903): the same
  * settings leave the ADC under one count (iqRMS 0.2, the waterfall shows nothing), and the Pro needs roughly 28 dB
@@ -1514,7 +1633,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   capture: ['capture', 'No captures yet', ['Tune to a signal and press ● REC', 'Keep it short: 2 Msps fills about 4 MB a second']],
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
-  lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'A wider SPAN (20 MHz on a HackRF) covers all of 902–928 MHz']],
+  lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels']],
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
@@ -4186,47 +4305,96 @@ interface LoraSnap { nodes: LoraNodeRow[]; messages: LoraEventRow[]; bursts: num
 const loraUi = { snap: null as LoraSnap | null, view: 'nodes' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
 const loraClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 const loraPins = (): GeoItem[] => (loraUi.snap?.nodes ?? []).filter(n => n.lat !== null && n.lon !== null).map(n => ({ id: n.key, lat: n.lat!, lon: n.lon!, label: n.label, kind: 'station' as GeoItem['kind'] }));
-/** LoRa opens on the band of the browser's own region setting (its locale, not its location): the whole 20 MHz band
- *  where the radio can sample it, else that band's main channel with the radio 300 kHz above it. */
+/** LoRa opens where the user last put it, else centered on what is local to where the browser is (its MeshCore
+ *  presets and its Meshtastic region, local.ts): 20 MHz where the radio can sample it, else one channel with the
+ *  radio 300 kHz above it (clear of the spike at the center). The gain starts where it settled here last time. */
 function loraOpen(): void {
-  const band = loraHomeBand(), wide = radioCan(LORA_WIDE);
-  configure('NONE', wide ? band.center : band.narrow + LORA_SHIFT, wide ? LORA_WIDE : LORA_NARROW, 32, 40, true, 'lora');
+  const wide = radioCan(LORA_WIDE);
+  loraSendPlan();
+  configure('NONE', wide ? LoraLocal.wideStart() : LoraLocal.narrowStart(), wide ? LORA_WIDE : LORA_NARROW, 32, 40, true, 'lora');
+  loraRecall();
 }
+/** The channels local to the area in use, to the DSP worker (it builds the plan the scanner listens by). */
+function loraSendPlan(): void { worker?.postMessage({ type: 'loraPlan', channels: LoraLocal.channels(LoraLocal.area()) }); }
+LoraLocal.position = () => state.home ?? lastKnownPos();
+// another area or the user's own channel: the channels again, and the span follows
+LoraLocal.onChange = () => {
+  loraSendPlan();
+  if (state.app !== 'lora') return;
+  tune(state.rate >= 10_000_000 ? LoraLocal.wideStart() : LoraLocal.narrowStart());
+  render('lora');
+};
 function loraSpan(wide: boolean): void {
   if (wide === state.rate >= 10_000_000) return;
   if (wide) {
     if (!radioCan(LORA_WIDE)) { log(`${radio?.label ?? 'this radio'} cannot sample 20 MHz`); return; }
-    const b = [...LORA_BANDS].sort((x, y) => Math.abs(x.center - state.freq) - Math.abs(y.center - state.freq))[0] ?? loraHomeBand();
-    setRate(LORA_WIDE); tune(b.center);
+    setRate(LORA_WIDE); tune(LoraLocal.wideStart());
   } else {
-    const b = LORA_BANDS.find(x => x.center === state.freq) ?? loraHomeBand();
-    setRate(LORA_NARROW); tune(b.narrow + LORA_SHIFT);
+    setRate(LORA_NARROW); tune(LoraLocal.narrowStart());
   }
   render("lora");
 }
+/** The narrow span's tiles: the area's own channels, most local first. */
+const loraNarrowChannels = () => LoraLocal.channels(LoraLocal.area()).slice(0, 8);
+/** The wide tiles' and narrow tiles' lit state: LOCAL follows the area; a band tile is the user's own pick. */
+function loraTilesOn(): void {
+  const user = LoraLocal.userWide(), localHz = LoraLocal.wideCenter(LoraLocal.area()) ?? LoraLocal.wideStart();
+  qa<HTMLButtonElement>('[data-lrwide]').forEach(b => {
+    const hz = Number(b.dataset.lrwide);
+    b.classList.toggle('on', hz === 0 ? user === 0 && state.freq === localHz : user !== 0 && state.freq === hz);
+  });
+  qa<HTMLButtonElement>('[data-lrnarrow]').forEach(b => b.classList.toggle('on', state.freq - LoraLocal.NARROW_SHIFT === Number(b.dataset.lrnarrow)));
+}
+const loraBwName = (bw: number) => (bw === 62_500 ? '62.5 kHz' : `${Math.trunc(bw / 1000)} kHz`);
 function renderLora(view: HTMLElement): void {
   const wide = state.rate >= 10_000_000;
-  const tiles = wide ? hsHtml(`<div class="tiles wide">${LORA_BANDS.map(b => `<button class="tl" data-preset="${b.center}"><b>${b.title}</b><small>${b.sub}</small></button>`).join('')}</div>`)
-    // one channel at a time: the radio sits 300 kHz above it, clear of the spike at the center
-    : hsHtml(`<div class="tiles wide">${LORA_TILES.map(t => `<button class="tl" data-preset="${t.hz + LORA_SHIFT}"><b>${t.title}</b><small>${t.sub}</small></button>`).join('')}</div>`);
+  const area = LoraLocal.area(), picked = LoraLocal.picked();
+  const areaSel = `<select id="lr-area" class="txin lr-area" aria-label="area">${LoraLocal.areas().map(x => `<option value="${esc(x.id)}" ${x.id === picked ? 'selected' : ''}>${esc(x.id === 'AUTO' ? `Automatic · ${LoraLocal.title(area)}` : x.title)}</option>`).join('')}</select>`;
+  const short = (n: string) => n.replace('MeshCore ', '').replace('Meshtastic ', '');
+  // LOCAL follows the area; a band tile is the user's own pick, kept until LOCAL is tapped again
+  const tiles = wide ? hsHtml(`<div class="tiles wide"><button class="tl" data-lrwide="0"><b>LOCAL</b><small>${esc(LoraLocal.title(area))}</small></button>${LORA_BANDS.map(b => `<button class="tl" data-lrwide="${b.center}"><b>${b.title}</b><small>${b.sub}</small></button>`).join('')}</div>`)
+    // one channel at a time, the area's own first: the radio sits 300 kHz above it, clear of the spike at the center
+    : hsHtml(`<div class="tiles wide">${loraNarrowChannels().map(c => `<button class="tl" data-lrnarrow="${c.hz}"><b>${(c.hz / 1e6).toFixed(3)}</b><small>${esc(short(c.name))}</small></button>`).join('')}</div>`);
+  const own = LoraLocal.custom();
   view.innerHTML = `
     <section class="${visCls('lora')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="lr-sum" class="mt-sum"></div>
       <div class="ctlrow">${segHtml(['nodes', 'map', 'messages', 'log'].map(v => `<button data-lrview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('lora')}<button id="lr-full" class="ib" title="full screen" aria-label="full screen">${loraUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('lora')}</div>
-      <div id="lr-stage" class="mt-stage"><div id="lr-cards" class="mt-cards"></div><div id="lr-map" class="panel map"></div><div id="lr-msgs" class="lr-msgs"></div><div id="lr-nopos" class="mt-nopos">no positions yet</div><div id="lr-detail" class="mt-detail" hidden></div></div>
+      <div id="lr-stage" class="mt-stage"><div id="lr-cards" class="mt-cards"></div><div id="lr-map" class="panel map"></div><div id="lr-msgs" class="lr-msgs"></div><div id="lr-nopos" class="mt-nopos">no positions yet</div><div id="lr-detail" class="mt-detail" hidden></div><button id="lr-newpill" class="lr-newpill" hidden></button></div>
       <div id="lr-log">${logHtml('lora', 'listening for LoRa…')}</div>
       <div id="lr-chans" class="lr-chans"></div>
+      <div class="ctlrow"><span class="rl">AREA</span>${areaSel}</div>
       ${tiles}
-      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([`<button data-lrspan="0" class="${wide ? '' : 'on'}">2 MHz</button>`, `<button data-lrspan="1" class="${wide ? 'on' : ''} ${radioCan(LORA_WIDE) ? '' : 'off'}">20 MHz</button>`])}</div>
-      <div class="note">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 902–928 MHz in the US, and every other region's band from its tile. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
+      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([`<button data-lrspan="0" class="${wide ? '' : 'on'}">2 MHz</button>`, `<button data-lrspan="1" class="${wide ? 'on' : ''} ${radioCan(LORA_WIDE) ? '' : 'off'}">20 MHz</button>`])}<button id="lr-own" class="chip" title="your own channel">YOUR CHANNEL</button></div>
+      ${own ? `<div class="lr-ownline">YOUR CHANNEL · ${(own.hz / 1e6).toFixed(4)} MHz · ${loraBwName(own.bw)} · SF${own.sf}</div>` : ''}
+      <div class="note">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 433, 470–510, 863–870 and 902–928 MHz, by area. It starts on the channels where you are (your language's region, and the part of it your last position is in): MeshCore's community presets and the Meshtastic region. AREA, the band tiles and your own channel change it. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-lrview]', view).forEach(b => b.onclick = () => { loraUi.view = b.dataset.lrview as typeof loraUi.view; refreshLora(true); });
   qa<HTMLButtonElement>('[data-lrspan]', view).forEach(b => b.onclick = () => loraSpan(b.dataset.lrspan === '1'));
+  qa<HTMLButtonElement>('[data-lrwide]', view).forEach(b => b.onclick = () => {
+    const hz = Number(b.dataset.lrwide);
+    LoraLocal.setUserWide(hz);
+    tune(hz === 0 ? LoraLocal.wideStart() : hz);
+    loraTilesOn();
+  });
+  qa<HTMLButtonElement>('[data-lrnarrow]', view).forEach(b => b.onclick = () => {
+    const hz = Number(b.dataset.lrnarrow);
+    LoraLocal.setUserNarrow(hz); tune(hz + LoraLocal.NARROW_SHIFT); loraTilesOn();
+  });
+  const sel = q<HTMLSelectElement>('#lr-area', view);
+  if (sel) sel.onchange = () => LoraLocal.setPicked(sel.value);
+  $('lr-own').onclick = () => loraOwnDialog();
+  $('lr-newpill').onclick = () => {
+    const el = loraUi.view === 'messages' ? q('#lr-msgs') : q('#lr-cards');
+    if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+  };
   $('lr-full').onclick = () => setLoraFull(!loraUi.full);
   const pick = (e: Event) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-lnode]'); if (c && (loraUi.snap?.nodes ?? []).some(n => n.key === c.dataset.lnode)) { loraUi.sel = loraUi.sel === c.dataset.lnode ? '' : c.dataset.lnode!; refreshLora(true); } };
   $('lr-cards').onclick = pick; $('lr-msgs').onclick = pick;
+  // scrolled back to the top by hand: the pill goes at once, not at the next refresh
+  $('lr-cards').onscroll = () => loraPill(); $('lr-msgs').onscroll = () => loraPill();
   $('lr-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ldo]'); if (!b) return;
     const what = b.dataset.ldo;
@@ -4243,7 +4411,87 @@ function renderLora(view: HTMLElement): void {
   geo = new GeoMap($('lr-map'), { home: null, start: mapStart(state.home), fitPins: true, onPick: id => { loraUi.sel = id; refreshLora(true); }, log });
   clearInterval(loraUi.timer);
   loraUi.timer = window.setInterval(() => { if (state.app !== 'lora') { clearInterval(loraUi.timer); return; } refreshLora(); }, 1000);
+  loraTilesOn();
   refreshLora(true);
+}
+/** A channel of the user's own: frequency, bandwidth and spreading factor, listened to all the time while in span. */
+function loraOwnDialog(): void {
+  if (q('#lr-owndlg')) return;
+  const c = LoraLocal.custom();
+  const BWS = [62_500, 125_000, 250_000, 500_000];
+  let bw = c?.bw ?? 125_000, sf = c?.sf ?? 7;
+  const el = document.createElement('div');
+  el.id = 'lr-owndlg'; el.className = 'modal';
+  el.innerHTML = `<div class="modal-card lr-owncard"><h3>YOUR OWN CHANNEL</h3>
+    <div class="ctlrow"><span class="rl">MHz</span><input id="lr-own-mhz" class="txin" inputmode="decimal" placeholder="915.0000" value="${c ? (c.hz / 1e6).toFixed(4) : ''}"></div>
+    <div class="ctlrow"><span class="rl">BW</span>${segHtml(BWS.map(x => `<button data-ownbw="${x}">${loraBwName(x)}</button>`))}</div>
+    <div class="ctlrow"><span class="rl">SF</span>${segHtml([7, 8, 9, 10, 11, 12].map(x => `<button data-ownsf="${x}">${x}</button>`))}</div>
+    <div id="lr-own-err" class="note" hidden>A frequency from 400 to 1000 MHz</div>
+    <div class="modal-actions"><button id="lr-own-clear" class="chip">CLEAR</button><button id="lr-own-save" class="chip primary">SAVE</button></div></div>`;
+  document.body.appendChild(el);
+  const lit = () => {
+    qa<HTMLButtonElement>('[data-ownbw]', el).forEach(b => b.classList.toggle('on', Number(b.dataset.ownbw) === bw));
+    qa<HTMLButtonElement>('[data-ownsf]', el).forEach(b => b.classList.toggle('on', Number(b.dataset.ownsf) === sf));
+  };
+  qa<HTMLButtonElement>('[data-ownbw]', el).forEach(b => b.onclick = () => { bw = Number(b.dataset.ownbw); lit(); });
+  qa<HTMLButtonElement>('[data-ownsf]', el).forEach(b => b.onclick = () => { sf = Number(b.dataset.ownsf); lit(); });
+  lit();
+  const close = () => el.remove();
+  el.onclick = e => { if (e.target === el) close(); };
+  $('lr-own-clear').onclick = () => { close(); LoraLocal.setCustom(null); };
+  $('lr-own-save').onclick = () => {
+    const f = Number(($('lr-own-mhz') as HTMLInputElement).value.replace(',', '.'));
+    if (!Number.isFinite(f) || f < 400 || f > 1000) { $('lr-own-err').hidden = false; return; }
+    close(); LoraLocal.setCustom({ hz: Math.round(f * 1e6), bw, sf });
+  };
+  ($('lr-own-mhz') as HTMLInputElement).focus();
+}
+/**
+ * A newest-first list the reader may scroll down. At the top it stays on the newest. Scrolled away, the item the
+ * reader is on stays where it is on screen (a node heard again moves its card to the top, which used to push the
+ * rest down under the reader), and what arrived since shows as "↑ N NEW" over the list; a tap goes back up.
+ * Each item carries data-fk (a key) and data-fms (when it last changed).
+ */
+const loraFollow = { cards: 0, msgs: 0 };
+function followNewest(el: HTMLElement, html: string, which: 'cards' | 'msgs'): void {
+  const box = el.getBoundingClientRect();
+  const atTop = el.scrollTop < 24;
+  const seen = loraFollow[which];
+  // the old items on screen, top first, and where each sits in the view
+  const anchors: [string, number][] = [];
+  if (!atTop) {
+    for (const c of Array.from(el.querySelectorAll<HTMLElement>('[data-fk]'))) {
+      const r = c.getBoundingClientRect();
+      if (r.bottom <= box.top) continue;
+      if (r.top >= box.bottom) break;
+      if (Number(c.dataset.fms) <= seen) anchors.push([c.dataset.fk!, r.top - box.top]);
+    }
+  }
+  el.innerHTML = html;
+  const items = Array.from(el.querySelectorAll<HTMLElement>('[data-fk]'));
+  const newest = items.reduce((m, c) => Math.max(m, Number(c.dataset.fms) || 0), 0);
+  if (atTop) { el.scrollTop = 0; loraFollow[which] = newest; return; }
+  for (const [k, dy] of anchors) {
+    const c = items.find(x => x.dataset.fk === k);
+    if (!c || Number(c.dataset.fms) > seen) continue;   // heard again: it moved to the top, the next one holds
+    el.scrollTop += c.getBoundingClientRect().top - el.getBoundingClientRect().top - dy;
+    break;
+  }
+}
+/** The "↑ N NEW" pill over whichever list is showing, while it is scrolled away from the top. */
+function loraPill(): void {
+  const pill = q<HTMLButtonElement>('#lr-newpill'); if (!pill) return;
+  const which = loraUi.view === 'messages' ? 'msgs' : loraUi.view === 'nodes' ? 'cards' : null;
+  const el = which === 'msgs' ? q('#lr-msgs') : which === 'cards' ? q('#lr-cards') : null;
+  if (!which || !el || el.scrollTop < 24) {
+    pill.hidden = true;
+    if (which && el) loraFollow[which] = Array.from(el.querySelectorAll<HTMLElement>('[data-fk]')).reduce((m, c) => Math.max(m, Number(c.dataset.fms) || 0), 0);
+    return;
+  }
+  const seen = loraFollow[which];
+  const fresh = Array.from(el.querySelectorAll<HTMLElement>('[data-fk]')).filter(c => Number(c.dataset.fms) > seen).length;
+  pill.textContent = fresh > 0 ? `↑ ${fresh} NEW` : '↑ NEWEST';
+  pill.hidden = false;
 }
 function setLoraFull(on: boolean): void {
   loraUi.full = on;
@@ -4266,7 +4514,7 @@ function loraCard(n: LoraNodeRow, now: number): string {
     const pts = v.length >= 2 ? v.map((x, i) => `${(W * i / (v.length - 1)).toFixed(1)},${(H - H * (x - lo) / sp).toFixed(1)}`) : [];
     spark = `<div class="mt-spark"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${pts.length ? `<polygon points="${pts.join(' ')} ${W},${H} 0,${H}" class="f"/><polyline points="${pts.join(' ')}" class="p"/>` : ''}</svg><b>${lastV >= 0 ? '+' : ''}${lastV} dB</b></div>`;
   }
-  return `<div class="mt-card ${loraUi.sel === n.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-lnode="${esc(n.key)}" style="--flash:${flash.toFixed(2)}">`
+  return `<div class="mt-card ${loraUi.sel === n.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-lnode="${esc(n.key)}" data-fk="${esc(n.key)}" data-fms="${n.lastMs}" style="--flash:${flash.toFixed(2)}">`
     + `<div class="mt-h"><span class="mt-id ${n.label.length > 6 ? '' : 'big'}" style="font-size:${n.label.length > 6 ? 16 : 24}px">${esc(n.label)}</span><span class="mt-k"><b>${esc(n.proto.toUpperCase())}</b><small class="${n.lat !== null ? 'pos' : ''}">${esc(n.kind)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
     + (n.name && n.name !== n.label ? `<div class="lr-name">${esc(n.name)}</div>` : '')
     + `<div class="mt-clk"><b>${n.packets}</b><small>${n.packets === 1 ? 'PACKET' : 'PACKETS'}</small><em>${(n.hz / 1e6).toFixed(3)} · ${esc(n.modem.split(' · CR')[0])}</em></div>`
@@ -4274,7 +4522,7 @@ function loraCard(n: LoraNodeRow, now: number): string {
 }
 /** One text message: who, where it went, when, and what it said. */
 function loraMessage(e: LoraEventRow): string {
-  return `<div class="lr-msg" ${e.nodeKey ? `data-lnode="${esc(e.nodeKey)}"` : ''}><div class="lr-mh"><b>${esc(e.from ?? '?')}</b><span>${esc(e.proto.toUpperCase() + (e.channel ? ` · ${e.channel}` : ''))}</span><i>${loraClock(e.ms)}</i></div><div class="lr-mt">${esc(e.text ?? '')}</div></div>`;
+  return `<div class="lr-msg" ${e.nodeKey ? `data-lnode="${esc(e.nodeKey)}"` : ''} data-fk="m${e.id}" data-fms="${e.ms}"><div class="lr-mh"><b>${esc(e.from ?? '?')}</b><span>${esc(e.proto.toUpperCase() + (e.channel ? ` · ${e.channel}` : ''))}</span><i>${loraClock(e.ms)}</i></div><div class="lr-mt">${esc(e.text ?? '')}</div></div>`;
 }
 /** Everything decoded from one node, field by field, its recent messages, with MAP when it has a position. */
 function loraDetail(n: LoraNodeRow, onMap: boolean): string {
@@ -4302,12 +4550,11 @@ function refreshLora(force = false): void {
   logEl.hidden = loraUi.view !== 'log'; stage.hidden = loraUi.view === 'log';
   nopos.hidden = loraUi.view !== 'map' || pins.length > 0;
   const held = paused.has('lora');
-  if (loraUi.view === 'nodes' && !held) {
-    const top = cards.scrollTop;
-    cards.innerHTML = nodes.length ? [...nodes].sort((a, b) => b.lastMs - a.lastMs).map(n => loraCard(n, now)).join('') : emptyState('lora');
-    cards.scrollTop = top;
-  }
-  if (loraUi.view === 'messages' && !held) chat.innerHTML = msgs.length ? msgs.map(loraMessage).join('') : emptyState('loramsg');
+  // newest first, and kept on the newest while the reader is at the top (followNewest)
+  if (loraUi.view === 'nodes' && !held) followNewest(cards, nodes.length ? [...nodes].sort((a, b) => b.lastMs - a.lastMs).map(n => loraCard(n, now)).join('') : emptyState('lora'), 'cards');
+  if (loraUi.view === 'messages' && !held) followNewest(chat, msgs.length ? msgs.map(loraMessage).join('') : emptyState('loramsg'), 'msgs');
+  loraPill();
+  loraTilesOn();
   const picked = nodes.find(n => n.key === loraUi.sel);
   det.hidden = !picked;
   if (picked) { const top = det.scrollTop; det.innerHTML = loraDetail(picked, pins.some(p => p.id === picked.key)); det.scrollTop = top; }
@@ -5326,7 +5573,7 @@ function ensureWorker(): Worker {
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
-      case 'health': lastHealth = m.line; lastLevel = m.levelDb; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
+      case 'health': lastHealth = m.line; lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
         const id = state.app ?? 'x', list = (logs[id] ??= []);
