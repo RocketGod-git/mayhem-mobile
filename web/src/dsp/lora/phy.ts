@@ -285,7 +285,9 @@ export class LoraReceiver {
       m++;
     }
     this.trace?.(`sfd m ${m}`);
-    if (m >= 30) return;
+    // the two sync words come before the start-of-frame: one found in the first windows is noise (and reading
+    // its sync words would run before the buffer)
+    if (m >= 30 || m < 2) return;
     const sync = [2, 1].map(j => this.peak(p + (m - j) * n, this.down, cf)[0]);
     // the dechirped peak over the noise bins is 1 + N x the signal-to-noise ratio (power, per sample)
     const pq = this.peak(p + 2 * n, this.down, cf)[1];

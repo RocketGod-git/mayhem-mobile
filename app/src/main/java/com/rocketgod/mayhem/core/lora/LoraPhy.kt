@@ -268,7 +268,9 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
             m++
         }
         trace?.invoke("sfd m $m")
-        if (m >= 30) return
+        // the two sync words come before the start-of-frame: one found in the first windows is noise (and reading
+        // its sync words would run before the buffer)
+        if (m >= 30 || m < 2) return
         Stats.sfd.incrementAndGet()
         val sync = listOf(2, 1).map { j -> peak(p + (m - j) * n, down, cf) }
         // the dechirped peak over the noise bins is 1 + N x the signal-to-noise ratio (power, per sample)
