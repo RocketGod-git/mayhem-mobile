@@ -577,6 +577,8 @@ const loraGain = {
   clipAt: -Infinity, hold: 0,
   /** When it last tried a stage up past what the headroom says, and since when the gain has held still. */
   probeAt: -Infinity, stillSince: 0,
+  /** Since when over 1% of samples have clipped every second (0: not now): real overload outlasts any packet. */
+  overSince: 0,
   /** Its latest reasoning, for the log. */
   note: 'LoRa gain not started',
 };
@@ -585,20 +587,20 @@ const loraGain = {
  *  there starts from it instead of finding it again. */
 const loraGainKey = () => `mm.lora.gain.${radio?.kind === 'rtlsdr' ? 'rtl' : isPro() ? 'pro' : 'one'}.${Math.trunc(state.freq / 10_000_000)}`;
 function loraRecall(): void {
-  Object.assign(loraGain, { level: null, rms: [], peaks: [], clipAt: -Infinity, hold: 0, probeAt: -Infinity, stillSince: 0 });
+  Object.assign(loraGain, { level: null, rms: [], peaks: [], clipAt: -Infinity, hold: 0, probeAt: -Infinity, stillSince: 0, overSince: 0 });
   if (!state.agc || !radio) return;
   let g = 0;
   try { g = Number(localStorage.getItem(loraGainKey()) ?? 0); } catch { /* private window */ }
   if (!(g > 0)) return;
-  const amp = Math.trunc(g / 1_000_000) === 1, lna = Math.trunc(g / 1000) % 1000, vga = g % 1000;
-  setGains(lna, vga, radio.kind === 'rtlsdr' ? state.amp : amp);
+  const lna = Math.trunc(g / 1000) % 1000, vga = g % 1000;
+  setGains(lna, vga, radio.kind === 'rtlsdr' ? state.amp : true);
   log(`LoRa gain: starting where it settled last time here (amp ${state.amp ? 'on' : 'off'} LNA ${state.lna} VGA ${state.vga})`);
 }
 /**
  * LoRa decodes below the noise, so the average level says little: what matters is the strongest burst. A node close
- * by (a good antenna in the same house) clips the converter and its frames are lost, while far nodes need the front
- * end's gain. So the gain comes down a stage when a LoRa frame clips (front-end amp first, then the LNA, then the
- * VGA) and climbs back, one stage at a time, only once the strongest burst of the last stretch would still fit after
+ * by (a good antenna in the same house) clips the converter, which LoRa rides through, while far nodes need the front
+ * end's gain. So the gain comes down a stage under sustained overload (a nearby node clipping costs nothing) (the LNA first, then the VGA; the front-end amp
+ * stays on, as LoRa hears nothing without it) and climbs back, one stage at a time, only once the strongest burst of the last stretch would still fit after
  * the step. After a clip it waits LORA_HOLD_MS before climbing (doubling each time a step up clips again, up to 30
  * minutes), so a nearby node that only speaks every few minutes doesn't get clipped again on each of its packets.
  */
@@ -614,15 +616,22 @@ function loraAgc(rms: number, now: number, lo: number, hi: number): void {
   // received (a node close by), or for sustained overload (over 1% of samples).
   const anyClip = lv.clipShare > 1e-4 || lv.peak >= 126;
   const loraNow = lv.agoMs >= 0 && lv.agoMs < 1500;
-  const clipped = anyClip && (loraNow || lv.clipShare > 0.01);
+  // A clip from a node close by costs it nothing: measured with a T114 beside the antenna clipping the converter,
+  // 6 of 6 frames at LNA 40, 24 and 0 alike, while stepping down for it sank the far nodes. Only overload that
+  // outlasts any packet (over 1% of samples clipped for 8 seconds running) brings the front end down.
+  if (lv.clipShare > 0.01) { if (!g.overSince) g.overSince = now; } else g.overSince = 0;
+  const clipped = g.overSince > 0 && now - g.overSince >= 8_000;
   let why = '';
-  if (clipped) {
+  if (hasAmp && !a) {
+    // the front-end amp stays on for LoRa: measured on a HackRF Pro, 43 and 14 frames in 4 minutes with it on, none
+    // with it off (the VGA cannot make up what the front end loses)
+    na = true; why = 'front-end amp back on: LoRa hears nothing without it';
+  } else if (clipped) {
     // a step up that clips within a minute doubles the wait before the next try; any other clip (the first seconds
     // of stepping down from a gain set by hand, a node keying up) waits the usual time
     g.hold = now - g.probeAt < 60_000 ? Math.min(1_800_000, Math.max(LORA_HOLD_MS, g.hold * 2)) : LORA_HOLD_MS;
     g.clipAt = now;
-    if (hasAmp && a) { na = false; why = 'clipped: front-end amp off'; }
-    else if (hasLna && l > 0) { nl = l - LNA_STEP; why = 'clipped: LNA down'; }
+    if (hasLna && l > 0) { nl = l - LNA_STEP; why = 'clipped: LNA down'; }
     else if (v > 0) { nv = Math.max(0, v - 6); why = 'clipped: VGA down'; }
     else why = 'clipped at the lowest gain (a transmitter right beside the antenna)';
     g.peaks = [];

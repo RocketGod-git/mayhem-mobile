@@ -220,7 +220,7 @@ object SdrEngine {
     /** The strongest sample of each second since the gain last moved: (ms, counts). */
     private val loraPeaks = ArrayList<Pair<Long, Double>>()
     /** When a burst last clipped, and how long the gain then waits before it climbs again. */
-    private var loraClipAt = 0L; private var loraHold = 0L
+    private var loraClipAt = 0L; private var loraHold = 0L; private var loraOverSince = 0L
     /** The LoRa gain control's latest reasoning, for the diagnostic log. */
     @Volatile var loraGainNote = "LoRa gain not started"; private set
     /** When it last tried a stage up past what the headroom says, and since when the gain has held still. */
@@ -236,7 +236,7 @@ object SdrEngine {
         if (!_agc.value) return
         val g = savedLong(loraGainKey())
         if (g <= 0) return
-        _radioAmp.value = g / 1_000_000 == 1L; _radioLna.value = (g / 1000 % 1000).toInt().coerceIn(0, LNA_MAX); _radioVga.value = (g % 1000).toInt().coerceIn(0, vgaMax())
+        _radioAmp.value = g / 1_000_000 == 1L || Radio.kind.value != Radio.Kind.RTLSDR; _radioLna.value = (g / 1000 % 1000).toInt().coerceIn(0, LNA_MAX); _radioVga.value = (g % 1000).toInt().coerceIn(0, vgaMax())
         loraPeaks.clear(); loraStillSince = 0
         Diag.log("LoRa gain: starting where it settled last time here (amp %s LNA %d VGA %d)".format(if (_radioAmp.value) "on" else "off", _radioLna.value, _radioVga.value))
         syncDriver()
@@ -244,9 +244,9 @@ object SdrEngine {
 
     /**
      * LoRa decodes below the noise, so the average level says little: what matters is the strongest burst. A node
-     * close by (a good antenna in the same house) clips the converter and its frames are lost, while far nodes need
-     * the front end's gain. So the gain comes down a stage the moment a LoRa frame clips (front-end amp first, then
-     * the LNA, then the VGA) and climbs back, one stage at a time, only once the strongest burst of the last stretch
+     * close by (a good antenna in the same house) clips the converter, which LoRa rides through, while far nodes need
+     * the front end's gain. So the gain comes down a stage under sustained overload (a nearby node clipping costs nothing) (the LNA first, then the VGA;
+     * the front-end amp stays on, as LoRa hears nothing without it) and climbs back, one stage at a time, only once the strongest burst of the last stretch
      * would still fit after the step. After a clip it waits [LORA_HOLD_MS] before climbing (doubling each time a step
      * up clips again, up to 30 minutes), so a nearby node that only speaks every few minutes is not clipped again on
      * each of its packets.
@@ -267,15 +267,22 @@ object SdrEngine {
         // a LoRa frame is being received (a node close by), or for sustained overload (over 1% of samples).
         val anyClip = clipShare > 1e-4 || peakNow >= 126.5
         val loraNow = (processor as? com.rocketgod.mayhem.core.lora.LoraScanner)?.let { System.currentTimeMillis() - it.loraAtMs < 1500 } ?: false
-        val clipped = anyClip && (loraNow || clipShare > 0.01)
+        // A clip from a node close by costs it nothing: measured with a T114 beside the antenna clipping the converter,
+        // 6 of 6 frames at LNA 40, 24 and 0 alike, while stepping down for it sank the far nodes. Only overload that
+        // outlasts any packet (over 1% of samples clipped for 8 seconds running) brings the front end down.
+        if (clipShare > 0.01) { if (loraOverSince == 0L) loraOverSince = now } else loraOverSince = 0L
+        val clipped = loraOverSince > 0L && now - loraOverSince >= 8_000
         val why: String
-        if (clipped) {
+        if (hasAmp && !a) {
+            // the front-end amp stays on for LoRa: measured on a HackRF Pro, 43 and 14 frames in 4 minutes with it on,
+            // none with it off (the VGA cannot make up what the front end loses)
+            _radioAmp.value = true; why = "front-end amp back on: LoRa hears nothing without it"
+        } else if (clipped) {
             // a step up that clips within a minute doubles the wait before the next try; any other clip (the first
             // seconds of stepping down from a gain set by hand, a node keying up) waits the usual time
             loraHold = if (now - loraProbeAt < 60_000) minOf(1_800_000L, maxOf(LORA_HOLD_MS, loraHold * 2)) else LORA_HOLD_MS
             loraClipAt = now
             why = when {
-                hasAmp && a -> { _radioAmp.value = false; "clipped: front-end amp off" }
                 hasLna && l > 0 -> { _radioLna.value = l - LNA_STEP; "clipped: LNA down" }
                 v > 0 -> { _radioVga.value = maxOf(0, v - 6); "clipped: VGA down" }
                 else -> "clipped at the lowest gain (a transmitter right beside the antenna)"
