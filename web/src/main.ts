@@ -5280,6 +5280,14 @@ function logKind(l: string): [number, string] | null {
   const m = LOG_KIND.exec(l) ?? LOG_KIND_FREQ.exec(l);
   return m ? [m[0].length - m[1].length, m[1]] : null;
 }
+/** The subject that follows a line's kind: a label and its ID ("node D7", "ID 12345678", "unit 5") or a bare ID with a
+ *  letter in it ("!61f882d4", "C3"); null for a frequency, a rate, a path or nothing. */
+function logSubject(rest: string): string | null {
+  const t = rest.trim().split(/\s+/).filter(x => x);
+  if (t.length >= 2 && /^[A-Za-z]{2,8}$/.test(t[0]) && /^[!#]?[A-Za-z0-9_-]{1,12}$/.test(t[1]) && !/^\d+\.\d+$/.test(t[1])) return `${t[0]} ${t[1]}`;
+  if (t.length && /^[!#]?(?=.*[A-Za-z])[A-Za-z0-9_-]{2,12}$/.test(t[0])) return t[0];
+  return null;
+}
 /** Twelve saturated colors chosen to stay apart on the dark panel (and from each other) for kinds and nodes. */
 const LOG_COLORS = ['#4c8dff', '#ffaf00', '#3ddc84', '#22d3ee', '#a78bfa', '#f472b6', '#fb7185', '#facc15', '#2dd4bf', '#f97316', '#c084fc', '#84cc16'];
 /** Java's String.hashCode, so a kind or a node has the same color as in the apps. */
@@ -5309,9 +5317,13 @@ function logLineHtml(l: string, n: number): string {
   const tl = tail !== null ? `<div class="lt">${esc(tail)}</div>` : '';
   if (!k) return `<div class="li${n % 2 ? '' : ' alt'}">${esc(head)}${tl}</div>`;
   const c = logKindColor(k[1]);
-  const rest = head.slice(k[0] + k[1].length), subj = rest.trim();
-  const sc = subj ? logNodeColor(subj, c) : c;
-  const restHtml = subj ? `${esc(rest.slice(0, rest.length - rest.trimStart().length))}<span class="chip" style="color:${sc};background:${sc}29">${esc(subj)}</span>` : `<span class="lh">${esc(rest)}</span>`;
+  // only a real identifier is a subject: a label and its ID ("node D7", "ID 12345678") or a bare ID ("!61f882d4");
+  // a frequency, a rate or a path is not, and its row takes the kind's color
+  const rest = head.slice(k[0] + k[1].length), subj = logSubject(rest), at = subj ? rest.indexOf(subj) : -1;
+  const sc = subj && at >= 0 ? logNodeColor(subj, c) : c;
+  const restHtml = subj && at >= 0
+    ? `${esc(rest.slice(0, at))}<span class="chip" style="color:${sc};background:${sc}29">${esc(subj)}</span><span class="lh">${esc(rest.slice(at + subj.length))}</span>`
+    : `<span class="lh">${esc(rest)}</span>`;
   return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${sc}"><span class="lq">${esc(head.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b>${restHtml}${tl}</div>`;
 }
 function refreshAis(): void {

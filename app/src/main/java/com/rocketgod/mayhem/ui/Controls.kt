@@ -241,7 +241,9 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
                 // the subject (a node, a device, a name: what follows the kind) gets a color of its own from its name, so
                 // the same node is the same color every time it repeats; the bar takes it too
                 val rest = if (k != null) head.substring(k.first + k.second.length) else ""
-                val subj = rest.trim().takeIf { it.isNotEmpty() }
+                // only a real identifier is a subject: a label and its ID ("node D7", "ID 12345678") or a bare ID
+                // ("!61f882d4"); a frequency, a rate or a path is not, and its row takes the kind's color
+                val subj = logSubject(rest)
                 val sc = subj?.let { logNodeColor(it, kc) }
                 val bar = sc ?: kc
                 val m = Modifier.fillMaxWidth()
@@ -256,11 +258,12 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
                     else {
                         withStyle(SpanStyle(color = Palette.muted)) { append(head.substring(0, k.first)) }
                         withStyle(SpanStyle(color = kc!!, fontWeight = FontWeight.Bold)) { append(k.second) }
-                        if (subj != null && sc != null) {
-                            val lead = rest.length - rest.trimStart().length
-                            append(rest.substring(0, lead))
+                        val at = if (subj != null) rest.indexOf(subj) else -1
+                        if (subj != null && sc != null && at >= 0) {
+                            append(rest.substring(0, at))
                             // a tinted chip: the node's color on a wash of itself
                             withStyle(SpanStyle(color = sc, fontWeight = FontWeight.Bold, background = sc.copy(alpha = 0.16f))) { append(" $subj ") }
+                            withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest.substring(at + subj.length)) }
                         } else withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest) }
                     }
                 }
@@ -288,6 +291,19 @@ internal fun logKind(l: String): Pair<Int, String>? {
 }
 private val LOG_KIND = Regex("""^\s*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s+)?([A-Z][A-Z0-9_-]{2,})\b""")
 private val LOG_KIND_FREQ = Regex("""^\s*\d+(?:\.\d+)?(?:\s*MHz)?\s+(?:[+-]?\d+(?:\.\d+)?\s*dB\s+)?([A-Za-z0-9][A-Za-z0-9_-]{2,})\b""")
+
+/** The subject that follows a line's kind: a label and its ID ("node D7", "ID 12345678", "unit 5") or a bare ID with a
+ *  letter in it ("!61f882d4", "C3"); null for a frequency, a rate, a path or nothing. */
+internal fun logSubject(rest: String): String? {
+    val t = rest.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (t.size >= 2 && LOG_LABEL.matches(t[0]) && LOG_ID.matches(t[1]) && !LOG_DECIMAL.matches(t[1])) return t[0] + " " + t[1]
+    if (t.isNotEmpty() && LOG_BARE.matches(t[0])) return t[0]
+    return null
+}
+private val LOG_LABEL = Regex("[A-Za-z]{2,8}")
+private val LOG_ID = Regex("[!#]?[A-Za-z0-9_-]{1,12}")
+private val LOG_BARE = Regex("[!#]?(?=.*[A-Za-z])[A-Za-z0-9_-]{2,12}")
+private val LOG_DECIMAL = Regex("\\d+\\.\\d+")
 
 /** Twelve saturated colors chosen to stay apart on the dark panel (and from each other) for kinds and nodes. */
 internal val LOG_COLORS = listOf(
