@@ -354,15 +354,26 @@ object RtlSdr {
             if (fails >= 200 || now - failSince >= 3000) { Diag.log("RTL-SDR: $fails failures in a row ($what) — dongle gone, stopping"); stop = true; return true }
             return false
         }
+        // Reads still out on the bus. A retune that needs a quiet bus, or a rate change, does what the web app does:
+        // it stops queuing new reads and lets the ones in flight come back on their own (about 14 ms each), then
+        // returns with nothing outstanding. Cancelling them instead (as this did) left the endpoint dead on some
+        // phones: the stream stalled, was reopened, and after six reopens stopped for good, freezing the waterfall.
+        val live = HashSet<UsbRequest>(reqs)
+        var draining = false; var drainSince = 0L
         try {
-            while (!stop && targetRateHz == appliedRate) {
-                if (System.currentTimeMillis() - lastData > STALL_MS) return true
-                // Retune live first; where this USB stack has shown it rejects that, or it just failed, leave the
-                // loop so run() cancels every request and retunes with nothing in flight.
-                if (pending() && System.currentTimeMillis() >= retuneAfter) {
-                    if (quietRetune || !applyPending()) { needQuietRetune = true; break }
-                }
-                applyBias()
+            while (!stop) {
+                val now0 = System.currentTimeMillis()
+                if (!draining) {
+                    if (now0 - lastData > STALL_MS) return true
+                    // Retune live first; where this USB stack has shown it rejects that, or it just failed, drain the
+                    // reads so run() retunes with nothing in flight.
+                    if (pending() && now0 >= retuneAfter) {
+                        if (quietRetune || !applyPending()) { needQuietRetune = true; draining = true; drainSince = now0 }
+                    }
+                    if (targetRateHz != appliedRate) { draining = true; drainSince = now0 }
+                } else if (live.isEmpty()) return false
+                else if (now0 - drainSince > 1000L) break     // one never came back: cancel what is left below
+                if (!draining) applyBias()
                 val req = try { c.requestWait(100L) } catch (e: TimeoutException) { continue }
                 if (req == null) { if (failed("wait")) break; Thread.sleep(2); continue }
                 val idx = req.clientData as? Int ?: continue
@@ -376,13 +387,14 @@ object RtlSdr {
                     runCatching { SdrEngine.onIq(scratch, n) }
                 }
                 b.clear()
+                if (draining) { live.remove(req); runCatching { req.close() }; continue }
                 var requeued = runCatching { req.queue(b) }.getOrDefault(false)
                 if (!requeued) {
-                    runCatching { req.close() }
+                    runCatching { req.close() }; live.remove(req)
                     val nr = UsbRequest()
                     if (runCatching { nr.initialize(c, rx) }.getOrDefault(false)) {
                         nr.clientData = idx
-                        if (runCatching { nr.queue(b) }.getOrDefault(false)) { reqs[idx] = nr; requeued = true }
+                        if (runCatching { nr.queue(b) }.getOrDefault(false)) { reqs[idx] = nr; live.add(nr); requeued = true }
                     }
                 }
                 if (!requeued) { if (failed("requeue")) break } else fails = 0
@@ -390,7 +402,7 @@ object RtlSdr {
                 if (now - lastStatus > 1000L) { lastStatus = now; onStatus("$label · %.3f MHz".format(appliedFreq / 1e6)) }
             }
         } finally {
-            UsbRequests.drainAndClose(c, reqs)
+            UsbRequests.drainAndClose(c, live.toList())
         }
         return false
     }
