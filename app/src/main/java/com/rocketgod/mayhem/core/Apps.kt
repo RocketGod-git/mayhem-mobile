@@ -32,7 +32,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     APRS("APRS", "packet radio, 144.39 MHz", "Receive"),
     PAGER("FLEX", "pager RX · FLEX, or POCSAG too", "Receive"),
     ERT("Meters", "utility meters: ERT, mesh networks, Gridstream", "Receive"),
-    LORA("LoRa", "Meshtastic · MeshCore · LoRaWAN, 915 MHz", "Receive"),
+    LORA("LoRa", "Meshtastic · MeshCore · LoRaWAN, by area", "Receive"),
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
     ACARS("ACARS", "aircraft messages, 131 MHz", "Receive"),
     TRAINS("Trains", "end-of-train telemetry · PTC train control", "Receive"),
