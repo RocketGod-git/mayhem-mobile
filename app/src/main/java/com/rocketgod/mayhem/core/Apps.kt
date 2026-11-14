@@ -171,8 +171,25 @@ object Apps {
     fun init(ctx: Context) {
         if (recorder == null) recorder = IqRecorder(File(ctx.getExternalFilesDir(null), "captures"))
         Geo.init(ctx)
+        com.rocketgod.mayhem.core.lora.LoraLocal.init(ctx)
         Bookmarks.load(ctx)
         com.rocketgod.mayhem.core.spectrum.Spectrum.load(ctx)
+    }
+
+    /** LoRa's wide span center: the one the user picked (kept until they pick LOCAL again), else the local one. */
+    fun loraWideStart(): Long {
+        val u = SdrEngine.savedLong("lora_user_wide")
+        if (u in 400_000_000L..1_000_000_000L) return u
+        val local = com.rocketgod.mayhem.core.lora.LoraLocal
+        return local.wideCenter(local.area()) ?: com.rocketgod.mayhem.core.lora.LoraPlan.homeBand().center
+    }
+
+    /** LoRa one channel at a time: the user's pick, else the most local channel; the radio sits 300 kHz above it. */
+    fun loraNarrowStart(): Long {
+        val u = SdrEngine.savedLong("lora_user_narrow")
+        if (u in 400_000_000L..1_000_000_000L) return u + 300_000
+        val local = com.rocketgod.mayhem.core.lora.LoraLocal
+        return (local.narrowChannel(local.area()) ?: com.rocketgod.mayhem.core.lora.LoraPlan.homeBand().narrow) + 300_000
     }
 
     /** A frequency another app (Spectrum) asked the next app to open on, used once (Analyzer and Devices take it). */
@@ -244,18 +261,31 @@ object Apps {
             }
             MayhemApp.LORA -> {
                 val wide = Radio.canSample(Radio.limits, com.rocketgod.mayhem.core.lora.LoraScanner.RATE)
-                // the band for this device's region setting; a radio that can't sample 20 MHz sits on that band's main
-                // channel, 300 kHz off it (clear of the spike at the center)
+                // Where the user last put it, if they did; else centered on what is local to where the device is (its
+                // MeshCore presets and its Meshtastic region, LoraLocal). A radio that can't sample 20 MHz sits on one
+                // channel, 300 kHz off it (clear of the spike at the center).
                 val band = com.rocketgod.mayhem.core.lora.LoraPlan.homeBand()
-                SdrEngine.configure(SdrEngine.Mode.NONE, if (wide) band.center else band.narrow + 300_000, if (wide) com.rocketgod.mayhem.core.lora.LoraScanner.RATE else 2_000_000, 32, 40, true, lora.scanner)
+                val local = com.rocketgod.mayhem.core.lora.LoraLocal
+                SdrEngine.configure(SdrEngine.Mode.NONE, if (wide) loraWideStart() else loraNarrowStart(), if (wide) com.rocketgod.mayhem.core.lora.LoraScanner.RATE else 2_000_000, 32, 40, true, lora.scanner)
                 lora.scanner.centerOf = { SdrEngine.freqHz.value }
+                SdrEngine.loraRecall()
+                // another area or the user's own channel: the channels again, and the span follows when the user hasn't set one
+                local.onChange = onChange@{
+                    lora.scanner.replan()
+                    if (playing() != MayhemApp.LORA) return@onChange
+                    val w = SdrEngine.rateHz.value >= 10_000_000
+                    kotlin.concurrent.thread(isDaemon = true, name = "lora-area") { SdrEngine.tune(if (w) loraWideStart() else loraNarrowStart()) }
+                }
                 lora.narrowed.value = 0
                 lora.scanner.onTooMuch = onTooMuch@{ r ->
                     // the next span down this radio can sample, still holding the band's main channel
                     val next = intArrayOf(10_000_000, 5_000_000, 2_000_000).firstOrNull { it < r && Radio.canSample(Radio.limits, it) } ?: return@onTooMuch
-                    val c = if (next <= 2_400_000) band.narrow + 300_000
-                        else if (band.center >= band.narrow) minOf(band.center, band.narrow + (0.45 * next).toLong())
-                        else maxOf(band.center, band.narrow - (0.45 * next).toLong())
+                    val area = local.area()
+                    val ch = local.narrowChannel(area) ?: band.narrow
+                    val wc = local.wideCenter(area) ?: band.center
+                    val c = if (next <= 2_400_000) ch + 300_000
+                        else if (wc >= ch) minOf(wc, ch + (0.45 * next).toLong())
+                        else maxOf(wc, ch - (0.45 * next).toLong())
                     com.rocketgod.mayhem.Diag.log("LoRa: this device fell behind at %.0f MHz, narrowing the span to %.0f MHz".format(r / 1e6, next / 1e6))
                     lora.narrowed.value = next
                     // off the engine's thread, which is the one asking

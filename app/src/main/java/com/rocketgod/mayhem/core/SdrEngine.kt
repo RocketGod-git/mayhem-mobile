@@ -165,6 +165,10 @@ object SdrEngine {
         dialSaved = true
         prefs?.edit()?.putLong("dial", radioFreqHz)?.putString("dial_mode", radioMode.name)?.apply()
     }
+    /** A number an app keeps across launches (the LoRa app's span, say); 0 when never set. */
+    fun savedLong(k: String): Long = prefs?.getLong(k, 0L) ?: 0L
+    fun saveLong(k: String, v: Long) { prefs?.edit()?.putLong(k, v)?.apply() }
+
     private fun saveGains() {
         val g = intArrayOf(_radioLna.value, _radioVga.value, if (_radioAmp.value) 1 else 0, if (_agc.value) 1 else 0)
         if (isPro()) gainPrefPro = g else gainPrefOne = g
@@ -209,6 +213,121 @@ object SdrEngine {
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
     /** LoRa's last few one-second levels, for [agcStep]. */
     private val burstLevels = ArrayDeque<Double>()
+
+    // ---- LoRa's gain ----
+    /** The LoRa scanner's strongest sample (counts from center) and clipped share over the last second. */
+    @Volatile private var loraLevel: Pair<Double, Double>? = null
+    /** The strongest sample of each second since the gain last moved: (ms, counts). */
+    private val loraPeaks = ArrayList<Pair<Long, Double>>()
+    /** When a burst last clipped, and how long the gain then waits before it climbs again. */
+    private var loraClipAt = 0L; private var loraHold = 0L
+    /** The LoRa gain control's latest reasoning, for the diagnostic log. */
+    @Volatile var loraGainNote = "LoRa gain not started"; private set
+    /** When it last tried a stage up past what the headroom says, and since when the gain has held still. */
+    private var loraProbeAt = 0L; private var loraStillSince = 0L
+
+    /**
+     * Where the gain settles depends on the antenna and the place (a big antenna beside a node clips at a gain a small
+     * one needs), so what held still for two minutes is kept per board and per 10 MHz of band, and the next LoRa
+     * session there starts from it instead of finding it again.
+     */
+    private fun loraGainKey() = "lora_gain2_${if (isPro()) "pro" else if (Radio.kind.value == Radio.Kind.RTLSDR) "rtl" else "one"}_${_freqHz.value / 10_000_000}"
+    fun loraRecall() {
+        if (!_agc.value) return
+        val g = savedLong(loraGainKey())
+        if (g <= 0) return
+        _radioAmp.value = g / 1_000_000 == 1L; _radioLna.value = (g / 1000 % 1000).toInt().coerceIn(0, LNA_MAX); _radioVga.value = (g % 1000).toInt().coerceIn(0, vgaMax())
+        loraPeaks.clear(); loraStillSince = 0
+        Diag.log("LoRa gain: starting where it settled last time here (amp %s LNA %d VGA %d)".format(if (_radioAmp.value) "on" else "off", _radioLna.value, _radioVga.value))
+        syncDriver()
+    }
+
+    /**
+     * LoRa decodes below the noise, so the average level says little: what matters is the strongest burst. A node
+     * close by (a good antenna in the same house) clips the converter and its frames are lost, while far nodes need
+     * the front end's gain. So the gain comes down a stage the moment a LoRa frame clips (front-end amp first, then
+     * the LNA, then the VGA) and climbs back, one stage at a time, only once the strongest burst of the last stretch
+     * would still fit after the step. After a clip it waits [LORA_HOLD_MS] before climbing (doubling each time a step
+     * up clips again, up to 30 minutes), so a nearby node that only speaks every few minutes is not clipped again on
+     * each of its packets.
+     */
+    private const val LORA_HOLD_MS = 120_000L
+    /** Counts from center the strongest burst may reach after a step up (the converter tops out at 127). */
+    private const val LORA_CEIL = 90.0
+
+    private fun loraAgc(rms: Double, now: Long, lo: Double, hi: Double) {
+        val lv = loraLevel ?: return
+        val peakNow = lv.first; val clipShare = lv.second
+        val l = _radioLna.value; val v = _radioVga.value; val a = _radioAmp.value
+        val vMax = vgaMax(); val rtl = Radio.kind.value == Radio.Kind.RTLSDR
+        val hasLna = !rtl; val hasAmp = !rtl
+        loraPeaks.add(now to peakNow); loraPeaks.removeAll { now - it.first > 60_000 }
+        // The band's meters burst every second and some clip; a clip lasts only their burst and costs only them, while
+        // stepping down for it left far nodes under the noise (it sat at LNA 0). So it backs off only for a clip while
+        // a LoRa frame is being received (a node close by), or for sustained overload (over 1% of samples).
+        val anyClip = clipShare > 1e-4 || peakNow >= 126.5
+        val loraNow = (processor as? com.rocketgod.mayhem.core.lora.LoraScanner)?.let { System.currentTimeMillis() - it.loraAtMs < 1500 } ?: false
+        val clipped = anyClip && (loraNow || clipShare > 0.01)
+        val why: String
+        if (clipped) {
+            // a step up that clips within a minute doubles the wait before the next try; any other clip (the first
+            // seconds of stepping down from a gain set by hand, a node keying up) waits the usual time
+            loraHold = if (now - loraProbeAt < 60_000) minOf(1_800_000L, maxOf(LORA_HOLD_MS, loraHold * 2)) else LORA_HOLD_MS
+            loraClipAt = now
+            why = when {
+                hasAmp && a -> { _radioAmp.value = false; "clipped: front-end amp off" }
+                hasLna && l > 0 -> { _radioLna.value = l - LNA_STEP; "clipped: LNA down" }
+                v > 0 -> { _radioVga.value = maxOf(0, v - 6); "clipped: VGA down" }
+                else -> "clipped at the lowest gain (a transmitter right beside the antenna)"
+            }
+            loraPeaks.clear()
+        } else if (anyClip && !loraNow && v > vMax / 2 && rms > lo) {
+            // a meter's burst clipped: the VGA alone gives a little back, the front end stays where far nodes need it
+            _radioVga.value = maxOf(0, v - 2); why = "clip outside LoRa: VGA down a step"
+        } else if (rms > hi && v > 0) {
+            _radioVga.value = maxOf(0, v - 2); why = "noise high: VGA down"
+        } else {
+            val span = if (loraPeaks.size >= 10) (now - (loraPeaks.firstOrNull()?.first ?: now)).toDouble() else 0.0
+            val peak = loraPeaks.maxOfOrNull { it.second } ?: 128.0
+            val waiting = now - loraClipAt < loraHold
+            // step factors: amp about 11 dB, an LNA step 8 dB, a VGA step 2 dB
+            val probeDue = now - maxOf(loraProbeAt, loraClipAt) > maxOf(LORA_HOLD_MS, loraHold)
+            why = when {
+                span < 9_000 -> "watching the level"
+                waiting -> {
+                    // only the VGA's small steps while it waits, and only for a quiet radio
+                    if (rms < lo && v < vMax && peak * 1.26 < LORA_CEIL) { _radioVga.value = minOf(vMax, v + 2); "quiet: VGA up (holding the front end after a clip)" }
+                    else "holding %.0f s after a clip".format((loraHold - (now - loraClipAt)) / 1000.0)
+                }
+                hasAmp && !a && peak * 3.55 < LORA_CEIL -> { _radioAmp.value = true; "room: front-end amp on" }
+                hasLna && l < LNA_MAX && peak * 2.5 < LORA_CEIL -> { _radioLna.value = minOf(LNA_MAX, l + LNA_STEP); "room: LNA up" }
+                v < vMax && rms * 1.26 < hi && peak * 1.26 < LORA_CEIL -> { _radioVga.value = minOf(vMax, v + 2); "room: VGA up" }
+                // No room by the strongest burst (often a meter, not a node): now and then it tries one stage up anyway.
+                // A clip brings it straight back down and makes the next try wait twice as long, so it settles at the
+                // most gain this antenna and place can take.
+                probeDue && hasAmp && !a -> { _radioAmp.value = true; loraProbeAt = now; "trying: front-end amp on" }
+                probeDue && hasLna && l < LNA_MAX -> { _radioLna.value = minOf(LNA_MAX, l + LNA_STEP); loraProbeAt = now; "trying: LNA up" }
+                else -> "settled"
+            }
+            if (_radioLna.value != l || _radioAmp.value != a) loraPeaks.clear()
+        }
+        loraGainNote = "%s · peak %.0f counts, clipped %.4f%%, noise %.1f counts".format(why, peakNow, clipShare * 100, rms)
+        val moved = _radioLna.value != l || _radioVga.value != v || _radioAmp.value != a
+        if (moved) loraStillSince = now
+        else if (loraStillSince == 0L) loraStillSince = now
+        else if (now - loraStillSince > 120_000 && now - loraClipAt > 600_000) {
+            val g = (if (_radioAmp.value) 1L else 0L) * 1_000_000 + _radioLna.value * 1000L + _radioVga.value
+            if (savedLong(loraGainKey()) != g) {
+                saveLong(loraGainKey(), g)
+                Diag.log("LoRa gain: kept amp %s LNA %d VGA %d for this radio and band".format(if (_radioAmp.value) "on" else "off", _radioLna.value, _radioVga.value))
+            }
+        }
+        if (moved) {
+            Diag.log("LoRa gain: %s (amp %s LNA %d VGA %d → amp %s LNA %d VGA %d; strongest %.0f counts)".format(why, if (a) "on" else "off", l, v,
+                if (_radioAmp.value) "on" else "off", _radioLna.value, _radioVga.value, peakNow))
+            syncDriver()
+        }
+    }
 
     private fun agcStep(sampled: Double, now: Long) {
         // held for as long as Transmit is open, not just while it sends: the receive level there means nothing
@@ -263,6 +382,8 @@ object SdrEngine {
             burstLevels.addLast(rms); while (burstLevels.size > 8) burstLevels.removeFirst()
             if (burstLevels.size < 4) return
             rms = burstLevels.sorted()[burstLevels.size / 2]
+            loraAgc(rms, now, lo, hi)
+            return
         } else burstLevels.clear()
         if (rms < lo) {
             when {
@@ -869,6 +990,7 @@ object SdrEngine {
                                 (if (sk > 0) " · LoRa channels SKIPPED %.0f ms (fell behind)".format(sk * 1000.0 / rate) else ""))
                             _rxHealth.value = health
                             _levelDb.value = peak - median
+                            loraLevel = ls?.takeLevel()
                             agcStep(rms, now)
                             if (m != Mode.NONE) Diag.log("SDR audio: peak=%d/32000 %s".format(
                                 audioPeak, if (audioPeak > 2500) "— demod producing audio" else "— silent (no modulation / no signal)"))

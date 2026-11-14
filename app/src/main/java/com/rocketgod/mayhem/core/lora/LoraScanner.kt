@@ -27,6 +27,9 @@ class LoraHeard(val frame: LoraFrame, val hz: Long, val inverted: Boolean, val t
  */
 class LoraScanner : IqProcessor {
     @Volatile var centerOf: () -> Long = { 0L }
+    /** The plan changed (another area, the user's own channel): the channels are placed again at the next look. */
+    @Volatile private var replanWanted = false
+    fun replan() { replanWanted = true }
     var onHeard: ((LoraHeard) -> Unit)? = null
     /** Each burst that got a channel of its own: (Hz, bandwidth, plan name or null). */
     var onBurst: ((Long, Int, String?) -> Unit)? = null
@@ -75,6 +78,24 @@ class LoraScanner : IqProcessor {
     /** The last 0.4 s of samples, written here (the radio's thread) and read by the channel worker behind it. */
     @Volatile private var ring = ByteArray(2); private var ringSize = 0; @Volatile private var ringMask = 0
     private var written = 0L; private var nextFrame = 0L
+
+    // ---- level, for the LoRa gain control ----
+    /**
+     * The strongest sample in the looks since the engine last read it (counts from center, 0-128), and how many
+     * looked samples sat at the converter's limit.
+     */
+    private var lvPeak = 0f
+    private var lvClipped = 0L; private var lvLooked = 0L
+    private val lvLock = Any()
+    /** When a receiver last found a LoRa preamble (wall-clock ms): a clip then is a LoRa node's, not a meter's. */
+    @Volatile var loraAtMs = 0L; private set
+    fun markLora() { loraAtMs = System.currentTimeMillis() }
+    /** Once a second, from the engine: the strongest sample and the share of samples clipped since the last call. */
+    fun takeLevel(): Pair<Double, Double> = synchronized(lvLock) {
+        val r = lvPeak.toDouble() to (if (lvLooked > 0) lvClipped.toDouble() / lvLooked else 0.0)
+        lvPeak = 0f; lvClipped = 0; lvLooked = 0
+        r
+    }
 
     private class Region(var lo: Int, var hi: Int, var start: Long, var last: Long) {
         /** When its width last grew: a chirp's sweep widens a burst until it has covered the whole channel once. */
@@ -206,7 +227,7 @@ class LoraScanner : IqProcessor {
         // the old standing channels were tuned to the old center: they finish where they are
         for ((id, o) in owners.entries.toList()) if (o.s?.standing == true) owners[id] = Owner(o.r, null, written)
         slots.clear()
-        val half = rate / 2.0 * 0.96
+        val half = usableHalf(rate)
         for (c in plan) {
             val off = (c.hz - center).toDouble()
             if (abs(off) + c.bw / 2.0 > half) continue
@@ -227,10 +248,18 @@ class LoraScanner : IqProcessor {
         val s0 = written - n
         var p0 = (s0 and ringMask.toLong()).toInt()
         val rg = ring
+        var pk = 0; var clip = 0
         for (k in 0 until n) {
-            re[k] = ((rg[2 * p0].toInt() and 0xff) - 127.4f) * win[k]; im[k] = ((rg[2 * p0 + 1].toInt() and 0xff) - 127.4f) * win[k]
+            val a = rg[2 * p0].toInt() and 0xff; val b = rg[2 * p0 + 1].toInt() and 0xff
+            re[k] = (a - 127.4f) * win[k]; im[k] = (b - 127.4f) * win[k]
+            // distance from the center, 0-128: at 126 and over the converter is at its limit
+            val da = if (a >= 128) a - 128 else 127 - a; val db = if (b >= 128) b - 128 else 127 - b
+            val m = max(da, db)
+            if (m > pk) pk = m
+            if (m >= 126) clip++
             p0 = (p0 + 1) and ringMask
         }
+        synchronized(lvLock) { lvPeak = max(lvPeak, pk + 0.5f); lvClipped += clip; lvLooked += n }
         Dsp.fft(re, im)
         frames++
         val hot = ArrayList<Int>()
@@ -273,7 +302,7 @@ class LoraScanner : IqProcessor {
             }
         }
         val center = centerOf()
-        if (center != slotCenter) placeSlots(center)
+        if (center != slotCenter || replanWanted) { replanWanted = false; placeSlots(center) }
         if (frames % 4 == 0) watchSlots()
 
         // the channels no plan knows: clusters of hot bins grouped into bursts
@@ -461,25 +490,8 @@ class LoraScanner : IqProcessor {
             for (e in extractors) untils[e.id]?.let { e.until = it }
             scheduled = false
         }
-        // each channel is independent: they run side by side, one core each, and never wait for one another (a
-        // slow channel held back every other one when they ran in rounds, with cores sitting idle)
-        val list = extractors.toList(); val r = ring; val mask = ringMask
-        channelCount = list.size
-        val behind = ringMask.toLong() - rate / 50; val back = (ringMask / 2).toLong()
-        for (e in list) {
-            val job = Runnable {
-                try {
-                    // the newest written sample when it starts, not when it was queued
-                    val top = latest
-                    if (top - e.pos > behind) { skipped += (top - back) - e.pos; e.pos = top - back }   // fell behind
-                    val end = min(top, e.until)
-                    if (end > e.pos) e.run(end, r, mask)
-                } catch (_: Throwable) {
-                } finally { e.busy.set(false) }
-            }
-            if (!shedding) { e.busy.set(true); job.run() }
-            else if (e.busy.compareAndSet(false, true)) pool.execute(job)
-        }
+        // Retire the finished channels first: one handed another turn before this check was always busy at it, so it
+        // never retired, and each turn "skipped" it past its end (a phantom fall-behind that narrowed the span).
         val gone = ArrayList<Int>()
         extractors.removeAll { e ->
             if (e.busy.get()) return@removeAll false
@@ -491,6 +503,29 @@ class LoraScanner : IqProcessor {
             done
         }
         if (gone.isNotEmpty()) synchronized(lock) { for (id in gone) untils.remove(id); finished.addAll(gone) }
+        // each channel is independent: they run side by side, one core each, and never wait for one another (a
+        // slow channel held back every other one when they ran in rounds, with cores sitting idle)
+        val list = extractors.toList(); val r = ring; val mask = ringMask
+        channelCount = list.size
+        val behind = ringMask.toLong() - rate / 50; val back = (ringMask / 2).toLong()
+        for (e in list) {
+            if (e.pos >= e.until) continue
+            val job = Runnable {
+                try {
+                    // the newest written sample when it starts, not when it was queued
+                    val top = latest
+                    // fell behind: on to half a ring back (never past its own end), and the channel time lost is counted
+                    if (top - e.pos > behind) { val to = min(top - back, max(e.pos, e.until)); skipped += to - e.pos; e.pos = to }
+                    if (e.pos < e.until) {
+                        val end = min(top, e.until)
+                        if (end > e.pos) e.run(end, r, mask)
+                    }
+                } catch (_: Throwable) {
+                } finally { e.busy.set(false) }
+            }
+            if (!shedding) { e.busy.set(true); job.run() }
+            else if (e.busy.compareAndSet(false, true)) pool.execute(job)
+        }
     }
 
     /** Channels decode side by side: what they report goes through here one at a time. */
@@ -569,7 +604,7 @@ class LoraScanner : IqProcessor {
                 val rcv = LoraReceiver(sf, bw)
                 rcv.onFrame = { f -> heard(f, this, inv) }
                 // once a channel: its timing phases all see the same transmission
-                rcv.onAligned = { if (!confirmed) { confirmed = true; onLora?.invoke(hz, bw) } }
+                rcv.onAligned = { markLora(); if (!confirmed) { confirmed = true; onLora?.invoke(hz, bw) } }
                 rx.add(Triple(rcv, inv, ph))
             }
         }
@@ -653,6 +688,13 @@ class LoraScanner : IqProcessor {
     companion object {
         /** 20 Msps: every LoRa bandwidth divides it exactly, and it is the widest a HackRF samples. */
         const val RATE = 20_000_000
+        /**
+         * How far either side of center a channel can sit. Measured on a HackRF Pro at 20 Msps (noise shape, 15 and
+         * 20 MHz baseband filters alike): flat within 1 dB to ±8.5 MHz, 1.5 dB down at ±9, 2.5 dB at ±9.7. So the
+         * span is used nearly to its edge, which is what lets SoCal's Meshtastic LongTurbo (908.75) and MeshCore
+         * (927.875), 19.4 MHz apart, share one view.
+         */
+        fun usableHalf(rate: Int): Double = rate / 2.0 * 0.975
         val BWS = intArrayOf(62_500, 125_000, 250_000, 500_000)
         /**
          * Every channel with a known modem, worldwide (LoraPlan): Meshtastic's regions and presets, MeshCore's presets,

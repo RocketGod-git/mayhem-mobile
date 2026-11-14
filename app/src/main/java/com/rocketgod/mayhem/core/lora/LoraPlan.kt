@@ -62,9 +62,16 @@ object LoraPlan {
 
     /**
      * Every channel with a known modem, worldwide. standing: listened to all the time once inside the span (each
-     * region's starting preset, the newer US default LongTurbo and the popular MediumFast, MeshCore's presets).
+     * region's starting preset, the newer US default LongTurbo and the popular MediumFast, and every channel local to
+     * the area in use: its MeshCore presets and the user's own channel). Rebuilt when the area or that channel changes.
      */
-    val channels: List<LoraChannel> = run {
+    val channels: List<LoraChannel>
+        get() = synchronized(planLock) { cached ?: build(LoraLocal.area()).also { cached = it } }
+    private var cached: List<LoraChannel>? = null
+    private val planLock = Any()
+    fun invalidate() { synchronized(planLock) { cached = null } }
+
+    private fun build(area: String): List<LoraChannel> {
         val c = ArrayList<LoraChannel>()
         val index = HashMap<String, Int>()
         fun add(hz: Long, bw: Int, sf: Int?, name: String, standing: Boolean) {
@@ -77,17 +84,18 @@ object LoraPlan {
             index[k] = c.size
             c.add(LoraChannel(hz, bw, sf, name, standing))
         }
+        // Every region's default channels listen all the time only where the area is unknown; with an area, only its
+        // own do (another country's channels in the span took receivers and found nothing)
+        val local = LoraLocal.channels(area)
+        val localKnown = local.isNotEmpty()
         for (r in regions) for (p in r.presets) {
             val hz = slotHz(r, p) ?: continue
-            val standing = p.name == r.start || ((r.name == "US" || r.name == "ANZ") && (p.name == "LongTurbo" || p.name == "MediumFast"))
+            val standing = !localKnown && (p.name == r.start || ((r.name == "US" || r.name == "ANZ") && (p.name == "LongTurbo" || p.name == "MediumFast")))
             add(hz, p.bw, p.sf, "Meshtastic ${p.name} ${r.name}", standing)
         }
-        // MeshCore's regional presets
-        add(910_525_000, 62_500, 7, "MeshCore US", true)
-        add(927_875_000, 62_500, 7, "MeshCore US 927.875", true)
-        add(869_618_000, 62_500, 8, "MeshCore EU/UK narrow", true)
-        add(869_525_000, 250_000, 11, "MeshCore EU/UK long range", true)
-        add(916_575_000, 62_500, 7, "MeshCore ANZ", true)
+        // what is local to the area in use first (named as its own list names it), then every MeshCore community preset
+        for (c in local) add(c.hz, c.bw, c.sf, c.name, true)
+        for (p in LoraLocal.MESHCORE) add(p.hz, p.bw, p.sf, "MeshCore ${p.title}", false)
         // LoRaWAN: US915 / AU915 uplinks (125 kHz every 200 kHz, 500 kHz every 1.6 MHz) and downlinks (500 kHz every 600 kHz)
         for ((base, name) in listOf(902_300_000L to "US915", 915_200_000L to "AU915")) {
             for (k in 0 until 64) add(base + k * 200_000L, 125_000, null, "LoRaWAN $name uplink $k", false)
@@ -101,7 +109,7 @@ object LoraPlan {
         for (f in longArrayOf(922_100_000, 922_300_000, 922_500_000)) add(f, 125_000, null, "LoRaWAN KR920", false)
         for (f in longArrayOf(865_062_500, 865_402_500, 865_985_000)) add(f, 125_000, null, "LoRaWAN IN865", false)
         for (k in 0 until 96) add(470_300_000L + k * 200_000L, 125_000, null, "LoRaWAN CN470 uplink $k", false)
-        c
+        return c
     }
 
     /**
@@ -111,13 +119,23 @@ object LoraPlan {
     class Band(val title: String, val sub: String, val center: Long, val narrow: Long)
 
     val bands = listOf(
-        Band("903–923", "US · Americas", 913_000_000, 906_875_000),
-        Band("908–928", "US upper", 918_000_000, 910_525_000),
-        Band("859–879", "Europe · India", 869_000_000, 869_525_000),
-        Band("912–932", "ANZ · Asia", 922_000_000, 916_575_000),
-        Band("424–444", "433 MHz", 434_000_000, 433_875_000),
-        Band("470–490", "China", 480_000_000, 470_300_000),
+        // each holds about ±9.7 MHz (usableHalf); 909–928 holds Meshtastic LongTurbo and both MeshCore US channels
+        Band("904–922", "US · Americas", 913_000_000, 906_875_000),
+        Band("909–928", "US upper", 918_200_000, 927_875_000),
+        Band("860–878", "Europe · India", 869_000_000, 869_525_000),
+        Band("913–931", "ANZ · Asia", 922_000_000, 916_575_000),
+        Band("425–443", "433 MHz", 434_000_000, 433_875_000),
+        Band("471–489", "China", 480_000_000, 470_300_000),
     )
+
+    /**
+     * The first band (in the list's order, so the Americas' before ANZ's for a 927 MHz channel) whose span holds
+     * [hz], a narrow channel at its edge included.
+     */
+    fun band(holding: Long): Band? {
+        val half = LoraScanner.usableHalf(LoraScanner.RATE).toLong() - 32_000
+        return bands.firstOrNull { kotlin.math.abs(it.center - holding) <= half }
+    }
 
     /** Where to start: the band for the device's own region setting (not its location). */
     fun homeBand(): Band {

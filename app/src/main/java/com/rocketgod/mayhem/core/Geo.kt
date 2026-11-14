@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * The phone's own position: the CPR reference that lets ADS-B place an aircraft from a single position frame
- * (dump1090 decodeCPRrelative), and the spot the map centres on before any aircraft shows up. Coarse is enough.
+ * (dump1090 decodeCPRrelative), and the spot the map centers on before any aircraft shows up. Coarse is enough.
  */
 object Geo {
     private val _fix = MutableStateFlow<Pair<Double, Double>?>(null)
@@ -33,12 +33,14 @@ object Geo {
 
     private const val PREFS = "geo"
     private var prefs: android.content.SharedPreferences? = null
+    private var app: Context? = null
     /** The last position this device reported, kept between visits (null when there never was one). */
     @Volatile private var last: Pair<Double, Double>? = null
 
     /** Load the last position known, so a map can open there before (or without) a fix. */
     fun init(ctx: Context) {
         if (prefs != null) return
+        app = ctx.applicationContext
         val p = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).also { prefs = it }
         val la = p.getString("lat", null)?.toDoubleOrNull(); val lo = p.getString("lon", null)?.toDoubleOrNull()
         if (la != null && lo != null && la.isFinite() && lo.isFinite()) last = la to lo
@@ -54,6 +56,33 @@ object Geo {
         _fix.value = l.latitude to l.longitude
         saveLastPos(l.latitude to l.longitude)
         if (first) Diag.log("GPS reference %.3f,%.3f for single-frame CPR".format(l.latitude, l.longitude))
+        countryFor(l)
+    }
+
+    /**
+     * The country the position is in (the LoRa app's local presets follow it): looked up once, and again only after
+     * moving 50 km, so the geocoder is barely used. Off the main thread: the lookup blocks on the network.
+     */
+    private var countryAt: Location? = null
+    private val geocoding = java.util.concurrent.atomic.AtomicBoolean(false)
+    private fun countryFor(l: Location) {
+        val ctx = app ?: return
+        val at = countryAt
+        if (at != null && at.distanceTo(l) < 50_000f) return
+        if (!android.location.Geocoder.isPresent() || !geocoding.compareAndSet(false, true)) return
+        countryAt = l
+        val lat = l.latitude; val lon = l.longitude
+        kotlin.concurrent.thread(isDaemon = true, name = "geo-country") {
+            try {
+                @Suppress("DEPRECATION")
+                val cc = android.location.Geocoder(ctx, java.util.Locale.US).getFromLocation(lat, lon, 1)?.firstOrNull()?.countryCode
+                if (!cc.isNullOrEmpty()) com.rocketgod.mayhem.core.lora.LoraLocal.gpsCountry = cc.uppercase(java.util.Locale.US)
+            } catch (e: Exception) {
+                // no network or no geocoder backend: try again on the next fix
+                countryAt = null
+                Diag.log("location: country lookup failed (${e.message})")
+            } finally { geocoding.set(false) }
+        }
     }
 
     fun granted(ctx: Context): Boolean =

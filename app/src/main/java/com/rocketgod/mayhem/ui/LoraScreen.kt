@@ -58,6 +58,7 @@ import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.apps.MeshField
 import com.rocketgod.mayhem.core.lora.LoraEvent
 import com.rocketgod.mayhem.core.lora.LoraHub
+import com.rocketgod.mayhem.core.lora.LoraLocal
 import com.rocketgod.mayhem.core.lora.LoraNode
 import com.rocketgod.mayhem.core.lora.LoraPlan
 import com.rocketgod.mayhem.core.lora.LoraScanner
@@ -150,29 +151,56 @@ fun LoraScreen(accent: Color) {
         val wide = rate >= 10_000_000
         val narrowed by Apps.lora.narrowed.collectAsState()
         val midSpan = rate in 2_400_001 until LoraScanner.RATE
+        // the area, the user's own channel and the saved picks all live in prefs: this redraws on each change
+        val localTick by LoraLocal.version.collectAsState()
+        var pickTick by remember { mutableIntStateOf(0) }
+        var customOpen by remember { mutableStateOf(false) }
+        val area = remember(localTick) { LoraLocal.area() }
+        val local = remember(localTick, area) { LoraLocal.channels(area) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+            RowLabel("AREA")
+            LoraAreaMenu(accent, LoraLocal.picked, area, Modifier.weight(1f)) { LoraLocal.picked = it }
+        }
         if (wide) {
-            PresetTiles(accent, LoraPlan.bands.map { Preset(it.title, it.sub, it.center) }, width = 132.dp)
+            // LOCAL follows the area; a band tile is the user's own pick, kept until LOCAL is tapped again
+            val localHz = remember(localTick, area) { LoraLocal.wideCenter(area) ?: LoraPlan.homeBand().center }
+            val userWide = remember(pickTick, localTick) { SdrEngine.savedLong("lora_user_wide") }
+            val tiles = listOf(Tile("LOCAL", LoraLocal.title(area), userWide == 0L && freq == localHz)) +
+                LoraPlan.bands.map { Tile(it.title, it.sub, userWide != 0L && freq == it.center) }
+            TileRow(tiles, accent, width = 132.dp) { i ->
+                if (i == 0) { SdrEngine.saveLong("lora_user_wide", 0L); SdrEngine.tune(localHz) }
+                else { val c = LoraPlan.bands[i - 1].center; SdrEngine.saveLong("lora_user_wide", c); SdrEngine.tune(c) }
+                pickTick++
+            }
         } else {
-            // one channel at a time: the radio sits 300 kHz above it, clear of the spike at the center
-            PresetTiles(accent, listOf(Preset("906.875", "LongFast US", 906_875_000L), Preset("910.525", "MeshCore US", 910_525_000L),
-                Preset("869.525", "LongFast EU", 869_525_000L), Preset("869.618", "MeshCore EU", 869_618_000L),
-                Preset("916.575", "MeshCore ANZ", 916_575_000L), Preset("927.875", "MeshCore", 927_875_000L)), shift = 300_000L)
+            // one channel at a time, the area's own first; the radio sits 300 kHz above it, clear of the spike at the center
+            val chans = local.take(8)
+            val tiles = chans.map { c -> Tile("%.3f".format(c.hz / 1e6), c.name.removePrefix("MeshCore ").removePrefix("Meshtastic "), freq - 300_000 == c.hz) }
+            TileRow(tiles, accent, width = 132.dp) { i ->
+                SdrEngine.saveLong("lora_user_narrow", chans[i].hz); SdrEngine.tune(chans[i].hz + 300_000); pickTick++
+            }
         }
         val whyWide = Radio.rateWhy(LoraScanner.RATE)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             RowLabel("SPAN")
             SegBar(listOf("2 MHz", if (midSpan) "${rate / 1_000_000} MHz" else "20 MHz"), if (rate > 2_400_000) 1 else 0, accent, Modifier.weight(1f),
                 tints = listOf(null, if (whyWide.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null)) {
                 if (it == 0) {
-                    if (rate > 2_400_000) { SdrEngine.setRate(2_000_000); SdrEngine.tune((LoraPlan.bands.firstOrNull { b -> b.center == freq }?.narrow ?: LoraPlan.homeBand().narrow) + 300_000) }
+                    if (rate > 2_400_000) { SdrEngine.setRate(2_000_000); SdrEngine.tune(Apps.loraNarrowStart()) }
                 } else gated(whyWide) {
-                    if (rate < LoraScanner.RATE) { Apps.lora.narrowed.value = 0; SdrEngine.setRate(LoraScanner.RATE); SdrEngine.tune(LoraPlan.bands.minByOrNull { b -> abs(b.center - freq) }?.center ?: LoraPlan.homeBand().center) }
+                    if (rate < LoraScanner.RATE) { Apps.lora.narrowed.value = 0; SdrEngine.setRate(LoraScanner.RATE); SdrEngine.tune(Apps.loraWideStart()) }
                 }()
             }
+            IconBox(TuneIcon, "Your own channel", Modifier.fillMaxHeight()) { customOpen = true }
         }
+        val mine = remember(localTick) { LoraLocal.custom }
+        if (mine != null)
+            Text("YOUR CHANNEL · %.4f MHz · %s · SF%d".format(mine.hz / 1e6, LoraHub.bwName(mine.bw), mine.sf),
+                color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (narrowed != 0 && narrowed == rate)
             Text("Span narrowed to ${rate / 1_000_000} MHz: this device fell behind at a wider one. Tap 20 MHz to try again.",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (customOpen) LoraCustomDialog(accent) { customOpen = false }
     }, list = {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             val by = nodes.groupingBy { it.proto }.eachCount()
@@ -187,6 +215,76 @@ fun LoraScreen(accent: Color) {
     if (full) FullscreenPanel(listOf("LORA · ${nodes.size} NODES", "LORA · MAP", "LORA · CHAT")[view], accent, onClose = { full = false },
         actions = { switcher(false, Modifier.width(d.dp(380f))) }) {
         stage(Modifier.fillMaxWidth().weight(1f))
+    }
+}
+
+/** The area picker: Automatic (where the device is) or any country or part of one with presets of its own. */
+@Composable
+private fun LoraAreaMenu(accent: Color, picked: String, area: String, modifier: Modifier, onPick: (String) -> Unit) {
+    val d = rememberDims()
+    var open by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(6.dp)
+    val label = if (picked == "AUTO") "AUTOMATIC · " + LoraLocal.title(area).uppercase() else LoraLocal.title(picked).uppercase()
+    Box(modifier) {
+        Text("$label  ▾", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().clip(shape).border(1.dp, accent.copy(alpha = 0.7f), shape).clickable { open = true }
+                .padding(horizontal = d.dp(12f), vertical = d.dp(7f)))
+        androidx.compose.material3.DropdownMenu(open, onDismissRequest = { open = false }, modifier = Modifier.background(Palette.surface)) {
+            for (a in LoraLocal.areas()) androidx.compose.material3.DropdownMenuItem(
+                text = {
+                    Text((if (a.id == picked) "✓ " else "") + a.title, color = if (a.id == picked) accent else Palette.ink, fontFamily = Mono,
+                        fontWeight = if (a.id == picked) FontWeight.Bold else FontWeight.Medium, fontSize = d.sp(12f))
+                },
+                onClick = { open = false; if (a.id != picked) onPick(a.id) })
+        }
+    }
+}
+
+/** A channel of the user's own: frequency, bandwidth and spreading factor, listened to all the time while in span. */
+@Composable
+private fun LoraCustomDialog(accent: Color, onDone: () -> Unit) {
+    val d = rememberDims()
+    val now = remember { LoraLocal.custom }
+    var mhz by remember { mutableStateOf(now?.let { "%.4f".format(java.util.Locale.US, it.hz / 1e6) } ?: "") }
+    var bw by remember { mutableIntStateOf(LoraScanner.BWS.indexOf(now?.bw ?: 125_000).let { if (it < 0) 1 else it }) }
+    var sf by remember { mutableIntStateOf((now?.sf ?: 7) - 7) }
+    fun save() {
+        val f = mhz.replace(',', '.').toDoubleOrNull() ?: return
+        if (f < 400 || f > 1000) return
+        LoraLocal.custom = LoraLocal.Custom(Math.round(f * 1e6), LoraScanner.BWS[bw], 7 + sf)
+        onDone()
+    }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDone) {
+        val shape = RoundedCornerShape(d.dp(14f))
+        Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, accent.copy(alpha = 0.6f), shape).padding(d.dp(18f)),
+            verticalArrangement = Arrangement.spacedBy(d.dp(12f))) {
+            Text("YOUR OWN CHANNEL", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 1.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("MHz")
+                androidx.compose.material3.OutlinedTextField(
+                    value = mhz, onValueChange = { t -> mhz = t.filter { it.isDigit() || it == '.' || it == ',' }.take(10) }, singleLine = true,
+                    placeholder = { Text("915.0000", fontFamily = Mono, color = Palette.muted) },
+                    textStyle = androidx.compose.ui.text.TextStyle(fontFamily = Mono, fontWeight = FontWeight.Bold, color = Palette.ink, fontSize = d.sp(14f)),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { save() }),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = accent.copy(alpha = 0.7f),
+                        cursorColor = accent),
+                    modifier = Modifier.weight(1f))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("BW")
+                SegBar(LoraScanner.BWS.map { LoraHub.bwName(it) }, bw, accent, Modifier.weight(1f)) { bw = it }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+                RowLabel("SF")
+                SegBar((7..12).map { "$it" }, sf, accent, Modifier.weight(1f)) { sf = it }
+            }
+            SegBar(listOf("CLEAR", "SAVE"), -1, accent, Modifier.fillMaxWidth()) { i ->
+                if (i == 0) { LoraLocal.custom = null; onDone() } else save()
+            }
+        }
     }
 }
 

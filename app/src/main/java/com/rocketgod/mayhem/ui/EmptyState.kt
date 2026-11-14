@@ -36,7 +36,7 @@ internal val EMPTY: Map<String, Triple<MayhemApp, String, List<String>>> = mapOf
     "capture" to Triple(MayhemApp.CAPTURE, "No captures yet", listOf("Tune to a signal and press ● REC", "Keep it short: 2 Msps fills about 4 MB a second")),
     "acars" to Triple(MayhemApp.ACARS, "Waiting for ACARS messages", listOf("Aircraft send them every few minutes; 131.550 is the busiest US channel", "Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out")),
     "btle" to Triple(MayhemApp.BTLE, "Waiting for BLE advertisements", listOf("Phones, earbuds and watches advertise several times a second: start on CH 37", "BLE is low power: hold the radio within a few meters of a device")),
-    "lora" to Triple(MayhemApp.LORA, "No nodes yet", listOf("Meshtastic nodes beacon about every 15 minutes: leave it running", "A wider SPAN (20 MHz on a HackRF) covers all of 902–928 MHz")),
+    "lora" to Triple(MayhemApp.LORA, "No nodes yet", listOf("Meshtastic nodes beacon about every 15 minutes: leave it running", "AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels")),
     "loramsg" to Triple(MayhemApp.LORA, "No messages yet", listOf("Text on the default Meshtastic and MeshCore public channels shows up here", "Names and positions arrive first; messages are rarer")),
     "ham" to Triple(MayhemApp.HAM, "Nothing open", listOf("Every channel in the span is watched; one that opens shows up here with its tone", "Try 2 m near 146.520, or set the threshold to +6 dB")),
     "ert" to Triple(MayhemApp.ERT, "No meters yet", listOf("Meters report every 30 s to a few minutes: give it a minute", "Most meters sit at 908–924 MHz: the 19.2 MHz span covers them")),

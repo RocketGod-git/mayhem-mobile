@@ -53,8 +53,33 @@ class LoraAppTest {
         // worldwide: Meshtastic's own slot rule per region
         assertEquals(919_875_000L, LoraScanner.plan.firstOrNull { it.name == "Meshtastic LongFast ANZ" }?.hz)
         assertEquals(869_525_000L, LoraScanner.plan.firstOrNull { it.name == "Meshtastic LongFast EU_868" }?.hz)
-        assertTrue(LoraScanner.plan.firstOrNull { it.name == "Meshtastic LongFast EU_868" }?.standing == true)
-        assertTrue(LoraScanner.plan.any { it.name == "MeshCore EU/UK narrow" && it.hz == 869_618_000L })
+        // every MeshCore community preset is known; only the area's own channels listen all the time
+        assertTrue(LoraScanner.plan.any { it.name == "MeshCore EU/UK (Narrow)" && it.hz == 869_618_000L })
+        try {
+            LoraLocal.picked = "GB"
+            assertTrue(LoraScanner.plan.firstOrNull { it.name == "Meshtastic LongFast EU_868" }?.standing == true)
+            assertTrue(LoraScanner.plan.firstOrNull { it.hz == 869_618_000L && it.bw == 62_500 && it.sf == 8 }?.standing == true)
+            assertTrue(LoraScanner.plan.none { it.standing && it.name.endsWith(" US") })
+            LoraLocal.picked = "US"
+            assertTrue(LoraScanner.plan.firstOrNull { it.name == "Meshtastic LongFast EU_868" }?.standing == false)
+            assertTrue(LoraScanner.plan.firstOrNull { it.hz == 910_525_000L && it.bw == 62_500 }?.standing == true)
+        } finally { LoraLocal.picked = "AUTO" }
+    }
+
+    /** Where to listen: MeshCore's presets for the area, then its Meshtastic region (LongTurbo first in the US). */
+    @Test fun loraLocalChannels() {
+        val us = LoraLocal.channels("US").map { it.name }
+        assertEquals(listOf("MeshCore USA", "Meshtastic LongTurbo US", "Meshtastic LongFast US", "Meshtastic MediumFast US"), us)
+        assertEquals(927_875_000L, LoraLocal.narrowChannel("US-SOCAL"))
+        assertEquals("EU_868", LoraLocal.meshtasticRegion("DE"))
+        assertTrue(LoraLocal.channels("DE").any { it.name == "MeshCore EU/UK (Narrow)" })
+        assertEquals(27, LoraLocal.MESHCORE.size)
+        // SoCal: Meshtastic LongTurbo (908.75) and MeshCore (927.875) share one 20 MHz view
+        val c = LoraLocal.wideCenter("US-SOCAL")!!
+        val half = LoraScanner.usableHalf(LoraScanner.RATE)
+        for ((hz, bw) in listOf(908_750_000L to 500_000, 927_875_000L to 62_500)) assertTrue("$hz from $c", kotlin.math.abs(hz - c) + bw / 2 <= half)
+        assertEquals("909–928", LoraPlan.band(927_875_000L)?.title)
+        assertEquals("Automatic", LoraLocal.areas().first().title)
     }
 
     @Test fun meshCoreAdvert() {
