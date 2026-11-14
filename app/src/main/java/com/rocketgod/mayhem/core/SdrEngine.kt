@@ -835,12 +835,17 @@ object SdrEngine {
         // Where the DSP thread's time goes, per stage (ns), and the audio it hands the speaker, logged once a second:
         // a thread that falls behind the radio says which stage holds it up.
         var stSpec = 0L; var stHd = 0L; var stDemod = 0L; var stEmit = 0L; var stProc = 0L; var stWait = 0L; var stAll = 0L
-        var stItems = 0; var stAudio = 0L; var stBytes = 0L; var stLast = System.nanoTime()
+        var stItems = 0; var stAudio = 0L; var stBytes = 0L; var stDropped = 0L; var stLast = System.nanoTime()
+        // the output's play position, to tell one that stopped playing (still "playing", taking nothing) from a full one
+        var headLast = -1; var headStuckSince = 0L
         fun emit(buf: ShortArray, n: Int) {
             val t = track ?: return
             val e0 = System.nanoTime()
-            val r = try { t.write(buf, 0, n) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
+            // never waits on the speaker: an output that stops taking audio (a route or focus change on some phones)
+            // blocked this thread a second per write and froze the waterfall; what it cannot take now is dropped
+            val r = try { t.write(buf, 0, n, AudioTrack.WRITE_NON_BLOCKING) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
             stEmit += System.nanoTime() - e0; if (r > 0) stAudio += r
+            if (r in 0 until n) stDropped += n - r
             if (r < 0) { Diag.log("audio output lost (code $r), reopening it"); runCatching { t.release() }; track = null }
         }
         try {
@@ -1159,10 +1164,22 @@ object SdrEngine {
                     val i1 = System.nanoTime(); stAll += i1 - i0
                     if (i1 - stLast >= 1_000_000_000L) {
                         val sec = (i1 - stLast) / 1e9; fun ms(v: Long) = v / 1e6 / sec
-                        Diag.log("DSP per s: %d bufs (%.0f KB) · busy %.0f ms · spectrum %.0f · HD %.0f · demod %.0f · audio write %.0f (%d samples, want %d) · %s %.0f · idle %.0f".format(
+                        Diag.log("DSP per s: %d bufs (%.0f KB) · busy %.0f ms · spectrum %.0f · HD %.0f · demod %.0f · audio write %.0f (%d samples, want %d, dropped %d) · %s %.0f · idle %.0f".format(
                             (stItems / sec).toInt(), stBytes / 1024.0 / sec, ms(stAll), ms(stSpec), ms(stHd), ms(stDemod), ms(stEmit), (stAudio / sec).toLong(), AUDIO_RATE,
-                            p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)))
-                        stSpec = 0; stHd = 0; stDemod = 0; stEmit = 0; stProc = 0; stWait = 0; stAll = 0; stItems = 0; stAudio = 0; stBytes = 0; stLast = i1
+                            (stDropped / sec).toLong(), p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)))
+                        // an output that says it plays but whose position has not moved for 2 s while audio was refused
+                        // has stopped: it is opened again (the next buffer does it)
+                        val tk = track
+                        if (tk != null && tk.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            val head = runCatching { tk.playbackHeadPosition }.getOrDefault(-1)
+                            val nowMs = System.currentTimeMillis()
+                            if (head != headLast || stDropped == 0L) { headLast = head; headStuckSince = nowMs }
+                            else if (nowMs - headStuckSince >= 2000L) {
+                                Diag.log("audio output stopped playing (position stuck at $head for 2 s), reopening it")
+                                runCatching { tk.release() }; track = null; headLast = -1; headStuckSince = nowMs
+                            }
+                        } else { headLast = -1; headStuckSince = System.currentTimeMillis() }
+                        stSpec = 0; stHd = 0; stDemod = 0; stEmit = 0; stProc = 0; stWait = 0; stAll = 0; stItems = 0; stAudio = 0; stBytes = 0; stDropped = 0; stLast = i1
                     }
                 } catch (e: InterruptedException) {
                     break
