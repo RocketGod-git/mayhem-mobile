@@ -111,8 +111,12 @@ export class Mk2aCollector {
   /** crcs[k] = the CRC of bytes 0 .. k-1 of the subframe being collected. */
   private readonly crcs = new Uint16Array(MK2A_MAX + 3);
   private len = 0; private bitN = 0; private cur = 0;
-  /** |soft| of every data bit collected (byte * 8 + bit). */
+  /** The soft value of every data bit collected (byte * 8 + bit, positive = 1), and its reliability. */
+  private readonly sv = new Float32Array((MK2A_MAX + 2) * 8);
   private readonly rel = new Float32Array((MK2A_MAX + 2) * 8);
+  /** The last copy that failed its CRC: every subframe is sent twice, so two bad copies can be added up. */
+  private readonly prevSv = new Float32Array((MK2A_MAX + 2) * 8);
+  private prevType = -1; private prevEnd = -1e9; private nSym = 0;
   private readonly cand = new Int32Array(REPAIR_BITS);
   private readonly syn = new Uint16Array(REPAIR_BITS);
   private readonly dec = new Mk2aDecoder();
@@ -127,7 +131,8 @@ export class Mk2aCollector {
   /** One channel symbol (soft: positive = 1). */
   symbol(s: number): void {
     const bit = s > 0 ? 1 : 0;
-    if (this.collecting) { this.collect(this.inv ? 1 - bit : bit, Math.abs(s)); return; }
+    this.nSym++;
+    if (this.collecting) { this.collect(this.inv ? 1 - bit : bit, this.inv ? -s : s); return; }
     this.hi = ((this.hi << 1) | (this.lo >>> 31)) & 0x3ffff;
     this.lo = ((this.lo << 1) | bit) >>> 0;
     if (++this.shN < MK2A_HEADER.length) return;
@@ -141,9 +146,9 @@ export class Mk2aCollector {
       this.bitN = 0; this.cur = 0;
     }
   }
-  private collect(bit: number, mag: number): void {
+  private collect(bit: number, soft: number): void {
     // symbol 0 = start bit, 1..8 = data LSB first, 9 = stop bit
-    if (this.bitN >= 1 && this.bitN <= 8) { this.cur |= bit << (this.bitN - 1); this.rel[this.len * 8 + this.bitN - 1] = mag; }
+    if (this.bitN >= 1 && this.bitN <= 8) { this.cur |= bit << (this.bitN - 1); this.sv[this.len * 8 + this.bitN - 1] = soft; }
     if (++this.bitN < 10) return;
     const b = this.cur; this.bitN = 0; this.cur = 0;
     const n = this.len, by = this.bytes, crcs = this.crcs;
@@ -161,13 +166,38 @@ export class Mk2aCollector {
     const known = mk2aKnownLen(by[2]);
     if (known > 0 && this.len === known + 2) {
       this.collecting = false;
-      const fixed = this.repair(known);
-      if (fixed > 0) { const f = this.dec.parse(by, known); if (f) { f.fixed = fixed; this.sink(f); } }
+      this.recover(known);
       return;
     }
     if (this.len >= MK2A_MAX || (n >= 5 && b === 0xca && by[n - 1] === 0xca && by[n - 2] === 0xca && by[n - 3] === 0xca)) {
       this.collecting = false;
     }
+  }
+
+  /** A subframe of a known length whose CRC failed: Chase repair, then the sum with a failed copy just before it. */
+  private recover(len: number): void {
+    const nb = (len + 2) * 8, sv = this.sv, rel = this.rel, by = this.bytes;
+    for (let i = 16; i < nb; i++) rel[i] = Math.abs(sv[i]);
+    let fixed = this.repair(len);
+    if (fixed === 0 && this.prevType === by[2] && this.nSym - this.prevEnd < 600) {
+      const prev = this.prevSv, type = by[2];
+      for (let i = 16; i < nb; i++) {
+        const v = sv[i] + prev[i];
+        rel[i] = Math.abs(v);
+        const byte = i >> 3, m = 1 << (i & 7);
+        if (v > 0) by[byte] |= m; else by[byte] &= ~m;
+      }
+      by[2] = type;
+      let c = 0;
+      for (let i = 0; i < len; i++) c = crcStep(c, by[i]);
+      fixed = c === ((by[len] << 8) | by[len + 1]) ? 1 : this.repair(len);
+      this.prevType = -1;
+      if (fixed > 0) { const f = this.dec.parse(by, len); if (f) { f.fixed = fixed; f.extra = { ...f.extra, REPAIR: 'two copies combined' }; this.sink(f); } }
+      return;
+    }
+    if (fixed > 0) { const f = this.dec.parse(by, len); if (f) { f.fixed = fixed; this.sink(f); } return; }
+    this.prevSv.set(sv.subarray(0, nb));
+    this.prevType = by[2]; this.prevEnd = this.nSym;
   }
 
   /**

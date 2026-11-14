@@ -11,6 +11,7 @@ import { Mk2aDecoder, mk2aLength, MK2A_HEADER } from '../dist/dsp/sonde/mk2a.js'
 import { MrzDecoder, MRZ_HEADER } from '../dist/dsp/sonde/mrz.js';
 import { Viterbi, convEncode } from '../dist/dsp/sonde/viterbi.js';
 import { SondeProcessor } from '../dist/dsp/sonde/front.js';
+import { Ddc } from '../dist/dsp/trains.js';
 import * as S from '../dist/dsp/sonde/synth.js';
 import * as B from '../dist/dsp/sonde/synth-b.js';
 
@@ -373,6 +374,57 @@ function mrzFrames(latlon = false, n = mrzSlots.length) {
   }
 }
 
+// ---- seed sweep at 15 dB: raw IQ at 2.4 Msps through the channel filter the front end uses (11 kHz for 400 MHz,
+// 60 kHz for 1680 MHz), the discriminator and the bank, 1 kHz off center, two noise seeds, both FM polarities
+function channelRun(syms, baud, dev, snr, seed, wide, offHz = 1000) {
+  const rate = 2_400_000;
+  const ddc = wide ? new Ddc(60_000, 192_000, 63) : new Ddc(11_000, 48_000, 63);
+  ddc.reset(rate); ddc.offsetHz = offHz;
+  const out = [], decs = makeBankB(ddc.outRate, f => out.push(f));
+  const per = Math.round(baud);
+  let pi = 1, pq = 0;
+  for (let k = 0; k * per < syms.length; k++) {
+    const iq = S.fskIq(syms.slice(k * per, (k + 1) * per), baud, rate, 0, dev, snr, 0, new S.Prng(seed * 1000 + k));
+    const n = iq.length / 2, re = new Float32Array(n), im = new Float32Array(n);
+    for (let i = 0; i < n; i++) { re[i] = iq[2 * i] / 128; im[i] = iq[2 * i + 1] / 128; }
+    const oi = new Float32Array(ddc.maxOut(n)), oq = new Float32Array(ddc.maxOut(n)), m = ddc.push(re, im, n, oi, oq);
+    for (let i = 0; i < m; i++) {
+      const a = oi[i], b = oq[i], d = Math.atan2(b * pi - a * pq, a * pi + b * pq);
+      pi = a; pq = b;
+      for (const x of decs) x.push(d);
+    }
+  }
+  return out;
+}
+{
+  const t0 = Date.now();
+  const lead = (baud) => new Array(Math.round(baud / 10)).fill(0).map((_, i) => i & 1);
+  const sweep = [
+    ['RS92', 4800, 1920, false, [...lead(4800), ...rs92Run(false, 'P5772156', 4).flatMap(f => B.rs92Symbols(f))]],
+    ['LMS6-403', 4800, 2160, false, [...lead(4800), ...B.lmsSymbols(B.lms6Blocks(Array.from({ length: 4 }, (_, k) => B.lms6Frame(lmsOpts(k))), 34))]],
+    ['LMSX', 4797.8, 2160, false, [...lead(4800), ...B.lmsSymbols(B.lmsxUnits(Array.from({ length: 4 }, (_, k) => B.lmsxFrame(lmsOpts(k)))))]],
+    ['MRZ', 2399, 4800, false, [...lead(2400), ...B.mrzSymbols(mrzFrames(false, 6), 2)]],
+    ['LMS6-1680', 9616, 40_000, true, (() => {
+      let mk = lead(9616);
+      for (let k = 0; k < 4; k++) {
+        const c = B.mk2aConfig(0x00a1b2c3, 900 + k), g = B.mk2aGps(0x00a1b2c3, 900 + k, 7_200_000 + k * 1000, flight(k));
+        const sec = B.mk2aSymbols([c, c, g, g]);
+        mk = mk.concat(sec, B.uartBits(new Array(Math.floor((9616 - sec.length) / 10)).fill(0xca)));
+      }
+      return mk;
+    })()],
+  ];
+  const want = { RS92: 4, 'LMS6-403': 4, LMSX: 4, MRZ: 5, 'LMS6-1680': 4 };
+  for (const [name, baud, dev, wide, body] of sweep) {
+    // idle after the last frame too: the channel filter holds its last symbols back
+    const syms = [...body, ...lead(baud)];
+    const got = [];
+    for (const seed of [1, 2]) for (const sign of [1, -1]) got.push(channelRun(syms, baud, sign * dev, 15, seed, wide).length);
+    ok(got.every(n => n >= want[name]), `${name} at 15 dB: every frame over 2 seeds x 2 polarities`, `got ${got.join(' ')}, want ${want[name]} each`);
+  }
+  console.log(`  (15 dB sweep: ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+}
+
 // ---- the whole receiver: FSK on raw IQ at 2.4 Msps, some hundreds of kHz off the center
 function iqOf(syms, baud, rate, offsetHz, dev, snr = 25) {
   // a second at a time, each with its own noise (like rs41Iq in sonde.mjs)
@@ -386,13 +438,13 @@ function run(proc, iq, rate, chunk = 131072) {
   for (let o = 0; o < iq.length; o += chunk) proc.onIq(iq.subarray(o, Math.min(iq.length, o + chunk)), rate);
 }
 let rxTime = 0, rxSeconds = 0;
-function receiver(what, band, centerHz, offsetHz, syms, baud, dev, serial, type, model) {
+function receiver(what, band, centerHz, offsetHz, syms, baud, dev, serial, type, model, { minFrames = 2, tolHz = 3000, snr = 25 } = {}) {
   const msgs = [], rate = 2_400_000;
   const proc = new SondeProcessor(m => msgs.push(m));
   proc.setBand(band);
   proc.reset(rate);
   proc.setCenter(centerHz - offsetHz);
-  const iq = iqOf(syms, baud, rate, offsetHz, dev);
+  const iq = iqOf(syms, baud, rate, offsetHz, dev, snr);
   const t0 = Date.now();
   run(proc, iq, rate);
   rxTime += Date.now() - t0; rxSeconds += iq.length / 2 / rate;
@@ -400,11 +452,12 @@ function receiver(what, band, centerHz, offsetHz, syms, baud, dev, serial, type,
   // the tracker drops a family prefix the card already shows ("LMS6-1193046" → "1193046")
   const shown = serial.startsWith(type + '-') ? serial.slice(type.length + 1) : serial;
   const s = rows.find(r => r.serial === shown);
+  if (process.env.SONDE_VERBOSE) console.log(`  ${what}: ${s?.frames} frames, ${s?.hz} Hz`);
   ok(!!s, `${what} through the receiver`, `rows ${rows.map(r => r.serial).join(',')}; log ${msgs.filter(m => m.type === 'log').map(m => m.line).join(' | ')}`);
   eq(s?.type, type, `${what} receiver row type`);
   if (model) eq(s?.model, model, `${what} receiver row model`);
-  ok((s?.frames ?? 0) >= 2, `${what} several frames through the receiver`, `frames ${s?.frames}`);
-  near(s?.hz, centerHz, 3000, `${what} channel frequency`);
+  ok((s?.frames ?? 0) >= minFrames, `${what} several frames through the receiver`, `frames ${s?.frames}`);
+  near(s?.hz, centerHz, tolHz, `${what} channel frequency`);
   return s;
 }
 {
@@ -421,12 +474,14 @@ function receiver(what, band, centerHz, offsetHz, syms, baud, dev, serial, type,
   // MRZ: the slot cycle twice, two copies each
   const mz = B.mrzSymbols(mrzFrames(false, 12), 2);
   receiver('MRZ', '400', 401_500_000, -350_000, mz, 2399, 4800, 'MRZ-12345678-87654321', 'MRZ');
-  // LMS6-1680 at 1680 MHz: config + GPS twice a second, idle CA to fill the second
+  // LMS6-1680 at 1680 MHz, ±40 kHz: config + GPS twice a second, idle CA to fill the second. A carrier this wide is
+  // first found up to ~40 kHz off (the spectrum's centroid) and the channel's AFC walks it in over a few seconds, so
+  // 10 s, at least half the frames, and the frequency within ±15 kHz
   const subs = [];
-  for (let k = 0; k < 5; k++) { const c = B.mk2aConfig(0x00a1b2c3, 900 + k), g = B.mk2aGps(0x00a1b2c3, 900 + k, 7_200_000 + k * 1000, flight(k)); subs.push(c, c, g, g); }
+  for (let k = 0; k < 10; k++) { const c = B.mk2aConfig(0x00a1b2c3, 900 + k), g = B.mk2aGps(0x00a1b2c3, 900 + k, 7_200_000 + k * 1000, flight(k)); subs.push(c, c, g, g); }
   let mk = [];
-  for (let k = 0; k < 5; k++) { const sec = B.mk2aSymbols(subs.slice(4 * k, 4 * k + 4)); mk = mk.concat(sec, B.uartBits(new Array(Math.floor((9616 - sec.length) / 10)).fill(0xca))); }
-  receiver('LMS6-1680', '1680', 1_680_000_000, 260_000, mk, 9616, 40_000, `LMS6-${0x00a1b2c3}`, 'LMS6', 'LMS6-1680');
+  for (let k = 0; k < 10; k++) { const sec = B.mk2aSymbols(subs.slice(4 * k, 4 * k + 4)); mk = mk.concat(sec, B.uartBits(new Array(Math.floor((9616 - sec.length) / 10)).fill(0xca))); }
+  receiver('LMS6-1680', '1680', 1_680_000_000, 260_000, mk, 9616, 40_000, `LMS6-${0x00a1b2c3}`, 'LMS6', 'LMS6-1680', { minFrames: 5, tolHz: 15_000 });
   console.log(`  (receiver: ${(rxTime / 1000).toFixed(1)} s for ${rxSeconds.toFixed(1)} s of 2.4 Msps over 5 types)`);
 }
 
