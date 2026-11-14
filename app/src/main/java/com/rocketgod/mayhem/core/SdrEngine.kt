@@ -838,6 +838,8 @@ object SdrEngine {
         var stItems = 0; var stAudio = 0L; var stBytes = 0L; var stDropped = 0L; var stLast = System.nanoTime()
         // the output's play position, to tell one that stopped playing (still "playing", taking nothing) from a full one
         var headLast = -1; var headStuckSince = 0L
+        var underrunLast = 0
+        fun underruns(): Int { val u = track?.let { runCatching { it.underrunCount }.getOrDefault(0) } ?: 0; val d = u - underrunLast; underrunLast = u; return maxOf(0, d) }
         fun emit(buf: ShortArray, n: Int) {
             val t = track ?: return
             val e0 = System.nanoTime()
@@ -1164,9 +1166,9 @@ object SdrEngine {
                     val i1 = System.nanoTime(); stAll += i1 - i0
                     if (i1 - stLast >= 1_000_000_000L) {
                         val sec = (i1 - stLast) / 1e9; fun ms(v: Long) = v / 1e6 / sec
-                        Diag.log("DSP per s: %d bufs (%.0f KB) · busy %.0f ms · spectrum %.0f · HD %.0f · demod %.0f · audio write %.0f (%d samples, want %d, dropped %d) · %s %.0f · idle %.0f".format(
+                        Diag.log("DSP per s: %d bufs (%.0f KB) · busy %.0f ms · spectrum %.0f · HD %.0f · demod %.0f · audio write %.0f (%d samples, want %d, dropped %d, underruns %d) · %s %.0f · idle %.0f".format(
                             (stItems / sec).toInt(), stBytes / 1024.0 / sec, ms(stAll), ms(stSpec), ms(stHd), ms(stDemod), ms(stEmit), (stAudio / sec).toLong(), AUDIO_RATE,
-                            (stDropped / sec).toLong(), p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)))
+                            (stDropped / sec).toLong(), underruns(), p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)))
                         // an output that says it plays but whose position has not moved for 2 s while audio was refused
                         // has stopped: it is opened again (the next buffer does it)
                         val tk = track
@@ -1201,9 +1203,12 @@ object SdrEngine {
         val t = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(AUDIO_RATE).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(max(minBuf, AUDIO_RATE / 4 * 2))
+            .setBufferSizeInBytes(max(minBuf, AUDIO_RATE / 2 * 2))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+        // writes never wait (the radio thread must not), so the output keeps its own cushion instead: it starts, and
+        // resumes after running dry, only with 0.2 s queued (an empty one stuttered on every late buffer)
+        runCatching { t.setStartThresholdInFrames(AUDIO_RATE / 5) }
         runCatching { t.play() }
         return t
     }

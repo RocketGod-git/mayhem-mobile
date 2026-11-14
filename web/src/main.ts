@@ -1729,23 +1729,31 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
   }
   if (now - pick.firstSeen < 2500 || now - pick.gainSince < 1000 || pick.frames < 3) return null;
   if (broadcast && pick.specAcc && pick.specN >= 3) {
-    // every 100 kHz raster channel in view (clear of the DC spike at the middle), scored by the average level
-    // summed across ±80 kHz of it
+    // every 100 kHz raster channel in view, scored by the average level across ±80 kHz of it. The middle channel
+    // counts too: the radio opens centered on the dial, so the station is often right there, and leaving it out made
+    // its two shoulders (±100 kHz) the "strongest stations" and tuned 100 kHz off it. Only the DC spike's own bins
+    // (±30 kHz of the middle) are left out of every score.
     const acc = pick.specAcc, n = acc.length, binHz = state.rate / n, w = Math.max(1, Math.floor(80_000 / binHz)), start = c - state.rate / 2;
     const score = (f: number): number => {
-      const mid = Math.floor((f - start) / binHz); let sum = 0;
-      for (let k = Math.max(0, mid - w); k <= Math.min(n - 1, mid + w); k++) sum += acc[k];
-      return sum / pick.specN;
+      const mid = Math.floor((f - start) / binHz); let sum = 0, cnt = 0;
+      for (let k = Math.max(0, mid - w); k <= Math.min(n - 1, mid + w); k++) {
+        if (Math.abs(start + (k + 0.5) * binHz - c) < 30_000) continue;
+        sum += acc[k]; cnt++;
+      }
+      return cnt ? sum / cnt * (2 * w + 1) / pick.specN : 0;
     };
     const scores: [number, number][] = [];
-    for (let f = Math.ceil((c - half) / 100_000) * 100_000; f <= c + half; f += 100_000) if (Math.abs(f - c) > 60_000) scores.push([f, score(f)]);
+    for (let f = Math.ceil((c - half) / 100_000) * 100_000; f <= c + half; f += 100_000) scores.push([f, score(f)]);
     if (!scores.length) return null;
     const best = scores.reduce((a, b) => (b[1] > a[1] ? b : a));
-    // already on a good station: stay unless it is under a third of the best one; a dial on the DC spike at the
-    // middle of the span cannot be judged, so it is not kept
-    if (Math.abs(here - c) > 60_000 && Math.abs(here - c) <= half) {
+    // already on a good station: stay unless it is under a third of the best one
+    if (Math.abs(here - c) <= half) {
       const mine = score(here);
-      if (mine >= best[1] / 3) { log(`start-up: staying on the station already tuned, ${(here / 1e6).toFixed(3)} MHz (level ${Math.round(mine)}, best in view ${(best[0] / 1e6).toFixed(1)} MHz ${Math.round(best[1])})`); return 'stay'; }
+      // and only on the station itself: a dial 100 kHz to one side sits on its shoulder (garbled audio)
+      // and standing out of the band: an empty dial (a fresh visit's default) scores near every other empty channel,
+      // a station at least half again over the median one
+      const median = scores.map(x => x[1]).sort((a, b) => a - b)[Math.floor(scores.length / 2)];
+      if (mine >= best[1] / 3 && mine >= 1.5 * median && mine >= score(here - 100_000) && mine >= score(here + 100_000)) { log(`start-up: staying on the station already tuned, ${(here / 1e6).toFixed(3)} MHz (level ${Math.round(mine)}, best in view ${(best[0] / 1e6).toFixed(1)} MHz ${Math.round(best[1])})`); return 'stay'; }
     }
     log(`start-up: channels by level across 160 kHz (MHz/score, ${pick.specN} frames) ${[...scores].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([f, v]) => `${(f / 1e6).toFixed(1)}/${Math.round(v)}`).join(' ')}`);
     log(`start-up: tuned the strongest station in view, ${(best[0] / 1e6).toFixed(1)} MHz`);

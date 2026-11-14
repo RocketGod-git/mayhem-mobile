@@ -849,7 +849,10 @@ fun WaterfallView(
             }
             channel?.let { (a, b) ->
                 val x0 = (a - start) * zoom * w; val x1 = (b - start) * zoom * w
-                vline(x0, accent, 1.25f * dp); vline(x1, accent, 1.25f * dp)
+                // the tuned channel's edges in the signal labels' amber, not the panels' blue (in blue they read as a
+                // border splitting the panel)
+                val edge = Palette.hold.copy(alpha = 0.85f)
+                vline(x0, edge, 1f * dp); vline(x1, edge, 1f * dp)
                 if (onChannelEdge != null) {
                     val s = 5 * dp
                     val g = Path(); g.moveTo(x0, 6 * dp); g.lineTo(x0 - s, 6 * dp + s); g.lineTo(x0, 6 * dp + 2 * s); g.close()
@@ -857,7 +860,6 @@ fun WaterfallView(
                     drawPath(g, Color.White.copy(alpha = 0.75f))
                 }
             }
-            if (centreMarker) toView(0.5f)?.let { vline(it * w, accent.copy(alpha = 0.66f), 0.8f * dp) }
             dragFrac?.let { f -> toView(f)?.let { vline(it * w, Palette.accent2, 2f * dp / 1.5f) } }
 
             // frequency axis: the view's own labels when zoomed, else the caller's

@@ -714,7 +714,7 @@ export class Scope {
       const ca = (this.channelAt - this.start) * this.zoom, cw = this.channel * this.zoom;
       const x0 = Math.round(w * (ca - cw / 2)), x1 = Math.round(w * (ca + cw / 2));
       g.fillStyle = 'rgba(255,255,255,0.05)'; g.fillRect(x0, 0, Math.max(1, x1 - x0), h);
-      g.fillStyle = css('--accent') || '#4c8dff'; g.fillRect(x0, 0, 1, h); g.fillRect(x1 - 1, 0, 1, h);
+      g.fillStyle = (css('--hold') || '#ffaf00') + 'd9'; g.fillRect(x0, 0, 1, h); g.fillRect(x1 - 1, 0, 1, h);   // amber, as the trace's edges
       if (this.adjustable) {                                           // grips: the edges can be dragged to set the filter
         const s = 5 * dpr;
         g.fillStyle = 'rgba(255,255,255,0.7)';
@@ -802,11 +802,10 @@ export class Scope {
     // Channel edges drawn LAST so the tuned signal's own filled trace can't paint over them.
     if (this.channel !== null && this.center) {
       const ca = (this.channelAt - this.start) * this.zoom, cw = this.channel * this.zoom;
-      vline(w * (ca - cw / 2), accent, Math.max(1.25, 1.1 * dpr));
-      vline(w * (ca + cw / 2), accent, Math.max(1.25, 1.1 * dpr));
+      // in the signal labels' amber, not the panels' blue (in blue they read as a border splitting the panel)
+      vline(w * (ca - cw / 2), hold + 'd9', Math.max(1, 0.9 * dpr));
+      vline(w * (ca + cw / 2), hold + 'd9', Math.max(1, 0.9 * dpr));
     }
-    const cx = this.toView(0.5);
-    if (this.center && cx !== null) vline(w * cx, accent + 'aa', Math.max(1, 0.8 * dpr));
   }
 
   /**

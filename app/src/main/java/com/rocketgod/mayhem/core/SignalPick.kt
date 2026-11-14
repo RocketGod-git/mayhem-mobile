@@ -155,26 +155,34 @@ object AutoPick {
         }
         if (now - firstSeen < 2500 || now - gainSince < 1000 || frames < 3) return                    // let the AGC and the classifier settle
         if (broadcast && specN >= 3) {
-            // every 100 kHz raster channel in view (clear of the DC spike at the middle), scored by the average level
-            // summed across ±80 kHz of it
+            // every 100 kHz raster channel in view, scored by the average level across ±80 kHz of it. The middle
+            // channel counts too: the radio opens centered on the dial, so the station is often right there, and
+            // leaving it out made its two shoulders (±100 kHz) the "strongest stations" and tuned 100 kHz off it.
+            // Only the DC spike's own bins (±30 kHz of the middle) are left out of every score.
             val rate = SdrEngine.rateHz.value.toDouble(); val n = specAcc.size; val binHz = rate / n
             val w = maxOf(1, (80_000 / binHz).toInt()); val start = lo - rate / 2
             fun score(c: Double): Double {
                 val mid = ((c - start) / binHz).toInt()
-                var sum = 0.0
-                for (k in maxOf(0, mid - w)..minOf(n - 1, mid + w)) sum += specAcc[k]
-                return sum / specN
+                var sum = 0.0; var cnt = 0
+                for (k in maxOf(0, mid - w)..minOf(n - 1, mid + w)) {
+                    if (abs(start + (k + 0.5) * binHz - lo) < 30_000) continue
+                    sum += specAcc[k]; cnt++
+                }
+                return if (cnt == 0) 0.0 else sum / cnt * (2 * w + 1) / specN
             }
             val scores = ArrayList<Pair<Double, Double>>()
             var c = Math.ceil((lo - half) / 100_000.0) * 100_000
-            while (c <= lo + half) { if (abs(c - lo) > 60_000) scores.add(Pair(c, score(c))); c += 100_000 }
+            while (c <= lo + half) { scores.add(Pair(c, score(c))); c += 100_000 }
             val best = scores.maxByOrNull { it.second } ?: return
             armed = false
-            // already on a good station (the dial the app came back to): stay unless it is under a third of the best one;
-            // a dial on the DC spike at the middle of the span cannot be judged, so it is not kept
-            if (abs(here - lo) > 60_000 && abs(here - lo) <= half) {
+            // already on a good station (the dial the app came back to): stay unless it is under a third of the best one
+            if (abs(here - lo) <= half) {
                 val mine = score(here)
-                if (mine >= best.second / 3) {
+                // and only on the station itself: a dial 100 kHz to one side sits on its shoulder (garbled audio)
+                // and standing out of the band: an empty dial (a fresh install's default) scores near every other
+                // empty channel, a station at least half again over the median one
+                val median = scores.map { it.second }.sorted()[scores.size / 2]
+                if (mine >= best.second / 3 && mine >= 1.5 * median && mine >= score(here - 100_000) && mine >= score(here + 100_000)) {
                     com.rocketgod.mayhem.Diag.log("start-up: staying on the station already tuned, %.3f MHz (level %.0f, best in view %.1f MHz %.0f)".format(here / 1e6, mine, best.first / 1e6, best.second))
                     return
                 }
