@@ -612,7 +612,7 @@ export class LoraScanner {
         gone.push(e.id);
         for (const [f, inv, at] of e.bad) {
           if (e.goodAt.some(g => Math.abs(g - at) < rate)) continue;
-          this.onHeard?.({ frame: f, hz: e.hz + Math.trunc(f.cfoHz), inverted: inv, time: Date.now() });
+          this.onHeard?.({ frame: f, hz: this.trueHz(e.hz + Math.trunc(f.cfoHz), f), inverted: inv, time: Date.now() });
         }
       }
       return !done;
@@ -654,6 +654,21 @@ export class LoraScanner {
     this.report(f, s ?? null, hz, inv, at);
   }
 
+  /** Where a frame really was. A strong signal just past the span's edge folds in from the far side, exactly one
+   *  sample rate away, and the radio's I/Q mirror shows it again opposite the center (measured with the view on
+   *  918.156 at 20 Msps: a node on 906.875 decoded at 926.875, its fold, and at 909.43, the fold's mirror). When the
+   *  heard frequency is no known channel of that modem but its fold, mirror or mirrored fold is, it was there. */
+  trueHz(hz: number, f: LoraFrame): number {
+    const r = this.rate;
+    if (r < 10_000_000) return hz;
+    const plan = LoraScanner.plan;
+    const known = (x: number): boolean => plan.some(c => c.bw === f.bw && (c.sf === null || c.sf === f.sf) && Math.abs(c.hz - x) <= f.bw / 4);
+    if (known(hz)) return hz;
+    const m = 2 * this.centerOf() - hz;
+    for (const a of [hz - r, hz + r, m, m - r, m + r]) if (known(a)) return a;
+    return hz;
+  }
+
   private report(f: LoraFrame, slot: Slot | null, hz: number, inv: boolean, at: number): void {
     const rate = this.rate;
     let h = 5381;
@@ -662,7 +677,7 @@ export class LoraScanner {
     if (this.recent.some(x => x[0] === h)) return;
     this.recent.push([h, at]);
     if (slot) slot.frames++;
-    this.onHeard?.({ frame: f, hz: hz + Math.trunc(f.cfoHz), inverted: inv, time: Date.now() });
+    this.onHeard?.({ frame: f, hz: this.trueHz(hz + Math.trunc(f.cfoHz), f), inverted: inv, time: Date.now() });
   }
 }
 

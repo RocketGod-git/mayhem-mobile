@@ -498,7 +498,7 @@ class LoraScanner : IqProcessor {
             val done = (e.pos >= e.until && upTo >= e.until) || (e.until < Long.MAX_VALUE / 8 && upTo - e.born > rate.toLong() * 8)
             if (done) {
                 gone.add(e.id)
-                for ((f, inv, at) in e.bad) if (e.goodAt.none { abs(it - at) < rate }) onHeard?.invoke(LoraHeard(f, e.hz + f.cfoHz.toLong(), inv, System.currentTimeMillis()))
+                for ((f, inv, at) in e.bad) if (e.goodAt.none { abs(it - at) < rate }) onHeard?.invoke(LoraHeard(f, trueHz(e.hz + f.cfoHz.toLong(), f), inv, System.currentTimeMillis()))
             }
             done
         }
@@ -531,6 +531,20 @@ class LoraScanner : IqProcessor {
     /** Channels decode side by side: what they report goes through here one at a time. */
     private val heardLock = Any()
 
+    /** Where a frame really was. A strong signal just past the span's edge folds in from the far side, exactly one
+     *  sample rate away, and the radio's I/Q mirror shows it again opposite the center (measured with the view on
+     *  918.156 at 20 Msps: a node on 906.875 decoded at 926.875, its fold, and at 909.43, the fold's mirror). When the
+     *  heard frequency is no known channel of that modem but its fold, mirror or mirrored fold is, it was there. */
+    fun trueHz(hz: Long, f: LoraFrame): Long {
+        val r = rate.toLong()
+        if (r < 10_000_000L) return hz
+        fun known(x: Long) = plan.any { it.bw == f.bw && (it.sf == null || it.sf == f.sf) && abs(it.hz - x) <= f.bw / 4 }
+        if (known(hz)) return hz
+        val m = 2 * centerOf() - hz
+        for (a in longArrayOf(hz - r, hz + r, m, m - r, m + r)) if (known(a)) return a
+        return hz
+    }
+
     private fun heard(f: LoraFrame, e: Extractor, inv: Boolean) = synchronized(heardLock) {
         // a damaged frame waits: another timing phase may yet get it right, and the phases' damaged copies differ
         val at = e.pos
@@ -541,7 +555,7 @@ class LoraScanner : IqProcessor {
         recent.removeAll { abs(at - it[1]) > rate.toLong() * 3 }
         if (recent.any { it[0] == h }) return@synchronized
         recent.add(longArrayOf(h, at))
-        onHeard?.invoke(LoraHeard(f, e.hz + f.cfoHz.toLong(), inv, System.currentTimeMillis()))
+        onHeard?.invoke(LoraHeard(f, trueHz(e.hz + f.cfoHz.toLong(), f), inv, System.currentTimeMillis()))
     }
 
     // ---- a channel ----
