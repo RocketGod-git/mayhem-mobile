@@ -12,6 +12,7 @@ import { BtleDecoder } from './dsp/btle.js';
 import { ErtDecoder } from './dsp/ert.js';
 import { MeshDecoder, MetersProcessor } from './dsp/mesh.js';
 import { LoraHub } from './dsp/lora/hub.js';
+import { setLocalChannels, type LocalChannel } from './dsp/lora/plan.js';
 import { POOL_WORKER_NAME, WorkerPool, startPoolWorker } from './dsp/lora/pool.js';
 import { PocsagDecoder } from './dsp/pocsag.js';
 import { FlexDecoder } from './dsp/flex.js';
@@ -335,6 +336,8 @@ self.onmessage = (e: MessageEvent) => {
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
+    // the channels local to the LoRa area in use (local.ts, on the main thread): the scanner places its channels again
+    case 'loraPlan': setLocalChannels(m.channels as LocalChannel[]); lora.scanner.replan(); break;
     case 'rds': rdsOn = !!m.on; if (!rdsOn) { rds.reset(); rdsN = 0; } break;
     case 'hd': hdOn = !!m.on; if (!hdOn) hd.reset(); break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
@@ -458,7 +461,9 @@ function process(iq: Int8Array): void {
       for (let k = 0; k < bins; k++) if (pdb[k] > peak) { peak = pdb[k]; peakIdx = k; }
       const offKhz = (peakIdx - bins / 2) * (rate / bins) / 1000;
       const line = `RX: iqRMS=${rms.toFixed(1)} dcI=${(sI / nn).toFixed(1)} dcQ=${(sQ / nn).toFixed(1)} · peak ${offKhz >= 0 ? '+' : ''}${offKhz.toFixed(0)} kHz ${peak.toFixed(0)}dB vs floor ${median.toFixed(0)}dB (Δ${(peak - median).toFixed(0)})`;
-      post({ type: 'health', line: processor === ham || processor === monitor ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE' });
+      // LoRa's gain steers by its strongest burst and its clips (loraAgc in main), measured in the scanner's looks
+      const loraLevel = processor === lora ? { ...lora.scanner.takeLevel(), agoMs: lora.scanner.loraAtMs > 0 ? Date.now() - lora.scanner.loraAtMs : -1 } : undefined;
+      post({ type: 'health', line: processor === ham || processor === monitor ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
       audioPeak = 0;
     }
   }

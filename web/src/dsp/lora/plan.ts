@@ -1,7 +1,8 @@
 /**
  * Where LoRa networks sit, worldwide. Port of core/lora/LoraPlan.swift: Meshtastic's regions, presets and
  * frequency-slot rule as its firmware defines them (src/mesh/RadioInterface.cpp, MeshRadio.h,
- * DisplayFormatters.cpp), MeshCore's regional presets, and the LoRaWAN channel plans.
+ * DisplayFormatters.cpp), MeshCore's community presets, and the LoRaWAN channel plans. What is local to the
+ * area in use comes from local.ts (LoraLocal.swift).
  */
 
 /** A channel with a known modem. `standing`: listened to all the time while inside the span (a far node's packet is
@@ -60,9 +61,69 @@ export function slotHz(r: LoraRegion, p: LoraPreset): number | null {
   return roundAway((r.lo + bw / 2 + r.padding + slot * width) * 1e6);
 }
 
-/** Every channel with a known modem, worldwide. `standing`: listened to all the time once inside the span (each
- *  region's starting preset, the newer US default LongTurbo and the popular MediumFast, MeshCore's presets). */
-export const CHANNELS: LoraChannel[] = (() => {
+/** How far either side of center a channel can sit. Measured on a HackRF Pro at 20 Msps (noise shape, 15 and 20 MHz
+ *  baseband filters alike): flat within 1 dB to ±8.5 MHz, 1.5 dB down at ±9, 2.5 dB at ±9.7. So the span is used
+ *  nearly to its edge, which is what lets SoCal's Meshtastic LongTurbo (908.75) and MeshCore (927.875), 19.4 MHz
+ *  apart, share one view. */
+export function usableHalf(rate: number): number { return rate / 2 * 0.975; }
+
+/** One of MeshCore's community presets. `area` is the country (ISO code), "EU" for Europe as a whole, or a part of a
+ *  country ("US-SOCAL"). */
+export interface McPreset { title: string; hz: number; bw: number; sf: number; area: string }
+const M = (title: string, hz: number, bw: number, sf: number, area: string): McPreset => ({ title, hz, bw, sf, area });
+
+/** MeshCore's community presets as its own app lists them (api.meshcore.nz/api/v1/config, suggested_radio_settings,
+ *  2026-11-13; MeshCore docs/radio_presets.md). */
+export const MESHCORE: McPreset[] = [
+  M('Australia', 915_800_000, 250_000, 10, 'AU'),
+  M('Australia (Narrow)', 916_575_000, 62_500, 7, 'AU'),
+  M('Australia (Mid)', 915_075_000, 125_000, 9, 'AU'),
+  M('Australia: SA, WA', 923_125_000, 62_500, 8, 'AU-SAWA'),
+  M('Australia: QLD', 923_125_000, 62_500, 8, 'AU-QLD'),
+  M('Brazil', 923_125_000, 62_500, 8, 'BR'),
+  M('Canada', 910_525_000, 62_500, 7, 'CA'),
+  M('Costa Rica', 910_525_000, 125_000, 11, 'CR'),
+  M('EU/UK (Narrow)', 869_618_000, 62_500, 8, 'EU'),
+  M('EU/UK (Deprecated)', 869_525_000, 250_000, 11, 'EU'),
+  M('Czech Republic (Narrow)', 869_432_000, 62_500, 7, 'CZ'),
+  M('EU 433MHz (Long Range)', 433_650_000, 250_000, 11, 'EU'),
+  M('EU 433MHz (Narrow)', 433_650_000, 62_500, 8, 'EU'),
+  M('Hungary', 869_618_000, 62_500, 7, 'HU'),
+  M('Netherlands', 869_618_000, 62_500, 7, 'NL'),
+  M('Netherlands (Limburg)', 869_618_000, 62_500, 8, 'NL-LI'),
+  M('New Zealand (Narrow)', 917_375_000, 62_500, 7, 'NZ'),
+  M('New Zealand (Gisborne)', 917_375_000, 250_000, 11, 'NZ-GIS'),
+  M('Portugal 433', 433_375_000, 62_500, 9, 'PT'),
+  M('Portugal 868', 869_618_000, 62_500, 7, 'PT'),
+  M('Slovakia', 869_618_000, 62_500, 7, 'SK'),
+  M('Switzerland', 869_618_000, 62_500, 8, 'CH'),
+  M('Thailand', 921_000_000, 62_500, 7, 'TH'),
+  M('USA', 910_525_000, 62_500, 7, 'US'),
+  M('USA - Southern California', 927_875_000, 62_500, 7, 'US-SOCAL'),
+  M('Vietnam (Narrow)', 920_250_000, 62_500, 8, 'VN'),
+  M('Vietnam (Deprecated)', 920_250_000, 250_000, 11, 'VN'),
+];
+
+/** A channel local to the area in use (local.ts channels()): Hz, bandwidth, spreading factor, name. */
+export interface LocalChannel { hz: number; bw: number; sf: number; name: string }
+
+/** What is local to the area in use, most local first (set through local.ts, in whichever thread builds the plan). */
+let localChannels: LocalChannel[] = [];
+let cached: LoraChannel[] | null = null;
+/** The area or the user's own channel changed: the plan is built again at the next look. */
+export function setLocalChannels(list: LocalChannel[]): void { localChannels = list.slice(); cached = null; }
+export function invalidatePlan(): void { cached = null; }
+
+/** Every channel with a known modem, worldwide. `standing`: listened to all the time once inside the span (every
+ *  channel local to the area in use: its MeshCore presets, its Meshtastic region's defaults and the user's own
+ *  channel; with no area known, each region's starting preset, the newer US default LongTurbo and the popular
+ *  MediumFast). Rebuilt when the area or that channel changes. */
+export function planChannels(): LoraChannel[] {
+  if (!cached) cached = build();
+  return cached;
+}
+
+function build(): LoraChannel[] {
   const c: LoraChannel[] = [];
   const seen = new Set<string>();
   const add = (hz: number, bw: number, sf: number | null, name: string, standing: boolean): void => {
@@ -74,20 +135,20 @@ export const CHANNELS: LoraChannel[] = (() => {
     }
     if (!seen.has(k)) { seen.add(k); c.push({ hz, bw, sf, name, standing }); }
   };
+  // Every region's default channels listen all the time only where the area is unknown; with an area, only its own
+  // do (another country's channels in the span took receivers and found nothing)
+  const localKnown = localChannels.length > 0;
   for (const r of REGIONS) {
     for (const p of r.presets) {
       const hz = slotHz(r, p);
       if (hz === null) continue;
-      const standing = p.name === r.start || ((r.name === 'US' || r.name === 'ANZ') && (p.name === 'LongTurbo' || p.name === 'MediumFast'));
+      const standing = !localKnown && (p.name === r.start || ((r.name === 'US' || r.name === 'ANZ') && (p.name === 'LongTurbo' || p.name === 'MediumFast')));
       add(hz, p.bw, p.sf, `Meshtastic ${p.name} ${r.name}`, standing);
     }
   }
-  // MeshCore's regional presets
-  add(910_525_000, 62_500, 7, 'MeshCore US', true);
-  add(927_875_000, 62_500, 7, 'MeshCore US 927.875', true);
-  add(869_618_000, 62_500, 8, 'MeshCore EU/UK narrow', true);
-  add(869_525_000, 250_000, 11, 'MeshCore EU/UK long range', true);
-  add(916_575_000, 62_500, 7, 'MeshCore ANZ', true);
+  // what is local to the area in use first (named as its own list names it), then every MeshCore community preset
+  for (const l of localChannels) add(l.hz, l.bw, l.sf, l.name, true);
+  for (const p of MESHCORE) add(p.hz, p.bw, p.sf, `MeshCore ${p.title}`, false);
   // LoRaWAN: US915 / AU915 uplinks (125 kHz every 200 kHz, 500 kHz every 1.6 MHz) and downlinks (500 kHz every 600 kHz)
   for (const [base, name] of [[902_300_000, 'US915'], [915_200_000, 'AU915']] as [number, string][]) {
     for (let k = 0; k < 64; k++) add(base + k * 200_000, 125_000, null, `LoRaWAN ${name} uplink ${k}`, false);
@@ -102,16 +163,24 @@ export const CHANNELS: LoraChannel[] = (() => {
   for (const f of [865_062_500, 865_402_500, 865_985_000]) add(f, 125_000, null, 'LoRaWAN IN865', false);
   for (let k = 0; k < 96; k++) add(470_300_000 + k * 200_000, 125_000, null, `LoRaWAN CN470 uplink ${k}`, false);
   return c;
-})();
+}
 
 export const BANDS: LoraBand[] = [
-  { title: '903–923', sub: 'US · Americas', center: 913_000_000, narrow: 906_875_000 },
-  { title: '908–928', sub: 'US upper', center: 918_000_000, narrow: 910_525_000 },
-  { title: '859–879', sub: 'Europe · India', center: 869_000_000, narrow: 869_525_000 },
-  { title: '912–932', sub: 'ANZ · Asia', center: 922_000_000, narrow: 916_575_000 },
-  { title: '424–444', sub: '433 MHz', center: 434_000_000, narrow: 433_875_000 },
-  { title: '470–490', sub: 'China', center: 480_000_000, narrow: 470_300_000 },
+  // each holds about ±9.7 MHz (usableHalf); 909–928 holds Meshtastic LongTurbo and both MeshCore US channels
+  { title: '904–922', sub: 'US · Americas', center: 913_000_000, narrow: 906_875_000 },
+  { title: '909–928', sub: 'US upper', center: 918_200_000, narrow: 927_875_000 },
+  { title: '860–878', sub: 'Europe · India', center: 869_000_000, narrow: 869_525_000 },
+  { title: '913–931', sub: 'ANZ · Asia', center: 922_000_000, narrow: 916_575_000 },
+  { title: '425–443', sub: '433 MHz', center: 434_000_000, narrow: 433_875_000 },
+  { title: '471–489', sub: 'China', center: 480_000_000, narrow: 470_300_000 },
 ];
+
+/** The first band (in the list's order, so the Americas' before ANZ's for a 927 MHz channel) whose span holds hz, a
+ *  narrow channel at its edge included. */
+export function bandHolding(hz: number): LoraBand | undefined {
+  const half = Math.trunc(usableHalf(20_000_000)) - 32_000;
+  return BANDS.find(b => Math.abs(b.center - hz) <= half);
+}
 
 /** The 2 MHz span's tiles (one channel at a time: the radio sits 300 kHz above it, clear of the spike at the
  *  center), from LoraScreen.swift. */

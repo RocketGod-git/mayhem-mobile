@@ -12,6 +12,8 @@ import { MeshCore } from '../dist/dsp/lora/meshcore.js';
 import { LoraWan } from '../dist/dsp/lora/lorawan.js';
 import { LoraScanner } from '../dist/dsp/lora/scanner.js';
 import { LoraHub } from '../dist/dsp/lora/hub.js';
+import { LoraLocal } from '../dist/dsp/lora/local.js';
+import { setLocalChannels, bandHolding } from '../dist/dsp/lora/plan.js';
 import { fft } from '../dist/fft.js';
 
 let pass = 0, fail = 0;
@@ -59,7 +61,37 @@ eq(hex(Sha256.hmac(utf8('Jefe'), utf8('what do ya want for nothing?'))), '5bdcc1
   eq(by('Meshtastic LongFast ANZ')?.hz, 919_875_000, 'LongFast ANZ');
   eq(by('Meshtastic LongFast EU_868')?.hz, 869_525_000, 'LongFast EU_868');
   ok(by('Meshtastic LongFast EU_868')?.standing === true, 'LongFast EU_868 standing');
-  ok(plan.some(c => c.name === 'MeshCore EU/UK narrow' && c.hz === 869_618_000), 'MeshCore EU/UK narrow');
+  ok(plan.some(c => c.name === 'MeshCore EU/UK (Narrow)' && c.hz === 869_618_000), 'MeshCore EU/UK (Narrow)');
+  // every MeshCore community preset is known, none standing until it is local
+  ok(plan.some(c => c.name === 'MeshCore USA - Southern California' && c.hz === 927_875_000 && !c.standing), 'MeshCore SoCal known, not standing');
+}
+
+// the local area: MeshCore's presets for it and its Meshtastic region, most local first; the plan follows it
+{
+  const names = LoraLocal.channels('US-SOCAL').map(c => c.name);
+  eq(names.join(' | '), 'MeshCore USA - Southern California | MeshCore USA | Meshtastic LongTurbo US | Meshtastic LongFast US | Meshtastic MediumFast US', 'SoCal channels, most local first');
+  eq(LoraLocal.channels('US-SOCAL').find(c => c.name === 'Meshtastic LongTurbo US')?.hz, 908_750_000, 'LongTurbo US on 908.75');
+  eq(LoraLocal.channels('DE').map(c => c.name).join(' | '), 'MeshCore EU/UK (Narrow) | MeshCore EU/UK (Deprecated) | MeshCore EU 433MHz (Long Range) | MeshCore EU 433MHz (Narrow) | Meshtastic LongFast EU_868', "Germany: Europe's MeshCore, EU_868");
+  eq(LoraLocal.channels('AQ').length, 0, 'no presets for Antarctica');
+  const c = LoraLocal.wideCenter('US-SOCAL');
+  ok(c !== null && Math.abs(c - 918_200_000) < 100_000, 'SoCal wide center holds 908.75 to 927.875', String(c));
+  ok(c !== null && LoraLocal.channels('US-SOCAL').filter(x => Math.abs(x.hz - c) + x.bw / 2 <= LoraScanner.usableHalf(LoraScanner.RATE)).length === 4, 'SoCal: four of five channels in one span');
+  eq(LoraLocal.narrowChannel('US-SOCAL'), 927_875_000, 'SoCal narrow channel');
+  // the wide centers the Mac app settles on, area by area
+  for (const [area, mhz] of [['NL', 869.875], ['GB', 869.875], ['PT', 869.875], ['AU', 920.63], ['NZ', 922.35], ['TH', 922.48], ['US', 910.0], ['US-SOCAL', 918.16]]) {
+    near(LoraLocal.wideCenter(area) / 1e6, mhz, 0.01, `wide center ${area}`);
+  }
+  eq(bandHolding(927_875_000)?.title, '909–928', 'a band holds 927.875');
+  eq(bandHolding(869_618_000)?.title, '860–878', 'a band holds 869.618');
+  eq(LoraLocal.areas()[0].id, 'AUTO', 'areas: Automatic first');
+  ok(LoraLocal.areas().some(a => a.id === 'US-SOCAL' && a.title === 'USA · Southern California'), 'areas: SoCal');
+  setLocalChannels(LoraLocal.channels('US-SOCAL'));
+  const plan = LoraScanner.plan, by = n => plan.find(x => x.name === n);
+  ok(by('MeshCore USA - Southern California')?.standing === true, 'local: SoCal MeshCore standing');
+  ok(by('Meshtastic LongTurbo US')?.standing === true, 'local: LongTurbo US standing');
+  ok(by('Meshtastic LongFast EU_868')?.standing === false, "local: another region's default not standing");
+  setLocalChannels([]);
+  ok(LoraScanner.plan.find(x => x.name === 'Meshtastic LongFast EU_868')?.standing === true, "no area: every region's default standing again");
 }
 
 // testMeshCoreAdvert
