@@ -68,7 +68,9 @@ export class FskFramer {
   reset(): void { this.phase = 0; this.acc = 0; this.first = true; this.sh = 0n; this.shN = 0; this.collecting = 0; this.n = 0; }
   /** One discriminator sample. */
   push(x: number): void {
-    this.dc += (x - this.dc) * 0.0005;
+    // the slicer's center follows the carrier between frames, and holds still inside one (long runs of one
+    // symbol, like MTS01's padding, would drag it off)
+    if (this.collecting === 0) this.dc += (x - this.dc) * 0.0005;
     const v = x - this.dc;
     const pos = v > 0;
     if (!this.first && pos !== this.lastPos) {

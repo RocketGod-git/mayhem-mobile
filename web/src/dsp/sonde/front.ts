@@ -168,9 +168,13 @@ export class SondeProcessor implements IqProcessor {
       found.push({ hz, lvl: v - floor });
     }
     found.sort((a, b) => b.lvl - a.lvl);
+    // one carrier, one peak: a wide sonde (M10 at 9600 baud) has sideband peaks of its own within ±20 kHz
+    const keep: { hz: number; lvl: number }[] = [];
+    // and a much weaker peak near a strong carrier is its spur, not a sonde
+    for (const f of found) if (!keep.some(k => Math.abs(k.hz - f.hz) < 20_000 || (Math.abs(k.hz - f.hz) < 100_000 && k.lvl > f.lvl + 18))) keep.push(f);
     const seen = new Map<number, number>();
-    for (const f of found) {
-      const ch = this.chans.find(c => Math.abs(c.hz - f.hz) < 12_000);
+    for (const f of keep) {
+      const ch = this.chans.find(c => Math.abs(c.hz - f.hz) < 20_000);
       if (ch) { ch.lastCarrierMs = now; ch.level = f.lvl; continue; }
       const key = Math.round(f.hz / 5000) * 5000;
       if ((this.banned.get(key) ?? 0) > now) continue;

@@ -138,6 +138,8 @@ export class SondeTracker {
   private readonly sondes = new Map<string, Sonde>();
   readonly events: string[] = [];
   add(f: SondeFrame, hz: number, level: number, now: number): SondeRow {
+    // the card shows the type beside the serial: drop a family prefix ("DFM-23038743" → "23038743")
+    if (f.serial.startsWith(f.type + '-') && f.serial.length > f.type.length + 1) f = { ...f, serial: f.serial.slice(f.type.length + 1) };
     const key = `${f.type}:${f.serial}`;
     let s = this.sondes.get(key);
     if (!s) { s = new Sonde(f, hz, now); this.sondes.set(key, s); }
