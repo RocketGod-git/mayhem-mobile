@@ -1839,3 +1839,16 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .wf-tog.on-wf svg { width: 14px; height: 14px; color: var(--muted); }
 .wf-tog.wf-strip { display: flex; align-items: center; gap: 8px; width: 100%; height: auto; padding: 5px 10px; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
 .wf-tog.wf-strip svg { width: 14px; height: 14px; }
+
+/* Sondes: balloons others hear (SondeHub) before ours does, and the launch sites near you. */
+.mt-card.sd-air { border-style: dashed; }
+.sd-tag { color: var(--accent2) !important; letter-spacing: 1px; }
+.sd-sites { margin-top: 8px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%), var(--surface); }
+.sd-sh { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px; }
+.sd-site { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.sd-site:first-of-type { border-top: 0; }
+.sd-sn { display: flex; flex-direction: column; min-width: 0; }
+.sd-sn b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-sn small { color: var(--muted); font-size: 10px; }
+.sd-sw { color: var(--muted); font-size: 10px; text-align: right; white-space: nowrap; }
+.sd-sw .ok { color: var(--ok, #3ddc84); }

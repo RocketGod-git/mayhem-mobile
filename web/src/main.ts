@@ -29,6 +29,7 @@ import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { GeoMap, type GeoItem, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
+import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
@@ -4641,6 +4642,45 @@ function sondeCard(s: SondeRow, now: number): string {
     + (ptu ? `<div class="lr-last">${esc(ptu)}</div>` : '')
     + (land ? `<div class="lr-last">${esc(land)}</div>` : '') + '</div>';
 }
+/** What SondeHub knows near you: the launch sites, and every balloon others are hearing (refreshed every 30 s). */
+const sondeNet = { sites: [] as HubSite[], air: [] as HubSonde[], airAt: 0, sitesAt: 0, busy: false, err: '' };
+function sondeNetPoll(): void {
+  const me = state.home ?? lastKnownPos(); if (!me || sondeNet.busy) return;
+  const now = Date.now();
+  if (!sondeNet.sites.length && now - sondeNet.sitesAt > 60_000) {
+    sondeNet.sitesAt = now;
+    hubSites().then(x => { sondeNet.sites = x; refreshSondes(true); }).catch(e => { sondeNet.err = String(e?.message ?? e); });
+  }
+  if (now - sondeNet.airAt < 30_000) return;
+  sondeNet.airAt = now; sondeNet.busy = true;
+  hubSondes(me.lat, me.lon).then(x => { sondeNet.air = x; sondeNet.err = ''; refreshSondes(true); })
+    .catch(e => { sondeNet.err = String(e?.message ?? e); }).finally(() => { sondeNet.busy = false; });
+}
+/** A balloon someone else is hearing and our radio isn't (yet): what it is, where, and where to listen. */
+function sondeAirCard(h: HubSonde, now: number): string {
+  const age = (now - h.ms) / 1000, live = age < 120;
+  const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
+  const climb = h.climb !== null ? `${h.climb >= 0 ? '▲' : '▼'} ${Math.abs(h.climb).toFixed(1)} m/s` : '';
+  const from = sondeFromHere(h.lat, h.lon);
+  return `<div class="mt-card sd-air ${live ? '' : 'dim'}" data-sonde="${esc(h.serial)}" data-fk="${esc(h.serial)}" data-fms="${h.ms}">`
+    + `<div class="mt-h"><span class="mt-id" style="font-size:${h.serial.length > 8 ? 16 : 20}px">${esc(h.serial)}</span><span class="mt-k"><b>${esc(h.type)}</b><small class="sd-tag">HEARD BY OTHERS</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
+    + `<div class="mt-clk"><b>${Math.round(h.alt).toLocaleString('en-US')}</b><small>METERS</small><em>${esc(climb)}</em></div>`
+    + `<div class="lr-name">${h.mhz !== null ? `listen on ${h.mhz.toFixed(3)} MHz` : 'frequency not reported'}${h.speedMs !== null ? ` · ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : ''}</div>`
+    + (from ? `<div class="lr-last">${esc(from)} from you</div>` : '') + '</div>';
+}
+/** The launch sites near you, nearest first, each with its next launch where it lists a schedule. */
+function sondeSitesHtml(now: number): string {
+  const me = state.home ?? lastKnownPos(); if (!me || !sondeNet.sites.length) return '';
+  const near = sondeNet.sites.map(x => ({ x, d: distBearing(me, x) })).filter(v => v.d[0] < 600).sort((a, b) => a.d[0] - b.d[0]).slice(0, 6);
+  if (!near.length) return '';
+  const rows = near.map(({ x, d }) => {
+    const next = nextLaunchMs(x, now);
+    const when = next === null ? (x.times.some(t => /irregular|mission/i.test(t)) ? 'launches irregularly' : 'schedule not listed')
+      : next <= now ? `<b class="ok">up now · launched ${sondeMins((now - next) / 1000)} ago</b>` : `next launch in ${sondeMins((next - now) / 1000)}`;
+    return `<div class="sd-site"><div class="sd-sn"><b>${esc(x.name)}</b><small>${Math.round(d[0])} km ${compass(d[1])} · ${esc(x.types.join(', ') || 'sonde')}</small></div><div class="sd-sw">${when}</div></div>`;
+  }).join('');
+  return `<div class="sd-sites"><div class="sd-sh">LAUNCH SITES NEAR YOU</div>${rows}</div>`;
+}
 function sondeDetail(s: SondeRow, onMap: boolean): string {
   const f = (name: string, value: string | undefined | false) => value ? [{ name, value }] : [];
   const fix = s.lat !== undefined && s.lon !== undefined;
@@ -4698,7 +4738,8 @@ function renderSondes(view: HTMLElement): void {
   view.classList.toggle('sondefull', sondeUi.full);
   geo = new GeoMap($('sd-map'), { home: state.home, start: mapStart(state.home), onPick: id => { sondeUi.sel = id.replace(/^(land|burst):/, ''); refreshSondes(true); }, log });
   clearInterval(sondeUi.timer);
-  sondeUi.timer = window.setInterval(() => { if (state.app !== 'sondes') { clearInterval(sondeUi.timer); return; } refreshSondes(); }, 1000);
+  sondeUi.timer = window.setInterval(() => { if (state.app !== 'sondes') { clearInterval(sondeUi.timer); return; } sondeNetPoll(); refreshSondes(); }, 1000);
+  sondeNetPoll();
   refreshSondes(true);
 }
 function setSondeFull(on: boolean): void {
@@ -4735,13 +4776,18 @@ function refreshSondes(force = false): void {
     const hunt = !snap ? 'waiting for the radio' : snap.wide ? `watching ${band.title}` : `stepping ${band.title} · window ${(snap.window?.ix ?? 0) + 1} of ${snap.window?.of ?? 1}`;
     sum.innerHTML = sondes.length ? `<div>${sondes.length} SONDE${sondes.length === 1 ? '' : 'S'} · ${esc(hunt)}</div>` : `<div class="muted">${esc(hunt)}${snap?.channels.length ? ` · trying ${snap.channels.length} carrier${snap.channels.length === 1 ? '' : 's'}` : ''}</div>`;
   }
-  qa<HTMLButtonElement>('[data-sdview]').forEach(b => { const v = b.dataset.sdview; b.classList.toggle('on', v === sondeUi.view); b.textContent = v === 'sondes' ? `SONDES ${sondes.length}` : v === 'map' ? `MAP ${withPos.length}` : 'LOG'; b.hidden = v === 'log' && sondeUi.full; });
+  qa<HTMLButtonElement>('[data-sdview]').forEach(b => { const v = b.dataset.sdview; b.classList.toggle('on', v === sondeUi.view); b.textContent = v === 'sondes' ? `SONDES ${sondes.length + sondeNet.air.filter(h => !sondes.some(s => s.serial === h.serial)).length}` : v === 'map' ? `MAP ${withPos.length + sondeNet.air.length}` : 'LOG'; b.hidden = v === 'log' && sondeUi.full; });
   const cards = q('#sd-cards'), mapEl = q('#sd-map'), logEl = q('#sd-log'), nopos = q('#sd-nopos'), det = q('#sd-detail'), stage = q('#sd-stage');
   if (!cards || !mapEl || !logEl || !nopos || !det || !stage) return;
   cards.hidden = sondeUi.view !== 'sondes'; mapEl.hidden = sondeUi.view !== 'map';
   logEl.hidden = sondeUi.view !== 'log'; stage.hidden = sondeUi.view === 'log';
-  nopos.hidden = sondeUi.view !== 'map' || withPos.length > 0;
-  if (sondeUi.view === 'sondes' && !paused.has('sondes')) followNewest(cards, sondes.length ? sondes.map(s => sondeCard(s, now)).join('') : emptyState('sondes'), 'sondes');
+  nopos.hidden = sondeUi.view !== 'map' || withPos.length > 0 || sondeNet.air.length > 0 || sondeNet.sites.length > 0;
+  // ours first; then what others are hearing that we aren't (yet); then the launch sites, so the screen always says
+  // what is up and where to listen
+  const mine = new Set(sondes.map(s => s.serial));
+  const air = sondeNet.air.filter(h => !mine.has(h.serial));
+  const body = sondes.map(s => sondeCard(s, now)).join('') + air.map(h => sondeAirCard(h, now)).join('');
+  if (sondeUi.view === 'sondes' && !paused.has('sondes')) followNewest(cards, (body || emptyState('sondes')) + sondeSitesHtml(now), 'sondes');
   sondePill();
   const picked = sondes.find(s => s.serial === sondeUi.sel);
   det.hidden = !picked;
@@ -4757,6 +4803,10 @@ function refreshSondes(force = false): void {
       if (s.burst) items.push({ id: `burst:${s.serial}`, lat: s.burst.lat, lon: s.burst.lon, label: 'BURST', kind: 'burst' });
       if (s.predict && mine) { paths.push({ pts: s.predict.path, dashed: true }); items.push({ id: `land:${s.serial}`, lat: s.predict.lat, lon: s.predict.lon, label: `${s.serial} lands`, kind: 'landing' }); }
     }
+    for (const h of sondeNet.air) if (!withPos.some(s => s.serial === h.serial))
+      items.push({ id: h.serial, lat: h.lat, lon: h.lon, label: `${h.serial} ${(h.alt / 1000).toFixed(1)} km${h.mhz !== null ? ` · ${h.mhz.toFixed(3)}` : ''}`, kind: 'sonde' });
+    const me = state.home ?? lastKnownPos();
+    if (me) for (const x of sondeNet.sites) if (distBearing(me, x)[0] < 600) items.push({ id: `site:${x.id}`, lat: x.lat, lon: x.lon, label: x.name, kind: 'station' });
     geo?.setPaths(paths);
     geo?.update(items, sondeUi.sel);
   }
