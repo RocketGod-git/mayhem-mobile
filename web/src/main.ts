@@ -4319,7 +4319,8 @@ interface LoraSnap { nodes: LoraNodeRow[]; messages: LoraEventRow[]; bursts: num
   channels: { name: string; hz: number; standing: boolean; active: boolean; hotAgoMs: number | null; frames: number }[] }
 /** The LoRa screen: NODES shows every node live; MAP puts the ones that broadcast a position where they say they are;
  *  MESSAGES is the text traffic in order. A tap on a card or a pin opens everything decoded from that node. */
-const loraUi = { snap: null as LoraSnap | null, view: 'nodes' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
+// opens on the LOG: it fills first (every frame and burst), while nodes and chat take minutes
+const loraUi = { snap: null as LoraSnap | null, view: 'log' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
 const loraClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 const loraPins = (): GeoItem[] => (loraUi.snap?.nodes ?? []).filter(n => n.lat !== null && n.lon !== null).map(n => ({ id: n.key, lat: n.lat!, lon: n.lon!, label: n.label, kind: 'station' as GeoItem['kind'] }));
 /** LoRa opens where the user last put it, else centered on what is local to where the browser is (its MeshCore
@@ -4555,12 +4556,11 @@ function refreshLora(force = false): void {
   if (!force && now - loraUi.drawn < 240) { clearTimeout(loraUi.drawPending); loraUi.drawPending = window.setTimeout(() => refreshLora(true), 250); return; }
   loraUi.drawn = now;
   const snap = loraUi.snap, nodes = snap?.nodes ?? [], msgs = snap?.messages ?? [], pins = loraPins();
-  if (loraUi.full && loraUi.view === 'log') loraUi.view = 'nodes';
   const by = new Map<string, number>(); for (const n of nodes) by.set(n.proto, (by.get(n.proto) ?? 0) + 1);
   const parts = ['Meshtastic', 'MeshCore', 'LoRaWAN'].filter(p => by.has(p)).map(p => `${p.toUpperCase()} ${by.get(p)}`);
   const sum = q('#lr-sum');
   if (sum) sum.innerHTML = parts.length ? `<div>${parts.join(' · ')} · ${snap?.frames ?? 0} frames</div>` : `<div class="muted">${snap && snap.bursts > 0 ? `${snap.bursts} LoRa bursts heard · ${snap.frames} frames` : 'listening for LoRa'}</div>`;
-  qa<HTMLButtonElement>('[data-lrview]').forEach(b => { const v = b.dataset.lrview; b.classList.toggle('on', v === loraUi.view); b.textContent = v === 'nodes' ? `NODES ${nodes.length}` : v === 'map' ? `MAP ${pins.length}` : v === 'messages' ? `CHAT ${msgs.length}` : 'LOG'; b.hidden = v === 'log' && loraUi.full; });
+  qa<HTMLButtonElement>('[data-lrview]').forEach(b => { const v = b.dataset.lrview; b.classList.toggle('on', v === loraUi.view); b.textContent = v === 'nodes' ? `NODES ${nodes.length}` : v === 'map' ? `MAP ${pins.length}` : v === 'messages' ? `CHAT ${msgs.length}` : 'LOG'; });
   const cards = q('#lr-cards'), mapEl = q('#lr-map'), chat = q('#lr-msgs'), logEl = q('#lr-log'), nopos = q('#lr-nopos'), det = q('#lr-detail'), stage = q('#lr-stage');
   if (!cards || !mapEl || !chat || !logEl || !nopos || !det || !stage) return;
   cards.hidden = loraUi.view !== 'nodes'; mapEl.hidden = loraUi.view !== 'map'; chat.hidden = loraUi.view !== 'messages';

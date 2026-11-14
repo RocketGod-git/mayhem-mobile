@@ -80,7 +80,9 @@ fun LoraScreen(accent: Color) {
     val events by Apps.lora.events.collectAsState()
     val bursts by Apps.lora.bursts.collectAsState()
     val frames by Apps.lora.frames.collectAsState()
-    var view by rememberSaveable { mutableIntStateOf(0) }
+    val logSnap by Apps.loraLog.snapshot.collectAsState()
+    // opens on the LOG: it fills first (every frame and burst), while nodes and chat take minutes
+    var view by rememberSaveable { mutableIntStateOf(3) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var focusKey by remember { mutableIntStateOf(0) }
     var full by remember { mutableStateOf(false) }
@@ -91,11 +93,12 @@ fun LoraScreen(accent: Color) {
     val picked = nodes.firstOrNull { it.key == sel }
 
     val wf = waterfallOn(MayhemApp.LORA, phoneDefault = true)
+    // NODES, MAP, CHAT and the decode LOG: one switcher, the same inline and full screen
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-            SegBar(listOf("NODES · ${nodes.size}", "MAP · ${mapItems.size}", "CHAT · ${messages.size}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
-            if (withFull) WaterfallBox(wf, accent, Modifier.fillMaxHeight()) { Apps.setWaterfall(MayhemApp.LORA, !wf) }
+            SegBar(listOf("NODES · ${nodes.size}", "MAP · ${mapItems.size}", "CHAT · ${messages.size}", "LOG · ${logSnap.total}"), view, accent,
+                Modifier.weight(1f).fillMaxHeight()) { view = it }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
         }
     }
@@ -129,6 +132,7 @@ fun LoraScreen(accent: Color) {
                             modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
                     }
                 }
+                3 -> LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "listening for LoRa frames…", total = logSnap.total, accent = accent)
                 else -> if (messages.isEmpty()) EmptyState("loramsg", Modifier.fillMaxSize().panel(), accent) else Box(Modifier.fillMaxSize()) {
                     val follow = rememberFollowNewest(chatList, messages.first().id.toLong())
                     LazyColumn(Modifier.fillMaxSize(), state = chatList, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -147,7 +151,8 @@ fun LoraScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.loraLog, tag = "LORA", title = "MESHTASTIC · MESHCORE · LORAWAN", roomy = true, listWeight = 3.2f, waterfall = wf, controls = {
+    PacketFrame(accent, Apps.loraLog, tag = "LORA", title = "MESHTASTIC · MESHCORE · LORAWAN", roomy = true, waterfall = wf,
+        onWaterfall = { Apps.setWaterfall(MayhemApp.LORA, !wf) }, controls = {
         val wide = rate >= 10_000_000
         val narrowed by Apps.lora.narrowed.collectAsState()
         val midSpan = rate in 2_400_001 until LoraScanner.RATE
@@ -201,8 +206,9 @@ fun LoraScreen(accent: Color) {
             Text("Span narrowed to ${rate / 1_000_000} MHz: this device fell behind at a wider one. Tap 20 MHz to try again.",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2, overflow = TextOverflow.Ellipsis)
         if (customOpen) LoraCustomDialog(accent) { customOpen = false }
-    }, list = {
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+    }, body = {
+        // the log is a tab of its own (LOG), so the cards and the waterfall share the height between them
+        Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             val by = nodes.groupingBy { it.proto }.eachCount()
             val parts = listOf("Meshtastic", "MeshCore", "LoRaWAN").mapNotNull { p -> by[p]?.let { "${p.uppercase()} $it" } }
             Text(if (parts.isEmpty()) (if (bursts > 0) "$bursts LoRa bursts heard · $frames frames" else "listening for LoRa") else parts.joinToString(" · ") + " · $frames frames",
@@ -212,8 +218,9 @@ fun LoraScreen(accent: Color) {
             stage(Modifier.fillMaxWidth().weight(1f))
         }
     })
-    if (full) FullscreenPanel(listOf("LORA · ${nodes.size} NODES", "LORA · MAP", "LORA · CHAT")[view], accent, onClose = { full = false },
-        actions = { switcher(false, Modifier.width(d.dp(380f))) }) {
+    // full screen: the title and its exit on top (the switcher crowded the exit off a phone's edge), the tabs below
+    if (full) FullscreenPanel(listOf("LORA · ${nodes.size} NODES", "LORA · MAP", "LORA · CHAT", "LORA · LOG")[view], accent, onClose = { full = false }) {
+        switcher(false, Modifier.fillMaxWidth().padding(bottom = d.dp(8f)))
         stage(Modifier.fillMaxWidth().weight(1f))
     }
 }

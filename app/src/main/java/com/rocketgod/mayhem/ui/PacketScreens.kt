@@ -32,6 +32,7 @@ import kotlin.math.roundToInt
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.material3.Icon
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -121,6 +122,9 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         waterfall: Boolean = true,
                         /** An [EMPTY] key for the log's empty state. */
                         emptyKey: String? = null,
+                        /** Show or hide the waterfall: a small button on the waterfall's corner, and a slim strip in its
+                         *  place while it is hidden (null: no button). */
+                        onWaterfall: (() -> Unit)? = null,
                         /** The lamp, in place of LISTENING / n DECODED. */
                         lamp: (@Composable () -> Unit)? = null,
                         /** Everything under [controls], in place of the log header and the log (BLE and ACARS: their cards or the log). */
@@ -152,10 +156,12 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                         rows = if (d.wide) 160 else 90, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                         onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
+                    if (onWaterfall != null) WaterfallCorner(true, Modifier.align(Alignment.TopStart).padding(d.dp(6f)), onWaterfall)
                 }
             }
         }
     ) {
+        if (!waterfall && onWaterfall != null) WaterfallCorner(false, Modifier.fillMaxWidth(), onWaterfall)
         Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { controls() }
         if (body != null) { body(); return@AdaptivePane }
         // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
@@ -606,5 +612,23 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
             }
         }
     }
+    }
+}
+
+
+/** The waterfall's own show/hide: a small button on its corner while shown, a slim strip where it was while hidden. */
+@Composable
+internal fun WaterfallCorner(shown: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(d.dp(8f))
+    if (shown) Box(modifier.clip(shape).background(Palette.paper.copy(alpha = 0.72f)).border(1.dp, Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(d.dp(6f))) {
+        Icon(WaterfallIcon, contentDescription = "Hide the waterfall", tint = Palette.muted, modifier = Modifier.size(d.dp(14f)))
+    } else Row(modifier.clip(shape).border(1.dp, Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(horizontal = d.dp(10f), vertical = d.dp(5f)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        Icon(WaterfallIcon, contentDescription = null, tint = Palette.muted, modifier = Modifier.size(d.dp(14f)))
+        Text("SHOW WATERFALL", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
     }
 }
