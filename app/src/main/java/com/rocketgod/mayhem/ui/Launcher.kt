@@ -35,6 +35,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -182,15 +185,38 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
     // dimmed, never locked: a dongle owner may still want two-metre HAM
     Radio.kind.collectAsState().value
     val why = Radio.blockedBecause(app)
-    Column(
-        // wide and short: the glyph, then the name over a one-line description, with no tall gap between them
-        Modifier.fillMaxWidth().aspectRatio(1.8f).alpha(if (why.isNotEmpty()) 0.4f else 1f).panel(tint).clickable { onClick() }.padding(d.dp(12f))
+    val off = why.isNotEmpty()
+    // a tile this radio can't run stays crisp (a faded tile read as broken): its glyph and name go gray, a small amber
+    // HACKRF chip says why, and a tap still explains
+    val glyphTint = if (off) Palette.muted.copy(alpha = 0.7f) else tint
+    val shape = RoundedCornerShape(d.dp(12f))
+    // wide and short: the glyph in its badge, then the name over a one-line description, with no tall gap between
+    Box(
+        Modifier.fillMaxWidth().aspectRatio(1.8f).clip(shape)
+            .background(Palette.surface, shape)
+            // the category's color glows in from the top-left corner
+            .background(Brush.radialGradient(listOf(glyphTint.copy(alpha = if (off) 0.05f else 0.16f), Color.Transparent),
+                center = Offset.Zero, radius = 900f), shape)
+            .border(1.dp, Brush.linearGradient(listOf(glyphTint.copy(alpha = if (off) 0.35f else 0.85f), glyphTint.copy(alpha = if (off) 0.12f else 0.25f))), shape)
+            .clickable { onClick() }
     ) {
-        AppGlyph(app, tint, Modifier.size(d.dp(36f)))
-        Box(Modifier.weight(1f))
-        Text(app.title, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
-        Text(if (why.isNotEmpty()) "needs a HackRF" else app.blurb, color = if (why.isNotEmpty()) Palette.accent2 else Palette.muted,
-            fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = d.dp(3f)))
+        // the glyph again, large and faint, bleeding off the bottom-right corner
+        AppGlyph(app, glyphTint.copy(alpha = if (off) 0.04f else 0.08f),
+            Modifier.size(d.dp(84f)).align(Alignment.BottomEnd).offset(x = d.dp(18f), y = d.dp(18f)))
+        if (off) Text("HACKRF", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 1.5.sp,
+            modifier = Modifier.align(Alignment.TopEnd).padding(d.dp(10f)).clip(RoundedCornerShape(4.dp))
+                .background(Palette.accent2.copy(alpha = 0.14f)).border(1.dp, Palette.accent2.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                .padding(horizontal = d.dp(5f), vertical = d.dp(2f)))
+        Column(Modifier.fillMaxSize().padding(d.dp(12f))) {
+            Box(Modifier.size(d.dp(40f)).clip(RoundedCornerShape(d.dp(10f))).background(glyphTint.copy(alpha = if (off) 0.06f else 0.14f))
+                .border(1.dp, glyphTint.copy(alpha = if (off) 0.2f else 0.4f), RoundedCornerShape(d.dp(10f))), contentAlignment = Alignment.Center) {
+                AppGlyph(app, glyphTint, Modifier.size(d.dp(26f)))
+            }
+            Box(Modifier.weight(1f))
+            Text(app.title, color = if (off) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
+            Text(if (off) "needs a HackRF" else app.blurb, color = Palette.muted,
+                fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = d.dp(3f)))
+        }
     }
 }
 

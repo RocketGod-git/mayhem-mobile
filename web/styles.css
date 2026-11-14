@@ -156,11 +156,27 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 
 /* Phone launcher: three compact columns, five rows, the whole menu on one screen under the waterfall strip. */
 .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
-.tile { --tint: var(--accent); background: var(--surface); border: 1px solid color-mix(in srgb, var(--tint) 45%, transparent); border-radius: 12px; padding: 8px 9px; text-align: left; color: var(--ink); cursor: pointer; aspect-ratio: 1.5; display: flex; flex-direction: column; min-width: 0; }
+.tile { --tint: var(--accent); position: relative; overflow: hidden; border-radius: 12px; padding: 8px 9px; text-align: left; color: var(--ink); cursor: pointer; aspect-ratio: 1.5; display: flex; flex-direction: column; min-width: 0;
+  /* the category's color glows in from the top-left corner; the border fades from it toward the far corner */
+  background: radial-gradient(circle at 0 0, color-mix(in srgb, var(--tint) 16%, transparent), transparent 70%), var(--surface);
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tint) 30%, transparent), inset 1px 1px 0 0 color-mix(in srgb, var(--tint) 70%, transparent); }
+.tile > * { position: relative; }
+/* the glyph again, large and faint, bleeding off the bottom-right corner */
+.tile .wm { position: absolute; right: -14px; bottom: -14px; opacity: 0.08; pointer-events: none; }
+.tile .wm svg { width: 64px; height: 64px; }
+/* the glyph in its badge */
+.tile .badge { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: color-mix(in srgb, var(--tint) 14%, transparent); border: 1px solid color-mix(in srgb, var(--tint) 40%, transparent); }
 /* An app the connected radio cannot serve. Dimmed, never disabled: a dongle owner may still want two-metre
  * HAM and should be allowed to try. Nothing carries this class unless a radio is connected that lacks what the
  * app needs, so a HackRF session never sees it. */
-.tile.limited { opacity: 0.38; filter: saturate(0.35); }
+/* stays crisp (a faded tile read as broken): gray glyph and name, a small amber HACKRF chip says why */
+.tile.limited { --tint: var(--muted); }
+.tile.limited .badge svg, .tile.limited .wm svg { filter: grayscale(1); opacity: 0.6; }
+.tile.limited .tile-title { color: var(--muted); }
+.tile.limited .cat { display: none; }
+.tile.limited::after { content: 'HACKRF'; position: absolute; top: 8px; right: 8px; font-size: 7px; font-weight: 700; letter-spacing: 1.5px; color: var(--accent2); padding: 1px 4px; border-radius: 3px; background: color-mix(in srgb, var(--accent2) 14%, transparent); border: 1px solid color-mix(in srgb, var(--accent2) 50%, transparent); }
 /* The launcher's band strip: where the front door is pointing. One swiping row, so a narrow phone shows the
  * first few and the rest are a thumb away rather than stacked into the tiles' space. */
 .launch-bands { flex: none; gap: 4px; margin-top: 6px; overflow-x: auto; scroll-snap-type: x proximity; }
@@ -168,10 +184,10 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 /* Band chips as a wrapping grid (in the audio controls and the launcher's side column): four to a row, tidy. */
 .bandrow { gap: 5px; }
 .bandrow > .chip { flex: 1 1 21%; padding: 7px 4px; font-size: 11px; }
-.tile.limited:hover { opacity: 0.6; }
+.tile.limited:hover { filter: brightness(1.15); }
 .tile:active { background: var(--panel); }
 .tile-top { display: flex; justify-content: space-between; align-items: flex-start; }
-.tile-top svg { width: 30px; height: 30px; }
+.tile-top .badge svg { width: 22px; height: 22px; }
 .tile .cat { color: var(--muted); font-size: 7px; letter-spacing: 1.5px; }
 .tile-title { margin-top: auto; font-weight: 700; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile-blurb { color: var(--muted); font-size: 8px; line-height: 1.25; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

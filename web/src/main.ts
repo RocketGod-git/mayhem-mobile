@@ -1871,7 +1871,7 @@ function renderLauncher(view: HTMLElement): void {
     <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
       const apps = APPS.filter(a => a.cat === c); if (!apps.length) return '';
       // each group's name over its tiles: a grid two to a row on a phone, one sideways row when wide (as on iPad)
-      return `<div class="lgrp"><div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div><div class="lgrp-in">` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><div class="tile-top">${glyph(a.id, tintHex(a.cat), 36)}<span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb">${a.blurb}</div></button>`).join('') + '</div></div>';
+      return `<div class="lgrp"><div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div><div class="lgrp-in">` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><span class="wm">${glyph(a.id, tintHex(a.cat), 84)}</span><div class="tile-top"><span class="badge">${glyph(a.id, tintHex(a.cat), 26)}</span><span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb" data-blurb="${a.blurb}">${a.blurb}</div></button>`).join('') + '</div></div>';
     }).join('')}</div>
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));
@@ -1900,6 +1900,8 @@ function refreshLauncherLimits(): void {
     const id = b.dataset.app ?? '';
     const why = radio ? blockedBecause(APP_NEEDS[id], radio.limits) : '';
     b.classList.toggle('limited', !!why);
+    // a tile this radio can't run says so in one line (its HACKRF chip is CSS); the full reason is in the tooltip
+    const bl = b.querySelector<HTMLElement>('.tile-blurb'); if (bl) bl.textContent = why ? 'needs a HackRF' : (bl.dataset.blurb ?? bl.textContent);
     if (why) b.title = `${APPS.find(a => a.id === id)?.title ?? id} on a ${radio?.label}: ${why}`;
     else b.removeAttribute('title');
   });
