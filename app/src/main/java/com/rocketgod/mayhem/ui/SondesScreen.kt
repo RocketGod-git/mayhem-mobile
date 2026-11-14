@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -44,6 +45,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -55,7 +62,10 @@ import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.Geo
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.lora.LoraHub
+import com.rocketgod.mayhem.core.sonde.HubSite
+import com.rocketgod.mayhem.core.sonde.HubSonde
 import com.rocketgod.mayhem.core.sonde.SondeFront
+import com.rocketgod.mayhem.core.sonde.SondeHub
 import com.rocketgod.mayhem.core.sonde.SondePhase
 import com.rocketgod.mayhem.core.sonde.SondeRow
 import com.rocketgod.mayhem.core.sonde.SondeSnap
@@ -93,17 +103,24 @@ fun SondesScreen(accent: Color) {
     LaunchedEffect(Unit) { Geo.start(ctx) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(250); value = System.currentTimeMillis() } }.value
     val me = fix ?: Geo.lastKnownPos()
+    // what SondeHub knows near you, refreshed every 30 s while Sondes is open
+    val net by SondeHub.net.collectAsState()
+    LaunchedEffect(Unit) { while (true) { (Geo.fix.value ?: Geo.lastKnownPos())?.let { SondeHub.poll(it.first, it.second) }; delay(1000) } }
 
     val live = snap?.sondes ?: emptyList()
     val sondes = held ?: live
     val withPos = sondes.filter { it.lat != null && it.lon != null }
     val picked = live.firstOrNull { it.serial == sel }
+    // ours first; then what others are hearing that we aren't (yet); then the launch sites
+    val air = net.air.filter { h -> sondes.none { it.serial == h.serial } }
+    val airOnMap = net.air.filter { h -> withPos.none { it.serial == h.serial } }
+    val sites = nearSites(net.sites, me)
     // full screen has no LOG: it is the cards or the map
     if (full && view == 2) view = 0
 
     @Composable
     fun switcher(withLog: Boolean, modifier: Modifier) {
-        val labels = listOf("SONDES ${sondes.size}", "MAP ${withPos.size}") + if (withLog) listOf("LOG") else emptyList()
+        val labels = listOf("SONDES ${sondes.size + air.size}", "MAP ${withPos.size + airOnMap.size}") + if (withLog) listOf("LOG") else emptyList()
         SegBar(labels, view, accent, modifier) { view = it }
     }
 
@@ -112,7 +129,7 @@ fun SondesScreen(accent: Color) {
         val grid = rememberLazyGridState()
         Box(modifier) {
             when (view) {
-                0 -> SondeCards(sondes, grid, accent, now, sel, me, full) { s -> sel = if (sel == s) "" else s }
+                0 -> SondeCards(sondes, air, sites, grid, accent, now, sel, me, full) { s -> sel = if (sel == s) "" else s }
                 else -> {
                     val items = ArrayList<GeoItem>(); val paths = ArrayList<GeoPath>()
                     for (s in withPos) {
@@ -123,13 +140,17 @@ fun SondesScreen(accent: Color) {
                         val p = s.predict
                         if (p != null && mine) { paths.add(GeoPath(p.path, dashed = true)); items.add(GeoItem("land:${s.serial}", p.lat, p.lon, "${s.serial} lands", GeoItem.Kind.LANDING)) }
                     }
+                    for (h in airOnMap) items.add(GeoItem(h.serial, h.lat, h.lon,
+                        h.serial + " %.1f km".format(Locale.US, h.alt / 1000) + (h.mhz?.let { " · %.3f".format(Locale.US, it) } ?: ""), GeoItem.Kind.SONDE))
+                    for ((x, _) in sites) items.add(GeoItem("site:${x.id}", x.lat, x.lon, x.name, GeoItem.Kind.STATION))
                     val pla = picked?.lat; val plo = picked?.lon
                     Box(Modifier.fillMaxSize()) {
                         GeoMapView(items, accent, Modifier.fillMaxSize().panel(), home = fix, selected = sel.ifEmpty { null }, layers = GeoLayers(paths = paths),
                             start = remember { mapStart(fix) }, focus = if (pla != null && plo != null) pla to plo else null, focusKey = focusKey) { id ->
-                            sel = id.removePrefix("land:").removePrefix("burst:")
+                            val id2 = id.removePrefix("land:").removePrefix("burst:")
+                            if (live.any { it.serial == id2 }) sel = id2
                         }
-                        if (withPos.isEmpty()) Text("no positions yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
+                        if (withPos.isEmpty() && airOnMap.isEmpty() && sites.isEmpty()) Text("no positions yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
                             modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
                     }
                 }
@@ -225,27 +246,117 @@ private fun SondeChannels(snap: SondeSnap?, accent: Color) {
     }
 }
 
-/** The cards, newest first, kept on the newest while the reader is at the top; scrolled down, "↑ N NEW" goes back. */
+/**
+ * The cards, newest first, kept on the newest while the reader is at the top; scrolled down, "↑ N NEW" goes back. After
+ * our own sondes come the ones others hear (SondeHub) and the launch sites near you, so the screen always says what is
+ * up and where to listen.
+ */
 @Composable
-private fun SondeCards(sondes: List<SondeRow>, grid: LazyGridState, accent: Color, now: Long, sel: String, me: Pair<Double, Double>?, full: Boolean,
-                       onPick: (String) -> Unit) {
+private fun SondeCards(sondes: List<SondeRow>, air: List<HubSonde>, sites: List<Pair<HubSite, Pair<Double, Double>>>, grid: LazyGridState, accent: Color,
+                       now: Long, sel: String, me: Pair<Double, Double>?, full: Boolean, onPick: (String) -> Unit) {
     val d = rememberDims()
-    if (sondes.isEmpty()) {
+    if (sondes.isEmpty() && air.isEmpty()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val h = maxHeight
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                EmptyState("sondes", Modifier.fillMaxWidth().heightIn(min = h * 0.9f).panel(), accent)
+                EmptyState("sondes", Modifier.fillMaxWidth().heightIn(min = h * (if (sites.isEmpty()) 0.9f else 0.55f)).panel(), accent)
+                if (sites.isNotEmpty()) SondeSites(sites, accent, now)
             }
         }
         return
     }
     Box(Modifier.fillMaxSize()) {
-        val follow = rememberFollowNewest(grid, sondes.first().lastMs)
+        val follow = rememberFollowNewest(grid, sondes.firstOrNull()?.lastMs ?: 0L)
         LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(), state = grid,
             horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             items(sondes, key = { "${it.type}:${it.serial}" }) { s -> SondeCard(s, accent, now, sel == s.serial, me) { onPick(s.serial) } }
+            items(air, key = { "hub:${it.serial}" }) { h -> SondeAirCard(h, accent, now, me) }
+            if (sites.isNotEmpty()) item(key = "sites", span = { GridItemSpan(maxLineSpan) }) { SondeSites(sites, accent, now) }
         }
         NewestPill(follow, grid, sondes.count { it.lastMs > follow.seen }, accent, Modifier.align(Alignment.TopCenter))
+    }
+}
+
+/** The 6 launch sites nearest you within 600 km, each with its distance (km) and bearing from you. */
+internal fun nearSites(sites: List<HubSite>, me: Pair<Double, Double>?): List<Pair<HubSite, Pair<Double, Double>>> {
+    me ?: return emptyList()
+    return sites.map { it to distBearing(me.first, me.second, it.lat, it.lon) }.filter { it.second.first < 600 }.sortedBy { it.second.first }.take(6)
+}
+
+/** A dashed rounded outline: the mark of a card our own radio hasn't heard. */
+private fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehind {
+    val w = 1.2.dp.toPx(); val r = radius.toPx()
+    drawRoundRect(color, topLeft = Offset(w / 2, w / 2), size = androidx.compose.ui.geometry.Size(size.width - w, size.height - w), cornerRadius = CornerRadius(r, r),
+        style = Stroke(width = w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))))
+}
+
+/** A balloon someone else is hearing and our radio isn't (yet): what it is, where, and where to listen. */
+@Composable
+private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double, Double>?) {
+    val d = rememberDims()
+    val age = (now - h.ms) / 1000.0
+    val live = age < 120
+    val ago = when { age < 60 -> "${max(0, age.toInt())} s ago"; age < 3600 -> "${(age / 60).toInt()} min ago"; else -> "${(age / 3600).toInt()} h ago" }
+    val climb = h.climb?.let { "${if (it >= 0) "▲" else "▼"} ${"%.1f".format(Locale.US, kotlin.math.abs(it))} m/s" } ?: ""
+    val from = fromHere(me, h.lat, h.lon)
+    val listen = (h.mhz?.let { "listen on %.3f MHz".format(Locale.US, it) } ?: "frequency not reported") +
+        (h.speedMs?.let { v -> " · %.0f km/h".format(Locale.US, v * 3.6) + (h.heading?.let { " ${compass(it)}" } ?: "") } ?: "")
+    val shape = RoundedCornerShape(d.dp(14f))
+    Column(Modifier.fillMaxWidth().alpha(if (live) 1f else 0.8f).clip(shape)
+        .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.06f), Palette.panel)))
+        .dashedBorder(accent.copy(alpha = 0.55f), d.dp(14f))
+        .padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(if (h.serial.length > 8) 16f else 20f), maxLines = 1)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
+                Text(h.type, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
+                Text("HEARD BY OTHERS", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box(Modifier.size(d.dp(9f)).background(if (live) Palette.ok else Palette.muted, CircleShape))
+            Text(ago, color = if (live) Palette.ok else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
+        }
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Text("%,d".format(Locale.US, Math.round(h.alt)), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
+            Text("METERS", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.padding(bottom = d.dp(4f)))
+            Text(climb, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
+                modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
+        }
+        Text(listen, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (from.isNotEmpty()) Text("$from from you", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** The launch sites near you, nearest first, each with its next launch where it lists a schedule. */
+@Composable
+private fun SondeSites(sites: List<Pair<HubSite, Pair<Double, Double>>>, accent: Color, now: Long) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(12f))
+    Column(Modifier.fillMaxWidth().padding(top = d.dp(8f)).clip(shape)
+        .background(Brush.radialGradient(listOf(accent.copy(alpha = 0.10f), Palette.panel), center = Offset.Zero, radius = 900f))
+        .border(1.dp, Palette.line, shape).padding(horizontal = d.dp(10f), vertical = d.dp(8f))) {
+        Text("LAUNCH SITES NEAR YOU", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 2.sp,
+            modifier = Modifier.padding(bottom = d.dp(4f)))
+        sites.forEachIndexed { i, (x, db) ->
+            val next = SondeHub.nextLaunchMs(x, now)
+            val up = next != null && next <= now
+            val whenText = when {
+                next == null -> if (SondeHub.irregular(x)) "launches irregularly" else "schedule not listed"
+                up -> "up now · launched ${sondeMins((now - next) / 1000.0)} ago"
+                else -> "next launch in ${sondeMins((next - now) / 1000.0)}"
+            }
+            if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line.copy(alpha = 0.6f)))
+            Row(Modifier.fillMaxWidth().padding(vertical = d.dp(6f)), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+                Column(Modifier.weight(1f)) {
+                    Text(x.name, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${Math.round(db.first)} km ${compass(db.second)} · ${x.types.joinToString(", ").ifEmpty { "sonde" }}", color = Palette.muted,
+                        fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                Text(whenText, color = if (up) Palette.ok else Palette.muted, fontFamily = Mono, fontWeight = if (up) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = d.sp(10f), maxLines = 1)
+            }
+        }
     }
 }
 
