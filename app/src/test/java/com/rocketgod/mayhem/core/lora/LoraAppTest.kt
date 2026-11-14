@@ -82,6 +82,17 @@ class LoraAppTest {
         assertEquals("Automatic", LoraLocal.areas().first().title)
     }
 
+    /** The wide view's center for each area, as verified on the Mac. */
+    @Test fun loraWideCenters() {
+        val want = mapOf("NL" to 869.875, "GB" to 869.875, "PT" to 869.875, "AU" to 920.63, "NZ" to 922.35, "TH" to 922.48,
+            "US" to 910.0, "US-SOCAL" to 918.16)
+        for ((area, mhz) in want) {
+            val c = LoraLocal.wideCenter(area)!! / 1e6
+            println("CENTER %s %.4f".format(area, c))
+            assertEquals(area, mhz, c, 0.006)
+        }
+    }
+
     @Test fun meshCoreAdvert() {
         val b = ArrayList<Int>()
         b += listOf(0x11, 0x00)                                  // flood (1) advert (4 << 2), no hops

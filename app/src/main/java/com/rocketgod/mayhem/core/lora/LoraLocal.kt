@@ -214,14 +214,27 @@ object LoraLocal {
      */
     fun wideCenter(area: String): Long? {
         val ch = channels(area)
-        val first = ch.firstOrNull() ?: return null
+        if (ch.isEmpty()) return null
         val half = LoraScanner.usableHalf(LoraScanner.RATE).toLong()
-        var lo = first.hz - first.bw / 2; var hi = first.hz + first.bw / 2
-        val out = ArrayList<Long>()
-        for (c in ch.drop(1)) {
-            val l = minOf(lo, c.hz - c.bw / 2); val h = maxOf(hi, c.hz + c.bw / 2)
-            if (h - l <= 2 * half) { lo = l; hi = h } else out.add(c.hz)
+        // From each channel in turn (most local first), take every other one that still fits, most local first; the
+        // window holding the most wins, the more local start breaking a tie (Portugal's 868 channels outnumber its 433).
+        var bestLo = 0L; var bestHi = 0L; var bestN = 0; var bestOut: List<Long> = emptyList()
+        // the user's own channel (first in the list) is always in view
+        val starts = if (custom != null) listOf(0) else ch.indices.toList()
+        for (start in starts) {
+            val s0 = ch[start]
+            var lo = s0.hz - s0.bw / 2; var hi = s0.hz + s0.bw / 2; var n = 1
+            val out = ArrayList<Long>()
+            for ((i, c) in ch.withIndex()) {
+                if (i == start) continue
+                val l = minOf(lo, c.hz - c.bw / 2); val h = maxOf(hi, c.hz + c.bw / 2)
+                if (h - l <= 2 * half) { lo = l; hi = h; n++ }
+                // only channels in reach of this band pull the leftover room (433 MHz presets never share a 900 MHz view)
+                else if (abs(c.hz - (lo + hi) / 2) < 3 * half) out.add(c.hz)
+            }
+            if (n > bestN) { bestLo = lo; bestHi = hi; bestN = n; bestOut = out }
         }
+        val lo = bestLo; val hi = bestHi; val out = bestOut
         var center = (lo + hi) / 2
         val slack = half - (hi - lo) / 2
         if (slack > 0 && out.isNotEmpty()) {
