@@ -340,6 +340,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
     case 'sondeBand': sonde.setBand(m.id as string); break;
+    case 'sondeHints': sonde.setHints(m.hz as number[]); break;
     // the channels local to the LoRa area in use (local.ts, on the main thread): the scanner places its channels again
     case 'loraPlan': setLocalChannels(m.channels as LocalChannel[]); lora.scanner.replan(); break;
     case 'rds': rdsOn = !!m.on; if (!rdsOn) { rds.reset(); rdsN = 0; } break;

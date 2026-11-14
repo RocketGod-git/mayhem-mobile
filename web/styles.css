@@ -470,7 +470,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -562,7 +562,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -624,7 +624,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -851,7 +851,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .controls { max-height: 58%; }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
-  .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
+  .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
   .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
   /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
   .view .visual.nowf { flex: none; }
@@ -1843,7 +1843,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* Sondes: balloons others hear (SondeHub) before ours does, and the launch sites near you. */
 .mt-card.sd-air { border-style: dashed; }
 .sd-tag { color: var(--accent2) !important; letter-spacing: 1px; }
-.sd-sites { margin-top: 8px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%), var(--surface); }
+.sd-sites { grid-column: 1 / -1; margin-top: 8px; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%), var(--surface); }
 .sd-sh { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px; }
 .sd-site { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
 .sd-site:first-of-type { border-top: 0; }
@@ -1852,3 +1852,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sd-sn small { color: var(--muted); font-size: 10px; }
 .sd-sw { color: var(--muted); font-size: 10px; text-align: right; white-space: nowrap; }
 .sd-sw .ok { color: var(--ok, #3ddc84); }
+/* the launch sites span the card area, in as many columns as fit */
+.sd-sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); column-gap: 18px; }
+.sd-sites > .sd-sh { grid-column: 1 / -1; }
+.sd-site, .sd-site:first-of-type { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }

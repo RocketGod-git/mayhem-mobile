@@ -105,6 +105,9 @@ export class SondeProcessor implements IqProcessor {
   /** Peaks closer than this are one carrier (a wide LMS6-1680 spreads ±50 kHz). */
   private get mergeHz(): number { return this.band.id === '1680' ? 80_000 : 20_000; }
   get wide(): boolean { return this.rate >= 6_000_000; }
+  /** Where others (SondeHub) hear balloons right now: a narrow radio goes to those windows first. */
+  private hints: number[] = [];
+  setHints(hz: number[]): void { this.hints = hz.filter(h => Number.isFinite(h) && h > 0); }
   setBand(id: string): void {
     this.band = SONDE_BANDS.find(b => b.id === id) ?? SONDE_BANDS[0];
     this.chans = []; this.seen.clear(); this.banned.clear();
@@ -216,7 +219,14 @@ export class SondeProcessor implements IqProcessor {
     const trying = this.chans.some(c => !c.lastDecodeMs && now - c.openedMs < 12_000);
     if (decoding || trying) { this.winSince = now; return; }
     if (now - this.winSince < 2500) return;
-    this.winIx = (this.winIx + 1) % this.windows.length;
+    // a balloon others are hearing (SondeHub) says where to listen: step only through the windows that hold one
+    // (inner ±0.9 MHz), and through the whole band when nothing is reported
+    const told = this.windows.map((w, i) => i).filter(i => this.hints.some(h => Math.abs(h - this.windows[i]) <= 900_000));
+    if (told.length) {
+      const at = told.indexOf(this.winIx);
+      if (told.length === 1 && at === 0) { this.winSince = now; return; }
+      this.winIx = told[(at + 1) % told.length];
+    } else this.winIx = (this.winIx + 1) % this.windows.length;
     this.winSince = now;
     const hz = this.windows[this.winIx];
     this.retuner.next(hz, n, this.rate);

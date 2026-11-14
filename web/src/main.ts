@@ -4653,7 +4653,12 @@ function sondeNetPoll(): void {
   }
   if (now - sondeNet.airAt < 30_000) return;
   sondeNet.airAt = now; sondeNet.busy = true;
-  hubSondes(me.lat, me.lon).then(x => { sondeNet.air = x; sondeNet.err = ''; refreshSondes(true); })
+  hubSondes(me.lat, me.lon).then(x => {
+    sondeNet.air = x; sondeNet.err = '';
+    // where they are heard is where a stepping radio should listen
+    worker?.postMessage({ type: 'sondeHints', hz: x.filter(h => h.mhz !== null && Date.now() - h.ms < 600_000).map(h => Math.round(h.mhz! * 1e6)) });
+    refreshSondes(true);
+  })
     .catch(e => { sondeNet.err = String(e?.message ?? e); }).finally(() => { sondeNet.busy = false; });
 }
 /** A balloon someone else is hearing and our radio isn't (yet): what it is, where, and where to listen. */
