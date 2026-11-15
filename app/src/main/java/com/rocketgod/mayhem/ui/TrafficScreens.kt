@@ -326,7 +326,10 @@ private fun VesselCard(v: Vessel, home: Pair<Double, Double>?, now: Long, onMap:
 // ---- APRS ----------------------------------------------------------------------------------------------------------
 /** Who a callsign belongs to, looked up once per base call when its card opens. */
 private object StationLookups {
-    val cache = java.util.concurrent.ConcurrentHashMap<String, CallInfo?>()
+    /** Calls already looked up (or being looked up), so each is asked once. A ConcurrentHashMap holds no nulls, so the
+     *  "asked, nothing found" mark lives here, not as a null in [cache]: that null crashed the first APRS card. */
+    val asked: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    val cache = java.util.concurrent.ConcurrentHashMap<String, CallInfo>()
     val changed = kotlinx.coroutines.flow.MutableStateFlow(0)
 }
 
@@ -381,8 +384,7 @@ private fun StationCard(s: AprsStation, home: Pair<Double, Double>?, now: Long, 
     val base = parseCall(s.call.replace(Regex("-\\d+$"), "")).base
     StationLookups.changed.collectAsState().value
     LaunchedEffect(base) {
-        if (s.kind == "station" && base.isNotEmpty() && !StationLookups.cache.containsKey(base)) {
-            StationLookups.cache[base] = null
+        if (s.kind == "station" && base.isNotEmpty() && StationLookups.asked.add(base)) {
             val i = withContext(Dispatchers.IO) { runCatching { lookupCall(base) }.getOrNull() }
             if (i != null) StationLookups.cache[base] = i
             StationLookups.changed.value++

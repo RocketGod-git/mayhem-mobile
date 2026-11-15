@@ -84,6 +84,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // first, so a crash anywhere after this leaves a report for the next launch
+        CrashReport.install(this)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         hideStatusBar()
@@ -136,10 +138,27 @@ class MainActivity : ComponentActivity() {
         }
         ContextCompat.registerReceiver(this, receiver, f, ContextCompat.RECEIVER_NOT_EXPORTED)
 
+        // a crash since the last launch: offer to send the report to the developer or save it
+        val crash = MutableStateFlow(CrashReport.pending(this))
         setContent {
             val st by status.collectAsState()
             val c by connected.collectAsState()
             MayhemScreen(status = st, connected = c)
+            val report by crash.collectAsState()
+            report?.let { r ->
+                com.rocketgod.mayhem.ui.CrashDialog(CrashReport.headline(r),
+                    onSend = {
+                        runCatching { startActivity(CrashReport.sendIntent(this, r)) }
+                            .onFailure { android.widget.Toast.makeText(this, "No email app found. Saved instead: ${CrashReport.save(this, r) ?: "could not save"}", android.widget.Toast.LENGTH_LONG).show() }
+                        CrashReport.clear(this); crash.value = null
+                    },
+                    onSave = {
+                        val where = CrashReport.save(this, r)
+                        android.widget.Toast.makeText(this, if (where != null) "Saved to $where" else "Could not save the report", android.widget.Toast.LENGTH_LONG).show()
+                        CrashReport.clear(this); crash.value = null
+                    },
+                    onDismiss = { CrashReport.clear(this); crash.value = null })
+            }
         }
 
         // Keep the picture-in-picture offer in step with what is open, so leaving the app keeps a receiver on screen.
@@ -223,6 +242,17 @@ class MainActivity : ComponentActivity() {
         if (i.getBooleanExtra("demo", false) && !radioRunning()) {
             com.rocketgod.mayhem.core.DemoIq.start()
             connected.value = true; status.value = "demo signal"
+        }
+        // `--ez aprsdemo true` adds one made-up APRS station (with a position and weather), to test its card and map dot
+        if (i.getBooleanExtra("aprsdemo", false)) {
+            val now = System.currentTimeMillis()
+            Apps.aprs.injectForTest(com.rocketgod.mayhem.core.apps.AprsStation("W6ABC-9", lat = 34.2694, lon = -118.7815, symbol = '>', table = '/',
+                course = 270, speed = 32.0, alt = 300.0, comment = "test station", packets = 3, firstMs = now - 600_000, lastMs = now,
+                wx = com.rocketgod.mayhem.core.apps.AprsWx(windDir = 250, windMph = 6, tempF = 64, humidity = 55, pressureMb = 1013.2)))
+        }
+        // `--ez crashtest true` crashes on purpose a moment later, to test the crash report on the next launch
+        if (i.getBooleanExtra("crashtest", false)) {
+            android.os.Handler(mainLooper).postDelayed({ throw IllegalStateException("crash report test (QA build, --ez crashtest)") }, 1500)
         }
         // `--es radio RTLSDR` dresses the demo as a dongle, to see the receive-only screens
         i.getStringExtra("radio")?.let { k -> runCatching { SdrEngine.onRadio(com.rocketgod.mayhem.core.Radio.Kind.valueOf(k)) } }

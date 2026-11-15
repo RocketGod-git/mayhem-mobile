@@ -86,6 +86,13 @@ class AprsDecoder(private val log: PacketLog) : IqProcessor {
 
     override fun reset(rate: Int) { fmRate = 0; chDec = null; for (f in framers) f.reset() }
 
+    /** QA and debug builds only (MainActivity.debugExtras, `--ez aprsdemo true`): a made-up station, so the station card
+     *  and the map can be tested without a radio. */
+    fun injectForTest(s: AprsStation) {
+        synchronized(stations) { stations[s.call] = s }
+        _stations.value = listOf(s) + _stations.value.filter { it.call != s.call }
+    }
+
     // ---- own channel with per-packet carrier tracking ----
     // Wide path (±12 kHz) finds the packet: the discriminator is steady through a packet and random between them, so
     // 10 ms blocks whose RMS drops well under the running noise level are a packet, and their mean is its carrier.

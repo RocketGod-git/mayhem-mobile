@@ -12,6 +12,14 @@
     <!-- HAM push-to-talk: the microphone, only while the PTT button is held. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Crash reports: lets the app see whether an email app is installed (Android 11+ hides other apps otherwise). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
