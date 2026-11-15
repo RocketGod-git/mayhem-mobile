@@ -15,6 +15,7 @@ import java.net.URL
 import java.time.OffsetDateTime
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
 /** A SondeHub launch site. */
 data class HubSite(
@@ -57,7 +58,11 @@ data class HubFlight(
     /** Every station that uploaded a frame, most frames first. */
     val stations: List<Pair<String, Int>>,
     val frames: Int,
+    /** Up to ~240 samples across the flight: time, altitude and (when the sonde sends it) temperature. */
+    val profile: List<HubSample> = emptyList(),
 )
+
+data class HubSample(val ms: Long, val alt: Double, val temp: Double?)
 
 data class HubPoint(val lat: Double, val lon: Double, val alt: Double, val ms: Long)
 
@@ -78,7 +83,9 @@ data class HubPredict(
 data class HubDetail(val flight: HubFlight? = null, val predict: HubPredict? = null, val at: Long = 0, val busy: Boolean = false, val err: String = "")
 
 /** What SondeHub knows near you: the launch sites, and every balloon others are hearing. */
-data class SondeNet(val sites: List<HubSite> = emptyList(), val air: List<HubSonde> = emptyList(), val err: String = "")
+data class SondeNet(val sites: List<HubSite> = emptyList(), val air: List<HubSonde> = emptyList(), val err: String = "",
+                    /** SondeHub's landing prediction for every balloon near you, refreshed each minute. */
+                    val preds: Map<String, HubPredict> = emptyMap())
 
 /**
  * SondeHub, the open network of radiosonde receivers: where the launch sites are, and every balloon in the air that
@@ -119,6 +126,19 @@ object SondeHub {
         return parseFlight(raw.optJSONObject(serial) ?: JSONObject())
     }
 
+    /** SondeHub's landing predictions for several balloons in one request, by serial. Blocking. */
+    fun predictions(serials: List<String>): Map<String, HubPredict> {
+        if (serials.isEmpty()) return emptyMap()
+        return parsePredictions(get("$API/predictions?vehicles=" + serials.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8") }, "predictions"))
+    }
+
+    fun parsePredictions(text: String): Map<String, HubPredict> {
+        val a = JSONArray(text)
+        val out = HashMap<String, HubPredict>()
+        for (i in 0 until a.length()) { val p = a.optJSONObject(i) ?: continue; val v = parsePredict(p) ?: continue; out[p.optString("vehicle")] = v }
+        return out
+    }
+
     /** SondeHub's landing prediction, or null when it has none. Blocking. */
     fun predict(serial: String): HubPredict? {
         val a = JSONArray(get("$API/predictions?vehicles=${java.net.URLEncoder.encode(serial, "UTF-8")}", "predictions"))
@@ -130,6 +150,7 @@ object SondeHub {
     private val busy = AtomicBoolean(false)
     @Volatile private var sitesAt = 0L
     @Volatile private var airAt = 0L
+    @Volatile private var predAt = 0L
     private var dir: File? = null
 
     /** Where the launch-site list is kept for a day between visits. */
@@ -147,12 +168,18 @@ object SondeHub {
                     .onFailure { e -> _net.value = _net.value.copy(err = e.message ?: e.toString()) }
             }
         }
-        if (now - airAt < 30_000 || !busy.compareAndSet(false, true)) return
+        // SondeHub's stations upload every second or two; every 15 s keeps the cards live without hammering it
+        if (now - airAt < 15_000 || !busy.compareAndSet(false, true)) return
         airAt = now
         scope.launch {
             try {
                 runCatching { sondes(lat, lon) }.onSuccess { a -> _net.value = _net.value.copy(air = a, err = "") }
                     .onFailure { e -> _net.value = _net.value.copy(err = e.message ?: e.toString()) }
+                val air = _net.value.air
+                if (air.isNotEmpty() && System.currentTimeMillis() - predAt > 60_000) {
+                    predAt = System.currentTimeMillis()
+                    runCatching { predictions(air.map { it.serial }) }.onSuccess { m -> _net.value = _net.value.copy(preds = m) }
+                }
             } finally { busy.set(false) }
         }
     }
@@ -291,7 +318,10 @@ object SondeHub {
             else r.v.str("uploader_callsign")?.let { calls[it] = (calls[it] ?: 0) + 1 }
         }
         val first = rows.firstOrNull()
-        return HubFlight(track = track, launch = first?.let { HubPoint(it.v.num("lat")!!, it.v.num("lon")!!, it.v.num("alt") ?: 0.0, it.ms) },
+        val step = max(1, (rows.size + 239) / 240)
+        val profile = rows.filterIndexed { i, _ -> i % step == 0 || i == rows.size - 1 }
+            .map { HubSample(it.ms, it.v.num("alt") ?: 0.0, if (it.v.optBoolean("invalid_temp", false)) null else it.v.num("temp")) }
+        return HubFlight(profile = profile, track = track, launch = first?.let { HubPoint(it.v.num("lat")!!, it.v.num("lon")!!, it.v.num("alt") ?: 0.0, it.ms) },
             maxAlt = maxAlt, maxAltMs = maxAltMs, stations = calls.entries.map { it.key to it.value }.sortedByDescending { it.second }, frames = rows.size)
     }
 

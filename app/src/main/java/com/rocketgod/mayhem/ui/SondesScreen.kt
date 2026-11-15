@@ -1,5 +1,10 @@
 package com.rocketgod.mayhem.ui
 
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.Canvas
+import com.rocketgod.mayhem.core.sonde.HubSample
+import com.rocketgod.mayhem.core.sonde.HubFlight
+import com.rocketgod.mayhem.core.sonde.HubPredict
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.withStyle
@@ -140,7 +145,8 @@ fun SondesScreen(accent: Color) {
         val grid = rememberLazyGridState()
         Box(modifier) {
             when (view) {
-                0 -> SondeCards(sondes, air, sites, grid, accent, now, sel, me, full) { s -> sel = if (sel == s) "" else s }
+                0 -> SondeCards(sondes, air, sites, grid, accent, now, sel, me, full,
+                    hub = { s -> (net.preds[s] ?: details[s]?.predict) to (details[s]?.flight?.maxAlt ?: 0.0) }) { s -> sel = if (sel == s) "" else s }
                 else -> {
                     val items = ArrayList<GeoItem>(); val paths = ArrayList<GeoPath>()
                     for (s in withPos) {
@@ -178,7 +184,7 @@ fun SondesScreen(accent: Color) {
             if (picked != null) SondeDetail(picked, accent, me, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 onMap = if (picked.lat != null) ({ view = 1; focusKey++ }) else null,
                 onCards = if (view != 0) ({ view = 0 }) else null) { sel = "" }
-            else if (pickedNet != null) SondeNetDetail(pickedNet, details[pickedNet.serial], net.sites, accent, me, now, snap?.wide == true, view == 1, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
+            else if (pickedNet != null) SondeNetDetail(pickedNet, details[pickedNet.serial], net.preds[pickedNet.serial], net.sites, accent, me, now, snap?.wide == true, view == 1, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 onMap = { view = 1; focusKey++ }, onCards = if (view != 0) ({ view = 0 }) else null,
                 onTracker = { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://sondehub.org/" + Uri.encode(pickedNet.serial)))) } }) { sel = "" }
         }
@@ -219,11 +225,7 @@ fun SondesScreen(accent: Color) {
             if (view == 2) LogList(heldLog ?: logSnap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) logSnap.total else null,
                 accent = accent, empty = "listening for sondes…")
             else stage(Modifier.fillMaxWidth().weight(1f))
-            AppNote("Weather balloons: Vaisala RS41 and RS92, Graw DFM, Meteomodem M10 and M20, InterMet iMet-1, iMet-4 and iMet-54, Lockheed Martin LMS6, " +
-                "Meisei, MRZ and MTS01, each found and decoded on its own: no type to pick. Weather services launch them twice a day, around 00:00 and " +
-                "12:00 UTC (about an hour before). A HackRF watches the whole 400–406 MHz band at once; an RTL-SDR steps across it and stays on a sonde " +
-                "once it decodes. 1680 MHz is the older US LMS6 band. The landing spot comes from a simple model: the balloon bursts near 30 km and the " +
-                "parachute drifts with the wind the sonde measured on the way up.")
+            SondeAbout(accent)
         })
     if (full) FullscreenPanel(if (view == 0) "SONDES · ${sondes.size}" else "SONDES · MAP", accent, onClose = { full = false },
         actions = { switcher(false, Modifier.width(d.dp(260f))) }) {
@@ -276,7 +278,7 @@ private fun SondeChannels(snap: SondeSnap?, accent: Color) {
  */
 @Composable
 private fun SondeCards(sondes: List<SondeRow>, air: List<HubSonde>, sites: List<Pair<HubSite, Pair<Double, Double>>>, grid: LazyGridState, accent: Color,
-                       now: Long, sel: String, me: Pair<Double, Double>?, full: Boolean, onPick: (String) -> Unit) {
+                       now: Long, sel: String, me: Pair<Double, Double>?, full: Boolean, hub: (String) -> Pair<HubPredict?, Double>, onPick: (String) -> Unit) {
     val d = rememberDims()
     if (sondes.isEmpty() && air.isEmpty()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -293,7 +295,7 @@ private fun SondeCards(sondes: List<SondeRow>, air: List<HubSonde>, sites: List<
         LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(), state = grid,
             horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             items(sondes, key = { "${it.type}:${it.serial}" }) { s -> SondeCard(s, accent, now, sel == s.serial, me) { onPick(s.serial) } }
-            items(air, key = { "hub:${it.serial}" }) { h -> SondeAirCard(h, accent, now, me, sel == h.serial) { onPick(h.serial) } }
+            items(air, key = { "hub:${it.serial}" }) { h -> val (pr, peak) = hub(h.serial); SondeAirCard(h, pr, peak, accent, now, me, sel == h.serial) { onPick(h.serial) } }
             if (sites.isNotEmpty()) item(key = "sites", span = { GridItemSpan(maxLineSpan) }) { SondeSites(sites, accent, now) }
         }
         NewestPill(follow, grid, sondes.count { it.lastMs > follow.seen }, accent, Modifier.align(Alignment.TopCenter))
@@ -313,43 +315,167 @@ private fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehi
         style = Stroke(width = w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))))
 }
 
-/** A balloon someone else is hearing and our radio isn't (yet): what it is, where, and where to listen. */
+/** Where a SondeHub balloon is in its flight; a report over 10 minutes old with no landing means no station hears it now. */
+internal fun hubPhase(h: HubSonde, pr: HubPredict?, now: Long): Pair<String, String> {
+    if (pr?.landed == true) return "down" to "LANDED"
+    if (now - h.ms > 600_000) return "lost" to "SIGNAL LOST"
+    val c = h.climb ?: 0.0
+    return when {
+        c > 1 -> "up" to "▲ CLIMBING %.1f m/s".format(Locale.US, c)
+        c < -1 -> "fall" to "▼ FALLING %.1f m/s".format(Locale.US, -c)
+        else -> "float" to "FLOATING"
+    }
+}
+
+/** A balloon someone else is hearing and our radio isn't (yet): what it is, where it is going, and where to listen. */
 @Composable
-private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double, Double>?, selected: Boolean, onClick: () -> Unit) {
+private fun SondeAirCard(h: HubSonde, pr: HubPredict?, peak: Double, accent: Color, now: Long, me: Pair<Double, Double>?, selected: Boolean, onClick: () -> Unit) {
     val d = rememberDims()
     val age = (now - h.ms) / 1000.0
     val live = age < 120
     val ago = when { age < 60 -> "${max(0, age.toInt())} s ago"; age < 3600 -> "${(age / 60).toInt()} min ago"; else -> "${(age / 3600).toInt()} h ago" }
-    val climb = h.climb?.let { "${if (it >= 0) "▲" else "▼"} ${"%.1f".format(Locale.US, kotlin.math.abs(it))} m/s" } ?: ""
+    val (phKey, phText) = hubPhase(h, pr, now)
+    val phColor = when (phKey) { "up" -> Palette.ok; "fall" -> Palette.accent2; "float" -> accent; else -> Palette.muted }
     val from = fromHere(me, h.lat, h.lon)
-    val listen = (h.mhz?.let { "listen on %.3f MHz".format(Locale.US, it) } ?: "frequency not reported") +
-        (h.speedMs?.let { v -> " · %.0f km/h".format(Locale.US, v * 3.6) + (h.heading?.let { " ${compass(it)}" } ?: "") } ?: "")
+    val land = pr?.let { fromHere(me, it.lat, it.lon) } ?: ""
+    val coming = pr != null && !pr.landed && pr.ms > now
+    val fate = when {
+        pr == null -> if (from.isNotEmpty()) "$from from you" else ""
+        pr.landed -> "landed" + if (land.isNotEmpty()) " $land from you" else ""
+        coming -> "lands in ${sondeMins((pr.ms - now) / 1000.0)}" + if (land.isNotEmpty()) " · $land from you" else ""
+        else -> "down by now" + if (land.isNotEmpty()) " · $land from you" else ""
+    }
+    val drift = h.speedMs?.let { v -> "drifting %.0f km/h".format(Locale.US, v * 3.6) + (h.heading?.let { " ${compass(it)}" } ?: "") } ?: ""
+    val top = maxOf(35_000.0, peak, h.alt)
     val shape = RoundedCornerShape(d.dp(14f))
-    Column(Modifier.fillMaxWidth().alpha(if (live) 1f else 0.8f).clip(shape)
+    Column(Modifier.fillMaxWidth().alpha(if (live) 1f else 0.85f).clip(shape)
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.06f), Palette.panel)))
         .then(if (selected) Modifier.border(2.5.dp, accent, shape) else Modifier.dashedBorder(accent.copy(alpha = 0.55f), d.dp(14f)))
-        .clickable { onClick() }.padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+        .clickable { onClick() }.padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(if (h.serial.length > 8) 16f else 20f), maxLines = 1)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
                 Text(h.type, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
-                Text("SONDEHUB", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
+                Text("VIA SONDEHUB", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Box(Modifier.size(d.dp(9f)).background(if (live) Palette.ok else Palette.muted, CircleShape))
             Text(ago, color = if (live) Palette.ok else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
         }
+        val pill = RoundedCornerShape(50)
+        Text(phText, color = phColor, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.5.sp, maxLines = 1,
+            modifier = Modifier.clip(pill).background(phColor.copy(alpha = if (phKey == "up" || phKey == "fall") 0.12f else 0f)).border(1.dp, phColor, pill)
+                .padding(horizontal = d.dp(8f), vertical = d.dp(2f)))
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Text("%,d".format(Locale.US, Math.round(h.alt)), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
             Text("METERS", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.padding(bottom = d.dp(4f)))
-            Text(climb, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
+            Text(drift, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, textAlign = TextAlign.End,
                 modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
         }
-        Text(listen, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // altitude against a 35 km burst, with the peak marked once the flight is known
+        val accent2 = Palette.accent2; val okC = Palette.ok; val track = Palette.line
+        Canvas(Modifier.fillMaxWidth().height(d.dp(9f))) {
+            val y = size.height / 2; val hgt = 5.dp.toPx()
+            drawRoundRect(track.copy(alpha = 0.7f), topLeft = Offset(0f, y - hgt / 2), size = androidx.compose.ui.geometry.Size(size.width, hgt), cornerRadius = CornerRadius(hgt / 2))
+            val w = (size.width * (h.alt / top)).toFloat().coerceAtLeast(hgt)
+            drawRoundRect(Brush.horizontalGradient(listOf(accent, okC)), topLeft = Offset(0f, y - hgt / 2), size = androidx.compose.ui.geometry.Size(w, hgt), cornerRadius = CornerRadius(hgt / 2))
+            if (peak > h.alt + 50) { val x = (size.width * (peak / top)).toFloat(); drawRect(accent2, topLeft = Offset(x - 1.dp.toPx(), 0f), size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height)) }
+        }
+        if (fate.isNotEmpty()) Text(fate, color = if (coming) Palette.accent2 else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f),
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
         val ptu = listOfNotNull(h.tempC?.let { "%.1f °C".format(Locale.US, it) }, h.rh?.let { "${Math.round(it)}% RH" }, h.battV?.let { "%.1f V".format(Locale.US, it) }).joinToString(" · ")
-        if (ptu.isNotEmpty()) Text(ptu, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (from.isNotEmpty()) Text("$from from you", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("online report · tap for the whole flight", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (ptu.isNotEmpty()) Text(ptu, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text((h.mhz?.let { "%.3f MHz".format(Locale.US, it) } ?: "frequency not reported") + " · tap for the whole flight", color = Palette.muted, fontFamily = Mono,
+            fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Altitude across the flight, with the burst marked and the latest point lit. */
+@Composable
+private fun HubAltChart(fl: HubFlight, h: HubSonde, accent: Color, modifier: Modifier) {
+    val d = rememberDims()
+    val pts = (fl.profile + HubSample(h.ms, h.alt, h.tempC)).filter { it.ms >= (fl.profile.firstOrNull()?.ms ?: h.ms) }
+    if (pts.size < 2) return
+    val t0 = pts.first().ms; val t1 = pts.last().ms
+    val top = maxOf(1000.0, pts.maxOf { it.alt }) * 1.08
+    val accent2 = Palette.accent2; val okC = Palette.ok
+    HubChartFrame("ALTITUDE", LoraHub.clock(t0).take(5), "peak %.1f km".format(Locale.US, fl.maxAlt / 1000), LoraHub.clock(t1).take(5), accent, modifier) {
+        Canvas(Modifier.fillMaxWidth().height(d.dp(64f))) {
+            fun x(ms: Long) = (size.width * (ms - t0) / maxOf(1L, t1 - t0).toFloat())
+            fun y(a: Double) = (size.height * (1 - a / top)).toFloat()
+            val path = androidx.compose.ui.graphics.Path(); val fill = androidx.compose.ui.graphics.Path()
+            fill.moveTo(x(t0), size.height)
+            pts.forEachIndexed { i, p -> if (i == 0) path.moveTo(x(p.ms), y(p.alt)) else path.lineTo(x(p.ms), y(p.alt)); fill.lineTo(x(p.ms), y(p.alt)) }
+            fill.lineTo(x(t1), size.height); fill.close()
+            drawPath(fill, accent.copy(alpha = 0.14f))
+            drawPath(path, accent, style = Stroke(width = 1.6.dp.toPx()))
+            if (fl.maxAlt > 0) drawCircle(accent2, 3.dp.toPx(), Offset(x(fl.maxAltMs), y(fl.maxAlt)))
+            drawCircle(okC, 3.5.dp.toPx(), Offset(x(pts.last().ms), y(pts.last().alt)))
+        }
+    }
+}
+
+/** Temperature by altitude on the way up: the atmosphere the sonde measured. */
+@Composable
+private fun HubTempChart(fl: HubFlight, accent: Color, modifier: Modifier) {
+    val d = rememberDims()
+    // the climb only: on the way down the sensor trails the parachute and reads warm
+    val upTo = fl.profile.indexOfFirst { it.ms >= fl.maxAltMs }
+    val pts = (if (upTo < 0) fl.profile else fl.profile.take(upTo + 1)).filter { it.temp != null }
+    if (pts.size < 5) return
+    val lo = pts.minOf { it.temp!! }; val hi = pts.maxOf { it.temp!! }; val top = pts.maxOf { it.alt } * 1.05
+    val accent2 = Palette.accent2; val muted = Palette.muted
+    HubChartFrame("TEMPERATURE BY ALTITUDE", "%.0f °C".format(Locale.US, lo), "0–%.0f km".format(Locale.US, top / 1050), "%.0f °C".format(Locale.US, hi), accent, modifier) {
+        Canvas(Modifier.fillMaxWidth().height(d.dp(64f))) {
+            fun x(t: Double) = (size.width * (t - lo) / maxOf(1.0, hi - lo)).toFloat()
+            fun y(a: Double) = (size.height * (1 - a / top)).toFloat()
+            if (lo < 0 && hi > 0) drawLine(muted, Offset(x(0.0), 0f), Offset(x(0.0), size.height), 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
+            val path = androidx.compose.ui.graphics.Path()
+            pts.forEachIndexed { i, p -> if (i == 0) path.moveTo(x(p.temp!!), y(p.alt)) else path.lineTo(x(p.temp!!), y(p.alt)) }
+            drawPath(path, accent2, style = Stroke(width = 1.6.dp.toPx()))
+        }
+    }
+}
+
+@Composable
+private fun HubChartFrame(title: String, left: String, mid: String, right: String, accent: Color, modifier: Modifier, chart: @Composable () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(10f))
+    Column(modifier.clip(shape).background(Palette.paper.copy(alpha = 0.55f)).border(1.dp, accent.copy(alpha = 0.22f), shape).padding(horizontal = d.dp(8f), vertical = d.dp(6f))) {
+        Text(title, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
+        chart()
+        Row(Modifier.fillMaxWidth()) {
+            Text(left, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+            Text(mid, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+            Text(right, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+        }
+    }
+}
+
+/** What Sondes hears and how, as a short labeled panel instead of a paragraph. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SondeAbout(accent: Color) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(12f))
+    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.7f)).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(11f), vertical = d.dp(9f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            for (t in listOf("RS41", "RS92", "DFM", "M10", "M20", "iMet-1", "iMet-4", "iMet-54", "LMS6", "Meisei", "MRZ", "MTS01")) {
+                val cs = RoundedCornerShape(d.dp(6f))
+                Text(t, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                    modifier = Modifier.clip(cs).background(accent.copy(alpha = 0.08f)).border(1.dp, accent.copy(alpha = 0.4f), cs).padding(horizontal = d.dp(7f), vertical = d.dp(2f)))
+            }
+        }
+        Text("all decoded on their own, no type to pick", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(4f)))
+        for ((k, v) in listOf("WHEN" to "twice a day, about an hour before 00:00 and 12:00 UTC", "HACKRF" to "watches all of 400–406 MHz at once",
+            "RTL-SDR" to "steps across the band and stays on a sonde once it decodes", "1680 MHz" to "the older US LMS6 band",
+            "LANDING" to "bursts near 30 km, then drifts on the winds it measured going up")) {
+            Row(horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+                Text(k, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.5.sp, modifier = Modifier.width(d.dp(74f)).padding(top = d.dp(1f)))
+                Text(v, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.weight(1f))
+            }
+        }
     }
 }
 
@@ -361,16 +487,17 @@ internal data class HubRow(val name: String, val value: String, val note: String
 internal data class HubDetailModel(val phase: String, val tiles: List<HubTile>, val sections: List<Pair<String, List<HubRow>>>, val stations: List<String>, val more: Int)
 
 /** What the SondeHub detail says about [h], in the web app's order (sondeNetDetail in main.ts). */
-internal fun hubDetailModel(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, me: Pair<Double, Double>?, now: Long): HubDetailModel {
-    val fl = dx?.flight; val pr = dx?.predict
-    val phase = when { pr?.landed == true -> "LANDED"; (h.climb ?: 0.0) < -1 -> "FALLING"; (h.climb ?: 0.0) > 1 -> "CLIMBING"; else -> "FLOATING" }
+internal fun hubDetailModel(h: HubSonde, dx: HubDetail?, shared: HubPredict?, sites: List<HubSite>, me: Pair<Double, Double>?, now: Long): HubDetailModel {
+    val fl = dx?.flight; val pr = dx?.predict ?: shared
+    val phKey = hubPhase(h, pr, now).first
+    val phase = when (phKey) { "down" -> "LANDED"; "fall" -> "FALLING"; "up" -> "CLIMBING"; "lost" -> "SIGNAL LOST"; else -> "FLOATING" }
     val f = h.fields.toMap()
     fun m(v: Double) = "%,d".format(Locale.US, Math.round(v))
     val age = (now - h.ms) / 1000.0
     val fromNow = fromHere(me, h.lat, h.lon)
     val tiles = ArrayList<HubTile>()
     tiles.add(HubTile("ALTITUDE", m(h.alt), "m", if (fl != null && fl.maxAlt > h.alt + 50) "peak ${m(fl.maxAlt)} m" else ""))
-    h.climb?.let { c -> tiles.add(HubTile(if (c >= 0) "CLIMBING" else "FALLING", "%.1f".format(Locale.US, Math.abs(c)), "m/s",
+    h.climb?.let { c -> tiles.add(HubTile((if (phKey == "lost") "WAS " else "") + if (c >= 0) "CLIMBING" else "FALLING", "%.1f".format(Locale.US, Math.abs(c)), "m/s",
         h.speedMs?.let { v -> "drifting %.0f km/h".format(Locale.US, v * 3.6) + (h.heading?.let { " ${compass(it)}" } ?: "") } ?: "")) }
     h.tempC?.let { t -> tiles.add(HubTile("AIR", "%.1f".format(Locale.US, t), "°C", h.rh?.let { "${Math.round(it)}% humidity" } ?: "")) }
     if (pr != null) {
@@ -385,7 +512,7 @@ internal fun hubDetailModel(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, m
     val site = l?.let { SondeHub.launchSite(sites, it.lat, it.lon) }
     add(flight, "Launched from", site?.name ?: l?.let { "%.4f, %.4f".format(Locale.US, it.lat, it.lon) }, if (site != null && site.id.isNotEmpty()) "station ${site.id}" else "")
     if (l != null) add(flight, "Went up", LoraHub.clock(l.ms), "${SondeHub.dur((h.ms - l.ms) / 1000.0)} in flight")
-    if (fl != null && fl.maxAlt > 0) add(flight, if (phase == "FALLING" || phase == "LANDED") "Burst" else "Highest so far", "${m(fl.maxAlt)} m", "at ${LoraHub.clock(fl.maxAltMs)}")
+    if (fl != null && fl.maxAlt > 0) add(flight, if (fl.maxAlt > h.alt + 500) "Burst" else "Highest so far", "${m(fl.maxAlt)} m", "at ${LoraHub.clock(fl.maxAltMs)}")
     if (pr != null) {
         add(flight, if (pr.landed) "Landed at" else "Predicted landing", "%.4f, %.4f".format(Locale.US, pr.lat, pr.lon),
             fromHere(me, pr.lat, pr.lon) + if (!pr.landed && pr.ms > now) " · in ${sondeMins((pr.ms - now) / 1000.0)}" else "")
@@ -399,7 +526,7 @@ internal fun hubDetailModel(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, m
     add(sonde, "Model", (f["MAKER"]?.let { "$it " } ?: "") + h.type)
     add(sonde, "Battery", f["BATTERY"])
     add(sonde, "GPS", f["SATELLITES"]?.let { "$it satellites" }, f["POSITION FROM"]?.takeIf { it != "GPS" }?.let { "position from $it" } ?: "")
-    add(sonde, "Burst timer", f["BURST TIMER"], "cuts the balloon free")
+    add(sonde, "Burst timer", f["BURST TIMER"], "left until it cuts the balloon free")
     add(sonde, "Mainboard", f["MAINBOARD"]); add(sonde, "DFM code", f["DFM CODE"]); add(sonde, "Frame", f["FRAME NUMBER"])
     val rx = ArrayList<HubRow>()
     val mhz = h.mhz?.let { "%.3f MHz".format(Locale.US, it) }
@@ -417,12 +544,12 @@ internal fun hubDetailModel(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, m
 /** The detail for a balloon only SondeHub reports: headline tiles, then the story in short labeled sections. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SondeNetDetail(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, accent: Color, me: Pair<Double, Double>?, now: Long, wide: Boolean, onMapView: Boolean, modifier: Modifier,
+private fun SondeNetDetail(h: HubSonde, dx: HubDetail?, shared: HubPredict?, sites: List<HubSite>, accent: Color, me: Pair<Double, Double>?, now: Long, wide: Boolean, onMapView: Boolean, modifier: Modifier,
                            onMap: () -> Unit, onCards: (() -> Unit)?, onTracker: () -> Unit, onClose: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(14f))
     val scroll = rememberScrollState()
-    val md = hubDetailModel(h, dx, sites, me, now)
+    val md = hubDetailModel(h, dx, shared, sites, me, now)
     // on the map the detail keeps the lower half, so the flight it describes stays in view
     Column((if (onMapView) modifier.fillMaxHeight(0.5f) else modifier).fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
@@ -445,6 +572,14 @@ private fun SondeNetDetail(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, ac
                     for (t in line) HubTileView(t, accent, Modifier.weight(1f))
                     repeat(perRow - line.size) { Spacer(Modifier.weight(1f)) }
                 }
+            }
+        }
+        dx?.flight?.let { fl ->
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val two = maxWidth >= 420.dp
+                val gap = d.dp(6f)
+                if (two) Row(horizontalArrangement = Arrangement.spacedBy(gap)) { HubAltChart(fl, h, accent, Modifier.weight(1f)); HubTempChart(fl, accent, Modifier.weight(1f)) }
+                else Column(verticalArrangement = Arrangement.spacedBy(gap)) { HubAltChart(fl, h, accent, Modifier.fillMaxWidth()); HubTempChart(fl, accent, Modifier.fillMaxWidth()) }
             }
         }
         if (dx?.flight == null && dx?.busy == true) Text("loading the flight from SondeHub…", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
