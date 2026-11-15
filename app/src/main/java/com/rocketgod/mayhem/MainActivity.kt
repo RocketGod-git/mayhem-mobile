@@ -266,6 +266,15 @@ class MainActivity : ComponentActivity() {
                 }
             }, "uatreplay").start()
         }
+        // `--es uatmsgs name.json` feeds decoded uplink messages (a JSON list of hex strings) into UAT, every weather product
+        i.getStringExtra("uatmsgs")?.let { name ->
+            Thread({
+                val f = java.io.File(getExternalFilesDir(null), name)
+                if (!f.exists()) return@Thread
+                val a = org.json.JSONArray(f.readText())
+                for (k in 0 until a.length()) { val h = a.getString(k); Apps.uat.onUp(ByteArray(h.length / 2) { j -> h.substring(j * 2, j * 2 + 2).toInt(16).toByte() }) }
+            }, "uatmsgs").start()
+        }
         // `--ez crashtest true` crashes on purpose a moment later, to test the crash report on the next launch
         if (i.getBooleanExtra("crashtest", false)) {
             android.os.Handler(mainLooper).postDelayed({ throw IllegalStateException("crash report test (QA build, --ez crashtest)") }, 1500)

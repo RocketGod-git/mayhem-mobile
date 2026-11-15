@@ -47,7 +47,14 @@ data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: 
 }
 
 /** A radar block: south-west corner and size in degrees, [bins] cols across and rows from the north, 0 = clear. */
-class RadarCell(val lat: Double, val lon: Double, val dLat: Double, val dLon: Double, val cols: Int, val rows: Int, val bins: ByteArray)
+class RadarCell(val lat: Double, val lon: Double, val dLat: Double, val dLon: Double, val cols: Int, val rows: Int, val bins: ByteArray,
+                /** ARGB by value for this block (a hazard grid), instead of the radar's colors. */ val colors: IntArray? = null) {
+    /** The block as a cols x rows bitmap, made once, drawn smoothed when zoomed in. */
+    @Volatile var bitmap: android.graphics.Bitmap? = null
+}
+
+/** A hazard drawn on the map (a G-AIRMET): an area or a line in [color], tappable by [id]. */
+data class GeoShape(val id: String, val pts: List<Pair<Double, Double>>, val line: Boolean, val color: Int, val dashed: Boolean = false, val sel: Boolean = false)
 
 /** The map's extra layers: lines home to each contact, a satellite's ground track and radio footprint. */
 data class GeoLayers(
@@ -60,6 +67,8 @@ data class GeoLayers(
     /** Weather radar under everything else, [radarColors] ARGB by intensity (0 means not drawn). */
     val radar: List<RadarCell> = emptyList(),
     val radarColors: IntArray = IntArray(0),
+    /** Hazard areas and lines over the radar, under the markers. */
+    val shapes: List<GeoShape> = emptyList(),
 )
 
 /** A line through [pts]: dashed for a prediction, faint for one that is not the selected item's. */
@@ -96,7 +105,8 @@ fun MapEmptyOverlay(title: String, sub: String, modifier: Modifier = Modifier) {
     }
 }
 
-private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int, private val onPick: (String) -> Unit) : Overlay() {
+private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int, private val onPick: (String) -> Unit,
+                           private val onMapTap: ((Double, Double) -> Unit)? = null) : Overlay() {
     @Volatile var items: List<GeoItem> = emptyList()
     @Volatile var layers = GeoLayers()
     @Volatile var selected: String? = null
@@ -186,6 +196,15 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         label.textSize = 10f * d; halo.textSize = 10f * d
         val rgb = accentInt and 0x00FFFFFF
         if (layers.radar.isNotEmpty()) drawRadar(c, mv)
+        for (sh in layers.shapes) {
+            if (sh.pts.size < 2) continue
+            val path = android.graphics.Path()
+            sh.pts.forEachIndexed { i, (a, b) -> val (x, y) = xy(mv, a, b); if (i == 0) path.moveTo(x, y) else path.lineTo(x, y) }
+            if (!sh.line) { path.close(); area.color = ((if (sh.sel) 0x48 else 0x1F) shl 24) or (sh.color and 0x00FFFFFF); c.drawPath(path, area) }
+            line.color = ((if (sh.sel) 0xFF else 0xD0) shl 24) or (sh.color and 0x00FFFFFF); line.strokeWidth = (if (sh.sel) 3.5f else if (sh.line) 2f else 1.5f) * d
+            line.pathEffect = if (sh.dashed) android.graphics.DashPathEffect(floatArrayOf(6f * d, 5f * d), 0f) else null
+            c.drawPath(path, line); line.pathEffect = null
+        }
         layers.footprint?.let { (la, lo, km) ->
             val ring = (0..72).map { destination(la, lo, km, it * 5.0) }
             area.color = (0x22 shl 24) or rgb
@@ -234,6 +253,7 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
     }
 
     private val cell = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL }
+    private val smooth = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
 
     /**
      * The radar: each block projected corner to corner and its bins drawn as cells. Zoomed out, where a bin would be
@@ -242,19 +262,29 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
      */
     private fun drawRadar(c: android.graphics.Canvas, mv: MapView) {
         val bb = mv.boundingBox
-        val colors = layers.radarColors
         for (rc in layers.radar) {
+            val colors = rc.colors ?: layers.radarColors
             if (rc.lat > bb.latNorth || rc.lat + rc.dLat < bb.latSouth) continue
             if (bb.lonWest <= bb.lonEast && (rc.lon > bb.lonEast || rc.lon + rc.dLon < bb.lonWest)) continue
             val (x0, y0) = xy(mv, rc.lat + rc.dLat, rc.lon); val (x1, y1) = xy(mv, rc.lat, rc.lon + rc.dLon)
             val bw = (x1 - x0) / rc.cols; val bh = (y1 - y0) / rc.rows
             if (x1 - x0 < 0.5f) continue
+            // zoomed in so a bin is several pixels: the block as a small bitmap drawn with filtering, soft fields
+            // like a forecast map instead of hard squares
+            if (bw >= 4f) {
+                val bmp = rc.bitmap ?: android.graphics.Bitmap.createBitmap(rc.cols, rc.rows, android.graphics.Bitmap.Config.ARGB_8888).also { b ->
+                    for (r in 0 until rc.rows) for (k in 0 until rc.cols) { val v = rc.bins[r * rc.cols + k].toInt() and 0xff; b.setPixel(k, r, if (v in 1 until colors.size) colors[v] else 0) }
+                    rc.bitmap = b
+                }
+                c.drawBitmap(bmp, null, android.graphics.RectF(x0, y0, x1, y1), smooth)
+                continue
+            }
             val g = if (bw >= 1.5f) 1 else minOf(rc.cols, kotlin.math.ceil(1.5f / maxOf(bw, 0.01f)).toInt())
             for (r in 0 until rc.rows) {
                 var k = 0
                 while (k < rc.cols) {
                     var v = 0
-                    for (j in k until minOf(rc.cols, k + g)) v = maxOf(v, rc.bins[r * rc.cols + j].toInt())
+                    for (j in k until minOf(rc.cols, k + g)) v = maxOf(v, rc.bins[r * rc.cols + j].toInt() and 0xff)
                     if (v > 0 && v < colors.size && colors[v] != 0) {
                         cell.color = colors[v]
                         c.drawRect(x0 + k * bw, y0 + r * bh, x0 + minOf(rc.cols, k + g) * bw + 0.5f, y0 + (r + 1) * bh + 0.5f, cell)
@@ -273,8 +303,27 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             if (dd < bestD) { bestD = dd; best = it.id }
         }
         val tapR = 26f * mv.resources.displayMetrics.density
-        return if (best != null && bestD < tapR * tapR) { onPick(best); true } else false
+        if (best != null && bestD < tapR * tapR) { onPick(best); return true }
+        // a hazard area or line under the finger, else a tap on open map
+        val gp = mv.projection.fromPixels(e.x.toInt(), e.y.toInt())
+        val la = gp.latitude; val lo = gp.longitude
+        for (sh in layers.shapes.asReversed()) {
+            if (!sh.line && inPoly(la, lo, sh.pts)) { onPick(sh.id); return true }
+        }
+        val tap = onMapTap ?: return false
+        tap(la, lo); return true
     }
+}
+
+/** Whether lat, lon is inside the polygon [pts] (ray casting). */
+fun inPoly(lat: Double, lon: Double, pts: List<Pair<Double, Double>>): Boolean {
+    var inside = false; var j = pts.size - 1
+    for (i in pts.indices) {
+        val (ya, xa) = pts[i]; val (yb, xb) = pts[j]
+        if ((ya > lat) != (yb > lat) && lon < (xb - xa) * (lat - ya) / (yb - ya) + xa) inside = !inside
+        j = i
+    }
+    return inside
 }
 
 /** The point [km] away from lat, lon on bearing [deg] (great circle). */
@@ -307,6 +356,8 @@ fun GeoMapView(
     emptyTitle: String = "", emptySub: String = "",
     /** Fit the view to the items as they come (false: stay where it opened until the crosshair is pressed). */
     autoFollow: Boolean = true,
+    /** A tap on open map (not on a marker or a hazard area). */
+    onMapTap: ((Double, Double) -> Unit)? = null,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -395,7 +446,7 @@ fun GeoMapView(
                         }
                         false
                     }
-                    val ov = ItemsOverlay(accentInt, goldInt, onPick).also { it.items = items; it.layers = layers; it.selected = selected; it.home = home }
+                    val ov = ItemsOverlay(accentInt, goldInt, onPick, onMapTap).also { it.items = items; it.layers = layers; it.selected = selected; it.home = home }
                     overlays.add(ov); overlayRef = ov
                     onResume()
                 }

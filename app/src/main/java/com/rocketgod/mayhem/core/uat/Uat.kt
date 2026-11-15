@@ -22,7 +22,14 @@ class UatProcessor(private val log: PacketLog) : IqProcessor {
         val towers: Map<String, Tower>, val regional: List<RadarBlock>, val national: List<RadarBlock>, val radarTime: String,
         val metars: Map<String, Pair<Metar, Long>>, val texts: List<Text>, val planes: Map<String, Plane>,
         val products: Map<Int, Int>, val up: Int, val down: Int, val firstAt: Long,
+        /** Icing, turbulence, cloud tops, lightning blocks by product. */
+        val hazards: Map<Int, List<HazardBlock>>,
+        /** G-AIRMETs and other drawn hazards, keyed. */
+        val shapes: Map<String, Shape>,
+        /** Every regional radar block reported (clear ones too): national radar is drawn only outside them. */
+        val regionalSeen: Set<Int>,
     )
+    data class Shape(val key: String, val o: Overlay, val at: Long)
 
     private val lock = Any()
     private val towers = LinkedHashMap<String, Tower>()
@@ -32,6 +39,9 @@ class UatProcessor(private val log: PacketLog) : IqProcessor {
     private val texts = LinkedHashMap<String, Text>()
     private val planes = HashMap<String, Plane>()
     private val products = HashMap<Int, Int>()
+    private val hazards = HashMap<Int, HashMap<Int, HazardBlock>>()
+    private val shapes = LinkedHashMap<String, Shape>()
+    private val regionalSeen = HashSet<Int>()
     private var up = 0; private var down = 0; private var firstAt = 0L
     private val _version = MutableStateFlow(0)
     /** Moves whenever anything new is decoded. */
@@ -60,8 +70,23 @@ class UatProcessor(private val log: PacketLog) : IqProcessor {
                 products[p.id] = (products[p.id] ?: 0) + 1
                 if (p.id == 63 || p.id == 64) {
                     val map = if (p.id == 63) regional else national
-                    for (b in Fisb.radarBlocks(p)) if (b.bins != null) map[b.block] = b else map.remove(b.block)
+                    for (b in Fisb.radarBlocks(p)) { if (p.id == 63 && b.scale == 0) regionalSeen.add(b.block); if (b.bins != null) map[b.block] = b else map.remove(b.block) }
                     radarTime = "%02d:%02dZ".format(Locale.US, p.hh, p.mm)
+                    continue
+                }
+                if (p.id == 70 || p.id == 71 || p.id == 84 || p.id == 90 || p.id == 91 || p.id == 103) {
+                    val m = hazards.getOrPut(p.id) { HashMap() }
+                    for (b in Fisb.hazardBlocks(p)) { val k = (b.level shl 24) or b.block; if (b.bins != null) m[k] = b else m.remove(k) }
+                    continue
+                }
+                if ((p.id == 14 || p.id == 8 || p.id in 11..17) && (p.payload.firstOrNull()?.toInt()?.and(0xff)?.shr(4) == 8)) {
+                    val o = Fisb.overlay(p)
+                    if (o != null && o.pts.size > 1) {
+                        val key = "${o.product}:${o.location}:${o.report}:${o.element}:${o.start.day}.${o.start.hh}"
+                        if (!shapes.containsKey(key)) got.add(if (p.id == 14) "G-AIRMET" else "AREA")
+                        shapes[key] = Shape(key, o, now)
+                        if (shapes.size > 1500) shapes.remove(shapes.keys.first())
+                    }
                     continue
                 }
                 val t = Fisb.text(p.payload)
@@ -111,12 +136,12 @@ class UatProcessor(private val log: PacketLog) : IqProcessor {
         val now = System.currentTimeMillis()
         planes.entries.removeAll { now - it.value.at > 120_000 }
         Snapshot(towers.toMap(), regional.values.toList(), national.values.toList(), radarTime, metars.toMap(), texts.values.toList(),
-            planes.toMap(), products.toMap(), up, down, firstAt)
+            planes.toMap(), products.toMap(), up, down, firstAt, hazards.mapValues { it.value.values.toList() }, shapes.toMap(), regionalSeen.toSet())
     }
 
     fun clear() {
         synchronized(lock) {
-            towers.clear(); regional.clear(); national.clear(); radarTime = ""; metars.clear(); texts.clear(); planes.clear(); products.clear()
+            towers.clear(); regional.clear(); national.clear(); hazards.clear(); shapes.clear(); regionalSeen.clear(); radarTime = ""; metars.clear(); texts.clear(); planes.clear(); products.clear()
             up = 0; down = 0; firstAt = 0
         }
         log.clear(); _version.value++

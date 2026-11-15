@@ -32,6 +32,22 @@ data class UatTarget(
     val callsign: String? = null, val emitter: Int? = null,
 )
 
+/** One block of a gridded hazard (icing, turbulence, cloud tops, lightning) at one altitude [level]; null bins: nothing there. */
+class HazardBlock(val product: Int, val block: Int, val level: Int, val lat: Double, val lon: Double, val dLat: Double, val dLon: Double, val bins: ByteArray?)
+
+/** Time of a G-AIRMET or area: month, day, hour, minute (UTC). */
+data class FisbTime(val month: Int, val day: Int, val hh: Int, val mm: Int)
+
+/**
+ * A drawn hazard: for G-AIRMETs [element] is 1 turbulence, 2 low-level wind shear, 3 surface wind, 4 icing,
+ * 5 freezing level, 6 IFR, 7 mountain obscuration. [pts] lat, lon; [altsFt] the altitudes on its vertices.
+ */
+data class Overlay(val product: Int, val element: Int, val location: String, val report: Int, val geometry: Int, val line: Boolean,
+                   val start: FisbTime, val end: FisbTime, val pts: List<Pair<Double, Double>>, val altsFt: List<Int>)
+
+/** A special use airspace schedule in its parts. */
+data class Sua(val name: String, val from: String?, val to: String?, val bottomFt: Int?, val topFt: Int?)
+
 object Fisb {
     private fun u(b: ByteArray, i: Int) = b[i].toInt() and 0xff
 
@@ -120,6 +136,7 @@ object Fisb {
         in 1..26 -> ('A' + c - 1).toString()
         in 32..63 -> c.toChar().toString()
         28 -> "\t"; 29, 30 -> "\n"
+        31 -> "|"   // field separator (special use airspace schedules)
         else -> ""
     }
 
@@ -228,4 +245,99 @@ object Fisb {
         }
         return UatTarget(address, q, pt, lat, lon, if (rawAlt != 0) (rawAlt - 1) * 25 - 1000 else null, u(b, 9) and 1 == 1, ag == 2, speed, track, vert, cs, emitter)
     }
+
+    /** The altitude, ft, of an icing or turbulence level (low products 70 / 90 from 2,000 ft, high 71 / 91 from 18,000). */
+    fun hazardAltFt(product: Int, level: Int) = (if (product == 71 || product == 91) 18000 else 2000) + level * 2000
+
+    /**
+     * The gridded hazards, worked out from our recordings: the radar's block reference, but the three bits after the
+     * run-length flag are the altitude level. Icing (70 / 71) is (run - 1, value) byte pairs; cloud tops (84),
+     * turbulence (90 / 91) and lightning (103) are (run - 1) << 4 | value bytes, with 0xE<value> followed by a long
+     * run. A block that does not fill its 128 bins exactly is dropped.
+     */
+    fun hazardBlocks(p: FisbProduct): List<HazardBlock> {
+        val d = p.payload
+        if (d.size < 3) return emptyList()
+        val rle = (u(d, 0) shr 7) and 1; val level = (u(d, 0) shr 4) and 7
+        val block = ((u(d, 0) and 0x0f) shl 16) or (u(d, 1) shl 8) or u(d, 2)
+        val pl = place(block, false, 0)
+        if (rle == 1) {
+            val bins = ByteArray(128); var n = 0; var i = 3
+            if (p.id == 70 || p.id == 71) {
+                while (i + 1 < d.size && n < 128) { val run = u(d, i) + 1; val v = d[i + 1]; i += 2; repeat(run) { if (n < 128) bins[n++] = v } }
+            } else {
+                while (i < d.size && n < 128) {
+                    val b = u(d, i++); val run: Int; val v: Int
+                    if (b shr 4 == 0xE) { v = b and 15; if (i >= d.size) return emptyList(); run = u(d, i++) + 1 } else { run = (b shr 4) + 1; v = b and 15 }
+                    repeat(run) { if (n < 128) bins[n++] = v.toByte() }
+                }
+            }
+            if (n != 128) return emptyList()
+            return listOf(HazardBlock(p.id, block, level, pl[0], pl[1], pl[2], pl[3], bins))
+        }
+        val out = arrayListOf(HazardBlock(p.id, block, level, pl[0], pl[1], pl[2], pl[3], null))
+        if (d.size > 3) {
+            val nBytes = u(d, 3) and 0x0f
+            val bits = ArrayList<Int>()
+            for (k in 4 until 8) bits.add((u(d, 3) shr k) and 1)
+            for (j in 0 until nBytes) { if (4 + j >= d.size) break; for (k in 0 until 8) bits.add((u(d, 4 + j) shr k) and 1) }
+            bits.forEachIndexed { idx, on -> if (on == 1) { val b = block + idx + 1; val q = place(b, false, 0); out.add(HazardBlock(p.id, b, level, q[0], q[1], q[2], q[3], null)) } }
+        }
+        return out
+    }
+
+    /** An icing value: severity 0-7 (7 no data), large supercooled drops 0-3; 0xFF is no data. */
+    fun icingSeverity(v: Int): Int = if (v == 0xFF) 0 else ((v shr 3) and 7).let { if (it >= 6) 0 else it }
+    fun icingSld(v: Int): Boolean = v != 0xFF && (v shr 6) != 0
+
+    private fun six4(d: ByteArray, at: Int): String {
+        val v = (u(d, at) shl 16) or (u(d, at + 1) shl 8) or u(d, at + 2)
+        val sb = StringBuilder()
+        for (k in 3 downTo 0) { val c = (v shr (k * 6)) and 63; if (c in 1..26) sb.append('A' + c - 1) else if (c in 48..57) sb.append(c.toChar()) }
+        return sb.toString()
+    }
+
+    /**
+     * A graphic overlay record (format 8): found by where its vertex list fits exactly. A geometry byte (low nibble),
+     * 2 bits of operator and 6 of vertex count - 1, start and end (month, day, hour, minute), then 6-byte vertices:
+     * 19-bit longitude, 19-bit latitude (360 / 2^19 degrees), a 10-bit altitude in hundreds of feet.
+     */
+    fun overlay(p: FisbProduct): Overlay? {
+        val d = p.payload
+        if (d.size < 26 || u(d, 0) shr 4 != 8) return null
+        fun okTime(i: Int) = u(d, i) in 1..12 && u(d, i + 1) in 1..31 && u(d, i + 2) < 24 && u(d, i + 3) < 60
+        var g = 10
+        while (g + 10 <= d.size) {
+            val geometry = u(d, g) and 15; val cnt = (u(d, g + 1) and 63) + 1
+            val v0 = g + 10
+            if (geometry in intArrayOf(3, 4, 7, 8, 9, 11, 12) && v0 + cnt * 6 == d.size && okTime(g + 2) && okTime(g + 6)) {
+                val pts = ArrayList<Pair<Double, Double>>(); val alts = sortedSetOf<Int>(); var bad = false
+                for (k in 0 until cnt) {
+                    val i = v0 + k * 6
+                    val hi = (u(d, i) shl 16) or (u(d, i + 1) shl 8) or u(d, i + 2); val lo = (u(d, i + 3) shl 16) or (u(d, i + 4) shl 8) or u(d, i + 5)
+                    var lon = (hi shr 5) * 360.0 / (1 shl 19); if (lon > 180) lon -= 360
+                    var lat = (((hi and 31) shl 14) or (lo shr 10)) * 360.0 / (1 shl 19); if (lat > 180) lat -= 360
+                    if (kotlin.math.abs(lat) > 90) { bad = true; break }
+                    pts.add(lat to lon); alts.add((lo and 0x3ff) * 100)
+                }
+                if (!bad) return Overlay(p.id, if (p.id == 14) u(d, 13) and 7 else 0, six4(d, 2), ((u(d, 6) and 0x3f) shl 8) or u(d, 7), geometry,
+                    geometry == 11 || geometry == 12, FisbTime(u(d, g + 2), u(d, g + 3), u(d, g + 4), u(d, g + 5)),
+                    FisbTime(u(d, g + 6), u(d, g + 7), u(d, g + 8), u(d, g + 9)), pts, alts.toList())
+            }
+            g++
+        }
+        return null
+    }
+
+    /** A special use airspace schedule line ("SUA ...|name|...|start|end|bottom|top|...") read into its parts. */
+    fun sua(text: String): Sua? {
+        if (!text.startsWith("SUA")) return null
+        val f = text.split('|').map { it.trim() }
+        val name = f.firstOrNull { Regex("^[A-Z]{1,2}\\d{2,5}[A-Z]?$").matches(it) } ?: ""
+        val whenF = f.filter { Regex("^\\d{10}$").matches(it) }
+        val alts = f.filter { Regex("^\\d{3}$").matches(it) }.map { it.toInt() * 100 }
+        fun t(x: String?) = x?.let { "20${it.substring(0, 2)}-${it.substring(2, 4)}-${it.substring(4, 6)} ${it.substring(6, 8)}:${it.substring(8, 10)}Z" }
+        return Sua(name, t(whenF.getOrNull(0)), t(whenF.getOrNull(1)), alts.getOrNull(0), alts.getOrNull(1))
+    }
 }
+
