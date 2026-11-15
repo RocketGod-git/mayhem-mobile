@@ -28,9 +28,9 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import { GeoMap, type GeoItem, type RadarCell, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
+import { GeoMap, type GeoItem, type RadarCell, type GeoShape, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
 import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
-import { productsOf, radarBlocks, textOf, parseMetar, stationOf, type Metar, type RadarBlock } from './dsp/uat/fisb.js';
+import { productsOf, radarBlocks, textOf, parseMetar, stationOf, hazardBlocks, icingOf, overlayOf, suaOf, type Metar, type RadarBlock, type HazardBlock, type Overlay } from './dsp/uat/fisb.js';
 import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
@@ -4836,7 +4836,19 @@ function refreshSondes(force = false): void {
 // ---- UAT (978 MHz): FIS-B weather from the FAA's ground towers, and the aircraft that broadcast on 978 ----
 type UatView = 'map' | 'weather' | 'notices' | 'traffic' | 'log';
 const uatUi = { view: 'map' as UatView, sel: '', timer: 0, drawn: 0, pending: 0, radarAt: 0, radarDirty: true,
-  layers: { radar: true, national: true, traffic: true, airports: true } };
+  layers: { radar: true, national: true, tops: false, turb: false, ice: false, lightning: true, gairmet: true, traffic: true, airports: true },
+  /** The altitude icing and turbulence are drawn at, ft (2,000 to 24,000). */
+  altFt: 8000, tap: null as [number, number] | null };
+/** The gridded hazards' colors by value: icing by severity, turbulence and cloud tops by level, lightning. */
+const UAT_ICE = ['', '#9fd9ff', '#5fb4ff', '#2f7dff', '#5a3dff', '#b04dff', '', ''];
+const UAT_TURB = ['', '', '#f8c63c', '#f8a33a', '#f4793a', '#ef4c3c', '#e2304e', '#d02a6e', '#bd2c8e', '#a63aa8', '#8f4bc0', '#7a5cd4', '#6a6ae0', '#5d75e8', '#5d75e8', ''];
+const UAT_TOPS = ['', '#d8e6ff', '#c3d6ff', '#adc6ff', '#97b5ff', '#81a4ff', '#6c93ff', '#5a82f4', '#4d71e0', '#4361cc', '#3a52b8', '#3245a4', '#2b3990', '#252f7c', '#252f7c', ''];
+const UAT_LIGHTNING = ['', '#fff35c', '#fff35c', '#ffe14a', '#ffe14a', '#ffce38', '#ffce38', '#ffba26', '#ffba26', '#ffa614', '#ffa614', '#ff9200', '#ff9200', '#ff7e00', '#ff7e00', ''];
+/** G-AIRMET kinds by element number, with their map colors. */
+const UAT_GAIRMET: Record<number, [string, string]> = { 1: ['TURBULENCE', '#f39a1c'], 2: ['LOW-LEVEL WIND SHEAR', '#ff7ad9'], 3: ['SURFACE WIND', '#a07cff'], 4: ['ICING', '#4aa3ff'],
+  5: ['FREEZING LEVEL', '#7fd6ff'], 6: ['IFR', '#ff5b52'], 7: ['MOUNTAIN OBSCURATION', '#d562ff'] };
+const UAT_ICE_WORD = ['none', 'trace', 'light', 'moderate', 'severe', 'heavy', '', 'no data'];
+type UatShape = Overlay & { key: string; at: number };
 type UatPlane = UatTarget & { at: number; first: number; frames: number; track: [number, number][] };
 interface UatText { kind: string; station: string; text: string; at: number }
 const uatData = {
@@ -4846,6 +4858,10 @@ const uatData = {
   metars: new Map<string, { m: Metar; at: number }>(),
   texts: new Map<string, UatText>(),
   products: new Map<number, number>(),
+  /** Icing, turbulence, cloud tops and lightning blocks by product, keyed level:block, and each product's time. */
+  hazards: new Map<number, Map<string, HazardBlock>>(), hazardTime: new Map<number, string>(),
+  /** G-AIRMETs and other drawn hazards. */
+  shapes: new Map<string, UatShape>(),
   planes: new Map<string, UatPlane>(),
   up: 0, down: 0, bad: 0, firstAt: 0,
 };
@@ -4887,6 +4903,22 @@ function uatOnUp(msg: Uint8Array): void {
       const map = p.id === 63 ? uatData.regional : uatData.national;
       for (const b of radarBlocks(p)) { if (b.bins) map.set(b.block, b); else map.delete(b.block); }
       uatData.radarTime = `${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}Z`; uatData.radarAt = now; uatUi.radarDirty = true;
+      continue;
+    }
+    if (p.id === 70 || p.id === 71 || p.id === 84 || p.id === 90 || p.id === 91 || p.id === 103) {
+      const map = uatData.hazards.get(p.id) ?? new Map<string, HazardBlock>(); uatData.hazards.set(p.id, map);
+      for (const b of hazardBlocks(p)) { const k = `${b.level}:${b.block}`; if (b.bins) map.set(k, b); else map.delete(k); }
+      uatData.hazardTime.set(p.id, `${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}Z`); uatUi.radarDirty = true;
+      continue;
+    }
+    if ((p.id === 14 || p.id === 8 || (p.id >= 11 && p.id <= 17)) && p.payload[0] >> 4 === 8) {
+      const o = overlayOf(p);
+      if (o && o.pts.length > 1) {
+        const key = `${o.product}:${o.location}:${o.report}:${o.element}:${o.start?.day}.${o.start?.hh}`;
+        if (!uatData.shapes.has(key)) got.push(p.id === 14 ? `G-AIRMET ${UAT_GAIRMET[o.element]?.[0] ?? ''}`.trim() : 'AREA');
+        uatData.shapes.set(key, { ...o, key, at: now });
+        if (uatData.shapes.size > 1500) uatData.shapes.delete(uatData.shapes.keys().next().value!);
+      }
       continue;
     }
     const t = textOf(p.payload);
@@ -4988,6 +5020,17 @@ function uatDetail(now: number): string {
       + `${row('Heading', p.trackDeg !== undefined ? `${p.trackDeg}° ${compass(p.trackDeg)}` : undefined)}${row('Vertical', p.vertFpm !== undefined ? `${p.vertFpm > 0 ? '+' : ''}${p.vertFpm.toLocaleString('en-US')} ft/min` : undefined)}`
       + `${row('Position', p.lat !== undefined ? `${p.lat.toFixed(4)}, ${p.lon!.toFixed(4)}` : undefined)}${row('From you', from?.text)}${row('First heard', uatClock(p.first))}${row('Frames', `${p.frames}`)}</div>`;
   }
+  if (kind === 'pt') { const [la, lo] = id.split(',').map(Number); return uatPointDetail(la, lo); }
+  if (kind === 'gm') {
+    const sh = uatData.shapes.get(id); if (!sh) return '';
+    const [name, color] = UAT_GAIRMET[sh.element] ?? ['AREA', '#ff5b52'];
+    const c = sh.pts.reduce((a, p) => [a[0] + p[0] / sh.pts.length, a[1] + p[1] / sh.pts.length], [0, 0]);
+    const from = uatFromHere(c[0], c[1]);
+    return `<div class="mt-dh"><b style="color:${color}">${sh.product === 14 ? 'G-AIRMET' : 'AREA'}</b><span>${esc(name)}</span>${close}</div>`
+      + `<div class="mt-fields">${row('Valid', uatValid(sh))}${row(sh.element === 5 && sh.line ? 'Freezing level' : sh.element >= 5 ? 'What' : 'Altitude', uatAltText(sh))}`
+      + `${row('Shape', `${sh.line ? 'line' : 'area'} · ${sh.pts.length} points`)}${row('Center', `${c[0].toFixed(3)}, ${c[1].toFixed(3)}`)}${row('From you', from?.text)}`
+      + `${row('Report', sh.report ? `#${sh.report}` : undefined)}${row('Heard', uatAge(sh.at, now))}</div>`;
+  }
   if (kind === 'tw') {
     const t = uatData.towers.get(id); if (!t) return '';
     const from = uatFromHere(t.lat, t.lon);
@@ -4995,6 +5038,18 @@ function uatDetail(now: number): string {
       + `<div class="mt-fields">${[...uatData.products.entries()].sort((x, y) => y[1] - x[1]).map(([id, c]) => row(UAT_PRODUCT[id] ?? `product ${id}`, `${c}`)).join('')}</div>`;
   }
   return '';
+}
+const UAT_LAYERS: [keyof typeof uatUi.layers, string][] = [['radar', 'RADAR'], ['national', 'NATIONAL'], ['tops', 'CLOUD TOPS'], ['turb', 'TURBULENCE'], ['ice', 'ICING'],
+  ['lightning', 'LIGHTNING'], ['gairmet', 'G-AIRMET'], ['traffic', 'TRAFFIC'], ['airports', 'AIRPORTS']];
+/** The color keys for what is switched on: radar, then each hazard grid, each a short ramp with its words. */
+function uatLegendHtml(): string {
+  const ramp = (cols: string[], lo: string, hi: string, name: string) => `<span class="ua-ramp"><b>${name}</b>${cols.map(c => `<i style="background:${c}"></i>`).join('')}<small>${lo} → ${hi}</small></span>`;
+  const out: string[] = [];
+  if (uatUi.layers.radar) out.push(ramp(UAT_RADAR.slice(2), 'light', 'heavy', 'RADAR'));
+  if (uatUi.layers.tops) out.push(ramp(UAT_TOPS.slice(1, 14).filter((_, i) => i % 3 === 0), 'low', 'high', 'TOPS'));
+  if (uatUi.layers.turb) out.push(ramp(UAT_TURB.slice(1, 14).filter((_, i) => i % 3 === 0), 'light', 'severe', 'TURB'));
+  if (uatUi.layers.ice) out.push(ramp(UAT_ICE.slice(1, 6), 'trace', 'heavy', 'ICE'));
+  return out.join('');
 }
 /** A desktop-size window: the map takes the big pane on the left (where the waterfall goes in other apps), the
  *  cards, log and detail share the column on the right, so nothing ever sits on top of the map. */
@@ -5004,7 +5059,7 @@ function renderUat(view: HTMLElement): void {
   const wide = UAT_WIDE.matches;
   if (wide && uatUi.view === 'map') uatUi.view = 'weather';
   view.classList.toggle('uawide', wide);
-  const layersHtml = `<div id="ua-layers" class="ua-layers">${(['radar', 'national', 'traffic', 'airports'] as const).map(k => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${k.toUpperCase()}</button>`).join('')}<span id="ua-legend" class="ua-legend">${UAT_RADAR.slice(2).map(c => `<i style="background:${c}"></i>`).join('')}<small>light → heavy</small></span></div>`;
+  const layersHtml = `<div id="ua-layers" class="ua-layers">${UAT_LAYERS.map(([k, label]) => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${label}</button>`).join('')}<select id="ua-alt" class="ua-alt" title="altitude for icing and turbulence">${Array.from({ length: 12 }, (_, i) => (i + 1) * 2000).map(a => `<option value="${a}" ${a === uatUi.altFt ? 'selected' : ''}>${a.toLocaleString('en-US')} FT</option>`).join('')}</select><span id="ua-legend" class="ua-legend"></span></div>`;
   const tabs = (wide ? ['weather', 'notices', 'traffic', 'log'] : ['map', 'weather', 'notices', 'traffic', 'log']) as UatView[];
   view.innerHTML = wide ? `
     <section class="${visCls('uat')}">${readoutHtml()}<div id="ua-mapbox" class="ua-mapbox">${layersHtml}<div id="ua-map" class="panel map"></div></div><div id="scope" class="panel short"></div></section>
@@ -5026,9 +5081,11 @@ function renderUat(view: HTMLElement): void {
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-uaview]', view).forEach(b => b.onclick = () => { uatUi.view = b.dataset.uaview as UatView; refreshUat(true); });
   qa<HTMLButtonElement>('[data-ualayer]', view).forEach(b => b.onclick = () => {
-    const k = b.dataset.ualayer as keyof typeof uatUi.layers; uatUi.layers[k] = !uatUi.layers[k]; b.classList.toggle('on', uatUi.layers[k]); uatUi.radarDirty = true; refreshUat(true);
+    const k = b.dataset.ualayer as keyof typeof uatUi.layers; uatUi.layers[k] = !uatUi.layers[k]; b.classList.toggle('on', uatUi.layers[k]); uatUi.radarDirty = true; uatUi.radarAt = 0; refreshUat(true);
   });
-  $('ua-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-ua]'); if (c) { uatUi.sel = uatUi.sel === c.dataset.ua ? '' : c.dataset.ua!; refreshUat(true); } };
+  const alt = q<HTMLSelectElement>('#ua-alt');
+  if (alt) alt.onchange = () => { uatUi.altFt = Number(alt.value); uatUi.radarDirty = true; uatUi.radarAt = 0; refreshUat(true); };
+  $('ua-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-ua]'); if (c) { uatUi.sel = uatUi.sel === c.dataset.ua ? '' : c.dataset.ua!; uatUi.radarDirty = true; uatUi.radarAt = 0; refreshUat(true); if (uatUi.sel.startsWith('gm:') && UAT_WIDE.matches) uatFocus(); } };
   $('ua-detail').onclick = (e) => {
     const t = e.target as HTMLElement;
     if (t.closest('[data-uao="close"]')) { uatUi.sel = ''; refreshUat(true); }
@@ -5050,7 +5107,9 @@ function renderUat(view: HTMLElement): void {
       const k = [...uatData.towers.keys()][0]; if (k) { uatUi.sel = `tw:${k}`; uatUi.view = wideNow ? 'weather' : 'map'; refreshUat(true); uatFocus(); }
     } else if (/FISB/.test(line)) { uatUi.view = 'notices'; refreshUat(true); }
   };
-  geo = new GeoMap($('ua-map'), { home: state.home, start: mapStart(state.home), onPick: id => { uatUi.sel = id; refreshUat(true); }, log });
+  geo = new GeoMap($('ua-map'), { home: state.home, start: mapStart(state.home), onPick: id => { uatUi.sel = id; uatUi.tap = null; geo?.setTapMark(null); uatUi.radarDirty = true; uatUi.radarAt = 0; refreshUat(true); }, log,
+    // a tap on open map reads every layer at that spot
+    onMapTap: (lat, lon) => { uatUi.tap = [lat, lon]; uatUi.sel = `pt:${lat.toFixed(4)},${lon.toFixed(4)}`; geo?.setTapMark([lat, lon]); refreshUat(true); } });
   geo.follow = false;
   uatUi.radarDirty = true;
   clearInterval(uatUi.timer);
@@ -5064,9 +5123,102 @@ function uatFocus(): void {
   if (kind === 'ac') { const p = uatData.planes.get(id); if (p?.lat !== undefined && p.lon !== undefined) at = [p.lat, p.lon]; }
   else if (kind === 'wx') { const a = uatAirports?.get(id); if (a) at = [a[0], a[1]]; }
   else if (kind === 'tw') { const t = uatData.towers.get(id); if (t) at = [t.lat, t.lon]; }
+  else if (kind === 'gm') { const sh = uatData.shapes.get(id); if (sh) at = sh.pts.reduce((a, p) => [a[0] + p[0] / sh.pts.length, a[1] + p[1] / sh.pts.length], [0, 0]) as [number, number]; }
   if (!at) return;
   if (!UAT_WIDE.matches) { uatUi.view = 'map'; refreshUat(true); }
   geo?.center(at[0], at[1], 8);
+}
+/** A G-AIRMET's altitudes in words: a freezing level line, a range, or from the surface. */
+function uatAltText(o: Overlay): string {
+  const a = o.altsFt, ft = (x: number) => (x >= 18000 ? `FL${Math.round(x / 100)}` : `${x.toLocaleString('en-US')} ft`);
+  if (o.element === 5 && o.line) return `${ft(a[0] ?? 0)}`;
+  if (o.element === 6) return 'ceiling below 1,000 ft or visibility below 3 mi';
+  if (o.element === 7) return 'mountains hidden in cloud, haze or rain';
+  if (o.element === 5) return !a.length || a[a.length - 1] === 0 ? 'freezing at the surface' : `freezing level ${a.length > 1 ? `${ft(a[0])} to ${ft(a[a.length - 1])}` : `up to ${ft(a[0])}`}`;
+  if (!a.length || (a.length === 1 && a[0] === 0)) return 'surface';
+  if (a.length === 1) return o.geometry === 4 ? `surface to ${ft(a[0])} AGL` : `up to ${ft(a[0])}`;
+  return `${ft(a[0])} to ${ft(a[a.length - 1])}`;
+}
+const uatWhen = (t?: { month: number; day: number; hh: number; mm: number }) => (t ? `${t.month}/${t.day} ${String(t.hh).padStart(2, '0')}:${String(t.mm).padStart(2, '0')}Z` : '');
+/** A G-AIRMET's time: a window, or the one forecast time it is a snapshot for. */
+const uatValid = (o: Overlay) => (uatWhen(o.start) === uatWhen(o.end) ? `for ${uatWhen(o.start)}` : `${uatWhen(o.start)} – ${uatWhen(o.end)}`);
+/** UTC time of a G-AIRMET's start or end, this year (or the next one, across New Year). */
+function uatTs(t?: { month: number; day: number; hh: number; mm: number }): number {
+  if (!t) return 0;
+  const now = new Date(); let y = now.getUTCFullYear();
+  if (t.month === 1 && now.getUTCMonth() === 11) y++; else if (t.month === 12 && now.getUTCMonth() === 0) y--;
+  return Date.UTC(y, t.month - 1, t.day, t.hh, t.mm);
+}
+/** The G-AIRMETs (and other areas) for now: each kind's window that covers now, or failing that the latest one sent. */
+function uatShapesNow(): UatShape[] {
+  const now = Date.now(), all = [...uatData.shapes.values()];
+  const byKind = new Map<string, UatShape[]>();
+  for (const s of all) { const k = `${s.product}:${s.element}`; (byKind.get(k) ?? byKind.set(k, []).get(k)!).push(s); }
+  const out: UatShape[] = [];
+  for (const list of byKind.values()) {
+    const live = list.filter(s => uatTs(s.start) <= now && now < uatTs(s.end));
+    if (live.length) { out.push(...live); continue; }
+    const latest = Math.max(...list.map(s => uatTs(s.start)));
+    out.push(...list.filter(s => uatTs(s.start) === latest));
+  }
+  return out;
+}
+/** What every layer says at one spot: radar, cloud tops, and icing and turbulence at each altitude. */
+function uatAt(lat: number, lon: number, id: number): HazardBlock[] {
+  const m = uatData.hazards.get(id); if (!m) return [];
+  const out: HazardBlock[] = [];
+  for (const b of m.values()) if (b.bins && lat >= b.lat && lat < b.lat + b.dLat && lon >= b.lon && lon < b.lon + b.dLon) out.push(b);
+  return out;
+}
+function uatBin(b: { lat: number; lon: number; dLat: number; dLon: number; bins: Uint8Array | null }, lat: number, lon: number): number {
+  if (!b.bins) return 0;
+  const x = Math.min(31, Math.floor((lon - b.lon) / b.dLon * 32)), y = Math.min(3, 3 - Math.floor((lat - b.lat) / b.dLat * 4));
+  return b.bins[y * 32 + x];
+}
+function uatPointDetail(lat: number, lon: number): string {
+  const row = (k: string, v: string | undefined | false) => (v ? `<div><b>${k}</b><span>${esc(v)}</span></div>` : '');
+  const radar = [...uatData.regional.values(), ...uatData.national.values()].filter(b => b.bins && lat >= b.lat && lat < b.lat + b.dLat && lon >= b.lon && lon < b.lon + b.dLon)
+    .map(b => uatBin(b, lat, lon)).reduce((a, v) => Math.max(a, v), 0);
+  const tops = uatAt(lat, lon, 84).map(b => uatBin(b, lat, lon)).find(v => v > 0 && v < 15);
+  const lightning = uatAt(lat, lon, 103).map(b => uatBin(b, lat, lon)).find(v => v > 0 && v < 15);
+  const levels: string[] = [];
+  for (let a = 2000; a <= 24000; a += 2000) {
+    const lo = a <= 16000, lvl = lo ? a / 2000 - 1 : (a - 18000) / 2000;
+    const ice = uatAt(lat, lon, lo ? 70 : 71).filter(b => b.level === lvl).map(b => icingOf(uatBin(b, lat, lon)))[0];
+    const turb = uatAt(lat, lon, lo ? 90 : 91).filter(b => b.level === lvl).map(b => uatBin(b, lat, lon))[0];
+    const parts = [ice && !ice.none && ice.severity > 0 && ice.severity < 6 ? `icing ${UAT_ICE_WORD[ice.severity]}${ice.sld ? ', large drops' : ''}` : '', turb && turb < 15 ? `turbulence ${turb}/14` : ''].filter(Boolean);
+    if (parts.length) levels.push(`<div><b>${a.toLocaleString('en-US')} FT</b><span>${esc(parts.join(' · '))}</span></div>`);
+  }
+  const inside = uatShapesNow().filter(s => !s.line && uatInPoly(lat, lon, s.pts)).map(s => `${UAT_GAIRMET[s.element]?.[0] ?? 'AREA'} · ${uatAltText(s)}`);
+  const from = uatFromHere(lat, lon);
+  return `<div class="mt-dh"><b>HERE</b><span>${lat.toFixed(3)}, ${lon.toFixed(3)}${from ? ` · ${esc(from.text)} from you` : ''}</span><button class="chip" data-uao="close">✕</button></div>`
+    + `<div class="mt-fields">${row('Radar', radar >= 2 ? ['', '', 'light', 'light', 'moderate', 'moderate', 'heavy', 'extreme'][radar] + ` (level ${radar})` : 'nothing falling')}${row('Cloud tops', tops ? `level ${tops} of 14` : uatData.hazards.has(84) ? 'clear' : undefined)}`
+    + `${row('Lightning', lightning ? `level ${lightning}` : uatData.hazards.has(103) ? 'none' : undefined)}${inside.map(t => row('G-AIRMET', t)).join('')}</div>`
+    + (levels.length ? `<div class="mt-fields ua-levels">${levels.join('')}</div>` : (uatData.hazards.has(70) || uatData.hazards.has(90) ? '<div class="ua-text">No icing or turbulence forecast here from 2,000 to 24,000 ft.</div>' : ''));
+}
+function uatInPoly(lat: number, lon: number, pts: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [ya, xa] = pts[i], [yb, xb] = pts[j];
+    if ((ya > lat) !== (yb > lat) && lon < (xb - xa) * (lat - ya) / (yb - ya) + xa) inside = !inside;
+  }
+  return inside;
+}
+function uatShapeCard(sh: UatShape, now: number): string {
+  const [name, color] = UAT_GAIRMET[sh.element] ?? ['AREA', '#ff5b52'];
+  const c = sh.pts.reduce((a, p) => [a[0] + p[0] / sh.pts.length, a[1] + p[1] / sh.pts.length], [0, 0]);
+  const from = uatFromHere(c[0], c[1]);
+  const live = uatTs(sh.start) <= now && now < uatTs(sh.end);
+  return `<div class="mt-card ua-gm ${uatUi.sel === `gm:${sh.key}` ? 'sel' : ''}" data-ua="gm:${esc(sh.key)}" style="--cat:${color}">`
+    + `<div class="mt-h"><span class="mt-id ua-kind" style="color:${color}">${sh.product === 14 ? 'G-AIRMET' : 'AREA'}</span><span class="mt-k"><b>${esc(name)}</b><small>${uatValid(sh)}${live ? ' · NOW' : ''}</small></span></div>`
+    + `<div class="lr-name">${esc(uatAltText(sh))}${sh.line ? ' · contour' : ''}</div>`
+    + `<div class="lr-last">${sh.pts.length} points${from ? ` · centered ${esc(from.text)} from you` : ''}</div></div>`;
+}
+function uatSuaCard(t: UatText, now: number): string {
+  const s = suaOf(t.text); if (!s) return uatTextCard(t, now);
+  const ft = (x?: number) => (x === undefined ? '' : x === 0 ? 'surface' : x >= 18000 ? `FL${x / 100}` : `${x.toLocaleString('en-US')} ft`);
+  return `<div class="mt-card ua-tx"><div class="mt-h"><span class="mt-id ua-kind">SUA</span><span class="mt-k"><b>${esc(s.name || 'special use airspace')}</b><small>${uatAge(t.at, now)}</small></span></div>`
+    + `<div class="lr-name">${esc([ft(s.bottomFt), ft(s.topFt)].filter(Boolean).join(' to '))}</div><div class="lr-last">${esc([s.from, s.to].filter(Boolean).join(' – '))}</div></div>`;
 }
 function refreshUat(force = false): void {
   if (state.app !== 'uat') return;
@@ -5105,7 +5257,9 @@ function refreshUat(force = false): void {
     cards.innerHTML = rows.length ? rows.map(r => uatWxCard(r.id, r.e.m, r.e.at, now)).join('') : emptyState('uat');
   } else if (uatUi.view === 'notices') {
     const rows = [...d.texts.values()].sort((a, b) => b.at - a.at);
-    cards.innerHTML = rows.length ? rows.map(t => uatTextCard(t, now)).join('') : emptyState('uat');
+    const order = [6, 7, 1, 4, 2, 3, 5];
+    const shapes = uatShapesNow().filter(sh => !sh.line).sort((a, b) => order.indexOf(a.element) - order.indexOf(b.element));
+    cards.innerHTML = rows.length || shapes.length ? shapes.map(sh => uatShapeCard(sh, now)).join('') + rows.map(t => (t.kind === 'SUA' ? uatSuaCard(t, now) : uatTextCard(t, now))).join('') : emptyState('uat');
   } else if (uatUi.view === 'traffic') {
     const rows = [...d.planes.values()].sort((a, b) => b.at - a.at);
     cards.innerHTML = rows.length ? rows.map(p => uatPlaneCard(p, now)).join('') : emptyState('uat');
@@ -5131,7 +5285,25 @@ function refreshUat(force = false): void {
       const cells: RadarCell[] = [];
       const add = (b: RadarBlock) => cells.push({ lat: b.lat, lon: b.lon, dLat: b.dLat, dLon: b.dLon, cols: 32, rows: 4, bins: b.bins! });
       if (uatUi.layers.radar) { if (uatUi.layers.national) d.national.forEach(add); d.regional.forEach(add); }
+      const grid = (id: number, colors: string[], level: number | null, map?: (v: number) => number) => {
+        for (const b of d.hazards.get(id)?.values() ?? []) {
+          if (!b.bins || (level !== null && b.level !== level)) continue;
+          cells.push({ lat: b.lat, lon: b.lon, dLat: b.dLat, dLon: b.dLon, cols: 32, rows: 4, bins: map ? b.bins.map(map) : b.bins, colors });
+        }
+      };
+      const lvl = (id: number) => { const lo = uatUi.altFt <= 16000; if ((id === 70 || id === 90) !== lo) return null; return lo ? uatUi.altFt / 2000 - 1 : (uatUi.altFt - 18000) / 2000; };
+      if (uatUi.layers.tops) grid(84, UAT_TOPS, null);
+      if (uatUi.layers.ice) for (const id of [70, 71]) { const l = lvl(id); if (l !== null) grid(id, UAT_ICE, l, v => { const x = icingOf(v); return x.none || x.severity >= 6 ? 0 : x.severity; }); }
+      if (uatUi.layers.turb) for (const id of [90, 91]) { const l = lvl(id); if (l !== null) grid(id, UAT_TURB, l); }
+      if (uatUi.layers.lightning) grid(103, UAT_LIGHTNING, null);
       geo?.setRadar(cells, UAT_RADAR);
+      const shapes: GeoShape[] = [];
+      if (uatUi.layers.gairmet) for (const sh of uatShapesNow()) {
+        const [name, color] = UAT_GAIRMET[sh.element] ?? ['AREA', '#ff5b52'];
+        shapes.push({ id: `gm:${sh.key}`, pts: sh.pts, line: sh.line, color, dashed: sh.element === 5, sel: uatUi.sel === `gm:${sh.key}`, label: `${sh.product === 14 ? name : 'AREA'} · ${uatAltText(sh)}` });
+      }
+      geo?.setShapes(shapes);
+      const lg = q('#ua-legend'); if (lg) lg.innerHTML = uatLegendHtml();
     }
   }
   const lamp = d.up || d.down;
@@ -5817,7 +5989,7 @@ function clearApp(id: string): void {
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
     case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
-    case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
+    case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
   }
   worker?.postMessage({ type: 'clear' });

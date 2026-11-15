@@ -124,6 +124,7 @@ function char6(c: number): string {
   if (c >= 32 && c <= 63) return String.fromCharCode(c);
   if (c === 28) return '\t';
   if (c === 29 || c === 30) return '\n';
+  if (c === 31) return '|';                         // field separator (special use airspace schedules)
   return '';
 }
 
@@ -192,4 +193,134 @@ export function parseMetar(text: string): Metar | null {
     out.category = ceil < 500 || vis < 1 ? 'LIFR' : ceil < 1000 || vis < 3 ? 'IFR' : ceil <= 3000 || vis <= 5 ? 'MVFR' : 'VFR';
   }
   return out;
+}
+
+/**
+ * The gridded hazard products, worked out from our recordings: they share the radar's 3-byte block reference, but
+ * the three bits after the run-length flag are the altitude level instead of north/south and scale.
+ * - 70 / 71 icing (low: 8 levels from 2,000 ft, high: 4 from 18,000 ft, 2,000 ft apart): (run - 1, value) byte pairs;
+ *   the value packs 2 bits of supercooled large drops, 3 of severity and 3 of probability; all ones is no data.
+ * - 84 cloud tops, 90 / 91 turbulence (low / high, levels as icing), 103 lightning: a byte is (run - 1) << 4 | value,
+ *   and 0xE<value> is followed by a byte holding a run of up to 256. 15 is no data.
+ * Every block that does not fill its 128 bins exactly is dropped, so a misread never paints the map.
+ */
+export interface HazardBlock {
+  product: number; block: number;
+  /** 0-based altitude level (0 for one-level products). */
+  level: number;
+  lat: number; lon: number; dLat: number; dLon: number;
+  /** 128 values, 32 a row, the northern row first; null for an empty block (nothing there). */
+  bins: Uint8Array | null;
+}
+
+/** The altitude, ft, of a level of icing or turbulence (low products 70 / 90, high 71 / 91). */
+export const hazardAltFt = (product: number, level: number) => (product === 71 || product === 91 ? 18000 : 2000) + level * 2000;
+
+export function hazardBlocks(p: FisbProduct): HazardBlock[] {
+  const d = p.payload;
+  if (d.length < 3) return [];
+  const rle = (d[0] >> 7) & 1, level = (d[0] >> 4) & 7;
+  const block = ((d[0] & 0x0f) << 16) | (d[1] << 8) | d[2];
+  const place = blockPlace(block, false, 0);
+  if (rle) {
+    const bins = new Uint8Array(128);
+    let n = 0, i = 3;
+    if (p.id === 70 || p.id === 71) {
+      while (i + 1 < d.length && n < 128) { const run = d[i] + 1, v = d[i + 1]; i += 2; for (let k = 0; k < run && n < 128; k++) bins[n++] = v; }
+    } else {
+      while (i < d.length && n < 128) {
+        const b = d[i++]; let run: number, v: number;
+        if (b >> 4 === 0xe) { v = b & 15; if (i >= d.length) return []; run = d[i++] + 1; } else { run = (b >> 4) + 1; v = b & 15; }
+        for (let k = 0; k < run && n < 128; k++) bins[n++] = v;
+      }
+    }
+    if (n !== 128) return [];
+    return [{ product: p.id, block, level, ...place, bins }];
+  }
+  const out: HazardBlock[] = [{ product: p.id, block, level, ...place, bins: null }];
+  if (d.length > 3) {
+    const nBytes = d[3] & 0x0f, bits: number[] = [];
+    for (let k = 4; k < 8; k++) bits.push((d[3] >> k) & 1);
+    for (let j = 0; j < nBytes && 4 + j < d.length; j++) for (let k = 0; k < 8; k++) bits.push((d[4 + j] >> k) & 1);
+    bits.forEach((on, idx) => { if (on) { const b = block + idx + 1; out.push({ product: p.id, block: b, level, ...blockPlace(b, false, 0), bins: null }); } });
+  }
+  return out;
+}
+
+/** An icing value's parts: severity 0-7 (7 no data), probability 0-7, supercooled large drops 0-3. */
+export const icingOf = (v: number) => ({ sld: v >> 6, severity: (v >> 3) & 7, prob: v & 7, none: v === 0xff });
+
+/**
+ * A graphic overlay record (format 8: G-AIRMET, TFR shapes, others): its kind, valid times and its shape. The layout
+ * is found by where the vertex list fits: a geometry byte (low nibble), then 2 bits of operator and 6 of vertex count
+ * minus one, then start and end times (month, day, hour, minute), then 6-byte vertices: 19-bit longitude, 19-bit
+ * latitude (360 / 2^19 degrees) and a 10-bit altitude in hundreds of feet. Geometry 3 and 4 are areas (MSL / AGL),
+ * 11 and 12 lines, 9 a point (a NOTAM's place). A record is kept only when its vertices end exactly at the end of the record.
+ */
+export interface Overlay {
+  product: number;
+  /** For G-AIRMETs, 1 turbulence, 3 surface wind, 4 icing, 5 freezing level, 6 IFR, 7 mountain obscuration. */
+  element: number;
+  /** Cause codes (IFR and mountain obscuration), as sent. */
+  qualifiers: number;
+  location: string;
+  report: number;
+  geometry: number;
+  line: boolean;
+  start?: { month: number; day: number; hh: number; mm: number };
+  end?: { month: number; day: number; hh: number; mm: number };
+  pts: [number, number][];
+  /** Altitudes on the vertices, ft (bottom and top when they differ). */
+  altsFt: number[];
+}
+
+function six4(d: Uint8Array, at: number): string {
+  let s = '';
+  const v = (d[at] << 16) | (d[at + 1] << 8) | d[at + 2];
+  for (let k = 3; k >= 0; k--) { const c = (v >> (k * 6)) & 63; s += c >= 1 && c <= 26 ? String.fromCharCode(64 + c) : c >= 48 && c <= 57 ? String.fromCharCode(c) : ''; }
+  return s;
+}
+
+export function overlayOf(p: FisbProduct): Overlay | null {
+  const d = p.payload;
+  if (d.length < 26 || d[0] >> 4 !== 8) return null;
+  const okTime = (i: number) => d[i] >= 1 && d[i] <= 12 && d[i + 1] >= 1 && d[i + 1] <= 31 && d[i + 2] < 24 && d[i + 3] < 60;
+  for (let g = 10; g + 10 <= d.length; g++) {
+    const geometry = d[g] & 15, cnt = (d[g + 1] & 63) + 1;
+    if (![3, 4, 7, 8, 9, 11, 12].includes(geometry)) continue;
+    const v0 = g + 2 + 8;
+    if (v0 + cnt * 6 !== d.length || !okTime(g + 2) || !okTime(g + 6)) continue;
+    const pts: [number, number][] = [], alts = new Set<number>();
+    let bad = false;
+    for (let k = 0; k < cnt; k++) {
+      const i = v0 + k * 6;
+      const hi = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2], lo = (d[i + 3] << 16) | (d[i + 4] << 8) | d[i + 5];
+      let lon = (hi >> 5) * 360 / 2 ** 19; if (lon > 180) lon -= 360;
+      let lat = (((hi & 31) << 14) | (lo >> 10)) * 360 / 2 ** 19; if (lat > 180) lat -= 360;
+      if (Math.abs(lat) > 90) { bad = true; break; }
+      pts.push([lat, lon]); alts.add((lo & 0x3ff) * 100);
+    }
+    if (bad) continue;
+    const t = d[13];
+    const q = (t >> 6) & 1;
+    return {
+      product: p.id, element: p.id === 14 ? t & 7 : 0, qualifiers: q && g >= 18 ? (d[g - 3] << 16) | (d[g - 2] << 8) | d[g - 1] : 0,
+      location: six4(d, 2), report: ((d[6] & 0x3f) << 8) | d[7], geometry, line: geometry === 11 || geometry === 12,
+      start: { month: d[g + 2], day: d[g + 3], hh: d[g + 4], mm: d[g + 5] }, end: { month: d[g + 6], day: d[g + 7], hh: d[g + 8], mm: d[g + 9] },
+      pts, altsFt: [...alts].sort((a, b) => a - b),
+    };
+  }
+  return null;
+}
+
+/** A special use airspace schedule line ("SUA ...|name|...|start|end|bottom|top|...") read into its parts. */
+export interface Sua { name: string; from?: string; to?: string; bottomFt?: number; topFt?: number; fields: string[] }
+export function suaOf(text: string): Sua | null {
+  if (!text.startsWith('SUA')) return null;
+  const f = text.split('|').map(x => x.trim());
+  const name = f.find(x => /^[A-Z]{1,2}\d{2,5}[A-Z]?$/.test(x) && !/^\d+$/.test(x)) ?? '';
+  const when = f.filter(x => /^\d{10}$/.test(x));
+  const alts = f.filter(x => /^\d{3}$/.test(x)).map(x => +x * 100);
+  const t = (s?: string) => (s ? `20${s.slice(0, 2)}-${s.slice(2, 4)}-${s.slice(4, 6)} ${s.slice(6, 8)}:${s.slice(8, 10)}Z` : undefined);
+  return { name, from: t(when[0]), to: t(when[1]), bottomFt: alts[0], topFt: alts[1], fields: f };
 }

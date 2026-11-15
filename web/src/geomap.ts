@@ -10,10 +10,14 @@ export type GeoKind = 'plane' | 'ship' | 'aton' | 'station' | 'object' | 'sat' |
 /** [color] overrides the skin's accent for this marker (airports by flight category). */
 export interface GeoItem { id: string; lat: number; lon: number; heading?: number; label: string; kind: GeoKind; color?: string }
 /** A radar block: south-west corner, size in degrees, and its bins (cols across, rows from the north), 0 = clear. */
-export interface RadarCell { lat: number; lon: number; dLat: number; dLon: number; cols: number; rows: number; bins: Uint8Array }
+export interface RadarCell { lat: number; lon: number; dLat: number; dLon: number; cols: number; rows: number; bins: Uint8Array; colors?: string[] }
+/** A hazard drawn on the map: an area or a line, colored, clickable (its id goes to onPick). */
+export interface GeoShape { id: string; pts: [number, number][]; line: boolean; color: string; dashed?: boolean; label?: string; sel?: boolean }
 export interface GeoOpts {
   home?: { lat: number; lon: number } | null;
   onPick: (id: string) => void;
+  /** A tap on the map itself, not on a marker or a shape. */
+  onMapTap?: (lat: number, lon: number) => void;
   onFollow?: (on: boolean) => void;
   log?: (line: string) => void;
   /** Fit the pins themselves, close in (meters a few hundred meters apart): one pin zooms right in on it. */
@@ -80,6 +84,7 @@ export class GeoMap {
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
   private paths: any[] = []; private pathDefs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
   private radar: any = null; private radarCells: RadarCell[] = []; private radarColors: string[] = [];
+  private shapes: any[] = []; private shapeDefs: GeoShape[] = []; private tapMark: any = null;
   private readonly btn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
@@ -95,11 +100,13 @@ export class GeoMap {
     this.map = L.map(this.host, { zoomControl: true, attributionControl: true }).setView(st ? [st.lat, st.lon] : home ? [home.lat, home.lon] : [39.5, -98.35], st ? st.zoom : home ? 9 : 4);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors', className: 'dark-tiles' }).addTo(this.map);
     this.map.on('dragstart', () => { if (this.follow) this.setFollow(false); });
+    this.map.on('click', (e: any) => this.opts.onMapTap?.(e.latlng.lat, e.latlng.lng));
     this.setHome(home ?? null);
     this.update(this.items, this.sel);
     if (this.trackPts.length) this.setTrack(this.trackPts);
     if (this.pathDefs.length) this.setPaths(this.pathDefs);
     if (this.radarCells.length) this.setRadar(this.radarCells, this.radarColors);
+    if (this.shapeDefs.length) this.setShapes(this.shapeDefs);
   }
   get ready(): boolean { return !!this.map; }
   setFollow(on: boolean): void { this.follow = on; this.btn.classList.toggle('on', on); this.opts.onFollow?.(on); if (on) this.fit(); }
@@ -208,14 +215,34 @@ export class GeoMap {
       const a = this.map.project([c.lat + c.dLat, c.lon], z), b = this.map.project([c.lat, c.lon + c.dLon], z);
       const x0 = a.x - ox, y0 = a.y - oy, w = (b.x - a.x) / c.cols, h = (b.y - a.y) / c.rows;
       for (let r = 0; r < c.rows; r++) for (let k = 0; k < c.cols; k++) {
-        const v = c.bins[r * c.cols + k];
-        if (!v || !this.radarColors[v]) continue;
-        g.fillStyle = this.radarColors[v];
+        const v = c.bins[r * c.cols + k], pal = c.colors ?? this.radarColors;
+        if (!v || !pal[v]) continue;
+        g.fillStyle = pal[v];
         // exact cell edges: overlapping cells drew a grid texture wherever the colors are see-through
         const xa = Math.round(x0 + k * w), xb = Math.round(x0 + (k + 1) * w), ya = Math.round(y0 + r * h), yb = Math.round(y0 + (r + 1) * h);
         g.fillRect(xa, ya, Math.max(1, xb - xa), Math.max(1, yb - ya));
       }
     }
+  }
+  /** Hazard areas and lines (G-AIRMETs, airspace), under the markers and over the radar; replaced as a set. */
+  setShapes(defs: GeoShape[]): void {
+    this.shapeDefs = defs;
+    if (!this.map) return;
+    for (const l of this.shapes) this.map.removeLayer(l);
+    this.shapes = defs.filter(d => d.pts.length > (d.line ? 1 : 2)).map(d => {
+      const o = { color: d.color, weight: d.sel ? 3.5 : d.line ? 2 : 1.5, opacity: d.sel ? 1 : 0.85, dashArray: d.dashed ? '6 5' : undefined, fillColor: d.color, fillOpacity: d.sel ? 0.28 : 0.12, bubblingMouseEvents: false };
+      const l = (d.line ? L.polyline(d.pts, o) : L.polygon(d.pts, o)).addTo(this.map);
+      if (d.label) l.bindTooltip(d.label, { sticky: true, direction: 'top', className: 'geo-tip' });
+      l.on('click', () => this.opts.onPick(d.id));
+      return l;
+    });
+  }
+  /** A small ring where the map was tapped (null takes it away). */
+  setTapMark(at: [number, number] | null): void {
+    if (!this.map) return;
+    if (!at) { if (this.tapMark) { this.map.removeLayer(this.tapMark); this.tapMark = null; } return; }
+    if (!this.tapMark) this.tapMark = L.circleMarker(at, { radius: 7, color: currentSkin().accent, weight: 2, fillOpacity: 0, interactive: false }).addTo(this.map);
+    else this.tapMark.setLatLng(at);
   }
   /** Straight lines between pairs of points (contacts from home). */
   setLines(lines: [[number, number], [number, number]][]): void {

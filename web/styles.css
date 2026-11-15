@@ -1959,3 +1959,15 @@ main#view.view.uat.uawide { display: grid; grid-template-columns: minmax(0, 1fr)
 .view.uat.uawide .face .funit { display: none; }
 .view.uat.uawide .face .lscale, .view.uat.uawide .face .health { display: none; }
 .view.uat.uawide .face .leds { height: 8px; margin-top: 4px; }
+/* UAT layers: hazard chips, the altitude for icing and turbulence, and one small color key per layer that is on */
+.ua-alt { font: inherit; font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--ink); background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 6px; padding: 3px 6px; }
+.view.uat.uawide .ua-mapbox .ua-alt { font-size: 11px; padding: 5px 8px; background: color-mix(in srgb, var(--surface) 78%, transparent); backdrop-filter: blur(6px); }
+.ua-legend { flex-wrap: wrap; gap: 4px 10px; }
+.ua-ramp { display: inline-flex; align-items: center; gap: 2px; }
+.ua-ramp b { font-size: 8.5px; letter-spacing: 1px; color: var(--muted); margin-right: 4px; }
+.ua-ramp i { width: 12px; height: 8px; border-radius: 2px; display: inline-block; }
+.ua-ramp small { font-size: 9px; color: var(--muted); margin-left: 5px; }
+.view.uat.uawide .ua-mapbox .ua-legend { margin-left: 0; }
+.mt-card.ua-gm { border-left: 3px solid var(--cat); }
+.ua-levels { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+.geo-tip { font: 700 10px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .5px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: none; }
