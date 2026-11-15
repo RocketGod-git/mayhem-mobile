@@ -1635,7 +1635,9 @@ function bindHs(root: ParentNode = document): void {
  *  landing underneath; CLEAR forgets them. Both are wired by id in wireCommon, whichever screen they are on. */
 /** The clear-all icon the Android app puts beside PAUSE. */
 const CLEAR_SVG = '<svg viewBox="0 0 24 24"><path d="M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z"/></svg>';
-const pauseClearHtml = (id: string) => `<button class="tog" id="pause-${id}">PAUSE</button><button class="ib" id="clear-${id}" title="clear" aria-label="clear">${CLEAR_SVG}</button>`;
+/** PAUSE / RESUME: the word on a wide screen, an icon on a phone so the tabs beside it keep their room. */
+const pauseInner = (on: boolean) => `<span class="pw">${on ? 'RESUME' : 'PAUSE'}</span><svg class="pi" viewBox="0 0 24 24" aria-hidden="true"><path d="${on ? 'M8 5v14l11-7z' : 'M6 19h4V5H6v14zm8-14v14h4V5h-4z'}"/></svg>`;
+const pauseClearHtml = (id: string) => `<button class="tog pz" id="pause-${id}" aria-label="pause">${pauseInner(false)}</button><button class="ib" id="clear-${id}" title="clear" aria-label="clear">${CLEAR_SVG}</button>`;
 const countRowHtml = (id: string, count: string, extra = '') => `<div class="countrow"><span id="count-${id}" class="count">${count}</span><span class="row">${extra}${pauseClearHtml(id)}</span></div>`;
 /**
  * What an empty list or card stage says, centered: the app's glyph, what it is waiting for, and one or two concrete
@@ -5612,7 +5614,7 @@ function togglePause(id: string): void {
   refreshPauseChips();
   if (!paused.has(id)) redraw(id);
 }
-function refreshPauseChips(): void { qa<HTMLButtonElement>('[id^="pause-"]').forEach(b => { const on = paused.has(b.id.slice(6)); b.classList.toggle('on', on); b.textContent = on ? 'RESUME' : 'PAUSE'; }); }
+function refreshPauseChips(): void { qa<HTMLButtonElement>('[id^="pause-"]').forEach(b => { const on = paused.has(b.id.slice(6)); b.classList.toggle('on', on); b.innerHTML = pauseInner(on); b.setAttribute('aria-label', on ? 'resume' : 'pause'); }); }
 /** The whole screen for one list, drawn again from what is held in memory. */
 function redraw(id: string): void {
   switch (id) {
