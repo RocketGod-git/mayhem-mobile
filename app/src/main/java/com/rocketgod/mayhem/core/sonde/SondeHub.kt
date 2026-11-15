@@ -14,7 +14,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.OffsetDateTime
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 /** A SondeHub launch site. */
@@ -79,8 +78,6 @@ data class HubPredict(
     val landed: Boolean,
 )
 
-/** The picked balloon's flight and prediction, as fetched (either may be missing). */
-data class HubDetail(val flight: HubFlight? = null, val predict: HubPredict? = null, val at: Long = 0, val busy: Boolean = false, val err: String = "")
 
 /** What SondeHub knows near you: the launch sites, and every balloon others are hearing. */
 data class SondeNet(val sites: List<HubSite> = emptyList(), val air: List<HubSonde> = emptyList(), val err: String = "",
@@ -101,24 +98,6 @@ object SondeHub {
 
     private val _net = MutableStateFlow(SondeNet())
     val net: StateFlow<SondeNet> = _net.asStateFlow()
-
-    private val _details = MutableStateFlow<Map<String, HubDetail>>(emptyMap())
-    /** The flight and landing prediction of each balloon tapped, refreshed at most once a minute. */
-    val details: StateFlow<Map<String, HubDetail>> = _details.asStateFlow()
-
-    /** Fetches [serial]'s whole flight and SondeHub's landing prediction, unless it did within the last minute. */
-    fun detail(serial: String, now: Long = System.currentTimeMillis()) {
-        val had = _details.value[serial]
-        if (had != null && (had.busy || now - had.at < 60_000)) return
-        _details.value = _details.value + (serial to (had ?: HubDetail()).copy(at = now, busy = true))
-        scope.launch {
-            val fl = runCatching { flight(serial) }
-            val pr = runCatching { predict(serial) }
-            val cur = _details.value[serial] ?: HubDetail()
-            _details.value = _details.value + (serial to cur.copy(flight = fl.getOrNull() ?: cur.flight, predict = pr.getOrNull() ?: cur.predict, busy = false,
-                err = fl.exceptionOrNull()?.let { it.message ?: it.toString() } ?: ""))
-        }
-    }
 
     /** Every frame anyone uploaded in the last [hours], as one flight. Blocking. */
     fun flight(serial: String, hours: Int = 6): HubFlight {
@@ -147,19 +126,13 @@ object SondeHub {
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val busy = AtomicBoolean(false)
     @Volatile private var sitesAt = 0L
-    @Volatile private var airAt = 0L
-    @Volatile private var predAt = 0L
     private var dir: File? = null
 
     /** Where the launch-site list is kept for a day between visits. */
     fun init(filesDir: File) { dir = filesDir }
 
-    /**
-     * Called every second or so while Sondes is open: fetches the sites once (retried after a minute on failure) and
-     * the balloons near [lat], [lon] every 30 s.
-     */
+    /** Called every second or so while Sondes is open: fetches the launch sites once (retried after a minute on failure). */
     fun poll(lat: Double, lon: Double, now: Long = System.currentTimeMillis()) {
         if (_net.value.sites.isEmpty() && now - sitesAt > 60_000) {
             sitesAt = now
@@ -168,20 +141,7 @@ object SondeHub {
                     .onFailure { e -> _net.value = _net.value.copy(err = e.message ?: e.toString()) }
             }
         }
-        // SondeHub's stations upload every second or two; every 15 s keeps the cards live without hammering it
-        if (now - airAt < 15_000 || !busy.compareAndSet(false, true)) return
-        airAt = now
-        scope.launch {
-            try {
-                runCatching { sondes(lat, lon) }.onSuccess { a -> _net.value = _net.value.copy(air = a, err = "") }
-                    .onFailure { e -> _net.value = _net.value.copy(err = e.message ?: e.toString()) }
-                val air = _net.value.air
-                if (air.isNotEmpty() && System.currentTimeMillis() - predAt > 60_000) {
-                    predAt = System.currentTimeMillis()
-                    runCatching { predictions(air.map { it.serial }) }.onSuccess { m -> _net.value = _net.value.copy(preds = m) }
-                }
-            } finally { busy.set(false) }
-        }
+        // the balloons others hear are never shown: the cards and the map are only what our own radio decodes
     }
 
     /** The launch sites, from the copy in the app's files when it is under a day old. Blocking. */
