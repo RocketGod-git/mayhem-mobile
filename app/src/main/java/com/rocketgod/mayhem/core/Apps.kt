@@ -28,6 +28,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     DEVICES("Devices", "keys, remotes, TPMS", "Receive"),
     SAT("Satellites", "track and decode", "Receive"),
     ADSB("ADS-B", "aircraft, 1090 MHz", "Receive"),
+    UAT("UAT", "weather & small planes", "Receive"),
     AIS("AIS", "ships, 162 MHz", "Receive"),
     APRS("APRS", "packet, 144.39 MHz", "Receive"),
     PAGER("Pagers", "FLEX · POCSAG pagers", "Receive"),
@@ -194,6 +195,8 @@ object Apps {
     }
 
     /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
+    /** UAT: FIS-B weather from the ground towers and the aircraft on 978 MHz. */
+    val uatLog = PacketLog(); val uat = com.rocketgod.mayhem.core.uat.UatProcessor(uatLog)
     val sondesLog = PacketLog(); val sondes = com.rocketgod.mayhem.core.sonde.SondeProcessor(sondesLog)
     /** The band Sondes watches, by id ("400" or "1680"), kept across runs. */
     fun sondeBandId(): String = SdrEngine.savedLong("sonde_band").let { if (it == 0L) "400" else it.toString() }
@@ -269,6 +272,7 @@ object Apps {
                 // another app had the radio (ADS-B, AIS...): back on the dial, and onto the strongest station in view
                 else -> { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.armBand() }
             }
+            MayhemApp.UAT -> SdrEngine.configure(SdrEngine.Mode.NONE, 978_000_000L, 2_000_000, 32, 32, true, uat)
             MayhemApp.ADSB -> { if (adsbPick == null) AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             // the radio sits NARROW_SHIFT above the channel, as Mayhem keeps its channels off the DC spike, and the
             // engine mixes the channel back down through the offset

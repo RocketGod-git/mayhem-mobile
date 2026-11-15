@@ -41,9 +41,13 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /** Something to put on a map: a logged contact, a looked-up callsign, a satellite, a sensor. */
-data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: String, val kind: Kind, val heading: Double? = null) {
-    enum class Kind { QSO, OBJECT, SAT, DEVICE, SHIP, ATON, STATION, SONDE, LANDING, BURST }
+data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: String, val kind: Kind, val heading: Double? = null,
+                   /** ARGB fill instead of the accent (airports by flight category). */ val color: Int? = null) {
+    enum class Kind { QSO, OBJECT, SAT, DEVICE, SHIP, ATON, STATION, SONDE, LANDING, BURST, AIRPORT, TOWER, PLANE }
 }
+
+/** A radar block: south-west corner and size in degrees, [bins] cols across and rows from the north, 0 = clear. */
+class RadarCell(val lat: Double, val lon: Double, val dLat: Double, val dLon: Double, val cols: Int, val rows: Int, val bins: ByteArray)
 
 /** The map's extra layers: lines home to each contact, a satellite's ground track and radio footprint. */
 data class GeoLayers(
@@ -53,6 +57,9 @@ data class GeoLayers(
     val footprint: Triple<Double, Double, Double>? = null,
     /** Any number of paths in the accent (sonde flight tracks solid, predicted descents dashed). */
     val paths: List<GeoPath> = emptyList(),
+    /** Weather radar under everything else, [radarColors] ARGB by intensity (0 means not drawn). */
+    val radar: List<RadarCell> = emptyList(),
+    val radarColors: IntArray = IntArray(0),
 )
 
 /** A line through [pts]: dashed for a prediction, faint for one that is not the selected item's. */
@@ -120,7 +127,8 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
 
     /** Marker size in dp: the drawn shapes span ±1.4 units of it. */
     private fun sizeDp(k: GeoItem.Kind): Float = when (k) {
-        GeoItem.Kind.SAT -> 30f; GeoItem.Kind.STATION, GeoItem.Kind.DEVICE -> 18f; GeoItem.Kind.QSO -> 14f; else -> 22f
+        GeoItem.Kind.SAT -> 30f; GeoItem.Kind.STATION, GeoItem.Kind.DEVICE -> 18f; GeoItem.Kind.QSO -> 14f; GeoItem.Kind.AIRPORT -> 12f
+        GeoItem.Kind.PLANE -> 26f; else -> 22f
     }
 
     /** Each kind's outline around x, y at [s] px per unit: a hull for a ship under way, a diamond for an AtoN, a ring for a station. */
@@ -151,6 +159,18 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             GeoItem.Kind.LANDING -> {
                 p.addCircle(x, y, 1.1f * s, cw); p.addCircle(x, y, 0.78f * s, android.graphics.Path.Direction.CCW); p.addCircle(x, y, 0.32f * s, cw)
             }
+            GeoItem.Kind.AIRPORT -> p.addCircle(x, y, 0.62f * s, cw)
+            // a FIS-B ground station: a mast with a dot on top
+            GeoItem.Kind.TOWER -> {
+                p.moveTo(x, y - 0.5f * s); p.lineTo(x + 0.45f * s, y + 1.2f * s); p.lineTo(x + 0.2f * s, y + 1.2f * s); p.lineTo(x, y + 0.45f * s)
+                p.lineTo(x - 0.2f * s, y + 1.2f * s); p.lineTo(x - 0.45f * s, y + 1.2f * s); p.close(); p.addCircle(x, y - 0.62f * s, 0.22f * s, cw)
+            }
+            // an airliner seen from above, nose up (it turns with the heading)
+            GeoItem.Kind.PLANE -> {
+                val xs = floatArrayOf(0f, 0.15f, 1.15f, 1.15f, 0.15f, 0.13f, 0.55f, 0.55f, 0f, -0.55f, -0.55f, -0.13f, -0.15f, -1.15f, -1.15f, -0.15f)
+                val ys = floatArrayOf(-1.25f, -0.45f, 0.18f, 0.4f, 0.1f, 0.8f, 1.12f, 1.28f, 1f, 1.28f, 1.12f, 0.8f, 0.1f, 0.4f, 0.18f, -0.45f)
+                p.moveTo(x + xs[0] * s, y + ys[0] * s); for (i in 1 until xs.size) p.lineTo(x + xs[i] * s, y + ys[i] * s); p.close()
+            }
             // where it burst: a star
             GeoItem.Kind.BURST -> {
                 val xs = floatArrayOf(0f, 0.3f, 1.15f, 0.45f, 0.72f, 0f, -0.72f, -0.45f, -1.15f, -0.3f)
@@ -165,6 +185,7 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         val d = mv.resources.displayMetrics.density
         label.textSize = 10f * d; halo.textSize = 10f * d
         val rgb = accentInt and 0x00FFFFFF
+        if (layers.radar.isNotEmpty()) drawRadar(c, mv)
         layers.footprint?.let { (la, lo, km) ->
             val ring = (0..72).map { destination(la, lo, km, it * 5.0) }
             area.color = (0x22 shl 24) or rgb
@@ -192,7 +213,7 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         home?.let { (la, lo) -> val (x, y) = xy(mv, la, lo); dot.color = 0xFFFFFFFF.toInt(); c.drawCircle(x, y, 4f * d, dot); c.drawCircle(x, y, 4f * d, rim) }
         for (it in items) {
             val (x, y) = xy(mv, it.lat, it.lon)
-            val col = when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
+            val col = it.color ?: when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
             val half = sizeDp(it.kind) * d / 2f
             val s = half / 1.4f
             glow.shader = android.graphics.RadialGradient(x, y, half * 1.3f, (0x70 shl 24) or (col and 0x00FFFFFF), col and 0x00FFFFFF, android.graphics.Shader.TileMode.CLAMP)
@@ -201,7 +222,7 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             outline(it, x, y, s)
             dot.color = col; rim.strokeWidth = 0.12f * s
             // only a ship's hull turns: the other shapes have no front
-            val turn = if (it.kind == GeoItem.Kind.SHIP) it.heading else null
+            val turn = if (it.kind == GeoItem.Kind.SHIP || it.kind == GeoItem.Kind.PLANE) it.heading else null
             c.save()
             if (turn != null) c.rotate(turn.toFloat(), x, y)
             c.drawPath(shape, dot); c.drawPath(shape, rim)
@@ -209,6 +230,38 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             if (it.kind == GeoItem.Kind.STATION) { dot.color = 0xFF0B1416.toInt(); c.drawCircle(x, y, 0.3f * s, dot) }
             val ly = y + half + label.textSize
             c.drawText(it.label, x, ly, halo); c.drawText(it.label, x, ly, label)
+        }
+    }
+
+    private val cell = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL }
+
+    /**
+     * The radar: each block projected corner to corner and its bins drawn as cells. Zoomed out, where a bin would be
+     * under a pixel and a half wide, neighboring bins are merged (the strongest wins) so a phone is not asked to paint
+     * a whole country's worth of single-pixel rectangles every frame.
+     */
+    private fun drawRadar(c: android.graphics.Canvas, mv: MapView) {
+        val bb = mv.boundingBox
+        val colors = layers.radarColors
+        for (rc in layers.radar) {
+            if (rc.lat > bb.latNorth || rc.lat + rc.dLat < bb.latSouth) continue
+            if (bb.lonWest <= bb.lonEast && (rc.lon > bb.lonEast || rc.lon + rc.dLon < bb.lonWest)) continue
+            val (x0, y0) = xy(mv, rc.lat + rc.dLat, rc.lon); val (x1, y1) = xy(mv, rc.lat, rc.lon + rc.dLon)
+            val bw = (x1 - x0) / rc.cols; val bh = (y1 - y0) / rc.rows
+            if (x1 - x0 < 0.5f) continue
+            val g = if (bw >= 1.5f) 1 else minOf(rc.cols, kotlin.math.ceil(1.5f / maxOf(bw, 0.01f)).toInt())
+            for (r in 0 until rc.rows) {
+                var k = 0
+                while (k < rc.cols) {
+                    var v = 0
+                    for (j in k until minOf(rc.cols, k + g)) v = maxOf(v, rc.bins[r * rc.cols + j].toInt())
+                    if (v > 0 && v < colors.size && colors[v] != 0) {
+                        cell.color = colors[v]
+                        c.drawRect(x0 + k * bw, y0 + r * bh, x0 + minOf(rc.cols, k + g) * bw + 0.5f, y0 + (r + 1) * bh + 0.5f, cell)
+                    }
+                    k += g
+                }
+            }
         }
     }
 
@@ -252,12 +305,14 @@ fun GeoMapView(
     start: MapStart? = null,
     /** Shown over the map until its first contact ("" hides it), with [emptySub] under it. */
     emptyTitle: String = "", emptySub: String = "",
+    /** Fit the view to the items as they come (false: stay where it opened until the crosshair is pressed). */
+    autoFollow: Boolean = true,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
     var overlayRef by remember { mutableStateOf<ItemsOverlay?>(null) }
-    var following by remember { mutableStateOf(true) }
+    var following by remember { mutableStateOf(autoFollow) }
     // the first fix centers the map on your area once (it usually lands after the map opened on the world)
     var homed by remember { mutableStateOf(false) }
 

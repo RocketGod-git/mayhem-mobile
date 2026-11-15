@@ -102,6 +102,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)
     MayhemApp.TRAINS -> lastLine(Apps.trainsLog)
     MayhemApp.SONDES -> lastLine(Apps.sondesLog)
+    MayhemApp.UAT -> lastLine(Apps.uatLog)
     MayhemApp.ANALYZER -> {
         val bursts by com.rocketgod.mayhem.core.analyzer.Analyzer.bursts.collectAsState()
         bursts.lastOrNull()?.let { "${it.auto.mod} · ${it.auto.coding} · ${it.best.length} bits · ${bursts.size} captured" } ?: "${bursts.size} captured"

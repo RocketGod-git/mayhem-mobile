@@ -250,6 +250,22 @@ class MainActivity : ComponentActivity() {
                 course = 270, speed = 32.0, alt = 300.0, comment = "test station", packets = 3, firstMs = now - 600_000, lastMs = now,
                 wx = com.rocketgod.mayhem.core.apps.AprsWx(windDir = 250, windMph = 6, tempF = 64, humidity = 55, pressureMb = 1013.2)))
         }
+        // `--es uatreplay name.cs8` feeds a 2 MS/s signed-IQ recording from the app's external files folder into UAT
+        i.getStringExtra("uatreplay")?.let { name ->
+            Thread({
+                val f = java.io.File(getExternalFilesDir(null), name)
+                if (!f.exists()) return@Thread
+                Apps.uat.reset(2_000_000)
+                val buf = ByteArray(262_144)
+                f.inputStream().buffered().use { s ->
+                    while (true) {
+                        val n = s.read(buf); if (n <= 0) break
+                        for (k in 0 until n) buf[k] = (buf[k] + 128).toByte()
+                        Apps.uat.onIq(buf, n and 1.inv(), 2_000_000)
+                    }
+                }
+            }, "uatreplay").start()
+        }
         // `--ez crashtest true` crashes on purpose a moment later, to test the crash report on the next launch
         if (i.getBooleanExtra("crashtest", false)) {
             android.os.Handler(mainLooper).postDelayed({ throw IllegalStateException("crash report test (QA build, --ez crashtest)") }, 1500)

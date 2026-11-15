@@ -109,6 +109,13 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.38f, 0.7f); path.l(0.16f, 0.94f); path.m(0.62f, 0.7f); path.l(0.84f, 0.94f)
                 path.m(0.3f, 0.82f); path.l(0.7f, 0.82f)
             }
+            MayhemApp.UAT -> {
+                // a small plane over a cloud
+                path.m(0.5f, 0.06f); path.l(0.5f, 0.46f); path.m(0.28f, 0.26f); path.l(0.5f, 0.18f); path.l(0.72f, 0.26f)
+                path.m(0.41f, 0.46f); path.l(0.5f, 0.4f); path.l(0.59f, 0.46f)
+                circles.add(Triple(0.3f, 0.76f, 0.1f)); circles.add(Triple(0.46f, 0.7f, 0.15f)); circles.add(Triple(0.66f, 0.74f, 0.12f))
+                path.m(0.2f, 0.86f); path.l(0.8f, 0.86f)
+            }
             MayhemApp.SONDES -> {
                 // a balloon on its line, the sonde hanging under it
                 circles.add(Triple(0.5f, 0.3f, 0.22f))
