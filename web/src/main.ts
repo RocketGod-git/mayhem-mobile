@@ -4823,6 +4823,15 @@ function sondeDetail(s: SondeRow, onMap: boolean): string {
   return `<div class="mt-dh"><b>${esc(s.serial)}</b><span>${esc(`${s.model ?? s.type} · ${SONDE_PHASE[s.phase] ?? ''}`)}</span>${onMap ? '<button class="chip" data-sdo="map">MAP</button>' : ''}${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="close">✕</button></div>`
     + `<div class="mt-fields">${all.map(x => `<div><b>${esc(x.name)}</b><span>${esc(x.value)}</span></div>`).join('')}</div>`;
 }
+/** What Sondes hears and how, as a short labeled panel instead of a paragraph. */
+const SONDE_ABOUT = `<div class="sd-about">
+  <div class="sd-types">${['RS41', 'RS92', 'DFM', 'M10', 'M20', 'iMet-1', 'iMet-4', 'iMet-54', 'LMS6', 'Meisei', 'MRZ', 'MTS01'].map(t => `<span>${t}</span>`).join('')}<em>all decoded on their own, no type to pick</em></div>
+  <div class="sd-ab"><b>WHEN</b><span>twice a day, about an hour before 00:00 and 12:00 UTC</span></div>
+  <div class="sd-ab"><b>HACKRF</b><span>watches all of 400–406 MHz at once</span></div>
+  <div class="sd-ab"><b>RTL-SDR</b><span>steps across the band and stays on a sonde once it decodes</span></div>
+  <div class="sd-ab"><b>1680 MHz</b><span>the older US LMS6 band</span></div>
+  <div class="sd-ab"><b>LANDING</b><span>bursts near 30 km, then drifts on the winds it measured going up</span></div>
+</div>`;
 function renderSondes(view: HTMLElement): void {
   const bandId = sondeBandId();
   view.innerHTML = `
@@ -4834,7 +4843,7 @@ function renderSondes(view: HTMLElement): void {
       <div id="sd-log">${logHtml('sondes', 'listening for sondes…')}</div>
       <div id="sd-chans" class="lr-chans"></div>
       <div class="ctlrow"><span class="rl">BAND</span>${segHtml(SONDE_BANDS.map(b => `<button data-sdband="${b.id}" class="${b.id === bandId ? 'on' : ''}">${b.title}</button>`))}</div>
-      <div class="note">Weather balloons: Vaisala RS41 and RS92, Graw DFM, Meteomodem M10 and M20, InterMet iMet-1, iMet-4 and iMet-54, Lockheed Martin LMS6, Meisei, MRZ and MTS01, each found and decoded on its own: no type to pick. Weather services launch them twice a day, around 00:00 and 12:00 UTC (about an hour before). A HackRF watches the whole 400–406 MHz band at once; an RTL-SDR steps across it and stays on a sonde once it decodes. 1680 MHz is the older US LMS6 band. The landing spot comes from a simple model: the balloon bursts near 30 km and the parachute drifts with the wind the sonde measured on the way up.</div>
+      ${SONDE_ABOUT}
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-sdview]', view).forEach(b => b.onclick = () => { sondeUi.view = b.dataset.sdview as typeof sondeUi.view; refreshSondes(true); });

@@ -1896,3 +1896,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sd-chart .b { fill: var(--accent2); }
 .sd-chart .n { fill: var(--ok, #3ddc84); }
 .sd-ax { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); }
+/* Sondes about panel: the types as chips, then one labeled line per fact */
+.sd-about { border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; background: color-mix(in srgb, var(--surface) 70%, transparent); display: flex; flex-direction: column; gap: 4px; }
+.sd-types { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 4px; }
+.sd-types span { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.sd-types em { font-style: normal; font-size: 10px; color: var(--muted); margin-left: 4px; }
+.sd-ab { display: flex; gap: 10px; align-items: baseline; }
+.sd-ab b { width: 74px; flex: none; font-size: 9px; letter-spacing: 1.5px; color: var(--muted); }
+.sd-ab span { font-size: 11px; color: var(--ink); }
