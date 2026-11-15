@@ -214,6 +214,13 @@ export class GeoMap {
       if (c.lat > nw.lat || c.lat + c.dLat < se.lat || c.lon > se.lng || c.lon + c.dLon < nw.lng) continue;
       const a = this.map.project([c.lat + c.dLat, c.lon], z), b = this.map.project([c.lat, c.lon + c.dLon], z);
       const x0 = a.x - ox, y0 = a.y - oy, w = (b.x - a.x) / c.cols, h = (b.y - a.y) / c.rows;
+      // zoomed in far enough that a bin is several pixels: draw the block as a small image the canvas smooths, so
+      // the weather reads as soft fields like a forecast map instead of hard squares
+      if (w >= 4) {
+        const img = this.cellImage(c);
+        if (img) { g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(img, x0, y0, b.x - a.x, b.y - a.y); }
+        continue;
+      }
       for (let r = 0; r < c.rows; r++) for (let k = 0; k < c.cols; k++) {
         const v = c.bins[r * c.cols + k], pal = c.colors ?? this.radarColors;
         if (!v || !pal[v]) continue;
@@ -223,6 +230,17 @@ export class GeoMap {
         g.fillRect(xa, ya, Math.max(1, xb - xa), Math.max(1, yb - ya));
       }
     }
+  }
+  private readonly cellImages = new WeakMap<RadarCell, HTMLCanvasElement | null>();
+  /** One block as a cols x rows image in its colors (cached per block). */
+  private cellImage(c: RadarCell): HTMLCanvasElement | null {
+    if (this.cellImages.has(c)) return this.cellImages.get(c)!;
+    const pal = c.colors ?? this.radarColors;
+    const cv = document.createElement('canvas'); cv.width = c.cols; cv.height = c.rows;
+    const g = cv.getContext('2d');
+    if (g) for (let r = 0; r < c.rows; r++) for (let k = 0; k < c.cols; k++) { const v = c.bins[r * c.cols + k]; if (v && pal[v]) { g.fillStyle = pal[v]; g.fillRect(k, r, 1, 1); } }
+    this.cellImages.set(c, g ? cv : null);
+    return g ? cv : null;
   }
   /** Hazard areas and lines (G-AIRMETs, airspace), under the markers and over the radar; replaced as a set. */
   setShapes(defs: GeoShape[]): void {

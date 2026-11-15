@@ -4854,6 +4854,8 @@ interface UatText { kind: string; station: string; text: string; at: number }
 const uatData = {
   towers: new Map<string, { lat: number; lon: number; at: number; frames: number }>(),
   regional: new Map<number, RadarBlock>(), national: new Map<number, RadarBlock>(),
+  /** Every regional block the tower has reported, clear ones too: the national radar is drawn only outside them. */
+  regionalSeen: new Set<number>(),
   radarTime: '', radarAt: 0,
   metars: new Map<string, { m: Metar; at: number }>(),
   texts: new Map<string, UatText>(),
@@ -4901,7 +4903,7 @@ function uatOnUp(msg: Uint8Array): void {
     uatData.products.set(p.id, (uatData.products.get(p.id) ?? 0) + 1);
     if (p.id === 63 || p.id === 64) {
       const map = p.id === 63 ? uatData.regional : uatData.national;
-      for (const b of radarBlocks(p)) { if (b.bins) map.set(b.block, b); else map.delete(b.block); }
+      for (const b of radarBlocks(p)) { if (p.id === 63 && b.scale === 0) uatData.regionalSeen.add(b.block); if (b.bins) map.set(b.block, b); else map.delete(b.block); }
       uatData.radarTime = `${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}Z`; uatData.radarAt = now; uatUi.radarDirty = true;
       continue;
     }
@@ -5045,7 +5047,7 @@ const UAT_LAYERS: [keyof typeof uatUi.layers, string][] = [['radar', 'RADAR'], [
 function uatLegendHtml(): string {
   const ramp = (cols: string[], lo: string, hi: string, name: string) => `<span class="ua-ramp"><b>${name}</b>${cols.map(c => `<i style="background:${c}"></i>`).join('')}<small>${lo} → ${hi}</small></span>`;
   const out: string[] = [];
-  if (uatUi.layers.radar) out.push(ramp(UAT_RADAR.slice(2), 'light', 'heavy', 'RADAR'));
+  if (uatUi.layers.radar) out.push(ramp(UAT_RADAR.slice(2), 'light', 'heavy', 'RAIN / SNOW'));
   if (uatUi.layers.tops) out.push(ramp(UAT_TOPS.slice(1, 14).filter((_, i) => i % 3 === 0), 'low', 'high', 'TOPS'));
   if (uatUi.layers.turb) out.push(ramp(UAT_TURB.slice(1, 14).filter((_, i) => i % 3 === 0), 'light', 'severe', 'TURB'));
   if (uatUi.layers.ice) out.push(ramp(UAT_ICE.slice(1, 6), 'trace', 'heavy', 'ICE'));
@@ -5261,7 +5263,8 @@ function refreshUat(force = false): void {
     const shapes = uatShapesNow().filter(sh => !sh.line).sort((a, b) => order.indexOf(a.element) - order.indexOf(b.element));
     cards.innerHTML = rows.length || shapes.length ? shapes.map(sh => uatShapeCard(sh, now)).join('') + rows.map(t => (t.kind === 'SUA' ? uatSuaCard(t, now) : uatTextCard(t, now))).join('') : emptyState('uat');
   } else if (uatUi.view === 'traffic') {
-    const rows = [...d.planes.values()].sort((a, b) => b.at - a.at);
+    // first heard first: a card keeps its place instead of jumping every time a plane reports
+    const rows = [...d.planes.values()].sort((a, b) => a.first - b.first || a.address.localeCompare(b.address));
     cards.innerHTML = rows.length ? rows.map(p => uatPlaneCard(p, now)).join('') : emptyState('uat');
   }
   if (wide || uatUi.view === 'map') {
@@ -5284,7 +5287,22 @@ function refreshUat(force = false): void {
       uatUi.radarDirty = false; uatUi.radarAt = now;
       const cells: RadarCell[] = [];
       const add = (b: RadarBlock) => cells.push({ lat: b.lat, lon: b.lon, dLat: b.dLat, dLon: b.dLon, cols: 32, rows: 4, bins: b.bins! });
-      if (uatUi.layers.radar) { if (uatUi.layers.national) d.national.forEach(add); d.regional.forEach(add); }
+      if (uatUi.layers.radar) {
+        // the national picture is coarse (each block 5 or 9 times a regional one): where the tower's own regional
+        // radar reports, clear or not, it has the say and the national bins under it are left out
+        if (uatUi.layers.national) for (const b of d.national.values()) {
+          if (!b.bins) continue;
+          const bins = b.bins.slice();
+          for (let i = 0; i < 128; i++) {
+            if (!bins[i]) continue;
+            const la = b.lat + b.dLat * (3 - (i >> 5) + 0.5) / 4, lo = b.lon + b.dLon * ((i & 31) + 0.5) / 32;
+            const row = Math.floor(la * 15), col = Math.floor(((lo + 360) % 360) / 0.8);
+            if (d.regionalSeen.has(row * 450 + col)) bins[i] = 0;
+          }
+          if (bins.some(v => v >= 2)) cells.push({ lat: b.lat, lon: b.lon, dLat: b.dLat, dLon: b.dLon, cols: 32, rows: 4, bins });
+        }
+        d.regional.forEach(add);
+      }
       const grid = (id: number, colors: string[], level: number | null, map?: (v: number) => number) => {
         for (const b of d.hazards.get(id)?.values() ?? []) {
           if (!b.bins || (level !== null && b.level !== level)) continue;
@@ -5989,7 +6007,7 @@ function clearApp(id: string): void {
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
     case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
-    case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
+    case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.regionalSeen.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
   }
   worker?.postMessage({ type: 'clear' });
