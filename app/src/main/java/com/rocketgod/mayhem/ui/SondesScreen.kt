@@ -107,6 +107,7 @@ fun SondesScreen(accent: Color) {
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf("") }
     var full by remember { mutableStateOf(false) }
+    var about by remember { mutableStateOf(false) }
     var focusKey by remember { mutableIntStateOf(0) }
     var bandId by remember { mutableStateOf(Apps.sondeBandId()) }
     var held by remember { mutableStateOf<List<SondeRow>?>(null) }
@@ -204,6 +205,7 @@ fun SondesScreen(accent: Color) {
                     val id = SondeFront.BANDS[i].id
                     if (id != bandId) { bandId = id; sel = ""; Apps.setSondeBand(id) }
                 }
+                if (live.isNotEmpty() || net.air.isNotEmpty()) IconBox(InfoIcon, if (about) "Hide about" else "About Sondes") { about = !about }
             }
             SondeSummary(snap, bandId, accent)
             SondeChannels(snap, accent)
@@ -214,7 +216,8 @@ fun SondesScreen(accent: Color) {
                 switcher(true, Modifier.weight(1f).fillMaxHeight())
                 WaterfallBox(wf, accent, Modifier.fillMaxHeight()) { Apps.setWaterfall(MayhemApp.SONDES, !wf) }
                 IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
-                ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent, Modifier.fillMaxHeight()) {
+                // an icon, not a word: on a phone the word squeezed the tabs
+                IconBox(if (held != null) PlayIcon else PauseIcon, if (held != null) "Resume" else "Pause", Modifier.fillMaxHeight()) {
                     if (held == null) { held = live; heldLog = logSnap.lines } else { held = null; heldLog = null }
                 }
                 IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) {
@@ -225,7 +228,8 @@ fun SondesScreen(accent: Color) {
             if (view == 2) LogList(heldLog ?: logSnap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) logSnap.total else null,
                 accent = accent, empty = "listening for sondes…")
             else stage(Modifier.fillMaxWidth().weight(1f))
-            SondeAbout(accent)
+            // the about panel is for an empty screen; once a balloon shows up it folds behind the info button
+            if ((live.isEmpty() && net.air.isEmpty()) || about) SondeAbout(accent)
         })
     if (full) FullscreenPanel(if (view == 0) "SONDES · ${sondes.size}" else "SONDES · MAP", accent, onClose = { full = false },
         actions = { switcher(false, Modifier.width(d.dp(260f))) }) {
@@ -551,18 +555,30 @@ private fun SondeNetDetail(h: HubSonde, dx: HubDetail?, shared: HubPredict?, sit
     val scroll = rememberScrollState()
     val md = hubDetailModel(h, dx, shared, sites, me, now)
     // on the map the detail keeps the lower half, so the flight it describes stays in view
-    Column((if (onMapView) modifier.fillMaxHeight(0.5f) else modifier).fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
+    Column((if (onMapView) modifier.fillMaxHeight(0.5f) else modifier).fillMaxWidth().clip(shape).background(Palette.paper).background(Palette.panel.copy(alpha = 0.95f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
         .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
         verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(20f), maxLines = 1)
-            Text("${h.type} · ${md.phase}", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
-                letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
-            if (onCards != null) ToggleBox("CARDS", false, accent, Modifier.fillMaxHeight()) { onCards() }
-            ToggleBox("TRACKER", false, accent, Modifier.fillMaxHeight()) { onTracker() }
-            ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            // one line when it fits; on a phone the buttons drop under the name instead of cutting it off
+            val narrow = maxWidth < 460.dp
+            @Composable fun title(m: Modifier) = Row(m, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(20f), maxLines = 1)
+                Text("${h.type} · ${md.phase}", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                    letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            }
+            @Composable fun buttons() {
+                ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
+                if (onCards != null) ToggleBox("CARDS", false, accent, Modifier.fillMaxHeight()) { onCards() }
+                ToggleBox("TRACKER", false, accent, Modifier.fillMaxHeight()) { onTracker() }
+                ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
+            }
+            if (narrow) Column(verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                title(Modifier.fillMaxWidth())
+                Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) { buttons() }
+            } else Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                title(Modifier.weight(1f)); buttons()
+            }
         }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val perRow = if (maxWidth < 420.dp) 2 else 4
@@ -727,7 +743,7 @@ private fun SondeDetail(s: SondeRow, accent: Color, me: Pair<Double, Double>?, m
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(14f))
     val scroll = rememberScrollState()
-    Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
+    Column(modifier.fillMaxWidth().clip(shape).background(Palette.paper).background(Palette.panel.copy(alpha = 0.95f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
         .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
         verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
