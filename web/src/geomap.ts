@@ -6,8 +6,11 @@ import { currentSkin } from './theme.js';
 
 declare const L: any;
 
-export type GeoKind = 'plane' | 'ship' | 'aton' | 'station' | 'object' | 'sat' | 'qso' | 'sonde' | 'landing' | 'burst';
-export interface GeoItem { id: string; lat: number; lon: number; heading?: number; label: string; kind: GeoKind }
+export type GeoKind = 'plane' | 'ship' | 'aton' | 'station' | 'object' | 'sat' | 'qso' | 'sonde' | 'landing' | 'burst' | 'airport' | 'tower';
+/** [color] overrides the skin's accent for this marker (airports by flight category). */
+export interface GeoItem { id: string; lat: number; lon: number; heading?: number; label: string; kind: GeoKind; color?: string }
+/** A radar block: south-west corner, size in degrees, and its bins (cols across, rows from the north), 0 = clear. */
+export interface RadarCell { lat: number; lon: number; dLat: number; dLon: number; cols: number; rows: number; bins: Uint8Array }
 export interface GeoOpts {
   home?: { lat: number; lon: number } | null;
   onPick: (id: string) => void;
@@ -62,6 +65,10 @@ const SHAPES: Record<GeoKind, (heading: number | undefined) => string> = {
   landing: () => '<path fill-rule="evenodd" d="M0 -1.1 A1.1 1.1 0 1 0 0.001 -1.1 Z M0 -0.78 A0.78 0.78 0 1 1 -0.001 -0.78 Z"/><circle r="0.32"/>',
   // where it burst: a star
   burst: () => '<path d="M0 -1.2 L0.3 -0.4 L1.15 -0.4 L0.45 0.12 L0.72 0.95 L0 0.45 L-0.72 0.95 L-0.45 0.12 L-1.15 -0.4 L-0.3 -0.4 Z"/>',
+  // an airport reporting weather: a disc in its flight-category color with a dark ring
+  airport: () => '<circle r="0.62"/>',
+  // a FIS-B ground station: a mast with its waves
+  tower: () => '<path d="M0 -0.5 L0.45 1.2 L0.2 1.2 L0 0.45 L-0.2 1.2 L-0.45 1.2 Z"/><circle cy="-0.62" r="0.22"/><path fill="none" stroke-width="0.14" d="M-0.62 -1.05 A0.75 0.75 0 0 0 -0.62 -0.2 M0.62 -1.05 A0.75 0.75 0 0 1 0.62 -0.2"/>',
 };
 
 export class GeoMap {
@@ -72,6 +79,7 @@ export class GeoMap {
   private items: GeoItem[] = []; private sel = '';
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
   private paths: any[] = []; private pathDefs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
+  private radar: any = null; private radarCells: RadarCell[] = []; private radarColors: string[] = [];
   private readonly btn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
@@ -91,6 +99,7 @@ export class GeoMap {
     this.update(this.items, this.sel);
     if (this.trackPts.length) this.setTrack(this.trackPts);
     if (this.pathDefs.length) this.setPaths(this.pathDefs);
+    if (this.radarCells.length) this.setRadar(this.radarCells, this.radarColors);
   }
   get ready(): boolean { return !!this.map; }
   setFollow(on: boolean): void { this.follow = on; this.btn.classList.toggle('on', on); this.opts.onFollow?.(on); if (on) this.fit(); }
@@ -117,7 +126,7 @@ export class GeoMap {
   private icon(it: GeoItem, sel: boolean): any {
     const accent = currentSkin().accent;
     const rot = it.kind === 'plane' || it.kind === 'ship' ? it.heading ?? 0 : 0;
-    return L.divIcon({ className: 'geo-wrap', iconSize: [60, 60], iconAnchor: [30, 30], html: `<div class="geo ${it.kind} ${sel ? 'sel' : ''}"><svg viewBox="-1.4 -1.4 2.8 2.8" style="transform:rotate(${rot}deg)" fill="${accent}" stroke="#0b1416" stroke-width="0.12" stroke-linejoin="round">${SHAPES[it.kind](it.heading)}</svg><span>${esc(it.label)}</span></div>` });
+    return L.divIcon({ className: 'geo-wrap', iconSize: [60, 60], iconAnchor: [30, 30], html: `<div class="geo ${it.kind} ${sel ? 'sel' : ''}"><svg viewBox="-1.4 -1.4 2.8 2.8" style="transform:rotate(${rot}deg)" fill="${it.color ?? accent}" stroke="#0b1416" stroke-width="0.12" stroke-linejoin="round">${SHAPES[it.kind](it.heading)}</svg><span>${esc(it.label)}</span></div>` });
   }
   fit(): void {
     if (!this.map) return;
@@ -168,6 +177,45 @@ export class GeoMap {
     for (const l of this.paths) this.map.removeLayer(l);
     const c = currentSkin().accent;
     this.paths = defs.filter(d => d.pts.length > 1).map(d => L.polyline(d.pts, { color: c, weight: d.dashed ? 2 : 3, opacity: d.faint ? 0.4 : 0.85, dashArray: d.dashed ? '6 6' : undefined, interactive: false }).addTo(this.map));
+  }
+  /**
+   * Weather radar under the markers: every block projected onto the map tile by tile (a single stretched image would
+   * drift on a Mercator map), [colors][level] for each intensity (0 is never drawn). Replaces the whole set.
+   */
+  setRadar(cells: RadarCell[], colors: string[]): void {
+    this.radarCells = cells; this.radarColors = colors;
+    if (!this.map) return;
+    if (!this.radar) {
+      const self = this;
+      const Layer = L.GridLayer.extend({
+        createTile(coords: any) {
+          const t = document.createElement('canvas'), size = this.getTileSize();
+          t.width = size.x; t.height = size.y;
+          self.drawRadarTile(t, coords, size);
+          return t;
+        },
+      });
+      this.radar = new Layer({ opacity: 0.78, zIndex: 300, updateWhenZooming: false });
+      this.radar.addTo(this.map);
+    } else this.radar.redraw();
+  }
+  private drawRadarTile(canvas: HTMLCanvasElement, coords: any, size: any): void {
+    const g = canvas.getContext('2d'); if (!g) return;
+    const z = coords.z, ox = coords.x * size.x, oy = coords.y * size.y;
+    const nw = this.map.unproject([ox, oy], z), se = this.map.unproject([ox + size.x, oy + size.y], z);
+    for (const c of this.radarCells) {
+      if (c.lat > nw.lat || c.lat + c.dLat < se.lat || c.lon > se.lng || c.lon + c.dLon < nw.lng) continue;
+      const a = this.map.project([c.lat + c.dLat, c.lon], z), b = this.map.project([c.lat, c.lon + c.dLon], z);
+      const x0 = a.x - ox, y0 = a.y - oy, w = (b.x - a.x) / c.cols, h = (b.y - a.y) / c.rows;
+      for (let r = 0; r < c.rows; r++) for (let k = 0; k < c.cols; k++) {
+        const v = c.bins[r * c.cols + k];
+        if (!v || !this.radarColors[v]) continue;
+        g.fillStyle = this.radarColors[v];
+        // exact cell edges: overlapping cells drew a grid texture wherever the colors are see-through
+        const xa = Math.round(x0 + k * w), xb = Math.round(x0 + (k + 1) * w), ya = Math.round(y0 + r * h), yb = Math.round(y0 + (r + 1) * h);
+        g.fillRect(xa, ya, Math.max(1, xb - xa), Math.max(1, yb - ya));
+      }
+    }
   }
   /** Straight lines between pairs of points (contacts from home). */
   setLines(lines: [[number, number], [number, number]][]): void {

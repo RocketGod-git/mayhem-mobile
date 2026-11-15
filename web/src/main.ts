@@ -28,8 +28,10 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import { GeoMap, type GeoItem, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
+import { GeoMap, type GeoItem, type RadarCell, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
 import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
+import { productsOf, radarBlocks, textOf, parseMetar, stationOf, type Metar, type RadarBlock } from './dsp/uat/fisb.js';
+import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
@@ -50,7 +52,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -59,6 +61,7 @@ const APPS: AppDef[] = [
   { id: 'devices', title: 'Devices', blurb: 'keys, remotes, TPMS', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
   { id: 'adsb', title: 'ADS-B', blurb: 'aircraft, 1090 MHz', cat: 'Receive' },
+  { id: 'uat', title: 'UAT', blurb: 'weather & small planes', cat: 'Receive' },
   { id: 'ais', title: 'AIS', blurb: 'ships, 162 MHz', cat: 'Receive' },
   { id: 'aprs', title: 'APRS', blurb: 'packet, 144.39 MHz', cat: 'Receive' },
   { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG pagers', cat: 'Receive' },
@@ -933,6 +936,7 @@ function open(app: AppId | null): void {
     }
     case 'prowl': configure('NFM', state.prowl.target ? state.freq : dial, Math.max(RX_RATE, state.rate), 24, 24, false, 'none'); break;
     case 'adsb': configure('NONE', 1_090_000_000, 2e6, 32, 32, true, 'adsb'); requestGeo(); break;
+    case 'uat': uatOpen(); break;
     case 'sat': satAppOpen(); return;
     case 'ais': configure('NFM', 161_975_000, 2e6, 32, 32, false, 'ais'); narrowShift(); requestGeo(); break;
     case 'aprs': configure('NFM', 144_390_000, 2e6, 24, 24, false, 'aprs'); narrowShift(); requestGeo(); break;
@@ -1654,6 +1658,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
+  uat: ['uat', 'Listening on 978 MHz', ['FAA ground towers broadcast weather here several times a second: radar, airport weather, notices', 'Small planes, and the traffic the towers rebroadcast, show up on the map', 'A 978 MHz antenna (a 915 MHz one works) with a view of the sky helps']],
   adsb: ['adsb', 'No aircraft yet', ['Aircraft send on 1090 MHz several times a second: a window with a view of the sky helps', 'A 1090 MHz antenna (about 6.9 cm) reaches 100+ miles']],
   ais: ['ais', 'No vessels yet', ['Ships under way report every 2–10 s, at anchor every 3 minutes', 'AIS is VHF: you need a line of sight to the water']],
   aprs: ['aprs', 'No stations yet', ['North America uses 144.390 MHz: cars and digipeaters beacon every few minutes', 'An antenna up high hears much farther']],
@@ -1836,6 +1841,7 @@ function render(app: AppId | null): void {
       break;
     case 'ham': renderHam(view); break;
     case 'adsb': renderAdsb(view); break;
+    case 'uat': renderUat(view); break;
     case 'ais': renderAis(view); break;
     case 'aprs': renderAprs(view); break;
     case 'pager': if (state.pagerMulti) renderHunt(view); else renderPacket(view, app); break;
@@ -4827,6 +4833,261 @@ function refreshSondes(force = false): void {
   if (sondes.length > 0) setLamp(`${sondes.length} SONDE${sondes.length === 1 ? '' : 'S'}`, 'ok');
 }
 
+// ---- UAT (978 MHz): FIS-B weather from the FAA's ground towers, and the aircraft that broadcast on 978 ----
+type UatView = 'map' | 'weather' | 'notices' | 'traffic' | 'log';
+const uatUi = { view: 'map' as UatView, sel: '', timer: 0, drawn: 0, pending: 0, radarAt: 0, radarDirty: true,
+  layers: { radar: true, national: true, traffic: true, airports: true } };
+type UatPlane = UatTarget & { at: number; first: number; frames: number; track: [number, number][] };
+interface UatText { kind: string; station: string; text: string; at: number }
+const uatData = {
+  towers: new Map<string, { lat: number; lon: number; at: number; frames: number }>(),
+  regional: new Map<number, RadarBlock>(), national: new Map<number, RadarBlock>(),
+  radarTime: '', radarAt: 0,
+  metars: new Map<string, { m: Metar; at: number }>(),
+  texts: new Map<string, UatText>(),
+  products: new Map<number, number>(),
+  planes: new Map<string, UatPlane>(),
+  up: 0, down: 0, bad: 0, firstAt: 0,
+};
+/** Airport positions for the weather markers (ICAO id to latitude, longitude and name), loaded once when present. */
+let uatAirports: Map<string, [number, number, string]> | null = null;
+function uatLoadAirports(): void {
+  if (uatAirports) return;
+  uatAirports = new Map();
+  fetch('assets/airports.json').then(r => (r.ok ? r.json() : null)).then((rows: [string, number, number, string][] | null) => {
+    if (!rows) return;
+    for (const [id, la, lo, name] of rows) uatAirports!.set(id, [la, lo, name]);
+    refreshUat(true);
+  }).catch(() => undefined);
+}
+const UAT_PRODUCT: Record<number, string> = { 8: 'notices', 11: 'AIRMET', 12: 'SIGMET', 13: 'special use airspace', 14: 'G-AIRMET', 15: 'center weather', 16: 'notices', 17: 'notices',
+  19: 'TFR', 63: 'regional radar', 64: 'national radar', 70: 'icing, low', 71: 'icing, high', 84: 'cloud tops', 90: 'turbulence, low', 91: 'turbulence, high', 103: 'lightning', 413: 'weather text' };
+/** Radar intensity 2-7 as colors. Level 1 is not drawn: on the national product it fills whole regions out to the edge
+ *  of radar coverage, so it reads as "covered, nothing there" rather than rain (to confirm against the standard). */
+const UAT_RADAR = ['', '', '#3ddc84', '#1e9e4b', '#f2df34', '#f39a1c', '#e5382b', '#c42597'];
+const UAT_CAT: Record<string, string> = { VFR: '#3ddc84', MVFR: '#4aa3ff', IFR: '#ff5b52', LIFR: '#d562ff' };
+const uatClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
+function uatLog(line: string): void {
+  const list = (logs.uat ??= []);
+  list.unshift(`${uatClock(Date.now())} ${line}`); if (list.length > 300) list.length = 300;
+  counts.uat = (counts.uat ?? 0) + 1;
+}
+function uatOnUp(msg: Uint8Array): void {
+  const now = Date.now();
+  uatData.up++; if (!uatData.firstAt) uatData.firstAt = now;
+  const st = stationOf(msg);
+  const key = `${st.lat.toFixed(3)},${st.lon.toFixed(3)}`;
+  const tw = uatData.towers.get(key);
+  if (!tw) uatLog(`TOWER FIS-B ground station at ${st.lat.toFixed(4)}, ${st.lon.toFixed(4)}`);
+  uatData.towers.set(key, { lat: st.lat, lon: st.lon, at: now, frames: (tw?.frames ?? 0) + 1 });
+  const got: string[] = [];
+  for (const p of productsOf(msg)) {
+    uatData.products.set(p.id, (uatData.products.get(p.id) ?? 0) + 1);
+    if (p.id === 63 || p.id === 64) {
+      const map = p.id === 63 ? uatData.regional : uatData.national;
+      for (const b of radarBlocks(p)) { if (b.bins) map.set(b.block, b); else map.delete(b.block); }
+      uatData.radarTime = `${String(p.hh).padStart(2, '0')}:${String(p.mm).padStart(2, '0')}Z`; uatData.radarAt = now; uatUi.radarDirty = true;
+      continue;
+    }
+    const t = textOf(p.payload);
+    if (!t) continue;
+    if (t.startsWith('METAR') || t.startsWith('SPECI')) {
+      const m = parseMetar(t);
+      if (m) { if (!uatData.metars.has(m.station)) got.push(`METAR ${m.station}`); uatData.metars.set(m.station, { m, at: now }); }
+      continue;
+    }
+    const kind = t.split(/[\s.]/)[0];
+    const station = /^(?:NOTAM-\w+\s+)?K?([A-Z0-9]{3,4})\b/.exec(t.replace(/^\S+\s+/, ''))?.[1] ?? '';
+    const k = t.slice(0, 64);
+    if (!uatData.texts.has(k)) got.push(kind);
+    uatData.texts.set(k, { kind, station, text: t, at: now });
+    if (uatData.texts.size > 600) uatData.texts.delete(uatData.texts.keys().next().value!);
+  }
+  if (got.length) uatLog(`FISB ${got.slice(0, 6).join(' · ')}${got.length > 6 ? ` +${got.length - 6}` : ''}`);
+}
+function uatOnDown(bytes: Uint8Array): void {
+  const now = Date.now();
+  uatData.down++;
+  const t = decodeDownlink(bytes);
+  const was = uatData.planes.get(t.address);
+  const p: UatPlane = { ...(was ?? { first: now, frames: 0, track: [] }), ...Object.fromEntries(Object.entries(t).filter(([, v]) => v !== undefined)) as UatTarget, at: now, frames: (was?.frames ?? 0) + 1 } as UatPlane;
+  if (t.lat !== undefined && t.lon !== undefined) {
+    const last = p.track[p.track.length - 1];
+    if (!last || Math.abs(last[0] - t.lat) + Math.abs(last[1] - t.lon) > 0.002) { p.track.push([t.lat, t.lon]); if (p.track.length > 400) p.track.shift(); }
+  }
+  uatData.planes.set(t.address, p);
+  if (!was) uatLog(`AIRCRAFT ${p.callsign ?? p.address} · ${uatSource(p.qualifier)}${p.altFt !== undefined ? ` · ${p.altFt.toLocaleString('en-US')} ft` : ''}`);
+}
+const uatSource = (q: number) => ['UAT', 'UAT', 'TIS-B', 'TIS-B', 'vehicle', 'beacon', 'ADS-R', '?'][q] ?? '?';
+function uatAge(ms: number, now: number): string {
+  const s = (now - ms) / 1000;
+  return s < 60 ? `${Math.max(0, Math.floor(s))} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+}
+function uatFromHere(lat: number, lon: number): { km: number; text: string } | null {
+  const me = state.home ?? lastKnownPos(); if (!me) return null;
+  const [km, brg] = distBearing(me, { lat, lon });
+  return { km, text: `${Math.round(km * 0.621371)} mi ${compass(brg)}` };
+}
+function uatOpen(): void {
+  configure('NONE', 978_000_000, 2e6, 32, 32, true, 'uat');
+  requestGeo(); uatLoadAirports();
+}
+function uatPlainWx(m: Metar): string {
+  const parts: string[] = [];
+  if (m.windKt !== undefined) parts.push(m.windKt === 0 ? 'calm' : `wind ${m.windDir !== undefined ? `${String(m.windDir).padStart(3, '0')}°` : 'variable'} ${m.windKt} kt${m.gustKt ? ` gusting ${m.gustKt}` : ''}`);
+  if (m.visSm !== undefined) parts.push(`${m.visSm >= 10 ? '10+' : m.visSm} mi`);
+  parts.push(m.sky.length ? m.sky.join(' · ').toLowerCase() : 'sky not reported');
+  if (m.wx.length) parts.push(m.wx.join(' '));
+  return parts.join(' · ');
+}
+function uatWxCard(id: string, m: Metar, at: number, now: number): string {
+  const ap = uatAirports?.get(id);
+  const from = ap ? uatFromHere(ap[0], ap[1]) : null;
+  const cat = m.category ?? '';
+  const f = (c: number) => Math.round(c * 9 / 5 + 32);
+  return `<div class="mt-card ua-wx ${uatUi.sel === `wx:${id}` ? 'sel' : ''}" data-ua="wx:${esc(id)}" style="--cat:${UAT_CAT[cat] ?? 'var(--muted)'}">`
+    + `<div class="mt-h"><span class="mt-id">${esc(id)}</span><span class="mt-k"><b>${esc(ap?.[2] ?? '')}</b><small>${m.hh !== undefined ? `${String(m.hh).padStart(2, '0')}:${String(m.mm).padStart(2, '0')}Z · ` : ''}${uatAge(at, now)}${from ? ` · ${from.text}` : ''}</small></span>${cat ? `<span class="ua-cat">${cat}</span>` : ''}</div>`
+    + `<div class="mt-clk"><b>${m.tempC !== undefined ? `${f(m.tempC)}°` : '—'}</b><small>F${m.tempC !== undefined ? ` · ${m.tempC}°C` : ''}${m.dewC !== undefined ? ` · dew ${f(m.dewC)}°` : ''}</small><em>${m.altimInHg !== undefined ? `${m.altimInHg.toFixed(2)} inHg` : ''}</em></div>`
+    + `<div class="lr-name">${esc(uatPlainWx(m))}</div>`
+    + `<div class="lr-last ua-raw">${esc(m.raw)}</div></div>`;
+}
+function uatTextCard(t: UatText, now: number): string {
+  return `<div class="mt-card ua-tx"><div class="mt-h"><span class="mt-id ua-kind">${esc(t.kind)}</span><span class="mt-k"><b>${esc(t.station || ' ')}</b><small>${uatAge(t.at, now)}</small></span></div>`
+    + `<div class="ua-text">${esc(t.text.replace(/\n/g, ' '))}</div></div>`;
+}
+function uatPlaneCard(p: UatPlane, now: number): string {
+  const from = p.lat !== undefined && p.lon !== undefined ? uatFromHere(p.lat, p.lon) : null;
+  const live = now - p.at < 30_000;
+  const vs = p.vertFpm ? `${p.vertFpm > 0 ? '▲' : '▼'} ${Math.abs(p.vertFpm).toLocaleString('en-US')} ft/min` : 'level';
+  return `<div class="mt-card ${uatUi.sel === `ac:${p.address}` ? 'sel' : ''} ${live ? '' : 'dim'}" data-ua="ac:${esc(p.address)}">`
+    + `<div class="mt-h"><span class="mt-id">${esc(p.callsign ?? p.address)}</span><span class="mt-k"><b>${uatSource(p.qualifier)}</b><small>${esc(p.address)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${uatAge(p.at, now)}</span></div>`
+    + `<div class="mt-clk"><b>${p.altFt !== undefined ? p.altFt.toLocaleString('en-US') : '—'}</b><small>FT${p.onGround ? ' · ON THE GROUND' : ''}</small><em>${esc(vs)}</em></div>`
+    + `<div class="lr-name">${p.speedKt !== undefined ? `${p.speedKt} kt` : 'speed —'}${p.trackDeg !== undefined ? ` · heading ${p.trackDeg}° ${compass(p.trackDeg)}` : ''}</div>`
+    + (from ? `<div class="lr-last">${esc(from.text)} from you</div>` : '') + '</div>';
+}
+function uatDetail(now: number): string {
+  const [kind, id] = [uatUi.sel.slice(0, 2), uatUi.sel.slice(3)];
+  const row = (k: string, v: string | undefined | false) => (v ? `<div><b>${k}</b><span>${esc(v)}</span></div>` : '');
+  const close = '<button class="chip" data-uao="close">✕</button>';
+  if (kind === 'wx') {
+    const e = uatData.metars.get(id); if (!e) return '';
+    const m = e.m, ap = uatAirports?.get(id);
+    const tafs = [...uatData.texts.values()].filter(t => t.kind === 'TAF' && t.text.includes(id));
+    const notes = [...uatData.texts.values()].filter(t => t.kind.startsWith('NOTAM') && t.station === id.slice(1)).slice(0, 6);
+    return `<div class="mt-dh"><b>${esc(id)}</b><span>${esc(ap?.[2] ?? '')}${m.category ? ` · ${m.category}` : ''}</span>${close}</div>`
+      + `<div class="mt-fields">${row('Observed', m.hh !== undefined ? `${String(m.hh).padStart(2, '0')}:${String(m.mm).padStart(2, '0')} UTC · ${uatAge(e.at, now)}` : uatAge(e.at, now))}${row('Wind', m.windKt === 0 ? 'calm' : m.windKt !== undefined ? `${m.windDir ?? 'variable'}° at ${m.windKt} kt${m.gustKt ? `, gusts ${m.gustKt}` : ''}` : undefined)}`
+      + `${row('Visibility', m.visSm !== undefined ? `${m.visSm} statute miles` : undefined)}${row('Sky', m.sky.join(', ') || undefined)}${row('Weather', m.wx.join(' ') || undefined)}`
+      + `${row('Temperature', m.tempC !== undefined ? `${m.tempC} °C · ${Math.round(m.tempC * 9 / 5 + 32)} °F` : undefined)}${row('Dew point', m.dewC !== undefined ? `${m.dewC} °C` : undefined)}${row('Altimeter', m.altimInHg !== undefined ? `${m.altimInHg.toFixed(2)} inHg` : undefined)}</div>`
+      + `<div class="ua-text">${esc(m.raw)}</div>` + tafs.map(t => `<div class="ua-text"><b>TAF</b> ${esc(t.text)}</div>`).join('') + notes.map(t => `<div class="ua-text"><b>${esc(t.kind)}</b> ${esc(t.text)}</div>`).join('');
+  }
+  if (kind === 'ac') {
+    const p = uatData.planes.get(id); if (!p) return '';
+    const from = p.lat !== undefined && p.lon !== undefined ? uatFromHere(p.lat, p.lon) : null;
+    return `<div class="mt-dh"><b>${esc(p.callsign ?? p.address)}</b><span>${uatSource(p.qualifier)} · ${esc(p.address)}</span>${close}</div>`
+      + `<div class="mt-fields">${row('Altitude', p.altFt !== undefined ? `${p.altFt.toLocaleString('en-US')} ft (${p.altGeo ? 'GPS' : 'pressure'})` : undefined)}${row('Speed', p.speedKt !== undefined ? `${p.speedKt} kt` : undefined)}`
+      + `${row('Heading', p.trackDeg !== undefined ? `${p.trackDeg}° ${compass(p.trackDeg)}` : undefined)}${row('Vertical', p.vertFpm !== undefined ? `${p.vertFpm > 0 ? '+' : ''}${p.vertFpm.toLocaleString('en-US')} ft/min` : undefined)}`
+      + `${row('Position', p.lat !== undefined ? `${p.lat.toFixed(4)}, ${p.lon!.toFixed(4)}` : undefined)}${row('From you', from?.text)}${row('First heard', uatClock(p.first))}${row('Frames', `${p.frames}`)}</div>`;
+  }
+  if (kind === 'tw') {
+    const t = uatData.towers.get(id); if (!t) return '';
+    const from = uatFromHere(t.lat, t.lon);
+    return `<div class="mt-dh"><b>FIS-B</b><span>ground station</span>${close}</div><div class="mt-fields">${row('Position', `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}`)}${row('From you', from?.text)}${row('Frames', `${t.frames}`)}${row('Last heard', uatAge(t.at, now))}</div>`
+      + `<div class="mt-fields">${[...uatData.products.entries()].sort((x, y) => y[1] - x[1]).map(([id, c]) => row(UAT_PRODUCT[id] ?? `product ${id}`, `${c}`)).join('')}</div>`;
+  }
+  return '';
+}
+function renderUat(view: HTMLElement): void {
+  view.innerHTML = `
+    <section class="${visCls('uat')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="ua-sum" class="mt-sum"></div>
+      <div class="ctlrow">${segHtml((['map', 'weather', 'notices', 'traffic', 'log'] as UatView[]).map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('uat')}${pauseClearHtml('uat')}</div>
+      <div id="ua-layers" class="ua-layers">${(['radar', 'national', 'traffic', 'airports'] as const).map(k => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${k.toUpperCase()}</button>`).join('')}<span id="ua-legend" class="ua-legend">${UAT_RADAR.slice(2).map(c => `<i style="background:${c}"></i>`).join('')}<small>light → heavy</small></span></div>
+      <div id="ua-stage" class="mt-stage"><div id="ua-map" class="panel map"></div><div id="ua-cards" class="mt-cards"></div><div id="ua-detail" class="mt-detail" hidden></div></div>
+      <div id="ua-log">${logHtml('uat', 'listening for FIS-B…')}</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-uaview]', view).forEach(b => b.onclick = () => { uatUi.view = b.dataset.uaview as UatView; refreshUat(true); });
+  qa<HTMLButtonElement>('[data-ualayer]', view).forEach(b => b.onclick = () => {
+    const k = b.dataset.ualayer as keyof typeof uatUi.layers; uatUi.layers[k] = !uatUi.layers[k]; b.classList.toggle('on', uatUi.layers[k]); uatUi.radarDirty = true; refreshUat(true);
+  });
+  $('ua-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-ua]'); if (c) { uatUi.sel = uatUi.sel === c.dataset.ua ? '' : c.dataset.ua!; refreshUat(true); } };
+  $('ua-detail').onclick = (e) => { if ((e.target as HTMLElement).closest('[data-uao="close"]')) { uatUi.sel = ''; refreshUat(true); } };
+  geo = new GeoMap($('ua-map'), { home: state.home, start: mapStart(state.home), onPick: id => { uatUi.sel = id; refreshUat(true); }, log });
+  geo.follow = false;
+  uatUi.radarDirty = true;
+  clearInterval(uatUi.timer);
+  uatUi.timer = window.setInterval(() => { if (state.app !== 'uat') { clearInterval(uatUi.timer); return; } refreshUat(); }, 1000);
+  refreshUat(true);
+}
+function refreshUat(force = false): void {
+  if (state.app !== 'uat') return;
+  const now = Date.now();
+  if (!force && now - uatUi.drawn < 400) { clearTimeout(uatUi.pending); uatUi.pending = window.setTimeout(() => refreshUat(true), 450); return; }
+  uatUi.drawn = now;
+  const d = uatData;
+  // aircraft not heard for two minutes leave the map and the list
+  for (const [k, p] of d.planes) if (now - p.at > 120_000) d.planes.delete(k);
+  const sum = q('#ua-sum');
+  if (sum) {
+    const mins = d.firstAt ? Math.max(1, (now - d.firstAt) / 60000) : 1;
+    const towers = [...d.towers.values()].filter(t => now - t.at < 120_000).length;
+    sum.innerHTML = d.up || d.down
+      ? `<div>${towers} TOWER${towers === 1 ? '' : 'S'} · ${Math.round(d.up / mins)} UPLINKS/MIN · ${d.metars.size} AIRPORTS · ${d.planes.size} AIRCRAFT${d.radarTime ? ` · RADAR ${d.radarTime}` : ''}</div>`
+      : `<div class="muted">listening on 978 MHz for FIS-B towers and aircraft</div>`;
+  }
+  const n = { map: d.towers.size + d.planes.size, weather: d.metars.size, notices: d.texts.size, traffic: d.planes.size, log: 0 };
+  qa<HTMLButtonElement>('[data-uaview]').forEach(b => { const v = b.dataset.uaview as UatView; b.classList.toggle('on', v === uatUi.view); b.textContent = v === 'traffic' ? 'PLANES' : v.toUpperCase(); b.title = v === 'log' ? '' : `${n[v]}`; });
+  const mapEl = q('#ua-map'), cards = q('#ua-cards'), det = q('#ua-detail'), logEl = q('#ua-log'), stage = q('#ua-stage'), layers = q('#ua-layers');
+  if (!mapEl || !cards || !det || !logEl || !stage || !layers) return;
+  mapEl.hidden = uatUi.view !== 'map'; cards.hidden = uatUi.view === 'map' || uatUi.view === 'log';
+  logEl.hidden = uatUi.view !== 'log'; stage.hidden = uatUi.view === 'log'; layers.hidden = uatUi.view !== 'map';
+  const detHtml = uatUi.sel ? uatDetail(now) : '';
+  det.hidden = !detHtml;
+  if (detHtml) { const top = det.scrollTop; det.innerHTML = detHtml; det.scrollTop = top; }
+  if (uatUi.view === 'log') { refreshList('uat'); return; }
+  if (paused.has('uat')) return;
+  if (uatUi.view === 'weather') {
+    const me = state.home ?? lastKnownPos();
+    const rows = [...d.metars.entries()].map(([id, e]) => {
+      const ap = uatAirports?.get(id);
+      return { id, e, km: me && ap ? distBearing(me, { lat: ap[0], lon: ap[1] })[0] : 1e9 };
+    }).sort((a, b) => a.km - b.km || a.id.localeCompare(b.id));
+    cards.innerHTML = rows.length ? rows.map(r => uatWxCard(r.id, r.e.m, r.e.at, now)).join('') : emptyState('uat');
+  } else if (uatUi.view === 'notices') {
+    const rows = [...d.texts.values()].sort((a, b) => b.at - a.at);
+    cards.innerHTML = rows.length ? rows.map(t => uatTextCard(t, now)).join('') : emptyState('uat');
+  } else if (uatUi.view === 'traffic') {
+    const rows = [...d.planes.values()].sort((a, b) => b.at - a.at);
+    cards.innerHTML = rows.length ? rows.map(p => uatPlaneCard(p, now)).join('') : emptyState('uat');
+  } else if (uatUi.view === 'map') {
+    geo?.invalidate();
+    const items: GeoItem[] = [];
+    for (const [k, t] of d.towers) items.push({ id: `tw:${k}`, lat: t.lat, lon: t.lon, label: 'FIS-B', kind: 'tower' });
+    if (uatUi.layers.airports && uatAirports) for (const [id, e] of d.metars) {
+      const ap = uatAirports.get(id); if (!ap) continue;
+      items.push({ id: `wx:${id}`, lat: ap[0], lon: ap[1], label: id, kind: 'airport', color: UAT_CAT[e.m.category ?? ''] ?? '#8a93a6' });
+    }
+    const paths: { pts: [number, number][]; faint?: boolean }[] = [];
+    if (uatUi.layers.traffic) for (const p of d.planes.values()) {
+      if (p.lat === undefined || p.lon === undefined) continue;
+      items.push({ id: `ac:${p.address}`, lat: p.lat, lon: p.lon, heading: p.trackDeg, label: `${p.callsign ?? p.address}${p.altFt !== undefined ? ` ${Math.round(p.altFt / 100)}` : ''}`, kind: 'plane' });
+      if (p.track.length > 1) paths.push({ pts: p.track, faint: uatUi.sel !== `ac:${p.address}` });
+    }
+    geo?.setPaths(paths);
+    geo?.update(items, uatUi.sel);
+    if (uatUi.radarDirty && now - uatUi.radarAt > 3000) {
+      uatUi.radarDirty = false; uatUi.radarAt = now;
+      const cells: RadarCell[] = [];
+      const add = (b: RadarBlock) => cells.push({ lat: b.lat, lon: b.lon, dLat: b.dLat, dLon: b.dLon, cols: 32, rows: 4, bins: b.bins! });
+      if (uatUi.layers.radar) { if (uatUi.layers.national) d.national.forEach(add); d.regional.forEach(add); }
+      geo?.setRadar(cells, UAT_RADAR);
+    }
+  }
+  const lamp = d.up || d.down;
+  if (lamp) setLamp(`${d.towers.size} TOWER${d.towers.size === 1 ? '' : 'S'} · ${d.planes.size} AIRCRAFT`, 'ok');
+}
+
 /** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
 function geoHeadHtml(id: string, glyphText: string, views: string[], wf?: AppId): string {
   return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span></div><div class="ctlrow">${segHtml(views.map(v => `<button data-${id}view="${v}">${v.toUpperCase()}</button>`))}${wf ? wfHtml(wf) : ''}${pauseClearHtml(id)}</div>`;
@@ -5506,6 +5767,7 @@ function clearApp(id: string): void {
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
     case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
+    case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
   }
   worker?.postMessage({ type: 'clear' });
@@ -5914,6 +6176,9 @@ function ensureWorker(): Worker {
       case 'table': state.aisTable = m.rows; refreshAis(); break;
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
       case 'meters': meters.snap = m as MetersSnap; refreshMeters(); break;
+      case 'uatUp': uatOnUp(new Uint8Array(m.msg as ArrayBuffer | Uint8Array as ArrayBuffer)); refreshUat(); break;
+      case 'uatDown': uatOnDown(new Uint8Array(m.bytes as ArrayBuffer | Uint8Array as ArrayBuffer)); refreshUat(); break;
+      case 'uatStat': uatData.bad = m.bad as number; break;
       case 'lora': loraUi.snap = m as LoraSnap; refreshLora(); break;
       case 'sonde': sondeUi.snap = m as unknown as SondeSnap; refreshSondes(); break;
       case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;

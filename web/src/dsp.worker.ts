@@ -22,6 +22,7 @@ import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { SondeProcessor } from './dsp/sonde/front.js';
+import { UatProcessor } from './dsp/uat/demod.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
 import { R433Processor, protocolList } from './dsp/r433/index.js';
 import { AnalyzerProcessor, captureFile } from './dsp/analyzer/capture.js';
@@ -121,6 +122,8 @@ const acars = new AcarsDecoder(emit);
 const trains = new TrainsProcessor(emit);
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);
+/** UAT on 978 MHz: FIS-B weather uplinks and aircraft downlinks. */
+const uat = new UatProcessor(emit);
 const ism = new IsmDecoder(emit);
 /** The rtl_433 port: every registered protocol, run over every burst found anywhere in the sampled span. */
 const r433 = new R433Processor(emit);
@@ -390,6 +393,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'tpms': return tpms;
     case 'acars': return acars;
     case 'sonde': sonde.setCenter(centreHz); return sonde;
+    case 'uat': return uat;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'subghz': return ism;
     case 'r433': return r433;

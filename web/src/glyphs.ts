@@ -25,6 +25,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   devices: { d: 'M22 88 L22 54 L50 32 L78 54 L78 88 Z M44 88 L44 70 L56 70 L56 88 ' + arc(50, 32, 12, -150, -30) + arc(50, 32, 22, -150, -30) },
   sat: { d: 'M40 40 L60 40 L60 60 L40 60 Z M10 44 L32 44 L32 56 L10 56 Z M68 44 L90 44 L90 56 L68 56 Z M32 50 L40 50 M60 50 L68 50 M50 60 L50 70 ' + arc(50, 90, 20, 200, 340) },
   adsb: { d: 'M50 6 L50 92 M6 52 L50 38 L94 52 M30 90 L50 78 L70 90' },
+  // a small plane over a cloud: weather and traffic from 978 MHz
+  uat: { d: 'M50 6 L50 46 M28 26 L50 18 L72 26 M41 46 L50 40 L59 46 M18 86 A12 12 0 0 1 26 64 A17 17 0 0 1 58 58 A14 14 0 0 1 82 72 A9 9 0 0 1 80 86 Z' },
   ais: { d: 'M8 60 L92 60 L78 84 L22 84 Z M50 60 L50 14 M50 20 L72 42 L50 42 ' + wave(8, 92, 94, 3, 12, 1.6) },
   aprs: { d: 'M50 12 L28 92 M50 12 L72 92 M38 55 L62 55 M33 74 L67 74 ' + arc(50, 14, 14, -150, -30) + arc(50, 14, 24, -150, -30) },
   pager: { d: 'M18 28 H82 Q88 28 88 34 V70 Q88 76 82 76 H18 Q12 76 12 70 V34 Q12 28 18 28 Z M22 42 L78 42 M22 54 L60 54 M70 66 L78 66' },

@@ -470,7 +470,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -488,9 +488,9 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .view.adsb .visual, .view.sat .visual, .view.ais .visual, .view.aprs .visual, .view.ham[data-tab="log"] .visual, .view.ham[data-tab="sat"] .visual { flex: none; }
   .view.adsb .visual > .scope, .view.sat .visual > .scope, .view.ais .visual > .scope, .view.aprs .visual > .scope, .view.ham[data-tab="log"] .visual > .scope, .view.ham[data-tab="sat"] .visual > .scope { flex: none; height: 96px; min-height: 96px; }
   .view.adsb .scope .sp, .view.sat .scope .sp, .view.ais .scope .sp, .view.aprs .scope .sp, .view.ham[data-tab="log"] .scope .sp, .view.ham[data-tab="sat"] .scope .sp { height: 40px !important; }
-  .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls, .view.ham[data-tab="log"] .controls, .view.ham[data-tab="sat"] .controls { flex: 1; max-height: none; min-height: 0; }
+  .view.adsb .controls, .view.uat .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls, .view.ham[data-tab="log"] .controls, .view.ham[data-tab="sat"] .controls { flex: 1; max-height: none; min-height: 0; }
   .view.ham[data-tab="log"] .map, .view.ham[data-tab="sat"] .map { height: 36vh; min-height: 200px; }
-  .view.adsb .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls { display: flex; flex-direction: column; }
+  .view.adsb .controls, .view.uat .controls, .view.sat .controls, .view.ais .controls, .view.aprs .controls { display: flex; flex-direction: column; }
   .view.adsb .map, .view.ais .map, .view.aprs .map { flex: none; height: 30vh; min-height: 180px; }
   /* Passes are only a handful — let the list grow to show them all rather than trapping them in a little scroll
      box inside the sheet. The sheet itself scrolls, so it is one scroll, not a window within a window. */
@@ -562,7 +562,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -624,7 +624,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -851,7 +851,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .controls { max-height: 58%; }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
-  .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
+  .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.uat:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
   .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
   /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
   .view .visual.nowf { flex: none; }
@@ -1910,3 +1910,22 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* PAUSE is a word on a wide screen and an icon on a phone, so the tabs beside it keep their room */
 .tog.pz .pi { display: none; width: 18px; height: 18px; fill: currentColor; vertical-align: middle; }
 @media (max-width: 600px) { .tog.pz .pw { display: none; } .tog.pz .pi { display: inline-block; } }
+
+/* UAT: weather markers, the tower, layer chips, radar legend, weather and notice cards */
+.geo.airport svg { width: 14px; height: 14px; filter: drop-shadow(0 0 4px rgba(0,0,0,0.6)); }
+.geo.airport span { font-size: 8px; opacity: 0.85; }
+.geo.tower svg { width: 22px; height: 22px; }
+.ua-layers { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ua-layers .chip { font-size: 10px; padding: 3px 9px; }
+.ua-legend { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+.ua-legend i { width: 14px; height: 8px; border-radius: 2px; display: inline-block; }
+.ua-legend small { font-size: 9px; color: var(--muted); margin-left: 6px; }
+.mt-card.ua-wx { border-left: 3px solid var(--cat); }
+.ua-cat { font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 2px 8px; border-radius: 999px; color: #05080a; background: var(--cat); flex: none; }
+.ua-raw { font-size: 9px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ua-kind { font-size: 13px !important; }
+.ua-text { font-size: 11px; line-height: 1.45; color: var(--ink); white-space: normal; overflow-wrap: anywhere; margin-top: 4px; }
+.ua-text b { color: var(--accent); margin-right: 6px; }
+/* UAT: the map, cards and detail fill the panel under the tabs */
+.view.uat #ua-stage { flex: 1 1 auto; min-height: 320px; }
+.view.uat #ua-stage .map { height: 100%; min-height: 320px; }
