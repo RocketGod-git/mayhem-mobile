@@ -5061,7 +5061,7 @@ function renderUat(view: HTMLElement): void {
   const wide = UAT_WIDE.matches;
   if (wide && uatUi.view === 'map') uatUi.view = 'weather';
   view.classList.toggle('uawide', wide);
-  const layersHtml = `<div id="ua-layers" class="ua-layers">${UAT_LAYERS.map(([k, label]) => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${label}</button>`).join('')}<select id="ua-alt" class="ua-alt" title="altitude for icing and turbulence">${Array.from({ length: 12 }, (_, i) => (i + 1) * 2000).map(a => `<option value="${a}" ${a === uatUi.altFt ? 'selected' : ''}>${a.toLocaleString('en-US')} FT</option>`).join('')}</select><span id="ua-legend" class="ua-legend"></span></div>`;
+  const layersHtml = `<div id="ua-layers" class="ua-layers"><div class="ua-chips">${UAT_LAYERS.map(([k, label]) => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${label}</button>`).join('')}<select id="ua-alt" class="ua-alt" title="altitude for icing and turbulence">${Array.from({ length: 12 }, (_, i) => (i + 1) * 2000).map(a => `<option value="${a}" ${a === uatUi.altFt ? 'selected' : ''}>${a.toLocaleString('en-US')} FT</option>`).join('')}</select></div><span id="ua-legend" class="ua-legend"></span></div>`;
   const tabs = (wide ? ['weather', 'notices', 'traffic', 'log'] : ['map', 'weather', 'notices', 'traffic', 'log']) as UatView[];
   view.innerHTML = wide ? `
     <section class="${visCls('uat')}">${readoutHtml()}<div id="ua-mapbox" class="ua-mapbox">${layersHtml}<div id="ua-map" class="panel map"></div></div><div id="scope" class="panel short"></div></section>

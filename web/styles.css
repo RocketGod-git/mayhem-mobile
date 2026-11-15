@@ -1971,3 +1971,8 @@ main#view.view.uat.uawide { display: grid; grid-template-columns: minmax(0, 1fr)
 .mt-card.ua-gm { border-left: 3px solid var(--cat); }
 .ua-levels { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
 .geo-tip { font: 700 10px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .5px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); box-shadow: none; }
+/* the layer chips are one row that scrolls sideways when it does not fit; the color key sits on its own line */
+.ua-chips { display: flex; flex: 1 1 100%; flex-wrap: nowrap; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.ua-chips::-webkit-scrollbar { display: none; }
+.ua-chips > * { flex: none; }
+.view.uat.uawide .ua-mapbox .ua-chips { pointer-events: auto; flex: 0 1 auto; max-width: 100%; }
