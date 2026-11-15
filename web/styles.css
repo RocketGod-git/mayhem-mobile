@@ -1904,3 +1904,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sd-ab { display: flex; gap: 10px; align-items: baseline; }
 .sd-ab b { width: 74px; flex: none; font-size: 9px; letter-spacing: 1.5px; color: var(--muted); }
 .sd-ab span { font-size: 11px; color: var(--ink); }
+/* on a phone the detail's buttons drop under the name instead of cutting it off */
+.mt-dh.wrap { flex-wrap: wrap; row-gap: 6px; }
+.mt-dh.wrap span { flex: 1 1 auto; }

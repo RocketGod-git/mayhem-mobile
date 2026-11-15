@@ -4594,7 +4594,7 @@ function refreshLora(force = false): void {
 
 // ---- Sondes: weather radiosondes, every type, the whole band
 const SONDE_BAND_KEY = 'mm.sondeBand';
-const sondeUi = { snap: null as SondeSnap | null, view: 'sondes' as 'sondes' | 'map' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
+const sondeUi = { snap: null as SondeSnap | null, view: 'sondes' as 'sondes' | 'map' | 'log', sel: '', full: false, about: false, drawn: 0, timer: 0, drawPending: 0 };
 interface SondeSnap { sondes: SondeRow[]; channels: SondeChannelRow[]; wide: boolean; centerHz: number; band: string; floor: number; window: { ix: number; of: number } | null }
 function sondeBandId(): string { try { return localStorage.getItem(SONDE_BAND_KEY) ?? '400'; } catch { return '400'; } }
 function sondesOpen(): void {
@@ -4779,7 +4779,7 @@ function sondeNetDetail(h: HubSonde, now: number): string {
     + row('Last report', ago) + row('Heard by', F.get('HEARD BY'), [F.get('SIGNAL'), F.get('THEIR ANTENNA')].filter(Boolean).join(' · '))
     + row('Their station', F.get('THEIR STATION'), F.get('THEIR SOFTWARE') ?? '')
     + row('Frames online', fl ? fl.frames.toLocaleString('en-US') : null, fl?.stations.length ? `from ${fl.stations.length} station${fl.stations.length === 1 ? '' : 's'}` : '') + stations;
-  return `<div class="mt-dh"><b>${esc(h.serial)}</b><span>${esc(h.type)} · ${phase}</span>`
+  return `<div class="mt-dh wrap"><b>${esc(h.serial)}</b><span>${esc(h.type)} · ${phase}</span>`
     + (hz && !wide ? `<button class="chip ${on ? 'on' : ''}" data-sdo="listen">${on ? 'LISTENING' : 'LISTEN'}</button>` : '')
     + `<button class="chip" data-sdo="map">MAP</button>${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="track">TRACKER</button><button class="chip" data-sdo="close">✕</button></div>`
     + `<div class="sd-tiles">${tiles}</div>`
@@ -4842,12 +4842,13 @@ function renderSondes(view: HTMLElement): void {
       <div id="sd-stage" class="mt-stage"><div id="sd-cards" class="mt-cards"></div><div id="sd-map" class="panel map"></div><div id="sd-nopos" class="mt-nopos">no positions yet</div><div id="sd-detail" class="mt-detail" hidden></div><button id="sd-newpill" class="lr-newpill" hidden></button></div>
       <div id="sd-log">${logHtml('sondes', 'listening for sondes…')}</div>
       <div id="sd-chans" class="lr-chans"></div>
-      <div class="ctlrow"><span class="rl">BAND</span>${segHtml(SONDE_BANDS.map(b => `<button data-sdband="${b.id}" class="${b.id === bandId ? 'on' : ''}">${b.title}</button>`))}</div>
-      ${SONDE_ABOUT}
+      <div class="ctlrow"><span class="rl">BAND</span>${segHtml(SONDE_BANDS.map(b => `<button data-sdband="${b.id}" class="${b.id === bandId ? 'on' : ''}">${b.title}</button>`))}<button id="sd-info" class="ib" title="about Sondes" aria-label="about Sondes" hidden>ⓘ</button></div>
+      <div id="sd-about">${SONDE_ABOUT}</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-sdview]', view).forEach(b => b.onclick = () => { sondeUi.view = b.dataset.sdview as typeof sondeUi.view; refreshSondes(true); });
   qa<HTMLButtonElement>('[data-sdband]', view).forEach(b => b.onclick = () => sondeBand(b.dataset.sdband!));
+  $('sd-info').onclick = () => { sondeUi.about = !sondeUi.about; refreshSondes(true); };
   $('sd-newpill').onclick = () => q('#sd-cards')?.scrollTo({ top: 0, behavior: 'smooth' });
   $('sd-full').onclick = () => setSondeFull(!sondeUi.full);
   $('sd-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-sonde]'); if (c) { sondeUi.sel = sondeUi.sel === c.dataset.sonde ? '' : c.dataset.sonde!; refreshSondes(true); } };
@@ -4956,6 +4957,11 @@ function refreshSondes(force = false): void {
     geo?.setPaths(paths);
     geo?.update(items, sondeUi.sel);
   }
+  // the about panel is for an empty screen; once a balloon shows up it folds behind the info button
+  const found = sondes.length > 0 || sondeNet.air.length > 0;
+  const ab = q('#sd-about'), ib = q('#sd-info');
+  if (ab) ab.hidden = found && !sondeUi.about;
+  if (ib) { ib.hidden = !found; ib.classList.toggle('on', sondeUi.about); }
   const ch = q('#sd-chans');
   if (ch) ch.innerHTML = (snap?.channels ?? []).map(c => `<span class="${c.decoding ? 'on hot' : ''}" title="+${c.level} dB">${(c.hz / 1e6).toFixed(3)}${c.decoding ? ` · ${esc(c.decoding)}` : ''}${c.frames ? ` · ${c.frames}` : ''}</span>`).join('');
   if (sondes.length > 0) setLamp(`${sondes.length} SONDE${sondes.length === 1 ? '' : 'S'}`, 'ok');
