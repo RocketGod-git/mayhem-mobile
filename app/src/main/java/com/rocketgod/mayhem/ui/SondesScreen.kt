@@ -64,6 +64,7 @@ import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.Geo
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.lora.LoraHub
+import com.rocketgod.mayhem.core.sonde.HubDetail
 import com.rocketgod.mayhem.core.sonde.HubSite
 import com.rocketgod.mayhem.core.sonde.HubSonde
 import com.rocketgod.mayhem.core.sonde.SondeFront
@@ -107,6 +108,7 @@ fun SondesScreen(accent: Color) {
     val me = fix ?: Geo.lastKnownPos()
     // what SondeHub knows near you, refreshed every 30 s while Sondes is open
     val net by SondeHub.net.collectAsState()
+    val details by SondeHub.details.collectAsState()
     LaunchedEffect(Unit) { while (true) { (Geo.fix.value ?: Geo.lastKnownPos())?.let { SondeHub.poll(it.first, it.second) }; delay(1000) } }
 
     val live = snap?.sondes ?: emptyList()
@@ -114,6 +116,8 @@ fun SondesScreen(accent: Color) {
     val withPos = sondes.filter { it.lat != null && it.lon != null }
     val picked = live.firstOrNull { it.serial == sel }
     val pickedNet = if (picked == null) net.air.firstOrNull { it.serial == sel } else null
+    // a tapped SondeHub balloon fetches its whole flight and landing prediction, then every minute while it stays picked
+    LaunchedEffect(pickedNet?.serial) { val s = pickedNet?.serial ?: return@LaunchedEffect; while (true) { SondeHub.detail(s); delay(5_000) } }
     // ours first; then what others are hearing that we aren't (yet); then the launch sites
     val air = net.air.filter { h -> sondes.none { it.serial == h.serial } }
     val airOnMap = net.air.filter { h -> withPos.none { it.serial == h.serial } }
@@ -143,8 +147,17 @@ fun SondesScreen(accent: Color) {
                         val p = s.predict
                         if (p != null && mine) { paths.add(GeoPath(p.path, dashed = true)); items.add(GeoItem("land:${s.serial}", p.lat, p.lon, "${s.serial} lands", GeoItem.Kind.LANDING)) }
                     }
-                    for (h in airOnMap) items.add(GeoItem(h.serial, h.lat, h.lon,
-                        h.serial + " %.1f km".format(Locale.US, h.alt / 1000) + (h.mhz?.let { " · %.3f".format(Locale.US, it) } ?: ""), GeoItem.Kind.SONDE))
+                    for (h in airOnMap) {
+                        items.add(GeoItem(h.serial, h.lat, h.lon,
+                            h.serial + " %.1f km".format(Locale.US, h.alt / 1000) + (h.mhz?.let { " · %.3f".format(Locale.US, it) } ?: ""), GeoItem.Kind.SONDE))
+                        val dx = details[h.serial]
+                        dx?.flight?.track?.takeIf { it.size > 1 }?.let { paths.add(GeoPath(it + (h.lat to h.lon), faint = sel.isNotEmpty() && sel != h.serial)) }
+                        val pr = dx?.predict
+                        if (pr != null && sel == h.serial) {
+                            paths.add(GeoPath(listOf(h.lat to h.lon) + pr.path, dashed = true))
+                            items.add(GeoItem("land:${h.serial}", pr.lat, pr.lon, "${h.serial} ${if (pr.landed) "landed" else "lands"}", GeoItem.Kind.LANDING))
+                        }
+                    }
                     for ((x, _) in sites) items.add(GeoItem("site:${x.id}", x.lat, x.lon, x.name, GeoItem.Kind.STATION))
                     val pla = picked?.lat; val plo = picked?.lon
                     Box(Modifier.fillMaxSize()) {
@@ -161,7 +174,7 @@ fun SondesScreen(accent: Color) {
             if (picked != null) SondeDetail(picked, accent, me, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 onMap = if (picked.lat != null) ({ view = 1; focusKey++ }) else null,
                 onCards = if (view != 0) ({ view = 0 }) else null) { sel = "" }
-            else if (pickedNet != null) SondeNetDetail(pickedNet, accent, me, now, snap?.wide == true, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
+            else if (pickedNet != null) SondeNetDetail(pickedNet, details[pickedNet.serial], net.sites, accent, me, now, snap?.wide == true, view == 1, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 onMap = { view = 1; focusKey++ }, onCards = if (view != 0) ({ view = 0 }) else null,
                 onTracker = { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://sondehub.org/" + Uri.encode(pickedNet.serial)))) } }) { sel = "" }
         }
@@ -329,14 +342,16 @@ private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double,
                 modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
         }
         Text(listen, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val ptu = listOfNotNull(h.tempC?.let { "%.1f °C".format(Locale.US, it) }, h.rh?.let { "${Math.round(it)}% RH" }, h.battV?.let { "%.1f V".format(Locale.US, it) }).joinToString(" · ")
+        if (ptu.isNotEmpty()) Text(ptu, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (from.isNotEmpty()) Text("$from from you", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("online report · not heard by your radio yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("online report · tap for the whole flight", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 /** The detail for a balloon only SondeHub reports: everything it says, and where to follow it online. */
 @Composable
-private fun SondeNetDetail(h: HubSonde, accent: Color, me: Pair<Double, Double>?, now: Long, wide: Boolean, modifier: Modifier,
+private fun SondeNetDetail(h: HubSonde, dx: HubDetail?, sites: List<HubSite>, accent: Color, me: Pair<Double, Double>?, now: Long, wide: Boolean, onMapView: Boolean, modifier: Modifier,
                            onMap: () -> Unit, onCards: (() -> Unit)?, onTracker: () -> Unit, onClose: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(14f))
@@ -351,13 +366,33 @@ private fun SondeNetDetail(h: HubSonde, accent: Color, me: Pair<Double, Double>?
     h.heading?.let { rows.add("HEADING" to "${Math.round(it)}° ${compass(it)}") }
     rows.add("POSITION" to "%.5f, %.5f".format(Locale.US, h.lat, h.lon))
     fromHere(me, h.lat, h.lon).takeIf { it.isNotEmpty() }?.let { rows.add("FROM YOU" to it) }
-    Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
+    val fl = dx?.flight; val pr = dx?.predict
+    val phase = when { pr?.landed == true -> "LANDED"; (h.climb ?: 0.0) < -1 -> "FALLING"; (h.climb ?: 0.0) > 1 -> "CLIMBING"; else -> "" }
+    if (fl != null) {
+        val l = fl.launch
+        val site = l?.let { SondeHub.launchSite(sites, it.lat, it.lon) }
+        if (site != null) rows.add("LAUNCHED FROM" to site.name + if (site.id.isNotEmpty()) " (${site.id})" else "")
+        else if (l != null) rows.add("LAUNCHED FROM" to "%.4f, %.4f".format(Locale.US, l.lat, l.lon))
+        if (l != null) rows.add("FIRST FRAME" to "${LoraHub.clock(l.ms)} · ${SondeHub.dur((h.ms - l.ms) / 1000.0)} in flight")
+        if (fl.maxAlt > 0) rows.add((if (phase == "FALLING" || phase == "LANDED") "BURST" else "HIGHEST") to "%,d m at %s".format(Locale.US, Math.round(fl.maxAlt), LoraHub.clock(fl.maxAltMs)))
+        rows.add("FRAMES ONLINE" to "%,d".format(Locale.US, fl.frames))
+        if (fl.stations.isNotEmpty()) rows.add("STATIONS" to "${fl.stations.size}: " + fl.stations.take(6).joinToString(", ") { it.first } + if (fl.stations.size > 6) ", …" else "")
+    }
+    if (pr != null) {
+        rows.add((if (pr.landed) "LANDED AT" else "PREDICTED LANDING") to "%.4f, %.4f".format(Locale.US, pr.lat, pr.lon) + if (pr.ms > now) " in ${sondeMins((pr.ms - now) / 1000.0)}" else "")
+        fromHere(me, pr.lat, pr.lon).takeIf { it.isNotEmpty() }?.let { rows.add("LANDING FROM YOU" to it) }
+        if (!pr.descending && pr.burstAlt != null) rows.add("ASSUMED BURST" to "%,d m".format(Locale.US, Math.round(pr.burstAlt)))
+        if (pr.ascent != null && pr.descent != null) rows.add("RATES" to "climb %.1f m/s · fall %.1f m/s".format(Locale.US, pr.ascent, pr.descent))
+    }
+    rows.addAll(h.fields)
+    // on the map the detail keeps the lower half, so the flight it describes stays in view
+    Column((if (onMapView) modifier.fillMaxHeight(0.5f) else modifier).fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
         .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
         verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f), maxLines = 1)
-            Text("${h.type} · VIA SONDEHUB", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+            Text("${h.type}${if (phase.isNotEmpty()) " · $phase" else ""} · VIA SONDEHUB", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
                 letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
             if (onCards != null) ToggleBox("CARDS", false, accent, Modifier.fillMaxHeight()) { onCards() }
@@ -365,10 +400,12 @@ private fun SondeNetDetail(h: HubSonde, accent: Color, me: Pair<Double, Double>?
             ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
         }
         SelectionContainer { FieldGrid(rows, labelWidth = 120f, minColumn = 300f) }
+        if (fl == null && dx?.busy == true) Text("loading the flight from SondeHub…", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+        else if (fl == null && !dx?.err.isNullOrEmpty()) Text(dx!!.err, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
         Text("Other receivers on the SondeHub network are hearing this balloon; your radio has not decoded it yet. " +
             (if (wide) "Your radio already watches the whole band, so it decodes it as soon as the signal is strong enough here. "
              else "Your radio steps across the band and stays on a sonde once it decodes. ") +
-            "Its card turns into a full decode (temperature, humidity, pressure, landing prediction) once your radio hears it.",
+            "Once your radio decodes it, its card switches to your own decode.",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
     }
 }
