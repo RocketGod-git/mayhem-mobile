@@ -4968,7 +4968,7 @@ function uatPlaneCard(p: UatPlane, now: number): string {
 function uatDetail(now: number): string {
   const [kind, id] = [uatUi.sel.slice(0, 2), uatUi.sel.slice(3)];
   const row = (k: string, v: string | undefined | false) => (v ? `<div><b>${k}</b><span>${esc(v)}</span></div>` : '');
-  const close = '<button class="chip" data-uao="close">✕</button>';
+  const close = '<button class="chip" data-uao="map">MAP</button><button class="chip" data-uao="close">✕</button>';
   if (kind === 'wx') {
     const e = uatData.metars.get(id); if (!e) return '';
     const m = e.m, ap = uatAirports?.get(id);
@@ -4996,13 +4996,30 @@ function uatDetail(now: number): string {
   }
   return '';
 }
+/** A desktop-size window: the map takes the big pane on the left (where the waterfall goes in other apps), the
+ *  cards, log and detail share the column on the right, so nothing ever sits on top of the map. */
+const UAT_WIDE = window.matchMedia('(min-width: 1000px)');
+UAT_WIDE.addEventListener('change', () => { if (state.app === 'uat') { const v = q<HTMLElement>('main#view'); if (v) renderUat(v); } });
 function renderUat(view: HTMLElement): void {
-  view.innerHTML = `
+  const wide = UAT_WIDE.matches;
+  if (wide && uatUi.view === 'map') uatUi.view = 'weather';
+  view.classList.toggle('uawide', wide);
+  const layersHtml = `<div id="ua-layers" class="ua-layers">${(['radar', 'national', 'traffic', 'airports'] as const).map(k => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${k.toUpperCase()}</button>`).join('')}<span id="ua-legend" class="ua-legend">${UAT_RADAR.slice(2).map(c => `<i style="background:${c}"></i>`).join('')}<small>light → heavy</small></span></div>`;
+  const tabs = (wide ? ['weather', 'notices', 'traffic', 'log'] : ['map', 'weather', 'notices', 'traffic', 'log']) as UatView[];
+  view.innerHTML = wide ? `
+    <section class="${visCls('uat')}">${readoutHtml()}<div id="ua-mapbox" class="ua-mapbox">${layersHtml}<div id="ua-map" class="panel map"></div></div><div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="ua-sum" class="mt-sum"></div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('uat')}${pauseClearHtml('uat')}</div>
+      <div id="ua-detail" class="mt-detail ua-dock" hidden></div>
+      <div id="ua-stage" class="mt-stage"><div id="ua-cards" class="mt-cards"></div></div>
+      <div id="ua-log">${logHtml('uat', 'listening for FIS-B…')}</div>
+    </section>` : `
     <section class="${visCls('uat')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="ua-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml((['map', 'weather', 'notices', 'traffic', 'log'] as UatView[]).map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('uat')}${pauseClearHtml('uat')}</div>
-      <div id="ua-layers" class="ua-layers">${(['radar', 'national', 'traffic', 'airports'] as const).map(k => `<button class="chip ${uatUi.layers[k] ? 'on' : ''}" data-ualayer="${k}">${k.toUpperCase()}</button>`).join('')}<span id="ua-legend" class="ua-legend">${UAT_RADAR.slice(2).map(c => `<i style="background:${c}"></i>`).join('')}<small>light → heavy</small></span></div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('uat')}${pauseClearHtml('uat')}</div>
+      ${layersHtml}
       <div id="ua-stage" class="mt-stage"><div id="ua-map" class="panel map"></div><div id="ua-cards" class="mt-cards"></div><div id="ua-detail" class="mt-detail" hidden></div></div>
       <div id="ua-log">${logHtml('uat', 'listening for FIS-B…')}</div>
     </section>`;
@@ -5012,13 +5029,44 @@ function renderUat(view: HTMLElement): void {
     const k = b.dataset.ualayer as keyof typeof uatUi.layers; uatUi.layers[k] = !uatUi.layers[k]; b.classList.toggle('on', uatUi.layers[k]); uatUi.radarDirty = true; refreshUat(true);
   });
   $('ua-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-ua]'); if (c) { uatUi.sel = uatUi.sel === c.dataset.ua ? '' : c.dataset.ua!; refreshUat(true); } };
-  $('ua-detail').onclick = (e) => { if ((e.target as HTMLElement).closest('[data-uao="close"]')) { uatUi.sel = ''; refreshUat(true); } };
+  $('ua-detail').onclick = (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('[data-uao="close"]')) { uatUi.sel = ''; refreshUat(true); }
+    else if (t.closest('[data-uao="map"]')) uatFocus();
+  };
+  // a log line opens what it was about: the aircraft, the airport's weather, the tower, or the notices
+  $('ua-log').onclick = (e) => {
+    const li = (e.target as HTMLElement).closest('.li'); const line = li?.textContent ?? '';
+    const wideNow = UAT_WIDE.matches;
+    let m: RegExpExecArray | null;
+    if (/AIRCRAFT/.test(line)) {
+      // the line's words run together in textContent, so look for each aircraft's name in it
+      const rest = line.slice(line.indexOf('AIRCRAFT') + 9);
+      const p = [...uatData.planes.values()].find(x => rest.startsWith(x.callsign ?? x.address) || rest.startsWith(x.address));
+      if (p) { uatUi.sel = `ac:${p.address}`; uatUi.view = wideNow ? 'traffic' : 'map'; refreshUat(true); uatFocus(); }
+    } else if ((m = /METAR (\w{3,4})/.exec(line)) && uatData.metars.has(m[1])) {
+      uatUi.sel = `wx:${m[1]}`; uatUi.view = wideNow ? 'weather' : 'map'; refreshUat(true); uatFocus();
+    } else if (/TOWER/.test(line)) {
+      const k = [...uatData.towers.keys()][0]; if (k) { uatUi.sel = `tw:${k}`; uatUi.view = wideNow ? 'weather' : 'map'; refreshUat(true); uatFocus(); }
+    } else if (/FISB/.test(line)) { uatUi.view = 'notices'; refreshUat(true); }
+  };
   geo = new GeoMap($('ua-map'), { home: state.home, start: mapStart(state.home), onPick: id => { uatUi.sel = id; refreshUat(true); }, log });
   geo.follow = false;
   uatUi.radarDirty = true;
   clearInterval(uatUi.timer);
   uatUi.timer = window.setInterval(() => { if (state.app !== 'uat') { clearInterval(uatUi.timer); return; } refreshUat(); }, 1000);
   refreshUat(true);
+}
+/** Pans the map to what is selected. */
+function uatFocus(): void {
+  const [kind, id] = [uatUi.sel.slice(0, 2), uatUi.sel.slice(3)];
+  let at: [number, number] | undefined;
+  if (kind === 'ac') { const p = uatData.planes.get(id); if (p?.lat !== undefined && p.lon !== undefined) at = [p.lat, p.lon]; }
+  else if (kind === 'wx') { const a = uatAirports?.get(id); if (a) at = [a[0], a[1]]; }
+  else if (kind === 'tw') { const t = uatData.towers.get(id); if (t) at = [t.lat, t.lon]; }
+  if (!at) return;
+  if (!UAT_WIDE.matches) { uatUi.view = 'map'; refreshUat(true); }
+  geo?.center(at[0], at[1], 8);
 }
 function refreshUat(force = false): void {
   if (state.app !== 'uat') return;
@@ -5040,12 +5088,13 @@ function refreshUat(force = false): void {
   qa<HTMLButtonElement>('[data-uaview]').forEach(b => { const v = b.dataset.uaview as UatView; b.classList.toggle('on', v === uatUi.view); b.textContent = v === 'traffic' ? 'PLANES' : v.toUpperCase(); b.title = v === 'log' ? '' : `${n[v]}`; });
   const mapEl = q('#ua-map'), cards = q('#ua-cards'), det = q('#ua-detail'), logEl = q('#ua-log'), stage = q('#ua-stage'), layers = q('#ua-layers');
   if (!mapEl || !cards || !det || !logEl || !stage || !layers) return;
-  mapEl.hidden = uatUi.view !== 'map'; cards.hidden = uatUi.view === 'map' || uatUi.view === 'log';
-  logEl.hidden = uatUi.view !== 'log'; stage.hidden = uatUi.view === 'log'; layers.hidden = uatUi.view !== 'map';
+  const wide = UAT_WIDE.matches;
+  mapEl.hidden = !wide && uatUi.view !== 'map'; cards.hidden = uatUi.view === 'map' || uatUi.view === 'log';
+  logEl.hidden = uatUi.view !== 'log'; stage.hidden = uatUi.view === 'log'; layers.hidden = !wide && uatUi.view !== 'map';
   const detHtml = uatUi.sel ? uatDetail(now) : '';
   det.hidden = !detHtml;
   if (detHtml) { const top = det.scrollTop; det.innerHTML = detHtml; det.scrollTop = top; }
-  if (uatUi.view === 'log') { refreshList('uat'); return; }
+  if (uatUi.view === 'log') { refreshList('uat'); if (!wide) return; }
   if (paused.has('uat')) return;
   if (uatUi.view === 'weather') {
     const me = state.home ?? lastKnownPos();
@@ -5060,7 +5109,8 @@ function refreshUat(force = false): void {
   } else if (uatUi.view === 'traffic') {
     const rows = [...d.planes.values()].sort((a, b) => b.at - a.at);
     cards.innerHTML = rows.length ? rows.map(p => uatPlaneCard(p, now)).join('') : emptyState('uat');
-  } else if (uatUi.view === 'map') {
+  }
+  if (wide || uatUi.view === 'map') {
     geo?.invalidate();
     const items: GeoItem[] = [];
     for (const [k, t] of d.towers) items.push({ id: `tw:${k}`, lat: t.lat, lon: t.lon, label: 'FIS-B', kind: 'tower' });

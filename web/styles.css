@@ -1929,3 +1929,33 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* UAT: the map, cards and detail fill the panel under the tabs */
 .view.uat #ua-stage { flex: 1 1 auto; min-height: 320px; }
 .view.uat #ua-stage .map { height: 100%; min-height: 320px; }
+/* UAT on a desktop-size window: the map is the big pane where the waterfall sits in other apps (a short waterfall
+ * strip under it when the waterfall is on), the layer chips float on the map, and the column on the right holds
+ * the tabs, the detail docked on top and the cards under it, all the way down. */
+main#view.view.uat.uawide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 600px); grid-template-rows: minmax(0, 1fr); gap: 12px; }
+.view.uat.uawide > .visual, .view.uat.uawide > .visual.nowf { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.view.uat.uawide .ua-mapbox { position: relative; flex: 1; min-height: 0; display: flex; margin-top: 8px; }
+.view.uat.uawide .ua-mapbox .map { flex: 1; height: auto; min-height: 0; margin: 0; }
+.view.uat.uawide .ua-mapbox .ua-layers { position: absolute; z-index: 500; top: 10px; left: 58px; right: 10px; pointer-events: none; }
+.view.uat.uawide .ua-mapbox .ua-layers > * { pointer-events: auto; }
+.view.uat.uawide .ua-mapbox .ua-layers .chip { font-size: 11px; padding: 5px 11px; backdrop-filter: blur(6px); background: color-mix(in srgb, var(--surface) 78%, transparent); }
+.view.uat.uawide .ua-mapbox .ua-layers .chip.on { background: var(--accent); }
+.view.uat.uawide .ua-mapbox .ua-legend { padding: 5px 10px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 78%, transparent); backdrop-filter: blur(6px); }
+.view.uat.uawide > .visual > .scope { flex: none; height: 170px; min-height: 170px; margin-top: 8px; }
+.view.uat.uawide > .visual.nowf > .scope { display: none; }
+.view.uat.uawide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; }
+.view.uat.uawide > .controls > * { flex: none; }
+.view.uat.uawide .mt-detail.ua-dock { position: static; align-self: stretch; margin: 0 0 8px; max-height: 48%; flex: none; }
+.view.uat.uawide #ua-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view.uat.uawide #ua-stage .mt-cards { flex: 1; max-height: none; min-height: 0; overflow-y: auto; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); align-content: start; }
+.view.uat.uawide #ua-log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view.uat.uawide #ua-log[hidden] { display: none; }
+.view.uat.uawide #ua-log .list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+.view.uat #ua-log .li { cursor: pointer; }
+.view.uat.uawide #ua-stage[hidden] { display: none; }
+/* the readout card stays slim beside the map: frequency and signal on one short card */
+.view.uat.uawide .face .readout { padding: 2px 0 0; }
+.view.uat.uawide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
+.view.uat.uawide .face .funit { display: none; }
+.view.uat.uawide .face .lscale, .view.uat.uawide .face .health { display: none; }
+.view.uat.uawide .face .leds { height: 8px; margin-top: 4px; }
