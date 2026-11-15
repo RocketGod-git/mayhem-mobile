@@ -43,5 +43,6 @@ export const CREDITS: [boolean, string][] = [
   [false, "Wardrive Go — the HackRF driver, SDR engine and ADS-B map started there"],
   [false, "PDW — FLEX and POCSAG on one channel"],
   [false, "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid"],
+  [false, "OurAirports — airport names and positions (public domain)"],
   [false, "Shopping-cart wheel sounds and images (Gatekeeper, Rocateq) — begaydocrime.com"],
 ];
