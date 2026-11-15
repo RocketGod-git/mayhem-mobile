@@ -29,7 +29,7 @@ import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { GeoMap, type GeoItem, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
-import { hubSites, hubSondes, hubFlight, hubPredict, hubLaunchSite, hubDur, nextLaunchMs, type HubSite, type HubSonde, type HubFlight, type HubPredict } from './sondehub.js';
+import { hubSites, hubSondes, hubFlight, hubPredict, hubPredictions, hubLaunchSite, hubDur, nextLaunchMs, type HubSite, type HubSonde, type HubFlight, type HubPredict } from './sondehub.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
@@ -4644,6 +4644,8 @@ function sondeCard(s: SondeRow, now: number): string {
 }
 /** What SondeHub knows near you: the launch sites, and every balloon others are hearing (refreshed every 30 s). */
 const sondeNet = { sites: [] as HubSite[], air: [] as HubSonde[], airAt: 0, sitesAt: 0, busy: false, err: '', listen: 0,
+  /** SondeHub's landing prediction for every balloon near you, refreshed each minute. */
+  preds: new Map<string, HubPredict>(), predAt: 0,
   /** The picked balloon's whole flight and SondeHub's landing prediction, fetched on tap and every minute after. */
   flights: new Map<string, { flight: HubFlight | null; predict: HubPredict | null; at: number; busy: boolean; err: string }>() };
 function sondeNetFlight(serial: string): void {
@@ -4669,29 +4671,75 @@ function sondeNetPoll(): void {
     sondeNet.sitesAt = now;
     hubSites().then(x => { sondeNet.sites = x; refreshSondes(true); }).catch(e => { sondeNet.err = String(e?.message ?? e); });
   }
-  if (now - sondeNet.airAt < 30_000) return;
+  // SondeHub's stations upload every second or two; every 15 s keeps the cards live without hammering it
+  if (now - sondeNet.airAt < 15_000) return;
   sondeNet.airAt = now; sondeNet.busy = true;
   hubSondes(me.lat, me.lon).then(x => {
     sondeNet.air = x; sondeNet.err = '';
+    if (x.length && Date.now() - sondeNet.predAt > 60_000) {
+      sondeNet.predAt = Date.now();
+      hubPredictions(x.map(h => h.serial)).then(m => { sondeNet.preds = m; refreshSondes(true); }).catch(() => { /* cards show without a landing */ });
+    }
     // where they are heard is where a stepping radio should listen
     sondeNetHints();
     refreshSondes(true);
   })
     .catch(e => { sondeNet.err = String(e?.message ?? e); }).finally(() => { sondeNet.busy = false; });
 }
-/** A balloon someone else is hearing and our radio isn't (yet): what it is, where, and where to listen. */
+/** Where a SondeHub balloon is in its flight; a report over 10 minutes old with no landing means no station hears it now. */
+function hubPhase(h: HubSonde, pr: HubPredict | null | undefined, now: number): { key: string; text: string } {
+  if (pr?.landed) return { key: 'down', text: 'LANDED' };
+  if (now - h.ms > 600_000) return { key: 'lost', text: 'SIGNAL LOST' };
+  const c = h.climb ?? 0;
+  return c > 1 ? { key: 'up', text: `▲ CLIMBING ${c.toFixed(1)} m/s` } : c < -1 ? { key: 'fall', text: `▼ FALLING ${Math.abs(c).toFixed(1)} m/s` } : { key: 'float', text: 'FLOATING' };
+}
+/** A balloon someone else is hearing and our radio isn't (yet): what it is, where it is going, and where to listen. */
 function sondeAirCard(h: HubSonde, now: number): string {
   const age = (now - h.ms) / 1000, live = age < 120;
   const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
-  const climb = h.climb !== null ? `${h.climb >= 0 ? '▲' : '▼'} ${Math.abs(h.climb).toFixed(1)} m/s` : '';
+  const pr = sondeNet.preds.get(h.serial) ?? sondeNet.flights.get(h.serial)?.predict ?? null;
+  const ph = hubPhase(h, pr, now);
+  const peak = sondeNet.flights.get(h.serial)?.flight?.maxAlt ?? 0;
+  const top = Math.max(35_000, peak, h.alt);
   const from = sondeFromHere(h.lat, h.lon);
+  const land = pr ? sondeFromHere(pr.lat, pr.lon) : '';
+  const fate = pr ? (pr.landed ? `landed${land ? ` ${land} from you` : ''}` : pr.ms > now ? `lands in ${sondeMins((pr.ms - now) / 1000)}${land ? ` · ${land} from you` : ''}` : `down by now${land ? ` · ${land} from you` : ''}`)
+    : from ? `${from} from you` : '';
   const ptu = [h.tempC !== null ? `${h.tempC.toFixed(1)} °C` : '', h.rh !== null ? `${Math.round(h.rh)}% RH` : '', h.battV !== null ? `${h.battV.toFixed(1)} V` : ''].filter(Boolean).join(' · ');
+  const drift = h.speedMs !== null ? `drifting ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : '';
   return `<div class="mt-card sd-air ${sondeUi.sel === h.serial ? 'sel' : ''} ${live ? '' : 'dim'}" data-sonde="${esc(h.serial)}" data-fk="${esc(h.serial)}" data-fms="${h.ms}">`
-    + `<div class="mt-h"><span class="mt-id" style="font-size:${h.serial.length > 8 ? 16 : 20}px">${esc(h.serial)}</span><span class="mt-k"><b>${esc(h.type)}</b><small class="sd-tag">SONDEHUB</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
-    + `<div class="mt-clk"><b>${Math.round(h.alt).toLocaleString('en-US')}</b><small>METERS</small><em>${esc(climb)}</em></div>`
-    + `<div class="lr-name">${h.mhz !== null ? `listen on ${h.mhz.toFixed(3)} MHz` : 'frequency not reported'}${h.speedMs !== null ? ` · ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : ''}</div>`
+    + `<div class="mt-h"><span class="mt-id" style="font-size:${h.serial.length > 8 ? 16 : 20}px">${esc(h.serial)}</span><span class="mt-k"><b>${esc(h.type)}</b><small class="sd-tag">VIA SONDEHUB</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
+    + `<div class="sd-ph ${ph.key}">${esc(ph.text)}</div>`
+    + `<div class="mt-clk"><b>${Math.round(h.alt).toLocaleString('en-US')}</b><small>METERS</small><em>${esc(drift)}</em></div>`
+    + `<div class="sd-alt" title="altitude against a 35 km burst"><i style="width:${(100 * h.alt / top).toFixed(1)}%"></i>${peak > h.alt + 50 ? `<u style="left:${(100 * peak / top).toFixed(1)}%"></u>` : ''}</div>`
+    + (fate ? `<div class="sd-fate ${pr && !pr.landed && pr.ms > now ? 'on' : ''}">${esc(fate)}</div>` : '')
     + (ptu ? `<div class="lr-last">${esc(ptu)}</div>` : '')
-    + (from ? `<div class="lr-last">${esc(from)} from you</div>` : '') + '<div class="lr-last">online report · tap for the whole flight</div></div>';
+    + `<div class="lr-last">${h.mhz !== null ? `${h.mhz.toFixed(3)} MHz` : 'frequency not reported'} · tap for the whole flight</div></div>`;
+}
+/** Altitude across the flight, with the burst marked and the latest point lit. */
+function sondeAltSvg(fl: HubFlight, h: HubSonde): string {
+  const pts = [...fl.profile, { ms: h.ms, alt: h.alt, temp: h.tempC }].filter(p => p.ms >= (fl.profile[0]?.ms ?? h.ms));
+  if (pts.length < 2) return '';
+  const t0 = pts[0].ms, t1 = pts[pts.length - 1].ms, top = Math.max(1000, ...pts.map(p => p.alt)) * 1.08;
+  const X = (ms: number) => 4 + 292 * (ms - t0) / Math.max(1, t1 - t0), Y = (a: number) => 86 - 80 * a / top;
+  const line = pts.map(p => `${X(p.ms).toFixed(1)},${Y(p.alt).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1];
+  return `<svg viewBox="0 0 300 90" preserveAspectRatio="none"><path class="f" d="M${X(t0).toFixed(1)},86 L${line.split(' ').join(' L')} L${X(t1).toFixed(1)},86 Z"/><polyline class="p" points="${line}"/>`
+    + (fl.maxAlt > 0 ? `<circle class="b" cx="${X(fl.maxAltMs).toFixed(1)}" cy="${Y(fl.maxAlt).toFixed(1)}" r="3"/>` : '')
+    + `<circle class="n" cx="${X(last.ms).toFixed(1)}" cy="${Y(last.alt).toFixed(1)}" r="3.5"/></svg>`
+    + `<div class="sd-ax"><span>${loraClock(t0).slice(0, 5)}</span><span>peak ${(fl.maxAlt / 1000).toFixed(1)} km</span><span>${loraClock(t1).slice(0, 5)}</span></div>`;
+}
+/** Temperature by altitude on the way up: the atmosphere the sonde measured. */
+function sondeTempSvg(fl: HubFlight): string {
+  // the climb only: on the way down the sensor trails the parachute and reads warm
+  const upTo = fl.profile.findIndex(p => p.ms >= fl.maxAltMs);
+  const pts = fl.profile.slice(0, upTo < 0 ? undefined : upTo + 1).filter((p): p is { ms: number; alt: number; temp: number } => p.temp !== null);
+  if (pts.length < 5) return '';
+  const lo = Math.min(...pts.map(p => p.temp)), hi = Math.max(...pts.map(p => p.temp)), top = Math.max(...pts.map(p => p.alt)) * 1.05;
+  const X = (t: number) => 4 + 292 * (t - lo) / Math.max(1, hi - lo), Y = (a: number) => 86 - 80 * a / top;
+  const zero = lo < 0 && hi > 0 ? `<line class="z" x1="${X(0).toFixed(1)}" y1="4" x2="${X(0).toFixed(1)}" y2="86"/>` : '';
+  return `<svg viewBox="0 0 300 90" preserveAspectRatio="none">${zero}<polyline class="t" points="${pts.map(p => `${X(p.temp).toFixed(1)},${Y(p.alt).toFixed(1)}`).join(' ')}"/></svg>`
+    + `<div class="sd-ax"><span>${lo.toFixed(0)} °C</span><span>0–${(top / 1050).toFixed(0)} km</span><span>${hi.toFixed(0)} °C</span></div>`;
 }
 /** The detail for a balloon only SondeHub reports: everything it says, and LISTEN to point a stepping radio at it. */
 function sondeNetDetail(h: HubSonde, now: number): string {
@@ -4699,9 +4747,10 @@ function sondeNetDetail(h: HubSonde, now: number): string {
   const wide = !!sondeUi.snap?.wide, on = hz > 0 && sondeNet.listen === hz;
   const age = (now - h.ms) / 1000;
   sondeNetFlight(h.serial);
-  const fx = sondeNet.flights.get(h.serial), fl = fx?.flight ?? null, pr = fx?.predict ?? null;
+  const fx = sondeNet.flights.get(h.serial), fl = fx?.flight ?? null, pr = fx?.predict ?? sondeNet.preds.get(h.serial) ?? null;
   const site = fl?.launch ? hubLaunchSite(sondeNet.sites, fl.launch) : null;
-  const phase = pr?.landed ? 'LANDED' : (h.climb ?? 0) < -1 ? 'FALLING' : (h.climb ?? 0) > 1 ? 'CLIMBING' : 'FLOATING';
+  const ph = hubPhase(h, pr, now);
+  const phase = ph.key === 'down' ? 'LANDED' : ph.key === 'fall' ? 'FALLING' : ph.key === 'up' ? 'CLIMBING' : ph.key === 'lost' ? 'SIGNAL LOST' : 'FLOATING';
   const F = new Map(h.fields.map(x => [x.name, x.value]));
   const m = (v: number) => Math.round(v).toLocaleString('en-US');
   const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : `${sondeMins(age)} ago`;
@@ -4711,20 +4760,20 @@ function sondeNetDetail(h: HubSonde, now: number): string {
   const tile = (label: string, value: string, unit = '', note = '') => `<div class="sd-tile"><small>${label}</small><b>${esc(value)}<em>${esc(unit)}</em></b>${note ? `<i>${esc(note)}</i>` : ''}</div>`;
   const climb = h.climb;
   const tiles = tile('ALTITUDE', m(h.alt), 'm', fl && fl.maxAlt > h.alt + 50 ? `peak ${m(fl.maxAlt)} m` : '')
-    + (climb !== null ? tile(climb >= 0 ? 'CLIMBING' : 'FALLING', Math.abs(climb).toFixed(1), 'm/s', h.speedMs !== null ? `drifting ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : '') : '')
+    + (climb !== null ? tile(`${ph.key === 'lost' ? 'WAS ' : ''}${climb >= 0 ? 'CLIMBING' : 'FALLING'}`, Math.abs(climb).toFixed(1), 'm/s', h.speedMs !== null ? `drifting ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : '') : '')
     + (h.tempC !== null ? tile('AIR', h.tempC.toFixed(1), '°C', h.rh !== null ? `${Math.round(h.rh)}% humidity` : '') : '')
     + (pr ? tile(pr.landed ? 'LANDED' : 'LANDS', pr.landed || pr.ms <= now ? sondeFromHere(pr.lat, pr.lon) || 'down' : `in ${sondeMins((pr.ms - now) / 1000)}`, '', pr.landed || pr.ms <= now ? 'from you' : sondeFromHere(pr.lat, pr.lon) ? `${sondeFromHere(pr.lat, pr.lon)} from you` : '')
       : tile('FROM YOU', sondeFromHere(h.lat, h.lon) || '—'));
   const flight = row('Launched from', site ? site.name : fl?.launch ? `${fl.launch.lat.toFixed(4)}, ${fl.launch.lon.toFixed(4)}` : null, site?.id ? `station ${site.id}` : '')
     + row('Went up', fl?.launch ? loraClock(fl.launch.ms) : null, fl?.launch ? `${hubDur((h.ms - fl.launch.ms) / 1000)} in flight` : '')
-    + row(phase === 'FALLING' || phase === 'LANDED' ? 'Burst' : 'Highest so far', fl && fl.maxAlt > 0 ? `${m(fl.maxAlt)} m` : null, fl ? `at ${loraClock(fl.maxAltMs)}` : '')
+    + row(fl && fl.maxAlt > h.alt + 500 ? 'Burst' : 'Highest so far', fl && fl.maxAlt > 0 ? `${m(fl.maxAlt)} m` : null, fl ? `at ${loraClock(fl.maxAltMs)}` : '')
     + row(pr?.landed ? 'Landed at' : 'Predicted landing', pr ? `${pr.lat.toFixed(4)}, ${pr.lon.toFixed(4)}` : null, pr ? sondeFromHere(pr.lat, pr.lon) + (pr.landed ? '' : pr.ms > now ? ` · in ${sondeMins((pr.ms - now) / 1000)}` : '') : '')
     + row('Assumed burst', pr && !pr.descending && pr.burstAlt !== null ? `${m(pr.burstAlt)} m` : null)
     + row('Rates used', pr && pr.ascent !== null && pr.descent !== null ? `up ${pr.ascent.toFixed(1)} · down ${pr.descent.toFixed(1)} m/s` : null)
     + row('Position now', `${h.lat.toFixed(5)}, ${h.lon.toFixed(5)}`, sondeFromHere(h.lat, h.lon) ? `${sondeFromHere(h.lat, h.lon)} from you` : '');
   const weather = row('Temperature', F.get('TEMPERATURE')) + row('Humidity', F.get('HUMIDITY')) + row('Pressure', F.get('PRESSURE'));
   const sonde = row('Model', `${F.get('MAKER') ? `${F.get('MAKER')} ` : ''}${h.type}`) + row('Battery', F.get('BATTERY')) + row('GPS', F.get('SATELLITES') ? `${F.get('SATELLITES')} satellites` : null, F.get('POSITION FROM') && F.get('POSITION FROM') !== 'GPS' ? `position from ${F.get('POSITION FROM')}` : '')
-    + row('Burst timer', F.get('BURST TIMER'), F.get('BURST TIMER') ? 'cuts the balloon free' : '') + row('Mainboard', F.get('MAINBOARD')) + row('DFM code', F.get('DFM CODE')) + row('Frame', F.get('FRAME NUMBER'));
+    + row('Burst timer', F.get('BURST TIMER'), F.get('BURST TIMER') ? 'left until it cuts the balloon free' : '') + row('Mainboard', F.get('MAINBOARD')) + row('DFM code', F.get('DFM CODE')) + row('Frame', F.get('FRAME NUMBER'));
   const stations = fl?.stations.length ? `<div class="sd-chips">${fl.stations.slice(0, 12).map(x => `<span title="${x.frames} frames">${esc(x.call)}</span>`).join('')}${fl.stations.length > 12 ? `<span>+${fl.stations.length - 12}</span>` : ''}</div>` : '';
   const rx = row('Frequency', h.mhz !== null ? `${h.mhz.toFixed(3)} MHz` : null, F.get('TX FREQUENCY') && F.get('TX FREQUENCY') !== `${h.mhz?.toFixed(3)} MHz` ? `set to ${F.get('TX FREQUENCY')}` : '')
     + row('Last report', ago) + row('Heard by', F.get('HEARD BY'), [F.get('SIGNAL'), F.get('THEIR ANTENNA')].filter(Boolean).join(' · '))
@@ -4734,6 +4783,7 @@ function sondeNetDetail(h: HubSonde, now: number): string {
     + (hz && !wide ? `<button class="chip ${on ? 'on' : ''}" data-sdo="listen">${on ? 'LISTENING' : 'LISTEN'}</button>` : '')
     + `<button class="chip" data-sdo="map">MAP</button>${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="track">TRACKER</button><button class="chip" data-sdo="close">✕</button></div>`
     + `<div class="sd-tiles">${tiles}</div>`
+    + (fl ? (() => { const alt = sondeAltSvg(fl, h), tmp = sondeTempSvg(fl); return alt || tmp ? `<div class="sd-charts">${alt ? `<div class="sd-chart"><small>ALTITUDE</small>${alt}</div>` : ''}${tmp ? `<div class="sd-chart"><small>TEMPERATURE BY ALTITUDE</small>${tmp}</div>` : ''}</div>` : ''; })() : '')
     + (fx?.busy && !fl ? '<p class="sd-note">loading the flight from SondeHub…</p>' : fx?.err && !fl ? `<p class="sd-note">${esc(fx.err)}</p>` : '')
     + `<div class="sd-secs">${sec('FLIGHT', flight)}${sec('WEATHER', weather)}${sec('SONDE', sonde)}${sec('RECEPTION', rx)}</div>`
     + `<p class="sd-note">Reported online by SondeHub; your radio has not decoded it yet.${wide ? '' : ' LISTEN keeps your radio on its frequency.'}</p>`;

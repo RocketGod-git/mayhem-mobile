@@ -45,6 +45,8 @@ export interface HubFlight {
   /** Every station that has uploaded a frame, most frames first. */
   stations: { call: string; frames: number }[];
   frames: number;
+  /** Up to ~240 samples across the flight: time, altitude and (when the sonde sends it) temperature. */
+  profile: { ms: number; alt: number; temp: number | null }[];
 }
 
 /** SondeHub's own landing prediction for a balloon. */
@@ -169,11 +171,27 @@ export function hubFlightOf(frames: Record<string, Record<string, unknown>>): Hu
     for (const u of ups) if (u.uploader_callsign) calls.set(u.uploader_callsign, (calls.get(u.uploader_callsign) ?? 0) + 1);
   }
   const first = rows[0];
+  const step = Math.max(1, Math.ceil(rows.length / 240));
+  const profile = rows.filter((_, i) => i % step === 0 || i === rows.length - 1)
+    .map(({ ms, v }) => ({ ms, alt: num(v.alt) ?? 0, temp: v.invalid_temp === true ? null : num(v.temp) }));
   return {
-    track, maxAlt, maxAltMs, frames: rows.length,
+    track, maxAlt, maxAltMs, frames: rows.length, profile,
     launch: first ? { lat: num(first.v.lat)!, lon: num(first.v.lon)!, alt: num(first.v.alt) ?? 0, ms: first.ms } : null,
     stations: [...calls].map(([call, frames]) => ({ call, frames })).sort((a, b) => b.frames - a.frames),
   };
+}
+
+/** SondeHub's landing predictions for several balloons in one request, by serial. */
+export async function hubPredictions(serials: string[]): Promise<Map<string, HubPredict>> {
+  const out = new Map<string, HubPredict>();
+  if (!serials.length) return out;
+  const r = await fetch(`${API}/predictions?vehicles=${serials.map(encodeURIComponent).join(',')}`);
+  if (!r.ok) throw new Error(`SondeHub predictions: HTTP ${r.status}`);
+  for (const p of await r.json() as Record<string, unknown>[]) {
+    const v = hubPredictOf(p);
+    if (v && typeof p.vehicle === 'string') out.set(p.vehicle, v);
+  }
+  return out;
 }
 
 /** SondeHub's landing prediction, or null when it has none for this balloon. */

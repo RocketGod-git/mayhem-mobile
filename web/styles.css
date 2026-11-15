@@ -1874,3 +1874,25 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sd-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .sd-chips span { font-size: 9px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
 .sd-note { font-size: 9px; color: var(--muted); margin: 8px 0 0; }
+/* SondeHub card: where it is in its flight, an altitude bar to a 35 km burst, and where it lands */
+.sd-ph { align-self: flex-start; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.sd-ph.up { color: var(--ok, #3ddc84); background: color-mix(in srgb, var(--ok, #3ddc84) 12%, transparent); }
+.sd-ph.fall { color: var(--accent2); background: color-mix(in srgb, var(--accent2) 12%, transparent); }
+.sd-ph.float { color: var(--accent); }
+.sd-ph.down, .sd-ph.lost { color: var(--muted); }
+.sd-alt { position: relative; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: visible; }
+.sd-alt i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--ok, #3ddc84)); }
+.sd-alt u { position: absolute; top: -3px; width: 2px; height: 11px; background: var(--accent2); transform: translateX(-1px); }
+.sd-fate { font-size: 11px; font-weight: 700; color: var(--ink); }
+.sd-fate.on { color: var(--accent2); }
+.sd-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px; margin-bottom: 8px; }
+.sd-chart { border-radius: 10px; padding: 6px 8px 4px; background: color-mix(in srgb, var(--paper) 55%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); }
+.sd-chart small { font-size: 9px; letter-spacing: 2px; color: var(--muted); }
+.sd-chart svg { width: 100%; height: 64px; display: block; }
+.sd-chart .p { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.sd-chart .f { fill: var(--accent); fill-opacity: 0.14; }
+.sd-chart .t { fill: none; stroke: var(--accent2); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.sd-chart .z { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.sd-chart .b { fill: var(--accent2); }
+.sd-chart .n { fill: var(--ok, #3ddc84); }
+.sd-ax { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); }
