@@ -1856,3 +1856,5 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sd-sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); column-gap: 18px; }
 .sd-sites > .sd-sh { grid-column: 1 / -1; }
 .sd-site, .sd-site:first-of-type { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+/* on the map the detail keeps the lower part, so the flight it describes stays in view */
+#sd-map:not([hidden]) ~ .mt-detail { max-height: 50%; }

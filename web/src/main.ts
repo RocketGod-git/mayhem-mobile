@@ -29,7 +29,7 @@ import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { GeoMap, type GeoItem, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
-import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
+import { hubSites, hubSondes, hubFlight, hubPredict, hubLaunchSite, hubDur, nextLaunchMs, type HubSite, type HubSonde, type HubFlight, type HubPredict } from './sondehub.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
@@ -4643,7 +4643,20 @@ function sondeCard(s: SondeRow, now: number): string {
     + (land ? `<div class="lr-last">${esc(land)}</div>` : '') + '</div>';
 }
 /** What SondeHub knows near you: the launch sites, and every balloon others are hearing (refreshed every 30 s). */
-const sondeNet = { sites: [] as HubSite[], air: [] as HubSonde[], airAt: 0, sitesAt: 0, busy: false, err: '', listen: 0 };
+const sondeNet = { sites: [] as HubSite[], air: [] as HubSonde[], airAt: 0, sitesAt: 0, busy: false, err: '', listen: 0,
+  /** The picked balloon's whole flight and SondeHub's landing prediction, fetched on tap and every minute after. */
+  flights: new Map<string, { flight: HubFlight | null; predict: HubPredict | null; at: number; busy: boolean; err: string }>() };
+function sondeNetFlight(serial: string): void {
+  const now = Date.now(), had = sondeNet.flights.get(serial);
+  if (had && (had.busy || now - had.at < 60_000)) return;
+  const e = had ?? { flight: null, predict: null, at: 0, busy: false, err: '' };
+  e.busy = true; e.at = now; sondeNet.flights.set(serial, e);
+  Promise.allSettled([hubFlight(serial), hubPredict(serial)]).then(([fl, pr]) => {
+    if (fl.status === 'fulfilled') e.flight = fl.value;
+    if (pr.status === 'fulfilled') e.predict = pr.value;
+    e.err = fl.status === 'rejected' ? String((fl.reason as Error)?.message ?? fl.reason) : '';
+  }).finally(() => { e.busy = false; refreshSondes(true); });
+}
 /** The frequencies a stepping radio should visit: the one LISTEN picked, else every balloon reported in the last 10 min. */
 function sondeNetHints(): void {
   const hz = sondeNet.listen ? [sondeNet.listen] : sondeNet.air.filter(h => h.mhz !== null && Date.now() - h.ms < 600_000).map(h => Math.round(h.mhz! * 1e6));
@@ -4672,11 +4685,13 @@ function sondeAirCard(h: HubSonde, now: number): string {
   const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
   const climb = h.climb !== null ? `${h.climb >= 0 ? '▲' : '▼'} ${Math.abs(h.climb).toFixed(1)} m/s` : '';
   const from = sondeFromHere(h.lat, h.lon);
+  const ptu = [h.tempC !== null ? `${h.tempC.toFixed(1)} °C` : '', h.rh !== null ? `${Math.round(h.rh)}% RH` : '', h.battV !== null ? `${h.battV.toFixed(1)} V` : ''].filter(Boolean).join(' · ');
   return `<div class="mt-card sd-air ${sondeUi.sel === h.serial ? 'sel' : ''} ${live ? '' : 'dim'}" data-sonde="${esc(h.serial)}" data-fk="${esc(h.serial)}" data-fms="${h.ms}">`
     + `<div class="mt-h"><span class="mt-id" style="font-size:${h.serial.length > 8 ? 16 : 20}px">${esc(h.serial)}</span><span class="mt-k"><b>${esc(h.type)}</b><small class="sd-tag">SONDEHUB</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
     + `<div class="mt-clk"><b>${Math.round(h.alt).toLocaleString('en-US')}</b><small>METERS</small><em>${esc(climb)}</em></div>`
     + `<div class="lr-name">${h.mhz !== null ? `listen on ${h.mhz.toFixed(3)} MHz` : 'frequency not reported'}${h.speedMs !== null ? ` · ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : ''}</div>`
-    + (from ? `<div class="lr-last">${esc(from)} from you</div>` : '') + '<div class="lr-last">online report · not heard by your radio yet</div></div>';
+    + (ptu ? `<div class="lr-last">${esc(ptu)}</div>` : '')
+    + (from ? `<div class="lr-last">${esc(from)} from you</div>` : '') + '<div class="lr-last">online report · tap for the whole flight</div></div>';
 }
 /** The detail for a balloon only SondeHub reports: everything it says, and LISTEN to point a stepping radio at it. */
 function sondeNetDetail(h: HubSonde, now: number): string {
@@ -4684,7 +4699,20 @@ function sondeNetDetail(h: HubSonde, now: number): string {
   const hz = h.mhz !== null ? Math.round(h.mhz * 1e6) : 0;
   const wide = !!sondeUi.snap?.wide, on = hz > 0 && sondeNet.listen === hz;
   const age = (now - h.ms) / 1000;
-  return `<div class="mt-dh"><b>${esc(h.serial)}</b><span>${esc(h.type)} · VIA SONDEHUB</span>`
+  sondeNetFlight(h.serial);
+  const fx = sondeNet.flights.get(h.serial), fl = fx?.flight ?? null, pr = fx?.predict ?? null;
+  const site = fl?.launch ? hubLaunchSite(sondeNet.sites, fl.launch) : null;
+  const phase = pr?.landed ? 'LANDED' : (h.climb ?? 0) < -1 ? 'FALLING' : (h.climb ?? 0) > 1 ? 'CLIMBING' : '';
+  const flightRows = fl ? f('LAUNCHED FROM', site ? `${site.name}${site.id ? ` (${site.id})` : ''}` : fl.launch ? `${fl.launch.lat.toFixed(4)}, ${fl.launch.lon.toFixed(4)}` : false)
+    + f('FIRST FRAME', fl.launch !== null && `${loraClock(fl.launch.ms)} · ${hubDur((h.ms - fl.launch.ms) / 1000)} in flight`)
+    + f(phase === 'FALLING' || phase === 'LANDED' ? 'BURST' : 'HIGHEST', fl.maxAlt > 0 && `${Math.round(fl.maxAlt).toLocaleString('en-US')} m at ${loraClock(fl.maxAltMs)}`)
+    + f('FRAMES ONLINE', `${fl.frames.toLocaleString('en-US')}`)
+    + f('STATIONS', fl.stations.length > 0 && `${fl.stations.length}: ${fl.stations.slice(0, 6).map(x => x.call).join(', ')}${fl.stations.length > 6 ? ', …' : ''}`) : '';
+  const predRows = pr ? f(pr.landed ? 'LANDED AT' : 'PREDICTED LANDING', `${pr.lat.toFixed(4)}, ${pr.lon.toFixed(4)}${pr.ms > now ? ` in ${sondeMins((pr.ms - now) / 1000)}` : ''}`)
+    + f('LANDING FROM YOU', sondeFromHere(pr.lat, pr.lon))
+    + f('ASSUMED BURST', !pr.descending && pr.burstAlt !== null && `${Math.round(pr.burstAlt).toLocaleString('en-US')} m`)
+    + f('RATES', pr.ascent !== null && pr.descent !== null && `climb ${pr.ascent.toFixed(1)} m/s · fall ${pr.descent.toFixed(1)} m/s`) : '';
+  return `<div class="mt-dh"><b>${esc(h.serial)}</b><span>${esc(h.type)}${phase ? ` · ${phase}` : ''} · VIA SONDEHUB</span>`
     + (hz && !wide ? `<button class="chip ${on ? 'on' : ''}" data-sdo="listen">${on ? 'LISTENING' : 'LISTEN'}</button>` : '')
     + `<button class="chip" data-sdo="map">MAP</button>${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="track">TRACKER</button><button class="chip" data-sdo="close">✕</button></div>`
     + `<div class="mt-fields">`
@@ -4692,7 +4720,9 @@ function sondeNetDetail(h: HubSonde, now: number): string {
     + f('ALTITUDE', `${Math.round(h.alt).toLocaleString('en-US')} m`) + f('CLIMB', h.climb !== null && `${h.climb >= 0 ? '+' : ''}${h.climb.toFixed(1)} m/s`)
     + f('GROUND SPEED', h.speedMs !== null && `${h.speedMs.toFixed(1)} m/s (${(h.speedMs * 3.6).toFixed(0)} km/h)`) + f('HEADING', h.heading !== null && `${Math.round(h.heading)}° ${compass(h.heading)}`)
     + f('POSITION', `${h.lat.toFixed(5)}, ${h.lon.toFixed(5)}`) + f('FROM YOU', sondeFromHere(h.lat, h.lon))
-    + `<p>Other receivers on the SondeHub network are hearing this balloon; your radio has not decoded it yet. ${wide ? 'Your radio already watches the whole band, so it decodes it as soon as the signal is strong enough here.' : 'LISTEN keeps your radio on its frequency instead of stepping across the band.'} Its card turns into a full decode (temperature, humidity, pressure, landing prediction) once your radio hears it.</p></div>`;
+    + flightRows + predRows + h.fields.map(x => f(x.name, x.value)).join('')
+    + (fx?.busy && !fl ? '<p>loading the flight from SondeHub…</p>' : fx?.err && !fl ? `<p>${esc(fx.err)}</p>` : '')
+    + `<p>Other receivers on the SondeHub network are hearing this balloon; your radio has not decoded it yet. ${wide ? 'Your radio already watches the whole band, so it decodes it as soon as the signal is strong enough here.' : 'LISTEN keeps your radio on its frequency instead of stepping across the band.'} Once your radio decodes it, its card switches to your own decode.</p></div>`;
 }
 /** The launch sites near you, nearest first, each with its next launch where it lists a schedule. */
 function sondeSitesHtml(now: number): string {
@@ -4839,8 +4869,15 @@ function refreshSondes(force = false): void {
       if (s.burst) items.push({ id: `burst:${s.serial}`, lat: s.burst.lat, lon: s.burst.lon, label: 'BURST', kind: 'burst' });
       if (s.predict && mine) { paths.push({ pts: s.predict.path, dashed: true }); items.push({ id: `land:${s.serial}`, lat: s.predict.lat, lon: s.predict.lon, label: `${s.serial} lands`, kind: 'landing' }); }
     }
-    for (const h of sondeNet.air) if (!withPos.some(s => s.serial === h.serial))
+    for (const h of sondeNet.air) if (!withPos.some(s => s.serial === h.serial)) {
       items.push({ id: h.serial, lat: h.lat, lon: h.lon, label: `${h.serial} ${(h.alt / 1000).toFixed(1)} km${h.mhz !== null ? ` · ${h.mhz.toFixed(3)}` : ''}`, kind: 'sonde' });
+      const fx = sondeNet.flights.get(h.serial);
+      if (fx?.flight && fx.flight.track.length > 1) paths.push({ pts: [...fx.flight.track, [h.lat, h.lon]], faint: !!sondeUi.sel && sondeUi.sel !== h.serial });
+      if (fx?.predict && sondeUi.sel === h.serial) {
+        paths.push({ pts: [[h.lat, h.lon], ...fx.predict.path], dashed: true });
+        items.push({ id: `land:${h.serial}`, lat: fx.predict.lat, lon: fx.predict.lon, label: `${h.serial} ${fx.predict.landed ? 'landed' : 'lands'}`, kind: 'landing' });
+      }
+    }
     const me = state.home ?? lastKnownPos();
     if (me) for (const x of sondeNet.sites) if (distBearing(me, x)[0] < 600) items.push({ id: `site:${x.id}`, lat: x.lat, lon: x.lon, label: x.name, kind: 'station' });
     geo?.setPaths(paths);

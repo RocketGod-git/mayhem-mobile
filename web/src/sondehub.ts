@@ -29,6 +29,35 @@ export interface HubSonde {
   speedMs: number | null;
   heading: number | null;
   ms: number;
+  /** Everything else the latest frame carries, labeled for the detail (temperature, battery, the station hearing it...). */
+  fields: { name: string; value: string }[];
+  tempC: number | null;
+  rh: number | null;
+  battV: number | null;
+}
+
+/** One balloon's whole flight so far, from SondeHub's telemetry: its track, where it came from, and who hears it. */
+export interface HubFlight {
+  track: [number, number][];
+  launch: { lat: number; lon: number; alt: number; ms: number } | null;
+  maxAlt: number;
+  maxAltMs: number;
+  /** Every station that has uploaded a frame, most frames first. */
+  stations: { call: string; frames: number }[];
+  frames: number;
+}
+
+/** SondeHub's own landing prediction for a balloon. */
+export interface HubPredict {
+  lat: number;
+  lon: number;
+  ms: number;
+  path: [number, number][];
+  burstAlt: number | null;
+  ascent: number | null;
+  descent: number | null;
+  descending: boolean;
+  landed: boolean;
 }
 
 const API = 'https://api.v2.sondehub.org';
@@ -63,17 +92,120 @@ export async function hubSites(): Promise<HubSite[]> {
 export async function hubSondes(lat: number, lon: number, km = 400, lastS = 3 * 3600): Promise<HubSonde[]> {
   const r = await fetch(`${API}/sondes?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&distance=${Math.round(km * 1000)}&last=${lastS}`);
   if (!r.ok) throw new Error(`SondeHub sondes: HTTP ${r.status}`);
-  const raw = await r.json() as Record<string, { type?: string; subtype?: string; frequency?: number; lat?: number; lon?: number; alt?: number; vel_v?: number; vel_h?: number; heading?: number; datetime?: string }>;
+  const raw = await r.json() as Record<string, Record<string, unknown>>;
   const out: HubSonde[] = [];
   for (const [serial, v] of Object.entries(raw)) {
-    if (typeof v.lat !== 'number' || typeof v.lon !== 'number') continue;
-    out.push({
-      serial, type: v.subtype || v.type || 'sonde', mhz: typeof v.frequency === 'number' ? v.frequency : null,
-      lat: v.lat, lon: v.lon, alt: v.alt ?? 0, climb: v.vel_v ?? null, speedMs: v.vel_h ?? null, heading: v.heading ?? null,
-      ms: v.datetime ? Date.parse(v.datetime) : Date.now(),
-    });
+    const h = hubParse(serial, v);
+    if (h) out.push(h);
   }
   return out.sort((a, b) => b.ms - a.ms);
+}
+
+const num = (x: unknown): number | null => typeof x === 'number' && Number.isFinite(x) ? x : null;
+const str = (x: unknown): string | null => typeof x === 'string' && x.trim() ? x.trim() : null;
+
+/** One SondeHub frame as a card: the flight numbers, plus every other field it carries, labeled. */
+export function hubParse(serial: string, v: Record<string, unknown>): HubSonde | null {
+  const lat = num(v.lat), lon = num(v.lon);
+  if (lat === null || lon === null) return null;
+  const fields: { name: string; value: string }[] = [];
+  const f = (name: string, value: string | null | false) => { if (value) fields.push({ name, value }); };
+  const temp = num(v.temp), rh = num(v.humidity), hPa = num(v.pressure), batt = num(v.batt);
+  const timer = num(v.burst_timer), snr = num(v.snr), rssi = num(v.rssi), sats = num(v.sats), frame = num(v.frame);
+  const tx = num(v.tx_frequency);
+  f('MAKER', str(v.manufacturer));
+  f('TEMPERATURE', temp !== null && v.invalid_temp !== true && `${temp.toFixed(1)} °C`);
+  f('HUMIDITY', rh !== null && `${rh.toFixed(0)} %`);
+  f('PRESSURE', hPa !== null && hPa > 0 && `${hPa.toFixed(1)} hPa`);
+  f('BATTERY', batt !== null && `${batt.toFixed(1)} V`);
+  f('SATELLITES', sats !== null && `${sats}`);
+  f('FRAME NUMBER', frame !== null && `${frame}`);
+  f('BURST TIMER', timer !== null && timer > 0 && timer < 65535 && hubDur(timer));
+  f('TX FREQUENCY', tx !== null && `${tx.toFixed(3)} MHz`);
+  f('SIGNAL', snr !== null ? `${snr.toFixed(1)} dB SNR${rssi !== null ? ` · ${rssi.toFixed(0)} dBm` : ''}` : rssi !== null && `${rssi.toFixed(0)} dBm`);
+  f('MAINBOARD', str(v.rs41_mainboard) && `${v.rs41_mainboard}${str(v.rs41_mainboard_fw) ? ` · firmware ${v.rs41_mainboard_fw}` : ''}`);
+  f('DFM CODE', str(v.dfmcode));
+  f('POSITION FROM', str(v.ref_position));
+  f('HEARD BY', str(v.uploader_callsign));
+  f('THEIR ANTENNA', str(v.uploader_antenna));
+  const up = str(v.uploader_position)?.split(',').map(Number);
+  if (up && up.length === 2 && up.every(Number.isFinite)) f('THEIR STATION', `${up[0].toFixed(4)}, ${up[1].toFixed(4)}${num(v.uploader_alt) !== null ? ` · ${Math.round(num(v.uploader_alt)!)} m` : ''}`);
+  f('THEIR SOFTWARE', str(v.software_name) && `${v.software_name}${str(v.software_version) ? ` ${v.software_version}` : ''}`);
+  const dt = str(v.datetime);
+  return {
+    serial, type: str(v.subtype) ?? str(v.type) ?? 'sonde', mhz: num(v.frequency),
+    lat, lon, alt: num(v.alt) ?? 0, climb: num(v.vel_v), speedMs: num(v.vel_h), heading: num(v.heading),
+    ms: dt ? Date.parse(dt) : Date.now(), fields, tempC: v.invalid_temp === true ? null : temp, rh, battV: batt,
+  };
+}
+
+/** A duration in seconds as "8 h 02 min" / "14 min". */
+export function hubDur(s: number): string {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min`;
+}
+
+/** The whole flight so far: every frame anyone uploaded in the last [hours], as one track. */
+export async function hubFlight(serial: string, hours = 6): Promise<HubFlight> {
+  const r = await fetch(`${API}/sondes/telemetry?serial=${encodeURIComponent(serial)}&duration=${hours}h`);
+  if (!r.ok) throw new Error(`SondeHub telemetry: HTTP ${r.status}`);
+  const raw = await r.json() as Record<string, Record<string, Record<string, unknown>>>;
+  return hubFlightOf(raw[serial] ?? {});
+}
+
+export function hubFlightOf(frames: Record<string, Record<string, unknown>>): HubFlight {
+  const rows = Object.entries(frames).map(([t, v]) => ({ ms: Date.parse(t), v })).filter(x => Number.isFinite(x.ms) && num(x.v.lat) !== null && num(x.v.lon) !== null)
+    .sort((a, b) => a.ms - b.ms);
+  const calls = new Map<string, number>();
+  let maxAlt = 0, maxAltMs = 0;
+  const track: [number, number][] = [];
+  for (const { ms, v } of rows) {
+    const lat = num(v.lat)!, lon = num(v.lon)!, alt = num(v.alt) ?? 0;
+    const last = track[track.length - 1];
+    // one point per ~50 m of movement keeps a 5000-frame flight light on the map
+    if (!last || Math.abs(last[0] - lat) + Math.abs(last[1] - lon) > 0.0005) track.push([lat, lon]);
+    if (alt > maxAlt) { maxAlt = alt; maxAltMs = ms; }
+    const ups = Array.isArray(v.uploaders) ? v.uploaders as { uploader_callsign?: string }[] : [{ uploader_callsign: str(v.uploader_callsign) ?? undefined }];
+    for (const u of ups) if (u.uploader_callsign) calls.set(u.uploader_callsign, (calls.get(u.uploader_callsign) ?? 0) + 1);
+  }
+  const first = rows[0];
+  return {
+    track, maxAlt, maxAltMs, frames: rows.length,
+    launch: first ? { lat: num(first.v.lat)!, lon: num(first.v.lon)!, alt: num(first.v.alt) ?? 0, ms: first.ms } : null,
+    stations: [...calls].map(([call, frames]) => ({ call, frames })).sort((a, b) => b.frames - a.frames),
+  };
+}
+
+/** SondeHub's landing prediction, or null when it has none for this balloon. */
+export async function hubPredict(serial: string): Promise<HubPredict | null> {
+  const r = await fetch(`${API}/predictions?vehicles=${encodeURIComponent(serial)}`);
+  if (!r.ok) throw new Error(`SondeHub predictions: HTTP ${r.status}`);
+  const list = await r.json() as Record<string, unknown>[];
+  return hubPredictOf(list.find(x => x.vehicle === serial));
+}
+
+export function hubPredictOf(p: Record<string, unknown> | undefined): HubPredict | null {
+  if (!p) return null;
+  let pts: { time?: number; lat?: number; lon?: number }[] = [];
+  try { pts = typeof p.data === 'string' ? JSON.parse(p.data) : Array.isArray(p.data) ? p.data as typeof pts : []; } catch { pts = []; }
+  const path = pts.filter(x => typeof x.lat === 'number' && typeof x.lon === 'number').map(x => [x.lat!, x.lon! > 180 ? x.lon! - 360 : x.lon!] as [number, number]);
+  const end = pts[pts.length - 1];
+  if (!path.length || !end) return null;
+  return {
+    lat: path[path.length - 1][0], lon: path[path.length - 1][1], ms: (end.time ?? 0) * 1000, path,
+    burstAlt: num(p.burst_altitude), ascent: num(p.ascent_rate), descent: num(p.descent_rate),
+    descending: p.descending === 1 || p.descending === true, landed: p.landed === 1 || p.landed === true,
+  };
+}
+
+/** The listed launch site a flight started from: the nearest within 25 km of its first frame. */
+export function hubLaunchSite(sites: HubSite[], at: { lat: number; lon: number }): HubSite | null {
+  let best: HubSite | null = null, bestKm = 25;
+  for (const s of sites) {
+    const dy = (s.lat - at.lat) * 111.2, dx = (s.lon - at.lon) * 111.2 * Math.cos(at.lat * Math.PI / 180), km = Math.hypot(dx, dy);
+    if (km < bestKm) { bestKm = km; best = s; }
+  }
+  return best;
 }
 
 /** SondeHub's short type codes as the names people know. */
