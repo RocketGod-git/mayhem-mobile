@@ -1858,3 +1858,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .sd-site, .sd-site:first-of-type { border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
 /* on the map the detail keeps the lower part, so the flight it describes stays in view */
 #sd-map:not([hidden]) ~ .mt-detail { max-height: 50%; }
+/* SondeHub balloon detail: headline numbers, then the story in short labeled sections */
+.sd-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; margin: 2px 0 8px; }
+.sd-tile { border-radius: 10px; padding: 7px 9px; background: color-mix(in srgb, var(--accent) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); min-width: 0; }
+.sd-tile small { display: block; font-size: 9px; letter-spacing: 2px; color: var(--muted); }
+.sd-tile b { display: block; font-size: 20px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-tile b em { font-style: normal; font-size: 10px; color: var(--muted); margin-left: 3px; letter-spacing: 1px; }
+.sd-tile i { display: block; font-style: normal; font-size: 9px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-secs { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 14px; }
+.sd-sec h4 { margin: 0 0 3px; font-size: 9px; letter-spacing: 2px; color: var(--accent); border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); padding-bottom: 3px; }
+.sd-r { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; min-width: 0; }
+.sd-r b { width: 96px; flex: none; font-size: 10px; font-weight: 400; color: var(--muted); }
+.sd-r span { font-size: 11px; color: var(--ink); user-select: text; overflow-wrap: anywhere; min-width: 0; }
+.sd-r span i { font-style: normal; color: var(--muted); font-size: 10px; }
+.sd-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.sd-chips span { font-size: 9px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
+.sd-note { font-size: 9px; color: var(--muted); margin: 8px 0 0; }
