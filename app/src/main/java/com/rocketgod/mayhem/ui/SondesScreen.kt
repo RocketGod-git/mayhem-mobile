@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -111,6 +113,7 @@ fun SondesScreen(accent: Color) {
     val sondes = held ?: live
     val withPos = sondes.filter { it.lat != null && it.lon != null }
     val picked = live.firstOrNull { it.serial == sel }
+    val pickedNet = if (picked == null) net.air.firstOrNull { it.serial == sel } else null
     // ours first; then what others are hearing that we aren't (yet); then the launch sites
     val air = net.air.filter { h -> sondes.none { it.serial == h.serial } }
     val airOnMap = net.air.filter { h -> withPos.none { it.serial == h.serial } }
@@ -146,9 +149,9 @@ fun SondesScreen(accent: Color) {
                     val pla = picked?.lat; val plo = picked?.lon
                     Box(Modifier.fillMaxSize()) {
                         GeoMapView(items, accent, Modifier.fillMaxSize().panel(), home = fix, selected = sel.ifEmpty { null }, layers = GeoLayers(paths = paths),
-                            start = remember { mapStart(fix) }, focus = if (pla != null && plo != null) pla to plo else null, focusKey = focusKey) { id ->
+                            start = remember { mapStart(fix) }, focus = if (pla != null && plo != null) pla to plo else pickedNet?.let { it.lat to it.lon }, focusKey = focusKey) { id ->
                             val id2 = id.removePrefix("land:").removePrefix("burst:")
-                            if (live.any { it.serial == id2 }) sel = id2
+                            if (live.any { it.serial == id2 } || net.air.any { it.serial == id2 }) sel = id2
                         }
                         if (withPos.isEmpty() && airOnMap.isEmpty() && sites.isEmpty()) Text("no positions yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
                             modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
@@ -158,6 +161,9 @@ fun SondesScreen(accent: Color) {
             if (picked != null) SondeDetail(picked, accent, me, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 onMap = if (picked.lat != null) ({ view = 1; focusKey++ }) else null,
                 onCards = if (view != 0) ({ view = 0 }) else null) { sel = "" }
+            else if (pickedNet != null) SondeNetDetail(pickedNet, accent, me, now, snap?.wide == true, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
+                onMap = { view = 1; focusKey++ }, onCards = if (view != 0) ({ view = 0 }) else null,
+                onTracker = { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://sondehub.org/" + Uri.encode(pickedNet.serial)))) } }) { sel = "" }
         }
     }
 
@@ -270,7 +276,7 @@ private fun SondeCards(sondes: List<SondeRow>, air: List<HubSonde>, sites: List<
         LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(), state = grid,
             horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             items(sondes, key = { "${it.type}:${it.serial}" }) { s -> SondeCard(s, accent, now, sel == s.serial, me) { onPick(s.serial) } }
-            items(air, key = { "hub:${it.serial}" }) { h -> SondeAirCard(h, accent, now, me) }
+            items(air, key = { "hub:${it.serial}" }) { h -> SondeAirCard(h, accent, now, me, sel == h.serial) { onPick(h.serial) } }
             if (sites.isNotEmpty()) item(key = "sites", span = { GridItemSpan(maxLineSpan) }) { SondeSites(sites, accent, now) }
         }
         NewestPill(follow, grid, sondes.count { it.lastMs > follow.seen }, accent, Modifier.align(Alignment.TopCenter))
@@ -292,7 +298,7 @@ private fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehi
 
 /** A balloon someone else is hearing and our radio isn't (yet): what it is, where, and where to listen. */
 @Composable
-private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double, Double>?) {
+private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double, Double>?, selected: Boolean, onClick: () -> Unit) {
     val d = rememberDims()
     val age = (now - h.ms) / 1000.0
     val live = age < 120
@@ -304,13 +310,13 @@ private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double,
     val shape = RoundedCornerShape(d.dp(14f))
     Column(Modifier.fillMaxWidth().alpha(if (live) 1f else 0.8f).clip(shape)
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.06f), Palette.panel)))
-        .dashedBorder(accent.copy(alpha = 0.55f), d.dp(14f))
-        .padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+        .then(if (selected) Modifier.border(2.5.dp, accent, shape) else Modifier.dashedBorder(accent.copy(alpha = 0.55f), d.dp(14f)))
+        .clickable { onClick() }.padding(d.dp(11f)), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(if (h.serial.length > 8) 16f else 20f), maxLines = 1)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
                 Text(h.type, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
-                Text("HEARD BY OTHERS", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
+                Text("SONDEHUB", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Box(Modifier.size(d.dp(9f)).background(if (live) Palette.ok else Palette.muted, CircleShape))
@@ -324,6 +330,46 @@ private fun SondeAirCard(h: HubSonde, accent: Color, now: Long, me: Pair<Double,
         }
         Text(listen, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (from.isNotEmpty()) Text("$from from you", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("online report · not heard by your radio yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** The detail for a balloon only SondeHub reports: everything it says, and where to follow it online. */
+@Composable
+private fun SondeNetDetail(h: HubSonde, accent: Color, me: Pair<Double, Double>?, now: Long, wide: Boolean, modifier: Modifier,
+                           onMap: () -> Unit, onCards: (() -> Unit)?, onTracker: () -> Unit, onClose: () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(14f))
+    val scroll = rememberScrollState()
+    val age = (now - h.ms) / 1000.0
+    val rows = ArrayList<Pair<String, String>>()
+    h.mhz?.let { rows.add("FREQUENCY" to "%.3f MHz".format(Locale.US, it)) }
+    rows.add("LAST REPORT" to if (age < 60) "${max(0, age.toInt())} s ago" else "${sondeMins(age)} ago")
+    rows.add("ALTITUDE" to "%,d m".format(Locale.US, Math.round(h.alt)))
+    h.climb?.let { rows.add("CLIMB" to "${if (it >= 0) "+" else ""}${"%.1f".format(Locale.US, it)} m/s") }
+    h.speedMs?.let { rows.add("GROUND SPEED" to "%.1f m/s (%.0f km/h)".format(Locale.US, it, it * 3.6)) }
+    h.heading?.let { rows.add("HEADING" to "${Math.round(it)}° ${compass(it)}") }
+    rows.add("POSITION" to "%.5f, %.5f".format(Locale.US, h.lat, h.lon))
+    fromHere(me, h.lat, h.lon).takeIf { it.isNotEmpty() }?.let { rows.add("FROM YOU" to it) }
+    Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
+        .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
+        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            Text(h.serial, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f), maxLines = 1)
+            Text("${h.type} · VIA SONDEHUB", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
+            if (onCards != null) ToggleBox("CARDS", false, accent, Modifier.fillMaxHeight()) { onCards() }
+            ToggleBox("TRACKER", false, accent, Modifier.fillMaxHeight()) { onTracker() }
+            ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
+        }
+        SelectionContainer { FieldGrid(rows, labelWidth = 120f, minColumn = 300f) }
+        Text("Other receivers on the SondeHub network are hearing this balloon; your radio has not decoded it yet. " +
+            (if (wide) "Your radio already watches the whole band, so it decodes it as soon as the signal is strong enough here. "
+             else "Your radio steps across the band and stays on a sonde once it decodes. ") +
+            "Its card turns into a full decode (temperature, humidity, pressure, landing prediction) once your radio hears it.",
+            color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
     }
 }
 

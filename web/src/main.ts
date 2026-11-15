@@ -4643,7 +4643,12 @@ function sondeCard(s: SondeRow, now: number): string {
     + (land ? `<div class="lr-last">${esc(land)}</div>` : '') + '</div>';
 }
 /** What SondeHub knows near you: the launch sites, and every balloon others are hearing (refreshed every 30 s). */
-const sondeNet = { sites: [] as HubSite[], air: [] as HubSonde[], airAt: 0, sitesAt: 0, busy: false, err: '' };
+const sondeNet = { sites: [] as HubSite[], air: [] as HubSonde[], airAt: 0, sitesAt: 0, busy: false, err: '', listen: 0 };
+/** The frequencies a stepping radio should visit: the one LISTEN picked, else every balloon reported in the last 10 min. */
+function sondeNetHints(): void {
+  const hz = sondeNet.listen ? [sondeNet.listen] : sondeNet.air.filter(h => h.mhz !== null && Date.now() - h.ms < 600_000).map(h => Math.round(h.mhz! * 1e6));
+  worker?.postMessage({ type: 'sondeHints', hz });
+}
 function sondeNetPoll(): void {
   const me = state.home ?? lastKnownPos(); if (!me || sondeNet.busy) return;
   const now = Date.now();
@@ -4656,7 +4661,7 @@ function sondeNetPoll(): void {
   hubSondes(me.lat, me.lon).then(x => {
     sondeNet.air = x; sondeNet.err = '';
     // where they are heard is where a stepping radio should listen
-    worker?.postMessage({ type: 'sondeHints', hz: x.filter(h => h.mhz !== null && Date.now() - h.ms < 600_000).map(h => Math.round(h.mhz! * 1e6)) });
+    sondeNetHints();
     refreshSondes(true);
   })
     .catch(e => { sondeNet.err = String(e?.message ?? e); }).finally(() => { sondeNet.busy = false; });
@@ -4667,11 +4672,27 @@ function sondeAirCard(h: HubSonde, now: number): string {
   const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
   const climb = h.climb !== null ? `${h.climb >= 0 ? '▲' : '▼'} ${Math.abs(h.climb).toFixed(1)} m/s` : '';
   const from = sondeFromHere(h.lat, h.lon);
-  return `<div class="mt-card sd-air ${live ? '' : 'dim'}" data-sonde="${esc(h.serial)}" data-fk="${esc(h.serial)}" data-fms="${h.ms}">`
-    + `<div class="mt-h"><span class="mt-id" style="font-size:${h.serial.length > 8 ? 16 : 20}px">${esc(h.serial)}</span><span class="mt-k"><b>${esc(h.type)}</b><small class="sd-tag">HEARD BY OTHERS</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
+  return `<div class="mt-card sd-air ${sondeUi.sel === h.serial ? 'sel' : ''} ${live ? '' : 'dim'}" data-sonde="${esc(h.serial)}" data-fk="${esc(h.serial)}" data-fms="${h.ms}">`
+    + `<div class="mt-h"><span class="mt-id" style="font-size:${h.serial.length > 8 ? 16 : 20}px">${esc(h.serial)}</span><span class="mt-k"><b>${esc(h.type)}</b><small class="sd-tag">SONDEHUB</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
     + `<div class="mt-clk"><b>${Math.round(h.alt).toLocaleString('en-US')}</b><small>METERS</small><em>${esc(climb)}</em></div>`
     + `<div class="lr-name">${h.mhz !== null ? `listen on ${h.mhz.toFixed(3)} MHz` : 'frequency not reported'}${h.speedMs !== null ? ` · ${(h.speedMs * 3.6).toFixed(0)} km/h${h.heading !== null ? ` ${compass(h.heading)}` : ''}` : ''}</div>`
-    + (from ? `<div class="lr-last">${esc(from)} from you</div>` : '') + '</div>';
+    + (from ? `<div class="lr-last">${esc(from)} from you</div>` : '') + '<div class="lr-last">online report · not heard by your radio yet</div></div>';
+}
+/** The detail for a balloon only SondeHub reports: everything it says, and LISTEN to point a stepping radio at it. */
+function sondeNetDetail(h: HubSonde, now: number): string {
+  const f = (name: string, value: string | false) => value ? `<div><b>${name}</b><span>${esc(value)}</span></div>` : '';
+  const hz = h.mhz !== null ? Math.round(h.mhz * 1e6) : 0;
+  const wide = !!sondeUi.snap?.wide, on = hz > 0 && sondeNet.listen === hz;
+  const age = (now - h.ms) / 1000;
+  return `<div class="mt-dh"><b>${esc(h.serial)}</b><span>${esc(h.type)} · VIA SONDEHUB</span>`
+    + (hz && !wide ? `<button class="chip ${on ? 'on' : ''}" data-sdo="listen">${on ? 'LISTENING' : 'LISTEN'}</button>` : '')
+    + `<button class="chip" data-sdo="map">MAP</button>${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="track">TRACKER</button><button class="chip" data-sdo="close">✕</button></div>`
+    + `<div class="mt-fields">`
+    + f('FREQUENCY', h.mhz !== null && `${h.mhz.toFixed(3)} MHz`) + f('LAST REPORT', age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : `${sondeMins(age)} ago`)
+    + f('ALTITUDE', `${Math.round(h.alt).toLocaleString('en-US')} m`) + f('CLIMB', h.climb !== null && `${h.climb >= 0 ? '+' : ''}${h.climb.toFixed(1)} m/s`)
+    + f('GROUND SPEED', h.speedMs !== null && `${h.speedMs.toFixed(1)} m/s (${(h.speedMs * 3.6).toFixed(0)} km/h)`) + f('HEADING', h.heading !== null && `${Math.round(h.heading)}° ${compass(h.heading)}`)
+    + f('POSITION', `${h.lat.toFixed(5)}, ${h.lon.toFixed(5)}`) + f('FROM YOU', sondeFromHere(h.lat, h.lon))
+    + `<p>Other receivers on the SondeHub network are hearing this balloon; your radio has not decoded it yet. ${wide ? 'Your radio already watches the whole band, so it decodes it as soon as the signal is strong enough here.' : 'LISTEN keeps your radio on its frequency instead of stepping across the band.'} Its card turns into a full decode (temperature, humidity, pressure, landing prediction) once your radio hears it.</p></div>`;
 }
 /** The launch sites near you, nearest first, each with its next launch where it lists a schedule. */
 function sondeSitesHtml(now: number): string {
@@ -4731,13 +4752,22 @@ function renderSondes(view: HTMLElement): void {
   $('sd-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-sdo]'); if (!b) return;
     const what = b.dataset.sdo;
+    const net = sondeNet.air.find(x => x.serial === sondeUi.sel);
     if (what === 'close') sondeUi.sel = '';
     else if (what === 'map') {
       sondeUi.view = 'map'; refreshSondes(true);
       const s = sondeUi.snap?.sondes.find(x => x.serial === sondeUi.sel);
       if (s && s.lat !== undefined && s.lon !== undefined) geo?.center(s.lat, s.lon, 11);
+      else if (net) geo?.center(net.lat, net.lon, 9);
       return;
     } else if (what === 'cards') sondeUi.view = 'sondes';
+    else if (what === 'track') { window.open(`https://sondehub.org/${encodeURIComponent(sondeUi.sel)}`, '_blank', 'noopener'); return; }
+    else if (what === 'listen' && net?.mhz != null) {
+      const hz = Math.round(net.mhz * 1e6);
+      sondeNet.listen = sondeNet.listen === hz ? 0 : hz;
+      sondeNetHints();
+      log(sondeNet.listen ? `Sondes: listening on ${net.mhz.toFixed(3)} MHz for ${net.serial}` : 'Sondes: stepping the band again');
+    }
     refreshSondes(true);
   };
   view.classList.toggle('sondefull', sondeUi.full);
@@ -4795,8 +4825,9 @@ function refreshSondes(force = false): void {
   if (sondeUi.view === 'sondes' && !paused.has('sondes')) followNewest(cards, (body || emptyState('sondes')) + sondeSitesHtml(now), 'sondes');
   sondePill();
   const picked = sondes.find(s => s.serial === sondeUi.sel);
-  det.hidden = !picked;
-  if (picked) { const top = det.scrollTop; det.innerHTML = sondeDetail(picked, picked.lat !== undefined); det.scrollTop = top; }
+  const pickedNet = picked ? undefined : sondeNet.air.find(h => h.serial === sondeUi.sel);
+  det.hidden = !picked && !pickedNet;
+  if (picked || pickedNet) { const top = det.scrollTop; det.innerHTML = picked ? sondeDetail(picked, picked.lat !== undefined) : sondeNetDetail(pickedNet!, now); det.scrollTop = top; }
   if (sondeUi.view === 'map') {
     geo?.invalidate();
     const items: GeoItem[] = [];
@@ -5498,7 +5529,7 @@ function clearApp(id: string): void {
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
-    case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
+    case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; sondeNet.listen = 0; sondeNetHints(); break;
     case 'trains': trainsUi.snap = null; break;
   }
   worker?.postMessage({ type: 'clear' });
