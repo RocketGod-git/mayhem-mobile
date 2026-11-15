@@ -6613,6 +6613,7 @@ async function connect(dev?: USBDevice): Promise<void> {
     // A device this origin was already granted skips the chooser (and works without a click gesture).
     const d = dev ?? await HackRf.remembered() ?? (RTLSDR_READY ? await RtlSdr.remembered() : undefined)
       ?? await navigator.usb.requestDevice({ filters: [...HACKRF_FILTERS, ...(RTLSDR_READY ? RTLSDR_FILTERS : [])] });
+    lastTried = d;
     if (isMayhemSerial(d)) {
       log('That is a PortaPack in Mayhem serial mode.');
       setStatus('PortaPack in Mayhem mode — switching…', false);
@@ -6702,6 +6703,8 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   await r.run();
 }
 
+/** The radio the last CONNECT went for, so a failure names the right one. */
+let lastTried: USBDevice | undefined;
 /** Platform-specific help when WebUSB can't see or claim the HackRF. */
 function platform(): 'windows' | 'mac' | 'linux' | 'android' | 'other' {
   const ua = navigator.userAgent;
@@ -6725,7 +6728,9 @@ function showHint(err: Error): void {
     else if (os === 'android') text += 'on Android use a data-capable OTG cable or a powered OTG hub; a PortaPack must be in HackRF mode.';
     else text += 'make sure a PortaPack is in HackRF mode.';
   } else if (busy) {
-    text = `Could not claim the HackRF (${err.message}). Another program probably has it open — close SDR++, SDRangel, GQRX, hackrf_transfer or a second browser tab, then reconnect.`;
+    const name = lastTried && isRtlSdr(lastTried) ? 'RTL-SDR' : 'HackRF';
+    if (os === 'android') text = `Could not open the ${name}: another app has it. When Android asks "Choose an app for the USB device", tap Cancel, or close the app that took it (Mayhem, Wardrive Go, an RTL-SDR driver). Then unplug the radio, plug it back in and tap CONNECT.`;
+    else text = `Could not claim the ${name} (${err.message}). Another program probably has it open — close SDR++, SDRangel, GQRX, ${name === 'HackRF' ? 'hackrf_transfer' : 'rtl_tcp'} or a second browser tab, then reconnect.`;
     if (os === 'windows') text += ' On Windows also confirm the WinUSB driver binding (Zadig).';
   } else return;
   box.textContent = text;
