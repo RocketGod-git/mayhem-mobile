@@ -341,47 +341,54 @@ private fun acarsAdsbMatch(p: AcarsPlane, aircraft: List<Aircraft>): Aircraft? {
     }
 }
 
-/** ACARS: one card per aircraft (by registration, else flight); a tap opens every message it sent or got. */
+/** ACARS (and VDL2, which carries ACARS): one card per aircraft (by registration, else flight); a tap opens every
+ *  message it sent or got. */
 @Composable
-fun AcarsScreen(accent: Color) {
+fun AcarsScreen(accent: Color, vdl: Boolean = false) {
     val d = rememberDims()
-    val shift = AcarsDecoder.LO_SHIFT
-    val tick by Apps.acarsTick.collectAsState()
-    val logCount by Apps.acarsLog.count.collectAsState()
-    val snap by Apps.acarsLog.snapshot.collectAsState()
+    val shift = if (vdl) 0L else AcarsDecoder.LO_SHIFT
+    val app = if (vdl) MayhemApp.VDL2 else MayhemApp.ACARS
+    val plog = if (vdl) Apps.vdl2Log else Apps.acarsLog
+    val key = if (vdl) "vdl2" else "acars"
+    val tick by (if (vdl) Apps.vdl2Tick else Apps.acarsTick).collectAsState()
+    val logCount by plog.count.collectAsState()
+    val snap by plog.snapshot.collectAsState()
     val aircraft by AdsbStore.flow.collectAsState()
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf("") }
     var held by remember { mutableStateOf<List<AcarsPlane>?>(null) }
     var heldLog by remember { mutableStateOf<List<String>?>(null) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(1000); value = System.currentTimeMillis() } }.value
-    val live = remember(tick) { Apps.acarsPlaneList() }
+    val live = remember(tick, vdl) { if (vdl) Apps.vdl2PlaneList() else Apps.acarsPlaneList() }
     val planes = held ?: live
     val picked = live.firstOrNull { it.key == sel }
 
-    val wf = waterfallOn(MayhemApp.ACARS, phoneDefault = true)
-    PacketFrame(accent, Apps.acarsLog, tag = "ACARS", title = "AIRCRAFT DATALINK", roomy = true, shift = shift, emptyKey = "acars", waterfall = wf,
-        onWaterfall = { Apps.setWaterfall(MayhemApp.ACARS, !wf) },
+    val wf = waterfallOn(app, phoneDefault = true)
+    PacketFrame(accent, plog, tag = if (vdl) "VDL2" else "ACARS", title = if (vdl) "AIRCRAFT DATALINK · D8PSK" else "AIRCRAFT DATALINK", roomy = true, shift = shift, emptyKey = key, waterfall = wf,
+        onWaterfall = { Apps.setWaterfall(app, !wf) },
         lamp = { if (live.isNotEmpty()) Lamp("${live.size} AIRCRAFT", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) },
         controls = {
-            PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
+            if (!vdl) PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
                 Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)), shift = shift)
         },
         body = {
             StageBar(listOf("AIRCRAFT ${live.size}", "LOG $logCount"), view, accent, held != null || heldLog != null, onView = { view = it },
                 onPause = { if (held == null) { held = live; heldLog = snap.lines } else { held = null; heldLog = null } },
-                onClear = { Apps.acarsClear(); sel = ""; if (held != null) { held = emptyList(); heldLog = emptyList() } },
+                onClear = { if (vdl) Apps.vdl2Clear() else Apps.acarsClear(); sel = ""; if (held != null) { held = emptyList(); heldLog = emptyList() } },
             )
             if (view == 1) {
-                LogList(heldLog ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) snap.total else null, accent = accent, emptyKey = "acars")
+                LogList(heldLog ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) snap.total else null, accent = accent, emptyKey = key)
             } else Box(Modifier.fillMaxWidth().weight(1f)) {
-                val note = "One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label " +
+                val note = if (vdl) "VDL Mode 2, the digital link that carries most airline ACARS now: every channel from 136.10 to 136.975 MHz at once, " +
+                    "each frame checked. One card per aircraft (by registration, else flight) with its ACARS messages; LOG also lists the link frames " +
+                    "between aircraft and ground stations, by their ICAO addresses. ADS-B links to the same aircraft when ADS-B has seen it."
+                else "One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label " +
                     "and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight)."
                 if (planes.isEmpty()) BoxWithConstraints(Modifier.fillMaxSize()) {
                     val stageH = maxHeight
                     // the empty state fills the stage, and keeps its room on a short phone (then the stage scrolls to the note)
                     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                        EmptyState("acars", Modifier.fillMaxWidth().heightIn(min = stageH * 0.75f).panel(), accent)
+                        EmptyState(key, Modifier.fillMaxWidth().heightIn(min = stageH * 0.75f).panel(), accent)
                         AppNote(note)
                     }
                 } else LazyVerticalGrid(GridCells.Adaptive(d.dp(250f)), Modifier.fillMaxSize(),

@@ -23,7 +23,7 @@ data class AcarsMsg(
  * the next line (the CRC and mode parts only when they say something). Null for any other line. The channel may come
  * with a decimal comma: the decoder's `%.3f` follows the device's locale.
  */
-private val HEAD = Regex("^ACARS (\\d+[.,]\\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\\S*))?(  CRC\\?)?(?:  mode (.))?$")
+private val HEAD = Regex("^(?:ACARS|VDL2) (\\d+[.,]\\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\\S*))?(  CRC\\?)?(?:  mode (.))?$")
 
 fun parseAcarsLine(line: String, ms: Long): AcarsMsg? {
     val nl = line.indexOf('\n')

@@ -35,6 +35,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     ERT("Meters", "ERT · Gridstream · 802.15.4g", "Receive"),
     LORA("LoRa", "Meshtastic, MeshCore", "Receive"),
     BTLE("BLE RX", "advertising, 2.4 GHz", "Receive"),
+    VDL2("VDL2", "VDL Mode 2 messages, 136.975 MHz", "Receive"),
     ACARS("ACARS", "messages, 131 MHz", "Receive"),
     TRAINS("Trains", "EOT · PTC telemetry", "Receive"),
     SONDES("Sondes", "weather balloons", "Receive"),
@@ -108,6 +109,13 @@ object Apps {
     val acarsTick: StateFlow<Long> = _acarsTick.asStateFlow()
     fun acarsPlaneList(): List<AcarsPlane> = synchronized(acarsPlanes) { acarsPlanes.list().map { it.snapshot() } }
     fun acarsClear() { synchronized(acarsPlanes) { acarsPlanes.clear() }; acarsLog.clear(); _acarsTick.value++ }
+    /** VDL2: VDL Mode 2 on every channel from 136.10 to 136.975; its ACARS messages grouped like ACARS's, apart from them. */
+    val vdl2Log = PacketLog(); val vdl2 = com.rocketgod.mayhem.core.apps.Vdl2Decoder(vdl2Log)
+    private val vdl2Planes = AcarsPlanes()
+    private val _vdl2Tick = MutableStateFlow(0L)
+    val vdl2Tick: StateFlow<Long> = _vdl2Tick.asStateFlow()
+    fun vdl2PlaneList(): List<AcarsPlane> = synchronized(vdl2Planes) { vdl2Planes.list().map { it.snapshot() } }
+    fun vdl2Clear() { synchronized(vdl2Planes) { vdl2Planes.clear() }; vdl2Log.clear(); _vdl2Tick.value++ }
     /** An aircraft ADS-B should open on (ACARS's ADS-B button): ADS-B keeps what it has heard instead of starting clean. */
     @Volatile var adsbPick: String? = null
     init {
@@ -118,6 +126,10 @@ object Apps {
         acarsLog.onAdd = { line ->
             val m = com.rocketgod.mayhem.core.apps.parseAcarsLine(line, System.currentTimeMillis())
             if (m != null) { synchronized(acarsPlanes) { acarsPlanes.add(m) }; _acarsTick.value++ }
+        }
+        vdl2Log.onAdd = { line ->
+            val m = com.rocketgod.mayhem.core.apps.parseAcarsLine(line, System.currentTimeMillis())
+            if (m != null) { synchronized(vdl2Planes) { vdl2Planes.add(m) }; _vdl2Tick.value++ }
         }
     }
     /** Trains: end-of-train / head-of-train telemetry, or the PTC network; BOTH takes turns between them. */
@@ -326,6 +338,12 @@ object Apps {
             MayhemApp.BTLE -> SdrEngine.configure(SdrEngine.Mode.NONE, BtleDecoder.channelFreq(btle.channel), r, 32, 40, true, btle)
             // the radio sits LO_SHIFT from the channel (130.8 MHz for 131.550), so every US channel is in the span and
             // decoded at once; the AM audio plays the tuned one through the offset
+            // the radio sits at 136.55 MHz: 2 MHz holds every VDL2 channel (136.10 to 136.975), all decoded at once
+            MayhemApp.VDL2 -> {
+                SdrEngine.configure(SdrEngine.Mode.NONE, com.rocketgod.mayhem.core.apps.Vdl2Decoder.SPAN_HZ, r, 32, 32, false, vdl2)
+                vdl2.centerOf = { SdrEngine.freqHz.value }
+                vdl2.onNote = { com.rocketgod.mayhem.Diag.log(it) }
+            }
             MayhemApp.ACARS -> {
                 SdrEngine.configure(SdrEngine.Mode.AM, 131_550_000L + AcarsDecoder.LO_SHIFT, r, 32, 32, false, acars)
                 SdrEngine.setOffset(-AcarsDecoder.LO_SHIFT.toInt())

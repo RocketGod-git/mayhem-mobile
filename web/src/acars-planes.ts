@@ -15,9 +15,10 @@ export interface AcarsMsg {
 }
 /**
  * Reads one decoder line: `ACARS 131.550 ↓ N12345  H1  blk 3  ack NAK  #M01A UA1234  CRC?  mode 2` with the text on
- * the next line (the CRC and mode parts only when they say something). Null for any other line.
+ * the next line (the CRC and mode parts only when they say something), or the same with VDL2 in front (ACARS carried
+ * over VDL Mode 2). Null for any other line.
  */
-const HEAD = /^ACARS (\d+[.,]\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\S*))?(  CRC\?)?(?:  mode (.))?$/;
+const HEAD = /^(?:ACARS|VDL2) (\d+[.,]\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\S*))?(  CRC\?)?(?:  mode (.))?$/;
 export function parseAcarsLine(line: string, ms: number): AcarsMsg | null {
   const nl = line.indexOf('\n');
   const head = nl >= 0 ? line.slice(0, nl) : line, text = nl >= 0 ? line.slice(nl + 1) : '';

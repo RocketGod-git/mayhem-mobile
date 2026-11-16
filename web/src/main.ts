@@ -52,7 +52,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -68,6 +68,7 @@ const APPS: AppDef[] = [
   { id: 'ert', title: 'Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'lora', title: 'LoRa', blurb: 'Meshtastic, MeshCore', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
+  { id: 'vdl2', title: 'VDL2', blurb: 'VDL Mode 2 messages, 136.975 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'EOT · PTC telemetry', cat: 'Receive' },
   { id: 'sondes', title: 'Sondes', blurb: 'weather balloons', cat: 'Receive' },
@@ -889,6 +890,8 @@ function applyLauncherView(): void {
 }
 
 const ACARS_SPAN_HZ = 130_800_000;
+/** VDL2: 2 MHz centered here holds 136.10 to 136.975 (every VDL2 channel), with no channel on the radio's center. */
+const VDL2_SPAN_HZ = 136_550_000;
 /** AIS and APRS: how far above the channel the radio sits, clear of the DC spike at the center of the span. */
 const NARROW_SHIFT = 250_000;
 /** Whether the radio can sample at `hz` (with no radio yet, a HackRF is assumed: it takes every rate on offer). */
@@ -954,6 +957,7 @@ function open(app: AppId | null): void {
     case 'btle': configure('NONE', btleChannelFreq(state.btleCh), 2e6, 32, 40, true, 'btle'); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); break;
     // The span is centred on 130.8 MHz: every US ACARS channel (130.025-131.550) is inside it and decoded at once,
     // none of them on the radio's DC spike; 131.550 is the one heard.
+    case 'vdl2': configure('AM', 136_975_000, 2e6, 32, 32, false, 'vdl2'); state.viewLo = VDL2_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = ACARS_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'trains': trainsTune(); if (trainsUi.auto) trainsCycle(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
@@ -1651,6 +1655,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   prowl: ['prowl', 'Nothing heard yet', ['Press HUNT: it lands on anyone talking and moves on when they stop', 'A wider SPAN watches more at once; a narrower one hears weak voices better']],
   search: ['search', 'No active frequencies yet', ['Pick a range above: AIR 118–137 and 2m 144–148 are busy almost everywhere', 'Set ABOVE to +10 dB to catch weaker signals']],
   capture: ['capture', 'No captures yet', ['Tune to a signal and press ● REC', 'Keep it short: 2 Msps fills about 4 MB a second']],
+  vdl2: ['vdl2', 'Waiting for VDL2 messages', ['Every VDL2 channel from 136.10 to 136.975 MHz is decoded at once; 136.975 is the common one', 'Aircraft talk to ground stations every few minutes, more near an airport; an antenna that sees the sky hears them 200 miles out']],
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
   lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels']],
@@ -1850,7 +1855,8 @@ function render(app: AppId | null): void {
     case 'sondes': renderSondes(view); break;
     case 'trains': renderTrains(view); break;
     case 'btle': renderBle(view); break;
-    case 'acars': renderAcars(view); break;
+    case 'vdl2': renderAcars(view, 'vdl2'); break;
+    case 'acars': renderAcars(view, 'acars'); break;
     case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'analyzer': renderAnalyzer(view); break;
@@ -3799,7 +3805,12 @@ function refreshBle(force = false): void {
 }
 
 // ---- ACARS: one card per aircraft, its messages in the panel, a link to the same aircraft in ADS-B ------------
-const acarsUi = { planes: new AcarsPlanes(), view: 'cards' as 'cards' | 'log', sel: '', drawn: 0, pending: 0, timer: 0 };
+type AcarsUi = { planes: AcarsPlanes; view: 'cards' | 'log'; sel: string; drawn: number; pending: number; timer: number };
+const newAcarsUi = (): AcarsUi => ({ planes: new AcarsPlanes(), view: 'cards', sel: '', drawn: 0, pending: 0, timer: 0 });
+/** ACARS and VDL2 share these screens (VDL2 carries ACARS messages), each with its own aircraft. */
+const acarsUis = { acars: newAcarsUi(), vdl2: newAcarsUi() };
+type AcarsApp = keyof typeof acarsUis;
+const acarsApp = (): AcarsApp => state.app === 'vdl2' ? 'vdl2' : 'acars';
 /** The same aircraft in the ADS-B list: by ICAO address (from a US registration), the registration looked up for an
  *  ADS-B aircraft, or the flight number against its callsign. */
 function acarsAdsbMatch(p: AcarsPlane): Aircraft | undefined {
@@ -3812,7 +3823,7 @@ function acarsCard(p: AcarsPlane, now: number): string {
   const age = now - p.lastMs, live = age < 120_000, flash = Math.max(0, 1 - age / 700), last = p.msgs[0];
   const ads = acarsAdsbMatch(p), what = labelMeaning(last.label);
   const sub = [p.icao ? `ICAO ${p.icao}` : '', ads ? 'ON ADS-B' : ''].filter(Boolean).join(' · ');
-  return `<div class="mt-card ${acarsUi.sel === p.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-acp="${esc(p.key)}" style="--flash:${flash.toFixed(2)}">`
+  return `<div class="mt-card ${acarsUis[acarsApp()].sel === p.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-acp="${esc(p.key)}" style="--flash:${flash.toFixed(2)}">`
     + `<div class="mt-h"><span class="mt-id">${esc(p.reg || p.flight)}</span><span class="mt-k"><b>${esc(p.flight && p.reg ? `FLIGHT ${p.flight}` : p.reg ? 'NO FLIGHT NUMBER' : 'NO REGISTRATION')}</b><small class="${ads ? 'pos' : ''}">${esc(sub)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : bleAgo(age)}</span></div>`
     + `<div class="mt-clk"><b>${p.count}</b><small>MESSAGE${p.count === 1 ? '' : 'S'} · LAST ${esc(last.label)}${what ? ` ${esc(what.toUpperCase())}` : ''}</small><em>${last.mhz}</em></div>`
     + `<div class="mt-hex">${esc(last.text || '(no text)')}</div></div>`;
@@ -3822,54 +3833,58 @@ function acarsDetail(p: AcarsPlane): string {
   const msgs = p.msgs.map(m => `<div class="ac-msg"><div><b>${new Date(m.ms).toLocaleTimeString()}</b><span>${m.down ? '↓ from the aircraft' : '↑ to the aircraft'} · ${esc(m.label)}${labelMeaning(m.label) ? ` ${esc(labelMeaning(m.label))}` : ''} · blk ${esc(m.blk)}${m.msn ? ` · #${esc(m.msn)}` : ''} · ${m.mhz}${m.crcOk ? '' : ' · CRC?'}</span></div>${m.text ? `<pre>${esc(m.text)}</pre>` : ''}</div>`).join('');
   const fields: [string, string][] = [['Registration', p.reg || '—'], ['Flight', p.flight || '—'], ['ICAO', p.icao || '—'], ['Messages', String(p.count)], ['First heard', trClock(p.firstMs)], ['Last heard', trClock(p.lastMs)],
     ['ADS-B', ads ? `${ads.icao.toUpperCase()}${ads.flight ? ` · ${ads.flight.trim()}` : ''}${ads.alt !== undefined ? ` · ${ads.alt} ft` : ''}` : 'not seen (open ADS-B to look for it)']];
-  return `<div class="mt-dh"><b>${esc(p.reg || p.flight)}</b><span>${esc([p.flight && `FLIGHT ${p.flight}`, p.icao && `ICAO ${p.icao}`].filter(Boolean).join(' · ') || 'ACARS')}</span>${ads ? '<button class="chip" data-ado="adsb">ADS-B</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
+  return `<div class="mt-dh"><b>${esc(p.reg || p.flight)}</b><span>${esc([p.flight && `FLIGHT ${p.flight}`, p.icao && `ICAO ${p.icao}`].filter(Boolean).join(' · ') || (acarsApp() === 'vdl2' ? 'VDL2' : 'ACARS'))}</span>${ads ? '<button class="chip" data-ado="adsb">ADS-B</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
     + `<div class="mt-fields">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`
     + `<div class="caption">MESSAGES · newest first</div><div class="ac-msgs">${msgs}</div>`;
 }
-function renderAcars(view: HTMLElement): void {
-  const why = radio ? blockedBecause(APP_NEEDS.acars, radio.limits) : '';
+function renderAcars(view: HTMLElement, id: AcarsApp): void {
+  const ui = acarsUis[id], vdl = id === 'vdl2';
+  const why = radio ? blockedBecause(APP_NEEDS[id], radio.limits) : '';
   view.innerHTML = `
-    <section class="${visCls('acars')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls(id)}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
-      ${presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
-      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('acars')}${pauseClearHtml('acars')}</div>
+      ${vdl ? '' : presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
+      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml(id)}${pauseClearHtml(id)}</div>
       <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
-      <div id="ac-log">${logHtml('acars', 'listening…')}</div>
-      <div class="note">One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).</div>
+      <div id="ac-log">${logHtml(id, 'listening…')}</div>
+      <div class="note">${vdl
+        ? 'VDL Mode 2, the digital link that carries most airline ACARS now: every channel from 136.10 to 136.975 MHz at once, each frame checked. One card per aircraft (by registration, else flight) with its ACARS messages; LOG also lists the link frames between aircraft and ground stations, by their ICAO addresses. ADS-B links to the same aircraft when ADS-B has seen it.'
+        : 'One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).'}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
-  qa<HTMLButtonElement>('[data-acview]', view).forEach(b => b.onclick = () => { acarsUi.view = b.dataset.acview as typeof acarsUi.view; refreshAcars(true); });
-  $('ac-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { acarsUi.sel = acarsUi.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
+  qa<HTMLButtonElement>('[data-acview]', view).forEach(b => b.onclick = () => { ui.view = b.dataset.acview as AcarsUi['view']; refreshAcars(true); });
+  $('ac-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { ui.sel = ui.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
   $('ac-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ado]'); if (!b) return;
-    if (b.dataset.ado === 'close') { acarsUi.sel = ''; refreshAcars(true); return; }
-    const p = acarsUi.planes.planes.get(acarsUi.sel), a = p && acarsAdsbMatch(p);
+    if (b.dataset.ado === 'close') { ui.sel = ''; refreshAcars(true); return; }
+    const p = ui.planes.planes.get(ui.sel), a = p && acarsAdsbMatch(p);
     if (a) { state.adsbSel = a.icao; open('adsb'); }
   };
-  clearInterval(acarsUi.timer);
-  acarsUi.timer = window.setInterval(() => { if (state.app !== 'acars') { clearInterval(acarsUi.timer); return; } refreshAcars(); }, 2000);
-  refreshList('acars'); refreshAcars(true);
+  clearInterval(ui.timer);
+  ui.timer = window.setInterval(() => { if (state.app !== id) { clearInterval(ui.timer); return; } refreshAcars(); }, 2000);
+  refreshList(id); refreshAcars(true);
 }
-function onAcarsLine(line: string): void {
-  const m = parseAcarsLine(line, Date.now()); if (m) acarsUi.planes.add(m);
-  if (state.app === 'acars') refreshAcars();
+function onAcarsLine(line: string, id: AcarsApp): void {
+  const m = parseAcarsLine(line, Date.now()); if (m) acarsUis[id].planes.add(m);
+  if (state.app === id) refreshAcars();
 }
 function refreshAcars(force = false): void {
-  if (state.app !== 'acars') return;
+  if (state.app !== 'acars' && state.app !== 'vdl2') return;
+  const id = acarsApp(), ui = acarsUis[id];
   const now = Date.now();
-  if (!force && now - acarsUi.drawn < 240) { clearTimeout(acarsUi.pending); acarsUi.pending = window.setTimeout(() => refreshAcars(true), 250); return; }
-  acarsUi.drawn = now;
-  const planes = acarsUi.planes.list();
-  qa<HTMLButtonElement>('[data-acview]').forEach(b => { const v = b.dataset.acview; b.classList.toggle('on', v === acarsUi.view); b.textContent = v === 'cards' ? `AIRCRAFT ${planes.length}` : `LOG ${counts.acars ?? 0}`; });
+  if (!force && now - ui.drawn < 240) { clearTimeout(ui.pending); ui.pending = window.setTimeout(() => refreshAcars(true), 250); return; }
+  ui.drawn = now;
+  const planes = ui.planes.list();
+  qa<HTMLButtonElement>('[data-acview]').forEach(b => { const v = b.dataset.acview; b.classList.toggle('on', v === ui.view); b.textContent = v === 'cards' ? `AIRCRAFT ${planes.length}` : `LOG ${counts[id] ?? 0}`; });
   const stage = q('#ac-stage'), cards = q('#ac-cards'), det = q('#ac-detail'), logEl = q('#ac-log');
   if (!stage || !cards || !det || !logEl) return;
-  stage.hidden = acarsUi.view !== 'cards'; logEl.hidden = acarsUi.view !== 'log';
-  if (acarsUi.view === 'cards' && !paused.has('acars')) {
+  stage.hidden = ui.view !== 'cards'; logEl.hidden = ui.view !== 'log';
+  if (ui.view === 'cards' && !paused.has(id)) {
     const top = cards.scrollTop;
-    cards.innerHTML = planes.length ? planes.map(p => acarsCard(p, now)).join('') : emptyState('acars');
+    cards.innerHTML = planes.length ? planes.map(p => acarsCard(p, now)).join('') : emptyState(id);
     cards.scrollTop = top;
   }
-  const picked = acarsUi.planes.planes.get(acarsUi.sel);
+  const picked = ui.planes.planes.get(ui.sel);
   det.hidden = !picked;
   if (picked) { const top = det.scrollTop; det.innerHTML = acarsDetail(picked); det.scrollTop = top; }
   if (planes.length) setLamp(`${planes.length} AIRCRAFT`, 'ok');
@@ -4109,7 +4124,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { sondes: false, btle: false, adsb: false, trains: false, ert: true, lora: true, acars: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { sondes: false, btle: false, adsb: false, trains: false, ert: true, lora: true, acars: true, vdl2: true };
 const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
 function wfShown(app: AppId): boolean {
   let v: string | null = null;
@@ -5989,7 +6004,7 @@ function redraw(id: string): void {
     case 'sondes': refreshList(id); refreshSondes(true); break;
     case 'trains': refreshList(id); refreshTrains(true); break;
     case 'btle': refreshList(id); refreshBle(true); break;
-    case 'acars': refreshList(id); refreshAcars(true); break;
+    case 'vdl2': case 'acars': refreshList(id); refreshAcars(true); break;
     default: refreshList(id);
   }
 }
@@ -6004,7 +6019,7 @@ function clearApp(id: string): void {
     case 'adsb': state.aircraft = []; state.frames = 0; state.adsbSel = ''; break;
     case 'devices': state.r433.heard = []; break;
     case 'btle': bleUi.tracker.clear(); bleUi.sel = ''; break;
-    case 'acars': acarsUi.planes.clear(); acarsUi.sel = ''; break;
+    case 'vdl2': case 'acars': acarsUis[id].planes.clear(); acarsUis[id].sel = ''; break;
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
@@ -6410,7 +6425,7 @@ function ensureWorker(): Worker {
         // a repeat that completed a partial page takes the old line's place rather than adding a second
         const was = typeof m.replaces === 'string' ? list.indexOf(m.replaces) : -1;
         if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
-        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars') onAcarsLine(m.line as string); else if (id === 'btle') refreshBle(); break; }
+        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars' || id === 'vdl2') onAcarsLine(m.line as string, id); else if (id === 'btle') refreshBle(); break; }
       case 'ble': onBleAdv(m as { pdu: number[]; db: number; ch: number }); break;
       case 'rds': lastRds = m as typeof lastRds; drawRds(); break;
       case 'hd': lastHd = m as typeof lastHd; console.log('[hd]', JSON.stringify(m)); drawHd(); break;
@@ -6973,7 +6988,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  pager: ['PAGER', 'FLEX · POCSAG'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

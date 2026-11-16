@@ -20,6 +20,7 @@ import { PagerHunter } from './dsp/pagerhunt.js';
 import { SweepProcessor } from './dsp/sweep.js';
 import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
+import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { SondeProcessor } from './dsp/sonde/front.js';
 import { UatProcessor } from './dsp/uat/demod.js';
@@ -119,6 +120,7 @@ function loraPoolFor(r: number): WorkerPool | null {
 const btle = new BtleDecoder(emit);
 const tpms = new TpmsDecoder(emit);
 const acars = new AcarsDecoder(emit);
+const vdl2 = new Vdl2Decoder(emit);
 const trains = new TrainsProcessor(emit);
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);
@@ -392,6 +394,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'btle': return btle;
     case 'tpms': return tpms;
     case 'acars': return acars;
+    case 'vdl2': vdl2.centerHz = centreHz; return vdl2;
     case 'sonde': sonde.setCenter(centreHz); return sonde;
     case 'uat': return uat;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
@@ -596,6 +599,7 @@ function process(iq: Int8Array): void {
   if (p === meters) mesh.centerHz = centreHz;
   if (p === lora) { lora.setCenter(centreHz); lora.scanner.pool = loraPoolFor(rate); }
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
+  if (p === vdl2) vdl2.centerHz = centreHz;
   if (p === trains) trains.centerHz = centreHz;
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
