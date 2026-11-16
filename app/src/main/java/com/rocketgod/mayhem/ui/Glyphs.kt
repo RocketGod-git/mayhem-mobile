@@ -94,6 +94,13 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.22f, 0.54f); path.l(0.6f, 0.54f)
                 path.m(0.7f, 0.66f); path.l(0.78f, 0.66f)
             }
+            MayhemApp.VDL2 -> {
+                // the ACARS envelope with a data trace across it
+                val a = p(0.1f, 0.3f); val b = p(0.9f, 0.78f)
+                path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.06f, s * 0.06f))
+                path.m(0.22f, 0.66f); path.l(0.36f, 0.44f); path.l(0.5f, 0.6f); path.l(0.64f, 0.4f); path.l(0.78f, 0.56f)
+                path.m(0.5f, 0.06f); path.l(0.5f, 0.2f); path.m(0.38f, 0.14f); path.l(0.62f, 0.14f)
+            }
             MayhemApp.ACARS -> {
                 val a = p(0.1f, 0.3f); val b = p(0.9f, 0.78f)
                 path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.06f, s * 0.06f))
