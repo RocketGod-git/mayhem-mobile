@@ -37,19 +37,6 @@ jobs:
           set -o pipefail
           ./gradlew bundleRelease --no-daemon --stacktrace 2>&1 | tee -a android_build.log
 
-      - name: Unit tests
-        run: |
-          set -o pipefail
-          ./gradlew testDebugUnitTest --no-daemon 2>&1 | tee -a android_build.log
-
-      - name: Upload test report
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: unit-test-report
-          path: app/build/reports/tests/testDebugUnitTest
-          if-no-files-found: ignore
-
       - name: Upload debug APK
         if: ${{ success() }}
         uses: actions/upload-artifact@v7

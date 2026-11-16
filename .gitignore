@@ -21,3 +21,7 @@ keystore.properties
 *.log
 *.iq
 *.c8
+# Tests and fixtures live in the private mayhem-mobile-tests repo (its run.sh copies them here)
+web/test/
+app/src/test/
+web/replay_tmp/
