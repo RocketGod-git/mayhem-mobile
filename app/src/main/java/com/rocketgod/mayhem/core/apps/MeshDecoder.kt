@@ -43,6 +43,8 @@ data class MeshFrame(
     var lenOk: Boolean = false,
     /** 802.15.4g only: the CRC-16 start the frame passed with. */
     val crcInit: Int = 0,
+    /** The 9C··15 network only: the channel byte its sync word carries (-1 otherwise). */
+    val tag: Int = -1,
 )
 
 /** Everything heard from one network (one sync word). */
@@ -123,6 +125,7 @@ data class MeshDevice(
         MeshDecoder.ERT -> id.toString()
         MeshDecoder.GRIDSTREAM -> "%08X".format(id)
         MeshDecoder.SUN -> "%014X".format(id)
+        MeshDecoder.FAST -> "106 kbaud"
         else -> "%02X".format(id)
     }
     /** The clock now, run on from the last frame at its rate (16 bits, wrapping). */
@@ -240,6 +243,8 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
     private val tails = ArrayList<Tail>()
     /** 802.15.4g frames published in the last half second (bytes -> sample count), so a frame is published once. */
     private val sunSeen = HashMap<List<Int>, Long>()
+    /** The 106.4 kbaud network's 4-byte headers after its sync, counted. */
+    private val fastHeads = HashMap<String, Int>()
 
     override fun reset(rate: Int) {
         this.rate = rate
@@ -255,7 +260,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         var size = 1
         while (size < (rate * 0.08).toInt()) size = size shl 1
         ring = ByteArray(2 * size) { 128.toByte() }; ringMask = size - 1
-        written = 0; nextFrame = n.toLong(); active.clear(); tails.clear(); sunSeen.clear()
+        written = 0; nextFrame = n.toLong(); active.clear(); tails.clear(); sunSeen.clear(); fastHeads.clear()
     }
 
     @Volatile private var pendingClear = false
@@ -400,6 +405,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         val fs = rate.toDouble() / dec
         if (sun(mixed, len, offHz, rnd(10 * log10(b.peak.toDouble())).toInt(), dur)) return true
         if (long) return false
+        if (dur <= 0.009 && fast(mixed, len, offHz, rnd(10 * log10(b.peak.toDouble())).toInt(), dur)) return true
         val lp = ComplexFirDecimator(lowpassTaps(45_000 / fs, 33), 1)
         val z = FloatArray(2 * (m0 + 2))
         val m = lp.process(z0, m0, z)
@@ -484,6 +490,77 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         val hz = centerOf() + (offHz + errHz + c * fs / (2 * Math.PI)).toLong()
         publish(MeshFrame(now(), hz, snr, SUN, SUN_BAUD, r.first, dur * 1000, crcOk = true, lenOk = true, crcInit = r.second))
         return true
+    }
+
+    /**
+     * The 106.4 kbaud network: 5 ms bursts too wide for the ±45 kHz channel the others go through. Down to about
+     * 524 kHz, a ±120 kHz channel, the discriminator centered, bits at 106.4 kb/s with the clock searched ±1% (a 500-bit
+     * frame slips at 0.2%), then its 0101 preamble and sync 39717DF1 (2 bit errors at most, either polarity). The bytes
+     * after the sync are published. True when a frame was. Twin of the web fast().
+     */
+    private fun fast(mixed: FloatArray, len: Int, offHz: Double, snr: Int, dur: Double): Boolean {
+        val chan = ChannelDecimator(max(1, rate / 524_288))
+        val y = FloatArray(chan.outSize(len))
+        val n = chan.process(mixed, len, y)
+        val fs = rate.toDouble() / chan.total; val sps0 = fs / FAST_BAUD
+        if (n < 64 || sps0 < 3) return false
+        val z = FloatArray(2 * (n + 2))
+        val m = ComplexFirDecimator(lowpassTaps(120_000 / fs, 31), 1).process(y, n, z)
+        if (m < 2) return false
+        val pw = FloatArray(m) { z[2 * it] * z[2 * it] + z[2 * it + 1] * z[2 * it + 1] }
+        val top = pw.sortedArray()[min(m - 1, (m * 0.995).toInt())]
+        val a = pw.indexOfFirst { it > 0.2f * top }; val e = pw.indexOfLast { it > 0.2f * top }
+        if (a < 0 || (e - a) / sps0 < 100) return false
+        val fm = FloatArray(e - a)
+        for (k in a + 1..e) {
+            val i0 = z[2 * (k - 1)]; val q0 = z[2 * (k - 1) + 1]; val i1 = z[2 * k]; val q1 = z[2 * k + 1]
+            fm[k - a - 1] = atan2(q1 * i0 - i1 * q0, i1 * i0 + q1 * q0)
+        }
+        val t = fm.sortedArray(); val c = (t[(t.size * 0.95).toInt()] + t[(t.size * 0.05).toInt()]) / 2
+        for (k in fm.indices) fm[k] -= c
+        // the clock: the rate and phase with the widest eye
+        var best = -1.0; var bs = sps0; var bp = 0.0
+        for (r in -10..10) {
+            val sps = sps0 * (1 + r / 1000.0); val cnt = ((fm.size - 1) / sps).toInt()
+            if (cnt <= 0) continue
+            for (p in 0 until 8) {
+                val ph = sps * p / 8
+                var v = 0.0
+                for (k in 0 until cnt) v += abs(fm[(ph + k * sps).toInt()])
+                v /= cnt
+                if (v > best) { best = v; bs = sps; bp = ph }
+            }
+        }
+        val cnt = ((fm.size - 1 - bp) / bs).toInt()
+        if (cnt <= 0) return false
+        val bits = IntArray(cnt) { if (fm[(bp + it * bs).toInt()] > 0) 1 else 0 }
+        val want = FAST_SYNC.toLong() and 0xFFFF_FFFFL
+        var i = 16
+        while (i + 32 + 16 <= bits.size && i < 260) {
+            var w = 0L
+            for (k in 0 until 32) w = (w shl 1) or bits[i + k].toLong()
+            for (inv in 0..1) {
+                val v = if (inv == 1) w.inv() and 0xFFFF_FFFFL else w
+                if (java.lang.Long.bitCount(v xor want) > 2) continue
+                // the preamble right before it alternates
+                var alt = 0
+                for (k in i - 16 until i - 1) if (bits[k] != bits[k + 1]) alt++
+                if (alt < 13) continue
+                val out = ArrayList<Int>()
+                var q = i + 32
+                while (q + 8 <= bits.size) {
+                    var b = 0
+                    for (k in q until q + 8) b = (b shl 1) or (if (inv == 1) 1 - bits[k] else bits[k])
+                    out.add(b); q += 8
+                }
+                if (out.size < 8) return false
+                val hz = centerOf() + (offHz + c * fs / (2 * Math.PI)).toLong()
+                publish(MeshFrame(now(), hz, snr, FAST, FAST_BAUD, out, dur * 1000))
+                return true
+            }
+            i++
+        }
+        return false
     }
 
     /**
@@ -627,12 +704,15 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             if (to < bf.size) while (out.isNotEmpty() && (out.last() == 0x55 || out.last() == 0xAA)) out.removeAt(out.size - 1)
             return out
         }
+        // 9C··15 is one network: the byte in the middle of its sync word follows the channel it is sent on
+        val hop9c = (sync and 0xFF00FF) == HOP9C
+        val net = if (hop9c) HOP9C else sync; val tag = if (hop9c) (sync shr 8) and 0xFF else -1
         for (s in starts.indices) {
             val from = starts[s] + 24; val to = if (s + 1 < starts.size) starts[s + 1] else bits.size
             val bytes = bytesOf(from, to)
-            if (s > 0 && bytes.isNotEmpty()) extraFrames.add(MeshFrame(now(), hz, snr, sync, baud, bytes, dur * 1000))
+            if (s > 0 && bytes.isNotEmpty()) extraFrames.add(MeshFrame(now(), hz, snr, net, baud, bytes, dur * 1000, tag = tag))
         }
-        return MeshFrame(now(), hz, snr, sync, baud, bytesOf(start + 24, if (starts.size > 1) starts[1] else bits.size), dur * 1000)
+        return MeshFrame(now(), hz, snr, net, baud, bytesOf(start + 24, if (starts.size > 1) starts[1] else bits.size), dur * 1000, tag = tag)
     }
 
     /** Frames after the first in the same burst, published right after it. */
@@ -880,6 +960,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
     private fun track(f: MeshFrame) {
         if (f.sync == GRIDSTREAM) { trackGridstream(f); return }
         if (f.sync == SUN) { trackSun(f); return }
+        if (f.sync == FAST) { trackFast(f); return }
         val first = f.bytes.firstOrNull() ?: return
         var id = first.toLong()
         var key = "${f.sync}/$id"
@@ -913,6 +994,17 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             MeshField("LENGTHS", d.lengths.sorted().joinToString(", ") + " bytes"),
             MeshField("NODE ID", if (d.address >= 0) "%06X (%d), heard %d×".format(d.address, d.address, d.addressSeen) else "not announced yet"),
             MeshField("FRAME LAYOUT", "index · clock (128/s) · check — ID frames: index · F0 · ID · clock · … 01 00"))
+        if (f.sync == HOP9C && f.tag >= 0) {
+            d.fields = d.fields.filter { it.name != "FRAME LAYOUT" && it.name != "NODE ID" }.toMutableList().also {
+                it.add(2, MeshField("CHANNEL BYTE", "%02X at %.3f MHz (the middle byte of the sync word follows the channel)".format(f.tag, f.hz / 1e6)))
+            }
+        }
+        if (f.sync == 0xA993A9 && f.bytes.size >= 10) {
+            d.fields = d.fields.filter { it.name != "FRAME LAYOUT" && it.name != "NODE ID" }.toMutableList().also {
+                it.add(2, MeshField("SIZE BYTE", "%02X: a %d-byte frame".format(f.bytes[1], (255 - f.bytes[1]) / 2 + 3)))
+                it.add(3, MeshField("NETWORK ID", f.bytes.subList(2, 9).joinToString(" ") { b -> "%02X".format(b) }))
+            }
+        }
         if (c16 >= 0) {
             // once the clock is known, a value that does not fit it (a bit error, another kind of frame) is left out
             val fits = d.ckV.size < 3 || wrap16(c16 - d.clockAt(f.ms)) < 80
@@ -1021,11 +1113,42 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         devMap[key] = d
     }
 
+    /** The 106.4 kbaud network: one card for the network (its frames carry no device ID we can read yet), with the
+     *  4-byte headers after the sync counted (60 76 00 06 and 60 76 1D 86 are most of them). */
+    private fun trackFast(f: MeshFrame) {
+        val b = f.bytes
+        if (b.size < 8) return
+        val key = "$FAST/0"
+        val d = devMap[key] ?: MeshDevice(FAST, 0L, firstMs = f.ms)
+        fun hx(from: Int, to: Int) = b.subList(from, min(to, b.size)).joinToString(" ") { "%02X".format(it) }
+        val hd = hx(0, 4)
+        fastHeads[hd] = (fastHeads[hd] ?: 0) + 1
+        d.frames++; d.lastMs = f.ms
+        d.hops = (d.hops + MeshHop(f.hz, f.ms)).takeLast(48)
+        d.snr = (d.snr + f.snrDb).takeLast(60)
+        d.lengths = d.lengths + b.size
+        d.lastHex = hx(0, 16)
+        val chs = d.hops.map { Math.round(it.hz / 200_000.0) }.toSet().size
+        d.fields = listOf(
+            MeshField("NETWORK", "106.4 kbaud 2-FSK · ±44 kHz · sync 39717DF1 · not identified"),
+            MeshField("HEADERS", fastHeads.entries.sortedByDescending { it.value }.take(4).joinToString(" · ") { "${it.key} ×${it.value}" }),
+            MeshField("FIELDS", "${hx(4, 6)} · ${hx(6, 8)} (change every second or so)"),
+            MeshField("LAST FRAME", hx(0, 24) + if (b.size > 24) " …" else ""),
+            MeshField("FREQUENCY", "%.4f MHz".format(f.hz / 1e6)),
+            MeshField("CHANNELS", "$chs heard"),
+            MeshField("SIGNAL", "+${f.snrDb} dB"),
+            MeshField("CHECK", "none found yet (no CRC-8 or CRC-16 fits)"),
+        )
+        devMap[key] = d
+    }
+
     /** Publish the tables now (they otherwise refresh at most four times a second). */
     fun flush() {
         foldGridstream()
         // a network needs a real share of the traffic: a few frames of the busy one read off by a bit or two are not one
-        val top = netMap.values.maxOfOrNull { it.frames } ?: 0
+        // (of the sync-word networks only: Gridstream, 802.15.4g and the 106 kbaud network are found by their own
+        // decoders, and a busy one of those must not hide a small sync-word network)
+        val top = netMap.values.filter { it.sync >= 0 }.maxOfOrNull { it.frames } ?: 0
         val nets = netMap.values.filter { it.sync < 0 || it.frames >= 20 || (it.frames >= MIN_FRAMES && it.frames * 50 >= top) }
             .sortedByDescending { it.frames }.map { it.copy() }
         _nets.value = nets
@@ -1038,7 +1161,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             when (d.net) {
                 ERT -> true
                 GRIDSTREAM -> d.frames >= 2 || d.addressed >= 3
-                SUN -> true
+                SUN, FAST -> true
                 else -> d.frames >= 5 && shown.contains(d.net)
             }
         }.sortedWith(compareByDescending<MeshDevice> { it.lastMs }.thenBy { it.id }).map { it.copy() }
@@ -1059,6 +1182,12 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         /** A Gridstream uptime above 20 years is a bit error, not a node that has run that long. */
         const val UPTIME_MAX = 20L * 365 * 86400
         const val SUN_BAUD = 50_000
+        /** The 106.4 kbaud network (2-FSK, ±44 kHz): its 32-bit sync after the 0101 preamble. */
+        const val FAST = -4
+        const val FAST_BAUD = 106_400
+        const val FAST_SYNC = 0x39717DF1
+        /** The 38.4 kbaud network whose sync word carries a channel byte in its middle: 9C, the channel, 15. */
+        const val HOP9C = 0x9C0015
         /** CRC-16 starts of the SUN networks heard (0x1877: the 911.6 MHz network), tried before the standard's own. */
         val SUN_INITS = intArrayOf(0x1877)
         /** PN9 (x^9 + x^5 + 1, all ones to start): the standard's data whitening, one bit per PSDU bit. */
@@ -1156,7 +1285,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             return c
         }
 
-        fun syncName(s: Int): String = when (s) { GRIDSTREAM -> "Gridstream"; SUN -> "802.15.4g"; else -> "%06X".format(s) }
+        fun syncName(s: Int): String = when (s) { GRIDSTREAM -> "Gridstream"; SUN -> "802.15.4g"; FAST -> "106 kbaud"; HOP9C -> "9C··15"; else -> "%06X".format(s) }
 
         /** The least edit distance between [p] and any stretch of [t] (Sellers' approximate substring match). */
         fun editIn(p: IntArray, t: List<Int>): Int {

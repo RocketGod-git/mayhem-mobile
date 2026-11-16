@@ -3890,7 +3890,7 @@ interface MetersSnap { nets: MeshNetRow[]; devices: MeshDev[]; links: { a: numbe
  *  are (only positions decoded off the air), with the mesh links between them. A tap on a card or a pin opens
  *  everything decoded from that device. */
 const meters = { snap: null as MetersSnap | null, view: 'cards' as 'cards' | 'map' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
-const meshSync = (s: number) => s === MESH_GRIDSTREAM ? 'Gridstream' : s === MESH_SUN ? '802.15.4g' : s.toString(16).toUpperCase().padStart(6, '0');
+const meshSync = (s: number) => s === MESH_GRIDSTREAM ? 'Gridstream' : s === MESH_SUN ? '802.15.4g' : s === -4 ? '106 kbaud' : s === 0x9C0015 ? '9C··15' : s.toString(16).toUpperCase().padStart(6, '0');
 const hx = (v: number, w: number) => v.toString(16).toUpperCase().padStart(w, '0');
 function meshClockAt(d: MeshDev, ms: number): number {
   if (d.clock < 0) return -1;

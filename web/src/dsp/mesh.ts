@@ -42,6 +42,8 @@ export interface MeshFrame {
   lenOk: boolean;
   /** 802.15.4g only: the CRC-16 start the frame passed with. */
   crcInit?: number;
+  /** The 9C··15 network only: the channel byte its sync word carries. */
+  tag?: number;
 }
 
 /** Everything heard from one network (one sync word). */
@@ -108,7 +110,9 @@ export interface MeshDevice {
 /** The snapshot the worker posts to the screen. */
 export interface MetersSnapshot { type: 'meters'; nets: MeshNet[]; devices: MeshDevice[]; links: MeshLink[]; bursts: number; busy: number }
 
-const GRIDSTREAM = -1, ERT = -2, SUN = -3;
+const GRIDSTREAM = -1, ERT = -2, SUN = -3, FAST = -4;
+/** The 38.4 kbaud network whose sync word carries a channel byte in its middle: 9C, the channel, 15. */
+const HOP9C = 0x9C0015;
 /** A Gridstream uptime above 20 years is a bit error, not a node that has run that long. */
 const UPTIME_MAX = 20 * 365 * 86400;
 const h2 = (v: number) => (v & 0xFF).toString(16).toUpperCase().padStart(2, '0');
@@ -178,6 +182,11 @@ export class MeshDecoder implements IqProcessor {
   static readonly SUN_BAUD = 50_000;
   /** CRC-16 starts of the SUN networks heard (0x1877: the 911.6 MHz network), tried before the standard's own. */
   static readonly SUN_INITS = [0x1877];
+  /** The 106.4 kbaud network (2-FSK, ±44 kHz): its 32-bit sync after the 0101 preamble. */
+  static readonly FAST = FAST;
+  static readonly FAST_BAUD = 106_400;
+  static readonly FAST_SYNC = 0x39717DF1;
+  static readonly HOP9C = HOP9C;
   /** Utility seeds for Gridstream's CRC (CoServ, Oncor), from the RECESSIM wiki. */
   static readonly GS_SEEDS = [0x45F8, 0x5FD6];
   static readonly R900_SYNC = 0b00000000000000001110010101100100;
@@ -235,6 +244,7 @@ export class MeshDecoder implements IqProcessor {
   private tails: { start: number; last: number; peak: number; bin: number; due: number }[] = [];
   /** 802.15.4g frames published in the last half second (bytes -> sample count), so a frame is published once. */
   private sunSeen = new Map<string, number>();
+  private fastHeads = new Map<string, number>();
   private count = 0;
   private shed = 0;
   /** Frames after the first in the same burst, published right after it. */
@@ -256,7 +266,7 @@ export class MeshDecoder implements IqProcessor {
     let size = 1;
     while (size < Math.floor(rate * 0.08)) size <<= 1;
     this.ring = new Int8Array(2 * size); this.ringMask = size - 1;
-    this.written = 0; this.nextFrame = N; this.active = []; this.tails = []; this.sunSeen.clear();
+    this.written = 0; this.nextFrame = N; this.active = []; this.tails = []; this.sunSeen.clear(); this.fastHeads.clear();
   }
 
   clear(): void {
@@ -377,6 +387,7 @@ export class MeshDecoder implements IqProcessor {
     const fs = rate / chan.total;
     if (this.sun(mixed, len, rate, offHz, Math.round(10 * Math.log10(b.peak)), dur)) return true;
     if (long) return false;
+    if (dur <= 0.009 && this.fast(mixed, len, rate, offHz, Math.round(10 * Math.log10(b.peak)), dur)) return true;
     const lp = new ComplexFirDecimator(lowpassTaps(45_000 / fs, 33), 1);
     const z = new Float32Array(2 * (m0 + 2));
     const m = lp.process(z0, m0, z);
@@ -464,6 +475,71 @@ export class MeshDecoder implements IqProcessor {
     const hz = this.centerHz + Math.trunc(offHz + errHz + c * fs / (2 * Math.PI));
     this.publish({ ms: this.now(), hz, snrDb: snr, sync: SUN, baud: MeshDecoder.SUN_BAUD, bytes: r.bytes, durMs: dur * 1000, crcOk: true, lenOk: true, crcInit: r.init });
     return true;
+  }
+
+  /** The 106.4 kbaud network: 5 ms bursts too wide for the ±45 kHz channel the others go through. Down to about
+   *  524 kHz, a ±120 kHz channel, the discriminator centered, bits at 106.4 kb/s with the clock searched ±1% (a 500-bit
+   *  frame slips at 0.2%), then its 0101 preamble and sync 39717DF1 (2 bit errors at most, either polarity). The bytes
+   *  after the sync are published. True when a frame was. */
+  private fast(mixed: Float32Array, len: number, rate: number, offHz: number, snr: number, dur: number): boolean {
+    const chan = new ChannelDecimator(Math.max(1, Math.floor(rate / 524_288)));
+    const { out: y, n } = chan.process(mixed, len);
+    const fs = rate / chan.total, sps0 = fs / MeshDecoder.FAST_BAUD;
+    if (n < 64 || sps0 < 3) return false;
+    const z = new Float32Array(2 * (n + 2));
+    const m = new ComplexFirDecimator(lowpassTaps(120_000 / fs, 31), 1).process(y, n, z);
+    const pw = new Float32Array(m);
+    for (let k = 0; k < m; k++) pw[k] = z[2 * k] * z[2 * k] + z[2 * k + 1] * z[2 * k + 1];
+    const top = Float32Array.from(pw).sort()[Math.min(m - 1, Math.floor(m * 0.995))];
+    let a = -1, e = -1;
+    for (let k = 0; k < m; k++) if (pw[k] > 0.2 * top) { if (a < 0) a = k; e = k; }
+    if (a < 0 || (e - a) / sps0 < 100) return false;
+    const fm = new Float32Array(e - a);
+    for (let k = a + 1; k <= e; k++) {
+      const i0 = z[2 * (k - 1)], q0 = z[2 * (k - 1) + 1], i1 = z[2 * k], q1 = z[2 * k + 1];
+      fm[k - a - 1] = Math.atan2(q1 * i0 - i1 * q0, i1 * i0 + q1 * q0);
+    }
+    const t = Float32Array.from(fm).sort(), c = (t[Math.floor(t.length * 0.95)] + t[Math.floor(t.length * 0.05)]) / 2;
+    for (let k = 0; k < fm.length; k++) fm[k] -= c;
+    // the clock: the rate and phase with the widest eye
+    let best = -1, bs = sps0, bp = 0;
+    for (let r = -10; r <= 10; r++) {
+      const sps = sps0 * (1 + r / 1000), cnt = Math.floor((fm.length - 1) / sps);
+      for (let p = 0; p < 8; p++) {
+        const ph = sps * p / 8;
+        let v = 0;
+        for (let k = 0; k < cnt; k++) v += Math.abs(fm[Math.floor(ph + k * sps)]);
+        v /= cnt;
+        if (v > best) { best = v; bs = sps; bp = ph; }
+      }
+    }
+    const cnt = Math.floor((fm.length - 1 - bp) / bs);
+    const bits = new Array<number>(cnt);
+    for (let k = 0; k < cnt; k++) bits[k] = fm[Math.floor(bp + k * bs)] > 0 ? 1 : 0;
+    const want = MeshDecoder.FAST_SYNC >>> 0;
+    for (let i = 16; i + 32 + 16 <= bits.length && i < 260; i++) {
+      let w = 0;
+      for (let k = 0; k < 32; k++) w = ((w << 1) | bits[i + k]) >>> 0;
+      for (const inv of [0, 1]) {
+        const v = inv ? (~w) >>> 0 : w;
+        if (pc((v ^ want) >>> 0) > 2) continue;
+        // the preamble right before it alternates
+        let alt = 0;
+        for (let k = i - 16; k < i - 1; k++) if (bits[k] !== bits[k + 1]) alt++;
+        if (alt < 13) continue;
+        const out: number[] = [];
+        for (let q = i + 32; q + 8 <= bits.length; q += 8) {
+          let b = 0;
+          for (let k = q; k < q + 8; k++) b = (b << 1) | (inv ? 1 - bits[k] : bits[k]);
+          out.push(b);
+        }
+        if (out.length < 8) return false;
+        const hz = this.centerHz + Math.trunc(offHz + c * fs / (2 * Math.PI));
+        this.publish({ ms: this.now(), hz, snrDb: snr, sync: FAST, baud: MeshDecoder.FAST_BAUD, bytes: out, durMs: dur * 1000, crcOk: false, lenOk: false });
+        return true;
+      }
+    }
+    return false;
   }
 
   /** PN9 (x^9 + x^5 + 1, all ones to start): the standard's data whitening, one bit per PSDU bit. */
@@ -685,15 +761,18 @@ export class MeshDecoder implements IqProcessor {
       if (to < bits.length) while (out.length && (out[out.length - 1] === 0x55 || out[out.length - 1] === 0xAA)) out.pop();
       return out;
     };
+    // 9C··15 is one network: the byte in the middle of its sync word follows the channel it is sent on
+    const hop9c = ((sync & 0xFF00FF) >>> 0) === HOP9C;
+    const named = (x: MeshFrame): MeshFrame => hop9c ? { ...x, sync: HOP9C, tag: (sync >> 8) & 0xFF } : x;
     for (let s = 1; s < starts.length; s++) {
       const by = bytesOf(starts[s] + 24, s + 1 < starts.length ? starts[s + 1] : bits.length);
-      if (by.length) this.extraFrames.push(frame(sync, by));
+      if (by.length) this.extraFrames.push(named(frame(sync, by)));
     }
-    return frame(sync, bytesOf(start + 24, starts.length > 1 ? starts[1] : bits.length));
+    return named(frame(sync, bytesOf(start + 24, starts.length > 1 ? starts[1] : bits.length)));
   }
 
   // ---- results ----
-  static syncName(s: number): string { return s === GRIDSTREAM ? 'Gridstream' : s === SUN ? '802.15.4g' : s.toString(16).toUpperCase().padStart(6, '0'); }
+  static syncName(s: number): string { return s === GRIDSTREAM ? 'Gridstream' : s === SUN ? '802.15.4g' : s === FAST ? '106 kbaud' : s === HOP9C ? '9C··15' : s.toString(16).toUpperCase().padStart(6, '0'); }
 
   /** The 911.6 MHz network's frame (the one whose check starts at 0x1877): a header, the 7-byte device ID at 4-10,
    *  ... a counter at 19 and the 6-byte network ID at 20-25. Other 802.15.4g networks have their own layouts and are
@@ -732,6 +811,35 @@ export class MeshDecoder implements IqProcessor {
     ];
     this.devMap.set(key, d);
   }
+  /** The 106.4 kbaud network: one card for the network (its frames carry no device ID we can read yet), with the
+   *  4-byte headers after the sync counted (60 76 00 06 and 60 76 1D 86 are most of them). */
+  private trackFast(f: MeshFrame): void {
+    const b = f.bytes;
+    if (b.length < 8) return;
+    const key = `${FAST}/0`;
+    const d = this.devMap.get(key) ?? newDevice(FAST, 0, f.ms);
+    d.label = '106 kbaud';
+    const hd = hxs(b.slice(0, 4)), heads = this.fastHeads;
+    heads.set(hd, (heads.get(hd) ?? 0) + 1);
+    d.frames++; d.lastMs = f.ms;
+    d.hops.push({ hz: f.hz, ms: f.ms }); if (d.hops.length > 48) d.hops.splice(0, d.hops.length - 48);
+    d.snr.push(f.snrDb); if (d.snr.length > 60) d.snr.splice(0, d.snr.length - 60);
+    if (!d.lengths.includes(b.length)) d.lengths.push(b.length);
+    d.lastHex = hxs(b.slice(0, 16));
+    const chs = new Set(d.hops.map(x => Math.round(x.hz / 200_000))).size;
+    d.fields = [
+      { name: 'NETWORK', value: '106.4 kbaud 2-FSK · ±44 kHz · sync 39717DF1 · not identified' },
+      { name: 'HEADERS', value: [...heads.entries()].sort((x, y) => y[1] - x[1]).slice(0, 4).map(([k, v]) => `${k} ×${v}`).join(' · ') },
+      { name: 'FIELDS', value: `${hxs(b.slice(4, 6))} · ${hxs(b.slice(6, 8))} (change every second or so)` },
+      { name: 'LAST FRAME', value: hxs(b.slice(0, 24)) + (b.length > 24 ? ' …' : '') },
+      { name: 'FREQUENCY', value: `${(f.hz / 1e6).toFixed(4)} MHz` },
+      { name: 'CHANNELS', value: `${chs} heard` },
+      { name: 'SIGNAL', value: `+${f.snrDb} dB` },
+      { name: 'CHECK', value: 'none found yet (no CRC-8 or CRC-16 fits)' },
+    ];
+    this.devMap.set(key, d);
+  }
+
   /**
    * The dominant network sync is a slipped read of, if any. Only a network carrying at least 1% of all frames is a
    * candidate: the ghosts come from the busy one, and each extra candidate is another chance to swallow a real small
@@ -1009,6 +1117,7 @@ export class MeshDecoder implements IqProcessor {
   private track(f: MeshFrame): void {
     if (f.sync === GRIDSTREAM) { this.trackGridstream(f); return; }
     if (f.sync === SUN) { this.trackSun(f); return; }
+    if (f.sync === FAST) { this.trackFast(f); return; }
     if (!f.bytes.length) return;
     let id = f.bytes[0];
     let key = `${f.sync}/${id}`;
@@ -1043,6 +1152,16 @@ export class MeshDecoder implements IqProcessor {
       { name: 'NODE ID', value: d.address >= 0 ? `${d.address.toString(16).toUpperCase().padStart(6, '0')} (${d.address}), heard ${d.addressSeen}×` : 'not announced yet' },
       { name: 'FRAME LAYOUT', value: 'index · clock (128/s) · check — ID frames: index · F0 · ID · clock · … 01 00' },
     ];
+    if (f.sync === HOP9C && f.tag !== undefined) {
+      d.fields.splice(2, 0, { name: 'CHANNEL BYTE', value: `${h2(f.tag)} at ${(f.hz / 1e6).toFixed(3)} MHz (the middle byte of the sync word follows the channel)` });
+      d.fields = d.fields.filter(x => x.name !== 'FRAME LAYOUT' && x.name !== 'NODE ID');
+    }
+    if (f.sync === 0xA993A9 && f.bytes.length >= 10) {
+      d.fields.splice(2, 0,
+        { name: 'SIZE BYTE', value: `${h2(f.bytes[1])}: a ${(255 - f.bytes[1]) / 2 + 3}-byte frame` },
+        { name: 'NETWORK ID', value: hxs(f.bytes.slice(2, 9)) });
+      d.fields = d.fields.filter(x => x.name !== 'FRAME LAYOUT' && x.name !== 'NODE ID');
+    }
     if (c16 >= 0) {
       // once the clock is known, a value that does not fit it (a bit error, another kind of frame) is left out
       const fits = d.ckV.length < 3 || MeshDecoder.wrap16(c16 - clockAt(d, f.ms)) < 80;
@@ -1125,7 +1244,9 @@ export class MeshDecoder implements IqProcessor {
   flush(): void {
     this.foldGridstream();
     // a network needs a real share of the traffic: a few frames of the busy one read off by a bit or two are not one
-    let top = 0; for (const n of this.netMap.values()) top = Math.max(top, n.frames);
+    // the share is of the sync-word networks only: Gridstream, 802.15.4g and the 106 kbaud network are found by their own
+    // decoders, and a busy one of those must not hide a small sync-word network
+    let top = 0; for (const n of this.netMap.values()) if (n.sync >= 0) top = Math.max(top, n.frames);
     this.nets = [...this.netMap.values()].filter(n => n.sync < 0 || n.frames >= 20 || (n.frames >= MeshDecoder.MIN_FRAMES && n.frames * 50 >= top)).sort((a, b) => b.frames - a.frames);
     this.bursts = this.count;
     this.links = [...this.linkSet.values()];
@@ -1135,7 +1256,7 @@ export class MeshDecoder implements IqProcessor {
     this.devices = [...this.devMap.values()].filter(d => {
       if (d.net === ERT) return true;
       if (d.net === GRIDSTREAM) return d.frames >= 2 || d.addressed >= 3;
-      if (d.net === SUN) return true;
+      if (d.net === SUN || d.net === FAST) return true;
       return d.frames >= 5 && shown.has(d.net);
     }).sort((a, b) => b.lastMs - a.lastMs || a.id - b.id);
     this.post();
