@@ -109,6 +109,8 @@ export interface MeshDevice {
 export interface MetersSnapshot { type: 'meters'; nets: MeshNet[]; devices: MeshDevice[]; links: MeshLink[]; bursts: number; busy: number }
 
 const GRIDSTREAM = -1, ERT = -2, SUN = -3;
+/** A Gridstream uptime above 20 years is a bit error, not a node that has run that long. */
+const UPTIME_MAX = 20 * 365 * 86400;
 const h2 = (v: number) => (v & 0xFF).toString(16).toUpperCase().padStart(2, '0');
 const h8 = (v: number) => (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
 const hex = (b: number[]) => b.map(h2).join('');
@@ -899,28 +901,37 @@ export class MeshDecoder implements IqProcessor {
     };
     const position = (d: MeshDevice, wan: number) => {
       d.wanVotes[wan] = (d.wanVotes[wan] ?? 0) + 1;
-      // a position is shown once two beacons agree on it, or while it is the only one heard
+      // a position is shown only once two beacons agree on it: where the utility's CRC seed is unknown a frame passes
+      // on its length alone, and one with a flipped bit in its WAN address decodes to a point kilometers away
       const votes = Object.entries(d.wanVotes);
       let best: [string, number] | null = null;
       for (const v of votes) if (!best || v[1] > best[1]) best = v;
-      const p = best && (best[1] >= 2 || votes.length === 1) ? GridstreamWan.decode(Number(best[0])) : null;
+      const p = best && best[1] >= 2 ? GridstreamWan.decode(Number(best[0])) : null;
       if (p) { d.lat = p.lat; d.lon = p.lon; d.posColor = p.color; } else { d.lat = null; d.lon = null; }
     };
+    const posText = (d: MeshDevice) => d.lat !== null && d.lon !== null ? `${d.lat.toFixed(5)}, ${d.lon.toFixed(5)} (node color ${d.posColor})`
+      : Object.keys(d.wanVotes).length ? 'waiting for a second beacon with the same WAN address' : '-';
+    // uptime is seconds since power-on; a bit error can make it decades, so such a value is shown but not kept
+    const upOk = (up: number) => up <= UPTIME_MAX;
+    const upText = (up: number, minutes: boolean) => !upOk(up) ? `${up} s (implausible, likely a bit error: ignored)`
+      : `${up} s (${Math.floor(up / 86400)}d ${pad2(Math.floor(up / 3600) % 24)}h${minutes ? ` ${pad2(Math.floor(up / 60) % 60)}m` : ''})`;
+    const poweredUp = (up: number) => upOk(up) ? `${new Date(f.ms - up * 1000).toISOString().replace('T', ' ').slice(0, 16)} UTC (the last power-up: an outage or a restart)` : '-';
     if (b[3] === 0x55 && b.length >= 37 && b[6] === 0x30) {
       const d = dev(u32(b, 26));
       heard(d);
-      d.uptimeS = u32(b, 20); d.uptimeMs = f.ms;
+      const up = u32(b, 20);
+      if (upOk(up)) { d.uptimeS = up; d.uptimeMs = f.ms; }
       d.clock = (b[35] << 8) | b[36]; d.clockMs = f.ms; d.clockRate = 100;   // hundredths into the 168 s cycle
       position(d, GridstreamWan.value(b, 13));
-      const up = d.uptimeS;
       setFields(d, 'BEACON', [
         { name: 'FRAME', value: `beacon 2A 55, sync opcode 30, ${b.length} bytes` },
         { name: 'METER ID', value: `${h8(d.id)} (${d.id})` },
-        { name: 'POSITION', value: d.lat !== null && d.lon !== null ? `${d.lat.toFixed(5)}, ${d.lon.toFixed(5)}` : '-' },
+        { name: 'POSITION', value: posText(d) },
         { name: 'NODE COLOR', value: String(d.posColor) },
         { name: 'WAN ADDRESS', value: hex(b.slice(13, 19)) },
         { name: 'DESTINATION', value: hex(b.slice(7, 13)) },
-        { name: 'UPTIME', value: `${up} s (${Math.floor(up / 86400)}d ${pad2(Math.floor(up / 3600) % 24)}h ${pad2(Math.floor(up / 60) % 60)}m)` },
+        { name: 'UPTIME', value: upText(up, true) },
+        { name: 'POWERED UP', value: poweredUp(up) },
         { name: 'COUNTER', value: `${h2(b[19])} (${b[19]}, steps by 2)` },
         { name: 'STATUS', value: MeshDecoder.statusWord(b[24], b[25]) },
         { name: 'FORMAT', value: hex(b.slice(30, 32)) + (b[30] === 0x01 ? ' (record marker)' : '') },
@@ -956,18 +967,18 @@ export class MeshDecoder implements IqProcessor {
       }
       if ((b[6] === 0x51 || b[6] === 0x55) && b.length >= 42) {
         const epoch = u32(b, 16), up = u32(b, 24);
-        d.uptimeS = up; d.uptimeMs = f.ms;
+        if (upOk(up)) { d.uptimeS = up; d.uptimeMs = f.ms; }
         position(d, GridstreamWan.value(b, 32));
         const terr = u32(b, 20) | 0;
-        const wan = GridstreamWan.decode(GridstreamWan.value(b, 32));
         const own = u32(b, 38);
         fl.push(
           { name: 'NETWORK TIME', value: `${new Date(epoch * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC` },
           { name: 'CLOCK ERROR', value: `${terr} (${hex(b.slice(20, 24))})` },
-          { name: 'UPTIME', value: `${up} s (${Math.floor(up / 86400)}d ${pad2(Math.floor(up / 3600) % 24)}h)` },
+          { name: 'UPTIME', value: upText(up, false) },
+          { name: 'POWERED UP', value: poweredUp(up) },
           { name: 'STATUS', value: MeshDecoder.statusWord(b[28], b[29]) },
           { name: 'SEQUENCE', value: `threshold ${b[30]} · number ${b[31]}` },
-          { name: 'POSITION', value: wan ? `${wan.lat.toFixed(5)}, ${wan.lon.toFixed(5)} (node color ${wan.color})` : '-' },
+          { name: 'POSITION', value: posText(d) },
           { name: 'WAN ADDRESS', value: hex(b.slice(32, 38)) },
           { name: 'OWN ID', value: `${h8(own)}${own === src ? ' (matches sender)' : ''}` },
         );

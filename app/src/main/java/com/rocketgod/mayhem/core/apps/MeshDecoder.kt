@@ -770,27 +770,40 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         }
         fun position(d: MeshDevice, wan: Long) {
             d.wanVotes = d.wanVotes + (wan to (d.wanVotes[wan] ?: 0) + 1)
-            // a position is shown once two beacons agree on it, or while it is the only one heard
+            // a position is shown only once two beacons agree on it: where the utility's CRC seed is unknown a frame
+            // passes on its length alone, and one with a flipped bit in its WAN address decodes to a point kilometers away
             val best = d.wanVotes.maxByOrNull { it.value }
-            val p = if (best != null && (best.value >= 2 || d.wanVotes.size == 1)) GridstreamWan.decode(best.key) else null
+            val p = if (best != null && best.value >= 2) GridstreamWan.decode(best.key) else null
             if (p != null) { d.lat = p.lat; d.lon = p.lon; d.posColor = p.color } else { d.lat = null; d.lon = null }
         }
+        fun posText(d: MeshDevice): String {
+            val la = d.lat; val lo = d.lon
+            return if (la != null && lo != null) "%.5f, %.5f (node color %d)".format(la, lo, d.posColor)
+            else if (d.wanVotes.isNotEmpty()) "waiting for a second beacon with the same WAN address" else "-"
+        }
+        // uptime is seconds since power-on; a bit error can make it decades, so such a value is shown but not kept
+        fun upOk(up: Long) = up <= UPTIME_MAX
+        fun upText(up: Long, minutes: Boolean): String = if (!upOk(up)) "$up s (implausible, likely a bit error: ignored)"
+            else "%d s (%dd %02dh".format(up, up / 86400, up / 3600 % 24) + (if (minutes) " %02dm".format(up / 60 % 60) else "") + ")"
+        fun poweredUp(up: Long): String = if (!upOk(up)) "-" else
+            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(f.ms - up * 1000)) +
+                " UTC (the last power-up: an outage or a restart)"
         if (b[3] == 0x55 && b.size >= 37 && b[6] == 0x30) {
             val d = dev(u32(b, 26))
             heard(d)
-            d.uptimeS = u32(b, 20).toInt(); d.uptimeMs = f.ms
+            val up = u32(b, 20)
+            if (upOk(up)) { d.uptimeS = up.toInt(); d.uptimeMs = f.ms }
             d.clock = (b[35] shl 8) or b[36]; d.clockMs = f.ms; d.clockRate = 100.0   // hundredths into the 168 s cycle
             position(d, GridstreamWan.value(b, 13))
-            val up = d.uptimeS
-            val la = d.lat; val lo = d.lon
             setFields(d, "BEACON", listOf(
                 MeshField("FRAME", "beacon 2A 55, sync opcode 30, ${b.size} bytes"),
                 MeshField("METER ID", "%08X (%d)".format(d.id, d.id)),
-                MeshField("POSITION", if (la != null && lo != null) "%.5f, %.5f".format(la, lo) else "-"),
+                MeshField("POSITION", posText(d)),
                 MeshField("NODE COLOR", d.posColor.toString()),
                 MeshField("WAN ADDRESS", hex(b, 13, 19)),
                 MeshField("DESTINATION", hex(b, 7, 13)),
-                MeshField("UPTIME", "%d s (%dd %02dh %02dm)".format(up, up / 86400, up / 3600 % 24, up / 60 % 60)),
+                MeshField("UPTIME", upText(up, true)),
+                MeshField("POWERED UP", poweredUp(up)),
                 MeshField("COUNTER", "%02X (%d, steps by 2)".format(b[19], b[19])),
                 MeshField("STATUS", statusWord(b[24], b[25])),
                 MeshField("FORMAT", hex(b, 30, 32) + if (b[30] == 0x01) " (record marker)" else ""),
@@ -824,20 +837,20 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
                 fl.add(MeshField("CRC", hex(b, n - 2, n)))
             }
             if ((b[6] == 0x51 || b[6] == 0x55) && b.size >= 42) {
-                val epoch = u32(b, 16); val up = u32(b, 24).toInt()
-                d.uptimeS = up; d.uptimeMs = f.ms
+                val epoch = u32(b, 16); val up = u32(b, 24)
+                if (upOk(up)) { d.uptimeS = up.toInt(); d.uptimeMs = f.ms }
                 position(d, GridstreamWan.value(b, 32))
                 val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
                 val terr = u32(b, 20).toInt()
-                val wan = GridstreamWan.decode(GridstreamWan.value(b, 32))
                 val own = u32(b, 38)
                 fl += listOf(
                     MeshField("NETWORK TIME", fmt.format(Date(epoch * 1000)) + " UTC"),
                     MeshField("CLOCK ERROR", "%d (%s)".format(terr, hex(b, 20, 24))),
-                    MeshField("UPTIME", "%d s (%dd %02dh)".format(up, up / 86400, up / 3600 % 24)),
+                    MeshField("UPTIME", upText(up, false)),
+                    MeshField("POWERED UP", poweredUp(up)),
                     MeshField("STATUS", statusWord(b[28], b[29])),
                     MeshField("SEQUENCE", "threshold %d · number %d".format(b[30], b[31])),
-                    MeshField("POSITION", if (wan != null) "%.5f, %.5f (node color %d)".format(wan.lat, wan.lon, wan.color) else "-"),
+                    MeshField("POSITION", posText(d)),
                     MeshField("WAN ADDRESS", hex(b, 32, 38)),
                     MeshField("OWN ID", "%08X%s".format(own, if (own == src) " (matches sender)" else "")))
                 if (n > 48) {
@@ -1043,6 +1056,8 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
         const val ERT = -2
         /** IEEE 802.15.4g SUN-FSK frames, any network (see [sunParse]). */
         const val SUN = -3
+        /** A Gridstream uptime above 20 years is a bit error, not a node that has run that long. */
+        const val UPTIME_MAX = 20L * 365 * 86400
         const val SUN_BAUD = 50_000
         /** CRC-16 starts of the SUN networks heard (0x1877: the 911.6 MHz network), tried before the standard's own. */
         val SUN_INITS = intArrayOf(0x1877)
