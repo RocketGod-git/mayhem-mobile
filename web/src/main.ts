@@ -11,7 +11,8 @@ import { glyph } from './glyphs.js';
 import { Scope, centredLabels, rangeLabels, rowToSpec } from './scope.js';
 import { btleChannelFreq } from './dsp/btle.js';
 import { BleTracker, KIND_LABEL, parseAdv, type BleDevice } from './ble.js';
-import { AcarsPlanes, labelMeaning, normReg, parseAcarsLine, type AcarsPlane } from './acars-planes.js';
+import { AcarsPlanes, labelMeaning, normReg, parseAcarsLine, type AcarsMsg } from './acars-planes.js';
+import { AcarsStats, Vdl2Tracker, VDL2_CHANNELS, acarsFor, airlineOf, kindLabelOf, msgInsight, numChips, planeInsight, xidSummary, type Airport, type AvlcFrame, type MsgInsight, type PlaneInsight, type VdlAircraft, type VdlStation } from './acars-insight.js';
 import { ORBCOMM_CHANNELS, type OrbcommSat } from './dsp/orbcomm.js';
 import type { PacketFrame } from './dsp/g3ruh.js';
 import { fetchGroup } from './sat.js';
@@ -989,7 +990,7 @@ function open(app: AppId | null): void {
 const mapEmptySub = (what: string) => `${what}. ${state.home ? 'Centered on you.' : mapStart(null).standIn ? 'No location yet: allow it to center the map on you.' : 'Centered where you were last.'}`;
 function requestGeo(): void {
   if (!('geolocation' in navigator)) return;
-  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); if (state.app === 'ais') refreshAis(); else if (state.app === 'aprs') refreshAprs(); else if (state.app === 'adsb') refreshAdsb(); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
+  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); if (state.app === 'ais') refreshAis(); else if (state.app === 'aprs') refreshAprs(); else if (state.app === 'adsb') refreshAdsb(); else if (state.app === 'acars' || state.app === 'vdl2') refreshAcars(true); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
 }
 
 
@@ -3804,90 +3805,236 @@ function refreshBle(force = false): void {
   else if (devs.length) setLamp(`${devs.length} DEVICE${devs.length === 1 ? '' : 'S'}`, 'ok');
 }
 
-// ---- ACARS: one card per aircraft, its messages in the panel, a link to the same aircraft in ADS-B ------------
-type AcarsUi = { planes: AcarsPlanes; view: 'cards' | 'log'; sel: string; drawn: number; pending: number; timer: number };
-const newAcarsUi = (): AcarsUi => ({ planes: new AcarsPlanes(), view: 'cards', sel: '', drawn: 0, pending: 0, timer: 0 });
+// ---- ACARS and VDL2: one card per aircraft (VDL2: by ICAO address, ACARS or not), a map, the activity, the log ----
+type AcarsView = 'cards' | 'map' | 'stats' | 'log';
+type AcarsUi = { planes: AcarsPlanes; stats: AcarsStats; vdl: Vdl2Tracker; view: AcarsView; sel: string; drawn: number; pending: number; timer: number };
+const newAcarsUi = (): AcarsUi => ({ planes: new AcarsPlanes(), stats: new AcarsStats(), vdl: new Vdl2Tracker(acLookup), view: 'cards', sel: '', drawn: 0, pending: 0, timer: 0 });
 /** ACARS and VDL2 share these screens (VDL2 carries ACARS messages), each with its own aircraft. */
 const acarsUis = { acars: newAcarsUi(), vdl2: newAcarsUi() };
 type AcarsApp = keyof typeof acarsUis;
 const acarsApp = (): AcarsApp => state.app === 'vdl2' ? 'vdl2' : 'acars';
-/** The same aircraft in the ADS-B list: by ICAO address (from a US registration), the registration looked up for an
- *  ADS-B aircraft, or the flight number against its callsign. */
-function acarsAdsbMatch(p: AcarsPlane): Aircraft | undefined {
+/** The ACARS channels the presets offer (counted even before anything is heard on them). */
+const ACARS_CHANNELS = ['131.550', '131.525', '131.725', '131.450', '130.025'];
+/** An airport from the bundled list (loaded with the UAT one), for the message readers, the stations and the map. */
+function acLookup(id: string): Airport | undefined { const a = uatAirports?.get(id); return a ? { ident: id, lat: a[0], lon: a[1], name: a[2] } : undefined; }
+/** Each message's reading, kept until the airports or home change. */
+const acInsights = new WeakMap<AcarsMsg, { v: string; i: MsgInsight }>();
+function acInsight(m: AcarsMsg): MsgInsight {
+  const v = `${uatAirports?.size ?? 0}|${state.home ? `${state.home.lat.toFixed(1)},${state.home.lon.toFixed(1)}` : ''}`;
+  const c = acInsights.get(m); if (c && c.v === v) return c.i;
+  const i = msgInsight(m, acLookup, state.home);
+  acInsights.set(m, { v, i }); return i;
+}
+/** One aircraft as the cards, the map and the panel show it: an ACARS record, a VDL2 address, or both. */
+interface AcRow { key: string; reg: string; flight: string; icao: string; firstMs: number; lastMs: number; msgs: AcarsMsg[]; vdl?: VdlAircraft; ins: PlaneInsight; airline: string }
+function acRows(ui: AcarsUi, vdl: boolean): AcRow[] {
+  const mk = (key: string, reg: string, flight: string, icao: string, firstMs: number, lastMs: number, msgs: AcarsMsg[], v?: VdlAircraft): AcRow =>
+    ({ key, reg, flight, icao, firstMs, lastMs, msgs, vdl: v, ins: planeInsight(msgs, acInsight), airline: airlineOf(flight) });
+  if (!vdl) return ui.planes.list().map(p => mk(p.key, p.reg, p.flight, p.icao, p.firstMs, p.lastMs, p.msgs));
+  return ui.vdl.list().map(a => { const p = acarsFor(a, ui.planes.planes); return mk(`A:${a.addr}`, a.reg || p?.reg || '', a.flight || p?.flight || '', a.addr, a.firstMs, a.lastMs, p?.msgs ?? [], a); });
+}
+/** The same aircraft in the ADS-B list: VDL2 by its own address; ACARS by the ICAO address a US registration gives,
+ *  the registration looked up for an ADS-B aircraft, or the flight number against its callsign. */
+function acarsAdsbMatch(p: { icao: string; reg: string; flight: string; vdl?: VdlAircraft }): Aircraft | undefined {
+  if (p.vdl) return state.aircraft.find(a => a.icao.toUpperCase() === p.icao);
   const reg = normReg(p.reg), fl = p.flight.replace(/\s/g, '').toUpperCase();
   return state.aircraft.find(a => (p.icao !== '' && a.icao.toUpperCase() === p.icao)
     || (reg !== '' && normReg(acInfo.get(a.icao)?.reg ?? '') === reg)
     || (fl !== '' && (a.flight ?? '').replace(/\s/g, '').toUpperCase() === fl));
 }
-function acarsCard(p: AcarsPlane, now: number): string {
-  const age = now - p.lastMs, live = age < 120_000, flash = Math.max(0, 1 - age / 700), last = p.msgs[0];
-  const ads = acarsAdsbMatch(p), what = labelMeaning(last.label);
-  const sub = [p.icao ? `ICAO ${p.icao}` : '', ads ? 'ON ADS-B' : ''].filter(Boolean).join(' · ');
-  return `<div class="mt-card ${acarsUis[acarsApp()].sel === p.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-acp="${esc(p.key)}" style="--flash:${flash.toFixed(2)}">`
-    + `<div class="mt-h"><span class="mt-id">${esc(p.reg || p.flight)}</span><span class="mt-k"><b>${esc(p.flight && p.reg ? `FLIGHT ${p.flight}` : p.reg ? 'NO FLIGHT NUMBER' : 'NO REGISTRATION')}</b><small class="${ads ? 'pos' : ''}">${esc(sub)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : bleAgo(age)}</span></div>`
-    + `<div class="mt-clk"><b>${p.count}</b><small>MESSAGE${p.count === 1 ? '' : 'S'} · LAST ${esc(last.label)}${what ? ` ${esc(what.toUpperCase())}` : ''}</small><em>${last.mhz}</em></div>`
-    + `<div class="mt-hex">${esc(last.text || '(no text)')}</div></div>`;
+/** Where an aircraft is: only the newest position its own messages gave (the radio hears one band at a time, so
+ *  nothing here comes from ADS-B). */
+function acWhere(r: AcRow): { lat: number; lon: number; ms: number } | null {
+  return r.ins.pos ? { lat: r.ins.pos.lat, lon: r.ins.pos.lon, ms: r.ins.posMs } : null;
 }
-function acarsDetail(p: AcarsPlane): string {
-  const ads = acarsAdsbMatch(p);
-  const msgs = p.msgs.map(m => `<div class="ac-msg"><div><b>${new Date(m.ms).toLocaleTimeString()}</b><span>${m.down ? '↓ from the aircraft' : '↑ to the aircraft'} · ${esc(m.label)}${labelMeaning(m.label) ? ` ${esc(labelMeaning(m.label))}` : ''} · blk ${esc(m.blk)}${m.msn ? ` · #${esc(m.msn)}` : ''} · ${m.mhz}${m.crcOk ? '' : ' · CRC?'}</span></div>${m.text ? `<pre>${esc(m.text)}</pre>` : ''}</div>`).join('');
-  const fields: [string, string][] = [['Registration', p.reg || '—'], ['Flight', p.flight || '—'], ['ICAO', p.icao || '—'], ['Messages', String(p.count)], ['First heard', trClock(p.firstMs)], ['Last heard', trClock(p.lastMs)],
-    ['ADS-B', ads ? `${ads.icao.toUpperCase()}${ads.flight ? ` · ${ads.flight.trim()}` : ''}${ads.alt !== undefined ? ` · ${ads.alt} ft` : ''}` : 'not seen (open ADS-B to look for it)']];
-  return `<div class="mt-dh"><b>${esc(p.reg || p.flight)}</b><span>${esc([p.flight && `FLIGHT ${p.flight}`, p.icao && `ICAO ${p.icao}`].filter(Boolean).join(' · ') || (acarsApp() === 'vdl2' ? 'VDL2' : 'ACARS'))}</span>${ads ? '<button class="chip" data-ado="adsb">ADS-B</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
-    + `<div class="mt-fields">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`
-    + `<div class="caption">MESSAGES · newest first</div><div class="ac-msgs">${msgs}</div>`;
+const acTitle = (r: AcRow) => r.reg || r.flight || r.icao;
+const acChip = (text: string, cls = '') => `<span class="ac-chip ${cls}">${esc(text)}</span>`;
+const acSnr = (n: number) => `${n >= 0 ? '+' : ''}${n} dB`;
+function acarsCard(r: AcRow, now: number, sel: string): string {
+  const age = now - r.lastMs, live = age < 120_000, flash = Math.max(0, 1 - age / 700), last = r.msgs[0], v = r.vdl;
+  const ads = acarsAdsbMatch(r), li = r.ins.last, nums = numChips(r.ins.nums);
+  const head = r.airline ? `${r.airline.toUpperCase()}${r.flight ? ` · ${r.flight}` : ''}` : r.flight && (r.reg || v) ? `FLIGHT ${r.flight}` : r.reg ? 'NO FLIGHT NUMBER' : v ? 'NO ACARS YET' : 'NO REGISTRATION';
+  const sub = [r.ins.orig ? `${r.ins.orig} → ${r.ins.dest}` : '', r.icao ? `ICAO ${r.icao}` : '', ads ? 'ON ADS-B' : ''].filter(Boolean).join(' · ');
+  const count = v ? v.frames : r.msgs.length;
+  const what = v ? `FRAME${count === 1 ? '' : 'S'} · ${v.acars} ACARS · ${acSnr(v.snr)}` : `MESSAGE${count === 1 ? '' : 'S'} · LAST ${last?.label ?? ''}`;
+  const mhz = v ? (v.hz / 1e6).toFixed(3) : last?.mhz ?? '';
+  const chips = [li ? acChip(kindLabelOf(li.kind), 'k') : '', r.ins.phase ? acChip(r.ins.phase, 'ph') : '', r.ins.pos ? acChip(`POS ${bleAgo(now - r.ins.posMs)}`) : '',
+    v?.station ? acChip(`GS ${v.station}`) : '', ...r.ins.airports.filter(a => a !== r.ins.orig && a !== r.ins.dest).slice(0, 3).map(a => acChip(a))].join('');
+  return `<div class="mt-card ${sel === r.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-acp="${esc(r.key)}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-id">${esc(acTitle(r))}</span><span class="mt-k"><b>${esc(head)}</b><small class="${ads ? 'pos' : ''}">${esc(sub)}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : bleAgo(age)}</span></div>`
+    + (nums.length ? `<div class="ac-ads">${esc(nums.join(' · '))}<small>${esc(bleAgo(now - r.ins.numsMs))}</small></div>` : '')
+    + `<div class="mt-clk"><b>${count}</b><small>${esc(what)}</small><em>${mhz}</em></div>`
+    + (chips ? `<div class="ac-chips">${chips}</div>` : '')
+    + `<div class="ac-sum">${esc(li?.summary ?? (v ? `link frames with ${v.stations.size} ground station${v.stations.size === 1 ? '' : 's'}` : ''))}</div>`
+    + `<div class="mt-hex">${esc(last ? last.text || '(no text)' : v?.events[0]?.text ?? '(no ACARS text)')}</div></div>`;
+}
+function acStationCard(g: VdlStation, now: number, sel: string): string {
+  const age = now - g.lastMs, live = age < 120_000, flash = Math.max(0, 1 - age / 700), apt = g.airport ? acLookup(g.airport) : undefined;
+  return `<div class="mt-card ac-gs ${sel === `G:${g.addr}` ? 'sel' : ''} ${live ? '' : 'dim'}" data-acp="G:${g.addr}" style="--flash:${flash.toFixed(2)}">`
+    + `<div class="mt-h"><span class="mt-id">${g.addr}</span><span class="mt-k"><b>${esc(apt ? apt.name.toUpperCase() : 'AIRPORT NOT NAMED YET')}</b><small>${esc(g.airport ? `${g.airport} · ${g.airportOwn ? 'from its own XID' : "from an aircraft's XID"}` : 'ground station')}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : bleAgo(age)}</span></div>`
+    + `<div class="mt-clk"><b>${g.frames}</b><small>FRAME${g.frames === 1 ? '' : 'S'} · ${g.aircraft.size} AIRCRAFT</small><em>${(g.hz / 1e6).toFixed(3)}</em></div>`
+    + `<div class="mt-hex">${g.snr !== null ? `heard itself at ${acSnr(g.snr)}` : 'not heard itself yet (only aircraft talking to it)'}</div></div>`;
+}
+const acFields = (f: [string, string][]) => `<div class="mt-fields">${f.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
+function acarsDetail(r: AcRow, now: number): string {
+  const ads = acarsAdsbMatch(r), v = r.vdl, i = r.ins;
+  const msgs = r.msgs.map(m => {
+    const x = acInsight(m);
+    const chips = [acChip(kindLabelOf(x.kind), 'k'), x.phase ? acChip(x.phase, 'ph') : '', x.pos ? acChip(`${x.pos.lat.toFixed(3)}, ${x.pos.lon.toFixed(3)}`) : '', ...numChips(x.nums).map(c => acChip(c)), ...x.airports.map(a => acChip(a))].join('');
+    return `<div class="ac-msg"><div><b>${new Date(m.ms).toLocaleTimeString()}</b><span>${m.down ? '↓ from the aircraft' : '↑ to the aircraft'} · ${esc(m.label)}${labelMeaning(m.label) ? ` ${esc(labelMeaning(m.label))}` : ''} · blk ${esc(m.blk)}${m.msn ? ` · #${esc(m.msn)}` : ''} · ${m.mhz}${m.crcOk ? '' : ' · CRC?'}</span></div>`
+      + `<div class="ac-chips">${chips}</div><div class="ac-sum">${esc(x.summary)}</div>${m.text ? `<pre>${esc(m.text)}</pre>` : ''}</div>`;
+  }).join('');
+  const fields: [string, string][] = [['Registration', r.reg || '—'], ['Flight', r.flight || '—'], ['Airline', r.airline || '—'], ['ICAO', r.icao || '—'], ['Messages', String(r.msgs.length)]];
+  if (v) fields.push(['Frames', `${v.frames} · ${v.acars} ACARS`], ['Last SNR', acSnr(v.snr)],
+    ['Ground stations', [...v.stations.keys()].map(g => { const a = acarsUis.vdl2.vdl.stations.get(g)?.airport; return a ? `${g} (${a})` : g; }).join(', ') || '—'], ['Channel', `${(v.hz / 1e6).toFixed(3)} MHz`]);
+  fields.push(['Phase', i.phase ? `${i.phase} · ${bleAgo(now - i.phaseMs)}` : '—'], ['Route', i.orig ? `${i.orig} → ${i.dest}` : '—'],
+    ['Position', i.pos ? `${i.pos.lat.toFixed(3)}, ${i.pos.lon.toFixed(3)} · from a message ${bleAgo(now - i.posMs)}` : '—'],
+    ['Stated', numChips(i.nums).join(' · ') ? `${numChips(i.nums).join(' · ')} · ${bleAgo(now - i.numsMs)}` : '—'],
+    ['Airports named', i.airports.join(', ') || '—'], ['First heard', trClock(r.firstMs)], ['Last heard', trClock(r.lastMs)]);
+  if (v) fields.push(['XID', v.xid || '—']);
+  fields.push(['ADS-B', ads ? `${ads.icao.toUpperCase()}${ads.flight ? ` · ${ads.flight.trim()}` : ''}${ads.alt !== undefined ? ` · ${ads.alt} ft` : ''}` : 'not seen (open ADS-B to look for it)']);
+  const events = v ? `<div class="caption">LINK EVENTS · newest first · ${v.events.length}</div>${v.events.length ? v.events.map(e => `<div class="ac-ev"><b>${new Date(e.ms).toLocaleTimeString()}</b><span>${esc(e.text)}</span></div>`).join('') : '<div class="ac-ev"><span>no XID handoffs heard yet</span></div>'}` : '';
+  const kind = [r.airline && r.airline.toUpperCase(), r.flight && `FLIGHT ${r.flight}`, r.icao && `ICAO ${r.icao}`].filter(Boolean).join(' · ') || (v ? 'VDL2' : 'ACARS');
+  return `<div class="mt-dh"><b>${esc(acTitle(r))}</b><span>${esc(kind)}</span>${acWhere(r) ? '<button class="chip" data-ado="map">MAP</button>' : ''}${ads ? '<button class="chip" data-ado="adsb">ADS-B</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
+    + acFields(fields) + events + `<div class="caption">MESSAGES · newest first · ${r.msgs.length}</div><div class="ac-msgs">${msgs || '<div class="ac-ev"><span>no ACARS messages from it yet</span></div>'}</div>`;
+}
+function acStationDetail(g: VdlStation, now: number): string {
+  const apt = g.airport ? acLookup(g.airport) : undefined, ui = acarsUis.vdl2;
+  const fields: [string, string][] = [['Address', g.addr], ['Airport', apt ? `${g.airport} · ${apt.name}` : '—'], ['Placed by', g.airport ? (g.airportOwn ? 'its own XID' : "an aircraft's XID to it") : '—'],
+    ['Frames', String(g.frames)], ['SNR', g.snr !== null ? acSnr(g.snr) : 'not heard itself yet'], ['Channel', `${(g.hz / 1e6).toFixed(3)} MHz`], ['First heard', trClock(g.firstMs)], ['Last heard', `${trClock(g.lastMs)} · ${bleAgo(now - g.lastMs)}`],
+    ['Its XID', xidSummary(g.xidOwn) || '—'], ['XID to it', xidSummary(g.xidHeard) || '—']];
+  const ac = [...g.aircraft].sort((a, b) => b[1] - a[1]).map(([k, t]) => { const a = ui.vdl.aircraft.get(k); return `<div class="ac-ev"><b>${new Date(t).toLocaleTimeString()}</b><span>${esc([a?.reg, a?.flight, k].filter(Boolean).join(' · '))}</span></div>`; }).join('');
+  return `<div class="mt-dh"><b>${g.addr}</b><span>GROUND STATION${g.airport ? ` · ${esc(g.airport)}` : ''}</span>${apt ? '<button class="chip" data-ado="map">MAP</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
+    + acFields(fields) + `<div class="caption">AIRCRAFT WORKING IT · ${g.aircraft.size}</div>${ac}`;
+}
+/** Bars: label, a bar as long as its share of the biggest, count. */
+function acBars(rows: [string, number][], empty: string): string {
+  if (!rows.length) return `<div class="ac-bar none"><span>${esc(empty)}</span></div>`;
+  const top = Math.max(1, ...rows.map(r => r[1]));
+  return rows.map(([k, n]) => `<div class="ac-bar ${n ? '' : 'zero'}"><span>${esc(k)}</span><i><u style="width:${(100 * n / top).toFixed(1)}%"></u></i><b>${n}</b></div>`).join('');
+}
+function acStats(ui: AcarsUi, vdl: boolean, rows: AcRow[], now: number): string {
+  const per = ui.stats.minutes(now), peak = Math.max(...per), sum = per.reduce((a, b) => a + b, 0);
+  const w = 300, h = 60, pts = per.map((n, k) => `${(w * k / (per.length - 1)).toFixed(1)},${(h - 4 - (h - 8) * n / Math.max(1, peak)).toFixed(1)}`);
+  const spark = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path class="f" d="M0,${h} L${pts.join(' L')} L${w},${h} Z"/><path class="p" d="M${pts.join(' L')}"/></svg>`;
+  const chans: [string, number][] = vdl ? VDL2_CHANNELS.slice().sort((a, b) => a - b).map(hz => [(hz / 1e6).toFixed(3), ui.vdl.chans.get(hz) ?? 0] as [string, number])
+    : [...new Set([...ACARS_CHANNELS, ...ui.stats.chans.keys()])].sort().map(c => [c, ui.stats.chans.get(c) ?? 0] as [string, number]);
+  const tiles: [string, string][] = [['MESSAGES', String(ui.stats.total)], ['AIRCRAFT', String(rows.length)], ['LAST 30 MIN', String(sum)], ['PEAK / MIN', String(peak)]];
+  if (vdl) tiles.push(['FRAMES', String(ui.vdl.frames)], ['GROUND STATIONS', String(ui.vdl.stations.size)]);
+  return `<div class="ac-tiles">${tiles.map(([k, v]) => `<div><b>${v}</b><small>${k}</small></div>`).join('')}</div>`
+    + `<div class="caption">MESSAGES A MINUTE · last 30 min</div><div class="ac-spark">${spark}<b>${peak}</b><em>30 min ago</em><em class="r">now</em></div>`
+    + `<div class="ac-cols"><div><div class="caption">${vdl ? 'FRAMES BY CHANNEL · MHz' : 'MESSAGES BY CHANNEL · MHz'}</div>${acBars(chans, '')}</div>`
+    + `<div><div class="caption">TOP AIRLINES · aircraft</div>${acBars(ui.stats.topAirlines(), 'none named yet (by flight number)')}</div>`
+    + `<div><div class="caption">MESSAGE KINDS</div>${acBars(ui.stats.kindList().map(([k, n]) => [kindLabelOf(k), n] as [string, number]), 'no messages yet')}</div></div>`;
 }
 function renderAcars(view: HTMLElement, id: AcarsApp): void {
   const ui = acarsUis[id], vdl = id === 'vdl2';
   const why = radio ? blockedBecause(APP_NEEDS[id], radio.limits) : '';
+  uatLoadAirports();
+  // home for the map and for dropping positions that cannot be this aircraft's (only when location is allowed)
+  if (!state.home) requestGeo();
   view.innerHTML = `
     <section class="${visCls(id)}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
       ${vdl ? '' : presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
-      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml(id)}${pauseClearHtml(id)}</div>
-      <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
+      <div class="ctlrow">${segHtml(['cards', 'map', 'stats', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml(id)}${pauseClearHtml(id)}</div>
+      <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-map" class="panel map"></div><div id="ac-nopos" class="mt-nopos">no positions yet</div><div id="ac-unplaced" class="ac-unplaced"></div><div id="ac-stats" class="ac-stats"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
       <div id="ac-log">${logHtml(id, 'listening…')}</div>
       <div class="note">${vdl
-        ? 'VDL Mode 2, the digital link that carries most airline ACARS now: every channel from 136.10 to 136.975 MHz at once, each frame checked. One card per aircraft (by registration, else flight) with its ACARS messages; LOG also lists the link frames between aircraft and ground stations, by their ICAO addresses. ADS-B links to the same aircraft when ADS-B has seen it.'
-        : 'One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).'}</div>
+        ? 'VDL Mode 2, the digital link that carries most airline ACARS now: every channel from 136.10 to 136.975 MHz at once, each frame checked. One card per aircraft by its ICAO address (exact, so ADS-B links straight to it), ACARS or not, with its registration and flight once it sends ACARS; ground stations below, placed at the airport their XIDs name. MAP plots the aircraft where their own messages put them, with lines to the stations they work.'
+        : 'One card per aircraft (by registration, else flight), each message read into plain words: out, off, on and in times, positions, weather, ATIS, free text, engine data. MAP plots them where their own messages put them. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).'}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
-  qa<HTMLButtonElement>('[data-acview]', view).forEach(b => b.onclick = () => { ui.view = b.dataset.acview as AcarsUi['view']; refreshAcars(true); });
+  qa<HTMLButtonElement>('[data-acview]', view).forEach(b => b.onclick = () => { ui.view = b.dataset.acview as AcarsView; refreshAcars(true); if (ui.view === 'map') requestAnimationFrame(() => { geo?.invalidate(); geo?.fit(); }); });
+  $('ac-unplaced').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { ui.sel = ui.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
   $('ac-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { ui.sel = ui.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
   $('ac-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ado]'); if (!b) return;
     if (b.dataset.ado === 'close') { ui.sel = ''; refreshAcars(true); return; }
-    const p = ui.planes.planes.get(ui.sel), a = p && acarsAdsbMatch(p);
+    if (b.dataset.ado === 'map') {
+      ui.view = 'map'; refreshAcars(true);
+      const g = ui.sel.startsWith('G:') ? ui.vdl.stations.get(ui.sel.slice(2)) : undefined, apt = g?.airport ? acLookup(g.airport) : undefined;
+      const r = acRows(ui, vdl).find(x => x.key === ui.sel), w = r && acWhere(r);
+      const at = apt ?? w; if (at) requestAnimationFrame(() => { geo?.invalidate(); geo?.center(at.lat, at.lon, 9); });
+      return;
+    }
+    const r = acRows(ui, vdl).find(x => x.key === ui.sel), a = r && acarsAdsbMatch(r);
     if (a) { state.adsbSel = a.icao; open('adsb'); }
   };
+  geo = new GeoMap($('ac-map'), { home: state.home, start: mapStart(state.home), onPick: id2 => { ui.sel = id2.replace(/^dest:/, ''); refreshAcars(true); }, log });
   clearInterval(ui.timer);
   ui.timer = window.setInterval(() => { if (state.app !== id) { clearInterval(ui.timer); return; } refreshAcars(); }, 2000);
   refreshList(id); refreshAcars(true);
 }
 function onAcarsLine(line: string, id: AcarsApp): void {
-  const m = parseAcarsLine(line, Date.now()); if (m) acarsUis[id].planes.add(m);
+  const m = parseAcarsLine(line, Date.now()), ui = acarsUis[id];
+  if (m) {
+    const p = ui.planes.add(m);
+    if (m.label !== 'SQ') ui.stats.add(m.ms, m.mhz, msgInsight(m).kind, airlineOf(p?.flight ?? m.flight), p?.key ?? '');
+  }
   if (state.app === id) refreshAcars();
+}
+/** A VDL2 frame, ACARS or not: the aircraft and ground stations by address. */
+function onVdl2Frame(f: AvlcFrame): void {
+  acarsUis.vdl2.vdl.add({ ...f, ms: Date.now() });
+  if (state.app === 'vdl2') refreshAcars();
 }
 function refreshAcars(force = false): void {
   if (state.app !== 'acars' && state.app !== 'vdl2') return;
-  const id = acarsApp(), ui = acarsUis[id];
+  const id = acarsApp(), ui = acarsUis[id], vdl = id === 'vdl2';
   const now = Date.now();
   if (!force && now - ui.drawn < 240) { clearTimeout(ui.pending); ui.pending = window.setTimeout(() => refreshAcars(true), 250); return; }
   ui.drawn = now;
-  const planes = ui.planes.list();
-  qa<HTMLButtonElement>('[data-acview]').forEach(b => { const v = b.dataset.acview; b.classList.toggle('on', v === ui.view); b.textContent = v === 'cards' ? `AIRCRAFT ${planes.length}` : `LOG ${counts[id] ?? 0}`; });
-  const stage = q('#ac-stage'), cards = q('#ac-cards'), det = q('#ac-detail'), logEl = q('#ac-log');
-  if (!stage || !cards || !det || !logEl) return;
-  stage.hidden = ui.view !== 'cards'; logEl.hidden = ui.view !== 'log';
+  const rows = acRows(ui, vdl), stations = vdl ? ui.vdl.stationList() : [];
+  const placed = rows.filter(r => acWhere(r)).length + stations.filter(g => g.airport && acLookup(g.airport)).length;
+  qa<HTMLButtonElement>('[data-acview]').forEach(b => {
+    const v = b.dataset.acview; b.classList.toggle('on', v === ui.view);
+    b.textContent = v === 'cards' ? `AIRCRAFT ${rows.length}` : v === 'map' ? `MAP ${placed}` : v === 'stats' ? 'STATS' : `LOG ${counts[id] ?? 0}`;
+  });
+  const stage = q('#ac-stage'), cards = q('#ac-cards'), det = q('#ac-detail'), logEl = q('#ac-log'), mapEl = q('#ac-map'), nopos = q('#ac-nopos'), statsEl = q('#ac-stats');
+  if (!stage || !cards || !det || !logEl || !mapEl || !nopos || !statsEl) return;
+  stage.hidden = ui.view === 'log'; logEl.hidden = ui.view !== 'log';
+  cards.hidden = ui.view !== 'cards'; mapEl.hidden = ui.view !== 'map'; statsEl.hidden = ui.view !== 'stats'; nopos.hidden = ui.view !== 'map' || placed > 0;
   if (ui.view === 'cards' && !paused.has(id)) {
     const top = cards.scrollTop;
-    cards.innerHTML = planes.length ? planes.map(p => acarsCard(p, now)).join('') : emptyState(id);
+    const gs = vdl && (rows.length || stations.length)
+      ? `<div class="caption ac-span">GROUND STATIONS · ${stations.length}</div>${stations.length ? stations.map(g => acStationCard(g, now, ui.sel)).join('') : '<div class="mt-hex ac-span">none heard yet</div>'}` : '';
+    cards.innerHTML = rows.length || stations.length ? rows.map(r => acarsCard(r, now, ui.sel)).join('') + gs : emptyState(id);
     cards.scrollTop = top;
   }
-  const picked = ui.planes.planes.get(ui.sel);
-  det.hidden = !picked;
-  if (picked) { const top = det.scrollTop; det.innerHTML = acarsDetail(picked); det.scrollTop = top; }
-  if (planes.length) setLamp(`${planes.length} AIRCRAFT`, 'ok');
+  if (ui.view === 'stats' && !paused.has(id)) statsEl.innerHTML = acStats(ui, vdl, rows, now);
+  if (ui.view === 'map') {
+    geo?.invalidate();
+    const items: GeoItem[] = [], at = new Map<string, [number, number]>(), paths: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
+    for (const g of stations) {
+      const apt = g.airport ? acLookup(g.airport) : undefined; if (!apt) continue;
+      items.push({ id: `G:${g.addr}`, lat: apt.lat, lon: apt.lon, label: `GS ${g.addr} · ${g.airport}`, kind: 'tower' }); at.set(g.addr, [apt.lat, apt.lon]);
+    }
+    for (const r of rows) {
+      const w = acWhere(r); if (!w) continue;
+      const alt = r.ins.nums.altFt !== null ? ` · ${numChips({ ...r.ins.nums, kt: null, mach: '', hdg: null, fuel: '', eta: '' })[0]}` : '';
+      items.push({ id: r.key, lat: w.lat, lon: w.lon, heading: r.ins.posHdg ?? undefined, label: `${acTitle(r)}${alt} · ${bleAgo(now - w.ms)}`, kind: 'plane' });
+      at.set(r.key, [w.lat, w.lon]);
+      const dest = r.ins.dest ? acLookup(r.ins.dest) : undefined;
+      // the picked aircraft's destination, dashed (only then, so the view stays on what is heard here)
+      if (dest && ui.sel === r.key) { paths.push({ pts: [[w.lat, w.lon], [dest.lat, dest.lon]], dashed: true }); items.push({ id: `dest:${r.key}`, lat: dest.lat, lon: dest.lon, label: r.ins.dest, kind: 'airport' }); }
+    }
+    const lines: [[number, number], [number, number]][] = [];
+    if (vdl) for (const [a, g] of ui.vdl.links(now)) { const p = at.get(`A:${a}`), s = at.get(g); if (p && s) lines.push([p, s]); }
+    geo?.setLines(lines); geo?.setPaths(paths);
+    geo?.update(items, ui.sel);
+  }
+  const un = q('#ac-unplaced');
+  if (un) {
+    const none = rows.filter(r => !acWhere(r));
+    un.hidden = ui.view !== 'map';
+    un.innerHTML = `<div class="caption">NO POSITION YET · ${none.length}</div><div class="ac-chips">${none.length ? none.map(r => `<button class="ac-chip ${ui.sel === r.key ? 'k' : ''}" data-acp="${esc(r.key)}">${esc(acTitle(r))}</button>`).join('') : '<span class="ac-chip">every aircraft heard is on the map</span>'}</div>`;
+  }
+  const g = ui.sel.startsWith('G:') ? ui.vdl.stations.get(ui.sel.slice(2)) : undefined;
+  const picked = g ? undefined : rows.find(r => r.key === ui.sel);
+  det.hidden = !picked && !g;
+  if (picked || g) { const top = det.scrollTop; det.innerHTML = g ? acStationDetail(g, now) : acarsDetail(picked!, now); det.scrollTop = top; }
+  if (rows.length) setLamp(`${rows.length} AIRCRAFT`, 'ok');
 }
 
 // ---- Meters: ERT meters, the hopping mesh networks and Gridstream meters, all heard at once ----------------------
@@ -4892,7 +5039,7 @@ function uatLoadAirports(): void {
   fetch('assets/airports.json').then(r => (r.ok ? r.json() : null)).then((rows: [string, number, number, string][] | null) => {
     if (!rows) return;
     for (const [id, la, lo, name] of rows) uatAirports!.set(id, [la, lo, name]);
-    refreshUat(true);
+    refreshUat(true); refreshAcars(true);
   }).catch(() => undefined);
 }
 const UAT_PRODUCT: Record<number, string> = { 8: 'notices', 11: 'AIRMET', 12: 'SIGMET', 13: 'special use airspace', 14: 'G-AIRMET', 15: 'center weather', 16: 'notices', 17: 'notices',
@@ -6019,7 +6166,7 @@ function clearApp(id: string): void {
     case 'adsb': state.aircraft = []; state.frames = 0; state.adsbSel = ''; break;
     case 'devices': state.r433.heard = []; break;
     case 'btle': bleUi.tracker.clear(); bleUi.sel = ''; break;
-    case 'vdl2': case 'acars': acarsUis[id].planes.clear(); acarsUis[id].sel = ''; break;
+    case 'vdl2': case 'acars': acarsUis[id].planes.clear(); acarsUis[id].stats.clear(); acarsUis[id].vdl.clear(); acarsUis[id].sel = ''; break;
     case 'psat': state.psat.frames = []; state.psat.heard = 0; state.psat.bad = 0; break;
     case 'ert': meters.snap = null; meters.sel = ''; break;
     case 'lora': loraUi.snap = null; loraUi.sel = ''; break;
@@ -6426,6 +6573,7 @@ function ensureWorker(): Worker {
         const was = typeof m.replaces === 'string' ? list.indexOf(m.replaces) : -1;
         if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
         list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars' || id === 'vdl2') onAcarsLine(m.line as string, id); else if (id === 'btle') refreshBle(); break; }
+      case 'vdl2frame': onVdl2Frame(m.f as AvlcFrame); break;
       case 'ble': onBleAdv(m as { pdu: number[]; db: number; ch: number }); break;
       case 'rds': lastRds = m as typeof lastRds; drawRds(); break;
       case 'hd': lastHd = m as typeof lastHd; console.log('[hd]', JSON.stringify(m)); drawHd(); break;

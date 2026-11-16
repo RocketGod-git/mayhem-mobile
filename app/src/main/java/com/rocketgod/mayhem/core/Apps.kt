@@ -108,14 +108,33 @@ object Apps {
     private val _acarsTick = MutableStateFlow(0L)
     val acarsTick: StateFlow<Long> = _acarsTick.asStateFlow()
     fun acarsPlaneList(): List<AcarsPlane> = synchronized(acarsPlanes) { acarsPlanes.list().map { it.snapshot() } }
-    fun acarsClear() { synchronized(acarsPlanes) { acarsPlanes.clear() }; acarsLog.clear(); _acarsTick.value++ }
+    fun acarsClear() { synchronized(acarsPlanes) { acarsPlanes.clear(); acarsStats.clear() }; acarsLog.clear(); _acarsTick.value++ }
+    /** Messages a minute, by channel, kind and airline (ACARS's STATS view). */
+    private val acarsStats = com.rocketgod.mayhem.core.apps.AcarsStats()
+    fun acarsStatsSnap(): com.rocketgod.mayhem.core.apps.AcarsStats = synchronized(acarsPlanes) { acarsStats.snapshot() }
+    /** An airport by ICAO ident from the bundled list (once it has loaded), for the message readers and the map. */
+    val airportLookup: com.rocketgod.mayhem.core.apps.AirportLookup = { id ->
+        com.rocketgod.mayhem.core.uat.Airports[id]?.let { com.rocketgod.mayhem.core.apps.AcarsAirport(id, it.lat, it.lon, it.name) }
+    }
+    private fun countMsg(stats: com.rocketgod.mayhem.core.apps.AcarsStats, m: com.rocketgod.mayhem.core.apps.AcarsMsg, p: AcarsPlane?) {
+        if (m.label == "SQ") return
+        val kind = com.rocketgod.mayhem.core.apps.msgInsight(m).kind
+        stats.add(m.ms, m.mhz, kind, com.rocketgod.mayhem.core.apps.airlineOf(p?.flight ?: m.flight), p?.key ?: "")
+    }
     /** VDL2: VDL Mode 2 on every channel from 136.10 to 136.975; its ACARS messages grouped like ACARS's, apart from them. */
     val vdl2Log = PacketLog(); val vdl2 = com.rocketgod.mayhem.core.apps.Vdl2Decoder(vdl2Log)
     private val vdl2Planes = AcarsPlanes()
     private val _vdl2Tick = MutableStateFlow(0L)
     val vdl2Tick: StateFlow<Long> = _vdl2Tick.asStateFlow()
     fun vdl2PlaneList(): List<AcarsPlane> = synchronized(vdl2Planes) { vdl2Planes.list().map { it.snapshot() } }
-    fun vdl2Clear() { synchronized(vdl2Planes) { vdl2Planes.clear() }; vdl2Log.clear(); _vdl2Tick.value++ }
+    fun vdl2Clear() { synchronized(vdl2Planes) { vdl2Planes.clear(); vdl2Stats.clear(); vdl2Tracker.clear() }; vdl2Log.clear(); _vdl2Tick.value++ }
+    private val vdl2Stats = com.rocketgod.mayhem.core.apps.AcarsStats()
+    /** VDL2's every aircraft and ground station, by their AVLC addresses (ACARS or not). Guarded by vdl2Planes. */
+    private val vdl2Tracker = com.rocketgod.mayhem.core.apps.Vdl2Tracker(airportLookup)
+    fun vdl2StatsSnap(): com.rocketgod.mayhem.core.apps.AcarsStats = synchronized(vdl2Planes) { vdl2Stats.snapshot() }
+    fun vdl2Aircraft(): List<com.rocketgod.mayhem.core.apps.VdlAircraft> = synchronized(vdl2Planes) { vdl2Tracker.list().map { it.snapshot() } }
+    fun vdl2Stations(): List<com.rocketgod.mayhem.core.apps.VdlStation> = synchronized(vdl2Planes) { vdl2Tracker.stationList().map { it.snapshot() } }
+    fun vdl2Chans(): Map<Long, Int> = synchronized(vdl2Planes) { LinkedHashMap(vdl2Tracker.chans) }
     /** An aircraft ADS-B should open on (ACARS's ADS-B button): ADS-B keeps what it has heard instead of starting clean. */
     @Volatile var adsbPick: String? = null
     init {
@@ -125,12 +144,14 @@ object Apps {
         }
         acarsLog.onAdd = { line ->
             val m = com.rocketgod.mayhem.core.apps.parseAcarsLine(line, System.currentTimeMillis())
-            if (m != null) { synchronized(acarsPlanes) { acarsPlanes.add(m) }; _acarsTick.value++ }
+            if (m != null) { synchronized(acarsPlanes) { val p = acarsPlanes.add(m); countMsg(acarsStats, m, p) }; _acarsTick.value++ }
         }
         vdl2Log.onAdd = { line ->
             val m = com.rocketgod.mayhem.core.apps.parseAcarsLine(line, System.currentTimeMillis())
-            if (m != null) { synchronized(vdl2Planes) { vdl2Planes.add(m) }; _vdl2Tick.value++ }
+            if (m != null) { synchronized(vdl2Planes) { val p = vdl2Planes.add(m); countMsg(vdl2Stats, m, p) }; _vdl2Tick.value++ }
         }
+        // every frame, ACARS or not: the aircraft and ground stations by address (the decoder's lines are unchanged)
+        vdl2.onFrame = { f -> synchronized(vdl2Planes) { vdl2Tracker.add(f, System.currentTimeMillis()) }; _vdl2Tick.value++ }
     }
     /** Trains: end-of-train / head-of-train telemetry, or the PTC network; BOTH takes turns between them. */
     val trainsLog = PacketLog(); val trains = com.rocketgod.mayhem.core.trains.TrainsProcessor(trainsLog)

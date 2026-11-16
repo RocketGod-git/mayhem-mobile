@@ -121,6 +121,8 @@ const btle = new BtleDecoder(emit);
 const tpms = new TpmsDecoder(emit);
 const acars = new AcarsDecoder(emit);
 const vdl2 = new Vdl2Decoder(emit);
+// every frame, ACARS or not, for the per-address aircraft and ground stations (posted before the frame's ACARS line)
+vdl2.onFrame = f => emit({ type: 'vdl2frame', f });
 const trains = new TrainsProcessor(emit);
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);

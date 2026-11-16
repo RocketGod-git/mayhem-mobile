@@ -70,6 +70,25 @@ import com.rocketgod.mayhem.core.apps.kindLabel
 import com.rocketgod.mayhem.core.apps.labelMeaning
 import com.rocketgod.mayhem.core.apps.normReg
 import com.rocketgod.mayhem.model.Aircraft
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import com.rocketgod.mayhem.core.apps.AcarsMsg
+import com.rocketgod.mayhem.core.apps.LatLon
+import com.rocketgod.mayhem.core.apps.MsgInsight
+import com.rocketgod.mayhem.core.apps.PlaneInsight
+import com.rocketgod.mayhem.core.apps.VDL2_CHANNELS
+import com.rocketgod.mayhem.core.apps.VDL_LINK_MS
+import com.rocketgod.mayhem.core.apps.VdlAircraft
+import com.rocketgod.mayhem.core.apps.VdlStation
+import com.rocketgod.mayhem.core.apps.acarsFor
+import com.rocketgod.mayhem.core.apps.airlineOf
+import com.rocketgod.mayhem.core.apps.kindLabelOf
+import com.rocketgod.mayhem.core.apps.msgInsight
+import com.rocketgod.mayhem.core.apps.planeInsight
+import com.rocketgod.mayhem.core.apps.FlightNums
+import com.rocketgod.mayhem.core.apps.numChips
+import com.rocketgod.mayhem.core.apps.xidSummary
+import com.rocketgod.mayhem.core.uat.Airports
 import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.max
@@ -328,24 +347,65 @@ private fun BleDetail(dv: BleDevice, accent: Color, now: Long, modifier: Modifie
     }
 }
 
-// ---- ACARS: one card per aircraft, its messages in the panel, a link to the same aircraft in ADS-B ------------------
+// ---- ACARS and VDL2: one card per aircraft (VDL2: by ICAO address, ACARS or not), a map, the activity, the log ----
 
-/** The same aircraft in the ADS-B list: by ICAO address (from a US registration), the registration looked up for an
- *  ADS-B aircraft, or the flight number against its callsign. */
-private fun acarsAdsbMatch(p: AcarsPlane, aircraft: List<Aircraft>): Aircraft? {
-    val reg = normReg(p.reg); val fl = p.flight.replace(Regex("\\s"), "").uppercase(Locale.US)
+/** One aircraft as the cards, the map and the panel show it: an ACARS record, a VDL2 address, or both. */
+private data class AcRow(val key: String, val reg: String, val flight: String, val icao: String, val firstMs: Long, val lastMs: Long,
+                         val msgs: List<AcarsMsg>, val vdl: VdlAircraft?, val ins: PlaneInsight, val airline: String) {
+    val title: String get() = reg.ifEmpty { flight.ifEmpty { icao } }
+}
+
+/** Each message's reading, kept until the airports or home change. */
+private object AcReads {
+    private val cache = HashMap<AcarsMsg, MsgInsight>()
+    private var version = ""
+    @Synchronized fun of(m: AcarsMsg, home: LatLon?, loaded: Boolean): MsgInsight {
+        val v = "$loaded|${home?.let { "%.1f,%.1f".format(Locale.US, it.lat, it.lon) } ?: ""}"
+        if (v != version || cache.size > 20_000) { cache.clear(); version = v }
+        return cache.getOrPut(m) { msgInsight(m, if (loaded) Apps.airportLookup else null, home) }
+    }
+}
+
+private fun acRows(vdl: Boolean, planes: List<AcarsPlane>, vdlAc: List<VdlAircraft>, read: (AcarsMsg) -> MsgInsight): List<AcRow> {
+    fun mk(key: String, reg: String, flight: String, icao: String, first: Long, last: Long, msgs: List<AcarsMsg>, v: VdlAircraft?) =
+        AcRow(key, reg, flight, icao, first, last, msgs, v, planeInsight(msgs, read), airlineOf(flight))
+    if (!vdl) return planes.map { mk(it.key, it.reg, it.flight, it.icao, it.firstMs, it.lastMs, it.msgs, null) }
+    val byKey = planes.associateBy { it.key }
+    return vdlAc.map { a ->
+        val p = acarsFor(a, byKey)
+        mk("A:${a.addr}", a.reg.ifEmpty { p?.reg ?: "" }, a.flight.ifEmpty { p?.flight ?: "" }, a.addr, a.firstMs, a.lastMs, p?.msgs ?: emptyList(), a)
+    }
+}
+
+/** The same aircraft in the ADS-B list: VDL2 by its own address; ACARS by the ICAO address a US registration gives,
+ *  the registration looked up for an ADS-B aircraft, or the flight number against its callsign. */
+private fun acarsAdsbMatch(r: AcRow, aircraft: List<Aircraft>): Aircraft? {
+    if (r.vdl != null) return aircraft.firstOrNull { it.icao.uppercase(Locale.US) == r.icao }
+    val reg = normReg(r.reg); val fl = r.flight.replace(Regex("\\s"), "").uppercase(Locale.US)
     return aircraft.firstOrNull { a ->
-        (p.icao.isNotEmpty() && a.icao.uppercase(Locale.US) == p.icao) ||
+        (r.icao.isNotEmpty() && a.icao.uppercase(Locale.US) == r.icao) ||
             (reg.isNotEmpty() && normReg(AircraftInfo.get(a.icao)?.reg ?: "") == reg) ||
             (fl.isNotEmpty() && (a.flight ?: "").replace(Regex("\\s"), "").uppercase(Locale.US) == fl)
     }
 }
 
-/** ACARS (and VDL2, which carries ACARS): one card per aircraft (by registration, else flight); a tap opens every
- *  message it sent or got. */
+private data class AcWhere(val lat: Double, val lon: Double, val ms: Long)
+
+/** Where an aircraft is: only the newest position its own messages gave (the radio hears one band at a time, so
+ *  nothing here comes from ADS-B). */
+private fun acWhere(r: AcRow): AcWhere? = r.ins.pos?.let { AcWhere(it.lat, it.lon, r.ins.posMs) }
+private fun acSnr(n: Int) = "${if (n >= 0) "+" else ""}$n dB"
+private fun mhzOf(hz: Long) = "%.3f".format(Locale.US, hz / 1e6)
+
+/** The ACARS channels the presets offer (counted even before anything is heard on them). */
+private val ACARS_CHANNELS = listOf("131.550", "131.525", "131.725", "131.450", "130.025")
+
+/** ACARS (and VDL2, which carries ACARS): one card per aircraft, a map, the activity and the log. VDL2 keys aircraft
+ *  by their ICAO address (ACARS or not) and lists the ground stations. A tap opens every message, read into plain words. */
 @Composable
 fun AcarsScreen(accent: Color, vdl: Boolean = false) {
     val d = rememberDims()
+    val ctx = LocalContext.current
     val shift = if (vdl) 0L else AcarsDecoder.LO_SHIFT
     val app = if (vdl) MayhemApp.VDL2 else MayhemApp.ACARS
     val plog = if (vdl) Apps.vdl2Log else Apps.acarsLog
@@ -354,14 +414,27 @@ fun AcarsScreen(accent: Color, vdl: Boolean = false) {
     val logCount by plog.count.collectAsState()
     val snap by plog.snapshot.collectAsState()
     val aircraft by AdsbStore.flow.collectAsState()
+    val fix by Geo.fix.collectAsState()
+    val airportsLoaded by Airports.loaded.collectAsState()
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf("") }
-    var held by remember { mutableStateOf<List<AcarsPlane>?>(null) }
+    var focusKey by remember { mutableIntStateOf(0) }
+    var held by remember { mutableStateOf<List<AcRow>?>(null) }
     var heldLog by remember { mutableStateOf<List<String>?>(null) }
+    // where you are (the map's home, and positions that cannot be this aircraft's), and the airport list
+    LaunchedEffect(Unit) { Geo.start(ctx); Airports.load(ctx) }
+    val home = fix?.let { LatLon(it.first, it.second) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(1000); value = System.currentTimeMillis() } }.value
-    val live = remember(tick, vdl) { if (vdl) Apps.vdl2PlaneList() else Apps.acarsPlaneList() }
-    val planes = held ?: live
-    val picked = live.firstOrNull { it.key == sel }
+    val stations = remember(tick, vdl, airportsLoaded) { if (vdl) Apps.vdl2Stations() else emptyList() }
+    val live = remember(tick, vdl, airportsLoaded, home) {
+        acRows(vdl, if (vdl) Apps.vdl2PlaneList() else Apps.acarsPlaneList(), if (vdl) Apps.vdl2Aircraft() else emptyList()) { AcReads.of(it, home, airportsLoaded) }
+    }
+    val rows = held ?: live
+    val adsOf = remember(rows, aircraft) { rows.associate { it.key to acarsAdsbMatch(it, aircraft) } }
+    val where = remember(rows) { rows.mapNotNull { r -> acWhere(r)?.let { r.key to it } }.toMap() }
+    val placedStations = stations.filter { it.airport.isNotEmpty() && Apps.airportLookup(it.airport) != null }
+    val pickedStation = if (sel.startsWith("G:")) stations.firstOrNull { "G:${it.addr}" == sel } else null
+    val picked = if (pickedStation == null) live.firstOrNull { it.key == sel } else null
 
     val wf = waterfallOn(app, phoneDefault = true)
     PacketFrame(accent, plog, tag = if (vdl) "VDL2" else "ACARS", title = if (vdl) "AIRCRAFT DATALINK · D8PSK" else "AIRCRAFT DATALINK", roomy = true, shift = shift, emptyKey = key, waterfall = wf,
@@ -372,98 +445,383 @@ fun AcarsScreen(accent: Color, vdl: Boolean = false) {
                 Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)), shift = shift)
         },
         body = {
-            StageBar(listOf("AIRCRAFT ${live.size}", "LOG $logCount"), view, accent, held != null || heldLog != null, onView = { view = it },
+            StageBar(listOf("AIRCRAFT ${live.size}", "MAP ${where.size + placedStations.size}", "STATS", "LOG $logCount"), view, accent, held != null || heldLog != null, onView = { view = it },
                 onPause = { if (held == null) { held = live; heldLog = snap.lines } else { held = null; heldLog = null } },
                 onClear = { if (vdl) Apps.vdl2Clear() else Apps.acarsClear(); sel = ""; if (held != null) { held = emptyList(); heldLog = emptyList() } },
             )
-            if (view == 1) {
+            if (view == 3) {
                 LogList(heldLog ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (heldLog == null) snap.total else null, accent = accent, emptyKey = key)
             } else Box(Modifier.fillMaxWidth().weight(1f)) {
                 val note = if (vdl) "VDL Mode 2, the digital link that carries most airline ACARS now: every channel from 136.10 to 136.975 MHz at once, " +
-                    "each frame checked. One card per aircraft (by registration, else flight) with its ACARS messages; LOG also lists the link frames " +
-                    "between aircraft and ground stations, by their ICAO addresses. ADS-B links to the same aircraft when ADS-B has seen it."
-                else "One card per aircraft (by registration, else flight), with every message it sent or got in its panel: registration, flight, label " +
-                    "and text, CRC checked. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight)."
-                if (planes.isEmpty()) BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val stageH = maxHeight
-                    // the empty state fills the stage, and keeps its room on a short phone (then the stage scrolls to the note)
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                        EmptyState(key, Modifier.fillMaxWidth().heightIn(min = stageH * 0.75f).panel(), accent)
-                        AppNote(note)
+                    "each frame checked. One card per aircraft by its ICAO address (exact, so ADS-B links straight to it), ACARS or not, with its " +
+                    "registration and flight once it sends ACARS; ground stations below, placed at the airport their XIDs name. MAP plots the aircraft " +
+                    "where their own messages put them, with lines to the stations they work."
+                else "One card per aircraft (by registration, else flight), each message read into plain words: out, off, on and in times, positions, " +
+                    "weather, ATIS, free text, engine data. MAP plots them where their own messages put them. ADS-B links " +
+                    "to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight)."
+                when (view) {
+                    1 -> AcarsMap(rows, stations, where, vdl, accent, fix, sel, focusKey, now) { id -> sel = if (sel == id.removePrefix("dest:")) "" else id.removePrefix("dest:") }
+                    2 -> AcarsStatsView(vdl, rows.size, accent, now, tick)
+                    else -> if (rows.isEmpty() && stations.isEmpty()) BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val stageH = maxHeight
+                        // the empty state fills the stage, and keeps its room on a short phone (then the stage scrolls to the note)
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                            EmptyState(key, Modifier.fillMaxWidth().heightIn(min = stageH * 0.75f).panel(), accent)
+                            AppNote(note)
+                        }
+                    } else LazyVerticalGrid(GridCells.Adaptive(d.dp(250f)), Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                        items(rows, key = { it.key }) { r -> AcarsCard(r, adsOf[r.key], accent, now, sel == r.key) { sel = if (sel == r.key) "" else r.key } }
+                        if (vdl) {
+                            item(key = "gs-head", span = { GridItemSpan(maxLineSpan) }) {
+                                Column { PanelCaption("GROUND STATIONS · ${stations.size}", Palette.accent2)
+                                    if (stations.isEmpty()) Text("none heard yet", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f)) }
+                            }
+                            items(stations, key = { "G:${it.addr}" }) { g -> StationCard(g, now, sel == "G:${g.addr}") { sel = if (sel == "G:${g.addr}") "" else "G:${g.addr}" } }
+                        }
+                        item(key = "note", span = { GridItemSpan(maxLineSpan) }) { AppNote(note) }
                     }
-                } else LazyVerticalGrid(GridCells.Adaptive(d.dp(250f)), Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                    items(planes, key = { it.key }) { p -> AcarsCard(p, acarsAdsbMatch(p, aircraft) != null, accent, now, sel == p.key) { sel = if (sel == p.key) "" else p.key } }
-                    item(key = "note", span = { GridItemSpan(maxLineSpan) }) { AppNote(note) }
                 }
+                val onMap: () -> Unit = { view = 1; focusKey++ }
                 if (picked != null) {
-                    val ads = acarsAdsbMatch(picked, aircraft)
-                    AcarsDetail(picked, ads, accent, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
+                    val ads = adsOf[picked.key] ?: acarsAdsbMatch(picked, aircraft)
+                    AcarsDetail(picked, ads, stations, accent, now, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
+                        onMap = if (acWhere(picked) != null && view != 1) onMap else null,
                         onAdsb = if (ads != null) ({ Apps.adsbPick = ads.icao; Apps.open(MayhemApp.ADSB) }) else null) { sel = "" }
-                }
+                } else if (pickedStation != null) StationDetail(pickedStation, live, now, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
+                    onMap = if (placedStations.contains(pickedStation) && view != 1) onMap else null) { sel = "" }
             }
         })
 }
 
+/** A small outlined word: a message kind, a phase, an airport. */
 @Composable
-private fun AcarsCard(p: AcarsPlane, onAdsb: Boolean, accent: Color, now: Long, selected: Boolean, onClick: () -> Unit) {
+private fun AcChip(text: String, c: Color = Palette.ink, edge: Color = Palette.line) {
     val d = rememberDims()
-    val age = now - p.lastMs
+    Text(text, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.border(1.dp, edge, RoundedCornerShape(6.dp)).padding(horizontal = d.dp(5f), vertical = d.dp(2f)))
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AcChips(chips: List<Pair<String, Int>>, accent: Color) {
+    val d = rememberDims()
+    if (chips.isEmpty()) return
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        for ((t, k) in chips) when (k) {
+            1 -> AcChip(t, accent, accent.copy(alpha = 0.7f))
+            2 -> AcChip(t, Palette.accent2, Palette.accent2.copy(alpha = 0.7f))
+            else -> AcChip(t)
+        }
+    }
+}
+
+@Composable
+private fun AcarsCard(r: AcRow, ads: Aircraft?, accent: Color, now: Long, selected: Boolean, onClick: () -> Unit) {
+    val d = rememberDims()
+    val age = now - r.lastMs
     val live = age < 120_000
     val flash = max(0f, 1 - age / 700f)
-    val last = p.msgs.firstOrNull() ?: return
-    val what = labelMeaning(last.label)
-    val sub = listOfNotNull(p.icao.takeIf { it.isNotEmpty() }?.let { "ICAO $it" }, if (onAdsb) "ON ADS-B" else null).joinToString(" · ")
+    val last = r.msgs.firstOrNull(); val v = r.vdl; val li = r.ins.last; val nums = numChips(r.ins.nums)
+    val head = when {
+        r.airline.isNotEmpty() -> r.airline.uppercase(Locale.US) + if (r.flight.isNotEmpty()) " · ${r.flight}" else ""
+        r.flight.isNotEmpty() && (r.reg.isNotEmpty() || v != null) -> "FLIGHT ${r.flight}"
+        r.reg.isNotEmpty() -> "NO FLIGHT NUMBER"
+        v != null -> "NO ACARS YET"
+        else -> "NO REGISTRATION"
+    }
+    val sub = listOfNotNull(r.ins.orig.takeIf { it.isNotEmpty() }?.let { "$it → ${r.ins.dest}" }, r.icao.takeIf { it.isNotEmpty() }?.let { "ICAO $it" }, if (ads != null) "ON ADS-B" else null).joinToString(" · ")
+    val count = v?.frames ?: r.msgs.size
+    val what = if (v != null) "FRAME${if (count == 1) "" else "S"} · ${v.acars} ACARS · ${acSnr(v.snr)}" else "MESSAGE${if (count == 1) "" else "S"} · LAST ${last?.label ?: ""}"
+    val chips = buildList {
+        if (li != null) add(kindLabelOf(li.kind) to 1)
+        if (r.ins.phase.isNotEmpty()) add(r.ins.phase to 2)
+        if (r.ins.pos != null) add("POS ${bleAgo(now - r.ins.posMs)}" to 0)
+        if (v != null && v.station.isNotEmpty()) add("GS ${v.station}" to 0)
+        for (a in r.ins.airports.filter { it != r.ins.orig && it != r.ins.dest }.take(3)) add(a to 0)
+    }
     Column(Modifier.liveCard(accent, flash, selected, false, live, d, onClick), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
-            Text(p.reg.ifEmpty { p.flight }, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f), maxLines = 1)
+            Text(r.title, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f), maxLines = 1)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
-                Text(if (p.flight.isNotEmpty() && p.reg.isNotEmpty()) "FLIGHT ${p.flight}" else if (p.reg.isNotEmpty()) "NO FLIGHT NUMBER" else "NO REGISTRATION",
-                    color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (sub.isNotEmpty()) Text(sub, color = if (onAdsb) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(head, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (sub.isNotEmpty()) Text(sub, color = if (ads != null) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            LiveDot(live, flash, bleAgo(age))
+        }
+        if (nums.isNotEmpty()) Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Text(nums.joinToString(" · "), color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Text(bleAgo(now - r.ins.numsMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
+        }
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Text("$count", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
+            Text(what, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
+            Text(if (v != null) mhzOf(v.hz) else last?.mhz ?: "", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(3f)))
+        }
+        AcChips(chips, accent)
+        Text(li?.summary ?: (if (v != null) "link frames with ${v.stations.size} ground station${if (v.stations.size == 1) "" else "s"}" else ""),
+            color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(if (last != null) last.text.ifEmpty { "(no text)" } else v?.events?.firstOrNull()?.text ?: "(no ACARS text)", color = Palette.muted, fontFamily = Mono,
+            fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun StationCard(g: VdlStation, now: Long, selected: Boolean, onClick: () -> Unit) {
+    val d = rememberDims()
+    val c = Palette.accent2
+    val age = now - g.lastMs
+    val live = age < 120_000
+    val flash = max(0f, 1 - age / 700f)
+    val apt = if (g.airport.isNotEmpty()) Apps.airportLookup(g.airport) else null
+    Column(Modifier.liveCard(c, flash, selected, false, live, d, onClick), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            Text(g.addr, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(18f), maxLines = 1)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
+                Text(apt?.name?.uppercase(Locale.US) ?: "AIRPORT NOT NAMED YET", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f),
+                    letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (g.airport.isNotEmpty()) "${g.airport} · ${if (g.airportOwn) "from its own XID" else "from an aircraft's XID"}" else "ground station",
+                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             LiveDot(live, flash, bleAgo(age))
         }
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Text("${p.count}", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
-            Text("MESSAGE${if (p.count == 1) "" else "S"} · LAST ${last.label}${if (what.isNotEmpty()) " ${what.uppercase(Locale.US)}" else ""}", color = Palette.muted,
-                fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
-            Text(last.mhz, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(3f)))
+            Text("${g.frames}", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
+            Text("FRAME${if (g.frames == 1) "" else "S"} · ${g.aircraft.size} AIRCRAFT", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
+            Text(mhzOf(g.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(3f)))
         }
-        Text(last.text.ifEmpty { "(no text)" }, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(g.snr?.let { "heard itself at ${acSnr(it)}" } ?: "not heard itself yet (only aircraft talking to it)", color = Palette.muted, fontFamily = Mono,
+            fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
-/** An aircraft's fields, the ADS-B link when ADS-B has it, and every message newest first. */
+/** A timed line in a panel: a link event, an aircraft working a station. */
 @Composable
-private fun AcarsDetail(p: AcarsPlane, ads: Aircraft?, accent: Color, modifier: Modifier, onAdsb: (() -> Unit)?, onClose: () -> Unit) {
+private fun AcEvent(ms: Long?, text: String, accent: Color) {
     val d = rememberDims()
-    val fields = listOf(
-        "Registration" to p.reg.ifEmpty { "—" }, "Flight" to p.flight.ifEmpty { "—" }, "ICAO" to p.icao.ifEmpty { "—" }, "Messages" to p.count.toString(),
-        "First heard" to clockOf(p.firstMs), "Last heard" to clockOf(p.lastMs),
-        "ADS-B" to (ads?.let { a -> a.icao.uppercase(Locale.US) + (a.flight?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "") + (a.altBaro?.let { " · $it ft" } ?: "") }
-            ?: "not seen (open ADS-B to look for it)"),
-    )
-    val kind = listOfNotNull(p.flight.takeIf { it.isNotEmpty() }?.let { "FLIGHT $it" }, p.icao.takeIf { it.isNotEmpty() }?.let { "ICAO $it" }).joinToString(" · ").ifEmpty { "ACARS" }
-    CardPanel(p.reg.ifEmpty { p.flight }, kind, accent, modifier,
-        actions = if (onAdsb != null) ({ ToggleBox("ADS-B", false, accent, Modifier.fillMaxHeight()) { onAdsb() } }) else null, onClose = onClose) {
+    Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        if (ms != null) Text(clockOf(ms), color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
+        Text(text, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+    }
+}
+
+/** An aircraft's fields, the ADS-B link when ADS-B has it, its link events (VDL2) and every message newest first,
+ *  each read into plain words with its raw text under it. */
+@Composable
+private fun AcarsDetail(r: AcRow, ads: Aircraft?, stations: List<VdlStation>, accent: Color, now: Long, modifier: Modifier, onMap: (() -> Unit)?, onAdsb: (() -> Unit)?, onClose: () -> Unit) {
+    val d = rememberDims()
+    val v = r.vdl; val i = r.ins
+    val fields = buildList {
+        add("Registration" to r.reg.ifEmpty { "—" }); add("Flight" to r.flight.ifEmpty { "—" }); add("Airline" to r.airline.ifEmpty { "—" })
+        add("ICAO" to r.icao.ifEmpty { "—" }); add("Messages" to r.msgs.size.toString())
+        if (v != null) {
+            add("Frames" to "${v.frames} · ${v.acars} ACARS"); add("Last SNR" to acSnr(v.snr))
+            add("Ground stations" to v.stations.keys.joinToString(", ") { g -> stations.firstOrNull { it.addr == g }?.airport?.takeIf { it.isNotEmpty() }?.let { "$g ($it)" } ?: g }.ifEmpty { "—" })
+            add("Channel" to "${mhzOf(v.hz)} MHz")
+        }
+        add("Phase" to if (i.phase.isNotEmpty()) "${i.phase} · ${bleAgo(now - i.phaseMs)}" else "—")
+        add("Route" to if (i.orig.isNotEmpty()) "${i.orig} → ${i.dest}" else "—")
+        add("Position" to (i.pos?.let { "%.3f, %.3f · from a message %s".format(Locale.US, it.lat, it.lon, bleAgo(now - i.posMs)) } ?: "—"))
+        add("Stated" to numChips(i.nums).joinToString(" · ").let { if (it.isEmpty()) "—" else "$it · ${bleAgo(now - i.numsMs)}" })
+        add("Airports named" to i.airports.joinToString(", ").ifEmpty { "—" })
+        add("First heard" to clockOf(r.firstMs)); add("Last heard" to clockOf(r.lastMs))
+        if (v != null) add("XID" to v.xid.ifEmpty { "—" })
+        add("ADS-B" to (ads?.let { a -> a.icao.uppercase(Locale.US) + (a.flight?.trim()?.takeIf { it.isNotEmpty() }?.let { " · $it" } ?: "") + (a.altBaro?.let { " · $it ft" } ?: "") }
+            ?: "not seen (open ADS-B to look for it)"))
+    }
+    val kind = listOfNotNull(r.airline.takeIf { it.isNotEmpty() }?.uppercase(Locale.US), r.flight.takeIf { it.isNotEmpty() }?.let { "FLIGHT $it" }, r.icao.takeIf { it.isNotEmpty() }?.let { "ICAO $it" })
+        .joinToString(" · ").ifEmpty { if (v != null) "VDL2" else "ACARS" }
+    CardPanel(r.title, kind, accent, modifier,
+        actions = if (onMap != null || onAdsb != null) ({
+            if (onMap != null) ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
+            if (onAdsb != null) ToggleBox("ADS-B", false, accent, Modifier.fillMaxHeight()) { onAdsb() }
+        }) else null, onClose = onClose) {
         SelectionContainer {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                 FieldGrid(fields, labelWidth = 112f, minColumn = 320f)
-                PanelCaption("MESSAGES · newest first", accent)
-                for (m in p.msgs) Column(Modifier.fillMaxWidth().padding(top = d.dp(2f))) {
+                if (v != null) {
+                    PanelCaption("LINK EVENTS · newest first · ${v.events.size}", accent)
+                    if (v.events.isEmpty()) AcEvent(null, "no XID handoffs heard yet", accent)
+                    for (e in v.events) AcEvent(e.ms, e.text, accent)
+                }
+                PanelCaption("MESSAGES · newest first · ${r.msgs.size}", accent)
+                if (r.msgs.isEmpty()) AcEvent(null, "no ACARS messages from it yet", accent)
+                for (m in r.msgs) Column(Modifier.fillMaxWidth().padding(top = d.dp(2f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+                    val x = AcReads.of(m, Geo.fix.value?.let { LatLon(it.first, it.second) }, Airports.loaded.value)
                     Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line))
-                    Row(Modifier.padding(top = d.dp(5f)), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                    Row(Modifier.padding(top = d.dp(2f)), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                         Text(clockOf(m.ms), color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
                         val mean = labelMeaning(m.label)
                         Text("${if (m.down) "↓ from the aircraft" else "↑ to the aircraft"} · ${m.label}${if (mean.isNotEmpty()) " $mean" else ""} · blk ${m.blk}" +
                             (if (m.msn.isNotEmpty()) " · #${m.msn}" else "") + " · ${m.mhz}" + (if (m.crcOk) "" else " · CRC?"),
                             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
                     }
-                    if (m.text.isNotEmpty()) Text(m.text, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(top = d.dp(3f)))
+                    AcChips(buildList {
+                        add(kindLabelOf(x.kind) to 1)
+                        if (x.phase.isNotEmpty()) add(x.phase to 2)
+                        x.pos?.let { add("%.3f, %.3f".format(Locale.US, it.lat, it.lon) to 0) }
+                        for (c in numChips(x.nums)) add(c to 0)
+                        for (a in x.airports) add(a to 0)
+                    }, accent)
+                    Text(x.summary, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+                    if (m.text.isNotEmpty()) Text(m.text, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f))
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StationDetail(g: VdlStation, rows: List<AcRow>, now: Long, modifier: Modifier, onMap: (() -> Unit)?, onClose: () -> Unit) {
+    val d = rememberDims()
+    val c = Palette.accent2
+    val apt = if (g.airport.isNotEmpty()) Apps.airportLookup(g.airport) else null
+    val fields = listOf("Address" to g.addr, "Airport" to (apt?.let { "${g.airport} · ${it.name}" } ?: "—"),
+        "Placed by" to if (g.airport.isEmpty()) "—" else if (g.airportOwn) "its own XID" else "an aircraft's XID to it",
+        "Frames" to g.frames.toString(), "SNR" to (g.snr?.let { acSnr(it) } ?: "not heard itself yet"), "Channel" to "${mhzOf(g.hz)} MHz",
+        "First heard" to clockOf(g.firstMs), "Last heard" to "${clockOf(g.lastMs)} · ${bleAgo(now - g.lastMs)}",
+        "Its XID" to xidSummary(g.xidOwn).ifEmpty { "—" }, "XID to it" to xidSummary(g.xidHeard).ifEmpty { "—" })
+    CardPanel(g.addr, "GROUND STATION${if (g.airport.isNotEmpty()) " · ${g.airport}" else ""}", c, Modifier.then(modifier),
+        actions = if (onMap != null) ({ ToggleBox("MAP", false, c, Modifier.fillMaxHeight()) { onMap() } }) else null, onClose = onClose) {
+        SelectionContainer {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+                FieldGrid(fields, labelWidth = 112f, minColumn = 320f)
+                PanelCaption("AIRCRAFT WORKING IT · ${g.aircraft.size}", c)
+                for ((k, t) in g.aircraft.entries.sortedByDescending { it.value }) {
+                    val r = rows.firstOrNull { it.icao == k }
+                    AcEvent(t, listOfNotNull(r?.reg?.takeIf { it.isNotEmpty() }, r?.flight?.takeIf { it.isNotEmpty() }, k).joinToString(" · "), c)
+                }
+            }
+        }
+    }
+}
+
+/** The map: aircraft where their own messages put them (with the age of that fix and any altitude and heading they
+ *  stated), VDL2 ground stations at the airport their XIDs name, a line from each aircraft to the stations it worked
+ *  in the last ten minutes, the picked aircraft's destination; the aircraft with no position listed under it. */
+@Composable
+private fun AcarsMap(rows: List<AcRow>, stations: List<VdlStation>, where: Map<String, AcWhere>, vdl: Boolean, accent: Color, fix: Pair<Double, Double>?,
+                     sel: String, focusKey: Int, now: Long, onPick: (String) -> Unit) {
+    val items = ArrayList<GeoItem>(); val at = HashMap<String, Pair<Double, Double>>(); val paths = ArrayList<GeoPath>()
+    for (g in stations) {
+        val apt = (if (g.airport.isNotEmpty()) Apps.airportLookup(g.airport) else null) ?: continue
+        items.add(GeoItem("G:${g.addr}", apt.lat, apt.lon, "GS ${g.addr} · ${g.airport}", GeoItem.Kind.TOWER)); at[g.addr] = apt.lat to apt.lon
+    }
+    for (r in rows) {
+        val w = where[r.key] ?: continue
+        val alt = r.ins.nums.altFt?.let { numChips(FlightNums(altFt = it)).first() }
+        items.add(GeoItem(r.key, w.lat, w.lon, "${r.title}${alt?.let { " · $it" } ?: ""} · ${bleAgo(now - w.ms)}", GeoItem.Kind.PLANE, heading = r.ins.posHdg?.toDouble()))
+        at[r.key] = w.lat to w.lon
+        // the picked aircraft's destination, dashed (only then, so the view stays on what is heard here)
+        val dest = if (r.ins.dest.isNotEmpty() && sel == r.key) Apps.airportLookup(r.ins.dest) else null
+        if (dest != null) { paths.add(GeoPath(listOf(w.lat to w.lon, dest.lat to dest.lon), dashed = true)); items.add(GeoItem("dest:${r.key}", dest.lat, dest.lon, r.ins.dest, GeoItem.Kind.AIRPORT)) }
+    }
+    val lines = ArrayList<Pair<Pair<Double, Double>, Pair<Double, Double>>>()
+    if (vdl) for (r in rows) { val v = r.vdl ?: continue; val p = at[r.key] ?: continue; for ((g, t) in v.stations) if (now - t <= VDL_LINK_MS) at[g]?.let { lines.add(p to it) } }
+    val focus = (if (sel.startsWith("G:")) at[sel.removePrefix("G:")] else at[sel])
+    val none = rows.filter { it.key !in where }
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(rememberDims().dp(6f))) {
+        GeoMapView(items, accent, Modifier.fillMaxWidth().weight(1f).panel(), home = fix, selected = sel.ifEmpty { null }, layers = GeoLayers(lines = lines, paths = paths),
+            start = remember { mapStart(fix) }, focus = focus, focusKey = focusKey,
+            emptyTitle = if (items.isEmpty()) "NO POSITIONS YET" else "", emptySub = mapEmptySub("Aircraft that send their position show up here", fix), onPick = onPick)
+        NoPositionList(none, sel, accent, onPick)
+    }
+}
+
+/** Under the map: the aircraft heard that have not sent a position, a tap opens one. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NoPositionList(none: List<AcRow>, sel: String, accent: Color, onPick: (String) -> Unit) {
+    val d = rememberDims()
+    Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+        PanelCaption("NO POSITION YET · ${none.size}", accent)
+        FlowRow(Modifier.heightIn(max = d.dp(64f)).verticalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            if (none.isEmpty()) AcChip("every aircraft heard is on the map", Palette.muted)
+            for (r in none) Box(Modifier.clickable { onPick(r.key) }) {
+                if (sel == r.key) AcChip(r.title, accent, accent.copy(alpha = 0.7f)) else AcChip(r.title)
+            }
+        }
+    }
+}
+
+/** STATS: totals, messages a minute over the last 30 minutes, and bars by channel, airline and message kind. */
+@Composable
+private fun AcarsStatsView(vdl: Boolean, aircraft: Int, accent: Color, now: Long, tick: Long) {
+    val d = rememberDims()
+    val stats = remember(tick, vdl, now / 10_000) { if (vdl) Apps.vdl2StatsSnap() else Apps.acarsStatsSnap() }
+    val chans = remember(tick, vdl) { if (vdl) Apps.vdl2Chans() else emptyMap() }
+    val stations = remember(tick, vdl) { if (vdl) Apps.vdl2Stations().size else 0 }
+    val per = stats.minutes(now); val peak = per.max(); val sum = per.sum()
+    val tiles = buildList {
+        add("MESSAGES" to stats.total); add("AIRCRAFT" to aircraft); add("LAST 30 MIN" to sum); add("PEAK / MIN" to peak)
+        if (vdl) { add("FRAMES" to chans.values.sum()); add("GROUND STATIONS" to stations) }
+    }
+    val chanRows = if (vdl) VDL2_CHANNELS.sorted().map { mhzOf(it) to (chans[it] ?: 0) }
+    else (ACARS_CHANNELS + stats.chans.keys).distinct().sorted().map { it to (stats.chans[it] ?: 0) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val cols = max(2, (maxWidth / d.dp(120f)).toInt())
+            Column(verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                for (row in tiles.chunked(cols)) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                    for (i in 0 until cols) {
+                        val t = row.getOrNull(i)
+                        Column(Modifier.weight(1f).then(if (t != null) Modifier.clip(RoundedCornerShape(d.dp(12f)))
+                            .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.10f), Palette.panel))).border(1.dp, accent.copy(alpha = 0.22f), RoundedCornerShape(d.dp(12f)))
+                            .padding(horizontal = d.dp(10f), vertical = d.dp(8f)) else Modifier)) {
+                            if (t != null) {
+                                Text("${t.second}", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f), maxLines = 1)
+                                Text(t.first, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        PanelCaption("MESSAGES A MINUTE · last 30 min", accent)
+        Box(Modifier.fillMaxWidth().height(d.dp(70f)).clip(RoundedCornerShape(d.dp(10f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(10f))).padding(d.dp(4f))) {
+            Canvas(Modifier.fillMaxSize().padding(bottom = d.dp(10f))) {
+                val w = size.width; val h = size.height
+                val pts = per.mapIndexed { k, n -> Offset(w * k / (per.size - 1), h - 2 - (h - 6) * n / max(1, peak).toFloat()) }
+                val line = Path().apply { moveTo(pts[0].x, pts[0].y); for (p in pts.drop(1)) lineTo(p.x, p.y) }
+                val fill = Path().apply { addPath(line); lineTo(w, h); lineTo(0f, h); close() }
+                drawPath(fill, accent.copy(alpha = 0.18f))
+                drawPath(line, accent, style = Stroke(1.5.dp.toPx()))
+            }
+            Text("$peak", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.TopEnd))
+            Text("30 min ago", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), modifier = Modifier.align(Alignment.BottomStart))
+            Text("now", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), modifier = Modifier.align(Alignment.BottomEnd))
+        }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val wide = maxWidth > d.dp(720f)
+            val blocks: List<Triple<String, List<Pair<String, Int>>, String>> = listOf(
+                Triple(if (vdl) "FRAMES BY CHANNEL · MHz" else "MESSAGES BY CHANNEL · MHz", chanRows, ""),
+                Triple("TOP AIRLINES · aircraft", stats.topAirlines(), "none named yet (by flight number)"),
+                Triple("MESSAGE KINDS", stats.kindList().map { kindLabelOf(it.first) to it.second }, "no messages yet"),
+            )
+            if (wide) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(14f))) { for (b in blocks) Column(Modifier.weight(1f)) { AcBars(b.first, b.second, b.third, accent) } }
+            else Column(verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { for (b in blocks) AcBars(b.first, b.second, b.third, accent) }
+        }
+    }
+}
+
+/** A caption, then a bar per row as long as its share of the biggest, with its count. */
+@Composable
+private fun AcBars(title: String, rows: List<Pair<String, Int>>, empty: String, accent: Color) {
+    val d = rememberDims()
+    Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+        PanelCaption(title, accent)
+        if (rows.isEmpty()) Text(empty, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+        val top = max(1, rows.maxOfOrNull { it.second } ?: 1)
+        for ((k, n) in rows) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Text(k, color = if (n > 0) Palette.ink else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.width(d.dp(104f)))
+            Box(Modifier.weight(1f).height(d.dp(8f)).clip(RoundedCornerShape(4.dp)).background(Palette.line.copy(alpha = 0.6f))) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(n / top.toFloat()).clip(RoundedCornerShape(4.dp)).background(accent))
+            }
+            Text("$n", color = if (n > 0) Palette.ink else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, modifier = Modifier.width(d.dp(36f)))
         }
     }
 }
