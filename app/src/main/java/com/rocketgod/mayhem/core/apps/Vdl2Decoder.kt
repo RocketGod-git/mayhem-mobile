@@ -27,10 +27,17 @@ import kotlin.math.sqrt
  *   the eight phase steps (0, 1, 3, 2, 6, 7, 5, 4 π/4 for 000 ... 111);
  * - everything from the reserved symbol on is scrambled by x^15 + x + 1 from state 0x098D (output: the oldest stage);
  * - the frame bits after the header are bytes (first bit = least significant) in Reed-Solomon blocks of up to 249
- *   data bytes, the data bytes of all blocks interleaved column by column, the parity after (not used yet: a frame
- *   with a bit error fails its frame check and is counted, not shown);
+ *   data bytes, the data bytes of all blocks interleaved column by column, the parity after;
  * - AVLC: flags 7E, zero-bit stuffing, CRC-16 X.25; each address is 4 octets of 7 bits (first sent = most
  *   significant): a flag bit, a 3-bit type (1 = aircraft, its 24-bit ICAO address) and the 24-bit address.
+ *
+ * All of that matches ICAO Annex 10 Volume III, Part I, 6.4.3 (read 2026-11-16): the unique word; the scrambler's
+ * start 1101 0010 1011 001 (our state above is the same generator written the other way round); the length (data bits
+ * after the header FEC, least significant bit first); the column interleaver; and the two codes it adds, both used
+ * here: the (25, 20) header FEC (one wrong header bit is put right) and Reed-Solomon (255, 249) over GF(256) with
+ * x^8 + x^7 + x^2 + x + 1, generator roots α^120 … α^125, blocks shorter than 249 octets filled with zeros that are not
+ * sent, and only 2 (3 to 30 octets) or 4 (31 to 67) of the 6 check octets sent, the rest erasures. Up to 3 bad octets
+ * a block are put right (an erasure counts half). On our recordings every full block's six syndromes are zero.
  *
  * Every VDL2 channel inside the span is decoded at once, each by its own receiver. ACARS carried in AVLC (FF FF 01,
  * then the ACARS block) comes out as the ACARS app's message lines with VDL2 in front, so the same cards read it.
@@ -44,15 +51,16 @@ class Vdl2Decoder(private val log: PacketLog) : IqProcessor {
     @Volatile var onNote: ((String) -> Unit)? = null
     /** Every AVLC frame that passed its check (tests and tools). */
     @Volatile var onFrame: ((Frame) -> Unit)? = null
-    /** Transmissions found (unique word heard) and frames that failed their check. */
+    /** Transmissions found (unique word heard), frames that failed their check, octets Reed-Solomon put right. */
     @Volatile var bursts = 0; private set
     @Volatile var badFrames = 0; private set
+    @Volatile var fixedOctets = 0; private set
     private var key = ""
     private var rx: List<Channel> = emptyList()
 
     fun channels(): List<Long> = rx.map { it.hz }
 
-    override fun reset(rate: Int) { key = ""; rx = emptyList(); bursts = 0; badFrames = 0 }
+    override fun reset(rate: Int) { key = ""; rx = emptyList(); bursts = 0; badFrames = 0; fixedOctets = 0 }
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
         val center = centerOf()
@@ -82,8 +90,9 @@ class Vdl2Decoder(private val log: PacketLog) : IqProcessor {
         val bits = IntArray(n * 3)
         for (q in 0 until n) { val t = TRI[steps[at + 16 + q]]; bits[3 * q] = t[0]; bits[3 * q + 1] = t[1]; bits[3 * q + 2] = t[2] }
         val r = transmissionFrames(bits, bits.size) ?: return
-        badFrames += r.bad
+        badFrames += r.bad; fixedOctets += r.fixed
         if (r.bad > 0 && r.frames.isEmpty()) onNote?.invoke("VDL2 %.3f: a %d-bit transmission failed its frame check".format(hz / 1e6, r.len))
+        if (r.fixed > 0) onNote?.invoke("VDL2 %.3f: Reed-Solomon put right %d octet%s".format(hz / 1e6, r.fixed, if (r.fixed == 1) "" else "s"))
         for (f in r.frames) frame(hz, f, snrDb)
     }
 
@@ -248,7 +257,7 @@ class Vdl2Decoder(private val log: PacketLog) : IqProcessor {
     }
 
     data class Address(val type: Int, val addr: Int, val flag: Int)
-    data class Transmission(val frames: List<List<Int>>, val bad: Int, val len: Int)
+    data class Transmission(val frames: List<List<Int>>, val bad: Int, val len: Int, val fixed: Int)
 
     companion object {
         /** VDL Mode 2 channels: 136.975 (the common signaling channel) first, then the other US and European ones and
@@ -317,7 +326,87 @@ class Vdl2Decoder(private val log: PacketLog) : IqProcessor {
             return Address(((v shr 24) and 7).toInt(), (v and 0xFFFFFF).toInt(), ((v shr 27) and 1).toInt())
         }
 
-        /** The frames of one transmission's bits (after the unique word): descrambled, header, de-interleaved, HDLC. */
+        /** The (25, 20) header FEC's parity matrix (Annex 10 Vol III 6.4.3.1.1.5), over the reserved symbol and the length. */
+        private val HEADER_H = listOf("00000000111111111111", "00111111000011111111", "11000111001100001111", "11011011010100110011", "01101001111001010101")
+            .map { r -> IntArray(20) { r[it] - '0' } }
+
+        /** Puts right one wrong bit in the 25 header bits (reserved symbol, length, parity) in place; false when more are wrong. */
+        fun headerFix(h: IntArray): Boolean {
+            var syn = 0
+            for (r in 0 until 5) {
+                var p = h[20 + r]
+                for (c in 0 until 20) p = p xor (HEADER_H[r][c] and h[c])
+                syn = syn or (p shl (4 - r))
+            }
+            if (syn == 0) return true
+            for (c in 0 until 20) {
+                var col = 0; for (r in 0 until 5) col = col or (HEADER_H[r][c] shl (4 - r))
+                if (col == syn) { h[c] = h[c] xor 1; return true }
+            }
+            for (r in 0 until 5) if (syn == 1 shl (4 - r)) { h[20 + r] = h[20 + r] xor 1; return true }
+            return false
+        }
+
+        // GF(256) with x^8 + x^7 + x^2 + x + 1, α = x
+        private val GF_EXP = IntArray(512); private val GF_LOG = IntArray(256)
+        init { var x = 1; for (i in 0 until 255) { GF_EXP[i] = x; GF_LOG[x] = i; x = x shl 1; if (x and 0x100 != 0) x = x xor 0x187 }; for (i in 255 until 512) GF_EXP[i] = GF_EXP[i - 255] }
+        private fun gmul(a: Int, b: Int) = if (a != 0 && b != 0) GF_EXP[GF_LOG[a] + GF_LOG[b]] else 0
+        private fun gdiv(a: Int, b: Int) = if (a != 0) GF_EXP[GF_LOG[a] + 255 - GF_LOG[b]] else 0
+        private fun gpow(e: Int) = GF_EXP[((e % 255) + 255) % 255]
+        /** Polynomials here are coefficient lists, lowest degree first. */
+        private fun pmul(a: List<Int>, b: List<Int>): List<Int> { val o = IntArray(a.size + b.size - 1); for (i in a.indices) for (j in b.indices) o[i + j] = o[i + j] xor gmul(a[i], b[j]); return o.toList() }
+        private fun peval(p: List<Int>, x: Int): Int { var v = 0; for (i in p.indices.reversed()) v = gmul(v, x) xor p[i]; return v }
+
+        /**
+         * Reed-Solomon (255, 249) errors-and-erasures decoding of one block in place: [cw] is the 255 octets in sending
+         * order (the first one the highest power), [erased] the positions whose octets were not sent. Roots α^120 … α^125.
+         * Returns how many octets were put right, or -1 when the block cannot be (then it is left as it was).
+         */
+        fun rsDecode(cw: IntArray, erased: List<Int>): Int {
+            val n = 255; val t2 = 6; val fcr = 120
+            val syn = IntArray(t2) { j -> var s = 0; val a = gpow(fcr + j); for (i in 0 until n) s = gmul(s, a) xor cw[i]; s }
+            if (syn.all { it == 0 }) return 0
+            val e = erased.size
+            if (e > t2) return -1
+            // the erasure locator Γ(x) = Π (1 - X x), X = α^degree
+            var gam = listOf(1)
+            for (i in erased) gam = pmul(gam, listOf(1, gpow(n - 1 - i)))
+            // Forney syndromes: S(x)Γ(x) mod x^6, the first e of them spent on the erasures
+            val fs = pmul(syn.toList(), gam).take(t2)
+            // Berlekamp-Massey over the rest for the error locator Λ(x)
+            var lam = listOf(1); var prev = listOf(1); var l = 0; var m = 1; var b = 1
+            for (r in e until t2) {
+                var d = fs[r]
+                for (i in 1..l) d = d xor gmul(lam.getOrElse(i) { 0 }, fs[r - i])
+                if (d == 0) { m++; continue }
+                val coef = gdiv(d, b); val t = lam
+                val sh = List(m) { 0 } + prev.map { gmul(it, coef) }
+                lam = List(maxOf(lam.size, sh.size)) { lam.getOrElse(it) { 0 } xor sh.getOrElse(it) { 0 } }
+                if (2 * l <= r - e) { l = r - e + 1 - l; prev = t; b = d; m = 1 } else m++
+            }
+            while (lam.size > 1 && lam.last() == 0) lam = lam.dropLast(1)
+            if (2 * (lam.size - 1) + e > t2) return -1
+            val psi = pmul(lam, gam)
+            // its roots: the positions
+            val pos = (0 until n).filter { peval(psi, gpow(-(n - 1 - it))) == 0 }
+            if (pos.size != psi.size - 1) return -1
+            // Forney: the values, Ω(x) = S(x)Ψ(x) mod x^6, e = X^(1-fcr) Ω(X⁻¹) / Ψ'(X⁻¹)
+            val om = pmul(syn.toList(), psi).take(t2)
+            val dpsi = psi.mapIndexed { i, c -> if (i and 1 == 1) c else 0 }.drop(1)
+            val fix = cw.copyOf()
+            for (i in pos) {
+                val x = gpow(n - 1 - i); val xi = gdiv(1, x)
+                val den = peval(dpsi, xi)
+                if (den == 0) return -1
+                fix[i] = fix[i] xor gmul(gmul(gpow((n - 1 - i) * (1 - fcr)), peval(om, xi)), gdiv(1, den))
+            }
+            for (j in 0 until t2) { var s = 0; val a = gpow(fcr + j); for (i in 0 until n) s = gmul(s, a) xor fix[i]; if (s != 0) return -1 }
+            fix.copyInto(cw)
+            return pos.count { it !in erased }
+        }
+
+        /** The frames of one transmission's bits (after the unique word): descrambled, header (put right if one bit is
+         *  wrong), de-interleaved, Reed-Solomon put right, HDLC. `fixed` counts the octets Reed-Solomon put right. */
         fun transmissionFrames(raw: IntArray, n: Int): Transmission? {
             if (n < 25 + 8 * 13) return null
             val bits = IntArray(n)
@@ -327,22 +416,38 @@ class Vdl2Decoder(private val log: PacketLog) : IqProcessor {
                 st = ((st shl 1) or fb) and 0x7FFF
                 bits[i] = raw[i] xor out
             }
+            if (!headerFix(bits)) return null
             if (bits[0] != 0 || bits[1] != 0 || bits[2] != 0) return null   // the reserved symbol is 000
             var len = 0
             for (i in 0 until 17) len = len or (bits[3 + i] shl i)
             val nby = (len + 7) shr 3
-            if (len < 8 * 13 || 25 + 8 * nby > n) return null
-            val have = (n - 25) / 8
-            val by = IntArray(have) { q -> var v = 0; for (i in 0 until 8) v = v or (bits[25 + 8 * q + i] shl i); v }
+            if (len < 8 * 13) return null
             val sizes = ArrayList<Int>(); var left = nby
             while (left > 0) { sizes.add(min(249, left)); left -= 249 }
-            val blocks = sizes.map { IntArray(it) }
+            val npar = sizes.map { k -> if (k <= 2) 0 else if (k <= 30) 2 else if (k <= 67) 4 else 6 }
+            // the data must all be there; check octets the burst ended before are erasures like the ones never sent
+            val avail = min(nby + npar.sum(), (n - 25) / 8)
+            if (avail < nby) return null
+            val by = IntArray(avail) { q -> var v = 0; for (i in 0 until 8) v = v or (bits[25 + 8 * q + i] shl i); v }
+            // the table: one row of 255 per block, read out column by column, octets never sent skipped
+            val rows = sizes.map { IntArray(255) }
+            val lost = sizes.map { ArrayList<Int>() }
             var pos = 0
-            for (i in 0 until 249) for (j in sizes.indices) if (i < sizes[j]) blocks[j][i] = by[pos++]
-            val data = blocks.flatMap { it.toList() }
+            for (i in 0 until 255) for (j in sizes.indices) if (i < sizes[j] || (i >= 249 && i < 249 + npar[j])) { if (pos < avail) rows[j][i] = by[pos] else lost[j].add(i); pos++ }
+            var fixed = 0
+            for (j in sizes.indices) {
+                if (npar[j] == 0) continue
+                val erased = lost[j] + (249 + npar[j] until 255)
+                val keep = rows[j].copyOf()
+                val r = rsDecode(rows[j], erased)
+                // the fill is zeros that were never sent: a "correction" there means the block was past putting right
+                if (r > 0 && (sizes[j] until 249).any { rows[j][it] != 0 }) keep.copyInto(rows[j])
+                else if (r > 0) fixed += r
+            }
+            val data = rows.flatMapIndexed { j, r -> r.take(sizes[j]) }
             val fb = IntArray(len) { (data[it shr 3] shr (it and 7)) and 1 }
             val (frames, bad) = hdlcFrames(fb, len)
-            return Transmission(frames, bad, len)
+            return Transmission(frames, bad, len, fixed)
         }
     }
 }

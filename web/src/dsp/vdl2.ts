@@ -8,10 +8,17 @@
  *   the eight phase steps (0, 1, 3, 2, 6, 7, 5, 4 π/4 for 000 ... 111);
  * - everything from the reserved symbol on is scrambled by x^15 + x + 1 from state 0x098D (output: the oldest stage);
  * - the frame bits after the header are bytes (first bit = least significant) in Reed-Solomon blocks of up to 249
- *   data bytes, the data bytes of all blocks interleaved column by column, the parity after (not used yet: a frame
- *   with a bit error fails its frame check and is counted, not shown);
+ *   data bytes, the data bytes of all blocks interleaved column by column, the parity after;
  * - AVLC: flags 7E, zero-bit stuffing, CRC-16 X.25; each address is 4 octets of 7 bits (first sent = most
  *   significant): a flag bit, a 3-bit type (1 = aircraft, its 24-bit ICAO address) and the 24-bit address.
+ *
+ * All of that matches ICAO Annex 10 Volume III, Part I, 6.4.3 (read 2026-11-16): the unique word; the scrambler's
+ * start 1101 0010 1011 001 (our state above is the same generator written the other way round); the length (data bits
+ * after the header FEC, least significant bit first); the column interleaver; and the two codes it adds, both used
+ * here: the (25, 20) header FEC (one wrong header bit is put right) and Reed-Solomon (255, 249) over GF(256) with
+ * x^8 + x^7 + x^2 + x + 1, generator roots α^120 … α^125, blocks shorter than 249 octets filled with zeros that are not
+ * sent, and only 2 (3 to 30 octets) or 4 (31 to 67) of the 6 check octets sent, the rest erasures. Up to 3 bad octets
+ * a block are put right (an erasure counts half). On our recordings every full block's six syndromes are zero.
  *
  * Every VDL2 channel inside the span is decoded at once, each by its own receiver. ACARS carried in AVLC (FF FF 01,
  * then the ACARS block) comes out as the ACARS app's message lines with VDL2 in front, so the same cards read it.
@@ -93,8 +100,92 @@ export function avlcAddress(b: number[], at: number): { type: number; addr: numb
 const TYPE_NAMES = ['type 0', 'aircraft', 'type 2', 'type 3', 'ground station', 'ground station', 'type 6', 'all stations'];
 const h6 = (v: number) => v.toString(16).toUpperCase().padStart(6, '0');
 
-/** The frames of one transmission's bits (after the unique word): descrambled, header, de-interleaved, HDLC. */
-export function vdl2Transmission(raw: ArrayLike<number>, n: number): { frames: number[][]; bad: number; len: number } | null {
+/** The (25, 20) header FEC's parity matrix (Annex 10 Vol III 6.4.3.1.1.5), over the reserved symbol and the length. */
+const HEADER_H = ['00000000111111111111', '00111111000011111111', '11000111001100001111', '11011011010100110011', '01101001111001010101']
+  .map(r => [...r].map(Number));
+
+/** Puts right one wrong bit in the 25 header bits (reserved symbol, length, parity) in place; false when more are wrong. */
+export function vdl2HeaderFix(h: Uint8Array): boolean {
+  let syn = 0;
+  for (let r = 0; r < 5; r++) {
+    let p = h[20 + r];
+    for (let c = 0; c < 20; c++) p ^= HEADER_H[r][c] & h[c];
+    syn |= p << (4 - r);
+  }
+  if (syn === 0) return true;
+  for (let c = 0; c < 20; c++) {
+    let col = 0; for (let r = 0; r < 5; r++) col |= HEADER_H[r][c] << (4 - r);
+    if (col === syn) { h[c] ^= 1; return true; }
+  }
+  for (let r = 0; r < 5; r++) if (syn === 1 << (4 - r)) { h[20 + r] ^= 1; return true; }
+  return false;
+}
+
+// GF(256) with x^8 + x^7 + x^2 + x + 1, α = x
+const GF_EXP = new Uint8Array(512), GF_LOG = new Uint8Array(256);
+{ let x = 1; for (let i = 0; i < 255; i++) { GF_EXP[i] = x; GF_LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x187; } for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255]; }
+const gmul = (a: number, b: number) => a && b ? GF_EXP[GF_LOG[a] + GF_LOG[b]] : 0;
+const gdiv = (a: number, b: number) => a ? GF_EXP[GF_LOG[a] + 255 - GF_LOG[b]] : 0;
+const gpow = (e: number) => GF_EXP[((e % 255) + 255) % 255];
+/** Polynomials here are coefficient arrays, lowest degree first. */
+const pmul = (a: number[], b: number[]) => { const o = new Array<number>(a.length + b.length - 1).fill(0); for (let i = 0; i < a.length; i++) for (let j = 0; j < b.length; j++) o[i + j] ^= gmul(a[i], b[j]); return o; };
+const peval = (p: number[], x: number) => { let v = 0; for (let i = p.length - 1; i >= 0; i--) v = gmul(v, x) ^ p[i]; return v; };
+
+/**
+ * Reed-Solomon (255, 249) errors-and-erasures decoding of one block in place: `cw` is the 255 octets in sending order
+ * (the first one the highest power), `erased` the positions (indexes into cw) whose octets were not sent. Roots
+ * α^120 … α^125. Returns how many octets were put right, or -1 when the block cannot be (then it is left as it was).
+ */
+export function rsDecode(cw: number[], erased: number[]): number {
+  const N = 255, T2 = 6, FCR = 120;
+  const syn = new Array<number>(T2);
+  let any = false;
+  for (let j = 0; j < T2; j++) { let s = 0; const a = gpow(FCR + j); for (let i = 0; i < N; i++) s = gmul(s, a) ^ cw[i]; syn[j] = s; if (s) any = true; }
+  if (!any) return 0;
+  const e = erased.length;
+  if (e > T2) return -1;
+  // the erasure locator Γ(x) = Π (1 - X x), X = α^degree
+  let gam = [1];
+  for (const i of erased) gam = pmul(gam, [1, gpow(N - 1 - i)]);
+  // Forney syndromes: S(x)Γ(x) mod x^6, the first e of them spent on the erasures
+  const fs = pmul(syn, gam).slice(0, T2);
+  // Berlekamp-Massey over the rest for the error locator Λ(x)
+  let lam = [1], prev = [1], L = 0, m = 1, b = 1;
+  for (let r = e; r < T2; r++) {
+    let d = fs[r];
+    for (let i = 1; i <= L; i++) d ^= gmul(lam[i] ?? 0, fs[r - i]);
+    if (d === 0) { m++; continue; }
+    const coef = gdiv(d, b), t = lam.slice(), sh = new Array<number>(m).fill(0).concat(prev.map(x => gmul(x, coef)));
+    const nl = new Array<number>(Math.max(lam.length, sh.length)).fill(0);
+    for (let i = 0; i < nl.length; i++) nl[i] = (lam[i] ?? 0) ^ (sh[i] ?? 0);
+    lam = nl;
+    if (2 * L <= r - e) { L = r - e + 1 - L; prev = t; b = d; m = 1; } else m++;
+  }
+  while (lam.length > 1 && lam[lam.length - 1] === 0) lam.pop();
+  if (2 * (lam.length - 1) + e > T2) return -1;
+  const psi = pmul(lam, gam);
+  // its roots: the positions
+  const pos: number[] = [];
+  for (let i = 0; i < N; i++) if (peval(psi, gpow(-(N - 1 - i))) === 0) pos.push(i);
+  if (pos.length !== psi.length - 1) return -1;
+  // Forney: the values, Ω(x) = S(x)Ψ(x) mod x^6, e = X^(1-FCR) Ω(X⁻¹) / Ψ'(X⁻¹)
+  const om = pmul(syn, psi).slice(0, T2);
+  const dpsi = psi.map((c, i) => (i & 1 ? c : 0)).slice(1);
+  const fix = cw.slice();
+  for (const i of pos) {
+    const X = gpow(N - 1 - i), xi = gdiv(1, X);
+    const den = peval(dpsi, xi);
+    if (!den) return -1;
+    fix[i] ^= gmul(gmul(gpow((N - 1 - i) * (1 - FCR)), peval(om, xi)), gdiv(1, den));
+  }
+  for (let j = 0; j < T2; j++) { let s = 0; const a = gpow(FCR + j); for (let i = 0; i < N; i++) s = gmul(s, a) ^ fix[i]; if (s) return -1; }
+  for (let i = 0; i < N; i++) cw[i] = fix[i];
+  return pos.filter(i => !erased.includes(i)).length;
+}
+
+/** The frames of one transmission's bits (after the unique word): descrambled, header (put right if one bit is
+ *  wrong), de-interleaved, Reed-Solomon put right, HDLC. `fixed` counts the octets Reed-Solomon put right. */
+export function vdl2Transmission(raw: ArrayLike<number>, n: number): { frames: number[][]; bad: number; len: number; fixed: number } | null {
   if (n < 25 + 8 * 13) return null;
   const bits = new Uint8Array(n);
   let st = SCRAMBLER_SEED;
@@ -103,24 +194,40 @@ export function vdl2Transmission(raw: ArrayLike<number>, n: number): { frames: n
     st = ((st << 1) | fb) & 0x7FFF;
     bits[i] = raw[i] ^ out;
   }
+  if (!vdl2HeaderFix(bits)) return null;
   if (bits[0] || bits[1] || bits[2]) return null;   // the reserved symbol is 000
   let len = 0;
   for (let i = 0; i < 17; i++) len |= bits[3 + i] << i;
   const nby = (len + 7) >> 3;
-  if (len < 8 * 13 || 25 + 8 * nby > n) return null;
-  const have = Math.floor((n - 25) / 8);
-  const by = new Array<number>(have);
-  for (let q = 0; q < have; q++) { let v = 0; for (let i = 0; i < 8; i++) v |= bits[25 + 8 * q + i] << i; by[q] = v; }
+  if (len < 8 * 13) return null;
   const sizes: number[] = [];
   for (let left = nby; left > 0; left -= 249) sizes.push(Math.min(249, left));
-  const blocks = sizes.map(k => new Array<number>(k));
+  const npar: number[] = sizes.map(k => k <= 2 ? 0 : k <= 30 ? 2 : k <= 67 ? 4 : 6);
+  // the data must all be there; check octets the burst ended before are erasures like the ones never sent
+  const avail = Math.min(nby + npar.reduce((a, x) => a + x, 0), Math.floor((n - 25) / 8));
+  if (avail < nby) return null;
+  const by = new Array<number>(avail);
+  for (let q = 0; q < avail; q++) { let v = 0; for (let i = 0; i < 8; i++) v |= bits[25 + 8 * q + i] << i; by[q] = v; }
+  // the table: one row of 255 per block, read out column by column, octets never sent skipped
+  const rows = sizes.map(() => new Array<number>(255).fill(0));
+  const lost = sizes.map(() => [] as number[]);
   let pos = 0;
-  for (let i = 0; i < 249; i++) for (let j = 0; j < sizes.length; j++) if (i < sizes[j]) blocks[j][i] = by[pos++];
-  const data = blocks.flat();
+  for (let i = 0; i < 255; i++) for (let j = 0; j < sizes.length; j++) if (i < sizes[j] || (i >= 249 && i < 249 + npar[j])) { if (pos < avail) rows[j][i] = by[pos]; else lost[j].push(i); pos++; }
+  let fixed = 0;
+  for (let j = 0; j < sizes.length; j++) {
+    if (!npar[j]) continue;
+    const erased: number[] = [...lost[j]]; for (let i = 249 + npar[j]; i < 255; i++) erased.push(i);
+    const keep = rows[j].slice();
+    const r = rsDecode(rows[j], erased);
+    // the fill is zeros that were never sent: a "correction" there means the block was past putting right
+    if (r > 0 && rows[j].some((v, i) => i >= sizes[j] && i < 249 && v !== 0)) rows[j] = keep;
+    else if (r > 0) fixed += r;
+  }
+  const data = rows.flatMap((r, j) => r.slice(0, sizes[j]));
   const fb = new Uint8Array(len);
   for (let i = 0; i < len; i++) fb[i] = (data[i >> 3] >> (i & 7)) & 1;
   const r = hdlcFrames(fb, len);
-  return { ...r, len };
+  return { ...r, len, fixed };
 }
 
 /** Every VDL2 channel in the span at once. */
@@ -129,12 +236,12 @@ export class Vdl2Decoder implements IqProcessor {
   now: () => number = () => Date.now();
   /** Every AVLC frame that passed its check (tests and tools). */
   onFrame: ((f: Vdl2Frame) => void) | null = null;
-  /** Transmissions found (unique word heard) and frames that failed their check. */
-  bursts = 0; badFrames = 0;
+  /** Transmissions found (unique word heard), frames that failed their check, octets Reed-Solomon put right. */
+  bursts = 0; badFrames = 0; fixedOctets = 0;
   private key = '';
   private rx: Vdl2Channel[] = [];
   constructor(private readonly emit: Emit) {}
-  reset(_rate: number): void { this.key = ''; this.rx = []; this.bursts = 0; this.badFrames = 0; }
+  reset(_rate: number): void { this.key = ''; this.rx = []; this.bursts = 0; this.badFrames = 0; this.fixedOctets = 0; }
   channels(): number[] { return this.rx.map(r => r.hz); }
   onIq(iq: Int8Array, rate: number): void {
     const key = `${this.centerHz}|${rate}`;
@@ -162,8 +269,9 @@ export class Vdl2Decoder implements IqProcessor {
     for (let i = 0; i < body.length; i++) { const t = TRI[body[i]]; bits[3 * i] = t[0]; bits[3 * i + 1] = t[1]; bits[3 * i + 2] = t[2]; }
     const r = vdl2Transmission(bits, bits.length);
     if (!r) return;
-    this.badFrames += r.bad;
+    this.badFrames += r.bad; this.fixedOctets += r.fixed;
     if (r.bad && !r.frames.length) this.emit({ type: 'log', line: `VDL2 ${(hz / 1e6).toFixed(3)}: a ${r.len}-bit transmission failed its frame check` });
+    if (r.fixed) this.emit({ type: 'log', line: `VDL2 ${(hz / 1e6).toFixed(3)}: Reed-Solomon put right ${r.fixed} octet${r.fixed === 1 ? '' : 's'}` });
     for (const fr of r.frames) this.frame(hz, fr, snrDb);
   }
 
