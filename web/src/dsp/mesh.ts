@@ -14,6 +14,11 @@
  *    makes the same network read the same on every radio.
  * 4. Landis+Gyr Gridstream (sync of 0xAA bytes, then UART-framed 00 FF) is recognized as such: bytes deframed and the
  *    CRC-16/CCITT checked with the published utility seeds, and a beacon's meter LAN address read out.
+ * 5. IEEE 802.15.4g SUN-FSK at 50 kb/s (+-25 kHz, the standard's FSK operating mode 1): the standard's SFD, PHR and PN9
+ *    whitening, and a frame check. The network heard at 911.6 MHz (worked out from our own 902-922 MHz recording,
+ *    2026-11-15) wakes its sleeping receivers with a ~150 ms preamble, so bursts up to half a second are kept for it,
+ *    and its CRC-16 (x^16+x^12+x^5+1 over the de-whitened bits in air order) starts from 0x1877, not 0: all 27 clean
+ *    frames of that recording pass. Each 7-byte device ID gets a card with its frame counter and network ID.
  *
  * MetersProcessor runs it beside ErtDecoder on the same samples: the Meters app.
  */
@@ -35,6 +40,8 @@ export interface MeshFrame {
   crcOk: boolean;
   /** Gridstream only: the length field matches the bytes received (the CRC seed differs by utility). */
   lenOk: boolean;
+  /** 802.15.4g only: the CRC-16 start the frame passed with. */
+  crcInit?: number;
 }
 
 /** Everything heard from one network (one sync word). */
@@ -101,7 +108,7 @@ export interface MeshDevice {
 /** The snapshot the worker posts to the screen. */
 export interface MetersSnapshot { type: 'meters'; nets: MeshNet[]; devices: MeshDevice[]; links: MeshLink[]; bursts: number; busy: number }
 
-const GRIDSTREAM = -1, ERT = -2;
+const GRIDSTREAM = -1, ERT = -2, SUN = -3;
 const h2 = (v: number) => (v & 0xFF).toString(16).toUpperCase().padStart(2, '0');
 const h8 = (v: number) => (v >>> 0).toString(16).toUpperCase().padStart(8, '0');
 const hex = (b: number[]) => b.map(h2).join('');
@@ -116,7 +123,7 @@ function newDevice(net: number, id: number, firstMs: number): MeshDevice {
     ckMs: [], ckV: [], pendMs: null, pendV: 0, pendRun: 0, lastHex: '', lengths: [], address: -1, addressSeen: 0,
     uptimeS: -1, uptimeMs: 0, resyncs: 0, ertKind: '', commodity: '', consFirst: -1, cons: -1, consHistory: [],
     lat: null, lon: null, posColor: 0, wanVotes: {}, fields: [], fieldsBy: {}, fieldOrder: [], talksTo: [], addressed: 0,
-    label: net === ERT ? String(id) : net === GRIDSTREAM ? h8(id) : h2(id),
+    label: net === ERT ? String(id) : net === GRIDSTREAM ? h8(id) : net === SUN ? '' : h2(id),
   };
 }
 
@@ -164,6 +171,11 @@ export class MeshDecoder implements IqProcessor {
   static readonly GRIDSTREAM = GRIDSTREAM;
   /** ERT meters (Itron SCM / SCM+ / IDM, Neptune R900) share the device list, decoded by ErtDecoder on the same samples. */
   static readonly ERT = ERT;
+  /** IEEE 802.15.4g SUN-FSK frames, any network (see sunParse). */
+  static readonly SUN = SUN;
+  static readonly SUN_BAUD = 50_000;
+  /** CRC-16 starts of the SUN networks heard (0x1877: the 911.6 MHz network), tried before the standard's own. */
+  static readonly SUN_INITS = [0x1877];
   /** Utility seeds for Gridstream's CRC (CoServ, Oncor), from the RECESSIM wiki. */
   static readonly GS_SEEDS = [0x45F8, 0x5FD6];
   static readonly R900_SYNC = 0b00000000000000001110010101100100;
@@ -217,6 +229,10 @@ export class MeshDecoder implements IqProcessor {
   private written = 0;
   private nextFrame = 0;
   private active: { start: number; last: number; wSum: number; w: number; peak: number; bin: number }[] = [];
+  /** Long bursts (wake-up preambles) looked at again once the frame after them has had time to arrive. */
+  private tails: { start: number; last: number; peak: number; bin: number; due: number }[] = [];
+  /** 802.15.4g frames published in the last half second (bytes -> sample count), so a frame is published once. */
+  private sunSeen = new Map<string, number>();
   private count = 0;
   private shed = 0;
   /** Frames after the first in the same burst, published right after it. */
@@ -238,7 +254,7 @@ export class MeshDecoder implements IqProcessor {
     let size = 1;
     while (size < Math.floor(rate * 0.08)) size <<= 1;
     this.ring = new Int8Array(2 * size); this.ringMask = size - 1;
-    this.written = 0; this.nextFrame = N; this.active = [];
+    this.written = 0; this.nextFrame = N; this.active = []; this.tails = []; this.sunSeen.clear();
   }
 
   clear(): void {
@@ -269,12 +285,20 @@ export class MeshDecoder implements IqProcessor {
     this.frames++;
     const frames = this.frames, floor = this.floor, binHz = this.binHz;
     const hot: [number, number][] = [];   // (shifted bin, power over floor)
+    // most of the span over its floor is the floor being wrong (a quiet start, a retune), not bursts: it all catches up
+    let over = 0;
+    for (let k = 0; k < n; k++) { re[k] = re[k] * re[k] + im[k] * im[k]; if (re[k] > floor[(k + n / 2) % n] * 25) over++; }
+    const wrong = over > n / 2;
     for (let k = 0; k < n; k++) {
       const b = (k + n / 2) % n;                 // 0 = lowest frequency
-      const p = re[k] * re[k] + im[k] * im[k];
+      const p = re[k];
       let f = floor[b];
       if (frames <= 8) f = frames === 1 ? p : f + 0.3 * (p - f);
-      else if (p < f * 4) f += 0.02 * (p - f); else f += 0.0005 * (p - f);
+      else if (p < f * 4 || wrong) f += 0.02 * (p - f);
+      // a bin well over its floor creeps it up slowly: an 802.15.4g wake-up preamble (~150 ms of steady lines) stays a
+      // burst to its end (at 0.0005 a look it faded after 40 ms); a carrier is still dropped at half a second
+      else if (p > f * 25) f += 0.00005 * (p - f);
+      else f += 0.0005 * (p - f);
       floor[b] = f;
       if (frames > 8 && Math.abs(b - n / 2) * binHz > 20_000 && p > f * 25) hot.push([b, p / Math.max(f, 1e-3)]);
     }
@@ -299,7 +323,8 @@ export class MeshDecoder implements IqProcessor {
     const done: typeof this.active = [];
     this.active = this.active.filter(b => {
       if (this.written - b.last > quiet) { done.push(b); return false; }
-      if (this.written - b.start > this.rate * 0.06) return false;   // a carrier, not a burst
+      // a carrier, not a burst (an 802.15.4g wake-up preamble runs ~150 ms, so up to half a second is a burst)
+      if (this.written - b.start > this.rate * 0.5) return false;
       return true;
     });
     // a strong burst splashes into neighbors: keep the strongest of those that ended together
@@ -309,22 +334,31 @@ export class MeshDecoder implements IqProcessor {
     for (const b of kept) {
       // over budget: keep up with the radio first, decode what the time allows (strong bursts first)
       if (this.shedding && (this.busy > 0.8 || (this.busy > 0.5 && b.peak < 60))) { this.shed++; continue; }
-      this.demod(b);
+      // an 802.15.4g frame after a long wake-up preamble is spread too wide to light the detector, so the burst seems
+      // to end with its preamble: if it held no frame, it is looked at again 12 ms on (the frame is 6-20 ms long)
+      if (!this.demod(b) && b.last - b.start > this.rate * 0.02) this.tails.push({ start: b.start, last: b.last, peak: b.peak, bin: b.bin, due: b.last + Math.floor(this.rate * 0.012) });
+    }
+    while (this.tails.length && this.tails[0].due <= this.written) {
+      const t = this.tails.shift()!;
+      this.demod({ start: t.start, last: t.due, peak: t.peak, bin: t.bin }, true);
     }
   }
 
   // ---- demodulation ----
-  private demod(b: { start: number; last: number; peak: number; bin: number }): void {
+  /** True when an 802.15.4g frame was found. `tail`: only that is looked for, in the last 40 ms. */
+  private demod(b: { start: number; last: number; peak: number; bin: number }, tail = false): boolean {
     const rate = this.rate, dur = (b.last - b.start) / rate;
-    if (dur < 0.002) return;
-    this.count++;
+    if (dur < 0.002) return false;
+    if (!tail) this.count++;
     const n = this.N;
     const offHz = (b.bin - n / 2) * rate / n;
     const edge = Math.max(this.HOP, Math.floor(rate / 2000));
-    const from = Math.max(b.start - edge, this.written - this.ringMask + 1);
+    // a long burst is a wake-up preamble with its frame at the end: only the last 40 ms are demodulated
+    const long = tail || dur > 0.06;
+    const from = Math.max(b.start - edge, this.written - this.ringMask + 1, long ? b.last + edge - Math.floor(rate * 0.04) : -Infinity);
     const to = Math.min(this.written, b.last + edge);
     const len = to - from;
-    if (len < 256) return;
+    if (len < 256) return false;
     // mix the burst to DC
     const mixed = new Float32Array(2 * len), ring = this.ring, mask = this.ringMask;
     const w = -2 * Math.PI * offHz / rate, sr = Math.cos(w), si = Math.sin(w);
@@ -339,17 +373,19 @@ export class MeshDecoder implements IqProcessor {
     const chan = new ChannelDecimator(Math.max(1, Math.floor(rate / 262_144)));
     const { out: z0, n: m0 } = chan.process(mixed, len);
     const fs = rate / chan.total;
+    if (this.sun(mixed, len, rate, offHz, Math.round(10 * Math.log10(b.peak)), dur)) return true;
+    if (long) return false;
     const lp = new ComplexFirDecimator(lowpassTaps(45_000 / fs, 33), 1);
     const z = new Float32Array(2 * (m0 + 2));
     const m = lp.process(z0, m0, z);
     // where the burst actually is (the detector's edges are half a millisecond coarse)
     const pw = new Float32Array(m);
     for (let k = 0; k < m; k++) pw[k] = z[2 * k] * z[2 * k] + z[2 * k + 1] * z[2 * k + 1];
-    if (m === 0) return;
+    if (m === 0) return false;
     const top = Float32Array.from(pw).sort()[Math.min(m - 1, Math.floor(m * 0.995))];
     let a = -1, e = -1;
     for (let k = 0; k < m; k++) if (pw[k] > 0.2 * top) { if (a < 0) a = k; e = k; }
-    if (a < 0 || e - a <= 64) return;
+    if (a < 0 || e - a <= 64) return false;
     const fm = new Float32Array(e - a);
     for (let k = a + 1; k <= e; k++) {
       const i0 = z[2 * (k - 1)], q0 = z[2 * (k - 1) + 1], i1 = z[2 * k], q1 = z[2 * k + 1];
@@ -364,10 +400,136 @@ export class MeshDecoder implements IqProcessor {
       const bits = MeshDecoder.slice(fm, fs / baud);
       this.extraFrames = [];
       const f = this.parse(bits, baud, hz, snr, dur);
-      if (f) { this.publish(f); for (const x of this.extraFrames) this.publish(x); this.extraFrames = []; return; }
+      if (f) { this.publish(f); for (const x of this.extraFrames) this.publish(x); this.extraFrames = []; return false; }
     }
     // not FSK: try it as on-off keying at 32768 chips a second (Neptune R900 water meters)
     this.ook(z, a, e, fs, this.centerHz + Math.trunc(offHz), snr);
+    return false;
+  }
+
+  /** An 802.15.4g SUN-FSK frame in this burst, if there is one. The long preamble lights a comb of lines 25 kHz apart
+   *  that pulls the detector's center by up to 100 kHz, so the carrier is found here: down to about 524 kHz, the
+   *  discriminator's midpoint over the burst, the burst moved onto it, a ±70 kHz channel, bits at 50 kb/s and
+   *  sunParse. True when a frame was published. */
+  private sun(mixed: Float32Array, len: number, rate: number, offHz: number, snr: number, dur: number): boolean {
+    const chan = new ChannelDecimator(Math.max(1, Math.floor(rate / 524_288)));
+    const { out: y, n } = chan.process(mixed, len);
+    const fs = rate / chan.total, sps = fs / MeshDecoder.SUN_BAUD;
+    if (n < 64 || sps < 3) return false;
+    const fmOf = (z: Float32Array, m: number): Float32Array | null => {
+      const pw = new Float32Array(m);
+      for (let k = 0; k < m; k++) pw[k] = z[2 * k] * z[2 * k] + z[2 * k + 1] * z[2 * k + 1];
+      const top = Float32Array.from(pw).sort()[Math.min(m - 1, Math.floor(m * 0.995))];
+      let a = -1, e = -1;
+      for (let k = 0; k < m; k++) if (pw[k] > 0.2 * top) { if (a < 0) a = k; e = k; }
+      if (a < 0 || (e - a) / sps < 64) return null;
+      const fm = new Float32Array(e - a);
+      for (let k = a + 1; k <= e; k++) {
+        const i0 = z[2 * (k - 1)], q0 = z[2 * (k - 1) + 1], i1 = z[2 * k], q1 = z[2 * k + 1];
+        fm[k - a - 1] = Math.atan2(q1 * i0 - i1 * q0, i1 * i0 + q1 * q0);
+      }
+      return fm;
+    };
+    const mid = (fm: Float32Array) => { const t = Float32Array.from(fm).sort(); return (t[Math.floor(t.length * 0.95)] + t[Math.floor(t.length * 0.05)]) / 2; };
+    // the carrier: a ±150 kHz look first
+    const w1 = new Float32Array(2 * (n + 2));
+    const m1 = new ComplexFirDecimator(lowpassTaps(150_000 / fs, 31), 1).process(y, n, w1);
+    const f1 = fmOf(w1, m1);
+    if (!f1) return false;
+    const errHz = mid(f1) * fs / (2 * Math.PI);
+    // the burst moved onto it, a ±70 kHz channel
+    const w = -2 * Math.PI * errHz / fs, sr = Math.cos(w), si = Math.sin(w);
+    let cr = 1, ci = 0;
+    for (let k = 0; k < n; k++) {
+      const iv = y[2 * k], qv = y[2 * k + 1];
+      y[2 * k] = iv * cr - qv * ci; y[2 * k + 1] = iv * ci + qv * cr;
+      const t = cr * sr - ci * si; ci = cr * si + ci * sr; cr = t;
+      if ((k & 1023) === 0) { const g = 1 / Math.sqrt(cr * cr + ci * ci); cr *= g; ci *= g; }
+    }
+    const z = new Float32Array(2 * (n + 2));
+    const m = new ComplexFirDecimator(lowpassTaps(70_000 / fs, 41), 1).process(y, n, z);
+    const fm = fmOf(z, m);
+    if (!fm) return false;
+    const c = mid(fm);
+    for (let k = 0; k < fm.length; k++) fm[k] -= c;
+    const r = MeshDecoder.sunParse(MeshDecoder.slice(fm, sps));
+    if (!r) return false;
+    // one frame is often looked at twice (a burst split by the comb, a second look at its tail): once is enough
+    const key = r.bytes.join(','), seen = this.sunSeen.get(key);
+    for (const [k, at] of this.sunSeen) if (this.written - at > rate * 0.5) this.sunSeen.delete(k);
+    this.sunSeen.set(key, this.written);
+    if (seen !== undefined && this.written - seen < rate * 0.5) return true;
+    const hz = this.centerHz + Math.trunc(offHz + errHz + c * fs / (2 * Math.PI));
+    this.publish({ ms: this.now(), hz, snrDb: snr, sync: SUN, baud: MeshDecoder.SUN_BAUD, bytes: r.bytes, durMs: dur * 1000, crcOk: true, lenOk: true, crcInit: r.init });
+    return true;
+  }
+
+  /** PN9 (x^9 + x^5 + 1, all ones to start): the standard's data whitening, one bit per PSDU bit. */
+  private static pn9Bits: Uint8Array = (() => {
+    const out = new Uint8Array(2048 * 8); let st = 0x1FF;
+    for (let k = 0; k < out.length; k++) { out[k] = st & 1; const b = (st ^ (st >> 5)) & 1; st = (st >> 1) | (b << 8); }
+    return out;
+  })();
+
+  /** CRC-16 x^16+x^12+x^5+1 over bits in air order, register MSB first (the 911.6 MHz network's frame check). */
+  static sunCrc16(bits: ArrayLike<number>, n: number, init: number): number {
+    let c = init;
+    for (let k = 0; k < n; k++) { const t = ((c >> 15) & 1) ^ bits[k]; c = ((c << 1) & 0xFFFF) ^ (t ? 0x1021 : 0); }
+    return c;
+  }
+  private static crc32Table: Uint32Array = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+    return t;
+  })();
+
+  /**
+   * An 802.15.4g SUN-FSK frame in hard bits (either polarity): alternating preamble, the uncoded SFD 0x904E (one bit
+   * wrong allowed), the 16-bit PHR (mode switch 0, FCS type, whitening, 11-bit length MSB first), the PSDU de-whitened
+   * and its frame check passed. The 2-octet check is tried from the known network starts, then as the standard's
+   * CRC-16 (reflected, start 0); the 4-octet one as the standard's CRC-32. Returns the PSDU bytes (LSB first, as sent)
+   * without the check, or null.
+   */
+  static sunParse(raw: number[]): { bytes: number[]; init: number } | null {
+    const PN = MeshDecoder.pn9Bits;
+    for (const inv of [false, true]) {
+      const bits = inv ? raw.map(x => 1 - x) : raw;
+      let w = 0;
+      for (let i = 0; i < bits.length; i++) {
+        w = ((w << 1) | bits[i]) >>> 0;
+        if (i < 31 || pc((w & 0xFFFF) ^ 0x904E) > 1 || pc((w >>> 16) ^ 0x5555) > 2) continue;
+        const p = i + 1;
+        if (p + 16 > bits.length) break;
+        if (bits[p] !== 0) continue;   // a mode-switch PHR, not a frame
+        let L = 0;
+        for (let k = 5; k < 16; k++) L = (L << 1) | bits[p + k];
+        const fcs2 = bits[p + 3] === 1, dw = bits[p + 4] === 1, fl = fcs2 ? 2 : 4;
+        if (L <= fl || p + 16 + L * 8 > bits.length) continue;
+        const ps = new Uint8Array(L * 8);
+        for (let k = 0; k < ps.length; k++) ps[k] = bits[p + 16 + k] ^ (dw ? PN[k] : 0);
+        const by: number[] = [];
+        for (let q = 0; q < L; q++) { let v = 0; for (let k = 0; k < 8; k++) v |= ps[8 * q + k] << k; by.push(v); }
+        const n = (L - fl) * 8;
+        let init = -1;
+        if (fcs2) {
+          let got = 0; for (let k = 0; k < 16; k++) got = (got << 1) | ps[n + k];
+          for (const s0 of MeshDecoder.SUN_INITS) if (MeshDecoder.sunCrc16(ps, n, s0) === got) { init = s0; break; }
+          if (init < 0) {
+            // the standard's CRC-16: reflected, start 0, sent low byte first
+            let c = 0;
+            for (let q = 0; q < L - 2; q++) { c ^= by[q]; for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0x8408 : c >>> 1; }
+            if (c === (by[L - 2] | (by[L - 1] << 8))) init = 0;
+          }
+        } else {
+          let c = 0xFFFFFFFF;
+          for (let q = 0; q < L - 4; q++) c = MeshDecoder.crc32Table[(c ^ by[q]) & 0xFF] ^ (c >>> 8);
+          c = (c ^ 0xFFFFFFFF) >>> 0;
+          if (c === ((by[L - 4] | (by[L - 3] << 8) | (by[L - 2] << 16) | (by[L - 1] << 24)) >>> 0)) init = 0;
+        }
+        if (init >= 0) return { bytes: by.slice(0, L - fl), init };
+      }
+    }
+    return null;
   }
 
   /** An on-off burst in its own channel: the envelope, chips at 32768 a second at the phase with the widest swing, the
@@ -529,7 +691,45 @@ export class MeshDecoder implements IqProcessor {
   }
 
   // ---- results ----
-  static syncName(s: number): string { return s === GRIDSTREAM ? 'Gridstream' : s.toString(16).toUpperCase().padStart(6, '0'); }
+  static syncName(s: number): string { return s === GRIDSTREAM ? 'Gridstream' : s === SUN ? '802.15.4g' : s.toString(16).toUpperCase().padStart(6, '0'); }
+
+  /** The 911.6 MHz network's frame (the one whose check starts at 0x1877): a header, the 7-byte device ID at 4-10,
+   *  ... a counter at 19 and the 6-byte network ID at 20-25. Other 802.15.4g networks have their own layouts and are
+   *  counted, not carded. */
+  static sunLayout(f: MeshFrame): boolean { return f.crcInit === 0x1877 && f.bytes.length >= 26; }
+
+  /** One card per 7-byte device ID (the ID repeats on every hop); its frame counter, kind and network ID. */
+  private trackSun(f: MeshFrame): void {
+    const b = f.bytes;
+    if (!MeshDecoder.sunLayout(f)) return;
+    const idHex = hex(b.slice(4, 11));
+    let h = 0x811C9DC5; for (let k = 4; k < 11; k++) h = Math.imul(h ^ b[k], 0x01000193) >>> 0;
+    const key = `${SUN}/${h}`;
+    const d = this.devMap.get(key) ?? newDevice(SUN, h, f.ms);
+    d.label = idHex;
+    d.frames++; d.lastMs = f.ms;
+    d.hops.push({ hz: f.hz, ms: f.ms }); if (d.hops.length > 48) d.hops.splice(0, d.hops.length - 48);
+    d.snr.push(f.snrDb); if (d.snr.length > 60) d.snr.splice(0, d.snr.length - 60);
+    if (!d.lengths.includes(b.length + 2)) d.lengths.push(b.length + 2);
+    d.lastHex = hxs(b.slice(0, 16));
+    // the counter at byte 19: shown as the card's clock (clockRate 0, so it holds between frames)
+    d.clock = b[19]; d.clockMs = f.ms; d.clockRate = 0;
+    const chs = new Set(d.hops.map(x => Math.round(x.hz / 200_000))).size;
+    d.fields = [
+      { name: 'PROTOCOL', value: `IEEE 802.15.4g SUN-FSK · 50 kb/s · CRC start ${(f.crcInit ?? 0).toString(16).toUpperCase().padStart(4, '0')}` },
+      { name: 'DEVICE ID', value: hxs(b.slice(4, 11)) },
+      { name: 'NETWORK ID', value: hxs(b.slice(20, 26)) },
+      { name: 'KIND', value: `${h2(b[3])} · ${h2(b[14])}` },
+      { name: 'COUNTER', value: `${h2(b[19])} (${b[19]})` },
+      { name: 'PAYLOAD', value: hxs(b.slice(26)) },
+      { name: 'LAST FRAME', value: hxs(b) },
+      { name: 'FREQUENCY', value: `${(f.hz / 1e6).toFixed(4)} MHz` },
+      { name: 'CHANNELS', value: `${chs} heard` },
+      { name: 'SIGNAL', value: `+${f.snrDb} dB` },
+      { name: 'LENGTHS', value: `${[...d.lengths].sort((x, y) => x - y).join(', ')} bytes` },
+    ];
+    this.devMap.set(key, d);
+  }
   /**
    * The dominant network sync is a slipped read of, if any. Only a network carrying at least 1% of all frames is a
    * candidate: the ghosts come from the busy one, and each extra candidate is another chance to swallow a real small
@@ -543,7 +743,7 @@ export class MeshDecoder implements IqProcessor {
     const p = Array.from({ length: 24 }, (_, i) => (sync >> (23 - i)) & 1);
     for (const net of this.netMap.values()) {
       const e = net.sync;
-      if (e === GRIDSTREAM || e === sync || net.frames < 5 || net.frames < 0.01 * this.syncFrames) continue;
+      if (e < 0 || e === sync || net.frames < 5 || net.frames < 0.01 * this.syncFrames) continue;
       const hs = [...(this.heads.get(e) ?? new Map<number, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 16).map((x) => x[0]);
       for (const x of this.slipWords(e, net.frames, hs)) if (pc(x ^ sync) <= 2) return e;
       for (const h of hs) {
@@ -604,9 +804,9 @@ export class MeshDecoder implements IqProcessor {
     if (MeshDecoder.isPreamble(frame.sync)) return;
     const f = { ...frame };
     // a sync word a bit or two off an established network's is that network with bit errors
-    if (f.sync !== GRIDSTREAM && (this.netMap.get(f.sync)?.frames ?? 0) < MeshDecoder.MIN_FRAMES) {
+    if (f.sync >= 0 && (this.netMap.get(f.sync)?.frames ?? 0) < MeshDecoder.MIN_FRAMES) {
       let near: MeshNet | null = null;
-      for (const v of this.netMap.values()) if (v.sync !== GRIDSTREAM && v.frames >= 5 && pc(v.sync ^ f.sync) <= 2 && (!near || v.frames > near.frames)) near = v;
+      for (const v of this.netMap.values()) if (v.sync >= 0 && v.frames >= 5 && pc(v.sync ^ f.sync) <= 2 && (!near || v.frames > near.frames)) near = v;
       if (near) f.sync = near.sync;
       // not a few flipped bits but a slipped one: the sync search locked a bit or two early or late (or on the
       // preamble's tail), so the word read is a window of an established network's own bit stream, and the bytes
@@ -614,7 +814,7 @@ export class MeshDecoder implements IqProcessor {
       else if (this.slipOf(f.sync) !== null) { this.slips++; return; }
     }
     this.onFrame?.(f);
-    if (f.sync !== GRIDSTREAM) this.syncFrames++;
+    if (f.sync >= 0) this.syncFrames++;
     const net = this.netMap.get(f.sync) ?? { sync: f.sync, frames: 0, types: {}, channels: [], loHz: Number.MAX_SAFE_INTEGER, hiHz: 0, lastHex: '', lastMs: 0, bestSnr: 0, meters: [] };
     net.frames++;
     if (f.bytes.length) net.types[f.bytes[0]] = (net.types[f.bytes[0]] ?? 0) + 1;
@@ -626,19 +826,19 @@ export class MeshDecoder implements IqProcessor {
       const id = u32(f.bytes, 26); if (!net.meters.includes(id)) net.meters.push(id);
     }
     this.netMap.set(f.sync, net);
-    if (f.sync !== GRIDSTREAM && f.bytes.length >= 2) {
+    if (f.sync >= 0 && f.bytes.length >= 2) {
       const h = this.heads.get(f.sync) ?? new Map<number, number>(); const k = (f.bytes[0] << 8) | f.bytes[1];
       h.set(k, (h.get(k) ?? 0) + 1); this.heads.set(f.sync, h);
     }
-    if (net.frames === 20 && f.sync !== GRIDSTREAM && !this.established.includes(f.sync)) this.established.push(f.sync);
-    if (net.frames >= MeshDecoder.MIN_FRAMES || f.sync === GRIDSTREAM) this.track(f);
+    if (net.frames === 20 && f.sync >= 0 && !this.established.includes(f.sync)) this.established.push(f.sync);
+    if (net.frames >= MeshDecoder.MIN_FRAMES || f.sync < 0) this.track(f);
     // the debug log gets each new kind of frame (network, first byte, length), and every long one: readings arrive
     // rarely and in longer frames than the hop beacons
     const kind = `${MeshDecoder.syncName(f.sync)} ${h2(f.bytes[0] ?? 0)} ${f.bytes.length}B`;
     if (net.frames >= MeshDecoder.MIN_FRAMES && (f.bytes.length >= 10 || !this.kinds.has(kind))) { this.kinds.add(kind); this.emit({ type: 'log', line: `MESH ${MeshDecoder.line(f)}` }); }
     // the log: every Gridstream frame, else at most one line a second per network and frame type
     const key = f.sync * 257 + (f.bytes[0] ?? 0);
-    if (f.sync === GRIDSTREAM || (net.frames >= MeshDecoder.MIN_FRAMES && f.ms - (this.lastLog.get(key) ?? 0) >= 1000)) {
+    if (f.sync < 0 || (net.frames >= MeshDecoder.MIN_FRAMES && f.ms - (this.lastLog.get(key) ?? 0) >= 1000)) {
       this.lastLog.set(key, f.ms);
       this.emit({ type: 'packet', line: MeshDecoder.line(f) });
     }
@@ -797,6 +997,7 @@ export class MeshDecoder implements IqProcessor {
 
   private track(f: MeshFrame): void {
     if (f.sync === GRIDSTREAM) { this.trackGridstream(f); return; }
+    if (f.sync === SUN) { this.trackSun(f); return; }
     if (!f.bytes.length) return;
     let id = f.bytes[0];
     let key = `${f.sync}/${id}`;
@@ -914,7 +1115,7 @@ export class MeshDecoder implements IqProcessor {
     this.foldGridstream();
     // a network needs a real share of the traffic: a few frames of the busy one read off by a bit or two are not one
     let top = 0; for (const n of this.netMap.values()) top = Math.max(top, n.frames);
-    this.nets = [...this.netMap.values()].filter(n => n.sync === GRIDSTREAM || n.frames >= 20 || (n.frames >= MeshDecoder.MIN_FRAMES && n.frames * 50 >= top)).sort((a, b) => b.frames - a.frames);
+    this.nets = [...this.netMap.values()].filter(n => n.sync < 0 || n.frames >= 20 || (n.frames >= MeshDecoder.MIN_FRAMES && n.frames * 50 >= top)).sort((a, b) => b.frames - a.frames);
     this.bursts = this.count;
     this.links = [...this.linkSet.values()];
     // a card for: every ERT meter; a Gridstream meter heard twice, or addressed by others three times (one reference
@@ -923,6 +1124,7 @@ export class MeshDecoder implements IqProcessor {
     this.devices = [...this.devMap.values()].filter(d => {
       if (d.net === ERT) return true;
       if (d.net === GRIDSTREAM) return d.frames >= 2 || d.addressed >= 3;
+      if (d.net === SUN) return true;
       return d.frames >= 5 && shown.has(d.net);
     }).sort((a, b) => b.lastMs - a.lastMs || a.id - b.id);
     this.post();
@@ -951,6 +1153,10 @@ export class MeshDecoder implements IqProcessor {
       }
       if (b.length >= 6 && b[2] === 0x2A && b[3] === 0xD2) return head + `GRIDSTREAM link frame D2 · len ${b[4]} · ` + hxs(b.slice(5).slice(0, 20));
       return head + 'GRIDSTREAM ' + hxs(b.slice(0, 16));
+    }
+    if (f.sync === SUN) {
+      if (MeshDecoder.sunLayout(f)) return head + `802.15.4g ${hex(b.slice(4, 11))} · cnt ${h2(b[19])} · kind ${h2(b[3])} · net ${hex(b.slice(20, 26))} · ` + hxs(b.slice(26));
+      return head + `802.15.4g ${b.length + 2}B · ` + hxs(b.slice(0, 20)) + (b.length > 20 ? ' …' : '');
     }
     if (f.sync === 0xF6E56B && b.length >= 9 && b[1] === 0xF0) {
       return head + `${MeshDecoder.syncName(f.sync)} node ${h2(b[0])} · ID ${h2(b[2])}${h2(b[3])}${h2(b[4])} · clock ${h2(b[5])}${h2(b[6])} · ` + hxs(b.slice(7));

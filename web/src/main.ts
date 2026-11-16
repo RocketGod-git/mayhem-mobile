@@ -65,7 +65,7 @@ const APPS: AppDef[] = [
   { id: 'ais', title: 'AIS', blurb: 'ships, 162 MHz', cat: 'Receive' },
   { id: 'aprs', title: 'APRS', blurb: 'packet, 144.39 MHz', cat: 'Receive' },
   { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG pagers', cat: 'Receive' },
-  { id: 'ert', title: 'Meters', blurb: 'ERT · Gridstream', cat: 'Receive' },
+  { id: 'ert', title: 'Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'lora', title: 'LoRa', blurb: 'Meshtastic, MeshCore', cat: 'Receive' },
   { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'messages, 131 MHz', cat: 'Receive' },
@@ -3877,7 +3877,7 @@ function refreshAcars(force = false): void {
 
 // ---- Meters: ERT meters, the hopping mesh networks and Gridstream meters, all heard at once ----------------------
 const METERS_RATE = 4_194_304, METERS_WIDE = 19_200_000;
-const MESH_GRIDSTREAM = -1, MESH_ERT = -2;
+const MESH_GRIDSTREAM = -1, MESH_ERT = -2, MESH_SUN = -3;
 interface MeshDev {
   key: string; net: number; id: number; label: string; frames: number; firstMs: number; lastMs: number;
   hops: { hz: number; ms: number }[]; snr: number[]; clock: number; clockMs: number; clockRate: number; lastHex: string;
@@ -3890,7 +3890,7 @@ interface MetersSnap { nets: MeshNetRow[]; devices: MeshDev[]; links: { a: numbe
  *  are (only positions decoded off the air), with the mesh links between them. A tap on a card or a pin opens
  *  everything decoded from that device. */
 const meters = { snap: null as MetersSnap | null, view: 'cards' as 'cards' | 'map' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
-const meshSync = (s: number) => s === MESH_GRIDSTREAM ? 'Gridstream' : s.toString(16).toUpperCase().padStart(6, '0');
+const meshSync = (s: number) => s === MESH_GRIDSTREAM ? 'Gridstream' : s === MESH_SUN ? '802.15.4g' : s.toString(16).toUpperCase().padStart(6, '0');
 const hx = (v: number, w: number) => v.toString(16).toUpperCase().padStart(w, '0');
 function meshClockAt(d: MeshDev, ms: number): number {
   if (d.clock < 0) return -1;
@@ -3914,7 +3914,7 @@ function renderMeters(view: HTMLElement): void {
       <div id="mt-log">${logHtml('ert', 'watching the band for meters…')}</div>
       ${presetHtml('CENTER', [['904.0', 904_000_000], ['911.6', 911_600_000], ['916.0', 916_000_000], ['920.0', 920_000_000], ['925.0', 925_000_000]])}
       <div class="ctlrow"><span class="rl">SPAN</span>${segHtml(([[2_000_000, '2 MHz'], [METERS_RATE, '4.2 MHz'], [METERS_WIDE, '19.2 MHz']] as [number, string][]).map(([r, l]) => `<button data-rate="${r}" class="${off(r)}">${l}</button>`))}</div>
-      <div class="note">Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) and Neptune R900 water meters with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), and Landis+Gyr Gridstream meters with their IDs, uptime and position. 902–928 MHz. A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band.</div>
+      <div class="note">Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) and Neptune R900 water meters with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), Landis+Gyr Gridstream meters with their IDs, uptime and position, and IEEE 802.15.4g SUN-FSK nodes with their device and network IDs. 902–928 MHz. A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band.</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-mtview]', view).forEach(b => b.onclick = () => { meters.view = b.dataset.mtview as typeof meters.view; refreshMeters(true); });
@@ -3950,7 +3950,7 @@ function setMetersFull(on: boolean): void {
 }
 function metersNetLine(n: MeshNetRow): string {
   const span = n.hiHz > n.loHz ? `${(n.loHz / 1e6).toFixed(2)}–${(n.hiHz / 1e6).toFixed(2)} MHz` : `${(n.loHz / 1e6).toFixed(3)} MHz`;
-  return `<div>${n.sync === MESH_GRIDSTREAM ? 'GRIDSTREAM' : `NETWORK ${meshSync(n.sync)}`} · ${n.frames} frames · ${n.channels.length} channels · ${span}</div>`;
+  return `<div>${n.sync === MESH_GRIDSTREAM ? 'GRIDSTREAM' : n.sync === MESH_SUN ? '802.15.4g SUN' : `NETWORK ${meshSync(n.sync)}`} · ${n.frames} frames · ${n.channels.length} channels · ${span}</div>`;
 }
 /** Each recent hop at its frequency across the span; time runs down the strip, joined by a faint path. */
 function meshHopTrail(d: MeshDev, now: number): string {
@@ -3977,9 +3977,10 @@ function meshCard(d: MeshDev, now: number): string {
   const age = d.lastMs > 0 ? (now - d.lastMs) / 1000 : 1e9, flash = Math.max(0, 1 - age / 0.7);
   // bursty senders go quiet for a while between bursts: a device stays lit for a minute, and once found it stays on
   // the board, dimmed only a little
-  const live = age < 60, ertM = d.net === MESH_ERT, gs = d.net === MESH_GRIDSTREAM;
-  const kind = ertM ? 'ERT METER' : gs ? 'GRIDSTREAM METER' : 'TRANSMITTER';
-  const sub = ertM ? `${d.ertKind} · ${d.commodity}` : gs ? (d.lat !== null ? 'POSITION ON AIR' : 'LANDIS+GYR') : `NET ${meshSync(d.net)}`;
+  const live = age < 60, ertM = d.net === MESH_ERT, gs = d.net === MESH_GRIDSTREAM, sun = d.net === MESH_SUN;
+  const kind = ertM ? 'ERT METER' : gs ? 'GRIDSTREAM METER' : sun ? '802.15.4g NODE' : 'TRANSMITTER';
+  const sunNet = sun ? (d.fields.find(f => f.name === 'NETWORK ID')?.value ?? '').replace(/ /g, '') : '';
+  const sub = ertM ? `${d.ertKind} · ${d.commodity}` : gs ? (d.lat !== null ? 'POSITION ON AIR' : 'LANDIS+GYR') : sun ? `NET ${sunNet}` : `NET ${meshSync(d.net)}`;
   const status = live ? 'LIVE' : d.lastMs === 0 ? 'ADDRESSED' : age < 120 ? `${Math.floor(age)} s ago` : `${Math.floor(age / 60)} min ago`;
   let clock: string;
   if (ertM) clock = `<b>${d.cons}</b><small>${d.cons > d.consFirst ? `+${d.cons - d.consFirst} SINCE HEARD` : 'CONSUMPTION'}</small><em>${d.frames} readings</em>`;
@@ -3989,7 +3990,8 @@ function meshCard(d: MeshDev, now: number): string {
       const up = d.uptimeS < 0 ? -1 : d.uptimeS + Math.trunc((now - d.uptimeMs) / 1000);
       const p2 = (x: number) => String(x).padStart(2, '0');
       clock = `<b>${c >= 0 ? (c / 100).toFixed(2).padStart(6, '0') : '---.--'}</b><small>${up >= 0 ? `HOP s · UP ${Math.floor(up / 86400)}d ${p2(Math.floor(up / 3600) % 24)}h ${p2(Math.floor(up / 60) % 60)}m ${p2(up % 60)}s` : 'HOP s'}</small>`;
-    } else clock = `<b>${c >= 0 ? hx(c, 4) : '----'}</b><small>${d.clockRate !== 0 ? `HOP CLOCK ${d.clockRate >= 0 ? '+' : ''}${d.clockRate.toFixed(0)}/s` : 'HOP CLOCK'}</small>`;
+    } else if (sun) clock = `<b>${d.clock >= 0 ? hx(d.clock, 2) : '--'}</b><small>FRAME COUNTER</small>`;
+    else clock = `<b>${c >= 0 ? hx(c, 4) : '----'}</b><small>${d.clockRate !== 0 ? `HOP CLOCK ${d.clockRate >= 0 ? '+' : ''}${d.clockRate.toFixed(0)}/s` : 'HOP CLOCK'}</small>`;
     clock += `<em>${d.frames} · ${meshPerSecond(d).toFixed(1)}/s</em>`;
   }
   return `<div class="mt-card ${meters.sel === d.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-mdev="${esc(d.key)}" style="--flash:${flash.toFixed(2)}">`
@@ -4000,7 +4002,7 @@ function meshCard(d: MeshDev, now: number): string {
 }
 /** Everything decoded from one device, field by field, with MAP when it has a position. */
 function meshDetail(d: MeshDev, onMap: boolean): string {
-  const kind = d.net === MESH_ERT ? 'ERT METER' : d.net === MESH_GRIDSTREAM ? 'GRIDSTREAM METER' : `MESH NODE · ${meshSync(d.net)}`;
+  const kind = d.net === MESH_ERT ? 'ERT METER' : d.net === MESH_GRIDSTREAM ? 'GRIDSTREAM METER' : d.net === MESH_SUN ? '802.15.4g NODE' : `MESH NODE · ${meshSync(d.net)}`;
   const votes = Object.values(d.wanVotes);
   return `<div class="mt-dh"><b>${esc(d.label)}</b><span>${kind}</span>${onMap ? '<button class="chip" data-mdo="map">MAP</button>' : ''}${meters.view === 'map' ? '<button class="chip" data-mdo="cards">CARDS</button>' : ''}<button class="chip" data-mdo="close">✕</button></div>`
     + `<div class="mt-fields">${d.fields.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
@@ -6972,7 +6974,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   pager: ['PAGER', 'FLEX · POCSAG'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
-  ert: ['METERS', 'ERT · MESH · GRIDSTREAM'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
+  ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };

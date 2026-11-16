@@ -140,7 +140,7 @@ fun MetersScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM", roomy = true, waterfall = wf,
+    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM · 802.15.4G", roomy = true, waterfall = wf,
         onWaterfall = { Apps.setWaterfall(MayhemApp.ERT, !wf) }, controls = {
         PresetTiles(accent, listOf(Preset("904.0", "low", 904_000_000L), Preset("911.6", "lower mid", 911_600_000L), Preset("916.0", "mid", 916_000_000L),
             Preset("920.0", "upper mid", 920_000_000L), Preset("925.0", "high", 925_000_000L)))
@@ -182,7 +182,7 @@ fun MetersScreen(accent: Color) {
 private fun NetLine(n: MeshNet, accent: Color) {
     val d = rememberDims()
     val span = if (n.hiHz > n.loHz) "%.2f–%.2f MHz".format(n.loHz / 1e6, n.hiHz / 1e6) else "%.3f MHz".format(n.loHz / 1e6)
-    val name = if (n.sync == MeshDecoder.GRIDSTREAM) "GRIDSTREAM" else "NETWORK ${MeshDecoder.syncName(n.sync)}"
+    val name = when (n.sync) { MeshDecoder.GRIDSTREAM -> "GRIDSTREAM"; MeshDecoder.SUN -> "802.15.4g SUN"; else -> "NETWORK ${MeshDecoder.syncName(n.sync)}" }
     Text("$name · ${n.frames} frames · ${n.channels.size} channels · $span", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold,
         fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
@@ -196,6 +196,7 @@ private fun MeshDetail(dev: MeshDevice, accent: Color, modifier: Modifier, onMap
     val kind = when (dev.net) {
         MeshDecoder.ERT -> "ERT METER"
         MeshDecoder.GRIDSTREAM -> "GRIDSTREAM METER"
+        MeshDecoder.SUN -> "802.15.4g NODE"
         else -> "MESH NODE · ${MeshDecoder.syncName(dev.net)}"
     }
     Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.94f))
@@ -238,6 +239,7 @@ private fun MeshDeviceCard(dev: MeshDevice, accent: Color, centerHz: Long, rate:
     val shape = RoundedCornerShape(d.dp(14f))
     val ert = dev.net == MeshDecoder.ERT
     val gs = dev.net == MeshDecoder.GRIDSTREAM
+    val sun = dev.net == MeshDecoder.SUN
     Column(Modifier.fillMaxWidth().alpha(if (live) 1f else 0.8f).clip(shape)
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.10f + 0.14f * flash), Palette.panel)))
         .border(if (selected) 2.5.dp else (1 + 1.4f * flash).dp, accent.copy(alpha = if (selected) 1f else 0.22f + 0.7f * flash), shape)
@@ -246,9 +248,9 @@ private fun MeshDeviceCard(dev: MeshDevice, accent: Color, centerHz: Long, rate:
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Text(dev.label, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(if (dev.label.length > 2) 18f else 30f))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
-                Text(if (ert) "ERT METER" else if (gs) "GRIDSTREAM METER" else "TRANSMITTER", color = Palette.ink, fontFamily = Mono,
+                Text(if (ert) "ERT METER" else if (gs) "GRIDSTREAM METER" else if (sun) "802.15.4g NODE" else "TRANSMITTER", color = Palette.ink, fontFamily = Mono,
                     fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
-                Text(if (ert) "${dev.ertKind} · ${dev.commodity}" else if (gs) (if (dev.lat != null) "POSITION ON AIR" else "LANDIS+GYR") else "NET ${MeshDecoder.syncName(dev.net)}",
+                Text(if (ert) "${dev.ertKind} · ${dev.commodity}" else if (gs) (if (dev.lat != null) "POSITION ON AIR" else "LANDIS+GYR") else if (sun) "NET " + (dev.fields.firstOrNull { it.name == "NETWORK ID" }?.value ?: "").replace(" ", "") else "NET ${MeshDecoder.syncName(dev.net)}",
                     color = if (dev.lat != null) accent else Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
                 if (dev.address >= 0) Text("NODE ID %06X · %d".format(dev.address, dev.address), color = accent, fontFamily = Mono,
                     fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1)
@@ -271,6 +273,10 @@ private fun MeshDeviceCard(dev: MeshDevice, accent: Color, centerHz: Long, rate:
                     Text(if (c >= 0) "%06.2f".format(c / 100.0) else "---.--", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
                     Text(if (up >= 0) "HOP s · UP %dd %02dh %02dm %02ds".format(up / 86400, up / 3600 % 24, up / 60 % 60, up % 60) else "HOP s",
                         color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)), maxLines = 1)
+                } else if (sun) {
+                    Text(if (dev.clock >= 0) "%02X".format(dev.clock) else "--", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
+                    Text("FRAME COUNTER", color = Palette.muted, fontFamily = Mono,
+                        fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)), maxLines = 1)
                 } else {
                     Text(if (c >= 0) "%04X".format(c) else "----", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
                     Text(if (dev.clockRate != 0.0) "HOP CLOCK %+.0f/s".format(dev.clockRate) else "HOP CLOCK", color = Palette.muted, fontFamily = Mono,
