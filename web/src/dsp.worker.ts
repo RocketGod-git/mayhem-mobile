@@ -22,6 +22,7 @@ import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
+import { FleetProcessor } from './dsp/fleet/fleet.js';
 import { SondeProcessor } from './dsp/sonde/front.js';
 import { UatProcessor } from './dsp/uat/demod.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
@@ -124,6 +125,8 @@ const vdl2 = new Vdl2Decoder(emit);
 // every frame, ACARS or not, for the per-address aircraft and ground stations (posted before the frame's ACARS line)
 vdl2.onFrame = f => emit({ type: 'vdl2frame', f });
 const trains = new TrainsProcessor(emit);
+/** Fleet: P25 and DMR trunking control channels across the span. */
+const fleet = new FleetProcessor(emit);
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);
 /** UAT on 978 MHz: FIS-B weather uplinks and aircraft downlinks. */
@@ -342,7 +345,12 @@ self.onmessage = (e: MessageEvent) => {
       break;
     case 'audioPort': audioPort = m.port as MessagePort; break;
     case 'app': processor = makeProcessor(m.app as string, m); break;
-    case 'geo': adsb.ref = { lat: m.lat as number, lon: m.lon as number }; break;
+    case 'geo': adsb.ref = { lat: m.lat as number, lon: m.lon as number }; fleet.setRef(m.lat as number, m.lon as number); break;
+    case 'fleet':
+      if (m.cmd === 'unit') { const d = fleet.unitDetail(m.key as string); if (d) emit({ type: 'fleetUnit', ...d }); }
+      else if (m.cmd === 'export') emit({ type: 'fleetExport', ...fleet.exportAll() });
+      else if (m.cmd === 'clear') fleet.clear();
+      break;
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
@@ -400,6 +408,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'sonde': sonde.setCenter(centreHz); return sonde;
     case 'uat': return uat;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
+    case 'fleet': fleet.centerHz = centreHz; return fleet;
     case 'subghz': return ism;
     case 'r433': return r433;
     case 'analyzer': return analyzer;
@@ -603,6 +612,7 @@ function process(iq: Int8Array): void {
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
   if (p === vdl2) vdl2.centerHz = centreHz;
   if (p === trains) trains.centerHz = centreHz;
+  if (p === fleet) fleet.centerHz = centreHz;
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }

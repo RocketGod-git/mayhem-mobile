@@ -11,7 +11,7 @@ import { W0, LTAB, VUV, LMPRBL, DG, PRBA24, PRBA58, HOC5, HOC6, HOC7, HOC8 } fro
 // ------------------------------------------------------------------------------------ Golay (23,12) / (20,8)
 /** Parity contribution (11 bits) of each Golay data bit, index 0 = the most significant data bit (bit 11). */
 export const GOLAY_GEN = [0x63a, 0x31d, 0x7b4, 0x3da, 0x1ed, 0x6cc, 0x366, 0x1b3, 0x6e3, 0x54b, 0x49f, 0x475];
-function golayParity(data: number, bits: number): number {
+export function golayParity(data: number, bits: number): number {
   let p = 0;
   for (let j = 0; j < bits; j++) if (data & (1 << j)) p ^= GOLAY_GEN[11 - j];
   return p;

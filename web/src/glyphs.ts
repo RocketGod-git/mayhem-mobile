@@ -41,6 +41,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   tpms: { d: 'M50 10 A40 40 0 1 0 50 90 A40 40 0 1 0 50 10 Z M50 30 A20 20 0 1 0 50 70 A20 20 0 1 0 50 30 Z M64 36 L78 22 M36 36 L22 22 M36 64 L22 78 M64 64 L78 78' },
   // a locomotive head-on: the cab, its windshield, two headlights, and the rails running away under it
   trains: { d: 'M34 8 H66 Q76 8 76 18 V70 H24 V18 Q24 8 34 8 Z M32 20 H68 V38 H32 Z M38 70 L16 94 M62 70 L84 94 M30 82 H70', circles: [[36, 56, 5], [64, 56, 5]] },
+  // a site on its mast with the trunk's links reaching out to two units
+  fleet: { d: 'M50 40 L38 92 M50 40 L62 92 M42 74 H58 ' + arc(50, 32, 20, 200, 340, 14) + arc(50, 32, 34, 205, 335, 13) + 'M44 52 L20 66 M56 52 L80 66', circles: [[50, 32, 6], [15, 72, 6], [85, 72, 6]] },
   vdl2: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M22 66 L36 44 L50 60 L64 40 L78 56 M50 6 L50 20 M38 14 L62 14' },
   acars: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M10 32 L50 56 L90 32 M50 6 L50 20 M38 14 L62 14' },
   // a spectrum peak over a baseline, a marker chevron over it: a bench analyzer's screen

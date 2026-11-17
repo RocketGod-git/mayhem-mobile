@@ -24,7 +24,7 @@ const rY = [0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1,
 const rZ = [5, 3, 4, 2, 3, 1, 2, 0, 1, 13, 0, 12, 22, 11, 21, 10, 20, 9, 19, 8, 18, 7, 17, 6, 16, 5, 15, 4, 14, 3, 13, 2, 12, 1, 11, 0];
 
 // ------------------------------------------------------------------------------------------- sync words
-interface Sync { proto: string; kind: 'voice' | 'data' | ''; src: string; s: Int8Array; sp: number; thr: number }
+export interface Sync { proto: string; kind: 'voice' | 'data' | ''; src: string; s: Int8Array; sp: number; thr: number }
 /** Symbol signs from a hex sync word (each dibit: MSB set → −). */
 function fromHex(hex: string): Int8Array {
   const out: number[] = [];
@@ -33,7 +33,7 @@ function fromHex(hex: string): Int8Array {
 }
 const fromSigns = (s: string) => Int8Array.from([...s].map(c => c === '1' ? 1 : -1));
 const inv = (a: Int8Array) => a.map(v => -v);
-const SYNCS: Sync[] = [
+export const SYNCS: Sync[] = [
   { proto: 'DMR', kind: 'voice', src: 'BS', s: fromHex('755FD7DF75F7'), sp: 10, thr: 0.82 },
   { proto: 'DMR', kind: 'data', src: 'BS', s: fromHex('DFF57D75DF5D'), sp: 10, thr: 0.82 },
   { proto: 'DMR', kind: 'voice', src: 'MS', s: fromHex('7F7D5DD57DFD'), sp: 10, thr: 0.82 },
@@ -58,7 +58,7 @@ const DMR_SYNCS = SYNCS.filter(s => s.proto === 'DMR');
 
 // ------------------------------------------------------------------------------------------- block codes
 /** Hamming single-error correction: `eq` lists, per parity bit, the data bits (as a mask) it covers. Returns 0 ok, 1 corrected, −1 uncorrectable. */
-function hamming(bits: Uint8Array, off: number, k: number, eq: number[]): number {
+export function hamming(bits: Uint8Array, off: number, k: number, eq: number[]): number {
   let syn = 0;
   for (let p = 0; p < eq.length; p++) {
     let c = 0; const m = eq[p];
@@ -75,12 +75,12 @@ function hamming(bits: Uint8Array, off: number, k: number, eq: number[]): number
   return -1;
 }
 const mask = (...idx: number[]) => idx.reduce((m, i) => m | (1 << i), 0);
-const H15113 = [mask(0, 1, 2, 3, 5, 7, 8), mask(1, 2, 3, 4, 6, 8, 9), mask(2, 3, 4, 5, 7, 9, 10), mask(0, 1, 2, 4, 6, 7, 10)];
+export const H15113 = [mask(0, 1, 2, 3, 5, 7, 8), mask(1, 2, 3, 4, 6, 8, 9), mask(2, 3, 4, 5, 7, 9, 10), mask(0, 1, 2, 4, 6, 7, 10)];
 const H16114 = [...H15113, mask(0, 2, 5, 6, 8, 9, 10)];
-const H1393 = [mask(0, 1, 3, 5, 6), mask(0, 1, 2, 4, 6, 7), mask(0, 1, 2, 3, 5, 7, 8), mask(0, 2, 4, 5, 8)];
+export const H1393 = [mask(0, 1, 3, 5, 6), mask(0, 1, 2, 4, 6, 7), mask(0, 1, 2, 3, 5, 7, 8), mask(0, 2, 4, 5, 8)];
 
 /** BPTC(196,96): 196 received bits → 12 bytes (errors corrected where the row/column Hamming codes allow). */
-function bptc(raw: Uint8Array): Uint8Array {
+export function bptc(raw: Uint8Array): Uint8Array {
   const de = new Uint8Array(196), col = new Uint8Array(13);
   for (let a = 0; a < 196; a++) de[a] = raw[(a * 181) % 196];
   for (let pass = 0; pass < 5; pass++) {

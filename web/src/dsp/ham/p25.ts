@@ -127,7 +127,7 @@ const BCH_GEN = (() => {
 })();
 
 /** The 64 bits a given network code and frame type must produce: 16 data, 47 parity, one overall parity. */
-function nidWord(nac: number, duid: number): { hi: number; lo: number } {
+export function nidWord(nac: number, duid: number): { hi: number; lo: number } {
   const data = BigInt(((nac << 4) | duid) >>> 0);
   let reg = data << 47n;
   for (let b = 62; b >= 47; b--) if ((reg >> BigInt(b)) & 1n) reg ^= BCH_GEN << BigInt(b - 47);
