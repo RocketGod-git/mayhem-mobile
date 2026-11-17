@@ -68,6 +68,8 @@ export class CellProcessor implements IqProcessor {
   version = 0;
   /** Called with every new or completed warning message. */
   onAlert: ((m: WarningMessage) => void) | null = null;
+  /** Live radio: skip input in proportion to the CPU a block took. Off for recordings, which wait for the decoder. */
+  realtime = true;
   private rate = 0; private D = 0; private num = new Numerology(LOW_FS);
   private abs = 0; private capStart = 0; private capN = 0; private capLen = 0;
   private xr = new Float32Array(0); private xi = new Float32Array(0);
@@ -114,7 +116,7 @@ export class CellProcessor implements IqProcessor {
         try { this.block(this.capStart); } catch (e) { this.emit?.({ type: 'log', line: `cell: ${(e as Error).message}` }); }
         this.cpuMs = performance.now() - t0;
         // never take more of the stream than the worker keeps up with
-        this.nextAbs = Math.max(this.nextAbs, this.abs + Math.round(this.rate * this.cpuMs / 1000 * 1.25));
+        if (this.realtime) this.nextAbs = Math.max(this.nextAbs, this.abs + Math.round(this.rate * this.cpuMs / 1000 * 1.25));
       }
     }
     if (this.dirty || this.now() - this.lastPost > 1000) this.post();
@@ -135,7 +137,7 @@ export class CellProcessor implements IqProcessor {
     const hits = pssSearch(yr, yi, 0, this.cfoKnown ? [0] : [0, -15_000, 15_000]).filter(h => h.score > 5.5);
     this.pss = hits.slice(0, 6).map(h => ({ nid2: h.nid2, score: Math.round(h.score * 10) / 10 }));
     this.lte = hits.length > 0;
-    const found: { cell: Cell; map: HalfFrame[]; evenSf0: boolean; tdd: boolean }[] = [];
+    const found: { cell: Cell; map: HalfFrame[]; evenSf0: boolean; tdd: boolean; mibH: number }[] = [];
     const tried = new Set<number>();
     for (const h of hits.slice(0, 6)) {
       if (h.cfo) { rotate(yr, yi, h.cfo, LOW_FS); }
@@ -146,11 +148,11 @@ export class CellProcessor implements IqProcessor {
           for (const [pci, evenSf0] of cands) {
             if (tried.has(pci * 2 + Number(tdd))) continue;
             tried.add(pci * 2 + Number(tdd));
-            const r = this.readMib(yr, yi, pci, map, evenSf0, tdd);
+            const r = this.readMib(yr, yi, pci, map, evenSf0, tdd, this.cells.has(`${Math.round(this.centerHz / 1e5)}:${pci}`));
             if (!r) continue;
             const cell = this.cellFor(pci, tdd, now);
             cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score;
-            found.push({ cell, map, evenSf0, tdd });
+            found.push({ cell, map, evenSf0, tdd, mibH: r.h });
             this.cfo = frac + h.cfo; this.cfoKnown = true;
           }
           if (found.some(f => f.map === map)) break;
@@ -164,7 +166,7 @@ export class CellProcessor implements IqProcessor {
     for (const f of found) {
       const m = f.cell.mib!;
       if (m.bandwidth > this.maxRb) continue;
-      this.readSi(f.cell, f.map, f.evenSf0, f.tdd, start, now);
+      this.readSi(f.cell, f.map, f.evenSf0, f.tdd, f.mibH, start, now);
     }
     this.schedule(found.map(f => f.cell));
   }
@@ -206,19 +208,25 @@ export class CellProcessor implements IqProcessor {
     return { g, coh: t.coh, level: t.level };
   }
 
-  private readMib(yr: Float32Array, yi: Float32Array, pci: number, map: HalfFrame[], evenSf0: boolean, tdd: boolean): { mib: Mib; snr: number; level: number } | null {
-    const off = DUPLEX_PSS(LOW, tdd);
+  /**
+   * MIB from the sf0 half-frames of the map. A cell not heard before needs two frames that agree (bandwidth, ports
+   * and SFN one frame apart per frame): a single 16-bit CRC pass among the many PCI hypotheses is not proof.
+   */
+  private readMib(yr: Float32Array, yi: Float32Array, pci: number, map: HalfFrame[], evenSf0: boolean, tdd: boolean, known: boolean): { mib: Mib; snr: number; level: number; h: number } | null {
+    const off = DUPLEX_PSS(LOW, tdd), hits: { mib: Mib; snr: number; level: number; h: number }[] = [];
     let tries = 0;
     for (const hf of map) {
       if ((hf.h % 2 === 0) !== evenSf0) continue;
-      if (++tries > 3) break;
+      if (++tries > 4) break;
       const d = this.demodAligned(yr, yi, hf.pos - off, LOW, 6, 0, pci, 1);
       if (!d) continue;
       const r = decodeMib(d.g, pci, 6);
-      if (r) {
-        const lvl = 10 * Math.log10(Math.max(d.level, 1e-12) / (128 * 128));
-        return { mib: r.mib, snr: 10 * Math.log10(Math.max(r.snr, 1e-6)), level: lvl };
-      }
+      if (!r) { if (!known && tries >= 2 && !hits.length) break; continue; }
+      const hit = { mib: r.mib, snr: 10 * Math.log10(Math.max(r.snr, 1e-6)), level: 10 * Math.log10(Math.max(d.level, 1e-12) / (128 * 128)), h: hf.h };
+      if (known) return hit;
+      const prev = hits.find(x => x.mib.bandwidth === r.mib.bandwidth && x.mib.ports === r.mib.ports && (x.mib.sfn + (hf.h - x.h) / 2) % 1024 === r.mib.sfn);
+      if (prev) return prev;
+      hits.push(hit);
     }
     return null;
   }
@@ -238,15 +246,14 @@ export class CellProcessor implements IqProcessor {
   }
 
   /** SIB1 occasions and the wanted SI windows inside this block, for one cell whose MIB just decoded. */
-  private readSi(cell: Cell, map: HalfFrame[], evenSf0: boolean, tdd: boolean, blockAbs: number, now: number): void {
+  private readSi(cell: Cell, map: HalfFrame[], evenSf0: boolean, tdd: boolean, mibH: number, blockAbs: number, now: number): void {
     const mib = cell.mib!, nrb = mib.bandwidth, num = this.num, D = this.D, off = DUPLEX_PSS(num, tdd), delay = decimDelay(this.rate);
     if (!cell.ctl.length || cell.ctl[0].nrb !== nrb || cell.ctl[0].nports !== mib.ports)
       cell.ctl = (tdd ? [0, 1, 2] : [1]).map(mi => new ControlDecoder(cell.pci, nrb, mib.ports, mib.phichResource, tdd, mi));
     // SFN of each mapped half-frame from the frame whose MIB was read
     const sf0 = map.filter(h => (h.h % 2 === 0) === evenSf0);
     if (!sf0.length) return;
-    const ref = sf0[0], refSfn = mib.sfn;
-    // the MIB came from the first usable sf0 half-frame; its SFN is the one decoded there
+    const ref = sf0.find(h => h.h === mibH) ?? sf0[0], refSfn = mib.sfn;
     cell.timing = { abs: blockAbs + ref.pos * D + delay - off, sfn: refSfn };
     const sched = cell.summary?.schedule ?? [];
     for (const hf of map) {
@@ -345,7 +352,7 @@ export class CellProcessor implements IqProcessor {
 
   /** Next capture: just before the earliest wanted SI window of the cells heard (or right away). */
   private schedule(cells: Cell[]): void {
-    const fs = this.rate, frame = fs / 100, now = this.now(), lead = Math.round(fs * 0.012), from = this.abs + Math.round(fs * this.cpuMs / 1000 * 1.25);
+    const fs = this.rate, frame = fs / 100, now = this.now(), lead = Math.round(fs * 0.012), from = this.abs + (this.realtime ? Math.round(fs * this.cpuMs / 1000 * 1.25) : 0);
     let best = Infinity;
     for (const c of cells) {
       if (!c.timing || !c.summary || (c.mib && c.mib.bandwidth > this.maxRb)) continue;

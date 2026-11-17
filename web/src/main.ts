@@ -46,6 +46,7 @@ import type { CellSnap, CellRow, SibRec as CellSibRec } from './dsp/cell/cell.js
 import type { Mib as CellMib } from './dsp/cell/pbch.js';
 import { groupAlerts, type AlertGroup } from './dsp/cell/cbs.js';
 import { fieldGroups } from './dsp/cell/sysinfo.js';
+import { parseWarningArea, parseGeoTrigger, areaRelation, type WarningArea } from './dsp/cell/area.js';
 import { CELL_BANDS, findCarriers, newProfile, stitch, type CarrierGuess, type Profile } from './dsp/cell/bands.js';
 import { EOT_CENTER as TR_EOT_CENTER, EOT_RATE as TR_EOT_RATE, EOT_NARROW as TR_EOT_NARROW, PTC_CENTER as TR_PTC_CENTER, PTC_RATE as TR_PTC_RATE, PTC_NARROW as TR_PTC_NARROW, PTC_KIND_LABEL, stationPeriod, stationVaries, symHex, type EotUnit, type HotHeard, type PtcStation } from './dsp/trains.js';
 
@@ -4510,7 +4511,7 @@ type CellView = 'alerts' | 'cells' | 'neighbors' | 'log';
 interface CellDetail { key: string; mib: CellMib | null; sib1: Record<string, unknown> | null; sib1Hex: string; sibs: CellSibRec[] }
 const cellUi = {
   snap: null as CellSnap | null, view: 'alerts' as CellView, band: 'AUTO', sel: '', detail: null as CellDetail | null, detailAsked: 0,
-  hold: false, wired: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, restored: false, clearArm: 0, seenAlerts: new Set<string>(), banner: '',
+  hold: false, wired: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, restored: false, clearArm: 0, seenAlerts: new Set<string>(), banner: '', alertSel: '', mapSig: '',
   html: new Map<string, string>(),
   scan: { phase: 'survey' as 'survey' | 'visit' | 'dwell' | 'stay', bandIdx: 0, windows: [] as number[], wi: 0, cands: [] as CarrierGuess[], ci: 0,
     until: 0, tunedMs: 0, profile: null as Profile | null, stayHz: 0 },
@@ -4520,7 +4521,7 @@ const cellRate = () => cellRtl() ? CELL_RTL_RATE : CELL_HACKRF_RATE;
 const cellMhz = (hz: number) => (hz / 1e6).toFixed(1);
 const cellAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} h ago` : `${Math.floor(ms / 86_400_000)} d ago`;
 const cellTime = (ms: number) => { const d = new Date(ms); return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toTimeString().slice(0, 8)}`; };
-const CELL_RANK_COLOR = ['var(--muted)', 'var(--accent)', '#ffaf00', '#ff7a45', '#ff4d4d', '#ff2a6a'];
+const CELL_RANK_COLOR = ['#8d97ab', '#4c8dff', '#ffaf00', '#ff7a45', '#ff4d4d', '#ff2a6a'];
 const cellBands = () => cellUi.band === 'AUTO' ? CELL_BANDS : CELL_BANDS.filter(b => b.id === cellUi.band);
 const cellBandAt = (hz: number) => CELL_BANDS.find(b => hz >= b.lo - 2e6 && hz <= b.hi + 2e6) ?? null;
 /** What the connected radio can and cannot do here, said plainly. */
@@ -4540,6 +4541,7 @@ function cellOpen(): void {
     try { saved = JSON.parse(localStorage.getItem(CELL_KEY) ?? 'null'); } catch { /* storage blocked or bad */ }
     if (saved) worker?.postMessage({ type: 'cell', cmd: 'restore', state: saved });
   }
+  requestGeo();
   cellTick();
 }
 /** A band sweep for carriers: windows across the band, a power profile stitched from them. */
@@ -4605,15 +4607,15 @@ function renderCell(view: HTMLElement): void {
   cellUi.html.clear();
   const tabs = (wide ? ['cells', 'neighbors', 'log'] : ['alerts', 'cells', 'neighbors', 'log']) as CellView[];
   view.innerHTML = `
-    <section class="${visCls('cell')}">${readoutHtml()}${wide ? '<div id="cl-alertbox" class="cl-alertbox"><div class="cl-boxh"><b>ALERTS</b><small id="cl-alertcount"></small></div><div id="cl-alerts" class="cl-alerts"></div></div>' : ''}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('cell')}">${readoutHtml()}${wide ? '<div id="cl-alertbox" class="cl-alertbox"><div class="cl-boxh"><b>ALERTS</b><small id="cl-alertcount"></small></div><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>' : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="cl-head" class="cl-head"></div>
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...CELL_BANDS.map(b => [b.id, b.label])].map(([k, l]) => `<button data-clband="${k}">${l}</button>`))}</div>
       <div class="ctlrow">${segHtml(tabs.map(v => `<button data-clview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('cell')}<button id="cl-export" class="ib" title="export the log (CSV) and every decoded field (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button></div>
       ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
-      <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-alerts" class="cl-alerts"></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
+      <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
       <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
-      <div class="note">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. Cell positions are not on the air, so there is no map. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. Alerts are kept until you clear them. Tap a cell for every decoded field.</div>
+      <div class="note">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. Alerts are kept until you clear them. Tap a cell for every decoded field.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-clband]', view).forEach(b => b.onclick = () => cellSetBand(b.dataset.clband!));
@@ -4629,6 +4631,7 @@ function renderCell(view: HTMLElement): void {
       if (Date.now() - cellUi.clearArm < 4000) { cellUi.clearArm = 0; worker?.postMessage({ type: 'cell', cmd: 'clearAlerts' }); cellUi.seenAlerts.clear(); }
       else cellUi.clearArm = Date.now();
     } else if (doIt === 'alerts') { cellUi.view = 'alerts'; cellUi.banner = ''; }
+    else if (t.dataset.clsel?.startsWith('alert:')) { cellUi.alertSel = t.dataset.clsel.slice(6); cellUi.mapSig = ''; }
     else if (t.dataset.clsel) cellPick(t.dataset.clsel);
     else return;
     refreshCell(true);
@@ -4638,6 +4641,8 @@ function renderCell(view: HTMLElement): void {
   const hold = () => { cellUi.hold = true; };
   const release = () => { if (!cellUi.hold) return; setTimeout(() => { cellUi.hold = false; refreshCell(true); }, 0); };
   for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-head']) $(id).onpointerdown = hold;
+  cellUi.mapSig = '';
+  geo = new GeoMap($('cl-amap'), { home: state.home, start: mapStart(state.home), onPick: () => undefined, log });
   if (!cellUi.wired) { cellUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
   clearInterval(cellUi.timer);
   cellUi.timer = window.setInterval(() => { if (state.app !== 'cell') { clearInterval(cellUi.timer); clearTimeout(cellUi.scanTimer); return; } refreshCell(); }, 500);
@@ -4674,15 +4679,54 @@ function cellAlertHtml(g: AlertGroup, s: CellSnap, now: number): string {
     const lang = m.language ? m.language.toUpperCase() : m.source === 'SIB10' ? 'WARNING TYPE' : m.alphabet === '8bit' ? 'DATA' : 'TEXT';
     const body = m.complete ? (m.text ? `<p>${esc(m.text)}</p>` : m.binaryHex ? `<p class="cl-hex">${esc(m.binaryHex)}</p><small>binary content; its layout is defined outside the 3GPP specs this app is built from (ATIS-0700041): shown as received</small>` : m.warningType ? `<p>${esc(m.warningType.type.toUpperCase())}${m.warningType.userAlert ? ' · USER ALERT' : ''}${m.warningType.popup ? ' · POPUP' : ''}</p>` : '') : `<p class="cl-dimtxt">segments ${m.segments.join(', ')} of ${m.lastSegment >= 0 ? m.lastSegment + 1 : '?'} received, waiting for the rest</p>`;
     const meta = [`ID ${m.id} (0x${m.id.toString(16).toUpperCase()})`, `SERIAL 0x${m.serial.toString(16).toUpperCase().padStart(4, '0')}`, m.scope, `CODE ${m.messageCode}`, `UPDATE ${m.updateNumber}`, m.dcs >= 0 ? `DCS 0x${m.dcs.toString(16).toUpperCase().padStart(2, '0')}` : '', m.pages ? `${m.pages} PAGE${m.pages === 1 ? '' : 'S'}` : '', m.source].filter(Boolean).join(' · ');
-    const area = m.areaHex ? `<details class="cl-area"><summary>ALERT AREA · ${m.areaHex.length / 2} OCTETS</summary><code>${esc(m.areaHex)}</code><small>the polygon's encoding is ATIS-0700041 (named by TS 23.041 9.3.63), outside the specs this app is built from: shown as received</small></details>` : '';
-    return `<div class="cl-msg"><em>${esc(lang)}${m.additionalLanguage ? ' · ADDITIONAL LANGUAGE' : ''}</em>${body}<small>${esc(meta)}</small>${area}</div>`;
+    const ar = m.areaHex ? parseWarningArea(m.areaHex) : null;
+    const area = m.areaHex ? `<details class="cl-area"><summary>ALERT AREA · ${ar ? `${ar.points.length} POINTS · ${ar.areaKm2.toFixed(1)} KM² · ${ar.closed ? 'CLOSED RING' : 'OPEN RING'} · ` : ''}${m.areaHex.length / 2} OCTETS</summary><code>${esc(m.areaHex)}</code><small>${ar ? `header 0x${ar.header} (meaning not settled), then ${ar.points.length} points of 22-bit latitude and longitude · format derived from recordings` : 'not a polygon this app can read: shown as received'}</small></details>` : '';
+    const trig = m.binaryHex && m.id === 4400 ? parseGeoTrigger(m.binaryHex) : null;
+    const links = trig ? `<div class="cl-links"><small>APPLIES TO · header 0x${trig.header} · derived from recordings</small>${trig.pairs.map(p => { const t = s.alerts.find(x => x.id === p.id && x.serial === p.serial); return `<span>${p.id} / 0x${p.serial.toString(16).toUpperCase().padStart(4, '0')}${t ? ` · ${esc(t.language ?? t.cls)}` : ' · not heard'}</span>`; }).join('')}</div>` : '';
+    return `<div class="cl-msg"><em>${esc(lang)}${m.additionalLanguage ? ' · ADDITIONAL LANGUAGE' : ''}</em>${body}${links}<small>${esc(meta)}</small>${area}</div>`;
   }).join('');
-  const first = g.messages[0];
-  return `<div class="cl-alert ${fresh ? 'fresh' : ''}" style="--al:${col}">`
-    + `<div class="cl-ah"><span class="cl-cls">${esc(g.cls.toUpperCase())}</span><b>${esc(first.category)}</b></div>`
+  const first = g.messages[0], area = groupArea(g), sel = cellUi.alertSel === g.key;
+  return `<div class="cl-alert ${fresh ? 'fresh' : ''} ${sel && area ? 'sel' : ''}" style="--al:${col}" ${area ? `data-clsel="alert:${esc(g.key)}"` : ''}>`
+    + `<div class="cl-ah"><span class="cl-cls">${esc(g.cls.toUpperCase())}</span><b>${esc(first.category)}</b>${area ? areaThumb(area) : ''}</div>`
+    + (area ? `<div class="cl-where ${whereOf(area)[1]}">${esc(whereOf(area)[0])}</div>` : '')
     + `<div class="cl-when">${esc(cellTime(g.firstMs))} · ${esc(cellAgo(now - g.lastMs))}${g.lastMs - g.firstMs > 2000 ? ` · heard until ${esc(cellTime(g.lastMs))}` : ''}</div>`
     + msgs
     + `<div class="cl-carried"><small>CARRIED BY</small>${cellRows.length ? cellRows.map(c => `<span data-clsel="${esc(c.key)}">${esc(cellLabel(c))}</span>`).join('') : g.cells.map(k => `<span>${esc(k)}</span>`).join('')}</div></div>`;
+}
+/** The alert area of a group (the first of its messages that carries one). */
+function groupArea(g: AlertGroup): WarningArea | null {
+  for (const m of g.messages) if (m.areaHex) { const a = parseWarningArea(m.areaHex); if (a) return a; }
+  return null;
+}
+/** INSIDE / OUTSIDE with the distance to the edge, from your position. */
+function whereOf(a: WarningArea): [string, 'in' | 'out' | ''] {
+  if (!state.home) return ['YOUR POSITION IS NOT KNOWN · allow location to see whether you are inside this alert area', ''];
+  const r = areaRelation([state.home.lat, state.home.lon], a), d = r.edgeM < 1000 ? `${Math.round(r.edgeM)} m` : `${(r.edgeM / 1000).toFixed(r.edgeM < 10_000 ? 1 : 0)} km`;
+  return r.inside ? [`INSIDE THE ALERT AREA · ${d} from its edge`, 'in'] : [`OUTSIDE THE ALERT AREA · ${d} from its edge`, 'out'];
+}
+function areaThumb(a: WarningArea): string {
+  const [s, w, n, e] = a.bounds, k = Math.cos((s + n) / 2 * Math.PI / 180), sx = (e - w) * k || 1e-6, sy = (n - s) || 1e-6, sc = 52 / Math.max(sx, sy);
+  const pts = a.points.map(([la, lo]) => `${(6 + ((lo - w) * k) * sc + (52 - sx * sc) / 2).toFixed(1)},${(6 + (n - la) * sc + (52 - sy * sc) / 2).toFixed(1)}`).join(' ');
+  return `<svg class="cl-thumb" viewBox="0 0 64 64" aria-label="alert area outline"><polygon points="${pts}"/></svg>`;
+}
+/** The selected alert's area on the map, with your position, framed once per change. */
+function cellAlertMap(s: CellSnap | null): void {
+  const box = q('#cl-amapbox'), cap = q('#cl-amapcap'); if (!box || !cap) return;
+  const groups = s ? groupAlerts(s.alerts) : [], withArea = groups.filter(g => groupArea(g));
+  if (!withArea.some(g => g.key === cellUi.alertSel)) cellUi.alertSel = withArea[0]?.key ?? '';
+  const g = withArea.find(x => x.key === cellUi.alertSel), a = g ? groupArea(g) : null;
+  box.hidden = !a;
+  if (!g || !a) { cellUi.mapSig = ''; return; }
+  const sig = `${g.key}|${state.home?.lat ?? ''}|${state.home?.lon ?? ''}`;
+  const [where, tone] = whereOf(a);
+  cap.innerHTML = `<b style="color:${CELL_RANK_COLOR[Math.max(0, Math.min(5, g.rank))]}">${esc(g.cls.toUpperCase())}</b><span class="cl-where ${tone}">${esc(where)}</span><small>${a.points.length} points · ${a.areaKm2.toFixed(1)} km² · area format derived from recordings</small>`;
+  if (sig === cellUi.mapSig) return;
+  cellUi.mapSig = sig;
+  geo?.setHome(state.home);
+  geo?.setShapes([{ id: g.key, pts: a.points, line: false, color: CELL_RANK_COLOR[Math.max(0, Math.min(5, g.rank))], sel: true, label: g.cls }]);
+  const pts: [number, number][] = [...a.points];
+  if (state.home) { const r = areaRelation([state.home.lat, state.home.lon], a); if (r.edgeM < 150_000) pts.push([state.home.lat, state.home.lon]); }
+  requestAnimationFrame(() => geo?.fitTo(pts));
 }
 function cellAlertsHtml(s: CellSnap | null, now: number): string {
   const groups = s ? groupAlerts(s.alerts) : [];
@@ -4774,12 +4818,12 @@ function refreshCell(force = false): void {
   });
   const alerts = q('#cl-alerts'), cards = q('#cl-cards'), nbrs = q('#cl-nbrs'), det = q('#cl-detail'), stage = q('#cl-stage'), logEl = q('#cl-log');
   if (!alerts || !cards || !nbrs || !det || !stage || !logEl) return;
-  if (!wide) alerts.hidden = view !== 'alerts';
+  if (!wide) { const w = q('#cl-awrap'); if (w) w.hidden = view !== 'alerts'; }
   cards.hidden = view !== 'cells'; nbrs.hidden = view !== 'neighbors';
   stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
   const ac = q('#cl-alertcount'); if (ac) ac.textContent = nAlerts ? `${nAlerts} kept until cleared` : '';
   if (!paused.has('cell')) {
-    if (wide || view === 'alerts') put(alerts, 'alerts', cellAlertsHtml(s, now));
+    if (wide || view === 'alerts') { put(alerts, 'alerts', cellAlertsHtml(s, now)); cellAlertMap(s); }
     if (view === 'cells') put(cards, 'cards', s && s.cells.length ? s.cells.map(c => cellCard(c, now)).join('') : `<div class="es"><span class="es-g">${glyph('cell', 'currentColor', 44)}</span><b>No cells yet</b><ul><li>AUTO sweeps the LTE downlink bands and stops on each carrier it finds</li><li>A cell appears within a second of its carrier being tuned; SIB1 and the other SIBs follow over a few seconds</li></ul></div>`);
     if (view === 'neighbors') put(nbrs, 'nbrs', s ? cellNbrsHtml(s, now) : '');
   }
