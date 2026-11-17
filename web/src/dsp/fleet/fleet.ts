@@ -7,9 +7,10 @@
 import { fft, hann } from '../../fft.js';
 import type { Emit, IqProcessor } from '../core.js';
 import { Ddc } from '../trains.js';
+import { RealFir, lowpassTaps } from '../ham/filters.js';
 import { crc12Ok, DMR_CRC_MASK, hex } from './codes.js';
 import { parseTsbk, resolveChannel, svcFlags, tsbkLine, h, type Field, type Iden, type Tsbk } from './tsbk.js';
-import { parseCsbk, unwrap16, csbkLine, type Csbk } from './csbk.js';
+import { parseCsbk, unwrap16, csbkLine, VendorCheck, type Csbk } from './csbk.js';
 import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, type P25Block, type DmrEvent } from './rx.js';
 
 export const CH_RATE = 24_000;
@@ -73,10 +74,12 @@ class Chan {
   cw!: CwReader;
   oi = new Float32Array(0); oq = new Float32Array(0);
   openedMs: number; lastSyncMs = 0; quietSince: number;
-  constructor(readonly key: number, public hz: number, center: number, rate: number, now: number) {
+  /** [baseband]: samples arrive already mixed to 0 Hz at that rate (a recorded channel clip), no down-converter. */
+  constructor(readonly key: number, public hz: number, center: number, rate: number, now: number, baseband = 0) {
     this.ddc.reset(rate); this.ddc.offsetHz = hz - center;
-    this.rx = new SymbolRx(this.ddc.outRate);
-    this.cw = new CwReader(this.ddc.outRate);
+    const fs = baseband || this.ddc.outRate;
+    this.rx = new SymbolRx(fs);
+    this.cw = new CwReader(fs);
     this.rx.onSymbol = s => { this.p25.push(s); this.dmr.push(s); };
     this.openedMs = now; this.quietSince = now;
   }
@@ -85,10 +88,13 @@ class Chan {
     const need = this.ddc.maxOut(n);
     if (this.oi.length < need) { this.oi = new Float32Array(need); this.oq = new Float32Array(need); }
     const m = this.ddc.push(fi, fq, n, this.oi, this.oq);
+    this.channel(this.oi, this.oq, m, now);
+  }
+  channel(zi: Float32Array, zq: Float32Array, m: number, now: number): void {
     const s0 = this.p25.syncs + this.dmr.syncs;
-    this.rx.push(this.oi, this.oq, m);
+    this.rx.push(zi, zq, m);
     if (this.p25.syncs + this.dmr.syncs !== s0) { this.lastSyncMs = now; this.quietSince = now; this.cw.reset(); }
-    else if (now - this.lastSyncMs > 80) this.cw.push(this.oi, this.oq, m);
+    else if (now - this.lastSyncMs > 80) this.cw.push(zi, zq, m);
   }
 }
 
@@ -111,6 +117,8 @@ export class FleetProcessor implements IqProcessor {
   private nfft = 4096; private re = new Float32Array(0); private im = new Float32Array(0); private win = new Float32Array(0); private acc = new Float32Array(0); private frames = 0;
   private lastFind = 0; private lastPost = 0; private pending = false; private colorNext = 0;
   private readonly logSeen = new Map<string, number>();
+  private readonly vendor = new VendorCheck();
+  private readonly bbFir = new Map<number, [RealFir, RealFir]>();
 
   constructor(private readonly emit: Emit | null) {}
 
@@ -149,12 +157,13 @@ export class FleetProcessor implements IqProcessor {
   get spanLo(): number { return this.centerHz - this.rate * 0.44; }
   get spanHi(): number { return this.centerHz + this.rate * 0.44; }
 
-  /** Peaks of the 10 kHz channel power, at least 10 dB over the span's median, 10 kHz apart. */
+  /** Peaks of the 6 kHz channel power, at least 10 dB over the span's median, 6 kHz apart (a neighbor 12.5 kHz away
+   *  stays its own carrier). */
   private findCarriers(now: number): void {
     const N = this.nfft, bin = this.rate / N, p = new Float32Array(N);
     for (let k = 0; k < N; k++) p[k] = this.acc[(k + N / 2) % N] / this.frames;
     this.acc.fill(0); this.frames = 0;
-    const W = Math.max(1, Math.round(10_000 / bin)), half = W >> 1, s = new Float32Array(N), P = new Float64Array(N + 1);
+    const W = Math.max(1, Math.round(6_000 / bin)), half = W >> 1, s = new Float32Array(N), P = new Float64Array(N + 1);
     for (let k = 0; k < N; k++) P[k + 1] = P[k] + p[k];
     for (let k = 0; k < N; k++) s[k] = P[Math.min(N, k - half + W)] - P[Math.max(0, k - half)];
     const lo = Math.ceil(N / 2 - this.rate * 0.44 / bin), hi = Math.floor(N / 2 + this.rate * 0.44 / bin);
@@ -198,10 +207,10 @@ export class FleetProcessor implements IqProcessor {
     for (const k of chosen) if (!this.chans.has(k)) { const c = this.carriers.get(k)!; c.lastAuditionMs = now; this.open(c, now); }
     for (const c of this.carriers.values()) c.decoding = this.chans.has(c.key);
   }
-  private open(c: Carrier, now: number): void {
-    const ch = new Chan(c.key, c.hz, this.centerHz, this.rate, now);
+  private open(c: Carrier, now: number, given?: Chan): void {
+    const ch = given ?? new Chan(c.key, c.hz, this.centerHz, this.rate, now);
     ch.p25.onBlock = b => this.p25Block(c, ch, b);
-    ch.p25.onFrame = (nac, duid) => this.p25Frame(c, nac, duid);
+    ch.p25.onFrame = (nac, duid) => { c.envCv = Math.round(ch.rx.envCv * 100) / 100; this.p25Frame(c, nac, duid); };
     ch.dmr.onBurst = e => this.dmrBurst(c, ch, e);
     ch.cw.onText = t => this.cwText(c, t);
     this.chans.set(c.key, ch);
@@ -315,13 +324,16 @@ export class FleetProcessor implements IqProcessor {
     const ok = mask !== undefined && crc12Ok(b.bytes, mask);
     if (ok) c.crcOk++;
     if (b.dt === 3) {
-      const cs = parseCsbk(b.bytes, ok);
-      // a vendor's derived formats are kept with no known CRC; anything else has to pass its CRC
-      if (!ok && !(cs.derived && (cs.kind === 'unitrpt' || cs.kind === 'unithdr' || cs.kind === 'callann'))) return;
+      const op = b.bytes[0] & 0x3f, vendor = !ok && b.bytes[1] === 0x10 && (op === 0x09 || op === 0x3d);
+      const vok = vendor && this.vendor.check(b.bytes, `${b.cc}`);
+      if (vok) c.crcOk++;
+      const cs = parseCsbk(b.bytes, ok || vok);
+      // the unit-report families are kept when their check fails (shown unverified); anything else has to pass its CRC
+      if (!ok && !vok && !(cs.derived && (cs.kind === 'unitrpt' || cs.kind === 'unithdr' || cs.kind === 'callann'))) return;
       if (c.role === '' || c.role === 'voice') c.role = 'control';
       const s = this.dmrSystem(c, cs, b.cc, now);
       this.dmrApply(c, cs, b.slot, s, now);
-      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name: cs.name, text: `CC ${b.cc} · TS${b.slot + 1} · ${csbkLine(cs)}`, hex: cs.hex, ok });
+      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name: cs.name, text: `CC ${b.cc} · TS${b.slot + 1} · ${csbkLine(cs)}`, hex: cs.hex, ok: ok || vok });
     } else if (ok || b.dt === 7) {
       if (b.dt === 6 || b.dt === 7) { if (c.role === '') c.role = 'data'; }
       const name = ['PI HEADER', 'VOICE HEADER', 'TERMINATOR', 'CSBK', 'MBC HEADER', 'MBC CONTINUATION', 'DATA HEADER', 'RATE 1/2 DATA', 'RATE 3/4 DATA', 'IDLE', 'RATE 1 DATA'][b.dt];
@@ -532,6 +544,20 @@ export class FleetProcessor implements IqProcessor {
   feedDmr(hz: number, slot: number, cc: number, dt: number, bytes: Uint8Array): void {
     this.dmrBurst(this.carrierAt(hz), null, { burst: { slot, cc, dt, stErrs: 0, bytes, busy: 1 }, dibits: new Uint8Array(0) });
   }
+  /** A recorded channel clip, complex baseband at [fs] mixed to 0 Hz from [hz]: decoded as a channel of the span. */
+  feedBaseband(hz: number, fs: number, zi: Float32Array, zq: Float32Array, n: number): void {
+    const c = this.carrierAt(hz), now = this.now();
+    let ch = this.chans.get(c.key);
+    if (!ch) { ch = new Chan(c.key, hz, hz, fs * 4, now, fs); this.open(c, now, ch); }
+    c.lastMs = now; c.decoding = true;
+    // the same channel filter the down-converter applies: a neighbor 12.5 kHz away is inside a 48 kS/s clip
+    const f = this.bbFir.get(c.key) ?? (() => { const t = lowpassTaps(CUT_HZ / fs, 127); const v = [new RealFir(t), new RealFir(t)] as [RealFir, RealFir]; this.bbFir.set(c.key, v); return v; })();
+    const fi = new Float32Array(n), fq = new Float32Array(n);
+    f[0].process(zi, n, fi); f[1].process(zq, n, fq);
+    ch.channel(fi, fq, n, now);
+  }
+  /** The end of a recording: the samples still waiting for a whole timing block are decoded too. */
+  flush(): void { for (const ch of this.chans.values()) ch.rx.flush(); }
   /** A CW ID read on [hz]. */
   feedCw(hz: number, text: string): void { this.cwText(this.carrierAt(hz), text); }
   /** Everything held about one unit, for its detail view. */

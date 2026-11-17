@@ -1,7 +1,7 @@
 /**
  * DMR control signaling blocks to named fields: the ETSI TS 102 361-2/-4 CSBKs (Tier III Aloha, broadcasts,
  * grants, acknowledgements) and, under feature set ID 0x10, the block formats derived from our own recordings
- * (rest-channel beacon, unit report header and unit report). No DOM.
+ * (rest-channel beacon, unit report header and unit report, with the vendor check). No DOM.
  */
 import { hex } from './codes.js';
 import { h, type Field } from './tsbk.js';
@@ -90,7 +90,7 @@ export function parseCsbk(b: ArrayLike<number>, verified: boolean): Csbk {
 
 /**
  * Feature set 0x10, formats derived from our recordings: 0x3E is a rest-channel beacon (CRC verified), 0x3D with
- * 0x09 after it is a unit report (no CRC found, so it stays unverified), 0x3B a periodic broadcast, 0x08 a call
+ * 0x09 after it is a unit report (the vendor check below), 0x3B a periodic broadcast, 0x08 a call
  * announcement. Anything else is shown as hex.
  */
 function vendor10(b: ArrayLike<number>, c: Csbk, add: (k: string, v: string) => void): Csbk {
@@ -124,8 +124,54 @@ function vendor10(b: ArrayLike<number>, c: Csbk, add: (k: string, v: string) => 
     const a = w(3), z = w(6); add('ID A', a === 0xffff ? 'all' : `${a}`); add('ID B', z === 0xffff ? 'all' : `${z}`);
     if (a !== 0xffff) c.unit = a;
   } else { c.derived = false; c.kind = 'vendor'; c.name = `FID 10 CSBK ${h(op, 2)}`; add('PAYLOAD', hex(b, 2, 10)); }
-  if (c.derived) add('FORMAT', `derived from recordings${c.verified ? ', CRC verified' : ', CRC unverified'}`);
+  if (c.derived) add('FORMAT', `derived from recordings${c.verified ? ', check passed' : ', check not passed'}`);
   return c;
+}
+
+/**
+ * The check on the feature set 0x10 unit report (0x89) and its header (0xBD), derived from our recordings: CRC-CCITT
+ * (0x11021) over the data bits in a fixed vendor order, given here as a table (data bit, MSB first from byte 0, to
+ * the exponent of its column x^e mod 0x11021). c = tail XOR the columns of every set mapped bit; a block passes when
+ * c equals its family's constant. The constant depends on the bits outside the table, so it is kept per family key
+ * (the block with the mapped bits and the tail cleared): two are known from our recordings, others are learned when
+ * the same c repeats on one system.
+ */
+const VENDOR_MAP: [number, number][] = [
+  [16, 34], [18, 39], [19, 16], [20, 35], [34, 77], [35, 47], [36, 17], [37, 67], [38, 40], [39, 32], [40, 90], [41, 74], [42, 112],
+  [43, 104], [44, 72], [45, 30], [46, 73], [47, 115], [48, 82], [49, 98], [50, 80], [51, 100], [52, 41], [53, 59], [54, 78], [55, 20],
+  [56, 99], [57, 42], [58, 107], [59, 36], [60, 26], [61, 52], [62, 102], [63, 88], [64, 28], [65, 92], [66, 24], [67, 65], [68, 75],
+  [69, 69], [70, 106], [71, 45], [72, 117], [73, 61], [74, 29], [75, 62], [76, 116], [77, 23], [78, 44], [79, 76],
+];
+const xpow = (e: number) => { let x = 1; for (let i = 0; i < e; i++) x = x & 0x8000 ? ((x << 1) ^ 0x11021) & 0xffff : (x << 1) & 0xffff; return x; };
+const VENDOR_COL = VENDOR_MAP.map(([p, e]) => [p, xpow(e)] as [number, number]);
+/** The block's family key (mapped bits and tail cleared) and its check value c. */
+export function vendorCheckValue(b: ArrayLike<number>): { key: string; c: number } {
+  const k = Array.from({ length: 10 }, (_, i) => b[i] & 255);
+  let c = ((b[10] << 8) | b[11]) & 0xffff;
+  for (const [p, col] of VENDOR_COL) { const m = 0x80 >> (p & 7); if (b[p >> 3] & m) c ^= col; k[p >> 3] &= ~m; }
+  return { key: k.map(v => v.toString(16).padStart(2, '0')).join(''), c };
+}
+/** Family keys and constants from our recordings. */
+const VENDOR_KNOWN = new Map<string, number>([
+  [vendorCheckValue([0x89, 0x10, 0x11, 0x00, 0x0e, 0x7d, 0xe4, 0x9a, 0x18, 0x09, 0xcc, 0x92]).key, 0x06da],
+  [vendorCheckValue([0xbd, 0x10, 0x88, 0x02, 0x00, 0xff, 0xff, 0x06, 0x0a, 0x8f, 0xb1, 0x61]).key, 0x4616],
+]);
+/** Checks 0x89 / 0xBD blocks; the constants for other systems' fixed bytes are learned from repeats. */
+export class VendorCheck {
+  private readonly learned = new Map<string, number>();
+  private readonly votes = new Map<string, Map<number, number>>();
+  static known(key: string): number | undefined { return VENDOR_KNOWN.get(key); }
+  /** [scope] separates systems: a learned constant holds for the system it was learned on. */
+  check(b: ArrayLike<number>, scope = ''): boolean {
+    const { key, c } = vendorCheckValue(b), k0 = VENDOR_KNOWN.get(key);
+    if (k0 !== undefined) return c === k0;
+    const sk = `${scope}|${key}`, l = this.learned.get(sk);
+    if (l !== undefined) return c === l;
+    const v = this.votes.get(sk) ?? new Map<number, number>(); v.set(c, (v.get(c) ?? 0) + 1); this.votes.set(sk, v);
+    if (this.votes.size > 2000) this.votes.clear();
+    if ((v.get(c) ?? 0) >= 4) { this.learned.set(sk, c); return true; }
+    return false;
+  }
 }
 
 /** Degrees × 2^22/360: the unit report carries the low 16 bits of each. */
@@ -137,5 +183,5 @@ export function unwrap16(lo16: number, refDeg: number): number {
 }
 
 export function csbkLine(c: Csbk): string {
-  return `${c.name}${c.fields.length ? ' · ' + c.fields.filter(x => x.k !== 'FORMAT').map(x => `${x.k.toLowerCase()} ${x.v}`).join(' · ') : ''}${c.derived ? (c.verified ? ' · derived' : ' · derived, CRC unverified') : ''}`;
+  return `${c.name}${c.fields.length ? ' · ' + c.fields.filter(x => x.k !== 'FORMAT').map(x => `${x.k.toLowerCase()} ${x.v}`).join(' · ') : ''}${c.derived ? (c.verified ? ' · derived, check passed' : ' · derived, unverified') : ''}`;
 }

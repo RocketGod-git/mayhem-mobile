@@ -61,13 +61,15 @@ export class SymbolRx {
     const i = Math.floor(t), f = t - i;
     return this.buf[i] * (1 - f) + this.buf[Math.min(i + 1, this.n - 1)] * f;
   }
-  private block(): void {
-    const T = this.sps, len = BLOCK * T, buf = this.buf;
+  /** Decode what is left in the buffer as a short last block. */
+  flush(): void { const k = Math.floor(this.n / this.sps) - 2; if (k > 20) this.block(k); }
+  private block(nsym = BLOCK): void {
+    const T = this.sps, len = nsym * T, buf = this.buf;
     let best = 0, bestE = -1, sumE = 0;
     for (let p = 0; p < 8; p++) {
       const off = p * T / 8;
       let e = 0;
-      for (let k = 0; k < BLOCK; k++) { const x = this.at(off + k * T) - this.center; e += x * x; }
+      for (let k = 0; k < nsym; k++) { const x = this.at(off + k * T) - this.center; e += x * x; }
       sumE += e;
       if (e > bestE) { bestE = e; best = off; }
     }
