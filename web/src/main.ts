@@ -47,7 +47,7 @@ import type { Mib as CellMib } from './dsp/cell/pbch.js';
 import { groupAlerts, type AlertGroup } from './dsp/cell/cbs.js';
 import { fieldGroups } from './dsp/cell/sysinfo.js';
 import { parseWarningArea, parseGeoTrigger, areaRelation, type WarningArea } from './dsp/cell/area.js';
-import { CELL_BANDS, findCarriers, newProfile, stitch, type CarrierGuess, type Profile } from './dsp/cell/bands.js';
+import { CELL_BANDS, findCarriers, newProfile, scanCandidates, stitch, type CarrierGuess, type Profile } from './dsp/cell/bands.js';
 import { EOT_CENTER as TR_EOT_CENTER, EOT_RATE as TR_EOT_RATE, EOT_NARROW as TR_EOT_NARROW, PTC_CENTER as TR_PTC_CENTER, PTC_RATE as TR_PTC_RATE, PTC_NARROW as TR_PTC_NARROW, PTC_KIND_LABEL, stationPeriod, stationVaries, symHex, type EotUnit, type HotHeard, type PtcStation } from './dsp/trains.js';
 
 type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
@@ -4572,16 +4572,18 @@ function cellTick(): void {
       if (sc.wi < sc.windows.length) cellGo(sc.windows[sc.wi], 700);
       else {
         const b = cellBands()[sc.bandIdx % cellBands().length];
-        sc.cands = sc.profile ? findCarriers(sc.profile).filter(c => c.centerHz >= b.lo && c.centerHz <= b.hi) : [];
-        // carriers already known in this band are visited too, found or not this time
-        for (const c of s?.cells ?? []) if (c.hz >= b.lo && c.hz <= b.hi && !sc.cands.some(x => Math.abs(x.centerHz - c.hz) < 50_000)) sc.cands.push({ centerHz: c.hz, occupiedMhz: 0, nrb: c.nrb, levelDb: 0 });
+        // exact centers first: the LTE carriers other cells list in SIB5, and cells already heard here
+        const exact = [...(s?.cells ?? []).flatMap(c => (c.neighbors?.inter ?? []).filter(f => f.mhz !== null).map(f => Math.round(f.mhz! * 1e6))), ...(s?.cells ?? []).map(c => c.hz)];
+        sc.cands = scanCandidates(b.lo, b.hi, sc.profile ? findCarriers(sc.profile) : [], exact);
         if (!sc.cands.length) { if (cellUi.band === 'AUTO') cellNextBand(); else cellSurvey(); }
         else { sc.ci = -1; cellNextCandidate(); }
       }
     }
   } else if (sc.phase === 'visit') {
-    const found = here?.cells.some(c => c.hz === state.freq && c.mib && now - c.mibMs < 3000);
-    if (found) { sc.phase = 'dwell'; sc.until = now + (cellRtl() ? 2500 : 13_000); }
+    // a cell found up to 300 kHz off the tuned center counts: retune to its own center and read it there
+    const near = here?.cells.find(c => Math.abs(c.hz - state.freq) <= 300_000 && c.mib && now - c.mibMs < 3000);
+    if (near && near.hz !== state.freq) cellGo(near.hz, 2500);
+    else if (near) { sc.phase = 'dwell'; sc.until = now + (cellRtl() ? 2500 : 13_000); }
     else if (now >= sc.until && (here || now - sc.tunedMs > 4000)) cellNextCandidate();
   } else if (sc.phase === 'dwell') {
     const cells = here?.cells.filter(c => c.hz === state.freq && now - c.lastMs < 15_000) ?? [];
