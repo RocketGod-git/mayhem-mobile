@@ -68,13 +68,15 @@ class SymbolRx(val fs: Double) {
         val i = floor(t).toInt(); val f = t - i
         return buf[i] * (1 - f) + buf[min(i + 1, n - 1)] * f
     }
-    private fun block() {
-        val tt = sps; val len = BLOCK * tt
+    /** Decode what is left in the buffer as a short last block. */
+    fun flush() { val k = floor(n / sps).toInt() - 2; if (k > 20) block(k) }
+    private fun block(nsym: Int = BLOCK) {
+        val tt = sps; val len = nsym * tt
         var best = 0.0; var bestE = -1.0; var sumE = 0.0
         for (p in 0 until 8) {
             val off = p * tt / 8
             var e = 0.0
-            for (k in 0 until BLOCK) { val x = at(off + k * tt) - center; e += x * x }
+            for (k in 0 until nsym) { val x = at(off + k * tt) - center; e += x * x }
             sumE += e
             if (e > bestE) { bestE = e; best = off }
         }
@@ -82,7 +84,7 @@ class SymbolRx(val fs: Double) {
         // continue the previous grid: the first symbol of this block is the one at least half a symbol after the last
         val t0 = tNext - base
         var k0 = ceil((t0 - tt / 2 - best) / tt).toInt(); if (k0 < 0) k0 = 0
-        val vals = ArrayList<Double>(BLOCK + 4)
+        val vals = ArrayList<Double>(nsym + 4)
         var t = best + k0 * tt
         while (t < len) { vals.add(at(t)); t += tt }
         tNext = base + t

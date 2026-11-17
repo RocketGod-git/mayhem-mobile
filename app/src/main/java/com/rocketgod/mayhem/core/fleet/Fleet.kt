@@ -3,6 +3,8 @@ package com.rocketgod.mayhem.core.fleet
 import com.rocketgod.mayhem.core.Dsp
 import com.rocketgod.mayhem.core.IqProcessor
 import com.rocketgod.mayhem.core.PacketLog
+import com.rocketgod.mayhem.core.ham.RealFir
+import com.rocketgod.mayhem.core.ham.lowpassTaps
 import com.rocketgod.mayhem.core.trains.Ddc
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -104,7 +106,8 @@ fun channelBudget(rate: Int): Int = max(4, min(24, floor(110e6 / max(rate, 1)).t
 private fun gridKey(hz: Double): Long = Math.round(hz / 6250) * 6250
 private fun round6(x: Double): Double = Math.round(x * 1e6) / 1e6
 
-private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: Long) {
+/** [baseband]: samples arrive already mixed to 0 Hz at that rate (a recorded channel clip), no down-converter. */
+private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: Long, baseband: Double = 0.0) {
     val ddc = Ddc(CUT_HZ, CH_RATE, 127)
     val rx: SymbolRx
     val p25 = P25Framer()
@@ -114,8 +117,9 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
     val openedMs = now; var lastSyncMs = 0L; var quietSince = now
     init {
         ddc.reset(rate.toDouble()); ddc.offsetHz = hz - center
-        rx = SymbolRx(ddc.outRate)
-        cw = CwReader(ddc.outRate)
+        val fs = if (baseband > 0) baseband else ddc.outRate
+        rx = SymbolRx(fs)
+        cw = CwReader(fs)
         rx.onSymbol = { s -> p25.push(s); dmr.push(s) }
     }
     fun retarget(center: Long) { ddc.offsetHz = hz - center }
@@ -123,10 +127,13 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         val need = ddc.maxOut(n)
         if (oi.size < need) { oi = FloatArray(need); oq = FloatArray(need) }
         val m = ddc.push(fi, fq, n, oi, oq)
+        channel(oi, oq, m, now)
+    }
+    fun channel(zi: FloatArray, zq: FloatArray, m: Int, now: Long) {
         val s0 = p25.syncs + dmr.syncs
-        rx.push(oi, oq, m)
+        rx.push(zi, zq, m)
         if (p25.syncs + dmr.syncs != s0) { lastSyncMs = now; quietSince = now; cw.reset() }
-        else if (now - lastSyncMs > 80) cw.push(oi, oq, m)
+        else if (now - lastSyncMs > 80) cw.push(zi, zq, m)
     }
 }
 
@@ -151,6 +158,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     private var nfft = 4096; private var re = FloatArray(0); private var im = FloatArray(0); private var win = FloatArray(0); private var acc = FloatArray(0); private var frames = 0
     private var lastFind = 0L; private var lastPost = 0L; private var pending = false; private var colorNext = 0
     private val logSeen = HashMap<String, Long>()
+    private val vendor = VendorCheck()
+    private val bbFir = HashMap<Long, Pair<RealFir, RealFir>>()
     private val _snap = MutableStateFlow<FleetSnap?>(null)
     val snap: StateFlow<FleetSnap?> = _snap.asStateFlow()
 
@@ -193,12 +202,13 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     val spanLo: Double get() = centerHz - rate * 0.44
     val spanHi: Double get() = centerHz + rate * 0.44
 
-    /** Peaks of the 10 kHz channel power, at least 10 dB over the span's median, 10 kHz apart. */
+    /** Peaks of the 6 kHz channel power, at least 10 dB over the span's median, 6 kHz apart (a neighbor 12.5 kHz away
+     *  stays its own carrier). */
     private fun findCarriers(now: Long) {
         val nn = nfft; val bin = rate.toDouble() / nn; val p = FloatArray(nn)
         for (k in 0 until nn) p[k] = acc[(k + nn / 2) % nn] / frames
         acc.fill(0f); frames = 0
-        val w = max(1, (10_000 / bin).roundToInt()); val half = w shr 1; val s = FloatArray(nn); val pre = DoubleArray(nn + 1)
+        val w = max(1, (6_000 / bin).roundToInt()); val half = w shr 1; val s = FloatArray(nn); val pre = DoubleArray(nn + 1)
         for (k in 0 until nn) pre[k + 1] = pre[k] + p[k]
         for (k in 0 until nn) s[k] = (pre[min(nn, max(0, k - half + w))] - pre[max(0, k - half)]).toFloat()
         val lo = ceil(nn / 2 - rate * 0.44 / bin).toInt(); val hi = floor(nn / 2 + rate * 0.44 / bin).toInt()
@@ -246,10 +256,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         for (k in chosen) if (!chans.containsKey(k)) { val c = carriers[k]!!; c.lastAuditionMs = now; open(c, now) }
         for (c in carriers.values) c.decoding = chans.containsKey(c.key)
     }
-    private fun open(c: Carrier, now: Long) {
-        val ch = Chan(c.key, c.hz.toDouble(), centerHz, rate, now)
+    private fun open(c: Carrier, now: Long, given: Chan? = null) {
+        val ch = given ?: Chan(c.key, c.hz.toDouble(), centerHz, rate, now)
         ch.p25.onBlock = { b -> p25Block(c, b) }
-        ch.p25.onFrame = { nac, duid -> p25Frame(c, nac, duid) }
+        ch.p25.onFrame = { nac, duid -> c.envCv = Math.round(ch.rx.envCv * 100) / 100.0; p25Frame(c, nac, duid) }
         ch.dmr.onBurst = { e -> dmrBurst(c, e) }
         ch.cw.onText = { t -> cwText(c, t) }
         chans[c.key] = ch
@@ -372,13 +382,17 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val ok = mask != null && Codes.crc12Ok(b.bytes, mask)
         if (ok) c.crcOk++
         if (b.dt == 3) {
-            val cs = Csbks.parse(b.bytes, ok)
-            // a vendor's derived formats are kept with no known CRC; anything else has to pass its CRC
-            if (!ok && !(cs.derived && (cs.kind == "unitrpt" || cs.kind == "unithdr" || cs.kind == "callann"))) return
+            val op = b.bytes[0] and 0x3f
+            val isVendor = !ok && b.bytes[1] == 0x10 && (op == 0x09 || op == 0x3d)
+            val vok = isVendor && vendor.check(b.bytes, "${b.cc}")
+            if (vok) c.crcOk++
+            val cs = Csbks.parse(b.bytes, ok || vok)
+            // the unit-report families are kept when their check fails (shown unverified); anything else has to pass its CRC
+            if (!ok && !vok && !(cs.derived && (cs.kind == "unitrpt" || cs.kind == "unithdr" || cs.kind == "callann"))) return
             if (c.role == "" || c.role == "voice") c.role = "control"
             val s = dmrSystem(c, cs, b.cc, now)
             dmrApply(c, cs, b.slot, s, now)
-            addLog(LogRow(now, c.hz, "DMR", cs.name, "CC ${b.cc} · TS${b.slot + 1} · ${Csbks.line(cs)}", cs.hex, ok))
+            addLog(LogRow(now, c.hz, "DMR", cs.name, "CC ${b.cc} · TS${b.slot + 1} · ${Csbks.line(cs)}", cs.hex, ok || vok))
         } else if (ok || b.dt == 7) {
             if (b.dt == 6 || b.dt == 7) { if (c.role == "") c.role = "data" }
             val name = DATA_TYPES[b.dt]
@@ -575,6 +589,20 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     @Synchronized fun feedDmr(hz: Long, slot: Int, cc: Int, dt: Int, bytes: IntArray) {
         dmrBurst(carrierAt(hz.toDouble()), DmrEvent(Codes.DmrBurst(slot, cc, dt, 0, bytes, 1), IntArray(0)))
     }
+    /** A recorded channel clip, complex baseband at [fs] mixed to 0 Hz from [hz]: decoded as a channel of the span. */
+    @Synchronized fun feedBaseband(hz: Long, fs: Double, zi: FloatArray, zq: FloatArray, n: Int) {
+        val c = carrierAt(hz.toDouble()); val now = now()
+        var ch = chans[c.key]
+        if (ch == null) { ch = Chan(c.key, hz.toDouble(), hz, (fs * 4).roundToInt(), now, fs); open(c, now, ch) }
+        c.lastMs = now; c.decoding = true
+        // the same channel filter the down-converter applies: a neighbor 12.5 kHz away is inside a 48 kS/s clip
+        val f = bbFir.getOrPut(c.key) { val t = lowpassTaps(CUT_HZ / fs, 127); RealFir(t) to RealFir(t) }
+        val fi = FloatArray(n); val fq = FloatArray(n)
+        f.first.process(zi, n, fi); f.second.process(zq, n, fq)
+        ch.channel(fi, fq, n, now)
+    }
+    /** The end of a recording: the samples still waiting for a whole timing block are decoded too. */
+    @Synchronized fun flush() { for (ch in chans.values) ch.rx.flush() }
     /** A CW ID read on [hz]. */
     @Synchronized fun feedCw(hz: Long, text: String) { cwText(carrierAt(hz.toDouble()), text) }
     /** Everything held about one unit, for its detail view. */
@@ -636,7 +664,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     @Synchronized fun clear() {
         carriers.clear(); systems.clear(); sites.clear(); units.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
-        chans.clear(); blocks = 0; colorNext = 0
+        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0
         post(true)
     }
 

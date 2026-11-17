@@ -3,7 +3,7 @@ package com.rocketgod.mayhem.core.fleet
 /**
  * DMR control signaling blocks to named fields: the ETSI TS 102 361-2/-4 CSBKs (Tier III Aloha, broadcasts, grants,
  * acknowledgements) and, under feature set ID 0x10, the block formats derived from our own recordings (rest-channel
- * beacon, unit report header and unit report).
+ * beacon, unit report header and unit report, with the vendor check).
  */
 class Csbk(val op: Int, val fid: Int, val last: Boolean, val hex: String,
            /** Checked by its CRC; the derived unit-report formats have none known. */ val verified: Boolean) {
@@ -85,7 +85,7 @@ object Csbks {
 
     /**
      * Feature set 0x10, formats derived from our recordings: 0x3E is a rest-channel beacon (CRC verified), 0x3D with
-     * 0x09 after it is a unit report (no CRC found, so it stays unverified), 0x3B a periodic broadcast, 0x08 a call
+     * 0x09 after it is a unit report (the vendor check below), 0x3B a periodic broadcast, 0x08 a call
      * announcement. Anything else is shown as hex.
      */
     private fun vendor10(b: IntArray, c: Csbk, add: (String, String) -> Unit): Csbk {
@@ -126,9 +126,39 @@ object Csbks {
             }
             else -> { c.derived = false; c.kind = "vendor"; c.name = "FID 10 CSBK ${hx(op, 2)}"; add("PAYLOAD", Codes.hex(b, 2, 10)) }
         }
-        if (c.derived) add("FORMAT", "derived from recordings${if (c.verified) ", CRC verified" else ", CRC unverified"}")
+        if (c.derived) add("FORMAT", "derived from recordings${if (c.verified) ", check passed" else ", check not passed"}")
         return c
     }
+
+    /**
+     * The check on the feature set 0x10 unit report (0x89) and its header (0xBD), derived from our recordings: CRC-CCITT
+     * (0x11021) over the data bits in a fixed vendor order, given here as a table (data bit, MSB first from byte 0, to the
+     * exponent of its column x^e mod 0x11021). c = tail XOR the columns of every set mapped bit; a block passes when c
+     * equals its family's constant. The constant depends on the bits outside the table, so it is kept per family key (the
+     * block with the mapped bits and the tail cleared): two are known from our recordings, others are learned when the same
+     * c repeats on one system.
+     */
+    private val VENDOR_MAP = intArrayOf(
+        16, 34, 18, 39, 19, 16, 20, 35, 34, 77, 35, 47, 36, 17, 37, 67, 38, 40, 39, 32, 40, 90, 41, 74, 42, 112,
+        43, 104, 44, 72, 45, 30, 46, 73, 47, 115, 48, 82, 49, 98, 50, 80, 51, 100, 52, 41, 53, 59, 54, 78, 55, 20,
+        56, 99, 57, 42, 58, 107, 59, 36, 60, 26, 61, 52, 62, 102, 63, 88, 64, 28, 65, 92, 66, 24, 67, 65, 68, 75,
+        69, 69, 70, 106, 71, 45, 72, 117, 73, 61, 74, 29, 75, 62, 76, 116, 77, 23, 78, 44, 79, 76,
+    )
+    private fun xpow(e: Int): Int { var x = 1; repeat(e) { x = if ((x and 0x8000) != 0) ((x shl 1) xor 0x11021) and 0xffff else (x shl 1) and 0xffff }; return x }
+    private val VENDOR_COL = IntArray(VENDOR_MAP.size / 2) { xpow(VENDOR_MAP[2 * it + 1]) }
+    /** The block's family key (mapped bits and tail cleared) and its check value c. */
+    fun vendorCheckValue(b: IntArray): Pair<String, Int> {
+        val k = IntArray(10) { b[it] and 255 }
+        var c = ((b[10] shl 8) or b[11]) and 0xffff
+        for (i in VENDOR_COL.indices) { val p = VENDOR_MAP[2 * i]; val m = 0x80 shr (p and 7); if ((b[p shr 3] and m) != 0) c = c xor VENDOR_COL[i]; k[p shr 3] = k[p shr 3] and m.inv() }
+        return Codes.hex(k) to c
+    }
+    /** Family keys and constants from our recordings. */
+    private val VENDOR_KNOWN: Map<String, Int> by lazy { mapOf(
+        vendorCheckValue(intArrayOf(0x89, 0x10, 0x11, 0x00, 0x0e, 0x7d, 0xe4, 0x9a, 0x18, 0x09, 0xcc, 0x92)).first to 0x06da,
+        vendorCheckValue(intArrayOf(0xbd, 0x10, 0x88, 0x02, 0x00, 0xff, 0xff, 0x06, 0x0a, 0x8f, 0xb1, 0x61)).first to 0x4616,
+    ) }
+    fun vendorKnown(key: String): Int? = VENDOR_KNOWN[key]
 
     /** Degrees × 2^22/360: the unit report carries the low 16 bits of each. */
     const val POS_SCALE = 4194304.0 / 360.0
@@ -141,5 +171,22 @@ object Csbks {
 
     fun line(c: Csbk): String =
         c.name + (if (c.fields.isNotEmpty()) " · " + c.fields.filter { it.k != "FORMAT" }.joinToString(" · ") { "${it.k.lowercase()} ${it.v}" } else "") +
-            (if (c.derived) (if (c.verified) " · derived" else " · derived, CRC unverified") else "")
+            (if (c.derived) (if (c.verified) " · derived, check passed" else " · derived, unverified") else "")
+}
+
+/** Checks 0x89 / 0xBD blocks; the constants for other systems' fixed bytes are learned from repeats. */
+class VendorCheck {
+    private val learned = HashMap<String, Int>()
+    private val votes = HashMap<String, HashMap<Int, Int>>()
+    /** [scope] separates systems: a learned constant holds for the system it was learned on. */
+    fun check(b: IntArray, scope: String = ""): Boolean {
+        val (key, c) = Csbks.vendorCheckValue(b)
+        Csbks.vendorKnown(key)?.let { return c == it }
+        val sk = "$scope|$key"
+        learned[sk]?.let { return c == it }
+        val v = votes.getOrPut(sk) { HashMap() }; v[c] = (v[c] ?: 0) + 1
+        if (votes.size > 2000) votes.clear()
+        if ((v[c] ?: 0) >= 4) { learned[sk] = c; return true }
+        return false
+    }
 }

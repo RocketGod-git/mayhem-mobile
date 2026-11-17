@@ -485,7 +485,7 @@ private fun fleetDetail(s: FleetSnap, sel: String, now: Long, view: Int): FleetD
                 "UNITS" to "${x.units}", "TALKGROUPS" to "${x.tgs}", "GRANTS" to "${x.grants}", "FIRST HEARD" to flClock(x.firstMs), "LAST HEARD" to flClock(x.lastMs))
             else listOf("PROTOCOL" to "DMR", "COLOR CODE" to "${x.cc}", "FEATURE SET" to (if (x.fid >= 0) "0x${hx(x.fid, 2)}" else "-"), "NETWORK" to (if (x.net >= 0) "${x.model} ${x.net}" else "not sent"),
                 "CALLSIGN" to x.callsign.ifEmpty { "no CW ID heard yet" }, "SITES" to x.sites.joinToString(", ") { it.label }, "UNITS" to "${x.units}",
-                "FORMATS" to (if (x.derived) "derived from recordings (rest-channel beacon CRC verified, unit reports unverified)" else "ETSI TS 102 361"),
+                "FORMATS" to (if (x.derived) "derived from recordings (rest-channel beacon on the CSBK CRC, unit reports on the vendor CRC)" else "ETSI TS 102 361"),
                 "FIRST HEARD" to flClock(x.firstMs), "LAST HEARD" to flClock(x.lastMs))
             return FleetDetail(x.proto, x.label, f, idens = if (x.proto == "P25") x.idens else null)
         }
