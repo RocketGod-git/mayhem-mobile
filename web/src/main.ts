@@ -31,7 +31,10 @@ import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import type { FleetSnap, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
-import { GeoMap, type GeoItem, type RadarCell, type GeoShape, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
+import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
+import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
+import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
+import { programTypeName, dataTypeName } from './dsp/hd/sis.js';
 import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
 import { productsOf, radarBlocks, textOf, parseMetar, stationOf, hazardBlocks, icingOf, overlayOf, suaOf, type Metar, type RadarBlock, type HazardBlock, type Overlay } from './dsp/uat/fisb.js';
 import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
@@ -55,12 +58,13 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
   { id: 'ham', title: 'HAM', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB', cat: 'Receive' },
+  { id: 'hd', title: 'HD Radio', blurb: 'station data · art · traffic', cat: 'Receive' },
   { id: 'devices', title: 'Devices', blurb: 'keys, remotes, TPMS', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
   { id: 'adsb', title: 'ADS-B', blurb: 'aircraft, 1090 MHz', cat: 'Receive' },
@@ -239,6 +243,7 @@ function setDial(hz: number): void {
 let silentTune = false;
 function tune(hz: number, hold = false): void {
   if (state.app === 'ham') { hamTune(hz); return; }
+  if (state.app === 'hd') { if (hdUi.auto) hdSetAuto(false); hdTune(hz); return; }
   state.freq = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
   // the finger that just picked something (`hold`). Explicit tuning — the dial, the keypad, the step keys — is
@@ -941,6 +946,7 @@ function open(app: AppId | null): void {
       configure(state.radioMode, f, RX_RATE, 24, 24, false, 'none');
       break;
     }
+    case 'hd': hdOpen(); break;
     case 'prowl': configure('NFM', state.prowl.target ? state.freq : dial, Math.max(RX_RATE, state.rate), 24, 24, false, 'none'); break;
     case 'adsb': configure('NONE', 1_090_000_000, 2e6, 32, 32, true, 'adsb'); requestGeo(); break;
     case 'uat': uatOpen(); break;
@@ -1660,6 +1666,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   prowl: ['prowl', 'Nothing heard yet', ['Press HUNT: it lands on anyone talking and moves on when they stop', 'A wider SPAN watches more at once; a narrower one hears weak voices better']],
   search: ['search', 'No active frequencies yet', ['Pick a range above: AIR 118–137 and 2m 144–148 are busy almost everywhere', 'Set ABOVE to +10 dB to catch weaker signals']],
   capture: ['capture', 'No captures yet', ['Tune to a signal and press ● REC', 'Keep it short: 2 Msps fills about 4 MB a second']],
+  hd: ['hd', 'No HD stations yet', ['AUTO steps across the FM band and stays on each station with digital sidebands until it fills in', 'Most big FM stations in the US are hybrid: name, songs, logos and album art come in within a minute or two', 'What plays is the analog FM: the digital audio codec is not decoded']],
   vdl2: ['vdl2', 'Waiting for VDL2 messages', ['Every VDL2 channel from 136.10 to 136.975 MHz is decoded at once; 136.975 is the common one', 'Aircraft talk to ground stations every few minutes, more near an airport; an antenna that sees the sky hears them 200 miles out']],
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
@@ -1861,6 +1868,7 @@ function render(app: AppId | null): void {
     case 'sondes': renderSondes(view); break;
     case 'trains': renderTrains(view); break;
     case 'fleet': renderFleet(view); break;
+    case 'hd': renderHd(view); break;
     case 'btle': renderBle(view); break;
     case 'vdl2': renderAcars(view, 'vdl2'); break;
     case 'acars': renderAcars(view, 'acars'); break;
@@ -4277,7 +4285,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { sondes: false, btle: false, adsb: false, trains: false, fleet: false, ert: true, lora: true, acars: true, vdl2: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, ert: true, lora: true, acars: true, vdl2: true };
 const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
 function wfShown(app: AppId): boolean {
   let v: string | null = null;
@@ -4770,6 +4778,405 @@ function fleetExport(csv: string, json: string): void {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   download(`fleet-log-${stamp}.csv`, csv, 'text/csv');
   setTimeout(() => download(`fleet-tables-${stamp}.json`, json, 'application/json'), 400);
+}
+// ---- HD Radio: the digital side of hybrid FM stations, with the analog audio under it (receive only) ------------
+type HdView = 'now' | 'stations' | 'map' | 'data' | 'log';
+interface HdObj { key: string; hz: number; port: number; id: number; name: string; size: number; mime: string; kind: string; program: number; ms: number; url: string; bytes: Uint8Array }
+interface HdStationRec {
+  hz: number; call: string; slogan: string; longName: string; message: string; facility: number; country: string;
+  lat: number | null; lon: number | null; altM: number | null; programs: { n: number; type: number; typeName: string; title: string; artist: string }[];
+  data: string[]; firstMs: number; lastMs: number; frames: number; logos: Record<string, string>;
+}
+const HD_KEY = 'mayhem.hd.stations', HD_MAPS_KEY = 'mayhem.hd.maps';
+const HD_RATE = RX_RATE;
+/** Station center within this of the span center keeps the radio where it is; the HD sidebands reach 200 kHz out. */
+const HD_REACH = HD_RATE / 2 - 260_000;
+/** AUTO's windows over the FM band, each heard from its middle. */
+const HD_WINDOWS: number[] = (() => { const out: number[] = []; for (let c = 88_000_000 + HD_REACH; c - HD_REACH < 108_000_000; c += 2 * HD_REACH - 100_000) out.push(Math.round(c / 100_000) * 100_000); return out; })();
+function loadHdStations(): Map<number, HdStationRec> {
+  try { const v = JSON.parse(localStorage.getItem(HD_KEY) ?? '[]') as HdStationRec[]; return new Map(v.filter(s => s && s.hz).map(s => [s.hz, { ...s, logos: s.logos ?? {} }])); } catch { return new Map(); }
+}
+function loadHdMaps(): { traffic: Record<string, TrafficInfo>; radar: Record<string, RadarInfo> } {
+  try { const v = JSON.parse(localStorage.getItem(HD_MAPS_KEY) ?? '{}'); return { traffic: v.traffic ?? {}, radar: v.radar ?? {} }; } catch { return { traffic: {}, radar: {} }; }
+}
+const hdUi = {
+  snap: null as HdSnapMsg | null, view: 'now' as HdView, left: 'now' as 'now' | 'map', prog: 0, sel: '',
+  objects: [] as HdObj[], stations: loadHdStations(), maps: loadHdMaps(),
+  tileUrls: new Map<string, string>(),
+  auto: false, scan: { win: 0, phase: 'survey' as 'survey' | 'dwell', until: 0, queue: [] as number[], locked: 0, cur: 0, started: 0 },
+  timer: 0, scanTimer: 0, saveTimer: 0, drawn: 0, pending: 0, hold: false, wired: false, mapKey: '', fitted: '',
+};
+interface HdSnapMsg {
+  hz: number; centerHz: number; rate: number; rx: { state: string; cfoHz: number; cpLock: number; blocks: number; blocksBad: number; psmi: number; bc: number };
+  station: StationSnap; cands: { hz: number; scoreDb: number; levelDb: number }[];
+  det: { present: boolean; snrDb: number; lock: number; sbLoDb: number; sbHiDb: number; refDb: number; analogDb: number; cfoHz: number } | null;
+  dropped: number; load: number; queued: number;
+}
+const HD_WIDE = window.matchMedia('(min-width: 1000px)');
+HD_WIDE.addEventListener('change', () => { if (state.app === 'hd') { const v = q<HTMLElement>('main#view'); if (v) { renderHd(v); refreshReadout(); refreshChannel(); } } });
+const hdMhz = (hz: number) => (hz / 1e6).toFixed(1);
+const hdAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} h ago` : `${Math.floor(ms / 86_400_000)} days ago`;
+const hdClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
+const hdHex = (v: number, n = 4) => `0x${v.toString(16).toUpperCase().padStart(n, '0')}`;
+/** A snapshot that is about the station tuned now (the radio's own tuning can sit a little off the target). */
+const hdMine = (m: HdSnapMsg | null): m is HdSnapMsg => !!m && Math.abs(m.hz - state.freq) < 2_000;
+const hdKey = (hz: number) => Math.round(hz / 100_000) * 100_000;
+let hdObjSeq = 0;
+const hdSize = (n: number) => n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
+
+function hdSaveStations(): void {
+  clearTimeout(hdUi.saveTimer);
+  hdUi.saveTimer = window.setTimeout(() => {
+    try { localStorage.setItem(HD_KEY, JSON.stringify([...hdUi.stations.values()])); } catch { /* full or private */ }
+    try { localStorage.setItem(HD_MAPS_KEY, JSON.stringify(hdUi.maps)); } catch { /* full or private */ }
+  }, 800);
+}
+function hdOpen(): void {
+  const known = [...hdUi.stations.values()].sort((a, b) => b.lastMs - a.lastMs)[0];
+  const dial = state.dial >= 87_900_000 && state.dial <= 107_900_000 ? state.dial : 0;
+  const f = dial || known?.hz || HD_WINDOWS[0];
+  configure('WFM', f, HD_RATE, 24, 24, false, 'hd');
+  requestGeo();
+  if (!dial && !known) hdSetAuto(true);
+}
+/** Tune a station: the channel moves inside the span; the radio follows only when the sidebands would leave it. */
+function hdTune(hz: number, recenter = false): void {
+  state.freq = Math.round(Math.min(107_900_000, Math.max(87_900_000, hz)) / 100_000) * 100_000;
+  const prev = state.viewLo;
+  if (recenter || Math.abs(state.freq - state.viewLo) > HD_REACH) {
+    state.viewLo = state.freq;
+    if (state.viewLo !== prev) scope?.shiftSpan((state.viewLo - prev) / state.rate);
+    if (radio) radio.targetFreqHz = state.viewLo;
+  }
+  sendOffset(); refreshChannel(); refreshReadout();
+  refreshHd(true);
+}
+function hdSetAuto(on: boolean): void {
+  hdUi.auto = on; clearTimeout(hdUi.scanTimer);
+  if (on) { const s = hdUi.scan; s.win = Math.max(0, HD_WINDOWS.findIndex(c => Math.abs(c - state.freq) <= HD_REACH)); s.phase = 'survey'; s.queue = []; hdSurvey(); hdUi.scanTimer = window.setTimeout(hdScanTick, 500); }
+  refreshHd(true);
+}
+function hdSurvey(): void {
+  const s = hdUi.scan, c = HD_WINDOWS[s.win % HD_WINDOWS.length];
+  s.phase = 'survey'; s.until = Date.now() + 2_600; s.cur = c; hdTune(c, true);
+}
+/** AUTO: look at a window's spectrum for hybrid channels, then dwell on each long enough to fill it in. */
+function hdScanTick(): void {
+  if (state.app !== 'hd' || !hdUi.auto) return;
+  const s = hdUi.scan, now = Date.now(), m = hdUi.snap;
+  if (s.phase === 'survey') {
+    if (now >= s.until) {
+      s.queue = (m && Math.abs(m.centerHz - state.viewLo) < 5_000 ? m.cands : []).filter(c => Math.abs(c.hz - state.viewLo) <= HD_REACH).sort((a, b) => b.scoreDb - a.scoreDb).map(c => c.hz);
+      if (!s.queue.length) { s.win = (s.win + 1) % HD_WINDOWS.length; hdSurvey(); }
+      else hdNextCandidate();
+    }
+  } else {
+    const st = m && Math.abs(m.hz - s.cur) < 2_000 ? m : null, digital = !!st && (st.station.frames > 0 || st.rx.state === 'sync' || st.rx.state === 'frames');
+    if (digital && !s.locked) { s.locked = now; s.until = now + 45_000; }
+    const filled = !!st && !!st.station.sis.callsign && now - s.locked > 20_000 && st.station.programs.every(p => p.title || p.lastMs === 0);
+    if (now >= s.until || (s.locked && filled)) hdNextCandidate();
+  }
+  refreshHd();
+  hdUi.scanTimer = window.setTimeout(hdScanTick, 500);
+}
+function hdNextCandidate(): void {
+  const s = hdUi.scan, next = s.queue.shift();
+  if (next === undefined) { s.win = (s.win + 1) % HD_WINDOWS.length; hdSurvey(); return; }
+  s.phase = 'dwell'; s.cur = next; s.locked = 0; s.started = Date.now(); s.until = Date.now() + 6_000; hdTune(next);
+}
+/** Step to the next or previous station already heard. */
+function hdStep(dir: 1 | -1): void {
+  const list = [...hdUi.stations.keys()].sort((a, b) => a - b);
+  if (!list.length) { hdTune(state.freq + dir * 200_000); return; }
+  const next = dir > 0 ? list.find(h => h > state.freq + 50_000) ?? list[0] : [...list].reverse().find(h => h < state.freq - 50_000) ?? list[list.length - 1];
+  hdSetAuto(false); hdTune(next);
+}
+
+/** What one snapshot adds to the station's record (kept once the digital side has decoded). */
+function hdRecord(m: HdSnapMsg): void {
+  const st = m.station, sis = st.sis, hz = hdKey(m.hz);
+  if (!st.frames) return;
+  const now = Date.now();
+  let r = hdUi.stations.get(hz);
+  if (!r) { r = { hz, call: '', slogan: '', longName: '', message: '', facility: -1, country: '', lat: null, lon: null, altM: null, programs: [], data: [], firstMs: now, lastMs: now, frames: 0, logos: {} }; hdUi.stations.set(hz, r); }
+  r.lastMs = now; r.frames = Math.max(r.frames, st.frames);
+  if (sis.callsign && sis.nameVotes[0] >= 3) r.call = sis.callsign;
+  if (sis.slogan) r.slogan = sis.slogan;
+  if (sis.longName) r.longName = sis.longName;
+  if (sis.message) r.message = sis.message;
+  if (sis.facility >= 0) { r.facility = sis.facility; r.country = sis.country; }
+  if (sis.lat !== null && sis.lon !== null && Math.abs(sis.lat) <= 90 && Math.abs(sis.lon) <= 180) { r.lat = sis.lat; r.lon = sis.lon; r.altM = sis.altM; }
+  for (const p of st.programs) {
+    let rp = r.programs.find(x => x.n === p.n);
+    if (!rp) { rp = { n: p.n, type: p.type, typeName: p.typeName, title: '', artist: '' }; r.programs.push(rp); r.programs.sort((a, b) => a.n - b.n); }
+    if (p.type >= 0) { rp.type = p.type; rp.typeName = p.typeName; }
+    if (p.title) { rp.title = p.title; rp.artist = p.artist; }
+  }
+  const data = [...new Set([...st.sig.filter(s => s.kind === 'data' && s.name).map(s => s.name), ...sis.data.map(d => dataTypeName(d.type))])];
+  if (data.length) r.data = data;
+  hdSaveStations();
+}
+
+/** A finished object from the station: kept for this session; logos, map and radar descriptions kept for good. */
+function hdOnObject(m: Record<string, unknown>): void {
+  const bytes = m.bytes as Uint8Array, mime = m.mime as string, name = m.name as string, kind = m.kind as string, hz = hdKey(m.hz as number);
+  if (hdUi.objects.some(o => o.hz === hz && o.port === m.port && o.name === name && o.size === m.size)) return;
+  const key = `o${++hdObjSeq}`;
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+  const o: HdObj = { key, hz, port: m.port as number, id: m.id as number, name, size: m.size as number, mime, kind, program: m.program as number, ms: m.ms as number, url, bytes };
+  hdUi.objects.unshift(o);
+  while (hdUi.objects.length > 160) { const x = hdUi.objects.pop()!; URL.revokeObjectURL(x.url); hdUi.tileUrls.delete(x.key); }
+  const text = () => new TextDecoder('latin1').decode(bytes);
+  if (kind === 'traffic-info') { const t = parseTrafficInfo(text()); if (t) { hdUi.maps.traffic[t.map] = t; hdSaveStations(); } }
+  else if (kind === 'radar-info') { const r = parseRadarInfo(text()); if (r) { hdUi.maps.radar[r.area] = r; hdSaveStations(); } }
+  else if (kind === 'logo' && bytes.length < 60_000) {
+    const rec = hdUi.stations.get(hz);
+    if (rec) { let s = ''; for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192)); rec.logos[String(Math.max(0, o.program))] = `data:${mime};base64,${btoa(s)}`; hdSaveStations(); }
+  }
+  if (kind === 'traffic') hdTileUrl(o);
+  refreshHd(true);
+}
+/** A traffic tile with its background color made see-through, so the map shows under it. */
+function hdTileUrl(o: HdObj): string {
+  const done = hdUi.tileUrls.get(o.key); if (done) return done;
+  hdUi.tileUrls.set(o.key, o.url);
+  const t = trafficTile(o.name), info = t ? hdUi.maps.traffic[t.map] : undefined, bg = info?.background;
+  if (bg && typeof createImageBitmap === 'function') {
+    void createImageBitmap(new Blob([o.bytes as BlobPart], { type: o.mime })).then(img => {
+      const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+      const g = cv.getContext('2d'); if (!g) return;
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, cv.width, cv.height), px = d.data;
+      for (let i = 0; i < px.length; i += 4) if (Math.abs(px[i] - bg[0]) < 10 && Math.abs(px[i + 1] - bg[1]) < 10 && Math.abs(px[i + 2] - bg[2]) < 10) px[i + 3] = 0;
+      g.putImageData(d, 0, 0);
+      cv.toBlob(b => { if (!b) return; hdUi.tileUrls.set(o.key, URL.createObjectURL(b)); hdUi.mapKey = ''; refreshHd(true); }, 'image/png');
+    }).catch(() => undefined);
+  }
+  return o.url;
+}
+function hdSaveObject(o: HdObj): void {
+  const a = document.createElement('a'); a.href = o.url; a.download = o.name.replace(/[^A-Za-z0-9._$-]/g, '_') || `hd-${hdHex(o.port)}-${hdHex(o.id)}.bin`; a.click();
+}
+/** The current station's objects. */
+const hdObjects = (hz = state.freq) => hdUi.objects.filter(o => o.hz === hdKey(hz));
+/** The picture for a program: its song's album art, else its logo, else the station's logo. */
+function hdArt(p: ProgramRow | null, hz: number): { url: string; kind: 'art' | 'logo' } | null {
+  const objs = hdObjects(hz);
+  if (p && p.artId !== null) { const a = objs.find(o => o.id === p.artId && o.mime.startsWith('image/')); if (a) return { url: a.url, kind: 'art' }; }
+  const logo = hdLogo(hz, p?.n ?? 0);
+  return logo ? { url: logo, kind: 'logo' } : null;
+}
+function hdLogo(hz: number, prog: number): string | null {
+  hz = hdKey(hz);
+  const objs = hdObjects(hz).filter(o => o.kind === 'logo');
+  const l = objs.find(o => o.program === prog) ?? (prog === 0 ? objs.find(o => o.program < 0) : undefined);
+  if (l) return l.url;
+  const rec = hdUi.stations.get(hz);
+  return rec ? rec.logos[String(prog)] ?? (prog === 0 ? rec.logos['0'] : null) ?? null : null;
+}
+
+function renderHd(view: HTMLElement): void {
+  const wide = HD_WIDE.matches;
+  if (wide && (hdUi.view === 'now' || hdUi.view === 'map')) hdUi.view = 'stations';
+  view.classList.toggle('hdwide', wide);
+  const tabs = (wide ? ['stations', 'data', 'log'] : ['now', 'stations', 'map', 'data', 'log']) as HdView[];
+  const mapHtml = '<div id="hd-map" class="panel map hd-map"></div><div id="hd-legend" class="hd-legend" hidden></div>';
+  view.innerHTML = `
+    <section class="${visCls('hd')}">${readoutHtml()}${wide ? `<div class="hd-left"><div class="ctlrow">${segHtml([['now', 'NOW PLAYING'], ['map', 'MAP']].map(([k, l]) => `<button data-hdleft="${k}">${l}</button>`))}</div><div id="hd-hero" class="hd-hero"></div><div class="hd-mapbox">${mapHtml}</div></div>` : ''}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="hd-head" class="hd-head"></div>
+      <div class="ctlrow"><button id="hd-auto" class="tog">AUTO</button><button id="hd-prev" class="chip" title="the previous station heard" aria-label="previous station">◀</button><button id="hd-next" class="chip" title="the next station heard" aria-label="next station">▶</button>${wfHtml('hd')}<button id="hd-export" class="ib" title="export the stations and the log" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('hd')}</div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-hdview="${v}">${v === 'now' ? 'NOW' : v.toUpperCase()}</button>`))}</div>
+      <div id="hd-detail" class="mt-detail hd-detail" hidden></div>
+      <div id="hd-stage" class="hd-stage">${wide ? '' : `<div id="hd-hero" class="hd-hero"></div>${mapHtml}`}<div id="hd-stations" class="hd-stations"></div><div id="hd-data" class="hd-data"></div></div>
+      <div id="hd-log"><div class="countrow"><span id="count-hd" class="count">0 DECODED</span></div>${listHtml('hd', 'listening for HD Radio…')}</div>
+      <div class="note">HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO steps across the band, finds the stations with digital sidebands, and stays on each until it fills in.</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-hdview]', view).forEach(b => b.onclick = () => { hdUi.view = b.dataset.hdview as HdView; hdUi.sel = ''; refreshHd(true); });
+  qa<HTMLButtonElement>('[data-hdleft]', view).forEach(b => b.onclick = () => { hdUi.left = b.dataset.hdleft as 'now' | 'map'; refreshHd(true); requestAnimationFrame(() => geo?.invalidate()); });
+  $('hd-auto').onclick = () => hdSetAuto(!hdUi.auto);
+  $('hd-prev').onclick = () => hdStep(-1);
+  $('hd-next').onclick = () => hdStep(1);
+  $('hd-export').onclick = hdExport;
+  const pick = (e: Event) => {
+    const t = e.target as HTMLElement;
+    const tuneEl = t.closest<HTMLElement>('[data-hdtune]'); if (tuneEl) { hdSetAuto(false); hdTune(Number(tuneEl.dataset.hdtune)); if (!HD_WIDE.matches) hdUi.view = 'now'; else hdUi.left = 'now'; refreshHd(true); return; }
+    const prog = t.closest<HTMLElement>('[data-hdprog]'); if (prog) { hdUi.prog = Number(prog.dataset.hdprog); refreshHd(true); return; }
+    const save = t.closest<HTMLElement>('[data-hdsave]'); if (save) { const o = hdUi.objects.find(x => x.key === save.dataset.hdsave); if (o) hdSaveObject(o); return; }
+    const obj = t.closest<HTMLElement>('[data-hdobj]'); if (obj) { hdUi.sel = hdUi.sel === obj.dataset.hdobj ? '' : obj.dataset.hdobj!; refreshHd(true); return; }
+    const close = t.closest<HTMLElement>('[data-hddo="close"]'); if (close) { hdUi.sel = ''; refreshHd(true); }
+  };
+  // A redraw between press and release would swap the element under the pointer and lose the click.
+  const hold = () => { hdUi.hold = true; };
+  const release = () => { if (!hdUi.hold) return; setTimeout(() => { hdUi.hold = false; refreshHd(true); }, 0); };
+  for (const id of ['hd-hero', 'hd-stations', 'hd-data', 'hd-detail']) { const el = q<HTMLElement>(`#${id}`); if (el) { el.onclick = pick; el.onpointerdown = hold; } }
+  if (!hdUi.wired) { hdUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
+  geo = new GeoMap($('hd-map'), { home: state.home, start: mapStart(state.home), onPick: id => { if (id.startsWith('st:')) { hdSetAuto(false); hdTune(Number(id.slice(3))); } }, log });
+  hdUi.mapKey = ''; hdUi.fitted = '';
+  clearInterval(hdUi.timer);
+  hdUi.timer = window.setInterval(() => { if (state.app !== 'hd') { clearInterval(hdUi.timer); clearTimeout(hdUi.scanTimer); return; } refreshHd(); }, 500);
+  if (hdUi.auto) { clearTimeout(hdUi.scanTimer); hdUi.scanTimer = window.setTimeout(hdScanTick, 500); }
+  refreshList('hd');
+  refreshHd(true);
+}
+
+/** The lock, in words, and how it shows. */
+function hdLock(m: HdSnapMsg | null, now: number): [string, '' | 'ok' | 'amber' | 'red'] {
+  if (!hdMine(m)) return ['TUNING', ''];
+  const st = m.station, fresh = st.lastFrameMs && now - st.lastFrameMs < 4_000;
+  if (fresh) return [st.ber < 0.05 ? 'DIGITAL LOCK' : 'DIGITAL · WEAK', 'ok'];
+  if (m.rx.state === 'frames' || m.rx.state === 'sync') return ['SYNC', 'amber'];
+  if (m.rx.state === 'ofdm') return ['OFDM FOUND', 'amber'];
+  if (m.det?.present) return ['SIDEBANDS', 'amber'];
+  return ['ANALOG ONLY', ''];
+}
+function hdHead(m: HdSnapMsg | null, now: number): string {
+  const st = hdMine(m) ? m.station : null, sis = st?.sis, rec = hdUi.stations.get(hdKey(state.freq));
+  const call = sis?.callsign && sis.nameVotes[0] >= 3 ? sis.callsign : rec?.call ?? '';
+  const [lock, tone] = hdLock(m, now);
+  const s = hdUi.scan;
+  const scan = hdUi.auto ? (s.phase === 'survey' ? `AUTO · LOOKING ${hdMhz(s.cur - HD_REACH)}–${hdMhz(s.cur + HD_REACH)}` : `AUTO · ${s.locked ? 'FILLING IN' : 'CHECKING'} ${Math.max(0, Math.ceil((s.until - now) / 1000))} s · ${s.queue.length} NEXT`) : '';
+  const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
+  const progs = st ? st.programs.filter(p => p.lastMs).length : rec?.programs.length ?? 0;
+  return `<div class="hd-watch"><b>${hdMhz(state.freq)} MHz</b>${call ? `<strong>${esc(call)}</strong>` : ''}<small>${esc(sis?.slogan || rec?.slogan || (st?.frames ? '' : 'no digital data yet'))}</small><em class="${tone}">${lock}</em></div>`
+    + (scan ? `<div class="hd-scan">${scan}</div>` : '')
+    + `<div class="hd-count">${tile(progs, 'PROGRAMS')}${tile(hdUi.stations.size, 'STATIONS')}${tile(hdObjects().length, 'OBJECTS')}${tile(st?.frames ?? 0, 'FRAMES')}${tile(st && st.frames ? (st.ber * 100).toFixed(2) + '%' : '-', 'RAW BER')}</div>`;
+}
+function hdSideband(label: string, snr: number | null, det: number | null, ref: number | null): string {
+  const v = snr === null || snr < -50 ? 0 : Math.max(0, Math.min(1, snr / 25));
+  return `<div class="hd-sb"><b>${label}</b><span class="hd-bar"><i style="width:${(100 * v).toFixed(0)}%"></i></span><small>${snr === null || snr < -50 ? '-' : `${snr.toFixed(1)} dB SNR`}${det !== null && ref !== null ? ` · ${(det - ref).toFixed(0)} dB over noise` : ''}</small></div>`;
+}
+function hdHero(m: HdSnapMsg | null, now: number): string {
+  const st = hdMine(m) ? m.station : null, rec = hdUi.stations.get(hdKey(state.freq));
+  const progs: ProgramRow[] = st?.programs ?? [];
+  const sel = progs.find(p => p.n === hdUi.prog) ?? progs[0] ?? null;
+  if (sel && sel.n !== hdUi.prog) hdUi.prog = sel.n;
+  const art = hdArt(sel, state.freq), logo = hdLogo(hdKey(state.freq), sel?.n ?? 0);
+  const call = (st?.sis.callsign && st.sis.nameVotes[0] >= 3 ? st.sis.callsign : rec?.call) || hdMhz(state.freq);
+  const artHtml = art ? `<img src="${art.url}" alt="${art.kind === 'art' ? 'album art' : 'station logo'}" class="${art.kind}">` : `<div class="hd-ph"><span>${glyph('hd', 'currentColor', 54)}</span><b>${esc(call)}</b><small>HD${(sel?.n ?? 0) + 1}</small></div>`;
+  const recProg = rec?.programs.find(p => p.n === (sel?.n ?? 0));
+  const title = sel?.title || '', artist = sel?.artist || '';
+  const waiting = !st?.frames ? (hdLock(m, now)[0] === 'ANALOG ONLY' ? 'No digital sidebands on this station: the analog audio plays' : 'Waiting for the digital side') : 'Waiting for this program\'s song data';
+  const tabs = progs.length ? `<div class="hd-progs">${progs.map(p => `<button data-hdprog="${p.n}" class="hd-prog ${p.n === sel?.n ? 'on' : ''} ${p.lastMs && now - p.lastMs < 10_000 ? 'live' : ''}"><b>HD${p.n + 1}</b><small>${esc(p.typeName || 'program')}</small><i>${esc(p.title ? `${p.title}${p.artist ? ` · ${p.artist}` : ''}` : p.lastMs ? 'on air' : 'listed in SIS')}</i></button>`).join('')}</div>` : '';
+  const det = hdMine(m) ? m.det : null;
+  const sig = `<div class="hd-sig">${hdSideband('LOWER', st && st.frames ? st.snrLoDb : null, det?.sbLoDb ?? null, det?.refDb ?? null)}${hdSideband('UPPER', st && st.frames ? st.snrHiDb : null, det?.sbHiDb ?? null, det?.refDb ?? null)}`
+    + `<div class="hd-kv"><span>LOCK <b>${hdLock(m, now)[0]}</b></span>${st?.frames ? `<span>RAW BER <b>${(st.ber * 100).toFixed(2)}%</b></span><span>PCI <b>${esc(st.pciName)}</b></span>` : ''}${hdMine(m) ? `<span>CARRIER <b>${m.rx.cfoHz >= 0 ? '+' : ''}${m.rx.cfoHz.toFixed(0)} Hz</b></span>` : ''}<span>AUDIO <b>ANALOG FM</b></span></div></div>`;
+  const songs = sel && sel.songs.length > 1 ? `<div class="hd-hist"><small>EARLIER ON HD${sel.n + 1}</small>${sel.songs.slice(1, 8).map(s => `<div><b>${hdClock(s.ms)}</b><span>${esc(s.title)}${s.artist ? ` · ${esc(s.artist)}` : ''}</span></div>`).join('')}</div>` : '';
+  return `<div class="hd-np"><div class="hd-art">${artHtml}</div><div class="hd-meta">`
+    + `<div class="hd-station">${logo ? `<img src="${logo}" alt="logo">` : ''}<b>${esc(call)}</b><span>${hdMhz(state.freq)} MHz${sel ? ` · HD${sel.n + 1}` : ''}${sel?.typeName ? ` · ${esc(sel.typeName)}` : recProg?.typeName ? ` · ${esc(recProg.typeName)}` : ''}</span></div>`
+    + `<div class="hd-title">${esc(title || waiting)}</div>${artist ? `<div class="hd-artist">${esc(artist)}</div>` : ''}${sel?.album || sel?.genre ? `<div class="hd-album">${esc([sel.album, sel.genre].filter(Boolean).join(' · '))}</div>` : ''}`
+    + `${st?.sis.message ? `<div class="hd-msg">${esc(st.sis.message)}</div>` : ''}</div></div>${tabs}${sig}${songs}`;
+}
+function hdStationsHtml(now: number): string {
+  const list = [...hdUi.stations.values()].sort((a, b) => a.hz - b.hz);
+  if (!list.length) return emptyState('hd');
+  return list.map(r => {
+    const logo = hdLogo(r.hz, 0) ?? Object.values(r.logos)[0], here = r.hz === hdKey(state.freq), live = here && now - r.lastMs < 5_000;
+    return `<div class="hd-st ${here ? 'sel' : ''}" data-hdtune="${r.hz}"><div class="hd-stl">${logo ? `<img src="${logo}" alt="">` : `<span>${glyph('hd', 'currentColor', 30)}</span>`}</div>`
+      + `<div class="hd-stb"><div class="hd-sth"><b>${esc(r.call || 'name not heard yet')}</b><span>${hdMhz(r.hz)} MHz</span><em class="${live ? 'on' : ''}">${live ? 'LIVE' : hdAgo(now - r.lastMs)}</em></div>`
+      + `${r.slogan || r.longName ? `<div class="hd-sts">${esc(r.slogan || r.longName)}</div>` : ''}`
+      + `<div class="hd-stp">${r.programs.map(p => `<span><b>HD${p.n + 1}</b>${esc(p.typeName || '')}${p.title ? `<i>${esc(p.title)}${p.artist ? ` · ${esc(p.artist)}` : ''}</i>` : ''}</span>`).join('')}</div>`
+      + `<div class="hd-stk">${r.facility >= 0 ? `<span>FACILITY <b>${r.facility}</b></span>` : ''}${r.country ? `<span>COUNTRY <b>${esc(r.country)}</b></span>` : ''}${r.lat !== null && r.lon !== null ? `<span>TX <b>${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}${r.altM !== null ? ` · ${r.altM} m` : ''}</b></span>` : ''}${r.data.length ? `<span>DATA <b>${esc(r.data.join(', '))}</b></span>` : ''}<span>FIRST <b>${new Date(r.firstMs).toLocaleDateString()}</b></span></div></div></div>`;
+  }).join('');
+}
+const HD_KIND: Record<string, string> = { art: 'ALBUM ART', logo: 'LOGO', traffic: 'TRAFFIC TILE', 'traffic-info': 'TRAFFIC MAP INFO', radar: 'WEATHER RADAR', 'radar-info': 'RADAR INFO', image: 'IMAGE', text: 'TEXT', file: 'FILE' };
+function hdDataHtml(m: HdSnapMsg | null, now: number): string {
+  const st = hdMine(m) ? m.station : null, objs = hdObjects(state.freq);
+  const rows = objs.map(o => `<div class="hd-obj ${hdUi.sel === o.key ? 'sel' : ''}" data-hdobj="${esc(o.key)}">${o.mime.startsWith('image/') ? `<img src="${o.kind === 'traffic' ? hdTileUrl(o) : o.url}" alt="">` : `<span class="hd-oi">${o.mime === 'text/plain' ? 'TXT' : 'BIN'}</span>`}`
+    + `<div><b>${esc(o.name || `object ${hdHex(o.id)}`)}</b><small>${HD_KIND[o.kind] ?? o.kind} · port ${hdHex(o.port)} · ${hdSize(o.size)} · ${esc(o.mime)} · ${hdAgo(now - o.ms)}</small></div><button class="chip" data-hdsave="${esc(o.key)}">SAVE</button></div>`).join('');
+  const pend = st?.pending.filter(p => p.need < 10_000) ?? [];
+  const pendHtml = pend.length ? `<div class="hd-sec"><small>COMING IN</small>${pend.map(p => `<div class="hd-pend"><b>${esc(p.name || `object ${hdHex(p.id)}`)}</b><span class="hd-bar"><i style="width:${(100 * p.have / p.need).toFixed(0)}%"></i></span><small>${p.have}/${p.need} · port ${hdHex(p.port)}</small></div>`).join('')}</div>` : '';
+  const ports = st?.ports.length ? `<div class="hd-sec"><small>PORTS</small><table class="hd-tab"><tr><th>PORT</th><th>WHAT</th><th>PACKETS</th><th>BYTES</th><th>LAST</th></tr>${st.ports.map(p => `<tr><td>${hdHex(p.port)}</td><td>${esc([p.kind, p.name].filter(Boolean).join(' · ') || p.bearer)}</td><td>${p.packets}</td><td>${hdSize(p.bytes)}</td><td>${hdAgo(now - p.lastMs)}</td></tr>`).join('')}</table></div>` : '';
+  const sig = st?.sig.length ? `<div class="hd-sec"><small>SERVICE DIRECTORY (format derived from recordings)</small>${st.sig.map(s => `<div class="hd-svc"><b>${esc(s.name || (s.kind === 'audio' ? `HD${s.program + 1}` : 'data'))}</b><span>${s.kind === 'audio' ? `HD${s.program + 1} · ${esc(programTypeName(s.progType))}` : 'data service'}</span><small>${s.components.map(c => `port ${hdHex(c.port)} · MIME ${c.mimeHex}`).join(' · ')}</small></div>`).join('')}</div>` : '';
+  const sis = st && st.frames ? (() => { const s = st.sis; const f: [string, string][] = [['CALL SIGN', s.callsign ? `${s.callsign} (${s.nameVotes[0]} of ${s.nameVotes[1]} votes)` : '-'], ['LONG NAME', s.longName || '-'], ['UNIVERSAL NAME', s.universal || '-'], ['SLOGAN', s.slogan || '-'], ['MESSAGE', s.message || '-'], ['FACILITY', s.facility >= 0 ? `${s.country} ${s.facility}` : '-'],
+    ['TRANSMITTER', s.lat !== null && s.lon !== null ? `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.altM !== null ? ` · ${s.altM} m` : ''}` : '-'], ['STATION CLOCK', s.alfnMs ? `${new Date(s.alfnMs).toISOString().replace('T', ' ').slice(0, 19)} UTC${s.timeLocked ? ' · locked to GPS' : ''}` : '-'],
+    ['AUDIO SERVICES', s.audio.map(a => `HD${a.program + 1} ${programTypeName(a.type)}`).join(' · ') || '-'], ['DATA SERVICES', s.data.map(d => `${dataTypeName(d.type)} (MIME ${d.mime12})`).join(' · ') || '-'],
+    ['FIXED BEARER', st.ccc ? st.ccc.subs.map(x => `${x.length} B/frame`).join(' + ') : '-'], ['PACKETS', `${st.hdlcGood} good · ${st.hdlcBad} failed FCS`], ['SIS PDUS', `${s.pdus} (${s.llds} other)`]];
+    return `<div class="hd-sec"><small>STATION INFORMATION (SIS, voted)</small><div class="mt-fields">${f.map(([k, v]) => `<div><b>${k}</b><span>${esc(v)}</span></div>`).join('')}</div></div>`; })() : '';
+  return (rows ? `<div class="hd-objs">${rows}</div>` : `<div class="empty">no files yet · logos and album art take a minute or two to come in whole</div>`) + pendHtml + sis + sig + ports;
+}
+function hdDetail(now: number): string {
+  const o = hdUi.objects.find(x => x.key === hdUi.sel); if (!o) return '';
+  const text = o.mime === 'text/plain' ? new TextDecoder('latin1').decode(o.bytes) : '';
+  const f: [string, string][] = [['NAME', o.name || '-'], ['KIND', HD_KIND[o.kind] ?? o.kind], ['PORT', hdHex(o.port)], ['OBJECT ID', hdHex(o.id)], ['SIZE', `${o.size} bytes`], ['TYPE', o.mime], ['PROGRAM', o.program >= 0 ? `HD${o.program + 1}` : '-'], ['STATION', `${hdMhz(o.hz)} MHz`], ['RECEIVED', `${hdClock(o.ms)} · ${hdAgo(now - o.ms)}`]];
+  return `<div class="hd-dh"><b>${esc(HD_KIND[o.kind] ?? 'FILE')}</b><button class="chip" data-hdsave="${esc(o.key)}">SAVE</button><button class="chip" data-hddo="close">✕</button></div>`
+    + (o.mime.startsWith('image/') ? `<div class="hd-big"><img src="${o.url}" alt=""></div>` : '') + (text ? `<pre class="hd-text">${esc(text)}</pre>` : '')
+    + `<div class="mt-fields">${f.map(([k, v]) => `<div><b>${k}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
+}
+/** The map's layers: every station's transmitter, the newest traffic tiles and radar image on their corners. */
+function hdMapLayers(): void {
+  if (!geo) return;
+  const pins: GeoItem[] = [...hdUi.stations.values()].filter(r => r.lat !== null && r.lon !== null).map(r => ({ id: `st:${r.hz}`, lat: r.lat!, lon: r.lon!, label: `${r.call || hdMhz(r.hz)} ${hdMhz(r.hz)}`, kind: 'tower' as GeoItem['kind'] }));
+  const imgs: GeoImage[] = [];
+  const tiles = new Map<string, HdObj>();
+  for (const o of hdUi.objects) {
+    if (o.kind !== 'traffic') continue;
+    const t = trafficTile(o.name); if (!t || !hdUi.maps.traffic[t.map]) continue;
+    const k = `${t.map}/${t.row}/${t.col}`, cur = tiles.get(k), ct = cur ? trafficTile(cur.name)! : null;
+    if (!cur || ct!.stamp < t.stamp) tiles.set(k, o);
+  }
+  for (const [k, o] of tiles) { const t = trafficTile(o.name)!, b = tileBounds(hdUi.maps.traffic[t.map], t.row, t.col); imgs.push({ id: `tile:${k}`, url: hdTileUrl(o), ...b, opacity: 0.9 }); }
+  let radarLegend: RadarInfo | null = null, radarStamp = '';
+  const radars = new Map<string, HdObj>();
+  for (const o of hdUi.objects) { if (o.kind !== 'radar') continue; const r = radarImage(o.name); if (!r || !hdUi.maps.radar[r.area]) continue; const cur = radars.get(r.area); if (!cur || radarImage(cur.name)!.stamp < r.stamp) radars.set(r.area, o); }
+  for (const [area, o] of radars) { const info = hdUi.maps.radar[area]; imgs.unshift({ id: `radar:${area}`, url: o.url, north: info.north, south: info.south, west: info.west, east: info.east, opacity: 0.7 }); radarLegend = info; radarStamp = radarImage(o.name)!.stamp; }
+  const key = JSON.stringify([pins.map(p => p.id), imgs.map(i => i.id + i.url)]);
+  if (key !== hdUi.mapKey) { hdUi.mapKey = key; geo.update(pins, `st:${hdKey(state.freq)}`); geo.setImages(imgs); }
+  const fitKey = imgs.length ? imgs.map(i => i.id).sort().join() : '';
+  if (geo.ready && fitKey && hdUi.fitted !== fitKey && !pins.length) { const n = Math.max(...imgs.map(i => i.north)), s = Math.min(...imgs.map(i => i.south)), w = Math.min(...imgs.map(i => i.west)), e = Math.max(...imgs.map(i => i.east)); geo.showBounds(n, s, w, e); hdUi.fitted = fitKey; }
+  const leg = q('#hd-legend');
+  if (leg) {
+    const traffic = Object.values(hdUi.maps.traffic)[0];
+    leg.hidden = !imgs.length;
+    if (imgs.length) leg.innerHTML = `${tiles.size ? `<div><b>TRAFFIC</b><small>${tiles.size} tiles${traffic ? ` · ${esc(traffic.copyright)}` : ''}</small></div>` : ''}${radarLegend ? `<div><b>RADAR ${esc(radarStamp.replace('_', ' '))} UTC</b>${radarLegend.legends.map(l => `<span><small>${esc(l.name.toUpperCase())}</small>${l.colors.map(([, c]) => `<i style="background:rgb(${c[0]},${c[1]},${c[2]})"></i>`).join('')}</span>`).join('')}<small>${esc(radarLegend.copyright)}</small></div>` : ''}`;
+  }
+  if (!pins.length && !imgs.length) geo.setEmpty('No map data yet', 'Transmitters show here from each station\'s SIS; traffic tiles and weather radar where a station sends them');
+  else geo.setEmpty('');
+}
+function refreshHd(force = false): void {
+  if (state.app !== 'hd') return;
+  const now = Date.now();
+  if (hdUi.hold) return;
+  if (!force && now - hdUi.drawn < 240) { clearTimeout(hdUi.pending); hdUi.pending = window.setTimeout(() => refreshHd(true), 250); return; }
+  hdUi.drawn = now;
+  const m = hdUi.snap, wide = HD_WIDE.matches, view = hdUi.view;
+  const head = q('#hd-head'); if (head) head.innerHTML = hdHead(m, now);
+  const auto = q('#hd-auto'); if (auto) auto.classList.toggle('on', hdUi.auto);
+  qa<HTMLButtonElement>('[data-hdleft]').forEach(b => b.classList.toggle('on', b.dataset.hdleft === hdUi.left));
+  const objs = hdObjects().length;
+  qa<HTMLButtonElement>('[data-hdview]').forEach(b => {
+    const v = b.dataset.hdview as HdView; b.classList.toggle('on', v === view);
+    b.textContent = v === 'now' ? 'NOW' : v === 'stations' ? `STATIONS ${hdUi.stations.size}` : v === 'data' ? `DATA ${objs}` : v.toUpperCase();
+  });
+  const hero = q('#hd-hero'), mapEl = q('#hd-map'), mapBox = q('.hd-mapbox'), stations = q('#hd-stations'), data = q('#hd-data'), det = q('#hd-detail'), stage = q('#hd-stage'), logEl = q('#hd-log');
+  if (!hero || !mapEl || !stations || !data || !det || !stage || !logEl) return;
+  const showMap = wide ? hdUi.left === 'map' : view === 'map', showHero = wide ? hdUi.left === 'now' : view === 'now';
+  hero.hidden = !showHero; if (mapBox) (mapBox as HTMLElement).hidden = !showMap; else mapEl.hidden = !showMap;
+  const legend = q('#hd-legend'); if (legend && !showMap) legend.hidden = true;
+  stations.hidden = view !== 'stations'; data.hidden = view !== 'data';
+  stage.hidden = view === 'log' || (wide && view !== 'stations' && view !== 'data'); logEl.hidden = view !== 'log';
+  const keep = (el: HTMLElement, html: string) => { const top = el.scrollTop; if (el.innerHTML !== html) el.innerHTML = html; el.scrollTop = top; };
+  if (!paused.has('hd')) {
+    if (showHero) keep(hero, hdHero(m, now));
+    if (view === 'stations') keep(stations, hdStationsHtml(now));
+    else if (view === 'data') keep(data, hdDataHtml(m, now));
+  }
+  if (showMap) { geo?.invalidate(); hdMapLayers(); }
+  const html = hdUi.sel ? hdDetail(now) : '';
+  det.hidden = !html; if (html) keep(det, html);
+  const [lock, tone] = hdLock(m, now);
+  setLamp(lock, tone, tone === 'amber');
+  const st = hdMine(m) ? m.station : null, sel = st?.programs.find(p => p.n === hdUi.prog);
+  setFace('HD RADIO', st?.sis.callsign && st.sis.nameVotes[0] >= 3 ? `${st.sis.callsign}${sel ? ` · HD${sel.n + 1}` : ''}` : 'NRSC-5 · FM HYBRID', sel?.title ? `${sel.title}${sel.artist ? ` · ${sel.artist}` : ''}` : '');
+}
+function hdExport(): void {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const lines = (logs['hd'] ?? []).slice().reverse();
+  download(`hd-log-${stamp}.csv`, 'line\n' + lines.map(l => `"${l.replace(/"/g, '""')}"`).join('\n'), 'text/csv');
+  const stations = [...hdUi.stations.values()].map(({ logos: _l, ...r }) => r);
+  const objects = hdUi.objects.map(({ bytes: _b, url: _u, ...o }) => o);
+  setTimeout(() => download(`hd-stations-${stamp}.json`, JSON.stringify({ stations, objects, maps: hdUi.maps, station: hdUi.snap?.station ?? null }, null, 1), 'application/json'), 400);
 }
 
 // ---- LoRa: every Meshtastic, MeshCore and LoRaWAN node heard across the span ------------------------------------
@@ -6431,6 +6838,7 @@ function redraw(id: string): void {
     case 'sondes': refreshList(id); refreshSondes(true); break;
     case 'trains': refreshList(id); refreshTrains(true); break;
     case 'fleet': refreshList(id); refreshFleet(true); break;
+    case 'hd': refreshList(id); refreshHd(true); break;
     case 'btle': refreshList(id); refreshBle(true); break;
     case 'vdl2': case 'acars': refreshList(id); refreshAcars(true); break;
     default: refreshList(id);
@@ -6455,6 +6863,7 @@ function clearApp(id: string): void {
     case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.regionalSeen.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
     case 'fleet': fleetUi.snap = null; fleetUi.sel = null; fleetUi.unit = null; break;
+    case 'hd': hdUi.snap = null; hdUi.sel = ''; for (const o of hdUi.objects) URL.revokeObjectURL(o.url); hdUi.objects = []; hdUi.tileUrls.clear(); hdUi.mapKey = ''; break;
   }
   worker?.postMessage({ type: 'clear' });
   // a cleared screen shows empty even while paused - the freeze is for reading rows, and there are none now
@@ -6856,6 +7265,8 @@ function ensureWorker(): Worker {
         if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
         list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars' || id === 'vdl2') onAcarsLine(m.line as string, id); else if (id === 'btle') refreshBle(); break; }
       case 'vdl2frame': onVdl2Frame(m.f as AvlcFrame); break;
+      case 'hdsnap': hdUi.snap = m as unknown as HdSnapMsg; hdRecord(hdUi.snap); refreshHd(); break;
+      case 'hdobj': hdOnObject(m); break;
       case 'ble': onBleAdv(m as { pdu: number[]; db: number; ch: number }); break;
       case 'rds': lastRds = m as typeof lastRds; drawRds(); break;
       case 'hd': lastHd = m as typeof lastHd; console.log('[hd]', JSON.stringify(m)); drawHd(); break;
@@ -7426,7 +7837,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  pager: ['PAGER', 'FLEX · POCSAG'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['FLEET', 'P25 · DMR TRUNKING'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['FLEET', 'P25 · DMR TRUNKING'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

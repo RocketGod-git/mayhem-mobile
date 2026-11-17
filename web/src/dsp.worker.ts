@@ -39,6 +39,7 @@ import { OrbcommDecoder } from './dsp/orbcomm.js';
 import { G3ruhDecoder } from './dsp/g3ruh.js';
 import { RdsDecoder } from './dsp/rds.js';
 import { HdDetector } from './dsp/hdradio.js';
+import { HdProcessor } from './dsp/hd/hd.js';
 import { SameDecoder } from './dsp/same.js';
 import { GeoscanDecoder } from './dsp/geoscan.js';
 import { CwDecoder, RttyDecoder, Psk31Decoder, type DigitalDecoder } from './dsp/ham/digital.js';
@@ -144,6 +145,8 @@ let rdsOn = false; const rdsBuf = new Float32Array(8192); let rdsN = 0;
 // audio path's channel filter). Off unless the audio app asks; it costs a sideband's worth of filtering.
 const hd = new HdDetector(r => post({ type: 'hd', ...r }));
 let hdOn = false;
+/** The HD Radio app: Layer 1 to the station's data, on the raw IQ beside the WFM audio of the same station. */
+const hdApp = new HdProcessor(emit);
 // SAME / EAS weather-radio alerts ride the NFM discriminator the same way, tapped only while the audio app asks
 // for it (NOAA weather radio is NFM at 162 MHz), so it costs nothing elsewhere.
 const same = new SameDecoder(emit);
@@ -407,6 +410,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'vdl2': vdl2.centerHz = centreHz; return vdl2;
     case 'sonde': sonde.setCenter(centreHz); return sonde;
     case 'uat': return uat;
+    case 'hd': hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; return hdApp;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'fleet': fleet.centerHz = centreHz; return fleet;
     case 'subghz': return ism;
@@ -614,6 +618,7 @@ function process(iq: Int8Array): void {
   if (p === trains) trains.centerHz = centreHz;
   if (p === fleet) fleet.centerHz = centreHz;
   if (p === aprs) aprs.offsetHz = offsetHz;
+  if (p === hdApp) { hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
 
