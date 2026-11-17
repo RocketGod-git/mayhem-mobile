@@ -1,5 +1,5 @@
 /**
- * DSP worker — the browser twin of core/SdrEngine.kt. Receives signed-int8 IQ, produces the spectrum row, the
+ * DSP worker, the browser twin of core/SdrEngine.kt. Receives signed-int8 IQ, produces the spectrum row, the
  * once/sec RX-health line, WFM / NFM / AM / USB / LSB audio to the AudioWorklet, and feeds the active app's
  * IqProcessor (raw IQ + the NFM discriminator tap for the FM-borne packet modes).
  */
@@ -545,7 +545,7 @@ function process(iq: Int8Array): void {
           s = lpI2 * c + lpQ2 * sn;
         } else {
           // Strip the front-end DC/LO offset before the discriminator. A HackRF One holds a steady dc on I/Q
-          // (the dcI/dcQ in the health line); a narrowband decoder tuned to the carrier (NFM, offset 0 — APRS,
+          // (the dcI/dcQ in the health line); a narrowband decoder tuned to the carrier (NFM, offset 0, APRS,
           // AIS, pager…) puts the wanted signal right on that dc, which anchors the phasor and suppresses its
           // effective deviation, so the tones demodulate weak. A slow one-pole (~15 Hz at the intermediate rate)
           // tracks only the static offset, far below the 1200/2200 Hz Bell-202 content. WFM is wideband and

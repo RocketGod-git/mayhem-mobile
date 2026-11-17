@@ -65,8 +65,8 @@ export class HamDemod implements IqProcessor {
   private audio2 = new Float32Array(0);
   private outChunk = new Float32Array(2048); private outLen = 0;
   private prevI = 0; private prevQ = 0; private deemph = 0;
-  /** WFM (broadcast) demodulates at the wide intermediate stage — the 240 kHz+ complex baseband after the first
-   *  decimator (`bufA`) — since ±75 kHz deviation cannot survive the 48 kHz channel the narrow modes use. The
+  /** WFM (broadcast) demodulates at the wide intermediate stage, the 240 kHz+ complex baseband after the first
+   *  decimator (`bufA`), since ±75 kHz deviation cannot survive the 48 kHz channel the narrow modes use. The
    *  discriminator runs there and a boxcar brings it to the audio rate (its null lands on that rate), with the
    *  US broadcast 75 µs de-emphasis applied at the audio rate. */
   private wfmDecim = 1; private wfmDeCoef = 0.25;
@@ -75,7 +75,7 @@ export class HamDemod implements IqProcessor {
   private chPow = 0; private chN = 0; private floorDb = NaN; private sqOpen = true; private lastMeter = 0; private lastDb = -200;
   /** Something is on the channel (6 dB over the tracked floor), regardless of the squelch setting. */
   get carrier(): boolean { return this.lastDb > this.floorDb + 6; }
-  /** CTCSS tone being received (0 = none) — a sure sign of an analog voice channel. */
+  /** CTCSS tone being received (0 = none), a sure sign of an analog voice channel. */
   get tone(): number { return this.sub.tone; }
   private filterKey = '';
 
@@ -145,7 +145,7 @@ export class HamDemod implements IqProcessor {
 
   /**
    * Broadcast FM on the wide stage. `buf` is the complex baseband after the first decimator (240 kHz at the
-   * 1.92 Msps HAM rate, wider at the higher ones — always enough for ±75 kHz deviation), `n` its sample count.
+   * 1.92 Msps HAM rate, wider at the higher ones, always enough for ±75 kHz deviation), `n` its sample count.
    * Discriminate every sample, box-average `wfmDecim` of them down to the audio rate (the boxcar's first null
    * sits exactly on that rate, so it is also the anti-alias), then 75 µs de-emphasis. Returns the audio sample
    * count written to `out`, at `interRate`, ready for the common AGC / NR / volume / resample tail.

@@ -14,12 +14,12 @@
  * Vivint's frame is straightforward; what is not is the status byte, which is exclusive-ored with a keystream
  * from a Rabbit cipher core keyed by a per-device seed that never goes over the air. Upstream takes that seed
  * on its command line. This app has no way to supply one, and without it upstream itself reports only the raw
- * payload — so the cipher is deliberately not ported, and the payload goes out as hex exactly as upstream does
+ * payload, so the cipher is deliberately not ported, and the payload goes out as hex exactly as upstream does
  * in that case. Both of its checksums are ported, including the unusual packed twelve-bit one.
  *
  * Silver Spring is a mesh endpoint whose payload is scrambled with a per-hop seed that is also not
  * transmitted. That one is recoverable: the decoder tries all 255 seeds and keeps whichever descrambles to a
- * payload matching its trailing CRC-32. That is a real check — on a constructed frame exactly one seed passes,
+ * payload matching its trailing CRC-32. That is a real check, on a constructed frame exactly one seed passes,
  * and after flipping a single bit no seed passes at all. Its link layer and TLV structure are ported; its
  * route-advertisement and IPv6 interpretation are not, because that part rests on candidate meanings its own
  * author flags as unconfirmed and there is no published frame to test any of it against. The whole payload is
@@ -74,7 +74,7 @@ const DTV_BUTTON: Record<number, string> = {
  * Differential pulse width decoding: only the run lengths between transitions carry data.
  *
  * The counter starts at all ones so that the very first transition is treated as the end of a sync of length
- * zero, which is how the leading run — whatever its length — is kept out of the data. Two behaviours matter
+ * zero, which is how the leading run, whatever its length, is kept out of the data. Two behaviours matter
  * and are easy to lose: a sync discards everything decoded before it, and the run straight after a sync is a
  * marker, not a bit.
  */
@@ -170,7 +170,7 @@ export const directv: RDevice = register({
  *
  * The status byte is encrypted under a per-device seed that is never transmitted; upstream accepts one on its
  * command line and, without it, reports the raw payload instead. This app has no equivalent facility, so the
- * cipher is not ported and the payload is always reported as hex — which is exactly upstream's behaviour for
+ * cipher is not ported and the payload is always reported as hex, which is exactly upstream's behaviour for
  * a sensor whose seed it has not been given. Nothing is silently guessed: `state` and `contact_open` simply do
  * not appear.
  *
@@ -280,7 +280,7 @@ interface SsnExtras {
  * and length are pulled out differently for each. Only one record kind nests another.
  *
  * The small fields read here are upstream's, and it marks several of them as candidates rather than
- * established meanings — the sequence control and epoch tick are confident, the link-info packing and the
+ * established meanings, the sequence control and epoch tick are confident, the link-info packing and the
  * signed reception strength less so. They are reported under upstream's own names so the two agree.
  */
 function ssnTlv(psdu: Uint8Array, len: number, i: number, parts: string[], extras: SsnExtras | null):
@@ -348,7 +348,7 @@ function ssnTlv(psdu: Uint8Array, len: number, i: number, parts: string[], extra
  *
  * Two record types change the walk rather than carrying data. One marks that the last four bytes of the
  * payload are a checksum over everything before them, but does not end the stream. The other does end it,
- * ahead of a fragment this decoder does not reassemble — whatever remains is reported as a byte count, and
+ * ahead of a fragment this decoder does not reassemble, whatever remains is reported as a byte count, and
  * the bytes themselves are always in the payload hex.
  */
 function ssnTlvs(psdu: Uint8Array, psduLen: number, start: number, extras: SsnExtras): string {

@@ -106,7 +106,7 @@ object Scanner {
 
     fun set(on: Boolean) {
         val list = Bookmarks.list.value
-        if (on && list.size < 2) { Diag.log("scan needs at least two bookmarks — save some first"); stop(); return }
+        if (on && list.size < 2) { Diag.log("scan needs at least two bookmarks, save some first"); stop(); return }
         if (!on) { stop(); return }
         if (_active.value) return
         if (SdrEngine.squelchDb.value == 0) SdrEngine.setSquelch(12)

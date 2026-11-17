@@ -323,7 +323,7 @@ private fun nameCoding(mark: List<Cluster>, space: List<Cluster>): String {
     if (mark.isEmpty()) return ""
     if (mark.size == 1 && space.size >= 2) return "pulse position"
     if (mark.size >= 2 && space.size == 1) return "pulse width"
-    if (mark.size == 1 && space.size == 1) return "fixed period — a preamble, or every bit the same"
+    if (mark.size == 1 && space.size == 1) return "fixed period, a preamble, or every bit the same"
     if (mark.size == 2 && space.size == 2) {
         val mr = mark[1].us.toDouble() / mark[0].us; val sr = space[1].us.toDouble() / space[0].us
         if (mr > 1.6 && mr < 2.5 && sr > 1.6 && sr < 2.5) return "Manchester or level per bit"

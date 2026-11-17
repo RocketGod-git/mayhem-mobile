@@ -1,5 +1,5 @@
 /**
- * Acurite — the largest single family here, and the most common weather sensor in the United States.
+ * Acurite, the largest single family here, and the most common weather sensor in the United States.
  *
  * Most of the range shares one frame, and dispatches on a message type in the third byte: the Tower thermometer,
  * the Iris five-in-one, the Notos three-in-one, the Atlas seven-in-one, the Optimus six-in-one, the 6045M
@@ -8,8 +8,8 @@
  * them as different message types in rotation, so a full picture takes a few transmissions.
  *
  * That frame is checked twice over: a byte sum in the last byte, and even parity on the top bit of every data
- * byte. The older sensors that predate it — the 609TXC, 606TX, 590TX, 896 rain gauge, the 985 and 986 fridge
- * thermometers and the 00275rm room monitor — each have their own arrangement and are decoded separately.
+ * byte. The older sensors that predate it, the 609TXC, 606TX, 590TX, 896 rain gauge, the 985 and 986 fridge
+ * thermometers and the 00275rm room monitor, each have their own arrangement and are decoded separately.
  *
  * Ported from rtl_433's `src/devices/acurite.c` (GPL-2.0-or-later).
  */
@@ -44,8 +44,8 @@ const LEN_515 = 6, LEN_TXR = 7, LEN_1190 = 7, LEN_3N1 = 8, LEN_5N1 = 8;
 const LEN_899 = 8, LEN_ATLAS = 8, LEN_6045 = 9, LEN_ATLAS_LTNG = 10, LEN_OPTIMUS = 10;
 
 /**
- * The wind vane's sixteen positions, as the sensor codes them. The mapping is not in any order — the vane is a
- * ring of reed switches wired for cheapness rather than for a tidy table — so it has to be looked up.
+ * The wind vane's sixteen positions, as the sensor codes them. The mapping is not in any order, the vane is a
+ * ring of reed switches wired for cheapness rather than for a tidy table, so it has to be looked up.
  * Each step is 22.5 degrees.
  */
 const WIND_DIRECTIONS = [14, 11, 13, 12, 15, 10, 0, 9, 3, 6, 4, 5, 2, 7, 1, 8];
@@ -78,8 +78,8 @@ function rawMsg(bb: Uint8Array, len: number): string {
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * Length, checksum and parity for the shared frame. Extra bits at the end are tolerated — the slicer sometimes
- * picks up a spurious one — as long as everything up to the expected length holds together.
+ * Length, checksum and parity for the shared frame. Extra bits at the end are tolerated, the slicer sometimes
+ * picks up a spurious one, as long as everything up to the expected length holds together.
  */
 function txrCheck(bb: Uint8Array, browlen: number, explen: number): number {
   if (browlen < 6) return DECODE_ABORT_LENGTH;
@@ -527,7 +527,7 @@ export const acurite606: RDevice = register({
  * The 590TX. There is no packet gap at all: the sync mark that begins each repeat looks like one more bit on
  * the end of the last one, so the frame is read as twenty-five bits with the last one discarded.
  *
- * It reports temperature and humidity in the same field, with nothing to say which — so a value that could be a
+ * It reports temperature and humidity in the same field, with nothing to say which, so a value that could be a
  * plausible humidity is taken as one.
  */
 export const acurite590tx: RDevice = register({
@@ -657,7 +657,7 @@ export const acurite985: RDevice = register({
 });
 
 /**
- * The 00275rm and 00276rm room monitor, with an optional probe on a lead — a water sensor, a thermometer, or a
+ * The 00275rm and 00276rm room monitor, with an optional probe on a lead, a water sensor, a thermometer, or a
  * thermometer with humidity, reported in the same fields and distinguished by two bits.
  *
  * This one takes three copies of the message and votes bit by bit before checking the CRC, which recovers a

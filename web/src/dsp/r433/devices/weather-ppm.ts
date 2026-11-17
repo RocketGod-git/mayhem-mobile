@@ -1,7 +1,7 @@
 /**
  * Pulse-position weather sensors: the cheap outdoor thermometers that came with a kitchen display.
  *
- * These are all the same idea under different brands — a fixed short mark, then a gap whose length is the bit —
+ * These are all the same idea under different brands, a fixed short mark, then a gap whose length is the bit —
  * and several of them are the same silicon with a different sticker, which is why some reject a reading the
  * moment a sibling protocol's checksum happens to pass on it.
  *
@@ -27,7 +27,7 @@ function signed(v: number, bits: number): number {
  *
  * There is no checksum here at all, only a nibble that is always 0xf, so most of this decoder is about not
  * claiming somebody else's transmission. The Rubicson family below has the same layout with a real CRC in the
- * last byte where Nexus puts humidity — so if that CRC passes, this is a Rubicson and we decline it.
+ * last byte where Nexus puts humidity, so if that CRC passes, this is a Rubicson and we decline it.
  */
 export const nexus: RDevice = register({
   num: 19,

@@ -103,11 +103,11 @@ const NOTE: Record<string, number> = (() => {
 const TUNES: Record<string, [string, number][]> = {
   // A rising-falling two-tone that reads unmistakably as a siren rather than a real emergency signal.
   siren: Array.from({ length: 12 }, (_, i) => [i % 2 ? 'A5' : 'E5', 2] as [string, number]),
-  // Ode to Joy — public domain.
+  // Ode to Joy, public domain.
   joy: [['E5', 1], ['E5', 1], ['F5', 1], ['G5', 1], ['G5', 1], ['F5', 1], ['E5', 1], ['D5', 1], ['C5', 1], ['C5', 1], ['D5', 1], ['E5', 1], ['E5', 2], ['D5', 1], ['D5', 2], ['0', 1]],
-  // Westminster chime — public domain doorbell.
+  // Westminster chime, public domain doorbell.
   chime: [['E5', 2], ['C5', 2], ['D5', 2], ['G4', 3], ['0', 1], ['G4', 2], ['D5', 2], ['E5', 2], ['C5', 3]],
-  // Short, recognizable riffs — the monophonic beep versions novelty firmware ships.
+  // Short, recognizable riffs, the monophonic beep versions novelty firmware ships.
   imperial: [['G4', 2], ['G4', 2], ['G4', 2], ['D#4', 1], ['A#4', 1], ['G4', 2], ['D#4', 1], ['A#4', 1], ['G4', 3], ['0', 1]],
   rick: [['C#5', 1], ['D#5', 1], ['0', 1], ['D#5', 1], ['0', 1], ['F5', 1], ['F5', 1], ['D#5', 1], ['C#5', 1], ['C#5', 1], ['C#5', 1], ['A#4', 2], ['0', 1]],
 };

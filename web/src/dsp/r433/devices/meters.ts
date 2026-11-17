@@ -2,7 +2,7 @@
  * Utility meters: the radio modules bolted to electricity, gas and water meters across North America.
  *
  * Itron's ERT family and its successors report on 912–920 MHz, several times a minute, in clear. What comes out
- * is a serial number and a consumption count — a raw register reading rather than kilowatt-hours, because the
+ * is a serial number and a consumption count, a raw register reading rather than kilowatt-hours, because the
  * multiplier lives in the utility's billing system rather than in the meter's transmission. The interval
  * message goes further and carries the last several hours of consumption, one figure per interval, which is a
  * remarkably detailed picture of a household to broadcast unencrypted.
@@ -36,7 +36,7 @@ function meterType(ertType: number): string {
 /**
  * The standard consumption message: ninety-six bits, no preamble worth finding.
  *
- * There is no sync word here — the message is identified purely by its CRC coming out right, and the fields are
+ * There is no sync word here, the message is identified purely by its CRC coming out right, and the fields are
  * then counted backwards from the end. That works because the CRC is over ten bytes, so a false match is rare.
  */
 export const ertScm: RDevice = register({
@@ -109,7 +109,7 @@ export const scmPlus: RDevice = register({
  * The interval data message: ninety-two bytes, most of it a history of consumption.
  *
  * A meter sending this is broadcasting the last several hours of a household's electricity use, one reading per
- * interval, with nothing protecting it but a CRC against interference. Two shapes exist — the ordinary one
+ * interval, with nothing protecting it but a CRC against interference. Two shapes exist, the ordinary one
  * carries forty-seven nine-bit intervals, the net-metering one twenty-seven fourteen-bit intervals to leave
  * room for generation as well as consumption.
  */

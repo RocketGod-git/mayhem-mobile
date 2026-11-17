@@ -229,7 +229,7 @@ class HamDemod : IqProcessor {
 
     /**
      * Broadcast FM on the wide stage: [buf] is the complex baseband after the first decimator (240 kHz at
-     * 1.92 Msps, 250 kHz at 2 — always enough for ±75 kHz deviation). Discriminate every sample, box-average
+     * 1.92 Msps, 250 kHz at 2, always enough for ±75 kHz deviation). Discriminate every sample, box-average
      * [wfmDecim] of them to the narrow rate (the boxcar's first null sits exactly on that rate, so it is also the
      * anti-alias), then 75 µs de-emphasis. Returns audio samples written, at the narrow rate.
      */

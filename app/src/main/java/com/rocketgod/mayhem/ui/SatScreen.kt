@@ -89,7 +89,7 @@ private fun SatTrack(accent: Color) {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1000); now = System.currentTimeMillis() } }
     var note by remember { mutableStateOf("") }
-    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> note = if (ok) "microphone ready — hold the button" else "no microphone permission" }
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> note = if (ok) "microphone ready, hold the button" else "no microphone permission" }
     // A receive app first: the transmit safety prompt waits until push-to-talk is actually pressed.
     var asking by remember { mutableStateOf(false) }
     if (asking && needsPrompt) SafetyPromptDialog(accent, onCancel = { asking = false }) { Tx.acknowledgeSafety(); asking = false }
@@ -144,7 +144,7 @@ private fun SatTrack(accent: Color) {
         // now
         Column(Modifier.fillMaxWidth().padding(top = d.gap).panel().padding(d.dp(6f))) {
             when {
-                sgp == null -> KvLine(def.name, if (u.status.endsWith("TLEs")) "no orbit data from CelesTrak — retired or renamed; the receiver is tuned anyway" else "waiting for orbit data…")
+                sgp == null -> KvLine(def.name, if (u.status.endsWith("TLEs")) "no orbit data from CelesTrak, retired or renamed; the receiver is tuned anyway" else "waiting for orbit data…")
                 home == null || l == null -> KvLine(def.name, "allow location to get look angles, Doppler and passes")
                 else -> {
                     val rx = doppler(svc.down, l.rangeRate)
@@ -244,7 +244,7 @@ private fun SatPacket(accent: Color) {
             Box(Modifier.fillMaxWidth().panel().padding(d.dp(4f))) {
                 val b = geo.bitmap
                 if (b != null) Image(b.asImageBitmap(), "picture from the satellite", Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth)
-                else Text("nothing yet — a picture takes most of a pass to come down", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
+                else Text("nothing yet, a picture takes most of a pass to come down", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
             }
             if (geo.frames > 0) Text("${geo.frames} frames · ${geo.fragments} pieces of picture · %.1f kB${if (geo.complete) " · complete" else ""}${if (geo.bad > 0) " · ${geo.bad} failed the checksum" else ""}".format(geo.high / 1024.0),
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
@@ -257,7 +257,7 @@ private fun SatPacket(accent: Color) {
             }
         }
         Column(Modifier.fillMaxWidth().padding(top = d.dp(4f)).panel().padding(d.dp(6f))) {
-            if (shown.isEmpty()) Text("nothing heard yet — pick something that is up and wait for a beacon", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
+            if (shown.isEmpty()) Text("nothing heard yet, pick something that is up and wait for a beacon", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
             for (f in shown) {
                 Text("${f.from} > ${f.to} · ${f.payload.size} bytes", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10.5f))
                 Text(f.text.ifEmpty { f.hex }, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(4f)))
@@ -285,7 +285,7 @@ private fun SatOrbcomm(accent: Color) {
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
         SectionLabel("${o.sats.size} SATELLITE${if (o.sats.size == 1) "" else "S"}")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(6f))) {
-            if (o.sats.isEmpty()) Text("nothing yet — try FIND A BUSY CHANNEL, or wait for a pass", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
+            if (o.sats.isEmpty()) Text("nothing yet, try FIND A BUSY CHANNEL, or wait for a pass", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
             for (s in o.sats) {
                 val n = o.named[s.id]
                 val utc = s.utc?.let { java.time.Instant.ofEpochMilli(it).toString().substring(11, 19) + "Z" }

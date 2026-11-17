@@ -15,7 +15,7 @@
  * where one OFDM symbol is ~278.6 samples with a ~14-sample cyclic prefix. The prefix is a copy of the symbol's
  * tail, so x[n]·conj(x[n−L]) (L = the useful symbol length) summed over a prefix length peaks once per symbol at a
  * fixed phase of the symbol clock. Folding that magnitude by symbol phase into 64 bins over a few hundred symbols
- * gives a profile whose peak-to-mean ratio is the lock — noise folds flat, about 1.0 — and the phase of the complex
+ * gives a profile whose peak-to-mean ratio is the lock, noise folds flat, about 1.0, and the phase of the complex
  * sum at the peak is the carrier error. Any input rate works; everything is derived from it.
  */
 import { fft, hann } from '../fft.js';
@@ -29,7 +29,7 @@ export interface HdReport {
   lock: number;
   lockLo: number; lockHi: number;
   sbLoDb: number; sbHiDb: number; refDb: number; analogDb: number;
-  /** Carrier frequency error of the station relative to the dial, Hz, from the locked sideband — modulo one subcarrier
+  /** Carrier frequency error of the station relative to the dial, Hz, from the locked sideband, modulo one subcarrier
    *  spacing (so within ±181 Hz): the cyclic prefix resolves only the fractional part of the error. */
   cfoHz: number;
   /** OFDM symbols folded into this report. */

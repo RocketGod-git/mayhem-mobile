@@ -14,7 +14,7 @@ import java.util.concurrent.TimeoutException
 
 /**
  * PURE-KOTLIN userspace driver for a HackRF talking to the board directly over Android [UsbDeviceConnection]
- * vendor control / bulk transfers — no native libhackrf. Lifted from Wardrive Go, where it is
+ * vendor control / bulk transfers, no native libhackrf. Lifted from Wardrive Go, where it is
  * field-proven on HackRF One and HackRF Pro. It streams raw 8-bit IQ to [SdrEngine], which does the
  * FFT waterfall, FM/AM demod → audio, and the Mode-S decode.
  *
@@ -30,7 +30,7 @@ import java.util.concurrent.TimeoutException
  *  - LNA/VGA gain are IN transfers carrying the value in wIndex and returning a 1-byte ack; AMP and
  *    TRANSCEIVER_MODE are OUT with the value in wValue and no data stage.
  *  - HackRF streams SIGNED 8-bit IQ; [SdrEngine] wants offset-128 uint8, so we XOR each byte with 0x80.
- * The HackRF mixes to true baseband internally — IQ arrives centred on the tuned frequency, non-inverted.
+ * The HackRF mixes to true baseband internally, IQ arrives centred on the tuned frequency, non-inverted.
  * Control (frequency / sample-rate / gain) is read from @Volatile fields the engine mutates; the RX loop applies
  * any pending change between buffers so the UI can retune live.
  */
@@ -41,7 +41,7 @@ object HackRfOne {
 
     // ---- Live control (set by SdrEngine; applied by the RX loop). Defaults match SdrEngine's WFM start-up. ----
     @Volatile var targetFreqHz = 92_300_000L      // default: FM broadcast demo station
-    @Volatile var targetRateHz = 2_000_000        // 2 Msps — the Pro-clean rate (2.4 Msps gave all-zeros on the Pro)
+    @Volatile var targetRateHz = 2_000_000        // 2 Msps, the Pro-clean rate (2.4 Msps gave all-zeros on the Pro)
     /** Total front-end gain in tenths of a dB; used only when no per-stage override is set. */
     @Volatile var targetGainTenthDb = 480
     // Explicit per-stage gain override (>=0 wins over the targetGainTenthDb split). The engine always sets these:
@@ -134,12 +134,12 @@ object HackRfOne {
             }
             val rx = epRx ?: run { Diag.log("HackRF: no bulk-IN endpoint"); onStatus("HackRF: no IQ endpoint"); return }
             Diag.log("HackRF: RX endpoint=0x%02x interfaces=%d (expect ep 0x81)".format(rx.address, device.interfaceCount))
-            // NOTE: no CLEAR_FEATURE(HALT) here — libhackrf never issues one; it only perturbs the endpoint.
+            // NOTE: no CLEAR_FEATURE(HALT) here, libhackrf never issues one; it only perturbs the endpoint.
 
             Diag.log("=== HackRF bring-up (raw SDR, userspace libhackrf port) ===")
             onStatus("HackRF · initializing…")
             // Presence probe: BOARD_ID_READ answers a small board id on a genuine HackRF (see boardName). This
-            // is how a HackRF Pro (board id 5 "Praline") is identified — it shares the HackRF One USB PID (0x6089)
+            // is how a HackRF Pro (board id 5 "Praline") is identified, it shares the HackRF One USB PID (0x6089)
             // and the same libhackrf command set, so this one driver handles One / One r9 / Pro / Jawbreaker / rad1o.
             val boardId = readBoardId()
             boardLabel = boardName(boardId)
@@ -182,7 +182,7 @@ object HackRfOne {
         setTransceiverMode(TRANSCEIVER_MODE_OFF); Thread.sleep(100)   // Pro/Praline FPGA needs longer settle
         setHwSyncMode(false)
 
-        // Config, capturing each control-transfer return code. A negative rc = the transfer FAILED — if the
+        // Config, capturing each control-transfer return code. A negative rc = the transfer FAILED, if the
         // front-end config doesn't land, the ADC streams near-zero IQ (the "all-zeros, iqRMS≈0.85, gain has no
         // effect" symptom).
         val rcSr = setSampleRate(targetRateHz); appliedRate = targetRateHz
@@ -191,10 +191,10 @@ object HackRfOne {
         val rcFq = setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
         val (rcAmp, rcLna, rcVga) = applyGainStages(targetGainTenthDb); appliedGain = targetGainTenthDb
         val rcRx = setTransceiverMode(TRANSCEIVER_MODE_RECEIVE)
-        // ★ THE PRO FIX — cache-busting post-RECEIVE re-tune. Source-confirmed against Mayhem radio.cpp
+        // ★ THE PRO FIX, cache-busting post-RECEIVE re-tune. Source-confirmed against Mayhem radio.cpp
         // (set_tuning_frequency, PRALINE path): the Pro is NOT zero-IF. It tunes the analog passband off-centre
         // by Fs/4 and the iCE40 FPGA rotates it back to DC (the "quarter shift", FPGA_REG_RX_PSTEP). Entering RX
-        // (set_direction) CLEARS the quarter shift, and ONLY set_tuning_frequency re-applies it — tuning
+        // (set_direction) CLEARS the quarter shift, and ONLY set_tuning_frequency re-applies it, tuning
         // off-centre without the rotation puts the signal outside the decimation filter's passband and it
         // disappears entirely (== all-zeros). The firmware's tuning path caches the frequency, so an unchanged
         // re-tune is a NO-OP → write an off-target freq FIRST to bust the cache, THEN the real target. Also
@@ -295,8 +295,8 @@ object HackRfOne {
                             Diag.log("HackRF raw: n=$n nonZero=$nz/$n min=$mn max=$mx first16=[$hex]")
                             if (!zeroHintShown && nz * 50 < n) {
                                 zeroHintShown = true
-                                Diag.log("HackRF: RX is all-zero samples — front-end delivering nothing. Check the antenna and a data-capable OTG cable / powered hub. (A HackRF Pro inside a PortaPack running Mayhem streams zeros to a raw-SDR host until the device is put in on-screen 'HackRF' mode.)")
-                                onStatus("HackRF: no signal — check antenna / cable / PortaPack mode")
+                                Diag.log("HackRF: RX is all-zero samples, front-end delivering nothing. Check the antenna and a data-capable OTG cable / powered hub. (A HackRF Pro inside a PortaPack running Mayhem streams zeros to a raw-SDR host until the device is put in on-screen 'HackRF' mode.)")
+                                onStatus("HackRF: no signal, check antenna / cable / PortaPack mode")
                             }
                         }
                         for (k in 0 until n) scratch[k] = (scratch[k].toInt() xor 0x80).toByte()   // signed int8 → offset-128 uint8
@@ -320,7 +320,7 @@ object HackRfOne {
     }
 
     private fun streamLoopSync(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
-        Diag.log("HackRF: async RX unavailable — synchronous fallback")
+        Diag.log("HackRF: async RX unavailable, synchronous fallback")
         val buf = ByteArray(16384)
         while (!stop && txJob == null) {
             applyPendingRetune(onStatus)
@@ -380,7 +380,7 @@ object HackRfOne {
         0 -> "Jellybean"; 1 -> "Jawbreaker"; 2 -> "HackRF One"; 3 -> "rad1o"; 4 -> "HackRF One r9"; 5 -> "HackRF Pro"; else -> "HackRF?"
     }
 
-    /** Firmware version string (VERSION_STRING_READ) — proves control round-trips + identifies the firmware. */
+    /** Firmware version string (VERSION_STRING_READ), proves control round-trips + identifies the firmware. */
     private fun readVersionString(): String {
         val b = ByteArray(255)
         val r = runCatching { conn.controlTransfer(CTRL_IN, REQ_VERSION_STRING_READ, 0, 0, b, b.size, CTRL_TIMEOUT) }.getOrDefault(-1)
@@ -396,14 +396,14 @@ object HackRfOne {
     private fun setTransceiverMode(mode: Int): Int =
         ctrl(CTRL_OUT, REQ_SET_TRANSCEIVER_MODE, mode, 0, null, 0, "TRXMODE")
 
-    /** Hardware-sync (external trigger) mode. We always disable it — if a prior app left it on, the firmware
+    /** Hardware-sync (external trigger) mode. We always disable it, if a prior app left it on, the firmware
      *  waits for a trigger and streams zeros. */
     private fun setHwSyncMode(on: Boolean): Int =
         ctrl(CTRL_OUT, REQ_SET_HW_SYNC_MODE, if (on) 1 else 0, 0, null, 0, "HWSYNC")
 
     /** Control-transfer wrapper: logs the EXACT request/wValue/wIndex/data/rc of every RF-config transfer so a
      *  diag capture shows precisely what the host sent (to diff against libhackrf when RX comes up all-zero).
-     *  Volume is low — config transfers only happen at bring-up + on a user retune, never per IQ buffer. */
+     *  Volume is low, config transfers only happen at bring-up + on a user retune, never per IQ buffer. */
     private fun ctrl(dir: Int, req: Int, wValue: Int, wIndex: Int, data: ByteArray?, len: Int, tag: String): Int {
         val rc = conn.controlTransfer(dir, req, wValue, wIndex, data, len, CTRL_TIMEOUT)
         val hex = if (data != null && len > 0) " data=[" + (0 until minOf(len, 8)).joinToString(" ") { "%02x".format(data[it].toInt() and 0xff) } + "]" else ""
@@ -448,10 +448,10 @@ object HackRfOne {
         return ctrl(CTRL_OUT, REQ_SET_FREQ, 0, 0, d, 8, "SETFREQ")
     }
 
-    // ---- Gain: amp(0/14) + LNA(0..40/8) + VGA(0..62/2) — the MAX2837 stages Mayhem's receiver_model surfaces ----
-    /** Returns (ampRc, lnaRc, vgaRc) — the three control-transfer results, for the config diagnostic. */
+    // ---- Gain: amp(0/14) + LNA(0..40/8) + VGA(0..62/2), the MAX2837 stages Mayhem's receiver_model surfaces ----
+    /** Returns (ampRc, lnaRc, vgaRc), the three control-transfer results, for the config diagnostic. */
     private fun applyGainStages(tenthDb: Int): Triple<Int, Int, Int> {
-        // Explicit per-stage override — the normal path (the engine always sets all three).
+        // Explicit per-stage override, the normal path (the engine always sets all three).
         if (ovrLnaDb >= 0) {
             val lna = ovrLnaDb.coerceIn(0, 40) and 0x07.inv()
             val vga = ovrVgaDb.coerceIn(0, 62) and 0x01.inv()

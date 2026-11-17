@@ -4,7 +4,7 @@
  * Two quite different generations sit side by side here. The older TX line keys the carrier on and off and
  * carries its digits as binary-coded decimal with a nibble checksum; the "IT+" line that replaced it shifts
  * frequency instead, leads with a sync word, and ends in a real CRC. The newer TX141 family went back to on-off
- * keying but kept a proper check, and packs several different sensors — thermometer, rain gauge, anemometer —
+ * keying but kept a proper check, and packs several different sensors, thermometer, rain gauge, anemometer —
  * behind one frame whose length tells you which one is talking.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `src/devices/lacrosse.c`, `lacrosse_tx35.c`, `lacrosse_tx34.c`,
@@ -24,7 +24,7 @@ const hex = (v: number, digits: number) => (v >>> 0).toString(16).padStart(digit
  * The original TX line: forty-four bits in eleven nibbles, digits carried as decimal rather than binary.
  *
  * Temperature and humidity go out as separate messages, distinguished by a type nibble, and each value is sent
- * twice — once with a decimal place and once without — which the decoder checks against itself. That, a nibble
+ * twice, once with a decimal place and once without, which the decoder checks against itself. That, a nibble
  * sum and one parity bit are the whole of the error checking, which is why the redundant copy matters.
  */
 export const lacrosseTx: RDevice = register({
@@ -90,7 +90,7 @@ export const lacrosseTx: RDevice = register({
  * The "IT+" frame the whole modern LaCrosse range shares: a sync word, a model nibble, a six-bit identity that
  * is picked at random when the batteries go in, the reading, and a CRC.
  *
- * The preamble varies — some sensors send a long run of alternating bits, some barely any — so the search starts
+ * The preamble varies, some sensors send a long run of alternating bits, some barely any, so the search starts
  * at the sync word rather than counting from the front.
  */
 function decodeItPlus(bits: BitBuffer, ctx: DecodeCtx, model: 29 | 35): number {

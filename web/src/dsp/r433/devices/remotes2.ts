@@ -1,10 +1,10 @@
 /**
- * Car remotes and keyfobs — the button you press in a car park.
+ * Car remotes and keyfobs, the button you press in a car park.
  *
  * These are not sensors, and what they report is deliberately limited. Almost all of them are rolling-code
  * transmitters: a counter that goes up by one each press, and a block of ciphertext that only the car can
  * check. That ciphertext is reported as an opaque hex string because that is genuinely all it is from the
- * outside — nothing here can tell whether a code is valid, and nothing here can produce one. What is useful
+ * outside, nothing here can tell whether a code is valid, and nothing here can produce one. What is useful
  * is the rest: which remote it was, which button, and how far its counter has moved.
  *
  * Two of them are the same physical Honda remote read two different ways. Continental's decoder treats the
@@ -12,7 +12,7 @@
  * with a proper CRC and a different field layout. Both are registered because rtl_433 registers both, and
  * either may be the one that matches a given capture.
  *
- * Three of these — Chrysler, GM and Siemens — compare a byte sum against a value wider than a byte, either
+ * Three of these, Chrysler, GM and Siemens, compare a byte sum against a value wider than a byte, either
  * against zero or against a saturated all-ones frame. Those comparisons need the sum at full width, so it is
  * taken locally here rather than through `addBytes`, which masks to a byte.
  *
@@ -38,7 +38,7 @@ const hexUp = (v: number, n: number) => (v >>> 0).toString(16).toUpperCase().pad
  * The byte sum at full width.
  *
  * `addBytes` in util masks to a byte, which is right for a checksum compared against one byte but wrong for
- * the sanity tests below — they compare against zero or against an all-ones frame, and a masked sum can never
+ * the sanity tests below, they compare against zero or against an all-ones frame, and a masked sum can never
  * reach the latter and can reach the former by accident.
  */
 function sumBytes(m: Uint8Array, n: number, at = 0): number {
@@ -61,7 +61,7 @@ function buttonsFrom(mask: number, names: string[]): string[] {
 /**
  * A fixed-code remote, so the same bits go out every time that button is pressed.
  *
- * It can report more than one button at once, and says so with a bit of its own — which is worth checking
+ * It can report more than one button at once, and says so with a bit of its own, which is worth checking
  * against the button bits themselves, since a frame claiming two buttons without that flag, or one button
  * with it, has decoded wrong however well its sum adds up.
  */
@@ -121,7 +121,7 @@ export const chryslerCarRemote: RDevice = register({
 /**
  * A Honda remote whose last field almost never arrives whole.
  *
- * The sixteen bits at the end are a keyed rolling-code authenticator, not a checksum — nobody has found a
+ * The sixteen bits at the end are a keyed rolling-code authenticator, not a checksum, nobody has found a
  * polynomial that reproduces them, and they cannot be derived from the wire. Worse, the demodulator usually
  * cuts the frame short before all sixteen have arrived, so the tail is padding rather than signal. How many
  * bits were genuinely received is reported alongside, and anything past that count should be read as nothing.
@@ -366,7 +366,7 @@ export const alpsFwb1u545CarRemote: RDevice = register({
 });
 
 // ---------------------------------------------------------------------------
-// Continental (316) and the Honda keyfob (327) — the same remote, read two ways
+// Continental (316) and the Honda keyfob (327), the same remote, read two ways
 // ---------------------------------------------------------------------------
 
 export const continentalCarRemote: RDevice = register({

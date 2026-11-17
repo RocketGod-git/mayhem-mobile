@@ -14,7 +14,7 @@
  *
  * The Megacode gate opener is the odd one. Its twenty-four bits are not sent as bits at all: each occupies a
  * six-millisecond window containing exactly one pulse, and which half of the window the pulse falls in is the
- * bit. Anything with two pulses in a window, or none, is not a Megacode frame — counting them is the whole of
+ * bit. Anything with two pulses in a window, or none, is not a Megacode frame, counting them is the whole of
  * its integrity, and it is stronger than it sounds.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `hondaremote.c`, `fordremote.c`, `dish_remote_6_3.c`,
@@ -47,7 +47,7 @@ const bitAt = (b: Uint8Array, i: number) => (b[i >> 3] >> (7 - (i & 7))) & 1;
 /**
  * A long frame with two fixed bytes in it and nothing else to go on.
  *
- * The rolling code is not decoded — only which button was pressed and the remote's number. With no check at
+ * The rolling code is not decoded, only which button was pressed and the remote's number. With no check at
  * all, the two 0xff bytes and the frame length are the only things separating this from noise, which is why
  * rtl_433 ships it switched off and why its readings here are marked as worth a second look.
  */
@@ -89,7 +89,7 @@ export const hondaRemote: RDevice = register({
 /**
  * Found by its run-in rather than by anything in the frame.
  *
- * The transmitter sends three tiny rows before the payload — one bit, then nine, then one — and that shape is
+ * The transmitter sends three tiny rows before the payload, one bit, then nine, then one, and that shape is
  * what identifies it. The field meanings behind it were never confirmed upstream, so they are reported as
  * they were read and no more is claimed for them.
  */
@@ -184,7 +184,7 @@ export const dishRemote63: RDevice = register({
  *
  * Every bit gets a six-millisecond window with a single one-millisecond pulse somewhere in it, and which half
  * the pulse lands in says whether the bit is a nought or a one. A window with two pulses, or with none, means
- * this was never a Megacode frame — so counting them to exactly twenty-four is a real check, even though the
+ * this was never a Megacode frame, so counting them to exactly twenty-four is a real check, even though the
  * code itself is fixed and carries no checksum of its own.
  */
 export const megacode: RDevice = register({
@@ -245,7 +245,7 @@ function getBitsReflect(b: Uint8Array, start: number, len: number): number {
  * Funkbus closes its frame with a nibble from a shift register and one parity bit.
  *
  * The exclusive-or of every payload byte is folded down to a nibble, and each of that nibble's four bits
- * selects a fixed pattern to mix in — the same 0x8C mask shifted along twice each step. The parity of the
+ * selects a fixed pattern to mix in, the same 0x8C mask shifted along twice each step. The parity of the
  * whole exclusive-or byte becomes the fifth bit.
  */
 function funkbusChecksum(b: Uint8Array, len: number): number {
@@ -270,7 +270,7 @@ function funkbusChecksum(b: Uint8Array, len: number): number {
 /**
  * The lighting system behind Berker, Gira and Jung switches, made by Insta.
  *
- * Unlike everything else in this file it is not a vehicle remote at all — it is a wall switch talking to a
+ * Unlike everything else in this file it is not a vehicle remote at all, it is a wall switch talking to a
  * dimmer, and it says which of three channel groups it belongs to, whether the button was held down, and
  * whether this is a repeat of a press already sent.
  */
@@ -332,7 +332,7 @@ const CODE_ALARM_BUTTONS: { name: string; vals: number[] }[] = [
 ];
 
 /**
- * The identifier here is not sent directly — it is recovered by folding the rolling code against itself.
+ * The identifier here is not sent directly, it is recovered by folding the rolling code against itself.
  *
  * Each byte of the thirty-six bit code is exclusive-ored with the next to give twenty-four bits that stay the
  * same from press to press, which is what makes one remote distinguishable from another even though the code

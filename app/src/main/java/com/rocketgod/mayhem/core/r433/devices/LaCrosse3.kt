@@ -6,7 +6,7 @@ import kotlin.math.min
 /*
  * The older LaCrosse consoles and the ELV / Conrad system they grew out of: the WS-2310 (thirteen nibbles guarded
  * three ways at once), the WS7000 (stuffed nibbles, reflected), the TX31U and TX22U (variable lists of tagged
- * measurements — the TX22U's length is discovered by finding the count whose CRC closes) and the WS6868 pair.
+ * measurements, the TX22U's length is discovered by finding the count whose CRC closes) and the WS6868 pair.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): lacrossews.c, lacrosse_ws7000.c, lacrosse_tx31u.c,
  * lacrosse_tx22uit.c, lacrosse_ws6868.c. Twin of web/src/dsp/r433/devices/lacrosse3.ts.

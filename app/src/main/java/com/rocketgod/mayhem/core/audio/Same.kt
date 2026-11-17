@@ -69,13 +69,13 @@ private fun opener(s: String, want: String): Int { var n = 0; for (i in 0 until 
 /**
  * NOAA Weather Radio / EAS "SAME" decoder: the 520.83 baud AFSK burst that opens and closes every alert, on the NFM
  * discriminator. A header is sent three times; each copy is decoded on its own and the copies are voted character
- * by character, and only a result that fits the published structure exactly is reported — a half-parsed alert is
+ * by character, and only a result that fits the published structure exactly is reported, a half-parsed alert is
  * worse than none, because someone may act on it. Decisions are sign-based, so any input scale works, 24–96 kHz.
  */
 class SameDecoder(private val emit: (SameEvent) -> Unit) {
     private var rate = 0
     private var t = 0L
-    // sliding one-bit correlators for the two tones (mark: four cycles a bit, space: three — orthogonal over a bit)
+    // sliding one-bit correlators for the two tones (mark: four cycles a bit, space: three, orthogonal over a bit)
     private var spb = 92
     private var ring = DoubleArray(92); private var ri = 0
     private var ph1 = 0.0; private var ph2 = 0.0; private var w1 = 0.0; private var w2 = 0.0

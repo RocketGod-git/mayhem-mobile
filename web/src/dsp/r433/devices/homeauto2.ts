@@ -2,14 +2,14 @@
  * Three building-automation buses: Insteon, Honeywell's CM921 heating controller, and Delta Dore's X3D.
  *
  * These are the three largest decoders in rtl_433 that this app had left, and none of them publishes a single
- * captured frame — not in any of the four spellings those files use. Everything here is therefore checked
+ * captured frame, not in any of the four spellings those files use. Everything here is therefore checked
  * against frames built from the transmit side, which raises rather than lowers the standard: a synthetic frame
  * only proves something if the builder is known to put it exactly where the decoder looks, so each one is
  * round-tripped through the decoder's own path before any assertion is written on top of it.
  *
  * Insteon sends one byte at a time in twenty-eight bit blocks: two marker bits, a five-bit index and eight
  * bits of data, both Manchester coded and both least significant bit first. The index counts down from
- * thirty-one to zero, so a block arriving out of order ends the packet — that ordering is a real check, and
+ * thirty-one to zero, so a block arriving out of order ends the packet, that ordering is a real check, and
  * with the two checksums it is most of what separates a packet from noise.
  *
  * The CM921 is the most heavily layered. Every byte is framed with a start and stop bit, the result is
@@ -17,7 +17,7 @@
  * that has to be scanned for backwards from the end. Its integrity check is that every byte of the decoded
  * message sums to zero.
  *
- * Delta Dore whitens its frames — including the length byte, which has to be de-whitened on its own before
+ * Delta Dore whitens its frames, including the length byte, which has to be de-whitened on its own before
  * the frame length is even known. That whitening is CCITT's, which shares its shift register with the IBM
  * variant this app already had but exclusive-ors with the *reflected* key byte, so it needs its own helper.
  *
@@ -51,7 +51,7 @@ const hexOf = (b: Uint8Array, from: number, n: number) => {
  * CCITT data whitening, as the SX1211 and its relatives apply it.
  *
  * The shift register is the same one the IBM variant uses, but each byte is exclusive-ored with the key byte
- * *reflected* rather than the key byte itself — which makes the two produce different keystreams from their
+ * *reflected* rather than the key byte itself, which makes the two produce different keystreams from their
  * second byte onward, so the existing helper cannot stand in for this one. Whitening is its own inverse.
  */
 function ccittWhitening(m: Uint8Array, n = m.length): void {
@@ -183,7 +183,7 @@ export const insteon: RDevice = register({
     bits.invert();
 
     const preamble = new Uint8Array([0xce, 0xaa]);
-    // Upstream's minimum adds `sizeof` the run-in array — two, the byte count, not its sixteen bits.
+    // Upstream's minimum adds `sizeof` the run-in array, two, the byte count, not its sixteen bits.
     const minBits = 10 * 28 + 2;
 
     let events = 0;
@@ -232,7 +232,7 @@ function cm921DeviceCount(header: number): number {
  * fixed three-byte header and a footer of repeated bytes, which is scanned for from the end because nothing
  * says in advance how long the message is.
  *
- * Its check is that every byte of the decoded message sums to zero — narrowed to a byte, so the shared helper
+ * Its check is that every byte of the decoded message sums to zero, narrowed to a byte, so the shared helper
  * is the right one here.
  */
 export const honeywellCm921: RDevice = register({
@@ -418,7 +418,7 @@ const X3D_CLASS = ['Sensor', 'Standard', 'Pairing', 'Beacon'];
  * The header's shape is not fixed: one flag byte decides whether a spare byte or a temperature reading
  * follows, which moves everything after it. Upstream notes the length arithmetic is off by the length byte
  * itself compared with the chip's documentation, and that the frame usually carries trailing rubbish left
- * over from a longer message — so the CRC's position, not the buffer's end, is what bounds the payload.
+ * over from a longer message, so the CRC's position, not the buffer's end, is what bounds the payload.
  */
 export const deltadoreX3d: RDevice = register({
   num: 269,

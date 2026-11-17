@@ -103,7 +103,7 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
             rows = 70, traceFrac = 0.32f, wholeRange = true)
         Row(Modifier.fillMaxWidth().padding(top = d.dp(4f), bottom = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
             Text(if (health.isNotEmpty()) "%.3f MHz%s%s · %s".format(freq / 1e6, if (mode == SdrEngine.Mode.NONE) "" else " ${mode.name}", band?.let { " · ${it.what}" } ?: "", health)
-                 else "no IQ yet — attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
+                 else "no IQ yet, attach a HackRF or an RTL-SDR over USB-OTG", color = if (Tuning.previewHz != null) Palette.accent2 else Palette.muted,
                 fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.weight(1f), maxLines = 1)
         }
         // a chip shows the whole band (as wide as this radio and screen take) and picks its strongest station

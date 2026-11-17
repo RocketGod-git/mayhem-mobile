@@ -27,7 +27,7 @@ import java.util.concurrent.TimeoutException
  *    tuner's 27-byte init block goes in sevens. Sent whole it is truncated after register 0x0b with no error:
  *    the tuner answers, the PLL locks, and nothing downconverts.
  *  - The R828D (RTL-SDR Blog V4, Astrometa) sits at another I2C address, may run its PLL from a 16 MHz crystal
- *    or the RTL's 28.8 (measured, by which one locks), and has separate aerial inputs below and above 345 MHz.
+ *    or the RTL's 28.8 (measured, by which one locks), and has separate antenna inputs below and above 345 MHz.
  *
  * Samples arrive as offset binary, zero at 127.5, which is already what [SdrEngine] takes.
  */
@@ -206,7 +206,7 @@ object RtlSdr {
         val on = targetBiasTee
         runCatching { setGpio(0, on) }
             .onSuccess { appliedBiasTee = on; Diag.log("RTL-SDR: bias tee ${if (on) "on" else "off"}") }
-            .onFailure { Diag.log("RTL-SDR: bias tee write failed — ${it.message}") }
+            .onFailure { Diag.log("RTL-SDR: bias tee write failed, ${it.message}") }
     }
     private var dbgBuffers = 0
 
@@ -241,13 +241,13 @@ object RtlSdr {
                     if (!ok) reopen = true
                     else if (!quietRetune) {
                         quietRetune = true
-                        Diag.log("RTL-SDR: this USB stack rejects retunes during streaming — retuning between drained reads from now on")
+                        Diag.log("RTL-SDR: this USB stack rejects retunes during streaming, retuning between drained reads from now on")
                     }
                 }
                 // A rate change resets the bulk FIFO, so it waits until nothing is in flight.
                 if (!reopen && targetRateHz != appliedRate) {
                     runCatching { setSampleRate(targetRateHz); resetBuffer(); SdrEngine.onSource(targetRateHz) }
-                        .onFailure { Diag.log("RTL-SDR: rate change failed — ${it.message}") }
+                        .onFailure { Diag.log("RTL-SDR: rate change failed, ${it.message}") }
                     appliedRate = targetRateHz
                 }
                 // the reads were cancelled and the FIFO may have been reset: either can leave the endpoint halted
@@ -260,14 +260,14 @@ object RtlSdr {
                 val now = System.currentTimeMillis()
                 reopenTimes.removeAll { now - it >= 10_000L }
                 reopenTimes.add(now)
-                if (reopenTimes.size > 6) { Diag.log("RTL-SDR: reopened the dongle 6 times in 10 s and it still fails — stopping"); break }
-                Diag.log(if (stalled) "RTL-SDR: no samples for 2 s — reopening the dongle"
-                         else "RTL-SDR: retune to %.3f MHz would not land — reopening the dongle there".format(targetFreqHz / 1e6))
+                if (reopenTimes.size > 6) { Diag.log("RTL-SDR: reopened the dongle 6 times in 10 s and it still fails, stopping"); break }
+                Diag.log(if (stalled) "RTL-SDR: no samples for 2 s, reopening the dongle"
+                         else "RTL-SDR: retune to %.3f MHz would not land, reopening the dongle there".format(targetFreqHz / 1e6))
                 runCatching { c.releaseInterface(device.getInterface(0)) }
                 runCatching { c.close() }
                 Thread.sleep(100)
                 val nc = mgr.openDevice(device)
-                if (nc == null) { Diag.log("RTL-SDR: could not reopen the dongle"); onStatus("RTL-SDR: lost the dongle — replug it"); break }
+                if (nc == null) { Diag.log("RTL-SDR: could not reopen the dongle"); onStatus("RTL-SDR: lost the dongle, replug it"); break }
                 c = nc; conn = nc
                 ep = claim(nc, device) ?: run { Diag.log("RTL-SDR: no bulk-IN endpoint after reopening"); null } ?: break
                 bringUp(nc, ep, onStatus)
@@ -351,7 +351,7 @@ object RtlSdr {
         fun failed(what: String): Boolean {
             val now = System.currentTimeMillis()
             if (fails++ == 0) failSince = now
-            if (fails >= 200 || now - failSince >= 3000) { Diag.log("RTL-SDR: $fails failures in a row ($what) — dongle gone, stopping"); stop = true; return true }
+            if (fails >= 200 || now - failSince >= 3000) { Diag.log("RTL-SDR: $fails failures in a row ($what), dongle gone, stopping"); stop = true; return true }
             return false
         }
         // Reads still out on the bus. A retune that needs a quiet bus, or a rate change, does what the web app does:
@@ -408,7 +408,7 @@ object RtlSdr {
     }
 
     private fun streamSync(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
-        Diag.log("RTL-SDR: async RX unavailable — synchronous fallback")
+        Diag.log("RTL-SDR: async RX unavailable, synchronous fallback")
         val buf = ByteArray(16384)
         var fails = 0
         while (!stop && targetRateHz == appliedRate) {
@@ -416,7 +416,7 @@ object RtlSdr {
             applyBias()
             val n = c.bulkTransfer(rx, buf, buf.size, 500)
             if (n > 0) { fails = 0; probe(buf, n, onStatus); runCatching { SdrEngine.onIq(buf, n) } }
-            else if (n < 0 && ++fails >= 200) { Diag.log("RTL-SDR: bulk reads keep failing — dongle gone, stopping"); stop = true }
+            else if (n < 0 && ++fails >= 200) { Diag.log("RTL-SDR: bulk reads keep failing, dongle gone, stopping"); stop = true }
             else if (n < 0) Thread.sleep(2)
         }
     }
@@ -428,7 +428,7 @@ object RtlSdr {
         var mn = 255; var mx = 0
         for (k in 0 until n) { val v = b[k].toInt() and 0xff; if (v < mn) mn = v; if (v > mx) mx = v }
         Diag.log("RTL-SDR raw: n=$n min=$mn max=$mx")
-        if (mx - mn < 3) { Diag.log("RTL-SDR: the samples barely move — check the aerial and try another USB port"); onStatus("RTL-SDR: no signal — check aerial / cable") }
+        if (mx - mn < 3) { Diag.log("RTL-SDR: the samples barely move, check the antenna and try another USB port"); onStatus("RTL-SDR: no signal, check antenna / cable") }
     }
 
     private fun pending() = targetFreqHz != appliedFreq || wantGain() != appliedGain ||
@@ -483,7 +483,7 @@ object RtlSdr {
 
     private var retuneError: String? = null
     private fun retuneFailed(t: Throwable) {
-        if (t.message != retuneError) Diag.log("RTL-SDR: retune failed, retrying — ${t.message}")
+        if (t.message != retuneError) Diag.log("RTL-SDR: retune failed, retrying, ${t.message}")
         retuneError = t.message
     }
 
@@ -582,7 +582,7 @@ object RtlSdr {
      * Tune. From 24 MHz up this is the ordinary tuner path, unchanged. Below it, where the R82xx tracking filter
      * runs out, HF is reached according to the stick: an R820T/R820T2 (the Blog V3 and every generic R820T) drops
      * into direct sampling and the wanted frequency is read straight off the ADC's Q branch by the demodulator's
-     * own downconverter; the V4L's R828S keeps its tuner but switches the aerial through the onboard upconverter
+     * own downconverter; the V4L's R828S keeps its tuner but switches the antenna through the onboard upconverter
      * (GPIO5 low) and tunes 28.8 MHz high. The Blog V4 does the same below 28.8 MHz, its HF arriving on cable-2.
      * Another R828D or an unknown stick has neither, so a sub-24 MHz ask there simply will not lock.
      */
@@ -613,7 +613,7 @@ object RtlSdr {
      * Direct sampling (librtlsdr rtlsdr_set_direct_sampling): bypass the tuner and read the ADC itself, with the
      * demodulator's downconverter moved onto the wanted HF frequency by [setIfFreq]. The Blog V3 brings its HF
      * port in on the Q branch, so the I/Q ADC inputs are swapped (register 0x06 = 0x90). A fixed spur sits 96 kHz
-     * above wherever it is tuned — inherent to reading the ADC this way; tune a few kHz to one side of it.
+     * above wherever it is tuned, inherent to reading the ADC this way; tune a few kHz to one side of it.
      */
     private fun enterDirectSampling() {
         demodWrite(1, 0x15, 0x00, 1)        // spectrum inversion off
@@ -678,7 +678,7 @@ object RtlSdr {
         }
         if (!found) {
             tunerAddr = R820T_ADDR; tunerXtal = RTL_XTAL; vcoPowerRef = 2; tuner = "unknown"
-            Diag.log("RTL-SDR: no R82xx answered. An E4000 or FC0012 dongle is not supported yet — expect static.")
+            Diag.log("RTL-SDR: no R82xx answered. An E4000 or FC0012 dongle is not supported yet, expect static.")
         }
         // A V4L's R828S passes for an R820T on the bus. It runs from the RTL's 28.8 MHz like one, but wants the
         // R828D's VCO power reference of one (librtlsdr r82xx_set_pll).
@@ -714,7 +714,7 @@ object RtlSdr {
             if (setPll(100_000_000L, quiet = true)) { Diag.log("RTL-SDR: R828D locks against %.1f MHz".format(cand / 1e6)); return }
         }
         tunerXtal = R828D_XTAL
-        Diag.log("RTL-SDR: R828D would not lock against either reference — expect a weak, mistuned front end.")
+        Diag.log("RTL-SDR: R828D would not lock against either reference, expect a weak, mistuned front end.")
     }
 
     /** Calibrate the channel filter, twice if the first lands on a reserved value. */
@@ -770,7 +770,7 @@ object RtlSdr {
             if (i == 0) tunerWriteMask(0x12, 0x60, 0xe0)   // more VCO current, try again
         }
         if (!locked) {
-            if (!quiet) Diag.log("RTL-SDR: PLL lock bit clear — status %s, nint %d sdm %d mixDiv %d".format(saw.joinToString(" ") { "%02x".format(it) }, plan.nint, plan.sdm, plan.mixDiv))
+            if (!quiet) Diag.log("RTL-SDR: PLL lock bit clear, status %s, nint %d sdm %d mixDiv %d".format(saw.joinToString(" ") { "%02x".format(it) }, plan.nint, plan.sdm, plan.mixDiv))
             return false
         }
         tunerWriteMask(0x1a, 0x08, 0x08)        // back to 8 kHz autotune
@@ -780,7 +780,7 @@ object RtlSdr {
     private fun r82xxSetFreq(rfHz: Long, hf: Boolean = false) {
         val lo = rfHz + IF_HZ
         setMux(lo)
-        // the R828D's aerial is on the air input below ~345 MHz and the cable input above; the init leaves cable
+        // the R828D's antenna is on the air input below ~345 MHz and the cable input above; the init leaves cable
         if (tuner == "R828D") tunerWriteMask(0x05, if (rfHz > 345_000_000L) 0x00 else 0x60, 0x60)
         // the V4L's R828S takes HF on cable-1 (bit 6) from the upconverter and everything else on the air-in
         if (tuner == "R828S") tunerWriteMask(0x05, if (hf) 0x40 else 0x00, 0x60)

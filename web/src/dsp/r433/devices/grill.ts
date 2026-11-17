@@ -2,7 +2,7 @@
  * Barbecue and food thermometers: nine boards that share a purpose and almost nothing else.
  *
  * These are the probes people leave in a joint of meat while the lid is down, so the thing they all have to do
- * is carry a temperature a long way through a metal box. Past that they diverge completely — four different
+ * is carry a temperature a long way through a metal box. Past that they diverge completely, four different
  * codings, temperatures in two different units, and integrity checks running from a proper CRC-16 down to
  * nothing whatsoever.
  *
@@ -10,7 +10,7 @@
  * integrity check at all**: each carries a sixteen-bit digest, but the decoder exclusive-ors that digest into
  * the session id rather than comparing it against anything, so every frame of the right length and preamble is
  * accepted and a corrupted one simply reports under a different id. That is upstream's design, not an omission
- * here — the digest covers a device serial that is never transmitted, so there is nothing to check it against.
+ * here, the digest covers a device serial that is never transmitted, so there is nothing to check it against.
  * Both list a `mic` field they never populate, and this port does not invent one.
  *
  * Three of them report Fahrenheit on the wire (the GT-TMBBQ-05, the RF-T0912, and nothing else), and those are
@@ -91,7 +91,7 @@ export const maverickEt73x: RDevice = register({
     const temp2 = ((b[3] & 0x3f) << 4) | ((b[4] & 0xf0) >> 4);
     const digest = ((b[4] & 0x0f) << 12) | (b[5] << 4) | (b[6] >> 4);
 
-    // The 24 bits behind the preamble — the flags and both temperatures — are what the digest was taken over.
+    // The 24 bits behind the preamble, the flags and both temperatures, are what the digest was taken over.
     const chk = mc.bytes(0, 12, 24);
     const id = lfsrDigest16(chk, 3, 0x8810, 0xdd38) ^ digest;
 
@@ -146,7 +146,7 @@ export const maverickEt73: RDevice = register({
 /**
  * The Maverick XR-30, the ET-73x moved onto frequency shift keying.
  *
- * The payload is identical in shape to the ET-73x — flags, two ten-bit temperatures, a session digest — but it
+ * The payload is identical in shape to the ET-73x, flags, two ten-bit temperatures, a session digest, but it
  * now rides behind a long run of alternating bits and a repeated sync word instead of an inner Manchester layer.
  *
  * The leading bit of that run is sometimes lost in reception, which shifts everything by one and turns the
@@ -202,7 +202,7 @@ const XR50_SYNC = new Uint8Array([0xd2, 0xaa, 0x2d, 0xd4]);
  * four times. A socket with nothing plugged into it reports flags 0xf and a temperature of zero, and a zero
  * there means "no probe" rather than freezing point, so that reading is left out entirely.
  *
- * The length test looks unbalanced — it demands 184 bits from the start of the sync word but then extracts 184
+ * The length test looks unbalanced, it demands 184 bits from the start of the sync word but then extracts 184
  * bits from *after* it, so a frame 32 bits short of complete is still read. That is upstream's own arithmetic,
  * kept because those frames fail the CRC a moment later anyway, and because our rows carry slack past their end
  * so the over-read sees zeroes rather than running off.
@@ -305,7 +305,7 @@ const BURNHARD_TASTE = ['rare', 'medium rare', 'medium', 'medium well', 'well do
  * The Burnhard barbecue thermometer, which reports rather more than a temperature.
  *
  * As well as the probe reading and its target it carries a countdown timer, which cut of meat is on the probe
- * and how well done it is wanted — the base station's whole user interface, put on the air.
+ * and how well done it is wanted, the base station's whole user interface, put on the air.
  *
  * The frame is sent inverted, and the last of its 81 bits is a coding artefact rather than data. A probe that
  * is not plugged in reads exactly zero, which would otherwise be reported as -50 °C, so that case is dropped.
@@ -366,7 +366,7 @@ export const burnhardbbq: RDevice = register({
  *
  * Four bytes, and remarkably little in them: no identity, no channel, and twelve bits nobody has explained. The
  * temperature is three decimal digits and a sign, and the check is that the sixteen nibbles of the frame add up
- * to something ending in 0x0c — a constant rather than a computed value, which is as weak as it sounds and is
+ * to something ending in 0x0c, a constant rather than a computed value, which is as weak as it sounds and is
  * why the fixed 0xf preamble nibble is checked as well.
  */
 export const gasmateBa1008: RDevice = register({
@@ -401,7 +401,7 @@ export const gasmateBa1008: RDevice = register({
 /**
  * An unbranded grill thermometer, known only by its FCC identifier: the RF-T0912.
  *
- * There is no model or maker in the frame, and no identity either — just a temperature and a sum of its two
+ * There is no model or maker in the frame, and no identity either, just a temperature and a sum of its two
  * bytes, repeated ten times. Three bytes with an eight-bit check is thin enough that a good many other
  * transmissions would satisfy it, which is why this runs at a lowered priority and why it insists on seeing the
  * same value twice before believing it.
@@ -452,14 +452,14 @@ const TYPHUR_SYNC = new Uint8Array([0x57, 0x54]);
 /**
  * The Typhur Sync Gold, a wireless probe with five sensors down its length.
  *
- * The five readings are not five probes but five points along one — a spit through a joint of meat measures the
- * gradient from the surface to the middle — plus a separate, coarser ambient sensor reading the air around it.
+ * The five readings are not five probes but five points along one, a spit through a joint of meat measures the
+ * gradient from the surface to the middle, plus a separate, coarser ambient sensor reading the air around it.
  * The five fine readings come in hundredths of a degree, the ambient one in tenths.
  *
  * Everything multi-byte here is little-endian, which is unusual in this collection: the identifier is the one
  * field read the other way round.
  *
- * This is the best-checked device in the file — a real CRC-16 over the whole payload — and upstream records
+ * This is the best-checked device in the file, a real CRC-16 over the whole payload, and upstream records
  * that it was verified against nineteen captures from two physical probes rather than a single sample.
  */
 export const typhurSyncGold: RDevice = register({

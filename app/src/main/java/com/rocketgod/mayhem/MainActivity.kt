@@ -40,12 +40,12 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Phase 0 — link up. Finds a HackRF or an RTL-SDR on the USB-OTG port (hot-plug via the manifest USB_DEVICE_ATTACHED filter,
+ * Phase 0, link up. Finds a HackRF or an RTL-SDR on the USB-OTG port (hot-plug via the manifest USB_DEVICE_ATTACHED filter,
  * or already-attached at launch via enumeration + a permission request), then runs [HackRfOne] on its own
  * thread. Everything after "IQ is flowing" is [com.rocketgod.mayhem.core.SdrEngine] + the Compose screen.
  */
 class MainActivity : ComponentActivity() {
-    private val status = MutableStateFlow("no radio — plug in a HackRF or an RTL-SDR via USB-OTG")
+    private val status = MutableStateFlow("no radio, plug in a HackRF or an RTL-SDR via USB-OTG")
     private val connected = MutableStateFlow(false)
     private var rxThread: Thread? = null
 
@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
                         Thread({ HackRfUsb.portapackToHackRf(applicationContext, d) }, "portapack-switch").start()
                         status.value = "PortaPack switching to HackRF mode…"
                     }
-                    else status.value = "USB permission denied — replug to retry"
+                    else status.value = "USB permission denied, replug to retry"
                 }
                 ACTION_PIP_MUTE -> SdrEngine.toggleMute()
                 ACTION_PIP_SKIP -> Prowl.skip()
@@ -116,7 +116,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.analyzer.Analyzer.init(filesDir)
         if (savedInstanceState == null) {
             // Land on the launcher (the front door), not Audio, and arm the auto-pick so it tunes the strongest
-            // signal in view the moment the radio delivers one — the landing comes up alive, like Audio does.
+            // signal in view the moment the radio delivers one, the landing comes up alive, like Audio does.
             if (Apps.current.value == null) {
                 // Home is the front door, unless the user asked to come back to the app they last used
                 val last = if (com.rocketgod.mayhem.core.NavBar.opensOnLast.value) com.rocketgod.mayhem.core.NavBar.lastApp() else null

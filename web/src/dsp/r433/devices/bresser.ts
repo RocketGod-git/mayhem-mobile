@@ -3,7 +3,7 @@
  *
  * The old three-channel thermometer keys its carrier and is a plain five-byte frame. Everything since shifts
  * frequency on 868.3 MHz behind the same `2d d4` sync word, and the sensor type in the seventh byte says what
- * kind of thing is talking — a weather mast, a soil probe, a leak alarm, a lightning detector, an air quality
+ * kind of thing is talking, a weather mast, a soil probe, a leak alarm, a lightning detector, an air quality
  * monitor, a carbon dioxide meter.
  *
  * These use two unusual protections. Half the range checks itself with a shift-register digest rather than a

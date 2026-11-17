@@ -18,7 +18,7 @@ object AdsbStore {
     /** Current aircraft, oldest-first (stable order). */
     val flow: StateFlow<List<Aircraft>> = _flow.asStateFlow()
 
-    // Raw decoded-frame counter — proof the SDR is actively INGESTING Mode-S even before any aircraft has a
+    // Raw decoded-frame counter, proof the SDR is actively INGESTING Mode-S even before any aircraft has a
     // full position (a plane needs a matched even+odd pair or a GPS reference). Surfaced in the UI.
     private val _frames = MutableStateFlow(0L)
     val frames: StateFlow<Long> = _frames.asStateFlow()

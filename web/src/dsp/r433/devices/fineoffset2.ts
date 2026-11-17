@@ -1,7 +1,7 @@
 /**
  * The rest of the modern Fine Offset range: soil, leak, lightning, probe temperature and the WS80 array.
  *
- * All of these share the arrangement the WH25 family uses — a run of alternating bits, the sync word `2d d4`,
+ * All of these share the arrangement the WH25 family uses, a run of alternating bits, the sync word `2d d4`,
  * a family-code byte saying which sensor it is, the readings, then a CRC-8 and usually a byte sum as well.
  * They are separate registrations rather than one decoder because rtl_433 keeps them separate, and because
  * their frames differ in length enough that guessing between them would cost more than trying each.
@@ -117,7 +117,7 @@ export const fineoffsetWn34: RDevice = register({
 /**
  * WH52 soil moisture, temperature and conductivity probe.
  *
- * The conductivity scaling is empirical — nobody has the manufacturer's figure — so it is carried across as
+ * The conductivity scaling is empirical, nobody has the manufacturer's figure, so it is carried across as
  * rtl_433 has it and reported for what it is.
  */
 export const fineoffsetWh52: RDevice = register({

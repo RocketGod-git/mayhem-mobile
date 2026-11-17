@@ -9,7 +9,7 @@ import kotlin.random.Random
  * The rest of Mayhem's transmit apps, ported to run on the phone/browser. These are dual-use tools that ship in
  * the upstream PortaPack Mayhem firmware and are meant for authorised use on your own equipment: bench work,
  * amateur-radio experiments (with a licence), security research on hardware you own. Nothing here bypasses a
- * rolling code or opens a door on its own — the encoders take a key/seed from the user and produce a valid
+ * rolling code or opens a door on its own, the encoders take a key/seed from the user and produce a valid
  * on-air waveform. The Settings safety prompt still gates the first transmission.
  *
  * Every entry point returns true if the transmission was queued, and Tx handles the actual radio hand-off.
@@ -83,7 +83,7 @@ object TxApps {
     }
 
     // ---- OOK jammer / noise (random amplitude modulation over a channel) -----------------------------------------
-    /** A random bit stream at [chipUs] per chip — pseudo-random OOK for authorised RF-lab work. */
+    /** A random bit stream at [chipUs] per chip, pseudo-random OOK for authorised RF-lab work. */
     fun noiseBits(seed: Long, count: Int): BooleanArray {
         val r = Random(seed)
         return BooleanArray(count) { r.nextBoolean() }
@@ -216,10 +216,10 @@ object TxApps {
     private val TUNES: LinkedHashMap<String, List<Pair<String, Int>>> = linkedMapOf(
         // A rising-falling two-tone that reads as a siren, not a real emergency signal.
         "siren" to (0 until 12).map { (if (it % 2 == 1) "A5" else "E5") to 2 },
-        // Ode to Joy — public domain.
+        // Ode to Joy, public domain.
         "joy" to listOf("E5" to 1, "E5" to 1, "F5" to 1, "G5" to 1, "G5" to 1, "F5" to 1, "E5" to 1, "D5" to 1,
             "C5" to 1, "C5" to 1, "D5" to 1, "E5" to 1, "E5" to 2, "D5" to 1, "D5" to 2, "0" to 1),
-        // Westminster chime — public domain doorbell.
+        // Westminster chime, public domain doorbell.
         "chime" to listOf("E5" to 2, "C5" to 2, "D5" to 2, "G4" to 3, "0" to 1, "G4" to 2, "D5" to 2, "E5" to 2, "C5" to 3),
         "imperial" to listOf("G4" to 2, "G4" to 2, "G4" to 2, "D#4" to 1, "A#4" to 1, "G4" to 2, "D#4" to 1, "A#4" to 1, "G4" to 3, "0" to 1),
         "rick" to listOf("C#5" to 1, "D#5" to 1, "0" to 1, "D#5" to 1, "0" to 1, "F5" to 1, "F5" to 1, "D#5" to 1,

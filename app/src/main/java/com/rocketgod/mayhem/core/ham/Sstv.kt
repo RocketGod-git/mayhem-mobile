@@ -36,7 +36,7 @@ class SstvMode internal constructor(
 private fun martin(name: String, vis: Int, t: Double) = SstvMode(name, vis, 320, 256, 4.862 + 0.572 + 3 * (t + 0.572), 0.0, 4.862, 1,
     listOf(SstvComp(5.434, t, SstvKind.G), SstvComp(5.434 + t + 0.572, t, SstvKind.B), SstvComp(5.434 + 2 * (t + 0.572), t, SstvKind.R)))
 
-// a lone 9 ms sync, then per line: sep G sep B | sync porch R — the sync sits before the red scan
+// a lone 9 ms sync, then per line: sep G sep B | sync porch R, the sync sits before the red scan
 private fun scottie(name: String, vis: Int, t: Double) = SstvMode(name, vis, 320, 256, 13.5 + 3 * t, 12 + 2 * t, 9.0, 1,
     listOf(SstvComp(-(2 * t + 1.5), t, SstvKind.G), SstvComp(-t, t, SstvKind.B), SstvComp(10.5, t, SstvKind.R)))
 

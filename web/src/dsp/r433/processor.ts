@@ -1,12 +1,12 @@
 /**
  * The receiver: samples in, readings out.
  *
- * Everything below this is faithful rtl_433; everything above it is the app. This is the join — it turns the
+ * Everything below this is faithful rtl_433; everything above it is the app. This is the join, it turns the
  * radio's samples into the two streams the pulse detector wants, hands each burst to every protocol at once,
  * and keeps a table of what has been heard so the interface can show devices rather than a scrolling log.
  *
  * Nothing here is tuned to a channel: whatever slice of spectrum is being listened across is watched all at
- * once, so every device inside it is heard without being asked for — which is the point, since you do not know
+ * once, so every device inside it is heard without being asked for, which is the point, since you do not know
  * what is out there until it transmits. How wide that slice is trades reach against sensitivity, and is the
  * single most useful thing to change when nothing is decoding.
  */
@@ -63,7 +63,7 @@ const CODING: Record<number, string> = {
   18: 'frequency shift, Manchester',
 };
 
-/** Everything registered, in protocol order — what the receiver can recognise. */
+/** Everything registered, in protocol order, what the receiver can recognise. */
 export function protocolList(): R433Protocol[] {
   return REGISTRY.map(d => ({
     num: d.num,
@@ -151,7 +151,7 @@ export class R433Processor implements IqProcessor {
   private readonly sink = (kind: PulseKind, pulses: Parameters<typeof this.radio.run>[1]) => {
     const found = this.radio.run(kind, pulses);
     // The checksumless protocols rtl_433 ships switched off will "decode" a sensor they were never meant for
-    // into nonsense — the phantom Jansite reading 132 °C that sits next to the real Renault reading of the very
+    // into nonsense, the phantom Jansite reading 132 °C that sits next to the real Renault reading of the very
     // same burst. When a checksum-verified protocol has already claimed this burst, drop those unverified
     // matches rather than listing a device that is not there.
     const verified = found.some(r => !r.dev.disabled);
@@ -299,7 +299,7 @@ export class R433Processor implements IqProcessor {
 
     // Unidentified bursts are kept OUT of the device list: most are fragments of a signal decoded elsewhere (the
     // OOK slicers catching a whiff of an FSK packet) or one-off interference, and they only bury the real readings.
-    // They are logged to the browser console instead — once a second per shape so a busy band does not flood it —
+    // They are logged to the browser console instead, once a second per shape so a busy band does not flood it —
     // where they can be copied for a closer look without cluttering the screen.
     const seen = this.unknownSeen.get(key) ?? 0;
     if (now - seen < 1000) return;

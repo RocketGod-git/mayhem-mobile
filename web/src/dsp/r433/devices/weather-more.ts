@@ -1,7 +1,7 @@
 /**
  * More thermometers, and the Silvercrest remote that shares their air.
  *
- * Nothing here is related to anything else here — these are five separate designs that happened to be sold in
+ * Nothing here is related to anything else here, these are five separate designs that happened to be sold in
  * the same shops. Two of them are worth a second look: the WT450 is the only device in the whole port that uses
  * differential Manchester, and the Solight is close enough to Rubicson to need a priority so that whichever one
  * actually sent the frame gets it first.
@@ -26,7 +26,7 @@ function signed(v: number, bits: number): number {
 }
 
 /**
- * Kedsum and the Pearl NC-7415 — the same frame as the Conrad S3318P and Esperanza, with a four-bit CRC.
+ * Kedsum and the Pearl NC-7415, the same frame as the Conrad S3318P and Esperanza, with a four-bit CRC.
  * Battery is reported in three steps rather than as a voltage, which is all the sensor knows.
  */
 export const kedsum: RDevice = register({
@@ -67,7 +67,7 @@ export const kedsum: RDevice = register({
 
 /**
  * Solight TE44, EMOS E0107T and the Pearl NX-6876. Shares its frame and its CRC with the Rubicson family, and
- * runs before Nexus for the same reason Rubicson does — whichever family's checksum passes owns the frame.
+ * runs before Nexus for the same reason Rubicson does, whichever family's checksum passes owns the frame.
  */
 export const solightTe44: RDevice = register({
   num: 85,
@@ -102,8 +102,8 @@ export const solightTe44: RDevice = register({
 });
 
 /**
- * The Silvercrest remote. There is no checksum, but each command is sent twice — once plainly and once through
- * a small substitution table — and the two must agree, which is enough to reject noise.
+ * The Silvercrest remote. There is no checksum, but each command is sent twice, once plainly and once through
+ * a small substitution table, and the two must agree, which is enough to reject noise.
  */
 export const silvercrest: RDevice = register({
   num: 1,
@@ -130,7 +130,7 @@ export const silvercrest: RDevice = register({
 });
 
 /**
- * The WT450 and its relatives — the only device in this port that uses differential Manchester, where the bit
+ * The WT450 and its relatives, the only device in this port that uses differential Manchester, where the bit
  * is whether the level held across the middle of its period rather than which way it moved.
  *
  * Temperature is carried as whole degrees plus a fraction in sixteenths, which is unusual and worth reading
@@ -177,7 +177,7 @@ export const wt450: RDevice = register({
 });
 
 /**
- * The TFA Twin Plus, Conrad KW9010 and Ea2 BL999 — one design under three names.
+ * The TFA Twin Plus, Conrad KW9010 and Ea2 BL999, one design under three names.
  *
  * Its bytes arrive least significant bit first, so everything is read from a bit-reversed copy, and the
  * temperature's sign lives in the original bytes rather than the reversed ones. The sign is not a simple

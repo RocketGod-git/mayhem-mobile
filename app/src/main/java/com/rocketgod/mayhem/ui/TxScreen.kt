@@ -167,7 +167,7 @@ fun TxScreen(defaultAccent: Color) {
     Box(Modifier.padding(top = d.dp(10f))) {
         ActionButton("▶ SEND 45 bd", accent, Modifier.fillMaxWidth()) { if (!active) Tx.rtty(text, 45, shift.toDouble(), freq) }
     }
-    Note("ITA2 Baudot, 45.45 baud — decodes on any RTTY reader (fldigi, etc.).")
+    Note("ITA2 Baudot, 45.45 baud, decodes on any RTTY reader (fldigi, etc.).")
 }
 
 @Composable private fun AprsTab(accent: Color, freq: Long, active: Boolean) {
@@ -177,7 +177,7 @@ fun TxScreen(defaultAccent: Color) {
     TxField(call, accent, "source callsign-ssid", kb = Kb.CAPS) { call = it.uppercase().take(9) }
     TxField(info, accent, "AX.25 info (position/status)") { info = it.take(120) }
     Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ BEACON 144.39", accent, Modifier.fillMaxWidth()) { if (!active) Tx.aprs(call, info, freq) } }
-    Note("Bell 202 AX.25 UI frame — decodes on the APRS app and on any TNC. Ham license required on 144.39.")
+    Note("Bell 202 AX.25 UI frame, decodes on the APRS app and on any TNC. Ham license required on 144.39.")
 }
 
 @Composable private fun SigGenTab(accent: Color, freq: Long, active: Boolean) {
@@ -218,7 +218,7 @@ fun TxScreen(defaultAccent: Color) {
         SegBar(teOpts.map { "${it}µs" }, teOpts.indexOf(te), accent, Modifier.weight(1f)) { te = teOpts[it] }
     }
     Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SEND ×8", accent, Modifier.fillMaxWidth()) { if (!active) Tx.ookPrinceton(freq, hex.toLongOrNull(16) ?: 0L, bits, te, 8) } }
-    Note("Fixed-code Princeton/PT2262 OOK — for remotes you own on a license-free ISM band.")
+    Note("Fixed-code Princeton/PT2262 OOK, for remotes you own on a license-free ISM band.")
 }
 
 @Composable private fun ReplayTab(accent: Color, active: Boolean) {
@@ -283,7 +283,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     }
     Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ PTT-ID", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.mdc1200(opv ?: 0, arg.toIntOrNull(16) ?: 0, unit.toIntOrNull(16) ?: 0, freq) } }
-    Note("MDC-1200 Motorola PTT-ID · op / arg (hex) / 16-bit unit ID (hex) · 1200 bd AFSK — for business-band radios you own.")
+    Note("MDC-1200 Motorola PTT-ID · op / arg (hex) / 16-bit unit ID (hex) · 1200 bd AFSK, for business-band radios you own.")
 }
 
 @Composable private fun QcTab(accent: Color, freq: Long, active: Boolean) {
@@ -312,7 +312,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
         Text(h.note, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(top = d.dp(4f)))
         Box(Modifier.padding(top = d.dp(6f))) { ToggleBox("DISMISS", false, accent) { Tx.handOff(null) } }
     }
-    TxField(raw, accent, "Flipper .sub file", placeholder = "Paste a Flipper .sub file here — Protocol: RAW / RAW_Data: 340 -1020 …", lines = 5) { raw = it }
+    TxField(raw, accent, "Flipper .sub file", placeholder = "Paste a Flipper .sub file here, Protocol: RAW / RAW_Data: 340 -1020 …", lines = 5) { raw = it }
     Row(Modifier.fillMaxWidth().padding(top = d.gap), horizontalArrangement = Arrangement.spacedBy(d.gap)) {
         val repOpts = listOf(1, 3, 5, 10, 20)
         RowLabel("REPEAT")
@@ -321,7 +321,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     Box(Modifier.padding(top = d.dp(10f))) {
         ActionButton("▶ REPLAY", accent, Modifier.fillMaxWidth()) { if (!active) Tx.subghzReplay(raw, txFreq, reps) }
     }
-    Note("Replay a Flipper Zero .sub file's RAW pulses as OOK, 2 Msps — remotes on your own equipment.")
+    Note("Replay a Flipper Zero .sub file's RAW pulses as OOK, 2 Msps, remotes on your own equipment.")
 }
 
 @Composable private fun KeeloqTab(accent: Color, freq: Long, active: Boolean) {
@@ -348,7 +348,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
                 counter.toIntOrNull() ?: 0, freq, reps)
         }
     }
-    Note("HCS301 (Microchip) rolling code · 64-bit key / 28-bit serial (hex) / 4-bit button / counter · OOK PWM — needs the manufacturer key. Test on equipment you own.")
+    Note("HCS301 (Microchip) rolling code · 64-bit key / 28-bit serial (hex) / 4-bit button / counter · OOK PWM, needs the manufacturer key. Test on equipment you own.")
 }
 
 @Composable private fun NoiseTab(accent: Color, freq: Long, active: Boolean) {
@@ -383,7 +383,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ BRUTE", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.ookBrute(freq, (bits.toIntOrNull() ?: 24).coerceIn(1, 32), from.toLongOrNull() ?: 0L, to.toLongOrNull() ?: 0L, te.toIntOrNull() ?: 350)
     } }
-    Note("Princeton PT2262 brute force · bits (12/24/32), from–to (decimal), te µs — a gate or remote you own on ISM.")
+    Note("Princeton PT2262 brute force · bits (12/24/32), from–to (decimal), te µs, a gate or remote you own on ISM.")
 }
 
 @Composable private fun HopperTab(accent: Color, active: Boolean) {
@@ -413,7 +413,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
             Tx.frequencyHopper(com.rocketgod.mayhem.core.TxApps.hopList(lo, hi, count.toIntOrNull() ?: 16), (dwell.toIntOrNull() ?: 20).coerceAtLeast(1))
         }
     } }
-    Note("Random-hop CW carrier · low–high MHz · hops · dwell ms each — spread-spectrum bench work on a license-free band.")
+    Note("Random-hop CW carrier · low–high MHz · hops · dwell ms each, spread-spectrum bench work on a license-free band.")
 }
 
 @Composable private fun AdsbTab(accent: Color, active: Boolean) {
@@ -425,7 +425,7 @@ private fun txStep(hz: Long): String = if (hz >= 1_000_000L) "${hz / 1_000_000}"
     Box(Modifier.padding(top = d.dp(10f))) { ActionButton("▶ SQUITTER", accent, Modifier.fillMaxWidth()) {
         if (!active) Tx.adsb(icao.toIntOrNull(16) ?: 0, me.padStart(14, '0').toULong(16).toLong())
     } }
-    Note("Mode-S DF17 Extended Squitter (1090 MHz). Only for bench test / dummy load — real airspace is illegal.")
+    Note("Mode-S DF17 Extended Squitter (1090 MHz). Only for bench test / dummy load, real airspace is illegal.")
 }
 
 /** Session-scoped safety prompt: confirms an antenna or a dummy load is attached before the first transmission. */
@@ -441,11 +441,11 @@ internal fun SafetyPromptDialog(accent: Color, onCancel: () -> Unit = { Apps.hom
             Column {
                 Text("Do you have an antenna, dummy load or matched load on the ANT port?", fontFamily = Mono, modifier = Modifier.padding(bottom = 6.dp))
                 Text("• Transmitting into an open port can damage the HackRF.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
-                Text("• Most bands need a license — know the rules where you are.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
+                Text("• Most bands need a license, know the rules where you are.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
                 Text("• Turn TX GAIN low first; the amp adds +14 dB.", fontFamily = Mono, color = Palette.muted, fontSize = 12.sp)
             }
         },
-        confirmButton = { androidx.compose.material3.TextButton(onClick = onAck) { Text("I HAVE ONE — CONTINUE", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold) } },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onAck) { Text("I HAVE ONE, CONTINUE", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold) } },
         dismissButton = { androidx.compose.material3.TextButton(onClick = onCancel) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) } },
     )
 }

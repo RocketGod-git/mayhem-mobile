@@ -26,9 +26,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * The DSP + state hub — a mini Mayhem `receiver_model` + baseband in Kotlin. [HackRfOne] streams raw 8-bit IQ
+ * The DSP + state hub, a mini Mayhem `receiver_model` + baseband in Kotlin. [HackRfOne] streams raw 8-bit IQ
  * here via [onIq]; a worker thread turns it into (a) an FFT spectrum for the waterfall ([spectrum]), (b) demodulated
- * audio (WFM / NFM / AM / USB / LSB — cf. proc_wfm_audio / proc_nfm_audio / proc_am_audio) to an [AudioTrack],
+ * audio (WFM / NFM / AM / USB / LSB, cf. proc_wfm_audio / proc_nfm_audio / proc_am_audio) to an [AudioTrack],
  * and (c) feeds the active app's [IqProcessor] (raw IQ, plus the NFM discriminator stream for FM-borne packet
  * modes). The UI observes the flows and drives tuning / mode / gain, forwarded to the driver via [syncDriver].
  */
@@ -123,7 +123,7 @@ object SdrEngine {
 
     /**
      * Automatic gain, on by default: hold the ADC level (iqRMS, once a second) where the 8-bit converter has both
-     * headroom and resolution — under ~2 counts the spectrum is quantisation mush, over ~40 it clips. VGA moves first,
+     * headroom and resolution, under ~2 counts the spectrum is quantisation mush, over ~40 it clips. VGA moves first,
      * 2 dB at a time (8 when far off), then the LNA. Touching LNA or VGA by hand hands the gain back to the user.
      */
     private val _agc = MutableStateFlow(true)
@@ -399,7 +399,7 @@ object SdrEngine {
                 hasLna && l < LNA_MAX -> _radioLna.value = l + LNA_STEP
                 _mode.value != Mode.NONE && now - agcSaidMax > 20_000 -> {
                     agcSaidMax = now
-                    Diag.log("AGC is at maximum and the level is still %.1f counts — check the antenna, or set the gain by hand".format(rms))
+                    Diag.log("AGC is at maximum and the level is still %.1f counts, check the antenna, or set the gain by hand".format(rms))
                 }
             }
         } else if (rms > hi) {
@@ -423,7 +423,7 @@ object SdrEngine {
     /** Once-per-second RX health line (iqRMS / DC / peak) for the UI. */
     private val _rxHealth = MutableStateFlow("")
     val rxHealth: StateFlow<String> = _rxHealth.asStateFlow()
-    /** Peak-vs-average dB of the last diagnostic frame — a cheap "signal present" level meter. */
+    /** Peak-vs-average dB of the last diagnostic frame, a cheap "signal present" level meter. */
     private val _levelDb = MutableStateFlow(0f)
     val levelDb: StateFlow<Float> = _levelDb.asStateFlow()
 
@@ -744,18 +744,18 @@ object SdrEngine {
         wideScan = false        // any ordinary rate (an app's, a zoom step) ends the RTL-SDR's start-up view
         val r = Radio.nearestRate(Radio.limits, rate)
         if (r != rate && Radio.kind.value != Radio.Kind.NONE)
-            Diag.log("%.2f Msps is out of range for this ${Radio.name} — using %.2f".format(rate / 1e6, r / 1e6))
+            Diag.log("%.2f Msps is out of range for this ${Radio.name}, using %.2f".format(rate / 1e6, r / 1e6))
         return r
     }
 
     /** A hand on the LNA or VGA switches the AGC off so the setting sticks, and is remembered for every app. */
     fun setRadioLna(db: Int) {
-        if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
+        if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off, tap AGC to hand it back")
         tunerAgcOff("gain set by hand, so the tuner AGC is off")
         _agc.value = false; _radioLna.value = (db.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; syncDriver(); saveGains()
     }
     fun setRadioVga(db: Int) {
-        if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off — tap AGC to hand it back")
+        if (_agc.value) Diag.log("gain set by hand, so the automatic gain is off, tap AGC to hand it back")
         tunerAgcOff("gain set by hand, so the tuner AGC is off")
         _agc.value = false; _radioVga.value = (db.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; syncDriver(); saveGains()
     }
@@ -1007,7 +1007,7 @@ object SdrEngine {
                             loraLevel = ls?.takeLevel()
                             agcStep(rms, now)
                             if (m != Mode.NONE) Diag.log("SDR audio: peak=%d/32000 %s".format(
-                                audioPeak, if (audioPeak > 2500) "— demod producing audio" else "— silent (no modulation / no signal)"))
+                                audioPeak, if (audioPeak > 2500) "demod producing audio" else "silent (no modulation / no signal)"))
                             audioPeak = 0
                         }
                     }

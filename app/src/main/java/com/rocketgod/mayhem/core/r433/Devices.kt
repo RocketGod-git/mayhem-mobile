@@ -73,7 +73,7 @@ object Devices {
         "storm_dist" to "the detector's estimate of how far off the leading edge of the storm is",
         "strike_count" to "a running total since the batteries went in, not a rate",
         "rfi" to "broadband interference, which stops the detector hearing strikes at all",
-        "consumption_data" to "a meter register reading, not a unit of energy — the multiplier is the utility's",
+        "consumption_data" to "a meter register reading, not a unit of energy, the multiplier is the utility's",
         "DifferentialConsumptionIntervals" to "consumption in each recent interval, oldest first",
         "tristate" to "the solder links or switches inside the remote: 0 low, 1 high, Z floating",
         "counter" to "advances every button press, which is what stops a recording being replayed",

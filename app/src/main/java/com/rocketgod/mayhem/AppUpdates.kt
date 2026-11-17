@@ -24,8 +24,8 @@ import java.net.URL
  *
  * A Play-installed build must go through Play's in-app update flow: Play policy does not allow an app
  * distributed by Play to fetch and install its own APK, and only Play knows which track the user is on.
- * That API reports the available build by VERSION CODE only — there is no way to ask it for the version
- * name — which is why a Play user sees "build 7" where a sideloader sees "v0.4.1".
+ * That API reports the available build by VERSION CODE only, there is no way to ask it for the version
+ * name, which is why a Play user sees "build 7" where a sideloader sees "v0.4.1".
  *
  * A sideloaded build has no such restriction and no Play to ask, so it checks the GitHub release feed and
  * opens the release page; the install itself is the user's business.
@@ -90,7 +90,7 @@ object AppUpdates {
                 _available.value = Available(currentLabel(), offered, fromPlay = true)
                 Diag.log("updates: Play has $offered, installed is ${BuildConfig.VERSION_CODE}")
             }
-            .addOnFailureListener { e -> Diag.log("updates: Play check failed — ${e.message}") }
+            .addOnFailureListener { e -> Diag.log("updates: Play check failed, ${e.message}") }
     }
 
     private fun checkGitHub(ctx: Context) {
@@ -119,7 +119,7 @@ object AppUpdates {
                 }
                 _available.value = Available(currentLabel(), offered, fromPlay = false, url = url)
                 Diag.log("updates: GitHub has $offered, installed is ${BuildConfig.VERSION_NAME}")
-            }.onFailure { e -> Diag.log("updates: GitHub check failed — ${e.message}") }
+            }.onFailure { e -> Diag.log("updates: GitHub check failed, ${e.message}") }
         }
     }
 
@@ -133,14 +133,14 @@ object AppUpdates {
             // store page always works, so the button never does nothing.
             val started = info != null && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE) &&
                 runCatching { mgr.startUpdateFlowForResult(info, AppUpdateType.IMMEDIATE, activity, REQ_UPDATE) }
-                    .onFailure { e -> Diag.log("updates: could not start Play flow — ${e.message}") }.getOrDefault(false)
+                    .onFailure { e -> Diag.log("updates: could not start Play flow, ${e.message}") }.getOrDefault(false)
             if (!started) runCatching {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${activity.packageName}")))
-            }.onFailure { e -> Diag.log("updates: could not open the store page — ${e.message}") }
+            }.onFailure { e -> Diag.log("updates: could not open the store page, ${e.message}") }
         } else {
             runCatching {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(a.url ?: "https://github.com/$REPO/releases")))
-            }.onFailure { e -> Diag.log("updates: could not open the release page — ${e.message}") }
+            }.onFailure { e -> Diag.log("updates: could not open the release page, ${e.message}") }
         }
         _available.value = null
     }

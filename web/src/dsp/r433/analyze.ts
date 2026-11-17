@@ -4,7 +4,7 @@
  * A burst that no protocol claims is not nothing. It was a real carrier, keyed or shifted in a deliberate
  * pattern, and its timings are measured to the sample. Reporting them is the difference between "the band is
  * quiet" and "something transmits here every forty seconds in pulse-position at 2.3 kbit/s, and this receiver
- * does not know it yet" — the second is a lead, and it is the same information rtl_433's own analyzer mode
+ * does not know it yet", the second is a lead, and it is the same information rtl_433's own analyzer mode
  * prints when asked to characterize an unknown device.
  *
  * Nothing here guesses at meaning. It measures widths, groups the ones that recur, and names the coding only
@@ -71,14 +71,14 @@ function cluster(v: Int32Array, n: number, spus: number): Cluster[] {
  *
  * The reasoning is the same one a person does by eye on a scope. One mark width and several space widths means
  * the information is in where the mark falls; the reverse means it is in how long the mark lasts. Two of each,
- * in a two-to-one ratio, is what Manchester and its relatives look like — those are not separable from the
+ * in a two-to-one ratio, is what Manchester and its relatives look like, those are not separable from the
  * timings alone, so they are named together rather than picked between.
  */
 function nameCoding(mark: Cluster[], space: Cluster[]): string {
   if (!mark.length) return '';
   if (mark.length === 1 && space.length >= 2) return 'pulse position';
   if (mark.length >= 2 && space.length === 1) return 'pulse width';
-  if (mark.length === 1 && space.length === 1) return 'fixed period — a preamble, or every bit the same';
+  if (mark.length === 1 && space.length === 1) return 'fixed period, a preamble, or every bit the same';
   if (mark.length === 2 && space.length === 2) {
     const mr = mark[1].us / mark[0].us, sr = space[1].us / space[0].us;
     if (mr > 1.6 && mr < 2.5 && sr > 1.6 && sr < 2.5) return 'Manchester or level per bit';

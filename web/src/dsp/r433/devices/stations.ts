@@ -8,7 +8,7 @@
  * fields each followed by a stop bit, least significant bit first, which means nothing in either frame is byte
  * aligned and every field has to be picked out a bit at a time. The EM 1000 goes further and takes a
  * majority vote across three repeats of the transmission before it looks at anything, so its decoder reads
- * three rows whether or not three rows arrived — which works here because this app's bit buffer, like the C
+ * three rows whether or not three rows arrived, which works here because this app's bit buffer, like the C
  * one, keeps every row allocated and zeroed.
  *
  * Archos TBH and NetAtmo are near-twins in shape: an FSK preamble, a sync word, a length byte, then a payload
@@ -75,14 +75,14 @@ function adPop(bb: Uint8Array, n: number, bit: number): number {
  * The distinctive part is the front: before reading anything it takes a majority vote over three repeats of
  * the transmission, byte by byte, and gives up the moment three bytes disagree three ways. Upstream indexes
  * rows zero through two without checking how many arrived, which is safe there because the C bit buffer
- * always has all fifty rows allocated and zeroed. The same is true here — this app's rows are views into one
- * flat, zeroed array — so the indexing is reproduced as written rather than guarded, and it behaves
+ * always has all fifty rows allocated and zeroed. The same is true here, this app's rows are views into one
+ * flat, zeroed array, so the indexing is reproduced as written rather than guarded, and it behaves
  * identically: with one row present the vote collapses to all zeroes and the stop-bit check throws it out,
  * while two identical rows still decode, exactly as upstream does.
  *
  * Nine bytes follow the preamble, each with a stop bit that must be set, and then an exclusive-or of those
  * nine bytes as a check. Upstream reports no `mic` field despite having that check, and this follows suit.
- * It is off by default upstream — the timings are marked "guessed, no samples available" — so it is off here.
+ * It is off by default upstream, the timings are marked "guessed, no samples available", so it is off here.
  */
 export const elvEm1000: RDevice = register({
   num: 6,
@@ -146,7 +146,7 @@ const WS2000_TYPES = [
  *
  * Upstream declares sixteen entries and fills only nine, so types nine through fifteen get a length of zero.
  * That is not a dead end: a zero length skips the payload loop entirely, leaving the running exclusive-or
- * equal to the type nibble itself, which is non-zero for all of those types — so the check rejects them. The
+ * equal to the type nibble itself, which is non-zero for all of those types, so the check rejects them. The
  * trailing zeroes are written out here rather than left implicit, because they are what makes that work.
  */
 const WS2000_LENGTHS = [5, 8, 5, 8, 12, 9, 8, 14, 8, 0, 0, 0, 0, 0, 0, 0];
@@ -156,12 +156,12 @@ const WS2000_LENGTHS = [5, 8, 5, 8, 12, 9, 8, 14, 8, 0, 0, 0, 0, 0, 0, 0];
  *
  * The type nibble decides how long the frame is, which is why the length table above has to be right: read
  * too few nibbles and the two checks land on the wrong bits. Everything is sent as four-bit nibbles with a
- * stop bit after each, low bit first, and the readings are decimal digits rather than scaled counts — so the
+ * stop bit after each, low bit first, and the readings are decimal digits rather than scaled counts, so the
  * temperature is assembled as tens, units and tenths, with a separate sign bit rather than two's complement.
  *
  * Two checks guard it: an exclusive-or over every nibble from the type onward that must come out zero, and a
  * four-bit sum of the same nibbles plus five. Upstream accumulates that sum in a `uint8_t` and then narrows
- * it to four bits, and since 256 is a multiple of 16 the intermediate wrap cannot change the answer — the
+ * it to four bits, and since 256 is a multiple of 16 the intermediate wrap cannot change the answer, the
  * plain sum used here is the same value.
  *
  * The combo sensor, type seven, reuses the temperature and humidity positions for wind and a rain counter,
@@ -207,7 +207,7 @@ export const elvWs2000: RDevice = register({
     let humidity = dec[7] * 10 + dec[6] + dec[5] * 0.1;
 
     // Only the barometric sensor carries a pressure, and 200 hPa is its offset, so this is never zero when
-    // present — which is what upstream's "report it if non-zero" condition amounts to.
+    // present, which is what upstream's "report it if non-zero" condition amounts to.
     const pressure = dec[0] === 4 ? 200 + dec[10] * 100 + dec[9] * 10 + dec[8] : 0;
 
     const out: R433Data = {
@@ -247,8 +247,8 @@ export const elvWs2000: RDevice = register({
 const TBH_PREAMBLE = new Uint8Array([0xaa, 0xaa, 0xd3, 0x91, 0xd3, 0x91]);
 
 /**
- * The fixed table the payload is chained against. It is not a key in any real sense — the transform is its
- * own inverse and the table is published in the source — but the payload cannot be read without it.
+ * The fixed table the payload is chained against. It is not a key in any real sense, the transform is its
+ * own inverse and the table is published in the source, but the payload cannot be read without it.
  */
 const TBH_INFO = new Uint8Array([
   0x19, 0xf8, 0x28, 0x30, 0x6d, 0x0c, 0x94, 0x54,
@@ -264,7 +264,7 @@ const TBH_INFO = new Uint8Array([
  * buffer. Only after that check passes is the payload unchained: each byte is the exclusive-or of itself, the
  * byte before it, and a fixed table entry, with the byte before the first one taken as zero.
  *
- * The power-index frame then has a second, inner check — a CRC-8 over the payload from the type byte on. To
+ * The power-index frame then has a second, inner check, a CRC-8 over the payload from the type byte on. To
  * compute it, upstream overwrites that type byte with a length, because the sensor computed it that way; the
  * type has already been read by then, so nothing is lost, but it does mean the byte the CRC covers is not
  * the byte that was on the air.
@@ -364,7 +364,7 @@ const EMAX_MESSAGE_BITLEN = 264;                   // 33 * 8
  * Two things make this decoder unusual. The first is the loop: a single burst carries several repeats of the
  * message, and a station reporting maximum light level can produce a gap that looks like a packet boundary,
  * so upstream insists on exactly one row and then walks that row finding preambles until something decodes.
- * A repeat that fails its length check or its checksum does not end the search — the next preamble is tried
+ * A repeat that fails its length check or its checksum does not end the search, the next preamble is tried
  * from where the failed one started, and only the last failure reason is returned if nothing works.
  *
  * The second is that the high nibble of byte one, called `kind`, splits the format in two. Zero means the
@@ -374,7 +374,7 @@ const EMAX_MESSAGE_BITLEN = 264;                   // 33 * 8
  * 255; every one of those is undone with a subtract-then-mask.
  *
  * The checksum is a plain sum of the first thirty-one bytes. Upstream computes it at full width and narrows
- * it only at the comparison, so the byte-wide sum this app's helper returns is the correct one — the offset
+ * it only at the comparison, so the byte-wide sum this app's helper returns is the correct one, the offset
  * subtracted for one variant is congruent either way. Real frames do overflow a byte, which the test asserts
  * so the reasoning stays visible.
  *
@@ -505,7 +505,7 @@ export const emax: RDevice = register({
       }
 
       if (b[29] === 0x16) {
-        // Same tail again, but with real light readings — and this one reports Celsius, not Fahrenheit.
+        // Same tail again, but with real light readings, and this one reports Celsius, not Fahrenheit.
         const out: R433Data = {
           ...base,
           model: 'Lacrosse-WS6262',
@@ -542,7 +542,7 @@ const NETATMO_PREAMBLE = new Uint8Array([0xaa, 0xaa, 0xe7, 0x12]);
  * The outdoor modules of a NetAtmo weather station, which talk to their base rather than to a receiver.
  *
  * Framing is the same idea as Archos: sync word, length byte, payload, CRC-16 over the length byte and
- * everything after. The length then also selects the message, and there are four of them — a six-byte
+ * everything after. The length then also selects the message, and there are four of them, a six-byte
  * keep-alive, a twenty-five byte reading, a forty-nine byte wind report, and a request from the base station
  * itself, which this decoder sees because the base transmits on the same channel.
  *
@@ -643,7 +643,7 @@ export const netatmoThw: RDevice = register({
 /**
  * The seed for the frame's CRC-8.
  *
- * Upstream's source invites the owner to change this — "change this to match your device for security" — so a
+ * Upstream's source invites the owner to change this, "change this to match your device for security", so a
  * unit built from that sketch with a different seed will not decode here. It is not security in any real
  * sense, since the polynomial and the frame layout are both published, but it does mean this constant is a
  * convention rather than something the protocol fixes.
@@ -654,8 +654,8 @@ const OMNI_INITCRC = 0xaa;
  * Not a product but a microcontroller sketch: a Raspberry Pi Pico with whatever sensor its owner attached.
  *
  * Because the payload depends on what is plugged in, the first nibble of the frame is a format number and the
- * eight payload bytes mean different things for each. Two formats are defined — bare core temperature and
- * supply voltage, and a Bosch environmental sensor with two temperatures, humidity, light and pressure — and
+ * eight payload bytes mean different things for each. Two formats are defined, bare core temperature and
+ * supply voltage, and a Bosch environmental sensor with two temperatures, humidity, light and pressure, and
  * the remaining fourteen are reported as raw hex so an unrecognized build is still visible.
  *
  * Temperatures are twelve-bit two's complement packed against their neighbours, and upstream sign-extends
@@ -757,7 +757,7 @@ function elsnerStep(prev: number, base: number, oldBit: number, newBit: number):
  * Undo the self-synchronizing whitening, G(x) = x^7 + x^5 + 1.
  *
  * Each output bit is the input bit exclusive-ored with the input five and seven bits back, with history
- * before the start taken as zero. It only reveals the constant marker and an opaque payload view — every
+ * before the start taken as zero. It only reveals the constant marker and an opaque payload view, every
  * field this decoder actually reports is read from the raw on-air bytes instead.
  */
 function elsnerDescramble(input: Uint8Array, nbytes: number): Uint8Array {
@@ -809,7 +809,7 @@ const ELSNER_ANCHOR = new Uint8Array([0x0a]);
  * A wind, light and temperature sensor that drives a sunblind, and the handset that overrides it.
  *
  * The frame is a constant four-byte header, thirty-two payload bytes and a CRC-16, all whitened. The CRC is
- * the only integrity gate — it runs over the whitened bytes, before any of the transforms below — and a frame
+ * the only integrity gate, it runs over the whitened bytes, before any of the transforms below, and a frame
  * that fails it is dropped outright.
  *
  * What makes this one interesting is that the payload has almost no fields. The first eleven bytes are an
@@ -824,7 +824,7 @@ const ELSNER_ANCHOR = new Uint8Array([0x0a]);
  * telegram came from the handset this mapping was derived from; when it did not, no command is reported.
  *
  * Upstream also notes that a candidate temperature reading in this frame turned out to be an algebraic
- * identity of the rolling-state formula — constant for all 256 states — so it is deliberately not reported.
+ * identity of the rolling-state formula, constant for all 256 states, so it is deliberately not reported.
  * There is no published capture for this protocol, so unlike NetAtmo and Emax its CRC parameters could not be
  * confirmed against real radio; they are enforced, not verified.
  */

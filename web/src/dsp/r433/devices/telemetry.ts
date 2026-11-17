@@ -1,15 +1,15 @@
 /**
- * Telemetry, tire sensors and assorted radios — ten protocols with little in common beyond being small.
+ * Telemetry, tire sensors and assorted radios, ten protocols with little in common beyond being small.
  *
  * Most of this file is sensors that say one or two numbers and stop: a plant moisture probe, two thermometers,
  * a weather station's indoor console, two tire pressure sensors. Three of them are unusual enough to be worth
  * naming. RadioHead is not a sensor at all but a hobbyist radio library, so anything built on it can appear
- * here — its frames carry a length, an address pair and a free-form payload, and one product (the Sensible
+ * here, its frames carry a length, an address pair and a free-form payload, and one product (the Sensible
  * Living moisture probe) is given its own registration purely to read that payload as named fields. ANT+ is
  * Garmin's sports telemetry, which lives at 2.4 GHz where an ordinary dongle cannot hear it at all. And the
  * cricket scoreboard is a transmitter rather than a sensor: it sends the digits a scoreboard should display.
  *
- * Four are checked against real captures that rtl_433 ships — Steelmate's, whose documented decode this port
+ * Four are checked against real captures that rtl_433 ships, Steelmate's, whose documented decode this port
  * reproduces byte for byte, and Telldus's two, which pass their CRC and between them exercise both of that
  * decoder's output branches. The rest are built from the transmit side in the test.
  *
@@ -40,7 +40,7 @@ const hexUp = (v: number, n: number) => (v >>> 0).toString(16).toUpperCase().pad
  *
  * The payload is inverted Manchester with the bits of every byte reversed as well, so the run-in that gets
  * searched for is `00 00 7f` even though the sensor is really sending `00 00 01`. Both transformations are
- * undone on a copy of the row rather than in the shared buffer — upstream inverts the whole buffer in place,
+ * undone on a copy of the row rather than in the shared buffer, upstream inverts the whole buffer in place,
  * which leaves it inverted for every decoder that runs afterwards if this one then fails its checksum.
  *
  * The pressure scale was re-derived after the original guess drifted further from the dashboard the harder the
@@ -104,8 +104,8 @@ const RH_ASK_MAX_MESSAGE_LEN = RH_ASK_MAX_PAYLOAD_LEN - RH_ASK_HEADER_LEN - 3;  
 /**
  * RadioHead's four-to-six line code: every nibble becomes a six-bit symbol with three ones and three zeros.
  *
- * Balancing the symbols that way bounds how long the line can sit at one level — at most three identical bits
- * inside a symbol and four across a join — which is what lets a receiver with no separate clock stay in step.
+ * Balancing the symbols that way bounds how long the line can sit at one level, at most three identical bits
+ * inside a symbol and four across a join, which is what lets a receiver with no separate clock stay in step.
  */
 const RH_SYMBOLS = [
   0x0d, 0x0e, 0x13, 0x15, 0x16, 0x19, 0x1a, 0x1c,
@@ -259,7 +259,7 @@ const XC0324_MESSAGE_BITLEN = 48;
  *
  * Everything numeric arrives least significant bit first, so temperature and humidity are read back through a
  * byte reversal. The check byte is the exclusive-or of the five before it, which makes each of its bits a
- * parity bit for the bits above it — so exclusive-oring all six together must give zero.
+ * parity bit for the bits above it, so exclusive-oring all six together must give zero.
  *
  * Only the first good copy is reported, but every good copy is counted, and that count goes out as
  * `message_num`: it is the only signal-quality figure this sensor offers.
@@ -324,7 +324,7 @@ export const digitechXc0324: RDevice = register({
 /**
  * Fourteen bits, and the temperature's seven whole degrees are scattered across seven separate positions.
  *
- * The order is 12, 7, 6, 11, 10, 9, 8 — most significant first — which no amount of shifting makes tidy, so it
+ * The order is 12, 7, 6, 11, 10, 9, 8, most significant first, which no amount of shifting makes tidy, so it
  * is reassembled the way upstream does it, one group at a time. The fractional part is five bits offset by ten,
  * sent bit-reversed, and the last bit is a parity bit chosen to make the whole message odd.
  *
@@ -379,15 +379,15 @@ export const companionWtr001: RDevice = register({
 /**
  * The indoor console repeating what its outdoor unit just told it, in a frame of its own.
  *
- * Every reading it has arrives at once — wind three different ways, rain over six periods, both thermometers
- * and both barometers — of which upstream reports the handful it is confident about and leaves the rest
+ * Every reading it has arrives at once, wind three different ways, rain over six periods, both thermometers
+ * and both barometers, of which upstream reports the handful it is confident about and leaves the rest
  * commented out. That judgement is kept rather than second-guessed.
  *
  * The run-in is nine bits but the frame starts on the ninth, not after it, so the search advances by eight: the
  * last bit of the pattern is the first bit of the message and is covered by the CRC.
  *
  * When the console has not heard from outside, every outdoor field reads as a run of ones ending in 0xb, and
- * the outdoor temperature reading 0x7fb is the flag for it — the console then reports only its own room.
+ * the outdoor temperature reading 0x7fb is the flag for it, the console then reports only its own room.
  */
 export const telldusFt0385r: RDevice = register({
   num: 205,
@@ -465,8 +465,8 @@ export const telldusFt0385r: RDevice = register({
  * in front of one, and at a megabit per second it wants four megasamples to decode reliably. That is why
  * upstream ships it switched off, and why it is switched off here too.
  *
- * The run-in is one byte whose value depends on the first bit of the message — 0xaa before a one, 0x55 before a
- * zero — so that the alternation continues unbroken into the data. Rather than work out which was sent, the
+ * The run-in is one byte whose value depends on the first bit of the message, 0xaa before a one, 0x55 before a
+ * zero, so that the alternation continues unbroken into the data. Rather than work out which was sent, the
  * decoder searches for 0xaa, extracts, and if the CRC fails tries again one bit along, keeping whichever
  * passes. The CRC covers its own two bytes, so a good frame checks to zero.
  *
@@ -534,15 +534,15 @@ const WL_TH6R_BITS_PER_ROW = 72;
  * A thermometer that whitens its own payload with a byte it then sends in clear.
  *
  * Bytes zero to six are exclusive-ored with byte seven, which also carries the pairing flag and the measurement
- * counter. That is not encryption — the key is right there in the frame — it just breaks up runs of identical
+ * counter. That is not encryption, the key is right there in the frame, it just breaks up runs of identical
  * bits so the receiver can hold its clock, and the same exclusive-or undoes it.
  *
  * The check byte folds three things together: an exclusive-or of the payload, the low byte of its sum, and the
  * sum's carry out of that byte. **That carry is the reason the sum has to be taken at full width here** rather
  * than through the shared helper, which masks to a byte and would make the third term always zero.
  *
- * Upstream is candid that this check is weak — frames with a good check byte and a corrupted sensor id have
- * been seen — so a row is only believed if an identical one arrived as well. The row is copied before being
+ * Upstream is candid that this check is weak, frames with a good check byte and a corrupted sensor id have
+ * been seen, so a row is only believed if an identical one arrived as well. The row is copied before being
  * unwhitened, because upstream does that work in the shared buffer and leaves it wrecked for everything that
  * decodes afterwards when the check then fails.
  */
@@ -686,7 +686,7 @@ export const tmpsGearHive: RDevice = register({
  * A transmission is a long alternating run-in followed by the same seventy-two bit block ten times over, and
  * one good copy is enough. Inside a block, three sync ones are followed by thirty-two Manchester-coded bits
  * holding four pairs: a position marker and a digit, counting the marker down from three to zero. Those markers
- * are the whole of the integrity check — there is no checksum — so all four are required to be exactly right.
+ * are the whole of the integrity check, there is no checksum, so all four are required to be exactly right.
  *
  * A digit of fifteen means the display is blank there rather than showing a zero, which is how the board shows
  * a two-digit score without a leading nought; blank digits contribute nothing to the value.

@@ -3,19 +3,19 @@
  *
  * Three of these four are *fixed code* remotes, and that is the whole story about them. Unlike the KeeLoq parts
  * in `keeloq.ts`, nothing here hops: the same button on the same remote sends the same bits every time, for the
- * life of the car. So a decode gives the real identity and the real button, not an opaque counter — and by the
+ * life of the car. So a decode gives the real identity and the real button, not an opaque counter, and by the
  * same token anyone who hears one press can repeat it. That is a property of the products, not of this port.
  *
  * The three fixed-code remotes share a habit worth explaining once. Each button has not one code but six or a
  * dozen, and the lists overlap: pressing two buttons together sends a code that appears in *both* buttons'
  * lists. So the lookup deliberately reports every name a code matches, joined with a semicolon, rather than
- * stopping at the first — "Lock; Panic" is not ambiguity, it is two buttons held down at once. A code in no list
+ * stopping at the first, "Lock; Panic" is not ambiguity, it is two buttons held down at once. A code in no list
  * is reported as "?" rather than guessed at.
  *
  * The 2GIG keyfob is the opposite case: its payload really is encrypted, by a scheme its maker has never
  * documented, and nobody has yet collected two presses of the same button on the same unit to even tell whether
- * it rolls. What can be checked is the frame — a sixteen-bit CRC that upstream confirmed against seven real
- * codes from two physical units — so the bytes are reported as the opaque hex they are, under names that say so.
+ * it rolls. What can be checked is the frame, a sixteen-bit CRC that upstream confirmed against seven real
+ * codes from two physical units, so the bytes are reported as the opaque hex they are, under names that say so.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `astrostart_2000.c`, `compustar_1wg3r.c`, `audiovox_pro_oe3b.c`,
  * `twogig_key2e.c`. None of the four ships a recorded capture, so every frame in the tests is built from the
@@ -37,7 +37,7 @@ type ButtonMap = readonly (readonly [string, readonly number[]])[];
 /**
  * Every button a code names, in table order.
  *
- * A code matches a button at most once — the codes within one button's list are not all distinct upstream, and
+ * A code matches a button at most once, the codes within one button's list are not all distinct upstream, and
  * counting a name twice would read as two presses of the same key.
  */
 function buttonNames(map: ButtonMap, code: number): string {
@@ -54,7 +54,7 @@ function buttonNames(map: ButtonMap, code: number): string {
  * The codes each of the six buttons sends, alone or paired with another.
  *
  * Six values per button is not six buttons' worth of redundancy: it is the single press plus the five pairings
- * with the other five buttons. That is why the same value turns up under two names — 0x35 is Lock and Panic
+ * with the other five buttons. That is why the same value turns up under two names, 0x35 is Lock and Panic
  * together, 0x37 is Lock and Start, and so on. Pressing three at once gives a code, but not a distinct one, and
  * 0x3f is the catch-all this remote sends for those.
  */
@@ -119,7 +119,7 @@ export const astrostart2000: RDevice = register({
 /**
  * Four buttons, their pairings, and a long-press form of each.
  *
- * "Long Press" is not a button — holding any combination for two and a half seconds sends a different code, so
+ * "Long Press" is not a button, holding any combination for two and a half seconds sends a different code, so
  * its list is every combination's held form gathered under one name. Upstream's list repeats several values
  * within itself; since a code names each button at most once that is harmless, and it is left as written rather
  * than tidied, so the table can still be diffed against its source.
@@ -147,7 +147,7 @@ const COMPUSTAR_BUTTONS: ButtonMap = [
  * fixed code with an eight-bit complement is thin, which is why this is not something to act on.
  *
  * One quirk is carried over deliberately. Upstream tests `b[4] & 1` for the frame's trailing zero bit, but that
- * bit is index 39 while the frame ends at 35 — on a correctly sliced row it is padding and always zero, so the
+ * bit is index 39 while the frame ends at 35, on a correctly sliced row it is padding and always zero, so the
  * test never fires. Changing it to look at bit 35 would reject frames upstream accepts, so it is left alone.
  */
 export const compustar1wg3r: RDevice = register({
@@ -217,7 +217,7 @@ const AUDIOVOX_BUTTONS = ['Lock', 'Unlock', 'Option', 'Trunk'];
  * here: upstream tests the button byte *before* inverting the buffer and reads every field *after*, because in C
  * `bytes` aliases the buffer that the inversion rewrites. Doing the sanity test on the inverted byte instead
  * would accept a different set of frames entirely. This port takes the complement of the three bytes it needs
- * rather than rewriting the buffer — the shared buffer is handed to every other decoder afterwards — but keeps
+ * rather than rewriting the buffer, the shared buffer is handed to every other decoder afterwards, but keeps
  * the same before-and-after split, which is why the test below reads a raw byte and the fields below it do not.
  *
  * That sanity test is the only defense there is. The button bits sit on the even positions of the byte and the
@@ -279,20 +279,20 @@ export const audiovoxProOe3b: RDevice = register({
 /**
  * A four-button alarm keyfob whose payload nobody has solved.
  *
- * It shares its transport with the plain Honeywell and 2GIG door sensors — the same Manchester coding and the
- * same twenty-four bit run-in — but carries seventy-two bits instead of the usual forty-eight, and forty-eight
+ * It shares its transport with the plain Honeywell and 2GIG door sensors, the same Manchester coding and the
+ * same twenty-four bit run-in, but carries seventy-two bits instead of the usual forty-eight, and forty-eight
  * of those are ciphertext under 2GIG's undocumented "eSeries" scheme. There are not even enough samples to say
  * whether it rolls: no two recordings exist of the same button pressed twice on the same unit.
  *
  * So the two encrypted fields are reported as hex under names that admit what they are, and specifically *not*
- * as an `id` — a rolling value presented as an identifier would make one keyfob look like a new device on every
+ * as an `id`, a rolling value presented as an identifier would make one keyfob look like a new device on every
  * press, which is worse than saying nothing.
  *
  * The frame itself is sound: a sixteen-bit CRC over the seven bytes ahead of it, confirmed upstream against
  * seven real codes from two different units, plus a constant byte in the middle. rtl_433 ships this switched
  * off because the payload is meaningless, and that is mirrored here rather than second-guessed: this table is
  * meant to read as a faithful copy of upstream's, so an entry that differs should differ for a reason visible
- * in the bits, and nothing here is. The flag fits on its own terms anyway — every registered decoder still
+ * in the bits, and nothing here is. The flag fits on its own terms anyway, every registered decoder still
  * runs, and all `disabled` does in this app is mark the reading doubtful, which is a fair description of two
  * hex fields nobody has solved.
  *

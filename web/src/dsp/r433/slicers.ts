@@ -2,7 +2,7 @@
  * Pulse slicers: turning a burst of measured pulses into rows of bits.
  *
  * The front end gives us a list of (mark, space) durations in samples. Each slicer reads that list the way one
- * family of protocols encodes bits into it — pulse width, pulse position, level per bit period, and so on — and
+ * family of protocols encodes bits into it, pulse width, pulse position, level per bit period, and so on, and
  * fills a bit buffer, calling back at the end of each message so the decoder can look at it.
  *
  * Ported from rtl_433's `src/pulse_slicer.c` (GPL-2.0-or-later, Tommy Vestermark and contributors). The
@@ -60,8 +60,8 @@ function widths(pulses: PulseData, dev: RDevice): Widths | null {
  * Non-return-to-zero and return-to-zero: the level itself is the bit, held for one bit period.
  *
  * The interesting part is the bit period. A transmitter's clock is only as good as its resonator, so before
- * slicing anything this measures the actual period from a run of alternating bits — a preamble if there is one,
- * otherwise every bit in the burst that already looks right — and slices with that instead of the nominal value.
+ * slicing anything this measures the actual period from a run of alternating bits, a preamble if there is one,
+ * otherwise every bit in the burst that already looks right, and slices with that instead of the nominal value.
  * Over a long message the difference between the nominal and the real period is what decides whether the last
  * byte lands in the right place.
  */
@@ -205,7 +205,7 @@ export function pulseSlicerPpm(pulses: PulseData, dev: RDevice, account: Account
  * Pulse width: the gaps are all the same and the length of the mark is the bit. A short mark is a one.
  *
  * A sync pulse can be shorter than both, between them, or longer than both, and each case moves the decision
- * boundaries somewhere different — hence the four-way split below rather than one set of thresholds.
+ * boundaries somewhere different, hence the four-way split below rather than one set of thresholds.
  */
 export function pulseSlicerPwm(pulses: PulseData, dev: RDevice, account: Account): number {
   const w = widths(pulses, dev);
@@ -264,7 +264,7 @@ export function pulseSlicerPwm(pulses: PulseData, dev: RDevice, account: Account
  *
  * The bit is in the direction of the transition at the middle of each period: falling is a one, rising a zero.
  * Rather than tracking a clock, this counts time since the last recorded bit and calls anything longer than one
- * and a half short-widths a data edge — which is the same decision, made without needing to stay in phase.
+ * and a half short-widths a data edge, which is the same decision, made without needing to stay in phase.
  */
 export function pulseSlicerManchesterZerobit(pulses: PulseData, dev: RDevice, account: Account): number {
   const w = widths(pulses, dev);
@@ -465,7 +465,7 @@ export function pulseSlicerRzi(pulses: PulseData, dev: RDevice, account: Account
  * Oregon Scientific's first-generation coding, which is Manchester on an unusual clock.
  *
  * It insists on exactly twelve preamble pulses followed by a sync far longer than a half-bit, and only then
- * does data start — so a burst that does not open that way is rejected outright rather than searched. The
+ * does data start, so a burst that does not open that way is rejected outright rather than searched. The
  * awkward part is that the sync gap is itself long enough to carry the first data bit whenever that bit is a
  * zero, so it has to be examined before the loop proper begins.
  *

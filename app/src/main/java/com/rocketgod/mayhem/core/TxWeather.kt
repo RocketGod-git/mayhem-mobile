@@ -1,13 +1,13 @@
 package com.rocketgod.mayhem.core
 
 /**
- * TRANSMIT encoder for a spoofed 433.92 MHz weather sensor — a harmless novelty transmitter for the "Troll"
+ * TRANSMIT encoder for a spoofed 433.92 MHz weather sensor, a harmless novelty transmitter for the "Troll"
  * app, of the kind Mayhem / Flipper firmware ship. It builds a valid OOK frame that the app's OWN rtl_433
  * decoder (r433 Acurite device) reads back as a real reading, so an indoor weather display tuned to that
  * sensor shows a phantom channel with whatever temperature and humidity you pick.
  *
  * Faithful port of web/src/dsp/tx-weather.ts. Targets the Acurite 592TXR / "Acurite-Tower" temp+humidity
- * sensor — rtl_433 protocol number 40, message type 0x04: seven bytes, a plain byte-sum check in the last
+ * sensor, rtl_433 protocol number 40, message type 0x04: seven bytes, a plain byte-sum check in the last
  * byte, even parity in the top bit of each data byte. No LFSR digest, no CRC, no bit reversal.
  *
  * This object does NOT import from the decoder. The two integrity primitives it needs (a byte sum and a byte

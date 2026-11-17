@@ -124,6 +124,6 @@ object Geo {
         } catch (e: SecurityException) {
             Diag.log("location: ${e.message}")
         }
-        if (_fix.value == null) Diag.log("no GPS fix yet — ADS-B positions need even+odd frame pairs until one arrives")
+        if (_fix.value == null) Diag.log("no GPS fix yet, ADS-B positions need even+odd frame pairs until one arrives")
     }
 }

@@ -378,8 +378,8 @@ private class PagerFilter {
 private class PageRow(val m: PagerMessage, val repeats: Int, val capcodes: Int)
 
 /**
- * Networks send the same text again and again — every frame of a FLEX cycle, every capcode in a fire group, a
- * dispatcher repeating a call — and one call-out can fill the screen. Folding keeps the newest copy of a text with a
+ * Networks send the same text again and again, every frame of a FLEX cycle, every capcode in a fire group, a
+ * dispatcher repeating a call, and one call-out can fill the screen. Folding keeps the newest copy of a text with a
  * count, so the feed reads as what was said rather than how often. Text-less pages (tones, numeric-only) never fold.
  */
 private const val FOLD_MS = 120_000L

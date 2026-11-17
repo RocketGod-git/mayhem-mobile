@@ -4,8 +4,8 @@ import com.rocketgod.mayhem.core.r433.*
 
 /*
  * Acurite: the largest single family here and the most common weather sensor in the US. Most of the range shares
- * one frame and dispatches on a message type in the third byte — Tower, Iris 5-in-1, Notos 3-in-1, Atlas
- * 7-in-1, Optimus 6-in-1, 6045M lightning, 899 rain, 515 fridge / freezer, 1190 leak — checked by a byte sum and
+ * one frame and dispatches on a message type in the third byte, Tower, Iris 5-in-1, Notos 3-in-1, Atlas
+ * 7-in-1, Optimus 6-in-1, 6045M lightning, 899 rain, 515 fridge / freezer, 1190 leak, checked by a byte sum and
  * even parity on every data byte's top bit. The older sensors each have their own arrangement.
  *
  * Ported from rtl_433's acurite.c (GPL-2.0-or-later). Twin of web/src/dsp/r433/devices/acurite.ts.

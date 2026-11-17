@@ -3,8 +3,8 @@
  *
  * A constellation of small satellites carrying short machine messages for trackers and remote sensors. The
  * messages themselves are encrypted and have resisted twenty-five years of hobbyist effort, so this decodes
- * everything around them: which satellite is overhead, the channel plan it is advertising, and — the useful part
- * — the satellite's own position and velocity, which it broadcasts every four seconds. That means a satellite can
+ * everything around them: which satellite is overhead, the channel plan it is advertising, and, the useful part
+ *, the satellite's own position and velocity, which it broadcasts every four seconds. That means a satellite can
  * be put on the map from its own transmission, with no orbit data fetched from anywhere.
  *
  * The modulation is SDPSK at 4800 symbols a second, which at that rate is the same thing as minimum-shift keying,

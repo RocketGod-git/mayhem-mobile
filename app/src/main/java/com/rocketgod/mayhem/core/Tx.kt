@@ -62,7 +62,7 @@ object Tx {
     fun start(label: String, freqHz: Long, rateHz: Int, offsetHz: Int, fill: (ByteArray) -> Int): Boolean {
         if (!_enabled.value) { _status.value = "transmit is switched off in Settings"; return false }
         if (_needsPrompt.value) { _status.value = "confirm the safety prompt first"; return false }
-        if (!Radio.canTransmit) { _status.value = "${Radio.name} receives only — transmitting needs a HackRF"; return false }
+        if (!Radio.canTransmit) { _status.value = "${Radio.name} receives only, transmitting needs a HackRF"; return false }
         if (!HackRfOne.running) { _status.value = "no HackRF"; return false }
         if (_active.value) { _status.value = "already transmitting"; return false }
         val job = HackRfOne.TxJob(label, freqHz - offsetHz, rateHz, _gain.value, _amp.value, fill) { err ->
@@ -218,7 +218,7 @@ object Tx {
         }
     }
 
-    /** Stream a list of per-symbol audio tones (Hz; 0 = silence) as narrowband FM — used by AFSK, RTTY audio, DTMF, tones. */
+    /** Stream a list of per-symbol audio tones (Hz; 0 = silence) as narrowband FM, used by AFSK, RTTY audio, DTMF, tones. */
     private fun fmTones(label: String, freqHz: Long, tones: DoubleArray, samplesPerTone: Int, devHz: Double, sumPairs: DoubleArray? = null): Boolean {
         var idx = 0; var left = samplesPerTone
         var ph = 0.0; var aph = 0.0; var aph2 = 0.0
@@ -290,11 +290,11 @@ object Tx {
     private const val MAX_PULSES = 1_000_000L
     private fun tooLong(pulses: Long): Boolean {
         if (pulses <= MAX_PULSES) return false
-        _status.value = "too long · %,d pulses, the limit is %,d — narrow it down".format(pulses, MAX_PULSES)
+        _status.value = "too long · %,d pulses, the limit is %,d, narrow it down".format(pulses, MAX_PULSES)
         return true
     }
 
-    /** Timed OOK pulse train (level, duration in samples) — used by SubGHz replay and OOK-based emitters. */
+    /** Timed OOK pulse train (level, duration in samples), used by SubGHz replay and OOK-based emitters. */
     private fun ookPulses(label: String, freqHz: Long, pulses: List<Pair<Boolean, Long>>): Boolean {
         if (pulses.isEmpty()) { _status.value = "empty pulse list"; return false }
         var idx = 0; var left = pulses[0].second; var ph = 0.0; val inc = 2 * PI * OFFSET_HZ / RATE
@@ -424,7 +424,7 @@ object Tx {
 
     // ---- Troll app transmitters (sideload APK only; gated by BuildConfig.INCLUDE_TROLL) ------------------------
 
-    /** Tesla charge-port opener — a fixed OOK burst, same on 315 (US/JP) and 433.92 MHz (EU). See TxApps.teslaPulses. */
+    /** Tesla charge-port opener, a fixed OOK burst, same on 315 (US/JP) and 433.92 MHz (EU). See TxApps.teslaPulses. */
     fun teslaChargePort(freqHz: Long): Boolean =
         ookPulses("Tesla charge port ${"%.2f".format(freqHz / 1e6)} MHz", freqHz, TxApps.teslaPulses(RATE))
 

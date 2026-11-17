@@ -1,6 +1,6 @@
 /**
  * APRS receiver (Mayhem proc_aprsrx; port of core/apps/AprsDecoder.kt): Bell 202 AFSK + AX.25, then the APRS
- * payload — uncompressed, compressed (base-91) and Mic-E positions, course / speed / altitude, status, messages,
+ * payload, uncompressed, compressed (base-91) and Mic-E positions, course / speed / altitude, status, messages,
  * objects and items, weather reports, third-party (IGate) wrapping. Every station heard keeps a record for the UI.
  */
 import { BitSync, DiscFilter, HdlcFramer, type Emit, type IqProcessor } from './core.js';
@@ -239,7 +239,7 @@ export class AprsDecoder implements IqProcessor {
   private digest(src: string, dest: string, path: string, info: string, via: string | undefined): AprsStation | null {
     if (!info) return null;
     const now = Date.now();
-    // third-party: the IGate wraps the original packet — read the inner one and remember who relayed it
+    // third-party: the IGate wraps the original packet, read the inner one and remember who relayed it
     if (info[0] === '}') {
       const m = info.slice(1).match(/^([A-Za-z0-9-]+)>([^:]+):([\s\S]*)$/); if (!m) return null;
       const [, isrc, addr, iinfo] = m; const parts = addr.split(',');

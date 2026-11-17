@@ -2,13 +2,13 @@
  * The last of the tire pressure sensors: German saloons, Chrysler, Aston Martin and a Sprinter van.
  *
  * These are the awkward ones. Three of them carry two different frame lengths down the same protocol and work
- * out which they are looking at from how many bits survived the decode — BMW's Gen4/Gen5 sensor shares its
+ * out which they are looking at from how many bits survived the decode, BMW's Gen4/Gen5 sensor shares its
  * wire format with an Audi pressure alert that is three bytes shorter, and the Gen2/Gen3 sensor tells its two
  * generations apart the same way. The TRW sensor fitted to Chryslers transmits the identical frame twice over,
  * once on-off keyed and once frequency shifted, so it is registered twice and told apart only by its run-in.
  *
  * Two of them overlap with sensors already in this app and say so honestly. The Jeep sensor is the same frame
- * as the Citroen one already registered, distinguishable by nothing in the bits at all — upstream leaves it off
+ * as the Citroen one already registered, distinguishable by nothing in the bits at all, upstream leaves it off
  * by default rather than have two decoders claim every transmission, and so does this. The Honda sensor guards
  * against a different TRW board by refusing a pressure too low for a tire to be holding at all.
  *
@@ -43,7 +43,7 @@ const hexOf = (b: Uint8Array, n: number) => {
 /**
  * One protocol, two frame lengths, and five brands of sensor inside it.
  *
- * The first byte names the maker — Beru, Schrader, Continental or Audi — and the frame is eleven bytes for a
+ * The first byte names the maker, Beru, Schrader, Continental or Audi, and the frame is eleven bytes for a
  * BMW sensor or eight for an Audi pressure alert, which is a warning rather than a routine reading. Which one
  * arrived is worked out from how much survived the Manchester decode, so a truncated BMW frame could in
  * principle be read as a whole Audi one; the CRC over the shorter length is what stops that.
@@ -380,7 +380,7 @@ export const tpmsJeep: RDevice = register({
  * Honda's sensor starts every frame with a deliberate coding violation.
  *
  * The twenty-three bits before the payload end mid-pair on a transition a Manchester decoder cannot produce
- * on its own, which makes them unmistakable as a start marker — it has to sit at the very beginning of the
+ * on its own, which makes them unmistakable as a start marker, it has to sit at the very beginning of the
  * row rather than being searched for. The pressure bound at the end is not a sanity check on the sensor but a
  * way of standing aside for a different TRW board whose frames can otherwise fit this same shape.
  */

@@ -207,7 +207,7 @@ export class RealFir {
 }
 
 /** Numerically controlled oscillator: multiplies interleaved int8 or float I/Q by e^{-j·2π·f·t}. The phasor is
- *  rotated recursively (one complex multiply per sample) and re-normalized every 1024 samples — no trig per sample. */
+ *  rotated recursively (one complex multiply per sample) and re-normalized every 1024 samples, no trig per sample. */
 export class Mixer {
   private hz = 0;
   private cr = 1; private ci = 0;      // current phasor e^{-jθ}

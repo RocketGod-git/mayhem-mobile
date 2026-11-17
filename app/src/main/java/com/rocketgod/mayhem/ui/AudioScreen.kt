@@ -114,7 +114,7 @@ fun AudioScreen(accent: Color) {
                     Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
                     SegBar(SQL_STEPS.map { if (it == 0) "OFF" else "$it dB" }, SQL_STEPS.indexOf(squelch), accent, Modifier.weight(1f)) { SdrEngine.setSquelch(SQL_STEPS[it]) }
                     ScanButton(scanning, bookmarks.isEmpty(), Modifier.width(d.dp(96f)).height(d.dp(40f))) {
-                        if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES — star a few with ☆ beside the frequency first" else Scanner.toggle()
+                        if (bookmarks.isEmpty()) Notice.msg.value = "SCAN hops your FAVES, star a few with ☆ beside the frequency first" else Scanner.toggle()
                     }
                 }
             }

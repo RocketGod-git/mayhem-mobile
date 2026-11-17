@@ -99,12 +99,12 @@ export class TpmsDecoder implements IqProcessor {
     else if (len === 80) this.report('FLM_80', this.rd(bits, 8, 32), Math.floor(this.rd(bits, 48, 8) * 4 / 3), this.rd(bits, 56, 8) - 56, null);
   }
   /**
-   * The 8.192 kbit/s Schrader family — SMD3MA4 in Subarus, and the Schrader 3039 fitted to Nissan, Infiniti
+   * The 8.192 kbit/s Schrader family, SMD3MA4 in Subarus, and the Schrader 3039 fitted to Nissan, Infiniti
    * and Renault. Thirty-eight bits: one fixed bit, three flag bits, twenty-four of identity, eight of
    * pressure and two of checksum. There is no temperature field at all, which is why these report none.
    *
    * The three flag bits are not decoded by anyone, rtl_433 included. They are believed to carry what
-   * prompted the transmission — a timer, motion, or a workshop tool — and a low-battery indication, but that
+   * prompted the transmission, a timer, motion, or a workshop tool, and a low-battery indication, but that
    * is inference rather than documentation, so they are reported raw.
    */
   private readOok8192(bits: Uint8Array): void {

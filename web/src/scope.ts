@@ -2,7 +2,7 @@
  * Waterfall + spectrum + axis widget (the twin of ui/Waterfall.kt), rendered at device resolution.
  *
  * - One waterfall column per device pixel (up to 4096), one row per spectrum frame, kept in an offscreen ring
- *   canvas so a new row costs one putImageData and two drawImage blits — no per-frame copy of the whole history.
+ *   canvas so a new row costs one putImageData and two drawImage blits, no per-frame copy of the whole history.
  * - Spectra arrive as 0..1 values (the worker normalizes against a median floor); they are resampled to the
  *   column count with max-pooling so narrow carriers never fall between pixels.
  * - Inferno-style 256-entry color map, dB grid on the spectrum with the floor / range the worker reports.
@@ -77,8 +77,8 @@ export class Scope {
   /**
    * Waterfall memory beyond the view: a canvas several spans wide, anchored to absolute frequency, holding every
    * row at 1× resolution. The ring (`ring`) is only ever one span wide, so panning and then panning back used to
-   * find black where history had been pushed off its edge. The memory repaints exactly those places — the sliver
-   * a pan exposes, a tune jump, the wings when zooming out — and nothing else, so the ring's own higher-resolution
+   * find black where history had been pushed off its edge. The memory repaints exactly those places, the sliver
+   * a pan exposes, a tune jump, the wings when zooming out, and nothing else, so the ring's own higher-resolution
    * rows always win where they exist. Null when the pixel budget says no (tiny screens are the ring alone).
    */
   private mem: HTMLCanvasElement | null = null;
@@ -125,7 +125,7 @@ export class Scope {
     const r = el.getBoundingClientRect();
     return r.width > 0 ? r.width : fallback;
   }
-  /** Device pixels per CSS pixel *as laid out*, i.e. devicePixelRatio × any CSS zoom on the page — the unit for
+  /** Device pixels per CSS pixel *as laid out*, i.e. devicePixelRatio × any CSS zoom on the page, the unit for
    *  canvas text and line widths so they match the surrounding UI on zoomed ultra-wide layouts. */
   private ui(): number {
     const cw = this.wf.clientWidth; if (!cw) return this.dpr;
@@ -161,7 +161,7 @@ export class Scope {
     this.adjustable = !!opts.onChannel;
     // Floor, not round: at a fractional device ratio (1.5 on a 150% display or browser zoom) rounding 1×1.5 up
     // to 2 device pixels per row halved the waterfall's history and drew it chunky. Flooring keeps one device
-    // pixel per row there — twice the seconds on screen and finer detail — and is unchanged at integer ratios and
+    // pixel per row there, twice the seconds on screen and finer detail, and is unchanged at integer ratios and
     // for the sweep (which asks for 2).
     this.rowPx = Math.max(1, Math.floor((opts.rowPx ?? 1) * this.dpr));
     this.center = opts.center ?? true;
@@ -182,7 +182,7 @@ export class Scope {
     zc.querySelector('[data-z="-"]')!.addEventListener('click', (e) => { e.stopPropagation(); if (this.zoom <= 1) { opts.onSpanStep?.(-1); return; } this.setView(this.zoom / 2); });
     zc.querySelector('[data-z="+"]')!.addEventListener('click', (e) => { e.stopPropagation(); if (this.zoom <= 1 && opts.onSpanStep?.(1)) return; this.setView(this.zoom * 2); });
     zc.addEventListener('pointerdown', e => e.stopPropagation());
-    // span bar: a scrollbar for the spectrum — the thumb is the span (with the zoomed window inside it), drag it to slide the receiver
+    // span bar: a scrollbar for the spectrum, the thumb is the span (with the zoomed window inside it), drag it to slide the receiver
     if (opts.onSlide) {
       const bar = document.createElement('div'); bar.className = 'spanbar'; bar.innerHTML = '<span class="l"></span><span class="r"></span><div class="thumb"><i></i></div>';
       host.appendChild(bar); host.classList.add('hasbar');
@@ -324,7 +324,7 @@ export class Scope {
     for (let y = 0; y < rows; y++) stamps[y] = this.stamps[(this.head + Math.min(this.rows - 1, Math.floor(y * this.rows / rows))) % this.rows];
     const peak = new Float32Array(cols);
     for (let x = 0; x < cols; x++) peak[x] = this.peak[Math.min(this.cols - 1, Math.floor(x * this.cols / cols))];
-    // Re-fit the memory too (reads the old geometry, so before it changes) — but never let a failure here stop
+    // Re-fit the memory too (reads the old geometry, so before it changes), but never let a failure here stop
     // the canvas itself from resizing, or a resize would leave the waterfall stretched. On error, drop the memory
     // and carry on; it rebuilds from the next rows.
     try { this.refitMem(cols, rows); } catch { this.allocMem(cols, rows); }
@@ -397,7 +397,7 @@ export class Scope {
     this.refreshZoomBtns();
     const t = this.thumb; if (!t) return;
     // Keep the thumb on screen and grabbable however small or off-edge the view is against the bar. On the
-    // launcher the bar is the whole 1 MHz–6 GHz range, so a 20 MHz view is a hair — without a floor and an
+    // launcher the bar is the whole 1 MHz–6 GHz range, so a 20 MHz view is a hair, without a floor and an
     // in-range clamp it vanishes at the ends and you cannot tell where you are.
     const minW = 0.02;
     let lo = this.barLo, hi = this.barHi;
@@ -516,7 +516,7 @@ export class Scope {
     if ((++this.pushes & 31) === 0) this.refit(this.host);
     const cols = this.cols;
     // The visible slice is taken on exact fractional bin bounds. Rounding it to whole bins moves the picture
-    // against everything drawn from the view fraction — the tuned marker, the channel shading, the peak labels,
+    // against everything drawn from the view fraction, the tuned marker, the channel shading, the peak labels,
     // and the older waterfall rows, which are rescaled exactly when the zoom changes. The error is under a bin
     // of the full span, which is invisible at 1x and several pixels once zoomed in.
     const nb = bins.length;
@@ -791,7 +791,7 @@ export class Scope {
     }
     // A full-height vertical line with a dark casing under it, so it reads whether it crosses black grid or the
     // tuned signal's own accent-filled trace. Without the casing an accent line vanishes into the accent fill of
-    // a strong centred station — which is what made the band look "incomplete" exactly over the signal you tuned.
+    // a strong centred station, which is what made the band look "incomplete" exactly over the signal you tuned.
     const vline = (x: number, color: string, lw: number) => {
       const xr = Math.round(x) + 0.5;
       g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = lw + 2.5 * dpr;

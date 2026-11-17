@@ -2,7 +2,7 @@
  * The rest of ThermoPro: the TX-2 room sensor and the modern barbecue probes.
  *
  * Kept apart from `thermopro.ts` only because that file was already full; between them they cover the range.
- * These are the frequency-shifted generation, and no two of them check themselves the same way — a digest over
+ * These are the frequency-shifted generation, and no two of them check themselves the same way, a digest over
  * byte-reversed input on the TP82xB pair, a CRC with a private final exclusive-or on the TempSpike, and on the
  * TP211B a bespoke table of sixteen-bit constants that appears on no other device in rtl_433.
  *
@@ -280,7 +280,7 @@ export const thermoproTp829b: RDevice = register({
  * The TempSpike XR, a wireless probe with a separate booster.
  *
  * Its check is a plain CRC-8 with a private final exclusive-or, and the byte after it must share no set bit
- * with it — a second opinion that costs nothing and catches a frame read one bit out of step.
+ * with it, a second opinion that costs nothing and catches a frame read one bit out of step.
  */
 export const thermoproTp86xb: RDevice = register({
   num: 294,

@@ -1,12 +1,12 @@
 /**
- * Wireless M-Bus — the radio link that European utility meters use to report themselves.
+ * Wireless M-Bus, the radio link that European utility meters use to report themselves.
  *
  * Water, gas, heat and electricity meters across Europe carry a small 868 MHz transmitter that sends a short
  * telegram every few seconds to minutes. Unlike almost everything else in this app, M-Bus is a layered
  * standard rather than one vendor's frame: a physical layer that differs per mode, a link layer that is the
  * same everywhere, and an application layer of typed consumption records on top.
  *
- * What is decoded here is the link layer — which is the part that identifies the meter. Every telegram names
+ * What is decoded here is the link layer, which is the part that identifies the meter. Every telegram names
  * its manufacturer as a three-letter code, its serial number, its version and what kind of meter it is, and
  * every block is closed by its own CRC, so a frame that reports at all is a frame that checked out. The
  * consumption records above that are NOT decoded: they are a large table of unit and scaling codes, and a
@@ -16,8 +16,8 @@
  * The five modes differ only in how the bits arrive. Mode T encodes every byte as twelve bits, three ones in
  * every six, so a corrupted symbol is detectable rather than silently wrong. Mode C sends plain bytes and
  * picks format A or B by a byte after the preamble. Mode S is Manchester-coded. Modes R and F run on
- * frequencies outside the usual allocation, so rtl_433 ships them switched off. Here they still run — this
- * app would rather report a doubtful reading than miss a real one — and are marked as worth a second look.
+ * frequencies outside the usual allocation, so rtl_433 ships them switched off. Here they still run, this
+ * app would rather report a doubtful reading than miss a real one, and are marked as worth a second look.
  *
  * The RADIAN meter at the end is a different animal that happens to live in the same file upstream: a French
  * meter that speaks UART framing over FSK and wraps a complete wired M-Bus telegram inside its payload.
@@ -110,7 +110,7 @@ function deviceTypeStr(t: number): string {
  * Mode T's line code: every nibble travels as six bits with exactly three of them set.
  *
  * Anything not in the table is a symbol that cannot legally have been sent, so it is flagged rather than
- * guessed at — the caller reports how many bytes ran clean before the first bad one.
+ * guessed at, the caller reports how many bytes ran clean before the first bad one.
  */
 function decode3of6(byte: number): number {
   switch (byte) {
@@ -138,7 +138,7 @@ function decode3of6(byte: number): number {
  * Walk a row of 3-of-6 symbols into bytes.
  *
  * A bad symbol is taken as a zero nibble rather than abandoning the frame, because the per-block CRC below is
- * the real arbiter — letting it fail gives a better answer than bailing out on the first marginal bit.
+ * the real arbiter, letting it fail gives a better answer than bailing out on the first marginal bit.
  * Returns how many bytes decoded cleanly before the first bad symbol.
  */
 function decode3of6Buffer(bits: Uint8Array, bitOffset: number, out: Uint8Array, numBytes: number): number {
@@ -519,8 +519,8 @@ function modeRDecode(bits: BitBuffer, ctx: DecodeCtx): number {
  * Mode F: recognized, but its payload framing has never been confirmed.
  *
  * rtl_433 has carried this one for years with no sample to check it against, and stops after reading the
- * format byte without reporting anything. Reporting the sighting is more useful than silence — a meter really
- * is transmitting — but with no CRC behind it the claim is kept to what was actually verified: a two-byte
+ * format byte without reporting anything. Reporting the sighting is more useful than silence, a meter really
+ * is transmitting, but with no CRC behind it the claim is kept to what was actually verified: a two-byte
  * preamble and a known format byte, with no `mic`. rtl_433 ships this one switched off, which here marks
  * anything it says as worth a second look rather than silencing it.
  */

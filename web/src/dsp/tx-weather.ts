@@ -1,13 +1,13 @@
 /**
- * TRANSMIT encoder for a spoofed 433.92 MHz weather sensor — a harmless novelty transmitter for the "Troll"
+ * TRANSMIT encoder for a spoofed 433.92 MHz weather sensor, a harmless novelty transmitter for the "Troll"
  * app, of the kind Mayhem / Flipper firmware ship. It builds a valid OOK frame that the app's OWN rtl_433
  * decoder (dsp/r433/devices/acurite.ts) reads back as a real reading, so an indoor weather display tuned to
  * that sensor shows a phantom channel with whatever temperature and humidity you pick.
  *
- * TARGET: the Acurite 592TXR / "Acurite-Tower" temperature+humidity sensor — rtl_433 protocol number 40,
+ * TARGET: the Acurite 592TXR / "Acurite-Tower" temperature+humidity sensor, rtl_433 protocol number 40,
  * message type 0x04. It has the cleanest fixed-length frame in the Acurite family: seven bytes, a plain
  * byte-sum check in the last byte, and even parity in the top bit of each data byte. No LFSR digest, no CRC,
- * no bit reversal — everything here is reproducible from the datasheet-level description in the decoder's
+ * no bit reversal, everything here is reproducible from the datasheet-level description in the decoder's
  * comments alone.
  *
  * This module deliberately does NOT import from the decoder. The two integrity primitives it needs (a byte
@@ -48,7 +48,7 @@ const BATTERY_OK = 0x40;     // byte 2 bit 6 set = battery good ((bb[2] & 0x40) 
 
 /**
  * The two-bit channel selector lives in the top of byte 0. The decoder's table is ['C','E','B','A'] indexed by
- * those two bits, and 01 ('E') is treated as an error — so only three codes are usable. Map the friendly
+ * those two bits, and 01 ('E') is treated as an error, so only three codes are usable. Map the friendly
  * channel numbers 1/2/3 onto A/B/C.
  */
 const CHANNEL_CODE: Record<number, number> = { 1: 0b11 /* A */, 2: 0b10 /* B */, 3: 0b00 /* C */ };

@@ -39,8 +39,8 @@ import com.rocketgod.mayhem.core.Tx
 import com.rocketgod.mayhem.core.TxApps
 
 /**
- * The "Troll" app: Mayhem's novelty transmitters — fixed-code OOK pranks, a .sub replay, FM jingles, Tesla
- * charge-port and weather-sensor spoofs — plus the shopping-cart wheel sounds, which are phone audio and need
+ * The "Troll" app: Mayhem's novelty transmitters, fixed-code OOK pranks, a .sub replay, FM jingles, Tesla
+ * charge-port and weather-sensor spoofs, plus the shopping-cart wheel sounds, which are phone audio and need
  * no radio. Everything else transmits and is gated by the Settings TX switch and the first-TX safety prompt,
  * exactly like the Transmit app. Ships only in the sideload APK (BuildConfig.INCLUDE_TROLL / the launcher tile
  * is hidden in the Play build).
@@ -72,7 +72,7 @@ fun TrollScreen(defaultAccent: Color) {
         if (!enabled) {
             Column(Modifier.fillMaxWidth().panel(accent).padding(d.dp(12f))) {
                 Text("TRANSMIT IS OFF", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), letterSpacing = 2.sp)
-                Text("Most Troll tricks transmit — turn TX back on in Settings. The shopping-cart one is phone audio and works regardless.",
+                Text("Most Troll tricks transmit, turn TX back on in Settings. The shopping-cart one is phone audio and works regardless.",
                     color = Palette.ink, fontFamily = Mono, fontSize = d.sp(11f), modifier = Modifier.padding(top = d.dp(6f)))
                 Box(Modifier.padding(top = d.dp(10f))) { ActionButton("OPEN SETTINGS", accent) { Apps.open(MayhemApp.SETTINGS) } }
             }
@@ -83,7 +83,7 @@ fun TrollScreen(defaultAccent: Color) {
         FreqCard(accent, tag = "TROLL", title = status.ifEmpty { "idle" }.uppercase(), freq = freq, meter = gain / 47f, scale = listOf(0f to "0", 10f / 47f to "10", 20f / 47f to "20", 30f / 47f to "30", 1f to "47 dB"),
             left = "GAIN $gain dB", right = if (amp) "AMP +14 dB" else "AMP off", rightColor = if (amp) accent else Palette.muted,
             lamp = { if (active) Lamp("ON AIR", accent, blink = true) else Lamp("IDLE", Palette.muted) })
-        Note("Everything here transmits unless noted — use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live.")
+        Note("Everything here transmits unless noted, use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live.")
 
         // IF gain 0–47 dB; AMP adds 14 dB
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f)), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)),
@@ -170,7 +170,7 @@ fun TrollScreen(defaultAccent: Color) {
     }
 }
 
-/** Shopping-cart wheel sounds — real captures played through the phone speaker; no radio involved. */
+/** Shopping-cart wheel sounds, real captures played through the phone speaker; no radio involved. */
 @Composable
 private fun CartCard(ctx: Context, accent: Color) {
     val d = rememberDims()

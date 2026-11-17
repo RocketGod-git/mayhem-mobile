@@ -73,7 +73,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 /**
- * HAM: a proper channel receiver — any mode, any filter width, anywhere in the HackRF's span — on a panadapter
+ * HAM: a proper channel receiver, any mode, any filter width, anywhere in the HackRF's span, on a panadapter
  * that stays still while you tune; a whole-band monitor; sound-card digital modes, DMR and P25; push-to-talk; and
  * a logbook. Twin of the web app's HAM.
  */

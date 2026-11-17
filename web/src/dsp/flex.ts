@@ -1,5 +1,5 @@
 /**
- * FLEX pager decoder — port of Mayhem's proc_flex.cpp (multimon-ng lineage): 1600/3200/6400 bps, 2- and 4-level
+ * FLEX pager decoder, port of Mayhem's proc_flex.cpp (multimon-ng lineage): 1600/3200/6400 bps, 2- and 4-level
  * FSK, sync + FIW + block-interleaved BCH(32,21) phases, BIW / address / vector parsing for alphanumeric, numeric
  * (standard, special, numbered), short-message, tone, hex and instruction pages. Rides on the NFM discriminator.
  *

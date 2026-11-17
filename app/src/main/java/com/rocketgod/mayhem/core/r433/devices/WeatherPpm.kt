@@ -4,7 +4,7 @@ import com.rocketgod.mayhem.core.r433.*
 
 /*
  * Pulse-position weather sensors: the cheap outdoor thermometers that came with a kitchen display. All the same
- * idea under different brands — a fixed short mark, then a gap whose length is the bit — and several are the same
+ * idea under different brands, a fixed short mark, then a gap whose length is the bit, and several are the same
  * silicon with a different sticker, which is why some reject a reading the moment a sibling's checksum passes.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): nexus.c, prologue.c, rubicson.c, generic_temperature_sensor.c,

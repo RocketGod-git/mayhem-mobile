@@ -12,7 +12,7 @@ import kotlin.math.roundToLong
 data class PagerMessage(val id: Long, val at: Long, val hz: Long, val page: PagerPage, val alert: Boolean)
 
 /**
- * Multi-channel pager decode over whatever span the radio is tuned to — worldwide, no band presets. It peak-holds
+ * Multi-channel pager decode over whatever span the radio is tuned to, worldwide, no band presets. It peak-holds
  * the current span's spectrum, finds the carriers in it, and decodes up to [SLOTS] at once, each through a
  * [PagerChannelRx]. In HUNT it tracks the span's busiest carriers itself; PINNED keeps only the ones you tapped.
  * You choose the band by tuning the radio; the heard channel's audio goes out the normal path, so the global mute

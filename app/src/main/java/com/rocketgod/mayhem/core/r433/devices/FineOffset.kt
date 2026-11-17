@@ -3,10 +3,10 @@ package com.rocketgod.mayhem.core.r433.devices
 import com.rocketgod.mayhem.core.r433.*
 
 /*
- * Fine Offset, and everything built on their designs — Ecowitt, Ambient Weather, Misol, Alecto, Froggit. One
+ * Fine Offset, and everything built on their designs, Ecowitt, Ambient Weather, Misol, Alecto, Froggit. One
  * Shenzhen factory makes the internals of a large share of the world's consumer weather stations. The modern
- * range shifts frequency and shares one arrangement — alternating preamble, sync `2d d4`, a family-code byte, the
- * readings, a CRC and a byte sum — so one decoder reads the burst length and hands off to whichever sibling fits.
+ * range shifts frequency and shares one arrangement, alternating preamble, sync `2d d4`, a family-code byte, the
+ * readings, a CRC and a byte sum, so one decoder reads the burst length and hands off to whichever sibling fits.
  *
  * Ported from rtl_433's fineoffset.c (GPL-2.0-or-later). Twin of web/src/dsp/r433/devices/fineoffset.ts.
  */

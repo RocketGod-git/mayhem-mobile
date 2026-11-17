@@ -15,7 +15,7 @@ object TxEncoders {
     /** BCH(31,21) + even parity for a POCSAG codeword whose 21 data bits are already in bits 31..11. */
     fun insertBch(codewordIn: Int): Int {
         val d21 = codewordIn ushr 11
-        // Systematic BCH(31,21), generator 0x769 — the standard POCSAG polynomial (matches PocsagEcc's syndrome table).
+        // Systematic BCH(31,21), generator 0x769, the standard POCSAG polynomial (matches PocsagEcc's syndrome table).
         var rem = d21 shl 10
         for (i in 30 downTo 10) if (rem and (1 shl i) != 0) rem = rem xor (0x769 shl (i - 10))
         var cw = (codewordIn and 0xFFFFF801.toInt()) or ((rem and 0x3FF) shl 1)
@@ -132,7 +132,7 @@ object TxEncoders {
         return out.toIntArray()
     }
 
-    // ---- AX.25 / APRS (Bell 202 AFSK) — HDLC UI frame with FCS + NRZI bits ------------------------------------
+    // ---- AX.25 / APRS (Bell 202 AFSK), HDLC UI frame with FCS + NRZI bits ------------------------------------
     /** A standard APRS AX.25 UI frame: dest APZMHM, source [call]-[ssid], no digipeaters, control 0x03, PID 0xF0, [info]. */
     fun ax25Aprs(source: String, info: String): ByteArray {
         val f = ArrayList<Int>()

@@ -4,7 +4,7 @@ import com.rocketgod.mayhem.core.r433.*
 
 /*
  * Microchip KeeLoq hopping encoders: the chip inside most garage doors, gates and car alarms. A decode gives the
- * serial, the button, the battery flag and the repeat counter — never anything that would open the door: the
+ * serial, the button, the battery flag and the repeat counter, never anything that would open the door: the
  * thirty-two bit hopping code is encrypted under a key that is not in the transmission, and is shown only so one
  * press can be told from a replay of it.
  *

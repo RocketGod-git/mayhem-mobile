@@ -332,7 +332,7 @@ class FollowNewest { var follow by mutableStateOf(true); var seen by mutableLong
 
 /**
  * Keep a newest-first list on its top entry while the reader is there. Only the reader's own drag away stops it —
- * the jump back up after a new entry does not — and coming back to the top starts it again. [newest] is anything
+ * the jump back up after a new entry does not, and coming back to the top starts it again. [newest] is anything
  * that grows with each new entry: an id, or a running count.
  */
 @Composable

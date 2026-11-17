@@ -58,7 +58,7 @@ typealias DecodeFn = (dev: RDevice, bits: BitBuffer, ctx: DecodeCtx) -> Int
 
 /**
  * A protocol: timings in microseconds and the function that reads its bits. `shortWidth` / `longWidth` mean
- * different things per modulation — pulse widths for PWM, gap widths for PPM, bit periods for PCM — which is why
+ * different things per modulation, pulse widths for PWM, gap widths for PPM, bit periods for PCM, which is why
  * the slicers, not the devices, interpret them.
  */
 class RDevice(

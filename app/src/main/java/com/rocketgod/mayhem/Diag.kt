@@ -16,7 +16,7 @@ import java.util.Locale
 
 /**
  * In-memory diagnostic log (plus logcat, tag "Mayhem"). Every USB control transfer, the once-per-second RX
- * health line (iqRMS / DC / peak bin — the diagnostic that proved the HackRF Pro quarter-shift bug) and the
+ * health line (iqRMS / DC / peak bin, the diagnostic that proved the HackRF Pro quarter-shift bug) and the
  * ADS-B decode-health counters land here, and the UI can show the tail on screen so a phone in the field
  * needs no adb to tell "front-end delivering nothing" from "signal present, decoder unhappy".
  *

@@ -18,7 +18,7 @@
  * consecutive failures, about a second, which is long enough to ride out a fade and short enough that a retune
  * shows up promptly.
  *
- * The input amplitude is arbitrary — an AGC ahead of the loop normalizes it — and any sample rate that keeps the
+ * The input amplitude is arbitrary, an AGC ahead of the loop normalizes it, and any sample rate that keeps the
  * subcarrier's upper sideband (59.4 kHz) below Nyquist works; in practice that means 120 kHz and up.
  */
 
@@ -134,8 +134,8 @@ export class RdsDecoder {
   /**
    * PS (the eight-character name) is assembled a whole frame at a time and shown only when a frame completes.
    * Stations scroll song titles through the name a frame a second (dynamic PS), each frame heard once, so writing
-   * segments as they land shows a blend of two frames; buffering to the frame boundary — a segment index that
-   * repeats is the next frame beginning — shows each frame whole, and a fixed name settles in one cycle just the
+   * segments as they land shows a blend of two frames; buffering to the frame boundary, a segment index that
+   * repeats is the next frame beginning, shows each frame whole, and a fixed name settles in one cycle just the
    * same. The block checkword is the guard against a garbled segment: a bad one keeps its frame from completing
    * cleanly, so it is skipped, costing one cycle. RadioText is written a segment at a time and shown up to its
    * carriage return; there too the checkword is the guard.
@@ -363,7 +363,7 @@ export class RdsDecoder {
     if (t.kind === 'ps') { this.seePs(t.seg, t.key); return; }
     // A toggled flag is the station's way of saying the text that follows is unrelated to what came before;
     // without the clear, a shorter new text would trail fragments of the old one. The text already on screen
-    // stays until the new one is confirmed in full — a blank that then trickles in is worse than a moment of
+    // stays until the new one is confirmed in full, a blank that then trickles in is worse than a moment of
     // the old message.
     if (t.ab !== this.abFlag) { if (this.abFlag >= 0) this.clearRt(); this.abFlag = t.ab; }
     this.seeRt(t.seg, t.width, t.key);
@@ -399,7 +399,7 @@ export class RdsDecoder {
 
   /**
    * One PS segment (two characters in `key`). Buffered into the current frame; a segment index that repeats
-   * marks the next frame, and a frame is shown only once all four of its segments are in — whole, never a blend
+   * marks the next frame, and a frame is shown only once all four of its segments are in, whole, never a blend
    * of two. A fixed name commits the same eight characters every cycle, so it settles after one and then holds.
    */
   private seePs(seg: number, key: number): void {
@@ -410,8 +410,8 @@ export class RdsDecoder {
     if (this.psMask !== 0b1111) return;                                    // only whole frames count
     this.psMask = 0;
     // A real, static station name is the same whole frame every cycle; a name a station scrolls a song title
-    // through — where each of the four segments in a cycle is a different scroll position, so even a whole frame
-    // is a jumble ("Frltz ic") — keeps changing. Show the name once it has repeated (a real name); the moment a
+    // through, where each of the four segments in a cycle is a different scroll position, so even a whole frame
+    // is a jumble ("Frltz ic"), keeps changing. Show the name once it has repeated (a real name); the moment a
     // name has changed a few times it is a scroll, which latches suppressed and drops any fragment shown, so the
     // first field is never a frozen scroll piece. The RadioText carries the full text.
     let same = this.psHaveLast;
@@ -431,7 +431,7 @@ export class RdsDecoder {
     }
     this.psBuild.fill(0x20);
   }
-  /** One RadioText segment (`width` characters in `key`), written straight in — the checkword already vouched for it. */
+  /** One RadioText segment (`width` characters in `key`), written straight in, the checkword already vouched for it. */
   private seeRt(seg: number, width: 2 | 4, key: number): void {
     if (width !== this.rtWidth) { this.clearRt(); this.rtWidth = width; }   // a station switching 2A <-> 2B is a new message
     const base = seg * width;

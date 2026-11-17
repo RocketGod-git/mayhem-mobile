@@ -1,7 +1,7 @@
 /**
  * IQ capture to the browser's origin-private file system (OPFS): signed-int8 I/Q as `.c8` (the HackRF's native
  * hackrf_transfer format) plus a Mayhem-style `.txt` sidecar. Writes use a synchronous access handle, which
- * exists only inside workers — exactly where the IQ already is.
+ * exists only inside workers, exactly where the IQ already is.
  */
 import type { Emit, IqProcessor } from './core.js';
 

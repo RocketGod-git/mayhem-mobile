@@ -2,7 +2,7 @@
  * Chamberlain Security+ garage door openers, versions 1.0 and 2.0.
  *
  * These are the only decoders in this app that remember anything between transmissions, and they have to be.
- * A Security+ remote does not send one packet — it sends two, a few milliseconds apart, and neither half means
+ * A Security+ remote does not send one packet, it sends two, a few milliseconds apart, and neither half means
  * anything alone. The radio delivers them as separate bursts, so the first half is held until the second
  * arrives and the pair is decoded together. A half left unclaimed is thrown away after eight hundred
  * milliseconds, which is far longer than the gap between two real halves and far shorter than the gap between
@@ -14,11 +14,11 @@
  * Both versions carry their payload as base-three digits rather than bits, which is why nothing here looks
  * like a normal frame. Version 1.0 counts the length of each run of ones: one pulse is a nought, two is a one,
  * three is a two, and four is a corrupt frame. Version 2.0 interleaves three ten-bit groups and then inverts
- * and reorders them according to eight bits carried in the packet — so the same payload goes out looking
+ * and reorders them according to eight bits carried in the packet, so the same payload goes out looking
  * different every time, and the decoder has to undo both permutations before anything can be read.
  *
  * Neither rolling code is decrypted, and neither can be: that is the point of a rolling code. What is
- * reported is the identity behind it — which opener, which button, and the counter's position — none of which
+ * reported is the identity behind it, which opener, which button, and the counter's position, none of which
  * would let anyone open a door.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `secplus_v1.c` and `secplus_v2.c`, both in turn based on
@@ -85,7 +85,7 @@ function v1DecodeHalf(src: Uint8Array, out: Uint8Array): number {
  * Find where the next half starts.
  *
  * There is no preamble to look for. Every half begins with a digit of nought or two, which on the wire are
- * `0001` and `0111`, so the run-in is recognised by those shapes — or, at the very start of a row, by the
+ * `0001` and `0111`, so the run-in is recognised by those shapes, or, at the very start of a row, by the
  * first byte already looking like one of them.
  */
 function v1FindNext(bits: BitBuffer, from: number): number {
@@ -258,7 +258,7 @@ const V2_ORDER: Record<number, [number, number, number]> = {
  * Undo one half's scrambling.
  *
  * Thirty bits arrive with three ten-bit groups interleaved a bit at a time. Eight further bits say which of
- * the groups were sent inverted and what order they were put in — so the same payload looks different on
+ * the groups were sent inverted and what order they were put in, so the same payload looks different on
  * every press. Both permutations are undone here, and anything naming a combination that does not exist is
  * refused rather than guessed at.
  *
@@ -272,7 +272,7 @@ const V2_ORDER: Record<number, [number, number, number]> = {
  * that does not exist in base three.
  *
  * Chamberlain reuses this exact permutation, bit for bit, inside an unrelated motion sensor, so it is shared
- * from here rather than written out a second time — those twenty cases are the easiest thing in this protocol
+ * from here rather than written out a second time, those twenty cases are the easiest thing in this protocol
  * to transcribe wrongly, and a single transposed entry would still pass every structural check.
  */
 export function secplusPermute(orderInvert: number, x30: number, roll: Uint8Array):

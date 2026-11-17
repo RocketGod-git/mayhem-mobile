@@ -2,13 +2,13 @@
  * Eight small weather and garden sensors, most of them a decade or more old.
  *
  * This is the long tail: cheap thermometers, a pool probe, a soil moisture meter, a wind and rain station.
- * They are worth having precisely because they are unglamorous — someone with one of these in the garden will
+ * They are worth having precisely because they are unglamorous, someone with one of these in the garden will
  * see it appear, and that is the whole point of listening to a band rather than to a device.
  *
  * Their age shows in how little most of them check. The Calibeur has a single parity bit and gets away with it
  * by demanding two identical messages in a row. The Springfield folds its nibbles into one, and then bounds
  * the temperature and moisture because that check is too weak to stand alone. The FT-004B has no check at all
- * and instead sends everything three times, taking whichever value two of the three agree on — which is a
+ * and instead sends everything three times, taking whichever value two of the three agree on, which is a
  * genuinely good answer to a noisy band, and rather better than a checksum at recovering rather than merely
  * detecting.
  *
@@ -61,7 +61,7 @@ function sumBytes(m: Uint8Array, n: number): number {
  * One of the oldest decoders in rtl_433, and it shows.
  *
  * There is no checksum and no length validation whatsoever. What stands in for both is that the same message
- * has to appear at three widely separated points in the transmission — rows one, five and thirteen have to
+ * has to appear at three widely separated points in the transmission, rows one, five and thirteen have to
  * agree on the bytes they share. That is a real guard against noise, if a crude one, and it is why this needs
  * a long enough capture to contain all three.
  */
@@ -309,7 +309,7 @@ export const wssensor: RDevice = register({
  *
  * The sum is taken across four bytes at full width, the carry out of the top byte is added back, and only then
  * is the fifth byte added without a further carry. That last asymmetry is deliberate on the sensor's part and
- * has to be reproduced exactly — a sum masked to a byte along the way would lose the carry and never match.
+ * has to be reproduced exactly, a sum masked to a byte along the way would lose the carry and never match.
  */
 export const wt1024: RDevice = register({
   num: 109,
@@ -358,7 +358,7 @@ export const wt1024: RDevice = register({
  * two kinds of message in turn about half a minute apart. So a single transmission only ever half-describes
  * the weather, and only the fields it actually carried are reported.
  *
- * Its wind scale is genuinely strange — nought, then a jump, then a linear run — but it is what the display
+ * Its wind scale is genuinely strange, nought, then a jump, then a linear run, but it is what the display
  * shows, so it is what is reported.
  */
 export const missilMl0757: RDevice = register({

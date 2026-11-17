@@ -2,13 +2,13 @@
  * Mains switches, doorbells and the cheap OOK remotes that drive them.
  *
  * These are the plainest protocols in the whole of rtl_433 and it is worth being blunt about what that means.
- * Nine of the eleven have no integrity check whatsoever — no CRC, no checksum, not even a parity bit. What
+ * Nine of the eleven have no integrity check whatsoever, no CRC, no checksum, not even a parity bit. What
  * stands in for one is structure: a fixed frame length, a run of bits the encoder chip can never vary, a
  * command nibble with only two legal values. A decoder here is really a pattern match, and the quality of the
  * pattern is the entire difference between reading a light switch and inventing one out of noise.
  *
- * That is also why four of them ship switched off. `disabled` in this app does not stop a decoder running — it
- * marks the reading doubtful — and upstream's flag is mirrored exactly rather than re-litigated, because the
+ * That is also why four of them ship switched off. `disabled` in this app does not stop a decoder running, it
+ * marks the reading doubtful, and upstream's flag is mirrored exactly rather than re-litigated, because the
  * judgement behind it (does this frame catch other people's traffic?) was made against far more radio than
  * anything available here.
  *
@@ -19,7 +19,7 @@
  * so a tripled reading is recognized rather than investigated.
  *
  * The odd one out is RF-tech (72), a thermometer rather than a switch. It sits here because it shares the
- * habits of this group entirely — twenty-four fixed bits, no check, trusted only because it repeats.
+ * habits of this group entirely, twenty-four fixed bits, no check, trusted only because it repeats.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `waveman.c`, `newkaku.c`, `brennenstuhl_rcs_2044.c`, `ht680.c`,
  * `akhan_100F14.c`, `quhwa.c`, `blyss.c`, `elro_db286a.c`, `rftech.c`, `nexa.c`, `jasco.c`.
@@ -39,7 +39,7 @@ const hex2 = (v: number) => (v & 0xff).toString(16).padStart(2, '0');
  * One row lifted into a buffer of its own.
  *
  * Several decoders in this family patch a bit or complement a byte before reading, and upstream does that
- * straight into the shared buffer — which in rtl_433 leaves the *next* decoder looking at bits the previous one
+ * straight into the shared buffer, which in rtl_433 leaves the *next* decoder looking at bits the previous one
  * rewrote. Nothing here does that: a decoder that needs to alter bits works on a copy, and the ones that only
  * need a complement take it into a local rather than storing it back. The tests assert the input buffer comes
  * out of every decode byte for byte as it went in.
@@ -64,7 +64,7 @@ function copyRow(bits: BitBuffer, row: number): BitBuffer {
  * and one strong structural check: three bytes masked with 0xaa must all come out 0xaa.
  *
  * The payload bits arrive reversed relative to how they read, which is why each nibble is assembled bit by bit
- * from masks 0x40, 0x10, 0x04, 0x01 into weights 1, 2, 4, 8 — and inverted at the same time, since a pulse pair
+ * from masks 0x40, 0x10, 0x04, 0x01 into weights 1, 2, 4, 8, and inverted at the same time, since a pulse pair
  * that is present means the setting is off.
  *
  * The last nibble is the state, and upstream now insists it be one of the two values real remotes send. That
@@ -72,7 +72,7 @@ function copyRow(bits: BitBuffer, row: number): BitBuffer {
  * "OFF", so any frame that got past the 0xaa test produced a confident wrong answer rather than nothing.
  *
  * The all-ones frame is refused outright ahead of everything else. Upstream found it arriving from other
- * transmitters — it names the Brennenstuhl below — and it passes the 0xaa test trivially.
+ * transmitters, it names the Brennenstuhl below, and it passes the 0xaa test trivially.
  */
 export const waveman: RDevice = register({
   num: 4,
@@ -124,8 +124,8 @@ export const waveman: RDevice = register({
 /**
  * The body both of them share, and Proove in `remotes.ts` with it.
  *
- * The coding is not really Manchester — it is ternary, with a third symbol the Manchester decoder cannot
- * represent — but the two symbols that carry data are a Manchester pair, so decoding it that way works and
+ * The coding is not really Manchester, it is ternary, with a third symbol the Manchester decoder cannot
+ * represent, but the two symbols that carry data are a Manchester pair, so decoding it that way works and
  * stopping at the third symbol is exactly the rejection wanted. Hence the position test: the decoder must have
  * consumed the whole row, sixty-four or seventy-two bits of it, rather than having tripped over a pair that did
  * not change level.
@@ -133,7 +133,7 @@ export const waveman: RDevice = register({
  * The returned bytes deliberately over-read by one. On a sixty-four bit row only thirty-two bits decode, so
  * `b[4]` is past the message; it reads as zero here exactly as it does in C, where a fresh bit buffer is zeroed
  * and the rows sit end to end. The dim level is read from it, so a thirty-two bit frame reports a dim value of
- * zero rather than garbage — which is upstream's behavior, not an accident of this port.
+ * zero rather than garbage, which is upstream's behavior, not an accident of this port.
  */
 function kakuTernary(src: BitBuffer): Uint8Array | null {
   const databits = new BitBuffer();
@@ -147,7 +147,7 @@ function kakuTernary(src: BitBuffer): Uint8Array | null {
  * KlikAanKlikUit, the Dutch build, and the only one of the three that understands dimming.
  *
  * A command of "11" is the third ternary symbol and means dim, with four more bits of level behind it. The
- * Manchester decoder would stop dead on that pair, so upstream rewrites it to "10" — an ON command — before
+ * Manchester decoder would stop dead on that pair, so upstream rewrites it to "10", an ON command, before
  * decoding, and remembers that it did. This port makes that edit on a copy of the row: in rtl_433 the patch
  * lands in the buffer every later decoder is handed, and a dim command from one switch would quietly change
  * what the next protocol saw.
@@ -252,7 +252,7 @@ export const nexa: RDevice = register({
  * receiver acts on all of them.
  *
  * Upstream uses that. Since nobody presses two buttons deliberately, a frame naming more than one is far more
- * likely to be noise than a command, and it is refused — which is the only thing resembling an integrity check
+ * likely to be noise than a command, and it is refused, which is the only thing resembling an integrity check
  * this protocol has. The same reasoning covers ON and OFF arriving together. Key "E" is accepted even though
  * no handset has that button, because a receiver will act on it.
  *
@@ -319,7 +319,7 @@ const HT680_TRISTATE = ['0', 'X', 'Z', '1'];         // 01 is invalid, 10 is the
  *
  * Thirty-six bits behind a five-bit sync, each pair of bits one physical pin: tied low, tied high, or left
  * floating. Four of those pins are wired the same way in every HT680 product, and those four fixed pairs are
- * what makes this decodable at all — they are checked before anything is reported.
+ * what makes this decodable at all, they are checked before anything is reported.
  *
  * Upstream had those four tests joined with `&&`, so a row was only refused when all four failed at once and
  * any one of them matching by chance let noise through. They are separate conditions here, as they now are
@@ -392,12 +392,12 @@ const AKHAN_COMMANDS: Record<number, string> = {
  * A keyless entry handset built on an HS1527, which is to say a garage remote sold for a car.
  *
  * Twenty bits of factory-burned identity and four bits of command, sent upside down. There is no check and no
- * rolling code, so the same four codes go out for the life of the handset — this decodes which button was
+ * rolling code, so the same four codes go out for the life of the handset, this decodes which button was
  * pressed and nothing that resists a replay.
  *
  * What makes it usable at all is that the command is one-hot: exactly one of four bits, so twelve of the
  * sixteen nibbles are impossible and a frame carrying one is thrown away rather than reported with an unknown
- * command. That is still thin, which is why upstream ships it off — a generic EV1527 remote sends the same
+ * command. That is still thin, which is why upstream ships it off, a generic EV1527 remote sends the same
  * twenty-five bits and roughly a quarter of those will land on a legal command by chance.
  *
  * Upstream complements the shared buffer in place and never puts it back, so in rtl_433 every decoder after
@@ -440,7 +440,7 @@ export const akhan100F14: RDevice = register({
 /**
  * A QH-C-CE-3V doorbell push, also sold as the "1 by One".
  *
- * Eighteen bits, sent inverted, of which the last four are constant — and that is the whole protocol. There is
+ * Eighteen bits, sent inverted, of which the last four are constant, and that is the whole protocol. There is
  * nothing to report but the identity, and upstream does not even pretend otherwise: the button carries no
  * command because a doorbell has only one thing to say.
  *
@@ -448,7 +448,7 @@ export const akhan100F14: RDevice = register({
  * demanded before anything is believed, which is what makes an eighteen-bit frame safe to act on at all.
  *
  * Two things about the order of the tests are load-bearing and are kept as upstream wrote them. The all-zero
- * refusal happens *before* the complement, so what it rejects is a frame of all ones on the wire — silence read
+ * refusal happens *before* the complement, so what it rejects is a frame of all ones on the wire, silence read
  * as data. The length test happens *after* it, which reads oddly since complementing cannot change a length,
  * but the two constant-field tests beside it must see the complemented bytes.
  */
@@ -493,14 +493,14 @@ export const quhwa: RDevice = register({
  * A B&Q remote that recognizes exactly two handsets, and says so.
  *
  * There is no decoding here at all: thirty-three bits are compared against two literal codes and reported as
- * an identity if they match. Upstream's author was candid about why — these remotes are paired to their
+ * an identity if they match. Upstream's author was candid about why, these remotes are paired to their
  * receivers, so the codes are probably specific to the units he had, and nobody has collected enough to work
  * out which bits are the address and which the command.
  *
  * That makes this the narrowest decoder in the file and also the safest: a thirty-three bit exact match against
  * a forty-bit constant cannot false-trigger. It is left enabled for the same reason upstream leaves it enabled.
  *
- * It shares its frame shape with the Elro doorbell below, and the two accept overlapping traffic — see there.
+ * It shares its frame shape with the Elro doorbell below, and the two accept overlapping traffic, see there.
  */
 const BLYSS_CODES = [
   [0xce, 0x8e, 0x2a, 0x6c, 0x80],
@@ -543,7 +543,7 @@ export const blyss: RDevice = register({
  *
  * Anything that arrives five times in a burst at exactly thirty-three bits is reported as an Elro doorbell,
  * which is why upstream ships it off. It will claim the Blyss codes above, and on a Blyss transmission both
- * decoders fire — `test/switches.mjs` asserts that, since it is a property of the two protocols rather than of
+ * decoders fire, `test/switches.mjs` asserts that, since it is a property of the two protocols rather than of
  * this port, and the `disabled` flag is what marks the Elro reading as the doubtful one.
  *
  * Each push is said to alternate between two codes, so one physical bell legitimately shows up under two
@@ -582,7 +582,7 @@ export const elroDb286a: RDevice = register({
  * A thermometer among the switches, and it belongs here: twenty-four bits, no check, trusted only because it
  * repeats three times.
  *
- * The layout is as plain as it gets — an identity byte, the whole degrees with a sign bit above them, then a
+ * The layout is as plain as it gets, an identity byte, the whole degrees with a sign bit above them, then a
  * nibble of tenths with the battery and button flags packed above that. Upstream ships six captured frames
  * beside the code, and the last of them is unusually good evidence: it is documented as having been taken with
  * fresh batteries and the button held, and the two flag bits in it are exactly the ones that claim so. The
@@ -628,7 +628,7 @@ export const rftech: RDevice = register({
  * A door and window sensor, and the only decoder in this file with a genuine integrity check.
  *
  * Three bytes of message and a fourth that is the exclusive-or of the other three, so the four together come to
- * zero. That is weak as checks go — it catches any single bad byte but not two that cancel — and it is still an
+ * zero. That is weak as checks go, it catches any single bad byte but not two that cancel, and it is still an
  * enormous improvement on everything above, which is why this is the one device here that claims a `mic`.
  *
  * The frame is Manchester coded behind a sixteen bit run-in, and the run-in is deliberately unbalanced
@@ -637,7 +637,7 @@ export const rftech: RDevice = register({
  * somewhere arbitrary.
  *
  * The closed state is read as a byte matching a mask rather than a single bit, which is upstream's reading of
- * a byte that is not fully understood — the battery line beside it is commented out there for the same reason.
+ * a byte that is not fully understood, the battery line beside it is commented out there for the same reason.
  * Nothing is guessed at here that upstream does not name.
  */
 export const jasco: RDevice = register({

@@ -7,7 +7,7 @@
  * into bits and the decoders turn into readings.
  *
  * It does two jobs at once. Most of these devices key the carrier on and off, so the envelope is the signal. But
- * a good number shift the frequency instead, holding the carrier up throughout — to the envelope that looks like
+ * a good number shift the frequency instead, holding the carrier up throughout, to the envelope that looks like
  * one very long mark. So while the first mark is running, a second detector watches the frequency discriminator
  * and measures the shifts there; if it finds enough of them before the carrier drops, the burst is reported as
  * frequency shift keying instead, with the discriminator's timings rather than the envelope's.
@@ -27,7 +27,7 @@ export const PD_MAX_GAP_RATIO = 10;                  // a gap this many times th
 
 const OOK_MAX_HIGH_LEVEL = 16384;                    // 0 dB, full scale
 const OOK_EST_HIGH_RATIO = 64;                       // how slowly the carrier-level estimate moves
-const OOK_EST_LOW_RATIO = 1024;                      // how slowly the noise-level estimate moves — very slowly
+const OOK_EST_LOW_RATIO = 1024;                      // how slowly the noise-level estimate moves, very slowly
 const FSK_EST_SLOW = 64;
 
 /**
@@ -35,11 +35,11 @@ const FSK_EST_SLOW = 64;
  *
  * rtl_433 puts the minimum carrier level twelve decibels below full scale, because an rtl-sdr runs its own
  * automatic gain and delivers a signal that fills most of the range. A HackRF does not: the operator sets the
- * gain, and on a quiet antenna the whole scene can sit near the bottom of the range — a busy street corner
+ * gain, and on a quiet antenna the whole scene can sit near the bottom of the range, a busy street corner
  * measured at a magnitude of only a few hundred out of sixteen thousand. rtl_433's fixed floor would then ask
  * for a burst thirteen decibels above that on top of the nine-decibel ratio below, so nothing but a transmitter
  * pressed against the antenna ever triggers. So the floor here is much lower, which lets the ratio to the
- * measured noise do the deciding — a burst is a carrier when it stands nine decibels above whatever the noise
+ * measured noise do the deciding, a burst is a carrier when it stands nine decibels above whatever the noise
  * happens to be, wherever in the range that noise sits.
  */
 const OOK_MIN_HIGH_LEVEL = 600;                      // ≈ −28 dB; only a backstop, so the noise ratio governs

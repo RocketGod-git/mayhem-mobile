@@ -9,12 +9,12 @@
  * the time it heard from a DCF77 broadcast. Which one arrived is a three-bit field, and the two layouts share
  * no fields at all beyond the checksum.
  *
- * The TFA wind sensor is the interesting one. Its line coding is return-to-zero inverted — the carrier sits
+ * The TFA wind sensor is the interesting one. Its line coding is return-to-zero inverted, the carrier sits
  * high and dips briefly, so a *short* interval is a zero and a long run is a string of ones, the opposite of
  * this project's usual convention. On top of that raw stream sit three more transforms: a differential phase
  * decode, a differential NRZ-S decode, and a self-synchronizing G3RUH descrambler, and only then does a sync
  * word appear. Each of those is its own inverse given the preceding one, which is what makes the frame
- * recoverable at all — and what lets the tests build a real frame by running the chain forwards.
+ * recoverable at all, and what lets the tests build a real frame by running the chain forwards.
  *
  * Hideki carries a parity bit after every eight, so nothing is byte aligned until the stuffing is removed,
  * and it packs four different sensors into one protocol told apart purely by how many bytes survive. It also
@@ -34,7 +34,7 @@ const BAND_433 = [433920000];
 const round1 = (x: number) => Math.round(x * 10) / 10;
 const round2 = (x: number) => Math.round(x * 100) / 100;
 const pad2 = (n: number) => n.toString().padStart(2, '0');
-/** One bit out of a row, MSB first — rtl_433's `bitrow_get_bit`. */
+/** One bit out of a row, MSB first, rtl_433's `bitrow_get_bit`. */
 const bitrowGetBit = (row: Uint8Array, pos: number) => (row[pos >> 3] >> (7 - (pos & 7))) & 1;
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ const bitrowGetBit = (row: Uint8Array, pos: number) => (row[pos >> 3] >> (7 - (p
 /**
  * One packet of the eight. Returns a count, so the caller can stop at the first that checks out.
  *
- * The frame is 54 bits, which is not a whole number of bytes, and the two leading bits are padding — so
+ * The frame is 54 bits, which is not a whole number of bytes, and the two leading bits are padding, so
  * everything is read from bit two onward, which is what puts the checksum nibble at the top of the first byte.
  * The last repeat is two bits shorter because it drops the trailing separator.
  */
@@ -54,7 +54,7 @@ function ttx201Packet(bits: BitBuffer, row: number, ctx: DecodeCtx): number {
 
   const b = bits.bytes(row, 2, 56);                // skip the two pad bits, take the packet whole
   const chk = b[0] & 0x3f;
-  // Ten nibbles, so at most 150 — under the byte this app's helper narrows to, and safe to use as is.
+  // Ten nibbles, so at most 150, under the byte this app's helper narrows to, and safe to use as is.
   const sum = addNibbles(b, 5, 1);
   const dataType = (b[2] & 0x70) >> 4;
 
@@ -106,7 +106,7 @@ export const ttx201: RDevice = register({
   decode(_dev, bits: BitBuffer, ctx: DecodeCtx): number {
     let ret = 0;
     let events = 0;
-    // A whole transmission is a preamble row, eight repeats and a stray bit — anything outside that is noise.
+    // A whole transmission is a preamble row, eight repeats and a stray bit, anything outside that is noise.
     if (bits.numRows >= 2 && bits.numRows <= 10) {
       for (let row = 0; row < bits.numRows; row++) {
         ret = ttx201Packet(bits, row, ctx);
@@ -129,7 +129,7 @@ export const ttx201: RDevice = register({
  * temperature, odd means humidity, and different id ranges mean different silicon with different conversions.
  * A five-byte message from one range is a Microchip part counting in 1/128 °C; from another it is a Sensirion
  * part needing an offset that upstream notes varies with supply voltage. None of that is guesswork on this
- * side — every branch is upstream's.
+ * side, every branch is upstream's.
  *
  * Its own doc block says the check is a CRC with init 0xc0, and its code uses 0x00. All five of the example
  * messages it publishes verify with 0x00 and none with 0xc0, so the code is right and the comment is not.
@@ -212,13 +212,13 @@ export const arexxMl: RDevice = register({
  *
  * The radio layer is return-to-zero inverted: the carrier is high nearly all the time and dips for about
  * thirty microseconds to mark a zero, so a long high run stands for however many one-bits fit in it. That
- * gives a raw bitstream, and three transforms then sit on top of it — a differential phase decode, a
+ * gives a raw bitstream, and three transforms then sit on top of it, a differential phase decode, a
  * differential NRZ-S decode, and a G3RUH self-synchronizing descrambler whose taps are bits 16 and 11 of a
  * shift register fed with the NRZ-S output. Only after all three does a sync word appear, and the decoder
  * simply runs the whole row through the chain watching for it.
  *
  * The first byte after the sync says where the CRC-32 sits, and the byte after that says which kind of
- * WeatherHub sensor is talking — which matters because the CRC's starting value is chosen per sensor type.
+ * WeatherHub sensor is talking, which matters because the CRC's starting value is chosen per sensor type.
  * Only the wind sensor's is known, so any other type is left alone rather than checked against a guess.
  *
  * The payload holds six readings taken a couple of minutes apart, most recent first. Only the most recent is

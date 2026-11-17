@@ -9,7 +9,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Pure-Kotlin ADS-B (Mode S) decoder for RAW IQ at 2.0 Msps / 1090 MHz — the Kotlin counterpart of Mayhem's
+ * Pure-Kotlin ADS-B (Mode S) decoder for RAW IQ at 2.0 Msps / 1090 MHz, the Kotlin counterpart of Mayhem's
  * proc_adsbrx. Ported from antirez's dump1090 (via Wardrive Go): magnitude lookup → preamble correlation →
  * Manchester bit extraction → CRC-24 → DF17/18 field decode (ICAO, callsign, altitude, airborne CPR position,
  * velocity). Decoded aircraft are pushed into [AdsbStore].
@@ -41,10 +41,10 @@ object AdsbDecoder : IqProcessor {
     private class Cpr { var evLat = 0; var evLon = 0; var odLat = 0; var odLon = 0; var evT = 0L; var odT = 0L; var haveEv = false; var haveOd = false }
     private val cprState = ConcurrentHashMap<String, Cpr>()
 
-    // De-noise: a lone frame that passes the 24-bit CRC can be a ~2^-24 noise false-positive — on a dead/all-zero
+    // De-noise: a lone frame that passes the 24-bit CRC can be a ~2^-24 noise false-positive, on a dead/all-zero
     // front-end (e.g. a PortaPack HackRF that never handed the radio to the host) one occasionally slips through and
     // shows as a phantom aircraft (a bare ICAO, no callsign/position, that never gets a second frame). Real aircraft
-    // emit several frames/sec, so we require MIN_CONFIRM frames for an ICAO before it's surfaced — a phantom
+    // emit several frames/sec, so we require MIN_CONFIRM frames for an ICAO before it's surfaced, a phantom
     // essentially never repeats the same random ICAO. Per-ICAO count; cleared in [reset]; size-capped as a backstop.
     private val icaoFrames = ConcurrentHashMap<String, Int>()
     private const val MIN_CONFIRM = 2
@@ -55,7 +55,7 @@ object AdsbDecoder : IqProcessor {
     private var dbgPre = 0; private var dbgDf = 0; private var dbgCrcOk = 0; private var dbgCrcFail = 0
     private var dbgLast = 0L
     /** Phone GPS position (lat,lon) provider for LOCAL single-frame CPR decode. Set by the app once it has a GPS fix. When present, a plane can be placed from ONE position frame (dump1090
-     *  decodeCPRrelative), instead of waiting for a matched even+odd pair — so aircraft map almost immediately. */
+     *  decodeCPRrelative), instead of waiting for a matched even+odd pair, so aircraft map almost immediately. */
     @Volatile var refProvider: (() -> Pair<Double, Double>?)? = null
 
     fun reset() { carryLen = 0; cprState.clear(); icaoFrames.clear() }
@@ -90,7 +90,7 @@ object AdsbDecoder : IqProcessor {
             val high = (m[j] + m[j + 2] + m[j + 7] + m[j + 9]) / 6
             if (m[j + 4] >= high || m[j + 5] >= high) { j++; continue }
             if (m[j + 11] >= high || m[j + 12] >= high || m[j + 13] >= high || m[j + 14] >= high) { j++; continue }
-            dbgPre++   // preamble + quiet-zone validated — a real Mode-S candidate
+            dbgPre++   // preamble + quiet-zone validated, a real Mode-S candidate
 
             // --- Manchester bit extraction (2 samples/bit, 112 bits) ---
             var errors = 0
@@ -122,7 +122,7 @@ object AdsbDecoder : IqProcessor {
             if (checksum(msg, msgBits) != 0L) { dbgCrcFail++; j++; continue }   // CRC must be clean (ICAO in the clear)
             dbgCrcOk++
 
-            AdsbStore.noteFrame()                                          // valid Mode-S frame — proof of ingestion
+            AdsbStore.noteFrame()                                          // valid Mode-S frame, proof of ingestion
             decodeAdsb(msg, batch, nowTs)
             j += (msgBits + PREAMBLE) * 2                                  // skip past this message
         }
@@ -134,7 +134,7 @@ object AdsbDecoder : IqProcessor {
 
         if (batch.isNotEmpty()) AdsbStore.merge(batch, nowMs)
 
-        // Once/sec decode-health line — the missing piece for "strong RX but no aircraft": it says whether the
+        // Once/sec decode-health line, the missing piece for "strong RX but no aircraft": it says whether the
         // decoder finds Mode-S preambles at all, and if they survive bit-decode + CRC.
         if (nowMs - dbgLast > 1000L) {
             dbgLast = nowMs
@@ -217,13 +217,13 @@ object AdsbDecoder : IqProcessor {
         val now = System.currentTimeMillis()
         if (odd) { st.odLat = rawLat; st.odLon = rawLon; st.odT = now; st.haveOd = true }
         else { st.evLat = rawLat; st.evLon = rawLon; st.evT = now; st.haveEv = true }
-        // FAST PATH — local single-frame decode referenced to the phone's GPS: one position frame is enough, so a
+        // FAST PATH, local single-frame decode referenced to the phone's GPS: one position frame is enough, so a
         // plane maps immediately instead of waiting to catch a matched even+odd pair (the "N aircraft, 0 on map"
         // case on sparse reception). Only used when a fix is available and the result lands near us (in range).
         refProvider?.invoke()?.let { (rLat, rLon) ->
             cprLocal(rLat, rLon, odd, rawLat, rawLon)?.let { return it }
         }
-        // FALLBACK — global even/odd pairing (no GPS fix, or the local result was out of plausible range).
+        // FALLBACK, global even/odd pairing (no GPS fix, or the local result was out of plausible range).
         if (!st.haveEv || !st.haveOd) return null
         if (abs(st.evT - st.odT) > 10_000L) return null       // frames too far apart to pair
         return cprGlobal(st)
@@ -250,7 +250,7 @@ object AdsbDecoder : IqProcessor {
         var rlon = airDlon * (m + lonFrac)
         if (rlon > 180) rlon -= 360.0
         if (abs(rlon) > 180) return null
-        // ~180 NM guard (≈3° lat; widen lon for high latitudes) — outside this the local cell is ambiguous.
+        // ~180 NM guard (≈3° lat; widen lon for high latitudes), outside this the local cell is ambiguous.
         if (abs(rlat - refLat) > 3.0 || abs(rlon - refLon) > 5.0) return null
         return rlat to rlon
     }

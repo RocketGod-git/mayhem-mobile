@@ -993,7 +993,7 @@ class MeshDecoder(private val log: PacketLog) : IqProcessor {
             MeshField("SIGNAL", "+${f.snrDb} dB"),
             MeshField("LENGTHS", d.lengths.sorted().joinToString(", ") + " bytes"),
             MeshField("NODE ID", if (d.address >= 0) "%06X (%d), heard %d×".format(d.address, d.address, d.addressSeen) else "not announced yet"),
-            MeshField("FRAME LAYOUT", "index · clock (128/s) · check — ID frames: index · F0 · ID · clock · … 01 00"))
+            MeshField("FRAME LAYOUT", "index · clock (128/s) · check · ID frames: index · F0 · ID · clock · … 01 00"))
         if (f.sync == HOP9C && f.tag >= 0) {
             d.fields = d.fields.filter { it.name != "FRAME LAYOUT" && it.name != "NODE ID" }.toMutableList().also {
                 it.add(2, MeshField("CHANNEL BYTE", "%02X at %.3f MHz (the middle byte of the sync word follows the channel)".format(f.tag, f.hz / 1e6)))

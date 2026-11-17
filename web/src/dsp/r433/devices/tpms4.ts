@@ -2,7 +2,7 @@
  * Eight more tire pressure sensors, this time the factory-fitted ones.
  *
  * Where the Schrader boards in `tpms3.ts` are aftermarket parts sold to fit many cars, these are the sensors a
- * manufacturer specified for its own models — Toyota, Hyundai, Porsche, Renault, Kia, Nissan, the Italian AVE
+ * manufacturer specified for its own models, Toyota, Hyundai, Porsche, Renault, Kia, Nissan, the Italian AVE
  * modules, and one aftermarket monitor for caravans and trailers. Almost all of them are FSK, and most hide
  * their frame behind a Manchester code of one kind or another.
  *
@@ -11,7 +11,7 @@
  * to invert, which is presumably the point, and it means the decoder has to find the clock before it can find
  * any data.
  *
- * Two of them — Hyundai and Renault — invert the whole buffer before searching, which is how rtl_433 does it
+ * Two of them, Hyundai and Renault, invert the whole buffer before searching, which is how rtl_433 does it
  * and how the decoders already in this tree do it. The runner takes its raw snapshot before any of this runs,
  * so the bits as they came off the air still survive for reporting.
  *
@@ -185,7 +185,7 @@ export const tpmsPorsche: RDevice = register({
     // Twenty bits of a thirty-bit run-in, accepted either way up.
     //
     // Differential Manchester carries its data in transitions, so the frame itself reads the same whichever
-    // polarity the demodulator settles on — but a preamble search does not. rtl_433 looks for one polarity
+    // polarity the demodulator settles on, but a preamble search does not. rtl_433 looks for one polarity
     // here and the opposite one for the AVE sensor below, which is the same run-in either way, so the choice
     // upstream is incidental rather than meaningful. The capture that project ships for this sensor is in
     // fact the other way up from the pattern it searches for, and only decodes once both are accepted.
@@ -206,7 +206,7 @@ export const tpmsPorsche: RDevice = register({
 // AVE (208)
 // ---------------------------------------------------------------------------
 
-/** Four calibrations, chosen by two bits in the frame — the same reading means four different pressures. */
+/** Four calibrations, chosen by two bits in the frame, the same reading means four different pressures. */
 const AVE_SCALE: { ratio: number; offset: number }[] = [
   { ratio: 2.352, offset: 47.0 },
   { ratio: 2.352, offset: 0.0 },
@@ -396,7 +396,7 @@ export const tpmsTyreguard400: RDevice = register({
  * Kia Rio and several Hyundai models.
  *
  * The frame is 154 bits, which is not a whole number of bytes, so the last three bits of the checked range fall
- * off the end of the transmission and are treated as zero — the sensor computes its CRC that way too.
+ * off the end of the transmission and are treated as zero, the sensor computes its CRC that way too.
  */
 function kiaDecode(bits: BitBuffer, ctx: DecodeCtx, row: number, bitpos: number): number {
   const packet = new BitBuffer();
@@ -460,7 +460,7 @@ export const tpmsKia: RDevice = register({
  * Nissan's check is two bits, built by adding up overlapping shifts of each byte.
  *
  * Every byte is folded in five times at different offsets, so each bit of the frame lands in the sum more than
- * once — which is what makes two bits worth having at all.
+ * once, which is what makes two bits worth having at all.
  */
 function nissanChecksum(b: Uint8Array): number {
   let chk = 0;

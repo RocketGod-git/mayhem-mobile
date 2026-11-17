@@ -13,7 +13,7 @@ import kotlin.math.sqrt
 /*
  * DSP building blocks for the HAM receiver: windowed-sinc FIR design, real / complex FIR filters with integer
  * decimation, an NCO mixer, Goertzel tone detectors, an audio AGC, spectral-subtraction noise reduction and an
- * LMS adaptive notch. Twin of web/src/dsp/ham/filters.ts — same algorithms and constants. Allocation-free in the
+ * LMS adaptive notch. Twin of web/src/dsp/ham/filters.ts, same algorithms and constants. Allocation-free in the
  * hot path.
  */
 
@@ -307,7 +307,7 @@ class RealFir(private val h: FloatArray) {
 
 /**
  * Numerically controlled oscillator: multiplies I/Q by e^{-j·2π·f·t}. The phasor is rotated recursively (one
- * complex multiply per sample) and re-normalized every 1024 samples — no trig per sample.
+ * complex multiply per sample) and re-normalized every 1024 samples, no trig per sample.
  */
 class Mixer(private var rate: Double, hz: Double = 0.0) {
     var freq = 0.0; private set

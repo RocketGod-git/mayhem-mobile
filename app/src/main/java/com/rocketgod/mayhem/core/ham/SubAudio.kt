@@ -8,7 +8,7 @@ import kotlin.math.roundToInt
  * Sub-audible squelch decoders fed with the NFM discriminator output. Twin of web/src/dsp/ham/ctcss.ts.
  *  - CTCSS: the 50 EIA tones, a Goertzel bank on 0.5 s blocks at 4 kHz (2 Hz bins resolve the 2.3 Hz spacing at
  *    the bottom of the table); a tone is reported when it beats the runner-up by 6 dB.
- *  - DCS: 134.4 bit/s Golay(23,12) words; the stream is cyclic so any 23-bit window is a codeword — the fixed
+ *  - DCS: 134.4 bit/s Golay(23,12) words; the stream is cyclic so any 23-bit window is a codeword, the fixed
  *    "100" field in bits 9..11 picks the alignment, the 9 low bits are the octal code. Both polarities are tried
  *    (inverted DCS shows up as the complementary bitstream).
  */

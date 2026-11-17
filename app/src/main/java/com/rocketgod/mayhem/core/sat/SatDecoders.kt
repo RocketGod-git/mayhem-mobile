@@ -67,7 +67,7 @@ private val GPS_EPOCH = java.util.Calendar.getInstance(java.util.TimeZone.getTim
 /**
  * ORBCOMM subscriber downlink, 137.2–137.8 MHz. Twin of web/src/dsp/orbcomm.ts.
  *
- * The messages are encrypted, so this decodes everything around them — and the useful part is the satellite's
+ * The messages are encrypted, so this decodes everything around them, and the useful part is the satellite's
  * own position and velocity, broadcast every four seconds, so a satellite goes on the map from its own
  * transmission. SDPSK at 4800 symbols/s is the same thing as MSK at that rate, so an FM discriminator recovers it.
  * From the ORBCOMM System Overview A80TD0008 and Serial Interface Specification E80050015, checked against Frank
@@ -227,8 +227,8 @@ private fun asText(b: ByteArray): String {
 
 /**
  * 9600 baud G3RUH packet, the way most cubesats send their telemetry: direct FSK through an ordinary FM receiver,
- * NRZI, James Miller's x^17 + x^12 + 1 scrambler, then plain AX.25. The order — NRZI, then descramble, then the
- * framer — is taken from gr-satellites. Twin of web/src/dsp/g3ruh.ts.
+ * NRZI, James Miller's x^17 + x^12 + 1 scrambler, then plain AX.25. The order, NRZI, then descramble, then the
+ * framer, is taken from gr-satellites. Twin of web/src/dsp/g3ruh.ts.
  */
 class G3ruhDecoder : FmTap {
     override val minHalf = 10_000.0

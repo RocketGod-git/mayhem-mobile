@@ -1,4 +1,4 @@
-/** Shared processor plumbing — the TypeScript twin of core/IqProcessor.kt. */
+/** Shared processor plumbing, the TypeScript twin of core/IqProcessor.kt. */
 
 export type Emit = (msg: Record<string, unknown>, transfer?: Transferable[]) => void;
 
@@ -23,7 +23,7 @@ export function popcount32(x: number): number {
 /**
  * Audio conditioning for the FM-discriminator decoders: a one-pole DC block (the carrier offset) and a 4th-order
  * Butterworth low-pass (two biquads) that takes out the discriminator's rising high-frequency noise before the
- * tone detectors see it — on a weak packet that noise is 10–20 dB above the tones.
+ * tone detectors see it, on a weak packet that noise is 10–20 dB above the tones.
  */
 export class DiscFilter {
   private dcX = 0; private dcY = 0;

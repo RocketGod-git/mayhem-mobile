@@ -2,15 +2,15 @@
  * Home automation: German FS20 switches and radiator valves, RojaFlex roller shutters, and Somfy's
  * io-homecontrol blinds.
  *
- * All three are command protocols rather than sensors — they carry what someone pressed, not what something
- * measured — and all three are two-way systems where the same air interface carries both the remote's command
+ * All three are command protocols rather than sensors, they carry what someone pressed, not what something
+ * measured, and all three are two-way systems where the same air interface carries both the remote's command
  * and the motor's reply.
  *
  * FS20 is the awkward one. Every byte is followed by its own parity bit, so nothing is byte aligned and each
  * field has to be lifted out nine bits at a time. Its trailing checksum is not a sum of the frame but a
  * residual: subtract the fields back out and what remains should be the protocol type plus however many
- * repeaters relayed it. Only two type values are documented — six for switches and dimmers, twelve for
- * radiator valves — so the residual has to land in one of two narrow bands, and the gap between them belongs
+ * repeaters relayed it. Only two type values are documented, six for switches and dimmers, twelve for
+ * radiator valves, so the residual has to land in one of two narrow bands, and the gap between them belongs
  * to neither protocol. That check plus per-byte parity is all there is, which is why upstream ships this one
  * switched off: foreign traffic satisfies parity alone often enough to matter.
  *
@@ -159,7 +159,7 @@ export const fs20: RDevice = register({
     if (!isFs20 && !isFht) return DECODE_FAIL_SANITY;
 
     // A valve ends its sync run by sending the final value in the extension byte, so a bare command zero is
-    // malformed — and it is one of the easier shapes for foreign traffic to satisfy on parity alone.
+    // malformed, and it is one of the easier shapes for foreign traffic to satisfy on parity alone.
     if (isFht && (cmd & 0x0f) === 0x00 && !(cmd & 0x20)) return DECODE_FAIL_SANITY;
     // These four command codes are documented as unused and no real device sends them.
     if (isFs20 && (cmd & 0x1f) >= 0x1c) return DECODE_FAIL_SANITY;
@@ -204,7 +204,7 @@ const ROJAFLEX_CMD: Record<number, string> = {
  *
  * The bridge is told apart from a real remote by what it leaves out: it clones the remote's frame but never
  * appends the CRC, so a frame that is two bytes short and claims to be a remote is the bridge talking. That
- * makes the length itself a field, which is why the integrity claim is conditional — a frame with no CRC is
+ * makes the length itself a field, which is why the integrity claim is conditional, a frame with no CRC is
  * reported without one rather than with an unearned badge.
  *
  * Upstream carries a signal-cloning block behind two compile-time flags that are both zero; it generates
@@ -264,8 +264,8 @@ export const rojaflex: RDevice = register({
 /**
  * Velux and Somfy blinds, shutters and their remotes.
  *
- * Everything after the run-in is UART framed — each byte sent as ten bits with a start and stop bit around it
- * — including the sync word, which is why the pattern searched for is the UART encoding of `ff33` rather than
+ * Everything after the run-in is UART framed, each byte sent as ten bits with a start and stop bit around it
+ *, including the sync word, which is why the pattern searched for is the UART encoding of `ff33` rather than
  * those bytes themselves.
  *
  * The first byte carries both flags and the frame length, and the length is what bounds the CRC: it counts
@@ -273,7 +273,7 @@ export const rojaflex: RDevice = register({
  * are counted. Every published packet checked against this agrees.
  *
  * A one-way frame ends with a counter and a six-byte authentication code; a two-way one does not, and the
- * payload runs to the end instead. The code is reported as hex rather than interpreted — it is a keyed value
+ * payload runs to the end instead. The code is reported as hex rather than interpreted, it is a keyed value
  * this app has no key for, and presenting it as anything else would be inventing meaning.
  */
 export const somfyIohc: RDevice = register({

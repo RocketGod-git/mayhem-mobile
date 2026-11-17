@@ -3,12 +3,12 @@
  *
  * Most of this batch came with unusually good evidence. Rubicson ships nineteen captures, Bresser
  * twenty-four annotated bit rows, Thermor A6N six sample frames, and Thermor DG950 one full off-air
- * recording — all of which check out arithmetically, so these ports are pinned to radio rather than to
+ * recording, all of which check out arithmetically, so these ports are pinned to radio rather than to
  * their own reasoning. Klimalogg, Inkbird, Acurite and Auriol publish nothing usable, and their tests are
  * built from the transmit side instead.
  *
  * Two upstream defects survive into this file deliberately, both pinned in the test rather than quietly
- * repaired. Rubicson's temperature loses its magnitude whenever the sign bit is set — a C precedence
+ * repaired. Rubicson's temperature loses its magnitude whenever the sign bit is set, a C precedence
  * accident, described at that decoder. Inkbird's documented sample row fails the very CRC it documents,
  * although the CRC's own parameters are provably right. Neither is invented here.
  *
@@ -47,7 +47,7 @@ function sumBytesWide(m: Uint8Array, n: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * A barbecue probe that reports in Fahrenheit and repeats itself relentlessly — twenty-five copies of the
+ * A barbecue probe that reports in Fahrenheit and repeats itself relentlessly, twenty-five copies of the
  * same four bytes is normal, which is why ten matching rows are demanded before anything is believed.
  *
  * The checksum is unusual only in being stated backwards: the first three bytes summed, minus the fourth,
@@ -56,7 +56,7 @@ function sumBytesWide(m: Uint8Array, n: number): number {
  * captures in the source file satisfy it.
  *
  * The temperature is where this decoder is wrong, and knowingly so. The layout documents a sign bit and
- * ten bits of magnitude, and the captures bear that out — the five sub-zero recordings all set the bit,
+ * ten bits of magnitude, and the captures bear that out, the five sub-zero recordings all set the bit,
  * and negating their magnitude reproduces the Celsius readings written beside them. But the C reads
  * `sign ? -1 : 1 * magnitude`, and `*` binds tighter than `?:`, so the whole negative branch is the bare
  * constant -1: every reading below freezing is reported as -1 °F regardless of what the sensor sent. That
@@ -107,7 +107,7 @@ export const rubicson48659: RDevice = register({
  * A logging thermometer whose whole transmission, sync word included, goes out bit-reflected.
  *
  * That reflection is why the preamble searched for is 0xb4 0x2b rather than the 0x2d 0xd4 the protocol
- * documents — the same two bytes seen the way they arrive. It also explains the odd order of the checks
+ * documents, the same two bytes seen the way they arrive. It also explains the odd order of the checks
  * below: the fixed 0x56 type byte is tested first, while the payload is still reflected, so it is compared
  * against 0x6a. Only once that cheap gate passes is the buffer turned the right way round and the CRC run.
  *
@@ -173,14 +173,14 @@ export const klimalogg: RDevice = register({
  *
  * The CRC is a reflected CRC-16 with a non-standard starting value, and it is worth saying why this port
  * trusts it, because the file's own sample row does not satisfy it. The parameters are checkable
- * independently — the source states `check=0x3583`, the value the algorithm gives for the digits one
+ * independently, the source states `check=0x3583`, the value the algorithm gives for the digits one
  * through nine, and running the polynomial and initial value quoted here over that string reproduces
  * 0x3583 exactly. So the arithmetic is right and the sample is not: its "Sample" column is a per-field
  * illustration assembled from more than one transmission, which the file half admits by describing a
  * temperature of 0xD200 in prose while listing 0xD600 in the column beside it. The test pins both facts.
  *
- * `battery_ok` carries a fraction rather than a flag here. That is upstream's choice — the sensor reports
- * a percentage, and the field is emitted as hundredths — and it is kept so the two agree field for field.
+ * `battery_ok` carries a fraction rather than a flag here. That is upstream's choice, the sensor reports
+ * a percentage, and the field is emitted as hundredths, and it is kept so the two agree field for field.
  */
 export const inkbirdIth20r: RDevice = register({
   num: 194,
@@ -215,7 +215,7 @@ export const inkbirdIth20r: RDevice = register({
       model: 'Inkbird-ITH20R',
       type: 'Weather',
       id: (msg[9] << 8) | msg[8],
-      battery_ok: round2(msg[7] * 0.01),             // a level, not a flag — upstream's own field shape
+      battery_ok: round2(msg[7] * 0.01),             // a level, not a flag, upstream's own field shape
       sensor_num: msg[4],                            // 2 once an external probe is plugged in
       temperature_C: round1(temperature),
       temperature_2_C: round1(temperature2),         // reads 130.0 when no second probe is attached
@@ -233,7 +233,7 @@ export const inkbirdIth20r: RDevice = register({
 /**
  * A two-probe barbecue thermometer: one reading for the meat, one for the grill around it.
  *
- * The line coding is doubly turned around — inverted, then reflected byte by byte — and the reflection
+ * The line coding is doubly turned around, inverted, then reflected byte by byte, and the reflection
  * happens in place, on the buffer itself, exactly as upstream does it. That matters for a row that then
  * fails its checksum: the row stays reflected, and any decoder that runs afterwards sees it that way.
  * Faithfulness wins over tidiness here, because that is the behaviour every other rtl_433 decoder is
@@ -241,7 +241,7 @@ export const inkbirdIth20r: RDevice = register({
  *
  * The checksum is a plain sum with carry, and the sum is deliberately taken at full width. Upstream
  * narrows it only for the comparison against the frame's own byte, then tests the unnarrowed value
- * against zero to reject a row of fifty-six zeros — which would otherwise decode as a perfectly
+ * against zero to reject a row of fifty-six zeros, which would otherwise decode as a perfectly
  * self-consistent frame reading an id of zero, a channel of zero and a checksum of zero.
  *
  * Both probes can report out-of-range sentinels rather than temperatures: 7000 means the probe is
@@ -306,7 +306,7 @@ export const acurite01185m: RDevice = register({
 const DG950_WIND_DIR = [157, 45, 135, 67, 180, 22, 112, 90, 225, 337, 247, 315, 202, 0, 270, 292];
 
 /**
- * A four-part weather station — thermometer, wind vane, anemometer and rain gauge — that sends its whole
+ * A four-part weather station, thermometer, wind vane, anemometer and rain gauge, that sends its whole
  * state as thirteen separate nine-bit bursts rather than one frame.
  *
  * Each burst is a start bit that must be zero followed by one reflected byte, so the demodulator hands
@@ -419,7 +419,7 @@ export const thermorDg950: RDevice = register({
  *
  * The frame is thirty-eight bits, which is to say nothing is byte aligned: a mandatory zero bit comes
  * first, and everything after it is read from a copy shifted one bit left. The checksum is six bits, the
- * sum of the payload's nibbles, and the payload's last bit is part of it — hence the mask that clears
+ * sum of the payload's nibbles, and the payload's last bit is part of it, hence the mask that clears
  * that bit before summing, so the sum does not include a fragment of its own answer.
  *
  * The nibble sum tops out at 120 over four bytes, comfortably inside a byte, so the shared helper's
@@ -427,7 +427,7 @@ export const thermorDg950: RDevice = register({
  * channel from decoding, since all-zero satisfies the checksum trivially.
  *
  * The temperature is signed twelve bits, and upstream extracts the sign by parking those bits at the top
- * of a sixteen-bit integer and shifting back down — the shift, not a comparison, is what extends the sign.
+ * of a sixteen-bit integer and shifting back down, the shift, not a comparison, is what extends the sign.
  * Reproduced literally; the test checks a sub-zero reading against a documented one.
  *
  * The same thirty-eight-bit shape is used by an Oregon Scientific hygrometer with a completely different
@@ -495,7 +495,7 @@ const oriaNibble = (m: Uint8Array, k: number) => (k % 2 === 0) ? (m[k >> 1] >> 4
  * The line coding is Manchester in the G. E. Thomas convention, which is the opposite polarity from the
  * one the shared decoder implements, so the buffer is inverted first and the standard routine then reads
  * it correctly. Two structural checks run before that, both on the raw pre-Manchester bits: a warm-up of
- * 0xaa bytes at the front, and 0x69 at the back. That trailing byte is not arbitrary — it is the low
+ * 0xaa bytes at the front, and 0x69 at the back. That trailing byte is not arbitrary, it is the low
  * nibble of the frame's fixed 0x65 terminator seen through the line code, which is a useful thing to know
  * when building a frame by hand.
  *
@@ -566,7 +566,7 @@ export const oriaWa150km: RDevice = register({
 /**
  * A plain thermometer with a checksum that changes shape depending on which sensor sent it.
  *
- * The low nibble is ordinary — the low nibbles of the three payload bytes, summed. The high nibble is not:
+ * The low nibble is ordinary, the low nibbles of the three payload bytes, summed. The high nibble is not:
  * on an id of 4 it collapses to a single bit, the parity of the high-nibble sum plus the carry out of the
  * low one, with the three bits above it held at zero. On the other ids seen, 3 and 5, it is a parity bit
  * over selected fields sitting on top of a three-bit value that folds in that same carry.
@@ -575,7 +575,7 @@ export const oriaWa150km: RDevice = register({
  * all six sample frames the source publishes satisfy it exactly, across both variants and three different
  * ids. The test runs every one of them.
  *
- * The temperature is unsigned — this sensor has no way to express a reading below zero — and anything
+ * The temperature is unsigned, this sensor has no way to express a reading below zero, and anything
  * above 250 °C is thrown out before the checksum is even considered.
  */
 export const thermorA6n132tx: RDevice = register({
@@ -636,8 +636,8 @@ export const thermorA6n132tx: RDevice = register({
 /**
  * A Lidl temperature station whose only integrity check is four bits wide.
  *
- * Four bits is not enough to keep other people's weather sensors out — upstream measured two dozen false
- * positives against its own test corpus — so two sanity checks carry most of the weight instead. The
+ * Four bits is not enough to keep other people's weather sensors out, upstream measured two dozen false
+ * positives against its own test corpus, so two sanity checks carry most of the weight instead. The
  * flags nibble has one bit always set and two always clear in every capture anyone has recorded, and the
  * temperature is held to a range no real reading approaches. Upstream is candid that these are
  * mitigations rather than a fix, and that a channel nobody has tested could in principle be turned away
@@ -665,7 +665,7 @@ export const auriolHg04641a: RDevice = register({
     const b = bits.bytes(row, 0, 36);
     b[4] >>= 4;                                      // only the top nibble of the fifth byte is real
 
-    const sum = addNibbles(b, 4);                    // eight nibbles, so at most 120 — no narrowing risk
+    const sum = addNibbles(b, 4);                    // eight nibbles, so at most 120, no narrowing risk
     if ((sum & 0x0f) !== b[4]) return DECODE_FAIL_MIC;
 
     const flags = b[2] >> 4;

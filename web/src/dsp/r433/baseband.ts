@@ -1,7 +1,7 @@
 /**
  * From raw samples to the two streams the pulse detector reads.
  *
- * The envelope is how loud the signal is, moment to moment — that is the whole signal for a device that keys its
+ * The envelope is how loud the signal is, moment to moment, that is the whole signal for a device that keys its
  * carrier on and off. The discriminator output is how far the frequency has moved from center, which is the whole
  * signal for a device that shifts frequency instead. Both are produced for every sample, because until a burst
  * has been examined there is no telling which kind it is.
@@ -11,7 +11,7 @@
  * to expect. These things transmit for a few milliseconds a minute, so two landing on top of each other is rare
  * enough to ignore.
  *
- * How wide that slice is, though, is not free — every megahertz of it brings its own noise. See `decim` below,
+ * How wide that slice is, though, is not free, every megahertz of it brings its own noise. See `decim` below,
  * which is worth about five decibels and is usually the difference between hearing a device and staring at an
  * empty list.
  *
@@ -25,7 +25,7 @@ const FM_A1 = 0.50953, FM_B0 = 0.24524;
 
 /**
  * Arctangent to about one part in ten thousand, which is far finer than the tone detector can use, and several
- * times quicker than the library call — this runs on every sample of a two megahertz stream.
+ * times quicker than the library call, this runs on every sample of a two megahertz stream.
  */
 function fastAtan2(y: number, x: number): number {
   const ax = Math.abs(x), ay = Math.abs(y);
@@ -51,7 +51,7 @@ export class Baseband {
   private xr = 0; private xi = 0; private xf = 0; private yf = 0;
   // The decimator's state, likewise carried across chunk boundaries: two integrators and two combs per
   // channel. Averaging groups of samples once leaves a lot of out-of-band noise to fold back in when the rate
-  // drops; running the average twice — a triangular weighting rather than a flat one — rejects a good deal
+  // drops; running the average twice, a triangular weighting rather than a flat one, rejects a good deal
   // more of it for two more additions a sample.
   private i1 = 0; private i2 = 0; private q1 = 0; private q2 = 0;
   private c1i = 0; private c2i = 0; private c1q = 0; private c2q = 0;
@@ -61,7 +61,7 @@ export class Baseband {
    * How many input samples are averaged into one. Set from the span the app wants to listen across.
    *
    * This is the single biggest thing standing between a weak sensor and a decode. The envelope detector has no
-   * idea what frequency anything is on — it sees the loudness of the whole sampled span at once, so every
+   * idea what frequency anything is on, it sees the loudness of the whole sampled span at once, so every
    * megahertz of that span contributes its own noise. Noise magnitude grows with the square root of bandwidth,
    * which means listening across two megahertz rather than a quarter of one costs about nine decibels of
    * sensitivity for every device in the band.
@@ -76,7 +76,7 @@ export class Baseband {
    *
    * Measured rather than assumed: going from two megahertz to a quarter of one lets the detector find a burst
    * about five decibels fainter. That is short of the nine the bandwidth arithmetic promises, because
-   * decimating cannot reject everything that folds back in — `test/r433.mjs` measures it and would notice a
+   * decimating cannot reject everything that folds back in, `test/r433.mjs` measures it and would notice a
    * regression.
    */
   decim = 1;
@@ -114,7 +114,7 @@ export class Baseband {
       // Integrate every sample; take a difference of differences once per output. The signal adds coherently
       // through the integrators, the noise does not, which is where the sensitivity comes from. At a
       // decimation of one this reduces exactly to a pass-through, so there is no second code path to keep
-      // honest — and no branch to make the hot loop guess about its own types.
+      // honest, and no branch to make the hot loop guess about its own types.
       //
       // Everything here is deliberately kept to thirty-two-bit integers. The integrators are running sums and
       // would otherwise grow without bound; in floating point that quietly loses precision after a few minutes

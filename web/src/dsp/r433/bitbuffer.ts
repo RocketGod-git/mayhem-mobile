@@ -1,8 +1,8 @@
 /**
  * The two-dimensional bit buffer every rtl_433 device decoder reads from.
  *
- * A slicer turns a burst of pulses into rows of bits — one row per transmission, or per repeat of the same
- * transmission — and hands the buffer to each decoder in turn. Everything a decoder does (searching for a
+ * A slicer turns a burst of pulses into rows of bits, one row per transmission, or per repeat of the same
+ * transmission, and hands the buffer to each decoder in turn. Everything a decoder does (searching for a
  * preamble, pulling bytes out at a bit offset, finding the row that repeated often enough to be trusted) is a
  * method here.
  *
@@ -272,7 +272,7 @@ export class BitBuffer {
     return -1;
   }
 
-  /** As above, but rows only have to agree across their first `minBits` — for transmitters with ragged tails. */
+  /** As above, but rows only have to agree across their first `minBits`, for transmitters with ragged tails. */
   findRepeatedPrefix(minRepeats: number, minBits: number): number {
     for (let i = 0; i < this.numRows; i++) {
       if (this.bitsPerRow[i] >= minBits && this.countRepeats(i, minBits) >= minRepeats) return i;

@@ -1,7 +1,7 @@
 /**
  * Household energy monitors: the clamp-on and optical sensors that watch a domestic electricity supply.
  *
- * These are not the utility's meter — they are the consumer display bought separately, either a current clamp
+ * These are not the utility's meter, they are the consumer display bought separately, either a current clamp
  * around the incoming cable or an optical head taped over the meter's blinking pulse lamp. So the readings are
  * an estimate rather than a billing figure, and several of them say so by reporting a raw current or a pulse
  * count and leaving the conversion to the display.
@@ -21,7 +21,7 @@ import { addBytes, crc8, crc16 } from '../util.js';
  * The Efergy e2 current clamp.
  *
  * It reports a raw reading from its analog converter together with the exponent to scale it by, rather than
- * amps — the display holds the calibration. The exponent arrives as a negated byte, so it is undone here.
+ * amps, the display holds the calibration. The exponent arrives as a negated byte, so it is undone here.
  */
 export const efergyE2Classic: RDevice = register({
   num: 36,

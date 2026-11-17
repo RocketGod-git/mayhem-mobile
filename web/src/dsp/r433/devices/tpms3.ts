@@ -1,12 +1,12 @@
 /**
- * Schrader tire pressure sensors — the valve-stem transmitters in a very large share of cars.
+ * Schrader tire pressure sensors, the valve-stem transmitters in a very large share of cars.
  *
  * Five boards, and no two of them agree on anything. The pressures come in three different units and three
  * different scalings; the temperature is Celsius on one, Fahrenheit on another, and absent from a third; and
  * the integrity checks run from a proper CRC down to two bits of parity. What they share is that none carries
  * a family code, so each is told apart by frame length and by whichever check happens to close.
  *
- * The SMD3MA4 and the NIS315G3 are the same board with the pressure scaled differently — a fifth of a pound
+ * The SMD3MA4 and the NIS315G3 are the same board with the pressure scaled differently, a fifth of a pound
  * per step against a quarter. Nothing in the frame distinguishes them, so both are registered and both will
  * claim a matching transmission; a reading from the wrong one is 25 per cent out, which is the price of the
  * manufacturer shipping two calibrations under one frame.
@@ -171,7 +171,7 @@ export const schraderNis315g3: RDevice = register({
  *
  * Its integrity check is two bits computed from how many ones there are in the payload and how many of those
  * fall at even positions. That rejects only three random frames in four, so the pressure and temperature are
- * bounded as a second, independent filter — a tire in use never approaches the chip's own rated range.
+ * bounded as a second, independent filter, a tire in use never approaches the chip's own rated range.
  */
 export const schraderMrxbc5a4: RDevice = register({
   num: 328,

@@ -258,7 +258,7 @@ export class Tx {
     return this.fmTones(`QC-II ${freqA}/${freqB}`, freqHz, list, RATE, 3000);
   }
 
-  /** Random OOK on/off keying — authorised RF-lab work. */
+  /** Random OOK on/off keying, authorised RF-lab work. */
   ookNoise(chipUs: number, seconds: number, freqHz: number): boolean {
     const chipSamples = Math.max(1, Math.floor(chipUs * RATE / 1_000_000));
     const chips = Math.floor(seconds * RATE / chipSamples);
@@ -290,7 +290,7 @@ export class Tx {
   /**
    * De Bruijn "open sesame" gate opener: instead of sending each fixed OOK code in full, stream a de Bruijn
    * sequence in which every `bits`-bit code appears once as a sliding window, so a receiver keyed to any code in
-   * that space matches as the window passes — the whole space in ~2^bits symbols rather than 2^bits × bits.
+   * that space matches as the window passes, the whole space in ~2^bits symbols rather than 2^bits × bits.
    */
   gateOpener(bits: number, teUs: number, freqHz: number): boolean {
     const seq = Apps.deBruijn(bits);
@@ -307,7 +307,7 @@ export class Tx {
     return this.ookPulses(`weather ${tempC}°C ${humidity ?? '--'}%`, freqHz, pulses);
   }
 
-  /** Tesla charge-port opener — a fixed OOK burst, same on 315 (US/JP) and 433.92 MHz (EU). See tx-apps.teslaPulses. */
+  /** Tesla charge-port opener, a fixed OOK burst, same on 315 (US/JP) and 433.92 MHz (EU). See tx-apps.teslaPulses. */
   teslaChargePort(freqHz: number): boolean {
     return this.ookPulses(`Tesla charge port ${(freqHz / 1e6).toFixed(2)} MHz`, freqHz, Apps.teslaPulses(RATE));
   }
@@ -358,7 +358,7 @@ export class Tx {
     });
   }
 
-  /** ADS-B DF17 short broadcast at 1090 MHz — illegal to rebroadcast in most places. */
+  /** ADS-B DF17 short broadcast at 1090 MHz, illegal to rebroadcast in most places. */
   adsb(icao: number, meLo: number, meHi: number): boolean {
     const frame = Apps.adsbFrame(icao, meLo, meHi);
     const slots = Apps.adsbSymbols(frame);

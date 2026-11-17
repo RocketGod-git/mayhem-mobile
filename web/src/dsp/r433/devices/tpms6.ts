@@ -1,5 +1,5 @@
 /**
- * The aftermarket tire pressure sensors — the screw-on caps sold for caravans, trailers and older cars.
+ * The aftermarket tire pressure sensors, the screw-on caps sold for caravans, trailers and older cars.
  *
  * These finish the family. They are cheap sensors built on a handful of shared chips, and it shows: four of
  * the seven are the same SP372-family part under different brand names, with the same eight-byte frame, the
@@ -8,7 +8,7 @@
  * That shared design has an awkward consequence. On those parts the pressure and temperature offsets are
  * calibrated per physical sensor rather than fixed by the protocol, so a decoder can only report readings for
  * units somebody has already measured against a real gauge. Two units are known for the Jansite TY-468, two
- * for the iMars T240 — and for the iMars, nobody ever recorded a ground-truth reading at all, so it can
+ * for the iMars T240, and for the iMars, nobody ever recorded a ground-truth reading at all, so it can
  * confirm that a sensor is transmitting and identify it, but cannot honestly say what pressure it read. It
  * reports the raw frame and nothing else, which is the truthful answer rather than a fabricated number.
  *
@@ -99,7 +99,7 @@ export const tpmsJansiteSolar: RDevice = register({
  * Read the eight-byte frame these chips share, and check the parts of it that are structural.
  *
  * There is no CRC. What there is instead: the last byte repeats the first, the low nibbles of the first two
- * bytes agree, and two bytes are fixed affine functions of the first — so their sum is a constant that
+ * bytes agree, and two bytes are fixed affine functions of the first, so their sum is a constant that
  * identifies the individual sensor unit. That constant is the only thing standing between a real frame and
  * noise, which is why the calibration tables below are keyed on it.
  */
@@ -192,7 +192,7 @@ export const tpmsImarsT240: RDevice = register({
  * A different wire format from the Jansite Solar above despite the name, and again no CRC.
  *
  * Here the two bytes that are affine functions of the first sum to a constant that is the same on every
- * sensor, so unlike its cousins this one's readings are not per-unit — but it pays for that by having no
+ * sensor, so unlike its cousins this one's readings are not per-unit, but it pays for that by having no
  * identity at all. What looks like it ought to be a sensor id turns out to vary between transmissions from
  * the same sensor, so the raw frame is reported instead and distinct sensors are told apart by that.
  */
@@ -380,7 +380,7 @@ const SEFIS_PAGE: Record<number, number> = { 7: 0, 4: 1, 5: 2, 2: 3 };
 /**
  * A frame that arrives bit-inverted, with the pressure spread across a deliberately scrambled page number.
  *
- * The page bits are not a plain two-bit field — the four values that appear are 7, 4, 5 and 2, standing for
+ * The page bits are not a plain two-bit field, the four values that appear are 7, 4, 5 and 2, standing for
  * nought through three in that order, which is only knowable from having watched a real sensor deflate. Any
  * other value means this is not a pressure reading, and the frame is reported without one rather than with a
  * made-up figure.

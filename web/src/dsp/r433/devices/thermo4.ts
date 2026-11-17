@@ -7,14 +7,14 @@
  *
  * The WEC-2103 has a checksum that is mangled on purpose: the CRC is computed over a frame with one nibble
  * swapped out for another taken from further along, and then exclusive-ored with a third. None of that is
- * reconstruction on this side — it is what the sensor does, and it is why a straight CRC over the frame never
+ * reconstruction on this side, it is what the sensor does, and it is why a straight CRC over the frame never
  * matches. It also carries an upstream defect that is preserved here and described where it occurs.
  *
  * The Homelead soil probe is the only one of the five with published radio, and its two example rows are
  * labelled as one capture shown raw and inverted. They are not: they are two different transmissions from two
  * different sensors, and both independently satisfy the device's own checksum. The tests assert both.
  *
- * The WallarGe thermometer checks itself twice over — a byte sum and a parity byte whose bits are the
+ * The WallarGe thermometer checks itself twice over, a byte sum and a parity byte whose bits are the
  * *inverse* of the usual convention, with three bits that must be zero. Upstream reports a battery field only
  * when the battery is low, so the field appears exclusively with the value zero; that is odd but faithful.
  *
@@ -130,7 +130,7 @@ export const homeleadHg9901: RDevice = register({
     bits.invert();
     const b = bits.bb[row];
 
-    // Fourteen nibbles, so at most 210 — under the byte the shared helper narrows to.
+    // Fourteen nibbles, so at most 210, under the byte the shared helper narrows to.
     if ((addNibbles(b, 7) & 0x0f) !== ((b[7] & 0xf0) >> 4)) return DECODE_FAIL_MIC;
 
     const temperature = (b[5] & 0x80) ? -(b[5] & 0x7f) : (b[5] & 0x7f);
@@ -163,7 +163,7 @@ export const homeleadHg9901: RDevice = register({
  *
  * Its line coding is the other way up from what the slicer produces, so each candidate row is turned over in
  * place before anything is read. Then a byte sum has to match, and a parity byte has to agree with all five
- * data bytes — but inverted from the usual sense, a set bit meaning an *even* number of ones. Three bits of
+ * data bytes, but inverted from the usual sense, a set bit meaning an *even* number of ones. Three bits of
  * that byte must also be zero, which the paired clock apparently insists on too.
  *
  * The battery field only appears when the battery is low, so in practice it is only ever reported as zero.
@@ -236,7 +236,7 @@ export const wallargeCltx001: RDevice = register({
  * A two-probe cooking thermometer whose check byte carries two different things at once.
  *
  * Its low three bits are the frame's byte sum taken modulo eight, and its top four are one parity flag per
- * data byte — set when that byte holds an *even* number of ones. Both halves have to agree.
+ * data byte, set when that byte holds an *even* number of ones. Both halves have to agree.
  *
  * A probe that is not plugged in reads a fixed sentinel rather than a temperature, so that channel is simply
  * not reported. Everything is in Fahrenheit regardless of what the display is set to.
@@ -282,7 +282,7 @@ export const esunEn2053: RDevice = register({
 /**
  * Four cooking probes on one transmitter, sent nine times over with no gap between repeats.
  *
- * Because the repeats run together, they are not separate rows — the decoder walks a single long row looking
+ * Because the repeats run together, they are not separate rows, the decoder walks a single long row looking
  * for the next run-in each time, so a repeat spoiled in the air costs nothing as long as a later one survives.
  * That is also why the checksum failing moves on to the next repeat rather than rejecting the burst.
  *

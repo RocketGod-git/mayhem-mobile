@@ -2,8 +2,8 @@
  * What a device decoder is, and what it produces.
  *
  * rtl_433's design is what makes a bulk port tractable: a decoder is not a state machine reading a live signal,
- * it is a pure function from a buffer of bits to a reading. The radio work — finding a burst, measuring its
- * pulses, slicing those into bits — happens once, in code shared by every protocol. Each decoder then declares
+ * it is a pure function from a buffer of bits to a reading. The radio work, finding a burst, measuring its
+ * pulses, slicing those into bits, happens once, in code shared by every protocol. Each decoder then declares
  * its timings, gets handed the bits, and either recognizes them or does not. Several hundred of those are a lot
  * of typing but no new signal processing, and every one of them can be tested without a radio.
  *
@@ -33,7 +33,7 @@ export const FSK_DEMOD_MIN_VAL = 16;
 
 /**
  * What a decoder returns. A positive number is how many readings it produced; zero or less says why it did not,
- * which is worth keeping separate — "too short to be mine" is normal traffic, while "checksum failed" means a
+ * which is worth keeping separate, "too short to be mine" is normal traffic, while "checksum failed" means a
  * real transmission from this device arrived damaged, and the app can say so.
  */
 export const DECODE_FAIL_OTHER = 0;
@@ -61,8 +61,8 @@ export type DecodeFn = (dev: RDevice, bits: BitBuffer, ctx: DecodeCtx) => number
  * A protocol: its timings in microseconds, and the function that reads its bits.
  *
  * The timings are the same numbers the rtl_433 device tables carry, so a ported decoder can be checked field by
- * field against its source. `shortWidth`/`longWidth` mean different things per modulation — pulse widths for
- * PWM, gap widths for PPM, bit periods for PCM — which is why the slicers, not the devices, interpret them.
+ * field against its source. `shortWidth`/`longWidth` mean different things per modulation, pulse widths for
+ * PWM, gap widths for PPM, bit periods for PCM, which is why the slicers, not the devices, interpret them.
  */
 export interface RDevice {
   /** Protocol number in rtl_433's own list, kept so a user can look a device up against that project's docs. */

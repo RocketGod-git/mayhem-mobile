@@ -2,7 +2,7 @@
  * Alarm systems: door and window contacts, motion detectors, smoke alarms and the panels they report to.
  *
  * These are worth listening to for a reason the weather sensors are not. A contact sensor announces itself
- * every time a door opens, in clear, with a serial number that never changes — so anyone within range can see
+ * every time a door opens, in clear, with a serial number that never changes, so anyone within range can see
  * the shape of a building's activity without touching anything. Several of the systems here have no
  * cryptography at all; the ones with a CRC have it to survive interference, not eavesdropping.
  *
@@ -88,7 +88,7 @@ const INTERLOGIX_TYPES: Record<number, string> = {
 };
 
 /**
- * Interlogix, GE and UTC devices — a large installed base in North American homes.
+ * Interlogix, GE and UTC devices, a large installed base in North American homes.
  *
  * Each frame carries five switch states rather than one, because a single device may have several inputs: a
  * contact and a tamper, or the four buttons of a keyfob. The keyfob encodes which button in the same bits the
@@ -235,7 +235,7 @@ export const dscSecurityWs4945: RDevice = register({
 });
 
 /**
- * X10 radio remotes — the home automation system that predates all of this, and still turns lamps on.
+ * X10 radio remotes, the home automation system that predates all of this, and still turns lamps on.
  *
  * There is no checksum. Instead each byte is followed by its own complement, and four bits are known to be
  * constant, which together is enough to reject noise. The house letter is not stored plainly: it is a small

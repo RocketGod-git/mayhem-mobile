@@ -9,7 +9,7 @@
  *
  * Only one of the twelve publishes a frame: `opel_mokka.c` prints a complete transmission in its doc comment
  * as a binary row, grouped 1/11/5/64 rather than in bytes. That row is used directly and it settles the
- * alignment — its five type bits read 26, exactly the event number the same comment states. It also exposes a
+ * alignment, its five type bits read 26, exactly the event number the same comment states. It also exposes a
  * genuine off-by-one in upstream's own payload extraction, described at that decoder.
  *
  * Three ship switched off upstream and are mirrored that way: EnOcean ERP1 (needs a high sample rate), CED7000
@@ -70,7 +70,7 @@ function bitrowGetByte(row: Uint8Array, bitIdx: number): number {
 
 /**
  * A generic probe whose frame is close enough to a Fine Offset WH2 that its own file admits it cannot tell
- * them apart — the two differ only in the message-type nibble, 0x3 here against 0x4 there.
+ * them apart, the two differ only in the message-type nibble, 0x3 here against 0x4 there.
  *
  * The humidity byte is not a reading: this probe has no hygrometer and pins the field to 0xff, so a byte that
  * is anything else means the frame was misread. That test runs *after* the CRC, which is the order upstream
@@ -119,8 +119,8 @@ const IBIS_PREAMBLE = new Uint8Array([0xab]);
 /**
  * The beacon a bus or tram sends to the stop it is pulling into, part of the German IBIS fleet system.
  *
- * Only two of its twenty-eight bytes are interpreted — the vehicle number and a counter that upstream believes
- * tracks door openings — so the whole frame also goes out as hex. That is deliberate: naming a field nobody has
+ * Only two of its twenty-eight bytes are interpreted, the vehicle number and a counter that upstream believes
+ * tracks door openings, so the whole frame also goes out as hex. That is deliberate: naming a field nobody has
  * confirmed would be worse than publishing the bytes and letting someone who has the fleet documentation read
  * them.
  *
@@ -177,7 +177,7 @@ export const ibisBeacon: RDevice = register({
  * the tests because either could be mistaken for a porting slip:
  *
  * The early-abort combines the preamble and the channel byte with `&&`, so a frame whose preamble is *wrong*
- * is only thrown out when its channel byte also looks right — which means a bad preamble alone still reaches
+ * is only thrown out when its channel byte also looks right, which means a bad preamble alone still reaches
  * the checksum. Reading that as `||` would be the obvious intent, and would change which frames decode.
  *
  * The checksum is skipped entirely when the sum happens to be zero: `chk != 0 && chk != b[5]`. A frame whose
@@ -246,7 +246,7 @@ const ENOCEAN_PREAMBLE = new Uint8Array([0x55, 0x20]);
  * ignored.
  *
  * The group decoder returns either a two-bit code or a negative error, and upstream stores that in a `uint8_t`
- * — so an error becomes 0xff or 0xfc and stops the loop by failing the `== 1` test rather than by being
+ *, so an error becomes 0xff or 0xfc and stops the loop by failing the `== 1` test rather than by being
  * checked. Masking to a byte here reproduces that exactly. Note also that a group appends its bits to the
  * output *before* it discovers a broken complement pair, so a damaged telegram ends up a few bits long rather
  * than empty; the CRC is what then rejects it.
@@ -275,8 +275,8 @@ function decode8of12(b: Uint8Array, pos: number, end: number, out: BitBuffer): n
 /**
  * The building-automation radio behind most European wireless light switches and window contacts.
  *
- * The telegram itself is not interpreted — EnOcean profiles are a specification of their own, and which one
- * applies depends on a pairing the receiver did — so this reports the bytes and their CRC and stops there.
+ * The telegram itself is not interpreted, EnOcean profiles are a specification of their own, and which one
+ * applies depends on a pairing the receiver did, so this reports the bytes and their CRC and stops there.
  *
  * Upstream ships it disabled because 125 kbps at 868 MHz needs a higher sample rate than a scanner normally
  * runs, and that is mirrored.
@@ -342,13 +342,13 @@ const CED7000_TOTAL_BITS = 201;
  * A competition shooting timer that broadcasts the running score to a spectator display.
  *
  * Everything is decimal on the wire: each nibble is one digit, reflected, so the times come back by reading
- * digits out rather than by scaling an integer. The two times are not laid out the same way — the final time
+ * digits out rather than by scaling an integer. The two times are not laid out the same way, the final time
  * takes its hundreds digit from the high nibble of byte five while the split time takes its hundreds from the
- * *low* nibble of byte seven — which looks like a transcription error but is upstream's, and is what its own
+ * *low* nibble of byte seven, which looks like a transcription error but is upstream's, and is what its own
  * layout comment describes.
  *
  * The only integrity check is where the Manchester decode stops. There is no checksum, so the frame is trusted
- * only if decoding runs to exactly one bit past a 201-bit row — 202 — which is what upstream's
+ * only if decoding runs to exactly one bit past a 201-bit row, 202, which is what upstream's
  * `NUM_BITS_TOTAL + 1` means: the last pair's second half is the zero padding beyond the row. Nothing else
  * about the payload is verified, which is why upstream ships this disabled and why that is mirrored.
  */
@@ -412,8 +412,8 @@ const ROSSTECH_BOND = new Uint8Array([0xcd, 0x00]);
  * Bytes carried as 8o1 serial: a start bit, eight data bits, an odd parity bit, and a stop bit.
  *
  * This is not the 8n1 or 8n2 helper in `util.ts` and differs from both in two ways worth stating, because
- * either would silently produce plausible garbage. The framing is inverted from the usual convention — the
- * start bit is a one and the stop bit a zero — and the data byte is **not** bit-reversed on the way out, where
+ * either would silently produce plausible garbage. The framing is inverted from the usual convention, the
+ * start bit is a one and the stop bit a zero, and the data byte is **not** bit-reversed on the way out, where
  * both shared helpers reverse theirs.
  *
  * The parity argument is masked to a byte before the check. In C the value is passed to a `uint8_t` parameter
@@ -450,7 +450,7 @@ function extractBytesUart8o1(m: Uint8Array, offsetBits: number, numBits: number,
  * Both are looked for, and which one arrived is reported rather than hidden, since a bond frame appearing on
  * its own says someone is pressing buttons on the tub.
  *
- * The two preambles are not arbitrary constants — each is the 8o1 encoding of its own message-type byte, 0xba
+ * The two preambles are not arbitrary constants, each is the 8o1 encoding of its own message-type byte, 0xba
  * for data and 0x9a for bond, which is why an eleven-bit search finds a frame that starts at its first bit.
  * The tests assert that relationship rather than just the byte values.
  */
@@ -511,7 +511,7 @@ const RFM69_MAX_LENGTH = 65;
  * default framing, with encryption switched off.
  *
  * Because the payload is a sketch's own bytes, it is reported as text rather than interpreted. Upstream reports
- * it only when the sender address is 2 — the gateway id in its example sketch — and returns nothing otherwise;
+ * it only when the sender address is 2, the gateway id in its example sketch, and returns nothing otherwise;
  * that is a hard-coded property of the sample rather than of the protocol, and it is mirrored so the two agree
  * on real traffic, but it is the reason this decoder stays quiet on most Moteino networks.
  *
@@ -585,7 +585,7 @@ const TR502_SOCKETS = ['1', '3', '2', '4', 'ALL'];
  * A four-socket mains remote whose socket numbering is bit-reversed on the wire.
  *
  * The three socket bits are transmitted least significant first, so socket 2 goes out as 100 and socket 3 as
- * 010 — which is why the lookup is indexed by the halved value and why the table reads 1, 3, 2, 4 rather than
+ * 010, which is why the lookup is indexed by the halved value and why the table reads 1, 3, 2, 4 rather than
  * in order. Only even codes and the all-sockets code 111 exist; an odd code is a misread rather than a fifth
  * socket, and is rejected.
  *
@@ -650,11 +650,11 @@ export const tr502msv: RDevice = register({
  * payload, then an end bit, fifteen zeros, and the whole thing again. The documented row's type field reads 26,
  * exactly the event number its own comment quotes, which confirms the alignment independently of this port.
  *
- * The payload is not decrypted and no meaning is attached to the event number — lock and unlock both send 26,
+ * The payload is not decrypted and no meaning is attached to the event number, lock and unlock both send 26,
  * so calling either one of them would be an invention.
  *
  * **Upstream's payload extraction is off by one against its own layout.** The type field ends at bit 105, so
- * the payload runs 106..169, but the code reads sixty-four bits from bit 107 — dropping the payload's first bit
+ * the payload runs 106..169, but the code reads sixty-four bits from bit 107, dropping the payload's first bit
  * and taking the end bit instead. The two id reads and the event read agree with the layout exactly, which is
  * what localizes the disagreement to this one line. It is reproduced as upstream has it, so the two projects
  * report the same string for the same transmission, and the test pins both the value upstream produces and the
@@ -713,7 +713,7 @@ export const opelMokka: RDevice = register({
  * A Lidl barbecue thermometer, reverse engineered from captures rather than from a datasheet.
  *
  * Only the first byte of the sixteen-bit id is checked, because a single unit was ever tested and it is not
- * known whether the id identifies the device or the model — so 0x49 is treated as a model marker and the whole
+ * known whether the id identifies the device or the model, so 0x49 is treated as a model marker and the whole
  * sixteen bits are still reported. The temperature scaling is empirical and its own file says so.
  *
  * The integrity check is a single parity bit taken over the whole frame including itself, which must come out
@@ -770,7 +770,7 @@ export const florabest: RDevice = register({
  *
  * The conversion from count to temperature and humidity lives in the Hanwell base station and is calibrated per
  * transmitter, so there is no formula to apply. Reporting the raw counts is the honest answer, and it is why
- * upstream ships this disabled — the reading is real but not yet in degrees. That flag is mirrored.
+ * upstream ships this disabled, the reading is real but not yet in degrees. That flag is mirrored.
  *
  * The frame is inverted and each byte arrives least significant bit first, so both have to be undone before the
  * additive checksum agrees. Only the last row is looked at: the preamble and sync leave earlier partial rows
@@ -821,11 +821,11 @@ const MCPOWER_PREAMBLE = new Uint8Array([0xaa, 0xaa]);
  * A battery-less light switch: pressing the rocker generates the power that sends the frame.
  *
  * That is why the same frame repeats for as long as the harvested energy lasts, and why a repeat can arrive
- * with both button bits clear — the switch is still transmitting after the rocker has been let go. Those
+ * with both button bits clear, the switch is still transmitting after the rocker has been let go. Those
  * button-less repeats are reported as they are rather than being treated as a third button.
  *
  * The flags byte has been 0x40 in every sample anyone has captured and its meaning is unknown, so it goes out
- * as a raw value. No capture was ever attached to the issue this came from — only demodulated hex — so unlike
+ * as a raw value. No capture was ever attached to the issue this came from, only demodulated hex, so unlike
  * most devices here there is no recording to check the CRC against; it is enforced, which at least means
  * upstream would reject every frame if its parameters were wrong.
  */

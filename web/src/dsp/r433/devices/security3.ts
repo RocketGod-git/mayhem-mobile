@@ -2,14 +2,14 @@
  * Alarm sensors that lean on repetition instead of arithmetic, and two strays that came with the batch.
  *
  * The six security devices here are the cheap end of the market, and it shows in what protects them. Kerui,
- * the generic motion sensor and the Amazon thermometer carry no check of any kind — what stands between them
+ * the generic motion sensor and the Amazon thermometer carry no check of any kind, what stands between them
  * and a burst of noise is that the sensor says the same thing nine, three or four times over, and the decoder
  * refuses to believe a frame it has not seen repeated. That makes the repeat counts load-bearing in a way a
  * checksum never is: lower one and the decoder starts inventing readings, so they are ported exactly.
  *
  * Above that sit two single-bit checks (X10 folds five bytes down to one parity bit, Honeywell counts the bits
  * in the whole frame) and, at the top, SimpliSafe's third generation, which is the only device in this file
- * with real cryptography — a CMAC and an encrypted body behind a CRC-16.
+ * with real cryptography, a CMAC and an encrypted body behind a CRC-16.
  *
  * SimpliSafe's earlier generation is the one worth pausing on. It sends the keypad's disarm PIN in clear, four
  * digits packed into two bytes, protected by nothing at all. That is not a flaw in this port; it is what the
@@ -40,7 +40,7 @@ const BAND_433 = [433920000];
 
 /**
  * What the sensor is reporting. Upstream names these and nothing else, so an unrecognized code is refused
- * rather than guessed at — there is no way to tell a fifth event apart from a frame that sliced badly.
+ * rather than guessed at, there is no way to tell a fifth event apart from a frame that sliced badly.
  */
 const KERUI_STATE: Record<number, string> = {
   0xa: 'motion', 0xe: 'open', 0x7: 'close', 0xb: 'tamper', 0x5: 'water', 0xf: 'battery',
@@ -53,7 +53,7 @@ const KERUI_STATE: Record<number, string> = {
  * There is no checksum, so the integrity check is entirely the repeat count. The sensor sends twenty-five
  * copies and upstream demands nine of them agree; that number is the whole defence and is copied exactly.
  *
- * The bits arrive inverted — a short pulse means a one — which the decoder undoes in place before reading. The
+ * The bits arrive inverted, a short pulse means a one, which the decoder undoes in place before reading. The
  * all-zero test runs before the inversion, so what it rejects is a frame that was all ones on the air.
  *
  * A twenty-fifth bit rides along in front of each packet, the tail of a wide sync gap that runs into the
@@ -87,7 +87,7 @@ export const kerui: RDevice = register({
     if (!state) return DECODE_ABORT_EARLY;
 
     const data: R433Data = { model: 'Kerui-Security', type: 'Security', id, cmd, state };
-    // Each code means one thing, so only the field it speaks to is reported — upstream does the same rather
+    // Each code means one thing, so only the field it speaks to is reported, upstream does the same rather
     // than publishing a full set of flags the frame never carried.
     if (cmd === 0xa) data.motion = 1;
     if (cmd === 0xe) data.opened = 1;
@@ -108,8 +108,8 @@ export const kerui: RDevice = register({
  * An unbranded motion sensor and alarm kit, decoded only as far as the twenty-bit code it sends.
  *
  * Nothing here says what the code means, so nothing here pretends to. Upstream's own notes list a handful of
- * observed values — `80042` arming, `80002` disarming, `80008` the quarter-hourly ping, `800a2` and its
- * neighbours a motion event — but the decoder reports the raw code and lets the reader match it, which is the
+ * observed values, `80042` arming, `80002` disarming, `80008` the quarter-hourly ping, `800a2` and its
+ * neighbours a motion event, but the decoder reports the raw code and lets the reader match it, which is the
  * only honest thing to do with an undocumented command set.
  *
  * With no checksum the validation is structural and strict: exactly twenty bits, three copies that agree, and
@@ -172,7 +172,7 @@ const X10_SEC_TAMPER_CODES = new Set([0x00, 0x04, 0x40, 0x44, 0x80, 0x84, 0xc0, 
 const X10_SEC_DELAY_CODES = new Set([0x00, 0x04, 0x40, 0x44, 0x80, 0x84, 0xc0, 0xc4]);
 
 /**
- * The security half of X10 — DS10/DS18 door contacts, MS10/MS18 motion detectors, KR15 and KR18 keyfobs.
+ * The security half of X10, DS10/DS18 door contacts, MS10/MS18 motion detectors, KR15 and KR18 keyfobs.
  *
  * The frame is shaped almost exactly like the NEC infrared remote protocol, and it protects itself the same
  * way: the second byte is the first with its low nibble complemented, the fourth is the third fully
@@ -295,7 +295,7 @@ function ssSensorParser(bits: BitBuffer, ctx: DecodeCtx, row: number): number {
 /**
  * The keypad announcing a disarm, with the PIN somebody just typed packed into two bytes as four nibbles.
  *
- * There is no checksum on this message and no encryption of any kind — the PIN travels in clear, and the
+ * There is no checksum on this message and no encryption of any kind, the PIN travels in clear, and the
  * digits arrive low nibble first within each byte as well as least significant bit first within each nibble.
  *
  * Note that the sequence number is reported straight from the byte here, not turned around the way the sensor
@@ -318,7 +318,7 @@ function ssPinentryParser(bits: BitBuffer, ctx: DecodeCtx, row: number): number 
   return 1;
 }
 
-/** The keypad's other buttons — arming, cancelling, panic. Again no checksum, and the raw byte if unknown. */
+/** The keypad's other buttons, arming, cancelling, panic. Again no checksum, and the raw byte if unknown. */
 function ssKeypadCommands(bits: BitBuffer, ctx: DecodeCtx, row: number): number {
   const b = bits.bb[row];
   ctx.emit({
@@ -384,7 +384,7 @@ const HONEYWELL_WDB_ALERT: Record<number, string> = {
  * Honeywell's ActivLink range: the wireless doorbell, the PIR that chimes, and the door contact.
  *
  * Everything of substance is in the frame's last byte, and one bit of it has two jobs. On a doorbell that bit
- * is the "secret knock" — pressing the button three times quickly — while on a contact sensor the same bit
+ * is the "secret knock", pressing the button three times quickly, while on a contact sensor the same bit
  * means the case has been opened. There is no way to read it correctly without first knowing which device
  * sent it, so the class is decoded first and the bit is then reported as one thing or the other, never both.
  *
@@ -396,7 +396,7 @@ const HONEYWELL_WDB_ALERT: Record<number, string> = {
  * so four agreeing copies are demanded on top of it.
  *
  * The inversion order looks odd and is deliberate. Upstream takes its pointer to the row before inverting the
- * buffer, so everything it reads afterwards — the parity included — is already inverted; and it runs the
+ * buffer, so everything it reads afterwards, the parity included, is already inverted; and it runs the
  * all-zero sanity test before enforcing the parity, so a blank frame is reported as nonsense rather than as a
  * failed check. Both are mirrored here.
  */
@@ -479,14 +479,14 @@ export const honeywellWdbFsk: RDevice = register({
 const bcd2int = (bcd: number): number => 10 * (bcd >> 4) + (bcd & 0x0f);
 
 /**
- * A meat thermometer, and the odd one out in this file — no alarm, no identity beyond a number it picks at
+ * A meat thermometer, and the odd one out in this file, no alarm, no identity beyond a number it picks at
  * random each time it is switched on.
  *
  * The sync word is the interesting part, because it is not really a sync word. `55 aa aa` is exactly what the
  * frame's own last twelve bits look like once Manchester coded: four ones and eight zeroes, which the sensor
  * sends at the end of every message because the last nibble of the temperature field and the whole final byte
  * are constant. So the decoder finds the end of the frame and steps back seventy-two bits to reach the start,
- * which is why a match earlier than bit 72 is rejected outright — there would be no frame in front of it.
+ * which is why a match earlier than bit 72 is rejected outright, there would be no frame in front of it.
  *
  * There is no checksum whatsoever. Four agreeing copies and that fixed tail are the only things separating a
  * reading from noise. Upstream also reads the decoded packet without checking how much of it decoded, which is
@@ -543,7 +543,7 @@ const SS3_LENGTHS = new Set([0x15, 0x16, 0x18]);
  * sent, which is enough to see that a system is present and how often it talks, and nothing more.
  *
  * The length byte is validated against the three known message lengths before anything else, because it
- * decides how many bytes the CRC covers — a wrong length would check the wrong span and reject a good frame.
+ * decides how many bytes the CRC covers, a wrong length would check the wrong span and reject a good frame.
  *
  * All five frames upstream publishes are sensor messages, `16 02`, despite the file naming two other types.
  * The CRC on every one of them was recomputed independently before this port was believed.

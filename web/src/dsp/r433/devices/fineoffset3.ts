@@ -6,13 +6,13 @@
  * what is packed where, so each is its own registration keyed on that family byte.
  *
  * Two habits of this range are worth stating because both produce confident nonsense if missed. Several fields
- * use an all-ones value to mean "not measured this time" rather than a reading — a WS90 with a still
+ * use an all-ones value to mean "not measured this time" rather than a reading, a WS90 with a still
  * anemometer would otherwise report a 51.1 m/s gust and a 102.3 degree bearing every transmission. And the
  * battery is reported as bars split across two different bytes, where six bars is not a very full battery but
  * the sensor saying it is running from external power.
  *
  * The WH1080 is the odd one out and predates all of it. It ships keyed and frequency-shifted, sends three
- * different message types on one frame, and comes in variants with seven or eight preamble bits — the short
+ * different message types on one frame, and comes in variants with seven or eight preamble bits, the short
  * ones need the whole buffer shifted a bit before anything reads. Its CRC starts at 0xff because the preamble
  * byte is included rather than skipped.
  *

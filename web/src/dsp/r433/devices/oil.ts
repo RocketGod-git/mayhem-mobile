@@ -8,12 +8,12 @@
  * one back, and the Advanced abandons the whole scheme for a length-prefixed message with a CRC-16.
  *
  * Three of them scan rather than decode once. A burst can hold several frames, so each walks its row looking
- * for further preambles and reports every complete frame it finds — the return value is a count, not a flag.
+ * for further preambles and reports every complete frame it finds, the return value is a count, not a flag.
  *
  * The Standard is the awkward one. It has no integrity check at all: a sixteen-bit id, some flags and a depth,
  * with nothing to confirm any of it. All that stands between it and noise is the preamble match, a structural
  * zero byte, and a range check on the depth, which the sensor's own documentation says tops out near 305 cm
- * even though the field is nine bits wide. It also has to actively refuse its own sibling — the Smart's
+ * even though the field is nine bits wide. It also has to actively refuse its own sibling, the Smart's
  * `55 55 58` run-in contains a valid Standard sync ten bits in, so without a guard the checksumless decoder
  * would happily claim Smart transmissions. That guard is tested here against a real Smart capture.
  *
@@ -44,7 +44,7 @@ const BAND_915 = [915000000];
  * bit, so a frame that decoded to the wrong bits will usually fail to produce the matching tail. It is tested
  * before the checksum because it costs nothing.
  *
- * The temperature is a guess and upstream says so — it falls out of a field that varies inversely with warmth
+ * The temperature is a guess and upstream says so, it falls out of a field that varies inversely with warmth
  * but has never been pinned down, so the raw field goes out alongside the derived value rather than instead
  * of it. No integrity field is claimed even though there is a checksum, matching upstream's own output.
  */
@@ -197,7 +197,7 @@ export const oilStandardAsk: RDevice = register({
  * length byte, a model code, and a CRC-16 over the lot.
  *
  * It also has a genuine bug in the wild, which upstream works around rather than rejects. Some units emit the
- * CRC shifted one bit left, so the check is tried twice — once as read, and once reassembled from an extra
+ * CRC shifted one bit left, so the check is tried twice, once as read, and once reassembled from an extra
  * bit captured past the end of the message. Both of the captures rtl_433 ships are the same reading, one with
  * each fault, and the tests here run both paths.
  *
@@ -260,8 +260,8 @@ export const oilWatchmanAdvanced: RDevice = register({
  * The Standard's frame with a checksum bolted on, which is what lets it be trusted where the Standard cannot.
  *
  * Most of the first status byte is still guesswork, and upstream's field names say as much. Two pairs of bits
- * appear to work against each other — a reading is only believed to be warm enough when the two temperature
- * bits differ — so they are reported as upstream reads them rather than reinterpreted here.
+ * appear to work against each other, a reading is only believed to be warm enough when the two temperature
+ * bits differ, so they are reported as upstream reads them rather than reinterpreted here.
  */
 function oilSmartOne(bits: BitBuffer, ctx: DecodeCtx, row: number, bitpos: number): number {
   const databits = new BitBuffer();

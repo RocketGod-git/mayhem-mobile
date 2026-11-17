@@ -2,7 +2,7 @@
  * Electricity meters and power monitors: the second batch.
  *
  * `energy.ts` holds the clamp-on and optical monitors that estimate a whole house's draw. These are the rest of
- * the family, and they split into two kinds. Some are the same idea — a head on the utility meter counting the
+ * the family, and they split into two kinds. Some are the same idea, a head on the utility meter counting the
  * pulse lamp, reporting a raw impulse count that only means something once you know the meter's pulses per
  * kilowatt-hour, which is printed on its front and never transmitted. The others are plug-in socket meters that
  * measure a single appliance directly and send real volts, amps and watts.
@@ -12,7 +12,7 @@
  * right as a constant compiled into this file.
  *
  * Three of these carry real recorded transmissions in their upstream doc comments, and all three were decoded
- * and checked before this port was written rather than after — the EnergyCount 3000's capture reproduces the
+ * and checked before this port was written rather than after, the EnergyCount 3000's capture reproduces the
  * decoded line printed beside it field for field, the IKEA's example packet brute-forces to exactly the sender
  * ID its own documentation uses as the worked example, and all nine Revolt rows check out byte for byte against
  * the message table below them. That is the only evidence here that does not come from this port's own
@@ -39,7 +39,7 @@ const hexLow = (v: number, n: number) => (v >>> 0).toString(16).padStart(n, '0')
  *
  * The shared `addBytes` masks to a byte, which is what almost every decoder wants because it compares the
  * result against a single checksum byte. The Revolt NC-5462 below is one of the few that reads the sum as a
- * number in its own right — it rejects a frame whose bytes sum to zero — and a masked sum would make every
+ * number in its own right, it rejects a frame whose bytes sum to zero, and a masked sum would make every
  * frame summing to exactly 256 look like that empty frame. Kept local rather than changed in `util.ts`,
  * because the masking is deliberate at the other call sites.
  */
@@ -57,7 +57,7 @@ function sumBytesFull(m: Uint8Array, n: number, at = 0): number {
  * Undo the ESA's payload obfuscation, and return the value that says whether it worked.
  *
  * The scrambling is a running exclusive-or whose key for each byte is the *previous ciphertext* byte plus a
- * constant, seeded with 0x89 — so it unwinds in one forward pass but a single bit error destroys everything
+ * constant, seeded with 0x89, so it unwinds in one forward pass but a single bit error destroys everything
  * after it. There is no separate checksum: the last two bytes hold a number from which the running total of
  * the ciphertext is subtracted, and the remainder is a fixed constant that also identifies which of the two
  * device families sent the frame. So the same arithmetic both verifies the frame and tells the models apart,
@@ -162,7 +162,7 @@ const SPARSNAS_BITLEN = 160;
  * Work out the sender's serial number from one encrypted packet.
  *
  * The payload is exclusive-ored with a five-byte key built from the serial number, and the serial number is
- * also *in* the payload — so the frame is self-referential, and the number can be recovered by looking for the
+ * also *in* the payload, so the frame is self-referential, and the number can be recovered by looking for the
  * one value that decrypts to itself. That is what makes this searchable at all. The search space collapses
  * quickly: the serial is at most six digits, which pins the top key byte almost immediately, and the battery
  * level sharing a key byte with the serial gives a second independent test.
@@ -274,7 +274,7 @@ export const ikeaSparsnas: RDevice = register({
  * The ESIC EMT7110 plug-in meter, which reports the whole picture: volts, amps, watts and a running total.
  *
  * The voltage is sent as half a volt per step with 128 volts subtracted first, which is a neat fit for a mains
- * socket and useless for anything else — it cannot express a reading below 128 V at all.
+ * socket and useless for anything else, it cannot express a reading below 128 V at all.
  */
 export const esicEmt7110: RDevice = register({
   num: 136,
@@ -334,7 +334,7 @@ function norgoNextMask(mask: number): number {
  * The Norgo's check byte: a shift register clocked backwards over the message.
  *
  * It walks the payload from its last bit down to the first, advancing a sixteen-bit register once per bit and
- * folding the register into a running total wherever the message has a one — the same shape as the digests in
+ * folding the register into a running total wherever the message has a one, the same shape as the digests in
  * `util.ts`, but with its own tap table and run in the opposite direction, so it is kept here.
  */
 function norgoChecksum(data: Uint8Array, datalen: number): number {
@@ -423,7 +423,7 @@ export const norgo: RDevice = register({
  * The Marlec iBoost+, which diverts surplus solar generation into an immersion heater.
  *
  * So the interesting number is not consumption but how much of the day's generation it managed to use rather
- * than export, which it reports as a running saving — and only one of the five periods per frame, cycling
+ * than export, which it reports as a running saving, and only one of the five periods per frame, cycling
  * through today, yesterday, the last week, the last four weeks and the lifetime total.
  *
  * It runs after Watts-Vision rather than before. The two use the same CRC-16 with the same polynomial and
@@ -501,7 +501,7 @@ export const marlecSolar: RDevice = register({
  * rather than a reading. That rule is why the sum has to be taken at full width here: a real frame whose
  * eleven bytes come to exactly 256 has a low byte of zero, and a sum masked to a byte would throw it away as
  * empty. The check byte for such a frame is zero too, so it passes the checksum and is refused by the sanity
- * rule alone — the mask would be the only thing deciding it.
+ * rule alone, the mask would be the only thing deciding it.
  *
  * The frame arrives inverted, and pressing the button on the meter makes it repeat the same reading with the
  * top bit set, which is reported as a button press rather than treated as a different message.
@@ -549,7 +549,7 @@ export const revoltNc5462: RDevice = register({
 /**
  * The Revolt ZX-7717 socket meter, which sends two different messages and marks them by length alone.
  *
- * There is no type field the decoder can rely on — the length byte is what says whether the frame carries
+ * There is no type field the decoder can rely on, the length byte is what says whether the frame carries
  * live volts and amps or an accumulated energy total, and the two "coldstart" variants are the same pair with
  * six extra bytes wedged in ahead of the payload. Everything is little endian and every byte arrives with its
  * bits reversed, so the frame is reflected before anything is read out of it.
@@ -631,7 +631,7 @@ function ec3kSymbolAt(m: Uint8Array, bit: number): number {
  * The radio chip runs the data through a scrambler before sending it, so the air never carries long runs of
  * one level even when the payload is mostly zeroes. Descrambling is self-synchronizing: each symbol is
  * exclusive-ored with two earlier ones, which is why the decode can start part way into a burst without
- * knowing where the scrambler was reset — and why the first seventeen bits are unusable and skipped.
+ * knowing where the scrambler was reset, and why the first seventeen bits are unusable and skipped.
  */
 function ec3kDescrambledAt(m: Uint8Array, bit: number): number {
   let out = ec3kSymbolAt(m, bit);
@@ -654,7 +654,7 @@ function ec3kNibbles(buf: Uint8Array, start: number, count: number): number {
  *
  * Several fields are split across the packet with their high and low halves far apart, which is a hint that
  * the format grew: the counters outgrew their original width and the extra digits were put wherever there was
- * room. The gaps between fields are always zero, and are checked — with only sixteen bits of CRC over a frame
+ * room. The gaps between fields are always zero, and are checked, with only sixteen bits of CRC over a frame
  * this long, the padding is worth as much as the CRC.
  */
 function ec3kExtract(p: Uint8Array, ctx: DecodeCtx): number {
@@ -691,12 +691,12 @@ function ec3kExtract(p: Uint8Array, ctx: DecodeCtx): number {
  *
  * This is the only decoder in the file that has to find its own frame boundaries. The others are handed a row
  * the slicer already delimited; this one gets a continuous stream and has to walk it a symbol at a time,
- * because the transmitter uses the link layer a modem would — frames delimited by a run of exactly six ones,
+ * because the transmitter uses the link layer a modem would, frames delimited by a run of exactly six ones,
  * and a zero forcibly inserted after any five ones in the payload so that run can never occur by accident.
  * Removing those inserted zeroes is what "unstuffing" below means, and it is why the payload's bit count and
  * the air's bit count are different numbers.
  *
- * Anything that cannot be one of those two cases — a seventh consecutive one, or a stray run — means the
+ * Anything that cannot be one of those two cases, a seventh consecutive one, or a stray run, means the
  * stream was joined mid-frame or corrupted, and the reader is thrown away and started again.
  */
 export const ec3k: RDevice = register({
@@ -763,14 +763,14 @@ export const ec3k: RDevice = register({
 /**
  * The RFXMeter and RFXPwr pulse counters.
  *
- * These borrow the frame the X10 remote-control system uses, which is why the address is sent twice — once
- * plainly and once with its high nibble flipped — as a coarse guard against a mis-slice. Note that upstream's
+ * These borrow the frame the X10 remote-control system uses, which is why the address is sent twice, once
+ * plainly and once with its high nibble flipped, as a coarse guard against a mis-slice. Note that upstream's
  * own documentation says the second copy has "the nibbles complemented", plural, but its code flips only the
  * high nibble; the code is what a receiver has to agree with, so that is what is implemented, and it halves
  * the strength of the guard the comment describes.
  *
- * Most frames are a counter reading, but the same frame carries configuration — a reporting interval, a
- * calibration value, an address change — distinguished by a type field. Only the type and the raw value are
+ * Most frames are a counter reading, but the same frame carries configuration, a reporting interval, a
+ * calibration value, an address change, distinguished by a type field. Only the type and the raw value are
  * reported, because what the value means changes completely with the type.
  */
 export const rfxmeter: RDevice = register({
@@ -815,8 +815,8 @@ export const rfxmeter: RDevice = register({
  * The Eco-Eye, which watches a house's import and its solar generation with one clamp each.
  *
  * It sends current rather than power, and never says at what voltage, so what comes out is amps and turning
- * that into watts is the display's job. It carries no identity at all — a transmitter and its display are
- * assumed to be alone on the channel — so nothing distinguishes two of these in earshot of each other.
+ * that into watts is the display's job. It carries no identity at all, a transmitter and its display are
+ * assumed to be alone on the channel, so nothing distinguishes two of these in earshot of each other.
  *
  * Its reset limit is far longer than the bit period needs, because there is no clock recovery beyond that
  * period: a quiet house sending two zero readings and a zero checksum puts forty consecutive zero bits on the

@@ -14,7 +14,7 @@ import kotlin.math.roundToLong
  *   · CACH (which slot), slot type via Golay (20,8): colour code + data type
  *   · BPTC(196,96) for voice LC headers / terminators (RS(12,9) checked) and CSBKs (CRC-CCITT checked)
  *   · EMB via QR(16,7) plus the embedded LC spread over voice bursts B–E (Hamming 16,11,4, column parity,
- *     5-bit checksum) — talkgroup, source ID and talker alias mid-call
+ *     5-bit checksum), talkgroup, source ID and talker alias mid-call
  *   · the three AMBE+2 voice frames per burst, de-interleaved and handed to the vocoder
  * Both time slots are followed; the audio follows one of them. The same correlator recognises P25 (decoded, with
  * its IMBE vocoder), D-STAR, NXDN and Fusion (YSF) sync words so the DIGITAL tab can name what it hears.
@@ -394,7 +394,7 @@ class DmrDecoder : FmTap {
 
     /**
      * Colour-code voting: every burst of a DMR system carries the same colour code, so once one is settled a burst
-     * claiming another is noise whose Golay happened to land on a code word — rejecting it keeps a phantom caller
+     * claiming another is noise whose Golay happened to land on a code word, rejecting it keeps a phantom caller
      * out of the other time slot.
      */
     private fun ccVote(c: Int, errs: Int): Boolean {

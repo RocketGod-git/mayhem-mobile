@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * A Mayhem-style baseband processor (the Kotlin counterpart of a `proc_*.cpp`). [SdrEngine] calls it on the DSP
- * thread: [onIq] with every raw buffer, and — when [wantsFm] — [onFm] with the NFM discriminator output at the
+ * thread: [onIq] with every raw buffer, and, when [wantsFm], [onFm] with the NFM discriminator output at the
  * intermediate (~48 kHz) rate, for the packet modes that ride on FM (POCSAG, AIS, APRS). All methods run on the
  * single DSP thread, so processors need no locking of their own state; publish results through StateFlows.
  */

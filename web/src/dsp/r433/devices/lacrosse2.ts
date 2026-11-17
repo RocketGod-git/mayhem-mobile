@@ -4,7 +4,7 @@
  * These four share one design. Frequency shifted at about 104 microseconds a bit, a preamble ending
  * `d2 aa 2d d4`, then three bytes of identity, a byte of flags carrying a three-bit sequence number, the
  * readings, and a CRC-8 over the whole thing with generator 0x31. Because the frame carries no family code,
- * they are told apart by length and by which CRC length closes — which is also why each one range-checks its
+ * they are told apart by length and by which CRC length closes, which is also why each one range-checks its
  * own readings before reporting them: with no family byte, a neighbour's frame that happens to pass the CRC
  * would otherwise arrive as a plausible-looking temperature.
  *

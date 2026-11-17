@@ -5,7 +5,7 @@
  *   · CACH (which slot), slot type via Golay (20,8): color code + data type
  *   · BPTC(196,96) for voice LC headers / terminators (RS(12,9) checked) and CSBKs (CRC-CCITT checked)
  *   · EMB via QR(16,7) plus the embedded LC spread over voice bursts B–E (Hamming 16,11,4, column parity,
- *     5-bit checksum) — talkgroup, source ID and talker alias mid-call
+ *     5-bit checksum), talkgroup, source ID and talker alias mid-call
  *   · the three AMBE+2 voice frames per burst, de-interleaved and handed to the vocoder
  * Both time slots are followed; the audio follows one of them. The same correlator recognizes P25, D-STAR,
  * NXDN and Fusion (YSF) sync words so the DIGITAL tab can name a digital voice signal we do not decode (yet).
@@ -486,7 +486,7 @@ export class DmrDecoder {
     if (sync) {
       this.lastSyncN = this.n; this.syncCount++; this.source = sync.src; this.dmrFrameN = this.n;
       if (sync.src === 'MS') {
-        // One radio — simplex, or a single uplink to a repeater — is one stream on one parity, and the other half
+        // One radio, simplex, or a single uplink to a repeater, is one stream on one parity, and the other half
         // is dead air. Two radios sharing the two uplink slots put MS sync on both parities: then the slots are
         // real and both must be followed.
         if (this.msDual) this.frame = this.parity;

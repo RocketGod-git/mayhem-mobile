@@ -1,17 +1,17 @@
 /**
- * Microchip KeeLoq hopping encoders — the chip inside most garage doors, gates and car alarms.
+ * Microchip KeeLoq hopping encoders, the chip inside most garage doors, gates and car alarms.
  *
  * What comes out of these is deliberately limited, and it is worth being plain about why. Each press sends a
  * thirty-two bit hopping code encrypted under a key held in the remote and the receiver, and that key is not
  * in the transmission. So a decode gives the serial number, which button was pressed, the battery flag and the
- * repeat counter — the identity of the remote and what it was asked to do — and never anything that would let
+ * repeat counter, the identity of the remote and what it was asked to do, and never anything that would let
  * the door be opened. The hopping code is reported as it arrived because it is the only way to tell one press
  * from a replay of the same press, not because it can be undone.
  *
  * The family is one silicon design wearing several coats. The HCS200 and HCS300 send a plain sixty-six bit
  * frame; the HCS361 adds a two-bit check and turns up at six different bit rates and two codings, which is why
  * it is registered six times over one decoder; the HCS362 does the same trick across on-off keying and
- * Manchester. Two consumer products — a RainPoint rain gauge and a Baldr pool thermometer — put real sensor
+ * Manchester. Two consumer products, a RainPoint rain gauge and a Baldr pool thermometer, put real sensor
  * readings through the same encoder, so they decode here too.
  *
  * A note on the battery bit: the HCS200 sets it when the battery is *low*, and the HCS361 sets it when the
@@ -270,7 +270,7 @@ export const hcs362Mc: RDevice = register({
 /**
  * The RainPoint HCS012ARF rain gauge.
  *
- * Manchester over the whole row, inverted, then every byte reflected before anything can be read — three
+ * Manchester over the whole row, inverted, then every byte reflected before anything can be read, three
  * transformations before the first field. The header 0xa5 is what confirms all three were needed.
  */
 export const rainpointHcs012arf: RDevice = register({

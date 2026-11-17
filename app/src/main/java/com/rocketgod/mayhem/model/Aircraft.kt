@@ -12,8 +12,8 @@ class Aircraft(val icao: String) {
     var squawk: String? = null
     /** UTC timestamp of the newest frame, as 14-digit YYYYMMDDHHMMSS. */
     var lastTs: Long = 0L
-    /** Wall-clock (System.currentTimeMillis) when we last heard it — drives ageing out of the live list. */
+    /** Wall-clock (System.currentTimeMillis) when we last heard it, drives ageing out of the live list. */
     var seenAtMs: Long = 0L
-    /** Wall-clock when first added — a STABLE list-sort key so rows don't reshuffle every frame. */
+    /** Wall-clock when first added, a STABLE list-sort key so rows don't reshuffle every frame. */
     var firstSeenMs: Long = 0L
 }

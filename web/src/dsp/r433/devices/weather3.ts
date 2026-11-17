@@ -2,13 +2,13 @@
  * More of the weather tail: an Alecto family, two Oregon-lineage sensors, a tank gauge and a wind station.
  *
  * The Alecto is the interesting one here. It is not a sensor but a family of them sharing one frame, and which
- * kind of reading arrived is decided by two bits plus the shape of the bytes after them — temperature and
+ * kind of reading arrived is decided by two bits plus the shape of the bytes after them, temperature and
  * humidity, or rainfall, or wind speed, or wind direction and gust. The wind readings are stitched together
  * from two rows several apart in the same transmission, which is why this decoder reaches so far into the
  * capture and why it has to be careful about how much of one arrived.
  *
  * Three of these check themselves in ways worth noticing. The Ambient Weather sends its four payload bytes
- * twice, the second copy inverted, and then a Fletcher-style checksum on top — belt and braces for a sensor
+ * twice, the second copy inverted, and then a Fletcher-style checksum on top, belt and braces for a sensor
  * that costs almost nothing. The TS-FT002 tank gauge sends every field backwards, so the whole frame is
  * reflected before anything can be read. And the WS2032 carries both a byte sum and a CRC, which between them
  * make it the most trustworthy thing in this file.
@@ -52,7 +52,7 @@ function sumBytes(m: Uint8Array, n: number): number {
 
 /**
  * Alecto's check sums the nibbles of the first four bytes, backwards, and then either subtracts the total from
- * fifteen or adds seven to it — which of the two depends on a value in the frame itself.
+ * fifteen or adds seven to it, which of the two depends on a value in the frame itself.
  */
 function alectoChecksum(b: Uint8Array): boolean {
   let sum = 0;
@@ -158,7 +158,7 @@ export const alectoV1: RDevice = register({
  *
  * The channel number is copied into the position the check itself occupies before the CRC is taken, and the
  * last nibble is then exclusive-ored in on its own rather than being fed through the polynomial. Neither step
- * is discoverable from the frame — it has to be known.
+ * is discoverable from the frame, it has to be known.
  */
 export const infactory: RDevice = register({
   num: 91,
@@ -283,7 +283,7 @@ function tx8300Checksum(b: Uint8Array): number {
  * and a checksum covers it as well.
  *
  * The very first bit of the frame is often mangled by the demodulator, so it is recovered from the inverted
- * copy before the two are compared — which is the only reason the comparison can be exact.
+ * copy before the two are compared, which is the only reason the comparison can be exact.
  */
 export const ambientWeatherTx8300: RDevice = register({
   num: 112,
@@ -331,7 +331,7 @@ export const ambientWeatherTx8300: RDevice = register({
 /**
  * An ultrasonic gauge for a water tank, which sends everything backwards.
  *
- * Bits go out least significant first, so the whole frame is reflected before any of it means anything — and
+ * Bits go out least significant first, so the whole frame is reflected before any of it means anything, and
  * that reflection also reverses the nibbles, which is why the depth and temperature are assembled from pieces
  * that look out of order.
  *
@@ -438,7 +438,7 @@ export const eurochron: RDevice = register({
  * Its temperature is not stored as a negative number but as a magnitude with a separate sign bit, which is
  * worth knowing because it means the value cannot simply be sign-extended like the others here.
  *
- * The run-in is searched for before the frame is turned the right way up and the bytes are read after — an
+ * The run-in is searched for before the frame is turned the right way up and the bytes are read after, an
  * order that looks odd and has to be kept, since the pattern only matches the way it arrives.
  */
 export const ws2032: RDevice = register({

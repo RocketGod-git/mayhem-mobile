@@ -2,7 +2,7 @@
  * Oregon Scientific, and the Owl energy monitors that use the same air interface.
  *
  * Two generations share one decoder, because they share one modulation: Manchester with a hardcoded leading
- * zero — the coding the slicer was written around in the first place. Version 2.1 sends every bit twice and
+ * zero, the coding the slicer was written around in the first place. Version 2.1 sends every bit twice and
  * needs a sync pattern found at one of eight bit offsets; version 3 sends each bit once behind a fixed
  * preamble. Both then carry their digits as decimal rather than binary, and check themselves with a sum of
  * nibbles rather than a CRC.

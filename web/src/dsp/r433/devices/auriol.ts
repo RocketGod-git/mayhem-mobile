@@ -1,5 +1,5 @@
 /**
- * Auriol — the Lidl house brand — and the Govee leak and contact sensors.
+ * Auriol, the Lidl house brand, and the Govee leak and contact sensors.
  *
  * Auriol sells a new thermometer most years and none of them share a frame, so these are four unrelated
  * decoders that happen to carry the same badge. Govee is here because its leak detector went through a hardware
@@ -180,7 +180,7 @@ export const auriol4ld5661: RDevice = register({
 /**
  * Govee's water leak detector and door contact, in their original form.
  *
- * The event code is what matters and it is not a bitfield — particular values mean particular things, and the
+ * The event code is what matters and it is not a bitfield, particular values mean particular things, and the
  * check is a nibble of parity folded out of the payload.
  */
 export const govee: RDevice = register({

@@ -226,7 +226,7 @@ object Sats {
 
     /**
      * Names for the satellites: over the air each gives only a one-byte identifier, but it also says where it is,
-     * so propagating the published orbits and seeing which one is in that spot names it — and says how far apart
+     * so propagating the published orbits and seeing which one is in that spot names it, and says how far apart
      * the two answers are, an independent check that the decode is right.
      */
     private fun orbName() {
@@ -287,7 +287,7 @@ object Sats {
                 for (g in listOf("amateur", "cubesat")) for (t in Tles.group(g)) t.line1.substring(2, 7).trim().toIntOrNull()?.let { byNorad.putIfAbsent(it, t) }
                 for (r in _packetRows.value) byNorad[r.norad]?.let { t -> runCatching { packetSgps[r.norad] = Sgp4(t) } }
                 Diag.log("packet satellites: ${_packetRows.value.size} transmitters, ${packetSgps.size} with orbits")
-            }.onFailure { packetNote = "no orbits — the list still tunes, but cannot be sorted by what is overhead" }
+            }.onFailure { packetNote = "no orbits, the list still tunes, but cannot be sorted by what is overhead" }
             packetRank()
         }
     }

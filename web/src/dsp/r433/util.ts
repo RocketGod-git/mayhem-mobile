@@ -25,7 +25,7 @@ export function reflect4(x: number): number {
  * Reverse all thirty-two bits.
  *
  * rtl_433 casts the word to a byte pointer and reads it in memory order, so on the little-endian machines it
- * actually runs on the least significant byte ends up in the most significant position — a whole-word bit
+ * actually runs on the least significant byte ends up in the most significant position, a whole-word bit
  * reversal, not a per-byte one. Its own `watchman_plus.c` says as much: "reverse32() reverses all 32 bits".
  *
  * Reversing each byte where it stands would turn 1 into 0x80 rather than 0x80000000, which would put the
@@ -234,7 +234,7 @@ export function extractBytesUart8n1(m: Uint8Array, offsetBits: number, numBits: 
  * Bytes carried as 8N2 serial, least significant bit first: a start bit, eight data bits, then *two* stop bits.
  *
  * The line idles high, so this first walks forward to the first start bit rather than assuming the caller
- * landed exactly on one — which is what lets a decoder point it just past a run of sync ones.
+ * landed exactly on one, which is what lets a decoder point it just past a run of sync ones.
  */
 export function extractBytesUart8n2(m: Uint8Array, offsetBits: number, numBits: number, dst: Uint8Array): number {
   let ret = 0, off = offsetBits, n = numBits;

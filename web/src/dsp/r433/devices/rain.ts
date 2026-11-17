@@ -3,7 +3,7 @@
  *
  * These are the cheap outdoor end of the 433 MHz weather market, and they are a scrappier family than the
  * thermometers next door. Four of the nine have no integrity check at all worth the name, two of those are
- * shipped switched off by upstream for exactly that reason, and one — Biltema — carries a checksum nobody has
+ * shipped switched off by upstream for exactly that reason, and one, Biltema, carries a checksum nobody has
  * ever worked out. What that means in practice is that the structural gates matter more here than usual: with
  * no checksum, the only thing standing between a stray burst and a bogus rainfall reading is a handful of
  * always-zero bits and a demand that the sensor said the same thing several times running.
@@ -11,7 +11,7 @@
  * A word on rain totals, because it is the thing most likely to look wrong. Every gauge here reports a
  * free-running tick count from a tipping bucket, not a rate: it climbs all season and wraps when the field
  * runs out. That is reported as sent. Deriving millimeters-per-hour from it needs two readings and a clock,
- * which is the application's job, not the decoder's. Biltema is the exception and not a happy one — it really
+ * which is the application's job, not the decoder's. Biltema is the exception and not a happy one, it really
  * does try to compute a rate, via arithmetic its own author flagged as guesswork, and that is preserved here
  * unchanged along with the `disabled` mark that warns about it.
  *
@@ -49,7 +49,7 @@ const int16 = (x: number) => (x << 16) >> 16;
  *
  * Upstream ships it disabled and says why: the ninth nibble is a checksum nobody has reverse engineered, so
  * nothing here can tell a real frame from a plausible-looking accident. It was written from a handful of
- * samples against the Springfield decoder, and the comments admit to two unresolved ambiguities — the same
+ * samples against the Springfield decoder, and the comments admit to two unresolved ambiguities, the same
  * three bits of byte one are read both as the top of the rain counter and as the channel, and the author was
  * not sure which reading is right. Both are kept exactly as upstream has them.
  *
@@ -117,19 +117,19 @@ export const btRain: RDevice = register({
 /**
  * A soil probe: a spike with a thermometer and a moisture sensor, reporting from a flower bed.
  *
- * This is the only Manchester-coded device in the file, and it has an oddity upstream calls out — the gap
+ * This is the only Manchester-coded device in the file, and it has an oddity upstream calls out, the gap
  * between packets is a steady carrier rather than silence, which is why the whole burst arrives as one very
  * long row instead of the usual repeated short ones. So the decode is a preamble search rather than a repeat
  * count, and there is no repetition check at all: the nibble sum is the only thing vouching for the frame.
  *
  * The preamble search rewinds two bits. That is deliberate and load-bearing: the last two bits of the sync
  * word are also the first Manchester symbol of the data, so consuming the full pattern would eat the leading
- * data bit. The consequence is that the frame's first decoded bit is not free — the sync word fixes it — and
+ * data bit. The consequence is that the frame's first decoded bit is not free, the sync word fixes it, and
  * a builder that ignores this produces frames the real sensor could never send.
  *
  * Three layers of transformation sit between the air and the bytes: Manchester decoding, then a whole-frame
  * inversion, then a per-byte bit reflection. The sum is checked after all three. Upstream narrows it to eight
- * bits before comparing, so the shared helper's masking is correct here rather than a hazard — twenty nibbles
+ * bits before comparing, so the shared helper's masking is correct here rather than a hazard, twenty nibbles
  * can reach 300 and genuinely do overflow.
  */
 export const rainpoint: RDevice = register({
@@ -192,7 +192,7 @@ export const rainpoint: RDevice = register({
  * Undo the sensor's second layer of coding: pulse widths carried inside a return-to-zero line code.
  *
  * The radio side slices this as plain RZ, which yields a run of ones and zeros rather than data bits. The
- * actual bits live in how many ones precede each zero — one for a zero bit, three for a one bit. Anything else
+ * actual bits live in how many ones precede each zero, one for a zero bit, three for a one bit. Anything else
  * is a coding violation and stops the decode where it stands, which is the only structural check this device
  * gets before its parity fold.
  *
@@ -221,13 +221,13 @@ function pwmOfPcmDecode(row: Uint8Array, bitLen: number, out: Uint8Array, outLen
  * The outdoor sensor for an Atech wireless weather station: a thermometer and nothing else.
  *
  * It transmits a nine-bit run-in as its own row followed by the data row, so the shape of the buffer is part
- * of the identification — exactly two rows, with the payload in the second. That is unusual enough to be worth
+ * of the identification, exactly two rows, with the payload in the second. That is unusual enough to be worth
  * stating, since almost every other device here looks for a row that repeated.
  *
  * The temperature is three BCD digits rather than a scaled count, with a separate sign bit, so it reads out as
  * decimal hundreds, tens and units. The check is an even parity fold: exclusive-or the first three bytes,
  * fold the last nibble in, and the result must be zero. Upstream also has a sanity test on the fixed id byte,
- * but it is commented out in the source and is left commented out here — enabling it would reject frames
+ * but it is commented out in the source and is left commented out here, enabling it would reject frames
  * upstream accepts.
  */
 export const atechWs308: RDevice = register({
@@ -280,7 +280,7 @@ export const atechWs308: RDevice = register({
  * Two EMOS sensors that share a frame: a full weather station and a plain thermometer.
  *
  * The frame is sent inverted, and the order of operations around that matters. The three-byte model preamble
- * is matched against the raw air bytes, before inversion; everything afterward — checksum, id, readings — is
+ * is matched against the raw air bytes, before inversion; everything afterward, checksum, id, readings, is
  * read from the inverted frame. Getting that backwards makes the model check fail on every real transmission.
  *
  * A two-bit variant field separates the two products. The E6018 is the cut-down one: no wind sensor and no
@@ -289,7 +289,7 @@ export const atechWs308: RDevice = register({
  * emitted only for the full station, which is what upstream's conditional output does.
  *
  * The repeat check looks at 112 bits rather than the full 120 because the last byte is a repeat counter that
- * decrements every transmission — the rows are deliberately not identical.
+ * decrements every transmission, the rows are deliberately not identical.
  *
  * The byte sum overflows a byte on real frames (the published capture sums to 1735) but upstream narrows it
  * before comparing, so the shared masked helper is correct here rather than a hazard.
@@ -358,14 +358,14 @@ export const emosE6016: RDevice = register({
  * The rain gauge that pairs with the EMOS station above, and the one whose documentation does not add up.
  *
  * Same inverted line code and the same preamble-then-invert ordering as its sibling, differing in the third
- * model byte — 0x75 rather than 0x7c — which is what keeps the two decoders off each other's frames.
+ * model byte, 0x75 rather than 0x7c, which is what keeps the two decoders off each other's frames.
  *
  * Upstream's doc comment prints its capture three ways: raw, "after inversion", and decoded. The raw row and
  * the inverted row disagree in two bytes, and only one of the two can be right, because they give different
  * checksums. The raw capture inverts to a frame whose byte sum is 0x29, exactly the checksum the frame
  * carries; the printed "after inversion" row sums to 0xeb against the same carried 0x29 and fails. So the raw
  * hex is the real transmission and reports no rain, while the inverted row and the "RAIN:2999" in the decoded
- * example come from somewhere else — and 2999 ticks would be 2099 mm, which is not a plausible reading in any
+ * example come from somewhere else, and 2999 ticks would be 2099 mm, which is not a plausible reading in any
  * case. The port follows the raw capture and the checksum; the test pins both so the disagreement stays
  * visible instead of looking like a porting error.
  */
@@ -415,14 +415,14 @@ export const emosE6016Rain: RDevice = register({
  * A floating pool thermometer, and the best-behaved device in this file: it is the only one with a real CRC.
  *
  * The frame is inverted like the EMOS pair, but unlike them every check runs after the inversion, including
- * the structural ones — so the low nibble of byte three and the whole of byte five must be zero in the
+ * the structural ones, so the low nibble of byte three and the whole of byte five must be zero in the
  * inverted frame. Byte five exists only to hold the forty-first bit, which is why demanding it be zero is a
  * meaningful test rather than a formality.
  *
  * The transmission interval encodes the channel: the sensor waits 55 seconds plus its channel number between
  * bursts, so up to eight of them can share the air without colliding forever.
  *
- * The CRC was checked against the row upstream documents before this was written, and it holds — a CRC-8 with
+ * The CRC was checked against the row upstream documents before this was written, and it holds, a CRC-8 with
  * polynomial 0x31 over the first four bytes, matching the fifth. That is worth stating because an unenforced
  * or unverified check is no check at all; this one both verifies and rejects.
  */
@@ -470,12 +470,12 @@ export const rubicsonPool48942: RDevice = register({
 // ---------------------------------------------------------------------------
 
 /**
- * The rain half of a Baldr weather station. Rain only — its temperature comes from a separate sensor that
+ * The rain half of a Baldr weather station. Rain only, its temperature comes from a separate sensor that
  * decodes as a Nexus-TH.
  *
  * There is no checksum whatsoever, which drives both of the unusual flags on this registration. It is shipped
- * disabled by upstream, and it is given a priority that makes it run late, so that Rubicson-Temperature — a
- * device with a real check and a frame this one would happily misread — gets first refusal on any burst they
+ * disabled by upstream, and it is given a priority that makes it run late, so that Rubicson-Temperature, a
+ * device with a real check and a frame this one would happily misread, gets first refusal on any burst they
  * could both claim. Both are mirrored exactly rather than reasoned about afresh: the bits do not justify
  * inventing a different order, and a priority that disagrees with upstream would change which device wins on
  * traffic neither of us can test.
@@ -591,13 +591,13 @@ export const schou72543Rain: RDevice = register({
  * The remote sensor for a Baldr solar weather station: temperature, humidity, and a channel switch hidden in
  * the battery compartment.
  *
- * Same line code and the same timings as the Baldr rain gauge above, and no checksum here either — but this
+ * Same line code and the same timings as the Baldr rain gauge above, and no checksum here either, but this
  * one is not disabled upstream, and the reason is visible in the frame. It demands eight matching rows rather
  * than three, and it has an unusually rich set of always-fixed bits to test: a spare bit in byte one, a whole
  * fixed nibble before the humidity, a fixed nibble after it, an entirely zero byte, and seven fixed bits in
  * byte six. Together those are around eighteen bits that must land exactly right, which is a stronger filter
- * than some of the real checksums in this file. The two are told apart by length regardless — 36 bits for the
- * gauge against 64 here — so neither needs a priority to stay off the other's frames.
+ * than some of the real checksums in this file. The two are told apart by length regardless, 36 bits for the
+ * gauge against 64 here, so neither needs a priority to stay off the other's frames.
  *
  * The identifier is split across the two ends of the frame and survives battery changes, which is unusual for
  * this price bracket; most of these sensors reroll their id at power-on.

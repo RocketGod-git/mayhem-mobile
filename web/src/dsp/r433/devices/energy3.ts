@@ -5,7 +5,7 @@
  * for rather than by how they work. Two of them are worth a note.
  *
  * The GEO minim+ is really two protocols behind one registration. The sensor clamp and the display unit send
- * the same framing with different payload lengths — five bytes from the clamp, forty-two from the display —
+ * the same framing with different payload lengths, five bytes from the clamp, forty-two from the display —
  * and the length byte in the header is what picks the reader. The display's payload carries a date counted in
  * days from the first of January 2007, which upstream normalizes by handing an over-large day number to
  * `mktime` and letting the C library roll it into a real calendar date. That call also applies the machine's
@@ -47,7 +47,7 @@ const hexOf = (b: Uint8Array, from: number, n: number) => {
   return s;
 };
 
-/** One byte read at an arbitrary bit offset, MSB first — rtl_433's `bitrow_get_byte`. */
+/** One byte read at an arbitrary bit offset, MSB first, rtl_433's `bitrow_get_byte`. */
 function bitrowGetByte(row: Uint8Array, pos: number): number {
   return (((row[pos >> 3] << 8) | row[(pos >> 3) + 1]) >> (8 - (pos & 7))) & 0xff;
 }
@@ -60,7 +60,7 @@ function bitrowGetByte(row: Uint8Array, pos: number): number {
  * Two devices on one protocol: a clamp that reports what the house is drawing, and a switchable socket.
  *
  * They are told apart by a message type halfway through the frame, and they do not even checksum the same
- * way — the socket sums eleven bytes, the transmitter sums nine and adds a constant. Both comparisons are
+ * way, the socket sums eleven bytes, the transmitter sums nine and adds a constant. Both comparisons are
  * against a single byte, so narrowing the sum is correct here; for the transmitter it is correct for a subtler
  * reason too, since adding a constant to a sum commutes with taking it modulo 256.
  *
@@ -250,8 +250,8 @@ export const geoMinim: RDevice = register({
 /**
  * A battery sensor that clamps to a car's terminals and reports voltage, charge and health.
  *
- * It keys the opposite way round from everything else on this modulation — a zero is the short pulse and a one
- * the long one — so the whole buffer is turned over before anything is read.
+ * It keys the opposite way round from everything else on this modulation, a zero is the short pulse and a one
+ * the long one, so the whole buffer is turned over before anything is read.
  *
  * Both voltages are sixteen-bit little-endian counts of 1/1600 V. Upstream rounds them to two places rather
  * than truncating as the sensor's own display does, on the grounds that rounding is closer to the truth, and
@@ -411,7 +411,7 @@ export const elsterPowerMeter: RDevice = register({
 /**
  * Type-2 frames: no Manchester coding, whitened with 0xaa, a sixteen-bit length, four times the bit rate.
  *
- * The length means something different here too — it counts from its own first byte through the last data
+ * The length means something different here too, it counts from its own first byte through the last data
  * byte and excludes the check, where type-1's length included itself and the check sat beyond it.
  *
  * Most bodies are encrypted under a per-meter key and are reported as raw hex. The two cleartext classes are

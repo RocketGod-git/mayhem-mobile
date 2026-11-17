@@ -10,7 +10,7 @@ import { bchCorrect } from './flex.js';
 const SYNC = 0x7CD215D8, IDLE = 0x7A89C197;
 const NUMERIC_CHARS = '0123456789RU -][';
 
-/** BCH(31,21) correction — port of Mayhem's EccContainer. */
+/** BCH(31,21) correction, port of Mayhem's EccContainer. */
 export class PocsagEcc {
   private readonly ecs = new Int32Array(21);
   private readonly bch = new Int32Array(1024);

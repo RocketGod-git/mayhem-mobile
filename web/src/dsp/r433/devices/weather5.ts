@@ -9,17 +9,17 @@
  * Holman's two variants disagree with themselves about temperature. The PCM decoder holds its reading in an
  * `int` and sign-extends into it, so negative temperatures work; the PWM decoder stores the same expression in
  * a `uint16_t`, which throws the sign away again before the shift that was supposed to preserve it. Upstream's
- * comment on the PWM line still says "uses sign-extend". It does not, and this port does not either — a sensor
+ * comment on the PWM line still says "uses sign-extend". It does not, and this port does not either, a sensor
  * below freezing reads as roughly 409 C there. That is upstream's behavior and the test pins it.
  *
  * Sainlogic's checksum is the interesting one. Upstream computes a CRC-16 and then never acts on it: a
  * mismatch is logged and the reading is emitted anyway, labelled `mic: "CRC"`. Its own sample frame fails that
- * check, and the code comment says as much — "crc checksum here when guessed". Searching the parameter space
+ * check, and the code comment says as much, "crc checksum here when guessed". Searching the parameter space
  * over that frame turns up exactly one conventional configuration, and it is the reflected twin of upstream's
  * own guess: CRC-16/MODBUS, poly 0xa001 (which is 0x8005 reversed), init 0xffff, over the same bytes upstream
  * already covers, stored with its high byte first. That reproduces the frame's check bytes exactly. This port
  * therefore computes the CRC that actually works, still declines to reject on it the way upstream declines,
- * and only claims `mic: "CRC"` when the check genuinely passed — an unverifiable reading should not carry the
+ * and only claims `mic: "CRC"` when the check genuinely passed, an unverifiable reading should not carry the
  * same badge as a verified one.
  *
  * Vevor is a reminder rather than a surprise: its byte sum overflows a byte on real traffic (the documented
@@ -70,7 +70,7 @@ const WIND_DIR_DEG = [0, 23, 45, 68, 90, 113, 135, 158, 180, 203, 225, 248, 270,
  * total bit count is carried down here rather than just the payload. A short frame with no light reading is the
  * plain Holman; a longer one is the AOK-5056, which additionally reports UV, lux, a battery flag and a counter.
  *
- * The check is a byte-wide exclusive-or of the payload passed through a Galois digest — a single byte fed to
+ * The check is a byte-wide exclusive-or of the payload passed through a Galois digest, a single byte fed to
  * `lfsr_digest8_reflect`, which for a one-byte message is just a fixed linear map. Cheap, and enough to keep
  * unrelated 915 MHz traffic out.
  */
@@ -176,7 +176,7 @@ function xorShiftBytes(m: Uint8Array, numBytes: number, shiftUp: number): number
  *
  * The frame arrives inverted. The preamble is checked first, against its inverted form, because that can be
  * done before touching the buffer; only then is the whole buffer flipped. Upstream holds a bare pointer into
- * the buffer across that flip, so everything it reads afterwards — checksum included — is the righted data,
+ * the buffer across that flip, so everything it reads afterwards, checksum included, is the righted data,
  * and the same is true here.
  *
  * The temperature is where this decoder parts company with its own comment. The expression casts to `int16_t`
@@ -247,13 +247,13 @@ export const holmanWs5029pwmOok: RDevice = register({
 // ---------------------------------------------------------------------------
 
 /**
- * A seven-in-one station sold under a long list of names — SwitchDoc FT020T, Sainlogic WS019T and FT0300,
+ * A seven-in-one station sold under a long list of names, SwitchDoc FT020T, Sainlogic WS019T and FT0300,
  * Ragova FT-0310, NicetyMeter 0366 among them.
  *
  * Two rows at most, because the station sometimes sends its message twice; each is searched for a twelve-bit
  * run-in and the first row carrying a full frame behind it wins.
  *
- * The light sensor is optional on some models, and an absent one does not report zero — it reports all ones,
+ * The light sensor is optional on some models, and an absent one does not report zero, it reports all ones,
  * which would otherwise decode as a bright day and a UV index of 251. Upstream spots that by testing the UV
  * byte against a bound no real index reaches, and drops both light fields together when it trips. The shipped
  * capture is one of those: its UV byte is 0xfb, so it carries no light reading at all.
@@ -324,7 +324,7 @@ export const cotech367959: RDevice = register({
 /**
  * A wind-only head from the same family, and the one device here with no confirmed radio behind it.
  *
- * It was reconstructed in an upstream issue from hand-transcribed hex rather than from a capture — the CRC and
+ * It was reconstructed in an upstream issue from hand-transcribed hex rather than from a capture, the CRC and
  * the direction field were checked against fifty such codes, but nobody ever posted IQ. Upstream ships it
  * switched off for that reason, and the same flag is carried here, which in this app marks its readings
  * doubtful rather than silencing the decoder.
@@ -380,7 +380,7 @@ export const cotechFt0203: RDevice = register({
  * upstream collected over five days. Those are almost certainly reserved bits rather than a happy accident, and
  * for the purpose of throwing out noise they work as well as a check would, so upstream tests them as one and
  * this does too. Together with the fixed marker and the requirement that the row repeat eight times, that is
- * the entire defense — which is why it ships marked doubtful.
+ * the entire defense, which is why it ships marked doubtful.
  *
  * The rain figure is deliberately left as a raw count. It climbs by about forty per bucket tip, but nobody has
  * ever calibrated a tip against a measured volume, so converting it to millimetres would be inventing a number.
@@ -433,11 +433,11 @@ export const cotech367900: RDevice = register({
  * run of nothing that the slicer would otherwise split it, so the reset limit is set wide and the decoder walks
  * the row itself, looking for each run-in in turn and stepping past a whole message when one does not pan out.
  *
- * Three of its fields carry a constant 257 that has to come off before they mean anything — wind, direction and
+ * Three of its fields carry a constant 257 that has to come off before they mean anything, wind, direction and
  * rain all encode as the value plus 0x0101. The light reading uses its top bit as a times-ten flag, so a bright
  * day and a dim one are stored to different precisions.
  *
- * The checksum is a plain byte sum. It genuinely overflows on real frames — the documented one sums to 1504 —
+ * The checksum is a plain byte sum. It genuinely overflows on real frames, the documented one sums to 1504 —
  * but upstream narrows it explicitly before comparing, so the shared masked helper is the right one here.
  */
 export const vevor7in1: RDevice = register({
@@ -579,7 +579,7 @@ function bresserGardenModel(sourceId: number): string {
  * moisture probe, a battery valve on a hose, and a mains gateway that bridges the lot to an app. Sold as
  * Bresser SmartHome Garden, Homgar and RainPoint.
  *
- * It is two-way and chatty, which is what makes it long. Every frame is the same shape — a target id, a source
+ * It is two-way and chatty, which is what makes it long. Every frame is the same shape, a target id, a source
  * id, a counter, a type byte, a payload length, then a fixed thirty-three bytes ending in a CRC that never
  * moves regardless of how much payload there is. The type byte's top bit marks a reply, so an acknowledgement
  * is always the request's type with bit seven set, echoing its counter.
@@ -592,7 +592,7 @@ function bresserGardenModel(sourceId: number): string {
  * form, on a different frequency. Both paths are decoded. The valve stores its watering schedule and runs it on
  * its own clock, so watering carries on with the gateway unplugged.
  *
- * Anything not recognized is still emitted, with its payload as raw hex, rather than guessed at — which is what
+ * Anything not recognized is still emitted, with its payload as raw hex, rather than guessed at, which is what
  * upstream does and the honest thing to do with a protocol this incompletely mapped.
  */
 export const bresserGarden: RDevice = register({
@@ -687,7 +687,7 @@ export const bresserGarden: RDevice = register({
       });
       return 1;
     }
-    // The probe's own reading, as sent to the valve — the message the relay above forwards.
+    // The probe's own reading, as sent to the valve, the message the relay above forwards.
     if (msgType === 0x09 && msgLength === 0x09) {
       ctx.emit({
         ...base, msg_name: 'Soil telemetry', station_id: targetId, device_type: b[11],

@@ -1,10 +1,10 @@
 /**
  * Six more thermometers, and one pair that cannot always be told apart.
  *
- * The interesting one here is Geevon. The TX16-3 and the TX19-1 send byte-for-byte the same frame — same
- * length, same field layout, same three fixed bytes — and differ only in how the last byte is computed: the
+ * The interesting one here is Geevon. The TX16-3 and the TX19-1 send byte-for-byte the same frame, same
+ * length, same field layout, same three fixed bytes, and differ only in how the last byte is computed: the
  * TX16 carries a CRC-8, the TX19 a Galois digest. Those are genuinely different functions, but both are affine
- * over the message, so the set of frames they agree on is not scattered at random — it is a whole coset. About
+ * over the message, so the set of frames they agree on is not scattered at random, it is a whole coset. About
  * one realistic frame in a hundred satisfies both checks, and, awkwardly, all four packets rtl_433 prints as
  * TX16 examples fall inside it. Neither decoder can be given priority on the evidence, and upstream registers
  * both without one, so this does too: an ambiguous frame is reported twice, once under each name. The test
@@ -40,7 +40,7 @@ const pad2 = (n: number) => n.toString().padStart(2, '0');
  * positions, and a temperature.
  *
  * The run-in is nominally seven one-bits followed by the model byte, but the leading ones are not reliable on
- * air, so only the last four of them are searched for along with the model — twelve bits in all. Everything
+ * air, so only the last four of them are searched for along with the model, twelve bits in all. Everything
  * from the model byte onward is covered by the CRC, which is why the search result is advanced by exactly four
  * bits: that lands on the model byte rather than past it.
  *
@@ -99,7 +99,7 @@ export const ecowitt: RDevice = register({
  * read first, while the long rows are still intact, and then every row longer than 49 bits is struck out so
  * the reading search cannot pick one up by mistake.
  *
- * The humidity is BCD but the temperature is not — it is a signed ten-bit value sitting high in a sixteen-bit
+ * The humidity is BCD but the temperature is not, it is a signed ten-bit value sitting high in a sixteen-bit
  * word, which is how upstream gets its sign extension for free, and the shift back down is what scales it.
  */
 export const eurochronEfth800: RDevice = register({
@@ -170,14 +170,14 @@ export const eurochronEfth800: RDevice = register({
 /**
  * A Lidl thermometer that sends its temperature as decimal digits rather than a scaled count.
  *
- * The frame is 68 bits — seventeen nibbles — so nothing is byte aligned until the four-bit prefix is shifted
+ * The frame is 68 bits, seventeen nibbles, so nothing is byte aligned until the four-bit prefix is shifted
  * off, which is what the realignment loop does. Both checks are then computed over the aligned bytes while
  * the temperature is read from the original unaligned row, because its digits sit on nibble boundaries there.
  *
  * The byte sum genuinely overflows a byte on real frames, and upstream narrows it to eight bits before
  * comparing, so the masked sum this app's helper returns is the correct one here rather than a hazard.
- * Its hand-rolled Galois routine is `lfsr_digest8` exactly — same forward byte order, same MSB-first bit
- * traversal, same right-rolling key — so the shared helper stands in for it.
+ * Its hand-rolled Galois routine is `lfsr_digest8` exactly, same forward byte order, same MSB-first bit
+ * traversal, same right-rolling key, so the shared helper stands in for it.
  */
 export const auriolAft77b2: RDevice = register({
   num: 184,
@@ -229,7 +229,7 @@ export const auriolAft77b2: RDevice = register({
  * The same board as the Esperanza EWS and the s3318p, sold under several names.
  *
  * Its check is a six-bit nibble sum split across the last two bytes. The sum runs over four whole bytes plus
- * one further nibble, which tops out at 135 — below the byte this app's `addNibbles` narrows to, so the
+ * one further nibble, which tops out at 135, below the byte this app's `addNibbles` narrows to, so the
  * masking that has bitten other decoders cannot reach this one. An all-zero row sums to zero and is thrown
  * out before the comparison, since it would otherwise check out perfectly.
  */
@@ -277,7 +277,7 @@ export const vaunoEn8822c: RDevice = register({
 /**
  * Everything the two Geevon sensors share, which is everything but the last byte.
  *
- * `verify` is the only difference between them. Both frames are 73 bits — 72 of payload and one left over —
+ * `verify` is the only difference between them. Both frames are 73 bits, 72 of payload and one left over —
  * sent inverted, repeated several times, with three fixed bytes two thirds of the way in that serve as a
  * cheap structural check before either integrity check runs.
  */

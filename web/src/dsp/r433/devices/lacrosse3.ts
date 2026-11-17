@@ -8,7 +8,7 @@
  * pair are ordinary fixed frames.
  *
  * The variable-length ones are the interesting case. A TX22U does not say how many measurements it sent, so
- * the decoder tries each possible count from five down and keeps the first whose CRC closes — the length is
+ * the decoder tries each possible count from five down and keeps the first whose CRC closes, the length is
  * discovered by finding the one that checks out, which is also the only thing standing between a short frame
  * and a plausible misread.
  *

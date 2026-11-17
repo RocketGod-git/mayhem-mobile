@@ -898,9 +898,9 @@ private val HOW: Map<MayhemApp, List<String>> = mapOf(
 /** The field notes: the things people ask about. */
 private val TIPS = listOf(
     "Plugging in" to "The app opens by itself when a HackRF or an RTL-SDR is plugged in; allow the USB prompt once and tick 'always'.",
-    "Nothing happens" to "Check the phone's OTG switch — OnePlus, OPPO and realme turn it off after ten idle minutes — and that the cable carries data.",
+    "Nothing happens" to "Check the phone's OTG switch, OnePlus, OPPO and realme turn it off after ten idle minutes, and that the cable carries data.",
     "RTL-SDR" to "Receive only, up to 1.766 GHz and 2.4 Msps. Below 24 MHz only on an RTL-SDR Blog V3 or V4L; transmit and Bluetooth need a HackRF.",
-    "Power" to "A HackRF Pro can draw more than a phone's OTG port supplies — use a powered OTG hub if the log shows all-zero IQ.",
+    "Power" to "A HackRF Pro can draw more than a phone's OTG port supplies, use a powered OTG hub if the log shows all-zero IQ.",
     "Faves" to "Tap ☆ beside the digits to keep a frequency; FAVES in the top bar brings it back in its own app, as it was heard.",
     "Tuning" to "Drag the digits up or down, tap ⌨ to type a frequency, or press the waterfall and slide; the radio retunes when you lift.",
     "Mute" to "MUTE in the top bar silences Mayhem from any screen; the phone's volume buttons set how loud.",
@@ -965,7 +965,7 @@ private fun SkinCard(skin: Skin, selected: Boolean, modifier: Modifier, onClick:
 
 /** Rolling credits, PortaPack style: Mayhem's contributor lists plus the authors of every file we ported.
  *  The list is rendered twice back-to-back and the auto-scroll snaps back to 0 when it crosses the first copy's
- *  height — an endless loop with no pause. Drag or fling to steer; the loop resumes as soon as you let go. */
+ *  height, an endless loop with no pause. Drag or fling to steer; the loop resumes as soon as you let go. */
 @Composable
 private fun CreditsRoll(accent: Color) {
     val d = rememberDims()

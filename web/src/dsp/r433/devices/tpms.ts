@@ -5,8 +5,8 @@
  * to report its pressure, its temperature and a serial number that never changes. They are the busiest thing in
  * the band: park near a road and they arrive continuously.
  *
- * They are almost all built the same way — frequency shift keying, a run of alternating bits as a preamble, then
- * Manchester-coded bytes ending in a checksum — so the work here is per-manufacturer field layout rather than
+ * They are almost all built the same way, frequency shift keying, a run of alternating bits as a preamble, then
+ * Manchester-coded bytes ending in a checksum, so the work here is per-manufacturer field layout rather than
  * per-manufacturer signal processing. US cars mostly transmit on 315 MHz, European ones on 433.92.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `src/devices/tpms_toyota.c`, `tpms_ford.c`, `tpms_citroen.c`,
@@ -181,7 +181,7 @@ export const tpmsCitroen: RDevice = register({
 });
 
 /**
- * Renault, Dacia and Nissan-Renault shared platforms. Nine bytes with a CRC, and — unusually — the serial
+ * Renault, Dacia and Nissan-Renault shared platforms. Nine bytes with a CRC, and, unusually, the serial
  * number stored least significant byte first.
  */
 export const tpmsRenault: RDevice = register({

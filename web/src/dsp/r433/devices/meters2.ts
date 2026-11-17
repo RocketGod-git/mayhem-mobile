@@ -1,14 +1,14 @@
 /**
  * Water and utility meter endpoints: the radio modules a utility bolts to a meter so it can be read from the street.
  *
- * These are the metering protocols outside the two families already in this app — Itron's ERT range in
+ * These are the metering protocols outside the two families already in this app, Itron's ERT range in
  * `meters.ts` and the European wireless M-Bus standard in `mbus.ts`. What the ones here have in common is that
  * none of them were meant to be read by anybody but the utility that installed them, and it shows. Four of the
  * twelve wrap their payload in a layer whose only purpose is to stop it looking like data, and in every case
  * that layer turns out to be keyless: three use the same fixed whitening sequence a CC1101 radio applies to
  * everything it sends, and the Apator pair adds a nibble substitution table that a single capture gives away.
  * None of it is encryption, and none of it is treated here as though it were. The one payload in this file that
- * really is encrypted — a Gridstream frame carrying an AES body — is reported as encrypted and left alone.
+ * really is encrypted, a Gridstream frame carrying an AES body, is reported as encrypted and left alone.
  *
  * Where a meter's consumption count needs a scaling table this port cannot honestly reproduce, the raw register
  * value is reported rather than a number in guessed units, the same choice `mbus.ts` makes. Badger's ORION
@@ -17,7 +17,7 @@
  *
  * Evidence is unusually good for a metering batch. Apator's heat allocator ships five real captures with the
  * bytes they unwhiten to, Badger's Orion Endpoint ships two, and Arad's meter ships a frame together with its
- * forty-bit checksum — so the three hardest pieces of arithmetic in this file are each checked against numbers
+ * forty-bit checksum, so the three hardest pieces of arithmetic in this file are each checked against numbers
  * this port had no part in producing. Details of what those captures settled are in `test/meters2.mjs`.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `badger_water.c`, `neptune_r900.c`, `arad_ms_meter.c`,
@@ -56,7 +56,7 @@ function byteAt(m: Uint8Array, off: number): number {
 /**
  * Mode T's line code: each nibble travels as six bits with exactly three of them set.
  *
- * `mbus.ts` carries the same sixteen-entry table for the same reason — this meter borrows wireless M-Bus's
+ * `mbus.ts` carries the same sixteen-entry table for the same reason, this meter borrows wireless M-Bus's
  * physical layer wholesale and puts an entirely different payload on top of it. The table is repeated rather
  * than shared because the two files agree only on this one accident of history, and a shared helper would
  * suggest a relationship between the protocols that does not exist.
@@ -90,8 +90,8 @@ function decode3of6(byte: number): number {
  * carry them, so the two flag bytes are reported raw rather than invented into named booleans. The reading
  * itself is unambiguous: whole gallons, little-endian, on meters with one-gallon resolution.
  *
- * Upstream's symbol check here is dead code — its helper returns 1 for a bad symbol and the caller tests for a
- * negative — so a frame containing an illegal six-bit symbol reaches the CRC instead of being rejected early.
+ * Upstream's symbol check here is dead code, its helper returns 1 for a bad symbol and the caller tests for a
+ * negative, so a frame containing an illegal six-bit symbol reaches the CRC instead of being rejected early.
  * The check is live in this port. That changes no outcome, because the CRC rejects those frames anyway; it
  * just rejects them for the reason that actually applies.
  */
@@ -156,7 +156,7 @@ const MAP16TO6 = [-1, -1, -1, 0, -1, 1, 2, -1, -1, 5, 4, -1, 3, -1, -1, -1];
  * The frame is not a run of bits with fields in it. Every nibble on the air is one of six legal patterns, each
  * standing for a base-6 digit; pairs of those make a byte-sized value 0–35, and twenty-one of those values are
  * repacked five bits at a time to recover 104 bits of actual message. That is a 62 percent coding overhead
- * spent on making the signal easy to clock rather than on protecting it — there is no checksum anywhere in the
+ * spent on making the signal easy to clock rather than on protecting it, there is no checksum anywhere in the
  * frame. What stands in for one is that two thirds of the possible nibble values are illegal, so a corrupted
  * frame almost always fails to decode rather than decoding wrongly.
  *
@@ -164,7 +164,7 @@ const MAP16TO6 = [-1, -1, -1, 0, -1, 1, 2, -1, -1, 5, 4, -1, 3, -1, -1, -1];
  * counter there with three extra high bits carried separately; the T-10 and its relatives pack six decimal
  * digits into the same twenty-four bits. Nothing in the transmission says which, so upstream ships two
  * decoders and so does this. The decimal one rejects any frame containing a nibble above nine, which is what
- * keeps it from claiming most binary meters' frames — but the two genuinely do overlap, and a binary reading
+ * keeps it from claiming most binary meters' frames, but the two genuinely do overlap, and a binary reading
  * that happens to use only digits 0–9 will be reported by both.
  */
 function neptuneDecode(bits: BitBuffer, ctx: DecodeCtx, isBcd: boolean): number {
@@ -256,7 +256,7 @@ export const neptuneR900bcd: RDevice = register({
   bands: US_METER_BANDS,
   // Reads the same frames as the binary decoder above and differs only in how it reads the counter, so on any
   // one meter at most one of the two is telling the truth. Marked doubtful because the frame carries nothing
-  // that says which — only the meter's model number, which is not on the air, settles it.
+  // that says which, only the meter's model number, which is not on the air, settles it.
   disabled: true,
   decode: (_dev, bits, ctx) => neptuneDecode(bits, ctx, true),
 });
@@ -271,7 +271,7 @@ export const neptuneR900bcd: RDevice = register({
  * It is a linear digest: a running exclusive-or of a per-bit key, accumulated over every set bit of the
  * eighty-eight payload bits. Linearity is normally a weakness in a checksum, but here it is the whole point.
  * Because flipping one payload bit changes the result by exactly that bit's key and nothing else, the
- * difference between the received and computed values — the syndrome — names which bits are wrong. Matching
+ * difference between the received and computed values, the syndrome, names which bits are wrong. Matching
  * the syndrome against one key, then against every pair, then every triple, locates and repairs up to three
  * bit errors in a frame that would otherwise be thrown away.
  *
@@ -349,7 +349,7 @@ function aradCorrectBits(b: Uint8Array, sHi: number, sLo: number): number {
  * Arad's Dialog3G, which transmits inverted and corrects its own bit errors.
  *
  * Everything after the sync word arrives inverted, so the fixed forty-eight-bit identifier that every one of
- * these meters carries — 3e690aec7ac8 — is searched for as its complement. Upstream inverts the whole shared
+ * these meters carries, 3e690aec7ac8, is searched for as its complement. Upstream inverts the whole shared
  * bit buffer to deal with that; this port complements only the bytes it extracts, because in this app the same
  * buffer is handed to every other decoder afterwards and must come back unchanged.
  *
@@ -438,7 +438,7 @@ export const aradMsMeter: RDevice = register({
 /**
  * The frame check has no fixed starting value: each utility is issued its own.
  *
- * That makes the CRC init an identifier rather than a secret — it does not protect anything, it just means a
+ * That makes the CRC init an identifier rather than a secret, it does not protect anything, it just means a
  * receiver has to know which deployment it is listening to. Upstream collects the values as they are
  * discovered and tries each in turn, so a frame that checks out has also named the utility that sent it. A
  * deployment whose value is not yet in this list simply fails the check.
@@ -477,7 +477,7 @@ function gridstreamChecksum(fullLength: number, length: number, b: Uint8Array, a
  *
  * Unlike every other meter in this file, these frames are not a meter announcing itself into the void. They
  * are traffic between meters and collectors on a mesh, so a frame has a source and a destination and a control
- * byte naming what kind of message it is. What can be read from the outside is the envelope — who is talking
+ * byte naming what kind of message it is. What can be read from the outside is the envelope, who is talking
  * to whom, how long since that meter last lost power, and what the mesh clock says. The message bodies are not
  * decoded, and the ones marked encrypted genuinely are.
  *
@@ -611,7 +611,7 @@ export const gridstream384: RDevice = register({
  * The substitution table that stands in for encryption on both Apator meters.
  *
  * Every nibble of the payload is replaced by another through this fixed sixteen-entry map. It has no key and
- * never changes, so one capture with a known meter reading breaks it permanently — which is what happened.
+ * never changes, so one capture with a known meter reading breaks it permanently, which is what happened.
  * Note that it is not an involution: 1 becomes 7 but 7 becomes 4, so decoding needs this table and encoding
  * needs its inverse, and applying the same one twice does not get back to where it started.
  */
@@ -621,7 +621,7 @@ const APATOR_NIBBLE_MAP = [0x0, 0x7, 0xf, 0x9, 0xe, 0xd, 0x3, 0x4, 0x2, 0x6, 0xc
  * Two Apator meters that are one protocol wearing two lengths.
  *
  * The water meter declares nineteen payload bytes and the heat cost allocator seventeen, and that length byte
- * is the only thing in the frame that tells them apart — so each registration insists on its own and steps
+ * is the only thing in the frame that tells them apart, so each registration insists on its own and steps
  * aside otherwise. Everything else is shared: the same run-in and sync word, the same whitening, the same
  * checksum over the whitening-removed but still substituted bytes, and the same nibble table underneath.
  *
@@ -718,7 +718,7 @@ export const apatorMetraEitn30: RDevice = register({
 // Badger Meter Orion Endpoint (282, and 290 for the 2020 hardware)
 // ---------------------------------------------------------------------------
 
-/** The endpoint's model is not in the frame — it is implied by which block the serial number falls in. */
+/** The endpoint's model is not in the frame, it is implied by which block the serial number falls in. */
 function orionEndpointModel(id: number): string {
   if (id >= 30000000 && id <= 59999999) return 'ME or SE';
   if (id >= 60000000 && id <= 69999999) return 'Mobile M';
@@ -741,7 +741,7 @@ function orionEndpointModel(id: number): string {
  * The endpoint changes frequency every hundred and fifty seconds across roughly fifty channels between 904 and
  * 925 MHz, so catching one is a matter of listening on the right channel at the right time rather than of
  * decoding difficulty. Once caught, the payload is unwhitened with the same fixed sequence a CC1101 applies to
- * everything, and then the whole twenty-three bytes including the check must run to zero — a check over its
+ * everything, and then the whole twenty-three bytes including the check must run to zero, a check over its
  * own CRC, so there is no separate comparison to make.
  *
  * Two registrations differ only in bit rate: the newer 2020 hardware sends at twice the speed. The daily

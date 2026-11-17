@@ -12,7 +12,7 @@
  * says marked as worth a second look. Reporting a doubtful smoke alarm and saying so is better than silence,
  * but the doubt has to travel with it.
  *
- * None of these six carries a rolling code, and none of them needs one — a door contact has nothing to hide.
+ * None of these six carries a rolling code, and none of them needs one, a door contact has nothing to hide.
  * What they do carry is a stable identity, which is exactly what makes them useful to see.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `visonic_powercode.c`, `yale_hsa.c`, `kidde_smoke.c`, `cavius.c`
@@ -40,7 +40,7 @@ const bitAt = (b: Uint8Array, i: number) => (b[i >> 3] >> (7 - (i & 7))) & 1;
  * the first bit of the check is the parity of every first bit, the second of every second, and so on. That
  * catches a whole nibble arriving wrong, which a plain sum would not.
  *
- * The eight flag bits are all reported. Most of them are about the sensor rather than the door — whether its
+ * The eight flag bits are all reported. Most of them are about the sensor rather than the door, whether its
  * case has been opened, whether it is a repeater, whether this is the routine check-in it sends when nothing
  * has happened at all.
  */
@@ -158,11 +158,11 @@ const KIDDE_ANCHOR = new Uint8Array([0x7f]);
  * A smoke alarm that only ever says who it is.
  *
  * These units interconnect so that one going off sets off the rest, and what is decoded here is the periodic
- * heartbeat they send regardless — the eight DIP switches somebody set when installing it, sent twice with one
+ * heartbeat they send regardless, the eight DIP switches somebody set when installing it, sent twice with one
  * bit flipped between the copies. That echo is not a checksum: it depends on nothing outside the identity, so
  * it cannot catch a corrupted frame, only an implausible one.
  *
- * There is no way to strengthen that. The obvious guard — demanding several identical copies — cannot work
+ * There is no way to strengthen that. The obvious guard, demanding several identical copies, cannot work
  * because real repeats arrive sixty to a hundred and twenty-five milliseconds apart, far outside the window in
  * which the receiver treats two bursts as one reception, so every repeat arrives as its own capture.
  *
@@ -236,7 +236,7 @@ const CAVIUS_MESSAGE: Record<number, string> = {
  *
  * Every unit knows the identity of the master it was paired to as well as its own, so a message names both:
  * which network, and which detector in it. The message byte is sent twice, the second copy inverted, and a
- * CRC closes the identity and message together — so unlike the Kidde above, this one can genuinely tell a
+ * CRC closes the identity and message together, so unlike the Kidde above, this one can genuinely tell a
  * corrupted frame from a real one.
  */
 export const cavius: RDevice = register({
@@ -342,7 +342,7 @@ function grayDecode(n: number): number {
  *
  * The interesting part is how thoroughly the payload is disguised without being encrypted at all: the frame is
  * differential Manchester coded, then every byte is bit-reversed, and the fields inside are Gray coded on top
- * of that. None of it is secret — a CRC-16 sits over the whole thing and anyone can undo the rest — but three
+ * of that. None of it is secret, a CRC-16 sits over the whole thing and anyone can undo the rest, but three
  * layers of rearrangement mean nothing is legible until all three come off.
  *
  * The identity is read before the reversal and the state after it, which looks inconsistent and is: upstream

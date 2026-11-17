@@ -34,12 +34,12 @@ import type { RadioCaps, Radio, RadioEvents, RadioLimits } from './radio.js';
  *
  * The driver brings a dongle up correctly - it enumerates, detects the tuner, locks the synthesizer, streams
  * IQ at the right rate and answers its gain control, all verified against an RTL-SDR Blog V4. What it does not
- * do is hear anything. With an aerial connected, broadcast FM should be the loudest thing on the spectrum and
+ * do is hear anything. With an antenna connected, broadcast FM should be the loudest thing on the spectrum and
  * it measured under two counts across the whole band, barely above the converter's own noise. Something in the
  * signal path is wrong while everything around it is right.
  *
  * The leading suspect is the V4's input routing: that board switches its front end between HF, VHF and UHF
- * filter paths under GPIO control, and this driver never touches those pins, so the aerial may simply not be
+ * filter paths under GPIO control, and this driver never touches those pins, so the antenna may simply not be
  * connected to the mixer. Gain behaving almost identically at nought and twenty decibels points the same way -
  * something upstream of the gain stages is attenuating everything.
  *
@@ -366,8 +366,8 @@ export class RtlSdr implements Radio {
         const now = performance.now();
         this.reopenTimes = this.reopenTimes.filter(t => now - t < 10_000);
         this.reopenTimes.push(now);
-        if (this.reopenTimes.length > 6) { this.ev.onLog('RTL-SDR: reopened the dongle 6 times in 10 s and retunes still fail — stopping'); break; }
-        this.ev.onLog(`RTL-SDR: retune to ${(this.targetFreqHz / 1e6).toFixed(3)} MHz would not land — reopening the dongle there`);
+        if (this.reopenTimes.length > 6) { this.ev.onLog('RTL-SDR: reopened the dongle 6 times in 10 s and retunes still fail, stopping'); break; }
+        this.ev.onLog(`RTL-SDR: retune to ${(this.targetFreqHz / 1e6).toFixed(3)} MHz would not land, reopening the dongle there`);
         try { await this.dev.releaseInterface(0); } catch { /* may already be released */ }
         try { await this.dev.close(); } catch { /* may already be closed */ }
         await this.open();
@@ -434,8 +434,8 @@ export class RtlSdr implements Radio {
       if (!this.stopFlag) inflight.push(read());
       if (res.status !== 'ok' || !res.data) {
         // A run of failures means the radio has gone, not that one buffer was unlucky.
-        if (++bad > N * 2) { this.ev.onLog(`RTL-SDR: giving up — ${this.lastError ?? res.status}`); break; }
-        if (bad === 1) this.ev.onLog(`RTL-SDR: transfer ${res.status}${this.lastError ? ` — ${this.lastError}` : ''}`);
+        if (++bad > N * 2) { this.ev.onLog(`RTL-SDR: giving up, ${this.lastError ?? res.status}`); break; }
+        if (bad === 1) this.ev.onLog(`RTL-SDR: transfer ${res.status}${this.lastError ? `, ${this.lastError}` : ''}`);
         if (res.status === 'stall') { try { await this.dev.clearHalt('in', this.epIn); } catch { /* gone */ } }
         continue;
       }
@@ -455,21 +455,21 @@ export class RtlSdr implements Radio {
         for (let k = 0; k < buf.length; k++) { const v = buf[k]; if (v !== 0) nz++; if (v < mn) mn = v; if (v > mx) mx = v; }
         this.ev.onLog(`RTL-SDR raw: n=${buf.length} nonZero=${nz}/${buf.length} min=${mn} max=${mx}`);
         if (nz === 0) {
-          this.ev.onLog('RTL-SDR: all-zero samples — the tuner is not delivering. Check the aerial and try a different USB port.');
-          this.ev.onStatus('RTL-SDR: no signal — check aerial / cable');
+          this.ev.onLog('RTL-SDR: all-zero samples, the tuner is not delivering. Check the antenna and try a different USB port.');
+          this.ev.onStatus('RTL-SDR: no signal, check antenna / cable');
         }
       }
 
       this.ev.onIq(buf);
       if (this.targetRateHz !== this.appliedRate) {
         // A sample-rate change resets the bulk FIFO (resetBuffer), which aborts any transferIn still in flight
-        // ("transfer babble") and the stream never recovers — that is what froze an app switch from 2.4 to
+        // ("transfer babble") and the stream never recovers, that is what froze an app switch from 2.4 to
         // 1.92 Msps. Drain the pending reads so the reset lands with nothing outstanding, then re-prime. Freq
         // and gain are I2C-only, touch no endpoint, and stay live in applyPending below.
         const rest = inflight.splice(0);
         await Promise.allSettled(rest);
         try { await this.setSampleRate(this.targetRateHz); await this.resetBuffer(); this.appliedRate = this.targetRateHz; }
-        catch (e) { this.ev.onLog(`RTL-SDR: rate change failed — ${(e as Error).message}`); }
+        catch (e) { this.ev.onLog(`RTL-SDR: rate change failed, ${(e as Error).message}`); }
         try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
         if (!this.stopFlag) for (let i = 0; i < N; i++) inflight.push(read());
         bad = 0;
@@ -493,7 +493,7 @@ export class RtlSdr implements Radio {
           if (!ok) { await Promise.allSettled(inflight.splice(0)); return 'reopen'; }
           if (ok && !this.quietRetune) {
             this.quietRetune = true;
-            this.ev.onLog('RTL-SDR: this USB stack rejects retunes during streaming — retuning between drained reads from now on');
+            this.ev.onLog('RTL-SDR: this USB stack rejects retunes during streaming, retuning between drained reads from now on');
           }
         }
       }
@@ -545,7 +545,7 @@ export class RtlSdr implements Radio {
       return true;
     } catch (e) {
       const msg = (e as Error).message;
-      if (msg !== this.retuneError) this.ev.onLog(`RTL-SDR: retune failed, retrying — ${msg}`);
+      if (msg !== this.retuneError) this.ev.onLog(`RTL-SDR: retune failed, retrying, ${msg}`);
       this.retuneError = msg;
       return false;
     }
@@ -673,7 +673,7 @@ export class RtlSdr implements Radio {
    * Tune. From 24 MHz up this is the ordinary tuner path, unchanged. Below it, where the R82xx tracking filter
    * runs out, HF is reached according to the stick: an R820T/R820T2 (the Blog V3 and every generic R820T) drops
    * into direct sampling and the wanted frequency is read straight off the ADC's Q branch by the demodulator's
-   * own downconverter; the V4L's R828S keeps its tuner but switches the aerial through the onboard upconverter
+   * own downconverter; the V4L's R828S keeps its tuner but switches the antenna through the onboard upconverter
    * (GPIO5 low) and tunes 28.8 MHz high. The Blog V4 does the same below 28.8 MHz, its HF arriving on cable-2.
    * Another R828D or an unknown stick has neither, so a sub-24 MHz ask there simply will not lock.
    */
@@ -709,7 +709,7 @@ export class RtlSdr implements Radio {
    * Direct sampling (librtlsdr rtlsdr_set_direct_sampling): bypass the tuner and read the ADC itself, with the
    * demodulator's downconverter moved onto the wanted HF frequency by setIfFreq. The Blog V3 brings its HF port
    * in on the Q branch, so the I/Q ADC inputs are swapped (register 0x06 = 0x90). A fixed spur sits 96 kHz above
-   * wherever it is tuned — inherent to reading the ADC this way; tune a few kHz to one side of it.
+   * wherever it is tuned, inherent to reading the ADC this way; tune a few kHz to one side of it.
    */
   private async enterDirectSampling(): Promise<void> {
     await this.demodWrite(1, 0x15, 0x00, 1);        // spectrum inversion off
@@ -827,7 +827,7 @@ export class RtlSdr implements Radio {
     }
     if (!found) {
       this.tunerAddr = R820T_ADDR; this.tunerXtal = RTL_XTAL; this.vcoPowerRef = 2; this.tuner = 'unknown';
-      this.ev.onLog('RTL-SDR: no R82xx answered. An E4000 or FC0012 dongle is not supported yet — expect static.');
+      this.ev.onLog('RTL-SDR: no R82xx answered. An E4000 or FC0012 dongle is not supported yet, expect static.');
     }
     // A V4L's R828S passes for an R820T on the bus; its USB strings are what give it away. It runs from the RTL's
     // 28.8 MHz like an R820T but wants the R828D's VCO power reference of one (librtlsdr r82xx_set_pll).
@@ -860,7 +860,7 @@ export class RtlSdr implements Radio {
    * The part turns up wired two ways. Upstream librtlsdr assumes sixteen megahertz, which is what the Astrometa
    * sticks give it; an RTL-SDR Blog V4 shares the RTL's own 28.8 MHz instead. Get it wrong and the divider is
    * out by nearly a factor of two, which puts the VCO a long way outside the range it can reach, so it never
-   * locks - and the dongle still passes a little signal, which makes it look like a weak aerial rather than a
+   * locks - and the dongle still passes a little signal, which makes it look like a weak antenna rather than a
    * mistuned synthesizer.
    *
    * There is no register that answers this, so it is measured: ask for a frequency in the middle of the tuner's
@@ -875,7 +875,7 @@ export class RtlSdr implements Radio {
       }
     }
     this.tunerXtal = R828D_XTAL;
-    this.ev.onLog('RTL-SDR: R828D would not lock against either reference — expect a weak, mistuned front end.');
+    this.ev.onLog('RTL-SDR: R828D would not lock against either reference, expect a weak, mistuned front end.');
   }
 
   /** Calibrate the channel filter, twice if the first attempt lands on a reserved value. */
@@ -953,7 +953,7 @@ export class RtlSdr implements Radio {
       // Say what the part actually reported. An empty read means the I2C never answered, which is a different
       // fault from a synthesizer that answered and said it had not settled.
       if (!quiet) {
-        this.ev.onLog(`RTL-SDR: PLL lock bit clear — status ${saw.length ? saw.map(v => v.toString(16).padStart(2, '0')).join(' ') : '(no answer)'}, nint ${nint} sdm ${sdm} mixDiv ${plan.mixDiv}`);
+        this.ev.onLog(`RTL-SDR: PLL lock bit clear, status ${saw.length ? saw.map(v => v.toString(16).padStart(2, '0')).join(' ') : '(no answer)'}, nint ${nint} sdm ${sdm} mixDiv ${plan.mixDiv}`);
       }
       return false;
     }
@@ -964,10 +964,10 @@ export class RtlSdr implements Radio {
   private async r82xxSetFreq(rfHz: number, hf = false): Promise<void> {
     const lo = rfHz + R82XX_IF_HZ;                      // low-side injection; the demodulator un-inverts
     await this.setMux(lo);
-    // The R828D (RTL-SDR Blog V4, Astrometa) has three RF inputs, and the aerial sits on the air-in below
+    // The R828D (RTL-SDR Blog V4, Astrometa) has three RF inputs, and the antenna sits on the air-in below
     // ~345 MHz and the cable-in above it. librtlsdr steers register 0x05 bit 6:5 (mask 0x60) to pick them; the
-    // init block leaves it at 0x00 (cable-in), so on a V4 nothing below 345 MHz — FM, APRS, air, 2 m — ever
-    // reached the mixer, which read as a dead aerial. An R820T/R820T2 has one input and ignores this bit.
+    // init block leaves it at 0x00 (cable-in), so on a V4 nothing below 345 MHz, FM, APRS, air, 2 m, ever
+    // reached the mixer, which read as a dead antenna. An R820T/R820T2 has one input and ignores this bit.
     if (this.tuner === 'R828D') await this.tunerWriteMask(0x05, rfHz > 345_000_000 ? 0x00 : 0x60, 0x60);
     // The V4L's R828S has one input fewer: cable-1 for HF (0x05 bit 6) carries the upconverter's output, the
     // air-in (both bits clear) everything else (librtlsdr r82xx_set_freq, V4L branch).

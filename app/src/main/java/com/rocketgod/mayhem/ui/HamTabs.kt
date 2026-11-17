@@ -253,7 +253,7 @@ internal fun HamDigitalTab(accent: Color) {
             LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(500); now = System.currentTimeMillis() } }
             SectionLabel("FT8 · ${15 - (now / 1000) % 15} s to next slot · UTC  SNR  DT  Hz  message")
             Column(Modifier.fillMaxWidth().panel().padding(d.dp(6f))) {
-                if (ft8.isEmpty()) Text("FT8 decodes appear every 15 s — tune a band's FT8 frequency in USB · tap a decode to log the station",
+                if (ft8.isEmpty()) Text("FT8 decodes appear every 15 s, tune a band's FT8 frequency in USB · tap a decode to log the station",
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
                 for (r in ft8.take(60)) {
                     Row(Modifier.fillMaxWidth().clickable { logFromFt8(r.text, r.snr) }.padding(vertical = d.dp(1f)), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -343,7 +343,7 @@ internal fun HamTransmit(accent: Color) {
     val amp by Tx.amp.collectAsState()
     val needsPrompt by Tx.needsPrompt.collectAsState()
     var note by remember { mutableStateOf("") }
-    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> note = if (ok) "microphone ready — hold the button" else "no microphone permission" }
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> note = if (ok) "microphone ready, hold the button" else "no microphone permission" }
     val radio by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
     val canTx = radio != com.rocketgod.mayhem.core.Radio.Kind.RTLSDR
     if (needsPrompt && canTx) SafetyPromptDialog(accent) { Tx.acknowledgeSafety() }
@@ -463,7 +463,7 @@ internal fun HamLogbook(accent: Color) {
         val ents = entries.mapNotNull { it.country ?: com.rocketgod.mayhem.core.ham.offlineInfo(it.call).country }.toSet().size
         SectionLabel("LOGBOOK · " + (if (entries.isEmpty()) "empty" else "${entries.size} QSO${if (entries.size == 1) "" else "s"} · $calls callsign${if (calls == 1) "" else "s"} · $ents entit${if (ents == 1) "y" else "ies"}") + " · tap to edit")
         Column(Modifier.fillMaxWidth().panel().padding(d.dp(6f))) {
-            if (entries.isEmpty()) Text("no contacts yet — work someone and LOG IT, or import an ADIF", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
+            if (entries.isEmpty()) Text("no contacts yet, work someone and LOG IT, or import an ADIF", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f))
             for (x in entries.take(300)) {
                 Row(Modifier.fillMaxWidth().clickable { Logbook.edit(x.id) }.padding(vertical = d.dp(2f)), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -509,7 +509,7 @@ private fun CallInfoPanel(call: String, entries: List<com.rocketgod.mayhem.core.
     val info by Logbook.info.collectAsState()
     val p = parseCall(call)
     val lines = ArrayList<Pair<String, Color>>()
-    if (p.base.isEmpty()) lines += "type a callsign — the prefix says where it is, LOOKUP asks HamQTH / hamdb / callook for the rest" to Palette.muted
+    if (p.base.isEmpty()) lines += "type a callsign, the prefix says where it is, LOOKUP asks HamQTH / hamdb / callook for the rest" to Palette.muted
     else {
         info?.let { i ->
             lines += (i.base + if (i.prefix.isNotEmpty() && i.prefix != i.base.take(i.prefix.length)) " (operating from ${i.prefix})" else "") to Palette.ink
@@ -532,7 +532,7 @@ private fun CallInfoPanel(call: String, entries: List<com.rocketgod.mayhem.core.
         if (worked.isNotEmpty()) {
             val w = worked[0]
             lines += "worked ${worked.size}× · last ${java.time.Instant.ofEpochMilli(w.ts).toString().take(10)} ${bandOfHz(w.freq)} ${w.mode}${if (w.name.isNotEmpty()) " · ${w.name}" else ""}" to Palette.accent2
-        } else lines += "new one — not in the log yet" to Palette.muted
+        } else lines += "new one, not in the log yet" to Palette.muted
     }
     Column(Modifier.fillMaxWidth().padding(vertical = d.dp(4f)).panel().padding(d.dp(6f))) {
         for ((t, c) in lines) Text(t, color = c, fontFamily = Mono, fontSize = d.sp(10.5f))

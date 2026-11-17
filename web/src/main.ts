@@ -1,4 +1,4 @@
-/** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
+/** Mayhem Mobile, web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
 import { openKeypad, FREQ_UNITS, freqAuto } from './keypad.js';
 import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
 import { RTL_MAX_GAIN_DB, RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
@@ -50,7 +50,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decimates by whole numbers and has no resampler: 1.92 M → 240 k → 48 k lands exactly on the 48 kHz player,
  * whereas 2 M gives 250 k → 50 k for WFM (played 4 % fast and sharp) and 48.78 k for NFM (1.6 % fast). The
  * HAM screen already ran the same radio at this rate for the same reason; now the two agree. The fixed-purpose
- * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
+ * decoders (ADS-B, BTLE, …) keep their own 2 Msps, their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
 type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
@@ -173,7 +173,7 @@ let sweepScope: Scope | null = null;
 let lastSweepRow = new Float32Array(0);
 let lastSweepBinHz = 0;
 // The span filling in live, slice by slice, kept between passes so the trace shows the whole span with the newest
-// slices overwriting the oldest — the way a real spectrum sweep paints across. `lastLiveSpec` throttles the redraw.
+// slices overwriting the oldest, the way a real spectrum sweep paints across. `lastLiveSpec` throttles the redraw.
 let sweepLiveRow = new Float32Array(0);
 let lastLiveSpec = 0;
 let installPrompt: (Event & { prompt: () => Promise<void> }) | null = null;
@@ -230,7 +230,7 @@ function setDial(hz: number): void {
 }
 /**
  * Set while the app retunes on its own (the launcher's auto-pick of the strongest signal). The dial the receiver
- * apps share records only what the USER chose — a deliberate tap, the keypad, a step — so an automatic move
+ * apps share records only what the USER chose, a deliberate tap, the keypad, a step, so an automatic move
  * never becomes the frequency the next app opens on. That was the "random" frequency on switching apps.
  */
 let silentTune = false;
@@ -238,7 +238,7 @@ function tune(hz: number, hold = false): void {
   if (state.app === 'ham') { hamTune(hz); return; }
   state.freq = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
-  // the finger that just picked something (`hold`). Explicit tuning — the dial, the keypad, the step keys — is
+  // the finger that just picked something (`hold`). Explicit tuning, the dial, the keypad, the step keys, is
   // free to go anywhere the radio reaches: the view follows it, so you are never walled inside the band you
   // happened to start in.
   if (state.app === null && state.viewLo && hold) {
@@ -388,13 +388,13 @@ function setScanning(on: boolean): void {
       scanIdx = (scanIdx + 1) % bookmarks.length;
       goBookmark(bookmarks[scanIdx]); scanHopAt = now; refreshBookmarks();
     }, 100);
-  } else if (on) log('scan needs at least two bookmarks — ★ SAVE some first');
+  } else if (on) log('scan needs at least two bookmarks, ★ SAVE some first');
   const b = q('#scan'); if (b) b.classList.toggle('on', state.scanning);
   refreshSquelch();
 }
 function refreshBookmarks(): void {
   const el = q('#bookmarks'); if (!el) return;
-  el.innerHTML = bookmarks.map((b, i) => `<button class="chip bm ${b.hz === state.freq ? 'on' : ''}" data-bm="${i}">${esc(b.name)}<i data-bmx="${i}">✕</i></button>`).join('') || '<span class="empty">no bookmarks — tune something and tap ★ SAVE</span>';
+  el.innerHTML = bookmarks.map((b, i) => `<button class="chip bm ${b.hz === state.freq ? 'on' : ''}" data-bm="${i}">${esc(b.name)}<i data-bmx="${i}">✕</i></button>`).join('') || '<span class="empty">no bookmarks, tune something and tap ★ SAVE</span>';
   qa<HTMLButtonElement>('[data-bm]', el).forEach(b => b.onclick = (ev) => {
     const i = Number(b.dataset.bm);
     if ((ev.target as HTMLElement).dataset.bmx !== undefined) { removeBookmark(i); return; }
@@ -417,7 +417,7 @@ function setRate(r: number): void {
   // will accept beats letting the app ask for something the hardware answers with silence.
   if (radio) {
     const ok = nearestRate(radio.limits, r);
-    if (ok !== r) { log(`${radio.label}: ${(r / 1e6).toFixed(3)} Msps is out of range — using ${(ok / 1e6).toFixed(3)}`); r = ok; }
+    if (ok !== r) { log(`${radio.label}: ${(r / 1e6).toFixed(3)} Msps is out of range, using ${(ok / 1e6).toFixed(3)}`); r = ok; }
   }
   state.rate = r;
   if (radio) radio.targetRateHz = r;
@@ -456,7 +456,7 @@ function setGains(lna: number, vga: number, amp: boolean): void {
   state.lna = Math.max(0, Math.min(40, lna)) & ~7; state.vga = Math.max(0, Math.min(62, vga)) & ~1; state.amp = amp;
   radio?.setGain(state.lna, state.vga, state.amp);
   // Say who is driving these. With the automatic gain on they are an output, not a setting, and a value typed in
-  // by hand lasts until the next second — which is exactly what it looks like when they spring back to maximum.
+  // by hand lasts until the next second, which is exactly what it looks like when they spring back to maximum.
   for (const a of qa('#amp')) { a.textContent = state.amp ? 'AMP +14' : 'AMP OFF'; a.classList.toggle('on', state.amp); }
   refreshAgcChip();
   refreshGainUi();
@@ -497,7 +497,7 @@ function setAgc(on: boolean): void {
 const userAgc = (on: boolean) => { setAgc(on); saveGains(); };
 /** Manual LNA / VGA taps switch the AGC off so the user's setting sticks. */
 const manualGains = (lna: number, vga: number, amp: boolean) => {
-  if (state.agc) log('gain set by hand, so the automatic gain is off — tap AGC to hand it back');
+  if (state.agc) log('gain set by hand, so the automatic gain is off, tap AGC to hand it back');
   const rtl = radio && radio.kind === 'rtlsdr' ? radio as RtlSdr : null;
   if (rtl?.tunerAgc) { rtl.tunerAgc = false; log('gain set by hand, so the tuner AGC is off'); }
   setAgc(false); setGains(lna, vga, amp); saveGains();
@@ -505,7 +505,7 @@ const manualGains = (lna: number, vga: number, amp: boolean) => {
 let agcLast = 0, agcSaidMax = 0;
 /**
  * Automatic gain: keep the ADC level (iqRMS over the once/sec health sample) between AGC_LO and AGC_HI counts.
- * That is where the HackRF's 8-bit converter has both headroom and resolution — under ~2 counts the FFT is
+ * That is where the HackRF's 8-bit converter has both headroom and resolution, under ~2 counts the FFT is
  * quantisation mush, over ~40 it clips. Steps VGA 2 dB at a time (8 dB when far off), then falls back to the LNA.
  */
 const AGC_LO = 7, AGC_HI = 22;
@@ -513,7 +513,7 @@ const AGC_LO = 7, AGC_HI = 22;
  * The AGC window scales with the span. iqRMS is the total power across the whole sampled width, so a 20 MHz
  * launcher view holds several times the RMS of a 2 MHz channel at the SAME per-signal level. Targeting the fixed
  * 7-22 counts on a wide span makes the AGC read it as "too hot" and crank the gain down until real signals sink
- * into the ADC noise — the launcher opening on static. Let a wider span sit proportionally hotter (per-Hz level
+ * into the ADC noise, the launcher opening on static. Let a wider span sit proportionally hotter (per-Hz level
  * held constant), capped short of the 8-bit converter's ~40-count clip.
  */
 function agcTargets(): [number, number] {
@@ -559,9 +559,9 @@ function agcStep(rms: number): void {
     if (state.vga < 62) setGains(state.lna, state.vga + (rms < 2 ? 8 : 2), state.amp);
     else if (state.lna < 40) setGains(state.lna + 8, state.vga, state.amp);
     // Only warn for a continuous signal. The pulse/burst apps (ADS-B, TPMS, sub-GHz, BLE, ERT…) run in NONE mode,
-    // where a low average iqRMS is normal between bursts even while they decode fine — ADS-B tracks aircraft at
+    // where a low average iqRMS is normal between bursts even while they decode fine, ADS-B tracks aircraft at
     // ~1.4 counts. Crying "check the antenna" there is a false alarm, so hold it for the voice modes.
-    else if (state.mode !== 'NONE' && now - agcSaidMax > 20_000) { agcSaidMax = now; log(`AGC is at maximum and the level is still ${rms.toFixed(1)} counts — check the antenna, or turn AGC off if you want to set the gain yourself`); }
+    else if (state.mode !== 'NONE' && now - agcSaidMax > 20_000) { agcSaidMax = now; log(`AGC is at maximum and the level is still ${rms.toFixed(1)} counts, check the antenna, or turn AGC off if you want to set the gain yourself`); }
   } else if (rms > hi) {
     // too hot: step down by how far over it is (up to 16 dB at once), so a radio that opens overloaded settles in a step or two
     if (state.vga > 0) setGains(state.lna, state.vga - Math.min(16, Math.max(2, Math.trunc((20 * Math.log10(rms / hi) + 2) / 2) * 2)), state.amp);
@@ -692,7 +692,7 @@ function loraAgc(rms: number, now: number, lo: number, hi: number): void {
 /**
  * Per-app gain presets are written for a HackRF One. Bench-measured on a HackRF Pro (Mayhem n_260903): the same
  * settings leave the ADC under one count (iqRMS 0.2, the waterfall shows nothing), and the Pro needs roughly 28 dB
- * more VGA for the same level — LNA 40 / VGA 52 lands the noise floor near 10 counts with no DC spur (VGA ≥ 56
+ * more VGA for the same level, LNA 40 / VGA 52 lands the noise floor near 10 counts with no DC spur (VGA ≥ 56
  * starts one). LNA steps count for less on the Pro, so it is pinned at 40 and the difference goes into the VGA.
  */
 function boardGains(lna: number, vga: number, amp: boolean): [number, number, boolean] {
@@ -706,7 +706,7 @@ function configure(mode: Mode, freq: number, rate: number, lna: number, vga: num
     // Say it plainly at the moment the app opens. A dongle that cannot reach 2.4 GHz will show a waterfall of
     // noise on the Bluetooth screen and look broken; it is not, it just cannot go there.
     const no = whyNot(radio.limits, freq, rate);
-    if (no) { log(`${radio.label}: this app ${no}.`); setStatus(`${radio.label} cannot do this one — ${no}`, true); }
+    if (no) { log(`${radio.label}: this app ${no}.`); setStatus(`${radio.label} cannot do this one, ${no}`, true); }
     rate = nearestRate(radio.limits, rate);
     state.rate = rate;
     radio.targetFreqHz = freq; radio.targetRateHz = rate;
@@ -741,7 +741,7 @@ function startSweep(start: number, end: number): void {
   if (radio) {
     const ok = nearestRate(radio.limits, state.sweepRate);
     if (ok !== state.sweepRate) {
-      log(`${radio.label}: ${state.sweepRate / 1e6} MHz slices are out of range — sweeping in ${(ok / 1e6).toFixed(2)} MHz`);
+      log(`${radio.label}: ${state.sweepRate / 1e6} MHz slices are out of range, sweeping in ${(ok / 1e6).toFixed(2)} MHz`);
       state.sweepRate = ok;
     }
   }
@@ -869,7 +869,7 @@ function launcherView(): { center: number; rate: number; mode: Mode } {
   // The same ceiling the HAM screen uses, and for the same reason: past it the front end and the USB link stop
   // keeping up, and a phone gives up sooner than a desktop. A launcher that stutters is worse than a narrow one.
   const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)];
-  // Center the VIEW on the band's midpoint so the span sits over the band itself, not off to one side — an FM
+  // Center the VIEW on the band's midpoint so the span sits over the band itself, not off to one side, an FM
   // view centred on 93.1 spent its left third below 88 (empty) and cut off 103-108. The marker then lands on the
   // strongest signal (see the auto-pick), so we no longer need a "recognizable station" as the centre.
   const rate = Math.max(RX_RATE, Math.min(widest, cap, b.hi - b.lo));
@@ -965,7 +965,7 @@ function open(app: AppId | null): void {
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is
       // up, and the hop moves it along on its own, so without this a session that wandered to 915 would come
-      // back there — when what is wanted on opening is the band that carries most of the protocol set.
+      // back there, when what is wanted on opening is the band that carries most of the protocol set.
       state.r433.band = 0;
       configure('NONE', takeHandoff() ?? R433_BANDS[0][1], 2e6, 32, 40, true, 'r433');
       // The worker is normally created on connect; ask for it here so the protocol list is available
@@ -990,7 +990,7 @@ function open(app: AppId | null): void {
 const mapEmptySub = (what: string) => `${what}. ${state.home ? 'Centered on you.' : mapStart(null).standIn ? 'No location yet: allow it to center the map on you.' : 'Centered where you were last.'}`;
 function requestGeo(): void {
   if (!('geolocation' in navigator)) return;
-  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); if (state.app === 'ais') refreshAis(); else if (state.app === 'aprs') refreshAprs(); else if (state.app === 'adsb') refreshAdsb(); else if (state.app === 'acars' || state.app === 'vdl2') refreshAcars(true); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix — ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
+  navigator.geolocation.getCurrentPosition(p => { state.home = { lat: p.coords.latitude, lon: p.coords.longitude }; saveLastPos(state.home); geo?.setHome(state.home); geo?.recenter(state.home.lat, state.home.lon); if (state.app === 'ais') refreshAis(); else if (state.app === 'aprs') refreshAprs(); else if (state.app === 'adsb') refreshAdsb(); else if (state.app === 'acars' || state.app === 'vdl2') refreshAcars(true); worker?.postMessage({ type: 'geo', lat: p.coords.latitude, lon: p.coords.longitude }); log(`GPS reference ${p.coords.latitude.toFixed(3)},${p.coords.longitude.toFixed(3)} for single-frame CPR`); }, () => log('no GPS fix, ADS-B positions need even+odd frame pairs'), { maximumAge: 600_000, timeout: 8000 });
 }
 
 
@@ -1316,7 +1316,7 @@ function renderOrbcomm(view: HTMLElement): void {
 
 /**
  * Names for the satellites. Over the air each one gives only a one-byte identifier, but it also says where it is,
- * so propagating the published orbits and seeing which one is in that spot names it — and, usefully, says how far
+ * so propagating the published orbits and seeing which one is in that spot names it, and, usefully, says how far
  * apart the two answers are, which is an independent check that the decode is right.
  */
 async function orbLoadOrbits(): Promise<void> {
@@ -1394,7 +1394,7 @@ function refreshOrbcomm(): void {
       ? o.sats.map((s, i) => { const n = o.named.get(s.id); return `<div class="li tap ${i % 2 ? 'alt' : ''}${s.id === o.sel ? ' sel' : ''}" data-orbsat="${s.id}">${
           esc(n ? n.name : `0x${s.id.toString(16).toUpperCase().padStart(2, '0')}`)} · ${s.lat !== undefined ? `${s.lat.toFixed(2)}, ${s.lon!.toFixed(2)} · ${s.altKm!.toFixed(0)} km · ${s.speedKms!.toFixed(2)} km/s` : 'heard, no position yet'
         }${n ? ` · ${n.km.toFixed(0)} km from its published orbit` : ''}${s.utc ? ` · ${new Date(s.utc).toISOString().slice(11, 19)}Z` : ''}</div>`; }).join('')
-      : '<div class="empty">nothing yet — try FIND A BUSY CHANNEL, or wait for a pass</div>';
+      : '<div class="empty">nothing yet, try FIND A BUSY CHANNEL, or wait for a pass</div>';
     qa<HTMLElement>('[data-orbsat]', el).forEach(b => b.onclick = () => { o.sel = Number(b.dataset.orbsat); refreshOrbcomm(); });
   }
   if (geo && state.app === 'sat' && state.ham.sat.view === 'orbcomm') {
@@ -1460,7 +1460,7 @@ async function packetLoad(): Promise<void> {
       if (tle) { try { s.sgp = new Sgp4(tle); } catch { s.sgp = null; } }
     }
     log(`packet satellites: ${p.sats.length} transmitters, ${p.sats.filter(s => s.sgp).length} with orbits`);
-  } catch { p.note = 'no orbits — the list still tunes, but cannot be sorted by what is overhead'; }
+  } catch { p.note = 'no orbits, the list still tunes, but cannot be sorted by what is overhead'; }
   packetRank();
 }
 
@@ -1519,12 +1519,12 @@ function refreshPacketSats(): void {
     const pn = q('#psat-picnote');
     if (pn) pn.textContent = g.frames
       ? `${g.frames} frames · ${g.fragments} pieces of picture · ${(g.high / 1024).toFixed(1)} kB${g.complete ? ' · complete' : ''}${g.bad ? ` · ${g.bad} failed the checksum` : ''}`
-      : 'nothing yet — a picture takes most of a pass to come down';
+      : 'nothing yet, a picture takes most of a pass to come down';
   }
   const fr = q('#psat-frames');
   if (fr && !paused.has('psat')) fr.innerHTML = p.frames.length
     ? p.frames.map((f, i) => `<div class="li ${i % 2 ? 'alt' : ''}"><b>${esc(f.from)} &gt; ${esc(f.to)}</b> · ${f.payload.length} bytes<br>${esc(f.text || f.hex)}</div>`).join('')
-    : '<div class="empty">nothing heard yet — pick something that is up and wait for a beacon</div>';
+    : '<div class="empty">nothing heard yet, pick something that is up and wait for a beacon</div>';
 }
 
 // ---- rendering ------------------------------------------------------------------------------------------------
@@ -1532,7 +1532,7 @@ function tint(cat: string): string { return cat === 'Receive' ? 'var(--accent)' 
 function tintHex(cat: string): string { const s = currentSkin(); return cat === 'Receive' ? s.accent : cat === 'Analyze' ? s.accent2 : cat === 'Transmit' ? '#ff5b52' : s.muted; }
 
 /**
- * The frequency readout: every digit from 1 GHz down to 1 Hz is its own control — mouse wheel over a digit, click
+ * The frequency readout: every digit from 1 GHz down to 1 Hz is its own control, mouse wheel over a digit, click
  * or tap its top half to add one and its bottom half to subtract one, ← → / ↑ ↓ on a focused digit. Leading zeros
  * are dimmed so the eye lands on the live digits, and each group is captioned with its unit. ⌨ (or typing a number
  * with nothing focused) swaps the digits for a text box to key a frequency in whole.
@@ -1900,7 +1900,7 @@ function renderLauncher(view: HTMLElement): void {
   scope.setLabels(centredLabels(state.freq, state.rate));
   qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => open(b.dataset.app as AppId));
   // Restore the app strip to where it was, and keep track as it moves, so opening an app and coming back does not
-  // jump it to the start (the strip scrolls sideways on a phone, down on a wide screen — remember both).
+  // jump it to the start (the strip scrolls sideways on a phone, down on a wide screen, remember both).
   const strip = view.querySelector<HTMLElement>('.launch-side');
   if (strip) {
     const restore = () => { strip.scrollLeft = launchScroll.x; strip.scrollTop = launchScroll.y; };
@@ -2298,7 +2298,7 @@ function refreshP25(): void {
 }
 function refreshFt8(): void {
   const g = state.ham.digi, el = q('#ft8-list'); if (!el) return;
-  el.innerHTML = g.ft8.length ? g.ft8.slice(0, 60).map((r, i) => `<div class="li tap ${i % 2 ? 'alt' : ''} ${/^CQ /.test(r.text) ? 'gold' : ''}" data-ft8i="${i}"><span class="row2"><span>${r.utc}  ${String(r.snr).padStart(3)}  ${r.dt.toFixed(1)}  ${r.hz}</span><span>${r.text}</span></span></div>`).join('') : '<div class="empty">FT8 decodes appear every 15 s — tune a band\'s FT8 frequency in USB (the FT8 chip does that) · tap a decode to log the station</div>';
+  el.innerHTML = g.ft8.length ? g.ft8.slice(0, 60).map((r, i) => `<div class="li tap ${i % 2 ? 'alt' : ''} ${/^CQ /.test(r.text) ? 'gold' : ''}" data-ft8i="${i}"><span class="row2"><span>${r.utc}  ${String(r.snr).padStart(3)}  ${r.dt.toFixed(1)}  ${r.hz}</span><span>${r.text}</span></span></div>`).join('') : '<div class="empty">FT8 decodes appear every 15 s, tune a band\'s FT8 frequency in USB (the FT8 chip does that) · tap a decode to log the station</div>';
   qa<HTMLElement>('[data-ft8i]', el).forEach(row => row.onclick = () => { const r = g.ft8[Number(row.dataset.ft8i)]; if (!r) return; const tok = r.text.replace(/^CQ (DX|POTA|SOTA|[A-Z]{2}) /, 'CQ ').split(/\s+/); const call = tok[0] === 'CQ' ? tok[1] : tok[1] ?? tok[0]; const grid = tok.find(x => /^[A-R]{2}\d{2}$/.test(x)) ?? ''; logPrefill({ call: (call ?? '').replace(/^<|>$/g, ''), grid, rstR: String(r.snr), rstS: '', mode: 'FT8', notes: r.text }); });
 }
 let ft8Timer = 0;
@@ -2597,7 +2597,7 @@ function satOpen(): void {
   if (!state.home) requestGeo();
   if (s.tles.size === 0) { s.status = 'fetching TLEs…'; fetchTles(SATS.map(x => x.norad)).then(m => { s.tles = m; s.status = `${m.size} TLEs`; satRefresh(true); }).catch(e => { s.status = `TLE fetch failed: ${(e as Error).message}`; satRefresh(); }); }
 }
-/** The selected bird and service; `sgp` is null until (unless) a TLE is available — tuning never waits for one. */
+/** The selected bird and service; `sgp` is null until (unless) a TLE is available, tuning never waits for one. */
 function satSel(): { def: typeof SATS[number]; svc: SatService; sgp: Sgp4 | null } | null {
   const s = state.ham.sat, def = SATS.find(x => x.norad === s.sel), tle = def && s.tles.get(def.norad);
   if (!def) return null;
@@ -2657,7 +2657,7 @@ function satRefresh(recomputePasses = false): void {
   const how = q('#sat-how');
   if (how) how.textContent = `${svc.up ? 'Two-way, license needed to transmit. ' : 'Receive only. '}${svc.how ?? ''}`.trim();
   const info = q('#sat-now');
-  if (!cur.sgp) { if (info) info.innerHTML = `<div class="kv"><span>${cur.def.name}</span><span>${s.tles.size ? 'no orbit data from CelesTrak — retired or renamed; the receiver is tuned anyway' : 'waiting for orbit data…'}</span></div>`; const pl0 = q('#sat-passes'); if (pl0) pl0.innerHTML = '<div class="empty">no TLE, no passes</div>'; return; }
+  if (!cur.sgp) { if (info) info.innerHTML = `<div class="kv"><span>${cur.def.name}</span><span>${s.tles.size ? 'no orbit data from CelesTrak, retired or renamed; the receiver is tuned anyway' : 'waiting for orbit data…'}</span></div>`; const pl0 = q('#sat-passes'); if (pl0) pl0.innerHTML = '<div class="empty">no TLE, no passes</div>'; return; }
   if (!home) { if (info) info.innerHTML = `<div class="kv"><span>${cur.def.name}</span><span>allow location to get look angles, Doppler and passes</span></div>`; return; }
   const now = Date.now(), l = look(cur.sgp, now, home.lat, home.lon);
   const rx = doppler(svc.down, l.rangeRate), txf = svc.up ? dopplerUp(svc.up, l.rangeRate) : 0;
@@ -2791,7 +2791,7 @@ function myLatLon(): { lat: number; lon: number } | null { const s = state.ham.s
 /** What we know about a callsign, as one line of HTML: entity, worked-before, distance and bearing. */
 function callInfoHtml(info: CallInfo | null, call: string): string {
   const p = parseCall(call);
-  if (!p.base) return 'type a callsign — the prefix says where it is, LOOKUP asks HamQTH / hamdb / callook for the rest';
+  if (!p.base) return 'type a callsign, the prefix says where it is, LOOKUP asks HamQTH / hamdb / callook for the rest';
   const worked = state.ham.log.entries.filter(q => parseCall(q.call).base === p.base).sort((a, b) => b.ts - a.ts);
   const parts: string[] = [];
   if (info) {
@@ -2806,7 +2806,7 @@ function callInfoHtml(info: CallInfo | null, call: string): string {
     parts.push(`<span class="dim">${info.source}</span>`);
   }
   if (worked.length) { const w = worked[0]; parts.push(`<span class="gold">worked ${worked.length}× · last ${new Date(w.ts).toISOString().slice(0, 10)} ${bandOfHz(w.freq)} ${w.mode}${w.name ? ` · ${w.name}` : ''}</span>`); }
-  else parts.push('<span class="dim">new one — not in the log yet</span>');
+  else parts.push('<span class="dim">new one, not in the log yet</span>');
   return parts.join('<br>');
 }
 function logRefreshInfo(): void {
@@ -2874,7 +2874,7 @@ function logRefreshList(): void {
   const h = state.ham, list = q('#log-list'), stats = q('#log-stats'); if (!list) return;
   const e = h.log.entries;
   if (stats) { const calls = new Set(e.map(x => parseCall(x.call).base)).size, ents = new Set(e.map(x => x.country ?? offlineInfo(x.call).country).filter(Boolean)).size; stats.textContent = e.length ? `${e.length} QSO${e.length === 1 ? '' : 's'} · ${calls} callsign${calls === 1 ? '' : 's'} · ${ents} entit${ents === 1 ? 'y' : 'ies'}` : 'empty'; }
-  list.innerHTML = e.length ? e.slice(0, 300).map((x, i) => { const d = new Date(x.ts); return `<div class="li tap ${i % 2 ? 'alt' : ''} ${x.id === h.log.editing ? 'gold' : ''}" data-qso="${x.id}"><span class="row2"><span><b>${x.call}</b> ${d.toISOString().slice(0, 16).replace('T', ' ')}z · ${(x.freq / 1e6).toFixed(4)} ${x.mode}${x.rstS || x.rstR ? ` · ${x.rstS || '—'}/${x.rstR || '—'}` : ''}</span><span>${[x.name, x.qth, x.grid, x.country].filter(Boolean).join(' · ')} <button class="x" data-del="${x.id}" title="delete">✕</button></span></span></div>`; }).join('') : '<div class="empty">no contacts yet — work someone and LOG IT, or import an ADIF</div>';
+  list.innerHTML = e.length ? e.slice(0, 300).map((x, i) => { const d = new Date(x.ts); return `<div class="li tap ${i % 2 ? 'alt' : ''} ${x.id === h.log.editing ? 'gold' : ''}" data-qso="${x.id}"><span class="row2"><span><b>${x.call}</b> ${d.toISOString().slice(0, 16).replace('T', ' ')}z · ${(x.freq / 1e6).toFixed(4)} ${x.mode}${x.rstS || x.rstR ? ` · ${x.rstS || '—'}/${x.rstR || '—'}` : ''}</span><span>${[x.name, x.qth, x.grid, x.country].filter(Boolean).join(' · ')} <button class="x" data-del="${x.id}" title="delete">✕</button></span></span></div>`; }).join('') : '<div class="empty">no contacts yet, work someone and LOG IT, or import an ADIF</div>';
   qa<HTMLElement>('[data-qso]', list).forEach(r => r.onclick = (ev) => { if ((ev.target as HTMLElement).dataset.del) return; logEdit(r.dataset.qso!); });
   logMap();
   qa<HTMLElement>('[data-del]', list).forEach(b => b.onclick = (ev) => { ev.stopPropagation(); logDelete(b.dataset.del!); });
@@ -3035,13 +3035,13 @@ async function portapackViaWebUsb(d: USBDevice): Promise<boolean> {
 }
 async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
   if (d && (await portapackViaWebUsb(d))) {
-    log('PortaPack: sent "hackrf" — it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
+    log('PortaPack: sent "hackrf", it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
     setStatus('PortaPack switching to HackRF mode… tap CONNECT in 5 s', false);
     return true;
   }
   type SerialPortLike = { open: (o: unknown) => Promise<void>; writable: WritableStream<Uint8Array> | null; readable: ReadableStream<Uint8Array> | null; close: () => Promise<void> };
   const serial = (navigator as unknown as { serial?: { requestPort: (o: unknown) => Promise<SerialPortLike> } }).serial;
-  if (!serial) { log('PortaPack: this browser has no Web Serial — tap HackRF mode on the PortaPack instead.'); return false; }
+  if (!serial) { log('PortaPack: this browser has no Web Serial, tap HackRF mode on the PortaPack instead.'); return false; }
   try {
     const port = await serial.requestPort({ filters: [{ usbVendorId: 0x1d50, usbProductId: 0x6018 }] });
     await port.open({ baudRate: 115200 });
@@ -3053,14 +3053,14 @@ async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
     w.releaseLock();
     if (r) { await Promise.race([reading, sleepMs(3000)]); await r.cancel().catch(() => undefined); r.releaseLock(); }
     await port.close().catch(() => undefined);
-    log('PortaPack: sent "hackrf" — it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
+    log('PortaPack: sent "hackrf", it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
     setStatus('PortaPack switching to HackRF mode… tap CONNECT in 5 s', false);
     return true;
   } catch (e) { log(`PortaPack switch: ${(e as Error).message}`); return false; }
 }
 
 function renderAudio(view: HTMLElement): void {
-  // The Android app's Audio: the card, RDS as its own strip, the waterfall; then three rows — how to listen,
+  // The Android app's Audio: the card, RDS as its own strip, the waterfall; then three rows, how to listen,
   // where (the bands), and squelch with SCAN. RDS and HD Radio are switches in Settings; gain is in Settings too.
   view.innerHTML = `
     <section class="visual"><div id="same-alert" class="samealert" hidden></div>${readoutHtml()}<div id="rds" class="rdsbar station" hidden></div><div id="scope" class="panel"></div></section>
@@ -3071,10 +3071,10 @@ function renderAudio(view: HTMLElement): void {
     </section>`;
   scope = attach(tunableScope('scope', 200));
   // The RDS ticker overlays the waterfall itself (the scope box is position:relative), so the scope stays a direct
-  // child of .visual and keeps the flex-fill height every other app's waterfall gets — no wrapper to break it.
+  // child of .visual and keeps the flex-fill height every other app's waterfall gets, no wrapper to break it.
   qa<HTMLButtonElement>('[data-sql]', view).forEach(b => b.onclick = () => setSquelch(Number(b.dataset.sql)));
   setSquelch(state.squelch);
-  $('scan').onclick = () => { if (bookmarks.length < 2) { log('SCAN hops your FAVES — star a few with ☆ beside the frequency first'); showHint(new Error('SCAN hops your FAVES — star a few with ☆ beside the frequency first')); return; } setScanning(!state.scanning); };
+  $('scan').onclick = () => { if (bookmarks.length < 2) { log('SCAN hops your FAVES, star a few with ☆ beside the frequency first'); showHint(new Error('SCAN hops your FAVES, star a few with ☆ beside the frequency first')); return; } setScanning(!state.scanning); };
   $('scan').classList.toggle('on', state.scanning);
   const hdEl = document.createElement('div'); hdEl.id = 'hd'; hdEl.className = 'hdbadge'; hdEl.hidden = true; $('scope').appendChild(hdEl);
   refreshBookmarks(); refreshSquelch();
@@ -3158,7 +3158,7 @@ function drawRds(): void {
     : `<b>${r.synced ? 'RDS · reading…' : 'RDS · listening…'}</b>`;
   // Reuse the one line node and just replace its text: the name is dynamic and changes about once a second, and
   // recreating the node each time restarted the marquee from the right edge, so it never scrolled past its first
-  // second — the whole message barely moved and the start of it looked like it was scrolling in a little box.
+  // second, the whole message barely moved and the start of it looked like it was scrolling in a little box.
   // Keeping the node alive lets the marquee run continuously across every name change; there are no fixed field
   // widths, so each field is as wide as its text and the whole line scrolls as one when it overflows the bar.
   let line = el.querySelector('.rdsline') as HTMLElement | null;
@@ -3171,7 +3171,7 @@ function drawRds(): void {
     if (lw <= cw) { el.classList.remove('ticker'); rdsAnim?.cancel(); rdsAnim = null; return; }   // fits: static, every field visible at once
     el.classList.add('ticker');
     // Start the marquee once and let it keep running as the text updates. Rebuild it only when the width really
-    // changes — a new RadioText — not on a name tick, whose few characters barely move the total; that is what
+    // changes, a new RadioText, not on a name tick, whose few characters barely move the total; that is what
     // kept it from ever scrolling past the start.
     if (!rdsAnim || Math.abs(lw - rdsAnimLw) > 24) {
       rdsAnim?.cancel();
@@ -3232,7 +3232,7 @@ const R433_MEANING: Record<string, string> = {
   storm_dist: 'the detector’s estimate of how far off the leading edge of the storm is',
   strike_count: 'a running total since the batteries went in, not a rate',
   rfi: 'broadband interference, which stops the detector hearing strikes at all',
-  consumption_data: 'a meter register reading, not a unit of energy — the multiplier is the utility’s',
+  consumption_data: 'a meter register reading, not a unit of energy, the multiplier is the utility’s',
   DifferentialConsumptionIntervals: 'consumption in each recent interval, oldest first',
   tristate: 'the solder links or switches inside the remote: 0 low, 1 high, Z floating',
   counter: 'advances every button press, which is what stops a recording being replayed',
@@ -3451,7 +3451,7 @@ function refreshR433(): void {
   r433Pending = window.setTimeout(() => { r433Pending = 0; drawR433(); }, 250);
 }
 
-/** `14:23:07` — what someone comparing a reading against the doorbell they just pressed wants to see. */
+/** `14:23:07`, what someone comparing a reading against the doorbell they just pressed wants to see. */
 function r433Clock(t: number): string {
   const d = new Date(t);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
@@ -3520,7 +3520,7 @@ function drawR433Protocols(): void {
   el.innerHTML = '<div class="devnote">Every one of these runs over every burst, so nothing has to be chosen in '
     + 'advance: whatever transmits nearby is decoded. Weather stations and tire sensors, but also door contacts '
     + 'and motion detectors, gas and electricity meters, gate and blind remotes, doorbells, smoke alarms, leak '
-    + 'detectors and cooking probes — anything that talks in the clear. Bursts that none of them claim are still '
+    + 'detectors and cooking probes, anything that talks in the clear. Bursts that none of them claim are still '
     + 'listed, described by their timings.</div>'
     + r.protocols.map((p, i) => `<div class="devrow p${i % 2 ? ' alt' : ''}">`
       + `<div class="p-name"><b>${esc(p.name)}</b><i>${p.num}</i>${p.doubtful ? '<i class="tag q" title="no checksum, so a reading from it is worth a second look">?</i>' : ''}</div>`
@@ -5566,7 +5566,7 @@ function renderSweep(view: HTMLElement, app: AppId): void {
   sweepScope = new Scope($('sweep-scope'), 0, { rows: search ? 140 : 300, center: false, spectrumHeight: search ? 60 : 90, rowPx: 2, labelAt: sweepLabel, onTap: search ? undefined : f => { const s = state.sweep; if (s) { const hz = s.start + (s.end - s.start) * f; listen(hz, hz > 87e6 && hz < 108e6 ? 'WFM' : 'NFM'); } },
     onPreview: search ? undefined : f => { const t = q('#sweep-title'), s = state.sweep; if (!t || !s) return; if (f === null) { t.classList.remove('preview'); t.textContent = sweepTitle(); } else { t.classList.add('preview'); t.textContent = `${((s.start + (s.end - s.start) * f) / 1e6).toFixed(3)} MHz`; } } });
   qa<HTMLButtonElement>('[data-range]', view).forEach(b => b.onclick = () => startSweep(Number(b.dataset.range), Number(b.dataset.end)));
-  // FULL sweeps the whole radio (a HackRF Pro reaches higher than a plain one); it is slow — hundreds of steps —
+  // FULL sweeps the whole radio (a HackRF Pro reaches higher than a plain one); it is slow, hundreds of steps —
   // but it is the "what is out there anywhere" view.
   const full = q('#sweep-full'); if (full) full.onclick = () => startSweep(radio?.limits.minHz ?? 1e6, radio?.limits.maxHz ?? 6e9);
   qa<HTMLButtonElement>('[data-slice]', view).forEach(b => { b.classList.toggle('on', Number(b.dataset.slice) === state.sweepRate); b.onclick = () => { state.sweepRate = Number(b.dataset.slice); qa('[data-slice]').forEach(x => x.classList.toggle('on', x === b)); const s = state.sweep; if (s) startSweep(s.start, s.end); }; });
@@ -5576,8 +5576,8 @@ function renderSweep(view: HTMLElement, app: AppId): void {
 function txStatus(s: string): void { const e = q('#tx-status'); if (e) e.textContent = s; const stop = q('#tx-stop'); if (stop) (stop as HTMLElement).hidden = !tx.active; }
 /**
  * Shopping-cart wheel locks listen for a signal in the air, not over radio, so this trick is pure phone-speaker
- * audio and works with no HackRF attached. These are the real recordings for the two common systems — Gatekeeper
- * (a 7.8 kHz tone) and Rocateq — from begaydocrime.com, credited in the About screen. Point the speaker at a wheel.
+ * audio and works with no HackRF attached. These are the real recordings for the two common systems, Gatekeeper
+ * (a 7.8 kHz tone) and Rocateq, from begaydocrime.com, credited in the About screen. Point the speaker at a wheel.
  */
 const CART_SOUNDS: Record<string, Record<string, string>> = {
   gatekeeper: { lock: 'assets/cart/GateKeeperCartKeyLock78.wav', unlock: 'assets/cart/unlock-cart.wav' },
@@ -5599,7 +5599,7 @@ function cartSound(brand: 'gatekeeper' | 'rocateq', action: string): void {
 function renderTroll(view: HTMLElement): void {
   tx.onStatus = txStatus;
   if (!tx.enabled) {
-    view.innerHTML = `<div class="notice tx-off"><b>Transmit is switched off in Settings.</b> Most Troll tricks transmit, so turn it back on there — the shopping-cart one is phone audio and works regardless.<div class="row" style="margin-top:10px"><button id="tx-settings" class="chip">OPEN SETTINGS</button><button id="tr-cart-only" class="chip">CART · UNLOCK</button></div></div>`;
+    view.innerHTML = `<div class="notice tx-off"><b>Transmit is switched off in Settings.</b> Most Troll tricks transmit, so turn it back on there, the shopping-cart one is phone audio and works regardless.<div class="row" style="margin-top:10px"><button id="tx-settings" class="chip">OPEN SETTINGS</button><button id="tr-cart-only" class="chip">CART · UNLOCK</button></div></div>`;
     $('tx-settings').onclick = () => open('settings');
     $('tr-cart-only').onclick = () => cartSound('gatekeeper', 'unlock');
     return;
@@ -5608,7 +5608,7 @@ function renderTroll(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual">${readoutHtml()}</section>
     <section class="controls trollctl">
-      <div class="trollintro">Everything here <b>transmits</b> unless noted — use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live. Harmless fun, your call.</div>
+      <div class="trollintro">Everything here <b>transmits</b> unless noted, use a dummy load or an antenna you are allowed to key. Some of these are regulated on air where you live. Harmless fun, your call.</div>
       ${stepHtml([1e6, 1e5, 1e4])}
       ${txGainHtml()}
 
@@ -5646,7 +5646,7 @@ function renderTroll(view: HTMLElement): void {
       </div>
     </section>`;
 
-  // gain / amp / stop — same controls and ids as the Transmit app; only one view is mounted at a time
+  // gain / amp / stop, same controls and ids as the Transmit app; only one view is mounted at a time
   const setg = () => qa('[data-txg]').forEach(b => b.classList.toggle('on', Number(b.dataset.txg) === tx.gain));
   qa<HTMLButtonElement>('[data-txg]', view).forEach(b => b.onclick = () => { tx.gain = Number(b.dataset.txg); setg(); });
   setg();
@@ -5714,7 +5714,7 @@ function showBiasWarn(): void {
   if (q('#bias-warn')) return;
   const el = document.createElement('div');
   el.id = 'bias-warn'; el.className = 'modal';
-  el.innerHTML = `<div class="modal-card"><h3>Bias-tee: DC on the antenna port</h3><p>This puts about ${radio?.caps.biasVolts ?? 4.5} V DC on the ${radio?.kind === 'hackrf' ? 'HackRF' : 'RTL-SDR'}'s antenna port to power an inline LNA.</p><ul><li>Only turn it on with a bias-tee-ready LNA or feed.</li><li>Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked — the DC can damage it.</li></ul><div class="modal-actions"><button id="bias-cancel" class="chip">CANCEL</button><button id="bias-ok" class="chip primary">ENABLE BIAS-T</button></div></div>`;
+  el.innerHTML = `<div class="modal-card"><h3>Bias-tee: DC on the antenna port</h3><p>This puts about ${radio?.caps.biasVolts ?? 4.5} V DC on the ${radio?.kind === 'hackrf' ? 'HackRF' : 'RTL-SDR'}'s antenna port to power an inline LNA.</p><ul><li>Only turn it on with a bias-tee-ready LNA or feed.</li><li>Never into a plain antenna, a shorted feed, or gear that isn't DC-blocked, the DC can damage it.</li></ul><div class="modal-actions"><button id="bias-cancel" class="chip">CANCEL</button><button id="bias-ok" class="chip primary">ENABLE BIAS-T</button></div></div>`;
   document.body.appendChild(el);
   const close = () => el.remove();
   $('bias-ok').onclick = () => { biasAcked = true; applyBiasTee(true); close(); };
@@ -5724,7 +5724,7 @@ function showTxSafetyPrompt(): void {
   if (q('#tx-safety')) return;
   const el = document.createElement('div');
   el.id = 'tx-safety'; el.className = 'modal';
-  el.innerHTML = `<div class="modal-card"><h3>Before you transmit</h3><p>Do you have an antenna, dummy load or matched load on the ANT port?</p><ul><li>Transmitting into an open port can damage the HackRF.</li><li>Most bands need a license — know the rules where you are.</li><li>Turn TX GAIN low first; the amp adds +14 dB.</li></ul><div class="modal-actions"><button id="tx-cancel" class="chip">CANCEL</button><button id="tx-ack" class="chip primary">I HAVE ONE — CONTINUE</button></div></div>`;
+  el.innerHTML = `<div class="modal-card"><h3>Before you transmit</h3><p>Do you have an antenna, dummy load or matched load on the ANT port?</p><ul><li>Transmitting into an open port can damage the HackRF.</li><li>Most bands need a license, know the rules where you are.</li><li>Turn TX GAIN low first; the amp adds +14 dB.</li></ul><div class="modal-actions"><button id="tx-cancel" class="chip">CANCEL</button><button id="tx-ack" class="chip primary">I HAVE ONE, CONTINUE</button></div></div>`;
   document.body.appendChild(el);
   const close = () => el.remove();
   $('tx-ack').onclick = () => { tx.acknowledgeSafety(); close(); };
@@ -5780,12 +5780,12 @@ function renderTx(view: HTMLElement): void {
       const nb = $('p-num'); nb.onclick = () => { numeric = !numeric; nb.classList.toggle('on', numeric); nb.textContent = numeric ? 'numeric' : 'alpha'; };
       $('p-send').onclick = () => tx.pocsagTx(parseInt(($('p-addr') as HTMLInputElement).value || '0', 10), 3, ($('p-msg') as HTMLInputElement).value, numeric ? 1 : 0, baud, state.freq);
     } else if (tab === 3) {
-      body.innerHTML = `<input id="r-text" class="txin" value="RYRYRY DE ${state.ham.station.call || 'MAYHEM'}" maxlength="120"><div class="row" style="margin-top:6px"><button class="chip" id="r-shift">170 Hz</button><button class="chip primary" id="r-send" style="flex:1.4">▶ SEND 45 bd</button></div><div class="caption">ITA2 Baudot 45.45 baud — decodes in fldigi etc.</div>`;
+      body.innerHTML = `<input id="r-text" class="txin" value="RYRYRY DE ${state.ham.station.call || 'MAYHEM'}" maxlength="120"><div class="row" style="margin-top:6px"><button class="chip" id="r-shift">170 Hz</button><button class="chip primary" id="r-send" style="flex:1.4">▶ SEND 45 bd</button></div><div class="caption">ITA2 Baudot 45.45 baud, decodes in fldigi etc.</div>`;
       let shift = 170;
       $('r-shift').onclick = () => { shift = shift === 170 ? 425 : shift === 425 ? 850 : 170; $('r-shift').textContent = `${shift} Hz`; };
       $('r-send').onclick = () => tx.rtty(($('r-text') as HTMLInputElement).value, 45, shift, state.freq);
     } else if (tab === 4) {
-      body.innerHTML = `<input id="a-call" class="txin" value="${aprsCall()}" maxlength="9"><input id="a-info" class="txin" value="!4903.50N/07201.75W-Mayhem Mobile" maxlength="120" style="margin-top:6px"><div class="caption">Bell 202 AX.25 UI frame — APRS app / any TNC. Ham license on 144.39.</div><button class="chip primary" id="a-send" style="margin-top:6px;width:100%">▶ BEACON</button>`;
+      body.innerHTML = `<input id="a-call" class="txin" value="${aprsCall()}" maxlength="9"><input id="a-info" class="txin" value="!4903.50N/07201.75W-Mayhem Mobile" maxlength="120" style="margin-top:6px"><div class="caption">Bell 202 AX.25 UI frame, APRS app / any TNC. Ham license on 144.39.</div><button class="chip primary" id="a-send" style="margin-top:6px;width:100%">▶ BEACON</button>`;
       $('a-send').onclick = () => tx.aprs(($('a-call') as HTMLInputElement).value, ($('a-info') as HTMLInputElement).value, state.freq);
     } else if (tab === 5) {
       body.innerHTML = `<input id="tx-msg" class="txin" value="CQ DE ${state.ham.station.call || 'MAYHEM'}" maxlength="80"><div class="row" style="margin-top:6px"><span id="tx-wpm" class="info">20 WPM</span><button class="chip" id="wpm-">−</button><button class="chip" id="wpm+">+</button><button class="chip on" id="tx-fm">FM tone</button></div><button class="chip primary" id="tx-send" style="margin-top:6px;width:100%">▶ SEND</button>`;
@@ -5795,7 +5795,7 @@ function renderTx(view: HTMLElement): void {
       const fmb = $('tx-fm'); fmb.onclick = () => { fm = !fm; fmb.classList.toggle('on', fm); fmb.textContent = fm ? 'FM tone' : 'CW key'; };
       $('tx-send').onclick = () => tx.morse(($('tx-msg') as HTMLInputElement).value, wpm, state.freq, fm);
     } else if (tab === 6) {
-      body.innerHTML = `<input id="tx-hex" class="txin" value="A5C3F1" maxlength="12"><div class="row" style="margin-top:6px"><span id="tx-ook" class="info">24 bit 350µs</span><button class="chip" id="ook-bits">bits</button><button class="chip" id="ook-te">te</button></div><div class="caption">Fixed-code Princeton/PT2262 — remotes you own on a license-free ISM band</div><button class="chip primary" id="tx-ooksend" style="margin-top:6px;width:100%">▶ SEND ×8</button>`;
+      body.innerHTML = `<input id="tx-hex" class="txin" value="A5C3F1" maxlength="12"><div class="row" style="margin-top:6px"><span id="tx-ook" class="info">24 bit 350µs</span><button class="chip" id="ook-bits">bits</button><button class="chip" id="ook-te">te</button></div><div class="caption">Fixed-code Princeton/PT2262, remotes you own on a license-free ISM band</div><button class="chip primary" id="tx-ooksend" style="margin-top:6px;width:100%">▶ SEND ×8</button>`;
       let bits = 24, te = 350;
       const upd = () => $('tx-ook').textContent = `${bits} bit ${te}µs`;
       $('ook-bits').onclick = () => { bits = bits === 24 ? 12 : bits === 12 ? 32 : 24; upd(); };
@@ -5808,7 +5808,7 @@ function renderTx(view: HTMLElement): void {
       body.innerHTML = `<div class="row"><input id="q-a" class="txin" value="1122.5" style="flex:1"><input id="q-b" class="txin" value="1465.5" style="flex:1"></div><div class="caption">Motorola Quick-Call II two-tone paging · tone A 1 s + tone B 3 s + 26 s carrier tail</div><button class="chip primary" id="q-send" style="margin-top:6px;width:100%">▶ PAGE QC-II</button>`;
       $('q-send').onclick = () => tx.quickCall2(parseFloat(($('q-a') as HTMLInputElement).value || '0'), parseFloat(($('q-b') as HTMLInputElement).value || '0'), state.freq);
     } else if (tab === 9) {
-      body.innerHTML = `<textarea id="s-text" class="txin" rows="5" style="width:100%;font-family:monospace" placeholder="Paste a Flipper .sub file here — 'Protocol: RAW / RAW_Data: 340 -1020 …'"></textarea><div class="row" style="margin-top:6px"><span id="s-rep" class="info">×3</span><button class="chip" id="s-repm">−</button><button class="chip" id="s-repp">+</button></div><div class="caption">SubGHz replay of a Flipper Zero .sub RAW file · OOK, 2 Msps</div><button class="chip primary" id="s-send" style="margin-top:6px;width:100%">▶ REPLAY</button>`;
+      body.innerHTML = `<textarea id="s-text" class="txin" rows="5" style="width:100%;font-family:monospace" placeholder="Paste a Flipper .sub file here, 'Protocol: RAW / RAW_Data: 340 -1020 …'"></textarea><div class="row" style="margin-top:6px"><span id="s-rep" class="info">×3</span><button class="chip" id="s-repm">−</button><button class="chip" id="s-repp">+</button></div><div class="caption">SubGHz replay of a Flipper Zero .sub RAW file · OOK, 2 Msps</div><button class="chip primary" id="s-send" style="margin-top:6px;width:100%">▶ REPLAY</button>`;
       let reps = 3;
       $('s-repm').onclick = () => { reps = Math.max(1, reps - 1); $('s-rep').textContent = `×${reps}`; };
       $('s-repp').onclick = () => { reps = Math.min(20, reps + 1); $('s-rep').textContent = `×${reps}`; };
@@ -5924,16 +5924,16 @@ function renderSettings(view: HTMLElement): void {
     <section class="sset" id="sec-tx"><div class="sset-h">TRANSMIT</div>
       ${srow('Transmit', 'The transmit apps. Most bands need a license: use a dummy load or an antenna rated for the frequency.', swHtml('tx-toggle', tx.enabled), 'tx enable')}
     </section>
-    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
-      <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies — use a powered OTG hub if RX reads all zeros</span></div>
+    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux, the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
+      <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies, use a powered OTG hub if RX reads all zeros</span></div>
       <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
-      <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
+      <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right, the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
       <div class="kv"><span>ADS-B map</span><span>aircraft plot live on an OpenStreetMap view (Leaflet loads from the CDN when you open the app); it follows the traffic until you drag, ⌖ re-arms it; allow location so single-frame positions and the map center use your spot</span></div>
-      <div class="kv"><span>Pagers</span><span>the Pagers app decodes FLEX (1600/3200/6400, 2- and 4-level) and POCSAG (512/1200/2400) on the same channel, like PDW — messages carry capcode, and FLEX its cycle/frame; in SINGLE mode it can be set to just one of them</span></div>
+      <div class="kv"><span>Pagers</span><span>the Pagers app decodes FLEX (1600/3200/6400, 2- and 4-level) and POCSAG (512/1200/2400) on the same channel, like PDW, messages carry capcode, and FLEX its cycle/frame; in SINGLE mode it can be set to just one of them</span></div>
       <div class="kv"><span>Squelch + scan</span><span>squelch gates audio by channel power against a tracked noise floor; SCAN hops through your bookmarks and holds on any channel where the squelch opens</span></div>
       <div class="kv"><span>Gain</span><span>radio defaults LNA 24 / VGA 24 / amp off (the amp overloads strong FM); ADS-B uses Mayhem's LNA 32 / VGA 32 / amp on</span></div>
       <div class="kv"><span>Windows</span><span>bind the HackRF to the WinUSB driver (Zadig), the same step hackrf_transfer needs; libusbK / libusb-win32 bindings hide it from the browser</span></div>
-      <div class="kv"><span>macOS</span><span>nothing to install — just close any other SDR program that has the HackRF open</span></div>
+      <div class="kv"><span>macOS</span><span>nothing to install, just close any other SDR program that has the HackRF open</span></div>
       <div class="kv"><span>Linux</span><span>the udev rule from the hackrf package (53-hackrf.rules) grants access; replug after adding it</span></div>
       <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc closes Settings, then goes home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div></div></section>
     <section class="sset" id="sec-log"><div class="sset-h">LOG</div>${srow('Log', 'Everything the radio and the decoders reported, to read, save or share', '<button id="set-log" class="tog">OPEN</button>')}</section>
@@ -5941,7 +5941,7 @@ function renderSettings(view: HTMLElement): void {
     <div class="panel about">
       <div class="row"><button id="install" class="chip" ${installPrompt ? '' : 'disabled'}>${installPrompt ? 'INSTALL TO HOME SCREEN' : 'INSTALLED / NOT OFFERED'}</button><a class="chip primary" href="https://play.google.com/store/apps/details?id=com.rocketgod.mayhem" target="_blank" rel="noopener">GET IT ON GOOGLE PLAY</a></div>
       ${isAndroid() ? `<div class="kv"><span>Android app</span><span>On Google Play. It opens by itself when the radio is plugged in and keeps running in the background.</span></div>` : ''}
-      <div class="kv"><span>Mayhem Mobile</span><span>${versionText} — one build, two shells: this web app in any Chrome/Edge browser, and the Android app on Google Play</span></div>
+      <div class="kv"><span>Mayhem Mobile</span><span>${versionText}, one build, two shells: this web app in any Chrome/Edge browser, and the Android app on Google Play</span></div>
       <div class="kv"><span>Device</span><span>${state.board ? (radio?.kind === 'rtlsdr' ? state.board : `${state.board} · fw ${state.firmware}`) : 'no radio attached'}</span></div>
       <div class="kv"><span>What it is</span><span>PortaPack Mayhem's receivers ported to run in the browser from raw HackRF IQ over WebUSB</span></div>
       <div class="kv"><span>Source</span><span><a href="https://github.com/RocketGod-git/mayhem-mobile">github.com/RocketGod-git/mayhem-mobile</a></span></div>
@@ -5950,7 +5950,7 @@ function renderSettings(view: HTMLElement): void {
     </div>
     <div class="panel about">
       <div class="kv"><span>RocketGod</span><span><a href="https://rocketgod.dev">RocketGod.dev</a></span></div>
-      <div class="kv"><span>Crew</span><span>The Pirates' Plunder — <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></span></div>
+      <div class="kv"><span>Crew</span><span>The Pirates' Plunder, <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></span></div>
     </div>
     <div class="sset-sub">CREDITS · drag to steer</div>
     <div class="panel credits" id="credits"><div class="credits-roll" id="credits-roll">${(() => { const inner = CREDITS.map(([h, t]) => h ? `<h4>${esc(t)}</h4>` : `<p>${esc(t)}</p>`).join(''); return `<div class="credits-copy">${inner}</div><div class="credits-copy" aria-hidden="true">${inner}</div>`; })()}</div></div>
@@ -6026,7 +6026,7 @@ function bindSettings(view: HTMLElement): void {
   };
 }
 /** Endless-loop credits scroller. Content is rendered twice; a rAF loop translates the roll upward at a steady
- *  pixels/sec, and when it crosses one copy's height it wraps back — so there's no visible seam or pause. Pointer
+ *  pixels/sec, and when it crosses one copy's height it wraps back, so there's no visible seam or pause. Pointer
  *  drag on the panel takes over: the roll follows the finger, and the auto-scroll resumes on release, keeping any
  *  fling momentum you gave it. */
 function attachCreditsScroller(panel: HTMLElement | null, roll: HTMLElement | null): void {
@@ -6125,7 +6125,7 @@ function refreshReadout(): void {
   highlightBands();
   refreshFav();
   const h = q('#health'); if (h && lastHealth) h.textContent = lastHealth;
-  const ll = q('#launch-line'); if (ll) ll.textContent = lastHealth ? `${(state.freq / 1e6).toFixed(3)} MHz${state.mode === 'NONE' ? '' : ` ${state.mode}`} · ${lastHealth}` : 'no IQ yet — connect a HackRF or an RTL-SDR';
+  const ll = q('#launch-line'); if (ll) ll.textContent = lastHealth ? `${(state.freq / 1e6).toFixed(3)} MHz${state.mode === 'NONE' ? '' : ` ${state.mode}`} · ${lastHealth}` : 'no IQ yet, connect a HackRF or an RTL-SDR';
   if (!meterOwned()) setMeter(lastLevel / 40, `SIGNAL +${Math.max(0, Math.round(lastLevel))} dB`);
 }
 /** Apps that drive the card's meter themselves (Audio's channel over the noise, HAM's S-meter, sweeps' progress). */
@@ -6305,8 +6305,8 @@ function acRowFill(row: HTMLElement, a: Aircraft): void {
   set('hex', call ? a.icao.toUpperCase() : '');
   set('id', [info?.reg, info?.typeIcao].filter(Boolean).join(' · ') || (info && !info.done ? 'looking up…' : ''));
   set('op', info?.owner ?? [info?.maker, info?.type].filter(Boolean).join(' '));
-  set('alt', a.alt !== undefined ? `${a.alt.toLocaleString()} ft` : '— ft');
-  set('gs', a.gs !== undefined ? `${a.gs} kt` : '— kt');
+  set('alt', a.alt !== undefined ? `${a.alt.toLocaleString()} ft` : 'ft');
+  set('gs', a.gs !== undefined ? `${a.gs} kt` : 'kt');
   let far = a.lat === undefined ? 'no position' : '';
   if (!far && state.home && a.lon !== undefined) { const d = distanceBearing(state.home.lat, state.home.lon, a.lat!, a.lon); far = `${(d.km * 0.539957).toFixed(0)} nmi · ${Math.round(d.deg)}°`; }
   set('far', far);
@@ -6565,7 +6565,7 @@ function ensureWorker(): Worker {
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
-      case 'health': lastHealth = m.line; lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
+      case 'health': lastHealth = m.line; lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? 'demod producing audio' : 'silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
         const id = state.app ?? 'x', list = (logs[id] ??= []);
@@ -6781,8 +6781,8 @@ async function connect(dev?: USBDevice): Promise<void> {
     lastTried = d;
     if (isMayhemSerial(d)) {
       log('That is a PortaPack in Mayhem serial mode.');
-      setStatus('PortaPack in Mayhem mode — switching…', false);
-      if (!(await portapackToHackRf(d))) { setStatus('PortaPack in serial mode — tap HackRF on its screen', false); showHint(new Error('PortaPack in Mayhem mode. CONNECT could not switch it. On the PortaPack, choose HackRF mode.')); }
+      setStatus('PortaPack in Mayhem mode, switching…', false);
+      if (!(await portapackToHackRf(d))) { setStatus('PortaPack in serial mode, tap HackRF on its screen', false); showHint(new Error('PortaPack in Mayhem mode. CONNECT could not switch it. On the PortaPack, choose HackRF mode.')); }
       return;
     }
     await ensureAudio();
@@ -6824,7 +6824,7 @@ async function connect(dev?: USBDevice): Promise<void> {
     applyLauncherView();          // now we know how wide it can go, show the whole band rather than a slice
     await r.open();
     btn.textContent = 'DISCONNECT';
-    hideHint();                     // claimed — any "device busy / not found" hint is now stale
+    hideHint();                     // claimed, any "device busy / not found" hint is now stale
     await r.run();
   } catch (e) {
     const err = e as Error;
@@ -6864,7 +6864,7 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   if (r.targetRateHz !== state.rate) { state.rate = r.targetRateHz; worker?.postMessage({ type: 'config', rate: state.rate }); refreshReadout(); }
   await r.open();
   btn.textContent = 'DISCONNECT';
-  hideHint();                       // claimed — clear any stale connect hint
+  hideHint();                       // claimed, clear any stale connect hint
   await r.run();
 }
 
@@ -6887,15 +6887,15 @@ function showHint(err: Error): void {
   let text = '';
   if (notListed) {
     text = 'The chooser showed no HackRF or RTL-SDR. Check the USB cable carries data, then: ';
-    if (os === 'windows') text += 'on Windows the radio must be bound to the WinUSB driver — run Zadig, pick "HackRF One" (or for an RTL-SDR the "Bulk-In, Interface (Interface 0)" entry), choose WinUSB, Replace Driver (a libusbK or libusb-win32 binding hides it from the browser).';
+    if (os === 'windows') text += 'on Windows the radio must be bound to the WinUSB driver, run Zadig, pick "HackRF One" (or for an RTL-SDR the "Bulk-In, Interface (Interface 0)" entry), choose WinUSB, Replace Driver (a libusbK or libusb-win32 binding hides it from the browser).';
     else if (os === 'linux') text += 'on Linux add the udev rule the hackrf package ships (53-hackrf.rules) or run the browser as a user in the plugdev group, then replug.';
-    else if (os === 'mac') text += 'on macOS nothing needs installing — try another cable or port, and make sure a PortaPack is in HackRF mode, not Mayhem serial mode.';
+    else if (os === 'mac') text += 'on macOS nothing needs installing, try another cable or port, and make sure a PortaPack is in HackRF mode, not Mayhem serial mode.';
     else if (os === 'android') text += 'on Android use a data-capable OTG cable or a powered OTG hub; a PortaPack must be in HackRF mode.';
     else text += 'make sure a PortaPack is in HackRF mode.';
   } else if (busy) {
     const name = lastTried && isRtlSdr(lastTried) ? 'RTL-SDR' : 'HackRF';
     if (os === 'android') text = `Could not open the ${name}: another app has it. When Android asks "Choose an app for the USB device", tap Cancel, or close the app that took it (Mayhem, Wardrive Go, an RTL-SDR driver). Then unplug the radio, plug it back in and tap CONNECT.`;
-    else text = `Could not claim the ${name} (${err.message}). Another program probably has it open — close SDR++, SDRangel, GQRX, ${name === 'HackRF' ? 'hackrf_transfer' : 'rtl_tcp'} or a second browser tab, then reconnect.`;
+    else text = `Could not claim the ${name} (${err.message}). Another program probably has it open, close SDR++, SDRangel, GQRX, ${name === 'HackRF' ? 'hackrf_transfer' : 'rtl_tcp'} or a second browser tab, then reconnect.`;
     if (os === 'windows') text += ' On Windows also confirm the WinUSB driver binding (Zadig).';
   } else return;
   box.textContent = text;
@@ -6905,7 +6905,7 @@ function showHint(err: Error): void {
 }
 let hintTimer = 0;
 /** Clear the connect hint: on its own 15 s timer, when the user taps it away, or the moment a radio is actually
- *  claimed — the "device busy / nothing in the chooser" condition it warned about is gone by then. */
+ *  claimed, the "device busy / nothing in the chooser" condition it warned about is gone by then. */
 function hideHint(): void {
   const b = q('#hint'); if (b) b.hidden = true;
   if (hintTimer) { clearTimeout(hintTimer); hintTimer = 0; }
@@ -6943,7 +6943,7 @@ function scrollHints(): void {
     }
   };
   // re-arm synchronously (the observer runs before the next paint), so a list that just re-rendered never shows a
-  // frame without its glow — that gap read as flicker
+  // frame without its glow, that gap read as flicker
   let arming = false;
   const rearm = () => { if (arming) return; arming = true; try { arm(); } finally { arming = false; } };
   new MutationObserver(rearm).observe(document.body, { childList: true, subtree: true });
@@ -7481,10 +7481,10 @@ function init(): void {
     (async () => await HackRf.remembered() ?? (RTLSDR_READY ? await RtlSdr.remembered() : undefined))().then(d => {
       if (!d || radio) return;
       const what = isRtlSdr(d) ? 'RTL-SDR' : 'HackRF';
-      setStatus(`${what} remembered — connecting…`, false);
-      void connect(d).catch(() => setStatus(`${what} remembered — tap CONNECT`, false));
+      setStatus(`${what} remembered, connecting…`, false);
+      void connect(d).catch(() => setStatus(`${what} remembered, tap CONNECT`, false));
     }).catch(() => undefined);
-    navigator.usb.addEventListener('connect', (e) => { log(`USB attached: ${e.device.productName ?? ''}`); if (!radio) setStatus(`${isRtlSdr(e.device) ? 'RTL-SDR' : 'HackRF'} attached — tap CONNECT`, false); });
+    navigator.usb.addEventListener('connect', (e) => { log(`USB attached: ${e.device.productName ?? ''}`); if (!radio) setStatus(`${isRtlSdr(e.device) ? 'RTL-SDR' : 'HackRF'} attached, tap CONNECT`, false); });
     // Only the radio leaving stops the radio. Any USB device detaching used to end the session - a phone on charge,
     // a hub dropping a port - which looked like the SDR disconnecting by itself.
     navigator.usb.addEventListener('disconnect', (e) => { log(`USB detached: ${e.device.productName ?? ''}`); if (e.device === radioDev) radio?.stop(); });

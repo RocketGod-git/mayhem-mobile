@@ -13,7 +13,7 @@
  * The three Govee sensors are one protocol family wearing three badges, and they overlap on purpose. All three
  * share a sync word, a 128-byte exclusive-or key that the manufacturer built into the firmware, and the same
  * frame envelope, so the interesting work is not decoding any one of them but keeping them from claiming each
- * other's frames. Upstream solved that structurally rather than by ordering — the pool thermometer demands two
+ * other's frames. Upstream solved that structurally rather than by ordering, the pool thermometer demands two
  * constant bytes where the dual-probe thermometer packs its humidity, and the dual-probe one refuses any frame
  * whose humidity comes out above what air can hold, which is exactly what those two constants decode to. The
  * priorities are ported as well, but they are the belt and not the braces.
@@ -50,7 +50,7 @@ const hexLow = (v: number, n: number) => (v >>> 0).toString(16).padStart(n, '0')
  * bits each and straddle byte boundaries, so there is no whole-frame reflection that would put them right.
  *
  * The checksum is the sum of those reflected field bytes, taken as a byte. That truncation is not incidental —
- * six of the ten captures rtl_433 ships sum past 255, one of them to 569 — but upstream stores the running
+ * six of the ten captures rtl_433 ships sum past 255, one of them to 569, but upstream stores the running
  * total in a `uint8_t`, so the masking the shared helper already does is the correct behavior rather than the
  * trap it usually is.
  *
@@ -189,7 +189,7 @@ const VISION_TEMP_UNAVAILABLE = 0x084c;
 /**
  * A thermostat that talks in records rather than in a fixed layout.
  *
- * Everything after the addresses is a stream of tag-and-value pairs, and — this is the part worth knowing —
+ * Everything after the addresses is a stream of tag-and-value pairs, and, this is the part worth knowing —
  * the length of each value is carried in the top two bits of the tag itself. That means the stream can be
  * walked without knowing what any tag means, which is why an unrecognized tag is skipped here instead of
  * ending the parse or being guessed at from where it sat.
@@ -316,8 +316,8 @@ const EBERLE_ACTIONS: Array<[string, number, number]> = [
  * A remote whose twenty-four bits have to be read two different ways at once.
  *
  * For the checksum they are six nibbles taken exactly as received but read least significant bit first, and
- * their sum is always eleven. For the identity and the command they are the same bits Gray-decoded — a running
- * exclusive-or from the first — and then complemented, read most significant bit first. Neither reading is a
+ * their sum is always eleven. For the identity and the command they are the same bits Gray-decoded, a running
+ * exclusive-or from the first, and then complemented, read most significant bit first. Neither reading is a
  * transformation of the other at the field level, which is why both appear below rather than one being derived
  * from the other.
  *
@@ -420,7 +420,7 @@ const REGENCY_COMMANDS: Record<number, string> = {
  * known codes, is rejected rather than reported, because a fan remote reporting nonsense is worse than a fan
  * remote reporting nothing.
  *
- * The channel is set by switches in the battery compartment and reads inverted — all switches off gives
+ * The channel is set by switches in the battery compartment and reads inverted, all switches off gives
  * fifteen, which says the switches pull their lines down rather than up.
  *
  * Upstream's doc comment opens by calling this PPM, but the device table right below it registers PWM, and the
@@ -503,7 +503,7 @@ const UNIFAN_BUTTONS: Record<number, string> = {
  * verify and awkward to construct, which is worth knowing when building a frame to test it: the check nibble
  * has to be solved for rather than computed forwards.
  *
- * Thirty-three bits, the last of which is always one — a cheap structural test that costs nothing and catches
+ * Thirty-three bits, the last of which is always one, a cheap structural test that costs nothing and catches
  * a truncated burst.
  */
 export const universalFanCtrl: RDevice = register({
@@ -560,7 +560,7 @@ const GOVEE_SYNC_SKEW1 = new Uint8Array([0x16, 0x26, 0x25]);
  *
  * It is a fixed string exclusive-ored over the payload starting at an offset the frame itself carries, so it
  * hides the payload from a casual look and from nothing else. It is not treated here as encryption because it
- * is not encryption — there is no key material a listener does not already have.
+ * is not encryption, there is no key material a listener does not already have.
  */
 const GOVEE_KEY = 's6amyEvO8UslCY0eZjgc2S6APCVLgLxzFvL2Z5GWPW7fKVjy2oAU6uiKU3lZCHm62VYQQuCtgxzPgGd8UDRPVZpDRAsh5EdYq1E4j4morJ3vd6tWx8BiWOLDc2I8wKUK';
 const GOVEE_MAX_FRAME = 128;
@@ -607,7 +607,7 @@ function goveeIds(dec: Uint8Array, at: number): { id: string; id_wire: string } 
 /**
  * Govee's pool and spa thermometer.
  *
- * Three frame shapes carry a temperature, and they are told apart by their outer length alone — a forced
+ * Three frame shapes carry a temperature, and they are told apart by their outer length alone, a forced
  * report, the ten-minute broadcast, and a reply to a poll. The first puts a constant byte where the other two
  * do not, so every field after it shifts by one; that is the whole difference between the layouts.
  *
@@ -617,7 +617,7 @@ function goveeIds(dec: Uint8Array, at: number): { id: string; id_wire: string } 
  *
  * The temperature offset was fitted twice. A calibration sweep gave one number, then live readings against the
  * sensor's own display showed everything a degree low, and the corrected value is what is used here. Below
- * freezing is unverified — the formula simply keeps counting down and nobody has held one in the cold.
+ * freezing is unverified, the formula simply keeps counting down and nobody has held one in the cold.
  */
 export const goveeH5310: RDevice = register({
   num: 349,
@@ -677,7 +677,7 @@ export const goveeH5310: RDevice = register({
  * readings from the phone app reproduces the transmitted bytes exactly.
  *
  * The frame also carries its own last ten minutes. Ten four-byte records in the same packed layout, one a
- * minute, oldest first — so a single reception gives an hour's worth of shape rather than one point. Those are
+ * minute, oldest first, so a single reception gives an hour's worth of shape rather than one point. Those are
  * reported as arrays.
  *
  * A humidity above what air can hold is impossible, and is also exactly what the pool thermometer's two

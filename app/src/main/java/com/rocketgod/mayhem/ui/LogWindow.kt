@@ -45,7 +45,7 @@ import kotlin.math.roundToInt
  * The diagnostic log as a terminal: full screen by default, or shrunk to a floating panel that can be
  * dragged anywhere on top of whatever app is running, so a decode can be watched while the log scrolls.
  *
- * SAVE writes to Downloads, SHARE hands the same text to the share sheet through the FileProvider — both
+ * SAVE writes to Downloads, SHARE hands the same text to the share sheet through the FileProvider, both
  * start with [Diag.header], which is what makes a log someone sends us actually diagnosable.
  */
 @Composable

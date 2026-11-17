@@ -1,5 +1,5 @@
 /**
- * Trains — the TypeScript twin of core/trains/TrainsDsp.kt and Trains.kt. Railroad telemetry, worked out from raw
+ * Trains, the TypeScript twin of core/trains/TrainsDsp.kt and Trains.kt. Railroad telemetry, worked out from raw
  * recordings and the published field layouts:
  *
  * - EOT / HOT / DPU (end-of-train, head-of-train, distributed power) on 457.9375 / 452.9375 / 457.925 MHz: NBFM carrying

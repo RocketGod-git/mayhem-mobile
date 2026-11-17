@@ -5,7 +5,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /*
- * The rest of the modern Fine Offset range: soil, leak, lightning, probe temperature and the WS80 array — the
+ * The rest of the modern Fine Offset range: soil, leak, lightning, probe temperature and the WS80 array, the
  * same `2d d4` sync and family-code arrangement as the WH25 family, kept as separate registrations as rtl_433
  * keeps them. Ecowitt and Ambient Weather sell this hardware under their own names.
  *

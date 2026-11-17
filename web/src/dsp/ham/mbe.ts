@@ -276,7 +276,7 @@ export class AmbeDecoder {
    * Unvoiced bands the way the standard builds them: shape a block of noise with the synthesis window, transform
    * it, keep only the bins falling in bands this frame called unvoiced, scale each band to its decoded
    * amplitude, and transform back. The reference implementation instead sums three sinusoids per band at a fixed
-   * offset from the harmonic, with a fresh random phase every frame — a pitch-locked comb that restarts fifty
+   * offset from the harmonic, with a fresh random phase every frame, a pitch-locked comb that restarts fifty
    * times a second, rather than noise.
    */
   private synthUnvoiced(cur: Parms): void {

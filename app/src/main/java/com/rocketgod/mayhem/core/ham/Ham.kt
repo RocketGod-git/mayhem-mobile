@@ -27,7 +27,7 @@ import org.json.JSONObject
  *
  * It is a panadapter: the LO stays put while the channel moves around inside the span, so the waterfall does not
  * lurch with every step and the HackRF's DC spike stays off the channel. The LO is only moved when the channel
- * gets within [GUARD] of the span edge, or so close to the LO that the spike would land in it — and then it is
+ * gets within [GUARD] of the span edge, or so close to the LO that the spike would land in it, and then it is
  * placed [LO_OFFSET] above the channel, leaving the band visible to both sides.
  *
  * MONITOR swaps the single receiver for [BandMonitor]: the LO sits on the band and every raster channel in the

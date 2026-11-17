@@ -1,8 +1,8 @@
 /**
  * Remote controls: gates, garage doors, blinds, and the generic keyfobs that open most of them.
  *
- * These divide sharply. The EV1527-style remotes at the top of this file send a fixed code every time — press
- * the button, the same bits go out, forever — which is why they are trivially replayed and why the industry
+ * These divide sharply. The EV1527-style remotes at the top of this file send a fixed code every time, press
+ * the button, the same bits go out, forever, which is why they are trivially replayed and why the industry
  * moved on. Somfy's RTS at the bottom sends a counter that advances with every press, so a recorded
  * transmission is stale the moment it is used; what is decoded here is which button and what the counter
  * stands at, not anything that would let you operate the blind.
@@ -66,7 +66,7 @@ export const genericRemote: RDevice = register({
 });
 
 /**
- * Intertechno's mains switches. Off by default, as in rtl_433 — there is no checksum, and the frame is loose
+ * Intertechno's mains switches. Off by default, as in rtl_433, there is no checksum, and the frame is loose
  * enough to catch other traffic.
  */
 export const intertechno: RDevice = register({
@@ -96,7 +96,7 @@ export const intertechno: RDevice = register({
   },
 });
 
-/** Proove, Nexa and KlikAanKlikUit mains switches — the same design under three names across Scandinavia. */
+/** Proove, Nexa and KlikAanKlikUit mains switches, the same design under three names across Scandinavia. */
 export const proove: RDevice = register({
   num: 51,
   name: 'Proove / Nexa / KlikAanKlikUit wireless switch',
@@ -133,7 +133,7 @@ export const proove: RDevice = register({
 });
 
 /**
- * Cardin's gate remote. There is no identity as such — the pairing is a bank of nine physical switches, and
+ * Cardin's gate remote. There is no identity as such, the pairing is a bank of nine physical switches, and
  * each is reported as up, down, or not fitted, which is exactly what you would see inside the handset.
  */
 export const cardin: RDevice = register({
@@ -192,7 +192,7 @@ const SOMFY_SEED = [
 ];
 
 /**
- * Somfy RTS — the awnings, blinds and shutters.
+ * Somfy RTS, the awnings, blinds and shutters.
  *
  * Unlike everything above it, this is not a fixed code. The payload is obscured by chaining each byte against
  * the one before it, and it carries a counter that advances with every button press, so a recorded frame is

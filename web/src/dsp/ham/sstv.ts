@@ -16,7 +16,7 @@ function martin(name: string, vis: number, T: number): Mode {
   return { name, vis, width: 320, height: 256, line: 4.862 + 0.572 + 3 * (T + 0.572), firstSync: 0, syncLen: 4.862, rows: 1, comps: [{ at: 5.434, dur: T, kind: 'G' }, { at: 5.434 + T + 0.572, dur: T, kind: 'B' }, { at: 5.434 + 2 * (T + 0.572), dur: T, kind: 'R' }] };
 }
 function scottie(name: string, vis: number, T: number): Mode {
-  // a lone 9 ms sync, then per line: sep G sep B | sync porch R — the sync sits before the red scan, so green and blue precede it
+  // a lone 9 ms sync, then per line: sep G sep B | sync porch R, the sync sits before the red scan, so green and blue precede it
   return { name, vis, width: 320, height: 256, line: 13.5 + 3 * T, firstSync: 12 + 2 * T, syncLen: 9, rows: 1, comps: [{ at: -(2 * T + 1.5), dur: T, kind: 'G' }, { at: -T, dur: T, kind: 'B' }, { at: 10.5, dur: T, kind: 'R' }] };
 }
 function pd(name: string, vis: number, T: number, width: number, height: number): Mode {

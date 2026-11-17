@@ -10,7 +10,7 @@ export interface CallInfo {
   name?: string; qth?: string; grid?: string; class?: string; source: string;
 }
 
-// [prefix, country, continent] — longest prefix wins; a trailing ':' pins the following character class (digit)
+// [prefix, country, continent], longest prefix wins; a trailing ':' pins the following character class (digit)
 const P: [string, string, string][] = [
   ['K', 'United States', 'NA'], ['N', 'United States', 'NA'], ['W', 'United States', 'NA'], ['AA', 'United States', 'NA'], ['AB', 'United States', 'NA'], ['AC', 'United States', 'NA'], ['AD', 'United States', 'NA'], ['AE', 'United States', 'NA'], ['AF', 'United States', 'NA'], ['AG', 'United States', 'NA'], ['AI', 'United States', 'NA'], ['AJ', 'United States', 'NA'], ['AK', 'United States', 'NA'], ['AL', 'United States', 'NA'],
   ['KH6', 'Hawaii', 'OC'], ['KH7', 'Hawaii', 'OC'], ['WH6', 'Hawaii', 'OC'], ['AH6', 'Hawaii', 'OC'], ['NH6', 'Hawaii', 'OC'], ['KL7', 'Alaska', 'NA'], ['KL', 'Alaska', 'NA'], ['AL7', 'Alaska', 'NA'], ['NL7', 'Alaska', 'NA'], ['WL7', 'Alaska', 'NA'], ['KP4', 'Puerto Rico', 'NA'], ['WP4', 'Puerto Rico', 'NA'], ['NP4', 'Puerto Rico', 'NA'], ['KP2', 'US Virgin Islands', 'NA'], ['KH2', 'Guam', 'OC'], ['KH0', 'Mariana Islands', 'OC'], ['KH8', 'American Samoa', 'OC'], ['KG4', 'Guantanamo Bay', 'NA'],

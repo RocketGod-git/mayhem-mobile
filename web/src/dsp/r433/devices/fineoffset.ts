@@ -1,5 +1,5 @@
 /**
- * Fine Offset, and everything built on their designs — Ecowitt, Ambient Weather, Misol, Alecto, Froggit.
+ * Fine Offset, and everything built on their designs, Ecowitt, Ambient Weather, Misol, Alecto, Froggit.
  *
  * One factory in Shenzhen makes the internals of a large share of the consumer weather stations sold anywhere,
  * so the same frames come out under a dozen brand names. The older sensors key the carrier on and off; the whole
@@ -7,7 +7,7 @@
  * `2d d4`, a family-code byte that says which sensor it is, the readings, then a CRC and a byte sum.
  *
  * Because those all look alike until the family code is read, one decoder here reads the length of the burst and
- * hands off to whichever sibling fits — the way rtl_433 does, and for the same reason.
+ * hands off to whichever sibling fits, the way rtl_433 does, and for the same reason.
  *
  * Ported from rtl_433's `src/devices/fineoffset.c` (GPL-2.0-or-later).
  */
@@ -133,7 +133,7 @@ function payloadStart(bits: BitBuffer): number {
  * one seventeen-byte frame, with three more bytes of pressure on the newest of them.
  *
  * Which model it is comes from how long the burst was and how much postamble followed the payload, because
- * nothing in the frame itself says — the family code is 0x24 for all of them.
+ * nothing in the frame itself says, the family code is 0x24 for all of them.
  */
 function wh24Decode(bits: BitBuffer, ctx: DecodeCtx): number {
   const n = bits.bitsPerRow[0];
@@ -228,7 +228,7 @@ function wh0290Decode(bits: BitBuffer, ctx: DecodeCtx): number {
 }
 
 /**
- * The indoor console sensors — WH25, WH32, WH32B, WN32B — and the front door to the whole frequency-keyed
+ * The indoor console sensors, WH25, WH32, WH32B, WN32B, and the front door to the whole frequency-keyed
  * family. The length of the burst decides which decoder gets it, so this one entry covers everything from a
  * desk thermometer to a full outdoor array.
  */

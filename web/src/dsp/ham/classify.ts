@@ -4,7 +4,7 @@
  * Every call: peak-hold with decay → box smoothing → humps at least `minSnr` dB over the median floor → for each
  * hump measure its −6 dB and −20 dB widths, how peaky its top is (carrier vs flat top), the left/right energy skew
  * and whether the top is bimodal (two FSK tones). Each hump is matched to a track that remembers its last few
- * seconds of measurements, and the track — not the single frame — is what gets classified:
+ * seconds of measurements, and the track, not the single frame, is what gets classified:
  *
  *   - widths are taken as the track's 80th percentile, so a broadcast station stays "wide" through a quiet bar
  *     of music and an FM voice channel stays "FM" between words;
@@ -14,7 +14,7 @@
  *   - the label is decided by a decaying vote over the track's history and only changes when a challenger has
  *     clearly out-voted the sitting label for a couple of seconds, so labels do not flicker with the modulation.
  *
- * Classes: WFM · NFM · DMR (digital FM, shown as "DMR?" — a flat-topped steady 10 kHz channel; the HAM decoder is
+ * Classes: WFM · NFM · DMR (digital FM, shown as "DMR?", a flat-topped steady 10 kHz channel; the HAM decoder is
  * the proof) · AM · USB / LSB / SSB · CW · FSK · DIGI (narrow steady multi-tone: FT8, PSK, RTTY) · OOK (narrow,
  * bursty: remotes, sensors) · CARRIER (unmodulated) · WIDE (40–100 kHz, unknown). A confidence rides along so the
  * UI can hedge ("NFM?"); a track younger than a second reports no class at all.
@@ -165,7 +165,7 @@ function levelVar(levels: number[]): number {
   return Math.sqrt(levels.reduce((s, v) => s + (v - m) * (v - m), 0) / levels.length);
 }
 
-/** What a frequency band is used for — the strongest prior the classifier has. */
+/** What a frequency band is used for, the strongest prior the classifier has. */
 type Band = 'bcfm' | 'air' | 'weak' | 'pager' | 'land' | 'hfbc' | 'mw' | 'hf';
 const HF_BROADCAST: [number, number][] = [[3.2e6, 3.4e6], [4.75e6, 5.06e6], [5.9e6, 6.2e6], [7.2e6, 7.45e6], [9.4e6, 9.9e6], [11.6e6, 12.1e6], [13.57e6, 13.87e6], [15.1e6, 15.8e6], [17.48e6, 17.9e6], [18.9e6, 19.02e6], [21.45e6, 21.85e6], [25.67e6, 26.1e6]];
 function bandOfHz(hz: number): Band {
@@ -191,7 +191,7 @@ function classify(bw6: number, bw20: number, peakiness: number, skew: number, bi
   if (band === 'air') return bw6 <= 30_000 ? ['AM', bw6 >= 1500 ? 0.85 : 0.6] : ['WIDE', 0.4];
   if (band === 'pager' && (bimodal || bw6 > 4000)) return ['FSK', 0.8];
   if (band === 'land') {
-    // VHF / UHF land mobile: FM voice, digital FM, data bursts, remotes — no SSB, no AM
+    // VHF / UHF land mobile: FM voice, digital FM, data bursts, remotes, no SSB, no AM
     if (bw6 < 1200) {
       if (duty < 0.6 && !young) return ['OOK', 0.6];              // keyed bursts: remotes, sensors, telemetry
       return peakiness > 8 ? ['CARRIER', 0.7] : ['DIGI', 0.5];     // an unmodulated carrier (idle repeater, link, birdie)
@@ -200,7 +200,7 @@ function classify(bw6: number, bw20: number, peakiness: number, skew: number, bi
     if (bw6 <= 4200) return ['NFM', 0.5];                           // FM with little on it
     if (bw6 <= 16_000) {
       const flat = peakiness < 4.5;
-      if (flat && lv < 1.5 && !young) return ['DMR', 0.5];         // flat-topped, steady: digital FM — hedged until a decoder proves it
+      if (flat && lv < 1.5 && !young) return ['DMR', 0.5];         // flat-topped, steady: digital FM, hedged until a decoder proves it
       return ['NFM', flat ? 0.6 : 0.8];
     }
     if (bw6 <= 40_000) return ['NFM', 0.6];

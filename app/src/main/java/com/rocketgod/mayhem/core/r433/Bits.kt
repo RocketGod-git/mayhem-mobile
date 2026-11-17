@@ -8,7 +8,7 @@ package com.rocketgod.mayhem.core.r433
 
 /**
  * Bytes read and written as 0..255, as a view onto shared storage. Reads outside the view give 0 and writes
- * outside it are dropped, exactly as a typed array behaves — several decoders read a byte or two past what they
+ * outside it are dropped, exactly as a typed array behaves, several decoders read a byte or two past what they
  * extracted and rely on that.
  */
 class UBytes(val buf: ByteArray, val off: Int, val size: Int) {

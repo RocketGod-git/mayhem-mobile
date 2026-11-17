@@ -1150,7 +1150,7 @@ export class MeshDecoder implements IqProcessor {
       { name: 'SIGNAL', value: `+${f.snrDb} dB` },
       { name: 'LENGTHS', value: `${[...d.lengths].sort((x, y) => x - y).join(', ')} bytes` },
       { name: 'NODE ID', value: d.address >= 0 ? `${d.address.toString(16).toUpperCase().padStart(6, '0')} (${d.address}), heard ${d.addressSeen}×` : 'not announced yet' },
-      { name: 'FRAME LAYOUT', value: 'index · clock (128/s) · check — ID frames: index · F0 · ID · clock · … 01 00' },
+      { name: 'FRAME LAYOUT', value: 'index · clock (128/s) · check · ID frames: index · F0 · ID · clock · … 01 00' },
     ];
     if (f.sync === HOP9C && f.tag !== undefined) {
       d.fields.splice(2, 0, { name: 'CHANNEL BYTE', value: `${h2(f.tag)} at ${(f.hz / 1e6).toFixed(3)} MHz (the middle byte of the sync word follows the channel)` });

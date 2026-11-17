@@ -12,7 +12,7 @@
  *
  * The Vaillant boiler control is the one that would have been silently wrong. Its checksum is a sixteen-bit
  * two's complement of a run of nine bytes, and that sum genuinely overflows a byte on upstream's own documented
- * frame — 695, or 0x2b7. Narrowing it first, which is what the shared `addBytes` helper does, gives 0xb7 and the
+ * frame, 695, or 0x2b7. Narrowing it first, which is what the shared `addBytes` helper does, gives 0xb7 and the
  * comparison never lands. The sum is taken locally at full width here for exactly that reason, and the test
  * asserts the overflow as a premise rather than trusting the answer to come out right by luck.
  *
@@ -23,7 +23,7 @@
  *
  * The Proflame gas-fire remote uses Manchester coding the opposite way up from the rest of the codebase, which
  * the file handles by complementing the decoded bytes rather than the input. Each of its seven words carries its
- * own guard bits and parity, so a word that fails stops the whole frame — which is why the decode is written as
+ * own guard bits and parity, so a word that fails stops the whole frame, which is why the decode is written as
  * a loop returning how many words it managed rather than as a plain success or failure.
  *
  * Two of these decline to report things upstream also declines to report, and that is kept: the Flowis meter
@@ -53,7 +53,7 @@ const round3 = (x: number) => Math.round(x * 1000) / 1000;
 const hex2 = (v: number) => v.toString(16).padStart(2, '0');
 const dec2 = (v: number) => v.toString().padStart(2, '0');
 
-/** One byte read at an arbitrary bit offset, MSB first — rtl_433's `bitrow_get_byte`. */
+/** One byte read at an arbitrary bit offset, MSB first, rtl_433's `bitrow_get_byte`. */
 function bitrowGetByte(row: Uint8Array, pos: number): number {
   return (((row[pos >> 3] << 8) | row[(pos >> 3) + 1]) >> (8 - (pos & 7))) & 0xff;
 }
@@ -66,7 +66,7 @@ function bitrowGetByte(row: Uint8Array, pos: number): number {
  * The 4b/6b line code, as a lookup from the six-bit symbol to the nibble it means.
  *
  * Only sixteen of the sixty-four possible symbols are legal. Everything else is a decoding error, which makes
- * this the device's first and strictest integrity check — a flipped bit inside a symbol nearly always produces
+ * this the device's first and strictest integrity check, a flipped bit inside a symbol nearly always produces
  * a code that is simply not here.
  */
 const DANFOSS_6B4B = new Map<number, number>([
@@ -149,7 +149,7 @@ export const danfossCfr: RDevice = register({
  * Six temperature probes can be attached and any of them may be absent; the sensor says so by sending exactly
  * 300.0 degrees, which is reported as nothing at all rather than as a reading.
  *
- * This is one of the few decoders that keeps looking after a success — several packets can share one burst —
+ * This is one of the few decoders that keeps looking after a success, several packets can share one burst —
  * so it returns how many it found.
  */
 export const emontx: RDevice = register({
@@ -241,7 +241,7 @@ export const emontx: RDevice = register({
  * Three things have to be undone in order before any field means anything: the stuffing (a zero inserted after
  * every five consecutive ones), the bit order within each byte, and only then the layout.
  *
- * The checksum is a sixteen-bit two's complement of nine payload bytes — the sum and the carried value must add
+ * The checksum is a sixteen-bit two's complement of nine payload bytes, the sum and the carried value must add
  * to zero across sixteen bits. That sum overflows a byte on upstream's own documented frame, so it is taken
  * here at full width rather than through the shared helper, which narrows to eight bits.
  */
@@ -286,7 +286,7 @@ export const vaillantVrt340f: RDevice = register({
 
     /*
      * Put each byte the right way round. Upstream reflects one byte fewer than the frame holds, so the very
-     * last byte keeps its transmitted bit order — harmless, because that byte is part of the trailing epilogue
+     * last byte keeps its transmitted bit order, harmless, because that byte is part of the trailing epilogue
      * and nothing reads it. The quirk is kept so the two implementations agree byte for byte.
      */
     reflectBytes(b, ((bitcount - 1) / 8) | 0);
@@ -341,7 +341,7 @@ export const vaillantVrt340f: RDevice = register({
 /**
  * A three-phase current clamp with two layers of coding and no checksum at all.
  *
- * The demodulator gives one bit per pulse — short pulses are ones, long pulses zeros, high and low alike. On
+ * The demodulator gives one bit per pulse, short pulses are ones, long pulses zeros, high and low alike. On
  * top of that sits a second layer: reading that stream, `00` means "the output bit stays as it was" and `011`
  * means "the output bit flips". Anything else is a decoding failure.
  *
@@ -527,7 +527,7 @@ function srsmithButton(id: number): string {
  * The frame carries two checks but only one is enforced. The CRC-16 over the packet is compared and a mismatch
  * rejects the frame; the CRC-8 over the inner sub-packet is computed upstream, written to the log and then
  * ignored. Nothing has ever forced that second one's parameters to be right, and no capture is published to
- * settle it, so it is neither checked nor reported here — reporting it would dress an unverified number up as
+ * settle it, so it is neither checked nor reported here, reporting it would dress an unverified number up as
  * an integrity result.
  *
  * The identifier is the remote's pin, sent inverted and bit-reversed. Upstream reports the whole reversed byte
@@ -657,7 +657,7 @@ export const flowis: RDevice = register({
  * is upstream's behaviour and is kept.
  *
  * The check is a CRC-8 run over eight bytes and required to come out zero. A command packet is five bytes and a
- * pairing packet four, so the run always reaches past the end of the real data into zeroes — which is harmless,
+ * pairing packet four, so the run always reaches past the end of the real data into zeroes, which is harmless,
  * because once the register reaches zero, feeding it zero bytes leaves it there. The test asserts that rather
  * than assuming it.
  */
@@ -728,7 +728,7 @@ export const celsiaCzc1: RDevice = register({
  * been eaten and upstream cannot decode it either. That fifth capture is kept as a test case for the rejection.
  *
  * The volume is seven BCD nibbles of US gallons, and the nibble after them is a flag whose meaning upstream
- * marks as unconfirmed — so it is reported as a raw value under its own name and nothing is claimed about it.
+ * marks as unconfirmed, so it is reported as a raw value under its own name and nothing is claimed about it.
  */
 export const muellerHotrod: RDevice = register({
   num: 255,
@@ -784,13 +784,13 @@ export const muellerHotrod: RDevice = register({
  * an accurate description but an awkward implementation, because inverting the shared buffer changes what every
  * decoder after this one sees. Inversion is its own inverse and both the search and the extraction are bitwise,
  * so searching for the complement of that pattern and complementing the bytes that come back gives an identical
- * result while leaving the buffer alone. The complement turns out to be `aad391d391` — the same CC110x sync
+ * result while leaving the buffer alone. The complement turns out to be `aad391d391`, the same CC110x sync
  * word the pool remote and the Flowis meter use, which is a better description of what is on the air.
  *
  * Two message kinds share a header. The short one is verified and then deliberately dropped: its payload is
  * believed to be wind but nobody has confirmed it, and upstream reports nothing rather than guess.
  *
- * Humidity is exact — it was fitted to two real reference readings and hits both. Temperature is not. Upstream
+ * Humidity is exact, it was fitted to two real reference readings and hits both. Temperature is not. Upstream
  * says so plainly: two points is the bare minimum to fit the two parameters it uses, leaving nothing to check
  * the fit against, and 0.7 degrees per count is not a clean constant. The estimate is reported because upstream
  * reports it, and the byte it came from is reported beside it so the doubt stays visible.

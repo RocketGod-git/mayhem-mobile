@@ -1,5 +1,5 @@
 /**
- * HackRF over WebUSB — a port of app/.../usb/HackRfOne.kt (itself a port of libhackrf). Vendor control transfers
+ * HackRF over WebUSB, a port of app/.../usb/HackRfOne.kt (itself a port of libhackrf). Vendor control transfers
  * on endpoint 0, bulk IN for signed-int8 IQ. Handles HackRF One / One r9 / Pro ("Praline") / Jawbreaker / rad1o,
  * including the Pro's post-RECEIVE cache-busting re-tune (see the comment at the bring-up).
  */
@@ -243,11 +243,11 @@ export class HackRf implements Radio {
         for (let k = 0; k < buf.length; k++) { const v = buf[k]; if (v !== 0) nz++; if (v < mn) mn = v; if (v > mx) mx = v; }
         this.ev.onLog(`HackRF raw: n=${buf.length} nonZero=${nz}/${buf.length} min=${mn} max=${mx}`);
         if (nz === 0) {
-          this.ev.onLog('HackRF: RX is all-zero samples — front-end delivering nothing. Check antenna, a data-capable OTG cable / powered hub, and that a PortaPack is in HackRF mode.');
-          this.ev.onStatus('HackRF: no signal — check antenna / cable / PortaPack mode');
+          this.ev.onLog('HackRF: RX is all-zero samples, front-end delivering nothing. Check antenna, a data-capable OTG cable / powered hub, and that a PortaPack is in HackRF mode.');
+          this.ev.onStatus('HackRF: no signal, check antenna / cable / PortaPack mode');
         } else if (nz * 50 < buf.length) {
           // A HackRF Pro at HackRF One gain settings sits well below one ADC count: not a fault, just too little gain.
-          this.ev.onLog(`HackRF: RX level is under 1 LSB (${nz}/${buf.length} non-zero) — raise LNA / VGA (a HackRF Pro needs roughly 30 dB more VGA than a HackRF One).`);
+          this.ev.onLog(`HackRF: RX level is under 1 LSB (${nz}/${buf.length} non-zero), raise LNA / VGA (a HackRF Pro needs roughly 30 dB more VGA than a HackRF One).`);
         }
       }
       this.ev.onIq(buf);

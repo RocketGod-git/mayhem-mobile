@@ -157,7 +157,7 @@ class PocsagDecoder(private val log: PacketLog) : IqProcessor {
     }
 }
 
-/** BCH(31,21) error correction for POCSAG codewords — direct port of Mayhem's EccContainer (pocsag.cpp). */
+/** BCH(31,21) error correction for POCSAG codewords, direct port of Mayhem's EccContainer (pocsag.cpp). */
 class PocsagEcc {
     private val ecs = IntArray(21)
     private val bch = IntArray(1024)

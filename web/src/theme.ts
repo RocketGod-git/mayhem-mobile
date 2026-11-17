@@ -1,4 +1,4 @@
-/** Skins — the same set as the Android app (Mayhem firmware themes + Mayhem Mobile + Cyan). */
+/** Skins, the same set as the Android app (Mayhem firmware themes + Mayhem Mobile + Cyan). */
 export interface Skin { id: string; title: string; paper: string; surface: string; panel: string; line: string; ink: string; muted: string; accent: string; accent2: string; }
 
 export const SKINS: Skin[] = [

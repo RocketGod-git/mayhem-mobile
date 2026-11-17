@@ -4,7 +4,7 @@
  *
  * A header is sent three times with about a second of silence between copies. Each copy is decoded on its
  * own and the copies are then voted character by character, so a single hit in one copy does not cost the
- * alert, and only a result that fits the published structure exactly is reported — a half-parsed alert is
+ * alert, and only a result that fits the published structure exactly is reported, a half-parsed alert is
  * worse than none, because someone may act on it. The attention tone between the header and the voice
  * message is reported as well: it is what tells a listener an alert is real rather than a weekly test.
  *

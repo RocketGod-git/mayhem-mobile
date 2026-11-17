@@ -3,7 +3,7 @@
  *
  * The barbecue probes are the interesting ones: a TP12 carries two probes, one in the meat and one measuring
  * the air inside the lid, and sends both in a single frame. Most of this family checks itself with a
- * shift-register digest rather than a CRC — the same construction, generator 0x51, that ThermoPro has reused
+ * shift-register digest rather than a CRC, the same construction, generator 0x51, that ThermoPro has reused
  * across a decade of products.
  *
  * Ported from rtl_433 (GPL-2.0-or-later): `src/devices/thermopro_tp11.c`, `thermopro_tp12.c`,

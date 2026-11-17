@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 
-/** The app menu — Mayhem's launcher grid, HackRF-DSP apps only (no games, no PortaPack-hardware apps). */
+/** The app menu, Mayhem's launcher grid, HackRF-DSP apps only (no games, no PortaPack-hardware apps). */
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
     HAM("HAM", "SSB · CW · repeaters", "Receive"),
     AUDIO("Audio", "WFM · NFM · AM · SSB", "Receive"),

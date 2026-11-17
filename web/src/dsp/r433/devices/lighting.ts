@@ -2,12 +2,12 @@
  * Lighting, ceiling fans and wireless switches, plus two Philips thermometers that came with clock radios.
  *
  * The two Philips sensors are grouped here because they are the same product line rather than the same
- * protocol — they share nothing but a manufacturer and a pair of pulse widths.
+ * protocol, they share nothing but a manufacturer and a pair of pulse widths.
  *
  * None of these six publishes a raw capture, which is unusual: every other batch in this app has had at least
  * one frame of real radio to check against. The one exception is the AJ7010, whose file prints five decoded
  * rows in binary with the temperature and channel each was recorded at. Those are used directly, and they turn
- * out to disagree with the conversion the same file applies — which upstream already suspects, marking that
+ * out to disagree with the conversion the same file applies, which upstream already suspects, marking that
  * line "this is very likely wrong". The formula is reproduced as written and the disagreement pinned, because
  * inventing a better fit from five points would be guessing with extra steps.
  *
@@ -59,7 +59,7 @@ const LIGHTWAVE_NIBBLE = (() => {
  * The pulse train carries seventy-one bits, because the seventy-second is a delimiter whose gap the
  * demodulator reads as the end of the message instead. Turning that back into ten nibbles takes three passes:
  * expand, strip, then look up. Each pass is done into its own buffer rather than by appending rows to the one
- * being decoded, which is how upstream does it — the result is identical and it leaves the shared buffer
+ * being decoded, which is how upstream does it, the result is identical and it leaves the shared buffer
  * alone.
  *
  * There is no checksum at all. The only thing standing between this and noise is that all ten bytes have to
@@ -134,8 +134,8 @@ const PHILIPS_CHANNEL = [2, 0, 1, 0, 3];
 /**
  * A clock-radio thermometer that sends its reading three times in one burst and lets the receiver vote.
  *
- * The three copies are not aligned the same way — the middle one sits four bits out of step with the other
- * two — so each has to be reassembled before they can be compared. The decoder then takes each byte by
+ * The three copies are not aligned the same way, the middle one sits four bits out of step with the other
+ * two, so each has to be reassembled before they can be compared. The decoder then takes each byte by
  * majority across the three, which means a burst can survive damage in any one copy. That is the interesting
  * property here, and the tests exercise it directly by corrupting one copy and expecting a reading anyway.
  *
@@ -340,7 +340,7 @@ export const philipsAj7010: RDevice = register({
 /**
  * Kinetic wall switches: pressing one generates its own power, so there is no battery and no battery field.
  *
- * A press and a release both transmit, and the release carries no button number — so it is recognized and
+ * A press and a release both transmit, and the release carries no button number, so it is recognized and
  * dropped rather than reported as a press of button 192.
  *
  * Upstream ships this disabled because it needs a receiver tuned to 433.4 MHz at a sample rate this app does
@@ -390,7 +390,7 @@ const MARTEC_SPEED = ['off', 'high', 'medium', 'low'];
 /**
  * A ceiling fan remote that keeps the fan's state itself and sends the whole setting on every press.
  *
- * The frame is twenty-two bits, which is neither a whole number of bytes nor aligned to one — reading it from
+ * The frame is twenty-two bits, which is neither a whole number of bytes nor aligned to one, reading it from
  * the second bit is what puts the checksum's four nibbles on boundaries. That checksum is only four bits wide
  * and an all-zero payload satisfies it trivially, so a separate guard throws that case out; no real button
  * press produces it.

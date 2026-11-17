@@ -1,7 +1,7 @@
 /**
  * Running every decoder over every burst.
  *
- * There is no signal analysis here at all — that is the point of the design. A burst arrives, and each protocol
+ * There is no signal analysis here at all, that is the point of the design. A burst arrives, and each protocol
  * in turn slices it with its own timings and offers the resulting bits to its own decoder. Most decoders reject
  * it in their first few lines, on length or on a checksum. Whichever ones recognize it produce readings.
  *
@@ -53,7 +53,7 @@ export interface R433Stats {
   ook: number;
   fsk: number;
   decoded: number;
-  /** Transmissions a decoder claimed but whose checksum failed — a device in range, too weak to read. */
+  /** Transmissions a decoder claimed but whose checksum failed, a device in range, too weak to read. */
   badChecksum: number;
   /**
    * Which protocols those near misses belonged to, and how many each.
@@ -61,7 +61,7 @@ export interface R433Stats {
    * This is the most useful diagnostic the receiver has and it used to be thrown away. A frame that reaches a
    * decoder's checksum got through the length and the header and the sanity checks first, so the protocol is
    * almost certainly right and only the last few bits were wrong. Seeing "LaCrosse-TX141 ×6" means there is a
-   * LaCrosse out there and the aerial or the gain is not quite good enough for it; seeing nothing but tire
+   * LaCrosse out there and the antenna or the gain is not quite good enough for it; seeing nothing but tire
    * sensors means there is genuinely nothing else transmitting nearby, which is a different problem entirely.
    */
   near: Record<string, number>;

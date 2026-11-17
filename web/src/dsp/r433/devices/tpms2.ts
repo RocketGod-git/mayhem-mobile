@@ -51,7 +51,7 @@ export const tpmsSchraderMotorcycle: RDevice = register({
 
 /**
  * The aftermarket sensors sold for older General Motors vehicles. A long run of zeroes opens the frame, and
- * the identity is forty bits — wider than most, because these are programmed rather than factory-assigned.
+ * the identity is forty bits, wider than most, because these are programmed rather than factory-assigned.
  */
 export const tpmsGm: RDevice = register({
   num: 275,

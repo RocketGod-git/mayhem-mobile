@@ -23,7 +23,7 @@ import com.rocketgod.mayhem.AppUpdates
  * Shown once per launch when something newer exists. Skip silences that exact build only.
  *
  * A Play install cannot be updated by the app itself, so UPDATE opens Play's own update flow; a sideload
- * opens the release page. The dialog is the same either way — only the button's destination differs.
+ * opens the release page. The dialog is the same either way, only the button's destination differs.
  */
 @Composable
 fun UpdateDialog() {

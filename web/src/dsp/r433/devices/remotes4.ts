@@ -4,15 +4,15 @@
  * A mixed batch held together by what these devices are: things around a building that announce themselves
  * when something happens. Two of them are worth calling out.
  *
- * The Chamberlain motion sensor turns out to carry Security+ 2.0's payload scrambling verbatim — the same
- * order and inversion tables, the same interleaving, the same base-three counter — wrapped in an entirely
+ * The Chamberlain motion sensor turns out to carry Security+ 2.0's payload scrambling verbatim, the same
+ * order and inversion tables, the same interleaving, the same base-three counter, wrapped in an entirely
  * different transport for an entirely different product. That permutation is imported from `secplus.ts`
  * rather than written out again.
  *
  * The Elero blind remote is the most heavily wrapped thing in this app: the whole frame is whitened by a shift
  * register before it is even bits, and the eight command bytes inside are then put through a fixed nibble
- * substitution and two rounds of key subtraction. None of that is a secret — it is obfuscation, reversible by
- * anyone who reads it — but it does mean nothing is legible until several layers come off.
+ * substitution and two rounds of key subtraction. None of that is a secret, it is obfuscation, reversible by
+ * anyone who reads it, but it does mean nothing is legible until several layers come off.
  *
  * Three of these carry no integrity check at all and rtl_433 ships them switched off. Here they still run,
  * with their readings marked as worth a second look; what stands in for a checksum is noted on each.
@@ -39,7 +39,7 @@ const bitAt = (b: Uint8Array, i: number) => (b[i >> 3] >> (7 - (i & 7))) & 1;
 /**
  * A motion sensor that speaks a garage door opener's language.
  *
- * The frame carries two forty-bit halves, each scrambled exactly as Security+ 2.0 scrambles its own — which is
+ * The frame carries two forty-bit halves, each scrambled exactly as Security+ 2.0 scrambles its own, which is
  * how one Chamberlain product's payload encoding ended up inside another. Together they give a forty-bit value
  * that stays fixed for a given sensor and a twenty-eight bit counter that moves every time.
  *
@@ -123,11 +123,11 @@ export const chamberlainCwpirc: RDevice = register({
  * An oil tank gauge that reports a single digit, not a depth.
  *
  * The older probe-based Watchman shows nought to nine or "F" for full, and that is all it transmits. Its
- * serial number is stored backwards across the whole twenty-four bits — not byte by byte — and then read as
+ * serial number is stored backwards across the whole twenty-four bits, not byte by byte, and then read as
  * eight octal digits, which is what makes the number printed on the case come back out.
  *
  * There is no checksum. Four two-bit markers are woven through the frame and all four must read "10", which
- * together with the run-in and a plausible level is the whole of its integrity — so no `mic` is claimed.
+ * together with the run-in and a plausible level is the whole of its integrity, so no `mic` is claimed.
  *
  * The pulse widths below are upstream's best estimate: its bit-level decoding is confirmed against eighteen
  * real messages from three devices, but nobody has yet got a raw capture through a pulse slicer cleanly.
@@ -208,7 +208,7 @@ const NICE_LEAF = [
  * Unwind the Nice scrambler.
  *
  * Six bytes are shuffled, complemented, and then twice run through a table-driven exclusive-or whose key
- * depends on the byte being transformed — so the serial number and the rolling code come out together, and
+ * depends on the byte being transformed, so the serial number and the rolling code come out together, and
  * neither can be read without doing the whole thing. Works in place; the caller reads the serial out of the
  * array afterwards and the code from the return value.
  */
@@ -305,7 +305,7 @@ const MARKISOL_CONTROL = [
  * whole thing is shifted back before anything can be read. The bytes are then complemented and reversed, and
  * what makes it check out is that all five sum to one.
  *
- * The channel, zone and control are interleaved rather than laid out in order — two of the control's four bits
+ * The channel, zone and control are interleaved rather than laid out in order, two of the control's four bits
  * and one of the zone's two live in a different byte from the rest.
  */
 export const markisol: RDevice = register({
@@ -364,7 +364,7 @@ const DICKERT_STATE = ['-', '0', '?', '+'];
 /**
  * A garage remote with ten physical switches inside it.
  *
- * There is no identity chip and no rolling code — whoever installed it opened the case and set ten three-way
+ * There is no identity chip and no rolling code, whoever installed it opened the case and set ten three-way
  * switches, and those settings *are* the code. Reporting them as the positions they are set to is more useful
  * than a number, because that is what someone would read off the hardware.
  *
@@ -420,7 +420,7 @@ const ELERO_NIBBLE = [
  *
  * This is obfuscation rather than encryption: a fixed nibble substitution, two nibble-wise subtractions with a
  * key that walks down in steps, and an exclusive-or in between using the block's own first two bytes. Nothing
- * about it is secret, and it is entirely reversible — which is how anyone worked out that one byte of the
+ * about it is secret, and it is entirely reversible, which is how anyone worked out that one byte of the
  * result says up, stop or down.
  */
 function eleroUnwrap(m: Uint8Array): void {
