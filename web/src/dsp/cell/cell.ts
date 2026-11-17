@@ -39,6 +39,8 @@ export interface CellSnap {
   profile: { lo: number; step: number; db: number[] } | null; floorDb: number;
   cells: CellRow[]; alerts: WarningMessage[]; log: LogRow[]; dci: number; tbOk: number;
   pss: { nid2: number; score: number }[];
+  /** A cell found off the tuned center (its own center), for the scan to retune to. */
+  offCenter: { hz: number; pci: number; ms: number } | null;
 }
 export interface CellState { v: 1; cells: Obj[]; alerts: WarningMessage[]; log: LogRow[] }
 
@@ -55,6 +57,8 @@ interface Cell {
 }
 
 const BLOCK_MS = 40;
+/** Raster offsets tried when nothing is found on the tuned center, nearest first. */
+const RASTER = [100_000, -100_000, 200_000, -200_000, 300_000, -300_000];
 const DUPLEX_PSS = (num: Numerology, tdd: boolean) => { if (!tdd) return num.pssOffset; const [o, cp] = num.symbol(2); return num.subframe + o + cp; };
 const sssLag = (num: Numerology, tdd: boolean) => tdd ? 3 * num.nfft + 2 * num.cpn + num.cp0 : num.nfft + num.cpn;
 
@@ -75,6 +79,7 @@ export class CellProcessor implements IqProcessor {
   private xr = new Float32Array(0); private xi = new Float32Array(0);
   private lastCenter = NaN; private cfo = 0; private cfoKnown = false;
   private blocks = 0; private lastBlockMs = 0; private cpuMs = 0; private lte = false; private cpStrength = 0; private dci = 0; private tbOk = 0;
+  private offCenter: CellSnap['offCenter'] = null;
   private profile: CellSnap['profile'] = null; private floorDb = 0; private pss: { nid2: number; score: number }[] = [];
   private lastPost = 0; private dirty = false; private nextAbs = 0;
   private readonly specRe = new Float32Array(1024); private readonly specIm = new Float32Array(1024); private readonly win = hann(1024);
@@ -160,7 +165,7 @@ export class CellProcessor implements IqProcessor {
       }
       if (h.cfo) rotate(yr, yi, -h.cfo, LOW_FS);
     }
-    if (!found.length) { this.cfoKnown = false; this.nextAbs = this.abs + Math.round(fs * 0.04); return; }
+    if (!found.length) { this.cfoKnown = false; this.rasterSearch(xr, xi, cp.hz, now); this.nextAbs = this.abs + Math.round(fs * 0.04); return; }
     // the whole carrier in the span: SI-RNTI traffic
     rotate(xr, xi, this.cfo, fs);
     for (const f of found) {
@@ -231,8 +236,40 @@ export class CellProcessor implements IqProcessor {
     return null;
   }
 
-  private cellFor(pci: number, tdd: boolean, now: number): Cell {
-    const hz = this.centerHz, key = `${Math.round(hz / 1e5)}:${pci}`;
+  /**
+   * No cell on the tuned center: the carrier may sit a few 100 kHz raster steps away (a center guessed from the
+   * power profile). Each raster offset up to 300 kHz is mixed to DC and searched on two half-frames; a PSS that
+   * leads to two agreeing MIB frames registers the cell at its own center, which is then offered as offCenter so
+   * the scan retunes there.
+   */
+  private rasterSearch(xr: Float32Array, xi: Float32Array, cpHz: number, now: number): void {
+    const fs = this.rate, D = this.D, taps = 16 * D + 1, shortN = (2 * 9600 + 128) * D + taps;
+    if (xr.length < shortN) return;
+    for (const d of RASTER) {
+      const shift = cpHz + Math.round((d - cpHz) / 15_000) * 15_000;
+      const sr = xr.slice(0, shortN), si = xi.slice(0, shortN);
+      rotate(sr, si, shift, fs);
+      const [ar, ai] = decimate(sr, si, fs), hit = pssSearch(ar, ai, 0, [0]).filter(h => h.score > 6)[0];
+      if (!hit) continue;
+      const fr = xr.slice(), fi = xi.slice();
+      rotate(fr, fi, shift, fs);
+      const [yr, yi] = decimate(fr, fi, fs), map = halfFrameMap(yr, yi, hit.nid2, hit.pos);
+      if (map.length < 3) continue;
+      const hz = Math.round((this.centerHz + shift) / 100_000) * 100_000;
+      for (const tdd of [false, true]) for (const [pci, evenSf0] of this.pciCandidates(yr, yi, hit.nid2, map, tdd)) {
+        const r = this.readMib(yr, yi, pci, map, evenSf0, tdd, false);
+        if (!r) continue;
+        const cell = this.cellFor(pci, tdd, now, hz);
+        cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = this.centerHz + shift - hz; cell.pssScore = hit.score;
+        this.offCenter = { hz, pci, ms: now };
+        this.addLog(now, hz, pci, 'CELL', `found ${((hz - this.centerHz) / 1e3).toFixed(0)} kHz from the tuned center`, '');
+        return;
+      }
+    }
+  }
+
+  private cellFor(pci: number, tdd: boolean, now: number, at = this.centerHz): Cell {
+    const hz = at, key = `${Math.round(hz / 1e5)}:${pci}`;
     let c = this.cells.get(key);
     if (!c) {
       const b = bandOf(hz);
@@ -428,7 +465,7 @@ export class CellProcessor implements IqProcessor {
       nextMs: this.nextAbs > this.abs ? Math.round((this.nextAbs - this.abs) / this.rate * 1000) : 0,
       profile: this.profile, floorDb: this.floorDb,
       cells: [...this.cells.values()].sort((a, b) => b.lastMs - a.lastMs).map(c => this.row(c)),
-      alerts: this.warnings.messages(), log: this.log.slice(-300), dci: this.dci, tbOk: this.tbOk, pss: this.pss,
+      alerts: this.warnings.messages(), log: this.log.slice(-300), dci: this.dci, tbOk: this.tbOk, pss: this.pss, offCenter: this.offCenter,
     };
   }
   /** Every decoded field of one cell, for its detail view. */

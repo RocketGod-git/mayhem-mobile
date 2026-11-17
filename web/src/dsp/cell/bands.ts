@@ -64,3 +64,15 @@ export function findCarriers(p: Profile, raster = 100_000): CarrierGuess[] {
   const seen = new Set<number>();
   return out.filter(c => !seen.has(c.centerHz) && (seen.add(c.centerHz), true));
 }
+
+/**
+ * The carriers a scan visits in [lo, hi]: exact centers first (SIB5 inter-frequency EARFCNs and cells already heard),
+ * then the power-profile guesses that are not within 300 kHz of one of them (a raster search covers that much).
+ */
+export function scanCandidates(lo: number, hi: number, guesses: CarrierGuess[], exact: number[]): CarrierGuess[] {
+  const out: CarrierGuess[] = [];
+  for (const hz of exact) if (hz >= lo && hz <= hi && !out.some(c => Math.abs(c.centerHz - hz) < 50_000)) out.push({ centerHz: hz, occupiedMhz: 0, nrb: 0, levelDb: 0 });
+  const n = out.length;
+  for (const g of guesses) if (g.centerHz >= lo && g.centerHz <= hi && !out.slice(0, n).some(c => Math.abs(c.centerHz - g.centerHz) <= 300_000) && !out.some(c => c.centerHz === g.centerHz)) out.push(g);
+  return out;
+}
