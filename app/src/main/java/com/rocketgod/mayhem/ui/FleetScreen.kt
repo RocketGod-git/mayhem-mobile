@@ -22,6 +22,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -72,6 +75,8 @@ import kotlin.math.max
 /** One color per system, used on the cards, the map, the feed and the frequency list. */
 private val FLEET_COLORS = listOf(0xFF4C8DFF, 0xFFFFAF00, 0xFF3DDC84, 0xFFFF5BD2, 0xFF00D5FF, 0xFFFF7A45, 0xFFB18CFF, 0xFFE8E14A, 0xFFFF5B52, 0xFF52FFB8).map { Color(it) }
 private val VIEWS = listOf("SYSTEMS", "MAP", "GRANTS", "FREQS", "LOG")
+/** On a wide screen the map has the big pane, so it is not a tab. */
+private val WIDE_VIEWS = listOf(0, 2, 3, 4)
 
 private fun mhz(hz: Long, d: Int = 5): String = if (hz > 0) "%.${d}f".format(java.util.Locale.US, hz / 1e6) else "-"
 private fun mhz(hz: Double, d: Int = 5): String = if (hz > 0) "%.${d}f".format(java.util.Locale.US, hz / 1e6) else "-"
@@ -81,6 +86,7 @@ private fun flAgo(ms: Long): String = when {
     ms < 3_600_000 -> "${ms / 60_000} min"
     else -> "${ms / 3_600_000} h"
 }
+private fun flAgoText(ms: Long): String = flAgo(ms).let { if (it == "now") it else "$it ago" }
 private fun flClock(ms: Long): String = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(ms))
 private fun liveCarriers(s: FleetSnap, now: Long) = s.carriers.filter { it.hz > s.spanLo && it.hz < s.spanHi && now - it.lastMs < 4_000 }
 
@@ -118,6 +124,9 @@ fun FleetScreen(accent: Color) {
     val mapItems = pins.map { GeoItem(it.key, it.lat!!, it.lon!!, "${it.id}", GeoItem.Kind.STATION, color = colorOf(it.sys).toArgb()) }
     val trails = s?.units.orEmpty().filter { it.trail.size > 1 }.map { u -> GeoShape(u.key, u.trail.map { it.lat to it.lon }, true, colorOf(u.sys).toArgb(), sel = sel == "unit:${u.key}") }
     val wf = waterfallOn(MayhemApp.FLEET, phoneDefault = false)
+    val wide = d.wide
+    LaunchedEffect(wide) { if (wide) { if (view == 1) view = 0; full = false } }
+    val tabs = if (wide) WIDE_VIEWS else VIEWS.indices.toList()
 
     fun pick(k: String) { sel = if (sel == k) null else k }
     fun export() {
@@ -130,12 +139,31 @@ fun FleetScreen(accent: Color) {
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         val counts = listOf("${s?.systems?.size ?: 0}", "${pins.size}", "${s?.grants?.size ?: 0}", "${s?.let { liveCarriers(it, now).size } ?: 0}", "${logSnap.total}")
-        Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
-            SegBar(VIEWS.mapIndexed { i, v -> "$v · ${counts[i]}" }, view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
-            ToggleBox("EXPORT", false, accent, Modifier.fillMaxHeight()) { export() }
-            ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent, Modifier.fillMaxHeight()) { held = if (held == null) live else null }
-            IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { Apps.fleet.clear(); Apps.fleetLog.clear(); held = null; sel = null }
-            if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
+        Row(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.Top) {
+            FlSeg(tabs.map { "${VIEWS[it]} ${counts[it]}" }, tabs.indexOf(view), accent, Modifier.weight(1f)) { view = tabs[it] }
+            ToggleBox("EXPORT", false, accent) { export() }
+            ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent) { held = if (held == null) live else null }
+            IconBox(ClearIcon, "Clear") { Apps.fleet.clear(); Apps.fleetLog.clear(); held = null; sel = null }
+            if (withFull && !wide) IconBox(FullscreenIcon, "Full screen") { full = true }
+        }
+    }
+
+    @Composable
+    fun fleetMap(modifier: Modifier) {
+        Box(modifier) {
+            val pu = pins.firstOrNull { "unit:${it.key}" == sel }
+            GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = fix, selected = pu?.key, layers = GeoLayers(shapes = trails),
+                start = remember { mapStart(Geo.fix.value) }, focus = pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true) { pick("unit:$it") }
+            if (pins.isEmpty()) Text(if (s != null && s.units.any { it.posMs > 0 } && !s.ref) "unit positions need your location: allow it to resolve them" else "no unit positions on the air yet",
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
+        }
+    }
+
+    @Composable
+    fun detail(modifier: Modifier) {
+        if (s != null && sel != null) {
+            val det = fleetDetail(s, sel!!, now, if (wide) 1 else view)
+            if (det != null) FleetDetailPanel(det, accent, modifier, onMap = if (det.mapKey != null) ({ if (!wide) view = 1; focusKey++ }) else null, onPick = ::pick) { sel = null }
         }
     }
 
@@ -145,16 +173,11 @@ fun FleetScreen(accent: Color) {
             val gap = Arrangement.spacedBy(d.dp(8f))
             when (view) {
                 0 -> if (s == null || s.systems.isEmpty()) EmptyState("fleet", Modifier.fillMaxSize().panel(), accent)
-                    else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = gap) {
+                    // two to a row where the column holds them
+                    else LazyVerticalGrid(GridCells.Adaptive(d.dp(if (wide) 330f else 600f)), Modifier.fillMaxSize(), verticalArrangement = gap, horizontalArrangement = gap) {
                         items(s.systems, key = { it.key }) { x -> SystemCard(x, s, now, sel == "sys:${x.key}", colorOf, ::pick) }
                     }
-                1 -> Box(Modifier.fillMaxSize()) {
-                    val pu = pins.firstOrNull { "unit:${it.key}" == sel }
-                    GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = fix, selected = pu?.key, layers = GeoLayers(shapes = trails),
-                        start = remember { mapStart(Geo.fix.value) }, focus = pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey) { pick("unit:$it") }
-                    if (pins.isEmpty()) Text(if (s != null && s.units.any { it.posMs > 0 } && !s.ref) "unit positions need your location: allow it to resolve them" else "no unit positions on the air yet",
-                        color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
-                }
+                1 -> fleetMap(Modifier.fillMaxSize())
                 2 -> if (s == null) EmptyState("fleet", Modifier.fillMaxSize().panel(), accent) else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                     item(key = "bars") { TgBars(s, now, colorOf, ::pick) }
                     if (s.grants.isEmpty()) item(key = "none") { FlDim("no grants yet · a quiet system may go minutes between calls") }
@@ -166,22 +189,19 @@ fun FleetScreen(accent: Color) {
                     }
                 else -> LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "watching for control channels…", total = logSnap.total, accent = accent)
             }
-            if (s != null && sel != null) {
-                val det = fleetDetail(s, sel!!, now, view)
-                if (det != null) FleetDetailPanel(det, accent, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
-                    onMap = if (det.mapKey != null) ({ view = 1; focusKey++ }) else null, onPick = ::pick) { sel = null }
-            }
+            if (!wide) detail(Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)))
         }
     }
 
     PacketFrame(accent, Apps.fleetLog, tag = "FLEET", title = "P25 · DMR TRUNKING", roomy = true, waterfall = wf,
+        widePane = { m -> fleetMap(m) },
         onWaterfall = { Apps.setWaterfall(MayhemApp.FLEET, !wf) },
         lamp = {
             if (s != null && s.systems.isNotEmpty()) Lamp("${s.systems.size} SYSTEM${if (s.systems.size == 1) "" else "S"}", Palette.ok)
             else Lamp("LISTENING", Palette.accent2, blink = true)
         },
         controls = {
-            SegBar(listOf("AUTO") + FleetProcessor.BANDS.map { if (it.id == "TBAND") "T-BAND" else it.id }, (listOf("AUTO") + FleetProcessor.BANDS.map { it.id }).indexOf(band), accent, Modifier.fillMaxWidth()) {
+            FlSeg(listOf("AUTO") + FleetProcessor.BANDS.map { if (it.id == "TBAND") "T-BAND" else it.id }, (listOf("AUTO") + FleetProcessor.BANDS.map { it.id }).indexOf(band), accent, Modifier.fillMaxWidth()) {
                 Apps.setFleetBand(if (it == 0) "AUTO" else FleetProcessor.BANDS[it - 1].id)
             }
             if (kind != Radio.Kind.RTLSDR) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
@@ -194,6 +214,8 @@ fun FleetScreen(accent: Color) {
             Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                 FleetHead(s, scan, now, accent)
                 switcher(true, Modifier.fillMaxWidth())
+                // a wide screen docks the details above the cards
+                if (wide) detail(Modifier.fillMaxWidth())
                 stage(Modifier.fillMaxWidth().weight(1f))
             }
         })
@@ -213,7 +235,8 @@ private fun FlDim(text: String, modifier: Modifier = Modifier) {
 @Composable
 private fun FleetHead(s: FleetSnap?, scan: Apps.FleetScan, now: Long, accent: Color) {
     val d = rememberDims()
-    val w = scan.windows.getOrNull(scan.idx); val band = FleetProcessor.BANDS.firstOrNull { it.id == w?.band }
+    val w = scan.windows.getOrNull(scan.idx); val c = s?.centerHz ?: w?.hz ?: 0L
+    val band = FleetProcessor.BANDS.firstOrNull { c >= it.lo - 2_000_000 && c <= it.hi + 2_000_000 } ?: FleetProcessor.BANDS.firstOrNull { it.id == w?.band }
     val scanText = if (scan.windows.size > 1) "${if (Apps.fleetBand.value == "AUTO") "AUTO SCAN" else "SCAN"} · ${scan.idx + 1}/${scan.windows.size} · ${if (scan.found) "STAYING" else "NEXT"} ${max(0L, (scan.dwellEnd - now + 999) / 1000)} s" else "HOLDING"
     Column(verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
@@ -419,11 +442,11 @@ private fun FreqLine(c: CarrierRow, s: FleetSnap, now: Long, selected: Boolean, 
         Box(Modifier.size(d.dp(8f)).background(if (col == Color.Transparent) Palette.line else col, CircleShape))
         Text(mhz(c.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), modifier = Modifier.width(d.dp(78f)))
         Column(Modifier.weight(1f)) {
-            Text((c.cls.ifEmpty { if (c.decoding) "listening" else "-" }) + (if (c.callsign.isNotEmpty()) " · ${c.callsign}" else ""), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(listOf(c.role.uppercase() + if (c.tdma) " TDMA" else "", id).filter { it.isNotBlank() }.joinToString(" · "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 1)
+            Text((c.cls.ifEmpty { if (c.decoding) "LISTENING" else "NOT HEARD YET" }) + (if (c.callsign.isNotEmpty()) " · ${c.callsign}" else ""), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f))
+            Text(listOf(c.role.uppercase() + if (c.tdma) " TDMA" else "", id).filter { it.isNotBlank() }.joinToString(" · "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f))
         }
         FlBar((2 * c.levelDb / 100).toFloat(), if (live) Palette.ok else Palette.muted, Modifier.width(d.dp(40f)).height(d.dp(5f)))
-        Text("%.0f".format(java.util.Locale.US, c.levelDb), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(22f)))
+        Text("%.0f dB".format(java.util.Locale.US, c.levelDb), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
         Text(if (live) (if (c.decoding) "DECODING" else "LIVE") else if (inSpan) flAgo(age) else "OUT OF SPAN", color = if (c.decoding && live) Palette.ok else Palette.muted,
             fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1)
     }
@@ -444,16 +467,16 @@ private fun fleetDetail(s: FleetSnap, sel: String, now: Long, view: Int): FleetD
             val pos = if (u.lat != null && u.lon != null) "%.5f, %.5f".format(java.util.Locale.US, u.lat, u.lon) + (if (u.posVerified) "" else " · position (CRC unverified)")
                 else if (u.posMs > 0) (if (s.ref) "-" else "needs your location to resolve") else "none on the air"
             val f = listOf("UNIT ID" to "${u.id} (0x${Integer.toHexString(u.id).uppercase()})", "SYSTEM" to sysLabel(u.sys), "SITE" to u.site.ifEmpty { "-" }, "POSITION" to pos,
-                "LAST POSITION" to (if (u.posMs > 0) "${flClock(u.posMs)} · ${flAgo(now - u.posMs)} ago" else "-"), "TALKGROUPS" to u.groups.joinToString(", ").ifEmpty { "-" },
+                "LAST POSITION" to (if (u.posMs > 0) "${flClock(u.posMs)} · ${flAgoText(now - u.posMs)}" else "-"), "TALKGROUPS" to u.groups.joinToString(", ").ifEmpty { "-" },
                 "GRANTS" to "${u.grants}", "HEARD ON" to u.carriers.joinToString(" · ") { k -> mhz(s.carriers.firstOrNull { it.key == k }?.hz ?: k) },
-                "FIRST HEARD" to flClock(u.firstMs), "LAST HEARD" to "${flClock(u.lastMs)} · ${flAgo(now - u.lastMs)} ago")
+                "FIRST HEARD" to flClock(u.firstMs), "LAST HEARD" to "${flClock(u.lastMs)} · ${flAgoText(now - u.lastMs)}")
             val hist = full.reversed().map { r -> Triple(flClock(r.ms), "${r.kind} · ${mhz(r.hz)}" + (if (r.lat != null && r.lon != null) " · %.5f, %.5f".format(java.util.Locale.US, r.lat, r.lon) else "") + "\n${r.text}", r.hex) }
             return FleetDetail("${u.id}", "UNIT", f, histLabel = "EVERY REPORT", hist = hist, mapKey = if (u.lat != null && view != 1) u.key else null)
         }
         "tg" -> {
             val t = s.tgs.firstOrNull { it.key == key } ?: return null
             val f = listOf("TALKGROUP" to "${t.tg} (0x${Integer.toHexString(t.tg).uppercase()})", "SYSTEM" to sysLabel(t.sys), "GRANTS" to "${t.grants} · ${t.recent.size} in 10 min",
-                "FIRST" to flClock(t.firstMs), "LAST" to "${flClock(t.lastMs)} · ${flAgo(now - t.lastMs)} ago")
+                "FIRST" to flClock(t.firstMs), "LAST" to "${flClock(t.lastMs)} · ${flAgoText(now - t.lastMs)}")
             return FleetDetail("TG ${t.tg}", "TALKGROUP", f, chipsLabel = "MEMBERS", chips = t.members.map { "$it" to "unit:${t.sys}/$it" }, histLabel = "HISTORY", grants = t.history)
         }
         "sys" -> {
@@ -472,7 +495,7 @@ private fun fleetDetail(s: FleetSnap, sel: String, now: Long, view: Int): FleetD
                 "NAC" to (if (c.nac >= 0) hx(c.nac, 3) else "-"), "COLOR CODE" to (if (c.cc >= 0) "${c.cc}" else "-"),
                 "LEVEL" to "%.1f dB over the floor (peak %.1f)".format(java.util.Locale.US, c.levelDb, c.peakDb), "ENVELOPE" to "%.2f (constant near 0, linear near 0.3)".format(java.util.Locale.US, c.envCv),
                 "EYE" to "%.2f".format(java.util.Locale.US, c.eye), "FRAMES" to "${c.frames}", "BLOCKS" to "${c.blocks} · ${c.crcOk} passed CRC", "CALLSIGN" to c.callsign.ifEmpty { "-" },
-                "LCN" to c.lcn.ifEmpty { "-" }, "ON AIR" to "${Math.round(c.onMs / 1000.0)} s", "FIRST HEARD" to flClock(c.firstMs), "LAST HEARD" to "${flClock(c.lastMs)} · ${flAgo(now - c.lastMs)} ago")
+                "LCN" to c.lcn.ifEmpty { "-" }, "ON AIR" to "${Math.round(c.onMs / 1000.0)} s", "FIRST HEARD" to flClock(c.firstMs), "LAST HEARD" to "${flClock(c.lastMs)} · ${flAgoText(now - c.lastMs)}")
             return FleetDetail(mhz(c.hz), "CARRIER", f)
         }
     }
@@ -514,6 +537,22 @@ private fun FleetDetailPanel(det: FleetDetail, accent: Color, modifier: Modifier
                     }
                 }
             }
+        }
+    }
+}
+
+/** Choices sized to their labels that wrap onto another line rather than clip. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FlSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(9f))
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        labels.forEachIndexed { i, label ->
+            val on = i == selected
+            Text(label, color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
+                modifier = Modifier.clip(shape).background(if (on) accent else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape).clickable { onPick(i) }
+                    .padding(horizontal = d.dp(10f), vertical = d.dp(7f)))
         }
     }
 }
