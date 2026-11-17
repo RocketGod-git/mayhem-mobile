@@ -13,6 +13,8 @@ export interface GeoItem { id: string; lat: number; lon: number; heading?: numbe
 export interface RadarCell { lat: number; lon: number; dLat: number; dLon: number; cols: number; rows: number; bins: Uint8Array; colors?: string[] }
 /** A hazard drawn on the map: an area or a line, colored, clickable (its id goes to onPick). */
 export interface GeoShape { id: string; pts: [number, number][]; line: boolean; color: string; dashed?: boolean; label?: string; sel?: boolean }
+/** A picture laid on the map between its corners (traffic tiles, a radar image), under the markers. */
+export interface GeoImage { id: string; url: string; north: number; south: number; west: number; east: number; opacity?: number }
 export interface GeoOpts {
   home?: { lat: number; lon: number } | null;
   onPick: (id: string) => void;
@@ -85,6 +87,7 @@ export class GeoMap {
   private paths: any[] = []; private pathDefs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
   private radar: any = null; private radarCells: RadarCell[] = []; private radarColors: string[] = [];
   private shapes: any[] = []; private shapeDefs: GeoShape[] = []; private tapMark: any = null;
+  private readonly images = new Map<string, { layer: any; url: string }>(); private imageDefs: GeoImage[] = [];
   private readonly btn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
@@ -107,6 +110,7 @@ export class GeoMap {
     if (this.pathDefs.length) this.setPaths(this.pathDefs);
     if (this.radarCells.length) this.setRadar(this.radarCells, this.radarColors);
     if (this.shapeDefs.length) this.setShapes(this.shapeDefs);
+    if (this.imageDefs.length) this.setImages(this.imageDefs);
   }
   get ready(): boolean { return !!this.map; }
   setFollow(on: boolean): void { this.follow = on; this.btn.classList.toggle('on', on); this.opts.onFollow?.(on); if (on) this.fit(); }
@@ -261,6 +265,24 @@ export class GeoMap {
     if (!at) { if (this.tapMark) { this.map.removeLayer(this.tapMark); this.tapMark = null; } return; }
     if (!this.tapMark) this.tapMark = L.circleMarker(at, { radius: 7, color: currentSkin().accent, weight: 2, fillOpacity: 0, interactive: false }).addTo(this.map);
     else this.tapMark.setLatLng(at);
+  }
+  /** Pictures between their corners, kept by id (a new url swaps the picture in place); replaced as a set. */
+  setImages(defs: GeoImage[]): void {
+    this.imageDefs = defs;
+    if (!this.map) return;
+    const live = new Set<string>();
+    for (const d of defs) {
+      live.add(d.id);
+      const b = [[d.south, d.west], [d.north, d.east]], e = this.images.get(d.id);
+      if (e) { if (e.url !== d.url) { e.layer.setUrl(d.url); e.url = d.url; } e.layer.setBounds(b); e.layer.setOpacity(d.opacity ?? 0.85); }
+      else this.images.set(d.id, { url: d.url, layer: L.imageOverlay(d.url, b, { opacity: d.opacity ?? 0.85, interactive: false }).addTo(this.map) });
+    }
+    for (const [id, e] of this.images) if (!live.has(id)) { this.map.removeLayer(e.layer); this.images.delete(id); }
+  }
+  /** Show a box (south-west to north-east), unless the map is following its pins. */
+  showBounds(north: number, south: number, west: number, east: number): void {
+    if (!this.map) return;
+    this.map.fitBounds([[south, west], [north, east]], { padding: [20, 20] });
   }
   /** Straight lines between pairs of points (contacts from home). */
   setLines(lines: [[number, number], [number, number]][]): void {
