@@ -23,6 +23,7 @@ import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { FleetProcessor } from './dsp/fleet/fleet.js';
+import { CellProcessor } from './dsp/cell/cell.js';
 import { SondeProcessor } from './dsp/sonde/front.js';
 import { UatProcessor } from './dsp/uat/demod.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
@@ -128,6 +129,10 @@ vdl2.onFrame = f => emit({ type: 'vdl2frame', f });
 const trains = new TrainsProcessor(emit);
 /** Fleet: P25 and DMR trunking control channels across the span. */
 const fleet = new FleetProcessor(emit);
+/** Cell: LTE system information and emergency alerts (SI-RNTI only). What it heard is saved by the page. */
+const cell = new CellProcessor(emit);
+let cellSaved = -1;
+setInterval(() => { if (cell.version !== cellSaved) { cellSaved = cell.version; emit({ type: 'cellState', state: cell.exportState() }); } }, 5000);
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);
 /** UAT on 978 MHz: FIS-B weather uplinks and aircraft downlinks. */
@@ -357,6 +362,12 @@ self.onmessage = (e: MessageEvent) => {
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
+    case 'cell':
+      if (m.cmd === 'detail') { const d = cell.detail(m.key as string); if (d) emit({ type: 'cellDetail', ...d }); }
+      else if (m.cmd === 'export') emit({ type: 'cellExport', ...cell.exportAll() });
+      else if (m.cmd === 'clearAlerts') cell.clearAlerts();
+      else if (m.cmd === 'restore') { cell.restore(m.state as Parameters<CellProcessor['restore']>[0]); cellSaved = cell.version; }
+      break;
     case 'sondeBand': sonde.setBand(m.id as string); break;
     case 'sondeHints': sonde.setHints(m.hz as number[]); break;
     // the channels local to the LoRa area in use (local.ts, on the main thread): the scanner places its channels again
@@ -411,6 +422,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'sonde': sonde.setCenter(centreHz); return sonde;
     case 'uat': return uat;
     case 'hd': hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; return hdApp;
+    case 'cell': cell.centerHz = centreHz; return cell;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'fleet': fleet.centerHz = centreHz; return fleet;
     case 'subghz': return ism;
@@ -617,6 +629,7 @@ function process(iq: Int8Array): void {
   if (p === vdl2) vdl2.centerHz = centreHz;
   if (p === trains) trains.centerHz = centreHz;
   if (p === fleet) fleet.centerHz = centreHz;
+  if (p === cell) cell.centerHz = centreHz;
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p === hdApp) { hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }

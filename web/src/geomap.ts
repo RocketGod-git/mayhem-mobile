@@ -88,8 +88,8 @@ export class GeoMap {
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
   private paths: any[] = []; private pathDefs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
   private radar: any = null; private radarCells: RadarCell[] = []; private radarColors: string[] = [];
-  private shapes: any[] = []; private shapeDefs: GeoShape[] = []; private tapMark: any = null;
   private readonly images = new Map<string, { layer: any; url: string }>(); private imageDefs: GeoImage[] = [];
+  private shapes: any[] = []; private shapeDefs: GeoShape[] = []; private tapMark: any = null; private fitPts: [number, number][] = [];
   private readonly btn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
@@ -113,6 +113,7 @@ export class GeoMap {
     if (this.radarCells.length) this.setRadar(this.radarCells, this.radarColors);
     if (this.shapeDefs.length) this.setShapes(this.shapeDefs);
     if (this.imageDefs.length) this.setImages(this.imageDefs);
+    if (this.fitPts.length) this.fitTo(this.fitPts);
   }
   get ready(): boolean { return !!this.map; }
   setFollow(on: boolean): void { this.follow = on; this.btn.classList.toggle('on', on); this.opts.onFollow?.(on); if (on) this.fit(); }
@@ -151,6 +152,12 @@ export class GeoMap {
     const same = pts.every(p => Math.abs(p[0] - pts[0][0]) < 1e-6 && Math.abs(p[1] - pts[0][1]) < 1e-6);
     if (same) { this.map.flyTo(pts[0], this.opts.fitPins ? 15 : Math.max(this.map.getZoom(), 11)); return; }
     this.map.fitBounds(pts, { padding: this.opts.fitPins ? [70, 70] : [40, 40], maxZoom: this.opts.fitPins ? 17 : 11 });
+  }
+  /** Frames these points (an area and your position with it); remembered until the map is up. */
+  fitTo(pts: [number, number][]): void {
+    this.fitPts = pts;
+    if (!this.map || !pts.length) return;
+    this.map.invalidateSize(); this.map.fitBounds(pts, { padding: [28, 28], maxZoom: 15 });
   }
   center(lat: number, lon: number, minZoom = 9): void {
     if (!this.map) return;
