@@ -4511,7 +4511,7 @@ type FleetSel = { kind: 'unit' | 'tg' | 'sys' | 'car'; key: string } | null;
 const fleetUi = {
   snap: null as FleetSnap | null, view: 'systems' as FleetView, band: 'AUTO', span: 8_000_000, sel: null as FleetSel,
   unit: null as { key: string; reports: FleetUnitReport[]; trail: [number, number, number][] } | null,
-  windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false,
+  windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false, hold: false, wired: false,
 };
 const fleetColor = (sys: string) => { const s = fleetUi.snap?.systems.find(x => x.key === sys); return s ? FLEET_COLORS[s.color % FLEET_COLORS.length] : 'var(--muted)'; };
 const fleetMhz = (hz: number, d = 5) => hz > 0 ? (hz / 1e6).toFixed(d) : '-';
@@ -4606,6 +4606,11 @@ function renderFleet(view: HTMLElement): void {
     if (t) { const [kind, ...rest] = t.dataset.flsel!.split(':'); fleetPick({ kind: kind as 'unit' | 'tg' | 'sys' | 'car', key: rest.join(':') }); }
   };
   $('fl-cards').onclick = pick; $('fl-grants').onclick = pick; $('fl-freqs').onclick = pick;
+  // A redraw between press and release would swap the element under the pointer and lose the click.
+  const hold = () => { fleetUi.hold = true; };
+  const release = () => { if (!fleetUi.hold) return; setTimeout(() => { fleetUi.hold = false; refreshFleet(true); }, 0); };
+  for (const id of ['fl-cards', 'fl-grants', 'fl-freqs', 'fl-detail']) $(id).onpointerdown = hold;
+  if (!fleetUi.wired) { fleetUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
   $('fl-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-fldo]'); if (b) { if (b.dataset.fldo === 'close') fleetUi.sel = null; else if (b.dataset.fldo === 'map') { if (!FLEET_WIDE.matches) fleetUi.view = 'map'; const u = fleetUi.snap?.units.find(x => x.key === fleetUi.sel?.key); refreshFleet(true); if (u && u.lat !== null && u.lon !== null) geo?.center(u.lat, u.lon, 15); return; } refreshFleet(true); return; }
     pick(e);
@@ -4725,6 +4730,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
 function refreshFleet(force = false): void {
   if (state.app !== 'fleet') return;
   const now = Date.now();
+  if (fleetUi.hold) return;
   if (!force && now - fleetUi.drawn < 240) { clearTimeout(fleetUi.pending); fleetUi.pending = window.setTimeout(() => refreshFleet(true), 250); return; }
   fleetUi.drawn = now;
   const s = fleetUi.snap, view = fleetUi.view;
