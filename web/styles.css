@@ -470,7 +470,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.cell {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -562,7 +562,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.cell {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -624,7 +624,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.cell {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -852,7 +852,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
   .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.uat:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
-  .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
+  .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
   /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
   .view .visual.nowf { flex: none; }
   .view:has(> .visual.nowf) > .controls { flex: 1; max-height: none; min-height: 0; }
@@ -2020,3 +2020,122 @@ main#view.view.uat.uawide { display: grid; grid-template-columns: minmax(0, 1fr)
 .ua-chips::-webkit-scrollbar { display: none; }
 .ua-chips > * { flex: none; }
 .view.uat.uawide .ua-mapbox .ua-chips { pointer-events: auto; flex: 0 1 auto; max-width: 100%; }
+
+/* ---- Cell: LTE cells and emergency alerts ---- */
+.cl-head { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.cl-watch { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.cl-watch b { font-size: 15px; letter-spacing: 2px; color: var(--accent); white-space: nowrap; }
+.cl-watch small { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.cl-watch em { margin-left: auto; font-style: normal; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; color: var(--muted); padding: 3px 8px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent); white-space: nowrap; }
+.cl-watch em.on { color: var(--ok); border-color: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 40%, transparent); }
+.cl-cap { font-size: 9.5px; letter-spacing: .5px; line-height: 1.35; color: var(--muted); padding: 5px 8px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); overflow-wrap: anywhere; }
+.cl-cap.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.cl-cap.amber { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 50%, transparent); }
+.cl-count { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.cl-count span { display: flex; flex-direction: column; align-items: center; padding: 6px 2px; border-radius: 10px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); min-width: 0; }
+.cl-count span.al { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); }
+.cl-count b { font-size: 18px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.cl-count small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); white-space: nowrap; }
+.cl-banner { font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: #fff; background: var(--danger); border: 0; border-radius: 10px; padding: 8px 10px; cursor: pointer; text-align: left; animation: cl-pulse 1.2s ease-in-out infinite; }
+@keyframes cl-pulse { 50% { box-shadow: 0 0 14px color-mix(in srgb, var(--danger) 70%, transparent); } }
+.cl-stage { min-height: 240px; flex: none; }
+.cl-alerts, .cl-cards, .cl-nbrs { display: flex; flex-direction: column; gap: 9px; max-height: 60vh; overflow-y: auto; padding: 2px 8px 6px 0; min-width: 0; box-sizing: border-box; }
+.cl-dim, .cl-dimtxt { font-size: 10px; color: var(--muted); padding: 2px; }
+.cl-alert { border-radius: 14px; padding: 12px 13px; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--al) 18%, var(--surface)), var(--surface)); border: 1px solid color-mix(in srgb, var(--al) 55%, transparent); border-left: 5px solid var(--al); }
+.cl-alert.fresh { box-shadow: 0 0 18px color-mix(in srgb, var(--al) 35%, transparent); }
+.cl-ah { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.cl-cls { flex: none; font-size: 11px; font-weight: 900; letter-spacing: 1.5px; color: #05080a; background: var(--al); border-radius: 6px; padding: 4px 8px; }
+.cl-ah b { font-size: 12px; letter-spacing: .5px; color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.cl-when { font-size: 10px; color: var(--muted); }
+.cl-msg { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid color-mix(in srgb, var(--al) 25%, transparent); padding-top: 7px; min-width: 0; }
+.cl-msg em { font-style: normal; font-size: 9px; font-weight: 800; letter-spacing: 1.5px; color: var(--al); }
+.cl-msg p { margin: 0; font-size: 15px; line-height: 1.45; color: var(--ink); user-select: text; overflow-wrap: anywhere; white-space: pre-wrap; }
+.cl-msg p.cl-hex { font-family: ui-monospace, monospace; font-size: 12px; }
+.cl-msg > small { font-size: 9px; color: var(--muted); letter-spacing: .4px; overflow-wrap: anywhere; }
+.cl-area summary { cursor: pointer; font-size: 9px; font-weight: 700; letter-spacing: 1.2px; color: var(--muted); }
+.cl-area code { display: block; font-size: 9px; color: var(--muted); overflow-wrap: anywhere; user-select: text; margin: 4px 0; }
+.cl-area small { font-size: 9px; color: var(--muted); }
+.cl-carried { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.cl-carried small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); margin-right: 3px; }
+.cl-carried span { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--al) 45%, transparent); color: var(--ink); cursor: pointer; }
+.cl-clearalerts { align-self: flex-start; margin: 4px 0 8px; }
+.cl-card { border-radius: 14px; padding: 10px 11px; display: flex; flex-direction: column; gap: 7px; min-width: 0; cursor: pointer;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--surface)), var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-left: 4px solid var(--accent); }
+.cl-card.sel { border-width: 2px; border-left-width: 4px; }
+.cl-card.dim { opacity: .72; }
+.cl-ch { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cl-band { flex: none; font-size: 10px; font-weight: 900; letter-spacing: 1.2px; color: #05080a; background: var(--accent); border-radius: 6px; padding: 4px 7px; }
+.cl-ct { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.cl-ct b { font-size: 13px; letter-spacing: .5px; color: var(--ink); overflow-wrap: anywhere; }
+.cl-ct small { font-size: 9.5px; color: var(--muted); overflow-wrap: anywhere; }
+.cl-kv { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 9px; letter-spacing: 1px; color: var(--muted); }
+.cl-kv b { color: var(--ink); font-size: 11px; letter-spacing: .5px; }
+.cl-sibs, .cl-flags { display: flex; flex-wrap: wrap; gap: 4px; }
+.cl-sibs span { font-size: 8.5px; font-weight: 800; letter-spacing: 1px; padding: 2px 6px; border-radius: 6px; color: var(--muted); border: 1px dashed color-mix(in srgb, var(--muted) 45%, transparent); }
+.cl-sibs span.on { color: var(--ink); border: 1px solid color-mix(in srgb, var(--ok) 60%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.cl-sibs span.warn { border-color: var(--danger); }
+.cl-nb { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.cl-nb small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); margin-right: 4px; }
+.cl-nb span { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent); color: var(--muted); display: inline-flex; gap: 5px; overflow-wrap: anywhere; }
+.cl-nb span i { font-style: normal; font-weight: 400; }
+.cl-nb span.heard, .cl-pci.heard { color: var(--ink); border-color: var(--ok); }
+.cl-pci { display: inline-block; font-weight: 700; padding: 0 4px; border-radius: 5px; border: 1px solid transparent; color: var(--muted); }
+.cl-tab { width: 100%; border-collapse: collapse; font-size: 10px; font-variant-numeric: tabular-nums; }
+.cl-tab th { text-align: left; font-size: 8px; letter-spacing: 1.2px; color: var(--muted); font-weight: 700; padding: 2px 4px; white-space: nowrap; }
+.cl-tab td { padding: 3px 4px; color: var(--ink); border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); white-space: nowrap; vertical-align: top; }
+.cl-tab td.cl-wrap { white-space: normal; overflow-wrap: anywhere; }
+.cl-nbr { border-radius: 12px; padding: 9px 10px; display: flex; flex-direction: column; gap: 7px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); min-width: 0; overflow-x: auto; }
+.cl-nbr.dim { opacity: .75; }
+.cl-nh { display: flex; flex-direction: column; gap: 1px; cursor: pointer; }
+.cl-nh b { font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+.cl-nh small { font-size: 9px; color: var(--muted); }
+.cl-detail { overflow-x: hidden; }
+.cl-dh { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-width: 0; flex-wrap: wrap; }
+.cl-dh b { font-size: 22px; color: var(--accent); flex: none; }
+.cl-dh span { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--ink); flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+.cl-dh .chip { padding: 4px 8px; font-size: 10px; flex: none; }
+.cl-sect { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.cl-sect > small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
+.cl-sect .mt-fields b { width: 104px; }
+.cl-sib { margin-top: 6px; border-top: 1px solid color-mix(in srgb, var(--line) 80%, transparent); padding-top: 5px; }
+.cl-sib summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.cl-sib summary b { font-size: 11px; letter-spacing: 1px; color: var(--accent); }
+.cl-sib summary small { font-size: 9px; color: var(--muted); }
+.cl-grp { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 6px 0 2px; }
+.cl-grp > i { font-style: normal; font-size: 8px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; }
+.cl-grp > div { display: grid; grid-template-columns: minmax(110px, 40%) minmax(0, 1fr); gap: 8px; font-size: 10px; padding: 1px 0; }
+.cl-grp > div b { color: var(--muted); font-weight: 600; overflow-wrap: anywhere; }
+.cl-grp > div span { color: var(--ink); overflow-wrap: anywhere; user-select: text; }
+.cl-raw small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); }
+.cl-raw code { display: block; font-size: 9px; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
+.view.cell .controls .ctlrow { flex-wrap: wrap; justify-content: flex-end; }
+.view.cell .controls .ctlrow > .seg { flex: 1 1 auto; flex-wrap: wrap; }
+.view.cell .controls .seg > button { flex: 1 1 auto; min-width: max-content; overflow: visible; text-overflow: clip; letter-spacing: .6px; padding: 8px 6px; }
+@media (max-width: 520px) { .cl-count b { font-size: 15px; } .cl-msg p { font-size: 14px; } }
+/* Cell on a desktop-size window: the alerts are the big pane on the left (a short waterfall strip under them when the
+ * waterfall is on); the column on the right holds the head, the bands, the tabs, the detail and the cards. */
+main#view.view.cell.clwide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 640px); grid-template-rows: minmax(0, 1fr); gap: 12px; }
+.view.cell.clwide > .visual, .view.cell.clwide > .visual.nowf { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.view.cell.clwide .cl-alertbox { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 8px; }
+.view.cell.clwide .cl-boxh { display: flex; align-items: baseline; gap: 10px; padding: 0 2px 6px; }
+.view.cell.clwide .cl-boxh b { font-size: 12px; letter-spacing: 2px; color: var(--danger); }
+.view.cell.clwide .cl-boxh small { font-size: 9px; color: var(--muted); }
+.view.cell.clwide .cl-alerts { flex: 1; max-height: none; min-height: 0; }
+.view.cell.clwide > .visual > .scope { flex: none; height: 150px; min-height: 150px; margin-top: 8px; }
+.view.cell.clwide > .visual.nowf > .scope { display: none; }
+.view.cell.clwide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; }
+.view.cell.clwide > .controls > * { flex: none; }
+.view.cell.clwide > .controls > .note { display: none; }
+.view.cell.clwide .mt-detail.cl-dock { position: static; align-self: stretch; margin: 6px 0 8px; max-height: 52%; flex: none; }
+.view.cell.clwide .cl-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 6px; }
+.view.cell.clwide .cl-stage[hidden] { display: none; }
+.view.cell.clwide .cl-cards, .view.cell.clwide .cl-nbrs { flex: 1; max-height: none; min-height: 0; }
+.view.cell.clwide .cl-cards[hidden], .view.cell.clwide .cl-nbrs[hidden] { display: none; }
+.view.cell.clwide #cl-log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view.cell.clwide #cl-log[hidden] { display: none; }
+.view.cell.clwide #cl-log .list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+.view.cell.clwide .face .readout { padding: 2px 0 0; }
+.view.cell.clwide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
+.view.cell.clwide .face .lscale, .view.cell.clwide .face .health { display: none; }
+.view.cell.clwide .face .leds { height: 8px; margin-top: 4px; }

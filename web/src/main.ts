@@ -42,6 +42,11 @@ import type { SondeRow } from './dsp/sonde/track.js';
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
 import { ISM_COUNTS } from './dsp/ism/counts.js';
+import type { CellSnap, CellRow, SibRec as CellSibRec } from './dsp/cell/cell.js';
+import type { Mib as CellMib } from './dsp/cell/pbch.js';
+import { groupAlerts, type AlertGroup } from './dsp/cell/cbs.js';
+import { fieldGroups } from './dsp/cell/sysinfo.js';
+import { CELL_BANDS, findCarriers, newProfile, stitch, type CarrierGuess, type Profile } from './dsp/cell/bands.js';
 import { EOT_CENTER as TR_EOT_CENTER, EOT_RATE as TR_EOT_RATE, EOT_NARROW as TR_EOT_NARROW, PTC_CENTER as TR_PTC_CENTER, PTC_RATE as TR_PTC_RATE, PTC_NARROW as TR_PTC_NARROW, PTC_KIND_LABEL, stationPeriod, stationVaries, symHex, type EotUnit, type HotHeard, type PtcStation } from './dsp/trains.js';
 
 type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
@@ -53,7 +58,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'cell' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -72,6 +77,7 @@ const APPS: AppDef[] = [
   { id: 'vdl2', title: 'VDL2', blurb: 'VDL Mode 2 messages, 136.975 MHz', cat: 'Receive' },
   { id: 'acars', title: 'ACARS', blurb: 'messages, 131 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'EOT · PTC telemetry', cat: 'Receive' },
+  { id: 'cell', title: 'Cell', blurb: 'LTE alerts · cell info', cat: 'Receive' },
   { id: 'sondes', title: 'Sondes', blurb: 'weather balloons', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice', cat: 'Receive' },
   { id: 'spectrum', title: 'Spectrum', blurb: 'analyzer, zero span', cat: 'Analyze' },
@@ -961,6 +967,7 @@ function open(app: AppId | null): void {
     case 'vdl2': configure('AM', 136_975_000, 2e6, 32, 32, false, 'vdl2'); state.viewLo = VDL2_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = ACARS_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'trains': trainsTune(); if (trainsUi.auto) trainsCycle(); break;
+    case 'cell': cellOpen(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is
@@ -1662,6 +1669,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels']],
   sondes: ['sondes', 'No sondes yet', ['Weather services launch around 00:00 and 12:00 UTC; a sonde climbs for about 90 minutes and is heard 200+ miles out', 'Every type is decoded on its own: leave it running and they show up']],
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
+  cell: ['cell', 'No alerts yet', ['Wireless Emergency Alerts and ETWS warnings ride in SIB12 and SIB10/11: carriers send them only while an alert is active', 'Every alert heard is kept here, newest first, until you clear it', 'Alerts need the whole carrier in the span: a HackRF']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
   uat: ['uat', 'Listening on 978 MHz', ['FAA ground towers broadcast weather here several times a second: radar, airport weather, notices', 'Small planes, and the traffic the towers rebroadcast, show up on the map', 'A 978 MHz antenna (a 915 MHz one works) with a view of the sky helps']],
@@ -1855,6 +1863,7 @@ function render(app: AppId | null): void {
     case 'lora': renderLora(view); break;
     case 'sondes': renderSondes(view); break;
     case 'trains': renderTrains(view); break;
+    case 'cell': renderCell(view); break;
     case 'btle': renderBle(view); break;
     case 'vdl2': renderAcars(view, 'vdl2'); break;
     case 'acars': renderAcars(view, 'acars'); break;
@@ -4271,7 +4280,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { sondes: false, btle: false, adsb: false, trains: false, ert: true, lora: true, acars: true, vdl2: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { sondes: false, btle: false, adsb: false, trains: false, cell: false, ert: true, lora: true, acars: true, vdl2: true };
 const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
 function wfShown(app: AppId): boolean {
   let v: string | null = null;
@@ -4490,6 +4499,313 @@ function refreshTrains(force = false): void {
   const b = trainsBurst();
   if (b !== null) setMeter(b / 40, `BURST +${b} dB`);
   if (train) setLamp('TRAIN NEARBY', 'amber', true); else if (stations.length) setLamp(`${stations.length} PTC STATION${stations.length === 1 ? '' : 'S'}`, 'ok');
+}
+
+// ---- Cell: LTE cells and emergency alerts (WEA/CMAS, ETWS) from the broadcast channels, receive only ----------------
+const CELL_KEY = 'mm.cell.v1';
+const CELL_HACKRF_RATE = 15_360_000, CELL_RTL_RATE = 1_920_000;
+const CELL_WIDE = window.matchMedia('(min-width: 1000px)');
+CELL_WIDE.addEventListener('change', () => { if (state.app === 'cell') { const v = q<HTMLElement>('main#view'); if (v) renderCell(v); } });
+type CellView = 'alerts' | 'cells' | 'neighbors' | 'log';
+interface CellDetail { key: string; mib: CellMib | null; sib1: Record<string, unknown> | null; sib1Hex: string; sibs: CellSibRec[] }
+const cellUi = {
+  snap: null as CellSnap | null, view: 'alerts' as CellView, band: 'AUTO', sel: '', detail: null as CellDetail | null, detailAsked: 0,
+  hold: false, wired: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, restored: false, clearArm: 0, seenAlerts: new Set<string>(), banner: '',
+  html: new Map<string, string>(),
+  scan: { phase: 'survey' as 'survey' | 'visit' | 'dwell' | 'stay', bandIdx: 0, windows: [] as number[], wi: 0, cands: [] as CarrierGuess[], ci: 0,
+    until: 0, tunedMs: 0, profile: null as Profile | null, stayHz: 0 },
+};
+const cellRtl = () => !!radio && radio.kind === 'rtlsdr';
+const cellRate = () => cellRtl() ? CELL_RTL_RATE : CELL_HACKRF_RATE;
+const cellMhz = (hz: number) => (hz / 1e6).toFixed(1);
+const cellAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} h ago` : `${Math.floor(ms / 86_400_000)} d ago`;
+const cellTime = (ms: number) => { const d = new Date(ms); return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toTimeString().slice(0, 8)}`; };
+const CELL_RANK_COLOR = ['var(--muted)', 'var(--accent)', '#ffaf00', '#ff7a45', '#ff4d4d', '#ff2a6a'];
+const cellBands = () => cellUi.band === 'AUTO' ? CELL_BANDS : CELL_BANDS.filter(b => b.id === cellUi.band);
+const cellBandAt = (hz: number) => CELL_BANDS.find(b => hz >= b.lo - 2e6 && hz <= b.hi + 2e6) ?? null;
+/** What the connected radio can and cannot do here, said plainly. */
+function cellCapability(): [string, 'ok' | 'amber' | ''] {
+  if (!radio) return ['NO RADIO · a HackRF reads cells, SIBs and alerts; an RTL-SDR reads cells and their MIB', ''];
+  if (cellRtl()) return ['RTL-SDR · 1.92 MS/s · cell search and MIB from the center 1.08 MHz · SIBs and alerts need the whole carrier: a HackRF', 'amber'];
+  return ['HACKRF · 15.36 MS/s · cells, MIB, every SIB and the alerts of carriers up to 15 MHz (20 MHz carriers: MIB only)', 'ok'];
+}
+
+function cellOpen(): void {
+  const sc = cellUi.scan;
+  if (sc.phase === 'stay' && sc.stayHz) configure('NONE', sc.stayHz, cellRate(), 32, 40, true, 'cell');
+  else { cellSurvey(true); configure('NONE', sc.windows[0], cellRate(), 32, 40, true, 'cell'); }
+  if (!cellUi.restored) {
+    cellUi.restored = true;
+    let saved: unknown = null;
+    try { saved = JSON.parse(localStorage.getItem(CELL_KEY) ?? 'null'); } catch { /* storage blocked or bad */ }
+    if (saved) worker?.postMessage({ type: 'cell', cmd: 'restore', state: saved });
+  }
+  cellTick();
+}
+/** A band sweep for carriers: windows across the band, a power profile stitched from them. */
+function cellSurvey(first = false): void {
+  const sc = cellUi.scan, bands = cellBands(), b = bands[sc.bandIdx % bands.length], use = 0.8 * cellRate();
+  const n = Math.max(1, Math.ceil((b.hi - b.lo) / use));
+  sc.windows = Array.from({ length: n }, (_, i) => Math.round(n === 1 ? (b.lo + b.hi) / 2 : b.lo + use / 2 + i * ((b.hi - b.lo - use) / (n - 1))));
+  sc.wi = 0; sc.phase = 'survey'; sc.profile = newProfile(b.lo, b.hi); sc.cands = []; sc.ci = 0;
+  if (!first) cellGo(sc.windows[0], 700);
+}
+function cellGo(hz: number, ms: number): void { const sc = cellUi.scan; sc.until = Date.now() + ms; sc.tunedMs = Date.now(); tune(hz); refreshCell(true); }
+function cellNextBand(): void { const sc = cellUi.scan; sc.bandIdx = (sc.bandIdx + 1) % cellBands().length; cellSurvey(); }
+function cellNextCandidate(): void {
+  const sc = cellUi.scan;
+  sc.ci++;
+  if (sc.ci >= sc.cands.length) { if (cellUi.band === 'AUTO') cellNextBand(); else cellSurvey(); return; }
+  sc.phase = 'visit'; cellGo(sc.cands[sc.ci].centerHz, 1600);
+}
+/** The scan: survey a band, visit each carrier found, stay long enough for its whole SI cycle, move on. */
+function cellTick(): void {
+  clearTimeout(cellUi.scanTimer);
+  if (state.app !== 'cell') return;
+  const sc = cellUi.scan, s = cellUi.snap, now = Date.now(), here = s && s.centerHz === state.freq && s.lastBlockMs > sc.tunedMs ? s : null;
+  if (sc.phase === 'survey') {
+    if (here?.profile && sc.profile) stitch(sc.profile, here.profile.lo, here.profile.step, here.profile.db);
+    if (now >= sc.until && (here || now - sc.tunedMs > 3000)) {
+      sc.wi++;
+      if (sc.wi < sc.windows.length) cellGo(sc.windows[sc.wi], 700);
+      else {
+        const b = cellBands()[sc.bandIdx % cellBands().length];
+        sc.cands = sc.profile ? findCarriers(sc.profile).filter(c => c.centerHz >= b.lo && c.centerHz <= b.hi) : [];
+        // carriers already known in this band are visited too, found or not this time
+        for (const c of s?.cells ?? []) if (c.hz >= b.lo && c.hz <= b.hi && !sc.cands.some(x => Math.abs(x.centerHz - c.hz) < 50_000)) sc.cands.push({ centerHz: c.hz, occupiedMhz: 0, nrb: c.nrb, levelDb: 0 });
+        if (!sc.cands.length) { if (cellUi.band === 'AUTO') cellNextBand(); else cellSurvey(); }
+        else { sc.ci = -1; cellNextCandidate(); }
+      }
+    }
+  } else if (sc.phase === 'visit') {
+    const found = here?.cells.some(c => c.hz === state.freq && c.mib && now - c.mibMs < 3000);
+    if (found) { sc.phase = 'dwell'; sc.until = now + (cellRtl() ? 2500 : 13_000); }
+    else if (now >= sc.until && (here || now - sc.tunedMs > 4000)) cellNextCandidate();
+  } else if (sc.phase === 'dwell') {
+    const cells = here?.cells.filter(c => c.hz === state.freq && now - c.lastMs < 15_000) ?? [];
+    const done = cells.length > 0 && cells.every(c => c.complete || !c.fullBand);
+    if (done && now < sc.until - 11_000) sc.until = now + 1500;
+    if (now >= sc.until) cellNextCandidate();
+  }
+  cellUi.scanTimer = window.setTimeout(cellTick, 300);
+}
+function cellSetBand(b: string): void {
+  cellUi.band = b; const sc = cellUi.scan; sc.bandIdx = 0; sc.stayHz = 0; cellSurvey(); cellTick();
+}
+function cellStay(hz: number): void {
+  const sc = cellUi.scan;
+  if (sc.phase === 'stay' && sc.stayHz === hz) { sc.stayHz = 0; cellSurvey(); cellTick(); return; }
+  sc.phase = 'stay'; sc.stayHz = hz; clearTimeout(cellUi.scanTimer); cellGo(hz, 0);
+}
+
+function renderCell(view: HTMLElement): void {
+  const wide = CELL_WIDE.matches;
+  if (wide && cellUi.view === 'alerts') cellUi.view = 'cells';
+  view.classList.toggle('clwide', wide);
+  cellUi.html.clear();
+  const tabs = (wide ? ['cells', 'neighbors', 'log'] : ['alerts', 'cells', 'neighbors', 'log']) as CellView[];
+  view.innerHTML = `
+    <section class="${visCls('cell')}">${readoutHtml()}${wide ? '<div id="cl-alertbox" class="cl-alertbox"><div class="cl-boxh"><b>ALERTS</b><small id="cl-alertcount"></small></div><div id="cl-alerts" class="cl-alerts"></div></div>' : ''}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="cl-head" class="cl-head"></div>
+      <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...CELL_BANDS.map(b => [b.id, b.label])].map(([k, l]) => `<button data-clband="${k}">${l}</button>`))}</div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-clview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('cell')}<button id="cl-export" class="ib" title="export the log (CSV) and every decoded field (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button></div>
+      ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
+      <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-alerts" class="cl-alerts"></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
+      <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
+      <div class="note">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. Cell positions are not on the air, so there is no map. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. Alerts are kept until you clear them. Tap a cell for every decoded field.</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-clband]', view).forEach(b => b.onclick = () => cellSetBand(b.dataset.clband!));
+  qa<HTMLButtonElement>('[data-clview]', view).forEach(b => b.onclick = () => { cellUi.view = b.dataset.clview as CellView; refreshCell(true); });
+  $('cl-export').onclick = () => worker?.postMessage({ type: 'cell', cmd: 'export' });
+  const pick = (e: Event) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-clsel],[data-cldo]');
+    if (!t) return;
+    const doIt = t.dataset.cldo;
+    if (doIt === 'close') { cellUi.sel = ''; cellUi.detail = null; }
+    else if (doIt === 'stay') cellStay(Number(t.dataset.hz));
+    else if (doIt === 'clearalerts') {
+      if (Date.now() - cellUi.clearArm < 4000) { cellUi.clearArm = 0; worker?.postMessage({ type: 'cell', cmd: 'clearAlerts' }); cellUi.seenAlerts.clear(); }
+      else cellUi.clearArm = Date.now();
+    } else if (doIt === 'alerts') { cellUi.view = 'alerts'; cellUi.banner = ''; }
+    else if (t.dataset.clsel) cellPick(t.dataset.clsel);
+    else return;
+    refreshCell(true);
+  };
+  for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-head']) $(id).onclick = pick;
+  // a redraw between press and release would swap the element under the pointer and lose the tap
+  const hold = () => { cellUi.hold = true; };
+  const release = () => { if (!cellUi.hold) return; setTimeout(() => { cellUi.hold = false; refreshCell(true); }, 0); };
+  for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-head']) $(id).onpointerdown = hold;
+  if (!cellUi.wired) { cellUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
+  clearInterval(cellUi.timer);
+  cellUi.timer = window.setInterval(() => { if (state.app !== 'cell') { clearInterval(cellUi.timer); clearTimeout(cellUi.scanTimer); return; } refreshCell(); }, 500);
+  refreshList('cell');
+  refreshCell(true);
+}
+function cellPick(key: string): void {
+  cellUi.sel = cellUi.sel === key ? '' : key;
+  cellUi.detail = null;
+  if (cellUi.sel) { cellUi.detailAsked = Date.now(); worker?.postMessage({ type: 'cell', cmd: 'detail', key }); }
+}
+const clPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span class="tr-pill ${tone}">${esc(text)}</span>`;
+function cellLabel(c: CellRow, pci = true): string {
+  const op = c.summary?.plmns.find(p => p.name)?.name ?? c.summary?.plmns[0]?.id ?? '';
+  return `${op ? op + ' · ' : ''}${cellMhz(c.hz)} MHz${pci ? ` · PCI ${c.pci}` : ''}`;
+}
+function cellHead(s: CellSnap | null, now: number): string {
+  const sc = cellUi.scan, [cap, tone] = cellCapability(), band = cellBandAt(state.freq);
+  const cells = s?.cells ?? [], carriers = new Set(cells.map(c => Math.round(c.hz / 1e5))).size, alerts = s ? groupAlerts(s.alerts).length : 0;
+  const sibs = cells.reduce((n, c) => n + c.sibs.length + (c.summary ? 1 : 0), 0);
+  const status = sc.phase === 'stay' ? `STAYING · ${cellMhz(sc.stayHz)} MHz` : sc.phase === 'survey' ? `${cellUi.band === 'AUTO' ? 'AUTO · ' : ''}SWEEP ${Math.min(sc.wi + 1, sc.windows.length)}/${sc.windows.length}`
+    : `${cellUi.band === 'AUTO' ? 'AUTO · ' : ''}CARRIER ${sc.ci + 1}/${sc.cands.length} · ${sc.phase === 'dwell' ? 'READING' : 'LOOKING'} ${Math.max(0, Math.ceil((sc.until - now) / 1000))} s`;
+  const here = cells.filter(c => c.hz === state.freq && now - c.lastMs < 10_000);
+  const tile = (n: number | string, l: string, cls = '') => `<span class="${cls}"><b>${n}</b><small>${l}</small></span>`;
+  const banner = cellUi.banner && cellUi.view !== 'alerts' && !CELL_WIDE.matches ? `<button class="cl-banner" data-cldo="alerts">${esc(cellUi.banner)} · VIEW</button>` : '';
+  return banner + `<div class="cl-watch"><b>${band ? esc(band.label) + ' · ' : ''}${cellMhz(state.freq)} MHz</b><small>${here.length ? here.map(c => `PCI ${c.pci}`).join(' · ') : s?.lte ? 'LTE heard, reading the MIB' : 'no LTE cell on this center'}${s?.cpuMs ? ` · ${s.cpuMs} ms per block` : ''}</small><em class="${sc.phase === 'dwell' || sc.phase === 'stay' ? 'on' : ''}">${status}</em></div>`
+    + `<div class="cl-cap ${tone}">${esc(cap)}</div>`
+    + `<div class="cl-count">${tile(alerts, 'ALERTS', alerts ? 'al' : '')}${tile(cells.length, 'CELLS')}${tile(carriers, 'CARRIERS')}${tile(sibs, 'SIBS')}${tile(s?.tbOk ?? 0, 'BLOCKS')}</div>`;
+}
+function cellAlertHtml(g: AlertGroup, s: CellSnap, now: number): string {
+  const col = CELL_RANK_COLOR[Math.max(0, Math.min(5, g.rank))], fresh = now - g.lastMs < 600_000;
+  const cellRows = g.cells.map(k => s.cells.find(c => c.key === k)).filter((c): c is CellRow => !!c);
+  const msgs = g.messages.map(m => {
+    const lang = m.language ? m.language.toUpperCase() : m.source === 'SIB10' ? 'WARNING TYPE' : m.alphabet === '8bit' ? 'DATA' : 'TEXT';
+    const body = m.complete ? (m.text ? `<p>${esc(m.text)}</p>` : m.binaryHex ? `<p class="cl-hex">${esc(m.binaryHex)}</p><small>binary content; its layout is defined outside the 3GPP specs this app is built from (ATIS-0700041): shown as received</small>` : m.warningType ? `<p>${esc(m.warningType.type.toUpperCase())}${m.warningType.userAlert ? ' · USER ALERT' : ''}${m.warningType.popup ? ' · POPUP' : ''}</p>` : '') : `<p class="cl-dimtxt">segments ${m.segments.join(', ')} of ${m.lastSegment >= 0 ? m.lastSegment + 1 : '?'} received, waiting for the rest</p>`;
+    const meta = [`ID ${m.id} (0x${m.id.toString(16).toUpperCase()})`, `SERIAL 0x${m.serial.toString(16).toUpperCase().padStart(4, '0')}`, m.scope, `CODE ${m.messageCode}`, `UPDATE ${m.updateNumber}`, m.dcs >= 0 ? `DCS 0x${m.dcs.toString(16).toUpperCase().padStart(2, '0')}` : '', m.pages ? `${m.pages} PAGE${m.pages === 1 ? '' : 'S'}` : '', m.source].filter(Boolean).join(' · ');
+    const area = m.areaHex ? `<details class="cl-area"><summary>ALERT AREA · ${m.areaHex.length / 2} OCTETS</summary><code>${esc(m.areaHex)}</code><small>the polygon's encoding is ATIS-0700041 (named by TS 23.041 9.3.63), outside the specs this app is built from: shown as received</small></details>` : '';
+    return `<div class="cl-msg"><em>${esc(lang)}${m.additionalLanguage ? ' · ADDITIONAL LANGUAGE' : ''}</em>${body}<small>${esc(meta)}</small>${area}</div>`;
+  }).join('');
+  const first = g.messages[0];
+  return `<div class="cl-alert ${fresh ? 'fresh' : ''}" style="--al:${col}">`
+    + `<div class="cl-ah"><span class="cl-cls">${esc(g.cls.toUpperCase())}</span><b>${esc(first.category)}</b></div>`
+    + `<div class="cl-when">${esc(cellTime(g.firstMs))} · ${esc(cellAgo(now - g.lastMs))}${g.lastMs - g.firstMs > 2000 ? ` · heard until ${esc(cellTime(g.lastMs))}` : ''}</div>`
+    + msgs
+    + `<div class="cl-carried"><small>CARRIED BY</small>${cellRows.length ? cellRows.map(c => `<span data-clsel="${esc(c.key)}">${esc(cellLabel(c))}</span>`).join('') : g.cells.map(k => `<span>${esc(k)}</span>`).join('')}</div></div>`;
+}
+function cellAlertsHtml(s: CellSnap | null, now: number): string {
+  const groups = s ? groupAlerts(s.alerts) : [];
+  if (!groups.length) return emptyState('cell');
+  return groups.map(g => cellAlertHtml(g, s!, now)).join('') + `<button class="chip cl-clearalerts" data-cldo="clearalerts">${Date.now() - cellUi.clearArm < 4000 ? 'TAP AGAIN TO CLEAR EVERY ALERT' : 'CLEAR ALERTS'}</button>`;
+}
+function cellCard(c: CellRow, now: number): string {
+  const live = now - c.lastMs < 10_000, sel = cellUi.sel === c.key, sm = c.summary;
+  const band = c.band ? `B${c.band}${c.tdd ? ' TDD' : ''}` : '';
+  const ops = sm ? sm.plmns.map(p => p.name ? `${p.name} ${p.id}` : p.id).join(' · ') : '';
+  const kv = (k: string, v: string | number) => `<span>${k} <b>${esc(String(v))}</b></span>`;
+  const bw = c.nrb ? `${({ 6: 1.4, 15: 3, 25: 5, 50: 10, 75: 15, 100: 20 } as Record<number, number>)[c.nrb]} MHz` : '-';
+  const want = new Set((sm?.schedule ?? []).flatMap(t => t.sibs.map(x => x.replace('sibType', 'sib'))));
+  const got = new Set(c.sibs.map(x => x.name.replace(/-v\d+$/, '').replace(/-r\d+$/, '')));
+  const chips = sm ? ['sib1', ...[...want].map(x => x.replace(/-v\d+$/, '').replace(/-r\d+$/, ''))].map(n => `<span class="${n === 'sib1' || got.has(n) ? 'on' : ''} ${/^sib1[012]$/.test(n) ? 'warn' : ''}">${n.toUpperCase()}</span>`).join('') : '';
+  const flags = [sm?.warning.sib12 ? clPill('WEA SCHEDULED', 'red') : '', sm?.warning.sib10 || sm?.warning.sib11 ? clPill('ETWS SCHEDULED', 'red') : '', c.alerts ? clPill(`${c.alerts} ALERT${c.alerts === 1 ? '' : 'S'}`, 'red') : '',
+    sm?.barred === 'barred' ? clPill('BARRED') : '', !c.fullBand && !sm && c.mib ? clPill(c.nrb > (cellUi.snap?.maxRb ?? 0) ? 'MIB ONLY · CARRIER WIDER THAN THE SPAN' : 'MIB ONLY') : ''].join('');
+  return `<div class="cl-card ${sel ? 'sel' : ''} ${live ? '' : 'dim'}" data-clsel="${esc(c.key)}">`
+    + `<div class="cl-ch"><span class="cl-band">${esc(band || 'LTE')}</span><span class="cl-ct"><b>${esc(ops || 'operator not read yet')}</b><small>${cellMhz(c.hz)} MHz${c.earfcn !== null ? ` · EARFCN ${c.earfcn}` : ''} · ${bw}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : esc(cellAgo(now - c.lastMs))}</span></div>`
+    + `<div class="cl-kv">${kv('PCI', c.pci)}${sm ? kv('CELL', `${sm.enbId}/${sm.cellId}`) + kv('TAC', sm.tac) : ''}${kv('SNR', `${c.snrDb.toFixed(0)} dB`)}${kv('PORTS', c.ports || '-')}${kv('SFN', c.sfn >= 0 ? c.sfn : '-')}</div>`
+    + (chips ? `<div class="cl-sibs">${chips}</div>` : '')
+    + (flags ? `<div class="cl-flags">${flags}</div>` : '') + '</div>';
+}
+function cellNbrsHtml(s: CellSnap, now: number): string {
+  const rows = s.cells.filter(c => c.neighbors && (c.neighbors.intra.length || c.neighbors.inter.length || c.neighbors.nr.length || c.neighbors.utra.length || c.neighbors.geran.length || c.neighbors.cdma.length));
+  if (!rows.length) return '<div class="empty">neighbor lists arrive in SIB4 (same frequency), SIB5 (other LTE carriers), SIB24 (5G NR) and SIB6/7/8 (older networks) · they need the whole carrier in the span</div>';
+  const heard = (mhz: number | null, pci: number) => mhz !== null && s.cells.some(c => Math.abs(c.hz / 1e6 - mhz) < 0.06 && c.pci === pci);
+  return rows.map(c => {
+    const n = c.neighbors!, mhz = c.hz / 1e6;
+    const intra = n.intra.length ? `<div class="cl-nb"><small>SAME FREQUENCY · SIB4</small>${n.intra.map(r => `<span class="${heard(mhz, r.pci) ? 'heard' : ''}">${r.pci}${r.offset && r.offset !== 'dB0' ? `<i>${esc(r.offset)}</i>` : ''}</span>`).join('')}</div>` : '';
+    const excl = n.intraExcluded.length ? `<div class="cl-nb"><small>EXCLUDED</small>${n.intraExcluded.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : '';
+    const inter = n.inter.length ? `<table class="cl-tab"><tr><th>LTE CARRIER · SIB5</th><th>BAND</th><th>MHz</th><th>PRIO</th><th>CELLS</th></tr>${n.inter.map(f => `<tr><td>${f.earfcn}</td><td>${f.band ?? '-'}${f.bands.length > 1 ? ` (${f.bands.slice(1).join(', ')})` : ''}</td><td>${f.mhz ?? '-'}</td><td>${f.priority ?? '-'}</td><td class="cl-wrap">${f.cells.map(r => `<span class="cl-pci ${heard(f.mhz, r.pci) ? 'heard' : ''}">${r.pci}</span>`).join(' ') || '-'}</td></tr>`).join('')}</table>` : '';
+    const nr = n.nr.length ? `<table class="cl-tab"><tr><th>NR CARRIER · SIB24</th><th>MHz</th><th>BAND</th><th>SCS</th><th>PRIO</th></tr>${n.nr.map(f => `<tr><td>${f.arfcn}</td><td>${f.mhz}</td><td>${f.bands.map(b => 'n' + b).join(', ') || '-'}</td><td>${esc(f.scs.replace('kHz', ''))} kHz</td><td>${f.priority ?? '-'}</td></tr>`).join('')}</table>` : '';
+    const old = [...n.utra.map(u => `UTRA ${u.kind} ${u.uarfcn}${u.priority !== null ? ` · prio ${u.priority}` : ''}`), ...n.geran.map(g => `GERAN ${g.band} ${g.arfcns.join(', ')}`), ...n.cdma.map(x => `CDMA2000 ${x.bandClass} ch ${x.arfcn}${x.pns.length ? ` · PN ${x.pns.join(', ')}` : ''}`)];
+    const oldHtml = old.length ? `<div class="cl-nb"><small>OTHER NETWORKS</small>${old.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : '';
+    const live = now - c.lastMs < 10_000;
+    return `<div class="cl-nbr ${live ? '' : 'dim'}"><div class="cl-nh" data-clsel="${esc(c.key)}"><b>${esc(cellLabel(c))}</b><small>${n.intra.length} same-frequency · ${n.inter.length} LTE carriers · ${n.nr.length} NR carriers</small></div>${intra}${excl}${inter}${nr}${oldHtml}</div>`;
+  }).join('') + '<div class="cl-dim">a highlighted cell is one this app has heard itself</div>';
+}
+function cellDetailHtml(s: CellSnap, now: number): string {
+  const c = s.cells.find(x => x.key === cellUi.sel); if (!c) return '';
+  const d = cellUi.detail?.key === c.key ? cellUi.detail : null, sm = c.summary, m = c.mib;
+  const fields = (f: [string, string][]) => `<div class="mt-fields">${f.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
+  const sect = (t: string, body: string) => `<div class="cl-sect"><small>${esc(t)}</small>${body}</div>`;
+  const stay = cellUi.scan.phase === 'stay' && cellUi.scan.stayHz === c.hz;
+  let html = `<div class="cl-dh"><b>PCI ${c.pci}</b><span>${esc(cellLabel(c, false))}</span><button class="chip ${stay ? 'on' : ''}" data-cldo="stay" data-hz="${c.hz}">${stay ? 'SCAN AGAIN' : 'STAY HERE'}</button><button class="chip" data-cldo="close">✕</button></div>`;
+  html += sect('CELL', fields([['FREQUENCY', `${cellMhz(c.hz)} MHz${c.earfcn !== null ? ` · EARFCN ${c.earfcn}` : ''}${c.band ? ` · band ${c.band}` : ''}`], ['PCI', `${c.pci} (group ${Math.floor(c.pci / 3)}, sector ${c.pci % 3})`],
+    ['SIGNAL', `SNR ${c.snrDb.toFixed(1)} dB · RS ${c.levelDb.toFixed(1)} dBFS · CFO ${c.cfoHz} Hz`], ['HEARD', `MIB ${c.mibCount} · SIB1 ${c.sib1Count} · SI DCI ${c.dciCount} · blocks ${c.tbOk} ok, ${c.tbFail} failed`],
+    ['FIRST HEARD', cellTime(c.firstMs)], ['LAST HEARD', `${cellTime(c.lastMs)} · ${cellAgo(now - c.lastMs)}`]]));
+  if (m) html += sect('MIB', fields([['BANDWIDTH', `n${m.bandwidth} (${m.bandwidth} RBs)`], ['PHICH', `${m.phichDuration} · Ng ${m.phichResource}`], ['CRS PORTS', `${m.ports} (from the CRC mask)`], ['SFN', `${m.sfn}`],
+    ['SIB1-BR (LTE-M)', m.sib1BR ? `scheduled, index ${m.sib1BR}` : 'not scheduled'], ['RAW', m.bits]]));
+  if (!c.fullBand && !sm) html += `<div class="cl-dim">${c.nrb > (s.maxRb || 0) ? `this carrier (${c.nrb} RBs) is wider than the span this radio samples (${s.maxRb} RBs): cell search and MIB only` : 'SIB1 and the SI messages come next'}</div>`;
+  if (sm) {
+    html += sect('SIB1', fields([['OPERATOR', sm.plmns.map(p => `${p.id}${p.name ? ` ${p.name}` : ''}`).join(' · ')], ['TRACKING AREA', `${sm.tac} (0x${sm.tac.toString(16).toUpperCase()})`],
+      ['CELL IDENTITY', `0x${sm.cellIdentity.toString(16).toUpperCase().padStart(7, '0')} · eNB ${sm.enbId} · cell ${sm.cellId}`], ['ACCESS', `${sm.barred} · intra-frequency reselection ${sm.intraFreqReselection}`],
+      ['BANDS', sm.bands.join(', ')], ['SELECTION', `q-RxLevMin ${sm.qRxLevMinDbm ?? '-'} dBm${sm.qQualMinDb !== null ? ` · q-QualMin ${sm.qQualMinDb} dB` : ''}${sm.pMax !== null ? ` · p-Max ${sm.pMax} dBm` : ''}`],
+      ['SI', `window ${sm.siWindowMs} ms · value tag ${sm.valueTag}${sm.hyperSfn !== null ? ` · hyper SFN ${sm.hyperSfn}` : ''}`], ['FEATURES', [sm.imsEmergency ? 'IMS emergency' : '', sm.edrx ? 'eDRX' : '', sm.tdd ? `TDD ${sm.tdd}` : ''].filter(Boolean).join(' · ') || '-']]));
+    const sched = c.si.map(t => `<tr><td>SI ${t.si}</td><td>${t.periodicity * 10} ms</td><td class="cl-wrap">${esc(t.sibs.map(x => x.replace('sibType', 'SIB')).join(' '))}</td><td>${t.ms ? `${esc(cellAgo(now - t.ms))} · ×${t.count}` : '<span class="cl-dimtxt">not yet</span>'}</td></tr>`).join('');
+    html += sect('SI SCHEDULE', `<table class="cl-tab"><tr><th>MESSAGE</th><th>EVERY</th><th>CARRIES</th><th>RECEIVED</th></tr>${sched}</table>`);
+  }
+  if (c.time) html += sect('TIME · SIB8', fields([['GPS', c.time.gpsIso], ['UTC', `${c.time.utcIso} (18 leap seconds assumed)`]]));
+  if (d) {
+    const blocks: [string, Record<string, unknown>, string, string][] = [];
+    if (d.sib1) blocks.push(['sib1', d.sib1, d.sib1Hex, '']);
+    for (const r of [...d.sibs].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))) blocks.push([r.name, r.value, r.hex, `SI ${r.si || '?'} · ${cellAgo(now - r.ms)} · ×${r.count}`]);
+    for (const [name, value, hex, meta] of blocks) {
+      let groups: { name: string; rows: [string, string][] }[] = [];
+      try { groups = fieldGroups(name, value); } catch { /* shown raw */ }
+      const body = groups.map(g => `<div class="cl-grp"><i>${esc(g.name.toUpperCase())}</i>${g.rows.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`).join('');
+      html += `<details class="cl-sib" ${cellUi.html.get('open:' + name) ? 'open' : ''} data-sib="${esc(name)}"><summary><b>${esc(name.toUpperCase())}</b><small>${esc(meta)}</small></summary>${body}<div class="cl-raw"><small>RAW · ${hex.length / 2} OCTETS</small><code>${esc(hex)}</code></div></details>`;
+    }
+  } else if (sm || c.sibs.length) html += '<div class="cl-dim">loading every decoded field…</div>';
+  return html;
+}
+function refreshCell(force = false): void {
+  if (state.app !== 'cell') return;
+  const now = Date.now();
+  if (cellUi.hold) return;
+  if (!force && now - cellUi.drawn < 240) { clearTimeout(cellUi.pending); cellUi.pending = window.setTimeout(() => refreshCell(true), 250); return; }
+  cellUi.drawn = now;
+  const s = cellUi.snap, view = cellUi.view, wide = CELL_WIDE.matches;
+  const put = (el: HTMLElement | null, key: string, html: string) => { if (!el || cellUi.html.get(key) === html) return; const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; cellUi.html.set(key, html); };
+  put(q('#cl-head'), 'head', cellHead(s, now));
+  qa<HTMLButtonElement>('[data-clband]').forEach(b => b.classList.toggle('on', b.dataset.clband === cellUi.band));
+  const nAlerts = s ? groupAlerts(s.alerts).length : 0, nb = s ? s.cells.filter(c => c.neighbors && (c.neighbors.intra.length || c.neighbors.inter.length || c.neighbors.nr.length)).length : 0;
+  qa<HTMLButtonElement>('[data-clview]').forEach(b => {
+    const v = b.dataset.clview as CellView; b.classList.toggle('on', v === view);
+    b.textContent = v === 'alerts' ? `ALERTS ${nAlerts}` : v === 'cells' ? `CELLS ${s?.cells.length ?? 0}` : v === 'neighbors' ? `NEIGHBORS ${nb}` : 'LOG';
+  });
+  const alerts = q('#cl-alerts'), cards = q('#cl-cards'), nbrs = q('#cl-nbrs'), det = q('#cl-detail'), stage = q('#cl-stage'), logEl = q('#cl-log');
+  if (!alerts || !cards || !nbrs || !det || !stage || !logEl) return;
+  if (!wide) alerts.hidden = view !== 'alerts';
+  cards.hidden = view !== 'cells'; nbrs.hidden = view !== 'neighbors';
+  stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
+  const ac = q('#cl-alertcount'); if (ac) ac.textContent = nAlerts ? `${nAlerts} kept until cleared` : '';
+  if (!paused.has('cell')) {
+    if (wide || view === 'alerts') put(alerts, 'alerts', cellAlertsHtml(s, now));
+    if (view === 'cells') put(cards, 'cards', s && s.cells.length ? s.cells.map(c => cellCard(c, now)).join('') : `<div class="es"><span class="es-g">${glyph('cell', 'currentColor', 44)}</span><b>No cells yet</b><ul><li>AUTO sweeps the LTE downlink bands and stops on each carrier it finds</li><li>A cell appears within a second of its carrier being tuned; SIB1 and the other SIBs follow over a few seconds</li></ul></div>`);
+    if (view === 'neighbors') put(nbrs, 'nbrs', s ? cellNbrsHtml(s, now) : '');
+  }
+  if (cellUi.sel && s) {
+    if (!cellUi.detail || now - cellUi.detailAsked > 5000) { cellUi.detailAsked = now; worker?.postMessage({ type: 'cell', cmd: 'detail', key: cellUi.sel }); }
+    qa<HTMLDetailsElement>('details.cl-sib', det).forEach(x => cellUi.html.set('open:' + x.dataset.sib, x.open ? '1' : ''));
+  }
+  const html = s && cellUi.sel ? cellDetailHtml(s, now) : '';
+  det.hidden = !html;
+  if (html) put(det, 'detail', html); else cellUi.html.delete('detail');
+  // new alerts: the lamp and a banner until they are looked at
+  for (const a of s?.alerts ?? []) if (a.complete && !cellUi.seenAlerts.has(a.key)) { cellUi.seenAlerts.add(a.key); if (now - a.firstMs < 3_600_000) cellUi.banner = `NEW ${a.cls.toUpperCase()}`; }
+  if (view === 'alerts' || wide) cellUi.banner = '';
+  const recent = (s?.alerts ?? []).some(a => a.complete && now - a.lastMs < 600_000);
+  if (recent) setLamp('ALERT', 'red', true);
+  else if (s && s.cells.some(c => now - c.lastMs < 10_000)) setLamp(`${s.cells.filter(c => now - c.lastMs < 10_000).length} CELL${s.cells.filter(c => now - c.lastMs < 10_000).length === 1 ? '' : 'S'}`, 'ok');
+  else if (s?.lte) setLamp('LTE HEARD', 'amber', true);
+  else setLamp(state.connected ? 'SEARCHING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
+}
+function cellExport(csv: string, json: string): void {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  download(`cell-log-${stamp}.csv`, csv, 'text/csv');
+  setTimeout(() => download(`cell-decoded-${stamp}.json`, json, 'application/json'), 400);
+}
+function cellSave(st: unknown): void {
+  try { localStorage.setItem(CELL_KEY, JSON.stringify(st)); } catch { /* storage full or blocked: kept for this session only */ }
 }
 
 // ---- LoRa: every Meshtastic, MeshCore and LoRaWAN node heard across the span ------------------------------------
@@ -6150,6 +6466,7 @@ function redraw(id: string): void {
     case 'lora': refreshList(id); refreshLora(true); break;
     case 'sondes': refreshList(id); refreshSondes(true); break;
     case 'trains': refreshList(id); refreshTrains(true); break;
+    case 'cell': refreshList(id); refreshCell(true); break;
     case 'btle': refreshList(id); refreshBle(true); break;
     case 'vdl2': case 'acars': refreshList(id); refreshAcars(true); break;
     default: refreshList(id);
@@ -6173,6 +6490,7 @@ function clearApp(id: string): void {
     case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
     case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.regionalSeen.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
+    case 'cell': cellUi.sel = ''; cellUi.detail = null; break;
   }
   worker?.postMessage({ type: 'clear' });
   // a cleared screen shows empty even while paused - the freeze is for reading rows, and there are none now
@@ -6587,6 +6905,10 @@ function ensureWorker(): Worker {
       case 'lora': loraUi.snap = m as LoraSnap; refreshLora(); break;
       case 'sonde': sondeUi.snap = m as unknown as SondeSnap; refreshSondes(); break;
       case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;
+      case 'cell': cellUi.snap = m as unknown as CellSnap; refreshCell(); break;
+      case 'cellDetail': cellUi.detail = m as unknown as CellDetail; refreshCell(true); break;
+      case 'cellExport': cellExport(m.csv as string, m.json as string); break;
+      case 'cellState': cellSave(m.state); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
       case 'huntPage': onHuntPage(m); break;
@@ -7136,7 +7458,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  pager: ['PAGER', 'FLEX · POCSAG'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

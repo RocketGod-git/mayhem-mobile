@@ -35,6 +35,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   lora: { d: 'M10 80 L37 20 L37 80 L63 20 L63 80 L90 20' },
   // a balloon on its line, the sonde hanging under it
   sondes: { d: 'M50 8 A22 22 0 1 0 50.1 8 Z M50 52 L50 74 M40 74 H60 V92 H40 Z M44 81 H56' },
+  // a lattice mast with its antennas, waves going out to both sides
+  cell: { d: 'M50 30 L34 92 M50 30 L66 92 M41 66 H59 M37 80 H63 M45 48 H55 ' + arc(50, 26, 14, 140, 220, 16) + arc(50, 26, 26, 145, 215, 14) + arc(50, 26, 14, -40, 40, 16) + arc(50, 26, 26, -35, 35, 14), circles: [[50, 26, 4]] },
   btle: { d: 'M32 30 L68 68 L50 88 L50 12 L68 32 L32 70' },
   prowl: { d: arc(50, 64.8, 40.8, -158.8, -21.2, 11.47) + arc(50, 35.2, 40.8, 21.2, 158.8, 11.47) + 'M50 30 Q57 50 50 70 Q43 50 50 30 Z' },
   subghz: { d: 'M50 92 L50 42 M50 35 A7 7 0 1 0 50 49 A7 7 0 1 0 50 35 Z ' + 'M32.7 32 A20 20 0 0 1 67.3 32 M22.3 26 A32 32 0 0 1 77.7 26 M20 92 L80 92' },
