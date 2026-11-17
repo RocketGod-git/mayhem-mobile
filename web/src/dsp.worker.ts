@@ -354,6 +354,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'audioPort': audioPort = m.port as MessagePort; break;
     case 'app': processor = makeProcessor(m.app as string, m); break;
     case 'geo': adsb.ref = { lat: m.lat as number, lon: m.lon as number }; fleet.setRef(m.lat as number, m.lon as number); break;
+    case 'fleetRef': fleet.setRef(m.lat as number, m.lon as number); break;
     case 'fleet':
       if (m.cmd === 'unit') { const d = fleet.unitDetail(m.key as string); if (d) emit({ type: 'fleetUnit', ...d }); }
       else if (m.cmd === 'export') emit({ type: 'fleetExport', ...fleet.exportAll() });

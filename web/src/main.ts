@@ -31,7 +31,7 @@ import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import type { FleetSnap, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
-import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos } from './geomap.js';
+import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
 import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
 import { programTypeName, dataTypeName } from './dsp/hd/sis.js';
@@ -4557,6 +4557,7 @@ function fleetOpen(): void {
   configure('NONE', fleetUi.windows[0].hz, fleetRate(), 32, 40, true, 'fleet');
   const pos = state.home ?? lastKnownPos();
   if (pos) worker?.postMessage({ type: 'geo', lat: pos.lat, lon: pos.lon });
+  else { const z = zoneGuess(); if (z) worker?.postMessage({ type: 'fleetRef', lat: z.lat, lon: z.lon }); }
   requestGeo();
   fleetDwell();
 }
@@ -4634,7 +4635,9 @@ function renderFleet(view: HTMLElement): void {
     pick(e);
   };
   view.classList.toggle('fleetfull', fleetUi.full);
-  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id }), log });
+  // Unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them.
+  const dragged = (lat: number, lon: number) => { if (!state.home && !lastKnownPos()) worker?.postMessage({ type: 'fleetRef', lat, lon }); };
+  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id }), onDragEnd: dragged, log });
   clearInterval(fleetUi.timer);
   fleetUi.timer = window.setInterval(() => { if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; } refreshFleet(); }, 500);
   refreshList('fleet');
@@ -4766,7 +4769,7 @@ function refreshFleet(force = false): void {
   cards.hidden = view !== 'systems'; mapEl.hidden = !showMap; grants.hidden = view !== 'grants'; freqs.hidden = view !== 'freqs';
   stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
   nopos.hidden = !showMap || pins.length > 0;
-  if (!nopos.hidden) nopos.textContent = s && s.units.some(u => u.posMs > 0) && !s.ref ? 'unit positions need your location: allow it to resolve them' : 'no unit positions on the air yet';
+  if (!nopos.hidden) nopos.textContent = s && s.units.some(u => u.posMs > 0) && !s.ref ? 'unit positions need a region: drag the map to your area' : 'no unit positions on the air yet';
   if (!paused.has('fleet') && s) {
     const keep = (el: HTMLElement, html: string) => { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; };
     if (view === 'systems') keep(cards, s.systems.length ? s.systems.map(x => fleetSystemCard(x, now)).join('') : emptyState('fleet'));

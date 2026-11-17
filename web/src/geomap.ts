@@ -28,6 +28,8 @@ export interface GeoOpts {
   start?: { lat: number; lon: number; zoom: number } | null;
   /** Moving pins: fit when the set of pins changes, not on every move (a refit every update keeps the map panning). */
   steady?: boolean;
+  /** The map was dragged by hand; its new center. */
+  onDragEnd?: (lat: number, lon: number) => void;
 }
 /** Regional zoom: a couple of hundred kilometers across, where ships, stations and aircraft near you show up. */
 export const REGION_ZOOM = 8;
@@ -40,10 +42,22 @@ export function lastKnownPos(): { lat: number; lon: number } | null {
   } catch { return null; }
 }
 export function saveLastPos(p: { lat: number; lon: number }): void { try { localStorage.setItem(LAST_POS_KEY, JSON.stringify(p)); } catch { /* private window */ } }
-/** Where a map opens: your position, else the last one known, else the middle of the US; always at regional zoom. */
+/** Rough middles of the US time zones, for a device that has never reported a position. */
+const ZONE_MIDS: Record<string, [number, number]> = {
+  'America/Los_Angeles': [36, -120], 'America/Phoenix': [33.5, -112], 'America/Denver': [39.7, -105], 'America/Boise': [43.6, -116.2],
+  'America/Chicago': [38, -92], 'America/New_York': [40, -77], 'America/Detroit': [42.5, -84], 'America/Indiana/Indianapolis': [39.8, -86.2],
+  'America/Anchorage': [61.2, -149.9], 'Pacific/Honolulu': [21.3, -157.9], 'America/Puerto_Rico': [18.2, -66.5],
+};
+/** The region this device's time zone points at, or null outside the table. */
+export function zoneGuess(): { lat: number; lon: number } | null {
+  try { const m = ZONE_MIDS[Intl.DateTimeFormat().resolvedOptions().timeZone]; return m ? { lat: m[0], lon: m[1] } : null; } catch { return null; }
+}
+/** Where a map opens: your position, else the last one known, else your time zone's region, else the middle of the US. */
 export function mapStart(home: { lat: number; lon: number } | null): { lat: number; lon: number; zoom: number; standIn: boolean } {
   const p = home ?? lastKnownPos();
-  return p ? { ...p, zoom: REGION_ZOOM, standIn: false } : { lat: 39.5, lon: -98.35, zoom: REGION_ZOOM - 3, standIn: true };
+  if (p) return { ...p, zoom: REGION_ZOOM, standIn: false };
+  const z = zoneGuess();
+  return z ? { ...z, zoom: REGION_ZOOM - 2, standIn: true } : { lat: 39.5, lon: -98.35, zoom: REGION_ZOOM - 3, standIn: true };
 }
 
 let leafletReady: Promise<void> | null = null;
@@ -105,6 +119,7 @@ export class GeoMap {
     this.map = L.map(this.host, { zoomControl: true, attributionControl: true }).setView(st ? [st.lat, st.lon] : home ? [home.lat, home.lon] : [39.5, -98.35], st ? st.zoom : home ? 9 : 4);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors', className: 'dark-tiles' }).addTo(this.map);
     this.map.on('dragstart', () => { if (this.follow) this.setFollow(false); });
+    this.map.on('dragend', () => { const c = this.map.getCenter(); this.opts.onDragEnd?.(c.lat, c.lng); });
     this.map.on('click', (e: any) => this.opts.onMapTap?.(e.latlng.lat, e.latlng.lng));
     this.setHome(home ?? null);
     this.update(this.items, this.sel);
