@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.ham.Logbook.load(this)
         com.rocketgod.mayhem.core.sat.Tles.init(filesDir)
         com.rocketgod.mayhem.core.sonde.SondeHub.init(filesDir)
+        Apps.cellFile = java.io.File(filesDir, "cell.json")
         com.rocketgod.mayhem.core.analyzer.Analyzer.init(filesDir)
         if (savedInstanceState == null) {
             // Land on the launcher (the front door), not Audio, and arm the auto-pick so it tunes the strongest
