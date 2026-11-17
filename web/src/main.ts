@@ -4511,7 +4511,7 @@ type FleetSel = { kind: 'unit' | 'tg' | 'sys' | 'car'; key: string } | null;
 const fleetUi = {
   snap: null as FleetSnap | null, view: 'systems' as FleetView, band: 'AUTO', span: 8_000_000, sel: null as FleetSel,
   unit: null as { key: string; reports: FleetUnitReport[]; trail: [number, number, number][] } | null,
-  windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false,
+  windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false, hold: false, wired: false,
 };
 const fleetColor = (sys: string) => { const s = fleetUi.snap?.systems.find(x => x.key === sys); return s ? FLEET_COLORS[s.color % FLEET_COLORS.length] : 'var(--muted)'; };
 const fleetMhz = (hz: number, d = 5) => hz > 0 ? (hz / 1e6).toFixed(d) : '-';
@@ -4593,7 +4593,7 @@ function renderFleet(view: HTMLElement): void {
       ${wide ? '<div id="fl-detail" class="mt-detail fl-dock" hidden></div>' : ''}
       <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div>${wide ? '' : mapHtml}<div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div>${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}</div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
-      <div class="note">Trunked radio systems from their control channels, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. DMR unit positions come from a format derived from recordings and are resolved against your own position (within about 300 km); they stay marked CRC unverified. AUTO steps through the bands and stays where it finds a system. Tap anything for all it carried.</div>
+      <div class="note">Trunked radio systems from their control channels, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. DMR unit positions come from a format derived from recordings, checked by the vendor CRC worked out from them, and are resolved against your own position (within about 300 km); a report that fails its check is shown as unverified. AUTO steps through the bands and stays where it finds a system. Tap anything for all it carried.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-flband]', view).forEach(b => b.onclick = () => fleetSetBand(b.dataset.flband!));
@@ -4606,6 +4606,11 @@ function renderFleet(view: HTMLElement): void {
     if (t) { const [kind, ...rest] = t.dataset.flsel!.split(':'); fleetPick({ kind: kind as 'unit' | 'tg' | 'sys' | 'car', key: rest.join(':') }); }
   };
   $('fl-cards').onclick = pick; $('fl-grants').onclick = pick; $('fl-freqs').onclick = pick;
+  // A redraw between press and release would swap the element under the pointer and lose the click.
+  const hold = () => { fleetUi.hold = true; };
+  const release = () => { if (!fleetUi.hold) return; setTimeout(() => { fleetUi.hold = false; refreshFleet(true); }, 0); };
+  for (const id of ['fl-cards', 'fl-grants', 'fl-freqs', 'fl-detail']) $(id).onpointerdown = hold;
+  if (!fleetUi.wired) { fleetUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
   $('fl-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-fldo]'); if (b) { if (b.dataset.fldo === 'close') fleetUi.sel = null; else if (b.dataset.fldo === 'map') { if (!FLEET_WIDE.matches) fleetUi.view = 'map'; const u = fleetUi.snap?.units.find(x => x.key === fleetUi.sel?.key); refreshFleet(true); if (u && u.lat !== null && u.lon !== null) geo?.center(u.lat, u.lon, 15); return; } refreshFleet(true); return; }
     pick(e);
@@ -4713,7 +4718,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
     const x = s.systems.find(y => y.key === sel.key); if (!x) return '';
     const f: [string, string][] = x.proto === 'P25'
       ? [['PROTOCOL', 'P25 Phase 1 control channel'], ['WACN', x.wacn.toString(16).toUpperCase().padStart(5, '0')], ['SYSTEM', x.sysId.toString(16).toUpperCase().padStart(3, '0')], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['TALKGROUPS', `${x.tgs}`], ['GRANTS', `${x.grants}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
-      : [['PROTOCOL', 'DMR'], ['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : '-'], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : 'not sent'], ['CALLSIGN', x.callsign || 'no CW ID heard yet'], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['FORMATS', x.derived ? 'derived from recordings (rest-channel beacon CRC verified, unit reports unverified)' : 'ETSI TS 102 361'], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]];
+      : [['PROTOCOL', 'DMR'], ['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : '-'], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : 'not sent'], ['CALLSIGN', x.callsign || 'no CW ID heard yet'], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['FORMATS', x.derived ? 'derived from recordings (rest-channel beacon on the CSBK CRC, unit reports on the vendor CRC)' : 'ETSI TS 102 361'], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]];
     return head(x.proto, x.label) + fields(f) + (x.proto === 'P25' ? `<div class="fl-hist"><small>CHANNEL TABLE</small>${fleetIdenRows(x.idens)}</div>` : '');
   }
   const c = s.carriers.find(y => String(y.key) === sel.key); if (!c) return '';
@@ -4725,6 +4730,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
 function refreshFleet(force = false): void {
   if (state.app !== 'fleet') return;
   const now = Date.now();
+  if (fleetUi.hold) return;
   if (!force && now - fleetUi.drawn < 240) { clearTimeout(fleetUi.pending); fleetUi.pending = window.setTimeout(() => refreshFleet(true), 250); return; }
   fleetUi.drawn = now;
   const s = fleetUi.snap, view = fleetUi.view;
