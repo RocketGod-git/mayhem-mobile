@@ -24,6 +24,8 @@ export interface GeoOpts {
   fitPins?: boolean;
   /** Where the map opens before anything is plotted (your position, the last one known, or a stand-in). */
   start?: { lat: number; lon: number; zoom: number } | null;
+  /** Moving pins: fit when the set of pins changes, not on every move (a refit every update keeps the map panning). */
+  steady?: boolean;
 }
 /** Regional zoom: a couple of hundred kilometers across, where ships, stations and aircraft near you show up. */
 export const REGION_ZOOM = 8;
@@ -80,7 +82,7 @@ export class GeoMap {
   private map: any = null;
   private readonly markers = new Map<string, any>();
   private homeMarker: any = null;
-  private items: GeoItem[] = []; private sel = '';
+  private items: GeoItem[] = []; private sel = ''; private fitKey = '';
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
   private paths: any[] = []; private pathDefs: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
   private radar: any = null; private radarCells: RadarCell[] = []; private radarColors: string[] = [];
@@ -128,7 +130,8 @@ export class GeoMap {
       else { const nm = L.marker([it.lat, it.lon], { icon }).addTo(this.map).on('click', () => this.opts.onPick(it.id)); this.markers.set(it.id, nm); }
     }
     for (const [id, m] of this.markers) if (!live.has(id)) { this.map.removeLayer(m); this.markers.delete(id); }
-    if (this.follow) this.fit();
+    const key = [...live].sort().join('|'), changed = key !== this.fitKey; this.fitKey = key;
+    if (this.follow && (!this.opts.steady || changed)) this.fit();
   }
   private icon(it: GeoItem, sel: boolean): any {
     const accent = currentSkin().accent;
