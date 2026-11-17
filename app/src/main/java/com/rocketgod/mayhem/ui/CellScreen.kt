@@ -1,6 +1,7 @@
 package com.rocketgod.mayhem.ui
 
 import android.widget.Toast
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,17 +48,25 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.Geo
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.Saves
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.cell.AlertGroup
+import com.rocketgod.mayhem.core.cell.WarningArea
+import com.rocketgod.mayhem.core.cell.areaRelation
+import com.rocketgod.mayhem.core.cell.parseGeoTrigger
+import com.rocketgod.mayhem.core.cell.parseWarningArea
 import com.rocketgod.mayhem.core.cell.CELL_BANDS
 import com.rocketgod.mayhem.core.cell.CellDetail
 import com.rocketgod.mayhem.core.cell.CellRow
@@ -90,7 +99,7 @@ private fun hex(v: Long, w: Int = 0) = java.lang.Long.toHexString(v).uppercase(L
 private fun clBandAt(hz: Long) = CELL_BANDS.firstOrNull { hz >= it.lo - 2_000_000 && hz <= it.hi + 2_000_000 }
 /** Severity colors by rank: tests, public safety, severe and AMBER, extreme, presidential and ETWS disasters. */
 private fun rankColor(rank: Int): Color = when (rank.coerceIn(0, 5)) {
-    0 -> Palette.muted; 1 -> Palette.accent; 2 -> Color(0xFFFFAF00); 3 -> Color(0xFFFF7A45); 4 -> Color(0xFFFF4D4D); else -> Color(0xFFFF2A6A)
+    0 -> Color(0xFF8D97AB); 1 -> Color(0xFF4C8DFF); 2 -> Color(0xFFFFAF00); 3 -> Color(0xFFFF7A45); 4 -> Color(0xFFFF4D4D); else -> Color(0xFFFF2A6A)
 }
 private fun cellLabel(c: CellRow, pci: Boolean = true): String {
     val op = c.summary?.plmns?.firstOrNull { it.name.isNotEmpty() }?.name ?: c.summary?.plmns?.firstOrNull()?.id ?: ""
@@ -101,6 +110,38 @@ private fun capability(kind: Radio.Kind): Pair<String, Int> = when {
     kind == Radio.Kind.NONE -> "NO RADIO · a HackRF reads cells, SIBs and alerts; an RTL-SDR reads cells and their MIB" to 0
     Apps.cellRate() < 15_360_000 -> "RTL-SDR · 1.92 MS/s · cell search and MIB from the center 1.08 MHz · SIBs and alerts need the whole carrier: a HackRF" to 1
     else -> "HACKRF · 15.36 MS/s · cells, MIB, every SIB and the alerts of carriers up to 15 MHz (20 MHz carriers: MIB only)" to 2
+}
+
+/** The alert area of a group (the first of its messages that carries one). */
+private fun groupArea(g: AlertGroup): WarningArea? {
+    for (m in g.messages) if (m.areaHex.isNotEmpty()) parseWarningArea(m.areaHex)?.let { return it }
+    return null
+}
+/** INSIDE / OUTSIDE with the distance to the edge, from your position; the tone is 1 inside, 2 outside, 0 unknown. */
+private fun whereOf(a: WarningArea, home: Pair<Double, Double>?): Pair<String, Int> {
+    if (home == null) return "YOUR POSITION IS NOT KNOWN · allow location to see whether you are inside this alert area" to 0
+    val (inside, edge) = areaRelation(home, a)
+    val dist = if (edge < 1000) "${Math.round(edge)} m" else "%.${if (edge < 10_000) 1 else 0}f km".format(Locale.US, edge / 1000)
+    return if (inside) "INSIDE THE ALERT AREA · $dist from its edge" to 1 else "OUTSIDE THE ALERT AREA · $dist from its edge" to 2
+}
+@Composable
+private fun whereColor(tone: Int) = when (tone) { 1 -> Palette.danger; 2 -> Palette.ok; else -> Palette.muted }
+
+/** The area's outline, small, in the alert's color. */
+@Composable
+private fun AreaThumb(a: WarningArea, col: Color, modifier: Modifier) {
+    Canvas(modifier) {
+        val s0 = a.bounds[0]; val w0 = a.bounds[1]; val n0 = a.bounds[2]; val e0 = a.bounds[3]
+        val k = kotlin.math.cos((s0 + n0) / 2 * Math.PI / 180); val sx = ((e0 - w0) * k).takeIf { it > 0 } ?: 1e-6; val sy = (n0 - s0).takeIf { it > 0 } ?: 1e-6
+        val box = size.minDimension * 52f / 64f; val pad = size.minDimension * 6f / 64f; val sc = box / maxOf(sx, sy)
+        val path = Path()
+        a.points.forEachIndexed { i, (la, lo) ->
+            val x = (pad + (lo - w0) * k * sc + (box - sx * sc) / 2).toFloat(); val y = (pad + (n0 - la) * sc + (box - sy * sc) / 2).toFloat()
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        drawPath(path, col.copy(alpha = 0.3f)); drawPath(path, col, style = Stroke(width = 1.5.dp.toPx()))
+    }
 }
 
 /**
@@ -128,7 +169,12 @@ fun CellScreen(accent: Color) {
     val seen = remember { HashSet<String>() }
     val open = remember { mutableStateMapOf<String, Boolean>() }
     var full by remember { mutableStateOf(false) }
+    /** The alert whose area is on the map. */
+    var alertSel by rememberSaveable { mutableStateOf("") }
+    val fix by Geo.fix.collectAsState()
+    val home = fix ?: Geo.lastKnownPos()
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(250); value = System.currentTimeMillis() } }.value
+    LaunchedEffect(Unit) { Geo.start(ctx) }
     // the scan runs while the screen is up
     LaunchedEffect(Unit) { while (true) { delay(300); Apps.cellTick(System.currentTimeMillis()) } }
     LaunchedEffect(wide) { if (wide && view == 0) { view = 1; full = false } }
@@ -172,12 +218,33 @@ fun CellScreen(accent: Color) {
         }
     }
 
+    val withArea = groups.mapNotNull { g -> groupArea(g)?.let { g to it } }
+    val mapped = withArea.firstOrNull { it.first.key == alertSel } ?: withArea.firstOrNull()
+
+    /** The selected alert's area on the map, with your position, and whether you are inside it. */
     @Composable
-    fun alertList(modifier: Modifier) {
+    fun alertMap(modifier: Modifier) {
+        val (g, a) = mapped ?: return
+        val col = rankColor(g.rank); val (where, tone) = whereOf(a, home)
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            val shape = com.rocketgod.mayhem.ui.GeoShape(g.key, a.points, false, col.toArgb(), sel = true)
+            val fit = a.points + (if (home != null && areaRelation(home, a).second < 150_000) listOf(home) else emptyList())
+            GeoMapView(emptyList(), accent, Modifier.fillMaxWidth().weight(1f).panel(), home = home, layers = GeoLayers(shapes = listOf(shape)), start = remember { mapStart(Geo.fix.value) }, fitPts = fit)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f)), itemVerticalAlignment = Alignment.CenterVertically) {
+                Text(g.cls.uppercase(Locale.US), color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.5.sp)
+                Text(where, color = whereColor(tone), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), letterSpacing = 1.sp)
+                Text("${a.points.size} points · ${"%.1f".format(Locale.US, a.areaKm2)} km² · area format derived from recordings", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+            }
+        }
+    }
+
+    @Composable
+    fun alertList(modifier: Modifier, withMap: Boolean) {
         val snap = s
         if (snap == null || groups.isEmpty()) { EmptyState("cell", modifier.panel(), accent); return }
         LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(d.dp(9f))) {
-            items(groups, key = { it.key }) { g -> AlertCard(g, snap, now, ::pick) }
+            if (withMap && mapped != null) item(key = "map") { alertMap(Modifier.fillMaxWidth().height(d.dp(260f))) }
+            items(groups, key = { it.key }) { g -> AlertCard(g, snap, now, home, mapped?.first?.key == g.key && withArea.size > 1, { alertSel = g.key }, ::pick) }
             item(key = "clear") {
                 ToggleBox(if (System.currentTimeMillis() - clearArm < 4000) "TAP AGAIN TO CLEAR EVERY ALERT" else "CLEAR ALERTS", false, accent) { clearAlerts() }
             }
@@ -196,7 +263,7 @@ fun CellScreen(accent: Color) {
         Box(modifier) {
             val gap = Arrangement.spacedBy(d.dp(9f))
             when (view) {
-                0 -> alertList(Modifier.fillMaxSize())
+                0 -> alertList(Modifier.fillMaxSize(), true)
                 1 -> if (s == null || s!!.cells.isEmpty()) EmptyState("cellcards", Modifier.fillMaxSize().panel(), accent)
                     else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = gap) { items(s!!.cells, key = { it.key }) { c -> CellCard(c, s!!, now, sel == c.key, accent, ::pick) } }
                 2 -> NeighborList(s, now, accent, Modifier.fillMaxSize(), ::pick)
@@ -213,7 +280,8 @@ fun CellScreen(accent: Color) {
                     Text("ALERTS", color = Palette.danger, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp)
                     if (groups.isNotEmpty()) Text("${groups.size} kept until cleared", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
                 }
-                alertList(Modifier.fillMaxWidth().weight(1f))
+                if (mapped != null) alertMap(Modifier.fillMaxWidth().weight(0.46f).padding(bottom = d.dp(8f)))
+                alertList(Modifier.fillMaxWidth().weight(if (mapped != null) 0.54f else 1f), false)
             }
         },
         onWaterfall = { Apps.setWaterfall(MayhemApp.CELL, !wf) },
@@ -292,20 +360,23 @@ private fun CellHead(s: CellSnap?, scan: Apps.CellScan, freq: Long, kind: Radio.
 /** One alert: its class, when, every language it came in, the alert area as received, and the cells that carried it. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AlertCard(g: AlertGroup, s: CellSnap, now: Long, pick: (String) -> Unit) {
+private fun AlertCard(g: AlertGroup, s: CellSnap, now: Long, home: Pair<Double, Double>?, selected: Boolean, onArea: () -> Unit, pick: (String) -> Unit) {
     val d = rememberDims()
     val col = rankColor(g.rank); val fresh = now - g.lastMs < 600_000
+    val area = remember(g.key, g.messages.size) { groupArea(g) }
     val shape = RoundedCornerShape(d.dp(14f))
     var areaOpen by remember { mutableStateOf(setOf<String>()) }
     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape).background(Brush.linearGradient(listOf(col.copy(alpha = if (fresh) 0.24f else 0.16f), Palette.surface)))
-        .border(if (fresh) 2.dp else 1.dp, col.copy(alpha = if (fresh) 0.85f else 0.55f), shape)) {
+        .border(if (fresh || selected) 2.dp else 1.dp, col.copy(alpha = if (fresh || selected) 0.9f else 0.55f), shape).then(if (area != null) Modifier.clickable { onArea() } else Modifier)) {
         Box(Modifier.width(d.dp(5f)).fillMaxHeight().background(col))
         Column(Modifier.weight(1f).padding(d.dp(12f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f)), itemVerticalAlignment = Alignment.CenterVertically) {
                 Text(g.cls.uppercase(Locale.US), color = Color(0xFF05080A), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), letterSpacing = 1.5.sp,
                     modifier = Modifier.clip(RoundedCornerShape(d.dp(6f))).background(col).padding(horizontal = d.dp(8f), vertical = d.dp(4f)))
                 Text(g.messages[0].category, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f))
+                if (area != null) AreaThumb(area, col, Modifier.size(d.dp(44f)))
             }
+            if (area != null) { val (w, tone) = whereOf(area, home); Text(w, color = whereColor(tone), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), letterSpacing = 1.sp) }
             Text("${clTime(g.firstMs)} · ${clAgo(now - g.lastMs)}${if (g.lastMs - g.firstMs > 2000) " · heard until ${clTime(g.lastMs)}" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
             for (m in g.messages) Column(verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                 Box(Modifier.fillMaxWidth().height(1.dp).background(col.copy(alpha = 0.25f)))
@@ -323,6 +394,15 @@ private fun AlertCard(g: AlertGroup, s: CellSnap, now: Long, pick: (String) -> U
                             }
                             wt != null -> Text(wt.type.uppercase(Locale.US) + (if (wt.userAlert) " · USER ALERT" else "") + (if (wt.popup) " · POPUP" else ""), color = Palette.ink, fontSize = d.sp(15f))
                         }
+                        val trig = if (m.binaryHex.isNotEmpty() && m.id == 4400) parseGeoTrigger(m.binaryHex) else null
+                        if (trig != null) FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f)), itemVerticalAlignment = Alignment.CenterVertically) {
+                            Text("APPLIES TO · header 0x${trig.header} · derived from recordings", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.2.sp)
+                            for (p in trig.pairs) {
+                                val hit = s.alerts.firstOrNull { it.id == p.id && it.serial == p.serial }
+                                Text("${p.id} / 0x${hex(p.serial.toLong(), 4)}" + if (hit != null) " · ${hit.language ?: hit.cls}" else " · not heard", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                                    modifier = Modifier.clip(RoundedCornerShape(d.dp(7f))).border(1.dp, col.copy(alpha = 0.45f), RoundedCornerShape(d.dp(7f))).padding(horizontal = d.dp(7f), vertical = d.dp(2f)))
+                            }
+                        }
                         val meta = listOf("ID ${m.id} (0x${hex(m.id.toLong())})", "SERIAL 0x${hex(m.serial.toLong(), 4)}", m.scope, "CODE ${m.messageCode}", "UPDATE ${m.updateNumber}",
                             if (m.dcs >= 0) "DCS 0x${hex(m.dcs.toLong(), 2)}" else "", if (m.pages > 0) "${m.pages} PAGE${if (m.pages == 1) "" else "S"}" else "", m.source).filter { it.isNotEmpty() }.joinToString(" · ")
                         Text(meta, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 0.4.sp)
@@ -330,12 +410,14 @@ private fun AlertCard(g: AlertGroup, s: CellSnap, now: Long, pick: (String) -> U
                 }
                 if (m.areaHex.isNotEmpty()) {
                     val isOpen = m.key in areaOpen
-                    Text("${if (isOpen) "▾" else "▸"} ALERT AREA · ${m.areaHex.length / 2} OCTETS", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.2.sp,
+                    val ar = remember(m.areaHex) { parseWarningArea(m.areaHex) }
+                    Text("${if (isOpen) "▾" else "▸"} ALERT AREA · ${if (ar != null) "${ar.points.size} POINTS · ${"%.1f".format(Locale.US, ar.areaKm2)} KM² · ${if (ar.closed) "CLOSED RING" else "OPEN RING"} · " else ""}${m.areaHex.length / 2} OCTETS", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.2.sp,
                         modifier = Modifier.clickable { areaOpen = if (isOpen) areaOpen - m.key else areaOpen + m.key })
                     if (isOpen) SelectionContainer {
                         Column {
                             Text(m.areaHex, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
-                            Text("the polygon's encoding is ATIS-0700041 (named by TS 23.041 9.3.63), outside the specs this app is built from: shown as received", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+                            Text(if (ar != null) "header 0x${ar.header} (meaning not settled), then ${ar.points.size} points of 22-bit latitude and longitude · format derived from recordings" else "not a polygon this app can read: shown as received",
+                                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
                         }
                     }
                 }

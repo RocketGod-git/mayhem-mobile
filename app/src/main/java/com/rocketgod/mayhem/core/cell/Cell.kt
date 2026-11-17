@@ -62,7 +62,8 @@ private class Cell(val key: String, val hz: Long, val pci: Int, var band: Int?, 
     var timing: Timing? = null
     var ctl: List<ControlDecoder> = emptyList(); val pending = HashMap<String, PendingTb>()
 }
-private class Found(val cell: Cell, val map: List<HalfFrame>, val evenSf0: Boolean, val tdd: Boolean)
+private class Found(val cell: Cell, val map: List<HalfFrame>, val evenSf0: Boolean, val tdd: Boolean, val mibH: Int)
+private class MibHit(val mib: Mib, val snr: Double, val level: Double, val h: Int)
 
 private const val BLOCK_MS = 40
 private fun duplexPss(num: Numerology, tdd: Boolean): Int { if (!tdd) return num.pssOffset; val (o, cp) = num.symbol(2); return num.subframe + o + cp }
@@ -74,8 +75,8 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     /** Where the radio is tuned, read at every buffer (the engine's frequency). */
     var centerOf: (() -> Long)? = null
     var now: () -> Long = { System.currentTimeMillis() }
-    /** Skip ahead by the CPU time a block took, so a slow device never falls behind the stream (off: an offline run that times nothing). */
-    var keepUp = true
+    /** Live radio: skip input in proportion to the CPU a block took. Off for recordings, which wait for the decoder. */
+    var realtime = true
     private val cells = LinkedHashMap<String, Cell>()
     val warnings = WarningAssembler()
     private val log = ArrayList<LogRow>()
@@ -134,9 +135,9 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                 capN = 0
                 val t0 = System.nanoTime()
                 try { block(capStart) } catch (e: Exception) { onNote?.invoke("cell: ${e.message}") }
-                cpuMs = if (keepUp) (System.nanoTime() - t0) / 1_000_000 else 0
+                cpuMs = (System.nanoTime() - t0) / 1_000_000
                 // never take more of the stream than this device keeps up with
-                nextAbs = max(nextAbs, abs + Math.round(this.rate * cpuMs / 1000.0 * 1.25))
+                if (realtime) nextAbs = max(nextAbs, abs + Math.round(this.rate * cpuMs / 1000.0 * 1.25))
             }
         }
         if (dirty || now() - lastPost > 1000) post()
@@ -166,10 +167,10 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                 for (tdd in booleanArrayOf(false, true)) {
                     for ((pci, evenSf0) in pciCandidates(yr, yi, h.nid2, map, tdd)) {
                         if (!tried.add(pci * 2 + (if (tdd) 1 else 0))) continue
-                        val r = readMib(yr, yi, pci, map, evenSf0, tdd) ?: continue
+                        val r = readMib(yr, yi, pci, map, evenSf0, tdd, cells.containsKey("${Math.round(centerHz / 1e5)}:$pci")) ?: continue
                         val cell = cellFor(pci, tdd, now)
-                        cell.mib = r.first; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.second; cell.levelDb = r.third; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score
-                        found.add(Found(cell, map, evenSf0, tdd))
+                        cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score
+                        found.add(Found(cell, map, evenSf0, tdd, r.h))
                         cfo = frac + h.cfo; cfoKnown = true
                     }
                     if (found.any { it.map === map }) break
@@ -183,7 +184,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         for (f in found) {
             val m = f.cell.mib!!
             if (m.bandwidth > maxRb) continue
-            readSi(f.cell, f.map, f.evenSf0, f.tdd, start, now)
+            readSi(f.cell, f.map, f.evenSf0, f.tdd, f.mibH, start, now)
         }
         schedule(found.map { it.cell })
     }
@@ -224,18 +225,24 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         return g to t.third
     }
 
-    private fun readMib(yr: FloatArray, yi: FloatArray, pci: Int, map: List<HalfFrame>, evenSf0: Boolean, tdd: Boolean): Triple<Mib, Double, Double>? {
-        val off = duplexPss(LOW, tdd)
+    /**
+     * MIB from the sf0 half-frames of the map. A cell not heard before needs two frames that agree (bandwidth, ports
+     * and SFN one frame apart per frame): a single 16-bit CRC pass among the many PCI hypotheses is not proof.
+     */
+    private fun readMib(yr: FloatArray, yi: FloatArray, pci: Int, map: List<HalfFrame>, evenSf0: Boolean, tdd: Boolean, known: Boolean): MibHit? {
+        val off = duplexPss(LOW, tdd); val hits = ArrayList<MibHit>()
         var tries = 0
         for (hf in map) {
             if ((hf.h % 2 == 0) != evenSf0) continue
-            if (++tries > 3) break
+            if (++tries > 4) break
             val d = demodAligned(yr, yi, hf.pos - off, LOW, 6, 0, pci, 1) ?: continue
             val r = decodeMib(d.first, pci, 6)
-            if (r != null) {
-                val lvl = 10 * log10(max(d.second, 1e-12) / (128.0 * 128))
-                return Triple(r.first, 10 * log10(max(r.second, 1e-6)), lvl)
-            }
+            if (r == null) { if (!known && tries >= 2 && hits.isEmpty()) break; continue }
+            val hit = MibHit(r.first, 10 * log10(max(r.second, 1e-6)), 10 * log10(max(d.second, 1e-12) / (128.0 * 128)), hf.h)
+            if (known) return hit
+            val prev = hits.firstOrNull { x -> x.mib.bandwidth == r.first.bandwidth && x.mib.ports == r.first.ports && (x.mib.sfn + (hf.h - x.h) / 2) % 1024 == r.first.sfn }
+            if (prev != null) return prev
+            hits.add(hit)
         }
         return null
     }
@@ -252,15 +259,14 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     }
 
     /** SIB1 occasions and the wanted SI windows inside this block, for one cell whose MIB just decoded. */
-    private fun readSi(cell: Cell, map: List<HalfFrame>, evenSf0: Boolean, tdd: Boolean, blockAbs: Long, now: Long) {
+    private fun readSi(cell: Cell, map: List<HalfFrame>, evenSf0: Boolean, tdd: Boolean, mibH: Int, blockAbs: Long, now: Long) {
         val mib = cell.mib!!; val nrb = mib.bandwidth; val off = duplexPss(num, tdd); val delay = decimDelay(rate)
         if (cell.ctl.isEmpty() || cell.ctl[0].nrb != nrb || cell.ctl[0].nports != mib.ports)
             cell.ctl = (if (tdd) listOf(0, 1, 2) else listOf(1)).map { ControlDecoder(cell.pci, nrb, mib.ports, mib.phichResource, tdd, it) }
         // SFN of each mapped half-frame from the frame whose MIB was read
         val sf0 = map.filter { (it.h % 2 == 0) == evenSf0 }
         if (sf0.isEmpty()) return
-        val ref = sf0[0]; val refSfn = mib.sfn
-        // the MIB came from the first usable sf0 half-frame; its SFN is the one decoded there
+        val ref = sf0.firstOrNull { it.h == mibH } ?: sf0[0]; val refSfn = mib.sfn
         cell.timing = Timing(blockAbs + ref.pos * dd + delay - off, refSfn)
         val sched = cell.summary?.schedule ?: emptyList()
         for (hf in map) {
@@ -362,7 +368,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
 
     /** Next capture: just before the earliest wanted SI window of the cells heard (or right away). */
     private fun schedule(cs: List<Cell>) {
-        val fs = rate.toDouble(); val frame = fs / 100; val now = now(); val lead = Math.round(fs * 0.012); val from = abs + Math.round(fs * cpuMs / 1000 * 1.25)
+        val fs = rate.toDouble(); val frame = fs / 100; val now = now(); val lead = Math.round(fs * 0.012); val from = abs + (if (realtime) Math.round(fs * cpuMs / 1000 * 1.25) else 0)
         var best = Double.POSITIVE_INFINITY
         for (c in cs) {
             val tm = c.timing ?: continue; val sm = c.summary ?: continue
