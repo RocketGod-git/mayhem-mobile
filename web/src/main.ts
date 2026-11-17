@@ -4516,6 +4516,7 @@ const fleetUi = {
 const fleetColor = (sys: string) => { const s = fleetUi.snap?.systems.find(x => x.key === sys); return s ? FLEET_COLORS[s.color % FLEET_COLORS.length] : 'var(--muted)'; };
 const fleetMhz = (hz: number, d = 5) => hz > 0 ? (hz / 1e6).toFixed(d) : '-';
 const fleetAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min` : `${Math.floor(ms / 3_600_000)} h`;
+const fleetAgoText = (ms: number) => { const a = fleetAgo(ms); return a === 'now' ? 'now' : `${a} ago`; };
 const fleetClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 /** The sample rate Fleet asks for: the chosen span where the radio takes it, else as wide as it goes up to 2.4 MHz. */
 function fleetRate(): number {
@@ -4572,24 +4573,33 @@ function setFleetFull(on: boolean): void {
   refreshFleet(true);
   requestAnimationFrame(() => geo?.invalidate());
 }
+/** A desktop-size window: the map takes the big pane where the waterfall sits (a short waterfall strip under it when
+ *  that is on), and the column on the right holds everything else all the way down. */
+const FLEET_WIDE = window.matchMedia('(min-width: 1000px)');
+FLEET_WIDE.addEventListener('change', () => { if (state.app === 'fleet') { const v = q<HTMLElement>('main#view'); if (v) renderFleet(v); } });
 function renderFleet(view: HTMLElement): void {
-  const hack = !radio || radio.kind !== 'rtlsdr';
+  const hack = !radio || radio.kind !== 'rtlsdr', wide = FLEET_WIDE.matches;
+  if (wide) { if (fleetUi.view === 'map') fleetUi.view = 'systems'; fleetUi.full = false; }
+  view.classList.toggle('flwide', wide);
+  const tabs = (wide ? ['systems', 'grants', 'freqs', 'log'] : ['systems', 'map', 'grants', 'freqs', 'log']) as FleetView[];
+  const mapHtml = '<div id="fl-map" class="panel map"></div><div id="fl-nopos" class="mt-nopos"></div>';
   view.innerHTML = `
-    <section class="${visCls('fleet')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('fleet')}">${readoutHtml()}${wide ? `<div class="fl-mapbox">${mapHtml}</div>` : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="fl-head" class="fl-head"></div>
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...FLEET_BANDS.map(b => [b[0], b[0] === 'TBAND' ? 'T-BAND' : b[0]])].map(([k, l]) => `<button data-flband="${k}">${l}</button>`))}</div>
       ${hack ? `<div class="ctlrow"><span class="rl">SPAN</span>${segHtml(FLEET_SPANS.map(([r, l]) => `<button data-flspan="${r}" class="${radioCan(r) ? '' : 'off'}">${l}</button>`))}</div>` : ''}
-      <div class="ctlrow">${segHtml((['systems', 'map', 'grants', 'freqs', 'log'] as FleetView[]).map(v => `<button data-flview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('fleet')}<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button><button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
-      <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div><div id="fl-map" class="panel map"></div><div id="fl-nopos" class="mt-nopos"></div><div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div><div id="fl-detail" class="mt-detail" hidden></div></div>
-      <div id="fl-log">${logHtml('fleet', 'watching for control channels…')}</div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-flview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('fleet')}${wide ? '' : `<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button>`}<button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
+      ${wide ? '<div id="fl-detail" class="mt-detail fl-dock" hidden></div>' : ''}
+      <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div>${wide ? '' : mapHtml}<div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div>${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}</div>
+      <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
       <div class="note">Trunked radio systems from their control channels, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. DMR unit positions come from a format derived from recordings and are resolved against your own position (within about 300 km); they stay marked CRC unverified. AUTO steps through the bands and stays where it finds a system. Tap anything for all it carried.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-flband]', view).forEach(b => b.onclick = () => fleetSetBand(b.dataset.flband!));
   qa<HTMLButtonElement>('[data-flspan]', view).forEach(b => b.onclick = () => fleetSetSpan(Number(b.dataset.flspan)));
   qa<HTMLButtonElement>('[data-flview]', view).forEach(b => b.onclick = () => { fleetUi.view = b.dataset.flview as FleetView; refreshFleet(true); });
-  $('fl-full').onclick = () => setFleetFull(!fleetUi.full);
+  const full = q('#fl-full'); if (full) full.onclick = () => setFleetFull(!fleetUi.full);
   $('fl-export').onclick = () => worker?.postMessage({ type: 'fleet', cmd: 'export' });
   const pick = (e: Event) => {
     const t = (e.target as HTMLElement).closest<HTMLElement>('[data-flsel]');
@@ -4597,11 +4607,11 @@ function renderFleet(view: HTMLElement): void {
   };
   $('fl-cards').onclick = pick; $('fl-grants').onclick = pick; $('fl-freqs').onclick = pick;
   $('fl-detail').onclick = (e) => {
-    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-fldo]'); if (b) { if (b.dataset.fldo === 'close') fleetUi.sel = null; else if (b.dataset.fldo === 'map') { fleetUi.view = 'map'; const u = fleetUi.snap?.units.find(x => x.key === fleetUi.sel?.key); refreshFleet(true); if (u && u.lat !== null && u.lon !== null) geo?.center(u.lat, u.lon, 15); return; } refreshFleet(true); return; }
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-fldo]'); if (b) { if (b.dataset.fldo === 'close') fleetUi.sel = null; else if (b.dataset.fldo === 'map') { if (!FLEET_WIDE.matches) fleetUi.view = 'map'; const u = fleetUi.snap?.units.find(x => x.key === fleetUi.sel?.key); refreshFleet(true); if (u && u.lat !== null && u.lon !== null) geo?.center(u.lat, u.lon, 15); return; } refreshFleet(true); return; }
     pick(e);
   };
   view.classList.toggle('fleetfull', fleetUi.full);
-  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, onPick: id => fleetPick({ kind: 'unit', key: id }), log });
+  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id }), log });
   clearInterval(fleetUi.timer);
   fleetUi.timer = window.setInterval(() => { if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; } refreshFleet(); }, 500);
   refreshList('fleet');
@@ -4616,7 +4626,7 @@ function fleetPick(sel: FleetSel): void {
 const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span class="tr-pill ${tone}">${esc(text)}</span>`;
 function fleetHead(s: FleetSnap | null, now: number): string {
   const sites = s ? s.systems.reduce((n, x) => n + x.sites.length, 0) : 0, units = s?.units.length ?? 0, live = s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000) : [];
-  const w = fleetUi.windows[fleetUi.idx], band = FLEET_BANDS.find(b => b[0] === w?.band);
+  const w = fleetUi.windows[fleetUi.idx], c = s?.centerHz ?? w?.hz ?? 0, band = FLEET_BANDS.find(b => c >= b[2] - 2e6 && c <= b[3] + 2e6) ?? FLEET_BANDS.find(b => b[0] === w?.band);
   const scan = fleetUi.windows.length > 1 ? `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : 'HOLDING';
   const span = s ? `${fleetMhz(s.spanLo, 3)}–${fleetMhz(s.spanHi, 3)} MHz` : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
@@ -4667,12 +4677,16 @@ function fleetGrantsHtml(s: FleetSnap, now: number): string {
 function fleetFreqsHtml(s: FleetSnap, now: number): string {
   const rows = s.carriers.filter(c => now - c.lastMs < 600_000);
   if (!rows.length) return '<div class="empty">no carriers found yet</div>';
-  return `<table class="fl-tab fl-ftab"><tr><th>MHz</th><th>CLASS</th><th>ROLE</th><th>LEVEL</th><th>ID</th><th>STATE</th></tr>${rows.map(c => {
+  return rows.map(c => {
     const age = now - c.lastMs, inSpan = c.hz > s.spanLo && c.hz < s.spanHi, live = inSpan && age < 4_000;
     const id = c.nac >= 0 ? `NAC ${c.nac.toString(16).toUpperCase().padStart(3, '0')}` : c.cc >= 0 ? `CC ${c.cc}` : '';
     const sel = fleetUi.sel?.kind === 'car' && fleetUi.sel.key === String(c.key);
-    return `<tr data-flsel="car:${c.key}" class="${live ? '' : 'dim'} ${sel ? 'sel' : ''}" style="--sys:${c.sys ? fleetColor(c.sys) : 'transparent'}"><td><i class="fl-dot"></i>${fleetMhz(c.hz)}</td><td>${c.cls || (c.decoding ? 'listening' : '-')}${c.callsign ? ` · ${esc(c.callsign)}` : ''}</td><td>${c.role ? c.role.toUpperCase() : ''}${c.tdma ? ' TDMA' : ''}</td><td><span class="fl-lvl"><i style="width:${Math.max(0, Math.min(100, 2 * c.levelDb)).toFixed(0)}%"></i></span>${c.levelDb.toFixed(0)}</td><td>${id}</td><td>${live ? (c.decoding ? 'DECODING' : 'LIVE') : inSpan ? fleetAgo(age) : 'OUT OF SPAN'}</td></tr>`;
-  }).join('')}</table>`;
+    return `<div data-flsel="car:${c.key}" class="fl-frow ${live ? '' : 'dim'} ${sel ? 'sel' : ''}" style="--sys:${c.sys ? fleetColor(c.sys) : 'transparent'}"><b><i class="fl-dot"></i>${fleetMhz(c.hz)}</b>`
+      + `<span class="fl-fcls">${c.cls || (c.decoding ? 'LISTENING' : 'NOT HEARD YET')}${c.callsign ? ` · ${esc(c.callsign)}` : ''}</span>`
+      + `<span class="fl-frole">${c.role ? c.role.toUpperCase() : ''}${c.tdma ? ' TDMA' : ''}</span><span class="fl-fid">${id}</span>`
+      + `<span class="fl-flvl"><span class="fl-lvl"><i style="width:${Math.max(0, Math.min(100, 2 * c.levelDb)).toFixed(0)}%"></i></span>${c.levelDb.toFixed(0)} dB</span>`
+      + `<em>${live ? (c.decoding ? 'DECODING' : 'LIVE') : inSpan ? fleetAgo(age) : 'OUT OF SPAN'}</em></div>`;
+  }).join('');
 }
 function fleetDetail(s: FleetSnap, now: number): string {
   const sel = fleetUi.sel; if (!sel) return '';
@@ -4684,14 +4698,14 @@ function fleetDetail(s: FleetSnap, now: number): string {
     const full = fleetUi.unit?.key === u.key ? fleetUi.unit.reports : u.reports;
     const pos = u.lat !== null && u.lon !== null ? `${u.lat.toFixed(5)}, ${u.lon.toFixed(5)}${u.posVerified ? '' : ' · position (CRC unverified)'}` : u.posMs ? (s.ref ? '-' : 'needs your location to resolve') : 'none on the air';
     const f: [string, string][] = [['UNIT ID', `${u.id} (0x${u.id.toString(16).toUpperCase()})`], ['SYSTEM', sysLabel(u.sys)], ['SITE', u.site || '-'], ['POSITION', pos],
-      ['LAST POSITION', u.posMs ? `${fleetClock(u.posMs)} · ${fleetAgo(now - u.posMs)} ago` : '-'], ['TALKGROUPS', u.groups.join(', ') || '-'], ['GRANTS', `${u.grants}`],
-      ['HEARD ON', u.carriers.map(k => fleetMhz(s.carriers.find(c => c.key === k)?.hz ?? k)).join(' · ')], ['FIRST HEARD', fleetClock(u.firstMs)], ['LAST HEARD', `${fleetClock(u.lastMs)} · ${fleetAgo(now - u.lastMs)} ago`]];
+      ['LAST POSITION', u.posMs ? `${fleetClock(u.posMs)} · ${fleetAgoText(now - u.posMs)}` : '-'], ['TALKGROUPS', u.groups.join(', ') || '-'], ['GRANTS', `${u.grants}`],
+      ['HEARD ON', u.carriers.map(k => fleetMhz(s.carriers.find(c => c.key === k)?.hz ?? k)).join(' · ')], ['FIRST HEARD', fleetClock(u.firstMs)], ['LAST HEARD', `${fleetClock(u.lastMs)} · ${fleetAgoText(now - u.lastMs)}`]];
     const hist = [...full].reverse().map(r => `<div class="fl-rep ${r.verified ? '' : 'unv'}"><b>${fleetClock(r.ms)}</b><span>${esc(r.kind)} · ${fleetMhz(r.hz)}${r.lat !== null && r.lon !== null ? ` · ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}` : ''}</span><small>${esc(r.text)}</small><code>${esc(r.hex)}</code></div>`).join('');
     return head(`${u.id}`, 'UNIT', u.lat !== null && fleetUi.view !== 'map' ? '<button class="chip" data-fldo="map">MAP</button>' : '') + fields(f) + `<div class="fl-hist"><small>EVERY REPORT${fleetUi.unit?.key === u.key ? '' : ' (loading the full history)'}</small>${hist}</div>`;
   }
   if (sel.kind === 'tg') {
     const t = s.tgs.find(x => x.key === sel.key); if (!t) return '';
-    const f: [string, string][] = [['TALKGROUP', `${t.tg} (0x${t.tg.toString(16).toUpperCase()})`], ['SYSTEM', sysLabel(t.sys)], ['GRANTS', `${t.grants} · ${t.recent.length} in 10 min`], ['FIRST', fleetClock(t.firstMs)], ['LAST', `${fleetClock(t.lastMs)} · ${fleetAgo(now - t.lastMs)} ago`]];
+    const f: [string, string][] = [['TALKGROUP', `${t.tg} (0x${t.tg.toString(16).toUpperCase()})`], ['SYSTEM', sysLabel(t.sys)], ['GRANTS', `${t.grants} · ${t.recent.length} in 10 min`], ['FIRST', fleetClock(t.firstMs)], ['LAST', `${fleetClock(t.lastMs)} · ${fleetAgoText(now - t.lastMs)}`]];
     const members = t.members.length ? `<div class="fl-nb"><small>MEMBERS</small>${t.members.map(m => `<span data-flsel="unit:${esc(t.sys)}/${m}">${m}</span>`).join('')}</div>` : '';
     return head(`TG ${t.tg}`, 'TALKGROUP') + fields(f) + members + `<div class="fl-hist"><small>HISTORY</small>${t.history.map(g => fleetGrantRow(g, now)).join('')}</div>`;
   }
@@ -4705,7 +4719,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
   const c = s.carriers.find(y => String(y.key) === sel.key); if (!c) return '';
   const f: [string, string][] = [['FREQUENCY', `${fleetMhz(c.hz)} MHz`], ['CLASS', c.cls || 'not classed yet'], ['ROLE', c.role || '-'], ['SYSTEM', c.sys ? sysLabel(c.sys) : '-'], ['NAC', c.nac >= 0 ? c.nac.toString(16).toUpperCase().padStart(3, '0') : '-'], ['COLOR CODE', c.cc >= 0 ? `${c.cc}` : '-'],
     ['LEVEL', `${c.levelDb.toFixed(1)} dB over the floor (peak ${c.peakDb.toFixed(1)})`], ['ENVELOPE', `${c.envCv.toFixed(2)} (constant near 0, linear near 0.3)`], ['EYE', c.eye.toFixed(2)], ['FRAMES', `${c.frames}`], ['BLOCKS', `${c.blocks} · ${c.crcOk} passed CRC`],
-    ['CALLSIGN', c.callsign || '-'], ['LCN', c.lcn || '-'], ['ON AIR', `${Math.round(c.onMs / 1000)} s`], ['FIRST HEARD', fleetClock(c.firstMs)], ['LAST HEARD', `${fleetClock(c.lastMs)} · ${fleetAgo(now - c.lastMs)} ago`]];
+    ['CALLSIGN', c.callsign || '-'], ['LCN', c.lcn || '-'], ['ON AIR', `${Math.round(c.onMs / 1000)} s`], ['FIRST HEARD', fleetClock(c.firstMs)], ['LAST HEARD', `${fleetClock(c.lastMs)} · ${fleetAgoText(now - c.lastMs)}`]];
   return head(fleetMhz(c.hz), 'CARRIER') + fields(f);
 }
 function refreshFleet(force = false): void {
@@ -4724,9 +4738,10 @@ function refreshFleet(force = false): void {
   });
   const cards = q('#fl-cards'), mapEl = q('#fl-map'), nopos = q('#fl-nopos'), grants = q('#fl-grants'), freqs = q('#fl-freqs'), det = q('#fl-detail'), stage = q('#fl-stage'), logEl = q('#fl-log');
   if (!cards || !mapEl || !nopos || !grants || !freqs || !det || !stage || !logEl) return;
-  cards.hidden = view !== 'systems'; mapEl.hidden = view !== 'map'; grants.hidden = view !== 'grants'; freqs.hidden = view !== 'freqs';
+  const wide = FLEET_WIDE.matches, showMap = wide || view === 'map';
+  cards.hidden = view !== 'systems'; mapEl.hidden = !showMap; grants.hidden = view !== 'grants'; freqs.hidden = view !== 'freqs';
   stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
-  nopos.hidden = view !== 'map' || pins.length > 0;
+  nopos.hidden = !showMap || pins.length > 0;
   if (!nopos.hidden) nopos.textContent = s && s.units.some(u => u.posMs > 0) && !s.ref ? 'unit positions need your location: allow it to resolve them' : 'no unit positions on the air yet';
   if (!paused.has('fleet') && s) {
     const keep = (el: HTMLElement, html: string) => { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; };
@@ -4734,7 +4749,7 @@ function refreshFleet(force = false): void {
     else if (view === 'grants') keep(grants, fleetGrantsHtml(s, now));
     else if (view === 'freqs') keep(freqs, fleetFreqsHtml(s, now));
   } else if (!s && view === 'systems') cards.innerHTML = emptyState('fleet');
-  if (view === 'map') {
+  if (showMap) {
     geo?.invalidate();
     geo?.update(pins, fleetUi.sel?.kind === 'unit' ? fleetUi.sel.key : '');
     geo?.setShapes((s?.units ?? []).filter(u => u.trail.length > 1).map(u => ({ id: u.key, pts: u.trail.map(p => [p[0], p[1]] as [number, number]), line: true, color: fleetColor(u.sys), sel: fleetUi.sel?.key === u.key })));
