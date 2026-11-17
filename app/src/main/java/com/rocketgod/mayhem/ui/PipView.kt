@@ -95,6 +95,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
         val heard by Devices.proc.devices.collectAsState()
         heard.maxByOrNull { it.lastSeen }?.let { "${it.model} · ${Devices.summary(it.data)}" } ?: "${heard.size} devices"
     }
+    MayhemApp.HD -> lastLine(com.rocketgod.mayhem.core.hd.HdApp.log)
     MayhemApp.PAGER -> lastLine(Apps.pagerLog)
     MayhemApp.ERT -> lastLine(Apps.metersLog)
     MayhemApp.LORA -> lastLine(Apps.loraLog)

@@ -61,6 +61,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                     path.l(0.05f + 0.9f * i / 40f, 0.5f + 0.38f * env * sin(i * 0.9).toFloat())
                 }
             }
+            MayhemApp.HD -> {
+                // a broadcast mast with the digital sidebands as two blocks either side of its carrier
+                path.m(0.5f, 0.3f); path.l(0.36f, 0.92f); path.m(0.5f, 0.3f); path.l(0.64f, 0.92f); path.m(0.41f, 0.7f); path.l(0.59f, 0.7f)
+                path.m(0.08f, 0.22f); path.l(0.28f, 0.22f); path.l(0.28f, 0.44f); path.l(0.08f, 0.44f); path.close()
+                path.m(0.72f, 0.22f); path.l(0.92f, 0.22f); path.l(0.92f, 0.44f); path.l(0.72f, 0.44f); path.close()
+                var a = 200.0; var first = true
+                while (a <= 340.0) { val x = 0.5f + 0.12f * cos(Math.toRadians(a)).toFloat(); val y = 0.3f + 0.12f * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 14.0 }
+                circles.add(Triple(0.5f, 0.3f, 0.04f))
+            }
             MayhemApp.ADSB -> {
                 path.m(0.5f, 0.06f); path.l(0.5f, 0.92f)
                 path.m(0.06f, 0.52f); path.l(0.5f, 0.38f); path.l(0.94f, 0.52f)
