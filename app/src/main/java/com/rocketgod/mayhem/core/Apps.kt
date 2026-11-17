@@ -248,18 +248,19 @@ object Apps {
                     if (wi < sc.windows.size) { _cellScan.value = sc.copy(wi = wi); cellGo(sc.windows[wi], 700) }
                     else {
                         val b = cellBands()[sc.bandIdx % cellBands().size]
-                        val cands = (if (p != null) com.rocketgod.mayhem.core.cell.findCarriers(p).filter { it.centerHz >= b.lo && it.centerHz <= b.hi } else emptyList()).toMutableList()
-                        // carriers already known in this band are visited too, found or not this time
-                        for (c in s?.cells.orEmpty()) if (c.hz >= b.lo && c.hz <= b.hi && cands.none { kotlin.math.abs(it.centerHz - c.hz) < 50_000 })
-                            cands.add(com.rocketgod.mayhem.core.cell.CarrierGuess(c.hz, 0.0, c.nrb, 0.0))
+                        // exact centers first: the LTE carriers other cells list in SIB5, and cells already heard here
+                        val exact = s?.cells.orEmpty().flatMap { c -> c.neighbors?.inter.orEmpty().mapNotNull { f -> f.mhz?.let { Math.round(it * 1e6) } } } + s?.cells.orEmpty().map { it.hz }
+                        val cands = com.rocketgod.mayhem.core.cell.scanCandidates(b.lo, b.hi, if (p != null) com.rocketgod.mayhem.core.cell.findCarriers(p) else emptyList(), exact)
                         if (cands.isEmpty()) { if (_cellBand.value == "AUTO") cellNextBand() else cellSurvey() }
                         else { _cellScan.value = sc.copy(wi = wi, cands = cands, ci = -1); cellNextCandidate() }
                     }
                 }
             }
             "visit" -> {
-                val found = here?.cells?.any { it.hz == freq && it.mib != null && now - it.mibMs < 3000 } == true
-                if (found) _cellScan.value = sc.copy(phase = "dwell", until = now + if (cellRate() < 15_360_000) 2500 else 13_000)
+                // a cell found up to 300 kHz off the tuned center counts: retune to its own center and read it there
+                val near = here?.cells?.firstOrNull { kotlin.math.abs(it.hz - freq) <= 300_000 && it.mib != null && now - it.mibMs < 3000 }
+                if (near != null && near.hz != freq) cellGo(near.hz, 2500)
+                else if (near != null) _cellScan.value = sc.copy(phase = "dwell", until = now + if (cellRate() < 15_360_000) 2500 else 13_000)
                 else if (now >= sc.until && (here != null || now - sc.tunedMs > 4000)) cellNextCandidate()
             }
             "dwell" -> {

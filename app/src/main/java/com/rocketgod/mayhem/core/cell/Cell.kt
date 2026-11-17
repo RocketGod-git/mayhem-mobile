@@ -46,7 +46,10 @@ data class CellSnap(
     val profile: CellProfile?, val floorDb: Double,
     val cells: List<CellRow>, val alerts: List<WarningMessage>, val log: List<LogRow>, val dci: Int, val tbOk: Int,
     val pss: List<PssPeak>,
+    /** A cell found off the tuned center (its own center), for the scan to retune to. */
+    val offCenter: OffCenter? = null,
 )
+data class OffCenter(val hz: Long, val pci: Int, val ms: Long)
 data class CellDetail(val key: String, val mib: Mib?, val sib1: Obj?, val sib1Hex: String, val sibs: List<SibRec>)
 
 private class Timing(val abs: Double, val sfn: Int)
@@ -66,6 +69,8 @@ private class Found(val cell: Cell, val map: List<HalfFrame>, val evenSf0: Boole
 private class MibHit(val mib: Mib, val snr: Double, val level: Double, val h: Int)
 
 private const val BLOCK_MS = 40
+/** Raster offsets tried when nothing is found on the tuned center, nearest first. */
+private val RASTER = intArrayOf(100_000, -100_000, 200_000, -200_000, 300_000, -300_000)
 private fun duplexPss(num: Numerology, tdd: Boolean): Int { if (!tdd) return num.pssOffset; val (o, cp) = num.symbol(2); return num.subframe + o + cp }
 private fun sssLag(num: Numerology, tdd: Boolean) = if (tdd) 3 * num.nfft + 2 * num.cpn + num.cp0 else num.nfft + num.cpn
 private fun round1(x: Double) = Math.round(x * 10) / 10.0
@@ -93,6 +98,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     private var xr = FloatArray(0); private var xi = FloatArray(0)
     private var lastCenter = Long.MIN_VALUE; private var cfo = 0.0; private var cfoKnown = false
     private var blocks = 0; private var lastBlockMs = 0L; private var cpuMs = 0L; private var lte = false; private var cpStrength = 0.0; private var dci = 0; private var tbOkAll = 0
+    private var offCenter: OffCenter? = null
     private var profile: CellProfile? = null; private var floorDb = 0.0; private var pss: List<PssPeak> = emptyList()
     private var lastPost = 0L; private var dirty = false; private var nextAbs = 0L
     private val specRe = FloatArray(1024); private val specIm = FloatArray(1024)
@@ -178,7 +184,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             }
             if (h.cfo != 0.0) rotate(yr, yi, -h.cfo, LOW_FS)
         }
-        if (found.isEmpty()) { cfoKnown = false; nextAbs = abs + Math.round(fs * 0.04); return }
+        if (found.isEmpty()) { cfoKnown = false; rasterSearch(xr, xi, cpHz, now); nextAbs = abs + Math.round(fs * 0.04); return }
         // the whole carrier in the span: SI-RNTI traffic
         rotate(xr, xi, cfo, fs)
         for (f in found) {
@@ -245,6 +251,37 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             hits.add(hit)
         }
         return null
+    }
+
+    /**
+     * No cell on the tuned center: the carrier may sit a few 100 kHz raster steps away (a center guessed from the
+     * power profile). Each raster offset up to 300 kHz is mixed to DC and searched on two half-frames; a PSS that
+     * leads to two agreeing MIB frames registers the cell at its own center, which is then offered as offCenter so
+     * the scan retunes there.
+     */
+    private fun rasterSearch(xr: FloatArray, xi: FloatArray, cpHz: Double, now: Long) {
+        val fs = rate; val d0 = Math.round(dd).toInt(); val taps = 16 * d0 + 1; val shortN = (2 * 9600 + 128) * d0 + taps
+        if (xr.size < shortN) return
+        for (d in RASTER) {
+            val shift = cpHz + Math.round((d - cpHz) / 15_000) * 15_000.0
+            val sr = xr.copyOfRange(0, shortN); val si = xi.copyOfRange(0, shortN)
+            rotate(sr, si, shift, fs)
+            val (ar, ai) = decimate(sr, si, fs)
+            val hit = pssSearch(ar, ai, 0, doubleArrayOf(0.0)).firstOrNull { it.score > 6 } ?: continue
+            val fr = xr.copyOf(); val fi = xi.copyOf()
+            rotate(fr, fi, shift, fs)
+            val (yr, yi) = decimate(fr, fi, fs); val map = halfFrameMap(yr, yi, hit.nid2, hit.pos)
+            if (map.size < 3) continue
+            val hz = Math.round((centerHz + shift) / 100_000) * 100_000
+            for (tdd in booleanArrayOf(false, true)) for ((pci, evenSf0) in pciCandidates(yr, yi, hit.nid2, map, tdd)) {
+                val r = readMib(yr, yi, pci, map, evenSf0, tdd, false) ?: continue
+                val cell = cellFor(pci, tdd, now, hz)
+                cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = centerHz + shift - hz; cell.pssScore = hit.score
+                offCenter = OffCenter(hz, pci, now)
+                addLog(now, hz, pci, "CELL", "found ${Math.round((hz - centerHz) / 1e3)} kHz from the tuned center", "")
+                return
+            }
+        }
     }
 
     private fun cellFor(pci: Int, tdd: Boolean, now: Long, hz: Long = centerHz): Cell {
@@ -443,7 +480,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         centerHz, rate, maxRb >= 25, maxRb, lte, Math.round(cpStrength * 1000) / 1000.0, blocks, !cfoKnown, lastBlockMs,
         if (nextAbs > abs && rate > 0) Math.round((nextAbs - abs).toDouble() / rate * 1000) else 0, cpuMs,
         profile, floorDb,
-        cells.values.sortedByDescending { it.lastMs }.map { row(it) }, warnings.messages(), log.takeLast(300).toList(), dci, tbOkAll, pss,
+        cells.values.sortedByDescending { it.lastMs }.map { row(it) }, warnings.messages(), log.takeLast(300).toList(), dci, tbOkAll, pss, offCenter,
     )
     /** Every decoded field of one cell, for its detail view. */
     @Synchronized

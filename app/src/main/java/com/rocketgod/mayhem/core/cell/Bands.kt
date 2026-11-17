@@ -71,3 +71,15 @@ fun findCarriers(p: Profile, raster: Long = 100_000): List<CarrierGuess> {
     val seen = HashSet<Long>()
     return out.filter { seen.add(it.centerHz) }
 }
+
+/**
+ * The carriers a scan visits in [lo, hi]: exact centers first (SIB5 inter-frequency EARFCNs and cells already heard),
+ * then the power-profile guesses that are not within 300 kHz of one of them (a raster search covers that much).
+ */
+fun scanCandidates(lo: Long, hi: Long, guesses: List<CarrierGuess>, exact: List<Long>): List<CarrierGuess> {
+    val out = ArrayList<CarrierGuess>()
+    for (hz in exact) if (hz in lo..hi && out.none { abs(it.centerHz - hz) < 50_000 }) out.add(CarrierGuess(hz, 0.0, 0, 0.0))
+    val n = out.size
+    for (g in guesses) if (g.centerHz in lo..hi && out.subList(0, n).none { abs(it.centerHz - g.centerHz) <= 300_000 } && out.none { it.centerHz == g.centerHz }) out.add(g)
+    return out
+}
