@@ -311,8 +311,21 @@ class HdRx {
         if (r.lock < 4.5) { if (++timingMiss >= 3) { state = "search"; timingMiss = 0 }; return }
         val cur = Math.floorMod(nextStart.roundToLong(), NSYM.toLong()).toInt()
         var delta = r.d0 - cur; if (delta > NSYM / 2) delta -= NSYM; if (delta < -NSYM / 2) delta += NSYM
-        if (abs(delta) <= 60) { timingMiss = 0; if (abs(delta) >= 2) nextStart += delta }
+        if (abs(delta) <= 60) { timingMiss = 0; if (abs(delta) >= 2) { nextStart += delta; shiftHeld(delta) } }
         else if (++timingMiss >= 3) { state = "search"; timingMiss = 0 }
+    }
+
+    /**
+     * The symbol window moved by [delta] samples: turn the symbols already held by the matching phase slope, as if
+     * they had been taken with the new timing, so the differential reference and the frame's channel estimate do not
+     * see a step across the subcarriers.
+     */
+    private fun shiftHeld(delta: Int) {
+        for (k in -546..546) {
+            val a = 2 * PI * k * delta / NFFT; val c = cos(a).toFloat(); val s = sin(a).toFloat(); val i = k + 546
+            var off = i
+            for (slot in 0 until SYMS) { val r = symRe[off]; val q = symIm[off]; symRe[off] = r * c - q * s; symIm[off] = r * s + q * c; off += NSC }
+        }
     }
 
     private fun symbol() {
@@ -369,12 +382,22 @@ class HdRx {
                 }
                 if (cnt > 0 && v.toDouble() / cnt > bestV) { bestV = v.toDouble() / cnt; bestP = p }
             }
-            if (bestV >= HdOfdm.SYNC_BITS.size - 1) { blockPhase = bestP; state = "sync"; blockMiss = 0; frameStart = -1 }
+            if (bestV >= HdOfdm.SYNC_BITS.size - 1) {
+                blockPhase = bestP; state = "sync"; blockMiss = 0; frameStart = -1
+                // the blocks already in hand, oldest first: a frame that began before sync is not lost
+                var st = from + Math.floorMod(bestP - from, 32)
+                while (st + 32 <= n) { if (st >= 1 && blockPhase >= 0) decodeBlock(st); st += 32 }
+            }
             return
         }
         if ((n - blockPhase) % 32 != 0) return
         val st = n - 32
         if (st < 1) return
+        decodeBlock(st)
+    }
+
+    /** The system control word of the block starting at symbol [st], then frame tracking. */
+    private fun decodeBlock(st: Int) {
         // decode the block's system control word on every reference subcarrier
         val words = arrayOfNulls<HdOfdm.ScWord>(NREF)
         val good = ArrayList<Int>()
