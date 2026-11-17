@@ -22,6 +22,8 @@ import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
+import { AtscProcessor } from './dsp/atsc/atsc.js';
+import { AtscPool, ATSC_POOL_NAME, startAtscPoolWorker } from './dsp/atsc/pool.js';
 import { SondeProcessor } from './dsp/sonde/front.js';
 import { UatProcessor } from './dsp/uat/demod.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
@@ -124,6 +126,20 @@ const vdl2 = new Vdl2Decoder(emit);
 // every frame, ACARS or not, for the per-address aircraft and ground stations (posted before the frame's ACARS line)
 vdl2.onFrame = f => emit({ type: 'vdl2frame', f });
 const trains = new TrainsProcessor(emit);
+/** ATSC TV: stations by their pilot; with the whole channel in the span, bursts decoded on a pool of workers. */
+const atsc = new AtscProcessor(emit);
+atsc.onStill = (key, st) => emit({ type: 'atscStill', key, w: st.width, h: st.height, dar: st.dar, complete: st.complete, mbs: st.mbs, total: st.mbsTotal, rgba: st.rgba }, [st.rgba.buffer]);
+let atscSaved = -1, atscPool: AtscPool | null = null;
+setInterval(() => { if (atsc.version !== atscSaved) { atscSaved = atsc.version; emit({ type: 'atscState', state: atsc.exportState() }); } }, 5000);
+function atscPoolFor(r: number): AtscPool | null {
+  if (r < 6_400_000 || typeof Worker === 'undefined') return null;
+  if (!atscPool) {
+    const cores = (navigator as { hardwareConcurrency?: number }).hardwareConcurrency ?? 4;
+    try { atscPool = new AtscPool(new URL(import.meta.url), cores >= 8 ? 2 : 1); emit({ type: 'log', line: `ATSC: ${atscPool.size} burst decoders` }); }
+    catch (e) { emit({ type: 'log', line: `ATSC: no burst decoders (${(e as Error).message}), bursts decode inline` }); return null; }
+  }
+  return atscPool.failed ? null : atscPool;
+}
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);
 /** UAT on 978 MHz: FIS-B weather uplinks and aircraft downlinks. */
@@ -346,6 +362,12 @@ self.onmessage = (e: MessageEvent) => {
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
+    case 'atsc':
+      if (m.cmd === 'detail') { const d = atsc.detail(m.key as string); if (d) emit({ type: 'atscDetail', ...d }); }
+      else if (m.cmd === 'export') emit({ type: 'atscExport', ...atsc.exportAll() });
+      else if (m.cmd === 'restore') { atsc.restore(m.state as Parameters<AtscProcessor['restore']>[0]); atscSaved = atsc.version; }
+      else if (m.cmd === 'clear') atsc.clear();
+      break;
     case 'sondeBand': sonde.setBand(m.id as string); break;
     case 'sondeHints': sonde.setHints(m.hz as number[]); break;
     // the channels local to the LoRa area in use (local.ts, on the main thread): the scanner places its channels again
@@ -400,6 +422,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'sonde': sonde.setCenter(centreHz); return sonde;
     case 'uat': return uat;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
+    case 'atsc': atsc.centerHz = centreHz; return atsc;
     case 'subghz': return ism;
     case 'r433': return r433;
     case 'analyzer': return analyzer;
@@ -603,6 +626,7 @@ function process(iq: Int8Array): void {
   if (p === acars) { acars.centerHz = centreHz; acars.tunedHz = centreHz + offsetHz; }
   if (p === vdl2) vdl2.centerHz = centreHz;
   if (p === trains) trains.centerHz = centreHz;
+  if (p === atsc) { atsc.centerHz = centreHz; atsc.pool = atscPoolFor(rate); }
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
@@ -614,6 +638,7 @@ function flushAudio(): void {
 
 // Started as one of the LoRa pool's workers: that is all this script does then.
 if ((self as unknown as { name?: string }).name === POOL_WORKER_NAME) startPoolWorker();
+if ((self as unknown as { name?: string }).name === ATSC_POOL_NAME) startAtscPoolWorker();
 
 /**
  * A file opened in the Analyzer: a recording (.cu8 .u8 .iq unsigned, .cs8 signed; the rate from its name, else 2 Msps)
