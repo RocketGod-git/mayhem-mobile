@@ -7310,9 +7310,14 @@ function bindDesktop(): void {
     const strip = t.closest?.('.launch-side, .hs-in, .bandstrip') as HTMLElement | null;
     if (strip && !e.ctrlKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)
         && strip.scrollWidth > strip.clientWidth + 1 && strip.scrollHeight <= strip.clientHeight + 1) {
-      const before = strip.scrollLeft;
-      strip.scrollLeft += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY;
-      if (strip.scrollLeft !== before) e.preventDefault();
+      const dx = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaY, max = strip.scrollWidth - strip.clientWidth;
+      if ((dx < 0 && strip.scrollLeft <= 0) || (dx > 0 && strip.scrollLeft >= max - 1)) return;
+      e.preventDefault();
+      // Glide, never jump: a jump close to one tile wide reads as the row creeping backward.
+      const prev = Number(strip.dataset.wheelTo ?? strip.scrollLeft), from = Math.abs(prev - strip.scrollLeft) > max ? strip.scrollLeft : prev;
+      const to = Math.max(0, Math.min(max, from + dx)); strip.dataset.wheelTo = String(to);
+      strip.scrollTo({ left: to, behavior: 'smooth' });
+      clearTimeout(Number(strip.dataset.wheelT)); strip.dataset.wheelT = String(window.setTimeout(() => { delete strip.dataset.wheelTo; }, 400));
       return;
     }
     const d = t.closest?.('.fd') as HTMLElement | null;
