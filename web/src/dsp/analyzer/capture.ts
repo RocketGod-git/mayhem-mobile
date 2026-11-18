@@ -7,7 +7,7 @@
  * Each becomes one captured signal: when, where, how long and how strong.
  *
  * The same burst is also offered to every Devices decoder (rtl_433, ProtoPirate's car keys, Mayhem's remotes and
- * sensors), so a capture that is a known device says so. Twin of core/analyzer/Capture.kt and Capture.swift.
+ * sensors, Z-Wave), so a capture that is a known device says so. Twin of core/analyzer/Capture.kt and Capture.swift.
  */
 
 import type { Emit, IqProcessor } from '../core.js';
@@ -18,6 +18,7 @@ import { R433 } from '../r433/runner.js';
 import type { PulseData } from '../r433/slicers.js';
 import { carrierOf, noiseOf, twoMeans } from './demod.js';
 import { informative } from './group.js';
+import { zwDescribe, zwMatches } from '../r433/zwave.js';
 import '../r433/devices/index.js';
 
 export interface Burst {
@@ -200,6 +201,7 @@ export class AnalyzerCapture implements IqProcessor {
     s.keys.slicer.flush();
     if (this.paused || s.n < 16) return;
     const n = s.n;
+    for (const f of zwMatches(s.iq, n, s.rate)) s.matches.add(`Z-Wave: ${f.home} ${f.src}→${f.dst} ${zwDescribe(f).text}`);
     const noise = noiseOf(s.env, n, s.rate);
     const on = carrierOf(s.env, n, noise);
     let a = 0, b = n, peak = 0;
