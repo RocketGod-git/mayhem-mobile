@@ -15,8 +15,8 @@ import { parseCsbk, unwrap16, csbkLine, VendorCheck, type Csbk } from './csbk.js
 import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, slice, type P25Block, type DmrEvent } from './rx.js';
 import { P25Decoder } from '../ham/p25.js';
 import './vocoders.js';
-import { CallTracker, type CallRow, type TgPrefs } from './calls.js';
-import { parseLc, voiceFrames } from './lc.js';
+import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from './calls.js';
+import { parseLc, voiceFrames, readEmb } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
 
 export const CH_RATE = 24_000;
@@ -45,21 +45,25 @@ export interface SystemRow {
   /** The latest CW ID heard on any of the system's channels (control, voice, conventional): text, when, where. */
   cwId: string; cwIdMs: number; cwIdHz: number;
   grants: number; units: number; tgs: number; derived: boolean;
+  /** DMR logical channels resolved to MHz from grants and the voice link control that followed them (derived). */
+  lpcns: { lpcn: number; hz: number; votes: number }[];
 }
 export interface UnitReport { ms: number; hz: number; kind: string; hex: string; verified: boolean; lat: number | null; lon: number | null; text: string }
 export interface UnitRow {
   key: string; sys: string; id: number; firstMs: number; lastMs: number; lat: number | null; lon: number | null; posMs: number;
   posVerified: boolean; trail: [number, number, number][]; groups: number[]; grants: number; carriers: number[]; reports: UnitReport[]; site: string;
 }
-export interface GrantRow { ms: number; lastMs: number; sys: string; kind: string; tg: number; group: boolean; src: number; ch: string; hz: number; slot: number; tdma: boolean; emergency: boolean; encrypted: boolean; carrierHz: number; site: string }
+export interface GrantRow { ms: number; lastMs: number; sys: string; kind: string; tg: number; group: boolean; src: number; ch: string; hz: number; slot: number; tdma: boolean; emergency: boolean; encrypted: boolean; carrierHz: number; site: string; lpcn?: number; chDerived?: boolean }
 export interface TgRow { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: number[]; history: GrantRow[] }
 export interface LogRow { ms: number; hz: number; proto: string; name: string; text: string; hex: string; ok: boolean }
 export interface FleetSnap {
   type: 'fleet'; centerHz: number; rate: number; spanLo: number; spanHi: number; carriers: CarrierRow[]; systems: SystemRow[];
   units: UnitRow[]; tgs: TgRow[]; grants: GrantRow[]; perMin: number; blocks: number; slots: number; ref: boolean;
   calls: CallRow[]; follow: { key: string; hz: number } | null; codecs: CodecId[];
+  /** The call being heard (its key), and the system lock in force. */
+  playing: string; lock: Lock | null;
 }
-export type { CallRow, TgPrefs };
+export type { CallRow, CallPos, Lock, TgPrefs };
 
 interface Carrier extends CarrierRow { hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
@@ -70,6 +74,8 @@ interface Sys {
   key: string; proto: 'P25' | 'DMR'; color: number; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string;
   firstMs: number; lastMs: number; idens: Map<number, Iden>; derived: boolean;
   lcns: Map<number, { hz: number; slot: number }>; lcnVotes: Map<string, Map<number, number>>; rest: number; busy: number[];
+  /** Tier III logical channel (LPCN) to carrier: votes, and the ones resolved. */
+  lpcnVotes: Map<number, Map<number, number>>; lpcnHz: Map<number, number>;
 }
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[] }
 interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: Set<number>; history: GrantRow[] }
@@ -147,6 +153,8 @@ export class FleetProcessor implements IqProcessor {
   readonly calls = new CallTracker(() => this.now());
   private readonly p25Seen = new Map<number, number>();
   private readonly dmrSeen = new Map<number, number>();
+  /** DMR grants of the last moments, waiting for the voice link control that says which carrier their channel is. */
+  private pendingGrants: { sys: string; tg: number; group: boolean; lpcn: number; slot: number; ms: number }[] = [];
 
   constructor(private readonly emit: Emit | null) {}
 
@@ -222,7 +230,7 @@ export class FleetProcessor implements IqProcessor {
     this.calls.tick(hz => { const c = this.carriers.get(gridKey(hz)); return c && now - c.lastMs < 1_500 ? c.levelDb : null; }, now);
     // the channels of calls on the air keep a channel while they last: from the grant on (the first voice frames come
     // before the spectrum shows the carrier), and past the first moments only while the carrier is up
-    const pinned = this.calls.ranked().filter(x => !x.muted && x.hz > 0 && this.inSpan(x.hz))
+    const pinned = this.calls.ranked().filter(x => !x.muted && !x.outside && x.hz > 0 && this.inSpan(x.hz))
       .map(x => { const c = this.carriers.get(gridKey(x.hz)); return c && now - c.lastMs < LIVE_MS ? c : now - x.startMs < 1_500 ? this.carrierAt(x.hz) : null; })
       .filter((c): c is Carrier => !!c);
     const pinnedKeys = new Set(pinned.map(c => c.key));
@@ -233,8 +241,13 @@ export class FleetProcessor implements IqProcessor {
       this.classify(c, ch, now);
     }
     const keep = (c: Carrier) => c.lastDecodeMs > 0 && now - c.lastDecodeMs < 10_000;
-    const want: Carrier[] = live.filter(keep).sort((a, b) => b.levelDb - a.levelDb);
-    for (const c of [...pinned].reverse()) { const i = want.indexOf(c); if (i >= 0) want.splice(i, 1); want.splice(want.filter(x => x.role === 'control').length, 0, c); }
+    // control and rest channels, and the ones carrying unit reports, come first (the locked system's when locked);
+    // the channels of calls on the air come right after them, never in their place
+    const lock = this.calls.prefs.lock?.sys ?? '';
+    const core = (c: Carrier) => (c.role === 'control' || c.role === 'rest' || this.reportsOn(c, now)) && (!lock || !c.sys || c.sys === lock);
+    const want: Carrier[] = live.filter(keep).sort((a, b) => Number(core(b)) - Number(core(a)) || b.levelDb - a.levelDb);
+    const nCore = want.filter(core).length;
+    for (const c of [...pinned].reverse()) { const i = want.indexOf(c); if (i >= 0) want.splice(i, 1); want.splice(Math.min(nCore, want.length), 0, c); }
     for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!keep(c) && now - ch.openedMs < AUDITION_MS && !want.includes(c)) want.push(c); }
     const rest = live.filter(c => !want.includes(c)).sort((a, b) => a.lastAuditionMs - b.lastAuditionMs || b.levelDb - a.levelDb);
     for (const c of rest) { if (want.length >= budget) break; want.push(c); }
@@ -242,15 +255,20 @@ export class FleetProcessor implements IqProcessor {
     for (const k of [...this.chans.keys()]) if (!chosen.has(k)) this.chans.delete(k);
     for (const k of chosen) if (!this.chans.has(k)) { const c = this.carriers.get(k)!; c.lastAuditionMs = now; this.open(c, now); }
     for (const c of this.carriers.values()) c.decoding = this.chans.has(c.key);
+    this.placeCalls();
   }
+  /** A carrier that has sent unit reports in the last minute. */
+  private reportsOn(c: Carrier, now: number): boolean { for (const t of c.unitIds.values()) if (now - t < 60_000) return true; return false; }
   private open(c: Carrier, now: number, given?: Chan): void {
     const ch = given ?? new Chan(c.key, c.hz, this.centerHz, this.rate, now);
     ch.p25.onBlock = b => this.p25Block(c, ch, b);
     ch.p25.onFrame = (nac, duid) => { c.envCv = Math.round(ch.rx.envCv * 100) / 100; this.p25Frame(c, nac, duid); };
     ch.dmr.onBurst = e => this.dmrBurst(c, ch, e);
-    ch.dmr.onVoice = (slot, d) => this.dmrVoice(c, slot, d);
+    ch.dmr.onVoice = (slot, d, n) => this.dmrVoice(c, ch, slot, d, n);
     ch.p25v.onVoice = bits => this.p25Voice(c, bits);
     ch.p25v.onLog = () => this.p25Lc(c, ch);
+    ch.p25v.onEs = es => this.p25Sec(c, 'LDU2', es);
+    ch.p25v.onHdu = hd => this.p25Sec(c, 'HDU', hd);
     ch.cw.onText = t => this.cwText(c, t);
     this.chans.set(c.key, ch);
   }
@@ -303,7 +321,7 @@ export class FleetProcessor implements IqProcessor {
     const key = `P25 ${h(id.wacn, 5)}.${h(id.sys, 3)}`;
     let s = this.systems.get(key);
     if (!s) {
-      s = { key, proto: 'P25', color: this.colorNext++, wacn: id.wacn, sysId: id.sys, cc: -1, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [] };
+      s = { key, proto: 'P25', color: this.colorNext++, wacn: id.wacn, sysId: id.sys, cc: -1, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map() };
       this.systems.set(key, s);
     }
     s.lastMs = now; c.sys = key;
@@ -362,14 +380,18 @@ export class FleetProcessor implements IqProcessor {
   private dmrBurst(c: Carrier, _ch: Chan | null, e: DmrEvent): void {
     const now = this.now(), b = e.burst;
     if (b.dt > 10) return;
-    c.frames++; c.cc = b.cc; c.cls = 'DMR'; c.lastDecodeMs = now; this.dmrSeen.set(c.key, now);
+    c.frames++; if (b.stErrs === 0 || c.cc < 0) c.cc = b.cc; c.cls = 'DMR'; c.lastDecodeMs = now; this.dmrSeen.set(c.key, now);
     if (b.dt === 1 || b.dt === 2) {
       if (c.role !== 'control' && c.role !== 'rest') c.role = 'voice';
       this.pending = true;
       const lc = parseLc(b.bytes, b.dt);
       if (lc?.ok) {
         // a terminator labels the call it ends; on its own it is no call
-        if (b.dt === 1 || this.calls.onAirAt(c.sys, c.hz, b.slot)) this.calls.lc(c.sys, c.hz, b.slot, lc, now);
+        if (b.dt === 1 || this.calls.onAirAt(c.sys, c.hz, b.slot)) {
+          if (b.dt === 1) this.learnLpcn(c, b.slot, lc, now);
+          const call = this.calls.lc(c.sys, c.hz, b.slot, lc, now);
+          if (call.sys && !c.sys) c.sys = call.sys;
+        }
         if (b.dt === 2) this.calls.terminate(c.sys, c.hz, b.slot, now);
         const name = b.dt === 1 ? 'VOICE LC HEADER' : 'TERMINATOR WITH LC';
         this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name, text: `CC ${b.cc} · TS${b.slot + 1} · ${name} · ${lc.group ? 'TG' : 'UNIT'} ${lc.dst} ← ${lc.src}${lc.emergency ? ' · EMERGENCY' : ''}${lc.privacy ? ' · PRIVACY' : ''}`, hex: hex(b.bytes), ok: true });
@@ -379,6 +401,8 @@ export class FleetProcessor implements IqProcessor {
     if (b.dt === 9) return;
     const mask = DMR_CRC_MASK[b.dt];
     const ok = mask !== undefined && crc12Ok(b.bytes, mask);
+    // a privacy indicator header (it follows the voice LC header of an encrypted call): the call it opens is encrypted
+    if (b.dt === 0 && ok) { this.calls.securityAt(c.sys, c.hz, b.slot, { enc: true, from: 'PI', pi: hex(b.bytes, 0, 10) }); this.pending = true; }
     // as on P25: a block failing its CRC on a voice channel is noise that looked like a burst
     if (!ok && c.role === 'voice' && b.dt !== 3) return;
     if (!ok && c.role === 'voice' && b.dt === 3 && !(b.bytes[1] === 0x10 && ((b.bytes[0] & 0x3f) === 0x09 || (b.bytes[0] & 0x3f) === 0x3d))) return;
@@ -412,16 +436,28 @@ export class FleetProcessor implements IqProcessor {
     const st = ch.p25v.status(ch.t), fresh = st.errs === ch.lcErrs;
     ch.lcErrs = st.errs;
     if (st.duid !== 5 || !fresh || (st.lcf !== 0 && st.lcf !== 3) || (!st.talkgroup && !st.source) || !this.calls.onAirAt(c.sys, c.hz, 0)) return;
-    this.calls.lc(c.sys, c.hz, 0, { group: st.lcf === 0, dst: st.talkgroup, src: st.source, emergency: false, privacy: st.encrypted }, this.now(), 'P25');
+    this.calls.lc(c.sys, c.hz, 0, { group: st.lcf === 0, dst: st.talkgroup, src: st.source, emergency: st.emergency, privacy: st.encrypted }, this.now(), 'P25');
   }
-  private dmrVoice(c: Carrier, slot: number, d: Uint8Array): void {
+  /** The encryption sync of an LDU2, or a call header: algorithm, key, message indicator. 0x80 is in the clear. */
+  private p25Sec(c: Carrier, from: 'LDU2' | 'HDU', es: { algId: number; keyId: number; mi: string }): void {
+    const now = this.now(), clear = es.algId === 0x80;
+    const call = this.calls.securityAt(c.sys, c.hz, 0, { enc: !clear, from, algId: es.algId, keyId: es.keyId, mi: es.mi });
+    if (call) this.pending = true;
+    const name = from === 'HDU' ? 'HEADER' : 'ENCRYPTION SYNC';
+    this.addLog({ ms: now, hz: c.hz, proto: 'P25', name, text: `NAC ${h(Math.max(0, c.nac), 3)} · ${name} · ALGID ${h(es.algId, 2)} · KEY ${h(es.keyId, 4)} · MI ${es.mi.toUpperCase()}`, hex: '', ok: true });
+  }
+  private dmrVoice(c: Carrier, ch: Chan | null, slot: number, d: Uint8Array, n = 0): void {
     const now = this.now();
     // a P25 channel's voice frames can look like a DMR voice sync now and then
-    // and a voice sync counts on a carrier that has sent real DMR bursts lately
-    if (now - (this.p25Seen.get(c.key) ?? -1e12) < 2_000 || now - (this.dmrSeen.get(c.key) ?? -1e12) > 3_000) return;
+    // and a voice sync counts on a carrier that has sent real DMR bursts lately, or whose voice superframes keep
+    // their 360 ms grid on their own (a call joined late, with no data burst heard)
+    if (now - (this.p25Seen.get(c.key) ?? -1e12) < 2_000) return;
+    if (now - (this.dmrSeen.get(c.key) ?? -1e12) > 3_000 && !ch?.dmr.voiceLive) return;
     c.lastDecodeMs = now; c.cls = 'DMR'; c.frames++;
     if (c.role === '') c.role = 'voice';
     const call = this.calls.voice(c.sys, 'DMR', c.hz, slot, 60, now);
+    // bursts B to F carry the EMB: its privacy bit says whether the call is encrypted, read before the frames play
+    if (n > 0) { const e = readEmb(d); if (e.ok && (c.cc < 0 || e.cc === c.cc)) this.calls.security(call, { enc: e.pi, from: 'EMB' }); }
     this.calls.frames(call, voiceFrames(d));
     this.pending = true;
   }
@@ -432,7 +468,7 @@ export class FleetProcessor implements IqProcessor {
     c.dmrSys = key; c.sys = key;
     let s = this.systems.get(key);
     if (!s) {
-      s = { key, proto: 'DMR', color: this.colorNext++, wacn: -1, sysId: -1, cc, fid: cs.fid, net: cs.net ?? -1, model: cs.model ?? '', firstMs: now, lastMs: now, idens: new Map(), derived: !!cs.derived, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [] };
+      s = { key, proto: 'DMR', color: this.colorNext++, wacn: -1, sysId: -1, cc, fid: cs.fid, net: cs.net ?? -1, model: cs.model ?? '', firstMs: now, lastMs: now, idens: new Map(), derived: !!cs.derived, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map() };
       this.systems.set(key, s);
     }
     s.lastMs = now; s.cc = cc; if (cs.derived) s.derived = true;
@@ -456,11 +492,32 @@ export class FleetProcessor implements IqProcessor {
       case 'unitrpt': if (cs.unit !== undefined) this.unitReport(s, c, cs, now); break;
       case 'grant': {
         if (cs.dst === undefined) break;
-        this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: cs.group ? 'grant' : 'u2u', tg: cs.dst, group: !!cs.group, src: cs.src ?? 0, ch: `LPCN ${cs.lpcn}`, hz: 0, slot: cs.slot ?? 0, tdma: true, emergency: !!cs.emergency, encrypted: false, carrierHz: c.hz, site: '' }, false);
+        const lp = cs.lpcn ?? -1, hz = s.lpcnHz.get(lp) ?? 0;
+        this.pendingGrants = this.pendingGrants.filter(g => now - g.ms < 3_000);
+        this.pendingGrants.push({ sys: s.key, tg: cs.dst, group: !!cs.group, lpcn: lp, slot: cs.slot ?? 0, ms: now });
+        this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: cs.group ? 'grant' : 'u2u', tg: cs.dst, group: !!cs.group, src: cs.src ?? 0, ch: `LPCN ${lp}`, hz, slot: cs.slot ?? 0, tdma: false, emergency: !!cs.emergency, encrypted: false, carrierHz: c.hz, site: '', lpcn: lp, chDerived: hz > 0 }, false);
         if (cs.src) this.touchUnit(s.key, cs.src, c, now, 'grant', cs, '', cs.group ? cs.dst : undefined);
         break;
       }
       case 'ack': case 'unit': case 'aloha': case 'callann': { const id = cs.kind === 'callann' ? cs.unit : cs.dst; if (id && id < 0xfffff0) this.touchUnit(s.key, id, c, now, cs.kind === 'ack' ? 'acknowledged' : cs.name.toLowerCase(), cs, ''); break; }
+    }
+  }
+  /**
+   * A voice LC header on [c]: a DMR grant of the last two seconds to the same talkgroup and slot says which logical
+   * channel this carrier is. Each logical channel takes the carrier it got at least two votes and two thirds of
+   * (derived from what the channels carry, not from a channel plan on the air).
+   */
+  private learnLpcn(c: Carrier, slot: number, lc: { group: boolean; dst: number }, now: number): void {
+    const i = this.pendingGrants.findIndex(g => now - g.ms < 2_000 && g.lpcn >= 0 && g.tg === lc.dst && g.group === lc.group && g.slot === slot && (!c.sys || c.sys === g.sys));
+    if (i < 0) return;
+    const g = this.pendingGrants[i]; this.pendingGrants.splice(i, 1);
+    const s = this.systems.get(g.sys); if (!s) return;
+    const v = s.lpcnVotes.get(g.lpcn) ?? new Map<number, number>(), k = c.hz;
+    v.set(k, (v.get(k) ?? 0) + 1); s.lpcnVotes.set(g.lpcn, v);
+    let best = 0, n = 0, all = 0; for (const [hz, m] of v) { all += m; if (m > n) { n = m; best = hz; } }
+    if (n >= 2 && n * 3 >= all * 2) {
+      for (const [l, hz] of s.lpcnHz) if (hz === best && l !== g.lpcn) s.lpcnHz.delete(l);
+      if (s.lpcnHz.get(g.lpcn) !== best) { s.lpcnHz.set(g.lpcn, best); this.pending = true; }
     }
   }
   /** Votes per carrier slot for the logical channel it is; each slot takes the one it got at least two thirds of. */
@@ -516,7 +573,8 @@ export class FleetProcessor implements IqProcessor {
   /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
   private grant(sys: string, g: GrantRow, update: boolean): void {
     if (g.kind !== 'datagrant') {
-      const call = this.calls.grant({ sys, proto: sys.startsWith('P25') ? 'P25' : 'DMR', tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: g.tdma && sys.startsWith('P25') ? g.slot : 0, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site }, g.ms);
+      const p25 = sys.startsWith('P25');
+      const call = this.calls.grant({ sys, proto: p25 ? 'P25' : 'DMR', tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: p25 ? (g.tdma ? g.slot : 0) : g.slot, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site, lpcn: g.lpcn, chDerived: g.chDerived }, g.ms);
       // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
       if (call?.onAir && !call.muted && call.hz && this.rate > 0 && this.inSpan(call.hz)) { const vc = this.carrierAt(call.hz); if (!vc.role) vc.role = 'voice'; if (!vc.sys) vc.sys = sys; if (!this.chans.has(vc.key)) { vc.lastAuditionMs = g.ms; this.open(vc, g.ms); vc.decoding = true; } }
     }
@@ -546,6 +604,39 @@ export class FleetProcessor implements IqProcessor {
   private resolvePos(u: Unit): [number | null, number | null] {
     if (!this.ref || u.lonLo < 0) return [null, null];
     return [round6(unwrap16(u.latLo, this.ref.lat)), round6(unwrap16(u.lonLo, this.ref.lon))];
+  }
+  /**
+   * Where each call on the air is heard from: the talking unit's last position, else the latest position of any unit
+   * in the talkgroup. The call keeps the last one placed while it was on the air.
+   */
+  private placeCalls(): void {
+    if (!this.ref) return;
+    for (const c of this.calls.calls) {
+      if (!c.onAir || c.kind !== 'call') continue;
+      const pos = this.callPos(c);
+      if (pos) this.calls.place(c, pos);
+    }
+  }
+  private callPos(c: CallRow): CallPos | null {
+    const at = (u: Unit | undefined, via: 'unit' | 'talkgroup'): CallPos | null => {
+      if (!u || u.lonLo < 0) return null;
+      const [lat, lon] = this.resolvePos(u);
+      return lat === null || lon === null ? null : { lat, lon, unit: u.id, ms: u.posMs, via, verified: u.posVerified };
+    };
+    const unitOf = (id: number): Unit | undefined => {
+      if (!id) return undefined;
+      if (c.sys) return this.units.get(`${c.sys}/${id}`) ?? (id > 0xffff ? this.units.get(`${c.sys}/${id & 0xffff}`) : undefined);
+      let found: Unit | undefined;
+      for (const u of this.units.values()) if (u.id === id && u.lonLo >= 0) { if (found) return undefined; found = u; }
+      return found;
+    };
+    const own = at(unitOf(c.src), 'unit'); if (own) return own;
+    if (!c.group || !c.tg) return null;
+    // a call on a channel no control channel has named yet: the talkgroup, when only one system has it
+    const t = c.sys ? this.tgs.get(`${c.sys}/${c.tg}`) : (() => { const m = [...this.tgs.values()].filter(x => x.tg === c.tg); return m.length === 1 ? m[0] : undefined; })();
+    let best: CallPos | null = null;
+    for (const m of t?.members ?? []) { const p = at(unitOf(m), 'talkgroup'); if (p && (!best || p.ms > best.ms)) best = p; }
+    return best;
   }
   /** The receiver's position arrived or moved: every stored report is resolved against it again. */
   setRef(lat: number, lon: number): void {
@@ -580,6 +671,7 @@ export class FleetProcessor implements IqProcessor {
   }
   snapshot(): FleetSnap {
     const now = this.now();
+    this.placeCalls();
     const unitSite = new Map<string, string>();
     const systems: SystemRow[] = [...this.systems.values()].map(s => {
       let sites: SiteRow[];
@@ -596,9 +688,10 @@ export class FleetProcessor implements IqProcessor {
       for (const st of sites) for (const k of st.carriers) for (const u of this.units.values()) if (u.sys === s.key && u.carriers.has(k)) unitSite.set(u.key, st.label);
       const label = s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
       const units = [...this.units.values()].filter(u => u.sys === s.key).length, tgs = [...this.tgs.values()].filter(t => t.sys === s.key).length;
+      const lpcns = [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
       return { key: s.key, proto: s.proto, color: s.color, label, wacn: s.wacn, sysId: s.sysId, cc: s.cc, fid: s.fid, net: s.net, model: s.model,
         callsign: sites.find(x => x.callsign)?.callsign ?? '', ...this.latestId(s.key), firstMs: s.firstMs, lastMs: s.lastMs, sites, idens: [...s.idens.values()].sort((a, b) => a.iden - b.iden),
-        grants: this.grants.filter(g => g.sys === s.key).length, units, tgs, derived: s.derived };
+        grants: this.grants.filter(g => g.sys === s.key).length, units, tgs, derived: s.derived || lpcns.length > 0, lpcns };
     }).sort((a, b) => a.firstMs - b.firstMs);
     const units: UnitRow[] = [...this.units.values()].map(u => {
       const [lat, lon] = this.resolvePos(u);
@@ -612,11 +705,11 @@ export class FleetProcessor implements IqProcessor {
     }).sort((a, b) => a.hz - b.hz);
     return { type: 'fleet', centerHz: this.centerHz, rate: this.rate, spanLo: this.spanLo, spanHi: this.spanHi, carriers, systems, units, tgs, grants: this.grants.slice(0, 120),
       perMin: this.grants.filter(g => now - g.ms < 60_000).length, blocks: this.blocks, slots: this.chans.size, ref: this.ref !== null,
-      calls: this.calls.rows(), follow: this.followTarget(), codecs: (['imbe', 'ambe2'] as CodecId[]).filter(hasCodec) };
+      calls: this.calls.rows(), follow: this.followTarget(), codecs: (['imbe', 'ambe2'] as CodecId[]).filter(hasCodec), playing: this.calls.playing, lock: this.calls.prefs.lock ?? null };
   }
   /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
   followTarget(): { key: string; hz: number } | null {
-    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !x.tdma);
+    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !(x.tdma && x.proto === 'P25'));
     return c ? { key: c.key, hz: c.hz } : null;
   }
   private latestId(sys: string): { cwId: string; cwIdMs: number; cwIdHz: number } {
@@ -647,6 +740,8 @@ export class FleetProcessor implements IqProcessor {
   feedDmr(hz: number, slot: number, cc: number, dt: number, bytes: Uint8Array): void {
     this.dmrBurst(this.carrierAt(hz), null, { burst: { slot, cc, dt, stErrs: 0, bytes, busy: 1 }, dibits: new Uint8Array(0) });
   }
+  /** One recorded DMR voice burst (144 dibits) heard on [hz]: [n] is its place in the superframe (0 has the sync). */
+  feedDmrVoice(hz: number, slot: number, dibits: Uint8Array, n: number): void { const c = this.carrierAt(hz); this.dmrSeen.set(c.key, this.now()); this.dmrVoice(c, null, slot, dibits, n); }
   /** A recorded channel clip, complex baseband at [fs] mixed to 0 Hz from [hz]: decoded as a channel of the span. */
   feedBaseband(hz: number, fs: number, zi: Float32Array, zq: Float32Array, n: number): void {
     const c = this.carrierAt(hz), now = this.now();
@@ -685,7 +780,7 @@ export class FleetProcessor implements IqProcessor {
   }
   clear(): void {
     this.carriers.clear(); this.systems.clear(); this.sites.clear(); this.units.clear(); this.tgs.clear(); this.grants = []; this.log.length = 0; this.logSeen.clear();
-    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear();
+    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = [];
     this.post(true);
   }
 }

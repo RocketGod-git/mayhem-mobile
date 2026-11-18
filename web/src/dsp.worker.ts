@@ -23,7 +23,7 @@ import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { FleetProcessor, type TgPrefs } from './dsp/fleet/fleet.js';
-import { to48k } from './dsp/fleet/codec.js';
+import { AudioFader } from './dsp/fleet/codec.js';
 import { CellProcessor } from './dsp/cell/cell.js';
 import { AtscProcessor } from './dsp/atsc/atsc.js';
 import { AtscPool, ATSC_POOL_NAME, startAtscPoolWorker } from './dsp/atsc/pool.js';
@@ -132,7 +132,8 @@ vdl2.onFrame = f => emit({ type: 'vdl2frame', f });
 const trains = new TrainsProcessor(emit);
 /** Dispatch: P25 and DMR trunking control channels and the calls they grant, across the span. */
 const fleet = new FleetProcessor(emit);
-const fleetAudio = { on: false, gain: 0.8, prev: 0 };
+const fleetAudio = { on: false, gain: 0.8, vuAt: 0 };
+const fleetFader = new AudioFader();
 /** Cell: LTE system information and emergency alerts (SI-RNTI only). What it heard is saved by the page. */
 const cell = new CellProcessor(emit);
 let cellSaved = -1;
@@ -181,7 +182,15 @@ const vBuf = new Float32Array(1);
 const toAudio = (chunk: Float32Array) => { audioChunks++; if (audioPort) audioPort.postMessage(chunk, [chunk.buffer]); };
 const ham = new HamDemod(emit, toAudio);
 // the top call on the air is the one heard: vocoder audio, where there is a vocoder for it
-fleet.calls.onAudio = (pcm, call) => { if (fleetAudio.on && processor === fleet && fleet.calls.ranked()[0]?.key === call.key) { toAudio(to48k(pcm, fleetAudio.gain, fleetAudio.prev)); fleetAudio.prev = pcm[pcm.length - 1] ?? 0; } };
+// the call being heard (the first to bring audio, unless priority or an emergency takes over) plays, faded in when it
+// starts and out when it ends or another takes over, so switching calls never clicks; its level goes to the meters
+fleet.calls.onAudio = (pcm, call) => {
+  if (!fleetAudio.on || processor !== fleet) return;
+  for (const b of fleetFader.push(pcm, call.key, fleetAudio.gain)) toAudio(b);
+  const t = Date.now();
+  if (t - fleetAudio.vuAt > 80) { fleetAudio.vuAt = t; let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i]; emit({ type: 'fleetVu', key: call.key, db: Math.round(10 * Math.log10(e / Math.max(1, pcm.length) + 1e-9)) }); }
+};
+fleet.calls.onEnd = call => { if (fleetFader.current === call.key) { const t = fleetFader.tail(); if (t) toAudio(t); emit({ type: 'fleetVu', key: '', db: -90 }); } };
 const orbcomm = new OrbcommDecoder(emit);
 const g3ruh = new G3ruhDecoder(emit);
 const geoscan = new GeoscanDecoder(emit);
@@ -380,10 +389,10 @@ self.onmessage = (e: MessageEvent) => {
       else if (m.cmd === 'export') emit({ type: 'fleetExport', ...fleet.exportAll() });
       else if (m.cmd === 'clear') fleet.clear();
       else if (m.cmd === 'prefs') fleet.setPrefs(m.prefs as TgPrefs);
-      else if (m.cmd === 'audio') { fleetAudio.on = !!m.on; fleetAudio.gain = Math.max(0, Math.min(1.5, Number(m.gain ?? fleetAudio.gain))); }
+      else if (m.cmd === 'audio') { if (!m.on && fleetAudio.on) { const t = fleetFader.tail(); if (t) toAudio(t); } fleetAudio.on = !!m.on; fleetAudio.gain = Math.max(0, Math.min(1.5, Number(m.gain ?? fleetAudio.gain))); }
       else if (m.cmd === 'replay') {
         const pcm = fleet.callAudio(m.key as string);
-        if (pcm) for (let i = 0; i < pcm.length; i += 1600) toAudio(to48k(pcm.subarray(i, i + 1600), fleetAudio.gain, i ? pcm[i - 1] : 0));
+        if (pcm) { const f = new AudioFader(); for (let i = 0; i < pcm.length; i += 1600) for (const b of f.push(pcm.subarray(i, i + 1600), 'replay', fleetAudio.gain)) toAudio(b); const t = f.tail(); if (t) toAudio(t); }
       }
       break;
     case 'btleChannel': btle.channel = m.ch as number; break;

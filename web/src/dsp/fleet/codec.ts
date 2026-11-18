@@ -23,3 +23,33 @@ export function to48k(pcm: Float32Array, gain: number, prev = 0): Float32Array {
   for (let i = 0; i < pcm.length; i++) { const b = pcm[i]; for (let k = 0; k < 6; k++) out[i * 6 + k] = gain * (a + (b - a) * (k + 1) / 6); a = b; }
   return out;
 }
+
+/**
+ * The live output of Dispatch: 8 kHz vocoder audio to 48 kHz, faded in over [fadeIn] samples when a different call
+ * starts, and faded out from its last sample over [fadeOut] when the call heard changes or ends, so the switch
+ * between calls never clicks.
+ */
+export class AudioFader {
+  private key = ''; private prev = 0; private ramp = 0; private last = 0;
+  constructor(readonly fadeIn = 480, readonly fadeOut = 240) {}
+  get current(): string { return this.key; }
+  push(pcm: Float32Array, key: string, gain: number): Float32Array[] {
+    const out: Float32Array[] = [];
+    if (key !== this.key) { const t = this.tail(); if (t) out.push(t); this.key = key; this.prev = 0; this.ramp = 0; }
+    const y = to48k(pcm, gain, this.prev);
+    this.prev = pcm.length ? pcm[pcm.length - 1] : this.prev;
+    for (let i = 0; i < y.length && this.ramp < this.fadeIn; i++, this.ramp++) y[i] *= this.ramp / this.fadeIn;
+    this.last = y.length ? y[y.length - 1] : this.last;
+    out.push(y);
+    return out;
+  }
+  /** The fade out from the last sample sent, or null when nothing is playing (or it already ended near zero). */
+  tail(): Float32Array | null {
+    const a = this.last;
+    this.key = ''; this.last = 0; this.prev = 0; this.ramp = 0;
+    if (Math.abs(a) < 1e-4) return null;
+    const t = new Float32Array(this.fadeOut);
+    for (let i = 0; i < t.length; i++) t[i] = a * (1 - (i + 1) / t.length);
+    return t;
+  }
+}

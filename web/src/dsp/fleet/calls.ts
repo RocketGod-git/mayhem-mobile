@@ -1,10 +1,17 @@
 /**
  * Dispatch calls: every voice grant and every voice transmission heard becomes a call that is on the air until its
  * channel says it ended (a P25 terminator, a DMR terminator) or goes quiet. Talkgroup preferences (mute, hold,
- * priority) pick what the receiver follows. Audio, where a vocoder is registered, is kept per call for replay. No DOM.
+ * priority) and the system lock pick what the receiver follows and what is heard. Each call keeps what the air said
+ * about its security (grant service options, link control, encryption sync, privacy header) and the position heard
+ * with it. Audio, where a vocoder is registered, is kept per call for replay. No DOM.
  */
 import { makeCodec, type CodecId, type VoiceCodec } from './codec.js';
 
+/** Where a call was heard from: the talking unit's own position, or the latest of a talkgroup member's. */
+export interface CallPos { lat: number; lon: number; unit: number; ms: number; via: 'unit' | 'talkgroup'; verified: boolean }
+/** One system (or one site of it) the listener locked on. [hz] is its control channel, for tuning back to it. */
+export interface Lock { sys: string; site: string; label: string; hz: number }
+export type CallSec = 'unknown' | 'clear' | 'enc';
 export interface CallRow {
   key: string; sys: string; proto: 'P25' | 'DMR'; tg: number; group: boolean; src: number; srcs: number[]; hz: number; slot: number; tdma: boolean;
   encrypted: boolean; emergency: boolean; startMs: number; lastMs: number; endMs: number; onAir: boolean;
@@ -14,25 +21,48 @@ export interface CallRow {
   end: string; muted: boolean; prio: boolean; audioMs: number; lcVerified: boolean; granted: boolean;
   /** 'id' rows are CW IDs keyed on a channel; a call's own [cwId] is the ID its channel keyed right after it. */
   kind: 'call' | 'id'; cwId: string;
+  /** Outside the system lock: shown dimmed, never heard, never followed. */
+  outside: boolean;
+  pos: CallPos | null;
+  /** Security as the call states it, and what said so ('grant', 'LDU1', 'LDU2', 'HDU', 'LC', 'EMB', 'PI', 'assumed'). */
+  sec: CallSec; secFrom: string;
+  /** P25 encryption sync (LDU2 or HDU): algorithm ID, key ID (-1 when not heard) and the message indicator in hex. */
+  algId: number; keyId: number; mi: string;
+  /** DMR privacy indicator header as sent, in hex ('' when none was heard). */
+  pi: string;
+  /** Decoded audio level, dB below full scale (0 when none yet). */
+  audioDb: number;
+  /** A DMR grant's logical channel, and whether its frequency was learned from what the channels carried. */
+  lpcn: number; chDerived: boolean;
 }
-interface Call extends CallRow { grantMs: number; voiceAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null }
+interface Call extends CallRow { grantMs: number; voiceAt: number; audioAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null; held: Uint8Array[]; hint: string }
 
-export interface TgPrefs { mute: string[]; hold: string; prio: string[] }
+export interface TgPrefs { mute: string[]; hold: string; prio: string[]; lock?: Lock | null }
 export const AUDIO_CAP_S = 120;
+/** Frames held while a call's security is not yet known (360 ms); past that a call nothing marked encrypted plays. */
+export const HOLD_FRAMES = 18;
 const CALLS_KEPT = 200, AUDIO_CALLS = 30;
-const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER_MS = 15_000;
+const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER_MS = 15_000, AUDIO_LIVE_MS = 1_200;
 
 const gridKey = (hz: number) => Math.round(hz / 6250) * 6250;
+/** Outside a lock: another system, or another site of the locked one (a call with no site label is kept). */
+export const outsideLock = (c: { sys: string; site: string }, lock: Lock | null | undefined) =>
+  !!lock && (c.sys !== lock.sys || (!!lock.site && !!c.site && c.site !== lock.site));
 
 export class CallTracker {
   readonly calls: Call[] = [];
-  prefs: TgPrefs = { mute: [], hold: '', prio: [] };
-  /** Live audio out, 8 kHz: set while the listener wants to hear the followed call. */
+  prefs: TgPrefs = { mute: [], hold: '', prio: [], lock: null };
+  /** The call being heard: the first to bring audio keeps it until it ends; priority (then emergency) takes over. */
+  playing = '';
+  /** Live audio out, 8 kHz: every decoded frame of the call being heard. */
   onAudio: ((pcm: Float32Array, call: CallRow) => void) | null = null;
+  /** The call being heard went off the air or out of hearing (so its audio can fade out instead of stopping dead). */
+  onEnd: ((call: CallRow) => void) | null = null;
   constructor(private readonly now: () => number) {}
 
   tgKey = (c: { sys: string; tg: number; group: boolean; src?: number }) => c.group ? `${c.sys}/${c.tg}` : `${c.sys}/u${c.tg}`;
   muted(c: CallRow): boolean { return this.prefs.mute.includes(this.tgKey(c)) || (!!this.prefs.hold && this.prefs.hold !== this.tgKey(c)); }
+  private label(c: Call): void { c.muted = this.muted(c); c.prio = this.prefs.prio.includes(this.tgKey(c)); c.outside = outsideLock(c, this.prefs.lock); }
 
   private find(sys: string, hz: number, slot: number, onAir = true): Call | undefined {
     const k = gridKey(hz);
@@ -41,11 +71,12 @@ export class CallTracker {
   private create(p: Partial<CallRow> & { sys: string; proto: 'P25' | 'DMR'; hz: number; slot: number; codec: CodecId }, now: number): Call {
     const c: Call = {
       key: `${p.sys}|${now}|${p.hz}|${p.slot}`, sys: p.sys, proto: p.proto, tg: p.tg ?? 0, group: p.group ?? true, src: p.src ?? 0, srcs: p.src ? [p.src] : [], hz: p.hz, slot: p.slot,
-      tdma: p.tdma ?? false, encrypted: p.encrypted ?? false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
+      tdma: p.tdma ?? false, encrypted: false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
       levelDb: 0, peakDb: 0, site: p.site ?? '', codec: p.codec, end: '', muted: false, prio: false, audioMs: 0, lcVerified: false, granted: false, kind: 'call', cwId: '',
-      grantMs: 0, voiceAt: 0, pcm: [], pcmN: 0, codecInst: null,
+      outside: false, pos: null, sec: 'unknown', secFrom: '', algId: -1, keyId: -1, mi: '', pi: '', audioDb: 0, lpcn: p.lpcn ?? -1, chDerived: p.chDerived ?? false,
+      grantMs: 0, voiceAt: 0, audioAt: 0, pcm: [], pcmN: 0, codecInst: null, held: [], hint: '',
     };
-    c.muted = this.muted(c); c.prio = this.prefs.prio.includes(this.tgKey(c));
+    this.label(c);
     this.calls.unshift(c);
     this.trim();
     return c;
@@ -58,9 +89,9 @@ export class CallTracker {
   }
 
   /** A voice grant (or grant update) on the control channel. */
-  grant(g: { sys: string; proto: 'P25' | 'DMR'; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string }, now = this.now()): Call | null {
+  grant(g: { sys: string; proto: 'P25' | 'DMR'; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string; lpcn?: number; chDerived?: boolean }, now = this.now()): Call | null {
     if (!g.tg && !g.hz) return null;
-    let c = this.calls.find(x => x.kind === 'call' && x.onAir && x.sys === g.sys && x.tg === g.tg && x.group === g.group && (!x.hz || !g.hz || gridKey(x.hz) === gridKey(g.hz)) && x.slot === g.slot);
+    let c = this.calls.find(x => x.kind === 'call' && x.onAir && x.sys === g.sys && x.tg === g.tg && x.group === g.group && (!x.hz || !g.hz || gridKey(x.hz) === gridKey(g.hz)) && (x.slot === g.slot || !x.hz || !g.hz));
     if (!c && g.hz) {
       // voice that arrived before its grant (or a grant for a channel already carrying an unlabeled call)
       const v = this.find(g.sys, g.hz, g.slot);
@@ -70,11 +101,16 @@ export class CallTracker {
     if (!c && this.calls.some(x => x.kind === 'call' && !x.onAir && x.end === 'terminator' && now - x.endMs < TRAIL_MS && x.sys === g.sys && x.tg === g.tg && (!g.hz || !x.hz || gridKey(x.hz) === gridKey(g.hz)))) return null;
     const codec: CodecId = g.proto === 'P25' && !g.tdma ? 'imbe' : 'ambe2';
     if (!c) c = this.create({ ...g, codec }, now);
-    c.tg = g.tg || c.tg; c.group = g.group; c.sys = g.sys || c.sys; if (g.hz) c.hz = g.hz; c.tdma = g.tdma; c.codec = codec;
+    c.tg = g.tg || c.tg; c.group = g.group; c.sys = g.sys || c.sys; if (g.hz) { c.hz = g.hz; c.slot = g.slot; } c.tdma = g.tdma; c.codec = codec;
+    if (g.lpcn !== undefined && g.lpcn >= 0) c.lpcn = g.lpcn;
+    if (g.chDerived) c.chDerived = true;
     if (g.src) this.addSrc(c, g.src);
-    c.encrypted = c.encrypted || g.encrypted; c.emergency = c.emergency || g.emergency; c.site = g.site || c.site;
+    c.emergency = c.emergency || g.emergency; c.site = g.site || c.site;
+    // a P25 grant's service options say whether the call is encrypted; a DMR grant says nothing either way
+    if (g.encrypted) this.security(c, { enc: true, from: 'grant' });
+    else if (g.proto === 'P25') this.security(c, { enc: false, from: 'grant' });
     c.grantMs = now; c.lastMs = now; c.granted = true;
-    c.muted = this.muted(c); c.prio = this.prefs.prio.includes(this.tgKey(c));
+    this.label(c);
     return c;
   }
   private addSrc(c: Call, src: number): void { c.src = src; if (!c.srcs.includes(src)) { c.srcs.push(src); if (c.srcs.length > 12) c.srcs.shift(); } }
@@ -84,18 +120,49 @@ export class CallTracker {
     let c = this.find(sys, hz, slot);
     if (!c) c = this.create({ sys, proto, hz, slot, codec: proto === 'P25' ? 'imbe' : 'ambe2' }, now);
     c.frames++; c.voiceMs += ms; c.voiceAt = now; c.lastMs = now;
-    if (sys && !c.sys) c.sys = sys;
+    if (sys && !c.sys) { c.sys = sys; this.label(c); }
     return c;
   }
-  /** Link control read on the voice channel (DMR voice LC header or terminator): who is talking to whom. */
+  /** Link control read on the voice channel (DMR voice LC header or terminator, P25 LDU1): who is talking to whom. */
   lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: 'P25' | 'DMR' = 'DMR'): Call {
     let c = this.find(sys, hz, slot);
     if (c && c.tg && c.tg !== lc.dst) { this.finish(c, 'terminator', now); c = undefined; }
+    if (!c) {
+      // a granted call whose channel is not resolved yet (a DMR logical channel): the voice link control places it
+      c = this.calls.find(x => x.kind === 'call' && x.onAir && x.proto === proto && !x.hz && x.tg === lc.dst && x.group === lc.group && (!sys || !x.sys || x.sys === sys));
+      if (c) { c.hz = hz; c.slot = slot; }
+    }
     if (!c) c = this.create({ sys, proto, hz, slot, codec: proto === 'P25' ? 'imbe' : 'ambe2', tg: lc.dst, group: lc.group }, now);
-    c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.encrypted = c.encrypted || lc.privacy; c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
+    c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
+    if (sys && !c.sys) c.sys = sys;
+    this.security(c, { enc: lc.privacy, from: proto === 'P25' ? 'LDU1' : 'LC' });
     c.lastMs = now; c.voiceAt = Math.max(c.voiceAt, now);
-    c.muted = this.muted(c); c.prio = this.prefs.prio.includes(this.tgKey(c));
+    this.label(c);
     return c;
+  }
+  /**
+   * What the air says about a call's security. Encrypted wins and stays: a call marked encrypted by anything never
+   * plays. The first clear statement releases the frames held while it was not known.
+   */
+  security(c: Call, s: { enc: boolean; from: string; algId?: number; keyId?: number; mi?: string; pi?: string }): void {
+    if (s.algId !== undefined && s.algId >= 0) c.algId = s.algId;
+    if (s.keyId !== undefined && s.keyId >= 0) c.keyId = s.keyId;
+    if (s.mi) c.mi = s.mi;
+    if (s.pi) c.pi = s.pi;
+    if (s.enc) {
+      if (c.sec !== 'enc') { c.sec = 'enc'; c.secFrom = s.from; }
+      c.encrypted = true; c.held = [];
+      if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); }
+      return;
+    }
+    // on P25 the encryption sync (LDU2) or the header is what says it: a clear grant or link control is only a hint,
+    // the frames wait for the sync (at most [HOLD_FRAMES], then the hint stands)
+    if (c.proto === 'P25' && (s.from === 'grant' || s.from === 'LDU1')) { if (c.sec === 'unknown' && !c.hint) c.hint = s.from; return; }
+    if (c.sec === 'unknown') { c.sec = 'clear'; c.secFrom = s.from; this.release(c); }
+  }
+  /** Security of the call on the air on a channel, if there is one. */
+  securityAt(sys: string, hz: number, slot: number, s: { enc: boolean; from: string; algId?: number; keyId?: number; mi?: string; pi?: string }): Call | undefined {
+    const c = this.find(sys, hz, slot); if (c) this.security(c, s); return c;
   }
   /** A CW ID keyed on a channel: logged as its own row, and on the call that channel just carried. */
   cwId(sys: string, hz: number, text: string, now = this.now()): void {
@@ -110,20 +177,54 @@ export class CallTracker {
   at(sys: string, hz: number, slot: number): Call | undefined { return this.find(sys, hz, slot); }
   /** The channel sent its end of transmission. */
   terminate(sys: string, hz: number, slot: number, now = this.now()): void { const c = this.find(sys, hz, slot); if (c) this.finish(c, 'terminator', now); }
-  /** Vocoder frames of a call: decoded where a codec is registered and the call is in the clear. */
+  /** Where the call was heard from; kept with the call once it ends. */
+  place(c: CallRow, pos: CallPos | null): void { if (pos) (c as Call).pos = pos; }
+  /**
+   * Vocoder frames of a call: decoded where a codec is registered and the call is in the clear. Until something on
+   * the air says whether the call is encrypted its frames wait (at most [HOLD_FRAMES]).
+   */
   frames(c: Call, frames: Uint8Array[]): void {
-    if (c.encrypted || c.muted) return;
+    if (c.encrypted || c.muted || c.outside) return;
+    if (c.sec === 'unknown') {
+      c.held.push(...frames);
+      if (c.held.length >= HOLD_FRAMES) { c.sec = 'clear'; c.secFrom = c.hint || 'assumed'; this.release(c); }
+      return;
+    }
+    this.decode(c, frames);
+  }
+  private release(c: Call): void {
+    const h = c.held; c.held = [];
+    if (h.length && !c.encrypted && !c.muted && !c.outside) this.decode(c, h);
+  }
+  private decode(c: Call, frames: Uint8Array[]): void {
     if (!c.codecInst) c.codecInst = makeCodec(c.codec);
     const k = c.codecInst; if (!k) return;
+    const now = this.now();
     for (const f of frames) {
       const pcm = k.decode(f); if (!pcm) continue;
       if (c.pcmN < AUDIO_CAP_S * 8000) { c.pcm.push(pcm); c.pcmN += pcm.length; c.audioMs = Math.round(c.pcmN / 8); }
-      this.onAudio?.(pcm, c);
+      let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i];
+      const db = 10 * Math.log10(e / pcm.length + 1e-9);
+      c.audioDb = c.audioDb ? c.audioDb + 0.3 * (db - c.audioDb) : db;
+      c.audioAt = now;
+      if (this.choose(c, now)) this.onAudio?.(pcm, c);
     }
+  }
+  /** Whether [c] is the call heard: it is when nothing else is, and it takes over for priority or emergency. */
+  private choose(c: Call, now: number): boolean {
+    if (this.playing === c.key) return true;
+    const cur = this.playing ? this.calls.find(x => x.key === this.playing) : undefined;
+    const live = !!cur && cur.onAir && !cur.muted && !cur.outside && !cur.encrypted && now - cur.audioAt < AUDIO_LIVE_MS;
+    const wins = !!cur && ((c.prio && !cur.prio) || (c.emergency && !cur.emergency && !cur.prio));
+    if (live && !wins) return false;
+    if (cur && live) this.onEnd?.(cur);
+    this.playing = c.key;
+    return true;
   }
   private finish(c: Call, why: string, now: number): void {
     if (!c.onAir) return;
-    c.onAir = false; c.endMs = now; c.end = why; c.codecInst = null;
+    c.onAir = false; c.endMs = now; c.end = why; c.codecInst = null; c.held = [];
+    if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); }
     this.trim();
   }
   /** Calls go off the air when nothing has kept them alive. [level] reads the carrier level for a frequency. */
@@ -137,16 +238,18 @@ export class CallTracker {
     }
   }
   setPrefs(p: TgPrefs): void {
-    this.prefs = { mute: [...p.mute], hold: p.hold, prio: [...p.prio] };
-    for (const c of this.calls) { c.muted = this.muted(c); c.prio = this.prefs.prio.includes(this.tgKey(c)); }
+    this.prefs = { mute: [...p.mute], hold: p.hold, prio: [...p.prio], lock: p.lock ? { ...p.lock } : null };
+    for (const c of this.calls) this.label(c);
+    const cur = this.calls.find(x => x.key === this.playing);
+    if (cur && (cur.muted || cur.outside)) { this.playing = ''; this.onEnd?.(cur); }
   }
-  /** On-air calls in the order they are worth listening to: priority, emergency, then newest. Muted ones last. */
+  /** On-air calls in the order they are worth listening to: priority, emergency, then newest. Muted and locked-out ones last. */
   ranked(): Call[] {
-    return this.calls.filter(c => c.onAir).sort((a, b) => Number(a.muted) - Number(b.muted) || Number(b.prio) - Number(a.prio) || Number(b.emergency) - Number(a.emergency) || b.startMs - a.startMs);
+    return this.calls.filter(c => c.onAir).sort((a, b) => Number(a.outside) - Number(b.outside) || Number(a.muted) - Number(b.muted) || Number(b.prio) - Number(a.prio) || Number(b.emergency) - Number(a.emergency) || b.startMs - a.startMs);
   }
-  /** The call a single-channel receiver should go to: the best one outside [inSpan] that is not muted. */
+  /** The call a single-channel receiver should go to: the best one outside [inSpan] that is not muted or locked out. */
   followTarget(inSpan: (hz: number) => boolean, worth: (c: CallRow) => boolean = () => true): Call | null {
-    return this.ranked().find(c => !c.muted && c.hz > 0 && !inSpan(c.hz) && worth(c)) ?? null;
+    return this.ranked().find(c => !c.muted && !c.outside && c.hz > 0 && !inSpan(c.hz) && worth(c)) ?? null;
   }
   audioOf(key: string): Float32Array | null {
     const c = this.calls.find(x => x.key === key); if (!c || !c.pcmN) return null;
@@ -155,7 +258,7 @@ export class CallTracker {
   }
   rows(n = 80): CallRow[] {
     const on = this.ranked(), off = this.calls.filter(c => !c.onAir).slice(0, n);
-    return [...on, ...off].map(({ grantMs: _g, voiceAt: _v, pcm: _p, pcmN: _n, codecInst: _k, ...r }) => ({ ...r, srcs: [...r.srcs] }));
+    return [...on, ...off].map(({ grantMs: _g, voiceAt: _v, audioAt: _a, pcm: _p, pcmN: _n, codecInst: _k, held: _h, hint: _t, ...r }) => ({ ...r, srcs: [...r.srcs], pos: r.pos ? { ...r.pos } : null }));
   }
-  clear(): void { this.calls.length = 0; }
+  clear(): void { this.calls.length = 0; this.playing = ''; }
 }
