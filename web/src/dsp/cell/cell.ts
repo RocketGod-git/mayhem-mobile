@@ -160,7 +160,8 @@ export class CellProcessor implements IqProcessor {
             tried.add(pci * 2 + Number(tdd));
             const r = this.readMib(yr, yi, pci, map, evenSf0, tdd, this.cells.has(`${Math.round(this.centerHz / 1e5)}:${pci}`));
             if (!r) continue;
-            const cell = this.cellFor(pci, tdd, now);
+            const cell = this.cellAt(pci, tdd, this.centerHz, r.mib, h.score, now);
+            if (!cell) continue;
             cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score;
             this.mibRow(cell, now);
             found.push({ cell, map, evenSf0, tdd, mibH: r.h });
@@ -265,7 +266,8 @@ export class CellProcessor implements IqProcessor {
       for (const tdd of [false, true]) for (const [pci, evenSf0] of this.pciCandidates(yr, yi, hit.nid2, map, tdd)) {
         const r = this.readMib(yr, yi, pci, map, evenSf0, tdd, false);
         if (!r) continue;
-        const cell = this.cellFor(pci, tdd, now, hz);
+        const cell = this.cellAt(pci, tdd, hz, r.mib, hit.score, now);
+        if (!cell) return;
         cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = this.centerHz + shift - hz; cell.pssScore = hit.score;
         this.mibRow(cell, now);
         this.offCenter = { hz, pci, ms: now };
@@ -273,6 +275,42 @@ export class CellProcessor implements IqProcessor {
         return;
       }
     }
+  }
+
+  /**
+   * The cell a MIB belongs to. A strong cell leaks into spans tuned a few MHz away (decimation folding, tuner images),
+   * where it decodes as the same PCI with the same MIB. A cell already known within 10 MHz with the same PCI, MIB
+   * content and a consistent SFN is that cell: the copy is dropped (null), unless it is heard clearly better and the
+   * known one never decoded SIB1, in which case the known cell moves to the new frequency.
+   */
+  private cellAt(pci: number, tdd: boolean, hz: number, mib: Mib, score: number, now: number): Cell | null {
+    if (this.cells.has(`${Math.round(hz / 1e5)}:${pci}`)) return this.cellFor(pci, tdd, now, hz);
+    const o = [...this.cells.values()].find(c => sameCell(c, pci, tdd, hz, mib, now));
+    if (!o) return this.cellFor(pci, tdd, now, hz);
+    if (o.summary || score <= 1.5 * o.pssScore) return null;
+    this.moveCell(o, hz, now);
+    return o;
+  }
+  private moveCell(c: Cell, hz: number, now: number): void {
+    const old = c.key, key = `${Math.round(hz / 1e5)}:${c.pci}`;
+    this.cells.delete(old);
+    c.key = key; c.hz = hz; c.timing = null; c.pending.clear();
+    const b = bandOf(hz); c.band = b ? b.bands[0] : c.band; c.earfcn = c.band ? dlEarfcnForMhz(c.band, hz / 1e6) : null;
+    this.cells.set(key, c);
+    for (const r of this.feed.rows) if (r.cell === old) { r.cell = key; r.hz = hz; }
+    this.addLog(now, hz, c.pci, 'CELL', `PCI ${c.pci} heard better here: moved from ${(Number(old.split(':')[0]) / 10).toFixed(1)} MHz`, '');
+  }
+  /** Copies of one cell kept by an earlier session: the best heard one stays (SIB1, then most MIBs, then the PSS metric). */
+  private mergeDuplicates(): void {
+    const all = [...this.cells.values()], drop = new Set<string>();
+    for (const a of all) for (const b of all) {
+      if (a === b || drop.has(a.key) || drop.has(b.key) || !a.mib || !b.mib || !sameCell(a, b.pci, b.tdd, b.hz, b.mib, 0)) continue;
+      const rank = (c: Cell) => [c.summary ? 1 : 0, c.mibCount, c.pssScore];
+      const [ra, rb] = [rank(a), rank(b)], aWins = ra[0] !== rb[0] ? ra[0] > rb[0] : ra[1] !== rb[1] ? ra[1] > rb[1] : ra[2] >= rb[2];
+      drop.add(aWins ? b.key : a.key);
+    }
+    for (const k of drop) this.cells.delete(k);
+    if (drop.size) this.feed.rows = this.feed.rows.filter(r => !drop.has(r.cell));
   }
 
   private cellFor(pci: number, tdd: boolean, now: number, at = this.centerHz): Cell {
@@ -548,6 +586,7 @@ export class CellProcessor implements IqProcessor {
     }
     this.warnings.restore(s.alerts ?? []);
     this.feed.restore(s.feed ?? []);
+    this.mergeDuplicates();
     if (Array.isArray(s.log) && !this.log.length) this.log.push(...s.log.slice(-500));
     this.post(true);
   }
@@ -564,6 +603,15 @@ export class CellProcessor implements IqProcessor {
 }
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
+/** Whether a MIB heard at hz is cell c seen again: same PCI and duplex, within 10 MHz, same MIB content, SFN in step (when now is given). */
+function sameCell(c: { pci: number; tdd: boolean; hz: number; mib: Mib | null; mibMs: number }, pci: number, tdd: boolean, hz: number, mib: Mib, now: number): boolean {
+  const m = c.mib;
+  if (!m || c.pci !== pci || c.tdd !== tdd || Math.abs(c.hz - hz) > 10_000_000 || c.hz === hz) return false;
+  if (m.bandwidth !== mib.bandwidth || m.ports !== mib.ports || m.phichResource !== mib.phichResource || m.phichDuration !== mib.phichDuration) return false;
+  if (!now || now - c.mibMs > 120_000) return true;
+  const want = (m.sfn + Math.round((now - c.mibMs) / 10)) % 1024, d = Math.abs(want - mib.sfn) % 1024;
+  return Math.min(d, 1024 - d) <= 50;
+}
 function sibLine(name: string, v: Obj): string {
   try {
     if (name === 'sib4') return `${((v.intraFreqNeighCellList ?? []) as unknown[]).length} intra-frequency neighbors`;
