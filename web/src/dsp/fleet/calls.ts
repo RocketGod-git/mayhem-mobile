@@ -88,10 +88,10 @@ export class CallTracker {
     return c;
   }
   /** Link control read on the voice channel (DMR voice LC header or terminator): who is talking to whom. */
-  lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now()): Call {
+  lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: 'P25' | 'DMR' = 'DMR'): Call {
     let c = this.find(sys, hz, slot);
     if (c && c.tg && c.tg !== lc.dst) { this.finish(c, 'terminator', now); c = undefined; }
-    if (!c) c = this.create({ sys, proto: 'DMR', hz, slot, codec: 'ambe2', tg: lc.dst, group: lc.group }, now);
+    if (!c) c = this.create({ sys, proto, hz, slot, codec: proto === 'P25' ? 'imbe' : 'ambe2', tg: lc.dst, group: lc.group }, now);
     c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.encrypted = c.encrypted || lc.privacy; c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
     c.lastMs = now; c.voiceAt = Math.max(c.voiceAt, now);
     c.muted = this.muted(c); c.prio = this.prefs.prio.includes(this.tgKey(c));
@@ -106,6 +106,8 @@ export class CallTracker {
     this.trim();
   }
   onAirAt(sys: string, hz: number, slot: number): boolean { return !!this.find(sys, hz, slot); }
+  /** The call on the air on a channel (and slot), if any. */
+  at(sys: string, hz: number, slot: number): Call | undefined { return this.find(sys, hz, slot); }
   /** The channel sent its end of transmission. */
   terminate(sys: string, hz: number, slot: number, now = this.now()): void { const c = this.find(sys, hz, slot); if (c) this.finish(c, 'terminator', now); }
   /** Vocoder frames of a call: decoded where a codec is registered and the call is in the clear. */

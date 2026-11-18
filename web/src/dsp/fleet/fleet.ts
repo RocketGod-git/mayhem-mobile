@@ -12,7 +12,9 @@ import { RealFir, lowpassTaps } from '../ham/filters.js';
 import { crc12Ok, DMR_CRC_MASK, hex } from './codes.js';
 import { parseTsbk, resolveChannel, svcFlags, tsbkLine, h, type Field, type Iden, type Tsbk } from './tsbk.js';
 import { parseCsbk, unwrap16, csbkLine, VendorCheck, type Csbk } from './csbk.js';
-import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, type P25Block, type DmrEvent } from './rx.js';
+import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, slice, type P25Block, type DmrEvent } from './rx.js';
+import { P25Decoder } from '../ham/p25.js';
+import './vocoders.js';
 import { CallTracker, type CallRow, type TgPrefs } from './calls.js';
 import { parseLc, voiceFrames } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
@@ -80,6 +82,9 @@ class Chan {
   readonly ddc = new Ddc(CUT_HZ, CH_RATE, 127);
   rx!: SymbolRx;
   readonly p25 = new P25Framer();
+  readonly p25v = new P25Decoder();
+  /** Symbols so far, the P25 voice decoder's clock; [lcErrs] its failure count at the last link control read. */
+  t = 0; lcErrs = 0;
   readonly dmr = new DmrFramer();
   cw!: CwReader;
   oi = new Float32Array(0); oq = new Float32Array(0);
@@ -90,7 +95,14 @@ class Chan {
     const fs = baseband || this.ddc.outRate;
     this.rx = new SymbolRx(fs);
     this.cw = new CwReader(fs);
-    this.rx.onSymbol = s => { this.p25.push(s); this.dmr.push(s); };
+    // the voice frames' payload (nine vocoder frames and the link control of each LDU) is read by the HAM receiver's
+    // P25 decoder, driven by this channel's frame syncs
+    this.rx.onSymbol = s => {
+      const n0 = this.p25.syncs;
+      this.p25.push(s); this.dmr.push(s);
+      if (this.p25.syncs !== n0) this.p25v.sync(this.t); else this.p25v.push(slice(s), this.t);
+      this.t++;
+    };
     this.openedMs = now; this.quietSince = now;
   }
   retarget(center: number): void { this.ddc.offsetHz = this.hz - center; }
@@ -237,6 +249,8 @@ export class FleetProcessor implements IqProcessor {
     ch.p25.onFrame = (nac, duid) => { c.envCv = Math.round(ch.rx.envCv * 100) / 100; this.p25Frame(c, nac, duid); };
     ch.dmr.onBurst = e => this.dmrBurst(c, ch, e);
     ch.dmr.onVoice = (slot, d) => this.dmrVoice(c, slot, d);
+    ch.p25v.onVoice = bits => this.p25Voice(c, bits);
+    ch.p25v.onLog = () => this.p25Lc(c, ch);
     ch.cw.onText = t => this.cwText(c, t);
     this.chans.set(c.key, ch);
   }
@@ -388,6 +402,18 @@ export class FleetProcessor implements IqProcessor {
     }
   }
   /** A DMR voice burst: keeps its call on the air and hands its three vocoder frames on. */
+  /** One IMBE frame out of a P25 voice frame. A call is decoded once its grant or its link control says what it is. */
+  private p25Voice(c: Carrier, bits: Uint8Array): void {
+    const call = this.calls.at(c.sys, c.hz, 0);
+    if (call && (call.granted || call.lcVerified)) this.calls.frames(call, [bits]);
+  }
+  /** Link control read out of an LDU1 (talkgroup or unit, source, encryption) labels the call on that channel. */
+  private p25Lc(c: Carrier, ch: Chan): void {
+    const st = ch.p25v.status(ch.t), fresh = st.errs === ch.lcErrs;
+    ch.lcErrs = st.errs;
+    if (st.duid !== 5 || !fresh || (st.lcf !== 0 && st.lcf !== 3) || (!st.talkgroup && !st.source) || !this.calls.onAirAt(c.sys, c.hz, 0)) return;
+    this.calls.lc(c.sys, c.hz, 0, { group: st.lcf === 0, dst: st.talkgroup, src: st.source, emergency: false, privacy: st.encrypted }, this.now(), 'P25');
+  }
   private dmrVoice(c: Carrier, slot: number, d: Uint8Array): void {
     const now = this.now();
     // a P25 channel's voice frames can look like a DMR voice sync now and then
@@ -590,7 +616,7 @@ export class FleetProcessor implements IqProcessor {
   }
   /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
   followTarget(): { key: string; hz: number } | null {
-    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted);
+    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !x.tdma);
     return c ? { key: c.key, hz: c.hz } : null;
   }
   private latestId(sys: string): { cwId: string; cwIdMs: number; cwIdHz: number } {
