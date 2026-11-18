@@ -22,8 +22,12 @@ export class SymbolRx {
   eye = 1;
   envMean = 0; envVar = 0; power = 0;
   symbols = 0;
-  constructor(readonly fs: number) {
-    this.sps = fs / BAUD; this.D = Math.max(1, Math.round(this.sps));
+  /**
+   * [diff] is the phase-step span as a fraction of a symbol. A whole symbol suits P25 and DMR; NXDN's outer levels turn
+   * the phase by nearly half a turn a symbol, so it measures over half a symbol to stay clear of the wrap.
+   */
+  constructor(readonly fs: number, baud = BAUD, diff = 1) {
+    this.sps = fs / baud; this.D = Math.max(1, Math.round(this.sps * diff));
     this.ri = new Float32Array(this.D); this.rq = new Float32Array(this.D);
     this.buf = new Float32Array(Math.ceil(this.sps * BLOCK * 2) + 64);
   }

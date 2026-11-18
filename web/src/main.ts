@@ -4651,7 +4651,7 @@ function dispatchLockFor(sysKey: string, siteLabel = ''): DispatchLock | null {
   const hz = site?.ccHz[0] ?? x.sites.find(y => y.ccHz.length)?.ccHz[0] ?? 0;
   return { sys: x.key, site: siteLabel, label: `${fleetSysTitle(x)}${siteLabel ? ` · SITE ${siteLabel}` : ''}`, hz };
 }
-const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'TETRA' ? `MCC ${sys.wacn} · MNC ${sys.sysId}` : sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
+const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'NXDN' ? `${sys.model} SYS ${sys.sysId}` : sys.proto === 'TETRA' ? `MCC ${sys.wacn} · MNC ${sys.sysId}` : sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : sys.trunk === 'CAPACITY PLUS' ? `CAP+ CC ${sys.cc}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
 /** Talkgroup preferences are kept on the device (the key names keep the app's internal id). */
 function loadDispatchPrefs(): TgPrefs {
   try { const v = JSON.parse(localStorage.getItem('mm.fleet.tgprefs') ?? 'null'); if (v && Array.isArray(v.mute) && Array.isArray(v.prio)) return { mute: v.mute, hold: typeof v.hold === 'string' ? v.hold : '', prio: v.prio }; } catch { /* storage blocked */ }
@@ -4876,7 +4876,9 @@ function fleetSiteHtml(sys: FleetSystem, site: FleetSite, now: number): string {
   const ccs = cars.map(c => `<span class="fl-cc ${c.role}" data-flsel="car:${c.key}">${fleetMhz(c.hz)}<small>${c.role === 'rest' ? 'REST' : c.role === 'control' ? (sys.proto === 'P25' ? 'CONTROL' : 'REPEATER') : c.role.toUpperCase()}${c.lcn ? ` · LCN ${c.lcn}` : ''}</small></span>`).join('');
   const lvl = Math.max(0, Math.min(1, site.levelDb / 50));
   let body = '';
-  if (sys.proto === 'TETRA') {
+  if (sys.proto === 'NXDN') {
+    body += `<div class="fl-kv"><span>SITE <b>${site.site}</b></span>${site.time ? `<span>${esc(site.time.toUpperCase())}</span>` : ''}${site.cls > 0 ? `<span>VERSION <b>${site.cls}</b></span>` : ''}</div>`;
+  } else if (sys.proto === 'TETRA') {
     body += `<div class="fl-kv"><span>COLOR CODE <b>${site.site}</b></span>${site.time ? `<span>${esc(site.time.toUpperCase())}</span>` : ''}${site.cls >= 0 ? `<span>CELL LOAD <b>${['LOW', 'MEDIUM', 'HIGH', 'UNKNOWN'][site.cls] ?? site.cls}</b></span>` : ''}</div>`;
   } else if (sys.proto === 'P25') {
     body += `<div class="fl-kv"><span>NAC <b>${site.nac >= 0 ? site.nac.toString(16).toUpperCase().padStart(3, '0') : '-'}</b></span><span>RFSS <b>${site.rfss}</b></span><span>SITE <b>${site.site}</b></span>${site.time ? `<span>CLOCK <b>${esc(site.time.slice(11, 19))}</b></span>` : ''}</div>`;
@@ -5045,11 +5047,13 @@ function fleetDetail(s: FleetSnap, now: number): string {
   }
   if (sel.kind === 'sys') {
     const x = s.systems.find(y => y.key === sel.key); if (!x) return '';
-    const f: [string, string][] = x.proto === 'TETRA'
+    const f: [string, string][] = x.proto === 'NXDN'
+      ? [['PROTOCOL', 'NXDN'], ['CATEGORY', x.model], ['SYSTEM CODE', `${x.sysId}`], ['SITES', x.sites.map(y => y.site).join(', ')], ['CARRIERS', x.sites.map(y => fleetMhz(y.ccHz[0] ?? 0)).join(', ')], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
+      : x.proto === 'TETRA'
       ? [['PROTOCOL', 'TETRA'], ['MCC', `${x.wacn}`], ['MNC', `${x.sysId}`], ['COLOR CODE', `${x.cc}`], ['CARRIERS', x.sites.map(y => fleetMhz(y.ccHz[0] ?? 0)).join(', ')], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
       : x.proto === 'P25'
       ? [['PROTOCOL', 'P25 Phase 1 control channel'], ['WACN', x.wacn.toString(16).toUpperCase().padStart(5, '0')], ['SYSTEM', x.sysId.toString(16).toUpperCase().padStart(3, '0')], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['TALKGROUPS', `${x.tgs}`], ['GRANTS', `${x.grants}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
-      : [['PROTOCOL', 'DMR'], ['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : '-'], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : 'not sent'], ['CALLSIGN', x.callsign || 'no CW ID heard yet'], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]];
+      : [['PROTOCOL', 'DMR'], ...(x.trunk ? [['TRUNKING', x.trunk]] as [string, string][] : []), ['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : '-'], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : 'not sent'], ['CALLSIGN', x.callsign || 'no CW ID heard yet'], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]];
     const lp = x.lpcns.length ? `<div class="fl-hist"><small>LOGICAL CHANNELS</small><div class="fl-lcn">${x.lpcns.map(l => `<span><b>LPCN ${l.lpcn}</b><i>${fleetMhz(l.hz)} · ${l.votes} calls</i></span>`).join('')}</div></div>` : '';
     return head(x.proto, x.label) + fields(f) + (x.proto === 'P25' ? `<div class="fl-hist"><small>CHANNEL TABLE</small>${fleetIdenRows(x.idens)}</div>` : lp);
   }
