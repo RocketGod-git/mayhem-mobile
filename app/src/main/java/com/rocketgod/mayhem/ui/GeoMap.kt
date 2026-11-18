@@ -358,6 +358,8 @@ fun GeoMapView(
     autoFollow: Boolean = true,
     /** A tap on open map (not on a marker or a hazard area). */
     onMapTap: ((Double, Double) -> Unit)? = null,
+    /** Moving markers: fit when the set of items changes, not on every move (a refit every update keeps the map panning). */
+    steady: Boolean = false,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -395,9 +397,13 @@ fun GeoMapView(
         if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
     }
 
-    LaunchedEffect(mapRef, items, layers, selected, home, following) {
+    LaunchedEffect(mapRef, items, layers, selected, home) {
         val mv = mapRef ?: return@LaunchedEffect
         overlayRef?.let { it.items = items; it.layers = layers; it.selected = selected; it.home = home; mv.invalidate() }
+    }
+    val fitKey: Any = if (steady) items.map { it.id }.sorted() else listOf(items, layers, selected, home)
+    LaunchedEffect(mapRef, fitKey, following) {
+        val mv = mapRef ?: return@LaunchedEffect
         if (!following) return@LaunchedEffect
         var waits = 0
         while ((mv.width == 0 || mv.height == 0) && waits++ < 40) delay(50)

@@ -23,7 +23,7 @@ import kotlin.math.sqrt
 /** Parity contribution (11 bits) of each Golay data bit, index 0 = the most significant data bit (bit 11). */
 private val GOLAY_GEN = intArrayOf(0x63a, 0x31d, 0x7b4, 0x3da, 0x1ed, 0x6cc, 0x366, 0x1b3, 0x6e3, 0x54b, 0x49f, 0x475)
 
-private fun golayParity(data: Int, bits: Int): Int {
+internal fun golayParity(data: Int, bits: Int): Int {
     var p = 0
     for (j in 0 until bits) if ((data and (1 shl j)) != 0) p = p xor GOLAY_GEN[11 - j]
     return p

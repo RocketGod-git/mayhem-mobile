@@ -70,7 +70,7 @@ private val DMR_SYNCS = SYNCS.filter { it.proto == "DMR" }
 
 // ------------------------------------------------------------------------------------------- block codes
 /** Hamming single-error correction; [eq] lists, per parity bit, the data bits it covers. 0 ok, 1 corrected, −1 not. */
-private fun hamming(bits: IntArray, off: Int, k: Int, eq: IntArray): Int {
+internal fun hamming(bits: IntArray, off: Int, k: Int, eq: IntArray): Int {
     var syn = 0
     for (p in eq.indices) {
         var c = 0; val m = eq[p]
@@ -87,12 +87,12 @@ private fun hamming(bits: IntArray, off: Int, k: Int, eq: IntArray): Int {
     return -1
 }
 private fun mask(vararg idx: Int) = idx.fold(0) { m, i -> m or (1 shl i) }
-private val H15113 = intArrayOf(mask(0, 1, 2, 3, 5, 7, 8), mask(1, 2, 3, 4, 6, 8, 9), mask(2, 3, 4, 5, 7, 9, 10), mask(0, 1, 2, 4, 6, 7, 10))
+internal val H15113 = intArrayOf(mask(0, 1, 2, 3, 5, 7, 8), mask(1, 2, 3, 4, 6, 8, 9), mask(2, 3, 4, 5, 7, 9, 10), mask(0, 1, 2, 4, 6, 7, 10))
 private val H16114 = H15113 + mask(0, 2, 5, 6, 8, 9, 10)
-private val H1393 = intArrayOf(mask(0, 1, 3, 5, 6), mask(0, 1, 2, 4, 6, 7), mask(0, 1, 2, 3, 5, 7, 8), mask(0, 2, 4, 5, 8))
+internal val H1393 = intArrayOf(mask(0, 1, 3, 5, 6), mask(0, 1, 2, 4, 6, 7), mask(0, 1, 2, 3, 5, 7, 8), mask(0, 2, 4, 5, 8))
 
 /** BPTC(196,96): 196 received bits → 12 bytes (errors corrected where the row / column Hamming codes allow). */
-private fun bptc(raw: IntArray): IntArray {
+internal fun bptc(raw: IntArray): IntArray {
     val de = IntArray(196); val col = IntArray(13)
     for (a in 0 until 196) de[a] = raw[(a * 181) % 196]
     for (pass in 0 until 5) {
