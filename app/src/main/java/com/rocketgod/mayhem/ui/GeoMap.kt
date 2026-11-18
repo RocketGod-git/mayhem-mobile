@@ -56,6 +56,9 @@ class RadarCell(val lat: Double, val lon: Double, val dLat: Double, val dLon: Do
 /** A hazard drawn on the map (a G-AIRMET): an area or a line in [color], tappable by [id]. */
 data class GeoShape(val id: String, val pts: List<Pair<Double, Double>>, val line: Boolean, val color: Int, val dashed: Boolean = false, val sel: Boolean = false)
 
+/** A picture laid on the map between its corners (traffic tiles, a radar image), under everything else. */
+class GeoImage(val id: String, val bitmap: android.graphics.Bitmap, val north: Double, val south: Double, val west: Double, val east: Double, val opacity: Float = 0.85f)
+
 /** The map's extra layers: lines home to each contact, a satellite's ground track and radio footprint. */
 data class GeoLayers(
     val lines: List<Pair<Pair<Double, Double>, Pair<Double, Double>>> = emptyList(),
@@ -69,6 +72,8 @@ data class GeoLayers(
     val radarColors: IntArray = IntArray(0),
     /** Hazard areas and lines over the radar, under the markers. */
     val shapes: List<GeoShape> = emptyList(),
+    /** Pictures on their corners, drawn first, in order. */
+    val images: List<GeoImage> = emptyList(),
 )
 
 /** A line through [pts]: dashed for a prediction, faint for one that is not the selected item's. */
@@ -195,6 +200,13 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         val d = mv.resources.displayMetrics.density
         label.textSize = 10f * d; halo.textSize = 10f * d
         val rgb = accentInt and 0x00FFFFFF
+        for (im in layers.images) {
+            val (x0, y0) = xy(mv, im.north, im.west); val (x1, y1) = xy(mv, im.south, im.east)
+            if (x1 - x0 < 1f || y1 - y0 < 1f) continue
+            smooth.alpha = (im.opacity * 255).toInt().coerceIn(0, 255)
+            c.drawBitmap(im.bitmap, null, android.graphics.RectF(x0, y0, x1, y1), smooth)
+            smooth.alpha = 255
+        }
         if (layers.radar.isNotEmpty()) drawRadar(c, mv)
         for (sh in layers.shapes) {
             if (sh.pts.size < 2) continue
@@ -374,9 +386,10 @@ fun GeoMapView(
         if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
         // home only counts when something is drawn from it
         val pts = items.map { it.lat to it.lon } + layers.track +
+            (if (items.isEmpty()) layers.images.flatMap { listOf(it.north to it.west, it.south to it.east) } else emptyList()) +
             (if (withHome || layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
         // nothing plotted yet: a map with a start point stays at regional zoom, recentered once when a fix comes in
-        if (start != null && items.isEmpty() && layers.track.isEmpty()) {
+        if (start != null && items.isEmpty() && layers.track.isEmpty() && layers.images.isEmpty()) {
             if (home != null && !homed) { homed = true; mv.controller.animateTo(GeoPoint(home.first, home.second), REGION_ZOOM, null) }
             return
         }

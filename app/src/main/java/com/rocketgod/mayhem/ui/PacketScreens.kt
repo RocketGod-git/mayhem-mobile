@@ -130,7 +130,9 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         /** Everything under [controls], in place of the log header and the log (BLE and ACARS: their cards or the log). */
                         body: (@Composable ColumnScope.() -> Unit)? = null,
                         /** On a wide screen, the big pane holds this (a map) over a short waterfall strip. */
-                        widePane: (@Composable (Modifier) -> Unit)? = null) {
+                        widePane: (@Composable (Modifier) -> Unit)? = null,
+                        /** A tap on the waterfall or a tune on the card goes here instead of the engine (HD Radio). */
+                        retune: ((Long) -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -139,7 +141,9 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
     var held by remember { mutableStateOf<List<String>?>(null) }
     var full by remember { mutableStateOf(false) }
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac) + shift) }
+    /** A frequency on the air: [retune] takes it as it is, the engine with the radio's shift. */
+    val tuneTo: (Long) -> Unit = retune ?: { SdrEngine.tune(it + shift) }
+    val onTune: (Float) -> Unit = { frac -> tuneTo(spanHz(freq, SdrEngine.currentRate(), frac)) }
     val rate = SdrEngine.currentRate()
     val channel = if (shift != 0L && rate > 0) { val c = 0.5f - shift.toFloat() / rate; val half = 6_000f / rate; c - half to c + half } else null
     AdaptivePane(
@@ -149,7 +153,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
             FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = (burstDb ?: level) / 40f,
                 left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
                 right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
-                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f + shift) }) else null,
+                onTune = if (tunable) ({ f: Long -> tuneTo(f) }) else null,
                 lamp = lamp ?: { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->

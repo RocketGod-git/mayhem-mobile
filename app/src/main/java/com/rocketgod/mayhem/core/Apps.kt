@@ -25,6 +25,7 @@ import java.io.File
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
     HAM("HAM", "SSB · CW · repeaters", "Receive"),
     AUDIO("Audio", "WFM · NFM · AM · SSB", "Receive"),
+    HD("HD Radio", "station data · art · traffic", "Receive"),
     DEVICES("Devices", "keys, remotes, TPMS", "Receive"),
     SAT("Satellites", "track and decode", "Receive"),
     ADSB("ADS-B", "aircraft, 1090 MHz", "Receive"),
@@ -265,6 +266,7 @@ object Apps {
         com.rocketgod.mayhem.core.lora.LoraLocal.init(ctx)
         Bookmarks.load(ctx)
         com.rocketgod.mayhem.core.spectrum.Spectrum.load(ctx)
+        com.rocketgod.mayhem.core.hd.HdApp.init(ctx)
     }
 
     /** LoRa's wide span center: the one the user picked (kept until they pick LOCAL again), else the local one. */
@@ -361,6 +363,7 @@ object Apps {
                 // another app had the radio (ADS-B, AIS...): back on the dial, and onto the strongest station in view
                 else -> { SdrEngine.configure(SdrEngine.radioMode, SdrEngine.radioFreqHz, SdrEngine.RX_RATE, 24, 24, false, null); AutoPick.armBand() }
             }
+            MayhemApp.HD -> com.rocketgod.mayhem.core.hd.HdApp.start()
             MayhemApp.UAT -> SdrEngine.configure(SdrEngine.Mode.NONE, 978_000_000L, 2_000_000, 32, 32, true, uat)
             MayhemApp.ADSB -> { if (adsbPick == null) AdsbStore.clear(); SdrEngine.configure(SdrEngine.Mode.NONE, 1_090_000_000L, r, 32, 32, true, AdsbDecoder) }
             // the radio sits NARROW_SHIFT above the channel, as Mayhem keeps its channels off the DC spike, and the
