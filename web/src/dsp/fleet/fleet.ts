@@ -481,7 +481,9 @@ export class FleetProcessor implements IqProcessor {
     const mask = DMR_CRC_MASK[b.dt];
     const ok = mask !== undefined && crc12Ok(b.bytes, mask);
     // a privacy indicator header (it follows the voice LC header of an encrypted call): the call it opens is encrypted
-    if (b.dt === 0 && ok) { this.calls.securityAt(c.sys, c.hz, b.slot, { enc: true, from: 'PI', pi: hex(b.bytes, 0, 10) }); this.pending = true; }
+    // its fields (not in ETSI TS 102 361; read from public descriptions, not yet verified on air): algorithm ID in
+    // octet 0, key ID in octet 2, a 32-bit MI in octets 3 to 6
+    if (b.dt === 0 && ok) { const y = b.bytes; this.calls.securityAt(c.sys, c.hz, b.slot, { enc: true, from: 'PI', pi: hex(y, 0, 10), algId: y[0], keyId: y[2], mi: hex(y, 3, 7) }); this.pending = true; }
     // as on P25: a block failing its CRC on a voice channel is noise that looked like a burst
     if (!ok && c.role === 'voice' && b.dt !== 3) return;
     if (!ok && c.role === 'voice' && b.dt === 3 && !(b.bytes[1] === 0x10 && ((b.bytes[0] & 0x3f) === 0x09 || (b.bytes[0] & 0x3f) === 0x3d))) return;

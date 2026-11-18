@@ -2115,7 +2115,6 @@ main#view.view.uat.uawide { display: grid; grid-template-columns: minmax(0, 1fr)
 .fl-rep span { color: var(--ink); }
 .fl-rep small { color: var(--muted); overflow-wrap: anywhere; }
 .fl-rep code { color: var(--muted); font-size: 9px; overflow-wrap: anywhere; user-select: text; }
-.fl-rep.unv span::after { content: ' · CRC unverified'; color: var(--accent2); }
 .view.fleet.fleetfull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; overflow: hidden; }
 .view.fleet.fleetfull > .visual, .view.fleet.fleetfull > .controls > :not(.ctlrow):not(.fl-stage):not(.fl-head):not(#fl-log):not(.fl-onair) { display: none !important; }
 .view.fleet.fleetfull #fl-log:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }

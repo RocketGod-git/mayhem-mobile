@@ -17,9 +17,12 @@ export const algName = (id: number) => id < 0 ? '' : P25_ALGS[id] ?? `ALGID 0x${
 export function secText(c: Pick<CallRow, 'encrypted' | 'sec' | 'algId' | 'keyId' | 'pi' | 'proto'>): string {
   if (c.encrypted) {
     const parts = ['ENCRYPTED'];
-    if (c.algId >= 0 && c.algId !== 0x80) parts.push(algName(c.algId));
-    if (c.keyId > 0) parts.push(`KEY 0x${hx(c.keyId, 4)}`);
-    if (c.proto === 'DMR' && c.pi) parts.push('PRIVACY HEADER');
+    // DMR algorithm IDs have no public table: shown by number
+    if (c.proto === 'DMR') { if (c.pi && c.algId >= 0) parts.push(`ALGID 0x${hx(c.algId, 2)}`, `KEY ${c.keyId}`); else if (c.pi) parts.push('PRIVACY HEADER'); }
+    else {
+      if (c.algId >= 0 && c.algId !== 0x80) parts.push(algName(c.algId));
+      if (c.keyId > 0) parts.push(`KEY 0x${hx(c.keyId, 4)}`);
+    }
     return parts.join(' · ');
   }
   return c.sec === 'clear' ? 'CLEAR' : '';
@@ -28,7 +31,7 @@ export function secText(c: Pick<CallRow, 'encrypted' | 'sec' | 'algId' | 'keyId'
 export const SEC_FROM: Record<string, string> = {
   grant: 'grant service options', LDU1: 'voice link control', LDU2: 'encryption sync', HDU: 'call header', LC: 'voice link control',
   EMB: 'voice burst privacy bit', PI: 'privacy header', assumed: 'nothing on the air marked it encrypted',
-  MAC: 'Phase 2 push to talk', ESS: 'Phase 2 encryption sync',
+  MAC: 'Phase 2 push to talk', ESS: 'Phase 2 encryption sync', history: 'earlier calls of this talkgroup were encrypted, and no push to talk said otherwise',
 };
 
 const R_MI = 3958.8;

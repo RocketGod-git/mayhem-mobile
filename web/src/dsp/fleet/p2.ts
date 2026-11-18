@@ -93,7 +93,7 @@ export class P2Rx {
   onSeed: (s: P2Seed) => void = () => undefined;
   syncs = 0; pairs = 0; symbols = 0;
   /** Bursts by type, voice frames passed on, MAC PDUs passing / failing their CRC. */
-  readonly stats = { bursts: 0, v4: 0, v2: 0, facch: 0, sacch: 0, frames: 0, c0clean: 0, macOk: 0, macBad: 0, essOk: 0 };
+  readonly stats = { bursts: 0, v4: 0, v2: 0, facch: 0, sacch: 0, frames: 0, c0clean: 0, macOk: 0, macBad: 0, macFixed: 0, essOk: 0 };
   seeds: P2Seed[] = [];
   seed: P2Seed | null = null;
   private seq: Uint8Array | null = null;
@@ -216,10 +216,20 @@ export class P2Rx {
   private mac(st: number, slot: number, lch: number, facch: boolean, scr: boolean): void {
     if (facch) this.stats.facch++; else this.stats.sacch++;
     if (scr && !this.seq) return;
-    const info = facch ? [...this.bits(st, 11, 36, scr, slot), ...this.bits(st, 48, 31, scr, slot), ...this.bits(st, 100, 11, scr, slot)]
+    let info = facch ? [...this.bits(st, 11, 36, scr, slot), ...this.bits(st, 48, 31, scr, slot), ...this.bits(st, 100, 11, scr, slot)]
       : [...this.bits(st, 11, 36, scr, slot), ...this.bits(st, 48, 54, scr, slot)];
-    const n = info.length - 12; let crc = 0; for (let i = n; i < info.length; i++) crc = crc * 2 + info[i];
-    if (p2Crc12(info, n) !== crc) { this.stats.macBad++; return; }
+    const n = info.length - 12, crcOf = (b: ArrayLike<number>) => { let c = 0; for (let i = n; i < b.length; i++) c = c * 2 + b[i]; return c; };
+    if (p2Crc12(info, n) !== crcOf(info)) {
+      // the Reed-Solomon code (BBAC 5.6.1): S-OEMI (45,26,20) and I-OEMI (52,30,23) from the (63,35,29) mother code,
+      // the S most significant information hexbits shortened (zero), the U least significant parity hexbits punctured
+      const parity = facch ? [...this.bits(st, 111, 21, scr, slot), ...this.bits(st, 133, 36, scr, slot)] : [...this.bits(st, 102, 30, scr, slot), ...this.bits(st, 133, 36, scr, slot)];
+      const S0 = facch ? 9 : 5, U = facch ? 9 : 6, cw = Uint8Array.from([...new Array(S0).fill(0), ...hexbits(info), ...hexbits(parity), ...new Array(U).fill(0)]);
+      const fixed = cw.length === 63 ? rs63Decode(cw, Array.from({ length: U }, (_, k) => 63 - U + k)) : -1;
+      if (fixed < 0) { this.stats.macBad++; return; }
+      const fx: number[] = []; for (let i = S0; i < S0 + info.length / 6; i++) for (let k = 5; k >= 0; k--) fx.push((cw[i] >> k) & 1);
+      if (p2Crc12(fx, n) !== crcOf(fx)) { this.stats.macBad++; return; }
+      info = fx; this.stats.macFixed++;
+    }
     this.stats.macOk++;
     const bytes = new Uint8Array(n >> 3); for (let i = 0; i < bytes.length; i++) { let v = 0; for (let k = 0; k < 8; k++) v = v * 2 + info[8 * i + k]; bytes[i] = v; }
     this.onMac({ lch, slot, bytes, opcode: bytes[0] >> 5, offset: (bytes[0] >> 2) & 7, facch });
@@ -236,6 +246,52 @@ export class P2Rx {
       }
     }
   }
+}
+// ------------------------------------------------------------------------------------------------ RS over GF(64)
+const GE = new Uint8Array(128), GL = new Uint8Array(64);
+{ let x = 1; for (let i = 0; i < 63; i++) { GE[i] = x; GL[x] = i; x <<= 1; if (x & 0x40) x ^= 0x43; } for (let i = 63; i < 128; i++) GE[i] = GE[i - 63]; }
+const gm = (a: number, b: number) => a && b ? GE[GL[a] + GL[b]] : 0;
+const gInv = (a: number) => GE[(63 - GL[a]) % 63];
+const polyMul = (a: number[], b: number[]) => { const o = new Array(a.length + b.length - 1).fill(0); for (let i = 0; i < a.length; i++) if (a[i]) for (let j = 0; j < b.length; j++) o[i + j] ^= gm(a[i], b[j]); return o; };
+const polyEval = (p: number[], x: number) => { let v = 0; for (let i = p.length - 1; i >= 0; i--) v = gm(v, x) ^ p[i]; return v; };
+/**
+ * Errors-and-erasures decoding of the (63,35,29) mother code (BBAC Annex A: GF(64) from x^6 + x + 1, generator roots
+ * a^1 to a^28). [cw] is the 63-hexbit word, highest power first; [eras] the indices of erased (punctured) hexbits.
+ * Corrects in place; returns the number of hexbits changed, or -1 past correcting.
+ */
+export function rs63Decode(cw: Uint8Array, eras: number[]): number {
+  const n = 63, R = 28, deg = (i: number) => n - 1 - i;
+  const S: number[] = [];
+  for (let j = 1; j <= R; j++) { let v = 0; for (let i = 0; i < n; i++) v = gm(v, GE[j]) ^ cw[i]; S.push(v); }
+  if (S.every(v => !v)) return 0;
+  let gam = [1]; for (const e of eras) gam = polyMul(gam, [1, GE[deg(e) % 63]]);
+  // modified syndromes T = S * Gamma mod x^R, then Berlekamp-Massey from the erasure count on
+  const T = polyMul(S, gam).slice(0, R), rho = eras.length;
+  let lam = [1], B = [1], L = 0;
+  for (let r = rho; r < R; r++) {
+    let d = 0; for (let i = 0; i <= L && i < lam.length; i++) d ^= gm(lam[i], T[r - i] ?? 0);
+    const xB = [0, ...B];
+    if (!d) { B = xB; continue; }
+    const nl = new Array(Math.max(lam.length, xB.length)).fill(0);
+    for (let i = 0; i < nl.length; i++) nl[i] = (lam[i] ?? 0) ^ gm(d, xB[i] ?? 0);
+    if (2 * L <= r - rho) { const di = gInv(d); B = lam.map(v => gm(v, di)); L = r - rho + 1 - L; } else B = xB;
+    lam = nl;
+  }
+  const psi = polyMul(lam, gam), om = polyMul(S, psi).slice(0, R);
+  const dpsi = psi.map((v, i) => (i & 1) ? v : 0).slice(1);
+  let fixed = 0, roots = 0;
+  for (let i = 0; i < n; i++) {
+    const X = GE[deg(i) % 63], Xi = gInv(X);
+    if (polyEval(psi, Xi)) continue;
+    roots++;
+    const den = polyEval(dpsi, Xi); if (!den) return -1;
+    const mag = gm(polyEval(om, Xi), gInv(den));
+    if (mag) { cw[i] ^= mag; fixed++; }
+  }
+  let degPsi = psi.length - 1; while (degPsi > 0 && !psi[degPsi]) degPsi--;
+  if (roots !== degPsi || 2 * (degPsi - rho) + rho > R) return -1;
+  for (let j = 1; j <= R; j++) { let v = 0; for (let i = 0; i < n; i++) v = gm(v, GE[j]) ^ cw[i]; if (v) return -1; }
+  return fixed;
 }
 const hexbits = (b: ArrayLike<number>) => { const o: number[] = []; for (let i = 0; i + 6 <= b.length; i += 6) { let v = 0; for (let k = 0; k < 6; k++) v = v * 2 + b[i + k]; o.push(v); } return o; };
 

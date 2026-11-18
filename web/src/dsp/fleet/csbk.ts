@@ -124,7 +124,6 @@ function vendor10(b: ArrayLike<number>, c: Csbk, add: (k: string, v: string) => 
     const a = w(3), z = w(6); add('ID A', a === 0xffff ? 'all' : `${a}`); add('ID B', z === 0xffff ? 'all' : `${z}`);
     if (a !== 0xffff) c.unit = a;
   } else { c.derived = false; c.kind = 'vendor'; c.name = `FID 10 CSBK ${h(op, 2)}`; add('PAYLOAD', hex(b, 2, 10)); }
-  if (c.derived) add('FORMAT', `derived from recordings${c.verified ? ', check passed' : ', check not passed'}`);
   return c;
 }
 
@@ -183,5 +182,5 @@ export function unwrap16(lo16: number, refDeg: number): number {
 }
 
 export function csbkLine(c: Csbk): string {
-  return `${c.name}${c.fields.length ? ' · ' + c.fields.filter(x => x.k !== 'FORMAT').map(x => `${x.k.toLowerCase()} ${x.v}`).join(' · ') : ''}${c.derived ? (c.verified ? ' · derived, check passed' : ' · derived, unverified') : ''}`;
+  return `${c.name}${c.fields.length ? ' · ' + c.fields.map(x => `${x.k.toLowerCase()} ${x.v}`).join(' · ') : ''}`;
 }

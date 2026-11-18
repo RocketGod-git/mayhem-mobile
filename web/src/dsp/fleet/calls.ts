@@ -41,7 +41,7 @@ export interface CallRow {
 }
 interface Call extends CallRow { grantMs: number; voiceAt: number; audioAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null; held: Uint8Array[]; hint: string; said: Said }
 /** What each source on the air said: 1 encrypted, 0 clear, -1 nothing yet; [syncs] the last algorithm IDs read. */
-interface Said { grant: number; lc: number; syncs: number[]; from: string; pi: boolean; emb: number }
+interface Said { grant: number; lc: number; syncs: number[]; from: string; pi: boolean; emb: number; history: boolean; histEnc: boolean }
 
 export interface TgPrefs { mute: string[]; hold: string; prio: string[]; lock?: Lock | null }
 export const AUDIO_CAP_S = 120;
@@ -71,6 +71,8 @@ export class CallTracker {
   playing = '';
   /** The talkgroup of the call last heard, and when it ended: its next call gets the audio first for a moment. */
   private lastHeard: { tg: string; ms: number } | null = null;
+  /** Talkgroups whose calls a sync (ALGID other than 0x80) marked encrypted, and when. */
+  private readonly encTgs = new Map<string, number>();
   /** Live audio out, 8 kHz: every decoded frame of the call being heard. */
   onAudio: ((pcm: Float32Array, call: CallRow) => void) | null = null;
   /** The call being heard went off the air or out of hearing (so its audio can fade out instead of stopping dead). */
@@ -91,7 +93,7 @@ export class CallTracker {
       tdma: p.tdma ?? false, encrypted: false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
       levelDb: 0, peakDb: 0, site: p.site ?? '', codec: p.codec, end: '', muted: false, prio: false, audioMs: 0, lcVerified: false, granted: false, kind: 'call', cwId: '',
       outside: false, pos: null, sec: 'unknown', secFrom: '', algId: -1, keyId: -1, mi: '', pi: '', audioDb: 0, lpcn: p.lpcn ?? -1, chDerived: p.chDerived ?? false, protectedHint: false, decoded: 0, badFrames: 0,
-      grantMs: 0, voiceAt: 0, audioAt: 0, pcm: [], pcmN: 0, codecInst: null, held: [], hint: '', said: { grant: -1, lc: -1, syncs: [], from: '', pi: false, emb: -1 },
+      grantMs: 0, voiceAt: 0, audioAt: 0, pcm: [], pcmN: 0, codecInst: null, held: [], hint: '', said: { grant: -1, lc: -1, syncs: [], from: '', pi: false, emb: -1, history: false, histEnc: false },
     };
     this.label(c);
     this.calls.unshift(c);
@@ -169,15 +171,21 @@ export class CallTracker {
    */
   security(c: Call, s: { enc: boolean; from: string; algId?: number; keyId?: number; mi?: string; pi?: string }): void {
     const said = c.said, sync = s.from === 'LDU2' || s.from === 'HDU' || s.from === 'MAC' || s.from === 'ESS';
+    if (c.tdma && c.tg && !said.history && this.encTgs.has(this.tgKey(c))) said.history = true;
     if (sync && s.algId !== undefined && s.algId >= 0) { said.syncs.push(s.algId); if (said.syncs.length > 2) said.syncs.shift(); c.algId = s.algId; c.keyId = s.keyId ?? c.keyId; if (s.mi !== undefined) c.mi = s.mi; said.from = s.from; }
     else if (s.from === 'grant') said.grant = s.enc ? 1 : (said.grant === 1 ? 1 : 0);
     else if (s.from === 'LDU1' || s.from === 'LC') said.lc = s.enc ? 1 : (said.lc === 1 ? 1 : 0);
-    else if (s.from === 'PI') { said.pi = true; if (s.pi) c.pi = s.pi; }
+    else if (s.from === 'PI') { said.pi = true; if (s.pi) c.pi = s.pi; if (s.algId !== undefined) c.algId = s.algId; if (s.keyId !== undefined) c.keyId = s.keyId; if (s.mi) c.mi = s.mi; }
     else if (s.from === 'EMB') said.emb = s.enc ? 1 : (said.emb === 1 ? 1 : 0);
+    else if (s.from === 'history') said.histEnc = true;
     let sec: CallSec = 'unknown', from = '';
     if (c.proto === 'P25') {
       const last = said.syncs.length ? said.syncs[said.syncs.length - 1] : -1;
       if (last >= 0) { sec = last === 0x80 ? 'clear' : 'enc'; from = said.from; }
+      // a Phase 2 talkgroup whose earlier calls were encrypted waits for its push to talk or ESS, and past a second
+      // without either is taken as encrypted
+      else if (said.histEnc) { sec = 'enc'; from = 'history'; }
+      else if (said.history && c.tdma) sec = 'unknown';
       else if (said.grant >= 0 || said.lc >= 0) { sec = 'clear'; from = said.grant >= 0 ? 'grant' : 'LDU1'; }
       c.protectedHint = last < 0 && (said.grant === 1 || said.lc === 1);
     } else {
@@ -186,6 +194,7 @@ export class CallTracker {
       c.protectedHint = false;
     }
     const was = c.sec;
+    if (sec === 'enc' && sync && c.tg) this.encTgs.set(this.tgKey(c), this.now());
     c.sec = sec; c.secFrom = sec === 'unknown' ? c.secFrom : from; c.encrypted = sec === 'enc';
     if (sec === 'enc') { c.held = []; if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); } }
     else if (sec === 'clear' && was !== 'clear') this.release(c);
@@ -276,6 +285,10 @@ export class CallTracker {
       if (!c.onAir) continue;
       const l = c.hz ? level(c.hz) : null;
       if (l !== null) { c.levelDb = l; c.peakDb = Math.max(c.peakDb, l); }
+      if (c.tdma && c.tg && c.sec !== 'enc' && !c.said.syncs.length) {
+        if (!c.said.history && this.encTgs.has(this.tgKey(c))) { c.said.history = true; this.security(c, { enc: false, from: 'recheck' }); }
+        if (c.said.history && now - c.startMs > 1_000) this.security(c, { enc: true, from: 'history' });
+      }
       const heard = c.voiceAt > 0;
       if (heard ? now - c.voiceAt > QUIET_HEARD_MS && now - c.grantMs > QUIET_HEARD_MS : now - c.grantMs > QUIET_GRANT_MS) this.finish(c, heard ? 'quiet' : 'grant ended', now);
     }
