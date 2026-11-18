@@ -50,7 +50,7 @@ const gdiv = (a: number, b: number) => a === 0 ? 0 : GF_EXP[GF_LOG[a] + 63 - GF_
  * Shortened Reed-Solomon (24,12) over GF(64), the code protecting link control. Syndromes, Berlekamp-Massey,
  * Chien search, Forney. Returns the number of symbols corrected, or -1 when the errors are past correcting.
  */
-function rsDecode(data: Uint8Array, nroots: number): number {
+export function rsDecode(data: Uint8Array, nroots: number): number {
   const n = data.length;
   const synd = new Uint8Array(nroots);
   let bad = false;

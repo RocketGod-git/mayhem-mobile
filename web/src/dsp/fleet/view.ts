@@ -28,6 +28,7 @@ export function secText(c: Pick<CallRow, 'encrypted' | 'sec' | 'algId' | 'keyId'
 export const SEC_FROM: Record<string, string> = {
   grant: 'grant service options', LDU1: 'voice link control', LDU2: 'encryption sync', HDU: 'call header', LC: 'voice link control',
   EMB: 'voice burst privacy bit', PI: 'privacy header', assumed: 'nothing on the air marked it encrypted',
+  MAC: 'Phase 2 push to talk', ESS: 'Phase 2 encryption sync',
 };
 
 const R_MI = 3958.8;

@@ -18,7 +18,7 @@ import './vocoders.js';
 import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from './calls.js';
 import { parseLc, voiceFrames, readEmb } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
-import { P2Rx } from './p2.js';
+import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
 
 export const CH_RATE = 24_000;
 const CUT_HZ = 5_500;
@@ -273,6 +273,7 @@ export class FleetProcessor implements IqProcessor {
     for (const k of [...this.chans.keys()]) if (!chosen.has(k)) this.chans.delete(k);
     for (const k of chosen) if (!this.chans.has(k)) { const c = this.carriers.get(k)!; c.lastAuditionMs = now; this.open(c, now); }
     for (const c of this.carriers.values()) c.decoding = this.chans.has(c.key);
+    for (const [k, ch] of this.chans) if (ch.p2 && !ch.p2.seed) { const c = this.carriers.get(k); if (c) ch.p2.setSeeds(this.p2Seeds(c)); }
     this.placeCalls();
   }
   /** A carrier that has sent unit reports in the last minute. */
@@ -296,6 +297,57 @@ export class FleetProcessor implements IqProcessor {
     if (ch.p2) return;
     ch.p2 = new P2Rx(ch.fs);
     ch.p2.onSync = paired => { if (!paired) return; const now = this.now(); c.cls = 'P25 PHASE 2 TDMA'; c.lastDecodeMs = now; c.frames++; if (c.role !== 'control') c.role = 'voice'; this.p2Seen.set(c.key, now); this.pending = true; };
+    ch.p2.setSeeds(this.p2Seeds(c));
+    ch.p2.onSeed = s => { if (!c.sys) c.sys = s.sys; this.addLog({ ms: this.now(), hz: c.hz, proto: 'P25', name: 'PHASE 2 SCRAMBLING', text: `PHASE 2 · descrambling with WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)} · NAC ${h(s.nac, 3)}`, hex: '', ok: true }); };
+    ch.p2.onVoice = (lch, fr) => { const now = this.now(), call = this.calls.voice(c.sys, 'P25', c.hz, lch, 20, now, true); this.calls.frames(call, [fr]); this.pending = true; };
+    ch.p2.onMac = m => this.p2Mac(c, m);
+    ch.p2.onEss = (lch, e) => { const call = this.calls.at(c.sys, c.hz, lch); if (call) this.calls.security(call, { enc: e.algId !== 0x80, from: 'ESS', algId: e.algId, keyId: e.keyId, mi: e.mi }); };
+  }
+  /** The scrambling seeds a Phase 2 channel may use: its own system first, then every P25 system and site heard. */
+  private p2Seeds(c: Carrier): P2Seed[] {
+    const out: P2Seed[] = [], add = (s: Sys, nac: number) => { if (nac >= 0 && s.wacn >= 0 && s.sysId >= 0 && !out.some(x => x.sys === s.key && x.nac === nac)) out.push({ wacn: s.wacn, sysId: s.sysId, nac, sys: s.key }); };
+    const own = this.systems.get(c.sys);
+    const nacs = (s: Sys) => [...this.sites.values()].filter(x => x.sys === s.key).map(x => x.nac);
+    if (own && own.proto === 'P25') for (const n of nacs(own)) add(own, n);
+    for (const s of this.systems.values()) if (s.proto === 'P25') for (const n of nacs(s)) add(s, n);
+    return out;
+  }
+  /** A Phase 2 MAC PDU (BBAC 8): push to talk names the call and its encryption, end of push to talk ends it. */
+  private p2Mac(c: Carrier, m: P2Mac): void {
+    const now = this.now(), op = MAC_OPS[m.opcode] ?? `MAC ${m.opcode}`, sys = c.sys, lch = m.lch;
+    let text = `${op} · TS${lch + 1}`;
+    if (m.opcode === 1) {
+      const p = p2Ptt(m.bytes);
+      const call = this.calls.lc(sys, c.hz, lch, { group: true, dst: p.group, src: p.src, emergency: false, privacy: false }, now, 'P25', true);
+      this.calls.security(call, { enc: p.algId !== 0x80, from: 'MAC', algId: p.algId, keyId: p.keyId, mi: p.mi });
+      text += ` · TG ${p.group}${p.src ? ` ← ${p.src}` : ''} · ALGID ${h(p.algId, 2)} · KEY ${h(p.keyId, 4)}${p.algId !== 0x80 ? ` · MI ${p.mi.toUpperCase()}` : ''}`;
+    } else if (m.opcode === 2) {
+      const e = p2EndPtt(m.bytes);
+      this.calls.terminate(sys, c.hz, lch, now);
+      text += ` · TG ${e.group}${e.src && e.src !== 0xffffff ? ` ← ${e.src}` : ''} · NAC ${h(e.nac, 3)}`;
+    } else {
+      const msgs = p2Messages(m.bytes);
+      for (const x of msgs) {
+        const b = x.bytes;
+        if (x.b === 0 && x.mco === 1 && b.length >= 7) {
+          // a group voice channel user: who is on this logical channel (while it is active)
+          const so = b[1], group = (b[2] << 8) | b[3], src = (b[4] << 16) | (b[5] << 8) | b[6];
+          if (m.opcode === 4) {
+            const call = this.calls.lc(sys, c.hz, lch, { group: true, dst: group, src, emergency: (so & 0x80) !== 0, privacy: false }, now, 'P25', true);
+            if (so & 0x40) this.calls.security(call, { enc: true, from: 'grant' });
+          }
+          text += ` · ${x.name} TG ${group}${src ? ` ← ${src}` : ''}${so & 0x80 ? ' · EMERGENCY' : ''}${so & 0x40 ? ' · PROTECTED' : ''}`;
+        } else if (x.b === 1 && b.length >= 9) {
+          // a Phase 1 broadcast in its abbreviated form: the trunking block parser reads it
+          const t = parseTsbk(Uint8Array.from([x.mco, 0, ...b.subarray(1, 9), 0, 0]));
+          const s = this.systems.get(sys);
+          if (s && (t.kind === 'update' || t.kind === 'grant')) this.p25Apply(c, t, s, now);
+          text += ` · ${tsbkLine(t)}`;
+        } else text += ` · ${x.name}`;
+      }
+    }
+    this.addLog({ ms: now, hz: c.hz, proto: 'P25', name: op, text: `PHASE 2 · ${text}`, hex: hex(m.bytes), ok: true });
+    this.pending = true;
   }
   private classify(c: Carrier, ch: Chan, now: number): void {
     if (c.tdma && !ch.p2) this.p2On(c, ch);
@@ -769,7 +821,7 @@ export class FleetProcessor implements IqProcessor {
   }
   /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
   followTarget(): { key: string; hz: number } | null {
-    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !x.protectedHint && x.sec !== 'unknown' && !(x.tdma && x.proto === 'P25'));
+    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !x.protectedHint && x.sec !== 'unknown');
     return c ? { key: c.key, hz: c.hz } : null;
   }
   private latestId(sys: string): { cwId: string; cwIdMs: number; cwIdHz: number } {

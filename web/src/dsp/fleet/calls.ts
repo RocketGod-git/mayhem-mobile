@@ -133,15 +133,15 @@ export class CallTracker {
   private addSrc(c: Call, src: number): void { c.src = src; if (!c.srcs.includes(src)) { c.srcs.push(src); if (c.srcs.length > 12) c.srcs.shift(); } }
 
   /** Voice on a channel: a P25 voice frame (180 ms of speech) or a DMR voice burst (60 ms). */
-  voice(sys: string, proto: 'P25' | 'DMR', hz: number, slot: number, ms: number, now = this.now()): Call {
+  voice(sys: string, proto: 'P25' | 'DMR', hz: number, slot: number, ms: number, now = this.now(), tdma = false): Call {
     let c = this.find(sys, hz, slot);
-    if (!c) c = this.create({ sys, proto, hz, slot, codec: proto === 'P25' ? 'imbe' : 'ambe2' }, now);
+    if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: proto === 'P25' && !tdma ? 'imbe' : 'ambe2' }, now);
     c.frames++; c.voiceMs += ms; c.voiceAt = now; c.lastMs = now;
     if (sys && !c.sys) { c.sys = sys; this.label(c); }
     return c;
   }
   /** Link control read on the voice channel (DMR voice LC header or terminator, P25 LDU1): who is talking to whom. */
-  lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: 'P25' | 'DMR' = 'DMR'): Call {
+  lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: 'P25' | 'DMR' = 'DMR', tdma = false): Call {
     let c = this.find(sys, hz, slot);
     if (c && c.tg && c.tg !== lc.dst) { this.finish(c, 'terminator', now); c = undefined; }
     if (!c) {
@@ -149,10 +149,10 @@ export class CallTracker {
       c = this.calls.find(x => x.kind === 'call' && x.onAir && x.proto === proto && !x.hz && x.tg === lc.dst && x.group === lc.group && (!sys || !x.sys || x.sys === sys));
       if (c) { c.hz = hz; c.slot = slot; }
     }
-    if (!c) c = this.create({ sys, proto, hz, slot, codec: proto === 'P25' ? 'imbe' : 'ambe2', tg: lc.dst, group: lc.group }, now);
+    if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: proto === 'P25' && !tdma ? 'imbe' : 'ambe2', tg: lc.dst, group: lc.group }, now);
     c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
     if (sys && !c.sys) c.sys = sys;
-    this.security(c, { enc: lc.privacy, from: proto === 'P25' ? 'LDU1' : 'LC' });
+    if (!tdma) this.security(c, { enc: lc.privacy, from: proto === 'P25' ? 'LDU1' : 'LC' });
     c.lastMs = now; c.voiceAt = Math.max(c.voiceAt, now);
     this.label(c);
     return c;
@@ -168,7 +168,7 @@ export class CallTracker {
    * Frames that fail their codes, or a call with nothing readable, never make a call encrypted.
    */
   security(c: Call, s: { enc: boolean; from: string; algId?: number; keyId?: number; mi?: string; pi?: string }): void {
-    const said = c.said, sync = s.from === 'LDU2' || s.from === 'HDU';
+    const said = c.said, sync = s.from === 'LDU2' || s.from === 'HDU' || s.from === 'MAC' || s.from === 'ESS';
     if (sync && s.algId !== undefined && s.algId >= 0) { said.syncs.push(s.algId); if (said.syncs.length > 2) said.syncs.shift(); c.algId = s.algId; c.keyId = s.keyId ?? c.keyId; if (s.mi !== undefined) c.mi = s.mi; said.from = s.from; }
     else if (s.from === 'grant') said.grant = s.enc ? 1 : (said.grant === 1 ? 1 : 0);
     else if (s.from === 'LDU1' || s.from === 'LC') said.lc = s.enc ? 1 : (said.lc === 1 ? 1 : 0);
