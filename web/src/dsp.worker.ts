@@ -22,7 +22,8 @@ import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
-import { FleetProcessor } from './dsp/fleet/fleet.js';
+import { FleetProcessor, type TgPrefs } from './dsp/fleet/fleet.js';
+import { to48k } from './dsp/fleet/codec.js';
 import { CellProcessor } from './dsp/cell/cell.js';
 import { AtscProcessor } from './dsp/atsc/atsc.js';
 import { AtscPool, ATSC_POOL_NAME, startAtscPoolWorker } from './dsp/atsc/pool.js';
@@ -129,8 +130,9 @@ const vdl2 = new Vdl2Decoder(emit);
 // every frame, ACARS or not, for the per-address aircraft and ground stations (posted before the frame's ACARS line)
 vdl2.onFrame = f => emit({ type: 'vdl2frame', f });
 const trains = new TrainsProcessor(emit);
-/** Fleet: P25 and DMR trunking control channels across the span. */
+/** Dispatch: P25 and DMR trunking control channels and the calls they grant, across the span. */
 const fleet = new FleetProcessor(emit);
+const fleetAudio = { on: false, gain: 0.8, prev: 0 };
 /** Cell: LTE system information and emergency alerts (SI-RNTI only). What it heard is saved by the page. */
 const cell = new CellProcessor(emit);
 let cellSaved = -1;
@@ -178,6 +180,8 @@ let audioChunks = 0;
 const vBuf = new Float32Array(1);
 const toAudio = (chunk: Float32Array) => { audioChunks++; if (audioPort) audioPort.postMessage(chunk, [chunk.buffer]); };
 const ham = new HamDemod(emit, toAudio);
+// the top call on the air is the one heard: vocoder audio, where there is a vocoder for it
+fleet.calls.onAudio = (pcm, call) => { if (fleetAudio.on && processor === fleet && fleet.calls.ranked()[0]?.key === call.key) { toAudio(to48k(pcm, fleetAudio.gain, fleetAudio.prev)); fleetAudio.prev = pcm[pcm.length - 1] ?? 0; } };
 const orbcomm = new OrbcommDecoder(emit);
 const g3ruh = new G3ruhDecoder(emit);
 const geoscan = new GeoscanDecoder(emit);
@@ -375,6 +379,12 @@ self.onmessage = (e: MessageEvent) => {
       if (m.cmd === 'unit') { const d = fleet.unitDetail(m.key as string); if (d) emit({ type: 'fleetUnit', ...d }); }
       else if (m.cmd === 'export') emit({ type: 'fleetExport', ...fleet.exportAll() });
       else if (m.cmd === 'clear') fleet.clear();
+      else if (m.cmd === 'prefs') fleet.setPrefs(m.prefs as TgPrefs);
+      else if (m.cmd === 'audio') { fleetAudio.on = !!m.on; fleetAudio.gain = Math.max(0, Math.min(1.5, Number(m.gain ?? fleetAudio.gain))); }
+      else if (m.cmd === 'replay') {
+        const pcm = fleet.callAudio(m.key as string);
+        if (pcm) for (let i = 0; i < pcm.length; i += 1600) toAudio(to48k(pcm.subarray(i, i + 1600), fleetAudio.gain, i ? pcm[i - 1] : 0));
+      }
       break;
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;

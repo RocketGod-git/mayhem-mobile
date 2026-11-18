@@ -3,7 +3,7 @@
  * C4FM, CQPSK/LSM and DMR alike (the phase step across one symbol), symbol timing picked again for every block of
  * 480 symbols so a dropped sample costs one block, the P25 and DMR framers, and a Morse reader for CW IDs. No DOM.
  */
-import { DMR_SYNC, P25_SYNC, isStatusPos, nidDecode, syncSigns, tsbkDecode, crc12Ok, dmrReadBurst, type DmrBurst } from './codes.js';
+import { DMR_SYNC, P25_SYNC, isStatusPos, nidDecode, syncSigns, tsbkDecode, crc12Ok, dmrReadBurst, cachSlot, type DmrBurst } from './codes.js';
 
 export const BAUD = 4800;
 const BLOCK = 480;
@@ -128,6 +128,8 @@ export class P25Framer {
   private nac = -1; private nidErrs = 0; private blk = 0; private flywheel = 0;
   readonly nacs = new Set<number>();
   syncs = 0; frames = 0;
+  /** Frames whose NID came through with at most 4 bit errors. */
+  clean = 0;
   push(s: number): void {
     this.sm.push(s);
     if (this.state !== 'body' && this.state !== 'nid' && this.sm.corr(P25S) > 0.82 && this.sm.mag() > 1.8) {
@@ -146,7 +148,7 @@ export class P25Framer {
   private nid(): void {
     const r = nidDecode(this.buf, this.nacs);
     if (!r) { this.state = 'idle'; return; }
-    this.frames++; this.nac = r.nac; this.nidErrs = r.errs;
+    this.frames++; this.nac = r.nac; this.nidErrs = r.errs; if (r.errs <= 4) this.clean++;
     if (r.errs <= 4) { this.nacs.add(r.nac); if (this.nacs.size > 6) this.nacs.delete(this.nacs.values().next().value as number); }
     this.onFrame(r.nac, r.duid);
     if (r.duid === 7) { this.state = 'body'; this.nb = 0; this.want = 98; this.blk = 0; }
@@ -170,28 +172,56 @@ export class P25Framer {
 export interface DmrEvent { burst: DmrBurst; dibits: Uint8Array }
 const DMR_BS_DATA = syncSigns(DMR_SYNC.bsData), DMR_BS_VOICE = syncSigns(DMR_SYNC.bsVoice), DMR_MS_DATA = syncSigns(DMR_SYNC.msData), DMR_MS_VOICE = syncSigns(DMR_SYNC.msVoice);
 
-/** DMR base-station bursts: sync, CACH slot, slot type, BPTC. Voice syncs are only counted. */
+/**
+ * DMR base-station bursts: sync, CACH slot, slot type, BPTC. A voice sync starts a superframe: its burst and the five
+ * after it in the same slot (every 288 symbols) are handed over as voice bursts.
+ */
 export class DmrFramer {
   onBurst: (e: DmrEvent) => void = () => undefined;
+  /** A voice burst: its slot from the CACH, the 144 dibits, and its place in the superframe (0 = the one with the sync). */
+  onVoice: (slot: number, dibits: Uint8Array, n: number) => void = () => undefined;
   private readonly sm = new SyncMatch();
   private readonly hist = new Uint8Array(144); private hp = 0;
-  private pending = -1;
+  private t = 0; private lastData = -1e9;
+  private queue: { at: number; voice: boolean; n: number; slot: number }[] = [];
   syncs = 0; voice = 0; ms = 0;
+  /** Data bursts whose slot type came through without a correction: a real DMR signal, where a sync alone can be chance. */
+  bursts = 0;
   push(s: number): void {
     this.sm.push(s);
     this.hist[this.hp] = slice(s); this.hp = (this.hp + 1) % 144;
-    if (this.pending > 0 && --this.pending === 0) this.emit();
-    if (this.pending > 0) return;
+    const t = ++this.t;
+    while (this.queue.length && this.queue[0].at <= t) this.emit(this.queue.shift()!);
+    if (this.queue.some(q => !q.voice && q.at > t)) return;
     if (this.sm.mag() < 1.8) return;
-    if (this.sm.corr(DMR_BS_DATA) > 0.82) { this.syncs++; this.pending = 54; }
-    else if (this.sm.corr(DMR_BS_VOICE) > 0.82) { this.syncs++; this.voice++; }
+    if (this.sm.corr(DMR_BS_DATA) > 0.82) {
+      this.syncs++; this.lastData = t;
+      this.queue = this.queue.filter(q => Math.abs(q.at - (t + 54)) > 10);
+      this.add({ at: t + 54, voice: false, n: 0, slot: -1 });
+    } else if (this.sm.corr(DMR_BS_VOICE) > 0.82) {
+      if (this.queue.some(q => q.voice && q.n === 0 && Math.abs(q.at - (t + 54)) <= 10)) return;
+      // bursts come every 144 symbols: a voice sync off the grid of the data bursts heard lately is in some payload
+      const ph = (t - this.lastData) % 144;
+      if (t - this.lastData < 9_600 && ph > 2 && ph < 142) return;
+      this.syncs++; this.voice++;
+      for (let k = 0; k < 6; k++) this.add({ at: t + 54 + 288 * k, voice: true, n: k, slot: -1 });
+    }
     else if (this.sm.corr(DMR_MS_DATA) > 0.82 || this.sm.corr(DMR_MS_VOICE) > 0.82) this.ms++;
   }
-  private emit(): void {
+  private add(q: { at: number; voice: boolean; n: number; slot: number }): void {
+    this.queue.push(q); this.queue.sort((a, b) => a.at - b.at);
+  }
+  private emit(q: { at: number; voice: boolean; n: number; slot: number }): void {
     const d = new Uint8Array(144);
     for (let i = 0; i < 144; i++) d[i] = this.hist[(this.hp + i) % 144];
+    if (q.voice) {
+      const cach = new Uint8Array(24);
+      for (let i = 0; i < 12; i++) { cach[2 * i] = d[i] >> 1; cach[2 * i + 1] = d[i] & 1; }
+      this.onVoice(cachSlot(cach), d, q.n);
+      return;
+    }
     const b = dmrReadBurst(d);
-    if (b) this.onBurst({ burst: b, dibits: d });
+    if (b) { if (b.stErrs === 0) this.bursts++; this.onBurst({ burst: b, dibits: d }); }
   }
 }
 
@@ -210,11 +240,12 @@ export const looksLikeCallsign = (s: string) => /^[A-Z]{1,4}\d{1,4}[A-Z]{0,4}(\/
 export class CwReader {
   onText: (text: string) => void = () => undefined;
   private pi = 0; private pq = 0; private acc = 0; private zc = 0; private prev = 0; private cnt = 0;
+  private env = 0; private env2 = 0;
   private hp = 0; private floor = 0; private peak = 0;
   private runs: [boolean, number][] = []; private on = false; private len = 0;
   private readonly step: number;
   constructor(private readonly fs: number) { this.step = Math.max(8, Math.round(fs * 0.005)); }
-  reset(): void { this.runs = []; this.on = false; this.len = 0; this.peak = 0; }
+  reset(): void { this.runs = []; this.on = false; this.len = 0; this.peak = 0; this.floor = 0; }
   push(zi: Float32Array, zq: Float32Array, n: number): void {
     for (let k = 0; k < n; k++) {
       const a = zi[k], b = zq[k];
@@ -222,18 +253,23 @@ export class CwReader {
       this.pi = a; this.pq = b;
       this.hp += 0.02 * (f - this.hp);
       const x = f - this.hp;
-      this.acc += x * x;
+      this.acc += x * x; const e2 = a * a + b * b; this.env += Math.sqrt(e2); this.env2 += e2;
       if ((x > 0) !== (this.prev > 0)) this.zc++;
       this.prev = x;
       if (++this.cnt >= this.step) this.window();
     }
   }
   private window(): void {
-    const p = this.acc / this.cnt, hz = this.zc * this.fs / (2 * this.cnt);
-    this.acc = 0; this.zc = 0; this.cnt = 0;
-    this.floor = this.floor === 0 ? p : p < this.floor ? this.floor + 0.2 * (p - this.floor) : this.floor + 0.002 * (p - this.floor);
-    this.peak = Math.max(p, this.peak * 0.999);
-    const key = p > 4 * this.floor && p > 0.4 * this.peak && hz > 300 && hz < 3000;
+    const p = this.acc / this.cnt, hz = this.zc * this.fs / (2 * this.cnt), em = this.env / this.cnt, ev = this.env2 / this.cnt - em * em;
+    this.acc = 0; this.zc = 0; this.cnt = 0; this.env = 0; this.env2 = 0;
+    // with the carrier down the discriminator puts out noise far louder than any tone: those windows (a noise-like
+    // envelope, its spread over its mean about 0.5 against near 0 for a carrier) are key-up and leave the references alone
+    const carrier = em > 0 && Math.sqrt(Math.max(0, ev)) / em < 0.3;
+    if (carrier) {
+      this.floor = this.floor === 0 ? p : p < this.floor ? this.floor + 0.2 * (p - this.floor) : this.floor + 0.002 * (p - this.floor);
+      this.peak = Math.max(p, this.peak * 0.999);
+    }
+    const key = carrier && p > 4 * this.floor && p > 0.4 * this.peak && hz > 300 && hz < 3000;
     if (key === this.on) this.len++;
     else { if (this.len > 0) this.runs.push([this.on, this.len]); this.on = key; this.len = 1; }
     if (!this.on && this.len === 80 && this.runs.length) this.finish();
