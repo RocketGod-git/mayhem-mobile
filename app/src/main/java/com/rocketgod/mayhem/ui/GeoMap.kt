@@ -372,6 +372,8 @@ fun GeoMapView(
     onMapTap: ((Double, Double) -> Unit)? = null,
     /** Moving markers: fit when the set of items changes, not on every move (a refit every update keeps the map panning). */
     steady: Boolean = false,
+    /** Points a fit frames besides the items (an alert area and your position with it). */
+    fitPts: List<Pair<Double, Double>> = emptyList(),
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -385,11 +387,11 @@ fun GeoMapView(
         val f = follow?.let { id -> items.firstOrNull { it.id == id } }
         if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
         // home only counts when something is drawn from it
-        val pts = items.map { it.lat to it.lon } + layers.track +
+        val pts = items.map { it.lat to it.lon } + layers.track + fitPts +
             (if (items.isEmpty()) layers.images.flatMap { listOf(it.north to it.west, it.south to it.east) } else emptyList()) +
             (if (withHome || layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
         // nothing plotted yet: a map with a start point stays at regional zoom, recentered once when a fix comes in
-        if (start != null && items.isEmpty() && layers.track.isEmpty() && layers.images.isEmpty()) {
+        if (start != null && items.isEmpty() && layers.track.isEmpty() && layers.images.isEmpty() && fitPts.isEmpty()) {
             if (home != null && !homed) { homed = true; mv.controller.animateTo(GeoPoint(home.first, home.second), REGION_ZOOM, null) }
             return
         }
@@ -414,7 +416,7 @@ fun GeoMapView(
         val mv = mapRef ?: return@LaunchedEffect
         overlayRef?.let { it.items = items; it.layers = layers; it.selected = selected; it.home = home; mv.invalidate() }
     }
-    val fitKey: Any = if (steady) items.map { it.id }.sorted() else listOf(items, layers, selected, home)
+    val fitKey: Any = if (steady) items.map { it.id }.sorted() + fitPts.size else listOf(items, layers, selected, home, fitPts)
     LaunchedEffect(mapRef, fitKey, following) {
         val mv = mapRef ?: return@LaunchedEffect
         if (!following) return@LaunchedEffect
