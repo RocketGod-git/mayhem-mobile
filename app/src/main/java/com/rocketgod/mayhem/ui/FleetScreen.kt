@@ -153,8 +153,10 @@ fun FleetScreen(accent: Color) {
         Box(modifier) {
             val pu = pins.firstOrNull { "unit:${it.key}" == sel }
             GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = fix, selected = pu?.key, layers = GeoLayers(shapes = trails),
-                start = remember { mapStart(Geo.fix.value) }, focus = pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true) { pick("unit:$it") }
-            if (pins.isEmpty()) Text(if (s != null && s.units.any { it.posMs > 0 } && !s.ref) "unit positions need your location: allow it to resolve them" else "no unit positions on the air yet",
+                start = remember { mapStart(Geo.fix.value) }, focus = pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true, fitPins = true,
+                // unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them
+                onDragEnd = { lat, lon -> if (Geo.fix.value == null && Geo.lastKnownPos() == null) Apps.fleet.setRef(lat, lon) }) { pick("unit:$it") }
+            if (pins.isEmpty()) Text(if (s != null && s.units.any { it.posMs > 0 } && !s.ref) "unit positions need a region: drag the map to your area" else "no unit positions on the air yet",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
         }
     }

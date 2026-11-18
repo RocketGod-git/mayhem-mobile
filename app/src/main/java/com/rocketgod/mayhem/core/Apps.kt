@@ -242,7 +242,7 @@ object Apps {
     }
     private fun startFleet() {
         fleet.centerOf = { SdrEngine.freqHz.value }
-        fleetRef(Geo.fix.value ?: Geo.lastKnownPos())
+        fleetRef(Geo.fix.value ?: Geo.lastKnownPos() ?: Geo.zoneGuess())
         val w = com.rocketgod.mayhem.core.fleet.FleetProcessor.windows(_fleetBand.value, fleetRate())
         SdrEngine.configure(SdrEngine.Mode.NONE, w[0].hz, fleetRate(), 32, 40, true, fleet)
         fleetRestart(System.currentTimeMillis(), false)

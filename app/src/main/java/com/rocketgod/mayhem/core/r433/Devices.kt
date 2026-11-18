@@ -14,7 +14,9 @@ object Devices {
      * because they are spread over fourteen megahertz, wider than one span, so hearing all of them means visiting each.
      */
     val BANDS = listOf("433.92" to 433_920_000L, "315.00" to 315_000_000L, "345.00" to 345_000_000L, "310.00" to 310_000_000L,
-        "318.00" to 318_000_000L, "303.875" to 303_875_000L, "868.30" to 868_300_000L, "912.60" to 912_600_000L, "915.00" to 915_000_000L)
+        "318.00" to 318_000_000L, "303.875" to 303_875_000L, "868.30" to 868_300_000L, "912.60" to 912_600_000L, "915.00" to 915_000_000L,
+        // Z-Wave: tuned 420 and 400 kHz below its channels (908.42, 916.00) so neither sits on the radio's DC spike
+        "908.00 · Z-WAVE" to 908_000_000L, "915.60 · Z-WAVE" to 915_600_000L)
     /** Most of these sensors report every thirty to sixty seconds. */
     const val DWELL_MS = 20_000L
 
@@ -110,7 +112,7 @@ object Devices {
     /** What a card calls a thing heard. */
     enum class Kind(val label: String, val group: Filter) {
         CAR_KEY("CAR KEY", Filter.KEY), REMOTE("REMOTE", Filter.REMOTE), TIRE("TIRE SENSOR", Filter.SENSOR), WEATHER("WEATHER", Filter.SENSOR),
-        SECURITY("SECURITY", Filter.SENSOR), METER("METER", Filter.SENSOR), SENSOR("SENSOR", Filter.SENSOR),
+        SECURITY("SECURITY", Filter.SENSOR), METER("METER", Filter.SENSOR), SENSOR("SENSOR", Filter.SENSOR), ZWAVE("Z-WAVE", Filter.SENSOR),
     }
     /** The filter row over the cards. */
     enum class Filter(val label: String) { ALL("ALL"), KEY("KEYS"), REMOTE("REMOTES"), SENSOR("SENSORS") }
@@ -123,7 +125,7 @@ object Devices {
 
     /** What a card calls the thing, from who decoded it and what its protocol says it is. */
     fun kind(h: HeardDevice): Kind {
-        when (h.family) { "key" -> return Kind.CAR_KEY; "remote" -> return Kind.REMOTE; "weather" -> return Kind.WEATHER }
+        when (h.family) { "key" -> return Kind.CAR_KEY; "remote" -> return Kind.REMOTE; "weather" -> return Kind.WEATHER; "zwave" -> return Kind.ZWAVE }
         val t = "${h.model} ${h.what} ${h.data["type"]?.let { fmtValue(it) } ?: ""}".lowercase()
         return when {
             TIRE.containsMatchIn(t) -> Kind.TIRE
@@ -156,6 +158,7 @@ object Devices {
     /** The big line on a card, and the small one under it: what this thing just said, in the fewest words. */
     fun headline(h: HeardDevice, k: Kind = kind(h)): Pair<String, String> {
         val v = h.data
+        if (k == Kind.ZWAVE) { val n = (v["nodes"] as? List<*>)?.size ?: 0; return "$n node${if (n == 1) "" else "s"}" to "${v["from"]} → ${v["to"]} ${v["said"]}" }
         if (k == Kind.CAR_KEY || k == Kind.REMOTE) {
             val big = (v["button"] ?: v["btn"] ?: v["cmd"] ?: v["state"])?.let { fmtValue(it) } ?: "PRESS"
             return big to (v["counter"]?.let { "counter ${fmtValue(it)}" } ?: v["hop"]?.let { "code ${fmtValue(it).take(8)}" } ?: "")
@@ -176,7 +179,36 @@ object Devices {
 
     /** One line per reading, for the history in the detail panel. */
     fun historyLine(h: HeardDevice, data: R433Data): String {
+        if (h.family == "zwave") return "${data["from"]} → ${data["to"]} ${data["said"]} · ${"%.1f".format(java.util.Locale.US, (data["snr"] as? Number)?.toDouble() ?: 0.0)} dB · ${data["raw"]}"
         val (a, b) = headline(h.copy(data = data))
         return listOf(a, b).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { summary(data) }
+    }
+
+    private val ZW_RATE = mapOf("R1" to "R1 9.6 kb/s", "R2" to "R2 40 kb/s", "R3" to "R3 100 kb/s")
+    /** Seconds as the poll interval reads best. */
+    private fun zwEvery(s: Double) = if (s < 120) "%.1f s".format(java.util.Locale.US, s) else "%.1f min".format(java.util.Locale.US, s / 60)
+
+    /** One Z-Wave network: its nodes, who talks to whom, the last frame raw, and every frame heard. Label, value, meaning. */
+    fun zwDetailFields(h: HeardDevice): List<Triple<String, String, String>> {
+        val v = h.data
+        val nodes = (v["nodes"] as? List<*>).orEmpty().filterIsInstance<ZwNode>()
+        val links = (v["links"] as? List<*>).orEmpty().filterIsInstance<ZwLink>()
+        val f = ArrayList<Triple<String, String, String>>()
+        f.add(Triple("HOME ID", "${v["id"]}", "the network ID every node in it shares"))
+        for (n in nodes) {
+            val parts = arrayListOf((n.rates.ifEmpty { listOf(n.rate) }).joinToString(", ") { r -> "${ZW_RATE[r] ?: r} · ${if (r == "R3") "916.00" else "908.42"} MHz" },
+                n.snr?.let { "SNR %.1f dB".format(java.util.Locale.US, it) } ?: "only heard being polled", "last ${clock(n.lastSeen)}")
+            n.poll?.let { parts.add("polled every ${zwEvery(it)}") }
+            if (n.last.isNotEmpty()) parts.add(n.last)
+            f.add(Triple(if (n.controller) "CONTROLLER ${n.id}" else "NODE ${n.id}", parts.joinToString(" · "), if (n.controller) "the node that polls and commands the others" else ""))
+        }
+        for (l in links) f.add(Triple("${l.from} → ${l.to}", "${l.frames} frame${if (l.frames == 1) "" else "s"} · last ${l.last}", "frames from one node to another"))
+        val snr = (v["snr"] as? Number)?.toDouble() ?: 0.0
+        f.add(Triple("LAST FRAME", "${v["from"]} → ${v["to"]} ${v["said"]} · SNR ${"%.1f".format(java.util.Locale.US, snr)} dB", ""))
+        f.add(Triple("RAW", "${v["raw"]}", "the frame as it arrived, home ID first, its check last"))
+        f.add(Triple("MODULATION", "FSK, ${ZW_RATE["${v["rate"]}"] ?: v["rate"]}${if (v["rate"] == "R1") " Manchester" else " NRZ"}", ""))
+        f.add(Triple("DECODER", "Z-Wave, ITU-T G.9959, kept only when the frame check passes", ""))
+        f.add(Triple("HEARD", "${h.count} frame${if (h.count == 1) "" else "s"} · first ${clock(h.firstSeen)} · last ${clock(h.lastSeen)}", ""))
+        return f
     }
 }
