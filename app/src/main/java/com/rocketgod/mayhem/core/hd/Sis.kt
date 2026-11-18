@@ -95,9 +95,37 @@ object HdSis {
         25 to "Spanish Music", 26 to "Hip-Hop", 29 to "Weather", 30 to "Emergency Test", 31 to "Emergency",
     )
     fun programTypeName(t: Int?): String = if (t == null || t < 0) "" else PROGRAM_TYPES[t] ?: "Type $t"
-    /** Data service types named in 1020s and seen on the air. */
-    val DATA_TYPES = mapOf(66 to "Image maps", 259 to "Navigation")
+    /** Service data types (1020s Table 4-13). */
+    val DATA_TYPES = mapOf(
+        0 to "Non-specific", 1 to "News", 3 to "Sports", 29 to "Weather", 31 to "Emergency", 65 to "Traffic", 66 to "Image maps", 80 to "Text", 256 to "Advertising", 257 to "Financial",
+        258 to "Stock ticker", 259 to "Navigation", 260 to "Program guide", 261 to "Audio", 262 to "Private data network", 263 to "Service maintenance", 264 to "HD Radio system services",
+        265 to "Audio-related objects", 511 to "Special tests",
+    )
     fun dataTypeName(t: Int): String = DATA_TYPES[t] ?: "Data type $t"
+
+    /** Whether a station location is on the globe (1020s 4.4); some stations send one that is not. */
+    fun locationValid(lat: Double?, lon: Double?): Boolean =
+        lat != null && lon != null && lat.isFinite() && lon.isFinite() && kotlin.math.abs(lat) <= 90 && kotlin.math.abs(lon) <= 180 && !(lat == 0.0 && lon == 0.0)
+
+    class Clock(val offsetMs: Long, val trusted: Boolean)
+    /** The station clock against this device's (1020s 5.4.1): trusted only when locked to GPS and within [tolMs]. */
+    fun clockCheck(alfnMs: Long, localMs: Long, timeLocked: Boolean, tolMs: Long = 10_000): Clock {
+        val off = if (alfnMs != 0L && localMs != 0L) alfnMs - localMs else 0L
+        return Clock(off, alfnMs != 0L && localMs != 0L && timeLocked && kotlin.math.abs(off) <= tolMs)
+    }
+
+    class TimeHint(val offsetMin: Int, val schedule: Int, val dstLocal: Boolean, val dstNow: Boolean)
+    /** SIS parameter 3, local time (1020s 4.7.1, bit 0 the most significant): UTC offset in minutes, DST schedule, DST
+     *  practiced locally, DST in effect regionally. */
+    fun localTimeHint(v: Int): TimeHint {
+        val o = (v shr 5) and 0x7FF
+        return TimeHint(if (o >= 1024) o - 2048 else o, (v shr 2) and 7, (v shr 1) and 1 == 1, v and 1 == 1)
+    }
+    /** A UTC offset as UTC-8:00. */
+    fun utcOffsetText(min: Int): String = "UTC${if (min < 0) "-" else "+"}${kotlin.math.abs(min) / 60}:${"%02d".format(kotlin.math.abs(min) % 60)}"
+
+    /** Blend control of the MPS (1017s Table 5-4). */
+    val BLEND_NAMES = listOf("disabled (all digital)", "select (analog forced)", "enabled (blends on signal)", "reserved")
 }
 
 private class Votes<T> {
@@ -111,6 +139,8 @@ private class Votes<T> {
         return b?.let { Best(it.v, it.n, total) }
     }
     val size: Int get() = m.size
+    /** How many distinct values came at least [n] times. */
+    fun atLeast(n: Int): Int = m.values.count { it.n >= n }
 }
 
 class SisAudio(val program: Int, val type: Int, val access: Int)
@@ -122,6 +152,14 @@ class SisSummary(
     val timeLocked: Boolean, val alfn: Long, val alfnMs: Long, val pdus: Int, val llds: Int, val alerts: Int,
     /** Votes behind the call sign, out of all short-name messages. */
     val nameVotes: Pair<Int, Int>,
+    /** The station message has the priority bit set (1020s 4.5: it goes to the top of the queue). */
+    val messagePriority: Boolean = false,
+    /** Votes behind each SIS parameter's value, out of all sent for that index. */
+    val paramVotes: Map<Int, Pair<Int, Int>> = emptyMap(),
+    /** This device's clock when the last ALFN came in (0: none yet). */
+    val alfnLocalMs: Long = 0,
+    /** EA PDUs whose content came again (a repeat is the only check without the CRC). */
+    val alertsRepeated: Int = 0,
 )
 
 private fun sisText(b: List<Int>, enc: Int?): String {
@@ -141,7 +179,8 @@ class SisVoter {
     private val long = HashMap<Int, Votes<String>>(); private val longLast = Votes<Int>()
     private val slogan = HashMap<Int, Votes<List<Int>>>(); private val sloganLen = Votes<Pair<Int, Int>>()
     private val usn = HashMap<Int, Votes<List<Int>>>(); private val usnEnc = Votes<Int>()
-    private val smsg = HashMap<String, Votes<List<Int>>>(); private val smsgHead = LinkedHashMap<Int, Votes<Pair<Int, Int>>>()
+    private val smsg = HashMap<String, Votes<List<Int>>>(); private val smsgHead = LinkedHashMap<Int, Votes<Triple<Int, Int, Int>>>()
+    private val alertBits = Votes<String>(); private var alfnLocal = 0L
     private val svcAudio = LinkedHashMap<Int, Votes<Pair<Int, Int>>>()
     private class DataE(val type: Int, val mime12: Int, val access: Int, var n: Int)
     private val svcData = LinkedHashMap<String, DataE>()
@@ -157,7 +196,7 @@ class SisVoter {
     }
     /** One frame's ALFN as sent; without a usable CRC single PDU errors show, so the clock is the voted offset
      *  between the frames counted here and the ALFN sent. */
-    fun setAlfn(a: Long) { alfnFrames++; val off = a - alfnFrames; alfnOff.add(off.toString(), off); alfn = alfnOff.best()!!.v + alfnFrames }
+    fun setAlfn(a: Long, localMs: Long = 0) { alfnLocal = localMs; alfnFrames++; val off = a - alfnFrames; alfnOff.add(off.toString(), off); alfn = alfnOff.best()!!.v + alfnFrames }
     /** A missed frame: the next ALFN is one further on. */
     fun skipFrame() { alfnFrames++ }
 
@@ -171,7 +210,7 @@ class SisVoter {
             is HdSis.Msg.Loc -> (if (m.high) locHi else locLo).add("${m.deg}/${m.alt}", m.deg to m.alt)
             is HdSis.Msg.Smsg -> {
                 smsg.at("${m.seq}/${m.frame}").add(m.bytes.joinToString(","), m.bytes.toList())
-                if (m.frame == 0) smsgHead.at(m.seq).add("${m.length}/${m.encoding}", (m.length ?: 0) to (m.encoding ?: 0))
+                if (m.frame == 0) smsgHead.at(m.seq).add("${m.length}/${m.encoding}/${m.priority}", Triple(m.length ?: 0, m.encoding ?: 0, m.priority ?: 0))
             }
             is HdSis.Msg.Svc -> {
                 if (m.audio) svcAudio.at(m.program).add("${m.progType}/${m.access}", m.progType to m.access)
@@ -180,7 +219,7 @@ class SisVoter {
             is HdSis.Msg.Param -> params.at(m.index).add(m.value.toString(), m.value)
             is HdSis.Msg.Usn -> { usn.at(m.frame).add(m.bytes.joinToString(","), m.bytes.toList()); if (m.frame == 0 && m.encoding != null) usnEnc.add(m.encoding.toString(), m.encoding) }
             is HdSis.Msg.Slogan -> { slogan.at(m.frame).add(m.bytes.joinToString(","), m.bytes.toList()); if (m.frame == 0) sloganLen.add("${m.length}/${m.encoding}", (m.length ?: 0) to (m.encoding ?: 0)) }
-            is HdSis.Msg.Alert -> alerts++
+            is HdSis.Msg.Alert -> { alerts++; alertBits.add(m.bits, m.bits) }
             else -> {}
         }
     }
@@ -196,10 +235,11 @@ class SisVoter {
             sloganS = sisText(if (len > 0) b.take(if (enc == 4) 2 * len else len) else b, enc)
         }
         val universal = if (usn.isNotEmpty()) sisText(join(usn), usnEnc.best()?.v) else ""
-        var message = ""
+        var message = ""; var messagePriority = false
         if (smsgHead.isNotEmpty()) {
             val seq = smsgHead.keys.sortedByDescending { smsgHead[it]!!.best()!!.total }.first()
-            val (len, enc) = smsgHead[seq]!!.best()!!.v
+            val (len, enc, prio) = smsgHead[seq]!!.best()!!.v
+            messagePriority = prio == 1
             val b = ArrayList<Int>()
             for (f in 0 until 32) { val v = smsg["$seq/$f"]?.best()?.v; if (v == null) { if (b.size >= len) break; continue }; b.addAll(v) }
             message = sisText(b.take(len), enc)
@@ -212,6 +252,8 @@ class SisVoter {
             data = svcData.values.filter { it.n >= 3 }.map { SisData(it.type, it.mime12, it.access) },
             params = params.mapValues { it.value.best()!!.v }, timeLocked = locked.best()?.v == 1, alfn = alfn, alfnMs = if (alfn >= 0) HdSis.alfnToMs(alfn) else 0L,
             pdus = pdus, llds = llds, alerts = alerts, nameVotes = if (sn != null) sn.n to sn.total else 0 to 0,
+            messagePriority = messagePriority, paramVotes = params.mapValues { it.value.best()!!.let { b -> b.n to b.total } }, alfnLocalMs = alfnLocal,
+            alertsRepeated = alertBits.atLeast(2),
         )
     }
 }

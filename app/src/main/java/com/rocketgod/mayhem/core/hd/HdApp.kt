@@ -158,7 +158,7 @@ object HdApp {
                 if (p.title.isNotEmpty()) p.title else old?.title ?: "", if (p.title.isNotEmpty()) p.artist else old?.artist ?: "")
         }
         val data = (st.sig.filter { it.kind == "data" && it.name.isNotEmpty() }.map { it.name } + sis.data.map { HdSis.dataTypeName(it.type) }).distinct()
-        val pos = sis.lat != null && sis.lon != null && abs(sis.lat) <= 90 && abs(sis.lon) <= 180
+        val pos = HdSis.locationValid(sis.lat, sis.lon)
         val rec = HdStationRec(
             hz, if (sis.callsign.isNotEmpty() && sis.nameVotes.first >= 3) sis.callsign else r?.call ?: "",
             sis.slogan.ifEmpty { r?.slogan ?: "" }, sis.longName.ifEmpty { r?.longName ?: "" }, sis.message.ifEmpty { r?.message ?: "" },

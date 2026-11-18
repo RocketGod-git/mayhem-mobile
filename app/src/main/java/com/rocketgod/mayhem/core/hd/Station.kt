@@ -18,7 +18,9 @@ class ProgramRow(
 }
 class PortRow(val port: Int, val bearer: String, val packets: Int, val bytes: Int, val lastMs: Long, val firstMs: Long, val seqGaps: Int, val kind: String, val name: String)
 class ObjectRow(val port: Int, val id: Int, val name: String, val size: Int, val mime: String, val kind: String, val ms: Long, val program: Int)
-class FrameStat(val ms: Long, val pci: Int, val pciErrors: Int, val ber: Double, val snrLoDb: Double, val snrHiDb: Double)
+/** One L1 frame: PCI, raw bit error rate before the FEC, sideband SNR, and the HDLC frames (PSD and data) that passed
+ *  and failed their FCS in it. */
+class FrameStat(val ms: Long, val pci: Int, val pciErrors: Int, val ber: Double, val snrLoDb: Double, val snrHiDb: Double, var fcsGood: Int = 0, var fcsBad: Int = 0)
 /** A finished object with what it is and which program it belongs to (-1: the station). */
 class HdObject(val o: LotObject, val kind: String, val program: Int)
 
@@ -27,6 +29,8 @@ class StationSnap(
     val ber: Double, val snrLoDb: Double, val snrHiDb: Double, val history: List<FrameStat>,
     val sis: SisSummary, val programs: List<ProgramRow>, val sig: List<HdLot.SigService>, val sigVerified: Boolean, val ports: List<PortRow>, val objects: List<ObjectRow>,
     val pending: List<LotPending>, val ccc: HdL2.Ccc?, val bbm: Int, val hdlcGood: Int, val hdlcBad: Int,
+    /** The MPS blend control (1017s Table 5-4), voted over the last frames; -1 before any. */
+    val blend: Int = -1,
 )
 
 class HdStation {
@@ -79,14 +83,17 @@ class HdStation {
         val now = clock()
         frames++; lastFrameMs = now; if (firstFrameMs == 0L) firstFrameMs = now
         if (pdu.pciErrors <= 2) framesGood++
-        history.addLast(FrameStat(now, pdu.pci, pdu.pciErrors, ber, snrLoDb, snrHiDb))
+        val stat = FrameStat(now, pdu.pci, pdu.pciErrors, ber, snrLoDb, snrHiDb)
+        history.addLast(stat)
         if (history.size > 120) history.removeFirst()
         lastPci = pdu.pci
         val adv = IntArray(sis.size)
         sis.forEachIndexed { i, b -> val p = HdSis.parse(b); sisVoter.add(p); adv[i] = p.advAlfn }
-        if (adv.size == 16) sisVoter.setAlfn(HdSis.alfnFromPairs(adv))
+        if (adv.size == 16) sisVoter.setAlfn(HdSis.alfnFromPairs(adv), now)
         if (pdu.pciErrors > 4) return
+        val (g0, b0) = fcsCounts()
         l2(pdu, now)
+        val (g1, b1) = fcsCounts(); stat.fcsGood = g1 - g0; stat.fcsBad = b1 - b0
         val sm = sisVoter.summary(); val cs = sm.callsign
         if (cs.isNotEmpty() && cs != callLogged && sm.nameVotes.first >= 3) { callLogged = cs; onEvent("station · $cs") }
     }
@@ -106,6 +113,7 @@ class HdStation {
                 onEvent("program · HD${d.program + 1} · codec mode ${d.codecMode}")
             }
             p.lastMs = now; p.codecMode = d.codecMode
+            if (d.program == 0) { blends.addLast(d.blend); if (blends.size > 8) blends.removeFirst() }
             if (d.progType != null) { p.type = d.progType; p.typeName = HdSis.programTypeName(d.progType) }
             val kb = (d.end - d.off + 1) * 8 / FRAME_S / 1000; p.kbps = if (p.kbps != 0.0) p.kbps * 0.8 + kb * 0.2 else kb
             val s = psd.getOrPut(d.program) { HdL2.HdlcStream(false) }
@@ -187,8 +195,22 @@ class HdStation {
             frames, framesGood, lastFrameMs, firstFrameMs, lastPci, if (lastPci >= 0) HdL2.PCI_CONTENT[lastPci] else "",
             last?.ber ?: 1.0, last?.snrLoDb ?: -99.0, last?.snrHiDb ?: -99.0, history.toList().takeLast(60),
             sis, out, sig, false, portRows, objects.take(120), lot.pending().take(40), fixed.ccc,
-            sb.sumOf { it.bbm } + opp.bbm, sb.sumOf { it.good } + opp.good, sb.sumOf { it.bad } + opp.bad,
+            sb.sumOf { it.bbm } + opp.bbm, sb.sumOf { it.good } + opp.good, sb.sumOf { it.bad } + opp.bad, blend(),
         )
+    }
+
+    private val blends = ArrayDeque<Int>()
+    /** HDLC frames so far that passed and failed their FCS, every stream. */
+    private fun fcsCounts(): Pair<Int, Int> {
+        var g = opp.good; var b = opp.bad
+        for (s in subs) if (s != null) { g += s.good; b += s.bad }
+        for (s in psd.values) { g += s.good; b += s.bad }
+        return g to b
+    }
+    private fun blend(): Int {
+        if (blends.isEmpty()) return -1
+        val c = IntArray(4); for (b in blends) c[b and 3]++
+        return c.indices.maxByOrNull { c[it] }!!
     }
 
     /** A missed frame breaks the byte streams: drop the partial frames. */

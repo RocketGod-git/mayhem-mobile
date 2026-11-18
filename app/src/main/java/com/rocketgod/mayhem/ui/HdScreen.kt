@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -71,6 +72,8 @@ import com.rocketgod.mayhem.core.hd.HdSis
 import com.rocketgod.mayhem.core.hd.HdSnap
 import com.rocketgod.mayhem.core.hd.HdStationRec
 import com.rocketgod.mayhem.core.hd.ProgramRow
+import com.rocketgod.mayhem.core.hd.SisSummary
+import com.rocketgod.mayhem.core.hd.StationSnap
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.max
@@ -93,6 +96,44 @@ private fun hdAgo(ms: Long): String = when {
 private fun hdClock(ms: Long) = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(ms))
 private fun hdHex(v: Int, n: Int = 4) = "0x" + Integer.toHexString(v).uppercase().padStart(n, '0')
 private fun hdSize(n: Int) = if (n < 1024) "$n B" else "%.1f KB".format(java.util.Locale.US, n / 1024.0)
+
+/** The station's transmitter as sent: a place on the map, or why it is not one. */
+private fun hdLocText(s: SisSummary, home: Pair<Double, Double>?): String {
+    val lat = s.lat ?: return "-"; val lon = s.lon ?: return "-"
+    val at = "%.5f, %.5f".format(java.util.Locale.US, lat, lon) + (s.altM?.let { " · $it m" } ?: "")
+    if (!HdSis.locationValid(lat, lon)) return "$at · not a valid location as sent, not placed on the map"
+    val d = home?.let { com.rocketgod.mayhem.core.ham.distanceBearing(it.first, it.second, lat, lon) } ?: return at
+    return at + " · " + (if (d.first < 10) "%.1f".format(java.util.Locale.US, d.first) else "%.0f".format(java.util.Locale.US, d.first)) + " km at %.0f°".format(java.util.Locale.US, d.second)
+}
+/** The station clock, checked against this device's: never used when it disagrees. */
+private fun hdClockText(s: SisSummary): String {
+    if (s.alfnMs == 0L) return "-"
+    val c = HdSis.clockCheck(s.alfnMs, s.alfnLocalMs, s.timeLocked)
+    val t = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(s.alfnMs)) + " UTC"
+    if (c.trusted) return "$t · agrees with this device (%.1f s) · locked to GPS".format(java.util.Locale.US, c.offsetMs / 1000.0)
+    val off = abs(c.offsetMs)
+    val d = when { off < 120_000 -> "${off / 1000} s"; off < 7_200_000 -> "${off / 60_000} min"; off < 172_800_000 -> "%.1f h".format(java.util.Locale.US, off / 3_600_000.0); else -> "${off / 86_400_000} days" }
+    return "$t · " + (if (s.alfnLocalMs != 0L) "$d ${if (c.offsetMs < 0) "behind" else "ahead of"} this device" else "not checked") + (if (s.timeLocked) "" else " · not locked to GPS") + " · not used"
+}
+/** SIS parameter 3 as a hint, marked unreliable when it disagrees with this device or does not hold steady. */
+private fun hdTzText(s: SisSummary): String {
+    val v = s.params[3] ?: return "-"
+    val h = HdSis.localTimeHint(v); val (n, total) = s.paramVotes[3] ?: (0 to 0)
+    val tz = java.util.TimeZone.getDefault(); val mine = tz.getOffset(System.currentTimeMillis()) / 60_000; val std = tz.rawOffset / 60_000
+    val steady = total > 0 && n * 2 > total
+    val agrees = steady && (h.offsetMin == mine || h.offsetMin == std)
+    return HdSis.utcOffsetText(h.offsetMin) + (if (h.dstLocal) " · DST practiced" else "") + (if (h.dstNow) " · DST in effect" else "") + " · " +
+        (if (agrees) "agrees with this device" else "unreliable (${if (steady) "this device is ${HdSis.utcOffsetText(mine)}" else "it changes from frame to frame"})")
+}
+/** The data services SIS lists (MSG 6 data descriptors), by type, with how many of each. */
+private fun hdDataSvcText(s: SisSummary): String =
+    s.data.groupingBy { it.type }.eachCount().entries.joinToString(" · ") { (t, n) -> "${HdSis.dataTypeName(t)} ($t)" + if (n > 1) " ×$n" else "" }.ifEmpty { "-" }
+/** Emergency alerts: a single EA PDU is most likely a bit error the missing CRC let through, so only a repeat counts. */
+private fun hdAlertText(s: SisSummary): String = when {
+    s.alerts == 0 -> "none"
+    s.alertsRepeated > 0 -> "${s.alertsRepeated} repeated, content not decoded"
+    else -> "none confirmed · ${s.alerts} single EA PDU${if (s.alerts == 1) "" else "s"}, unverified (likely bit errors)"
+}
 
 /** Decoded pictures, made once: objects by key, traffic tiles with their background made see-through, logos by content. */
 private object HdBitmaps {
@@ -217,7 +258,7 @@ fun HdScreen(accent: Color) {
         Column(modifier, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             GeoMapView(pins, accent, Modifier.fillMaxWidth().weight(1f).panel(), home = fix, selected = "st:${HdApp.key(tuned)}", layers = layers,
                 start = remember { mapStart(Geo.fix.value) },
-                emptyTitle = if (pins.isEmpty() && imgs.isEmpty()) "No map data yet" else "", emptySub = "Transmitters show here from each station's SIS; traffic tiles and weather radar where a station sends them") { id ->
+                emptyTitle = if (pins.isEmpty() && imgs.isEmpty()) "No map data yet" else "", emptySub = "Transmitters show here from each station's SIS. Where a station sends traffic and weather radar, both come in about 1 to 1.5 minutes after tuning") { id ->
                 if (id.startsWith("st:")) id.substring(3).toLongOrNull()?.let { pick(it) }
             }
             if (imgs.isNotEmpty()) HdLegend(tiles.size, traffic.values.firstOrNull(), radars.entries.lastOrNull()?.let { radar[it.key] to it.value.second.stamp })
@@ -228,7 +269,7 @@ fun HdScreen(accent: Color) {
     fun hero(modifier: Modifier) {
         val scroll = rememberScrollState()
         Column(modifier.verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            HdHero(m, now, tuned, call, rec, selProg, here, objs, lock, accent) { prog = it }
+            HdHero(m, now, tuned, call, rec, selProg, here, objs, lock, accent, fix ?: Geo.lastKnownPos()) { prog = it }
             AppNote(HD_NOTE)
         }
     }
@@ -243,7 +284,7 @@ fun HdScreen(accent: Color) {
                         items(stations.values.sortedBy { it.hz }, key = { it.hz }) { r -> HdStationCard(r, r.hz == HdApp.key(tuned), now, objs, accent) { pick(r.hz) } }
                     }
                 2 -> hdMap(Modifier.fillMaxSize())
-                3 -> HdData(m, here, now, sel, accent, onSel = { k -> sel = if (sel == k) null else k }, onSave = ::save, Modifier.fillMaxSize())
+                3 -> HdData(m, here, now, sel, accent, fix ?: Geo.lastKnownPos(), onSel = { k -> sel = if (sel == k) null else k }, onSave = ::save, Modifier.fillMaxSize())
                 else -> LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "listening for HD Radio…", total = logSnap.total, accent = accent, emptyKey = "hd")
             }
             val o = objs.firstOrNull { it.key == sel }
@@ -351,6 +392,12 @@ private fun HdHead(m: HdSnap?, tuned: Long, call: String, rec: HdStationRec?, sc
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             HdPill(lock, tone ?: Palette.muted)
         }
+        val msg = st?.sis?.message.orEmpty()
+        if (msg.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            Box(Modifier.width(2.dp).height(d.dp(14f)).background(if (st!!.sis.messagePriority) Palette.accent2 else accent))
+            if (st!!.sis.messagePriority) HdPill("PRIORITY", Palette.accent2)
+            Text(msg, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false, modifier = Modifier.weight(1f).basicMarquee(iterations = Int.MAX_VALUE))
+        }
         if (scan.auto) {
             val text = if (scan.phase == "survey") "AUTO · LOOKING ${hdMhz(scan.cur - HdApp.REACH)}–${hdMhz(scan.cur + HdApp.REACH)}"
                 else "AUTO · ${if (scan.locked != 0L) "FILLING IN" else "CHECKING"} ${max(0L, (scan.until - now + 999) / 1000)} s · ${scan.queue.size} NEXT"
@@ -379,7 +426,8 @@ private fun HdPicture(bmp: Bitmap?, modifier: Modifier, crop: Boolean = false) {
 /** NOW PLAYING: the art, the station, the song, the program tabs, the signal per sideband and the songs before. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HdHero(m: HdSnap?, now: Long, tuned: Long, call: String, rec: HdStationRec?, sel: ProgramRow?, here: List<HdObj>, objs: List<HdObj>, lock: String, accent: Color, onProg: (Int) -> Unit) {
+private fun HdHero(m: HdSnap?, now: Long, tuned: Long, call: String, rec: HdStationRec?, sel: ProgramRow?, here: List<HdObj>, objs: List<HdObj>, lock: String, accent: Color,
+                   home: Pair<Double, Double>?, onProg: (Int) -> Unit) {
     val d = rememberDims()
     val st = m?.station
     val progs = st?.programs ?: emptyList()
@@ -414,9 +462,9 @@ private fun HdHero(m: HdSnap?, now: Long, tuned: Long, call: String, rec: HdStat
                 Text(title.ifEmpty { waiting }, color = if (title.isNotEmpty()) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold,
                     fontSize = d.sp(if (title.isNotEmpty()) 19f else 12f), maxLines = 3, overflow = TextOverflow.Ellipsis)
                 if (!sel?.artist.isNullOrEmpty()) Text(sel!!.artist, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(13f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                val album = listOf(sel?.album.orEmpty(), sel?.genre.orEmpty()).filter { it.isNotEmpty() }.joinToString(" · ")
+                // TCON is left out: stations send their brand in it rather than a genre
+                val album = sel?.album.orEmpty()
                 if (album.isNotEmpty()) Text(album, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (!st?.sis?.message.isNullOrEmpty()) Text(st!!.sis.message, color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
         }
         if (progs.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -452,7 +500,18 @@ private fun HdHero(m: HdSnap?, now: Long, tuned: Long, call: String, rec: HdStat
                 if (st != null && st.frames > 0) "RAW BER" to "%.2f%%".format(java.util.Locale.US, st.ber * 100) else null,
                 if (st != null && st.frames > 0) "PCI" to st.pciName else null,
                 if (m != null) "CARRIER" to "%+.0f Hz".format(java.util.Locale.US, m.rx.cfoHz) else null,
+                if (st != null && st.blend >= 0) "BLEND" to HdSis.BLEND_NAMES[st.blend].uppercase() else null,
                 "AUDIO" to "ANALOG FM"))
+            if (st != null && st.frames > 0) HdFrames(st)
+        }
+        val s = st?.takeIf { it.frames > 0 }?.sis
+        if (s != null) Column(Modifier.fillMaxWidth().panel().padding(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            Text("STATION", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 2.sp)
+            HdKv(listOfNotNull(
+                if (s.facility >= 0) "FACILITY" to "${s.country} ${s.facility}" else null,
+                if (s.lat != null) "TRANSMITTER" to hdLocText(s, home) else null,
+                if (s.data.isNotEmpty()) "DATA SERVICES" to hdDataSvcText(s) else null,
+                if (s.alfnMs != 0L) "CLOCK" to hdClockText(s) else null))
         }
         if (sel != null && sel.songs.size > 1) Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
             Text("EARLIER ON HD${sel.n + 1}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp)
@@ -462,6 +521,24 @@ private fun HdHero(m: HdSnap?, now: Long, tuned: Long, call: String, rec: HdStat
             }
         }
     }
+}
+
+/** The last frames, each as its raw BER (bar height) and the FCS results of the packets it carried (red: a failure). */
+@Composable
+private fun HdFrames(st: StationSnap) {
+    val d = rememberDims()
+    val h = st.history.takeLast(30); val last = h.lastOrNull() ?: return
+    val ok = Palette.ok; val weak = Palette.accent2; val bad = Palette.danger
+    Canvas(Modifier.fillMaxWidth().height(d.dp(22f))) {
+        val w = minOf(size.width / 30f, 8.dp.toPx() + 2.dp.toPx())
+        h.forEachIndexed { i, f ->
+            val v = (f.ber * 10).coerceIn(0.08, 1.0).toFloat()
+            drawRoundRect(if (f.fcsBad > 0) bad else if (f.ber >= 0.05) weak else ok, topLeft = androidx.compose.ui.geometry.Offset(i * w, size.height * (1 - v)),
+                size = Size(w - 2.dp.toPx(), size.height * v), cornerRadius = CornerRadius(1.dp.toPx()), alpha = 0.8f)
+        }
+    }
+    HdKv(listOf("LAST FRAME" to "BER %.2f%% · FCS ${last.fcsGood} good".format(java.util.Locale.US, last.ber * 100) + (if (last.fcsBad > 0) " · ${last.fcsBad} failed" else ""),
+        "FRAMES" to "${st.framesGood} of ${st.frames} with a clean PCI"))
 }
 
 /** One station heard: logo, call sign, frequency, slogan, programs, facility, transmitter, data services. */
@@ -525,7 +602,7 @@ private fun HdLegend(tiles: Int, traffic: HdLot.TrafficInfo?, radar: Pair<HdLot.
 
 /** DATA: every file this station sent, what is still coming in, the voted SIS, the service directory and the ports. */
 @Composable
-private fun HdData(m: HdSnap?, objs: List<HdObj>, now: Long, sel: String?, accent: Color, onSel: (String) -> Unit, onSave: (HdObj) -> Unit, modifier: Modifier) {
+private fun HdData(m: HdSnap?, objs: List<HdObj>, now: Long, sel: String?, accent: Color, home: Pair<Double, Double>?, onSel: (String) -> Unit, onSave: (HdObj) -> Unit, modifier: Modifier) {
     val d = rememberDims()
     val st = m?.station
     LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
@@ -559,12 +636,13 @@ private fun HdData(m: HdSnap?, objs: List<HdObj>, now: Long, sel: String?, accen
             val s = st.sis
             val f = listOf(
                 "CALL SIGN" to (if (s.callsign.isNotEmpty()) "${s.callsign} (${s.nameVotes.first} of ${s.nameVotes.second} votes)" else "-"),
-                "LONG NAME" to s.longName.ifEmpty { "-" }, "UNIVERSAL NAME" to s.universal.ifEmpty { "-" }, "SLOGAN" to s.slogan.ifEmpty { "-" }, "MESSAGE" to s.message.ifEmpty { "-" },
+                "LONG NAME" to s.longName.ifEmpty { "-" }, "UNIVERSAL NAME" to s.universal.ifEmpty { "-" }, "SLOGAN" to s.slogan.ifEmpty { "-" },
+                "MESSAGE" to (if (s.message.isNotEmpty()) s.message + (if (s.messagePriority) " (priority)" else "") else "-"),
                 "FACILITY" to (if (s.facility >= 0) "${s.country} ${s.facility}" else "-"),
-                "TRANSMITTER" to (if (s.lat != null && s.lon != null) "%.5f, %.5f".format(java.util.Locale.US, s.lat, s.lon) + (s.altM?.let { " · $it m" } ?: "") else "-"),
-                "STATION CLOCK" to (if (s.alfnMs != 0L) java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(s.alfnMs)) + " UTC" + (if (s.timeLocked) " · locked to GPS" else "") else "-"),
+                "TRANSMITTER" to hdLocText(s, home), "STATION CLOCK" to hdClockText(s), "TIME ZONE HINT" to hdTzText(s),
+                "LEAP SECONDS" to (s.params[0]?.let { "${it.toByte()} s as sent (the clock uses 18 s)" } ?: "-"), "EMERGENCY ALERTS" to hdAlertText(s),
                 "AUDIO SERVICES" to s.audio.joinToString(" · ") { "HD${it.program + 1} ${HdSis.programTypeName(it.type)}" }.ifEmpty { "-" },
-                "DATA SERVICES" to s.data.joinToString(" · ") { "${HdSis.dataTypeName(it.type)} (MIME ${it.mime12})" }.ifEmpty { "-" },
+                "DATA SERVICES" to s.data.joinToString(" · ") { "${HdSis.dataTypeName(it.type)} (${it.type}, MIME ${it.mime12})" }.ifEmpty { "-" },
                 "FIXED BEARER" to (st.ccc?.subs?.joinToString(" + ") { "${it.length} B/frame" } ?: "-"),
                 "PACKETS" to "${st.hdlcGood} good · ${st.hdlcBad} failed FCS", "SIS PDUS" to "${s.pdus} (${s.llds} other)")
             HdSection("STATION INFORMATION (SIS, voted)", accent) { SelectionContainer { FieldGrid(f, labelWidth = 120f, minColumn = 320f) } }

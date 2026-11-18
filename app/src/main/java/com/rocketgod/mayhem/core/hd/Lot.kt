@@ -6,7 +6,8 @@ package com.rocketgod.mayhem.core.hd
  *
  * Object packets: [0] the header length (where the file data starts in this packet), [1] a repeat count, [2..3]
  * object id, [4..7] fragment index (little endian), then the file data in 256-byte fragments. Fragment 0's header goes
- * on with 16 bytes of metadata ([16..19] the file size, little endian) and the file name in ASCII.
+ * on with 16 bytes of metadata ([8..11] always 01 00 00 00, [16..19] the file size, little endian) and the file name
+ * in ASCII; fragment 0 is the one with index 0 and that word.
  *
  * Service directory (a TLV list, each length counting its own length byte): 0x40 an audio service and 0x41 a data
  * service (each followed by three header bytes), 0x69 a name (an encoding byte, then text), 0x66 audio service info
@@ -38,7 +39,8 @@ class LotAssembler {
         val hl = p[0]
         if (hl < 8 || hl > p.size) return
         if (idx == 0L) {
-            if (hl < 24) return
+            // fragment 0 carries the metadata word 01 00 00 00 at bytes 8..11
+            if (hl < 24 || p[8] != 1 || p[9] != 0 || p[10] != 0 || p[11] != 0) return
             val size = (p[16].toLong() or (p[17].toLong() shl 8) or (p[18].toLong() shl 16) or (p[19].toLong() shl 24))
             if (size == 0L || size > 4_000_000) return
             val name = String(CharArray(hl - 24) { p[24 + it].toChar() }).trimEnd('\u0000')
