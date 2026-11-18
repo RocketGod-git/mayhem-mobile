@@ -3424,7 +3424,7 @@ function r433Card(d: HeardDevice & { hz?: number }, now: number): string {
   const [big, sub] = r433Headline(d, k);
   const id = d.data.id !== undefined ? String(d.data.id) : '';
   return `<div class="mt-card dv-card k-${k.replace(/ /g, '').toLowerCase()} ${state.r433.sel === d.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-dv="${esc(d.key)}" style="--flash:${flash.toFixed(2)}">`
-    + `<div class="mt-h"><span class="dv-glyph">${R433_GLYPH[k]}</span><span class="mt-k"><b>${k}</b><small>${esc(d.model)}</small>${id ? `<i>ID ${esc(id)}</i>` : ''}</span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : r433Ago(age)}</span></div>`
+    + `<div class="mt-h"><span class="dv-glyph">${R433_GLYPH[k]}</span><span class="mt-k"><b>${k}</b>${d.model.toUpperCase() === k ? '' : `<small>${esc(d.model)}</small>`}${id ? `<i>ID ${esc(id)}</i>` : ''}</span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : r433Ago(age)}</span></div>`
     + `<div class="mt-clk"><b>${esc(big)}</b><small>${esc(sub)}</small><em>${d.count}×</em></div>`
     + `<div class="dv-foot"><span>${k === 'Z-WAVE' ? `${((d.data.channels as number[] | undefined) ?? []).map(c => c.toFixed(2)).join(' · ')} MHz` : d.hz ? r433Mhz(d.hz) : ''}</span><span>${live ? r433Ago(age) : r433Clock(d.lastSeen)}</span></div></div>`;
 }
@@ -3477,7 +3477,7 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
   const fields = k === 'Z-WAVE' ? zwDetailFields(d) : r433Fields(d, doubtful);
   const hist = state.r433.hist.get(d.key) ?? [];
   const rows = hist.slice().reverse().map(h => `<div><b>${r433Clock(h.t)}</b><span>${esc(h.s)}${h.hz ? ` · ${r433Mhz(h.hz)}` : ''}</span></div>`).join('');
-  return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${k} · ${esc(d.model)}</span><button class="chip" data-dvdo="close">✕</button></div>`
+  return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${d.model.toUpperCase() === k ? k : `${k} · ${esc(d.model)}`}</span><button class="chip" data-dvdo="close">✕</button></div>`
     + `<div class="mt-fields">${fields.map(([a, b, m]) => `<div${m ? ` title="${esc(m)}"` : ''}><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}`
     + (rows ? `<p>EVERY TIME IT WAS HEARD</p>${rows}` : '') + '</div>';
 }
