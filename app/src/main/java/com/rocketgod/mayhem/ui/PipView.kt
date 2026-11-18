@@ -105,6 +105,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     MayhemApp.TRAINS -> lastLine(Apps.trainsLog)
     MayhemApp.FLEET -> lastLine(Apps.fleetLog)
     MayhemApp.CELL -> lastLine(Apps.cellLog)
+    MayhemApp.ATSC -> lastLine(com.rocketgod.mayhem.core.atsc.AtscApp.log)
     MayhemApp.SONDES -> lastLine(Apps.sondesLog)
     MayhemApp.UAT -> lastLine(Apps.uatLog)
     MayhemApp.ANALYZER -> {
