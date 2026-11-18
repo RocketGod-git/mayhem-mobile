@@ -19,6 +19,7 @@ import { R433 } from './runner.js';
 import { REGISTRY, type R433Data, type RDevice } from './device.js';
 import { describeBurst, shapeSummary, type BurstShape } from './analyze.js';
 import type { R433Stats } from './runner.js';
+import { ZWaveNets, ZWaveRx, zwDescribe, zwHex, type ZwHeard } from './zwave.js';
 import './devices/index.js';
 
 /** The once-a-second summary line: how the receiver is doing, not what it heard. */
@@ -36,6 +37,8 @@ export interface R433Report extends R433Stats {
   /** Bursts being followed right now, and how many have been since the start. */
   channels: number;
   followed: number;
+  /** The Z-Wave channels inside the span, MHz. */
+  zwave: number[];
 }
 
 /** One line about a protocol, for the list the app shows of everything it can hear. */
@@ -65,14 +68,15 @@ const CODING: Record<number, string> = {
 
 /** Everything registered, in protocol order — what the receiver can recognise. */
 export function protocolList(): R433Protocol[] {
-  return REGISTRY.map(d => ({
+  const zwave: R433Protocol = { num: 0, name: 'Z-Wave', what: 'home automation network (ITU-T G.9959): switches, locks, sensors and their controller', coding: 'frequency shift, R1 9.6k Manchester, R2 40k and R3 100k NRZ', bands: [908.42, 916], doubtful: false };
+  return [zwave, ...REGISTRY.map(d => ({
     num: d.num,
     name: d.name,
     what: d.what ?? '',
     coding: CODING[d.modulation] ?? String(d.modulation),
     bands: (d.bands ?? []).map(hz => hz / 1e6),
     doubtful: !!d.disabled,
-  })).sort((a, b) => a.num - b.num);
+  })).sort((a, b) => a.num - b.num)];
 }
 
 /** What we remember about one device we have heard. */
@@ -96,7 +100,7 @@ export interface HeardDevice {
    */
   shape?: BurstShape;
   /** What kind of thing it is: an rtl_433 sensor, a car key, a gate or garage remote, or a weather sensor read by Mayhem's decoders. */
-  family: 'sensor' | 'key' | 'remote' | 'weather';
+  family: 'sensor' | 'key' | 'remote' | 'weather' | 'zwave';
   /** Where it was heard, as an offset from the radio's center in hertz. */
   offsetHz: number;
   /** Frequency shift keyed rather than on-off keyed. */
@@ -138,6 +142,10 @@ export class R433Processor implements IqProcessor {
   /** Weak-check presses heard once, waiting for a second hearing. */
   private readonly unconfirmed = new Map<string, { press: string; at: number }>();
   private radio = new R433();
+  /** The radio's center, Hz, for finding the Z-Wave channels in the span. */
+  centerHz = 0;
+  private readonly zw = new ZWaveRx(f => this.reportZw(f));
+  readonly zwNets = new ZWaveNets();
   private rate = 0;
   private lastStats = 0;
   /** The offset of the channel being read right now, so a reading knows where it was heard. */
@@ -208,11 +216,14 @@ export class R433Processor implements IqProcessor {
     this.lastPayload.clear();
     this.unconfirmed.clear();
     this.unknownSeen.clear();
+    this.zwNets.clear();
   }
 
   onIq(iq: Int8Array, rate: number): void {
     if (rate !== this.rate) this.reset(rate);
     this.channels.process(iq);
+    this.zw.configure(rate, this.centerHz);
+    this.zw.process(iq);
     this.airMs += (iq.length >> 1) / rate * 1000;
     const now = Date.now();
     if (now - this.lastStats >= STATS_MS) {
@@ -220,8 +231,8 @@ export class R433Processor implements IqProcessor {
       const lv = this.slots[0].pd.levels();
       const report: R433Report = {
         ...this.radio.stats, devices: this.heard.size, protocols: this.radio.devices.length,
-        noise: lv.noise, trigger: lv.trigger, span: this.span(), channels: this.channels.active(), followed: this.channels.opened,
-        decoded: this.radio.stats.decoded + this.keysDecoded,
+        noise: lv.noise, trigger: lv.trigger, span: this.span(), channels: this.channels.active(), followed: this.channels.opened, zwave: this.zw.listening(),
+        decoded: this.radio.stats.decoded + this.keysDecoded + this.zw.frames,
       };
       this.emit({ type: 'r433stats', ...report });
     }
@@ -305,6 +316,26 @@ export class R433Processor implements IqProcessor {
     if (now - seen < 1000) return;
     this.unknownSeen.set(key, now);
     console.log(`[r433] unidentified · ${shape.fsk ? 'FSK' : 'OOK'} · ${shapeSummary(shape)} · ${shape.coding || 'coding unsettled'}`, shape);
+  }
+
+  /** A Z-Wave frame whose check passed: its network's card, with every node and link, is sent again. */
+  private reportZw(f: ZwHeard): void {
+    const now = Date.now();
+    const net = this.zwNets.add(f, now);
+    const m = zwDescribe(f);
+    const key = `Z-Wave/${f.home}`;
+    const prev = this.heard.get(key);
+    const data: R433Data = {
+      model: 'Z-Wave', id: f.home, nodes: net.nodes, links: net.links, frames: net.frames, channels: net.channels,
+      from: f.src, to: f.dst, said: m.text, rate: f.rate, snr: f.snr, raw: zwHex(f.bytes),
+    };
+    const entry: HeardDevice = {
+      key, model: 'Z-Wave', num: 0, what: 'Z-Wave network',
+      count: (prev?.count ?? 0) + 1, firstSeen: prev?.firstSeen ?? now, lastSeen: now, data,
+      family: 'zwave', offsetHz: Math.round(f.mhz * 1e6 - this.centerHz), fsk: true,
+    };
+    this.heard.set(key, entry);
+    this.emit({ type: 'r433', ...entry });
   }
 
   private report(dev: RDevice, data: R433Data, kind: PulseKind): void {

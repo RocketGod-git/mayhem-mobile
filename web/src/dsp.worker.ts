@@ -427,7 +427,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'fleet': fleet.centerHz = centreHz; return fleet;
     case 'subghz': return ism;
-    case 'r433': return r433;
+    case 'r433': r433.centerHz = centreHz; return r433;
     case 'analyzer': return analyzer;
     case 'spectrum': return new SpectrumProcessor(m.cfg as SpecConfig, emit);
     case 'sweep': return new SweepProcessor(m.start as number, m.end as number, m.slice as number, emit);
@@ -631,6 +631,7 @@ function process(iq: Int8Array): void {
   if (p === trains) trains.centerHz = centreHz;
   if (p === fleet) fleet.centerHz = centreHz;
   if (p === cell) cell.centerHz = centreHz;
+  if (p === r433) r433.centerHz = centreHz;
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p === hdApp) { hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }

@@ -19,6 +19,7 @@ import { fetchGroup } from './sat.js';
 import { PACKET_SATS } from './packet-sats.js';
 import { GEOSCAN_SATS } from './dsp/geoscan.js';
 import type { HeardDevice, R433Data, R433Protocol, R433Report } from './dsp/r433/index.js';
+import type { ZwLink, ZwNode } from './dsp/r433/zwave.js';
 import { CREDITS } from './credits.js';
 import { AnalyzerUi } from './analyzer-ui.js';
 import { SpectrumUi } from './spectrum-ui.js';
@@ -3220,6 +3221,9 @@ const R433_BANDS: [string, number][] = [
   ['868.30', 868_300_000],
   ['912.60', 912_600_000],
   ['915.00', 915_000_000],
+  // Z-Wave: tuned 420 and 400 kHz below its channels (908.42, 916.00) so neither sits on the radio's DC spike
+  ['908.00 · Z-WAVE', 908_000_000],
+  ['915.60 · Z-WAVE', 915_600_000],
 ];
 /** How long to sit on each band when hopping. Most of these sensors report every thirty to sixty seconds. */
 const R433_DWELL_MS = 20_000;
@@ -3352,7 +3356,7 @@ function renderR433(view: HTMLElement): void {
       <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="tog" id="r433-ptoggle">PROTOCOLS</button>${pauseClearHtml('devices')}</span></div>
       <div class="mt-stage dv-stage"><div id="r433-list" class="mt-cards dv-cards"></div><div id="r433-detail" class="mt-detail" hidden></div></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
-      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys, gate and garage remotes, tire sensors, weather stations, alarms and hundreds more. A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
+      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys, gate and garage remotes, tire sensors, weather stations, alarms and hundreds more. Z-Wave networks are read on 908.42 and 916 (the two Z-WAVE bands, or any span that holds them): each card is one network, its controller and nodes. A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-r433f]', view).forEach(b => b.onclick = () => { state.r433.filter = b.dataset.r433f as R433Filter; state.r433.sel = ''; drawR433(); });
@@ -3372,12 +3376,13 @@ function renderR433(view: HTMLElement): void {
 let r433Tick = 0;
 
 type R433Filter = 'all' | 'key' | 'remote' | 'sensor';
-type R433Kind = 'CAR KEY' | 'REMOTE' | 'TIRE SENSOR' | 'WEATHER' | 'SECURITY' | 'METER' | 'SENSOR';
+type R433Kind = 'CAR KEY' | 'REMOTE' | 'TIRE SENSOR' | 'WEATHER' | 'SECURITY' | 'METER' | 'SENSOR' | 'Z-WAVE';
 /** What a card calls the thing, from who decoded it and what its protocol says it is. */
 function r433Kind(d: HeardDevice): R433Kind {
   if (d.family === 'key') return 'CAR KEY';
   if (d.family === 'remote') return 'REMOTE';
   if (d.family === 'weather') return 'WEATHER';
+  if (d.family === 'zwave') return 'Z-WAVE';
   const t = `${d.model} ${d.what} ${d.data.type ?? ''}`.toLowerCase();
   if (/tpms|tire|tyre/.test(t)) return 'TIRE SENSOR';
   if (/weather|thermo|temperature|humidity|rain|wind|lightning|hygro|soil|pool|bbq|meat|grill/.test(t)) return 'WEATHER';
@@ -3386,7 +3391,7 @@ function r433Kind(d: HeardDevice): R433Kind {
   if (/remote|switch|button|doorbell|bell|keyfob|key fob|gate|garage|blind|shutter|outlet|plug|dimmer/.test(t)) return 'REMOTE';
   return 'SENSOR';
 }
-const R433_GROUP: Record<R433Kind, R433Filter> = { 'CAR KEY': 'key', REMOTE: 'remote', 'TIRE SENSOR': 'sensor', WEATHER: 'sensor', SECURITY: 'sensor', METER: 'sensor', SENSOR: 'sensor' };
+const R433_GROUP: Record<R433Kind, R433Filter> = { 'CAR KEY': 'key', REMOTE: 'remote', 'TIRE SENSOR': 'sensor', WEATHER: 'sensor', SECURITY: 'sensor', METER: 'sensor', SENSOR: 'sensor', 'Z-WAVE': 'sensor' };
 const R433_FILTER_LABEL: Record<R433Filter, string> = { all: 'ALL', key: 'KEYS', remote: 'REMOTES', sensor: 'SENSORS' };
 /** How long a device counts as live: a key or remote is a press, a sensor reports every half minute or so. */
 const r433LiveMs = (k: R433Kind) => (k === 'CAR KEY' || k === 'REMOTE' ? 15_000 : 120_000);
@@ -3399,6 +3404,7 @@ const r433Num = (v: unknown): number | null => (typeof v === 'number' ? v : type
 /** The big line on a card: what this thing just said, in the fewest words. */
 function r433Headline(d: HeardDevice, k: R433Kind): [string, string] {
   const v = d.data;
+  if (k === 'Z-WAVE') { const n = (v.nodes as ZwNode[] | undefined)?.length ?? 0; return [`${n} node${n === 1 ? '' : 's'}`, `${v.from} → ${v.to} ${v.said}`]; }
   if (k === 'CAR KEY' || k === 'REMOTE') return [String(v.button ?? v.btn ?? v.cmd ?? v.state ?? 'PRESS'), v.counter !== undefined ? `counter ${v.counter}` : v.hop !== undefined ? `code ${String(v.hop).slice(0, 8)}` : ''];
   const kpaRaw = r433Num(v.pressure_kPa), psiRaw = r433Num(v.pressure_PSI), barRaw = r433Num(v.pressure_bar);
   const tcRaw = r433Num(v.temperature_C), tfRaw = r433Num(v.temperature_F);
@@ -3420,7 +3426,7 @@ function r433Card(d: HeardDevice & { hz?: number }, now: number): string {
   return `<div class="mt-card dv-card k-${k.replace(/ /g, '').toLowerCase()} ${state.r433.sel === d.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-dv="${esc(d.key)}" style="--flash:${flash.toFixed(2)}">`
     + `<div class="mt-h"><span class="dv-glyph">${R433_GLYPH[k]}</span><span class="mt-k"><b>${k}</b><small>${esc(d.model)}</small>${id ? `<i>ID ${esc(id)}</i>` : ''}</span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : r433Ago(age)}</span></div>`
     + `<div class="mt-clk"><b>${esc(big)}</b><small>${esc(sub)}</small><em>${d.count}×</em></div>`
-    + `<div class="dv-foot"><span>${d.hz ? r433Mhz(d.hz) : ''}</span><span>${live ? r433Ago(age) : r433Clock(d.lastSeen)}</span></div></div>`;
+    + `<div class="dv-foot"><span>${k === 'Z-WAVE' ? `${((d.data.channels as number[] | undefined) ?? []).map(c => c.toFixed(2)).join(' · ')} MHz` : d.hz ? r433Mhz(d.hz) : ''}</span><span>${live ? r433Ago(age) : r433Clock(d.lastSeen)}</span></div></div>`;
 }
 const R433_GLYPH: Record<R433Kind, string> = {
   'CAR KEY': '<svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4.5"/><path d="M12.5 12H21v3M18 12v2.5"/></svg>',
@@ -3429,10 +3435,31 @@ const R433_GLYPH: Record<R433Kind, string> = {
   WEATHER: '<svg viewBox="0 0 24 24"><path d="M10 4v10.5a3.5 3.5 0 1 0 4 0V4a2 2 0 0 0-4 0z"/><path d="M12 9v7"/></svg>',
   SECURITY: '<svg viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6z"/></svg>',
   METER: '<svg viewBox="0 0 24 24"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l4-5"/></svg>',
+  'Z-WAVE': '<svg viewBox="0 0 24 24"><path d="M4 11l8-6.5 8 6.5M6.5 9.5V19h11V9.5"/><circle cx="12" cy="14.5" r="1.4"/><path d="M9.6 12.1a3.4 3.4 0 0 1 4.8 0"/></svg>',
   SENSOR: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></svg>',
 };
-function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): string {
-  const k = r433Kind(d);
+const ZW_RATE: Record<string, string> = { R1: 'R1 9.6 kb/s', R2: 'R2 40 kb/s', R3: 'R3 100 kb/s' };
+/** Seconds as the poll interval reads best. */
+const zwEvery = (s: number) => (s < 120 ? `${s.toFixed(1)} s` : `${(s / 60).toFixed(1)} min`);
+/** One Z-Wave network: its nodes, who talks to whom, the last frame raw, and every frame heard. */
+function zwDetailFields(d: HeardDevice & { hz?: number }): [string, string, string?][] {
+  const v = d.data, nodes = (v.nodes as ZwNode[] | undefined) ?? [], links = (v.links as ZwLink[] | undefined) ?? [];
+  const f: [string, string, string?][] = [['HOME ID', String(v.id), 'the network ID every node in it shares']];
+  for (const n of nodes) {
+    const parts = [(n.rates.length ? n.rates : [n.rate]).map(r => `${ZW_RATE[r] ?? r} · ${r === 'R3' ? '916.00' : '908.42'} MHz`).join(', '), n.snr !== null ? `SNR ${n.snr.toFixed(1)} dB` : 'only heard being polled', `last ${r433Clock(n.lastSeen)}`];
+    if (n.poll !== null) parts.push(`polled every ${zwEvery(n.poll)}`);
+    if (n.last) parts.push(n.last);
+    f.push([n.controller ? `CONTROLLER ${n.id}` : `NODE ${n.id}`, parts.join(' · '), n.controller ? 'the node that polls and commands the others' : '']);
+  }
+  for (const l of links) f.push([`${l.from} → ${l.to}`, `${l.frames} frame${l.frames === 1 ? '' : 's'} · last ${l.last}`, 'frames from one node to another']);
+  f.push(['LAST FRAME', `${v.from} → ${v.to} ${v.said} · SNR ${Number(v.snr).toFixed(1)} dB`]);
+  f.push(['RAW', String(v.raw), 'the frame as it arrived, home ID first, its check last']);
+  f.push(['MODULATION', `FSK, ${ZW_RATE[String(v.rate)] ?? v.rate}${v.rate === 'R1' ? ' Manchester' : ' NRZ'}`]);
+  f.push(['DECODER', 'Z-Wave, ITU-T G.9959, kept only when the frame check passes']);
+  f.push(['HEARD', `${d.count} frame${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
+  return f;
+}
+function r433Fields(d: HeardDevice & { hz?: number }, doubtful: boolean): [string, string, string?][] {
   const fields: [string, string, string?][] = [];
   for (const [key, v] of Object.entries(d.data)) {
     if (key === 'model') continue;
@@ -3443,6 +3470,11 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
   fields.push(['DECODER', d.family === 'key' ? 'car keys' : d.family === 'sensor' ? `protocol ${d.num} · ${d.what}` : d.family === 'remote' ? 'gate and garage remotes' : 'weather sensors']);
   fields.push(['HEARD', `${d.count} time${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
   if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);
+  return fields;
+}
+function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): string {
+  const k = r433Kind(d);
+  const fields = k === 'Z-WAVE' ? zwDetailFields(d) : r433Fields(d, doubtful);
   const hist = state.r433.hist.get(d.key) ?? [];
   const rows = hist.slice().reverse().map(h => `<div><b>${r433Clock(h.t)}</b><span>${esc(h.s)}${h.hz ? ` · ${r433Mhz(h.hz)}` : ''}</span></div>`).join('');
   return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${k} · ${esc(d.model)}</span><button class="chip" data-dvdo="close">✕</button></div>`
@@ -3451,6 +3483,7 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
 }
 /** One line per reading for the history in the detail panel. */
 function r433HistLine(d: HeardDevice): string {
+  if (d.family === 'zwave') return `${d.data.from} → ${d.data.to} ${d.data.said} · ${Number(d.data.snr).toFixed(1)} dB · ${d.data.raw}`;
   const k = r433Kind(d), [a, b] = r433Headline(d, k);
   return [a, b].filter(Boolean).join(' · ') || r433Summary(d.data);
 }
@@ -3488,7 +3521,7 @@ function drawR433(): void {
     const s = r.stats;
     const lo = (state.freq - (s?.span ?? state.rate) / 2) / 1e6, hi = (state.freq + (s?.span ?? state.rate) / 2) / 1e6;
     st.innerHTML = s
-      ? `<div>WATCHING ${lo.toFixed(2)}–${hi.toFixed(2)} MHz${s.channels ? ` · TUNED TO ${s.channels} BURST${s.channels === 1 ? '' : 'S'} NOW` : ''}</div>`
+      ? `<div>WATCHING ${lo.toFixed(2)}–${hi.toFixed(2)} MHz${s.zwave?.length ? ` · Z-WAVE ${s.zwave.map(c => c.toFixed(2)).join(', ')}` : ''}${s.channels ? ` · TUNED TO ${s.channels} BURST${s.channels === 1 ? '' : 'S'} NOW` : ''}</div>`
         + `<div class="muted">${s.followed} bursts followed · ${s.decoded} decoded · ${s.protocols} sensor protocols and every car key and remote run on each${s.badChecksum ? ` · ${s.badChecksum} near misses` : ''}</div>`
       : '<div>listening…</div>';
   }
@@ -3547,7 +3580,7 @@ function drawR433Protocols(): void {
     + 'detectors and cooking probes — anything that talks in the clear. Bursts that none of them claim are still '
     + 'listed, described by their timings.</div>'
     + r.protocols.map((p, i) => `<div class="devrow p${i % 2 ? ' alt' : ''}">`
-      + `<div class="p-name"><b>${esc(p.name)}</b><i>${p.num}</i>${p.doubtful ? '<i class="tag q" title="no checksum, so a reading from it is worth a second look">?</i>' : ''}</div>`
+      + `<div class="p-name"><b>${esc(p.name)}</b>${p.num ? `<i>${p.num}</i>` : ''}${p.doubtful ? '<i class="tag q" title="no checksum, so a reading from it is worth a second look">?</i>' : ''}</div>`
       + (p.what ? `<div class="p-what">${esc(p.what)}</div>` : '')
       + `<div class="p-meta">${esc(p.coding)}${p.bands.length ? ` · ${p.bands.map(b => b.toFixed(2)).join(', ')} MHz` : ''}${p.doubtful ? ' · no checksum, so it can misread other traffic; it runs anyway' : ''}</div>`
       + '</div>').join('');
