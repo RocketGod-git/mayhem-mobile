@@ -25,31 +25,69 @@ export function to48k(pcm: Float32Array, gain: number, prev = 0): Float32Array {
 }
 
 /**
- * The live output of Dispatch: 8 kHz vocoder audio to 48 kHz, faded in over [fadeIn] samples when a different call
- * starts, and faded out from its last sample over [fadeOut] when the call heard changes or ends, so the switch
- * between calls never clicks.
+ * 8 kHz vocoder audio to 48 kHz through a proper interpolation filter: six phases of a 120-tap windowed sinc
+ * (Blackman, cut at 3.7 kHz), so the images of the speech band at 8, 16 and 24 kHz are filtered out instead of left
+ * in, as straight-line interpolation leaves them (heard as a harsh, buzzy edge on every voice). 1.25 ms of delay.
+ */
+const UP = 6, UP_TAPS = 120, UP_PH = UP_TAPS / UP;
+const UP_H = (() => {
+  const h = new Float32Array(UP_TAPS), m = (UP_TAPS - 1) / 2, fc = 3700 / 48_000; let sum = 0;
+  for (let i = 0; i < UP_TAPS; i++) {
+    const x = i - m, sinc = x === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * x) / (Math.PI * x), t = i / (UP_TAPS - 1);
+    h[i] = sinc * (0.42 - 0.5 * Math.cos(2 * Math.PI * t) + 0.08 * Math.cos(4 * Math.PI * t)); sum += h[i];
+  }
+  for (let i = 0; i < UP_TAPS; i++) h[i] *= UP / sum;
+  return h;
+})();
+/** Make-up for the vocoders' headroom (vocoders.ts): the level the listener asked for, with room above it. */
+export const MAKEUP = 3;
+/** Linear to 0.7, then a smooth knee that never passes 1: peaks round off instead of clipping. */
+export const soft = (x: number) => { const a = x < 0 ? -x : x; if (a <= 0.7) return x; const y = 0.7 + 0.3 * Math.tanh((a - 0.7) / 0.3); return x < 0 ? -y : y; };
+export class Upsampler {
+  private readonly hist = new Float32Array(UP_PH); private pos = 0;
+  reset(): void { this.hist.fill(0); this.pos = 0; }
+  process(pcm: ArrayLike<number>, gain: number, n = pcm.length): Float32Array {
+    const out = new Float32Array(n * UP), hist = this.hist;
+    for (let i = 0; i < n; i++) {
+      hist[this.pos] = pcm[i];
+      for (let p = 0; p < UP; p++) {
+        let s = 0, k = this.pos;
+        for (let j = 0; j < UP_PH; j++) { s += UP_H[j * UP + p] * hist[k]; if (--k < 0) k = UP_PH - 1; }
+        out[i * UP + p] = soft(gain * s);
+      }
+      if (++this.pos >= UP_PH) this.pos = 0;
+    }
+    return out;
+  }
+}
+
+/**
+ * The live output of Dispatch: 8 kHz vocoder audio to 48 kHz (through [Upsampler]), faded in over [fadeIn] samples
+ * when a different call starts, and faded out over [fadeOut] when the call heard changes or ends (the filter is run
+ * out under the fade), so the switch between calls never clicks.
  */
 export class AudioFader {
-  private key = ''; private prev = 0; private ramp = 0; private last = 0;
+  private key = ''; private ramp = 0; private gain = 1; private live = false;
+  private readonly up = new Upsampler();
   constructor(readonly fadeIn = 480, readonly fadeOut = 240) {}
   get current(): string { return this.key; }
   push(pcm: Float32Array, key: string, gain: number): Float32Array[] {
     const out: Float32Array[] = [];
-    if (key !== this.key) { const t = this.tail(); if (t) out.push(t); this.key = key; this.prev = 0; this.ramp = 0; }
-    const y = to48k(pcm, gain, this.prev);
-    this.prev = pcm.length ? pcm[pcm.length - 1] : this.prev;
+    if (key !== this.key) { const t = this.tail(); if (t) out.push(t); this.key = key; this.ramp = 0; }
+    this.gain = gain; this.live = true;
+    const y = this.up.process(pcm, gain * MAKEUP);
     for (let i = 0; i < y.length && this.ramp < this.fadeIn; i++, this.ramp++) y[i] *= this.ramp / this.fadeIn;
-    this.last = y.length ? y[y.length - 1] : this.last;
     out.push(y);
     return out;
   }
-  /** The fade out from the last sample sent, or null when nothing is playing (or it already ended near zero). */
+  /** The fade out: the filter run out over [fadeOut] samples under a ramp to zero, or null when nothing is playing. */
   tail(): Float32Array | null {
-    const a = this.last;
-    this.key = ''; this.last = 0; this.prev = 0; this.ramp = 0;
-    if (Math.abs(a) < 1e-4) return null;
-    const t = new Float32Array(this.fadeOut);
-    for (let i = 0; i < t.length; i++) t[i] = a * (1 - (i + 1) / t.length);
+    const was = this.live;
+    this.key = ''; this.ramp = 0; this.live = false;
+    if (!was) { this.up.reset(); return null; }
+    const t = this.up.process(new Float32Array(Math.ceil(this.fadeOut / UP)), this.gain * MAKEUP).subarray(0, this.fadeOut);
+    for (let i = 0; i < t.length; i++) t[i] *= 1 - (i + 1) / t.length;
+    this.up.reset();
     return t;
   }
 }

@@ -8,12 +8,15 @@ import { ImbeDecoder } from '../ham/imbe.js';
 import { AmbeDecoder } from '../ham/mbe.js';
 import { rW, rX, rY, rZ } from '../ham/dmr.js';
 
+/** 9.5 dB under the HAM receiver's level: loud talkers on a trunked system no longer clip inside the vocoder. The
+ *  output stage (codec.ts) makes the level up and limits softly. */
+export const VOCODER_GAIN = 7 / 32768 / 3;
 registerCodec('imbe', () => {
-  const d = new ImbeDecoder();
+  const d = new ImbeDecoder(); d.outGain = VOCODER_GAIN;
   return { id: 'imbe', reset: () => d.reset(), decode: (bits: Uint8Array) => d.decodeVoice(bits).slice() };
 });
 registerCodec('ambe2', () => {
-  const d = new AmbeDecoder();
+  const d = new AmbeDecoder(); d.outGain = VOCODER_GAIN;
   const fr: [Uint8Array, Uint8Array, Uint8Array, Uint8Array] = [new Uint8Array(24), new Uint8Array(24), new Uint8Array(24), new Uint8Array(24)];
   return {
     id: 'ambe2', reset: () => d.reset(),

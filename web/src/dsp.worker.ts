@@ -23,7 +23,7 @@ import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { FleetProcessor, type TgPrefs } from './dsp/fleet/fleet.js';
-import { AudioFader } from './dsp/fleet/codec.js';
+import { AudioFader, MAKEUP } from './dsp/fleet/codec.js';
 import { CellProcessor } from './dsp/cell/cell.js';
 import { AtscProcessor } from './dsp/atsc/atsc.js';
 import { AtscPool, ATSC_POOL_NAME, startAtscPoolWorker } from './dsp/atsc/pool.js';
@@ -188,7 +188,7 @@ fleet.calls.onAudio = (pcm, call) => {
   if (!fleetAudio.on || processor !== fleet) return;
   for (const b of fleetFader.push(pcm, call.key, fleetAudio.gain)) toAudio(b);
   const t = Date.now();
-  if (t - fleetAudio.vuAt > 80) { fleetAudio.vuAt = t; let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i]; emit({ type: 'fleetVu', key: call.key, db: Math.round(10 * Math.log10(e / Math.max(1, pcm.length) + 1e-9)) }); }
+  if (t - fleetAudio.vuAt > 80) { fleetAudio.vuAt = t; let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i]; emit({ type: 'fleetVu', key: call.key, db: Math.round(10 * Math.log10(MAKEUP * MAKEUP * e / Math.max(1, pcm.length) + 1e-9)) }); }
 };
 fleet.calls.onEnd = call => { if (fleetFader.current === call.key) { const t = fleetFader.tail(); if (t) toAudio(t); emit({ type: 'fleetVu', key: '', db: -90 }); } };
 const orbcomm = new OrbcommDecoder(emit);

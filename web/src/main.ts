@@ -4974,7 +4974,9 @@ function dispatchFollow(s: FleetSnap, now: number): void {
   const span = s.spanHi - s.spanLo, home = s.centerHz;
   const cc = s.carriers.find(c => c.role === 'control' && c.hz > s.spanLo && c.hz < s.spanHi && (!fleetUi.lock || c.sys === fleetUi.lock.sys));
   const center = cc && Math.abs(s.follow.hz - cc.hz) < span * 0.8 ? Math.round((s.follow.hz + cc.hz) / 2) : Math.round(s.follow.hz + span * 0.2);
-  fleetUi.following = { key: s.follow.key, home, until: now + 120_000 };
+  // the radio stays with the call as long as it is on the air (its own end of transmission brings it back), with ten
+  // minutes as a last resort
+  fleetUi.following = { key: s.follow.key, home, until: now + 600_000 };
   tune(center);
 }
 function fleetDetail(s: FleetSnap, now: number): string {

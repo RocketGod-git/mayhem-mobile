@@ -43,7 +43,7 @@ export class SymbolRx {
       const re = a * pa + b * pb, im = b * pa - a * pb;
       const m2 = a * a + b * b, m = Math.sqrt(m2);
       pw += 0.0005 * (m2 - pw); envM += 0.0005 * (m - envM); envV += 0.0005 * ((m - envM) * (m - envM) - envV);
-      if (this.n >= this.buf.length) this.compact();
+      if (this.n >= this.buf.length) this.grow();
       this.buf[this.n++] = Math.atan2(im, re);
     }
     this.ph = ph; this.envMean = envM; this.envVar = envV; this.power = pw;
@@ -53,10 +53,11 @@ export class SymbolRx {
   /** Envelope variation over its mean: near 0 for constant-envelope FM, about 0.3 for linear modulation. */
   get envCv(): number { return this.envMean > 0 ? Math.sqrt(Math.max(0, this.envVar)) / this.envMean : 0; }
 
-  private compact(): void {
-    const keep = Math.min(this.n, Math.ceil(this.sps * 4));
-    this.buf.copyWithin(0, this.n - keep, this.n); this.base += this.n - keep; this.n = keep;
-  }
+  /**
+   * A chunk bigger than the buffer (a long recording fed at once): the buffer grows. It used to keep only the last
+   * four symbols, which threw away the rest of the chunk mid-frame and cost P25 voice frames whole.
+   */
+  private grow(): void { const b = new Float32Array(this.buf.length * 2); b.set(this.buf.subarray(0, this.n)); this.buf = b; }
   private at(t: number): number {
     const i = Math.floor(t), f = t - i;
     return this.buf[i] * (1 - f) + this.buf[Math.min(i + 1, this.n - 1)] * f;

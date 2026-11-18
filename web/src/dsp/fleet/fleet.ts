@@ -426,10 +426,13 @@ export class FleetProcessor implements IqProcessor {
     }
   }
   /** A DMR voice burst: keeps its call on the air and hands its three vocoder frames on. */
-  /** One IMBE frame out of a P25 voice frame. A call is decoded once its grant or its link control says what it is. */
+  /**
+   * One IMBE frame out of a P25 voice frame. Until a grant or the link control says what the call is, its frames wait
+   * in the call (the LDU1 that names it arrives after its own nine frames, which used to be thrown away).
+   */
   private p25Voice(c: Carrier, bits: Uint8Array): void {
     const call = this.calls.at(c.sys, c.hz, 0);
-    if (call && (call.granted || call.lcVerified)) this.calls.frames(call, [bits]);
+    if (call) this.calls.frames(call, [bits]);
   }
   /** Link control read out of an LDU1 (talkgroup or unit, source, encryption) labels the call on that channel. */
   private p25Lc(c: Carrier, ch: Chan): void {

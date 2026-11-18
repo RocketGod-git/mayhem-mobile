@@ -105,6 +105,9 @@ export class AmbeDecoder {
   readonly out = new Float32Array(N);
   /** Golay corrections in the last frame (C0 + C1). */
   errs = 0;
+  /** Synthesis to output scale. Loud speech reaches full scale at the default and is clipped there; a listener that
+   *  wants headroom (Dispatch) sets it lower and limits on its own. */
+  outGain = 7 / 32768;
   /** What the last frame was: '' voice, 'E' erasure, 'T' tone, 'R' repeat, 'M' muted, 'S' silence. */
   status = '';
   uvQuality = 3;
@@ -345,7 +348,7 @@ export class AmbeDecoder {
       out[n] += v / den;
     }
     prevUw.set(uw);
-    const g = 7 / 32768;
+    const g = this.outGain;
     for (let n = 0; n < N; n++) { const v = out[n] * g; out[n] = v > 1 ? 1 : v < -1 ? -1 : v; }
   }
 }

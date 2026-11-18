@@ -41,8 +41,13 @@ export interface TgPrefs { mute: string[]; hold: string; prio: string[]; lock?: 
 export const AUDIO_CAP_S = 120;
 /** Frames held while a call's security is not yet known (360 ms); past that a call nothing marked encrypted plays. */
 export const HOLD_FRAMES = 18;
+/**
+ * On P25 a clear grant or link control waits three LDUs (540 ms) for the encryption sync: the sync is read at the end
+ * of an LDU2, after its nine frames, so a call joined at its LDU1 has the sync in hand before this many frames.
+ */
+export const P25_HOLD_FRAMES = 27;
 const CALLS_KEPT = 200, AUDIO_CALLS = 30;
-const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER_MS = 15_000, AUDIO_LIVE_MS = 1_200;
+const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER_MS = 15_000, AUDIO_LIVE_MS = 3_000;
 
 const gridKey = (hz: number) => Math.round(hz / 6250) * 6250;
 /** Outside a lock: another system, or another site of the locked one (a call with no site label is kept). */
@@ -187,7 +192,9 @@ export class CallTracker {
     if (c.encrypted || c.muted || c.outside) return;
     if (c.sec === 'unknown') {
       c.held.push(...frames);
-      if (c.held.length >= HOLD_FRAMES) { c.sec = 'clear'; c.secFrom = c.hint || 'assumed'; this.release(c); }
+      // a P25 call nothing has named yet (no grant, no link control) keeps waiting, its oldest frames going first
+      if (c.proto === 'P25' && !c.hint) { if (c.held.length > 2 * P25_HOLD_FRAMES) c.held.splice(0, c.held.length - 2 * P25_HOLD_FRAMES); return; }
+      if (c.held.length >= (c.proto === 'P25' ? P25_HOLD_FRAMES : HOLD_FRAMES)) { c.sec = 'clear'; c.secFrom = c.hint || 'assumed'; this.release(c); }
       return;
     }
     this.decode(c, frames);
@@ -210,7 +217,11 @@ export class CallTracker {
       if (this.choose(c, now)) this.onAudio?.(pcm, c);
     }
   }
-  /** Whether [c] is the call heard: it is when nothing else is, and it takes over for priority or emergency. */
+  /**
+   * Whether [c] is the call heard: it is when nothing else is, and it takes over for priority or emergency. The call
+   * heard keeps the audio while it is on the air (its terminator, or 1.2 s with no voice frame, ends it) and has
+   * brought audio in the last 3 s: a lost LDU or a frame that failed its codes does not hand it to another call.
+   */
   private choose(c: Call, now: number): boolean {
     if (this.playing === c.key) return true;
     const cur = this.playing ? this.calls.find(x => x.key === this.playing) : undefined;
@@ -223,6 +234,8 @@ export class CallTracker {
   }
   private finish(c: Call, why: string, now: number): void {
     if (!c.onAir) return;
+    // frames still waiting on the call's security play out first, unless nothing on the air ever named the call
+    if (c.held.length && !c.encrypted && (c.sec === 'clear' || c.hint || c.proto === 'DMR')) { c.sec = 'clear'; c.secFrom = c.secFrom || c.hint || 'assumed'; this.release(c); }
     c.onAir = false; c.endMs = now; c.end = why; c.codecInst = null; c.held = [];
     if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); }
     this.trim();
