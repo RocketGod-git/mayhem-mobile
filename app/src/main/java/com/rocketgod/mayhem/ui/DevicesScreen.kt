@@ -110,7 +110,7 @@ fun DevicesScreen(accent: Color) {
     ) {
         Column(Modifier.fillMaxWidth().padding(top = d.dp(6f), bottom = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             // 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns
-            TileRow(Devices.BANDS.map { (label, hz) -> Tile(label, "MHz", freq == hz) }, accent, width = 84.dp) { Devices.pickFreq(Devices.BANDS[it].second) }
+            TileRow(Devices.BANDS.map { (label, hz) -> label.split(" · ").let { Tile(it[0], it.getOrElse(1) { "MHz" }, freq == hz) } }, accent, width = 84.dp) { Devices.pickFreq(Devices.BANDS[it].second) }
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 val filters = Devices.Filter.entries
                 SegBar(filters.map { f -> "${f.label} ${heard.count { Devices.shows(f, it) }}" }, filters.indexOf(filter), accent,
@@ -119,7 +119,7 @@ fun DevicesScreen(accent: Color) {
             }
             if (rep.span > 0) {
                 val lo = (freq - rep.span / 2) / 1e6; val hi = (freq + rep.span / 2) / 1e6
-                Text("WATCHING %.2f–%.2f MHz".format(lo, hi) + (if (rep.channels > 0) " · TUNED TO ${rep.channels} BURST${if (rep.channels == 1) "" else "S"} NOW" else ""),
+                Text("WATCHING %.2f–%.2f MHz".format(lo, hi) + (if (rep.zwave.isNotEmpty()) " · Z-WAVE ${rep.zwave.joinToString(", ") { "%.2f".format(java.util.Locale.US, it) }}" else "") + (if (rep.channels > 0) " · TUNED TO ${rep.channels} BURST${if (rep.channels == 1) "" else "S"} NOW" else ""),
                     color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("${rep.followed} bursts followed · ${rep.decoded} decoded · ${rep.protocols} sensor protocols and every car key and remote run on each" +
                     (if (rep.badChecksum > 0) " · ${rep.badChecksum} near misses" else ""), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2,
@@ -146,6 +146,7 @@ private fun kindColor(k: Devices.Kind): Color = when (k) {
     Devices.Kind.SECURITY -> Color(0xFFFF6B6B)
     Devices.Kind.METER -> Color(0xFF8FD14F)
     Devices.Kind.SENSOR -> Palette.accent
+    Devices.Kind.ZWAVE -> Color(0xFFFF8FC8)
 }
 
 /** Each kind's glyph (the web app's, with its circles and rounded rectangle written as arcs), in a 24-unit box. */
@@ -156,6 +157,7 @@ private val KIND_GLYPH: Map<Devices.Kind, String> = mapOf(
     Devices.Kind.WEATHER to "M10 4v10.5a3.5 3.5 0 1 0 4 0V4a2 2 0 0 0-4 0zM12 9v7",
     Devices.Kind.SECURITY to "M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6z",
     Devices.Kind.METER to "M4 16a8 8 0 1 1 16 0M12 16l4-5",
+    Devices.Kind.ZWAVE to "M4 11l8-6.5 8 6.5M6.5 9.5V19h11V9.5M10.6 14.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0M9.6 12.1a3.4 3.4 0 0 1 4.8 0",
     Devices.Kind.SENSOR to "M10 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14",
 )
 private val glyphPaths = HashMap<Devices.Kind, Path>()
@@ -194,7 +196,8 @@ private fun DeviceCards(heard: List<HeardDevice>, filter: Devices.Filter, sel: S
         val picked = heard.firstOrNull { it.key == sel }
         if (picked != null) {
             val k = Devices.kind(picked)
-            FieldDetail(detailFields(picked), picked.data["id"]?.let { fmtValue(it) } ?: picked.model, "${k.label} · ${picked.model}", kindColor(k),
+            val fields = if (k == Devices.Kind.ZWAVE) Devices.zwDetailFields(picked).map { it.first to it.second } else detailFields(picked)
+            FieldDetail(fields, picked.data["id"]?.let { fmtValue(it) } ?: picked.model, if (picked.model.uppercase() == k.label) k.label else "${k.label} · ${picked.model}", kindColor(k),
                 Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 history = picked.history.asReversed().map { r ->
                     Devices.clock(r.at) to (Devices.historyLine(picked, r.data) + if (r.hz > 0) " · ${Devices.mhz(r.hz)}" else "")
@@ -223,7 +226,7 @@ private fun DeviceCard(h: HeardDevice, now: Long, selected: Boolean, onClick: ()
             KindGlyph(k, c)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(1f))) {
                 Text(k.label, color = c, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), letterSpacing = 2.sp, maxLines = 1)
-                Text(h.model, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (h.model.uppercase() != k.label) Text(h.model, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (id.isNotEmpty()) Text("ID $id", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Box(Modifier.size(d.dp(8f) * (1 + 0.5f * flash)).background(if (live) Palette.ok else Palette.muted, CircleShape))
@@ -238,7 +241,8 @@ private fun DeviceCard(h: HeardDevice, now: Long, selected: Boolean, onClick: ()
             Text("${h.count}×", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(3f)))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(if (h.hz > 0) Devices.mhz(h.hz) else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
+            Text(if (k == Devices.Kind.ZWAVE) "${(h.data["channels"] as? List<*>).orEmpty().joinToString(" · ") { "%.2f".format(java.util.Locale.US, it as Double) }} MHz"
+                else if (h.hz > 0) Devices.mhz(h.hz) else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
             Text(if (live) Devices.ago(age) else Devices.clock(h.lastSeen), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
         }
     }
@@ -266,6 +270,7 @@ private fun ProtocolList(protocols: List<R433Protocol>, modifier: Modifier) {
             item {
                 Text("Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys " +
                     "gate and garage remotes, tire sensors, weather stations, alarms and hundreds more (listed here). " +
+                    "Z-Wave networks are read on 908.42 and 916 (the two Z-WAVE bands, or any span that holds them): each card is one network, its controller and nodes. " +
                     "A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio " +
                     "here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute " +
                     "and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.",
@@ -275,7 +280,7 @@ private fun ProtocolList(protocols: List<R433Protocol>, modifier: Modifier) {
                 Row(Modifier.fillMaxWidth()
                     .background(if (i % 2 == 0) Color.Transparent else Palette.panel.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
                     .padding(vertical = d.dp(3f), horizontal = d.dp(4f))) {
-                    Text("${p.num}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.width(d.dp(34f)))
+                    Text(if (p.num != 0) "${p.num}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10.5f), modifier = Modifier.width(d.dp(34f)))
                     Column(Modifier.weight(1f)) {
                         Text(p.name, color = if (p.doubtful) Palette.muted else Palette.ink, fontFamily = Mono, fontSize = d.sp(11f))
                         Text(buildString {

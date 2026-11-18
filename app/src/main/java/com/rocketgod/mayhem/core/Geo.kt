@@ -46,6 +46,14 @@ object Geo {
         if (la != null && lo != null && la.isFinite() && lo.isFinite()) last = la to lo
     }
     fun lastKnownPos(): Pair<Double, Double>? = last
+    /** Rough middles of the US time zones, for a device that has never reported a position. */
+    private val ZONE_MIDS = mapOf(
+        "America/Los_Angeles" to (36.0 to -120.0), "America/Phoenix" to (33.5 to -112.0), "America/Denver" to (39.7 to -105.0), "America/Boise" to (43.6 to -116.2),
+        "America/Chicago" to (38.0 to -92.0), "America/New_York" to (40.0 to -77.0), "America/Detroit" to (42.5 to -84.0), "America/Indiana/Indianapolis" to (39.8 to -86.2),
+        "America/Anchorage" to (61.2 to -149.9), "Pacific/Honolulu" to (21.3 to -157.9), "America/Puerto_Rico" to (18.2 to -66.5),
+    )
+    /** The region this device's time zone points at, or null outside the table. */
+    fun zoneGuess(): Pair<Double, Double>? = runCatching { ZONE_MIDS[java.util.TimeZone.getDefault().id] }.getOrNull()
     fun saveLastPos(p: Pair<Double, Double>) {
         last = p
         prefs?.edit()?.putString("lat", p.first.toString())?.putString("lon", p.second.toString())?.apply()

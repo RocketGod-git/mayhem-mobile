@@ -61,6 +61,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                     path.l(0.05f + 0.9f * i / 40f, 0.5f + 0.38f * env * sin(i * 0.9).toFloat())
                 }
             }
+            MayhemApp.HD -> {
+                // a broadcast mast with the digital sidebands as two blocks either side of its carrier
+                path.m(0.5f, 0.3f); path.l(0.36f, 0.92f); path.m(0.5f, 0.3f); path.l(0.64f, 0.92f); path.m(0.41f, 0.7f); path.l(0.59f, 0.7f)
+                path.m(0.08f, 0.22f); path.l(0.28f, 0.22f); path.l(0.28f, 0.44f); path.l(0.08f, 0.44f); path.close()
+                path.m(0.72f, 0.22f); path.l(0.92f, 0.22f); path.l(0.92f, 0.44f); path.l(0.72f, 0.44f); path.close()
+                var a = 200.0; var first = true
+                while (a <= 340.0) { val x = 0.5f + 0.12f * cos(Math.toRadians(a)).toFloat(); val y = 0.3f + 0.12f * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 14.0 }
+                circles.add(Triple(0.5f, 0.3f, 0.04f))
+            }
             MayhemApp.ADSB -> {
                 path.m(0.5f, 0.06f); path.l(0.5f, 0.92f)
                 path.m(0.06f, 0.52f); path.l(0.5f, 0.38f); path.l(0.94f, 0.52f)
@@ -115,6 +124,26 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 circles.add(Triple(0.36f, 0.56f, 0.05f)); circles.add(Triple(0.64f, 0.56f, 0.05f))
                 path.m(0.38f, 0.7f); path.l(0.16f, 0.94f); path.m(0.62f, 0.7f); path.l(0.84f, 0.94f)
                 path.m(0.3f, 0.82f); path.l(0.7f, 0.82f)
+            }
+            MayhemApp.FLEET -> {
+                // a site on its mast with the trunk's links reaching out to two units
+                path.m(0.5f, 0.4f); path.l(0.38f, 0.92f); path.m(0.5f, 0.4f); path.l(0.62f, 0.92f); path.m(0.42f, 0.74f); path.l(0.58f, 0.74f)
+                for ((r, a0, a1, st) in listOf(listOf(0.2, 200.0, 340.0, 14.0), listOf(0.34, 205.0, 335.0, 13.0))) {
+                    var a = a0; var first = true
+                    while (a <= a1) { val x = 0.5f + r.toFloat() * cos(Math.toRadians(a)).toFloat(); val y = 0.32f + r.toFloat() * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += st }
+                }
+                path.m(0.44f, 0.52f); path.l(0.2f, 0.66f); path.m(0.56f, 0.52f); path.l(0.8f, 0.66f)
+                circles.add(Triple(0.5f, 0.32f, 0.06f)); circles.add(Triple(0.15f, 0.72f, 0.06f)); circles.add(Triple(0.85f, 0.72f, 0.06f))
+            }
+            MayhemApp.CELL -> {
+                // a lattice mast with its antennas, waves going out to both sides
+                path.m(0.5f, 0.3f); path.l(0.34f, 0.92f); path.m(0.5f, 0.3f); path.l(0.66f, 0.92f)
+                path.m(0.41f, 0.66f); path.l(0.59f, 0.66f); path.m(0.37f, 0.8f); path.l(0.63f, 0.8f); path.m(0.45f, 0.48f); path.l(0.55f, 0.48f)
+                for ((r, a0, a1, st) in listOf(listOf(0.14, 140.0, 220.0, 16.0), listOf(0.26, 145.0, 215.0, 14.0), listOf(0.14, -40.0, 40.0, 16.0), listOf(0.26, -35.0, 35.0, 14.0))) {
+                    var a = a0; var first = true
+                    while (a <= a1 + 1e-6) { val x = 0.5f + r.toFloat() * cos(Math.toRadians(a)).toFloat(); val y = 0.26f + r.toFloat() * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += st }
+                }
+                circles.add(Triple(0.5f, 0.26f, 0.04f))
             }
             MayhemApp.UAT -> {
                 // a small plane over a cloud

@@ -56,6 +56,9 @@ class RadarCell(val lat: Double, val lon: Double, val dLat: Double, val dLon: Do
 /** A hazard drawn on the map (a G-AIRMET): an area or a line in [color], tappable by [id]. */
 data class GeoShape(val id: String, val pts: List<Pair<Double, Double>>, val line: Boolean, val color: Int, val dashed: Boolean = false, val sel: Boolean = false)
 
+/** A picture laid on the map between its corners (traffic tiles, a radar image), under everything else. */
+class GeoImage(val id: String, val bitmap: android.graphics.Bitmap, val north: Double, val south: Double, val west: Double, val east: Double, val opacity: Float = 0.85f)
+
 /** The map's extra layers: lines home to each contact, a satellite's ground track and radio footprint. */
 data class GeoLayers(
     val lines: List<Pair<Pair<Double, Double>, Pair<Double, Double>>> = emptyList(),
@@ -69,6 +72,8 @@ data class GeoLayers(
     val radarColors: IntArray = IntArray(0),
     /** Hazard areas and lines over the radar, under the markers. */
     val shapes: List<GeoShape> = emptyList(),
+    /** Pictures on their corners, drawn first, in order. */
+    val images: List<GeoImage> = emptyList(),
 )
 
 /** A line through [pts]: dashed for a prediction, faint for one that is not the selected item's. */
@@ -80,10 +85,12 @@ const val REGION_ZOOM = 8.0
 /** Where a map opens before anything is plotted. [standIn]: there is no position at all, so it is the middle of the US. */
 data class MapStart(val lat: Double, val lon: Double, val zoom: Double, val standIn: Boolean)
 
-/** Where a map opens: your position, else the last one known, else the middle of the US; always at regional zoom. */
+/** Where a map opens: your position, else the last one known, else your time zone's region, else the middle of the US. */
 fun mapStart(home: Pair<Double, Double>?): MapStart {
     val p = home ?: com.rocketgod.mayhem.core.Geo.lastKnownPos()
-    return if (p != null) MapStart(p.first, p.second, REGION_ZOOM, false) else MapStart(39.5, -98.35, REGION_ZOOM - 3, true)
+    if (p != null) return MapStart(p.first, p.second, REGION_ZOOM, false)
+    val z = com.rocketgod.mayhem.core.Geo.zoneGuess()
+    return if (z != null) MapStart(z.first, z.second, REGION_ZOOM - 2, true) else MapStart(39.5, -98.35, REGION_ZOOM - 3, true)
 }
 
 /** The second line of a map's empty overlay: what will show up, and where the map is centered. */
@@ -195,6 +202,13 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         val d = mv.resources.displayMetrics.density
         label.textSize = 10f * d; halo.textSize = 10f * d
         val rgb = accentInt and 0x00FFFFFF
+        for (im in layers.images) {
+            val (x0, y0) = xy(mv, im.north, im.west); val (x1, y1) = xy(mv, im.south, im.east)
+            if (x1 - x0 < 1f || y1 - y0 < 1f) continue
+            smooth.alpha = (im.opacity * 255).toInt().coerceIn(0, 255)
+            c.drawBitmap(im.bitmap, null, android.graphics.RectF(x0, y0, x1, y1), smooth)
+            smooth.alpha = 255
+        }
         if (layers.radar.isNotEmpty()) drawRadar(c, mv)
         for (sh in layers.shapes) {
             if (sh.pts.size < 2) continue
@@ -358,12 +372,21 @@ fun GeoMapView(
     autoFollow: Boolean = true,
     /** A tap on open map (not on a marker or a hazard area). */
     onMapTap: ((Double, Double) -> Unit)? = null,
+    /** Moving markers: fit when the set of items changes, not on every move (a refit every update keeps the map panning). */
+    steady: Boolean = false,
+    /** Points a fit frames besides the items (an alert area and your position with it). */
+    fitPts: List<Pair<Double, Double>> = emptyList(),
+    /** Fit the pins closely: street level on one, up to zoom 17 on several. */
+    fitPins: Boolean = false,
+    /** The map was dragged by hand; its new center. */
+    onDragEnd: ((Double, Double) -> Unit)? = null,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
     var mapRef by remember { mutableStateOf<MapView?>(null) }
     var overlayRef by remember { mutableStateOf<ItemsOverlay?>(null) }
     var following by remember { mutableStateOf(autoFollow) }
+    val dragEnd = androidx.compose.runtime.rememberUpdatedState(onDragEnd)
     // the first fix centers the map on your area once (it usually lands after the map opened on the world)
     var homed by remember { mutableStateOf(false) }
 
@@ -371,10 +394,11 @@ fun GeoMapView(
         val f = follow?.let { id -> items.firstOrNull { it.id == id } }
         if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
         // home only counts when something is drawn from it
-        val pts = items.map { it.lat to it.lon } + layers.track +
+        val pts = items.map { it.lat to it.lon } + layers.track + fitPts +
+            (if (items.isEmpty()) layers.images.flatMap { listOf(it.north to it.west, it.south to it.east) } else emptyList()) +
             (if (withHome || layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
         // nothing plotted yet: a map with a start point stays at regional zoom, recentered once when a fix comes in
-        if (start != null && items.isEmpty() && layers.track.isEmpty()) {
+        if (start != null && items.isEmpty() && layers.track.isEmpty() && layers.images.isEmpty() && fitPts.isEmpty()) {
             if (home != null && !homed) { homed = true; mv.controller.animateTo(GeoPoint(home.first, home.second), REGION_ZOOM, null) }
             return
         }
@@ -387,17 +411,21 @@ fun GeoMapView(
         // one point (or several on the same spot): glide there and zoom in as part of the glide (a setZoom after
         // animateTo stops the glide, which left the map zoomed in on its starting point, far from the pin)
         if (pts.size == 1 || (n - s < 1e-6 && e - w < 1e-6)) {
-            mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), if (fitHome) 15.0 else maxOf(mv.zoomLevelDouble, 11.0), null)
+            mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), if (fitHome || fitPins) 15.0 else maxOf(mv.zoomLevelDouble, 11.0), null)
             return
         }
-        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitHome) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }
-        val maxZoom = if (fitHome) 17.0 else 11.0
+        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitHome || fitPins) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }
+        val maxZoom = if (fitHome || fitPins) 17.0 else 11.0
         if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
     }
 
-    LaunchedEffect(mapRef, items, layers, selected, home, following) {
+    LaunchedEffect(mapRef, items, layers, selected, home) {
         val mv = mapRef ?: return@LaunchedEffect
         overlayRef?.let { it.items = items; it.layers = layers; it.selected = selected; it.home = home; mv.invalidate() }
+    }
+    val fitKey: Any = if (steady) items.map { it.id }.sorted() + fitPts.size else listOf(items, layers, selected, home, fitPts)
+    LaunchedEffect(mapRef, fitKey, following) {
+        val mv = mapRef ?: return@LaunchedEffect
         if (!following) return@LaunchedEffect
         var waits = 0
         while ((mv.width == 0 || mv.height == 0) && waits++ < 40) delay(50)
@@ -436,13 +464,16 @@ fun GeoMapView(
                     }
                     // a drag (past the touch slop, so a tap on a marker does not count) hands the view to the user
                     val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop.toFloat()
-                    var downX = 0f; var downY = 0f
+                    var downX = 0f; var downY = 0f; var dragged = false
                     @Suppress("ClickableViewAccessibility")
                     setOnTouchListener { v, ev ->
                         when (ev.actionMasked) {
-                            android.view.MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; v.parent?.requestDisallowInterceptTouchEvent(true) }
-                            android.view.MotionEvent.ACTION_MOVE -> if (following && (abs(ev.x - downX) > slop || abs(ev.y - downY) > slop)) following = false
-                            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
+                            android.view.MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; dragged = false; v.parent?.requestDisallowInterceptTouchEvent(true) }
+                            android.view.MotionEvent.ACTION_MOVE -> if (abs(ev.x - downX) > slop || abs(ev.y - downY) > slop) { dragged = true; if (following) following = false }
+                            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                                v.parent?.requestDisallowInterceptTouchEvent(false)
+                                if (dragged) { dragged = false; val at = mapCenter; dragEnd.value?.invoke(at.latitude, at.longitude) }
+                            }
                         }
                         false
                     }

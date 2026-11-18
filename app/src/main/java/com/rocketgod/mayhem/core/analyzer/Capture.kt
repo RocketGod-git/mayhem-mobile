@@ -10,6 +10,8 @@ import com.rocketgod.mayhem.core.r433.MAX_CHANNELS
 import com.rocketgod.mayhem.core.r433.PulseDetect
 import com.rocketgod.mayhem.core.r433.R433
 import com.rocketgod.mayhem.core.r433.fmtValue
+import com.rocketgod.mayhem.core.r433.zwDescribe
+import com.rocketgod.mayhem.core.r433.zwMatches
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.log10
@@ -25,7 +27,7 @@ import kotlin.math.min
  * Each becomes one captured signal: when, where, how long and how strong.
  *
  * The same burst is also offered to every Devices decoder (rtl_433, ProtoPirate's car keys, Mayhem's remotes and
- * sensors), so a capture that is a known device says so. Twin of web/src/dsp/analyzer/capture.ts and Capture.swift.
+ * sensors, Z-Wave), so a capture that is a known device says so. Twin of web/src/dsp/analyzer/capture.ts and Capture.swift.
  */
 
 class Burst(
@@ -226,6 +228,7 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
         s.keys.slicer.flush()
         if (paused || s.n < 16) return
         val n = s.n
+        for (f in zwMatches(s.iq, n, s.rate)) s.matches.add("Z-Wave: ${f.home} ${f.src}→${f.dst} ${zwDescribe(f).text}")
         val noise = noiseOf(s.env, n, s.rate)
         val on = carrierOf(s.env, n, noise)
         var a = 0; var b = n; var peak = 0

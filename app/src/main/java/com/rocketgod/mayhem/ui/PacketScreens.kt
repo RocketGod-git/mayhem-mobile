@@ -128,7 +128,11 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         /** The lamp, in place of LISTENING / n DECODED. */
                         lamp: (@Composable () -> Unit)? = null,
                         /** Everything under [controls], in place of the log header and the log (BLE and ACARS: their cards or the log). */
-                        body: (@Composable ColumnScope.() -> Unit)? = null) {
+                        body: (@Composable ColumnScope.() -> Unit)? = null,
+                        /** On a wide screen, the big pane holds this (a map) over a short waterfall strip. */
+                        widePane: (@Composable (Modifier) -> Unit)? = null,
+                        /** A tap on the waterfall or a tune on the card goes here instead of the engine (HD Radio). */
+                        retune: ((Long) -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -137,22 +141,26 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
     var held by remember { mutableStateOf<List<String>?>(null) }
     var full by remember { mutableStateOf(false) }
     val onPreview: (Float?) -> Unit = { f -> Tuning.previewHz = f?.let { spanHz(freq, SdrEngine.currentRate(), it) } }
-    val onTune: (Float) -> Unit = { frac -> SdrEngine.tune(spanHz(freq, SdrEngine.currentRate(), frac) + shift) }
+    /** A frequency on the air: [retune] takes it as it is, the engine with the radio's shift. */
+    val tuneTo: (Long) -> Unit = retune ?: { SdrEngine.tune(it + shift) }
+    val onTune: (Float) -> Unit = { frac -> tuneTo(spanHz(freq, SdrEngine.currentRate(), frac)) }
     val rate = SdrEngine.currentRate()
     val channel = if (shift != 0L && rate > 0) { val c = 0.5f - shift.toFloat() / rate; val half = 6_000f / rate; c - half to c + half } else null
     AdaptivePane(
         // the card keeps its height; the waterfall and the log split the rest evenly
-        share = true, noVisual = !waterfall,
+        share = true, noVisual = !waterfall && !(d.wide && widePane != null),
         face = {
             FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = (burstDb ?: level) / 40f,
                 left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
                 right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
-                onTune = if (tunable) ({ f: Long -> SdrEngine.tune(f + shift) }) else null,
+                onTune = if (tunable) ({ f: Long -> tuneTo(f) }) else null,
                 lamp = lamp ?: { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
         },
         visual = { m ->
-            Column(m) {
-                Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
+            Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                val pane = if (d.wide) widePane else null
+                if (pane != null) pane(Modifier.fillMaxWidth().weight(1f))
+                if (pane == null || waterfall) Box((if (pane != null) Modifier.fillMaxWidth().height(d.dp(110f)) else Modifier.fillMaxWidth().weight(1f)).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                         rows = if (d.wide) 160 else 90, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                         onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)

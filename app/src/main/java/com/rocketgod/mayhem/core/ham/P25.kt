@@ -118,7 +118,7 @@ private val BCH_GEN: Long = run {
 }
 
 /** The 64 bits a network code and frame type must produce: 16 data, 47 parity, one overall parity. */
-private fun nidWord(nac: Int, duid: Int): Long {
+internal fun nidWord(nac: Int, duid: Int): Long {
     val data = ((nac shl 4) or duid).toLong() and 0xFFFF
     var reg = data shl 47
     for (b in 62 downTo 47) if (((reg shr b) and 1L) != 0L) reg = reg xor (BCH_GEN shl (b - 47))

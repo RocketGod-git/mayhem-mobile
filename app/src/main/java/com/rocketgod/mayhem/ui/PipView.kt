@@ -95,6 +95,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
         val heard by Devices.proc.devices.collectAsState()
         heard.maxByOrNull { it.lastSeen }?.let { "${it.model} · ${Devices.summary(it.data)}" } ?: "${heard.size} devices"
     }
+    MayhemApp.HD -> lastLine(com.rocketgod.mayhem.core.hd.HdApp.log)
     MayhemApp.PAGER -> lastLine(Apps.pagerLog)
     MayhemApp.ERT -> lastLine(Apps.metersLog)
     MayhemApp.LORA -> lastLine(Apps.loraLog)
@@ -102,6 +103,8 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     MayhemApp.VDL2 -> lastLine(Apps.vdl2Log)
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)
     MayhemApp.TRAINS -> lastLine(Apps.trainsLog)
+    MayhemApp.FLEET -> lastLine(Apps.fleetLog)
+    MayhemApp.CELL -> lastLine(Apps.cellLog)
     MayhemApp.SONDES -> lastLine(Apps.sondesLog)
     MayhemApp.UAT -> lastLine(Apps.uatLog)
     MayhemApp.ANALYZER -> {

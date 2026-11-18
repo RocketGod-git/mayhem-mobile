@@ -19,7 +19,7 @@ data class HeardReading(val at: Long, val data: R433Data, val offsetHz: Int, val
 data class HeardDevice(
     val key: String, val model: String, val num: Int, val what: String, val count: Int,
     val firstSeen: Long, val lastSeen: Long, val data: R433Data, val fsk: Boolean,
-    /** What kind of thing it is: "sensor" (rtl_433), "key" (a car key), "remote" (gate or garage) or "weather" (Mayhem's decoders). */
+    /** What kind of thing it is: "sensor" (rtl_433), "key" (a car key), "remote" (gate or garage), "weather" (Mayhem's decoders) or "zwave". */
     val family: String = "sensor",
     /** Where it was heard, as an offset from the radio's center in hertz. */
     val offsetHz: Int = 0,
@@ -36,6 +36,8 @@ data class R433Report(
     val trigger: Int = 0, val span: Int = 0,
     /** Bursts being followed right now, and how many have been since the start. */
     val channels: Int = 0, val followed: Int = 0,
+    /** The Z-Wave channels inside the span, MHz. */
+    val zwave: List<Double> = emptyList(),
 )
 
 /** One line about a protocol, for the list of everything the receiver can recognize. */
@@ -45,7 +47,8 @@ private val CODING = mapOf(3 to "Manchester", 4 to "level per bit", 5 to "pulse 
     9 to "differential Manchester", 10 to "pulse width, Oregon v1", 11 to "level per bit, clocked", 12 to "NRZ-S", 13 to "return to zero, inverted",
     16 to "frequency shift, level per bit", 17 to "frequency shift, pulse width", 18 to "frequency shift, Manchester")
 
-fun protocolList(): List<R433Protocol> = R433Registry.all.map { d ->
+fun protocolList(): List<R433Protocol> = listOf(R433Protocol(0, "Z-Wave", "home automation network (ITU-T G.9959): switches, locks, sensors and their controller",
+    "frequency shift, R1 9.6k Manchester, R2 40k and R3 100k NRZ", listOf(908.42, 916.0), false)) + R433Registry.all.map { d ->
     R433Protocol(d.num, d.name, d.what ?: "", CODING[d.modulation] ?: d.modulation.toString(), d.bands.map { it / 1e6 }, d.disabled)
 }.sortedBy { it.num }
 
@@ -104,6 +107,10 @@ class R433Processor : IqProcessor {
     @Volatile private var keysDecoded = 0
     private val unknownSeen = HashMap<String, Long>()
     private val heard = LinkedHashMap<String, HeardDevice>()
+    /** Z-Wave on the DSP thread; its networks on the worker. */
+    private val zw = ZWaveRx { f -> val c = zwCenter; worker.execute { reportZw(f, c) } }
+    private var zwCenter = 0L
+    val zwNets = ZWaveNets()
     private val _devices = MutableStateFlow<List<HeardDevice>>(emptyList())
     val devices: StateFlow<List<HeardDevice>> = _devices.asStateFlow()
     private val _report = MutableStateFlow(R433Report())
@@ -140,7 +147,7 @@ class R433Processor : IqProcessor {
     /** Every burst in the span is tuned to on its own, so the span watched is all of it. */
     fun span(): Int = rate
 
-    fun clear() { worker.execute { resetBluelineId(); resetSparsnasSensorId(); heard.clear(); lastPayload.clear(); unconfirmed.clear(); unknownSeen.clear(); _devices.value = emptyList() } }
+    fun clear() { worker.execute { resetBluelineId(); resetSparsnasSensorId(); heard.clear(); lastPayload.clear(); unconfirmed.clear(); unknownSeen.clear(); zwNets.clear(); _devices.value = emptyList() } }
 
     /** Waits until the worker has decoded and reported everything sent to it so far (for the tests). */
     fun settle() { worker.submit {}.get() }
@@ -148,14 +155,17 @@ class R433Processor : IqProcessor {
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
         if (rate != this.rate) reset(rate)
         channels.process(iq, len)
+        zwCenter = centerOf()
+        zw.configure(rate, zwCenter)
+        zw.process(iq, len)
         airMs += (len shr 1).toDouble() / rate * 1000
         val now = System.currentTimeMillis()
         if (now - lastStats >= 1000) {
             lastStats = now
             val (noise, trigger) = slots[0].pd.levels()
             val s = radio.stats
-            _report.value = R433Report(s.bursts, s.ook, s.fsk, s.decoded + keysDecoded, s.badChecksum, HashMap(s.near), heard.size, radio.devices.size, noise, trigger, span(),
-                channels.active(), channels.opened)
+            _report.value = R433Report(s.bursts, s.ook, s.fsk, s.decoded + keysDecoded + zw.frames, s.badChecksum, HashMap(s.near), heard.size, radio.devices.size, noise, trigger, span(),
+                channels.active(), channels.opened, zw.listening())
         }
     }
 
@@ -251,6 +261,22 @@ class R433Processor : IqProcessor {
         val off = hz.roundToInt()
         val what = when (r.family) { "key" -> "car key"; "remote" -> "gate or garage remote"; else -> "weather sensor" }
         put(HeardDevice(key, r.model, 0, what, (prev?.count ?: 0) + 1, prev?.firstSeen ?: now, now, data, false, r.family, off, centerOf() + off), prev)
+    }
+
+    /** A Z-Wave frame whose check passed: its network's card, with every node and link, is sent again. */
+    private fun reportZw(h: ZwHeard, center: Long) {
+        val now = System.currentTimeMillis()
+        val f = h.f
+        val net = zwNets.add(h, now)
+        val m = zwDescribe(f)
+        val key = "Z-Wave/${f.home}"
+        val prev = heard[key]
+        val data = R433Data()
+        data["model"] = "Z-Wave"; data["id"] = f.home; data["nodes"] = net.nodes; data["links"] = net.links; data["frames"] = net.frames
+        data["channels"] = net.channels; data["from"] = f.src; data["to"] = f.dst; data["said"] = m.text; data["rate"] = f.rate
+        data["snr"] = h.snr; data["raw"] = zwHex(f.bytes)
+        val off = Math.round(h.mhz * 1e6 - center).toInt()
+        put(HeardDevice(key, "Z-Wave", 0, "Z-Wave network", (prev?.count ?: 0) + 1, prev?.firstSeen ?: now, now, data, true, "zwave", off, center + off), prev)
     }
 
     /** Unidentified bursts stay out of the list (mostly fragments and interference) and go to the log, once a second per shape. */
