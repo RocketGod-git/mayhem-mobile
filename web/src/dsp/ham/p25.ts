@@ -23,6 +23,7 @@ export interface P25Status {
   frame: string;                     // human name of the last frame type
   talkgroup: number; source: number; // from link control, 0 when unknown
   encrypted: boolean;
+  emergency: boolean;                // the link control's service options
   lcf: number;                       // link control format
   frames: number; errs: number;      // frames seen, and how many failed their checks
   since: number;                     // samples since the last frame
@@ -151,13 +152,27 @@ function hamming106(word: number): number {
   return -1;
 }
 
+/** An encryption sync: algorithm ID (0x80 is clear), key ID and the message indicator in hex. */
+export interface P25EncSync { algId: number; keyId: number; mi: string }
+/** The encryption sync out of the first 16 corrected hex symbols (96 bits): MI 72, ALGID 8, KID 16. */
+function syncOf(hex: Uint8Array, from: number): P25EncSync {
+  const bit = (i: number) => (hex[from + ((i / 6) | 0)] >> (5 - i % 6)) & 1;
+  const f = (a: number, n: number) => { let v = 0; for (let i = 0; i < n; i++) v = v * 2 + bit(a + i); return v; };
+  let mi = ''; for (let i = 0; i < 9; i++) mi += f(8 * i, 8).toString(16).padStart(2, '0');
+  return { mi, algId: f(72, 8), keyId: f(80, 16) };
+}
+
 export class P25Decoder {
   onLog: (line: string) => void = () => undefined;
   /** Raw 144-bit voice frames as they come out of an LDU, for the vocoder. */
   onVoice: (bits: Uint8Array) => void = () => undefined;
+  /** The encryption sync of an LDU2 (algorithm, key and message indicator), once it passes its checks. */
+  onEs: (es: P25EncSync) => void = () => undefined;
+  /** The header of a call (HDU): the same encryption sync, the manufacturer and the talkgroup, sent before the voice. */
+  onHdu: (h: P25EncSync & { mfid: number; tg: number }) => void = () => undefined;
 
   private nac = -1; private duid = -1;
-  private frameName = ''; private tg = 0; private src = 0; private enc = false; private lcf = 0;
+  private frameName = ''; private tg = 0; private src = 0; private enc = false; private emerg = false; private lcf = 0;
   private frames = 0; private errs = 0; private lastAt = -1e9;
   private locked = false;
 
@@ -171,7 +186,7 @@ export class P25Decoder {
   private state: 'idle' | 'skip' | 'nid' | 'body' = 'idle';
 
   reset(): void {
-    this.nac = -1; this.duid = -1; this.frameName = ''; this.tg = 0; this.src = 0; this.enc = false;
+    this.nac = -1; this.duid = -1; this.frameName = ''; this.tg = 0; this.src = 0; this.enc = false; this.emerg = false;
     this.lcf = 0; this.frames = 0; this.errs = 0; this.nacVotes.clear();
     this.idle();
   }
@@ -194,7 +209,7 @@ export class P25Decoder {
   status(now: number): P25Status {
     return {
       locked: this.locked, nac: this.nac, duid: this.duid, frame: this.frameName,
-      talkgroup: this.tg, source: this.src, encrypted: this.enc, lcf: this.lcf,
+      talkgroup: this.tg, source: this.src, encrypted: this.enc, emergency: this.emerg, lcf: this.lcf,
       frames: this.frames, errs: this.errs, since: now - this.lastAt,
     };
   }
@@ -272,6 +287,7 @@ export class P25Decoder {
     this.lastAt = now;
     this.expectNext();
     if (this.duid === 0x5 || this.duid === 0xa) this.onLdu();
+    else if (this.duid === 0x0) this.decodeHdu();
     else if (this.duid === 0xf) this.onTdulc();
     this.report();
   }
@@ -293,7 +309,47 @@ export class P25Decoder {
     at += 16;                                           // low speed data
     takeVoice();
     if (this.duid === 0x5) this.decodeLc(lc);
-    // LDU2's 240 bits are the encryption sync; whether the call is actually keyed comes from link control
+    else this.decodeEs(lc);
+  }
+
+  /** 24 hex words, each a Hamming (10,6) code word of five dibits; [bad] counts the words past correcting. */
+  private hexWords(d: ArrayLike<number>): { hex: Uint8Array; bad: number } {
+    const hex = new Uint8Array(24);
+    let bad = 0;
+    for (let w = 0; w < 24; w++) {
+      let word = 0;
+      for (let i = 0; i < 5; i++) word = word * 4 + d[w * 5 + i];
+      const h = hamming106(word);
+      if (h < 0) { bad++; hex[w] = 0; } else hex[w] = h;
+    }
+    return { hex, bad };
+  }
+
+  /**
+   * LDU2's 240 bits are the encryption sync: the same Hamming (10,6) hex words as link control, but a shortened
+   * Reed-Solomon (24,16,9) code over GF(64), whose 16 symbols are 96 bits: the 72-bit message indicator, the 8-bit
+   * algorithm ID and the 16-bit key ID (TIA-102.BAAA).
+   */
+  private decodeEs(d: number[]): void {
+    if (d.length < 120) return;
+    const { hex, bad } = this.hexWords(d);
+    if (bad > 4 || rsDecode(hex, 8) < 0) return;
+    this.onEs(syncOf(hex, 0));
+  }
+
+  /**
+   * The header: 36 hex symbols, each sent as a Golay (18,6) code word (the six data bits first), are a shortened
+   * Reed-Solomon (36,20,17) code word over GF(64); its 20 symbols are 120 bits: message indicator (72), manufacturer
+   * ID (8), algorithm ID (8), key ID (16) and talkgroup (16). The Reed-Solomon code alone corrects up to eight of the
+   * symbols, so a damaged Golay word costs one symbol.
+   */
+  private decodeHdu(): void {
+    const at = 32, hex = new Uint8Array(36);
+    for (let w = 0; w < 36; w++) { let v = 0; for (let i = 0; i < 3; i++) v = v * 4 + this.info[at + 9 * w + i]; hex[w] = v; }
+    if (rsDecode(hex, 16) < 0) return;
+    const es = syncOf(hex, 0), bit = (i: number) => (hex[(i / 6) | 0] >> (5 - i % 6)) & 1;
+    const f = (from: number, n: number) => { let v = 0; for (let i = 0; i < n; i++) v = v * 2 + bit(from + i); return v; };
+    this.onHdu({ mi: es.mi, mfid: f(72, 8), algId: f(80, 8), keyId: f(88, 16), tg: f(104, 16) });
   }
 
   /**
@@ -309,14 +365,7 @@ export class P25Decoder {
    */
   private decodeLc(lcDibits: number[]): void {
     if (lcDibits.length < 120) return;
-    const hex = new Uint8Array(24);
-    let bad = 0;
-    for (let w = 0; w < 24; w++) {
-      let word = 0;
-      for (let i = 0; i < 5; i++) { const d = lcDibits[w * 5 + i]; word = word * 4 + d; }
-      const h = hamming106(word);
-      if (h < 0) { bad++; hex[w] = 0; } else hex[w] = h;
-    }
+    const { hex, bad } = this.hexWords(lcDibits);
     if (rsDecode(hex, 12) < 0 || bad > 6) { this.errs++; return; }
     // The surviving 12 symbols are one 72-bit word, six bits per symbol, most significant first.
     const bit = (i: number) => (hex[(i / 6) | 0] >> (5 - i % 6)) & 1;
@@ -325,6 +374,7 @@ export class P25Decoder {
     const lcf = f(2, 6), svc = f(16, 8);
     this.lcf = lcf;
     this.enc = bit(0) === 1 || (svc & 0x40) !== 0;
+    this.emerg = (svc & 0x80) !== 0;
     if (lcf === 0x00) {                                 // group call: talkgroup then the source radio
       this.tg = f(32, 16); this.src = f(48, 24);
     } else if (lcf === 0x03) {                          // call between two radios: destination then source

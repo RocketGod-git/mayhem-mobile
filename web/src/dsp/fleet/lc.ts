@@ -62,3 +62,33 @@ export function voiceFrames(d: ArrayLike<number>): [Uint8Array, Uint8Array, Uint
   for (let i = 90; i < 144; i++) { bits[p++] = d[i] >> 1; bits[p++] = d[i] & 1; }
   return [bits.slice(0, 72), bits.slice(72, 144), bits.slice(144, 216)];
 }
+
+// ------------------------------------------------------------------------------------------------ embedded signaling
+/**
+ * The two generators a (16,7) code shortened from the length-17 quadratic residue code can have: (x + 1) times one of
+ * the two degree-8 factors of x^17 + 1 over GF(2). The EMB is accepted as a code word of either.
+ */
+export const QR167_GENS = [0x34b, 0x279];
+/** The nine check bits of seven EMB data bits under generator [g] (systematic, data first). */
+export function qr167Parity(data7: number, g: number): number {
+  let r = (data7 & 0x7f) << 9;
+  for (let b = 15; b >= 9; b--) if (r & (1 << b)) r ^= g << (b - 9);
+  return r & 0x1ff;
+}
+/**
+ * The EMB of a voice burst B to F (ETSI TS 102 361-1): 8 bits before and 8 after the 32-bit embedded signaling in
+ * the burst's 48-bit center: color code (4), privacy indicator (1), LC start/stop (2), then 9 check bits.
+ */
+export function readEmb(d: ArrayLike<number>): { cc: number; pi: boolean; lcss: number; ok: boolean } {
+  let w = 0;
+  for (let i = 66; i < 70; i++) w = (w << 2) | (d[i] & 3);
+  for (let i = 86; i < 90; i++) w = (w << 2) | (d[i] & 3);
+  const data = w >> 9, par = w & 0x1ff;
+  return { cc: data >> 3, pi: ((data >> 2) & 1) === 1, lcss: data & 3, ok: QR167_GENS.some(g => qr167Parity(data, g) === par) };
+}
+/** A voice burst's center field carrying an EMB (for the synthetic signals in the tests). */
+export function embDibits(cc: number, pi: boolean, lcss: number, g = QR167_GENS[0]): number[] {
+  const data = ((cc & 15) << 3) | (pi ? 4 : 0) | (lcss & 3), w = (data << 9) | qr167Parity(data, g), out: number[] = [];
+  for (let i = 7; i >= 0; i--) out.push((w >> (2 * i)) & 3);
+  return out;
+}

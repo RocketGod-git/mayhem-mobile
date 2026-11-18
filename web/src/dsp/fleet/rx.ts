@@ -183,10 +183,14 @@ export class DmrFramer {
   private readonly sm = new SyncMatch();
   private readonly hist = new Uint8Array(144); private hp = 0;
   private t = 0; private lastData = -1e9;
-  private queue: { at: number; voice: boolean; n: number; slot: number }[] = [];
+  private queue: { at: number; voice: boolean; n: number; sf: { slot: number } }[] = [];
   syncs = 0; voice = 0; ms = 0;
   /** Data bursts whose slot type came through without a correction: a real DMR signal, where a sync alone can be chance. */
   bursts = 0;
+  /** Voice syncs heard lately, and when one last came a superframe (1728 symbols, 360 ms) after another. */
+  private voiceAt: number[] = []; private confirmedAt = -1e9;
+  /** Voice superframes are arriving on their own grid: a voice call heard without a data burst (late entry). */
+  get voiceLive(): boolean { return this.t - this.confirmedAt < 3_500; }
   push(s: number): void {
     this.sm.push(s);
     this.hist[this.hp] = slice(s); this.hp = (this.hp + 1) % 144;
@@ -195,33 +199,39 @@ export class DmrFramer {
     if (this.queue.some(q => !q.voice && q.at > t)) return;
     if (this.sm.mag() < 1.8) return;
     if (this.sm.corr(DMR_BS_DATA) > 0.82) {
-      this.syncs++; this.lastData = t;
+      this.syncs++;
       this.queue = this.queue.filter(q => Math.abs(q.at - (t + 54)) > 10);
-      this.add({ at: t + 54, voice: false, n: 0, slot: -1 });
+      this.add({ at: t + 54, voice: false, n: 0, sf: { slot: -1 } });
     } else if (this.sm.corr(DMR_BS_VOICE) > 0.82) {
       if (this.queue.some(q => q.voice && q.n === 0 && Math.abs(q.at - (t + 54)) <= 10)) return;
       // bursts come every 144 symbols: a voice sync off the grid of the data bursts heard lately is in some payload
+      // (the grid is set only by data bursts whose slot type came through clean, so a chance data sync moves nothing)
       const ph = (t - this.lastData) % 144;
       if (t - this.lastData < 9_600 && ph > 2 && ph < 142) return;
       this.syncs++; this.voice++;
-      for (let k = 0; k < 6; k++) this.add({ at: t + 54 + 288 * k, voice: true, n: k, slot: -1 });
+      if (this.voiceAt.some(a => Math.abs(t - a - 1728) <= 4)) this.confirmedAt = t;
+      this.voiceAt.push(t); if (this.voiceAt.length > 4) this.voiceAt.shift();
+      const sf = { slot: -1 };
+      for (let k = 0; k < 6; k++) this.add({ at: t + 54 + 288 * k, voice: true, n: k, sf });
     }
     else if (this.sm.corr(DMR_MS_DATA) > 0.82 || this.sm.corr(DMR_MS_VOICE) > 0.82) this.ms++;
   }
-  private add(q: { at: number; voice: boolean; n: number; slot: number }): void {
+  private add(q: { at: number; voice: boolean; n: number; sf: { slot: number } }): void {
     this.queue.push(q); this.queue.sort((a, b) => a.at - b.at);
   }
-  private emit(q: { at: number; voice: boolean; n: number; slot: number }): void {
+  private emit(q: { at: number; voice: boolean; n: number; sf: { slot: number } }): void {
     const d = new Uint8Array(144);
     for (let i = 0; i < 144; i++) d[i] = this.hist[(this.hp + i) % 144];
     if (q.voice) {
       const cach = new Uint8Array(24);
       for (let i = 0; i < 12; i++) { cach[2 * i] = d[i] >> 1; cach[2 * i + 1] = d[i] & 1; }
-      this.onVoice(cachSlot(cach), d, q.n);
+      // the superframe's slot is the one its sync burst's CACH said: the five after it are in the same slot
+      if (q.sf.slot < 0) q.sf.slot = cachSlot(cach);
+      this.onVoice(q.sf.slot, d, q.n);
       return;
     }
     const b = dmrReadBurst(d);
-    if (b) { if (b.stErrs === 0) this.bursts++; this.onBurst({ burst: b, dibits: d }); }
+    if (b) { if (b.stErrs === 0) { this.bursts++; this.lastData = q.at - 54; } this.onBurst({ burst: b, dibits: d }); }
   }
 }
 
