@@ -9,7 +9,7 @@ import java.util.Locale
  * move on every transmission (the hyper SFN, the CDMA2000 system time) do not count as changes.
  */
 data class FeedRow(
-    val id: Int, val cell: String, val hz: Long, val pci: Int, var op: String, val band: Int?,
+    val id: Int, var cell: String, var hz: Long, val pci: Int, var op: String, val band: Int?,
     val name: String, val slot: String, var text: String, val alert: Boolean, val change: Boolean, val firstMs: Long, var lastMs: Long, var count: Int, val fp: String,
 )
 
@@ -136,6 +136,10 @@ class MessageFeed(val max: Int = 1500) {
         next = (list.maxOfOrNull { it.id } ?: 0) + 1
     }
     @Synchronized fun clear() = list.clear()
+    /** A cell moved to its real center: its rows follow it. */
+    @Synchronized fun rekey(old: String, key: String, hz: Long) { for (r in list) if (r.cell == old) { r.cell = key; r.hz = hz } }
+    /** Copies of a cell merged away: their rows go. */
+    @Synchronized fun dropCells(keys: Set<String>) { list.removeAll { it.cell in keys } }
     @Synchronized fun take(n: Int): List<FeedRow> = list.take(n).map { it.copy() }
 
     companion object {

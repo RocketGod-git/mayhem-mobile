@@ -57,7 +57,7 @@ data class CellDetail(val key: String, val mib: Mib?, val sib1: Obj?, val sib1He
 private class Timing(val abs: Double, val sfn: Int)
 private class PendingTb(val tb: TbDecoder, val g: Int, val epoch: Int)
 private class SiGot(val ms: Long, val count: Int)
-private class Cell(val key: String, val hz: Long, val pci: Int, var band: Int?, var earfcn: Int?, val tdd: Boolean, var firstMs: Long, var lastMs: Long) {
+private class Cell(var key: String, var hz: Long, val pci: Int, var band: Int?, var earfcn: Int?, val tdd: Boolean, var firstMs: Long, var lastMs: Long) {
     var mibMs = 0L; var sib1Ms = 0L
     var mib: Mib? = null; var snrDb = 0.0; var levelDb = 0.0; var cfoHz = 0.0; var pssScore = 0.0
     var mibCount = 0; var sib1Count = 0; var dciCount = 0; var tbOk = 0; var tbFail = 0
@@ -178,7 +178,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                     for ((pci, evenSf0) in pciCandidates(yr, yi, h.nid2, map, tdd)) {
                         if (!tried.add(pci * 2 + (if (tdd) 1 else 0))) continue
                         val r = readMib(yr, yi, pci, map, evenSf0, tdd, cells.containsKey("${Math.round(centerHz / 1e5)}:$pci")) ?: continue
-                        val cell = cellFor(pci, tdd, now)
+                        val cell = cellAt(pci, tdd, centerHz, r.mib, h.score, now) ?: continue
                         cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score
                         mibRow(cell, now)
                         found.add(Found(cell, map, evenSf0, tdd, r.h))
@@ -280,7 +280,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             val hz = Math.round((centerHz + shift) / 100_000) * 100_000
             for (tdd in booleanArrayOf(false, true)) for ((pci, evenSf0) in pciCandidates(yr, yi, hit.nid2, map, tdd)) {
                 val r = readMib(yr, yi, pci, map, evenSf0, tdd, false) ?: continue
-                val cell = cellFor(pci, tdd, now, hz)
+                val cell = cellAt(pci, tdd, hz, r.mib, hit.score, now) ?: return
                 cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = centerHz + shift - hz; cell.pssScore = hit.score
                 mibRow(cell, now)
                 offCenter = OffCenter(hz, pci, now)
@@ -288,6 +288,54 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                 return
             }
         }
+    }
+
+    /**
+     * The cell a MIB belongs to. A strong cell leaks into spans tuned a few MHz away (decimation folding, tuner images),
+     * where it decodes as the same PCI with the same MIB. A cell already known within 10 MHz with the same PCI, MIB
+     * content and a consistent SFN is that cell: the copy is dropped (null), unless it is heard clearly better and the
+     * known one never decoded SIB1, in which case the known cell moves to the new frequency.
+     */
+    private fun cellAt(pci: Int, tdd: Boolean, hz: Long, mib: Mib, score: Double, now: Long): Cell? {
+        if (cells.containsKey("${Math.round(hz / 1e5)}:$pci")) return cellFor(pci, tdd, now, hz)
+        val o = cells.values.firstOrNull { sameCell(it, pci, tdd, hz, mib, now) } ?: return cellFor(pci, tdd, now, hz)
+        if (o.summary != null || score <= 1.5 * o.pssScore) return null
+        moveCell(o, hz, now)
+        return o
+    }
+    private fun moveCell(c: Cell, hz: Long, now: Long) {
+        val old = c.key; val key = "${Math.round(hz / 1e5)}:${c.pci}"
+        cells.remove(old)
+        c.key = key; c.hz = hz; c.timing = null; c.pending.clear()
+        bandOf(hz)?.let { c.band = it.bands[0] }
+        c.earfcn = c.band?.let { dlEarfcnForMhz(it, hz / 1e6) }
+        cells[key] = c
+        feed.rekey(old, key, hz)
+        addLog(now, hz, c.pci, "CELL", "PCI ${c.pci} heard better here: moved from ${"%.1f".format(java.util.Locale.US, old.substringBefore(':').toDouble() / 10)} MHz", "")
+    }
+    /** Copies of one cell kept by an earlier session: the best heard one stays (SIB1, then most MIBs, then the PSS metric). */
+    private fun mergeDuplicates() {
+        val all = cells.values.toList(); val drop = HashSet<String>()
+        for (a in all) for (b in all) {
+            if (a === b || a.key in drop || b.key in drop || a.mib == null || b.mib == null || !sameCell(a, b.pci, b.tdd, b.hz, b.mib!!, 0)) continue
+            val aWins = when {
+                (a.summary != null) != (b.summary != null) -> a.summary != null
+                a.mibCount != b.mibCount -> a.mibCount > b.mibCount
+                else -> a.pssScore >= b.pssScore
+            }
+            drop.add(if (aWins) b.key else a.key)
+        }
+        for (k in drop) cells.remove(k)
+        if (drop.isNotEmpty()) feed.dropCells(drop)
+    }
+    /** Whether a MIB heard at hz is cell c seen again: same PCI and duplex, within 10 MHz, same MIB content, SFN in step (when now is given). */
+    private fun sameCell(c: Cell, pci: Int, tdd: Boolean, hz: Long, mib: Mib, now: Long): Boolean {
+        val m = c.mib ?: return false
+        if (c.pci != pci || c.tdd != tdd || Math.abs(c.hz - hz) > 10_000_000 || c.hz == hz) return false
+        if (m.bandwidth != mib.bandwidth || m.ports != mib.ports || m.phichResource != mib.phichResource || m.phichDuration != mib.phichDuration) return false
+        if (now == 0L || now - c.mibMs > 120_000) return true
+        val want = ((m.sfn + Math.round((now - c.mibMs) / 10.0)) % 1024).toInt(); val d = Math.abs(want - mib.sfn) % 1024
+        return minOf(d, 1024 - d) <= 50
     }
 
     private fun cellFor(pci: Int, tdd: Boolean, now: Long, hz: Long = centerHz): Cell {
@@ -574,6 +622,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         warnings.restore((0 until al.length()).mapNotNull { runCatching { warningOf(al.getJSONObject(it)) }.getOrNull() })
         val fd = s.optJSONArray("feed") ?: JSONArray()
         feed.restore((0 until fd.length()).mapNotNull { runCatching { MessageFeed.of(fd.getJSONObject(it)) }.getOrNull() })
+        mergeDuplicates()
         val lg = s.optJSONArray("log") ?: JSONArray()
         if (log.isEmpty()) for (i in 0 until lg.length()) runCatching { val o = lg.getJSONObject(i); log.add(LogRow(o.getLong("ms"), o.getLong("hz"), o.getInt("pci"), o.getString("kind"), o.getString("text"), o.optString("hex"))) }
         post(true)
