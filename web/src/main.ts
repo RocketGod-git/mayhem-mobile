@@ -4831,7 +4831,7 @@ function renderFleet(view: HTMLElement): void {
   view.classList.toggle('fleetfull', fleetUi.full);
   // Unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them.
   const dragged = (lat: number, lon: number) => { if (!state.home && !lastKnownPos()) worker?.postMessage({ type: 'fleetRef', lat, lon }); };
-  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id.replace(/^call:/, '') }), onDragEnd: dragged, log });
+  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id.replace(/^call:/, '') }), onDragEnd: dragged, log, fallback: () => state.home ?? lastKnownPos() ?? zoneGuess() });
   clearInterval(fleetUi.timer);
   fleetUi.timer = window.setInterval(() => {
     if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; }

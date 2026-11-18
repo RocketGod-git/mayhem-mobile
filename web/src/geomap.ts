@@ -31,6 +31,17 @@ export interface GeoOpts {
   steady?: boolean;
   /** The map was dragged by hand; its new center. */
   onDragEnd?: (lat: number, lon: number) => void;
+  /** Where the locate button goes when there is nothing plotted and no position of the user (a reference position). */
+  fallback?: () => { lat: number; lon: number } | null;
+}
+/**
+ * What a tap on the locate button does: fit everything plotted; with the user's position known, the next tap centers
+ * on the user and the one after fits again; with nothing plotted, the user's position, else the reference position.
+ */
+export function locateNext(plotted: number, home: boolean, last: '' | 'fit' | 'home' | 'ref'): 'fit' | 'home' | 'ref' {
+  if (!plotted) return home ? 'home' : 'ref';
+  if (home && last === 'fit') return 'home';
+  return 'fit';
 }
 /** Regional zoom: a couple of hundred kilometers across, where ships, stations and aircraft near you show up. */
 export const REGION_ZOOM = 8;
@@ -110,10 +121,12 @@ export class GeoMap {
   private readonly btn: HTMLButtonElement;
   private readonly emptyEl: HTMLElement;
   constructor(private readonly host: HTMLElement, private readonly opts: GeoOpts) {
-    host.innerHTML = '<button class="follow" title="follow the traffic">⌖</button><div class="geo-empty" hidden></div>';
+    host.innerHTML = '<button class="follow" title="fit the map to everything on it" aria-label="fit the map to everything on it">⌖</button><div class="geo-empty" hidden></div>';
     this.btn = host.querySelector('.follow')!;
     this.emptyEl = host.querySelector('.geo-empty')!;
-    this.btn.onclick = () => this.setFollow(!this.follow);
+    // the locate button always does something: fit what is plotted (and follow it), or center on the user, or on the
+    // reference position when there is neither (it used to only toggle following, which looked like nothing)
+    this.btn.onclick = () => this.locate();
     this.btn.classList.toggle('on', this.follow);
     void ensureLeaflet(opts.log).then(() => { if (host.isConnected) this.build(); }).catch(() => undefined);
   }
@@ -134,8 +147,29 @@ export class GeoMap {
     if (this.fitPts.length) this.fitTo(this.fitPts);
   }
   get ready(): boolean { return !!this.map; }
+  private lastLocate: '' | 'fit' | 'home' | 'ref' = '';
+  private home: { lat: number; lon: number } | null = null;
+  private plottedPts(): [number, number][] {
+    return [...this.items.map(i => [i.lat, i.lon] as [number, number]), ...this.trackPts, ...this.shapeDefs.flatMap(d => d.pts), ...this.fitPts];
+  }
+  locate(): void {
+    const pts = this.plottedPts(), home = this.home ?? this.opts.home ?? null;
+    const a = locateNext(pts.length, !!home, this.lastLocate);
+    this.lastLocate = a;
+    if (a === 'fit') { this.follow = true; this.btn.classList.add('on'); this.opts.onFollow?.(true); this.fitAll(pts); return; }
+    const at = a === 'home' ? home : this.opts.fallback?.() ?? (this.opts.start ? { lat: this.opts.start.lat, lon: this.opts.start.lon } : null);
+    if (at) this.center(at.lat, at.lon, a === 'home' ? 13 : 9);
+  }
+  private fitAll(pts: [number, number][]): void {
+    if (!this.map || !pts.length) return;
+    const same = pts.every(p => Math.abs(p[0] - pts[0][0]) < 1e-6 && Math.abs(p[1] - pts[0][1]) < 1e-6);
+    this.map.invalidateSize();
+    if (same) this.map.flyTo(pts[0], this.opts.fitPins ? 15 : Math.max(this.map.getZoom(), 11));
+    else this.map.fitBounds(pts, { padding: this.opts.fitPins ? [70, 70] : [40, 40], maxZoom: this.opts.fitPins ? 17 : 11 });
+  }
   setFollow(on: boolean): void { this.follow = on; this.btn.classList.toggle('on', on); this.opts.onFollow?.(on); if (on) this.fit(); }
   setHome(home: { lat: number; lon: number } | null): void {
+    this.home = home;
     if (!this.map) return;
     if (this.homeMarker) { this.map.removeLayer(this.homeMarker); this.homeMarker = null; }
     if (home) this.homeMarker = L.marker([home.lat, home.lon], { icon: L.divIcon({ className: 'geo-wrap', iconSize: [20, 20], iconAnchor: [10, 10], html: '<div class="geo home"></div>' }), interactive: false }).addTo(this.map);
