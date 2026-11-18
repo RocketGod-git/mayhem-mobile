@@ -22,7 +22,7 @@ import { TpmsDecoder } from './dsp/tpms.js';
 import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
-import { FleetProcessor, type TgPrefs } from './dsp/fleet/fleet.js';
+import { FleetProcessor, type TgPrefs, type KnownState } from './dsp/fleet/fleet.js';
 import { AudioFader, MAKEUP } from './dsp/fleet/codec.js';
 import { CellProcessor } from './dsp/cell/cell.js';
 import { AtscProcessor } from './dsp/atsc/atsc.js';
@@ -388,6 +388,8 @@ self.onmessage = (e: MessageEvent) => {
       if (m.cmd === 'unit') { const d = fleet.unitDetail(m.key as string); if (d) emit({ type: 'fleetUnit', ...d }); }
       else if (m.cmd === 'export') emit({ type: 'fleetExport', ...fleet.exportAll() });
       else if (m.cmd === 'clear') fleet.clear();
+      else if (m.cmd === 'known') emit({ type: 'fleetKnown', known: fleet.known() });
+      else if (m.cmd === 'restore') fleet.restore(m.known as KnownState);
       else if (m.cmd === 'prefs') fleet.setPrefs(m.prefs as TgPrefs);
       else if (m.cmd === 'audio') { if (!m.on && fleetAudio.on) { const t = fleetFader.tail(); if (t) toAudio(t); } fleetAudio.on = !!m.on; fleetAudio.gain = Math.max(0, Math.min(1.5, Number(m.gain ?? fleetAudio.gain))); }
       else if (m.cmd === 'replay') {

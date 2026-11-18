@@ -47,6 +47,8 @@ export interface SystemRow {
   grants: number; units: number; tgs: number; derived: boolean;
   /** DMR logical channels resolved to MHz from grants and the voice link control that followed them (derived). */
   lpcns: { lpcn: number; hz: number; votes: number }[];
+  /** The channels the system was heard on (kept when it is out of the span), and whether its units report positions. */
+  heardHz: number[]; positions: boolean;
 }
 export interface UnitReport { ms: number; hz: number; kind: string; hex: string; verified: boolean; lat: number | null; lon: number | null; text: string }
 export interface UnitRow {
@@ -64,6 +66,11 @@ export interface FleetSnap {
   playing: string; lock: Lock | null;
 }
 export type { CallRow, CallPos, Lock, TgPrefs };
+/** What the device keeps between sessions (see FleetProcessor.known). */
+export interface KnownSystem { key: string; proto: 'P25' | 'DMR'; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string; firstMs: number; lastMs: number; derived: boolean; hz: number[] }
+export interface KnownUnit { sys: string; id: number; lat: number; lon: number; posMs: number; verified: boolean; firstMs: number; lastMs: number }
+export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[] }
+const KNOWN_UNITS = 3000;
 
 interface Carrier extends CarrierRow { hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
@@ -76,8 +83,12 @@ interface Sys {
   lcns: Map<number, { hz: number; slot: number }>; lcnVotes: Map<string, Map<number, number>>; rest: number; busy: number[];
   /** Tier III logical channel (LPCN) to carrier: votes, and the ones resolved. */
   lpcnVotes: Map<number, Map<number, number>>; lpcnHz: Map<number, number>;
+  /** Where the system was heard (its control or rest channels), kept across retunes and sessions. */
+  heardHz: Set<number>;
 }
-interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[] }
+interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
+  /** A position kept from an earlier session (restored from the device), used until a report on the air replaces it. */
+  fix?: [number, number] }
 interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: Set<number>; history: GrantRow[] }
 
 /** Channels a span can run at once: the down-converters cost in proportion to the sample rate. */
@@ -321,10 +332,10 @@ export class FleetProcessor implements IqProcessor {
     const key = `P25 ${h(id.wacn, 5)}.${h(id.sys, 3)}`;
     let s = this.systems.get(key);
     if (!s) {
-      s = { key, proto: 'P25', color: this.colorNext++, wacn: id.wacn, sysId: id.sys, cc: -1, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map() };
+      s = { key, proto: 'P25', color: this.colorNext++, wacn: id.wacn, sysId: id.sys, cc: -1, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() };
       this.systems.set(key, s);
     }
-    s.lastMs = now; c.sys = key;
+    s.lastMs = now; c.sys = key; if (t.kind !== 'iden') s.heardHz.add(c.key);
     for (const [k, v] of c.tables) s.idens.set(k, v);
     if (id.rfss >= 0) {
       const sk = `${key}/${id.rfss}.${id.site}`;
@@ -471,10 +482,10 @@ export class FleetProcessor implements IqProcessor {
     c.dmrSys = key; c.sys = key;
     let s = this.systems.get(key);
     if (!s) {
-      s = { key, proto: 'DMR', color: this.colorNext++, wacn: -1, sysId: -1, cc, fid: cs.fid, net: cs.net ?? -1, model: cs.model ?? '', firstMs: now, lastMs: now, idens: new Map(), derived: !!cs.derived, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map() };
+      s = { key, proto: 'DMR', color: this.colorNext++, wacn: -1, sysId: -1, cc, fid: cs.fid, net: cs.net ?? -1, model: cs.model ?? '', firstMs: now, lastMs: now, idens: new Map(), derived: !!cs.derived, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() };
       this.systems.set(key, s);
     }
-    s.lastMs = now; s.cc = cc; if (cs.derived) s.derived = true;
+    s.lastMs = now; s.cc = cc; s.heardHz.add(c.key); if (cs.derived) s.derived = true;
     return s;
   }
   private dmrApply(c: Carrier, cs: Csbk, slot: number, s: Sys, now: number): void {
@@ -605,6 +616,7 @@ export class FleetProcessor implements IqProcessor {
 
   // ------------------------------------------------------------------------------------------------ output
   private resolvePos(u: Unit): [number | null, number | null] {
+    if (u.lonLo < 0 && u.fix) return [u.fix[0], u.fix[1]];
     if (!this.ref || u.lonLo < 0) return [null, null];
     return [round6(unwrap16(u.latLo, this.ref.lat)), round6(unwrap16(u.lonLo, this.ref.lon))];
   }
@@ -640,6 +652,32 @@ export class FleetProcessor implements IqProcessor {
     let best: CallPos | null = null;
     for (const m of t?.members ?? []) { const p = at(unitOf(m), 'talkgroup'); if (p && (!best || p.ms > best.ms)) best = p; }
     return best;
+  }
+  /**
+   * What the device keeps between sessions: every system heard (where, and what it was) and every unit position
+   * decoded. [restore] puts it back; positions from the air replace the kept ones as they come.
+   */
+  known(): KnownState {
+    const systems: KnownSystem[] = [...this.systems.values()].map(s => ({ key: s.key, proto: s.proto, wacn: s.wacn, sysId: s.sysId, cc: s.cc, fid: s.fid, net: s.net, model: s.model, firstMs: s.firstMs, lastMs: s.lastMs, derived: s.derived, hz: [...s.heardHz].slice(0, 12) }));
+    const units: KnownUnit[] = [];
+    for (const u of this.units.values()) { const [lat, lon] = this.resolvePos(u); if (lat !== null && lon !== null) units.push({ sys: u.sys, id: u.id, lat, lon, posMs: u.posMs, verified: u.posVerified, firstMs: u.firstMs, lastMs: u.lastMs }); }
+    units.sort((a, b) => b.posMs - a.posMs);
+    return { v: 1, systems, units: units.slice(0, KNOWN_UNITS) };
+  }
+  restore(k: KnownState): void {
+    if (!k || k.v !== 1) return;
+    for (const x of k.systems ?? []) {
+      let s = this.systems.get(x.key);
+      if (!s) { s = { key: x.key, proto: x.proto, color: this.colorNext++, wacn: x.wacn, sysId: x.sysId, cc: x.cc, fid: x.fid, net: x.net, model: x.model, firstMs: x.firstMs, lastMs: x.lastMs, idens: new Map(), derived: x.derived, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() }; this.systems.set(x.key, s); }
+      for (const hz of x.hz ?? []) s.heardHz.add(hz);
+    }
+    for (const x of k.units ?? []) {
+      const key = `${x.sys}/${x.id}`;
+      let u = this.units.get(key);
+      if (!u) { u = { key, sys: x.sys, id: x.id, firstMs: x.firstMs, lastMs: x.lastMs, lonLo: -1, latLo: -1, posMs: x.posMs, posVerified: x.verified, trail: [[x.lat, x.lon, x.posMs]], groups: new Set(), grants: 0, carriers: new Set(), reports: [] }; this.units.set(key, u); }
+      if (u.lonLo < 0 && x.posMs >= u.posMs) { u.fix = [x.lat, x.lon]; u.posMs = x.posMs; u.posVerified = x.verified; }
+    }
+    this.post(true);
   }
   /** The receiver's position arrived or moved: every stored report is resolved against it again. */
   setRef(lat: number, lon: number): void {
@@ -694,7 +732,8 @@ export class FleetProcessor implements IqProcessor {
       const lpcns = [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
       return { key: s.key, proto: s.proto, color: s.color, label, wacn: s.wacn, sysId: s.sysId, cc: s.cc, fid: s.fid, net: s.net, model: s.model,
         callsign: sites.find(x => x.callsign)?.callsign ?? '', ...this.latestId(s.key), firstMs: s.firstMs, lastMs: s.lastMs, sites, idens: [...s.idens.values()].sort((a, b) => a.iden - b.iden),
-        grants: this.grants.filter(g => g.sys === s.key).length, units, tgs, derived: s.derived || lpcns.length > 0, lpcns };
+        grants: this.grants.filter(g => g.sys === s.key).length, units, tgs, derived: s.derived || lpcns.length > 0, lpcns, heardHz: [...s.heardHz].slice(0, 12),
+        positions: [...this.units.values()].some(u => u.sys === s.key && (u.lonLo >= 0 || !!u.fix)) };
     }).sort((a, b) => a.firstMs - b.firstMs);
     const units: UnitRow[] = [...this.units.values()].map(u => {
       const [lat, lon] = this.resolvePos(u);
@@ -712,7 +751,7 @@ export class FleetProcessor implements IqProcessor {
   }
   /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
   followTarget(): { key: string; hz: number } | null {
-    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !(x.tdma && x.proto === 'P25'));
+    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !x.protectedHint && x.sec !== 'unknown' && !(x.tdma && x.proto === 'P25'));
     return c ? { key: c.key, hz: c.hz } : null;
   }
   private latestId(sys: string): { cwId: string; cwIdMs: number; cwIdHz: number } {

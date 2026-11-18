@@ -9,6 +9,8 @@ export interface VoiceCodec {
   readonly id: CodecId;
   /** One frame of bits (one per byte, as sent) to 160 samples of 8 kHz audio, or null for a frame it drops. */
   decode(bits: Uint8Array): Float32Array | null;
+  /** The last frame decoded was past its error correction (repeated or muted by the vocoder). */
+  readonly bad?: boolean;
   reset(): void;
 }
 const registry = new Map<CodecId, () => VoiceCodec>();
@@ -40,9 +42,9 @@ const UP_H = (() => {
   return h;
 })();
 /** Make-up for the vocoders' headroom (vocoders.ts): the level the listener asked for, with room above it. */
-export const MAKEUP = 3;
-/** Linear to 0.7, then a smooth knee that never passes 1: peaks round off instead of clipping. */
-export const soft = (x: number) => { const a = x < 0 ? -x : x; if (a <= 0.7) return x; const y = 0.7 + 0.3 * Math.tanh((a - 0.7) / 0.3); return x < 0 ? -y : y; };
+export const MAKEUP = 2;
+/** Linear to 0.8, then a smooth knee that never passes 1: peaks round off instead of clipping. */
+export const soft = (x: number) => { const a = x < 0 ? -x : x; if (a <= 0.8) return x; const y = 0.8 + 0.2 * Math.tanh((a - 0.8) / 0.2); return x < 0 ? -y : y; };
 export class Upsampler {
   private readonly hist = new Float32Array(UP_PH); private pos = 0;
   reset(): void { this.hist.fill(0); this.pos = 0; }

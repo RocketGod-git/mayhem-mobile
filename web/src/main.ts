@@ -4595,7 +4595,16 @@ const fleetUi = {
   windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false, hold: false, wired: false,
   prefs: loadDispatchPrefs(), airSeen: new Map<string, number>(), audioOn: false, gain: 0.8, following: null as { key: string; home: number; until: number } | null,
   lock: loadDispatchLock(), vu: { key: '', db: -90 },
+  /** A short look at a band where a position-reporting system lives, and when the last one was. */
+  visit: null as { home: number; until: number; sys: string } | null, lastVisit: Date.now() - 60_000, knownAt: 0,
 };
+/** Systems and unit positions are kept on the device: every position ever decoded stays on the map. */
+const KNOWN_KEY = 'mm.fleet.known';
+function dispatchSaveKnown(k: unknown): void {
+  try { localStorage.setItem(KNOWN_KEY, JSON.stringify(k)); }
+  catch { try { const v = k as { units: unknown[] }; localStorage.setItem(KNOWN_KEY, JSON.stringify({ ...v, units: v.units.slice(0, 500) })); } catch { /* storage full or blocked */ } }
+}
+function dispatchLoadKnown(): unknown { try { return JSON.parse(localStorage.getItem(KNOWN_KEY) ?? 'null'); } catch { return null; } }
 /** The system lock is kept on the device too: ALL is no lock. */
 function loadDispatchLock(): DispatchLock | null {
   try { const v = JSON.parse(localStorage.getItem('mm.fleet.lock') ?? 'null'); if (v && typeof v.sys === 'string' && v.sys) return { sys: v.sys, site: typeof v.site === 'string' ? v.site : '', label: String(v.label ?? v.sys), hz: Number(v.hz) || 0 }; } catch { /* storage blocked */ }
@@ -4610,6 +4619,22 @@ function dispatchLock(l: DispatchLock | null): void {
   worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: dispatchPrefsMsg() });
   if (l) dispatchTuneLock();
   fleetDwell(); refreshFleet(true);
+}
+/**
+ * Every two minutes, a look of 18 s at a band where a system with unit positions was heard and the span does not
+ * reach, so its positions stay fresh; never while locked, and never while the call being heard is on the air.
+ */
+function dispatchVisitDue(s: FleetSnap, now: number): boolean {
+  if (fleetUi.lock || now - fleetUi.lastVisit < 120_000) return false;
+  if (fleetUi.audioOn && s.calls.some(c => c.key === s.playing && c.onAir)) return false;
+  const out = (hz: number) => hz < s.spanLo + 20_000 || hz > s.spanHi - 20_000;
+  const target = s.systems.filter(x => x.positions && x.heardHz.length && x.heardHz.every(out)).sort((a, b) => a.lastMs - b.lastMs)[0];
+  if (!target) { fleetUi.lastVisit = now; return false; }
+  const hz = target.heardHz[0], span = s.spanHi - s.spanLo;
+  fleetUi.visit = { home: s.centerHz, until: now + 18_000, sys: target.key };
+  tune(Math.round(hz + span * 0.2));
+  refreshFleet(true);
+  return true;
 }
 /** Brings the locked system's control channel into the span, if it is not there. */
 function dispatchTuneLock(): void {
@@ -4672,6 +4697,8 @@ function fleetOpen(): void {
   configure('NONE', fleetUi.windows[0].hz, fleetRate(), 32, 40, true, 'fleet');
   fleetUi.following = null;
   worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: dispatchPrefsMsg() });
+  const known = dispatchLoadKnown(); if (known) worker?.postMessage({ type: 'fleet', cmd: 'restore', known });
+  fleetUi.visit = null; fleetUi.lastVisit = Date.now() - 60_000;
   // a saved lock starts on the window holding the locked system's control channel
   const lk = fleetUi.lock;
   if (lk?.hz) { const half = fleetRate() * 0.4, i = fleetUi.windows.findIndex(x => Math.abs(x.hz - lk.hz) < half); if (i > 0) { fleetUi.idx = i; tune(fleetUi.windows[i].hz); } }
@@ -4687,15 +4714,21 @@ function fleetOpen(): void {
 function fleetDwell(): void {
   clearTimeout(fleetUi.scanTimer);
   fleetUi.found = false; fleetUi.dwellEnd = Date.now() + 6_000;
-  if (fleetUi.windows.length < 2) return;
+  // one window (a band the span covers): nothing to step through, but the checks on locks, follows and visits run
   const check = () => {
     if (state.app !== 'fleet') return;
     const s = fleetUi.snap, now = Date.now();
     if (fleetUi.following) { fleetUi.dwellEnd = Math.max(fleetUi.dwellEnd, now + 6_000); fleetUi.scanTimer = window.setTimeout(check, 500); return; }
+    // a look at a band where units report positions: back home when it is over
+    if (fleetUi.visit) { if (now >= fleetUi.visit.until) { tune(fleetUi.visit.home); fleetUi.visit = null; fleetUi.lastVisit = now; fleetUi.dwellEnd = Math.max(fleetUi.dwellEnd, now + 6_000); refreshFleet(true); } fleetUi.scanTimer = window.setTimeout(check, 500); return; }
+    if (s && dispatchVisitDue(s, now)) { fleetUi.scanTimer = window.setTimeout(check, 500); return; }
     // locked: the receiver stays with the locked system (and goes back to it if something moved it)
     if (fleetUi.lock) { fleetUi.found = true; fleetUi.dwellEnd = now + 6_000; if (s && fleetUi.lock.hz && (fleetUi.lock.hz < s.spanLo || fleetUi.lock.hz > s.spanHi)) dispatchTuneLock(); fleetUi.scanTimer = window.setTimeout(check, 500); return; }
     const live = s ? s.carriers.some(c => (c.role === 'control' || c.role === 'rest') && c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastDecodeMs < 5_000) : false;
     if (live && !fleetUi.found) { fleetUi.found = true; fleetUi.dwellEnd = now + 25_000; }
+    if (fleetUi.windows.length < 2) { fleetUi.scanTimer = window.setTimeout(check, 500); return; }
+    // the call being heard finishes before AUTO moves on (encrypted traffic never holds it)
+    if (now >= fleetUi.dwellEnd && fleetUi.audioOn && s && s.calls.some(c => c.key === s.playing && c.onAir && !c.encrypted)) fleetUi.dwellEnd = now + 1_000;
     if (now >= fleetUi.dwellEnd) { fleetUi.idx = (fleetUi.idx + 1) % fleetUi.windows.length; tune(fleetUi.windows[fleetUi.idx].hz); fleetUi.found = false; fleetUi.dwellEnd = now + 6_000; refreshFleet(true); }
     fleetUi.scanTimer = window.setTimeout(check, 500);
   };
@@ -4800,7 +4833,11 @@ function renderFleet(view: HTMLElement): void {
   const dragged = (lat: number, lon: number) => { if (!state.home && !lastKnownPos()) worker?.postMessage({ type: 'fleetRef', lat, lon }); };
   geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id.replace(/^call:/, '') }), onDragEnd: dragged, log });
   clearInterval(fleetUi.timer);
-  fleetUi.timer = window.setInterval(() => { if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; } refreshFleet(); }, 500);
+  fleetUi.timer = window.setInterval(() => {
+    if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; }
+    if (Date.now() - fleetUi.knownAt > 15_000) { fleetUi.knownAt = Date.now(); worker?.postMessage({ type: 'fleet', cmd: 'known' }); }
+    refreshFleet();
+  }, 500);
   refreshList('fleet');
   refreshFleet(true);
 }
@@ -4822,7 +4859,7 @@ const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span cl
 function fleetHead(s: FleetSnap | null, now: number): string {
   const sites = s ? s.systems.reduce((n, x) => n + x.sites.length, 0) : 0, units = s?.units.length ?? 0, live = s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000) : [];
   const w = fleetUi.windows[fleetUi.idx], c = s?.centerHz ?? w?.hz ?? 0, band = FLEET_BANDS.find(b => c >= b[2] - 2e6 && c <= b[3] + 2e6) ?? FLEET_BANDS.find(b => b[0] === w?.band);
-  const scan = fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : 'HOLDING';
+  const scan = fleetUi.visit ? `CHECKING POSITIONS · BACK IN ${Math.max(0, Math.ceil((fleetUi.visit.until - now) / 1000))} s` : fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : 'HOLDING';
   const span = s ? `${fleetMhz(s.spanLo, 3)}–${fleetMhz(s.spanHi, 3)} MHz` : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const onAir = s?.calls.filter(c => c.onAir && c.kind === 'call' && !c.outside).length ?? 0;
@@ -4859,9 +4896,10 @@ function fleetSystemCard(sys: FleetSystem, now: number): string {
   const title = fleetSysTitle(sys);
   const sel = fleetUi.sel?.kind === 'sys' && fleetUi.sel.key === sys.key;
   const locked = fleetUi.lock?.sys === sys.key && !fleetUi.lock.site, out = !!fleetUi.lock && fleetUi.lock.sys !== sys.key;
+  const sn = fleetUi.snap, away = !!sn && sys.heardHz.length > 0 && sys.heardHz.every(h => h < sn.spanLo || h > sn.spanHi);
   const lockB = `<button class="chip fl-lockb ${locked ? 'on' : ''}" ${locked ? 'data-flunlock="1"' : `data-fllock="${esc(sys.key)}|"`} title="${locked ? 'unlock' : 'lock on this system'}">${locked ? 'LOCKED' : 'LOCK'}</button>`;
   return `<div class="fl-sys ${sel ? 'sel' : ''} ${age < 15_000 && !out ? '' : 'dim'} ${fleetUi.lock?.sys === sys.key ? 'locked' : ''}" style="--sys:${col};--flash:${flash.toFixed(2)}">`
-    + `<div class="fl-syh" data-flsel="sys:${esc(sys.key)}"><span class="fl-proto">${sys.proto}</span><span class="fl-syt"><b>${esc(title)}</b><small>${sys.callsign ? `${esc(sys.callsign)} · ` : ''}${sys.sites.length} site${sys.sites.length === 1 ? '' : 's'} · ${sys.units} units · ${sys.tgs} talkgroups · ${sys.grants} grants${sys.derived ? ' · derived formats' : ''}</small></span>${sys.cwId ? flIdChip(sys.cwId, now - sys.cwIdMs, sys.cwIdHz) : ''}${lockB}<span class="mt-live ${age < 15_000 ? 'on' : ''}"><i></i>${age < 15_000 ? 'LIVE' : fleetAgo(age)}</span></div>`
+    + `<div class="fl-syh" data-flsel="sys:${esc(sys.key)}"><span class="fl-proto">${sys.proto}</span><span class="fl-syt"><b>${esc(title)}</b><small>${sys.callsign ? `${esc(sys.callsign)} · ` : ''}${sys.sites.length} site${sys.sites.length === 1 ? '' : 's'} · ${sys.units} units · ${sys.tgs} talkgroups · ${sys.grants} grants${sys.derived ? ' · derived formats' : ''}</small></span>${sys.cwId ? flIdChip(sys.cwId, now - sys.cwIdMs, sys.cwIdHz) : ''}${lockB}<span class="mt-live ${age < 15_000 ? 'on' : ''}"><i></i>${age < 15_000 ? 'LIVE' : away ? `NOT IN SPAN · LAST HEARD ${fleetAgoText(age).toUpperCase()}` : fleetAgo(age)}</span></div>`
     + sys.sites.map(x => fleetSiteHtml(sys, x, now)).join('') + '</div>';
 }
 function fleetGrantRow(g: FleetGrant, now: number): string {
@@ -4901,13 +4939,14 @@ function dispatchAudioNote(c: FleetCall, codecs: string[]): string {
   if (c.encrypted) return 'encrypted, no audio';
   if (c.audioMs > 0) return '';
   if (c.tdma && c.proto === 'P25') return 'no audio yet, Phase 2 voice needs a recording to build';
-  if (c.sec === 'unknown' && c.voiceMs) return 'checking for encryption';
+  if (c.decoded >= 10 && c.badFrames > 0.5 * c.decoded) return 'weak signal';
+  if (c.sec === 'unknown' && c.voiceMs) return 'no voice decoded yet';
   if (!codecs.includes(c.codec)) return c.codec === 'imbe' ? 'no audio yet, the P25 full-rate vocoder is not built' : `no audio yet, the half-rate vocoder for ${c.proto === 'DMR' ? 'DMR' : 'Phase 2'} is not built`;
   return c.voiceMs ? '' : 'voice channel not heard';
 }
 const dispatchWho = callWho;
 /** Security as the call itself states it: the grant's service options, the link control, the encryption sync, the privacy bit. */
-const dispatchSec = (c: FleetCall) => { const t = secText(c); return t ? flPill(t, c.encrypted ? 'acc' : 'ok') : ''; };
+const dispatchSec = (c: FleetCall) => { const t = secText(c); return c.protectedHint && !c.encrypted ? flPill('PROTECTED?', '') : t ? flPill(t, c.encrypted ? 'acc' : 'ok') : ''; };
 /** Where a P25 key and message indicator or a DMR privacy header were read, for the card's security line. */
 function dispatchSecLine(c: FleetCall): string {
   if (!c.encrypted) return '';
@@ -5029,7 +5068,7 @@ function refreshFleet(force = false): void {
   qa<HTMLButtonElement>('[data-flspan]').forEach(b => b.classList.toggle('on', Number(b.dataset.flspan) === fleetRate()));
   // the units of calls on the air pulse on the map while they talk
   const talking = new Set((s?.calls ?? []).filter(c => c.onAir && c.pos && !c.outside).map(c => `${c.sys}/${c.pos!.unit}`));
-  const pins: GeoItem[] = (s?.units ?? []).filter(u => u.lat !== null && u.lon !== null).map(u => ({ id: u.key, lat: u.lat!, lon: u.lon!, label: `${u.id}`, kind: 'station' as GeoItem['kind'], color: fleetColor(u.sys), cls: talking.has(u.key) ? 'talk' : '' }));
+  const pins: GeoItem[] = (s?.units ?? []).filter(u => u.lat !== null && u.lon !== null).map(u => ({ id: u.key, lat: u.lat!, lon: u.lon!, label: `${u.id}`, kind: 'station' as GeoItem['kind'], color: fleetColor(u.sys), cls: talking.has(u.key) ? 'talk' : now - u.posMs > 3_600_000 ? 'older' : now - u.posMs > 600_000 ? 'old' : '' }));
   qa<HTMLButtonElement>('[data-flview]').forEach(b => {
     const v = b.dataset.flview as FleetView; b.classList.toggle('on', v === view);
     b.textContent = v === 'systems' ? `SYSTEMS ${s?.systems.length ?? 0}` : v === 'calls' ? `CALLS ${s?.calls.length ?? 0}` : v === 'map' ? `MAP ${pins.length}` : v === 'grants' ? `GRANTS ${s?.grants.length ?? 0}` : v === 'freqs' ? `FREQS ${s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000).length : 0}` : 'LOG';
@@ -5041,12 +5080,15 @@ function refreshFleet(force = false): void {
   const onAir = s ? s.calls.filter(c => c.onAir && c.kind === 'call' && !c.outside) : [];
   // emergencies are pinned on top (and stay a minute after they end), then the call being heard, then the rest;
   // calls outside the lock are left out of the stack and counted
-  const stack = s ? onAirOrder(s.calls, s.playing, now).filter(c => !c.outside) : [];
+  // encrypted calls fold into one line under the cards: they never push a clear call out of the stack
+  const all = s ? onAirOrder(s.calls, s.playing, now).filter(c => !c.outside) : [];
+  const stack = all.filter(c => !c.encrypted), locked = all.filter(c => c.encrypted && c.onAir);
   const others = s ? s.calls.filter(c => c.onAir && c.kind === 'call' && c.outside).length : 0;
   const onMap = view === 'map' && !FLEET_WIDE.matches, max = onMap ? 2 : 4;
-  air.hidden = (!stack.length && !others) || view === 'log';
+  air.hidden = (!stack.length && !others && !locked.length) || view === 'log';
   air.classList.toggle('onmap', onMap);
-  if (!air.hidden && s) flipRender(air, stack.slice(0, max).map(c => dispatchOnAirCard(c, s, now)).join('') + (stack.length > max ? `<div class="fl-dim">${stack.length - max} more on the air</div>` : '') + (others ? `<div class="fl-dim">${others} on other systems, not heard while locked</div>` : ''));
+  if (!air.hidden && s) flipRender(air, stack.slice(0, max).map(c => dispatchOnAirCard(c, s, now)).join('') + (stack.length > max ? `<div class="fl-dim">${stack.length - max} more on the air</div>` : '') + (locked.length ? `<div class="fl-encrow"><small>ENCRYPTED ON THE AIR</small>${locked.map(c => `<span data-flsel="${c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`}">${esc(dispatchWho(c))}<i>${esc(secText(c).replace(/^ENCRYPTED( · )?/, '') || 'encrypted')}</i></span>`).join('')}</div>` : '')
+    + (others ? `<div class="fl-dim">${others} on other systems, not heard while locked</div>` : ''));
   mode.innerHTML = segHtml([`<button data-flmode="all" class="${fleetUi.lock ? '' : 'on'}">ALL</button>`, `<button data-flmode="lock" class="${fleetUi.lock ? 'on' : ''}">LOCK</button>`])
     + (fleetUi.lock ? `<button class="fl-lockbar" data-flunlock="1" title="tap to hear every system again"><small>LOCKED ON</small><b>${esc(fleetUi.lock.label)}</b><em>UNLOCK</em></button>` : '<span class="fl-dim">every system, first call to talk is heard</span>');
   dispatchNowBar(np, s, now);
@@ -8038,7 +8080,7 @@ function clearApp(id: string): void {
     case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
     case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.regionalSeen.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
-    case 'fleet': fleetUi.snap = null; fleetUi.sel = null; fleetUi.unit = null; break;
+    case 'fleet': fleetUi.snap = null; fleetUi.sel = null; fleetUi.unit = null; try { localStorage.removeItem(KNOWN_KEY); } catch { /* storage blocked */ } break;
     case 'hd': hdUi.snap = null; hdUi.sel = ''; for (const o of hdUi.objects) URL.revokeObjectURL(o.url); hdUi.objects = []; hdUi.tileUrls.clear(); hdUi.mapKey = ''; break;
     case 'cell': cellUi.sel = ''; cellUi.detail = null; break;
     case 'atsc': atscUi.snap = null; atscUi.sel = ''; atscUi.detail = null; atscUi.stills.clear(); atscGuide.clear(); worker?.postMessage({ type: 'atsc', cmd: 'clear' }); void atscDb().then(db => { try { db?.transaction('stills', 'readwrite').objectStore('stills').clear(); } catch { /* storage blocked */ } }); try { localStorage.removeItem(ATSC_KEY); } catch { /* storage blocked */ } break;
@@ -8462,6 +8504,7 @@ function ensureWorker(): Worker {
       case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][] }; refreshFleet(true); break;
       case 'fleetExport': fleetExport(m.csv as string, m.json as string); break;
       case 'fleetVu': if (state.app === 'fleet') dispatchVu(m.key as string, Number(m.db)); break;
+      case 'fleetKnown': dispatchSaveKnown(m.known); break;
       case 'cell': cellUi.snap = m as unknown as CellSnap; refreshCell(); break;
       case 'cellDetail': cellUi.detail = m as unknown as CellDetail; refreshCell(true); break;
       case 'cellExport': cellExport(m.csv as string, m.json as string); break;

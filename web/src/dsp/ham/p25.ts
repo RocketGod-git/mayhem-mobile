@@ -333,7 +333,11 @@ export class P25Decoder {
   private decodeEs(d: number[]): void {
     if (d.length < 120) return;
     const { hex, bad } = this.hexWords(d);
-    if (bad > 4 || rsDecode(hex, 8) < 0) return;
+    // a sync can mark a call encrypted, so it has to be beyond doubt: at most two words past their Hamming code and
+    // at most three symbols corrected in all (the code would take four)
+    if (bad > 2) return;
+    const fixed = rsDecode(hex, 8);
+    if (fixed < 0 || fixed > 3) return;
     this.onEs(syncOf(hex, 0));
   }
 
@@ -346,7 +350,8 @@ export class P25Decoder {
   private decodeHdu(): void {
     const at = 32, hex = new Uint8Array(36);
     for (let w = 0; w < 36; w++) { let v = 0; for (let i = 0; i < 3; i++) v = v * 4 + this.info[at + 9 * w + i]; hex[w] = v; }
-    if (rsDecode(hex, 16) < 0) return;
+    const fixed = rsDecode(hex, 16);
+    if (fixed < 0 || fixed > 6) return;
     const es = syncOf(hex, 0), bit = (i: number) => (hex[(i / 6) | 0] >> (5 - i % 6)) & 1;
     const f = (from: number, n: number) => { let v = 0; for (let i = 0; i < n; i++) v = v * 2 + bit(from + i); return v; };
     this.onHdu({ mi: es.mi, mfid: f(72, 8), algId: f(80, 8), keyId: f(88, 16), tg: f(104, 16) });

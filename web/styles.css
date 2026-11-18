@@ -2733,3 +2733,10 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 @keyframes fl-talk { 50% { transform: scale(1.5); filter: drop-shadow(0 0 8px var(--ok)); } }
 @keyframes fl-ring { from { transform: scale(.6); opacity: 1; } to { transform: scale(3); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .fl-air.emerg, .geo.talk svg, .geo.talk::before, .fl-np-l i { animation: none; } }
+/* Dispatch: unit positions kept from earlier fade with their age */
+.geo.old { opacity: .6; }
+.geo.older { opacity: .35; }
+.fl-encrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; padding: 5px 8px; border-radius: 9px; border: 1px dashed color-mix(in srgb, var(--accent2) 55%, transparent); font-size: 10px; }
+.fl-encrow small { font-size: 8px; letter-spacing: 1.5px; color: var(--accent2); font-weight: 800; }
+.fl-encrow span { cursor: pointer; color: var(--ink); font-weight: 700; }
+.fl-encrow i { font-style: normal; font-weight: 400; color: var(--muted); margin-left: 4px; }
