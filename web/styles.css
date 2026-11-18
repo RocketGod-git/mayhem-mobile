@@ -2302,7 +2302,7 @@ main#view.view.hd.hdwide { display: grid; grid-template-columns: minmax(0, 1fr) 
 .view.hd.hdwide .hd-left > .ctlrow { flex: none; }
 .view.hd.hdwide .hd-hero { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 2px; }
 .view.hd.hdwide .hd-art { width: min(30vh, 340px); }
-.view.hd.hdwide .hd-title { font-size: 28px; }
+.view.hd.hdwide .hd-title { font-size: clamp(18px, 2vw, 28px); }
 .view.hd.hdwide .hd-artist { font-size: 18px; }
 .view.hd.hdwide .hd-mapbox { flex: 1; min-height: 0; }
 .view.hd.hdwide .hd-mapbox .map { flex: 1; height: auto; min-height: 0; }
