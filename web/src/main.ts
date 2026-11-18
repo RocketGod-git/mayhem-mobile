@@ -30,7 +30,8 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import type { FleetSnap, CallRow as FleetCall, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
+import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho } from './dsp/fleet/view.js';
+import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
@@ -4571,7 +4572,39 @@ const fleetUi = {
   unit: null as { key: string; reports: FleetUnitReport[]; trail: [number, number, number][] } | null,
   windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false, hold: false, wired: false,
   prefs: loadDispatchPrefs(), airSeen: new Map<string, number>(), audioOn: false, gain: 0.8, following: null as { key: string; home: number; until: number } | null,
+  lock: loadDispatchLock(), vu: { key: '', db: -90 },
 };
+/** The system lock is kept on the device too: ALL is no lock. */
+function loadDispatchLock(): DispatchLock | null {
+  try { const v = JSON.parse(localStorage.getItem('mm.fleet.lock') ?? 'null'); if (v && typeof v.sys === 'string' && v.sys) return { sys: v.sys, site: typeof v.site === 'string' ? v.site : '', label: String(v.label ?? v.sys), hz: Number(v.hz) || 0 }; } catch { /* storage blocked */ }
+  return null;
+}
+/** What the worker is told: the talkgroup preferences and the lock. */
+const dispatchPrefsMsg = (): TgPrefs => ({ ...fleetUi.prefs, lock: fleetUi.lock });
+/** Lock on one system (or one of its sites), or back to ALL with null. Tunes to the locked system when it is out of the span. */
+function dispatchLock(l: DispatchLock | null): void {
+  fleetUi.lock = l;
+  try { if (l) localStorage.setItem('mm.fleet.lock', JSON.stringify(l)); else localStorage.removeItem('mm.fleet.lock'); } catch { /* storage blocked */ }
+  worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: dispatchPrefsMsg() });
+  if (l) dispatchTuneLock();
+  fleetDwell(); refreshFleet(true);
+}
+/** Brings the locked system's control channel into the span, if it is not there. */
+function dispatchTuneLock(): void {
+  const l = fleetUi.lock, s = fleetUi.snap; if (!l || !l.hz) return;
+  if (s && l.hz > s.spanLo + 20_000 && l.hz < s.spanHi - 20_000) return;
+  const half = fleetRate() * 0.4, w = fleetUi.windows.map((x, i) => ({ i, d: Math.abs(x.hz - l.hz) })).filter(x => x.d < half).sort((a, b) => a.d - b.d)[0];
+  if (fleetUi.following) fleetUi.following = null;
+  if (w) { fleetUi.idx = w.i; tune(fleetUi.windows[w.i].hz); } else tune(Math.round(l.hz));
+}
+/** A lock for a system (and a site), named the way its card names it, with its control channel to come back to. */
+function dispatchLockFor(sysKey: string, siteLabel = ''): DispatchLock | null {
+  const x = fleetUi.snap?.systems.find(y => y.key === sysKey); if (!x) return null;
+  const site = siteLabel ? x.sites.find(y => y.label === siteLabel) : x.sites[0];
+  const hz = site?.ccHz[0] ?? x.sites.find(y => y.ccHz.length)?.ccHz[0] ?? 0;
+  return { sys: x.key, site: siteLabel, label: `${fleetSysTitle(x)}${siteLabel ? ` · SITE ${siteLabel}` : ''}`, hz };
+}
+const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
 /** Talkgroup preferences are kept on the device (the key names keep the app's internal id). */
 function loadDispatchPrefs(): TgPrefs {
   try { const v = JSON.parse(localStorage.getItem('mm.fleet.tgprefs') ?? 'null'); if (v && Array.isArray(v.mute) && Array.isArray(v.prio)) return { mute: v.mute, hold: typeof v.hold === 'string' ? v.hold : '', prio: v.prio }; } catch { /* storage blocked */ }
@@ -4582,7 +4615,7 @@ function dispatchPref(kind: 'mute' | 'hold' | 'prio', key: string): void {
   if (kind === 'hold') p.hold = p.hold === key ? '' : key;
   else { const l = p[kind], i = l.indexOf(key); if (i >= 0) l.splice(i, 1); else l.push(key); }
   try { localStorage.setItem('mm.fleet.tgprefs', JSON.stringify(p)); } catch { /* storage blocked */ }
-  worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: p });
+  worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: dispatchPrefsMsg() });
   refreshFleet(true);
 }
 function dispatchAudio(on: boolean, gain = fleetUi.gain): void {
@@ -4616,7 +4649,10 @@ function fleetOpen(): void {
   fleetUi.windows = fleetWindows(); fleetUi.idx = 0;
   configure('NONE', fleetUi.windows[0].hz, fleetRate(), 32, 40, true, 'fleet');
   fleetUi.following = null;
-  worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: fleetUi.prefs });
+  worker?.postMessage({ type: 'fleet', cmd: 'prefs', prefs: dispatchPrefsMsg() });
+  // a saved lock starts on the window holding the locked system's control channel
+  const lk = fleetUi.lock;
+  if (lk?.hz) { const half = fleetRate() * 0.4, i = fleetUi.windows.findIndex(x => Math.abs(x.hz - lk.hz) < half); if (i > 0) { fleetUi.idx = i; tune(fleetUi.windows[i].hz); } }
   try { const a = JSON.parse(localStorage.getItem('mm.fleet.audio') ?? 'null'); if (a) { fleetUi.audioOn = !!a.on; fleetUi.gain = Number(a.gain) || 0.8; } } catch { /* storage blocked */ }
   worker?.postMessage({ type: 'fleet', cmd: 'audio', on: fleetUi.audioOn, gain: fleetUi.gain });
   const pos = state.home ?? lastKnownPos();
@@ -4634,6 +4670,8 @@ function fleetDwell(): void {
     if (state.app !== 'fleet') return;
     const s = fleetUi.snap, now = Date.now();
     if (fleetUi.following) { fleetUi.dwellEnd = Math.max(fleetUi.dwellEnd, now + 6_000); fleetUi.scanTimer = window.setTimeout(check, 500); return; }
+    // locked: the receiver stays with the locked system (and goes back to it if something moved it)
+    if (fleetUi.lock) { fleetUi.found = true; fleetUi.dwellEnd = now + 6_000; if (s && fleetUi.lock.hz && (fleetUi.lock.hz < s.spanLo || fleetUi.lock.hz > s.spanHi)) dispatchTuneLock(); fleetUi.scanTimer = window.setTimeout(check, 500); return; }
     const live = s ? s.carriers.some(c => (c.role === 'control' || c.role === 'rest') && c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastDecodeMs < 5_000) : false;
     if (live && !fleetUi.found) { fleetUi.found = true; fleetUi.dwellEnd = now + 25_000; }
     if (now >= fleetUi.dwellEnd) { fleetUi.idx = (fleetUi.idx + 1) % fleetUi.windows.length; tune(fleetUi.windows[fleetUi.idx].hz); fleetUi.found = false; fleetUi.dwellEnd = now + 6_000; refreshFleet(true); }
@@ -4670,16 +4708,18 @@ function renderFleet(view: HTMLElement): void {
   view.innerHTML = `
     <section class="${visCls('fleet')}">${readoutHtml()}${wide ? `<div class="fl-mapbox">${mapHtml}</div>` : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
+      <div id="fl-now" class="fl-now" hidden></div>
       <div id="fl-head" class="fl-head"></div>
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...FLEET_BANDS.map(b => [b[0], b[0] === 'TBAND' ? 'T-BAND' : b[0]])].map(([k, l]) => `<button data-flband="${k}">${l}</button>`))}</div>
       ${hack ? `<div class="ctlrow"><span class="rl">SPAN</span>${segHtml(FLEET_SPANS.map(([r, l]) => `<button data-flspan="${r}" class="${radioCan(r) ? '' : 'off'}">${l}</button>`))}</div>` : ''}
       <div class="ctlrow">${segHtml(tabs.map(v => `<button data-flview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('fleet')}${wide ? '' : `<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button>`}<button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
+      <div id="fl-mode" class="ctlrow fl-mode"></div>
       <div id="fl-audio" class="ctlrow fl-audio" hidden></div>
       ${wide ? '<div id="fl-detail" class="mt-detail fl-dock" hidden></div>' : ''}
       <div id="fl-onair" class="fl-onair" hidden></div>
       <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div><div id="fl-calls" class="fl-calls"></div>${wide ? '' : mapHtml}<div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div>${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}</div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
-      <div class="note">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. Phase 2 TDMA calls show everything but their audio. Mute, hold and priority are per talkgroup. DMR unit positions come from a format derived from recordings, checked by the vendor CRC worked out from them, and are resolved against your own position (within about 300 km); a report that fails its check is shown as unverified. AUTO steps through the bands and stays where it finds a system. Tap anything for all it carried.</div>
+      <div class="note">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. Phase 2 TDMA calls show everything but their audio for now. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, and the DMR privacy bit and header; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it (derived). A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, hold and priority are per talkgroup. DMR unit positions come from a format derived from recordings, checked by the vendor CRC worked out from them, and are resolved against your own position (within about 300 km); a report that fails its check is shown as unverified. AUTO steps through the bands and stays where it finds a system. Tap anything for all it carried.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-flband]', view).forEach(b => b.onclick = () => fleetSetBand(b.dataset.flband!));
@@ -4691,8 +4731,29 @@ function renderFleet(view: HTMLElement): void {
     const t = (e.target as HTMLElement).closest<HTMLElement>('[data-flsel]');
     if (t) { const [kind, ...rest] = t.dataset.flsel!.split(':'); fleetPick({ kind: kind as 'unit' | 'tg' | 'sys' | 'car', key: rest.join(':') }); }
   };
-  $('fl-cards').onclick = pick; $('fl-grants').onclick = pick; $('fl-freqs').onclick = pick;
+  /** Lock, unlock and position buttons, wherever they are: true when the click was one of them. */
+  const special = (e: Event): boolean => {
+    const t = e.target as HTMLElement;
+    const lk = t.closest<HTMLElement>('[data-fllock]'); if (lk) { const [sys, site] = lk.dataset.fllock!.split('|'); const l = dispatchLockFor(sys, site ?? ''); if (l) dispatchLock(l); return true; }
+    if (t.closest('[data-flunlock]')) { dispatchLock(null); return true; }
+    const go = t.closest<HTMLElement>('[data-flgo]'); if (go) { const [la, lo, ...k] = go.dataset.flgo!.split(','); dispatchGoTo(Number(la), Number(lo), k.join(',')); return true; }
+    return false;
+  };
+  $('fl-cards').onclick = (e) => { if (!special(e)) pick(e); }; $('fl-grants').onclick = pick; $('fl-freqs').onclick = pick;
+  $('fl-mode').onclick = (e) => {
+    if (special(e)) return;
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-flmode]'); if (!b) return;
+    if (b.dataset.flmode === 'all') { dispatchLock(null); return; }
+    if (fleetUi.lock) return;
+    const s = fleetUi.snap, sel = fleetUi.sel?.kind === 'sys' ? fleetUi.sel.key : '';
+    const playing = s ? s.calls.find(c => c.key === s.playing) : undefined, now = Date.now();
+    const sys = sel || playing?.sys || s?.calls.find(c => c.onAir && c.sys)?.sys || s?.systems.filter(x => now - x.lastMs < 15_000).sort((a, b) => b.grants - a.grants)[0]?.key || '';
+    const l = sys ? dispatchLockFor(sys) : null;
+    if (l) dispatchLock(l); else log('no system to lock on yet, wait for one to show or lock from its card');
+  };
+  $('fl-now').onclick = (e) => { if (special(e)) return; pick(e); };
   const callClick = (e: Event) => {
+    if (special(e)) return;
     const t = e.target as HTMLElement;
     const pref = t.closest<HTMLElement>('[data-fltg]'); if (pref) { const [kind, ...rest] = pref.dataset.fltg!.split(':'); dispatchPref(kind as 'mute' | 'hold' | 'prio', rest.join(':')); return; }
     const play = t.closest<HTMLElement>('[data-flplay]'); if (play) { void ensureAudio(); worker?.postMessage({ type: 'fleet', cmd: 'replay', key: play.dataset.flplay }); return; }
@@ -4704,7 +4765,7 @@ function renderFleet(view: HTMLElement): void {
   // A redraw between press and release would swap the element under the pointer and lose the click.
   const hold = () => { fleetUi.hold = true; };
   const release = () => { if (!fleetUi.hold) return; setTimeout(() => { fleetUi.hold = false; refreshFleet(true); }, 0); };
-  for (const id of ['fl-cards', 'fl-calls', 'fl-onair', 'fl-grants', 'fl-freqs', 'fl-detail', 'fl-audio']) $(id).onpointerdown = hold;
+  for (const id of ['fl-cards', 'fl-calls', 'fl-onair', 'fl-grants', 'fl-freqs', 'fl-detail', 'fl-audio', 'fl-mode', 'fl-now']) $(id).onpointerdown = hold;
   if (!fleetUi.wired) { fleetUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
   $('fl-detail').onclick = (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('[data-fldo]'); if (b) { if (b.dataset.fldo === 'close') fleetUi.sel = null; else if (b.dataset.fldo === 'map') { if (!FLEET_WIDE.matches) fleetUi.view = 'map'; const u = fleetUi.snap?.units.find(x => x.key === fleetUi.sel?.key); refreshFleet(true); if (u && u.lat !== null && u.lon !== null) geo?.center(u.lat, u.lon, 15); return; } refreshFleet(true); return; }
@@ -4715,11 +4776,19 @@ function renderFleet(view: HTMLElement): void {
   view.classList.toggle('fleetfull', fleetUi.full);
   // Unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them.
   const dragged = (lat: number, lon: number) => { if (!state.home && !lastKnownPos()) worker?.postMessage({ type: 'fleetRef', lat, lon }); };
-  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id }), onDragEnd: dragged, log });
+  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, onPick: id => fleetPick({ kind: 'unit', key: id.replace(/^call:/, '') }), onDragEnd: dragged, log });
   clearInterval(fleetUi.timer);
   fleetUi.timer = window.setInterval(() => { if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; } refreshFleet(); }, 500);
   refreshList('fleet');
   refreshFleet(true);
+}
+/** Shows a call's position on the map: the map view on a phone, centered there, the unit picked when there is one. */
+function dispatchGoTo(lat: number, lon: number, unitKey: string): void {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  if (!FLEET_WIDE.matches) fleetUi.view = 'map';
+  if (unitKey && fleetUi.snap?.units.some(u => u.key === unitKey)) { fleetUi.sel = { kind: 'unit', key: unitKey }; fleetUi.unit = null; worker?.postMessage({ type: 'fleet', cmd: 'unit', key: unitKey }); }
+  refreshFleet(true);
+  requestAnimationFrame(() => geo?.center(lat, lon, 15));
 }
 function fleetPick(sel: FleetSel): void {
   fleetUi.sel = sel && fleetUi.sel && fleetUi.sel.kind === sel.kind && fleetUi.sel.key === sel.key ? null : sel;
@@ -4731,10 +4800,10 @@ const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span cl
 function fleetHead(s: FleetSnap | null, now: number): string {
   const sites = s ? s.systems.reduce((n, x) => n + x.sites.length, 0) : 0, units = s?.units.length ?? 0, live = s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000) : [];
   const w = fleetUi.windows[fleetUi.idx], c = s?.centerHz ?? w?.hz ?? 0, band = FLEET_BANDS.find(b => c >= b[2] - 2e6 && c <= b[3] + 2e6) ?? FLEET_BANDS.find(b => b[0] === w?.band);
-  const scan = fleetUi.windows.length > 1 ? `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : 'HOLDING';
+  const scan = fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : 'HOLDING';
   const span = s ? `${fleetMhz(s.spanLo, 3)}–${fleetMhz(s.spanHi, 3)} MHz` : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
-  const onAir = s?.calls.filter(c => c.onAir).length ?? 0;
+  const onAir = s?.calls.filter(c => c.onAir && c.kind === 'call' && !c.outside).length ?? 0;
   return `<div class="fl-watch"><b>${esc(band ? band[1] + ' MHz' : '')}</b><small>${span}${s ? ` · ${live.length} carriers · ${s.slots} decoding` : ''}</small><em class="${fleetUi.found ? 'on' : ''}">${scan}</em></div>`
     + `<div class="fl-count">${tile(s?.systems.length ?? 0, 'SYSTEMS')}${tile(sites, 'SITES')}${tile(units, 'UNITS')}<span class="${onAir ? 'air' : ''}"><b>${onAir}</b><small>ON AIR</small></span>${tile(s?.perMin ?? 0, 'GRANTS/MIN')}${tile(s?.blocks ?? 0, 'BLOCKS')}</div>`;
 }
@@ -4757,22 +4826,26 @@ function fleetSiteHtml(sys: FleetSystem, site: FleetSite, now: number): string {
     if (site.lcns.length || site.rest >= 0) body += `<div class="fl-lcn">${site.lcns.map(l => `<span class="${l.lcn === site.rest ? 'rest' : site.busy.includes(l.lcn) ? 'busy' : ''}"><b>LCN ${l.lcn}</b><i>${fleetMhz(l.hz)} TS${l.slot + 1}</i></span>`).join('')}${site.rest >= 0 && !site.lcns.some(l => l.lcn === site.rest) ? `<span class="rest"><b>LCN ${site.rest}</b><i>rest, not heard</i></span>` : ''}${site.busy.filter(n => !site.lcns.some(l => l.lcn === n)).map(n => `<span class="busy"><b>LCN ${n}</b><i>busy</i></span>`).join('')}</div>`;
     body += `<div class="fl-kv"><span>UNITS <b>${site.units}</b></span>${site.rest >= 0 ? `<span>REST <b>LCN ${site.rest}</b></span>` : ''}</div>`;
   }
-  return `<div class="fl-site ${live ? '' : 'dim'}"><div class="fl-sh"><b>${esc(sys.proto === 'P25' ? `SITE ${site.label}` : site.label.toUpperCase())}</b>${site.callsign && sys.proto === 'P25' ? `<em>${esc(site.callsign)}</em>` : ''}<span class="fl-lvl"><i style="width:${(100 * lvl).toFixed(0)}%"></i></span><small>${site.levelDb.toFixed(0)} dB · ${fleetAgo(age)}</small></div><div class="fl-ccs">${ccs}</div>${body}</div>`;
+  const lockedHere = fleetUi.lock?.sys === sys.key && fleetUi.lock.site === site.label;
+  const siteLock = sys.proto === 'P25' ? `<button class="chip fl-lockb ${lockedHere ? 'on' : ''}" ${lockedHere ? 'data-flunlock="1"' : `data-fllock="${esc(sys.key)}|${esc(site.label)}"`} title="${lockedHere ? 'unlock' : 'lock on this site'}">${lockedHere ? 'LOCKED' : 'LOCK SITE'}</button>` : '';
+  return `<div class="fl-site ${live ? '' : 'dim'}"><div class="fl-sh"><b>${esc(sys.proto === 'P25' ? `SITE ${site.label}` : site.label.toUpperCase())}</b>${site.callsign && sys.proto === 'P25' ? `<em>${esc(site.callsign)}</em>` : ''}${siteLock}<span class="fl-lvl"><i style="width:${(100 * lvl).toFixed(0)}%"></i></span><small>${site.levelDb.toFixed(0)} dB · ${fleetAgo(age)}</small></div><div class="fl-ccs">${ccs}</div>${body}</div>`;
 }
 /** A CW ID chip: the callsign, how long ago it was keyed, and on which channel. */
 const flIdChip = (id: string, ago: number, hz = 0) => `<span class="fl-id" title="CW ID${hz ? ` on ${fleetMhz(hz)} MHz` : ''}, ${fleetAgoText(ago)}"><small>ID</small>${esc(id)}<i>${fleetAgo(ago)}</i></span>`;
 function fleetSystemCard(sys: FleetSystem, now: number): string {
   const col = FLEET_COLORS[sys.color % FLEET_COLORS.length], age = now - sys.lastMs, flash = Math.max(0, 1 - age / 1500);
-  const title = sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
+  const title = fleetSysTitle(sys);
   const sel = fleetUi.sel?.kind === 'sys' && fleetUi.sel.key === sys.key;
-  return `<div class="fl-sys ${sel ? 'sel' : ''} ${age < 15_000 ? '' : 'dim'}" style="--sys:${col};--flash:${flash.toFixed(2)}">`
-    + `<div class="fl-syh" data-flsel="sys:${esc(sys.key)}"><span class="fl-proto">${sys.proto}</span><span class="fl-syt"><b>${esc(title)}</b><small>${sys.callsign ? `${esc(sys.callsign)} · ` : ''}${sys.sites.length} site${sys.sites.length === 1 ? '' : 's'} · ${sys.units} units · ${sys.tgs} talkgroups · ${sys.grants} grants${sys.derived ? ' · derived formats' : ''}</small></span>${sys.cwId ? flIdChip(sys.cwId, now - sys.cwIdMs, sys.cwIdHz) : ''}<span class="mt-live ${age < 15_000 ? 'on' : ''}"><i></i>${age < 15_000 ? 'LIVE' : fleetAgo(age)}</span></div>`
+  const locked = fleetUi.lock?.sys === sys.key && !fleetUi.lock.site, out = !!fleetUi.lock && fleetUi.lock.sys !== sys.key;
+  const lockB = `<button class="chip fl-lockb ${locked ? 'on' : ''}" ${locked ? 'data-flunlock="1"' : `data-fllock="${esc(sys.key)}|"`} title="${locked ? 'unlock' : 'lock on this system'}">${locked ? 'LOCKED' : 'LOCK'}</button>`;
+  return `<div class="fl-sys ${sel ? 'sel' : ''} ${age < 15_000 && !out ? '' : 'dim'} ${fleetUi.lock?.sys === sys.key ? 'locked' : ''}" style="--sys:${col};--flash:${flash.toFixed(2)}">`
+    + `<div class="fl-syh" data-flsel="sys:${esc(sys.key)}"><span class="fl-proto">${sys.proto}</span><span class="fl-syt"><b>${esc(title)}</b><small>${sys.callsign ? `${esc(sys.callsign)} · ` : ''}${sys.sites.length} site${sys.sites.length === 1 ? '' : 's'} · ${sys.units} units · ${sys.tgs} talkgroups · ${sys.grants} grants${sys.derived ? ' · derived formats' : ''}</small></span>${sys.cwId ? flIdChip(sys.cwId, now - sys.cwIdMs, sys.cwIdHz) : ''}${lockB}<span class="mt-live ${age < 15_000 ? 'on' : ''}"><i></i>${age < 15_000 ? 'LIVE' : fleetAgo(age)}</span></div>`
     + sys.sites.map(x => fleetSiteHtml(sys, x, now)).join('') + '</div>';
 }
 function fleetGrantRow(g: FleetGrant, now: number): string {
   const col = fleetColor(g.sys), flash = Math.max(0, 1 - (now - g.ms) / 1200);
   const who = g.group ? `<span class="fl-tg" data-flsel="tg:${esc(g.sys)}/${g.tg}">TG ${g.tg}</span>` : `<span class="fl-tg">UNIT ${g.tg}</span>`;
-  const ch = g.hz > 0 ? `${fleetMhz(g.hz)}${g.tdma ? ` · TDMA S${g.slot + 1}` : ''}` : `${esc(g.ch)}${g.tdma && g.slot >= 0 ? ` · TS${g.slot + 1}` : ''}`;
+  const ch = g.hz > 0 ? `${fleetMhz(g.hz)}${g.tdma ? ` · TDMA S${g.slot + 1}` : g.lpcn !== undefined && g.lpcn >= 0 ? ` · TS${g.slot + 1} · LPCN ${g.lpcn}${g.chDerived ? ' derived' : ''}` : ''}` : `${esc(g.ch)}${g.lpcn !== undefined && g.lpcn >= 0 ? ` · TS${g.slot + 1}` : g.tdma && g.slot >= 0 ? ` · TS${g.slot + 1}` : ''}`;
   return `<div class="fl-grant ${g.emergency ? 'emerg' : ''}" style="--sys:${col};--flash:${flash.toFixed(2)}"><i></i><span class="fl-gt">${fleetClock(g.ms)}</span>${who}<span class="fl-src">${g.src ? `← ${g.src}` : ''}</span><span class="fl-gch">${ch}</span><span class="fl-gf">${g.emergency ? flPill('EMERG', 'red') : ''}${g.encrypted ? flPill('ENC', 'acc') : ''}${g.kind === 'datagrant' ? flPill('DATA') : g.kind === 'u2u' ? flPill('PRIVATE') : ''}</span></div>`;
 }
 function fleetGrantsHtml(s: FleetSnap, now: number): string {
@@ -4805,26 +4878,50 @@ function dispatchPrefButtons(key: string): string {
 function dispatchAudioNote(c: FleetCall, codecs: string[]): string {
   if (c.encrypted) return 'encrypted, no audio';
   if (c.audioMs > 0) return '';
-  if (c.tdma) return 'no audio yet, Phase 2 TDMA voice is not built';
+  if (c.tdma && c.proto === 'P25') return 'no audio yet, Phase 2 voice needs a recording to build';
+  if (c.sec === 'unknown' && c.voiceMs) return 'checking for encryption';
   if (!codecs.includes(c.codec)) return c.codec === 'imbe' ? 'no audio yet, the P25 full-rate vocoder is not built' : `no audio yet, the half-rate vocoder for ${c.proto === 'DMR' ? 'DMR' : 'Phase 2'} is not built`;
   return c.voiceMs ? '' : 'voice channel not heard';
 }
-const dispatchWho = (c: FleetCall) => c.tg ? `${c.group ? 'TG' : 'UNIT'} ${c.tg}` : 'UNKNOWN TALKGROUP';
-/** Security as the call itself states it: the grant's service options or the voice link control. */
-const dispatchSec = (c: FleetCall) => c.encrypted ? flPill('ENCRYPTED', 'acc') : c.granted || c.lcVerified ? flPill('CLEAR', 'ok') : '';
+const dispatchWho = callWho;
+/** Security as the call itself states it: the grant's service options, the link control, the encryption sync, the privacy bit. */
+const dispatchSec = (c: FleetCall) => { const t = secText(c); return t ? flPill(t, c.encrypted ? 'acc' : 'ok') : ''; };
+/** Where a P25 key and message indicator or a DMR privacy header were read, for the card's security line. */
+function dispatchSecLine(c: FleetCall): string {
+  if (!c.encrypted) return '';
+  const bits: string[] = [];
+  if (c.mi) bits.push(`MI ${c.mi.toUpperCase()}`);
+  if (c.pi) bits.push(`PRIVACY HEADER ${c.pi.toUpperCase()}`);
+  if (c.secFrom) bits.push(`from the ${SEC_FROM[c.secFrom] ?? c.secFrom}`);
+  return bits.length ? `<div class="fl-sec ${c.encrypted ? 'enc' : ''}">${esc(bits.join(' · '))}</div>` : '';
+}
+/** The listener's own position, for distance and direction to a call. */
+const dispatchMe = () => state.home ?? lastKnownPos();
+/** A call's position as a button that shows it on the map, or '' when it has none. */
+function dispatchPosChip(c: FleetCall, long: boolean): string {
+  const p = c.pos; if (!p) return '';
+  const who = p.via === 'unit' ? `UNIT ${p.unit}` : `TG MEMBER ${p.unit}`;
+  return `<button class="fl-loc ${c.onAir ? 'live' : ''}" data-flgo="${p.lat},${p.lon},${esc(c.sys)}/${p.unit}" title="show on the map"><small>${long ? 'HEARD FROM' : 'AT'}</small>${esc(posText(p, dispatchMe()))}${long ? `<i>${esc(who)} · ${fleetAgoText(Date.now() - p.ms)} · derived${p.verified ? '' : ', unverified'}</i>` : ''}</button>`;
+}
 function dispatchOnAirCard(c: FleetCall, s: FleetSnap, now: number): string {
   const col = c.sys ? fleetColor(c.sys) : 'var(--accent)', sys = s.systems.find(x => x.key === c.sys);
   const lvl = Math.max(0, Math.min(1, c.levelDb / 40)), segs = 16, lit = Math.round(lvl * segs);
   const meter = Array.from({ length: segs }, (_, i) => `<i class="${i < lit ? (i >= segs - 3 ? 'hi' : 'on') : ''}"></i>`).join('');
   const note = dispatchAudioNote(c, s.codecs), key = dispatchKey(c), sel = c.group ? `tg:${esc(key)}` : `unit:${esc(c.sys)}/${c.tg}`;
-  const ch = c.hz > 0 ? `${fleetMhz(c.hz)} MHz${c.tdma ? ` · TDMA S${c.slot + 1}` : c.proto === 'DMR' ? ` · TS${c.slot + 1}` : ''}` : 'channel not resolved';
+  const lp = c.lpcn >= 0 ? ` · LPCN ${c.lpcn}${c.chDerived ? ' derived' : ''}` : '';
+  const ch = c.hz > 0 ? `${fleetMhz(c.hz)} MHz${c.tdma ? ` · TDMA S${c.slot + 1}` : c.proto === 'DMR' ? ` · TS${c.slot + 1}` : ''}${lp}` : c.lpcn >= 0 ? `LPCN ${c.lpcn} · TS${c.slot + 1} · learning its frequency` : 'channel not resolved';
   // the card slides in once, when the call first shows; the dot blinks with the redraws (twice a second)
   const first = fleetUi.airSeen.get(c.key) ?? now; if (!fleetUi.airSeen.has(c.key)) { fleetUi.airSeen.set(c.key, now); if (fleetUi.airSeen.size > 400) fleetUi.airSeen.delete(fleetUi.airSeen.keys().next().value as string); }
   const fresh = now - first < 450, blink = Math.floor(now / 500) % 2 === 1;
   const following = fleetUi.following?.key === c.key, car = c.hz > 0 ? s.carriers.find(x => Math.abs(x.hz - c.hz) < 3_200 && x.callsign) : undefined;
-  return `<div class="fl-air ${fresh ? 'fresh' : ''} ${blink ? 'blink' : ''} ${c.emergency ? 'emerg' : ''} ${c.encrypted ? 'enc' : ''} ${c.muted ? 'muted' : ''} ${c.prio ? 'prio' : ''}" style="--sys:${col}">`
-    + `<div class="fl-air-h"><span class="fl-onbadge"><i></i>${c.muted ? 'MUTED' : 'ON AIR'}</span><span class="fl-proto">${c.proto}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.emergency ? flPill('EMERGENCY', 'red') : ''}${dispatchSec(c)}<span class="fl-air-t">${flDur(now - c.startMs)}</span></div>`
-    + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>UNIT</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}</div>`
+  const playing = s.playing === c.key && fleetUi.audioOn, ended = !c.onAir;
+  const badge = ended ? 'ENDED' : c.emergency ? 'EMERGENCY' : c.outside ? 'OTHER SYSTEM' : c.muted ? 'MUTED' : playing ? 'PLAYING' : 'ON AIR';
+  const lockB = !fleetUi.lock && c.sys ? `<button class="chip fl-lockb" data-fllock="${esc(c.sys)}|" title="lock on this system">LOCK</button>` : '';
+  const vu = playing ? `<div class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><small>AUDIO</small><span><i></i></span></div>` : '';
+  return `<div class="fl-air ${fresh ? 'fresh' : ''} ${blink ? 'blink' : ''} ${c.emergency ? 'emerg' : ''} ${c.encrypted ? 'enc' : ''} ${c.muted ? 'muted' : ''} ${c.outside ? 'out' : ''} ${c.prio ? 'prio' : ''} ${playing ? 'playing' : ''} ${ended ? 'ended' : ''}" data-flkey="${esc(c.key)}" style="--sys:${col}">`
+    + `<div class="fl-air-h"><span class="fl-onbadge"><i></i>${badge}</span><span class="fl-proto">${c.proto}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.emergency && !ended ? '' : c.emergency ? flPill(`EMERGENCY · ${fleetAgoText(now - c.endMs)}`, 'red') : ''}${dispatchSec(c)}<span class="fl-air-t">${flDur((ended ? c.endMs : now) - c.startMs)}</span></div>`
+    + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>UNIT</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}${lockB}</div>`
+    + dispatchPosChip(c, true) + dispatchSecLine(c) + vu
     + `<div class="fl-meter" title="signal ${c.levelDb.toFixed(0)} dB">${meter}<small>${c.levelDb > 0 ? `${c.levelDb.toFixed(0)} dB` : ''}</small></div>`
     + `<div class="fl-air-f"><small>${c.voiceMs ? `VOICE ${(c.voiceMs / 1000).toFixed(1)} s` : c.granted ? 'GRANTED' : ''}${note ? ` · ${esc(note)}` : ''}</small><span class="pc-m">${dispatchPrefButtons(key)}</span></div></div>`;
 }
@@ -4832,9 +4929,10 @@ function dispatchCallRow(c: FleetCall, now: number): string {
   if (c.kind === 'id') return `<div class="fl-call idrow" style="--sys:${c.sys ? fleetColor(c.sys) : 'var(--muted)'}"><i></i><span class="fl-gt">${fleetClock(c.startMs)}</span>${flIdChip(c.cwId, now - c.startMs, c.hz)}<span class="fl-src">CW ID</span><span class="fl-cd">${fleetMhz(c.hz)} MHz</span></div>`;
   const col = c.sys ? fleetColor(c.sys) : 'var(--muted)', dur = (c.onAir ? now : c.endMs) - c.startMs;
   const sel = c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`;
-  return `<div class="fl-call ${c.onAir ? 'live' : ''} ${c.emergency ? 'emerg' : ''}" style="--sys:${col}"><i></i><span class="fl-gt">${fleetClock(c.startMs)}</span><b class="fl-tg" data-flsel="${sel}">${esc(dispatchWho(c))}</b>`
+  const enc = c.encrypted ? secText(c).replace(/^ENCRYPTED/, 'ENC') : '';
+  return `<div class="fl-call ${c.onAir ? 'live' : ''} ${c.emergency ? 'emerg' : ''} ${c.outside ? 'out' : ''}" style="--sys:${col}"><i></i><span class="fl-gt">${fleetClock(c.startMs)}</span><b class="fl-tg" data-flsel="${sel}">${esc(dispatchWho(c))}</b>`
     + `<span class="fl-src">${c.src ? `← ${c.src}` : ''}</span><span class="fl-cd">${flDur(dur)}${c.voiceMs ? ` · voice ${(c.voiceMs / 1000).toFixed(1)} s` : ''}</span>`
-    + `<span class="fl-gf">${c.onAir ? flPill('ON AIR', 'ok') : ''}${c.emergency ? flPill('EMERG', 'red') : ''}${c.encrypted ? flPill('ENC', 'acc') : ''}${c.cwId ? flIdChip(c.cwId, now - c.endMs) : ''}${c.audioMs ? `<button class="chip" data-flplay="${esc(c.key)}" title="replay">▶</button>` : ''}</span></div>`;
+    + `<span class="fl-gf">${c.onAir ? flPill('ON AIR', 'ok') : ''}${c.emergency ? flPill('EMERG', 'red') : ''}${enc ? flPill(enc, 'acc') : ''}${c.cwId ? flIdChip(c.cwId, now - c.endMs) : ''}${c.audioMs ? `<button class="chip" data-flplay="${esc(c.key)}" title="replay">▶</button>` : ''}</span>${dispatchPosChip(c, false)}</div>`;
 }
 function dispatchCallsHtml(s: FleetSnap, now: number): string {
   const ended = s.calls.filter(c => !c.onAir && c.kind === 'call');
@@ -4852,7 +4950,7 @@ function dispatchFollow(s: FleetSnap, now: number): void {
   }
   if (!s.follow || !fleetUi.audioOn) return;
   const span = s.spanHi - s.spanLo, home = s.centerHz;
-  const cc = s.carriers.find(c => c.role === 'control' && c.hz > s.spanLo && c.hz < s.spanHi);
+  const cc = s.carriers.find(c => c.role === 'control' && c.hz > s.spanLo && c.hz < s.spanHi && (!fleetUi.lock || c.sys === fleetUi.lock.sys));
   const center = cc && Math.abs(s.follow.hz - cc.hz) < span * 0.8 ? Math.round((s.follow.hz + cc.hz) / 2) : Math.round(s.follow.hz + span * 0.2);
   fleetUi.following = { key: s.follow.key, home, until: now + 120_000 };
   tune(center);
@@ -4886,7 +4984,8 @@ function fleetDetail(s: FleetSnap, now: number): string {
     const f: [string, string][] = x.proto === 'P25'
       ? [['PROTOCOL', 'P25 Phase 1 control channel'], ['WACN', x.wacn.toString(16).toUpperCase().padStart(5, '0')], ['SYSTEM', x.sysId.toString(16).toUpperCase().padStart(3, '0')], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['TALKGROUPS', `${x.tgs}`], ['GRANTS', `${x.grants}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
       : [['PROTOCOL', 'DMR'], ['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : '-'], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : 'not sent'], ['CALLSIGN', x.callsign || 'no CW ID heard yet'], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['FORMATS', x.derived ? 'derived from recordings (rest-channel beacon on the CSBK CRC, unit reports on the vendor CRC)' : 'ETSI TS 102 361'], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]];
-    return head(x.proto, x.label) + fields(f) + (x.proto === 'P25' ? `<div class="fl-hist"><small>CHANNEL TABLE</small>${fleetIdenRows(x.idens)}</div>` : '');
+    const lp = x.lpcns.length ? `<div class="fl-hist"><small>LOGICAL CHANNELS · DERIVED FROM GRANTS AND THE VOICE THAT FOLLOWED</small><div class="fl-lcn">${x.lpcns.map(l => `<span><b>LPCN ${l.lpcn}</b><i>${fleetMhz(l.hz)} · ${l.votes} calls</i></span>`).join('')}</div></div>` : '';
+    return head(x.proto, x.label) + fields(f) + (x.proto === 'P25' ? `<div class="fl-hist"><small>CHANNEL TABLE</small>${fleetIdenRows(x.idens)}</div>` : lp);
   }
   const c = s.carriers.find(y => String(y.key) === sel.key); if (!c) return '';
   const f: [string, string][] = [['FREQUENCY', `${fleetMhz(c.hz)} MHz`], ['CLASS', c.cls || 'not classed yet'], ['ROLE', c.role || '-'], ['SYSTEM', c.sys ? sysLabel(c.sys) : '-'], ['NAC', c.nac >= 0 ? c.nac.toString(16).toUpperCase().padStart(3, '0') : '-'], ['COLOR CODE', c.cc >= 0 ? `${c.cc}` : '-'],
@@ -4904,18 +5003,29 @@ function refreshFleet(force = false): void {
   const headEl = q('#fl-head'); if (headEl) headEl.innerHTML = fleetHead(s, now);
   qa<HTMLButtonElement>('[data-flband]').forEach(b => b.classList.toggle('on', b.dataset.flband === fleetUi.band));
   qa<HTMLButtonElement>('[data-flspan]').forEach(b => b.classList.toggle('on', Number(b.dataset.flspan) === fleetRate()));
-  const pins: GeoItem[] = (s?.units ?? []).filter(u => u.lat !== null && u.lon !== null).map(u => ({ id: u.key, lat: u.lat!, lon: u.lon!, label: `${u.id}`, kind: 'station' as GeoItem['kind'], color: fleetColor(u.sys) }));
+  // the units of calls on the air pulse on the map while they talk
+  const talking = new Set((s?.calls ?? []).filter(c => c.onAir && c.pos && !c.outside).map(c => `${c.sys}/${c.pos!.unit}`));
+  const pins: GeoItem[] = (s?.units ?? []).filter(u => u.lat !== null && u.lon !== null).map(u => ({ id: u.key, lat: u.lat!, lon: u.lon!, label: `${u.id}`, kind: 'station' as GeoItem['kind'], color: fleetColor(u.sys), cls: talking.has(u.key) ? 'talk' : '' }));
   qa<HTMLButtonElement>('[data-flview]').forEach(b => {
     const v = b.dataset.flview as FleetView; b.classList.toggle('on', v === view);
     b.textContent = v === 'systems' ? `SYSTEMS ${s?.systems.length ?? 0}` : v === 'calls' ? `CALLS ${s?.calls.length ?? 0}` : v === 'map' ? `MAP ${pins.length}` : v === 'grants' ? `GRANTS ${s?.grants.length ?? 0}` : v === 'freqs' ? `FREQS ${s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000).length : 0}` : 'LOG';
   });
   const cards = q('#fl-cards'), mapEl = q('#fl-map'), nopos = q('#fl-nopos'), grants = q('#fl-grants'), freqs = q('#fl-freqs'), det = q('#fl-detail'), stage = q('#fl-stage'), logEl = q('#fl-log');
-  const callsEl = q('#fl-calls'), air = q('#fl-onair'), audio = q('#fl-audio');
-  if (!cards || !mapEl || !nopos || !grants || !freqs || !det || !stage || !logEl || !callsEl || !air || !audio) return;
+  const callsEl = q('#fl-calls'), air = q('#fl-onair'), audio = q('#fl-audio'), mode = q('#fl-mode'), np = q('#fl-now');
+  if (!cards || !mapEl || !nopos || !grants || !freqs || !det || !stage || !logEl || !callsEl || !air || !audio || !mode || !np) return;
   if (s) dispatchFollow(s, now);
-  const onAir = s ? s.calls.filter(c => c.onAir && c.kind === 'call') : [];
-  air.hidden = !onAir.length || view === 'log';
-  if (!air.hidden && s) air.innerHTML = onAir.slice(0, 4).map(c => dispatchOnAirCard(c, s, now)).join('') + (onAir.length > 4 ? `<div class="fl-dim">${onAir.length - 4} more on the air</div>` : '');
+  const onAir = s ? s.calls.filter(c => c.onAir && c.kind === 'call' && !c.outside) : [];
+  // emergencies are pinned on top (and stay a minute after they end), then the call being heard, then the rest;
+  // calls outside the lock are left out of the stack and counted
+  const stack = s ? onAirOrder(s.calls, s.playing, now).filter(c => !c.outside) : [];
+  const others = s ? s.calls.filter(c => c.onAir && c.kind === 'call' && c.outside).length : 0;
+  const onMap = view === 'map' && !FLEET_WIDE.matches, max = onMap ? 2 : 4;
+  air.hidden = (!stack.length && !others) || view === 'log';
+  air.classList.toggle('onmap', onMap);
+  if (!air.hidden && s) flipRender(air, stack.slice(0, max).map(c => dispatchOnAirCard(c, s, now)).join('') + (stack.length > max ? `<div class="fl-dim">${stack.length - max} more on the air</div>` : '') + (others ? `<div class="fl-dim">${others} on other systems, not heard while locked</div>` : ''));
+  mode.innerHTML = segHtml([`<button data-flmode="all" class="${fleetUi.lock ? '' : 'on'}">ALL</button>`, `<button data-flmode="lock" class="${fleetUi.lock ? 'on' : ''}">LOCK</button>`])
+    + (fleetUi.lock ? `<button class="fl-lockbar" data-flunlock="1" title="tap to hear every system again"><small>LOCKED ON</small><b>${esc(fleetUi.lock.label)}</b><em>UNLOCK</em></button>` : '<span class="fl-dim">every system, first call to talk is heard</span>');
+  dispatchNowBar(np, s, now);
   audio.hidden = !s || !s.codecs.length;
   if (!audio.hidden && !audio.querySelector('input')) audio.innerHTML = `<button class="chip" data-flaudio="1"></button><span class="rl">VOLUME</span><input type="range" min="0" max="150" value="${Math.round(fleetUi.gain * 100)}" aria-label="volume">`;
   const ab = audio.querySelector<HTMLButtonElement>('[data-flaudio]'); if (ab) { ab.textContent = fleetUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; ab.classList.toggle('on', fleetUi.audioOn); }
@@ -4940,9 +5050,44 @@ function refreshFleet(force = false): void {
   const html = s ? fleetDetail(s, now) : '';
   det.hidden = !html;
   if (html) { const top = det.scrollTop; det.innerHTML = html; det.scrollTop = top; }
-  if (onAir.length) setLamp(`${onAir.length} ON AIR`, 'ok', true);
+  if (onAir.some(c => c.emergency)) setLamp('EMERGENCY', 'red', true);
+  else if (onAir.length) setLamp(`${onAir.length} ON AIR`, 'ok', true);
   else if (s && s.systems.length) setLamp(`${s.systems.length} SYSTEM${s.systems.length === 1 ? '' : 'S'}`, 'ok');
   else if (s && s.carriers.some(c => c.decoding)) setLamp('LISTENING', 'amber', true);
+}
+/** The now-playing bar: what is heard right now, with its level; tapping it opens the talkgroup. */
+function dispatchNowBar(el: HTMLElement, s: FleetSnap | null, now: number): void {
+  const c = s && fleetUi.audioOn ? nowPlaying(s.calls, s.playing) : null;
+  el.hidden = !s || !fleetUi.audioOn || !s.codecs.length;
+  if (el.hidden) return;
+  el.classList.toggle('on', !!c); el.classList.toggle('emerg', !!c?.emergency);
+  if (!c) { el.innerHTML = `<span class="fl-np-l">LISTENING</span><span class="fl-np-t">nothing clear on the air${fleetUi.lock ? ` · locked on ${esc(fleetUi.lock.label)}` : ''}</span>`; return; }
+  const sys = s!.systems.find(x => x.key === c.sys), sel = c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`, col = c.sys ? fleetColor(c.sys) : 'var(--accent)';
+  const where = c.pos ? ` · ${posText(c.pos, dispatchMe())}` : '';
+  el.style.setProperty('--sys', col);
+  el.innerHTML = `<span class="fl-np-l"><i></i>NOW PLAYING</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.src ? `<span class="fl-np-u">← ${c.src}</span>` : ''}`
+    + `<span class="fl-np-t">${esc(sys ? fleetSysTitle(sys) : c.sys || c.proto)}${c.site ? ` · SITE ${esc(c.site)}` : ''} · ${fleetMhz(c.hz)} MHz${esc(where)}</span>`
+    + `<span class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><span><i></i></span></span><span class="fl-np-d">${flDur(now - c.startMs)}</span>`;
+}
+/** The audio level of the call heard, 0 to 100, from the worker's level reports. */
+const dispatchVuPct = (key: string) => fleetUi.vu.key === key ? Math.max(0, Math.min(100, (fleetUi.vu.db + 60) * 100 / 54)) : 0;
+/** A level report: the meters move between redraws. */
+function dispatchVu(key: string, db: number): void {
+  fleetUi.vu = { key, db };
+  for (const el of qa<HTMLElement>('[data-vu]')) el.style.setProperty('--vu', `${dispatchVuPct(el.dataset.vu ?? '').toFixed(0)}%`);
+}
+/** Redraws a stack of cards and slides the ones that moved from where they were to where they are now. */
+function flipRender(el: HTMLElement, html: string): void {
+  const before = new Map<string, number>();
+  for (const c of qa<HTMLElement>('[data-flkey]', el)) before.set(c.dataset.flkey!, c.getBoundingClientRect().top);
+  el.innerHTML = html;
+  if (!before.size || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const c of qa<HTMLElement>('[data-flkey]', el)) {
+    const was = before.get(c.dataset.flkey!); if (was === undefined) continue;
+    const dy = was - c.getBoundingClientRect().top; if (Math.abs(dy) < 2) continue;
+    c.style.transition = 'none'; c.style.transform = `translateY(${dy}px)`;
+    requestAnimationFrame(() => { c.style.transition = 'transform .35s cubic-bezier(.2,.8,.2,1)'; c.style.transform = ''; });
+  }
 }
 function fleetExport(csv: string, json: string): void {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -8292,6 +8437,7 @@ function ensureWorker(): Worker {
       case 'fleet': fleetUi.snap = m as unknown as FleetSnap; refreshFleet(); break;
       case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][] }; refreshFleet(true); break;
       case 'fleetExport': fleetExport(m.csv as string, m.json as string); break;
+      case 'fleetVu': if (state.app === 'fleet') dispatchVu(m.key as string, Number(m.db)); break;
       case 'cell': cellUi.snap = m as unknown as CellSnap; refreshCell(); break;
       case 'cellDetail': cellUi.detail = m as unknown as CellDetail; refreshCell(true); break;
       case 'cellExport': cellExport(m.csv as string, m.json as string); break;

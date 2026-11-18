@@ -2676,3 +2676,60 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 .fl-id small { font-size: 8px; letter-spacing: 1.5px; color: var(--accent2); }
 .fl-id i { font-style: normal; font-weight: 400; font-size: 9px; color: var(--muted); }
 .fl-call.idrow { background: color-mix(in srgb, var(--accent2) 6%, var(--surface)); border-style: dashed; }
+
+/* Dispatch: now playing, the ALL / LOCK switch, call positions, security lines, emergencies, the map's talking units */
+.fl-now { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; margin: 4px 0 6px; padding: 7px 10px; border-radius: 12px;
+  background: var(--surface); border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent); font-size: 11px; font-variant-numeric: tabular-nums; }
+.fl-now[hidden] { display: none; }
+.fl-now.on { border-color: var(--sys); background: linear-gradient(100deg, color-mix(in srgb, var(--sys) 24%, var(--surface)), var(--surface) 80%); box-shadow: 0 0 16px color-mix(in srgb, var(--sys) 30%, transparent); }
+.fl-now.emerg { --sys: var(--danger); }
+.fl-np-l { display: inline-flex; align-items: center; gap: 6px; font-size: 9px; font-weight: 900; letter-spacing: 2px; color: var(--muted); }
+.fl-now.on .fl-np-l { color: var(--ink); }
+.fl-np-l i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: fl-beat 1s ease-in-out infinite; }
+.fl-now > b { font-size: 15px; font-weight: 900; letter-spacing: 1px; color: var(--ink); cursor: pointer; }
+.fl-np-u { color: var(--sys); font-weight: 800; }
+.fl-np-t { color: var(--muted); font-size: 10px; min-width: 0; overflow-wrap: anywhere; flex: 1 1 160px; }
+.fl-np-d { font-weight: 800; color: var(--ink); margin-left: auto; }
+.fl-vu { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fl-vu small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); }
+.fl-vu > span { flex: 1; min-width: 60px; height: 8px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, var(--muted) 20%, transparent); }
+.fl-vu i { display: block; height: 100%; width: var(--vu, 0%); border-radius: 4px; transition: width .09s linear;
+  background: linear-gradient(90deg, var(--ok), var(--ok) 60%, var(--accent2)); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent); }
+.fl-now .fl-vu { flex: 0 1 120px; }
+@keyframes fl-beat { 50% { opacity: .35; } }
+.fl-mode { gap: 8px; align-items: center; flex-wrap: wrap; }
+.fl-mode .fl-dim { padding: 0; }
+.fl-lockbar { display: inline-flex; align-items: center; gap: 8px; flex: 1 1 220px; min-width: 0; padding: 6px 10px; border-radius: 10px; cursor: pointer; font: inherit; color: var(--ink); text-align: left;
+  border: 2px solid var(--accent2); background: color-mix(in srgb, var(--accent2) 16%, var(--surface)); box-shadow: 0 0 12px color-mix(in srgb, var(--accent2) 35%, transparent); }
+.fl-lockbar small { font-size: 8px; letter-spacing: 1.5px; color: var(--accent2); font-weight: 800; }
+.fl-lockbar b { font-size: 12px; letter-spacing: 1px; min-width: 0; overflow-wrap: anywhere; }
+.fl-lockbar em { margin-left: auto; font-style: normal; font-size: 9px; font-weight: 900; letter-spacing: 1.5px; padding: 3px 8px; border-radius: 6px; background: var(--accent2); color: #000; }
+.fl-lockb { padding: 1px 8px; font-size: 9px; letter-spacing: 1px; flex: none; }
+.fl-lockb.on { background: var(--accent2); color: #000; border-color: var(--accent2); }
+.fl-sys.locked { border-color: var(--accent2); box-shadow: 0 0 0 2px var(--accent2), 0 0 18px color-mix(in srgb, var(--accent2) 30%, transparent); }
+.fl-onair.onmap { max-height: 30vh; }
+.fl-air { transition: opacity .3s; will-change: transform; }
+.fl-air.out { opacity: .4; }
+.fl-air.ended { opacity: .8; }
+.fl-air.playing { border-width: 2px; box-shadow: 0 0 22px color-mix(in srgb, var(--sys) 45%, transparent); }
+.fl-air.playing .fl-onbadge { background: var(--ok); color: #000; }
+.fl-air.playing .fl-onbadge i { background: #000; }
+.fl-air.emerg { animation: fl-alarm 1s ease-in-out infinite; }
+.fl-air.emerg .fl-onbadge { background: var(--danger); font-size: 12px; padding: 5px 10px; }
+.fl-air.emerg .fl-air-h > b { color: var(--danger); }
+.fl-air.emerg.ended { animation: none; }
+@keyframes fl-alarm { 50% { box-shadow: 0 0 34px color-mix(in srgb, var(--danger) 75%, transparent); background: linear-gradient(100deg, color-mix(in srgb, var(--danger) 44%, var(--surface)), var(--surface) 80%); } }
+.fl-loc { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; padding: 4px 8px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 11px; text-align: left; color: var(--ink); font-variant-numeric: tabular-nums;
+  border: 1px solid color-mix(in srgb, var(--sys, var(--accent)) 55%, transparent); background: color-mix(in srgb, var(--sys, var(--accent)) 10%, transparent); }
+.fl-loc small { font-size: 8px; letter-spacing: 1.5px; color: var(--sys, var(--accent)); font-weight: 800; }
+.fl-loc i { font-style: normal; font-size: 9px; color: var(--muted); }
+.fl-call .fl-loc { padding: 1px 6px; font-size: 10px; flex-basis: 100%; }
+.fl-sec { font-size: 9px; letter-spacing: .5px; color: var(--muted); overflow-wrap: anywhere; }
+.fl-sec.enc { color: var(--accent2); }
+.fl-call.out { opacity: .45; }
+.geo.talk svg { animation: fl-talk 1s ease-in-out infinite; }
+.geo.talk::before { content: ''; position: absolute; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--ok); animation: fl-ring 1.2s ease-out infinite; pointer-events: none; }
+.geo.talk { position: relative; }
+@keyframes fl-talk { 50% { transform: scale(1.5); filter: drop-shadow(0 0 8px var(--ok)); } }
+@keyframes fl-ring { from { transform: scale(.6); opacity: 1; } to { transform: scale(3); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .fl-air.emerg, .geo.talk svg, .geo.talk::before, .fl-np-l i { animation: none; } }

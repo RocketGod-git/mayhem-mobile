@@ -8,7 +8,8 @@ declare const L: any;
 
 export type GeoKind = 'plane' | 'ship' | 'aton' | 'station' | 'object' | 'sat' | 'qso' | 'sonde' | 'landing' | 'burst' | 'airport' | 'tower';
 /** [color] overrides the skin's accent for this marker (airports by flight category). */
-export interface GeoItem { id: string; lat: number; lon: number; heading?: number; label: string; kind: GeoKind; color?: string }
+/** [cls]: extra classes on the marker (Dispatch's 'talk' pulses a unit while it is on the air). */
+export interface GeoItem { id: string; lat: number; lon: number; heading?: number; label: string; kind: GeoKind; color?: string; cls?: string }
 /** A radar block: south-west corner, size in degrees, and its bins (cols across, rows from the north), 0 = clear. */
 export interface RadarCell { lat: number; lon: number; dLat: number; dLon: number; cols: number; rows: number; bins: Uint8Array; colors?: string[] }
 /** A hazard drawn on the map: an area or a line, colored, clickable (its id goes to onPick). */
@@ -97,6 +98,8 @@ export class GeoMap {
   follow = true;
   private map: any = null;
   private readonly markers = new Map<string, any>();
+  /** Each marker's icon as last drawn: an unchanged icon is not set again, so its animation keeps running. */
+  private readonly drawn = new Map<string, string>();
   private homeMarker: any = null;
   private items: GeoItem[] = []; private sel = ''; private fitKey = '';
   private track: any = null; private trackPts: [number, number][] = []; private footprint: any = null; private lines: any[] = [];
@@ -144,19 +147,21 @@ export class GeoMap {
     const live = new Set<string>();
     for (const it of items) {
       live.add(it.id);
-      const icon = this.icon(it, it.id === sel);
+      const html = this.iconHtml(it, it.id === sel);
       const m = this.markers.get(it.id);
-      if (m) { m.setLatLng([it.lat, it.lon]); m.setIcon(icon); }
-      else { const nm = L.marker([it.lat, it.lon], { icon }).addTo(this.map).on('click', () => this.opts.onPick(it.id)); this.markers.set(it.id, nm); }
+      if (m) { m.setLatLng([it.lat, it.lon]); if (this.drawn.get(it.id) !== html) m.setIcon(this.icon(html)); }
+      else { const nm = L.marker([it.lat, it.lon], { icon: this.icon(html) }).addTo(this.map).on('click', () => this.opts.onPick(it.id)); this.markers.set(it.id, nm); }
+      this.drawn.set(it.id, html);
     }
-    for (const [id, m] of this.markers) if (!live.has(id)) { this.map.removeLayer(m); this.markers.delete(id); }
+    for (const [id, m] of this.markers) if (!live.has(id)) { this.map.removeLayer(m); this.markers.delete(id); this.drawn.delete(id); }
     const key = [...live].sort().join('|'), changed = key !== this.fitKey; this.fitKey = key;
     if (this.follow && (!this.opts.steady || changed)) this.fit();
   }
-  private icon(it: GeoItem, sel: boolean): any {
+  private icon(html: string): any { return L.divIcon({ className: 'geo-wrap', iconSize: [60, 60], iconAnchor: [30, 30], html }); }
+  private iconHtml(it: GeoItem, sel: boolean): string {
     const accent = currentSkin().accent;
     const rot = it.kind === 'plane' || it.kind === 'ship' ? it.heading ?? 0 : 0;
-    return L.divIcon({ className: 'geo-wrap', iconSize: [60, 60], iconAnchor: [30, 30], html: `<div class="geo ${it.kind} ${sel ? 'sel' : ''}"><svg viewBox="-1.4 -1.4 2.8 2.8" style="transform:rotate(${rot}deg)" fill="${it.color ?? accent}" stroke="#0b1416" stroke-width="0.12" stroke-linejoin="round">${SHAPES[it.kind](it.heading)}</svg><span>${esc(it.label)}</span></div>` });
+    return `<div class="geo ${it.kind} ${sel ? 'sel' : ''} ${it.cls ?? ''}"><svg viewBox="-1.4 -1.4 2.8 2.8" style="transform:rotate(${rot}deg)" fill="${it.color ?? accent}" stroke="#0b1416" stroke-width="0.12" stroke-linejoin="round">${SHAPES[it.kind](it.heading)}</svg><span>${esc(it.label)}</span></div>`;
   }
   fit(): void {
     if (!this.map) return;
