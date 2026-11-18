@@ -48,6 +48,8 @@ data class CellSnap(
     val pss: List<PssPeak>,
     /** A cell found off the tuned center (its own center), for the scan to retune to. */
     val offCenter: OffCenter? = null,
+    /** The message feed, newest first. */
+    val feed: List<FeedRow> = emptyList(),
 )
 data class OffCenter(val hz: Long, val pci: Int, val ms: Long)
 data class CellDetail(val key: String, val mib: Mib?, val sib1: Obj?, val sib1Hex: String, val sibs: List<SibRec>)
@@ -55,7 +57,7 @@ data class CellDetail(val key: String, val mib: Mib?, val sib1: Obj?, val sib1He
 private class Timing(val abs: Double, val sfn: Int)
 private class PendingTb(val tb: TbDecoder, val g: Int, val epoch: Int)
 private class SiGot(val ms: Long, val count: Int)
-private class Cell(val key: String, val hz: Long, val pci: Int, var band: Int?, var earfcn: Int?, val tdd: Boolean, var firstMs: Long, var lastMs: Long) {
+private class Cell(var key: String, var hz: Long, val pci: Int, var band: Int?, var earfcn: Int?, val tdd: Boolean, var firstMs: Long, var lastMs: Long) {
     var mibMs = 0L; var sib1Ms = 0L
     var mib: Mib? = null; var snrDb = 0.0; var levelDb = 0.0; var cfoHz = 0.0; var pssScore = 0.0
     var mibCount = 0; var sib1Count = 0; var dciCount = 0; var tbOk = 0; var tbFail = 0
@@ -84,6 +86,8 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     var realtime = true
     private val cells = LinkedHashMap<String, Cell>()
     val warnings = WarningAssembler()
+    /** Every MIB and SIB as one readable row, repeats folded. */
+    val feed = MessageFeed()
     private val log = ArrayList<LogRow>()
     /** Bumped whenever something worth keeping changes (the state is saved when it moves). */
     @Volatile var version = 0; private set
@@ -174,8 +178,9 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                     for ((pci, evenSf0) in pciCandidates(yr, yi, h.nid2, map, tdd)) {
                         if (!tried.add(pci * 2 + (if (tdd) 1 else 0))) continue
                         val r = readMib(yr, yi, pci, map, evenSf0, tdd, cells.containsKey("${Math.round(centerHz / 1e5)}:$pci")) ?: continue
-                        val cell = cellFor(pci, tdd, now)
+                        val cell = cellAt(pci, tdd, centerHz, r.mib, h.score, now) ?: continue
                         cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score
+                        mibRow(cell, now)
                         found.add(Found(cell, map, evenSf0, tdd, r.h))
                         cfo = frac + h.cfo; cfoKnown = true
                     }
@@ -275,13 +280,62 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             val hz = Math.round((centerHz + shift) / 100_000) * 100_000
             for (tdd in booleanArrayOf(false, true)) for ((pci, evenSf0) in pciCandidates(yr, yi, hit.nid2, map, tdd)) {
                 val r = readMib(yr, yi, pci, map, evenSf0, tdd, false) ?: continue
-                val cell = cellFor(pci, tdd, now, hz)
+                val cell = cellAt(pci, tdd, hz, r.mib, hit.score, now) ?: return
                 cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = centerHz + shift - hz; cell.pssScore = hit.score
+                mibRow(cell, now)
                 offCenter = OffCenter(hz, pci, now)
                 addLog(now, hz, pci, "CELL", "found ${Math.round((hz - centerHz) / 1e3)} kHz from the tuned center", "")
                 return
             }
         }
+    }
+
+    /**
+     * The cell a MIB belongs to. A strong cell leaks into spans tuned a few MHz away (decimation folding, tuner images),
+     * where it decodes as the same PCI with the same MIB. A cell already known within 10 MHz with the same PCI, MIB
+     * content and a consistent SFN is that cell: the copy is dropped (null), unless it is heard clearly better and the
+     * known one never decoded SIB1, in which case the known cell moves to the new frequency.
+     */
+    private fun cellAt(pci: Int, tdd: Boolean, hz: Long, mib: Mib, score: Double, now: Long): Cell? {
+        if (cells.containsKey("${Math.round(hz / 1e5)}:$pci")) return cellFor(pci, tdd, now, hz)
+        val o = cells.values.firstOrNull { sameCell(it, pci, tdd, hz, mib, now) } ?: return cellFor(pci, tdd, now, hz)
+        if (o.summary != null || score <= 1.5 * o.pssScore) return null
+        moveCell(o, hz, now)
+        return o
+    }
+    private fun moveCell(c: Cell, hz: Long, now: Long) {
+        val old = c.key; val key = "${Math.round(hz / 1e5)}:${c.pci}"
+        cells.remove(old)
+        c.key = key; c.hz = hz; c.timing = null; c.pending.clear()
+        bandOf(hz)?.let { c.band = it.bands[0] }
+        c.earfcn = c.band?.let { dlEarfcnForMhz(it, hz / 1e6) }
+        cells[key] = c
+        feed.rekey(old, key, hz)
+        addLog(now, hz, c.pci, "CELL", "PCI ${c.pci} heard better here: moved from ${"%.1f".format(java.util.Locale.US, old.substringBefore(':').toDouble() / 10)} MHz", "")
+    }
+    /** Copies of one cell kept by an earlier session: the best heard one stays (SIB1, then most MIBs, then the PSS metric). */
+    private fun mergeDuplicates() {
+        val all = cells.values.toList(); val drop = HashSet<String>()
+        for (a in all) for (b in all) {
+            if (a === b || a.key in drop || b.key in drop || a.mib == null || b.mib == null || !sameCell(a, b.pci, b.tdd, b.hz, b.mib!!, 0)) continue
+            val aWins = when {
+                (a.summary != null) != (b.summary != null) -> a.summary != null
+                a.mibCount != b.mibCount -> a.mibCount > b.mibCount
+                else -> a.pssScore >= b.pssScore
+            }
+            drop.add(if (aWins) b.key else a.key)
+        }
+        for (k in drop) cells.remove(k)
+        if (drop.isNotEmpty()) feed.dropCells(drop)
+    }
+    /** Whether a MIB heard at hz is cell c seen again: same PCI and duplex, within 10 MHz, same MIB content, SFN in step (when now is given). */
+    private fun sameCell(c: Cell, pci: Int, tdd: Boolean, hz: Long, mib: Mib, now: Long): Boolean {
+        val m = c.mib ?: return false
+        if (c.pci != pci || c.tdd != tdd || Math.abs(c.hz - hz) > 10_000_000 || c.hz == hz) return false
+        if (m.bandwidth != mib.bandwidth || m.ports != mib.ports || m.phichResource != mib.phichResource || m.phichDuration != mib.phichDuration) return false
+        if (now == 0L || now - c.mibMs > 120_000) return true
+        val want = ((m.sfn + Math.round((now - c.mibMs) / 10.0)) % 1024).toInt(); val d = Math.abs(want - mib.sfn) % 1024
+        return minOf(d, 1024 - d) <= 50
     }
 
     private fun cellFor(pci: Int, tdd: Boolean, now: Long, hz: Long = centerHz): Cell {
@@ -383,6 +437,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                 val s = cell.summary
                 addLog(now, cell.hz, cell.pci, "SIB1", if (s != null) "PLMN ${s.plmns.joinToString(", ") { it.id + (if (it.name.isNotEmpty()) " ${it.name}" else "") }} · TAC ${s.tac} · eNB ${s.enbId}/${s.cellId} · band ${s.band} · ${s.schedule.size} SI" else "SIB1", hex)
             }
+            cell.summary?.let { feedRow(cell, "SIB1", sib1Line(it), false, fingerprint(s1), now) }
             return
         }
         var siIdx = si
@@ -391,6 +446,8 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             val old = cell.sibs[name]; val fresh = old == null || old.hex != hex
             cell.sibs[name] = SibRec(name, siIdx, now, (old?.count ?: 0) + 1, hex, value)
             if (fresh) addLog(now, cell.hz, cell.pci, name.uppercase().replace(Regex("-.*"), ""), sibLine(name, value), hex)
+            val warn = name == "sib10" || name == "sib11" || name.startsWith("sib12")
+            feedRow(cell, name.uppercase().replace(Regex("-.*"), ""), feedSibLine(name, value, cell.band, cell.hz / 1e6), warn, fingerprint(value), now, if (warn) warningSlot(name, value) else "")
             if (name == "sib10" || name == "sib11" || name.startsWith("sib12")) {
                 val m = warnings.add(if (name.startsWith("sib12")) "sib12-v920" else name, value, cell.key, now)
                 if (m != null) {
@@ -401,6 +458,17 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             }
         }
         if (siIdx != 0) { val g = cell.siGot[siIdx]; cell.siGot[siIdx] = SiGot(now, (g?.count ?: 0) + 1) }
+    }
+
+    private fun feedRow(cell: Cell, name: String, text: String, alert: Boolean, fp: String, now: Long, slot: String = "") {
+        val op = cell.summary?.plmns?.firstOrNull { it.name.isNotEmpty() }?.name ?: cell.summary?.plmns?.firstOrNull()?.id ?: ""
+        val r = feed.add(cell.key, cell.hz, cell.pci, op, cell.band, name, text, alert, fp, now, slot)
+        if (r.count == 1) version++
+        dirty = true
+    }
+    private fun mibRow(cell: Cell, now: Long) {
+        val m = cell.mib ?: return
+        feedRow(cell, "MIB", mibLine(m), false, fingerprint(linkedMapOf("b" to m.bandwidth, "p" to m.ports, "h" to m.phichResource, "d" to m.phichDuration, "r" to m.sib1BR)), now)
     }
 
     /** Next capture: just before the earliest wanted SI window of the cells heard (or right away). */
@@ -480,7 +548,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         centerHz, rate, maxRb >= 25, maxRb, lte, Math.round(cpStrength * 1000) / 1000.0, blocks, !cfoKnown, lastBlockMs,
         if (nextAbs > abs && rate > 0) Math.round((nextAbs - abs).toDouble() / rate * 1000) else 0, cpuMs,
         profile, floorDb,
-        cells.values.sortedByDescending { it.lastMs }.map { row(it) }, warnings.messages(), log.takeLast(300).toList(), dci, tbOkAll, pss, offCenter,
+        cells.values.sortedByDescending { it.lastMs }.map { row(it) }, warnings.messages(), log.takeLast(300).toList(), dci, tbOkAll, pss, offCenter, feed.take(400),
     )
     /** Every decoded field of one cell, for its detail view. */
     @Synchronized
@@ -505,6 +573,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     fun feedMib(hz: Long, pci: Int, mib: Mib, ms: Long = now()) {
         val c = cellFor(pci, false, ms, hz)
         c.mib = mib; c.mibMs = ms; c.mibCount++; c.lastMs = max(c.lastMs, ms)
+        mibRow(c, ms)
     }
 
     /** What was heard, as JSON: the cells with their transport blocks, the alerts and the recent log. */
@@ -518,7 +587,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
             .put("sibs", JSONArray(c.sibs.values.map { JSONObject().put("name", it.name).put("si", it.si).put("ms", it.ms).put("count", it.count).put("hex", it.hex) }))
             .put("siGot", JSONArray(c.siGot.entries.map { JSONArray().put(it.key).put(JSONObject().put("ms", it.value.ms).put("count", it.value.count)) })))
         val logs = JSONArray(log.takeLast(500).map { JSONObject().put("ms", it.ms).put("hz", it.hz).put("pci", it.pci).put("kind", it.kind).put("text", it.text).put("hex", it.hex) })
-        return JSONObject().put("v", 1).put("cells", cs).put("alerts", JSONArray(warnings.messages().map { warningJson(it) })).put("log", logs).toString()
+        return JSONObject().put("v", 1).put("cells", cs).put("alerts", JSONArray(warnings.messages().map { warningJson(it) })).put("log", logs).put("feed", JSONArray(feed.take(600).map { MessageFeed.json(it) })).toString()
     }
     /** Brings back what an earlier session heard; decoded values are rebuilt from the kept transport blocks. */
     @Synchronized
@@ -551,6 +620,9 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         }
         val al = s.optJSONArray("alerts") ?: JSONArray()
         warnings.restore((0 until al.length()).mapNotNull { runCatching { warningOf(al.getJSONObject(it)) }.getOrNull() })
+        val fd = s.optJSONArray("feed") ?: JSONArray()
+        feed.restore((0 until fd.length()).mapNotNull { runCatching { MessageFeed.of(fd.getJSONObject(it)) }.getOrNull() })
+        mergeDuplicates()
         val lg = s.optJSONArray("log") ?: JSONArray()
         if (log.isEmpty()) for (i in 0 until lg.length()) runCatching { val o = lg.getJSONObject(i); log.add(LogRow(o.getLong("ms"), o.getLong("hz"), o.getInt("pci"), o.getString("kind"), o.getString("text"), o.optString("hex"))) }
         post(true)
@@ -579,7 +651,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     }
     /** Forgets the cells and the log; the alerts stay until clearAlerts(). */
     @Synchronized
-    fun clear() { cells.clear(); log.clear(); dci = 0; tbOkAll = 0; version++; packets?.clear(); post(true) }
+    fun clear() { cells.clear(); feed.clear(); log.clear(); dci = 0; tbOkAll = 0; version++; packets?.clear(); post(true) }
     @Synchronized
     fun clearAlerts() { warnings.clear(); version++; post(true) }
 
