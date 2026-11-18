@@ -12,6 +12,8 @@ export const HACKRF_FILTERS: USBDeviceFilter[] = [
   { vendorId: 0x1d50, productId: 0xcc15 },   // rad1o
 ];
 const PID_MAYHEM_SERIAL = 0x6018;
+/** A PortaPack running Mayhem shows up as a USB serial device until it is told to reboot into HackRF mode. */
+export const MAYHEM_SERIAL_FILTER: USBDeviceFilter = { vendorId: 0x1d50, productId: PID_MAYHEM_SERIAL };
 
 export function isHackRf(d: USBDevice): boolean {
   return d.vendorId === 0x1d50 && HACKRF_FILTERS.some(f => f.productId === d.productId);
@@ -102,7 +104,8 @@ export class HackRf implements Radio {
 
   static async remembered(): Promise<USBDevice | undefined> {
     const ds = await navigator.usb.getDevices();
-    return ds.find(isHackRf);
+    // A granted PortaPack still in Mayhem mode counts too, so start-up can switch it without a tap.
+    return ds.find(isHackRf) ?? ds.find(isMayhemSerial);
   }
 
   static request(): Promise<USBDevice> {

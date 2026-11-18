@@ -1,6 +1,6 @@
 /** Mayhem Mobile — web. Launcher, screens, WebUSB radio, DSP worker, audio, skins. */
 import { openKeypad, FREQ_UNITS, freqAuto } from './keypad.js';
-import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isMayhemSerial } from './hackrf.js';
+import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isHackRf, isMayhemSerial, MAYHEM_SERIAL_FILTER } from './hackrf.js';
 import { RTL_MAX_GAIN_DB, RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
 import { APP_NEEDS, RATE_CHOICES, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
@@ -3042,10 +3042,15 @@ async function portapackViaWebUsb(d: USBDevice): Promise<boolean> {
     if (!d.configuration) await d.selectConfiguration(1);
     await d.claimInterface(data.interfaceNumber);
     if (comm) {
-      await d.claimInterface(comm.interfaceNumber).catch(() => undefined);
+      // The PortaPack only reads its serial shell once the host raises DTR. On macOS the system's own serial
+      // driver keeps the control interface, so it cannot be claimed and an interface-addressed request is
+      // refused; the same requests addressed to the device get through, and without them the command below
+      // waits forever.
+      const claimed = await d.claimInterface(comm.interfaceNumber).then(() => true, () => false);
       const idx = comm.interfaceNumber;
-      await d.controlTransferOut({ requestType: 'class', recipient: 'interface', request: 0x20, value: 0, index: idx }, new Uint8Array([0x00, 0xc2, 0x01, 0x00, 0, 0, 8])).catch(() => undefined);
-      await d.controlTransferOut({ requestType: 'class', recipient: 'interface', request: 0x22, value: 0x03, index: idx }).catch(() => undefined);
+      const recipient = claimed ? 'interface' as const : 'device' as const;
+      await d.controlTransferOut({ requestType: 'class', recipient, request: 0x20, value: 0, index: idx }, new Uint8Array([0x00, 0xc2, 0x01, 0x00, 0, 0, 8])).catch(() => undefined);
+      await d.controlTransferOut({ requestType: 'class', recipient, request: 0x22, value: 0x03, index: idx }).catch(() => undefined);
     }
     let gone = false;
     const drain = async (ms: number) => {
@@ -3056,7 +3061,9 @@ async function portapackViaWebUsb(d: USBDevice): Promise<boolean> {
       }
     };
     await drain(300);
-    await d.transferOut(out.endpointNumber, new TextEncoder().encode('\r\nhackrf\r\n'));
+    // Never wait on it forever: a board that will not take the command falls through to Web Serial below.
+    const sent = await Promise.race([d.transferOut(out.endpointNumber, new TextEncoder().encode('\r\nhackrf\r\n')).then(() => true, () => false), sleepMs(3000).then(() => false)]);
+    if (!sent) throw new Error('the PortaPack did not take the command');
     await drain(3000);
     await d.close().catch(() => undefined);
     return true;
@@ -3066,17 +3073,24 @@ async function portapackViaWebUsb(d: USBDevice): Promise<boolean> {
     return false;
   }
 }
+/** When a PortaPack was last told to switch, so the HackRF that comes back is connected without a tap. */
+let ppSwitchedAt = 0;
 async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
   if (d && (await portapackViaWebUsb(d))) {
-    log('PortaPack: sent "hackrf" — it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
-    setStatus('PortaPack switching to HackRF mode… tap CONNECT in 5 s', false);
+    log('PortaPack: sent "hackrf", it is rebooting into HackRF mode and will connect when it comes back.');
+    setStatus('PortaPack switching to HackRF mode…', false);
+    ppSwitchedAt = Date.now();
     return true;
   }
   type SerialPortLike = { open: (o: unknown) => Promise<void>; writable: WritableStream<Uint8Array> | null; readable: ReadableStream<Uint8Array> | null; close: () => Promise<void> };
-  const serial = (navigator as unknown as { serial?: { requestPort: (o: unknown) => Promise<SerialPortLike> } }).serial;
+  type SerialPortInfoLike = SerialPortLike & { getInfo?: () => { usbVendorId?: number; usbProductId?: number } };
+  const serial = (navigator as unknown as { serial?: { requestPort: (o: unknown) => Promise<SerialPortLike>; getPorts?: () => Promise<SerialPortInfoLike[]> } }).serial;
   if (!serial) { log('PortaPack: this browser has no Web Serial — tap HackRF mode on the PortaPack instead.'); return false; }
   try {
-    const port = await serial.requestPort({ filters: [{ usbVendorId: 0x1d50, usbProductId: 0x6018 }] });
+    // A port this origin was already granted needs no chooser and no tap, so a plugged-in PortaPack switches on its own.
+    const granted = (await serial.getPorts?.().catch(() => [])) ?? [];
+    const port = granted.find(p => { const i = p.getInfo?.(); return i?.usbVendorId === 0x1d50 && i?.usbProductId === 0x6018; })
+      ?? await serial.requestPort({ filters: [{ usbVendorId: 0x1d50, usbProductId: 0x6018 }] });
     await port.open({ baudRate: 115200 });
     const r = port.readable?.getReader();
     const reading = (async () => { try { for (;;) { const { done } = await r!.read(); if (done) break; } } catch { /* board rebooted */ } })();
@@ -3086,8 +3100,9 @@ async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
     w.releaseLock();
     if (r) { await Promise.race([reading, sleepMs(3000)]); await r.cancel().catch(() => undefined); r.releaseLock(); }
     await port.close().catch(() => undefined);
-    log('PortaPack: sent "hackrf" — it is rebooting into HackRF mode; tap CONNECT again in a few seconds.');
-    setStatus('PortaPack switching to HackRF mode… tap CONNECT in 5 s', false);
+    log('PortaPack: sent "hackrf", it is rebooting into HackRF mode and will connect when it comes back.');
+    setStatus('PortaPack switching to HackRF mode…', false);
+    ppSwitchedAt = Date.now();
     return true;
   } catch (e) { log(`PortaPack switch: ${(e as Error).message}`); return false; }
 }
@@ -8637,7 +8652,7 @@ async function connect(dev?: USBDevice): Promise<void> {
   try {
     // A device this origin was already granted skips the chooser (and works without a click gesture).
     const d = dev ?? await HackRf.remembered() ?? (RTLSDR_READY ? await RtlSdr.remembered() : undefined)
-      ?? await navigator.usb.requestDevice({ filters: [...HACKRF_FILTERS, ...(RTLSDR_READY ? RTLSDR_FILTERS : [])] });
+      ?? await navigator.usb.requestDevice({ filters: [...HACKRF_FILTERS, MAYHEM_SERIAL_FILTER, ...(RTLSDR_READY ? RTLSDR_FILTERS : [])] });
     lastTried = d;
     if (isMayhemSerial(d)) {
       log('That is a PortaPack in Mayhem serial mode.');
@@ -9345,11 +9360,20 @@ function init(): void {
     // user has permitted before, so the receiver is running by the time the page has finished settling.
     (async () => await HackRf.remembered() ?? (RTLSDR_READY ? await RtlSdr.remembered() : undefined))().then(d => {
       if (!d || radio) return;
-      const what = isRtlSdr(d) ? 'RTL-SDR' : 'HackRF';
+      const what = isRtlSdr(d) ? 'RTL-SDR' : isMayhemSerial(d) ? 'PortaPack' : 'HackRF';
       setStatus(`${what} remembered — connecting…`, false);
       void connect(d).catch(() => setStatus(`${what} remembered — tap CONNECT`, false));
     }).catch(() => undefined);
-    navigator.usb.addEventListener('connect', (e) => { log(`USB attached: ${e.device.productName ?? ''}`); if (!radio) setStatus(`${isRtlSdr(e.device) ? 'RTL-SDR' : 'HackRF'} attached — tap CONNECT`, false); });
+    navigator.usb.addEventListener('connect', (e) => {
+      const d = e.device;
+      log(`USB attached: ${d.productName ?? ''}`);
+      if (radio?.running) return;
+      // A PortaPack in Mayhem mode is switched to HackRF mode as soon as it is plugged in, and the HackRF it
+      // reboots into is connected when it comes back, the same as the Android app does.
+      if (isMayhemSerial(d)) { void connect(d).catch(() => undefined); return; }
+      if (isHackRf(d) && Date.now() - ppSwitchedAt < 30_000) { ppSwitchedAt = 0; setStatus('PortaPack in HackRF mode, connecting…', false); void connect(d).catch(() => setStatus('HackRF attached, tap CONNECT', false)); return; }
+      setStatus(`${isRtlSdr(d) ? 'RTL-SDR' : 'HackRF'} attached, tap CONNECT`, false);
+    });
     // Only the radio leaving stops the radio. Any USB device detaching used to end the session - a phone on charge,
     // a hub dropping a port - which looked like the SDR disconnecting by itself.
     navigator.usb.addEventListener('disconnect', (e) => { log(`USB detached: ${e.device.productName ?? ''}`); if (e.device === radioDev) radio?.stop(); });
