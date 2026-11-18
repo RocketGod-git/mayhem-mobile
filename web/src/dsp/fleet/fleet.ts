@@ -18,6 +18,7 @@ import './vocoders.js';
 import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from './calls.js';
 import { parseLc, voiceFrames, readEmb } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
+import { P2Rx } from './p2.js';
 
 export const CH_RATE = 24_000;
 const CUT_HZ = 5_500;
@@ -106,10 +107,13 @@ class Chan {
   cw!: CwReader;
   oi = new Float32Array(0); oq = new Float32Array(0);
   openedMs: number; lastSyncMs = 0; quietSince: number; private cwOn = false;
+  /** The Phase 2 TDMA receiver, on a channel a grant named TDMA. */
+  p2: P2Rx | null = null; readonly fs: number;
   /** [baseband]: samples arrive already mixed to 0 Hz at that rate (a recorded channel clip), no down-converter. */
   constructor(readonly key: number, public hz: number, center: number, rate: number, now: number, baseband = 0) {
     this.ddc.reset(rate); this.ddc.offsetHz = hz - center;
     const fs = baseband || this.ddc.outRate;
+    this.fs = fs;
     this.rx = new SymbolRx(fs);
     this.cw = new CwReader(fs);
     // the voice frames' payload (nine vocoder frames and the link control of each LDU) is read by the HAM receiver's
@@ -133,6 +137,7 @@ class Chan {
     // decoded frames, not bare syncs, mark the channel digital: a keyed CW tone can pass for a sync now and then
     const s0 = this.p25.clean + this.dmr.bursts;
     this.rx.push(zi, zq, m);
+    this.p2?.push(zi, zq, m);
     if (this.p25.clean + this.dmr.bursts !== s0) { this.lastSyncMs = now; this.quietSince = now; this.cwOn = false; }
     // a CW ID comes once the digital signal has stopped (a voice channel's frames are 180 ms apart); the reader starts
     // fresh then, so the digital signal's levels do not hide the tone
@@ -164,6 +169,8 @@ export class FleetProcessor implements IqProcessor {
   readonly calls = new CallTracker(() => this.now());
   private readonly p25Seen = new Map<number, number>();
   private readonly dmrSeen = new Map<number, number>();
+  /** When each carrier last sent a Phase 2 sync pair: DMR syncs read off a Phase 2 signal are not DMR. */
+  private readonly p2Seen = new Map<number, number>();
   /** DMR grants of the last moments, waiting for the voice link control that says which carrier their channel is. */
   private pendingGrants: { sys: string; tg: number; group: boolean; lpcn: number; slot: number; ms: number }[] = [];
 
@@ -281,9 +288,17 @@ export class FleetProcessor implements IqProcessor {
     ch.p25v.onEs = es => this.p25Sec(c, 'LDU2', es);
     ch.p25v.onHdu = hd => this.p25Sec(c, 'HDU', hd);
     ch.cw.onText = t => this.cwText(c, t);
+    if (c.tdma) this.p2On(c, ch);
     this.chans.set(c.key, ch);
   }
+  /** A Phase 2 TDMA channel: its S-ISCH syncs class it and keep it decoding (its voice is not built yet). */
+  private p2On(c: Carrier, ch: Chan): void {
+    if (ch.p2) return;
+    ch.p2 = new P2Rx(ch.fs);
+    ch.p2.onSync = paired => { if (!paired) return; const now = this.now(); c.cls = 'P25 PHASE 2 TDMA'; c.lastDecodeMs = now; c.frames++; if (c.role !== 'control') c.role = 'voice'; this.p2Seen.set(c.key, now); this.pending = true; };
+  }
   private classify(c: Carrier, ch: Chan, now: number): void {
+    if (c.tdma && !ch.p2) this.p2On(c, ch);
     c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100; c.eye = Math.round(ch.rx.eye * 100) / 100;
     if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return;
     if (now - ch.openedMs < 2_000) return;
@@ -391,6 +406,7 @@ export class FleetProcessor implements IqProcessor {
   private dmrBurst(c: Carrier, _ch: Chan | null, e: DmrEvent): void {
     const now = this.now(), b = e.burst;
     if (b.dt > 10) return;
+    if (c.tdma || this.now() - (this.p2Seen.get(c.key) ?? -1e12) < 5_000) return;
     c.frames++; if (b.stErrs === 0 || c.cc < 0) c.cc = b.cc; c.cls = 'DMR'; c.lastDecodeMs = now; this.dmrSeen.set(c.key, now);
     if (b.dt === 1 || b.dt === 2) {
       if (c.role !== 'control' && c.role !== 'rest') c.role = 'voice';
@@ -466,6 +482,8 @@ export class FleetProcessor implements IqProcessor {
     // and a voice sync counts on a carrier that has sent real DMR bursts lately, or whose voice superframes keep
     // their 360 ms grid on their own (a call joined late, with no data burst heard)
     if (now - (this.p25Seen.get(c.key) ?? -1e12) < 2_000) return;
+    // a P25 Phase 2 channel (a grant said TDMA, or its syncs were heard) is never read as DMR
+    if (c.tdma || now - (this.p2Seen.get(c.key) ?? -1e12) < 5_000) return;
     if (now - (this.dmrSeen.get(c.key) ?? -1e12) > 3_000 && !ch?.dmr.voiceLive) return;
     c.lastDecodeMs = now; c.cls = 'DMR'; c.frames++;
     if (c.role === '') c.role = 'voice';
