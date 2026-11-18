@@ -3074,11 +3074,18 @@ async function portapackViaWebUsb(d: USBDevice): Promise<boolean> {
 }
 /** When a PortaPack was last told to switch, so the HackRF that comes back is connected without a tap. */
 let ppSwitchedAt = 0;
+/**
+ * The HackRF a PortaPack reboots into is a different USB device to the browser. If this site was never allowed
+ * to use it, it cannot connect on its own, so say plainly that one tap is needed, once.
+ */
+function expectHackRfBack(): void {
+  setTimeout(() => { if (!radio?.running && ppSwitchedAt) setStatus('PortaPack is in HackRF mode, tap CONNECT once to allow it', false); }, 12_000);
+}
 async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
   if (d && (await portapackViaWebUsb(d))) {
     log('PortaPack: sent "hackrf", it is rebooting into HackRF mode and will connect when it comes back.');
     setStatus('PortaPack switching to HackRF mode…', false);
-    ppSwitchedAt = Date.now();
+    ppSwitchedAt = Date.now(); expectHackRfBack();
     return true;
   }
   type SerialPortLike = { open: (o: unknown) => Promise<void>; writable: WritableStream<Uint8Array> | null; readable: ReadableStream<Uint8Array> | null; close: () => Promise<void> };
@@ -3101,7 +3108,7 @@ async function portapackToHackRf(d?: USBDevice): Promise<boolean> {
     await port.close().catch(() => undefined);
     log('PortaPack: sent "hackrf", it is rebooting into HackRF mode and will connect when it comes back.');
     setStatus('PortaPack switching to HackRF mode…', false);
-    ppSwitchedAt = Date.now();
+    ppSwitchedAt = Date.now(); expectHackRfBack();
     return true;
   } catch (e) { log(`PortaPack switch: ${(e as Error).message}`); return false; }
 }
@@ -9108,8 +9115,14 @@ function init(): void {
       // A PortaPack in Mayhem mode is switched to HackRF mode as soon as it is plugged in, and the HackRF it
       // reboots into is connected when it comes back, the same as the Android app does.
       if (isMayhemSerial(d)) { void connect(d).catch(() => undefined); return; }
-      if (isHackRf(d) && Date.now() - ppSwitchedAt < 30_000) { ppSwitchedAt = 0; setStatus('PortaPack in HackRF mode, connecting…', false); void connect(d).catch(() => setStatus('HackRF attached, tap CONNECT', false)); return; }
-      setStatus(`${isRtlSdr(d) ? 'RTL-SDR' : 'HackRF'} attached, tap CONNECT`, false);
+      // The browser only reports devices this site was already allowed to use, so any radio that shows up here
+      // connects on its own: no chooser and no tap after the first time.
+      if (isHackRf(d) || (RTLSDR_READY && isRtlSdr(d))) {
+        const what = isRtlSdr(d) ? 'RTL-SDR' : Date.now() - ppSwitchedAt < 30_000 ? 'PortaPack in HackRF mode' : 'HackRF';
+        ppSwitchedAt = 0;
+        setStatus(`${what}, connecting…`, false);
+        void connect(d).catch(() => setStatus(`${what} attached, tap CONNECT`, false));
+      }
     });
     // Only the radio leaving stops the radio. Any USB device detaching used to end the session - a phone on charge,
     // a hub dropping a port - which looked like the SDR disconnecting by itself.
