@@ -36,6 +36,8 @@ import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, map
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
 import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
 import { programTypeName, dataTypeName, locationValid, clockCheck, localTimeHint, utcOffsetText, BLEND_NAMES, type SisSummary } from './dsp/hd/sis.js';
+import type { AtscSnap, StationRow as AtscStation, SubRow as AtscSub, EventRec as AtscEvent, LiveSignal as AtscLive } from './dsp/atsc/atsc.js';
+import { CHANNELS as ATSC_CHANNELS, centerOf, pilotOf } from './dsp/atsc/channels.js';
 import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
 import { productsOf, radarBlocks, textOf, parseMetar, stationOf, hazardBlocks, icingOf, overlayOf, suaOf, type Metar, type RadarBlock, type HazardBlock, type Overlay } from './dsp/uat/fisb.js';
 import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
@@ -65,7 +67,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -87,6 +89,7 @@ const APPS: AppDef[] = [
   { id: 'trains', title: 'Trains', blurb: 'EOT · PTC telemetry', cat: 'Receive' },
   { id: 'fleet', title: 'Fleet', blurb: 'P25 · DMR trunking', cat: 'Receive' },
   { id: 'cell', title: 'Cell', blurb: 'LTE alerts · cell info', cat: 'Receive' },
+  { id: 'atsc', title: 'ATSC TV', blurb: 'digital TV channels, guide, pictures', cat: 'Receive' },
   { id: 'sondes', title: 'Sondes', blurb: 'weather balloons', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice', cat: 'Receive' },
   { id: 'spectrum', title: 'Spectrum', blurb: 'analyzer, zero span', cat: 'Analyze' },
@@ -980,6 +983,7 @@ function open(app: AppId | null): void {
     case 'trains': trainsTune(); if (trainsUi.auto) trainsCycle(); break;
     case 'fleet': fleetOpen(); break;
     case 'cell': cellOpen(); break;
+    case 'atsc': atscOpen(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is
@@ -1683,6 +1687,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   sondes: ['sondes', 'No sondes yet', ['Weather services launch around 00:00 and 12:00 UTC; a sonde climbs for about 90 minutes and is heard 200+ miles out', 'Every type is decoded on its own: leave it running and they show up']],
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
   cell: ['cell', 'No alerts yet', ['Wireless Emergency Alerts and ETWS warnings ride in SIB12 and SIB10/11: carriers send them only while an alert is active', 'Every alert heard is kept here, newest first, until you clear it', 'Alerts need the whole carrier in the span: a HackRF']],
+  atsc: ['atsc', 'No stations yet', ['AUTO looks at every channel for an ATSC pilot and stays on each station it finds', 'An antenna up high, or outside, hears stations 60+ miles away', 'A HackRF decodes the channels, the guide and a picture of each; an RTL-SDR finds the stations']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   fleet: ['fleet', 'No trunked systems yet', ['Control channels send all the time: a system shows up within seconds of its band being in the span', 'AUTO steps through VHF, UHF, T-band, 700, 800 and 900 MHz; pick a band to stay on it', 'A HackRF at 8 or 20 MHz hears a whole site at once']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
@@ -1880,6 +1885,7 @@ function render(app: AppId | null): void {
     case 'fleet': renderFleet(view); break;
     case 'hd': renderHd(view); break;
     case 'cell': renderCell(view); break;
+    case 'atsc': renderAtsc(view); break;
     case 'btle': renderBle(view); break;
     case 'vdl2': renderAcars(view, 'vdl2'); break;
     case 'acars': renderAcars(view, 'acars'); break;
@@ -4328,7 +4334,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, ert: true, lora: true, acars: true, vdl2: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, atsc: false, ert: true, lora: true, acars: true, vdl2: true };
 const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
 function wfShown(app: AppId): boolean {
   let v: string | null = null;
@@ -5621,6 +5627,401 @@ function cellExport(csv: string, json: string): void {
 }
 function cellSave(st: unknown): void {
   try { localStorage.setItem(CELL_KEY, JSON.stringify(st)); } catch { /* storage full or blocked: kept for this session only */ }
+}
+// ---- ATSC TV: stations by their pilot, and with a HackRF the channels, the guide and a still of every subchannel --
+const ATSC_KEY = 'mm.atsc.v1', ATSC_RATE = 8_000_000;
+const ATSC_WIDE = window.matchMedia('(min-width: 1000px)');
+ATSC_WIDE.addEventListener('change', () => { if (state.app === 'atsc') { const v = q<HTMLElement>('main#view'); if (v) renderAtsc(v); } });
+type AtscView = 'channels' | 'signal' | 'guide' | 'log';
+type AtscBand = 'AUTO' | 'VHF' | 'UHF' | 'HOLD';
+interface AtscStillRec { url: string; w: number; h: number; dar: number; ms: number; complete: boolean }
+interface AtscDetail { key: string; station: AtscStation; program: number; events: AtscEvent[]; raw: { table: string; id: string; hex: string }[]; video: { pid: number; gop: string; pictures: number; iPictures: number }[]; chanText: string }
+const atscUi = {
+  snap: null as AtscSnap | null, view: 'channels' as AtscView, band: 'AUTO' as AtscBand, sel: '', sigSel: '', detail: null as AtscDetail | null, rawOpen: false,
+  stills: new Map<string, AtscStillRec>(), timer: 0, scanTimer: 0, drawn: 0, pending: 0, hold: false, wired: false, restored: false,
+  scan: { list: [] as number[], idx: 0, tunedMs: 0, stayCh: 0 },
+};
+const atscRtl = () => !!radio && radio.kind === 'rtlsdr';
+const atscRate = () => atscRtl() ? (radioCan(2_400_000) ? 2_400_000 : 2_048_000) : ATSC_RATE;
+/** Where a channel is tuned: its center for a full decode, beside the pilot for a narrow radio (off its DC spike). */
+const atscHz = (ch: number) => atscRtl() ? pilotOf(ch) + 400_000 : centerOf(ch);
+const atscMhz = (hz: number, d = 0) => (hz / 1e6).toFixed(d);
+const atscAgo = (ms: number) => ms < 5_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} h ago` : `${Math.floor(ms / 86_400_000)} d ago`;
+const atscTime = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+const atscVc = (x: AtscSub) => x.major ? `${x.major}.${x.minor}` : `P${x.program}`;
+/** Station time: the device clock corrected by the station's STT when there is one. */
+const atscNow = (s: AtscStation | null | undefined) => Date.now() + (s?.stt ? s.stt.diffMs : 0);
+function atscCapability(): [string, 'ok' | 'amber' | ''] {
+  if (!radio) return ['NO RADIO · a HackRF decodes channels, guide and pictures; an RTL-SDR finds stations by their pilot', ''];
+  if (atscRtl()) return ['RTL-SDR · finds stations by their pilot and shows level and offset · it cannot decode them, that needs 8 MS/s across the 6 MHz channel (a HackRF)', 'amber'];
+  return ['HACKRF · 8 MS/s · the whole 6 MHz channel, decoded to channels, guide, station time and a picture of every subchannel', 'ok'];
+}
+function atscChannels(): number[] {
+  const all = ATSC_CHANNELS.map(c => c.ch);
+  if (atscUi.band === 'VHF') return all.filter(c => c <= 13);
+  if (atscUi.band === 'UHF') return all.filter(c => c >= 14);
+  return all;
+}
+function atscOpen(): void {
+  const sc = atscUi.scan;
+  sc.list = atscChannels(); if (sc.idx >= sc.list.length) sc.idx = 0;
+  const ch = atscUi.band === 'HOLD' && sc.stayCh ? sc.stayCh : sc.list[sc.idx];
+  configure('NONE', atscHz(ch), atscRate(), 24, 24, false, 'atsc');
+  sc.tunedMs = Date.now();
+  if (!atscUi.restored) {
+    atscUi.restored = true;
+    let saved: unknown = null;
+    try { saved = JSON.parse(localStorage.getItem(ATSC_KEY) ?? 'null'); } catch { /* storage blocked or bad */ }
+    if (saved) worker?.postMessage({ type: 'atsc', cmd: 'restore', state: saved });
+    void atscLoadStills();
+  }
+  atscTick();
+}
+function atscGo(ch: number): void { const sc = atscUi.scan; sc.tunedMs = Date.now(); tune(atscHz(ch)); refreshAtsc(true); }
+/** AUTO: a moment on every channel for its pilot; a station keeps the radio until its channels, a picture of each
+ *  subchannel and the guide are in (a minute at most), then the scan moves on. */
+function atscTick(): void {
+  clearTimeout(atscUi.scanTimer);
+  if (state.app !== 'atsc') return;
+  const sc = atscUi.scan, s = atscUi.snap, now = Date.now(), e = now - sc.tunedMs;
+  if (atscUi.band !== 'HOLD' && sc.list.length) {
+    const ch = sc.list[sc.idx % sc.list.length], h = s && s.here && s.here.ch === ch && s.here.since >= sc.tunedMs - 400 ? s.here : null;
+    const pilot = !!h && h.pilotDb >= 8;
+    let next = false;
+    if (e > 1_800 && !pilot) next = true;
+    else if (pilot && s?.capability === 'pilot' && e > 3_500) next = true;
+    else if (pilot && s?.capability === 'decode') {
+      const done = h!.vct && h!.eit && h!.stills >= Math.max(1, h!.videoSubs);
+      if ((done && e > 10_000) || e > 60_000 || (e > 25_000 && !h!.vct)) next = true;
+    }
+    if (next) { sc.idx = (sc.idx + 1) % sc.list.length; atscGo(sc.list[sc.idx]); }
+  }
+  atscUi.scanTimer = window.setTimeout(atscTick, 300);
+}
+function atscSetBand(b: AtscBand): void {
+  const sc = atscUi.scan;
+  if (b === 'HOLD') { sc.stayCh = atscUi.snap?.ch || sc.list[sc.idx] || 14; atscUi.band = 'HOLD'; refreshAtsc(true); return; }
+  atscUi.band = b; sc.list = atscChannels(); sc.idx = 0; atscGo(sc.list[0]); atscTick();
+}
+function atscStep(d: number): void {
+  const all = ATSC_CHANNELS.map(c => c.ch), cur = atscUi.snap?.ch || atscUi.scan.stayCh || 14;
+  const i = Math.max(0, all.indexOf(cur)), ch = all[(i + d + all.length) % all.length];
+  atscUi.band = 'HOLD'; atscUi.scan.stayCh = ch; atscGo(ch);
+}
+function atscHoldOn(ch: number): void { atscUi.band = 'HOLD'; atscUi.scan.stayCh = ch; atscGo(ch); }
+
+// stills: kept as small JPEGs in IndexedDB (one per subchannel), shown from memory
+function atscDb(): Promise<IDBDatabase | null> {
+  return new Promise(res => {
+    try { const r = indexedDB.open('mm-atsc', 1); r.onupgradeneeded = () => r.result.createObjectStore('stills'); r.onsuccess = () => res(r.result); r.onerror = () => res(null); } catch { res(null); }
+  });
+}
+async function atscLoadStills(): Promise<void> {
+  const db = await atscDb(); if (!db) return;
+  try {
+    const tx = db.transaction('stills', 'readonly'), st = tx.objectStore('stills'), req = st.openCursor();
+    req.onsuccess = () => { const c = req.result; if (!c) { refreshAtsc(true); return; } if (!atscUi.stills.has(String(c.key))) atscUi.stills.set(String(c.key), c.value as AtscStillRec); c.continue(); };
+  } catch { /* storage blocked */ }
+}
+async function atscSaveStill(key: string, rec: AtscStillRec): Promise<void> {
+  const db = await atscDb(); if (!db) return;
+  try { db.transaction('stills', 'readwrite').objectStore('stills').put(rec, key); } catch { /* storage blocked */ }
+}
+function atscOnStill(m: Record<string, unknown>): void {
+  const w = m.w as number, h = m.h as number, dar = (m.dar as number) || w / h;
+  const src = document.createElement('canvas'); src.width = w; src.height = h;
+  const cx = src.getContext('2d'); if (!cx) return;
+  cx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba as ArrayBuffer | Uint8ClampedArray as ArrayBuffer), w, h), 0, 0);
+  // stored at the display aspect, 480 wide at most
+  const ow = Math.min(480, Math.round(Math.max(w, h * dar))), oh = Math.round(ow / dar);
+  const out = document.createElement('canvas'); out.width = ow; out.height = oh;
+  const ox = out.getContext('2d'); if (!ox) return;
+  ox.imageSmoothingQuality = 'high'; ox.drawImage(src, 0, 0, ow, oh);
+  const rec: AtscStillRec = { url: out.toDataURL('image/jpeg', 0.82), w: ow, h: oh, dar, ms: Date.now(), complete: !!m.complete };
+  atscUi.stills.set(m.key as string, rec);
+  void atscSaveStill(m.key as string, rec);
+  refreshAtsc();
+}
+function atscSave(st: unknown): void {
+  try { localStorage.setItem(ATSC_KEY, JSON.stringify(st)); }
+  catch { try { localStorage.setItem(ATSC_KEY, JSON.stringify({ ...(st as Record<string, unknown>), log: [] })); } catch { /* full */ } }
+}
+function renderAtsc(view: HTMLElement): void {
+  const wide = ATSC_WIDE.matches;
+  if (wide && atscUi.view === 'channels') atscUi.view = 'signal';
+  view.classList.toggle('atwide', wide);
+  const tabs = (wide ? ['signal', 'guide', 'log'] : ['channels', 'signal', 'guide', 'log']) as AtscView[];
+  view.innerHTML = `
+    <section class="${visCls('atsc')}">${readoutHtml()}${wide ? '<div id="at-wall" class="at-wall"></div>' : ''}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div id="at-head" class="at-head"></div>
+      <div class="ctlrow">${segHtml(([['AUTO', 'AUTO'], ['VHF', 'VHF 2–13'], ['UHF', 'UHF 14–36']] as [AtscBand, string][]).map(([k, l]) => `<button data-atband="${k}">${l}</button>`))}<span class="at-step"><button class="ib" data-atstep="-1" title="previous channel" aria-label="previous channel">◀</button><b id="at-ch">CH</b><button class="ib" data-atstep="1" title="next channel" aria-label="next channel">▶</button></span></div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-atview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('atsc')}<button id="at-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('atsc')}</div>
+      ${wide ? '<div id="at-detail" class="mt-detail at-dock" hidden></div>' : ''}
+      <div id="at-stage" class="mt-stage at-stage">${wide ? '' : '<div id="at-wall" class="at-wall"></div>'}<div id="at-signal" class="at-signal"></div><div id="at-guide" class="at-guide"></div>${wide ? '' : '<div id="at-detail" class="mt-detail" hidden></div>'}</div>
+      <div id="at-log"><div class="countrow"><span id="count-atsc" class="count">0 DECODED</span></div>${listHtml('atsc', 'looking for stations…')}</div>
+      <div class="note">Over-the-air digital TV (ATSC 1.0), receive only. Stations are found by their pilot, 309 kHz above the bottom of each 6 MHz channel. With a HackRF the whole channel is sampled at 8 MS/s and decoded in bursts through the 8VSB equalizer and trellis decoder, Reed-Solomon, the transport stream and PSIP (the channel list, the program guide, the station clock), with a picture from each subchannel's MPEG-2 video. The CPU decodes what it can and skips the rest. The tables and pictures repeat, so every view still fills in, and the share decoded is shown. AUTO steps through VHF 2–13 and UHF 14–36 and stays on each station until its channels, pictures and guide are in. Everything heard is kept. Tap a subchannel for its guide, its streams and the raw tables.</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-atband]', view).forEach(b => b.onclick = () => atscSetBand(b.dataset.atband as AtscBand));
+  qa<HTMLButtonElement>('[data-atstep]', view).forEach(b => b.onclick = () => atscStep(Number(b.dataset.atstep)));
+  qa<HTMLButtonElement>('[data-atview]', view).forEach(b => b.onclick = () => { atscUi.view = b.dataset.atview as AtscView; refreshAtsc(true); });
+  $('at-export').onclick = () => worker?.postMessage({ type: 'atsc', cmd: 'export' });
+  const pick = (e: Event) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-atsel],[data-atsig],[data-atdo]'); if (!t) return;
+    if (t.dataset.atsig) { atscUi.sigSel = t.dataset.atsig; refreshAtsc(true); return; }
+    const d = t.dataset.atdo;
+    if (d === 'close') { atscUi.sel = ''; atscUi.detail = null; refreshAtsc(true); return; }
+    if (d === 'raw') { atscUi.rawOpen = !atscUi.rawOpen; refreshAtsc(true); return; }
+    if (d?.startsWith('hold:')) { atscHoldOn(Number(d.slice(5))); return; }
+    if (d?.startsWith('signal:')) { atscUi.sigSel = d.slice(7); atscUi.view = 'signal'; refreshAtsc(true); return; }
+    if (t.dataset.atsel) atscPick(t.dataset.atsel);
+  };
+  for (const id of ['at-wall', 'at-signal', 'at-guide', 'at-detail', 'at-head']) { const el = q(`#${id}`); if (el) el.onclick = pick; }
+  // A redraw between press and release would swap the element under the pointer and lose the click.
+  const hold = () => { atscUi.hold = true; };
+  const release = () => { if (!atscUi.hold) return; setTimeout(() => { atscUi.hold = false; refreshAtsc(true); }, 0); };
+  for (const id of ['at-wall', 'at-signal', 'at-guide', 'at-detail']) { const el = q(`#${id}`); if (el) el.onpointerdown = hold; }
+  if (!atscUi.wired) { atscUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
+  clearInterval(atscUi.timer);
+  atscUi.timer = window.setInterval(() => { if (state.app !== 'atsc') { clearInterval(atscUi.timer); clearTimeout(atscUi.scanTimer); return; } refreshAtsc(); }, 500);
+  refreshList('atsc');
+  refreshAtsc(true);
+}
+function atscPick(key: string): void {
+  atscUi.sel = atscUi.sel === key ? '' : key; atscUi.detail = null; atscUi.rawOpen = false;
+  if (atscUi.sel) worker?.postMessage({ type: 'atsc', cmd: 'detail', key });
+  refreshAtsc(true);
+}
+function atscHead(s: AtscSnap | null): string {
+  const [cap, tone] = atscCapability(), sc = atscUi.scan, now = Date.now();
+  const ch = s?.ch || (atscUi.band === 'HOLD' ? sc.stayCh : sc.list[sc.idx]) || 0, st = s?.stations.find(x => x.ch === ch);
+  const status = atscUi.band === 'HOLD' ? `HOLDING CH ${ch}` : `${atscUi.band === 'AUTO' ? 'AUTO' : atscUi.band} · CH ${ch} · ${sc.idx + 1}/${sc.list.length} · ${st && st.pilotDb >= 8 && now - st.pilotMs < 4_000 ? 'READING' : 'LOOKING'} ${Math.floor((now - sc.tunedMs) / 1000)} s`;
+  const subs = s ? s.stations.reduce((n, x) => n + x.subs.length, 0) : 0, onAir = s ? s.stations.reduce((n, x) => n + x.subs.filter(y => y.now).length, 0) : 0;
+  const pics = s ? s.stations.reduce((n, x) => n + x.subs.filter(y => atscUi.stills.has(y.key)).length, 0) : 0;
+  const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
+  const dec = s && s.capability === 'decode' ? `${s.decodedPct.toFixed(0)}%` : '-';
+  return `<div class="at-cap ${tone}">${esc(cap)}</div>`
+    + `<div class="at-watch"><b>CH ${ch}${ch ? ` · ${atscMhz(centerOf(ch))} MHz` : ''}</b><small>${st ? `${st.tsid >= 0 ? `TSID 0x${st.tsid.toString(16).toUpperCase().padStart(4, '0')} · ` : ''}pilot +${st.pilotDb.toFixed(0)} dB${Number.isFinite(st.snrDb) ? ` · SNR ${st.snrDb.toFixed(1)} dB` : ''}` : 'no pilot yet'}${s && s.capability === 'decode' ? ` · ${s.workers || 1} decoder${(s.workers || 1) === 1 ? '' : 's'}` : ''}</small><em class="${st && st.pilotDb >= 8 ? 'on' : ''}">${esc(status)}</em></div>`
+    + `<div class="at-count">${tile(s?.stations.length ?? 0, 'STATIONS')}${tile(subs, 'CHANNELS')}${tile(onAir, 'ON NOW')}${tile(pics, 'PICTURES')}${tile(dec, 'DECODED')}</div>`;
+}
+function atscStillHtml(x: AtscSub, live: boolean): string {
+  const r = atscUi.stills.get(x.key);
+  const vid = x.streams.find(y => y.type === 0x02 || y.type === 0x1b);
+  const empty = !vid ? 'NO VIDEO' : vid.type === 0x1b ? 'H.264 · NO PICTURE' : atscRtl() ? 'PICTURES NEED A HACKRF' : live ? 'WAITING FOR A PICTURE' : 'NO PICTURE YET';
+  return `<div class="at-still">${r ? `<img src="${r.url}" alt="">` : `<div class="at-nopic"><i></i><span>${empty}</span></div>`}<span class="at-vc">${atscVc(x)}</span>${live && r && Date.now() - r.ms < 20_000 ? '<span class="at-new">NEW</span>' : ''}</div>`;
+}
+function atscNowHtml(st: AtscStation, x: AtscSub): string {
+  const now = atscNow(st), e = x.now, n = x.next;
+  if (!e && !n) return `<div class="at-ev dim">${x.events ? 'nothing on now in the guide' : 'no guide yet'}</div>`;
+  const pct = e ? Math.max(0, Math.min(100, 100 * (now - e.startMs) / (e.seconds * 1000))) : 0;
+  return (e ? `<div class="at-ev"><b>${esc(e.title || 'untitled')}</b><small>${atscTime(e.startMs)}–${atscTime(e.startMs + e.seconds * 1000)}${e.rating ? ` · ${esc(e.rating)}` : ''}</small><span class="at-bar"><i style="width:${pct.toFixed(0)}%"></i></span></div>` : '')
+    + (n ? `<div class="at-next"><small>NEXT ${atscTime(n.startMs)}</small> ${esc(n.title || 'untitled')}</div>` : '');
+}
+function atscStationHtml(st: AtscStation, s: AtscSnap): string {
+  const live = s.ch === st.ch && Date.now() - st.pilotMs < 4_000, now = Date.now();
+  const name = st.subs.find(x => x.longName)?.longName ?? st.tvName;
+  const head = `<div class="at-sth"><span class="at-rf"><b>${st.ch}</b><small>RF</small></span><span class="at-stt"><b>${esc(name || (st.tsid >= 0 ? `TSID 0x${st.tsid.toString(16).toUpperCase().padStart(4, '0')}` : 'PILOT ONLY'))}</b><small>${atscMhz(st.centerHz)} MHz${st.tsid >= 0 ? ` · TSID 0x${st.tsid.toString(16).toUpperCase().padStart(4, '0')}` : ''} · pilot +${st.pilotDb.toFixed(0)} dB${Number.isFinite(st.snrDb) ? ` · SNR ${st.snrDb.toFixed(1)} dB` : ''} · ${st.subs.length} channel${st.subs.length === 1 ? '' : 's'}</small></span><span class="mt-live ${live ? 'on' : ''}" data-atdo="signal:${st.key}"><i></i>${live ? 'LIVE' : atscAgo(now - st.lastMs).toUpperCase()}</span></div>`;
+  if (!st.subs.length) return `<div class="at-st">${head}<div class="at-dim">${s.capability === 'pilot' ? 'a station is on this channel: decoding it needs a HackRF at 8 MS/s' : live ? 'reading the channel list…' : 'channel list not decoded yet'}</div></div>`;
+  const tiles = st.subs.map(x => `<div class="at-tile ${atscUi.sel === x.key ? 'sel' : ''}" data-atsel="${esc(x.key)}">${atscStillHtml(x, live)}<div class="at-tb"><div class="at-name"><b>${esc(x.name || `program ${x.program}`)}</b>${x.access ? '<span class="tr-pill acc">PAY</span>' : ''}${x.hidden ? '<span class="tr-pill">HIDDEN</span>' : ''}</div>${atscNowHtml(st, x)}<div class="at-meta">${esc(x.video || x.streams.map(y => y.typeName).join(' · '))}${x.streams.filter(y => y.type === 0x81 || y.type === 0x87).map(y => ` · ${esc(y.lang || 'audio')}`).join('')}${x.streams.some(y => y.captions) ? ' · CC' : ''}</div></div></div>`).join('');
+  return `<div class="at-st">${head}<div class="at-tiles">${tiles}</div></div>`;
+}
+function atscWallHtml(s: AtscSnap): string {
+  if (!s.stations.length) return emptyState('atsc');
+  return s.stations.slice().sort((a, b) => (b.ch === s.ch ? 1 : 0) - (a.ch === s.ch ? 1 : 0) || (b.subs.length ? 1 : 0) - (a.subs.length ? 1 : 0) || a.ch - b.ch).map(st => atscStationHtml(st, s)).join('');
+}
+const ATSC_LV = [-7, -5, -3, -1, 1, 3, 5, 7];
+function atscCss(name: string, dflt: string): string { return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || dflt; }
+function atscDraw(live: AtscLive | null): void {
+  const acc = atscCss('--accent', '#4c8dff'), mut = atscCss('--muted', '#8d97ab'), ok = atscCss('--ok', '#3ddc84'), a2 = atscCss('--accent2', '#ffaf00');
+  const canvas = (id: string): [CanvasRenderingContext2D, number, number] | null => {
+    const c = q<HTMLCanvasElement>(`#${id}`); if (!c) return null;
+    const w = c.clientWidth || 300, h = c.clientHeight || 120, dpr = devicePixelRatio || 1;
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    const x = c.getContext('2d'); if (!x) return null;
+    x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h); x.font = '10px system-ui, sans-serif';
+    return [x, w, h];
+  };
+  if (!live) return;
+  // slicer histogram: the eight levels as peaks
+  let g = canvas('at-hist');
+  if (g) {
+    const [x, w, h] = g, H = live.hist, mx = Math.max(1, ...H), xs = (v: number) => (v + 10.5) / 21 * w;
+    x.strokeStyle = mut; x.globalAlpha = 0.35;
+    for (const l of ATSC_LV) { x.beginPath(); x.moveTo(xs(l), 0); x.lineTo(xs(l), h - 12); x.stroke(); }
+    x.globalAlpha = 1;
+    const grad = x.createLinearGradient(0, 0, 0, h); grad.addColorStop(0, acc); grad.addColorStop(1, 'transparent');
+    x.fillStyle = grad; x.beginPath(); x.moveTo(0, h - 12);
+    H.forEach((v, i) => x.lineTo(i / H.length * w, h - 12 - (h - 16) * Math.sqrt(v / mx)));
+    x.lineTo(w, h - 12); x.closePath(); x.fill();
+    x.fillStyle = mut; ATSC_LV.forEach(l => x.fillText(`${l > 0 ? '+' : ''}${l}`, xs(l) - 6, h - 1));
+  }
+  // the eye: equalized symbols over time against the eight levels
+  g = canvas('at-eye');
+  if (g) {
+    const [x, w, h] = g, ys = (v: number) => h / 2 - v / 9 * (h / 2 - 4);
+    x.strokeStyle = mut; x.globalAlpha = 0.3;
+    for (const l of ATSC_LV) { x.beginPath(); x.moveTo(0, ys(l)); x.lineTo(w, ys(l)); x.stroke(); }
+    x.globalAlpha = 0.7; x.fillStyle = acc;
+    const E = live.eye; for (let i = 0; i < E.length; i++) x.fillRect(i / E.length * w, ys(E[i]) - 0.75, 1.5, 1.5);
+    x.globalAlpha = 1;
+  }
+  // the echo profile ("ghosts"): delay in microseconds against level re the main path
+  g = canvas('at-echo');
+  if (g && live.echo.length) {
+    const [x, w, h] = g, E = live.echo, us = (i: number) => (i / 2 - 32) / 10.762237762, umin = us(0), umax = us(E.length - 1);
+    const xs = (u: number) => (u - umin) / (umax - umin) * w, ys = (db: number) => 4 + (Math.min(0, Math.max(-40, db)) / -40) * (h - 18);
+    x.strokeStyle = mut; x.globalAlpha = 0.3; x.fillStyle = mut;
+    for (const db of [-10, -20, -30]) { x.beginPath(); x.moveTo(0, ys(db)); x.lineTo(w, ys(db)); x.stroke(); }
+    x.globalAlpha = 1;
+    for (let u = 0; u <= umax; u += 10) x.fillText(`${u} µs`, xs(u) + 2, h - 2);
+    x.fillText('-20 dB', 2, ys(-20) - 2);
+    x.strokeStyle = acc; x.lineWidth = 1.2; x.beginPath();
+    E.forEach((v, i) => { const px = xs(us(i)), py = ys(v); if (i) x.lineTo(px, py); else x.moveTo(px, py); });
+    x.stroke();
+    // echoes over -25 dB away from the main path, labeled
+    const sorted = E.slice(2 * 72).slice().sort((a, b) => a - b), floor = sorted[sorted.length >> 1] ?? -30;
+    x.fillStyle = a2;
+    let last = -99;
+    for (let i = 2; i < E.length - 2; i++) {
+      const u = us(i);
+      if (Math.abs(u) < 1.2 || E[i] < Math.max(-25, floor + 6) || E[i] < E[i - 1] || E[i] < E[i + 1] || u - last < 3) continue;
+      last = u; x.beginPath(); x.arc(xs(u), ys(E[i]), 3, 0, 2 * Math.PI); x.fill();
+      x.fillText(`${u.toFixed(1)} µs ${E[i].toFixed(0)} dB`, Math.min(w - 90, xs(u) + 5), ys(E[i]) - 4);
+    }
+    x.fillStyle = ok; x.fillText('MAIN', xs(0) + 4, 12);
+  }
+  // SNR and uncorrectable-packet history
+  g = canvas('at-hist2');
+  if (g) {
+    const [x, w, h] = g, S = live.snrHistory, R = live.rsHistory, n = Math.max(S.length, 2);
+    const ys = (db: number) => h - 4 - Math.max(0, Math.min(1, (db - 10) / 25)) * (h - 8);
+    x.strokeStyle = mut; x.globalAlpha = 0.3; x.beginPath(); x.moveTo(0, ys(15)); x.lineTo(w, ys(15)); x.stroke(); x.globalAlpha = 1;
+    x.fillStyle = mut; x.fillText('15 dB', 2, ys(15) - 2);
+    x.fillStyle = a2; R.forEach((v, i) => { const bh = v * (h - 8); x.fillRect(i / n * w, h - 4 - bh, Math.max(2, w / n - 2), bh); });
+    x.strokeStyle = ok; x.lineWidth = 1.5; x.beginPath(); S.forEach((v, i) => { const px = (i + 0.5) / n * w; if (i) x.lineTo(px, ys(v)); else x.moveTo(px, ys(v)); }); x.stroke();
+  }
+}
+function atscSignalHtml(s: AtscSnap): string {
+  const key = atscUi.sigSel || (s.ch ? `ch${s.ch}` : s.stations[0]?.key ?? '');
+  const st = s.stations.find(x => x.key === key), live = s.live && st && s.live.ch === st.ch ? s.live : null;
+  const chips = s.stations.length > 1 ? `<div class="at-chips">${s.stations.map(x => `<button class="chip ${x.key === key ? 'on' : ''}" data-atsig="${x.key}">CH ${x.ch}</button>`).join('')}</div>` : '';
+  if (!st) return chips + (s.stations.length ? '' : emptyState('atsc', 'No station yet', ['Each channel takes a moment, AUTO looks at every one for its pilot', 'An antenna up high, or outside, hears stations 60+ miles away']));
+  const tot = st.rs.ok + st.rs.corrected + st.rs.failed, fail = tot ? 100 * st.rs.failed / tot : 0;
+  const tile = (v: string, l: string, tone = '') => `<span class="${tone}"><b>${v}</b><small>${l}</small></span>`;
+  const tiles = `<div class="at-sig">${tile(`+${st.pilotDb.toFixed(1)}`, 'PILOT dB')}${tile(`${st.pilotHz >= 0 ? '+' : ''}${st.pilotHz.toFixed(0)}`, 'PILOT OFFSET Hz')}${tile(Number.isFinite(st.snrDb) ? st.snrDb.toFixed(1) : '-', 'EQUALIZER SNR dB', Number.isFinite(st.snrDb) ? (st.snrDb >= 16 ? 'ok' : st.snrDb >= 14.5 ? 'amber' : 'red') : '')}${tile(tot ? `${fail.toFixed(fail < 1 ? 2 : 0)}%` : '-', 'UNCORRECTABLE', tot ? (fail < 1 ? 'ok' : fail < 10 ? 'amber' : 'red') : '')}${tile(tot ? `${(100 * st.rs.corrected / tot).toFixed(0)}%` : '-', 'RS CORRECTED')}${tile(Number.isFinite(st.topDb) ? `+${st.topDb.toFixed(0)}` : '-', 'CHANNEL OVER FLOOR dB')}</div>`;
+  if (!live) return chips + `<div class="at-sigh"><b>CH ${st.ch} · ${atscMhz(st.centerHz)} MHz</b><small>${s.ch === st.ch ? (s.capability === 'pilot' ? 'pilot and level only on this radio' : 'waiting for the first burst…') : `last heard ${atscAgo(Date.now() - st.lastMs)} · tune here for the live equalizer, echoes and packets`}</small>${s.ch !== st.ch ? `<button class="chip" data-atdo="hold:${st.ch}">TUNE</button>` : ''}</div>` + tiles;
+  const L = live, rsTot = L.rs.ok + L.rs.corrected + L.rs.failed;
+  const pidRows = L.pids.map(p => `<tr><td>0x${p.pid.toString(16).toUpperCase().padStart(4, '0')}</td><td class="at-role">${esc(p.role || '?')}</td><td class="at-kb"><span class="at-lvl"><i style="width:${Math.min(100, 100 * p.share / Math.max(0.01, ...L.pids.map(x => x.share))).toFixed(0)}%"></i></span>${p.kbps >= 1000 ? `${(p.kbps / 1000).toFixed(2)} Mb/s` : `${p.kbps.toFixed(0)} kb/s`}</td><td>${p.ccErrors || ''}</td><td>${p.pcrs ? `${p.pcrIntervalMs.toFixed(0)} ms · ${p.pcrPpm >= 0 ? '+' : ''}${p.pcrPpm.toFixed(1)} ppm` : ''}</td></tr>`).join('');
+  return chips
+    + `<div class="at-sigh"><b>CH ${st.ch} · ${atscMhz(st.centerHz)} MHz · LIVE</b><small>${L.ok ? `${L.fields} fields in the last burst · ${L.syncs} field syncs · segment sync ${L.segPeak.toFixed(0)}× · clock ${(L.eps * 1e6 >= 0 ? '+' : '')}${(L.eps * 1e6).toFixed(2)} ppm · ${L.cpuMs.toFixed(0)} ms CPU · ${s.decodedPct.toFixed(0)}% of the air time decoded` : esc(L.reason || 'no lock')}</small></div>`
+    + tiles
+    + `<div class="at-plot"><small>SLICER · the eight 8VSB levels after the equalizer${Number.isFinite(L.sliceSnrDb) ? ` · ${L.sliceSnrDb.toFixed(1)} dB to the nearest level` : ''}</small><canvas id="at-hist"></canvas></div>`
+    + `<div class="at-plot"><small>EYE · equalized symbols over the last field</small><canvas id="at-eye"></canvas></div>`
+    + `<div class="at-plot"><small>ECHOES · the channel from the field sync (PN511): the main path and its ghosts by delay</small><canvas id="at-echo"></canvas></div>`
+    + `<div class="at-plot"><small>HISTORY · SNR per burst (line), share of packets lost (bars) · last burst ${rsTot} packets, ${L.rs.corrected} corrected (${L.rs.bytes} bytes), ${L.rs.failed} lost</small><canvas id="at-hist2"></canvas></div>`
+    + `<div class="at-plot"><small>TRANSPORT STREAM · ${st.packets.toLocaleString()} packets · ${st.badPackets.toLocaleString()} lost</small><table class="at-tab at-pids"><tr><th>PID</th><th>CARRIES</th><th>RATE</th><th>CC</th><th>PCR</th></tr>${pidRows}</table></div>`;
+}
+function atscGuideHtml(s: AtscSnap): string {
+  const rows = s.stations.flatMap(st => st.subs.filter(x => !x.hideGuide && x.sourceId >= 0).map(x => ({ st, x })));
+  if (!rows.length) return emptyState('atsc', 'No guide yet', ['Stations send the guide every few seconds, and it fills in once a station has been decoded', 'Each station carries its own subchannels\' next few hours']);
+  const now = atscNow(s.stations.find(x => x.ch === s.ch) ?? s.stations[0]);
+  const t0 = Math.floor(now / 1_800_000) * 1_800_000 - 1_800_000, span = 5 * 3_600_000, ppm = ATSC_WIDE.matches ? 4 : 3, W = span / 60_000 * ppm;
+  const xs = (ms: number) => (ms - t0) / 60_000 * ppm;
+  let marks = ''; for (let t = t0; t <= t0 + span; t += 1_800_000) marks += `<span style="left:${xs(t).toFixed(0)}px">${atscTime(t)}</span>`;
+  const body = rows.map(({ x }) => {
+    return `<div class="at-grow" data-atsel="${esc(x.key)}"><div class="at-glab"><b>${atscVc(x)}</b><small>${esc(x.name || '')}</small></div><div class="at-gline" style="width:${W}px" data-gk="${esc(x.key)}"></div></div>`;
+  }).join('');
+  return `<div class="at-gscroll"><div class="at-gin" style="width:${W + 84}px"><div class="at-gtime" style="width:${W}px">${marks}<i style="left:${xs(now).toFixed(0)}px"></i></div>${body}<i class="at-gnow" style="left:${(84 + xs(now)).toFixed(0)}px"></i></div></div>`;
+}
+/** The guide's event blocks come from each subchannel's full list (the detail's events, else now and next). */
+function atscGuideFill(s: AtscSnap): void {
+  const now = atscNow(s.stations.find(x => x.ch === s.ch) ?? s.stations[0]);
+  const t0 = Math.floor(now / 1_800_000) * 1_800_000 - 1_800_000, span = 5 * 3_600_000, ppm = ATSC_WIDE.matches ? 4 : 3;
+  const xs = (ms: number) => (ms - t0) / 60_000 * ppm;
+  for (const el of qa<HTMLElement>('[data-gk]')) {
+    const key = el.dataset.gk!, st = s.stations.find(y => key.startsWith(y.key + '/')), x = st?.subs.find(y => y.key === key); if (!x) continue;
+    const evs = (atscGuide.get(key) ?? [x.now, x.next].filter((e): e is AtscEvent => !!e));
+    el.innerHTML = evs.filter(e => e.startMs + e.seconds * 1000 > t0 && e.startMs < t0 + span).map(e => {
+      const a = Math.max(0, xs(e.startMs)), b = Math.min(span / 60_000 * ppm, xs(e.startMs + e.seconds * 1000)), on = e.startMs <= now && e.startMs + e.seconds * 1000 > now;
+      return `<span class="at-gev ${on ? 'on' : ''}" style="left:${a.toFixed(0)}px;width:${Math.max(2, b - a - 2).toFixed(0)}px" title="${esc(e.title)}"><b>${esc(e.title || 'untitled')}</b><small>${atscTime(e.startMs)}</small></span>`;
+    }).join('');
+  }
+}
+/** Every subchannel's events as the detail requests bring them in (the guide shows more than now and next). */
+const atscGuide = new Map<string, AtscEvent[]>();
+let atscGuideAsk = 0;
+function atscDetailHtml(s: AtscSnap): string {
+  const key = atscUi.sel; if (!key) return '';
+  const st = s.stations.find(x => key.startsWith(x.key + '/')), x = st?.subs.find(y => y.key === key);
+  if (!st || !x) return '';
+  const d = atscUi.detail?.key === key ? atscUi.detail : null, r = atscUi.stills.get(key), now = atscNow(st);
+  const head = `<div class="mt-dh"><b>${atscVc(x)} ${esc(x.name)}</b><span>${esc(x.longName || `RF ${st.ch} · program ${x.program}`)}</span><button class="chip" data-atdo="hold:${st.ch}">${atscUi.band === 'HOLD' && atscUi.scan.stayCh === st.ch ? 'HOLDING' : 'HOLD HERE'}</button><button class="chip" data-atdo="close">✕</button></div>`;
+  const pic = r ? `<div class="at-big"><img src="${r.url}" alt=""><small>${r.complete ? 'whole picture' : 'part of a picture'} · ${atscAgo(Date.now() - r.ms)}</small></div>` : '';
+  const evs = d?.events ?? [x.now, x.next].filter((e): e is AtscEvent => !!e);
+  const prog = evs.filter(e => e.startMs + e.seconds * 1000 > now - 3_600_000).map(e => {
+    const on = e.startMs <= now && e.startMs + e.seconds * 1000 > now;
+    return `<div class="at-gl ${on ? 'on' : ''}"><b>${atscTime(e.startMs)}</b><span><em>${esc(e.title || 'untitled')}</em><small>${Math.round(e.seconds / 60)} min${e.rating ? ` · ${esc(e.rating)}` : ''}${e.captions ? ` · ${esc(e.captions)}` : ''}</small>${e.text ? `<i>${esc(e.text)}</i>` : ''}</span></div>`;
+  }).join('') || '<div class="at-dim">no guide for this channel yet</div>';
+  const streams = `<table class="at-tab"><tr><th>PID</th><th>STREAM</th><th>LANG</th><th>DETAIL</th><th>RATE</th></tr>${x.streams.map(y => `<tr><td>0x${y.pid.toString(16).toUpperCase().padStart(4, '0')}</td><td>${esc(y.typeName)}</td><td>${esc(y.lang)}</td><td>${esc([y.info, y.captions].filter(v => v).join(' · '))}</td><td>${y.kbps >= 1000 ? `${(y.kbps / 1000).toFixed(2)} Mb/s` : `${y.kbps.toFixed(0)} kb/s`}</td></tr>`).join('')}</table>`;
+  const vinfo = d?.video.find(v => x.streams.some(y => y.pid === v.pid));
+  const fields: [string, string][] = [['VIRTUAL CHANNEL', `${atscVc(x)}${x.name ? ` ${x.name}` : ''}`], ['RF CHANNEL', `${st.ch} · ${atscMhz(st.centerHz)} MHz`], ['TSID', st.tsid >= 0 ? `0x${st.tsid.toString(16).toUpperCase().padStart(4, '0')}` : '-'], ['PROGRAM', `${x.program}`], ['SOURCE ID', x.sourceId >= 0 ? `${x.sourceId}` : '-'],
+    ['SERVICE', ATSC_SERVICE[x.serviceType] ?? `type ${x.serviceType}`], ['VIDEO', x.video || '-'], ['PICTURES', vinfo ? `${vinfo.pictures} seen, ${vinfo.iPictures} intra · ${vinfo.gop.slice(-15)}` : '-'],
+    ['STATION CLOCK', st.stt ? `${new Date(now).toISOString().slice(11, 19)} UTC · ${(st.stt.diffMs / 1000 >= 0 ? '+' : '')}${(st.stt.diffMs / 1000).toFixed(1)} s from this device` : '-'], ['TABLES', st.tables.join(' ')]];
+  const raw = d ? `<div class="at-sec"><small data-atdo="raw" class="at-rawh">RAW TABLES · ${d.raw.length} sections ${atscUi.rawOpen ? '▾' : '▸'}</small>${atscUi.rawOpen ? d.raw.map(t => `<div class="at-raw"><b>${esc(t.table)}</b><code>${esc(t.hex.replace(/(.{64})/g, '$1 '))}</code></div>`).join('') : ''}</div>` : '<div class="at-dim">loading the tables…</div>';
+  return head + pic + `<div class="at-sec"><small>PROGRAM GUIDE</small>${d?.chanText ? `<div class="at-dim">${esc(d.chanText)}</div>` : ''}${prog}</div>` + `<div class="mt-fields">${fields.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>` + `<div class="at-sec"><small>STREAMS</small>${streams}</div>` + raw;
+}
+const ATSC_SERVICE: Record<number, string> = { 0: 'not in the channel table', 1: 'analog TV', 2: 'digital TV', 3: 'audio only', 4: 'data only', 5: 'software download', 6: 'unassociated', 7: 'parameterized', 8: 'ATSC 3.0', 9: 'ATSC 3.0 audio' };
+function refreshAtsc(force = false): void {
+  if (state.app !== 'atsc') return;
+  const now = Date.now();
+  if (atscUi.hold) return;
+  if (!force && now - atscUi.drawn < 240) { clearTimeout(atscUi.pending); atscUi.pending = window.setTimeout(() => refreshAtsc(true), 250); return; }
+  atscUi.drawn = now;
+  const s = atscUi.snap, view = atscUi.view, wide = ATSC_WIDE.matches;
+  const head = q('#at-head'); if (head) head.innerHTML = atscHead(s);
+  qa<HTMLButtonElement>('[data-atband]').forEach(b => b.classList.toggle('on', b.dataset.atband === atscUi.band));
+  const chEl = q('#at-ch'); if (chEl) chEl.textContent = `CH ${s?.ch || atscUi.scan.stayCh || atscUi.scan.list[atscUi.scan.idx] || ''}`;
+  qa<HTMLButtonElement>('[data-atview]').forEach(b => {
+    const v = b.dataset.atview as AtscView; b.classList.toggle('on', v === view);
+    b.textContent = v === 'channels' ? `CHANNELS ${s ? s.stations.reduce((n, x) => n + x.subs.length, 0) : 0}` : v === 'signal' ? 'SIGNAL' : v === 'guide' ? 'GUIDE' : 'LOG';
+  });
+  const wall = q('#at-wall'), sig = q('#at-signal'), guide = q('#at-guide'), det = q('#at-detail'), stage = q('#at-stage'), logEl = q('#at-log');
+  if (!wall || !sig || !guide || !det || !stage || !logEl) return;
+  if (!wide) wall.hidden = view !== 'channels';
+  sig.hidden = view !== 'signal'; guide.hidden = view !== 'guide';
+  stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
+  const keep = (el: HTMLElement, html: string) => { const top = el.scrollTop, left = el.querySelector('.at-gscroll')?.scrollLeft ?? 0; el.innerHTML = html; el.scrollTop = top; const g = el.querySelector('.at-gscroll'); if (g) g.scrollLeft = left; };
+  if (!paused.has('atsc') && s) {
+    if (wide || view === 'channels') keep(wall, atscWallHtml(s));
+    if (view === 'signal') { keep(sig, atscSignalHtml(s)); atscDraw(s.live && (atscUi.sigSel === '' || atscUi.sigSel === `ch${s.live.ch}`) ? s.live : null); }
+    if (view === 'guide') {
+      keep(guide, atscGuideHtml(s)); atscGuideFill(s);
+      // ask for each subchannel's whole guide now and then
+      if (now - atscGuideAsk > 15_000) { atscGuideAsk = now; for (const st of s.stations) for (const x of st.subs) if (x.events > 2) worker?.postMessage({ type: 'atsc', cmd: 'detail', key: x.key }); }
+    }
+  } else if (!s) { wall.innerHTML = emptyState('atsc'); if (view === 'signal') sig.innerHTML = emptyState('atsc'); }
+  const html = s ? atscDetailHtml(s) : '';
+  det.hidden = !html;
+  if (html) { const top = det.scrollTop; det.innerHTML = html; det.scrollTop = top; }
+  if (s) {
+    const st = s.stations.find(x => x.ch === s.ch);
+    if (st && st.pilotDb >= 8) setMeter(Math.min(1, st.pilotDb / 40), `PILOT +${st.pilotDb.toFixed(0)} dB${Number.isFinite(st.snrDb) && s.live ? ` · SNR ${st.snrDb.toFixed(1)} dB` : ''}`);
+    else setMeter(0, `CH ${s.ch || '-'} · NO PILOT`);
+    const subs = s.stations.reduce((n, x) => n + x.subs.length, 0);
+    if (subs) setLamp(`${subs} CHANNEL${subs === 1 ? '' : 'S'}`, 'ok'); else if (s.stations.length) setLamp(`${s.stations.length} STATION${s.stations.length === 1 ? '' : 'S'}`, 'ok'); else setLamp('SCANNING', 'amber', true);
+  }
+}
+function atscOnDetail(m: Record<string, unknown>): void {
+  const d = m as unknown as AtscDetail;
+  atscGuide.set(d.key, d.events);
+  if (d.key === atscUi.sel) atscUi.detail = d;
+  refreshAtsc();
+}
+function atscExport(csv: string, json: string): void {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  download(`atsc-log-${stamp}.csv`, csv, 'text/csv');
+  setTimeout(() => download(`atsc-tables-${stamp}.json`, json, 'application/json'), 400);
 }
 
 // ---- LoRa: every Meshtastic, MeshCore and LoRaWAN node heard across the span ------------------------------------
@@ -7284,6 +7685,7 @@ function redraw(id: string): void {
     case 'fleet': refreshList(id); refreshFleet(true); break;
     case 'hd': refreshList(id); refreshHd(true); break;
     case 'cell': refreshList(id); refreshCell(true); break;
+    case 'atsc': refreshList(id); refreshAtsc(true); break;
     case 'btle': refreshList(id); refreshBle(true); break;
     case 'vdl2': case 'acars': refreshList(id); refreshAcars(true); break;
     default: refreshList(id);
@@ -7310,6 +7712,7 @@ function clearApp(id: string): void {
     case 'fleet': fleetUi.snap = null; fleetUi.sel = null; fleetUi.unit = null; break;
     case 'hd': hdUi.snap = null; hdUi.sel = ''; for (const o of hdUi.objects) URL.revokeObjectURL(o.url); hdUi.objects = []; hdUi.tileUrls.clear(); hdUi.mapKey = ''; break;
     case 'cell': cellUi.sel = ''; cellUi.detail = null; break;
+    case 'atsc': atscUi.snap = null; atscUi.sel = ''; atscUi.detail = null; atscUi.stills.clear(); atscGuide.clear(); worker?.postMessage({ type: 'atsc', cmd: 'clear' }); void atscDb().then(db => { try { db?.transaction('stills', 'readwrite').objectStore('stills').clear(); } catch { /* storage blocked */ } }); try { localStorage.removeItem(ATSC_KEY); } catch { /* storage blocked */ } break;
   }
   worker?.postMessage({ type: 'clear' });
   // a cleared screen shows empty even while paused - the freeze is for reading rows, and there are none now
@@ -7733,6 +8136,11 @@ function ensureWorker(): Worker {
       case 'cellDetail': cellUi.detail = m as unknown as CellDetail; refreshCell(true); break;
       case 'cellExport': cellExport(m.csv as string, m.json as string); break;
       case 'cellState': cellSave(m.state); break;
+      case 'atsc': atscUi.snap = m as unknown as AtscSnap; refreshAtsc(); break;
+      case 'atscStill': atscOnStill(m); break;
+      case 'atscDetail': atscOnDetail(m); break;
+      case 'atscExport': atscExport(m.csv as string, m.json as string); break;
+      case 'atscState': atscSave(m.state); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
       case 'huntPage': onHuntPage(m); break;
@@ -8287,7 +8695,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['FLEET', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['FLEET', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['ATSC', 'DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

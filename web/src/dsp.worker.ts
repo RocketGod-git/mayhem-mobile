@@ -24,6 +24,8 @@ import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { FleetProcessor } from './dsp/fleet/fleet.js';
 import { CellProcessor } from './dsp/cell/cell.js';
+import { AtscProcessor } from './dsp/atsc/atsc.js';
+import { AtscPool, ATSC_POOL_NAME, startAtscPoolWorker } from './dsp/atsc/pool.js';
 import { SondeProcessor } from './dsp/sonde/front.js';
 import { UatProcessor } from './dsp/uat/demod.js';
 import { IsmDecoder } from './dsp/ism/ism.js';
@@ -133,6 +135,20 @@ const fleet = new FleetProcessor(emit);
 const cell = new CellProcessor(emit);
 let cellSaved = -1;
 setInterval(() => { if (cell.version !== cellSaved) { cellSaved = cell.version; emit({ type: 'cellState', state: cell.exportState() }); } }, 5000);
+/** ATSC TV: stations by their pilot; with the whole channel in the span, bursts decoded on a pool of workers. */
+const atsc = new AtscProcessor(emit);
+atsc.onStill = (key, st) => emit({ type: 'atscStill', key, w: st.width, h: st.height, dar: st.dar, complete: st.complete, mbs: st.mbs, total: st.mbsTotal, rgba: st.rgba }, [st.rgba.buffer]);
+let atscSaved = -1, atscPool: AtscPool | null = null;
+setInterval(() => { if (atsc.version !== atscSaved) { atscSaved = atsc.version; emit({ type: 'atscState', state: atsc.exportState() }); } }, 5000);
+function atscPoolFor(r: number): AtscPool | null {
+  if (r < 6_400_000 || typeof Worker === 'undefined') return null;
+  if (!atscPool) {
+    const cores = (navigator as { hardwareConcurrency?: number }).hardwareConcurrency ?? 4;
+    try { atscPool = new AtscPool(new URL(import.meta.url), cores >= 8 ? 2 : 1); emit({ type: 'log', line: `ATSC: ${atscPool.size} burst decoders` }); }
+    catch (e) { emit({ type: 'log', line: `ATSC: no burst decoders (${(e as Error).message}), bursts decode inline` }); return null; }
+  }
+  return atscPool.failed ? null : atscPool;
+}
 /** Sondes: every carrier in the 400–406 MHz band (or 1680 MHz), every sonde type on each. */
 const sonde = new SondeProcessor(emit);
 /** UAT on 978 MHz: FIS-B weather uplinks and aircraft downlinks. */
@@ -368,6 +384,11 @@ self.onmessage = (e: MessageEvent) => {
       else if (m.cmd === 'export') emit({ type: 'cellExport', ...cell.exportAll() });
       else if (m.cmd === 'clearAlerts') cell.clearAlerts();
       else if (m.cmd === 'restore') { cell.restore(m.state as Parameters<CellProcessor['restore']>[0]); cellSaved = cell.version; }
+    case 'atsc':
+      if (m.cmd === 'detail') { const d = atsc.detail(m.key as string); if (d) emit({ type: 'atscDetail', ...d }); }
+      else if (m.cmd === 'export') emit({ type: 'atscExport', ...atsc.exportAll() });
+      else if (m.cmd === 'restore') { atsc.restore(m.state as Parameters<AtscProcessor['restore']>[0]); atscSaved = atsc.version; }
+      else if (m.cmd === 'clear') atsc.clear();
       break;
     case 'sondeBand': sonde.setBand(m.id as string); break;
     case 'sondeHints': sonde.setHints(m.hz as number[]); break;
@@ -426,6 +447,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'cell': cell.centerHz = centreHz; return cell;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'fleet': fleet.centerHz = centreHz; return fleet;
+    case 'atsc': atsc.centerHz = centreHz; return atsc;
     case 'subghz': return ism;
     case 'r433': r433.centerHz = centreHz; return r433;
     case 'analyzer': return analyzer;
@@ -632,6 +654,7 @@ function process(iq: Int8Array): void {
   if (p === fleet) fleet.centerHz = centreHz;
   if (p === cell) cell.centerHz = centreHz;
   if (p === r433) r433.centerHz = centreHz;
+  if (p === atsc) { atsc.centerHz = centreHz; atsc.pool = atscPoolFor(rate); }
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p === hdApp) { hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
@@ -644,6 +667,7 @@ function flushAudio(): void {
 
 // Started as one of the LoRa pool's workers: that is all this script does then.
 if ((self as unknown as { name?: string }).name === POOL_WORKER_NAME) startPoolWorker();
+if ((self as unknown as { name?: string }).name === ATSC_POOL_NAME) startAtscPoolWorker();
 
 /**
  * A file opened in the Analyzer: a recording (.cu8 .u8 .iq unsigned, .cs8 signed; the rate from its name, else 2 Msps)

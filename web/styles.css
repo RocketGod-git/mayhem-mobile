@@ -470,7 +470,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -562,7 +562,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -624,7 +624,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -852,7 +852,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
   .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.uat:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
-  .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.fleet:has(> .visual:not(.nowf)) .controls, .view.hd:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
+  .view.acars:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.fleet:has(> .visual:not(.nowf)) .controls, .view.hd:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls, .view.atsc:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
   /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
   .view .visual.nowf { flex: none; }
   .view:has(> .visual.nowf) > .controls { flex: 1; max-height: none; min-height: 0; }
@@ -2458,3 +2458,151 @@ main#view.view.cell.clwide { display: grid; grid-template-columns: minmax(0, 1fr
 .view.cell.clwide .cl-amapbox .map { height: auto; flex: 1; min-height: 0; }
 .view.cell.clwide .cl-amapbox { flex: 0 0 46%; min-height: 220px; margin-bottom: 8px; }
 .cl-alerts > *, .cl-cards > *, .cl-nbrs > * { flex: none; }
+/* ---- ATSC TV: a guide-style wall of stations and their subchannels with live pictures, the signal, the guide ---- */
+.at-head { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.at-cap { font-size: 10px; line-height: 1.35; color: var(--muted); padding: 5px 9px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); overflow-wrap: anywhere; }
+.at-cap.ok { color: var(--ink); border-color: color-mix(in srgb, var(--ok) 55%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
+.at-cap.amber { color: var(--ink); border-color: color-mix(in srgb, var(--accent2) 65%, transparent); background: color-mix(in srgb, var(--accent2) 10%, transparent); }
+.at-step { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.at-step b { font-size: 11px; letter-spacing: 1.5px; color: var(--ink); min-width: 46px; text-align: center; font-variant-numeric: tabular-nums; }
+.at-stage { min-height: 240px; flex: none; }
+.at-wall, .at-signal, .at-guide { display: flex; flex-direction: column; gap: 10px; max-height: 64vh; overflow-y: auto; padding: 2px 6px 6px 0; min-width: 0; box-sizing: border-box; }
+.at-dim { font-size: 10px; color: var(--muted); padding: 4px 2px; }
+.at-st { border-radius: 16px; padding: 10px; display: flex; flex-direction: column; gap: 9px; min-width: 0;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 10%, var(--surface)), var(--surface) 55%); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+.at-sth { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.at-rf { flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 46px; height: 46px; border-radius: 12px; color: #05080a;
+  background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--accent2))); box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 35%, transparent); }
+.at-rf b { font-size: 19px; line-height: 1; font-weight: 900; font-variant-numeric: tabular-nums; }
+.at-rf small { font-size: 7px; letter-spacing: 2px; font-weight: 800; }
+.at-stt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.at-stt b { font-size: 14px; letter-spacing: 1px; color: var(--ink); overflow-wrap: anywhere; }
+.at-stt small { font-size: 9px; color: var(--muted); overflow-wrap: anywhere; }
+.at-sth .mt-live { cursor: pointer; flex: none; }
+.at-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.at-tile { display: flex; flex-direction: column; border-radius: 12px; overflow: hidden; background: var(--paper); border: 1px solid color-mix(in srgb, var(--line) 90%, transparent); cursor: pointer; min-width: 0; transition: border-color .15s; }
+.at-tile:hover { border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.at-tile.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+.at-still { position: relative; aspect-ratio: 16 / 9; background: #05070a; overflow: hidden; }
+.at-still img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.at-nopic { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 6px; text-align: center;
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--muted) 10%, #05070a) 0 6px, #05070a 6px 12px); }
+.at-nopic i { width: 22px; height: 22px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--muted) 60%, transparent); border-top-color: var(--accent); animation: at-spin 1.4s linear infinite; }
+.at-nopic span { font-size: 8px; letter-spacing: 1.5px; font-weight: 700; color: var(--muted); }
+@keyframes at-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .at-nopic i { animation: none; } }
+.at-vc { position: absolute; left: 6px; top: 6px; font-size: 13px; font-weight: 900; color: #fff; padding: 2px 7px; border-radius: 7px; background: color-mix(in srgb, #000 55%, transparent); backdrop-filter: blur(3px); font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+.at-new { position: absolute; right: 6px; top: 6px; font-size: 8px; font-weight: 800; letter-spacing: 1.5px; color: #05080a; background: var(--ok); padding: 2px 6px; border-radius: 6px; }
+.at-tb { display: flex; flex-direction: column; gap: 4px; padding: 7px 8px 8px; min-width: 0; }
+.at-name { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.at-name b { font-size: 12px; letter-spacing: 1px; color: var(--ink); overflow-wrap: anywhere; }
+.at-name .tr-pill { font-size: 7px; padding: 1px 4px; }
+.at-ev { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.at-ev b { font-size: 11px; color: var(--ink); font-weight: 700; overflow-wrap: anywhere; }
+.at-ev small, .at-next small { font-size: 9px; color: var(--muted); }
+.at-ev.dim { font-size: 9px; color: var(--muted); }
+.at-bar { height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--muted) 22%, transparent); overflow: hidden; margin-top: 2px; }
+.at-bar i { display: block; height: 100%; background: var(--accent); }
+.at-next { font-size: 10px; color: var(--ink); overflow-wrap: anywhere; }
+.at-meta { font-size: 8px; letter-spacing: .5px; color: var(--muted); overflow-wrap: anywhere; }
+.at-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.at-sigh { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.at-sigh b { font-size: 13px; letter-spacing: 1.5px; color: var(--accent); }
+.at-sigh small { font-size: 9px; color: var(--muted); overflow-wrap: anywhere; flex: 1 1 200px; }
+.at-sig { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.at-sig span { display: flex; flex-direction: column; align-items: center; padding: 7px 3px; border-radius: 10px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); min-width: 0; text-align: center; }
+.at-sig b { font-size: 17px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.at-sig small { font-size: 7px; letter-spacing: 1.2px; color: var(--muted); overflow-wrap: anywhere; }
+.at-sig span.ok b { color: var(--ok); }
+.at-sig span.amber b { color: var(--accent2); }
+.at-sig span.red b { color: var(--danger); }
+.at-plot { display: flex; flex-direction: column; gap: 4px; padding: 8px; border-radius: 12px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); min-width: 0; }
+.at-plot > small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); overflow-wrap: anywhere; }
+.at-plot canvas { width: 100%; height: 110px; display: block; }
+#at-echo { height: 150px; }
+.at-pids td { white-space: normal; }
+.at-pids .at-role { overflow-wrap: anywhere; min-width: 90px; }
+.at-pids .at-kb { white-space: nowrap; }
+.at-gscroll { overflow-x: auto; overflow-y: visible; padding-bottom: 6px; }
+.at-gin { position: relative; }
+.at-gtime { position: relative; height: 18px; margin-left: 84px; border-bottom: 1px solid var(--line); }
+.at-gtime span { position: absolute; top: 2px; font-size: 9px; color: var(--muted); transform: translateX(2px); white-space: nowrap; }
+.at-gtime span::before { content: ""; position: absolute; left: -2px; top: -2px; height: 18px; border-left: 1px solid color-mix(in srgb, var(--line) 90%, transparent); }
+.at-gtime > i { display: none; }
+.at-gnow { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); box-shadow: 0 0 6px var(--danger); pointer-events: none; z-index: 3; }
+.at-grow { display: flex; align-items: stretch; height: 52px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); cursor: pointer; }
+.at-glab { position: sticky; left: 0; z-index: 4; flex: none; width: 80px; margin-right: 4px; display: flex; flex-direction: column; justify-content: center; padding: 0 4px; background: var(--paper); border-right: 1px solid var(--line); }
+.at-glab b { font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.at-glab small { font-size: 8px; color: var(--muted); overflow-wrap: anywhere; line-height: 1.1; }
+.at-gline { position: relative; flex: none; }
+.at-gev { position: absolute; top: 3px; bottom: 3px; display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 0 5px; border-radius: 7px; overflow: hidden; min-width: 0; box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.at-gev.on { background: color-mix(in srgb, var(--accent) 26%, var(--surface)); border-color: var(--accent); }
+.at-gev b { font-size: 10px; line-height: 1.15; color: var(--ink); white-space: normal; overflow-wrap: anywhere; }
+.at-gev small { font-size: 8px; color: var(--muted); white-space: nowrap; }
+.at-big { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; }
+.at-big img { width: 100%; border-radius: 10px; display: block; background: #000; }
+.at-big small { font-size: 8px; letter-spacing: 1px; color: var(--muted); }
+.at-gl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 8px; padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); font-size: 10px; }
+.at-gl > b { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.at-gl.on > b { color: var(--accent); }
+.at-gl span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.at-gl em { font-style: normal; font-weight: 700; color: var(--ink); overflow-wrap: anywhere; }
+.at-gl small { color: var(--muted); font-size: 9px; }
+.at-gl i { font-style: normal; color: var(--ink); opacity: .85; overflow-wrap: anywhere; }
+.at-rawh { cursor: pointer; }
+.at-raw { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 6px; padding: 4px 0; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+.at-raw b { font-size: 9px; color: var(--accent); }
+.at-raw code { font-size: 8px; color: var(--muted); overflow-wrap: anywhere; word-break: break-all; user-select: text; }
+.view.atsc .controls .ctlrow { flex-wrap: wrap; justify-content: flex-end; }
+.view.atsc .controls .ctlrow > .seg { flex: 1 1 auto; flex-wrap: wrap; }
+.view.atsc .controls .seg > button { flex: 1 1 auto; min-width: max-content; overflow: visible; text-overflow: clip; letter-spacing: .6px; padding: 8px 6px; }
+@media (max-width: 520px) {
+  .at-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .at-sig b { font-size: 15px; }
+  .at-count b { font-size: 15px; }
+}
+/* ATSC on a desktop-size window: the station wall is the big pane (a short waterfall strip under it), the column on
+ * the right holds the counters, the bands, the tabs, the subchannel detail docked on top and the signal, the guide
+ * or the log under it. */
+main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 600px); grid-template-rows: minmax(0, 1fr); gap: 12px; }
+.view.atsc.atwide > .visual, .view.atsc.atwide > .visual.nowf { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.view.atsc.atwide .at-wall { flex: 1; min-height: 0; max-height: none; margin-top: 8px; }
+.view.atsc.atwide .at-tiles { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.view.atsc.atwide > .visual > .scope { flex: none; height: 150px; min-height: 150px; margin-top: 8px; }
+.view.atsc.atwide > .visual.nowf > .scope { display: none; }
+.view.atsc.atwide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; }
+.view.atsc.atwide > .controls > * { flex: none; }
+.view.atsc.atwide > .controls > .note { display: none; }
+.view.atsc.atwide .mt-detail.at-dock { position: static; align-self: stretch; margin: 6px 0 8px; max-height: 55%; flex: none; }
+.view.atsc.atwide .at-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 6px; }
+.view.atsc.atwide .at-stage[hidden] { display: none; }
+.view.atsc.atwide .at-signal, .view.atsc.atwide .at-guide { flex: 1; max-height: none; min-height: 0; }
+.view.atsc.atwide .at-signal[hidden], .view.atsc.atwide .at-guide[hidden] { display: none; }
+.view.atsc.atwide #at-log { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view.atsc.atwide #at-log[hidden] { display: none; }
+.view.atsc.atwide #at-log .list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+.view.atsc.atwide .face .readout { padding: 2px 0 0; }
+.view.atsc.atwide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
+.view.atsc.atwide .face .funit { display: none; }
+.view.atsc.atwide .face .lscale, .view.atsc.atwide .face .health { display: none; }
+.view.atsc.atwide .face .leds { height: 8px; margin-top: 4px; }
+@media (min-width: 1500px) { main#view.view.atsc.atwide { grid-template-columns: minmax(0, 1fr) minmax(480px, 720px); } .view.atsc.atwide .at-tiles { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
+.at-watch { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.at-watch b { font-size: 15px; letter-spacing: 2px; color: var(--accent); white-space: nowrap; }
+.at-watch small { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.at-watch em { margin-left: auto; font-style: normal; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; color: var(--muted); padding: 3px 8px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent); white-space: nowrap; }
+.at-watch em.on { color: var(--ok); border-color: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 40%, transparent); }
+.at-count { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.at-count span { display: flex; flex-direction: column; align-items: center; padding: 6px 2px; border-radius: 10px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); min-width: 0; }
+.at-count b { font-size: 18px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.at-count small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); white-space: nowrap; }
+.at-lvl { display: inline-block; width: 46px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--muted) 25%, transparent); overflow: hidden; vertical-align: middle; margin-right: 5px; flex: none; }
+.at-lvl i { display: block; height: 100%; background: var(--accent); }
+.at-tab { width: 100%; border-collapse: collapse; font-size: 10px; font-variant-numeric: tabular-nums; }
+.at-tab th { text-align: left; font-size: 8px; letter-spacing: 1.5px; color: var(--muted); font-weight: 700; padding: 2px 4px; }
+.at-tab td { padding: 3px 4px; color: var(--ink); border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); overflow-wrap: anywhere; }
+.at-sec { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.at-sec > small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); }
+.view.atsc .mt-dh { flex-wrap: wrap; row-gap: 4px; }
+.view.atsc .mt-dh > span { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; min-width: 0; flex: 1 1 120px; }
