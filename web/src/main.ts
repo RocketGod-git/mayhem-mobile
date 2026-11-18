@@ -51,6 +51,7 @@ import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
 import { ISM_COUNTS } from './dsp/ism/counts.js';
 import type { CellSnap, CellRow, SibRec as CellSibRec } from './dsp/cell/cell.js';
+import type { FeedRow as CellFeedRow } from './dsp/cell/feed.js';
 import type { Mib as CellMib } from './dsp/cell/pbch.js';
 import { groupAlerts, type AlertGroup } from './dsp/cell/cbs.js';
 import { fieldGroups } from './dsp/cell/sysinfo.js';
@@ -5286,7 +5287,7 @@ type CellView = 'alerts' | 'cells' | 'neighbors' | 'log';
 interface CellDetail { key: string; mib: CellMib | null; sib1: Record<string, unknown> | null; sib1Hex: string; sibs: CellSibRec[] }
 const cellUi = {
   snap: null as CellSnap | null, view: 'alerts' as CellView, band: 'AUTO', sel: '', detail: null as CellDetail | null, detailAsked: 0,
-  hold: false, wired: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, restored: false, clearArm: 0, seenAlerts: new Set<string>(), banner: '', alertSel: '', mapSig: '',
+  hold: false, wired: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, restored: false, clearArm: 0, seenAlerts: new Set<string>(), banner: '', alertSel: '', mapSig: '', feedFilter: 'all' as 'all' | 'alerts' | 'changes', openSib: '',
   html: new Map<string, string>(),
   scan: { phase: 'survey' as 'survey' | 'visit' | 'dwell' | 'stay', bandIdx: 0, windows: [] as number[], wi: 0, cands: [] as CarrierGuess[], ci: 0,
     until: 0, tunedMs: 0, profile: null as Profile | null, stayHz: 0 },
@@ -5384,7 +5385,7 @@ function renderCell(view: HTMLElement): void {
   cellUi.html.clear();
   const tabs = (wide ? ['cells', 'neighbors', 'log'] : ['alerts', 'cells', 'neighbors', 'log']) as CellView[];
   view.innerHTML = `
-    <section class="${visCls('cell')}">${readoutHtml()}${wide ? '<div id="cl-alertbox" class="cl-alertbox"><div class="cl-boxh"><b>ALERTS</b><small id="cl-alertcount"></small></div><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>' : ''}<div id="scope" class="panel short"></div></section>
+    <section class="${visCls('cell')}">${readoutHtml()}${wide ? '<div id="cl-alertbox" class="cl-alertbox"><div class="cl-boxh"><b>MESSAGES</b><small id="cl-alertcount"></small></div><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>' : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="cl-head" class="cl-head"></div>
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...CELL_BANDS.map(b => [b.id, b.label])].map(([k, l]) => `<button data-clband="${k}">${l}</button>`))}</div>
@@ -5392,14 +5393,14 @@ function renderCell(view: HTMLElement): void {
       ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
       <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
       <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
-      <div class="note">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. Alerts are kept until you clear them. Tap a cell for every decoded field.</div>
+      <div class="note">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-clband]', view).forEach(b => b.onclick = () => cellSetBand(b.dataset.clband!));
   qa<HTMLButtonElement>('[data-clview]', view).forEach(b => b.onclick = () => { cellUi.view = b.dataset.clview as CellView; refreshCell(true); });
   $('cl-export').onclick = () => worker?.postMessage({ type: 'cell', cmd: 'export' });
   const pick = (e: Event) => {
-    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-clsel],[data-cldo]');
+    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-clsel],[data-cldo],[data-clfeed],[data-clfilter]');
     if (!t) return;
     const doIt = t.dataset.cldo;
     if (doIt === 'close') { cellUi.sel = ''; cellUi.detail = null; }
@@ -5408,6 +5409,8 @@ function renderCell(view: HTMLElement): void {
       if (Date.now() - cellUi.clearArm < 4000) { cellUi.clearArm = 0; worker?.postMessage({ type: 'cell', cmd: 'clearAlerts' }); cellUi.seenAlerts.clear(); }
       else cellUi.clearArm = Date.now();
     } else if (doIt === 'alerts') { cellUi.view = 'alerts'; cellUi.banner = ''; }
+    else if (t.dataset.clfilter) cellUi.feedFilter = t.dataset.clfilter as typeof cellUi.feedFilter;
+    else if (t.dataset.clfeed) { const [key, name] = t.dataset.clfeed.split('|'); if (cellUi.sel !== key) cellPick(key); cellUi.openSib = name.toLowerCase(); cellUi.html.set('open:' + name.toLowerCase(), '1'); }
     else if (t.dataset.clsel?.startsWith('alert:')) { cellUi.alertSel = t.dataset.clsel.slice(6); cellUi.mapSig = ''; }
     else if (t.dataset.clsel) cellPick(t.dataset.clsel);
     else return;
@@ -5463,8 +5466,8 @@ function cellAlertHtml(g: AlertGroup, s: CellSnap, now: number): string {
     return `<div class="cl-msg"><em>${esc(lang)}${m.additionalLanguage ? ' · ADDITIONAL LANGUAGE' : ''}</em>${body}${links}<small>${esc(meta)}</small>${area}</div>`;
   }).join('');
   const first = g.messages[0], area = groupArea(g), sel = cellUi.alertSel === g.key;
-  return `<div class="cl-alert ${fresh ? 'fresh' : ''} ${sel && area ? 'sel' : ''}" style="--al:${col}" ${area ? `data-clsel="alert:${esc(g.key)}"` : ''}>`
-    + `<div class="cl-ah"><span class="cl-cls">${esc(g.cls.toUpperCase())}</span><b>${esc(first.category)}</b>${area ? areaThumb(area) : ''}</div>`
+  return `<div class="pcard alert cl-alert ${fresh ? 'fresh' : ''} ${sel && area ? 'sel' : ''}" style="--al:${col}" ${area ? `data-clsel="alert:${esc(g.key)}"` : ''}>`
+    + `<div class="pc-h"><span class="pc-b">⚠ ${esc(g.cls.toUpperCase())}</span><span class="pc-t">${esc(new Date(g.lastMs).toTimeString().slice(0, 8))}</span><span class="pc-r">${esc(first.category)}</span>${area ? areaThumb(area) : ''}</div>`
     + (area ? `<div class="cl-where ${whereOf(area)[1]}">${esc(whereOf(area)[0])}</div>` : '')
     + `<div class="cl-when">${esc(cellTime(g.firstMs))} · ${esc(cellAgo(now - g.lastMs))}${g.lastMs - g.firstMs > 2000 ? ` · heard until ${esc(cellTime(g.lastMs))}` : ''}</div>`
     + msgs
@@ -5505,10 +5508,24 @@ function cellAlertMap(s: CellSnap | null): void {
   if (state.home) { const r = areaRelation([state.home.lat, state.home.lon], a); if (r.edgeM < 150_000) pts.push([state.home.lat, state.home.lon]); }
   requestAnimationFrame(() => geo?.fitTo(pts));
 }
+/** One feed row in the Pagers app's card style: warnings are its red call-out cards, changes amber, the rest blue. */
+function cellFeedRow(r: CellFeedRow, s: CellSnap, now: number): string {
+  const c = s.cells.find(x => x.key === r.cell), band = r.band ? `B${r.band} ` : '';
+  const where = `${r.op ? r.op + ' · ' : ''}${band}${cellMhz(r.hz)} · PCI ${r.pci}`;
+  const kind = r.alert ? 'alert' : r.change ? 'num' : 'alpha';
+  const t = new Date(r.lastMs).toTimeString().slice(0, 8);
+  return `<div class="pcard ${kind} cl-frow" data-clfeed="${esc(r.cell)}|${esc(r.name)}"><div class="pc-h"><span class="pc-b">${r.alert ? '⚠ ' : ''}${esc(r.name)}</span><span class="pc-t">${t}</span>${r.count > 1 ? `<span class="pc-x">×${r.count}</span>` : ''}${r.change ? '<span class="pill a2">CHANGED</span>' : ''}<span class="pc-r">${esc(where)}</span></div>`
+    + `<div class="pc-body">${esc(r.text)}</div>${r.count > 1 && now - r.firstMs > 60_000 ? `<div class="cl-fsince">first ${esc(cellTime(r.firstMs))}${c ? '' : ' · cell cleared'}</div>` : ''}</div>`;
+}
 function cellAlertsHtml(s: CellSnap | null, now: number): string {
-  const groups = s ? groupAlerts(s.alerts) : [];
-  if (!groups.length) return emptyState('cell');
-  return groups.map(g => cellAlertHtml(g, s!, now)).join('') + `<button class="chip cl-clearalerts" data-cldo="clearalerts">${Date.now() - cellUi.clearArm < 4000 ? 'TAP AGAIN TO CLEAR EVERY ALERT' : 'CLEAR ALERTS'}</button>`;
+  const groups = s ? groupAlerts(s.alerts) : [], feed = s?.feed ?? [];
+  if (!groups.length && !feed.length) return emptyState('cell');
+  const f = cellUi.feedFilter, rows = feed.filter(r => f === 'all' || (f === 'alerts' ? r.alert : r.change));
+  const n = (k: typeof f) => k === 'all' ? feed.length : feed.filter(r => k === 'alerts' ? r.alert : r.change).length;
+  const chips = `<div class="seg cl-ffilter">${(['all', 'alerts', 'changes'] as const).map(k => `<button data-clfilter="${k}" class="${k === f ? 'on' : ''} ${k === 'alerts' ? 'red' : ''}">${k.toUpperCase()} ${n(k)}</button>`).join('')}</div>`;
+  const pinned = groups.map(g => cellAlertHtml(g, s!, now)).join('') + (groups.length ? `<button class="chip cl-clearalerts" data-cldo="clearalerts">${Date.now() - cellUi.clearArm < 4000 ? 'TAP AGAIN TO CLEAR EVERY ALERT' : 'CLEAR ALERTS'}</button>` : '');
+  const list = rows.length ? rows.map(r => cellFeedRow(r, s!, now)).join('') : `<div class="empty">${f === 'alerts' ? 'no warning messages heard: carriers send SIB10/11/12 only while an alert is active' : f === 'changes' ? 'no message has changed since it was first heard' : 'every MIB and SIB lands here as it is decoded'}</div>`;
+  return pinned + chips + list;
 }
 function cellCard(c: CellRow, now: number): string {
   const live = now - c.lastMs < 10_000, sel = cellUi.sel === c.key, sm = c.summary;
@@ -5573,7 +5590,7 @@ function cellDetailHtml(s: CellSnap, now: number): string {
       let groups: { name: string; rows: [string, string][] }[] = [];
       try { groups = fieldGroups(name, value); } catch { /* shown raw */ }
       const body = groups.map(g => `<div class="cl-grp"><i>${esc(g.name.toUpperCase())}</i>${g.rows.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`).join('');
-      html += `<details class="cl-sib" ${cellUi.html.get('open:' + name) ? 'open' : ''} data-sib="${esc(name)}"><summary><b>${esc(name.toUpperCase())}</b><small>${esc(meta)}</small></summary>${body}<div class="cl-raw"><small>RAW · ${hex.length / 2} OCTETS</small><code>${esc(hex)}</code></div></details>`;
+      html += `<details class="cl-sib" ${cellUi.html.get('open:' + name) || (cellUi.openSib && name.startsWith(cellUi.openSib)) ? 'open' : ''} data-sib="${esc(name)}"><summary><b>${esc(name.toUpperCase())}</b><small>${esc(meta)}</small></summary>${body}<div class="cl-raw"><small>RAW · ${hex.length / 2} OCTETS</small><code>${esc(hex)}</code></div></details>`;
     }
   } else if (sm || c.sibs.length) html += '<div class="cl-dim">loading every decoded field…</div>';
   return html;
@@ -5591,7 +5608,7 @@ function refreshCell(force = false): void {
   const nAlerts = s ? groupAlerts(s.alerts).length : 0, nb = s ? s.cells.filter(c => c.neighbors && (c.neighbors.intra.length || c.neighbors.inter.length || c.neighbors.nr.length)).length : 0;
   qa<HTMLButtonElement>('[data-clview]').forEach(b => {
     const v = b.dataset.clview as CellView; b.classList.toggle('on', v === view);
-    b.textContent = v === 'alerts' ? `ALERTS ${nAlerts}` : v === 'cells' ? `CELLS ${s?.cells.length ?? 0}` : v === 'neighbors' ? `NEIGHBORS ${nb}` : 'LOG';
+    b.textContent = v === 'alerts' ? `MESSAGES${nAlerts ? ` · ${nAlerts} ALERT${nAlerts === 1 ? '' : 'S'}` : ` ${s?.feed?.length ?? 0}`}` : v === 'cells' ? `CELLS ${s?.cells.length ?? 0}` : v === 'neighbors' ? `NEIGHBORS ${nb}` : 'LOG';
   });
   const alerts = q('#cl-alerts'), cards = q('#cl-cards'), nbrs = q('#cl-nbrs'), det = q('#cl-detail'), stage = q('#cl-stage'), logEl = q('#cl-log');
   if (!alerts || !cards || !nbrs || !det || !stage || !logEl) return;
@@ -5611,6 +5628,10 @@ function refreshCell(force = false): void {
   const html = s && cellUi.sel ? cellDetailHtml(s, now) : '';
   det.hidden = !html;
   if (html) put(det, 'detail', html); else cellUi.html.delete('detail');
+  if (cellUi.openSib && html) {
+    const d = qa<HTMLElement>('details.cl-sib', det).find(x => (x.dataset.sib ?? '').startsWith(cellUi.openSib));
+    if (d || cellUi.openSib === 'mib') { (d ?? det).scrollIntoView({ block: 'nearest' }); if (d) det.scrollTop = Math.max(0, d.offsetTop - 8); cellUi.openSib = ''; }
+  }
   // new alerts: the lamp and a banner until they are looked at
   for (const a of s?.alerts ?? []) if (a.complete && !cellUi.seenAlerts.has(a.key)) { cellUi.seenAlerts.add(a.key); if (now - a.firstMs < 3_600_000) cellUi.banner = `NEW ${a.cls.toUpperCase()}`; }
   if (view === 'alerts' || wide) cellUi.banner = '';
