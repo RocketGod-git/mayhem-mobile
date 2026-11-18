@@ -46,6 +46,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -70,6 +73,7 @@ import com.rocketgod.mayhem.core.cell.parseWarningArea
 import com.rocketgod.mayhem.core.cell.CELL_BANDS
 import com.rocketgod.mayhem.core.cell.CellDetail
 import com.rocketgod.mayhem.core.cell.CellRow
+import com.rocketgod.mayhem.core.cell.FeedRow
 import com.rocketgod.mayhem.core.cell.CellSnap
 import com.rocketgod.mayhem.core.cell.fieldGroups
 import com.rocketgod.mayhem.core.cell.groupAlerts
@@ -81,7 +85,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.max
 
-private val CL_VIEWS = listOf("ALERTS", "CELLS", "NEIGHBORS", "LOG")
+private val CL_VIEWS = listOf("MESSAGES", "CELLS", "NEIGHBORS", "LOG")
 /** On a wide screen the alerts have the big pane, so they are not a tab. */
 private val CL_WIDE_VIEWS = listOf(1, 2, 3)
 private val CL_BW = mapOf(6 to "1.4", 15 to "3", 25 to "5", 50 to "10", 75 to "15", 100 to "20")
@@ -171,6 +175,10 @@ fun CellScreen(accent: Color) {
     var full by remember { mutableStateOf(false) }
     /** The alert whose area is on the map. */
     var alertSel by rememberSaveable { mutableStateOf("") }
+    /** The feed filter: 0 every message, 1 the warnings, 2 the changes. */
+    var feedFilter by rememberSaveable { mutableIntStateOf(0) }
+    /** A feed row was tapped: the SIB of the selected cell to open. */
+    var openPrefix by remember { mutableStateOf("") }
     val fix by Geo.fix.collectAsState()
     val home = fix ?: Geo.lastKnownPos()
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(250); value = System.currentTimeMillis() } }.value
@@ -209,7 +217,7 @@ fun CellScreen(accent: Color) {
 
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
-        val counts = listOf("${groups.size}", "${s?.cells?.size ?: 0}", "$nbCount", "")
+        val counts = listOf(if (groups.isNotEmpty()) "· ${groups.size} ALERT${if (groups.size == 1) "" else "S"}" else "${s?.feed?.size ?: 0}", "${s?.cells?.size ?: 0}", "$nbCount", "")
         Row(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.Top) {
             ClSeg(tabs.map { "${CL_VIEWS[it]} ${counts[it]}".trim() }, tabs.indexOf(view), accent, Modifier.weight(1f)) { view = tabs[it] }
             ToggleBox("EXPORT", false, accent) { export() }
@@ -238,16 +246,32 @@ fun CellScreen(accent: Color) {
         }
     }
 
+    /** A feed row opens its cell's details at that message. */
+    fun openRow(r: FeedRow) { if (sel != r.cell) sel = r.cell; val n = r.name.lowercase(Locale.US); openPrefix = n; open.keys.filter { it.startsWith(n) }.forEach { open[it] = true } }
+
+    /** MESSAGES: the warnings pinned on top until cleared, then every MIB and SIB as one line, newest first. */
     @Composable
     fun alertList(modifier: Modifier, withMap: Boolean) {
         val snap = s
-        if (snap == null || groups.isEmpty()) { EmptyState("cell", modifier.panel(), accent); return }
+        val feed = snap?.feed.orEmpty()
+        if (snap == null || (groups.isEmpty() && feed.isEmpty())) { EmptyState("cell", modifier.panel(), accent); return }
+        val rows = feed.filter { feedFilter == 0 || (if (feedFilter == 1) it.alert else it.change) }
+        fun n(k: Int) = if (k == 0) feed.size else feed.count { if (k == 1) it.alert else it.change }
         LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(d.dp(9f))) {
             if (withMap && mapped != null) item(key = "map") { alertMap(Modifier.fillMaxWidth().height(d.dp(260f))) }
-            items(groups, key = { it.key }) { g -> AlertCard(g, snap, now, home, mapped?.first?.key == g.key && withArea.size > 1, { alertSel = g.key }, ::pick) }
-            item(key = "clear") {
+            items(groups, key = { "g:" + it.key }) { g -> AlertCard(g, snap, now, home, mapped?.first?.key == g.key && withArea.size > 1, { alertSel = g.key }, ::pick) }
+            if (groups.isNotEmpty()) item(key = "clear") {
                 ToggleBox(if (System.currentTimeMillis() - clearArm < 4000) "TAP AGAIN TO CLEAR EVERY ALERT" else "CLEAR ALERTS", false, accent) { clearAlerts() }
             }
+            item(key = "filter") {
+                val labels = listOf("ALL", "ALERTS", "CHANGES").mapIndexed { i, l -> "$l ${n(i)}" }
+                ClSeg(labels, feedFilter, accent, Modifier.fillMaxWidth(), tint = { i -> if (i == 1) Palette.danger else null }) { feedFilter = it }
+            }
+            if (rows.isEmpty()) item(key = "none") {
+                Text(when (feedFilter) { 1 -> "no warning messages heard: carriers send SIB10/11/12 only while an alert is active"; 2 -> "no message has changed since it was first heard"; else -> "every MIB and SIB lands here as it is decoded" },
+                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.padding(d.dp(8f)))
+            }
+            items(rows, key = { "f:${it.id}" }) { r -> FeedCard(r, snap, now, accent) { openRow(r) } }
         }
     }
 
@@ -255,7 +279,7 @@ fun CellScreen(accent: Color) {
     fun detailPanel(modifier: Modifier) {
         val snap = s ?: return
         val c = snap.cells.firstOrNull { it.key == sel } ?: return
-        CellDetailPanel(c, snap, detail?.takeIf { it.key == c.key }, scan, now, accent, open, modifier, onClose = { sel = null })
+        CellDetailPanel(c, snap, detail?.takeIf { it.key == c.key }, scan, now, accent, open, openPrefix, modifier, onClose = { sel = null; openPrefix = "" })
     }
 
     @Composable
@@ -277,7 +301,7 @@ fun CellScreen(accent: Color) {
         widePane = { m ->
             Column(m) {
                 Row(Modifier.padding(start = d.dp(2f), bottom = d.dp(6f)), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
-                    Text("ALERTS", color = Palette.danger, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp)
+                    Text("MESSAGES", color = Palette.danger, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 2.sp)
                     if (groups.isNotEmpty()) Text("${groups.size} kept until cleared", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
                 }
                 if (mapped != null) alertMap(Modifier.fillMaxWidth().weight(0.46f).padding(bottom = d.dp(8f)))
@@ -364,24 +388,22 @@ private fun AlertCard(g: AlertGroup, s: CellSnap, now: Long, home: Pair<Double, 
     val d = rememberDims()
     val col = rankColor(g.rank); val fresh = now - g.lastMs < 600_000
     val area = remember(g.key, g.messages.size) { groupArea(g) }
-    val shape = RoundedCornerShape(d.dp(14f))
     var areaOpen by remember { mutableStateOf(setOf<String>()) }
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape).background(Brush.linearGradient(listOf(col.copy(alpha = if (fresh) 0.24f else 0.16f), Palette.surface)))
-        .border(if (fresh || selected) 2.dp else 1.dp, col.copy(alpha = if (fresh || selected) 0.9f else 0.55f), shape).then(if (area != null) Modifier.clickable { onArea() } else Modifier)) {
-        Box(Modifier.width(d.dp(5f)).fillMaxHeight().background(col))
-        Column(Modifier.weight(1f).padding(d.dp(12f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f)), itemVerticalAlignment = Alignment.CenterVertically) {
-                Text(g.cls.uppercase(Locale.US), color = Color(0xFF05080A), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), letterSpacing = 1.5.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(d.dp(6f))).background(col).padding(horizontal = d.dp(8f), vertical = d.dp(4f)))
+    PagerCard(Palette.danger, true, Modifier.then(if (fresh || selected) Modifier.border(if (selected) 2.dp else 1.5.dp, Palette.danger, RoundedCornerShape(d.dp(12f))) else Modifier)
+        .then(if (area != null) Modifier.clickable { onArea() } else Modifier)) {
+        Column(verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f)), itemVerticalAlignment = Alignment.CenterVertically) {
+                PagerBadge("⚠ ${g.cls.uppercase(Locale.US)}", Palette.danger, true)
+                Text(clClock(g.lastMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
                 Text(g.messages[0].category, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f))
-                if (area != null) AreaThumb(area, col, Modifier.size(d.dp(44f)))
+                if (area != null) AreaThumb(area, col, Modifier.size(d.dp(30f)))
             }
             if (area != null) { val (w, tone) = whereOf(area, home); Text(w, color = whereColor(tone), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), letterSpacing = 1.sp) }
             Text("${clTime(g.firstMs)} · ${clAgo(now - g.lastMs)}${if (g.lastMs - g.firstMs > 2000) " · heard until ${clTime(g.lastMs)}" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
             for (m in g.messages) Column(verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                Box(Modifier.fillMaxWidth().height(1.dp).background(col.copy(alpha = 0.25f)))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.danger.copy(alpha = 0.25f)))
                 val lang = m.language?.uppercase(Locale.US) ?: if (m.source == "SIB10") "WARNING TYPE" else if (m.alphabet == "8bit") "DATA" else "TEXT"
-                Text(lang + if (m.additionalLanguage) " · ADDITIONAL LANGUAGE" else "", color = col, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 1.5.sp)
+                Text(lang + if (m.additionalLanguage) " · ADDITIONAL LANGUAGE" else "", color = Palette.danger, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 1.5.sp)
                 SelectionContainer {
                     Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
                         val wt = m.warningType
@@ -430,6 +452,50 @@ private fun AlertCard(g: AlertGroup, s: CellSnap, now: Long, home: Pair<Double, 
                     modifier = Modifier.clip(RoundedCornerShape(d.dp(7f))).border(1.dp, col.copy(alpha = 0.45f), RoundedCornerShape(d.dp(7f)))
                         .then(if (k != null) Modifier.clickable { pick(k) } else Modifier).padding(horizontal = d.dp(7f), vertical = d.dp(3f)))
             }
+        }
+    }
+}
+
+private fun clClock(ms: Long): String = java.text.SimpleDateFormat("HH:mm:ss", Locale.US).format(java.util.Date(ms))
+
+/** The Pagers app's card: an edge in its color with a glow, and a call-out (red) gets the red wash and border. */
+@Composable
+private fun PagerCard(edge: Color, alert: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(12f))
+    Row(modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape)
+        .background(if (alert) Brush.horizontalGradient(listOf(Palette.danger.copy(alpha = 0.16f), Palette.surface), endX = 900f) else Brush.horizontalGradient(listOf(Palette.surface, Palette.surface)))
+        .border(1.dp, if (alert) Palette.danger.copy(alpha = 0.75f) else Palette.line, shape)) {
+        Box(Modifier.width(4.dp).fillMaxHeight().background(edge).drawBehind { drawRect(edge.copy(alpha = 0.35f), Offset(size.width, 0f), Size(5.dp.toPx(), size.height)) })
+        Box(Modifier.weight(1f).padding(start = d.dp(10f), end = d.dp(10f), top = d.dp(7f), bottom = d.dp(8f))) { content() }
+    }
+}
+/** The Pagers app's badge: white on red for a call-out, else the edge color on its own tint. */
+@Composable
+private fun PagerBadge(text: String, edge: Color, alert: Boolean) {
+    val d = rememberDims()
+    Text(text, color = if (alert) Color.White else edge, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1,
+        modifier = Modifier.background(if (alert) Palette.danger else edge.copy(alpha = 0.2f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 1.dp))
+}
+
+/** One feed row: warnings are the Pagers app's red call-outs, changes amber, the rest blue. Tap for the cell at that message. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FeedCard(r: FeedRow, s: CellSnap, now: Long, accent: Color, onTap: () -> Unit) {
+    val d = rememberDims()
+    val edge = if (r.alert) Palette.danger else if (r.change) Palette.accent2 else accent
+    val where = "${if (r.op.isNotEmpty()) r.op + " · " else ""}${if (r.band != null) "B${r.band} " else ""}${clMhz(r.hz)} · PCI ${r.pci}"
+    PagerCard(edge, r.alert, Modifier.clickable { onTap() }) {
+        Column {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f)), itemVerticalAlignment = Alignment.CenterVertically) {
+                PagerBadge((if (r.alert) "⚠ " else "") + r.name, edge, r.alert)
+                Text(clClock(r.lastMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+                if (r.count > 1) Text("×${r.count}", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(10f))
+                if (r.change) ClPill("CHANGED", Palette.accent2)
+                Text(where, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+            }
+            Text(r.text, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(12.5f), lineHeight = d.sp(17f), modifier = Modifier.padding(top = d.dp(5f)))
+            if (r.count > 1 && now - r.firstMs > 60_000) Text("first ${clTime(r.firstMs)}${if (s.cells.none { it.key == r.cell }) " · cell cleared" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.padding(top = d.dp(3f)))
         }
     }
 }
@@ -562,7 +628,7 @@ private fun NeighborList(s: CellSnap?, now: Long, accent: Color, modifier: Modif
 
 /** Every decoded field of one cell: its signal, the MIB, SIB1 and the SI schedule, then each SIB in named groups with its raw hex. */
 @Composable
-private fun CellDetailPanel(c: CellRow, s: CellSnap, det: CellDetail?, scan: Apps.CellScan, now: Long, accent: Color, open: MutableMap<String, Boolean>, modifier: Modifier, onClose: () -> Unit) {
+private fun CellDetailPanel(c: CellRow, s: CellSnap, det: CellDetail?, scan: Apps.CellScan, now: Long, accent: Color, open: MutableMap<String, Boolean>, openPrefix: String, modifier: Modifier, onClose: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(14f))
     val scroll = rememberScrollState()
@@ -622,7 +688,7 @@ private fun CellDetailPanel(c: CellRow, s: CellSnap, det: CellDetail?, scan: App
                     add(Triple(r.name, r.value as Any?, r.hex to "SI ${if (r.si > 0) "${r.si}" else "?"} · ${clAgo(now - r.ms)} · ×${r.count}"))
             }
             for ((name, value, hm) in blocks) {
-                val isOpen = open[name] == true
+                val isOpen = open[name] ?: (openPrefix.isNotEmpty() && name.startsWith(openPrefix))
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Palette.line.copy(alpha = 0.8f)))
                 Row(Modifier.fillMaxWidth().clickable { open[name] = !isOpen }, verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                     Text("${if (isOpen) "▾" else "▸"} ${name.uppercase(Locale.US)}", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp)
@@ -650,13 +716,13 @@ private fun CellDetailPanel(c: CellRow, s: CellSnap, det: CellDetail?, scan: App
 /** Choices sized to their labels that wrap onto another line rather than clip. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ClSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, onPick: (Int) -> Unit) {
+private fun ClSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, tint: (Int) -> Color? = { null }, onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(9f))
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         labels.forEachIndexed { i, label ->
             val on = i == selected
-            Text(label, color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
+            Text(label, color = if (on) inkOn(accent) else tint(i) ?: Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
                 modifier = Modifier.clip(shape).background(if (on) accent else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape).clickable { onPick(i) }
                     .padding(horizontal = d.dp(10f), vertical = d.dp(7f)))
         }
