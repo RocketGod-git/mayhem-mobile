@@ -137,7 +137,7 @@ let cellSaved = -1;
 setInterval(() => { if (cell.version !== cellSaved) { cellSaved = cell.version; emit({ type: 'cellState', state: cell.exportState() }); } }, 5000);
 /** ATSC TV: stations by their pilot; with the whole channel in the span, bursts decoded on a pool of workers. */
 const atsc = new AtscProcessor(emit);
-atsc.onStill = (key, st) => emit({ type: 'atscStill', key, w: st.width, h: st.height, dar: st.dar, complete: st.complete, mbs: st.mbs, total: st.mbsTotal, rgba: st.rgba }, [st.rgba.buffer]);
+atsc.onStill = (key, st) => emit({ type: 'atscStill', key, w: st.width, h: st.height, dar: st.dar, complete: st.filled, mbs: st.mbs, total: st.mbsTotal, rgba: st.rgba, have: st.have, mbw: st.mbw, mbPx: st.mbPx }, [st.rgba.buffer]);
 let atscSaved = -1, atscPool: AtscPool | null = null;
 setInterval(() => { if (atsc.version !== atscSaved) { atscSaved = atsc.version; emit({ type: 'atscState', state: atsc.exportState() }); } }, 5000);
 function atscPoolFor(r: number): AtscPool | null {

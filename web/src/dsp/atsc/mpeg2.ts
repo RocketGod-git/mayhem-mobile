@@ -56,7 +56,12 @@ class Bits {
 
 export interface SeqInfo { width: number; height: number; aspect: number; frameRate: number; bitRate: number; progressive: boolean; chroma: number; profileLevel: number; intraMatrix: boolean }
 export interface PicInfo { type: number; temporalRef: number; structure: number; topFirst: boolean; framePredDct: boolean; concealment: boolean; qScaleType: number; intraVlc: number; altScan: number; dcPrecision: number; progressiveFrame: boolean }
-export interface Still { width: number; height: number; rgba: Uint8ClampedArray; dar: number; seq: SeqInfo; pic: PicInfo; mbs: number; mbsTotal: number; slices: number; badSlices: number; complete: boolean }
+export interface Still {
+  width: number; height: number; rgba: Uint8ClampedArray; dar: number; seq: SeqInfo; pic: PicInfo; mbs: number; mbsTotal: number; slices: number; badSlices: number; complete: boolean;
+  /** Macroblocks that hold picture (from this one or an earlier one on the same stream), mbw across, mbPx pixels each way
+   *  (twice as tall for a field); the others were never decoded and are mid gray. */
+  have: Uint8Array; mbw: number; mbPx: number; filled: boolean;
+}
 
 const FRAME_RATES = [0, 24000 / 1001, 24, 25, 30000 / 1001, 30, 50, 60000 / 1001, 60];
 const DARS = [0, 1, 4 / 3, 16 / 9, 2.21];
@@ -81,7 +86,7 @@ export class StillDecoder {
   private ext: { progressive: boolean; chroma: number; hx: number; vx: number; brx: number; pl: number; fn: number; fd: number } | null = null;
   /** Reduced planes of the last still (kept for compositing a damaged picture over it). */
   private y: Uint8Array | null = null; private cb: Uint8Array | null = null; private cr: Uint8Array | null = null;
-  private key = '';
+  private key = ''; private have: Uint8Array | null = null;
   pictures = 0; iPictures = 0; gop = '';
   /** Maximum still width in pixels; each 8x8 block is averaged to s x s with s a power of two that fits. */
   constructor(private readonly maxWidth = 480) {}
@@ -152,7 +157,7 @@ export class StillDecoder {
     let s = 8; while (s > 1 && mbw * 2 * s > this.maxWidth) s >>= 1;
     const yw = mbw * 2 * s, yh = mbhPic * 2 * s, cw = mbw * s, ch = mbhPic * s;
     const key = `${seq.width}x${seq.height}/${pic.structure}/${s}`;
-    if (key !== this.key || !this.y) { this.key = key; this.y = new Uint8Array(yw * yh).fill(16); this.cb = new Uint8Array(cw * ch).fill(128); this.cr = new Uint8Array(cw * ch).fill(128); }
+    if (key !== this.key || !this.y) { this.key = key; this.have = new Uint8Array(mbw * mbhPic); this.y = new Uint8Array(yw * yh).fill(126); this.cb = new Uint8Array(cw * ch).fill(128); this.cr = new Uint8Array(cw * ch).fill(128); }
     const Y = this.y, CB = this.cb!, CR = this.cr!;
     const L = luts(), lutc = pic.intraVlc ? L.b15 : L.b14, inv = INV[pic.altScan], qs = QS[pic.qScaleType];
     const dcMult = [8, 4, 2, 1][pic.dcPrecision], dcReset = [128, 256, 512, 1024][pic.dcPrecision];
@@ -241,7 +246,7 @@ export class StillDecoder {
             CB[(mr * s + r) * cw + mc * s + c] = clip(blk[4 * 64 + r * s + c]);
             CR[(mr * s + r) * cw + mc * s + c] = clip(blk[5 * 64 + r * s + c]);
           }
-          done.push(addr);
+          done.push(addr); this.have![addr] = 1;
         }
         mbs += done.length;
       } catch {
@@ -262,7 +267,8 @@ export class StillDecoder {
       }
     }
     const dar = DARS[this.seqRaw!.aspect] === 1 || !DARS[this.seqRaw!.aspect] ? seq.width / seq.height : DARS[this.seqRaw!.aspect];
-    return { width: pw, height: oh, rgba, dar, seq, pic, mbs, mbsTotal: nmb, slices: slices.length, badSlices: bad, complete: mbs === nmb && bad === 0 };
+    const have = this.have!.slice();
+    return { width: pw, height: oh, rgba, dar, seq, pic, mbs, mbsTotal: nmb, slices: slices.length, badSlices: bad, complete: mbs === nmb && bad === 0, have, mbw, mbPx: 2 * s, filled: have.every(v => v === 1) };
   }
 }
 

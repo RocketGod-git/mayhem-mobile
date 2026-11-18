@@ -5686,13 +5686,16 @@ function atscTick(): void {
   const sc = atscUi.scan, s = atscUi.snap, now = Date.now(), e = now - sc.tunedMs;
   if (atscUi.band !== 'HOLD' && sc.list.length) {
     const ch = sc.list[sc.idx % sc.list.length], h = s && s.here && s.here.ch === ch && s.here.since >= sc.tunedMs - 400 ? s.here : null;
-    const pilot = !!h && h.pilotDb >= 8;
+    const pilot = !!h && h.pilotOk;
     let next = false;
-    if (e > 1_800 && !pilot) next = true;
+    // no 8VSB pilot: gone in two seconds; a pilot with no segment sync after a few bursts: gone; a station keeps
+    // the radio until its channels, a picture of each and the guide are in (a minute and a half at most)
+    if (e > 2_000 && !pilot && !(h && h.sync)) next = true;
     else if (pilot && s?.capability === 'pilot' && e > 3_500) next = true;
-    else if (pilot && s?.capability === 'decode') {
-      const done = h!.vct && h!.eit && h!.stills >= Math.max(1, h!.videoSubs);
-      if ((done && e > 10_000) || e > 60_000 || (e > 25_000 && !h!.vct)) next = true;
+    else if (s?.capability === 'decode' && h) {
+      const done = h.vct && h.eit && h.stills >= Math.max(1, h.videoSubs);
+      if (!h.sync && (h.bursts >= 3 || e > 15_000)) next = true;
+      else if (h.sync && ((done && e > 10_000) || e > 90_000 || (e > 45_000 && !h.vct))) next = true;
     }
     if (next) { sc.idx = (sc.idx + 1) % sc.list.length; atscGo(sc.list[sc.idx]); }
   }
@@ -5727,19 +5730,38 @@ async function atscSaveStill(key: string, rec: AtscStillRec): Promise<void> {
   const db = await atscDb(); if (!db) return;
   try { db.transaction('stills', 'readwrite').objectStore('stills').put(rec, key); } catch { /* storage blocked */ }
 }
-function atscOnStill(m: Record<string, unknown>): void {
-  const w = m.w as number, h = m.h as number, dar = (m.dar as number) || w / h;
+/** A picture with macroblocks never decoded (slices lost to uncorrectable packets) keeps the last still there. */
+async function atscOnStill(m: Record<string, unknown>): Promise<void> {
+  const w = m.w as number, h = m.h as number, dar = (m.dar as number) || w / h, key = m.key as string;
+  const img = new ImageData(new Uint8ClampedArray(m.rgba as ArrayBuffer | Uint8ClampedArray as ArrayBuffer), w, h);
+  const prev = atscUi.stills.get(key), have = m.have as Uint8Array | undefined, mbw = m.mbw as number, mbPx = m.mbPx as number;
+  let complete = !!m.complete;
+  if (!complete && prev && have && mbw && mbPx) {
+    const old = await new Promise<HTMLImageElement | null>(res => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = prev.url; });
+    const base = document.createElement('canvas'); base.width = w; base.height = h;
+    const bx = base.getContext('2d');
+    if (old && bx) {
+      bx.drawImage(old, 0, 0, w, h);
+      const od = bx.getImageData(0, 0, w, h).data, nd = img.data, rows = have.length / mbw, vpx = h > rows * mbPx ? 2 * mbPx : mbPx;
+      for (let k = 0; k < have.length; k++) {
+        if (have[k]) continue;
+        const x0 = (k % mbw) * mbPx, y0 = Math.floor(k / mbw) * vpx;
+        for (let y = y0; y < Math.min(h, y0 + vpx); y++) for (let x = x0; x < Math.min(w, x0 + mbPx); x++) { const o = (y * w + x) * 4; nd[o] = od[o]; nd[o + 1] = od[o + 1]; nd[o + 2] = od[o + 2]; }
+      }
+      complete = prev.complete;
+    }
+  }
   const src = document.createElement('canvas'); src.width = w; src.height = h;
   const cx = src.getContext('2d'); if (!cx) return;
-  cx.putImageData(new ImageData(new Uint8ClampedArray(m.rgba as ArrayBuffer | Uint8ClampedArray as ArrayBuffer), w, h), 0, 0);
+  cx.putImageData(img, 0, 0);
   // stored at the display aspect, 480 wide at most
   const ow = Math.min(480, Math.round(Math.max(w, h * dar))), oh = Math.round(ow / dar);
   const out = document.createElement('canvas'); out.width = ow; out.height = oh;
   const ox = out.getContext('2d'); if (!ox) return;
   ox.imageSmoothingQuality = 'high'; ox.drawImage(src, 0, 0, ow, oh);
-  const rec: AtscStillRec = { url: out.toDataURL('image/jpeg', 0.82), w: ow, h: oh, dar, ms: Date.now(), complete: !!m.complete };
-  atscUi.stills.set(m.key as string, rec);
-  void atscSaveStill(m.key as string, rec);
+  const rec: AtscStillRec = { url: out.toDataURL('image/jpeg', 0.82), w: ow, h: oh, dar, ms: Date.now(), complete };
+  atscUi.stills.set(key, rec);
+  void atscSaveStill(key, rec);
   refreshAtsc();
 }
 function atscSave(st: unknown): void {
@@ -5795,14 +5817,14 @@ function atscPick(key: string): void {
 }
 function atscHead(s: AtscSnap | null): string {
   const [cap, tone] = atscCapability(), sc = atscUi.scan, now = Date.now();
-  const ch = s?.ch || (atscUi.band === 'HOLD' ? sc.stayCh : sc.list[sc.idx]) || 0, st = s?.stations.find(x => x.ch === ch);
-  const status = atscUi.band === 'HOLD' ? `HOLDING CH ${ch}` : `${atscUi.band === 'AUTO' ? 'AUTO' : atscUi.band} · CH ${ch} · ${sc.idx + 1}/${sc.list.length} · ${st && st.pilotDb >= 8 && now - st.pilotMs < 4_000 ? 'READING' : 'LOOKING'} ${Math.floor((now - sc.tunedMs) / 1000)} s`;
+  const ch = s?.ch || (atscUi.band === 'HOLD' ? sc.stayCh : sc.list[sc.idx]) || 0, h = s?.here && s.here.ch === ch ? s.here : null;
+  const status = atscUi.band === 'HOLD' ? `HOLDING CH ${ch}` : `${atscUi.band === 'AUTO' ? 'AUTO' : atscUi.band} · CH ${ch} · ${sc.idx + 1}/${sc.list.length} · ${h && (h.pilotOk || h.sync) ? 'READING' : 'LOOKING'} ${Math.floor((now - sc.tunedMs) / 1000)} s`;
   const subs = s ? s.stations.reduce((n, x) => n + x.subs.length, 0) : 0, onAir = s ? s.stations.reduce((n, x) => n + x.subs.filter(y => y.now).length, 0) : 0;
   const pics = s ? s.stations.reduce((n, x) => n + x.subs.filter(y => atscUi.stills.has(y.key)).length, 0) : 0;
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const dec = s && s.capability === 'decode' ? `${s.decodedPct.toFixed(0)}%` : '-';
   return `<div class="at-cap ${tone}">${esc(cap)}</div>`
-    + `<div class="at-watch"><b>CH ${ch}${ch ? ` · ${atscMhz(centerOf(ch))} MHz` : ''}</b><small>${st ? `${st.tsid >= 0 ? `TSID 0x${st.tsid.toString(16).toUpperCase().padStart(4, '0')} · ` : ''}pilot +${st.pilotDb.toFixed(0)} dB${Number.isFinite(st.snrDb) ? ` · SNR ${st.snrDb.toFixed(1)} dB` : ''}` : 'no pilot yet'}${s && s.capability === 'decode' ? ` · ${s.workers || 1} decoder${(s.workers || 1) === 1 ? '' : 's'}` : ''}</small><em class="${st && st.pilotDb >= 8 ? 'on' : ''}">${esc(status)}</em></div>`
+    + `<div class="at-watch"><b>CH ${ch}${ch ? ` · ${atscMhz(centerOf(ch))} MHz` : ''}</b><small>${h && h.pilotOk ? `${h.tsid >= 0 ? `TSID 0x${h.tsid.toString(16).toUpperCase().padStart(4, '0')} · ` : ''}pilot +${h.pilotDb.toFixed(0)} dB · channel +${h.topDb.toFixed(0)} dB over the floor${h.sync ? ' · segment sync' : ''}${Number.isFinite(h.snrDb) ? ` · SNR ${h.snrDb.toFixed(1)} dB` : ''}` : h && Number.isFinite(h.topDb) ? `no 8VSB pilot · channel +${h.topDb.toFixed(0)} dB over the floor` : 'no 8VSB pilot yet'}${s && s.capability === 'decode' ? ` · ${s.workers || 1} decoder${(s.workers || 1) === 1 ? '' : 's'}` : ''}</small><em class="${h && (h.pilotOk || h.sync) ? 'on' : ''}">${esc(status)}</em></div>`
     + `<div class="at-count">${tile(s?.stations.length ?? 0, 'STATIONS')}${tile(subs, 'CHANNELS')}${tile(onAir, 'ON NOW')}${tile(pics, 'PICTURES')}${tile(dec, 'DECODED')}</div>`;
 }
 function atscStillHtml(x: AtscSub, live: boolean): string {
@@ -6005,8 +6027,8 @@ function refreshAtsc(force = false): void {
   det.hidden = !html;
   if (html) { const top = det.scrollTop; det.innerHTML = html; det.scrollTop = top; }
   if (s) {
-    const st = s.stations.find(x => x.ch === s.ch);
-    if (st && st.pilotDb >= 8) setMeter(Math.min(1, st.pilotDb / 40), `PILOT +${st.pilotDb.toFixed(0)} dB${Number.isFinite(st.snrDb) && s.live ? ` · SNR ${st.snrDb.toFixed(1)} dB` : ''}`);
+    const h = s.here && s.here.ch === s.ch ? s.here : null;
+    if (h && h.pilotOk) setMeter(Math.min(1, h.pilotDb / 40), `PILOT +${h.pilotDb.toFixed(0)} dB${Number.isFinite(h.snrDb) ? ` · SNR ${h.snrDb.toFixed(1)} dB` : ''}`);
     else setMeter(0, `CH ${s.ch || '-'} · NO PILOT`);
     const subs = s.stations.reduce((n, x) => n + x.subs.length, 0);
     if (subs) setLamp(`${subs} CHANNEL${subs === 1 ? '' : 'S'}`, 'ok'); else if (s.stations.length) setLamp(`${s.stations.length} STATION${s.stations.length === 1 ? '' : 'S'}`, 'ok'); else setLamp('SCANNING', 'amber', true);
@@ -8137,7 +8159,7 @@ function ensureWorker(): Worker {
       case 'cellExport': cellExport(m.csv as string, m.json as string); break;
       case 'cellState': cellSave(m.state); break;
       case 'atsc': atscUi.snap = m as unknown as AtscSnap; refreshAtsc(); break;
-      case 'atscStill': atscOnStill(m); break;
+      case 'atscStill': void atscOnStill(m); break;
       case 'atscDetail': atscOnDetail(m); break;
       case 'atscExport': atscExport(m.csv as string, m.json as string); break;
       case 'atscState': atscSave(m.state); break;

@@ -33,7 +33,15 @@ export function rrc(t: number, a: number): number {
 }
 export const ALPHA = 0.1152;
 
-export interface PilotInfo { hz: number; db: number; topDb: number }
+export interface PilotInfo {
+  hz: number; db: number; topDb: number;
+  /** The pilot over the plateau that A/53 gives (1.25 against the data's 21 of power, per FFT bin here). */
+  expectDb: number;
+  /** An 8VSB channel: a data plateau over the floor and a pilot at about the A/53 level above it (a spur on noise is not). */
+  ok: boolean;
+}
+/** Plateau over the floor an 8VSB channel must show, dB. */
+export const MIN_TOP_DB = 2.5;
 /**
  * The pilot near `nominal` (from the tuned center; -Sr/4 when the channel is centered), its offset from where it
  * should be and its level over the data plateau above it; `topDb` is the plateau over the floor below the channel.
@@ -59,18 +67,23 @@ export function findPilot(re: Float32Array, im: Float32Array, rate: number, sear
   const a = Math.log(at(best - 1) + 1e-12), b = Math.log(at(best) + 1e-12), c = Math.log(at(best + 1) + 1e-12);
   const den = a - 2 * b + c, d = den !== 0 ? 0.5 * (a - c) / den : 0;
   const hz = (best + d) * rate / N;
-  // the data plateau: median level 0.8-5.5 MHz into the channel (relative to the pilot), the floor outside it
-  const plateau: number[] = [], outside: number[] = [];
+  // the data plateau: median level from 0.3 MHz above the pilot to the top of the channel (what of it is in the span);
+  // the floor: the stretches just below and just above the channel, together
+  const plateau: number[] = [], below: number[] = [], above: number[] = [];
   const edge = rate / 2 - 150_000;
   for (let f = hz + 300_000; f < hz + 5_500_000 && f < edge; f += rate / N * 7) plateau.push(at(bin(f)));
-  for (let f = hz - 450_000; f > -edge && f > hz - 900_000; f -= rate / N * 3) outside.push(at(bin(f)));
-  plateau.sort((x, y) => x - y);
-  outside.sort((x, y) => x - y);
-  const med = plateau[plateau.length >> 1] || 1e-12;
+  for (let f = hz - 450_000; f > -edge && f > hz - 900_000; f -= rate / N * 3) below.push(at(bin(f)));
+  for (let f = hz + 5_850_000; f < edge && f < hz + 6_300_000; f += rate / N * 3) above.push(at(bin(f)));
+  const median = (v: number[]) => { v.sort((x, y) => x - y); return v[v.length >> 1] || 1e-12; };
+  const med = median(plateau);
+  const outside = [...below, ...above];
   const pk = at(best - 1) + at(best) + at(best + 1);
   const db = 10 * Math.log10(pk / med);
-  const topDb = outside.length > 4 ? 10 * Math.log10(med / (outside[outside.length >> 1] || 1e-12)) : NaN;
-  return { hz: hz - nom, db, topDb };
+  const topDb = outside.length > 4 ? 10 * Math.log10(med / median(outside)) : NaN;
+  // pilot power 1.25^2 against data power 21 spread over Sr/2; per Hann bin (1.5 bins wide), the median 1.6 dB under the mean
+  const expectDb = 10 * Math.log10((SR / 2) * 1.5625 / 21 / (1.5 * rate / N)) + 1.6;
+  const ok = Number.isFinite(topDb) && topDb >= MIN_TOP_DB && db > expectDb - 9 && db < expectDb + 6;
+  return { hz: hz - nom, db, topDb, expectDb, ok };
 }
 
 /** Halves the rate with a 31-tap half-band low pass (16 and 20 MS/s spans to 8 and 10). */
@@ -150,7 +163,7 @@ export function demodBurst(iq: Int8Array, rate: number, st: BurstState): BurstRe
   const pilot = findPilot(re, im, R);
   res.pilot = pilot;
   const T: number[] = [performance.now()];
-  if (!pilot || pilot.db < 6) { res.reason = 'no pilot'; return done(); }
+  if (!pilot || !pilot.ok) { res.reason = 'no pilot'; return done(); }
 
   st.pilotHz = pilot.hz;
 

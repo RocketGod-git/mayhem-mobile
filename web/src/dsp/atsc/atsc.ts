@@ -30,8 +30,8 @@ export interface SubRow {
 export interface PidRow { pid: number; role: string; packets: number; kbps: number; share: number; ccErrors: number; scrambled: number; pcrs: number; pcrIntervalMs: number; pcrPpm: number }
 export interface StationRow {
   key: string; ch: number; band: string; centerHz: number; tsid: number; firstMs: number; lastMs: number;
-  pilotDb: number; pilotHz: number; topDb: number; pilotMs: number;
-  snrDb: number; sliceSnrDb: number; rs: { ok: number; corrected: number; failed: number; bytes: number };
+  pilotDb: number; pilotHz: number; topDb: number; pilotMs: number; pilotOk: boolean; syncMs: number;
+  snrDb: number; sliceSnrDb: number; snrMs: number; rs: { ok: number; corrected: number; failed: number; bytes: number };
   fields: number; airFields: number; packets: number; badPackets: number; decodedMs: number;
   subs: SubRow[]; tables: string[]; stt: { utcMs: number; offset: number; ds: boolean; diffMs: number; atMs: number } | null;
   hasVct: boolean; hasEit: boolean; tvName: string; events: number;
@@ -44,14 +44,17 @@ export interface LiveSignal {
 export interface AtscSnap {
   type: 'atsc'; capability: 'decode' | 'pilot'; rate: number; centerHz: number; ch: number; workers: number; busy: number;
   decodedPct: number; cpuPct: number; bursts: number; stations: StationRow[]; live: LiveSignal | null;
-  here: { ch: number; pilotDb: number; since: number; vct: boolean; stills: number; videoSubs: number; eit: boolean; bursts: number } | null;
+  here: { ch: number; pilotOk: boolean; sync: boolean; pilotDb: number; pilotHz: number; topDb: number; snrDb: number; tsid: number; since: number; vct: boolean; stills: number; videoSubs: number; eit: boolean; bursts: number } | null;
 }
 export interface AtscLogRow { ms: number; ch: number; kind: string; text: string }
 
 interface Station {
   key: string; ch: number; centerHz: number; tsid: number; firstMs: number; lastMs: number;
   pilotDb: number; pilotHz: number; topDb: number; pilotMs: number;
-  snrDb: number; sliceSnrDb: number; rs: { ok: number; corrected: number; failed: number; bytes: number };
+  /** The pilot met the 8VSB rule (a plateau over the floor, the pilot at its level over it); segment sync was seen. */
+  pilotOk: boolean; syncMs: number;
+  /** SNR of the last burst that decoded fields with most packets correctable (snrMs 0: none yet). */
+  snrDb: number; sliceSnrDb: number; snrMs: number; rs: { ok: number; corrected: number; failed: number; bytes: number };
   fields: number; airFields: number; packets: number; badPackets: number;
   pat: Pat | null; pmts: Record<number, Pmt>; vct: Vct | null; mgt: Mgt | null; rrt: Rrt | null;
   stt: { utcMs: number; offset: number; ds: boolean; diffMs: number; atMs: number } | null;
@@ -87,7 +90,7 @@ export class AtscProcessor implements IqProcessor {
   private snrHistory: number[] = []; private rsHistory: number[] = [];
   private airSamples = 0; private decodedSamples = 0; private cpuMs = 0; private wallStart = 0;
   private pilotAcc = 0; private pilotRe = new Float32Array(32768); private pilotIm = new Float32Array(32768); private pilotN = 0;
-  private hereSince = 0; private hereBursts = 0;
+  private hereSince = 0; private hereBursts = 0; private settle = 0;
   private lastPost = 0; private dirty = false;
 
   constructor(private readonly emit: Emit | null) {
@@ -109,7 +112,7 @@ export class AtscProcessor implements IqProcessor {
     let s = this.stations.get(key);
     if (!s) {
       const now = this.now();
-      s = { key, ch: this.ch, centerHz: centerOf(this.ch), tsid: -1, firstMs: now, lastMs: now, pilotDb: 0, pilotHz: 0, topDb: NaN, pilotMs: 0, snrDb: NaN, sliceSnrDb: NaN,
+      s = { key, ch: this.ch, centerHz: centerOf(this.ch), tsid: -1, firstMs: now, lastMs: now, pilotDb: 0, pilotHz: 0, topDb: NaN, pilotMs: 0, pilotOk: false, syncMs: 0, snrDb: NaN, sliceSnrDb: NaN, snrMs: 0,
         rs: { ok: 0, corrected: 0, failed: 0, bytes: 0 }, fields: 0, airFields: 0, packets: 0, badPackets: 0, pat: null, pmts: {}, vct: null, mgt: null, rrt: null, stt: null,
         events: {}, etts: {}, chanEtt: {}, raw: {}, pidStats: {}, video: {}, stills: {} };
       this.stations.set(key, s);
@@ -120,7 +123,9 @@ export class AtscProcessor implements IqProcessor {
   onIq(iq: Int8Array, rate: number): void {
     if (rate !== this.rate) this.reset(rate);
     if (this.centerHz !== this.lastCenter) this.retuned();
-    const n = iq.length >> 1;
+    let n = iq.length >> 1;
+    // samples still in flight from before the retune are not this channel's
+    if (this.settle > 0) { const k = Math.min(n, this.settle); this.settle -= k; if (k === n) return; iq = iq.subarray(2 * k); n -= k; }
     // the pilot, from a stretch of every buffer, about twice a second (any radio)
     this.pilotAcc += n;
     if (this.pilotAcc > rate / 4) {
@@ -131,10 +136,11 @@ export class AtscProcessor implements IqProcessor {
     }
     if (this.capability !== 'decode') return;
     const st = this.station();
-    if (st && st.pilotDb >= 8) this.airSamples += n;
-    // a burst starts only when a decoder can take it
+    const live = !!st && st.pilotOk && this.now() - st.pilotMs < 3_000;
+    if (live) this.airSamples += n;
+    // a burst starts only when a decoder can take it, on a channel whose pilot met the 8VSB rule
     if (!this.capturing) {
-      if (!st || (this.realtime && st.pilotDb < 8)) return;
+      if (!st || (this.realtime && !live)) return;
       if (this.realtime && this.pool && (this.pool.free === 0 || this.pool.failed)) return;
       if (this.realtime && !this.pool && this.inFlight) return;
       this.capturing = true; this.capN = 0;
@@ -152,7 +158,10 @@ export class AtscProcessor implements IqProcessor {
     // decoding needs the channel centered; a narrow radio looks at the pilot wherever it is in the span
     this.ch = c ? c.ch : 0;
     this.capturing = false; this.capN = 0; this.pilotAcc = 0; this.pilotN = 0;
+    this.settle = this.realtime ? Math.round(this.rate * 0.3) : 0;
     this.demux.clear(); this.stills = new Map();
+    // nothing measured before this visit stands for it
+    const s = this.station(); if (s) { s.snrDb = NaN; s.sliceSnrDb = NaN; s.snrMs = 0; s.pilotOk = false; s.pilotDb = 0; }
     this.st = { eps: this.st.eps, pilotHz: 0 };
     this.hereSince = this.now(); this.hereBursts = 0; this.live = null; this.snrHistory = []; this.rsHistory = [];
     this.post(true);
@@ -165,12 +174,12 @@ export class AtscProcessor implements IqProcessor {
     const p = findPilot(this.pilotRe, this.pilotIm, this.rate, 30_000, expect);
     const s = this.station(); if (!s) return;
     const now = this.now();
-    if (p && p.db >= 8) {
+    if (p && p.ok) {
       const first = s.pilotMs === 0;
-      s.pilotDb = s.pilotDb > 0 ? 0.7 * s.pilotDb + 0.3 * p.db : p.db; s.pilotHz = p.hz; if (Number.isFinite(p.topDb)) s.topDb = p.topDb; s.pilotMs = now; s.lastMs = now;
-      if (first) this.note('PILOT', `ch ${s.ch} ${(s.centerHz / 1e6).toFixed(0)} MHz · pilot +${p.db.toFixed(1)} dB · ${p.hz >= 0 ? '+' : ''}${p.hz.toFixed(0)} Hz`);
+      s.pilotDb = s.pilotOk && s.pilotDb > 0 ? 0.7 * s.pilotDb + 0.3 * p.db : p.db; s.pilotHz = p.hz; s.topDb = p.topDb; s.pilotMs = now; s.lastMs = now; s.pilotOk = true;
+      if (first) this.note('PILOT', `ch ${s.ch} ${(s.centerHz / 1e6).toFixed(0)} MHz · pilot +${p.db.toFixed(1)} dB · ${p.hz >= 0 ? '+' : ''}${p.hz.toFixed(0)} Hz · channel +${p.topDb.toFixed(1)} dB over the floor`);
       this.version++;
-    } else s.pilotDb = p ? Math.min(s.pilotDb, p.db) * 0.5 : 0;
+    } else { s.pilotOk = false; s.pilotDb = 0; if (p && Number.isFinite(p.topDb)) s.topDb = p.topDb; }
     this.dirty = true; this.post();
   }
 
@@ -201,14 +210,19 @@ export class AtscProcessor implements IqProcessor {
     if (!this.wallStart) this.wallStart = now;
     this.decodedSamples += r.fields * FIELD_MS / 1000 * this.rate;
     s.fields += r.fields; s.airFields = Math.round(this.airSamples / this.rate * 1000 / FIELD_MS);
+    if (r.segPeak >= 6 && r.reason !== 'no segment sync' && r.reason !== 'no pilot') s.syncMs = now;
     if (r.ok) {
-      s.snrDb = r.snrDb; s.sliceSnrDb = r.sliceSnrDb;
+      const tot = r.rs.ok + r.rs.corrected + r.rs.failed;
+      // an SNR measured against decisions that are mostly wrong says nothing: shown only when most packets correct
+      if (r.fields > 0 && tot && r.rs.failed / tot < 0.5) { s.snrDb = r.snrDb; s.sliceSnrDb = r.sliceSnrDb; s.snrMs = now; }
+      else { s.snrDb = NaN; s.sliceSnrDb = NaN; }
       s.rs.ok += r.rs.ok; s.rs.corrected += r.rs.corrected; s.rs.failed += r.rs.failed; s.rs.bytes += r.rs.bytes;
       this.snrHistory.push(r.snrDb); if (this.snrHistory.length > 60) this.snrHistory.shift();
-      const tot = r.rs.ok + r.rs.corrected + r.rs.failed;
       this.rsHistory.push(tot ? r.rs.failed / tot : 1); if (this.rsHistory.length > 60) this.rsHistory.shift();
     }
-    this.live = { ch: s.ch, centerHz: s.centerHz, ms: now, ok: r.ok, reason: r.reason, pilot: r.pilot, snrDb: r.snrDb, sliceSnrDb: r.sliceSnrDb, segPeak: r.segPeak, syncs: r.syncs,
+    // the signal view is for a channel with an 8VSB pilot; a burst of noise leaves it empty
+    if (r.reason === 'no pilot') this.live = null;
+    else this.live = { ch: s.ch, centerHz: s.centerHz, ms: now, ok: r.ok, reason: r.reason, pilot: r.pilot, snrDb: r.snrDb, sliceSnrDb: r.sliceSnrDb, segPeak: r.segPeak, syncs: r.syncs,
       hist: Array.from(r.hist), eye: Array.from(r.eye.subarray(0, 1500), v => Math.round(v * 100) / 100), echo: Array.from(r.echo, v => Math.round(v * 10) / 10), dfe: Array.from(r.dfe, v => Math.round(v * 1e4) / 1e4), ffe: Array.from(r.ffe, v => Math.round(v * 1e4) / 1e4),
       eps: r.eps, cpuMs: r.cpuMs, fields: r.fields, rs: r.rs, snrHistory: this.snrHistory.slice(), rsHistory: this.rsHistory.slice(), pids: [] };
     if (r.ts.length) {
@@ -297,8 +311,8 @@ export class AtscProcessor implements IqProcessor {
     s.video[pid] = { seq: dec.seq, gop: dec.gop, pictures: dec.pictures, iPictures: dec.iPictures };
     if (still && prog >= 0) {
       // a picture that came out with fewer rows than the one we have keeps the old still
-      if (last && last.complete && !still.complete && now - last.ms < 60_000) return;
-      s.stills[prog] = { ms: now, complete: still.complete, mbs: still.mbs, w: still.width, h: still.height, dar: still.dar };
+      if (last && last.complete && !still.filled && now - last.ms < 60_000) return;
+      s.stills[prog] = { ms: now, complete: still.filled, mbs: still.mbs, w: still.width, h: still.height, dar: still.dar };
       const vc = s.vct?.channels.find(c => c.program === prog);
       if (!last) this.note('STILL', `${vc ? `${vc.major}.${vc.minor} ${vc.shortName}` : `program ${prog}`} · ${still.seq.width}x${still.seq.height}${still.seq.progressive ? 'p' : 'i'} · ${still.complete ? 'whole picture' : `${Math.round(100 * still.mbs / still.mbsTotal)} % of the picture`}`);
       this.onStill?.(`${s.key}/${prog}`, still);
@@ -346,7 +360,7 @@ export class AtscProcessor implements IqProcessor {
   stationRow(s: Station): StationRow {
     const subs = this.subRows(s);
     return { key: s.key, ch: s.ch, band: CHANNELS.find(c => c.ch === s.ch)?.band ?? '', centerHz: s.centerHz, tsid: s.tsid, firstMs: s.firstMs, lastMs: s.lastMs,
-      pilotDb: s.pilotDb, pilotHz: s.pilotHz, topDb: s.topDb, pilotMs: s.pilotMs, snrDb: s.snrDb, sliceSnrDb: s.sliceSnrDb, rs: s.rs,
+      pilotDb: s.pilotDb, pilotHz: s.pilotHz, topDb: s.topDb, pilotMs: s.pilotMs, pilotOk: s.pilotOk, syncMs: s.syncMs, snrDb: s.snrMs ? s.snrDb : NaN, sliceSnrDb: s.snrMs ? s.sliceSnrDb : NaN, snrMs: s.snrMs, rs: s.rs,
       fields: s.fields, airFields: s.airFields, packets: s.packets, badPackets: s.badPackets, decodedMs: s.fields * FIELD_MS,
       subs, tables: [...new Set([s.pat ? 'PAT' : '', ...Object.keys(s.pmts).map(() => 'PMT'), s.mgt ? 'MGT' : '', s.vct ? (s.vct.cable ? 'CVCT' : 'TVCT') : '', s.stt ? 'STT' : '', Object.keys(s.events).length ? 'EIT' : '', Object.keys(s.etts).length ? 'ETT' : '', s.rrt ? 'RRT' : ''].filter(x => x))],
       stt: s.stt, hasVct: !!s.vct, hasEit: Object.keys(s.events).length > 0, tvName: subs.find(x => x.name)?.name ?? '', events: Object.keys(s.events).length };
@@ -365,6 +379,9 @@ export class AtscProcessor implements IqProcessor {
       .sort((a, b) => a.pid - b.pid);
   }
 
+  /** A station: its tables were read, or its segment sync seen; with a narrow radio, its pilot met the 8VSB rule. */
+  private listed(x: Station): boolean { return x.tsid >= 0 || x.syncMs > 0 || (this.capability === 'pilot' && x.pilotOk); }
+
   snapshot(): AtscSnap {
     const s = this.ch ? this.stations.get(`ch${this.ch}`) ?? null : null, now = this.now();
     const wall = this.wallStart ? Math.max(1, now - this.wallStart) : 1;
@@ -374,8 +391,8 @@ export class AtscProcessor implements IqProcessor {
     return {
       type: 'atsc', capability: this.capability, rate: this.rate, centerHz: this.centerHz, ch: this.ch, workers: this.pool?.size ?? 0, busy: this.inFlight,
       decodedPct: this.airSamples ? Math.min(100, 100 * this.decodedSamples / this.airSamples) : 0, cpuPct: Math.min(400, 100 * this.cpuMs / wall), bursts: this.bursts,
-      stations: [...this.stations.values()].filter(x => x.pilotMs > 0 || x.tsid >= 0).sort((a, b) => a.ch - b.ch).map(x => this.stationRow(x)), live,
-      here: s ? { ch: s.ch, pilotDb: s.pilotDb, since: this.hereSince, vct: !!s.vct, stills: videoSubs.filter(x => x.stillMs > this.hereSince).length, videoSubs: videoSubs.length, eit: Object.values(s.events).some(e => e.seenMs > this.hereSince), bursts: this.hereBursts } : null,
+      stations: [...this.stations.values()].filter(x => this.listed(x)).sort((a, b) => a.ch - b.ch).map(x => this.stationRow(x)), live,
+      here: s ? { ch: s.ch, pilotOk: s.pilotOk, sync: s.syncMs >= this.hereSince, pilotDb: s.pilotDb, pilotHz: s.pilotHz, topDb: s.topDb, snrDb: s.snrMs >= this.hereSince ? s.snrDb : NaN, tsid: s.tsid, since: this.hereSince, vct: !!s.vct, stills: videoSubs.filter(x => x.stillMs > this.hereSince).length, videoSubs: videoSubs.length, eit: Object.values(s.events).some(e => e.seenMs > this.hereSince), bursts: this.hereBursts } : null,
     };
   }
 
@@ -411,7 +428,9 @@ export class AtscProcessor implements IqProcessor {
   }
   restore(st: AtscState | null): void {
     if (!st || st.v !== 1) return;
-    for (const s of st.stations ?? []) if (!this.stations.has(s.key)) this.stations.set(s.key, { ...s, raw: s.raw ?? {}, pidStats: s.pidStats ?? {}, video: s.video ?? {}, stills: s.stills ?? {}, chanEtt: s.chanEtt ?? {} });
+    // a saved station from before the 8VSB rule, with nothing decoded, was likely a spur: it is not brought back
+    for (const s of st.stations ?? []) if (!this.stations.has(s.key) && (s.tsid >= 0 || s.syncMs > 0 || s.pilotOk))
+      this.stations.set(s.key, { ...s, pilotOk: !!s.pilotOk, syncMs: s.syncMs ?? 0, snrMs: s.snrMs ?? 0, snrDb: s.snrMs ? s.snrDb : NaN, raw: s.raw ?? {}, pidStats: s.pidStats ?? {}, video: s.video ?? {}, stills: s.stills ?? {}, chanEtt: s.chanEtt ?? {} });
     if (!this.log.length) this.log.push(...(st.log ?? []));
     this.post(true);
   }
