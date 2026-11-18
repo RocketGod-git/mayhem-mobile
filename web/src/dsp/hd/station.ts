@@ -22,7 +22,9 @@ export interface ProgramRow {
 }
 export interface PortRow { port: number; bearer: string; packets: number; bytes: number; lastMs: number; firstMs: number; seqGaps: number; kind: string; name: string }
 export interface ObjectRow { port: number; id: number; name: string; size: number; mime: string; kind: LotKind; ms: number; program: number }
-export interface FrameStat { ms: number; pci: number; pciErrors: number; ber: number; snrLoDb: number; snrHiDb: number }
+/** One L1 frame: PCI, raw bit error rate before the FEC, sideband SNR, and the HDLC frames (PSD and data) that passed
+ *  and failed their FCS in it. */
+export interface FrameStat { ms: number; pci: number; pciErrors: number; ber: number; snrLoDb: number; snrHiDb: number; fcsGood: number; fcsBad: number }
 
 export interface StationSnap {
   frames: number; framesGood: number; lastFrameMs: number; firstFrameMs: number; pci: number; pciName: string;
@@ -30,6 +32,8 @@ export interface StationSnap {
   sis: SisSummary; programs: ProgramRow[]; sig: SigService[]; sigVerified: boolean; ports: PortRow[]; objects: ObjectRow[];
   pending: { port: number; id: number; name: string; have: number; need: number }[];
   ccc: { mpl: number; subs: { length: number; parity: number; interleave: number }[] } | null; bbm: number; hdlcGood: number; hdlcBad: number;
+  /** The MPS blend control (1017s Table 5-4), voted over the last frames; -1 before any. */
+  blend: number;
 }
 
 export class HdStation {
@@ -79,14 +83,17 @@ export class HdStation {
     const now = Date.now();
     this.frames++; this.lastFrameMs = now; if (!this.firstFrameMs) this.firstFrameMs = now;
     if (pdu.pciErrors <= 2) this.framesGood++;
-    this.history.push({ ms: now, pci: pdu.pci, pciErrors: pdu.pciErrors, ber: q.ber, snrLoDb: q.snrLoDb, snrHiDb: q.snrHiDb });
+    const stat: FrameStat = { ms: now, pci: pdu.pci, pciErrors: pdu.pciErrors, ber: q.ber, snrLoDb: q.snrLoDb, snrHiDb: q.snrHiDb, fcsGood: 0, fcsBad: 0 };
+    this.history.push(stat);
     if (this.history.length > 120) this.history.shift();
     this.lastPci = pdu.pci;
     const adv: number[] = [];
     for (const b of sis) { const p: SisPdu = parseSis(b); this.sisVoter.add(p); adv.push(p.advAlfn); }
-    if (adv.length === 16) this.sisVoter.setAlfn(alfnFromPairs(adv));
+    if (adv.length === 16) this.sisVoter.setAlfn(alfnFromPairs(adv), now);
     if (pdu.pciErrors > 4) return;
+    const [g0, b0] = this.fcsCounts();
     this.l2(pdu, now);
+    const [g1, b1] = this.fcsCounts(); stat.fcsGood = g1 - g0; stat.fcsBad = b1 - b0;
     const cs = this.sisVoter.summary().callsign;
     if (cs && cs !== this.callLogged && this.sisVoter.summary().nameVotes[0] >= 3) { this.callLogged = cs; this.onEvent(`station · ${cs}`); }
   }
@@ -106,6 +113,7 @@ export class HdStation {
         this.onEvent(`program · HD${d.program + 1} · codec mode ${d.codecMode}`);
       }
       p.lastMs = now; p.codecMode = d.codecMode;
+      if (d.program === 0) { this.blends.push(d.blend); if (this.blends.length > 8) this.blends.shift(); }
       if (d.progType !== null) { p.type = d.progType; p.typeName = programTypeName(d.progType); }
       const kb = (d.end - d.off + 1) * 8 / FRAME_S / 1000; p.kbps = p.kbps ? p.kbps * 0.8 + kb * 0.2 : kb;
       let s = this.psd.get(d.program); if (!s) { s = new HdlcStream(false); this.psd.set(d.program, s); }
@@ -182,7 +190,20 @@ export class HdStation {
       sis, programs: programs.map(p => ({ ...p, songs: p.songs.slice(0, 20) })), sig: this.sig, sigVerified: false, ports, objects: this.objects.slice(0, 120), pending: this.lot.pending().slice(0, 40),
       ccc: this.fixed.ccc ? { mpl: this.fixed.ccc.mpl, subs: this.fixed.ccc.subs } : null,
       bbm: subs.reduce((a, s) => a + s.bbm, 0) + this.opp.bbm, hdlcGood: subs.reduce((a, s) => a + s.good, 0) + this.opp.good, hdlcBad: subs.reduce((a, s) => a + s.bad, 0) + this.opp.bad,
+      blend: this.blend(),
     };
+  }
+
+  private readonly blends: number[] = [];
+  /** HDLC frames so far that passed and failed their FCS, every stream. */
+  private fcsCounts(): [number, number] {
+    let g = 0, b = 0;
+    for (const s of [...this.subs, this.opp, ...this.psd.values()]) if (s) { g += s.good; b += s.bad; }
+    return [g, b];
+  }
+  private blend(): number {
+    const c = [0, 0, 0, 0]; for (const b of this.blends) c[b & 3]++;
+    return this.blends.length ? c.indexOf(Math.max(...c)) : -1;
   }
 
   /** A missed frame breaks the byte streams: drop the partial frames. */

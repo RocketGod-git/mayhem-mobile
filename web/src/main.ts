@@ -34,7 +34,7 @@ import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
 import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
-import { programTypeName, dataTypeName } from './dsp/hd/sis.js';
+import { programTypeName, dataTypeName, locationValid, clockCheck, localTimeHint, utcOffsetText, BLEND_NAMES, type SisSummary } from './dsp/hd/sis.js';
 import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from './sondehub.js';
 import { productsOf, radarBlocks, textOf, parseMetar, stationOf, hazardBlocks, icingOf, overlayOf, suaOf, type Metar, type RadarBlock, type HazardBlock, type Overlay } from './dsp/uat/fisb.js';
 import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
@@ -4918,7 +4918,7 @@ function hdRecord(m: HdSnapMsg): void {
   if (sis.longName) r.longName = sis.longName;
   if (sis.message) r.message = sis.message;
   if (sis.facility >= 0) { r.facility = sis.facility; r.country = sis.country; }
-  if (sis.lat !== null && sis.lon !== null && Math.abs(sis.lat) <= 90 && Math.abs(sis.lon) <= 180) { r.lat = sis.lat; r.lon = sis.lon; r.altM = sis.altM; }
+  if (locationValid(sis.lat, sis.lon)) { r.lat = sis.lat; r.lon = sis.lon; r.altM = sis.altM; }
   for (const p of st.programs) {
     let rp = r.programs.find(x => x.n === p.n);
     if (!rp) { rp = { n: p.n, type: p.type, typeName: p.typeName, title: '', artist: '' }; r.programs.push(rp); r.programs.sort((a, b) => a.n - b.n); }
@@ -5053,8 +5053,52 @@ function hdHead(m: HdSnapMsg | null, now: number): string {
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const progs = st ? st.programs.filter(p => p.lastMs).length : rec?.programs.length ?? 0;
   return `<div class="hd-watch"><b>${hdMhz(state.freq)} MHz</b>${call ? `<strong>${esc(call)}</strong>` : ''}<small>${esc(sis?.slogan || rec?.slogan || (st?.frames ? '' : 'no digital data yet'))}</small><em class="${tone}">${lock}</em></div>`
+    + (sis?.message ? `<div class="hd-ticker${sis.messagePriority ? ' prio' : ''}">${sis.messagePriority ? '<em>PRIORITY</em>' : ''}<span><i>${esc(sis.message)}</i></span></div>` : '')
     + (scan ? `<div class="hd-scan">${scan}</div>` : '')
     + `<div class="hd-count">${tile(progs, 'PROGRAMS')}${tile(hdUi.stations.size, 'STATIONS')}${tile(hdObjects().length, 'OBJECTS')}${tile(st?.frames ?? 0, 'FRAMES')}${tile(st && st.frames ? (st.ber * 100).toFixed(2) + '%' : '-', 'RAW BER')}</div>`;
+}
+/** The station's transmitter as sent: a place on the map, or why it is not one. */
+function hdLocText(s: SisSummary): string {
+  if (s.lat === null || s.lon === null) return '-';
+  const at = `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.altM !== null ? ` · ${s.altM} m` : ''}`;
+  if (!locationValid(s.lat, s.lon)) return `${at} · not a valid location as sent, not placed on the map`;
+  const h = state.home, d = h ? distanceBearing(h.lat, h.lon, s.lat, s.lon) : null;
+  return `${at}${d ? ` · ${d.km < 10 ? d.km.toFixed(1) : d.km.toFixed(0)} km at ${d.deg.toFixed(0)}°` : ''}`;
+}
+/** The station clock, checked against this device's: never used when it disagrees. */
+function hdClockText(s: SisSummary): string {
+  if (!s.alfnMs) return '-';
+  const c = clockCheck(s.alfnMs, s.alfnLocalMs, s.timeLocked), t = `${new Date(s.alfnMs).toISOString().replace('T', ' ').slice(0, 19)} UTC`;
+  if (c.trusted) return `${t} · agrees with this device (${(c.offsetMs / 1000).toFixed(1)} s) · locked to GPS`;
+  const off = Math.abs(c.offsetMs), d = off < 120_000 ? `${(off / 1000).toFixed(0)} s` : off < 7_200_000 ? `${(off / 60_000).toFixed(0)} min` : off < 172_800_000 ? `${(off / 3_600_000).toFixed(1)} h` : `${(off / 86_400_000).toFixed(0)} days`;
+  return `${t} · ${s.alfnLocalMs ? `${d} ${c.offsetMs < 0 ? 'behind' : 'ahead of'} this device` : 'not checked'}${s.timeLocked ? '' : ' · not locked to GPS'} · not used`;
+}
+/** SIS parameter 3 as a hint, marked unreliable when it disagrees with this device or does not hold steady. */
+function hdTzText(s: SisSummary): string {
+  const v = s.params[3]; if (v === undefined) return '-';
+  const h = localTimeHint(v), [n, total] = s.paramVotes[3] ?? [0, 0], now = new Date(), mine = -now.getTimezoneOffset();
+  // the standard time offset too, as a station may send it whether or not DST is in effect
+  const std = -Math.max(new Date(now.getFullYear(), 0, 1).getTimezoneOffset(), new Date(now.getFullYear(), 6, 1).getTimezoneOffset());
+  const steady = total > 0 && n * 2 > total;
+  const agrees = steady && (h.offsetMin === mine || h.offsetMin === std);
+  return `${utcOffsetText(h.offsetMin)}${h.dstLocal ? ' · DST practiced' : ''}${h.dstNow ? ' · DST in effect' : ''} · ${agrees ? 'agrees with this device' : `unreliable (${steady ? `this device is ${utcOffsetText(mine)}` : 'it changes from frame to frame'})`}`;
+}
+/** The data services SIS lists (MSG 6 data descriptors), by type, with how many of each. */
+function hdDataSvcText(s: SisSummary): string {
+  const c = new Map<number, number>(); for (const d of s.data) c.set(d.type, (c.get(d.type) ?? 0) + 1);
+  return [...c].map(([t, n]) => `${dataTypeName(t)} (${t})${n > 1 ? ` ×${n}` : ''}`).join(' · ') || '-';
+}
+/** Emergency alerts: a single EA PDU is most likely a bit error the missing CRC let through, so only a repeat counts. */
+function hdAlertText(s: SisSummary): string {
+  if (!s.alerts) return 'none';
+  return s.alertsRepeated ? `${s.alertsRepeated} repeated, content not decoded` : `none confirmed · ${s.alerts} single EA PDU${s.alerts === 1 ? '' : 's'}, unverified (likely bit errors)`;
+}
+/** The last frames, each as its raw BER and the FCS results of the packets it carried. */
+function hdFrames(st: StationSnap): string {
+  const h = st.history.slice(-30); if (!h.length) return '';
+  const last = h[h.length - 1];
+  return `<div class="hd-frames" title="one bar per L1 frame: its height the raw bit error rate before FEC, red where a packet failed its FCS">${h.map(f => `<i class="${f.fcsBad ? 'bad' : f.ber >= 0.05 ? 'weak' : ''}" style="height:${Math.max(8, Math.min(100, f.ber * 1000)).toFixed(0)}%"></i>`).join('')}</div>`
+    + `<div class="hd-kv"><span>LAST FRAME <b>BER ${(last.ber * 100).toFixed(2)}% · FCS ${last.fcsGood} good${last.fcsBad ? ` · ${last.fcsBad} failed` : ''}</b></span><span>FRAMES <b>${st.framesGood} of ${st.frames} with a clean PCI</b></span></div>`;
 }
 function hdSideband(label: string, snr: number | null, det: number | null, ref: number | null): string {
   const v = snr === null || snr < -50 ? 0 : Math.max(0, Math.min(1, snr / 25));
@@ -5074,12 +5118,14 @@ function hdHero(m: HdSnapMsg | null, now: number): string {
   const tabs = progs.length ? `<div class="hd-progs">${progs.map(p => `<button data-hdprog="${p.n}" class="hd-prog ${p.n === sel?.n ? 'on' : ''} ${p.lastMs && now - p.lastMs < 10_000 ? 'live' : ''}"><b>HD${p.n + 1}</b><small>${esc(p.typeName || 'program')}</small><i>${esc(p.title ? `${p.title}${p.artist ? ` · ${p.artist}` : ''}` : p.lastMs ? 'on air' : 'listed in SIS')}</i></button>`).join('')}</div>` : '';
   const det = hdMine(m) ? m.det : null;
   const sig = `<div class="hd-sig">${hdSideband('LOWER', st && st.frames ? st.snrLoDb : null, det?.sbLoDb ?? null, det?.refDb ?? null)}${hdSideband('UPPER', st && st.frames ? st.snrHiDb : null, det?.sbHiDb ?? null, det?.refDb ?? null)}`
-    + `<div class="hd-kv"><span>LOCK <b>${hdLock(m, now)[0]}</b></span>${st?.frames ? `<span>RAW BER <b>${(st.ber * 100).toFixed(2)}%</b></span><span>PCI <b>${esc(st.pciName)}</b></span>` : ''}${hdMine(m) ? `<span>CARRIER <b>${m.rx.cfoHz >= 0 ? '+' : ''}${m.rx.cfoHz.toFixed(0)} Hz</b></span>` : ''}<span>AUDIO <b>ANALOG FM</b></span></div></div>`;
+    + `<div class="hd-kv"><span>LOCK <b>${hdLock(m, now)[0]}</b></span>${st?.frames ? `<span>RAW BER <b>${(st.ber * 100).toFixed(2)}%</b></span><span>PCI <b>${esc(st.pciName)}</b></span>` : ''}${hdMine(m) ? `<span>CARRIER <b>${m.rx.cfoHz >= 0 ? '+' : ''}${m.rx.cfoHz.toFixed(0)} Hz</b></span>` : ''}${st && st.blend >= 0 ? `<span>BLEND <b>${BLEND_NAMES[st.blend].toUpperCase()}</b></span>` : ''}<span>AUDIO <b>ANALOG FM</b></span></div>${st?.frames ? hdFrames(st) : ''}</div>`;
+  const s = st?.frames ? st.sis : null;
+  const info = s ? `<div class="hd-info"><small>STATION</small><div class="hd-kv">${s.facility >= 0 ? `<span>FACILITY <b>${esc(s.country)} ${s.facility}</b></span>` : ''}${s.lat !== null ? `<span>TRANSMITTER <b>${esc(hdLocText(s))}</b></span>` : ''}${s.data.length ? `<span>DATA SERVICES <b>${esc(hdDataSvcText(s))}</b></span>` : ''}${s.alfnMs ? `<span>CLOCK <b>${esc(hdClockText(s))}</b></span>` : ''}</div></div>` : '';
   const songs = sel && sel.songs.length > 1 ? `<div class="hd-hist"><small>EARLIER ON HD${sel.n + 1}</small>${sel.songs.slice(1, 8).map(s => `<div><b>${hdClock(s.ms)}</b><span>${esc(s.title)}${s.artist ? ` · ${esc(s.artist)}` : ''}</span></div>`).join('')}</div>` : '';
   return `<div class="hd-np"><div class="hd-art">${artHtml}</div><div class="hd-meta">`
     + `<div class="hd-station">${logo ? `<img src="${logo}" alt="logo">` : ''}<b>${esc(call)}</b><span>${hdMhz(state.freq)} MHz${sel ? ` · HD${sel.n + 1}` : ''}${sel?.typeName ? ` · ${esc(sel.typeName)}` : recProg?.typeName ? ` · ${esc(recProg.typeName)}` : ''}</span></div>`
-    + `<div class="hd-title">${esc(title || waiting)}</div>${artist ? `<div class="hd-artist">${esc(artist)}</div>` : ''}${sel?.album || sel?.genre ? `<div class="hd-album">${esc([sel.album, sel.genre].filter(Boolean).join(' · '))}</div>` : ''}`
-    + `${st?.sis.message ? `<div class="hd-msg">${esc(st.sis.message)}</div>` : ''}</div></div>${tabs}${sig}${songs}`;
+    + `<div class="hd-title">${esc(title || waiting)}</div>${artist ? `<div class="hd-artist">${esc(artist)}</div>` : ''}${sel?.album ? `<div class="hd-album">${esc(sel.album)}</div>` : ''}`
+    + `</div></div>${tabs}${sig}${info}${songs}`;
 }
 function hdStationsHtml(now: number): string {
   const list = [...hdUi.stations.values()].sort((a, b) => a.hz - b.hz);
@@ -5102,9 +5148,10 @@ function hdDataHtml(m: HdSnapMsg | null, now: number): string {
   const pendHtml = pend.length ? `<div class="hd-sec"><small>COMING IN</small>${pend.map(p => `<div class="hd-pend"><b>${esc(p.name || `object ${hdHex(p.id)}`)}</b><span class="hd-bar"><i style="width:${(100 * p.have / p.need).toFixed(0)}%"></i></span><small>${p.have}/${p.need} · port ${hdHex(p.port)}</small></div>`).join('')}</div>` : '';
   const ports = st?.ports.length ? `<div class="hd-sec"><small>PORTS</small><table class="hd-tab"><tr><th>PORT</th><th>WHAT</th><th>PACKETS</th><th>BYTES</th><th>LAST</th></tr>${st.ports.map(p => `<tr><td>${hdHex(p.port)}</td><td>${esc([p.kind, p.name].filter(Boolean).join(' · ') || p.bearer)}</td><td>${p.packets}</td><td>${hdSize(p.bytes)}</td><td>${hdAgo(now - p.lastMs)}</td></tr>`).join('')}</table></div>` : '';
   const sig = st?.sig.length ? `<div class="hd-sec"><small>SERVICE DIRECTORY (format derived from recordings)</small>${st.sig.map(s => `<div class="hd-svc"><b>${esc(s.name || (s.kind === 'audio' ? `HD${s.program + 1}` : 'data'))}</b><span>${s.kind === 'audio' ? `HD${s.program + 1} · ${esc(programTypeName(s.progType))}` : 'data service'}</span><small>${s.components.map(c => `port ${hdHex(c.port)} · MIME ${c.mimeHex}`).join(' · ')}</small></div>`).join('')}</div>` : '';
-  const sis = st && st.frames ? (() => { const s = st.sis; const f: [string, string][] = [['CALL SIGN', s.callsign ? `${s.callsign} (${s.nameVotes[0]} of ${s.nameVotes[1]} votes)` : '-'], ['LONG NAME', s.longName || '-'], ['UNIVERSAL NAME', s.universal || '-'], ['SLOGAN', s.slogan || '-'], ['MESSAGE', s.message || '-'], ['FACILITY', s.facility >= 0 ? `${s.country} ${s.facility}` : '-'],
-    ['TRANSMITTER', s.lat !== null && s.lon !== null ? `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.altM !== null ? ` · ${s.altM} m` : ''}` : '-'], ['STATION CLOCK', s.alfnMs ? `${new Date(s.alfnMs).toISOString().replace('T', ' ').slice(0, 19)} UTC${s.timeLocked ? ' · locked to GPS' : ''}` : '-'],
-    ['AUDIO SERVICES', s.audio.map(a => `HD${a.program + 1} ${programTypeName(a.type)}`).join(' · ') || '-'], ['DATA SERVICES', s.data.map(d => `${dataTypeName(d.type)} (MIME ${d.mime12})`).join(' · ') || '-'],
+  const sis = st && st.frames ? (() => { const s = st.sis; const f: [string, string][] = [['CALL SIGN', s.callsign ? `${s.callsign} (${s.nameVotes[0]} of ${s.nameVotes[1]} votes)` : '-'], ['LONG NAME', s.longName || '-'], ['UNIVERSAL NAME', s.universal || '-'], ['SLOGAN', s.slogan || '-'], ['MESSAGE', s.message ? `${s.message}${s.messagePriority ? ' (priority)' : ''}` : '-'], ['FACILITY', s.facility >= 0 ? `${s.country} ${s.facility}` : '-'],
+    ['TRANSMITTER', hdLocText(s)], ['STATION CLOCK', hdClockText(s)], ['TIME ZONE HINT', hdTzText(s)],
+    ['LEAP SECONDS', s.params[0] !== undefined ? `${(s.params[0] << 24) >> 24} s as sent (the clock uses 18 s)` : '-'], ['EMERGENCY ALERTS', hdAlertText(s)],
+    ['AUDIO SERVICES', s.audio.map(a => `HD${a.program + 1} ${programTypeName(a.type)}`).join(' · ') || '-'], ['DATA SERVICES', s.data.map(d => `${dataTypeName(d.type)} (${d.type}, MIME ${d.mime12})`).join(' · ') || '-'],
     ['FIXED BEARER', st.ccc ? st.ccc.subs.map(x => `${x.length} B/frame`).join(' + ') : '-'], ['PACKETS', `${st.hdlcGood} good · ${st.hdlcBad} failed FCS`], ['SIS PDUS', `${s.pdus} (${s.llds} other)`]];
     return `<div class="hd-sec"><small>STATION INFORMATION (SIS, voted)</small><div class="mt-fields">${f.map(([k, v]) => `<div><b>${k}</b><span>${esc(v)}</span></div>`).join('')}</div></div>`; })() : '';
   return (rows ? `<div class="hd-objs">${rows}</div>` : `<div class="empty">no files yet · logos and album art take a minute or two to come in whole</div>`) + pendHtml + sis + sig + ports;
@@ -5144,7 +5191,7 @@ function hdMapLayers(): void {
     leg.hidden = !imgs.length;
     if (imgs.length) leg.innerHTML = `${tiles.size ? `<div><b>TRAFFIC</b><small>${tiles.size} tiles${traffic ? ` · ${esc(traffic.copyright)}` : ''}</small></div>` : ''}${radarLegend ? `<div><b>RADAR ${esc(radarStamp.replace('_', ' '))} UTC</b>${radarLegend.legends.map(l => `<span><small>${esc(l.name.toUpperCase())}</small>${l.colors.map(([, c]) => `<i style="background:rgb(${c[0]},${c[1]},${c[2]})"></i>`).join('')}</span>`).join('')}<small>${esc(radarLegend.copyright)}</small></div>` : ''}`;
   }
-  if (!pins.length && !imgs.length) geo.setEmpty('No map data yet', 'Transmitters show here from each station\'s SIS; traffic tiles and weather radar where a station sends them');
+  if (!pins.length && !imgs.length) geo.setEmpty('No map data yet', 'Transmitters show here from each station\'s SIS. Where a station sends traffic and weather radar, both come in about 1 to 1.5 minutes after tuning');
   else geo.setEmpty('');
 }
 function refreshHd(force = false): void {

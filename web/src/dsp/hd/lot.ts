@@ -4,7 +4,8 @@
  *
  * Object packets: [0] the header length (where the file data starts in this packet), [1] a repeat count, [2..3]
  * object id, [4..7] fragment index (little endian), then the file data in 256-byte fragments. Fragment 0's header goes
- * on with 16 bytes of metadata ([16..19] the file size, little endian) and the file name in ASCII.
+ * on with 16 bytes of metadata ([8..11] always 01 00 00 00, [16..19] the file size, little endian) and the file name
+ * in ASCII; fragment 0 is the one with index 0 and that word.
  *
  * Service directory (a TLV list, each length counting its own length byte): 0x40 an audio service and 0x41 a data
  * service (each followed by three header bytes), 0x69 a name (an encoding byte, then text), 0x66 audio service info
@@ -34,7 +35,8 @@ export class LotAssembler {
     const hl = p[0];
     if (hl < 8 || hl > p.length) return;
     if (idx === 0) {
-      if (hl < 24) return;
+      // fragment 0 carries the metadata word 01 00 00 00 at bytes 8..11
+      if (hl < 24 || p[8] !== 1 || p[9] !== 0 || p[10] !== 0 || p[11] !== 0) return;
       const size = (p[16] | (p[17] << 8) | (p[18] << 16) | (p[19] << 24)) >>> 0;
       if (size === 0 || size > 4_000_000) return;
       let name = ''; for (const c of p.subarray(24, hl)) name += String.fromCharCode(c);

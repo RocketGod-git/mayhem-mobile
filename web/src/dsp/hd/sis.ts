@@ -91,8 +91,12 @@ export const PROGRAM_TYPES: Record<number, string> = {
   25: 'Spanish Music', 26: 'Hip-Hop', 29: 'Weather', 30: 'Emergency Test', 31: 'Emergency',
 };
 export const programTypeName = (t: number | null | undefined) => t === null || t === undefined || t < 0 ? '' : PROGRAM_TYPES[t] ?? `Type ${t}`;
-/** Data service types named in 1020s and seen on the air. */
-export const DATA_TYPES: Record<number, string> = { 66: 'Image maps', 259: 'Navigation' };
+/** Service data types (1020s Table 4-13). */
+export const DATA_TYPES: Record<number, string> = {
+  0: 'Non-specific', 1: 'News', 3: 'Sports', 29: 'Weather', 31: 'Emergency', 65: 'Traffic', 66: 'Image maps', 80: 'Text', 256: 'Advertising', 257: 'Financial',
+  258: 'Stock ticker', 259: 'Navigation', 260: 'Program guide', 261: 'Audio', 262: 'Private data network', 263: 'Service maintenance', 264: 'HD Radio system services',
+  265: 'Audio-related objects', 511: 'Special tests',
+};
 export const dataTypeName = (t: number) => DATA_TYPES[t] ?? `Data type ${t}`;
 
 class Votes<T> {
@@ -104,6 +108,8 @@ class Votes<T> {
     return b ? { ...b, total } : null;
   }
   get size(): number { return this.m.size; }
+  /** How many distinct values came at least `n` times. */
+  atLeast(n: number): number { let c = 0; for (const e of this.m.values()) if (e.n >= n) c++; return c; }
 }
 
 export interface SisSummary {
@@ -115,7 +121,39 @@ export interface SisSummary {
   timeLocked: boolean; alfn: number; alfnMs: number; pdus: number; llds: number; alerts: number;
   /** Votes behind the call sign, out of all short-name messages. */
   nameVotes: [number, number];
+  /** The station message has the priority bit set (1020s 4.5: it goes to the top of the queue). */
+  messagePriority: boolean;
+  /** Votes behind each SIS parameter's value, out of all sent for that index. */
+  paramVotes: Record<number, [number, number]>;
+  /** This device's clock when the last ALFN came in (0: none yet). */
+  alfnLocalMs: number;
+  /** EA PDUs whose content came again (a repeat is the only check without the CRC). */
+  alertsRepeated: number;
 }
+
+/** Whether a station location is on the globe (1020s 4.4); some stations send one that is not. */
+export function locationValid(lat: number | null, lon: number | null): boolean {
+  return lat !== null && lon !== null && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0);
+}
+
+/** The station clock against this device's (1020s 5.4.1): trusted only when locked to GPS and within `tolMs`. */
+export function clockCheck(alfnMs: number, localMs: number, timeLocked: boolean, tolMs = 10_000): { offsetMs: number; trusted: boolean } {
+  const offsetMs = alfnMs && localMs ? alfnMs - localMs : 0;
+  return { offsetMs, trusted: !!alfnMs && !!localMs && timeLocked && Math.abs(offsetMs) <= tolMs };
+}
+
+/** SIS parameter 3, local time (1020s 4.7.1, bit 0 the most significant): UTC offset in minutes, DST schedule, DST
+ *  practiced locally, DST in effect regionally. */
+export function localTimeHint(v: number): { offsetMin: number; schedule: number; dstLocal: boolean; dstNow: boolean } {
+  const o = (v >> 5) & 0x7FF;
+  return { offsetMin: o >= 1024 ? o - 2048 : o, schedule: (v >> 2) & 7, dstLocal: ((v >> 1) & 1) === 1, dstNow: (v & 1) === 1 };
+}
+/** A UTC offset as UTC-8:00. */
+export const utcOffsetText = (min: number) => `UTC${min < 0 ? '-' : '+'}${Math.floor(Math.abs(min) / 60)}:${String(Math.abs(min) % 60).padStart(2, '0')}`;
+
+/** Blend control of the MPS (1017s Table 5-4). */
+export const BLEND_NAMES = ['disabled (all digital)', 'select (analog forced)', 'enabled (blends on signal)', 'reserved'];
+
 
 const text = (b: number[], enc: number | undefined) => {
   const t = enc === 4 ? (() => { let s = ''; for (let i = 0; i + 1 < b.length; i += 2) s += String.fromCharCode(b[i] | (b[i + 1] << 8)); return s; })() : String.fromCharCode(...b);
@@ -130,7 +168,8 @@ export class SisVoter {
   private readonly long = new Map<number, Votes<string>>(); private longLast = new Votes<number>();
   private readonly slogan = new Map<number, Votes<number[]>>(); private sloganLen = new Votes<[number, number]>();
   private readonly usn = new Map<number, Votes<number[]>>(); private usnEnc = new Votes<number>();
-  private readonly smsg = new Map<string, Votes<number[]>>(); private readonly smsgHead = new Map<number, Votes<[number, number]>>();
+  private readonly smsg = new Map<string, Votes<number[]>>(); private readonly smsgHead = new Map<number, Votes<[number, number, number]>>();
+  private readonly alertBits = new Votes<string>(); private alfnLocal = 0;
   private readonly svcAudio = new Map<number, Votes<[number, number]>>(); private readonly svcData = new Map<string, { type: number; mime12: number; access: number; n: number }>();
   private readonly params = new Map<number, Votes<number>>();
   private locked = new Votes<number>();
@@ -144,7 +183,7 @@ export class SisVoter {
   }
   /** One frame's ALFN as sent; without a usable CRC single PDU errors show, so the clock is the voted offset
    *  between the frames counted here and the ALFN sent. */
-  setAlfn(a: number): void { this.alfnFrames++; this.alfnOff.add(String(a - this.alfnFrames), a - this.alfnFrames); const b = this.alfnOff.best()!; this.alfn = b.v + this.alfnFrames; }
+  setAlfn(a: number, localMs = 0): void { this.alfnLocal = localMs; this.alfnFrames++; this.alfnOff.add(String(a - this.alfnFrames), a - this.alfnFrames); const b = this.alfnOff.best()!; this.alfn = b.v + this.alfnFrames; }
   /** A missed frame: the next ALFN is one further on. */
   skipFrame(): void { this.alfnFrames++; }
 
@@ -157,7 +196,7 @@ export class SisVoter {
       case 'loc': (m.high ? this.locHi : this.locLo).add(`${m.deg}/${m.alt}`, [m.deg, m.alt]); break;
       case 'smsg':
         map(this.smsg, `${m.seq}/${m.frame}`).add(m.bytes.join(','), m.bytes);
-        if (m.frame === 0) map(this.smsgHead, m.seq).add(`${m.length}/${m.encoding}`, [m.length ?? 0, m.encoding ?? 0]);
+        if (m.frame === 0) map(this.smsgHead, m.seq).add(`${m.length}/${m.encoding}/${m.priority}`, [m.length ?? 0, m.encoding ?? 0, m.priority ?? 0]);
         break;
       case 'svc':
         if (m.audio) map(this.svcAudio, m.program).add(`${m.progType}/${m.access}`, [m.progType, m.access]);
@@ -166,7 +205,7 @@ export class SisVoter {
       case 'param': map(this.params, m.index).add(String(m.value), m.value); break;
       case 'usn': map(this.usn, m.frame).add(m.bytes.join(','), m.bytes); if (m.frame === 0 && m.encoding !== undefined) this.usnEnc.add(String(m.encoding), m.encoding); break;
       case 'slogan': map(this.slogan, m.frame).add(m.bytes.join(','), m.bytes); if (m.frame === 0) this.sloganLen.add(`${m.length}/${m.encoding}`, [m.length ?? 0, m.encoding ?? 0]); break;
-      case 'alert': this.alerts++; break;
+      case 'alert': this.alerts++; this.alertBits.add(m.bits, m.bits); break;
     }
   }
 
@@ -178,17 +217,20 @@ export class SisVoter {
     let slogan = '';
     if (this.slogan.size) { const [len, enc] = this.sloganLen.best()?.v ?? [0, 0]; const b = join(this.slogan); slogan = text(len ? b.slice(0, enc === 4 ? 2 * len : len) : b, enc); }
     const universal = this.usn.size ? text(join(this.usn), this.usnEnc.best()?.v) : '';
-    let message = '';
+    let message = '', messagePriority = false;
     const seqs = [...this.smsgHead.keys()];
     if (seqs.length) {
       const seq = seqs.sort((a, b) => (this.smsgHead.get(b)!.best()!.total) - (this.smsgHead.get(a)!.best()!.total))[0];
-      const [len, enc] = this.smsgHead.get(seq)!.best()!.v;
+      const [len, enc, prio] = this.smsgHead.get(seq)!.best()!.v;
+      messagePriority = prio === 1;
       const b: number[] = [];
       for (let f = 0; f < 32; f++) { const v = this.smsg.get(`${seq}/${f}`)?.best()?.v; if (!v) { if (b.length >= len) break; continue; } b.push(...v); }
       message = text(b.slice(0, len), enc);
     }
     const params: Record<number, number> = {};
-    for (const [k, v] of this.params) params[k] = v.best()!.v;
+    const paramVotes: Record<number, [number, number]> = {};
+    for (const [k, v] of this.params) { const b = v.best()!; params[k] = b.v; paramVotes[k] = [b.n, b.total]; }
+    const alertsRepeated = this.alertBits.atLeast(2);
     return {
       callsign: sn?.v ?? '', country: id?.[0] ?? '', facility: id?.[1] ?? -1, longName: longName.replace(/\0+$/, '').trim(), slogan: slogan.trim(), message: message.trim(), universal: universal.trim(),
       lat: hi ? hi[0] : null, lon: lo ? lo[0] : null, altM: hi && lo ? ((hi[1] << 4) | lo[1]) * 16 : null,
@@ -196,6 +238,7 @@ export class SisVoter {
       data: [...this.svcData.values()].filter(d => d.n >= 3).map(d => ({ type: d.type, mime12: d.mime12, access: d.access })),
       params, timeLocked: this.locked.best()?.v === 1, alfn: this.alfn, alfnMs: this.alfn >= 0 ? alfnToMs(this.alfn) : 0,
       pdus: this.pdus, llds: this.llds, alerts: this.alerts, nameVotes: sn ? [sn.n, sn.total] : [0, 0],
+      messagePriority, paramVotes, alfnLocalMs: this.alfnLocal, alertsRepeated,
     };
   }
 }
