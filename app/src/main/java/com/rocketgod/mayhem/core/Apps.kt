@@ -41,6 +41,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     TRAINS("Trains", "EOT · PTC telemetry", "Receive"),
     FLEET("Fleet", "P25 · DMR trunking", "Receive"),
     CELL("Cell", "LTE alerts · cell info", "Receive"),
+    ATSC("ATSC TV", "digital TV channels, guide, pictures", "Receive"),
     SONDES("Sondes", "weather balloons", "Receive"),
     PROWL("Prowl", "hunts live voice", "Receive"),
     SPECTRUM("Spectrum", "analyzer, zero span", "Analyze"),
@@ -378,6 +379,7 @@ object Apps {
         Bookmarks.load(ctx)
         com.rocketgod.mayhem.core.spectrum.Spectrum.load(ctx)
         com.rocketgod.mayhem.core.hd.HdApp.init(ctx)
+        com.rocketgod.mayhem.core.atsc.AtscApp.init(ctx)
     }
 
     /** LoRa's wide span center: the one the user picked (kept until they pick LOCAL again), else the local one. */
@@ -544,6 +546,7 @@ object Apps {
             MayhemApp.TRAINS -> startTrains()
             MayhemApp.FLEET -> startFleet()
             MayhemApp.CELL -> startCell()
+            MayhemApp.ATSC -> com.rocketgod.mayhem.core.atsc.AtscApp.start()
             MayhemApp.SONDES -> startSondes()
             MayhemApp.PROWL -> Prowl.open()
             MayhemApp.LOOKING_GLASS -> startSweep(88_000_000L, 108_000_000L)

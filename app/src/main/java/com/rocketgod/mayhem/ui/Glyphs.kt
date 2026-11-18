@@ -152,6 +152,16 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 circles.add(Triple(0.3f, 0.76f, 0.1f)); circles.add(Triple(0.46f, 0.7f, 0.15f)); circles.add(Triple(0.66f, 0.74f, 0.12f))
                 path.m(0.2f, 0.86f); path.l(0.8f, 0.86f)
             }
+            MayhemApp.ATSC -> {
+                // a TV set on its feet, rabbit ears up, a picture on the screen and two knobs
+                val a = p(0.08f, 0.34f); val b = p(0.92f, 0.84f)
+                path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.04f, s * 0.04f))
+                path.m(0.18f, 0.42f); path.l(0.7f, 0.42f); path.l(0.7f, 0.76f); path.l(0.18f, 0.76f); path.l(0.18f, 0.42f)
+                path.m(0.5f, 0.34f); path.l(0.34f, 0.1f); path.m(0.5f, 0.34f); path.l(0.68f, 0.12f)
+                path.m(0.3f, 0.84f); path.l(0.24f, 0.94f); path.m(0.7f, 0.84f); path.l(0.76f, 0.94f)
+                path.m(0.22f, 0.7f); path.l(0.36f, 0.54f); path.l(0.46f, 0.64f); path.l(0.56f, 0.5f); path.l(0.66f, 0.62f)
+                circles.add(Triple(0.81f, 0.48f, 0.04f)); circles.add(Triple(0.81f, 0.62f, 0.04f))
+            }
             MayhemApp.SONDES -> {
                 // a balloon on its line, the sonde hanging under it
                 circles.add(Triple(0.5f, 0.3f, 0.22f))
