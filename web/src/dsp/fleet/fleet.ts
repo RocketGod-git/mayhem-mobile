@@ -132,11 +132,13 @@ class Chan {
     };
     this.openedMs = now; this.quietSince = now;
   }
-  retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.hz - center; }
+  retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.tetraHz - center; }
+  /** Where the TETRA receiver is centered: the middle of the whole 25 kHz signal, not of the piece the finder saw. */
+  private tetraHz = 0;
   /** Starts the TETRA receiver: 72 kS/s off its own down-converter, or the baseband itself when it is fast enough. */
-  tetraOn(): TetraRx | null {
+  tetraOn(hz = this.hz): TetraRx | null {
     if (this.tetra) return this.tetra.rx;
-    if (this.rate > 0) { const d = new Ddc(12_500, 72_000, 63); d.reset(this.rate); d.offsetHz = this.hz - this.center; this.tetra = { rx: new TetraRx(d.outRate), ddc: d, oi: new Float32Array(0), oq: new Float32Array(0) }; }
+    if (this.rate > 0) { const d = new Ddc(13_500, 72_000, 63); d.reset(this.rate); d.offsetHz = hz - this.center; this.tetraHz = hz; this.tetra = { rx: new TetraRx(d.outRate), ddc: d, oi: new Float32Array(0), oq: new Float32Array(0) }; }
     else if (this.fs >= 36_000) this.tetra = { rx: new TetraRx(this.fs), ddc: null, oi: new Float32Array(0), oq: new Float32Array(0) };
     return this.tetra?.rx ?? null;
   }
@@ -321,7 +323,10 @@ export class FleetProcessor implements IqProcessor {
     ch.p2.onEss = (lch, e) => { const call = this.calls.at(c.sys, c.hz, lch); if (call) this.calls.security(call, { enc: e.algId !== 0x80, from: 'ESS', algId: e.algId, keyId: e.keyId, mi: e.mi }); };
   }
   private tetraOn(c: Carrier, ch: Chan): void {
-    const rx = ch.tetraOn(); if (!rx) return;
+    // the carrier finder can split a 25 kHz signal into pieces: the receiver is centered on all of them together
+    const now = this.now(), parts = [...this.carriers.values()].filter(x => Math.abs(x.hz - c.hz) <= 16_000 && now - x.lastMs < LIVE_MS && x.cls !== 'P25 C4FM' && x.cls !== 'DMR');
+    let w = 0, sum = 0; for (const x of parts) { const p = 10 ** (x.levelDb / 10); w += p; sum += p * x.hz; }
+    const rx = ch.tetraOn(w > 0 ? sum / w : c.hz); if (!rx) return;
     rx.onSync = s => this.tetraSync(c, s);
   }
   /** A TETRA synchronization burst (EN 300 392-2 BSCH): the network (MCC, MNC), the cell's color code and timing. */
@@ -332,6 +337,8 @@ export class FleetProcessor implements IqProcessor {
     s.lastMs = now; s.heardHz.add(c.key);
     c.cls = 'TETRA'; c.role = 'control'; c.sys = key; c.cc = t.colorCode; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++;
     c.tetra = t;
+    // the other pieces of the same 25 kHz signal are the same carrier
+    for (const x of this.carriers.values()) if (x !== c && Math.abs(x.hz - c.hz) <= 13_000 && x.cls !== 'TETRA' && !(x.lastDecodeMs > 0 && now - x.lastDecodeMs < 5_000)) { x.cls = 'TETRA'; x.role = 'control'; x.sys = key; x.cc = t.colorCode; x.lastDecodeMs = now; }
     this.addLog({ ms: now, hz: c.hz, proto: 'TETRA', name: 'SYNC', text: `TETRA · SYNC · MCC ${t.mcc} · MNC ${t.mnc} · color code ${t.colorCode} · TS${t.timeslot} · frame ${t.frame} · multiframe ${t.multiframe} · cell load ${t.cellLoad}`, hex: '', ok: true });
     this.pending = true;
   }
@@ -383,7 +390,7 @@ export class FleetProcessor implements IqProcessor {
   }
   private classify(c: Carrier, ch: Chan, now: number): void {
     if (c.tdma && !ch.p2) this.p2On(c, ch);
-    if (!c.tdma && !ch.tetra && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)) this.tetraOn(c, ch);
+    if (!c.tdma && !ch.tetra && c.cls !== 'TETRA' && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)) this.tetraOn(c, ch);
     c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100; c.eye = Math.round(ch.rx.eye * 100) / 100;
     if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return;
     if (now - ch.openedMs < 2_000) return;
