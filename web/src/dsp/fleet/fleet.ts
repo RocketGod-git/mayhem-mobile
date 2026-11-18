@@ -18,6 +18,7 @@ import './vocoders.js';
 import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from './calls.js';
 import { parseLc, voiceFrames, readEmb } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
+import { TetraRx, type TetraSync } from './tetra.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
 
 export const CH_RATE = 24_000;
@@ -25,7 +26,8 @@ const CUT_HZ = 5_500;
 const AUDITION_MS = 3_000;
 const LIVE_MS = 4_000;
 
-export type CarrierClass = '' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR';
+export type SysProto = 'P25' | 'DMR' | 'TETRA';
+export type CarrierClass = '' | 'TETRA' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR';
 export type Role = '' | 'control' | 'voice' | 'rest' | 'data';
 export interface CarrierRow {
   key: number; hz: number; levelDb: number; peakDb: number; firstMs: number; lastMs: number; onMs: number; heardMs: number;
@@ -41,7 +43,7 @@ export interface SiteRow {
   idens: Iden[]; units: number; lra: number; cls: number;
 }
 export interface SystemRow {
-  key: string; proto: 'P25' | 'DMR'; color: number; label: string; wacn: number; sysId: number; cc: number; fid: number;
+  key: string; proto: SysProto; color: number; label: string; wacn: number; sysId: number; cc: number; fid: number;
   net: number; model: string; callsign: string; firstMs: number; lastMs: number; sites: SiteRow[]; idens: Iden[];
   /** The latest CW ID heard on any of the system's channels (control, voice, conventional): text, when, where. */
   cwId: string; cwIdMs: number; cwIdHz: number;
@@ -68,18 +70,18 @@ export interface FleetSnap {
 }
 export type { CallRow, CallPos, Lock, TgPrefs };
 /** What the device keeps between sessions (see FleetProcessor.known). */
-export interface KnownSystem { key: string; proto: 'P25' | 'DMR'; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string; firstMs: number; lastMs: number; derived: boolean; hz: number[] }
+export interface KnownSystem { key: string; proto: SysProto; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string; firstMs: number; lastMs: number; derived: boolean; hz: number[] }
 export interface KnownUnit { sys: string; id: number; lat: number; lon: number; posMs: number; verified: boolean; firstMs: number; lastMs: number }
 export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[] }
 const KNOWN_UNITS = 3000;
 
-interface Carrier extends CarrierRow { hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
+interface Carrier extends CarrierRow { tetra?: TetraSync; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
   key: string; sys: string; rfss: number; site: number; nac: number; carriers: Set<number>; lastMs: number; neighbors: Map<string, { sys: number; rfss: number; site: number; ch: number }>;
   secondary: Set<number>; time: string; lra: number; cls: number; idens: Map<number, Iden>;
 }
 interface Sys {
-  key: string; proto: 'P25' | 'DMR'; color: number; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string;
+  key: string; proto: SysProto; color: number; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string;
   firstMs: number; lastMs: number; idens: Map<number, Iden>; derived: boolean;
   lcns: Map<number, { hz: number; slot: number }>; lcnVotes: Map<string, Map<number, number>>; rest: number; busy: number[];
   /** Tier III logical channel (LPCN) to carrier: votes, and the ones resolved. */
@@ -109,9 +111,13 @@ class Chan {
   openedMs: number; lastSyncMs = 0; quietSince: number; private cwOn = false;
   /** The Phase 2 TDMA receiver, on a channel a grant named TDMA. */
   p2: P2Rx | null = null; readonly fs: number;
+  /** A TETRA receiver on its own wider down-converter (a TETRA carrier is 25 kHz wide), for a carrier nothing else read. */
+  tetra: { rx: TetraRx; ddc: Ddc | null; oi: Float32Array; oq: Float32Array } | null = null;
+  private center = 0; private rate = 0;
   /** [baseband]: samples arrive already mixed to 0 Hz at that rate (a recorded channel clip), no down-converter. */
   constructor(readonly key: number, public hz: number, center: number, rate: number, now: number, baseband = 0) {
     this.ddc.reset(rate); this.ddc.offsetHz = hz - center;
+    this.center = center; this.rate = baseband ? 0 : rate;
     const fs = baseband || this.ddc.outRate;
     this.fs = fs;
     this.rx = new SymbolRx(fs);
@@ -126,13 +132,24 @@ class Chan {
     };
     this.openedMs = now; this.quietSince = now;
   }
-  retarget(center: number): void { this.ddc.offsetHz = this.hz - center; }
+  retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.hz - center; }
+  /** Starts the TETRA receiver: 72 kS/s off its own down-converter, or the baseband itself when it is fast enough. */
+  tetraOn(): TetraRx | null {
+    if (this.tetra) return this.tetra.rx;
+    if (this.rate > 0) { const d = new Ddc(12_500, 72_000, 63); d.reset(this.rate); d.offsetHz = this.hz - this.center; this.tetra = { rx: new TetraRx(d.outRate), ddc: d, oi: new Float32Array(0), oq: new Float32Array(0) }; }
+    else if (this.fs >= 36_000) this.tetra = { rx: new TetraRx(this.fs), ddc: null, oi: new Float32Array(0), oq: new Float32Array(0) };
+    return this.tetra?.rx ?? null;
+  }
   push(fi: Float32Array, fq: Float32Array, n: number, now: number): void {
     const need = this.ddc.maxOut(n);
     if (this.oi.length < need) { this.oi = new Float32Array(need); this.oq = new Float32Array(need); }
     const m = this.ddc.push(fi, fq, n, this.oi, this.oq);
     this.channel(this.oi, this.oq, m, now);
+    const t = this.tetra;
+    if (t?.ddc) { const k = t.ddc.maxOut(n); if (t.oi.length < k) { t.oi = new Float32Array(k); t.oq = new Float32Array(k); } const j = t.ddc.push(fi, fq, n, t.oi, t.oq); t.rx.push(t.oi, t.oq, j); }
   }
+  /** Baseband straight to the TETRA receiver (a recorded or synthesized channel at its own rate). */
+  tetraBaseband(zi: Float32Array, zq: Float32Array, m: number): void { if (this.tetra && !this.tetra.ddc) this.tetra.rx.push(zi, zq, m); }
   channel(zi: Float32Array, zq: Float32Array, m: number, now: number): void {
     // decoded frames, not bare syncs, mark the channel digital: a keyed CW tone can pass for a sync now and then
     const s0 = this.p25.clean + this.dmr.bursts;
@@ -303,6 +320,21 @@ export class FleetProcessor implements IqProcessor {
     ch.p2.onMac = m => this.p2Mac(c, m);
     ch.p2.onEss = (lch, e) => { const call = this.calls.at(c.sys, c.hz, lch); if (call) this.calls.security(call, { enc: e.algId !== 0x80, from: 'ESS', algId: e.algId, keyId: e.keyId, mi: e.mi }); };
   }
+  private tetraOn(c: Carrier, ch: Chan): void {
+    const rx = ch.tetraOn(); if (!rx) return;
+    rx.onSync = s => this.tetraSync(c, s);
+  }
+  /** A TETRA synchronization burst (EN 300 392-2 BSCH): the network (MCC, MNC), the cell's color code and timing. */
+  private tetraSync(c: Carrier, t: TetraSync): void {
+    const now = this.now(), key = `TETRA ${t.mcc}-${t.mnc}`;
+    let s = this.systems.get(key);
+    if (!s) { s = { key, proto: 'TETRA', color: this.colorNext++, wacn: t.mcc, sysId: t.mnc, cc: t.colorCode, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() }; this.systems.set(key, s); }
+    s.lastMs = now; s.heardHz.add(c.key);
+    c.cls = 'TETRA'; c.role = 'control'; c.sys = key; c.cc = t.colorCode; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++;
+    c.tetra = t;
+    this.addLog({ ms: now, hz: c.hz, proto: 'TETRA', name: 'SYNC', text: `TETRA · SYNC · MCC ${t.mcc} · MNC ${t.mnc} · color code ${t.colorCode} · TS${t.timeslot} · frame ${t.frame} · multiframe ${t.multiframe} · cell load ${t.cellLoad}`, hex: '', ok: true });
+    this.pending = true;
+  }
   /** The scrambling seeds a Phase 2 channel may use: its own system first, then every P25 system and site heard. */
   private p2Seeds(c: Carrier): P2Seed[] {
     const out: P2Seed[] = [], add = (s: Sys, nac: number) => { if (nac >= 0 && s.wacn >= 0 && s.sysId >= 0 && !out.some(x => x.sys === s.key && x.nac === nac)) out.push({ wacn: s.wacn, sysId: s.sysId, nac, sys: s.key }); };
@@ -351,6 +383,7 @@ export class FleetProcessor implements IqProcessor {
   }
   private classify(c: Carrier, ch: Chan, now: number): void {
     if (c.tdma && !ch.p2) this.p2On(c, ch);
+    if (!c.tdma && !ch.tetra && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)) this.tetraOn(c, ch);
     c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100; c.eye = Math.round(ch.rx.eye * 100) / 100;
     if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return;
     if (now - ch.openedMs < 2_000) return;
@@ -797,9 +830,12 @@ export class FleetProcessor implements IqProcessor {
             secondary: [...x.secondary].map(ch => ({ ch: h(ch, 4), hz: resolveChannel(ch, tables)?.hz ?? 0 })), time: x.time, callsign: ccs.find(c => c.callsign)?.callsign ?? '',
             carriers: [...x.carriers], lcns: [], rest: -1, busy: [], idens: [...tables.values()].sort((a, b) => a.iden - b.iden), units: 0, lra: x.lra, cls: x.cls };
         });
+      } else if (s.proto === 'TETRA') {
+        sites = [...this.carriers.values()].filter(c => c.sys === s.key && c.tetra).map(c => ({ key: `${s.key}/${c.key}`, label: `color code ${c.tetra!.colorCode}`, rfss: -1, site: c.tetra!.colorCode, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
+          neighbors: [], secondary: [], time: `TS${c.tetra!.timeslot} · frame ${c.tetra!.frame} · multiframe ${c.tetra!.multiframe}`, callsign: '', carriers: [c.key], lcns: [], rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: c.tetra!.cellLoad }));
       } else sites = this.dmrSites(s);
       for (const st of sites) for (const k of st.carriers) for (const u of this.units.values()) if (u.sys === s.key && u.carriers.has(k)) unitSite.set(u.key, st.label);
-      const label = s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
+      const label = s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
       const units = [...this.units.values()].filter(u => u.sys === s.key).length, tgs = [...this.tgs.values()].filter(t => t.sys === s.key).length;
       const lpcns = [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
       return { key: s.key, proto: s.proto, color: s.color, label, wacn: s.wacn, sysId: s.sysId, cc: s.cc, fid: s.fid, net: s.net, model: s.model,
@@ -867,7 +903,10 @@ export class FleetProcessor implements IqProcessor {
     const fi = new Float32Array(n), fq = new Float32Array(n);
     f[0].process(zi, n, fi); f[1].process(zq, n, fq);
     ch.channel(fi, fq, n, now);
+    ch.tetraBaseband(zi, zq, n);
   }
+  /** Starts the TETRA receiver on a carrier now (the recorded and synthesized channels in the tests). */
+  tetraNow(hz: number): void { const c = this.carrierAt(hz), ch = this.chans.get(c.key); if (ch) this.tetraOn(c, ch); }
   /** The end of a recording: the samples still waiting for a whole timing block are decoded too. */
   flush(): void { for (const ch of this.chans.values()) ch.rx.flush(); }
   /** A CW ID read on [hz]. */

@@ -128,7 +128,8 @@ export class P2Rx {
   private block(): void {
     const T = this.T, t0 = T + 1;
     let best = 0, bm = -1e9;
-    for (let p = 0; p < 8; p++) { let s = 0; for (let k = 0; k < BLK; k += 3) s -= Math.cos(4 * this.dphi(t0 + p * T / 8 + k * T)); if (s > bm) { bm = s; best = p; } }
+    // the timing whose phase steps sit closest to odd multiples of pi/4 (|mean of e^(4j step)|: a frequency offset does not move it)
+    for (let p = 0; p < 8; p++) { let x = 0, y = 0; for (let k = 0; k < BLK; k += 3) { const v = 4 * this.dphi(t0 + p * T / 8 + k * T); x += Math.cos(v); y += Math.sin(v); } const s = x * x + y * y; if (s > bm) { bm = s; best = p; } }
     let cr = 0, ci = 0;
     for (let k = 0; k < BLK; k++) { const v = this.dphi(t0 + best * T / 8 + k * T); cr += Math.cos(4 * v); ci += Math.sin(4 * v); }
     const off = Math.atan2(ci, cr) - Math.PI, corr = Math.atan2(Math.sin(off), Math.cos(off)) / 4;
