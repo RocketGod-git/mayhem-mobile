@@ -2338,9 +2338,8 @@ main#view.view.hd.hdwide { display: grid; grid-template-columns: minmax(0, 1fr) 
 .cl-stage { min-height: 240px; flex: none; }
 .cl-alerts, .cl-cards, .cl-nbrs { display: flex; flex-direction: column; gap: 9px; max-height: 60vh; overflow-y: auto; padding: 2px 8px 6px 0; min-width: 0; box-sizing: border-box; }
 .cl-dim, .cl-dimtxt { font-size: 10px; color: var(--muted); padding: 2px; }
-.cl-alert { border-radius: 14px; padding: 12px 13px; display: flex; flex-direction: column; gap: 8px; min-width: 0;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--al) 18%, var(--surface)), var(--surface)); border: 1px solid color-mix(in srgb, var(--al) 55%, transparent); border-left: 5px solid var(--al); }
-.cl-alert.fresh { box-shadow: 0 0 18px color-mix(in srgb, var(--al) 35%, transparent); }
+.cl-alert { display: flex; flex-direction: column; gap: 8px; min-width: 0; cursor: default; }
+.cl-alert.fresh { box-shadow: 0 0 14px color-mix(in srgb, var(--danger) 35%, transparent); }
 .cl-ah { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .cl-cls { flex: none; font-size: 11px; font-weight: 900; letter-spacing: 1.5px; color: #05080a; background: var(--al); border-radius: 6px; padding: 4px 8px; }
 .cl-ah b { font-size: 12px; letter-spacing: .5px; color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
@@ -2449,14 +2448,14 @@ main#view.view.cell.clwide { display: grid; grid-template-columns: minmax(0, 1fr
 .cl-where.in { color: var(--danger); }
 .cl-where.out { color: var(--ok); }
 .cl-alert[data-clsel] { cursor: pointer; }
-.cl-alert.sel { border-width: 2px; border-left-width: 5px; }
+.cl-alert.sel { border-width: 2px; }
 .cl-thumb { width: 44px; height: 44px; margin-left: auto; flex: none; }
 .cl-thumb polygon { fill: color-mix(in srgb, var(--al) 30%, transparent); stroke: var(--al); stroke-width: 1.5; stroke-linejoin: round; }
 .cl-links { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .cl-links small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); margin-right: 3px; }
 .cl-links span { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--al) 45%, transparent); color: var(--ink); }
 .view.cell.clwide .cl-amapbox .map { height: auto; flex: 1; min-height: 0; }
-.view.cell.clwide .cl-amapbox { flex: 0 0 46%; min-height: 220px; margin-bottom: 8px; }
+.view.cell.clwide .cl-amapbox { flex: 0 0 34%; min-height: 200px; margin-bottom: 8px; }
 .cl-alerts > *, .cl-cards > *, .cl-nbrs > * { flex: none; }
 /* ---- ATSC TV: a guide-style wall of stations and their subchannels with live pictures, the signal, the guide ---- */
 .at-head { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
@@ -2606,3 +2605,16 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 .at-sec > small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); }
 .view.atsc .mt-dh { flex-wrap: wrap; row-gap: 4px; }
 .view.atsc .mt-dh > span { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; min-width: 0; flex: 1 1 120px; }
+
+/* Cell message feed: rows are the Pagers app's cards (.pcard), warnings its red call-outs */
+.cl-ffilter { margin: 4px 0 2px; flex: none; }
+.cl-ffilter button.red:not(.on) { color: var(--danger); }
+.cl-frow .pc-r { white-space: normal; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.cl-frow .pc-h { flex-wrap: wrap; }
+.cl-frow .pc-body { font-size: 12.5px; line-height: 17px; }
+.cl-fsince { margin-top: 3px; font-size: 9px; color: var(--muted); }
+.cl-alert .cl-msg { border-top-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+.cl-alert .cl-msg em { color: var(--danger); }
+.cl-alert .cl-ah:empty { display: none; }
+.cl-alert .pc-h .cl-thumb { width: 30px; height: 30px; margin-left: 0; }
+.cl-alert .pc-h { flex-wrap: wrap; }

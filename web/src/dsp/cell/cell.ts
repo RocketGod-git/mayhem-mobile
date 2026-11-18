@@ -16,6 +16,7 @@ import { decodeBcchDlSch, messageParts, hexToBytes } from './rrc.js';
 import { sib1Summary, neighbors, sib2Summary, sib3Summary, sib8Time, earfcnDl, dlEarfcnForMhz, type Sib1Summary, type Neighbors, type Sib2Summary, type Sib3Summary } from './sysinfo.js';
 import { WarningAssembler, type WarningMessage } from './cbs.js';
 import { bandOf } from './bands.js';
+import { MessageFeed, mibLine, sib1Line, sibLine as feedLine, fingerprint, feedCtx, warningSlot, type FeedRow } from './feed.js';
 
 type Obj = Record<string, unknown>;
 export interface SibRec { name: string; si: number; ms: number; count: number; hex: string; value: Obj }
@@ -41,8 +42,10 @@ export interface CellSnap {
   pss: { nid2: number; score: number }[];
   /** A cell found off the tuned center (its own center), for the scan to retune to. */
   offCenter: { hz: number; pci: number; ms: number } | null;
+  /** The message feed, newest first. */
+  feed: FeedRow[];
 }
-export interface CellState { v: 1; cells: Obj[]; alerts: WarningMessage[]; log: LogRow[] }
+export interface CellState { v: 1; cells: Obj[]; alerts: WarningMessage[]; log: LogRow[]; feed?: FeedRow[] }
 
 interface Cell {
   key: string; hz: number; pci: number; band: number | null; earfcn: number | null; tdd: boolean;
@@ -68,6 +71,8 @@ export class CellProcessor implements IqProcessor {
   readonly cells = new Map<string, Cell>();
   readonly warnings = new WarningAssembler();
   readonly log: LogRow[] = [];
+  /** Every MIB and SIB as one readable row, repeats folded. */
+  readonly feed = new MessageFeed();
   /** Bumped whenever something worth keeping changes (the page saves the state when it moves). */
   version = 0;
   /** Called with every new or completed warning message. */
@@ -157,6 +162,7 @@ export class CellProcessor implements IqProcessor {
             if (!r) continue;
             const cell = this.cellFor(pci, tdd, now);
             cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = frac + h.cfo; cell.pssScore = h.score;
+            this.mibRow(cell, now);
             found.push({ cell, map, evenSf0, tdd, mibH: r.h });
             this.cfo = frac + h.cfo; this.cfoKnown = true;
           }
@@ -261,6 +267,7 @@ export class CellProcessor implements IqProcessor {
         if (!r) continue;
         const cell = this.cellFor(pci, tdd, now, hz);
         cell.mib = r.mib; cell.mibMs = now; cell.lastMs = now; cell.mibCount++; cell.snrDb = r.snr; cell.levelDb = r.level; cell.cfoHz = this.centerHz + shift - hz; cell.pssScore = hit.score;
+        this.mibRow(cell, now);
         this.offCenter = { hz, pci, ms: now };
         this.addLog(now, hz, pci, 'CELL', `found ${((hz - this.centerHz) / 1e3).toFixed(0)} kHz from the tuned center`, '');
         return;
@@ -367,6 +374,7 @@ export class CellProcessor implements IqProcessor {
         const s = cell.summary;
         this.addLog(now, cell.hz, cell.pci, 'SIB1', s ? `PLMN ${s.plmns.map(p => p.id + (p.name ? ` ${p.name}` : '')).join(', ')} · TAC ${s.tac} · eNB ${s.enbId}/${s.cellId} · band ${s.band} · ${s.schedule.length} SI` : 'SIB1', hex);
       }
+      if (cell.summary) this.feedRow(cell, 'SIB1', sib1Line(cell.summary), false, fingerprint(parts.sib1), now);
       return;
     }
     let siIdx = si;
@@ -375,6 +383,8 @@ export class CellProcessor implements IqProcessor {
       const old = cell.sibs.get(name), fresh = !old || old.hex !== hex;
       cell.sibs.set(name, { name, si: siIdx, ms: now, count: (old?.count ?? 0) + 1, hex, value });
       if (fresh) this.addLog(now, cell.hz, cell.pci, name.toUpperCase().replace(/-.*/, ''), sibLine(name, value), hex);
+      const warn = name === 'sib10' || name === 'sib11' || name.startsWith('sib12');
+      this.feedRow(cell, name.toUpperCase().replace(/-.*/, ''), feedLine(name, value, feedCtx(cell.band, cell.hz)), warn, fingerprint(value), now, warn ? warningSlot(name, value) : '');
       if (name === 'sib10' || name === 'sib11' || name.startsWith('sib12')) {
         const m = this.warnings.add(name.startsWith('sib12') ? 'sib12-v920' : name, value, cell.key, now);
         if (m) {
@@ -385,6 +395,17 @@ export class CellProcessor implements IqProcessor {
       }
     }
     if (siIdx) { const g = cell.siGot.get(siIdx); cell.siGot.set(siIdx, { ms: now, count: (g?.count ?? 0) + 1 }); }
+  }
+
+  private feedRow(cell: Cell, name: string, text: string, alert: boolean, fp: string, now: number, slot = ''): void {
+    const op = cell.summary?.plmns.find(p => p.name)?.name ?? cell.summary?.plmns[0]?.id ?? '';
+    const r = this.feed.add({ cell: cell.key, hz: cell.hz, pci: cell.pci, op, band: cell.band, name, text, alert, fp }, now, slot);
+    if (r.count === 1) this.version++;
+    this.dirty = true;
+  }
+  private mibRow(cell: Cell, now: number): void {
+    const m = cell.mib!;
+    this.feedRow(cell, 'MIB', mibLine(m), false, fingerprint({ b: m.bandwidth, p: m.ports, h: m.phichResource, d: m.phichDuration, r: m.sib1BR }), now);
   }
 
   /** Next capture: just before the earliest wanted SI window of the cells heard (or right away). */
@@ -465,7 +486,7 @@ export class CellProcessor implements IqProcessor {
       nextMs: this.nextAbs > this.abs ? Math.round((this.nextAbs - this.abs) / this.rate * 1000) : 0,
       profile: this.profile, floorDb: this.floorDb,
       cells: [...this.cells.values()].sort((a, b) => b.lastMs - a.lastMs).map(c => this.row(c)),
-      alerts: this.warnings.messages(), log: this.log.slice(-300), dci: this.dci, tbOk: this.tbOk, pss: this.pss, offCenter: this.offCenter,
+      alerts: this.warnings.messages(), log: this.log.slice(-300), dci: this.dci, tbOk: this.tbOk, pss: this.pss, offCenter: this.offCenter, feed: this.feed.rows.slice(0, 400),
     };
   }
   /** Every decoded field of one cell, for its detail view. */
@@ -494,13 +515,14 @@ export class CellProcessor implements IqProcessor {
     const c = this.cellFor(pci, false, ms);
     this.centerHz = prev;
     c.mib = mib; c.mibMs = ms; c.mibCount++; c.lastMs = Math.max(c.lastMs, ms);
+    this.mibRow(c, ms);
   }
 
   exportState(): CellState {
     const cells = [...this.cells.values()].map(c => ({ key: c.key, hz: c.hz, pci: c.pci, band: c.band, earfcn: c.earfcn, tdd: c.tdd, firstMs: c.firstMs, lastMs: c.lastMs, mibMs: c.mibMs, sib1Ms: c.sib1Ms,
       mib: c.mib, snrDb: c.snrDb, levelDb: c.levelDb, cfoHz: c.cfoHz, pssScore: c.pssScore, mibCount: c.mibCount, sib1Count: c.sib1Count, dciCount: c.dciCount, tbOk: c.tbOk, tbFail: c.tbFail,
       sib1Hex: c.sib1Hex, sibs: [...c.sibs.values()].map(s => ({ name: s.name, si: s.si, ms: s.ms, count: s.count, hex: s.hex })), siGot: [...c.siGot.entries()] }));
-    return { v: 1, cells, alerts: this.warnings.messages(), log: this.log.slice(-500) };
+    return { v: 1, cells, alerts: this.warnings.messages(), log: this.log.slice(-500), feed: this.feed.rows.slice(0, 600) };
   }
   /** Brings back what an earlier session heard; decoded values are rebuilt from the kept transport blocks. */
   restore(s: CellState | null): void {
@@ -525,6 +547,7 @@ export class CellProcessor implements IqProcessor {
       this.cells.set(key, c);
     }
     this.warnings.restore(s.alerts ?? []);
+    this.feed.restore(s.feed ?? []);
     if (Array.isArray(s.log) && !this.log.length) this.log.push(...s.log.slice(-500));
     this.post(true);
   }
@@ -536,7 +559,7 @@ export class CellProcessor implements IqProcessor {
     return { csv, json };
   }
   /** Forgets the cells and the log; the alerts stay until clearAlerts(). */
-  clear(): void { this.cells.clear(); this.log.length = 0; this.dci = 0; this.tbOk = 0; this.version++; this.post(true); }
+  clear(): void { this.cells.clear(); this.feed.clear(); this.log.length = 0; this.dci = 0; this.tbOk = 0; this.version++; this.post(true); }
   clearAlerts(): void { this.warnings.clear(); this.version++; this.post(true); }
 }
 
