@@ -287,8 +287,23 @@ export class HdRx {
     if (r.lock < 4.5) { if (++this.timingMiss >= 3) { this.state = 'search'; this.timingMiss = 0; } return; }
     const cur = ((Math.round(this.nextStart) % NSYM) + NSYM) % NSYM;
     let delta = r.d0 - cur; if (delta > NSYM / 2) delta -= NSYM; if (delta < -NSYM / 2) delta += NSYM;
-    if (Math.abs(delta) <= 60) { this.timingMiss = 0; if (Math.abs(delta) >= 2) this.nextStart += delta; }
+    if (Math.abs(delta) <= 60) { this.timingMiss = 0; if (Math.abs(delta) >= 2) { this.nextStart += delta; this.shiftHeld(delta); } }
     else if (++this.timingMiss >= 3) { this.state = 'search'; this.timingMiss = 0; }
+  }
+
+  /**
+   * The symbol window moved by `delta` samples: turn the symbols already held by the matching phase slope, as if
+   * they had been taken with the new timing, so the differential reference and the frame's channel estimate do not
+   * see a step across the subcarriers.
+   */
+  private shiftHeld(delta: number): void {
+    for (let k = -546; k <= 546; k++) {
+      const a = 2 * Math.PI * k * delta / NFFT, c = Math.cos(a), s = Math.sin(a), i = k + 546;
+      for (let slot = 0, off = i; slot < SYMS; slot++, off += NSC) {
+        const r = this.symRe[off], q = this.symIm[off];
+        this.symRe[off] = r * c - q * s; this.symIm[off] = r * s + q * c;
+      }
+    }
   }
 
   private symbol(): void {
@@ -343,12 +358,21 @@ export class HdRx {
         }
         if (cnt && v / cnt > bestV) { bestV = v / cnt; bestP = p; }
       }
-      if (bestV >= SYNC_BITS.length - 1) { this.blockPhase = bestP; this.state = 'sync'; this.blockMiss = 0; this.frameStart = -1; }
+      if (bestV >= SYNC_BITS.length - 1) {
+        this.blockPhase = bestP; this.state = 'sync'; this.blockMiss = 0; this.frameStart = -1;
+        // the blocks already in hand, oldest first: a frame that began before sync is not lost
+        for (let st = from + ((bestP - from) % 32 + 32) % 32; st + 32 <= n; st += 32) if (st >= 1 && this.blockPhase >= 0) this.decodeBlock(st);
+      }
       return;
     }
     if ((n - this.blockPhase) % 32 !== 0) return;
     const st = n - 32;
     if (st < 1) return;
+    this.decodeBlock(st);
+  }
+
+  /** The system control word of the block starting at symbol `st`, then frame tracking. */
+  private decodeBlock(st: number): void {
     // decode the block's system control word on every reference subcarrier
     const words: ScWord[] = [];
     const good: number[] = [];
