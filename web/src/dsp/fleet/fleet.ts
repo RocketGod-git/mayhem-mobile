@@ -16,7 +16,7 @@ import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, slice, typ
 import { P25Decoder } from '../ham/p25.js';
 import './vocoders.js';
 import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from './calls.js';
-import { parseLc, voiceFrames, readEmb } from './lc.js';
+import { parseLc, voiceFrames, readEmb, embBits, EmbLcAssembler, parseEmbLc, TalkerAlias } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
 import { TetraRx, type TetraSync } from './tetra.js';
 import { NxdnRx, NXDN_CATEGORY, type NxdnSite } from './nxdn.js';
@@ -69,6 +69,8 @@ export interface UnitRow {
   posVerified: boolean; trail: [number, number, number][]; groups: number[]; grants: number; carriers: number[]; reports: UnitReport[]; site: string;
   /** Talkgroups the unit was heard on, with how many times. */
   tgCounts: [number, number][];
+  /** The talker alias its radio sent (DMR), or ''. */
+  alias: string;
   /** Position reports that resolved outside the system's area (left off the map), and all position reports. */
   offArea: number; fixes: number;
 }
@@ -106,6 +108,8 @@ interface Sys {
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
   /** Every position report as sent (low 16 bits), resolved when shown: [time, lat16, lon16]. */
   fixes: [number, number, number][]; tgCounts: Map<number, number>;
+  /** The talker alias its radio sent (DMR), or ''. */
+  alias?: string;
   /** A position kept from an earlier session (restored from the device), used until a report on the air replaces it. */
   fix?: [number, number] }
 interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: Set<number>; history: GrantRow[] }
@@ -642,6 +646,30 @@ export class FleetProcessor implements IqProcessor {
     const name = from === 'HDU' ? 'HEADER' : 'ENCRYPTION SYNC';
     this.addLog({ ms: now, hz: c.hz, proto: 'P25', name, text: `NAC ${h(Math.max(0, c.nac), 3)} · ${name} · ALGID ${h(es.algId, 2)} · KEY ${h(es.keyId, 4)} · MI ${es.mi.toUpperCase()}`, hex: '', ok: true });
   }
+  /** Embedded LC fragments and talker aliases being put together, per carrier and slot. */
+  private readonly embAsm = new Map<string, EmbLcAssembler>(); private readonly aliases = new Map<string, TalkerAlias>();
+  private readonly embSeen = new Map<string, number>(); private readonly unitAlias = new Map<string, string>();
+  /** An embedded voice LC: the call on that slot is named (talkgroup, unit) and its privacy bit taken, as from a header. */
+  private embLc(c: Carrier, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean; fid: number }, now: number): void {
+    if (!lc.dst && !lc.src) return;
+    const call = this.calls.lc(c.sys, c.hz, slot, { ...lc }, now, 'DMR');
+    if (call.sys && !c.sys) c.sys = call.sys;
+    const k = `${c.key}:${slot}:${lc.dst}:${lc.src}:${lc.privacy}`;
+    if (this.embSeen.get(k) === undefined || now - this.embSeen.get(k)! > 10_000) {
+      this.embSeen.set(k, now); if (this.embSeen.size > 500) this.embSeen.clear();
+      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name: 'EMBEDDED LC', text: `CC ${c.cc} · TS${slot + 1} · EMBEDDED LC · ${lc.group ? 'TG' : 'UNIT'} ${lc.dst} ← ${lc.src}${lc.fid === 0x10 ? ' · FID 10' : ''}${lc.emergency ? ' · EMERGENCY' : ''}${lc.privacy ? ' · PRIVACY' : ''}`, hex: '', ok: true });
+    }
+    this.pending = true;
+  }
+  /** A talker alias part: once the name is whole it labels the call and its unit. */
+  private embAlias(c: Carrier, slot: number, part: number, bytes: Uint8Array): void {
+    const k = `${c.key}:${slot}`, ta = this.aliases.get(k) ?? (() => { const x = new TalkerAlias(); this.aliases.set(k, x); return x; })();
+    const name = ta.push(part, bytes); if (!name) return;
+    const call = this.calls.at(c.sys, c.hz, slot);
+    if (call && call.alias !== name) { call.alias = name; this.pending = true; }
+    if (call && call.src) { this.unitAlias.set(`${call.sys || c.sys}/${call.src}`, name); const u = this.units.get(`${call.sys || c.sys}/${call.src}`); if (u) u.alias = name; }
+    if (call && call.alias === name) this.addLog({ ms: this.now(), hz: c.hz, proto: 'DMR', name: 'TALKER ALIAS', text: `TS${slot + 1} · TALKER ALIAS · ${name}${call.src ? ` · UNIT ${call.src}` : ''}`, hex: '', ok: true });
+  }
   /** Per carrier: the last EMB that passed its check on a voice burst with no DMR data heard, for [dmrVoice]. */
   private readonly embVotes = new Map<number, { cc: number; ms: number }>();
   private dmrVoice(c: Carrier, ch: Chan | null, slot: number, d: Uint8Array, n = 0): void {
@@ -672,7 +700,18 @@ export class FleetProcessor implements IqProcessor {
     if (c.role === '') c.role = 'voice';
     const call = this.calls.voice(c.sys, 'DMR', c.hz, slot, 60, now);
     // bursts B to F carry the EMB: its privacy bit says whether the call is encrypted, read before the frames play
-    if (n > 0) { const e = readEmb(d); if (e.ok && (c.cc < 0 || e.cc === c.cc)) this.calls.security(call, { enc: e.pi, from: 'EMB' }); }
+    if (n > 0) {
+      const e = readEmb(d);
+      if (e.ok && (c.cc < 0 || e.cc === c.cc)) {
+        this.calls.security(call, { enc: e.pi, from: 'EMB' });
+        // bursts B to E also carry the embedded LC in four fragments: who is talking to whom, the privacy bit, the alias
+        const k = `${c.key}:${slot}`, asm = this.embAsm.get(k) ?? (() => { const x = new EmbLcAssembler(); this.embAsm.set(k, x); return x; })();
+        const lc = n <= 4 ? asm.push(e.lcss, embBits(d)) : (asm.reset(), null);
+        const p = lc ? parseEmbLc(lc) : null;
+        if (p?.kind === 'voice') this.embLc(c, slot, p.lc, now);
+        else if (p?.kind === 'alias') this.embAlias(c, slot, p.part, p.bytes);
+      }
+    }
     this.calls.frames(call, voiceFrames(d)); ch?.voiced(slot);
     this.pending = true;
   }
@@ -985,7 +1024,7 @@ export class FleetProcessor implements IqProcessor {
       const tr = this.trailOf(u);
       return { key: u.key, sys: u.sys, id: u.id, firstMs: u.firstMs, lastMs: u.lastMs, lat, lon, posMs: u.posMs, posVerified: u.posVerified, trail: tr.trail.slice(-12),
         groups: [...u.groups], grants: u.grants, carriers: [...u.carriers], reports: u.reports.slice(-6).map(r => ({ ...r, lonLo: undefined, latLo: undefined })), site: unitSite.get(u.key) ?? '',
-        tgCounts: [...u.tgCounts].sort((a, b) => b[1] - a[1]), offArea: tr.off, fixes: u.fixes.length };
+        tgCounts: [...u.tgCounts].sort((a, b) => b[1] - a[1]), offArea: tr.off, fixes: u.fixes.length, alias: u.alias ?? this.unitAlias.get(u.key) ?? '' };
     });
     const tgs: TgRow[] = [...this.tgs.values()].map(t => ({ key: t.key, sys: t.sys, tg: t.tg, firstMs: t.firstMs, lastMs: t.lastMs, grants: t.grants, recent: t.recent.filter(x => now - x < 600_000), members: [...t.members].slice(0, 200), history: t.history.slice(0, 12) }));
     const carriers: CarrierRow[] = [...this.carriers.values()].map(c => {

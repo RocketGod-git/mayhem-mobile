@@ -38,6 +38,8 @@ export interface CallRow {
   protectedHint: boolean;
   /** Vocoder frames decoded, and how many of them were past their error correction (repeated or muted). */
   decoded: number; badFrames: number;
+  /** The talker alias the radio sent (DMR), or ''. */
+  alias: string;
 }
 interface Call extends CallRow { grantMs: number; voiceAt: number; audioAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null; held: Uint8Array[]; hint: string; said: Said; wait: Float32Array[] }
 /** What each source on the air said: 1 encrypted, 0 clear, -1 nothing yet; [syncs] the last algorithm IDs read. */
@@ -100,7 +102,7 @@ export class CallTracker {
       key: `${p.sys}|${now}|${p.hz}|${p.slot}`, sys: p.sys, proto: p.proto, tg: p.tg ?? 0, group: p.group ?? true, src: p.src ?? 0, srcs: p.src ? [p.src] : [], hz: p.hz, slot: p.slot,
       tdma: p.tdma ?? false, encrypted: false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
       levelDb: 0, peakDb: 0, site: p.site ?? '', codec: p.codec, end: '', muted: false, prio: false, audioMs: 0, lcVerified: false, granted: false, kind: 'call', cwId: '',
-      outside: false, pos: null, sec: 'unknown', secFrom: '', algId: -1, keyId: -1, mi: '', pi: '', audioDb: 0, lpcn: p.lpcn ?? -1, chDerived: p.chDerived ?? false, protectedHint: false, decoded: 0, badFrames: 0,
+      outside: false, pos: null, sec: 'unknown', secFrom: '', algId: -1, keyId: -1, mi: '', pi: '', audioDb: 0, lpcn: p.lpcn ?? -1, chDerived: p.chDerived ?? false, protectedHint: false, decoded: 0, badFrames: 0, alias: '',
       grantMs: 0, voiceAt: 0, audioAt: 0, pcm: [], pcmN: 0, codecInst: null, held: [], hint: '', wait: [], said: { grant: -1, lc: -1, syncs: [], from: '', pi: false, emb: -1, history: false, histEnc: false },
     };
     this.label(c);
@@ -198,7 +200,8 @@ export class CallTracker {
       c.protectedHint = last < 0 && (said.grant === 1 || said.lc === 1);
     } else {
       if (said.lc === 1 || said.pi || said.emb === 1) { sec = 'enc'; from = said.pi ? 'PI' : said.lc === 1 ? 'LC' : 'EMB'; }
-      else if (said.lc === 0 || said.emb === 0) { sec = 'clear'; from = said.lc === 0 ? 'LC' : 'EMB'; }
+      // an EMB privacy bit of 0 does not make a call clear: Motorola's privacy leaves it 0, the LC's service options say it
+      else if (said.lc === 0) { sec = 'clear'; from = 'LC'; }
       c.protectedHint = false;
     }
     const was = c.sec;

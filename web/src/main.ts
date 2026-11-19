@@ -5033,7 +5033,7 @@ function dispatchOnAirCard(c: FleetCall, s: FleetSnap, now: number): string {
   const vu = playing ? `<div class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><small>AUDIO</small><span><i></i></span></div>` : '';
   return `<div class="fl-air ${fresh ? 'fresh' : ''} ${blink ? 'blink' : ''} ${c.emergency ? 'emerg' : ''} ${c.encrypted ? 'enc' : ''} ${c.muted ? 'muted' : ''} ${c.outside ? 'out' : ''} ${c.prio ? 'prio' : ''} ${playing ? 'playing' : ''} ${ended ? 'ended' : ''}" data-flkey="${esc(c.key)}" style="--sys:${col}">`
     + `<div class="fl-air-h"><span class="fl-onbadge"><i></i>${badge}</span><span class="fl-proto">${c.proto}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.emergency && !ended ? '' : c.emergency ? flPill(`EMERGENCY · ${fleetAgoText(now - c.endMs)}`, 'red') : ''}${dispatchSec(c)}<span class="fl-air-t">${flDur((ended ? c.endMs : now) - c.startMs)}</span></div>`
-    + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>UNIT</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}${lockB}</div>`
+    + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>${c.alias ? esc(c.alias.toUpperCase()) : 'UNIT'}</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : c.alias ? `<small>TALKER</small><b>${esc(c.alias)}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}${lockB}</div>`
     + dispatchPosChip(c, true) + dispatchSecLine(c) + vu
     + `<div class="fl-meter" title="signal ${c.levelDb.toFixed(0)} dB">${meter}<small>${c.levelDb > 0 ? `${c.levelDb.toFixed(0)} dB` : ''}</small></div>`
     + `<div class="fl-air-f"><small>${c.voiceMs ? `VOICE ${(c.voiceMs / 1000).toFixed(1)} s` : c.granted ? 'GRANTED' : ''}${note ? ` · ${esc(note)}` : ''}</small><span class="pc-m">${dispatchPrefButtons(key)}</span></div></div>`;
@@ -5044,7 +5044,7 @@ function dispatchCallRow(c: FleetCall, now: number): string {
   const sel = c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`;
   const enc = c.encrypted ? secText(c).replace(/^ENCRYPTED/, 'ENC') : '';
   return `<div class="fl-call ${c.onAir ? 'live' : ''} ${c.emergency ? 'emerg' : ''} ${c.outside ? 'out' : ''}" style="--sys:${col}"><i></i><span class="fl-gt">${fleetClock(c.startMs)}</span><b class="fl-tg" data-flsel="${sel}">${esc(dispatchWho(c))}</b>`
-    + `<span class="fl-src">${c.src ? `← ${c.src}` : ''}</span><span class="fl-cd">${flDur(dur)}${c.voiceMs ? ` · voice ${(c.voiceMs / 1000).toFixed(1)} s` : ''}</span>`
+    + `<span class="fl-src">${c.src ? `← ${c.src}` : ''}${c.alias ? ` ${esc(c.alias)}` : ''}</span><span class="fl-cd">${flDur(dur)}${c.voiceMs ? ` · voice ${(c.voiceMs / 1000).toFixed(1)} s` : ''}</span>`
     + `<span class="fl-gf">${c.onAir ? flPill('ON AIR', 'ok') : ''}${c.emergency ? flPill('EMERG', 'red') : ''}${enc ? flPill(enc, 'acc') : ''}${c.cwId ? flIdChip(c.cwId, now - c.endMs) : ''}${c.audioMs ? `<button class="chip" data-flplay="${esc(c.key)}" title="replay">▶</button>` : ''}</span>${dispatchPosChip(c, false)}</div>`;
 }
 function dispatchCallsHtml(s: FleetSnap, now: number): string {
@@ -5128,7 +5128,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
     const restSite = dmr ? sys?.sites.find(x => x.label === site) ?? sys?.sites[0] : undefined;
     const dbs = reports.map(r => r.db).filter((x): x is number => typeof x === 'number');
     const radio = kv([
-      ['UNIT ID', `${u.id} · 0x${u.id.toString(16).toUpperCase()}`],
+      ['UNIT ID', `${u.id} · 0x${u.id.toString(16).toUpperCase()}`], ['TALKER ALIAS', u.alias || calls.find(c => c.alias)?.alias || ''],
       ['SYSTEM', sys ? `${fleetSysTitle(sys)} · ${fleetSysType(sys, s)}` : u.sys],
       ['SITE', site], ['COLOR CODE', dmr && sys && sys.cc >= 0 ? `${sys.cc}` : ''], ['SLOT', slots.length ? slots.map(x => `TS${x}`).join(', ') : ''],
       ['REST CHANNEL', restSite && restSite.rest >= 0 ? `LCN ${restSite.rest}` : ''],
@@ -5138,7 +5138,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
     ]) + (dbs.length >= 3 && Math.max(...dbs) - Math.min(...dbs) >= 1 ? `<div class="flc-spk"><small>SIGNAL · ${Math.round(Math.min(...dbs))} to ${Math.round(Math.max(...dbs))} dB</small>${sparkSvg(dbs.slice(-40).map(x => Math.max(1, x)))}</div>` : '');
     const times = [...reports.map(r => r.ms), ...calls.map(c => c.startMs)];
     const hist = reports.length ? [...reports].reverse().slice(0, 40).map(r => `<div class="fl-rep ${r.verified ? '' : 'unv'}"><b>${fleetClock(r.ms)}</b><span>${esc(r.kind)} · ${fleetMhz(r.hz)}${r.lat !== null && r.lon !== null ? ` · ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}` : ''}</span><small>${esc(r.text)}</small><code>${esc(r.hex)}</code></div>`).join('') : '';
-    return `<div class="flc">${head(`${u.id}`, 'UNIT', sys ? fleetSysTitle(sys) : u.sys, col, chips, mapBtn)}<div class="flc-grid">`
+    return `<div class="flc">${head(`${u.id}`, 'UNIT', `${u.alias ? `${u.alias} · ` : ''}${sys ? fleetSysTitle(sys) : u.sys}`, col, chips, mapBtn)}<div class="flc-grid">`
       + sec('WHERE', where, true) + sec('CALLS', callList(calls)) + sec('TALKGROUPS', tgs) + sec('RADIO', radio) + sec('ACTIVITY', spark(times))
       + sec(`EVERY REPORT · ${reports.length}`, hist ? `<div class="fl-hist flc-reps">${hist}</div>` : '', true) + `</div></div>`;
   }
