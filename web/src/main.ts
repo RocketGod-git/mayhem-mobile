@@ -31,7 +31,7 @@ import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
-import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet } from './dsp/fleet/view.js';
+import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, trackSvg, sparkSvg, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
@@ -4595,7 +4595,7 @@ type FleetView = 'systems' | 'calls' | 'map' | 'grants' | 'freqs' | 'log';
 type FleetSel = { kind: 'unit' | 'tg' | 'sys' | 'car'; key: string } | null;
 const fleetUi = {
   snap: null as FleetSnap | null, view: 'systems' as FleetView, band: 'AUTO', span: 8_000_000, sel: null as FleetSel,
-  unit: null as { key: string; reports: FleetUnitReport[]; trail: [number, number, number][] } | null,
+  unit: null as { key: string; reports: FleetUnitReport[]; trail: [number, number, number][]; offArea: number } | null,
   windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false, hold: false, wired: false,
   prefs: loadDispatchPrefs(), airSeen: new Map<string, number>(), audioOn: true, gain: 0.8, following: null as { key: string; home: number; until: number } | null,
   lock: loadDispatchLock(), vu: { key: '', db: -90 },
@@ -5072,45 +5072,147 @@ function dispatchFollow(s: FleetSnap, now: number): void {
 }
 function fleetDetail(s: FleetSnap, now: number): string {
   const sel = fleetUi.sel; if (!sel) return '';
-  const head = (title: string, kind: string, extra = '') => `<div class="mt-dh"><b>${esc(title)}</b><span>${esc(kind)}</span>${extra}<button class="chip" data-fldo="close">✕</button></div>`;
-  const fields = (f: [string, string][]) => `<div class="mt-fields">${f.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}</div>`;
-  const sysLabel = (k: string) => s.systems.find(x => x.key === k)?.label ?? k;
+  const me = state.home ?? lastKnownPos() ?? null;
+  const sysOf = (k: string) => s.systems.find(x => x.key === k);
+  // only what has data: a field with no value is left out, never shown as a dash
+  const kv = (f: [string, string | number | null | undefined | false][]) => {
+    const rows = f.filter(([, v]) => v !== null && v !== undefined && v !== false && v !== '');
+    return rows.length ? `<div class="flc-kv">${rows.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(String(v))}</span></div>`).join('')}</div>` : '';
+  };
+  const sec = (title: string, body: string, wide = false) => body ? `<section class="flc-sec ${wide ? 'wide' : ''}"><h4>${esc(title)}</h4>${body}</section>` : '';
+  const chip = (t: string, tone = '') => `<span class="flc-chip ${tone}">${esc(t)}</span>`;
+  const big = (v: string, l: string) => v === '0' || v === '0%' ? '' : `<div class="flc-stat"><b>${esc(v)}</b><small>${esc(l)}</small></div>`;
+  const seen = (ms: number) => now - ms < 15_000 ? chip('LIVE', 'ok') : chip(`HEARD ${agoShort(now - ms).toUpperCase()} AGO`);
+  const head = (id: string, kind: string, label: string, color: string, chips: string, extra = '') =>
+    `<div class="flc-head" style="--sys:${color}"><div class="flc-id"><b>${esc(id)}</b><small>${esc(kind)}</small></div><div class="flc-hl"><span>${esc(label)}</span><div class="flc-chips">${chips}</div></div>${extra}<button class="chip" data-fldo="close" aria-label="close">✕</button></div>`;
+  const secText2 = (cs: FleetCall[]) => { const [e, n] = encShare(cs); return !n ? '' : e === 0 ? 'CLEAR' : e === n ? 'ENCRYPTED' : `${Math.round(100 * e / n)}% ENCRYPTED`; };
+  const spark = (times: number[]) => {
+    if (!times.length) return '';
+    const hr = activityBuckets(times, now, 3_600_000, 30), day = activityBuckets(times, now, 86_400_000, 24);
+    const inHour = hr.reduce((a, b) => a + b, 0), inDay = day.reduce((a, b) => a + b, 0);
+    return (inHour ? `<div class="flc-spk"><small>LAST HOUR · ${inHour}</small>${sparkSvg(hr)}</div>` : '') + (inDay > inHour ? `<div class="flc-spk"><small>LAST DAY · ${inDay}</small>${sparkSvg(day)}</div>` : '');
+  };
+  const callList = (cs: FleetCall[], n = 10) => cs.length ? `<div class="flc-calls">${cs.slice(0, n).map(c => dispatchCallRow(c, now)).join('')}${cs.length > n ? `<div class="fl-dim">${cs.length - n} more</div>` : ''}</div>` : '';
+
   if (sel.kind === 'unit') {
     const u = s.units.find(x => x.key === sel.key); if (!u) return '';
-    const full = fleetUi.unit?.key === u.key ? fleetUi.unit.reports : u.reports;
-    const pos = u.lat !== null && u.lon !== null ? `${u.lat.toFixed(5)}, ${u.lon.toFixed(5)}` : u.posMs ? (s.ref ? '-' : 'needs your location to resolve') : 'none on the air';
-    const f: [string, string][] = [['UNIT ID', `${u.id} (0x${u.id.toString(16).toUpperCase()})`], ['SYSTEM', sysLabel(u.sys)], ['SITE', u.site || '-'], ['POSITION', pos],
-      ['LAST POSITION', u.posMs ? `${fleetClock(u.posMs)} · ${fleetAgoText(now - u.posMs)}` : '-'], ['TALKGROUPS', u.groups.join(', ') || '-'], ['GRANTS', `${u.grants}`],
-      ['HEARD ON', u.carriers.map(k => fleetMhz(s.carriers.find(c => c.key === k)?.hz ?? k)).join(' · ')], ['FIRST HEARD', fleetClock(u.firstMs)], ['LAST HEARD', `${fleetClock(u.lastMs)} · ${fleetAgoText(now - u.lastMs)}`]];
-    const hist = [...full].reverse().map(r => `<div class="fl-rep ${r.verified ? '' : 'unv'}"><b>${fleetClock(r.ms)}</b><span>${esc(r.kind)} · ${fleetMhz(r.hz)}${r.lat !== null && r.lon !== null ? ` · ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}` : ''}</span><small>${esc(r.text)}</small><code>${esc(r.hex)}</code></div>`).join('');
-    return head(`${u.id}`, 'UNIT', u.lat !== null && fleetUi.view !== 'map' ? '<button class="chip" data-fldo="map">MAP</button>' : '') + fields(f) + `<div class="fl-hist"><small>EVERY REPORT${fleetUi.unit?.key === u.key ? '' : ' (loading the full history)'}</small>${hist}</div>`;
+    const sys = sysOf(u.sys), col = fleetColor(u.sys), dmr = sys?.proto === 'DMR';
+    const full = fleetUi.unit?.key === u.key ? fleetUi.unit : null, reports = full ? full.reports : u.reports, trail = full ? full.trail : u.trail;
+    const calls = s.calls.filter(c => c.kind === 'call' && c.sys === u.sys && (c.src === u.id || c.srcs.includes(u.id) || (!c.group && c.tg === u.id)));
+    const talking = calls.find(c => c.onAir && (c.src === u.id || c.pos?.unit === u.id));
+    const emerg = calls.some(c => c.emergency && (c.onAir || now - c.endMs < 600_000));
+    const chips = seen(u.lastMs) + (talking ? chip('TALKING NOW', 'ok live') : '') + (emerg ? chip('EMERGENCY', 'red') : '') + (secText2(calls) ? chip(secText2(calls), calls.some(c => c.encrypted) ? 'acc' : 'ok') : '');
+    const mapBtn = u.lat !== null && fleetUi.view !== 'map' ? '<button class="chip" data-fldo="map">MAP</button>' : '';
+    // where: the track over the rest of the system's units, the stats it gives
+    let where = '';
+    if (trail.length || (u.lat !== null && u.lon !== null)) {
+      const tr: [number, number, number][] = trail.length ? trail : [[u.lat!, u.lon!, u.posMs]];
+      const others = s.units.filter(x => x.sys === u.sys && x.key !== u.key && x.lat !== null && x.lon !== null && u.lat !== null && Math.abs(x.lat! - u.lat!) < 0.6 && Math.abs(x.lon! - u.lon!) < 0.8).map(x => [x.lat!, x.lon!] as [number, number]);
+      const st = trackStats(tr), last = tr[tr.length - 1], d = me ? flDistBearing(me, { lat: last[0], lon: last[1] }) : null;
+      where = `<div class="flc-map">${trackSvg(tr, { others, me: me && d && d.mi < 60 ? me : null })}</div><div class="flc-stats">`
+        + (d ? big(distText(d), `FROM YOU · ${Math.round(d.deg)}°`) : '')
+        + (st.mph !== null ? big(st.moving ? `${Math.round(st.mph)} mph` : 'STOPPED', st.moving ? `HEADING ${st.dir} · ${st.course}°` : 'NOT MOVING') : '')
+        + big(`${st.fixes}`, st.fixes === 1 ? 'POSITION FIX' : st.spanMs > 0 ? `FIXES OVER ${flSpan(st.spanMs)}` : 'FIXES')
+        + big(agoShort(now - last[2]), 'SINCE LAST FIX') + (st.mi >= 0.05 ? big(`${st.mi < 10 ? st.mi.toFixed(1) : Math.round(st.mi)} mi`, 'TRAVELED') : '')
+        + `</div>` + kv([['POSITION', `${last[0].toFixed(5)}, ${last[1].toFixed(5)}`], ['LAST FIX', `${fleetClock(last[2])}${u.posVerified ? ' · checked' : ''}`]]);
+    }
+    const off = full?.offArea ?? u.offArea;
+    if (off) where += `<div class="flc-note">${off} position ${off === 1 ? 'report' : 'reports'} outside the system's area, not placed</div>`;
+    if (!where && u.posMs) where = `<div class="flc-note">${s.ref ? 'position reports outside the system\'s area, not placed' : 'position reports waiting for your location to resolve'}</div>`;
+    // what it said
+    const tgs = u.tgCounts.length ? `<div class="flc-tags">${u.tgCounts.slice(0, 16).map(([tg, n]) => `<span data-flsel="tg:${esc(u.sys)}/${tg}"><b>TG ${tg}</b><i>${n}</i></span>`).join('')}</div>` : '';
+    // radio facts
+    const site = u.site || calls.find(c => c.site)?.site || '';
+    const slots = [...new Set(calls.filter(c => c.proto === 'DMR' || c.tdma).map(c => c.slot + 1))];
+    const freqs = [...new Set([...u.carriers.map(k => s.carriers.find(c => c.key === k)?.hz ?? k), ...calls.map(c => c.hz).filter(Boolean)])].sort((a, b) => a - b);
+    const restSite = dmr ? sys?.sites.find(x => x.label === site) ?? sys?.sites[0] : undefined;
+    const dbs = reports.map(r => r.db).filter((x): x is number => typeof x === 'number');
+    const radio = kv([
+      ['UNIT ID', `${u.id} · 0x${u.id.toString(16).toUpperCase()}`],
+      ['SYSTEM', sys ? `${fleetSysTitle(sys)} · ${fleetSysType(sys, s)}` : u.sys],
+      ['SITE', site], ['COLOR CODE', dmr && sys && sys.cc >= 0 ? `${sys.cc}` : ''], ['SLOT', slots.length ? slots.map(x => `TS${x}`).join(', ') : ''],
+      ['REST CHANNEL', restSite && restSite.rest >= 0 ? `LCN ${restSite.rest}` : ''],
+      ['WACN · SYSTEM', sys?.proto === 'P25' ? `${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : ''],
+      ['HEARD ON', freqs.length ? freqs.map(h => `${fleetMhz(h)}`).join(' · ') : ''], ['GRANTS', u.grants || ''],
+      ['CW ID', sys?.callsign ?? ''], ['FIRST HEARD', `${fleetClock(u.firstMs)} · ${agoShort(now - u.firstMs)} ago`], ['LAST HEARD', `${fleetClock(u.lastMs)} · ${agoShort(now - u.lastMs)} ago`],
+    ]) + (dbs.length >= 3 && Math.max(...dbs) - Math.min(...dbs) >= 1 ? `<div class="flc-spk"><small>SIGNAL · ${Math.round(Math.min(...dbs))} to ${Math.round(Math.max(...dbs))} dB</small>${sparkSvg(dbs.slice(-40).map(x => Math.max(1, x)))}</div>` : '');
+    const times = [...reports.map(r => r.ms), ...calls.map(c => c.startMs)];
+    const hist = reports.length ? [...reports].reverse().slice(0, 40).map(r => `<div class="fl-rep ${r.verified ? '' : 'unv'}"><b>${fleetClock(r.ms)}</b><span>${esc(r.kind)} · ${fleetMhz(r.hz)}${r.lat !== null && r.lon !== null ? ` · ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}` : ''}</span><small>${esc(r.text)}</small><code>${esc(r.hex)}</code></div>`).join('') : '';
+    return `<div class="flc">${head(`${u.id}`, 'UNIT', sys ? fleetSysTitle(sys) : u.sys, col, chips, mapBtn)}<div class="flc-grid">`
+      + sec('WHERE', where, true) + sec('CALLS', callList(calls)) + sec('TALKGROUPS', tgs) + sec('RADIO', radio) + sec('ACTIVITY', spark(times))
+      + sec(`EVERY REPORT · ${reports.length}`, hist ? `<div class="fl-hist flc-reps">${hist}</div>` : '', true) + `</div></div>`;
   }
+
   if (sel.kind === 'tg') {
     const t = s.tgs.find(x => x.key === sel.key); if (!t) return '';
-    const f: [string, string][] = [['TALKGROUP', `${t.tg} (0x${t.tg.toString(16).toUpperCase()})`], ['SYSTEM', sysLabel(t.sys)], ['GRANTS', `${t.grants} · ${t.recent.length} in 10 min`], ['FIRST', fleetClock(t.firstMs)], ['LAST', `${fleetClock(t.lastMs)} · ${fleetAgoText(now - t.lastMs)}`]];
-    const members = t.members.length ? `<div class="fl-nb"><small>MEMBERS</small>${t.members.map(m => `<span data-flsel="unit:${esc(t.sys)}/${m}">${m}</span>`).join('')}</div>` : '';
-    const calls = s.calls.filter(c => c.group && c.sys === t.sys && c.tg === t.tg).slice(0, 12);
-    return head(`TG ${t.tg}`, 'TALKGROUP') + `<div class="pc-m fl-prefs">${dispatchPrefButtons(t.key)}</div>` + fields(f) + members
-      + (calls.length ? `<div class="fl-hist"><small>CALLS</small>${calls.map(c => dispatchCallRow(c, now)).join('')}</div>` : '')
-      + `<div class="fl-hist"><small>HISTORY</small>${t.history.map(g => fleetGrantRow(g, now)).join('')}</div>`;
+    const sys = sysOf(t.sys), col = fleetColor(t.sys);
+    const calls = s.calls.filter(c => c.kind === 'call' && c.group && c.sys === t.sys && c.tg === t.tg);
+    const onAir = calls.find(c => c.onAir), emerg = calls.some(c => c.emergency);
+    const chips = seen(Math.max(t.lastMs, ...calls.map(c => c.onAir ? now : c.endMs))) + (onAir ? chip(s.playing === onAir.key ? 'PLAYING' : 'ON THE AIR', 'ok live') : '') + (emerg ? chip('EMERGENCY', 'red') : '') + (secText2(calls) ? chip(secText2(calls), calls.some(c => c.encrypted) ? 'acc' : 'ok') : '');
+    const units = s.units.filter(u => u.sys === t.sys && (t.members.includes(u.id) || u.groups.includes(t.tg))).sort((a, b) => b.lastMs - a.lastMs);
+    const unitTags = units.length ? `<div class="flc-tags">${units.slice(0, 40).map(u => `<span data-flsel="unit:${esc(u.key)}"><b>${u.id}</b><i>${agoShort(now - u.lastMs)}</i></span>`).join('')}</div>` : '';
+    const placed = units.filter(u => u.lat !== null && u.lon !== null);
+    const map = placed.length ? `<div class="flc-map">${trackSvg([], { others: placed.map(u => [u.lat!, u.lon!] as [number, number]), me, bright: true })}</div>` : '';
+    const stats = `<div class="flc-stats">${big(`${t.grants}`, 'GRANTS')}${big(`${t.recent.length}`, 'IN 10 MIN')}${big(`${calls.length}`, 'CALLS KEPT')}${big(`${units.length}`, 'UNITS')}</div>`;
+    const times = [...t.history.map(g => g.ms), ...t.recent, ...calls.map(c => c.startMs)];
+    return `<div class="flc">${head(`TG ${t.tg}`, 'TALKGROUP', sys ? fleetSysTitle(sys) : t.sys, col, chips)}<div class="pc-m fl-prefs">${dispatchPrefButtons(t.key)}</div><div class="flc-grid">`
+      + sec('NOW', stats + kv([['TALKGROUP', `${t.tg} · 0x${t.tg.toString(16).toUpperCase()}`], ['SYSTEM', sys ? `${fleetSysTitle(sys)} · ${fleetSysType(sys, s)}` : ''], ['FIRST HEARD', fleetClock(t.firstMs)], ['LAST HEARD', `${fleetClock(t.lastMs)} · ${agoShort(now - t.lastMs)} ago`]]), true)
+      + sec('RECENT CALLS', callList(calls, 14)) + sec(`UNITS · ${units.length}`, map + unitTags) + sec('ACTIVITY', spark(times))
+      + sec('GRANTS', t.history.length ? `<div class="fl-hist">${t.history.map(g => fleetGrantRow(g, now)).join('')}</div>` : '', true) + `</div></div>`;
   }
+
   if (sel.kind === 'sys') {
-    const x = s.systems.find(y => y.key === sel.key); if (!x) return '';
-    const f: [string, string][] = x.proto === 'NXDN'
-      ? [['PROTOCOL', 'NXDN'], ['CATEGORY', x.model], ['SYSTEM CODE', `${x.sysId}`], ['SITES', x.sites.map(y => y.site).join(', ')], ['CARRIERS', x.sites.map(y => fleetMhz(y.ccHz[0] ?? 0)).join(', ')], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
-      : x.proto === 'TETRA'
-      ? [['PROTOCOL', 'TETRA'], ['MCC', `${x.wacn}`], ['MNC', `${x.sysId}`], ['COLOR CODE', `${x.cc}`], ['CARRIERS', x.sites.map(y => fleetMhz(y.ccHz[0] ?? 0)).join(', ')], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
-      : x.proto === 'P25'
-      ? [['PROTOCOL', 'P25 Phase 1 control channel'], ['WACN', x.wacn.toString(16).toUpperCase().padStart(5, '0')], ['SYSTEM', x.sysId.toString(16).toUpperCase().padStart(3, '0')], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['TALKGROUPS', `${x.tgs}`], ['GRANTS', `${x.grants}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]]
-      : [['PROTOCOL', 'DMR'], ...(x.trunk ? [['TRUNKING', x.trunk]] as [string, string][] : []), ['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : '-'], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : 'not sent'], ['CALLSIGN', x.callsign || 'no CW ID heard yet'], ['SITES', x.sites.map(y => y.label).join(', ')], ['UNITS', `${x.units}`], ['FIRST HEARD', fleetClock(x.firstMs)], ['LAST HEARD', fleetClock(x.lastMs)]];
-    const lp = x.lpcns.length ? `<div class="fl-hist"><small>LOGICAL CHANNELS</small><div class="fl-lcn">${x.lpcns.map(l => `<span><b>LPCN ${l.lpcn}</b><i>${fleetMhz(l.hz)} · ${l.votes} calls</i></span>`).join('')}</div></div>` : '';
-    return head(x.proto, x.label) + fields(f) + (x.proto === 'P25' ? `<div class="fl-hist"><small>CHANNEL TABLE</small>${fleetIdenRows(x.idens)}</div>` : lp);
+    const x = sysOf(sel.key); if (!x) return '';
+    const col = fleetColor(x.key), calls = s.calls.filter(c => c.kind === 'call' && c.sys === x.key);
+    const units = s.units.filter(u => u.sys === x.key), placed = units.filter(u => u.lat !== null && u.lon !== null);
+    const live = s.carriers.some(c => c.sys === x.key && now - c.lastDecodeMs < 10_000);
+    const chips = (live ? chip('LIVE', 'ok') : seen(x.lastMs)) + chip(fleetSysType(x, s)) + (secText2(calls) ? chip(secText2(calls), calls.some(c => c.encrypted) ? 'acc' : 'ok') : '') + (calls.some(c => c.onAir) ? chip(`${calls.filter(c => c.onAir).length} ON THE AIR`, 'ok live') : '');
+    const tgs = s.tgs.filter(t => t.sys === x.key).sort((a, b) => b.grants - a.grants || b.lastMs - a.lastMs);
+    const callTg = new Map<number, number>(); for (const c of calls) if (c.group && c.tg) callTg.set(c.tg, (callTg.get(c.tg) ?? 0) + 1);
+    const busiest: [number, number][] = tgs.length ? tgs.slice(0, 12).map(t => [t.tg, t.grants]) : [...callTg].sort((a, b) => b[1] - a[1]).slice(0, 12);
+    const tgTags = busiest.length ? `<div class="flc-tags">${busiest.map(([tg, n]) => `<span data-flsel="tg:${esc(x.key)}/${tg}"><b>TG ${tg}</b><i>${n}</i></span>`).join('')}</div>` : '';
+    const sites = x.sites.length ? `<div class="flc-sites">${x.sites.map(st => `<div class="flc-site"><b>${esc(x.proto === 'P25' ? `SITE ${st.label}` : st.label.toUpperCase())}</b>`
+      + `<span>${st.ccHz.map(h => `${fleetMhz(h)}`).join(' · ')}${st.callsign ? ` · ${esc(st.callsign)}` : ''}</span>`
+      + (st.lcns.length ? `<span class="flc-lcn">${st.lcns.map(l => `<i class="${l.lcn === st.rest ? 'rest' : st.busy.includes(l.lcn) ? 'busy' : ''}">LCN ${l.lcn} ${fleetMhz(l.hz)}</i>`).join('')}</span>` : '')
+      + (st.neighbors.length ? `<span class="flc-nb">${st.neighbors.length} neighbor${st.neighbors.length > 1 ? 's' : ''}</span>` : '') + `</div>`).join('')}</div>` : '';
+    let area = '';
+    if (placed.length) {
+      const la = placed.map(u => u.lat!), lo = placed.map(u => u.lon!), h = flDistBearing({ lat: Math.min(...la), lon: Math.min(...lo) }, { lat: Math.min(...la), lon: Math.max(...lo) }).mi, v = flDistBearing({ lat: Math.min(...la), lon: lo[0] }, { lat: Math.max(...la), lon: lo[0] }).mi;
+      area = `<div class="flc-map">${trackSvg([], { others: placed.map(u => [u.lat!, u.lon!] as [number, number]), me, bright: true })}</div>` + kv([['UNITS PLACED', `${placed.length} of ${units.length}`], ['AREA', `${Math.max(0.1, h).toFixed(1)} × ${Math.max(0.1, v).toFixed(1)} mi`]]);
+    }
+    const [enc, n] = encShare(calls);
+    const stats = `<div class="flc-stats">${big(`${x.sites.length}`, 'SITES')}${big(`${units.length}`, 'UNITS')}${big(`${x.tgs || tgs.length}`, 'TALKGROUPS')}${big(`${x.grants}`, 'GRANTS')}${n ? big(`${Math.round(100 * enc / n)}%`, 'ENCRYPTED') : ''}</div>`;
+    const ids: [string, string][] = x.proto === 'NXDN' ? [['CATEGORY', x.model], ['SYSTEM CODE', `${x.sysId}`]]
+      : x.proto === 'TETRA' ? [['MCC', `${x.wacn}`], ['MNC', `${x.sysId}`], ['COLOR CODE', `${x.cc}`]]
+      : x.proto === 'P25' ? [['WACN', x.wacn.toString(16).toUpperCase().padStart(5, '0')], ['SYSTEM', x.sysId.toString(16).toUpperCase().padStart(3, '0')]]
+      : [['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : '']];
+    const facts = kv([['TYPE', fleetSysType(x, s)], ...ids, ['CW ID', x.callsign], ['FIRST HEARD', `${fleetClock(x.firstMs)} · ${agoShort(now - x.firstMs)} ago`], ['LAST HEARD', `${fleetClock(x.lastMs)} · ${agoShort(now - x.lastMs)} ago`], ['ENCRYPTION', n ? `${enc} of ${n} calls` : '']]);
+    const lp = x.lpcns.length ? `<div class="fl-lcn">${x.lpcns.map(l => `<span><b>LPCN ${l.lpcn}</b><i>${fleetMhz(l.hz)} · ${l.votes} calls</i></span>`).join('')}</div>` : '';
+    const times = [...s.grants.filter(g => g.sys === x.key).map(g => g.ms), ...calls.map(c => c.startMs)];
+    return `<div class="flc">${head(fleetSysTitle(x), 'SYSTEM', x.label, col, chips)}<div class="flc-grid">`
+      + sec('OVERVIEW', stats + facts, true) + sec('SITES AND CHANNELS', sites + lp) + sec('BUSIEST TALKGROUPS', tgTags) + sec('COVERAGE', area)
+      + sec(`UNITS · ${units.length}`, units.length ? `<div class="flc-tags">${[...units].sort((a, b) => b.lastMs - a.lastMs).slice(0, 40).map(u => `<span data-flsel="unit:${esc(u.key)}"><b>${u.id}</b><i>${agoShort(now - u.lastMs)}</i></span>`).join('')}${units.length > 40 ? `<span class="more"><i>${units.length - 40} more</i></span>` : ''}</div>` : '') + sec('ACTIVITY', spark(times))
+      + sec('RECENT CALLS', callList(calls, 8)) + (x.proto === 'P25' && x.idens.length ? sec('CHANNEL TABLE', fleetIdenRows(x.idens), true) : '') + `</div></div>`;
   }
+
   const c = s.carriers.find(y => String(y.key) === sel.key); if (!c) return '';
-  const f: [string, string][] = [['FREQUENCY', `${fleetMhz(c.hz)} MHz`], ['CLASS', c.cls || 'not classed yet'], ['ROLE', c.role || '-'], ['SYSTEM', c.sys ? sysLabel(c.sys) : '-'], ['NAC', c.nac >= 0 ? c.nac.toString(16).toUpperCase().padStart(3, '0') : '-'], ['COLOR CODE', c.cc >= 0 ? `${c.cc}` : '-'],
-    ['LEVEL', `${c.levelDb.toFixed(1)} dB over the floor (peak ${c.peakDb.toFixed(1)})`], ['ENVELOPE', `${c.envCv.toFixed(2)} (constant near 0, linear near 0.3)`], ['EYE', c.eye.toFixed(2)], ['FRAMES', `${c.frames}`], ['BLOCKS', `${c.blocks} · ${c.crcOk} passed CRC`],
-    ['CW ID', c.callsign ? `${c.callsign}${c.callsignMs ? ` · ${fleetClock(c.callsignMs)} · ${fleetAgoText(now - c.callsignMs)}` : ''}` : '-'], ['LCN', c.lcn || '-'], ['ON AIR', `${Math.round(c.onMs / 1000)} s`], ['FIRST HEARD', fleetClock(c.firstMs)], ['LAST HEARD', `${fleetClock(c.lastMs)} · ${fleetAgoText(now - c.lastMs)}`]];
-  return head(fleetMhz(c.hz), 'CARRIER') + fields(f);
+  const sys = c.sys ? sysOf(c.sys) : undefined, col = c.sys ? fleetColor(c.sys) : 'var(--muted)';
+  const calls = s.calls.filter(k => k.kind === 'call' && Math.abs(k.hz - c.hz) < 3_200);
+  const chips = (now - c.lastDecodeMs < 10_000 ? chip('DECODING', 'ok') : now - c.lastMs < 4_000 ? chip('ON THE AIR', 'ok') : seen(c.lastMs)) + (c.cls ? chip(c.cls) : '') + (c.role ? chip(c.role.toUpperCase(), 'acc') : '');
+  const stats = `<div class="flc-stats">${big(`${c.levelDb.toFixed(0)} dB`, `LEVEL · PEAK ${c.peakDb.toFixed(0)}`)}${c.blocks ? big(`${Math.round(100 * c.crcOk / Math.max(1, c.blocks))}%`, `BLOCKS PASSING · ${c.crcOk}/${c.blocks}`) : ''}${c.frames ? big(`${c.frames}`, 'FRAMES') : ''}${c.onMs > 0 ? big(flSpan(c.onMs), 'ON THE AIR') : ''}</div>`;
+  const facts = kv([['FREQUENCY', `${fleetMhz(c.hz)} MHz`], ['SYSTEM', sys ? `${fleetSysTitle(sys)} · ${fleetSysType(sys, s)}` : ''], ['NAC', c.nac >= 0 ? c.nac.toString(16).toUpperCase().padStart(3, '0') : ''], ['COLOR CODE', c.cc >= 0 ? `${c.cc}` : ''], ['LCN', c.lcn],
+    ['CW ID', c.callsign ? `${c.callsign}${c.callsignMs ? ` · ${fleetClock(c.callsignMs)}` : ''}` : ''], ['ENVELOPE', `${c.envCv.toFixed(2)} (constant near 0, linear near 0.3)`], ['EYE', c.eye.toFixed(2)],
+    ['FIRST HEARD', fleetClock(c.firstMs)], ['LAST HEARD', `${fleetClock(c.lastMs)} · ${agoShort(now - c.lastMs)} ago`]]);
+  return `<div class="flc">${head(fleetMhz(c.hz), 'CARRIER', sys ? fleetSysTitle(sys) : (c.cls || 'not classed yet'), col, chips)}<div class="flc-grid">`
+    + sec('SIGNAL', stats + facts, true) + sec('CALLS ON THIS CHANNEL', callList(calls, 8)) + sec('ACTIVITY', spark(calls.map(k => k.startMs))) + `</div></div>`;
+}
+/** A span of time, short: '45 s', '12 min', '3.5 h'. */
+const flSpan = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`;
+/** What kind of system it is, as the cards name it. */
+function fleetSysType(x: FleetSystem, s: FleetSnap): string {
+  if (x.proto === 'P25') return s.carriers.some(c => c.sys === x.key && c.tdma) || s.calls.some(c => c.sys === x.key && c.tdma) ? 'P25 PHASE 1 AND 2' : 'P25 PHASE 1';
+  if (x.proto === 'DMR') return x.trunk === 'CAPACITY PLUS' ? 'DMR CAPACITY PLUS' : x.trunk === 'TIER III' ? 'DMR TIER III' : 'DMR';
+  return x.proto;
 }
 function refreshFleet(force = false): void {
   if (state.app !== 'fleet') return;
@@ -8570,7 +8672,7 @@ function ensureWorker(): Worker {
       case 'sonde': sondeUi.snap = m as unknown as SondeSnap; refreshSondes(); break;
       case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;
       case 'fleet': fleetUi.snap = m as unknown as FleetSnap; refreshFleet(); break;
-      case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][] }; refreshFleet(true); break;
+      case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][], offArea: Number(m.offArea) || 0 }; refreshFleet(true); break;
       case 'fleetExport': fleetExport(m.csv as string, m.json as string); break;
       case 'fleetVu': if (state.app === 'fleet') dispatchVu(m.key as string, Number(m.db)); break;
       case 'fleetKnown': dispatchSaveKnown(m.known); break;

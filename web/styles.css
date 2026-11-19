@@ -2778,3 +2778,72 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 /* Two-finger maps: a small pill at the bottom of the map, never an overlay. */
 .geo-2f { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); z-index: 800; pointer-events: none; white-space: nowrap;
   padding: 3px 7px; border-radius: 6px; background: color-mix(in srgb, var(--surface) 85%, transparent); color: var(--muted); font-size: 9px; }
+
+/* Dispatch detail cards: unit, talkgroup, system, carrier */
+.flc { --sys: var(--accent); display: flex; flex-direction: column; gap: 10px; }
+.flc-head { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-radius: 12px; min-width: 0;
+  background: linear-gradient(110deg, color-mix(in srgb, var(--sys) 22%, transparent), color-mix(in srgb, var(--sys) 4%, transparent) 70%);
+  border: 1px solid color-mix(in srgb, var(--sys) 45%, transparent); }
+.flc-head .chip { flex: none; padding: 4px 9px; font-size: 10px; }
+.flc-id { display: flex; flex-direction: column; flex: none; line-height: 1; }
+.flc-id b { font-size: 34px; font-weight: 900; color: var(--ink); letter-spacing: 1px; text-shadow: 0 0 18px color-mix(in srgb, var(--sys) 55%, transparent); }
+.flc-id small { font-size: 9px; letter-spacing: 3px; color: var(--sys); font-weight: 800; margin-top: 5px; }
+.flc-hl { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.flc-hl > span { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flc-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.flc-chip { font-size: 9px; font-weight: 800; letter-spacing: 1.2px; padding: 3px 8px; border-radius: 99px; color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent); white-space: nowrap; }
+.flc-chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.flc-chip.red { color: #fff; background: var(--danger); border-color: var(--danger); }
+.flc-chip.acc { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 55%, transparent); }
+.flc-chip.live::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; animation: flcpulse 1s ease-in-out infinite; }
+@keyframes flcpulse { 50% { opacity: 0.25; } }
+.flc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.flc-sec { background: color-mix(in srgb, var(--panel) 70%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.flc-sec.wide { grid-column: 1 / -1; }
+.flc-sec h4 { margin: 0; font-size: 9px; letter-spacing: 2px; color: var(--muted); font-weight: 800; }
+.flc-kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 12px; }
+.flc-kv > div { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.flc-kv b { width: 104px; flex: none; font-size: 9px; letter-spacing: 1px; color: var(--muted); font-weight: 700; }
+.flc-kv span { font-size: 11px; color: var(--ink); user-select: text; overflow-wrap: anywhere; }
+.flc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 6px; }
+.flc-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.flc-stat b { font-size: 17px; font-weight: 900; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flc-stat small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); font-weight: 700; }
+.flc-map { border-radius: 8px; overflow: hidden; }
+.fl-track { display: block; width: 100%; height: auto; max-height: 240px; }
+.fl-track .bg { fill: var(--surface); stroke: var(--line); }
+.fl-track .tr { fill: none; stroke: var(--sys, var(--accent)); stroke-width: 2; stroke-linejoin: round; opacity: 0.75; }
+.fl-track .old { fill: var(--sys, var(--accent)); }
+.fl-track .now { fill: var(--ink); stroke: var(--sys, var(--accent)); stroke-width: 3; filter: drop-shadow(0 0 5px var(--sys, var(--accent))); }
+.fl-track .oth { fill: var(--muted); opacity: 0.45; }
+.fl-track .unit { fill: var(--sys, var(--accent)); stroke: color-mix(in srgb, var(--ink) 70%, transparent); stroke-width: 1; }
+.fl-track .me { fill: none; stroke: var(--ok); stroke-width: 2.5; }
+.fl-track .sb line { stroke: var(--muted); stroke-width: 2; }
+.fl-track text { fill: var(--muted); font-size: 9px; font-family: inherit; }
+.flc-spk { display: flex; flex-direction: column; gap: 3px; }
+.flc-spk small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); font-weight: 700; }
+.fl-spark { display: block; width: 100%; height: 34px; color: var(--sys, var(--accent)); }
+.fl-spark rect { fill: currentColor; }
+.fl-spark rect.z { fill: var(--line); }
+.flc-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.flc-tags span { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--sys) 45%, var(--line)); background: var(--surface); cursor: pointer; }
+.flc-tags b { font-size: 11px; color: var(--ink); }
+.flc-tags i { font-style: normal; font-size: 9px; color: var(--muted); }
+.flc-sites { display: flex; flex-direction: column; gap: 6px; }
+.flc-site { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 6px 8px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+.flc-site > b { font-size: 11px; color: var(--sys); letter-spacing: 1px; }
+.flc-site > span { font-size: 10px; color: var(--ink); }
+.flc-lcn { display: flex; flex-wrap: wrap; gap: 4px; }
+.flc-lcn i { font-style: normal; font-size: 9px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); }
+.flc-lcn i.rest { color: var(--ok); border-color: var(--ok); }
+.flc-lcn i.busy { color: var(--accent2); border-color: var(--accent2); }
+.flc-nb { font-size: 9px; color: var(--muted); }
+.flc-note { font-size: 10px; color: var(--muted); }
+.flc-calls { display: flex; flex-direction: column; gap: 2px; }
+.flc-reps { max-height: 260px; overflow-y: auto; margin-top: 0; }
+@media (max-width: 640px) {
+  .flc-id b { font-size: 28px; }
+  .flc-head { gap: 10px; padding: 9px 10px; }
+  .flc-grid { grid-template-columns: 1fr; }
+  .flc-kv { grid-template-columns: 1fr; }
+}

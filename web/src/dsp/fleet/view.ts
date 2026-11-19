@@ -77,3 +77,65 @@ export function nowPlaying(calls: CallRow[], playing: string): CallRow | null {
 }
 /** The talkgroup or unit a call is to, as the cards name it. */
 export const callWho = (c: Pick<CallRow, 'tg' | 'group'>) => c.tg ? `${c.group ? 'TG' : 'UNIT'} ${c.tg}` : 'UNKNOWN TALKGROUP';
+
+// ------------------------------------------------------------------------------------------------ detail cards
+/** What a unit's track says: reports placed, time span, distance covered, the latest speed and course, moving or not. */
+export interface TrackStats { fixes: number; spanMs: number; mi: number; mph: number | null; course: number | null; dir: string; moving: boolean; lastMs: number }
+/** Speed and course come from the last two fixes (at least 20 s apart); a unit doing under 3 mph is stopped. */
+export function trackStats(trail: [number, number, number][]): TrackStats {
+  const n = trail.length;
+  const out: TrackStats = { fixes: n, spanMs: n > 1 ? trail[n - 1][2] - trail[0][2] : 0, mi: 0, mph: null, course: null, dir: '', moving: false, lastMs: n ? trail[n - 1][2] : 0 };
+  for (let i = 1; i < n; i++) out.mi += distBearing({ lat: trail[i - 1][0], lon: trail[i - 1][1] }, { lat: trail[i][0], lon: trail[i][1] }).mi;
+  for (let i = n - 1; i > 0; i--) {
+    const a = trail[i - 1], b = trail[n - 1], dt = (b[2] - a[2]) / 3_600_000;
+    if (dt * 3600 < 20) continue;
+    const d = distBearing({ lat: a[0], lon: a[1] }, { lat: b[0], lon: b[1] });
+    out.mph = d.mi / dt; out.moving = out.mph >= 3;
+    if (out.moving) { out.course = Math.round(d.deg); out.dir = d.dir; }
+    break;
+  }
+  return out;
+}
+/** Counts of [times] in [n] equal buckets over the [spanMs] up to [now] (oldest first). */
+export function activityBuckets(times: number[], now: number, spanMs: number, n: number): number[] {
+  const b = new Array(n).fill(0), w = spanMs / n;
+  for (const t of times) { const i = Math.floor((t - (now - spanMs)) / w); if (i >= 0 && i < n) b[i]++; }
+  return b;
+}
+/** A bar sparkline as SVG (theme colors from CSS: currentColor). */
+export function sparkSvg(b: number[], w = 240, h = 34): string {
+  const max = Math.max(1, ...b), bw = w / b.length;
+  return `<svg class="fl-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${b.map((v, i) => v ? `<rect x="${(i * bw + 0.5).toFixed(1)}" y="${(h - 2 - (h - 4) * v / max).toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${((h - 4) * v / max + 2).toFixed(1)}" rx="1"/>` : `<rect class="z" x="${(i * bw + 0.5).toFixed(1)}" y="${h - 2}" width="${Math.max(1, bw - 1).toFixed(1)}" height="2"/>`).join('')}</svg>`;
+}
+/**
+ * A small map of positions as SVG: an equirectangular fit with a margin, the track as a line (older faint, newest
+ * bright), [others] as dim dots (the rest of the system), [me] as a ring, and a scale bar. No tiles, so it draws at once.
+ */
+export function trackSvg(trail: [number, number, number][], opts: { others?: [number, number][]; me?: { lat: number; lon: number } | null; w?: number; h?: number; /** [others] are the subject (a system's units), drawn bright. */ bright?: boolean } = {}): string {
+  const w = opts.w ?? 320, h = opts.h ?? 180, pts = [...trail.map(t => [t[0], t[1]] as [number, number]), ...(opts.others ?? [])];
+  if (opts.me) pts.push([opts.me.lat, opts.me.lon]);
+  if (!pts.length) return '';
+  let la0 = Math.min(...pts.map(p => p[0])), la1 = Math.max(...pts.map(p => p[0])), lo0 = Math.min(...pts.map(p => p[1])), lo1 = Math.max(...pts.map(p => p[1]));
+  const k = Math.cos((la0 + la1) / 2 * Math.PI / 180);
+  // at least 600 m across, so one fix is not a single pixel blown up
+  const minDeg = 0.0055;
+  if (la1 - la0 < minDeg) { const c = (la0 + la1) / 2; la0 = c - minDeg / 2; la1 = c + minDeg / 2; }
+  if ((lo1 - lo0) * k < minDeg) { const c = (lo0 + lo1) / 2; lo0 = c - minDeg / k / 2; lo1 = c + minDeg / k / 2; }
+  const pad = 14, sx = (w - 2 * pad) / ((lo1 - lo0) * k), sy = (h - 2 * pad) / (la1 - la0), s = Math.min(sx, sy);
+  const cx = (lo0 + lo1) / 2, cy = (la0 + la1) / 2;
+  const X = (lon: number) => (w / 2 + (lon - cx) * k * s).toFixed(1), Y = (lat: number) => (h / 2 - (lat - cy) * s).toFixed(1);
+  // scale bar: a round distance near a quarter of the width
+  const kmPerPx = 111.32 / s, want = kmPerPx * w / 4, steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200], km = steps.find(v => v >= want) ?? want, px = km / kmPerPx;
+  const mi = km * 0.621371, lab = mi < 0.25 ? `${Math.round(mi * 5280)} ft` : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`;
+  const n = trail.length;
+  const line = n > 1 ? `<polyline class="tr" points="${trail.map(t => `${X(t[1])},${Y(t[0])}`).join(' ')}"/>` : '';
+  const dots = trail.map((t, i) => `<circle class="${i === n - 1 ? 'now' : 'old'}" cx="${X(t[1])}" cy="${Y(t[0])}" r="${i === n - 1 ? 5 : 2.4}" style="opacity:${i === n - 1 ? 1 : (0.25 + 0.6 * i / Math.max(1, n - 1)).toFixed(2)}"/>`).join('');
+  const others = (opts.others ?? []).map(p => `<circle class="${opts.bright ? 'unit' : 'oth'}" cx="${X(p[1])}" cy="${Y(p[0])}" r="${opts.bright ? 3.5 : 2}"/>`).join('');
+  const me = opts.me ? `<circle class="me" cx="${X(opts.me.lon)}" cy="${Y(opts.me.lat)}" r="5"/>` : '';
+  return `<svg class="fl-track" viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect class="bg" width="${w}" height="${h}" rx="8"/>${others}${line}${dots}${me}`
+    + `<g class="sb"><line x1="${pad}" y1="${h - 9}" x2="${(pad + px).toFixed(1)}" y2="${h - 9}"/><text x="${pad}" y="${h - 13}">${lab}</text></g><text class="n" x="${w - pad}" y="${pad + 4}" text-anchor="end">N ↑</text></svg>`;
+}
+/** Encrypted share of a set of calls: [encrypted, total]. */
+export const encShare = (calls: Pick<CallRow, 'encrypted' | 'kind'>[]) => { const v = calls.filter(c => c.kind === 'call'); return [v.filter(c => c.encrypted).length, v.length] as [number, number]; };
+/** How long ago, short: 'now', '42 s', '7 min', '3 h', '2 d'. */
+export const agoShort = (ms: number) => ms < 5_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min` : ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)} h` : `${Math.floor(ms / 86_400_000)} d`;

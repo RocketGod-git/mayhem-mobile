@@ -23,6 +23,13 @@ import { NxdnRx, NXDN_CATEGORY, type NxdnSite } from './nxdn.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
 
 export const CH_RATE = 24_000;
+/** How far from its system's area a DMR unit position may resolve, and from the receiver before the area is known (km). */
+export const PLACE_KM = 80, PLACE_RX_KM = 150;
+/** Distance in km between two points (equirectangular, plenty for a region). */
+export const kmBetween = (a: number, b: number, c: number, d: number): number => {
+  const r = Math.PI / 180, x = (d - b) * r * Math.cos((a + c) / 2 * r), y = (c - a) * r;
+  return 6371 * Math.hypot(x, y);
+};
 const CUT_HZ = 5_500;
 const AUDITION_MS = 3_000;
 const LIVE_MS = 4_000;
@@ -56,10 +63,14 @@ export interface SystemRow {
   /** The channels the system was heard on (kept when it is out of the span), and whether its units report positions. */
   heardHz: number[]; positions: boolean;
 }
-export interface UnitReport { ms: number; hz: number; kind: string; hex: string; verified: boolean; lat: number | null; lon: number | null; text: string }
+export interface UnitReport { ms: number; hz: number; kind: string; hex: string; verified: boolean; lat: number | null; lon: number | null; text: string; /** The carrier's level when it was heard (dB over the floor). */ db?: number }
 export interface UnitRow {
   key: string; sys: string; id: number; firstMs: number; lastMs: number; lat: number | null; lon: number | null; posMs: number;
   posVerified: boolean; trail: [number, number, number][]; groups: number[]; grants: number; carriers: number[]; reports: UnitReport[]; site: string;
+  /** Talkgroups the unit was heard on, with how many times. */
+  tgCounts: [number, number][];
+  /** Position reports that resolved outside the system's area (left off the map), and all position reports. */
+  offArea: number; fixes: number;
 }
 export interface GrantRow { ms: number; lastMs: number; sys: string; kind: string; tg: number; group: boolean; src: number; ch: string; hz: number; slot: number; tdma: boolean; emergency: boolean; encrypted: boolean; carrierHz: number; site: string; lpcn?: number; chDerived?: boolean }
 export interface TgRow { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: number[]; history: GrantRow[] }
@@ -93,6 +104,8 @@ interface Sys {
   heardHz: Set<number>;
 }
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
+  /** Every position report as sent (low 16 bits), resolved when shown: [time, lat16, lon16]. */
+  fixes: [number, number, number][]; tgCounts: Map<number, number>;
   /** A position kept from an earlier session (restored from the device), used until a report on the air replaces it. */
   fix?: [number, number] }
 interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: Set<number>; history: GrantRow[] }
@@ -742,12 +755,11 @@ export class FleetProcessor implements IqProcessor {
     u.lonLo = cs.lonLo; u.latLo = cs.latLo; u.posMs = now; u.posVerified = cs.verified;
     const last = u.reports[u.reports.length - 1];
     if (last) { last.lonLo = cs.lonLo; last.latLo = cs.latLo; }
-    if (this.ref) {
-      const lat = unwrap16(cs.latLo, this.ref.lat), lon = unwrap16(cs.lonLo, this.ref.lon);
-      if (last) { last.lat = round6(lat); last.lon = round6(lon); }
-      const tr = u.trail[u.trail.length - 1];
-      if (!tr || tr[0] !== round6(lat) || tr[1] !== round6(lon)) { u.trail.push([round6(lat), round6(lon), now]); if (u.trail.length > 30) u.trail.shift(); }
-    }
+    const fx = u.fixes[u.fixes.length - 1];
+    if (!fx || fx[1] !== cs.latLo || fx[2] !== cs.lonLo) { u.fixes.push([now, cs.latLo, cs.lonLo]); if (u.fixes.length > 300) u.fixes.shift(); }
+    this.anchorsAt = -1;
+    const p = this.place(s.key, cs.latLo, cs.lonLo);
+    if (last && p) { last.lat = p[0]; last.lon = p[1]; }
   }
   private cwText(c: Carrier, text: string): void {
     const word = text.split(' ').find(looksLikeCallsign);
@@ -759,12 +771,12 @@ export class FleetProcessor implements IqProcessor {
   private touchUnit(sys: string, id: number, c: Carrier, now: number, kind: string, msg: Tsbk | Csbk, site: string, group?: number): Unit {
     const key = `${sys}/${id}`;
     let u = this.units.get(key);
-    if (!u) { u = { key, sys, id, firstMs: now, lastMs: now, lonLo: -1, latLo: -1, posMs: 0, posVerified: false, trail: [], groups: new Set(), grants: 0, carriers: new Set(), reports: [] }; this.units.set(key, u); }
+    if (!u) { u = { key, sys, id, firstMs: now, lastMs: now, lonLo: -1, latLo: -1, posMs: 0, posVerified: false, trail: [], groups: new Set(), grants: 0, carriers: new Set(), reports: [], fixes: [], tgCounts: new Map() }; this.units.set(key, u); }
     u.lastMs = now; u.carriers.add(c.key);
-    if (group !== undefined) { u.groups.add(group); this.tgFor(sys, group, now).members.add(id); }
+    if (group !== undefined) { u.groups.add(group); u.tgCounts.set(group, (u.tgCounts.get(group) ?? 0) + 1); this.tgFor(sys, group, now).members.add(id); }
     if (kind === 'grant' || kind === 'u2u' || kind === 'datagrant') u.grants++;
     const cs = 'verified' in msg ? msg as Csbk : null, text = cs ? csbkLine(cs) : tsbkLine(msg as Tsbk);
-    u.reports.push({ ms: now, hz: c.hz, kind: `${kind}${site ? ` · site ${site}` : ''}`, hex: msg.hex, verified: cs ? cs.verified : true, lat: null, lon: null, text });
+    u.reports.push({ ms: now, hz: c.hz, kind: `${kind}${site ? ` · site ${site}` : ''}`, hex: msg.hex, verified: cs ? cs.verified : true, lat: null, lon: null, text, db: c.levelDb });
     if (u.reports.length > 60) u.reports.shift();
     this.pending = true;
     return u;
@@ -807,9 +819,46 @@ export class FleetProcessor implements IqProcessor {
 
   // ------------------------------------------------------------------------------------------------ output
   private resolvePos(u: Unit): [number | null, number | null] {
-    if (u.lonLo < 0 && u.fix) return [u.fix[0], u.fix[1]];
-    if (!this.ref || u.lonLo < 0) return [null, null];
-    return [round6(unwrap16(u.latLo, this.ref.lat)), round6(unwrap16(u.lonLo, this.ref.lon))];
+    if (u.lonLo < 0 && u.fix) {
+      // a position kept from an earlier session: shown only where the system's radios can be (an older build drew
+      // some reports in the wrong place)
+      const a = this.anchorFor(u.sys), r = a ?? this.ref;
+      return !r || kmBetween(u.fix[0], u.fix[1], r.lat, r.lon) <= (a ? PLACE_KM : PLACE_RX_KM) ? [u.fix[0], u.fix[1]] : [null, null];
+    }
+    if (u.lonLo < 0) return [null, null];
+    const p = this.place(u.sys, u.latLo, u.lonLo);
+    return p ? p : [null, null];
+  }
+  /**
+   * DMR unit reports carry only the low 16 bits of each coordinate (about 5.6 degrees a cycle), so each report has a
+   * twin every 5.6 degrees and is resolved to the one nearest a reference. The reference is the system's own area
+   * once three or more of its units agree on it (the median of their positions, at least three within 40 km of it):
+   * units of one system cluster around its sites. A report that lands farther than [PLACE_KM] from that area (or
+   * [PLACE_RX_KM] from the receiver, before the system has an area) is not a place the system's radios can be: it is
+   * left off the map rather than drawn in the ocean, and counted.
+   */
+  private place(sys: string, lat16: number, lon16: number): [number, number] | null {
+    if (!this.ref) return null;
+    const a = this.anchorFor(sys), r = a ?? this.ref;
+    const lat = round6(unwrap16(lat16, r.lat)), lon = round6(unwrap16(lon16, r.lon));
+    return kmBetween(lat, lon, r.lat, r.lon) <= (a ? PLACE_KM : PLACE_RX_KM) ? [lat, lon] : null;
+  }
+  private readonly anchors = new Map<string, { lat: number; lon: number } | null>(); private anchorsAt = -1;
+  private anchorFor(sys: string): { lat: number; lon: number } | null {
+    if (this.anchorsAt < 0) { this.anchors.clear(); this.anchorsAt = 1; }
+    if (this.anchors.has(sys)) return this.anchors.get(sys)!;
+    let out: { lat: number; lon: number } | null = null;
+    if (this.ref) {
+      const pts: [number, number][] = [];
+      for (const u of this.units.values()) if (u.sys === sys && u.lonLo >= 0) pts.push([unwrap16(u.latLo, this.ref.lat), unwrap16(u.lonLo, this.ref.lon)]);
+      if (pts.length >= 3) {
+        const med = (v: number[]) => { const x = [...v].sort((p, q) => p - q); return x[x.length >> 1]; };
+        const m = { lat: med(pts.map(p => p[0])), lon: med(pts.map(p => p[1])) };
+        if (pts.filter(p => kmBetween(p[0], p[1], m.lat, m.lon) <= 40).length >= 3) out = m;
+      }
+    }
+    this.anchors.set(sys, out);
+    return out;
   }
   /**
    * Where each call on the air is heard from: the talking unit's last position, else the latest position of any unit
@@ -865,7 +914,7 @@ export class FleetProcessor implements IqProcessor {
     for (const x of k.units ?? []) {
       const key = `${x.sys}/${x.id}`;
       let u = this.units.get(key);
-      if (!u) { u = { key, sys: x.sys, id: x.id, firstMs: x.firstMs, lastMs: x.lastMs, lonLo: -1, latLo: -1, posMs: x.posMs, posVerified: x.verified, trail: [[x.lat, x.lon, x.posMs]], groups: new Set(), grants: 0, carriers: new Set(), reports: [] }; this.units.set(key, u); }
+      if (!u) { u = { key, sys: x.sys, id: x.id, firstMs: x.firstMs, lastMs: x.lastMs, lonLo: -1, latLo: -1, posMs: x.posMs, posVerified: x.verified, trail: [[x.lat, x.lon, x.posMs]], groups: new Set(), grants: 0, carriers: new Set(), reports: [], fixes: [], tgCounts: new Map() }; this.units.set(key, u); }
       if (u.lonLo < 0 && x.posMs >= u.posMs) { u.fix = [x.lat, x.lon]; u.posMs = x.posMs; u.posVerified = x.verified; }
     }
     this.post(true);
@@ -875,9 +924,8 @@ export class FleetProcessor implements IqProcessor {
     this.ref = { lat, lon };
     for (const u of this.units.values()) {
       if (u.lonLo < 0) continue;
-      for (const r of u.reports) if (r.lonLo !== undefined && r.latLo !== undefined) { r.lat = round6(unwrap16(r.latLo, lat)); r.lon = round6(unwrap16(r.lonLo, lon)); }
-      const [la, lo] = this.resolvePos(u);
-      if (la !== null && lo !== null && !u.trail.length) u.trail.push([la, lo, u.posMs]);
+      this.anchorsAt = -1;
+      for (const r of u.reports) if (r.lonLo !== undefined && r.latLo !== undefined) { const p = this.place(u.sys, r.latLo, r.lonLo); r.lat = p ? p[0] : null; r.lon = p ? p[1] : null; }
     }
     this.post(true);
   }
@@ -934,8 +982,10 @@ export class FleetProcessor implements IqProcessor {
     }).sort((a, b) => a.firstMs - b.firstMs);
     const units: UnitRow[] = [...this.units.values()].map(u => {
       const [lat, lon] = this.resolvePos(u);
-      return { key: u.key, sys: u.sys, id: u.id, firstMs: u.firstMs, lastMs: u.lastMs, lat, lon, posMs: u.posMs, posVerified: u.posVerified, trail: u.trail.slice(-12),
-        groups: [...u.groups], grants: u.grants, carriers: [...u.carriers], reports: u.reports.slice(-6).map(r => ({ ...r, lonLo: undefined, latLo: undefined })), site: unitSite.get(u.key) ?? '' };
+      const tr = this.trailOf(u);
+      return { key: u.key, sys: u.sys, id: u.id, firstMs: u.firstMs, lastMs: u.lastMs, lat, lon, posMs: u.posMs, posVerified: u.posVerified, trail: tr.trail.slice(-12),
+        groups: [...u.groups], grants: u.grants, carriers: [...u.carriers], reports: u.reports.slice(-6).map(r => ({ ...r, lonLo: undefined, latLo: undefined })), site: unitSite.get(u.key) ?? '',
+        tgCounts: [...u.tgCounts].sort((a, b) => b[1] - a[1]), offArea: tr.off, fixes: u.fixes.length };
     });
     const tgs: TgRow[] = [...this.tgs.values()].map(t => ({ key: t.key, sys: t.sys, tg: t.tg, firstMs: t.firstMs, lastMs: t.lastMs, grants: t.grants, recent: t.recent.filter(x => now - x < 600_000), members: [...t.members].slice(0, 200), history: t.history.slice(0, 12) }));
     const carriers: CarrierRow[] = [...this.carriers.values()].map(c => {
@@ -1003,9 +1053,17 @@ export class FleetProcessor implements IqProcessor {
   /** A CW ID read on [hz]. */
   feedCw(hz: number, text: string): void { this.cwText(this.carrierAt(hz), text); }
   /** Everything held about one unit, for its detail view. */
-  unitDetail(key: string): { key: string; reports: UnitReport[]; trail: [number, number, number][] } | null {
+  /** A unit's track: every position report placed (in order, repeats folded), and how many could not be placed. */
+  private trailOf(u: Unit): { trail: [number, number, number][]; off: number } {
+    if (!u.fixes.length) return { trail: u.trail, off: 0 };
+    const trail: [number, number, number][] = []; let off = 0;
+    for (const [ms, la, lo] of u.fixes) { const p = this.place(u.sys, la, lo); if (!p) { off++; continue; } const l = trail[trail.length - 1]; if (!l || l[0] !== p[0] || l[1] !== p[1]) trail.push([p[0], p[1], ms]); }
+    return { trail, off };
+  }
+  unitDetail(key: string): { key: string; reports: UnitReport[]; trail: [number, number, number][]; offArea: number } | null {
     const u = this.units.get(key); if (!u) return null;
-    return { key, reports: u.reports.map(r => ({ ms: r.ms, hz: r.hz, kind: r.kind, hex: r.hex, verified: r.verified, lat: r.lat, lon: r.lon, text: r.text })), trail: u.trail };
+    const tr = this.trailOf(u);
+    return { key, reports: u.reports.map(r => ({ ms: r.ms, hz: r.hz, kind: r.kind, hex: r.hex, verified: r.verified, lat: r.lat, lon: r.lon, text: r.text, db: r.db })), trail: tr.trail, offArea: tr.off };
   }
   /** The block log as CSV, and the tables as JSON. */
   exportAll(): { csv: string; json: string } {
@@ -1013,7 +1071,7 @@ export class FleetProcessor implements IqProcessor {
     const csv = 'utc,mhz,protocol,type,crc_ok,fields,hex\n' + this.log.map(r => [new Date(r.ms).toISOString(), (r.hz / 1e6).toFixed(5), r.proto, q(r.name), r.ok ? 1 : 0, q(r.text), r.hex].join(',')).join('\n') + '\n';
     const s = this.snapshot();
     const json = JSON.stringify({ exported: new Date(this.now()).toISOString(), systems: s.systems, carriers: s.carriers, talkgroups: s.tgs, grants: this.grants,
-      units: [...this.units.values()].map(u => ({ sys: u.sys, id: u.id, first: new Date(u.firstMs).toISOString(), last: new Date(u.lastMs).toISOString(), groups: [...u.groups], position: this.resolvePos(u), positionVerified: u.posVerified, trail: u.trail, reports: u.reports })) }, null, 1);
+      units: [...this.units.values()].map(u => ({ sys: u.sys, id: u.id, first: new Date(u.firstMs).toISOString(), last: new Date(u.lastMs).toISOString(), groups: [...u.groups], position: this.resolvePos(u), positionVerified: u.posVerified, trail: this.trailOf(u).trail, reports: u.reports })) }, null, 1);
     return { csv, json };
   }
   private post(force = false): void {
