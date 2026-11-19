@@ -93,7 +93,7 @@ export class P2Rx {
   onSeed: (s: P2Seed) => void = () => undefined;
   syncs = 0; pairs = 0; symbols = 0;
   /** Bursts by type, voice frames passed on, MAC PDUs passing / failing their CRC. */
-  readonly stats = { bursts: 0, v4: 0, v2: 0, facch: 0, sacch: 0, frames: 0, c0clean: 0, macOk: 0, macBad: 0, macFixed: 0, essOk: 0 };
+  readonly stats = { slipped: 0, rescued: 0, bursts: 0, v4: 0, v2: 0, facch: 0, sacch: 0, frames: 0, c0clean: 0, macOk: 0, macBad: 0, macFixed: 0, essOk: 0 };
   seeds: P2Seed[] = [];
   seed: P2Seed | null = null;
   private seq: Uint8Array | null = null;
@@ -152,7 +152,7 @@ export class P2Rx {
       if (paired) this.pair(this.lastSync - 20);
       this.lastSync = this.t; this.onSync(paired);
     }
-    while (this.pendingSlots.length && this.t >= this.pendingSlots[0] + SLOT + 1) this.slot(this.pendingSlots.shift()!);
+    while (this.pendingSlots.length && this.t >= this.pendingSlots[0] + SLOT + 3) this.slot(this.pendingSlots.shift()!);
   }
   /** An S-ISCH pair starting at [p]: the four slots after it are framed (the next pair comes 720 symbols on). */
   private pair(p: number): void {
@@ -173,10 +173,51 @@ export class P2Rx {
     }
     return out;
   }
-  private slot(st: number): void {
-    if (st < this.histBase) return;
+  /**
+   * Where a slot really starts: the symbol clock can slip a symbol between sync pairs, so the burst is looked for a
+   * symbol either side (two late) of where the grid puts it. A DUID read cleanly wins; else, once the scrambling is
+   * known, the place where most voice frames' first Golay words pass. The slots still to come move with it.
+   */
+  private place(st: number): number {
+    let best = st, score = -1;
+    const slot = this.sf0 >= 0 ? ((Math.round((st - this.sf0) / SLOT) % 12) + 12) % 12 : -1;
+    for (const sh of [0, 1, -1, 2]) {
+      const d = this.duidAt(st + sh), known = (Object.values(DUID) as number[]).includes(d.v);
+      let sc = d.dist === 0 && known ? 10 : d.dist === 1 && known ? 5 : 0;
+      if (this.seq && slot >= 0 && slot < 10) sc += 3 * [11, 48, 96, 133].filter(f => c0Clean(this.bits(st + sh, f, 36, true, slot))).length;
+      if (sc > score) { score = sc; best = st + sh; }
+      if (sh === 0 && sc >= 10 + (this.seq && slot >= 0 && slot < 10 ? 6 : 0)) break;
+    }
+    if (best !== st) { this.stats.slipped++; for (let i = 0; i < this.pendingSlots.length; i++) this.pendingSlots[i] += best - st; }
+    return best;
+  }
+  private slot(at: number): void {
+    if (at < this.histBase) return;
+    const st = this.place(at);
     const d = this.duidAt(st);
-    if (d.dist > 1) return;
+    const pos = this.sf0 >= 0 ? ((Math.round((st - this.sf0) / SLOT) % 12) + 12) % 12 : -1;
+    const isSacch = d.v === DUID.SACCH_S || d.v === DUID.SACCH, isVoice = d.v === DUID.V4 || d.v === DUID.V2;
+    // a DUID that names a burst its slot never carries (a SACCH in slots 0 to 9, voice in 10 or 11) was misread
+    let known = d.dist <= 1 && (Object.values(DUID) as number[]).includes(d.v) && !(pos >= 0 && ((isSacch && pos < 10) || (isVoice && pos >= 10)));
+    // a FACCH read through a damaged DUID whose frames' first Golay words pass where voice sits is voice
+    // and a voice DUID read through one bit error must show it: at least two frames whose first Golay word passes
+    if (known && d.dist === 1 && isVoice && pos >= 0 && this.seq && [11, 48].concat(d.v === DUID.V4 ? [96, 133] : []).filter(f => c0Clean(this.bits(st, f, 36, true, pos))).length < 2) return;
+    if (known && d.dist === 1 && !isVoice && pos >= 0 && pos < 10 && this.seq && [11, 48, 96, 133].filter(f => c0Clean(this.bits(st, f, 36, true, pos))).length >= 3) known = false;
+    // a DUID too damaged to read (or read as no defined burst): once the grid and the scrambling are known, the burst
+    // is taken as voice when its frames' first Golay words pass where a 4V (or a 2V) carries them, else it is dropped.
+    // A DUID is only four dibits, so a burst at the edge loses it long before it loses its voice.
+    if (!known) {
+      if (this.sf0 < 0 || !this.seq) return;
+      const slot = ((Math.round((st - this.sf0) / SLOT) % 12) + 12) % 12;
+      // only inside a call on that logical channel (voice in the last two superframes): never a call made from nothing
+      if (slot >= 10 || this.t - this.voiceT[slot & 1] > 2 * 2160) return;
+      const clean = (f: number) => c0Clean(this.bits(st, f, 36, true, slot));
+      const c = [11, 48, 96, 133].map(clean);
+      const n4 = c.filter(Boolean).length;
+      if (n4 >= 3 || (n4 >= 2 && (c[2] || c[3]))) { this.stats.rescued++; this.voice(st, slot, slot & 1, true); }
+      else if (c[0] && c[1]) { this.stats.rescued++; this.voice(st, slot, slot & 1, false); }
+      return;
+    }
     this.stats.bursts++;
     // the SACCH pair (slots 10 and 11) right after an S-ISCH pair sets the superframe: slot 0 begins two slots on
     const sacch = d.v === DUID.SACCH_S || d.v === DUID.SACCH;
@@ -187,7 +228,9 @@ export class P2Rx {
     if (d.v === DUID.V4 || d.v === DUID.V2) this.voice(st, slot, lch, d.v === DUID.V4);
     else if (d.v === DUID.FACCH_S || d.v === DUID.FACCH || d.v === DUID.SACCH_S || d.v === DUID.SACCH) this.mac(st, slot, lch, d.v === DUID.FACCH_S || d.v === DUID.FACCH, d.v === DUID.FACCH_S || d.v === DUID.SACCH_S);
   }
+  private readonly voiceT = [-1e9, -1e9];
   private voice(st: number, slot: number, lch: number, four: boolean): void {
+    this.voiceT[lch] = this.t;
     if (four) this.stats.v4++; else this.stats.v2++;
     const at = four ? [11, 48, 96, 133] : [11, 48];
     if (!this.seq) { this.findSeed(st, slot, at); if (!this.seq) return; }

@@ -55,7 +55,13 @@ export const P25_HOLD_FRAMES = 27;
 /** Encrypted calls, and calls still waiting on their security, rank below every clear call. */
 export const quietRank = (c: Pick<CallRow, 'encrypted' | 'sec'>) => c.encrypted ? 2 : c.sec === 'unknown' ? 1 : 0;
 const CALLS_KEPT = 200, AUDIO_CALLS = 30;
-const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER_MS = 15_000, AUDIO_LIVE_MS = 3_000;
+const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER_MS = 15_000;
+/**
+ * How long the call heard keeps the audio with no speech frame: P25 Phase 1 hands over nine frames an LDU (180 ms), so
+ * one lost LDU must not cost it; Phase 2 and DMR bring frames every 60 ms. Past this a call with speech takes over, so
+ * a call that holds the channel with silence, or frames that all fail, never keeps NOW PLAYING quiet.
+ */
+export const liveMs = (c: { proto: string; tdma: boolean }) => c.proto === 'P25' && !c.tdma ? 600 : 360;
 
 const gridKey = (hz: number) => Math.round(hz / 6250) * 6250;
 /** How long the talkgroup of a call just heard keeps first claim on the audio: the reply in a conversation. */
@@ -250,9 +256,9 @@ export class CallTracker {
       let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i];
       const db = 10 * Math.log10(e / pcm.length + 1e-9);
       c.audioDb = c.audioDb ? c.audioDb + 0.3 * (db - c.audioDb) : db;
-      // only a frame that came through its codes counts as audio: a weak call's muted and repeated frames neither
-      // take the audio nor keep it
-      const good = !k.bad;
+      // only a frame that came through its codes and carries speech counts as audio: a weak call's muted and repeated
+      // frames, and a keyed radio's silence frames, neither take the audio nor keep it
+      const good = !k.bad && !k.silent;
       if (good) c.audioAt = now;
       if (this.playing === c.key) { this.onAudio?.(pcm, c); continue; }
       const r = good ? this.choose(c, now) : c.wait.length ? 'wait' : 'no';
@@ -264,12 +270,12 @@ export class CallTracker {
   /**
    * Whether [c] is the call heard: it is when nothing else is, and it takes over for priority or emergency. The call
    * heard keeps the audio while it is on the air (its terminator, or 1.2 s with no voice frame, ends it) and has
-   * brought audio in the last 3 s: a lost LDU or a frame that failed its codes does not hand it to another call.
+   * brought speech within [liveMs]: a lost LDU or a frame that failed its codes does not hand it to another call.
    */
   private choose(c: Call, now: number): 'yes' | 'no' | 'wait' {
     if (this.playing === c.key) return 'yes';
     const cur = this.playing ? this.calls.find(x => x.key === this.playing) : undefined;
-    const live = !!cur && cur.onAir && !cur.muted && !cur.outside && !cur.encrypted && now - cur.audioAt < AUDIO_LIVE_MS;
+    const live = !!cur && cur.onAir && !cur.muted && !cur.outside && !cur.encrypted && now - cur.audioAt < liveMs(cur);
     const wins = !!cur && ((c.prio && !cur.prio) || (c.emergency && !cur.emergency && !cur.prio));
     if (live && !wins) return 'no';
     // the conversation goes on: for 2 s after the call heard ends, the same talkgroup's next call gets the audio

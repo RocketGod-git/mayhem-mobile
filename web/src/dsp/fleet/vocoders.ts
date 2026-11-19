@@ -19,7 +19,7 @@ registerCodec('ambe2', () => {
   const d = new AmbeDecoder(); d.outGain = VOCODER_GAIN;
   const fr: [Uint8Array, Uint8Array, Uint8Array, Uint8Array] = [new Uint8Array(24), new Uint8Array(24), new Uint8Array(24), new Uint8Array(24)];
   return {
-    id: 'ambe2', reset: () => d.reset(), get bad() { return d.status === 'R' || d.status === 'M'; },
+    id: 'ambe2', reset: () => d.reset(), get bad() { return d.status === 'R' || d.status === 'M'; }, get silent() { return d.status === 'S'; },
     /** One 72-bit frame as it sits in the burst: 36 dibits, each split across the four code words. */
     decode: (bits: Uint8Array) => {
       for (const row of fr) row.fill(0);

@@ -11,6 +11,8 @@ export interface VoiceCodec {
   decode(bits: Uint8Array): Float32Array | null;
   /** The last frame decoded was past its error correction (repeated or muted by the vocoder). */
   readonly bad?: boolean;
+  /** The last frame was the codec's own silence (a radio keyed with nobody talking): it neither takes nor keeps the audio. */
+  readonly silent?: boolean;
   reset(): void;
 }
 const registry = new Map<CodecId, () => VoiceCodec>();
