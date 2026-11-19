@@ -115,6 +115,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                 when (current) {
                     null -> Launcher(accent)
                     MayhemApp.HAM -> HamScreen(accent)
+                    MayhemApp.JS8 -> Js8Screen(accent)
                     MayhemApp.AUDIO -> AudioScreen(accent)
                     MayhemApp.HD -> HdScreen(accent)
                     MayhemApp.DEVICES -> DevicesScreen(accent)

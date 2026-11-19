@@ -99,6 +99,9 @@ object HamDigital {
 
     fun update(f: (Settings) -> Settings) = apply(f(_settings.value))
 
+    /** Back on the HAM receiver after another app (JS8) had it: this tab's decoders, taps and mute again. */
+    fun restore() = apply(_settings.value)
+
     private fun apply(s: Settings) {
         val prev = _settings.value
         _settings.value = s

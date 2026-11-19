@@ -47,6 +47,7 @@ fun PipView(app: MayhemApp?, accent: Color) {
     val ham by Ham.state.collectAsState()
     val hz = when (app) {
         MayhemApp.HAM -> ham.channel
+        MayhemApp.JS8 -> com.rocketgod.mayhem.core.js8.Js8.state.collectAsState().value.dial
         else -> lo + offset
     }
     Column(Modifier.fillMaxSize().background(Palette.paper).padding(4.dp)) {
@@ -57,7 +58,7 @@ fun PipView(app: MayhemApp?, accent: Color) {
         }
         Row(verticalAlignment = Alignment.Bottom) {
             Text("%.4f".format(hz / 1e6), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = 20.sp, maxLines = 1)
-            val m = when (app) { MayhemApp.HAM -> ham.mode.name; else -> if (mode == SdrEngine.Mode.NONE) "" else mode.name }
+            val m = when (app) { MayhemApp.HAM -> ham.mode.name; MayhemApp.JS8 -> "USB"; else -> if (mode == SdrEngine.Mode.NONE) "" else mode.name }
             Text(" MHz $m", color = Palette.muted, fontFamily = Mono, fontSize = 9.sp, modifier = Modifier.padding(bottom = 3.dp), maxLines = 1)
         }
         WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxWidth().weight(1f).padding(vertical = 2.dp), rows = 40, traceFrac = 0.4f)
@@ -104,6 +105,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)
     MayhemApp.TRAINS -> lastLine(Apps.trainsLog)
     MayhemApp.FLEET -> lastLine(Apps.fleetLog)
+    MayhemApp.JS8 -> com.rocketgod.mayhem.core.js8.Js8.state.collectAsState().value.entries.lastOrNull()?.text ?: "listening…"
     MayhemApp.CELL -> lastLine(Apps.cellLog)
     MayhemApp.ATSC -> lastLine(com.rocketgod.mayhem.core.atsc.AtscApp.log)
     MayhemApp.SONDES -> lastLine(Apps.sondesLog)

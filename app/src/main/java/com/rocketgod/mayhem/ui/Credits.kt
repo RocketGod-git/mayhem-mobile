@@ -46,6 +46,7 @@ object Credits {
         false to "PDW — FLEX and POCSAG on one channel",
         false to "Trains — end-of-train field layout and BCH check after PyEOT by Eric Reuter; the PTC waveform worked out from recordings",
         false to "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid",
+        false to "JS8Call by Jordan Sherer, KN4CRD · the JS8 dictionary, command and group tables · GPL-3.0",
         false to "OurAirports — airport names and positions (public domain)",
     )
 }

@@ -45,8 +45,8 @@ object Ham {
     @Volatile var wideScreen = false
         set(v) { if (v == field) return; field = v; if (monitoring) monitorSend() }
 
-    /** Which app is driving the receiver: HAM itself, or Satellites (which never uses the band monitor). */
-    enum class Host { HAM, SAT }
+    /** Which app is driving the receiver: HAM itself, Satellites (which never uses the band monitor), or JS8. */
+    enum class Host { HAM, SAT, JS8 }
     @Volatile var host = Host.HAM; private set
 
     enum class Tab(val label: String) { RX("RECEIVE"), MONITOR("MONITOR"), DIGI("DIGITAL"), TX("TRANSMIT"), LOG("LOGBOOK") }
@@ -150,6 +150,7 @@ object Ham {
     private fun start() {
         host = Host.HAM
         stopPtt()
+        HamDigital.restore()
         if (_tab.value == Tab.MONITOR) { openMonitor(); return }
         val d = HamDigital.settings.value.mode
         if (_tab.value == Tab.DIGI && d == HamDigital.Mode.FT8 && _state.value.mode != Mode.USB) setMode(Mode.USB)
@@ -169,8 +170,41 @@ object Ham {
     fun openSat(channel: Long) {
         host = Host.SAT
         stopPtt()
+        HamDigital.restore()
         _state.value = _state.value.copy(channel = channel, rev = false)
         openReceiver()
+    }
+
+    /** Where the radio sits while JS8 has the receiver (the dial plus [LO_OFFSET], moved only near the span edge). */
+    private var js8Lo = 0L
+
+    /**
+     * The JS8 app takes the receiver: USB on [dial] with a 100-3200 Hz pass band, its audio feeding [decoder] alone.
+     * HAM's own channel, mode and digital decoders are left as they were and come back when HAM opens.
+     */
+    fun openJs8(dial: Long, decoder: DigitalDecoder) {
+        host = Host.JS8
+        stopPtt()
+        js8Lo = dial + LO_OFFSET
+        SdrEngine.configure(SdrEngine.Mode.NONE, js8Lo, RATES[0], 32, 40, false, demod)
+        demod.setFmTaps(emptyList())
+        demod.analogMute = false
+        demod.onDsp { decoder.reset(); demod.digital = listOf(decoder) }
+        js8Params(dial)
+    }
+
+    /** JS8's dial moved: the LO follows only when the dial nears the span edge or the spike. */
+    fun js8Tune(dial: Long) {
+        if (host != Host.JS8) return
+        val off = dial - js8Lo
+        if (abs(off) > RATES[0] / 2 - GUARD || abs(off) < 15_000) { js8Lo = dial + LO_OFFSET; SdrEngine.tuneLo(js8Lo) }
+        SdrEngine.setDial(dial, SdrEngine.Mode.USB)
+        js8Params(dial)
+    }
+
+    private fun js8Params(dial: Long) {
+        demod.set(HamDemod.Params(offsetHz = (dial - js8Lo).toDouble(), mode = Mode.USB, lo = 100.0, hi = 3200.0, pitch = 600.0,
+            agc = AgcMode.SLOW, nr = false, anf = false, squelchDb = 0, volume = _state.value.volume))
     }
 
     /** True while the band monitor, not the channel receiver, has the radio. */
