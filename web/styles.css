@@ -2739,3 +2739,39 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 .fl-encrow small { font-size: 8px; letter-spacing: 1.5px; color: var(--accent2); font-weight: 800; }
 .fl-encrow span { cursor: pointer; color: var(--ink); font-weight: 700; }
 .fl-encrow i { font-style: normal; font-weight: 400; color: var(--muted); margin-left: 4px; }
+
+/* An app's long description lives in Settings, HOW IT WORKS, not on its screen. */
+.view .note.about { display: none; }
+/* System cards on a phone: the name keeps its width and the status wraps under it. */
+.fl-syh { flex-wrap: wrap; row-gap: 4px; }
+.fl-syh .fl-syt { flex: 1 1 160px; }
+.fl-syh .mt-live { white-space: normal; }
+/* Dispatch on a phone: once anything is on the map, the map fills the screen below the tabs. */
+.view.fleet.fl-mapbig .fl-stage .map { height: calc(100dvh - 140px); min-height: 360px; }
+/* Dispatch on a phone: one page, no hidden tabs. */
+.view.fleet:not(.flwide) .fl-stage { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.view.fleet:not(.flwide) .fl-stage > .mt-detail { position: static; align-self: stretch; margin: 0 0 4px; max-height: none; }
+.view.fleet:not(.flwide) .fl-mapwrap { position: relative; }
+.view.fleet:not(.flwide) .fl-mapwrap .map { height: 220px; margin: 0; }
+.view.fleet.fl-mapbig:not(.flwide) .fl-mapwrap .map { height: min(70dvh, 560px); min-height: 320px; }
+.fl-sech { font-size: 10px; letter-spacing: 2px; font-weight: 800; color: var(--muted); margin: 10px 2px 0; }
+.fl-now { background: var(--paper); }
+/* Dispatch on a phone: one row of section chips that stays on screen and follows the scroll. */
+.fl-jump { position: sticky; top: 0; z-index: 6; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 6px -2px 4px; padding: 6px 2px;
+  background: linear-gradient(var(--paper) 75%, transparent); }
+.fl-jump::-webkit-scrollbar { display: none; }
+.fl-jump button { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line, #2a3242);
+  background: var(--surface, #121826); color: var(--muted); font: inherit; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; cursor: pointer; transition: background .15s, color .15s, box-shadow .15s; }
+.fl-jump button b { min-width: 18px; padding: 1px 6px; border-radius: 999px; font-size: 10px; letter-spacing: 0; text-align: center; background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.fl-jump button b:empty { display: none; }
+.fl-jump button.on { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent); }
+.fl-jump button.on b { background: rgba(255,255,255,.22); color: #fff; }
+.view.fleet:not(.flwide) .fl-now { top: 46px; }
+.fl-jump { background: var(--paper); box-shadow: 0 -12px 0 var(--paper); }
+.view.fleet:not(.flwide) .fl-now { top: 40px; margin-top: 0; box-shadow: 0 -6px 0 var(--paper); }
+.fl-jump { z-index: 1100; }
+.view.fleet:not(.flwide) .fl-now { z-index: 1090; }
+/* One page on a phone: the log's empty state would repeat the one above it. */
+.view.fleet:not(.flwide) #fl-log .es { display: none; }
+/* The map opens expanded on a phone, pins or not. */
+.view.fleet:not(.flwide) .fl-mapwrap .map { height: min(70dvh, 560px); min-height: 320px; }
