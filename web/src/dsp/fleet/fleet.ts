@@ -132,12 +132,33 @@ class Chan {
     // the voice frames' payload (nine vocoder frames and the link control of each LDU) is read by the HAM receiver's
     // P25 decoder, driven by this channel's frame syncs
     this.rx.onSymbol = s => {
+      if ((this.t & 31) === 0) this.fillDue();
       const n0 = this.p25.syncs;
       this.p25.push(s); this.dmr.push(s);
       if (this.p25.syncs !== n0) this.p25v.sync(this.t); else this.p25v.push(slice(s), this.t);
       this.t++;
     };
     this.openedMs = now; this.quietSince = now;
+  }
+  /**
+   * Lost voice is filled, not left silent: a P25 LDU (9 frames, 864 symbols) or a DMR voice burst (3 frames, 60 ms a
+   * slot) that does not come when due is replaced by erasures, which the vocoder answers with the last frame repeated
+   * and faded to a faint floor. So the player never runs dry inside a call. The fill never starts, extends, takes or
+   * keeps a call (the fleet drops it for a call no longer on the air), and stops 5 s after the lane's last voice.
+   */
+  onFill: (lane: number, frames: number) => void = () => undefined;
+  /** Lanes: 0 and 1 the DMR slots, 2 P25. Symbol time of the last voice, and when the next fill falls due. */
+  private readonly lastVoice = [-1e9, -1e9, -1e9]; private readonly due = [Infinity, Infinity, Infinity];
+  /** Voice arrived on a lane (DMR slot 0 or 1, or 2 for P25). */
+  voiced(lane: number): void { const per = lane === 2 ? 864 : 288; this.lastVoice[lane] = this.t; this.due[lane] = this.t + per + (lane === 2 ? 216 : 96); }
+  private fillDue(): void {
+    for (let lane = 0; lane < 3; lane++) {
+      if (this.t < this.due[lane]) continue;
+      if (this.t - this.lastVoice[lane] > 24_000) { this.due[lane] = Infinity; continue; }
+      const per = lane === 2 ? 864 : 288;
+      this.due[lane] += per;
+      this.onFill(lane, lane === 2 ? 9 : 3);
+    }
   }
   retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.tetraHz - center; }
   /** Where the TETRA receiver is centered: the middle of the whole 25 kHz signal, not of the piece the finder saw. */
@@ -311,7 +332,8 @@ export class FleetProcessor implements IqProcessor {
     ch.p25.onFrame = (nac, duid) => { c.envCv = Math.round(ch.rx.envCv * 100) / 100; this.p25Frame(c, nac, duid); };
     ch.dmr.onBurst = e => this.dmrBurst(c, ch, e);
     ch.dmr.onVoice = (slot, d, n) => this.dmrVoice(c, ch, slot, d, n);
-    ch.p25v.onVoice = bits => this.p25Voice(c, bits);
+    ch.p25v.onVoice = bits => this.p25Voice(c, bits, ch);
+    ch.onFill = (lane, n) => this.fill(c, lane, n);
     ch.p25v.onLog = () => this.p25Lc(c, ch);
     ch.p25v.onEs = es => this.p25Sec(c, 'LDU2', es);
     ch.p25v.onHdu = hd => this.p25Sec(c, 'HDU', hd);
@@ -582,9 +604,15 @@ export class FleetProcessor implements IqProcessor {
    * One IMBE frame out of a P25 voice frame. Until a grant or the link control says what the call is, its frames wait
    * in the call (the LDU1 that names it arrives after its own nine frames, which used to be thrown away).
    */
-  private p25Voice(c: Carrier, bits: Uint8Array): void {
+  private p25Voice(c: Carrier, bits: Uint8Array, ch?: Chan): void {
     const call = this.calls.at(c.sys, c.hz, 0);
-    if (call) this.calls.frames(call, [bits]);
+    if (call) { this.calls.frames(call, [bits]); ch?.voiced(2); }
+  }
+  /** Erasures for voice that did not come when due ([Chan.onFill]): only for a call on the air, never making one. */
+  private fill(c: Carrier, lane: number, n: number): void {
+    const call = this.calls.at(c.sys, c.hz, lane === 2 ? 0 : lane);
+    if (!call?.onAir || call.proto !== (lane === 2 ? 'P25' : 'DMR') || call.tdma) return;
+    this.calls.frames(call, Array.from({ length: n }, () => new Uint8Array(0)));
   }
   /** Link control read out of an LDU1 (talkgroup or unit, source, encryption) labels the call on that channel. */
   private p25Lc(c: Carrier, ch: Chan): void {
@@ -632,7 +660,7 @@ export class FleetProcessor implements IqProcessor {
     const call = this.calls.voice(c.sys, 'DMR', c.hz, slot, 60, now);
     // bursts B to F carry the EMB: its privacy bit says whether the call is encrypted, read before the frames play
     if (n > 0) { const e = readEmb(d); if (e.ok && (c.cc < 0 || e.cc === c.cc)) this.calls.security(call, { enc: e.pi, from: 'EMB' }); }
-    this.calls.frames(call, voiceFrames(d));
+    this.calls.frames(call, voiceFrames(d)); ch?.voiced(slot);
     this.pending = true;
   }
   private dmrSystem(c: Carrier, cs: Csbk, cc: number, now: number): Sys {
