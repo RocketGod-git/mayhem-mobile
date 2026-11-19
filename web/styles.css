@@ -2775,3 +2775,7 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 .view.fleet:not(.flwide) #fl-log .es { display: none; }
 /* The map opens expanded on a phone, pins or not. */
 .view.fleet:not(.flwide) .fl-mapwrap .map { height: min(70dvh, 560px); min-height: 320px; }
+/* Two-finger maps: a brief hint when one finger lands on the map while scrolling. */
+.geo-2f { position: absolute; inset: 0; z-index: 900; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity .2s;
+  background: rgba(0,0,0,.45); color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
+.geo-2f.on { opacity: 1; }

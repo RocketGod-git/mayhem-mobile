@@ -31,6 +31,8 @@ export interface GeoOpts {
   steady?: boolean;
   /** The map was dragged by hand; its new center. */
   onDragEnd?: (lat: number, lon: number) => void;
+  /** On a touch screen one finger scrolls the page past the map; two fingers move and zoom it. */
+  twoFinger?: boolean;
   /** Where the locate button goes when there is nothing plotted and no position of the user (a reference position). */
   fallback?: () => { lat: number; lon: number } | null;
 }
@@ -136,6 +138,18 @@ export class GeoMap {
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors', className: 'dark-tiles' }).addTo(this.map);
     this.map.on('dragstart', () => { if (this.follow) this.setFollow(false); });
     this.map.on('dragend', () => { const c = this.map.getCenter(); this.opts.onDragEnd?.(c.lat, c.lng); });
+    if (this.opts.twoFinger && matchMedia('(pointer: coarse)').matches) {
+      // One finger belongs to the page so it scrolls past the map; two fingers pan and pinch it.
+      this.map.dragging.disable();
+      this.host.style.touchAction = 'pan-y';
+      const hint = document.createElement('div'); hint.className = 'geo-2f'; hint.textContent = 'two fingers to move the map'; this.host.appendChild(hint);
+      let t = 0;
+      // Leaflet's pinch handler already moves the map with the two fingers, so dragging stays off.
+      this.host.addEventListener('touchstart', (e) => { if (e.touches.length >= 2) hint.classList.remove('on'); }, { passive: true });
+      this.host.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 1) { hint.classList.add('on'); clearTimeout(t); t = window.setTimeout(() => hint.classList.remove('on'), 1200); }
+      }, { passive: true });
+    }
     this.map.on('click', (e: any) => this.opts.onMapTap?.(e.latlng.lat, e.latlng.lng));
     this.setHome(home ?? null);
     this.update(this.items, this.sel);
