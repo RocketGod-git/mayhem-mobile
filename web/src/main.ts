@@ -4783,11 +4783,12 @@ function setFleetFull(on: boolean): void {
  *  that is on), and the column on the right holds everything else all the way down. */
 const FLEET_WIDE = window.matchMedia('(min-width: 1000px)');
 FLEET_WIDE.addEventListener('change', () => { if (state.app === 'fleet') { const v = q<HTMLElement>('main#view'); if (v) renderFleet(v); } });
+let flSpy: (() => void) | null = null;
 function renderFleet(view: HTMLElement): void {
   const hack = !radio || radio.kind !== 'rtlsdr', wide = FLEET_WIDE.matches;
   if (wide) { if (fleetUi.view === 'map') fleetUi.view = 'systems'; fleetUi.full = false; }
   view.classList.toggle('flwide', wide);
-  const tabs = (wide ? ['systems', 'calls', 'grants', 'freqs', 'log'] : ['systems', 'calls', 'map', 'grants', 'freqs', 'log']) as FleetView[];
+  const tabs = (wide ? ['systems', 'calls', 'grants', 'freqs', 'log'] : ['map', 'systems', 'calls', 'grants', 'freqs', 'log']) as FleetView[];
   const mapHtml = '<div id="fl-map" class="panel map"></div><div id="fl-nopos" class="mt-nopos"></div>';
   view.innerHTML = `
     <section class="${visCls('fleet')}">${readoutHtml()}${wide ? `<div class="fl-mapbox">${mapHtml}</div>` : ''}<div id="scope" class="panel short"></div></section>
@@ -4796,12 +4797,12 @@ function renderFleet(view: HTMLElement): void {
       <div id="fl-head" class="fl-head"></div>
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...FLEET_BANDS.map(b => [b[0], b[0] === 'TBAND' ? 'T-BAND' : b[0]])].map(([k, l]) => `<button data-flband="${k}">${l}</button>`))}</div>
       ${hack ? `<div class="ctlrow"><span class="rl">SPAN</span>${segHtml(FLEET_SPANS.map(([r, l]) => `<button data-flspan="${r}" class="${radioCan(r) ? '' : 'off'}">${l}</button>`))}</div>` : ''}
-      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-flview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('fleet')}${wide ? '' : `<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button>`}<button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
+      ${wide ? '' : `<nav class="fl-jump">${tabs.map(v => `<button data-flview="${v}"><span>${v === 'freqs' ? 'FREQS' : v.toUpperCase()}</span><b></b></button>`).join('')}</nav>`}<div class="ctlrow">${wide ? segHtml(tabs.map(v => `<button data-flview="${v}">${v.toUpperCase()}</button>`)) : ''}${wfHtml('fleet')}${wide ? '' : `<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button>`}<button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
       <div id="fl-mode" class="ctlrow fl-mode"></div>
       <div id="fl-audio" class="ctlrow fl-audio" hidden></div>
       ${wide ? '<div id="fl-detail" class="mt-detail fl-dock" hidden></div>' : ''}
       <div id="fl-onair" class="fl-onair" hidden></div>
-      <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div><div id="fl-calls" class="fl-calls"></div>${wide ? '' : mapHtml}<div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div>${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}</div>
+      <div id="fl-stage" class="mt-stage fl-stage">${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}${wide ? '' : `<div class="fl-sech" data-flsec="map">MAP</div><div class="fl-mapwrap">${mapHtml}</div>`}${wide ? '' : '<div class="fl-sech" data-flsec="systems">SYSTEMS</div>'}<div id="fl-cards" class="fl-cards"></div>${wide ? '' : '<div class="fl-sech" data-flsec="calls">CALLS</div>'}<div id="fl-calls" class="fl-calls"></div>${wide ? '' : '<div class="fl-sech" data-flsec="grants">GRANTS</div>'}<div id="fl-grants" class="fl-grants"></div>${wide ? '' : '<div class="fl-sech" data-flsec="freqs">FREQUENCIES</div>'}<div id="fl-freqs" class="fl-freqs"></div></div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
       <div class="note about">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call: the channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, and the DMR privacy bit and header; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, hold and priority are per talkgroup. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. Tap anything for all it carried.</div>
     </section>`;
@@ -4810,9 +4811,24 @@ function renderFleet(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-flspan]', view).forEach(b => b.onclick = () => fleetSetSpan(Number(b.dataset.flspan)));
   qa<HTMLButtonElement>('[data-flview]', view).forEach(b => b.onclick = () => {
     fleetUi.view = b.dataset.flview as FleetView; refreshFleet(true);
-    // On a phone the map sits below the controls: bring it on screen rather than leave it under the fold.
-    if (fleetUi.view === 'map') setTimeout(() => { const m = q('#fl-map'), sc = $('view'); const r = m?.getBoundingClientRect(); if (m && r && r.height && r.top > innerHeight * 0.6) sc.scrollTo({ top: sc.scrollTop + r.top - sc.getBoundingClientRect().top - 8 }); }, 150);
+    // On a phone every section is on one page: the tab jumps to its section.
+    if (!FLEET_WIDE.matches) setTimeout(() => { const t = fleetUi.view === 'log' ? q('#fl-log') : q(`[data-flsec="${fleetUi.view}"]`), sc = $('view'); const r = t?.getBoundingClientRect(); if (t && r) sc.scrollTo({ top: sc.scrollTop + r.top - sc.getBoundingClientRect().top - 56 }); }, 60);
   });
+  // The chip of the section on screen lights up as the page scrolls.
+  const sc = $('view');
+  if (flSpy) sc.removeEventListener('scroll', flSpy);
+  flSpy = () => {
+    if (state.app !== 'fleet' || FLEET_WIDE.matches) return;
+    const top = sc.getBoundingClientRect().top + 120;
+    let cur = 'map';
+    for (const v of ['map', 'systems', 'calls', 'grants', 'freqs', 'log']) {
+      const el = v === 'log' ? q('#fl-log') : q(`[data-flsec="${v}"]`);
+      if (el && el.getBoundingClientRect().top <= top) cur = v;
+    }
+    qa<HTMLButtonElement>('.fl-jump [data-flview]').forEach(b => b.classList.toggle('on', b.dataset.flview === cur));
+  };
+  sc.addEventListener('scroll', flSpy, { passive: true });
+  flSpy();
   const full = q('#fl-full'); if (full) full.onclick = () => setFleetFull(!fleetUi.full);
   $('fl-export').onclick = () => worker?.postMessage({ type: 'fleet', cmd: 'export' });
   const pick = (e: Event) => {
@@ -5110,8 +5126,11 @@ function refreshFleet(force = false): void {
   const talking = new Set((s?.calls ?? []).filter(c => c.onAir && c.pos && !c.outside).map(c => `${c.sys}/${c.pos!.unit}`));
   const pins: GeoItem[] = (s?.units ?? []).filter(u => u.lat !== null && u.lon !== null).map(u => ({ id: u.key, lat: u.lat!, lon: u.lon!, label: `${u.id}`, kind: 'station' as GeoItem['kind'], color: fleetColor(u.sys), cls: talking.has(u.key) ? 'talk' : now - u.posMs > 3_600_000 ? 'older' : now - u.posMs > 600_000 ? 'old' : '' }));
   qa<HTMLButtonElement>('[data-flview]').forEach(b => {
-    const v = b.dataset.flview as FleetView; b.classList.toggle('on', v === view);
-    b.textContent = v === 'systems' ? `SYSTEMS ${s?.systems.length ?? 0}` : v === 'calls' ? `CALLS ${s?.calls.length ?? 0}` : v === 'map' ? `MAP ${pins.length}` : v === 'grants' ? `GRANTS ${s?.grants.length ?? 0}` : v === 'freqs' ? `FREQS ${s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000).length : 0}` : 'LOG';
+    const v = b.dataset.flview as FleetView; if (FLEET_WIDE.matches) b.classList.toggle('on', v === view);
+    const n = v === 'systems' ? s?.systems.length ?? 0 : v === 'calls' ? s?.calls.length ?? 0 : v === 'map' ? pins.length : v === 'grants' ? s?.grants.length ?? 0 : v === 'freqs' ? (s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000).length : 0) : -1;
+    const badge = b.querySelector('b');
+    if (badge) { badge.textContent = n > 0 ? String(n) : ''; b.classList.toggle('has', n > 0); }
+    else b.textContent = n < 0 ? 'LOG' : `${v === 'freqs' ? 'FREQS' : v.toUpperCase()} ${n}`;
   });
   const cards = q('#fl-cards'), mapEl = q('#fl-map'), nopos = q('#fl-nopos'), grants = q('#fl-grants'), freqs = q('#fl-freqs'), det = q('#fl-detail'), stage = q('#fl-stage'), logEl = q('#fl-log');
   const callsEl = q('#fl-calls'), air = q('#fl-onair'), audio = q('#fl-audio'), mode = q('#fl-mode'), np = q('#fl-now');
@@ -5137,13 +5156,19 @@ function refreshFleet(force = false): void {
   audio.hidden = !s || !s.codecs.length;
   if (!audio.hidden && !audio.querySelector('input')) audio.innerHTML = `<button class="chip" data-flaudio="1"></button><span class="rl">VOLUME</span><input type="range" min="0" max="150" value="${Math.round(fleetUi.gain * 100)}" aria-label="volume">`;
   const ab = audio.querySelector<HTMLButtonElement>('[data-flaudio]'); if (ab) { ab.textContent = fleetUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; ab.classList.toggle('on', fleetUi.audioOn); }
-  callsEl.hidden = view !== 'calls';
   const wide = FLEET_WIDE.matches, showMap = wide || view === 'map';
-  cards.hidden = view !== 'systems'; mapEl.hidden = !showMap; grants.hidden = view !== 'grants'; freqs.hidden = view !== 'freqs';
-  stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
-  nopos.hidden = !showMap || pins.length > 0;
-  // Anything on the map: on a phone the map grows to fill the screen instead of staying a small panel.
-  stage.closest('.view')?.classList.toggle('fl-mapbig', !wide && view === 'map' && pins.length > 0);
+  if (wide) {
+    callsEl.hidden = view !== 'calls';
+    cards.hidden = view !== 'systems'; mapEl.hidden = !showMap; grants.hidden = view !== 'grants'; freqs.hidden = view !== 'freqs';
+    stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
+    nopos.hidden = !showMap || pins.length > 0;
+  } else {
+    // A phone scrolls easily, so nothing hides behind a tab: the map, systems, calls, grants, frequencies and the
+    // log are one page, and the tabs jump to them. The map leads, and fills the screen once anything is on it.
+    callsEl.hidden = cards.hidden = mapEl.hidden = grants.hidden = freqs.hidden = stage.hidden = logEl.hidden = false;
+    nopos.hidden = pins.length > 0;
+  }
+  stage.closest('.view')?.classList.toggle('fl-mapbig', !wide && pins.length > 0);
   if (!nopos.hidden) nopos.textContent = s && s.units.some(u => u.posMs > 0) && !s.ref ? 'unit positions need a region: drag the map to your area' : 'no unit positions on the air yet';
   if (!paused.has('fleet') && s) {
     const keep = (el: HTMLElement, html: string) => { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; };
