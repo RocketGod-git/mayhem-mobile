@@ -31,6 +31,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -154,6 +162,8 @@ fun FleetScreen(accent: Color) {
     var held by remember { mutableStateOf<FleetSnap?>(null) }
     var full by remember { mutableStateOf(false) }
     var focusKey by remember { mutableIntStateOf(0) }
+    /** Bumped when something asks for the map on a phone: the page scrolls to it. */
+    var jumpMap by remember { mutableIntStateOf(0) }
     var focusAt by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(250); value = System.currentTimeMillis() } }.value
     LaunchedEffect(Unit) { Geo.start(ctx) }
@@ -188,7 +198,7 @@ fun FleetScreen(accent: Color) {
     }
     /** Shows a call's position on the map: the map view on a phone, centered there, the unit picked when there is one. */
     fun goTo(lat: Double, lon: Double, unitKey: String) {
-        if (!wide) view = V_MAP
+        if (!wide) { view = V_MAP; jumpMap++ }
         if (unitKey.isNotEmpty() && s?.units?.any { it.key == unitKey } == true) sel = "unit:$unitKey"
         focusAt = lat to lon; focusKey++
     }
@@ -226,7 +236,7 @@ fun FleetScreen(accent: Color) {
         if (s != null && sel != null) {
             val det = fleetDetail(s, sel!!, now, if (wide) V_MAP else view)
             if (det != null) FleetDetailPanel(det, s, now, accent, prefs, me, colorOf, acts, modifier,
-                onMap = if (det.mapKey != null) ({ if (!wide) view = V_MAP; focusAt = null; focusKey++ }) else null) { sel = null }
+                onMap = if (det.mapKey != null) ({ if (!wide) { view = V_MAP; jumpMap++ }; focusAt = null; focusKey++ }) else null) { sel = null }
         }
     }
 
@@ -287,22 +297,70 @@ fun FleetScreen(accent: Color) {
             @Composable
             fun modeRow() = ModeRow(lock, accent) { all -> if (all) Dispatch.setLock(null) else if (!Dispatch.lockSomething(sel?.takeIf { it.startsWith("sys:") }?.substringAfter(':')))
                 Toast.makeText(ctx, "no system to lock on yet, wait for one to show or lock from its card", Toast.LENGTH_SHORT).show() }
-            if (!wide && view == V_MAP) {
-                // the phone map: right under the tabs, never below the fold. With anything on it, it fills the height there
-                // is (360 dp at least); it stays compact only while no unit position has been heard. The rest scrolls under it.
-                androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f))) {
-                    val avail = maxHeight
-                    val mapScroll = rememberScrollState()
-                    LaunchedEffect(view) { mapScroll.scrollTo(0) }
-                    val mapH = if (pins.isNotEmpty()) maxOf(avail - d.dp(48f), 360.dp) else minOf(maxOf(avail * 0.5f, d.dp(200f)), 360.dp)
-                    Column(Modifier.fillMaxWidth().verticalScroll(mapScroll), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                        switcher(true, Modifier.fillMaxWidth())
-                        stage(Modifier.fillMaxWidth().height(mapH))
+            if (!wide) {
+                // the phone: one page that scrolls, nothing hidden behind tabs. The section chips and the now-playing bar
+                // stay pinned on top; a chip scrolls to its section, and the chip of the section on screen lights up.
+                // The map is always the big size (70% of the screen, 320 to 560 dp)
+                val list = rememberLazyListState()
+                val scope = rememberCoroutineScope()
+                val starts = remember { IntArray(FL_SECTIONS.size) }
+                val mapH = (LocalConfiguration.current.screenHeightDp * 0.7f).coerceIn(320f, 560f).dp
+                val th = with(LocalDensity.current) { d.dp(24f).roundToPx() }
+                val counts = listOf(pins.size, s?.systems?.size ?: 0, s?.calls?.count { it.kind == "call" } ?: 0, s?.grants?.size ?: 0,
+                    s?.let { liveCarriers(it, now).size } ?: 0, logSnap.total)
+                LaunchedEffect(jumpMap) { if (jumpMap > 0) list.animateScrollToItem(starts[0]) }
+                val active by remember { derivedStateOf {
+                    val first = list.layoutInfo.visibleItemsInfo.firstOrNull { it.offset + it.size > th }
+                    val k = (first?.key as? String)?.substringBefore(':') ?: "map"
+                    if (!list.canScrollForward && list.canScrollBackward) FL_SECTIONS.size - 1 else FL_SECTIONS.indexOfFirst { it.first == k }.coerceAtLeast(0)
+                } }
+                Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f))) {
+                    Column(Modifier.fillMaxWidth().background(Palette.paper).padding(bottom = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                        FlJump(counts, active, accent) { i -> scope.launch { list.animateScrollToItem(starts[i]) } }
                         if (s != null && audioOn && s.codecs.isNotEmpty()) NowBar(s, now, lock, me, vu, colorOf, acts)
-                        onAir(Modifier.fillMaxWidth())
-                        FleetHead(s, scan, now, accent)
-                        modeRow()
-                        if (s != null && s.codecs.isNotEmpty()) AudioRow(audioOn, gain, accent)
+                    }
+                    Box(Modifier.fillMaxWidth().weight(1f)) {
+                        LazyColumn(Modifier.fillMaxSize(), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                            var idx = 0
+                            item(key = "map:top") {
+                                Column(Modifier.fillMaxWidth().padding(top = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                                    FleetHead(s, scan, now, accent)
+                                    modeRow()
+                                    if (s != null && s.codecs.isNotEmpty()) AudioRow(audioOn, gain, accent)
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f), Alignment.End)) {
+                                        ToggleBox("EXPORT", false, accent) { export() }
+                                        ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent) { held = if (held == null) live else null }
+                                        IconBox(ClearIcon, "Clear") { Apps.fleet.clear(); Apps.fleetLog.clear(); Dispatch.forget(); held = null; sel = null }
+                                    }
+                                    if (s != null) OnAirStack(s, now, 4, audioOn, following?.key, me, vu, prefs, lock, colorOf, acts, Modifier.fillMaxWidth())
+                                }
+                            }
+                            idx++
+                            starts[0] = idx; item(key = "map:head") { FlSecHead(FL_SECTIONS[0].second) }; idx++
+                            item(key = "map:map") { fleetMap(Modifier.fillMaxWidth().height(mapH)) }; idx++
+                            starts[1] = idx; item(key = "sys:head") { FlSecHead(FL_SECTIONS[1].second) }; idx++
+                            if (s == null || s.systems.isEmpty()) { item(key = "sys:empty") { EmptyState("fleet", Modifier.fillMaxWidth().height(d.dp(280f)).panel(), accent) }; idx++ }
+                            else { items(s.systems, key = { "sys:${it.key}" }) { x -> SystemCard(x, s, now, sel == "sys:${x.key}", lock, colorOf, acts) }; idx += s.systems.size }
+                            starts[2] = idx; item(key = "calls:head") { FlSecHead(FL_SECTIONS[2].second) }; idx++
+                            if (s == null || s.calls.isEmpty()) { item(key = "calls:none") { FlDim("no calls yet · each voice grant and each transmission heard is logged here") }; idx++ }
+                            else {
+                                val ended = s.calls.filter { !it.onAir && it.kind == "call" }
+                                item(key = "calls:sum") { FlDim("${ended.size} recent calls · ${flDur(ended.sumOf { it.endMs - it.startMs })} on the air${if (s.codecs.isNotEmpty()) " · audio kept in memory for replay, up to 2 min a call" else ""}") }; idx++
+                                items(s.calls, key = { "calls:${it.key}" }) { c -> CallLine(c, now, me, if (c.sys.isNotEmpty()) colorOf(c.sys) else Palette.muted, acts) }; idx += s.calls.size
+                            }
+                            starts[3] = idx; item(key = "grants:head") { FlSecHead(FL_SECTIONS[3].second) }; idx++
+                            if (s != null) { item(key = "grants:bars") { TgBars(s, now, colorOf, ::pick) }; idx++ }
+                            if (s == null || s.grants.isEmpty()) { item(key = "grants:none") { FlDim("no grants yet · a quiet system may go minutes between calls") }; idx++ }
+                            else { items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }; idx += s.grants.size }
+                            starts[4] = idx; item(key = "freqs:head") { FlSecHead(FL_SECTIONS[4].second) }; idx++
+                            val cars = s?.carriers.orEmpty().filter { now - it.lastMs < 600_000 }
+                            if (s == null || cars.isEmpty()) { item(key = "freqs:none") { FlDim("no carriers found yet") }; idx++ }
+                            else { items(cars, key = { "freqs:${it.key}" }) { c -> FreqLine(c, s, now, sel == "car:${c.key}", if (c.sys.isNotEmpty()) colorOf(c.sys) else Color.Transparent, ::pick) }; idx += cars.size }
+                            starts[5] = idx; item(key = "log:head") { FlSecHead(FL_SECTIONS[5].second) }; idx++
+                            // the log keeps its own short line when empty: the systems section above already shows the empty state
+                            item(key = "log:list") { LogList(logSnap.lines, Modifier.fillMaxWidth().height(d.dp(440f)), empty = "watching for control channels…", total = logSnap.total, accent = accent) }
+                        }
+                        detail(Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)))
                     }
                 }
             } else Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
@@ -325,6 +383,39 @@ fun FleetScreen(accent: Color) {
 }
 
 /** What the cards and rows can do: open a detail, set a talkgroup preference, replay, show on the map, lock and unlock. */
+/** The phone page's sections: the key its rows carry and the header. */
+private val FL_SECTIONS = listOf("map" to "MAP", "sys" to "SYSTEMS", "calls" to "CALLS", "grants" to "GRANTS", "freqs" to "FREQUENCIES", "log" to "LOG")
+private val FL_CHIPS = listOf("MAP", "SYSTEMS", "CALLS", "GRANTS", "FREQS", "LOG")
+
+/** A section's small header on the phone page. */
+@Composable
+private fun FlSecHead(text: String) {
+    val d = rememberDims()
+    Text(text, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 2.sp,
+        modifier = Modifier.padding(top = d.dp(10f), start = d.dp(2f), bottom = d.dp(2f)))
+}
+
+/** The section chips: one row that scrolls sideways, a count on each (none at 0), the section on screen lit. */
+@Composable
+private fun FlJump(counts: List<Int>, active: Int, accent: Color, onPick: (Int) -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(50)
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = d.dp(4f), horizontal = d.dp(2f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
+        verticalAlignment = Alignment.CenterVertically) {
+        FL_CHIPS.forEachIndexed { i, label ->
+            val on = i == active
+            Row(Modifier.then(if (on) Modifier.shadow(d.dp(8f), shape, ambientColor = accent, spotColor = accent) else Modifier).clip(shape)
+                .background(if (on) accent else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape).clickable { onPick(i) }
+                .padding(horizontal = d.dp(12f), vertical = d.dp(7f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                Text(label, color = if (on) inkOn(accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+                val n = counts.getOrElse(i) { 0 }
+                if (n > 0) Text(if (n > 999) "999+" else "$n", color = if (on) accent else Palette.paper, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1,
+                    modifier = Modifier.clip(shape).background(if (on) inkOn(accent) else Palette.muted).padding(horizontal = d.dp(5f), vertical = d.dp(1f)))
+            }
+        }
+    }
+}
+
 private class DispatchActs(val pick: (String) -> Unit, val pref: (String, String) -> Unit, val replay: (String) -> Unit,
                            val goTo: (Double, Double, String) -> Unit, val lock: (String, String) -> Unit, val unlock: () -> Unit)
 
