@@ -437,10 +437,11 @@ fun AcarsScreen(accent: Color, vdl: Boolean = false) {
     val picked = if (pickedStation == null) live.firstOrNull { it.key == sel } else null
 
     val wf = waterfallOn(app, phoneDefault = true)
-    PacketFrame(accent, plog, tag = if (vdl) "AIRLINE DATA" else "AIRLINE MSGS", title = if (vdl) "VDL MODE 2 · D8PSK" else "AIRLINE MESSAGES · ACARS", roomy = true, shift = shift, emptyKey = key, waterfall = wf,
+    PacketFrame(accent, plog, tag = "FLIGHT MSGS", title = if (vdl) "VDL MODE 2 · 136.975 MHZ" else "ACARS · 131 MHZ", roomy = true, shift = shift, emptyKey = key, waterfall = wf,
         onWaterfall = { Apps.setWaterfall(app, !wf) },
         lamp = { if (live.isNotEmpty()) Lamp("${live.size} AIRCRAFT", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) },
         controls = {
+            SegBar(listOf("ACARS 131", "VDL2 136.975"), if (vdl) 1 else 0, accent) { i -> if ((i == 1) != vdl) Apps.open(if (i == 1) MayhemApp.VDL2 else MayhemApp.ACARS) }
             if (!vdl) PresetTiles(accent, listOf(Preset("131.550", "US", 131_550_000L), Preset("131.525", "EU", 131_525_000L), Preset("131.725", "EU 2", 131_725_000L),
                 Preset("131.450", "JP", 131_450_000L), Preset("130.025", "US 2", 130_025_000L)), shift = shift)
         },

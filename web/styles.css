@@ -807,16 +807,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .radiomiss[hidden] { display: none; }
 .radiomiss div { flex: 1; min-width: 0; } .radiomiss b { display: block; color: var(--accent2); letter-spacing: 2px; font-size: 11px; }
 .radiomiss span { color: var(--muted); font-size: 10px; }
-/* The app picker, drawn as a tool strip: a gear square (Settings), then one key per app in a hairline pill. Each
- * key is faintly lit in its own tint; the open app wears a glowing fill that slides between keys. The keys
- * stretch to fill the pill when they fit and scroll with the glowing edges when they do not. */
+/* The app picker, drawn as a tool strip: a gear square (Settings), then one key per app filling the rest of the bar
+ * at the gear's full height (no container around them). Each key is faintly lit in its own tint; the open app wears
+ * a glowing fill that slides between keys. The keys stretch across when they fit and scroll when they do not, with
+ * one quiet hint (see bindHs): a soft glow and a drifting chevron on the side with more apps, gone while you scroll,
+ * back on the other side once you reach the end. */
 .appbar { display: flex; align-items: center; gap: 8px; flex: none; height: 54px; padding: 0 8px; box-sizing: content-box; background: var(--paper); padding-bottom: env(safe-area-inset-bottom); }
 .bar-gear { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; padding: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; transition: transform .12s ease; }
 .bar-gear svg { width: 24px; height: 24px; fill: var(--accent); }
 .bar-gear:active { transform: scale(.92); }
-.bar-pill { flex: 1; height: 44px; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.appbar .hs-in { position: relative; display: flex; gap: 4px; height: 100%; padding: 4px; box-sizing: border-box; }
-.appbar .hs-in button { position: relative; z-index: 1; flex: 1 0 auto; min-width: 56px; background: color-mix(in srgb, var(--seg) 7%, transparent); border: 1px solid color-mix(in srgb, var(--seg) 22%, transparent); color: color-mix(in srgb, var(--ink) 82%, transparent); font-weight: 700; font-size: 14px; letter-spacing: 1px; padding: 0 16px; border-radius: 6px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, color .2s ease; }
+.bar-pill { flex: 1; height: 44px; box-sizing: border-box; overflow: hidden; border-radius: 8px; }
+.appbar .hs-in { position: relative; display: flex; gap: 6px; height: 100%; padding: 0; box-sizing: border-box; }
+.appbar .hs-in button { position: relative; z-index: 1; flex: 1 0 auto; min-width: 56px; background: color-mix(in srgb, var(--seg) 7%, transparent); border: 1px solid color-mix(in srgb, var(--seg) 22%, transparent); color: color-mix(in srgb, var(--ink) 82%, transparent); font-weight: 700; font-size: 14px; letter-spacing: 1px; padding: 0 16px; border-radius: 8px; cursor: pointer; white-space: nowrap; transition: transform .12s ease, color .2s ease; }
 .appbar .hs-in button:active { transform: scale(.94); }
 .appbar .hs-in button.dim:not(.on) { opacity: 0.45; }
 .appbar .hs-in button.on { color: #fff; }
@@ -825,9 +827,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .appbar .ag { display: flex; flex: none; color: var(--seg); }
 .appbar .ag svg { width: 18px; height: 18px; }
 .appbar .hs-in button.on .ag { color: #fff; }
-.afill { position: absolute; z-index: 0; top: 4px; bottom: 4px; left: 0; width: 0; border-radius: 6px; background: var(--seg, var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--seg, var(--accent)) 55%, transparent); opacity: 0; pointer-events: none; transition: opacity .2s ease, background-color .24s ease; }
+.afill { position: absolute; z-index: 0; top: 0; bottom: 0; left: 0; width: 0; border-radius: 8px; background: var(--seg, var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--seg, var(--accent)) 55%, transparent); opacity: 0; pointer-events: none; transition: opacity .2s ease, background-color .24s ease; }
 .afill.show { opacity: 1; }
 .afill.slide { transition: left .36s cubic-bezier(.3, 1.25, .5, 1), width .36s cubic-bezier(.3, 1.25, .5, 1), opacity .2s ease, background-color .24s ease; }
+/* the bar's scroll hint: the keys fade into the bar's own color under a soft accent glow, a chevron drifting outward */
+.appbar .hs::before, .appbar .hs::after { width: 46px; border: 0; display: flex; align-items: center; color: var(--accent); font: 700 22px/1 system-ui, sans-serif; text-shadow: 0 0 10px var(--accent); transition: opacity .35s ease; animation: none; }
+.appbar .hs::before { content: '\2039'; justify-content: flex-start; padding-left: 6px; background: linear-gradient(90deg, var(--paper) 18%, color-mix(in srgb, var(--paper) 70%, transparent) 55%, transparent), radial-gradient(60% 70% at 0 50%, color-mix(in srgb, var(--accent) 30%, transparent), transparent); }
+.appbar .hs::after { content: '\203A'; justify-content: flex-end; padding-right: 6px; background: linear-gradient(270deg, var(--paper) 18%, color-mix(in srgb, var(--paper) 70%, transparent) 55%, transparent), radial-gradient(60% 70% at 100% 50%, color-mix(in srgb, var(--accent) 30%, transparent), transparent); }
+.appbar .hs.mL::before, .appbar .hs.mR::after { opacity: 1; animation: none; }
+.appbar .hs.mL::before { animation: hintL 1.6s ease-in-out infinite; } .appbar .hs.mR::after { animation: hintR 1.6s ease-in-out infinite; }
+@keyframes hintR { 0%, 100% { padding-right: 6px; } 50% { padding-right: 1px; } }
+@keyframes hintL { 0%, 100% { padding-left: 6px; } 50% { padding-left: 1px; } }
+@media (prefers-reduced-motion: reduce) { .appbar .hs.mL::before, .appbar .hs.mR::after { animation: none; } }
 /* No radio: one quiet line under the top bar, with the connect button a browser needs. */
 .radiomiss { margin: 0; padding: 5px 16px; gap: 8px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .radiomiss > i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }

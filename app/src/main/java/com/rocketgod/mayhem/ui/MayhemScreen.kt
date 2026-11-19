@@ -6,6 +6,9 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -165,7 +168,8 @@ internal fun barLabel(app: MayhemApp): String = when (app) {
     MayhemApp.TRANSMIT -> "TX"
     MayhemApp.UAT -> "FLIGHT UAT"
     MayhemApp.ERT -> "METERS"
-    MayhemApp.ACARS -> "AIRLINE MSGS"
+    MayhemApp.ACARS, MayhemApp.VDL2 -> "FLIGHT MSGS"
+    MayhemApp.ADSB -> "FLIGHTS"
     MayhemApp.SONDES -> "BALLOONS"
     else -> app.title.uppercase()
 }
@@ -253,18 +257,18 @@ private fun AppScroller(current: MayhemApp?) {
     var asking by remember { mutableStateOf<MayhemApp?>(null) }
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
     val onSettings = current == MayhemApp.SETTINGS
-    val lit = if (onSettings) Apps.settingsOver() else current
+    val lit = (if (onSettings) Apps.settingsOver() else current)?.barKey()
     Row(Modifier.fillMaxWidth().background(Palette.paper).height(StripGeo.band).padding(horizontal = d.pad),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StripGear { SettingsNav.open("bar") }
         StripSegments(bar, lit, Modifier.weight(1f)) { app ->
             RadioUi.open = false
             when {
-                current == app -> {}
+                current?.barKey() == app -> {}
                 // the app Settings is open over: just close Settings, don't start it again
-                onSettings && Apps.settingsOver() == app -> Apps.back()
+                onSettings && Apps.settingsOver()?.barKey() == app -> Apps.back()
                 Radio.blockedBecause(app).isNotEmpty() -> asking = app
-                else -> Apps.open(app)
+                else -> Apps.openPicked(app)
             }
         }
     }
@@ -274,11 +278,55 @@ private fun AppScroller(current: MayhemApp?) {
 private object StripGeo {
     val band = 54.dp
     val pill = 44.dp
-    val inset = 4.dp
-    val gap = 4.dp
+    val inset = 0.dp
+    val gap = 6.dp
     val segMin = 56.dp
     val segPad = 16.dp
-    val corner = 9.dp
+    val corner = 8.dp
+}
+
+/**
+ * The bar's scroll hint: on the side with more apps, the keys fade into the bar's own color under a soft accent glow
+ * with a chevron drifting outward. It shows until you first drag the bar; while you scroll it stays dark, and when
+ * you reach an end it comes back on the other side, pointing the way you came.
+ */
+private fun Modifier.barHint(scroll: androidx.compose.foundation.ScrollState): Modifier = composed {
+    var touched by remember { mutableStateOf(false) }
+    LaunchedEffect(scroll) {
+        scroll.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) touched = true }
+    }
+    val back = scroll.canScrollBackward; val fwd = scroll.canScrollForward; val moving = scroll.isScrollInProgress
+    val wantStart = if (!touched) back else !moving && back && !fwd
+    val wantEnd = if (!touched) fwd else !moving && fwd && !back
+    val aStart by androidx.compose.animation.core.animateFloatAsState(if (wantStart) 1f else 0f, tween(350), label = "hintL")
+    val aEnd by androidx.compose.animation.core.animateFloatAsState(if (wantEnd) 1f else 0f, tween(350), label = "hintR")
+    val drift by androidx.compose.animation.core.rememberInfiniteTransition(label = "hint").animateFloat(0f, 1f,
+        androidx.compose.animation.core.infiniteRepeatable(tween(800, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            androidx.compose.animation.core.RepeatMode.Reverse), label = "drift")
+    drawWithContent {
+        drawContent()
+        val paper = Palette.paper; val a = Palette.accent
+        val depth = 46.dp.toPx()
+        fun side(start: Boolean, k: Float) {
+            if (k <= 0.01f) return
+            val x0 = if (start) 0f else size.width - depth
+            val outer = if (start) 0f else size.width; val inner = if (start) depth else size.width - depth
+            drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(0f to paper.copy(alpha = k), 0.18f to paper.copy(alpha = k),
+                0.55f to paper.copy(alpha = 0.7f * k), 1f to Color.Transparent, startX = outer, endX = inner), Offset(x0, 0f), Size(depth, size.height))
+            drawRect(androidx.compose.ui.graphics.Brush.radialGradient(listOf(a.copy(alpha = 0.30f * k), Color.Transparent),
+                center = Offset(outer, size.height / 2), radius = size.height * 0.7f), Offset(x0, 0f), Size(depth, size.height))
+            // the chevron, drifting a few pixels outward and back
+            val pad = (6f - 5f * drift).dp.toPx(); val w = 5.dp.toPx(); val h = 8.dp.toPx(); val cy = size.height / 2
+            val tip = if (start) pad else size.width - pad
+            val tail = if (start) tip + w else tip - w
+            val stroke = 2.5f.dp.toPx()
+            for ((al, sw) in listOf(0.25f to stroke * 3, 1f to stroke)) {
+                drawLine(a.copy(alpha = al * k), Offset(tail, cy - h), Offset(tip, cy), sw, androidx.compose.ui.graphics.StrokeCap.Round)
+                drawLine(a.copy(alpha = al * k), Offset(tip, cy), Offset(tail, cy + h), sw, androidx.compose.ui.graphics.StrokeCap.Round)
+            }
+        }
+        side(true, aStart); side(false, aEnd)
+    }
 }
 
 /** Shrinks a little while held, as a key does. */
@@ -310,7 +358,8 @@ private class KeySpots { var x = IntArray(0); var w = IntArray(0) }
 @Composable
 private fun StripSegments(apps: List<MayhemApp>, selected: MayhemApp?, modifier: Modifier, onPick: (MayhemApp) -> Unit) {
     val pill = RoundedCornerShape(StripGeo.corner)
-    BoxWithConstraints(modifier.height(StripGeo.pill).clip(pill).background(Palette.surface).border(1.dp, Palette.line, pill)) {
+    // the keys fill the bar at the gear's full height, with no container drawn around them
+    BoxWithConstraints(modifier.height(StripGeo.pill).clip(pill)) {
         val density = LocalDensity.current
         val viewport = constraints.maxWidth
         val scroll = rememberScrollState()
@@ -334,8 +383,8 @@ private fun StripSegments(apps: List<MayhemApp>, selected: MayhemApp?, modifier:
                 fillX.animateTo(x, sp)
             }
         }
-        Box(Modifier.fillMaxSize().scrollGlow(scroll, horizontal = true).horizontalScroll(scroll)) {
-            val inset = with(density) { (StripGeo.inset + 1.dp).roundToPx() }
+        Box(Modifier.fillMaxSize().barHint(scroll).horizontalScroll(scroll)) {
+            val inset = with(density) { StripGeo.inset.roundToPx() }
             val gap = with(density) { StripGeo.gap.roundToPx() }
             val segMin = with(density) { StripGeo.segMin.roundToPx() }
             Layout(

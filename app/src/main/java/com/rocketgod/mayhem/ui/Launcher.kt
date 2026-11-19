@@ -136,14 +136,14 @@ private fun AppGrid(modifier: Modifier) {
     ) {
         // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
         val groups = MayhemApp.entries
-            .filter { it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL }
+            .filter { (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) && it.barKey() == it }
             .groupBy { it.category }
         for ((cat, apps) in listOf("Receive", "Analyze", "Transmit", "Tools").mapNotNull { c -> groups[c]?.let { c to it } }) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(cat.uppercase(), color = tintFor(apps.first()), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
                     modifier = Modifier.padding(top = d.dp(6f), start = d.dp(2f)))
             }
-            items(apps) { app -> AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.open(app) } }
+            items(apps) { app -> AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.openPicked(app) } }
         }
     }
 }
@@ -161,7 +161,7 @@ private fun AppRail(modifier: Modifier) {
     DisposableEffect(Unit) { onDispose { RailSpot.x = scroll.value } }
     // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
     val groups = MayhemApp.entries
-        .filter { it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL }
+        .filter { (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) && it.barKey() == it }
         .groupBy { it.category }
     Row(modifier.scrollGlow(scroll, horizontal = true).horizontalScroll(scroll).padding(bottom = d.dp(6f)),
         horizontalArrangement = Arrangement.spacedBy(d.dp(14f))) {
@@ -171,7 +171,7 @@ private fun AppRail(modifier: Modifier) {
                     modifier = Modifier.padding(start = d.dp(2f)))
                 Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                     for (app in apps) Box(Modifier.width(d.tileMin)) {
-                        AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.open(app) }
+                        AppTile(app, d) { if (Radio.blockedBecause(app).isNotEmpty()) asking = app else Apps.openPicked(app) }
                     }
                 }
             }
@@ -213,7 +213,7 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
                 AppGlyph(app, glyphTint, Modifier.size(d.dp(26f)))
             }
             Box(Modifier.weight(1f))
-            // the two-word names (Airline Messages, Weather Balloons) step down a size so they fit a phone's two-across tile whole
+            // the two-word names (Flight Messages, Weather Balloons) step down a size so they fit a phone's two-across tile whole
             Text(app.title, color = if (off) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
                 fontSize = d.sp(if (app.title.length > 12) 13f else 15f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             Text(if (off) "needs a HackRF" else app.blurb, color = Palette.muted,

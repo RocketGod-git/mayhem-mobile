@@ -27,15 +27,20 @@ object NavBar {
         "LORA", "BTLE", "VDL2", "ACARS", "TRAINS", "FLEET", "CELL", "ATSC", "SONDES", "PROWL", "SPECTRUM", "ANALYZER", "LOOKING_GLASS",
         "SEARCH", "TRANSMIT", "TROLL", "CAPTURE")
 
+    /** The default order of 0.9.39 to 0.9.41, before the flight apps were grouped (a bar still in it takes the new one). */
+    private val PREV_DEFAULT = listOf("AUDIO", "HD", "FLEET", "PAGER", "LORA", "ADSB", "CELL", "DEVICES", "UAT", "JS8", "HAM", "APRS", "ERT",
+        "TRAINS", "BTLE", "ACARS", "VDL2", "AIS", "SAT", "SONDES", "ATSC", "PROWL", "SPECTRUM", "ANALYZER", "LOOKING_GLASS", "SEARCH",
+        "TRANSMIT", "TROLL", "CAPTURE")
+
     /** True when [saved] is the old default order (or the part of it this build knows), so it was never rearranged. */
     fun neverDragged(saved: List<MayhemApp>): Boolean {
         val names = saved.map { it.name }
-        return names.isNotEmpty() && names == OLD_DEFAULT.filter { it in names }
+        return names.isNotEmpty() && (names == OLD_DEFAULT.filter { it in names } || names == PREV_DEFAULT.filter { it in names })
     }
 
     /** Every app the bar can hold: all of them but Settings (it has its own button), and Troll only where it ships. */
     fun all(): List<MayhemApp> = MayhemApp.entries.filter {
-        it != MayhemApp.SETTINGS && (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL)
+        it != MayhemApp.SETTINGS && it != MayhemApp.VDL2 && (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL)
     }
 
     private val _order = MutableStateFlow(defaultOrder())
@@ -86,6 +91,13 @@ object NavBar {
             if (saved != null && neverDragged(saved)) saved = null
             p.edit().putBoolean("nav_regrouped", true).apply()
         }
+        // once more (0.9.42): the flight apps grouped together. VDL2 left the bar for the band switch in Flight
+        // Messages, so the saved order is compared by its raw names (VDL2 included) before unknown names drop out
+        if (!p.getBoolean("nav_flights_grouped", false)) {
+            val raw = p.getString(KEY_ORDER, null)?.split(",")?.mapNotNull { n -> MayhemApp.entries.firstOrNull { it.name == n.trim() } }?.distinct()
+            if (raw != null && neverDragged(raw)) saved = null
+            p.edit().putBoolean("nav_flights_grouped", true).apply()
+        }
         // an app added in an update, not yet in the saved order, goes in after the app it follows by default (LoRa
         // after Meters, with the other receivers), not at the end
         _order.value = if (saved.isNullOrEmpty()) defaultOrder() else withNew(saved, defaultOrder())
@@ -128,7 +140,11 @@ object NavBar {
         prefs()?.edit()?.putString(KEY_LAST, app.name)?.apply()
     }
 
-    fun lastApp(): MayhemApp? = prefs()?.getString(KEY_LAST, null)?.let { n -> MayhemApp.byName(n)?.takeIf { it in all() } }
+    fun lastApp(): MayhemApp? = prefs()?.getString(KEY_LAST, null)?.let { n -> MayhemApp.byName(n)?.takeIf { it.barKey() in all() } }
+
+    /** The band Flight Messages was last on: true for VDL2 (136.975), false for ACARS (131). */
+    fun flightBandVdl(): Boolean = prefs()?.getBoolean("flight_band_vdl", false) ?: false
+    fun setFlightBandVdl(vdl: Boolean) { prefs()?.edit()?.putBoolean("flight_band_vdl", vdl)?.apply() }
 
     private fun prefs() = ctx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 

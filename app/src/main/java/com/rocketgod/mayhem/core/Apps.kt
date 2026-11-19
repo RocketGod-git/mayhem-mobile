@@ -28,19 +28,20 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     FLEET("Dispatch", "P25 · DMR trunking and calls", "Receive"),
     PAGER("Pagers", "FLEX · POCSAG", "Receive"),
     LORA("Mesh", "LoRa · Meshtastic · MeshCore", "Receive"),
-    ADSB("Aircraft", "ADS-B · 1090 MHz", "Receive"),
+    ADSB("Flights", "ADS-B · 1090 MHz", "Receive"),
+    UAT("Flight UAT", "UAT 978 · weather · small planes", "Receive"),
+    ACARS("Flight Messages", "ACARS · VDL2", "Receive"),
+    // no tile or bar key of its own: the 136.975 band of Flight Messages (see barKey)
+    VDL2("Flight Messages", "VDL Mode 2 · 136.975 MHz", "Receive"),
+    TRAINS("Trains", "EOT · PTC", "Receive"),
+    AIS("Ships", "AIS · 162 MHz", "Receive"),
     CELL("Cell", "LTE alerts · cell info", "Receive"),
     DEVICES("Devices", "keys · remotes · TPMS", "Receive"),
-    UAT("Flight Weather", "UAT · radar · small planes", "Receive"),
     JS8("JS8", "HF chat · groups", "Receive"),
     HAM("Ham Radio", "SSB · CW · repeaters", "Receive"),
     APRS("Ham Map", "APRS · 144.39 MHz", "Receive"),
     ERT("Utility Meters", "ERT · Gridstream · 802.15.4g", "Receive"),
-    TRAINS("Trains", "EOT · PTC", "Receive"),
     BTLE("Bluetooth", "BLE advertising · 2.4 GHz", "Receive"),
-    ACARS("Airline Messages", "ACARS · 131 MHz", "Receive"),
-    VDL2("Airline Data", "VDL Mode 2 · 136.975 MHz", "Receive"),
-    AIS("Ships", "AIS · 162 MHz", "Receive"),
     SAT("Satellites", "track and decode", "Receive"),
     SONDES("Weather Balloons", "radiosondes · 400–406 MHz", "Receive"),
     ATSC("TV", "ATSC · guide · pictures", "Receive"),
@@ -59,6 +60,9 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
          *  either opens Devices. */
         fun byName(name: String): MayhemApp? = if (name == "SUBGHZ" || name == "TPMS") DEVICES else entries.firstOrNull { it.name == name }
     }
+
+    /** The tile and bar key this app sits under: VDL2 is the second band of Flight Messages. */
+    fun barKey(): MayhemApp = if (this == VDL2) ACARS else this
 }
 
 /** Wires each app to its engine configuration and baseband processor (Mayhem's receiver_model per app). */
@@ -418,7 +422,11 @@ object Apps {
     /** The app Settings is open over (null: over Home, or Settings is not open). */
     fun settingsOver(): MayhemApp? = if (_current.value == MayhemApp.SETTINGS) under else null
 
+    /** Open an app from its tile or bar key: Flight Messages opens on the band used last. */
+    fun openPicked(app: MayhemApp) = open(if (app == MayhemApp.ACARS && NavBar.flightBandVdl()) MayhemApp.VDL2 else app)
+
     fun open(app: MayhemApp) {
+        if (app == MayhemApp.ACARS || app == MayhemApp.VDL2) NavBar.setFlightBandVdl(app == MayhemApp.VDL2)
         if (app == MayhemApp.SETTINGS) {
             if (_current.value != MayhemApp.SETTINGS) under = _current.value
             _current.value = app

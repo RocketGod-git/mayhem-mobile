@@ -82,19 +82,20 @@ const APPS: AppDef[] = [
   { id: 'fleet', title: 'Dispatch', blurb: 'P25 · DMR trunking and calls', cat: 'Receive' },
   { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG', cat: 'Receive' },
   { id: 'lora', title: 'Mesh', blurb: 'LoRa · Meshtastic · MeshCore', cat: 'Receive' },
-  { id: 'adsb', title: 'Aircraft', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
+  { id: 'adsb', title: 'Flights', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
+  { id: 'uat', title: 'Flight UAT', blurb: 'UAT 978 · weather · small planes', cat: 'Receive' },
+  { id: 'acars', title: 'Flight Messages', blurb: 'ACARS · VDL2', cat: 'Receive' },
+  // VDL2 has no tile or bar key of its own: it is the 136.975 band of Flight Messages (see MERGED_INTO)
+  { id: 'vdl2', title: 'Flight Messages', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
+  { id: 'trains', title: 'Trains', blurb: 'EOT · PTC', cat: 'Receive' },
+  { id: 'ais', title: 'Ships', blurb: 'AIS · 162 MHz', cat: 'Receive' },
   { id: 'cell', title: 'Cell', blurb: 'LTE alerts · cell info', cat: 'Receive' },
   { id: 'devices', title: 'Devices', blurb: 'keys · remotes · TPMS', cat: 'Receive' },
-  { id: 'uat', title: 'Flight Weather', blurb: 'UAT · radar · small planes', cat: 'Receive' },
   { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
-  { id: 'trains', title: 'Trains', blurb: 'EOT · PTC', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
-  { id: 'acars', title: 'Airline Messages', blurb: 'ACARS · 131 MHz', cat: 'Receive' },
-  { id: 'vdl2', title: 'Airline Data', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
-  { id: 'ais', title: 'Ships', blurb: 'AIS · 162 MHz', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
   { id: 'sondes', title: 'Weather Balloons', blurb: 'radiosondes · 400–406 MHz', cat: 'Receive' },
   { id: 'atsc', title: 'TV', blurb: 'ATSC · guide · pictures', cat: 'Receive' },
@@ -108,6 +109,15 @@ const APPS: AppDef[] = [
   { id: 'troll', title: 'Troll', blurb: 'novelty transmitters', cat: 'Transmit' },
   { id: 'settings', title: 'Settings', blurb: 'theme · about', cat: 'Tools' },
 ];
+/** Apps folded into another app's tile and bar key: VDL2 is the second band of Flight Messages. */
+const MERGED_INTO: Partial<Record<AppId, AppId>> = { vdl2: 'acars' };
+const keyOf = (id: AppId | null) => id ? MERGED_INTO[id] ?? id : id;
+const FLIGHT_MSGS_KEY = 'mm.flightmsgs.band';
+/** The tile and the bar key open Flight Messages on the band you used last. */
+function openPicked(id: AppId): void {
+  if (id === 'acars') { let b = 'acars'; try { b = localStorage.getItem(FLIGHT_MSGS_KEY) ?? 'acars'; } catch { /* no storage */ } open(b === 'vdl2' ? 'vdl2' : 'acars'); return; }
+  open(id);
+}
 const RANGES: [string, number, number][] = [
   ['FM 88-108', 88e6, 108e6], ['AIR 118-137', 118e6, 137e6], ['2m 144-148', 144e6, 148e6], ['70cm 420-450', 420e6, 450e6],
   ['ISM 902-928', 902e6, 928e6], ['GSM 925-960', 925e6, 960e6], ['1.2-1.6G', 1200e6, 1600e6], ['2.4G ISM', 2400e6, 2483e6],
@@ -930,6 +940,7 @@ function narrowShift(): void { state.viewLo = state.freq + NARROW_SHIFT; if (rad
 function open(app: AppId | null): void {
   if ((app as string) === 'subghz' || (app as string) === 'tpms') app = 'devices';      // Sub-GHz and TPMS are part of Devices now
   if (app === 'settings') { openSettings(); return; }
+  if (app === 'acars' || app === 'vdl2') { try { localStorage.setItem(FLIGHT_MSGS_KEY, app); } catch { /* no storage */ } }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
   if (state.scanning && app !== 'audio') setScanning(false);
   if (state.prowl.on && app !== 'prowl') prowlStop();       // the hunt owns the receiver; anything else takes it back
@@ -1666,7 +1677,21 @@ function bindHs(root: ParentNode = document): void {
   qa<HTMLElement>('.hs', root as HTMLElement).forEach(w => {
     const inner = w.querySelector<HTMLElement>('.hs-in'); if (!inner || inner.dataset.hs) return;
     inner.dataset.hs = '1';
-    const upd = () => { w.classList.toggle('mL', inner.scrollLeft > 4); w.classList.toggle('mR', inner.scrollLeft < inner.scrollWidth - inner.clientWidth - 4); };
+    const left = () => inner.scrollLeft > 4, right = () => inner.scrollLeft < inner.scrollWidth - inner.clientWidth - 4;
+    let upd = () => { w.classList.toggle('mL', left()); w.classList.toggle('mR', right()); };
+    if (w.classList.contains('bar-pill')) {
+      // the app bar hints quietly: the side with more apps glows until you touch it; while you scroll it stays dark,
+      // and when you reach an end the glow comes back on the other side, pointing the way you came
+      let touched = false, moving = 0;
+      const show = () => { const l = left(), r = right(); w.classList.toggle('mL', touched ? !r && l : l); w.classList.toggle('mR', touched ? !l && r : r); };
+      const grab = () => { touched = true; };
+      for (const ev of ['pointerdown', 'wheel', 'touchstart'] as const) inner.addEventListener(ev, grab, { passive: true });
+      upd = () => {
+        if (!touched) { show(); return; }
+        w.classList.remove('mL', 'mR'); clearTimeout(moving);
+        moving = window.setTimeout(show, 140);
+      };
+    }
     inner.addEventListener('scroll', upd, { passive: true }); new ResizeObserver(upd).observe(inner); upd();
     // the tile you are on, in view
     const on = inner.querySelector<HTMLElement>('.on'); if (on) inner.scrollLeft = Math.max(0, on.offsetLeft - inner.offsetLeft - 60);
@@ -1935,14 +1960,14 @@ function renderLauncher(view: HTMLElement): void {
     <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div><div id="launch-line" class="launch-line"></div>
     <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain"></div></div></section>
     <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
-      const apps = APPS.filter(a => a.cat === c); if (!apps.length) return '';
+      const apps = APPS.filter(a => a.cat === c && !MERGED_INTO[a.id]); if (!apps.length) return '';
       // each group's name over its tiles: a grid two to a row on a phone, one sideways row when wide (as on iPad)
       return `<div class="lgrp"><div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div><div class="lgrp-in">` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><span class="wm">${glyph(a.id, tintHex(a.cat), 84)}</span><div class="tile-top"><span class="badge">${glyph(a.id, tintHex(a.cat), 26)}</span><span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb" data-blurb="${a.blurb}">${a.blurb}</div></button>`).join('') + '</div></div>';
     }).join('')}</div>
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));
   scope.setLabels(centredLabels(state.freq, state.rate));
-  qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => open(b.dataset.app as AppId));
+  qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => openPicked(b.dataset.app as AppId));
   // Restore the app strip to where it was, and keep track as it moves, so opening an app and coming back does not
   // jump it to the start (the strip scrolls sideways on a phone, down on a wide screen — remember both).
   const strip = view.querySelector<HTMLElement>('.launch-side');
@@ -4076,6 +4101,7 @@ function renderAcars(view: HTMLElement, id: AcarsApp): void {
   view.innerHTML = `
     <section class="${visCls(id)}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
+      <div class="ctlrow">${segHtml([['acars', 'ACARS 131'], ['vdl2', 'VDL2 136.975']].map(([k, t]) => `<button data-acband="${k}" class="${k === id ? 'on' : ''}">${t}</button>`))}</div>
       ${vdl ? '' : presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
       <div class="ctlrow">${segHtml(['cards', 'map', 'stats', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml(id)}${pauseClearHtml(id)}</div>
       <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-map" class="panel map"></div><div id="ac-nopos" class="mt-nopos">no positions yet</div><div id="ac-unplaced" class="ac-unplaced"></div><div id="ac-stats" class="ac-stats"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
@@ -4085,6 +4111,7 @@ function renderAcars(view: HTMLElement, id: AcarsApp): void {
         : 'One card per aircraft (by registration, else flight), each message read into plain words: out, off, on and in times, positions, weather, ATIS, free text, engine data. MAP plots them where their own messages put them. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).'}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-acband]', view).forEach(b => b.onclick = () => { if (b.dataset.acband !== id) open(b.dataset.acband as AcarsApp); });
   qa<HTMLButtonElement>('[data-acview]', view).forEach(b => b.onclick = () => { ui.view = b.dataset.acview as AcarsView; refreshAcars(true); if (ui.view === 'map') requestAnimationFrame(() => { geo?.invalidate(); geo?.fit(); }); });
   $('ac-unplaced').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { ui.sel = ui.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
   $('ac-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-acp]'); if (c) { ui.sel = ui.sel === c.dataset.acp ? '' : c.dataset.acp!; refreshAcars(true); } };
@@ -8214,7 +8241,7 @@ function wireCommon(view: HTMLElement): void {
   const fav = q<HTMLButtonElement>('#fav', view); if (fav) { fav.onclick = toggleFav; refreshFav(); }
   const fkey = q<HTMLButtonElement>('#fkey', view);
   if (fkey) { if (state.app === 'adsb' || state.app === 'btle') fkey.remove(); else fkey.onclick = () => freqEntry(); }
-  qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => open(b.dataset.app as AppId));
+  qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => openPicked(b.dataset.app as AppId));
   qa<HTMLButtonElement>('[data-satview]', view).forEach(b => b.onclick = () => { state.ham.sat.view = b.dataset.satview as typeof state.ham.sat.view; open('sat'); });
   qa<HTMLButtonElement>('[data-mode]', view).forEach(b => b.onclick = () => setMode(b.dataset.mode as Mode));
   qa<HTMLButtonElement>('[data-step]', view).forEach(b => b.onclick = () => tune(state.freq + Number(b.dataset.step)));
@@ -9243,12 +9270,12 @@ let versionText = 'dev build', releaseUrl = 'https://github.com/RocketGod-git/ma
 
 // ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
 /** The app bar's order, the native apps' default: by what they do (receive, analyze, transmit, tools), as Home lists them. */
-const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings').map(a => a.id));
+const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings' && !MERGED_INTO[a.id]).map(a => a.id));
 /** The app's name in capitals, as its header, Settings and FAVES show it. */
 const appName = (id: AppId) => APPS.find(a => a.id === id)?.title.toUpperCase() ?? (id === 'subghz' ? 'SUB-GHZ' : id.toUpperCase());
 /** The bar's own shorter names for the longest apps, so a key never takes half the strip (the readout tag uses them too, for
  *  the same room); the header, Settings and FAVES say the full name. */
-const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', transmit: 'TX', uat: 'FLIGHT UAT', ert: 'METERS', acars: 'AIRLINE MSGS', sondes: 'BALLOONS' };
+const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', transmit: 'TX', uat: 'FLIGHT UAT', ert: 'METERS', acars: 'FLIGHT MSGS', adsb: 'FLIGHTS', sondes: 'BALLOONS' };
 const barLabel = (id: AppId) => BAR_LABEL[id] ?? appName(id);
 /** A wide screen (tablet or desktop): Home lays the waterfall over one sideways row of app tiles, as on iPad. */
 const wideShell = matchMedia('(min-width: 720px)');
@@ -9267,7 +9294,7 @@ function buildBar(): void {
   qa<HTMLButtonElement>('[data-bar]', bar).forEach(b => b.onclick = () => {
     const id = b.dataset.bar as AppId;
     closeSettings();
-    if (state.app !== id) open(id);
+    if (keyOf(state.app) !== id) openPicked(id);
   });
   refreshShell();
 }
@@ -9295,7 +9322,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['AIRLINE DATA', 'VDL MODE 2 · D8PSK'], acars: ['AIRLINE MSGS', 'AIRLINE MESSAGES · ACARS'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
@@ -9486,7 +9513,7 @@ let fillPlaced = false;
 /** Move the phone strip's fill under the open app's key, sliding there when [slide]; on Home it fades away. */
 function placeFill(slide: boolean): void {
   const fill = q<HTMLElement>('#appbar-in .afill'); if (!fill) return;
-  const on = q<HTMLElement>(`#appbar-in [data-bar="${state.app}"]`);
+  const on = q<HTMLElement>(`#appbar-in [data-bar="${keyOf(state.app)}"]`);
   if (!on || !on.offsetWidth) { fill.classList.remove('show'); fillPlaced = false; return; }
   fill.classList.toggle('slide', slide && fillPlaced);
   fill.style.setProperty('--seg', on.style.getPropertyValue('--seg'));
@@ -9509,7 +9536,7 @@ function fitTopnav(): void {
 
 function refreshShell(): void {
   requestAnimationFrame(fitTopnav);
-  const here = state.app, setOn = settingsOpen();
+  const here = keyOf(state.app), setOn = settingsOpen();
   qa<HTMLButtonElement>('[data-bar]').forEach(b => {
     const id = b.dataset.bar as AppId;
     b.classList.toggle('on', id === here);
