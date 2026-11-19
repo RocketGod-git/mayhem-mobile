@@ -142,13 +142,8 @@ export class GeoMap {
       // One finger belongs to the page so it scrolls past the map; two fingers pan and pinch it.
       this.map.dragging.disable();
       this.host.style.touchAction = 'pan-y';
-      const hint = document.createElement('div'); hint.className = 'geo-2f'; hint.textContent = 'two fingers to move the map'; this.host.appendChild(hint);
-      let t = 0;
-      // Leaflet's pinch handler already moves the map with the two fingers, so dragging stays off.
-      this.host.addEventListener('touchstart', (e) => { if (e.touches.length >= 2) hint.classList.remove('on'); }, { passive: true });
-      this.host.addEventListener('touchmove', (e) => {
-        if (e.touches.length === 1) { hint.classList.add('on'); clearTimeout(t); t = window.setTimeout(() => hint.classList.remove('on'), 1200); }
-      }, { passive: true });
+      // A quiet pill at the bottom of the map says how to move it; nothing covers the map.
+      const hint = document.createElement('div'); hint.className = 'geo-2f'; hint.textContent = '✌ two fingers to move the map'; this.host.appendChild(hint);
     }
     this.map.on('click', (e: any) => this.opts.onMapTap?.(e.latlng.lat, e.latlng.lng));
     this.setHome(home ?? null);
