@@ -34,6 +34,9 @@ import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, trackSvg, sparkSvg, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
+import { renderJs8, js8Dial, js8SetDial, js8Speeds, js8OnDecodes, js8OnWaterfall, refreshJs8, type Js8Host } from './js8-ui.js';
+import type { Js8Decode } from './dsp/js8/decoder.js';
+import type { Js8Speed } from './dsp/js8/modes.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
 import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
@@ -70,11 +73,12 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
   { id: 'ham', title: 'HAM', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
+  { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB', cat: 'Receive' },
   { id: 'hd', title: 'HD Radio', blurb: 'station data · art · traffic', cat: 'Receive' },
   { id: 'devices', title: 'Devices', blurb: 'keys, remotes, TPMS', cat: 'Receive' },
@@ -257,6 +261,7 @@ function setDial(hz: number): void {
 let silentTune = false;
 function tune(hz: number, hold = false): void {
   if (state.app === 'ham') { hamTune(hz); return; }
+  if (state.app === 'js8') { js8Tune(hz); return; }
   if (state.app === 'hd') { if (hdUi.auto) hdSetAuto(false); hdTune(hz); return; }
   state.freq = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
@@ -944,6 +949,7 @@ function open(app: AppId | null): void {
     // configure, and stays off if the user has turned it off).
     case null: { const v = launcherView(); configure(v.mode, v.center, v.rate, 32, 32, false, 'none'); setAgc(true); launchPicked = false; launchTapped = false; pickArm(); break; }
     case 'ham': hamOpen(); return;
+    case 'js8': js8Open(); return;
     // Arriving from the launcher is "take me to what I am looking at": open on the station the launcher has
     // (its auto-pick of the strongest, or one you tapped), state.freq. From anywhere else, keep the shared dial —
     // the launcher's auto-pick still never writes that dial, so a plain app-to-app hop is never thrown onto it.
@@ -1878,6 +1884,7 @@ function render(app: AppId | null): void {
       else renderSat(view, satStrip());
       break;
     case 'ham': renderHam(view); break;
+    case 'js8': renderJs8(view, js8Host); break;
     case 'adsb': renderAdsb(view); break;
     case 'uat': renderUat(view); break;
     case 'ais': renderAis(view); break;
@@ -2281,6 +2288,48 @@ function hamOpen(): void {
   render('ham');
   hamSend();
 }
+/** JS8: the HAM receiver in USB on the dial, its audio feeding the JS8 receiver in the worker. */
+function js8Open(): void {
+  const d = js8Dial();
+  if (radio && !canTune(radio.limits, d)) log(`${radio.label}: ${(d / 1e6).toFixed(3)} MHz is out of its range, JS8 lives on HF`);
+  state.hamLo = hamLoFor(d);
+  configure('NONE', state.hamLo, HAM_RATE, 32, 40, false, 'js8', { speeds: js8Speeds() });
+  state.freq = d;
+  render('js8');
+  js8Params();
+}
+function js8Params(): void {
+  worker?.postMessage({ type: 'hamParams', params: { offsetHz: js8Dial() - state.hamLo, mode: 'USB', lo: 100, hi: 3200, pitch: 600, agc: 'slow', nr: false, anf: false, squelchDb: 0, volume: state.ham.volume } });
+}
+function js8Tune(hz: number): void {
+  hz = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
+  js8SetDial(hz); state.freq = hz;
+  const off = hz - state.hamLo;
+  if (Math.abs(off) > state.rate / 2 - HAM_GUARD || Math.abs(off) < 15_000) { state.hamLo = hamLoFor(hz); if (radio) radio.targetFreqHz = state.hamLo; }
+  js8Params(); refreshReadout(); refreshJs8(true);
+}
+const js8Host: Js8Host = {
+  readoutHtml: () => readoutHtml(),
+  refreshReadout: () => refreshReadout(),
+  segHtml: (b, c) => segHtml(b, c),
+  hsHtml: (i, c) => hsHtml(i, c),
+  esc: s => esc(s).replace(/"/g, '&quot;'),
+  log: s => log(s),
+  station: () => ({ call: state.ham.station.call.trim().toUpperCase(), grid: myGrid() }),
+  home: () => state.home ?? (myGrid() ? gridToLatLon(myGrid()) : null),
+  isOpen: () => state.app === 'js8',
+  tune: hz => js8Tune(hz),
+  setSpeeds: s => worker?.postMessage({ type: 'js8Speeds', speeds: s }),
+  tx: {
+    get enabled() { return tx.enabled; },
+    get needsPrompt() { return tx.needsPrompt; },
+    get active() { return tx.active; },
+    js8: (label, rfHz, track, rate, sps) => tx.js8(label, rfHz, track, rate, sps),
+  },
+  showTxSafetyPrompt: () => showTxSafetyPrompt(),
+  txReady: () => !tx.enabled ? 'transmit is switched off in Settings' : !radio || radio.kind !== 'hackrf' ? 'sending needs a HackRF' : !state.ham.station.call.trim() ? 'set your callsign in Settings, STATION' : '',
+  setGeo: g => { geo = g; },
+};
 /** MONITOR: the LO sits on the band (or the current channel) and every raster channel in the span is watched. */
 function monitorOpen(at?: number): void {
   const h = state.ham, band = bandOf(h.freq);
@@ -8768,6 +8817,8 @@ function ensureWorker(): Worker {
         if (st) st.textContent = head + conf.map(([n, c]) => ` · ${n} ${c}%`).join('') + wpm;
         break;
       }
+      case 'js8': js8OnDecodes(m.list as Js8Decode[], m.speed as Js8Speed, m.slot as number); break;
+      case 'js8wf': js8OnWaterfall(m.row as Uint8Array, m.ms as number); break;
       case 'ft8': { const g = state.ham.digi; g.ft8.unshift(...(m.list as typeof g.ft8)); if (g.ft8.length > 200) g.ft8.length = 200; refreshFt8(); break; }
       case 'dmr': state.ham.digi.dmr = m.status as DmrStatus; refreshDmr(); break;
       case 'p25': state.ham.digi.p25 = m.status as P25Status; refreshP25(); break;
@@ -9239,6 +9290,7 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
+  js8: ['JS8', 'HF MESSAGING · USB'],
   pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['ATSC', 'DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],

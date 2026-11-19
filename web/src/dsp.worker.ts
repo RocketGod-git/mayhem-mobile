@@ -48,6 +48,8 @@ import { SameDecoder } from './dsp/same.js';
 import { GeoscanDecoder } from './dsp/geoscan.js';
 import { CwDecoder, RttyDecoder, Psk31Decoder, type DigitalDecoder } from './dsp/ham/digital.js';
 import { Ft8Decoder } from './dsp/ham/ft8.js';
+import { Js8Decoder, type Js8Decode } from './dsp/js8/decoder.js';
+import { loadJsc } from './dsp/js8/varicode.js';
 import { DmrDecoder } from './dsp/ham/dmr.js';
 import { SstvDecoder } from './dsp/ham/sstv.js';
 import { AptDecoder } from './dsp/ham/apt.js';
@@ -203,6 +205,18 @@ sstv.onImage = img => post({ type: 'sstv', ...img }, [img.rows.buffer]);
 let digiMode = 'off', digiWinner = '';
 for (const d of digiAll) d.onText = (t, meta) => { if (digiMode === d.name.toLowerCase() || (digiMode === 'auto' && (digiWinner === d.name || d.name === 'FT8' || d.name === 'SSTV'))) post({ type: 'digi', from: d.name, text: t, meta }); };
 ft8.onDecodes = (list, slot) => post({ type: 'ft8', list, slot });
+// JS8: the whole passband at every speed, on the HAM receiver's USB audio while the JS8 app is open
+const js8 = new Js8Decoder();
+let js8On = false, js8WfAt = 0;
+js8.onDecodes = (list: Js8Decode[], speed, slot) => { if (js8On) post({ type: 'js8', list, speed, slot }); };
+js8.onWaterfall = (row, ms) => {
+  if (!js8On || ms - js8WfAt < 240) return;
+  js8WfAt = ms;
+  // each row against its own median, so the picture holds steady whatever the gain
+  const sorted = Float32Array.from(row).sort(), med = sorted[sorted.length >> 1], b = new Uint8Array(row.length);
+  for (let i = 0; i < row.length; i++) b[i] = Math.max(0, Math.min(255, Math.round((row[i] - med + 6) * 9)));
+  post({ type: 'js8wf', row: b, ms }, [b.buffer]);
+};
 // DMR runs on the NFM discriminator rather than the audio; its voice replaces the analog audio while it decodes
 const dmr = new DmrDecoder();
 dmr.onLog = line => { if (dvMode()) post({ type: 'digi', from: 'DMR', text: `${line}\n` }); };
@@ -381,7 +395,7 @@ self.onmessage = (e: MessageEvent) => {
       if (typeof m.voice === 'boolean') { voiceOn = m.voice; if (!voiceOn) voice.reset(); }
       break;
     case 'audioPort': audioPort = m.port as MessagePort; break;
-    case 'app': processor = makeProcessor(m.app as string, m); break;
+    case 'app': if (m.app !== 'js8') js8On = false; processor = makeProcessor(m.app as string, m); break;
     case 'geo': adsb.ref = { lat: m.lat as number, lon: m.lon as number }; fleet.setRef(m.lat as number, m.lon as number); break;
     case 'fleetRef': fleet.setRef(m.lat as number, m.lon as number); break;
     case 'fleet':
@@ -442,6 +456,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'hamParams': ham.set(m.params); break;
     case 'monitorParams': monitor.set(m.params); break;
     case 'digital': setDigital(m.mode as string, m); break;
+    case 'js8Speeds': js8.enabled = { ...js8.enabled, ...(m.speeds as Record<string, boolean>) }; break;
     case 'satService': if (typeof m.baud === 'number') g3ruh.setBaud(m.baud); setSatService(m.kind as string); break;
     case 'tapFm': fmTap = new Float32Array(Math.round((m.seconds as number) * 50_000)); fmTapN = 0; applyTaps(); fmBurst = !!m.bursts; fmBurstEnd = performance.now() + ((m.wall as number) ?? m.seconds as number) * 1000; fmPre = new Float32Array(20_000); fmPreN = 0; fmHold = 0; fmAcc = 0; fmAccN = 0; fmFloor = 0; fmBurstCount = 0; break;
   }
@@ -475,7 +490,15 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'spectrum': return new SpectrumProcessor(m.cfg as SpecConfig, emit);
     case 'sweep': return new SweepProcessor(m.start as number, m.end as number, m.slice as number, emit);
     case 'capture': return recorder;
-    case 'ham': return ham;
+    case 'ham': js8On = false; if (ham.digital.includes(js8 as unknown as DigitalDecoder)) ham.digital = []; return ham;
+    case 'js8': {
+      js8On = true; js8.reset();
+      // compressed text needs the JS8 dictionary; it is fetched once, the first time JS8 runs
+      void loadJsc(new URL('../assets/js8-jsc.json', self.location.href).href).catch(() => undefined);
+      if (m.speeds) js8.enabled = { ...js8.enabled, ...(m.speeds as Record<string, boolean>) };
+      ham.digital = [js8 as unknown as DigitalDecoder];
+      return ham;
+    }
     case 'monitor': return monitor;
     default: return null;
   }

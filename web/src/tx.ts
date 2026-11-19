@@ -4,6 +4,7 @@ import type { HackRf } from './hackrf.js';
 import * as Enc from './tx-encoders.js';
 import * as Apps from './tx-apps.js';
 import * as Weather from './dsp/tx-weather.js';
+import { rampAt } from './dsp/js8/synth.js';
 
 const RATE = 2_000_000, OFFSET = 100_000, AMP = 100;
 
@@ -118,6 +119,26 @@ export class Tx {
         buf[2 * i] = Math.round(a * Math.cos(ph)); buf[2 * i + 1] = Math.round(a * Math.sin(ph));
       }
       return n * 2;
+    });
+  }
+
+  /**
+   * One JS8 frame on USB: the carrier at `rfHz` (dial + audio offset of tone 0) moved by the frame's tone track,
+   * `track` being the offset in Hz at `trackRate` samples per second.
+   */
+  js8(label: string, rfHz: number, track: Float32Array, trackRate: number, symSamples: number): boolean {
+    const n = Math.round(track.length * RATE / trackRate), sps = Math.round(symSamples * RATE / trackRate);
+    let i = 0, ph = 0;
+    return this.begin(label, rfHz, RATE, OFFSET, (buf) => {
+      if (i >= n) return 0;
+      const m = Math.min(buf.length >> 1, n - i);
+      for (let k = 0; k < m; k++, i++) {
+        const f = track[Math.min(track.length - 1, Math.floor(i * trackRate / RATE))];
+        ph += 2 * Math.PI * (OFFSET + f) / RATE; if (ph > 2 * Math.PI) ph -= 2 * Math.PI;
+        const a = AMP * rampAt(i, n, sps);
+        buf[2 * k] = Math.round(a * Math.cos(ph)); buf[2 * k + 1] = Math.round(a * Math.sin(ph));
+      }
+      return m * 2;
     });
   }
 
