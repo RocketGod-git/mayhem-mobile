@@ -30,7 +30,7 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import { FleetAuto } from './dsp/fleet/auto.js';
+import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
@@ -4715,12 +4715,27 @@ function fleetOpen(): void {
 }
 /** Six seconds a window; a window where a control channel decodes keeps the radio for 25. */
 /** AUTO's choice of window, scored by the clear voice heard on each (dsp/fleet/auto.ts). */
-let fleetAuto: FleetAuto | null = null;
+let fleetAuto: FleetAuto | null = null, fleetAutoSig = '', fleetAutoSaved = 0;
+/** The band scores are kept on the device with the systems, for the same set of windows (band choice and span). */
+const fleetWindowSig = () => `${fleetUi.band}|${fleetUi.windows.map(w => w.hz).join(',')}`;
+function fleetAutoLoad(sig: string): AutoSaved | null {
+  try { const v = JSON.parse(localStorage.getItem('mm.fleet.auto') ?? 'null'); return v && v.sig === sig ? v.saved as AutoSaved : null; } catch { return null; }
+}
+function fleetAutoSave(now: number): void {
+  if (!fleetAuto || now - fleetAutoSaved < 10_000) return;
+  fleetAutoSaved = now;
+  try { localStorage.setItem('mm.fleet.auto', JSON.stringify({ sig: fleetAutoSig, saved: fleetAuto.save(now) })); } catch { /* storage full or blocked */ }
+}
 function fleetDwell(): void {
   clearTimeout(fleetUi.scanTimer);
   fleetUi.found = false; fleetUi.dwellEnd = Date.now() + 6_000;
-  if (!fleetAuto || fleetAuto.windows !== fleetUi.windows.length) fleetAuto = new FleetAuto(fleetUi.windows.length, Date.now(), fleetUi.idx);
-  else fleetAuto.moved(fleetUi.idx, Date.now());
+  const sig = fleetWindowSig();
+  if (!fleetAuto || fleetAutoSig !== sig) {
+    fleetAutoSig = sig;
+    fleetAuto = new FleetAuto(fleetUi.windows.length, Date.now(), fleetUi.idx, fleetAutoLoad(sig));
+    // a reload with a known best band starts on it
+    if (!fleetUi.lock && fleetAuto.idx !== fleetUi.idx && fleetUi.windows[fleetAuto.idx]) { fleetUi.idx = fleetAuto.idx; tune(fleetUi.windows[fleetUi.idx].hz); }
+  } else fleetAuto.moved(fleetUi.idx, Date.now());
   // one window (a band the span covers): nothing to step through, but the checks on locks, follows and visits run
   const check = () => {
     if (state.app !== 'fleet') return;
@@ -4739,6 +4754,7 @@ function fleetDwell(): void {
       fleetUi.found = a.mode !== 'scan' || a.found;
       fleetUi.dwellEnd = a.mode === 'hold' ? now + 6_000 : a.until;
       if (to !== null && to !== fleetUi.idx && fleetUi.windows[to]) { fleetUi.idx = to; tune(fleetUi.windows[to].hz); refreshFleet(true); }
+      fleetAutoSave(now);
     }
     fleetUi.scanTimer = window.setTimeout(check, 500);
   };
@@ -4869,7 +4885,7 @@ const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span cl
 function fleetHead(s: FleetSnap | null, now: number): string {
   const sites = s ? s.systems.reduce((n, x) => n + x.sites.length, 0) : 0, units = s?.units.length ?? 0, live = s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000) : [];
   const w = fleetUi.windows[fleetUi.idx], c = s?.centerHz ?? w?.hz ?? 0, band = FLEET_BANDS.find(b => c >= b[2] - 2e6 && c <= b[3] + 2e6) ?? FLEET_BANDS.find(b => b[0] === w?.band);
-  const scan = fleetUi.visit ? `CHECKING POSITIONS · BACK IN ${Math.max(0, Math.ceil((fleetUi.visit.until - now) / 1000))} s` : fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? (fleetAuto?.mode === 'hold' ? `${fleetUi.band === 'AUTO' ? 'AUTO' : 'SCAN'} · HOLDING WHERE THE VOICE IS` : fleetAuto?.mode === 'look' ? `LOOKING AROUND · BACK IN ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s`) : 'HOLDING';
+  const scan = fleetUi.visit ? `CHECKING POSITIONS · BACK IN ${Math.max(0, Math.ceil((fleetUi.visit.until - now) / 1000))} s` : fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? (fleetAuto?.mode === 'hold' ? `${fleetUi.band === 'AUTO' ? 'AUTO' : 'SCAN'} · HOLDING WHERE THE VOICE IS` : fleetAuto?.mode === 'survey' ? `AUTO · FIRST PASS · ${fleetUi.idx + 1}/${fleetUi.windows.length} · NEXT ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : fleetAuto?.mode === 'look' ? `LOOKING AROUND · BACK IN ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s`) : 'HOLDING';
   const span = s ? `${fleetMhz(s.spanLo, 3)}–${fleetMhz(s.spanHi, 3)} MHz` : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const onAir = s?.calls.filter(c => c.onAir && c.kind === 'call' && !c.outside).length ?? 0;
