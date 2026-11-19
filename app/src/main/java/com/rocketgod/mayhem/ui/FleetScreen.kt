@@ -7,6 +7,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -58,6 +60,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -85,6 +91,7 @@ import com.rocketgod.mayhem.core.fleet.GrantRow
 import com.rocketgod.mayhem.core.fleet.Iden
 import com.rocketgod.mayhem.core.fleet.SiteRow
 import com.rocketgod.mayhem.core.fleet.SystemRow
+import com.rocketgod.mayhem.core.fleet.TrailPt
 import com.rocketgod.mayhem.core.fleet.hx
 import kotlinx.coroutines.delay
 import kotlin.math.abs
@@ -236,9 +243,8 @@ fun FleetScreen(accent: Color) {
     @Composable
     fun detail(modifier: Modifier) {
         if (s != null && sel != null) {
-            val det = fleetDetail(s, sel!!, now, if (wide) V_MAP else view)
-            if (det != null) FleetDetailPanel(det, s, now, accent, prefs, me, colorOf, acts, modifier,
-                onMap = if (det.mapKey != null) ({ if (!wide) { view = V_MAP; jumpMap++ }; focusAt = null; focusKey++ }) else null) { sel = null }
+            FleetCard(s, sel!!, now, if (wide) V_MAP else view, wide, prefs, me, colorOf, acts, modifier,
+                onMap = { if (!wide) { view = V_MAP; jumpMap++ }; focusAt = null; focusKey++ }) { sel = null }
         }
     }
 
@@ -478,7 +484,7 @@ private fun NowBar(s: FleetSnap, now: Long, lock: Lock?, me: Pair<Double, Double
             Text("NOW PLAYING", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp)
         }
         Text(DispatchView.callWho(c), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), maxLines = 1)
-        if (c.src != 0) Text("← ${c.src}", color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
+        if (c.src != 0 || c.alias.isNotEmpty()) Text(listOf(if (c.src != 0) "← ${c.src}" else "", c.alias).filter { it.isNotEmpty() }.joinToString(" "), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
         val sys = s.systems.firstOrNull { it.key == c.sys }
         Text("${sys?.let { Dispatch.sysTitle(it) } ?: c.sys.ifEmpty { c.proto }}${if (c.site.isNotEmpty()) " · SITE ${c.site}" else ""} · ${mhz(c.hz)} MHz${c.pos?.let { " · ${DispatchView.posText(it, me)}" } ?: ""}",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
@@ -633,8 +639,10 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f)), itemVerticalAlignment = Alignment.CenterVertically) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(4f)),
                 modifier = if (c.src != 0) Modifier.clickable { acts.pick("unit:${c.sys}/${c.src}") } else Modifier) {
-                Text("UNIT", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
-                Text(if (c.src != 0) "${c.src}" else "-", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f))
+                // the talker alias the radio sent names the unit; with no unit ID heard, the alias stands in for it
+                Text(if (c.alias.isNotEmpty()) (if (c.src != 0) c.alias.uppercase() else "TALKER") else "UNIT", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = d.dp(160f)))
+                Text(if (c.src != 0) "${c.src}" else c.alias.ifEmpty { "-" }, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f))
             }
             Column(Modifier.widthIn(min = d.dp(140f))) {
                 Text("${sys?.label ?: c.sys.ifEmpty { "no control channel" }}${if (c.site.isNotEmpty()) " · SITE ${c.site}" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -695,7 +703,7 @@ private fun CallLine(c: CallRow, now: Long, me: Pair<Double, Double>?, col: Colo
             return@FlowRow
         }
         Text(DispatchView.callWho(c), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, modifier = Modifier.clickable { acts.pick(dispatchSel(c)) })
-        if (c.src != 0) Text("← ${c.src}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1)
+        if (c.src != 0 || c.alias.isNotEmpty()) Text(listOf(if (c.src != 0) "← ${c.src}" else "", c.alias).filter { it.isNotEmpty() }.joinToString(" "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1)
         Text(flDur((if (c.onAir) now else c.endMs) - c.startMs) + if (c.voiceMs > 0) " · voice %.1f s".format(java.util.Locale.US, c.voiceMs / 1000.0) else "", color = col, fontFamily = Mono, fontSize = d.sp(9.5f))
         if (c.onAir) FlPill("ON AIR", Palette.ok)
         if (c.emergency) FlPill("EMERG", Palette.danger)
@@ -919,110 +927,442 @@ private fun FreqLine(c: CarrierRow, s: FleetSnap, now: Long, selected: Boolean, 
     }
 }
 
-private class FleetDetail(val title: String, val kind: String, val fields: List<Pair<String, String>>, val chipsLabel: String = "", val chips: List<Pair<String, String>> = emptyList(),
-                          val histLabel: String = "", val hist: List<Triple<String, String, String>> = emptyList(), val idens: List<Iden>? = null, val grants: List<GrantRow> = emptyList(),
-                          val mapKey: String? = null, val color: Color? = null,
-                          /** A talkgroup's preference key, and its recent calls. */ val tgKey: String? = null, val calls: List<CallRow> = emptyList(),
-                          /** DMR logical channels placed on their carriers. */ val lpcns: List<Pair<String, String>> = emptyList())
+// ------------------------------------------------------------------------------------------------ detail cards
+/** A status chip on a card's header: its tone, and whether it pulses (something live). */
+private enum class ChipTone { PLAIN, OK, RED, ACC }
+private class CardChip(val text: String, val tone: ChipTone = ChipTone.PLAIN, val live: Boolean = false)
+/** One section of a card: a narrow one sits beside another on a wide screen, a wide one takes the row. */
+private class CardSec(val title: String, val wide: Boolean = false, val body: @Composable () -> Unit)
 
-/** Every field held for what is selected. */
-private fun fleetDetail(s: FleetSnap, sel: String, now: Long, view: Int): FleetDetail? {
+/** What kind of system it is, as the cards name it. */
+private fun sysType(x: SystemRow, s: FleetSnap): String = when (x.proto) {
+    "P25" -> if (s.carriers.any { it.sys == x.key && it.tdma } || s.calls.any { it.sys == x.key && it.tdma }) "P25 PHASE 1 AND 2" else "P25 PHASE 1"
+    "DMR" -> when (x.trunk) { "CAPACITY PLUS" -> "DMR CAPACITY PLUS"; "TIER III" -> "DMR TIER III"; else -> "DMR" }
+    else -> x.proto
+}
+/** Only what has data: a field with no value is left out, never shown as a dash. */
+private fun kvOf(vararg f: Pair<String, String?>): List<Pair<String, String>> = f.mapNotNull { (k, v) -> if (v.isNullOrEmpty()) null else k to v }
+private fun hex(v: Int) = Integer.toHexString(v).uppercase()
+private fun seenChip(ms: Long, now: Long) = if (now - ms < 15_000) CardChip("LIVE", ChipTone.OK) else CardChip("HEARD ${DispatchView.agoShort(now - ms).uppercase()} AGO")
+private fun encChip(calls: List<CallRow>): CardChip? = DispatchView.encWord(calls).takeIf { it.isNotEmpty() }?.let { CardChip(it, if (calls.any { c -> c.encrypted }) ChipTone.ACC else ChipTone.OK) }
+
+/** The selected unit, talkgroup, system or carrier as a card: a header with its status, then every section that has data. */
+@Composable
+private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boolean, prefs: TgPrefs, me: Pair<Double, Double>?, colorOf: (String) -> Color, acts: DispatchActs,
+                      modifier: Modifier, onMap: () -> Unit, onClose: () -> Unit) {
     val kind = sel.substringBefore(':'); val key = sel.substringAfter(':')
-    fun sysLabel(k: String) = s.systems.firstOrNull { it.key == k }?.label ?: k
+    val secs = ArrayList<CardSec>()
+    val id: String; val kindLabel: String; val label: String; val col: Color; val chips = ArrayList<CardChip>()
+    var mapBtn = false; var tgKey: String? = null
     when (kind) {
         "unit" -> {
-            val u = s.units.firstOrNull { it.key == key } ?: return null
-            val full = Apps.fleet.unitDetail(u.key)?.reports ?: u.reports
-            val pos = if (u.lat != null && u.lon != null) "%.5f, %.5f".format(java.util.Locale.US, u.lat, u.lon)
-                else if (u.posMs > 0) (if (s.ref) "-" else "needs your location to resolve") else "none on the air"
-            val f = listOf("UNIT ID" to "${u.id} (0x${Integer.toHexString(u.id).uppercase()})", "SYSTEM" to sysLabel(u.sys), "SITE" to u.site.ifEmpty { "-" }, "POSITION" to pos,
-                "LAST POSITION" to (if (u.posMs > 0) "${flClock(u.posMs)} · ${flAgoText(now - u.posMs)}" else "-"), "TALKGROUPS" to u.groups.joinToString(", ").ifEmpty { "-" },
-                "GRANTS" to "${u.grants}", "HEARD ON" to u.carriers.joinToString(" · ") { k -> mhz(s.carriers.firstOrNull { it.key == k }?.hz ?: k) },
-                "FIRST HEARD" to flClock(u.firstMs), "LAST HEARD" to "${flClock(u.lastMs)} · ${flAgoText(now - u.lastMs)}")
-            val hist = full.reversed().map { r -> Triple(flClock(r.ms), "${r.kind} · ${mhz(r.hz)}" + (if (r.lat != null && r.lon != null) " · %.5f, %.5f".format(java.util.Locale.US, r.lat, r.lon) else "") + "\n${r.text}", r.hex) }
-            return FleetDetail("${u.id}", "UNIT", f, histLabel = "EVERY REPORT", hist = hist, mapKey = if (u.lat != null && view != V_MAP) u.key else null)
+            val u = s.units.firstOrNull { it.key == key } ?: return
+            val sys = s.systems.firstOrNull { it.key == u.sys }; val dmr = sys?.proto == "DMR"
+            col = colorOf(u.sys)
+            val full = Apps.fleet.unitDetail(u.key)
+            val reports = full?.reports ?: u.reports; val trail = full?.trail ?: u.trail
+            val calls = s.calls.filter { it.kind == "call" && it.sys == u.sys && (it.src == u.id || u.id in it.srcs || (!it.group && it.tg == u.id)) }
+            val talking = calls.firstOrNull { it.onAir && (it.src == u.id || it.pos?.unit == u.id) }
+            val alias = u.alias.ifEmpty { calls.firstOrNull { it.alias.isNotEmpty() }?.alias ?: "" }
+            id = "${u.id}"; kindLabel = "UNIT"; label = listOf(alias, sys?.let { Dispatch.sysTitle(it) } ?: u.sys).filter { it.isNotEmpty() }.joinToString(" · ")
+            chips.add(seenChip(u.lastMs, now))
+            if (talking != null) chips.add(CardChip("TALKING NOW", ChipTone.OK, true))
+            if (calls.any { it.emergency && (it.onAir || now - it.endMs < 600_000) }) chips.add(CardChip("EMERGENCY", ChipTone.RED))
+            encChip(calls)?.let { chips.add(it) }
+            mapBtn = u.lat != null && view != V_MAP
+            // where: the track over the rest of the system's units, and what it gives
+            val tr = trail.ifEmpty { if (u.lat != null && u.lon != null) listOf(TrailPt(u.lat, u.lon, u.posMs)) else emptyList() }
+            val off = full?.offArea ?: u.offArea
+            if (tr.isNotEmpty() || off > 0 || u.posMs > 0) secs.add(CardSec("WHERE", true) {
+                if (tr.isNotEmpty()) {
+                    val last = tr.last()
+                    val others = s.units.filter { it.sys == u.sys && it.key != u.key && it.lat != null && it.lon != null && abs(it.lat - last.lat) < 0.6 && abs(it.lon - last.lon) < 0.8 }
+                        .map { it.lat!! to it.lon!! }
+                    val st = DispatchView.trackStats(tr); val dist = me?.let { DispatchView.distBearing(it.first, it.second, last.lat, last.lon) }
+                    TrackMap(tr, others, if (dist != null && dist.mi < 60) me else null, col, false)
+                    StatTiles(listOfNotNull(
+                        dist?.let { DispatchView.distText(it) to "FROM YOU · ${Math.round(it.deg)}°" },
+                        st.mph?.let { v -> if (st.moving) "${Math.round(v)} mph" to "HEADING ${st.dir} · ${st.course}°" else "STOPPED" to "NOT MOVING" },
+                        "${st.fixes}" to (if (st.fixes == 1) "POSITION FIX" else if (st.spanMs > 0) "FIXES OVER ${DispatchView.spanShort(st.spanMs)}" else "FIXES"),
+                        DispatchView.agoShort(now - last.ms) to "SINCE LAST FIX",
+                        if (st.mi >= 0.05) (if (st.mi < 10) "%.1f mi".format(java.util.Locale.US, st.mi) else "${Math.round(st.mi)} mi") to "TRAVELED" else null))
+                    CardKv(kvOf("POSITION" to "%.5f, %.5f".format(java.util.Locale.US, last.lat, last.lon), "LAST FIX" to "${flClock(last.ms)}${if (u.posVerified) " · checked" else ""}"))
+                }
+                if (off > 0) CardNote("$off position ${if (off == 1) "report" else "reports"} outside the system's area, not placed")
+                else if (tr.isEmpty()) CardNote(if (s.ref) "position reports outside the system's area, not placed" else "position reports waiting for your location to resolve")
+            })
+            if (calls.isNotEmpty()) secs.add(CardSec("CALLS") { CardCalls(calls, 10, now, me, colorOf, acts) })
+            if (u.tgCounts.isNotEmpty()) secs.add(CardSec("TALKGROUPS") { CardTags(u.tgCounts.take(16).map { (tg, n) -> Triple("TG $tg", "$n", "tg:${u.sys}/$tg") }, col, acts) })
+            val site = u.site.ifEmpty { calls.firstOrNull { it.site.isNotEmpty() }?.site ?: "" }
+            val slots = calls.filter { it.proto == "DMR" || it.tdma }.map { it.slot + 1 }.distinct()
+            val freqs = (u.carriers.map { k -> s.carriers.firstOrNull { it.key == k }?.hz ?: k } + calls.map { it.hz }.filter { it > 0 }).distinct().sorted()
+            val rest = if (dmr) (sys.sites.firstOrNull { it.label == site } ?: sys.sites.firstOrNull()) else null
+            val dbs = reports.mapNotNull { it.db }
+            secs.add(CardSec("RADIO") {
+                CardKv(kvOf("UNIT ID" to "${u.id} · 0x${hex(u.id)}", "TALKER ALIAS" to alias, "SYSTEM" to (sys?.let { "${Dispatch.sysTitle(it)} · ${sysType(it, s)}" } ?: u.sys),
+                    "SITE" to site, "COLOR CODE" to (if (dmr && sys.cc >= 0) "${sys.cc}" else null), "SLOT" to slots.joinToString(", ") { "TS$it" },
+                    "REST CHANNEL" to (if (rest != null && rest.rest >= 0) "LCN ${rest.rest}" else null),
+                    "WACN · SYSTEM" to (if (sys?.proto == "P25") "${hx(sys.wacn, 5)} · ${hx(sys.sysId, 3)}" else null),
+                    "HEARD ON" to freqs.joinToString(" · ") { mhz(it) }, "GRANTS" to (if (u.grants > 0) "${u.grants}" else null), "CW ID" to sys?.callsign,
+                    "FIRST HEARD" to "${flClock(u.firstMs)} · ${DispatchView.agoShort(now - u.firstMs)} ago", "LAST HEARD" to "${flClock(u.lastMs)} · ${DispatchView.agoShort(now - u.lastMs)} ago"))
+                if (dbs.size >= 3 && dbs.max() - dbs.min() >= 1) Spark("SIGNAL · ${Math.round(dbs.min())} to ${Math.round(dbs.max())} dB", dbs.takeLast(40).map { max(1.0, it).toFloat() }, col)
+            })
+            activitySec(reports.map { it.ms } + calls.map { it.startMs }, now, col)?.let { secs.add(it) }
+            if (reports.isNotEmpty()) secs.add(CardSec("EVERY REPORT · ${reports.size}", true) { CardReports(reports) })
         }
         "tg" -> {
             val t = s.tgs.firstOrNull { it.key == key }
-            val tg = t?.tg ?: key.substringAfterLast('/').toIntOrNull() ?: return null
-            val sys = t?.sys ?: key.substringBeforeLast('/')
-            val f = if (t != null) listOf("TALKGROUP" to "${t.tg} (0x${Integer.toHexString(t.tg).uppercase()})", "SYSTEM" to sysLabel(t.sys), "GRANTS" to "${t.grants} · ${t.recent.size} in 10 min",
-                "FIRST" to flClock(t.firstMs), "LAST" to "${flClock(t.lastMs)} · ${flAgoText(now - t.lastMs)}")
-                else listOf("TALKGROUP" to "$tg (0x${Integer.toHexString(tg).uppercase()})", "SYSTEM" to sysLabel(sys))
-            val calls = s.calls.filter { it.group && it.sys == sys && it.tg == tg }.take(12)
-            return FleetDetail("TG $tg", "TALKGROUP", f, chipsLabel = "MEMBERS", chips = t?.members.orEmpty().map { "$it" to "unit:$sys/$it" }, histLabel = "HISTORY",
-                grants = t?.history.orEmpty(), tgKey = key, calls = calls)
+            val tg = t?.tg ?: key.substringAfterLast('/').toIntOrNull() ?: return
+            val sysKey = t?.sys ?: key.substringBeforeLast('/')
+            val sys = s.systems.firstOrNull { it.key == sysKey }
+            col = colorOf(sysKey); tgKey = key
+            val calls = s.calls.filter { it.kind == "call" && it.group && it.sys == sysKey && it.tg == tg }
+            val onAir = calls.firstOrNull { it.onAir }
+            id = "TG $tg"; kindLabel = "TALKGROUP"; label = sys?.let { Dispatch.sysTitle(it) } ?: sysKey
+            chips.add(seenChip(max(t?.lastMs ?: 0L, calls.maxOfOrNull { if (it.onAir) now else it.endMs } ?: 0L), now))
+            if (onAir != null) chips.add(CardChip(if (s.playing == onAir.key) "PLAYING" else "ON THE AIR", ChipTone.OK, true))
+            if (calls.any { it.emergency }) chips.add(CardChip("EMERGENCY", ChipTone.RED))
+            encChip(calls)?.let { chips.add(it) }
+            val units = s.units.filter { it.sys == sysKey && (t?.members?.contains(it.id) == true || tg in it.groups) }.sortedByDescending { it.lastMs }
+            val placed = units.filter { it.lat != null && it.lon != null }
+            secs.add(CardSec("NOW", true) {
+                StatTiles(listOf("${t?.grants ?: 0}" to "GRANTS", "${t?.recent?.size ?: 0}" to "IN 10 MIN", "${calls.size}" to "CALLS KEPT", "${units.size}" to "UNITS"))
+                CardKv(kvOf("TALKGROUP" to "$tg · 0x${hex(tg)}", "SYSTEM" to sys?.let { "${Dispatch.sysTitle(it)} · ${sysType(it, s)}" },
+                    "FIRST HEARD" to t?.let { flClock(it.firstMs) }, "LAST HEARD" to t?.let { "${flClock(it.lastMs)} · ${DispatchView.agoShort(now - it.lastMs)} ago" }))
+            })
+            if (calls.isNotEmpty()) secs.add(CardSec("RECENT CALLS") { CardCalls(calls, 14, now, me, colorOf, acts) })
+            if (units.isNotEmpty()) secs.add(CardSec("UNITS · ${units.size}") {
+                if (placed.isNotEmpty()) TrackMap(emptyList(), placed.map { it.lat!! to it.lon!! }, me, col, true)
+                CardTags(units.take(40).map { Triple("${it.id}", DispatchView.agoShort(now - it.lastMs), "unit:${it.key}") }, col, acts)
+            })
+            activitySec(t?.history.orEmpty().map { it.ms } + t?.recent.orEmpty() + calls.map { it.startMs }, now, col)?.let { secs.add(it) }
+            if (t != null && t.history.isNotEmpty()) secs.add(CardSec("GRANTS", true) { Column(verticalArrangement = Arrangement.spacedBy(3.dp)) { for (g in t.history) GrantLine(g, now, col) {} } })
         }
         "sys" -> {
-            val x = s.systems.firstOrNull { it.key == key } ?: return null
-            val f = when (x.proto) {
-                "NXDN" -> listOf("PROTOCOL" to "NXDN", "CATEGORY" to x.model, "SYSTEM CODE" to "${x.sysId}", "SITES" to x.sites.joinToString(", ") { "${it.site}" },
-                    "CARRIERS" to x.sites.joinToString(", ") { mhz(it.ccHz.firstOrNull() ?: 0L) }, "FIRST HEARD" to flClock(x.firstMs), "LAST HEARD" to flClock(x.lastMs))
-                "TETRA" -> listOf("PROTOCOL" to "TETRA", "MCC" to "${x.wacn}", "MNC" to "${x.sysId}", "COLOR CODE" to "${x.cc}",
-                    "CARRIERS" to x.sites.joinToString(", ") { mhz(it.ccHz.firstOrNull() ?: 0L) }, "FIRST HEARD" to flClock(x.firstMs), "LAST HEARD" to flClock(x.lastMs))
-                "P25" -> listOf("PROTOCOL" to "P25 Phase 1 control channel", "WACN" to hx(x.wacn, 5), "SYSTEM" to hx(x.sysId, 3), "SITES" to x.sites.joinToString(", ") { it.label },
-                    "UNITS" to "${x.units}", "TALKGROUPS" to "${x.tgs}", "GRANTS" to "${x.grants}", "FIRST HEARD" to flClock(x.firstMs), "LAST HEARD" to flClock(x.lastMs))
-                else -> listOfNotNull("PROTOCOL" to "DMR", if (x.trunk.isNotEmpty()) "TRUNKING" to x.trunk else null, "COLOR CODE" to "${x.cc}",
-                    "FEATURE SET" to (if (x.fid >= 0) "0x${hx(x.fid, 2)}" else "-"), "NETWORK" to (if (x.net >= 0) "${x.model} ${x.net}" else "not sent"),
-                    "CALLSIGN" to x.callsign.ifEmpty { "no CW ID heard yet" }, "SITES" to x.sites.joinToString(", ") { it.label }, "UNITS" to "${x.units}",
-                    "FIRST HEARD" to flClock(x.firstMs), "LAST HEARD" to flClock(x.lastMs))
-            }
-            return FleetDetail(x.proto, x.label, f, idens = if (x.proto == "P25") x.idens else null,
-                lpcns = if (x.proto == "P25") emptyList() else x.lpcns.map { "LPCN ${it.lpcn}" to "${mhz(it.hz)} · ${it.votes} calls" })
+            val x = s.systems.firstOrNull { it.key == key } ?: return
+            col = colorOf(x.key)
+            val calls = s.calls.filter { it.kind == "call" && it.sys == x.key }
+            val units = s.units.filter { it.sys == x.key }; val placed = units.filter { it.lat != null && it.lon != null }
+            id = Dispatch.sysTitle(x); kindLabel = "SYSTEM"; label = x.label
+            chips.add(if (s.carriers.any { it.sys == x.key && now - it.lastDecodeMs < 10_000 }) CardChip("LIVE", ChipTone.OK) else seenChip(x.lastMs, now))
+            chips.add(CardChip(sysType(x, s)))
+            encChip(calls)?.let { chips.add(it) }
+            calls.count { it.onAir }.takeIf { it > 0 }?.let { chips.add(CardChip("$it ON THE AIR", ChipTone.OK, true)) }
+            val tgs = s.tgs.filter { it.sys == x.key }.sortedWith(compareByDescending<com.rocketgod.mayhem.core.fleet.TgRow> { it.grants }.thenByDescending { it.lastMs })
+            val busiest = if (tgs.isNotEmpty()) tgs.take(12).map { it.tg to it.grants }
+                else calls.filter { it.group && it.tg != 0 }.groupingBy { it.tg }.eachCount().entries.sortedByDescending { it.value }.take(12).map { it.key to it.value }
+            val (enc, n) = DispatchView.encShare(calls)
+            secs.add(CardSec("OVERVIEW", true) {
+                StatTiles(listOfNotNull("${x.sites.size}" to "SITES", "${units.size}" to "UNITS", "${if (x.tgs > 0) x.tgs else tgs.size}" to "TALKGROUPS", "${x.grants}" to "GRANTS",
+                    if (n > 0) "${Math.round(100.0 * enc / n)}%" to "ENCRYPTED" else null))
+                val ids = when (x.proto) {
+                    "NXDN" -> arrayOf<Pair<String, String?>>("CATEGORY" to x.model, "SYSTEM CODE" to "${x.sysId}")
+                    "TETRA" -> arrayOf<Pair<String, String?>>("MCC" to "${x.wacn}", "MNC" to "${x.sysId}", "COLOR CODE" to "${x.cc}")
+                    "P25" -> arrayOf<Pair<String, String?>>("WACN" to hx(x.wacn, 5), "SYSTEM" to hx(x.sysId, 3))
+                    else -> arrayOf<Pair<String, String?>>("COLOR CODE" to "${x.cc}", "FEATURE SET" to (if (x.fid >= 0) "0x${hx(x.fid, 2)}" else null), "NETWORK" to (if (x.net >= 0) "${x.model} ${x.net}" else null))
+                }
+                CardKv(kvOf("TYPE" to sysType(x, s), *ids, "CW ID" to x.callsign, "FIRST HEARD" to "${flClock(x.firstMs)} · ${DispatchView.agoShort(now - x.firstMs)} ago",
+                    "LAST HEARD" to "${flClock(x.lastMs)} · ${DispatchView.agoShort(now - x.lastMs)} ago", "ENCRYPTION" to (if (n > 0) "$enc of $n calls" else null)))
+            })
+            if (x.sites.isNotEmpty() || x.lpcns.isNotEmpty()) secs.add(CardSec("SITES AND CHANNELS") {
+                for (st in x.sites) CardSite(x, st, col)
+                if (x.lpcns.isNotEmpty()) FlChips("LOGICAL CHANNELS", x.lpcns.map { "LPCN ${it.lpcn} ${mhz(it.hz)} · ${it.votes} calls" to true }, col)
+            })
+            if (busiest.isNotEmpty()) secs.add(CardSec("BUSIEST TALKGROUPS") { CardTags(busiest.map { (tg, c) -> Triple("TG $tg", "$c", "tg:${x.key}/$tg") }, col, acts) })
+            if (placed.isNotEmpty()) secs.add(CardSec("COVERAGE") {
+                TrackMap(emptyList(), placed.map { it.lat!! to it.lon!! }, me, col, true)
+                val la0 = placed.minOf { it.lat!! }; val la1 = placed.maxOf { it.lat!! }; val lo0 = placed.minOf { it.lon!! }; val lo1 = placed.maxOf { it.lon!! }
+                val h = DispatchView.distBearing(la0, lo0, la0, lo1).mi; val v = DispatchView.distBearing(la0, lo0, la1, lo0).mi
+                CardKv(kvOf("UNITS PLACED" to "${placed.size} of ${units.size}", "AREA" to "%.1f × %.1f mi".format(java.util.Locale.US, max(0.1, h), max(0.1, v))))
+            })
+            if (units.isNotEmpty()) secs.add(CardSec("UNITS · ${units.size}") {
+                CardTags(units.sortedByDescending { it.lastMs }.take(40).map { Triple("${it.id}", DispatchView.agoShort(now - it.lastMs), "unit:${it.key}") }, col, acts)
+                if (units.size > 40) CardNote("${units.size - 40} more")
+            })
+            activitySec(s.grants.filter { it.sys == x.key }.map { it.ms } + calls.map { it.startMs }, now, col)?.let { secs.add(it) }
+            if (calls.isNotEmpty()) secs.add(CardSec("RECENT CALLS") { CardCalls(calls, 8, now, me, colorOf, acts) })
+            if (x.proto == "P25" && x.idens.isNotEmpty()) secs.add(CardSec("CHANNEL TABLE", true) { IdenTable(x.idens) })
         }
         else -> {
-            val c = s.carriers.firstOrNull { "${it.key}" == key } ?: return null
-            val f = listOf("FREQUENCY" to "${mhz(c.hz)} MHz", "CLASS" to c.cls.ifEmpty { "not classed yet" }, "ROLE" to c.role.ifEmpty { "-" }, "SYSTEM" to (if (c.sys.isNotEmpty()) sysLabel(c.sys) else "-"),
-                "NAC" to (if (c.nac >= 0) hx(c.nac, 3) else "-"), "COLOR CODE" to (if (c.cc >= 0) "${c.cc}" else "-"),
-                "LEVEL" to "%.1f dB over the floor (peak %.1f)".format(java.util.Locale.US, c.levelDb, c.peakDb), "ENVELOPE" to "%.2f (constant near 0, linear near 0.3)".format(java.util.Locale.US, c.envCv),
-                "EYE" to "%.2f".format(java.util.Locale.US, c.eye), "FRAMES" to "${c.frames}", "BLOCKS" to "${c.blocks} · ${c.crcOk} passed CRC",
-                "CW ID" to (if (c.callsign.isNotEmpty()) c.callsign + (if (c.callsignMs > 0) " · ${flClock(c.callsignMs)} · ${flAgoText(now - c.callsignMs)}" else "") else "-"),
-                "LCN" to c.lcn.ifEmpty { "-" }, "ON AIR" to "${Math.round(c.onMs / 1000.0)} s", "FIRST HEARD" to flClock(c.firstMs), "LAST HEARD" to "${flClock(c.lastMs)} · ${flAgoText(now - c.lastMs)}")
-            return FleetDetail(mhz(c.hz), "CARRIER", f)
+            val c = s.carriers.firstOrNull { "${it.key}" == key } ?: return
+            val sys = if (c.sys.isNotEmpty()) s.systems.firstOrNull { it.key == c.sys } else null
+            col = if (c.sys.isNotEmpty()) colorOf(c.sys) else Palette.muted
+            val calls = s.calls.filter { it.kind == "call" && abs(it.hz - c.hz) < 3_200 }
+            id = mhz(c.hz); kindLabel = "CARRIER"; label = sys?.let { Dispatch.sysTitle(it) } ?: c.cls.ifEmpty { "not classed yet" }
+            chips.add(if (now - c.lastDecodeMs < 10_000) CardChip("DECODING", ChipTone.OK) else if (now - c.lastMs < 4_000) CardChip("ON THE AIR", ChipTone.OK) else seenChip(c.lastMs, now))
+            if (c.cls.isNotEmpty()) chips.add(CardChip(c.cls))
+            if (c.role.isNotEmpty()) chips.add(CardChip(c.role.uppercase(), ChipTone.ACC))
+            secs.add(CardSec("SIGNAL", true) {
+                StatTiles(listOfNotNull("%.0f dB".format(java.util.Locale.US, c.levelDb) to "LEVEL · PEAK %.0f".format(java.util.Locale.US, c.peakDb),
+                    if (c.blocks > 0) "${Math.round(100.0 * c.crcOk / max(1, c.blocks))}%" to "BLOCKS PASSING · ${c.crcOk}/${c.blocks}" else null,
+                    if (c.frames > 0) "${c.frames}" to "FRAMES" else null, if (c.onMs > 0) DispatchView.spanShort(c.onMs) to "ON THE AIR" else null))
+                CardKv(kvOf("FREQUENCY" to "${mhz(c.hz)} MHz", "SYSTEM" to sys?.let { "${Dispatch.sysTitle(it)} · ${sysType(it, s)}" },
+                    "NAC" to (if (c.nac >= 0) hx(c.nac, 3) else null), "COLOR CODE" to (if (c.cc >= 0) "${c.cc}" else null), "LCN" to c.lcn,
+                    "CW ID" to (if (c.callsign.isNotEmpty()) c.callsign + (if (c.callsignMs > 0) " · ${flClock(c.callsignMs)}" else "") else null),
+                    "ENVELOPE" to "%.2f (constant near 0, linear near 0.3)".format(java.util.Locale.US, c.envCv), "EYE" to "%.2f".format(java.util.Locale.US, c.eye),
+                    "FIRST HEARD" to flClock(c.firstMs), "LAST HEARD" to "${flClock(c.lastMs)} · ${DispatchView.agoShort(now - c.lastMs)} ago"))
+            })
+            if (calls.isNotEmpty()) secs.add(CardSec("CALLS ON THIS CHANNEL") { CardCalls(calls, 8, now, me, colorOf, acts) })
+            activitySec(calls.map { it.startMs }, now, col)?.let { secs.add(it) }
+        }
+    }
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(14f))
+    val scroll = rememberScrollState()
+    Column(modifier.fillMaxWidth().heightIn(max = d.dp(if (wide) 560f else 460f)).clip(shape).background(Palette.panel.copy(alpha = 0.97f))
+        .border(1.5.dp, col.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(10f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+        CardHead(id, kindLabel, label, col, chips, now, wide, if (mapBtn) onMap else null, onClose)
+        if (tgKey != null) PrefButtons(tgKey, prefs, acts)
+        CardGrid(secs)
+    }
+}
+
+/** The activity section: calls and reports in the last hour (30 bars) and the last day (24), when there were any. */
+private fun activitySec(times: List<Long>, now: Long, col: Color): CardSec? {
+    if (times.isEmpty()) return null
+    val hr = DispatchView.activityBuckets(times, now, 3_600_000, 30); val day = DispatchView.activityBuckets(times, now, 86_400_000, 24)
+    val inHour = hr.sum(); val inDay = day.sum()
+    if (inHour == 0 && inDay <= inHour) return null
+    return CardSec("ACTIVITY") {
+        if (inHour > 0) Spark("LAST HOUR · $inHour", hr.map { it.toFloat() }, col)
+        if (inDay > inHour) Spark("LAST DAY · $inDay", day.map { it.toFloat() }, col)
+    }
+}
+
+/** The card's header: a big ID, what it is, its system, the status chips, and MAP and close. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CardHead(id: String, kind: String, label: String, col: Color, chips: List<CardChip>, now: Long, wide: Boolean, onMap: (() -> Unit)?, onClose: () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(12f))
+    Row(Modifier.fillMaxWidth().clip(shape).background(Brush.linearGradient(listOf(col.copy(alpha = 0.24f), col.copy(alpha = 0.04f))))
+        .border(1.dp, col.copy(alpha = 0.45f), shape).padding(horizontal = d.dp(11f), vertical = d.dp(9f)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(if (wide) 14f else 10f))) {
+        Column(Modifier.widthIn(max = d.dp(if (wide) 360f else 190f))) {
+            val big = if (id.length > 12) (if (wide) 24f else 19f) else if (wide) 34f else 28f
+            Text(id, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(big), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = androidx.compose.ui.text.TextStyle(shadow = androidx.compose.ui.graphics.Shadow(col.copy(alpha = 0.55f), blurRadius = 18f)))
+            Text(kind, color = col, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 3.sp)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            if (label.isNotEmpty()) Text(label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) { for (c in chips) StatusChip(c, now) }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(d.dp(5f)), horizontalAlignment = Alignment.End) {
+            ToggleBox("✕", false, col) { onClose() }
+            if (onMap != null) ToggleBox("MAP", false, col) { onMap() }
         }
     }
 }
 
-/** The selected item's details over the stage: fields, then members, calls, history or the channel table. */
 @Composable
-private fun FleetDetailPanel(det: FleetDetail, s: FleetSnap, now: Long, accent: Color, prefs: TgPrefs, me: Pair<Double, Double>?, colorOf: (String) -> Color, acts: DispatchActs,
-                             modifier: Modifier, onMap: (() -> Unit)?, onClose: () -> Unit) {
+private fun StatusChip(c: CardChip, now: Long) {
     val d = rememberDims()
-    val shape = RoundedCornerShape(d.dp(14f))
-    val scroll = rememberScrollState()
-    Column(modifier.fillMaxWidth().heightIn(max = d.dp(440f)).clip(shape).background(Palette.panel.copy(alpha = 0.95f))
-        .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
-        .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
-        verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-            Text(det.title, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
-            Text(det.kind, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            if (onMap != null) ToggleBox("MAP", false, accent, Modifier.fillMaxHeight()) { onMap() }
-            ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
-        }
-        if (det.tgKey != null) PrefButtons(det.tgKey, prefs, acts)
-        SelectionContainer { FieldGrid(det.fields, labelWidth = 112f, minColumn = 320f) }
-        if (det.chips.isNotEmpty()) FlChips(det.chipsLabel, det.chips.map { it.first to true }, accent) { i -> acts.pick(det.chips[i].second) }
-        if (det.lpcns.isNotEmpty()) FlChips("LOGICAL CHANNELS", det.lpcns.map { "${it.first} ${it.second}" to true }, accent)
-        if (det.idens != null) {
-            Text("CHANNEL TABLE", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp)
-            IdenTable(det.idens)
-        }
-        if (det.calls.isNotEmpty()) {
-            Text("CALLS", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp)
-            for (c in det.calls) CallLine(c, now, me, if (c.sys.isNotEmpty()) colorOf(c.sys) else accent, acts)
-        }
-        if (det.hist.isNotEmpty() || det.grants.isNotEmpty()) Text(det.histLabel, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp)
-        for (g in det.grants) GrantLine(g, now, accent) {}
-        SelectionContainer {
-            Column(verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
-                for ((t, v, hex) in det.hist) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                    Text(t, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(64f)))
-                    Column(Modifier.weight(1f)) {
-                        Text(v, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f))
-                        Text(hex, color = Palette.ink.copy(alpha = 0.6f), fontFamily = Mono, fontSize = d.sp(8.5f))
+    val tone = when (c.tone) { ChipTone.OK -> Palette.ok; ChipTone.RED -> Palette.danger; ChipTone.ACC -> Palette.accent2; ChipTone.PLAIN -> Palette.muted }
+    val filled = c.tone == ChipTone.RED
+    Row(Modifier.clip(RoundedCornerShape(50)).background(if (filled) tone else Color.Transparent).border(1.dp, tone.copy(alpha = if (c.tone == ChipTone.PLAIN) 0.4f else 0.6f), RoundedCornerShape(50))
+        .padding(horizontal = d.dp(8f), vertical = d.dp(3f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+        if (c.live) Box(Modifier.size(d.dp(6f)).alpha(if ((now / 500) % 2 == 1L) 0.25f else 1f).background(tone, CircleShape))
+        Text(c.text, color = if (filled) Color.White else tone, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(8.5f), letterSpacing = 1.2.sp, maxLines = 1)
+    }
+}
+
+/** The sections: one column on a phone, two side by side where the card is wide enough; a wide section takes the row. */
+@Composable
+private fun CardGrid(secs: List<CardSec>) {
+    val d = rememberDims()
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val two = maxWidth >= d.dp(600f)
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+            if (!two) for (x in secs) SecBox(x, Modifier.fillMaxWidth())
+            else {
+                var i = 0
+                while (i < secs.size) {
+                    val a = secs[i]
+                    if (a.wide) { SecBox(a, Modifier.fillMaxWidth()); i++; continue }
+                    val b = secs.getOrNull(i + 1)?.takeIf { !it.wide }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalAlignment = Alignment.Top) {
+                        SecBox(a, Modifier.weight(1f))
+                        if (b != null) SecBox(b, Modifier.weight(1f)) else Spacer(Modifier.weight(1f))
                     }
+                    i += if (b != null) 2 else 1
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SecBox(x: CardSec, modifier: Modifier) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(10f))
+    Column(modifier.clip(shape).background(Palette.surface.copy(alpha = 0.55f)).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(11f), vertical = d.dp(10f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        Text(x.title, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp)
+        x.body()
+    }
+}
+
+@Composable
+private fun CardKv(kv: List<Pair<String, String>>) {
+    if (kv.isEmpty()) return
+    SelectionContainer { FieldGrid(kv, labelWidth = 104f, minColumn = 260f) }
+}
+
+@Composable
+private fun CardNote(text: String) {
+    val d = rememberDims()
+    Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f))
+}
+
+/** Big numbers: a value and what it is. A zero is left out, never shown as a tile. */
+@Composable
+private fun StatTiles(stats: List<Pair<String, String>>) {
+    val shown = stats.filter { it.first != "0" && it.first != "0%" }
+    if (shown.isEmpty()) return
+    val d = rememberDims()
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val gap = d.dp(6f)
+        val cols = ((maxWidth + gap) / (d.dp(104f) + gap)).toInt().coerceIn(1, shown.size)
+        Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+            for (row in shown.chunked(cols)) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                for (i in 0 until cols) {
+                    val t = row.getOrNull(i)
+                    if (t == null) { Spacer(Modifier.weight(1f)); continue }
+                    val shape = RoundedCornerShape(d.dp(8f))
+                    Column(Modifier.weight(1f).clip(shape).background(Palette.panel).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(8f), vertical = d.dp(7f)),
+                        verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+                        Text(t.first, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(17f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(t.second, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 1.2.sp, maxLines = 2)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A small map with no tiles, so it draws at once: the track as a line (older fixes faint, the newest bright), [others]
+ * as dots (the rest of the system dim, or the subject itself bright), you as a ring, and a scale bar.
+ */
+@Composable
+private fun TrackMap(trail: List<TrailPt>, others: List<Pair<Double, Double>>, me: Pair<Double, Double>?, col: Color, bright: Boolean) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(8f))
+    BoxWithConstraints(Modifier.fillMaxWidth().height(d.dp(190f)).clip(shape).background(Palette.paper).border(1.dp, Palette.line, shape)) {
+        val dens = LocalDensity.current
+        val w = with(dens) { maxWidth.toPx() }; val h = with(dens) { maxHeight.toPx() }; val pad = with(dens) { d.dp(14f).toPx() }
+        val fit = remember(trail, others, me, w, h) { DispatchView.trackFit(trail, others, me, w, h, pad) } ?: return@BoxWithConstraints
+        val ink = Palette.ink; val muted = Palette.muted; val ok = Palette.ok
+        Canvas(Modifier.fillMaxSize()) {
+            val u = 1.dp.toPx()
+            for ((x, y) in fit.others) {
+                if (bright) { drawCircle(col, 3.5f * u, Offset(x, y)); drawCircle(ink.copy(alpha = 0.7f), 3.5f * u, Offset(x, y), style = Stroke(u)) }
+                else drawCircle(muted.copy(alpha = 0.45f), 2f * u, Offset(x, y))
+            }
+            val n = fit.track.size
+            if (n > 1) {
+                val p = Path().apply { moveTo(fit.track[0].first, fit.track[0].second); for (i in 1 until n) lineTo(fit.track[i].first, fit.track[i].second) }
+                drawPath(p, col.copy(alpha = 0.75f), style = Stroke(2f * u, join = StrokeJoin.Round))
+            }
+            fit.track.forEachIndexed { i, (x, y) ->
+                if (i == n - 1) {
+                    drawCircle(col.copy(alpha = 0.3f), 10f * u, Offset(x, y))
+                    drawCircle(ink, 5f * u, Offset(x, y)); drawCircle(col, 5f * u, Offset(x, y), style = Stroke(3f * u))
+                } else drawCircle(col.copy(alpha = 0.25f + 0.6f * i / max(1, n - 1)), 2.4f * u, Offset(x, y))
+            }
+            fit.me?.let { (x, y) -> drawCircle(ok, 5f * u, Offset(x, y), style = Stroke(2.5f * u)) }
+            drawLine(muted, Offset(pad, size.height - 9f * u), Offset(pad + fit.barPx, size.height - 9f * u), strokeWidth = 2f * u)
+        }
+        Text(fit.barLabel, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.BottomStart).padding(start = d.dp(14f), bottom = d.dp(12f)))
+        Text("N ↑", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.TopEnd).padding(top = d.dp(6f), end = d.dp(10f)))
+    }
+}
+
+/** A bar sparkline under its label: empty buckets as a thin baseline. */
+@Composable
+private fun Spark(label: String, b: List<Float>, col: Color) {
+    if (b.isEmpty()) return
+    val d = rememberDims()
+    val line = Palette.line
+    Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+        Text(label, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 1.2.sp)
+        Canvas(Modifier.fillMaxWidth().height(d.dp(34f))) {
+            val top = max(1f, b.max()); val bw = size.width / b.size; val hh = size.height
+            b.forEachIndexed { i, v ->
+                val x = i * bw + 0.5f; val wd = max(1f, bw - 1f)
+                if (v > 0) { val bh = (hh - 4f) * v / top + 2f; drawRoundRect(col, Offset(x, hh - bh), Size(wd, bh), CornerRadius(1.5f)) }
+                else drawRect(line, Offset(x, hh - 2f), Size(wd, 2f))
+            }
+        }
+    }
+}
+
+/** Tappable tags: a name and a count or age; a tap opens that unit or talkgroup. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CardTags(tags: List<Triple<String, String, String>>, col: Color, acts: DispatchActs) {
+    val d = rememberDims()
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+        for ((name, sub, sel) in tags) {
+            val shape = RoundedCornerShape(d.dp(7f))
+            Row(Modifier.clip(shape).background(Palette.panel).border(1.dp, col.copy(alpha = 0.45f), shape).clickable { acts.pick(sel) }.padding(horizontal = d.dp(8f), vertical = d.dp(4f)),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                Text(name, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
+                if (sub.isNotEmpty()) Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
+            }
+        }
+    }
+}
+
+/** Calls, newest first, each with its replay where audio was kept. */
+@Composable
+private fun CardCalls(calls: List<CallRow>, n: Int, now: Long, me: Pair<Double, Double>?, colorOf: (String) -> Color, acts: DispatchActs) {
+    val d = rememberDims()
+    Column(verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
+        for (c in calls.take(n)) CallLine(c, now, me, if (c.sys.isNotEmpty()) colorOf(c.sys) else Palette.muted, acts)
+        if (calls.size > n) CardNote("${calls.size - n} more")
+    }
+}
+
+/** A system's site: its channels, the logical channels with the rest one lit, its CW ID and neighbors. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CardSite(x: SystemRow, st: SiteRow, col: Color) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(8f))
+    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.panel).border(1.dp, Palette.line, shape).padding(horizontal = d.dp(8f), vertical = d.dp(6f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f)), itemVerticalAlignment = Alignment.CenterVertically) {
+            Text(if (x.proto == "P25") "SITE ${st.label}" else st.label.uppercase(), color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp)
+            val chs = st.ccHz.joinToString(" · ") { mhz(it) } + if (st.callsign.isNotEmpty()) " · ${st.callsign}" else ""
+            if (chs.isNotEmpty()) Text(chs, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
+            if (st.neighbors.isNotEmpty()) Text("${st.neighbors.size} neighbor${if (st.neighbors.size > 1) "s" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+        }
+        if (st.lcns.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
+            for (l in st.lcns) {
+                val c = if (l.lcn == st.rest) Palette.ok else if (l.lcn in st.busy) Palette.accent2 else Palette.muted
+                Text("LCN ${l.lcn} ${mhz(l.hz)}", color = c, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1,
+                    modifier = Modifier.clip(RoundedCornerShape(d.dp(5f))).border(1.dp, if (c == Palette.muted) Palette.line else c, RoundedCornerShape(d.dp(5f))).padding(horizontal = d.dp(6f), vertical = d.dp(1f)))
+            }
+        }
+    }
+}
+
+/** Every report a unit sent, newest first: time, what and where, the decoded line, the block as sent. */
+@Composable
+private fun CardReports(reports: List<com.rocketgod.mayhem.core.fleet.UnitReport>) {
+    val d = rememberDims()
+    val scroll = rememberScrollState()
+    SelectionContainer {
+        Column(Modifier.heightIn(max = d.dp(280f)).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+            for (r in reports.reversed().take(40)) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text(flClock(r.ms), color = if (r.verified) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(64f)))
+                Column(Modifier.weight(1f)) {
+                    Text("${r.kind} · ${mhz(r.hz)}" + (if (r.lat != null && r.lon != null) " · %.5f, %.5f".format(java.util.Locale.US, r.lat, r.lon) else ""), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f))
+                    Text(r.text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+                    Text(r.hex, color = Palette.ink.copy(alpha = 0.55f), fontFamily = Mono, fontSize = d.sp(8.5f))
                 }
             }
         }

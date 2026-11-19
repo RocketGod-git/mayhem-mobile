@@ -33,6 +33,14 @@ import kotlin.math.roundToLong
  * a second) and log lines. Internal names and saved keys stay "fleet" so saved data carries over.
  */
 const val CH_RATE = 24_000.0
+/** How far from its system's area a DMR unit position may resolve, and from the receiver before the area is known (km). */
+const val PLACE_KM = 80.0
+const val PLACE_RX_KM = 150.0
+/** Distance in km between two points (equirectangular, plenty for a region). */
+fun kmBetween(a: Double, b: Double, c: Double, d: Double): Double {
+    val r = PI / 180; val x = (d - b) * r * cos((a + c) / 2 * r); val y = (c - a) * r
+    return 6371 * kotlin.math.hypot(x, y)
+}
 private const val CUT_HZ = 5_500.0
 private const val AUDITION_MS = 3_000L
 private const val LIVE_MS = 4_000L
@@ -66,11 +74,18 @@ data class SystemRow(
     /** The channels the system was heard on (kept when it is out of the span), and whether its units report positions. */
     val heardHz: List<Long> = emptyList(), val positions: Boolean = false,
 )
-data class UnitReport(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val lat: Double?, val lon: Double?, val text: String)
+data class UnitReport(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val lat: Double?, val lon: Double?, val text: String,
+                      /** The carrier's level when it was heard (dB over the floor). */ val db: Double? = null)
 data class TrailPt(val lat: Double, val lon: Double, val ms: Long)
 data class UnitRow(
     val key: String, val sys: String, val id: Int, val firstMs: Long, val lastMs: Long, val lat: Double?, val lon: Double?, val posMs: Long,
     val posVerified: Boolean, val trail: List<TrailPt>, val groups: List<Int>, val grants: Int, val carriers: List<Long>, val reports: List<UnitReport>, val site: String,
+    /** Talkgroups the unit was heard on, with how many times (most first). */
+    val tgCounts: List<Pair<Int, Int>> = emptyList(),
+    /** Position reports that resolved outside the system's area (left off the map), and all position reports. */
+    val offArea: Int = 0, val fixes: Int = 0,
+    /** The talker alias its radio sent (DMR), or "". */
+    val alias: String = "",
 )
 data class GrantRow(
     val ms: Long, var lastMs: Long, val sys: String, val kind: String, val tg: Int, val group: Boolean, var src: Int, val ch: String, val hz: Long, val slot: Int,
@@ -86,7 +101,7 @@ data class FleetSnap(
     /** The call being heard (its key), and the system lock in force. */
     val playing: String = "", val lock: Lock? = null,
 )
-data class UnitDetail(val key: String, val reports: List<UnitReport>, val trail: List<TrailPt>)
+data class UnitDetail(val key: String, val reports: List<UnitReport>, val trail: List<TrailPt>, val offArea: Int = 0)
 
 /** What the device keeps between sessions (see [FleetProcessor.known]). */
 data class KnownSystem(val key: String, val proto: String, val wacn: Int, val sysId: Int, val cc: Int, val fid: Int, val net: Int, val model: String,
@@ -140,13 +155,19 @@ private class Sys(val key: String, val proto: String, val color: Int, val wacn: 
     /** Where the system was heard (its control or rest channels), kept across retunes and sessions. */
     val heardHz = LinkedHashSet<Long>()
 }
-private class Report(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val text: String) {
+private class Report(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val text: String, val db: Double? = null) {
     var lat: Double? = null; var lon: Double? = null; var lonLo: Int? = null; var latLo: Int? = null
-    fun row() = UnitReport(ms, hz, kind, hex, verified, lat, lon, text)
+    fun row() = UnitReport(ms, hz, kind, hex, verified, lat, lon, text, db)
 }
+/** A position report as sent (the low 16 bits of each coordinate), resolved when shown. */
+private class Fix(val ms: Long, val lat16: Int, val lon16: Int)
 private class UnitRec(val key: String, val sys: String, val id: Int, val firstMs: Long, var lastMs: Long) {
     var lonLo = -1; var latLo = -1; var posMs = 0L; var posVerified = false; val trail = ArrayList<TrailPt>(); val groups = LinkedHashSet<Int>(); var grants = 0
     val carriers = LinkedHashSet<Long>(); val reports = ArrayList<Report>()
+    /** Every position report as sent, and the talkgroups the unit was heard on with how many times. */
+    val fixes = ArrayList<Fix>(); val tgCounts = LinkedHashMap<Int, Int>()
+    /** The talker alias its radio sent (DMR), or "". */
+    var alias = ""
     /** A position kept from an earlier session (restored from the device), used until a report on the air replaces it. */
     var fix: Pair<Double, Double>? = null
 }
@@ -794,9 +815,47 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (c.role == "") c.role = "voice"
         val call = calls.voice(c.sys, "DMR", c.hz, slot, 60, now)
         // bursts B to F carry the EMB: its privacy bit says whether the call is encrypted, read before the frames play
-        if (n > 0) { val e = readEmb(d); if (e.ok && (c.cc < 0 || e.cc == c.cc)) calls.security(call, SecIn(e.pi, "EMB")) }
+        if (n > 0) {
+            val e = readEmb(d)
+            if (e.ok && (c.cc < 0 || e.cc == c.cc)) {
+                calls.security(call, SecIn(e.pi, "EMB"))
+                // bursts B to E also carry the embedded LC in four fragments: who is talking to whom, the privacy bit, the alias
+                val k = "${c.key}:$slot"; val asm = embAsm.getOrPut(k) { EmbLcAssembler() }
+                val lc = if (n <= 4) asm.push(e.lcss, embBits(d)) else { asm.reset(); null }
+                when (val p = lc?.let { parseEmbLc(it) }) {
+                    is EmbLc.Voice -> embLc(c, slot, p.lc, now)
+                    is EmbLc.Alias -> embAlias(c, slot, p.part, p.bytes)
+                    null -> {}
+                }
+            }
+        }
         calls.frames(call, voiceFrames(d)); ch?.voiced(slot)
         pending = true
+    }
+    /** Embedded LC fragments and talker aliases being put together, per carrier and slot. */
+    private val embAsm = HashMap<String, EmbLcAssembler>(); private val aliases = HashMap<String, TalkerAlias>()
+    private val embSeen = HashMap<String, Long>(); private val unitAlias = HashMap<String, String>()
+    /** An embedded voice LC: the call on that slot is named (talkgroup, unit) and its privacy bit taken, as from a header. */
+    private fun embLc(c: Carrier, slot: Int, lc: DmrLc, now: Long) {
+        if (lc.dst == 0 && lc.src == 0) return
+        val call = calls.lc(c.sys, c.hz, slot, LcIn(lc.group, lc.dst, lc.src, lc.emergency, lc.privacy), now, "DMR")
+        if (call.sys.isNotEmpty() && c.sys.isEmpty()) c.sys = call.sys
+        val k = "${c.key}:$slot:${lc.dst}:${lc.src}:${lc.privacy}"; val seen = embSeen[k]
+        if (seen == null || now - seen > 10_000) {
+            embSeen[k] = now; if (embSeen.size > 500) embSeen.clear()
+            addLog(LogRow(now, c.hz, "DMR", "EMBEDDED LC", "CC ${c.cc} · TS${slot + 1} · EMBEDDED LC · ${if (lc.group) "TG" else "UNIT"} ${lc.dst} ← ${lc.src}${if (lc.fid == 0x10) " · FID 10" else ""}" +
+                "${if (lc.emergency) " · EMERGENCY" else ""}${if (lc.privacy) " · PRIVACY" else ""}", "", true))
+        }
+        pending = true
+    }
+    /** A talker alias part: once the name is whole it labels the call and its unit. */
+    private fun embAlias(c: Carrier, slot: Int, part: Int, bytes: IntArray) {
+        val ta = aliases.getOrPut("${c.key}:$slot") { TalkerAlias() }
+        val name = ta.push(part, bytes); if (name.isEmpty()) return
+        val call = calls.at(c.sys, c.hz, slot) ?: return
+        if (call.alias != name) { call.alias = name; pending = true }
+        if (call.src != 0) { val uk = "${call.sys.ifEmpty { c.sys }}/${call.src}"; unitAlias[uk] = name; units[uk]?.alias = name }
+        addLog(LogRow(now(), c.hz, "DMR", "TALKER ALIAS", "TS${slot + 1} · TALKER ALIAS · $name${if (call.src != 0) " · UNIT ${call.src}" else ""}", "", true))
     }
     private fun dmrSystem(c: Carrier, cs: Csbk, cc: Int, now: Long): Sys {
         var key = c.dmrSys
@@ -879,11 +938,11 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         u.lonLo = lonLo; u.latLo = latLo; u.posMs = now; u.posVerified = cs.verified
         val last = u.reports.lastOrNull()
         if (last != null) { last.lonLo = lonLo; last.latLo = latLo }
-        val r = ref ?: return
-        val lat = round6(Csbks.unwrap16(latLo, r.first)); val lon = round6(Csbks.unwrap16(lonLo, r.second))
-        if (last != null) { last.lat = lat; last.lon = lon }
-        val tr = u.trail.lastOrNull()
-        if (tr == null || tr.lat != lat || tr.lon != lon) { u.trail.add(TrailPt(lat, lon, now)); if (u.trail.size > 30) u.trail.removeAt(0) }
+        val fx = u.fixes.lastOrNull()
+        if (fx == null || fx.lat16 != latLo || fx.lon16 != lonLo) { u.fixes.add(Fix(now, latLo, lonLo)); if (u.fixes.size > 300) u.fixes.removeAt(0) }
+        anchorsDirty = true
+        val p = place(s.key, latLo, lonLo)
+        if (last != null && p != null) { last.lat = p.first; last.lon = p.second }
     }
     private fun cwText(c: Carrier, text: String) {
         val word = text.split(' ').firstOrNull { looksLikeCallsign(it) }
@@ -896,11 +955,11 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val key = "$sys/$id"
         val u = units.getOrPut(key) { UnitRec(key, sys, id, now, now) }
         u.lastMs = now; u.carriers.add(c.key)
-        if (group != null) { u.groups.add(group); tgFor(sys, group, now).members.add(id) }
+        if (group != null) { u.groups.add(group); u.tgCounts[group] = (u.tgCounts[group] ?: 0) + 1; tgFor(sys, group, now).members.add(id) }
         if (kind == "grant" || kind == "u2u" || kind == "datagrant") u.grants++
         val cs = msg as? Csbk; val ts = msg as? Tsbk
         val text = if (cs != null) Csbks.line(cs) else Tsbks.line(ts!!)
-        u.reports.add(Report(now, c.hz, kind + if (site.isNotEmpty()) " · site $site" else "", cs?.hex ?: ts!!.hex, cs?.verified ?: true, text))
+        u.reports.add(Report(now, c.hz, kind + if (site.isNotEmpty()) " · site $site" else "", cs?.hex ?: ts!!.hex, cs?.verified ?: true, text, c.levelDb))
         if (u.reports.size > 60) u.reports.removeAt(0)
         pending = true
         return u
@@ -945,10 +1004,66 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     // ------------------------------------------------------------------------------------------------ output
     private fun resolvePos(u: UnitRec): Pair<Double?, Double?> {
         val f = u.fix
-        if (u.lonLo < 0 && f != null) return f.first to f.second
+        if (u.lonLo < 0 && f != null) {
+            // a position kept from an earlier session: shown only where the system's radios can be (an older build drew
+            // some reports in the wrong place)
+            return if (keptOk(u.sys, f)) f.first to f.second else null to null
+        }
+        if (u.lonLo < 0) return null to null
+        val p = place(u.sys, u.latLo, u.lonLo) ?: return null to null
+        return p.first to p.second
+    }
+    private fun keptOk(sys: String, f: Pair<Double, Double>): Boolean {
+        val a = anchorFor(sys); val r = a ?: ref ?: return true
+        return kmBetween(f.first, f.second, r.first, r.second) <= (if (a != null) PLACE_KM else PLACE_RX_KM)
+    }
+    /**
+     * DMR unit reports carry only the low 16 bits of each coordinate (about 5.6 degrees a cycle), so each report has a
+     * twin every 5.6 degrees and is resolved to the one nearest a reference. The reference is the system's own area
+     * once three or more of its units agree on it (the median of their positions, at least three within 40 km of it):
+     * units of one system cluster around its sites. A report that lands farther than [PLACE_KM] from that area (or
+     * [PLACE_RX_KM] from the receiver, before the system has an area) is not a place the system's radios can be: it is
+     * left off the map rather than drawn in the ocean, and counted.
+     */
+    private fun place(sys: String, lat16: Int, lon16: Int): Pair<Double, Double>? {
+        if (ref == null) return null
+        val a = anchorFor(sys); val r = a ?: ref!!
+        val lat = round6(Csbks.unwrap16(lat16, r.first)); val lon = round6(Csbks.unwrap16(lon16, r.second))
+        return if (kmBetween(lat, lon, r.first, r.second) <= (if (a != null) PLACE_KM else PLACE_RX_KM)) lat to lon else null
+    }
+    private val anchors = HashMap<String, Pair<Double, Double>?>(); private var anchorsDirty = true
+    private fun anchorFor(sys: String): Pair<Double, Double>? {
+        if (anchorsDirty) { anchors.clear(); anchorsDirty = false }
+        if (anchors.containsKey(sys)) return anchors[sys]
+        var out: Pair<Double, Double>? = null
         val r = ref
-        if (r == null || u.lonLo < 0) return null to null
-        return round6(Csbks.unwrap16(u.latLo, r.first)) to round6(Csbks.unwrap16(u.lonLo, r.second))
+        if (r != null) {
+            val pts = ArrayList<Pair<Double, Double>>()
+            for (u in units.values) if (u.sys == sys && u.lonLo >= 0) pts.add(Csbks.unwrap16(u.latLo, r.first) to Csbks.unwrap16(u.lonLo, r.second))
+            if (pts.size >= 3) {
+                fun med(v: List<Double>): Double { val x = v.sorted(); return x[x.size shr 1] }
+                val m = med(pts.map { it.first }) to med(pts.map { it.second })
+                if (pts.count { kmBetween(it.first, it.second, m.first, m.second) <= 40 } >= 3) out = m
+            }
+        }
+        anchors[sys] = out
+        return out
+    }
+    /** A unit's track: every position report placed (in order, repeats folded), and how many could not be placed. */
+    private fun trailOf(u: UnitRec): Pair<List<TrailPt>, Int> {
+        if (u.fixes.isEmpty()) {
+            // a track kept from an earlier session: the same check as its position
+            val f = u.fix
+            return if (f != null && !keptOk(u.sys, f)) emptyList<TrailPt>() to 1 else u.trail.toList() to 0
+        }
+        val trail = ArrayList<TrailPt>(); var off = 0
+        for (x in u.fixes) {
+            val p = place(u.sys, x.lat16, x.lon16)
+            if (p == null) { off++; continue }
+            val l = trail.lastOrNull()
+            if (l == null || l.lat != p.first || l.lon != p.second) trail.add(TrailPt(p.first, p.second, x.ms))
+        }
+        return trail to off
     }
     /**
      * Where each call on the air is heard from: the talking unit's last position, else the latest position of any unit
@@ -1008,12 +1123,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     /** The receiver's position arrived or moved: every stored report is resolved against it again. */
     @Synchronized fun setRef(lat: Double, lon: Double) {
-        ref = lat to lon
+        ref = lat to lon; anchorsDirty = true
         for (u in units.values) {
             if (u.lonLo < 0) continue
-            for (r in u.reports) { val a = r.latLo; val o = r.lonLo; if (a != null && o != null) { r.lat = round6(Csbks.unwrap16(a, lat)); r.lon = round6(Csbks.unwrap16(o, lon)) } }
-            val (la, lo) = resolvePos(u)
-            if (la != null && lo != null && u.trail.isEmpty()) u.trail.add(TrailPt(la, lo, u.posMs))
+            for (r in u.reports) { val a = r.latLo; val o = r.lonLo; if (a != null && o != null) { val p = place(u.sys, a, o); r.lat = p?.first; r.lon = p?.second } }
         }
         post(true)
     }
@@ -1077,9 +1190,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                 units.values.any { it.sys == s.key && (it.lonLo >= 0 || it.fix != null) })
         }.sortedBy { it.firstMs }
         val unitRows = units.values.map { u ->
-            val (lat, lon) = resolvePos(u)
-            UnitRow(u.key, u.sys, u.id, u.firstMs, u.lastMs, lat, lon, u.posMs, u.posVerified, u.trail.takeLast(12), u.groups.toList(), u.grants, u.carriers.toList(),
-                u.reports.takeLast(6).map { it.row() }, unitSite[u.key] ?: "")
+            val (lat, lon) = resolvePos(u); val (tr, off) = trailOf(u)
+            UnitRow(u.key, u.sys, u.id, u.firstMs, u.lastMs, lat, lon, u.posMs, u.posVerified, tr.takeLast(12), u.groups.toList(), u.grants, u.carriers.toList(),
+                u.reports.takeLast(6).map { it.row() }, unitSite[u.key] ?: "", u.tgCounts.entries.sortedByDescending { it.value }.map { it.key to it.value }, off, u.fixes.size,
+                u.alias.ifEmpty { unitAlias[u.key] ?: "" })
         }
         val tgRows = tgs.values.map { t -> TgRow(t.key, t.sys, t.tg, t.firstMs, t.lastMs, t.grants, t.recent.filter { now - it < 600_000 }, t.members.take(200), t.history.take(12).map { it.copy() }) }
         val carrierRows = carriers.values.map { it.row() }.sortedBy { it.hz }
@@ -1150,7 +1264,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     /** Everything held about one unit, for its detail view. */
     @Synchronized fun unitDetail(key: String): UnitDetail? {
         val u = units[key] ?: return null
-        return UnitDetail(key, u.reports.map { it.row() }, u.trail.toList())
+        val (tr, off) = trailOf(u)
+        return UnitDetail(key, u.reports.map { it.row() }, tr, off)
     }
     /** The block log as CSV, and the tables as JSON. */
     @Synchronized fun exportAll(): Pair<String, String> {
@@ -1171,7 +1286,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             val (la, lo) = resolvePos(u)
             JSONObject().put("sys", u.sys).put("id", u.id).put("first", iso.format(java.util.Date(u.firstMs))).put("last", iso.format(java.util.Date(u.lastMs)))
                 .put("groups", JSONArray(u.groups.toList())).put("position", JSONArray(listOf(la ?: JSONObject.NULL, lo ?: JSONObject.NULL))).put("positionVerified", u.posVerified)
-                .put("trail", JSONArray(u.trail.map { JSONArray(listOf(it.lat, it.lon, it.ms)) }))
+                .put("trail", JSONArray(trailOf(u).first.map { JSONArray(listOf(it.lat, it.lon, it.ms)) }))
                 .put("reports", JSONArray(u.reports.map { r -> reportJson(r.row()).also { j -> r.lonLo?.let { j.put("lonLo", it) }; r.latLo?.let { j.put("latLo", it) } } }))
         }))
         return csv.toString() to o.toString(1)
@@ -1207,7 +1322,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         _snap.value = buildSnapshot()
     }
     @Synchronized fun clear() {
-        carriers.clear(); systems.clear(); sites.clear(); units.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
+        carriers.clear(); systems.clear(); sites.clear(); units.clear(); anchorsDirty = true; embAsm.clear(); aliases.clear(); unitAlias.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
         chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList()
         post(true)
     }

@@ -47,6 +47,8 @@ data class CallRow(
     val protectedHint: Boolean,
     /** Vocoder frames decoded, and how many of them were past their error correction (repeated or muted). */
     val decoded: Int, val badFrames: Int,
+    /** The talker alias the radio sent (DMR), or "". */
+    val alias: String = "",
 )
 
 /** What each source on the air said: 1 encrypted, 0 clear, -1 nothing yet; [syncs] the last algorithm IDs read. */
@@ -61,7 +63,7 @@ class Call(
     var encrypted = false; var lastMs = startMs; var endMs = 0L; var onAir = true; var voiceMs = 0L; var frames = 0
     var levelDb = 0.0; var peakDb = 0.0; var end = ""; var muted = false; var prio = false; var audioMs = 0L; var lcVerified = false; var granted = false
     var kind = "call"; var cwId = ""; var outside = false; var pos: CallPos? = null; var sec = "unknown"; var secFrom = ""; var algId = -1; var keyId = -1; var mi = ""; var pi = ""
-    var audioDb = 0.0; var protectedHint = false; var decoded = 0; var badFrames = 0
+    var audioDb = 0.0; var protectedHint = false; var decoded = 0; var badFrames = 0; var alias = ""
     var grantMs = 0L; var voiceAt = 0L; var audioAt = 0L
     val pcm = ArrayList<FloatArray>(); var pcmN = 0
     var codecInst: VoiceCodec? = null
@@ -69,7 +71,7 @@ class Call(
     val said = Said()
     var wait = ArrayList<FloatArray>()
     fun row() = CallRow(key, sys, proto, tg, group, src, srcs.toList(), hz, slot, tdma, encrypted, emergency, startMs, lastMs, endMs, onAir, voiceMs, frames, levelDb, peakDb,
-        site, codec, end, muted, prio, audioMs, lcVerified, granted, kind, cwId, outside, pos, sec, secFrom, algId, keyId, mi, pi, audioDb, lpcn, chDerived, protectedHint, decoded, badFrames)
+        site, codec, end, muted, prio, audioMs, lcVerified, granted, kind, cwId, outside, pos, sec, secFrom, algId, keyId, mi, pi, audioDb, lpcn, chDerived, protectedHint, decoded, badFrames, alias)
 }
 
 /** A grant as the control channel gave it. */
@@ -237,7 +239,8 @@ class CallTracker(private val now: () -> Long) {
             c.protectedHint = last < 0 && (said.grant == 1 || said.lc == 1)
         } else {
             if (said.lc == 1 || said.pi || said.emb == 1) { sec = "enc"; from = if (said.pi) "PI" else if (said.lc == 1) "LC" else "EMB" }
-            else if (said.lc == 0 || said.emb == 0) { sec = "clear"; from = if (said.lc == 0) "LC" else "EMB" }
+            // an EMB privacy bit of 0 does not make a call clear: Motorola's privacy leaves it 0, the LC's service options say it
+            else if (said.lc == 0) { sec = "clear"; from = "LC" }
             c.protectedHint = false
         }
         val was = c.sec

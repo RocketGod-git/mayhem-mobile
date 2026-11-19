@@ -86,4 +86,67 @@ object DispatchView {
     fun nowPlaying(calls: List<CallRow>, playing: String): CallRow? = if (playing.isNotEmpty()) calls.firstOrNull { it.key == playing && it.onAir } else null
     /** The talkgroup or unit a call is to, as the cards name it. */
     fun callWho(c: CallRow): String = if (c.tg != 0) "${if (c.group) "TG" else "UNIT"} ${c.tg}" else "UNKNOWN TALKGROUP"
+
+    // ------------------------------------------------------------------------------------------------ detail cards
+    /** What a unit's track says: reports placed, time span, distance covered, the latest speed and course, moving or not. */
+    data class TrackStats(val fixes: Int, val spanMs: Long, val mi: Double, val mph: Double?, val course: Int?, val dir: String, val moving: Boolean, val lastMs: Long)
+    /** Speed and course come from the last two fixes (at least 20 s apart); a unit doing under 3 mph is stopped. */
+    fun trackStats(trail: List<TrailPt>): TrackStats {
+        val n = trail.size
+        var mi = 0.0
+        for (i in 1 until n) mi += distBearing(trail[i - 1].lat, trail[i - 1].lon, trail[i].lat, trail[i].lon).mi
+        var mph: Double? = null; var course: Int? = null; var dir = ""; var moving = false
+        for (i in n - 1 downTo 1) {
+            val a = trail[i - 1]; val b = trail[n - 1]; val dt = (b.ms - a.ms) / 3_600_000.0
+            if (dt * 3600 < 20) continue
+            val d = distBearing(a.lat, a.lon, b.lat, b.lon)
+            val v = d.mi / dt; mph = v; moving = v >= 3
+            if (moving) { course = d.deg.roundToInt(); dir = d.dir }
+            break
+        }
+        return TrackStats(n, if (n > 1) trail[n - 1].ms - trail[0].ms else 0L, mi, mph, course, dir, moving, if (n > 0) trail[n - 1].ms else 0L)
+    }
+    /** Counts of [times] in [n] equal buckets over the [spanMs] up to [now] (oldest first). */
+    fun activityBuckets(times: List<Long>, now: Long, spanMs: Long, n: Int): IntArray {
+        val b = IntArray(n); val w = spanMs.toDouble() / n
+        for (t in times) { val i = kotlin.math.floor((t - (now - spanMs)) / w).toInt(); if (i in 0 until n) b[i]++ }
+        return b
+    }
+    /** A small map of positions fitted to a box: the track, the other units, the listener, and a round scale bar. */
+    data class TrackFit(val track: List<Pair<Float, Float>>, val others: List<Pair<Float, Float>>, val me: Pair<Float, Float>?, val barPx: Float, val barLabel: String)
+    /**
+     * An equirectangular fit of [trail], [others] and [me] into [w] by [h] with a margin, at least 600 m across so one
+     * fix is not a single point blown up; the scale bar is a round distance near a quarter of the width. Null with nothing to draw.
+     */
+    fun trackFit(trail: List<TrailPt>, others: List<Pair<Double, Double>>, me: Pair<Double, Double>?, w: Float, h: Float, pad: Float = 14f): TrackFit? {
+        val pts = ArrayList<Pair<Double, Double>>(); trail.forEach { pts.add(it.lat to it.lon) }; pts.addAll(others); if (me != null) pts.add(me)
+        if (pts.isEmpty() || w <= 2 * pad || h <= 2 * pad) return null
+        var la0 = pts.minOf { it.first }; var la1 = pts.maxOf { it.first }; var lo0 = pts.minOf { it.second }; var lo1 = pts.maxOf { it.second }
+        val k = cos((la0 + la1) / 2 * Math.PI / 180)
+        val minDeg = 0.0055
+        if (la1 - la0 < minDeg) { val c = (la0 + la1) / 2; la0 = c - minDeg / 2; la1 = c + minDeg / 2 }
+        if ((lo1 - lo0) * k < minDeg) { val c = (lo0 + lo1) / 2; lo0 = c - minDeg / k / 2; lo1 = c + minDeg / k / 2 }
+        val s = min((w - 2 * pad) / ((lo1 - lo0) * k), (h - 2 * pad) / (la1 - la0))
+        val cx = (lo0 + lo1) / 2; val cy = (la0 + la1) / 2
+        fun xy(lat: Double, lon: Double) = (w / 2 + (lon - cx) * k * s).toFloat() to (h / 2 - (lat - cy) * s).toFloat()
+        val kmPerPx = 111.32 / s; val want = kmPerPx * w / 4
+        val km = listOf(0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0).firstOrNull { it >= want } ?: want
+        val mi = km * 0.621371
+        val label = if (mi < 0.25) "${(mi * 5280).roundToInt()} ft" else "${if (mi < 10) String.format(java.util.Locale.US, "%.1f", mi) else mi.roundToInt().toString()} mi"
+        return TrackFit(trail.map { xy(it.lat, it.lon) }, others.map { xy(it.first, it.second) }, me?.let { xy(it.first, it.second) }, (km / kmPerPx).toFloat(), label)
+    }
+    /** Encrypted share of a set of calls: encrypted, total (calls only, not CW IDs). */
+    fun encShare(calls: List<CallRow>): Pair<Int, Int> { val v = calls.filter { it.kind == "call" }; return v.count { it.encrypted } to v.size }
+    /** The security of a set of calls in a word: "CLEAR", "ENCRYPTED" or "n% ENCRYPTED", or "" with no calls. */
+    fun encWord(calls: List<CallRow>): String {
+        val (e, n) = encShare(calls)
+        return if (n == 0) "" else if (e == 0) "CLEAR" else if (e == n) "ENCRYPTED" else "${(100.0 * e / n).roundToInt()}% ENCRYPTED"
+    }
+    /** How long ago, short: "now", "42 s", "7 min", "3 h", "2 d". */
+    fun agoShort(ms: Long): String = when {
+        ms < 5_000 -> "now"; ms < 60_000 -> "${ms / 1000} s"; ms < 3_600_000 -> "${ms / 60_000} min"; ms < 86_400_000 -> "${ms / 3_600_000} h"; else -> "${ms / 86_400_000} d"
+    }
+    /** A span of time, short: "45 s", "12 min", "3.5 h". */
+    fun spanShort(ms: Long): String = if (ms < 60_000) "${(ms / 1000.0).roundToInt()} s" else if (ms < 3_600_000) "${(ms / 60_000.0).roundToInt()} min"
+        else String.format(java.util.Locale.US, "%.1f h", ms / 3_600_000.0)
 }
