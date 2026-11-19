@@ -2847,10 +2847,6 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
   .flc-grid { grid-template-columns: 1fr; }
   .flc-kv { grid-template-columns: 1fr; }
 }
-/* Two-finger maps: a brief hint when one finger lands on the map while scrolling. */
-.geo-2f { position: absolute; inset: 0; z-index: 900; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity .2s;
-  background: rgba(0,0,0,.45); color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-.geo-2f.on { opacity: 1; }
 /* JS8: conversations, groups, stations, map, passband waterfall. One page on a phone, the wide layout from 1000 px. */
 .j8-stage { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 .j8-clock { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 4px 2px 10px; font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--muted); font-variant-numeric: tabular-nums; }
