@@ -15,7 +15,10 @@ package com.rocketgod.mayhem.core.ham
 
 data class P25Status(
     val locked: Boolean, val nac: Int, val duid: Int, val frame: String,
-    val talkgroup: Int, val source: Int, val encrypted: Boolean, val lcf: Int,
+    val talkgroup: Int, val source: Int, val encrypted: Boolean,
+    /** The link control's service options. */
+    val emergency: Boolean,
+    val lcf: Int,
     val frames: Int, val errs: Int, val since: Long,
 )
 
@@ -37,7 +40,7 @@ private fun g64mul(a: Int, b: Int) = if (a == 0 || b == 0) 0 else GF64_EXP[GF64_
 private fun g64div(a: Int, b: Int) = if (a == 0) 0 else GF64_EXP[GF64_LOG[a] + 63 - GF64_LOG[b]]
 
 /** Shortened RS(24,12) over GF(64): syndromes, Berlekamp-Massey, Chien, Forney. Symbols corrected, or −1. */
-private fun rsDecode(data: IntArray, nroots: Int): Int {
+fun rsDecode(data: IntArray, nroots: Int): Int {
     check(gfInit)
     val n = data.size
     val synd = IntArray(nroots)
@@ -139,13 +142,30 @@ private fun hamming106(word: Int): Int {
     return -1
 }
 
+/** An encryption sync: algorithm ID (0x80 is clear), key ID and the message indicator in hex. */
+data class P25EncSync(val algId: Int, val keyId: Int, val mi: String)
+/** A call header (HDU): the encryption sync, the manufacturer and the talkgroup. */
+data class P25Hdu(val algId: Int, val keyId: Int, val mi: String, val mfid: Int, val tg: Int)
+
+/** The encryption sync out of the first 16 corrected hex symbols (96 bits): MI 72, ALGID 8, KID 16. */
+private fun syncOf(hex: IntArray, from: Int): P25EncSync {
+    fun bit(i: Int) = (hex[from + i / 6] shr (5 - i % 6)) and 1
+    fun f(a: Int, n: Int): Int { var v = 0; for (i in 0 until n) v = v * 2 + bit(a + i); return v }
+    val mi = StringBuilder(); for (i in 0 until 9) mi.append(String.format(java.util.Locale.US, "%02x", f(8 * i, 8)))
+    return P25EncSync(f(72, 8), f(80, 16), mi.toString())
+}
+
 class P25Decoder {
     var onLog: (String) -> Unit = {}
     /** Raw 144-bit voice frames as they come out of an LDU, for the vocoder. */
     var onVoice: (IntArray) -> Unit = {}
+    /** The encryption sync of an LDU2 (algorithm, key and message indicator), once it passes its checks. */
+    var onEs: (P25EncSync) -> Unit = {}
+    /** The header of a call (HDU): the same encryption sync, the manufacturer and the talkgroup, sent before the voice. */
+    var onHdu: (P25Hdu) -> Unit = {}
 
     private var nac = -1; private var duid = -1
-    private var frameName = ""; private var tg = 0; private var src = 0; private var enc = false; private var lcf = 0
+    private var frameName = ""; private var tg = 0; private var src = 0; private var enc = false; private var emerg = false; private var lcf = 0
     private var frames = 0; private var errs = 0
     /** Sample at which the last good frame was read, so the receiver can tell a live stream from a stale lock. */
     var lastFrame = -1_000_000_000L; private set
@@ -161,7 +181,7 @@ class P25Decoder {
     private val voice = IntArray(144)
 
     fun reset() {
-        nac = -1; duid = -1; frameName = ""; tg = 0; src = 0; enc = false
+        nac = -1; duid = -1; frameName = ""; tg = 0; src = 0; enc = false; emerg = false
         lcf = 0; frames = 0; errs = 0; nacVotes.clear()
         idle()
     }
@@ -176,7 +196,7 @@ class P25Decoder {
      */
     private fun expectNext() { sym = 0; nInfo = 0; want = 24; state = 1 }
 
-    fun status(now: Long) = P25Status(locked, nac, duid, frameName, tg, src, enc, lcf, frames, errs, now - lastFrame)
+    fun status(now: Long) = P25Status(locked, nac, duid, frameName, tg, src, enc, emerg, lcf, frames, errs, now - lastFrame)
 
     /** A frame sync was recognised: the next symbol is index 24 of a new frame. */
     fun sync(now: Long) { sym = 24; nInfo = 0; want = 32; state = 2; lastFrame = now; locked = true }
@@ -236,6 +256,7 @@ class P25Decoder {
         lastFrame = now
         expectNext()
         if (duid == 0x5 || duid == 0xa) onLdu()
+        else if (duid == 0x0) decodeHdu()
         report()
     }
 
@@ -252,26 +273,66 @@ class P25Decoder {
         repeat(6) { takeLc(); takeVoice() }
         at += 16                                            // low speed data
         takeVoice()
-        if (duid == 0x5) decodeLc(lc)
+        if (duid == 0x5) decodeLc(lc) else decodeEs(lc)
+    }
+
+    /** 24 hex words, each a Hamming (10,6) code word of five dibits; the count is the words past correcting. */
+    private fun hexWords(d: List<Int>): Pair<IntArray, Int> {
+        val hex = IntArray(24)
+        var bad = 0
+        for (w in 0 until 24) {
+            var word = 0
+            for (i in 0 until 5) word = word * 4 + d[w * 5 + i]
+            val h = hamming106(word)
+            if (h < 0) { bad++; hex[w] = 0 } else hex[w] = h
+        }
+        return hex to bad
+    }
+
+    /**
+     * LDU2's 240 bits are the encryption sync: the same Hamming (10,6) hex words as link control, but a shortened
+     * Reed-Solomon (24,16,9) code over GF(64), whose 16 symbols are 96 bits: the 72-bit message indicator, the 8-bit
+     * algorithm ID and the 16-bit key ID (TIA-102.BAAA).
+     */
+    private fun decodeEs(d: List<Int>) {
+        if (d.size < 120) return
+        val (hex, bad) = hexWords(d)
+        // a sync can mark a call encrypted, so it has to be beyond doubt: at most two words past their Hamming code and
+        // at most three symbols corrected in all (the code would take four)
+        if (bad > 2) return
+        val fixed = rsDecode(hex, 8)
+        if (fixed < 0 || fixed > 3) return
+        onEs(syncOf(hex, 0))
+    }
+
+    /**
+     * The header: 36 hex symbols, each sent as a Golay (18,6) code word (the six data bits first), are a shortened
+     * Reed-Solomon (36,20,17) code word over GF(64); its 20 symbols are 120 bits: message indicator (72), manufacturer
+     * ID (8), algorithm ID (8), key ID (16) and talkgroup (16). The Reed-Solomon code alone corrects up to eight of the
+     * symbols, so a damaged Golay word costs one symbol.
+     */
+    private fun decodeHdu() {
+        val at = 32; val hex = IntArray(36)
+        for (w in 0 until 36) { var v = 0; for (i in 0 until 3) v = v * 4 + info[at + 9 * w + i]; hex[w] = v }
+        val fixed = rsDecode(hex, 16)
+        if (fixed < 0 || fixed > 6) return
+        val es = syncOf(hex, 0)
+        fun bit(i: Int) = (hex[i / 6] shr (5 - i % 6)) and 1
+        fun f(from: Int, n: Int): Int { var v = 0; for (i in 0 until n) v = v * 2 + bit(from + i); return v }
+        onHdu(P25Hdu(f(80, 8), f(88, 16), es.mi, f(72, 8), f(104, 16)))
     }
 
     /** 24 Hamming (10,6) words carrying 24 hex symbols, an RS(24,12) code word; the 12 left are 72 bits of call. */
     private fun decodeLc(lcDibits: List<Int>) {
         if (lcDibits.size < 120) return
-        val hex = IntArray(24)
-        var bad = 0
-        for (w in 0 until 24) {
-            var word = 0
-            for (i in 0 until 5) word = word * 4 + lcDibits[w * 5 + i]
-            val h = hamming106(word)
-            if (h < 0) { bad++; hex[w] = 0 } else hex[w] = h
-        }
+        val (hex, bad) = hexWords(lcDibits)
         if (rsDecode(hex, 12) < 0 || bad > 6) { errs++; return }
         fun bit(i: Int) = (hex[i / 6] shr (5 - i % 6)) and 1
         fun f(from: Int, count: Int): Int { var v = 0; for (i in 0 until count) v = v * 2 + bit(from + i); return v }
         val format = f(2, 6); val svc = f(16, 8)
         lcf = format
         enc = bit(0) == 1 || (svc and 0x40) != 0
+        emerg = (svc and 0x80) != 0
         if (format == 0x00) { tg = f(32, 16); src = f(48, 24) }          // group call: talkgroup then source
         else if (format == 0x03) { tg = f(24, 24); src = f(48, 24) }     // unit to unit: destination then source
     }

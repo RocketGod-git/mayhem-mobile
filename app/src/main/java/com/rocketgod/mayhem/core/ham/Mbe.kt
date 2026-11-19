@@ -118,12 +118,20 @@ open class AmbeDecoder {
     private val prevUw = DoubleArray(NFFT_UV)
     private val outD = DoubleArray(NS)
     val out = FloatArray(NS)
+    /** The pitch of the last frame decoded, Hz (8 kHz audio). */
+    val pitchHz: Double get() = cur.w0 * 8000 / (2 * Math.PI)
     /** Golay corrections in the last frame (C0 + C1). */
     var errs = 0
     /** What the last frame was: "" voice, E erasure, T tone, R repeat, M muted, S silence. */
     var status = ""
+    /** Synthesis to output scale. Loud speech reaches full scale at the default and is clipped there; a listener that
+     *  wants headroom (Dispatch) sets it lower and limits on its own. */
+    var outGain = 7.0 / 32768
     /** Frames with more than this many corrected bits are not trusted, and the previous frame is repeated. */
     protected var repeatErrs = 3
+
+    /** A frame that never arrived (a lost burst): the previous frame is repeated, and muted after a few in a row. */
+    fun erase(): FloatArray { errs = repeatErrs + 1; return process(errs) }
 
     init { initParms(cur, prev, prevEnh) }
 
@@ -350,7 +358,7 @@ open class AmbeDecoder {
             o[n] += v / den
         }
         uw.copyInto(prevUw)
-        val g = 7.0 / 32768
+        val g = outGain
         for (n in 0 until NS) { val v = o[n] * g; out[n] = (if (v > 1) 1.0 else if (v < -1) -1.0 else v).toFloat() }
     }
 }

@@ -126,7 +126,6 @@ object Csbks {
             }
             else -> { c.derived = false; c.kind = "vendor"; c.name = "FID 10 CSBK ${hx(op, 2)}"; add("PAYLOAD", Codes.hex(b, 2, 10)) }
         }
-        if (c.derived) add("FORMAT", "derived from recordings${if (c.verified) ", check passed" else ", check not passed"}")
         return c
     }
 
@@ -170,8 +169,7 @@ object Csbks {
     }
 
     fun line(c: Csbk): String =
-        c.name + (if (c.fields.isNotEmpty()) " · " + c.fields.filter { it.k != "FORMAT" }.joinToString(" · ") { "${it.k.lowercase()} ${it.v}" } else "") +
-            (if (c.derived) (if (c.verified) " · derived, check passed" else " · derived, unverified") else "")
+        c.name + (if (c.fields.isNotEmpty()) " · " + c.fields.joinToString(" · ") { "${it.k.lowercase()} ${it.v}" } else "")
 }
 
 /** Checks 0x89 / 0xBD blocks; the constants for other systems' fixed bytes are learned from repeats. */

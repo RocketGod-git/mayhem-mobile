@@ -20,13 +20,17 @@ import kotlin.math.sqrt
 const val BAUD = 4800
 private const val BLOCK = 480
 
-/** Soft 4-level symbols (about ±1 / ±3) from complex samples. */
-class SymbolRx(val fs: Double) {
+/**
+ * Soft 4-level symbols (about ±1 / ±3) from complex samples. [diff] is the phase-step span as a fraction of a symbol.
+ * A whole symbol suits P25 and DMR; NXDN's outer levels turn the phase by nearly half a turn a symbol, so it measures
+ * over half a symbol to stay clear of the wrap.
+ */
+class SymbolRx(val fs: Double, baud: Double = BAUD.toDouble(), diff: Double = 1.0) {
     var onSymbol: (Float) -> Unit = {}
-    val sps = fs / BAUD
-    private val dl = max(1, sps.roundToInt())
+    val sps = fs / baud
+    private val dl = max(1, (sps * diff).roundToInt())
     private val ri = FloatArray(dl); private val rq = FloatArray(dl); private var rp = 0
-    private val buf = FloatArray(ceil(sps * BLOCK * 2).toInt() + 64); private var n = 0; private var base = 0L
+    private var buf = FloatArray(ceil(sps * BLOCK * 2).toInt() + 64); private var n = 0; private var base = 0L
     private var tNext = 0.0
     private var w = 0.0; private var ph = 0.0
     var center = 0.0; var level = 0.0
@@ -50,7 +54,7 @@ class SymbolRx(val fs: Double) {
             val re = a * pa + b * pb; val im = b * pa - a * pb
             val m2 = (a * a + b * b).toDouble(); val m = sqrt(m2)
             pw += 0.0005 * (m2 - pw); envM += 0.0005 * (m - envM); envV += 0.0005 * ((m - envM) * (m - envM) - envV)
-            if (n >= buf.size) compact()
+            if (n >= buf.size) grow()
             buf[n++] = atan2(im, re)
         }
         ph = p; envMean = envM; envVar = envV; power = pw
@@ -60,10 +64,11 @@ class SymbolRx(val fs: Double) {
     /** Envelope variation over its mean: near 0 for constant-envelope FM, about 0.3 for linear modulation. */
     val envCv: Double get() = if (envMean > 0) sqrt(max(0.0, envVar)) / envMean else 0.0
 
-    private fun compact() {
-        val keep = min(n, ceil(sps * 4).toInt())
-        buf.copyInto(buf, 0, n - keep, n); base += n - keep; n = keep
-    }
+    /**
+     * A chunk bigger than the buffer (a long recording fed at once): the buffer grows. It used to keep only the last
+     * four symbols, which threw away the rest of the chunk mid-frame and cost P25 voice frames whole.
+     */
+    private fun grow() { buf = buf.copyOf(buf.size * 2) }
     private fun at(t: Double): Double {
         val i = floor(t).toInt(); val f = t - i
         return buf[i] * (1 - f) + buf[min(i + 1, n - 1)] * f
@@ -136,6 +141,8 @@ class P25Framer {
     private var nac = -1; private var nidErrs = 0; private var blk = 0; private var flywheel = 0
     val nacs = LinkedHashSet<Int>()
     var syncs = 0; var frames = 0
+    /** Frames whose NID came through with at most 4 bit errors. */
+    var clean = 0
     fun push(s: Float) {
         sm.push(s)
         if (state != St.BODY && state != St.NID && sm.corr(P25S) > 0.82f && sm.mag() > 1.8f) { syncs++; begin(); return }
@@ -152,7 +159,7 @@ class P25Framer {
     private fun nid() {
         val r = Codes.nidDecode(buf, nacs)
         if (r == null) { state = St.IDLE; return }
-        frames++; nac = r.nac; nidErrs = r.errs
+        frames++; nac = r.nac; nidErrs = r.errs; if (r.errs <= 4) clean++
         if (r.errs <= 4) { nacs.add(r.nac); if (nacs.size > 6) nacs.remove(nacs.first()) }
         onFrame(r.nac, r.duid)
         if (r.duid == 7) { state = St.BODY; nb = 0; want = 98; blk = 0 } else state = St.IDLE
@@ -177,27 +184,65 @@ private val DMR_BS_VOICE = Codes.syncSigns(Codes.DMR_BS_VOICE)
 private val DMR_MS_DATA = Codes.syncSigns(Codes.DMR_MS_DATA)
 private val DMR_MS_VOICE = Codes.syncSigns(Codes.DMR_MS_VOICE)
 
-/** DMR base-station bursts: sync, CACH slot, slot type, BPTC. Voice syncs are only counted. */
+/**
+ * DMR base-station bursts: sync, CACH slot, slot type, BPTC. A voice sync starts a superframe: its burst and the five
+ * after it in the same slot (every 288 symbols) are handed over as voice bursts.
+ */
 class DmrFramer {
     var onBurst: (DmrEvent) -> Unit = {}
+    /** A voice burst: its slot from the CACH, the 144 dibits, and its place in the superframe (0 = the one with the sync). */
+    var onVoice: (slot: Int, dibits: IntArray, n: Int) -> Unit = { _, _, _ -> }
+    private class Sf(var slot: Int)
+    private class Q(val at: Long, val voice: Boolean, val n: Int, val sf: Sf)
     private val sm = SyncMatch()
     private val hist = IntArray(144); private var hp = 0
-    private var pending = -1
+    private var t = 0L; private var lastData = -1_000_000_000L
+    private var queue = ArrayList<Q>()
     var syncs = 0; var voice = 0; var ms = 0
+    /** Data bursts whose slot type came through without a correction: a real DMR signal, where a sync alone can be chance. */
+    var bursts = 0
+    /** Voice syncs heard lately, and when one last came a superframe (1728 symbols, 360 ms) after another. */
+    private val voiceAt = ArrayList<Long>(); private var confirmedAt = -1_000_000_000L
+    /** Voice superframes are arriving on their own grid: a voice call heard without a data burst (late entry). */
+    val voiceLive: Boolean get() = t - confirmedAt < 3_500
     fun push(s: Float) {
         sm.push(s)
         hist[hp] = slice(s); hp = (hp + 1) % 144
-        if (pending > 0 && --pending == 0) emit()
-        if (pending > 0) return
+        val t = ++this.t
+        while (queue.isNotEmpty() && queue[0].at <= t) emit(queue.removeAt(0))
+        if (queue.any { !it.voice && it.at > t }) return
         if (sm.mag() < 1.8f) return
-        if (sm.corr(DMR_BS_DATA) > 0.82f) { syncs++; pending = 54 }
-        else if (sm.corr(DMR_BS_VOICE) > 0.82f) { syncs++; voice++ }
+        if (sm.corr(DMR_BS_DATA) > 0.82f) {
+            syncs++
+            queue.removeAll { abs(it.at - (t + 54)) <= 10 }
+            add(Q(t + 54, false, 0, Sf(-1)))
+        } else if (sm.corr(DMR_BS_VOICE) > 0.82f) {
+            if (queue.any { it.voice && it.n == 0 && abs(it.at - (t + 54)) <= 10 }) return
+            // bursts come every 144 symbols: a voice sync off the grid of the data bursts heard lately is in some payload
+            // (the grid is set only by data bursts whose slot type came through clean, so a chance data sync moves nothing)
+            val ph = (t - lastData) % 144
+            if (t - lastData < 9_600 && ph > 2 && ph < 142) return
+            syncs++; voice++
+            if (voiceAt.any { abs(t - it - 1728) <= 4 }) confirmedAt = t
+            voiceAt.add(t); if (voiceAt.size > 4) voiceAt.removeAt(0)
+            val sf = Sf(-1)
+            for (k in 0 until 6) add(Q(t + 54 + 288L * k, true, k, sf))
+        }
         else if (sm.corr(DMR_MS_DATA) > 0.82f || sm.corr(DMR_MS_VOICE) > 0.82f) ms++
     }
-    private fun emit() {
+    private fun add(q: Q) { queue.add(q); queue.sortBy { it.at } }
+    private fun emit(q: Q) {
         val d = IntArray(144) { hist[(hp + it) % 144] }
+        if (q.voice) {
+            val cach = IntArray(24)
+            for (i in 0 until 12) { cach[2 * i] = d[i] shr 1; cach[2 * i + 1] = d[i] and 1 }
+            // the superframe's slot is the one its sync burst's CACH said: the five after it are in the same slot
+            if (q.sf.slot < 0) q.sf.slot = Codes.cachSlot(cach)
+            onVoice(q.sf.slot, d, q.n)
+            return
+        }
         val b = Codes.dmrReadBurst(d)
-        if (b != null) onBurst(DmrEvent(b, d))
+        if (b != null) { if (b.stErrs == 0) { bursts++; lastData = q.at - 54 }; onBurst(DmrEvent(b, d)) }
     }
 }
 
@@ -217,11 +262,12 @@ fun looksLikeCallsign(s: String) = CALLSIGN.matches(s) && s.length >= 4
 class CwReader(private val fs: Double) {
     var onText: (String) -> Unit = {}
     private var pi = 0f; private var pq = 0f; private var acc = 0.0; private var zc = 0; private var prev = 0.0; private var cnt = 0
+    private var env = 0.0; private var env2 = 0.0
     private var hp = 0.0; private var floorP = 0.0; private var peak = 0.0
     private class Run(val on: Boolean, var n: Int)
     private var runs = ArrayList<Run>(); private var on = false; private var len = 0
     private val step = max(8, (fs * 0.005).roundToInt())
-    fun reset() { runs = ArrayList(); on = false; len = 0; peak = 0.0 }
+    fun reset() { runs = ArrayList(); on = false; len = 0; peak = 0.0; floorP = 0.0 }
     fun push(zi: FloatArray, zq: FloatArray, count: Int) {
         for (k in 0 until count) {
             val a = zi[k]; val b = zq[k]
@@ -229,18 +275,23 @@ class CwReader(private val fs: Double) {
             pi = a; pq = b
             hp += 0.02 * (f - hp)
             val x = f - hp
-            acc += x * x
+            acc += x * x; val e2 = (a * a + b * b).toDouble(); env += sqrt(e2); env2 += e2
             if ((x > 0) != (prev > 0)) zc++
             prev = x
             if (++cnt >= step) window()
         }
     }
     private fun window() {
-        val p = acc / cnt; val hz = zc * fs / (2 * cnt)
-        acc = 0.0; zc = 0; cnt = 0
-        floorP = if (floorP == 0.0) p else if (p < floorP) floorP + 0.2 * (p - floorP) else floorP + 0.002 * (p - floorP)
-        peak = max(p, peak * 0.999)
-        val key = p > 4 * floorP && p > 0.4 * peak && hz > 300 && hz < 3000
+        val p = acc / cnt; val hz = zc * fs / (2 * cnt); val em = env / cnt; val ev = env2 / cnt - em * em
+        acc = 0.0; zc = 0; cnt = 0; env = 0.0; env2 = 0.0
+        // with the carrier down the discriminator puts out noise far louder than any tone: those windows (a noise-like
+        // envelope, its spread over its mean about 0.5 against near 0 for a carrier) are key-up and leave the references alone
+        val carrier = em > 0 && sqrt(max(0.0, ev)) / em < 0.3
+        if (carrier) {
+            floorP = if (floorP == 0.0) p else if (p < floorP) floorP + 0.2 * (p - floorP) else floorP + 0.002 * (p - floorP)
+            peak = max(p, peak * 0.999)
+        }
+        val key = carrier && p > 4 * floorP && p > 0.4 * peak && hz > 300 && hz < 3000
         if (key == on) len++
         else { if (len > 0) runs.add(Run(on, len)); on = key; len = 1 }
         if (!on && len == 80 && runs.isNotEmpty()) finish()
