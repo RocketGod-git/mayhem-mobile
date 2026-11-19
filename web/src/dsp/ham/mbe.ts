@@ -144,6 +144,9 @@ export class AmbeDecoder {
     return this.process(errs);
   }
 
+  /** A frame that never arrived (a lost burst): the previous frame is repeated, and muted after a few in a row. */
+  erase(): Float32Array { this.errs = this.repeatErrs + 1; return this.process(this.errs); }
+
   /** Frames with more than this many corrected bits are not trusted, and the previous frame is repeated. */
   protected repeatErrs = 3;
 

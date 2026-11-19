@@ -119,6 +119,8 @@ class Chan {
   /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
   nxdn: NxdnRx[] | null = null;
   private center = 0; private rate = 0;
+  /** Fed a recorded channel at its own rate (no down-converter, so no DC spike of the receiver's). */
+  get baseband(): boolean { return this.rate === 0; }
   /** [baseband]: samples arrive already mixed to 0 Hz at that rate (a recorded channel clip), no down-converter. */
   constructor(readonly key: number, public hz: number, center: number, rate: number, now: number, baseband = 0) {
     this.ddc.reset(rate); this.ddc.offsetHz = hz - center;
@@ -324,7 +326,11 @@ export class FleetProcessor implements IqProcessor {
     ch.p2.onSync = paired => { if (!paired) return; const now = this.now(); c.cls = 'P25 PHASE 2 TDMA'; c.lastDecodeMs = now; c.frames++; if (c.role !== 'control') c.role = 'voice'; this.p2Seen.set(c.key, now); this.pending = true; };
     ch.p2.setSeeds(this.p2Seeds(c));
     ch.p2.onSeed = s => { if (!c.sys) c.sys = s.sys; this.addLog({ ms: this.now(), hz: c.hz, proto: 'P25', name: 'PHASE 2 SCRAMBLING', text: `PHASE 2 · descrambling with WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)} · NAC ${h(s.nac, 3)}`, hex: '', ok: true }); };
-    ch.p2.onVoice = (lch, fr) => { const now = this.now(), call = this.calls.voice(c.sys, 'P25', c.hz, lch, 20, now, true); this.calls.frames(call, [fr]); this.pending = true; };
+    ch.p2.onVoice = (lch, fr) => {
+      // an erasure keeps the timing of a call already on the air; it never starts or extends one
+      if (!fr.length) { const call = this.calls.at(c.sys, c.hz, lch); if (call?.onAir) this.calls.frames(call, [fr]); return; }
+      const now = this.now(), call = this.calls.voice(c.sys, 'P25', c.hz, lch, 20, now, true); this.calls.frames(call, [fr]); this.pending = true;
+    };
     ch.p2.onMac = m => this.p2Mac(c, m);
     ch.p2.onEss = (lch, e) => { const call = this.calls.at(c.sys, c.hz, lch); if (call) this.calls.security(call, { enc: e.algId !== 0x80, from: 'ESS', algId: e.algId, keyId: e.keyId, mi: e.mi }); };
   }
@@ -595,6 +601,8 @@ export class FleetProcessor implements IqProcessor {
     const name = from === 'HDU' ? 'HEADER' : 'ENCRYPTION SYNC';
     this.addLog({ ms: now, hz: c.hz, proto: 'P25', name, text: `NAC ${h(Math.max(0, c.nac), 3)} · ${name} · ALGID ${h(es.algId, 2)} · KEY ${h(es.keyId, 4)} · MI ${es.mi.toUpperCase()}`, hex: '', ok: true });
   }
+  /** Per carrier: the last EMB that passed its check on a voice burst with no DMR data heard, for [dmrVoice]. */
+  private readonly embVotes = new Map<number, { cc: number; ms: number }>();
   private dmrVoice(c: Carrier, ch: Chan | null, slot: number, d: Uint8Array, n = 0): void {
     const now = this.now();
     // a P25 channel's voice frames can look like a DMR voice sync now and then
@@ -603,7 +611,22 @@ export class FleetProcessor implements IqProcessor {
     if (now - (this.p25Seen.get(c.key) ?? -1e12) < 2_000) return;
     // a P25 Phase 2 channel (a grant said TDMA, or its syncs were heard) is never read as DMR
     if (c.tdma || now - (this.p2Seen.get(c.key) ?? -1e12) < 5_000) return;
-    if (now - (this.dmrSeen.get(c.key) ?? -1e12) > 3_000 && !ch?.dmr.voiceLive) return;
+    // nor is a carrier next to one (a Phase 2 signal the carrier finder split, or its neighbor 12.5 kHz away)
+    for (const x of this.carriers.values()) if (x !== c && Math.abs(x.hz - c.hz) <= 13_000 && (x.tdma || now - (this.p2Seen.get(x.key) ?? -1e12) < 5_000)) return;
+    // the receiver's own DC spike at the center of the span, and bursts of one repeated symbol (a bare carrier),
+    // are not DMR: an all-zero EMB passes any linear code
+    if (ch && !ch.baseband && Math.abs(c.hz - this.centerHz) < 2_000) return;
+    { const k = [0, 0, 0, 0]; for (let i = 0; i < d.length; i++) k[d[i] & 3]++; if (Math.max(...k) > 0.7 * d.length) return; }
+    const data = now - (this.dmrSeen.get(c.key) ?? -1e12) <= 3_000;
+    if (!data && !ch?.dmr.voiceLive) return;
+    // with no DMR data burst heard lately, the voice alone has to prove itself: two EMBs that pass their (16,7) check
+    // with the same color code within a second (a Phase 2 superframe also repeats every 360 ms)
+    if (!data && !this.calls.at(c.sys, c.hz, slot)) {
+      if (n === 0) return;
+      const e = readEmb(d); if (!e.ok) return;
+      const v = this.embVotes.get(c.key);
+      if (!v || v.cc !== e.cc || now - v.ms > 1_000) { this.embVotes.set(c.key, { cc: e.cc, ms: now }); return; }
+    }
     c.lastDecodeMs = now; c.cls = 'DMR'; c.frames++;
     if (c.role === '') c.role = 'voice';
     const call = this.calls.voice(c.sys, 'DMR', c.hz, slot, 60, now);

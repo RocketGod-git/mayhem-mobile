@@ -83,7 +83,7 @@ export const MAC_OPS: Record<number, string> = { 1: 'MAC_PTT', 2: 'MAC_END_PTT',
 export class P2Rx {
   /** A sync, and whether it is the second of a pair (180 symbols after the one before). */
   onSync: (paired: boolean) => void = () => undefined;
-  /** One AMBE+2 frame (72 bits, descrambled, as sent) of a logical channel. */
+  /** One AMBE+2 frame (72 bits, descrambled, as sent) of a logical channel; an empty frame is an erasure (a lost burst). */
   onVoice: (lch: number, frame: Uint8Array) => void = () => undefined;
   /** A MAC PDU that passed its CRC. */
   onMac: (m: P2Mac) => void = () => undefined;
@@ -93,7 +93,7 @@ export class P2Rx {
   onSeed: (s: P2Seed) => void = () => undefined;
   syncs = 0; pairs = 0; symbols = 0;
   /** Bursts by type, voice frames passed on, MAC PDUs passing / failing their CRC. */
-  readonly stats = { slipped: 0, rescued: 0, bursts: 0, v4: 0, v2: 0, facch: 0, sacch: 0, frames: 0, c0clean: 0, macOk: 0, macBad: 0, macFixed: 0, essOk: 0 };
+  readonly stats = { flywheel: 0, erased: 0, slipped: 0, rescued: 0, bursts: 0, v4: 0, v2: 0, facch: 0, sacch: 0, frames: 0, c0clean: 0, macOk: 0, macBad: 0, macFixed: 0, essOk: 0 };
   seeds: P2Seed[] = [];
   seed: P2Seed | null = null;
   private seq: Uint8Array | null = null;
@@ -152,6 +152,9 @@ export class P2Rx {
       if (paired) this.pair(this.lastSync - 20);
       this.lastSync = this.t; this.onSync(paired);
     }
+    // a sync pair missed (noise, a fade) does not cost its four slots: once the superframe is placed the slots carry on
+    // from the last pair (each one is placed to the symbol on its own), for up to eight pairs
+    if (this.sf0 >= 0 && this.lastPair > 0 && this.t > this.lastPair + 720 + 200 && this.t - this.lastPair < 720 * 8) { this.stats.flywheel++; this.pair(this.lastPair + 720); }
     while (this.pendingSlots.length && this.t >= this.pendingSlots[0] + SLOT + 3) this.slot(this.pendingSlots.shift()!);
   }
   /** An S-ISCH pair starting at [p]: the four slots after it are framed (the next pair comes 720 symbols on). */
@@ -191,7 +194,28 @@ export class P2Rx {
     if (best !== st) { this.stats.slipped++; for (let i = 0; i < this.pendingSlots.length; i++) this.pendingSlots[i] += best - st; }
     return best;
   }
+  /**
+   * A voice slot of a call on the air that brought no voice (lost, or taken by signaling): its time is filled with
+   * erasures (an empty frame), which the vocoder answers with the last frame repeated and then muted to a faint floor,
+   * so the audio keeps its timing instead of running dry, through a lost burst and a pause between talkers. Fill for a
+   * call no longer on the air is dropped, and it stops 5 s after the channel's last voice.
+   */
+  private readonly missed = [0, 0];
+  private readonly voiceT = [-1e9, -1e9];
   private slot(at: number): void {
+    const v0 = this.stats.frames;
+    this.slotInner(at);
+    if (this.sf0 < 0 || !this.seq) return;
+    const pos = ((Math.round((at - this.sf0) / SLOT) % 12) + 12) % 12;
+    if (pos >= 10) return;
+    const lch = pos & 1;
+    if (this.stats.frames !== v0) { this.missed[lch] = 0; return; }
+    // while the call may still be on the air (the fill for a call that has ended is dropped), at most 5 s from its voice
+    if (this.t - this.voiceT[lch] > 30_000) return;
+    this.missed[lch]++; this.stats.erased += 4;
+    for (let k = 0; k < 4; k++) this.onVoice(lch, new Uint8Array(0));
+  }
+  private slotInner(at: number): void {
     if (at < this.histBase) return;
     const st = this.place(at);
     const d = this.duidAt(st);
@@ -201,7 +225,8 @@ export class P2Rx {
     let known = d.dist <= 1 && (Object.values(DUID) as number[]).includes(d.v) && !(pos >= 0 && ((isSacch && pos < 10) || (isVoice && pos >= 10)));
     // a FACCH read through a damaged DUID whose frames' first Golay words pass where voice sits is voice
     // and a voice DUID read through one bit error must show it: at least two frames whose first Golay word passes
-    if (known && d.dist === 1 && isVoice && pos >= 0 && this.seq && [11, 48].concat(d.v === DUID.V4 ? [96, 133] : []).filter(f => c0Clean(this.bits(st, f, 36, true, pos))).length < 2) return;
+    // (and any voice burst some frame of: a DUID read by chance off noise, after a carrier has gone, carries none)
+    if (known && isVoice && pos >= 0 && this.seq && [11, 48].concat(d.v === DUID.V4 ? [96, 133] : []).filter(f => c0Clean(this.bits(st, f, 36, true, pos))).length < (d.dist === 1 ? 2 : 1)) return;
     if (known && d.dist === 1 && !isVoice && pos >= 0 && pos < 10 && this.seq && [11, 48, 96, 133].filter(f => c0Clean(this.bits(st, f, 36, true, pos))).length >= 3) known = false;
     // a DUID too damaged to read (or read as no defined burst): once the grid and the scrambling are known, the burst
     // is taken as voice when its frames' first Golay words pass where a 4V (or a 2V) carries them, else it is dropped.
@@ -228,7 +253,6 @@ export class P2Rx {
     if (d.v === DUID.V4 || d.v === DUID.V2) this.voice(st, slot, lch, d.v === DUID.V4);
     else if (d.v === DUID.FACCH_S || d.v === DUID.FACCH || d.v === DUID.SACCH_S || d.v === DUID.SACCH) this.mac(st, slot, lch, d.v === DUID.FACCH_S || d.v === DUID.FACCH, d.v === DUID.FACCH_S || d.v === DUID.SACCH_S);
   }
-  private readonly voiceT = [-1e9, -1e9];
   private voice(st: number, slot: number, lch: number, four: boolean): void {
     this.voiceT[lch] = this.t;
     if (four) this.stats.v4++; else this.stats.v2++;
