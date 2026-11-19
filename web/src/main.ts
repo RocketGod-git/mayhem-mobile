@@ -1853,6 +1853,8 @@ function audioAutoPick(): void {
   audioPick = false;
   if (r !== 'stay') { silentTune = true; try { tune(r.hz); } finally { silentTune = false; } }
 }
+/** Each app's long description, kept for Settings, HOW IT WORKS: it is not shown on the app's own screen. */
+const appAbout: Partial<Record<AppId, string>> = {};
 function render(app: AppId | null): void {
   const view = $('view');
   const header = $('title');
@@ -1902,6 +1904,7 @@ function render(app: AppId | null): void {
     case 'troll': renderTroll(view); break;
     case 'settings': renderSettings(view); break;
   }
+  if (app) { const ab = view.querySelector('.note.about'); if (ab?.textContent) appAbout[app] = ab.textContent.trim(); }
   if (app && app !== 'settings') {
     const def = APPS.find(a => a.id === app)!;
     const title = CARD_TITLE[app];
@@ -3387,7 +3390,7 @@ function renderR433(view: HTMLElement): void {
       <div class="countrow"><span class="count" id="r433-count">0 DEVICES</span><span class="row"><button class="tog" id="r433-ptoggle">PROTOCOLS</button>${pauseClearHtml('devices')}</span></div>
       <div class="mt-stage dv-stage"><div id="r433-list" class="mt-cards dv-cards"></div><div id="r433-detail" class="mt-detail" hidden></div></div>
       <div id="r433-protocols" class="panel devtable" hidden></div>
-      <div class="note">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys, gate and garage remotes, tire sensors, weather stations, alarms and hundreds more. Z-Wave networks are read on 908.42 and 916 (the two Z-WAVE bands, or any span that holds them): each card is one network, its controller and nodes. A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
+      <div class="note about">Every burst in the span is tuned to on its own, wherever it lands, and offered to every decoder at once: car keys, gate and garage remotes, tire sensors, weather stations, alarms and hundreds more. Z-Wave networks are read on 908.42 and 916 (the two Z-WAVE bands, or any span that holds them): each card is one network, its controller and nodes. A key that hops between two frequencies is followed on both. 315 and 433.92 are 119 MHz apart, further than any radio here spans, so HOP takes turns. Tire sensors (Schrader, Ford, GM, Toyota and dozens more) repeat about once a minute and wake up when a car moves: 315 in the US, 433.92 in Europe. Tap a card for everything it sent.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-r433f]', view).forEach(b => b.onclick = () => { state.r433.filter = b.dataset.r433f as R433Filter; state.r433.sel = ''; drawR433(); });
@@ -3843,7 +3846,7 @@ function renderBle(view: HTMLElement): void {
       <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-bleview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('btle')}${pauseClearHtml('btle')}</div>
       <div id="ble-stage" class="mt-stage"><div id="ble-cards" class="mt-cards"></div><div id="ble-detail" class="mt-detail" hidden></div></div>
       <div id="ble-log">${logHtml('btle', 'listening…')}</div>
-      <div class="note">One card per device, by its address: the maker from its manufacturer ID, the type from what it advertises (Find My, Tile, SmartTag, Find Hub, iBeacon, Eddystone, Fast Pair, AirPods, phones, watches). A tracker that stays near you for 20 minutes, or is still there after you move 500 m (with location allowed), is flagged. Phones and tags change their random address every 15 minutes or so, so one phone can show up as several cards over time.</div>
+      <div class="note about">One card per device, by its address: the maker from its manufacturer ID, the type from what it advertises (Find My, Tile, SmartTag, Find Hub, iBeacon, Eddystone, Fast Pair, AirPods, phones, watches). A tracker that stays near you for 20 minutes, or is still there after you move 500 m (with location allowed), is flagged. Phones and tags change their random address every 15 minutes or so, so one phone can show up as several cards over time.</div>
     </section>`;
   scope = attach(new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }));
   qa<HTMLButtonElement>('[data-btle]', view).forEach(b => b.onclick = () => { state.btleCh = Number(b.dataset.btle); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); tune(btleChannelFreq(state.btleCh)); refreshBtle(); });
@@ -4028,7 +4031,7 @@ function renderAcars(view: HTMLElement, id: AcarsApp): void {
       <div class="ctlrow">${segHtml(['cards', 'map', 'stats', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml(id)}${pauseClearHtml(id)}</div>
       <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-map" class="panel map"></div><div id="ac-nopos" class="mt-nopos">no positions yet</div><div id="ac-unplaced" class="ac-unplaced"></div><div id="ac-stats" class="ac-stats"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
       <div id="ac-log">${logHtml(id, 'listening…')}</div>
-      <div class="note">${vdl
+      <div class="note about">${vdl
         ? 'VDL Mode 2, the digital link that carries most airline ACARS now: every channel from 136.10 to 136.975 MHz at once, each frame checked. One card per aircraft by its ICAO address (exact, so ADS-B links straight to it), ACARS or not, with its registration and flight once it sends ACARS; ground stations below, placed at the airport their XIDs name. MAP plots the aircraft where their own messages put them, with lines to the stations they work.'
         : 'One card per aircraft (by registration, else flight), each message read into plain words: out, off, on and in times, positions, weather, ATIS, free text, engine data. MAP plots them where their own messages put them. ADS-B links to the same aircraft when ADS-B has seen it (by its ICAO address, its registration or its flight).'}</div>
     </section>`;
@@ -4164,7 +4167,7 @@ function renderMeters(view: HTMLElement): void {
       <div id="mt-log">${logHtml('ert', 'watching the band for meters…')}</div>
       ${presetHtml('CENTER', [['904.0', 904_000_000], ['911.6', 911_600_000], ['916.0', 916_000_000], ['920.0', 920_000_000], ['925.0', 925_000_000]])}
       <div class="ctlrow"><span class="rl">SPAN</span>${segHtml(([[2_000_000, '2 MHz'], [METERS_RATE, '4.2 MHz'], [METERS_WIDE, '19.2 MHz']] as [number, string][]).map(([r, l]) => `<button data-rate="${r}" class="${off(r)}">${l}</button>`))}</div>
-      <div class="note">Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) and Neptune R900 water meters with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), Landis+Gyr Gridstream meters with their IDs, uptime and position, and IEEE 802.15.4g SUN-FSK nodes with their device and network IDs. 902–928 MHz. A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band.</div>
+      <div class="note about">Utility meters, three ways at once: Itron ERT meters (SCM, SCM+, IDM) and Neptune R900 water meters with their readings, the hopping smart-meter mesh networks (each learned by its sync word, every transmitter on its own live card with its hop clock), Landis+Gyr Gridstream meters with their IDs, uptime and position, and IEEE 802.15.4g SUN-FSK nodes with their device and network IDs. 902–928 MHz. A HackRF watches 19.2 MHz at once; an RTL-SDR 2 MHz, and the presets move it across the band.</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-mtview]', view).forEach(b => b.onclick = () => { meters.view = b.dataset.mtview as typeof meters.view; refreshMeters(true); });
@@ -4385,7 +4388,7 @@ function renderTrains(view: HTMLElement): void {
       <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}${pauseClearHtml('trains')}</div>
       <div class="tr-stage"><div id="tr-cards" class="mt-cards tr-cards"></div><div id="tr-detail" class="mt-detail" hidden></div></div>
       <div id="tr-log">${logHtml('trains', 'listening for trains…')}</div>
-      <div class="note">The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns. 457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC. A HackRF hears both EOT channels or all of PTC at once. Tap a card for everything decoded from it.</div>
+      <div class="note about">The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns. 457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC. A HackRF hears both EOT channels or all of PTC at once. Tap a card for everything decoded from it.</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-trband]', view).forEach(b => b.onclick = () => trainsSetBand(b.dataset.trband as 'EOT' | 'PTC' | 'BOTH'));
@@ -4594,7 +4597,7 @@ const fleetUi = {
   snap: null as FleetSnap | null, view: 'systems' as FleetView, band: 'AUTO', span: 8_000_000, sel: null as FleetSel,
   unit: null as { key: string; reports: FleetUnitReport[]; trail: [number, number, number][] } | null,
   windows: [] as { band: string; hz: number }[], idx: 0, dwellEnd: 0, found: false, timer: 0, scanTimer: 0, drawn: 0, pending: 0, full: false, hold: false, wired: false,
-  prefs: loadDispatchPrefs(), airSeen: new Map<string, number>(), audioOn: false, gain: 0.8, following: null as { key: string; home: number; until: number } | null,
+  prefs: loadDispatchPrefs(), airSeen: new Map<string, number>(), audioOn: true, gain: 0.8, following: null as { key: string; home: number; until: number } | null,
   lock: loadDispatchLock(), vu: { key: '', db: -90 },
   /** A short look at a band where a position-reporting system lives, and when the last one was. */
   visit: null as { home: number; until: number; sys: string } | null, lastVisit: Date.now() - 60_000, knownAt: 0,
@@ -4670,7 +4673,7 @@ function dispatchPref(kind: 'mute' | 'hold' | 'prio', key: string): void {
 }
 function dispatchAudio(on: boolean, gain = fleetUi.gain): void {
   fleetUi.audioOn = on; fleetUi.gain = gain;
-  try { localStorage.setItem('mm.fleet.audio', JSON.stringify({ on, gain })); } catch { /* storage blocked */ }
+  try { localStorage.setItem('mm.fleet.audio.v2', JSON.stringify({ on, gain })); } catch { /* storage blocked */ }
   if (on) void ensureAudio();
   worker?.postMessage({ type: 'fleet', cmd: 'audio', on, gain });
 }
@@ -4705,7 +4708,7 @@ function fleetOpen(): void {
   // a saved lock starts on the window holding the locked system's control channel
   const lk = fleetUi.lock;
   if (lk?.hz) { const half = fleetRate() * 0.4, i = fleetUi.windows.findIndex(x => Math.abs(x.hz - lk.hz) < half); if (i > 0) { fleetUi.idx = i; tune(fleetUi.windows[i].hz); } }
-  try { const a = JSON.parse(localStorage.getItem('mm.fleet.audio') ?? 'null'); if (a) { fleetUi.audioOn = !!a.on; fleetUi.gain = Number(a.gain) || 0.8; } } catch { /* storage blocked */ }
+  try { const a = JSON.parse(localStorage.getItem('mm.fleet.audio.v2') ?? 'null'); if (a) { fleetUi.audioOn = !!a.on; fleetUi.gain = Number(a.gain) || 0.8; } } catch { /* storage blocked */ }
   worker?.postMessage({ type: 'fleet', cmd: 'audio', on: fleetUi.audioOn, gain: fleetUi.gain });
   const pos = state.home ?? lastKnownPos();
   if (pos) worker?.postMessage({ type: 'geo', lat: pos.lat, lon: pos.lon });
@@ -4800,12 +4803,16 @@ function renderFleet(view: HTMLElement): void {
       <div id="fl-onair" class="fl-onair" hidden></div>
       <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div><div id="fl-calls" class="fl-calls"></div>${wide ? '' : mapHtml}<div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div>${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}</div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
-      <div class="note">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call: the channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, and the DMR privacy bit and header; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, hold and priority are per talkgroup. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. Tap anything for all it carried.</div>
+      <div class="note about">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call: the channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, and the DMR privacy bit and header; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, hold and priority are per talkgroup. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. Tap anything for all it carried.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-flband]', view).forEach(b => b.onclick = () => fleetSetBand(b.dataset.flband!));
   qa<HTMLButtonElement>('[data-flspan]', view).forEach(b => b.onclick = () => fleetSetSpan(Number(b.dataset.flspan)));
-  qa<HTMLButtonElement>('[data-flview]', view).forEach(b => b.onclick = () => { fleetUi.view = b.dataset.flview as FleetView; refreshFleet(true); });
+  qa<HTMLButtonElement>('[data-flview]', view).forEach(b => b.onclick = () => {
+    fleetUi.view = b.dataset.flview as FleetView; refreshFleet(true);
+    // On a phone the map sits below the controls: bring it on screen rather than leave it under the fold.
+    if (fleetUi.view === 'map') setTimeout(() => { const m = q('#fl-map'), sc = $('view'); const r = m?.getBoundingClientRect(); if (m && r && r.height && r.top > innerHeight * 0.6) sc.scrollTo({ top: sc.scrollTop + r.top - sc.getBoundingClientRect().top - 8 }); }, 150);
+  });
   const full = q('#fl-full'); if (full) full.onclick = () => setFleetFull(!fleetUi.full);
   $('fl-export').onclick = () => worker?.postMessage({ type: 'fleet', cmd: 'export' });
   const pick = (e: Event) => {
@@ -5135,6 +5142,8 @@ function refreshFleet(force = false): void {
   cards.hidden = view !== 'systems'; mapEl.hidden = !showMap; grants.hidden = view !== 'grants'; freqs.hidden = view !== 'freqs';
   stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
   nopos.hidden = !showMap || pins.length > 0;
+  // Anything on the map: on a phone the map grows to fill the screen instead of staying a small panel.
+  stage.closest('.view')?.classList.toggle('fl-mapbig', !wide && view === 'map' && pins.length > 0);
   if (!nopos.hidden) nopos.textContent = s && s.units.some(u => u.posMs > 0) && !s.ref ? 'unit positions need a region: drag the map to your area' : 'no unit positions on the air yet';
   if (!paused.has('fleet') && s) {
     const keep = (el: HTMLElement, html: string) => { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; };
@@ -5406,7 +5415,7 @@ function renderHd(view: HTMLElement): void {
       <div id="hd-detail" class="mt-detail hd-detail" hidden></div>
       <div id="hd-stage" class="hd-stage">${wide ? '' : `<div id="hd-hero" class="hd-hero"></div>${mapHtml}`}<div id="hd-stations" class="hd-stations"></div><div id="hd-data" class="hd-data"></div></div>
       <div id="hd-log"><div class="countrow"><span id="count-hd" class="count">0 DECODED</span></div>${listHtml('hd', 'listening for HD Radio…')}</div>
-      <div class="note">HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO steps across the band, finds the stations with digital sidebands, and stays on each until it fills in.</div>
+      <div class="note about">HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO steps across the band, finds the stations with digital sidebands, and stays on each until it fills in.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-hdview]', view).forEach(b => b.onclick = () => { hdUi.view = b.dataset.hdview as HdView; hdUi.sel = ''; refreshHd(true); });
@@ -5756,7 +5765,7 @@ function renderCell(view: HTMLElement): void {
       ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
       <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
       <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
-      <div class="note">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
+      <div class="note about">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-clband]', view).forEach(b => b.onclick = () => cellSetBand(b.dataset.clband!));
@@ -6166,7 +6175,7 @@ function renderAtsc(view: HTMLElement): void {
       ${wide ? '<div id="at-detail" class="mt-detail at-dock" hidden></div>' : ''}
       <div id="at-stage" class="mt-stage at-stage">${wide ? '' : '<div id="at-wall" class="at-wall"></div>'}<div id="at-signal" class="at-signal"></div><div id="at-guide" class="at-guide"></div>${wide ? '' : '<div id="at-detail" class="mt-detail" hidden></div>'}</div>
       <div id="at-log"><div class="countrow"><span id="count-atsc" class="count">0 DECODED</span></div>${listHtml('atsc', 'looking for stations…')}</div>
-      <div class="note">Over-the-air digital TV (ATSC 1.0), receive only. Stations are found by their pilot, 309 kHz above the bottom of each 6 MHz channel. With a HackRF the whole channel is sampled at 8 MS/s and decoded in bursts through the 8VSB equalizer and trellis decoder, Reed-Solomon, the transport stream and PSIP (the channel list, the program guide, the station clock), with a picture from each subchannel's MPEG-2 video. The CPU decodes what it can and skips the rest. The tables and pictures repeat, so every view still fills in, and the share decoded is shown. AUTO steps through VHF 2–13 and UHF 14–36 and stays on each station until its channels, pictures and guide are in. Everything heard is kept. Tap a subchannel for its guide, its streams and the raw tables.</div>
+      <div class="note about">Over-the-air digital TV (ATSC 1.0), receive only. Stations are found by their pilot, 309 kHz above the bottom of each 6 MHz channel. With a HackRF the whole channel is sampled at 8 MS/s and decoded in bursts through the 8VSB equalizer and trellis decoder, Reed-Solomon, the transport stream and PSIP (the channel list, the program guide, the station clock), with a picture from each subchannel's MPEG-2 video. The CPU decodes what it can and skips the rest. The tables and pictures repeat, so every view still fills in, and the share decoded is shown. AUTO steps through VHF 2–13 and UHF 14–36 and stays on each station until its channels, pictures and guide are in. Everything heard is kept. Tap a subchannel for its guide, its streams and the raw tables.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-atband]', view).forEach(b => b.onclick = () => atscSetBand(b.dataset.atband as AtscBand));
@@ -6505,7 +6514,7 @@ function renderLora(view: HTMLElement): void {
       ${tiles}
       <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([`<button data-lrspan="0" class="${wide ? '' : 'on'}">2 MHz</button>`, `<button data-lrspan="1" class="${wide ? 'on' : ''} ${radioCan(LORA_WIDE) ? '' : 'off'}">20 MHz</button>`])}<button id="lr-own" class="chip" title="your own channel">YOUR CHANNEL</button></div>
       ${own ? `<div class="lr-ownline">YOUR CHANNEL · ${(own.hz / 1e6).toFixed(4)} MHz · ${loraBwName(own.bw)} · SF${own.sf}</div>` : ''}
-      <div class="note">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 433, 470–510, 863–870 and 902–928 MHz, by area. It starts on the channels where you are (your language's region, and the part of it your last position is in): MeshCore's community presets and the Meshtastic region. AREA, the band tiles and your own channel change it. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
+      <div class="note about">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 433, 470–510, 863–870 and 902–928 MHz, by area. It starts on the channels where you are (your language's region, and the part of it your last position is in): MeshCore's community presets and the Meshtastic region. AREA, the band tiles and your own channel change it. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-lrview]', view).forEach(b => b.onclick = () => { loraUi.view = b.dataset.lrview as typeof loraUi.view; refreshLora(true); });
@@ -7862,7 +7871,7 @@ function renderSettings(view: HTMLElement): void {
     <section class="sset" id="sec-tx"><div class="sset-h">TRANSMIT</div>
       ${srow('Transmit', 'The transmit apps. Most bands need a license: use a dummy load or an antenna rated for the frequency.', swHtml('tx-toggle', tx.enabled), 'tx enable')}
     </section>
-    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
+    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">${over && appAbout[over] ? `<div class="kv"><span>${esc(barLabel(over))}</span><span>${esc(appAbout[over]!)}</span></div>` : ''}      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
       <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies — use a powered OTG hub if RX reads all zeros</span></div>
       <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
       <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>

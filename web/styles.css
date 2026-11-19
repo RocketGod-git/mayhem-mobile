@@ -2739,3 +2739,12 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 .fl-encrow small { font-size: 8px; letter-spacing: 1.5px; color: var(--accent2); font-weight: 800; }
 .fl-encrow span { cursor: pointer; color: var(--ink); font-weight: 700; }
 .fl-encrow i { font-style: normal; font-weight: 400; color: var(--muted); margin-left: 4px; }
+
+/* An app's long description lives in Settings, HOW IT WORKS, not on its screen. */
+.view .note.about { display: none; }
+/* System cards on a phone: the name keeps its width and the status wraps under it. */
+.fl-syh { flex-wrap: wrap; row-gap: 4px; }
+.fl-syh .fl-syt { flex: 1 1 160px; }
+.fl-syh .mt-live { white-space: normal; }
+/* Dispatch on a phone: once anything is on the map, the map fills the screen below the tabs. */
+.view.fleet.fl-mapbig .fl-stage .map { height: calc(100dvh - 140px); min-height: 360px; }
