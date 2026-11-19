@@ -42,7 +42,9 @@ import kotlin.math.sin
 
 /** Something to put on a map: a logged contact, a looked-up callsign, a satellite, a sensor. */
 data class GeoItem(val id: String, val lat: Double, val lon: Double, val label: String, val kind: Kind, val heading: Double? = null,
-                   /** ARGB fill instead of the accent (airports by flight category). */ val color: Int? = null) {
+                   /** ARGB fill instead of the accent (airports by flight category). */ val color: Int? = null,
+                   /** Pulses while it is on the air (a Dispatch unit talking). */ val pulse: Boolean = false,
+                   /** Drawn faded (an old position): 1 full, down to 0.35. */ val alpha: Float = 1f) {
     enum class Kind { QSO, OBJECT, SAT, DEVICE, SHIP, ATON, STATION, SONDE, LANDING, BURST, AIRPORT, TOWER, PLANE }
 }
 
@@ -118,6 +120,7 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
     @Volatile var layers = GeoLayers()
     @Volatile var selected: String? = null
     @Volatile var home: Pair<Double, Double>? = null
+    private val okInt = Palette.ok.toArgb()
     private val dot = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.FILL }
     private val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0B1416.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; strokeJoin = android.graphics.Paint.Join.ROUND }
     private val glow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.FILL }
@@ -244,10 +247,19 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         for ((a, b) in layers.lines) polyline(c, mv, listOf(a, b), line)
         rim.strokeWidth = 2f
         home?.let { (la, lo) -> val (x, y) = xy(mv, la, lo); dot.color = 0xFFFFFFFF.toInt(); c.drawCircle(x, y, 4f * d, dot); c.drawCircle(x, y, 4f * d, rim) }
+        val t = (System.currentTimeMillis() % 1200L) / 1200f
         for (it in items) {
             val (x, y) = xy(mv, it.lat, it.lon)
-            val col = it.color ?: when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
-            val half = sizeDp(it.kind) * d / 2f
+            val col0 = it.color ?: when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
+            val a = (it.alpha.coerceIn(0f, 1f) * 255).toInt()
+            val col = (((col0 ushr 24) * a / 255) shl 24) or (col0 and 0x00FFFFFF)
+            // a talking unit: a ring that grows and fades, and the marker swelling with it (the web map's pulse)
+            val swell = if (it.pulse) 1f + 0.5f * sin(Math.PI * ((System.currentTimeMillis() % 1000L) / 1000.0)).toFloat() else 1f
+            if (it.pulse) {
+                line.color = (((1f - t) * 255).toInt() shl 24) or (okInt and 0x00FFFFFF); line.strokeWidth = 2f * d
+                c.drawCircle(x, y, (9f + 18f * t) * d, line)
+            }
+            val half = sizeDp(it.kind) * d / 2f * swell
             val s = half / 1.4f
             glow.shader = android.graphics.RadialGradient(x, y, half * 1.3f, (0x70 shl 24) or (col and 0x00FFFFFF), col and 0x00FFFFFF, android.graphics.Shader.TileMode.CLAMP)
             c.drawCircle(x, y, half * 1.3f, glow)
@@ -380,6 +392,8 @@ fun GeoMapView(
     fitPins: Boolean = false,
     /** The map was dragged by hand; its new center. */
     onDragEnd: ((Double, Double) -> Unit)? = null,
+    /** Where the locate button goes when nothing is plotted and your position is not known (a reference position). */
+    fallback: (() -> Pair<Double, Double>?)? = null,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -430,6 +444,43 @@ fun GeoMapView(
         var waits = 0
         while ((mv.width == 0 || mv.height == 0) && waits++ < 40) delay(50)
         if (mv.width > 0 && mv.height > 0) fitTo(mv)
+    }
+
+    // a talking unit pulses: the map is redrawn while one is on it
+    val pulsing = items.any { it.pulse }
+    LaunchedEffect(mapRef, pulsing) {
+        val mv = mapRef ?: return@LaunchedEffect
+        while (pulsing) { mv.invalidate(); delay(50) }
+    }
+
+    /** Fit everything plotted, closely when [fitPins]: one spot glides there, several are framed. */
+    fun fitAll(mv: MapView, pts: List<Pair<Double, Double>>) {
+        if (pts.isEmpty()) return
+        val n = pts.maxOf { it.first }; val s = pts.minOf { it.first }; val e = pts.maxOf { it.second }; val w = pts.minOf { it.second }
+        if (n - s < 1e-6 && e - w < 1e-6) { mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), if (fitPins) 15.0 else maxOf(mv.zoomLevelDouble, 11.0), null); return }
+        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitPins) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }
+        val maxZoom = if (fitPins) 17.0 else 11.0
+        if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
+    }
+    var lastLocate by remember { mutableStateOf(LocateStep.NONE) }
+    /**
+     * The locate button always does something: fit what is plotted (and follow it), or center on you, or on the
+     * reference position when there is neither ([locateNext]).
+     */
+    fun locate() {
+        val mv = mapRef ?: return
+        val pts = items.map { it.lat to it.lon } + layers.track + layers.shapes.flatMap { it.pts } + layers.paths.flatMap { it.pts } + fitPts
+        val a = locateNext(pts.size, home != null, lastLocate)
+        lastLocate = a
+        when (a) {
+            LocateStep.FIT -> { following = true; fitAll(mv, pts) }
+            LocateStep.HOME -> { following = false; val h = home ?: return; mv.controller.animateTo(GeoPoint(h.first, h.second), 13.0, null) }
+            else -> {
+                following = false
+                val at = fallback?.invoke() ?: start?.let { it.lat to it.lon } ?: return
+                mv.controller.animateTo(GeoPoint(at.first, at.second), 9.0, null)
+            }
+        }
     }
 
     LaunchedEffect(focusKey) {
@@ -497,7 +548,7 @@ fun GeoMapView(
         Box(
             Modifier.align(Alignment.BottomEnd).padding(6.dp).size(30.dp)
                 .background(if (following) accent else Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
-                .clickable { following = !following },
+                .clickable { locate() },
             contentAlignment = Alignment.Center
         ) { Text("⌖", color = if (following) inkOn(accent) else Palette.ink, fontFamily = Mono) }
         Text("© OpenStreetMap contributors", color = Palette.muted, fontFamily = Mono, fontSize = 8.sp,

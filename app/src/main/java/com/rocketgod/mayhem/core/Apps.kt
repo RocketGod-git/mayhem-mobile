@@ -39,7 +39,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     VDL2("VDL2", "VDL Mode 2 messages, 136.975 MHz", "Receive"),
     ACARS("ACARS", "messages, 131 MHz", "Receive"),
     TRAINS("Trains", "EOT · PTC telemetry", "Receive"),
-    FLEET("Fleet", "P25 · DMR trunking", "Receive"),
+    FLEET("Dispatch", "P25 · DMR trunking and calls", "Receive"),
     CELL("Cell", "LTE alerts · cell info", "Receive"),
     ATSC("ATSC TV", "digital TV channels, guide, pictures", "Receive"),
     SONDES("Sondes", "weather balloons", "Receive"),
@@ -193,60 +193,38 @@ object Apps {
             else SdrEngine.configure(SdrEngine.Mode.NONE, t.PTC_NARROW, 2_000_000, 32, 40, true, trains)
         }
     }
-    /** Fleet: P25 and DMR trunked systems from their control channels, every carrier in the span at once. */
+    /** Dispatch: P25, DMR, TETRA and NXDN trunked systems and their calls, every carrier in the span at once. */
     val fleetLog = PacketLog(); val fleet = com.rocketgod.mayhem.core.fleet.FleetProcessor(fleetLog)
     /** AUTO or one band id from [com.rocketgod.mayhem.core.fleet.FleetProcessor.BANDS]. */
     private val _fleetBand = MutableStateFlow("AUTO")
     val fleetBand: StateFlow<String> = _fleetBand.asStateFlow()
     private val _fleetSpan = MutableStateFlow(8_000_000)
     val fleetSpan: StateFlow<Int> = _fleetSpan.asStateFlow()
-    /** The scan: the centers it steps through, the one tuned, when it moves on, and whether a system holds it there. */
-    data class FleetScan(val windows: List<com.rocketgod.mayhem.core.fleet.FleetProcessor.Window> = emptyList(), val idx: Int = 0, val dwellEnd: Long = 0L, val found: Boolean = false)
-    private val _fleetScan = MutableStateFlow(FleetScan())
-    val fleetScan: StateFlow<FleetScan> = _fleetScan.asStateFlow()
-    /** The sample rate Fleet asks for: the chosen span where the radio takes it, else as wide as it goes up to 2.4 MHz. */
+    /** The scan: the centers it steps through, the one tuned, when it moves on, and whether something holds it there. */
+    val fleetScan: StateFlow<Dispatch.Scan> get() = Dispatch.scan
+    /** The sample rate Dispatch asks for: the chosen span where the radio takes it, else as wide as it goes up to 2.4 MHz. */
     fun fleetRate(): Int {
         val want = _fleetSpan.value
         if (Radio.canSample(Radio.limits, want)) return want
         return if (Radio.canSample(Radio.limits, 2_400_000)) 2_400_000 else 2_000_000
     }
-    private fun fleetRestart(now: Long, tuneNow: Boolean) {
-        val w = com.rocketgod.mayhem.core.fleet.FleetProcessor.windows(_fleetBand.value, fleetRate())
-        _fleetScan.value = FleetScan(w, 0, now + 6_000, false)
-        if (tuneNow && w.isNotEmpty()) SdrEngine.tune(w[0].hz)
-    }
-    fun setFleetBand(b: String) { _fleetBand.value = b; if (playing() == MayhemApp.FLEET) fleetRestart(System.currentTimeMillis(), true) }
+    private fun fleetWindows() = com.rocketgod.mayhem.core.fleet.FleetProcessor.windows(_fleetBand.value, fleetRate())
+    fun setFleetBand(b: String) { _fleetBand.value = b; if (playing() == MayhemApp.FLEET) Dispatch.restart(fleetWindows()) }
     fun setFleetSpan(r: Int) {
         _fleetSpan.value = r
         if (playing() != MayhemApp.FLEET) return
-        SdrEngine.setRate(fleetRate()); fleetRestart(System.currentTimeMillis(), true)
+        SdrEngine.setRate(fleetRate()); Dispatch.restart(fleetWindows())
     }
     /** The receiver's own position, for the DMR unit reports. */
     fun fleetRef(p: Pair<Double, Double>?) { if (p != null) fleet.setRef(p.first, p.second) }
-    /**
-     * One step of the scan, every half second while the screen is up: six seconds a window; a window where a control
-     * channel decodes keeps the radio for 25.
-     */
-    fun fleetTick(now: Long) {
-        val sc = _fleetScan.value
-        if (sc.windows.size < 2 || playing() != MayhemApp.FLEET) return
-        val s = fleet.snap.value
-        val live = s != null && s.carriers.any { (it.role == "control" || it.role == "rest") && it.hz > s.spanLo && it.hz < s.spanHi && now - it.lastDecodeMs < 5_000 }
-        var next = sc
-        if (live && !next.found) next = next.copy(found = true, dwellEnd = now + 25_000)
-        if (now >= next.dwellEnd) {
-            val i = (next.idx + 1) % next.windows.size
-            next = next.copy(idx = i, found = false, dwellEnd = now + 6_000)
-            SdrEngine.tune(next.windows[i].hz)
-        }
-        _fleetScan.value = next
-    }
+    /** One step of the scan, every half second while the screen is up ([Dispatch.tick]). */
+    fun fleetTick(now: Long) { if (playing() == MayhemApp.FLEET) Dispatch.tick(now) }
     private fun startFleet() {
         fleet.centerOf = { SdrEngine.freqHz.value }
         fleetRef(Geo.fix.value ?: Geo.lastKnownPos() ?: Geo.zoneGuess())
-        val w = com.rocketgod.mayhem.core.fleet.FleetProcessor.windows(_fleetBand.value, fleetRate())
-        SdrEngine.configure(SdrEngine.Mode.NONE, w[0].hz, fleetRate(), 32, 40, true, fleet)
-        fleetRestart(System.currentTimeMillis(), false)
+        val w = fleetWindows()
+        SdrEngine.configure(SdrEngine.Mode.NONE, w[0].hz, fleetRate(), 32, 40, true, Dispatch.WithSpeaker(fleet))
+        Dispatch.open(w, fleetRate(), true)
     }
     /** Cell: LTE system information and emergency alerts (SI-RNTI only). What it heard is kept in [cellFile]. */
     val cellLog = PacketLog(); val cell = com.rocketgod.mayhem.core.cell.CellProcessor(cellLog)

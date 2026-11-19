@@ -126,14 +126,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.3f, 0.82f); path.l(0.7f, 0.82f)
             }
             MayhemApp.FLEET -> {
-                // a site on its mast with the trunk's links reaching out to two units
-                path.m(0.5f, 0.4f); path.l(0.38f, 0.92f); path.m(0.5f, 0.4f); path.l(0.62f, 0.92f); path.m(0.42f, 0.74f); path.l(0.58f, 0.74f)
-                for ((r, a0, a1, st) in listOf(listOf(0.2, 200.0, 340.0, 14.0), listOf(0.34, 205.0, 335.0, 13.0))) {
-                    var a = a0; var first = true
-                    while (a <= a1) { val x = 0.5f + r.toFloat() * cos(Math.toRadians(a)).toFloat(); val y = 0.32f + r.toFloat() * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += st }
+                // Dispatch: a handheld radio, its speaker grille, and the call going out from it
+                val a = p(0.24f, 0.32f); val b = p(0.60f, 0.92f)
+                path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.06f, s * 0.06f))
+                path.m(0.32f, 0.32f); path.l(0.32f, 0.08f)
+                path.m(0.32f, 0.5f); path.l(0.52f, 0.5f); path.m(0.32f, 0.62f); path.l(0.52f, 0.62f); path.m(0.32f, 0.74f); path.l(0.52f, 0.74f)
+                for (r in listOf(0.16, 0.30)) {
+                    var a = -40.0; var first = true
+                    while (a <= 40.0) { val x = 0.6f + r.toFloat() * cos(Math.toRadians(a)).toFloat(); val y = 0.52f + r.toFloat() * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
                 }
-                path.m(0.44f, 0.52f); path.l(0.2f, 0.66f); path.m(0.56f, 0.52f); path.l(0.8f, 0.66f)
-                circles.add(Triple(0.5f, 0.32f, 0.06f)); circles.add(Triple(0.15f, 0.72f, 0.06f)); circles.add(Triple(0.85f, 0.72f, 0.06f))
             }
             MayhemApp.CELL -> {
                 // a lattice mast with its antennas, waves going out to both sides
