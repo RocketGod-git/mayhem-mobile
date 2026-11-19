@@ -395,13 +395,10 @@ fun GeoMapView(
     /** Where the locate button goes when nothing is plotted and your position is not known (a reference position). */
     fallback: (() -> Pair<Double, Double>?)? = null,
     /**
-     * A map inside a page that scrolls (Dispatch on a phone): one finger scrolls the page past the map through
-     * [onPageDrag] (pixels moved down) and [onPageFling] (pixels a second, at the lift), with a short hint; two fingers
-     * pan and pinch the map. A tap still picks a marker.
+     * A map inside a page that scrolls (Dispatch on a phone): one finger scrolls the page past it, two fingers pan and
+     * pinch the map, and a small pill at the bottom says so. A tap still picks a marker.
      */
     twoFinger: Boolean = false,
-    onPageDrag: ((Float) -> Unit)? = null,
-    onPageFling: ((Float) -> Unit)? = null,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -410,10 +407,6 @@ fun GeoMapView(
     var following by remember { mutableStateOf(autoFollow) }
     val dragEnd = androidx.compose.runtime.rememberUpdatedState(onDragEnd)
     val twoF = androidx.compose.runtime.rememberUpdatedState(twoFinger)
-    val pageDrag = androidx.compose.runtime.rememberUpdatedState(onPageDrag)
-    val pageFling = androidx.compose.runtime.rememberUpdatedState(onPageFling)
-    /** When the "two fingers" hint last showed (a one-finger drag over a [twoFinger] map). */
-    var hintAt by remember { mutableStateOf(0L) }
     // the first fix centers the map on your area once (it usually lands after the map opened on the world)
     var homed by remember { mutableStateOf(false) }
 
@@ -529,45 +522,22 @@ fun GeoMapView(
                     // a drag (past the touch slop, so a tap on a marker does not count) hands the view to the user
                     val slop = android.view.ViewConfiguration.get(c).scaledTouchSlop.toFloat()
                     var downX = 0f; var downY = 0f; var dragged = false
-                    // a two-finger map: one finger drags the page, so the map sees only the down, a lift that was a tap,
-                    // and the gestures of two fingers or more
-                    var paging = false; var lastRawY = 0f; var multi = false
-                    var vt: android.view.VelocityTracker? = null
+                    var multi = false
                     @Suppress("ClickableViewAccessibility")
                     setOnTouchListener { v, ev ->
                         if (twoF.value) {
+                            // inside a page that scrolls: the page keeps one-finger drags (and their fling), the map takes
+                            // two fingers; a tap still reaches the map, so markers pick
                             when (ev.actionMasked) {
-                                android.view.MotionEvent.ACTION_DOWN -> {
-                                    downX = ev.rawX; downY = ev.rawY; lastRawY = ev.rawY; paging = false; multi = false
-                                    vt?.recycle(); vt = android.view.VelocityTracker.obtain().also { it.addMovement(ev) }
-                                    return@setOnTouchListener false
-                                }
-                                android.view.MotionEvent.ACTION_POINTER_DOWN -> { multi = true; paging = false; return@setOnTouchListener false }
-                                android.view.MotionEvent.ACTION_MOVE -> {
-                                    if (ev.pointerCount > 1 || multi) { if (following) following = false; dragged = true; return@setOnTouchListener false }
-                                    vt?.addMovement(ev)
-                                    if (!paging && (abs(ev.rawX - downX) > slop || abs(ev.rawY - downY) > slop)) {
-                                        paging = true; lastRawY = ev.rawY; hintAt = System.currentTimeMillis()
-                                        // the map gives the gesture up: it never pans under one finger
-                                        val cancel = android.view.MotionEvent.obtain(ev).also { it.action = android.view.MotionEvent.ACTION_CANCEL }
-                                        (v as MapView).onTouchEvent(cancel); cancel.recycle()
-                                    }
-                                    if (paging) { pageDrag.value?.invoke(ev.rawY - lastRawY); lastRawY = ev.rawY }
-                                    return@setOnTouchListener paging
-                                }
+                                android.view.MotionEvent.ACTION_DOWN -> { multi = false; v.parent?.requestDisallowInterceptTouchEvent(false) }
+                                android.view.MotionEvent.ACTION_POINTER_DOWN -> if (ev.pointerCount >= 2) { multi = true; v.parent?.requestDisallowInterceptTouchEvent(true); if (following) following = false }
                                 android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
-                                    val wasPaging = paging; paging = false
-                                    if (wasPaging) {
-                                        vt?.let { it.addMovement(ev); it.computeCurrentVelocity(1000); pageFling.value?.invoke(it.yVelocity) }
-                                        vt?.recycle(); vt = null
-                                        return@setOnTouchListener true
-                                    }
-                                    vt?.recycle(); vt = null
-                                    if (dragged && multi) { dragged = false; val at = mapCenter; dragEnd.value?.invoke(at.latitude, at.longitude) }
-                                    return@setOnTouchListener false
+                                    v.parent?.requestDisallowInterceptTouchEvent(false)
+                                    if (multi) { multi = false; val at = mapCenter; dragEnd.value?.invoke(at.latitude, at.longitude) }
                                 }
-                                else -> return@setOnTouchListener false
                             }
+                            if (ev.actionMasked == android.view.MotionEvent.ACTION_MOVE && ev.pointerCount < 2) return@setOnTouchListener true
+                            return@setOnTouchListener false
                         }
                         when (ev.actionMasked) {
                             android.view.MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; dragged = false; v.parent?.requestDisallowInterceptTouchEvent(true) }
@@ -586,15 +556,10 @@ fun GeoMapView(
             }
         )
         MapEmptyOverlay(emptyTitle, emptySub, Modifier.align(Alignment.Center).padding(16.dp))
-        // a one-finger drag over a two-finger map scrolls the page, and says once how to move the map
-        if (twoFinger && hintAt > 0) {
-            var shown by remember(hintAt) { mutableStateOf(true) }
-            LaunchedEffect(hintAt) { delay(1_200); shown = false }
-            if (shown) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
-                Text("two fingers to move the map", color = Color.White, fontFamily = Mono, fontSize = 13.sp,
-                    modifier = Modifier.background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 8.dp))
-            }
-        }
+        // a map inside a page that scrolls says, quietly, how to move it
+        if (twoFinger) Text("✌ two fingers to move the map", color = Palette.muted, fontFamily = Mono, fontSize = 9.sp, maxLines = 1,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).background(Palette.surface.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 7.dp, vertical = 3.dp))
         // + / − zoom, top left (the web map's): a zoom by hand stops the follow, as a drag does
         androidx.compose.foundation.layout.Column(Modifier.align(Alignment.TopStart).padding(6.dp)) {
             for ((label, step) in listOf("+" to 1.0, "−" to -1.0)) {
