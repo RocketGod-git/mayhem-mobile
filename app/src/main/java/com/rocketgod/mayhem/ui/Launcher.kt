@@ -213,7 +213,9 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
                 AppGlyph(app, glyphTint, Modifier.size(d.dp(26f)))
             }
             Box(Modifier.weight(1f))
-            Text(app.title, color = if (off) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(15f), maxLines = 1)
+            // the two-word names (Airline Messages, Weather Balloons) step down a size so they fit a phone's two-across tile whole
+            Text(app.title, color = if (off) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
+                fontSize = d.sp(if (app.title.length > 12) 13f else 15f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             Text(if (off) "needs a HackRF" else app.blurb, color = Palette.muted,
                 fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = d.dp(3f)))
         }

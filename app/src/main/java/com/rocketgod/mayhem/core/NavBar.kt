@@ -19,6 +19,19 @@ object NavBar {
     private const val KEY_KNOWN = "nav_known"
     /** Apps added after the bar first saved its choices (a bar saved before this list existed knew all but these). */
     private val ADDED = listOf(MayhemApp.LORA)
+    /**
+     * The bar's default order before the apps were regrouped by what people listen for, by name. A saved order
+     * still in exactly this order was never dragged, so it moves to the new default; one the user arranged stays theirs.
+     */
+    private val OLD_DEFAULT = listOf("HAM", "JS8", "AUDIO", "HD", "DEVICES", "SAT", "ADSB", "UAT", "AIS", "APRS", "PAGER", "ERT",
+        "LORA", "BTLE", "VDL2", "ACARS", "TRAINS", "FLEET", "CELL", "ATSC", "SONDES", "PROWL", "SPECTRUM", "ANALYZER", "LOOKING_GLASS",
+        "SEARCH", "TRANSMIT", "TROLL", "CAPTURE")
+
+    /** True when [saved] is the old default order (or the part of it this build knows), so it was never rearranged. */
+    fun neverDragged(saved: List<MayhemApp>): Boolean {
+        val names = saved.map { it.name }
+        return names.isNotEmpty() && names == OLD_DEFAULT.filter { it in names }
+    }
 
     /** Every app the bar can hold: all of them but Settings (it has its own button), and Troll only where it ships. */
     fun all(): List<MayhemApp> = MayhemApp.entries.filter {
@@ -67,6 +80,11 @@ object NavBar {
         if (!p.getBoolean("nav_lora_placed", false)) {
             saved = saved?.filter { it != MayhemApp.LORA }
             p.edit().putBoolean("nav_lora_placed", true).apply()
+        }
+        // once: a bar still in the old default order takes the new one (apps grouped by what people listen for)
+        if (!p.getBoolean("nav_regrouped", false)) {
+            if (saved != null && neverDragged(saved)) saved = null
+            p.edit().putBoolean("nav_regrouped", true).apply()
         }
         // an app added in an update, not yet in the saved order, goes in after the app it follows by default (LoRa
         // after Meters, with the other receivers), not at the end

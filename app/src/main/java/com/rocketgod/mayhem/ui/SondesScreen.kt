@@ -160,7 +160,7 @@ fun SondesScreen(accent: Color) {
 
     // sondes transmit a frame a second, narrow and steady: a phone gives the waterfall's room to the cards
     val wf = waterfallOn(MayhemApp.SONDES, phoneDefault = false)
-    PacketFrame(accent, Apps.sondesLog, tag = "SONDES", title = "WEATHER BALLOONS", tunable = false, emptyKey = "sondes", waterfall = wf,
+    PacketFrame(accent, Apps.sondesLog, tag = "BALLOONS", title = "WEATHER BALLOONS · RADIOSONDES", tunable = false, emptyKey = "sondes", waterfall = wf,
         lamp = {
             if (live.isNotEmpty()) Lamp("${live.size} SONDE${if (live.size == 1) "" else "S"}", Palette.ok)
             else Lamp("LISTENING", Palette.accent2, blink = true)

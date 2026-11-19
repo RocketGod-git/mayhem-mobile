@@ -77,27 +77,27 @@ type AppId = 'transmit' | 'troll' | 'ham' | 'js8' | 'audio' | 'hd' | 'prowl' | '
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
-  { id: 'ham', title: 'HAM', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
-  { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB', cat: 'Receive' },
   { id: 'hd', title: 'HD Radio', blurb: 'station data · art · traffic', cat: 'Receive' },
-  { id: 'devices', title: 'Devices', blurb: 'keys, remotes, TPMS', cat: 'Receive' },
-  { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
-  { id: 'adsb', title: 'ADS-B', blurb: 'aircraft, 1090 MHz', cat: 'Receive' },
-  { id: 'uat', title: 'UAT', blurb: 'weather & small planes', cat: 'Receive' },
-  { id: 'ais', title: 'AIS', blurb: 'ships, 162 MHz', cat: 'Receive' },
-  { id: 'aprs', title: 'APRS', blurb: 'packet, 144.39 MHz', cat: 'Receive' },
-  { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG pagers', cat: 'Receive' },
-  { id: 'ert', title: 'Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
-  { id: 'lora', title: 'LoRa', blurb: 'Meshtastic, MeshCore', cat: 'Receive' },
-  { id: 'btle', title: 'BLE RX', blurb: 'advertising, 2.4 GHz', cat: 'Receive' },
-  { id: 'vdl2', title: 'VDL2', blurb: 'VDL Mode 2 messages, 136.975 MHz', cat: 'Receive' },
-  { id: 'acars', title: 'ACARS', blurb: 'messages, 131 MHz', cat: 'Receive' },
-  { id: 'trains', title: 'Trains', blurb: 'EOT · PTC telemetry', cat: 'Receive' },
   { id: 'fleet', title: 'Dispatch', blurb: 'P25 · DMR trunking and calls', cat: 'Receive' },
+  { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG', cat: 'Receive' },
+  { id: 'lora', title: 'Mesh', blurb: 'LoRa · Meshtastic · MeshCore', cat: 'Receive' },
+  { id: 'adsb', title: 'Aircraft', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
   { id: 'cell', title: 'Cell', blurb: 'LTE alerts · cell info', cat: 'Receive' },
-  { id: 'atsc', title: 'ATSC TV', blurb: 'digital TV channels, guide, pictures', cat: 'Receive' },
-  { id: 'sondes', title: 'Sondes', blurb: 'weather balloons', cat: 'Receive' },
+  { id: 'devices', title: 'Devices', blurb: 'keys · remotes · TPMS', cat: 'Receive' },
+  { id: 'uat', title: 'Flight Weather', blurb: 'UAT 978 MHz · radar · small planes', cat: 'Receive' },
+  { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
+  { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
+  { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
+  { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
+  { id: 'trains', title: 'Trains', blurb: 'EOT · PTC', cat: 'Receive' },
+  { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
+  { id: 'acars', title: 'Airline Messages', blurb: 'ACARS · 131 MHz', cat: 'Receive' },
+  { id: 'vdl2', title: 'Airline Data', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
+  { id: 'ais', title: 'Ships', blurb: 'AIS · 162 MHz', cat: 'Receive' },
+  { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
+  { id: 'sondes', title: 'Weather Balloons', blurb: 'radiosondes · 400–406 MHz', cat: 'Receive' },
+  { id: 'atsc', title: 'TV', blurb: 'ATSC · channels · guide · pictures', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice', cat: 'Receive' },
   { id: 'spectrum', title: 'Spectrum', blurb: 'analyzer, zero span', cat: 'Analyze' },
   { id: 'analyzer', title: 'Analyzer', blurb: 'bursts to bits', cat: 'Analyze' },
@@ -1693,7 +1693,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
   lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels']],
-  sondes: ['sondes', 'No sondes yet', ['Weather services launch around 00:00 and 12:00 UTC; a sonde climbs for about 90 minutes and is heard 200+ miles out', 'Every type is decoded on its own: leave it running and they show up']],
+  sondes: ['sondes', 'No weather balloons yet', ['Weather services launch around 00:00 and 12:00 UTC; a sonde climbs for about 90 minutes and is heard 200+ miles out', 'Every type is decoded on its own: leave it running and they show up']],
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
   cell: ['cell', 'No alerts yet', ['Wireless Emergency Alerts and ETWS warnings ride in SIB12 and SIB10/11: carriers send them only while an alert is active', 'Every alert heard is kept here, newest first, until you clear it', 'Alerts need the whole carrier in the span: a HackRF']],
   atsc: ['atsc', 'No stations yet', ['AUTO looks at every channel for an ATSC pilot and stays on each station it finds', 'An antenna up high, or outside, hears stations 60+ miles away', 'A HackRF decodes the channels, the guide and a picture of each; an RTL-SDR finds the stations']],
@@ -1915,7 +1915,7 @@ function render(app: AppId | null): void {
   if (app && app !== 'settings') {
     const def = APPS.find(a => a.id === app)!;
     const title = CARD_TITLE[app];
-    if (!q('#ftag')?.textContent) setFace(title?.[0] ?? barLabel(app), title?.[1] ?? def.blurb.toUpperCase());
+    if (!q('#ftag')?.textContent) setFace(title?.[0] ?? appName(app), title?.[1] ?? def.blurb.toUpperCase());
     if (!q('#lamp b')?.textContent) setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
   } else if (!app) { setFace('HOME', 'TAP THE WATERFALL TO LISTEN'); setLamp(state.connected ? 'LIVE' : 'NO RADIO', state.connected ? 'ok' : ''); }
   wireCommon(view);
@@ -4032,7 +4032,7 @@ function acarsDetail(r: AcRow, now: number): string {
     ['Stated', numChips(i.nums).join(' · ') ? `${numChips(i.nums).join(' · ')} · ${bleAgo(now - i.numsMs)}` : '—'],
     ['Airports named', i.airports.join(', ') || '—'], ['First heard', trClock(r.firstMs)], ['Last heard', trClock(r.lastMs)]);
   if (v) fields.push(['XID', v.xid || '—']);
-  fields.push(['ADS-B', ads ? `${ads.icao.toUpperCase()}${ads.flight ? ` · ${ads.flight.trim()}` : ''}${ads.alt !== undefined ? ` · ${ads.alt} ft` : ''}` : 'not seen (open ADS-B to look for it)']);
+  fields.push(['ADS-B', ads ? `${ads.icao.toUpperCase()}${ads.flight ? ` · ${ads.flight.trim()}` : ''}${ads.alt !== undefined ? ` · ${ads.alt} ft` : ''}` : 'not seen (open Aircraft to look for it)']);
   const events = v ? `<div class="caption">LINK EVENTS · newest first · ${v.events.length}</div>${v.events.length ? v.events.map(e => `<div class="ac-ev"><b>${new Date(e.ms).toLocaleTimeString()}</b><span>${esc(e.text)}</span></div>`).join('') : '<div class="ac-ev"><span>no XID handoffs heard yet</span></div>'}` : '';
   const kind = [r.airline && r.airline.toUpperCase(), r.flight && `FLIGHT ${r.flight}`, r.icao && `ICAO ${r.icao}`].filter(Boolean).join(' · ') || (v ? 'VDL2' : 'ACARS');
   return `<div class="mt-dh"><b>${esc(acTitle(r))}</b><span>${esc(kind)}</span>${acWhere(r) ? '<button class="chip" data-ado="map">MAP</button>' : ''}${ads ? '<button class="chip" data-ado="adsb">ADS-B</button>' : ''}<button class="chip" data-ado="close">✕</button></div>`
@@ -8027,13 +8027,13 @@ function renderSettings(view: HTMLElement): void {
   const over = settingsOver;
   const radioLine = radio ? (radio.kind === 'rtlsdr' ? radio.label : `HackRF · ${state.board || 'HackRF'}${state.firmware ? ' · fw ' + state.firmware : ''}`) : 'No radio attached';
   const appRows = thisAppRows(over);
-  const jumps: [string, string][] = [...(appRows ? [['app', over ? barLabel(over) : 'APP'] as [string, string]] : []), ['radio', 'RADIO'], ['look', 'LOOK'], ['station', 'STATION'], ['tx', 'TRANSMIT'], ['how', 'HOW IT WORKS'], ['log', 'LOG'], ['about', 'ABOUT']];
+  const jumps: [string, string][] = [...(appRows ? [['app', over ? appName(over) : 'APP'] as [string, string]] : []), ['radio', 'RADIO'], ['look', 'LOOK'], ['station', 'STATION'], ['tx', 'TRANSMIT'], ['how', 'HOW IT WORKS'], ['log', 'LOG'], ['about', 'ABOUT']];
   view.innerHTML = `
     <section class="controls settings-page">
     <input id="set-search" class="txin set-search" placeholder="Search settings" autocomplete="off" spellcheck="false">
     <div class="radiocard ${radio ? 'on' : ''}"><div><b>${radio ? 'RADIO CONNECTED' : 'NO RADIO'}</b><small>${esc(radioLine)}</small></div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
     <div class="set-jumps">${hsHtml(`<div class="tiles">${jumps.map(([id, l]) => `<button class="pill" data-jump="${id}">${l}</button>`).join('')}</div>`)}</div>
-    ${secHtml('app', `THIS APP · ${over ? barLabel(over) : ''}`, appRows)}
+    ${secHtml('app', `THIS APP · ${over ? appName(over) : ''}`, appRows)}
     <section class="sset fold link" id="sec-radio" data-keys="radio gain lna vga amp agc bias tee ppm sample rate filter"><div class="sset-h">RADIO</div></section>
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
     <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsOn()), 'full screen fullscreen status bar address bar') : ''}</section>
@@ -8047,7 +8047,7 @@ function renderSettings(view: HTMLElement): void {
     <section class="sset" id="sec-tx"><div class="sset-h">TRANSMIT</div>
       ${srow('Transmit', 'The transmit apps. Most bands need a license: use a dummy load or an antenna rated for the frequency.', swHtml('tx-toggle', tx.enabled), 'tx enable')}
     </section>
-    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">${over && appAbout[over] ? `<div class="kv"><span>${esc(barLabel(over))}</span><span>${esc(appAbout[over]!)}</span></div>` : ''}      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
+    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">${over && appAbout[over] ? `<div class="kv"><span>${esc(appName(over))}</span><span>${esc(appAbout[over]!)}</span></div>` : ''}      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
       <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies — use a powered OTG hub if RX reads all zeros</span></div>
       <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
       <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
@@ -8392,7 +8392,7 @@ function refreshAis(): void {
 function refreshAprs(): void {
   if (state.app !== 'aprs') return;
   // the packet count rides in the card's title, as in the native apps
-  if (state.app === 'aprs') setFace('APRS', `${counts['aprs'] ?? 0} PACKETS`);
+  if (state.app === 'aprs') setFace('HAM MAP', `${counts['aprs'] ?? 0} PACKETS`);
   qa('[data-aprsview]').forEach(b => b.classList.toggle('on', b.dataset.aprsview === state.aprsView));
   const list = q('#aprs-list'), mapEl = q('#aprs-map'), logEl = q('#aprs-log'); if (!list || !mapEl || !logEl) return;
   list.hidden = state.aprsView !== 'list'; mapEl.hidden = state.aprsView !== 'map'; logEl.hidden = state.aprsView !== 'log';
@@ -9244,8 +9244,12 @@ let versionText = 'dev build', releaseUrl = 'https://github.com/RocketGod-git/ma
 // ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
 /** The app bar's order, the native apps' default: by what they do (receive, analyze, transmit, tools), as Home lists them. */
 const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings').map(a => a.id));
-const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', btle: 'BLE', transmit: 'TX' };
-const barLabel = (id: AppId) => BAR_LABEL[id] ?? APPS.find(a => a.id === id)!.title.toUpperCase();
+/** The app's name in capitals, as its header, Settings and FAVES show it. */
+const appName = (id: AppId) => APPS.find(a => a.id === id)?.title.toUpperCase() ?? (id === 'subghz' ? 'SUB-GHZ' : id.toUpperCase());
+/** The bar's own shorter names for the longest apps, so a key never takes half the strip (the readout tag uses them too, for
+ *  the same room); the header, Settings and FAVES say the full name. */
+const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', transmit: 'TX', uat: 'FLIGHT WX', ert: 'METERS', acars: 'AIRLINE MSGS', sondes: 'BALLOONS' };
+const barLabel = (id: AppId) => BAR_LABEL[id] ?? appName(id);
 /** A wide screen (tablet or desktop): Home lays the waterfall over one sideways row of app tiles, as on iPad. */
 const wideShell = matchMedia('(min-width: 720px)');
 /** Where "home" is: the launcher at every width, as in the native apps. */
@@ -9291,8 +9295,8 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['VDL2', 'AIRCRAFT DATALINK · D8PSK'], acars: ['ACARS', 'AIRCRAFT DATALINK'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['ATSC', 'DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
-  ert: ['METERS', 'ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['LORA', 'MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['SONDES', 'WEATHER BALLOONS'], btle: ['BLE', 'ADVERTISING'], adsb: ['ADS-B', '1090 MHZ AIRCRAFT'], ais: ['AIS', 'SHIPS'], aprs: ['APRS', 'PACKET STATIONS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['AIRLINE DATA', 'VDL MODE 2 · D8PSK'], acars: ['AIRLINE MSGS', 'AIRLINE MESSAGES · ACARS'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT WX', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };
@@ -9307,7 +9311,7 @@ function openSettings(): void {
   setOpen.clear();
   settingsOver = state.app;
   $('setmodal').hidden = false;
-  $('set-over').textContent = state.app ? `· ${barLabel(state.app)}` : '';
+  $('set-over').textContent = state.app ? `· ${appName(state.app)}` : '';
   drawSettings();
   refreshShell();
 }
@@ -9339,7 +9343,7 @@ let rpDrag = '';
 function openRadioPanel(): void {
   closeSettings();
   $('radiomodal').hidden = false;
-  $('radio-over').textContent = state.app ? `· ${barLabel(state.app)}` : '';
+  $('radio-over').textContent = state.app ? `· ${appName(state.app)}` : '';
   drawRadioPanel();
   refreshShell();
 }
@@ -9548,7 +9552,7 @@ function refreshShell(): void {
 function showFaves(open: boolean): void {
   const sh = $('faves'); sh.hidden = !open; if (!open) return;
   const list = $('faves-list');
-  list.innerHTML = bookmarks.length ? bookmarks.map((b, i) => `<div class="fav-row" data-fv="${i}"><div><b>${(b.hz / 1e6).toFixed(4)} MHz</b><small>${esc(b.name)} · ${b.app ? barLabel(b.app) : b.mode}</small></div><button class="x" data-fvx="${i}">✕</button></div>`).join('')
+  list.innerHTML = bookmarks.length ? bookmarks.map((b, i) => `<div class="fav-row" data-fv="${i}"><div><b>${(b.hz / 1e6).toFixed(4)} MHz</b><small>${esc(b.name)} · ${b.app ? appName(b.app) : b.mode}</small></div><button class="x" data-fvx="${i}">✕</button></div>`).join('')
     : '<div class="empty">No FAVES yet. Tune something and tap ☆ beside the frequency.</div>';
   qa<HTMLElement>('[data-fv]', list).forEach(r => r.onclick = (e) => {
     const i = Number(r.dataset.fv);

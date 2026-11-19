@@ -208,7 +208,7 @@ fun AtscScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, AtscApp.log, tag = "ATSC", title = "DIGITAL TV · 8VSB", tunable = false, roomy = true, waterfall = wf,
+    PacketFrame(accent, AtscApp.log, tag = "TV", title = "ATSC · DIGITAL TV · 8VSB", tunable = false, roomy = true, waterfall = wf,
         widePane = { m -> wall(m) },
         onWaterfall = { Apps.setWaterfall(MayhemApp.ATSC, !wf) },
         lamp = {

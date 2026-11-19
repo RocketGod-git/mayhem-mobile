@@ -150,19 +150,23 @@ fun MayhemScreen(status: String, connected: Boolean) {
             }
             AppScroller(current)
         }
-        NoticeBar(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = d.dp(58f)))
+        NoticeBar(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = d.dp(68f)))
         if (faves) FavesSheet(accent) { faves = false }
         if (LogUi.open) LogWindow(onClose = { LogUi.open = false })
         UpdateDialog()
     }
 }
 
-/** What an app is called in the bar: short enough that four or five fit across a phone. */
+/** What an app is called in the bar: short enough that four or five fit across a phone. Only the longest names
+ *  get a bar name of their own; Settings, FAVES and each app's header say the full one. */
 internal fun barLabel(app: MayhemApp): String = when (app) {
     MayhemApp.LOOKING_GLASS -> "GLASS"
     MayhemApp.SAT -> "SATS"
-    MayhemApp.BTLE -> "BLE"
     MayhemApp.TRANSMIT -> "TX"
+    MayhemApp.UAT -> "FLIGHT WX"
+    MayhemApp.ERT -> "METERS"
+    MayhemApp.ACARS -> "AIRLINE MSGS"
+    MayhemApp.SONDES -> "BALLOONS"
     else -> app.title.uppercase()
 }
 
@@ -268,13 +272,13 @@ private fun AppScroller(current: MayhemApp?) {
 
 /** The strip's measurements: the touch band, the visible pill and ⚙ square inside it, and the keys. */
 private object StripGeo {
-    val band = 44.dp
-    val pill = 36.dp
-    val inset = 3.dp
+    val band = 54.dp
+    val pill = 44.dp
+    val inset = 4.dp
     val gap = 4.dp
-    val segMin = 48.dp
-    val segPad = 14.dp
-    val corner = 8.dp
+    val segMin = 56.dp
+    val segPad = 16.dp
+    val corner = 9.dp
 }
 
 /** Shrinks a little while held, as a key does. */
@@ -295,7 +299,7 @@ private fun StripGear(onClick: () -> Unit) {
         contentAlignment = Alignment.Center) {
         Box(Modifier.size(StripGeo.pill).graphicsLayer { scaleX = k; scaleY = k }.clip(shape).background(Palette.surface)
             .border(1.dp, Palette.line, shape), contentAlignment = Alignment.Center) {
-            Icon(GearIcon, contentDescription = null, tint = Palette.accent, modifier = Modifier.size(20.dp))
+            Icon(GearIcon, contentDescription = null, tint = Palette.accent, modifier = Modifier.size(24.dp))
         }
     }
 }
@@ -392,10 +396,10 @@ private fun StripSeg(app: MayhemApp, label: String, active: Boolean, tint: Color
         .padding(horizontal = StripGeo.segPad), contentAlignment = Alignment.Center) {
         // the app's own glyph (the Home tile's) beside its name, so the strip reads at a glance
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AppGlyph(app, if (active) inkOn(tint) else tint, Modifier.size(15.dp))
-            Spacer(Modifier.width(6.dp))
+            AppGlyph(app, if (active) inkOn(tint) else tint, Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
             Text(label, color = if (active) inkOn(tint) else Palette.ink.copy(alpha = 0.82f), fontFamily = Mono, fontWeight = FontWeight.Bold,
-                fontSize = 13.sp, letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+                fontSize = 14.sp, letterSpacing = 1.sp, maxLines = 1, softWrap = false)
         }
     }
 }

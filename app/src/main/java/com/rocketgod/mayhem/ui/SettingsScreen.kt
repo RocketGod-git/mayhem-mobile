@@ -385,7 +385,7 @@ fun RadioPanel() {
         .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }) {
         Row(Modifier.fillMaxWidth().background(lerp(Palette.surface, red, 0.14f)).padding(horizontal = d.dp(8f), vertical = d.dp(8f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
             Text("RADIO", color = red, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), letterSpacing = 3.sp)
-            Text(if (over != null) "· ${barLabel(over)}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), letterSpacing = 2.sp,
+            Text(if (over != null) "· ${over.title.uppercase()}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), letterSpacing = 2.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             SmallButton("DONE", red) { RadioUi.open = false }
         }

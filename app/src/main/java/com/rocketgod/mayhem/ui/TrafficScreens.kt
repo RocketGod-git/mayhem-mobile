@@ -188,7 +188,7 @@ fun AdsbScreen(accent: Color) {
     val a = live.firstOrNull { it.icao == sel } ?: planes.firstOrNull { it.icao == sel }
     // 1090 MHz pulses hardly show on a waterfall: a phone gives its room to the map
     val wf = waterfallOn(MayhemApp.ADSB, phoneDefault = false)
-    TrafficFrame(accent, tunable = false, tag = "ADS-B", title = "$frames FRAMES", count = planes.size, unit = "AIRCRAFT",
+    TrafficFrame(accent, tunable = false, tag = "AIRCRAFT", title = "$frames FRAMES", count = planes.size, unit = "AIRCRAFT",
         waterfall = wf, onWaterfall = { Apps.setWaterfall(MayhemApp.ADSB, !wf) },
         views = listOf(View.MAP, View.LIST), view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null }, onClear = { AdsbStore.clear(); sel = null; if (frozen != null) frozen = emptyList() }) {
@@ -254,7 +254,7 @@ fun AisScreen(accent: Color) {
     val vessels = frozen ?: live
     val now = ticker()
     val v = live.firstOrNull { it.mmsi == sel } ?: vessels.firstOrNull { it.mmsi == sel }
-    TrafficFrame(accent, tunable = true, tag = "AIS", title = "$count PACKETS", count = vessels.size, unit = "VESSELS",
+    TrafficFrame(accent, tunable = true, tag = "SHIPS", title = "$count PACKETS", count = vessels.size, unit = "VESSELS",
         views = View.entries, view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
         onClear = { Apps.ais.clear(); Apps.aisLog.clear(); sel = 0; if (frozen != null) frozen = emptyList() },
@@ -348,7 +348,7 @@ fun AprsScreen(accent: Color) {
     val stations = frozen ?: live
     val now = ticker()
     val s = live.firstOrNull { it.call == sel } ?: stations.firstOrNull { it.call == sel }
-    TrafficFrame(accent, tunable = true, tag = "APRS", title = "$count PACKETS", count = stations.size, unit = "STATIONS",
+    TrafficFrame(accent, tunable = true, tag = "HAM MAP", title = "$count PACKETS", count = stations.size, unit = "STATIONS",
         views = View.entries, view = view, onView = { view = it },
         paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
         onClear = { Apps.aprs.clear(); Apps.aprsLog.clear(); sel = ""; if (frozen != null) frozen = emptyList() },

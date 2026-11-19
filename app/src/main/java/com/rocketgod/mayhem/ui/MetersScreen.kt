@@ -140,7 +140,7 @@ fun MetersScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "ERT · MESH · GRIDSTREAM · 802.15.4G", roomy = true, waterfall = wf,
+    PacketFrame(accent, Apps.metersLog, tag = "METERS", title = "UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G", roomy = true, waterfall = wf,
         onWaterfall = { Apps.setWaterfall(MayhemApp.ERT, !wf) }, controls = {
         PresetTiles(accent, listOf(Preset("904.0", "low", 904_000_000L), Preset("911.6", "lower mid", 911_600_000L), Preset("916.0", "mid", 916_000_000L),
             Preset("920.0", "upper mid", 920_000_000L), Preset("925.0", "high", 925_000_000L)))
