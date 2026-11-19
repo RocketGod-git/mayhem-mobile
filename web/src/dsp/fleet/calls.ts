@@ -39,7 +39,7 @@ export interface CallRow {
   /** Vocoder frames decoded, and how many of them were past their error correction (repeated or muted). */
   decoded: number; badFrames: number;
 }
-interface Call extends CallRow { grantMs: number; voiceAt: number; audioAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null; held: Uint8Array[]; hint: string; said: Said }
+interface Call extends CallRow { grantMs: number; voiceAt: number; audioAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null; held: Uint8Array[]; hint: string; said: Said; wait: Float32Array[] }
 /** What each source on the air said: 1 encrypted, 0 clear, -1 nothing yet; [syncs] the last algorithm IDs read. */
 interface Said { grant: number; lc: number; syncs: number[]; from: string; pi: boolean; emb: number; history: boolean; histEnc: boolean }
 
@@ -60,6 +60,8 @@ const QUIET_HEARD_MS = 1_200, QUIET_GRANT_MS = 3_000, TRAIL_MS = 2_000, ID_AFTER
 const gridKey = (hz: number) => Math.round(hz / 6250) * 6250;
 /** How long the talkgroup of a call just heard keeps first claim on the audio: the reply in a conversation. */
 export const CONVERSATION_MS = 2_000;
+/** A call waiting out another talkgroup's conversation keeps this many frames (20 ms each) to play when its turn comes. */
+const WAIT_FRAMES = Math.ceil(CONVERSATION_MS / 20) + 25;
 /** Outside a lock: another system, or another site of the locked one (a call with no site label is kept). */
 export const outsideLock = (c: { sys: string; site: string }, lock: Lock | null | undefined) =>
   !!lock && (c.sys !== lock.sys || (!!lock.site && !!c.site && c.site !== lock.site));
@@ -70,7 +72,7 @@ export class CallTracker {
   /** The call being heard: the first to bring audio keeps it until it ends; priority (then emergency) takes over. */
   playing = '';
   /** The talkgroup of the call last heard, and when it ended: its next call gets the audio first for a moment. */
-  private lastHeard: { tg: string; ms: number } | null = null;
+  private lastHeard: { sys: string; tg: number; group: boolean; ms: number } | null = null;
   /** Talkgroups whose calls a sync (ALGID other than 0x80) marked encrypted, and when. */
   private readonly encTgs = new Map<string, number>();
   /** Live audio out, 8 kHz: every decoded frame of the call being heard. */
@@ -93,7 +95,7 @@ export class CallTracker {
       tdma: p.tdma ?? false, encrypted: false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
       levelDb: 0, peakDb: 0, site: p.site ?? '', codec: p.codec, end: '', muted: false, prio: false, audioMs: 0, lcVerified: false, granted: false, kind: 'call', cwId: '',
       outside: false, pos: null, sec: 'unknown', secFrom: '', algId: -1, keyId: -1, mi: '', pi: '', audioDb: 0, lpcn: p.lpcn ?? -1, chDerived: p.chDerived ?? false, protectedHint: false, decoded: 0, badFrames: 0,
-      grantMs: 0, voiceAt: 0, audioAt: 0, pcm: [], pcmN: 0, codecInst: null, held: [], hint: '', said: { grant: -1, lc: -1, syncs: [], from: '', pi: false, emb: -1, history: false, histEnc: false },
+      grantMs: 0, voiceAt: 0, audioAt: 0, pcm: [], pcmN: 0, codecInst: null, held: [], hint: '', wait: [], said: { grant: -1, lc: -1, syncs: [], from: '', pi: false, emb: -1, history: false, histEnc: false },
     };
     this.label(c);
     this.calls.unshift(c);
@@ -196,7 +198,7 @@ export class CallTracker {
     const was = c.sec;
     if (sec === 'enc' && sync && c.tg) this.encTgs.set(this.tgKey(c), this.now());
     c.sec = sec; c.secFrom = sec === 'unknown' ? c.secFrom : from; c.encrypted = sec === 'enc';
-    if (sec === 'enc') { c.held = []; if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); } }
+    if (sec === 'enc') { c.held = []; c.wait = []; if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); } }
     else if (sec === 'clear' && was !== 'clear') this.release(c);
   }
   /** Security of the call on the air on a channel, if there is one. */
@@ -252,7 +254,11 @@ export class CallTracker {
       // take the audio nor keep it
       const good = !k.bad;
       if (good) c.audioAt = now;
-      if (this.playing === c.key || (good && this.choose(c, now))) this.onAudio?.(pcm, c);
+      if (this.playing === c.key) { this.onAudio?.(pcm, c); continue; }
+      const r = good ? this.choose(c, now) : c.wait.length ? 'wait' : 'no';
+      if (r === 'yes') { for (const w of c.wait) this.onAudio?.(w, c); c.wait = []; this.onAudio?.(pcm, c); }
+      else if (r === 'wait') { c.wait.push(pcm); if (c.wait.length > WAIT_FRAMES) c.wait.shift(); }
+      else c.wait = [];
     }
   }
   /**
@@ -260,27 +266,52 @@ export class CallTracker {
    * heard keeps the audio while it is on the air (its terminator, or 1.2 s with no voice frame, ends it) and has
    * brought audio in the last 3 s: a lost LDU or a frame that failed its codes does not hand it to another call.
    */
-  private choose(c: Call, now: number): boolean {
-    if (this.playing === c.key) return true;
+  private choose(c: Call, now: number): 'yes' | 'no' | 'wait' {
+    if (this.playing === c.key) return 'yes';
     const cur = this.playing ? this.calls.find(x => x.key === this.playing) : undefined;
     const live = !!cur && cur.onAir && !cur.muted && !cur.outside && !cur.encrypted && now - cur.audioAt < AUDIO_LIVE_MS;
     const wins = !!cur && ((c.prio && !cur.prio) || (c.emergency && !cur.emergency && !cur.prio));
-    if (live && !wins) return false;
-    // the conversation goes on: for 2 s after the call heard ends, the same talkgroup's next call gets the audio first
-    if (!cur?.onAir && this.lastHeard && now - this.lastHeard.ms < CONVERSATION_MS && this.tgKey(c) !== this.lastHeard.tg && !c.prio && !c.emergency) return false;
+    if (live && !wins) return 'no';
+    // the conversation goes on: for 2 s after the call heard ends, the same talkgroup's next call gets the audio
+    // first over a call that starts in that time. That call's speech is kept, not lost: it plays from its start if no
+    // reply comes. A call already on the air when the heard one ended goes straight on (holding it would cost audio).
+    const h = this.lastHeard, same = !!h && c.tg === h.tg && c.group === h.group && (!c.sys || !h.sys || c.sys === h.sys);
+    if (!cur?.onAir && h && now - h.ms < CONVERSATION_MS && !same && c.startMs >= h.ms && !c.prio && !c.emergency) return 'wait';
+    // past the window, the call that has waited longest goes first, from the start of what it kept
+    if (!cur?.onAir && !(h && now - h.ms < CONVERSATION_MS && same)) {
+      const first = this.calls.find(x => x !== c && x.onAir && x.wait.length > c.wait.length && !x.encrypted && !x.muted && !x.outside);
+      if (first) { this.playing = first.key; for (const w of first.wait) this.onAudio?.(w, first); first.wait = []; return 'no'; }
+    }
     if (cur && live) this.onEnd?.(cur);
     this.playing = c.key;
-    return true;
+    return 'yes';
+  }
+  /**
+   * The conversation window is over and nothing plays: the speech kept by the call that waited longest plays now, even
+   * when that call has already ended (a short call in the window is heard rather than lost).
+   */
+  private waitOut(now: number): void {
+    const h = this.lastHeard;
+    if (this.playing || !h || now - h.ms < CONVERSATION_MS) return;
+    const x = this.calls.filter(c => c.wait.length && !c.encrypted && !c.muted && !c.outside).sort((a, b) => a.startMs - b.startMs)[0];
+    for (const c of this.calls) if (c !== x && !c.onAir) c.wait = [];
+    if (!x) return;
+    const w = x.wait; x.wait = [];
+    if (x.onAir) this.playing = x.key;
+    for (const p of w) this.onAudio?.(p, x);
+    if (!x.onAir) this.onEnd?.(x);
   }
   private finish(c: Call, why: string, now: number): void {
     if (!c.onAir) return;
     // frames still waiting on the call's security play out first, unless nothing on the air ever named the call
     c.onAir = false; c.endMs = now; c.end = why; c.codecInst = null; c.held = [];
-    if (this.playing === c.key) { this.playing = ''; this.lastHeard = { tg: this.tgKey(c), ms: now }; this.onEnd?.(c); }
+    // the conversation's window runs from the call's last voice (a call that went quiet ends 1.2 s after it)
+    if (this.playing === c.key) { this.playing = ''; this.lastHeard = { sys: c.sys, tg: c.tg, group: c.group, ms: Math.min(now, c.voiceAt || now) }; this.onEnd?.(c); }
     this.trim();
   }
   /** Calls go off the air when nothing has kept them alive. [level] reads the carrier level for a frequency. */
   tick(level: (hz: number) => number | null, now = this.now()): void {
+    this.waitOut(now);
     for (const c of this.calls) {
       if (!c.onAir) continue;
       const l = c.hz ? level(c.hz) : null;
@@ -314,7 +345,7 @@ export class CallTracker {
   }
   rows(n = 80): CallRow[] {
     const on = this.ranked(), off = this.calls.filter(c => !c.onAir).slice(0, n);
-    return [...on, ...off].map(({ grantMs: _g, voiceAt: _v, audioAt: _a, pcm: _p, pcmN: _n, codecInst: _k, held: _h, hint: _t, said: _s, ...r }) => ({ ...r, srcs: [...r.srcs], pos: r.pos ? { ...r.pos } : null }));
+    return [...on, ...off].map(({ grantMs: _g, voiceAt: _v, audioAt: _a, pcm: _p, pcmN: _n, codecInst: _k, held: _h, hint: _t, said: _s, wait: _w, ...r }) => ({ ...r, srcs: [...r.srcs], pos: r.pos ? { ...r.pos } : null }));
   }
   clear(): void { this.calls.length = 0; this.playing = ''; }
 }

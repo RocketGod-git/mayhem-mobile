@@ -30,7 +30,8 @@ import type { Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
-import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho } from './dsp/fleet/view.js';
+import { FleetAuto } from './dsp/fleet/auto.js';
+import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
@@ -1691,7 +1692,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   cell: ['cell', 'No alerts yet', ['Wireless Emergency Alerts and ETWS warnings ride in SIB12 and SIB10/11: carriers send them only while an alert is active', 'Every alert heard is kept here, newest first, until you clear it', 'Alerts need the whole carrier in the span: a HackRF']],
   atsc: ['atsc', 'No stations yet', ['AUTO looks at every channel for an ATSC pilot and stays on each station it finds', 'An antenna up high, or outside, hears stations 60+ miles away', 'A HackRF decodes the channels, the guide and a picture of each; an RTL-SDR finds the stations']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
-  fleet: ['fleet', 'No trunked systems yet', ['Control channels send all the time: a system shows up within seconds of its band being in the span', 'Every call granted jumps to the top while it is on the air', 'AUTO steps through VHF, UHF, T-band, 700, 800 and 900 MHz; pick a band to stay on it', 'A HackRF at 8 or 20 MHz hears a whole site at once']],
+  fleet: ['fleet', 'No trunked systems yet', ['Control channels send all the time: a system shows up within seconds of its band being in the span', 'Every call granted jumps to the top while it is on the air', 'AUTO steps through VHF, UHF, T-band, 700, 800 and 900 MHz and stays on the band where clear voice is heard; pick a band to stay on it', 'A HackRF at 8 or 20 MHz hears a whole site at once']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
   uat: ['uat', 'Listening on 978 MHz', ['FAA ground towers broadcast weather here several times a second: radar, airport weather, notices', 'Small planes, and the traffic the towers rebroadcast, show up on the map', 'A 978 MHz antenna (a 915 MHz one works) with a view of the sky helps']],
   adsb: ['adsb', 'No aircraft yet', ['Aircraft send on 1090 MHz several times a second: a window with a view of the sky helps', 'A 1090 MHz antenna (about 6.9 cm) reaches 100+ miles']],
@@ -4627,6 +4628,8 @@ function dispatchLock(l: DispatchLock | null): void {
 function dispatchVisitDue(s: FleetSnap, now: number): boolean {
   if (fleetUi.lock || now - fleetUi.lastVisit < 120_000) return false;
   if (fleetUi.audioOn && s.calls.some(c => c.key === s.playing && c.onAir)) return false;
+  // a look away only when nothing clear has played for a while
+  if (fleetAuto && now - fleetAuto.lastClear < 15_000) return false;
   const out = (hz: number) => hz < s.spanLo + 20_000 || hz > s.spanHi - 20_000;
   const target = s.systems.filter(x => x.positions && x.heardHz.length && x.heardHz.every(out)).sort((a, b) => a.lastMs - b.lastMs)[0];
   if (!target) { fleetUi.lastVisit = now; return false; }
@@ -4711,9 +4714,13 @@ function fleetOpen(): void {
   fleetDwell();
 }
 /** Six seconds a window; a window where a control channel decodes keeps the radio for 25. */
+/** AUTO's choice of window, scored by the clear voice heard on each (dsp/fleet/auto.ts). */
+let fleetAuto: FleetAuto | null = null;
 function fleetDwell(): void {
   clearTimeout(fleetUi.scanTimer);
   fleetUi.found = false; fleetUi.dwellEnd = Date.now() + 6_000;
+  if (!fleetAuto || fleetAuto.windows !== fleetUi.windows.length) fleetAuto = new FleetAuto(fleetUi.windows.length, Date.now(), fleetUi.idx);
+  else fleetAuto.moved(fleetUi.idx, Date.now());
   // one window (a band the span covers): nothing to step through, but the checks on locks, follows and visits run
   const check = () => {
     if (state.app !== 'fleet') return;
@@ -4725,11 +4732,14 @@ function fleetDwell(): void {
     // locked: the receiver stays with the locked system (and goes back to it if something moved it)
     if (fleetUi.lock) { fleetUi.found = true; fleetUi.dwellEnd = now + 6_000; if (s && fleetUi.lock.hz && (fleetUi.lock.hz < s.spanLo || fleetUi.lock.hz > s.spanHi)) dispatchTuneLock(); fleetUi.scanTimer = window.setTimeout(check, 500); return; }
     const live = s ? s.carriers.some(c => (c.role === 'control' || c.role === 'rest') && c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastDecodeMs < 5_000) : false;
-    if (live && !fleetUi.found) { fleetUi.found = true; fleetUi.dwellEnd = now + 25_000; }
-    if (fleetUi.windows.length < 2) { fleetUi.scanTimer = window.setTimeout(check, 500); return; }
-    // the call being heard finishes before AUTO moves on (encrypted traffic never holds it)
-    if (now >= fleetUi.dwellEnd && fleetUi.audioOn && s && s.calls.some(c => c.key === s.playing && c.onAir && !c.encrypted)) fleetUi.dwellEnd = now + 1_000;
-    if (now >= fleetUi.dwellEnd) { fleetUi.idx = (fleetUi.idx + 1) % fleetUi.windows.length; tune(fleetUi.windows[fleetUi.idx].hz); fleetUi.found = false; fleetUi.dwellEnd = now + 6_000; refreshFleet(true); }
+    // AUTO holds the window where clear voice is heard, looks elsewhere now and then, and scans while nothing has earned it
+    const a = fleetAuto;
+    if (a && s) {
+      const to = a.step({ now, calls: s.calls, playing: fleetUi.audioOn ? s.playing : '', controlLive: live, systems: s.systems.length });
+      fleetUi.found = a.mode !== 'scan' || a.found;
+      fleetUi.dwellEnd = a.mode === 'hold' ? now + 6_000 : a.until;
+      if (to !== null && to !== fleetUi.idx && fleetUi.windows[to]) { fleetUi.idx = to; tune(fleetUi.windows[to].hz); refreshFleet(true); }
+    }
     fleetUi.scanTimer = window.setTimeout(check, 500);
   };
   fleetUi.scanTimer = window.setTimeout(check, 500);
@@ -4774,7 +4784,7 @@ function renderFleet(view: HTMLElement): void {
       <div id="fl-onair" class="fl-onair" hidden></div>
       <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-cards" class="fl-cards"></div><div id="fl-calls" class="fl-calls"></div>${wide ? '' : mapHtml}<div id="fl-grants" class="fl-grants"></div><div id="fl-freqs" class="fl-freqs"></div>${wide ? '' : '<div id="fl-detail" class="mt-detail" hidden></div>'}</div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
-      <div class="note">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call: the channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, and the DMR privacy bit and header; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, hold and priority are per talkgroup. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands and stays where it finds a system. Tap anything for all it carried.</div>
+      <div class="note">Trunked radio systems and their calls, receive only. P25 Phase 1 (C4FM and CQPSK simulcast) and DMR: every carrier in the span is found and the live ones decoded at once; systems are named by what they send (WACN, system, RFSS, site, NAC; DMR color code and network, the CW ID callsign). Grants resolve to MHz through the channel tables on the air; Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, its voice channel followed when it is inside the span: P25 voice frames and terminators, DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear P25 Phase 1 and DMR calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call: the channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, and the DMR privacy bit and header; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, hold and priority are per talkgroup. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. Tap anything for all it carried.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-flband]', view).forEach(b => b.onclick = () => fleetSetBand(b.dataset.flband!));
@@ -4859,7 +4869,7 @@ const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span cl
 function fleetHead(s: FleetSnap | null, now: number): string {
   const sites = s ? s.systems.reduce((n, x) => n + x.sites.length, 0) : 0, units = s?.units.length ?? 0, live = s ? s.carriers.filter(c => c.hz > s.spanLo && c.hz < s.spanHi && now - c.lastMs < 4_000) : [];
   const w = fleetUi.windows[fleetUi.idx], c = s?.centerHz ?? w?.hz ?? 0, band = FLEET_BANDS.find(b => c >= b[2] - 2e6 && c <= b[3] + 2e6) ?? FLEET_BANDS.find(b => b[0] === w?.band);
-  const scan = fleetUi.visit ? `CHECKING POSITIONS · BACK IN ${Math.max(0, Math.ceil((fleetUi.visit.until - now) / 1000))} s` : fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : 'HOLDING';
+  const scan = fleetUi.visit ? `CHECKING POSITIONS · BACK IN ${Math.max(0, Math.ceil((fleetUi.visit.until - now) / 1000))} s` : fleetUi.lock ? 'LOCKED' : fleetUi.windows.length > 1 ? (fleetAuto?.mode === 'hold' ? `${fleetUi.band === 'AUTO' ? 'AUTO' : 'SCAN'} · HOLDING WHERE THE VOICE IS` : fleetAuto?.mode === 'look' ? `LOOKING AROUND · BACK IN ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s` : `${fleetUi.band === 'AUTO' ? 'AUTO SCAN' : 'SCAN'} · ${fleetUi.idx + 1}/${fleetUi.windows.length} · ${fleetUi.found ? 'STAYING' : 'NEXT'} ${Math.max(0, Math.ceil((fleetUi.dwellEnd - now) / 1000))} s`) : 'HOLDING';
   const span = s ? `${fleetMhz(s.spanLo, 3)}–${fleetMhz(s.spanHi, 3)} MHz` : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const onAir = s?.calls.filter(c => c.onAir && c.kind === 'call' && !c.outside).length ?? 0;
@@ -5089,12 +5099,14 @@ function refreshFleet(force = false): void {
   // calls outside the lock are left out of the stack and counted
   // encrypted calls fold into one line under the cards: they never push a clear call out of the stack
   const all = s ? onAirOrder(s.calls, s.playing, now).filter(c => !c.outside) : [];
-  const stack = all.filter(c => !c.encrypted), locked = all.filter(c => c.encrypted && c.onAir);
+  const quiet = s ? all.filter(c => c.onAir && unnamedQuiet(c, s.playing)) : [];
+  const stack = all.filter(c => !c.encrypted && !quiet.includes(c)), locked = all.filter(c => c.encrypted && c.onAir);
   const others = s ? s.calls.filter(c => c.onAir && c.kind === 'call' && c.outside).length : 0;
   const onMap = view === 'map' && !FLEET_WIDE.matches, max = onMap ? 2 : 4;
-  air.hidden = (!stack.length && !others && !locked.length) || view === 'log';
+  air.hidden = (!stack.length && !others && !locked.length && !quiet.length) || view === 'log';
   air.classList.toggle('onmap', onMap);
   if (!air.hidden && s) flipRender(air, stack.slice(0, max).map(c => dispatchOnAirCard(c, s, now)).join('') + (stack.length > max ? `<div class="fl-dim">${stack.length - max} more on the air</div>` : '') + (locked.length ? `<div class="fl-encrow"><small>ENCRYPTED ON THE AIR</small>${locked.map(c => `<span data-flsel="${c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`}">${esc(dispatchWho(c))}<i>${esc(secText(c).replace(/^ENCRYPTED( · )?/, '') || 'encrypted')}</i></span>`).join('')}</div>` : '')
+    + (quiet.length ? `<div class="fl-dim">${quiet.length} more with no talkgroup or audio yet (${[...new Set(quiet.map(c => c.proto))].join(', ')})</div>` : '')
     + (others ? `<div class="fl-dim">${others} on other systems, not heard while locked</div>` : ''));
   mode.innerHTML = segHtml([`<button data-flmode="all" class="${fleetUi.lock ? '' : 'on'}">ALL</button>`, `<button data-flmode="lock" class="${fleetUi.lock ? 'on' : ''}">LOCK</button>`])
     + (fleetUi.lock ? `<button class="fl-lockbar" data-flunlock="1" title="tap to hear every system again"><small>LOCKED ON</small><b>${esc(fleetUi.lock.label)}</b><em>UNLOCK</em></button>` : '<span class="fl-dim">every system, first call to talk is heard</span>');

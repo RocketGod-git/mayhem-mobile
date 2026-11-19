@@ -65,6 +65,12 @@ export function onAirOrder(calls: CallRow[], playing: string, now: number): Call
   const rank = (c: CallRow) => c.outside ? 4 : c.emergency ? 0 : c.key === playing ? 1 : c.onAir ? 2 : 3;
   return shown.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c) - rank(b.c) || (a.c.emergency && b.c.emergency ? b.c.startMs - a.c.startMs : a.i - b.i)).map(x => x.c);
 }
+/**
+ * A card with nothing to hear or name: no talkgroup read and no audio, not the call being heard and not an emergency.
+ * These fold into one line under the stack, like the encrypted calls, so they never push a call with audio out.
+ */
+export const unnamedQuiet = (c: Pick<CallRow, 'tg' | 'audioMs' | 'key' | 'emergency' | 'encrypted'>, playing: string) =>
+  !c.encrypted && !c.tg && c.audioMs <= 0 && c.key !== playing && !c.emergency;
 /** What the now-playing bar names, or null when nothing is heard. */
 export function nowPlaying(calls: CallRow[], playing: string): CallRow | null {
   return playing ? calls.find(c => c.key === playing && c.onAir) ?? null : null;
