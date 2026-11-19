@@ -286,7 +286,7 @@ fun UatScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.uatLog, tag = "FLIGHT WX", title = "FLIGHT WEATHER · UAT 978 MHZ", tunable = false, emptyKey = "uat", waterfall = wf,
+    PacketFrame(accent, Apps.uatLog, tag = "FLIGHT UAT", title = "FLIGHT WEATHER · UAT 978 MHZ", tunable = false, emptyKey = "uat", waterfall = wf,
         onWaterfall = { Apps.setWaterfall(MayhemApp.UAT, !wf) },
         lamp = {
             if (snap.up > 0 || snap.down > 0) Lamp("RECEIVING", Palette.ok)

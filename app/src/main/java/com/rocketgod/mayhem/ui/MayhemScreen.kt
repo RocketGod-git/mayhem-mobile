@@ -163,7 +163,7 @@ internal fun barLabel(app: MayhemApp): String = when (app) {
     MayhemApp.LOOKING_GLASS -> "GLASS"
     MayhemApp.SAT -> "SATS"
     MayhemApp.TRANSMIT -> "TX"
-    MayhemApp.UAT -> "FLIGHT WX"
+    MayhemApp.UAT -> "FLIGHT UAT"
     MayhemApp.ERT -> "METERS"
     MayhemApp.ACARS -> "AIRLINE MSGS"
     MayhemApp.SONDES -> "BALLOONS"
