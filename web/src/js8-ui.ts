@@ -4,8 +4,10 @@
  */
 import { GeoMap, type GeoItem, mapStart, lastKnownPos, zoneGuess } from './geomap.js';
 import { distanceBearing, gridToLatLon } from './callsign.js';
-import { JS8_DIALS, JS8_MODES, TX_MAX_HZ, TX_MIN_HZ, frameSeconds, js8Mode, symSamples, type Js8Speed } from './dsp/js8/modes.js';
-import { Assembler, buildFrames, cleanText, isStandardCall, parseMessage, codeBits, DATA_BITS, type Js8Meaning, type Js8Message } from './dsp/js8/message.js';
+import { HB_HI_HZ, HB_LO_HZ, JS8_DIALS, JS8_MODES, TX_MAX_HZ, TX_MIN_HZ, frameSeconds, js8Mode, symSamples, type Js8Speed } from './dsp/js8/modes.js';
+import { Assembler, isStandardCall, parseMessage, unpackFrame, type Js8Meaning, type Js8Message } from './dsp/js8/message.js';
+import { buildMessageFrames, isValidCallsign, jscReady, loadJsc } from './dsp/js8/varicode.js';
+import type { Frame } from './dsp/js8/codec.js';
 import { frameTones } from './dsp/js8/codec.js';
 import { toneTrack } from './dsp/js8/synth.js';
 import type { Js8Decode } from './dsp/js8/decoder.js';
@@ -61,7 +63,7 @@ const st = {
   stations: new Map<string, Js8Station>(), entries: [] as Js8Entry[], activity: [] as Activity[], read: {} as Record<string, number>,
   view: 'chat' as View, room: '', sel: '' as string, target: '', draft: '',
   wf: [] as { ms: number; row: Uint8Array }[], marks: [] as { ms: number; hz: number; label: string; mode: Js8Speed }[],
-  queue: [] as { at: number; label: string; tones: Uint8Array; speed: Js8Speed; entry: string; last: boolean }[],
+  queue: [] as { at: number; label: string; tones: Uint8Array; speed: Js8Speed; entry: string; last: boolean; hz?: number }[],
   hold: false, wired: false, timer: 0, spy: null as (() => void) | null, geo: null as GeoMap | null, saveAt: 0, status: '',
 };
 const asm = new Assembler();
@@ -177,37 +179,50 @@ const forMe = (e: Js8Entry) => { const my = me(); return !!my && (e.meaning.to =
 // ---- sending -------------------------------------------------------------------------------------------------------
 function nextSlot(speed: Js8Speed, now = Date.now()): number { const P = js8Mode(speed).period * 1000; return Math.ceil((now + 300) / P) * P; }
 /** What SEND would do with the target and text now, or why it cannot. */
-function plan(target: string, text: string): { frames: ReturnType<typeof buildFrames>; why: string } {
+function plan(target: string, text: string): { frames: Frame[] | null; why: string; line: string } {
   const call = me();
-  if (!call) return { frames: null, why: 'set your callsign in Settings, STATION' };
-  if (!isStandardCall(call)) return { frames: null, why: `${call} needs JS8's compound callsign frames` };
-  const body = cleanText(text);
-  if (target === 'HB SNR') return { frames: null, why: '' };
-  if (!target || target === 'BAND') {
-    if (!body) return { frames: null, why: '' };
-    const withId = /\bDE [A-Z0-9/]+$/.test(body) || body.includes(call) ? body : `${body} DE ${call}`;
-    return { frames: buildFrames({ kind: 'text', text: withId }), why: '' };
+  if (!call) return { frames: null, why: 'set your callsign in Settings, STATION', line: '' };
+  if (!isValidCallsign(call).valid) return { frames: null, why: `${call} is not a callsign JS8 can send`, line: '' };
+  if (!jscReady()) { void loadJsc('assets/js8-jsc.json').then(() => refresh(true)).catch(() => undefined); return { frames: null, why: 'loading the JS8 dictionary', line: '' }; }
+  const body = text.toUpperCase().replace(/\s+/g, ' ').trim();
+  let line: string;
+  if (target === 'HB') line = `@HB HEARTBEAT ${grid4()}`.trim();
+  else if (target === 'CQ') line = `CQ CQ CQ ${grid4()}`.trim();
+  else if (target === 'HB SNR') return { frames: null, why: '', line: '' };
+  else if (!target || target === 'BAND') {
+    if (!body) return { frames: null, why: '', line: '' };
+    line = /\bDE [A-Z0-9/]+$/.test(body) || body.includes(call) ? body : `${body} DE ${call}`;
+  } else {
+    if (!isValidCallsign(target).valid) return { frames: null, why: `${target} is not a callsign or group`, line: '' };
+    line = `${target} ${body}`.trim();
   }
-  if (isGroup(target)) return { frames: null, why: `sending to ${target} needs JS8's group frames` };
-  if (!isStandardCall(target)) return { frames: null, why: `${target} needs JS8's compound callsign frames` };
-  return { frames: buildFrames({ kind: 'directed', from: call, to: target, text: body }), why: '' };
+  const frames = buildMessageFrames(call, grid4(), '', line, st.txSpeed);
+  return frames.length ? { frames, why: '', line } : { frames: null, why: 'nothing JS8 can send in that', line };
 }
-function send(kind: 'text' | 'hbsnr', target: string, text: string, snr = 0): void {
+const grid4 = (): string => (host?.station().grid ?? '').slice(0, 4).toUpperCase();
+/** How a frame list reads on the air, exactly as a receiver shows it. */
+const asShown = (frames: Frame[]): string => frames.map(f => unpackFrame(f).text ?? '').join('').replace(/\s+/g, ' ').trim();
+function send(kind: 'text' | 'hbsnr' | 'hb' | 'cq', target: string, text: string, snr = 0): void {
   if (!host) return;
   const why = host.txReady();
   if (why) { status(why); return; }
   if (host.tx.needsPrompt) { host.showTxSafetyPrompt(); return; }
   const call = me();
-  const frames = kind === 'hbsnr' ? buildFrames({ kind: 'hbsnr', from: call, to: target, snr }) : plan(target, text).frames;
-  if (!frames) { status(plan(target, text).why || 'nothing to send'); return; }
+  const p = kind === 'hbsnr' ? plan(target, `HEARTBEAT SNR ${snr < 0 ? '-' : '+'}${String(Math.abs(Math.round(snr))).padStart(2, '0')}`)
+    : kind === 'hb' ? plan('HB', '') : kind === 'cq' ? plan('CQ', '') : plan(target, text);
+  const frames = p.frames;
+  if (!frames) { status(p.why || 'nothing to send'); return; }
   const speed = st.txSpeed, m = js8Mode(speed);
   const first = nextSlot(speed);
   const id = `tx-${first}`;
-  const shown = kind === 'hbsnr' ? `${call}: ${target} HEARTBEAT SNR ${snr < 0 ? '-' : '+'}${String(Math.abs(snr)).padStart(2, '0')}` : target && target !== 'BAND' ? `${call}: ${target} ${cleanText(text)}` : cleanText(text);
-  st.entries.push({ id, ms: first, mode: speed, hz: st.txHz, snr: 0, dt: 0, text: shown, complete: true, frames: frames.length, mine: true, state: 'queued', meaning: parseMessage(shown) });
-  frames.forEach((f, k) => st.queue.push({ at: first + k * m.period * 1000 + m.delay * 1000, label: `JS8 ${m.label} ${k + 1}/${frames.length}`, tones: frameTones(f, m.costas), speed, entry: id, last: k === frames.length - 1 }));
-  st.draft = ''; const tf = document.getElementById('j8-text') as HTMLInputElement | null; if (tf) tf.value = '';
-  status(`${frames.length} frame${frames.length > 1 ? 's' : ''} · ${m.label} · ${Math.round(st.txHz)} Hz · starts ${new Date(first).toISOString().slice(11, 19)} UTC`);
+  // heartbeats and CQs go in the heartbeat part of the passband, the way JS8 stations listen for them
+  const hz = kind === 'hb' || kind === 'cq' ? HB_LO_HZ + Math.random() * (HB_HI_HZ - HB_LO_HZ) : st.txHz;
+  const shown = asShown(frames);
+  st.entries.push({ id, ms: first, mode: speed, hz, snr: 0, dt: 0, text: shown, complete: true, frames: frames.length, mine: true, state: 'queued', meaning: parseMessage(shown) });
+  frames.forEach((f, k) => st.queue.push({ at: first + k * m.period * 1000 + m.delay * 1000, label: `JS8 ${m.label} ${k + 1}/${frames.length}`, tones: frameTones(f, m.costas), speed, entry: id, last: k === frames.length - 1, hz }));
+  if (kind === 'text') { st.draft = ''; const tf = document.getElementById('j8-text') as HTMLInputElement | null; if (tf) tf.value = ''; }
+  status(`${frames.length} frame${frames.length > 1 ? 's' : ''} · ${m.label} · ${Math.round(hz)} Hz · starts ${new Date(first).toISOString().slice(11, 19)} UTC`);
+  void call;
   save(0); refresh(true);
 }
 function pump(now: number): void {
@@ -223,7 +238,7 @@ function pump(now: number): void {
     return;
   }
   const m = js8Mode(q0.speed), rate = 12_000;
-  const ok = host.tx.js8(q0.label, st.dial + st.txHz, toneTrack(q0.tones, m, rate), rate, Math.round(m.symbol * rate));
+  const ok = host.tx.js8(q0.label, st.dial + (q0.hz ?? st.txHz), toneTrack(q0.tones, m, rate), rate, Math.round(m.symbol * rate));
   if (e) e.state = ok ? (q0.last ? 'sent' : 'sending') : 'failed';
   if (!ok) { for (let i = st.queue.length - 1; i >= 0; i--) if (st.queue[i].entry === q0.entry) st.queue.splice(i, 1); }
   refresh(true);
@@ -326,6 +341,8 @@ function onClick(ev: Event): void {
     case 'rooms': st.room = ''; break;
     case 'send': send('text', st.target, (document.getElementById('j8-text') as HTMLInputElement | null)?.value ?? st.draft); return;
     case 'hbsnr': { const s = st.stations.get(val); if (s) send('hbsnr', s.call, '', s.snr); return; }
+    case 'hb': send('hb', '', ''); return;
+    case 'cq': send('cq', '', ''); return;
     case 'follow': if (followed(val)) st.follow = st.follow.filter(x => x !== val); else st.follow.push(val); save(0); break;
     case 'delgroup': if (!BUILTIN_GROUPS.includes(val)) { st.groups = st.groups.filter(x => x !== val); st.follow = st.follow.filter(x => x !== val); save(0); } break;
     case 'addgroup': addGroup((document.getElementById('j8-addgroup') as HTMLInputElement | null)?.value ?? ''); return;
@@ -349,7 +366,7 @@ function budget(): void {
   const p = plan(st.target, st.draft);
   if (p.why) { el.textContent = p.why; return; }
   const n = p.frames?.length ?? 0, m = js8Mode(st.txSpeed);
-  el.textContent = n ? `${n} frame${n > 1 ? 's' : ''} · ${Math.round(n * m.period)} s at ${m.label}` : `${Math.floor(DATA_BITS / Math.max(1, codeBits('E')))} characters fit one frame at best`;
+  el.textContent = n ? `${n} frame${n > 1 ? 's' : ''} · ${Math.round(n * m.period)} s at ${m.label}` : 'type a message';
 }
 
 export function refreshJs8(force = false): void { refresh(force); }
@@ -412,6 +429,7 @@ function composeHtml(): string {
   const esc = host!.esc;
   return `<div class="row"><select id="j8-target" class="txin">${targetOptions()}</select><select id="j8-txspeed" class="txin">${JS8_MODES.map(m => `<option value="${m.id}" ${m.id === st.txSpeed ? 'selected' : ''}>${m.label}</option>`).join('')}</select></div>
     <div class="row"><input id="j8-text" class="txin" placeholder="message" value="${esc(st.draft)}" autocapitalize="characters" spellcheck="false"><button class="chip primary" data-j8do="send">SEND</button></div>
+    <div class="row j8-quick"><button class="chip" data-j8do="hb">HEARTBEAT</button><button class="chip" data-j8do="cq">CQ</button></div>
     <div class="row j8-txrow"><span id="j8-budget" class="j8-budget"></span><span class="j8-off"><button class="chip" data-j8do="tx:-50">−</button><b id="j8-txhz">TX ${Math.round(st.txHz)} Hz</b><button class="chip" data-j8do="tx:50">+</button></span></div>
     <div id="j8-status" class="health">${esc(st.status)}</div>`;
 }

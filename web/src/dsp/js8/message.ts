@@ -9,6 +9,7 @@
  */
 import { FLAG_FIRST, FLAG_LAST, type Frame } from './codec.js';
 import { HUFFMAN } from './tables.js';
+import { decodeFrame, checksum16, checksum32 } from './varicode.js';
 
 export type FrameKind = 'heartbeat' | 'compound' | 'compoundDirected' | 'directed' | 'data' | 'compressed';
 export interface Js8Frame {
@@ -60,7 +61,6 @@ export const isStandardCall = (c: string): boolean => packCall(c) >= 0;
 /** The low 6 bits hold SNR + 31 (0 = no number), -30..+30 dB. */
 export const snrToExtra = (snr: number): number => Math.max(-30, Math.min(30, Math.round(snr))) + 31;
 export const extraToSnr = (x: number): number | undefined => { const v = x & 63; return v === 0 ? undefined : v - 31; };
-const fmtSnr = (s: number) => `${s < 0 ? '-' : '+'}${String(Math.abs(s)).padStart(2, '0')}`;
 
 // ---- character code ---------------------------------------------------------------------------------------------------
 const CODE_OF = new Map<string, string>(Object.entries(HUFFMAN));
@@ -72,30 +72,14 @@ export const encodable = (ch: string): boolean => CODE_OF.has(ch);
 export function cleanText(t: string): string { return [...t.toUpperCase().replace(/\s+/g, ' ')].filter(encodable).join(''); }
 export const DATA_BITS = 69;
 export function codeBits(t: string): number { let n = 0; for (const ch of t) n += CODE_OF.get(ch)?.length ?? 0; return n; }
-function decodeCodes(bits: Uint8Array, from: number, to: number): string | null {
-  let s = '', n = ROOT;
-  for (let i = from; i < to; i++) { const nx = n.k[bits[i]]; if (!nx) return null; n = nx; if (n.c !== undefined) { s += n.c; n = ROOT; } }
-  return n === ROOT ? s : null;
-}
 
 // ---- frames ---------------------------------------------------------------------------------------------------------
 export function unpackFrame(f: Frame): Js8Frame {
-  const p = f.payload;
-  if (p[0] === 1) {
-    if (p[1] === 1) return { kind: 'compressed', flags: f.flags };
-    let end = 71; while (end >= 2 && p[end] === 1) end--;
-    if (end < 2 || p[end] !== 0) return { kind: 'data', flags: f.flags, text: '' };
-    return { kind: 'data', flags: f.flags, text: decodeCodes(p, 2, end) ?? '' };
-  }
-  const type = getBits(p, 0, 3);
-  if (type === 3) {
-    const from = unpackCall(getBits(p, 3, 28)), to = unpackCall(getBits(p, 31, 28)), cmd = getBits(p, 59, 5), extra = getBits(p, 64, 8);
-    const name = COMMANDS[cmd];
-    const snr = cmd === CMD_HB_SNR ? extraToSnr(extra) : undefined;
-    const head = `${from}: ${to}${name === undefined ? ` CMD${cmd}` : name ? ` ${name}` : ''}${snr !== undefined ? ` ${fmtSnr(snr)}` : ''}`;
-    return { kind: 'directed', flags: f.flags, from, to, cmd, extra, snr, text: head };
-  }
-  return { kind: type === 0 ? 'heartbeat' : type === 1 ? 'compound' : 'compoundDirected', flags: f.flags };
+  // Every frame type is read by the protocol layer; its text is what JS8 shows for that frame.
+  const d = decodeFrame(f);
+  if (!d) return { kind: 'data', flags: f.flags, text: '' };
+  const p = f.payload, extra = d.kind === 'directed' ? getBits(p, 64, 8) : undefined, cmd = d.kind === 'directed' ? getBits(p, 59, 5) : undefined;
+  return { kind: d.kind, flags: f.flags, from: d.from, to: d.to, cmd, extra, snr: d.snr, text: d.text };
 }
 
 export function packDirected(from: string, to: string, cmd: number, extra: number, flags: number): Frame | null {
@@ -152,6 +136,15 @@ export interface Js8Meaning {
   dest?: string;
   msgId?: number;
   command?: string;
+  /** For checksummed commands: whether the text's checksum matched (undefined when none was sent). */
+  checked?: boolean;
+}
+/** Buffered commands carry a checksum after their text: a 16-bit one as 3 characters, a 32-bit one as 6. */
+function stripChecksum(body: string): { body: string; ok?: boolean } {
+  const m = /^(.*\S)\s+(\S{3}|\S{6})$/s.exec(body); if (!m) return { body };
+  if (m[2].length === 3 && checksum16(m[1]) === m[2]) return { body: m[1], ok: true };
+  if (m[2].length === 6 && checksum32(m[1]) === m[2]) return { body: m[1], ok: true };
+  return { body };
 }
 const QUERIES = ['SNR?', 'GRID?', 'INFO?', 'STATUS?', 'HEARING?', 'AGN?', 'QSL?', 'HW CPY?'];
 const GRID_RE = /^[A-R]{2}[0-9]{2}([A-X]{2}([0-9]{2})?)?$/i;
@@ -161,7 +154,7 @@ const GRID_RE = /^[A-R]{2}[0-9]{2}([A-X]{2}([0-9]{2})?)?$/i;
  * MSG, MSG TO:CALL, QUERY MSGS, QUERY MSG n, and ACK.
  */
 export function parseMessage(text: string): Js8Meaning {
-  const t = text.replace(/♢/g, '').trim();
+  const t = text.replace(/♢/g, '').replace(/>\s+/g, '>').trim();
   const m = /^([A-Z0-9/]+):\s*(.*)$/s.exec(t);
   if (!m) return { kind: 'text', from: '', to: '', body: t };
   const from = m[1]; let rest = m[2].trim();
@@ -184,14 +177,15 @@ export function parseMessage(text: string): Js8Meaning {
   }
   if (first === '@HB' || /^HEARTBEAT\b/.test(rest) || /^HB\b/.test(rest)) return { ...out, kind: 'heartbeat', grid, command: 'HEARTBEAT' };
   let mm: RegExpExecArray | null;
-  if ((mm = /^MSG TO:\s*([A-Z0-9/]+)\s*(.*)$/s.exec(rest))) return { ...out, kind: 'msgto', dest: mm[1], body: mm[2].trim(), command: 'MSG TO:' };
-  if ((mm = /^MSG\s+(.*)$/s.exec(rest))) return { ...out, kind: 'msg', body: mm[1].trim(), command: 'MSG' };
+  if ((mm = /^MSG TO:\s*([A-Z0-9/]+)\s*(.*)$/s.exec(rest))) { const c = stripChecksum(mm[2].trim()); return { ...out, kind: 'msgto', dest: mm[1], body: c.body, checked: c.ok, command: 'MSG TO:' }; }
+  if ((mm = /^MSG\s+(.*)$/s.exec(rest))) { const c = stripChecksum(mm[1].trim()); return { ...out, kind: 'msg', body: c.body, checked: c.ok, command: 'MSG' }; }
   if (/^QUERY MSGS\b/.test(rest)) return { ...out, kind: 'querymsgs', body: '', command: 'QUERY MSGS' };
   if ((mm = /^QUERY MSG\s+(\d+)/.exec(rest))) return { ...out, kind: 'querymsg', msgId: Number(mm[1]), body: '', command: 'QUERY MSG' };
   if (/^ACK\b/.test(rest)) return { ...out, kind: 'ack', command: 'ACK' };
   if ((mm = /^SNR\s+([+-]?\d+)/.exec(rest))) return { ...out, kind: 'snr', snr: Number(mm[1]), command: 'SNR' };
   const q = QUERIES.find(x => rest === x || rest.startsWith(x + ' '));
   if (q) return { ...out, kind: 'query', command: q };
+  if (first === '@ALLCALL' && /^CQ\b/.test(rest)) return { ...out, kind: 'cq', to: '@CQ', grid };
   if (first === '@ALLCALL') return { ...out, kind: 'allcall', grid };
   if (first.startsWith('@')) return { ...out, kind: 'group', grid };
   return { ...out, kind: 'directed', grid };
@@ -221,16 +215,13 @@ export class Assembler {
       this.open.push(o);
     }
     o.lastMs = p.slotMs; o.frames++; o.snr.push(p.snr); o.dt.push(p.dt); o.hz = (o.hz * (o.frames - 1) + p.hz) / o.frames;
-    if (f.kind === 'directed') o.head = o.head ? o.head : f.text ?? '';
-    else if (f.kind === 'data') o.body += f.text ?? '';
-    else if (f.kind === 'compressed') o.body += '';
-    if (f.kind === 'directed' && o.frames > 1 && o.head !== f.text) o.body += ` ${f.text}`;
+    o.body += f.text ?? '';
     if (f.flags & FLAG_LAST) this.close(o, true);
     else this.emit(o, false);
   }
   /** Close transmissions that have gone quiet. */
   tick(nowMs: number): void { for (const o of [...this.open]) if (nowMs - o.lastMs > Math.max(60_000, 3 * o.period * 1000)) this.close(o, false); }
-  private text(o: Open): string { const b = o.body.replace(/\s+/g, ' '); return o.head ? `${o.head}${b ? (o.head.endsWith(' ') ? '' : ' ') + b.trimStart() : ''}`.trim() : b.trim(); }
+  private text(o: Open): string { return o.body.replace(/\s+/g, ' ').trim(); }
   private emit(o: Open, complete: boolean): void {
     const text = this.text(o);
     const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / Math.max(1, a.length);

@@ -49,6 +49,7 @@ import { GeoscanDecoder } from './dsp/geoscan.js';
 import { CwDecoder, RttyDecoder, Psk31Decoder, type DigitalDecoder } from './dsp/ham/digital.js';
 import { Ft8Decoder } from './dsp/ham/ft8.js';
 import { Js8Decoder, type Js8Decode } from './dsp/js8/decoder.js';
+import { loadJsc } from './dsp/js8/varicode.js';
 import { DmrDecoder } from './dsp/ham/dmr.js';
 import { SstvDecoder } from './dsp/ham/sstv.js';
 import { AptDecoder } from './dsp/ham/apt.js';
@@ -492,6 +493,8 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'ham': js8On = false; if (ham.digital.includes(js8 as unknown as DigitalDecoder)) ham.digital = []; return ham;
     case 'js8': {
       js8On = true; js8.reset();
+      // compressed text needs the JS8 dictionary; it is fetched once, the first time JS8 runs
+      void loadJsc(new URL('../assets/js8-jsc.json', self.location.href).href).catch(() => undefined);
       if (m.speeds) js8.enabled = { ...js8.enabled, ...(m.speeds as Record<string, boolean>) };
       ham.digital = [js8 as unknown as DigitalDecoder];
       return ham;

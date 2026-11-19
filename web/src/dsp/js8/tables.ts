@@ -49,12 +49,12 @@ export const LDPC_NM = new Uint8Array([
 /** The 12 six-bit characters of a frame's 72-bit field. */
 export const ALPHABET72 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-+';
 
-/** JS8Call User Guide, Appendix A: the character code of uncompressed data frames. */
+/** The JS8 character code of uncompressed (Huffman) data frames. */
 export const HUFFMAN: Readonly<Record<string, string>> = {
   ' ': '01', E: '100', T: '1101', A: '0011', O: '11111', I: '11100', N: '10111', S: '10100', H: '00011', R: '00000',
   D: '111011', L: '110011', C: '110001', U: '101101', M: '101011', W: '001011', F: '001001', G: '000101', Y: '000011',
   P: '1111011', B: '1111001', '.': '1110100', V: '1100101', K: '1100100', '-': '1100001', '+': '1100000', '?': '1011001',
-  '!': '1011000', '\\': '1010101', X: '1010100', '0': '0010101', J: '0010100', '1': '0010001', Q: '0010000', '2': '0001001',
+  '!': '1011000', '"': '1010101', X: '1010100', '0': '0010101', J: '0010100', '1': '0010001', Q: '0010000', '2': '0001001',
   Z: '0001000', '3': '0000101', '5': '0000100', '4': '11110101', '9': '11110100', '8': '11110001', '6': '11110000',
   '7': '11101011', '/': '11101010',
 };
