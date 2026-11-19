@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -218,10 +219,14 @@ fun FleetScreen(accent: Color) {
     }
 
     @Composable
-    fun fleetMap(modifier: Modifier) {
+    fun fleetMap(modifier: Modifier, page: androidx.compose.foundation.lazy.LazyListState? = null) {
+        val mapScope = rememberCoroutineScope()
         Box(modifier) {
             val pu = pins.firstOrNull { "unit:${it.key}" == sel }
             GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = fix, selected = pu?.key, layers = GeoLayers(shapes = trails),
+                // on the phone page one finger scrolls past the map, two move it
+                twoFinger = page != null, onPageDrag = page?.let { l -> { dy: Float -> l.dispatchRawDelta(-dy); Unit } },
+                onPageFling = page?.let { l -> { vy: Float -> mapScope.launch { l.animateScrollBy(-vy * 0.3f, androidx.compose.animation.core.tween(450, easing = androidx.compose.animation.core.LinearOutSlowInEasing)) }; Unit } },
                 start = remember { mapStart(Geo.fix.value) }, focus = focusAt ?: pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true, fitPins = true,
                 fallback = { Geo.fix.value ?: Geo.lastKnownPos() ?: Geo.zoneGuess() },
                 // unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them
@@ -337,7 +342,7 @@ fun FleetScreen(accent: Color) {
                             }
                             idx++
                             starts[0] = idx; item(key = "map:head") { FlSecHead(FL_SECTIONS[0].second) }; idx++
-                            item(key = "map:map") { fleetMap(Modifier.fillMaxWidth().height(mapH)) }; idx++
+                            item(key = "map:map") { fleetMap(Modifier.fillMaxWidth().height(mapH), list) }; idx++
                             starts[1] = idx; item(key = "sys:head") { FlSecHead(FL_SECTIONS[1].second) }; idx++
                             if (s == null || s.systems.isEmpty()) { item(key = "sys:empty") { EmptyState("fleet", Modifier.fillMaxWidth().height(d.dp(280f)).panel(), accent) }; idx++ }
                             else { items(s.systems, key = { "sys:${it.key}" }) { x -> SystemCard(x, s, now, sel == "sys:${x.key}", lock, colorOf, acts) }; idx += s.systems.size }
