@@ -38,6 +38,16 @@ object Tx {
     private val _needsPrompt = MutableStateFlow(true)
     val needsPrompt: StateFlow<Boolean> = _needsPrompt.asStateFlow()
     fun acknowledgeSafety() { _needsPrompt.value = false }
+    /** The safety prompt is due again, as at the start of a session. */
+    internal fun armSafety() { _needsPrompt.value = true }
+
+    /** Where a transmission goes: the HackRF's bulk-OUT pipe. The tests put a stand-in radio here. */
+    interface Pipe { val running: Boolean; fun transmit(job: HackRfOne.TxJob): Boolean; fun abort() }
+    @Volatile internal var pipe: Pipe = object : Pipe {
+        override val running get() = HackRfOne.running
+        override fun transmit(job: HackRfOne.TxJob) = HackRfOne.transmit(job)
+        override fun abort() = HackRfOne.abortTx()
+    }
 
     /**
      * A Flipper .sub handed over by another app (the Analyzer's SEND TO TX) for the SubGHz tab to load: the file, the
@@ -50,9 +60,9 @@ object Tx {
     fun handOff(h: SubHandoff?) { _handoff.value = h }
 
     fun load(ctx: Context) { _enabled.value = ctx.getSharedPreferences("mayhem", Context.MODE_PRIVATE).getBoolean("tx_enabled", true) }
-    fun setEnabled(ctx: Context, on: Boolean) {
+    fun setEnabled(ctx: Context?, on: Boolean) {
         _enabled.value = on
-        ctx.getSharedPreferences("mayhem", Context.MODE_PRIVATE).edit().putBoolean("tx_enabled", on).apply()
+        ctx?.getSharedPreferences("mayhem", Context.MODE_PRIVATE)?.edit()?.putBoolean("tx_enabled", on)?.apply()
         if (!on) stop()
     }
     fun setGain(db: Int) { _gain.value = db.coerceIn(0, 47) }
@@ -63,18 +73,18 @@ object Tx {
         if (!_enabled.value) { _status.value = "transmit is switched off in Settings"; return false }
         if (_needsPrompt.value) { _status.value = "confirm the safety prompt first"; return false }
         if (!Radio.canTransmit) { _status.value = "${Radio.name} receives only — transmitting needs a HackRF"; return false }
-        if (!HackRfOne.running) { _status.value = "no HackRF"; return false }
+        if (!pipe.running) { _status.value = "no HackRF"; return false }
         if (_active.value) { _status.value = "already transmitting"; return false }
         val job = HackRfOne.TxJob(label, freqHz - offsetHz, rateHz, _gain.value, _amp.value, fill) { err ->
             _active.value = false
             _status.value = if (err == null) "done · $label" else "TX failed: $err"
             if (err != null) Diag.log("TX: $err")
         }
-        if (!HackRfOne.transmit(job)) { _status.value = "radio busy"; return false }
+        if (!pipe.transmit(job)) { _status.value = "radio busy"; return false }
         _active.value = true; _status.value = "TX · $label"
         return true
     }
-    fun stop() { HackRfOne.abortTx() }
+    fun stop() { pipe.abort() }
 
     /**
      * Push-to-talk FM voice from the microphone: pre-emphasis and a limiter on the voice, an optional CTCSS tone
@@ -154,6 +164,27 @@ object Tx {
                 buf[2 * i] = (a * cos(ph)).toInt().toByte(); buf[2 * i + 1] = (a * sin(ph)).toInt().toByte()
             }
             n * 2
+        }
+    }
+
+    /**
+     * One JS8 frame on USB: the carrier at [rfHz] (dial + audio offset of tone 0) moved by the frame's tone track,
+     * [track] being the offset in Hz at [trackRate] samples per second, with the frame's end ramps.
+     */
+    fun js8(label: String, rfHz: Long, track: FloatArray, trackRate: Int, symSamples: Int): Boolean {
+        val n = Math.round(track.size.toDouble() * RATE / trackRate).toInt(); val sps = Math.round(symSamples.toDouble() * RATE / trackRate).toInt()
+        var i = 0; var ph = 0.0
+        return start(label, rfHz, RATE, OFFSET_HZ) { buf ->
+            if (i >= n) return@start 0
+            val m = minOf(buf.size / 2, n - i)
+            for (k in 0 until m) {
+                val f = track[minOf(track.size - 1, (i.toLong() * trackRate / RATE).toInt())]
+                ph += 2 * PI * (OFFSET_HZ + f) / RATE; if (ph > 2 * PI) ph -= 2 * PI
+                val a = AMP * com.rocketgod.mayhem.core.js8.Js8Synth.rampAt(i, n, sps)
+                buf[2 * k] = Math.round(a * cos(ph)).toInt().toByte(); buf[2 * k + 1] = Math.round(a * sin(ph)).toInt().toByte()
+                i++
+            }
+            m * 2
         }
     }
 

@@ -24,6 +24,7 @@ import java.io.File
 /** The app menu — Mayhem's launcher grid, HackRF-DSP apps only (no games, no PortaPack-hardware apps). */
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
     HAM("HAM", "SSB · CW · repeaters", "Receive"),
+    JS8("JS8", "HF chat · groups", "Receive"),
     AUDIO("Audio", "WFM · NFM · AM · SSB", "Receive"),
     HD("HD Radio", "station data · art · traffic", "Receive"),
     DEVICES("Devices", "keys, remotes, TPMS", "Receive"),
@@ -432,6 +433,7 @@ object Apps {
         if (app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH) _sweep.value = null
         if (app != MayhemApp.AUDIO) Scanner.stop()
         if (app != MayhemApp.HAM) com.rocketgod.mayhem.core.ham.Ham.stopPtt()
+        if (app != MayhemApp.JS8) com.rocketgod.mayhem.core.js8.Js8.stop()
         if (app != MayhemApp.SAT) com.rocketgod.mayhem.core.sat.Sats.close()
         if (app != MayhemApp.PROWL) Prowl.stop()          // the hunt owns the receiver; anything else takes it back
         if (!(app == MayhemApp.PAGER && _pagerMulti.value)) com.rocketgod.mayhem.core.pager.PagerEngine.stop()
@@ -445,6 +447,7 @@ object Apps {
         val r = SdrEngine.IQ_RATE
         when (app) {
             MayhemApp.HAM -> com.rocketgod.mayhem.core.ham.Ham.open()
+            MayhemApp.JS8 -> com.rocketgod.mayhem.core.js8.Js8.open()
             MayhemApp.SAT -> com.rocketgod.mayhem.core.sat.Sats.open()
             MayhemApp.DEVICES -> com.rocketgod.mayhem.core.r433.Devices.open()
             // already listening (from the launcher, or back from Settings): carry on exactly where it is
@@ -565,6 +568,7 @@ object Apps {
         Scanner.stop()
         Prowl.stop()
         com.rocketgod.mayhem.core.ham.Ham.stopPtt()
+        com.rocketgod.mayhem.core.js8.Js8.stop()
         com.rocketgod.mayhem.core.sat.Sats.close()
         SdrEngine.watchSignals = true
         SdrEngine.deepQueue = false

@@ -110,6 +110,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.Tx.load(this)
         com.rocketgod.mayhem.core.NavBar.load(this)
         com.rocketgod.mayhem.core.Station.load(this)
+        com.rocketgod.mayhem.core.js8.Js8.init(this)
         com.rocketgod.mayhem.core.ham.Logbook.load(this)
         com.rocketgod.mayhem.core.sat.Tles.init(filesDir)
         com.rocketgod.mayhem.core.sonde.SondeHub.init(filesDir)

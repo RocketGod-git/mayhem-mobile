@@ -24,6 +24,7 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
         fun p(x: Float, y: Float) = Offset(ox + x * s, oy + y * s)
         fun Path.m(x: Float, y: Float) { val o = p(x, y); moveTo(o.x, o.y) }
         fun Path.l(x: Float, y: Float) { val o = p(x, y); lineTo(o.x, o.y) }
+        fun Path.q(cx: Float, cy: Float, x: Float, y: Float) { val c = p(cx, cy); val o = p(x, y); quadraticTo(c.x, c.y, o.x, o.y) }
         val path = Path()
         val circles = ArrayList<Triple<Float, Float, Float>>()
         var dot: Triple<Float, Float, Float>? = null
@@ -34,6 +35,14 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.3f, 0.36f); path.l(0.7f, 0.36f)
                 path.m(0.36f, 0.5f); path.l(0.64f, 0.5f)
                 path.m(0.34f, 0.92f); path.l(0.66f, 0.92f)
+            }
+            MayhemApp.JS8 -> {
+                // JS8: a chat bubble holding a run of 8-FSK tone steps
+                path.m(0.14f, 0.16f); path.l(0.86f, 0.16f); path.q(0.92f, 0.16f, 0.92f, 0.22f); path.l(0.92f, 0.60f); path.q(0.92f, 0.66f, 0.86f, 0.66f)
+                path.l(0.42f, 0.66f); path.l(0.24f, 0.84f); path.l(0.24f, 0.66f); path.l(0.14f, 0.66f); path.q(0.08f, 0.66f, 0.08f, 0.60f)
+                path.l(0.08f, 0.22f); path.q(0.08f, 0.16f, 0.14f, 0.16f); path.close()
+                path.m(0.20f, 0.50f); path.l(0.31f, 0.50f); path.l(0.31f, 0.32f); path.l(0.42f, 0.32f); path.l(0.42f, 0.44f); path.l(0.53f, 0.44f)
+                path.l(0.53f, 0.26f); path.l(0.64f, 0.26f); path.l(0.64f, 0.40f); path.l(0.75f, 0.40f); path.l(0.75f, 0.34f); path.l(0.82f, 0.34f)
             }
             MayhemApp.SAT -> {
                 // a body with two solar panels, and the arc of its downlink
