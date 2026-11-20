@@ -239,6 +239,9 @@ class Baseband {
      * the raw channel (the Analyzer's waterfall and IQ export). Off by default: nothing else needs them.
      */
     var keepIq = false
+    /** The decimated samples unrounded, interleaved I, Q, when [keepIqF] is set: a signal of a few LSB keeps its shape. */
+    var iqf = FloatArray(0); private set
+    var keepIqF = false
     private var envX = 0.0; private var envY = 0.0
     private var xr = 0.0; private var xi = 0.0; private var xf = 0.0; private var yf = 0.0
     private var i1 = 0; private var i2 = 0; private var q1 = 0; private var q2 = 0
@@ -256,7 +259,9 @@ class Baseband {
         if (env.size < cap) { env = ShortArray(cap); fm = ShortArray(cap) }
         val keep = keepIq
         if (keep && this.iq.size < cap * 2) this.iq = ByteArray(cap * 2)
-        val e = env; val f = fm; val out = this.iq
+        val keepF = keepIqF
+        if (keepF && iqf.size < cap * 2) iqf = FloatArray(cap * 2)
+        val e = env; val f = fm; val out = this.iq; val outF = iqf
         var ex = envX; var ey = envY
         var x1r = xr; var x1i = xi; var x1f = xf; var y1f = yf
         var a1 = i1; var a2 = i2; var b1 = q1; var b2 = q2
@@ -280,6 +285,7 @@ class Baseband {
                 out[2 * i] = (if (ir > 127) 127 else if (ir < -128) -128 else Math.round(ir).toInt()).toByte()
                 out[2 * i + 1] = (if (ii > 127) 127 else if (ii < -128) -128 else Math.round(ii).toInt()).toByte()
             }
+            if (keepF) { outF[2 * i] = ir.toFloat(); outF[2 * i + 1] = ii.toFloat() }
             // magnitude without a square root: 122/128 of the larger plus 51/128 of the smaller, full scale ≈ 16384
             val ax = abs(ir); val ay = abs(ii)
             val mag = if (ax > ay) 122 * ax + 51 * ay else 122 * ay + 51 * ax

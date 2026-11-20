@@ -113,6 +113,8 @@ object Devices {
     enum class Kind(val label: String, val group: Filter) {
         CAR_KEY("CAR KEY", Filter.KEY), REMOTE("REMOTE", Filter.REMOTE), TIRE("TIRE SENSOR", Filter.SENSOR), WEATHER("WEATHER", Filter.SENSOR),
         SECURITY("SECURITY", Filter.SENSOR), METER("METER", Filter.SENSOR), SENSOR("SENSOR", Filter.SENSOR), ZWAVE("Z-WAVE", Filter.SENSOR),
+        /** A DMR two-way radio system: under ALL only, since it is neither a key, a remote nor a sensor. */
+        RADIO("RADIO", Filter.ALL),
     }
     /** The filter row over the cards. */
     enum class Filter(val label: String) { ALL("ALL"), KEY("KEYS"), REMOTE("REMOTES"), SENSOR("SENSORS") }
@@ -125,7 +127,7 @@ object Devices {
 
     /** What a card calls the thing, from who decoded it and what its protocol says it is. */
     fun kind(h: HeardDevice): Kind {
-        when (h.family) { "key" -> return Kind.CAR_KEY; "remote" -> return Kind.REMOTE; "weather" -> return Kind.WEATHER; "zwave" -> return Kind.ZWAVE }
+        when (h.family) { "key" -> return Kind.CAR_KEY; "remote" -> return Kind.REMOTE; "weather" -> return Kind.WEATHER; "zwave" -> return Kind.ZWAVE; "radio" -> return Kind.RADIO }
         val t = "${h.model} ${h.what} ${h.data["type"]?.let { fmtValue(it) } ?: ""}".lowercase()
         return when {
             TIRE.containsMatchIn(t) -> Kind.TIRE
@@ -159,6 +161,7 @@ object Devices {
     fun headline(h: HeardDevice, k: Kind = kind(h)): Pair<String, String> {
         val v = h.data
         if (k == Kind.ZWAVE) { val n = (v["nodes"] as? List<*>)?.size ?: 0; return "$n node${if (n == 1) "" else "s"}" to "${v["from"]} → ${v["to"]} ${v["said"]}" }
+        if (k == Kind.RADIO) return "CC ${fmtValue(v["color_code"])}" to "${fmtValue(v["burst"])} from ${fmtValue(v["from"])}"
         if (k == Kind.CAR_KEY || k == Kind.REMOTE) {
             val big = (v["button"] ?: v["btn"] ?: v["cmd"] ?: v["state"])?.let { fmtValue(it) } ?: "PRESS"
             return big to (v["counter"]?.let { "counter ${fmtValue(it)}" } ?: v["hop"]?.let { "code ${fmtValue(it).take(8)}" } ?: "")
