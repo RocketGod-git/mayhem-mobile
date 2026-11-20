@@ -17,6 +17,8 @@ export interface HdCandidate { hz: number; scoreDb: number; levelDb: number }
 
 export class HdProcessor implements IqProcessor {
   centerHz = 0; offsetHz = 0;
+  /** AUTO's wide look is on: the span is not one to decode (nothing runs until it is back at the HD rate). */
+  paused = false;
   private rx = new HdRx();
   private station = new HdStation();
   private readonly det: HdDetector;
@@ -55,6 +57,7 @@ export class HdProcessor implements IqProcessor {
   tuned(): void { this.clear(); }
 
   onIq(iq: Int8Array, rate: number): void {
+    if (this.paused) return;
     const t0 = performance.now();
     const n = iq.length >> 1, hz = this.centerHz + this.offsetHz;
     if (hz !== this.tunedHz) { if (this.tunedHz) this.clear(); this.tunedHz = hz; }

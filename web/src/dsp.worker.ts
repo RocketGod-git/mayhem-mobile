@@ -431,6 +431,8 @@ self.onmessage = (e: MessageEvent) => {
     case 'loraPlan': setLocalChannels(m.channels as LocalChannel[]); lora.scanner.replan(); break;
     case 'rds': rdsOn = !!m.on; if (!rdsOn) { rds.reset(); rdsN = 0; } break;
     case 'hd': hdOn = !!m.on; if (!hdOn) hd.reset(); break;
+    // HD Radio AUTO is looking across the band at a wide rate: its decoder rests until the look is over
+    case 'hdLook': hdApp.paused = !!m.on; break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
     case 'pager': pagerWhich = m.which; pocsag.reset(); flex.reset(); break;
     case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;

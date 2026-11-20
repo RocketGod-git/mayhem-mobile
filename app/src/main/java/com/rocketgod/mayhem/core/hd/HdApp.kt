@@ -30,9 +30,10 @@ class HdObj(val key: String, val hz: Long, val port: Int, val id: Int, val name:
 
 /**
  * The HD Radio app's state around its processor: the stations heard (kept across runs), the objects of this session,
- * the traffic map and radar descriptions (kept), and AUTO, which steps across the FM band, finds the hybrid
- * channels in each window and dwells on each long enough to fill it in. The radio stays on WFM, so the analog audio
- * of the tuned station plays underneath.
+ * the traffic map and radar descriptions (kept), and AUTO, which finds the stations across the FM band first (one
+ * or a few wide looks on a radio that sees most of it at once, else a window survey from the bottom up, see
+ * [HdScanPlan]) and then dwells on each, lowest first, long enough to fill it in. The radio stays on WFM, so the
+ * analog audio of the tuned station plays underneath.
  */
 object HdApp {
     val log = PacketLog()
@@ -40,12 +41,8 @@ object HdApp {
     const val RATE = SdrEngine.RX_RATE
     /** Station center within this of the span center keeps the radio where it is; the HD sidebands reach 200 kHz out. */
     const val REACH = RATE / 2 - 260_000
-    /** AUTO's windows over the FM band, each heard from its middle. */
-    val WINDOWS: List<Long> = run {
-        val out = ArrayList<Long>(); var c = 88_000_000L + REACH
-        while (c - REACH < 108_000_000L) { out.add((c / 100_000.0).roundToLong() * 100_000); c += 2 * REACH - 100_000 }
-        out
-    }
+    /** The FM band in windows at the HD rate, each heard from its middle, bottom up. */
+    val WINDOWS: List<Long> = HdScanPlan.windows(RATE)
 
     private val _stations = MutableStateFlow<Map<Long, HdStationRec>>(emptyMap())
     val stations: StateFlow<Map<Long, HdStationRec>> = _stations.asStateFlow()
@@ -57,9 +54,17 @@ object HdApp {
     fun traffic(): Map<String, HdLot.TrafficInfo> = _maps.value.first.mapNotNull { (k, v) -> HdLot.parseTrafficInfo(v)?.let { k to it } }.toMap()
     fun radar(): Map<String, HdLot.RadarInfo> = _maps.value.second.mapNotNull { (k, v) -> HdLot.parseRadarInfo(v)?.let { k to it } }.toMap()
 
-    class Scan(val auto: Boolean = false, val win: Int = 0, val phase: String = "survey", val until: Long = 0, val queue: List<Long> = emptyList(), val locked: Long = 0, val cur: Long = 0)
+    /** AUTO's step: [phase] "look" (a wide look, step [win] of the plan), "survey" (window [win]) or "dwell" (on [cur]). */
+    class Scan(val auto: Boolean = false, val win: Int = 0, val phase: String = "look", val until: Long = 0, val queue: List<Long> = emptyList(), val locked: Long = 0, val cur: Long = 0, val from: Long = 0)
     private val _scan = MutableStateFlow(Scan())
     val scan: StateFlow<Scan> = _scan.asStateFlow()
+    // AUTO's finding: the plan, the levels the looks have read, the hybrid channels the windows have shown, and the
+    // spectrum summed in the look running now
+    private var plan = HdScanPlan.Plan(false, RATE, WINDOWS)
+    private val levels = HashMap<Long, Double>()
+    private val found = ArrayList<Long>()
+    private var acc = DoubleArray(0)
+    private var accN = 0
 
     private var file: File? = null
     private var objSeq = 0
@@ -84,6 +89,7 @@ object HdApp {
         val known = _stations.value.values.maxByOrNull { it.lastMs }
         val dial = SdrEngine.channelHz().takeIf { it in 87_900_000L..107_900_000L }
         val f = dial ?: known?.hz ?: WINDOWS[0]
+        proc.paused = false
         SdrEngine.configure(SdrEngine.Mode.WFM, f, RATE, 24, 24, false, proc)
         _scan.value = Scan()
         if (dial == null && known == null) setAuto(true)
@@ -100,40 +106,91 @@ object HdApp {
     fun pick(hz: Long) { if (_scan.value.auto) setAuto(false); tune(hz) }
 
     fun setAuto(on: Boolean) {
-        if (!on) { _scan.value = Scan(); return }
-        val now = System.currentTimeMillis()
-        val w = max(0, WINDOWS.indexOfFirst { abs(it - tunedHz()) <= REACH })
-        survey(w, now)
+        val was = _scan.value.auto
+        if (!on) { _scan.value = Scan(); if (was) lookEnd(); return }
+        bandStart(System.currentTimeMillis())
     }
-    private fun survey(w: Int, now: Long) {
-        val c = WINDOWS[w % WINDOWS.size]
-        _scan.value = Scan(true, w % WINDOWS.size, "survey", now + 2_600, emptyList(), 0, c)
-        tune(c, recenter = true)
+    /** The spans AUTO's wide look may take here: as wide as Home shows the band on this radio and screen. */
+    private fun lookRates(): List<Int> {
+        val cap = if (android.content.res.Resources.getSystem().configuration.screenWidthDp >= 600) 19_200_000 else 7_680_000
+        return SdrEngine.RX_RATES.filter { it <= cap && com.rocketgod.mayhem.core.Radio.canSample(com.rocketgod.mayhem.core.Radio.limits, it) }
     }
+    /** AUTO from the bottom of the band: find the stations (wide looks, or windows on a narrow radio), then visit them. */
+    private fun bandStart(now: Long) {
+        plan = HdScanPlan.lookPlan(lookRates(), RATE); levels.clear(); found.clear()
+        lookAt(0, now)
+    }
+    /** One look (or one window) of the plan. A wide look moves only the span: the dial stays where it is. */
+    private fun lookAt(step: Int, now: Long) {
+        val p = plan; val c = p.centers[step]
+        acc = DoubleArray(0); accN = 0
+        if (!p.wide) { _scan.value = Scan(true, step, "survey", now + 2_600, emptyList(), 0, c); tune(c, recenter = true); return }
+        _scan.value = Scan(true, step, "look", now + 4_000, emptyList(), 0, c, from = now + 1_500)
+        // the decoder rests while the span is wide; back at the HD rate it starts over on the first station
+        proc.paused = true
+        val ch = tunedHz()
+        if (SdrEngine.rateHz.value != p.rate) SdrEngine.setRate(p.rate)
+        SdrEngine.tuneLo(c); SdrEngine.setOffset((ch - c).toInt())
+    }
+    /** Back from a wide look to the HD rate, on the station tuned. */
+    private fun lookEnd() {
+        proc.paused = false
+        if (SdrEngine.rateHz.value == RATE) return
+        val ch = tunedHz()
+        SdrEngine.setRate(RATE); tune(ch, recenter = true)
+    }
+    /** The next station up; past the top, a fresh look from the bottom. */
     private fun nextCandidate(s: Scan, queue: List<Long>, now: Long) {
         val next = queue.firstOrNull()
-        if (next == null) { survey(s.win + 1, now); return }
+        if (next == null) { bandStart(now); return }
         _scan.value = Scan(true, s.win, "dwell", now + 6_000, queue.drop(1), 0, next)
         tune(next)
     }
-    /** AUTO, every half second while the screen is up: look at a window's spectrum for hybrid channels, then dwell on
-     *  each long enough to fill it in. */
+    /** AUTO, every half second while the screen is up: find the stations, then dwell on each, lowest first, long enough
+     *  to fill it in; at the top, look again. */
     fun scanTick(now: Long) {
         var s = _scan.value
         if (!s.auto) return
         val m = proc.snap.value
-        if (s.phase == "survey") {
-            if (now >= s.until) {
-                val lo = SdrEngine.freqHz.value
-                val q = (if (m != null && abs(m.centerHz - lo) < 5_000) m.cands else emptyList()).filter { abs(it.hz - lo) <= REACH }.sortedByDescending { it.scoreDb }.map { it.hz }
-                if (q.isEmpty()) survey(s.win + 1, now) else nextCandidate(s, q, now)
+        when (s.phase) {
+            "look" -> {
+                val bins = SdrEngine.spectrum.value; val range = SdrEngine.specScale.value.second
+                if (now >= s.from && bins.isNotEmpty()) {
+                    // dB over this row's own median, summed
+                    val db = DoubleArray(bins.size) { bins[it] * range.toDouble() }
+                    val med = db.sortedArray()[db.size / 2]
+                    if (acc.size != db.size) { acc = DoubleArray(db.size); accN = 0 }
+                    for (k in db.indices) acc[k] += max(0.0, db[k] - med)
+                    accN++
+                }
+                if ((now >= s.until && accN >= 3) || now >= s.until + 4_000) {
+                    if (accN > 0) { val n = accN; HdScanPlan.mergeLevels(levels, HdScanPlan.channelLevels(DoubleArray(acc.size) { acc[it] / n }, SdrEngine.rateHz.value, s.cur)) }
+                    if (s.win + 1 < plan.centers.size) lookAt(s.win + 1, now)
+                    else {
+                        val strong = HdScanPlan.strongStations(levels)
+                        val q = HdScanPlan.visitOrder(strong, _stations.value.keys.toList(), levels)
+                        com.rocketgod.mayhem.Diag.log("HD AUTO: ${strong.size} strong stations in a look across the band (${strong.joinToString(" ") { "%.1f".format(it / 1e6) }}), visiting ${q.size} lowest first")
+                        lookEnd(); nextCandidate(s, q, now)
+                    }
+                }
             }
-        } else {
-            val st = m?.takeIf { abs(it.hz - s.cur) < 2_000 }
-            val digital = st != null && (st.station.frames > 0 || st.rx.state == "sync" || st.rx.state == "frames")
-            if (digital && s.locked == 0L) { s = Scan(true, s.win, s.phase, now + 45_000, s.queue, now, s.cur); _scan.value = s }
-            val filled = st != null && st.station.sis.callsign.isNotEmpty() && now - s.locked > 20_000 && st.station.programs.all { it.title.isNotEmpty() || it.lastMs == 0L }
-            if (now >= s.until || (s.locked != 0L && filled)) nextCandidate(s, s.queue, now)
+            "survey" -> if (now >= s.until) {
+                val lo = SdrEngine.freqHz.value
+                found += (if (m != null && abs(m.centerHz - lo) < 5_000) m.cands else emptyList()).filter { abs(it.hz - lo) <= REACH }.map { it.hz }
+                if (s.win + 1 < plan.centers.size) lookAt(s.win + 1, now)
+                else {
+                    val q = HdScanPlan.visitOrder(found, _stations.value.keys.toList())
+                    com.rocketgod.mayhem.Diag.log("HD AUTO: ${found.size} hybrid channels in ${plan.centers.size} windows, visiting ${q.size} lowest first")
+                    nextCandidate(s, q, now)
+                }
+            }
+            else -> {
+                val st = m?.takeIf { abs(it.hz - s.cur) < 2_000 }
+                val digital = st != null && (st.station.frames > 0 || st.rx.state == "sync" || st.rx.state == "frames")
+                if (digital && s.locked == 0L) { s = Scan(true, s.win, s.phase, now + 45_000, s.queue, now, s.cur); _scan.value = s }
+                val filled = st != null && st.station.sis.callsign.isNotEmpty() && now - s.locked > 20_000 && st.station.programs.all { it.title.isNotEmpty() || it.lastMs == 0L }
+                if (now >= s.until || (s.locked != 0L && filled)) nextCandidate(s, s.queue, now)
+            }
         }
     }
     /** Step to the next or previous station already heard. */

@@ -37,6 +37,8 @@ class HdObjMsg(val hz: Long, val obj: HdObject)
 class HdProcessor(private val log: PacketLog?) : IqProcessor {
     /** The span center and the station's offset from it, read each buffer. */
     @Volatile var centerOf: () -> Long = { 0L }
+    /** AUTO's wide look is on: the span is not one to decode (nothing runs until it is back at the HD rate). */
+    @Volatile var paused = false
     @Volatile var offsetOf: () -> Int = { 0 }
     /** Run the FEC on the caller's thread (tests). */
     @Volatile var inline = false
@@ -111,6 +113,7 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
     }
 
     @Synchronized override fun onIq(iq: ByteArray, len: Int, rate: Int) {
+        if (paused) return
         val t0 = System.nanoTime()
         val n = len / 2
         centerHz = centerOf()

@@ -39,6 +39,7 @@ import type { Js8Decode } from './dsp/js8/decoder.js';
 import type { Js8Speed } from './dsp/js8/modes.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
+import { hdChannelLevels, hdLookPlan, hdMergeLevels, hdStrongStations, hdVisitOrder, hdWindows, type HdLookPlan } from './hdscan.js';
 import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
 import { programTypeName, dataTypeName, locationValid, clockCheck, localTimeHint, utcOffsetText, BLEND_NAMES, type SisSummary } from './dsp/hd/sis.js';
 import type { AtscSnap, StationRow as AtscStation, SubRow as AtscSub, EventRec as AtscEvent, LiveSignal as AtscLive } from './dsp/atsc/atsc.js';
@@ -1715,7 +1716,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   prowl: ['prowl', 'Nothing heard yet', ['Press HUNT: it lands on anyone talking and moves on when they stop', 'A wider SPAN watches more at once; a narrower one hears weak voices better']],
   search: ['search', 'No active frequencies yet', ['Pick a range above: AIR 118–137 and 2m 144–148 are busy almost everywhere', 'Set ABOVE to +10 dB to catch weaker signals']],
   capture: ['capture', 'No captures yet', ['Tune to a signal and press ● REC', 'Keep it short: 2 Msps fills about 4 MB a second']],
-  hd: ['hd', 'No HD stations yet', ['AUTO steps across the FM band and stays on each station with digital sidebands until it fills in', 'Most big FM stations in the US are hybrid: name, songs, logos and album art come in within a minute or two', 'What plays is the analog FM: the digital audio codec is not decoded']],
+  hd: ['hd', 'No HD stations yet', ['AUTO finds the stations across the FM band, then visits the strong ones from the bottom up until each fills in', 'Most big FM stations in the US are hybrid: name, songs, logos and album art come in within a minute or two', 'What plays is the analog FM: the digital audio codec is not decoded']],
   vdl2: ['vdl2', 'Waiting for VDL2 messages', ['Every VDL2 channel from 136.10 to 136.975 MHz is decoded at once; 136.975 is the common one', 'Aircraft talk to ground stations every few minutes, more near an airport; an antenna that sees the sky hears them 200 miles out']],
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
@@ -5421,8 +5422,8 @@ const HD_KEY = 'mayhem.hd.stations', HD_MAPS_KEY = 'mayhem.hd.maps';
 const HD_RATE = RX_RATE;
 /** Station center within this of the span center keeps the radio where it is; the HD sidebands reach 200 kHz out. */
 const HD_REACH = HD_RATE / 2 - 260_000;
-/** AUTO's windows over the FM band, each heard from its middle. */
-const HD_WINDOWS: number[] = (() => { const out: number[] = []; for (let c = 88_000_000 + HD_REACH; c - HD_REACH < 108_000_000; c += 2 * HD_REACH - 100_000) out.push(Math.round(c / 100_000) * 100_000); return out; })();
+/** The FM band in windows at the HD rate, each heard from its middle, bottom up. */
+const HD_WINDOWS: number[] = hdWindows(HD_RATE);
 function loadHdStations(): Map<number, HdStationRec> {
   try { const v = JSON.parse(localStorage.getItem(HD_KEY) ?? '[]') as HdStationRec[]; return new Map(v.filter(s => s && s.hz).map(s => [s.hz, { ...s, logos: s.logos ?? {} }])); } catch { return new Map(); }
 }
@@ -5433,7 +5434,13 @@ const hdUi = {
   snap: null as HdSnapMsg | null, view: 'now' as HdView, left: 'now' as 'now' | 'map', prog: 0, sel: '',
   objects: [] as HdObj[], stations: loadHdStations(), maps: loadHdMaps(),
   tileUrls: new Map<string, string>(),
-  auto: false, scan: { win: 0, phase: 'survey' as 'survey' | 'dwell', until: 0, queue: [] as number[], locked: 0, cur: 0, started: 0 },
+  auto: false,
+  scan: {
+    phase: 'look' as 'look' | 'survey' | 'dwell', plan: { wide: false, rate: HD_RATE, centers: HD_WINDOWS } as HdLookPlan, step: 0, from: 0, until: 0,
+    acc: null as Float64Array | null, accN: 0, levels: new Map<number, number>(), found: [] as number[], queue: [] as number[], locked: 0, cur: 0, started: 0,
+  },
+  /** The newest spectrum row on this screen (0..1 of rangeDb), for AUTO's wide look. */
+  bins: null as Float32Array | null, binsRange: 0,
   timer: 0, scanTimer: 0, saveTimer: 0, drawn: 0, pending: 0, hold: false, wired: false, mapKey: '', fitted: '',
 };
 interface HdSnapMsg {
@@ -5466,8 +5473,10 @@ function hdOpen(): void {
   const dial = state.dial >= 87_900_000 && state.dial <= 107_900_000 ? state.dial : 0;
   const f = dial || known?.hz || HD_WINDOWS[0];
   configure('WFM', f, HD_RATE, 24, 24, false, 'hd');
+  worker?.postMessage({ type: 'hdLook', on: false });
   requestGeo();
   if (!dial && !known) hdSetAuto(true);
+  else if (hdUi.auto) hdBandStart();
 }
 /** Tune a station: the channel moves inside the span; the radio follows only when the sidebands would leave it. */
 function hdTune(hz: number, recenter = false): void {
@@ -5482,23 +5491,77 @@ function hdTune(hz: number, recenter = false): void {
   refreshHd(true);
 }
 function hdSetAuto(on: boolean): void {
+  const was = hdUi.auto;
   hdUi.auto = on; clearTimeout(hdUi.scanTimer);
-  if (on) { const s = hdUi.scan; s.win = Math.max(0, HD_WINDOWS.findIndex(c => Math.abs(c - state.freq) <= HD_REACH)); s.phase = 'survey'; s.queue = []; hdSurvey(); hdUi.scanTimer = window.setTimeout(hdScanTick, 500); }
+  if (on) { hdBandStart(); hdUi.scanTimer = window.setTimeout(hdScanTick, 500); }
+  else if (was) hdLookEnd();
   refreshHd(true);
 }
-function hdSurvey(): void {
-  const s = hdUi.scan, c = HD_WINDOWS[s.win % HD_WINDOWS.length];
-  s.phase = 'survey'; s.until = Date.now() + 2_600; s.cur = c; hdTune(c, true);
+/** The spans AUTO's wide look may take here: as wide as Home shows the band on this radio and screen. */
+function hdLookRates(): number[] {
+  const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)], widest = radio ? cleanWidest(radio.limits) : RX_RATE;
+  return RX_RATES.filter(r => r <= Math.min(cap, widest));
 }
-/** AUTO: look at a window's spectrum for hybrid channels, then dwell on each long enough to fill it in. */
+/** AUTO from the bottom of the band: find the stations (wide looks, or windows on a narrow radio), then visit them. */
+function hdBandStart(): void {
+  const s = hdUi.scan;
+  s.plan = hdLookPlan(hdLookRates(), HD_RATE); s.step = 0; s.levels = new Map(); s.found = []; s.queue = [];
+  hdLookAt();
+}
+/** One look (or one window) of the plan. A wide look moves only the span: the dial stays where it is. */
+function hdLookAt(): void {
+  const s = hdUi.scan, c = s.plan.centers[s.step], now = Date.now();
+  s.cur = c; s.acc = null; s.accN = 0;
+  if (!s.plan.wide) { s.phase = 'survey'; s.until = now + 2_600; hdTune(c, true); return; }
+  s.phase = 'look'; s.from = now + 1_500; s.until = now + 4_000;
+  // the decoder rests while the span is wide; back at the HD rate it starts over on the first station
+  worker?.postMessage({ type: 'hdLook', on: true });
+  if (state.rate !== s.plan.rate) setRate(s.plan.rate);
+  if (state.viewLo !== c) scope?.clear();
+  state.viewLo = c;
+  if (radio) radio.targetFreqHz = c;
+  sendOffset(); refreshChannel(); refreshReadout();
+}
+/** Back from a wide look to the HD rate, on the station tuned. */
+function hdLookEnd(): void {
+  worker?.postMessage({ type: 'hdLook', on: false });
+  if (state.rate === HD_RATE) return;
+  setRate(HD_RATE); scope?.clear();
+  hdTune(state.freq, true);
+}
+/** AUTO: find the stations, then dwell on each, lowest first, long enough to fill it in; at the top, look again. */
 function hdScanTick(): void {
   if (state.app !== 'hd' || !hdUi.auto) return;
   const s = hdUi.scan, now = Date.now(), m = hdUi.snap;
-  if (s.phase === 'survey') {
+  if (s.phase === 'look') {
+    const bins = hdUi.bins;
+    if (now >= s.from && bins && bins.length) {
+      // dB over this row's own median, summed
+      const db = Float32Array.from(bins, v => v * hdUi.binsRange), med = Float32Array.from(db).sort()[db.length >> 1];
+      if (!s.acc || s.acc.length !== db.length) { s.acc = new Float64Array(db.length); s.accN = 0; }
+      for (let k = 0; k < db.length; k++) s.acc[k] += Math.max(0, db[k] - med);
+      s.accN++;
+    }
+    if ((now >= s.until && s.accN >= 3) || now >= s.until + 4_000) {
+      const acc = s.acc, n = s.accN;
+      if (acc && n) hdMergeLevels(s.levels, hdChannelLevels(Float64Array.from(acc, v => v / n), state.rate, s.cur));
+      if (++s.step < s.plan.centers.length) hdLookAt();
+      else {
+        const found = hdStrongStations(s.levels);
+        s.queue = hdVisitOrder(found, [...hdUi.stations.keys()], s.levels);
+        log(`HD AUTO: ${found.length} strong stations in a look across the band (${found.map(hdMhz).join(' ')}), visiting ${s.queue.length} lowest first`);
+        hdLookEnd(); hdNextCandidate();
+      }
+    }
+  } else if (s.phase === 'survey') {
     if (now >= s.until) {
-      s.queue = (m && Math.abs(m.centerHz - state.viewLo) < 5_000 ? m.cands : []).filter(c => Math.abs(c.hz - state.viewLo) <= HD_REACH).sort((a, b) => b.scoreDb - a.scoreDb).map(c => c.hz);
-      if (!s.queue.length) { s.win = (s.win + 1) % HD_WINDOWS.length; hdSurvey(); }
-      else hdNextCandidate();
+      s.found.push(...(m && Math.abs(m.centerHz - state.viewLo) < 5_000 ? m.cands : []).filter(c => Math.abs(c.hz - state.viewLo) <= HD_REACH).map(c => c.hz));
+      if (++s.step < s.plan.centers.length) hdLookAt();
+      else {
+        s.queue = hdVisitOrder(s.found, [...hdUi.stations.keys()]);
+        log(`HD AUTO: ${s.found.length} hybrid channels in ${s.plan.centers.length} windows, visiting ${s.queue.length} lowest first`);
+        hdNextCandidate();
+      }
     }
   } else {
     const st = m && Math.abs(m.hz - s.cur) < 2_000 ? m : null, digital = !!st && (st.station.frames > 0 || st.rx.state === 'sync' || st.rx.state === 'frames');
@@ -5509,9 +5572,10 @@ function hdScanTick(): void {
   refreshHd();
   hdUi.scanTimer = window.setTimeout(hdScanTick, 500);
 }
+/** The next station up; past the top, a fresh look from the bottom. */
 function hdNextCandidate(): void {
   const s = hdUi.scan, next = s.queue.shift();
-  if (next === undefined) { s.win = (s.win + 1) % HD_WINDOWS.length; hdSurvey(); return; }
+  if (next === undefined) { hdBandStart(); return; }
   s.phase = 'dwell'; s.cur = next; s.locked = 0; s.started = Date.now(); s.until = Date.now() + 6_000; hdTune(next);
 }
 /** Step to the next or previous station already heard. */
@@ -5620,7 +5684,7 @@ function renderHd(view: HTMLElement): void {
       <div id="hd-detail" class="mt-detail hd-detail" hidden></div>
       <div id="hd-stage" class="hd-stage">${wide ? '' : `<div id="hd-hero" class="hd-hero"></div>${mapHtml}`}<div id="hd-stations" class="hd-stations"></div><div id="hd-data" class="hd-data"></div></div>
       <div id="hd-log"><div class="countrow"><span id="count-hd" class="count">0 DECODED</span></div>${listHtml('hd', 'listening for HD Radio…')}</div>
-      <div class="note about">HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO steps across the band, finds the stations with digital sidebands, and stays on each until it fills in.</div>
+      <div class="note about">HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO first finds the stations across the band, then visits the strong ones from the bottom up and stays on each until it fills in. At the top it looks again.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-hdview]', view).forEach(b => b.onclick = () => { hdUi.view = b.dataset.hdview as HdView; hdUi.sel = ''; refreshHd(true); });
@@ -5666,7 +5730,7 @@ function hdHead(m: HdSnapMsg | null, now: number): string {
   const call = sis?.callsign && sis.nameVotes[0] >= 3 ? sis.callsign : rec?.call ?? '';
   const [lock, tone] = hdLock(m, now);
   const s = hdUi.scan;
-  const scan = hdUi.auto ? (s.phase === 'survey' ? `AUTO · LOOKING ${hdMhz(s.cur - HD_REACH)}–${hdMhz(s.cur + HD_REACH)}` : `AUTO · ${s.locked ? 'FILLING IN' : 'CHECKING'} ${Math.max(0, Math.ceil((s.until - now) / 1000))} s · ${s.queue.length} NEXT`) : '';
+  const scan = hdUi.auto ? (s.phase !== 'dwell' ? 'AUTO · FINDING STATIONS 88–108' : `AUTO · ${s.locked ? 'FILLING IN' : 'CHECKING'} ${Math.max(0, Math.ceil((s.until - now) / 1000))} s · ${s.queue.length} NEXT`) : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const progs = st ? st.programs.filter(p => p.lastMs).length : rec?.programs.length ?? 0;
   return `<div class="hd-watch"><b>${hdMhz(state.freq)} MHz</b>${call ? `<strong>${esc(call)}</strong>` : ''}<small>${esc(sis?.slogan || rec?.slogan || (st?.frames ? '' : 'no digital data yet'))}</small><em class="${tone}">${lock}</em></div>`
@@ -8722,6 +8786,7 @@ function ensureWorker(): Worker {
         // the meter reads the bins before the waterfall takes them
         if (state.app === 'audio') { const db = channelOverNoise(m.bins as Float32Array, m.rangeDb as number); setMeter(db / 40, `+${Math.round(db)} dB over the noise`, state.squelch ? state.squelch / 40 : null); }
         if (pick.armedAt && (launchPicked === false || audioPick)) notePickSpectrum(m.bins as Float32Array, m.rangeDb as number);
+        if (state.app === 'hd') { hdUi.bins = m.bins as Float32Array; hdUi.binsRange = m.rangeDb as number; }
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there

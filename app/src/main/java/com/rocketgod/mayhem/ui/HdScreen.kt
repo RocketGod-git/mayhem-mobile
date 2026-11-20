@@ -83,7 +83,7 @@ private val HD_VIEWS = listOf("NOW", "STATIONS", "MAP", "DATA", "LOG")
 private val HD_WIDE_VIEWS = listOf(1, 3, 4)
 private val HD_KIND = mapOf("art" to "ALBUM ART", "logo" to "LOGO", "traffic" to "TRAFFIC TILE", "traffic-info" to "TRAFFIC MAP INFO", "radar" to "WEATHER RADAR",
     "radar-info" to "RADAR INFO", "image" to "IMAGE", "text" to "TEXT", "file" to "FILE")
-private const val HD_NOTE = "HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO steps across the band, finds the stations with digital sidebands, and stays on each until it fills in."
+private const val HD_NOTE = "HD Radio (NRSC-5) on hybrid FM stations, receive only. Layer 1 is decoded here from the standard: the station's name, ID, location, slogan and message (SIS, majority-voted: its checksum does not verify yet), each program's title, artist and album (PSD), and the data services: album art, station logos, traffic map tiles and weather radar placed on the map, every file shown in DATA. The digital audio codec is proprietary and not decoded: what plays is the station's analog FM under the digital sidebands. The large-object and service-directory formats are derived from our recordings. AUTO first finds the stations across the band, then visits the strong ones from the bottom up and stays on each until it fills in. At the top it looks again."
 
 private fun hdMhz(hz: Long) = "%.1f".format(java.util.Locale.US, hz / 1e6)
 private fun hdAgo(ms: Long): String = when {
@@ -399,7 +399,7 @@ private fun HdHead(m: HdSnap?, tuned: Long, call: String, rec: HdStationRec?, sc
             Text(msg, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false, modifier = Modifier.weight(1f).basicMarquee(iterations = Int.MAX_VALUE))
         }
         if (scan.auto) {
-            val text = if (scan.phase == "survey") "AUTO · LOOKING ${hdMhz(scan.cur - HdApp.REACH)}–${hdMhz(scan.cur + HdApp.REACH)}"
+            val text = if (scan.phase != "dwell") "AUTO · FINDING STATIONS 88–108"
                 else "AUTO · ${if (scan.locked != 0L) "FILLING IN" else "CHECKING"} ${max(0L, (scan.until - now + 999) / 1000)} s · ${scan.queue.size} NEXT"
             Text(text, color = if (scan.locked != 0L) Palette.ok else Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1)
         }
