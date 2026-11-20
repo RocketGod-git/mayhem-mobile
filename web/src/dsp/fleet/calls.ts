@@ -13,12 +13,12 @@ export interface CallPos { lat: number; lon: number; unit: number; ms: number; v
 export interface Lock { sys: string; site: string; label: string; hz: number }
 export type CallSec = 'unknown' | 'clear' | 'enc';
 /** The air interfaces calls come from. */
-export type CallProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN';
+export type CallProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET';
 /**
  * The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 half rate for DMR, Phase 2 and NXDN, the TETRA ACELP codec for
- * TETRA. NXDN's EFR (its 9600 bps full rate) is the IMBE frame: [efr].
+ * TETRA. NXDN's EFR (its 9600 bps full rate) is the IMBE frame: [efr]. Motorola Type II voice is analog FM.
  */
-export const codecOf = (proto: CallProto, tdma: boolean, efr = false): CodecId => proto === 'TETRA' ? 'tetra' : (proto === 'P25' && !tdma) || (proto === 'NXDN' && efr) ? 'imbe' : 'ambe2';
+export const codecOf = (proto: CallProto, tdma: boolean, efr = false): CodecId => proto === 'SMARTNET' ? 'fm' : proto === 'TETRA' ? 'tetra' : (proto === 'P25' && !tdma) || (proto === 'NXDN' && efr) ? 'imbe' : 'ambe2';
 export interface CallRow {
   key: string; sys: string; proto: CallProto; tg: number; group: boolean; src: number; srcs: number[]; hz: number; slot: number; tdma: boolean;
   encrypted: boolean; emergency: boolean; startMs: number; lastMs: number; endMs: number; onAir: boolean;
@@ -196,6 +196,7 @@ export class CallTracker {
     else if (s.from === 'EMB') said.emb = s.enc ? 1 : (said.emb === 1 ? 1 : 0);
     else if (s.from === 'history') said.histEnc = true;
     else if (s.from === 'AIE') said.aie = true;
+    else if (s.from === 'analog') said.lc = 0;
     // NXDN: the cipher type of a VCALL (SACCH or FACCH1, CRC checked) or of a Type-D INFO1 (SCCH, CRC checked)
     else if (s.from === 'VCALL' || s.from === 'SCCH') { said.lc = s.enc ? 1 : (said.lc === 1 ? 1 : 0); said.from = s.from; if (s.enc) { if (s.algId !== undefined) c.algId = s.algId; if (s.keyId !== undefined) c.keyId = s.keyId; } }
     let sec: CallSec = 'unknown', from = '';
@@ -213,6 +214,10 @@ export class CallTracker {
       // or signalling encrypted on the air interface of a cell that offers it
       if (said.grant === 1 || said.aie) { sec = 'enc'; from = said.aie ? 'AIE' : 'grant'; }
       else if (said.grant === 0) { sec = 'clear'; from = 'grant'; }
+      c.protectedHint = false;
+    } else if (c.proto === 'SMARTNET') {
+      // analog FM heard on the channel: nothing on a Type II control channel says more
+      if (said.lc === 0) { sec = 'clear'; from = 'analog'; }
       c.protectedHint = false;
     } else if (c.proto === 'NXDN') {
       // a cipher type other than 00 is encrypted (scramble, DES, AES); 00 says clear (TS 1-A 6.5.27)
@@ -276,21 +281,37 @@ export class CallTracker {
     const now = this.now();
     for (const f of frames) {
       const pcm = k.decode(f); if (!pcm) continue;
-      c.decoded++; if (k.bad) c.badFrames++;
-      if (c.pcmN < AUDIO_CAP_S * 8000) { c.pcm.push(pcm); c.pcmN += pcm.length; c.audioMs = Math.round(c.pcmN / 8); }
-      let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i];
-      const db = 10 * Math.log10(e / pcm.length + 1e-9);
-      c.audioDb = c.audioDb ? c.audioDb + 0.3 * (db - c.audioDb) : db;
+      if (k.bad) c.badFrames++;
       // only a frame that came through its codes and carries speech counts as audio: a weak call's muted and repeated
       // frames, and a keyed radio's silence frames, neither take the audio nor keep it
-      const good = !k.bad && !k.silent;
-      if (good) c.audioAt = now;
-      if (this.playing === c.key) { this.onAudio?.(pcm, c); continue; }
-      const r = good ? this.choose(c, now) : c.wait.length ? 'wait' : 'no';
-      if (r === 'yes') { for (const w of c.wait) this.onAudio?.(w, c); c.wait = []; this.onAudio?.(pcm, c); }
-      else if (r === 'wait') { c.wait.push(pcm); if (c.wait.length > WAIT_FRAMES) c.wait.shift(); }
-      else c.wait = [];
+      this.play(c, pcm, !k.bad && !k.silent, now);
     }
+  }
+  /** 20 ms of decoded audio of a call: kept with it, and heard when the call is the one playing. */
+  private play(c: Call, pcm: Float32Array, good: boolean, now: number): void {
+    c.decoded++;
+    if (c.pcmN < AUDIO_CAP_S * 8000) { c.pcm.push(pcm); c.pcmN += pcm.length; c.audioMs = Math.round(c.pcmN / 8); }
+    let e = 0; for (let i = 0; i < pcm.length; i++) e += pcm[i] * pcm[i];
+    const db = 10 * Math.log10(e / pcm.length + 1e-9);
+    c.audioDb = c.audioDb ? c.audioDb + 0.3 * (db - c.audioDb) : db;
+    if (good) c.audioAt = now;
+    if (this.playing === c.key) { this.onAudio?.(pcm, c); return; }
+    const r = good ? this.choose(c, now) : c.wait.length ? 'wait' : 'no';
+    if (r === 'yes') { for (const w of c.wait) this.onAudio?.(w, c); c.wait = []; this.onAudio?.(pcm, c); }
+    else if (r === 'wait') { c.wait.push(pcm); if (c.wait.length > WAIT_FRAMES) c.wait.shift(); }
+    else c.wait = [];
+  }
+  /**
+   * 20 ms of analog FM voice off a Type II voice channel (8 kHz). [open]: the squelch found a carrier there. Only that
+   * counts as voice: it keeps the call on the air and takes or keeps the audio; the closed squelch's noise is dropped.
+   */
+  analog(call: CallRow, pcm: Float32Array, open: boolean, now = this.now()): void {
+    const c = call as Call;
+    if (!c.onAir || !open) return;
+    c.frames++; c.voiceMs += 20; c.voiceAt = now; c.lastMs = now;
+    if (c.sec === 'unknown') this.security(c, { enc: false, from: 'analog' });
+    if (c.encrypted || c.muted || c.outside) return;
+    this.play(c, pcm, true, now);
   }
   /**
    * Whether [c] is the call heard: it is when nothing else is, and it takes over for priority or emergency. The call

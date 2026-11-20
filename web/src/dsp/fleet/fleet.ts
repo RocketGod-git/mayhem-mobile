@@ -1,5 +1,5 @@
 /**
- * Dispatch: a receive-only monitor for P25, DMR, TETRA and NXDN trunked radio. Finds every carrier in the span, gives the live
+ * Dispatch: a receive-only monitor for P25, DMR, TETRA, NXDN and Motorola Type II trunked radio. Finds every carrier in the span, gives the live
  * ones a channel each (the control channels and the channels of calls on the air keep theirs, the rest take turns),
  * decodes the control signaling and builds the systems, sites, channel tables, grants, registrations, unit positions
  * and calls from what is on the air. Labels are only what the air carries. Publishes a 'fleet' snapshot (at most two
@@ -21,6 +21,7 @@ import { hasCodec, type CodecId } from './codec.js';
 import { TetraRx, type TetraSync } from './tetra.js';
 import { TetraMac, tetraCarrierHz, tetraDisconnectCause, tetraGrantName, tetraCommName, type TetraEvent, type TetraSysinfo, type TetraCmce, type TetraMacInfo } from './tetra-mac.js';
 import { NxdnRx, NxdnPlan, NXDN_CATEGORY, nxdnLine, nxdnId, type NxdnSite, type NxdnMsg, type NxdnTraffic, type NxdnScch, type NxdnAdj } from './nxdn.js';
+import { OswRx, OswParser, FmVoice, provePlan, tgOf, tgStatus, oswHex, oswWordText, type Osw, type OswEvent, type OswPlan } from './smartnet.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
 
 export const CH_RATE = 24_000;
@@ -32,11 +33,29 @@ export const kmBetween = (a: number, b: number, c: number, d: number): number =>
   return 6371 * Math.hypot(x, y);
 };
 const CUT_HZ = 5_500;
-const AUDITION_MS = 3_000;
+/**
+ * Turns on a channel for carriers nothing has decoded lately go two ways at once. Full looks for the strong new
+ * carriers ([FULL_DB] over the floor and off any stronger one's skirt), strongest first, and after them for every carrier
+ * in turn, the one waiting longest first: [LOOK_MS], or [AUDITION_MS] once anything like a sync came. Quick looks of
+ * [AUDITION_FIRST_MS] for the weaker new ones, strongest first (a control channel at a fair level shows its syncs well
+ * inside one), held for [AUDITION_MS] when something on it looked like a signal Dispatch reads (syncs, words through
+ * their check, training sequences).
+ */
+const AUDITION_MS = 3_000, AUDITION_FIRST_MS = 500, LOOK_MS = 1_500, FULL_DB = 20;
+/** The quickest a carrier is classed analog or otherwise. */
+const CLASS_MS = 1_500;
+/** A control channel found on a turn keeps its channel until its system is read, up to this long. */
+const IDENTIFY_MS = 10_000;
+/** More control channels than channels for them: each holds one this long, then the one waiting longest takes it. */
+const CORE_TURN_MS = 20_000;
+/** A carrier classed analog or unknown, or one already identified that is not a control channel, waits this long for another turn. */
+const RECHECK_MS = 300_000;
+/** When the span has more carriers than channels, this share of the channels stays free for turns (at least one). */
+const TURN_SHARE = 0.4;
 const LIVE_MS = 4_000;
 
-export type SysProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN';
-export type CarrierClass = '' | 'TETRA' | 'NXDN48' | 'NXDN96' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR';
+export type SysProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET';
+export type CarrierClass = '' | 'TETRA' | 'NXDN48' | 'NXDN96' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR' | 'MOTOROLA TYPE II';
 export type Role = '' | 'control' | 'voice' | 'rest' | 'data';
 export interface CarrierRow {
   key: number; hz: number; levelDb: number; peakDb: number; firstMs: number; lastMs: number; onMs: number; heardMs: number;
@@ -96,7 +115,12 @@ const KNOWN_UNITS = 3000;
 
 interface Carrier extends CarrierRow { tetra?: TetraSync; tetraCell?: TetraSysinfo; nxdn?: NxdnSite & { baud: number }; nxdnAdj?: Map<string, NxdnAdj>; nxdnRan?: number; nxdnRanN?: number;
   /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
-  nxdnD?: { src: number; dst: number; group: boolean; cipher: number; keyId: number; ms: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
+  nxdnD?: { src: number; dst: number; group: boolean; cipher: number; keyId: number; ms: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number;
+  /** Motorola Type II: the channel number the control channel announces for itself, and the plan that number proved. */
+  osw?: { cc: number; plan: OswPlan | null };
+  /** Turns the carrier has had on a channel, and its level at the last. */
+  turns: number; turnDb: number;
+  p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
   key: string; sys: string; rfss: number; site: number; nac: number; carriers: Set<number>; lastMs: number; neighbors: Map<string, { sys: number; rfss: number; site: number; ch: number }>;
   secondary: Set<number>; time: string; lra: number; cls: number; idens: Map<number, Iden>;
@@ -113,6 +137,8 @@ interface Sys {
   tetra?: TetraSys;
   /** NXDN: the channel plan learned from what was heard, and the symbol rate of the system's channels. */
   nxdnPlan?: NxdnPlan; nxdnBaud?: number;
+  /** Motorola Type II: the channel plan its control channel proved (null until one does), and the channels granted (count). */
+  osw?: { plan: OswPlan | null; chans: Map<number, number> };
 }
 interface TetraSys { calls: Map<number, { tg: number; group: boolean; src: number; hz: number; slot: number; e2ee: boolean; ms: number }>; encSdus: number; clearSdus: number; aie: boolean; sec: TetraSysinfo['security']; carriers: Map<number, number> }
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
@@ -127,6 +153,8 @@ interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: nu
 /** Channels a span can run at once: the down-converters cost in proportion to the sample rate. */
 export const channelBudget = (rate: number) => Math.max(4, Math.min(24, Math.floor(110e6 / Math.max(rate, 1))));
 const gridKey = (hz: number) => Math.round(hz / 6250) * 6250;
+/** TETRA is not tried on 925 to 960 MHz (the 900 MHz land mobile and GSM downlink band), where none is allocated. */
+const tetraBand = (hz: number) => hz < 925e6 || hz > 960e6;
 
 class Chan {
   readonly ddc = new Ddc(CUT_HZ, CH_RATE, 127);
@@ -136,6 +164,8 @@ class Chan {
   /** Symbols so far, the P25 voice decoder's clock; [lcErrs] its failure count at the last link control read. */
   t = 0; lcErrs = 0;
   readonly dmr = new DmrFramer();
+  /** Motorola Type II signaling words, and analog FM voice on a channel a Type II grant named. */
+  osw!: OswRx; fm: FmVoice | null = null;
   cw!: CwReader;
   oi = new Float32Array(0); oq = new Float32Array(0);
   openedMs: number; lastSyncMs = 0; quietSince: number; private cwOn = false;
@@ -175,6 +205,7 @@ class Chan {
     const fs = baseband || this.ddc.outRate;
     this.fs = fs;
     this.rx = new SymbolRx(fs);
+    this.osw = new OswRx(fs);
     this.cw = new CwReader(fs);
     // the voice frames' payload (nine vocoder frames and the link control of each LDU) is read by the HAM receiver's
     // P25 decoder, driven by this channel's frame syncs
@@ -207,6 +238,15 @@ class Chan {
       this.onFill(lane, lane === 2 ? 9 : 3);
     }
   }
+  /** Something on the channel looks like a signal Dispatch reads (syncs, words through their check, training sequences). */
+  hinted(): boolean {
+    return this.p25.clean > 0 || this.p25.syncs >= 2 || this.dmr.syncs >= 2 || this.osw.good >= 2 || (this.nxdn?.some(r => r.framer.gridSyncs > 0) ?? false)
+      || (this.tetra ? this.tetra.rx.stats.bschOk > 0 || this.tetra.rx.stats.trainings >= 3 : false);
+  }
+  /** The turn of a carrier nothing has decoded is over. */
+  turnOver(now: number): boolean { return now - this.openedMs >= (this.hinted() || (!this.quick && this.p25.syncs + this.dmr.syncs + this.osw.good > 0) ? AUDITION_MS : this.quick ? AUDITION_FIRST_MS : LOOK_MS); }
+  /** The turn is a quick first look. */
+  quick = false;
   retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.tetraHz - center; if (this.nxdnDdc) this.nxdnDdc.ddc.offsetHz = this.hz - center; }
   /** Where the TETRA receiver is centered: the middle of the whole 25 kHz signal, not of the piece the finder saw. */
   private tetraHz = 0;
@@ -237,6 +277,7 @@ class Chan {
     // decoded frames, not bare syncs, mark the channel digital: a keyed CW tone can pass for a sync now and then
     const s0 = this.p25.clean + this.dmr.bursts;
     this.rx.push(zi, zq, m);
+    this.osw.push(zi, zq, m); this.fm?.push(zi, zq, m);
     this.p2?.push(zi, zq, m);
     if (this.nxdn) for (const r of this.nxdn) if (r.fs === this.fs) r.push(zi, zq, m);
     this.nxdnSyncCheck();
@@ -364,16 +405,66 @@ export class FleetProcessor implements IqProcessor {
     // control and rest channels, and the ones carrying unit reports, come first (the locked system's when locked);
     // the channels of calls on the air come right after them, never in their place
     const lock = this.calls.prefs.lock?.sys ?? '';
-    const core = (c: Carrier) => (c.role === 'control' || c.role === 'rest' || this.reportsOn(c, now)) && (!lock || !c.sys || c.sys === lock);
-    const want: Carrier[] = live.filter(keep).sort((a, b) => Number(core(b)) - Number(core(a)) || b.levelDb - a.levelDb);
-    const nCore = want.filter(core).length;
-    for (const c of [...pinned].reverse()) { const i = want.indexOf(c); if (i >= 0) want.splice(i, 1); want.splice(Math.min(nCore, want.length), 0, c); }
-    for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!keep(c) && now - ch.openedMs < AUDITION_MS && !want.includes(c)) want.push(c); }
-    const rest = live.filter(c => !want.includes(c)).sort((a, b) => a.lastAuditionMs - b.lastAuditionMs || b.levelDb - a.levelDb);
-    for (const c of rest) { if (want.length >= budget) break; want.push(c); }
+    const core0 = (c: Carrier) => (c.role === 'control' || c.role === 'rest' || this.reportsOn(c, now)) && (!lock || !c.sys || c.sys === lock);
+    // one control channel a P25 site is enough: the others the same site's are heard on (a secondary control channel, or
+    // the copies of a strong one the receiver makes beside it) wait their turns like any carrier
+    const bestOfSite = new Map<string, Carrier>();
+    for (const c of live) if (c.p25.site >= 0 && c.sys && core0(c)) { const k = `${c.sys}/${c.p25.rfss}/${c.p25.site}`, b = bestOfSite.get(k); if (!b || c.levelDb > b.levelDb) bestOfSite.set(k, c); }
+    const core = (c: Carrier) => core0(c) && (c.p25.site < 0 || !c.sys || bestOfSite.get(`${c.sys}/${c.p25.rfss}/${c.p25.site}`) === c);
+    // a carrier classed analog or unknown, or one a system already owns that is not a control channel, waits for its next turn
+    // (a voice channel comes back through the grants that name it)
+    // (one classed unknown comes back sooner when it keys up 6 dB stronger)
+    const settled = (c: Carrier) => c.lastAuditionMs > 0 && now - c.lastAuditionMs < RECHECK_MS && !core(c)
+      && (!!c.sys || c.cls === 'ANALOG FM' || ((c.cls === 'UNKNOWN 4FSK' || c.cls === 'UNKNOWN LINEAR') && c.levelDb < c.turnDb + 6));
+    const sorted = live.filter(keep).sort((a, b) => Number(core(b)) - Number(core(a)) || b.levelDb - a.levelDb);
+    // carriers still waiting for a turn keep a share of the channels free, so a span with more carriers than channels
+    // visits all of them: the decoding control channels take the rest, strongest first, and the others come round
+    // turns: carriers never heard first, strongest first (one sitting on the skirt of a much stronger neighbor later),
+    // then the one waiting longest
+    const byHz = [...live].sort((a, b) => a.hz - b.hz), score = new Map<number, number>();
+    for (let i = 0; i < byHz.length; i++) {
+      const c = byHz[i]; let skirt = false;
+      for (let j = i - 1; j >= 0 && c.hz - byHz[j].hz <= 10_000 && !skirt; j--) skirt = byHz[j].levelDb >= c.levelDb + 15;
+      for (let j = i + 1; j < byHz.length && byHz[j].hz - c.hz <= 10_000 && !skirt; j++) skirt = byHz[j].levelDb >= c.levelDb + 15;
+      score.set(c.key, c.levelDb - (skirt ? 20 : 0));
+    }
+    const waiting = live.filter(c => !this.chans.has(c.key) && !keep(c) && !settled(c));
+    // a carrier is new to the turns until it has had one, and again when it comes up 6 dB over its level then (a channel
+    // that keys up now and then). The full share while new carriers or strong ones' second looks wait, one channel after.
+    const fresh = (c: Carrier) => c.turns === 0 || c.levelDb >= c.turnDb + 6;
+    const reserve = waiting.length && live.length > budget ? (waiting.some(fresh) ? Math.max(2, Math.round(budget * TURN_SHARE)) : 1) : 0, cap = budget - reserve;
+    // the control channels known take turns when there are more than channels for them: one holding its channel keeps
+    // it for [CORE_TURN_MS], then the one that has waited longest goes next. One granting calls keeps its channel.
+    const busy = new Map<number, number>();
+    for (const g of this.grants) { if (now - g.lastMs > 60_000) continue; const k = gridKey(g.carrierHz); busy.set(k, (busy.get(k) ?? 0) + 1); }
+    const rank = (c: Carrier) => { const ch = this.chans.get(c.key); return !ch ? 2 : busy.get(c.key) ? 0 : now - ch.openedMs < CORE_TURN_MS ? 1 : 3; };
+    const coreL = live.filter(core).sort((a, b) => {
+      const ra = rank(a), rb = rank(b);
+      return ra - rb || (ra === 0 ? busy.get(b.key)! - busy.get(a.key)! : ra === 1 ? b.levelDb - a.levelDb : a.lastAuditionMs - b.lastAuditionMs);
+    });
+    const others = sorted.filter(c => !core(c) && !pinnedKeys.has(c.key));
+    const nCore = Math.min(coreL.length, Math.max(1, cap - pinned.length));
+    const held = coreL.slice(0, nCore), calls = pinned.filter(c => !held.includes(c));
+    const want: Carrier[] = [...held, ...calls, ...others].slice(0, Math.max(cap, held.length + calls.length));
+    // a carrier found decoding on its turn (a control channel, or a DMR or NXDN channel whose system its own frames name)
+    // keeps the channel until its system is read
+    for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!want.includes(c) && (c.role === 'control' || c.role === 'rest' || (keep(c) && (c.cls === 'DMR' || c.cls.startsWith('NXDN')))) && !c.sys && now - ch.openedMs < IDENTIFY_MS) want.splice(Math.min(nCore, want.length), 0, c); }
+    for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!keep(c) && !ch.turnOver(now) && !want.includes(c)) want.push(c); }
+    // the two ways of turns share the free channels: full looks (strong new carriers strongest first, then every
+    // carrier, the one waiting longest first) and quick looks (the weaker new carriers, strongest first)
+    const free = live.filter(c => !want.includes(c) && !settled(c));
+    const fullQ = free.filter(c => !fresh(c) || score.get(c.key)! >= FULL_DB).sort((a, b) => Number(fresh(b)) - Number(fresh(a)) || (fresh(a) ? score.get(b.key)! - score.get(a.key)! : a.lastAuditionMs - b.lastAuditionMs));
+    const quickQ = free.filter(c => fresh(c) && score.get(c.key)! < FULL_DB).sort((a, b) => score.get(b.key)! - score.get(a.key)!);
+    let nQuick = 0, nFull = 0;
+    for (const [, ch] of this.chans) if (!ch.turnOver(now)) { if (ch.quick) nQuick++; else nFull++; }
+    const quickSet = new Set<number>();
+    for (let fi = 0, qi = 0; want.length < budget && (fi < fullQ.length || qi < quickQ.length);) {
+      const q = qi < quickQ.length && (nQuick <= nFull || fi >= fullQ.length);
+      if (q) { const c = quickQ[qi++]; want.push(c); quickSet.add(c.key); nQuick++; } else { want.push(fullQ[fi++]); nFull++; }
+    }
     const chosen = new Set(want.slice(0, budget).map(c => c.key));
     for (const k of [...this.chans.keys()]) if (!chosen.has(k)) this.chans.delete(k);
-    for (const k of chosen) if (!this.chans.has(k)) { const c = this.carriers.get(k)!; c.lastAuditionMs = now; this.open(c, now); }
+    for (const k of chosen) if (!this.chans.has(k)) { const c = this.carriers.get(k)!, quick = quickSet.has(k); c.lastAuditionMs = now; c.turns++; c.turnDb = c.levelDb; this.open(c, now); const ch = this.chans.get(k); if (ch) ch.quick = quick; }
     for (const c of this.carriers.values()) c.decoding = this.chans.has(c.key);
     for (const [k, ch] of this.chans) if (ch.p2 && !ch.p2.seed) { const c = this.carriers.get(k); if (c) ch.p2.setSeeds(this.p2Seeds(c)); }
     this.placeCalls();
@@ -393,8 +484,10 @@ export class FleetProcessor implements IqProcessor {
     ch.p25v.onEs = es => this.p25Sec(c, 'LDU2', es);
     ch.p25v.onHdu = hd => this.p25Sec(c, 'HDU', hd);
     ch.cw.onText = t => this.cwText(c, t);
+    ch.osw.onOsw = (o, gap) => this.oswWord(c, ch, o, gap);
     if (c.tdma) this.p2On(c, ch);
     this.chans.set(c.key, ch);
+    if (this.calls.at('', c.hz, 0)?.proto === 'SMARTNET') this.fmOn(c, ch);
   }
   /** A Phase 2 TDMA channel: its S-ISCH syncs class it and keep it decoding (its voice is not built yet). */
   private p2On(c: Carrier, ch: Chan): void {
@@ -807,16 +900,89 @@ export class FleetProcessor implements IqProcessor {
   }
   private classify(c: Carrier, ch: Chan, now: number): void {
     if (c.tdma && !ch.p2) this.p2On(c, ch);
-    if (!c.tdma && !ch.tetra && c.cls !== 'TETRA' && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)) this.tetraOn(c, ch);
+    if (!c.tdma && !ch.tetra && c.cls !== 'TETRA' && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) && tetraBand(c.hz)) this.tetraOn(c, ch);
     if (!c.tdma && !ch.nxdn && c.cls !== 'TETRA' && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)) this.nxdnOn(c, ch);
     c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100; c.eye = Math.round(ch.rx.eye * 100) / 100;
     if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return;
-    if (now - ch.openedMs < 2_000) return;
+    if (now - ch.openedMs < CLASS_MS) return;
     if (c.tdma && ch.rx.envCv > 0.15) c.cls = 'P25 PHASE 2 TDMA';
     else if (ch.rx.eye > 1.3 && ch.rx.envCv < 0.15) c.cls = 'UNKNOWN 4FSK';
     else if (ch.rx.envCv > 0.18) c.cls = 'UNKNOWN LINEAR';
     else c.cls = 'ANALOG FM';
     const nx = this.nxdnSeen.get(c.key); if (nx && now - nx.ms < 5_000) c.cls = nx.baud === 2400 ? 'NXDN48' : 'NXDN96';
+  }
+
+  // ------------------------------------------------------------------------------------------------ Motorola Type II
+  private readonly oswParsers = new Map<number, OswParser>();
+  /**
+   * A signaling word that passed its check. A carrier becomes a Type II control channel on its third word, with at
+   * least half the frames since its first passing: a chance pass on noise never makes one.
+   */
+  private oswWord(c: Carrier, ch: Chan, o: Osw, gap: number): void {
+    const now = this.now(), rx = ch.osw;
+    if (c.cls !== 'MOTOROLA TYPE II') {
+      if (rx.good < 3 || rx.good < 0.5 * rx.expected) return;
+      c.cls = 'MOTOROLA TYPE II'; c.role = 'control';
+    }
+    c.frames++; c.blocks = rx.expected; c.crcOk = rx.good; c.lastDecodeMs = now; this.blocks++;
+    let p = this.oswParsers.get(c.key); if (!p) { p = new OswParser(); this.oswParsers.set(c.key, p); }
+    const ev = gap > 1 ? p.lost() : [];
+    ev.push(...p.push(o));
+    for (const e of ev) this.oswEvent(c, e, now);
+  }
+  private oswSys(id: number, now: number): Sys {
+    const key = `SMARTNET ${h(id, 4)}`;
+    let s = this.systems.get(key);
+    if (!s) {
+      s = { key, proto: 'SMARTNET', color: this.colorNext++, wacn: -1, sysId: id, cc: -1, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, trunk: 'TYPE II', lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() };
+      this.systems.set(key, s);
+    }
+    s.trunk = 'TYPE II';
+    if (!s.osw) s.osw = { plan: null, chans: new Map() };
+    s.lastMs = now;
+    return s;
+  }
+  private oswEvent(c: Carrier, e: OswEvent, now: number): void {
+    const hexw = oswHex(e.words), log = (name: string, text: string) => this.addLog({ ms: now, hz: c.hz, proto: 'TYPE II', name, text, hex: hexw, ok: true });
+    if (e.kind === 'sysid') {
+      const s = this.oswSys(e.sys, now); c.sys = s.key; s.heardHz.add(c.key);
+      const plan = provePlan(e.cc, c.hz);
+      c.osw = { cc: e.cc, plan };
+      if (plan && !s.osw!.plan) s.osw!.plan = plan;
+      log('SYSTEM ID', `SYSTEM ${h(e.sys, 4)} · CONTROL CHANNEL ${e.cc}${plan ? ` · ${plan.label}` : ' · no channel plan puts that number on this frequency'}`);
+      this.pending = true;
+      return;
+    }
+    const s = c.sys ? this.systems.get(c.sys) : undefined;
+    if (e.kind === 'grant' || e.kind === 'update') {
+      const tg = e.group ? tgOf(e.tg) : e.tg, st = e.group ? tgStatus(e.tg) : 0;
+      const who = `${e.group ? 'TG' : 'UNIT'} ${tg}${st ? ` · STATUS ${st}` : ''}${e.kind === 'grant' ? ` ← ${e.src}` : ''}`;
+      if (!s?.osw) { log(e.kind === 'grant' ? 'GRANT' : 'UPDATE', `${who} · CH ${e.ch} · system ID not heard yet`); return; }
+      s.lastMs = now;
+      const plan = s.osw.plan, hz = plan ? plan.hz(e.ch) : 0;
+      s.osw.chans.set(e.ch, (s.osw.chans.get(e.ch) ?? 0) + 1);
+      const site = this.oswSiteLabel(c);
+      this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: e.kind === 'grant' ? 'grant' : 'update', tg, group: e.group, src: e.kind === 'grant' ? e.src : 0, ch: `CH ${e.ch}`, hz, slot: 0, tdma: false, emergency: false, encrypted: false, carrierHz: c.hz, site, lpcn: e.ch }, e.kind === 'update');
+      if (e.kind === 'grant') this.touchUnit(s.key, e.src, c, now, 'grant', { hex: hexw, line: `GRANT ${who} · CH ${e.ch}` }, site, e.group ? tg : undefined);
+      log(e.kind === 'grant' ? 'GRANT' : 'UPDATE', `${who} · CH ${e.ch}${hz ? ` · ${(hz / 1e6).toFixed(4)} MHz` : ''}`);
+      return;
+    }
+    if (e.kind === 'idle') return;
+    log(`OSW ${e.words.map(w => h(w.cmd, 3)).join('+')}`, `not read · ${e.words.map(oswWordText).join(' / ')}`);
+  }
+  private oswSiteLabel(c: Carrier): string { return c.osw ? `channel ${c.osw.cc}` : `${(c.hz / 1e6).toFixed(4)} MHz`; }
+  /** A Type II voice channel: analog FM voice to the call on the air there. */
+  private fmOn(c: Carrier, ch: Chan): void {
+    if (ch.fm) return;
+    ch.fm = new FmVoice(ch.fs);
+    ch.fm.onPcm = (pcm, open) => { const call = this.calls.at('', c.hz, 0); if (call?.proto === 'SMARTNET') { this.calls.analog(call, pcm, open); if (open) this.pending = true; } };
+  }
+  private oswSites(s: Sys): SiteRow[] {
+    const cs = [...this.carriers.values()].filter(c => c.sys === s.key && c.cls === 'MOTOROLA TYPE II');
+    const plan = s.osw?.plan ?? null;
+    const lcns = plan ? [...(s.osw?.chans.keys() ?? [])].sort((a, b) => a - b).map(ch => ({ lcn: ch, hz: plan.hz(ch), slot: 0 })) : [];
+    return cs.map(c => ({ key: `${s.key}/${c.key}`, label: this.oswSiteLabel(c), rfss: -1, site: c.osw?.cc ?? -1, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
+      neighbors: [], secondary: [], time: c.osw ? (c.osw.plan ? c.osw.plan.label : 'channel plan not proved') : '', callsign: c.callsign, carriers: [c.key], lcns, rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: -1 }));
   }
 
   // ------------------------------------------------------------------------------------------------ P25
@@ -1197,8 +1363,8 @@ export class FleetProcessor implements IqProcessor {
   /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
   private grant(sys: string, g: GrantRow, update: boolean): void {
     if (g.kind !== 'datagrant') {
-      const p25 = sys.startsWith('P25'), tetra = sys.startsWith('TETRA'), nxdn = sys.startsWith('NXDN');
-      const proto: CallProto = p25 ? 'P25' : tetra ? 'TETRA' : nxdn ? 'NXDN' : 'DMR';
+      const p25 = sys.startsWith('P25'), tetra = sys.startsWith('TETRA'), nxdn = sys.startsWith('NXDN'), sn = sys.startsWith('SMARTNET');
+      const proto: CallProto = p25 ? 'P25' : tetra ? 'TETRA' : nxdn ? 'NXDN' : sn ? 'SMARTNET' : 'DMR';
       const call = this.calls.grant({ sys, proto, tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: p25 ? (g.tdma ? g.slot : 0) : g.slot, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site, lpcn: g.lpcn, chDerived: g.chDerived, efr: g.efr }, g.ms);
       // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
       if (call?.onAir && !call.muted && call.hz && this.rate > 0 && this.inSpan(call.hz)) {
@@ -1208,6 +1374,12 @@ export class FleetProcessor implements IqProcessor {
         if (tetra && ch && !ch.tetra) this.tetraOn(vc, ch);
         // an NXDN voice channel is read from its first frame, at the system's symbol rate
         if (nxdn && ch && !ch.nxdn) this.nxdnOn(vc, ch, this.systems.get(sys)?.nxdnBaud);
+        // a Type II voice channel carries analog FM
+        if (sn && ch) this.fmOn(vc, ch);
+      } else if (sn && call?.onAir && call.hz) {
+        // a recorded channel fed as its own baseband
+        const vc = this.carriers.get(gridKey(call.hz)), ch = vc && this.chans.get(vc.key);
+        if (vc && ch) { if (!vc.role) vc.role = 'voice'; if (!vc.sys) vc.sys = sys; this.fmOn(vc, ch); }
       }
     }
     const same = this.grants.find(x => x.sys === sys && x.tg === g.tg && x.ch === g.ch && x.group === g.group && g.ms - x.lastMs < 5_000);
@@ -1414,9 +1586,10 @@ export class FleetProcessor implements IqProcessor {
             lcns: [], rest: -1, busy: [], idens: [], units: units.size, lra: info?.la ?? -1, cls: sy?.cellLoad ?? -1 };
         });
       } else if (s.proto === 'NXDN') sites = this.nxdnSites(s);
+      else if (s.proto === 'SMARTNET') sites = this.oswSites(s);
       else sites = this.dmrSites(s);
       for (const st of sites) for (const k of st.carriers) for (const u of this.units.values()) if (u.sys === s.key && u.carriers.has(k)) unitSite.set(u.key, st.label);
-      const label = s.proto === 'NXDN' ? (s.trunk === 'CONVENTIONAL' ? `NXDN · CONVENTIONAL · RAN ${s.sysId}` : s.trunk === 'TYPE-D' ? `NXDN · TYPE-D · SITE ${s.sysId}` : `NXDN · ${s.model} SYSTEM ${s.sysId}`) : s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : s.trunk === 'CAPACITY PLUS' ? `CAPACITY PLUS · COLOR CODE ${s.cc}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
+      const label = s.proto === 'SMARTNET' ? `MOTOROLA TYPE II · SYSTEM ${h(s.sysId, 4)}` : s.proto === 'NXDN' ? (s.trunk === 'CONVENTIONAL' ? `NXDN · CONVENTIONAL · RAN ${s.sysId}` : s.trunk === 'TYPE-D' ? `NXDN · TYPE-D · SITE ${s.sysId}` : `NXDN · ${s.model} SYSTEM ${s.sysId}`) : s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : s.trunk === 'CAPACITY PLUS' ? `CAPACITY PLUS · COLOR CODE ${s.cc}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
       const units = [...this.units.values()].filter(u => u.sys === s.key).length, tgs = [...this.tgs.values()].filter(t => t.sys === s.key).length;
       const lpcns = s.nxdnPlan ? [...s.nxdnPlan.heard].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.nxdnPlan!.votes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn)
         : [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
@@ -1434,16 +1607,16 @@ export class FleetProcessor implements IqProcessor {
     });
     const tgs: TgRow[] = [...this.tgs.values()].map(t => ({ key: t.key, sys: t.sys, tg: t.tg, firstMs: t.firstMs, lastMs: t.lastMs, grants: t.grants, recent: t.recent.filter(x => now - x < 600_000), members: [...t.members].slice(0, 200), history: t.history.slice(0, 12) }));
     const carriers: CarrierRow[] = [...this.carriers.values()].map(c => {
-      const { lastAuditionMs: _a, p25: _p, dmrSys: _d, tables: _t, unitIds: _u, hdr: _h, nxdnAdj: _n, nxdnD: _x, nxdnRanN: _r, ...row } = c;
+      const { lastAuditionMs: _a, turns: _tu, turnDb: _td, osw: _o, p25: _p, dmrSys: _d, tables: _t, unitIds: _u, hdr: _h, nxdnAdj: _n, nxdnD: _x, nxdnRanN: _r, ...row } = c;
       return { ...row };
     }).sort((a, b) => a.hz - b.hz);
     return { type: 'fleet', centerHz: this.centerHz, rate: this.rate, spanLo: this.spanLo, spanHi: this.spanHi, carriers, systems, units, tgs, grants: this.grants.slice(0, 120),
       perMin: this.grants.filter(g => now - g.ms < 60_000).length, blocks: this.blocks, slots: this.chans.size, ref: this.ref !== null,
-      calls: this.calls.rows(), follow: this.followTarget(), codecs: (['imbe', 'ambe2', 'tetra'] as CodecId[]).filter(hasCodec), playing: this.calls.playing, lock: this.calls.prefs.lock ?? null };
+      calls: this.calls.rows(), follow: this.followTarget(), codecs: [...(['imbe', 'ambe2', 'tetra'] as CodecId[]).filter(hasCodec), 'fm'], playing: this.calls.playing, lock: this.calls.prefs.lock ?? null };
   }
   /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
   followTarget(): { key: string; hz: number } | null {
-    const c = this.calls.followTarget(hz => this.inSpan(hz), x => hasCodec(x.codec) && !x.encrypted && !x.protectedHint && x.sec !== 'unknown');
+    const c = this.calls.followTarget(hz => this.inSpan(hz), x => (hasCodec(x.codec) || x.codec === 'fm') && !x.encrypted && !x.protectedHint && x.sec !== 'unknown');
     return c ? { key: c.key, hz: c.hz } : null;
   }
   private latestId(sys: string): { cwId: string; cwIdMs: number; cwIdHz: number } {
@@ -1461,7 +1634,7 @@ export class FleetProcessor implements IqProcessor {
     if (!c) for (const x of this.carriers.values()) if (Math.abs(x.hz - hz) < 1_500) { c = x; break; }
     if (!c) {
       c = { key, hz, levelDb: 0, peakDb: 0, firstMs: now, lastMs: now, onMs: 0, heardMs: 0, cls: '', role: '', sys: '', nac: -1, cc: -1, frames: 0, blocks: 0, crcOk: 0, lastDecodeMs: 0,
-        envCv: 0, eye: 0, decoding: false, callsign: '', callsignMs: 0, tdma: false, lcn: '', lastAuditionMs: 0, p25: { sys: -1, wacn: -1, rfss: -1, site: -1 }, dmrSys: '', tables: new Map(), unitIds: new Map() };
+        envCv: 0, eye: 0, decoding: false, callsign: '', callsignMs: 0, tdma: false, lcn: '', lastAuditionMs: 0, turns: 0, turnDb: 0, p25: { sys: -1, wacn: -1, rfss: -1, site: -1 }, dmrSys: '', tables: new Map(), unitIds: new Map() };
       this.carriers.set(key, c);
     }
     return c;
@@ -1529,7 +1702,7 @@ export class FleetProcessor implements IqProcessor {
   }
   clear(): void {
     this.carriers.clear(); this.systems.clear(); this.sites.clear(); this.units.clear(); this.tgs.clear(); this.grants = []; this.log.length = 0; this.logSeen.clear();
-    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = [];
+    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = []; this.oswParsers.clear();
     this.post(true);
   }
 }

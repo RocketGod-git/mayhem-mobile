@@ -80,7 +80,7 @@ interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'An
 const APPS: AppDef[] = [
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB', cat: 'Receive' },
   { id: 'hd', title: 'HD Radio', blurb: 'station data · art · traffic', cat: 'Receive' },
-  { id: 'fleet', title: 'Dispatch', blurb: 'P25 · DMR trunking and calls', cat: 'Receive' },
+  { id: 'fleet', title: 'Dispatch', blurb: 'P25 · DMR · Type II trunking and calls', cat: 'Receive' },
   { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG', cat: 'Receive' },
   { id: 'lora', title: 'Mesh', blurb: 'LoRa · Meshtastic · MeshCore', cat: 'Receive' },
   { id: 'adsb', title: 'Flights', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
@@ -4738,7 +4738,7 @@ function dispatchLockFor(sysKey: string, siteLabel = ''): DispatchLock | null {
   const hz = site?.ccHz[0] ?? x.sites.find(y => y.ccHz.length)?.ccHz[0] ?? 0;
   return { sys: x.key, site: siteLabel, label: `${fleetSysTitle(x)}${siteLabel ? ` · SITE ${siteLabel}` : ''}`, hz };
 }
-const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'NXDN' ? (sys.trunk === 'CONVENTIONAL' ? `NXDN RAN ${sys.sysId}` : sys.trunk === 'TYPE-D' ? `TYPE-D SITE ${sys.sysId}` : `${sys.model} SYS ${sys.sysId}`) : sys.proto === 'TETRA' ? `MCC ${sys.wacn} · MNC ${sys.sysId}` : sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : sys.trunk === 'CAPACITY PLUS' ? `CAP+ CC ${sys.cc}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
+const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'SMARTNET' ? `TYPE II SYS ${sys.sysId.toString(16).toUpperCase().padStart(4, '0')}` : sys.proto === 'NXDN' ? (sys.trunk === 'CONVENTIONAL' ? `NXDN RAN ${sys.sysId}` : sys.trunk === 'TYPE-D' ? `TYPE-D SITE ${sys.sysId}` : `${sys.model} SYS ${sys.sysId}`) : sys.proto === 'TETRA' ? `MCC ${sys.wacn} · MNC ${sys.sysId}` : sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : sys.trunk === 'CAPACITY PLUS' ? `CAP+ CC ${sys.cc}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
 /** Talkgroup preferences are kept on the device (the key names keep the app's internal id). */
 function loadDispatchPrefs(): TgPrefs {
   try { const v = JSON.parse(localStorage.getItem('mm.fleet.tgprefs') ?? 'null'); if (v && Array.isArray(v.mute) && Array.isArray(v.prio)) return { mute: v.mute, hold: typeof v.hold === 'string' ? v.hold : '', prio: v.prio }; } catch { /* storage blocked */ }
@@ -5003,10 +5003,13 @@ function fleetIdenRows(idens: FleetIden[]): string {
 function fleetSiteHtml(sys: FleetSystem, site: FleetSite, now: number): string {
   const age = now - site.lastMs, live = age < 10_000, s = fleetUi.snap;
   const cars = site.carriers.map(k => s?.carriers.find(c => c.key === k)).filter((c): c is FleetCarrier => !!c);
-  const ccs = cars.map(c => `<span class="fl-cc ${c.role}" data-flsel="car:${c.key}">${fleetMhz(c.hz)}<small>${c.role === 'rest' ? 'REST' : c.role === 'control' ? (sys.proto === 'P25' || sys.proto === 'TETRA' ? 'CONTROL' : 'REPEATER') : c.role.toUpperCase()}${c.lcn ? ` · LCN ${c.lcn}` : ''}</small></span>`).join('');
+  const ccs = cars.map(c => `<span class="fl-cc ${c.role}" data-flsel="car:${c.key}">${fleetMhz(c.hz)}<small>${c.role === 'rest' ? 'REST' : c.role === 'control' ? (sys.proto === 'P25' || sys.proto === 'TETRA' || sys.proto === 'SMARTNET' ? 'CONTROL' : 'REPEATER') : c.role.toUpperCase()}${c.lcn ? ` · LCN ${c.lcn}` : ''}</small></span>`).join('');
   const lvl = Math.max(0, Math.min(1, site.levelDb / 50));
   let body = '';
-  if (sys.proto === 'NXDN') {
+  if (sys.proto === 'SMARTNET') {
+    body += `<div class="fl-kv">${site.site >= 0 ? `<span>CONTROL CHANNEL <b>${site.site}</b></span>` : ''}${site.time ? `<span>${esc(site.time.toUpperCase())}</span>` : ''}</div>`;
+    if (site.lcns.length) body += `<div class="fl-lcn">${site.lcns.map(l => `<span><b>CH ${l.lcn}</b><i>${fleetMhz(l.hz)}</i></span>`).join('')}</div>`;
+  } else if (sys.proto === 'NXDN') {
     body += `<div class="fl-kv"><span>${sys.trunk === 'CONVENTIONAL' ? 'RAN' : 'SITE'} <b>${site.site}</b></span>${site.nac >= 0 && sys.trunk === 'TYPE-C' ? `<span>RAN <b>${site.nac}</b></span>` : ''}${site.time ? `<span>${esc(site.time.toUpperCase())}</span>` : ''}${site.cls > 0 ? `<span>VERSION <b>${site.cls}</b></span>` : ''}</div>`;
     if (site.neighbors.length) body += `<div class="fl-nb"><small>ADJACENT</small>${site.neighbors.map(nb => `<span class="${nb.heard ? 'heard' : ''}">${esc(nb.label.toUpperCase())}<i>${nb.hz ? fleetMhz(nb.hz) : nb.ch}</i></span>`).join('')}</div>`;
     if (site.lcns.length) body += `<div class="fl-lcn">${site.lcns.map(l => `<span><b>${sys.trunk === 'TYPE-D' ? 'REPEATER' : 'CH'} ${l.lcn}</b><i>${fleetMhz(l.hz)}</i></span>`).join('')}</div>`;
@@ -5042,7 +5045,7 @@ function fleetSystemCard(sys: FleetSystem, now: number): string {
 function fleetGrantRow(g: FleetGrant, now: number): string {
   const col = fleetColor(g.sys), flash = Math.max(0, 1 - (now - g.ms) / 1200);
   const who = g.group ? `<span class="fl-tg" data-flsel="tg:${esc(g.sys)}/${g.tg}">TG ${g.tg}</span>` : `<span class="fl-tg">UNIT ${g.tg}</span>`;
-  const nx = g.sys.startsWith('NXDN');
+  const nx = g.sys.startsWith('NXDN') || g.sys.startsWith('SMARTNET');
   const ch = g.hz > 0 ? `${fleetMhz(g.hz)}${g.tdma ? ` · TDMA S${g.slot + 1}` : nx ? ` · ${esc(g.ch)}` : g.lpcn !== undefined && g.lpcn >= 0 ? ` · TS${g.slot + 1} · LPCN ${g.lpcn}` : g.sys.startsWith('TETRA') ? ` · TS${g.slot + 1}` : ''}` : `${esc(g.ch)}${nx ? '' : g.lpcn !== undefined && g.lpcn >= 0 ? ` · TS${g.slot + 1}` : g.tdma && g.slot >= 0 ? ` · TS${g.slot + 1}` : ''}`;
   return `<div class="fl-grant ${g.emergency ? 'emerg' : ''}" style="--sys:${col};--flash:${flash.toFixed(2)}"><i></i><span class="fl-gt">${fleetClock(g.ms)}</span>${who}<span class="fl-src">${g.src ? `← ${g.src}` : ''}</span><span class="fl-gch">${ch}</span><span class="fl-gf">${g.emergency ? flPill('EMERG', 'red') : ''}${g.encrypted ? flPill('ENC', 'acc') : ''}${g.kind === 'datagrant' ? flPill('DATA') : g.kind === 'u2u' ? flPill('PRIVATE') : ''}</span></div>`;
 }
@@ -5106,8 +5109,8 @@ function dispatchOnAirCard(c: FleetCall, s: FleetSnap, now: number): string {
   const lvl = Math.max(0, Math.min(1, c.levelDb / 40)), segs = 16, lit = Math.round(lvl * segs);
   const meter = Array.from({ length: segs }, (_, i) => `<i class="${i < lit ? (i >= segs - 3 ? 'hi' : 'on') : ''}"></i>`).join('');
   const note = dispatchAudioNote(c, s.codecs), key = dispatchKey(c), sel = c.group ? `tg:${esc(key)}` : `unit:${esc(c.sys)}/${c.tg}`;
-  const lpName = c.proto === 'NXDN' ? 'CH' : 'LPCN', lp = c.lpcn >= 0 ? ` · ${lpName} ${c.lpcn}` : '';
-  const ch = c.hz > 0 ? `${fleetMhz(c.hz)} MHz${c.tdma ? ` · TDMA S${c.slot + 1}` : c.proto === 'DMR' || c.proto === 'TETRA' ? ` · TS${c.slot + 1}` : ''}${lp}` : c.lpcn >= 0 ? `${lpName} ${c.lpcn}${c.proto === 'DMR' ? ` · TS${c.slot + 1}` : ''} · learning its frequency` : 'channel not resolved';
+  const lpName = c.proto === 'NXDN' || c.proto === 'SMARTNET' ? 'CH' : 'LPCN', lp = c.lpcn >= 0 ? ` · ${lpName} ${c.lpcn}` : '';
+  const ch = c.hz > 0 ? `${fleetMhz(c.hz)} MHz${c.tdma ? ` · TDMA S${c.slot + 1}` : c.proto === 'DMR' || c.proto === 'TETRA' ? ` · TS${c.slot + 1}` : ''}${lp}` : c.lpcn >= 0 ? `${lpName} ${c.lpcn}${c.proto === 'DMR' ? ` · TS${c.slot + 1}` : ''} · ${c.proto === 'SMARTNET' ? 'channel plan not proved' : 'learning its frequency'}` : 'channel not resolved';
   // the card slides in once, when the call first shows; the dot blinks with the redraws (twice a second)
   const first = fleetUi.airSeen.get(c.key) ?? now; if (!fleetUi.airSeen.has(c.key)) { fleetUi.airSeen.set(c.key, now); if (fleetUi.airSeen.size > 400) fleetUi.airSeen.delete(fleetUi.airSeen.keys().next().value as string); }
   const fresh = now - first < 450, blink = Math.floor(now / 500) % 2 === 1;
@@ -5267,7 +5270,8 @@ function fleetDetail(s: FleetSnap, now: number): string {
     }
     const [enc, n] = encShare(calls);
     const stats = `<div class="flc-stats">${big(`${x.sites.length}`, 'SITES')}${big(`${units.length}`, 'UNITS')}${big(`${x.tgs || tgs.length}`, 'TALKGROUPS')}${big(`${x.grants}`, 'GRANTS')}${n ? big(`${Math.round(100 * enc / n)}%`, 'ENCRYPTED') : ''}</div>`;
-    const ids: [string, string][] = x.proto === 'NXDN' ? (x.trunk === 'CONVENTIONAL' ? [['RAN', `${x.sysId}`]] : x.trunk === 'TYPE-D' ? [['SITE CODE', `${x.sysId}`]] : [['CATEGORY', x.model], ['SYSTEM CODE', `${x.sysId}`]])
+    const ids: [string, string][] = x.proto === 'SMARTNET' ? [['SYSTEM ID', x.sysId.toString(16).toUpperCase().padStart(4, '0')], ['CHANNEL PLAN', x.sites.find(st => st.time)?.time ?? '']]
+      : x.proto === 'NXDN' ? (x.trunk === 'CONVENTIONAL' ? [['RAN', `${x.sysId}`]] : x.trunk === 'TYPE-D' ? [['SITE CODE', `${x.sysId}`]] : [['CATEGORY', x.model], ['SYSTEM CODE', `${x.sysId}`]])
       : x.proto === 'TETRA' ? [['MCC', `${x.wacn}`], ['MNC', `${x.sysId}`], ['COLOR CODE', `${x.cc}`], ['AIR INTERFACE', x.security]]
       : x.proto === 'P25' ? [['WACN', x.wacn.toString(16).toUpperCase().padStart(5, '0')], ['SYSTEM', x.sysId.toString(16).toUpperCase().padStart(3, '0')]]
       : [['COLOR CODE', `${x.cc}`], ['FEATURE SET', x.fid >= 0 ? `0x${x.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''], ['NETWORK', x.net >= 0 ? `${x.model} ${x.net}` : '']];
@@ -5298,6 +5302,7 @@ function fleetSysType(x: FleetSystem, s: FleetSnap): string {
   if (x.proto === 'P25') return s.carriers.some(c => c.sys === x.key && c.tdma) || s.calls.some(c => c.sys === x.key && c.tdma) ? 'P25 PHASE 1 AND 2' : 'P25 PHASE 1';
   if (x.proto === 'DMR') return x.trunk === 'CAPACITY PLUS' ? 'DMR CAPACITY PLUS' : x.trunk === 'TIER III' ? 'DMR TIER III' : 'DMR';
   if (x.proto === 'NXDN') return x.trunk ? `NXDN ${x.trunk}` : 'NXDN';
+  if (x.proto === 'SMARTNET') return 'MOTOROLA TYPE II';
   return x.proto;
 }
 function refreshFleet(force = false): void {
