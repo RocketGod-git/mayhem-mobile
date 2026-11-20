@@ -1092,6 +1092,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .pc-m { display: flex; gap: 6px; margin-top: 5px; }
 .pc-m button { font: inherit; font-size: 10px; font-weight: 700; color: var(--ink); background: var(--panel); border: 0; border-radius: 5px; padding: 2px 6px; cursor: pointer; }
 .pc-m button.hz { font-weight: 400; color: var(--muted); }
+.pc-m .pc-w { font-size: 10px; font-weight: 700; color: var(--ink); background: var(--panel); border-radius: 5px; padding: 2px 6px; }
 .pc-m button.on { background: var(--accent); color: #fff; }
 .pc-body { margin-top: 5px; font-size: 13.5px; line-height: 18px; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
 .pc-body.muted { color: var(--muted); }

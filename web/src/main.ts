@@ -3768,7 +3768,7 @@ function onHuntPage(m: { hz: number; page: HuntPage; line?: string; replaces?: s
   if (m.replaces) hunt.messages = hunt.messages.filter(x => x.line !== m.replaces);
   hunt.messages.unshift({ id: hunt.nextId++, at: Date.now(), hz: m.hz, page: m.page, alert: HUNT_ALERT.test(m.page.text.toUpperCase()), line: m.line });
   if (hunt.messages.length > 400) hunt.messages.length = 400;
-  hunt.caps.add(m.page.cap);
+  if (m.page.cap >= 0) hunt.caps.add(m.page.cap);   // a ReFLEX frame card has no capcode
   refreshHunt();
 }
 function onHuntState(m: { text: string; hunting: boolean; pinned: number[]; channels: HuntChan[]; heardHz?: number | null }): void {
@@ -3865,7 +3865,7 @@ function drawHunt(): void {
   // the feed's head
   qa<HTMLButtonElement>('[data-hk]').forEach(b => { const k = Number(b.dataset.hk); b.classList.toggle('on', k === hunt.kind); b.textContent = k === 0 ? `ALL ${msgs.length}` : k === 1 ? 'TEXT' : `CALL-OUTS${alerts ? ` ${alerts}` : ''}`; });
   const tg = q('#htogs');
-  if (tg) tg.innerHTML = `<button class="pill ${hunt.protocol !== 'POCSAG' ? 'on' : ''}" data-ht="flex">FLEX ${flexN}</button><button class="pill ${hunt.protocol !== 'FLEX' ? 'on' : ''}" data-ht="pocsag">POCSAG ${msgs.length - flexN}</button><button class="pill ${hunt.fold ? 'on' : ''}" data-ht="fold">FOLD</button>`
+  if (tg) tg.innerHTML = `<button class="pill ${hunt.protocol !== 'POCSAG' ? 'on' : ''}" data-ht="flex">FLEX ${flexN}</button><button class="pill ${hunt.protocol !== 'FLEX' ? 'on' : ''}" data-ht="pocsag">POCSAG ${msgs.filter(m => m.page.protocol === 'POCSAG').length}</button><button class="pill ${hunt.fold ? 'on' : ''}" data-ht="fold">FOLD</button>`
     + (noise ? `<button class="pill ${hunt.noise ? 'on' : ''}" data-ht="noise">NOISE ${noise}</button>` : '')
     + (hunt.capcode !== null ? `<button class="pill only" data-ht="cap">CAP ${hunt.capcode} ✕</button>` : '')
     + (hunt.hz !== null ? `<button class="pill only" data-ht="hz">${(hunt.hz / 1e6).toFixed(4)} MHz ✕</button>` : '');
@@ -3892,7 +3892,7 @@ function drawHunt(): void {
     const body = p.text.trim() ? p.text : p.kind === 'TONE' ? 'tone only (beep)' : p.errors > 0 ? 'unreadable: too much of it was lost on the air' : 'no message';
     const time = new Date(m.at).toTimeString().slice(0, 8);
     return `<div class="pcard ${kind}" data-hid="${m.id}"><div class="pc-h"><span class="pc-b">${m.alert ? '⚠ CALL-OUT' : p.kind}</span><span class="pc-t">${time}</span>${n > 1 ? `<span class="pc-x">×${n}</span>` : ''}${p.errors > 0 && p.text.trim() ? '<span class="pill a2">PARTIAL</span>' : ''}<span class="pc-r">${p.protocol} ${p.rate}</span></div>`
-      + `<div class="pc-m"><button class="${hunt.capcode === p.cap ? 'on' : ''}" data-hcap="${p.cap}">CAP ${p.cap}${caps.size > 1 ? ` +${caps.size - 1}` : ''}</button><button class="hz ${hunt.hz === m.hz ? 'on' : ''}" data-hhz="${m.hz}">${(m.hz / 1e6).toFixed(4)}</button></div>`
+      + `<div class="pc-m">${p.cap >= 0 ? `<button class="${hunt.capcode === p.cap ? 'on' : ''}" data-hcap="${p.cap}">CAP ${p.cap}${caps.size > 1 ? ` +${caps.size - 1}` : ''}</button>` : `<span class="pc-w">${esc(p.where)}</span>`}<button class="hz ${hunt.hz === m.hz ? 'on' : ''}" data-hhz="${m.hz}">${(m.hz / 1e6).toFixed(4)}</button></div>`
       + `<div class="pc-body ${p.text.trim() ? '' : 'muted'}">${esc(body)}</div></div>`;
   }).join('');
   if (atTop) feed.scrollTop = 0;

@@ -2,7 +2,9 @@ package com.rocketgod.mayhem.core.pager
 
 /** What a page carries. */
 enum class PageKind(val label: String) {
-    ALPHA("ALPHA"), NUMERIC("NUM"), TONE("TONE"), BINARY("BIN"), SECURE("SECURE"), INSTRUCTION("INSTR")
+    ALPHA("ALPHA"), NUMERIC("NUM"), TONE("TONE"), BINARY("BIN"), SECURE("SECURE"), INSTRUCTION("INSTR"),
+    /** A ReFLEX frame: what the frame showed, not a page to anyone (it has no capcode). */
+    FRAME("FRAME")
 }
 
 /**

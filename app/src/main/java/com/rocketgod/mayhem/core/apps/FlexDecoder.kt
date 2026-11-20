@@ -58,7 +58,11 @@ class FlexDecoder(private val log: PacketLog) : IqProcessor {
             val pat = lockBuf xor LOCK_PATTERN
             if ((pat and LOCK_MASK) == 0L || (pat.inv() and LOCK_MASK) == 0L) { locked = 1; lockBuf = 0L }
         }
-        if (++timeout > DEMOD_TIMEOUT) locked = 0
+        // No crossing for a while means the carrier is gone, except inside a frame's data: there, words of all zeros
+        // (or all ones) go out as one steady tone for as long as a block lasts. Dropping the lock there lost every page
+        // whose last word closed a block (alpha pages of 21 to 23 characters and so on); the frame's length and its
+        // idle words end the data instead.
+        if (++timeout > DEMOD_TIMEOUT && st != DATA) locked = 0
     }
 
     private fun buildSymbol(sampleIn: Float): Int {
@@ -413,7 +417,8 @@ class FlexDecoder(private val log: PacketLog) : IqProcessor {
     }
 }
 
-/** Pager RX: FLEX by default, POCSAG optionally alongside on the same discriminator stream (what PDW does on a PC). */
+/** Pager RX: FLEX (with ReFLEX, the same family of frame) and POCSAG side by side on the same discriminator stream
+ *  by default (what PDW does on a PC), or just one of them. */
 class PagerDecoder(private val log: PacketLog) : IqProcessor {
     enum class Which(val label: String) { FLEX("FLEX"), POCSAG("POCSAG"), BOTH("FLEX + POCSAG") }
     val flex = FlexDecoder(log)
@@ -421,6 +426,10 @@ class PagerDecoder(private val log: PacketLog) : IqProcessor {
      *  frequency error is a DC on the discriminator), which the older single-channel decoder did not. */
     private var pocsag: com.rocketgod.mayhem.core.pager.PocsagDecoder? = null
     private var pocsagRate = 0
+    /** ReFLEX rides with FLEX: each frame it reads goes on the packet log as a line. */
+    private var reflex: com.rocketgod.mayhem.core.pager.ReflexDecoder? = null
+    private var reflexRate = 0
+    private val quiet = object : com.rocketgod.mayhem.core.pager.PagerSink { override fun onPage(p: com.rocketgod.mayhem.core.pager.PagerPage) {} }
     private val sink = object : com.rocketgod.mayhem.core.pager.PagerSink {
         override fun onPage(p: com.rocketgod.mayhem.core.pager.PagerPage) {
             val func = p.where.removePrefix("func ").toIntOrNull() ?: 0
@@ -438,11 +447,18 @@ class PagerDecoder(private val log: PacketLog) : IqProcessor {
     val which: StateFlow<Which> = _which.asStateFlow()
     fun select(w: Which) { _which.value = w }
     override val wantsFm: Boolean get() = true
-    override fun reset(rate: Int) { pocsag = null; pocsagRate = 0; flex.reset(rate) }
+    override fun reset(rate: Int) { pocsag = null; pocsagRate = 0; reflex = null; reflexRate = 0; flex.reset(rate) }
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {}
     override fun onFm(samples: FloatArray, n: Int, rate: Int) {
         val w = _which.value
-        if (w != Which.POCSAG) flex.onFm(samples, n, rate)
+        if (w != Which.POCSAG) {
+            flex.onFm(samples, n, rate)
+            if (reflex == null || rate != reflexRate) {
+                reflexRate = rate
+                reflex = com.rocketgod.mayhem.core.pager.ReflexDecoder(quiet, rate.toDouble()).also { d -> d.onFrame = { f -> log.add(f.line) } }
+            }
+            reflex!!.push(samples, n)
+        }
         if (w != Which.FLEX) {
             if (pocsag == null || rate != pocsagRate) { pocsagRate = rate; pocsag = com.rocketgod.mayhem.core.pager.PocsagDecoder(sink, rate.toDouble()) }
             pocsag!!.push(samples, n)

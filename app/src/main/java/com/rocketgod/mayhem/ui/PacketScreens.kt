@@ -430,7 +430,7 @@ private fun PagerFeed(messages: List<PagerMessage>, f: PagerFilter, accent: Colo
         Row(Modifier.fillMaxWidth().scrollGlow(toggles, horizontal = true).horizontalScroll(toggles).padding(vertical = d.dp(6f)),
             horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
             TogglePill("FLEX $flex", f.protocol != "POCSAG", accent) { f.protocol = if (f.protocol == null) "POCSAG" else null }
-            TogglePill("POCSAG ${messages.size - flex}", f.protocol != "FLEX", accent) { f.protocol = if (f.protocol == null) "FLEX" else null }
+            TogglePill("POCSAG ${messages.count { it.page.protocol == "POCSAG" }}", f.protocol != "FLEX", accent) { f.protocol = if (f.protocol == null) "FLEX" else null }
             TogglePill("FOLD", f.fold, accent) { f.fold = !f.fold }
             if (noise > 0) TogglePill("NOISE $noise", PagerUi.noise, accent) { PagerUi.noise = !PagerUi.noise }
             f.capcode?.let { cap -> OnlyChip("CAP $cap", accent) { f.capcode = null } }
@@ -484,9 +484,9 @@ private fun PageCard(r: PageRow, accent: Color, f: PagerFilter) {
         Modifier.fillMaxWidth().height(IntrinsicSize.Min).clip(shape)
             .background(if (m.alert) Brush.horizontalGradient(listOf(Palette.danger.copy(alpha = 0.16f), Palette.surface), endX = 900f) else Brush.horizontalGradient(listOf(Palette.surface, Palette.surface)))
             .border(1.dp, if (m.alert) Palette.danger.copy(alpha = 0.75f) else Palette.line, shape)
-            .clickable { copyPage(ctx, p.text.ifBlank { "CAP ${p.capcode}" }) }
+            .clickable { copyPage(ctx, p.text.ifBlank { if (p.capcode >= 0) "CAP ${p.capcode}" else p.where }) }
     ) {
-        // the edge glows in its colour, except for tone-only pages, which have nothing to read
+        // the edge glows in its color, except for tone-only pages, which have nothing to read
         Box(Modifier.width(4.dp).fillMaxHeight().background(edge).drawBehind {
             if (edge != Palette.muted) drawRect(edge.copy(alpha = 0.35f), Offset(size.width, 0f), Size(5.dp.toPx(), size.height))
         })
@@ -504,11 +504,17 @@ private fun PageCard(r: PageRow, accent: Color, f: PagerFilter) {
                 Text("${p.protocol} ${p.rate}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = d.dp(5f))) {
-                val capOn = f.capcode == p.capcode
-                Text("CAP ${p.capcode}" + (if (r.capcodes > 1) " +${r.capcodes - 1}" else ""),
-                    color = if (capOn) inkOn(accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
-                    modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(if (capOn) accent else Palette.panel)
-                        .clickable { f.capcode = if (capOn) null else p.capcode }.padding(horizontal = d.dp(6f), vertical = d.dp(2f)))
+                if (p.capcode >= 0) {
+                    val capOn = f.capcode == p.capcode
+                    Text("CAP ${p.capcode}" + (if (r.capcodes > 1) " +${r.capcodes - 1}" else ""),
+                        color = if (capOn) inkOn(accent) else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                        modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(if (capOn) accent else Palette.panel)
+                            .clickable { f.capcode = if (capOn) null else p.capcode }.padding(horizontal = d.dp(6f), vertical = d.dp(2f)))
+                } else {
+                    // a ReFLEX frame card: no capcode was decoded, so it shows where in the cycle the frame was
+                    Text(p.where, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f),
+                        modifier = Modifier.clip(RoundedCornerShape(5.dp)).background(Palette.panel).padding(horizontal = d.dp(6f), vertical = d.dp(2f)))
+                }
                 Spacer(Modifier.width(d.dp(6f)))
                 val hzOn = f.hz == m.hz
                 Text("%.4f".format(m.hz / 1e6), color = if (hzOn) inkOn(accent) else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),

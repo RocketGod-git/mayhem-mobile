@@ -8,6 +8,7 @@ import { fft } from '../fft.js';
 import type { Emit, IqProcessor } from './core.js';
 import { FlexDecoder } from './flex.js';
 import { PocsagDecoder } from './pocsag.js';
+import { ReflexDecoder, type ReflexFrame } from './reflex.js';
 
 const SLOTS = 4;
 const SETTLE_MS = 300;        // ignore the span right after a retune, while the AGC and stream settle
@@ -21,6 +22,22 @@ const SURVEY_DB = 8;
 const TRIAL_MS = 20_000;      // a hunted carrier gets this long to show a sync
 const RETRY_MS = 90_000;      // before an evicted carrier is tried again
 const PROVEN_MS = 180_000;    // a carrier that synced this recently keeps its slot
+/**
+ * Image copies of a strong carrier. The HackRF puts weak copies of every strong carrier at multiples of 41.667 kHz
+ * (20 MHz / 480) either side of it, about 30 dB down at the first and 43 dB at the second (measured on the 2026-11-20
+ * roof recording, 929.6125, 931.5375, 935.275 and 940.8625 MHz). A copy carries the same pages at the same instant,
+ * so it would decode them a second time and take a receiver a real carrier needs. A carrier sitting within
+ * [IMAGE_TOL] of such an offset from one [IMAGE_DB] stronger gets no receiver in AUTO; a receiver at such an offset
+ * that decodes a page another, much stronger receiver just decoded is a copy too, and gives its slot up.
+ */
+const IMAGE_STEP = 41_667;
+const IMAGE_STEPS = 4;
+const IMAGE_TOL = 5_000;
+const IMAGE_DB = 15;
+/** A page heard again on another carrier this soon after is the same transmission. */
+const COPY_MS = 3_000;
+/** How much weaker a receiver repeating another's page must be to be taken for a copy of it. */
+const COPY_DB = 10;
 
 /** Hamming-windowed sinc, unity gain at DC; [cut] is the cutoff as a fraction of the sample rate. */
 function lowpass(taps: number, cut: number): Float32Array {
@@ -39,7 +56,7 @@ function lowpass(taps: number, cut: number): Float32Array {
 /**
  * One pager channel cut out of the wide IQ stream: mixed to baseband by an oscillator, filtered and decimated in two
  * FIR stages (to ~240 kHz, then to ~48 kHz with a channel filter tight enough that the next 25 kHz channel is gone),
- * FM-discriminated, and fed to both a FLEX and a POCSAG decoder.
+ * FM-discriminated, and fed to a FLEX, a POCSAG and a ReFLEX decoder.
  */
 class ChannelRx {
   outRate = 0;
@@ -51,11 +68,11 @@ class ChannelRx {
   private h2i = new Float32Array(2); private h2q = new Float32Array(2); private p2 = 0; private c2 = 0;
   private lastI = 0; private lastQ = 0;
   private readonly out = new Float32Array(4096); private nOut = 0;
-  private readonly flex: FlexDecoder; private readonly pocsag: PocsagDecoder;
+  private readonly flex: FlexDecoder; private readonly pocsag: PocsagDecoder; private readonly reflex: ReflexDecoder;
   /** Sees every discriminator block before the decoders do: the heard channel's audio. */
   tap: ((xs: Float32Array, n: number, rate: number) => void) | null = null;
 
-  constructor(readonly hz: number, emit: Emit) { this.flex = new FlexDecoder(emit); this.pocsag = new PocsagDecoder(emit); }
+  constructor(readonly hz: number, emit: Emit) { this.flex = new FlexDecoder(emit); this.pocsag = new PocsagDecoder(emit); this.reflex = new ReflexDecoder(emit); }
 
   configure(centerHz: number, sampleRate: number): void {
     if (centerHz === this.center && sampleRate === this.rate) return;
@@ -70,7 +87,7 @@ class ChannelRx {
       this.t2 = lowpass(127, 10_000 / inter);
       this.h1i = new Float32Array(this.t1.length * 2); this.h1q = new Float32Array(this.t1.length * 2); this.p1 = 0; this.c1 = 0;
       this.h2i = new Float32Array(this.t2.length * 2); this.h2q = new Float32Array(this.t2.length * 2); this.p2 = 0; this.c2 = 0;
-      this.flex.reset(); this.pocsag.reset();
+      this.flex.reset(); this.pocsag.reset(); this.reflex.reset();
     }
     const w = -2 * Math.PI * (this.hz - centerHz) / sampleRate;
     this.sr = Math.cos(w); this.si = Math.sin(w);
@@ -114,12 +131,26 @@ class ChannelRx {
     this.tap?.(this.out, this.nOut, this.outRate);
     this.flex.onFm(this.out, this.nOut, this.outRate);
     this.pocsag.onFm(this.out, this.nOut, this.outRate);
+    this.reflex.onFm(this.out, this.nOut, this.outRate);
     this.nOut = 0;
   }
 }
 
-interface Slot { hz: number; rx: ChannelRx; since: number; lastSync: number; syncs: number; pages: number; protocol: string; rate: string }
-interface Carrier { hz: number; db: number }
+interface Slot { hz: number; rx: ChannelRx; since: number; lastSync: number; syncs: number; pages: number; protocol: string; rate: string; reflexLine?: string }
+interface Carrier { hz: number; db: number; image?: number }
+
+/** The stronger carrier [c] is an image copy of, if any (see [IMAGE_STEP]). */
+export function imageOf(c: Carrier, all: Carrier[], rate = 0): number | undefined {
+  const steps = [IMAGE_STEP];
+  const r = rate / 480;   // the same spur scaled to the stream's rate, when that is its own spacing
+  if (r >= 2 * IMAGE_TOL && Math.abs(r - IMAGE_STEP) > IMAGE_TOL) steps.push(r);
+  for (const s of all) {
+    if (s === c || s.db - c.db < IMAGE_DB) continue;
+    const d = Math.abs(c.hz - s.hz);
+    for (const st of steps) for (let k = 1; k <= IMAGE_STEPS; k++) if (Math.abs(d - k * st) <= IMAGE_TOL) return s.hz;
+  }
+  return undefined;
+}
 
 export class PagerHunter implements IqProcessor {
   /** The span's center, set by the worker before each buffer. */
@@ -135,6 +166,10 @@ export class PagerHunter implements IqProcessor {
   private carrierList: Carrier[] = [];
   private slots: Slot[] = [];
   private readonly tried = new Map<number, number>();
+  /** Carriers a receiver proved to be copies of another (it decoded that one's pages), by frequency. */
+  private readonly copies = new Map<number, number>();
+  /** Pages posted in the last [COPY_MS]: line, carrier and when. */
+  private recent: { line: string; hz: number; at: number }[] = [];
   private heard: Slot | null = null;
   // The radio's DC offset (LO leakage), tracked per buffer and removed, so a carrier at the tuned center is not
   // buried under the spike and the center of the span can be hunted like the rest of it.
@@ -199,7 +234,7 @@ export class PagerHunter implements IqProcessor {
     const t = this.clock();
     if (this.restart || this.centerHz !== this.center || rate !== this.rate) {
       this.center = this.centerHz; this.rate = rate; this.restart = false;
-      this.slots = []; this.tried.clear(); this.peak = new Float32Array(0); this.carrierList = [];
+      this.slots = []; this.tried.clear(); this.copies.clear(); this.recent = []; this.peak = new Float32Array(0); this.carrierList = [];
       this.spanStart = t; this.lastManage = 0; this.heard = null;
       this.hist = new Int8Array(Math.max(2, Math.floor(rate * HISTORY_S) * 2)); this.hW = 0; this.hFill = 0;
       this.dcFresh = true;
@@ -263,7 +298,9 @@ export class PagerHunter implements IqProcessor {
       const est = this.center + (isum / wsum - n / 2) * bin;
       out.push({ hz: Math.round(est / 2500) * 2500, db: p - floor });
     }
-    return out.sort((a, b) => b.db - a.db).slice(0, 16);
+    out.sort((a, b) => b.db - a.db);
+    for (const c of out) c.image = imageOf(c, out, this.rate);
+    return out.slice(0, 16);
   }
 
   // ---- slots
@@ -271,13 +308,63 @@ export class PagerHunter implements IqProcessor {
     const slot: Slot = { hz, rx: null as unknown as ChannelRx, since: t, lastSync: 0, syncs: 0, pages: 0, protocol: '', rate: '' };
     slot.rx = new ChannelRx(hz, (m) => {
       if (m.type === 'sync') { slot.lastSync = this.clock(); slot.syncs++; slot.protocol = m.protocol as string; slot.rate = m.rate as string; }
-      else if (m.type === 'packet' && m.page) { slot.pages++; this.post({ type: 'huntPage', hz, page: m.page, line: m.line, replaces: m.replaces }); }
+      else if (m.type === 'packet' && m.page) this.onPage(slot, m);
+      else if (m.type === 'reflex') this.onReflex(slot, m.frame as ReflexFrame, m.line as string);
       else if (m.type === 'pagerNoise') this.post({ type: 'huntPage', hz, page: m.page });
     });
     slot.rx.tap = (xs, n, r) => { if (this.heard === slot) this.onAudio?.(xs, n, r); };
     slot.rx.configure(this.center, this.rate);
     this.replay(slot.rx);
     return slot;
+  }
+
+  /** The survey's level for a carrier (0 when it is not listed). */
+  private levelOf(hz: number): number { return this.carrierList.find(c => Math.abs(c.hz - hz) < 10_000)?.db ?? 0; }
+
+  /**
+   * A decoded page. The same line from another receiver a moment ago is one transmission heard twice: a receiver on
+   * an image copy (see [IMAGE_STEP]). It is shown once, on the stronger carrier, and the weaker one gives its slot up.
+   */
+  private onPage(slot: Slot, m: Record<string, unknown>): void {
+    const t = this.clock(), line = typeof m.line === 'string' ? m.line : '';
+    this.recent = this.recent.filter(r => t - r.at <= COPY_MS);
+    const twin = line ? this.recent.find(r => r.hz !== slot.hz && r.line === line) : undefined;
+    if (twin) {
+      const mine = this.levelOf(slot.hz), theirs = this.levelOf(twin.hz);
+      const strong = mine >= theirs ? slot.hz : twin.hz, weak = strong === slot.hz ? twin.hz : slot.hz;
+      // much weaker and at a spur offset: a copy. Two real carriers can carry the same page; those both show.
+      if (Math.abs(mine - theirs) >= COPY_DB && imageOf({ hz: weak, db: 0 }, [{ hz: strong, db: IMAGE_DB }], this.rate) !== undefined) {
+        this.copies.set(weak, strong);
+        this.lastManage = 0;
+        if (strong !== slot.hz) return;      // the copy: already shown
+        // the stronger carrier decoded it second: its card takes the copy's place
+        twin.hz = slot.hz; slot.pages++;
+        const w = this.slots.find(s => s.hz === weak);
+        if (w && w.pages > 0) w.pages--;
+        this.post({ type: 'huntPage', hz: slot.hz, page: m.page, line, replaces: line });
+        return;
+      }
+    }
+    slot.pages++;
+    if (line) this.recent.push({ line, hz: slot.hz, at: t });
+    this.post({ type: 'huntPage', hz: slot.hz, page: m.page, line: m.line, replaces: m.replaces });
+  }
+
+  /**
+   * A ReFLEX frame: one card per carrier, replaced by each new frame, with what the frame showed (its cycle and frame,
+   * blocks, the checked words). Its addresses and messages are not decoded, so it has no capcode.
+   */
+  private onReflex(slot: Slot, f: ReflexFrame, line: string): void {
+    if (this.isCopy(slot.hz)) return;
+    const page = { protocol: 'ReFLEX', rate: '6400', cap: -1, kind: 'FRAME', text: ReflexDecoder.text(f), errors: 0, where: ReflexDecoder.where(f) };
+    this.post({ type: 'huntPage', hz: slot.hz, page, line, replaces: slot.reflexLine });
+    slot.reflexLine = line;
+  }
+
+  /** A carrier AUTO leaves alone: an image copy by the survey, or one a receiver showed to be a copy. */
+  private isCopy(hz: number): boolean {
+    for (const k of this.copies.keys()) if (Math.abs(k - hz) < 5_000) return true;
+    return this.carrierList.some(c => c.image !== undefined && Math.abs(c.hz - hz) < 5_000);
   }
 
   private record(iq: Int8Array): void {
@@ -308,13 +395,13 @@ export class PagerHunter implements IqProcessor {
   /** Who gets a receiver: AUTO, the busiest carriers; AUTO off with pins, only those; AUTO off without, whoever has one. */
   private fill(t: number): void {
     if (!this.hunting && !this.pinned.size) { this.publish(); return; }
-    const want = this.hunting ? this.carrierList.slice(0, SLOTS).map(c => c.hz) : [...this.pinned];
+    const want = this.hunting ? this.carrierList.filter(c => !this.isCopy(c.hz)).slice(0, SLOTS).map(c => c.hz) : [...this.pinned];
     // evict: in AUTO, carriers that had their trial and never proved; pinned, anything no longer pinned. A carrier
     // that wants a receiver while all are busy: one that never synced, has had a few seconds and is no longer among
     // the wanted gives way (POCSAG keys up for a second; it can't wait out a 20 s trial).
     const waiting = this.hunting && this.slots.length >= SLOTS && want.some(hz => !this.slots.some(s => Math.abs(s.hz - hz) < 10_000) && t - (this.tried.get(hz) ?? -Infinity) >= RETRY_MS);
     const gone = this.slots.filter(s => !this.hunting ? !want.includes(s.hz)
-      : !want.includes(s.hz) && t - s.lastSync > PROVEN_MS && (t - s.since > TRIAL_MS || (waiting && s.syncs === 0 && t - s.since > QUICK_MS)));
+      : this.isCopy(s.hz) || !want.includes(s.hz) && t - s.lastSync > PROVEN_MS && (t - s.since > TRIAL_MS || (waiting && s.syncs === 0 && t - s.since > QUICK_MS)));
     // only a carrier that never synced waits out RETRY_MS: a pager that went quiet is welcome back at once
     for (const s of gone) { this.slots = this.slots.filter(x => x !== s); if (this.hunting && s.syncs === 0) this.tried.set(s.hz, t); }
     for (const hz of want) {
@@ -343,7 +430,7 @@ export class PagerHunter implements IqProcessor {
     // a carrier's estimate wanders a raster step or two between surveys: within 10 kHz of a channel, it is that channel
     const near = (a: number, b: number) => Math.abs(a - b) < 10_000;
     const channels = this.slots.map(s => ({ hz: s.hz, db: this.carrierList.find(c => near(c.hz, s.hz))?.db ?? 0, listening: true, protocol: s.protocol, rate: s.rate, pages: s.pages }));
-    for (const c of this.carrierList) if (!this.slots.some(s => near(s.hz, c.hz)) && channels.length < 12) channels.push({ hz: c.hz, db: c.db, listening: false, protocol: '', rate: '', pages: 0 });
+    for (const c of this.carrierList) if (!this.slots.some(s => near(s.hz, c.hz)) && !this.isCopy(c.hz) && channels.length < 12) channels.push({ hz: c.hz, db: c.db, listening: false, protocol: '', rate: '', pages: 0 });
     this.post({ type: 'huntState', text: this.statusText(), hunting: this.hunting, pinned: [...this.pinned], channels, heardHz: this.listenHz ?? this.heard?.hz ?? null });
   }
 }
