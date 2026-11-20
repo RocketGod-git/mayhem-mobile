@@ -95,9 +95,9 @@ export class HackRf implements Radio {
   private txCancel = false;
   txActive = false;
   private stopFlag = false;
-  private appliedFreq = 0; private appliedRate = 0;
-  private appliedLna = -1; private appliedVga = -1; private appliedAmp = -1;
-  private appliedBias = -1; private appliedBb = -1;
+  private appliedFreq = 0;
+  /** Exactly what was last written to the radio (null: nothing yet, or a transmission changed it). */
+  private applied: RxSettings | null = null;
   private dbgBuffers = 0;
 
   constructor(private dev: USBDevice, private ev: HackRfEvents) {}
@@ -129,7 +129,7 @@ export class HackRf implements Radio {
   async run(): Promise<void> {
     if (this.running) return;
     this.running = true; this.stopFlag = false; this.dbgBuffers = 0;
-    this.appliedFreq = 0; this.appliedRate = 0; this.appliedLna = -1; this.appliedVga = -1; this.appliedAmp = -1; this.appliedBias = -1; this.appliedBb = -1;
+    this.appliedFreq = 0; this.applied = null;
     try {
       this.ev.onLog('=== HackRF bring-up (WebUSB, libhackrf protocol) ===');
       this.ev.onStatus('HackRF · initializing…');
@@ -155,7 +155,8 @@ export class HackRf implements Radio {
     } finally {
       try { await this.setTransceiverMode(MODE_OFF); } catch { /* device may be gone */ }
       // Never leave DC on the antenna port after we let go of the radio.
-      if (this.biasT) { try { await this.ctrlOut(REQ.ANTENNA_ENABLE, 0, 0, undefined, 'ANTPOWER'); } catch { /* gone */ } }
+      if (this.biasT || (this.applied as RxSettings | null)?.bias) { try { await this.setAntennaPower(false); } catch { /* gone */ } }
+      this.applied = null;
       try { await this.dev.releaseInterface(0); } catch { /* ignore */ }
       try { await this.dev.close(); } catch { /* ignore */ }
       this.running = false;
@@ -173,26 +174,30 @@ export class HackRf implements Radio {
   abortTx(): void { this.txCancel = true; }
 
   private async bringUpRx(): Promise<void> {
-    this.appliedFreq = 0; this.appliedRate = 0; this.appliedLna = -1; this.appliedVga = -1; this.appliedAmp = -1; this.appliedBias = -1; this.appliedBb = -1;
+    this.appliedFreq = 0; this.applied = null;
     await this.setTransceiverMode(MODE_OFF); await sleep(100);
     await this.setHwSync(false);
-    await this.setSampleRate(this.targetRateHz); this.appliedRate = this.targetRateHz;
-    await this.setBasebandFilter(this.bbFor(this.targetRateHz)); this.appliedBb = this.bbFilterHz;
-    await this.setFreq(this.targetFreqHz); this.appliedFreq = this.targetFreqHz;
-    await this.applyGains();
+    // every value from one snapshot: the page moves the controls while each transfer is awaited
+    const want = this.snapshot();
+    const g = gainStages(want);
+    await this.setSampleRate(want.rateHz);
+    await this.setBasebandFilter(bbFor(want));
+    await this.setFreq(want.freqHz);
+    await this.setGains(g);
     await this.setTransceiverMode(MODE_RECEIVE);
-    // Pro fix: cache-bust the quarter-shift re-tune (see notes below), then re-assert gains.
+    // Pro: cache-busting re-tune after RECEIVE so the FPGA quarter shift is re-programmed
     await sleep(40);
-    await this.setFreq(this.targetFreqHz + 1_000_000);
-    await this.setFreq(this.targetFreqHz);
-    await this.applyGains();
-    await this.applyBias();
+    await this.setFreq(want.freqHz + 1_000_000);
+    await this.setFreq(want.freqHz);
+    await this.setGains(g);
+    await this.setAntennaPower(want.bias);
+    this.appliedFreq = want.freqHz;
+    this.applied = want;   // a control moved during bring-up differs from this, so the first applyPending sends it
     await sleep(60);
-    this.ev.onLog(`HackRF: streaming IQ @ ${(this.targetFreqHz / 1e6).toFixed(3)} MHz, ${(this.targetRateHz / 1e6).toFixed(2)} Msps`);
-    this.ev.onStatus(`${this.board} · ${(this.targetFreqHz / 1e6).toFixed(3)} MHz`);
+    this.ev.onLog(`HackRF: streaming IQ @ ${(want.freqHz / 1e6).toFixed(3)} MHz, ${(want.rateHz / 1e6).toFixed(2)} Msps`);
+    this.ev.onStatus(`${this.board} · ${(want.freqHz / 1e6).toFixed(3)} MHz`);
   }
 
-  /** Transmit one job on the bulk-OUT pipe (leaves the radio OFF; the run loop brings RX back). */
   private async doTransmit(job: { label: string; freqHz: number; rateHz: number; txVgaDb: number; amp: boolean; fill: (buf: Int8Array) => number; onDone: (err: string | null) => void }): Promise<void> {
     this.txActive = true;
     let err: string | null = null;
@@ -262,32 +267,33 @@ export class HackRf implements Radio {
     await Promise.allSettled(inflight);
   }
 
+  /** The live controls at one instant. */
+  snapshot(): RxSettings {
+    return { rateHz: this.targetRateHz, freqHz: this.targetFreqHz, bbHz: this.bbFilterHz, lna: this.lnaDb, vga: this.vgaDb, amp: this.amp, bias: this.biasT };
+  }
+
+  /** Any change asked for since the last buffer. The controls are read once, written from that one reading and recorded as
+   *  sent; a control moved while a transfer was awaited differs from the record and goes out on the next pass. */
   private async applyPending(): Promise<void> {
-    const rateChanged = this.targetRateHz !== this.appliedRate;
-    const freqChanged = this.targetFreqHz !== this.appliedFreq;
-    const ampV = this.amp ? 1 : 0;
-    const gainChanged = this.lnaDb !== this.appliedLna || this.vgaDb !== this.appliedVga || ampV !== this.appliedAmp;
-    const biasChanged = (this.biasT ? 1 : 0) !== this.appliedBias;
-    const bbChanged = this.bbFilterHz !== this.appliedBb;
-    if (!rateChanged && !freqChanged && !gainChanged && !biasChanged && !bbChanged) return;
-    if (rateChanged) {
-      await this.setSampleRate(this.targetRateHz);
-      this.appliedRate = this.targetRateHz;
+    const want = this.snapshot();
+    const plan = retunePlan(want, this.applied);
+    if (!plan.length) return;
+    for (const w of plan) {
+      switch (w.kind) {
+        case 'rate': await this.setSampleRate(w.hz); break;
+        case 'bb': await this.setBasebandFilter(w.hz); break;
+        case 'bias': await this.setAntennaPower(w.on); break;
+        case 'retune':
+          await this.setFreq(w.hz + 1_000_000);
+          await this.setFreq(w.hz);
+          this.appliedFreq = w.hz;
+          await sleep(50);
+          this.ev.onStatus(`${this.board} · ${(w.hz / 1e6).toFixed(3)} MHz`);
+          break;
+        case 'gains': await this.setGains(w); break;
+      }
     }
-    if (rateChanged || bbChanged) {
-      await this.setBasebandFilter(this.bbFor(this.targetRateHz));
-      this.appliedBb = this.bbFilterHz;
-    }
-    if (biasChanged) await this.applyBias();
-    if (freqChanged || rateChanged) {
-      // cache-bust retune so the Pro's quarter shift is re-programmed
-      await this.setFreq(this.targetFreqHz + 1_000_000);
-      await this.setFreq(this.targetFreqHz);
-      this.appliedFreq = this.targetFreqHz;
-      await sleep(50);
-      this.ev.onStatus(`${this.board} · ${(this.appliedFreq / 1e6).toFixed(3)} MHz`);
-    }
-    if (gainChanged) await this.applyGains();
+    this.applied = want;
   }
 
   // ---- vendor protocol ----------------------------------------------------------------------------------------
@@ -324,21 +330,50 @@ export class HackRf implements Radio {
     const d = new DataView(new ArrayBuffer(8)); d.setUint32(0, mhz, true); d.setUint32(4, rem, true);
     return this.ctrlOut(REQ.SET_FREQ, 0, 0, d.buffer, 'SETFREQ');
   }
-  /** The baseband filter for a rate: the one set by hand, else the largest under the rate (libhackrf's rule). */
-  private bbFor(rate: number): number { return this.bbFilterHz || bbFilterRoundDownLt(rate); }
-  private async applyBias(): Promise<void> {
-    await this.ctrlOut(REQ.ANTENNA_ENABLE, this.biasT ? 1 : 0, 0, undefined, 'ANTPOWER');
-    this.appliedBias = this.biasT ? 1 : 0;
+  private setAntennaPower(on: boolean) { return this.ctrlOut(REQ.ANTENNA_ENABLE, on ? 1 : 0, 0, undefined, 'ANTPOWER'); }
+  private async setGains(g: { amp: boolean; lna: number; vga: number }): Promise<void> {
+    await this.ctrlOut(REQ.AMP_ENABLE, g.amp ? 1 : 0, 0, undefined, 'AMP');
+    await this.ctrlIn(REQ.SET_LNA_GAIN, 0, g.lna, 1, 'LNA');
+    await this.ctrlIn(REQ.SET_VGA_GAIN, 0, g.vga, 1, 'VGA');
   }
-  private async applyGains(): Promise<[number, number, number]> {
-    const lna = Math.min(40, Math.max(0, this.lnaDb)) & ~7;
-    const vga = Math.min(62, Math.max(0, this.vgaDb)) & ~1;
-    const a = await this.ctrlOut(REQ.AMP_ENABLE, this.amp ? 1 : 0, 0, undefined, 'AMP');
-    const l = (await this.ctrlIn(REQ.SET_LNA_GAIN, 0, lna, 1, 'LNA')) ? 1 : -1;
-    const v = (await this.ctrlIn(REQ.SET_VGA_GAIN, 0, vga, 1, 'VGA')) ? 1 : -1;
-    this.appliedLna = this.lnaDb; this.appliedVga = this.vgaDb; this.appliedAmp = this.amp ? 1 : 0;
-    return [a, l, v];
-  }
+}
+
+/** Everything the radio is told in receive, read from the live controls at one instant. The page moves those controls while
+ *  a control transfer is awaited, often several in a row (an app switch sets the rate twice and the gains three times), so a
+ *  pass that re-read a control after writing it could record a value it never sent, and then never send it: the radio stayed
+ *  at the old rate or gain while the app believed the new one. Every write comes from one snapshot, and the snapshot is recorded. */
+export interface RxSettings {
+  rateHz: number; freqHz: number;
+  /** The baseband filter set by hand, 0 = follow the rate. */
+  bbHz: number;
+  lna: number; vga: number; amp: boolean; bias: boolean;
+}
+/** One step of a receive retune, in the order it is sent. 'retune' is the Pro's cache-busting pair (1 MHz off, then the target). */
+export type RxWrite =
+  | { kind: 'rate'; hz: number } | { kind: 'bb'; hz: number } | { kind: 'bias'; on: boolean }
+  | { kind: 'retune'; hz: number } | { kind: 'gains'; amp: boolean; lna: number; vga: number };
+
+/** The baseband filter for a setting: the one set by hand, else the largest under the rate (libhackrf's rule). */
+export function bbFor(s: RxSettings): number { return s.bbHz || bbFilterRoundDownLt(s.rateHz); }
+/** The stage values a setting asks for, on the steps the chips take (LNA 8 dB, VGA 2 dB). */
+export function gainStages(s: RxSettings): { amp: boolean; lna: number; vga: number } {
+  return { amp: s.amp, lna: Math.min(40, Math.max(0, s.lna)) & ~7, vga: Math.min(62, Math.max(0, s.vga)) & ~1 };
+}
+/** The writes that take the radio from what it was last told (have) to want, or every one of them when nothing was. */
+export function retunePlan(want: RxSettings, have: RxSettings | null): RxWrite[] {
+  const rate = !have || have.rateHz !== want.rateHz;
+  const freq = !have || have.freqHz !== want.freqHz;
+  const bb = !have || have.bbHz !== want.bbHz;
+  const bias = !have || have.bias !== want.bias;
+  const gain = !have || have.lna !== want.lna || have.vga !== want.vga || have.amp !== want.amp;
+  const w: RxWrite[] = [];
+  if (rate) w.push({ kind: 'rate', hz: want.rateHz });
+  if (rate || bb) w.push({ kind: 'bb', hz: bbFor(want) });
+  if (bias) w.push({ kind: 'bias', on: want.bias });
+  // any freq or rate change gets the cache-bust retune so the Pro's quarter shift is re-programmed
+  if (freq || rate) w.push({ kind: 'retune', hz: want.freqHz });
+  if (gain) w.push({ kind: 'gains', ...gainStages(want) });
+  return w;
 }
 
 function bbFilterRoundDownLt(rate: number): number {

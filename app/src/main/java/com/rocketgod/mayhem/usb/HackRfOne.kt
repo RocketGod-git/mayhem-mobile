@@ -100,13 +100,51 @@ object HackRfOne {
     private lateinit var conn: UsbDeviceConnection
     /** The frequency the radio has actually been set to, so a sweep knows when its retune has landed. */
     @Volatile var appliedFreq = 0L; private set
-    @Volatile private var appliedRate = 0
-    @Volatile private var appliedGain = Int.MAX_VALUE
-    @Volatile private var appliedOvrLna = Int.MIN_VALUE   // track the gain OVERRIDE too, so a mode switch that changes
-    @Volatile private var appliedOvrVga = Int.MIN_VALUE   // only the override (ADS-B 32/32/amp-on) actually re-applies
-    @Volatile private var appliedOvrAmp = Int.MIN_VALUE
-    @Volatile private var appliedBias = -1
-    @Volatile private var appliedBb = -1
+    /** Exactly what was last written to the radio (null: nothing yet, or a transmission changed it). */
+    private var applied: RxSettings? = null
+
+    /** Everything the radio is told in receive, read from the live controls at one instant. The engine moves those controls
+     *  from other threads, often several in a row (an app switch sets the rate twice and the gains three times), so a pass that
+     *  re-read a control after writing it could record a value it never sent, and then never send it: the radio stayed at the
+     *  old rate or gain while the app believed the new one. Every write comes from one snapshot, and the snapshot is what is recorded. */
+    data class RxSettings(
+        val rateHz: Int, val freqHz: Long,
+        /** The baseband filter set by hand, 0 = follow the rate. */
+        val bbHz: Int,
+        val gainTenthDb: Int, val lna: Int, val vga: Int,
+        /** 1 on, 0 off, -1 derived from gainTenthDb. */
+        val amp: Int,
+        val bias: Boolean,
+    )
+    /** One step of a receive retune, in the order it is sent. */
+    sealed class RxWrite {
+        data class SampleRate(val hz: Int) : RxWrite()
+        data class BasebandFilter(val hz: Int) : RxWrite()
+        data class AntennaPower(val on: Boolean) : RxWrite()
+        /** The Pro's cache-busting pair (1 MHz off, then the target). */
+        data class Retune(val hz: Long) : RxWrite()
+        data class Gains(val amp: Boolean, val lna: Int, val vga: Int) : RxWrite()
+    }
+
+    fun snapshot() = RxSettings(targetRateHz, targetFreqHz, bbFilterHz, targetGainTenthDb, ovrLnaDb, ovrVgaDb, ovrAmp, biasT)
+
+    /** The writes that take the radio from what it was last told ([have]) to [want], or every one of them when nothing was. */
+    fun retunePlan(want: RxSettings, have: RxSettings?): List<RxWrite> {
+        val rate = have == null || have.rateHz != want.rateHz
+        val freq = have == null || have.freqHz != want.freqHz
+        val bb = have == null || have.bbHz != want.bbHz
+        val bias = have == null || have.bias != want.bias
+        val gain = have == null || have.gainTenthDb != want.gainTenthDb || have.lna != want.lna || have.vga != want.vga || have.amp != want.amp
+        val w = ArrayList<RxWrite>()
+        if (rate) w.add(RxWrite.SampleRate(want.rateHz))
+        if (rate || bb) w.add(RxWrite.BasebandFilter(bbFor(want)))
+        if (bias) w.add(RxWrite.AntennaPower(want.bias))
+        // Any freq or rate change gets the cache-bust re-tune so the Pro's FPGA quarter shift is re-programmed: without it a
+        // mid-stream mode switch (radio to ADS-B) retunes to 1090 but leaves the quarter shift stale, and no aircraft.
+        if (freq || rate) w.add(RxWrite.Retune(want.freqHz))
+        if (gain) { val g = gainStages(want); w.add(RxWrite.Gains(g.first, g.second, g.third)) }
+        return w
+    }
     private var dbgBuffers = 0    // one-shot raw-buffer probe counter (first few RX buffers logged)
     private var zeroHintShown = false   // one-shot "all-zero RX" hint per connect
 
@@ -115,9 +153,7 @@ object HackRfOne {
     fun run(ctx: Context, device: UsbDevice, onStatus: (String) -> Unit) {
         if (running) return
         running = true; stop = false
-        appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE; dbgBuffers = 0; zeroHintShown = false
-        appliedOvrLna = Int.MIN_VALUE; appliedOvrVga = Int.MIN_VALUE; appliedOvrAmp = Int.MIN_VALUE
-        appliedBias = -1; appliedBb = -1
+        appliedFreq = 0L; applied = null; dbgBuffers = 0; zeroHintShown = false
         SdrEngine.syncDriver()   // pull the engine's current mode/freq/gain into our target fields before bring-up
         val mgr = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
         val c = mgr.openDevice(device) ?: run { onStatus("HackRF: couldn't open device"); running = false; return }
@@ -165,7 +201,8 @@ object HackRfOne {
             SdrEngine.setActive(false)
             runCatching { setTransceiverMode(TRANSCEIVER_MODE_OFF) }
             // Never leave DC on the antenna port after we let go of the radio.
-            if (biasT) runCatching { ctrl(CTRL_OUT, REQ_ANTENNA_ENABLE, 0, 0, null, 0, "ANTPOWER") }
+            if (biasT || applied?.bias == true) runCatching { setAntennaPower(false) }
+            applied = null
             runCatching { c.close() }
             running = false
             Diag.log("HackRF: RX loop stopped")
@@ -184,34 +221,36 @@ object HackRfOne {
 
         // Config, capturing each control-transfer return code. A negative rc = the transfer FAILED — if the
         // front-end config doesn't land, the ADC streams near-zero IQ (the "all-zeros, iqRMS≈0.85, gain has no
-        // effect" symptom).
-        val rcSr = setSampleRate(targetRateHz); appliedRate = targetRateHz
-        appliedBias = -1
-        val rcBb = setBasebandFilter(bbFor(targetRateHz)); appliedBb = bbFilterHz
-        val rcFq = setCenterFreq(targetFreqHz); appliedFreq = targetFreqHz
-        val (rcAmp, rcLna, rcVga) = applyGainStages(targetGainTenthDb); appliedGain = targetGainTenthDb
+        // effect" symptom). Every value comes from one snapshot of the live controls.
+        val want = snapshot()
+        val g = gainStages(want)
+        val rcSr = setSampleRate(want.rateHz)
+        val rcBb = setBasebandFilter(bbFor(want))
+        val rcFq = setCenterFreq(want.freqHz)
+        val (rcAmp, rcLna, rcVga) = setGains(g.first, g.second, g.third)
         val rcRx = setTransceiverMode(TRANSCEIVER_MODE_RECEIVE)
         // ★ THE PRO FIX — cache-busting post-RECEIVE re-tune. Source-confirmed against Mayhem radio.cpp
-        // (set_tuning_frequency, PRALINE path): the Pro is NOT zero-IF. It tunes the analog passband off-centre
+        // (set_tuning_frequency, PRALINE path): the Pro is NOT zero-IF. It tunes the analog passband off-center
         // by Fs/4 and the iCE40 FPGA rotates it back to DC (the "quarter shift", FPGA_REG_RX_PSTEP). Entering RX
         // (set_direction) CLEARS the quarter shift, and ONLY set_tuning_frequency re-applies it — tuning
-        // off-centre without the rotation puts the signal outside the decimation filter's passband and it
+        // off-center without the rotation puts the signal outside the decimation filter's passband and it
         // disappears entirely (== all-zeros). The firmware's tuning path caches the frequency, so an unchanged
         // re-tune is a NO-OP → write an off-target freq FIRST to bust the cache, THEN the real target. Also
         // re-apply gains (entering RX can reset them on the Pro). Harmless on a standard zero-IF HackRF.
         Thread.sleep(40)
-        setCenterFreq(targetFreqHz + 1_000_000L)   // cache-bust: make the real target below differ from the cached freq
-        val rcFq2 = setCenterFreq(targetFreqHz)     // real target → re-runs tuning AFTER RX → re-programs the FPGA quarter shift
-        val (rcAmp2, rcLna2, rcVga2) = applyGainStages(targetGainTenthDb)
-        appliedOvrLna = ovrLnaDb; appliedOvrVga = ovrVgaDb; appliedOvrAmp = ovrAmp
-        applyBias()
+        setCenterFreq(want.freqHz + 1_000_000L)   // cache-bust: make the real target below differ from the cached freq
+        val rcFq2 = setCenterFreq(want.freqHz)     // real target → re-runs tuning AFTER RX → re-programs the FPGA quarter shift
+        val (rcAmp2, rcLna2, rcVga2) = setGains(g.first, g.second, g.third)
+        setAntennaPower(want.bias)
+        appliedFreq = want.freqHz
+        applied = want   // a control moved during bring-up differs from this, so the first applyPendingRetune sends it
         Thread.sleep(60)   // RFFC5072 LO relock + FPGA quarter-shift/decim recompute settle before RX reads
         Diag.log("HackRF cfg rc (>=0 ok, <0 FAILED): sampleRate=$rcSr basebandFilter=$rcBb setFreq=$rcFq amp=$rcAmp lna=$rcLna vga=$rcVga rxMode=$rcRx · post-RX cachebust+reassert(freq=$rcFq2 amp=$rcAmp2 lna=$rcLna2 vga=$rcVga2)")
         SdrEngine.sourceLabel = boardLabel
-        SdrEngine.onSource(targetRateHz)
+        SdrEngine.onSource(want.rateHz)
         SdrEngine.setActive(true)
-        Diag.log("HackRF: streaming IQ @ %.3f MHz, %.2f Msps".format(targetFreqHz / 1e6, targetRateHz / 1e6))
-        onStatus("$boardLabel · %.3f MHz".format(targetFreqHz / 1e6))
+        Diag.log("HackRF: streaming IQ @ %.3f MHz, %.2f Msps".format(want.freqHz / 1e6, want.rateHz / 1e6))
+        onStatus("$boardLabel · %.3f MHz".format(want.freqHz / 1e6))
 
     }
 
@@ -249,7 +288,7 @@ object HackRfOne {
             runCatching { setAmp(false) }
             Thread.sleep(60)
             txActive = false
-            appliedFreq = 0L; appliedRate = 0; appliedGain = Int.MAX_VALUE
+            appliedFreq = 0L; applied = null
             job.onDone(err)
         }
     }
@@ -335,36 +374,24 @@ object HackRfOne {
     /** Apply any freq / rate / gain change the engine requested since the last buffer (retune between buffers so
      *  IQ never straddles a tune). */
     private fun applyPendingRetune(onStatus: (String) -> Unit) {
-        val rateChanged = targetRateHz != appliedRate
-        val freqChanged = targetFreqHz != appliedFreq
-        val gainChanged = targetGainTenthDb != appliedGain ||
-            ovrLnaDb != appliedOvrLna || ovrVgaDb != appliedOvrVga || ovrAmp != appliedOvrAmp
-        val biasChanged = (if (biasT) 1 else 0) != appliedBias
-        val bbChanged = bbFilterHz != appliedBb
-        if (!rateChanged && !freqChanged && !gainChanged && !biasChanged && !bbChanged) return
-        if (rateChanged) {
-            runCatching { setSampleRate(targetRateHz); SdrEngine.onSource(targetRateHz) }
-            appliedRate = targetRateHz
+        // The controls are read once, written from that one reading and recorded as sent; a control moved meanwhile
+        // differs from the record and goes out on the next pass.
+        val want = snapshot()
+        val plan = retunePlan(want, applied)
+        if (plan.isEmpty()) return
+        for (w in plan) when (w) {
+            is RxWrite.SampleRate -> runCatching { setSampleRate(w.hz); SdrEngine.onSource(w.hz) }
+            is RxWrite.BasebandFilter -> runCatching { setBasebandFilter(w.hz) }
+            is RxWrite.AntennaPower -> runCatching { setAntennaPower(w.on) }
+            is RxWrite.Retune -> {
+                runCatching { setCenterFreq(w.hz + 1_000_000L); setCenterFreq(w.hz) }
+                appliedFreq = w.hz
+                Thread.sleep(50)   // let the RFFC5072 LO relock + FPGA quarter-shift/decim settle before the next read
+                onStatus("$boardLabel · %.3f MHz".format(w.hz / 1e6))
+            }
+            is RxWrite.Gains -> runCatching { setGains(w.amp, w.lna, w.vga) }
         }
-        if (rateChanged || bbChanged) {
-            val bb = bbFilterHz
-            runCatching { setBasebandFilter(bbFor(targetRateHz)) }
-            appliedBb = bb
-        }
-        if (biasChanged) runCatching { applyBias() }
-        // Any freq or rate change → CACHE-BUST re-tune (off-target then target) so the Pro's FPGA quarter-shift is
-        // re-programmed. Without this a mid-stream mode switch (e.g. radio→ADS-B) retunes to 1090 but leaves the
-        // quarter-shift stale → no aircraft. Same trick as bring-up; here it also covers a plain rate change.
-        if (freqChanged || rateChanged) {
-            runCatching { setCenterFreq(targetFreqHz + 1_000_000L); setCenterFreq(targetFreqHz) }
-            appliedFreq = targetFreqHz
-            Thread.sleep(50)   // let the RFFC5072 LO relock + FPGA quarter-shift/decim settle before the next read
-            onStatus("$boardLabel · %.3f MHz".format(appliedFreq / 1e6))
-        }
-        if (gainChanged) {
-            runCatching { applyGainStages(targetGainTenthDb) }
-            appliedGain = targetGainTenthDb; appliedOvrLna = ovrLnaDb; appliedOvrVga = ovrVgaDb; appliedOvrAmp = ovrAmp
-        }
+        applied = want
     }
 
     // ================= HackRF vendor protocol (libhackrf hackrf.c) =================
@@ -429,15 +456,11 @@ object HackRfOne {
         return chosen
     }
 
-    /** The baseband filter for a rate: the one set by hand, else the largest under the rate (libhackrf's rule). */
-    private fun bbFor(rate: Int): Int = if (bbFilterHz > 0) bbFilterHz else bbFilterRoundDownLt(rate)
+    /** The baseband filter for a setting: the one set by hand, else the largest under the rate (libhackrf's rule). */
+    fun bbFor(s: RxSettings): Int = if (s.bbHz > 0) s.bbHz else bbFilterRoundDownLt(s.rateHz)
 
     /** Antenna port power on or off (ANTENNA_ENABLE, OUT with the value in wValue and no data stage). */
-    private fun applyBias() {
-        val on = biasT
-        ctrl(CTRL_OUT, REQ_ANTENNA_ENABLE, if (on) 1 else 0, 0, null, 0, "ANTPOWER")
-        appliedBias = if (on) 1 else 0
-    }
+    private fun setAntennaPower(on: Boolean): Int = ctrl(CTRL_OUT, REQ_ANTENNA_ENABLE, if (on) 1 else 0, 0, null, 0, "ANTPOWER")
 
     /** SET_FREQ carries {uint32 freq_mhz, uint32 freq_hz} little-endian (freq = mhz*1e6 + hz). */
     private fun setCenterFreq(freqHz: Long): Int {
@@ -450,20 +473,18 @@ object HackRfOne {
 
     // ---- Gain: amp(0/14) + LNA(0..40/8) + VGA(0..62/2) — the MAX2837 stages Mayhem's receiver_model surfaces ----
     /** Returns (ampRc, lnaRc, vgaRc) — the three control-transfer results, for the config diagnostic. */
-    private fun applyGainStages(tenthDb: Int): Triple<Int, Int, Int> {
-        // Explicit per-stage override — the normal path (the engine always sets all three).
-        if (ovrLnaDb >= 0) {
-            val lna = ovrLnaDb.coerceIn(0, 40) and 0x07.inv()
-            val vga = ovrVgaDb.coerceIn(0, 62) and 0x01.inv()
-            return Triple(setAmp(ovrAmp > 0), setLnaGain(lna), setVgaGain(vga))
-        }
+    /** The three stages (amp, LNA, VGA) a setting asks for: the per-stage override when set (the normal path, the engine
+     *  always sets all three), else a split of the single total. */
+    fun gainStages(s: RxSettings): Triple<Boolean, Int, Int> {
+        if (s.lna >= 0) return Triple(s.amp > 0, s.lna.coerceIn(0, 40) and 0x07.inv(), s.vga.coerceIn(0, 62) and 0x01.inv())
         // Fallback split of a single total across LNA + VGA, amp OFF: the +14 dB amp overloads strong FM
         // broadcast (ADC rails → silence/static), so it is never switched on implicitly.
-        val total = (tenthDb / 10).coerceIn(0, 40 + 62)
+        val total = (s.gainTenthDb / 10).coerceIn(0, 40 + 62)
         val lna = (total / 2).coerceIn(0, 40) and 0x07.inv()
         val vga = (total - lna).coerceIn(0, 62) and 0x01.inv()
-        return Triple(setAmp(false), setLnaGain(lna), setVgaGain(vga))
+        return Triple(false, lna, vga)
     }
+    private fun setGains(amp: Boolean, lna: Int, vga: Int) = Triple(setAmp(amp), setLnaGain(lna), setVgaGain(vga))
     private fun setAmp(on: Boolean): Int =
         ctrl(CTRL_OUT, REQ_AMP_ENABLE, if (on) 1 else 0, 0, null, 0, "AMP")
     private fun setLnaGain(db: Int): Int =
