@@ -2823,6 +2823,11 @@ main#view.view.atsc.atwide { display: grid; grid-template-columns: minmax(0, 1fr
 .flc-stat b { font-size: 17px; font-weight: 900; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .flc-stat small { font-size: 8px; letter-spacing: 1.2px; color: var(--muted); font-weight: 700; }
 .flc-map { border-radius: 8px; overflow: hidden; }
+/* The card's map: the main map's tiles and markers, a fixed height so the rest of the card stays in reach. */
+.view.fleet .flc .flc-geomap.map { flex: none; height: 220px; min-height: 0; border-radius: 8px; border: 1px solid var(--line); }
+.geo.dim { opacity: 0.55; }
+/* A label that would cover another is left off; the marker stays. */
+.geo-wrap.nolab .geo span { visibility: hidden; }
 .fl-track { display: block; width: 100%; height: auto; max-height: 240px; }
 .fl-track .bg { fill: var(--surface); stroke: var(--line); }
 .fl-track .tr { fill: none; stroke: var(--sys, var(--accent)); stroke-width: 2; stroke-linejoin: round; opacity: 0.75; }

@@ -85,6 +85,7 @@ import com.rocketgod.mayhem.core.fleet.CarrierRow
 import com.rocketgod.mayhem.core.fleet.DispatchView
 import com.rocketgod.mayhem.core.fleet.Lock
 import com.rocketgod.mayhem.core.fleet.TgPrefs
+import com.rocketgod.mayhem.core.fleet.UnitRow
 import com.rocketgod.mayhem.core.fleet.FleetProcessor
 import com.rocketgod.mayhem.core.fleet.FleetSnap
 import com.rocketgod.mayhem.core.fleet.GrantRow
@@ -231,7 +232,7 @@ fun FleetScreen(accent: Color) {
             GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = fix, selected = pu?.key, layers = GeoLayers(shapes = trails),
                 // on the phone page one finger scrolls past the map, two move it
                 twoFinger = page != null,
-                start = remember { mapStart(Geo.fix.value) }, focus = focusAt ?: pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true, fitPins = true,
+                start = remember { mapStart(Geo.fix.value) }, focus = focusAt ?: pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true, fitPins = true, declutter = true,
                 fallback = { Geo.fix.value ?: Geo.lastKnownPos() ?: Geo.zoneGuess() },
                 // unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them
                 onDragEnd = { lat, lon -> if (Geo.fix.value == null && Geo.lastKnownPos() == null) Apps.fleet.setRef(lat, lon) }) { pick("unit:$it") }
@@ -992,9 +993,14 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                 if (tr.isNotEmpty()) {
                     val last = tr.last()
                     val others = s.units.filter { it.sys == u.sys && it.key != u.key && it.lat != null && it.lon != null && abs(it.lat - last.lat) < 0.6 && abs(it.lon - last.lon) < 0.8 }
-                        .map { it.lat!! to it.lon!! }
                     val st = DispatchView.trackStats(tr); val dist = me?.let { DispatchView.distBearing(it.first, it.second, last.lat, last.lon) }
-                    TrackMap(tr, others, if (dist != null && dist.mi < 60) me else null, col, false)
+                    // a real map, the main map's tiles: the unit and its track over the rest of its system's units (dimmed),
+                    // framed on the track and you; the others show where they fall in that view
+                    val c = col.toArgb()
+                    CardMap("unit:${u.key}", others.map { GeoItem(it.key, it.lat!!, it.lon!!, "${it.id}", GeoItem.Kind.STATION, color = c, alpha = 0.55f) } +
+                        GeoItem(u.key, last.lat, last.lon, "${u.id}", GeoItem.Kind.STATION, color = c, pulse = talking != null),
+                        u.key, if (tr.size > 1) listOf(GeoShape(u.key, tr.map { it.lat to it.lon }, true, c, sel = true)) else emptyList(),
+                        if (dist != null && dist.mi < 60) me else null, tr.map { it.lat to it.lon }, acts)
                     StatTiles(listOfNotNull(
                         dist?.let { DispatchView.distText(it) to "FROM YOU · ${Math.round(it.deg)}°" },
                         st.mph?.let { v -> if (st.moving) "${Math.round(v)} mph" to "HEADING ${st.dir} · ${st.course}°" else "STOPPED" to "NOT MOVING" },
@@ -1047,7 +1053,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
             })
             if (calls.isNotEmpty()) secs.add(CardSec("RECENT CALLS") { CardCalls(calls, 14, now, me, colorOf, acts) })
             if (units.isNotEmpty()) secs.add(CardSec("UNITS · ${units.size}") {
-                if (placed.isNotEmpty()) TrackMap(emptyList(), placed.map { it.lat!! to it.lon!! }, me, col, true)
+                if (placed.isNotEmpty()) CardUnitsMap("tg:$key", placed, col, me, acts)
                 CardTags(units.take(40).map { Triple("${it.id}", DispatchView.agoShort(now - it.lastMs), "unit:${it.key}") }, col, acts)
             })
             activitySec(t?.history.orEmpty().map { it.ms } + t?.recent.orEmpty() + calls.map { it.startMs }, now, col)?.let { secs.add(it) }
@@ -1093,7 +1099,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
             })
             if (busiest.isNotEmpty()) secs.add(CardSec("BUSIEST TALKGROUPS") { CardTags(busiest.map { (tg, c) -> Triple("TG $tg", "$c", "tg:${x.key}/$tg") }, col, acts) })
             if (placed.isNotEmpty()) secs.add(CardSec("COVERAGE") {
-                TrackMap(emptyList(), placed.map { it.lat!! to it.lon!! }, me, col, true)
+                CardUnitsMap("sys:${x.key}", placed, col, me, acts)
                 val la0 = placed.minOf { it.lat!! }; val la1 = placed.maxOf { it.lat!! }; val lo0 = placed.minOf { it.lon!! }; val lo1 = placed.maxOf { it.lon!! }
                 val h = DispatchView.distBearing(la0, lo0, la0, lo1).mi; val v = DispatchView.distBearing(la0, lo0, la1, lo0).mi
                 CardKv(kvOf("UNITS PLACED" to "${placed.size} of ${units.size}", "AREA" to "%.1f × %.1f mi".format(java.util.Locale.US, max(0.1, h), max(0.1, v))))
@@ -1266,41 +1272,27 @@ private fun StatTiles(stats: List<Pair<String, String>>) {
 }
 
 /**
- * A small map with no tiles, so it draws at once: the track as a line (older fixes faint, the newest bright), [others]
- * as dots (the rest of the system dim, or the subject itself bright), you as a ring, and a scale bar.
+ * The map on a detail card: the main map's tiles and markers at a fixed height, so the rest of the card stays in reach.
+ * Framed on [fit] and you; one finger scrolls the card past it, two move it. A new card ([key]) starts a new view.
  */
 @Composable
-private fun TrackMap(trail: List<TrailPt>, others: List<Pair<Double, Double>>, me: Pair<Double, Double>?, col: Color, bright: Boolean) {
+private fun CardMap(key: String, items: List<GeoItem>, selected: String?, shapes: List<GeoShape>, me: Pair<Double, Double>?, fit: List<Pair<Double, Double>>, acts: DispatchActs) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(8f))
-    BoxWithConstraints(Modifier.fillMaxWidth().height(d.dp(190f)).clip(shape).background(Palette.paper).border(1.dp, Palette.line, shape)) {
-        val dens = LocalDensity.current
-        val w = with(dens) { maxWidth.toPx() }; val h = with(dens) { maxHeight.toPx() }; val pad = with(dens) { d.dp(14f).toPx() }
-        val fit = remember(trail, others, me, w, h) { DispatchView.trackFit(trail, others, me, w, h, pad) } ?: return@BoxWithConstraints
-        val ink = Palette.ink; val muted = Palette.muted; val ok = Palette.ok
-        Canvas(Modifier.fillMaxSize()) {
-            val u = 1.dp.toPx()
-            for ((x, y) in fit.others) {
-                if (bright) { drawCircle(col, 3.5f * u, Offset(x, y)); drawCircle(ink.copy(alpha = 0.7f), 3.5f * u, Offset(x, y), style = Stroke(u)) }
-                else drawCircle(muted.copy(alpha = 0.45f), 2f * u, Offset(x, y))
-            }
-            val n = fit.track.size
-            if (n > 1) {
-                val p = Path().apply { moveTo(fit.track[0].first, fit.track[0].second); for (i in 1 until n) lineTo(fit.track[i].first, fit.track[i].second) }
-                drawPath(p, col.copy(alpha = 0.75f), style = Stroke(2f * u, join = StrokeJoin.Round))
-            }
-            fit.track.forEachIndexed { i, (x, y) ->
-                if (i == n - 1) {
-                    drawCircle(col.copy(alpha = 0.3f), 10f * u, Offset(x, y))
-                    drawCircle(ink, 5f * u, Offset(x, y)); drawCircle(col, 5f * u, Offset(x, y), style = Stroke(3f * u))
-                } else drawCircle(col.copy(alpha = 0.25f + 0.6f * i / max(1, n - 1)), 2.4f * u, Offset(x, y))
-            }
-            fit.me?.let { (x, y) -> drawCircle(ok, 5f * u, Offset(x, y), style = Stroke(2.5f * u)) }
-            drawLine(muted, Offset(pad, size.height - 9f * u), Offset(pad + fit.barPx, size.height - 9f * u), strokeWidth = 2f * u)
-        }
-        Text(fit.barLabel, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.BottomStart).padding(start = d.dp(14f), bottom = d.dp(12f)))
-        Text("N ↑", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.TopEnd).padding(top = d.dp(6f), end = d.dp(10f)))
+    androidx.compose.runtime.key(key) {
+        GeoMapView(items, Palette.accent, Modifier.fillMaxWidth().height(d.dp(220f)).clip(shape).border(1.dp, Palette.line, shape),
+            home = me, selected = selected, layers = GeoLayers(shapes = shapes), fitPts = fit + listOfNotNull(me), fitPins = true, steady = true,
+            twoFinger = true, declutter = true, fitItems = false) { if (it != selected) acts.pick("unit:$it") }
     }
+}
+
+/** A talkgroup's or system's placed units on the card map, labeled, you with them when you are within 60 miles. */
+@Composable
+private fun CardUnitsMap(key: String, placed: List<UnitRow>, col: Color, me: Pair<Double, Double>?, acts: DispatchActs) {
+    val c = col.toArgb()
+    val near = me?.takeIf { m -> placed.any { DispatchView.distBearing(m.first, m.second, it.lat!!, it.lon!!).mi < 60 } }
+    CardMap(key, placed.map { GeoItem(it.key, it.lat!!, it.lon!!, "${it.id}", GeoItem.Kind.STATION, color = c) }, null, emptyList(), near,
+        placed.map { it.lat!! to it.lon!! }, acts)
 }
 
 /** A bar sparkline under its label: empty buckets as a thin baseline. */

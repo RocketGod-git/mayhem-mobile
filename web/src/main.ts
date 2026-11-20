@@ -31,7 +31,7 @@ import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
-import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, trackSvg, sparkSvg, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
+import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { renderJs8, js8Dial, js8SetDial, js8Speeds, js8OnDecodes, js8OnWaterfall, refreshJs8, type Js8Host } from './js8-ui.js';
@@ -4995,7 +4995,7 @@ function renderFleet(view: HTMLElement): void {
   view.classList.toggle('fleetfull', fleetUi.full);
   // Unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them.
   const dragged = (lat: number, lon: number) => { if (!state.home && !lastKnownPos()) worker?.postMessage({ type: 'fleetRef', lat, lon }); };
-  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, twoFinger: !FLEET_WIDE.matches, onPick: id => fleetPick({ kind: 'unit', key: id.replace(/^call:/, '') }), onDragEnd: dragged, log, fallback: () => state.home ?? lastKnownPos() ?? zoneGuess() });
+  geo = new GeoMap($('fl-map'), { home: state.home, start: mapStart(state.home), fitPins: true, steady: true, declutter: true, twoFinger: !FLEET_WIDE.matches, onPick: id => fleetPick({ kind: 'unit', key: id.replace(/^call:/, '') }), onDragEnd: dragged, log, fallback: () => state.home ?? lastKnownPos() ?? zoneGuess() });
   clearInterval(fleetUi.timer);
   fleetUi.timer = window.setInterval(() => {
     if (state.app !== 'fleet') { clearInterval(fleetUi.timer); clearTimeout(fleetUi.scanTimer); return; }
@@ -5192,7 +5192,41 @@ function dispatchFollow(s: FleetSnap, now: number): void {
   fleetUi.following = { key: s.follow.key, home, until: now + 600_000 };
   tune(center);
 }
+/** The map in the open detail card: what fleetDetail put on it, mounted into its slot after each redraw. */
+let fleetCardMap: { key: string; sel: string; me: { lat: number; lon: number } | null; items: GeoItem[]; shapes: GeoShape[]; fit?: [number, number][] } | null = null;
+/** The card's map lives across redraws (the card's HTML is rebuilt every tick): its host moves into each new slot. */
+let flcGeo: { host: HTMLElement; geo: GeoMap; fit: string; me: string } | null = null;
+/** A system color the marker SVG can take (a CSS variable cannot be an SVG fill attribute). */
+const flMapColor = (c: string) => c.startsWith('var(') ? '#8899aa' : c;
+/** A talkgroup's or system's placed units on the card map, labeled, you with them when you are within 60 miles. */
+function fleetCardUnits(key: string, placed: FleetSnap['units'], col: string, me: { lat: number; lon: number } | null): string {
+  const c = flMapColor(col), near = me && placed.some(u => flDistBearing(me, { lat: u.lat!, lon: u.lon! }).mi < 60) ? me : null;
+  fleetCardMap = { key, sel: '', me: near, shapes: [], items: placed.map(u => ({ id: u.key, lat: u.lat!, lon: u.lon!, label: `${u.id}`, kind: 'station' as const, color: c })) };
+  return '<div class="flc-map flc-geo"></div>';
+}
+/** Puts the card's map into the slot the card just drew, then its markers, track and your position; it frames them when the card changes. */
+function fleetCardMapMount(det: HTMLElement): void {
+  const slot = det.querySelector<HTMLElement>('.flc-geo'), m = fleetCardMap;
+  if (!slot || !m) return;
+  if (!flcGeo) {
+    const host = document.createElement('div'); host.className = 'map flc-geomap';
+    slot.replaceWith(host);
+    const geo = new GeoMap(host, { home: null, fitPins: true, declutter: true, twoFinger: !FLEET_WIDE.matches, onPick: id => { if (fleetCardMap?.sel !== id) fleetPick({ kind: 'unit', key: id }); }, log });
+    geo.setFollow(false);
+    flcGeo = { host, geo, fit: '', me: '' };
+  } else slot.replaceWith(flcGeo.host);
+  const g = flcGeo.geo, meKey = m.me ? `${m.me.lat},${m.me.lon}` : '';
+  g.invalidate();
+  if (meKey !== flcGeo.me || !g.ready) { flcGeo.me = meKey; g.setHome(m.me); }
+  g.update(m.items, m.sel); g.setShapes(m.shapes);
+  const fit = `${m.key}|${m.items.length}|${meKey}`;
+  if (fit !== flcGeo.fit) {
+    flcGeo.fit = fit;
+    g.fitTo([...(m.fit ?? m.items.map(i => [i.lat, i.lon] as [number, number])), ...(m.me ? [[m.me.lat, m.me.lon] as [number, number]] : [])]);
+  }
+}
 function fleetDetail(s: FleetSnap, now: number): string {
+  fleetCardMap = null;
   const sel = fleetUi.sel; if (!sel) return '';
   const me = state.home ?? lastKnownPos() ?? null;
   const sysOf = (k: string) => s.systems.find(x => x.key === k);
@@ -5229,9 +5263,17 @@ function fleetDetail(s: FleetSnap, now: number): string {
     let where = '';
     if (trail.length || (u.lat !== null && u.lon !== null)) {
       const tr: [number, number, number][] = trail.length ? trail : [[u.lat!, u.lon!, u.posMs]];
-      const others = s.units.filter(x => x.sys === u.sys && x.key !== u.key && x.lat !== null && x.lon !== null && u.lat !== null && Math.abs(x.lat! - u.lat!) < 0.6 && Math.abs(x.lon! - u.lon!) < 0.8).map(x => [x.lat!, x.lon!] as [number, number]);
+      const others = s.units.filter(x => x.sys === u.sys && x.key !== u.key && x.lat !== null && x.lon !== null && u.lat !== null && Math.abs(x.lat! - u.lat!) < 0.6 && Math.abs(x.lon! - u.lon!) < 0.8);
       const st = trackStats(tr), last = tr[tr.length - 1], d = me ? flDistBearing(me, { lat: last[0], lon: last[1] }) : null;
-      where = `<div class="flc-map">${trackSvg(tr, { others, me: me && d && d.mi < 60 ? me : null })}</div><div class="flc-stats">`
+      // a real map, the main map's tiles: the unit and its track over the rest of its system's units (dimmed), you as the ring
+      const c = flMapColor(col);
+      fleetCardMap = { key: `unit:${u.key}`, sel: u.key, me: me && d && d.mi < 60 ? me : null,
+        items: [...others.map(x => ({ id: x.key, lat: x.lat!, lon: x.lon!, label: `${x.id}`, kind: 'station' as const, color: c, cls: 'dim' })),
+          { id: u.key, lat: last[0], lon: last[1], label: `${u.id}`, kind: 'station' as const, color: c, cls: talking ? 'talk' : '' }],
+        shapes: tr.length > 1 ? [{ id: u.key, pts: tr.map(p => [p[0], p[1]] as [number, number]), line: true, color: c, sel: true }] : [],
+        // framed on the unit and its track (and you): the rest of the system shows where it falls in that view
+        fit: tr.map(p => [p[0], p[1]] as [number, number]) };
+      where = `<div class="flc-map flc-geo"></div><div class="flc-stats">`
         + (d ? big(distText(d), `FROM YOU · ${Math.round(d.deg)}°`) : '')
         + (st.mph !== null ? big(st.moving ? `${Math.round(st.mph)} mph` : 'STOPPED', st.moving ? `HEADING ${st.dir} · ${st.course}°` : 'NOT MOVING') : '')
         + big(`${st.fixes}`, st.fixes === 1 ? 'POSITION FIX' : st.spanMs > 0 ? `FIXES OVER ${flSpan(st.spanMs)}` : 'FIXES')
@@ -5274,7 +5316,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
     const units = s.units.filter(u => u.sys === t.sys && (t.members.includes(u.id) || u.groups.includes(t.tg))).sort((a, b) => b.lastMs - a.lastMs);
     const unitTags = units.length ? `<div class="flc-tags">${units.slice(0, 40).map(u => `<span data-flsel="unit:${esc(u.key)}"><b>${u.id}</b><i>${agoShort(now - u.lastMs)}</i></span>`).join('')}</div>` : '';
     const placed = units.filter(u => u.lat !== null && u.lon !== null);
-    const map = placed.length ? `<div class="flc-map">${trackSvg([], { others: placed.map(u => [u.lat!, u.lon!] as [number, number]), me, bright: true })}</div>` : '';
+    const map = placed.length ? fleetCardUnits(`tg:${t.key}`, placed, col, me) : '';
     const stats = `<div class="flc-stats">${big(`${t.grants}`, 'GRANTS')}${big(`${t.recent.length}`, 'IN 10 MIN')}${big(`${calls.length}`, 'CALLS KEPT')}${big(`${units.length}`, 'UNITS')}</div>`;
     const times = [...t.history.map(g => g.ms), ...t.recent, ...calls.map(c => c.startMs)];
     return `<div class="flc">${head(`TG ${t.tg}`, 'TALKGROUP', sys ? fleetSysTitle(sys) : t.sys, col, chips)}<div class="pc-m fl-prefs">${dispatchPrefButtons(t.key)}</div><div class="flc-grid">`
@@ -5300,7 +5342,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
     let area = '';
     if (placed.length) {
       const la = placed.map(u => u.lat!), lo = placed.map(u => u.lon!), h = flDistBearing({ lat: Math.min(...la), lon: Math.min(...lo) }, { lat: Math.min(...la), lon: Math.max(...lo) }).mi, v = flDistBearing({ lat: Math.min(...la), lon: lo[0] }, { lat: Math.max(...la), lon: lo[0] }).mi;
-      area = `<div class="flc-map">${trackSvg([], { others: placed.map(u => [u.lat!, u.lon!] as [number, number]), me, bright: true })}</div>` + kv([['UNITS PLACED', `${placed.length} of ${units.length}`], ['AREA', `${Math.max(0.1, h).toFixed(1)} × ${Math.max(0.1, v).toFixed(1)} mi`]]);
+      area = fleetCardUnits(`sys:${x.key}`, placed, col, me) + kv([['UNITS PLACED', `${placed.length} of ${units.length}`], ['AREA', `${Math.max(0.1, h).toFixed(1)} × ${Math.max(0.1, v).toFixed(1)} mi`]]);
     }
     const [enc, n] = encShare(calls);
     const stats = `<div class="flc-stats">${big(`${x.sites.length}`, 'SITES')}${big(`${units.length}`, 'UNITS')}${big(`${x.tgs || tgs.length}`, 'TALKGROUPS')}${big(`${x.grants}`, 'GRANTS')}${n ? big(`${Math.round(100 * enc / n)}%`, 'ENCRYPTED') : ''}</div>`;
@@ -5411,7 +5453,7 @@ function refreshFleet(force = false): void {
   }
   const html = s ? fleetDetail(s, now) : '';
   det.hidden = !html;
-  if (html) { const top = det.scrollTop; det.innerHTML = html; det.scrollTop = top; }
+  if (html) { const top = det.scrollTop; det.innerHTML = html; fleetCardMapMount(det); det.scrollTop = top; }
   if (onAir.some(c => c.emergency)) setLamp('EMERGENCY', 'red', true);
   else if (onAir.length) setLamp(`${onAir.length} ON AIR`, 'ok', true);
   else if (s && s.systems.length) setLamp(`${s.systems.length} SYSTEM${s.systems.length === 1 ? '' : 'S'}`, 'ok');
