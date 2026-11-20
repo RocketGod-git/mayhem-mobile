@@ -102,6 +102,11 @@ object Dispatch {
         put(K_PREFS, JSONObject().put("mute", JSONArray(next.mute)).put("hold", next.hold).put("prio", JSONArray(next.prio)).toString())
         pushPrefs(Apps.fleet)
     }
+    /** A tap on the talkgroup grid: follow that talkgroup (only it is heard), or back to ALL with "". The follow is the hold. */
+    fun followTalkgroup(key: String) {
+        val next = com.rocketgod.mayhem.core.fleet.DispatchView.followTap(_prefs.value.hold, key)
+        if (next != _prefs.value.hold) pref("hold", if (next.isEmpty()) _prefs.value.hold else next)
+    }
     fun setAudio(on: Boolean, gain: Double = _gain.value) {
         _audioOn.value = on; _gain.value = gain.coerceIn(0.0, 1.5)
         put(K_AUDIO, JSONObject().put("on", on).put("gain", _gain.value).toString())
