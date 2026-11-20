@@ -15,11 +15,11 @@ import { parseCsbk, unwrap16, csbkLine, VendorCheck, type Csbk } from './csbk.js
 import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, slice, type P25Block, type DmrEvent } from './rx.js';
 import { P25Decoder } from '../ham/p25.js';
 import './vocoders.js';
-import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from './calls.js';
+import { CallTracker, type CallRow, type CallPos, type CallProto, type Lock, type TgPrefs } from './calls.js';
 import { parseLc, voiceFrames, readEmb, embBits, EmbLcAssembler, parseEmbLc, TalkerAlias } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
 import { TetraRx, type TetraSync } from './tetra.js';
-import { NxdnRx, NXDN_CATEGORY, type NxdnSite } from './nxdn.js';
+import { NxdnRx, NxdnPlan, NXDN_CATEGORY, nxdnLine, nxdnId, type NxdnSite, type NxdnMsg, type NxdnTraffic, type NxdnScch, type NxdnAdj } from './nxdn.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
 
 export const CH_RATE = 24_000;
@@ -74,7 +74,7 @@ export interface UnitRow {
   /** Position reports that resolved outside the system's area (left off the map), and all position reports. */
   offArea: number; fixes: number;
 }
-export interface GrantRow { ms: number; lastMs: number; sys: string; kind: string; tg: number; group: boolean; src: number; ch: string; hz: number; slot: number; tdma: boolean; emergency: boolean; encrypted: boolean; carrierHz: number; site: string; lpcn?: number; chDerived?: boolean }
+export interface GrantRow { ms: number; lastMs: number; sys: string; kind: string; tg: number; group: boolean; src: number; ch: string; hz: number; slot: number; tdma: boolean; emergency: boolean; encrypted: boolean; carrierHz: number; site: string; lpcn?: number; chDerived?: boolean; efr?: boolean }
 export interface TgRow { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: number[]; history: GrantRow[] }
 export interface LogRow { ms: number; hz: number; proto: string; name: string; text: string; hex: string; ok: boolean }
 export interface FleetSnap {
@@ -91,7 +91,9 @@ export interface KnownUnit { sys: string; id: number; lat: number; lon: number; 
 export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[] }
 const KNOWN_UNITS = 3000;
 
-interface Carrier extends CarrierRow { tetra?: TetraSync; nxdn?: NxdnSite & { baud: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
+interface Carrier extends CarrierRow { tetra?: TetraSync; nxdn?: NxdnSite & { baud: number }; nxdnAdj?: Map<string, NxdnAdj>; nxdnRan?: number;
+  /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
+  nxdnD?: { src: number; dst: number; group: boolean; cipher: number; keyId: number; ms: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
   key: string; sys: string; rfss: number; site: number; nac: number; carriers: Set<number>; lastMs: number; neighbors: Map<string, { sys: number; rfss: number; site: number; ch: number }>;
   secondary: Set<number>; time: string; lra: number; cls: number; idens: Map<number, Iden>;
@@ -104,6 +106,8 @@ interface Sys {
   lpcnVotes: Map<number, Map<number, number>>; lpcnHz: Map<number, number>;
   /** Where the system was heard (its control or rest channels), kept across retunes and sessions. */
   heardHz: Set<number>;
+  /** NXDN: the channel plan learned from what was heard, and the symbol rate of the system's channels. */
+  nxdnPlan?: NxdnPlan; nxdnBaud?: number;
 }
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
   /** Every position report as sent (low 16 bits), resolved when shown: [time, lat16, lon16]. */
@@ -135,6 +139,17 @@ class Chan {
   tetra: { rx: TetraRx; ddc: Ddc | null; oi: Float32Array; oq: Float32Array } | null = null;
   /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
   nxdn: NxdnRx[] | null = null;
+  /**
+   * NXDN96's own down-converter on a span channel: 48 kS/s and 7 kHz wide, so its 4800 symbols a second get ten samples
+   * each (at the channel's 24 kS/s the symbol timing slips now and then) and its outer deviation is not clipped.
+   */
+  nxdnDdc: { ddc: Ddc; oi: Float32Array; oq: Float32Array } | null = null;
+  /** The sample rate an NXDN receiver at [baud] gets: [wide] for an NXDN96 channel known as one. */
+  nxdnFs(baud: number, wide: boolean): number {
+    if (!wide || baud === 2400 || this.rate === 0) return this.fs;
+    if (!this.nxdnDdc) { const d = new Ddc(7_000, 48_000, 63); d.reset(this.rate); d.offsetHz = this.hz - this.center; this.nxdnDdc = { ddc: d, oi: new Float32Array(0), oq: new Float32Array(0) }; }
+    return this.nxdnDdc.ddc.outRate;
+  }
   private center = 0; private rate = 0;
   /** Fed a recorded channel at its own rate (no down-converter, so no DC spike of the receiver's). */
   get baseband(): boolean { return this.rate === 0; }
@@ -177,7 +192,7 @@ class Chan {
       this.onFill(lane, lane === 2 ? 9 : 3);
     }
   }
-  retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.tetraHz - center; }
+  retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.tetraHz - center; if (this.nxdnDdc) this.nxdnDdc.ddc.offsetHz = this.hz - center; }
   /** Where the TETRA receiver is centered: the middle of the whole 25 kHz signal, not of the piece the finder saw. */
   private tetraHz = 0;
   /** Starts the TETRA receiver: 72 kS/s off its own down-converter, or the baseband itself when it is fast enough. */
@@ -192,6 +207,12 @@ class Chan {
     if (this.oi.length < need) { this.oi = new Float32Array(need); this.oq = new Float32Array(need); }
     const m = this.ddc.push(fi, fq, n, this.oi, this.oq);
     this.channel(this.oi, this.oq, m, now);
+    const x = this.nxdnDdc;
+    if (x && this.nxdn?.some(r => r.fs !== this.fs)) {
+      const k = x.ddc.maxOut(n); if (x.oi.length < k) { x.oi = new Float32Array(k); x.oq = new Float32Array(k); }
+      const j = x.ddc.push(fi, fq, n, x.oi, x.oq);
+      for (const r of this.nxdn) if (r.fs !== this.fs) r.push(x.oi, x.oq, j);
+    } else if (x && this.nxdn) this.nxdnDdc = null;
     const t = this.tetra;
     if (t?.ddc) { const k = t.ddc.maxOut(n); if (t.oi.length < k) { t.oi = new Float32Array(k); t.oq = new Float32Array(k); } const j = t.ddc.push(fi, fq, n, t.oi, t.oq); t.rx.push(t.oi, t.oq, j); }
   }
@@ -202,7 +223,7 @@ class Chan {
     const s0 = this.p25.clean + this.dmr.bursts;
     this.rx.push(zi, zq, m);
     this.p2?.push(zi, zq, m);
-    if (this.nxdn) for (const r of this.nxdn) r.push(zi, zq, m);
+    if (this.nxdn) for (const r of this.nxdn) if (r.fs === this.fs) r.push(zi, zq, m);
     if (this.p25.clean + this.dmr.bursts !== s0) { this.lastSyncMs = now; this.quietSince = now; this.cwOn = false; }
     // a CW ID comes once the digital signal has stopped (a voice channel's frames are 180 ms apart); the reader starts
     // fresh then, so the digital signal's levels do not hide the tone
@@ -373,23 +394,174 @@ export class FleetProcessor implements IqProcessor {
     ch.p2.onMac = m => this.p2Mac(c, m);
     ch.p2.onEss = (lch, e) => { const call = this.calls.at(c.sys, c.hz, lch); if (call) this.calls.security(call, { enc: e.algId !== 0x80, from: 'ESS', algId: e.algId, keyId: e.keyId, mi: e.mi }); };
   }
-  private nxdnOn(c: Carrier, ch: Chan): void {
-    ch.nxdn = ([2400, 4800] as const).map(baud => {
-      const r = new NxdnRx(ch.fs, baud);
-      r.framer.onSite = x => { if (ch.nxdn && ch.nxdn.length > 1) ch.nxdn = [r]; this.nxdnSite(c, x, baud); };
+  // ------------------------------------------------------------------------------------------------ NXDN
+  /**
+   * NXDN receivers on a channel: both bandwidths until one locks, or the one a system's grant names. The one that locks
+   * stays; an NXDN96 one moves to its own 48 kS/s down-converter then (a carrier tried and not NXDN never costs one).
+   */
+  private nxdnOn(c: Carrier, ch: Chan, baud?: number): void {
+    if (ch.nxdn) return;
+    const make = (b: 2400 | 4800, wide: boolean): NxdnRx => {
+      const r = new NxdnRx(ch.nxdnFs(b, wide), b);
+      const keep = () => {
+        if (!r.framer.locked || !ch.nxdn?.includes(r)) return;
+        if (b === 4800 && !wide && !ch.baseband) ch.nxdn = [make(4800, true)];
+        else if (ch.nxdn.length > 1) ch.nxdn = [r];
+      };
+      r.framer.onCac = (sr, msgs) => { keep(); this.nxdnCac(c, sr, msgs, b); };
+      r.framer.onTraffic = t => { keep(); if (r.framer.locked || t.msgs.length) this.nxdnTraffic(c, t, b); };
       return r;
-    });
+    };
+    ch.nxdn = ([2400, 4800] as const).filter(b => !baud || b === baud).map(b => make(b, b === baud));
   }
-  /** NXDN SITE_INFO (TS 1-A 6.4.3.1): the Location ID names the system and site, and the control channels. */
+  private nxdnSys(key: string, now: number, init: { model: string; wacn: number; sysId: number; trunk: string; baud: number }): Sys {
+    let s = this.systems.get(key);
+    if (!s) { s = { key, proto: 'NXDN', color: this.colorNext++, wacn: init.wacn, sysId: init.sysId, cc: -1, fid: -1, net: -1, model: init.model, firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() }; this.systems.set(key, s); }
+    s.trunk = init.trunk; s.lastMs = now;
+    if (!s.nxdnPlan) s.nxdnPlan = new NxdnPlan();
+    s.nxdnBaud = init.baud; s.nxdnPlan.spacing = init.baud === 2400 ? 6250 : 12500;
+    return s;
+  }
+  /** Grants of the last moments, waiting for the voice that says which carrier their channel is (TS 1-A gives no plan). */
+  private nxdnPending: { sys: string; ch: number; src: number; dst: number; group: boolean; ms: number }[] = [];
+  private nxdnLog(c: Carrier, name: string, text: string, hex: string): void { this.addLog({ ms: this.now(), hz: c.hz, proto: 'NXDN', name, text: `${c.cls} · ${text}`, hex, ok: true }); }
+  /** Where an NXDN channel is: heard, from the plan, or a guess used only where a carrier is live in the span. */
+  private nxdnHz(s: Sys, ch: number, now: number): { hz: number; derived: boolean } {
+    const r = s.nxdnPlan?.resolve(ch);
+    if (!r) return { hz: 0, derived: false };
+    if (r.how === 'guess') {
+      const k = this.carriers.get(gridKey(r.hz));
+      return k && this.inSpan(r.hz) && now - k.lastMs < LIVE_MS && Math.abs(k.hz - r.hz) < 1_500 ? { hz: r.hz, derived: true } : { hz: 0, derived: false };
+    }
+    return { hz: r.hz, derived: r.how !== 'heard' };
+  }
+  /** An outbound control channel frame (TS 1-A 4.4.1): its messages build the system, its grants and its units. */
+  private nxdnCac(c: Carrier, sr: number, msgs: NxdnMsg[], baud: number): void {
+    const now = this.now();
+    c.cls = baud === 2400 ? 'NXDN48' : 'NXDN96'; c.role = 'control'; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++; c.nxdnRan = sr & 0x3f;
+    for (const m of msgs) {
+      if (m.site) this.nxdnSite(c, m.site, baud);
+      const s = c.sys ? this.systems.get(c.sys) : undefined;
+      if (s) { s.lastMs = now; this.nxdnControl(c, s, m, c.nxdn ? `site ${c.nxdn.site}` : '', now); }
+      if (m.type !== 0x10 && !m.site) this.nxdnLog(c, m.name, nxdnLine(m), m.hex);
+    }
+    this.pending = true;
+  }
+  /** SITE_INFO (TS 1-A 6.4.3.1): the Location ID names the system and site, and the control channels. */
   private nxdnSite(c: Carrier, x: NxdnSite, baud: number): void {
     const now = this.now(), cat = NXDN_CATEGORY[x.category], key = `NXDN ${cat}-${x.system}`;
-    let s = this.systems.get(key);
-    if (!s) { s = { key, proto: 'NXDN', color: this.colorNext++, wacn: x.category, sysId: x.system, cc: -1, fid: -1, net: -1, model: cat, firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() }; this.systems.set(key, s); }
-    s.lastMs = now; s.heardHz.add(c.key);
-    c.cls = baud === 2400 ? 'NXDN48' : 'NXDN96'; c.role = 'control'; c.sys = key; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++;
-    c.nxdn = { ...x, baud };
+    const s = this.nxdnSys(key, now, { model: cat, wacn: x.category, sysId: x.system, trunk: 'TYPE-C', baud });
+    s.heardHz.add(c.key);
+    c.cls = baud === 2400 ? 'NXDN48' : 'NXDN96'; c.role = 'control'; c.sys = key;
+    c.nxdn = { ...x, baud, service: c.nxdn?.service ?? x.service };
+    // the control channel's own number: with one control channel named it is this one; with two, the one the plan puts here
+    const plan = s.nxdnPlan!;
+    if (x.cc1 && (!x.cc2 || x.cc2 === x.cc1)) plan.vote(x.cc1, c.hz);
+    else if (x.cc1) for (const n of [x.cc1, x.cc2]) { const r = plan.resolve(n); if (r && r.how !== 'guess' && Math.abs(r.hz - c.hz) < 1_000) plan.vote(n, c.hz); }
     this.addLog({ ms: now, hz: c.hz, proto: 'NXDN', name: 'SITE_INFO', text: `${c.cls} · SITE_INFO · ${cat} SYSTEM ${x.system} · SITE ${x.site} · control channel ${x.cc1}${x.cc2 ? ` and ${x.cc2}` : ''} · ${x.adjacent} adjacent sites · version ${x.version}`, hex: '', ok: true });
     this.pending = true;
+  }
+  /** A control message of a known system: grants, registrations, neighbors, channels. */
+  private nxdnControl(c: Carrier, s: Sys, m: NxdnMsg, site: string, now: number): void {
+    const msg = { hex: m.hex, line: nxdnLine(m) };
+    if ((m.type === 0x04 || m.type === 0x05) && m.ch && m.dst !== undefined) {
+      const at = this.nxdnHz(s, m.ch, now), efr = ((m.voiceOpt ?? 0) & 7) === 3;
+      this.nxdnPending = this.nxdnPending.filter(g => now - g.ms < 3_000);
+      if (!this.nxdnPending.some(g => g.sys === s.key && g.ch === m.ch && g.dst === m.dst)) this.nxdnPending.push({ sys: s.key, ch: m.ch, src: m.src ?? 0, dst: m.dst, group: !!m.group, ms: now });
+      this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: m.group ? 'grant' : 'u2u', tg: m.dst, group: !!m.group, src: m.src ?? 0, ch: `CH ${m.ch}`, hz: at.hz, slot: 0, tdma: false, emergency: !!m.emergency, encrypted: false, carrierHz: c.hz, site, lpcn: m.ch, chDerived: at.derived, efr }, m.type === 0x05);
+      if (m.src) this.touchUnit(s.key, m.src, c, now, 'grant', msg, site, m.group ? m.dst : undefined);
+      if (!m.group && m.dst) this.touchUnit(s.key, m.dst, c, now, 'u2u', msg, site);
+    } else if ((m.type === 0x20 || m.type === 0x24) && m.unit && m.unit < 0xfff0) {
+      const u = this.touchUnit(s.key, m.unit, c, now, m.type === 0x20 ? 'registration' : 'group registration', msg, site);
+      // a registration accepted (Cause (MM) 0x01, Table 6.5-27) puts the unit in its group
+      if (m.gid && m.gid < 0xfff0 && m.cause === 1) { u.groups.add(m.gid); this.tgFor(s.key, m.gid, now).members.add(m.unit); }
+    } else if ((m.type === 0x22 || m.type === 0x23) && m.unit && m.unit < 0xfff0) this.touchUnit(s.key, m.unit, c, now, m.type === 0x22 ? 'registration clear' : 'registration command', msg, site);
+    else if (m.type === 0x1b && m.adj) { c.nxdnAdj ??= new Map(); for (const a of m.adj) c.nxdnAdj.set(`${a.category}-${a.system}-${a.site}`, a); }
+    else if (m.type === 0x1a && m.cch && c.nxdn && m.cch.site === c.nxdn.site && m.cch.system === c.nxdn.system && m.cch.flags === 8 && m.cch.ch1 && !m.cch.ch2) s.nxdnPlan!.vote(m.cch.ch1, c.hz);
+    else if (m.type === 0x19 && c.nxdn && m.service !== undefined) c.nxdn.service = m.service;
+  }
+  /**
+   * A traffic channel frame (RTCH, RDCH, or a Type-D RTCH2): the VCALL in its SACCH or FACCH1 names the call and says
+   * whether it is ciphered, TX_REL ends it, and its VCHs are the voice. A conventional channel (RDCH) is its own system,
+   * named by its RAN; a trunked one belongs to the system whose grant named it.
+   */
+  private nxdnTraffic(c: Carrier, t: NxdnTraffic, baud: number): void {
+    const now = this.now();
+    c.cls = baud === 2400 ? 'NXDN48' : 'NXDN96'; c.lastDecodeMs = now; c.frames++;
+    if (c.role !== 'control') c.role = 'voice';
+    if (t.ran >= 0) c.nxdnRan = t.ran;
+    if (t.rf === 2 && t.ran >= 0) {
+      const key = `NXDN CONV RAN ${t.ran}`;
+      const s = this.nxdnSys(key, now, { model: 'CONVENTIONAL', wacn: -1, sysId: t.ran, trunk: 'CONVENTIONAL', baud });
+      s.heardHz.add(c.key); c.sys = key;
+    }
+    if (t.scch) this.nxdnScch(c, t.scch, now, baud);
+    for (const m of t.msgs) {
+      if (m.type === 0x01 && m.dst !== undefined) {
+        this.nxdnLearn(c, m.src ?? 0, m.dst, !!m.group, now);
+        const call = this.calls.lc(c.sys, c.hz, 0, { group: !!m.group, dst: m.dst, src: m.src ?? 0, emergency: !!m.emergency, privacy: !!m.cipher }, now, 'NXDN');
+        if (((m.voiceOpt ?? 0) & 7) === 3) this.calls.setCodec(call, 'imbe');
+        this.calls.security(call, { enc: !!m.cipher, from: 'VCALL', algId: m.cipher, keyId: m.keyId });
+        if (call.sys && !c.sys) c.sys = call.sys;
+      } else if (m.type === 0x08 || m.type === 0x07 || m.type === 0x11) this.calls.terminate(c.sys, c.hz, 0, now);
+      else if (m.type === 0x05 && m.ch && c.sys) { const s = this.systems.get(c.sys); if (s) this.nxdnControl(c, s, m, '', now); }
+      if (m.type !== 0x10) this.nxdnLog(c, m.name, `${t.rf === 2 ? 'RDCH' : t.typeD ? 'RTCH2' : 'RTCH'} · ${nxdnLine(m)}`, m.hex);
+    }
+    const halves = t.halves.filter((x): x is Uint8Array => !!x);
+    if (!halves.length) { this.pending = true; return; }
+    const call = this.calls.voice(c.sys, 'NXDN', c.hz, 0, 0, now);
+    // EHR: two 72-bit VCHs a half; EFR (the IMBE frame): one 144-bit VCH a half
+    const frames: Uint8Array[] = [];
+    for (const h of halves) { if (call.codec === 'imbe') frames.push(h); else frames.push(h.slice(0, 72), h.slice(72)); }
+    call.voiceMs += 20 * frames.length;
+    this.calls.frames(call, frames);
+    this.pending = true;
+  }
+  /** A call named on a carrier: a grant of the last moments to the same talkgroup or unit says which channel it is. */
+  private nxdnLearn(c: Carrier, src: number, dst: number, group: boolean, now: number): void {
+    const i = this.nxdnPending.findIndex(g => now - g.ms < 3_000 && g.dst === dst && g.group === group && (!src || !g.src || g.src === src) && (!c.sys || c.sys === g.sys));
+    if (i < 0) return;
+    const g = this.nxdnPending[i]; this.nxdnPending.splice(i, 1);
+    const s = this.systems.get(g.sys); if (!s?.nxdnPlan) return;
+    if (!c.sys) c.sys = g.sys;
+    if (s.nxdnPlan.vote(g.ch, c.hz)) {
+      this.pending = true;
+      this.addLog({ ms: now, hz: c.hz, proto: 'NXDN', name: 'CHANNEL', text: `${c.cls} · channel ${g.ch} is ${(c.hz / 1e6).toFixed(5)} MHz, from a grant and the voice that followed it`, hex: '', ok: true });
+    }
+  }
+  /** A Type-D SCCH message (TS 1-E 6.5.3): the site, a call's source, destination and cipher, the end of a transmission. */
+  private nxdnScch(c: Carrier, x: NxdnScch, now: number, baud: number): void {
+    if (x.kind === 'site' && x.siteCode !== undefined) {
+      const key = `NXDN TYPE-D SITE ${x.siteCode}`;
+      const s = this.nxdnSys(key, now, { model: 'TYPE-D', wacn: -1, sysId: x.siteCode, trunk: 'TYPE-D', baud });
+      s.heardHz.add(c.key); c.sys = key;
+      return;
+    }
+    if (x.kind === 'idle' || x.kind === 'free' || x.kind === 'halt') return;
+    const d = c.nxdnD && now - c.nxdnD.ms < 2_000 ? c.nxdnD : (c.nxdnD = { src: 0, dst: -1, group: true, cipher: -1, keyId: 0, ms: now });
+    d.ms = now;
+    if (x.info === 3 && x.src !== undefined) d.src = x.src;
+    if (x.info === 1 && x.cipher !== undefined) { d.cipher = x.cipher; d.keyId = x.keyId ?? 0; }
+    if (x.kind === 'busy' && x.dst !== undefined) {
+      // Go to Repeater 31 is the end of a transmission (1-E 6.6.11)
+      if (x.goTo === 31) { this.calls.terminate(c.sys, c.hz, 0, now); c.nxdnD = undefined; return; }
+      d.dst = x.dst; d.group = !!x.group;
+      // INFO4 on a repeater sends units elsewhere: a grant to that repeater's channel (INFO2 names this repeater's own call)
+      const s = c.sys ? this.systems.get(c.sys) : undefined;
+      if (s && x.info === 4 && x.goTo && !this.calls.onAirAt(c.sys, c.hz, 0)) {
+        const at = this.nxdnHz(s, x.goTo, now);
+        this.nxdnPending = this.nxdnPending.filter(g => now - g.ms < 3_000);
+        if (!this.nxdnPending.some(g => g.sys === s.key && g.ch === x.goTo && g.dst === x.dst)) this.nxdnPending.push({ sys: s.key, ch: x.goTo, src: 0, dst: x.dst, group: !!x.group, ms: now });
+        this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: x.group ? 'grant' : 'u2u', tg: x.dst, group: !!x.group, src: 0, ch: `REPEATER ${x.goTo}`, hz: at.hz, slot: 0, tdma: false, emergency: false, encrypted: false, carrierHz: c.hz, site: '', lpcn: x.goTo, chDerived: at.derived }, false);
+        this.nxdnLog(c, 'INFO4', `GO TO REPEATER ${x.goTo} · ${x.group ? 'TG' : 'UNIT'} ${nxdnId(x.dst, true)}`, '');
+        return;
+      }
+    }
+    if (d.dst >= 0 && (d.src || this.calls.onAirAt(c.sys, c.hz, 0))) {
+      this.nxdnLearn(c, d.src, d.dst, d.group, now);
+      const call = this.calls.lc(c.sys, c.hz, 0, { group: d.group, dst: d.dst, src: d.src, emergency: false, privacy: d.cipher > 0 }, now, 'NXDN');
+      if (d.cipher >= 0) this.calls.security(call, { enc: d.cipher > 0, from: 'SCCH', algId: d.cipher, keyId: d.keyId });
+    }
   }
   private tetraOn(c: Carrier, ch: Chan): void {
     // the carrier finder can split a 25 kHz signal into pieces: the receiver is centered on all of them together
@@ -807,14 +979,14 @@ export class FleetProcessor implements IqProcessor {
   }
 
   // ------------------------------------------------------------------------------------------------ tables
-  private touchUnit(sys: string, id: number, c: Carrier, now: number, kind: string, msg: Tsbk | Csbk, site: string, group?: number): Unit {
+  private touchUnit(sys: string, id: number, c: Carrier, now: number, kind: string, msg: Tsbk | Csbk | { hex: string; line: string }, site: string, group?: number): Unit {
     const key = `${sys}/${id}`;
     let u = this.units.get(key);
     if (!u) { u = { key, sys, id, firstMs: now, lastMs: now, lonLo: -1, latLo: -1, posMs: 0, posVerified: false, trail: [], groups: new Set(), grants: 0, carriers: new Set(), reports: [], fixes: [], tgCounts: new Map() }; this.units.set(key, u); }
     u.lastMs = now; u.carriers.add(c.key);
     if (group !== undefined) { u.groups.add(group); u.tgCounts.set(group, (u.tgCounts.get(group) ?? 0) + 1); this.tgFor(sys, group, now).members.add(id); }
     if (kind === 'grant' || kind === 'u2u' || kind === 'datagrant') u.grants++;
-    const cs = 'verified' in msg ? msg as Csbk : null, text = cs ? csbkLine(cs) : tsbkLine(msg as Tsbk);
+    const cs = 'verified' in msg ? msg as Csbk : null, text = 'line' in msg ? msg.line : cs ? csbkLine(cs) : tsbkLine(msg as Tsbk);
     u.reports.push({ ms: now, hz: c.hz, kind: `${kind}${site ? ` · site ${site}` : ''}`, hex: msg.hex, verified: cs ? cs.verified : true, lat: null, lon: null, text, db: c.levelDb });
     if (u.reports.length > 60) u.reports.shift();
     this.pending = true;
@@ -829,10 +1001,15 @@ export class FleetProcessor implements IqProcessor {
   /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
   private grant(sys: string, g: GrantRow, update: boolean): void {
     if (g.kind !== 'datagrant') {
-      const p25 = sys.startsWith('P25');
-      const call = this.calls.grant({ sys, proto: p25 ? 'P25' : 'DMR', tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: p25 ? (g.tdma ? g.slot : 0) : g.slot, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site, lpcn: g.lpcn, chDerived: g.chDerived }, g.ms);
+      const p25 = sys.startsWith('P25'), nxdn = sys.startsWith('NXDN'), proto: CallProto = p25 ? 'P25' : nxdn ? 'NXDN' : 'DMR';
+      const call = this.calls.grant({ sys, proto, tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: p25 ? (g.tdma ? g.slot : 0) : g.slot, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site, lpcn: g.lpcn, chDerived: g.chDerived, efr: g.efr }, g.ms);
       // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
-      if (call?.onAir && !call.muted && call.hz && this.rate > 0 && this.inSpan(call.hz)) { const vc = this.carrierAt(call.hz); if (!vc.role) vc.role = 'voice'; if (!vc.sys) vc.sys = sys; if (!this.chans.has(vc.key)) { vc.lastAuditionMs = g.ms; this.open(vc, g.ms); vc.decoding = true; } }
+      if (call?.onAir && !call.muted && call.hz && this.rate > 0 && this.inSpan(call.hz)) {
+        const vc = this.carrierAt(call.hz); if (!vc.role) vc.role = 'voice'; if (!vc.sys) vc.sys = sys;
+        if (!this.chans.has(vc.key)) { vc.lastAuditionMs = g.ms; this.open(vc, g.ms); vc.decoding = true; }
+        // an NXDN voice channel is read from its first frame, at the system's symbol rate
+        const ch = this.chans.get(vc.key); if (nxdn && ch && !ch.nxdn) this.nxdnOn(vc, ch, this.systems.get(sys)?.nxdnBaud);
+      }
     }
     const same = this.grants.find(x => x.sys === sys && x.tg === g.tg && x.ch === g.ch && x.group === g.group && g.ms - x.lastMs < 5_000);
     if (same) { same.lastMs = g.ms; if (g.src && !same.src) same.src = g.src; this.pending = true; return; }
@@ -968,6 +1145,26 @@ export class FleetProcessor implements IqProcessor {
     }
     this.post(true);
   }
+  /**
+   * NXDN sites: a Type-C control channel per site (its SITE_INFO), with its adjacent sites and the channels learned;
+   * a conventional or Type-D system's carriers make one site.
+   */
+  private nxdnSites(s: Sys): SiteRow[] {
+    const plan = s.nxdnPlan, now = this.now();
+    const lcns = plan ? [...plan.heard].sort((a, b) => a[0] - b[0]).map(([lcn, hz]) => ({ lcn, hz, slot: 0 })) : [];
+    const cs = [...this.carriers.values()].filter(c => c.sys === s.key);
+    if (s.trunk === 'TYPE-C') {
+      return cs.filter(c => c.nxdn).map(c => {
+        const x = c.nxdn!, adj = [...(c.nxdnAdj?.values() ?? [])];
+        return { key: `${s.key}/${x.site}`, label: `site ${x.site}`, rfss: -1, site: x.site, nac: c.nxdnRan ?? -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
+          neighbors: adj.map(a => { const r = plan?.resolve(a.ch); return { label: a.system === x.system && a.category === x.category ? `site ${a.site}` : `${NXDN_CATEGORY[a.category]} ${a.system} site ${a.site}`, hz: r && r.how !== 'guess' ? r.hz : 0, ch: `CH ${a.ch}`, sys: a.system, heard: cs.some(o => o.nxdn?.site === a.site && now - o.lastMs < 60_000) }; }),
+          secondary: [], time: `${c.cls} · control channel ${x.cc1}${x.cc2 ? ` and ${x.cc2}` : ''} · ${x.adjacent} adjacent sites`, callsign: c.callsign, carriers: [c.key], lcns, rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: x.version };
+      });
+    }
+    if (!cs.length) return [];
+    return [{ key: `${s.key}/1`, label: s.trunk === 'TYPE-D' ? `site ${s.sysId}` : `RAN ${s.sysId}`, rfss: -1, site: s.sysId, nac: s.trunk === 'CONVENTIONAL' ? s.sysId : -1, ccHz: cs.map(c => c.hz).sort((a, b) => a - b), lastMs: Math.max(...cs.map(c => c.lastMs)), levelDb: Math.max(...cs.map(c => c.levelDb)),
+      neighbors: [], secondary: [], time: cs[0].cls, callsign: cs.find(c => c.callsign)?.callsign ?? '', carriers: cs.map(c => c.key), lcns, rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: -1 }];
+  }
   private dmrSites(s: Sys): SiteRow[] {
     const cs = [...this.carriers.values()].filter(c => c.sys === s.key);
     const parent = new Map<number, number>(cs.map(c => [c.key, c.key]));
@@ -1006,14 +1203,13 @@ export class FleetProcessor implements IqProcessor {
       } else if (s.proto === 'TETRA') {
         sites = [...this.carriers.values()].filter(c => c.sys === s.key && c.tetra).map(c => ({ key: `${s.key}/${c.key}`, label: `color code ${c.tetra!.colorCode}`, rfss: -1, site: c.tetra!.colorCode, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
           neighbors: [], secondary: [], time: `TS${c.tetra!.timeslot} · frame ${c.tetra!.frame} · multiframe ${c.tetra!.multiframe}`, callsign: '', carriers: [c.key], lcns: [], rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: c.tetra!.cellLoad }));
-      } else if (s.proto === 'NXDN') {
-        sites = [...this.carriers.values()].filter(c => c.sys === s.key && c.nxdn).map(c => ({ key: `${s.key}/${c.nxdn!.site}`, label: `site ${c.nxdn!.site}`, rfss: -1, site: c.nxdn!.site, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
-          neighbors: [], secondary: [], time: `${c.cls} · control channel ${c.nxdn!.cc1}${c.nxdn!.cc2 ? ` and ${c.nxdn!.cc2}` : ''} · ${c.nxdn!.adjacent} adjacent sites`, callsign: '', carriers: [c.key], lcns: [], rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: c.nxdn!.version }));
-      } else sites = this.dmrSites(s);
+      } else if (s.proto === 'NXDN') sites = this.nxdnSites(s);
+      else sites = this.dmrSites(s);
       for (const st of sites) for (const k of st.carriers) for (const u of this.units.values()) if (u.sys === s.key && u.carriers.has(k)) unitSite.set(u.key, st.label);
-      const label = s.proto === 'NXDN' ? `NXDN · ${s.model} SYSTEM ${s.sysId}` : s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : s.trunk === 'CAPACITY PLUS' ? `CAPACITY PLUS · COLOR CODE ${s.cc}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
+      const label = s.proto === 'NXDN' ? (s.trunk === 'CONVENTIONAL' ? `NXDN · CONVENTIONAL · RAN ${s.sysId}` : s.trunk === 'TYPE-D' ? `NXDN · TYPE-D · SITE ${s.sysId}` : `NXDN · ${s.model} SYSTEM ${s.sysId}`) : s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : s.trunk === 'CAPACITY PLUS' ? `CAPACITY PLUS · COLOR CODE ${s.cc}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
       const units = [...this.units.values()].filter(u => u.sys === s.key).length, tgs = [...this.tgs.values()].filter(t => t.sys === s.key).length;
-      const lpcns = [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
+      const lpcns = s.nxdnPlan ? [...s.nxdnPlan.heard].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.nxdnPlan!.votes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn)
+        : [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
       return { key: s.key, proto: s.proto, color: s.color, label, trunk: s.trunk ?? '', wacn: s.wacn, sysId: s.sysId, cc: s.cc, fid: s.fid, net: s.net, model: s.model,
         callsign: sites.find(x => x.callsign)?.callsign ?? '', ...this.latestId(s.key), firstMs: s.firstMs, lastMs: s.lastMs, sites, idens: [...s.idens.values()].sort((a, b) => a.iden - b.iden),
         grants: this.grants.filter(g => g.sys === s.key).length, units, tgs, derived: s.derived || lpcns.length > 0, lpcns, heardHz: [...s.heardHz].slice(0, 12),
@@ -1028,7 +1224,7 @@ export class FleetProcessor implements IqProcessor {
     });
     const tgs: TgRow[] = [...this.tgs.values()].map(t => ({ key: t.key, sys: t.sys, tg: t.tg, firstMs: t.firstMs, lastMs: t.lastMs, grants: t.grants, recent: t.recent.filter(x => now - x < 600_000), members: [...t.members].slice(0, 200), history: t.history.slice(0, 12) }));
     const carriers: CarrierRow[] = [...this.carriers.values()].map(c => {
-      const { lastAuditionMs: _a, p25: _p, dmrSys: _d, tables: _t, unitIds: _u, hdr: _h, ...row } = c;
+      const { lastAuditionMs: _a, p25: _p, dmrSys: _d, tables: _t, unitIds: _u, hdr: _h, nxdnAdj: _n, nxdnD: _x, ...row } = c;
       return { ...row };
     }).sort((a, b) => a.hz - b.hz);
     return { type: 'fleet', centerHz: this.centerHz, rate: this.rate, spanLo: this.spanLo, spanHi: this.spanHi, carriers, systems, units, tgs, grants: this.grants.slice(0, 120),
@@ -1088,7 +1284,7 @@ export class FleetProcessor implements IqProcessor {
   /** Starts the NXDN receivers on a carrier now (the synthesized channels in the tests). */
   nxdnNow(hz: number): void { const c = this.carrierAt(hz), ch = this.chans.get(c.key); if (ch && !ch.nxdn) this.nxdnOn(c, ch); }
   /** The end of a recording: the samples still waiting for a whole timing block are decoded too. */
-  flush(): void { for (const ch of this.chans.values()) ch.rx.flush(); }
+  flush(): void { for (const ch of this.chans.values()) { ch.rx.flush(); for (const r of ch.nxdn ?? []) r.flush(); } }
   /** A CW ID read on [hz]. */
   feedCw(hz: number, text: string): void { this.cwText(this.carrierAt(hz), text); }
   /** Everything held about one unit, for its detail view. */
@@ -1121,7 +1317,7 @@ export class FleetProcessor implements IqProcessor {
   }
   clear(): void {
     this.carriers.clear(); this.systems.clear(); this.sites.clear(); this.units.clear(); this.tgs.clear(); this.grants = []; this.log.length = 0; this.logSeen.clear();
-    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = [];
+    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = [];
     this.post(true);
   }
 }

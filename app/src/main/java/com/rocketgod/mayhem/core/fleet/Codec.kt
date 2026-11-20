@@ -9,8 +9,8 @@ import kotlin.math.tanh
 /**
  * Where a vocoder plugs into Dispatch. A call's voice frames are handed to the codec for its air interface; with no
  * codec registered the call is still followed and shown, without audio.
- *  - "imbe": P25 Phase 1 full rate, 144-bit frames (88 voice bits under FEC), 20 ms each.
- *  - "ambe2": half rate, 72-bit frames (49 voice bits under FEC), 20 ms each: DMR and P25 Phase 2.
+ *  - "imbe": P25 Phase 1 full rate, 144-bit frames (88 voice bits under FEC), 20 ms each; NXDN's EFR is the same frame.
+ *  - "ambe2": half rate, 72-bit frames (49 voice bits under FEC), 20 ms each: DMR, P25 Phase 2 and NXDN EHR.
  */
 object CodecIds { const val IMBE = "imbe"; const val AMBE2 = "ambe2" }
 

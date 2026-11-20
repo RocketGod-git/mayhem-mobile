@@ -138,9 +138,15 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     var p25Sys = -1; var p25Wacn = -1; var p25Rfss = -1; var p25Site = -1
     var dmrSys = ""; val tables = LinkedHashMap<Int, Iden>(); val unitIds = LinkedHashMap<Int, Long>()
     var tetra: TetraSync? = null; var nxdn: NxdnSite? = null; var nxdnBaud = 0
+    var nxdnAdj: LinkedHashMap<String, NxdnAdj>? = null; var nxdnRan = -1; var nxdnService: Int? = null
+    /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
+    var nxdnD: NxdnD? = null
     fun row() = CarrierRow(key, hz, levelDb, peakDb, firstMs, lastMs, onMs, heardMs, cls, role, sys, nac, cc, frames, blocks, crcOk, lastDecodeMs, envCv, eye,
         decoding, callsign, tdma, lcn, callsignMs)
 }
+private class NxdnD { var src = 0; var dst = -1; var group = true; var cipher = -1; var keyId = 0; var ms = 0L }
+/** An NXDN message as a unit's report shows it. */
+private class NxdnUnitMsg(val hex: String, val line: String)
 private class NeighborAt(val sys: Int, val rfss: Int, val site: Int, val ch: Int)
 private class Site(val key: String, val sys: String, val rfss: Int, val site: Int, var nac: Int, var lastMs: Long) {
     val carriers = LinkedHashSet<Long>(); val neighbors = LinkedHashMap<String, NeighborAt>(); val secondary = LinkedHashSet<Int>()
@@ -154,6 +160,8 @@ private class Sys(val key: String, val proto: String, val color: Int, val wacn: 
     val lpcnVotes = LinkedHashMap<Int, LinkedHashMap<Long, Int>>(); val lpcnHz = LinkedHashMap<Int, Long>()
     /** Where the system was heard (its control or rest channels), kept across retunes and sessions. */
     val heardHz = LinkedHashSet<Long>()
+    /** NXDN: the channel plan learned from what was heard, and the symbol rate of the system's channels. */
+    var nxdnPlan: NxdnPlan? = null; var nxdnBaud = 0
 }
 private class Report(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val text: String, val db: Double? = null) {
     var lat: Double? = null; var lon: Double? = null; var lonLo: Int? = null; var latLo: Int? = null
@@ -183,6 +191,7 @@ private fun gridKey(hz: Long): Long = gridKey(hz.toDouble())
 private fun round6(x: Double): Double = Math.round(x * 1e6) / 1e6
 
 private class TetraChan(val rx: TetraRx, val ddc: Ddc?) { var oi = FloatArray(0); var oq = FloatArray(0) }
+private class DdcBuf(val ddc: Ddc) { var oi = FloatArray(0); var oq = FloatArray(0) }
 
 /** [baseband]: samples arrive already mixed to 0 Hz at that rate (a recorded channel clip), no down-converter. */
 private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: Long, baseband: Double = 0.0) {
@@ -203,6 +212,11 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
     var tetra: TetraChan? = null
     /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
     var nxdn: List<NxdnRx>? = null
+    /**
+     * NXDN96's own down-converter on a span channel: 48 kS/s and 7 kHz wide, so its 4800 symbols a second get ten samples
+     * each (at the channel's 24 kS/s the symbol timing slips now and then) and its outer deviation is not clipped.
+     */
+    var nxdnDdc: DdcBuf? = null
     private var center = center; private val rate = if (baseband > 0) 0 else rate
     /** Fed a recorded channel at its own rate (no down-converter, so no DC spike of the receiver's). */
     val baseband: Boolean get() = rate == 0
@@ -244,7 +258,13 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
             onFill(lane, if (lane == 2) 9 else 3)
         }
     }
-    fun retarget(center: Long) { ddc.offsetHz = hz - center; this.center = center; tetra?.ddc?.offsetHz = tetraHz - center }
+    fun retarget(center: Long) { ddc.offsetHz = hz - center; this.center = center; tetra?.ddc?.offsetHz = tetraHz - center; nxdnDdc?.let { it.ddc.offsetHz = hz - center } }
+    /** The sample rate an NXDN receiver at [baud] gets: [wide] for an NXDN96 channel known as one. */
+    fun nxdnFs(baud: Int, wide: Boolean): Double {
+        if (!wide || baud == 2400 || rate == 0) return fs
+        val x = nxdnDdc ?: run { val d = Ddc(7_000.0, 48_000.0, 63); d.reset(rate.toDouble()); d.offsetHz = hz - center; DdcBuf(d).also { nxdnDdc = it } }
+        return x.ddc.outRate
+    }
     /** Starts the TETRA receiver: 72 kS/s off its own down-converter, or the baseband itself when it is fast enough. */
     fun tetraOn(hz: Double = this.hz): TetraRx? {
         tetra?.let { return it.rx }
@@ -257,6 +277,12 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         if (oi.size < need) { oi = FloatArray(need); oq = FloatArray(need) }
         val m = ddc.push(fi, fq, n, oi, oq)
         channel(oi, oq, m, now)
+        val nx = nxdnDdc; val nd = nx?.ddc; val rs = nxdn
+        if (nx != null && nd != null && rs != null && rs.any { it.fs != fs }) {
+            val k = nd.maxOut(n); if (nx.oi.size < k) { nx.oi = FloatArray(k); nx.oq = FloatArray(k) }
+            val j = nd.push(fi, fq, n, nx.oi, nx.oq)
+            for (r in rs) if (r.fs != fs) r.push(nx.oi, nx.oq, j)
+        } else if (nx != null && rs != null) nxdnDdc = null
         val tc = tetra; val td = tc?.ddc
         if (tc != null && td != null) {
             val k = td.maxOut(n); if (tc.oi.size < k) { tc.oi = FloatArray(k); tc.oq = FloatArray(k) }
@@ -270,7 +296,7 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         val s0 = p25.clean + dmr.bursts
         rx.push(zi, zq, m)
         p2?.push(zi, zq, m)
-        nxdn?.let { for (r in it) r.push(zi, zq, m) }
+        nxdn?.let { for (r in it) if (r.fs == fs) r.push(zi, zq, m) }
         if (p25.clean + dmr.bursts != s0) { lastSyncMs = now; quietSince = now; cwOn = false }
         // a CW ID comes once the digital signal has stopped (a voice channel's frames are 180 ms apart); the reader starts
         // fresh then, so the digital signal's levels do not hide the tone
@@ -498,26 +524,203 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         p.onMac = { m -> p2Mac(c, m) }
         p.onEss = { lch, e -> calls.at(c.sys, c.hz, lch)?.let { calls.security(it, SecIn(e.algId != 0x80, "ESS", e.algId, e.keyId, e.mi)) } }
     }
-    private fun nxdnOn(c: Carrier, ch: Chan) {
-        val rs = ArrayList<NxdnRx>()
-        for (baud in intArrayOf(2400, 4800)) {
-            val r = NxdnRx(ch.fs, baud)
-            r.framer.onSite = { x -> if ((ch.nxdn?.size ?: 0) > 1) ch.nxdn = listOf(r); nxdnSite(c, x, baud) }
-            rs.add(r)
+    // ------------------------------------------------------------------------------------------------ NXDN
+    /**
+     * NXDN receivers on a channel: both bandwidths until one locks, or the one a system's grant names. The one that locks
+     * stays; an NXDN96 one moves to its own 48 kS/s down-converter then (a carrier tried and not NXDN never costs one).
+     */
+    private fun nxdnOn(c: Carrier, ch: Chan, baud: Int = 0) {
+        if (ch.nxdn != null) return
+        fun make(b: Int, wide: Boolean): NxdnRx {
+            val r = NxdnRx(ch.nxdnFs(b, wide), b)
+            val keep = {
+                val cur = ch.nxdn
+                if (r.framer.locked && cur != null && r in cur) {
+                    if (b == 4800 && !wide && !ch.baseband) ch.nxdn = listOf(make(4800, true))
+                    else if (cur.size > 1) ch.nxdn = listOf(r)
+                }
+            }
+            r.framer.onCac = { sr, msgs -> keep(); nxdnCac(c, sr, msgs, b) }
+            r.framer.onTraffic = { t -> keep(); if (r.framer.locked || t.msgs.isNotEmpty()) nxdnTraffic(c, t, b) }
+            return r
         }
-        ch.nxdn = rs
+        ch.nxdn = intArrayOf(2400, 4800).filter { baud == 0 || it == baud }.map { make(it, it == baud) }
     }
     private fun newSys(key: String, proto: String, wacn: Int, sysId: Int, cc: Int, fid: Int, net: Int, model: String, now: Long, derived: Boolean = false): Sys =
         Sys(key, proto, colorNext++, wacn, sysId, cc, fid, net, model, now, now, derived).also { systems[key] = it }
-    /** NXDN SITE_INFO (TS 1-A 6.4.3.1): the Location ID names the system and site, and the control channels. */
+    private fun nxdnSys(key: String, now: Long, model: String, wacn: Int, sysId: Int, trunk: String, baud: Int): Sys {
+        val s = systems[key] ?: newSys(key, "NXDN", wacn, sysId, -1, -1, -1, model, now)
+        s.trunk = trunk; s.lastMs = now
+        val plan = s.nxdnPlan ?: NxdnPlan().also { s.nxdnPlan = it }
+        s.nxdnBaud = baud; plan.spacing = if (baud == 2400) 6250L else 12500L
+        return s
+    }
+    private class NxdnPending(val sys: String, val ch: Int, val src: Int, val dst: Int, val group: Boolean, val ms: Long)
+    /** Grants of the last moments, waiting for the voice that says which carrier their channel is (TS 1-A gives no plan). */
+    private var nxdnPending = ArrayList<NxdnPending>()
+    private fun nxdnLog(c: Carrier, name: String, text: String, hex: String) = addLog(LogRow(now(), c.hz, "NXDN", name, "${c.cls} · $text", hex, true))
+    /** Where an NXDN channel is: heard, from the plan, or a guess used only where a carrier is live in the span. */
+    private fun nxdnHz(s: Sys, ch: Int, now: Long): Pair<Long, Boolean> {
+        val r = s.nxdnPlan?.resolve(ch) ?: return 0L to false
+        if (r.how == "guess") {
+            val k = carriers[gridKey(r.hz)]
+            return if (k != null && inSpan(r.hz) && now - k.lastMs < LIVE_MS && abs(k.hz - r.hz) < 1_500) r.hz to true else 0L to false
+        }
+        return r.hz to (r.how != "heard")
+    }
+    /** An outbound control channel frame (TS 1-A 4.4.1): its messages build the system, its grants and its units. */
+    private fun nxdnCac(c: Carrier, sr: Int, msgs: List<NxdnMsg>, baud: Int) {
+        val now = now()
+        c.cls = if (baud == 2400) "NXDN48" else "NXDN96"; c.role = "control"; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; blocks++; c.nxdnRan = sr and 0x3f
+        for (m in msgs) {
+            m.site?.let { nxdnSite(c, it, baud) }
+            val s = if (c.sys.isNotEmpty()) systems[c.sys] else null
+            if (s != null) { s.lastMs = now; nxdnControl(c, s, m, c.nxdn?.let { "site ${it.site}" } ?: "", now) }
+            if (m.type != 0x10 && m.site == null) nxdnLog(c, m.name, nxdnLine(m), m.hex)
+        }
+        pending = true
+    }
+    /** SITE_INFO (TS 1-A 6.4.3.1): the Location ID names the system and site, and the control channels. */
     private fun nxdnSite(c: Carrier, x: NxdnSite, baud: Int) {
         val now = now(); val cat = NXDN_CATEGORY[x.category]; val key = "NXDN $cat-${x.system}"
-        val s = systems[key] ?: newSys(key, "NXDN", x.category, x.system, -1, -1, -1, cat, now)
-        s.lastMs = now; s.heardHz.add(c.key)
-        c.cls = if (baud == 2400) "NXDN48" else "NXDN96"; c.role = "control"; c.sys = key; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; blocks++
-        c.nxdn = x; c.nxdnBaud = baud
+        val s = nxdnSys(key, now, cat, x.category, x.system, "TYPE-C", baud)
+        s.heardHz.add(c.key)
+        c.cls = if (baud == 2400) "NXDN48" else "NXDN96"; c.role = "control"; c.sys = key
+        c.nxdn = x.copy(service = c.nxdnService ?: x.service); c.nxdnBaud = baud
+        // the control channel's own number: with one control channel named it is this one; with two, the one the plan puts here
+        val plan = s.nxdnPlan!!
+        if (x.cc1 != 0 && (x.cc2 == 0 || x.cc2 == x.cc1)) plan.vote(x.cc1, c.hz)
+        else if (x.cc1 != 0) for (n in intArrayOf(x.cc1, x.cc2)) { val r = plan.resolve(n); if (r != null && r.how != "guess" && abs(r.hz - c.hz) < 1_000) plan.vote(n, c.hz) }
         addLog(LogRow(now, c.hz, "NXDN", "SITE_INFO", "${c.cls} · SITE_INFO · $cat SYSTEM ${x.system} · SITE ${x.site} · control channel ${x.cc1}${if (x.cc2 != 0) " and ${x.cc2}" else ""} · ${x.adjacent} adjacent sites · version ${x.version}", "", true))
         pending = true
+    }
+    /** A control message of a known system: grants, registrations, neighbors, channels. */
+    private fun nxdnControl(c: Carrier, s: Sys, m: NxdnMsg, site: String, now: Long) {
+        val msg = NxdnUnitMsg(m.hex, nxdnLine(m))
+        val ch = m.ch; val dst = m.dst
+        if ((m.type == 0x04 || m.type == 0x05) && ch != null && ch != 0 && dst != null) {
+            val (hz, derived) = nxdnHz(s, ch, now); val efr = ((m.voiceOpt ?: 0) and 7) == 3; val src = m.src ?: 0
+            nxdnPending = ArrayList(nxdnPending.filter { now - it.ms < 3_000 })
+            if (nxdnPending.none { it.sys == s.key && it.ch == ch && it.dst == dst }) nxdnPending.add(NxdnPending(s.key, ch, src, dst, m.group, now))
+            grant(s.key, GrantRow(now, now, s.key, if (m.group) "grant" else "u2u", dst, m.group, src, "CH $ch", hz, 0, false, m.emergency, false, c.hz, site, ch, derived), m.type == 0x05, efr)
+            if (src != 0) touchUnit(s.key, src, c, now, "grant", msg, site, if (m.group) dst else null)
+            if (!m.group && dst != 0) touchUnit(s.key, dst, c, now, "u2u", msg, site)
+        } else if ((m.type == 0x20 || m.type == 0x24) && (m.unit ?: 0) in 1 until 0xfff0) {
+            val unit = m.unit!!
+            val u = touchUnit(s.key, unit, c, now, if (m.type == 0x20) "registration" else "group registration", msg, site)
+            // a registration accepted (Cause (MM) 0x01, Table 6.5-27) puts the unit in its group
+            val g = m.gid ?: 0
+            if (g in 1 until 0xfff0 && m.cause == 1) { u.groups.add(g); tgFor(s.key, g, now).members.add(unit) }
+        } else if ((m.type == 0x22 || m.type == 0x23) && (m.unit ?: 0) in 1 until 0xfff0) touchUnit(s.key, m.unit!!, c, now, if (m.type == 0x22) "registration clear" else "registration command", msg, site)
+        else if (m.type == 0x1b && m.adj != null) { val a = c.nxdnAdj ?: LinkedHashMap<String, NxdnAdj>().also { c.nxdnAdj = it }; for (x in m.adj!!) a["${x.category}-${x.system}-${x.site}"] = x }
+        else if (m.type == 0x1a) { val x = m.cch; val own = c.nxdn; if (x != null && own != null && x.site == own.site && x.system == own.system && x.flags == 8 && x.ch1 != 0 && x.ch2 == 0) s.nxdnPlan!!.vote(x.ch1, c.hz) }
+        else if (m.type == 0x19 && m.service != null) { c.nxdnService = m.service; c.nxdn = c.nxdn?.copy(service = m.service!!) }
+    }
+    /**
+     * A traffic channel frame (RTCH, RDCH, or a Type-D RTCH2): the VCALL in its SACCH or FACCH1 names the call and says
+     * whether it is ciphered, TX_REL ends it, and its VCHs are the voice. A conventional channel (RDCH) is its own system,
+     * named by its RAN; a trunked one belongs to the system whose grant named it.
+     */
+    private fun nxdnTraffic(c: Carrier, t: NxdnTraffic, baud: Int) {
+        val now = now()
+        c.cls = if (baud == 2400) "NXDN48" else "NXDN96"; c.lastDecodeMs = now; c.frames++
+        if (c.role != "control") c.role = "voice"
+        if (t.ran >= 0) c.nxdnRan = t.ran
+        if (t.rf == 2 && t.ran >= 0) {
+            val key = "NXDN CONV RAN ${t.ran}"
+            val s = nxdnSys(key, now, "CONVENTIONAL", -1, t.ran, "CONVENTIONAL", baud)
+            s.heardHz.add(c.key); c.sys = key
+        }
+        t.scch?.let { nxdnScch(c, it, now, baud) }
+        for (m in t.msgs) {
+            val dst = m.dst
+            if (m.type == 0x01 && dst != null) {
+                nxdnLearn(c, m.src ?: 0, dst, m.group, now)
+                val call = calls.lc(c.sys, c.hz, 0, LcIn(m.group, dst, m.src ?: 0, m.emergency, (m.cipher ?: 0) != 0), now, "NXDN")
+                if (((m.voiceOpt ?: 0) and 7) == 3) calls.setCodec(call, CodecIds.IMBE)
+                calls.security(call, SecIn((m.cipher ?: 0) != 0, "VCALL", m.cipher, m.keyId))
+                if (call.sys.isNotEmpty() && c.sys.isEmpty()) c.sys = call.sys
+            } else if (m.type == 0x08 || m.type == 0x07 || m.type == 0x11) calls.terminate(c.sys, c.hz, 0, now)
+            else if (m.type == 0x05 && (m.ch ?: 0) != 0 && c.sys.isNotEmpty()) systems[c.sys]?.let { nxdnControl(c, it, m, "", now) }
+            if (m.type != 0x10) nxdnLog(c, m.name, "${if (t.rf == 2) "RDCH" else if (t.typeD) "RTCH2" else "RTCH"} · ${nxdnLine(m)}", m.hex)
+        }
+        val halves = t.halves.filterNotNull()
+        if (halves.isEmpty()) { pending = true; return }
+        val call = calls.voice(c.sys, "NXDN", c.hz, 0, 0, now)
+        // EHR: two 72-bit VCHs a half; EFR (the IMBE frame): one 144-bit VCH a half
+        val frames = ArrayList<IntArray>()
+        for (h in halves) { if (call.codec == CodecIds.IMBE) frames.add(h) else { frames.add(h.copyOfRange(0, 72)); frames.add(h.copyOfRange(72, 144)) } }
+        call.voiceMs += 20L * frames.size
+        calls.frames(call, frames)
+        pending = true
+    }
+    /** A call named on a carrier: a grant of the last moments to the same talkgroup or unit says which channel it is. */
+    private fun nxdnLearn(c: Carrier, src: Int, dst: Int, group: Boolean, now: Long) {
+        val i = nxdnPending.indexOfFirst { now - it.ms < 3_000 && it.dst == dst && it.group == group && (src == 0 || it.src == 0 || it.src == src) && (c.sys.isEmpty() || c.sys == it.sys) }
+        if (i < 0) return
+        val g = nxdnPending.removeAt(i)
+        val s = systems[g.sys] ?: return; val plan = s.nxdnPlan ?: return
+        if (c.sys.isEmpty()) c.sys = g.sys
+        if (plan.vote(g.ch, c.hz)) {
+            pending = true
+            addLog(LogRow(now, c.hz, "NXDN", "CHANNEL", "${c.cls} · channel ${g.ch} is ${"%.5f".format(java.util.Locale.US, c.hz / 1e6)} MHz, from a grant and the voice that followed it", "", true))
+        }
+    }
+    /** A Type-D SCCH message (TS 1-E 6.5.3): the site, a call's source, destination and cipher, the end of a transmission. */
+    private fun nxdnScch(c: Carrier, x: NxdnScch, now: Long, baud: Int) {
+        if (x.kind == "site" && x.siteCode >= 0) {
+            val key = "NXDN TYPE-D SITE ${x.siteCode}"
+            val s = nxdnSys(key, now, "TYPE-D", -1, x.siteCode, "TYPE-D", baud)
+            s.heardHz.add(c.key); c.sys = key
+            return
+        }
+        if (x.kind == "idle" || x.kind == "free" || x.kind == "halt") return
+        val d = c.nxdnD?.takeIf { now - it.ms < 2_000 } ?: NxdnD().also { c.nxdnD = it }
+        d.ms = now
+        if (x.info == 3 && x.src >= 0) d.src = x.src
+        if (x.info == 1 && x.cipher >= 0) { d.cipher = x.cipher; d.keyId = maxOf(0, x.keyId) }
+        if (x.kind == "busy" && x.dst >= 0) {
+            // Go to Repeater 31 is the end of a transmission (1-E 6.6.11)
+            if (x.goTo == 31) { calls.terminate(c.sys, c.hz, 0, now); c.nxdnD = null; return }
+            d.dst = x.dst; d.group = x.group
+            // INFO4 on a repeater sends units elsewhere: a grant to that repeater's channel (INFO2 names this repeater's own call)
+            val s = if (c.sys.isNotEmpty()) systems[c.sys] else null
+            if (s != null && x.info == 4 && x.goTo > 0 && !calls.onAirAt(c.sys, c.hz, 0)) {
+                val (hz, derived) = nxdnHz(s, x.goTo, now)
+                nxdnPending = ArrayList(nxdnPending.filter { now - it.ms < 3_000 })
+                if (nxdnPending.none { it.sys == s.key && it.ch == x.goTo && it.dst == x.dst }) nxdnPending.add(NxdnPending(s.key, x.goTo, 0, x.dst, x.group, now))
+                grant(s.key, GrantRow(now, now, s.key, if (x.group) "grant" else "u2u", x.dst, x.group, 0, "REPEATER ${x.goTo}", hz, 0, false, false, false, c.hz, "", x.goTo, derived), false)
+                nxdnLog(c, "INFO4", "GO TO REPEATER ${x.goTo} · ${if (x.group) "TG" else "UNIT"} ${nxdnId(x.dst, true)}", "")
+                return
+            }
+        }
+        if (d.dst >= 0 && (d.src != 0 || calls.onAirAt(c.sys, c.hz, 0))) {
+            nxdnLearn(c, d.src, d.dst, d.group, now)
+            val call = calls.lc(c.sys, c.hz, 0, LcIn(d.group, d.dst, d.src, false, d.cipher > 0), now, "NXDN")
+            if (d.cipher >= 0) calls.security(call, SecIn(d.cipher > 0, "SCCH", d.cipher, d.keyId))
+        }
+    }
+    /**
+     * NXDN sites: a Type-C control channel per site (its SITE_INFO), with its adjacent sites and the channels learned;
+     * a conventional or Type-D system's carriers make one site.
+     */
+    private fun nxdnSites(s: Sys): List<SiteRow> {
+        val plan = s.nxdnPlan; val now = now()
+        val lcns = plan?.heard?.entries?.sortedBy { it.key }?.map { Lcn(it.key, it.value, 0) } ?: emptyList()
+        val cs = carriers.values.filter { it.sys == s.key }
+        if (s.trunk == "TYPE-C") return cs.filter { it.nxdn != null }.map { c ->
+            val x = c.nxdn!!
+            val nbs = (c.nxdnAdj?.values ?: emptyList()).map { a ->
+                val r = plan?.resolve(a.ch)
+                Neighbor(if (a.system == x.system && a.category == x.category) "site ${a.site}" else "${NXDN_CATEGORY[a.category]} ${a.system} site ${a.site}", if (r != null && r.how != "guess") r.hz else 0L, "CH ${a.ch}", a.system,
+                    cs.any { o -> o.nxdn?.site == a.site && now - o.lastMs < 60_000 })
+            }
+            SiteRow("${s.key}/${x.site}", "site ${x.site}", -1, x.site, c.nxdnRan, listOf(c.hz), c.lastMs, c.levelDb, nbs, emptyList(),
+                "${c.cls} · control channel ${x.cc1}${if (x.cc2 != 0) " and ${x.cc2}" else ""} · ${x.adjacent} adjacent sites", c.callsign, listOf(c.key), lcns, -1, emptyList(), emptyList(), 0, -1, x.version)
+        }
+        if (cs.isEmpty()) return emptyList()
+        return listOf(SiteRow("${s.key}/1", if (s.trunk == "TYPE-D") "site ${s.sysId}" else "RAN ${s.sysId}", -1, s.sysId, if (s.trunk == "CONVENTIONAL") s.sysId else -1, cs.map { it.hz }.sorted(),
+            cs.maxOf { it.lastMs }, cs.maxOf { it.levelDb }, emptyList(), emptyList(), cs.first().cls, cs.firstOrNull { it.callsign.isNotEmpty() }?.callsign ?: "", cs.map { it.key }, lcns, -1, emptyList(), emptyList(), 0, -1, -1))
     }
     private fun tetraOn(c: Carrier, ch: Chan) {
         // the carrier finder can split a 25 kHz signal into pieces: the receiver is centered on all of them together
@@ -957,24 +1160,26 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         u.lastMs = now; u.carriers.add(c.key)
         if (group != null) { u.groups.add(group); u.tgCounts[group] = (u.tgCounts[group] ?: 0) + 1; tgFor(sys, group, now).members.add(id) }
         if (kind == "grant" || kind == "u2u" || kind == "datagrant") u.grants++
-        val cs = msg as? Csbk; val ts = msg as? Tsbk
-        val text = if (cs != null) Csbks.line(cs) else Tsbks.line(ts!!)
-        u.reports.add(Report(now, c.hz, kind + if (site.isNotEmpty()) " · site $site" else "", cs?.hex ?: ts!!.hex, cs?.verified ?: true, text, c.levelDb))
+        val cs = msg as? Csbk; val ts = msg as? Tsbk; val nx = msg as? NxdnUnitMsg
+        val text = if (nx != null) nx.line else if (cs != null) Csbks.line(cs) else Tsbks.line(ts!!)
+        u.reports.add(Report(now, c.hz, kind + if (site.isNotEmpty()) " · site $site" else "", nx?.hex ?: cs?.hex ?: ts!!.hex, cs?.verified ?: true, text, c.levelDb))
         if (u.reports.size > 60) u.reports.removeAt(0)
         pending = true
         return u
     }
     private fun tgFor(sys: String, tg: Int, now: Long): Tg { val key = "$sys/$tg"; return tgs.getOrPut(key) { Tg(key, sys, tg, now, now) } }
     /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
-    private fun grant(sys: String, g: GrantRow, update: Boolean) {
+    private fun grant(sys: String, g: GrantRow, update: Boolean, efr: Boolean = false) {
         if (g.kind != "datagrant") {
-            val p25 = sys.startsWith("P25")
-            val call = calls.grant(GrantIn(sys, if (p25) "P25" else "DMR", g.tg, g.group, g.src, g.hz, if (p25) (if (g.tdma) g.slot else 0) else g.slot, g.tdma, g.encrypted, g.emergency,
-                g.site, g.lpcn, g.chDerived), g.ms)
+            val p25 = sys.startsWith("P25"); val nxdn = sys.startsWith("NXDN")
+            val call = calls.grant(GrantIn(sys, if (p25) "P25" else if (nxdn) "NXDN" else "DMR", g.tg, g.group, g.src, g.hz, if (p25) (if (g.tdma) g.slot else 0) else g.slot, g.tdma, g.encrypted, g.emergency,
+                g.site, g.lpcn, g.chDerived, efr), g.ms)
             // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
             if (call != null && call.onAir && !call.muted && call.hz != 0L && rate > 0 && inSpan(call.hz)) {
                 val vc = carrierAt(call.hz.toDouble()); if (vc.role.isEmpty()) vc.role = "voice"; if (vc.sys.isEmpty()) vc.sys = sys
                 if (!chans.containsKey(vc.key)) { vc.lastAuditionMs = g.ms; open(vc, g.ms); vc.decoding = true }
+                // an NXDN voice channel is read from its first frame, at the system's symbol rate
+                val ch = chans[vc.key]; if (nxdn && ch != null && ch.nxdn == null) nxdnOn(vc, ch, systems[sys]?.nxdnBaud ?: 0)
             }
         }
         val same = grants.firstOrNull { it.sys == sys && it.tg == g.tg && it.ch == g.ch && it.group == g.group && g.ms - it.lastMs < 5_000 }
@@ -1167,13 +1372,13 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                 "TETRA" -> carriers.values.filter { it.sys == s.key && it.tetra != null }.map { c -> val t = c.tetra!!
                     SiteRow("${s.key}/${c.key}", "color code ${t.colorCode}", -1, t.colorCode, -1, listOf(c.hz), c.lastMs, c.levelDb, emptyList(), emptyList(),
                         "TS${t.timeslot} · frame ${t.frame} · multiframe ${t.multiframe}", "", listOf(c.key), emptyList(), -1, emptyList(), emptyList(), 0, -1, t.cellLoad) }
-                "NXDN" -> carriers.values.filter { it.sys == s.key && it.nxdn != null }.map { c -> val x = c.nxdn!!
-                    SiteRow("${s.key}/${x.site}", "site ${x.site}", -1, x.site, -1, listOf(c.hz), c.lastMs, c.levelDb, emptyList(), emptyList(),
-                        "${c.cls} · control channel ${x.cc1}${if (x.cc2 != 0) " and ${x.cc2}" else ""} · ${x.adjacent} adjacent sites", "", listOf(c.key), emptyList(), -1, emptyList(), emptyList(), 0, -1, x.version) }
+                "NXDN" -> nxdnSites(s)
                 else -> dmrSites(s)
             }
             for (st in siteRows) for (k in st.carriers) for (u in units.values) if (u.sys == s.key && k in u.carriers) unitSite[u.key] = st.label
             val label = when {
+                s.proto == "NXDN" && s.trunk == "CONVENTIONAL" -> "NXDN · CONVENTIONAL · RAN ${s.sysId}"
+                s.proto == "NXDN" && s.trunk == "TYPE-D" -> "NXDN · TYPE-D · SITE ${s.sysId}"
                 s.proto == "NXDN" -> "NXDN · ${s.model} SYSTEM ${s.sysId}"
                 s.proto == "TETRA" -> "TETRA · MCC ${s.wacn} · MNC ${s.sysId}"
                 s.proto == "P25" -> "WACN ${hx(s.wacn, 5)} · SYSTEM ${hx(s.sysId, 3)}"
@@ -1181,7 +1386,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                 s.trunk == "CAPACITY PLUS" -> "CAPACITY PLUS · COLOR CODE ${s.cc}"
                 else -> "COLOR CODE ${s.cc}${if (s.fid > 0) " · FID ${hx(s.fid, 2)}" else ""}"
             }
-            val lpcns = s.lpcnHz.map { (lpcn, hz) -> LpcnRow(lpcn, hz, s.lpcnVotes[lpcn]?.get(hz) ?: 0) }.sortedBy { it.lpcn }
+            val plan = s.nxdnPlan
+            val lpcns = if (plan != null) plan.heard.map { (ch, hz) -> LpcnRow(ch, hz, plan.votes[ch]?.get(hz) ?: 0) }.sortedBy { it.lpcn }
+                else s.lpcnHz.map { (lpcn, hz) -> LpcnRow(lpcn, hz, s.lpcnVotes[lpcn]?.get(hz) ?: 0) }.sortedBy { it.lpcn }
             var cwId = ""; var cwIdMs = 0L; var cwIdHz = 0L
             for (c in carriers.values) if (c.sys == s.key && c.callsignMs != 0L && c.callsignMs > cwIdMs) { cwId = c.callsign; cwIdMs = c.callsignMs; cwIdHz = c.hz }
             SystemRow(s.key, s.proto, s.color, label, s.wacn, s.sysId, s.cc, s.fid, s.net, s.model, siteRows.firstOrNull { it.callsign.isNotEmpty() }?.callsign ?: "",
@@ -1258,7 +1465,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     /** Starts the NXDN receivers on a carrier now (the synthesized channels in the tests). */
     @Synchronized fun nxdnNow(hz: Long) { val c = carrierAt(hz.toDouble()); val ch = chans[c.key]; if (ch != null && ch.nxdn == null) nxdnOn(c, ch) }
     /** The end of a recording: the samples still waiting for a whole timing block are decoded too. */
-    @Synchronized fun flush() { for (ch in chans.values) ch.rx.flush() }
+    @Synchronized fun flush() { for (ch in chans.values) { ch.rx.flush(); ch.nxdn?.forEach { it.flush() } } }
     /** A CW ID read on [hz]. */
     @Synchronized fun feedCw(hz: Long, text: String) { cwText(carrierAt(hz.toDouble()), text) }
     /** Everything held about one unit, for its detail view. */
@@ -1323,7 +1530,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     @Synchronized fun clear() {
         carriers.clear(); systems.clear(); sites.clear(); units.clear(); anchorsDirty = true; embAsm.clear(); aliases.clear(); unitAlias.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
-        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList()
+        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList()
         post(true)
     }
 

@@ -112,6 +112,8 @@ object Dispatch {
 
     /** The short system title, the way its card names it. */
     fun sysTitle(x: SystemRow): String = when {
+        x.proto == "NXDN" && x.trunk == "CONVENTIONAL" -> "NXDN RAN ${x.sysId}"
+        x.proto == "NXDN" && x.trunk == "TYPE-D" -> "TYPE-D SITE ${x.sysId}"
         x.proto == "NXDN" -> "${x.model} SYS ${x.sysId}"
         x.proto == "TETRA" -> "MCC ${x.wacn} · MNC ${x.sysId}"
         x.proto == "P25" -> "WACN ${hx(x.wacn, 5)} · SYS ${hx(x.sysId, 3)}"

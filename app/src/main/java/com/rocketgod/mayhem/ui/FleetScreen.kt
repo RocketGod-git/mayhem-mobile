@@ -614,9 +614,9 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
     val sys = s.systems.firstOrNull { it.key == c.sys }
     val playing = s.playing == c.key && audioOn; val ended = !c.onAir
     val badge = if (ended) "ENDED" else if (c.emergency) "EMERGENCY" else if (c.outside) "OTHER SYSTEM" else if (c.muted) "MUTED" else if (playing) "PLAYING" else "ON AIR"
-    val lp = if (c.lpcn >= 0) " · LPCN ${c.lpcn}" else ""
+    val lpName = if (c.proto == "NXDN") "CH" else "LPCN"; val lp = if (c.lpcn >= 0) " · $lpName ${c.lpcn}" else ""
     val ch = if (c.hz > 0) "${mhz(c.hz)} MHz${if (c.tdma) " · TDMA S${c.slot + 1}" else if (c.proto == "DMR") " · TS${c.slot + 1}" else ""}$lp"
-        else if (c.lpcn >= 0) "LPCN ${c.lpcn} · TS${c.slot + 1} · learning its frequency" else "channel not resolved"
+        else if (c.lpcn >= 0) "$lpName ${c.lpcn}${if (c.proto == "DMR") " · TS${c.slot + 1}" else ""} · learning its frequency" else "channel not resolved"
     val car = if (c.hz > 0) s.carriers.firstOrNull { abs(it.hz - c.hz) < 3_200 && it.callsign.isNotEmpty() } else null
     val note = dispatchAudioNote(c, s.codecs)
     val blink = (now / 500) % 2 == 1L
@@ -796,7 +796,12 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
             }
         }
         when (sys.proto) {
-            "NXDN" -> FlKv(listOfNotNull("SITE" to "${site.site}", if (site.time.isNotEmpty()) "" to site.time.uppercase() else null, if (site.cls > 0) "VERSION" to "${site.cls}" else null))
+            "NXDN" -> {
+                FlKv(listOfNotNull((if (sys.trunk == "CONVENTIONAL") "RAN" else "SITE") to "${site.site}", if (site.nac >= 0 && sys.trunk == "TYPE-C") "RAN" to "${site.nac}" else null,
+                    if (site.time.isNotEmpty()) "" to site.time.uppercase() else null, if (site.cls > 0) "VERSION" to "${site.cls}" else null))
+                if (site.neighbors.isNotEmpty()) FlChips("ADJACENT", site.neighbors.map { "${it.label.uppercase()} ${if (it.hz > 0) mhz(it.hz) else it.ch}" to it.heard }, col)
+                if (site.lcns.isNotEmpty()) FlChips("CHANNELS", site.lcns.map { "${if (sys.trunk == "TYPE-D") "REPEATER" else "CH"} ${it.lcn} ${mhz(it.hz)}" to false }, col)
+            }
             "TETRA" -> FlKv(listOfNotNull("COLOR CODE" to "${site.site}", if (site.time.isNotEmpty()) "" to site.time.uppercase() else null,
                 if (site.cls >= 0) "CELL LOAD" to (listOf("LOW", "MEDIUM", "HIGH", "UNKNOWN").getOrNull(site.cls) ?: "${site.cls}") else null))
             "P25" -> {
@@ -886,8 +891,9 @@ private fun GrantLine(g: GrantRow, now: Long, col: Color, pick: (String) -> Unit
     val d = rememberDims()
     val flash = max(0f, 1 - (now - g.ms) / 1200f)
     val lp = g.lpcn ?: -1
-    val ch = if (g.hz > 0) mhz(g.hz) + (if (g.tdma) " · TDMA S${g.slot + 1}" else if (lp >= 0) " · TS${g.slot + 1} · LPCN $lp" else "")
-        else g.ch + (if (lp >= 0) " · TS${g.slot + 1}" else if (g.tdma && g.slot >= 0) " · TS${g.slot + 1}" else "")
+    val nx = g.sys.startsWith("NXDN")
+    val ch = if (g.hz > 0) mhz(g.hz) + (if (g.tdma) " · TDMA S${g.slot + 1}" else if (nx) " · ${g.ch}" else if (lp >= 0) " · TS${g.slot + 1} · LPCN $lp" else "")
+        else g.ch + (if (nx) "" else if (lp >= 0) " · TS${g.slot + 1}" else if (g.tdma && g.slot >= 0) " · TS${g.slot + 1}" else "")
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(d.dp(8f))).background(Brush.horizontalGradient(listOf(col.copy(alpha = 0.06f + 0.25f * flash), Palette.panel)))
         .border(1.dp, if (g.emergency) Palette.danger else col.copy(alpha = 0.3f + 0.6f * flash), RoundedCornerShape(d.dp(8f)))
         .clickable(enabled = g.group) { pick("tg:${g.sys}/${g.tg}") }.padding(horizontal = d.dp(8f), vertical = d.dp(5f)),
@@ -938,6 +944,7 @@ private class CardSec(val title: String, val wide: Boolean = false, val body: @C
 private fun sysType(x: SystemRow, s: FleetSnap): String = when (x.proto) {
     "P25" -> if (s.carriers.any { it.sys == x.key && it.tdma } || s.calls.any { it.sys == x.key && it.tdma }) "P25 PHASE 1 AND 2" else "P25 PHASE 1"
     "DMR" -> when (x.trunk) { "CAPACITY PLUS" -> "DMR CAPACITY PLUS"; "TIER III" -> "DMR TIER III"; else -> "DMR" }
+    "NXDN" -> if (x.trunk.isNotEmpty()) "NXDN ${x.trunk}" else "NXDN"
     else -> x.proto
 }
 /** Only what has data: a field with no value is left out, never shown as a dash. */
@@ -1056,7 +1063,11 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                 StatTiles(listOfNotNull("${x.sites.size}" to "SITES", "${units.size}" to "UNITS", "${if (x.tgs > 0) x.tgs else tgs.size}" to "TALKGROUPS", "${x.grants}" to "GRANTS",
                     if (n > 0) "${Math.round(100.0 * enc / n)}%" to "ENCRYPTED" else null))
                 val ids = when (x.proto) {
-                    "NXDN" -> arrayOf<Pair<String, String?>>("CATEGORY" to x.model, "SYSTEM CODE" to "${x.sysId}")
+                    "NXDN" -> when (x.trunk) {
+                        "CONVENTIONAL" -> arrayOf<Pair<String, String?>>("RAN" to "${x.sysId}")
+                        "TYPE-D" -> arrayOf<Pair<String, String?>>("SITE CODE" to "${x.sysId}")
+                        else -> arrayOf<Pair<String, String?>>("CATEGORY" to x.model, "SYSTEM CODE" to "${x.sysId}")
+                    }
                     "TETRA" -> arrayOf<Pair<String, String?>>("MCC" to "${x.wacn}", "MNC" to "${x.sysId}", "COLOR CODE" to "${x.cc}")
                     "P25" -> arrayOf<Pair<String, String?>>("WACN" to hx(x.wacn, 5), "SYSTEM" to hx(x.sysId, 3))
                     else -> arrayOf<Pair<String, String?>>("COLOR CODE" to "${x.cc}", "FEATURE SET" to (if (x.fid >= 0) "0x${hx(x.fid, 2)}" else null), "NETWORK" to (if (x.net >= 0) "${x.model} ${x.net}" else null))
@@ -1066,7 +1077,10 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
             })
             if (x.sites.isNotEmpty() || x.lpcns.isNotEmpty()) secs.add(CardSec("SITES AND CHANNELS") {
                 for (st in x.sites) CardSite(x, st, col)
-                if (x.lpcns.isNotEmpty()) FlChips("LOGICAL CHANNELS", x.lpcns.map { "LPCN ${it.lpcn} ${mhz(it.hz)} · ${it.votes} calls" to true }, col)
+                if (x.lpcns.isNotEmpty()) {
+                    if (x.proto == "NXDN") FlChips("CHANNELS", x.lpcns.map { "${if (x.trunk == "TYPE-D") "REPEATER" else "CH"} ${it.lpcn} ${mhz(it.hz)} · ${it.votes} heard" to true }, col)
+                    else FlChips("LOGICAL CHANNELS", x.lpcns.map { "LPCN ${it.lpcn} ${mhz(it.hz)} · ${it.votes} calls" to true }, col)
+                }
             })
             if (busiest.isNotEmpty()) secs.add(CardSec("BUSIEST TALKGROUPS") { CardTags(busiest.map { (tg, c) -> Triple("TG $tg", "$c", "tg:${x.key}/$tg") }, col, acts) })
             if (placed.isNotEmpty()) secs.add(CardSec("COVERAGE") {

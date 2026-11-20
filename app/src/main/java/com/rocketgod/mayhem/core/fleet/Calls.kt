@@ -76,7 +76,7 @@ class Call(
 
 /** A grant as the control channel gave it. */
 data class GrantIn(val sys: String, val proto: String, val tg: Int, val group: Boolean, val src: Int, val hz: Long, val slot: Int, val tdma: Boolean,
-                   val encrypted: Boolean, val emergency: Boolean, val site: String, val lpcn: Int? = null, val chDerived: Boolean? = null)
+                   val encrypted: Boolean, val emergency: Boolean, val site: String, val lpcn: Int? = null, val chDerived: Boolean? = null, val efr: Boolean = false)
 /** Link control as the voice channel gave it. */
 data class LcIn(val group: Boolean, val dst: Int, val src: Int, val emergency: Boolean, val privacy: Boolean)
 /** What one source on the air said about a call's security. */
@@ -104,6 +104,9 @@ private const val ID_AFTER_MS = 15_000L
  * a call that holds the channel with silence, or frames that all fail, never keeps NOW PLAYING quiet.
  */
 fun liveMs(proto: String, tdma: Boolean): Long = if (proto == "P25" && !tdma) 600L else 360L
+/** The vocoder a call needs: IMBE for P25 Phase 1, AMBE+2 half rate for DMR, Phase 2 and NXDN (EFR, NXDN's full rate, is
+ *  the IMBE frame: [efr]). */
+fun codecFor(proto: String, tdma: Boolean, efr: Boolean = false): String = if ((proto == "P25" && !tdma) || (proto == "NXDN" && efr)) CodecIds.IMBE else CodecIds.AMBE2
 
 private fun callGrid(hz: Long): Long = Math.round(hz / 6250.0) * 6250
 /** How long the talkgroup of a call just heard keeps first claim on the audio: the reply in a conversation. */
@@ -167,7 +170,7 @@ class CallTracker(private val now: () -> Long) {
         }
         // grant updates trail a call for a moment after its terminator: they do not open it again
         if (c == null && calls.any { x -> x.kind == "call" && !x.onAir && x.end == "terminator" && now - x.endMs < TRAIL_MS && x.sys == g.sys && x.tg == g.tg && (g.hz == 0L || x.hz == 0L || callGrid(x.hz) == callGrid(g.hz)) }) return null
-        val codec = if (g.proto == "P25" && !g.tdma) CodecIds.IMBE else CodecIds.AMBE2
+        val codec = codecFor(g.proto, g.tdma, g.efr)
         if (c == null) c = create(g.sys, g.proto, g.hz, g.slot, codec, now, g.tg, g.group, g.src, g.tdma, g.emergency, g.site, g.lpcn ?: -1, g.chDerived ?: false)
         c.tg = if (g.tg != 0) g.tg else c.tg; c.group = g.group; c.sys = g.sys.ifEmpty { c.sys }; if (g.hz != 0L) { c.hz = g.hz; c.slot = g.slot }; c.tdma = g.tdma; c.codec = codec
         if (g.lpcn != null && g.lpcn >= 0) c.lpcn = g.lpcn
@@ -185,7 +188,7 @@ class CallTracker(private val now: () -> Long) {
 
     /** Voice on a channel: a P25 voice frame (180 ms of speech) or a DMR voice burst (60 ms). */
     fun voice(sys: String, proto: String, hz: Long, slot: Int, ms: Long, now: Long = this.now(), tdma: Boolean = false): Call {
-        val c = find(sys, hz, slot) ?: create(sys, proto, hz, slot, if (proto == "P25" && !tdma) CodecIds.IMBE else CodecIds.AMBE2, now, tdma = tdma)
+        val c = find(sys, hz, slot) ?: create(sys, proto, hz, slot, codecFor(proto, tdma), now, tdma = tdma)
         c.frames++; c.voiceMs += ms; c.voiceAt = now; c.lastMs = now
         if (sys.isNotEmpty() && c.sys.isEmpty()) { c.sys = sys; label(c) }
         return c
@@ -199,10 +202,10 @@ class CallTracker(private val now: () -> Long) {
             c = calls.firstOrNull { x -> x.kind == "call" && x.onAir && x.proto == proto && x.hz == 0L && x.tg == lc.dst && x.group == lc.group && (sys.isEmpty() || x.sys.isEmpty() || x.sys == sys) }
             if (c != null) { c.hz = hz; c.slot = slot }
         }
-        if (c == null) c = create(sys, proto, hz, slot, if (proto == "P25" && !tdma) CodecIds.IMBE else CodecIds.AMBE2, now, lc.dst, lc.group, tdma = tdma)
+        if (c == null) c = create(sys, proto, hz, slot, codecFor(proto, tdma), now, lc.dst, lc.group, tdma = tdma)
         c.tg = lc.dst; c.group = lc.group; addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true
         if (sys.isNotEmpty() && c.sys.isEmpty()) c.sys = sys
-        if (!tdma) security(c, SecIn(lc.privacy, if (proto == "P25") "LDU1" else "LC"))
+        if (!tdma && proto != "NXDN") security(c, SecIn(lc.privacy, if (proto == "P25") "LDU1" else "LC"))
         c.lastMs = now; c.voiceAt = max(c.voiceAt, now)
         label(c)
         return c
@@ -227,6 +230,8 @@ class CallTracker(private val now: () -> Long) {
         else if (s.from == "PI") { said.pi = true; if (!s.pi.isNullOrEmpty()) c.pi = s.pi; if (s.algId != null) c.algId = s.algId; if (s.keyId != null) c.keyId = s.keyId; if (!s.mi.isNullOrEmpty()) c.mi = s.mi }
         else if (s.from == "EMB") said.emb = if (s.enc) 1 else if (said.emb == 1) 1 else 0
         else if (s.from == "history") said.histEnc = true
+        // NXDN: the cipher type of a VCALL (SACCH or FACCH1, CRC checked) or of a Type-D INFO1 (SCCH, CRC checked)
+        else if (s.from == "VCALL" || s.from == "SCCH") { said.lc = if (s.enc) 1 else if (said.lc == 1) 1 else 0; said.from = s.from; if (s.enc) { if (s.algId != null) c.algId = s.algId; if (s.keyId != null) c.keyId = s.keyId } }
         var sec = "unknown"; var from = ""
         if (c.proto == "P25") {
             val last = if (said.syncs.isNotEmpty()) said.syncs.last() else -1
@@ -237,6 +242,10 @@ class CallTracker(private val now: () -> Long) {
             else if (said.history && c.tdma) sec = "unknown"
             else if (said.grant >= 0 || said.lc >= 0) { sec = "clear"; from = if (said.grant >= 0) "grant" else "LDU1" }
             c.protectedHint = last < 0 && (said.grant == 1 || said.lc == 1)
+        } else if (c.proto == "NXDN") {
+            // a cipher type other than 00 is encrypted (scramble, DES, AES); 00 says clear (TS 1-A 6.5.27)
+            if (said.lc == 1) { sec = "enc"; from = said.from } else if (said.lc == 0) { sec = "clear"; from = said.from }
+            c.protectedHint = false
         } else {
             if (said.lc == 1 || said.pi || said.emb == 1) { sec = "enc"; from = if (said.pi) "PI" else if (said.lc == 1) "LC" else "EMB" }
             // an EMB privacy bit of 0 does not make a call clear: Motorola's privacy leaves it 0, the LC's service options say it
@@ -249,6 +258,8 @@ class CallTracker(private val now: () -> Long) {
         if (sec == "enc") { c.held = ArrayList(); c.wait = ArrayList(); if (playing == c.key) { playing = ""; onEnd?.invoke(c) } }
         else if (sec == "clear" && was != "clear") release(c)
     }
+    /** The call's vocoder, before any of its frames were decoded (an NXDN call that turns out to be EFR). */
+    fun setCodec(c: Call, codec: String) { if (c.codec != codec && c.codecInst == null) { c.codec = codec; c.held = ArrayList() } }
     /** Security of the call on the air on a channel, if there is one. */
     fun securityAt(sys: String, hz: Long, slot: Int, s: SecIn): Call? { val c = find(sys, hz, slot); if (c != null) security(c, s); return c }
     /** A CW ID keyed on a channel: logged as its own row, and on the call that channel just carried. */
