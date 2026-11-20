@@ -2986,3 +2986,41 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .fl-tgs[hidden] { display: none; }
 .view.fleet:not(.flwide) .fl-tilegrid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 .fl-tile.all span { white-space: normal; }
+
+/* Dispatch, a wide screen's steady grid: the controls on top never move; the live bar keeps one height; the calls on
+   the air fill the space beside the map and scroll there; the tabs and what they show sit in a region as tall as the
+   waterfall under the map; a card opens over those two. Calls starting and stopping move nothing. */
+.view.fleet.flwide { --fl-wf: clamp(120px, 22vh, 230px); }
+.view.fleet.flwide > .controls { overflow: hidden; padding-right: 0; }
+.view.fleet.flwide > .visual > .scope { height: var(--fl-wf); min-height: var(--fl-wf); }
+.view.fleet.flwide .fl-acts { flex: none; gap: 6px; align-items: center; margin: 0; }
+.view.fleet.flwide .fl-acts .fl-audio { flex: 1; min-width: 0; margin: 0; }
+.view.fleet.flwide .fl-acts .fl-audio[hidden] { display: flex; visibility: hidden; }
+.view.fleet.flwide .fl-lower { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.view.fleet.flwide .fl-onair { flex: 1; min-height: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: 6px;
+  border-radius: 12px; background: color-mix(in srgb, var(--surface) 35%, transparent); }
+.view.fleet.flwide .fl-onair[hidden] { display: flex; }
+.view.fleet.flwide .fl-onair .fl-idle { margin: auto; font-size: 10px; color: var(--muted); }
+.view.fleet.flwide .fl-bottom { flex: none; height: var(--fl-wf); min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.view.fleet.flwide .fl-bottom .fl-tabs { position: static; padding: 0; margin: 0; flex: none; }
+.view.fleet.flwide .fl-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.view.fleet.flwide .fl-scroll .fl-stage { margin-top: 0; }
+.view.fleet.flwide .mt-detail.fl-over { position: absolute; inset: 0; align-self: stretch; margin: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain; z-index: 20;
+  background: var(--paper); animation: flover 0.2s ease-out; }
+@keyframes flover { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+/* The live bar: two rows and one height, playing or listening, on every layout. */
+.fl-now { flex-direction: column; align-items: stretch; justify-content: center; gap: 3px; height: 52px; box-sizing: border-box; flex-wrap: nowrap; overflow: hidden; }
+.view.fleet.flwide .fl-now { position: static; margin: 0; flex: none; }
+.fl-np-r1, .fl-np-r2 { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+.fl-np-r1 .fl-np-d { margin-left: auto; }
+.fl-np-r2 .fl-np-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fl-np-r2 .fl-vu { flex: 0 0 90px; }
+/* Dispatch names every protocol it reads in its card's subtitle: it shrinks to fit, then wraps, rather than lose its end. */
+.view.fleet .fhead { flex-wrap: wrap; row-gap: 4px; }
+.view.fleet .fhead .ftitle { order: 99; flex: 1 0 100%; padding: 0 2px; font-size: 9px; letter-spacing: 1.5px; white-space: normal; line-height: 1.2; }
+/* Two columns but not the wide grid (720 to 999 px): the live bar stays in place rather than pinning over the counters. */
+@media (min-width: 720px) { .view.fleet:not(.flwide) .fl-now { position: static; } }
+/* Every call, the live bar and every talkgroup tile carry their protocol badge. */
+.fl-tile small .fl-proto { font-size: 7px; padding: 0 4px; margin-right: 5px; vertical-align: 1px; }
+.fl-call .fl-proto, .fl-np-r1 .fl-proto { font-size: 8px; padding: 1px 5px; flex: none; }
+@media (max-width: 480px) { .view.fleet .fhead .ftitle { display: block; } }

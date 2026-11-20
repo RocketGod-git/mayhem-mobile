@@ -31,7 +31,7 @@ import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
-import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
+import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, protoLabel, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { renderJs8, js8Dial, js8SetDial, js8Speeds, js8OnDecodes, js8OnWaterfall, refreshJs8, type Js8Host } from './js8-ui.js';
@@ -4803,7 +4803,7 @@ function fleetTgTilesHtml(s: FleetSnap, now: number): string {
     const sys = s.systems.find(x => x.key === t.sys), col = flMapColor(fleetColor(t.sys));
     const when = t.live ? 'ON THE AIR' : t.lastMs ? (agoShort(now - t.lastMs) === 'now' ? 'now' : `${agoShort(now - t.lastMs)} ago`) : 'not heard yet';
     return `<div class="fl-tile ${t.followed ? 'fol' : ''} ${t.live ? 'live' : ''} ${t.emergency ? 'emerg' : ''} ${t.muted ? 'muted' : ''}" role="button" style="--sys:${col}" data-flfollow="${esc(t.key)}">`
-      + `<b>TG ${t.tg}</b><small>${esc(sys ? fleetSysTitle(sys) : t.sys)}</small>`
+      + `<b>TG ${t.tg}</b><small>${sys ? `<span class="fl-proto">${protoLabel(sys.proto)}</span>` : ''}${esc(sys ? fleetSysTitle(sys) : t.sys)}</small>`
       + `<span><i></i>${esc(when)}</span>${t.sec ? `<em class="${t.sec === 'CLEAR' ? 'ok' : 'enc'}">${esc(t.sec)}</em>` : ''}`
       + `${t.followed ? '<u>FOLLOWING</u>' : t.muted ? '<u>MUTED</u>' : ''}<button class="fl-ti" data-flsel="tg:${esc(t.key)}" title="details" aria-label="details">i</button></div>`;
   }).join('')}</div>${tiles.length ? '' : '<div class="fl-dim">talkgroups show here as the control channels grant them and their calls are heard</div>'}`;
@@ -4919,8 +4919,25 @@ function setFleetFull(on: boolean): void {
 /** A desktop-size window: the map takes the big pane where the waterfall sits (a short waterfall strip under it when
  *  that is on), and the column on the right holds everything else all the way down. */
 const FLEET_WIDE = window.matchMedia('(min-width: 1000px)');
-FLEET_WIDE.addEventListener('change', () => { if (state.app === 'fleet') { const v = q<HTMLElement>('main#view'); if (v) renderFleet(v); } });
+// crossing the breakpoint lays the screen out again through the full path, so the card keeps its tag, subtitle and frequency
+FLEET_WIDE.addEventListener('change', () => { if (state.app === 'fleet') { render('fleet'); refreshReadout(); refreshFleet(true); } });
 let flSpy: (() => void) | null = null;
+/**
+ * A wide screen's right column as a steady grid beside the map: the controls (bands, span, follow and lock, audio and
+ * the log buttons) on top and never moved; the live bar (always the same height); the calls on the air in a region
+ * that fills the space beside the map and scrolls on its own; and, as tall as the waterfall under the map, the tabs and
+ * what they show in one scroll. A card opens over the calls and the tabs. Calls starting and stopping move nothing.
+ */
+function fleetWideGrid(): void {
+  const mode = $('fl-mode'), audio = $('fl-audio'), now = $('fl-now'), air = $('fl-onair'), tabs = q<HTMLElement>('.fl-tabs'), stage = $('fl-stage'), log = $('fl-log'), det = $('fl-detail');
+  if (!tabs) return;
+  const box = (cls: string) => { const d = document.createElement('div'); d.className = cls; return d; };
+  const acts = box('ctlrow fl-acts'), lower = box('fl-lower'), bottom = box('fl-bottom'), scroll = box('fl-scroll');
+  acts.append(audio, ...[...tabs.children].filter(c => !c.classList.contains('seg')));
+  det.classList.add('fl-over');
+  scroll.append(stage, log); bottom.append(tabs, scroll); lower.append(air, bottom, det);
+  mode.after(acts); acts.after(now); now.after(lower);
+}
 function renderFleet(view: HTMLElement): void {
   const hack = !radio || radio.kind !== 'rtlsdr', wide = FLEET_WIDE.matches;
   if (wide) { if (fleetUi.view === 'map') fleetUi.view = 'tgs'; fleetUi.full = false; }
@@ -4943,6 +4960,7 @@ function renderFleet(view: HTMLElement): void {
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
       <div class="note about">Trunked radio systems and their calls, receive only, for P25 Phase 1 (C4FM and CQPSK simulcast), P25 Phase 2, DMR, NXDN and TETRA. Every carrier in the span is found and the live ones decoded at once, and systems are named by what they send (WACN, system, RFSS, site, NAC; the DMR color code and network; the NXDN system and site; the TETRA network and cell; the CW ID callsign). Grants resolve to MHz through the channel tables on the air, and Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, and its voice channel is followed when it is inside the span, with P25 voice frames and terminators and DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call. The channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, the DMR privacy bit and header, the NXDN cipher type and the TETRA encryption flags; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, follow and priority are per talkgroup; a tap on a talkgroup tile follows it, so only it is heard, and ALL hears every talkgroup again. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. NXDN48 and NXDN96 are read on control, traffic and conventional channels. A Type-C control channel names its system and site, its grants are followed to their traffic channels, and each call's VCALL names the talkgroup or unit and says whether it is ciphered (scramble, DES or AES are encrypted and never play); conventional channels are their own systems by RAN, and Type-D repeaters by their site. NXDN carries no channel plan on the air, so channel numbers become frequencies as they are heard, from the control channel's own number and each grant matched to the voice that follows it. Clear NXDN voice plays through the same AMBE+2 vocoder as DMR, and the 9600 bps full-rate mode through the P25 one. TETRA (EN 300 392-2) is read from the cell's synchronization and broadcast bursts on, giving the network (MCC, MNC), the cell (location area, color code, main carrier) and what it offers, call set-up and transmission grants (group, unit, the carrier and timeslot of the call), releases, registrations and SDS text and status messages. TETRA speech is followed onto its timeslot and carrier and played through the app's own TETRA ACELP decoder, written from EN 300 395-2 and checked against the standard's test sequences. A TETRA call set up end-to-end encrypted is marked encrypted and never plays; a cell that encrypts its air interface (TEA) says so on its card, and its traffic is marked encrypted, not decoded. Tap anything for all it carried.</div>
     </section>`;
+  if (wide) fleetWideGrid();
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-flband]', view).forEach(b => b.onclick = () => fleetSetBand(b.dataset.flband!));
   qa<HTMLButtonElement>('[data-flspan]', view).forEach(b => b.onclick = () => fleetSetSpan(Number(b.dataset.flspan)));
@@ -4952,7 +4970,7 @@ function renderFleet(view: HTMLElement): void {
     // On a phone every section is on one page: the tab jumps to its section.
     if (!FLEET_WIDE.matches) setTimeout(() => { const t = fleetUi.view === 'log' ? q('#fl-log') : q(`[data-flsec="${fleetUi.view}"]`), sc = $('view'); const r = t?.getBoundingClientRect(); if (t && r) sc.scrollTo({ top: sc.scrollTop + r.top - sc.getBoundingClientRect().top - 56 }); }, 60);
     // the wide column scrolls as one: what the tab shows comes into view under the tabs
-    else { const col = q<HTMLElement>('.view.fleet > .controls'), tb = q<HTMLElement>('.fl-tabs'); if (col && tb) col.scrollTo({ top: Math.max(0, tb.getBoundingClientRect().top - col.getBoundingClientRect().top + col.scrollTop - 64), behavior: 'smooth' }); }
+    else { const sc = q<HTMLElement>('.fl-scroll'); if (sc) sc.scrollTop = 0; }
   });
   // The chip of the section on screen lights up as the page scrolls.
   const sc = $('view');
@@ -5049,7 +5067,7 @@ function fleetPick(sel: FleetSel): void {
   if (fleetUi.sel?.kind === 'unit') worker?.postMessage({ type: 'fleet', cmd: 'unit', key: fleetUi.sel.key });
   refreshFleet(true);
   // the wide column scrolls as one: a card opens under the tabs and comes into view there
-  if (fleetUi.sel && FLEET_WIDE.matches) { const col = q<HTMLElement>('.view.fleet > .controls'), tb = q<HTMLElement>('.fl-tabs'); if (col && tb) col.scrollTo({ top: Math.max(0, tb.getBoundingClientRect().top - col.getBoundingClientRect().top + col.scrollTop - 64), behavior: 'smooth' }); }
+  if (fleetUi.sel && FLEET_WIDE.matches) { const det = q<HTMLElement>('#fl-detail'); if (det) det.scrollTop = 0; }
 }
 const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span class="tr-pill ${tone}">${esc(text)}</span>`;
 function fleetHead(s: FleetSnap | null, now: number): string {
@@ -5186,7 +5204,7 @@ function dispatchOnAirCard(c: FleetCall, s: FleetSnap, now: number): string {
   const lockB = !fleetUi.lock && c.sys ? `<button class="chip fl-lockb" data-fllock="${esc(c.sys)}|" title="lock on this system">LOCK</button>` : '';
   const vu = playing ? `<div class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><small>AUDIO</small><span><i></i></span></div>` : '';
   return `<div class="fl-air ${fresh ? 'fresh' : ''} ${blink ? 'blink' : ''} ${c.emergency ? 'emerg' : ''} ${c.encrypted ? 'enc' : ''} ${c.muted ? 'muted' : ''} ${c.outside ? 'out' : ''} ${c.prio ? 'prio' : ''} ${playing ? 'playing' : ''} ${ended ? 'ended' : ''}" data-flkey="${esc(c.key)}" style="--sys:${col}">`
-    + `<div class="fl-air-h"><span class="fl-onbadge"><i></i>${badge}</span><span class="fl-proto">${c.proto}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.emergency && !ended ? '' : c.emergency ? flPill(`EMERGENCY · ${fleetAgoText(now - c.endMs)}`, 'red') : ''}${dispatchSec(c)}<span class="fl-air-t">${flDur((ended ? c.endMs : now) - c.startMs)}</span></div>`
+    + `<div class="fl-air-h"><span class="fl-onbadge"><i></i>${badge}</span><span class="fl-proto">${protoLabel(c.proto, c.tdma)}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.emergency && !ended ? '' : c.emergency ? flPill(`EMERGENCY · ${fleetAgoText(now - c.endMs)}`, 'red') : ''}${dispatchSec(c)}<span class="fl-air-t">${flDur((ended ? c.endMs : now) - c.startMs)}</span></div>`
     + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>${c.alias ? esc(c.alias.toUpperCase()) : 'UNIT'}</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : c.alias ? `<small>TALKER</small><b>${esc(c.alias)}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}${lockB}</div>`
     + dispatchPosChip(c, true) + dispatchSecLine(c) + vu
     + `<div class="fl-meter" title="signal ${c.levelDb.toFixed(0)} dB">${meter}<small>${c.levelDb > 0 ? `${c.levelDb.toFixed(0)} dB` : ''}</small></div>`
@@ -5197,7 +5215,7 @@ function dispatchCallRow(c: FleetCall, now: number): string {
   const col = c.sys ? fleetColor(c.sys) : 'var(--muted)', dur = (c.onAir ? now : c.endMs) - c.startMs;
   const sel = c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`;
   const enc = c.encrypted ? secText(c).replace(/^ENCRYPTED/, 'ENC') : '';
-  return `<div class="fl-call ${c.onAir ? 'live' : ''} ${c.emergency ? 'emerg' : ''} ${c.outside ? 'out' : ''}" style="--sys:${col}"><i></i><span class="fl-gt">${fleetClock(c.startMs)}</span><b class="fl-tg" data-flsel="${sel}">${esc(dispatchWho(c))}</b>`
+  return `<div class="fl-call ${c.onAir ? 'live' : ''} ${c.emergency ? 'emerg' : ''} ${c.outside ? 'out' : ''}" style="--sys:${col}"><i></i><span class="fl-gt">${fleetClock(c.startMs)}</span><span class="fl-proto">${protoLabel(c.proto, c.tdma)}</span><b class="fl-tg" data-flsel="${sel}">${esc(dispatchWho(c))}</b>`
     + `<span class="fl-src">${c.src ? `← ${c.src}` : ''}${c.alias ? ` ${esc(c.alias)}` : ''}</span><span class="fl-cd">${flDur(dur)}${c.voiceMs ? ` · voice ${(c.voiceMs / 1000).toFixed(1)} s` : ''}</span>`
     + `<span class="fl-gf">${c.onAir ? flPill('ON AIR', 'ok') : ''}${c.emergency ? flPill('EMERG', 'red') : ''}${enc ? flPill(enc, 'acc') : ''}${c.cwId ? flIdChip(c.cwId, now - c.endMs) : ''}${c.audioMs ? `<button class="chip" data-flplay="${esc(c.key)}" title="replay">▶</button>` : ''}</span>${dispatchPosChip(c, false)}</div>`;
 }
@@ -5446,9 +5464,11 @@ function refreshFleet(force = false): void {
   const stack = all.filter(c => !c.encrypted && !quiet.includes(c)), locked = all.filter(c => c.encrypted && c.onAir);
   const others = s ? s.calls.filter(c => c.onAir && c.kind === 'call' && c.outside).length : 0;
   const onMap = view === 'map' && !FLEET_WIDE.matches, max = onMap ? 2 : 4;
-  air.hidden = (!stack.length && !others && !locked.length && !quiet.length) || view === 'log';
+  const airEmpty = !stack.length && !others && !locked.length && !quiet.length;
+  air.hidden = FLEET_WIDE.matches ? false : airEmpty || view === 'log';
+  if (FLEET_WIDE.matches && airEmpty && !air.querySelector('.fl-idle')) air.innerHTML = '<div class="fl-idle">no calls on the air</div>';
   air.classList.toggle('onmap', onMap);
-  if (!air.hidden && s) flipRender(air, stack.slice(0, max).map(c => dispatchOnAirCard(c, s, now)).join('') + (stack.length > max ? `<div class="fl-dim">${stack.length - max} more on the air</div>` : '') + (locked.length ? `<div class="fl-encrow"><small>ENCRYPTED ON THE AIR</small>${locked.map(c => `<span data-flsel="${c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`}">${esc(dispatchWho(c))}<i>${esc(secText(c).replace(/^ENCRYPTED( · )?/, '') || 'encrypted')}</i></span>`).join('')}</div>` : '')
+  if (!air.hidden && s && !airEmpty) flipRender(air, stack.slice(0, max).map(c => dispatchOnAirCard(c, s, now)).join('') + (stack.length > max ? `<div class="fl-dim">${stack.length - max} more on the air</div>` : '') + (locked.length ? `<div class="fl-encrow"><small>ENCRYPTED ON THE AIR</small>${locked.map(c => `<span data-flsel="${c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`}">${esc(dispatchWho(c))}<i>${esc(secText(c).replace(/^ENCRYPTED( · )?/, '') || 'encrypted')}</i></span>`).join('')}</div>` : '')
     + (quiet.length ? `<div class="fl-dim">${quiet.length} more with no talkgroup or audio yet (${[...new Set(quiet.map(c => c.proto))].join(', ')})</div>` : '')
     + (others ? `<div class="fl-dim">${others} on other systems, not heard while locked</div>` : ''));
   const hold = fleetUi.prefs.hold;
@@ -5496,16 +5516,20 @@ function refreshFleet(force = false): void {
 /** The now-playing bar: what is heard right now, with its level; tapping it opens the talkgroup. */
 function dispatchNowBar(el: HTMLElement, s: FleetSnap | null, now: number): void {
   const c = s && fleetUi.audioOn ? nowPlaying(s.calls, s.playing) : null;
-  el.hidden = !s || !fleetUi.audioOn || !s.codecs.length;
-  if (el.hidden) return;
+  // always there and always the same height, playing or not, so nothing under it moves when calls start and stop
+  el.hidden = false;
   el.classList.toggle('on', !!c); el.classList.toggle('emerg', !!c?.emergency);
-  if (!c) { el.innerHTML = `<span class="fl-np-l">LISTENING</span><span class="fl-np-t">nothing clear on the air${fleetUi.lock ? ` · locked on ${esc(fleetUi.lock.label)}` : ''}</span>`; return; }
+  if (!c) {
+    const what = !fleetUi.audioOn ? 'audio is off · the calls show below' : `nothing clear on the air · ${listenText(fleetUi.prefs.hold, fleetUi.lock)}`;
+    el.innerHTML = `<div class="fl-np-r1"><span class="fl-np-l">LISTENING</span></div><div class="fl-np-r2"><span class="fl-np-t">${esc(what)}</span></div>`;
+    return;
+  }
   const sys = s!.systems.find(x => x.key === c.sys), sel = c.group ? `tg:${esc(dispatchKey(c))}` : `unit:${esc(c.sys)}/${c.tg}`, col = c.sys ? fleetColor(c.sys) : 'var(--accent)';
   const where = c.pos ? ` · ${posText(c.pos, dispatchMe())}` : '';
   el.style.setProperty('--sys', col);
-  el.innerHTML = `<span class="fl-np-l"><i></i>NOW PLAYING</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.src ? `<span class="fl-np-u">← ${c.src}</span>` : ''}`
-    + `<span class="fl-np-t">${esc(sys ? fleetSysTitle(sys) : c.sys || c.proto)}${c.site ? ` · SITE ${esc(c.site)}` : ''} · ${fleetMhz(c.hz)} MHz${esc(where)}</span>`
-    + `<span class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><span><i></i></span></span><span class="fl-np-d">${flDur(now - c.startMs)}</span>`;
+  el.innerHTML = `<div class="fl-np-r1"><span class="fl-np-l"><i></i>NOW PLAYING</span><span class="fl-proto">${protoLabel(c.proto, c.tdma)}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.src ? `<span class="fl-np-u">← ${c.src}</span>` : ''}<span class="fl-np-d">${flDur(now - c.startMs)}</span></div>`
+    + `<div class="fl-np-r2"><span class="fl-np-t">${esc(sys ? fleetSysTitle(sys) : c.sys || c.proto)}${c.site ? ` · SITE ${esc(c.site)}` : ''} · ${fleetMhz(c.hz)} MHz${esc(where)}</span>`
+    + `<span class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><span><i></i></span></span></div>`;
 }
 /** The audio level of the call heard, 0 to 100, from the worker's level reports. */
 const dispatchVuPct = (key: string) => fleetUi.vu.key === key ? Math.max(0, Math.min(100, (fleetUi.vu.db + 60) * 100 / 54)) : 0;
@@ -9534,7 +9558,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR TRUNKING'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

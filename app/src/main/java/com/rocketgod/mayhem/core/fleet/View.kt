@@ -193,4 +193,6 @@ object DispatchView {
         if (hold.isNotEmpty()) return "only TG ${hold.substring(hold.lastIndexOf('/') + 1)} is heard${if (lock != null) ", locked on ${lock.label}" else ""}"
         return if (lock != null) "every talkgroup on ${lock.label}, first to talk is heard" else "every talkgroup, first to talk is heard"
     }
+    /** A call's or system's protocol as its badge says it: P25, P25 P2 (a Phase 2 TDMA call), DMR, NXDN, TETRA, TYPE II. */
+    fun protoLabel(proto: String, tdma: Boolean = false): String = if (proto == "SMARTNET") "TYPE II" else if (proto == "P25" && tdma) "P25 P2" else proto
 }

@@ -194,3 +194,6 @@ export function listenText(hold: string, lock: { label: string } | null): string
   if (tg) return `only ${tg} is heard${lock ? `, locked on ${lock.label}` : ''}`;
   return lock ? `every talkgroup on ${lock.label}, first to talk is heard` : 'every talkgroup, first to talk is heard';
 }
+
+/** A call's or system's protocol as its badge says it: P25, P25 P2 (a Phase 2 TDMA call), DMR, NXDN, TETRA, TYPE II. */
+export const protoLabel = (proto: string, tdma = false) => proto === 'SMARTNET' ? 'TYPE II' : proto === 'P25' && tdma ? 'P25 P2' : proto;
