@@ -64,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.Apps
+import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.trains.EotUnit
 import com.rocketgod.mayhem.core.trains.HotHeard
 import com.rocketgod.mayhem.core.trains.PtcStation
@@ -162,10 +163,10 @@ fun TrainsScreen(accent: Color) {
     val burst = (stations.filter { now - it.lastMs < 4000 }.mapNotNull { it.snr.lastOrNull() } + units.filter { now - it.lastMs < 4000 }.mapNotNull { it.snr.lastOrNull() })
         .maxOrNull()?.toFloat()
     // the waterfall at 8 MHz shows little of a 20 ms burst: a phone leaves it out for the cards (the band strip shows the
-    // bursts), a bigger screen keeps it, and the WATERFALL toggle overrides either
-    val wfChoice by Apps.trainsWaterfall.collectAsState()
-    val waterfall = wfChoice ?: (d.cls != ScreenClass.COMPACT)
-    PacketFrame(accent, Apps.trainsLog, tag = "TRAINS", title = "EOT · PTC", roomy = true, listWeight = if (waterfall) 2.5f else 6f, burstDb = burst, waterfall = waterfall, controls = {
+    // bursts), a bigger screen keeps it, and the waterfall's own show / hide overrides either
+    val waterfall = waterfallOn(MayhemApp.TRAINS, phoneDefault = false)
+    PacketFrame(accent, Apps.trainsLog, tag = "TRAINS", title = "EOT · PTC", roomy = true, listWeight = if (waterfall) 2.5f else 6f, burstDb = burst, waterfall = waterfall,
+        onWaterfall = { Apps.setWaterfall(MayhemApp.TRAINS, !waterfall) }, controls = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             SegBar(listOf("EOT · HOT", "PTC 220", "BOTH"), if (auto) 2 else if (band == TrainsProcessor.Band.EOT) 0 else 1, accent, Modifier.weight(1f)) {
                 when (it) {
@@ -177,7 +178,6 @@ fun TrainsScreen(accent: Color) {
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             ChannelLamps(band, activity, now, accent, spanLo, spanHi, Modifier.weight(1f))
-            ToggleBox("WATERFALL", waterfall, accent) { Apps.setTrainsWaterfall(!waterfall) }
         }
     }, list = {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {

@@ -5,14 +5,18 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -27,6 +31,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -39,9 +44,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -464,6 +471,14 @@ private object SpecWants {
  * Waterfall (top), live spectrum (bottom), frequency axis and, when [onSlide] is given, a span bar: the twin of the
  * web app's scope.
  *
+ * The waterfall standard, the same in every app and on web (scope.ts) and the Mac and iPad (Waterfall.swift). Every
+ * control that belongs to the waterfall is drawn here, never by an app:
+ * - top left: the show / hide button ([onHide]), for the apps whose waterfall can be put away. While it is put away
+ *   the app shows [WaterfallCorner]'s slim SHOW WATERFALL strip where the waterfall was.
+ * - top right: the zoom row, ⌖ (only while the channel is off the span), − span or zoom +.
+ * - left edge: the time ruler, ticks and -Ns / -Nm labels down the history.
+ * - bottom: the live spectrum with its dB grid, then the frequency axis, then the span bar when the span can slide.
+ *
  * - One column per screen pixel and, unless [rows] asks for more, one row per pixel of height (up to 600), coloured
  *   by the chosen palette, with a seconds ruler down the side. When the radio moves ([centerHz0]) the history slides
  *   with it so what was painted stays under its true frequency; history slid or panned out of view is remembered and
@@ -512,6 +527,8 @@ fun WaterfallView(
     boxes: List<WfMark> = emptyList(),
     /** A tap on a box: its id (instead of [onTapFrac]). */
     onBox: ((Int) -> Unit)? = null,
+    /** Puts the waterfall away: the show / hide button on the top left corner. Null: no button. */
+    onHide: (() -> Unit)? = null,
     onTapFrac: ((Float) -> Unit)? = null,
 ) {
     val engineLo by SdrEngine.freqHz.collectAsState()
@@ -757,7 +774,8 @@ fun WaterfallView(
                     var prev = -1L
                     for (y in 0 until n) {
                         val mark = (now - st[(hd + y) % r]) / 1000L / ivl
-                        if (prev >= 0 && mark != prev && mark > 0 && y * rowH < wfH - textPx) {
+                        // no label under the show / hide button
+                        if (prev >= 0 && mark != prev && mark > 0 && y * rowH < wfH - textPx && (onHide == null || y * rowH >= 38 * dp)) {
                             val yy = y * rowH
                             can.drawRect(0f, yy, 6 * dp, yy + max(1f, dp / 2), rulerPaint)
                             val secs = mark * ivl
@@ -912,6 +930,25 @@ fun WaterfallView(
             Text(if (zoom > 1.001f) "${zoom.roundToInt()}×" else if (spanHz > 0) fmtSpan(spanHz) else "1×", color = Palette.muted, fontFamily = Mono, fontSize = 10.sp)
             ZoomBtn("+", enabled = canIn) { if (zoom <= 1.001f && onSpanStep?.invoke(1) == true) return@ZoomBtn; val c = channel; setView(zoom * 2, c?.let { (it.first + it.second) / 2 }) }
         }
+        if (onHide != null) WaterfallCorner(true, Modifier.align(Alignment.TopStart).padding(6.dp), onHide)
+    }
+}
+
+/** The waterfall's own show / hide: the small button on its top left corner while shown ([WaterfallView] draws it),
+ *  the slim SHOW WATERFALL strip where it was while it is put away. */
+@Composable
+fun WaterfallCorner(shown: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val d = rememberDims()
+    val haptic = LocalHapticFeedback.current
+    val shape = RoundedCornerShape(d.dp(8f))
+    if (shown) Box(modifier.clip(shape).background(Palette.paper.copy(alpha = 0.72f)).border(1.dp, Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(d.dp(6f))) {
+        Icon(WaterfallIcon, contentDescription = "Hide the waterfall", tint = Palette.muted, modifier = Modifier.size(d.dp(14f)))
+    } else Row(modifier.clip(shape).border(1.dp, Palette.line, shape)
+        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(horizontal = d.dp(10f), vertical = d.dp(5f)),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+        Icon(WaterfallIcon, contentDescription = "Show the waterfall", tint = Palette.muted, modifier = Modifier.size(d.dp(14f)))
+        Text("SHOW WATERFALL", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
     }
 }
 

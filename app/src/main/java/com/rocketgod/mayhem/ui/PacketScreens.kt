@@ -163,13 +163,14 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                 if (pane == null || waterfall) Box((if (pane != null) Modifier.fillMaxWidth().height(d.dp(110f)) else Modifier.fillMaxWidth().weight(1f)).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                         rows = if (d.wide) 160 else 90, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
-                        onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
-                    if (onWaterfall != null) WaterfallCorner(true, Modifier.align(Alignment.TopStart).padding(d.dp(6f)), onWaterfall)
+                        onPreviewFrac = if (tunable) onPreview else null, onHide = onWaterfall, onTapFrac = if (tunable) onTune else null)
                 }
+                // put away under a wide pane: the strip sits where the waterfall was
+                else if (onWaterfall != null) WaterfallCorner(false, Modifier.fillMaxWidth(), onWaterfall)
             }
         }
     ) {
-        if (!waterfall && onWaterfall != null) WaterfallCorner(false, Modifier.fillMaxWidth(), onWaterfall)
+        if (!waterfall && onWaterfall != null && !(d.wide && widePane != null)) WaterfallCorner(false, Modifier.fillMaxWidth(), onWaterfall)
         Column(Modifier.fillMaxWidth().padding(top = d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { controls() }
         if (body != null) { body(); return@AdaptivePane }
         // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
@@ -630,19 +631,3 @@ private fun ChannelTiles(accent: Color, channels: List<PagerEngine.Chan>, status
 }
 
 
-/** The waterfall's own show/hide: a small button on its corner while shown, a slim strip where it was while hidden. */
-@Composable
-internal fun WaterfallCorner(shown: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    val d = rememberDims()
-    val haptic = LocalHapticFeedback.current
-    val shape = RoundedCornerShape(d.dp(8f))
-    if (shown) Box(modifier.clip(shape).background(Palette.paper.copy(alpha = 0.72f)).border(1.dp, Palette.line, shape)
-        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(d.dp(6f))) {
-        Icon(WaterfallIcon, contentDescription = "Hide the waterfall", tint = Palette.muted, modifier = Modifier.size(d.dp(14f)))
-    } else Row(modifier.clip(shape).border(1.dp, Palette.line, shape)
-        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onClick() }.padding(horizontal = d.dp(10f), vertical = d.dp(5f)),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-        Icon(WaterfallIcon, contentDescription = null, tint = Palette.muted, modifier = Modifier.size(d.dp(14f)))
-        Text("SHOW WATERFALL", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
-    }
-}

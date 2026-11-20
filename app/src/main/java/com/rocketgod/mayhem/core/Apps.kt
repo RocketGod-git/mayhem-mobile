@@ -176,11 +176,7 @@ object Apps {
         _trainsBand.value = b
         if (playing() == MayhemApp.TRAINS) startTrains()
     }
-    /** Whether Trains shows the waterfall, once chosen; null: by screen size (a phone leaves it out for the cards). */
-    private val _trainsWaterfall = MutableStateFlow<Boolean?>(null)
-    val trainsWaterfall: StateFlow<Boolean?> = _trainsWaterfall.asStateFlow()
-    fun setTrainsWaterfall(on: Boolean) { _trainsWaterfall.value = on }
-    /** The apps whose waterfall can be put away (BLE, ADS-B, Meters, LoRa, ACARS): the choice, once made. */
+    /** The apps whose waterfall can be put away (the button on the waterfall's corner): the choice, once made. */
     private val _waterfalls = MutableStateFlow<Map<MayhemApp, Boolean>>(emptyMap())
     val waterfalls: StateFlow<Map<MayhemApp, Boolean>> = _waterfalls.asStateFlow()
     fun setWaterfall(app: MayhemApp, on: Boolean) { _waterfalls.value = _waterfalls.value + (app to on) }

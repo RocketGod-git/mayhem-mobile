@@ -1382,8 +1382,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .mt-fields.tr-fields { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .tr-next b.muted { color: var(--muted); }
 .visual.nowf #scope { display: none; }
-.ib.wf-tog.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
-.ib.wf-tog:not(.on) { color: var(--muted); }
 /* with its waterfall put away on a wide screen, the readout spans the top and the rest goes under it */
 @media (min-width: 720px) { main#view:has(> .visual.nowf) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); } }
 
@@ -1893,10 +1891,11 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* The waterfall's show/hide: a small button on its top-left corner, or a slim strip where it was while hidden. */
 #scope { position: relative; }
-.wf-tog.on-wf { position: absolute; top: 6px; left: 6px; z-index: 3; width: 26px; height: 26px; padding: 5px; border-radius: 8px; background: color-mix(in srgb, var(--paper) 72%, transparent); border: 1px solid var(--line); }
-.wf-tog.on-wf svg { width: 14px; height: 14px; color: var(--muted); }
-.wf-tog.wf-strip { display: flex; align-items: center; gap: 8px; width: 100%; height: auto; padding: 5px 10px; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
-.wf-tog.wf-strip svg { width: 14px; height: 14px; }
+/* the waterfall's show / hide (the scope's own, top left corner) and the strip that brings it back */
+.scope .wfhide { position: absolute; top: 6px; left: 6px; z-index: 3; width: 26px; height: 26px; padding: 5px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: color-mix(in srgb, var(--paper) 72%, transparent); border: 1px solid var(--line); }
+.scope .wfhide svg { width: 14px; height: 14px; fill: currentColor; }
+.wf-strip { display: flex; align-items: center; gap: 8px; width: 100%; height: auto; padding: 5px 10px; margin-top: 6px; background: var(--surface); cursor: pointer; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font: inherit; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+.wf-strip svg { width: 14px; height: 14px; fill: currentColor; }
 
 /* Sondes: balloons others hear (SondeHub) before ours does, and the launch sites near you. */
 .mt-card.sd-air { border-style: dashed; }

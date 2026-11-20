@@ -161,6 +161,7 @@ fun SondesScreen(accent: Color) {
     // sondes transmit a frame a second, narrow and steady: a phone gives the waterfall's room to the cards
     val wf = waterfallOn(MayhemApp.SONDES, phoneDefault = false)
     PacketFrame(accent, Apps.sondesLog, tag = "BALLOONS", title = "WEATHER BALLOONS · RADIOSONDES", tunable = false, emptyKey = "sondes", waterfall = wf,
+        onWaterfall = { Apps.setWaterfall(MayhemApp.SONDES, !wf) },
         lamp = {
             if (live.isNotEmpty()) Lamp("${live.size} SONDE${if (live.size == 1) "" else "S"}", Palette.ok)
             else Lamp("LISTENING", Palette.accent2, blink = true)
@@ -181,7 +182,6 @@ fun SondesScreen(accent: Color) {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f), bottom = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
                 verticalAlignment = Alignment.CenterVertically) {
                 switcher(true, Modifier.weight(1f).fillMaxHeight())
-                WaterfallBox(wf, accent, Modifier.fillMaxHeight()) { Apps.setWaterfall(MayhemApp.SONDES, !wf) }
                 IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
                 // an icon, not a word: on a phone the word squeezed the tabs
                 IconBox(if (held != null) PlayIcon else PauseIcon, if (held != null) "Resume" else "Pause", Modifier.fillMaxHeight()) {

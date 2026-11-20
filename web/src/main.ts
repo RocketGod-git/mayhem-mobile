@@ -8,7 +8,7 @@ import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
 import { SKINS, applySkin, currentSkin, loadSkin } from './theme.js';
 import { glyph } from './glyphs.js';
-import { Scope, centredLabels, rangeLabels, rowToSpec } from './scope.js';
+import { Scope, WF_ICON, centredLabels, rangeLabels, rowToSpec } from './scope.js';
 import { btleChannelFreq } from './dsp/btle.js';
 import { BleTracker, KIND_LABEL, parseAdv, type BleDevice } from './ble.js';
 import { AcarsPlanes, labelMeaning, normReg, parseAcarsLine, type AcarsMsg } from './acars-planes.js';
@@ -3954,7 +3954,7 @@ function renderBle(view: HTMLElement): void {
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
       <div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>
       <div id="ble-alert" class="ble-warn big" hidden></div>
-      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-bleview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('btle')}${pauseClearHtml('btle')}</div>
+      <div class="ctlrow">${segHtml(['cards', 'log'].map(v => `<button data-bleview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('btle')}</div>
       <div id="ble-stage" class="mt-stage"><div id="ble-cards" class="mt-cards"></div><div id="ble-detail" class="mt-detail" hidden></div></div>
       <div id="ble-log">${logHtml('btle', 'listening…')}</div>
       <div class="note about">One card per device, by its address: the maker from its manufacturer ID, the type from what it advertises (Find My, Tile, SmartTag, Find Hub, iBeacon, Eddystone, Fast Pair, AirPods, phones, watches). A tracker that stays near you for 20 minutes, or is still there after you move 500 m (with location allowed), is flagged. Phones and tags change their random address every 15 minutes or so, so one phone can show up as several cards over time.</div>
@@ -4140,7 +4140,7 @@ function renderAcars(view: HTMLElement, id: AcarsApp): void {
     <section class="controls">${why ? `<div class="note warn">${esc(radio!.label)} cannot receive this: ${esc(why)}. Nothing will decode here. A HackRF covers 1 MHz to 6 GHz.</div>` : ''}
       <div class="ctlrow">${segHtml([['acars', 'ACARS 131'], ['vdl2', 'VDL2 136.975']].map(([k, t]) => `<button data-acband="${k}" class="${k === id ? 'on' : ''}">${t}</button>`))}</div>
       ${vdl ? '' : presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]])}
-      <div class="ctlrow">${segHtml(['cards', 'map', 'stats', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${wfHtml(id)}${pauseClearHtml(id)}</div>
+      <div class="ctlrow">${segHtml(['cards', 'map', 'stats', 'log'].map(v => `<button data-acview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml(id)}</div>
       <div id="ac-stage" class="mt-stage"><div id="ac-cards" class="mt-cards"></div><div id="ac-map" class="panel map"></div><div id="ac-nopos" class="mt-nopos">no positions yet</div><div id="ac-unplaced" class="ac-unplaced"></div><div id="ac-stats" class="ac-stats"></div><div id="ac-detail" class="mt-detail" hidden></div></div>
       <div id="ac-log">${logHtml(id, 'listening…')}</div>
       <div class="note about">${vdl
@@ -4275,7 +4275,7 @@ function renderMeters(view: HTMLElement): void {
     <section class="${visCls('ert')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="mt-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(['cards', 'map', 'log'].map(v => `<button data-mtview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('ert')}<button id="mt-full" class="ib" title="full screen" aria-label="full screen">${meters.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('ert')}</div>
+      <div class="ctlrow">${segHtml(['cards', 'map', 'log'].map(v => `<button data-mtview="${v}">${v.toUpperCase()}</button>`))}<button id="mt-full" class="ib" title="full screen" aria-label="full screen">${meters.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('ert')}</div>
       <div id="mt-stage" class="mt-stage"><div id="mt-cards" class="mt-cards"></div><div id="mt-map" class="panel map"></div><div id="mt-nopos" class="mt-nopos">no positions yet</div><div id="mt-detail" class="mt-detail" hidden></div></div>
       <div id="mt-log">${logHtml('ert', 'watching the band for meters…')}</div>
       ${presetHtml('CENTER', [['904.0', 904_000_000], ['911.6', 911_600_000], ['916.0', 916_000_000], ['920.0', 920_000_000], ['925.0', 925_000_000]])}
@@ -4476,7 +4476,10 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
 const WF_PHONE: Partial<Record<AppId, boolean>> = { hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, atsc: false, ert: true, lora: true, acars: true, vdl2: true };
-const WF_SVG = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
+const WF_SVG = WF_ICON;
+/** The apps whose waterfall can be put away. The button is the scope's own (Scope.setHide, top left corner), wired
+ *  for these apps in wireCommon, so no screen draws one of its own. */
+const WF_HIDE = new Set<AppId>(['adsb', 'uat', 'btle', 'acars', 'vdl2', 'ert', 'lora', 'sondes', 'trains', 'fleet', 'hd', 'cell', 'atsc']);
 function wfShown(app: AppId): boolean {
   let v: string | null = null;
   try { v = localStorage.getItem('mm.wf.' + app); } catch { /* storage blocked */ }
@@ -4488,14 +4491,16 @@ function setWf(app: AppId, on: boolean): void {
 }
 /** The visual section's class: without its waterfall when that is put away. */
 const visCls = (app: AppId) => (wfShown(app) ? 'visual' : 'visual nowf');
-/** The WATERFALL on / off button, as an icon in a toolbar row. */
-const wfHtml = (app: AppId) => `<button class="ib wf-tog ${wfShown(app) ? 'on' : ''}" data-wf="${app}" title="${wfShown(app) ? 'hide' : 'show'} the waterfall" aria-label="waterfall" aria-pressed="${wfShown(app)}">${WF_SVG}</button>`;
+/** Nothing: the show / hide button is the scope's own now (WF_HIDE). Left so a template that still names it renders as before. */
+const wfHtml = (_app: AppId) => '';
+/** While the waterfall is put away: a slim strip where it was, to bring it back. */
+const wfStripHtml = (app: AppId) => `<button class="wf-strip" data-wf="${app}" title="show the waterfall" aria-label="show the waterfall">${WF_SVG}<span>SHOW WATERFALL</span></button>`;
 function renderTrains(view: HTMLElement): void {
   view.innerHTML = `
     <section class="${visCls('trains')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div class="ctlrow">${segHtml(([['EOT', 'EOT · HOT'], ['PTC', 'PTC 220'], ['BOTH', 'BOTH']] as [string, string][]).map(([k, l]) => `<button data-trband="${k}">${l}</button>`))}</div>
-      <div class="ctlrow"><div id="tr-lamps" class="tr-lamps"></div><button id="tr-wf" class="tog ${wfShown('trains') ? 'on' : ''}" data-wf="trains">WATERFALL</button></div>
+      <div class="ctlrow"><div id="tr-lamps" class="tr-lamps"></div></div>
       <div id="tr-banner" class="tr-banner"></div>
       <div id="tr-strip" class="tr-strip"></div>
       <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}${pauseClearHtml('trains')}</div>
@@ -5742,7 +5747,7 @@ function renderHd(view: HTMLElement): void {
     <section class="${visCls('hd')}">${readoutHtml()}${wide ? `<div class="hd-left"><div class="ctlrow">${segHtml([['now', 'NOW PLAYING'], ['map', 'MAP']].map(([k, l]) => `<button data-hdleft="${k}">${l}</button>`))}</div><div id="hd-hero" class="hd-hero"></div><div class="hd-mapbox">${mapHtml}</div></div>` : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="hd-head" class="hd-head"></div>
-      <div class="ctlrow"><button id="hd-auto" class="tog">AUTO</button><button id="hd-prev" class="chip" title="the previous station heard" aria-label="previous station">◀</button><button id="hd-next" class="chip" title="the next station heard" aria-label="next station">▶</button>${wfHtml('hd')}<button id="hd-export" class="ib" title="export the stations and the log" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('hd')}</div>
+      <div class="ctlrow"><button id="hd-auto" class="tog">AUTO</button><button id="hd-prev" class="chip" title="the previous station heard" aria-label="previous station">◀</button><button id="hd-next" class="chip" title="the next station heard" aria-label="next station">▶</button><button id="hd-export" class="ib" title="export the stations and the log" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('hd')}</div>
       <div class="ctlrow">${segHtml(tabs.map(v => `<button data-hdview="${v}">${v === 'now' ? 'NOW' : v.toUpperCase()}</button>`))}</div>
       <div id="hd-detail" class="mt-detail hd-detail" hidden></div>
       <div id="hd-stage" class="hd-stage">${wide ? '' : `<div id="hd-hero" class="hd-hero"></div>${mapHtml}`}<div id="hd-stations" class="hd-stations"></div><div id="hd-data" class="hd-data"></div></div>
@@ -6099,7 +6104,7 @@ function renderCell(view: HTMLElement): void {
     <section class="controls">
       <div id="cl-head" class="cl-head"></div>
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...CELL_BANDS.map(b => [b.id, b.label])].map(([k, l]) => `<button data-clband="${k}">${l}</button>`))}</div>
-      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-clview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('cell')}<button id="cl-export" class="ib" title="export the log (CSV) and every decoded field (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button></div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-clview="${v}">${v.toUpperCase()}</button>`))}<button id="cl-export" class="ib" title="export the log (CSV) and every decoded field (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button></div>
       ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
       <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
       <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
@@ -6509,7 +6514,7 @@ function renderAtsc(view: HTMLElement): void {
     <section class="controls">
       <div id="at-head" class="at-head"></div>
       <div class="ctlrow">${segHtml(([['AUTO', 'AUTO'], ['VHF', 'VHF 2–13'], ['UHF', 'UHF 14–36']] as [AtscBand, string][]).map(([k, l]) => `<button data-atband="${k}">${l}</button>`))}<span class="at-step"><button class="ib" data-atstep="-1" title="previous channel" aria-label="previous channel">◀</button><b id="at-ch">CH</b><button class="ib" data-atstep="1" title="next channel" aria-label="next channel">▶</button></span></div>
-      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-atview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('atsc')}<button id="at-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('atsc')}</div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-atview="${v}">${v.toUpperCase()}</button>`))}<button id="at-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('atsc')}</div>
       ${wide ? '<div id="at-detail" class="mt-detail at-dock" hidden></div>' : ''}
       <div id="at-stage" class="mt-stage at-stage">${wide ? '' : '<div id="at-wall" class="at-wall"></div>'}<div id="at-signal" class="at-signal"></div><div id="at-guide" class="at-guide"></div>${wide ? '' : '<div id="at-detail" class="mt-detail" hidden></div>'}</div>
       <div id="at-log"><div class="countrow"><span id="count-atsc" class="count">0 DECODED</span></div>${listHtml('atsc', 'looking for stations…')}</div>
@@ -6844,7 +6849,7 @@ function renderLora(view: HTMLElement): void {
     <section class="${visCls('lora')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="lr-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(['nodes', 'map', 'messages', 'log'].map(v => `<button data-lrview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('lora')}<button id="lr-full" class="ib" title="full screen" aria-label="full screen">${loraUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('lora')}</div>
+      <div class="ctlrow">${segHtml(['nodes', 'map', 'messages', 'log'].map(v => `<button data-lrview="${v}">${v.toUpperCase()}</button>`))}<button id="lr-full" class="ib" title="full screen" aria-label="full screen">${loraUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('lora')}</div>
       <div id="lr-stage" class="mt-stage"><div id="lr-cards" class="mt-cards"></div><div id="lr-map" class="panel map"></div><div id="lr-msgs" class="lr-msgs"></div><div id="lr-nopos" class="mt-nopos">no positions yet</div><div id="lr-detail" class="mt-detail" hidden></div><button id="lr-newpill" class="lr-newpill" hidden></button></div>
       <div id="lr-log">${logHtml('lora', 'listening for LoRa…')}</div>
       <div id="lr-chans" class="lr-chans"></div>
@@ -7175,7 +7180,7 @@ function renderSondes(view: HTMLElement): void {
     <section class="${visCls('sondes')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="sd-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(['sondes', 'map', 'log'].map(v => `<button data-sdview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('sondes')}<button id="sd-full" class="ib" title="full screen" aria-label="full screen">${sondeUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('sondes')}</div>
+      <div class="ctlrow">${segHtml(['sondes', 'map', 'log'].map(v => `<button data-sdview="${v}">${v.toUpperCase()}</button>`))}<button id="sd-full" class="ib" title="full screen" aria-label="full screen">${sondeUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('sondes')}</div>
       <div id="sd-stage" class="mt-stage"><div id="sd-cards" class="mt-cards"></div><div id="sd-map" class="panel map"></div><div id="sd-nopos" class="mt-nopos">no positions yet</div><div id="sd-detail" class="mt-detail" hidden></div><button id="sd-newpill" class="lr-newpill" hidden></button></div>
       <div id="sd-log">${logHtml('sondes', 'listening for sondes…')}</div>
       <div id="sd-chans" class="lr-chans"></div>
@@ -7516,7 +7521,7 @@ function renderUat(view: HTMLElement): void {
     <section class="${visCls('uat')}">${readoutHtml()}<div id="ua-mapbox" class="ua-mapbox">${layersHtml}<div id="ua-map" class="panel map"></div></div><div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="ua-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('uat')}${pauseClearHtml('uat')}</div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('uat')}</div>
       <div id="ua-detail" class="mt-detail ua-dock" hidden></div>
       <div id="ua-stage" class="mt-stage"><div id="ua-cards" class="mt-cards"></div></div>
       <div id="ua-log">${logHtml('uat', 'listening for FIS-B…')}</div>
@@ -7524,7 +7529,7 @@ function renderUat(view: HTMLElement): void {
     <section class="${visCls('uat')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="ua-sum" class="mt-sum"></div>
-      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${wfHtml('uat')}${pauseClearHtml('uat')}</div>
+      <div class="ctlrow">${segHtml(tabs.map(v => `<button data-uaview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('uat')}</div>
       ${layersHtml}
       <div id="ua-stage" class="mt-stage"><div id="ua-map" class="panel map"></div><div id="ua-cards" class="mt-cards"></div><div id="ua-detail" class="mt-detail" hidden></div></div>
       <div id="ua-log">${logHtml('uat', 'listening for FIS-B…')}</div>
@@ -7778,14 +7783,14 @@ function refreshUat(force = false): void {
 }
 
 /** The count line, then MAP / LIST / LOG with PAUSE and clear: the three map apps' frame. */
-function geoHeadHtml(id: string, glyphText: string, views: string[], wf?: AppId): string {
-  return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span></div><div class="ctlrow">${segHtml(views.map(v => `<button data-${id}view="${v}">${v.toUpperCase()}</button>`))}${wf ? wfHtml(wf) : ''}${pauseClearHtml(id)}</div>`;
+function geoHeadHtml(id: string, glyphText: string, views: string[]): string {
+  return `<div class="countrow"><span id="${id}-count" class="count">${glyphText}</span></div><div class="ctlrow">${segHtml(views.map(v => `<button data-${id}view="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml(id)}</div>`;
 }
 function renderAdsb(view: HTMLElement): void {
   view.innerHTML = `
     <section class="${visCls('adsb')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      ${geoHeadHtml('adsb', `✈ ${state.frames} FRAMES · ${state.aircraft.length} AIRCRAFT`, ['map', 'list'], 'adsb')}
+      ${geoHeadHtml('adsb', `✈ ${state.frames} FRAMES · ${state.aircraft.length} AIRCRAFT`, ['map', 'list'])}
       <div id="adsb-card" class="accard" hidden></div>
       <div id="adsb-map" class="panel map"></div>
       <div id="adsb-list" class="panel list"></div>
@@ -8364,15 +8369,15 @@ function attachCreditsScroller(panel: HTMLElement | null, roll: HTMLElement | nu
 }
 
 function wireCommon(view: HTMLElement): void {
-  qa<HTMLButtonElement>('[data-wf]', view).forEach(b => b.onclick = () => { const a = b.dataset.wf as AppId; setWf(a, !wfShown(a)); });
-  // the waterfall's own show/hide sits on the waterfall (a small button on its corner), or, while it is hidden, as a
-  // slim strip where it was, rather than among the list's tabs
-  const wb = q<HTMLButtonElement>('.wf-tog', view);
-  if (wb && state.app) {
-    const sc = q<HTMLElement>('#scope', view), vis = q<HTMLElement>('section.visual', view);
-    if (wfShown(state.app) && sc) { wb.classList.add('on-wf'); sc.appendChild(wb); for (const ev of ['pointerdown', 'pointerup', 'mousedown', 'touchstart'] as const) wb.addEventListener(ev, e => e.stopPropagation()); }
-    else if (vis) { wb.classList.add('wf-strip'); wb.innerHTML = `${WF_SVG}<span>SHOW WATERFALL</span>`; vis.appendChild(wb); }
+  // the waterfall's own show / hide: the scope's button on its top left corner, or, while it is put away, a slim
+  // strip where it was. Never a button among an app's tabs or actions.
+  const app = state.app;
+  if (app && WF_HIDE.has(app)) {
+    const vis = q<HTMLElement>('section.visual', view);
+    if (wfShown(app)) scope?.setHide(() => setWf(app, false));
+    else if (vis) vis.insertAdjacentHTML('beforeend', wfStripHtml(app));
   }
+  qa<HTMLButtonElement>('[data-wf]', view).forEach(b => b.onclick = () => { const a = b.dataset.wf as AppId; setWf(a, !wfShown(a)); });
   const fav = q<HTMLButtonElement>('#fav', view); if (fav) { fav.onclick = toggleFav; refreshFav(); }
   const fkey = q<HTMLButtonElement>('#fkey', view);
   if (fkey) { if (state.app === 'adsb' || state.app === 'btle') fkey.remove(); else fkey.onclick = () => freqEntry(); }

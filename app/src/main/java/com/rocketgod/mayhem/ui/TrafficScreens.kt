@@ -106,9 +106,7 @@ private fun TrafficFrame(
             Box(m.clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                 WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                     rows = if (d.wide) 160 else 80, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
-                    onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
-                // the waterfall's own show/hide sits on its corner
-                if (onWaterfall != null) WaterfallCorner(true, Modifier.align(Alignment.TopStart).padding(d.dp(6f)), onWaterfall)
+                    onPreviewFrac = if (tunable) onPreview else null, onHide = onWaterfall, onTapFrac = if (tunable) onTune else null)
             }
         }
     ) {

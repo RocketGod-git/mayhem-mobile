@@ -10,6 +10,9 @@
 
 export type AxisLabel = [number, string];
 
+/** The waterfall glyph: rows of spectrum stacked over time. The show / hide button and the SHOW WATERFALL strip use it. */
+export const WF_ICON = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v3H3V9zm0 5h18v2.5H3V14zm0 4.5h18V20H3v-1.5z"/></svg>';
+
 function css(name: string): string { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
 /** Inferno-like color LUT: black → violet → magenta → orange → yellow → near-white. */
@@ -63,6 +66,15 @@ export interface ScopeOpts {
  */
 export interface ScopeMark { id: number; t0: number; t1: number; frac: number; w: number; color: string; bold?: boolean; label?: string; alpha?: number }
 
+/**
+ * The waterfall standard, the same in every app on web, Android (ui/Waterfall.kt) and the Mac and iPad (Waterfall.swift).
+ * Every control that belongs to the waterfall is drawn by this widget, never by an app:
+ * - top left: the show / hide button ([setHide]), for the apps whose waterfall can be put away. While it is put
+ *   away the app shows the slim SHOW WATERFALL strip (wfStripHtml in main.ts) where the waterfall was.
+ * - top right: the zoom row, ⌖ (only while the channel is off the span), − span or zoom +.
+ * - left edge: the time ruler, ticks and -Ns / -Nm labels down the history.
+ * - bottom: the live spectrum with its dB grid, then the frequency axis, then the span bar when the span can slide.
+ */
 export class Scope {
   cols: number;
   /** Called after the scope re-sizes itself to a new column count (the app forwards it to the worker). */
@@ -443,6 +455,18 @@ export class Scope {
     this.draw();
   }
 
+  private hideBtn: HTMLButtonElement | null = null;
+  /** The show / hide button on the top left corner; null takes it away. One implementation for every app. */
+  setHide(onHide: (() => void) | null): void {
+    this.hideBtn?.remove(); this.hideBtn = null;
+    if (!onHide) return;
+    const b = document.createElement('button');
+    b.className = 'wfhide'; b.title = 'hide the waterfall'; b.setAttribute('aria-label', 'hide the waterfall');
+    b.innerHTML = WF_ICON;
+    for (const ev of ['pointerdown', 'pointerup', 'mousedown', 'touchstart'] as const) b.addEventListener(ev, e => e.stopPropagation());
+    b.addEventListener('click', (e) => { e.stopPropagation(); onHide(); });
+    this.host.appendChild(b); this.hideBtn = b;
+  }
   setLabels(labels: AxisLabel[]): void { this.fullLabels = labels; this.applyLabels(); }
   private applyLabels(): void {
     let labels = this.fullLabels;
@@ -732,7 +756,7 @@ export class Scope {
       const wr = this.wf.getBoundingClientRect();
       const under = wr.height > 0 ? this.sp.getBoundingClientRect().height / wr.height * this.rows : 0;
       const lowest = this.rows - under - 9 * dpr;
-      const minPx = 40 * dpr;
+      const minPx = 40 * dpr, top = 38 * dpr;                        // no label under the show / hide button
       let ivl = 5; for (const c of [5, 10, 15, 30, 60, 120, 300, 600]) { ivl = c; if (c / secPerPx >= minPx) break; }
       const label = (s: number) => s >= 120 ? `-${Math.round(s / 60)}m` : `-${s}s`;
       g.fillStyle = 'rgba(255,255,255,0.55)'; g.font = `${Math.round(9 * dpr)}px ui-monospace, Menlo, Consolas, monospace`; g.textAlign = 'left'; g.textBaseline = 'middle';
@@ -740,7 +764,7 @@ export class Scope {
       for (let y = 0; y < this.filled; y++) {
         const mark = Math.floor((now - this.stamps[(this.head + y) % this.rows]) / 1000 / ivl);
         const yy = y * rowH;
-        if (prevMark >= 0 && mark !== prevMark && mark > 0 && yy < lowest) { g.fillRect(0, yy, 6 * dpr, 1); g.fillText(label(mark * ivl), 8 * dpr, yy); }
+        if (prevMark >= 0 && mark !== prevMark && mark > 0 && yy < lowest && (yy >= top || !this.hideBtn)) { g.fillRect(0, yy, 6 * dpr, 1); g.fillText(label(mark * ivl), 8 * dpr, yy); }
         prevMark = mark;
       }
     }
