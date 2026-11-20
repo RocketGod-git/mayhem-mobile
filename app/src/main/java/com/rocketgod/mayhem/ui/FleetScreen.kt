@@ -422,6 +422,8 @@ fun FleetScreen(accent: Color) {
                 val list = rememberLazyListState()
                 val scope = rememberCoroutineScope()
                 if (s != null && audioOn && s.codecs.isNotEmpty()) NowBar(s, now, lock, me, vu, colorOf, acts)
+                // a card opens under the tabs and comes into view there
+                LaunchedEffect(sel) { if (sel != null) list.animateScrollToItem(1) }
                 LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                     item(key = "top") {
                         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {

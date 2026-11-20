@@ -5048,6 +5048,8 @@ function fleetPick(sel: FleetSel): void {
   fleetUi.unit = null;
   if (fleetUi.sel?.kind === 'unit') worker?.postMessage({ type: 'fleet', cmd: 'unit', key: fleetUi.sel.key });
   refreshFleet(true);
+  // the wide column scrolls as one: a card opens under the tabs and comes into view there
+  if (fleetUi.sel && FLEET_WIDE.matches) { const col = q<HTMLElement>('.view.fleet > .controls'), tb = q<HTMLElement>('.fl-tabs'); if (col && tb) col.scrollTo({ top: Math.max(0, tb.getBoundingClientRect().top - col.getBoundingClientRect().top + col.scrollTop - 64), behavior: 'smooth' }); }
 }
 const flPill = (text: string, tone: '' | 'ok' | 'red' | 'acc' = '') => `<span class="tr-pill ${tone}">${esc(text)}</span>`;
 function fleetHead(s: FleetSnap | null, now: number): string {
