@@ -3,11 +3,12 @@
  * codec registered the call is still followed and shown, without audio. No DOM.
  *  - 'imbe': P25 Phase 1 full rate, 144-bit frames (88 voice bits under FEC), 20 ms each.
  *  - 'ambe2': half rate, 72-bit frames (49 voice bits under FEC), 20 ms each: DMR and P25 Phase 2.
+ *  - 'tetra': the TETRA ACELP codec, 137-bit frames (after the speech channel decoding), 30 ms each.
  */
-export type CodecId = 'imbe' | 'ambe2';
+export type CodecId = 'imbe' | 'ambe2' | 'tetra';
 export interface VoiceCodec {
   readonly id: CodecId;
-  /** One frame of bits (one per byte, as sent) to 160 samples of 8 kHz audio, or null for a frame it drops. */
+  /** One frame of bits (one per byte, as sent) to 8 kHz audio (160 samples, 240 for TETRA), or null for a frame it drops. */
   decode(bits: Uint8Array): Float32Array | null;
   /** The last frame decoded was past its error correction (repeated or muted by the vocoder). */
   readonly bad?: boolean;

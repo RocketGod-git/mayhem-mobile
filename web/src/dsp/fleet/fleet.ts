@@ -1,5 +1,5 @@
 /**
- * Dispatch: a receive-only monitor for P25 and DMR trunked radio. Finds every carrier in the span, gives the live
+ * Dispatch: a receive-only monitor for P25, DMR, TETRA and NXDN trunked radio. Finds every carrier in the span, gives the live
  * ones a channel each (the control channels and the channels of calls on the air keep theirs, the rest take turns),
  * decodes the control signaling and builds the systems, sites, channel tables, grants, registrations, unit positions
  * and calls from what is on the air. Labels are only what the air carries. Publishes a 'fleet' snapshot (at most two
@@ -19,6 +19,7 @@ import { CallTracker, type CallRow, type CallPos, type Lock, type TgPrefs } from
 import { parseLc, voiceFrames, readEmb, embBits, EmbLcAssembler, parseEmbLc, TalkerAlias } from './lc.js';
 import { hasCodec, type CodecId } from './codec.js';
 import { TetraRx, type TetraSync } from './tetra.js';
+import { TetraMac, tetraCarrierHz, tetraDisconnectCause, tetraGrantName, tetraCommName, type TetraEvent, type TetraSysinfo, type TetraCmce, type TetraMacInfo } from './tetra-mac.js';
 import { NxdnRx, NXDN_CATEGORY, type NxdnSite } from './nxdn.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
 
@@ -62,6 +63,8 @@ export interface SystemRow {
   lpcns: { lpcn: number; hz: number; votes: number }[];
   /** The channels the system was heard on (kept when it is out of the span), and whether its units report positions. */
   heardHz: number[]; positions: boolean;
+  /** TETRA: what the cell broadcasts and the MAC headers say about air interface encryption ('' for the others). */
+  security: string;
 }
 export interface UnitReport { ms: number; hz: number; kind: string; hex: string; verified: boolean; lat: number | null; lon: number | null; text: string; /** The carrier's level when it was heard (dB over the floor). */ db?: number }
 export interface UnitRow {
@@ -91,7 +94,7 @@ export interface KnownUnit { sys: string; id: number; lat: number; lon: number; 
 export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[] }
 const KNOWN_UNITS = 3000;
 
-interface Carrier extends CarrierRow { tetra?: TetraSync; nxdn?: NxdnSite & { baud: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
+interface Carrier extends CarrierRow { tetra?: TetraSync; tetraCell?: TetraSysinfo; nxdn?: NxdnSite & { baud: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
   key: string; sys: string; rfss: number; site: number; nac: number; carriers: Set<number>; lastMs: number; neighbors: Map<string, { sys: number; rfss: number; site: number; ch: number }>;
   secondary: Set<number>; time: string; lra: number; cls: number; idens: Map<number, Iden>;
@@ -104,7 +107,10 @@ interface Sys {
   lpcnVotes: Map<number, Map<number, number>>; lpcnHz: Map<number, number>;
   /** Where the system was heard (its control or rest channels), kept across retunes and sessions. */
   heardHz: Set<number>;
+  /** TETRA: calls by call identifier, and the air interface encryption seen. */
+  tetra?: TetraSys;
 }
+interface TetraSys { calls: Map<number, { tg: number; group: boolean; src: number; hz: number; slot: number; e2ee: boolean; ms: number }>; encSdus: number; clearSdus: number; aie: boolean; sec: TetraSysinfo['security']; carriers: Map<number, number> }
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
   /** Every position report as sent (low 16 bits), resolved when shown: [time, lat16, lon16]. */
   fixes: [number, number, number][]; tgCounts: Map<number, number>;
@@ -135,6 +141,8 @@ class Chan {
   tetra: { rx: TetraRx; ddc: Ddc | null; oi: Float32Array; oq: Float32Array } | null = null;
   /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
   nxdn: NxdnRx[] | null = null;
+  /** The TETRA MAC on the TETRA receiver's bursts. */
+  tetraMac: TetraMac | null = null;
   private center = 0; private rate = 0;
   /** Fed a recorded channel at its own rate (no down-converter, so no DC spike of the receiver's). */
   get baseband(): boolean { return this.rate === 0; }
@@ -394,9 +402,15 @@ export class FleetProcessor implements IqProcessor {
   private tetraOn(c: Carrier, ch: Chan): void {
     // the carrier finder can split a 25 kHz signal into pieces: the receiver is centered on all of them together
     const now = this.now(), parts = [...this.carriers.values()].filter(x => Math.abs(x.hz - c.hz) <= 16_000 && now - x.lastMs < LIVE_MS && x.cls !== 'P25 C4FM' && x.cls !== 'DMR');
+    // one receiver per signal: a piece next to one that already has it reads nothing twice
+    for (const [k, x] of this.chans) if (k !== c.key && x.tetra && Math.abs((this.carriers.get(k)?.hz ?? 0) - c.hz) <= 16_000) return;
     let w = 0, sum = 0; for (const x of parts) { const p = 10 ** (x.levelDb / 10); w += p; sum += p * x.hz; }
     const rx = ch.tetraOn(w > 0 ? sum / w : c.hz); if (!rx) return;
     rx.onSync = s => this.tetraSync(c, s);
+    if (!ch.tetraMac) { ch.tetraMac = new TetraMac(rx); ch.tetraMac.onEvent = e => this.tetraEvent(c, e); }
+    // a carrier a grant sent us to: its scrambling is the cell's, known before its own synchronization bursts come
+    const s = this.systems.get(c.sys);
+    if (s?.proto === 'TETRA' && !ch.tetraMac.cellKnown) ch.tetraMac.setCell(s.wacn, s.sysId, s.cc);
   }
   /** A TETRA synchronization burst (EN 300 392-2 BSCH): the network (MCC, MNC), the cell's color code and timing. */
   private tetraSync(c: Carrier, t: TetraSync): void {
@@ -404,12 +418,161 @@ export class FleetProcessor implements IqProcessor {
     let s = this.systems.get(key);
     if (!s) { s = { key, proto: 'TETRA', color: this.colorNext++, wacn: t.mcc, sysId: t.mnc, cc: t.colorCode, fid: -1, net: -1, model: '', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set() }; this.systems.set(key, s); }
     s.lastMs = now; s.heardHz.add(c.key);
-    c.cls = 'TETRA'; c.role = 'control'; c.sys = key; c.cc = t.colorCode; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++;
+    c.cls = 'TETRA'; if (c.role !== 'voice') c.role = 'control'; c.sys = key; c.cc = t.colorCode; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++;
     c.tetra = t;
     // the other pieces of the same 25 kHz signal are the same carrier
     for (const x of this.carriers.values()) if (x !== c && Math.abs(x.hz - c.hz) <= 13_000 && x.cls !== 'TETRA' && !(x.lastDecodeMs > 0 && now - x.lastDecodeMs < 5_000)) { x.cls = 'TETRA'; x.role = 'control'; x.sys = key; x.cc = t.colorCode; x.lastDecodeMs = now; }
     this.addLog({ ms: now, hz: c.hz, proto: 'TETRA', name: 'SYNC', text: `TETRA · SYNC · MCC ${t.mcc} · MNC ${t.mnc} · color code ${t.colorCode} · TS${t.timeslot} · frame ${t.frame} · multiframe ${t.multiframe} · cell load ${t.cellLoad}`, hex: '', ok: true });
     this.pending = true;
+  }
+  /** The TETRA state of a carrier's system. */
+  private tetraOf(c: Carrier): Sys | undefined {
+    const s = this.systems.get(c.sys); if (!s || s.proto !== 'TETRA') return undefined;
+    if (!s.tetra) s.tetra = { calls: new Map(), encSdus: 0, clearSdus: 0, aie: false, sec: null, carriers: new Map() };
+    return s;
+  }
+  /** What the TETRA MAC read on a carrier (EN 300 392-2 clauses 14, 16, 18, 21). */
+  private tetraEvent(c: Carrier, e: TetraEvent): void {
+    const s = this.tetraOf(c); if (!s) return;
+    const t = s.tetra!, now = this.now();
+    const log = (name: string, text: string) => this.addLog({ ms: now, hz: c.hz, proto: 'TETRA', name, text: `TETRA · ${text}`, hex: '', ok: true });
+    switch (e.kind) {
+      case 'sysinfo': {
+        const i = e.info; c.tetraCell = i; c.lastDecodeMs = now; c.blocks++; c.crcOk++; this.blocks++;
+        t.aie = i.services.aie; if (i.security) t.sec = i.security;
+        const mhz = i.mainHz ? ` (${(i.mainHz / 1e6).toFixed(5)} MHz)` : '', sec = i.security ? ` · security class ${i.security.class3 ? 3 : 2}${i.security.auth ? ' · authentication required' : ''}` : '';
+        log('SYSINFO', `SYSINFO · LA ${i.la} · main carrier ${i.mainCarrier}${mhz} · ${i.services.aie ? 'air interface encryption available' : 'no air interface encryption'}${sec} · ${i.services.voice ? 'voice service' : 'no voice service'}${i.services.registration ? ' · registration required' : ''}`);
+        break;
+      }
+      case 'access': log('ACCESS-DEFINE', e.text); break;
+      case 'encrypted': t.encSdus++; c.blocks++; this.blocks++; log('ENCRYPTED', `TS${e.mac.tn} · signalling encrypted on the air interface (encryption mode ${e.mac.enc})`); break;
+      case 'alloc': if (e.mac.chan) log('CHANNEL ALLOCATION', `TS${e.mac.tn} · SSI ${e.mac.ssi}${e.mac.um >= 0 ? ` · usage marker ${e.mac.um}` : ''} · ${this.tetraChanText(c, e.mac)}`); break;
+      case 'mm':
+        t.clearSdus++; c.blocks++; c.crcOk++; this.blocks++;
+        if (e.type === 5 && e.mac.ssi > 0) this.tetraUnit(s.key, e.mac.ssi, c, now, 'registration', e.name);
+        log(e.name, `TS${e.mac.tn} · ${e.name}${e.mac.ssi >= 0 ? ` · SSI ${e.mac.ssi}` : ''}`);
+        break;
+      case 'other': log(e.name, `TS${e.mac.tn} · ${e.name}${e.mac.ssi >= 0 ? ` · SSI ${e.mac.ssi}` : ''}`); break;
+      case 'cmce': t.clearSdus++; c.blocks++; c.crcOk++; this.blocks++; this.tetraCmce(c, s, e.pdu, e.mac, now); break;
+      case 'voice': this.tetraVoice(c, s, e.tn, e.frames, now); break;
+      case 'aach':
+        // a traffic slot of a cell whose signalling is encrypted on the air interface, with no call read for it: an
+        // encrypted call (the cell's broadcast and the MAC headers both say so)
+        if (e.usage >= 4 && t.aie && t.encSdus > 0) {
+          const k = this.calls.at(s.key, c.hz, e.tn - 1);
+          if (!k) { const call = this.calls.voice(s.key, 'TETRA', c.hz, e.tn - 1, 0, now); this.calls.security(call, { enc: true, from: 'AIE' }); }
+          else if (k.sec === 'enc') this.calls.voice(s.key, 'TETRA', c.hz, e.tn - 1, 0, now);
+        }
+        return;
+    }
+    this.pending = true;
+  }
+  /**
+   * A channel allocation to a frequency and slot: the cell's band and offset unless it gives its own, placed relative
+   * to the cell's main carrier as received.
+   */
+  private tetraChanHz(c: Carrier, a: { carrier: number; band: number; offset: number; tn: number }): { hz: number; slot: number } {
+    const cell = c.tetraCell ?? [...this.carriers.values()].find(x => x.sys === c.sys && x.tetraCell)?.tetraCell;
+    let hz = 0;
+    if (a.band > 0) hz = tetraCarrierHz(a.carrier, a.band, a.offset);
+    else if (cell && cell.band > 0) hz = tetraCarrierHz(a.carrier, cell.band, cell.offset);
+    const main = cell ? [...this.carriers.values()].find(x => x.sys === c.sys && x.tetraCell && Math.abs(x.hz - cell.mainHz) < 15_000) : undefined;
+    if (cell && main && hz) hz = main.hz + (hz - cell.mainHz);
+    else if (!hz && cell && a.carrier === cell.mainCarrier) hz = c.hz;
+    const s = this.tetraOf(c);
+    if (hz && s) s.tetra!.carriers.set(a.carrier, Math.round(hz));
+    return { hz: Math.round(hz), slot: Math.max(0, a.tn - 1) };
+  }
+  private tetraChanText(c: Carrier, mac: TetraMacInfo): string {
+    const a = mac.chan; if (!a) return '';
+    if (a.tn === 0) return 'to the control channel';
+    const r = this.tetraChanHz(c, a);
+    return `carrier ${a.carrier}${r.hz ? ` (${(r.hz / 1e6).toFixed(5)} MHz)` : ''} TS${a.tn}${a.updown === 1 ? ' downlink' : a.updown === 2 ? ' uplink' : ''}`;
+  }
+  /** TETRA call control (14.7.1): set-up, connect, transmission grants and the end of a call build the call. */
+  private tetraCmce(c: Carrier, s: Sys, p: TetraCmce, mac: TetraMacInfo, now: number): void {
+    const t = s.tetra!;
+    let call = p.callId >= 0 ? t.calls.get(p.callId) : undefined;
+    const at = mac.chan && mac.chan.tn > 0 ? this.tetraChanHz(c, mac.chan) : null;
+    const who = () => call ? ` · ${call.group ? 'TG' : 'UNIT'} ${call.tg}` : '';
+    let text = `TS${mac.tn} · ${p.name}${p.callId >= 0 ? ` · call ${p.callId}` : ''}`;
+    let grant = false;
+    switch (p.type) {
+      case 7: {   // D-SETUP: sent to the called group (or unit), naming the calling unit
+        const group = (p.basic?.comm ?? 1) !== 0;
+        call = { tg: mac.ssi, group, src: p.calling > 0 ? p.calling : 0, hz: at?.hz ?? call?.hz ?? 0, slot: at?.slot ?? call?.slot ?? 0, e2ee: !!p.basic?.e2ee, ms: now };
+        if (p.callId >= 0) t.calls.set(p.callId, call);
+        const kind = p.basic && p.basic.mode !== 0 ? ` · circuit mode ${p.basic.mode}` : ' speech';
+        text += ` · ${group ? 'TG' : 'UNIT'} ${mac.ssi}${call.src ? ` ← ${call.src}` : ''} · ${tetraCommName(p.basic?.comm ?? 1)}${kind}${p.basic?.e2ee ? ' · END-TO-END ENCRYPTED' : ''} · priority ${p.prio}`;
+        grant = true;
+        break;
+      }
+      case 2: case 14:   // D-CONNECT (to the calling unit), D-CALL RESTORE
+        if (call && at) { call.hz = at.hz; call.slot = at.slot; }
+        if (call && p.basic) call.e2ee = p.basic.e2ee;
+        if (call && p.newCallId >= 0) { t.calls.delete(p.callId); t.calls.set(p.newCallId, call); text += ` · now call ${p.newCallId}`; }
+        if (call && p.type === 2 && mac.ssi > 0 && !call.src) call.src = mac.ssi;
+        text += who();
+        grant = !!call;
+        break;
+      case 11: case 13:   // D-TX GRANTED, D-TX INTERRUPT: who talks now
+        if (call && p.talker > 0 && (p.grant === 0 || p.grant === 3)) call.src = p.talker;
+        if (call && at) { call.hz = at.hz; call.slot = at.slot; }
+        if (call && p.encCtl === 1) call.e2ee = true;
+        text += `${who()} · ${tetraGrantName(p.grant)}${p.talker > 0 ? ` · talker ${p.talker}` : ''}${p.encCtl === 1 ? ' · END-TO-END ENCRYPTED' : ''}`;
+        grant = !!call && (p.grant === 0 || p.grant === 3);
+        break;
+      case 9: text += `${who()} · transmission ceased`; break;
+      case 4: case 6:   // D-DISCONNECT, D-RELEASE
+        text += `${who()} · ${tetraDisconnectCause(p.cause)}`;
+        if (call && p.type === 6) { if (call.hz) this.calls.terminate(s.key, call.hz, call.slot, now); t.calls.delete(p.callId); }
+        break;
+      case 8: case 15: {   // D-STATUS, D-SDS-DATA
+        const x = p.sds; if (!x) break;
+        const body = x.kind === 'text' ? `"${x.text}"` : x.kind === 'status' ? `status ${x.status}` : `${x.kind} ${x.hex}`;
+        text += ` · ${x.from > 0 ? `${x.from} → ` : ''}${mac.ssi} · ${body}`;
+        const what = `${x.kind === 'text' ? 'SDS text' : x.kind === 'status' ? 'status' : 'SDS'} ${body}`;
+        if (x.from > 0) this.tetraUnit(s.key, x.from, c, now, `${what} to ${mac.ssi}`, text);
+        if (mac.ssi > 0) this.tetraUnit(s.key, mac.ssi, c, now, `${what}${x.from > 0 ? ` from ${x.from}` : ''}`, text);
+        break;
+      }
+      default: text += who();
+    }
+    if (call && grant) {
+      if (call.src) this.tetraUnit(s.key, call.src, c, now, 'call', text, call.group ? call.tg : undefined);
+      const ch = at ? `carrier ${mac.chan!.carrier} TS${mac.chan!.tn}` : `call ${p.callId}`;
+      if (call.tg || call.hz) this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: call.group ? 'grant' : 'u2u', tg: call.tg, group: call.group, src: call.src, ch, hz: call.hz, slot: call.slot, tdma: false, emergency: false, encrypted: call.e2ee, carrierHz: c.hz, site: '' }, p.type !== 7);
+    }
+    if (at) text += ` · ${this.tetraChanText(c, mac)}`;
+    this.addLog({ ms: now, hz: c.hz, proto: 'TETRA', name: p.name, text: `TETRA · ${text}`, hex: '', ok: true });
+  }
+  /** Speech of a traffic slot: the call on that carrier and slot takes it (one the air named, or a new one that waits). */
+  private tetraVoice(c: Carrier, s: Sys, tn: number, frames: Uint8Array[], now: number): void {
+    c.lastDecodeMs = now; c.frames++; if (c.role !== 'control') c.role = 'voice';
+    // the call on this signal and slot, where the grant put it (the receiver may sit on a piece of the same signal)
+    const near = this.calls.calls.find(k => k.kind === 'call' && k.onAir && k.proto === 'TETRA' && k.sys === s.key && k.slot === tn - 1 && Math.abs(k.hz - c.hz) <= 13_000);
+    const call = this.calls.voice(s.key, 'TETRA', near ? near.hz : c.hz, tn - 1, 30 * frames.filter(f => f.length).length, now);
+    this.calls.frames(call, frames);
+  }
+  /** A TETRA unit heard: what it did, with the group when there is one. */
+  private tetraUnit(sys: string, id: number, c: Carrier, now: number, kind: string, text: string, group?: number): void {
+    const key = `${sys}/${id}`;
+    let u = this.units.get(key);
+    if (!u) { u = { key, sys, id, firstMs: now, lastMs: now, lonLo: -1, latLo: -1, posMs: 0, posVerified: false, trail: [], groups: new Set(), grants: 0, carriers: new Set(), reports: [], fixes: [], tgCounts: new Map() }; this.units.set(key, u); }
+    u.lastMs = now; u.carriers.add(c.key);
+    if (group !== undefined) { u.groups.add(group); u.tgCounts.set(group, (u.tgCounts.get(group) ?? 0) + 1); this.tgFor(sys, group, now).members.add(id); }
+    if (kind === 'call') u.grants++;
+    u.reports.push({ ms: now, hz: c.hz, kind, hex: '', verified: true, lat: null, lon: null, text, db: c.levelDb });
+    if (u.reports.length > 60) u.reports.shift();
+    this.pending = true;
+  }
+  /** What a TETRA system's cells broadcast and its MAC headers say about air interface encryption. */
+  private tetraSecurity(s: Sys): string {
+    const t = s.tetra; if (!t) return [...this.carriers.values()].some(c => c.sys === s.key && c.tetraCell) ? 'CLEAR AIR INTERFACE' : '';
+    const cls = t.sec ? ` · SECURITY CLASS ${t.sec.class3 ? 3 : 2}` : '';
+    if (t.aie && t.encSdus > 0) return `AIR INTERFACE ENCRYPTED${cls}`;
+    if (t.aie) return `AIR INTERFACE ENCRYPTION AVAILABLE${cls}`;
+    return [...this.carriers.values()].some(c => c.sys === s.key && c.tetraCell) ? 'CLEAR AIR INTERFACE' : '';
   }
   /** The scrambling seeds a Phase 2 channel may use: its own system first, then every P25 system and site heard. */
   private p2Seeds(c: Carrier): P2Seed[] {
@@ -829,10 +992,10 @@ export class FleetProcessor implements IqProcessor {
   /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
   private grant(sys: string, g: GrantRow, update: boolean): void {
     if (g.kind !== 'datagrant') {
-      const p25 = sys.startsWith('P25');
-      const call = this.calls.grant({ sys, proto: p25 ? 'P25' : 'DMR', tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: p25 ? (g.tdma ? g.slot : 0) : g.slot, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site, lpcn: g.lpcn, chDerived: g.chDerived }, g.ms);
+      const p25 = sys.startsWith('P25'), tetra = sys.startsWith('TETRA');
+      const call = this.calls.grant({ sys, proto: p25 ? 'P25' : tetra ? 'TETRA' : 'DMR', tg: g.tg, group: g.group, src: g.src, hz: g.hz, slot: p25 ? (g.tdma ? g.slot : 0) : g.slot, tdma: g.tdma, encrypted: g.encrypted, emergency: g.emergency, site: g.site, lpcn: g.lpcn, chDerived: g.chDerived }, g.ms);
       // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
-      if (call?.onAir && !call.muted && call.hz && this.rate > 0 && this.inSpan(call.hz)) { const vc = this.carrierAt(call.hz); if (!vc.role) vc.role = 'voice'; if (!vc.sys) vc.sys = sys; if (!this.chans.has(vc.key)) { vc.lastAuditionMs = g.ms; this.open(vc, g.ms); vc.decoding = true; } }
+      if (call?.onAir && !call.muted && call.hz && this.rate > 0 && this.inSpan(call.hz)) { const vc = this.carrierAt(call.hz); if (!vc.role) vc.role = 'voice'; if (!vc.sys) vc.sys = sys; if (!this.chans.has(vc.key)) { vc.lastAuditionMs = g.ms; this.open(vc, g.ms); vc.decoding = true; } if (tetra) { const ch = this.chans.get(vc.key); if (ch && !ch.tetra) this.tetraOn(vc, ch); } }
     }
     const same = this.grants.find(x => x.sys === sys && x.tg === g.tg && x.ch === g.ch && x.group === g.group && g.ms - x.lastMs < 5_000);
     if (same) { same.lastMs = g.ms; if (g.src && !same.src) same.src = g.src; this.pending = true; return; }
@@ -1004,8 +1167,19 @@ export class FleetProcessor implements IqProcessor {
             carriers: [...x.carriers], lcns: [], rest: -1, busy: [], idens: [...tables.values()].sort((a, b) => a.iden - b.iden), units: 0, lra: x.lra, cls: x.cls };
         });
       } else if (s.proto === 'TETRA') {
-        sites = [...this.carriers.values()].filter(c => c.sys === s.key && c.tetra).map(c => ({ key: `${s.key}/${c.key}`, label: `color code ${c.tetra!.colorCode}`, rfss: -1, site: c.tetra!.colorCode, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
-          neighbors: [], secondary: [], time: `TS${c.tetra!.timeslot} · frame ${c.tetra!.frame} · multiframe ${c.tetra!.multiframe}`, callsign: '', carriers: [c.key], lcns: [], rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: c.tetra!.cellLoad }));
+        // one site per cell (color code): its control carriers, and the traffic carriers heard or allocated
+        const cells = new Map<number, Carrier[]>();
+        for (const c of this.carriers.values()) if (c.sys === s.key && (c.tetra || c.tetraCell)) { const k = c.tetra?.colorCode ?? c.cc; (cells.get(k) ?? cells.set(k, []).get(k)!).push(c); }
+        sites = [...cells].map(([cc, cs]) => {
+          const info = cs.find(c => c.tetraCell)?.tetraCell, sy = cs.find(c => c.tetra && c.role === 'control')?.tetra ?? cs.find(c => c.tetra)?.tetra;
+          const ctrl = cs.filter(c => c.role !== 'voice'), traffic = new Map<number, string>();
+          for (const c of cs) if (c.role === 'voice') traffic.set(c.hz, '');
+          for (const [n, hz] of s.tetra?.carriers ?? []) if (![...traffic.keys()].some(h => Math.abs(h - hz) < 3_200) && !ctrl.some(c => Math.abs(c.hz - hz) < 3_200)) traffic.set(hz, `carrier ${n}`);
+          const units = new Set<number>(); for (const u of this.units.values()) if (u.sys === s.key && cs.some(c => u.carriers.has(c.key))) units.add(u.id);
+          return { key: `${s.key}/${cc}`, label: info ? `cell LA ${info.la}` : `color code ${cc}`, rfss: -1, site: cc, nac: -1, ccHz: ctrl.map(c => c.hz), lastMs: Math.max(...cs.map(c => c.lastMs)), levelDb: Math.max(...cs.map(c => c.levelDb)),
+            neighbors: [], secondary: [...traffic].map(([hz, ch]) => ({ hz, ch })).sort((a, b) => a.hz - b.hz), time: sy ? `TS${sy.timeslot} · frame ${sy.frame} · multiframe ${sy.multiframe}` : '', callsign: '', carriers: cs.map(c => c.key),
+            lcns: [], rest: -1, busy: [], idens: [], units: units.size, lra: info?.la ?? -1, cls: sy?.cellLoad ?? -1 };
+        });
       } else if (s.proto === 'NXDN') {
         sites = [...this.carriers.values()].filter(c => c.sys === s.key && c.nxdn).map(c => ({ key: `${s.key}/${c.nxdn!.site}`, label: `site ${c.nxdn!.site}`, rfss: -1, site: c.nxdn!.site, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
           neighbors: [], secondary: [], time: `${c.cls} · control channel ${c.nxdn!.cc1}${c.nxdn!.cc2 ? ` and ${c.nxdn!.cc2}` : ''} · ${c.nxdn!.adjacent} adjacent sites`, callsign: '', carriers: [c.key], lcns: [], rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: c.nxdn!.version }));
@@ -1017,7 +1191,7 @@ export class FleetProcessor implements IqProcessor {
       return { key: s.key, proto: s.proto, color: s.color, label, trunk: s.trunk ?? '', wacn: s.wacn, sysId: s.sysId, cc: s.cc, fid: s.fid, net: s.net, model: s.model,
         callsign: sites.find(x => x.callsign)?.callsign ?? '', ...this.latestId(s.key), firstMs: s.firstMs, lastMs: s.lastMs, sites, idens: [...s.idens.values()].sort((a, b) => a.iden - b.iden),
         grants: this.grants.filter(g => g.sys === s.key).length, units, tgs, derived: s.derived || lpcns.length > 0, lpcns, heardHz: [...s.heardHz].slice(0, 12),
-        positions: [...this.units.values()].some(u => u.sys === s.key && (u.lonLo >= 0 || !!u.fix)) };
+        positions: [...this.units.values()].some(u => u.sys === s.key && (u.lonLo >= 0 || !!u.fix)), security: s.proto === 'TETRA' ? this.tetraSecurity(s) : '' };
     }).sort((a, b) => a.firstMs - b.firstMs);
     const units: UnitRow[] = [...this.units.values()].map(u => {
       const [lat, lon] = this.resolvePos(u);
@@ -1033,7 +1207,7 @@ export class FleetProcessor implements IqProcessor {
     }).sort((a, b) => a.hz - b.hz);
     return { type: 'fleet', centerHz: this.centerHz, rate: this.rate, spanLo: this.spanLo, spanHi: this.spanHi, carriers, systems, units, tgs, grants: this.grants.slice(0, 120),
       perMin: this.grants.filter(g => now - g.ms < 60_000).length, blocks: this.blocks, slots: this.chans.size, ref: this.ref !== null,
-      calls: this.calls.rows(), follow: this.followTarget(), codecs: (['imbe', 'ambe2'] as CodecId[]).filter(hasCodec), playing: this.calls.playing, lock: this.calls.prefs.lock ?? null };
+      calls: this.calls.rows(), follow: this.followTarget(), codecs: (['imbe', 'ambe2', 'tetra'] as CodecId[]).filter(hasCodec), playing: this.calls.playing, lock: this.calls.prefs.lock ?? null };
   }
   /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
   followTarget(): { key: string; hz: number } | null {

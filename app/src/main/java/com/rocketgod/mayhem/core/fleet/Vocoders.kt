@@ -10,13 +10,16 @@ import com.rocketgod.mayhem.core.ham.rZ
 /**
  * The app's own vocoders behind Dispatch's codec plug point: IMBE (ham ImbeDecoder) for P25 Phase 1 full rate, and
  * AMBE+2 3600x2450 (ham AmbeDecoder) for DMR and P25 Phase 2, fed through the DMR frame de-interleave the HAM
- * receiver uses. Each call gets its own decoder state. [Vocoders.ensure] registers them (once).
+ * receiver uses, and the TETRA ACELP decoder (TetraAcelp) for TETRA. Each call gets its own decoder state.
+ * [Vocoders.ensure] registers them (once).
  */
 object Vocoders {
     /** 9.5 dB under the HAM receiver's level: loud talkers on a trunked system no longer clip inside the vocoder. The
      *  output stage (Codec.kt) makes the level up and limits softly. */
     const val VOCODER_GAIN = 7.0 / 32768 / 3
 
+    /** The TETRA decoder gives 16-bit full scale as -1 .. 1: brought to the level of the other vocoders ([VOCODER_GAIN]). */
+    const val TETRA_GAIN = 7.0 / 3
     /** A muted frame is not left at exact zero mid-call: a faint noise floor (about -80 dBFS) keeps the output alive. */
     fun comfort(pcm: FloatArray): FloatArray {
         for (v in pcm) if (v != 0f) return pcm
@@ -50,6 +53,21 @@ object Vocoders {
                     for (row in fr) row.fill(0)
                     for (i in 0 until 36) { fr[rW[i]][rX[i]] = bits[2 * i]; fr[rY[i]][rZ[i]] = bits[2 * i + 1] }
                     return comfort(d.decode(fr).copyOf())
+                }
+            }
+        }
+        // TETRA: a 137-bit speech frame, or an empty one for a frame lost or failing its parity (concealed by the decoder)
+        registerCodec(CodecIds.TETRA) {
+            val d = TetraAcelp(); var lastBad = false
+            object : VoiceCodec {
+                override val id = CodecIds.TETRA
+                override fun reset() { d.reset() }
+                override val bad: Boolean get() = lastBad
+                override fun decode(bits: IntArray): FloatArray {
+                    lastBad = bits.size != 137
+                    val pcm = d.decode(if (lastBad) null else bits)
+                    for (i in pcm.indices) pcm[i] = (pcm[i] * TETRA_GAIN).toFloat()
+                    return comfort(pcm)
                 }
             }
         }
