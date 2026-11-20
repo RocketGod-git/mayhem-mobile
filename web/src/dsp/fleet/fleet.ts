@@ -154,6 +154,8 @@ interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: nu
 export const channelBudget = (rate: number) => Math.max(4, Math.min(24, Math.floor(110e6 / Math.max(rate, 1))));
 const gridKey = (hz: number) => Math.round(hz / 6250) * 6250;
 /** TETRA is not tried on 925 to 960 MHz (the 900 MHz land mobile and GSM downlink band), where none is allocated. */
+/** The feature set 0x10 messages carry 16-bit unit IDs, where FFFF is every unit, not a radio. */
+const allUnits = (cs: { fid: number }, id: number) => cs.fid === 0x10 && id === 0xffff;
 const tetraBand = (hz: number) => hz < 925e6 || hz > 960e6;
 
 class Chan {
@@ -1280,11 +1282,11 @@ export class FleetProcessor implements IqProcessor {
           const mine = [...s.lcns].filter(([, v]) => v.hz === k.hz).map(([n]) => n);
           k.role = mine.includes(s.rest) ? 'rest' : k.role === 'rest' ? 'control' : k.role;
         }
-        if (cs.unit !== undefined) this.touchUnit(s.key, cs.unit, c, now, 'busy channel', cs, '');
+        if (cs.unit !== undefined && !allUnits(cs, cs.unit)) this.touchUnit(s.key, cs.unit, c, now, 'busy channel', cs, '');
         break;
       }
-      case 'unithdr': if (cs.unit !== undefined) { c.hdr = { ms: now, slot }; this.touchUnit(s.key, cs.unit, c, now, 'unit report header', cs, ''); } break;
-      case 'unitrpt': if (cs.unit !== undefined) this.unitReport(s, c, cs, now); break;
+      case 'unithdr': if (cs.unit !== undefined && !allUnits(cs, cs.unit)) { c.hdr = { ms: now, slot }; this.touchUnit(s.key, cs.unit, c, now, 'unit report header', cs, ''); } break;
+      case 'unitrpt': if (cs.unit !== undefined && !allUnits(cs, cs.unit)) this.unitReport(s, c, cs, now); break;
       case 'grant': {
         if (cs.verified && cs.fid === 0) s.trunk = 'TIER III';
         if (cs.dst === undefined) break;
@@ -1296,7 +1298,7 @@ export class FleetProcessor implements IqProcessor {
         break;
       }
       case 'ack': case 'unit': case 'aloha': case 'callann': {
-        if (cs.kind === 'aloha' && cs.verified) s.trunk = 'TIER III'; const id = cs.kind === 'callann' ? cs.unit : cs.dst; if (id && id < 0xfffff0) this.touchUnit(s.key, id, c, now, cs.kind === 'ack' ? 'acknowledged' : cs.name.toLowerCase(), cs, ''); break; }
+        if (cs.kind === 'aloha' && cs.verified) s.trunk = 'TIER III'; const id = cs.kind === 'callann' ? cs.unit : cs.dst; if (id && id < 0xfffff0 && !allUnits(cs, id)) this.touchUnit(s.key, id, c, now, cs.kind === 'ack' ? 'acknowledged' : cs.name.toLowerCase(), cs, ''); break; }
     }
   }
   /**

@@ -227,6 +227,8 @@ fun channelBudget(rate: Int): Int = max(4, min(24, floor(110e6 / max(rate, 1)).t
 private fun gridKey(hz: Double): Long = Math.round(hz / 6250) * 6250
 private fun gridKey(hz: Long): Long = gridKey(hz.toDouble())
 /** TETRA is not tried on 925 to 960 MHz (the 900 MHz land mobile and GSM downlink band), where none is allocated. */
+/** The feature set 0x10 messages carry 16-bit unit IDs, where FFFF is every unit, not a radio. */
+private fun allUnits(cs: Csbk, id: Int): Boolean = cs.fid == 0x10 && id == 0xffff
 private fun tetraBand(hz: Long): Boolean = hz < 925_000_000L || hz > 960_000_000L
 private fun round6(x: Double): Double = Math.round(x * 1e6) / 1e6
 
@@ -1473,10 +1475,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                     val mine = s.lcns.filter { it.value.first == k.hz }.keys
                     k.role = if (s.rest in mine) "rest" else if (k.role == "rest") "control" else k.role
                 }
-                cs.unit?.let { touchUnit(s.key, it, c, now, "busy channel", cs, "") }
+                cs.unit?.let { if (!allUnits(cs, it)) touchUnit(s.key, it, c, now, "busy channel", cs, "") }
             }
-            "unithdr" -> cs.unit?.let { c.hdr = Hdr(now, slot); touchUnit(s.key, it, c, now, "unit report header", cs, "") }
-            "unitrpt" -> if (cs.unit != null) unitReport(s, c, cs, now)
+            "unithdr" -> cs.unit?.let { if (!allUnits(cs, it)) { c.hdr = Hdr(now, slot); touchUnit(s.key, it, c, now, "unit report header", cs, "") } }
+            "unitrpt" -> if (cs.unit != null && !allUnits(cs, cs.unit!!)) unitReport(s, c, cs, now)
             "grant" -> {
                 if (cs.verified && cs.fid == 0) s.trunk = "TIER III"
                 val dst = cs.dst ?: return
@@ -1490,7 +1492,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             "ack", "unit", "aloha", "callann" -> {
                 if (cs.kind == "aloha" && cs.verified) s.trunk = "TIER III"
                 val id = if (cs.kind == "callann") cs.unit else cs.dst
-                if (id != null && id != 0 && id < 0xfffff0) touchUnit(s.key, id, c, now, if (cs.kind == "ack") "acknowledged" else cs.name.lowercase(), cs, "")
+                if (id != null && id != 0 && id < 0xfffff0 && !allUnits(cs, id)) touchUnit(s.key, id, c, now, if (cs.kind == "ack") "acknowledged" else cs.name.lowercase(), cs, "")
             }
         }
     }
