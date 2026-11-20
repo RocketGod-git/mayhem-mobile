@@ -25,10 +25,17 @@ object HdScanPlan {
     const val MAX_LOOKS = 4
     /** The part of a span a look trusts: the radio's baseband filter rolls the edges off. */
     const val LOOK_USABLE = 0.75
-    /** A channel this far over the floor (dB, its 160 kHz average) is a station worth a visit. */
-    const val STRONG_DB = 12.0
-    /** A station heard before is visited again when the look still sees it at least this far over the floor. */
-    const val SAVED_DB = 6.0
+    /** A channel this far over its local floor (dB, the average across its middle 100 kHz) is a station worth a visit. */
+    const val STRONG_DB = 8.0
+    /** A station heard before is visited again when the look still sees it at least this far over its local floor. */
+    const val SAVED_DB = 4.0
+    /** A channel's level is the average across ±50 kHz of it: the core of an FM station, not its rounded skirts. */
+    const val LEVEL_HALF = 50_000.0
+    /** The local floor: the 20th percentile of the bins within ±1 MHz (the radio's filter tilts the floor across a span). */
+    const val FLOOR_REACH = 1_000_000.0
+    const val FLOOR_PCT = 0.2
+    /** A pass that heard no digital rests this long on the strongest station before it looks again (ms). */
+    const val REST_MS = 120_000L
 
     class Plan(val wide: Boolean, val rate: Int, val centers: List<Long>)
 
@@ -66,24 +73,29 @@ object HdScanPlan {
     }
 
     /**
-     * Every raster channel a look shows, with its level: the average dB over the floor across ±80 kHz of it. [spec] is
-     * the averaged spectrum, dB over its own median, bin 0 at the bottom of the span. Only the trusted middle of the
-     * span counts, and the DC spike's own bins (±30 kHz of the center) are left out of every channel.
+     * Every raster channel a look shows, with its level: the average dB across ±50 kHz of it, over the local floor (the
+     * 20th percentile of the bins within ±1 MHz). [spec] is the averaged spectrum in dB on any common scale (dB over its
+     * own median, say), bin 0 at the bottom of the span. Only the trusted middle of the span counts, and the DC spike's
+     * own bins (±30 kHz of the center) are left out everywhere.
      */
     fun channelLevels(spec: DoubleArray, rate: Int, centerHz: Long): Map<Long, Double> {
         val out = LinkedHashMap<Long, Double>(); val n = spec.size
         if (n == 0 || rate <= 0) return out
         val binHz = rate.toDouble() / n; val start = centerHz - rate / 2.0; val half = rate * LOOK_USABLE / 2
-        val w = max(1, floor(80_000 / binHz).toInt())
+        val w = max(1, floor(LEVEL_HALF / binHz).toInt()); val fw = max(w + 1, floor(FLOOR_REACH / binHz).toInt())
+        fun dc(k: Int) = abs(start + (k + 0.5) * binHz - centerHz) < 30_000
+        val around = DoubleArray(2 * fw + 1)
         var f = ceil(max(BAND_LO.toDouble(), centerHz - half) / RASTER).toLong() * RASTER
         while (f <= min(BAND_HI.toDouble(), centerHz + half)) {
             val mid = floor((f - start) / binHz).toInt()
             var sum = 0.0; var cnt = 0
-            for (k in max(0, mid - w)..min(n - 1, mid + w)) {
-                if (abs(start + (k + 0.5) * binHz - centerHz) < 30_000) continue
-                sum += spec[k]; cnt++
+            for (k in max(0, mid - w)..min(n - 1, mid + w)) if (!dc(k)) { sum += spec[k]; cnt++ }
+            var na = 0
+            for (k in max(0, mid - fw)..min(n - 1, mid + fw)) if (!dc(k)) around[na++] = spec[k]
+            if (cnt > 0 && na > 0) {
+                java.util.Arrays.sort(around, 0, na)
+                out[f] = sum / cnt - around[(na * FLOOR_PCT).toInt()]
             }
-            if (cnt > 0) out[f] = sum / cnt
             f += RASTER
         }
         return out
@@ -96,7 +108,7 @@ object HdScanPlan {
     }
 
     /**
-     * The stations in a look: channels at least [minDb] over the floor that stand above both neighbors (a strong
+     * The stations in a look: channels at least [minDb] over their local floor that stand above both neighbors (a strong
      * station's ±100 kHz shoulders and its HD sidebands also read high), lowest first.
      */
     fun strongStations(levels: Map<Long, Double>, minDb: Double = STRONG_DB): List<Long> =
@@ -112,5 +124,12 @@ object HdScanPlan {
     fun visitOrder(found: List<Long>, saved: List<Long>, levels: Map<Long, Double>? = null): List<Long> {
         val keep = saved.map(::snap).filter { levels == null || (levels[it] ?: Double.NEGATIVE_INFINITY) >= SAVED_DB }
         return (found.map(::snap) + keep).distinct().filter { it in BAND_LO..BAND_HI }.sorted()
+    }
+
+    /** Where a pass with no digital rests: the visit the looks read loudest (the first one when there are no levels). */
+    fun strongest(visits: List<Long>, levels: Map<Long, Double>?): Long? {
+        var best: Long? = null; var bestDb = Double.NEGATIVE_INFINITY
+        for (f in visits) { val v = levels?.get(f) ?: Double.NEGATIVE_INFINITY; if (best == null || v > bestDb) { best = f; bestDb = v } }
+        return best
     }
 }

@@ -399,7 +399,7 @@ private fun HdHead(m: HdSnap?, tuned: Long, call: String, rec: HdStationRec?, sc
             Text(msg, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false, modifier = Modifier.weight(1f).basicMarquee(iterations = Int.MAX_VALUE))
         }
         if (scan.auto) {
-            val text = if (scan.phase != "dwell") "AUTO · FINDING STATIONS 88–108"
+            val text = if (scan.phase == "rest") "AUTO · NO HD HEARD · LOOKING AGAIN SOON" else if (scan.phase != "dwell") "AUTO · FINDING STATIONS 88–108"
                 else "AUTO · ${if (scan.locked != 0L) "FILLING IN" else "CHECKING"} ${max(0L, (scan.until - now + 999) / 1000)} s · ${scan.queue.size} NEXT"
             Text(text, color = if (scan.locked != 0L) Palette.ok else Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1)
         }

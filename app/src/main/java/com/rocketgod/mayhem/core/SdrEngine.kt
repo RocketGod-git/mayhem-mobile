@@ -511,6 +511,8 @@ object SdrEngine {
     @Volatile private var sampleRate = IQ_RATE
     @Volatile var sourceLabel = "HackRF"
     @Volatile var processor: IqProcessor? = null; private set
+    /** HD AUTO's wide look is on: the demodulator rests (the span is many times the channel; only the spectrum is wanted). */
+    @Volatile var holdDemod = false
     @Volatile private var worker: Thread? = null
     // Room for about 0.2 s of samples (onIq caps it by time): eight buffers held only 3 ms at 19.2 Msps, while a
     // LoRa frame's channel catching up from its start takes 60-80 ms now and then and USB delivers in bursts.
@@ -596,6 +598,7 @@ object SdrEngine {
     /** Enter an app: audio mode, dial, IQ rate, gain preset and the baseband processor, all at once. */
     fun configure(mode: Mode, freqHz: Long, rateHz: Int, lna: Int, vga: Int, amp: Boolean, proc: IqProcessor?) {
         processor = null
+        holdDemod = false
         _offsetHz.value = 0
         _mode.value = mode
         _rateHz.value = clampRate(rateHz)
@@ -1024,7 +1027,8 @@ object SdrEngine {
                     val dm0 = System.nanoTime(); stHd += dm0 - hd0; val em0 = stEmit
 
                     // ---- demod → audio (+ FM tap for packet processors) ----
-                    if (m != Mode.NONE && abs(_offsetHz.value) < rate / 2 - 40_000) {     // a channel slid off the span is silent
+                    // (and nothing is demodulated while HD AUTO looks across the band at a wide rate: only the spectrum runs then)
+                    if (m != Mode.NONE && !holdDemod && abs(_offsetHz.value) < rate / 2 - 40_000) {     // a channel slid off the span is silent
                         // Two-stage decimation. Stage 1 brings the IQ down to an intermediate rate near the channel: WFM ->
                         // ~240 kHz by a plain average, everything else -> ~48 kHz through a CIC + FIR (ChannelDecimator)
                         // that keeps neighbors from folding onto the channel. Stage 2 decimates the audio to 48 kHz.

@@ -39,7 +39,7 @@ import type { Js8Decode } from './dsp/js8/decoder.js';
 import type { Js8Speed } from './dsp/js8/modes.js';
 import { GeoMap, type GeoItem, type RadarCell, type GeoShape, type GeoImage, mapStart, saveLastPos, lastKnownPos, zoneGuess } from './geomap.js';
 import type { StationSnap, ProgramRow } from './dsp/hd/station.js';
-import { hdChannelLevels, hdLookPlan, hdMergeLevels, hdStrongStations, hdVisitOrder, hdWindows, type HdLookPlan } from './hdscan.js';
+import { hdChannelLevels, hdLookPlan, hdMergeLevels, hdStrongStations, hdStrongest, hdVisitOrder, hdWindows, HD_REST_MS, type HdLookPlan } from './hdscan.js';
 import { parseTrafficInfo, parseRadarInfo, tileBounds, trafficTile, radarImage, type TrafficInfo, type RadarInfo } from './dsp/hd/lot.js';
 import { programTypeName, dataTypeName, locationValid, clockCheck, localTimeHint, utcOffsetText, BLEND_NAMES, type SisSummary } from './dsp/hd/sis.js';
 import type { AtscSnap, StationRow as AtscStation, SubRow as AtscSub, EventRec as AtscEvent, LiveSignal as AtscLive } from './dsp/atsc/atsc.js';
@@ -5436,8 +5436,10 @@ const hdUi = {
   tileUrls: new Map<string, string>(),
   auto: false,
   scan: {
-    phase: 'look' as 'look' | 'survey' | 'dwell', plan: { wide: false, rate: HD_RATE, centers: HD_WINDOWS } as HdLookPlan, step: 0, from: 0, until: 0,
+    phase: 'look' as 'look' | 'survey' | 'dwell' | 'rest', plan: { wide: false, rate: HD_RATE, centers: HD_WINDOWS } as HdLookPlan, step: 0, from: 0, until: 0,
     acc: null as Float64Array | null, accN: 0, levels: new Map<number, number>(), found: [] as number[], queue: [] as number[], locked: 0, cur: 0, started: 0,
+    /** This pass: the hybrid channels' scores (survey), the stations visited and how loud, and whether any was digital. */
+    cands: new Map<number, number>(), visits: [] as number[], loud: null as Map<number, number> | null, digital: false,
   },
   /** The newest spectrum row on this screen (0..1 of rangeDb), for AUTO's wide look. */
   bins: null as Float32Array | null, binsRange: 0,
@@ -5505,7 +5507,7 @@ function hdLookRates(): number[] {
 /** AUTO from the bottom of the band: find the stations (wide looks, or windows on a narrow radio), then visit them. */
 function hdBandStart(): void {
   const s = hdUi.scan;
-  s.plan = hdLookPlan(hdLookRates(), HD_RATE); s.step = 0; s.levels = new Map(); s.found = []; s.queue = [];
+  s.plan = hdLookPlan(hdLookRates(), HD_RATE); s.step = 0; s.levels = new Map(); s.found = []; s.cands = new Map(); s.queue = []; s.visits = []; s.loud = null; s.digital = false;
   hdLookAt();
 }
 /** One look (or one window) of the plan. A wide look moves only the span: the dial stays where it is. */
@@ -5514,7 +5516,8 @@ function hdLookAt(): void {
   s.cur = c; s.acc = null; s.accN = 0;
   if (!s.plan.wide) { s.phase = 'survey'; s.until = now + 2_600; hdTune(c, true); return; }
   s.phase = 'look'; s.from = now + 1_500; s.until = now + 4_000;
-  // the decoder rests while the span is wide; back at the HD rate it starts over on the first station
+  // the HD decoder and the audio demodulator rest while the span is wide: only the spectrum runs at the wide rate.
+  // Back at the HD rate the decoder starts over on the first station.
   worker?.postMessage({ type: 'hdLook', on: true });
   if (state.rate !== s.plan.rate) setRate(s.plan.rate);
   if (state.viewLo !== c) scope?.clear();
@@ -5529,6 +5532,12 @@ function hdLookEnd(): void {
   setRate(HD_RATE); scope?.clear();
   hdTune(state.freq, true);
 }
+/** The pass is found: visit its stations, lowest first. */
+function hdVisit(queue: number[], loud: Map<number, number> | null): void {
+  const s = hdUi.scan;
+  s.queue = queue; s.visits = [...queue]; s.loud = loud;
+  hdNextCandidate();
+}
 /** AUTO: find the stations, then dwell on each, lowest first, long enough to fill it in; at the top, look again. */
 function hdScanTick(): void {
   if (state.app !== 'hd' || !hdUi.auto) return;
@@ -5539,7 +5548,7 @@ function hdScanTick(): void {
       // dB over this row's own median, summed
       const db = Float32Array.from(bins, v => v * hdUi.binsRange), med = Float32Array.from(db).sort()[db.length >> 1];
       if (!s.acc || s.acc.length !== db.length) { s.acc = new Float64Array(db.length); s.accN = 0; }
-      for (let k = 0; k < db.length; k++) s.acc[k] += Math.max(0, db[k] - med);
+      for (let k = 0; k < db.length; k++) s.acc[k] += db[k] - med;
       s.accN++;
     }
     if ((now >= s.until && s.accN >= 3) || now >= s.until + 4_000) {
@@ -5547,36 +5556,44 @@ function hdScanTick(): void {
       if (acc && n) hdMergeLevels(s.levels, hdChannelLevels(Float64Array.from(acc, v => v / n), state.rate, s.cur));
       if (++s.step < s.plan.centers.length) hdLookAt();
       else {
-        const found = hdStrongStations(s.levels);
-        s.queue = hdVisitOrder(found, [...hdUi.stations.keys()], s.levels);
-        log(`HD AUTO: ${found.length} strong stations in a look across the band (${found.map(hdMhz).join(' ')}), visiting ${s.queue.length} lowest first`);
-        hdLookEnd(); hdNextCandidate();
+        const found = hdStrongStations(s.levels), queue = hdVisitOrder(found, [...hdUi.stations.keys()], s.levels);
+        log(`HD AUTO: ${found.length} strong stations in a look across the band (${found.map(hdMhz).join(' ')}), visiting ${queue.length} lowest first`);
+        hdLookEnd(); hdVisit(queue, s.levels);
       }
     }
   } else if (s.phase === 'survey') {
     if (now >= s.until) {
-      s.found.push(...(m && Math.abs(m.centerHz - state.viewLo) < 5_000 ? m.cands : []).filter(c => Math.abs(c.hz - state.viewLo) <= HD_REACH).map(c => c.hz));
+      for (const c of m && Math.abs(m.centerHz - state.viewLo) < 5_000 ? m.cands : []) if (Math.abs(c.hz - state.viewLo) <= HD_REACH) { s.found.push(c.hz); s.cands.set(c.hz, Math.max(c.scoreDb, s.cands.get(c.hz) ?? -Infinity)); }
       if (++s.step < s.plan.centers.length) hdLookAt();
       else {
-        s.queue = hdVisitOrder(s.found, [...hdUi.stations.keys()]);
-        log(`HD AUTO: ${s.found.length} hybrid channels in ${s.plan.centers.length} windows, visiting ${s.queue.length} lowest first`);
-        hdNextCandidate();
+        const queue = hdVisitOrder(s.found, [...hdUi.stations.keys()]);
+        log(`HD AUTO: ${s.found.length} hybrid channels in ${s.plan.centers.length} windows, visiting ${queue.length} lowest first`);
+        hdVisit(queue, s.cands);
       }
     }
+  } else if (s.phase === 'rest') {
+    if (now >= s.until) hdBandStart();
   } else {
     const st = m && Math.abs(m.hz - s.cur) < 2_000 ? m : null, digital = !!st && (st.station.frames > 0 || st.rx.state === 'sync' || st.rx.state === 'frames');
-    if (digital && !s.locked) { s.locked = now; s.until = now + 45_000; }
+    if (digital && !s.locked) { s.locked = now; s.until = now + 45_000; s.digital = true; }
     const filled = !!st && !!st.station.sis.callsign && now - s.locked > 20_000 && st.station.programs.every(p => p.title || p.lastMs === 0);
     if (now >= s.until || (s.locked && filled)) hdNextCandidate();
   }
   refreshHd();
   hdUi.scanTimer = window.setTimeout(hdScanTick, 500);
 }
-/** The next station up; past the top, a fresh look from the bottom. */
+/**
+ * The next station up. Past the top: a pass that heard digital looks again from the bottom; one that heard none rests
+ * on the strongest station for two minutes first (a fresh look every few seconds would only chop its audio).
+ */
 function hdNextCandidate(): void {
-  const s = hdUi.scan, next = s.queue.shift();
-  if (next === undefined) { hdBandStart(); return; }
-  s.phase = 'dwell'; s.cur = next; s.locked = 0; s.started = Date.now(); s.until = Date.now() + 6_000; hdTune(next);
+  const s = hdUi.scan, next = s.queue.shift(), now = Date.now();
+  if (next !== undefined) { s.phase = 'dwell'; s.cur = next; s.locked = 0; s.started = now; s.until = now + 6_000; hdTune(next); return; }
+  if (s.digital) { hdBandStart(); return; }
+  const best = hdStrongest(s.visits, s.loud);
+  s.phase = 'rest'; s.until = now + HD_REST_MS; s.cur = best ?? state.freq;
+  log(`HD AUTO: no digital heard on this pass, resting on ${hdMhz(s.cur)} MHz before the next look`);
+  if (best !== null) hdTune(best);
 }
 /** Step to the next or previous station already heard. */
 function hdStep(dir: 1 | -1): void {
@@ -5730,7 +5747,7 @@ function hdHead(m: HdSnapMsg | null, now: number): string {
   const call = sis?.callsign && sis.nameVotes[0] >= 3 ? sis.callsign : rec?.call ?? '';
   const [lock, tone] = hdLock(m, now);
   const s = hdUi.scan;
-  const scan = hdUi.auto ? (s.phase !== 'dwell' ? 'AUTO · FINDING STATIONS 88–108' : `AUTO · ${s.locked ? 'FILLING IN' : 'CHECKING'} ${Math.max(0, Math.ceil((s.until - now) / 1000))} s · ${s.queue.length} NEXT`) : '';
+  const scan = hdUi.auto ? (s.phase === 'rest' ? 'AUTO · NO HD HEARD · LOOKING AGAIN SOON' : s.phase !== 'dwell' ? 'AUTO · FINDING STATIONS 88–108' : `AUTO · ${s.locked ? 'FILLING IN' : 'CHECKING'} ${Math.max(0, Math.ceil((s.until - now) / 1000))} s · ${s.queue.length} NEXT`) : '';
   const tile = (n: number | string, l: string) => `<span><b>${n}</b><small>${l}</small></span>`;
   const progs = st ? st.programs.filter(p => p.lastMs).length : rec?.programs.length ?? 0;
   return `<div class="hd-watch"><b>${hdMhz(state.freq)} MHz</b>${call ? `<strong>${esc(call)}</strong>` : ''}<small>${esc(sis?.slogan || rec?.slogan || (st?.frames ? '' : 'no digital data yet'))}</small><em class="${tone}">${lock}</em></div>`

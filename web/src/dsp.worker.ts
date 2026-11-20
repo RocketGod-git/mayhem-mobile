@@ -173,6 +173,8 @@ const hd = new HdDetector(r => post({ type: 'hd', ...r }));
 let hdOn = false;
 /** The HD Radio app: Layer 1 to the station's data, on the raw IQ beside the WFM audio of the same station. */
 const hdApp = new HdProcessor(emit);
+/** HD AUTO's wide look is on: the demodulator rests (the span is many times the channel; only the spectrum is wanted). */
+let demodHold = false;
 // SAME / EAS weather-radio alerts ride the NFM discriminator the same way, tapped only while the audio app asks
 // for it (NOAA weather radio is NFM at 162 MHz), so it costs nothing elsewhere.
 const same = new SameDecoder(emit);
@@ -395,7 +397,7 @@ self.onmessage = (e: MessageEvent) => {
       if (typeof m.voice === 'boolean') { voiceOn = m.voice; if (!voiceOn) voice.reset(); }
       break;
     case 'audioPort': audioPort = m.port as MessagePort; break;
-    case 'app': if (m.app !== 'js8') js8On = false; processor = makeProcessor(m.app as string, m); break;
+    case 'app': demodHold = false; if (m.app !== 'js8') js8On = false; processor = makeProcessor(m.app as string, m); break;
     case 'geo': adsb.ref = { lat: m.lat as number, lon: m.lon as number }; fleet.setRef(m.lat as number, m.lon as number); break;
     case 'fleetRef': fleet.setRef(m.lat as number, m.lon as number); break;
     case 'fleet':
@@ -432,7 +434,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'rds': rdsOn = !!m.on; if (!rdsOn) { rds.reset(); rdsN = 0; } break;
     case 'hd': hdOn = !!m.on; if (!hdOn) hd.reset(); break;
     // HD Radio AUTO is looking across the band at a wide rate: its decoder rests until the look is over
-    case 'hdLook': hdApp.paused = !!m.on; break;
+    case 'hdLook': hdApp.paused = demodHold = !!m.on; break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
     case 'pager': pagerWhich = m.which; pocsag.reset(); flex.reset(); break;
     case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;
@@ -579,7 +581,8 @@ function process(iq: Int8Array): void {
 
   // HD Radio sidebands reach 200 kHz either side of the station; the detector needs them inside the span.
   if (hdOn && mode === 'WFM' && Math.abs(offsetHz) < rate / 2 - 240_000) hd.push(iq, nSamp, rate, offsetHz);
-  if (mode !== 'NONE' && Math.abs(offsetHz) < rate / 2 - 40_000) {       // a channel slid off the span is silent
+  // (and nothing is demodulated while HD AUTO looks across the band at a wide rate: only the spectrum runs then)
+  if (mode !== 'NONE' && !demodHold && Math.abs(offsetHz) < rate / 2 - 40_000) {       // a channel slid off the span is silent
     const mixing = offsetHz !== 0, offW = -2 * Math.PI * offsetHz / rate, offDr = Math.cos(offW), offDi = Math.sin(offW);
     // Two-stage decimation. Stage 1 brings the IQ down to an intermediate rate near the channel: WFM -> ~240 kHz by
     // a plain average, everything else -> ~48 kHz through a CIC + FIR (ChannelDecimator) that keeps neighbors from

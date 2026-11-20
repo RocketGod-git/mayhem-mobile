@@ -14,10 +14,16 @@ export const HD_BAND_LO = 87_900_000, HD_BAND_HI = 107_900_000, HD_RASTER = 100_
 export const HD_MAX_LOOKS = 4;
 /** The part of a span a look trusts: the radio's baseband filter rolls the edges off. */
 export const HD_LOOK_USABLE = 0.75;
-/** A channel this far over the floor (dB, its 160 kHz average) is a station worth a visit. */
-export const HD_STRONG_DB = 12;
-/** A station heard before is visited again when the look still sees it at least this far over the floor. */
-export const HD_SAVED_DB = 6;
+/** A channel this far over its local floor (dB, the average across its middle 100 kHz) is a station worth a visit. */
+export const HD_STRONG_DB = 8;
+/** A station heard before is visited again when the look still sees it at least this far over its local floor. */
+export const HD_SAVED_DB = 4;
+/** A channel's level is the average across ±50 kHz of it: the core of an FM station, not its rounded skirts. */
+export const HD_LEVEL_HALF = 50_000;
+/** The local floor: the 20th percentile of the bins within ±1 MHz (the radio's filter tilts the floor across a span). */
+export const HD_FLOOR_REACH = 1_000_000, HD_FLOOR_PCT = 0.2;
+/** A pass that heard no digital rests this long on the strongest station before it looks again (ms). */
+export const HD_REST_MS = 120_000;
 
 export interface HdLookPlan { wide: boolean; rate: number; centers: number[] }
 
@@ -54,22 +60,26 @@ export function hdLookPlan(rates: number[], hdRate: number): HdLookPlan {
 }
 
 /**
- * Every raster channel a look shows, with its level: the average dB over the floor across ±80 kHz of it. [spec] is the
- * averaged spectrum, dB over its own median, bin 0 at the bottom of the span. Only the trusted middle of the span
- * counts, and the DC spike's own bins (±30 kHz of the center) are left out of every channel.
+ * Every raster channel a look shows, with its level: the average dB across ±50 kHz of it, over the local floor (the
+ * 20th percentile of the bins within ±1 MHz). [spec] is the averaged spectrum in dB on any common scale (dB over its
+ * own median, say), bin 0 at the bottom of the span. Only the trusted middle of the span counts, and the DC spike's own
+ * bins (±30 kHz of the center) are left out everywhere.
  */
 export function hdChannelLevels(spec: ArrayLike<number>, rate: number, centerHz: number): Map<number, number> {
   const out = new Map<number, number>(), n = spec.length;
   if (!n || rate <= 0) return out;
-  const binHz = rate / n, start = centerHz - rate / 2, half = rate * HD_LOOK_USABLE / 2, w = Math.max(1, Math.floor(80_000 / binHz));
+  const binHz = rate / n, start = centerHz - rate / 2, half = rate * HD_LOOK_USABLE / 2;
+  const w = Math.max(1, Math.floor(HD_LEVEL_HALF / binHz)), fw = Math.max(w + 1, Math.floor(HD_FLOOR_REACH / binHz));
+  const dc = (k: number) => Math.abs(start + (k + 0.5) * binHz - centerHz) < 30_000;
   for (let f = Math.ceil(Math.max(HD_BAND_LO, centerHz - half) / HD_RASTER) * HD_RASTER; f <= Math.min(HD_BAND_HI, centerHz + half); f += HD_RASTER) {
     const mid = Math.floor((f - start) / binHz);
     let sum = 0, cnt = 0;
-    for (let k = Math.max(0, mid - w); k <= Math.min(n - 1, mid + w); k++) {
-      if (Math.abs(start + (k + 0.5) * binHz - centerHz) < 30_000) continue;
-      sum += spec[k]; cnt++;
-    }
-    if (cnt) out.set(f, sum / cnt);
+    for (let k = Math.max(0, mid - w); k <= Math.min(n - 1, mid + w); k++) if (!dc(k)) { sum += spec[k]; cnt++; }
+    const around: number[] = [];
+    for (let k = Math.max(0, mid - fw); k <= Math.min(n - 1, mid + fw); k++) if (!dc(k)) around.push(spec[k]);
+    if (!cnt || !around.length) continue;
+    around.sort((x, y) => x - y);
+    out.set(f, sum / cnt - around[Math.floor(around.length * HD_FLOOR_PCT)]);
   }
   return out;
 }
@@ -81,7 +91,7 @@ export function hdMergeLevels(into: Map<number, number>, add: Map<number, number
 }
 
 /**
- * The stations in a look: channels at least [minDb] over the floor that stand above both neighbors (a strong
+ * The stations in a look: channels at least [minDb] over their local floor that stand above both neighbors (a strong
  * station's ±100 kHz shoulders and its HD sidebands also read high), lowest first.
  */
 export function hdStrongStations(levels: Map<number, number>, minDb = HD_STRONG_DB): number[] {
@@ -102,4 +112,11 @@ export function hdStrongStations(levels: Map<number, number>, minDb = HD_STRONG_
 export function hdVisitOrder(found: number[], saved: number[], levels: Map<number, number> | null = null): number[] {
   const keep = saved.map(snap).filter(f => !levels || (levels.get(f) ?? -Infinity) >= HD_SAVED_DB);
   return [...new Set([...found.map(snap), ...keep])].filter(f => f >= HD_BAND_LO && f <= HD_BAND_HI).sort((a, b) => a - b);
+}
+
+/** Where a pass with no digital rests: the visit the looks read loudest (the first one when there are no levels). */
+export function hdStrongest(visits: number[], levels: Map<number, number> | null): number | null {
+  let best: number | null = null, bestDb = -Infinity;
+  for (const f of visits) { const v = levels?.get(f) ?? -Infinity; if (best === null || v > bestDb) { best = f; bestDb = v; } }
+  return best;
 }
