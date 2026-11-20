@@ -4801,7 +4801,7 @@ function fleetTgTilesHtml(s: FleetSnap, now: number): string {
   const all = `<div class="fl-tile all ${p.hold ? '' : 'fol'}" role="button" data-flfollow=""><b>ALL</b><small>EVERY TALKGROUP</small><span>first to talk is heard</span></div>`;
   return `<div class="fl-tilegrid">${all}${tiles.map(t => {
     const sys = s.systems.find(x => x.key === t.sys), col = flMapColor(fleetColor(t.sys));
-    const when = t.live ? 'ON THE AIR' : t.lastMs ? `${agoShort(now - t.lastMs)} ago` : 'not heard yet';
+    const when = t.live ? 'ON THE AIR' : t.lastMs ? (agoShort(now - t.lastMs) === 'now' ? 'now' : `${agoShort(now - t.lastMs)} ago`) : 'not heard yet';
     return `<div class="fl-tile ${t.followed ? 'fol' : ''} ${t.live ? 'live' : ''} ${t.emergency ? 'emerg' : ''} ${t.muted ? 'muted' : ''}" role="button" style="--sys:${col}" data-flfollow="${esc(t.key)}">`
       + `<b>TG ${t.tg}</b><small>${esc(sys ? fleetSysTitle(sys) : t.sys)}</small>`
       + `<span><i></i>${esc(when)}</span>${t.sec ? `<em class="${t.sec === 'CLEAR' ? 'ok' : 'enc'}">${esc(t.sec)}</em>` : ''}`

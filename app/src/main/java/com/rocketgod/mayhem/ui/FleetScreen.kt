@@ -481,7 +481,7 @@ private fun TgGrid(tiles: List<DispatchView.TgTile>, s: FleetSnap?, hold: String
                         else {
                             val sys = s?.systems?.firstOrNull { it.key == t.sys }
                             TgTileBox(Modifier.weight(1f).fillMaxHeight(), "TG ${t.tg}", sys?.let { Dispatch.sysTitle(it) } ?: t.sys,
-                                if (t.live) "ON THE AIR" else if (t.lastMs > 0) "${DispatchView.agoShort(now - t.lastMs)} ago" else "not heard yet",
+                                if (t.live) "ON THE AIR" else if (t.lastMs > 0) DispatchView.agoShort(now - t.lastMs).let { if (it == "now") it else "$it ago" } else "not heard yet",
                                 t.live, t.sec, t.followed, t.muted, t.emergency, colorOf(t.sys), accent, { acts.pick("tg:${t.key}") }) { Dispatch.followTalkgroup(t.key) }
                         }
                     }
