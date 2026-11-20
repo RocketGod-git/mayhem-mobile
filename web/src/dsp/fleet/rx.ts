@@ -188,7 +188,7 @@ export class DmrFramer {
   private readonly sm = new SyncMatch();
   private readonly hist = new Uint8Array(144); private hp = 0;
   private t = 0; private lastData = -1e9;
-  private queue: { at: number; voice: boolean; n: number; sf: { slot: number } }[] = [];
+  private queue: { at: number; voice: boolean; n: number; sf: { slot: number }; ms?: boolean }[] = [];
   syncs = 0; voice = 0; ms = 0;
   /** Data bursts whose slot type came through without a correction: a real DMR signal, where a sync alone can be chance. */
   bursts = 0;
@@ -203,28 +203,33 @@ export class DmrFramer {
     while (this.queue.length && this.queue[0].at <= t) this.emit(this.queue.shift()!);
     if (this.queue.some(q => !q.voice && q.at > t)) return;
     if (this.sm.mag() < 1.8) return;
-    if (this.sm.corr(DMR_BS_DATA) > 0.82) {
-      this.syncs++;
+    // a base station's syncs, or a mobile's (a radio heard directly: inbound to a repeater, or talkaround); a mobile's
+    // burst has no CACH, so its slot is not read from it
+    const bsData = this.sm.corr(DMR_BS_DATA) > 0.82, msData = !bsData && this.sm.corr(DMR_MS_DATA) > 0.82;
+    if (bsData || msData) {
+      this.syncs++; if (msData) this.ms++;
       this.queue = this.queue.filter(q => Math.abs(q.at - (t + 54)) > 10);
-      this.add({ at: t + 54, voice: false, n: 0, sf: { slot: -1 } });
-    } else if (this.sm.corr(DMR_BS_VOICE) > 0.82) {
+      this.add({ at: t + 54, voice: false, n: 0, sf: { slot: -1 }, ms: msData });
+      return;
+    }
+    const bsVoice = this.sm.corr(DMR_BS_VOICE) > 0.82, msVoice = !bsVoice && this.sm.corr(DMR_MS_VOICE) > 0.82;
+    if (bsVoice || msVoice) {
       if (this.queue.some(q => q.voice && q.n === 0 && Math.abs(q.at - (t + 54)) <= 10)) return;
       // bursts come every 144 symbols: a voice sync off the grid of the data bursts heard lately is in some payload
       // (the grid is set only by data bursts whose slot type came through clean, so a chance data sync moves nothing)
       const ph = (t - this.lastData) % 144;
       if (t - this.lastData < 9_600 && ph > 2 && ph < 142) return;
-      this.syncs++; this.voice++;
+      this.syncs++; this.voice++; if (msVoice) this.ms++;
       if (this.voiceAt.some(a => Math.abs(t - a - 1728) <= 4)) this.confirmedAt = t;
       this.voiceAt.push(t); if (this.voiceAt.length > 4) this.voiceAt.shift();
-      const sf = { slot: -1 };
-      for (let k = 0; k < 6; k++) this.add({ at: t + 54 + 288 * k, voice: true, n: k, sf });
+      const sf = { slot: msVoice ? 0 : -1 };
+      for (let k = 0; k < 6; k++) this.add({ at: t + 54 + 288 * k, voice: true, n: k, sf, ms: msVoice });
     }
-    else if (this.sm.corr(DMR_MS_DATA) > 0.82 || this.sm.corr(DMR_MS_VOICE) > 0.82) this.ms++;
   }
-  private add(q: { at: number; voice: boolean; n: number; sf: { slot: number } }): void {
+  private add(q: { at: number; voice: boolean; n: number; sf: { slot: number }; ms?: boolean }): void {
     this.queue.push(q); this.queue.sort((a, b) => a.at - b.at);
   }
-  private emit(q: { at: number; voice: boolean; n: number; sf: { slot: number } }): void {
+  private emit(q: { at: number; voice: boolean; n: number; sf: { slot: number }; ms?: boolean }): void {
     const d = new Uint8Array(144);
     for (let i = 0; i < 144; i++) d[i] = this.hist[(this.hp + i) % 144];
     if (q.voice) {
@@ -236,6 +241,7 @@ export class DmrFramer {
       return;
     }
     const b = dmrReadBurst(d);
+    if (b && q.ms) { b.slot = 0; b.busy = 0; b.ms = true; }
     if (b) { if (b.stErrs === 0) { this.bursts++; this.lastData = q.at - 54; } this.onBurst({ burst: b, dibits: d }); }
   }
 }

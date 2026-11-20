@@ -25,7 +25,7 @@ import java.io.File
 enum class MayhemApp(val title: String, val blurb: String, val category: String) {
     AUDIO("Audio", "WFM · NFM · AM · SSB", "Receive"),
     HD("HD Radio", "station data · art · traffic", "Receive"),
-    FLEET("Dispatch", "P25 · DMR trunking and calls", "Receive"),
+    FLEET("Dispatch", "P25 · DMR · Type II trunking and calls", "Receive"),
     PAGER("Pagers", "FLEX · POCSAG", "Receive"),
     LORA("Mesh", "LoRa · Meshtastic · MeshCore", "Receive"),
     ADSB("Flights", "ADS-B · 1090 MHz", "Receive"),

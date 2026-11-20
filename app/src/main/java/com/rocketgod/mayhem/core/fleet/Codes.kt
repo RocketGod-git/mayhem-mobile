@@ -194,7 +194,8 @@ object Codes {
         payload.copyInto(bits, 190, 98, 196)
         return IntArray(144) { (bits[2 * it] shl 1) or bits[2 * it + 1] }
     }
-    class DmrBurst(val slot: Int, val cc: Int, val dt: Int, val stErrs: Int, val bytes: IntArray, val busy: Int)
+    /** [ms]: a mobile station sent it (an MS sync): no CACH, so no slot or busy bit is read from it (slot 0, busy 0). */
+    class DmrBurst(var slot: Int, val cc: Int, val dt: Int, val stErrs: Int, val bytes: IntArray, var busy: Int, var ms: Boolean = false)
     /** Reads a 144-dibit base-station data burst: slot from the CACH, slot type through Golay, payload through BPTC. */
     fun dmrReadBurst(d: IntArray): DmrBurst? {
         var st = 0

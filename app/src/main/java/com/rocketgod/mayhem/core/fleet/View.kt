@@ -43,6 +43,7 @@ object DispatchView {
         "grant" to "grant service options", "LDU1" to "voice link control", "LDU2" to "encryption sync", "HDU" to "call header", "LC" to "voice link control",
         "EMB" to "voice burst privacy bit", "PI" to "privacy header", "assumed" to "nothing on the air marked it encrypted",
         "VCALL" to "voice call message", "SCCH" to "Type-D signaling channel", "MAC" to "Phase 2 push to talk", "ESS" to "Phase 2 encryption sync", "history" to "earlier calls of this talkgroup were encrypted, and no push to talk said otherwise",
+        "analog" to "analog FM voice heard on the channel",
     )
 
     private const val R_MI = 3958.8

@@ -614,9 +614,9 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
     val sys = s.systems.firstOrNull { it.key == c.sys }
     val playing = s.playing == c.key && audioOn; val ended = !c.onAir
     val badge = if (ended) "ENDED" else if (c.emergency) "EMERGENCY" else if (c.outside) "OTHER SYSTEM" else if (c.muted) "MUTED" else if (playing) "PLAYING" else "ON AIR"
-    val lpName = if (c.proto == "NXDN") "CH" else "LPCN"; val lp = if (c.lpcn >= 0) " · $lpName ${c.lpcn}" else ""
+    val lpName = if (c.proto == "NXDN" || c.proto == "SMARTNET") "CH" else "LPCN"; val lp = if (c.lpcn >= 0) " · $lpName ${c.lpcn}" else ""
     val ch = if (c.hz > 0) "${mhz(c.hz)} MHz${if (c.tdma) " · TDMA S${c.slot + 1}" else if (c.proto == "DMR" || c.proto == "TETRA") " · TS${c.slot + 1}" else ""}$lp"
-        else if (c.lpcn >= 0) "$lpName ${c.lpcn}${if (c.proto == "DMR") " · TS${c.slot + 1}" else ""} · learning its frequency" else "channel not resolved"
+        else if (c.lpcn >= 0) "$lpName ${c.lpcn}${if (c.proto == "DMR") " · TS${c.slot + 1}" else ""} · ${if (c.proto == "SMARTNET") "channel plan not proved" else "learning its frequency"}" else "channel not resolved"
     val car = if (c.hz > 0) s.carriers.firstOrNull { abs(it.hz - c.hz) < 3_200 && it.callsign.isNotEmpty() } else null
     val note = dispatchAudioNote(c, s.codecs)
     val blink = (now / 500) % 2 == 1L
@@ -787,7 +787,7 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
             for (c in cars) {
-                val role = when (c.role) { "rest" -> "REST"; "control" -> if (sys.proto == "P25" || sys.proto == "TETRA") "CONTROL" else "REPEATER"; else -> c.role.uppercase() }
+                val role = when (c.role) { "rest" -> "REST"; "control" -> if (sys.proto == "P25" || sys.proto == "TETRA" || sys.proto == "SMARTNET") "CONTROL" else "REPEATER"; else -> c.role.uppercase() }
                 Column(Modifier.clip(RoundedCornerShape(d.dp(8f))).border(1.dp, col.copy(alpha = if (c.role == "rest") 1f else 0.5f), RoundedCornerShape(d.dp(8f)))
                     .background(col.copy(alpha = if (c.role == "rest") 0.18f else 0.06f)).clickable { acts.pick("car:${c.key}") }.padding(horizontal = d.dp(7f), vertical = d.dp(3f))) {
                     Text(mhz(c.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f))
@@ -796,6 +796,10 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
             }
         }
         when (sys.proto) {
+            "SMARTNET" -> {
+                FlKv(listOfNotNull(if (site.site >= 0) "CONTROL CHANNEL" to "${site.site}" else null, if (site.time.isNotEmpty()) "" to site.time.uppercase() else null))
+                if (site.lcns.isNotEmpty()) FlChips("CHANNELS", site.lcns.map { "CH ${it.lcn} ${mhz(it.hz)}" to false }, col)
+            }
             "NXDN" -> {
                 FlKv(listOfNotNull((if (sys.trunk == "CONVENTIONAL") "RAN" else "SITE") to "${site.site}", if (site.nac >= 0 && sys.trunk == "TYPE-C") "RAN" to "${site.nac}" else null,
                     if (site.time.isNotEmpty()) "" to site.time.uppercase() else null, if (site.cls > 0) "VERSION" to "${site.cls}" else null))
@@ -894,7 +898,7 @@ private fun GrantLine(g: GrantRow, now: Long, col: Color, pick: (String) -> Unit
     val d = rememberDims()
     val flash = max(0f, 1 - (now - g.ms) / 1200f)
     val lp = g.lpcn ?: -1
-    val nx = g.sys.startsWith("NXDN")
+    val nx = g.sys.startsWith("NXDN") || g.sys.startsWith("SMARTNET")
     val ch = if (g.hz > 0) mhz(g.hz) + (if (g.tdma) " · TDMA S${g.slot + 1}" else if (nx) " · ${g.ch}" else if (lp >= 0) " · TS${g.slot + 1} · LPCN $lp" else "")
         else g.ch + (if (nx) "" else if (lp >= 0) " · TS${g.slot + 1}" else if (g.tdma && g.slot >= 0) " · TS${g.slot + 1}" else "")
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(d.dp(8f))).background(Brush.horizontalGradient(listOf(col.copy(alpha = 0.06f + 0.25f * flash), Palette.panel)))
@@ -948,6 +952,7 @@ private fun sysType(x: SystemRow, s: FleetSnap): String = when (x.proto) {
     "P25" -> if (s.carriers.any { it.sys == x.key && it.tdma } || s.calls.any { it.sys == x.key && it.tdma }) "P25 PHASE 1 AND 2" else "P25 PHASE 1"
     "DMR" -> when (x.trunk) { "CAPACITY PLUS" -> "DMR CAPACITY PLUS"; "TIER III" -> "DMR TIER III"; else -> "DMR" }
     "NXDN" -> if (x.trunk.isNotEmpty()) "NXDN ${x.trunk}" else "NXDN"
+    "SMARTNET" -> "MOTOROLA TYPE II"
     else -> x.proto
 }
 /** Only what has data: a field with no value is left out, never shown as a dash. */
@@ -1066,6 +1071,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                 StatTiles(listOfNotNull("${x.sites.size}" to "SITES", "${units.size}" to "UNITS", "${if (x.tgs > 0) x.tgs else tgs.size}" to "TALKGROUPS", "${x.grants}" to "GRANTS",
                     if (n > 0) "${Math.round(100.0 * enc / n)}%" to "ENCRYPTED" else null))
                 val ids = when (x.proto) {
+                    "SMARTNET" -> arrayOf<Pair<String, String?>>("SYSTEM ID" to hx(x.sysId, 4), "CHANNEL PLAN" to x.sites.firstOrNull { it.time.isNotEmpty() }?.time)
                     "NXDN" -> when (x.trunk) {
                         "CONVENTIONAL" -> arrayOf<Pair<String, String?>>("RAN" to "${x.sysId}")
                         "TYPE-D" -> arrayOf<Pair<String, String?>>("SITE CODE" to "${x.sysId}")

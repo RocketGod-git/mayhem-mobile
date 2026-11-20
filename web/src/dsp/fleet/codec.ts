@@ -4,8 +4,9 @@
  *  - 'imbe': P25 Phase 1 full rate, 144-bit frames (88 voice bits under FEC), 20 ms each; NXDN's EFR is the same frame.
  *  - 'ambe2': half rate, 72-bit frames (49 voice bits under FEC), 20 ms each: DMR, P25 Phase 2 and NXDN EHR.
  *  - 'tetra': the TETRA ACELP codec, 137-bit frames (after the speech channel decoding), 30 ms each.
+ *  - 'fm': analog FM voice (Motorola Type II voice channels), demodulated on the channel itself: no codec.
  */
-export type CodecId = 'imbe' | 'ambe2' | 'tetra';
+export type CodecId = 'imbe' | 'ambe2' | 'tetra' | 'fm';
 export interface VoiceCodec {
   readonly id: CodecId;
   /** One frame of bits (one per byte, as sent) to 8 kHz audio (160 samples, 240 for TETRA), or null for a frame it drops. */

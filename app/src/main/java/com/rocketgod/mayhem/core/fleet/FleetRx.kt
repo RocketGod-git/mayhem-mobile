@@ -193,7 +193,7 @@ class DmrFramer {
     /** A voice burst: its slot from the CACH, the 144 dibits, and its place in the superframe (0 = the one with the sync). */
     var onVoice: (slot: Int, dibits: IntArray, n: Int) -> Unit = { _, _, _ -> }
     private class Sf(var slot: Int)
-    private class Q(val at: Long, val voice: Boolean, val n: Int, val sf: Sf)
+    private class Q(val at: Long, val voice: Boolean, val n: Int, val sf: Sf, val ms: Boolean = false)
     private val sm = SyncMatch()
     private val hist = IntArray(144); private var hp = 0
     private var t = 0L; private var lastData = -1_000_000_000L
@@ -212,23 +212,28 @@ class DmrFramer {
         while (queue.isNotEmpty() && queue[0].at <= t) emit(queue.removeAt(0))
         if (queue.any { !it.voice && it.at > t }) return
         if (sm.mag() < 1.8f) return
-        if (sm.corr(DMR_BS_DATA) > 0.82f) {
-            syncs++
+        // a base station's syncs, or a mobile's (a radio heard directly: inbound to a repeater, or talkaround); a mobile's
+        // burst has no CACH, so its slot is not read from it
+        val bsData = sm.corr(DMR_BS_DATA) > 0.82f; val msData = !bsData && sm.corr(DMR_MS_DATA) > 0.82f
+        if (bsData || msData) {
+            syncs++; if (msData) ms++
             queue.removeAll { abs(it.at - (t + 54)) <= 10 }
-            add(Q(t + 54, false, 0, Sf(-1)))
-        } else if (sm.corr(DMR_BS_VOICE) > 0.82f) {
+            add(Q(t + 54, false, 0, Sf(-1), msData))
+            return
+        }
+        val bsVoice = sm.corr(DMR_BS_VOICE) > 0.82f; val msVoice = !bsVoice && sm.corr(DMR_MS_VOICE) > 0.82f
+        if (bsVoice || msVoice) {
             if (queue.any { it.voice && it.n == 0 && abs(it.at - (t + 54)) <= 10 }) return
             // bursts come every 144 symbols: a voice sync off the grid of the data bursts heard lately is in some payload
             // (the grid is set only by data bursts whose slot type came through clean, so a chance data sync moves nothing)
             val ph = (t - lastData) % 144
             if (t - lastData < 9_600 && ph > 2 && ph < 142) return
-            syncs++; voice++
+            syncs++; voice++; if (msVoice) ms++
             if (voiceAt.any { abs(t - it - 1728) <= 4 }) confirmedAt = t
             voiceAt.add(t); if (voiceAt.size > 4) voiceAt.removeAt(0)
-            val sf = Sf(-1)
-            for (k in 0 until 6) add(Q(t + 54 + 288L * k, true, k, sf))
+            val sf = Sf(if (msVoice) 0 else -1)
+            for (k in 0 until 6) add(Q(t + 54 + 288L * k, true, k, sf, msVoice))
         }
-        else if (sm.corr(DMR_MS_DATA) > 0.82f || sm.corr(DMR_MS_VOICE) > 0.82f) ms++
     }
     private fun add(q: Q) { queue.add(q); queue.sortBy { it.at } }
     private fun emit(q: Q) {
@@ -242,6 +247,7 @@ class DmrFramer {
             return
         }
         val b = Codes.dmrReadBurst(d)
+        if (b != null && q.ms) { b.slot = 0; b.busy = 0; b.ms = true }
         if (b != null) { if (b.stErrs == 0) { bursts++; lastData = q.at - 54 }; onBurst(DmrEvent(b, d)) }
     }
 }
