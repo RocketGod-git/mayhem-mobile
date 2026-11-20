@@ -152,4 +152,47 @@ object DispatchView {
     /** A span of time, short: "45 s", "12 min", "3.5 h". */
     fun spanShort(ms: Long): String = if (ms < 60_000) "${(ms / 1000.0).roundToInt()} s" else if (ms < 3_600_000) "${(ms / 60_000.0).roundToInt()} min"
         else String.format(java.util.Locale.US, "%.1f h", ms / 3_600_000.0)
+
+    /** A talkgroup as a tile on the Dispatch grid: who it is, how lately it was heard, whether it is encrypted, followed. */
+    data class TgTile(val key: String, val sys: String, val tg: Int, val live: Boolean, val lastMs: Long, val sec: String, val calls: Int, val grants: Int,
+                      val followed: Boolean, val muted: Boolean, val emergency: Boolean)
+    /**
+     * The talkgroup tiles, from the talkgroups the control channels granted and the group calls heard (a conventional DMR
+     * or NXDN talkgroup has calls and no grants). The followed one leads, then emergencies, then the ones on the air,
+     * then the most lately heard; [max] keeps the grid short.
+     */
+    fun tgTiles(tgs: List<TgRow>, calls: List<CallRow>, prefs: TgPrefs, now: Long, max: Int = 200): List<TgTile> {
+        class T(val sys: String, val tg: Int) { var live = false; var lastMs = 0L; var calls = 0; var grants = 0; var emergency = false; var enc = 0 }
+        val by = LinkedHashMap<String, T>()
+        fun tile(sys: String, tg: Int) = by.getOrPut("$sys/$tg") { T(sys, tg) }
+        for (g in tgs) { val t = tile(g.sys, g.tg); t.grants = g.grants; t.lastMs = maxOf(t.lastMs, g.lastMs) }
+        for (c in calls) {
+            if (c.kind != "call" || !c.group || c.tg == 0) continue
+            val t = tile(c.sys, c.tg)
+            t.calls++; t.live = t.live || c.onAir; t.lastMs = maxOf(t.lastMs, if (c.onAir) now else if (c.endMs != 0L) c.endMs else c.startMs)
+            if (c.emergency && (c.onAir || now - c.endMs < EMERGENCY_PIN_MS)) t.emergency = true
+            if (c.encrypted) t.enc++
+        }
+        // a followed talkgroup stays on the grid even before it is heard again
+        if (prefs.hold.isNotEmpty() && !by.containsKey(prefs.hold)) {
+            val i = prefs.hold.lastIndexOf('/'); val tg = prefs.hold.substring(i + 1).toIntOrNull() ?: 0
+            if (i > 0 && tg > 0) tile(prefs.hold.substring(0, i), tg)
+        }
+        val out = by.map { (k, t) ->
+            val sec = if (t.calls == 0) "" else if (t.enc == 0) "CLEAR" else if (t.enc == t.calls) "ENCRYPTED" else "${(100.0 * t.enc / t.calls).roundToInt()}% ENCRYPTED"
+            TgTile(k, t.sys, t.tg, t.live, t.lastMs, sec, t.calls, t.grants, prefs.hold == k, k in prefs.mute, t.emergency)
+        }
+        fun rank(t: TgTile) = if (t.followed) 0 else if (t.emergency) 1 else if (t.live) 2 else 3
+        return out.sortedWith(compareBy<TgTile>({ rank(it) }, { -it.lastMs }, { it.key })).take(max)
+    }
+    /** What a tap on the talkgroup grid does to the follow (the HOLD preference): ALL ("") hears every talkgroup again,
+     *  a tile follows that talkgroup, and a tap on the followed tile goes back to ALL. */
+    fun followTap(hold: String, key: String): String = if (key.isEmpty() || hold == key) "" else key
+    /** What the listen line says: every talkgroup, or only the followed one (and on which system lock). */
+    fun listenText(hold: String, lock: Lock?): String {
+        if (hold.isNotEmpty()) return "only TG ${hold.substring(hold.lastIndexOf('/') + 1)} is heard${if (lock != null) ", locked on ${lock.label}" else ""}"
+        return if (lock != null) "every talkgroup on ${lock.label}, first to talk is heard" else "every talkgroup, first to talk is heard"
+    }
+    /** A call's or system's protocol as its badge says it: P25, P25 P2 (a Phase 2 TDMA call), DMR, NXDN, TETRA, TYPE II. */
+    fun protoLabel(proto: String, tdma: Boolean = false): String = if (proto == "SMARTNET") "TYPE II" else if (proto == "P25" && tdma) "P25 P2" else proto
 }

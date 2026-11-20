@@ -344,7 +344,8 @@ fun FreqCard(
             FaceTag(tag, accent)
             // a phone's header is too narrow for both: the subtitle gives way so the gain pill shows in full
             if (d.widthDp <= 480) Spacer(Modifier.weight(1f))
-            else Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            // a long subtitle (Dispatch names every protocol it reads) takes two lines rather than lose its end
+            else Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(if (title.length > 30) 9f else 10f), letterSpacing = if (title.length > 30) 1.sp else 2.sp, maxLines = if (title.length > 30) 2 else 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
             if (actions != null) actions() else if (onTune != null) DialActions(accent, freq, onTune = onTune)
             GainChip(accent)

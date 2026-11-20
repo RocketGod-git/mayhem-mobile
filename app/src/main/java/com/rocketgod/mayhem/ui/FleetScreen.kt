@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -33,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.derivedStateOf
@@ -58,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -85,6 +89,7 @@ import com.rocketgod.mayhem.core.fleet.CarrierRow
 import com.rocketgod.mayhem.core.fleet.DispatchView
 import com.rocketgod.mayhem.core.fleet.Lock
 import com.rocketgod.mayhem.core.fleet.TgPrefs
+import com.rocketgod.mayhem.core.fleet.UnitRow
 import com.rocketgod.mayhem.core.fleet.FleetProcessor
 import com.rocketgod.mayhem.core.fleet.FleetSnap
 import com.rocketgod.mayhem.core.fleet.GrantRow
@@ -99,15 +104,17 @@ import kotlin.math.max
 
 /** One color per system, used on the cards, the map, the feed and the frequency list. */
 private val FLEET_COLORS = listOf(0xFF4C8DFF, 0xFFFFAF00, 0xFF3DDC84, 0xFFFF5BD2, 0xFF00D5FF, 0xFFFF7A45, 0xFFB18CFF, 0xFFE8E14A, 0xFFFF5B52, 0xFF52FFB8).map { Color(it) }
-private val VIEWS = listOf("SYSTEMS", "CALLS", "MAP", "GRANTS", "FREQS", "LOG")
+private val VIEWS = listOf("SYSTEMS", "CALLS", "MAP", "GRANTS", "FREQS", "LOG", "TALKGROUPS")
 private const val V_SYSTEMS = 0
 private const val V_CALLS = 1
 private const val V_MAP = 2
 private const val V_GRANTS = 3
 private const val V_FREQS = 4
 private const val V_LOG = 5
+/** The talkgroup grid: ALL, and a tile per talkgroup that a tap follows. The first view. */
+private const val V_TGS = 6
 /** On a wide screen the map has the big pane, so it is not a tab. */
-private val WIDE_VIEWS = listOf(V_SYSTEMS, V_CALLS, V_GRANTS, V_FREQS, V_LOG)
+private val WIDE_VIEWS = listOf(V_TGS, V_SYSTEMS, V_CALLS, V_GRANTS, V_FREQS, V_LOG)
 
 private fun mhz(hz: Long, d: Int = 5): String = if (hz > 0) "%.${d}f".format(java.util.Locale.US, hz / 1e6) else "-"
 private fun mhz(hz: Double, d: Int = 5): String = if (hz > 0) "%.${d}f".format(java.util.Locale.US, hz / 1e6) else "-"
@@ -146,6 +153,7 @@ private fun dispatchVuFrac(vu: FleetProcessor.VuLevel, key: String): Float = if 
  * CALLS is the log with replay, MAP puts the units that report a position where they say they are, GRANTS is the live
  * feed with per-talkgroup activity, FREQS every carrier in the span, LOG every decoded block. A tap opens all it carried.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun FleetScreen(accent: Color) {
     val d = rememberDims()
@@ -163,7 +171,7 @@ fun FleetScreen(accent: Color) {
     val gain by Dispatch.gain.collectAsState()
     val following by Dispatch.following.collectAsState()
     val vu by Apps.fleet.vu.collectAsState()
-    var view by rememberSaveable { mutableIntStateOf(V_SYSTEMS) }
+    var view by rememberSaveable { mutableIntStateOf(V_TGS) }
     /** What is open for its details: "unit:<key>", "tg:<key>", "sys:<key>" or "car:<key>". */
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var held by remember { mutableStateOf<FleetSnap?>(null) }
@@ -193,7 +201,9 @@ fun FleetScreen(accent: Color) {
     val trails = s?.units.orEmpty().filter { it.trail.size > 1 }.map { u -> GeoShape(u.key, u.trail.map { it.lat to it.lon }, true, colorOf(u.sys).toArgb(), sel = sel == "unit:${u.key}") }
     val wf = waterfallOn(MayhemApp.FLEET, phoneDefault = false)
     val wide = d.wide
-    LaunchedEffect(wide) { if (wide) { if (view == V_MAP) view = V_SYSTEMS; full = false } }
+    LaunchedEffect(wide) { if (wide) { if (view == V_MAP) view = V_TGS; full = false } }
+    val tiles = s?.let { DispatchView.tgTiles(it.tgs, it.calls, prefs, now) } ?: emptyList()
+    val flBottom = flWideBottom(LocalConfiguration.current.screenHeightDp)
     val tabs = if (wide) WIDE_VIEWS else VIEWS.indices.toList()
 
     fun pick(k: String) { sel = if (sel == k) null else k }
@@ -213,14 +223,21 @@ fun FleetScreen(accent: Color) {
     val acts = DispatchActs(::pick, { k, key -> Dispatch.pref(k, key) }, { Dispatch.replay(it) }, ::goTo, ::lockFor, { Dispatch.setLock(null) })
 
     @Composable
-    fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
-        val counts = listOf("${s?.systems?.size ?: 0}", "${s?.calls?.size ?: 0}", "${pins.size}", "${s?.grants?.size ?: 0}", "${s?.let { liveCarriers(it, now).size } ?: 0}", "${logSnap.total}")
+    fun switcher(withFull: Boolean, modifier: Modifier = Modifier, actions: Boolean = true, onTab: () -> Unit = {}) {
+        val counts = listOf("${s?.systems?.size ?: 0}", "${s?.calls?.size ?: 0}", "${pins.size}", "${s?.grants?.size ?: 0}", "${s?.let { liveCarriers(it, now).size } ?: 0}", "${logSnap.total}", "${tiles.size}")
         Row(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.Top) {
-            FlSeg(tabs.map { if (it == V_LOG) VIEWS[it] else "${VIEWS[it]} ${counts[it]}" }, tabs.indexOf(view), accent, Modifier.weight(1f)) { view = tabs[it] }
-            ToggleBox("EXPORT", false, accent) { export() }
-            ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent) { held = if (held == null) live else null }
-            IconBox(ClearIcon, "Clear") { Apps.fleet.clear(); Apps.fleetLog.clear(); Dispatch.forget(); held = null; sel = null }
-            if (withFull && !wide) IconBox(FullscreenIcon, "Full screen") { full = true }
+            FlSeg(tabs.map { if (it == V_LOG) VIEWS[it] else "${VIEWS[it]} ${counts[it]}" }, tabs.indexOf(view), accent, Modifier.weight(1f)) {
+                view = tabs[it]
+                // a tab is a new view: an open card closes, so what the tab shows is what is on screen
+                if (wide) sel = null
+                onTab()
+            }
+            if (actions) {
+                ToggleBox("EXPORT", false, accent) { export() }
+                ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent) { held = if (held == null) live else null }
+                IconBox(ClearIcon, "Clear") { Apps.fleet.clear(); Apps.fleetLog.clear(); Dispatch.forget(); held = null; sel = null }
+                if (withFull && !wide) IconBox(FullscreenIcon, "Full screen") { full = true }
+            }
         }
     }
 
@@ -231,7 +248,7 @@ fun FleetScreen(accent: Color) {
             GeoMapView(mapItems, accent, Modifier.fillMaxSize().panel(), home = fix, selected = pu?.key, layers = GeoLayers(shapes = trails),
                 // on the phone page one finger scrolls past the map, two move it
                 twoFinger = page != null,
-                start = remember { mapStart(Geo.fix.value) }, focus = focusAt ?: pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true, fitPins = true,
+                start = remember { mapStart(Geo.fix.value) }, focus = focusAt ?: pu?.let { it.lat!! to it.lon!! }, focusKey = focusKey, steady = true, fitPins = true, declutter = true,
                 fallback = { Geo.fix.value ?: Geo.lastKnownPos() ?: Geo.zoneGuess() },
                 // unit reports carry only the low bits of a position: with no position of our own, the region on the map resolves them
                 onDragEnd = { lat, lon -> if (Geo.fix.value == null && Geo.lastKnownPos() == null) Apps.fleet.setRef(lat, lon) }) { pick("unit:$it") }
@@ -241,9 +258,9 @@ fun FleetScreen(accent: Color) {
     }
 
     @Composable
-    fun detail(modifier: Modifier) {
+    fun detail(modifier: Modifier, inline: Boolean = false) {
         if (s != null && sel != null) {
-            FleetCard(s, sel!!, now, if (wide) V_MAP else view, wide, prefs, me, colorOf, acts, modifier,
+            FleetCard(s, sel!!, now, if (wide) V_MAP else view, wide, prefs, me, colorOf, acts, modifier, inline,
                 onMap = { if (!wide) { view = V_MAP; jumpMap++ }; focusAt = null; focusKey++ }) { sel = null }
         }
     }
@@ -259,6 +276,7 @@ fun FleetScreen(accent: Color) {
         Box(modifier) {
             val gap = Arrangement.spacedBy(d.dp(8f))
             when (view) {
+                V_TGS -> LazyColumn(Modifier.fillMaxSize()) { item(key = "tgs") { TgGrid(tiles, s, prefs.hold, colorOf, accent, acts) } }
                 V_SYSTEMS -> if (s == null || s.systems.isEmpty()) EmptyState("fleet", Modifier.fillMaxSize().panel(), accent)
                     // two to a row where the column holds them
                     else LazyVerticalGrid(GridCells.Adaptive(d.dp(if (wide) 330f else 600f)), Modifier.fillMaxSize(), verticalArrangement = gap, horizontalArrangement = gap) {
@@ -281,9 +299,36 @@ fun FleetScreen(accent: Color) {
         }
     }
 
+    /** What the wide column's tab shows, as items of the column's one scroll. */
+    fun LazyListScope.wideStage(s: FleetSnap?, view: Int, tiles: List<DispatchView.TgTile>, now: Long) {
+        if (s == null) { item(key = "none") { EmptyState("fleet", Modifier.fillMaxWidth().height(d.dp(280f)).panel(), accent) }; return }
+        when (view) {
+            V_TGS -> item(key = "tgs") { TgGrid(tiles, s, prefs.hold, colorOf, accent, acts) }
+            V_SYSTEMS -> if (s.systems.isEmpty()) item(key = "sys:none") { EmptyState("fleet", Modifier.fillMaxWidth().height(d.dp(280f)).panel(), accent) }
+                else items(s.systems, key = { "sys:${it.key}" }) { x -> SystemCard(x, s, now, sel == "sys:${x.key}", lock, colorOf, acts) }
+            V_CALLS -> if (s.calls.isEmpty()) item(key = "calls:none") { FlDim("no calls yet · each voice grant and each transmission heard is logged here") }
+                else {
+                    val ended = s.calls.filter { !it.onAir && it.kind == "call" }
+                    item(key = "calls:sum") { FlDim("${ended.size} recent calls · ${flDur(ended.sumOf { it.endMs - it.startMs })} on the air${if (s.codecs.isNotEmpty()) " · audio kept in memory for replay, up to 2 min a call" else ""}") }
+                    items(s.calls, key = { "calls:${it.key}" }) { c -> CallLine(c, now, me, if (c.sys.isNotEmpty()) colorOf(c.sys) else Palette.muted, acts) }
+                }
+            V_GRANTS -> {
+                item(key = "grants:bars") { TgBars(s, now, colorOf, ::pick) }
+                if (s.grants.isEmpty()) item(key = "grants:none") { FlDim("no grants yet · a quiet system may go minutes between calls") }
+                else items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }
+            }
+            V_FREQS -> {
+                val cars = s.carriers.filter { now - it.lastMs < 600_000 }
+                if (cars.isEmpty()) item(key = "freqs:none") { FlDim("no carriers found yet") }
+                else items(cars, key = { "freqs:${it.key}" }) { c -> FreqLine(c, s, now, sel == "car:${c.key}", if (c.sys.isNotEmpty()) colorOf(c.sys) else Color.Transparent, ::pick) }
+            }
+            else -> logItems(logSnap.lines, logSnap.total, accent)
+        }
+    }
+
     val onAirNow = s?.calls.orEmpty().filter { it.onAir && it.kind == "call" && !it.outside }
-    PacketFrame(accent, Apps.fleetLog, tag = "DISPATCH", title = "P25 · DMR TRUNKING", roomy = true, waterfall = wf,
-        widePane = { m -> fleetMap(m) },
+    PacketFrame(accent, Apps.fleetLog, tag = "DISPATCH", title = "P25 · DMR · NXDN · TETRA · TYPE II", roomy = true, waterfall = wf,
+        widePane = { m -> fleetMap(m) }, paneWaterfall = flBottom,
         onWaterfall = { Apps.setWaterfall(MayhemApp.FLEET, !wf) },
         lamp = {
             if (onAirNow.any { it.emergency }) Lamp("EMERGENCY", Palette.danger, blink = true)
@@ -303,7 +348,7 @@ fun FleetScreen(accent: Color) {
             }
         }, body = {
             @Composable
-            fun modeRow() = ModeRow(lock, accent) { all -> if (all) Dispatch.setLock(null) else if (!Dispatch.lockSomething(sel?.takeIf { it.startsWith("sys:") }?.substringAfter(':')))
+            fun modeRow() = ListenRow(prefs.hold, lock, accent, onAll = { Dispatch.followTalkgroup("") }) { all -> if (all) Dispatch.setLock(null) else if (!Dispatch.lockSomething(sel?.takeIf { it.startsWith("sys:") }?.substringAfter(':')))
                 Toast.makeText(ctx, "no system to lock on yet, wait for one to show or lock from its card", Toast.LENGTH_SHORT).show() }
             if (!wide) {
                 // the phone: one page that scrolls, nothing hidden behind tabs. The section chips and the now-playing bar
@@ -314,9 +359,11 @@ fun FleetScreen(accent: Color) {
                 val starts = remember { IntArray(FL_SECTIONS.size) }
                 val mapH = (LocalConfiguration.current.screenHeightDp * 0.7f).coerceIn(320f, 560f).dp
                 val th = with(LocalDensity.current) { d.dp(24f).roundToPx() }
-                val counts = listOf(pins.size, s?.systems?.size ?: 0, s?.calls?.count { it.kind == "call" } ?: 0, s?.grants?.size ?: 0,
+                val counts = listOf(pins.size, tiles.size, s?.systems?.size ?: 0, s?.calls?.count { it.kind == "call" } ?: 0, s?.grants?.size ?: 0,
                     s?.let { liveCarriers(it, now).size } ?: 0, logSnap.total)
                 LaunchedEffect(jumpMap) { if (jumpMap > 0) list.animateScrollToItem(starts[0]) }
+                // a card opens at the top of the page, under the controls
+                LaunchedEffect(sel) { if (sel != null) list.animateScrollToItem(1) }
                 val active by remember { derivedStateOf {
                     val first = list.layoutInfo.visibleItemsInfo.firstOrNull { it.offset + it.size > th }
                     val k = (first?.key as? String)?.substringBefore(':') ?: "map"
@@ -325,7 +372,8 @@ fun FleetScreen(accent: Color) {
                 Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f))) {
                     Column(Modifier.fillMaxWidth().background(Palette.paper).padding(bottom = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                         FlJump(counts, active, accent) { i -> scope.launch { list.animateScrollToItem(starts[i]) } }
-                        if (s != null && audioOn && s.codecs.isNotEmpty()) NowBar(s, now, lock, me, vu, colorOf, acts)
+                        // the live bar: always there, always one height
+                        LiveBar(s, now, audioOn, prefs.hold, lock, me, vu, colorOf, acts)
                     }
                     Box(Modifier.fillMaxWidth().weight(1f)) {
                         LazyColumn(Modifier.fillMaxSize(), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -344,43 +392,68 @@ fun FleetScreen(accent: Color) {
                                 }
                             }
                             idx++
+                            item(key = "map:card") { detail(Modifier.fillMaxWidth(), inline = true) }; idx++
                             starts[0] = idx; item(key = "map:head") { FlSecHead(FL_SECTIONS[0].second) }; idx++
                             item(key = "map:map") { fleetMap(Modifier.fillMaxWidth().height(mapH), list) }; idx++
-                            starts[1] = idx; item(key = "sys:head") { FlSecHead(FL_SECTIONS[1].second) }; idx++
+                            starts[1] = idx; item(key = "tgs:head") { FlSecHead(FL_SECTIONS[1].second) }; idx++
+                            item(key = "tgs:grid") { TgGrid(tiles, s, prefs.hold, colorOf, accent, acts) }; idx++
+                            starts[2] = idx; item(key = "sys:head") { FlSecHead(FL_SECTIONS[2].second) }; idx++
                             if (s == null || s.systems.isEmpty()) { item(key = "sys:empty") { EmptyState("fleet", Modifier.fillMaxWidth().height(d.dp(280f)).panel(), accent) }; idx++ }
                             else { items(s.systems, key = { "sys:${it.key}" }) { x -> SystemCard(x, s, now, sel == "sys:${x.key}", lock, colorOf, acts) }; idx += s.systems.size }
-                            starts[2] = idx; item(key = "calls:head") { FlSecHead(FL_SECTIONS[2].second) }; idx++
+                            starts[3] = idx; item(key = "calls:head") { FlSecHead(FL_SECTIONS[3].second) }; idx++
                             if (s == null || s.calls.isEmpty()) { item(key = "calls:none") { FlDim("no calls yet · each voice grant and each transmission heard is logged here") }; idx++ }
                             else {
                                 val ended = s.calls.filter { !it.onAir && it.kind == "call" }
                                 item(key = "calls:sum") { FlDim("${ended.size} recent calls · ${flDur(ended.sumOf { it.endMs - it.startMs })} on the air${if (s.codecs.isNotEmpty()) " · audio kept in memory for replay, up to 2 min a call" else ""}") }; idx++
                                 items(s.calls, key = { "calls:${it.key}" }) { c -> CallLine(c, now, me, if (c.sys.isNotEmpty()) colorOf(c.sys) else Palette.muted, acts) }; idx += s.calls.size
                             }
-                            starts[3] = idx; item(key = "grants:head") { FlSecHead(FL_SECTIONS[3].second) }; idx++
+                            starts[4] = idx; item(key = "grants:head") { FlSecHead(FL_SECTIONS[4].second) }; idx++
                             if (s != null) { item(key = "grants:bars") { TgBars(s, now, colorOf, ::pick) }; idx++ }
                             if (s == null || s.grants.isEmpty()) { item(key = "grants:none") { FlDim("no grants yet · a quiet system may go minutes between calls") }; idx++ }
                             else { items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }; idx += s.grants.size }
-                            starts[4] = idx; item(key = "freqs:head") { FlSecHead(FL_SECTIONS[4].second) }; idx++
+                            starts[5] = idx; item(key = "freqs:head") { FlSecHead(FL_SECTIONS[5].second) }; idx++
                             val cars = s?.carriers.orEmpty().filter { now - it.lastMs < 600_000 }
                             if (s == null || cars.isEmpty()) { item(key = "freqs:none") { FlDim("no carriers found yet") }; idx++ }
                             else { items(cars, key = { "freqs:${it.key}" }) { c -> FreqLine(c, s, now, sel == "car:${c.key}", if (c.sys.isNotEmpty()) colorOf(c.sys) else Color.Transparent, ::pick) }; idx += cars.size }
-                            starts[5] = idx; item(key = "log:head") { FlSecHead(FL_SECTIONS[5].second) }; idx++
-                            // the log keeps its own short line when empty: the systems section above already shows the empty state
-                            item(key = "log:list") { LogList(logSnap.lines, Modifier.fillMaxWidth().height(d.dp(440f)), empty = "watching for control channels…", total = logSnap.total, accent = accent) }
+                            starts[6] = idx; item(key = "log:head") { FlSecHead(FL_SECTIONS[6].second) }; idx++
+                            // the log is part of the page's one scroll; it keeps its own short line when empty
+                            logItems(logSnap.lines, logSnap.total, accent)
                         }
-                        detail(Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)))
                     }
                 }
-            } else Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                if (s != null && audioOn && s.codecs.isNotEmpty()) NowBar(s, now, lock, me, vu, colorOf, acts)
+            } else Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                // a steady grid beside the map: the controls never move; the live bar keeps one height; the calls on
+                // the air fill the space beside the map and scroll there; the tabs and what they show sit in a region
+                // as tall as the waterfall under the map; a card opens over those two. Calls starting and stopping
+                // move nothing
+                val list = rememberLazyListState()
                 FleetHead(s, scan, now, accent)
-                switcher(true, Modifier.fillMaxWidth())
                 modeRow()
-                if (s != null && s.codecs.isNotEmpty()) AudioRow(audioOn, gain, accent)
-                // a wide screen docks the details above the cards
-                if (wide) detail(Modifier.fillMaxWidth())
-                onAir(Modifier.fillMaxWidth())
-                stage(Modifier.fillMaxWidth().weight(1f))
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { if (s != null && s.codecs.isNotEmpty()) AudioRow(audioOn, gain, accent) }
+                    ToggleBox("EXPORT", false, accent) { export() }
+                    ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent) { held = if (held == null) live else null }
+                    IconBox(ClearIcon, "Clear") { Apps.fleet.clear(); Apps.fleetLog.clear(); Dispatch.forget(); held = null; sel = null }
+                }
+                LiveBar(s, now, audioOn, prefs.hold, lock, me, vu, colorOf, acts)
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                        val anyOnAir = s?.calls.orEmpty().any { it.onAir && it.kind == "call" }
+                        Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(d.dp(12f))).background(Palette.surface.copy(alpha = 0.35f))) {
+                            if (!anyOnAir) Text("no calls on the air", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.align(Alignment.Center))
+                            else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(d.dp(6f))) {
+                                if (s != null) OnAirStack(s, now, 12, audioOn, following?.key, me, vu, prefs, lock, colorOf, acts, Modifier.fillMaxWidth().animateContentSize())
+                            }
+                        }
+                        Column(Modifier.fillMaxWidth().height(d.dp(flBottom)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                            switcher(true, Modifier.fillMaxWidth(), actions = false)
+                            LaunchedEffect(view) { list.scrollToItem(0) }
+                            LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) { wideStage(s, view, tiles, now) }
+                        }
+                    }
+                    // a card opens over the calls and the tabs, in a scroll of its own
+                    if (s != null && sel != null) Column(Modifier.fillMaxSize().background(Palette.paper).verticalScroll(rememberScrollState())) { detail(Modifier.fillMaxWidth(), inline = true) }
+                }
             }
         })
     if (full) FullscreenPanel("DISPATCH · ${VIEWS[view]}", accent, onClose = { full = false }) {
@@ -390,10 +463,105 @@ fun FleetScreen(accent: Color) {
     }
 }
 
-/** What the cards and rows can do: open a detail, set a talkgroup preference, replay, show on the map, lock and unlock. */
+/** A wide screen's waterfall under the map, and the region beside it with the tabs: one height, so the columns line up;
+ *  230 dp, 22% of the screen's height, 120 to 230 dp, so the calls keep room. */
+private fun flWideBottom(screenHeightDp: Int) = (screenHeightDp * 0.22f).coerceIn(120f, 230f)
+
 /** The phone page's sections: the key its rows carry and the header. */
-private val FL_SECTIONS = listOf("map" to "MAP", "sys" to "SYSTEMS", "calls" to "CALLS", "grants" to "GRANTS", "freqs" to "FREQUENCIES", "log" to "LOG")
-private val FL_CHIPS = listOf("MAP", "SYSTEMS", "CALLS", "GRANTS", "FREQS", "LOG")
+private val FL_SECTIONS = listOf("map" to "MAP", "tgs" to "TALKGROUPS", "sys" to "SYSTEMS", "calls" to "CALLS", "grants" to "GRANTS", "freqs" to "FREQUENCIES", "log" to "LOG")
+private val FL_CHIPS = listOf("MAP", "TALKGROUPS", "SYSTEMS", "CALLS", "GRANTS", "FREQS", "LOG")
+
+/** The Dispatch log as items of a page's own scroll (no scroll inside it), newest first, with its short line when empty. */
+private fun LazyListScope.logItems(lines: List<String>, total: Int, accent: Color) {
+    if (lines.isEmpty()) { item(key = "log:none") { FlDim("watching for control channels…") }; return }
+    itemsIndexed(lines, key = { i, _ -> "log:${total - i}" }) { i, l -> LogLine(i, l, total - i, accent) }
+}
+
+/**
+ * The talkgroup grid: ALL first (every talkgroup, the first to talk is heard), then a small tile per talkgroup with its
+ * system, when it was last heard (or ON THE AIR) and its encryption. A tap follows the talkgroup, so only it is heard; a
+ * tap on the followed tile, or on ALL, hears every talkgroup again. The i on a tile opens its card.
+ */
+@Composable
+private fun TgGrid(tiles: List<DispatchView.TgTile>, s: FleetSnap?, hold: String, colorOf: (String) -> Color, accent: Color, acts: DispatchActs) {
+    val d = rememberDims()
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val cols = max(2, (maxWidth / d.dp(132f)).toInt())
+        val now = System.currentTimeMillis()
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            val cells: List<DispatchView.TgTile?> = listOf<DispatchView.TgTile?>(null) + tiles
+            for (row in cells.chunked(cols)) {
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                    for (t in row) {
+                        if (t == null) TgTileBox(Modifier.weight(1f).fillMaxHeight(), "ALL", "EVERY TALKGROUP", "first to talk is heard", false, "", hold.isEmpty(),
+                            false, false, Palette.muted, accent, null) { Dispatch.followTalkgroup("") }
+                        else {
+                            val sys = s?.systems?.firstOrNull { it.key == t.sys }
+                            TgTileBox(Modifier.weight(1f).fillMaxHeight(), "TG ${t.tg}", (sys?.let { DispatchView.protoLabel(it.proto) + "  " + Dispatch.sysTitle(it) }) ?: t.sys,
+                                if (t.live) "ON THE AIR" else if (t.lastMs > 0) DispatchView.agoShort(now - t.lastMs).let { if (it == "now") it else "$it ago" } else "not heard yet",
+                                t.live, t.sec, t.followed, t.muted, t.emergency, colorOf(t.sys), accent, { acts.pick("tg:${t.key}") }) { Dispatch.followTalkgroup(t.key) }
+                        }
+                    }
+                    repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+            if (tiles.isEmpty()) FlDim("talkgroups show here as the control channels grant them and their calls are heard")
+        }
+    }
+}
+
+@Composable
+private fun TgTileBox(modifier: Modifier, title: String, sub: String, whenText: String, live: Boolean, sec: String, followed: Boolean, muted: Boolean, emergency: Boolean,
+                      col: Color, accent: Color, onInfo: (() -> Unit)?, onTap: () -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(10f))
+    val edge = if (emergency) Palette.danger else if (followed) accent else col
+    val border = if (followed) accent else if (emergency) Palette.danger else if (live) Palette.ok.copy(alpha = 0.6f) else Palette.line
+    Box(modifier.alpha(if (muted) 0.5f else 1f).clip(shape).background(if (followed) accent.copy(alpha = 0.16f) else Palette.surface).border(1.dp, border, shape)
+        .drawBehind { drawRect(edge, size = Size(3.dp.toPx(), size.height)) }.clickable { onTap() }) {
+        Column(Modifier.fillMaxWidth().padding(start = d.dp(11f), end = d.dp(9f), top = d.dp(7f), bottom = d.dp(7f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
+            Text(title, color = if (onInfo == null) accent else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(14f), maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(end = d.dp(18f)))
+            Text(sub, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(5f))) {
+                if (onInfo != null) Box(Modifier.size(d.dp(6f)).background(if (live) Palette.ok else Palette.line, CircleShape))
+                Text(whenText, color = if (live) Palette.ok else Palette.muted, fontFamily = Mono, fontWeight = if (live) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(10f), maxLines = 2)
+            }
+            if (sec.isNotEmpty()) Text(sec, color = if (sec == "CLEAR") Palette.ok else Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8f), letterSpacing = 1.sp)
+            if (onInfo != null && (followed || muted)) Text(if (followed) "FOLLOWING" else "MUTED", color = accent, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(8f), letterSpacing = 1.5.sp)
+        }
+        if (onInfo != null) Box(Modifier.align(Alignment.TopEnd).padding(d.dp(5f)).size(d.dp(18f)).clip(CircleShape).border(1.dp, Palette.line, CircleShape).clickable { onInfo() },
+            contentAlignment = Alignment.Center) { Text("i", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f)) }
+    }
+}
+
+/**
+ * What is heard: ALL (every talkgroup, the first to talk is heard) or the one talkgroup followed (only it plays), with a
+ * tap back to ALL; and the system lock beside it (LOCK SYSTEM stays on one system, LOCKED ON taps to unlock).
+ */
+@Composable
+private fun ListenRow(hold: String, lock: Lock?, accent: Color, onAll: () -> Unit, onLock: (all: Boolean) -> Unit) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(10f))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+        val on = hold.isNotEmpty()
+        Row(Modifier.weight(1f).clip(shape).background(if (on) accent.copy(alpha = 0.14f) else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape)
+            .padding(horizontal = d.dp(10f), vertical = d.dp(6f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Text(if (on) "FOLLOWING" else "HEARING", color = if (on) accent else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(8f), letterSpacing = 1.5.sp)
+            Text(if (on) "TG ${hold.substringAfterLast('/')}" else "ALL", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1)
+            Text(DispatchView.listenText(hold, lock), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, modifier = Modifier.weight(1f))
+            if (on) ToggleBox("BACK TO ALL", false, accent) { onAll() }
+        }
+        if (lock != null) {
+            Row(Modifier.clip(shape).background(accent.copy(alpha = 0.14f)).border(1.dp, accent, shape).clickable { onLock(true) }.padding(horizontal = d.dp(9f), vertical = d.dp(6f)),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text("LOCKED ON", color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
+                Text(lock.label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = d.dp(180f)))
+                Text("UNLOCK", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
+            }
+        } else ToggleBox("LOCK SYSTEM", false, accent) { onLock(false) }
+    }
+}
 
 /** A section's small header on the phone page. */
 @Composable
@@ -461,53 +629,42 @@ private fun FleetHead(s: FleetSnap?, scan: Dispatch.Scan, now: Long, accent: Col
     }
 }
 
-/** The now-playing bar: what is heard right now, with its level; tapping it opens the talkgroup. */
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * The live bar: the call heard right now (who, talkgroup, unit, system, its level and length), or LISTENING with what is
+ * heard (every talkgroup, the one followed, the lock). Two lines, always the same height, so nothing under it jumps when
+ * calls start and stop; tapping a call opens its talkgroup.
+ */
 @Composable
-private fun NowBar(s: FleetSnap, now: Long, lock: Lock?, me: Pair<Double, Double>?, vu: FleetProcessor.VuLevel, colorOf: (String) -> Color, acts: DispatchActs) {
+private fun LiveBar(s: FleetSnap?, now: Long, audioOn: Boolean, hold: String, lock: Lock?, me: Pair<Double, Double>?, vu: FleetProcessor.VuLevel, colorOf: (String) -> Color, acts: DispatchActs) {
     val d = rememberDims()
-    val c = DispatchView.nowPlaying(s.calls, s.playing)
+    val c = if (s != null && audioOn) DispatchView.nowPlaying(s.calls, s.playing) else null
     val col = if (c == null) Palette.line else if (c.emergency) Palette.danger else if (c.sys.isNotEmpty()) colorOf(c.sys) else Palette.accent
     val shape = RoundedCornerShape(d.dp(12f))
-    FlowRow(Modifier.fillMaxWidth().clip(shape).background(Brush.horizontalGradient(listOf(col.copy(alpha = if (c != null) 0.24f else 0.05f), Palette.surface)))
+    Column(Modifier.fillMaxWidth().height(d.dp(52f)).clip(shape).background(Brush.horizontalGradient(listOf(col.copy(alpha = if (c != null) 0.24f else 0.05f), Palette.surface)))
         .border(1.dp, col.copy(alpha = if (c != null) 0.9f else 0.6f), shape).clickable(enabled = c != null) { c?.let { acts.pick(dispatchSel(it)) } }
-        .padding(horizontal = d.dp(10f), vertical = d.dp(7f)),
-        horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f)), itemVerticalAlignment = Alignment.CenterVertically) {
+        .padding(horizontal = d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f), Alignment.CenterVertically)) {
         if (c == null) {
             Text("LISTENING", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp)
-            Text("nothing clear on the air${if (lock != null) " · locked on ${lock.label}" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f))
-            return@FlowRow
+            Text(if (!audioOn) "audio is off · the calls show below" else "nothing clear on the air · ${DispatchView.listenText(hold, lock)}", color = Palette.muted, fontFamily = Mono,
+                fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            return@Column
         }
         val blink = (now / 500) % 2 == 0L
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Box(Modifier.size(d.dp(8f)).alpha(if (blink) 1f else 0.35f).background(Palette.ok, CircleShape))
-            Text("NOW PLAYING", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp)
+            Text("NOW PLAYING", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
+            FlPill(DispatchView.protoLabel(c.proto, c.tdma), colorOf(c.sys))
+            Text(DispatchView.callWho(c), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), maxLines = 1)
+            Text(listOf(if (c.src != 0) "← ${c.src}" else "", c.alias).filter { it.isNotEmpty() }.joinToString(" "), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f),
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(flDur(now - c.startMs), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f))
         }
-        Text(DispatchView.callWho(c), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), maxLines = 1)
-        if (c.src != 0 || c.alias.isNotEmpty()) Text(listOf(if (c.src != 0) "← ${c.src}" else "", c.alias).filter { it.isNotEmpty() }.joinToString(" "), color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
-        val sys = s.systems.firstOrNull { it.key == c.sys }
-        Text("${sys?.let { Dispatch.sysTitle(it) } ?: c.sys.ifEmpty { c.proto }}${if (c.site.isNotEmpty()) " · SITE ${c.site}" else ""} · ${mhz(c.hz)} MHz${c.pos?.let { " · ${DispatchView.posText(it, me)}" } ?: ""}",
-            color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
-        FlBar(dispatchVuFrac(vu, c.key), Palette.ok, Modifier.width(d.dp(70f)).height(d.dp(6f)))
-        Text(flDur(now - c.startMs), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f))
-    }
-}
-
-/** ALL hears every system; LOCK stays on one, shown with its name and a tap to unlock. */
-@Composable
-private fun ModeRow(lock: Lock?, accent: Color, onPick: (all: Boolean) -> Unit) {
-    val d = rememberDims()
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-        SegBar(listOf("ALL", "LOCK"), if (lock == null) 0 else 1, accent, Modifier.width(d.dp(150f))) { onPick(it == 0) }
-        if (lock != null) {
-            val shape = RoundedCornerShape(d.dp(9f))
-            Row(Modifier.weight(1f).clip(shape).background(accent.copy(alpha = 0.14f)).border(1.dp, accent, shape).clickable { onPick(true) }.padding(horizontal = d.dp(9f), vertical = d.dp(6f)),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-                Text("LOCKED ON", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
-                Text(lock.label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text("UNLOCK", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
-            }
-        } else Text("every system, first call to talk is heard", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 2, modifier = Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            val sys = s?.systems?.firstOrNull { it.key == c.sys }
+            Text("${sys?.let { Dispatch.sysTitle(it) } ?: c.sys.ifEmpty { c.proto }}${if (c.site.isNotEmpty()) " · SITE ${c.site}" else ""} · ${mhz(c.hz)} MHz${c.pos?.let { " · ${DispatchView.posText(it, me)}" } ?: ""}",
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            FlBar(dispatchVuFrac(vu, c.key), Palette.ok, Modifier.width(d.dp(70f)).height(d.dp(6f)))
+        }
     }
 }
 
@@ -587,7 +744,7 @@ private fun PosChip(c: CallRow, long: Boolean, me: Pair<Double, Double>?, now: L
 private fun PrefButtons(key: String, prefs: TgPrefs, acts: DispatchActs) {
     val d = rememberDims()
     Row(horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        for ((k, label, on) in listOf(Triple("mute", "MUTE", key in prefs.mute), Triple("hold", "HOLD", prefs.hold == key), Triple("prio", "PRIORITY", key in prefs.prio))) {
+        for ((k, label, on) in listOf(Triple("mute", "MUTE", key in prefs.mute), Triple("hold", "FOLLOW", prefs.hold == key), Triple("prio", "PRIORITY", key in prefs.prio))) {
             val c = if (on) (if (k == "mute") Palette.muted else if (k == "prio") Palette.accent2 else Palette.ok) else Palette.line
             Text(label, color = if (on) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1,
                 modifier = Modifier.clip(RoundedCornerShape(d.dp(6f))).border(1.dp, c, RoundedCornerShape(d.dp(6f))).background(if (on) c.copy(alpha = 0.18f) else Color.Transparent)
@@ -630,7 +787,7 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
                 Box(Modifier.size(d.dp(8f)).alpha(if (ended || blink) 0.4f else 1f).background(if (c.emergency) Palette.danger else if (ended) Palette.muted else Palette.ok, CircleShape))
                 Text(badge, color = if (c.emergency) Palette.danger else if (ended) Palette.muted else Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(8.5f), letterSpacing = 1.5.sp)
             }
-            FlPill(c.proto, col)
+            FlPill(DispatchView.protoLabel(c.proto, c.tdma), col)
             Text(DispatchView.callWho(c), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f), maxLines = 1, modifier = Modifier.clickable { acts.pick(dispatchSel(c)) })
             if (c.emergency && ended) FlPill("EMERGENCY · ${flAgoText(now - c.endMs)}", Palette.danger)
             SecPill(c)
@@ -697,6 +854,7 @@ private fun CallLine(c: CallRow, now: Long, me: Pair<Double, Double>?, col: Colo
         horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f)), itemVerticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(d.dp(4f), d.dp(16f)).background(col, RoundedCornerShape(2.dp)))
         Text(flClock(c.startMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+        if (c.kind != "id") FlPill(DispatchView.protoLabel(c.proto, c.tdma), col)
         if (c.kind == "id") {
             IdChip(c.cwId, now - c.startMs)
             Text("CW ID · ${mhz(c.hz)} MHz", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
@@ -964,7 +1122,7 @@ private fun encChip(calls: List<CallRow>): CardChip? = DispatchView.encWord(call
 /** The selected unit, talkgroup, system or carrier as a card: a header with its status, then every section that has data. */
 @Composable
 private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boolean, prefs: TgPrefs, me: Pair<Double, Double>?, colorOf: (String) -> Color, acts: DispatchActs,
-                      modifier: Modifier, onMap: () -> Unit, onClose: () -> Unit) {
+                      modifier: Modifier, inline: Boolean, onMap: () -> Unit, onClose: () -> Unit) {
     val kind = sel.substringBefore(':'); val key = sel.substringAfter(':')
     val secs = ArrayList<CardSec>()
     val id: String; val kindLabel: String; val label: String; val col: Color; val chips = ArrayList<CardChip>()
@@ -992,9 +1150,14 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                 if (tr.isNotEmpty()) {
                     val last = tr.last()
                     val others = s.units.filter { it.sys == u.sys && it.key != u.key && it.lat != null && it.lon != null && abs(it.lat - last.lat) < 0.6 && abs(it.lon - last.lon) < 0.8 }
-                        .map { it.lat!! to it.lon!! }
                     val st = DispatchView.trackStats(tr); val dist = me?.let { DispatchView.distBearing(it.first, it.second, last.lat, last.lon) }
-                    TrackMap(tr, others, if (dist != null && dist.mi < 60) me else null, col, false)
+                    // a real map, the main map's tiles: the unit and its track over the rest of its system's units (dimmed),
+                    // framed on the track and you; the others show where they fall in that view
+                    val c = col.toArgb()
+                    CardMap("unit:${u.key}", others.map { GeoItem(it.key, it.lat!!, it.lon!!, "${it.id}", GeoItem.Kind.STATION, color = c, alpha = 0.55f) } +
+                        GeoItem(u.key, last.lat, last.lon, "${u.id}", GeoItem.Kind.STATION, color = c, pulse = talking != null),
+                        u.key, if (tr.size > 1) listOf(GeoShape(u.key, tr.map { it.lat to it.lon }, true, c, sel = true)) else emptyList(),
+                        if (dist != null && dist.mi < 60) me else null, tr.map { it.lat to it.lon }, acts)
                     StatTiles(listOfNotNull(
                         dist?.let { DispatchView.distText(it) to "FROM YOU · ${Math.round(it.deg)}°" },
                         st.mph?.let { v -> if (st.moving) "${Math.round(v)} mph" to "HEADING ${st.dir} · ${st.course}°" else "STOPPED" to "NOT MOVING" },
@@ -1047,7 +1210,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
             })
             if (calls.isNotEmpty()) secs.add(CardSec("RECENT CALLS") { CardCalls(calls, 14, now, me, colorOf, acts) })
             if (units.isNotEmpty()) secs.add(CardSec("UNITS · ${units.size}") {
-                if (placed.isNotEmpty()) TrackMap(emptyList(), placed.map { it.lat!! to it.lon!! }, me, col, true)
+                if (placed.isNotEmpty()) CardUnitsMap("tg:$key", placed, col, me, acts)
                 CardTags(units.take(40).map { Triple("${it.id}", DispatchView.agoShort(now - it.lastMs), "unit:${it.key}") }, col, acts)
             })
             activitySec(t?.history.orEmpty().map { it.ms } + t?.recent.orEmpty() + calls.map { it.startMs }, now, col)?.let { secs.add(it) }
@@ -1093,7 +1256,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
             })
             if (busiest.isNotEmpty()) secs.add(CardSec("BUSIEST TALKGROUPS") { CardTags(busiest.map { (tg, c) -> Triple("TG $tg", "$c", "tg:${x.key}/$tg") }, col, acts) })
             if (placed.isNotEmpty()) secs.add(CardSec("COVERAGE") {
-                TrackMap(emptyList(), placed.map { it.lat!! to it.lon!! }, me, col, true)
+                CardUnitsMap("sys:${x.key}", placed, col, me, acts)
                 val la0 = placed.minOf { it.lat!! }; val la1 = placed.maxOf { it.lat!! }; val lo0 = placed.minOf { it.lon!! }; val lo1 = placed.maxOf { it.lon!! }
                 val h = DispatchView.distBearing(la0, lo0, la0, lo1).mi; val v = DispatchView.distBearing(la0, lo0, la1, lo0).mi
                 CardKv(kvOf("UNITS PLACED" to "${placed.size} of ${units.size}", "AREA" to "%.1f × %.1f mi".format(java.util.Locale.US, max(0.1, h), max(0.1, v))))
@@ -1132,8 +1295,8 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(14f))
     val scroll = rememberScrollState()
-    Column(modifier.fillMaxWidth().heightIn(max = d.dp(if (wide) 560f else 460f)).clip(shape).background(Palette.panel.copy(alpha = 0.97f))
-        .border(1.5.dp, col.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(10f)),
+    Column(modifier.fillMaxWidth().then(if (inline) Modifier else Modifier.heightIn(max = d.dp(if (wide) 560f else 460f))).clip(shape).background(Palette.panel.copy(alpha = 0.97f))
+        .border(1.5.dp, col.copy(alpha = 0.8f), shape).then(if (inline) Modifier else Modifier.scrollGlow(scroll).verticalScroll(scroll)).padding(d.dp(10f)),
         verticalArrangement = Arrangement.spacedBy(d.dp(10f))) {
         CardHead(id, kindLabel, label, col, chips, now, wide, if (mapBtn) onMap else null, onClose)
         if (tgKey != null) PrefButtons(tgKey, prefs, acts)
@@ -1266,41 +1429,27 @@ private fun StatTiles(stats: List<Pair<String, String>>) {
 }
 
 /**
- * A small map with no tiles, so it draws at once: the track as a line (older fixes faint, the newest bright), [others]
- * as dots (the rest of the system dim, or the subject itself bright), you as a ring, and a scale bar.
+ * The map on a detail card: the main map's tiles and markers at a fixed height, so the rest of the card stays in reach.
+ * Framed on [fit] and you; one finger scrolls the card past it, two move it. A new card ([key]) starts a new view.
  */
 @Composable
-private fun TrackMap(trail: List<TrailPt>, others: List<Pair<Double, Double>>, me: Pair<Double, Double>?, col: Color, bright: Boolean) {
+private fun CardMap(key: String, items: List<GeoItem>, selected: String?, shapes: List<GeoShape>, me: Pair<Double, Double>?, fit: List<Pair<Double, Double>>, acts: DispatchActs) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(8f))
-    BoxWithConstraints(Modifier.fillMaxWidth().height(d.dp(190f)).clip(shape).background(Palette.paper).border(1.dp, Palette.line, shape)) {
-        val dens = LocalDensity.current
-        val w = with(dens) { maxWidth.toPx() }; val h = with(dens) { maxHeight.toPx() }; val pad = with(dens) { d.dp(14f).toPx() }
-        val fit = remember(trail, others, me, w, h) { DispatchView.trackFit(trail, others, me, w, h, pad) } ?: return@BoxWithConstraints
-        val ink = Palette.ink; val muted = Palette.muted; val ok = Palette.ok
-        Canvas(Modifier.fillMaxSize()) {
-            val u = 1.dp.toPx()
-            for ((x, y) in fit.others) {
-                if (bright) { drawCircle(col, 3.5f * u, Offset(x, y)); drawCircle(ink.copy(alpha = 0.7f), 3.5f * u, Offset(x, y), style = Stroke(u)) }
-                else drawCircle(muted.copy(alpha = 0.45f), 2f * u, Offset(x, y))
-            }
-            val n = fit.track.size
-            if (n > 1) {
-                val p = Path().apply { moveTo(fit.track[0].first, fit.track[0].second); for (i in 1 until n) lineTo(fit.track[i].first, fit.track[i].second) }
-                drawPath(p, col.copy(alpha = 0.75f), style = Stroke(2f * u, join = StrokeJoin.Round))
-            }
-            fit.track.forEachIndexed { i, (x, y) ->
-                if (i == n - 1) {
-                    drawCircle(col.copy(alpha = 0.3f), 10f * u, Offset(x, y))
-                    drawCircle(ink, 5f * u, Offset(x, y)); drawCircle(col, 5f * u, Offset(x, y), style = Stroke(3f * u))
-                } else drawCircle(col.copy(alpha = 0.25f + 0.6f * i / max(1, n - 1)), 2.4f * u, Offset(x, y))
-            }
-            fit.me?.let { (x, y) -> drawCircle(ok, 5f * u, Offset(x, y), style = Stroke(2.5f * u)) }
-            drawLine(muted, Offset(pad, size.height - 9f * u), Offset(pad + fit.barPx, size.height - 9f * u), strokeWidth = 2f * u)
-        }
-        Text(fit.barLabel, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.BottomStart).padding(start = d.dp(14f), bottom = d.dp(12f)))
-        Text("N ↑", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.align(Alignment.TopEnd).padding(top = d.dp(6f), end = d.dp(10f)))
+    androidx.compose.runtime.key(key) {
+        GeoMapView(items, Palette.accent, Modifier.fillMaxWidth().height(d.dp(220f)).clip(shape).border(1.dp, Palette.line, shape),
+            home = me, selected = selected, layers = GeoLayers(shapes = shapes), fitPts = fit + listOfNotNull(me), fitPins = true, steady = true,
+            twoFinger = true, declutter = true, fitItems = false) { if (it != selected) acts.pick("unit:$it") }
     }
+}
+
+/** A talkgroup's or system's placed units on the card map, labeled, you with them when you are within 60 miles. */
+@Composable
+private fun CardUnitsMap(key: String, placed: List<UnitRow>, col: Color, me: Pair<Double, Double>?, acts: DispatchActs) {
+    val c = col.toArgb()
+    val near = me?.takeIf { m -> placed.any { DispatchView.distBearing(m.first, m.second, it.lat!!, it.lon!!).mi < 60 } }
+    CardMap(key, placed.map { GeoItem(it.key, it.lat!!, it.lon!!, "${it.id}", GeoItem.Kind.STATION, color = c) }, null, emptyList(), near,
+        placed.map { it.lat!! to it.lon!! }, acts)
 }
 
 /** A bar sparkline under its label: empty buckets as a thin baseline. */

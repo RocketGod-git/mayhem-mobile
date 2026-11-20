@@ -131,6 +131,8 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         body: (@Composable ColumnScope.() -> Unit)? = null,
                         /** On a wide screen, the big pane holds this (a map) over a short waterfall strip. */
                         widePane: (@Composable (Modifier) -> Unit)? = null,
+                        /** The waterfall strip's height under [widePane] (Dispatch matches the region beside it). */
+                        paneWaterfall: Float = 110f,
                         /** A tap on the waterfall or a tune on the card goes here instead of the engine (HD Radio). */
                         retune: ((Long) -> Unit)? = null) {
     val d = rememberDims()
@@ -160,7 +162,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
             Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 val pane = if (d.wide) widePane else null
                 if (pane != null) pane(Modifier.fillMaxWidth().weight(1f))
-                if (pane == null || waterfall) Box((if (pane != null) Modifier.fillMaxWidth().height(d.dp(110f)) else Modifier.fillMaxWidth().weight(1f)).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
+                if (pane == null || waterfall) Box((if (pane != null) Modifier.fillMaxWidth().height(d.dp(paneWaterfall)) else Modifier.fillMaxWidth().weight(1f)).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                         rows = if (d.wide) 160 else 90, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
                         onPreviewFrac = if (tunable) onPreview else null, onTapFrac = if (tunable) onTune else null)
