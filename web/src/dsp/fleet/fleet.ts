@@ -920,6 +920,9 @@ export class FleetProcessor implements IqProcessor {
     if (this.nxdnLately(c, now)) return;
     if (b.dt > 10) return;
     if (c.tdma || this.now() - (this.p2Seen.get(c.key) ?? -1e12) < 5_000) return;
+    // nor are a P25 carrier's, as for the voice bursts below
+    if (now - (this.p25Seen.get(c.key) ?? -1e12) < 2_000) return;
+    if (!this.dmrProven(c, b, now)) return;
     c.frames++; if (b.stErrs === 0 || c.cc < 0) c.cc = b.cc; c.cls = 'DMR'; c.lastDecodeMs = now; this.dmrSeen.set(c.key, now);
     if (b.dt === 1 || b.dt === 2) {
       if (c.role !== 'control' && c.role !== 'rest') c.role = 'voice';
@@ -1020,6 +1023,19 @@ export class FleetProcessor implements IqProcessor {
     if (call && call.alias !== name) { call.alias = name; this.pending = true; }
     if (call && call.src) { this.unitAlias.set(`${call.sys || c.sys}/${call.src}`, name); const u = this.units.get(`${call.sys || c.sys}/${call.src}`); if (u) u.alias = name; }
     if (call && call.alias === name) this.addLog({ ms: this.now(), hz: c.hz, proto: 'DMR', name: 'TALKER ALIAS', text: `TS${slot + 1} · TALKER ALIAS · ${name}${call.src ? ` · UNIT ${call.src}` : ''}`, hex: '', ok: true });
+  }
+  /**
+   * A carrier not heard as DMR in the last 3 s has to prove it before a burst counts: the burst's own check passes (the
+   * block CRC, or the RS check of a voice header or terminator), or its slot type needed no correction. A pager, an
+   * analog or bare carrier, or a P25 voice channel passes the 0.82 sync now and then, and about a third of those chance
+   * bursts pass the slot type's Golay code with corrections (almost none without): such a carrier was labeled DMR
+   * voice, and its unchecked blocks could reach the tables.
+   */
+  private dmrProven(c: Carrier, b: DmrEvent['burst'], now: number): boolean {
+    if (b.stErrs === 0 || now - (this.dmrSeen.get(c.key) ?? -1e12) <= 3_000) return true;
+    if (b.dt === 1 || b.dt === 2) return !!parseLc(b.bytes, b.dt)?.ok;
+    const mask = DMR_CRC_MASK[b.dt];
+    return mask !== undefined && crc12Ok(b.bytes, mask);
   }
   /** Per carrier: the last EMB that passed its check on a voice burst with no DMR data heard, for [dmrVoice]. */
   private readonly embVotes = new Map<number, { cc: number; ms: number }>();

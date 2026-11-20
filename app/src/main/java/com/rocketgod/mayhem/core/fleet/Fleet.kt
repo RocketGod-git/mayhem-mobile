@@ -354,6 +354,19 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     private fun nxdnLately(c: Carrier, now: Long): Boolean { val x = nxdnSeen[c.key]; return x != null && now - x.first < 5_000 }
     /** DMR grants of the last moments, waiting for the voice link control that says which carrier their channel is. */
     private var pendingGrants = ArrayList<PendingGrant>()
+    /**
+     * A carrier not heard as DMR in the last 3 s has to prove it before a burst counts: the burst's own check passes (the
+     * block CRC, or the RS check of a voice header or terminator), or its slot type needed no correction. A pager, an
+     * analog or bare carrier, or a P25 voice channel passes the 0.82 sync now and then, and about a third of those chance
+     * bursts pass the slot type's Golay code with corrections (almost none without): such a carrier was labeled DMR
+     * voice, and its unchecked blocks could reach the tables.
+     */
+    private fun dmrProven(c: Carrier, b: Codes.DmrBurst, now: Long): Boolean {
+        if (b.stErrs == 0 || now - (dmrSeen[c.key] ?: Long.MIN_VALUE / 2) <= 3_000) return true
+        if (b.dt == 1 || b.dt == 2) return parseLc(b.bytes, b.dt)?.ok == true
+        val mask = Codes.DMR_CRC_MASK[b.dt] ?: return false
+        return Codes.crc12Ok(b.bytes, mask)
+    }
     /** Per carrier: the last EMB that passed its check on a voice burst with no DMR data heard, for [dmrVoice]. */
     private val embVotes = HashMap<Long, Pair<Int, Long>>()
     private val _snap = MutableStateFlow<FleetSnap?>(null)
@@ -1102,6 +1115,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (nxdnLately(c, now)) return
         if (b.dt > 10) return
         if (c.tdma || now - (p2Seen[c.key] ?: Long.MIN_VALUE / 2) < 5_000) return
+        // nor are a P25 carrier's, as for the voice bursts below
+        if (now - (p25Seen[c.key] ?: Long.MIN_VALUE / 2) < 2_000) return
+        if (!dmrProven(c, b, now)) return
         c.frames++; if (b.stErrs == 0 || c.cc < 0) c.cc = b.cc; c.cls = "DMR"; c.lastDecodeMs = now; dmrSeen[c.key] = now
         if (b.dt == 1 || b.dt == 2) {
             if (c.role != "control" && c.role != "rest") c.role = "voice"
