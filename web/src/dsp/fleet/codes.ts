@@ -190,7 +190,8 @@ export function dmrDataBurst(slot: number, cc: number, dt: number, bytes: ArrayL
   for (let i = 0; i < 144; i++) out[i] = (bits[2 * i] << 1) | bits[2 * i + 1];
   return out;
 }
-export interface DmrBurst { slot: number; cc: number; dt: number; stErrs: number; bytes: Uint8Array; busy: number }
+/** [ms]: a mobile station sent it (an MS sync): no CACH, so no slot or busy bit is read from it (slot 0, busy 0). */
+export interface DmrBurst { slot: number; cc: number; dt: number; stErrs: number; bytes: Uint8Array; busy: number; ms?: boolean }
 /** Reads a 144-dibit base-station data burst: slot from the CACH, slot type through Golay, payload through BPTC. */
 export function dmrReadBurst(d: ArrayLike<number>): DmrBurst | null {
   let st = 0;

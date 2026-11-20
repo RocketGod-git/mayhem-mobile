@@ -107,10 +107,10 @@ private const val ID_AFTER_MS = 15_000L
 fun liveMs(proto: String, tdma: Boolean): Long = if (proto == "P25" && !tdma) 600L else 360L
 /**
  * The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 half rate for DMR, Phase 2 and NXDN, the TETRA ACELP codec for
- * TETRA. NXDN's EFR (its 9600 bps full rate) is the IMBE frame: [efr].
+ * TETRA. NXDN's EFR (its 9600 bps full rate) is the IMBE frame: [efr]. Motorola Type II voice is analog FM.
  */
 fun codecOf(proto: String, tdma: Boolean, efr: Boolean = false): String =
-    if (proto == "TETRA") CodecIds.TETRA else if ((proto == "P25" && !tdma) || (proto == "NXDN" && efr)) CodecIds.IMBE else CodecIds.AMBE2
+    if (proto == "SMARTNET") CodecIds.FM else if (proto == "TETRA") CodecIds.TETRA else if ((proto == "P25" && !tdma) || (proto == "NXDN" && efr)) CodecIds.IMBE else CodecIds.AMBE2
 
 private fun callGrid(hz: Long): Long = Math.round(hz / 6250.0) * 6250
 /** How long the talkgroup of a call just heard keeps first claim on the audio: the reply in a conversation. */
@@ -235,6 +235,7 @@ class CallTracker(private val now: () -> Long) {
         else if (s.from == "EMB") said.emb = if (s.enc) 1 else if (said.emb == 1) 1 else 0
         else if (s.from == "history") said.histEnc = true
         else if (s.from == "AIE") said.aie = true
+        else if (s.from == "analog") said.lc = 0
         // NXDN: the cipher type of a VCALL (SACCH or FACCH1, CRC checked) or of a Type-D INFO1 (SCCH, CRC checked)
         else if (s.from == "VCALL" || s.from == "SCCH") { said.lc = if (s.enc) 1 else if (said.lc == 1) 1 else 0; said.from = s.from; if (s.enc) { if (s.algId != null) c.algId = s.algId; if (s.keyId != null) c.keyId = s.keyId } }
         var sec = "unknown"; var from = ""
@@ -252,6 +253,10 @@ class CallTracker(private val now: () -> Long) {
             // or signalling encrypted on the air interface of a cell that offers it
             if (said.grant == 1 || said.aie) { sec = "enc"; from = if (said.aie) "AIE" else "grant" }
             else if (said.grant == 0) { sec = "clear"; from = "grant" }
+            c.protectedHint = false
+        } else if (c.proto == "SMARTNET") {
+            // analog FM heard on the channel: nothing on a Type II control channel says more
+            if (said.lc == 0) { sec = "clear"; from = "analog" }
             c.protectedHint = false
         } else if (c.proto == "NXDN") {
             // a cipher type other than 00 is encrypted (scramble, DES, AES); 00 says clear (TS 1-A 6.5.27)
@@ -314,23 +319,38 @@ class CallTracker(private val now: () -> Long) {
         val now = now()
         for (f in frames) {
             val pcm = k.decode(f) ?: continue
-            c.decoded++; if (k.bad) c.badFrames++
-            if (c.pcmN < AUDIO_CAP_S * 8000) { c.pcm.add(pcm); c.pcmN += pcm.size; c.audioMs = (c.pcmN / 8.0).roundToLong() }
-            var e = 0.0; for (v in pcm) e += v * v
-            val db = 10 * log10(e / pcm.size + 1e-9)
-            c.audioDb = if (c.audioDb != 0.0) c.audioDb + 0.3 * (db - c.audioDb) else db
+            if (k.bad) c.badFrames++
             // only a frame that came through its codes and carries speech counts as audio: a weak call's muted and repeated
             // frames, and a keyed radio's silence frames, neither take the audio nor keep it
-            val good = !k.bad && !k.silent
-            if (good) c.audioAt = now
-            if (playing == c.key) { onAudio?.invoke(pcm, c); continue }
-            val r = if (good) choose(c, now) else if (c.wait.isNotEmpty()) "wait" else "no"
-            when (r) {
-                "yes" -> { for (w in c.wait) onAudio?.invoke(w, c); c.wait = ArrayList(); onAudio?.invoke(pcm, c) }
-                "wait" -> { c.wait.add(pcm); if (c.wait.size > WAIT_FRAMES) c.wait.removeAt(0) }
-                else -> c.wait = ArrayList()
-            }
+            play(c, pcm, !k.bad && !k.silent, now)
         }
+    }
+    /** 20 ms of decoded audio of a call: kept with it, and heard when the call is the one playing. */
+    private fun play(c: Call, pcm: FloatArray, good: Boolean, now: Long) {
+        c.decoded++
+        if (c.pcmN < AUDIO_CAP_S * 8000) { c.pcm.add(pcm); c.pcmN += pcm.size; c.audioMs = (c.pcmN / 8.0).roundToLong() }
+        var e = 0.0; for (v in pcm) e += v * v
+        val db = 10 * log10(e / pcm.size + 1e-9)
+        c.audioDb = if (c.audioDb != 0.0) c.audioDb + 0.3 * (db - c.audioDb) else db
+        if (good) c.audioAt = now
+        if (playing == c.key) { onAudio?.invoke(pcm, c); return }
+        val r = if (good) choose(c, now) else if (c.wait.isNotEmpty()) "wait" else "no"
+        when (r) {
+            "yes" -> { for (w in c.wait) onAudio?.invoke(w, c); c.wait = ArrayList(); onAudio?.invoke(pcm, c) }
+            "wait" -> { c.wait.add(pcm); if (c.wait.size > WAIT_FRAMES) c.wait.removeAt(0) }
+            else -> c.wait = ArrayList()
+        }
+    }
+    /**
+     * 20 ms of analog FM voice off a Type II voice channel (8 kHz). [open]: the squelch found a carrier there. Only that
+     * counts as voice: it keeps the call on the air and takes or keeps the audio; the closed squelch's noise is dropped.
+     */
+    fun analog(c: Call, pcm: FloatArray, open: Boolean, now: Long = now()) {
+        if (!c.onAir || !open) return
+        c.frames++; c.voiceMs += 20; c.voiceAt = now; c.lastMs = now
+        if (c.sec == "unknown") security(c, SecIn(false, "analog"))
+        if (c.encrypted || c.muted || c.outside) return
+        play(c, pcm, true, now)
     }
     /**
      * Whether [c] is the call heard: it is when nothing else is, and it takes over for priority or emergency. The call

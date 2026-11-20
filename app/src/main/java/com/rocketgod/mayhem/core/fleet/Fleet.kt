@@ -26,7 +26,7 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
- * Dispatch: a receive-only monitor for P25, DMR, TETRA and NXDN trunked radio. Finds every carrier in the span, gives the
+ * Dispatch: a receive-only monitor for P25, DMR, TETRA, NXDN and Motorola Type II trunked radio. Finds every carrier in the span, gives the
  * live ones a channel each (the control channels and the channels of calls on the air keep theirs, the rest take
  * turns), decodes the control signaling and builds the systems, sites, channel tables, grants, registrations, unit
  * positions and calls from what is on the air. Labels are only what the air carries. Publishes a snapshot (at most two
@@ -42,7 +42,27 @@ fun kmBetween(a: Double, b: Double, c: Double, d: Double): Double {
     return 6371 * kotlin.math.hypot(x, y)
 }
 private const val CUT_HZ = 5_500.0
+/**
+ * Turns on a channel for carriers nothing has decoded lately go two ways at once. Full looks for the strong new
+ * carriers ([FULL_DB] over the floor and off any stronger one's skirt), strongest first, and after them for every carrier
+ * in turn, the one waiting longest first: [AUDITION_MS] each. Quick looks of
+ * [AUDITION_FIRST_MS] for the weaker new ones, strongest first (a control channel at a fair level shows its syncs well
+ * inside one), held for [AUDITION_MS] when something on it looked like a signal Dispatch reads (syncs, words through
+ * their check, training sequences).
+ */
 private const val AUDITION_MS = 3_000L
+private const val AUDITION_FIRST_MS = 500L
+private const val FULL_DB = 20.0
+/** The quickest a carrier is classed analog or otherwise. */
+private const val CLASS_MS = 1_500L
+/** A control channel found on a turn keeps its channel until its system is read, up to this long. */
+private const val IDENTIFY_MS = 10_000L
+/** More control channels than channels for them: each holds one this long, then the one waiting longest takes it. */
+private const val CORE_TURN_MS = 20_000L
+/** A carrier classed analog or unknown, or one already identified that is not a control channel, waits this long for another turn. */
+private const val RECHECK_MS = 300_000L
+/** When the span has more carriers than channels, this many channels stay free for turns while new carriers wait (one after). */
+private const val TURN_CHANNELS = 2
 private const val LIVE_MS = 4_000L
 private const val KNOWN_UNITS = 3000
 
@@ -137,6 +157,10 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     var cls = ""; var role = ""; var sys = ""; var nac = -1; var cc = -1; var frames = 0; var blocks = 0; var crcOk = 0; var lastDecodeMs = 0L
     var envCv = 0.0; var eye = 0.0; var decoding = false; var callsign = ""; var callsignMs = 0L; var tdma = false; var lcn = ""
     var hdr: Hdr? = null; var lastAuditionMs = 0L
+    /** Motorola Type II: the channel number the control channel announces for itself, and the plan that number proved. */
+    var osw: OswCc? = null
+    /** Turns the carrier has had on a channel, and its level at the last. */
+    var turns = 0; var turnDb = 0.0
     var p25Sys = -1; var p25Wacn = -1; var p25Rfss = -1; var p25Site = -1
     var dmrSys = ""; val tables = LinkedHashMap<Int, Iden>(); val unitIds = LinkedHashMap<Int, Long>()
     var tetra: TetraSync? = null; var tetraCell: TetraSysinfo? = null; var nxdn: NxdnSite? = null; var nxdnBaud = 0
@@ -146,6 +170,9 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     fun row() = CarrierRow(key, hz, levelDb, peakDb, firstMs, lastMs, onMs, heardMs, cls, role, sys, nac, cc, frames, blocks, crcOk, lastDecodeMs, envCv, eye,
         decoding, callsign, tdma, lcn, callsignMs)
 }
+private class OswCc(val cc: Int, val plan: SmartNet.Plan?)
+/** Motorola Type II: the channel plan its control channel proved (null until one does), and the channels granted (count). */
+private class OswSys { var plan: SmartNet.Plan? = null; val chans = LinkedHashMap<Int, Int>() }
 private class NxdnD { var src = 0; var dst = -1; var group = true; var cipher = -1; var keyId = 0; var ms = 0L }
 /** An NXDN message as a unit's report shows it. */
 private class NxdnUnitMsg(val hex: String, val line: String)
@@ -166,6 +193,7 @@ private class Sys(val key: String, val proto: String, val color: Int, val wacn: 
     var nxdnPlan: NxdnPlan? = null; var nxdnBaud = 0
     /** TETRA: calls by call identifier, and the air interface encryption seen. */
     var tetra: TetraSys? = null
+    var osw: OswSys? = null
 }
 private class TetraCall(var tg: Int, var group: Boolean, var src: Int, var hz: Long, var slot: Int, var e2ee: Boolean, val ms: Long)
 private class TetraSys {
@@ -198,6 +226,8 @@ private class PendingGrant(val sys: String, val tg: Int, val group: Boolean, val
 fun channelBudget(rate: Int): Int = max(4, min(24, floor(110e6 / max(rate, 1)).toInt()))
 private fun gridKey(hz: Double): Long = Math.round(hz / 6250) * 6250
 private fun gridKey(hz: Long): Long = gridKey(hz.toDouble())
+/** TETRA is not tried on 925 to 960 MHz (the 900 MHz land mobile and GSM downlink band), where none is allocated. */
+private fun tetraBand(hz: Long): Boolean = hz < 925_000_000L || hz > 960_000_000L
 private fun round6(x: Double): Double = Math.round(x * 1e6) / 1e6
 
 private class TetraChan(val rx: TetraRx, val ddc: Ddc?) { var oi = FloatArray(0); var oq = FloatArray(0) }
@@ -212,6 +242,10 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
     /** Symbols so far, the P25 voice decoder's clock; [lcErrs] its failure count at the last link control read. */
     var t = 0L; var lcErrs = 0
     val dmr = DmrFramer()
+    /** Motorola Type II signaling words, and analog FM voice on a channel a Type II grant named. */
+    val osw: OswRx; var fm: FmVoice? = null
+    /** The turn is a quick first look. */
+    var quick = false
     val cw: CwReader
     var oi = FloatArray(0); var oq = FloatArray(0)
     val openedMs = now; var lastSyncMs = 0L; var quietSince = now; private var cwOn = false
@@ -252,6 +286,7 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         ddc.reset(rate.toDouble()); ddc.offsetHz = hz - center
         fs = if (baseband > 0) baseband else ddc.outRate
         rx = SymbolRx(fs)
+        osw = OswRx(fs)
         cw = CwReader(fs)
         // the voice frames' payload (nine vocoder frames and the link control of each LDU) is read by the HAM receiver's
         // P25 decoder, driven by this channel's frame syncs
@@ -274,6 +309,11 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
             onFill(lane, if (lane == 2) 9 else 3)
         }
     }
+    /** Something on the channel looks like a signal Dispatch reads (syncs, words through their check, training sequences). */
+    fun hinted(): Boolean = p25.clean > 0 || p25.syncs >= 2 || dmr.syncs >= 2 || osw.good >= 2 || (nxdn?.any { it.framer.gridSyncs > 0} ?: false) ||
+        (tetra?.let { it.rx.stats.bschOk > 0 || it.rx.stats.trainings >= 3 } ?: false)
+    /** The turn of a carrier nothing has decoded is over. */
+    fun turnOver(now: Long): Boolean = now - openedMs >= (if (quick && !hinted()) AUDITION_FIRST_MS else AUDITION_MS)
     fun retarget(center: Long) { ddc.offsetHz = hz - center; this.center = center; tetra?.ddc?.offsetHz = tetraHz - center; nxdnDdc?.let { it.ddc.offsetHz = hz - center } }
     /** The sample rate an NXDN receiver at [baud] gets: [wide] for an NXDN96 channel known as one. */
     fun nxdnFs(baud: Int, wide: Boolean): Double {
@@ -311,6 +351,7 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         // decoded frames, not bare syncs, mark the channel digital: a keyed CW tone can pass for a sync now and then
         val s0 = p25.clean + dmr.bursts
         rx.push(zi, zq, m)
+        osw.push(zi, zq, m); fm?.push(zi, zq, m)
         p2?.push(zi, zq, m)
         nxdn?.let { for (r in it) if (r.fs == fs) r.push(zi, zq, m) }
         nxdnSyncCheck()
@@ -490,7 +531,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         pending = true
     }
 
-    /** Control channels keep their channel; every other live carrier gets a turn of a few seconds. */
+    /**
+     * Control channels keep their channel (taking turns when there are more than channels for them); the channels of
+     * calls on the air keep theirs; every other live carrier gets turns (see [AUDITION_MS]).
+     */
     private fun assign(now: Long) {
         val budget = channelBudget(rate)
         calls.tick({ hz -> val c = carriers[gridKey(hz)]; if (c != null && now - c.lastMs < 1_500) c.levelDb else null }, now)
@@ -512,16 +556,78 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         // control and rest channels, and the ones carrying unit reports, come first (the locked system's when locked);
         // the channels of calls on the air come right after them, never in their place
         val lock = calls.prefs.lock?.sys ?: ""
-        fun core(c: Carrier) = (c.role == "control" || c.role == "rest" || reportsOn(c, now)) && (lock.isEmpty() || c.sys.isEmpty() || c.sys == lock)
-        val want = ArrayList(live.filter { keep(it) }.sortedWith(compareByDescending<Carrier> { core(it) }.thenByDescending { it.levelDb }))
-        val nCore = want.count { core(it) }
-        for (c in pinned.reversed()) { val i = want.indexOf(c); if (i >= 0) want.removeAt(i); want.add(min(nCore, want.size), c) }
-        for ((k, ch) in chans) { val c = carriers[k]!!; if (!keep(c) && now - ch.openedMs < AUDITION_MS && c !in want) want.add(c) }
-        val rest = live.filter { it !in want }.sortedWith(compareBy<Carrier> { it.lastAuditionMs }.thenByDescending { it.levelDb })
-        for (c in rest) { if (want.size >= budget) break; want.add(c) }
+        fun core0(c: Carrier) = (c.role == "control" || c.role == "rest" || reportsOn(c, now)) && (lock.isEmpty() || c.sys.isEmpty() || c.sys == lock)
+        // one control channel a P25 site is enough: the others the same site's are heard on (a secondary control channel, or
+        // the copies of a strong one the receiver makes beside it) wait their turns like any carrier
+        val bestOfSite = HashMap<String, Carrier>()
+        for (c in live) if (c.p25Site >= 0 && c.sys.isNotEmpty() && core0(c)) { val k = "${c.sys}/${c.p25Rfss}/${c.p25Site}"; val b = bestOfSite[k]; if (b == null || c.levelDb > b.levelDb) bestOfSite[k] = c }
+        fun core(c: Carrier) = core0(c) && (c.p25Site < 0 || c.sys.isEmpty() || bestOfSite["${c.sys}/${c.p25Rfss}/${c.p25Site}"] === c)
+        // a carrier classed analog or unknown, or one a system already owns that is not a control channel, waits for its next
+        // turn (a voice channel comes back through the grants that name it; one classed unknown comes back sooner when it
+        // keys up 6 dB stronger)
+        fun settled(c: Carrier) = c.lastAuditionMs > 0 && now - c.lastAuditionMs < RECHECK_MS && !core(c) &&
+            (c.sys.isNotEmpty() || c.cls == "ANALOG FM" || ((c.cls == "UNKNOWN 4FSK" || c.cls == "UNKNOWN LINEAR") && c.levelDb < c.turnDb + 6))
+        val sorted = live.filter { keep(it) }.sortedWith(compareByDescending<Carrier> { core(it) }.thenByDescending { it.levelDb })
+        // a carrier's place in the turns: its level, 20 dB less when it sits on the skirt of a neighbor 15 dB stronger
+        // within 10 kHz
+        val byHz = live.sortedBy { it.hz }; val score = HashMap<Long, Double>()
+        for (i in byHz.indices) {
+            val c = byHz[i]; var skirt = false
+            var j = i - 1; while (j >= 0 && c.hz - byHz[j].hz <= 10_000 && !skirt) { skirt = byHz[j].levelDb >= c.levelDb + 15; j-- }
+            j = i + 1; while (j < byHz.size && byHz[j].hz - c.hz <= 10_000 && !skirt) { skirt = byHz[j].levelDb >= c.levelDb + 15; j++ }
+            score[c.key] = c.levelDb - if (skirt) 20 else 0
+        }
+        fun sc(c: Carrier) = score[c.key] ?: c.levelDb
+        // carriers still waiting for a turn keep a share of the channels free, so a span with more carriers than channels
+        // visits all of them. A carrier is new to the turns until it has had one, and again when it comes up 6 dB over its
+        // level then (a channel that keys up now and then). The full share while new carriers wait, one channel after.
+        val waiting = live.filter { !chans.containsKey(it.key) && !keep(it) && !settled(it) }
+        fun fresh(c: Carrier) = c.turns == 0 || c.levelDb >= c.turnDb + 6
+        val reserve = if (waiting.isNotEmpty() && live.size > budget) (if (waiting.any { fresh(it) }) TURN_CHANNELS else 1) else 0
+        val cap = budget - reserve
+        // the control channels known take turns when there are more than channels for them: one holding its channel keeps
+        // it for [CORE_TURN_MS], then the one that has waited longest goes next. One granting calls keeps its channel.
+        val busy = HashMap<Long, Int>()
+        for (g in grants) { if (now - g.lastMs > 60_000) continue; val k = gridKey(g.carrierHz); busy[k] = (busy[k] ?: 0) + 1 }
+        fun rank(c: Carrier): Int { val ch = chans[c.key]; return if (ch == null) 2 else if ((busy[c.key] ?: 0) > 0) 0 else if (now - ch.openedMs < CORE_TURN_MS) 1 else 3 }
+        val coreL = live.filter { core(it) }.sortedWith { a, b ->
+            val ra = rank(a); val rb = rank(b)
+            if (ra != rb) ra - rb
+            else if (ra == 0) (busy[b.key] ?: 0) - (busy[a.key] ?: 0)
+            else if (ra == 1) b.levelDb.compareTo(a.levelDb)
+            else a.lastAuditionMs.compareTo(b.lastAuditionMs)
+        }
+        val others = sorted.filter { !core(it) && it.key !in pinnedKeys }
+        val nCore = min(coreL.size, max(1, cap))
+        val held = coreL.take(nCore); val callChans = pinned.filter { it !in held }
+        val want = ArrayList((held + callChans + others).take(max(cap, held.size + callChans.size)))
+        // a carrier found decoding on its turn (a control channel, or a DMR or NXDN channel whose system its own frames name)
+        // keeps the channel until its system is read
+        for ((k, ch) in chans) { val c = carriers[k]!!; if (c !in want && (c.role == "control" || c.role == "rest" || (keep(c) && (c.cls == "DMR" || c.cls.startsWith("NXDN")))) && c.sys.isEmpty() && now - ch.openedMs < IDENTIFY_MS) want.add(min(nCore, want.size), c) }
+        for ((k, ch) in chans) { val c = carriers[k]!!; if (!keep(c) && !ch.turnOver(now) && c !in want) want.add(c) }
+        // the two ways of turns share the free channels: full looks (strong new carriers strongest first, then every
+        // carrier, the one waiting longest first) and quick looks (the weaker new carriers, strongest first)
+        val free = live.filter { it !in want && !settled(it) }
+        val fullQ = free.filter { !fresh(it) || sc(it) >= FULL_DB }.sortedWith { a, b ->
+            val fa = fresh(a); val fb = fresh(b)
+            if (fa != fb) (if (fb) 1 else 0) - (if (fa) 1 else 0) else if (fa) sc(b).compareTo(sc(a)) else a.lastAuditionMs.compareTo(b.lastAuditionMs)
+        }
+        val quickQ = free.filter { fresh(it) && sc(it) < FULL_DB }.sortedByDescending { sc(it) }
+        var nQuick = 0; var nFull = 0
+        for (ch in chans.values) if (!ch.turnOver(now)) { if (ch.quick) nQuick++ else nFull++ }
+        val quickSet = HashSet<Long>()
+        var fi = 0; var qi = 0
+        while (want.size < budget && (fi < fullQ.size || qi < quickQ.size)) {
+            val q = qi < quickQ.size && (nQuick <= nFull || fi >= fullQ.size)
+            if (q) { val c = quickQ[qi++]; want.add(c); quickSet.add(c.key); nQuick++ } else { want.add(fullQ[fi++]); nFull++ }
+        }
+        // channels still to spare go to the carriers that are waiting out their recheck, the one waiting longest first
+        for (c in live.filter { it !in want && settled(it) }.sortedBy { it.lastAuditionMs }) { if (want.size >= budget) break; want.add(c) }
         val chosen = want.take(budget).map { it.key }.toSet()
         chans.keys.retainAll(chosen)
-        for (k in chosen) if (!chans.containsKey(k)) { val c = carriers[k]!!; c.lastAuditionMs = now; open(c, now) }
+        for (k in chosen) if (!chans.containsKey(k)) {
+            val c = carriers[k]!!; c.lastAuditionMs = now; c.turns++; c.turnDb = c.levelDb; open(c, now); chans[k]?.quick = k in quickSet
+        }
         for (c in carriers.values) c.decoding = chans.containsKey(c.key)
         for ((k, ch) in chans) { val p = ch.p2; if (p != null && p.seed == null) carriers[k]?.let { p.setSeeds(p2Seeds(it)) } }
         placeCalls()
@@ -541,8 +647,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         ch.p25v.onEs = { es -> p25Sec(c, "LDU2", es.algId, es.keyId, es.mi) }
         ch.p25v.onHdu = { hd -> p25Sec(c, "HDU", hd.algId, hd.keyId, hd.mi) }
         ch.cw.onText = { t -> cwText(c, t) }
+        ch.osw.onOsw = { o, gap -> oswWord(c, ch, o, gap) }
         if (c.tdma) p2On(c, ch)
         chans[c.key] = ch
+        if (calls.at("", c.hz, 0)?.proto == "SMARTNET") fmOn(c, ch)
     }
     /** A Phase 2 TDMA channel: its S-ISCH syncs class it and keep it decoding. */
     private fun p2On(c: Carrier, ch: Chan) {
@@ -990,14 +1098,88 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         addLog(LogRow(now, c.hz, "P25", op, "PHASE 2 · $text", Codes.hex(m.bytes), true))
         pending = true
     }
+    // ------------------------------------------------------------------------------------------------ Motorola Type II
+    private val oswParsers = HashMap<Long, OswParser>()
+    /**
+     * A signaling word that passed its check. A carrier becomes a Type II control channel on its third word, with at
+     * least half the frames since its first passing: a chance pass on noise never makes one.
+     */
+    private fun oswWord(c: Carrier, ch: Chan, o: Osw, gap: Int) {
+        val now = now(); val rx = ch.osw
+        if (c.cls != "MOTOROLA TYPE II") {
+            if (rx.good < 3 || rx.good < 0.5 * rx.expected) return
+            c.cls = "MOTOROLA TYPE II"; c.role = "control"
+        }
+        c.frames++; c.blocks = rx.expected; c.crcOk = rx.good; c.lastDecodeMs = now; blocks++
+        val p = oswParsers.getOrPut(c.key) { OswParser() }
+        val ev = if (gap > 1) p.lost() else ArrayList()
+        ev.addAll(p.push(o))
+        for (e in ev) oswEvent(c, e, now)
+    }
+    private fun oswSys(id: Int, now: Long): Sys {
+        val key = "SMARTNET ${hx(id, 4)}"
+        val s = systems.getOrPut(key) { Sys(key, "SMARTNET", colorNext++, -1, id, -1, -1, -1, "", now, now, false) }
+        s.trunk = "TYPE II"
+        if (s.osw == null) s.osw = OswSys()
+        s.lastMs = now
+        return s
+    }
+    private fun oswEvent(c: Carrier, e: OswEvent, now: Long) {
+        val hexw = SmartNet.hex(e.words)
+        fun log(name: String, text: String) = addLog(LogRow(now, c.hz, "TYPE II", name, text, hexw, true))
+        if (e.kind == "sysid") {
+            val s = oswSys(e.sys, now); c.sys = s.key; s.heardHz.add(c.key)
+            val plan = SmartNet.provePlan(e.cc, c.hz)
+            c.osw = OswCc(e.cc, plan)
+            if (plan != null && s.osw!!.plan == null) s.osw!!.plan = plan
+            log("SYSTEM ID", "SYSTEM ${hx(e.sys, 4)} · CONTROL CHANNEL ${e.cc}${if (plan != null) " · ${plan.label}" else " · no channel plan puts that number on this frequency"}")
+            pending = true
+            return
+        }
+        val s = if (c.sys.isNotEmpty()) systems[c.sys] else null
+        if (e.kind == "grant" || e.kind == "update") {
+            val tg = if (e.group) SmartNet.tgOf(e.tg) else e.tg; val st = if (e.group) SmartNet.tgStatus(e.tg) else 0
+            val who = "${if (e.group) "TG" else "UNIT"} $tg${if (st != 0) " · STATUS $st" else ""}${if (e.kind == "grant") " ← ${e.src}" else ""}"
+            val name = if (e.kind == "grant") "GRANT" else "UPDATE"
+            val so = s?.osw
+            if (s == null || so == null) { log(name, "$who · CH ${e.ch} · system ID not heard yet"); return }
+            s.lastMs = now
+            val plan = so.plan; val hz = plan?.hz?.invoke(e.ch) ?: 0L
+            so.chans[e.ch] = (so.chans[e.ch] ?: 0) + 1
+            val site = oswSiteLabel(c)
+            grant(s.key, GrantRow(now, now, s.key, if (e.kind == "grant") "grant" else "update", tg, e.group, if (e.kind == "grant") e.src else 0, "CH ${e.ch}", hz, 0, false, false, false, c.hz, site, e.ch), e.kind == "update")
+            if (e.kind == "grant") touchUnit(s.key, e.src, c, now, "grant", NxdnUnitMsg(hexw, "GRANT $who · CH ${e.ch}"), site, if (e.group) tg else null)
+            log(name, "$who · CH ${e.ch}${if (hz != 0L) " · ${"%.4f".format(java.util.Locale.US, hz / 1e6)} MHz" else ""}")
+            return
+        }
+        if (e.kind == "idle") return
+        log("OSW ${e.words.joinToString("+") { hx(it.cmd, 3) }}", "not read · ${e.words.joinToString(" / ") { SmartNet.wordText(it) }}")
+    }
+    private fun oswSiteLabel(c: Carrier): String { val o = c.osw; return if (o != null) "channel ${o.cc}" else "${"%.4f".format(java.util.Locale.US, c.hz / 1e6)} MHz" }
+    /** A Type II voice channel: analog FM voice to the call on the air there. */
+    private fun fmOn(c: Carrier, ch: Chan) {
+        if (ch.fm != null) return
+        val f = FmVoice(ch.fs); ch.fm = f
+        f.onPcm = { pcm, open -> val call = calls.at("", c.hz, 0); if (call != null && call.proto == "SMARTNET") { calls.analog(call, pcm, open); if (open) pending = true } }
+    }
+    private fun oswSites(s: Sys): List<SiteRow> {
+        val cs = carriers.values.filter { it.sys == s.key && it.cls == "MOTOROLA TYPE II" }
+        val plan = s.osw?.plan
+        val lcns = if (plan != null) (s.osw?.chans?.keys ?: emptySet()).sorted().map { Lcn(it, plan.hz(it), 0) } else emptyList()
+        return cs.map { c ->
+            val o = c.osw
+            SiteRow("${s.key}/${c.key}", oswSiteLabel(c), -1, o?.cc ?: -1, -1, listOf(c.hz), c.lastMs, c.levelDb, emptyList(), emptyList(),
+                if (o != null) (o.plan?.label ?: "channel plan not proved") else "", c.callsign, listOf(c.key), lcns, -1, emptyList(), emptyList(), 0, -1, -1)
+        }
+    }
     private fun classify(c: Carrier, ch: Chan, now: Long) {
         if (c.tdma && ch.p2 == null) p2On(c, ch)
         val quiet = !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)
-        if (!c.tdma && ch.tetra == null && c.cls != "TETRA" && now - ch.openedMs > 1_500 && quiet) tetraOn(c, ch)
+        if (!c.tdma && ch.tetra == null && c.cls != "TETRA" && now - ch.openedMs > 1_500 && quiet && tetraBand(c.hz)) tetraOn(c, ch)
         if (!c.tdma && ch.nxdn == null && c.cls != "TETRA" && now - ch.openedMs > 1_500 && quiet) nxdnOn(c, ch)
         c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100.0; c.eye = Math.round(ch.rx.eye * 100) / 100.0
         if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return
-        if (now - ch.openedMs < 2_000) return
+        if (now - ch.openedMs < CLASS_MS) return
         c.cls = when {
             c.tdma && ch.rx.envCv > 0.15 -> "P25 PHASE 2 TDMA"
             ch.rx.eye > 1.3 && ch.rx.envCv < 0.15 -> "UNKNOWN 4FSK"
@@ -1111,6 +1293,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     private val DATA_TYPES = arrayOf("PI HEADER", "VOICE HEADER", "TERMINATOR", "CSBK", "MBC HEADER", "MBC CONTINUATION", "DATA HEADER", "RATE 1/2 DATA", "RATE 3/4 DATA", "IDLE", "RATE 1 DATA")
     private fun dmrBurst(c: Carrier, e: DmrEvent) {
         val now = now(); val b = e.burst
+        // a mobile's burst (MS sync) carries no CACH: no slot is read from it
+        val ts = if (b.ms) "FROM A RADIO" else "TS${b.slot + 1}"
         // an NXDN carrier's 2400 or 4800 symbols can pass for a DMR burst now and then
         if (nxdnLately(c, now)) return
         if (b.dt > 10) return
@@ -1132,7 +1316,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                 }
                 if (b.dt == 2) calls.terminate(c.sys, c.hz, b.slot, now)
                 val name = if (b.dt == 1) "VOICE LC HEADER" else "TERMINATOR WITH LC"
-                addLog(LogRow(now, c.hz, "DMR", name, "CC ${b.cc} · TS${b.slot + 1} · $name · ${if (lc.group) "TG" else "UNIT"} ${lc.dst} ← ${lc.src}${if (lc.emergency) " · EMERGENCY" else ""}${if (lc.privacy) " · PRIVACY" else ""}", Codes.hex(b.bytes), true))
+                addLog(LogRow(now, c.hz, "DMR", name, "CC ${b.cc} · $ts · $name · ${if (lc.group) "TG" else "UNIT"} ${lc.dst} ← ${lc.src}${if (lc.emergency) " · EMERGENCY" else ""}${if (lc.privacy) " · PRIVACY" else ""}", Codes.hex(b.bytes), true))
             } else if (b.dt == 2) calls.terminate(c.sys, c.hz, b.slot, now)
             return
         }
@@ -1156,15 +1340,16 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             val cs = Csbks.parse(b.bytes, ok || vok)
             // the unit-report families are kept when their check fails (shown unverified); anything else has to pass its CRC
             if (!ok && !vok && !(cs.derived && (cs.kind == "unitrpt" || cs.kind == "unithdr" || cs.kind == "callann"))) return
-            if (c.role == "" || c.role == "voice") c.role = "control"
+            // radios heard directly (inbound or talkaround) are not a control channel
+            if (c.role == "" || c.role == "voice") c.role = if (b.ms) "data" else "control"
             val s = dmrSystem(c, cs, b.cc, now)
             dmrApply(c, cs, b.slot, s, now)
-            addLog(LogRow(now, c.hz, "DMR", cs.name, "CC ${b.cc} · TS${b.slot + 1} · ${Csbks.line(cs)}", cs.hex, ok || vok))
+            addLog(LogRow(now, c.hz, "DMR", cs.name, "CC ${b.cc} · $ts · ${Csbks.line(cs)}", cs.hex, ok || vok))
         } else if (ok || b.dt == 7) {
             if (b.dt == 6 || b.dt == 7) { if (c.role == "") c.role = "data" }
             val name = DATA_TYPES[b.dt]
             val hex = Codes.hex(b.bytes)
-            addLog(LogRow(now, c.hz, "DMR", name, "CC ${b.cc} · TS${b.slot + 1} · $name${if (ok) "" else " · no block CRC"} · $hex", hex, ok))
+            addLog(LogRow(now, c.hz, "DMR", name, "CC ${b.cc} · $ts · $name${if (ok) "" else " · no block CRC"} · $hex", hex, ok))
         }
     }
     /**
@@ -1377,8 +1562,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
     private fun grant(sys: String, g: GrantRow, update: Boolean, efr: Boolean = false) {
         if (g.kind != "datagrant") {
-            val p25 = sys.startsWith("P25"); val tetra = sys.startsWith("TETRA"); val nxdn = sys.startsWith("NXDN")
-            val call = calls.grant(GrantIn(sys, if (p25) "P25" else if (tetra) "TETRA" else if (nxdn) "NXDN" else "DMR", g.tg, g.group, g.src, g.hz, if (p25) (if (g.tdma) g.slot else 0) else g.slot, g.tdma, g.encrypted, g.emergency,
+            val p25 = sys.startsWith("P25"); val tetra = sys.startsWith("TETRA"); val nxdn = sys.startsWith("NXDN"); val sn = sys.startsWith("SMARTNET")
+            val call = calls.grant(GrantIn(sys, if (p25) "P25" else if (tetra) "TETRA" else if (nxdn) "NXDN" else if (sn) "SMARTNET" else "DMR", g.tg, g.group, g.src, g.hz, if (p25) (if (g.tdma) g.slot else 0) else g.slot, g.tdma, g.encrypted, g.emergency,
                 g.site, g.lpcn, g.chDerived, efr), g.ms)
             // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
             if (call != null && call.onAir && !call.muted && call.hz != 0L && rate > 0 && inSpan(call.hz)) {
@@ -1388,6 +1573,12 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                 if (tetra && ch != null && ch.tetra == null) tetraOn(vc, ch)
                 // an NXDN voice channel is read from its first frame, at the system's symbol rate
                 if (nxdn && ch != null && ch.nxdn == null) nxdnOn(vc, ch, systems[sys]?.nxdnBaud ?: 0)
+                // a Type II voice channel carries analog FM
+                if (sn && ch != null) fmOn(vc, ch)
+            } else if (sn && call != null && call.onAir && call.hz != 0L) {
+                // a recorded channel fed as its own baseband
+                val vc = carriers[gridKey(call.hz)]; val ch = vc?.let { chans[it.key] }
+                if (vc != null && ch != null) { if (vc.role.isEmpty()) vc.role = "voice"; if (vc.sys.isEmpty()) vc.sys = sys; fmOn(vc, ch) }
             }
         }
         val same = grants.firstOrNull { it.sys == sys && it.tg == g.tg && it.ch == g.ch && it.group == g.group && g.ms - it.lastMs < 5_000 }
@@ -1594,10 +1785,12 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                     }
                 }
                 "NXDN" -> nxdnSites(s)
+                "SMARTNET" -> oswSites(s)
                 else -> dmrSites(s)
             }
             for (st in siteRows) for (k in st.carriers) for (u in units.values) if (u.sys == s.key && k in u.carriers) unitSite[u.key] = st.label
             val label = when {
+                s.proto == "SMARTNET" -> "MOTOROLA TYPE II · SYSTEM ${hx(s.sysId, 4)}"
                 s.proto == "NXDN" && s.trunk == "CONVENTIONAL" -> "NXDN · CONVENTIONAL · RAN ${s.sysId}"
                 s.proto == "NXDN" && s.trunk == "TYPE-D" -> "NXDN · TYPE-D · SITE ${s.sysId}"
                 s.proto == "NXDN" -> "NXDN · ${s.model} SYSTEM ${s.sysId}"
@@ -1627,12 +1820,12 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val carrierRows = carriers.values.map { it.row() }.sortedBy { it.hz }
         return FleetSnap(centerHz, rate, spanLo, spanHi, carrierRows, sysRows, unitRows, tgRows, grants.take(120).map { it.copy() },
             grants.count { now - it.ms < 60_000 }, blocks, chans.size, ref != null, calls.rows(), followTarget(),
-            listOf(CodecIds.IMBE, CodecIds.AMBE2, CodecIds.TETRA).filter { hasCodec(it) }, calls.playing, calls.prefs.lock)
+            listOf(CodecIds.IMBE, CodecIds.AMBE2, CodecIds.TETRA).filter { hasCodec(it) } + CodecIds.FM, calls.playing, calls.prefs.lock)
     }
     @Synchronized fun snapshot(): FleetSnap = buildSnapshot()
     /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
     private fun followTarget(): Follow? {
-        val c = calls.followTarget({ inSpan(it) }, { x -> hasCodec(x.codec) && !x.encrypted && !x.protectedHint && x.sec != "unknown" }) ?: return null
+        val c = calls.followTarget({ inSpan(it) }, { x -> (hasCodec(x.codec) || x.codec == CodecIds.FM) && !x.encrypted && !x.protectedHint && x.sec != "unknown" }) ?: return null
         return Follow(c.key, c.hz)
     }
     @Synchronized fun setPrefs(p: TgPrefs) { calls.setPrefs(p); post(true) }
@@ -1655,6 +1848,20 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     /** Test access: every carrier heard and decoded again at [ms]. */
     @Synchronized internal fun testTouchAll(ms: Long) { for (c in carriers.values) { c.lastMs = ms; c.lastDecodeMs = ms } }
+    /** Test access: the key of the carrier at [hz] (made as if found in the span). */
+    @Synchronized internal fun testCarrierKey(hz: Long): Long = carrierAt(hz.toDouble()).key
+    /** Test access: sets what the finder and the decoders would leave on a carrier (null leaves a field as it is). */
+    @Synchronized internal fun testSet(key: Long, levelDb: Double? = null, lastMs: Long? = null, role: String? = null, sys: String? = null, cls: String? = null,
+                                       lastDecodeMs: Long? = null, p25Site: Int? = null) {
+        val c = carriers[key] ?: return
+        levelDb?.let { c.levelDb = it }; lastMs?.let { c.lastMs = it }; role?.let { c.role = it }; sys?.let { c.sys = it }; cls?.let { c.cls = it }
+        lastDecodeMs?.let { c.lastDecodeMs = it }; p25Site?.let { c.p25Rfss = 1; c.p25Site = it }
+    }
+    /** Test access: a carrier's level, class, whether it has a channel, and when its last turn began. */
+    internal data class TestState(val levelDb: Double, val cls: String, val decoding: Boolean, val lastAuditionMs: Long, val hz: Long)
+    @Synchronized internal fun testState(key: Long): TestState? = carriers[key]?.let { TestState(it.levelDb, it.cls, it.decoding, it.lastAuditionMs, it.hz) }
+    /** Test access: a grant as the control channel would add it. */
+    @Synchronized internal fun testAddGrant(g: GrantRow) { grants.add(0, g); if (grants.size > 300) grants.subList(300, grants.size).clear() }
     /** Test access: one channel assignment pass now. */
     @Synchronized internal fun testAssign(now: Long) = assign(now)
     /** Test access: the carriers that have a channel decoding them. */
@@ -1754,7 +1961,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     @Synchronized fun clear() {
         carriers.clear(); systems.clear(); sites.clear(); units.clear(); anchorsDirty = true; embAsm.clear(); aliases.clear(); unitAlias.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
-        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList()
+        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList(); oswParsers.clear()
         post(true)
     }
 

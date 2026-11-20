@@ -34,14 +34,14 @@ export const kmBetween = (a: number, b: number, c: number, d: number): number =>
 };
 const CUT_HZ = 5_500;
 /**
- * Turns on a channel for carriers nothing has decoded lately go two ways at once. Full looks for the strong new
- * carriers ([FULL_DB] over the floor and off any stronger one's skirt), strongest first, and after them for every carrier
- * in turn, the one waiting longest first: [LOOK_MS], or [AUDITION_MS] once anything like a sync came. Quick looks of
- * [AUDITION_FIRST_MS] for the weaker new ones, strongest first (a control channel at a fair level shows its syncs well
- * inside one), held for [AUDITION_MS] when something on it looked like a signal Dispatch reads (syncs, words through
+ * Turns on a channel for carriers nothing has decoded lately go two ways at once. Full looks of [AUDITION_MS] (long enough
+ * for NXDN and TETRA, whose receivers start 1.5 s in) for the strong new carriers ([FULL_DB] over the floor and off any
+ * stronger one's skirt), strongest first, and after them for every carrier in turn, the one waiting longest first. Quick
+ * looks of [AUDITION_FIRST_MS] for the weaker new ones, strongest first (a control channel at a fair level shows its syncs
+ * well inside one), held for [AUDITION_MS] when something on it looked like a signal Dispatch reads (syncs, words through
  * their check, training sequences).
  */
-const AUDITION_MS = 3_000, AUDITION_FIRST_MS = 500, LOOK_MS = 1_500, FULL_DB = 20;
+const AUDITION_MS = 3_000, AUDITION_FIRST_MS = 500, FULL_DB = 20;
 /** The quickest a carrier is classed analog or otherwise. */
 const CLASS_MS = 1_500;
 /** A control channel found on a turn keeps its channel until its system is read, up to this long. */
@@ -50,8 +50,8 @@ const IDENTIFY_MS = 10_000;
 const CORE_TURN_MS = 20_000;
 /** A carrier classed analog or unknown, or one already identified that is not a control channel, waits this long for another turn. */
 const RECHECK_MS = 300_000;
-/** When the span has more carriers than channels, this share of the channels stays free for turns (at least one). */
-const TURN_SHARE = 0.4;
+/** When the span has more carriers than channels, this many channels stay free for turns while new carriers wait (one after). */
+const TURN_CHANNELS = 2;
 const LIVE_MS = 4_000;
 
 export type SysProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET';
@@ -244,7 +244,7 @@ class Chan {
       || (this.tetra ? this.tetra.rx.stats.bschOk > 0 || this.tetra.rx.stats.trainings >= 3 : false);
   }
   /** The turn of a carrier nothing has decoded is over. */
-  turnOver(now: number): boolean { return now - this.openedMs >= (this.hinted() || (!this.quick && this.p25.syncs + this.dmr.syncs + this.osw.good > 0) ? AUDITION_MS : this.quick ? AUDITION_FIRST_MS : LOOK_MS); }
+  turnOver(now: number): boolean { return now - this.openedMs >= (this.quick && !this.hinted() ? AUDITION_FIRST_MS : AUDITION_MS); }
   /** The turn is a quick first look. */
   quick = false;
   retarget(center: number): void { this.ddc.offsetHz = this.hz - center; this.center = center; if (this.tetra?.ddc) this.tetra.ddc.offsetHz = this.tetraHz - center; if (this.nxdnDdc) this.nxdnDdc.ddc.offsetHz = this.hz - center; }
@@ -432,7 +432,7 @@ export class FleetProcessor implements IqProcessor {
     // a carrier is new to the turns until it has had one, and again when it comes up 6 dB over its level then (a channel
     // that keys up now and then). The full share while new carriers or strong ones' second looks wait, one channel after.
     const fresh = (c: Carrier) => c.turns === 0 || c.levelDb >= c.turnDb + 6;
-    const reserve = waiting.length && live.length > budget ? (waiting.some(fresh) ? Math.max(2, Math.round(budget * TURN_SHARE)) : 1) : 0, cap = budget - reserve;
+    const reserve = waiting.length && live.length > budget ? (waiting.some(fresh) ? TURN_CHANNELS : 1) : 0, cap = budget - reserve;
     // the control channels known take turns when there are more than channels for them: one holding its channel keeps
     // it for [CORE_TURN_MS], then the one that has waited longest goes next. One granting calls keeps its channel.
     const busy = new Map<number, number>();
@@ -443,7 +443,7 @@ export class FleetProcessor implements IqProcessor {
       return ra - rb || (ra === 0 ? busy.get(b.key)! - busy.get(a.key)! : ra === 1 ? b.levelDb - a.levelDb : a.lastAuditionMs - b.lastAuditionMs);
     });
     const others = sorted.filter(c => !core(c) && !pinnedKeys.has(c.key));
-    const nCore = Math.min(coreL.length, Math.max(1, cap - pinned.length));
+    const nCore = Math.min(coreL.length, Math.max(1, cap));
     const held = coreL.slice(0, nCore), calls = pinned.filter(c => !held.includes(c));
     const want: Carrier[] = [...held, ...calls, ...others].slice(0, Math.max(cap, held.length + calls.length));
     // a carrier found decoding on its turn (a control channel, or a DMR or NXDN channel whose system its own frames name)
@@ -462,6 +462,9 @@ export class FleetProcessor implements IqProcessor {
       const q = qi < quickQ.length && (nQuick <= nFull || fi >= fullQ.length);
       if (q) { const c = quickQ[qi++]; want.push(c); quickSet.add(c.key); nQuick++; } else { want.push(fullQ[fi++]); nFull++; }
     }
+    // channels still free after every turn waiting (a narrow span): the settled carriers keep or get one too, the one
+    // waiting longest first, as every live carrier always did
+    for (const c of live.filter(x => !want.includes(x) && settled(x)).sort((a, b) => a.lastAuditionMs - b.lastAuditionMs)) { if (want.length >= budget) break; want.push(c); }
     const chosen = new Set(want.slice(0, budget).map(c => c.key));
     for (const k of [...this.chans.keys()]) if (!chosen.has(k)) this.chans.delete(k);
     for (const k of chosen) if (!this.chans.has(k)) { const c = this.carriers.get(k)!, quick = quickSet.has(k); c.lastAuditionMs = now; c.turns++; c.turnDb = c.levelDb; this.open(c, now); const ch = this.chans.get(k); if (ch) ch.quick = quick; }
@@ -1082,6 +1085,8 @@ export class FleetProcessor implements IqProcessor {
   // ------------------------------------------------------------------------------------------------ DMR
   private dmrBurst(c: Carrier, _ch: Chan | null, e: DmrEvent): void {
     const now = this.now(), b = e.burst;
+    // a mobile's burst (MS sync) carries no CACH: no slot is read from it
+    const ts = b.ms ? 'FROM A RADIO' : `TS${b.slot + 1}`;
     // an NXDN carrier's 2400 or 4800 symbols can pass for a DMR burst now and then
     if (this.nxdnLately(c, now)) return;
     if (b.dt > 10) return;
@@ -1103,7 +1108,7 @@ export class FleetProcessor implements IqProcessor {
         }
         if (b.dt === 2) this.calls.terminate(c.sys, c.hz, b.slot, now);
         const name = b.dt === 1 ? 'VOICE LC HEADER' : 'TERMINATOR WITH LC';
-        this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name, text: `CC ${b.cc} · TS${b.slot + 1} · ${name} · ${lc.group ? 'TG' : 'UNIT'} ${lc.dst} ← ${lc.src}${lc.emergency ? ' · EMERGENCY' : ''}${lc.privacy ? ' · PRIVACY' : ''}`, hex: hex(b.bytes), ok: true });
+        this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name, text: `CC ${b.cc} · ${ts} · ${name} · ${lc.group ? 'TG' : 'UNIT'} ${lc.dst} ← ${lc.src}${lc.emergency ? ' · EMERGENCY' : ''}${lc.privacy ? ' · PRIVACY' : ''}`, hex: hex(b.bytes), ok: true });
       } else if (b.dt === 2) this.calls.terminate(c.sys, c.hz, b.slot, now);
       return;
     }
@@ -1126,14 +1131,15 @@ export class FleetProcessor implements IqProcessor {
       const cs = parseCsbk(b.bytes, ok || vok);
       // the unit-report families are kept when their check fails (shown unverified); anything else has to pass its CRC
       if (!ok && !vok && !(cs.derived && (cs.kind === 'unitrpt' || cs.kind === 'unithdr' || cs.kind === 'callann'))) return;
-      if (c.role === '' || c.role === 'voice') c.role = 'control';
+      // radios heard directly (inbound or talkaround) are not a control channel
+      if (c.role === '' || c.role === 'voice') c.role = b.ms ? 'data' : 'control';
       const s = this.dmrSystem(c, cs, b.cc, now);
       this.dmrApply(c, cs, b.slot, s, now);
-      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name: cs.name, text: `CC ${b.cc} · TS${b.slot + 1} · ${csbkLine(cs)}`, hex: cs.hex, ok: ok || vok });
+      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name: cs.name, text: `CC ${b.cc} · ${ts} · ${csbkLine(cs)}`, hex: cs.hex, ok: ok || vok });
     } else if (ok || b.dt === 7) {
       if (b.dt === 6 || b.dt === 7) { if (c.role === '') c.role = 'data'; }
       const name = ['PI HEADER', 'VOICE HEADER', 'TERMINATOR', 'CSBK', 'MBC HEADER', 'MBC CONTINUATION', 'DATA HEADER', 'RATE 1/2 DATA', 'RATE 3/4 DATA', 'IDLE', 'RATE 1 DATA'][b.dt];
-      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name, text: `CC ${b.cc} · TS${b.slot + 1} · ${name}${ok ? '' : ' · no block CRC'} · ${hex(b.bytes)}`, hex: hex(b.bytes), ok });
+      this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name, text: `CC ${b.cc} · ${ts} · ${name}${ok ? '' : ' · no block CRC'} · ${hex(b.bytes)}`, hex: hex(b.bytes), ok });
     }
   }
   /** A DMR voice burst: keeps its call on the air and hands its three vocoder frames on. */
