@@ -10,11 +10,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /*
@@ -71,6 +73,8 @@ private class Found(val cell: Cell, val map: List<HalfFrame>, val evenSf0: Boole
 private class MibHit(val mib: Mib, val snr: Double, val level: Double, val h: Int)
 
 private const val BLOCK_MS = 40
+/** LTE-rate samples either side of a resampled subframe, for the CRS timing correction. */
+private const val SEG_PAD = 192
 /** Raster offsets tried when nothing is found on the tuned center, nearest first. */
 private val RASTER = intArrayOf(100_000, -100_000, 200_000, -200_000, 300_000, -300_000)
 private fun duplexPss(num: Numerology, tdd: Boolean): Int { if (!tdd) return num.pssOffset; val (o, cp) = num.symbol(2); return num.subframe + o + cp }
@@ -98,6 +102,8 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     val snap: StateFlow<CellSnap?> = _snap.asStateFlow()
 
     private var rate = 0; private var dd = 0.0; private var num = Numerology(LOW_FS)
+    /** Rate not a multiple of 1.92 MS/s: resamplers to the LTE rate and to 1.92 MS/s, plus a subframe buffer. */
+    private var rs: LteResamplers? = null; private var segR = FloatArray(0); private var segI = FloatArray(0)
     private var abs = 0L; private var capStart = 0L; private var capN = 0; private var capLen = 0
     private var xr = FloatArray(0); private var xi = FloatArray(0)
     private var lastCenter = Long.MIN_VALUE; private var cfo = 0.0; private var cfoKnown = false
@@ -112,8 +118,11 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     @Synchronized
     override fun reset(rate: Int) {
         this.rate = rate
-        dd = rate.toDouble() / LOW_FS
-        num = Numerology(if (integerD) rate else LOW_FS)
+        rs = lteResamplers(rate)
+        val lteRate = rs?.vr ?: rate
+        dd = lteRate.toDouble() / LOW_FS
+        num = Numerology(if (integerD) lteRate else LOW_FS)
+        if (rs != null) { val n = num.subframe + 2 * SEG_PAD; segR = FloatArray(n); segI = FloatArray(n) }
         capLen = Math.round(rate.toDouble() * BLOCK_MS / 1000).toInt()
         xr = FloatArray(capLen); xi = FloatArray(capLen)
         abs = 0; capN = 0; capStart = 0; nextAbs = 0
@@ -123,7 +132,25 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     /** Absolute sample index where the next block starts (or the one being filled started), its length, and whether it is filling. */
     val capture: Triple<Long, Int, Boolean> @Synchronized get() = Triple(if (capN > 0) capStart else nextAbs, capLen, capN > 0)
     /** The widest carrier (RBs) the current rate holds with margin for the radio's filter edges. */
-    val maxRb: Int get() { if (!integerD) return 0; val k = 0.9 * num.nfft; return intArrayOf(100, 75, 50, 25, 15, 6).firstOrNull { 12 * it <= k } ?: 0 }
+    val maxRb: Int get() { if (!integerD) return 0; val k = 0.9 * min(num.nfft.toDouble(), rate / 15_000.0); return intArrayOf(100, 75, 50, 25, 15, 6).firstOrNull { 12 * it <= k } ?: 0 }
+    /** The block at 1.92 MS/s for cell search (sample j sits on LTE-rate sample j * D + lowDelay). */
+    private fun toLow(xr: FloatArray, xi: FloatArray): Pair<FloatArray, FloatArray> {
+        val d = rs?.down ?: return decimate(xr, xi, rate)
+        val n = d.count(xr.size); val yr = FloatArray(n); val yi = FloatArray(n)
+        d.run(xr, xi, 0, n, yr, yi)
+        return yr to yi
+    }
+    private val lowDelay: Int get() = if (rs != null) 0 else decimDelay(rate)
+    /** Input samples of the low-pass ahead of the 1.92 MS/s output (so a short search slice is long enough). */
+    private val lowTaps: Int get() = rs?.let { 2 * it.down.h } ?: (16 * Math.round(rate.toDouble() / LOW_FS).toInt() + 1)
+    /** One subframe at the LTE rate from the block: startF in LTE-rate samples from the block start. */
+    private fun demodSf(startF: Double, nrb: Int, sf: Int, pci: Int, backoff: Int): Pair<Grid, Double>? {
+        val up = rs?.up ?: return demodAligned(xr, xi, startF, num, nrb, sf, pci, backoff)
+        val m0 = Math.round(startF).toInt() - SEG_PAD; val n = segR.size
+        if (m0 < 0 || ceil((m0 + n).toDouble() * up.m / up.l).toInt() + up.h > xr.size) return null
+        up.run(xr, xi, m0, n, segR, segI)
+        return demodAligned(segR, segI, (Math.round(startF) - m0).toDouble(), num, nrb, sf, pci, backoff)
+    }
 
     @Synchronized
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
@@ -159,7 +186,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         blocks++; lastBlockMs = now; dirty = true
         spectrum(xr, xi)
         if (!integerD) { nextAbs = abs + fs; return }
-        var (yr, yi) = decimate(xr, xi, fs)
+        var (yr, yi) = toLow(xr, xi)
         if (yr === xr) { yr = xr.copyOf(); yi = xi.copyOf() }
         val (cpHz, cpStr) = cpCfo(yr, yi, LOW_FS)
         cpStrength = cpStr
@@ -265,17 +292,17 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
      * the scan retunes there.
      */
     private fun rasterSearch(xr: FloatArray, xi: FloatArray, cpHz: Double, now: Long) {
-        val fs = rate; val d0 = Math.round(dd).toInt(); val taps = 16 * d0 + 1; val shortN = (2 * 9600 + 128) * d0 + taps
+        val fs = rate; val shortN = ceil((2 * 9600 + 128) * fs.toDouble() / LOW_FS).toInt() + lowTaps
         if (xr.size < shortN) return
         for (d in RASTER) {
             val shift = cpHz + Math.round((d - cpHz) / 15_000) * 15_000.0
             val sr = xr.copyOfRange(0, shortN); val si = xi.copyOfRange(0, shortN)
             rotate(sr, si, shift, fs)
-            val (ar, ai) = decimate(sr, si, fs)
+            val (ar, ai) = toLow(sr, si)
             val hit = pssSearch(ar, ai, 0, doubleArrayOf(0.0)).firstOrNull { it.score > 6 } ?: continue
             val fr = xr.copyOf(); val fi = xi.copyOf()
             rotate(fr, fi, shift, fs)
-            val (yr, yi) = decimate(fr, fi, fs); val map = halfFrameMap(yr, yi, hit.nid2, hit.pos)
+            val (yr, yi) = toLow(fr, fi); val map = halfFrameMap(yr, yi, hit.nid2, hit.pos)
             if (map.size < 3) continue
             val hz = Math.round((centerHz + shift) / 100_000) * 100_000
             for (tdd in booleanArrayOf(false, true)) for ((pci, evenSf0) in pciCandidates(yr, yi, hit.nid2, map, tdd)) {
@@ -351,14 +378,14 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
 
     /** SIB1 occasions and the wanted SI windows inside this block, for one cell whose MIB just decoded. */
     private fun readSi(cell: Cell, map: List<HalfFrame>, evenSf0: Boolean, tdd: Boolean, mibH: Int, blockAbs: Long, now: Long) {
-        val mib = cell.mib!!; val nrb = mib.bandwidth; val off = duplexPss(num, tdd); val delay = decimDelay(rate)
+        val mib = cell.mib!!; val nrb = mib.bandwidth; val off = duplexPss(num, tdd); val delay = lowDelay; val toIn = rate.toDouble() / num.fs
         if (cell.ctl.isEmpty() || cell.ctl[0].nrb != nrb || cell.ctl[0].nports != mib.ports)
             cell.ctl = (if (tdd) listOf(0, 1, 2) else listOf(1)).map { ControlDecoder(cell.pci, nrb, mib.ports, mib.phichResource, tdd, it) }
         // SFN of each mapped half-frame from the frame whose MIB was read
         val sf0 = map.filter { (it.h % 2 == 0) == evenSf0 }
         if (sf0.isEmpty()) return
         val ref = sf0.firstOrNull { it.h == mibH } ?: sf0[0]; val refSfn = mib.sfn
-        cell.timing = Timing(blockAbs + ref.pos * dd + delay - off, refSfn)
+        cell.timing = Timing(blockAbs + (ref.pos * dd + delay - off) * toIn, refSfn)
         val sched = cell.summary?.schedule ?: emptyList()
         for (hf in map) {
             val isSf0 = (hf.h % 2 == 0) == evenSf0
@@ -375,7 +402,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                 if (sib1 && cell.sib1Ms > 0 && now - cell.sib1Ms < 2000 && sched.isNotEmpty()) continue
                 if (tdd && !sib1) continue
                 val startF = base + j * num.subframe
-                val d = demodAligned(xr, xi, startF, num, nrb, sf, cell.pci, max(1, Math.round(num.nfft / 128.0).toInt())) ?: continue
+                val d = demodSf(startF, nrb, sf, cell.pci, max(1, Math.round(num.nfft / 128.0).toInt())) ?: continue
                 subframe(cell, d.first, sf, sfn, sib1, si, hf.h * 5 + j, now, tdd)
             }
         }

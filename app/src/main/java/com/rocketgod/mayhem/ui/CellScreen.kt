@@ -113,7 +113,7 @@ private fun cellLabel(c: CellRow, pci: Boolean = true): String {
 private fun capability(kind: Radio.Kind): Pair<String, Int> = when {
     kind == Radio.Kind.NONE -> "NO RADIO · a HackRF reads cells, SIBs and alerts; an RTL-SDR reads cells and their MIB" to 0
     Apps.cellRate() < 15_360_000 -> "RTL-SDR · 1.92 MS/s · cell search and MIB from the center 1.08 MHz · SIBs and alerts need the whole carrier: a HackRF" to 1
-    else -> "HACKRF · 15.36 MS/s · cells, MIB, every SIB and the alerts of carriers up to 15 MHz (20 MHz carriers: MIB only)" to 2
+    else -> "HACKRF · ${if (SdrEngine.rateHz.value == Apps.CELL_WIDE_RATE) "20 MS/s" else "15.36 MS/s"} · cells, MIB, every SIB and the alerts of carriers up to 20 MHz (20 MS/s for 20 MHz carriers)" to 2
 }
 
 /** The alert area of a group (the first of its messages that carries one). */

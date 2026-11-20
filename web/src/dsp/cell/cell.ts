@@ -3,12 +3,14 @@
  * (PSS/SSS), reads the MIB from the central 6 RBs (any radio at 1.92 MS/s or more), and with the whole carrier in the
  * span decodes SI-RNTI traffic only: SIB1 and the SI messages (SIB2 to SIB24, ETWS and CMAS in SIB10/11/12).
  * The next block is placed on the next SI window still wanted, from the SFN timing of the last block.
+ * A rate that is not a multiple of 1.92 MS/s (a HackRF at 20 MS/s, for 20 MHz carriers) is read through an LTE rate:
+ * cell search on a 1.92 MS/s resampling of the block, and each subframe wanted resampled on its own to 30.72 MS/s.
  * Paging and every other RNTI are left alone.
  */
 import { fft, hann } from '../../fft.js';
 import type { Emit, IqProcessor } from '../core.js';
 import { Numerology, Grid, chanEst, crsSeq, crsShift, ofdmDemod, bitsToBytes, hexOf, NRB_MAX } from './common.js';
-import { LOW, LOW_FS, decimate, decimDelay, cpCfo, rotate, pssSearch, halfFrameMap, sssIdentify, type HalfFrame } from './sync.js';
+import { LOW, LOW_FS, decimate, decimDelay, cpCfo, rotate, pssSearch, halfFrameMap, sssIdentify, lteResamplers, type Rational, type HalfFrame } from './sync.js';
 import { decodeMib, type Mib } from './pbch.js';
 import { ControlDecoder } from './pdcch.js';
 import { allocation, tbsSi, pdschLlr, TbDecoder } from './pdsch.js';
@@ -60,6 +62,8 @@ interface Cell {
 }
 
 const BLOCK_MS = 40;
+/** LTE-rate samples either side of a resampled subframe, for the CRS timing correction. */
+const SEG_PAD = 192;
 /** Raster offsets tried when nothing is found on the tuned center, nearest first. */
 const RASTER = [100_000, -100_000, 200_000, -200_000, 300_000, -300_000];
 const DUPLEX_PSS = (num: Numerology, tdd: boolean) => { if (!tdd) return num.pssOffset; const [o, cp] = num.symbol(2); return num.subframe + o + cp; };
@@ -80,6 +84,9 @@ export class CellProcessor implements IqProcessor {
   /** Live radio: skip input in proportion to the CPU a block took. Off for recordings, which wait for the decoder. */
   realtime = true;
   private rate = 0; private D = 0; private num = new Numerology(LOW_FS);
+  /** Rate not a multiple of 1.92 MS/s: resamplers to the LTE rate (vr) and to 1.92 MS/s, plus a subframe buffer. */
+  private rs: { vr: number; up: Rational; down: Rational } | null = null; private segR = new Float32Array(0); private segI = new Float32Array(0);
+  private supported = false;
   private abs = 0; private capStart = 0; private capN = 0; private capLen = 0;
   private xr = new Float32Array(0); private xi = new Float32Array(0);
   private lastCenter = NaN; private cfo = 0; private cfoKnown = false;
@@ -93,8 +100,12 @@ export class CellProcessor implements IqProcessor {
 
   reset(rate: number): void {
     this.rate = rate;
-    this.D = rate / LOW_FS;
-    this.num = new Numerology(Number.isInteger(this.D) ? rate : LOW_FS);
+    this.rs = lteResamplers(rate);
+    const lte = this.rs ? this.rs.vr : rate;
+    this.D = lte / LOW_FS;
+    this.supported = Number.isInteger(this.D);
+    this.num = new Numerology(this.supported ? lte : LOW_FS);
+    if (this.rs) { const n = this.num.subframe + 2 * SEG_PAD; this.segR = new Float32Array(n); this.segI = new Float32Array(n); }
     this.capLen = Math.round(rate * BLOCK_MS / 1000);
     this.xr = new Float32Array(this.capLen); this.xi = new Float32Array(this.capLen);
     this.abs = 0; this.capN = 0; this.capStart = 0; this.nextAbs = 0;
@@ -104,7 +115,26 @@ export class CellProcessor implements IqProcessor {
   /** The widest carrier (RBs) the current rate holds with margin for the radio's filter edges. */
   /** Absolute sample index where the next block starts (or the one being filled started), and its length. */
   get capture(): { start: number; len: number; filling: boolean } { return { start: this.capN ? this.capStart : this.nextAbs, len: this.capLen, filling: this.capN > 0 }; }
-  get maxRb(): number { if (!Number.isInteger(this.D)) return 0; const k = 0.9 * this.num.nfft; return [100, 75, 50, 25, 15, 6].find(n => 12 * n <= k) ?? 0; }
+  get maxRb(): number { if (!this.supported) return 0; const k = 0.9 * Math.min(this.num.nfft, this.rate / 15_000); return [100, 75, 50, 25, 15, 6].find(n => 12 * n <= k) ?? 0; }
+  /** The block at 1.92 MS/s for cell search (sample j sits on LTE-rate sample j * D + lowDelay). */
+  private toLow(xr: Float32Array, xi: Float32Array): [Float32Array, Float32Array] {
+    if (!this.rs) return decimate(xr, xi, this.rate);
+    const d = this.rs.down, n = d.count(xr.length), yr = new Float32Array(n), yi = new Float32Array(n);
+    d.run(xr, xi, 0, n, yr, yi);
+    return [yr, yi];
+  }
+  private get lowDelay(): number { return this.rs ? 0 : decimDelay(this.rate); }
+  /** Input samples of the low-pass ahead of the 1.92 MS/s output (so a short search slice is long enough). */
+  private get lowTaps(): number { return this.rs ? 2 * this.rs.down.H : 16 * Math.round(this.rate / LOW_FS) + 1; }
+  /** One subframe at the LTE rate from the block: startF in LTE-rate samples from the block start. */
+  private demodSf(startF: number, nrb: number, sf: number, pci: number, backoff: number): { g: Grid; coh: number; level: number } | null {
+    const num = this.num;
+    if (!this.rs) return this.demodAligned(this.xr, this.xi, startF, num, nrb, sf, pci, backoff);
+    const up = this.rs.up, m0 = Math.round(startF) - SEG_PAD, n = this.segR.length;
+    if (m0 < 0 || Math.ceil((m0 + n) * up.M / up.L) + up.H > this.xr.length) return null;
+    up.run(this.xr, this.xi, m0, n, this.segR, this.segI);
+    return this.demodAligned(this.segR, this.segI, Math.round(startF) - m0, num, nrb, sf, pci, backoff);
+  }
 
   onIq(iq: Int8Array, rate: number): void {
     if (rate !== this.rate) this.reset(rate);
@@ -137,8 +167,8 @@ export class CellProcessor implements IqProcessor {
     const now = this.now(), fs = this.rate, xr = this.xr, xi = this.xi;
     this.blocks++; this.lastBlockMs = now; this.dirty = true;
     this.spectrum(xr, xi);
-    if (!Number.isInteger(this.D)) { this.nextAbs = this.abs + fs; return; }
-    let [yr, yi] = decimate(xr, xi, fs);
+    if (!this.supported) { this.nextAbs = this.abs + fs; return; }
+    let [yr, yi] = this.toLow(xr, xi);
     if (yr === xr) { yr = xr.slice(); yi = xi.slice(); }
     const cp = cpCfo(yr, yi, LOW_FS);
     this.cpStrength = cp.strength;
@@ -250,17 +280,17 @@ export class CellProcessor implements IqProcessor {
    * the scan retunes there.
    */
   private rasterSearch(xr: Float32Array, xi: Float32Array, cpHz: number, now: number): void {
-    const fs = this.rate, D = this.D, taps = 16 * D + 1, shortN = (2 * 9600 + 128) * D + taps;
+    const fs = this.rate, shortN = Math.ceil((2 * 9600 + 128) * fs / LOW_FS) + this.lowTaps;
     if (xr.length < shortN) return;
     for (const d of RASTER) {
       const shift = cpHz + Math.round((d - cpHz) / 15_000) * 15_000;
       const sr = xr.slice(0, shortN), si = xi.slice(0, shortN);
       rotate(sr, si, shift, fs);
-      const [ar, ai] = decimate(sr, si, fs), hit = pssSearch(ar, ai, 0, [0]).filter(h => h.score > 6)[0];
+      const [ar, ai] = this.toLow(sr, si), hit = pssSearch(ar, ai, 0, [0]).filter(h => h.score > 6)[0];
       if (!hit) continue;
       const fr = xr.slice(), fi = xi.slice();
       rotate(fr, fi, shift, fs);
-      const [yr, yi] = decimate(fr, fi, fs), map = halfFrameMap(yr, yi, hit.nid2, hit.pos);
+      const [yr, yi] = this.toLow(fr, fi), map = halfFrameMap(yr, yi, hit.nid2, hit.pos);
       if (map.length < 3) continue;
       const hz = Math.round((this.centerHz + shift) / 100_000) * 100_000;
       for (const tdd of [false, true]) for (const [pci, evenSf0] of this.pciCandidates(yr, yi, hit.nid2, map, tdd)) {
@@ -329,14 +359,14 @@ export class CellProcessor implements IqProcessor {
 
   /** SIB1 occasions and the wanted SI windows inside this block, for one cell whose MIB just decoded. */
   private readSi(cell: Cell, map: HalfFrame[], evenSf0: boolean, tdd: boolean, mibH: number, blockAbs: number, now: number): void {
-    const mib = cell.mib!, nrb = mib.bandwidth, num = this.num, D = this.D, off = DUPLEX_PSS(num, tdd), delay = decimDelay(this.rate);
+    const mib = cell.mib!, nrb = mib.bandwidth, num = this.num, D = this.D, off = DUPLEX_PSS(num, tdd), delay = this.lowDelay, toIn = this.rate / num.fs;
     if (!cell.ctl.length || cell.ctl[0].nrb !== nrb || cell.ctl[0].nports !== mib.ports)
       cell.ctl = (tdd ? [0, 1, 2] : [1]).map(mi => new ControlDecoder(cell.pci, nrb, mib.ports, mib.phichResource, tdd, mi));
     // SFN of each mapped half-frame from the frame whose MIB was read
     const sf0 = map.filter(h => (h.h % 2 === 0) === evenSf0);
     if (!sf0.length) return;
     const ref = sf0.find(h => h.h === mibH) ?? sf0[0], refSfn = mib.sfn;
-    cell.timing = { abs: blockAbs + ref.pos * D + delay - off, sfn: refSfn };
+    cell.timing = { abs: blockAbs + (ref.pos * D + delay - off) * toIn, sfn: refSfn };
     const sched = cell.summary?.schedule ?? [];
     for (const hf of map) {
       const isSf0 = (hf.h % 2 === 0) === evenSf0, frames = Math.floor((hf.h - ref.h - (isSf0 ? 0 : 1)) / 2), sfn = ((refSfn + frames) % 1024 + 1024) % 1024;
@@ -352,7 +382,7 @@ export class CellProcessor implements IqProcessor {
         if (sib1 && cell.sib1Ms && now - cell.sib1Ms < 2000 && sched.length) continue;
         if (tdd && !sib1) continue;
         const startF = base + j * num.subframe;
-        const d = this.demodAligned(this.xr, this.xi, startF, num, nrb, sf, cell.pci, Math.max(1, Math.round(num.nfft / 128)));
+        const d = this.demodSf(startF, nrb, sf, cell.pci, Math.max(1, Math.round(num.nfft / 128)));
         if (!d) continue;
         this.subframe(cell, d.g, sf, sfn, sib1, si, hf.h * 5 + j, now, tdd);
       }

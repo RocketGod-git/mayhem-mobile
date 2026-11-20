@@ -78,6 +78,58 @@ export function decimate(xr: Float32Array, xi: Float32Array, fs: number): [Float
 /** Delay of the decimator output: output o is centered on input sample o * D + delayIn. */
 export const decimDelay = (fs: number) => { const D = Math.round(fs / LOW_FS); return D <= 1 ? 0 : 8 * D; };
 
+/**
+ * Rational resampler by L/M for rates that are not a multiple of 1.92 MS/s (a HackRF at 20 MS/s). Output m is the
+ * signal at input position m * M / L, with no delay: a Kaiser-windowed sinc with cutoff fc (cycles per input sample),
+ * one 2H-tap phase per L, each phase normalized to unit DC gain. Input outside the buffer counts as zero.
+ */
+export class Rational {
+  readonly h: Float32Array;
+  constructor(readonly L: number, readonly M: number, readonly H: number, fc: number, beta: number) {
+    const T = 2 * H, h = new Float32Array(L * T), i0 = (x: number) => { let s = 1, t = 1; for (let k = 1; k < 30; k++) { t *= (x / (2 * k)) ** 2; s += t; } return s; }, ib = i0(beta);
+    for (let r = 0; r < L; r++) {
+      let sum = 0;
+      for (let k = 0; k < T; k++) {
+        const t = k - H + 1 - r / L, u = t / H, w = Math.abs(u) >= 1 ? 0 : i0(beta * Math.sqrt(1 - u * u)) / ib;
+        const v = (t === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * t) / (Math.PI * t)) * w;
+        h[r * T + k] = v; sum += v;
+      }
+      for (let k = 0; k < T; k++) h[r * T + k] /= sum;
+    }
+    this.h = h;
+  }
+  /** Outputs m0 .. m0+n-1 into (or, oi). */
+  run(xr: Float32Array, xi: Float32Array, m0: number, n: number, or: Float32Array, oi: Float32Array): void {
+    const { L, M, H, h } = this, T = 2 * H, len = xr.length;
+    for (let j = 0; j < n; j++) {
+      const num = (m0 + j) * M, q = Math.floor(num / L), r = num - q * L, b = q - H + 1, hb = r * T;
+      let ar = 0, ai = 0;
+      if (b >= 0 && b + T <= len) for (let k = 0; k < T; k++) { const c = h[hb + k]; ar += c * xr[b + k]; ai += c * xi[b + k]; }
+      else for (let k = 0; k < T; k++) { const x = b + k; if (x < 0 || x >= len) continue; const c = h[hb + k]; ar += c * xr[x]; ai += c * xi[x]; }
+      or[j] = ar; oi[j] = ai;
+    }
+  }
+  /** Number of outputs from m = 0 whose taps all fall before the end of an input of len samples. */
+  count(len: number): number { return Math.max(0, Math.floor((len - this.H) * this.L / this.M)); }
+}
+const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+/**
+ * For a rate that is not a multiple of 1.92 MS/s: the LTE rate it is resampled to (the smallest 1.92 MS/s x 2^k at or
+ * above it, up to 30.72 MS/s), the resampler there for the OFDM symbols and the one down to 1.92 MS/s for cell search.
+ * Null when the rate is a multiple of 1.92 MS/s (no resampling) or has no small rational ratio.
+ */
+export function lteResamplers(fs: number): { vr: number; up: Rational; down: Rational } | null {
+  if (!Number.isInteger(fs) || Number.isInteger(fs / LOW_FS) || fs < 2 * LOW_FS) return null;
+  let vr = LOW_FS;
+  while (vr < fs && vr < 30_720_000) vr *= 2;
+  if (vr < fs) return null;
+  const g1 = gcd(vr, fs), g2 = gcd(LOW_FS, fs), L1 = vr / g1, M1 = fs / g1, L2 = LOW_FS / g2, M2 = fs / g2;
+  if (L1 > 4096 || L2 > 4096) return null;
+  // up: keep everything to the input Nyquist (an LTE carrier fills 90 %), stop its images; down: the central 1.08 MHz
+  // with the same cutoff and span as decimate()
+  return { vr, up: new Rational(L1, M1, 16, 0.5, 6), down: new Rational(L2, M2, Math.ceil(8 * fs / LOW_FS), 0.62e6 / fs, 7.5) };
+}
+
 /** CFO in Hz from the CP repetition over the whole buffer: x[n] x*[n + N] (unambiguous +-7.5 kHz). */
 export function cpCfo(xr: Float32Array, xi: Float32Array, fs: number): { hz: number; strength: number } {
   const N = Math.round(fs / 15_000);
