@@ -255,7 +255,9 @@ function setStatus(s: string, connected: boolean): void {
 }
 
 // ---- radio / engine control -----------------------------------------------------------------------------------
-function loadDial(): number { try { return Number(localStorage.getItem('mayhem.dial')) || 0; } catch { return 0; } }
+/** The saved dial, only when it is on broadcast FM: the app always opens there, in WFM, where Home and Audio pick the
+ *  strongest station (a dial left on 6 m or NOAA is not brought back on a new visit). */
+function loadDial(): number { try { const hz = Number(localStorage.getItem('mayhem.dial')) || 0; return hz >= 87.5e6 && hz <= 108e6 ? hz : 0; } catch { return 0; } }
 let dialSaveTimer = 0;
 /** Remember the dial for the other apps and for the next visit. */
 function setDial(hz: number): void {

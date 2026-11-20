@@ -149,11 +149,10 @@ object SdrEngine {
         fun read(k: String) = p.getString(k, null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 4 }?.toIntArray()
         gainPrefOne = read("gains"); gainPrefPro = read("gains_pro")
         gainPrefOne?.let { _agc.value = it[3] == 1 }
+        // the app always opens on broadcast FM in WFM, where Home and Audio pick the strongest station: a dial saved
+        // anywhere else (a 6 m or NOAA listen) is not brought back at launch
         val dial = p.getLong("dial", 0L)
-        if (dial in FREQ_MIN_HZ..FREQ_MAX_HZ) {
-            radioFreqHz = dial; dialSaved = true
-            radioMode = runCatching { Mode.valueOf(p.getString("dial_mode", null) ?: "") }.getOrDefault(radioMode)
-        }
+        if (dial in 87_500_000L..108_000_000L) { radioFreqHz = dial; dialSaved = true }
         rdsOn = p.getBoolean("rds", true); _rdsWanted.value = rdsOn
         _ppm.value = p.getInt("rtl_ppm", 0).coerceIn(-200, 200); RtlSdr.ppm = _ppm.value
     }
