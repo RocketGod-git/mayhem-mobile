@@ -3377,6 +3377,9 @@ const R433_MEANING: Record<string, string> = {
   counter: 'advances every button press, which is what stops a recording being replayed',
   learn: 'the device is being taught to a receiver rather than reporting',
   heartbeat: 'a periodic check-in, not an event',
+  color_code: 'the DMR color code, which keeps one system from hearing another on the same channel',
+  burst: 'the data type of the last burst, from its slot type',
+  channels: 'every frequency this color code was heard on',
 };
 
 function r433Value(k: string, v: unknown): string {
@@ -3487,13 +3490,14 @@ function renderR433(view: HTMLElement): void {
 let r433Tick = 0;
 
 type R433Filter = 'all' | 'key' | 'remote' | 'sensor';
-type R433Kind = 'CAR KEY' | 'REMOTE' | 'TIRE SENSOR' | 'WEATHER' | 'SECURITY' | 'METER' | 'SENSOR' | 'Z-WAVE';
+type R433Kind = 'CAR KEY' | 'REMOTE' | 'TIRE SENSOR' | 'WEATHER' | 'SECURITY' | 'METER' | 'SENSOR' | 'Z-WAVE' | 'RADIO';
 /** What a card calls the thing, from who decoded it and what its protocol says it is. */
 function r433Kind(d: HeardDevice): R433Kind {
   if (d.family === 'key') return 'CAR KEY';
   if (d.family === 'remote') return 'REMOTE';
   if (d.family === 'weather') return 'WEATHER';
   if (d.family === 'zwave') return 'Z-WAVE';
+  if (d.family === 'radio') return 'RADIO';
   const t = `${d.model} ${d.what} ${d.data.type ?? ''}`.toLowerCase();
   if (/tpms|tire|tyre/.test(t)) return 'TIRE SENSOR';
   if (/weather|thermo|temperature|humidity|rain|wind|lightning|hygro|soil|pool|bbq|meat|grill/.test(t)) return 'WEATHER';
@@ -3502,7 +3506,7 @@ function r433Kind(d: HeardDevice): R433Kind {
   if (/remote|switch|button|doorbell|bell|keyfob|key fob|gate|garage|blind|shutter|outlet|plug|dimmer/.test(t)) return 'REMOTE';
   return 'SENSOR';
 }
-const R433_GROUP: Record<R433Kind, R433Filter> = { 'CAR KEY': 'key', REMOTE: 'remote', 'TIRE SENSOR': 'sensor', WEATHER: 'sensor', SECURITY: 'sensor', METER: 'sensor', SENSOR: 'sensor', 'Z-WAVE': 'sensor' };
+const R433_GROUP: Record<R433Kind, R433Filter> = { 'CAR KEY': 'key', REMOTE: 'remote', 'TIRE SENSOR': 'sensor', WEATHER: 'sensor', SECURITY: 'sensor', METER: 'sensor', SENSOR: 'sensor', 'Z-WAVE': 'sensor', RADIO: 'all' };
 const R433_FILTER_LABEL: Record<R433Filter, string> = { all: 'ALL', key: 'KEYS', remote: 'REMOTES', sensor: 'SENSORS' };
 /** How long a device counts as live: a key or remote is a press, a sensor reports every half minute or so. */
 const r433LiveMs = (k: R433Kind) => (k === 'CAR KEY' || k === 'REMOTE' ? 15_000 : 120_000);
@@ -3516,6 +3520,7 @@ const r433Num = (v: unknown): number | null => (typeof v === 'number' ? v : type
 function r433Headline(d: HeardDevice, k: R433Kind): [string, string] {
   const v = d.data;
   if (k === 'Z-WAVE') { const n = (v.nodes as ZwNode[] | undefined)?.length ?? 0; return [`${n} node${n === 1 ? '' : 's'}`, `${v.from} → ${v.to} ${v.said}`]; }
+  if (k === 'RADIO') return [`CC ${v.color_code}`, `${v.burst} from ${v.from}`];
   if (k === 'CAR KEY' || k === 'REMOTE') return [String(v.button ?? v.btn ?? v.cmd ?? v.state ?? 'PRESS'), v.counter !== undefined ? `counter ${v.counter}` : v.hop !== undefined ? `code ${String(v.hop).slice(0, 8)}` : ''];
   const kpaRaw = r433Num(v.pressure_kPa), psiRaw = r433Num(v.pressure_PSI), barRaw = r433Num(v.pressure_bar);
   const tcRaw = r433Num(v.temperature_C), tfRaw = r433Num(v.temperature_F);
@@ -3537,7 +3542,7 @@ function r433Card(d: HeardDevice & { hz?: number }, now: number): string {
   return `<div class="mt-card dv-card k-${k.replace(/ /g, '').toLowerCase()} ${state.r433.sel === d.key ? 'sel' : ''} ${live ? '' : 'dim'}" data-dv="${esc(d.key)}" style="--flash:${flash.toFixed(2)}">`
     + `<div class="mt-h"><span class="dv-glyph">${R433_GLYPH[k]}</span><span class="mt-k"><b>${k}</b>${d.model.toUpperCase() === k ? '' : `<small>${esc(d.model)}</small>`}${id ? `<i>ID ${esc(id)}</i>` : ''}</span><span class="mt-live ${live ? 'on' : ''}"><i></i>${live ? 'LIVE' : r433Ago(age)}</span></div>`
     + `<div class="mt-clk"><b>${esc(big)}</b><small>${esc(sub)}</small><em>${d.count}×</em></div>`
-    + `<div class="dv-foot"><span>${k === 'Z-WAVE' ? `${((d.data.channels as number[] | undefined) ?? []).map(c => c.toFixed(2)).join(' · ')} MHz` : d.hz ? r433Mhz(d.hz) : ''}</span><span>${live ? r433Ago(age) : r433Clock(d.lastSeen)}</span></div></div>`;
+    + `<div class="dv-foot"><span>${k === 'Z-WAVE' ? `${((d.data.channels as number[] | undefined) ?? []).map(c => c.toFixed(2)).join(' · ')} MHz` : k === 'RADIO' ? esc(String(d.data.channels)) : d.hz ? r433Mhz(d.hz) : ''}</span><span>${live ? r433Ago(age) : r433Clock(d.lastSeen)}</span></div></div>`;
 }
 const R433_GLYPH: Record<R433Kind, string> = {
   'CAR KEY': '<svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4.5"/><path d="M12.5 12H21v3M18 12v2.5"/></svg>',
@@ -3547,6 +3552,7 @@ const R433_GLYPH: Record<R433Kind, string> = {
   SECURITY: '<svg viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6z"/></svg>',
   METER: '<svg viewBox="0 0 24 24"><path d="M4 16a8 8 0 1 1 16 0"/><path d="M12 16l4-5"/></svg>',
   'Z-WAVE': '<svg viewBox="0 0 24 24"><path d="M4 11l8-6.5 8 6.5M6.5 9.5V19h11V9.5"/><circle cx="12" cy="14.5" r="1.4"/><path d="M9.6 12.1a3.4 3.4 0 0 1 4.8 0"/></svg>',
+  RADIO: '<svg viewBox="0 0 24 24"><rect x="7.5" y="8" width="9" height="13" rx="2"/><path d="M10 8V3M10 12h4M10 15h4"/></svg>',
   SENSOR: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></svg>',
 };
 const ZW_RATE: Record<string, string> = { R1: 'R1 9.6 kb/s', R2: 'R2 40 kb/s', R3: 'R3 100 kb/s' };
@@ -3577,8 +3583,13 @@ function r433Fields(d: HeardDevice & { hz?: number }, doubtful: boolean): [strin
     fields.push([key.replace(/_/g, ' ').toUpperCase(), r433Value(key, v), R433_MEANING[key] ?? '']);
   }
   if (d.hz) fields.push(['FREQUENCY', `${r433Mhz(d.hz)} (${d.offsetHz >= 0 ? '+' : ''}${(d.offsetHz / 1e3).toFixed(0)} kHz from the dial)`]);
-  fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'FSK (frequency shift)' : 'OOK (on-off)') : 'OOK or FSK, both are tried']);
-  fields.push(['DECODER', d.family === 'key' ? 'car keys' : d.family === 'sensor' ? `protocol ${d.num} · ${d.what}` : d.family === 'remote' ? 'gate and garage remotes' : 'weather sensors']);
+  if (d.family === 'radio') {
+    fields.push(['MODULATION', '4-level FSK, 4800 symbols a second']);
+    fields.push(['DECODER', 'DMR sync and slot type, kept only when the Golay check passes, with the full decode in Dispatch']);
+  } else {
+    fields.push(['MODULATION', d.family === 'sensor' ? (d.fsk ? 'FSK (frequency shift)' : 'OOK (on-off)') : 'OOK or FSK, both are tried']);
+    fields.push(['DECODER', d.family === 'key' ? 'car keys' : d.family === 'sensor' ? `protocol ${d.num} · ${d.what}` : d.family === 'remote' ? 'gate and garage remotes' : 'weather sensors']);
+  }
   fields.push(['HEARD', `${d.count} time${d.count === 1 ? '' : 's'} · first ${r433Clock(d.firstSeen)} · last ${r433Clock(d.lastSeen)}`]);
   if (doubtful) fields.push(['NOTE', 'this protocol has no checksum, so nothing in the frame proves the reading']);
   return fields;

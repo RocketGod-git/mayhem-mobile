@@ -20,6 +20,8 @@ import { REGISTRY, type R433Data, type RDevice } from './device.js';
 import { describeBurst, shapeSummary, type BurstShape } from './analyze.js';
 import type { R433Stats } from './runner.js';
 import { ZWaveNets, ZWaveRx, zwDescribe, zwHex, type ZwHeard } from './zwave.js';
+import { NarrowOok, NARROW_MAX, type NarrowChannel } from './narrow.js';
+import { DmrSpot, DMR_DATA_TYPE, type DmrSeen } from './dmr.js';
 import './devices/index.js';
 
 /** The once-a-second summary line: how the receiver is doing, not what it heard. */
@@ -100,7 +102,7 @@ export interface HeardDevice {
    */
   shape?: BurstShape;
   /** What kind of thing it is: an rtl_433 sensor, a car key, a gate or garage remote, or a weather sensor read by Mayhem's decoders. */
-  family: 'sensor' | 'key' | 'remote' | 'weather' | 'zwave';
+  family: 'sensor' | 'key' | 'remote' | 'weather' | 'zwave' | 'radio';
   /** Where it was heard, as an offset from the radio's center in hertz. */
   offsetHz: number;
   /** Frequency shift keyed rather than on-off keyed. */
@@ -116,6 +118,20 @@ function keyOf(model: string, d: R433Data): string {
 }
 
 const STATS_MS = 1000;
+/** A narrow reading is confirmed by the same sensor again within this much radio time. */
+const NARROW_CONFIRM_MS = 300_000;
+/** Readings of one sensor this close together are one transmission. */
+const NARROW_SAME_MS = 1_500;
+/** A DMR channel's color code is voted over this much radio time. */
+const DMR_VOTE_MS = 60_000;
+/** One DMR channel: its frequency, its recent bursts' times per color code, and the color code it last settled on. */
+interface DmrChan { hz: number; n: number; votes: Map<number, number[]>; cc: number }
+/** The color code a channel's recent bursts agree on: at least two, and more than twice any other; -1 if none. */
+function dmrMajority(c: DmrChan): number {
+  let best = -1, top = 0, second = 0;
+  for (const [cc, ts] of c.votes) { const v = ts.length; if (v > top) { second = top; top = v; best = cc; } else if (v > second) second = v; }
+  return top >= 2 && top > 2 * second ? best : -1;
+}
 /** Readings no real device gives: a tire or sensor outside -40..125 °C, or a tire above 100 psi. */
 function plausible(d: R433Data): boolean {
   const n = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
@@ -126,13 +142,21 @@ function plausible(d: R433Data): boolean {
   if (tire && !isNaN(psi) && psi > 100) return false;
   return true;
 }
+/**
+ * A frame of all zeros passes an additive check, and a steady carrier slices to one. A reading whose every field
+ * is zero is that, not a sensor.
+ */
+function allZero(d: R433Data): boolean {
+  const skip = new Set(['model', 'type', 'mic', 'raw', 'protocol']);
+  return Object.entries(d).every(([k, v]) => skip.has(k) || v === 0 || v === '0');
+}
 /** Car-key decoders whose frames carry too little checking to trust a single one. */
 const WEAK_KEYS = new Set(['Honda Static']);
 
 export class R433Processor implements IqProcessor {
   private readonly channels: BurstChannels;
   /** One rtl_433 detector and one set of key decoders per channel slot, reused as bursts come and go. */
-  private readonly slots: { pd: PulseDetect; keys: KeyDecoders; pending: { r: KeyReading; hz: number }[]; verified: boolean }[] = [];
+  private readonly slots: { pd: PulseDetect; keys: KeyDecoders; pending: { r: KeyReading; hz: number }[]; verified: boolean; dmr: DmrSpot; dmrSeen: DmrSeen[] }[] = [];
   /** Which slot is being read right now. */
   private curSlot = 0;
   /** Milliseconds of radio time since the start, for telling a repeat from a new press. */
@@ -179,10 +203,52 @@ export class R433Processor implements IqProcessor {
     if (!found.length) this.reportUnknown(pulses);
   };
 
+  /** The narrow on-off path for weak sensors, and one detector per narrow channel. */
+  private readonly narrow: NarrowOok;
+  private readonly nslots: PulseDetect[] = [];
+  /**
+   * A narrow channel's burst: on-off keyed only, and only the checksummed decoders (the protocols rtl_433 ships
+   * switched off, and the key and remote decoders with little or no check, stay on the wide path), so the extra
+   * reach adds readings that verify rather than guesses.
+   */
+  private readonly narrowSink = (kind: PulseKind, pulses: Parameters<typeof this.radio.run>[1]) => {
+    if (kind !== PulseKind.OOK) return;
+    const ids = new Set<string>();
+    for (const res of this.radio.run(kind, pulses)) {
+      if (res.dev.disabled || !plausible(res.data) || allZero(res.data)) continue;
+      const id = res.data.id !== undefined ? String(res.data.id) : '';
+      if (id) { if (ids.has(id)) continue; ids.add(id); }
+      const key = keyOf(res.data.model, res.data), at = this.airMs;
+      // one transmission the detector split in two is still one reading
+      const last = this.narrowLast.get(key);
+      if (last !== undefined && at - last < NARROW_SAME_MS) continue;
+      // A check of a few bits passes on noise now and then, and the narrow path reads many more bursts. A sensor
+      // reports again and again with the same ID; noise does not. So a reading heard only here is shown once the
+      // same model and ID come again within a few minutes (or the wide path already knows the device).
+      if (!this.heard.has(key)) {
+        const first = this.narrowFirst.get(key);
+        if (first === undefined || at - first > NARROW_CONFIRM_MS || at - first < NARROW_SAME_MS) {
+          if (first === undefined || at - first > NARROW_CONFIRM_MS) this.narrowFirst.set(key, at);
+          if (this.narrowFirst.size > 500) this.narrowFirst.clear();
+          continue;
+        }
+      }
+      this.narrowLast.set(key, at);
+      this.report(res.dev, res.data, kind);
+    }
+  };
+  /** Narrow readings heard once, waiting for the same sensor again; and when each was last reported. */
+  private readonly narrowFirst = new Map<string, number>();
+  private readonly narrowLast = new Map<string, number>();
+
   constructor(private readonly emit: Emit) {
-    this.channels = new BurstChannels((ch, env, fm, n) => this.onChannel(ch, env, fm, n), (ch) => this.onChannelEnd(ch));
+    this.narrow = new NarrowOok((ch, env, fm, n) => this.onNarrow(ch, env, fm, n), (ch) => this.onNarrowEnd(ch));
+    for (let i = 0; i < NARROW_MAX; i++) this.nslots.push(new PulseDetect(100_000));
+    this.channels = new BurstChannels((ch, env, fm, n, _iq, iqf) => this.onChannel(ch, env, fm, n, iqf), (ch) => this.onChannelEnd(ch));
+    // the channel's own samples, unrounded, for the DMR reader
+    this.channels.keepIqF = true;
     for (let i = 0; i < MAX_CHANNELS; i++) {
-      const slot = { pd: new PulseDetect(250_000), keys: new KeyDecoders((r) => slot.pending.push({ r, hz: this.curHz })), pending: [] as { r: KeyReading; hz: number }[], verified: false };
+      const slot = { pd: new PulseDetect(250_000), keys: new KeyDecoders((r) => slot.pending.push({ r, hz: this.curHz })), pending: [] as { r: KeyReading; hz: number }[], verified: false, dmr: new DmrSpot(), dmrSeen: [] as DmrSeen[] };
       this.slots.push(slot);
     }
   }
@@ -190,6 +256,7 @@ export class R433Processor implements IqProcessor {
   reset(rate: number): void {
     this.rate = rate;
     this.channels.reset(rate);
+    this.narrow.reset(rate);
     this.lastStats = 0;
   }
 
@@ -216,12 +283,17 @@ export class R433Processor implements IqProcessor {
     this.lastPayload.clear();
     this.unconfirmed.clear();
     this.unknownSeen.clear();
+    this.narrowFirst.clear();
+    this.dmrChans.length = 0;
+    this.dmrBursts.clear();
+    this.narrowLast.clear();
     this.zwNets.clear();
   }
 
   onIq(iq: Int8Array, rate: number): void {
     if (rate !== this.rate) this.reset(rate);
     this.channels.process(iq);
+    this.narrow.process(iq);
     this.zw.configure(rate, this.centerHz);
     this.zw.process(iq);
     this.airMs += (iq.length >> 1) / rate * 1000;
@@ -238,12 +310,25 @@ export class R433Processor implements IqProcessor {
     }
   }
 
-  private onChannel(ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number): void {
+  private onChannel(ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number, iq?: Float32Array): void {
     const s = this.slots[ch.slot];
-    if (ch.fresh) { s.pd.setSampleRate(ch.rate); s.pd.reset(); s.keys.slicer.reset(ch.rate); s.keys.slicer.flush(); s.keys.reset(); s.pending.length = 0; s.verified = false; }
+    if (ch.fresh) { s.pd.setSampleRate(ch.rate); s.pd.reset(); s.keys.slicer.reset(ch.rate); s.keys.slicer.flush(); s.keys.reset(); s.pending.length = 0; s.verified = false; s.dmr.reset(ch.rate); s.dmrSeen.length = 0; }
+    if (iq) s.dmr.push(iq, n, s.dmrSeen);
     this.curHz = ch.hz; this.curSlot = ch.slot;
     s.pd.process(env, fm, n, this.sink);
     s.keys.slicer.process(env, fm, n);
+  }
+
+  private onNarrow(ch: NarrowChannel, env: Int16Array, fm: Int16Array, n: number): void {
+    const pd = this.nslots[ch.slot];
+    if (ch.fresh) { pd.setSampleRate(ch.rate); pd.reset(); }
+    this.curHz = ch.hz;
+    pd.process(env, fm, n, this.narrowSink);
+  }
+
+  private onNarrowEnd(ch: NarrowChannel): void {
+    this.curHz = ch.hz;
+    this.nslots[ch.slot].flush(this.narrowSink);
   }
 
   private onChannelEnd(ch: BurstChannel): void {
@@ -251,6 +336,11 @@ export class R433Processor implements IqProcessor {
     this.curHz = ch.hz; this.curSlot = ch.slot;
     s.pd.flush(this.sink);
     s.keys.slicer.flush();
+    s.dmr.end(s.dmrSeen);
+    for (const d of s.dmrSeen) this.reportDmr(d, ch.hz);
+    // a DMR burst is not a key: what the key decoders made of it is noise
+    if (s.dmrSeen.length) s.verified = true;
+    s.dmrSeen.length = 0;
     // Keys and remotes carry little or no checksum, so a sensor's burst can read as one by chance. When a
     // checksum-verified sensor claimed this burst, what the key decoders made of it is noise.
     if (!s.verified) for (const k of s.pending) { this.curHz = k.hz; this.reportKey(k.r); }
@@ -317,6 +407,43 @@ export class R433Processor implements IqProcessor {
     this.unknownSeen.set(key, now);
     console.log(`[r433] unidentified · ${shape.fsk ? 'FSK' : 'OOK'} · ${shapeSummary(shape)} · ${shape.coding || 'coding unsettled'}`, shape);
   }
+
+  /**
+   * A DMR data burst: its sync matched and its slot type decoded. One card per color code, with the channels it was
+   * heard on. A burst can misread its slot type, and a busy repeater sends hundreds, so each channel takes the color
+   * code most of its last minute of bursts agree on (at least two, and more than twice any other); a burst counts
+   * only for its channel's own color code. What the bursts say is Dispatch's to read.
+   */
+  private reportDmr(d: DmrSeen, chHz: number): void {
+    const hz = Math.round(chHz + d.offsetHz), at = this.airMs;
+    let c = this.dmrChans.find(x => Math.abs(x.hz - hz) < 3_000);
+    if (!c) { c = { hz, n: 0, votes: new Map(), cc: -1 }; this.dmrChans.push(c); if (this.dmrChans.length > 200) this.dmrChans.shift(); }
+    c.hz = Math.round((c.hz * c.n + hz) / (c.n + 1)); c.n++;
+    c.votes.set(d.cc, [...(c.votes.get(d.cc) ?? []), at]);
+    for (const [k, ts] of c.votes) { const keep = ts.filter(x => at - x < DMR_VOTE_MS); if (keep.length) c.votes.set(k, keep); else c.votes.delete(k); }
+    const maj = dmrMajority(c);
+    if (maj >= 0) c.cc = maj;
+    if (maj !== d.cc) return;
+    const bursts = (this.dmrBursts.get(d.cc) ?? 0) + 1;
+    this.dmrBursts.set(d.cc, bursts);
+    const key = `DMR/CC ${d.cc}`, now = Date.now(), prev = this.heard.get(key);
+    const mhz = (x: number) => ((this.centerHz + x) / 1e6).toFixed(4);
+    const chans = this.dmrChans.filter(x => x.cc === d.cc).sort((a, b) => a.hz - b.hz);
+    const data: R433Data = {
+      model: 'DMR', color_code: d.cc, from: d.from === 'radio' ? 'a radio' : 'a repeater', burst: DMR_DATA_TYPE[d.dt],
+      channels: `${chans.map(x => mhz(x.hz)).join(' · ')} MHz`, bursts,
+    };
+    const entry: HeardDevice = {
+      key, model: 'DMR', num: 0, what: 'DMR two-way radio',
+      count: (prev?.count ?? 0) + 1, firstSeen: prev?.firstSeen ?? now, lastSeen: now, data,
+      family: 'radio', offsetHz: hz, fsk: true,
+    };
+    this.heard.set(key, entry);
+    this.emit({ type: 'r433', ...entry });
+  }
+  /** DMR channels heard, each with the times of its last minute of bursts per color code; bursts counted per color code. */
+  private readonly dmrChans: DmrChan[] = [];
+  private readonly dmrBursts = new Map<number, number>();
 
   /** A Z-Wave frame whose check passed: its network's card, with every node and link, is sent again. */
   private reportZw(f: ZwHeard): void {

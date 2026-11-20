@@ -94,6 +94,8 @@ class BurstChannels(private val onChannel: ChannelSink, private val onEnd: Chann
     @Volatile var opened = 0; private set
     /** Hand each channel's raw samples to the sink as well (the Analyzer keeps them); off for the Devices app. */
     var keepIq = false
+    /** Each channel's samples unrounded, to this (the channel, interleaved I/Q floats, count), before [onChannel]; the Devices DMR reader. */
+    var onIqF: ((BurstChannel, FloatArray, Int) -> Unit)? = null
     /** Absolute index of the next sample to arrive, so a caller can say when a channel opened. */
     val samples: Long get() = written
     /** The absolute sample a channel's first block starts at (its look-back included). */
@@ -241,7 +243,7 @@ class BurstChannels(private val onChannel: ChannelSink, private val onEnd: Chann
             if (o != null) { o.lastLit = absStart + nn; continue }
             if (free.isEmpty()) continue
             val slot = free.removeAt(free.size - 1)
-            val bb = Baseband(); bb.decim = decim; bb.keepIq = keepIq
+            val bb = Baseband(); bb.decim = decim; bb.keepIq = keepIq; bb.keepIqF = onIqF != null
             val back = (rate * LOOKBACK_MS / 1000.0).roundToInt()
             val pos = maxOf(absStart - back, written - (ring.size shr 1) + 1, 0L)
             open.add(Open(slot, hz, absStart + nn, pos, pos, bb, 0.0, true))
@@ -278,6 +280,7 @@ class BurstChannels(private val onChannel: ChannelSink, private val onEnd: Chann
         o.pos = upto
         val m = o.bb.process(out, count * 2)
         val ch = channel(o)
+        onIqF?.invoke(ch, o.bb.iqf, m)
         o.fresh = false
         onChannel(ch, o.bb.env, o.bb.fm, m, if (keepIq) o.bb.iq else null)
     }

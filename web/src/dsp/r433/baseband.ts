@@ -46,6 +46,9 @@ export class Baseband {
    * the raw channel (the Analyzer's waterfall and IQ export). Off by default: nothing else needs them.
    */
   keepIq = false;
+  /** The decimated samples unrounded, as floats: a signal of a few LSB keeps its shape (the DMR reader wants this). */
+  keepIqF = false;
+  private iqf = new Float32Array(0);
   // Filter memory, carried across chunks so the boundaries are not audible to the detector.
   private envX = 0; private envY = 0;
   private xr = 0; private xi = 0; private xf = 0; private yf = 0;
@@ -93,14 +96,16 @@ export class Baseband {
    * Convert one chunk. Returns the two streams and how many samples they hold; both are reused between calls,
    * so read them before calling again. With decimation the count is smaller than the chunk it came from.
    */
-  process(iq: Int8Array): { env: Int16Array; fm: Int16Array; n: number; iq: Int8Array } {
+  process(iq: Int8Array): { env: Int16Array; fm: Int16Array; n: number; iq: Int8Array; iqf: Float32Array } {
     const total = iq.length >> 1;
     const decim = this.decim < 1 ? 1 : this.decim | 0;
     const cap = Math.ceil((total + decim) / decim);
     if (this.env.length < cap) { this.env = new Int16Array(cap); this.fm = new Int16Array(cap); }
     const keep = this.keepIq;
     if (keep && this.iq.length < cap * 2) this.iq = new Int8Array(cap * 2);
-    const env = this.env, fm = this.fm, out = this.iq;
+    const keepF = this.keepIqF;
+    if (keepF && this.iqf.length < cap * 2) this.iqf = new Float32Array(cap * 2);
+    const env = this.env, fm = this.fm, out = this.iq, outF = this.iqf;
 
     let ex = this.envX, ey = this.envY;
     let x1r = this.xr, x1i = this.xi, x1f = this.xf, y1f = this.yf;
@@ -135,6 +140,7 @@ export class Baseband {
         out[2 * i] = ir > 127 ? 127 : ir < -128 ? -128 : Math.round(ir);
         out[2 * i + 1] = ii > 127 ? 127 : ii < -128 ? -128 : Math.round(ii);
       }
+      if (keepF) { outF[2 * i] = ir; outF[2 * i + 1] = ii; }
 
       // Magnitude without a square root: 122/128 of the larger component plus 51/128 of the smaller is within
       // four per cent of the true value everywhere, and full scale lands on 16384 as the detector expects.
@@ -160,6 +166,6 @@ export class Baseband {
     this.i1 = i1; this.i2 = i2; this.q1 = q1; this.q2 = q2;
     this.c1i = c1i; this.c2i = c2i; this.c1q = c1q; this.c2q = c2q;
     this.accN = accN;
-    return { env, fm, n, iq: out };
+    return { env, fm, n, iq: out, iqf: outF };
   }
 }

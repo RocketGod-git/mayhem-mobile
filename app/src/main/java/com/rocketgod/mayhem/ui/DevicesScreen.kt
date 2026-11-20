@@ -147,6 +147,7 @@ private fun kindColor(k: Devices.Kind): Color = when (k) {
     Devices.Kind.METER -> Color(0xFF8FD14F)
     Devices.Kind.SENSOR -> Palette.accent
     Devices.Kind.ZWAVE -> Color(0xFFFF8FC8)
+    Devices.Kind.RADIO -> Color(0xFFF2C94C)
 }
 
 /** Each kind's glyph (the web app's, with its circles and rounded rectangle written as arcs), in a 24-unit box. */
@@ -158,6 +159,7 @@ private val KIND_GLYPH: Map<Devices.Kind, String> = mapOf(
     Devices.Kind.SECURITY to "M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6z",
     Devices.Kind.METER to "M4 16a8 8 0 1 1 16 0M12 16l4-5",
     Devices.Kind.ZWAVE to "M4 11l8-6.5 8 6.5M6.5 9.5V19h11V9.5M10.6 14.5a1.4 1.4 0 1 0 2.8 0a1.4 1.4 0 1 0 -2.8 0M9.6 12.1a3.4 3.4 0 0 1 4.8 0",
+    Devices.Kind.RADIO to "M9.5 8h5a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-5a2 2 0 0 1 -2 -2v-9a2 2 0 0 1 2 -2zM10 8V3M10 12h4M10 15h4",
     Devices.Kind.SENSOR to "M10 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14",
 )
 private val glyphPaths = HashMap<Devices.Kind, Path>()
@@ -242,7 +244,7 @@ private fun DeviceCard(h: HeardDevice, now: Long, selected: Boolean, onClick: ()
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(if (k == Devices.Kind.ZWAVE) "${(h.data["channels"] as? List<*>).orEmpty().joinToString(" · ") { "%.2f".format(java.util.Locale.US, it as Double) }} MHz"
-                else if (h.hz > 0) Devices.mhz(h.hz) else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
+                else if (k == Devices.Kind.RADIO) "${h.data["channels"]}" else if (h.hz > 0) Devices.mhz(h.hz) else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
             Text(if (live) Devices.ago(age) else Devices.clock(h.lastSeen), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp)
         }
     }
@@ -253,8 +255,13 @@ private fun detailFields(h: HeardDevice): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>()
     for ((k, v) in h.data) { if (k == "model") continue; out.add(k.replace('_', ' ').uppercase() to Devices.value(k, v)) }
     if (h.hz > 0) out.add("FREQUENCY" to "${Devices.mhz(h.hz)} (${if (h.offsetHz >= 0) "+" else "-"}${"%.0f".format(abs(h.offsetHz) / 1e3)} kHz from the dial)")
-    out.add("MODULATION" to if (h.family == "sensor") (if (h.fsk) "FSK (frequency shift)" else "OOK (on-off)") else "OOK or FSK, both are tried")
-    out.add("DECODER" to when (h.family) { "key" -> "car keys"; "sensor" -> "protocol ${h.num} · ${h.what}"; "remote" -> "gate and garage remotes"; else -> "weather sensors" })
+    if (h.family == "radio") {
+        out.add("MODULATION" to "4-level FSK, 4800 symbols a second")
+        out.add("DECODER" to "DMR sync and slot type, kept only when the Golay check passes, with the full decode in Dispatch")
+    } else {
+        out.add("MODULATION" to if (h.family == "sensor") (if (h.fsk) "FSK (frequency shift)" else "OOK (on-off)") else "OOK or FSK, both are tried")
+        out.add("DECODER" to when (h.family) { "key" -> "car keys"; "sensor" -> "protocol ${h.num} · ${h.what}"; "remote" -> "gate and garage remotes"; else -> "weather sensors" })
+    }
     out.add("HEARD" to "${h.count} time${if (h.count == 1) "" else "s"} · first ${Devices.clock(h.firstSeen)} · last ${Devices.clock(h.lastSeen)}")
     if (h.num in Devices.doubtful) out.add("NOTE" to "this protocol has no checksum, so nothing in the frame proves the reading")
     return out

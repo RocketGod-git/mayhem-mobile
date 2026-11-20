@@ -27,8 +27,11 @@ export interface BurstChannel {
   fresh: boolean;
 }
 
-/** `iq` is the channel's own samples (interleaved I, Q at the channel rate), only when `keepIq` is set. */
-export type ChannelSink = (ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number, iq?: Int8Array) => void;
+/**
+ * `iq` is the channel's own samples (interleaved I, Q at the channel rate), only when `keepIq` is set; `iqf` the
+ * same unrounded, only when `keepIqF` is set.
+ */
+export type ChannelSink = (ch: BurstChannel, env: Int16Array, fm: Int16Array, n: number, iq?: Int8Array, iqf?: Float32Array) => void;
 export type ChannelEnd = (ch: BurstChannel) => void;
 
 /** How many bursts can be followed at once. */
@@ -83,6 +86,8 @@ export class BurstChannels {
   opened = 0;
   /** Hand each channel's raw samples to the sink as well (the Analyzer keeps them); off for the Devices app. */
   keepIq = false;
+  /** Hand them on unrounded as well (the Devices DMR reader); off unless asked for. */
+  keepIqF = false;
   /** Absolute index of the next sample to arrive, so a caller can say when a channel opened. */
   get samples(): number { return this.written; }
   /** The absolute sample a channel's first block starts at (its look-back included). */
@@ -221,7 +226,7 @@ export class BurstChannels {
       if (o) { o.lastLit = absStart + N; continue; }
       if (!this.free.length) continue;
       const slot = this.free.pop()!;
-      const bb = new Baseband(); bb.decim = this.decim; bb.keepIq = this.keepIq;
+      const bb = new Baseband(); bb.decim = this.decim; bb.keepIq = this.keepIq; bb.keepIqF = this.keepIqF;
       const back = Math.round(this.rate * LOOKBACK_MS / 1000);
       const pos = Math.max(absStart - back, this.written - (this.ring.length >> 1) + 1, 0);
       this.open.push({ slot, hz, lastLit: absStart + N, pos, start: pos, bb, phase: 0, fresh: true });
@@ -258,7 +263,7 @@ export class BurstChannels {
     const res = o.bb.process(out.subarray(0, count * 2));
     const ch = this.channel(o);
     o.fresh = false;
-    this.onChannel(ch, res.env, res.fm, res.n, this.keepIq ? res.iq : undefined);
+    this.onChannel(ch, res.env, res.fm, res.n, this.keepIq ? res.iq : undefined, this.keepIqF ? res.iqf : undefined);
   }
 
   private channel(o: Open): BurstChannel {

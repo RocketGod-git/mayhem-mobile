@@ -19,7 +19,7 @@ data class HeardReading(val at: Long, val data: R433Data, val offsetHz: Int, val
 data class HeardDevice(
     val key: String, val model: String, val num: Int, val what: String, val count: Int,
     val firstSeen: Long, val lastSeen: Long, val data: R433Data, val fsk: Boolean,
-    /** What kind of thing it is: "sensor" (rtl_433), "key" (a car key), "remote" (gate or garage), "weather" (Mayhem's decoders) or "zwave". */
+    /** What kind of thing it is: "sensor" (rtl_433), "key" (a car key), "remote" (gate or garage), "weather" (Mayhem's decoders), "zwave" or "radio" (DMR). */
     val family: String = "sensor",
     /** Where it was heard, as an offset from the radio's center in hertz. */
     val offsetHz: Int = 0,
@@ -81,6 +81,9 @@ class R433Processor : IqProcessor {
         val pending = ArrayList<Pair<KeyReading, Double>>()
         /** Which channel this slot is following, so the worker can tell one burst's verdict from the next. */
         var gen = 0
+        /** The DMR reader on this channel, and the bursts it named. */
+        val dmr = DmrSpot()
+        val dmrSeen = ArrayList<DmrSeen>()
     }
     private val channels: BurstChannels
     private val slots = ArrayList<Slot>()
@@ -129,8 +132,39 @@ class R433Processor : IqProcessor {
         worker.execute { handle(fsk, copy, gen, hz) }
     }
 
+    /** The narrow on-off path for weak sensors, and one detector per narrow channel. */
+    private val narrow = NarrowOok({ ch, env, fm, n -> onNarrow(ch, env, fm, n) }, { ch -> onNarrowEnd(ch) })
+    private val nslots = Array(NARROW_MAX) { PulseDetect(100_000.0) }
+    private var narrowHz = 0.0
+    /** Narrow readings heard once, waiting for the same sensor again; and when each was last reported (worker side). */
+    private val narrowFirst = HashMap<String, Double>()
+    private val narrowLast = HashMap<String, Double>()
+    /** DMR channels heard, each with the times of its last minute of bursts per color code; bursts counted per color code (worker side). */
+    private val dmrChans = ArrayList<DmrChan>()
+    private val dmrBursts = HashMap<Int, Int>()
+    /**
+     * A narrow channel's burst: on-off keyed only, and only the checksummed decoders (the protocols rtl_433 ships
+     * switched off, and the key and remote decoders with little or no check, stay on the wide path).
+     */
+    private val narrowSink: BurstFn = { fsk, pulses ->
+        if (!fsk) {
+            val copy = PulseData(pulses.numPulses + 1, pulses.sampleRate, pulses.fsk)
+            System.arraycopy(pulses.pulse, 0, copy.pulse, 0, pulses.numPulses + 1)
+            System.arraycopy(pulses.gap, 0, copy.gap, 0, pulses.numPulses + 1)
+            copy.numPulses = pulses.numPulses
+            val hz = narrowHz; val air = airMs
+            worker.execute { handleNarrow(copy, hz, air) }
+        }
+    }
+
     init {
         channels = BurstChannels({ ch, env, fm, n, _ -> onChannel(ch, env, fm, n) }, { ch -> onChannelEnd(ch) })
+        // the channel's own samples, unrounded, for the DMR reader
+        channels.onIqF = { ch, iqf, m ->
+            val s = slots[ch.slot]
+            if (ch.fresh) { s.dmr.reset(ch.rate); s.dmrSeen.clear() }
+            s.dmr.push(iqf, m, s.dmrSeen)
+        }
         for (i in 0 until MAX_CHANNELS) {
             val slot = Slot(PulseDetect(250_000.0))
             slot.keys = KeyDecoders { r -> slot.pending.add(r to curHz) }
@@ -141,13 +175,14 @@ class R433Processor : IqProcessor {
     override fun reset(rate: Int) {
         this.rate = rate
         channels.reset(rate)
+        narrow.reset(rate)
         lastStats = 0
     }
 
     /** Every burst in the span is tuned to on its own, so the span watched is all of it. */
     fun span(): Int = rate
 
-    fun clear() { worker.execute { resetBluelineId(); resetSparsnasSensorId(); heard.clear(); lastPayload.clear(); unconfirmed.clear(); unknownSeen.clear(); zwNets.clear(); _devices.value = emptyList() } }
+    fun clear() { worker.execute { resetBluelineId(); resetSparsnasSensorId(); heard.clear(); lastPayload.clear(); unconfirmed.clear(); unknownSeen.clear(); zwNets.clear(); narrowFirst.clear(); narrowLast.clear(); dmrChans.clear(); dmrBursts.clear(); _devices.value = emptyList() } }
 
     /** Waits until the worker has decoded and reported everything sent to it so far (for the tests). */
     fun settle() { worker.submit {}.get() }
@@ -155,6 +190,7 @@ class R433Processor : IqProcessor {
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
         if (rate != this.rate) reset(rate)
         channels.process(iq, len)
+        narrow.process(iq, len)
         zwCenter = centerOf()
         zw.configure(rate, zwCenter)
         zw.process(iq, len)
@@ -188,10 +224,85 @@ class R433Processor : IqProcessor {
         // Keys and remotes carry little or no checksum, so a sensor's burst can read as one by chance. When a
         // checksum-verified sensor claimed this burst, what the key decoders made of it is noise.
         val keys = ArrayList(s.pending); s.pending.clear()
-        val gen = s.gen; val air = airMs
+        s.dmr.end(s.dmrSeen)
+        val dmr = ArrayList(s.dmrSeen); s.dmrSeen.clear()
+        val gen = s.gen; val air = airMs; val chHz = ch.hz
         worker.execute {
-            if (!verified.remove(gen)) for ((r, hz) in keys) reportKey(r, hz, air)
+            for (d in dmr) reportDmr(d, chHz, air)
+            // a DMR burst is not a key: what the key decoders made of it is noise
+            if (!verified.remove(gen) && dmr.isEmpty()) for ((r, hz) in keys) reportKey(r, hz, air)
         }
+    }
+
+    private fun onNarrow(ch: BurstChannel, env: ShortArray, fm: ShortArray, n: Int) {
+        val pd = nslots[ch.slot]
+        if (ch.fresh) { pd.setSampleRate(ch.rate); pd.reset() }
+        narrowHz = ch.hz
+        pd.process(env, fm, n, narrowSink)
+    }
+
+    private fun onNarrowEnd(ch: BurstChannel) {
+        narrowHz = ch.hz
+        nslots[ch.slot].flush(narrowSink)
+    }
+
+    /**
+     * A reading from the narrow path. A check of a few bits passes on noise now and then, and this path reads many
+     * more bursts; a sensor reports again and again with the same ID, noise does not. So a reading heard only here is
+     * shown once the same model and ID come again within a few minutes (or the wide path already knows the device).
+     */
+    private fun handleNarrow(pulses: PulseData, hz: Double, air: Double) {
+        val found = runCatching { radio.run(false, pulses) }.getOrElse { Diag.log("r433: ${it.message}"); emptyList() }
+        val ids = HashSet<String>()
+        for (r in found) {
+            if (r.dev.disabled || !plausible(r.data) || allZero(r.data)) continue
+            val id = r.data["id"]?.let { fmtValue(it) } ?: ""
+            if (id.isNotEmpty() && !ids.add(id)) continue
+            val key = keyOf(r.data["model"]?.toString() ?: r.dev.name, r.data)
+            // one transmission the detector split in two is still one reading
+            val last = narrowLast[key]
+            if (last != null && air - last < NARROW_SAME_MS) continue
+            if (!heard.containsKey(key)) {
+                val first = narrowFirst[key]
+                if (first == null || air - first > NARROW_CONFIRM_MS || air - first < NARROW_SAME_MS) {
+                    if (first == null || air - first > NARROW_CONFIRM_MS) narrowFirst[key] = air
+                    if (narrowFirst.size > 500) narrowFirst.clear()
+                    continue
+                }
+            }
+            narrowLast[key] = air
+            report(r.dev, r.data, false, hz)
+        }
+    }
+
+    /**
+     * A DMR data burst: its sync matched and its slot type decoded. One card per color code, with the channels it was
+     * heard on. A burst can misread its slot type, and a busy repeater sends hundreds, so each channel takes the color
+     * code most of its last minute of bursts agree on (at least two, and more than twice any other); a burst counts only
+     * for its channel's own color code. What the bursts say is Dispatch's to read.
+     */
+    private fun reportDmr(d: DmrSeen, chHz: Double, air: Double) {
+        val hz = (chHz + d.offsetHz).roundToInt()
+        var c = dmrChans.firstOrNull { kotlin.math.abs(it.hz - hz) < 3_000 }
+        if (c == null) { c = DmrChan(hz); dmrChans.add(c); if (dmrChans.size > 200) dmrChans.removeAt(0) }
+        c.hz = ((c.hz.toDouble() * c.n + hz) / (c.n + 1)).roundToInt(); c.n++
+        c.votes.getOrPut(d.cc) { ArrayList() }.add(air)
+        val iter = c.votes.entries.iterator()
+        while (iter.hasNext()) { val e = iter.next(); e.value.removeAll { air - it >= DMR_VOTE_MS }; if (e.value.isEmpty()) iter.remove() }
+        val maj = c.majority()
+        if (maj >= 0) c.cc = maj
+        if (maj != d.cc) return
+        val bursts = (dmrBursts[d.cc] ?: 0) + 1
+        dmrBursts[d.cc] = bursts
+        val key = "DMR/CC ${d.cc}"; val now = System.currentTimeMillis(); val prev = heard[key]
+        val center = centerOf()
+        val chans = dmrChans.filter { it.cc == d.cc }.sortedBy { it.hz }
+        val data = R433Data()
+        data["model"] = "DMR"; data["color_code"] = d.cc; data["from"] = if (d.from == "radio") "a radio" else "a repeater"
+        data["burst"] = DMR_DATA_TYPE[d.dt]
+        data["channels"] = chans.joinToString(" · ") { "%.4f".format(java.util.Locale.US, (center + it.hz) / 1e6) } + " MHz"
+        data["bursts"] = bursts
+        put(HeardDevice(key, "DMR", 0, "DMR two-way radio", (prev?.count ?: 0) + 1, prev?.firstSeen ?: now, now, data, true, "radio", hz, center + hz), prev)
     }
 
     private fun handle(fsk: Boolean, pulses: PulseData, gen: Int, hz: Double) {
@@ -312,6 +423,31 @@ class R433Processor : IqProcessor {
 }
 
 private val NON_WORD = Regex("[^a-z0-9]+")
+
+/** A narrow reading is confirmed by the same sensor again within this much radio time. */
+private const val NARROW_CONFIRM_MS = 300_000.0
+/** Readings of one sensor this close together are one transmission. */
+private const val NARROW_SAME_MS = 1_500.0
+/** A DMR channel's color code is voted over this much radio time. */
+private const val DMR_VOTE_MS = 60_000.0
+
+/** One DMR channel: its frequency (offset from center) and the times of its recent bursts per color code. */
+private class DmrChan(var hz: Int) {
+    var n = 0
+    /** The color code it last settled on, -1 before it has. */
+    var cc = -1
+    val votes = HashMap<Int, ArrayList<Double>>()
+    /** The color code its recent bursts agree on: at least two, and more than twice any other; -1 if none. */
+    fun majority(): Int {
+        var best = -1; var top = 0; var second = 0
+        for ((cc, ts) in votes) { val v = ts.size; if (v > top) { second = top; top = v; best = cc } else if (v > second) second = v }
+        return if (top >= 2 && top > 2 * second) best else -1
+    }
+}
+
+/** A frame of all zeros passes an additive check, and a steady carrier slices to one: a reading whose every field is zero is that. */
+private val ZERO_SKIP = setOf("model", "type", "mic", "raw", "protocol")
+private fun allZero(d: R433Data): Boolean = d.entries.all { (k, v) -> k in ZERO_SKIP || (v is Number && v.toDouble() == 0.0) || v == "0" }
 
 /** Car-key decoders whose frames carry too little checking to trust a single one. */
 private val WEAK_KEYS = setOf("Honda Static")

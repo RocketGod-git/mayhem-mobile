@@ -1396,6 +1396,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .dv-card.k-security { --kind: #ff6b6b; }
 .dv-card.k-meter { --kind: #8fd14f; }
 .dv-card.k-z-wave { --kind: #ff8fc8; }
+.dv-card.k-radio { --kind: #f2c94c; }
 .dv-card .mt-k b { color: var(--kind); }
 .dv-card.sel { border-color: var(--kind); }
 .dv-card { box-shadow: 0 0 calc(18px * var(--flash, 0)) color-mix(in srgb, var(--kind) calc(70% * var(--flash, 0)), transparent);
