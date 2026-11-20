@@ -541,11 +541,17 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val budget = channelBudget(rate)
         calls.tick({ hz -> val c = carriers[gridKey(hz)]; if (c != null && now - c.lastMs < 1_500) c.levelDb else null }, now)
         // the channels of calls on the air keep a channel while they last: from the grant on (the first voice frames come
-        // before the spectrum shows the carrier), and past the first moments only while the carrier is up
-        val pinned = calls.ranked().filter { !it.muted && !it.outside && it.hz > 0 && inSpan(it.hz) }.mapNotNull { x ->
+        // before the spectrum shows the carrier), and past the first moments only while the carrier is up. The call being
+        // heard comes first: when there are more calls than channels, its channel is the last to go (newest first had
+        // taken it from the call playing as soon as enough newer calls came up)
+        val heard = calls.playing
+        val onAir = calls.ranked().filter { !it.muted && !it.outside && it.hz > 0 && inSpan(it.hz) }.sortedByDescending { heard.isNotEmpty() && it.key == heard }
+        fun carrierOf(x: Call): Carrier? {
             val c = carriers[gridKey(x.hz)]
-            if (c != null && now - c.lastMs < LIVE_MS) c else if (now - x.startMs < 1_500) carrierAt(x.hz.toDouble()) else null
-        }.distinct()
+            return if (c != null && now - c.lastMs < LIVE_MS) c else if (now - x.startMs < 1_500) carrierAt(x.hz.toDouble()) else null
+        }
+        val heardC = if (heard.isNotEmpty() && onAir.firstOrNull()?.key == heard) carrierOf(onAir[0]) else null
+        val pinned = onAir.mapNotNull { carrierOf(it) }.distinct()
         val pinnedKeys = pinned.map { it.key }.toSet()
         val live = carriers.values.filter { inSpan(it.hz) && now - it.lastMs < LIVE_MS }
         val it = chans.entries.iterator()
@@ -604,8 +610,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val held = coreL.take(nCore); val callChans = pinned.filter { it !in held }
         val want = ArrayList((held + callChans + others).take(max(cap, held.size + callChans.size)))
         // a carrier found decoding on its turn (a control channel, or a DMR or NXDN channel whose system its own frames name)
-        // keeps the channel until its system is read
-        for ((k, ch) in chans) { val c = carriers[k]!!; if (c !in want && (c.role == "control" || c.role == "rest" || (keep(c) && (c.cls == "DMR" || c.cls.startsWith("NXDN")))) && c.sys.isEmpty() && now - ch.openedMs < IDENTIFY_MS) want.add(min(nCore, want.size), c) }
+        // keeps the channel until its system is read, after the channel of the call being heard
+        val at = nCore + if (heardC != null && heardC in callChans) 1 else 0
+        for ((k, ch) in chans) { val c = carriers[k]!!; if (c !in want && (c.role == "control" || c.role == "rest" || (keep(c) && (c.cls == "DMR" || c.cls.startsWith("NXDN")))) && c.sys.isEmpty() && now - ch.openedMs < IDENTIFY_MS) want.add(min(at, want.size), c) }
         for ((k, ch) in chans) { val c = carriers[k]!!; if (!keep(c) && !ch.turnOver(now) && c !in want) want.add(c) }
         // the two ways of turns share the free channels: full looks (strong new carriers strongest first, then every
         // carrier, the one waiting longest first) and quick looks (the weaker new carriers, strongest first)

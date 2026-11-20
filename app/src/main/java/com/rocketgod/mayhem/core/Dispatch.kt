@@ -329,5 +329,6 @@ object Dispatch {
     class WithSpeaker(private val f: FleetProcessor) : IqProcessor by f {
         override val producesAudio: Boolean get() = true
         override fun drainAudio(dst: FloatArray, max: Int): Int = out.drain(dst, max)
+        override val pacedAudio: Boolean get() = true
     }
 }

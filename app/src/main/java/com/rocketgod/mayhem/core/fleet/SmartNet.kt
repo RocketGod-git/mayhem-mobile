@@ -189,6 +189,16 @@ class OswParser {
 }
 
 /**
+ * The squelch opens on a block whose noise is under [SQ_OPEN] and stays open [SQ_HANG_BLOCKS] blocks (300 ms) past the
+ * last such block, closing at once on a block of bare noise ([SQ_SHUT]: a channel with no carrier reads about 0.3). Loud
+ * syllables lift the noise reading too (a clean call has one block in twenty over 0.12), and a block-by-block decision
+ * dropped those 20 ms blocks from the middle of words.
+ */
+const val SQ_OPEN = 0.12
+const val SQ_SHUT = 0.25
+const val SQ_HANG_BLOCKS = 15
+
+/**
  * Analog FM voice on a channel's complex baseband at [fs] (a Type II voice channel): the discriminator, a 3.4 kHz
  * low-pass, down to 8 kHz, the sub-audible signaling taken out below 300 Hz, and the 6 dB an octave pre-emphasis taken
  * back. 20 ms blocks come out with [open]: the noise above the voice band says whether a carrier is there.
@@ -198,7 +208,7 @@ class FmVoice(val fs: Double) {
     private var pi = 0.0; private var pq = 0.0; private val dec = max(1, Math.round(fs / 8000).toInt())
     private val lp: DoubleArray; private val hist: DoubleArray; private var hp = 0; private var ph = 0
     private var hpX = 0.0; private var hpY = 0.0; private var hpX2 = 0.0; private var hpY2 = 0.0; private var de = 0.0; private var nz = 0.0; private var np = 0; private var prev = 0.0
-    private val out = FloatArray(160); private var on = 0
+    private val out = FloatArray(160); private var on = 0; private var hang = 0
     init {
         val taps = 8 * dec + 1; val fc = 3400 / fs; val mid = (taps - 1) / 2.0; lp = DoubleArray(taps); var s = 0.0
         for (i in 0 until taps) { val x = i - mid; val w = 0.54 - 0.46 * cos(2 * PI * i / (taps - 1)); lp[i] = (if (x == 0.0) 2 * fc else sin(2 * PI * fc * x) / (PI * x)) * w; s += lp[i] }
@@ -224,7 +234,8 @@ class FmVoice(val fs: Double) {
             if (on == 160) {
                 val noise = sqrt(nz / max(1, np)) / (fs / 2)
                 // a carrier quiets the discriminator: unmodulated noise there sits near a third of the sample rate
-                onPcm(out.copyOf(), noise < 0.12)
+                hang = if (noise < SQ_OPEN) SQ_HANG_BLOCKS else if (noise >= SQ_SHUT) 0 else max(0, hang - 1)
+                onPcm(out.copyOf(), hang > 0)
                 on = 0; nz = 0.0; np = 0
             }
         }

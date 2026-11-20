@@ -392,10 +392,16 @@ export class FleetProcessor implements IqProcessor {
     const budget = channelBudget(this.rate);
     this.calls.tick(hz => { const c = this.carriers.get(gridKey(hz)); return c && now - c.lastMs < 1_500 ? c.levelDb : null; }, now);
     // the channels of calls on the air keep a channel while they last: from the grant on (the first voice frames come
-    // before the spectrum shows the carrier), and past the first moments only while the carrier is up
-    const pinned = this.calls.ranked().filter(x => !x.muted && !x.outside && x.hz > 0 && this.inSpan(x.hz))
-      .map(x => { const c = this.carriers.get(gridKey(x.hz)); return c && now - c.lastMs < LIVE_MS ? c : now - x.startMs < 1_500 ? this.carrierAt(x.hz) : null; })
-      .filter((c): c is Carrier => !!c);
+    // before the spectrum shows the carrier), and past the first moments only while the carrier is up. The call being
+    // heard comes first: when there are more calls than channels, its channel is the last to go (newest first had
+    // taken it from the call playing as soon as enough newer calls came up). A carrier with two calls (the two slots
+    // of a TDMA channel) counts once.
+    const heard = this.calls.playing;
+    const onAir = this.calls.ranked().filter(x => !x.muted && !x.outside && x.hz > 0 && this.inSpan(x.hz))
+      .sort((a, b) => Number(b.key === heard) - Number(a.key === heard));
+    const carrierOf = (x: CallRow) => { const c = this.carriers.get(gridKey(x.hz)); return c && now - c.lastMs < LIVE_MS ? c : now - x.startMs < 1_500 ? this.carrierAt(x.hz) : null; };
+    const heardC = heard && onAir[0]?.key === heard ? carrierOf(onAir[0]) : null;
+    const pinned = [...new Set(onAir.map(carrierOf).filter((c): c is Carrier => !!c))];
     const pinnedKeys = new Set(pinned.map(c => c.key));
     const live = [...this.carriers.values()].filter(c => this.inSpan(c.hz) && now - c.lastMs < LIVE_MS);
     for (const [k, ch] of this.chans) {
@@ -449,8 +455,9 @@ export class FleetProcessor implements IqProcessor {
     const held = coreL.slice(0, nCore), calls = pinned.filter(c => !held.includes(c));
     const want: Carrier[] = [...held, ...calls, ...others].slice(0, Math.max(cap, held.length + calls.length));
     // a carrier found decoding on its turn (a control channel, or a DMR or NXDN channel whose system its own frames name)
-    // keeps the channel until its system is read
-    for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!want.includes(c) && (c.role === 'control' || c.role === 'rest' || (keep(c) && (c.cls === 'DMR' || c.cls.startsWith('NXDN')))) && !c.sys && now - ch.openedMs < IDENTIFY_MS) want.splice(Math.min(nCore, want.length), 0, c); }
+    // keeps the channel until its system is read, after the channel of the call being heard
+    const at = nCore + (heardC && calls.includes(heardC) ? 1 : 0);
+    for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!want.includes(c) && (c.role === 'control' || c.role === 'rest' || (keep(c) && (c.cls === 'DMR' || c.cls.startsWith('NXDN')))) && !c.sys && now - ch.openedMs < IDENTIFY_MS) want.splice(Math.min(at, want.length), 0, c); }
     for (const [k, ch] of this.chans) { const c = this.carriers.get(k)!; if (!keep(c) && !ch.turnOver(now) && !want.includes(c)) want.push(c); }
     // the two ways of turns share the free channels: full looks (strong new carriers strongest first, then every
     // carrier, the one waiting longest first) and quick looks (the weaker new carriers, strongest first)

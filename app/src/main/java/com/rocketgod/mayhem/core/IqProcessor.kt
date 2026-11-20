@@ -34,6 +34,12 @@ interface IqProcessor {
 
     /** Moves up to [max] samples of 48 kHz audio (±1) into [dst]; returns how many. */
     fun drainAudio(dst: FloatArray, max: Int): Int = 0
+
+    /**
+     * The audio waits with the processor until the output has room for it: [drainAudio] is asked for no more than the
+     * output can take now, so nothing is dropped when a burst comes (Dispatch hands over a call's kept speech at once).
+     */
+    val pacedAudio: Boolean get() = false
 }
 
 /** Newest-first text log a decoder publishes to its screen. */

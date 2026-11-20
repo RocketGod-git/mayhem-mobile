@@ -837,18 +837,27 @@ object SdrEngine {
         // Where the DSP thread's time goes, per stage (ns), and the audio it hands the speaker, logged once a second:
         // a thread that falls behind the radio says which stage holds it up.
         var stSpec = 0L; var stHd = 0L; var stDemod = 0L; var stEmit = 0L; var stProc = 0L; var stWait = 0L; var stAll = 0L
+        var stWithheld = 0L
         var stItems = 0; var stAudio = 0L; var stBytes = 0L; var stDropped = 0L; var stLast = System.nanoTime()
         // the output's play position, to tell one that stopped playing (still "playing", taking nothing) from a full one
         var headLast = -1; var headStuckSince = 0L
         var underrunLast = 0
         fun underruns(): Int { val u = track?.let { runCatching { it.underrunCount }.getOrDefault(0) } ?: 0; val d = u - underrunLast; underrunLast = u; return maxOf(0, d) }
+        // frames written to the output since it opened or was flushed, for the room a paced processor's audio may fill
+        var written = 0; var writtenTo: AudioTrack? = null
+        fun room(t: AudioTrack): Int {
+            if (writtenTo !== t) { writtenTo = t; written = 0 }
+            val size = runCatching { t.bufferSizeInFrames }.getOrDefault(AUDIO_RATE / 2)
+            val queued = written - runCatching { t.playbackHeadPosition }.getOrDefault(written)
+            return (size - queued).coerceIn(0, size)
+        }
         fun emit(buf: ShortArray, n: Int) {
             val t = track ?: return
             val e0 = System.nanoTime()
             // never waits on the speaker: an output that stops taking audio (a route or focus change on some phones)
             // blocked this thread a second per write and froze the waterfall; what it cannot take now is dropped
             val r = try { t.write(buf, 0, n, AudioTrack.WRITE_NON_BLOCKING) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
-            stEmit += System.nanoTime() - e0; if (r > 0) stAudio += r
+            stEmit += System.nanoTime() - e0; if (r > 0) { stAudio += r; if (writtenTo !== t) { writtenTo = t; written = 0 }; written += r }
             if (r in 0 until n) stDropped += n - r
             if (r < 0) { Diag.log("audio output lost (code $r), reopening it"); runCatching { t.release() }; track = null }
         }
@@ -894,7 +903,7 @@ object SdrEngine {
                             if (runCatching { tk.play() }.isFailure || tk.playState != AudioTrack.PLAYSTATE_PLAYING) {
                                 Diag.log("audio output would not resume, reopening it"); runCatching { tk.release() }; track = null
                             }
-                        } else if (!wantTrack && playing) runCatching { tk.pause(); tk.flush() }
+                        } else if (!wantTrack && playing) { runCatching { tk.pause(); tk.flush() }; written = 0 }
                     }
 
                     val sp0 = System.nanoTime()
@@ -1154,7 +1163,11 @@ object SdrEngine {
                     stProc += System.nanoTime() - pr0
                     val t = track
                     if (p != null && p.producesAudio && t != null) {
-                        val k = p.drainAudio(procAudio, procAudio.size)
+                        // a paced processor keeps what the output has no room for (nothing dropped); a full output that
+                        // stops playing still reads as refusing audio, for the stuck-output check below
+                        val max = if (p.pacedAudio) room(t).coerceAtMost(procAudio.size) else procAudio.size
+                        if (p.pacedAudio && max == 0) stWithheld++
+                        val k = if (max > 0) p.drainAudio(procAudio, max) else 0
                         if (k > 0) {
                             for (i in 0 until k) {
                                 val v = (procAudio[i] * 32000f).toInt().coerceIn(-32767, 32767)
@@ -1178,13 +1191,13 @@ object SdrEngine {
                         if (tk != null && tk.playState == AudioTrack.PLAYSTATE_PLAYING) {
                             val head = runCatching { tk.playbackHeadPosition }.getOrDefault(-1)
                             val nowMs = System.currentTimeMillis()
-                            if (head != headLast || stDropped == 0L) { headLast = head; headStuckSince = nowMs }
+                            if (head != headLast || (stDropped == 0L && stWithheld == 0L)) { headLast = head; headStuckSince = nowMs }
                             else if (nowMs - headStuckSince >= 2000L) {
                                 Diag.log("audio output stopped playing (position stuck at $head for 2 s), reopening it")
                                 runCatching { tk.release() }; track = null; headLast = -1; headStuckSince = nowMs
                             }
                         } else { headLast = -1; headStuckSince = System.currentTimeMillis() }
-                        stSpec = 0; stHd = 0; stDemod = 0; stEmit = 0; stProc = 0; stWait = 0; stAll = 0; stItems = 0; stAudio = 0; stBytes = 0; stDropped = 0; stLast = i1
+                        stSpec = 0; stHd = 0; stDemod = 0; stEmit = 0; stProc = 0; stWait = 0; stAll = 0; stItems = 0; stAudio = 0; stBytes = 0; stDropped = 0; stWithheld = 0; stLast = i1
                     }
                 } catch (e: InterruptedException) {
                     break

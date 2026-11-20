@@ -181,6 +181,13 @@ export const oswWordText = (o: Osw) => `${hx(o.addr, 4)} ${o.flag} ${hx(o.cmd, 3
 export const oswHex = (words: Osw[]) => words.map(oswWordText).join(' / ');
 
 /**
+ * The squelch opens on a block whose noise is under [SQ_OPEN] and stays open [SQ_HANG_BLOCKS] blocks (300 ms) past the
+ * last such block, closing at once on a block of bare noise ([SQ_SHUT]: a channel with no carrier reads about 0.3). Loud
+ * syllables lift the noise reading too (a clean call has one block in twenty over 0.12), and a block-by-block decision
+ * dropped those 20 ms blocks from the middle of words.
+ */
+export const SQ_OPEN = 0.12, SQ_SHUT = 0.25, SQ_HANG_BLOCKS = 15;
+/**
  * Analog FM voice on a channel's complex baseband at [fs] (a Type II voice channel): the discriminator, a 3.4 kHz
  * low-pass, down to 8 kHz, the sub-audible signaling taken out below 300 Hz, and the 6 dB an octave pre-emphasis taken
  * back. 20 ms blocks come out with [open]: the noise above the voice band says whether a carrier is there.
@@ -189,7 +196,7 @@ export class FmVoice {
   onPcm: (pcm: Float32Array, open: boolean) => void = () => undefined;
   private pi = 0; private pq = 0; private readonly dec: number; private readonly lp: Float32Array; private readonly hist: Float32Array; private hp = 0; private ph = 0;
   private hpX = 0; private hpY = 0; private hpX2 = 0; private hpY2 = 0; private de = 0; private nz = 0; private np = 0; private prev = 0;
-  private readonly out = new Float32Array(160); private on = 0;
+  private readonly out = new Float32Array(160); private on = 0; private hang = 0;
   constructor(readonly fs: number) {
     this.dec = Math.max(1, Math.round(fs / 8000));
     const taps = 8 * this.dec + 1, fc = 3400 / fs, m = (taps - 1) / 2; this.lp = new Float32Array(taps); let s = 0;
@@ -217,7 +224,8 @@ export class FmVoice {
       if (this.on === 160) {
         const noise = Math.sqrt(this.nz / Math.max(1, this.np)) / (this.fs / 2);
         // a carrier quiets the discriminator: unmodulated noise there sits near a third of the sample rate
-        const open = noise < 0.12;
+        this.hang = noise < SQ_OPEN ? SQ_HANG_BLOCKS : noise >= SQ_SHUT ? 0 : Math.max(0, this.hang - 1);
+        const open = this.hang > 0;
         this.onPcm(this.out.slice(), open);
         this.on = 0; this.nz = 0; this.np = 0;
       }
