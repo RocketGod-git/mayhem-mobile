@@ -11,7 +11,7 @@ import kotlin.math.sqrt
 /**
  * One pager channel cut out of the SDR's wide IQ stream: mixed to baseband by a numerically controlled oscillator,
  * filtered and decimated in two FIR stages (to ~240 kHz, then to ~48 kHz with a channel filter tight enough that
- * the next 25 kHz channel is gone), FM-discriminated, and fed to both a FLEX and a POCSAG decoder. Several of these
+ * the next 25 kHz channel is gone), FM-discriminated, and fed to a FLEX, a POCSAG and a ReFLEX decoder. Several of these
  * run on one buffer, so one SDR listens to every busy pager channel in its window at once.
  */
 class PagerChannelRx(val hz: Long, sink: PagerSink) {
@@ -30,6 +30,7 @@ class PagerChannelRx(val hz: Long, sink: PagerSink) {
     private var out = FloatArray(4096); private var nOut = 0
     private var flex: FlexDecoder? = null
     private var pocsag: PocsagDecoder? = null
+    private var reflex: ReflexDecoder? = null
     private var pow = 0.0
     /** Channel power after the channel filter, dB relative to full scale (for the UI's signal bar). */
     val powerDb: Double get() = 10.0 * ln(pow + 1e-12) / ln(10.0) - 42.0
@@ -49,6 +50,7 @@ class PagerChannelRx(val hz: Long, sink: PagerSink) {
             h2i = FloatArray(t2.size * 2); h2q = FloatArray(t2.size * 2); p2 = 0; c2 = 0
             flex = FlexDecoder(sink, outRate)
             pocsag = PocsagDecoder(sink, outRate)
+            reflex = ReflexDecoder(sink, outRate)
         }
         val w = -2.0 * PI * (hz - center) / rate
         sr = cos(w); si = sin(w)
@@ -95,6 +97,7 @@ class PagerChannelRx(val hz: Long, sink: PagerSink) {
         tap?.invoke(out, nOut)
         flex?.push(out, nOut)
         pocsag?.push(out, nOut)
+        reflex?.push(out, nOut)
         nOut = 0
     }
 

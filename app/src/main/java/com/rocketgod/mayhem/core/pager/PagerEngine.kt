@@ -80,6 +80,22 @@ object PagerEngine {
     private const val TRIAL_MS = 20_000L       // a hunted carrier gets this long to show a sync
     private const val RETRY_MS = 90_000L       // before an evicted carrier is tried again
     private const val PROVEN_MS = 180_000L     // a carrier that synced this recently keeps its slot
+    /**
+     * Image copies of a strong carrier. The HackRF puts weak copies of every strong carrier at multiples of 41.667 kHz
+     * (20 MHz / 480) either side of it, about 30 dB down at the first and 43 dB at the second (measured on the
+     * 2026-11-20 roof recording, 929.6125, 931.5375, 935.275 and 940.8625 MHz). A copy carries the same pages at the
+     * same instant, so it would decode them a second time and take a receiver a real carrier needs. A carrier sitting
+     * within [IMAGE_TOL] of such an offset from one [IMAGE_DB] stronger gets no receiver in AUTO; a receiver at such an
+     * offset that decodes a page another, much stronger receiver just decoded is a copy too, and gives its slot up.
+     */
+    private const val IMAGE_STEP = 41_667.0
+    private const val IMAGE_STEPS = 4
+    private const val IMAGE_TOL = 5_000.0
+    private const val IMAGE_DB = 15f
+    /** A page heard again on another carrier this soon after is the same transmission. */
+    private const val COPY_MS = 3_000L
+    /** How much weaker a receiver repeating another's page must be to be taken for a copy of it. */
+    private const val COPY_DB = 10f
     private const val MAX_MESSAGES = 400
     /** How far back the card a repeated page replaces is looked for. */
     private const val REPEAT_MS = 10 * 60_000L
@@ -89,7 +105,20 @@ object PagerEngine {
         @Volatile var lastSync = 0L
         var syncs = 0; var pages = 0; var protocol = ""; var rate = ""
     }
-    private class Carrier(val hz: Long, val db: Float)
+    internal class Carrier(val hz: Long, val db: Float) { var image: Long? = null }
+
+    /** The stronger carrier [c] is an image copy of, if any (see [IMAGE_STEP]). */
+    internal fun imageOf(c: Carrier, all: List<Carrier>, rate: Int = 0): Long? {
+        val steps = ArrayList<Double>(2).apply { add(IMAGE_STEP) }
+        val r = rate / 480.0   // the same spur scaled to the stream's rate, when that is its own spacing
+        if (r >= 2 * IMAGE_TOL && abs(r - IMAGE_STEP) > IMAGE_TOL) steps += r
+        for (s in all) {
+            if (s === c || s.db - c.db < IMAGE_DB) continue
+            val d = abs(c.hz - s.hz).toDouble()
+            for (st in steps) for (k in 1..IMAGE_STEPS) if (abs(d - k * st) <= IMAGE_TOL) return s.hz
+        }
+        return null
+    }
 
     private var center = 0L
     private var rateHz = 0
@@ -100,6 +129,11 @@ object PagerEngine {
     private var carriers = emptyList<Carrier>()
     private val slots = ArrayList<Slot>()
     private val tried = HashMap<Long, Long>()
+    /** Carriers a receiver proved to be copies of another (it decoded that one's pages), by frequency. */
+    private val copies = HashMap<Long, Long>()
+    /** Pages put on the feed in the last [COPY_MS]: what the page says, its carrier, its card, when. */
+    private class Recent(val key: String, var hz: Long, var id: Long, val at: Long)
+    private val recent = ArrayList<Recent>()
     private var iq = FloatArray(0); private var qq = FloatArray(0)
     // The radio's DC offset (LO leakage), tracked per buffer and removed, so a carrier at the tuned center is not
     // buried under the spike and the center of the span can be hunted like the rest of it.
@@ -125,7 +159,7 @@ object PagerEngine {
         val t = now()
         if (restart || centerHz != center || rate != rateHz) {
             center = centerHz; rateHz = rate; restart = false
-            slots.clear(); tried.clear(); peak = FloatArray(0); carriers = emptyList()
+            slots.clear(); tried.clear(); synchronized(recent) { copies.clear(); recent.clear() }; peak = FloatArray(0); carriers = emptyList()
             spanStart = t; lastManage = 0L; heard = null
             hist = ByteArray(((rate * HISTORY_S).toInt() * 2).coerceAtLeast(2)); hW = 0; hFill = 0
             dcFresh = true
@@ -210,7 +244,9 @@ object PagerEngine {
             val hz = (est / 2500.0).roundToLong() * 2500
             out += Carrier(hz, p - floor)
         }
-        return out.sortedByDescending { it.db }.take(16)
+        val ranked = out.sortedByDescending { it.db }
+        for (c in ranked) c.image = imageOf(c, ranked, rate)
+        return ranked.take(16)
     }
 
     /**
@@ -245,7 +281,7 @@ object PagerEngine {
     private fun newSlot(hz: Long, t: Long): Slot {
         lateinit var slot: Slot
         val rx = PagerChannelRx(hz, object : PagerSink {
-            override fun onPage(p: PagerPage) { slot.pages++; addPage(hz, p) }
+            override fun onPage(p: PagerPage) { if (p.protocol != "ReFLEX") slot.pages++; addPage(hz, p) }
             override fun onSync(protocol: String, rate: String) {
                 val at = now(); slot.lastSync = at; slot.syncs++; slot.protocol = protocol; slot.rate = rate
             }
@@ -291,7 +327,7 @@ object PagerEngine {
 
     private fun manage(t: Long) {
         carriers = carriers(center, rateHz)
-        val want: List<Long> = if (hunting) carriers.take(SLOTS).map { it.hz }
+        val want: List<Long> = if (hunting) carriers.filter { !isCopy(it.hz) }.take(SLOTS).map { it.hz }
             else synchronized(pinned) { if (pinned.isNotEmpty()) pinned.toList() else held.toList() }
         // evict: in HUNT, carriers that had their trial and never proved; in PINNED, anything no longer pinned
         // A carrier that wants a receiver while all are busy: one that has never synced, has had a few seconds and
@@ -299,7 +335,7 @@ object PagerEngine {
         val waiting = hunting && slots.size >= SLOTS && want.any { hz -> slots.none { abs(it.hz - hz) < 10_000 } && t - (tried[hz] ?: 0L) >= RETRY_MS }
         val gone = slots.filter { s ->
             if (!hunting) s.hz !in want
-            else s.hz !in want && t - s.lastSync > PROVEN_MS &&
+            else isCopy(s.hz) || s.hz !in want && t - s.lastSync > PROVEN_MS &&
                 (t - s.since > TRIAL_MS || (waiting && s.syncs == 0 && t - s.since > QUICK_MS))
         }
         // only a carrier that never synced waits out RETRY_MS: a pager that went quiet is welcome back at once
@@ -336,24 +372,60 @@ object PagerEngine {
         fun near(a: Long, b: Long) = abs(a - b) < 10_000
         val cs = ArrayList<Chan>()
         for (s in slots) cs += Chan(s.hz, carriers.firstOrNull { near(it.hz, s.hz) }?.db ?: 0f, true, s.protocol, s.rate, s.pages, s.lastSync)
-        for (c in carriers) if (slots.none { near(it.hz, c.hz) } && cs.size < 12) cs += Chan(c.hz, c.db, false, "", "", 0, 0L)
+        for (c in carriers) if (slots.none { near(it.hz, c.hz) } && !isCopy(c.hz) && cs.size < 12) cs += Chan(c.hz, c.db, false, "", "", 0, 0L)
         _channels.value = cs
         status()
     }
 
+    /** A carrier AUTO leaves alone: an image copy by the survey, or one a receiver showed to be a copy. */
+    private fun isCopy(hz: Long): Boolean {
+        if (synchronized(recent) { copies.keys.any { abs(it - hz) < 5_000 } }) return true
+        return carriers.any { it.image != null && abs(it.hz - hz) < 5_000 }
+    }
+    private fun levelOf(hz: Long): Float = carriers.firstOrNull { abs(it.hz - hz) < 10_000 }?.db ?: 0f
+
     private fun addPage(hz: Long, p: PagerPage) {
         val t = now()
+        // a ReFLEX frame card: one per carrier, kept current, never for a copy
+        if (p.protocol == "ReFLEX") { if (!isCopy(hz)) place(hz, p, t, null); return }
+        // The same page from another receiver a moment ago is one transmission heard twice when the two are far apart
+        // in level and at a spur offset: a receiver on an image copy (see [IMAGE_STEP]). It is shown once, on the
+        // stronger carrier, and the weaker one gives its slot up. Two real carriers can carry the same page; both show.
+        val key = "${p.protocol}|${p.rate}|${p.capcode}|${p.kind}|${p.where}|${p.text}"
+        synchronized(recent) {
+            recent.removeAll { t - it.at > COPY_MS }
+            val twin = recent.firstOrNull { it.hz != hz && it.key == key }
+            if (twin != null) {
+                val mine = levelOf(hz); val theirs = levelOf(twin.hz)
+                val strong = if (mine >= theirs) hz else twin.hz; val weak = if (strong == hz) twin.hz else hz
+                if (abs(mine - theirs) >= COPY_DB && imageOf(Carrier(weak, 0f), listOf(Carrier(strong, IMAGE_DB)), rateHz) != null) {
+                    copies[weak] = strong; lastManage = 0L
+                    if (strong != hz) return                  // the copy: already shown
+                    // the stronger carrier decoded it second: its card takes the copy's place
+                    twin.hz = hz; twin.id = place(hz, p, t, twin.id)
+                    return
+                }
+            }
+            recent += Recent(key, hz, place(hz, p, t, null), t)
+        }
+    }
+
+    /** Puts a page on the feed (in place of card [replace], if given) and returns its card's id. */
+    private fun place(hz: Long, p: PagerPage, t: Long, replace: Long?): Long {
         var cur = _messages.value
+        if (replace != null) cur = cur.filter { it.id != replace }
         // Another transmission of a page already on the feed (the decoder matched it by capcode and message number):
         // one that adds nothing is dropped, one that filled words the first copy lost takes its card's place.
         if (p.repeat != 0 && p.key.isNotEmpty()) {
             val earlier = cur.firstOrNull { it.at >= t - REPEAT_MS && it.hz == hz && it.page.protocol == p.protocol && it.page.capcode == p.capcode && it.page.key == p.key }
-            if (p.repeat == 1 && earlier != null) return
+            if (p.repeat == 1 && earlier != null) return earlier.id
             if (earlier != null) cur = cur.filter { it.id != earlier.id }
         }
         val m = PagerMessage(nextId++, t, hz, p, isCallOut(p.text))
         _messages.value = if (cur.size >= MAX_MESSAGES) listOf(m) + cur.subList(0, MAX_MESSAGES - 1) else listOf(m) + cur
-        synchronized(caps) { caps += p.capcode; _capcodes.value = caps.size }
+        // a ReFLEX frame card has no capcode
+        if (p.capcode >= 0) synchronized(caps) { caps += p.capcode; _capcodes.value = caps.size }
+        return m.id
     }
 
     // ---------------------------------------------------------------- heard-channel audio (played via drainAudio; global mute governs it)
