@@ -258,7 +258,7 @@ function setStatus(s: string, connected: boolean): void {
 // ---- radio / engine control -----------------------------------------------------------------------------------
 /** The saved dial, only when it is on broadcast FM: the app always opens there, in WFM, where Home and Audio pick the
  *  strongest station (a dial left on 6 m or NOAA is not brought back on a new visit). */
-function loadDial(): number { try { const hz = Number(localStorage.getItem('mayhem.dial')) || 0; return hz >= 87.5e6 && hz <= 108e6 ? hz : 0; } catch { return 0; } }
+function loadDial(): number { try { const hz = Number(localStorage.getItem('mayhem.dial')) || 0; return hz >= 76e6 && hz <= 108e6 ? hz : 0; } catch { return 0; } }
 let dialSaveTimer = 0;
 /** Remember the dial for the other apps and for the next visit. */
 function setDial(hz: number): void {
@@ -1826,11 +1826,17 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
       return cnt ? sum / cnt * (2 * w + 1) / pick.specN : 0;
     };
     const scores: [number, number][] = [];
-    for (let f = Math.ceil((c - half) / 100_000) * 100_000; f <= c + half; f += 100_000) scores.push([f, score(f)]);
+    const all: [number, number][] = [];
+    for (let f = Math.ceil((c - half) / 100_000) * 100_000; f <= c + half; f += 100_000) all.push([f, score(f)]);
+    // the band's own grid, learned from the stations on the air, so it holds in every country: the Americas, Korea and
+    // the Philippines put stations on odd tenths only (88.1 to 107.9), Europe and Japan on any 100 kHz step. Off the
+    // grid a noise hump can win (101.0 picked on a Mac after Dispatch, garbled)
+    const grid = fmGridParity(all);
+    for (const s of all) if (grid < 0 || Math.round(s[0] / 100_000) % 2 === grid) scores.push(s);
     if (!scores.length) return null;
     const best = scores.reduce((a, b) => (b[1] > a[1] ? b : a));
     // already on a good station: stay unless it is under a third of the best one
-    if (Math.abs(here - c) <= half) {
+    if (Math.abs(here - c) <= half && (grid < 0 || Math.round(here / 100_000) % 2 === grid)) {
       const mine = score(here);
       // and only on the station itself: a dial 100 kHz to one side sits on its shoulder (garbled audio)
       // and standing out of the band: an empty dial (a fresh visit's default) scores near every other empty channel,
@@ -1846,6 +1852,23 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
   for (const [n, s] of pick.tally.values()) if (n * 3 >= pick.frames && (!best || s.snr > best.snr)) best = s;
   if (best) log(`start-up: tuned the strongest steady signal in view, ${(best.hz / 1e6).toFixed(3)} MHz ${best.cls} ${Math.round(best.snr)} dB ${Math.round(best.bw / 1e3)} kHz wide`);
   return best;
+}
+/**
+ * The broadcast grid in view: 1 when the stations heard sit on odd tenths (200 kHz apart, as in the Americas), 0 on
+ * even tenths, -1 for any 100 kHz step. A station is a channel that tops both neighbors and is at least twice the
+ * median; it takes three of them, nearly all on one parity, to settle it.
+ */
+export function fmGridParity(all: [number, number][]): number {
+  if (all.length < 5) return -1;
+  const median = all.map(x => x[1]).sort((a, b) => a - b)[Math.floor(all.length / 2)];
+  let odd = 0, even = 0;
+  for (let i = 1; i < all.length - 1; i++) {
+    const v = all[i][1];
+    if (v >= 2 * median && v > 0 && v >= all[i - 1][1] && v >= all[i + 1][1]) { if (Math.round(all[i][0] / 100_000) % 2 === 1) odd++; else even++; }
+  }
+  const n = odd + even;
+  if (n < 3) return -1;
+  return odd >= 0.7 * n ? 1 : even >= 0.7 * n ? 0 : -1;
 }
 function launchAutoPick(): void {
   if (state.app !== null || launchPicked || !lastSignals.length) return;

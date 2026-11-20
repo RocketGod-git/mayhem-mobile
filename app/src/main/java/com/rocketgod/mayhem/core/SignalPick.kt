@@ -172,11 +172,17 @@ object AutoPick {
             }
             val scores = ArrayList<Pair<Double, Double>>()
             var c = Math.ceil((lo - half) / 100_000.0) * 100_000
-            while (c <= lo + half) { scores.add(Pair(c, score(c))); c += 100_000 }
+            val all = ArrayList<Pair<Double, Double>>()
+            while (c <= lo + half) { all.add(Pair(c, score(c))); c += 100_000 }
+            // the band's own grid, learned from the stations on the air, so it holds in every country: the Americas,
+            // Korea and the Philippines put stations on odd tenths only (88.1 to 107.9), Europe and Japan on any 100 kHz
+            // step. Off the grid a noise hump can win (101.0 picked on a Mac after Dispatch, garbled)
+            val grid = fmGridParity(all)
+            for (s in all) if (grid < 0 || Math.round(s.first / 100_000) % 2 == grid.toLong()) scores.add(s)
             val best = scores.maxByOrNull { it.second } ?: return
             armed = false
             // already on a good station (the dial the app came back to): stay unless it is under a third of the best one
-            if (abs(here - lo) <= half) {
+            if (abs(here - lo) <= half && (grid < 0 || Math.round(here / 100_000) % 2 == grid.toLong())) {
                 val mine = score(here)
                 // and only on the station itself: a dial 100 kHz to one side sits on its shoulder (garbled audio)
                 // and standing out of the band: an empty dial (a fresh install's default) scores near every other
@@ -200,4 +206,22 @@ object AutoPick {
         SdrEngine.tune(signalDial(best, rasterFor(SdrEngine.mode.value)), silent = true)
         com.rocketgod.mayhem.Diag.log("start-up: tuned the strongest steady signal in view, %.3f MHz %s %.0f dB %.0f kHz wide".format(best.hz / 1e6, best.cls, best.snr, best.bw6 / 1e3))
     }
+}
+
+/**
+ * The broadcast grid in view: 1 when the stations heard sit on odd tenths (200 kHz apart, as in the Americas), 0 on
+ * even tenths, -1 for any 100 kHz step. A station is a channel that tops both neighbors and is at least twice the
+ * median; it takes three of them, nearly all on one parity, to settle it.
+ */
+fun fmGridParity(all: List<Pair<Double, Double>>): Int {
+    if (all.size < 5) return -1
+    val median = all.map { it.second }.sorted()[all.size / 2]
+    var odd = 0; var even = 0
+    for (i in 1 until all.size - 1) {
+        val v = all[i].second
+        if (v >= 2 * median && v > 0 && v >= all[i - 1].second && v >= all[i + 1].second) { if (Math.round(all[i].first / 100_000) % 2 == 1L) odd++ else even++ }
+    }
+    val n = odd + even
+    if (n < 3) return -1
+    return if (odd >= 0.7 * n) 1 else if (even >= 0.7 * n) 0 else -1
 }
