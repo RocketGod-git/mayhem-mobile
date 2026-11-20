@@ -132,7 +132,7 @@ private fun dispatchAudioNote(c: CallRow, codecs: List<String>): String = when {
     c.audioMs > 0 -> ""
     c.decoded >= 10 && c.badFrames > 0.5 * c.decoded -> "weak signal"
     c.sec == "unknown" && c.voiceMs > 0 -> "no voice decoded yet"
-    c.codec !in codecs -> if (c.codec == "imbe") "no audio yet, the P25 full-rate vocoder is not built" else "no audio yet, the half-rate vocoder for ${if (c.proto == "DMR") "DMR" else "Phase 2"} is not built"
+    c.codec !in codecs -> if (c.codec == "imbe") "no audio yet, the P25 full-rate vocoder is not built" else if (c.codec == "tetra") "no audio yet, the TETRA codec is not built" else "no audio yet, the half-rate vocoder for ${if (c.proto == "DMR") "DMR" else "Phase 2"} is not built"
     c.voiceMs > 0 -> ""
     else -> "voice channel not heard"
 }
@@ -615,7 +615,7 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
     val playing = s.playing == c.key && audioOn; val ended = !c.onAir
     val badge = if (ended) "ENDED" else if (c.emergency) "EMERGENCY" else if (c.outside) "OTHER SYSTEM" else if (c.muted) "MUTED" else if (playing) "PLAYING" else "ON AIR"
     val lp = if (c.lpcn >= 0) " · LPCN ${c.lpcn}" else ""
-    val ch = if (c.hz > 0) "${mhz(c.hz)} MHz${if (c.tdma) " · TDMA S${c.slot + 1}" else if (c.proto == "DMR") " · TS${c.slot + 1}" else ""}$lp"
+    val ch = if (c.hz > 0) "${mhz(c.hz)} MHz${if (c.tdma) " · TDMA S${c.slot + 1}" else if (c.proto == "DMR" || c.proto == "TETRA") " · TS${c.slot + 1}" else ""}$lp"
         else if (c.lpcn >= 0) "LPCN ${c.lpcn} · TS${c.slot + 1} · learning its frequency" else "channel not resolved"
     val car = if (c.hz > 0) s.carriers.firstOrNull { abs(it.hz - c.hz) < 3_200 && it.callsign.isNotEmpty() } else null
     val note = dispatchAudioNote(c, s.codecs)
@@ -753,7 +753,7 @@ private fun SystemCard(x: SystemRow, s: FleetSnap, now: Long, selected: Boolean,
             FlPill(x.proto, col)
             Column(Modifier.widthIn(min = d.dp(160f)).weight(1f)) {
                 Text(Dispatch.sysTitle(x), color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${if (x.callsign.isNotEmpty()) "${x.callsign} · " else ""}${x.sites.size} site${if (x.sites.size == 1) "" else "s"} · ${x.units} units · ${x.tgs} talkgroups · ${x.grants} grants",
+                Text("${if (x.security.isNotEmpty()) "${x.security} · " else ""}${if (x.callsign.isNotEmpty()) "${x.callsign} · " else ""}${x.sites.size} site${if (x.sites.size == 1) "" else "s"} · ${x.units} units · ${x.tgs} talkgroups · ${x.grants} grants",
                     color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2)
             }
             if (x.cwId.isNotEmpty()) IdChip(x.cwId, now - x.cwIdMs)
@@ -787,7 +787,7 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
             for (c in cars) {
-                val role = when (c.role) { "rest" -> "REST"; "control" -> if (sys.proto == "P25") "CONTROL" else "REPEATER"; else -> c.role.uppercase() }
+                val role = when (c.role) { "rest" -> "REST"; "control" -> if (sys.proto == "P25" || sys.proto == "TETRA") "CONTROL" else "REPEATER"; else -> c.role.uppercase() }
                 Column(Modifier.clip(RoundedCornerShape(d.dp(8f))).border(1.dp, col.copy(alpha = if (c.role == "rest") 1f else 0.5f), RoundedCornerShape(d.dp(8f)))
                     .background(col.copy(alpha = if (c.role == "rest") 0.18f else 0.06f)).clickable { acts.pick("car:${c.key}") }.padding(horizontal = d.dp(7f), vertical = d.dp(3f))) {
                     Text(mhz(c.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f))
@@ -797,8 +797,11 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
         }
         when (sys.proto) {
             "NXDN" -> FlKv(listOfNotNull("SITE" to "${site.site}", if (site.time.isNotEmpty()) "" to site.time.uppercase() else null, if (site.cls > 0) "VERSION" to "${site.cls}" else null))
-            "TETRA" -> FlKv(listOfNotNull("COLOR CODE" to "${site.site}", if (site.time.isNotEmpty()) "" to site.time.uppercase() else null,
-                if (site.cls >= 0) "CELL LOAD" to (listOf("LOW", "MEDIUM", "HIGH", "UNKNOWN").getOrNull(site.cls) ?: "${site.cls}") else null))
+            "TETRA" -> {
+                FlKv(listOfNotNull(if (site.lra >= 0) "LA" to "${site.lra}" else null, "COLOR CODE" to "${site.site}", if (site.time.isNotEmpty()) "" to site.time.uppercase() else null,
+                    if (site.cls >= 0) "CELL LOAD" to (listOf("LOW", "MEDIUM", "HIGH", "UNKNOWN").getOrNull(site.cls) ?: "${site.cls}") else null, if (sys.security.isNotEmpty()) "" to sys.security else null))
+                if (site.secondary.isNotEmpty()) FlChips("CARRIERS", site.secondary.map { (if (it.second.isNotEmpty()) "${mhz(it.first)} ${it.second.uppercase()}" else mhz(it.first)) to false }, col)
+            }
             "P25" -> {
                 FlKv(listOfNotNull("NAC" to (if (site.nac >= 0) hx(site.nac, 3) else "-"), "RFSS" to "${site.rfss}", "SITE" to "${site.site}", if (site.time.length >= 19) "CLOCK" to site.time.substring(11, 19) else null))
                 if (site.neighbors.isNotEmpty()) FlChips("NEIGHBORS", site.neighbors.map { "${it.label} ${mhz(it.hz)}" to it.heard }, col)
@@ -994,7 +997,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
             if (calls.isNotEmpty()) secs.add(CardSec("CALLS") { CardCalls(calls, 10, now, me, colorOf, acts) })
             if (u.tgCounts.isNotEmpty()) secs.add(CardSec("TALKGROUPS") { CardTags(u.tgCounts.take(16).map { (tg, n) -> Triple("TG $tg", "$n", "tg:${u.sys}/$tg") }, col, acts) })
             val site = u.site.ifEmpty { calls.firstOrNull { it.site.isNotEmpty() }?.site ?: "" }
-            val slots = calls.filter { it.proto == "DMR" || it.tdma }.map { it.slot + 1 }.distinct()
+            val slots = calls.filter { it.proto == "DMR" || it.proto == "TETRA" || it.tdma }.map { it.slot + 1 }.distinct()
             val freqs = (u.carriers.map { k -> s.carriers.firstOrNull { it.key == k }?.hz ?: k } + calls.map { it.hz }.filter { it > 0 }).distinct().sorted()
             val rest = if (dmr) (sys.sites.firstOrNull { it.label == site } ?: sys.sites.firstOrNull()) else null
             val dbs = reports.mapNotNull { it.db }
@@ -1057,7 +1060,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                     if (n > 0) "${Math.round(100.0 * enc / n)}%" to "ENCRYPTED" else null))
                 val ids = when (x.proto) {
                     "NXDN" -> arrayOf<Pair<String, String?>>("CATEGORY" to x.model, "SYSTEM CODE" to "${x.sysId}")
-                    "TETRA" -> arrayOf<Pair<String, String?>>("MCC" to "${x.wacn}", "MNC" to "${x.sysId}", "COLOR CODE" to "${x.cc}")
+                    "TETRA" -> arrayOf<Pair<String, String?>>("MCC" to "${x.wacn}", "MNC" to "${x.sysId}", "COLOR CODE" to "${x.cc}", "AIR INTERFACE" to x.security.ifEmpty { null })
                     "P25" -> arrayOf<Pair<String, String?>>("WACN" to hx(x.wacn, 5), "SYSTEM" to hx(x.sysId, 3))
                     else -> arrayOf<Pair<String, String?>>("COLOR CODE" to "${x.cc}", "FEATURE SET" to (if (x.fid >= 0) "0x${hx(x.fid, 2)}" else null), "NETWORK" to (if (x.net >= 0) "${x.model} ${x.net}" else null))
                 }

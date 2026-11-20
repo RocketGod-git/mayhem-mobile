@@ -11,12 +11,13 @@ import kotlin.math.tanh
  * codec registered the call is still followed and shown, without audio.
  *  - "imbe": P25 Phase 1 full rate, 144-bit frames (88 voice bits under FEC), 20 ms each.
  *  - "ambe2": half rate, 72-bit frames (49 voice bits under FEC), 20 ms each: DMR and P25 Phase 2.
+ *  - "tetra": the TETRA ACELP codec, 137-bit frames (after the speech channel decoding), 30 ms each.
  */
-object CodecIds { const val IMBE = "imbe"; const val AMBE2 = "ambe2" }
+object CodecIds { const val IMBE = "imbe"; const val AMBE2 = "ambe2"; const val TETRA = "tetra" }
 
 interface VoiceCodec {
     val id: String
-    /** One frame of bits (one per element, as sent) to 160 samples of 8 kHz audio, or null for a frame it drops. An
+    /** One frame of bits (one per element, as sent) to 8 kHz audio (160 samples, 240 for TETRA), or null for a frame it drops. An
      *  empty frame is an erasure. */
     fun decode(bits: IntArray): FloatArray?
     /** The last frame decoded was past its error correction (repeated or muted by the vocoder). */

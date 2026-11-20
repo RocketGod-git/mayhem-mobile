@@ -52,7 +52,7 @@ data class CallRow(
 )
 
 /** What each source on the air said: 1 encrypted, 0 clear, -1 nothing yet; [syncs] the last algorithm IDs read. */
-class Said { var grant = -1; var lc = -1; val syncs = ArrayList<Int>(); var from = ""; var pi = false; var emb = -1; var history = false; var histEnc = false }
+class Said { var grant = -1; var lc = -1; val syncs = ArrayList<Int>(); var from = ""; var pi = false; var emb = -1; var history = false; var histEnc = false; var aie = false }
 
 /** A call the tracker holds (mutable; [row] is the copy handed out). */
 class Call(
@@ -103,6 +103,8 @@ private const val ID_AFTER_MS = 15_000L
  * one lost LDU must not cost it; Phase 2 and DMR bring frames every 60 ms. Past this a call with speech takes over, so
  * a call that holds the channel with silence, or frames that all fail, never keeps NOW PLAYING quiet.
  */
+/** The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 for DMR and Phase 2, the TETRA ACELP codec for TETRA. */
+fun codecOf(proto: String, tdma: Boolean): String = if (proto == "TETRA") CodecIds.TETRA else if (proto == "P25" && !tdma) CodecIds.IMBE else CodecIds.AMBE2
 fun liveMs(proto: String, tdma: Boolean): Long = if (proto == "P25" && !tdma) 600L else 360L
 
 private fun callGrid(hz: Long): Long = Math.round(hz / 6250.0) * 6250
@@ -167,7 +169,7 @@ class CallTracker(private val now: () -> Long) {
         }
         // grant updates trail a call for a moment after its terminator: they do not open it again
         if (c == null && calls.any { x -> x.kind == "call" && !x.onAir && x.end == "terminator" && now - x.endMs < TRAIL_MS && x.sys == g.sys && x.tg == g.tg && (g.hz == 0L || x.hz == 0L || callGrid(x.hz) == callGrid(g.hz)) }) return null
-        val codec = if (g.proto == "P25" && !g.tdma) CodecIds.IMBE else CodecIds.AMBE2
+        val codec = codecOf(g.proto, g.tdma)
         if (c == null) c = create(g.sys, g.proto, g.hz, g.slot, codec, now, g.tg, g.group, g.src, g.tdma, g.emergency, g.site, g.lpcn ?: -1, g.chDerived ?: false)
         c.tg = if (g.tg != 0) g.tg else c.tg; c.group = g.group; c.sys = g.sys.ifEmpty { c.sys }; if (g.hz != 0L) { c.hz = g.hz; c.slot = g.slot }; c.tdma = g.tdma; c.codec = codec
         if (g.lpcn != null && g.lpcn >= 0) c.lpcn = g.lpcn
@@ -176,7 +178,7 @@ class CallTracker(private val now: () -> Long) {
         c.emergency = c.emergency || g.emergency; c.site = g.site.ifEmpty { c.site }
         // a P25 grant's service options say whether the call is encrypted; a DMR grant says nothing either way
         if (g.encrypted) security(c, SecIn(true, "grant"))
-        else if (g.proto == "P25") security(c, SecIn(false, "grant"))
+        else if (g.proto == "P25" || g.proto == "TETRA") security(c, SecIn(false, "grant"))
         c.grantMs = now; c.lastMs = now; c.granted = true
         label(c)
         return c
@@ -185,7 +187,7 @@ class CallTracker(private val now: () -> Long) {
 
     /** Voice on a channel: a P25 voice frame (180 ms of speech) or a DMR voice burst (60 ms). */
     fun voice(sys: String, proto: String, hz: Long, slot: Int, ms: Long, now: Long = this.now(), tdma: Boolean = false): Call {
-        val c = find(sys, hz, slot) ?: create(sys, proto, hz, slot, if (proto == "P25" && !tdma) CodecIds.IMBE else CodecIds.AMBE2, now, tdma = tdma)
+        val c = find(sys, hz, slot) ?: create(sys, proto, hz, slot, codecOf(proto, tdma), now, tdma = tdma)
         c.frames++; c.voiceMs += ms; c.voiceAt = now; c.lastMs = now
         if (sys.isNotEmpty() && c.sys.isEmpty()) { c.sys = sys; label(c) }
         return c
@@ -199,7 +201,7 @@ class CallTracker(private val now: () -> Long) {
             c = calls.firstOrNull { x -> x.kind == "call" && x.onAir && x.proto == proto && x.hz == 0L && x.tg == lc.dst && x.group == lc.group && (sys.isEmpty() || x.sys.isEmpty() || x.sys == sys) }
             if (c != null) { c.hz = hz; c.slot = slot }
         }
-        if (c == null) c = create(sys, proto, hz, slot, if (proto == "P25" && !tdma) CodecIds.IMBE else CodecIds.AMBE2, now, lc.dst, lc.group, tdma = tdma)
+        if (c == null) c = create(sys, proto, hz, slot, codecOf(proto, tdma), now, lc.dst, lc.group, tdma = tdma)
         c.tg = lc.dst; c.group = lc.group; addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true
         if (sys.isNotEmpty() && c.sys.isEmpty()) c.sys = sys
         if (!tdma) security(c, SecIn(lc.privacy, if (proto == "P25") "LDU1" else "LC"))
@@ -227,6 +229,7 @@ class CallTracker(private val now: () -> Long) {
         else if (s.from == "PI") { said.pi = true; if (!s.pi.isNullOrEmpty()) c.pi = s.pi; if (s.algId != null) c.algId = s.algId; if (s.keyId != null) c.keyId = s.keyId; if (!s.mi.isNullOrEmpty()) c.mi = s.mi }
         else if (s.from == "EMB") said.emb = if (s.enc) 1 else if (said.emb == 1) 1 else 0
         else if (s.from == "history") said.histEnc = true
+        else if (s.from == "AIE") said.aie = true
         var sec = "unknown"; var from = ""
         if (c.proto == "P25") {
             val last = if (said.syncs.isNotEmpty()) said.syncs.last() else -1
@@ -237,6 +240,12 @@ class CallTracker(private val now: () -> Long) {
             else if (said.history && c.tdma) sec = "unknown"
             else if (said.grant >= 0 || said.lc >= 0) { sec = "clear"; from = if (said.grant >= 0) "grant" else "LDU1" }
             c.protectedHint = last < 0 && (said.grant == 1 || said.lc == 1)
+        } else if (c.proto == "TETRA") {
+            // TETRA: the end-to-end encryption flag of the call's set-up (or the encryption control of a transmission grant),
+            // or signalling encrypted on the air interface of a cell that offers it
+            if (said.grant == 1 || said.aie) { sec = "enc"; from = if (said.aie) "AIE" else "grant" }
+            else if (said.grant == 0) { sec = "clear"; from = "grant" }
+            c.protectedHint = false
         } else {
             if (said.lc == 1 || said.pi || said.emb == 1) { sec = "enc"; from = if (said.pi) "PI" else if (said.lc == 1) "LC" else "EMB" }
             // an EMB privacy bit of 0 does not make a call clear: Motorola's privacy leaves it 0, the LC's service options say it

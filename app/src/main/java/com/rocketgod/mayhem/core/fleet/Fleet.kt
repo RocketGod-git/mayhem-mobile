@@ -73,6 +73,8 @@ data class SystemRow(
     val lpcns: List<LpcnRow> = emptyList(),
     /** The channels the system was heard on (kept when it is out of the span), and whether its units report positions. */
     val heardHz: List<Long> = emptyList(), val positions: Boolean = false,
+    /** TETRA: what the cell broadcasts and the MAC headers say about air interface encryption ("" for the others). */
+    val security: String = "",
 )
 data class UnitReport(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val lat: Double?, val lon: Double?, val text: String,
                       /** The carrier's level when it was heard (dB over the floor). */ val db: Double? = null)
@@ -137,7 +139,7 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     var hdr: Hdr? = null; var lastAuditionMs = 0L
     var p25Sys = -1; var p25Wacn = -1; var p25Rfss = -1; var p25Site = -1
     var dmrSys = ""; val tables = LinkedHashMap<Int, Iden>(); val unitIds = LinkedHashMap<Int, Long>()
-    var tetra: TetraSync? = null; var nxdn: NxdnSite? = null; var nxdnBaud = 0
+    var tetra: TetraSync? = null; var tetraCell: TetraSysinfo? = null; var nxdn: NxdnSite? = null; var nxdnBaud = 0
     fun row() = CarrierRow(key, hz, levelDb, peakDb, firstMs, lastMs, onMs, heardMs, cls, role, sys, nac, cc, frames, blocks, crcOk, lastDecodeMs, envCv, eye,
         decoding, callsign, tdma, lcn, callsignMs)
 }
@@ -154,6 +156,14 @@ private class Sys(val key: String, val proto: String, val color: Int, val wacn: 
     val lpcnVotes = LinkedHashMap<Int, LinkedHashMap<Long, Int>>(); val lpcnHz = LinkedHashMap<Int, Long>()
     /** Where the system was heard (its control or rest channels), kept across retunes and sessions. */
     val heardHz = LinkedHashSet<Long>()
+    /** TETRA: calls by call identifier, and the air interface encryption seen. */
+    var tetra: TetraSys? = null
+}
+private class TetraCall(var tg: Int, var group: Boolean, var src: Int, var hz: Long, var slot: Int, var e2ee: Boolean, val ms: Long)
+private class TetraSys {
+    val calls = LinkedHashMap<Int, TetraCall>(); var encSdus = 0; var clearSdus = 0; var aie = false; var sec: TetraSecurity? = null
+    /** Carriers named by channel allocations: carrier number to frequency. */
+    val carriers = LinkedHashMap<Int, Long>()
 }
 private class Report(val ms: Long, val hz: Long, val kind: String, val hex: String, val verified: Boolean, val text: String, val db: Double? = null) {
     var lat: Double? = null; var lon: Double? = null; var lonLo: Int? = null; var latLo: Int? = null
@@ -203,6 +213,8 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
     var tetra: TetraChan? = null
     /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
     var nxdn: List<NxdnRx>? = null
+    /** The TETRA MAC on the TETRA receiver's bursts. */
+    var tetraMac: TetraMac? = null
     private var center = center; private val rate = if (baseband > 0) 0 else rate
     /** Fed a recorded channel at its own rate (no down-converter, so no DC spike of the receiver's). */
     val baseband: Boolean get() = rate == 0
@@ -523,16 +535,22 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         // the carrier finder can split a 25 kHz signal into pieces: the receiver is centered on all of them together
         val now = now()
         val parts = carriers.values.filter { abs(it.hz - c.hz) <= 16_000 && now - it.lastMs < LIVE_MS && it.cls != "P25 C4FM" && it.cls != "DMR" }
+        // one receiver per signal: a piece next to one that already has it reads nothing twice
+        for ((k, x) in chans) if (k != c.key && x.tetra != null && abs((carriers[k]?.hz ?: 0L) - c.hz) <= 16_000) return
         var w = 0.0; var sum = 0.0; for (x in parts) { val p = 10.0.pow(x.levelDb / 10); w += p; sum += p * x.hz }
         val rx = ch.tetraOn(if (w > 0) sum / w else c.hz.toDouble()) ?: return
         rx.onSync = { s -> tetraSync(c, s) }
+        val mac = ch.tetraMac ?: TetraMac(rx).also { m -> ch.tetraMac = m; m.onEvent = { tetraEvent(c, it) } }
+        // a carrier a grant sent us to: its scrambling is the cell's, known before its own synchronization bursts come
+        val s = systems[c.sys]
+        if (s != null && s.proto == "TETRA" && !mac.cellKnown) mac.setCell(s.wacn, s.sysId, s.cc)
     }
     /** A TETRA synchronization burst (EN 300 392-2 BSCH): the network (MCC, MNC), the cell's color code and timing. */
     private fun tetraSync(c: Carrier, t: TetraSync) {
         val now = now(); val key = "TETRA ${t.mcc}-${t.mnc}"
         val s = systems[key] ?: newSys(key, "TETRA", t.mcc, t.mnc, t.colorCode, -1, -1, "", now)
         s.lastMs = now; s.heardHz.add(c.key)
-        c.cls = "TETRA"; c.role = "control"; c.sys = key; c.cc = t.colorCode; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; blocks++
+        c.cls = "TETRA"; if (c.role != "voice") c.role = "control"; c.sys = key; c.cc = t.colorCode; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; blocks++
         c.tetra = t
         // the other pieces of the same 25 kHz signal are the same carrier
         for (x in carriers.values) if (x !== c && abs(x.hz - c.hz) <= 13_000 && x.cls != "TETRA" && !(x.lastDecodeMs > 0 && now - x.lastDecodeMs < 5_000)) {
@@ -540,6 +558,163 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         }
         addLog(LogRow(now, c.hz, "TETRA", "SYNC", "TETRA · SYNC · MCC ${t.mcc} · MNC ${t.mnc} · color code ${t.colorCode} · TS${t.timeslot} · frame ${t.frame} · multiframe ${t.multiframe} · cell load ${t.cellLoad}", "", true))
         pending = true
+    }
+    /** The TETRA state of a carrier's system. */
+    private fun tetraOf(c: Carrier): Sys? {
+        val s = systems[c.sys] ?: return null
+        if (s.proto != "TETRA") return null
+        if (s.tetra == null) s.tetra = TetraSys()
+        return s
+    }
+    /** What the TETRA MAC read on a carrier (EN 300 392-2 clauses 14, 16, 18, 21). */
+    private fun tetraEvent(c: Carrier, e: TetraEvent) {
+        val s = tetraOf(c) ?: return
+        val t = s.tetra!!; val now = now()
+        fun log(name: String, text: String) = addLog(LogRow(now, c.hz, "TETRA", name, "TETRA · $text", "", true))
+        when (e) {
+            is TetraEvent.Sysinfo -> {
+                val i = e.info; c.tetraCell = i; c.lastDecodeMs = now; c.blocks++; c.crcOk++; blocks++
+                t.aie = i.services.aie; if (i.security != null) t.sec = i.security
+                val mhz = if (i.mainHz > 0) " (${"%.5f".format(java.util.Locale.US, i.mainHz / 1e6)} MHz)" else ""
+                val sec = i.security?.let { " · security class ${if (it.class3) 3 else 2}${if (it.auth) " · authentication required" else ""}" } ?: ""
+                log("SYSINFO", "SYSINFO · LA ${i.la} · main carrier ${i.mainCarrier}$mhz · ${if (i.services.aie) "air interface encryption available" else "no air interface encryption"}$sec · " +
+                    "${if (i.services.voice) "voice service" else "no voice service"}${if (i.services.registration) " · registration required" else ""}")
+            }
+            is TetraEvent.Access -> log("ACCESS-DEFINE", e.text)
+            is TetraEvent.Encrypted -> { t.encSdus++; c.blocks++; blocks++; log("ENCRYPTED", "TS${e.mac.tn} · signalling encrypted on the air interface (encryption mode ${e.mac.enc})") }
+            is TetraEvent.Alloc -> if (e.mac.chan != null) log("CHANNEL ALLOCATION", "TS${e.mac.tn} · SSI ${e.mac.ssi}${if (e.mac.um >= 0) " · usage marker ${e.mac.um}" else ""} · ${tetraChanText(c, e.mac)}")
+            is TetraEvent.Mm -> {
+                t.clearSdus++; c.blocks++; c.crcOk++; blocks++
+                if (e.type == 5 && e.mac.ssi > 0) tetraUnit(s.key, e.mac.ssi, c, now, "registration", e.name)
+                log(e.name, "TS${e.mac.tn} · ${e.name}${if (e.mac.ssi >= 0) " · SSI ${e.mac.ssi}" else ""}")
+            }
+            is TetraEvent.Other -> log(e.name, "TS${e.mac.tn} · ${e.name}${if (e.mac.ssi >= 0) " · SSI ${e.mac.ssi}" else ""}")
+            is TetraEvent.Cmce -> { t.clearSdus++; c.blocks++; c.crcOk++; blocks++; tetraCmce(c, s, e.pdu, e.mac, now) }
+            is TetraEvent.Voice -> tetraVoice(c, s, e.tn, e.frames, now)
+            is TetraEvent.Aach -> {
+                // a traffic slot of a cell whose signalling is encrypted on the air interface, with no call read for it: an
+                // encrypted call (the cell's broadcast and the MAC headers both say so)
+                if (e.usage >= 4 && t.aie && t.encSdus > 0) {
+                    val k = calls.at(s.key, c.hz, e.tn - 1)
+                    if (k == null) { val call = calls.voice(s.key, "TETRA", c.hz, e.tn - 1, 0, now); calls.security(call, SecIn(true, "AIE")) }
+                    else if (k.sec == "enc") calls.voice(s.key, "TETRA", c.hz, e.tn - 1, 0, now)
+                }
+                return
+            }
+        }
+        pending = true
+    }
+    /**
+     * A channel allocation to a frequency and slot: the cell's band and offset unless it gives its own, placed relative
+     * to the cell's main carrier as received.
+     */
+    private fun tetraChanHz(c: Carrier, a: TetraChanAlloc): Pair<Long, Int> {
+        val cell = c.tetraCell ?: carriers.values.firstOrNull { it.sys == c.sys && it.tetraCell != null }?.tetraCell
+        var hz = 0.0
+        if (a.band > 0) hz = tetraCarrierHz(a.carrier, a.band, a.offset)
+        else if (cell != null && cell.band > 0) hz = tetraCarrierHz(a.carrier, cell.band, cell.offset)
+        val main = if (cell != null) carriers.values.firstOrNull { it.sys == c.sys && it.tetraCell != null && abs(it.hz - cell.mainHz) < 15_000 } else null
+        if (cell != null && main != null && hz > 0) hz = main.hz + (hz - cell.mainHz)
+        else if (hz == 0.0 && cell != null && a.carrier == cell.mainCarrier) hz = c.hz.toDouble()
+        val r = Math.round(hz)
+        if (r > 0) tetraOf(c)?.tetra?.carriers?.set(a.carrier, r)
+        return r to max(0, a.tn - 1)
+    }
+    private fun tetraChanText(c: Carrier, mac: TetraMacInfo): String {
+        val a = mac.chan ?: return ""
+        if (a.tn == 0) return "to the control channel"
+        val (hz, _) = tetraChanHz(c, a)
+        return "carrier ${a.carrier}${if (hz > 0) " (${"%.5f".format(java.util.Locale.US, hz / 1e6)} MHz)" else ""} TS${a.tn}${if (a.updown == 1) " downlink" else if (a.updown == 2) " uplink" else ""}"
+    }
+    /** TETRA call control (14.7.1): set-up, connect, transmission grants and the end of a call build the call. */
+    private fun tetraCmce(c: Carrier, s: Sys, p: TetraCmce, mac: TetraMacInfo, now: Long) {
+        val t = s.tetra!!
+        var call = if (p.callId >= 0) t.calls[p.callId] else null
+        val at = mac.chan?.let { if (it.tn > 0) tetraChanHz(c, it) else null }
+        fun who() = call?.let { " · ${if (it.group) "TG" else "UNIT"} ${it.tg}" } ?: ""
+        val text = StringBuilder("TS${mac.tn} · ${p.name}${if (p.callId >= 0) " · call ${p.callId}" else ""}")
+        var grant = false
+        when (p.type) {
+            7 -> {   // D-SETUP: sent to the called group (or unit), naming the calling unit
+                val group = (p.basic?.comm ?: 1) != 0
+                val nc = TetraCall(mac.ssi, group, if (p.calling > 0) p.calling else 0, at?.first ?: call?.hz ?: 0L, at?.second ?: call?.slot ?: 0, p.basic?.e2ee == true, now)
+                call = nc
+                if (p.callId >= 0) t.calls[p.callId] = nc
+                val kind = if (p.basic != null && p.basic!!.mode != 0) " · circuit mode ${p.basic!!.mode}" else " speech"
+                text.append(" · ${if (group) "TG" else "UNIT"} ${mac.ssi}${if (nc.src != 0) " ← ${nc.src}" else ""} · ${tetraCommName(p.basic?.comm ?: 1)}$kind${if (p.basic?.e2ee == true) " · END-TO-END ENCRYPTED" else ""} · priority ${p.prio}")
+                grant = true
+            }
+            2, 14 -> {   // D-CONNECT (to the calling unit), D-CALL RESTORE
+                val k = call
+                if (k != null && at != null) { k.hz = at.first; k.slot = at.second }
+                if (k != null && p.basic != null) k.e2ee = p.basic!!.e2ee
+                if (k != null && p.newCallId >= 0) { t.calls.remove(p.callId); t.calls[p.newCallId] = k; text.append(" · now call ${p.newCallId}") }
+                if (k != null && p.type == 2 && mac.ssi > 0 && k.src == 0) k.src = mac.ssi
+                text.append(who())
+                grant = k != null
+            }
+            11, 13 -> {   // D-TX GRANTED, D-TX INTERRUPT: who talks now
+                val k = call
+                if (k != null && p.talker > 0 && (p.grant == 0 || p.grant == 3)) k.src = p.talker
+                if (k != null && at != null) { k.hz = at.first; k.slot = at.second }
+                if (k != null && p.encCtl == 1) k.e2ee = true
+                text.append("${who()} · ${tetraGrantName(p.grant)}${if (p.talker > 0) " · talker ${p.talker}" else ""}${if (p.encCtl == 1) " · END-TO-END ENCRYPTED" else ""}")
+                grant = k != null && (p.grant == 0 || p.grant == 3)
+            }
+            9 -> text.append("${who()} · transmission ceased")
+            4, 6 -> {   // D-DISCONNECT, D-RELEASE
+                text.append("${who()} · ${tetraDisconnectCause(p.cause)}")
+                val k = call
+                if (k != null && p.type == 6) { if (k.hz != 0L) calls.terminate(s.key, k.hz, k.slot, now); t.calls.remove(p.callId) }
+            }
+            8, 15 -> {   // D-STATUS, D-SDS-DATA
+                val x = p.sds
+                if (x != null) {
+                    val body = when (x.kind) { "text" -> "\"${x.text}\""; "status" -> "status ${x.status}"; else -> "${x.kind} ${x.hex}" }
+                    text.append(" · ${if (x.from > 0) "${x.from} → " else ""}${mac.ssi} · $body")
+                    val what = "${when (x.kind) { "text" -> "SDS text"; "status" -> "status"; else -> "SDS" }} $body"
+                    if (x.from > 0) tetraUnit(s.key, x.from, c, now, "$what to ${mac.ssi}", text.toString())
+                    if (mac.ssi > 0) tetraUnit(s.key, mac.ssi, c, now, "$what${if (x.from > 0) " from ${x.from}" else ""}", text.toString())
+                }
+            }
+            else -> text.append(who())
+        }
+        val k = call
+        if (k != null && grant) {
+            if (k.src != 0) tetraUnit(s.key, k.src, c, now, "call", text.toString(), if (k.group) k.tg else null)
+            val ch = if (at != null) "carrier ${mac.chan!!.carrier} TS${mac.chan.tn}" else "call ${p.callId}"
+            if (k.tg != 0 || k.hz != 0L) grant(s.key, GrantRow(now, now, s.key, if (k.group) "grant" else "u2u", k.tg, k.group, k.src, ch, k.hz, k.slot, false, false, k.e2ee, c.hz, ""), p.type != 7)
+        }
+        if (at != null) text.append(" · ${tetraChanText(c, mac)}")
+        addLog(LogRow(now, c.hz, "TETRA", p.name, "TETRA · $text", "", true))
+    }
+    /** Speech of a traffic slot: the call on that carrier and slot takes it (one the air named, or a new one that waits). */
+    private fun tetraVoice(c: Carrier, s: Sys, tn: Int, frames: List<IntArray>, now: Long) {
+        c.lastDecodeMs = now; c.frames++; if (c.role != "control") c.role = "voice"
+        // the call on this signal and slot, where the grant put it (the receiver may sit on a piece of the same signal)
+        val near = calls.calls.firstOrNull { it.kind == "call" && it.onAir && it.proto == "TETRA" && it.sys == s.key && it.slot == tn - 1 && abs(it.hz - c.hz) <= 13_000 }
+        val call = calls.voice(s.key, "TETRA", near?.hz ?: c.hz, tn - 1, 30L * frames.count { it.isNotEmpty() }, now)
+        calls.frames(call, frames)
+    }
+    /** A TETRA unit heard: what it did, with the group when there is one. */
+    private fun tetraUnit(sys: String, id: Int, c: Carrier, now: Long, kind: String, text: String, group: Int? = null) {
+        val key = "$sys/$id"
+        val u = units.getOrPut(key) { UnitRec(key, sys, id, now, now) }
+        u.lastMs = now; u.carriers.add(c.key)
+        if (group != null) { u.groups.add(group); u.tgCounts[group] = (u.tgCounts[group] ?: 0) + 1; tgFor(sys, group, now).members.add(id) }
+        if (kind == "call") u.grants++
+        u.reports.add(Report(now, c.hz, kind, "", true, text, c.levelDb))
+        if (u.reports.size > 60) u.reports.removeAt(0)
+        pending = true
+    }
+    /** What a TETRA system's cells broadcast and its MAC headers say about air interface encryption. */
+    private fun tetraSecurity(s: Sys): String {
+        val heard = carriers.values.any { it.sys == s.key && it.tetraCell != null }
+        val t = s.tetra ?: return if (heard) "CLEAR AIR INTERFACE" else ""
+        val cls = t.sec?.let { " · SECURITY CLASS ${if (it.class3) 3 else 2}" } ?: ""
+        if (t.aie && t.encSdus > 0) return "AIR INTERFACE ENCRYPTED$cls"
+        if (t.aie) return "AIR INTERFACE ENCRYPTION AVAILABLE$cls"
+        return if (heard) "CLEAR AIR INTERFACE" else ""
     }
     /** The scrambling seeds a Phase 2 channel may use: its own system first, then every P25 system and site heard. */
     private fun p2Seeds(c: Carrier): List<P2Seed> {
@@ -968,13 +1143,14 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     /** A grant, or an update of one already on the feed (the same talkgroup on the same channel within 5 s). */
     private fun grant(sys: String, g: GrantRow, update: Boolean) {
         if (g.kind != "datagrant") {
-            val p25 = sys.startsWith("P25")
-            val call = calls.grant(GrantIn(sys, if (p25) "P25" else "DMR", g.tg, g.group, g.src, g.hz, if (p25) (if (g.tdma) g.slot else 0) else g.slot, g.tdma, g.encrypted, g.emergency,
+            val p25 = sys.startsWith("P25"); val tetra = sys.startsWith("TETRA")
+            val call = calls.grant(GrantIn(sys, if (p25) "P25" else if (tetra) "TETRA" else "DMR", g.tg, g.group, g.src, g.hz, if (p25) (if (g.tdma) g.slot else 0) else g.slot, g.tdma, g.encrypted, g.emergency,
                 g.site, g.lpcn, g.chDerived), g.ms)
             // a voice channel inside the span is listened to from the grant on, not from the next channel assignment
             if (call != null && call.onAir && !call.muted && call.hz != 0L && rate > 0 && inSpan(call.hz)) {
                 val vc = carrierAt(call.hz.toDouble()); if (vc.role.isEmpty()) vc.role = "voice"; if (vc.sys.isEmpty()) vc.sys = sys
                 if (!chans.containsKey(vc.key)) { vc.lastAuditionMs = g.ms; open(vc, g.ms); vc.decoding = true }
+                if (tetra) chans[vc.key]?.let { ch -> if (ch.tetra == null) tetraOn(vc, ch) }
             }
         }
         val same = grants.firstOrNull { it.sys == sys && it.tg == g.tg && it.ch == g.ch && it.group == g.group && g.ms - it.lastMs < 5_000 }
@@ -1164,9 +1340,22 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                         x.secondary.map { ch -> (Tsbks.resolve(ch, tables)?.hz ?: 0L) to hx(ch, 4) }, x.time, ccs.firstOrNull { it.callsign.isNotEmpty() }?.callsign ?: "",
                         x.carriers.toList(), emptyList(), -1, emptyList(), tables.values.sortedBy { it.iden }, 0, x.lra, x.cls)
                 }
-                "TETRA" -> carriers.values.filter { it.sys == s.key && it.tetra != null }.map { c -> val t = c.tetra!!
-                    SiteRow("${s.key}/${c.key}", "color code ${t.colorCode}", -1, t.colorCode, -1, listOf(c.hz), c.lastMs, c.levelDb, emptyList(), emptyList(),
-                        "TS${t.timeslot} · frame ${t.frame} · multiframe ${t.multiframe}", "", listOf(c.key), emptyList(), -1, emptyList(), emptyList(), 0, -1, t.cellLoad) }
+                "TETRA" -> {
+                    // one site per cell (color code): its control carriers, and the traffic carriers heard or allocated
+                    val cells = LinkedHashMap<Int, ArrayList<Carrier>>()
+                    for (c in carriers.values) if (c.sys == s.key && (c.tetra != null || c.tetraCell != null)) cells.getOrPut(c.tetra?.colorCode ?: c.cc) { ArrayList() }.add(c)
+                    cells.map { (cc, cs) ->
+                        val info = cs.firstOrNull { it.tetraCell != null }?.tetraCell
+                        val sy = (cs.firstOrNull { it.tetra != null && it.role == "control" } ?: cs.firstOrNull { it.tetra != null })?.tetra
+                        val ctrl = cs.filter { it.role != "voice" }; val traffic = LinkedHashMap<Long, String>()
+                        for (c in cs) if (c.role == "voice") traffic[c.hz] = ""
+                        for ((n, hz) in s.tetra?.carriers ?: emptyMap<Int, Long>()) if (traffic.keys.none { abs(it - hz) < 3_200 } && ctrl.none { abs(it.hz - hz) < 3_200 }) traffic[hz] = "carrier $n"
+                        val unitIds = units.values.filter { u -> u.sys == s.key && cs.any { it.key in u.carriers } }.map { it.id }.toSet()
+                        SiteRow("${s.key}/$cc", if (info != null) "cell LA ${info.la}" else "color code $cc", -1, cc, -1, ctrl.map { it.hz }, cs.maxOf { it.lastMs }, cs.maxOf { it.levelDb },
+                            emptyList(), traffic.entries.sortedBy { it.key }.map { it.key to it.value }, if (sy != null) "TS${sy.timeslot} · frame ${sy.frame} · multiframe ${sy.multiframe}" else "", "",
+                            cs.map { it.key }, emptyList(), -1, emptyList(), emptyList(), unitIds.size, info?.la ?: -1, sy?.cellLoad ?: -1)
+                    }
+                }
                 "NXDN" -> carriers.values.filter { it.sys == s.key && it.nxdn != null }.map { c -> val x = c.nxdn!!
                     SiteRow("${s.key}/${x.site}", "site ${x.site}", -1, x.site, -1, listOf(c.hz), c.lastMs, c.levelDb, emptyList(), emptyList(),
                         "${c.cls} · control channel ${x.cc1}${if (x.cc2 != 0) " and ${x.cc2}" else ""} · ${x.adjacent} adjacent sites", "", listOf(c.key), emptyList(), -1, emptyList(), emptyList(), 0, -1, x.version) }
@@ -1187,7 +1376,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             SystemRow(s.key, s.proto, s.color, label, s.wacn, s.sysId, s.cc, s.fid, s.net, s.model, siteRows.firstOrNull { it.callsign.isNotEmpty() }?.callsign ?: "",
                 s.firstMs, s.lastMs, siteRows, s.idens.values.sortedBy { it.iden }, grants.count { it.sys == s.key }, units.values.count { it.sys == s.key },
                 tgs.values.count { it.sys == s.key }, s.derived || lpcns.isNotEmpty(), s.trunk, cwId, cwIdMs, cwIdHz, lpcns, s.heardHz.take(12),
-                units.values.any { it.sys == s.key && (it.lonLo >= 0 || it.fix != null) })
+                units.values.any { it.sys == s.key && (it.lonLo >= 0 || it.fix != null) }, if (s.proto == "TETRA") tetraSecurity(s) else "")
         }.sortedBy { it.firstMs }
         val unitRows = units.values.map { u ->
             val (lat, lon) = resolvePos(u); val (tr, off) = trailOf(u)
@@ -1199,7 +1388,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val carrierRows = carriers.values.map { it.row() }.sortedBy { it.hz }
         return FleetSnap(centerHz, rate, spanLo, spanHi, carrierRows, sysRows, unitRows, tgRows, grants.take(120).map { it.copy() },
             grants.count { now - it.ms < 60_000 }, blocks, chans.size, ref != null, calls.rows(), followTarget(),
-            listOf(CodecIds.IMBE, CodecIds.AMBE2).filter { hasCodec(it) }, calls.playing, calls.prefs.lock)
+            listOf(CodecIds.IMBE, CodecIds.AMBE2, CodecIds.TETRA).filter { hasCodec(it) }, calls.playing, calls.prefs.lock)
     }
     @Synchronized fun snapshot(): FleetSnap = buildSnapshot()
     /** The call a one-channel receiver should go to, outside the span: only one there is something to hear on. */
