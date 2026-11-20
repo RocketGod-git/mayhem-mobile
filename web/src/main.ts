@@ -4704,11 +4704,13 @@ function dispatchLock(l: DispatchLock | null): void {
   fleetDwell(); refreshFleet(true);
 }
 /**
- * Every two minutes, a look of 18 s at a band where a system with unit positions was heard and the span does not
- * reach, so its positions stay fresh; never while locked, and never while the call being heard is on the air.
+ * Every two minutes in AUTO, a look of 18 s at a band where a system with unit positions was heard and the span does not
+ * reach, so its positions stay fresh; never on a band the listener picked, never while locked, and never while the call
+ * being heard is on the air.
  */
 function dispatchVisitDue(s: FleetSnap, now: number): boolean {
-  if (fleetUi.lock || now - fleetUi.lastVisit < 120_000) return false;
+  // only AUTO leaves its band to check positions: a band the listener tapped holds, and LOCK never leaves its system
+  if (fleetUi.lock || fleetUi.band !== 'AUTO' || now - fleetUi.lastVisit < 120_000) return false;
   if (fleetUi.audioOn && s.calls.some(c => c.key === s.playing && c.onAir)) return false;
   // a look away only when nothing clear has played for a while
   if (fleetAuto && now - fleetAuto.lastClear < 15_000) return false;

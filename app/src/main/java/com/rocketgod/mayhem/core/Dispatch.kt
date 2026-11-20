@@ -200,11 +200,13 @@ object Dispatch {
         if (w != null) { _scan.value = sc.copy(idx = w.first); tune(sc.windows[w.first].hz) } else tune(l.hz)
     }
     /**
-     * Every two minutes, a look of 18 s at a band where a system with unit positions was heard and the span does not
-     * reach, so its positions stay fresh; never while locked, and never while the call being heard is on the air.
+     * Every two minutes in AUTO, a look of 18 s at a band where a system with unit positions was heard and the span does
+     * not reach, so its positions stay fresh; never on a band the listener picked, never while locked, and never while the
+     * call being heard is on the air.
      */
     private fun visitDue(s: FleetSnap, now: Long): Boolean {
-        if (_lock.value != null || now - lastVisit < 120_000) return false
+        // only AUTO leaves its band to check positions: a band the listener tapped holds, and LOCK never leaves its system
+        if (_lock.value != null || Apps.fleetBand.value != "AUTO" || now - lastVisit < 120_000) return false
         if (_audioOn.value && s.calls.any { it.key == s.playing && it.onAir }) return false
         // a look away only when nothing clear has played for a while
         val a = auto; if (a != null && now - a.lastClear < 15_000) return false

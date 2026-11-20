@@ -312,18 +312,31 @@ class NxdnFramer {
     /** Where the last frame read ended, and the last one that passed a check (a frame's voice counts on that grid). */
     private var lastFrame = -1_000_000_000; private var lastGood = -1_000_000_000
     /**
-     * Locked: a check of 12 bits or more passed (a CAC, a FACCH1, a SACCH superframe whole), or three frames in a row on
-     * one grid passed their SACCH or SCCH. Until then no voice is handed on: a receiver at the wrong symbol rate finds a
-     * frame sync now and then, and a 6-bit CRC passes one time in 64.
+     * Locked: a check of 12 bits or more passed (a CAC, a FACCH1), or a SACCH superframe came whole (its four quarters in
+     * order), or a Type-D SCCH went through INFO1 to INFO4 in order on one grid (or an idle repeater's site ID came three
+     * frames in a row). Until then no voice and no SACCH or SCCH field is handed on. A receiver at the wrong symbol rate
+     * finds a frame sync now and then, a 6-bit CRC passes one time in 64, and a transmitter repeating one frame that
+     * happens to pass a short check passes it every frame: the order of the structure fields is what it cannot fake.
      */
     var locked = false; private set
-    private var run = 0
+    private var scchNext = 0; private var siteRun = 0
+    /** Frame syncs on the 192-symbol grid of one of the last four frames' (an NXDN signal, whether or not anything on it decodes). */
+    var gridSyncs = 0; private set
+    private val recent = ArrayDeque<Int>(); private val onGridAt = ArrayDeque<Int>()
+    /** Steady: 15 or more of the last 25 frames (2 s at NXDN48) brought their sync on the grid. A tone or noise does not. */
+    val steady: Boolean get() = onGridAt.size >= 15
     fun push(s: Float) {
         hist[hp and 255] = s; hp++
         if (hp >= 10) {
             var c = 0.0; var a = 0.0
             for (k in 0 until 10) { val x = hist[(hp - 10 + k) and 255]; c += x * NXDN_FSW[k]; a += abs(x) }
-            if (a > 15 && c / (3 * a) > 0.85) { stats.fsw++; pending.addLast(hp + NXDN_BODY) }
+            if (a > 15 && c / (3 * a) > 0.85) {
+                stats.fsw++; pending.addLast(hp + NXDN_BODY)
+                // on the grid of a sync of the last four frames (a chance match inside a frame does not break it)
+                if (recent.any { p -> val g = hp - p; g >= NXDN_FRAME - 2 && g <= 4 * NXDN_FRAME + 2 && abs(g - NXDN_FRAME * Math.round(g.toDouble() / NXDN_FRAME).toInt()) <= 2 }) { gridSyncs++; onGridAt.addLast(hp) }
+                while (onGridAt.isNotEmpty() && hp - onGridAt.first() > 25 * NXDN_FRAME) onGridAt.removeFirst()
+                recent.addLast(hp); if (recent.size > 12) recent.removeFirst()
+            }
         }
         while (pending.isNotEmpty() && pending.first() <= hp) {
             val end = pending.removeFirst()
@@ -370,7 +383,14 @@ class NxdnFramer {
         val sc = nxdnSacchSoft(soft(v, 8, 30))
         var good = false
         val scch = sc.scch; val sacch = sc.sacch
-        if (rf == 3 && scch != null) { t.typeD = true; t.scch = nxdnScch(scch); stats.scchOk++; good = true }
+        if (rf == 3 && scch != null) {
+            val x = nxdnScch(scch); t.typeD = true; t.scch = x; stats.scchOk++; good = true
+            // INFO1, INFO2, INFO3, INFO4 in turn, a frame apart (TS 1-E 6.3); an idle repeater's site ID three frames running
+            val nearby = end - lastGood in NXDN_FRAME - 2..NXDN_FRAME + 2
+            scchNext = if (x.info == 1) 2 else if (x.info == scchNext && nearby) scchNext + 1 else 0
+            siteRun = if (x.kind == "site") (if (nearby || siteRun == 0) siteRun + 1 else 1) else 0
+            if (scchNext == 5 || siteRun >= 3) locked = true
+        }
         else if (sacch != null) {
             stats.sacchOk++; good = true
             val sr = nxField(sacch, 0, 8); val q = 3 - (sr shr 6); t.ran = sr and 0x3f
@@ -400,9 +420,9 @@ class NxdnFramer {
             }
         }
         // voice in a frame where nothing passed a check counts only on the grid of the frames that did
-        if (!good && !onGrid) { run = 0; return false }
-        if (good) { run = if (onGrid) run + 1 else 1; lastGood = end; if (run >= 3) locked = true }
-        if (!locked) { t.halves[0] = null; t.halves[1] = null }
+        if (!good && !onGrid) return false
+        if (good) lastGood = end
+        if (!locked) { t.halves[0] = null; t.halves[1] = null; t.ran = -1; t.scch = null }
         stats.voice += t.halves.count { it != null }
         onTraffic(t)
         return true

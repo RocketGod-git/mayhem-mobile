@@ -286,16 +286,28 @@ export class NxdnFramer {
   /** Where the last frame read ended, and the last one that passed a check (a frame's voice counts on that grid). */
   private lastFrame = -1e9; private lastGood = -1e9;
   /**
-   * Locked: a check of 12 bits or more passed (a CAC, a FACCH1, a SACCH superframe whole), or three frames in a row on
-   * one grid passed their SACCH or SCCH. Until then no voice is handed on: a receiver at the wrong symbol rate finds a
-   * frame sync now and then, and a 6-bit CRC passes one time in 64.
+   * Locked: a check of 12 bits or more passed (a CAC, a FACCH1), or a SACCH superframe came whole (its four quarters in
+   * order), or a Type-D SCCH went through INFO1 to INFO4 in order on one grid. Until then no voice and no SACCH or SCCH
+   * field is handed on. A receiver at the wrong symbol rate finds a frame sync now and then, a 6-bit CRC passes one time
+   * in 64, and a transmitter repeating one frame that happens to pass a short check passes it every frame: the order of
+   * the structure fields is what a repeated frame cannot fake.
    */
-  locked = false; private run = 0;
+  locked = false; private scchNext = 0; private siteRun = 0;
+  /** Frame syncs on the 192-symbol grid of the one before (an NXDN signal, whether or not anything on it decodes). */
+  gridSyncs = 0; private readonly recent: number[] = []; private readonly onGridAt: number[] = [];
+  /** Steady: 15 or more of the last 25 frames (2 s at NXDN48) brought their sync on the grid. A tone or noise does not. */
+  get steady(): boolean { return this.onGridAt.length >= 15; }
   push(s: number): void {
     this.hist[this.hp & 255] = s; this.hp++;
     if (this.hp >= 10) {
       let c = 0, a = 0; for (let k = 0; k < 10; k++) { const x = this.hist[(this.hp - 10 + k) & 255]; c += x * FSW[k]; a += Math.abs(x); }
-      if (a > 15 && c / (3 * a) > 0.85) { this.stats.fsw++; this.pending.push(this.hp + BODY); }
+      if (a > 15 && c / (3 * a) > 0.85) {
+        this.stats.fsw++; this.pending.push(this.hp + BODY);
+        // on the grid of a sync of the last four frames (a chance match inside a frame does not break it)
+        if (this.recent.some(p => { const g = this.hp - p; return g >= FRAME - 2 && g <= 4 * FRAME + 2 && Math.abs(g - FRAME * Math.round(g / FRAME)) <= 2; })) { this.gridSyncs++; this.onGridAt.push(this.hp); }
+        while (this.onGridAt.length && this.hp - this.onGridAt[0] > 25 * FRAME) this.onGridAt.shift();
+        this.recent.push(this.hp); if (this.recent.length > 12) this.recent.shift();
+      }
     }
     while (this.pending.length && this.pending[0] <= this.hp) {
       const end = this.pending.shift()!;
@@ -342,7 +354,15 @@ export class NxdnFramer {
     const t: NxdnTraffic = { rf, fn, opt, dir, ran: -1, typeD: false, halves: [null, null], msgs: [], scch: null };
     const sc = nxdnSacch(this.soft(v, 8, 30), true);
     let good = false;
-    if (rf === 3 && sc.scch) { t.typeD = true; t.scch = nxdnScch(sc.scch); this.stats.scchOk++; good = true; }
+    if (rf === 3 && sc.scch) {
+      t.typeD = true; t.scch = nxdnScch(sc.scch); this.stats.scchOk++; good = true;
+      // INFO1, INFO2, INFO3, INFO4 in turn, a frame apart (TS 1-E 6.3)
+      const nearby = end - this.lastGood <= FRAME + 2 && end - this.lastGood >= FRAME - 2;
+      this.scchNext = t.scch.info === 1 ? 2 : t.scch.info === this.scchNext && nearby ? this.scchNext + 1 : 0;
+      // an idle repeater sends its site ID (INFO4, ID 2041) frame after frame: three in a row on one grid will do
+      this.siteRun = t.scch.kind === 'site' && (nearby || this.siteRun === 0) ? this.siteRun + 1 : t.scch.kind === 'site' ? 1 : 0;
+      if (this.scchNext === 5 || this.siteRun >= 3) this.locked = true;
+    }
     else if (sc.sacch) {
       this.stats.sacchOk++; good = true;
       const sr = field(sc.sacch, 0, 8), q = 3 - (sr >> 6); t.ran = sr & 0x3f;
@@ -370,9 +390,9 @@ export class NxdnFramer {
       }
     }
     // voice in a frame where nothing passed a check counts only on the grid of the frames that did
-    if (!good && !onGrid) { this.run = 0; return false; }
-    if (good) { this.run = onGrid ? this.run + 1 : 1; this.lastGood = end; if (this.run >= 3) this.locked = true; }
-    if (!this.locked) t.halves = [null, null];
+    if (!good && !onGrid) return false;
+    if (good) this.lastGood = end;
+    if (!this.locked) { t.halves = [null, null]; t.ran = -1; t.scch = null; }
     this.stats.voice += t.halves.filter(Boolean).length;
     this.onTraffic(t);
     return true;

@@ -94,7 +94,7 @@ export interface KnownUnit { sys: string; id: number; lat: number; lon: number; 
 export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[] }
 const KNOWN_UNITS = 3000;
 
-interface Carrier extends CarrierRow { tetra?: TetraSync; tetraCell?: TetraSysinfo; nxdn?: NxdnSite & { baud: number }; nxdnAdj?: Map<string, NxdnAdj>; nxdnRan?: number;
+interface Carrier extends CarrierRow { tetra?: TetraSync; tetraCell?: TetraSysinfo; nxdn?: NxdnSite & { baud: number }; nxdnAdj?: Map<string, NxdnAdj>; nxdnRan?: number; nxdnRanN?: number;
   /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
   nxdnD?: { src: number; dst: number; group: boolean; cipher: number; keyId: number; ms: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number; p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
 interface Site {
@@ -143,6 +143,13 @@ class Chan {
   p2: P2Rx | null = null; readonly fs: number;
   /** A TETRA receiver on its own wider down-converter (a TETRA carrier is 25 kHz wide), for a carrier nothing else read. */
   tetra: { rx: TetraRx; ddc: Ddc | null; oi: Float32Array; oq: Float32Array } | null = null;
+  /** NXDN frame syncs on their grid seen so far, and the callback when more come (the baud they came at). */
+  private nxdnGrid = 0;
+  onNxdnSync: (baud: number) => void = () => undefined;
+  nxdnSyncCheck(): void {
+    if (!this.nxdn) return;
+    for (const r of this.nxdn) { if (r.framer.steady && r.framer.gridSyncs > this.nxdnGrid + 2) { this.nxdnGrid = r.framer.gridSyncs; this.onNxdnSync(r.baud); } }
+  }
   /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
   nxdn: NxdnRx[] | null = null;
   /** The TETRA MAC on the TETRA receiver's bursts. */
@@ -232,6 +239,7 @@ class Chan {
     this.rx.push(zi, zq, m);
     this.p2?.push(zi, zq, m);
     if (this.nxdn) for (const r of this.nxdn) if (r.fs === this.fs) r.push(zi, zq, m);
+    this.nxdnSyncCheck();
     if (this.p25.clean + this.dmr.bursts !== s0) { this.lastSyncMs = now; this.quietSince = now; this.cwOn = false; }
     // a CW ID comes once the digital signal has stopped (a voice channel's frames are 180 ms apart); the reader starts
     // fresh then, so the digital signal's levels do not hide the tone
@@ -325,12 +333,12 @@ export class FleetProcessor implements IqProcessor {
       if (Math.abs(k - N / 2) < dc && db < 20) continue;
       let sw = 0, sp = 0; for (let j = k - half; j <= k + half; j++) { sw += p[j]; sp += p[j] * j; }
       const hz = this.centerHz + (sp / sw - N / 2) * bin, key = gridKey(hz);
-      seen.add(key);
-      const fresh = !this.carriers.has(key), c = this.carrierAt(Math.abs(hz - key) < 1_500 ? key : Math.round(hz / 100) * 100);
+      const n0 = this.carriers.size, c = this.carrierAt(Math.abs(hz - key) < 1_500 ? key : Math.round(hz / 100) * 100), fresh = this.carriers.size > n0;
+      seen.add(c.key);
       if (fresh) { c.levelDb = db; c.peakDb = db; }
       if (now - c.lastMs < 2_000) c.onMs += now - c.lastMs;
       c.lastMs = now; c.levelDb = Math.round(db * 10) / 10; c.peakDb = Math.max(c.peakDb, c.levelDb);
-      const ch = this.chans.get(key); if (ch) ch.hz = hz;
+      const ch = this.chans.get(c.key); if (ch) ch.hz = hz;
     }
     for (const c of this.carriers.values()) if (!seen.has(c.key) && this.inSpan(c.hz) && now - c.lastMs > 1_000) { const ch = this.chans.get(c.key); if (ch) ch.cw.end(); }
     this.pending = true;
@@ -380,6 +388,7 @@ export class FleetProcessor implements IqProcessor {
     ch.dmr.onVoice = (slot, d, n) => this.dmrVoice(c, ch, slot, d, n);
     ch.p25v.onVoice = bits => this.p25Voice(c, bits, ch);
     ch.onFill = (lane, n) => this.fill(c, lane, n);
+    ch.onNxdnSync = baud => this.nxdnSeen.set(c.key, { ms: this.now(), baud });
     ch.p25v.onLog = () => this.p25Lc(c, ch);
     ch.p25v.onEs = es => this.p25Sec(c, 'LDU2', es);
     ch.p25v.onHdu = hd => this.p25Sec(c, 'HDU', hd);
@@ -432,6 +441,9 @@ export class FleetProcessor implements IqProcessor {
   }
   /** Grants of the last moments, waiting for the voice that says which carrier their channel is (TS 1-A gives no plan). */
   private nxdnPending: { sys: string; ch: number; src: number; dst: number; group: boolean; ms: number }[] = [];
+  /** Carriers whose NXDN frame syncs keep their grid: NXDN, decoded or not, so never DMR. */
+  private readonly nxdnSeen = new Map<number, { ms: number; baud: number }>();
+  private nxdnLately(c: Carrier, now: number): boolean { const x = this.nxdnSeen.get(c.key); return !!x && now - x.ms < 5_000; }
   private nxdnLog(c: Carrier, name: string, text: string, hex: string): void { this.addLog({ ms: this.now(), hz: c.hz, proto: 'NXDN', name, text: `${c.cls} · ${text}`, hex, ok: true }); }
   /** Where an NXDN channel is: heard, from the plan, or a guess used only where a carrier is live in the span. */
   private nxdnHz(s: Sys, ch: number, now: number): { hz: number; derived: boolean } {
@@ -497,8 +509,9 @@ export class FleetProcessor implements IqProcessor {
     const now = this.now();
     c.cls = baud === 2400 ? 'NXDN48' : 'NXDN96'; c.lastDecodeMs = now; c.frames++;
     if (c.role !== 'control') c.role = 'voice';
-    if (t.ran >= 0) c.nxdnRan = t.ran;
-    if (t.rf === 2 && t.ran >= 0) {
+    // a conventional system is named by its RAN once two SACCHs agree on it
+    if (t.ran >= 0) { c.nxdnRanN = c.nxdnRan === t.ran ? (c.nxdnRanN ?? 0) + 1 : 1; c.nxdnRan = t.ran; }
+    if (t.rf === 2 && t.ran >= 0 && (c.nxdnRanN ?? 0) >= 2) {
       const key = `NXDN CONV RAN ${t.ran}`;
       const s = this.nxdnSys(key, now, { model: 'CONVENTIONAL', wacn: -1, sysId: t.ran, trunk: 'CONVENTIONAL', baud });
       s.heardHz.add(c.key); c.sys = key;
@@ -803,6 +816,7 @@ export class FleetProcessor implements IqProcessor {
     else if (ch.rx.eye > 1.3 && ch.rx.envCv < 0.15) c.cls = 'UNKNOWN 4FSK';
     else if (ch.rx.envCv > 0.18) c.cls = 'UNKNOWN LINEAR';
     else c.cls = 'ANALOG FM';
+    const nx = this.nxdnSeen.get(c.key); if (nx && now - nx.ms < 5_000) c.cls = nx.baud === 2400 ? 'NXDN48' : 'NXDN96';
   }
 
   // ------------------------------------------------------------------------------------------------ P25
@@ -902,6 +916,8 @@ export class FleetProcessor implements IqProcessor {
   // ------------------------------------------------------------------------------------------------ DMR
   private dmrBurst(c: Carrier, _ch: Chan | null, e: DmrEvent): void {
     const now = this.now(), b = e.burst;
+    // an NXDN carrier's 2400 or 4800 symbols can pass for a DMR burst now and then
+    if (this.nxdnLately(c, now)) return;
     if (b.dt > 10) return;
     if (c.tdma || this.now() - (this.p2Seen.get(c.key) ?? -1e12) < 5_000) return;
     c.frames++; if (b.stErrs === 0 || c.cc < 0) c.cc = b.cc; c.cls = 'DMR'; c.lastDecodeMs = now; this.dmrSeen.set(c.key, now);
@@ -1013,6 +1029,7 @@ export class FleetProcessor implements IqProcessor {
     // and a voice sync counts on a carrier that has sent real DMR bursts lately, or whose voice superframes keep
     // their 360 ms grid on their own (a call joined late, with no data burst heard)
     if (now - (this.p25Seen.get(c.key) ?? -1e12) < 2_000) return;
+    if (this.nxdnLately(c, now)) return;
     // a P25 Phase 2 channel (a grant said TDMA, or its syncs were heard) is never read as DMR
     if (c.tdma || now - (this.p2Seen.get(c.key) ?? -1e12) < 5_000) return;
     // nor is a carrier next to one (a Phase 2 signal the carrier finder split, or its neighbor 12.5 kHz away)
@@ -1401,7 +1418,7 @@ export class FleetProcessor implements IqProcessor {
     });
     const tgs: TgRow[] = [...this.tgs.values()].map(t => ({ key: t.key, sys: t.sys, tg: t.tg, firstMs: t.firstMs, lastMs: t.lastMs, grants: t.grants, recent: t.recent.filter(x => now - x < 600_000), members: [...t.members].slice(0, 200), history: t.history.slice(0, 12) }));
     const carriers: CarrierRow[] = [...this.carriers.values()].map(c => {
-      const { lastAuditionMs: _a, p25: _p, dmrSys: _d, tables: _t, unitIds: _u, hdr: _h, nxdnAdj: _n, nxdnD: _x, ...row } = c;
+      const { lastAuditionMs: _a, p25: _p, dmrSys: _d, tables: _t, unitIds: _u, hdr: _h, nxdnAdj: _n, nxdnD: _x, nxdnRanN: _r, ...row } = c;
       return { ...row };
     }).sort((a, b) => a.hz - b.hz);
     return { type: 'fleet', centerHz: this.centerHz, rate: this.rate, spanLo: this.spanLo, spanHi: this.spanHi, carriers, systems, units, tgs, grants: this.grants.slice(0, 120),
@@ -1424,6 +1441,8 @@ export class FleetProcessor implements IqProcessor {
   carrierAt(hz: number): Carrier {
     const key = gridKey(hz), now = this.now();
     let c = this.carriers.get(key);
+    // a carrier off the 6.25 kHz grid sits near the boundary of two keys: the one already heard within 1.5 kHz is it
+    if (!c) for (const x of this.carriers.values()) if (Math.abs(x.hz - hz) < 1_500) { c = x; break; }
     if (!c) {
       c = { key, hz, levelDb: 0, peakDb: 0, firstMs: now, lastMs: now, onMs: 0, heardMs: 0, cls: '', role: '', sys: '', nac: -1, cc: -1, frames: 0, blocks: 0, crcOk: 0, lastDecodeMs: 0,
         envCv: 0, eye: 0, decoding: false, callsign: '', callsignMs: 0, tdma: false, lcn: '', lastAuditionMs: 0, p25: { sys: -1, wacn: -1, rfss: -1, site: -1 }, dmrSys: '', tables: new Map(), unitIds: new Map() };

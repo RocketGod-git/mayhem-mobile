@@ -140,7 +140,7 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     var p25Sys = -1; var p25Wacn = -1; var p25Rfss = -1; var p25Site = -1
     var dmrSys = ""; val tables = LinkedHashMap<Int, Iden>(); val unitIds = LinkedHashMap<Int, Long>()
     var tetra: TetraSync? = null; var tetraCell: TetraSysinfo? = null; var nxdn: NxdnSite? = null; var nxdnBaud = 0
-    var nxdnAdj: LinkedHashMap<String, NxdnAdj>? = null; var nxdnRan = -1; var nxdnService: Int? = null
+    var nxdnAdj: LinkedHashMap<String, NxdnAdj>? = null; var nxdnRan = -1; var nxdnRanN = 0; var nxdnService: Int? = null
     /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
     var nxdnD: NxdnD? = null
     fun row() = CarrierRow(key, hz, levelDb, peakDb, firstMs, lastMs, onMs, heardMs, cls, role, sys, nac, cc, frames, blocks, crcOk, lastDecodeMs, envCv, eye,
@@ -229,6 +229,10 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
      * each (at the channel's 24 kS/s the symbol timing slips now and then) and its outer deviation is not clipped.
      */
     var nxdnDdc: DdcBuf? = null
+    /** NXDN frame syncs on their grid seen so far, and the callback when more come (the baud they came at). */
+    private var nxdnGrid = 0
+    var onNxdnSync: (baud: Int) -> Unit = {}
+    fun nxdnSyncCheck() { nxdn?.let { for (r in it) if (r.framer.steady && r.framer.gridSyncs > nxdnGrid + 2) { nxdnGrid = r.framer.gridSyncs; onNxdnSync(r.baud) } } }
     private var center = center; private val rate = if (baseband > 0) 0 else rate
     /** Fed a recorded channel at its own rate (no down-converter, so no DC spike of the receiver's). */
     val baseband: Boolean get() = rate == 0
@@ -309,6 +313,7 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         rx.push(zi, zq, m)
         p2?.push(zi, zq, m)
         nxdn?.let { for (r in it) if (r.fs == fs) r.push(zi, zq, m) }
+        nxdnSyncCheck()
         if (p25.clean + dmr.bursts != s0) { lastSyncMs = now; quietSince = now; cwOn = false }
         // a CW ID comes once the digital signal has stopped (a voice channel's frames are 180 ms apart); the reader starts
         // fresh then, so the digital signal's levels do not hide the tone
@@ -344,6 +349,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     private val dmrSeen = HashMap<Long, Long>()
     /** When each carrier last sent a Phase 2 sync pair: DMR syncs read off a Phase 2 signal are not DMR. */
     private val p2Seen = HashMap<Long, Long>()
+    /** Carriers whose NXDN frame syncs keep their grid: NXDN, decoded or not, so never DMR (when, and at which baud). */
+    private val nxdnSeen = HashMap<Long, Pair<Long, Int>>()
+    private fun nxdnLately(c: Carrier, now: Long): Boolean { val x = nxdnSeen[c.key]; return x != null && now - x.first < 5_000 }
     /** DMR grants of the last moments, waiting for the voice link control that says which carrier their channel is. */
     private var pendingGrants = ArrayList<PendingGrant>()
     /** Per carrier: the last EMB that passed its check on a voice burst with no DMR data heard, for [dmrVoice]. */
@@ -456,13 +464,14 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             if (abs(k - nn / 2) < dc && db < 20) continue
             var sw = 0.0; var sp = 0.0; for (j in max(0, k - half)..min(nn - 1, k + half)) { sw += p[j]; sp += p[j].toDouble() * j }
             val hz = centerHz + (sp / sw - nn / 2) * bin; val key = gridKey(hz)
-            seen.add(key)
-            val fresh = !carriers.containsKey(key)
+            val n0 = carriers.size
             val c = carrierAt(if (abs(hz - key) < 1_500) key.toDouble() else Math.round(hz / 100) * 100.0)
+            val fresh = carriers.size > n0
+            seen.add(c.key)
             if (fresh) { c.levelDb = db; c.peakDb = db }
             if (now - c.lastMs < 2_000) c.onMs += now - c.lastMs
             c.lastMs = now; c.levelDb = Math.round(db * 10) / 10.0; c.peakDb = max(c.peakDb, c.levelDb)
-            chans[key]?.hz = hz
+            chans[c.key]?.hz = hz
         }
         for (c in carriers.values) if (c.key !in seen && inSpan(c.hz) && now - c.lastMs > 1_000) chans[c.key]?.cw?.end()
         pending = true
@@ -514,6 +523,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         ch.dmr.onVoice = { slot, d, n -> dmrVoice(c, ch, slot, d, n) }
         ch.p25v.onVoice = { bits -> p25Voice(c, bits.copyOf(), ch) }
         ch.onFill = { lane, n -> fill(c, lane, n) }
+        ch.onNxdnSync = { baud -> nxdnSeen[c.key] = now() to baud }
         ch.p25v.onLog = { p25Lc(c, ch) }
         ch.p25v.onEs = { es -> p25Sec(c, "LDU2", es.algId, es.keyId, es.mi) }
         ch.p25v.onHdu = { hd -> p25Sec(c, "HDU", hd.algId, hd.keyId, hd.mi) }
@@ -637,8 +647,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val now = now()
         c.cls = if (baud == 2400) "NXDN48" else "NXDN96"; c.lastDecodeMs = now; c.frames++
         if (c.role != "control") c.role = "voice"
-        if (t.ran >= 0) c.nxdnRan = t.ran
-        if (t.rf == 2 && t.ran >= 0) {
+        // a conventional system is named by its RAN once two SACCHs agree on it
+        if (t.ran >= 0) { c.nxdnRanN = if (c.nxdnRan == t.ran) c.nxdnRanN + 1 else 1; c.nxdnRan = t.ran }
+        if (t.rf == 2 && t.ran >= 0 && c.nxdnRanN >= 2) {
             val key = "NXDN CONV RAN ${t.ran}"
             val s = nxdnSys(key, now, "CONVENTIONAL", -1, t.ran, "CONVENTIONAL", baud)
             s.heardHz.add(c.key); c.sys = key
@@ -980,6 +991,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             ch.rx.envCv > 0.18 -> "UNKNOWN LINEAR"
             else -> "ANALOG FM"
         }
+        nxdnSeen[c.key]?.let { (ms, baud) -> if (now - ms < 5_000) c.cls = if (baud == 2400) "NXDN48" else "NXDN96" }
     }
 
     // ------------------------------------------------------------------------------------------------ P25
@@ -1086,6 +1098,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     private val DATA_TYPES = arrayOf("PI HEADER", "VOICE HEADER", "TERMINATOR", "CSBK", "MBC HEADER", "MBC CONTINUATION", "DATA HEADER", "RATE 1/2 DATA", "RATE 3/4 DATA", "IDLE", "RATE 1 DATA")
     private fun dmrBurst(c: Carrier, e: DmrEvent) {
         val now = now(); val b = e.burst
+        // an NXDN carrier's 2400 or 4800 symbols can pass for a DMR burst now and then
+        if (nxdnLately(c, now)) return
         if (b.dt > 10) return
         if (c.tdma || now - (p2Seen[c.key] ?: Long.MIN_VALUE / 2) < 5_000) return
         c.frames++; if (b.stErrs == 0 || c.cc < 0) c.cc = b.cc; c.cls = "DMR"; c.lastDecodeMs = now; dmrSeen[c.key] = now
@@ -1171,6 +1185,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val now = now(); val never = Long.MIN_VALUE / 2
         // a P25 channel's voice frames can look like a DMR voice sync now and then
         if (now - (p25Seen[c.key] ?: never) < 2_000) return
+        if (nxdnLately(c, now)) return
         // a P25 Phase 2 channel (a grant said TDMA, or its syncs were heard) is never read as DMR
         if (c.tdma || now - (p2Seen[c.key] ?: never) < 5_000) return
         // nor is a carrier next to one (a Phase 2 signal the carrier finder split, or its neighbor 12.5 kHz away)
@@ -1609,7 +1624,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     /** A carrier at [hz] as if found in the span (recorded blocks are replayed through it). */
     private fun carrierAt(hz: Double): Carrier {
         val key = gridKey(hz)
-        return carriers.getOrPut(key) { Carrier(key, Math.round(hz), now()) }
+        carriers[key]?.let { return it }
+        // a carrier off the 6.25 kHz grid sits near the boundary of two keys: the one already heard within 1.5 kHz is it
+        carriers.values.firstOrNull { abs(it.hz - hz) < 1_500 }?.let { return it }
+        return Carrier(key, Math.round(hz), now()).also { carriers[key] = it }
     }
     /** Marks the carrier at [hz] as a Phase 2 TDMA channel of [sys] (what a grant would say; for recorded channels). */
     @Synchronized fun markTdma(hz: Long, sys: String = "") { val c = carrierAt(hz.toDouble()); c.tdma = true; if (sys.isNotEmpty()) c.sys = sys; chans[c.key]?.let { p2On(c, it) } }
