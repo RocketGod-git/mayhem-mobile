@@ -1730,7 +1730,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
 
         /** The bands Dispatch scans: id, label, low and high edge (Hz). */
         val BANDS = listOf(
-            Band("VHF", "VHF 150–174", 150_000_000L, 174_000_000L), Band("UHF", "UHF 450–470", 450_000_000L, 470_000_000L),
+            Band("VHF", "VHF 150–174", 150_000_000L, 174_000_000L), Band("TETRA", "TETRA 380–430", 380_000_000L, 430_000_000L), Band("UHF", "UHF 450–470", 450_000_000L, 470_000_000L),
             Band("TBAND", "T-BAND 470–512", 470_000_000L, 512_000_000L), Band("700", "700 769–775", 769_000_000L, 775_000_000L),
             Band("800", "800 851–869", 851_000_000L, 869_000_000L), Band("900", "900 935–941", 935_000_000L, 941_000_000L),
         )
