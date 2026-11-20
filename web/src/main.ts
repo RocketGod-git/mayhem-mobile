@@ -5945,7 +5945,7 @@ function hdExport(): void {
 }
 // ---- Cell: LTE cells and emergency alerts (WEA/CMAS, ETWS) from the broadcast channels, receive only ----------------
 const CELL_KEY = 'mm.cell.v1';
-const CELL_HACKRF_RATE = 15_360_000, CELL_RTL_RATE = 1_920_000;
+const CELL_HACKRF_RATE = 15_360_000, CELL_WIDE_RATE = 20_000_000, CELL_RTL_RATE = 1_920_000;
 const CELL_WIDE = window.matchMedia('(min-width: 1000px)');
 CELL_WIDE.addEventListener('change', () => { if (state.app === 'cell') { const v = q<HTMLElement>('main#view'); if (v) renderCell(v); } });
 type CellView = 'alerts' | 'cells' | 'neighbors' | 'log';
@@ -5959,6 +5959,8 @@ const cellUi = {
 };
 const cellRtl = () => !!radio && radio.kind === 'rtlsdr';
 const cellRate = () => cellRtl() ? CELL_RTL_RATE : CELL_HACKRF_RATE;
+/** A 20 MHz carrier (100 RBs) does not fit 15.36 MS/s: on a HackRF it is read at 20 MS/s, which the decoder resamples to 30.72 MS/s. */
+const cellRateFor = (hz: number) => radio?.kind === 'hackrf' && (cellUi.snap?.cells ?? []).some(c => c.hz === hz && c.nrb > 75) ? CELL_WIDE_RATE : cellRate();
 const cellMhz = (hz: number) => (hz / 1e6).toFixed(1);
 const cellAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} h ago` : `${Math.floor(ms / 86_400_000)} d ago`;
 const cellTime = (ms: number) => { const d = new Date(ms); return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toTimeString().slice(0, 8)}`; };
@@ -5969,12 +5971,12 @@ const cellBandAt = (hz: number) => CELL_BANDS.find(b => hz >= b.lo - 2e6 && hz <
 function cellCapability(): [string, 'ok' | 'amber' | ''] {
   if (!radio) return ['NO RADIO · a HackRF reads cells, SIBs and alerts; an RTL-SDR reads cells and their MIB', ''];
   if (cellRtl()) return ['RTL-SDR · 1.92 MS/s · cell search and MIB from the center 1.08 MHz · SIBs and alerts need the whole carrier: a HackRF', 'amber'];
-  return ['HACKRF · 15.36 MS/s · cells, MIB, every SIB and the alerts of carriers up to 15 MHz (20 MHz carriers: MIB only)', 'ok'];
+  return [`HACKRF · ${state.rate === CELL_WIDE_RATE ? '20 MS/s' : '15.36 MS/s'} · cells, MIB, every SIB and the alerts of carriers up to 20 MHz (20 MS/s for 20 MHz carriers)`, 'ok'];
 }
 
 function cellOpen(): void {
   const sc = cellUi.scan;
-  if (sc.phase === 'stay' && sc.stayHz) configure('NONE', sc.stayHz, cellRate(), 32, 40, true, 'cell');
+  if (sc.phase === 'stay' && sc.stayHz) configure('NONE', sc.stayHz, cellRateFor(sc.stayHz), 32, 40, true, 'cell');
   else { cellSurvey(true); configure('NONE', sc.windows[0], cellRate(), 32, 40, true, 'cell'); }
   if (!cellUi.restored) {
     cellUi.restored = true;
@@ -5993,7 +5995,7 @@ function cellSurvey(first = false): void {
   sc.wi = 0; sc.phase = 'survey'; sc.profile = newProfile(b.lo, b.hi); sc.cands = []; sc.ci = 0;
   if (!first) cellGo(sc.windows[0], 700);
 }
-function cellGo(hz: number, ms: number): void { const sc = cellUi.scan; sc.until = Date.now() + ms; sc.tunedMs = Date.now(); tune(hz); refreshCell(true); }
+function cellGo(hz: number, ms: number): void { const sc = cellUi.scan; sc.until = Date.now() + ms; sc.tunedMs = Date.now(); const r = cellRateFor(hz); if (state.rate !== r) setRate(r); tune(hz); refreshCell(true); }
 function cellNextBand(): void { const sc = cellUi.scan; sc.bandIdx = (sc.bandIdx + 1) % cellBands().length; cellSurvey(); }
 function cellNextCandidate(): void {
   const sc = cellUi.scan;
@@ -6005,7 +6007,7 @@ function cellNextCandidate(): void {
 function cellTick(): void {
   clearTimeout(cellUi.scanTimer);
   if (state.app !== 'cell') return;
-  const sc = cellUi.scan, s = cellUi.snap, now = Date.now(), here = s && s.centerHz === state.freq && s.lastBlockMs > sc.tunedMs ? s : null;
+  const sc = cellUi.scan, s = cellUi.snap, now = Date.now(), here = s && s.centerHz === state.freq && s.rate === state.rate && s.lastBlockMs > sc.tunedMs ? s : null;
   if (sc.phase === 'survey') {
     if (here?.profile && sc.profile) stitch(sc.profile, here.profile.lo, here.profile.step, here.profile.db);
     if (now >= sc.until && (here || now - sc.tunedMs > 3000)) {
@@ -6024,7 +6026,11 @@ function cellTick(): void {
     // a cell found up to 300 kHz off the tuned center counts: retune to its own center and read it there
     const near = here?.cells.find(c => Math.abs(c.hz - state.freq) <= 300_000 && c.mib && now - c.mibMs < 3000);
     if (near && near.hz !== state.freq) cellGo(near.hz, 2500);
-    else if (near) { sc.phase = 'dwell'; sc.until = now + (cellRtl() ? 2500 : 13_000); }
+    else if (near) {
+      // a 20 MHz carrier: the HackRF goes to 20 MS/s for its SIBs (the cell is read again at the new rate)
+      if (cellRateFor(near.hz) !== state.rate) { setRate(cellRateFor(near.hz)); sc.tunedMs = now; }
+      sc.phase = 'dwell'; sc.until = now + (cellRtl() ? 2500 : 13_000);
+    }
     else if (now >= sc.until && (here || now - sc.tunedMs > 4000)) cellNextCandidate();
   } else if (sc.phase === 'dwell') {
     const cells = here?.cells.filter(c => c.hz === state.freq && now - c.lastMs < 15_000) ?? [];
@@ -6058,7 +6064,7 @@ function renderCell(view: HTMLElement): void {
       ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
       <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
       <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
-      <div class="note about">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 MHz carrier), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
+      <div class="note about">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 or 15 MHz carrier, 20 MS/s for a 20 MHz one, which the app resamples to the LTE rate), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-clband]', view).forEach(b => b.onclick = () => cellSetBand(b.dataset.clband!));

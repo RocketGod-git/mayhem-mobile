@@ -88,6 +88,62 @@ fun decimate(xr: FloatArray, xi: FloatArray, fs: Int): Pair<FloatArray, FloatArr
 /** Delay of the decimator output: output o is centered on input sample o * D + delayIn. */
 fun decimDelay(fs: Int): Int { val dd = Math.round(fs.toDouble() / LOW_FS).toInt(); return if (dd <= 1) 0 else 8 * dd }
 
+/**
+ * Rational resampler by L/M for rates that are not a multiple of 1.92 MS/s (a HackRF at 20 MS/s). Output m is the
+ * signal at input position m * M / L, with no delay: a Kaiser-windowed sinc with cutoff fc (cycles per input sample),
+ * one 2H-tap phase per L, each phase normalized to unit DC gain. Input outside the buffer counts as zero.
+ */
+class Rational(val l: Int, val m: Int, val h: Int, fc: Double, beta: Double) {
+    private val taps: FloatArray
+    init {
+        val t2 = 2 * h; val tab = FloatArray(l * t2)
+        fun i0(x: Double): Double { var s = 1.0; var t = 1.0; for (k in 1 until 30) { val q = x / (2 * k); t *= q * q; s += t }; return s }
+        val ib = i0(beta)
+        for (r in 0 until l) {
+            var sum = 0.0; val v = DoubleArray(t2)
+            for (k in 0 until t2) {
+                val t = k - h + 1 - r.toDouble() / l; val u = t / h; val w = if (abs(u) >= 1) 0.0 else i0(beta * sqrt(1 - u * u)) / ib
+                v[k] = (if (t == 0.0) 2 * fc else sin(2 * Math.PI * fc * t) / (Math.PI * t)) * w; sum += v[k]
+            }
+            for (k in 0 until t2) tab[r * t2 + k] = (v[k] / sum).toFloat()
+        }
+        taps = tab
+    }
+    /** Outputs m0 .. m0+n-1 into (or, oi). */
+    fun run(xr: FloatArray, xi: FloatArray, m0: Int, n: Int, or: FloatArray, oi: FloatArray) {
+        val t2 = 2 * h; val len = xr.size
+        for (j in 0 until n) {
+            val num = (m0 + j).toLong() * m; val q = Math.floorDiv(num, l.toLong()); val r = (num - q * l).toInt(); val b = (q - h + 1).toInt(); val hb = r * t2
+            var ar = 0f; var ai = 0f
+            if (b >= 0 && b + t2 <= len) for (k in 0 until t2) { val c = taps[hb + k]; ar += c * xr[b + k]; ai += c * xi[b + k] }
+            else for (k in 0 until t2) { val x = b + k; if (x < 0 || x >= len) continue; val c = taps[hb + k]; ar += c * xr[x]; ai += c * xi[x] }
+            or[j] = ar; oi[j] = ai
+        }
+    }
+    /** Number of outputs from m = 0 whose taps all fall before the end of an input of len samples. */
+    fun count(len: Int): Int = max(0, ((len - h).toLong() * l / m).toInt())
+}
+private tailrec fun gcd(a: Long, b: Long): Long = if (b == 0L) a else gcd(b, a % b)
+/** The LTE rate a rate that is not a multiple of 1.92 MS/s is read at, with its two resamplers. */
+class LteResamplers(val vr: Int, val up: Rational, val down: Rational)
+/**
+ * For a rate that is not a multiple of 1.92 MS/s: the LTE rate it is resampled to (the smallest 1.92 MS/s x 2^k at or
+ * above it, up to 30.72 MS/s), the resampler there for the OFDM symbols and the one down to 1.92 MS/s for cell search.
+ * Null when the rate is a multiple of 1.92 MS/s (no resampling) or has no small rational ratio.
+ */
+fun lteResamplers(fs: Int): LteResamplers? {
+    if (fs % LOW_FS == 0 || fs < 2 * LOW_FS) return null
+    var vr = LOW_FS
+    while (vr < fs && vr < 30_720_000) vr *= 2
+    if (vr < fs) return null
+    val g1 = gcd(vr.toLong(), fs.toLong()); val g2 = gcd(LOW_FS.toLong(), fs.toLong())
+    val l1 = (vr / g1).toInt(); val m1 = (fs / g1).toInt(); val l2 = (LOW_FS / g2).toInt(); val m2 = (fs / g2).toInt()
+    if (l1 > 4096 || l2 > 4096) return null
+    // up: keep everything to the input Nyquist (an LTE carrier fills 90 %), stop its images; down: the central 1.08 MHz
+    // with the same cutoff and span as decimate()
+    return LteResamplers(vr, Rational(l1, m1, 16, 0.5, 6.0), Rational(l2, m2, ceil(8.0 * fs / LOW_FS).toInt(), 0.62e6 / fs, 7.5))
+}
+
 /** CFO in Hz from the CP repetition over the whole buffer: x[n] x*[n + N] (unambiguous +-7.5 kHz). */
 fun cpCfo(xr: FloatArray, xi: FloatArray, fs: Int): Pair<Double, Double> {
     val nn = Math.round(fs / 15_000.0).toInt()

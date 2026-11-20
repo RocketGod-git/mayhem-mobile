@@ -93,6 +93,8 @@ object Apps {
     }
     /** AIS and APRS: how far above the channel the radio sits, clear of the DC spike at the center of the span. */
     const val NARROW_SHIFT = 250_000L
+    /** A HackRF reads a 20 MHz LTE carrier at this rate (the Cell decoder resamples it to 30.72 MS/s). */
+    const val CELL_WIDE_RATE = 20_000_000
     val aisLog = PacketLog(); val ais = AisDecoder(aisLog)
     val aprsLog = PacketLog(); val aprs = AprsDecoder(aprsLog)
     /** Meters: ERT and the mesh networks on the same samples, into one log (the app keeps ERT's name in settings). */
@@ -249,6 +251,9 @@ object Apps {
     fun cellRtl() = Radio.kind.value == Radio.Kind.RTLSDR
     /** 15.36 MS/s holds a whole 10 or 15 MHz carrier; a radio that can't sample it gets the central 1.08 MHz at 1.92. */
     fun cellRate(): Int = if (Radio.canSample(Radio.limits, 15_360_000)) 15_360_000 else 1_920_000
+    /** A 20 MHz carrier (100 RBs) does not fit 15.36 MS/s: on a HackRF it is read at 20 MS/s, which the decoder resamples to 30.72 MS/s. */
+    fun cellRateFor(hz: Long): Int =
+        if (Radio.kind.value == Radio.Kind.HACKRF && Radio.canSample(Radio.limits, CELL_WIDE_RATE) && cell.snap.value?.cells.orEmpty().any { it.hz == hz && it.nrb > 75 }) CELL_WIDE_RATE else cellRate()
     /** The bands the scan walks: every one the radio tunes on AUTO, else the one chosen. */
     fun cellBands(): List<com.rocketgod.mayhem.core.cell.BandPreset> {
         val all = com.rocketgod.mayhem.core.cell.CELL_BANDS
@@ -266,6 +271,8 @@ object Apps {
     private fun cellGo(hz: Long, ms: Long) {
         val now = System.currentTimeMillis()
         _cellScan.value = _cellScan.value.copy(until = now + ms, tunedMs = now)
+        val r = cellRateFor(hz)
+        if (SdrEngine.rateHz.value != r) SdrEngine.setRate(r)
         SdrEngine.tune(hz)
     }
     private fun cellNextBand() { cellSurvey(bandIdx = (_cellScan.value.bandIdx + 1) % cellBands().size) }
@@ -279,7 +286,7 @@ object Apps {
     fun cellTick(now: Long) {
         if (playing() != MayhemApp.CELL) return
         val sc = _cellScan.value; val s = cell.snap.value; val freq = SdrEngine.freqHz.value
-        val here = if (s != null && s.centerHz == freq && s.lastBlockMs > sc.tunedMs) s else null
+        val here = if (s != null && s.centerHz == freq && s.rate == SdrEngine.rateHz.value && s.lastBlockMs > sc.tunedMs) s else null
         when (sc.phase) {
             "survey" -> {
                 val p = cellProfile; val hp = here?.profile
@@ -301,7 +308,12 @@ object Apps {
                 // a cell found up to 300 kHz off the tuned center counts: retune to its own center and read it there
                 val near = here?.cells?.firstOrNull { kotlin.math.abs(it.hz - freq) <= 300_000 && it.mib != null && now - it.mibMs < 3000 }
                 if (near != null && near.hz != freq) cellGo(near.hz, 2500)
-                else if (near != null) _cellScan.value = sc.copy(phase = "dwell", until = now + if (cellRate() < 15_360_000) 2500 else 13_000)
+                else if (near != null) {
+                    // a 20 MHz carrier: the HackRF goes to 20 MS/s for its SIBs (the cell is read again at the new rate)
+                    val r = cellRateFor(near.hz)
+                    if (r != SdrEngine.rateHz.value) SdrEngine.setRate(r)
+                    _cellScan.value = sc.copy(phase = "dwell", until = now + if (cellRate() < 15_360_000) 2500 else 13_000, tunedMs = if (r != (here?.rate ?: r)) now else sc.tunedMs)
+                }
                 else if (now >= sc.until && (here != null || now - sc.tunedMs > 4000)) cellNextCandidate()
             }
             "dwell" -> {
@@ -328,7 +340,7 @@ object Apps {
     private fun startCell() {
         cell.centerOf = { SdrEngine.freqHz.value }
         val sc = _cellScan.value
-        if (sc.phase == "stay" && sc.stayHz > 0) SdrEngine.configure(SdrEngine.Mode.NONE, sc.stayHz, cellRate(), 32, 40, true, cell)
+        if (sc.phase == "stay" && sc.stayHz > 0) SdrEngine.configure(SdrEngine.Mode.NONE, sc.stayHz, cellRateFor(sc.stayHz), 32, 40, true, cell)
         else { cellSurvey(first = true); SdrEngine.configure(SdrEngine.Mode.NONE, _cellScan.value.windows[0], cellRate(), 32, 40, true, cell) }
         val f = cellFile ?: return
         if (!cellRestored) kotlin.concurrent.thread(isDaemon = true, name = "cell-restore") {
