@@ -144,3 +144,53 @@ export function trackSvg(trail: [number, number, number][], opts: { others?: [nu
 export const encShare = (calls: Pick<CallRow, 'encrypted' | 'kind'>[]) => { const v = calls.filter(c => c.kind === 'call'); return [v.filter(c => c.encrypted).length, v.length] as [number, number]; };
 /** How long ago, short: 'now', '42 s', '7 min', '3 h', '2 d'. */
 export const agoShort = (ms: number) => ms < 5_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min` : ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)} h` : `${Math.floor(ms / 86_400_000)} d`;
+
+/** A talkgroup as a tile on the Dispatch grid: who it is, how lately it was heard, whether it is encrypted, followed. */
+export interface TgTile {
+  /** The talkgroup's key (`sys/tg`), the one the HOLD (follow) preference and a call's talkgroup key use. */
+  key: string; sys: string; tg: number;
+  /** On the air now, and when it was last heard (a grant or a call). */
+  live: boolean; lastMs: number;
+  /** 'CLEAR', 'ENCRYPTED', a share like '40% ENCRYPTED', or '' with no call heard yet. */
+  sec: string; calls: number; grants: number;
+  followed: boolean; muted: boolean; emergency: boolean;
+}
+/**
+ * The talkgroup tiles, from the talkgroups the control channels granted and the group calls heard (a conventional DMR
+ * or NXDN talkgroup has calls and no grants). The followed one leads, then the ones on the air, then the most lately
+ * heard; [max] keeps the grid short.
+ */
+export function tgTiles(tgs: { key: string; sys: string; tg: number; lastMs: number; grants: number }[],
+  calls: Pick<CallRow, 'sys' | 'tg' | 'group' | 'onAir' | 'encrypted' | 'kind' | 'emergency' | 'startMs' | 'endMs'>[],
+  prefs: { hold: string; mute: string[] }, now: number, max = 200): TgTile[] {
+  const by = new Map<string, TgTile>();
+  const tile = (sys: string, tg: number) => {
+    const key = `${sys}/${tg}`;
+    let t = by.get(key);
+    if (!t) { t = { key, sys, tg, live: false, lastMs: 0, sec: '', calls: 0, grants: 0, followed: prefs.hold === key, muted: prefs.mute.includes(key), emergency: false }; by.set(key, t); }
+    return t;
+  };
+  for (const g of tgs) { const t = tile(g.sys, g.tg); t.grants = g.grants; t.lastMs = Math.max(t.lastMs, g.lastMs); }
+  const enc = new Map<string, [number, number]>();
+  for (const c of calls) {
+    if (c.kind !== 'call' || !c.group || !c.tg) continue;
+    const t = tile(c.sys, c.tg);
+    t.calls++; t.live ||= c.onAir; t.lastMs = Math.max(t.lastMs, c.onAir ? now : c.endMs || c.startMs);
+    if (c.emergency && (c.onAir || now - c.endMs < EMERGENCY_PIN_MS)) t.emergency = true;
+    const e = enc.get(t.key) ?? [0, 0]; e[1]++; if (c.encrypted) e[0]++; enc.set(t.key, e);
+  }
+  for (const [k, [e, n]] of enc) by.get(k)!.sec = e === 0 ? 'CLEAR' : e === n ? 'ENCRYPTED' : `${Math.round(100 * e / n)}% ENCRYPTED`;
+  // a followed talkgroup stays on the grid even before it is heard again
+  if (prefs.hold && !by.has(prefs.hold)) { const i = prefs.hold.lastIndexOf('/'), tg = Number(prefs.hold.slice(i + 1)); if (i > 0 && tg > 0) tile(prefs.hold.slice(0, i), tg); }
+  const rank = (t: TgTile) => t.followed ? 0 : t.emergency ? 1 : t.live ? 2 : 3;
+  return [...by.values()].sort((a, b) => rank(a) - rank(b) || b.lastMs - a.lastMs || a.key.localeCompare(b.key)).slice(0, max);
+}
+/** What a tap on the talkgroup grid does to the follow (the HOLD preference): ALL ('') hears every talkgroup again,
+ *  a tile follows that talkgroup, and a tap on the followed tile goes back to ALL. */
+export const followTap = (hold: string, key: string) => !key || hold === key ? '' : key;
+/** What the listen line says: every talkgroup, or only the followed one (and on which system lock). */
+export function listenText(hold: string, lock: { label: string } | null): string {
+  const tg = hold ? `TG ${hold.slice(hold.lastIndexOf('/') + 1)}` : '';
+  if (tg) return `only ${tg} is heard${lock ? `, locked on ${lock.label}` : ''}`;
+  return lock ? `every talkgroup on ${lock.label}, first to talk is heard` : 'every talkgroup, first to talk is heard';
+}

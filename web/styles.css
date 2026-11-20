@@ -2938,3 +2938,51 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .view.js8.j8wide .j8-chat .j8-thread { flex: 1; }
 .view.js8.j8wide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
 .view.js8.j8wide .face .lscale, .view.js8.j8wide .face .health { display: none; }
+
+/* Dispatch, one scroll per column: the wide column scrolls as a whole (the live call stays pinned on top), and nothing
+   inside it, or inside the phone page, scrolls on its own. */
+.view.fleet.flwide > .controls { overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+.view.fleet.flwide .fl-stage { flex: none; min-height: 0; margin-top: 6px; }
+.view.fleet.flwide .fl-cards, .view.fleet.flwide .fl-calls, .view.fleet.flwide .fl-grants, .view.fleet.flwide .fl-freqs { flex: none; }
+.view.fleet.flwide #fl-log { flex: none; }
+.view.fleet:not(.fleetfull) .fl-cards, .view.fleet:not(.fleetfull) .fl-calls, .view.fleet:not(.fleetfull) .fl-grants, .view.fleet:not(.fleetfull) .fl-freqs,
+.view.fleet .fl-onair, .view.fleet .flc-reps, .view.fleet:not(.fleetfull) #fl-log .list { max-height: none; overflow: visible; }
+.view.fleet .fl-stage > .mt-detail { position: static; align-self: stretch; margin: 0 0 8px; max-height: none; overflow: visible; }
+.view.fleet.flwide .fl-tabs { position: sticky; top: 52px; z-index: 4; background: var(--paper); padding: 4px 0; margin: 0; }
+
+/* What is heard: ALL, or the one talkgroup followed (only it plays), and the system lock beside it. */
+.fl-listen { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-width: 0; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }
+.fl-listen small { font-size: 8px; letter-spacing: 1.5px; color: var(--muted); font-weight: 800; }
+.fl-listen b { font-size: 13px; letter-spacing: 1px; color: var(--ink); white-space: nowrap; }
+.fl-listen span { flex: 1; min-width: 0; font-size: 10px; color: var(--muted); }
+.fl-listen .chip { flex: none; padding: 4px 9px; font-size: 10px; }
+.fl-listen.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.fl-listen.on small { color: var(--accent); }
+.fl-mode .fl-lockbtn { flex: none; padding: 6px 10px; font-size: 10px; }
+
+/* The talkgroup grid: small tiles; a tap follows one, ALL hears them all. */
+.fl-tilegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 6px; }
+.fl-tile { --sys: var(--accent); position: relative; display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 7px 9px 7px 11px; border-radius: 10px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--sys); user-select: none; }
+.fl-tile:hover { border-color: color-mix(in srgb, var(--sys) 60%, var(--line)); }
+.fl-tile b { font-size: 14px; font-weight: 900; letter-spacing: 0.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 18px; }
+.fl-tile small { font-size: 8px; letter-spacing: 1px; color: var(--muted); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-tile span { font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.fl-tile span i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); flex: none; }
+.fl-tile em { font-style: normal; font-size: 8px; font-weight: 800; letter-spacing: 1px; color: var(--ok); }
+.fl-tile em.enc { color: var(--accent2); }
+.fl-tile u { text-decoration: none; font-size: 8px; font-weight: 900; letter-spacing: 1.5px; color: var(--accent); }
+.fl-tile .fl-ti { position: absolute; top: 5px; right: 5px; width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 10px; font-weight: 800; cursor: pointer; }
+.fl-tile .fl-ti:hover { color: var(--ink); border-color: var(--muted); }
+.fl-tile.live { border-color: color-mix(in srgb, var(--ok) 60%, var(--line)); }
+.fl-tile.live span { color: var(--ok); font-weight: 800; }
+.fl-tile.live span i { background: var(--ok); animation: flcpulse 1s ease-in-out infinite; }
+.fl-tile.emerg { border-color: var(--danger); box-shadow: inset 3px 0 0 var(--danger); }
+.fl-tile.muted { opacity: 0.5; }
+.fl-tile.fol { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); box-shadow: inset 3px 0 0 var(--accent), 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent); }
+.fl-tile.all b { color: var(--accent); }
+.fl-tile.all { box-shadow: inset 3px 0 0 var(--muted); }
+.fl-tile.all.fol { box-shadow: inset 3px 0 0 var(--accent), 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent); }
+.fl-tgs[hidden] { display: none; }
+.view.fleet:not(.flwide) .fl-tilegrid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+.fl-tile.all span { white-space: normal; }
