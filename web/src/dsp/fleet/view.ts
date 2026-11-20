@@ -11,6 +11,8 @@ export const P25_ALGS: Record<number, string> = {
   0x9f: 'DES-XL', 0xa0: 'DVI-XL', 0xa1: 'DVP-XL', 0xaa: 'ADP (RC4)',
 };
 const hx = (v: number, w: number) => v.toString(16).toUpperCase().padStart(w, '0');
+/** NXDN cipher types (TS 1-A Table 6.5-24). */
+const NXDN_CIPHER_NAMES = ['CLEAR', 'SCRAMBLE', 'DES', 'AES'];
 export const algName = (id: number) => id < 0 ? '' : P25_ALGS[id] ?? `ALGID 0x${hx(id, 2)}`;
 
 /** The call's security in words: 'CLEAR', 'ENCRYPTED' with the algorithm and key when heard, or '' when unknown. */
@@ -19,6 +21,8 @@ export function secText(c: Pick<CallRow, 'encrypted' | 'sec' | 'algId' | 'keyId'
     const parts = ['ENCRYPTED'];
     // DMR algorithm IDs have no public table: shown by number
     if (c.proto === 'DMR') { if (c.pi && c.algId >= 0) parts.push(`ALGID 0x${hx(c.algId, 2)}`, `KEY ${c.keyId}`); else if (c.pi) parts.push('PRIVACY HEADER'); }
+    // NXDN: the cipher type of the VCALL (TS 1-A 6.5.27) and its 6-bit key ID
+    else if (c.proto === 'NXDN') { if (c.algId > 0) parts.push(NXDN_CIPHER_NAMES[c.algId] ?? `CIPHER ${c.algId}`); if (c.keyId > 0) parts.push(`KEY ${c.keyId}`); }
     else {
       if (c.algId >= 0 && c.algId !== 0x80) parts.push(algName(c.algId));
       if (c.keyId > 0) parts.push(`KEY 0x${hx(c.keyId, 4)}`);
@@ -31,7 +35,7 @@ export function secText(c: Pick<CallRow, 'encrypted' | 'sec' | 'algId' | 'keyId'
 export const SEC_FROM: Record<string, string> = {
   grant: 'grant service options', LDU1: 'voice link control', LDU2: 'encryption sync', HDU: 'call header', LC: 'voice link control',
   EMB: 'voice burst privacy bit', PI: 'privacy header', assumed: 'nothing on the air marked it encrypted',
-  MAC: 'Phase 2 push to talk', ESS: 'Phase 2 encryption sync', history: 'earlier calls of this talkgroup were encrypted, and no push to talk said otherwise',
+  VCALL: 'voice call message', SCCH: 'Type-D signaling channel', MAC: 'Phase 2 push to talk', ESS: 'Phase 2 encryption sync', history: 'earlier calls of this talkgroup were encrypted, and no push to talk said otherwise',
 };
 
 const R_MI = 3958.8;

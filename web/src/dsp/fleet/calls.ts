@@ -13,9 +13,12 @@ export interface CallPos { lat: number; lon: number; unit: number; ms: number; v
 export interface Lock { sys: string; site: string; label: string; hz: number }
 export type CallSec = 'unknown' | 'clear' | 'enc';
 /** The air interfaces calls come from. */
-export type CallProto = 'P25' | 'DMR' | 'TETRA';
-/** The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 for DMR and Phase 2, the TETRA ACELP codec for TETRA. */
-export const codecOf = (proto: CallProto, tdma: boolean): CodecId => proto === 'TETRA' ? 'tetra' : proto === 'P25' && !tdma ? 'imbe' : 'ambe2';
+export type CallProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN';
+/**
+ * The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 half rate for DMR, Phase 2 and NXDN, the TETRA ACELP codec for
+ * TETRA. NXDN's EFR (its 9600 bps full rate) is the IMBE frame: [efr].
+ */
+export const codecOf = (proto: CallProto, tdma: boolean, efr = false): CodecId => proto === 'TETRA' ? 'tetra' : (proto === 'P25' && !tdma) || (proto === 'NXDN' && efr) ? 'imbe' : 'ambe2';
 export interface CallRow {
   key: string; sys: string; proto: CallProto; tg: number; group: boolean; src: number; srcs: number[]; hz: number; slot: number; tdma: boolean;
   encrypted: boolean; emergency: boolean; startMs: number; lastMs: number; endMs: number; onAir: boolean;
@@ -122,7 +125,7 @@ export class CallTracker {
   }
 
   /** A voice grant (or grant update) on the control channel. */
-  grant(g: { sys: string; proto: CallProto; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string; lpcn?: number; chDerived?: boolean }, now = this.now()): Call | null {
+  grant(g: { sys: string; proto: CallProto; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string; lpcn?: number; chDerived?: boolean; efr?: boolean }, now = this.now()): Call | null {
     if (!g.tg && !g.hz) return null;
     let c = this.calls.find(x => x.kind === 'call' && x.onAir && x.sys === g.sys && x.tg === g.tg && x.group === g.group && (!x.hz || !g.hz || gridKey(x.hz) === gridKey(g.hz)) && (x.slot === g.slot || !x.hz || !g.hz));
     if (!c && g.hz) {
@@ -132,7 +135,7 @@ export class CallTracker {
     }
     // grant updates trail a call for a moment after its terminator: they do not open it again
     if (!c && this.calls.some(x => x.kind === 'call' && !x.onAir && x.end === 'terminator' && now - x.endMs < TRAIL_MS && x.sys === g.sys && x.tg === g.tg && (!g.hz || !x.hz || gridKey(x.hz) === gridKey(g.hz)))) return null;
-    const codec = codecOf(g.proto, g.tdma);
+    const codec = codecOf(g.proto, g.tdma, g.efr);
     if (!c) c = this.create({ ...g, codec }, now);
     c.tg = g.tg || c.tg; c.group = g.group; c.sys = g.sys || c.sys; if (g.hz) { c.hz = g.hz; c.slot = g.slot; } c.tdma = g.tdma; c.codec = codec;
     if (g.lpcn !== undefined && g.lpcn >= 0) c.lpcn = g.lpcn;
@@ -168,7 +171,7 @@ export class CallTracker {
     if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: codecOf(proto, tdma), tg: lc.dst, group: lc.group }, now);
     c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
     if (sys && !c.sys) c.sys = sys;
-    if (!tdma) this.security(c, { enc: lc.privacy, from: proto === 'P25' ? 'LDU1' : 'LC' });
+    if (!tdma && proto !== 'NXDN') this.security(c, { enc: lc.privacy, from: proto === 'P25' ? 'LDU1' : 'LC' });
     c.lastMs = now; c.voiceAt = Math.max(c.voiceAt, now);
     this.label(c);
     return c;
@@ -193,6 +196,8 @@ export class CallTracker {
     else if (s.from === 'EMB') said.emb = s.enc ? 1 : (said.emb === 1 ? 1 : 0);
     else if (s.from === 'history') said.histEnc = true;
     else if (s.from === 'AIE') said.aie = true;
+    // NXDN: the cipher type of a VCALL (SACCH or FACCH1, CRC checked) or of a Type-D INFO1 (SCCH, CRC checked)
+    else if (s.from === 'VCALL' || s.from === 'SCCH') { said.lc = s.enc ? 1 : (said.lc === 1 ? 1 : 0); said.from = s.from; if (s.enc) { if (s.algId !== undefined) c.algId = s.algId; if (s.keyId !== undefined) c.keyId = s.keyId; } }
     let sec: CallSec = 'unknown', from = '';
     if (c.proto === 'P25') {
       const last = said.syncs.length ? said.syncs[said.syncs.length - 1] : -1;
@@ -209,6 +214,10 @@ export class CallTracker {
       if (said.grant === 1 || said.aie) { sec = 'enc'; from = said.aie ? 'AIE' : 'grant'; }
       else if (said.grant === 0) { sec = 'clear'; from = 'grant'; }
       c.protectedHint = false;
+    } else if (c.proto === 'NXDN') {
+      // a cipher type other than 00 is encrypted (scramble, DES, AES); 00 says clear (TS 1-A 6.5.27)
+      if (said.lc === 1) { sec = 'enc'; from = said.from; } else if (said.lc === 0) { sec = 'clear'; from = said.from; }
+      c.protectedHint = false;
     } else {
       if (said.lc === 1 || said.pi || said.emb === 1) { sec = 'enc'; from = said.pi ? 'PI' : said.lc === 1 ? 'LC' : 'EMB'; }
       // an EMB privacy bit of 0 does not make a call clear: Motorola's privacy leaves it 0, the LC's service options say it
@@ -221,6 +230,8 @@ export class CallTracker {
     if (sec === 'enc') { c.held = []; c.wait = []; if (this.playing === c.key) { this.playing = ''; this.onEnd?.(c); } }
     else if (sec === 'clear' && was !== 'clear') this.release(c);
   }
+  /** The call's vocoder, before any of its frames were decoded (an NXDN call that turns out to be EFR). */
+  setCodec(c: CallRow, codec: CodecId): void { const x = c as Call; if (x.codec !== codec && !x.codecInst) { x.codec = codec; x.held = []; } }
   /** Security of the call on the air on a channel, if there is one. */
   securityAt(sys: string, hz: number, slot: number, s: { enc: boolean; from: string; algId?: number; keyId?: number; mi?: string; pi?: string }): Call | undefined {
     const c = this.find(sys, hz, slot); if (c) this.security(c, s); return c;

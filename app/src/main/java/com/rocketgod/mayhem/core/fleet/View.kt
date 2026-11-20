@@ -28,6 +28,8 @@ object DispatchView {
             val parts = arrayListOf("ENCRYPTED")
             // DMR algorithm IDs have no public table: shown by number
             if (c.proto == "DMR") { if (c.pi.isNotEmpty() && c.algId >= 0) { parts.add("ALGID 0x${hx(c.algId, 2)}"); parts.add("KEY ${c.keyId}") } else if (c.pi.isNotEmpty()) parts.add("PRIVACY HEADER") }
+            // NXDN: the cipher type of the VCALL (TS 1-A 6.5.27) and its 6-bit key ID
+            else if (c.proto == "NXDN") { if (c.algId > 0) parts.add(NXDN_CIPHERS.getOrNull(c.algId) ?: "CIPHER ${c.algId}"); if (c.keyId > 0) parts.add("KEY ${c.keyId}") }
             else {
                 if (c.algId >= 0 && c.algId != 0x80) parts.add(algName(c.algId))
                 if (c.keyId > 0) parts.add("KEY 0x${hx(c.keyId, 4)}")
@@ -40,7 +42,7 @@ object DispatchView {
     val SEC_FROM: Map<String, String> = mapOf(
         "grant" to "grant service options", "LDU1" to "voice link control", "LDU2" to "encryption sync", "HDU" to "call header", "LC" to "voice link control",
         "EMB" to "voice burst privacy bit", "PI" to "privacy header", "assumed" to "nothing on the air marked it encrypted",
-        "MAC" to "Phase 2 push to talk", "ESS" to "Phase 2 encryption sync", "history" to "earlier calls of this talkgroup were encrypted, and no push to talk said otherwise",
+        "VCALL" to "voice call message", "SCCH" to "Type-D signaling channel", "MAC" to "Phase 2 push to talk", "ESS" to "Phase 2 encryption sync", "history" to "earlier calls of this talkgroup were encrypted, and no push to talk said otherwise",
     )
 
     private const val R_MI = 3958.8
