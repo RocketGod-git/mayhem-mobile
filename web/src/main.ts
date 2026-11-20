@@ -85,9 +85,9 @@ const APPS: AppDef[] = [
   { id: 'lora', title: 'Mesh', blurb: 'LoRa · Meshtastic · MeshCore', cat: 'Receive' },
   { id: 'adsb', title: 'Flights', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
   { id: 'uat', title: 'Flight UAT', blurb: 'UAT 978 · weather · small planes', cat: 'Receive' },
-  { id: 'acars', title: 'Flight Messages', blurb: 'ACARS · VDL2', cat: 'Receive' },
+  { id: 'acars', title: 'Flight Msgs', blurb: 'ACARS · VDL2', cat: 'Receive' },
   // VDL2 has no tile or bar key of its own: it is the 136.975 band of Flight Messages (see MERGED_INTO)
-  { id: 'vdl2', title: 'Flight Messages', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
+  { id: 'vdl2', title: 'Flight Msgs', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'EOT · PTC', cat: 'Receive' },
   { id: 'ais', title: 'Ships', blurb: 'AIS · 162 MHz', cat: 'Receive' },
   { id: 'cell', title: 'Cell', blurb: 'LTE alerts · cell info', cat: 'Receive' },

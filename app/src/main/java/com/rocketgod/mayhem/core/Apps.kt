@@ -30,9 +30,9 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     LORA("Mesh", "LoRa · Meshtastic · MeshCore", "Receive"),
     ADSB("Flights", "ADS-B · 1090 MHz", "Receive"),
     UAT("Flight UAT", "UAT 978 · weather · small planes", "Receive"),
-    ACARS("Flight Messages", "ACARS · VDL2", "Receive"),
+    ACARS("Flight Msgs", "ACARS · VDL2", "Receive"),
     // no tile or bar key of its own: the 136.975 band of Flight Messages (see barKey)
-    VDL2("Flight Messages", "VDL Mode 2 · 136.975 MHz", "Receive"),
+    VDL2("Flight Msgs", "VDL Mode 2 · 136.975 MHz", "Receive"),
     TRAINS("Trains", "EOT · PTC", "Receive"),
     AIS("Ships", "AIS · 162 MHz", "Receive"),
     CELL("Cell", "LTE alerts · cell info", "Receive"),
