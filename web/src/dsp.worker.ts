@@ -15,7 +15,7 @@ import { LoraHub } from './dsp/lora/hub.js';
 import { setLocalChannels, type LocalChannel } from './dsp/lora/plan.js';
 import { POOL_WORKER_NAME, WorkerPool, startPoolWorker } from './dsp/lora/pool.js';
 import { PocsagDecoder } from './dsp/pocsag.js';
-import { FlexDecoder } from './dsp/flex.js';
+import { PagerSingle } from './dsp/pagersingle.js';
 import { PagerHunter } from './dsp/pagerhunt.js';
 import { SweepProcessor } from './dsp/sweep.js';
 import { TpmsDecoder } from './dsp/tpms.js';
@@ -81,15 +81,8 @@ const adsb = new AdsbDecoder(emit);
 const ais = new AisDecoder(emit);
 const aprs = new AprsDecoder(emit);
 const pocsag = new PocsagDecoder(emit);
-const flex = new FlexDecoder(emit);
-/** Pager RX: FLEX and POCSAG side by side on the same discriminator by default (what PDW does), or just one. */
-let pagerWhich: 'flex' | 'pocsag' | 'both' = 'both';
-const pager: IqProcessor = {
-  wantsFm: true,
-  reset() { pocsag.reset(); flex.reset(); },
-  onIq() {},
-  onFm(sm, n, r) { if (pagerWhich !== 'pocsag') flex.onFm(sm, n, r); if (pagerWhich !== 'flex') pocsag.onFm(sm, n, r); },
-};
+/** Pager SINGLE: the tuned channel into FLEX (with ReFLEX) and POCSAG. */
+const pager = new PagerSingle(emit);
 /** The pager app's MULTI: up to four channels across the span at once, the heard one through the speaker. */
 const hunter = new PagerHunter(emit);
 let huntPhase = 0;
@@ -436,7 +429,7 @@ self.onmessage = (e: MessageEvent) => {
     // HD Radio AUTO is looking across the band at a wide rate: its decoder rests until the look is over
     case 'hdLook': hdApp.paused = demodHold = !!m.on; break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
-    case 'pager': pagerWhich = m.which; pocsag.reset(); flex.reset(); break;
+    case 'pager': pager.select(m.which); break;
     case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;
     case 'ismFamilies': ism.weather = !!m.weather; ism.remotes = !!m.remotes; ism.cars = !!m.cars; break;
     // Every list screen's CLEAR: whichever decoder is running forgets its table, if it keeps one.

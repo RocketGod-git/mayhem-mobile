@@ -163,7 +163,11 @@ export class FlexDecoder implements IqProcessor {
       const pat = this.lockBuf ^ LOCK_PATTERN;
       if ((pat & LOCK_MASK) === 0n || ((~pat) & LOCK_MASK) === 0n) { this.locked = 1; this.lockBuf = 0n; }
     }
-    if (++this.timeout > DEMOD_TIMEOUT) this.locked = 0;
+    // No crossing for a while means the carrier is gone, except inside a frame's data: there, words of all zeros (or
+    // all ones) are sent as one steady tone for as long as a block lasts, 256 symbols at 1600 baud. Dropping the lock
+    // there lost every page whose last word closed a block (an alpha page of 8, 16 or 24 words, 21 to 23 characters
+    // and so on). The frame's own length and its idle words end the data instead.
+    if (++this.timeout > DEMOD_TIMEOUT && this.st !== St.DATA) this.locked = 0;
   }
 
   private buildSymbol(sampleIn: number): number {

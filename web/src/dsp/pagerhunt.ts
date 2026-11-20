@@ -356,7 +356,7 @@ export class PagerHunter implements IqProcessor {
    */
   private onReflex(slot: Slot, f: ReflexFrame, line: string): void {
     if (this.isCopy(slot.hz)) return;
-    const page = { protocol: 'ReFLEX', rate: '3200', cap: -1, kind: 'FRAME', text: ReflexDecoder.text(f), errors: 0, where: ReflexDecoder.where(f) };
+    const page = { protocol: 'ReFLEX', rate: '6400', cap: -1, kind: 'FRAME', text: ReflexDecoder.text(f), errors: 0, where: ReflexDecoder.where(f) };
     this.post({ type: 'huntPage', hz: slot.hz, page, line, replaces: slot.reflexLine });
     slot.reflexLine = line;
   }
