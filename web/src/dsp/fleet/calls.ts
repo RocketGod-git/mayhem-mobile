@@ -12,8 +12,12 @@ export interface CallPos { lat: number; lon: number; unit: number; ms: number; v
 /** One system (or one site of it) the listener locked on. [hz] is its control channel, for tuning back to it. */
 export interface Lock { sys: string; site: string; label: string; hz: number }
 export type CallSec = 'unknown' | 'clear' | 'enc';
+/** The air interfaces calls come from. */
+export type CallProto = 'P25' | 'DMR' | 'TETRA';
+/** The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 for DMR and Phase 2, the TETRA ACELP codec for TETRA. */
+export const codecOf = (proto: CallProto, tdma: boolean): CodecId => proto === 'TETRA' ? 'tetra' : proto === 'P25' && !tdma ? 'imbe' : 'ambe2';
 export interface CallRow {
-  key: string; sys: string; proto: 'P25' | 'DMR'; tg: number; group: boolean; src: number; srcs: number[]; hz: number; slot: number; tdma: boolean;
+  key: string; sys: string; proto: CallProto; tg: number; group: boolean; src: number; srcs: number[]; hz: number; slot: number; tdma: boolean;
   encrypted: boolean; emergency: boolean; startMs: number; lastMs: number; endMs: number; onAir: boolean;
   /** Voice heard on the channel itself (P25 voice frames, DMR voice bursts), in ms of speech. */
   voiceMs: number; frames: number; levelDb: number; peakDb: number; site: string; codec: CodecId;
@@ -43,7 +47,7 @@ export interface CallRow {
 }
 interface Call extends CallRow { grantMs: number; voiceAt: number; audioAt: number; pcm: Float32Array[]; pcmN: number; codecInst: VoiceCodec | null; held: Uint8Array[]; hint: string; said: Said; wait: Float32Array[] }
 /** What each source on the air said: 1 encrypted, 0 clear, -1 nothing yet; [syncs] the last algorithm IDs read. */
-interface Said { grant: number; lc: number; syncs: number[]; from: string; pi: boolean; emb: number; history: boolean; histEnc: boolean }
+interface Said { grant: number; lc: number; syncs: number[]; from: string; pi: boolean; emb: number; history: boolean; histEnc: boolean; aie?: boolean }
 
 export interface TgPrefs { mute: string[]; hold: string; prio: string[]; lock?: Lock | null }
 export const AUDIO_CAP_S = 120;
@@ -97,7 +101,7 @@ export class CallTracker {
     const k = gridKey(hz);
     return this.calls.find(c => c.kind === 'call' && (!onAir || c.onAir) && (!sys || !c.sys || c.sys === sys) && c.hz > 0 && gridKey(c.hz) === k && c.slot === slot);
   }
-  private create(p: Partial<CallRow> & { sys: string; proto: 'P25' | 'DMR'; hz: number; slot: number; codec: CodecId }, now: number): Call {
+  private create(p: Partial<CallRow> & { sys: string; proto: CallProto; hz: number; slot: number; codec: CodecId }, now: number): Call {
     const c: Call = {
       key: `${p.sys}|${now}|${p.hz}|${p.slot}`, sys: p.sys, proto: p.proto, tg: p.tg ?? 0, group: p.group ?? true, src: p.src ?? 0, srcs: p.src ? [p.src] : [], hz: p.hz, slot: p.slot,
       tdma: p.tdma ?? false, encrypted: false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
@@ -118,7 +122,7 @@ export class CallTracker {
   }
 
   /** A voice grant (or grant update) on the control channel. */
-  grant(g: { sys: string; proto: 'P25' | 'DMR'; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string; lpcn?: number; chDerived?: boolean }, now = this.now()): Call | null {
+  grant(g: { sys: string; proto: CallProto; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string; lpcn?: number; chDerived?: boolean }, now = this.now()): Call | null {
     if (!g.tg && !g.hz) return null;
     let c = this.calls.find(x => x.kind === 'call' && x.onAir && x.sys === g.sys && x.tg === g.tg && x.group === g.group && (!x.hz || !g.hz || gridKey(x.hz) === gridKey(g.hz)) && (x.slot === g.slot || !x.hz || !g.hz));
     if (!c && g.hz) {
@@ -128,7 +132,7 @@ export class CallTracker {
     }
     // grant updates trail a call for a moment after its terminator: they do not open it again
     if (!c && this.calls.some(x => x.kind === 'call' && !x.onAir && x.end === 'terminator' && now - x.endMs < TRAIL_MS && x.sys === g.sys && x.tg === g.tg && (!g.hz || !x.hz || gridKey(x.hz) === gridKey(g.hz)))) return null;
-    const codec: CodecId = g.proto === 'P25' && !g.tdma ? 'imbe' : 'ambe2';
+    const codec = codecOf(g.proto, g.tdma);
     if (!c) c = this.create({ ...g, codec }, now);
     c.tg = g.tg || c.tg; c.group = g.group; c.sys = g.sys || c.sys; if (g.hz) { c.hz = g.hz; c.slot = g.slot; } c.tdma = g.tdma; c.codec = codec;
     if (g.lpcn !== undefined && g.lpcn >= 0) c.lpcn = g.lpcn;
@@ -137,7 +141,7 @@ export class CallTracker {
     c.emergency = c.emergency || g.emergency; c.site = g.site || c.site;
     // a P25 grant's service options say whether the call is encrypted; a DMR grant says nothing either way
     if (g.encrypted) this.security(c, { enc: true, from: 'grant' });
-    else if (g.proto === 'P25') this.security(c, { enc: false, from: 'grant' });
+    else if (g.proto === 'P25' || g.proto === 'TETRA') this.security(c, { enc: false, from: 'grant' });
     c.grantMs = now; c.lastMs = now; c.granted = true;
     this.label(c);
     return c;
@@ -145,15 +149,15 @@ export class CallTracker {
   private addSrc(c: Call, src: number): void { c.src = src; if (!c.srcs.includes(src)) { c.srcs.push(src); if (c.srcs.length > 12) c.srcs.shift(); } }
 
   /** Voice on a channel: a P25 voice frame (180 ms of speech) or a DMR voice burst (60 ms). */
-  voice(sys: string, proto: 'P25' | 'DMR', hz: number, slot: number, ms: number, now = this.now(), tdma = false): Call {
+  voice(sys: string, proto: CallProto, hz: number, slot: number, ms: number, now = this.now(), tdma = false): Call {
     let c = this.find(sys, hz, slot);
-    if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: proto === 'P25' && !tdma ? 'imbe' : 'ambe2' }, now);
+    if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: codecOf(proto, tdma) }, now);
     c.frames++; c.voiceMs += ms; c.voiceAt = now; c.lastMs = now;
     if (sys && !c.sys) { c.sys = sys; this.label(c); }
     return c;
   }
   /** Link control read on the voice channel (DMR voice LC header or terminator, P25 LDU1): who is talking to whom. */
-  lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: 'P25' | 'DMR' = 'DMR', tdma = false): Call {
+  lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: CallProto = 'DMR', tdma = false): Call {
     let c = this.find(sys, hz, slot);
     if (c && c.tg && c.tg !== lc.dst) { this.finish(c, 'terminator', now); c = undefined; }
     if (!c) {
@@ -161,7 +165,7 @@ export class CallTracker {
       c = this.calls.find(x => x.kind === 'call' && x.onAir && x.proto === proto && !x.hz && x.tg === lc.dst && x.group === lc.group && (!sys || !x.sys || x.sys === sys));
       if (c) { c.hz = hz; c.slot = slot; }
     }
-    if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: proto === 'P25' && !tdma ? 'imbe' : 'ambe2', tg: lc.dst, group: lc.group }, now);
+    if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: codecOf(proto, tdma), tg: lc.dst, group: lc.group }, now);
     c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
     if (sys && !c.sys) c.sys = sys;
     if (!tdma) this.security(c, { enc: lc.privacy, from: proto === 'P25' ? 'LDU1' : 'LC' });
@@ -188,6 +192,7 @@ export class CallTracker {
     else if (s.from === 'PI') { said.pi = true; if (s.pi) c.pi = s.pi; if (s.algId !== undefined) c.algId = s.algId; if (s.keyId !== undefined) c.keyId = s.keyId; if (s.mi) c.mi = s.mi; }
     else if (s.from === 'EMB') said.emb = s.enc ? 1 : (said.emb === 1 ? 1 : 0);
     else if (s.from === 'history') said.histEnc = true;
+    else if (s.from === 'AIE') said.aie = true;
     let sec: CallSec = 'unknown', from = '';
     if (c.proto === 'P25') {
       const last = said.syncs.length ? said.syncs[said.syncs.length - 1] : -1;
@@ -198,6 +203,12 @@ export class CallTracker {
       else if (said.history && c.tdma) sec = 'unknown';
       else if (said.grant >= 0 || said.lc >= 0) { sec = 'clear'; from = said.grant >= 0 ? 'grant' : 'LDU1'; }
       c.protectedHint = last < 0 && (said.grant === 1 || said.lc === 1);
+    } else if (c.proto === 'TETRA') {
+      // TETRA: the end-to-end encryption flag of the call's set-up (or the encryption control of a transmission grant),
+      // or signalling encrypted on the air interface of a cell that offers it
+      if (said.grant === 1 || said.aie) { sec = 'enc'; from = said.aie ? 'AIE' : 'grant'; }
+      else if (said.grant === 0) { sec = 'clear'; from = 'grant'; }
+      c.protectedHint = false;
     } else {
       if (said.lc === 1 || said.pi || said.emb === 1) { sec = 'enc'; from = said.pi ? 'PI' : said.lc === 1 ? 'LC' : 'EMB'; }
       // an EMB privacy bit of 0 does not make a call clear: Motorola's privacy leaves it 0, the LC's service options say it

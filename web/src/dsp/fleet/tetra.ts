@@ -162,14 +162,14 @@ export function tetraAach(bits: ArrayLike<number>, e: ArrayLike<number>): number
 
 export interface TetraSync {
   systemCode: number; colorCode: number; timeslot: number; frame: number; multiframe: number; sharing: number;
-  mcc: number; mnc: number; neighbourBroadcast: number; cellLoad: number; lateEntry: boolean;
+  mcc: number; mnc: number; neighborBroadcast: number; cellLoad: number; lateEntry: boolean;
 }
 export function tetraSyncPdu(b: ArrayLike<number>): TetraSync {
   let i = 0; const f = (n: number) => { let v = 0; for (let k = 0; k < n; k++) v = v * 2 + b[i++]; return v; };
   const systemCode = f(4), colorCode = f(6), timeslot = f(2) + 1, frame = f(5), multiframe = f(6), sharing = f(2);
   f(3); f(1); f(1); f(1);
-  const mcc = f(10), mnc = f(14), neighbourBroadcast = f(2), cellLoad = f(2), lateEntry = f(1) === 1;
-  return { systemCode, colorCode, timeslot, frame, multiframe, sharing, mcc, mnc, neighbourBroadcast, cellLoad, lateEntry };
+  const mcc = f(10), mnc = f(14), neighborBroadcast = f(2), cellLoad = f(2), lateEntry = f(1) === 1;
+  return { systemCode, colorCode, timeslot, frame, multiframe, sharing, mcc, mnc, neighborBroadcast, cellLoad, lateEntry };
 }
 
 /**
