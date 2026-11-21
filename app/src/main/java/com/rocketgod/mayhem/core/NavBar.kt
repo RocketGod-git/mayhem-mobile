@@ -17,6 +17,7 @@ object NavBar {
     private const val KEY_LAST = "nav_last"
     private const val KEY_BIAS_OK = "bias_ok"
     private const val KEY_KNOWN = "nav_known"
+    private const val KEY_REORDERED = "nav_order_0958"
     /** Apps added after the bar first saved its choices (a bar saved before this list existed knew all but these). */
     private val ADDED = listOf(MayhemApp.LORA)
     /**
@@ -97,6 +98,12 @@ object NavBar {
             val raw = p.getString(KEY_ORDER, null)?.split(",")?.mapNotNull { n -> MayhemApp.entries.firstOrNull { it.name == n.trim() } }?.distinct()
             if (raw != null && neverDragged(raw)) saved = null
             p.edit().putBoolean("nav_flights_grouped", true).apply()
+        }
+        // once more (0.9.58): every bar takes the grouped order, the same as the web and Mac apps, even one arranged
+        // by hand before the regrouping (the earlier passes moved only bars still in an old default). The ticks stay.
+        if (!p.getBoolean(KEY_REORDERED, false)) {
+            saved = null
+            p.edit().putBoolean(KEY_REORDERED, true).apply()
         }
         // an app added in an update, not yet in the saved order, goes in after the app it follows by default (LoRa
         // after Meters, with the other receivers), not at the end

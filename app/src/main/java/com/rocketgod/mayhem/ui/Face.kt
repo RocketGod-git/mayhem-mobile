@@ -330,13 +330,14 @@ fun FreqCard(
     Column(Modifier.faceCard(accent, d)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FaceTag(tag, accent)
-            // a phone's header is too narrow for both: the subtitle gives way so the gain pill shows in full
-            if (d.widthDp <= 480) Spacer(Modifier.weight(1f))
+            // a phone's header is too narrow for the subtitle: it gives way to the gain pill and the lamp
+            val phone = d.widthDp <= 480
             // a long subtitle (Dispatch names every protocol it reads) takes two lines rather than lose its end
-            else Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(if (title.length > 30) 9f else 10f), letterSpacing = if (title.length > 30) 1.sp else 2.sp, maxLines = if (title.length > 30) 2 else 1, overflow = TextOverflow.Ellipsis,
+            if (!phone) Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(if (title.length > 30) 9f else 10f), letterSpacing = if (title.length > 30) 1.sp else 2.sp, maxLines = if (title.length > 30) 2 else 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
             if (actions != null) actions() else if (onTune != null) DialActions(accent, freq, onTune = onTune)
-            GainChip(accent)
+            // the status lamp (SENDING, 4 HEARD) always shows whole: on a phone the gain pill takes what room is left and shortens
+            if (phone) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { GainChip(accent) } else GainChip(accent)
             lamp()
         }
         Box(Modifier.fillMaxWidth().padding(top = d.dp(2f))) {
