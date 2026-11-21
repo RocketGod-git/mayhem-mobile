@@ -234,54 +234,59 @@ fun LogList(lines: List<String>, modifier: Modifier = Modifier, empty: String = 
             // A line with parts ("head · detail · detail") is two lines on purpose: the head (time or frequency and
             // level, the kind, the subject) over its details a size smaller, instead of a long line that wraps a few
             // characters. Each row's bar is inset top and bottom so rows of one kind still read as separate.
-            val row: @Composable (Int, String) -> Unit = { i, l ->
-                val k = logKind(l)
-                val kc = k?.let { logKindColor(it.second, accent) }
-                val n = if (total != null) total - i else lines.size - i
-                val cut = l.indexOf(" · ").let { if (it > 0 && (k == null || it > k.first + k.second.length)) it else -1 }
-                val head = if (cut > 0) l.substring(0, cut) else l
-                val tail = if (cut > 0) l.substring(cut + 3) else null
-                // the subject (a node, a device, a name: what follows the kind) gets a color of its own from its name, so
-                // the same node is the same color every time it repeats; the bar takes it too
-                val rest = if (k != null) head.substring(k.first + k.second.length) else ""
-                // only a real identifier is a subject: a label and its ID ("node D7", "ID 12345678") or a bare ID
-                // ("!61f882d4"); a frequency, a rate or a path is not, and its row takes the kind's color
-                val subj = logSubject(rest)
-                val sc = subj?.let { logNodeColor(it, kc) }
-                val bar = sc ?: kc
-                val m = Modifier.fillMaxWidth()
-                    .background(if (n % 2 == 0) Palette.ink.copy(alpha = 0.035f) else Color.Transparent, RoundedCornerShape(4.dp))
-                    .drawBehind {
-                        if (bar != null) { val inset = 3.dp.toPx(); drawRoundRect(bar, topLeft = Offset(0f, inset), size = Size(3.dp.toPx(), size.height - 2 * inset), cornerRadius = CornerRadius(1.5.dp.toPx())) }
-                    }
-                    .padding(vertical = d.dp(4f), horizontal = d.dp(8f))
-                val base = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.88f)
-                val text = buildAnnotatedString {
-                    if (k == null) withStyle(SpanStyle(color = base)) { append(head) }
-                    else {
-                        withStyle(SpanStyle(color = Palette.muted)) { append(head.substring(0, k.first)) }
-                        withStyle(SpanStyle(color = kc!!, fontWeight = FontWeight.Bold)) { append(k.second) }
-                        val at = if (subj != null) rest.indexOf(subj) else -1
-                        if (subj != null && sc != null && at >= 0) {
-                            append(rest.substring(0, at))
-                            // a tinted chip: the node's color on a wash of itself
-                            withStyle(SpanStyle(color = sc, fontWeight = FontWeight.Bold, background = sc.copy(alpha = 0.16f))) { append(" $subj ") }
-                            withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest.substring(at + subj.length)) }
-                        } else withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest) }
-                    }
-                }
-                Column(if (onTap != null) m.clickable { onTap(l) } else m) {
-                    Text(text, fontFamily = Mono, fontSize = d.sp(11f))
-                    if (tail != null) Text(tail, color = Palette.ink.copy(alpha = 0.6f), fontFamily = Mono, fontSize = d.sp(10f),
-                        modifier = Modifier.padding(top = d.dp(1f)))
-                }
-            }
+            val row: @Composable (Int, String) -> Unit = { i, l -> LogLine(i, l, if (total != null) total - i else lines.size - i, accent, onTap) }
             LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(6f), vertical = d.dp(4f)), state = state) {
                 if (total != null) itemsIndexed(lines, key = { i, _ -> total - i }) { i, l -> row(i, l) }
                 else itemsIndexed(lines) { i, l -> row(i, l) }
             }
             if (total != null) NewestPill(follow, state, (total - follow.seen).toInt(), accent, Modifier.align(Alignment.TopCenter))
         }
+    }
+}
+
+/** One line of a log: its stripe, its kind's color and bar, the subject chip, and the details under it. [n] is its number
+ *  in the whole log (stripes hold still as lines arrive). Shared by [LogList] and pages that list a log in their own scroll. */
+@Composable
+fun LogLine(i: Int, l: String, n: Int, accent: Color = Palette.accent, onTap: ((String) -> Unit)? = null) {
+    val d = rememberDims()
+    val k = logKind(l)
+    val kc = k?.let { logKindColor(it.second, accent) }
+    val cut = l.indexOf(" · ").let { if (it > 0 && (k == null || it > k.first + k.second.length)) it else -1 }
+    val head = if (cut > 0) l.substring(0, cut) else l
+    val tail = if (cut > 0) l.substring(cut + 3) else null
+    // the subject (a node, a device, a name: what follows the kind) gets a color of its own from its name, so
+    // the same node is the same color every time it repeats; the bar takes it too
+    val rest = if (k != null) head.substring(k.first + k.second.length) else ""
+    // only a real identifier is a subject: a label and its ID ("node D7", "ID 12345678") or a bare ID
+    // ("!61f882d4"); a frequency, a rate or a path is not, and its row takes the kind's color
+    val subj = logSubject(rest)
+    val sc = subj?.let { logNodeColor(it, kc) }
+    val bar = sc ?: kc
+    val m = Modifier.fillMaxWidth()
+        .background(if (n % 2 == 0) Palette.ink.copy(alpha = 0.035f) else Color.Transparent, RoundedCornerShape(4.dp))
+        .drawBehind {
+            if (bar != null) { val inset = 3.dp.toPx(); drawRoundRect(bar, topLeft = Offset(0f, inset), size = Size(3.dp.toPx(), size.height - 2 * inset), cornerRadius = CornerRadius(1.5.dp.toPx())) }
+        }
+        .padding(vertical = d.dp(4f), horizontal = d.dp(8f))
+    val base = if (i == 0) Palette.ink else Palette.ink.copy(alpha = 0.88f)
+    val text = buildAnnotatedString {
+        if (k == null) withStyle(SpanStyle(color = base)) { append(head) }
+        else {
+            withStyle(SpanStyle(color = Palette.muted)) { append(head.substring(0, k.first)) }
+            withStyle(SpanStyle(color = kc!!, fontWeight = FontWeight.Bold)) { append(k.second) }
+            val at = if (subj != null) rest.indexOf(subj) else -1
+            if (subj != null && sc != null && at >= 0) {
+                append(rest.substring(0, at))
+                // a tinted chip: the node's color on a wash of itself
+                withStyle(SpanStyle(color = sc, fontWeight = FontWeight.Bold, background = sc.copy(alpha = 0.16f))) { append(" $subj ") }
+                withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest.substring(at + subj.length)) }
+            } else withStyle(SpanStyle(color = base, fontWeight = FontWeight.SemiBold)) { append(rest) }
+        }
+    }
+    Column(if (onTap != null) m.clickable { onTap(l) } else m) {
+        Text(text, fontFamily = Mono, fontSize = d.sp(11f))
+        if (tail != null) Text(tail, color = Palette.ink.copy(alpha = 0.6f), fontFamily = Mono, fontSize = d.sp(10f),
+            modifier = Modifier.padding(top = d.dp(1f)))
     }
 }
 

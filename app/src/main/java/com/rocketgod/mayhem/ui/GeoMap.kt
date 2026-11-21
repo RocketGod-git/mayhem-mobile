@@ -120,6 +120,8 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
     @Volatile var layers = GeoLayers()
     @Volatile var selected: String? = null
     @Volatile var home: Pair<Double, Double>? = null
+    /** Labels that would cover another are left off (the marker stays): the selected one first, then talking ones. */
+    @Volatile var declutter = false
     private val okInt = Palette.ok.toArgb()
     private val dot = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.FILL }
     private val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0B1416.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; strokeJoin = android.graphics.Paint.Join.ROUND }
@@ -248,7 +250,9 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         rim.strokeWidth = 2f
         home?.let { (la, lo) -> val (x, y) = xy(mv, la, lo); dot.color = 0xFFFFFFFF.toInt(); c.drawCircle(x, y, 4f * d, dot); c.drawCircle(x, y, 4f * d, rim) }
         val t = (System.currentTimeMillis() % 1200L) / 1200f
-        for (it in items) {
+        val items = items
+        val hidden = if (declutter) hiddenLabels(mv, items, d) else null
+        for ((idx, it) in items.withIndex()) {
             val (x, y) = xy(mv, it.lat, it.lon)
             val col0 = it.color ?: when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
             val a = (it.alpha.coerceIn(0f, 1f) * 255).toInt()
@@ -273,9 +277,25 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             c.drawPath(shape, dot); c.drawPath(shape, rim)
             c.restore()
             if (it.kind == GeoItem.Kind.STATION) { dot.color = 0xFF0B1416.toInt(); c.drawCircle(x, y, 0.3f * s, dot) }
+            if (hidden?.get(idx) == true) continue
             val ly = y + half + label.textSize
             c.drawText(it.label, x, ly, halo); c.drawText(it.label, x, ly, label)
         }
+    }
+
+    /** Which items' labels to leave off so no two overlap ([declutterLabels]), boxes where draw puts the text. */
+    private fun hiddenLabels(mv: MapView, items: List<GeoItem>, d: Float): BooleanArray {
+        val order = labelOrder(items.size, { items[it].id == selected }, { items[it].pulse })
+        val boxes = order.map { i ->
+            val it = items[i]; val (x, y) = xy(mv, it.lat, it.lon)
+            val w = if (it.label.isEmpty()) 0f else label.measureText(it.label) + 4f * d
+            val top = y + sizeDp(it.kind) * d / 2f + label.textSize * 0.15f
+            LabelBox(x - w / 2f, top, w, label.textSize)
+        }
+        val shown = declutterLabels(boxes)
+        val hidden = BooleanArray(items.size)
+        order.forEachIndexed { k, i -> hidden[i] = !shown[k] }
+        return hidden
     }
 
     private val cell = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL }
@@ -399,6 +419,10 @@ fun GeoMapView(
      * pinch the map, and a small pill at the bottom says so. A tap still picks a marker.
      */
     twoFinger: Boolean = false,
+    /** Labels that would overlap are left off, the selected one first, then talking ones; the markers stay. */
+    declutter: Boolean = false,
+    /** False: a fit frames [fitPts] (and the track) only, the items show where they fall in that view (a detail card's map). */
+    fitItems: Boolean = true,
     onPick: (String) -> Unit = {},
 ) {
     val accentInt = accent.toArgb(); val goldInt = Palette.accent2.toArgb()
@@ -414,7 +438,7 @@ fun GeoMapView(
         val f = follow?.let { id -> items.firstOrNull { it.id == id } }
         if (f != null) { mv.controller.animateTo(GeoPoint(f.lat, f.lon)); return }
         // home only counts when something is drawn from it
-        val pts = items.map { it.lat to it.lon } + layers.track + fitPts +
+        val pts = (if (fitItems) items.map { it.lat to it.lon } else emptyList()) + layers.track + fitPts +
             (if (items.isEmpty()) layers.images.flatMap { listOf(it.north to it.west, it.south to it.east) } else emptyList()) +
             (if (withHome || layers.track.isNotEmpty() || layers.lines.isNotEmpty() || (fitHome && items.isEmpty())) listOfNotNull(home) else emptyList())
         // nothing plotted yet: a map with a start point stays at regional zoom, recentered once when a fix comes in
@@ -441,7 +465,7 @@ fun GeoMapView(
 
     LaunchedEffect(mapRef, items, layers, selected, home) {
         val mv = mapRef ?: return@LaunchedEffect
-        overlayRef?.let { it.items = items; it.layers = layers; it.selected = selected; it.home = home; mv.invalidate() }
+        overlayRef?.let { it.items = items; it.layers = layers; it.selected = selected; it.home = home; it.declutter = declutter; mv.invalidate() }
     }
     val fitKey: Any = if (steady) items.map { it.id }.sorted() + fitPts.size else listOf(items, layers, selected, home, fitPts)
     LaunchedEffect(mapRef, fitKey, following) {
@@ -549,7 +573,7 @@ fun GeoMapView(
                         }
                         false
                     }
-                    val ov = ItemsOverlay(accentInt, goldInt, onPick, onMapTap).also { it.items = items; it.layers = layers; it.selected = selected; it.home = home }
+                    val ov = ItemsOverlay(accentInt, goldInt, onPick, onMapTap).also { it.items = items; it.layers = layers; it.selected = selected; it.home = home; it.declutter = declutter }
                     overlays.add(ov); overlayRef = ov
                     onResume()
                 }

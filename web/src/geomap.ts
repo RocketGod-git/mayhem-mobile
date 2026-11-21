@@ -35,7 +35,31 @@ export interface GeoOpts {
   twoFinger?: boolean;
   /** Where the locate button goes when there is nothing plotted and no position of the user (a reference position). */
   fallback?: () => { lat: number; lon: number } | null;
+  /** Labels that would overlap are left off (the marker stays): the selected one first, then talking ones (cls 'talk'). */
+  declutter?: boolean;
 }
+/** A label's box on screen, in pixels. */
+export interface LabelBox { x: number; y: number; w: number; h: number }
+/**
+ * Which labels to draw: in priority order, a label is drawn only when its box clears every label drawn before it by
+ * [gap] pixels. Its marker is drawn either way, so a tap or a closer zoom still shows it.
+ */
+export function declutterLabels(boxes: LabelBox[], gap = 2): boolean[] {
+  const kept: LabelBox[] = [];
+  return boxes.map(b => {
+    if (b.w <= 0) return false;
+    const hit = kept.some(k => b.x < k.x + k.w + gap && k.x < b.x + b.w + gap && b.y < k.y + k.h + gap && k.y < b.y + b.h + gap);
+    if (!hit) kept.push(b);
+    return !hit;
+  });
+}
+/** The order labels claim room in: the selected item first, then the talking ones, then the rest as listed. */
+export function labelOrder(n: number, selected: (i: number) => boolean, talking: (i: number) => boolean): number[] {
+  const rank = (i: number) => selected(i) ? 0 : talking(i) ? 1 : 2;
+  return Array.from({ length: n }, (_, i) => i).sort((a, b) => rank(a) - rank(b) || a - b);
+}
+/** A marker label's box: centered under the point, [chars] wide in the 9 px label font. */
+export const labelBox = (x: number, y: number, chars: number): LabelBox => { const w = chars ? chars * 5.6 + 4 : 0; return { x: x - w / 2, y: y + 1, w, h: 11 }; };
 /**
  * What a tap on the locate button does: fit everything plotted; with the user's position known, the next tap centers
  * on the user and the one after fits again; with nothing plotted, the user's position, else the reference position.
@@ -138,6 +162,7 @@ export class GeoMap {
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors', className: 'dark-tiles' }).addTo(this.map);
     this.map.on('dragstart', () => { if (this.follow) this.setFollow(false); });
     this.map.on('dragend', () => { const c = this.map.getCenter(); this.opts.onDragEnd?.(c.lat, c.lng); });
+    if (this.opts.declutter) this.map.on('zoomend', () => this.declutter());
     if (this.opts.twoFinger && matchMedia('(pointer: coarse)').matches) {
       // One finger belongs to the page so it scrolls past the map; two fingers pan and pinch it.
       this.map.dragging.disable();
@@ -199,6 +224,15 @@ export class GeoMap {
     for (const [id, m] of this.markers) if (!live.has(id)) { this.map.removeLayer(m); this.markers.delete(id); this.drawn.delete(id); }
     const key = [...live].sort().join('|'), changed = key !== this.fitKey; this.fitKey = key;
     if (this.follow && (!this.opts.steady || changed)) this.fit();
+    if (this.opts.declutter) this.declutter();
+  }
+  /** Hides the labels that would cover another (setIcon resets the marker's classes, so this runs after every update). */
+  private declutter(): void {
+    if (!this.map) return;
+    const items = this.items, order = labelOrder(items.length, i => items[i].id === this.sel, i => (items[i].cls ?? '').includes('talk'));
+    const boxes = order.map(i => { const p = this.map.latLngToContainerPoint([items[i].lat, items[i].lon]); return labelBox(p.x, p.y, items[i].label.length); });
+    const shown = declutterLabels(boxes);
+    order.forEach((i, k) => this.markers.get(items[i].id)?.getElement()?.classList.toggle('nolab', !shown[k]));
   }
   private icon(html: string): any { return L.divIcon({ className: 'geo-wrap', iconSize: [60, 60], iconAnchor: [30, 30], html }); }
   private iconHtml(it: GeoItem, sel: boolean): string {
