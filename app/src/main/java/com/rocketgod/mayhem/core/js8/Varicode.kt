@@ -203,6 +203,24 @@ object Js8Varicode {
             jsc = parseJsc(text)
         }
     }
+    /**
+     * The app's loader. The Android build unpacks a ".gz" asset and drops the extension, so the APK holds
+     * js8-jsc.json while the source tree holds js8-jsc.json.gz. Try both names, and unzip only when the bytes
+     * start with the gzip magic, so the dictionary loads whichever way it was packed.
+     */
+    fun loadJscAsset(open: (String) -> InputStream) {
+        if (jsc != null) return
+        var last: Throwable? = null
+        for (name in JSC_ASSETS) {
+            val raw = runCatching { java.io.BufferedInputStream(open(name), 1 shl 16) }.getOrElse { last = it; null } ?: continue
+            raw.mark(2)
+            val gz = raw.read() == 0x1f && raw.read() == 0x8b
+            raw.reset()
+            return loadJsc({ raw }, gz)
+        }
+        throw last ?: java.io.FileNotFoundException(JSC_ASSETS.first())
+    }
+    val JSC_ASSETS = listOf("js8-jsc.json", "js8-jsc.json.gz")
     /** The dictionary's JSON: {"words": [...], "mapSize": {i: n}, "list": [...], "listSize": {li: n}, "prefix": [[ch, count, start], ...]}. */
     fun parseJsc(text: String): Jsc {
         @Suppress("UNCHECKED_CAST")

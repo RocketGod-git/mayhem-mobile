@@ -107,7 +107,7 @@ object Js8 {
         if (Js8Varicode.jscReady()) { if (!_st.value.dict) mutate { it.copy(dict = true) }; onReady(); return }
         val c = ctx ?: return
         io.execute {
-            runCatching { Js8Varicode.loadJsc({ c.assets.open("js8-jsc.json.gz") }) }
+            runCatching { Js8Varicode.loadJscAsset { c.assets.open(it) } }
                 .onFailure { com.rocketgod.mayhem.Diag.log("JS8: dictionary did not load: ${it.message}") }
             if (Js8Varicode.jscReady()) mutate { it.copy(dict = true) }
             onReady()
