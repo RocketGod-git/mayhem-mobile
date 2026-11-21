@@ -17,9 +17,9 @@ import { Ddc } from '../trains.js';
 import { RealFir, Resampler, lowpassTaps } from '../ham/filters.js';
 import { SubAudioDecoder } from '../ham/ctcss.js';
 import { CwReader } from '../fleet/rx.js';
-import { HP_RASTER } from './plan.js';
+import { HP_RASTER, hpBandOf } from './plan.js';
 import { ClipStore, ClipWriter, CLIP_RATE, planReplay, ReplayMixer, type Clip } from './clips.js';
-import { HamTracker, ENV_MS, chanKey, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
+import { HamTracker, ENV_MS, HEAT_SLOTS, chanKey, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
 
 export const PROBE_RATE = 24_000;
 /** Processor time a second the probes may take, and the cap's bounds. */
@@ -28,6 +28,8 @@ export const BUDGET_MS = 450, CAP_MIN = 2, CAP_MAX = 32, CAP_START = 8;
 export const CLOSE_HOLD_MS = 400;
 /** Shorter than this is a noise blip, not a transmission. */
 export const TX_MIN_MS = 250;
+/** A tone must be heard through this share of a transmission to be its tone. */
+export const TONE_SHARE = 0.5;
 const MEASURE_MS = 100, SNAP_MS = 500, OFF_WIN_MS = 100;
 
 export interface HpParams { thresholdDb: number; mode: 'mix' | 'newest'; volume: number }
@@ -43,7 +45,7 @@ class Probe {
   private offAcc = 0; private offN = 0; readonly means: number[] = [];
   private envAcc = 0; private envN = 0; readonly env: number[] = [];
   pow = 0; powN = 0; levelDb = -90; cw0 = '';
-  tones = new Map<number, number>(); dcsCodes = new Map<number, number>();
+  tones = new Map<number, number>(); dcsCodes = new Map<number, number>(); subN = 0;
   out48 = 0;
   constructor(rate: number, readonly offsetHz: number) {
     this.ddc.reset(rate); this.ddc.offsetHz = offsetHz; this.fs = this.ddc.outRate;
@@ -68,6 +70,7 @@ class Probe {
       this.pow += a * a + b * b; this.powN++;
     }
     this.sub.push(au, m);
+    this.subN += m;
     if (this.sub.tone) this.tones.set(this.sub.tone, (this.tones.get(this.sub.tone) ?? 0) + m);
     else if (this.sub.dcs) this.dcsCodes.set(this.sub.dcs, (this.dcsCodes.get(this.sub.dcs) ?? 0) + m);
     for (let i = 0; i < m; i++) { this.deemph += this.de * (au[i] - this.deemph); au[i] = this.deemph * 0.6; }
@@ -89,7 +92,10 @@ class Probe {
     const q1 = s[Math.floor(s.length / 4)], q3 = s[Math.floor(s.length * 3 / 4)];
     return { hz: med, sd: (q3 - q1) / 1.35 / Math.sqrt(ms.length) };
   }
-  static top(m: Map<number, number>): number { let b = 0, v = 0; for (const [k, n] of m) if (n > v) { v = n; b = k; } return b; }
+  /** The tone (or code) heard through most of the transmission: half of it at least, so a moment of voice read as a tone does not count. */
+  static top(m: Map<number, number>, total: number): number { let b = 0, v = 0; for (const [k, n] of m) if (n > v) { v = n; b = k; } return v >= TONE_SHARE * total ? b : 0; }
+  tone(): number { return Probe.top(this.tones, this.subN); }
+  dcs(): number { return this.tone() ? 0 : Probe.top(this.dcsCodes, this.subN); }
 }
 
 interface Open { id: number; k: number; hz: number; startMs: number; quietMs: number; peak: number; snr: number; probe: Probe | null; cut: boolean; shifted: boolean; tileKey: string }
@@ -105,7 +111,7 @@ export class HamPlusEngine implements IqProcessor {
   private rate = 0; private samples = 0; private baseMs = 0;
   private nfft = 4096; private re = new Float32Array(0); private im = new Float32Array(0); private win = new Float32Array(0); private acc = new Float32Array(0); private frames = 0;
   private fi = new Float32Array(0); private fq = new Float32Array(0);
-  private first = 0; private count = 0;
+  private first = 0; private count = 0; private hamBand = new Uint8Array(0);
   private power = new Float32Array(0); private floor = new Float32Array(0); private snr = new Float32Array(0);
   private readonly opens = new Map<number, Open>();
   private nextId = 1;
@@ -138,6 +144,8 @@ export class HamPlusEngine implements IqProcessor {
     const half = this.rate * 0.44 - 6_250;
     const first = Math.ceil((this.centerHz - half) / HP_RASTER), last = Math.floor((this.centerHz + half) / HP_RASTER);
     this.first = first; this.count = Math.max(0, last - first + 1);
+    // only the ham bands open channels: a span reaching past a band's edge leaves the rest alone
+    this.hamBand = new Uint8Array(this.count); for (let k = 0; k < this.count; k++) this.hamBand[k] = hpBandOf(this.hzOf(k)) ? 1 : 0;
     this.power = new Float32Array(this.count).fill(-120); this.floor = new Float32Array(this.count).fill(NaN); this.snr = new Float32Array(this.count);
     this.lastCenter = this.centerHz;
     this.tracker.setSpan(this.centerHz - half, this.centerHz + half);
@@ -192,7 +200,7 @@ export class HamPlusEngine implements IqProcessor {
     }
     // new carriers: over the threshold, the strongest raster point within 7.5 kHz, clear of the open ones
     for (let k = 0; k < this.count; k++) {
-      if (this.snr[k] <= p.thresholdDb || nearDc(k)) continue;
+      if (this.snr[k] <= p.thresholdDb || nearDc(k) || !this.hamBand[k]) continue;
       let peak = true; for (let d = -3; d <= 3 && peak; d++) { const j = k + d; if (d && j >= 0 && j < this.count && this.power[j] > this.power[k]) peak = false; }
       if (!peak) continue;
       let clear = true; for (const o of this.opens.values()) if (Math.abs(o.k - k) <= 4) { clear = false; break; }
@@ -226,7 +234,7 @@ export class HamPlusEngine implements IqProcessor {
     const recorded = !!p && !o.cut;
     const t: TxRec = {
       id: o.id, hz: o.hz, startMs: o.startMs, endMs, peakDb: Math.round(o.peak * 10) / 10, offsetHz: off.hz, offsetSd: off.sd,
-      tone: p ? Probe.top(p.tones) : 0, dcs: p && !Probe.top(p.tones) ? Probe.top(p.dcsCodes) : 0, cw: p?.cw0 ?? '', env: Float32Array.from((p?.env ?? []).slice(0, Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
+      tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cw0 ?? '', env: Float32Array.from((p?.env ?? []).slice(0, Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
     };
     if (recorded) this.clips.add({ id: o.id, chan: o.hz, startMs: o.startMs, data: p!.clip.done().slice(0, Math.round((endMs - o.startMs) * CLIP_RATE / 1000)) });
     this.tracker.addTx(t);
@@ -302,6 +310,8 @@ export class HamPlusEngine implements IqProcessor {
     return this.replayTx(ids, `the band from ${new Date(ms).toTimeString().slice(0, 8)}`, 'band');
   }
   stopReplay(): void { this.replay = null; }
+  /** Forgets everything heard: the channels, stations, pairs, links, the activity map and the time machine. */
+  clear(): void { this.replay = null; this.tracker.clear(); this.tracker.heat = { bands: [], cover: new Array(HEAT_SLOTS).fill(0) }; this.clips.clear(); }
   private replayStep(n: number): void {
     const r = this.replay!; r.acc += n * CLIP_RATE / this.rate;
     while (r.acc >= 1) {
@@ -321,7 +331,7 @@ export class HamPlusEngine implements IqProcessor {
   liveRecs(): LiveRec[] {
     return [...this.opens.values()].map(o => {
       const off = o.probe ? o.probe.offset(2) : { hz: NaN, sd: 0 };
-      return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe?.sub.tone ?? 0, dcs: o.probe?.sub.dcs ?? 0, recorded: !!o.probe && !o.cut };
+      return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0, recorded: !!o.probe && !o.cut };
     });
   }
 

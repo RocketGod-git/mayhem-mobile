@@ -21,6 +21,8 @@ function arc(cx: number, cy: number, r: number, a0: number, a1: number, step = 1
 
 const PATHS: Record<string, { d: string; circles?: [number, number, number][]; dot?: [number, number, number] }> = {
   ham: { d: 'M50 92 L50 14 M24 22 L76 22 M30 36 L70 36 M36 50 L64 50 M34 92 L66 92' },
+  // HAM+: a repeater mast hearing on every side at once, and a plus
+  hamplus: { d: 'M42 90 L42 36 M28 90 H56 M42 56 L32 90 M42 56 L52 90 ' + arc(42, 32, 14, 145, 215, 7) + arc(42, 32, 26, 150, 210, 7) + arc(42, 32, 14, -35, 35, 7) + arc(42, 32, 26, -30, 30, 7) + 'M80 4 V26 M69 15 H91', circles: [[42, 32, 4]] },
   // JS8: a chat bubble holding a run of 8-FSK tone steps
   js8: { d: 'M14 16 H86 Q92 16 92 22 V60 Q92 66 86 66 H42 L24 84 V66 H14 Q8 66 8 60 V22 Q8 16 14 16 Z M20 50 H31 V32 H42 V44 H53 V26 H64 V40 H75 V34 H82' },
   audio: { d: wave(5, 95, 50, 38, 40, 0.9) },
