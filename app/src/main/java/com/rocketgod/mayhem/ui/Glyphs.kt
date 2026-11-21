@@ -36,6 +36,17 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.36f, 0.5f); path.l(0.64f, 0.5f)
                 path.m(0.34f, 0.92f); path.l(0.66f, 0.92f)
             }
+            MayhemApp.HAMPLUS -> {
+                // HAM+: a repeater mast hearing on every side at once, and a plus
+                path.m(0.42f, 0.9f); path.l(0.42f, 0.36f); path.m(0.28f, 0.9f); path.l(0.56f, 0.9f)
+                path.m(0.42f, 0.56f); path.l(0.32f, 0.9f); path.m(0.42f, 0.56f); path.l(0.52f, 0.9f)
+                circles.add(Triple(0.42f, 0.32f, 0.04f))
+                for ((r, a0, a1) in listOf(Triple(0.14, 145.0, 215.0), Triple(0.26, 150.0, 210.0), Triple(0.14, -35.0, 35.0), Triple(0.26, -30.0, 30.0))) {
+                    var a = a0; var first = true
+                    while (a <= a1 + 1e-6) { val x = 0.42f + r.toFloat() * cos(Math.toRadians(a)).toFloat(); val y = 0.32f + r.toFloat() * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 7.0 }
+                }
+                path.m(0.8f, 0.04f); path.l(0.8f, 0.26f); path.m(0.69f, 0.15f); path.l(0.91f, 0.15f)
+            }
             MayhemApp.JS8 -> {
                 // JS8: a chat bubble holding a run of 8-FSK tone steps
                 path.m(0.14f, 0.16f); path.l(0.86f, 0.16f); path.q(0.92f, 0.16f, 0.92f, 0.22f); path.l(0.92f, 0.60f); path.q(0.92f, 0.66f, 0.86f, 0.66f)

@@ -53,6 +53,8 @@ const val CAP_START = 8
 const val CLOSE_HOLD_MS = 400.0
 /** Shorter than this is a noise blip, not a transmission. */
 const val TX_MIN_MS = 250.0
+/** A tone must be heard through this share of a transmission to be its tone. */
+const val TONE_SHARE = 0.5
 private const val MEASURE_MS = 100.0
 private const val SNAP_MS = 500.0
 private const val OFF_WIN_MS = 100.0
@@ -76,7 +78,7 @@ private class Probe(rate: Double, offsetHz: Double) {
     private var envAcc = 0.0; private var envN = 0; val env = ArrayList<Float>()
     private var pow = 0.0; private var powN = 0
     var levelDb = -90.0; var cw0 = ""
-    val tones = LinkedHashMap<Double, Int>(); val dcsCodes = LinkedHashMap<Int, Int>()
+    val tones = LinkedHashMap<Double, Int>(); val dcsCodes = LinkedHashMap<Int, Int>(); var subN = 0L
     var out48 = 0
 
     init {
@@ -105,6 +107,7 @@ private class Probe(rate: Double, offsetHz: Double) {
             pow += (a * a + b * b).toDouble(); powN++
         }
         sub.push(au, m)
+        subN += m
         if (sub.tone != 0.0) tones[sub.tone] = (tones[sub.tone] ?: 0) + m
         else if (sub.dcs != 0) dcsCodes[sub.dcs] = (dcsCodes[sub.dcs] ?: 0) + m
         for (i in 0 until m) { deemph += de * (au[i] - deemph); au[i] = (deemph * 0.6).toFloat() }
@@ -129,8 +132,11 @@ private class Probe(rate: Double, offsetHz: Double) {
         return Offset(med, (q3 - q1) / 1.35 / sqrt(s.size.toDouble()))
     }
 
+    /** The tone (or code) heard through most of the transmission: half of it at least, so a moment of voice read as a tone does not count. */
+    fun tone(): Double = top(tones, 0.0, subN)
+    fun dcs(): Int = if (tone() != 0.0) 0 else top(dcsCodes, 0, subN)
     companion object {
-        fun <K> top(m: Map<K, Int>, none: K): K { var b = none; var v = 0; for ((k, n) in m) if (n > v) { v = n; b = k }; return b }
+        fun <K> top(m: Map<K, Int>, none: K, total: Long): K { var b = none; var v = 0; for ((k, n) in m) if (n > v) { v = n; b = k }; return if (v >= TONE_SHARE * total) b else none }
     }
 }
 
@@ -180,7 +186,7 @@ class HamPlusEngine(
     private var nfft = 4096; private var re = FloatArray(0); private var im = FloatArray(0); private var win = FloatArray(0); private var acc = DoubleArray(0); private var frames = 0
     private var pdb = DoubleArray(0)
     private var fi = FloatArray(0); private var fq = FloatArray(0)
-    private var first = 0L; private var count = 0
+    private var first = 0L; private var count = 0; private var hamBand = BooleanArray(0)
     private var power = FloatArray(0); private var floorDb = FloatArray(0); private var snr = FloatArray(0)
     private val opens = LinkedHashMap<Int, Open>()
     private var nextId = 1
@@ -217,6 +223,8 @@ class HamPlusEngine(
         val half = rate * 0.44 - 6_250
         val f = ceil((centerHz - half) / HP_RASTER).toLong(); val l = floor((centerHz + half) / HP_RASTER).toLong()
         first = f; count = max(0, (l - f + 1).toInt())
+        // only the ham bands open channels: a span reaching past a band's edge leaves the rest alone
+        hamBand = BooleanArray(count) { hpBandOf(hzOf(it)) != null }
         power = FloatArray(count) { -120f }; floorDb = FloatArray(count) { Float.NaN }; snr = FloatArray(count)
         lastCenter = centerHz
         tracker.setSpan(centerHz - half, centerHz + half)
@@ -275,7 +283,7 @@ class HamPlusEngine(
         }
         // new carriers: over the threshold, the strongest raster point within 7.5 kHz, clear of the open ones
         for (k in 0 until count) {
-            if (snr[k] <= p.thresholdDb || nearDc(k)) continue
+            if (snr[k] <= p.thresholdDb || nearDc(k) || !hamBand[k]) continue
             var peak = true
             for (d in -3..3) { val j = k + d; if (d != 0 && j in 0 until count && power[j] > power[k]) { peak = false; break } }
             if (!peak) continue
@@ -308,11 +316,11 @@ class HamPlusEngine(
         val off = p?.offset(2) ?: Offset(Double.NaN, 0.0)
         p?.cw?.end()
         val recorded = p != null && !o.cut
-        val tone = if (p != null) Probe.top(p.tones, 0.0) else 0.0
+        val tone = p?.tone() ?: 0.0
         val envN = ceil((endMs - o.startMs) / ENV_MS).toInt()
         val env = p?.env?.let { e -> FloatArray(min(e.size, envN)) { e[it] } } ?: FloatArray(0)
         val t = TxRec(o.id, o.hz, o.startMs, endMs, (o.peak * 10).roundToInt() / 10.0, off.hz, off.sd,
-            tone, if (p != null && tone == 0.0) Probe.top(p.dcsCodes, 0) else 0, p?.cw0 ?: "", env, recorded)
+            tone, p?.dcs() ?: 0, p?.cw0 ?: "", env, recorded)
         if (recorded) {
             val data = p!!.clip.done()
             clips.add(Clip(o.id, o.hz, o.startMs, data.copyOf(min(data.size, ((endMs - o.startMs) * CLIP_RATE / 1000).roundToInt()))))
@@ -409,6 +417,8 @@ class HamPlusEngine(
     }
 
     fun stopReplay() { synchronized(lock) { replay = null } }
+    /** Forgets everything heard: the channels, stations, pairs, links, the activity map and the time machine. */
+    fun clear() { synchronized(lock) { replay = null; tracker.clear(); tracker.heat = HpHeat(); clips.clear() } }
 
     private fun replayStep(n: Int) {
         val r = replay ?: return
@@ -434,7 +444,7 @@ class HamPlusEngine(
         val p = o.probe
         val off = p?.offset(2) ?: Offset(Double.NaN, 0.0)
         LiveRec(o.id, o.hz, o.startMs, (o.snr * 10).roundToInt() / 10.0, if (p != null) p.levelDb.roundToInt().toDouble() else -90.0, off.hz,
-            p?.sub?.tone ?: 0.0, p?.sub?.dcs ?: 0, p != null && !o.cut)
+            p?.tone() ?: 0.0, p?.dcs() ?: 0, p != null && !o.cut)
     }
 
     /** The whole picture now; the engine also publishes it on [snap] twice a second. */
