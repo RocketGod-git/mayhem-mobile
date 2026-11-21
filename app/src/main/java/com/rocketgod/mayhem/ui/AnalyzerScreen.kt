@@ -311,7 +311,7 @@ fun AnalyzerScreen(accent: Color) {
             if (!UiState.listFull) TileRow(Analyzer.BANDS.map { (label, hz) -> Tile(label, "MHz", freq == hz) }, accent, width = 84.dp) { Analyzer.pickFreq(Analyzer.BANDS[it].second) }
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 // first in the row, so it is always in reach: the list full screen, and back to the waterfall
-                ToggleBox(if (UiState.listFull) "WATERFALL" else "FULL LIST", UiState.listFull, accent, Modifier.fillMaxHeight()) { UiState.listFull = !UiState.listFull }
+                ToggleBox("FULL LIST", UiState.listFull, accent, Modifier.fillMaxHeight()) { UiState.listFull = !UiState.listFull }
                 ToggleBox("CAPTURE", capturing, accent, Modifier.fillMaxHeight()) { Analyzer.setCapturing(!capturing) }
                 ToggleBox("IMPORT", false, accent, Modifier.fillMaxHeight()) { runCatching { importer.launch(arrayOf("*/*")) } }
                 ToggleBox("FILTER", UiState.showFilter, accent, Modifier.fillMaxHeight()) { UiState.showFilter = !UiState.showFilter }

@@ -243,7 +243,8 @@ export class AnalyzerUi {
       const v = this.root?.closest('.view') ?? document.querySelector('.view.analyzer');
       const on = !v?.classList.contains('an-listfull');
       v?.classList.toggle('an-listfull', on);
-      const b = $('an-full'); if (b) { b.textContent = on ? 'WATERFALL' : 'FULL LIST'; b.classList.toggle('on', on); }
+      // one label, lit while the list is full: it never reads as a waterfall button
+      $('an-full')?.classList.toggle('on', on);
     };
     $('an-filt').onclick = () => { this.showFilter = !this.showFilter; this.draw(); };
     $('an-star').onclick = () => { this.starredOnly = !this.starredOnly; this.draw(); };
