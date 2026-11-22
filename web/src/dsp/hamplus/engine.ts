@@ -34,7 +34,44 @@ const MEASURE_MS = 100, SNAP_MS = 500, OFF_WIN_MS = 100;
 
 export interface HpParams { thresholdDb: number; mode: 'mix' | 'newest'; volume: number }
 
-class Probe {
+/** What the watcher needs of a channel's demodulator: HAM+ has the FM one below, CB its AM / FM / SSB one. */
+export interface WatchProbe {
+  readonly clip: ClipWriter; readonly means: number[]; readonly env: number[];
+  a48: Float32Array; out48: number; levelDb: number; cw0: string;
+  push(fi: Float32Array, fq: Float32Array, n: number, listen: boolean): void;
+  retune(offsetHz: number): void;
+  offset(skip?: number): { hz: number; sd: number };
+  tone(): number; dcs(): number;
+  /** The transmission ended: flush what is still buffered (a Morse letter). */
+  end(): void;
+}
+
+/**
+ * Where a watcher's channels are and how one opens. HAM+ watches every point of a 2.5 kHz raster inside the ham bands
+ * and lets a carrier move to its own raster point; CB watches the 40 channels of its plan and nothing else.
+ */
+export interface WatchPlan {
+  /** The name in log lines and the snapshot message type. */
+  name: string; type: string;
+  raster: number;
+  /** Whether a raster point may open a channel. */
+  inPlan(hz: number): boolean;
+  /** The FFT size for a sample rate. */
+  nfft(rate: number): number;
+  /** Half the span heard, at a sample rate. */
+  spanHalf(rate: number): number;
+  /** A new carrier must be the strongest within this many raster steps, and this many from an open one. */
+  peakSteps: number; clearSteps: number;
+  /** An open carrier off its raster point by more than half a step moves to the right one. */
+  snap: boolean;
+}
+export const HAM_PLAN: WatchPlan = {
+  name: 'HAM+', type: 'hamplus', raster: HP_RASTER, inPlan: hz => !!hpBandOf(hz),
+  nfft: rate => 1 << Math.max(10, Math.min(14, Math.ceil(Math.log2(rate / 1000)))), spanHalf: rate => rate * 0.44 - 6_250,
+  peakSteps: 3, clearSteps: 4, snap: true,
+};
+
+class Probe implements WatchProbe {
   readonly ddc = new Ddc(7_500, PROBE_RATE, 63);
   readonly fs: number;
   oi = new Float32Array(0); oq = new Float32Array(0); au = new Float32Array(0); au2 = new Float32Array(0); a8 = new Float32Array(0); a48 = new Float32Array(0);
@@ -96,9 +133,10 @@ class Probe {
   static top(m: Map<number, number>, total: number): number { let b = 0, v = 0; for (const [k, n] of m) if (n > v) { v = n; b = k; } return v >= TONE_SHARE * total ? b : 0; }
   tone(): number { return Probe.top(this.tones, this.subN); }
   dcs(): number { return this.tone() ? 0 : Probe.top(this.dcsCodes, this.subN); }
+  end(): void { this.cw.end(); }
 }
 
-interface Open { id: number; k: number; hz: number; startMs: number; quietMs: number; peak: number; snr: number; probe: Probe | null; cut: boolean; shifted: boolean; tileKey: string }
+export interface Open<P extends WatchProbe = WatchProbe> { id: number; k: number; hz: number; startMs: number; quietMs: number; peak: number; snr: number; probe: P | null; cut: boolean; shifted: boolean; tileKey: string }
 
 /** The span's noise: the power the quietest quarter of its channels sit at (a carrier or a hundred barely move it). */
 export function quietQuarter(power: Float32Array | number[], count: number): number {
@@ -107,7 +145,12 @@ export function quietQuarter(power: Float32Array | number[], count: number): num
   return v[Math.floor((count - 1) / 4)];
 }
 
-export class HamPlusEngine implements IqProcessor {
+/**
+ * Every channel of a plan in the span at once: the measurement, the opening and closing, the demodulators and their
+ * cap, the listening, the time machine and the snapshot. What is HAM+'s own (its plan, its FM probe) or CB's comes in
+ * through [WatchPlan], [makeProbe] and [gate].
+ */
+export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor {
   readonly wantsFm = false;
   centerHz = 146_001_250;
   params: HpParams = { thresholdDb: 8, mode: 'mix', volume: 1 };
@@ -115,12 +158,12 @@ export class HamPlusEngine implements IqProcessor {
   readonly clips = new ClipStore();
   /** Wall-clock anchoring: the engine's time is the samples it has had; it follows the wall clock when [followClock]. */
   followClock = true;
-  private rate = 0; private samples = 0; private baseMs = 0;
-  private nfft = 4096; private re = new Float32Array(0); private im = new Float32Array(0); private win = new Float32Array(0); private acc = new Float32Array(0); private frames = 0;
-  private fi = new Float32Array(0); private fq = new Float32Array(0);
-  private first = 0; private count = 0; private hamBand = new Uint8Array(0);
-  private power = new Float32Array(0); private floor = new Float32Array(0); private snr = new Float32Array(0);
-  private readonly opens = new Map<number, Open>();
+  protected rate = 0; private samples = 0; private baseMs = 0;
+  protected nfft = 4096; private re = new Float32Array(0); private im = new Float32Array(0); private win = new Float32Array(0); private acc = new Float32Array(0); private frames = 0;
+  protected fi = new Float32Array(0); protected fq = new Float32Array(0);
+  protected first = 0; protected count = 0; protected hamBand = new Uint8Array(0);
+  protected power = new Float32Array(0); protected floor = new Float32Array(0); protected snr = new Float32Array(0);
+  protected readonly opens = new Map<number, Open<P>>();
   private nextId = 1;
   private lastMeasure = 0; private lastSnap = 0; private lastCap = 0; private lastLog = 0; private lastCenter = 0;
   /** Probe processing time measured: ms a probe takes per second of signal (smoothed), and the cap it sets. */
@@ -131,9 +174,11 @@ export class HamPlusEngine implements IqProcessor {
   private replay: { mixer: ReplayMixer; label: string; kind: string; to48: Resampler; buf8: Float32Array; buf48: Float32Array; acc: number } | null = null;
   playing: string[] = [];
 
-  constructor(private readonly emit: Emit, private readonly sink: (chunk: Float32Array) => void, private readonly clock: () => number = () => Date.now(), private readonly perf: () => number = () => performance.now()) {
-    this.tracker = new HamTracker(() => this.nowMs());
+  constructor(readonly plan: WatchPlan, protected readonly emit: Emit, private readonly sink: (chunk: Float32Array) => void, private readonly clock: () => number = () => Date.now(), private readonly perf: () => number = () => performance.now(), tracker?: (now: () => number) => HamTracker) {
+    this.tracker = tracker ? tracker(() => this.nowMs()) : new HamTracker(() => this.nowMs());
   }
+  /** A demodulator for a carrier at [hz] (tile [key]). */
+  protected abstract makeProbe(hz: number, key: string): P;
   nowMs(): number { return this.baseMs + this.samples * 1000 / Math.max(1, this.rate); }
 
   setParams(p: Partial<HpParams>): void { Object.assign(this.params, p); }
@@ -142,26 +187,26 @@ export class HamPlusEngine implements IqProcessor {
 
   reset(rate: number): void {
     this.rate = rate; this.samples = 0; this.baseMs = this.clock();
-    this.nfft = 1 << Math.max(10, Math.min(14, Math.ceil(Math.log2(rate / 1000))));
+    this.nfft = this.plan.nfft(rate);
     this.re = new Float32Array(this.nfft); this.im = new Float32Array(this.nfft); this.win = hann(this.nfft); this.acc = new Float32Array(this.nfft); this.frames = 0;
-    this.closeAll(); this.plan();
-    this.emit({ type: 'log', line: `HAM+: ${(rate / 1e6).toFixed(2)} Msps · ${this.count} channels on a ${HP_RASTER / 1e3} kHz raster · probe cap ${this.cap}` });
+    this.closeAll(); this.layout();
+    this.emit({ type: 'log', line: `${this.plan.name}: ${(rate / 1e6).toFixed(2)} Msps · ${this.count} channels on a ${this.plan.raster / 1e3} kHz raster · probe cap ${this.cap}` });
   }
-  private plan(): void {
-    const half = this.rate * 0.44 - 6_250;
-    const first = Math.ceil((this.centerHz - half) / HP_RASTER), last = Math.floor((this.centerHz + half) / HP_RASTER);
+  protected layout(): void {
+    const half = this.plan.spanHalf(this.rate), R = this.plan.raster;
+    const first = Math.ceil((this.centerHz - half) / R), last = Math.floor((this.centerHz + half) / R);
     this.first = first; this.count = Math.max(0, last - first + 1);
     // only the ham bands open channels: a span reaching past a band's edge leaves the rest alone
-    this.hamBand = new Uint8Array(this.count); for (let k = 0; k < this.count; k++) this.hamBand[k] = hpBandOf(this.hzOf(k)) ? 1 : 0;
+    this.hamBand = new Uint8Array(this.count); for (let k = 0; k < this.count; k++) this.hamBand[k] = this.plan.inPlan(this.hzOf(k)) ? 1 : 0;
     this.power = new Float32Array(this.count).fill(-120); this.floor = new Float32Array(this.count).fill(NaN); this.snr = new Float32Array(this.count);
     this.lastCenter = this.centerHz;
     this.tracker.setSpan(this.centerHz - half, this.centerHz + half);
   }
-  private hzOf(k: number): number { return (this.first + k) * HP_RASTER; }
+  protected hzOf(k: number): number { return (this.first + k) * this.plan.raster; }
 
   onIq(iq: Int8Array, rate: number): void {
     if (rate !== this.rate) this.reset(rate);
-    if (this.centerHz !== this.lastCenter) { this.closeAll(); this.acc.fill(0); this.frames = 0; this.plan(); }
+    if (this.centerHz !== this.lastCenter) { this.closeAll(); this.acc.fill(0); this.frames = 0; this.layout(); }
     const n = iq.length >> 1;
     if (this.fi.length < n) { this.fi = new Float32Array(n); this.fq = new Float32Array(n); }
     for (let k = 0; k < n; k++) { this.fi[k] = iq[2 * k] + 0.5; this.fq[k] = iq[2 * k + 1] + 0.5; }
@@ -182,7 +227,7 @@ export class HamPlusEngine implements IqProcessor {
 
   /** Channel powers, floors, SNRs; carriers open and close. */
   private measure(now: number): void {
-    const N = this.nfft, binHz = this.rate / N, half = Math.max(1, Math.round(4_000 / binHz)), p = this.params;
+    const N = this.nfft, binHz = this.rate / N, half = Math.max(1, Math.round(4_000 / binHz));
     const pdb = new Float32Array(N);
     for (let k = 0; k < N; k++) pdb[(k + N / 2) % N] = this.acc[k] / this.frames;
     this.acc.fill(0); this.frames = 0;
@@ -201,6 +246,11 @@ export class HamPlusEngine implements IqProcessor {
       this.floor[k] = Number.isNaN(f) ? rel : rel < f ? f + 0.3 * (rel - f) : f + 0.004 * (rel - f);
       this.snr[k] = rel - this.floor[k];
     }
+    this.gate(now, pdb, binHz);
+  }
+  /** Which channels open and close, on the measurement just made ([pdb]: the span's power a bin, DC in the middle). */
+  protected gate(now: number, _pdb: Float32Array, _binHz: number): void {
+    const p = this.params, pl = this.plan;
     const nearDc = (k: number) => Math.abs(this.hzOf(k) - this.centerHz) < 6_000;
     // open channels: still above the closing level near their raster point?
     for (const o of [...this.opens.values()]) {
@@ -213,48 +263,52 @@ export class HamPlusEngine implements IqProcessor {
     // new carriers: over the threshold, the strongest raster point within 7.5 kHz, clear of the open ones
     for (let k = 0; k < this.count; k++) {
       if (this.snr[k] <= p.thresholdDb || nearDc(k) || !this.hamBand[k]) continue;
-      let peak = true; for (let d = -3; d <= 3 && peak; d++) { const j = k + d; if (d && j >= 0 && j < this.count && this.power[j] > this.power[k]) peak = false; }
+      let peak = true; for (let d = -pl.peakSteps; d <= pl.peakSteps && peak; d++) { const j = k + d; if (d && j >= 0 && j < this.count && this.power[j] > this.power[k]) peak = false; }
       if (!peak) continue;
-      let clear = true; for (const o of this.opens.values()) if (Math.abs(o.k - k) <= 4) { clear = false; break; }
+      let clear = true; for (const o of this.opens.values()) if (Math.abs(o.k - k) <= pl.clearSteps) { clear = false; break; }
       if (!clear) continue;
       this.openAt(k, now);
     }
   }
 
-  private tileKey(hz: number): string { return chanKey(this.tracker.tileHz(hz)); }
+  protected tileKey(hz: number): string { return chanKey(this.tracker.tileHz(hz)); }
   private wanted(key: string): boolean { const pr = this.tracker.prefs; return pr.hold === key || pr.prio.includes(key); }
   private probes(): number { let n = 0; for (const o of this.opens.values()) if (o.probe) n++; return n; }
 
-  private openAt(k: number, now: number): void {
+  protected openAt(k: number, now: number): Open<P> {
     const hz = this.hzOf(k), key = this.tileKey(hz);
-    const o: Open = { id: this.nextId++, k, hz, startMs: now - MEASURE_MS, quietMs: 0, peak: this.snr[k], snr: this.snr[k], probe: null, cut: false, shifted: false, tileKey: key };
+    const o: Open<P> = { id: this.nextId++, k, hz, startMs: now - MEASURE_MS, quietMs: 0, peak: this.snr[k], snr: this.snr[k], probe: null, cut: false, shifted: false, tileKey: key };
     if (this.fixedCap) this.cap = this.fixedCap;
     if (this.probes() >= this.cap && this.wanted(key)) {
       // a followed or priority channel takes the probe of the newest other one, which is then marked cut
       const victim = [...this.opens.values()].filter(x => x.probe && !this.wanted(x.tileKey)).sort((a, b) => b.startMs - a.startMs)[0];
       if (victim) { victim.probe = null; victim.cut = true; }
     }
-    if (this.probes() < this.cap) o.probe = new Probe(this.rate, hz - this.centerHz);
+    if (this.probes() < this.cap) o.probe = this.makeProbe(hz, key);
     this.opens.set(o.id, o);
+    return o;
   }
 
-  private close(o: Open, endMs: number): void {
+  protected close(o: Open<P>, endMs: number): void {
     this.opens.delete(o.id);
     if (endMs - o.startMs < TX_MIN_MS) return;
     const p = o.probe, off = p ? p.offset(2) : { hz: NaN, sd: 0 };
-    if (p) p.cw.end();
+    if (p) p.end();
     const recorded = !!p && !o.cut;
     const t: TxRec = {
       id: o.id, hz: o.hz, startMs: o.startMs, endMs, peakDb: Math.round(o.peak * 10) / 10, offsetHz: off.hz, offsetSd: off.sd,
       tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cw0 ?? '', env: Float32Array.from((p?.env ?? []).slice(0, Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
     };
     if (recorded) this.clips.add({ id: o.id, chan: o.hz, startMs: o.startMs, data: p!.clip.done().slice(0, Math.round((endMs - o.startMs) * CLIP_RATE / 1000)) });
+    this.closed(o, t);
     this.tracker.addTx(t);
   }
-  private closeAll(): void { const now = this.nowMs(); for (const o of [...this.opens.values()]) this.close(o, now); }
+  /** A finished transmission, just before the tracker has it. */
+  protected closed(_o: Open<P>, _t: TxRec): void { /* HAM+ keeps nothing more */ }
+  protected closeAll(): void { const now = this.nowMs(); for (const o of [...this.opens.values()]) this.close(o, now); }
 
   /** Which open channels are heard: the followed one alone; else priority ones when open; else all (mix) or the newest. */
-  private listenSet(): Open[] {
+  private listenSet(): Open<P>[] {
     const pr = this.tracker.prefs;
     let c = [...this.opens.values()].filter(o => o.probe && !pr.mute.includes(o.tileKey));
     // a repeater input is the same voice as its output: the output is heard
@@ -277,7 +331,7 @@ export class HamPlusEngine implements IqProcessor {
       const hear = listen.includes(o);
       p.push(this.fi, this.fq, n, hear);
       // a carrier that is off its raster point by more than half a step moves to the right one, once
-      if (!o.shifted && now - o.startMs > 500) {
+      if (this.plan.snap && !o.shifted && now - o.startMs > 500) {
         o.shifted = true;
         const off = p.offset(1);
         if (Math.abs(off.hz) > HP_RASTER / 2) {
@@ -300,7 +354,7 @@ export class HamPlusEngine implements IqProcessor {
       this.costMs = this.costMs ? 0.7 * this.costMs + 0.3 * per : per;
       this.cap = this.fixedCap || Math.max(CAP_MIN, Math.min(CAP_MAX, Math.floor(BUDGET_MS / Math.max(0.1, this.costMs))));
       this.costT = 0; this.costSig = 0; this.costProbeS = 0;
-      if (now - this.lastLog > 30_000) { this.lastLog = now; this.emit({ type: 'log', line: `HAM+: demod cost ${this.costMs.toFixed(1)} ms per channel per second at ${(this.rate / 1e6).toFixed(2)} Msps, cap ${this.cap} channels` }); }
+      if (now - this.lastLog > 30_000) { this.lastLog = now; this.emit({ type: 'log', line: `${this.plan.name}: demod cost ${this.costMs.toFixed(1)} ms per channel per second at ${(this.rate / 1e6).toFixed(2)} Msps, cap ${this.cap} channels` }); }
     }
     if (this.replay) { this.replayStep(n); return; }
     if (!voices) return;
@@ -361,6 +415,14 @@ export class HamPlusEngine implements IqProcessor {
       stats: { onAir: this.opens.size, stations: tr.stationCount, probes: this.probes(), cap: this.cap, costMs: Math.round(this.costMs * 10) / 10, clipS: Math.round(this.clips.seconds), clipMB: Math.round(this.clips.bytes / 1e5) / 10, capMB: Math.round(this.clips.cap / 1e5) / 10, oldestMs: this.clips.oldestMs(), channels: this.count },
     };
   }
-  private post(now: number): void { this.emit({ type: 'hamplus', ...this.snapshot(now) }); }
+  protected post(now: number): void { this.emit({ type: this.plan.type, ...this.snapshot(now) }); }
+}
+
+/** HAM+: every FM channel on the ham bands at once. */
+export class HamPlusEngine extends ChannelWatch<Probe> {
+  constructor(emit: Emit, sink: (chunk: Float32Array) => void, clock: () => number = () => Date.now(), perf: () => number = () => performance.now()) {
+    super(HAM_PLAN, emit, sink, clock, perf);
+  }
+  protected makeProbe(hz: number): Probe { return new Probe(this.rate, hz - this.centerHz); }
 }
 export type HpSnap = ReturnType<HamPlusEngine['snapshot']>;

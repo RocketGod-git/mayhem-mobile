@@ -10,7 +10,7 @@
  *  - nets: one station coming back between check-ins from many others;
  *  - a 24-hour activity map per band, and per-channel activity for sparklines.
  */
-import { planInfo, offsetText, hpBandOf } from './plan.js';
+import { planInfo, offsetText, hpBandOf, type PlanInfo } from './plan.js';
 
 export const CONV_GAP_MS = 45_000;
 /** A transmission shorter than this has too little carrier for its offset to count. */
@@ -68,6 +68,8 @@ export interface HpTxRow {
   /** The talker's own carrier was heard on the repeater's input: they are near. */
   direct: boolean;
   conv: number; recorded: boolean; cw: string;
+  /** CB: the mode it was heard in (AM, FM, USB, LSB). HAM+ leaves it out. */
+  mode?: string;
 }
 export interface HpTile {
   key: string; hz: number; label: string; use: string; kind: string; offset: string;
@@ -109,6 +111,13 @@ export function envCorr(a: Float32Array, b: Float32Array, startDiffFrames: numbe
   return best;
 }
 
+/**
+ * What the tracker asks of a band plan: what a frequency is (its name, its use, its repeater offsets) and the row of
+ * the activity map it counts in. HAM+ has the ARRL plans and a row per band; CB its channel names and a row a channel.
+ */
+export interface TrackerPlan { info(hz: number): PlanInfo; heatRow(hz: number): string }
+export const HAM_TRACKER_PLAN: TrackerPlan = { info: planInfo, heatRow: hz => hpBandOf(hz)?.id ?? '' };
+
 export class HamTracker {
   private readonly chans = new Map<string, Chan>();
   private readonly txs: TxRec[] = [];
@@ -127,7 +136,7 @@ export class HamTracker {
   spanLo = 0; spanHi = 0;
   private lastCover = 0;
 
-  constructor(readonly now: () => number = () => Date.now()) {}
+  constructor(readonly now: () => number = () => Date.now(), readonly plan: TrackerPlan = HAM_TRACKER_PLAN) {}
 
   setSpan(lo: number, hi: number): void { this.spanLo = lo; this.spanHi = hi; }
   inSpan(hz: number): boolean { return hz > this.spanLo && hz < this.spanHi; }
@@ -143,7 +152,7 @@ export class HamTracker {
   inputOf(hz: number): number { return this.pairs.get(chanKey(hz)) ?? 0; }
   /** A repeater output: the band plan says so, a CW ID was heard on it, or its input was found. */
   repeaterLike(hz: number): boolean {
-    const c = this.chans.get(chanKey(hz)), p = planInfo(hz);
+    const c = this.chans.get(chanKey(hz)), p = this.plan.info(hz);
     if (this.outputOf(hz)) return false;
     return p.use === 'output' || !!this.inputOf(hz) || (!!c?.callsign && p.use !== 'simplex');
   }
@@ -190,17 +199,17 @@ export class HamTracker {
       if (b > a) c.minutes.set(m, (c.minutes.get(m) ?? 0) + b - a);
     }
     for (const m of c.minutes.keys()) if (m < Math.floor(t.endMs / 60_000) - SPARK_MIN) c.minutes.delete(m);
-    const band = hpBandOf(t.hz);
-    if (band) {
-      let b = this.heat.bands.find(x => x.id === band.id);
-      if (!b) { b = { id: band.id, slots: new Array(HEAT_SLOTS).fill(0) }; this.heat.bands.push(b); }
+    const row = this.plan.heatRow(t.hz);
+    if (row) {
+      let b = this.heat.bands.find(x => x.id === row);
+      if (!b) { b = { id: row, slots: new Array(HEAT_SLOTS).fill(0) }; this.heat.bands.push(b); }
       b.slots[localSlot(t.startMs)] += dur / 1000;
     }
     const call = cwCallsign(t.cw);
     // every transmission is clustered; on a repeater output the clusters are the repeater's own carrier and go unused
     const s = this.assign(c, t, true);
     if (s) this.txStation.set(t.id, s.key);
-    if (call) { const u = planInfo(t.hz).use; if (s && (u === 'simplex' || u === 'input' || this.outputOf(t.hz))) s.callsign = call; else { c.callsign = call; c.callsignMs = t.endMs; } }
+    if (call) { const u = this.plan.info(t.hz).use; if (s && (u === 'simplex' || u === 'input' || this.outputOf(t.hz))) s.callsign = call; else { c.callsign = call; c.callsignMs = t.endMs; } }
     this.judge(this.now());
   }
 
@@ -220,7 +229,7 @@ export class HamTracker {
       this.judged.add(t.id);
       // as a repeater input: an output at a plan offset keyed with it
       for (const c of this.chans.values()) {
-        const off = t.hz - c.hz, p = planInfo(c.hz);
+        const off = t.hz - c.hz, p = this.plan.info(c.hz);
         if (!p.offsets.some(o => Math.abs(o - off) < 1_250)) continue;
         const k = `${chanKey(c.hz)}|${chanKey(t.hz)}`;
         const ev = this.pairEv.get(k) ?? { hits: 0, misses: 0 };
@@ -246,7 +255,7 @@ export class HamTracker {
     }
   }
   private pairedTogether(a: number, b: number): boolean {
-    return Math.abs(this.inputOf(a) - b) < 1_250 || Math.abs(this.inputOf(b) - a) < 1_250 || planInfo(a).offsets.some(o => Math.abs(b - a - o) < 1_250) && this.pairEv.has(`${chanKey(a)}|${chanKey(b)}`) || planInfo(b).offsets.some(o => Math.abs(a - b - o) < 1_250) && this.pairEv.has(`${chanKey(b)}|${chanKey(a)}`);
+    return Math.abs(this.inputOf(a) - b) < 1_250 || Math.abs(this.inputOf(b) - a) < 1_250 || this.plan.info(a).offsets.some(o => Math.abs(b - a - o) < 1_250) && this.pairEv.has(`${chanKey(a)}|${chanKey(b)}`) || this.plan.info(b).offsets.some(o => Math.abs(a - b - o) < 1_250) && this.pairEv.has(`${chanKey(b)}|${chanKey(a)}`);
   }
 
   /** Link groups: each tile key in a linked network mapped to a group number from 1. */
@@ -326,7 +335,7 @@ export class HamTracker {
       const c = this.chans.get(k) ?? this.chan(tileHz), inHz = this.inputOf(tileHz), ci = inHz ? this.chans.get(chanKey(inHz)) : undefined;
       const lv = this.live.filter(l => Math.abs(l.hz - tileHz) < 1_250 || (inHz && Math.abs(l.hz - inHz) < 1_250));
       const lo = lv.find(l => Math.abs(l.hz - tileHz) < 1_250) ?? lv[0];
-      const p = planInfo(tileHz), rep = this.repeaterLike(tileHz);
+      const p = this.plan.info(tileHz), rep = this.repeaterLike(tileHz);
       const spark: number[] = []; for (let m = nowMin - SPARK_MIN + 1; m <= nowMin; m++) spark.push(Math.round((c.minutes.get(m) ?? 0) / 1000));
       if (lo) { const a = Math.max(lo.startMs, nowMin * 60_000); spark[spark.length - 1] += Math.round((now - a) / 1000); }
       const sts = rep ? ci?.stations ?? [] : c.stations;

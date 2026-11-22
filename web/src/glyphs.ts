@@ -53,6 +53,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   trains: { d: 'M34 8 H66 Q76 8 76 18 V70 H24 V18 Q24 8 34 8 Z M32 20 H68 V38 H32 Z M38 70 L16 94 M62 70 L84 94 M30 82 H70', circles: [[36, 56, 5], [64, 56, 5]] },
   // Dispatch: a handheld radio, its speaker grille, and the call going out from it
   fleet: { d: 'M30 32 H54 Q60 32 60 38 V86 Q60 92 54 92 H30 Q24 92 24 86 V38 Q24 32 30 32 Z M32 32 V8 M32 50 H52 M32 62 H52 M32 74 H52 ' + arc(60, 52, 16, -40, 40, 10) + arc(60, 52, 30, -40, 40, 10) },
+  // CB: the same handheld radio, a transceiver on a channel
+  cb: { d: 'M30 32 H54 Q60 32 60 38 V86 Q60 92 54 92 H30 Q24 92 24 86 V38 Q24 32 30 32 Z M32 32 V8 M32 50 H52 M32 62 H52 M32 74 H52 ' + arc(60, 52, 16, -40, 40, 10) + arc(60, 52, 30, -40, 40, 10) },
   vdl2: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M22 66 L36 44 L50 60 L64 40 L78 56 M50 6 L50 20 M38 14 L62 14' },
   acars: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M10 32 L50 56 L90 32 M50 6 L50 20 M38 14 L62 14' },
   // a spectrum peak over a baseline, a marker chevron over it: a bench analyzer's screen

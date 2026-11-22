@@ -38,6 +38,7 @@ import { IqRecorder } from './dsp/capture.js';
 import { HamDemod } from './dsp/ham/demod.js';
 import { BandMonitor } from './dsp/ham/monitor.js';
 import { HamPlusEngine } from './dsp/hamplus/engine.js';
+import { CbEngine } from './dsp/cb/engine.js';
 import { Classifier } from './dsp/ham/classify.js';
 import { VoiceDetector } from './dsp/voice.js';
 import { OrbcommDecoder } from './dsp/orbcomm.js';
@@ -194,6 +195,7 @@ const g3ruh = new G3ruhDecoder(emit);
 const geoscan = new GeoscanDecoder(emit);
 const monitor = new BandMonitor(emit, toAudio);
 const hamplus = new HamPlusEngine(emit, toAudio);
+const cb = new CbEngine(emit, toAudio);
 const classifier = new Classifier();
 // digital decoders on the HAM audio; 'auto' runs the three audio modems together and shows whichever is making sense
 const cw = new CwDecoder(600), rtty = new RttyDecoder(), psk = new Psk31Decoder(1000), ft8 = new Ft8Decoder(), sstv = new SstvDecoder();
@@ -455,16 +457,20 @@ self.onmessage = (e: MessageEvent) => {
     case 'hamParams': ham.set(m.params); break;
     case 'monitorParams': monitor.set(m.params); break;
     case 'hamplus':
-      if (m.cmd === 'center') hamplus.centerHz = m.hz as number;
-      else if (m.cmd === 'params') hamplus.setParams(m.params as Record<string, unknown>);
-      else if (m.cmd === 'prefs') hamplus.setPrefs(m.prefs as never, m.labels as Record<string, string>);
-      else if (m.cmd === 'restore') hamplus.restore(m.saved as never);
-      else if (m.cmd === 'save') post({ type: 'hamplusSaved', saved: hamplus.tracker.save() });
-      else if (m.cmd === 'replay') { if (!hamplus.replayTx(m.ids as number[], m.label as string, m.kind as string)) { emit({ type: 'log', line: 'HAM+: that audio is no longer in the time machine' }); post({ type: 'hamplusNote', text: 'That audio is no longer kept' }); } }
-      else if (m.cmd === 'replayFrom') { if (!hamplus.replayFrom(m.ms as number)) { emit({ type: 'log', line: 'HAM+: nothing recorded yet' }); post({ type: 'hamplusNote', text: 'Nothing recorded yet' }); } }
-      else if (m.cmd === 'stop') hamplus.stopReplay();
-      else if (m.cmd === 'clear') hamplus.clear();
+    case 'cb': {
+      // HAM+ and CB share the watcher and its commands; CB adds its modes and clarifiers
+      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB' : 'HAM+';
+      if (m.cmd === 'center') w.centerHz = m.hz as number;
+      else if (m.cmd === 'params') w.setParams(m.params as Record<string, unknown>);
+      else if (m.cmd === 'prefs') { w.setPrefs(m.prefs as never, m.labels as Record<string, string>); if (w === cb && m.cb) cb.setCbPrefs(m.cb as never); }
+      else if (m.cmd === 'restore') w.restore(m.saved as never);
+      else if (m.cmd === 'save') post({ type: `${m.type}Saved`, saved: w.tracker.save() });
+      else if (m.cmd === 'replay') { if (!w.replayTx(m.ids as number[], m.label as string, m.kind as string)) { emit({ type: 'log', line: `${name}: that audio is no longer in the time machine` }); post({ type: `${m.type}Note`, text: 'That audio is no longer kept' }); } }
+      else if (m.cmd === 'replayFrom') { if (!w.replayFrom(m.ms as number)) { emit({ type: 'log', line: `${name}: nothing recorded yet` }); post({ type: `${m.type}Note`, text: 'Nothing recorded yet' }); } }
+      else if (m.cmd === 'stop') w.stopReplay();
+      else if (m.cmd === 'clear') w.clear();
       break;
+    }
     case 'digital': setDigital(m.mode as string, m); break;
     case 'js8Speeds': js8.enabled = { ...js8.enabled, ...(m.speeds as Record<string, boolean>) }; break;
     case 'satService': if (typeof m.baud === 'number') g3ruh.setBaud(m.baud); setSatService(m.kind as string); break;
@@ -511,6 +517,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     }
     case 'monitor': return monitor;
     case 'hamplus': hamplus.centerHz = centreHz; return hamplus;
+    case 'cb': cb.centerHz = centreHz; return cb;
     default: return null;
   }
 }
@@ -581,7 +588,7 @@ function process(iq: Int8Array): void {
       const line = `RX: iqRMS=${rms.toFixed(1)} dcI=${(sI / nn).toFixed(1)} dcQ=${(sQ / nn).toFixed(1)} · peak ${offKhz >= 0 ? '+' : ''}${offKhz.toFixed(0)} kHz ${peak.toFixed(0)}dB vs floor ${median.toFixed(0)}dB (Δ${(peak - median).toFixed(0)})`;
       // LoRa's gain steers by its strongest burst and its clips (loraAgc in main), measured in the scanner's looks
       const loraLevel = processor === lora ? { ...lora.scanner.takeLevel(), agoMs: lora.scanner.loraAtMs > 0 ? Date.now() - lora.scanner.loraAtMs : -1 } : undefined;
-      post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
+      post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus || processor === cb ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
       audioPeak = 0;
     }
   }

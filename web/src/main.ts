@@ -35,6 +35,9 @@ import { hpWindows } from './dsp/hamplus/plan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import type { HpTxRow } from './dsp/hamplus/tracker.js';
 import { hpHeadHtml, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, HP_SPAN_MS } from './hamplus-ui.js';
+import type { CbSnap } from './dsp/cb/engine.js';
+import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
+import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml, cbListenHtml, cbTilesHtml, cbTitle } from './cb-ui.js';
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, protoLabel, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
@@ -78,7 +81,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -99,6 +102,7 @@ const APPS: AppDef[] = [
   { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
   { id: 'hamplus', title: 'HAM+', blurb: 'every repeater at once', cat: 'Receive' },
+  { id: 'cb', title: 'CB', blurb: 'all 40 channels at once', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
@@ -284,6 +288,7 @@ function tune(hz: number, hold = false): void {
   state.freq = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
   // HAM+ measures every channel against the radio's center: it moves with it
   if (state.app === 'hamplus') hpSend({ cmd: 'center', hz: state.freq });
+  if (state.app === 'cb') cbSend({ cmd: 'center', hz: state.freq });
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
   // the finger that just picked something (`hold`). Explicit tuning — the dial, the keypad, the step keys — is
   // free to go anywhere the radio reaches: the view follows it, so you are never walled inside the band you
@@ -1013,6 +1018,7 @@ function open(app: AppId | null): void {
     case 'trains': trainsTune(); if (trainsUi.auto) trainsCycle(); break;
     case 'fleet': fleetOpen(); break;
     case 'hamplus': hpOpen(); break;
+    case 'cb': cbOpen(); break;
     case 'cell': cellOpen(); break;
     case 'atsc': atscOpen(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
@@ -1735,6 +1741,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   atsc: ['atsc', 'No stations yet', ['AUTO looks at every channel for an ATSC pilot and stays on each station it finds', 'An antenna up high, or outside, hears stations 60+ miles away', 'A HackRF decodes the channels, the guide and a picture of each; an RTL-SDR finds the stations']],
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   hamplus: ['hamplus', 'Nothing on the air yet', ['Every channel that keys up shows up here at once, repeaters, simplex and their inputs', 'Each transmission is recorded, so a tap on it later plays it back', 'AUTO looks at 10 m, 6 m, 2 m, 1.25 m and 70 cm and stays where the voice is', 'A HackRF at 8 MHz hears all of 2 m at once']],
+  cb: ['cb', 'Nothing on the air yet', ['All 40 channels are heard at once, each in its own mode', 'A channel opens on a voice, so a steady carrier from a charger or a computer stays shut', 'Daytime skip brings far stations, and the activity map shows when the band opens', 'A HackRF at 2 MS/s or an RTL-SDR at 2.4 MS/s hears the whole band']],
   fleet: ['fleet', 'No trunked systems yet', ['Control channels send all the time: a system shows up within seconds of its band being in the span', 'Every call granted jumps to the top while it is on the air', 'AUTO steps through VHF, TETRA 380 to 430, UHF, T-band, 700, 800 and 900 MHz and stays on the band where clear voice is heard; pick a band to stay on it', 'A HackRF at 8 or 20 MHz hears a whole site at once']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
   uat: ['uat', 'Listening on 978 MHz', ['FAA ground towers broadcast weather here several times a second: radar, airport weather, notices', 'Small planes, and the traffic the towers rebroadcast, show up on the map', 'A 978 MHz antenna (a 915 MHz one works) with a view of the sky helps']],
@@ -1956,6 +1963,7 @@ function render(app: AppId | null): void {
     case 'trains': renderTrains(view); break;
     case 'fleet': renderFleet(view); break;
     case 'hamplus': renderHamPlus(view); break;
+    case 'cb': renderCb(view); break;
     case 'hd': renderHd(view); break;
     case 'cell': renderCell(view); break;
     case 'atsc': renderAtsc(view); break;
@@ -4485,7 +4493,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { hamplus: false, hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, atsc: false, ert: true, lora: true, acars: true, vdl2: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { hamplus: false, cb: false, hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, atsc: false, ert: true, lora: true, acars: true, vdl2: true };
 const WF_SVG = WF_ICON;
 /** The apps whose waterfall can be put away. The button is the scope's own (Scope.setHide, top left corner), wired
  *  for these apps in wireCommon, so no screen draws one of its own. */
@@ -4924,6 +4932,174 @@ function refreshHamPlus(force = false): void {
   else setLamp('LISTENING', 'amber', true);
 }
 HP_WIDE.addEventListener('change', () => { if (state.app === 'hamplus') { render('hamplus'); refreshReadout(); } });
+
+// ---- CB: all 40 channels at once on HAM+'s watcher, AM / FM / SSB, steady carriers kept shut --------------------
+const CB_KEY = 'mm.cb.v1', CB_KNOWN = 'mm.cb.known1';
+const cbUi = {
+  snap: null as CbSnap | null, prefs: { hold: '', mute: [] as string[], prio: [] as string[] }, labels: {} as Record<string, string>,
+  modes: {} as Record<string, CbMode | ''>, clar: {} as Record<string, number>,
+  mode: 'mix' as 'mix' | 'newest', audioOn: true, gain: 1, view: 'talk' as HpView, sel: '', open: new Set<number>(),
+  timer: 0, drawn: 0, pending: 0, hold: false, wired: false, savedAt: 0, anim: 0,
+  hit: null as HpHit | null, hitWide: null as HpHit | null, note: '', noteUntil: 0,
+};
+function cbNote(text: string): void { cbUi.note = text; cbUi.noteUntil = Date.now() + 3_500; refreshCb(true); }
+(() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(CB_KEY) ?? 'null');
+    if (v) { cbUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; cbUi.labels = v.labels ?? {}; cbUi.modes = v.modes ?? {}; cbUi.clar = v.clar ?? {}; cbUi.mode = v.mode === 'newest' ? 'newest' : 'mix'; cbUi.audioOn = v.audioOn !== false; cbUi.gain = Number(v.gain) || 1; }
+  } catch { /* storage blocked */ }
+})();
+function cbSave(): void {
+  try { localStorage.setItem(CB_KEY, JSON.stringify({ prefs: cbUi.prefs, labels: cbUi.labels, modes: cbUi.modes, clar: cbUi.clar, mode: cbUi.mode, audioOn: cbUi.audioOn, gain: cbUi.gain })); } catch { /* storage full or blocked */ }
+}
+/** One span hears all 40: a HackRF at 2 MS/s, an RTL-SDR at 2.4. */
+const cbRate = () => radioCan(2_400_000) && radio?.kind === 'rtlsdr' ? 2_400_000 : radioCan(2_000_000) ? 2_000_000 : 2_400_000;
+const cbSend = (m: Record<string, unknown>) => worker?.postMessage({ type: 'cb', ...m });
+const cbPushPrefs = () => cbSend({ cmd: 'prefs', prefs: cbUi.prefs, labels: cbUi.labels, cb: { modes: cbUi.modes, clar: cbUi.clar } });
+const cbPushParams = () => cbSend({ cmd: 'params', params: { mode: cbUi.mode, volume: cbUi.audioOn ? cbUi.gain : 0 } });
+function cbOpen(): void {
+  configure('NONE', CB_CENTER, cbRate(), 32, 40, true, 'cb');
+  cbSend({ cmd: 'center', hz: CB_CENTER });
+  cbPushPrefs(); cbPushParams();
+  try { const k = JSON.parse(localStorage.getItem(CB_KNOWN) ?? 'null'); if (k) cbSend({ cmd: 'restore', saved: k }); } catch { /* storage blocked */ }
+  if (cbUi.audioOn) void ensureAudio();
+}
+function cbPref(kind: 'hold' | 'mute' | 'prio', key: string): void {
+  const p = cbUi.prefs;
+  if (kind === 'hold') p.hold = p.hold === key ? '' : key;
+  else { const l = p[kind]; p[kind] = l.includes(key) ? l.filter(x => x !== key) : [...l, key]; }
+  cbSave(); cbPushPrefs(); refreshCb(true);
+}
+function cbFollow(key: string): void { if (!key || key === cbUi.prefs.hold) { if (cbUi.prefs.hold) cbPref('hold', cbUi.prefs.hold); } else cbPref('hold', key); }
+function cbRename(key: string, cur: string): void {
+  const v = window.prompt('Name this talker (empty: back to its letter)', cur);
+  if (v === null) return;
+  const n = v.trim().toUpperCase().slice(0, 16);
+  if (n) cbUi.labels[key] = n; else delete cbUi.labels[key];
+  cbSave(); cbPushPrefs();
+}
+function cbReplay(ids: number[], label: string, kind: string): void { void ensureAudio(); cbSend({ cmd: 'replay', ids, label, kind }); }
+const CB_ABOUT = 'All 40 CB channels at once. Every channel that carries a voice is demodulated in its own mode, AM, FM, USB or LSB, read from the transmission itself (a carrier that moves with the voice is AM, a steady envelope is FM, energy on one side of the channel is single sideband), or set by hand on the channel\'s card with a clarifier for SSB. A channel opens on its modulation, not its power, so a steady unmodulated carrier from a nearby receiver, charger or computer keeps it shut and shows as a steady carrier, while a voice under one still opens it. Talkers on AM and FM are told apart by their own radio\'s carrier, and the time machine keeps every transmission to replay. An RTL-SDR tunes 27 MHz directly, a Blog V4 through its HF upconverter.';
+function renderCb(view: HTMLElement): void {
+  const wide = HP_WIDE.matches;
+  view.classList.toggle('hpwide', wide);
+  const tabs: [HpView, string][] = [['talk', 'CONVERSATIONS'], ['act', 'ACTIVITY'], ['log', 'LOG']];
+  const jumps: [string, string][] = [['ch', 'CHANNELS'], ['tl', 'TIMELINE'], ['talk', 'CONVERSATIONS'], ['act', 'ACTIVITY'], ['log', 'LOG']];
+  view.innerHTML = `
+    <section class="${visCls('cb')}">${readoutHtml()}${wide ? '<div class="hp-tlbox wide"><canvas id="cb-tlw" class="hp-tl" data-fill="1"></canvas></div>' : ''}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      ${wide ? '' : `<nav class="fl-jump hp-jump">${jumps.map(([k, l]) => `<button data-hpjump="${k}"><span>${l}</span><b></b></button>`).join('')}</nav>`}
+      <div id="cb-live" class="fl-now hp-live"></div>
+      <div id="cb-head" class="hp-head"></div>
+      <div id="cb-listen" class="ctlrow fl-mode hp-listen"></div>
+      <div class="ctlrow hp-audio"><button class="chip" id="cb-aud"></button><span class="rl">VOLUME</span><input id="cb-vol" type="range" min="0" max="150" value="${Math.round(cbUi.gain * 100)}" aria-label="volume"><span id="cb-volv" class="hp-volv"></span><button id="cb-clear" class="ib" title="forget what was heard" aria-label="clear"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button></div>
+      ${wide ? `<div class="hp-lower"><div class="hp-tiles cb-scroll"><div id="cb-board"></div><div id="cb-tiles"></div></div><div class="hp-bottom"><div class="ctlrow hp-tabs">${segHtml(tabs.map(([v, l]) => `<button data-hpview="${v}">${l}</button>`))}</div><div id="cb-stage" class="hp-stage"></div></div><div id="cb-card" class="hp-cardbox over" hidden></div></div>`
+      : `<div id="cb-card" class="hp-cardbox" hidden></div><div class="fl-sech" data-hpsec="ch">CHANNELS</div><div id="cb-board"></div><div id="cb-tiles" class="hp-tiles"></div>
+      <div class="fl-sech" data-hpsec="tl">TIMELINE · TAP A TRANSMISSION TO HEAR IT, ANYWHERE ELSE TO REPLAY FROM THERE</div><div class="hp-tlbox"><canvas id="cb-tl" class="hp-tl"></canvas></div>
+      <div class="fl-sech" data-hpsec="talk">CONVERSATIONS</div><div id="cb-talk" class="hp-talk"></div>
+      <div class="fl-sech" data-hpsec="act">ACTIVITY · 24 HOURS A CHANNEL</div><div id="cb-act"></div>
+      <div class="fl-sech" data-hpsec="log">LOG</div><div id="cb-log" class="hp-logs"></div>`}
+      <div class="note about">${esc(CB_ABOUT)}</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-hpview]', view).forEach(b => b.onclick = () => { cbUi.view = b.dataset.hpview as HpView; const st = q<HTMLElement>('#cb-stage'); if (st) st.scrollTop = 0; refreshCb(true); });
+  qa<HTMLButtonElement>('[data-hpjump]', view).forEach(b => b.onclick = () => {
+    const t = q(`[data-hpsec="${b.dataset.hpjump}"]`), sc = $('view'), r = t?.getBoundingClientRect();
+    if (t && r) sc.scrollTo({ top: sc.scrollTop + r.top - sc.getBoundingClientRect().top - 120, behavior: 'smooth' });
+  });
+  const sc = $('view');
+  if (cbSpy) sc.removeEventListener('scroll', cbSpy);
+  cbSpy = () => {
+    if (state.app !== 'cb' || HP_WIDE.matches) return;
+    const top = sc.getBoundingClientRect().top + 160; let cur = 'ch';
+    for (const k of ['ch', 'tl', 'talk', 'act', 'log']) { const el = q(`[data-hpsec="${k}"]`); if (el && el.getBoundingClientRect().top <= top) cur = k; }
+    if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4) cur = 'log';
+    qa<HTMLButtonElement>('.hp-jump [data-hpjump]').forEach(b => b.classList.toggle('on', b.dataset.hpjump === cur));
+  };
+  sc.addEventListener('scroll', cbSpy, { passive: true }); cbSpy();
+  view.onclick = (e) => {
+    const t = e.target as HTMLElement;
+    const info = t.closest<HTMLElement>('[data-hpinfo]'); if (info) { cbUi.sel = cbUi.sel === info.dataset.hpinfo ? '' : info.dataset.hpinfo!; refreshCb(true); if (!HP_WIDE.matches && cbUi.sel) $('cb-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    if (t.closest('[data-hpclose]')) { cbUi.sel = ''; refreshCb(true); return; }
+    const cm = t.closest<HTMLElement>('[data-cbmode]'); if (cm) { const [k, m] = cm.dataset.cbmode!.split(':'); if (m) cbUi.modes[k] = m as CbMode; else delete cbUi.modes[k]; cbSave(); cbPushPrefs(); refreshCb(true); return; }
+    const cc = t.closest<HTMLElement>('[data-cbclar]'); if (cc) { const [k, d] = cc.dataset.cbclar!.split(':'); const n = Number(d); cbUi.clar[k] = n === 0 ? 0 : Math.max(-CB_CLAR_MAX, Math.min(CB_CLAR_MAX, (cbUi.clar[k] ?? 0) + n)); if (!cbUi.clar[k]) delete cbUi.clar[k]; cbSave(); cbPushPrefs(); refreshCb(true); return; }
+    const nm = t.closest<HTMLElement>('[data-hpname]'); if (nm) { cbRename(nm.dataset.hpname!, nm.dataset.hpcur ?? ''); return; }
+    const pr = t.closest<HTMLElement>('[data-hppref]'); if (pr) { const [k, ...rest] = pr.dataset.hppref!.split(':'); cbPref(k as 'mute' | 'prio', rest.join(':')); return; }
+    const all = t.closest<HTMLElement>('[data-hpall]'); if (all) { cbUi.open.add(Number(all.dataset.hpall)); refreshCb(true); return; }
+    const cv = t.closest<HTMLElement>('[data-hpconv]'); if (cv) { cbReplay(cv.dataset.hpconv!.split(',').map(Number), cv.dataset.hplabel ?? '', 'conv'); return; }
+    const pl = t.closest<HTMLElement>('[data-hpplay]'); if (pl) { cbReplay([Number(pl.dataset.hpplay)], pl.dataset.hplabel ?? '', 'tx'); return; }
+    if (t.closest('[data-hpstop]')) { cbSend({ cmd: 'stop' }); return; }
+    const md = t.closest<HTMLElement>('[data-hpmode]'); if (md) { cbUi.mode = md.dataset.hpmode as 'mix' | 'newest'; cbSave(); cbPushParams(); refreshCb(true); return; }
+    const f = t.closest<HTMLElement>('[data-hpfollow]'); if (f) { cbFollow(f.dataset.hpfollow ?? ''); return; }
+  };
+  $('cb-aud').onclick = () => { cbUi.audioOn = !cbUi.audioOn; cbSave(); cbPushParams(); if (cbUi.audioOn) void ensureAudio(); refreshCb(true); };
+  $('cb-vol').oninput = (e) => { cbUi.gain = Number((e.target as HTMLInputElement).value) / 100; cbSave(); cbPushParams(); refreshCb(true); };
+  $('cb-clear').onclick = () => { cbSend({ cmd: 'clear' }); try { localStorage.removeItem(CB_KNOWN); } catch { /* storage blocked */ } cbUi.snap = null; cbUi.sel = ''; refreshCb(true); };
+  for (const id of ['cb-tl', 'cb-tlw']) {
+    const c = q<HTMLCanvasElement>(`#${id}`); if (!c) continue;
+    (c.parentElement ?? c).onclick = (e) => {
+      cbPainted = 0; cbPaint();
+      const r = c.getBoundingClientRect(), x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
+      const hit = (id === 'cb-tl' ? cbUi.hit : cbUi.hitWide)?.(x, y);
+      if (!hit) return;
+      if (hit.hz && x < 84) { cbFollow(String(hit.hz)); return; }
+      if (hit.tx && hit.tx.recorded && !hit.tx.live) { cbReplay([hit.tx.id], `${cbTitle(hit.tx.hz)} at ${hpClock(hit.tx.startMs)}`, 'tx'); return; }
+      if (!cbUi.snap?.rows.some(t => t.recorded && !t.live)) { cbNote('Nothing recorded yet'); return; }
+      void ensureAudio(); cbSend({ cmd: 'replayFrom', ms: hit.ms });
+    };
+  }
+  const release = () => { if (!cbUi.hold) return; setTimeout(() => { cbUi.hold = false; refreshCb(true); }, 0); };
+  view.onpointerdown = () => { cbUi.hold = true; };
+  if (!cbUi.wired) { cbUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
+  clearInterval(cbUi.timer);
+  cbUi.timer = window.setInterval(() => {
+    if (state.app !== 'cb') { clearInterval(cbUi.timer); return; }
+    const now = Date.now(); if (now - cbUi.savedAt > 15_000) { cbUi.savedAt = now; cbSend({ cmd: 'save' }); }
+    refreshCb();
+  }, 500);
+  cancelAnimationFrame(cbUi.anim);
+  const frame = () => { if (state.app !== 'cb') return; cbPaint(); cbUi.anim = requestAnimationFrame(frame); };
+  cbUi.anim = requestAnimationFrame(frame);
+  refreshCb(true);
+}
+let cbSpy: (() => void) | null = null, cbPainted = 0;
+function cbPaint(): void {
+  const now = Date.now(); if (now - cbPainted < 66) return; cbPainted = now;
+  const c = hpColors();
+  const p = q<HTMLCanvasElement>('#cb-tl'); if (p) cbUi.hit = hpPaintTimeline(p, cbUi.snap, now, 8, c, CB_NAMER);
+  const w = q<HTMLCanvasElement>('#cb-tlw'); if (w) cbUi.hitWide = hpPaintTimeline(w, cbUi.snap, now, 16, c, CB_NAMER);
+}
+function refreshCb(force = false): void {
+  if (state.app !== 'cb' || cbUi.hold) return;
+  const now = Date.now();
+  if (!force && now - cbUi.drawn < 240) { clearTimeout(cbUi.pending); cbUi.pending = window.setTimeout(() => refreshCb(true), 250); return; }
+  cbUi.drawn = now;
+  const s = cbUi.snap;
+  qa<HTMLButtonElement>('[data-hpview]').forEach(b => b.classList.toggle('on', b.dataset.hpview === cbUi.view));
+  const set = (id: string, html: string) => { const el = q<HTMLElement>(`#${id}`); if (el && el.innerHTML !== html) { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; } };
+  set('cb-head', cbHeadHtml(s));
+  set('cb-listen', cbListenHtml(cbUi.prefs.hold, cbUi.mode));
+  const lb = hpLiveHtml(s, now, cbUi.audioOn, cbUi.prefs.hold, now < cbUi.noteUntil ? cbUi.note : '', CB_NAMER), live = q<HTMLElement>('#cb-live');
+  if (live) { live.className = `fl-now hp-live ${lb.cls}`; live.style.setProperty('--sys', lb.col); if (live.innerHTML !== lb.html) live.innerHTML = lb.html; }
+  const aud = q<HTMLButtonElement>('#cb-aud'); if (aud) { aud.textContent = cbUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; aud.classList.toggle('on', cbUi.audioOn); }
+  const vv = q('#cb-volv'); if (vv) vv.textContent = `${Math.round(cbUi.gain * 100)}%`;
+  set('cb-board', cbBoardHtml(s, now, cbUi.prefs.hold, cbUi.sel));
+  set('cb-tiles', cbTilesHtml(s, now, cbUi.prefs.hold, s?.tiles.length ? '' : emptyState('cb')));
+  const card = q<HTMLElement>('#cb-card');
+  if (card) { const html = s && cbUi.sel ? cbCardHtml(s, cbUi.sel, now, cbUi.prefs, cbUi.open) : ''; card.hidden = !html; if (card.innerHTML !== html) card.innerHTML = html; }
+  if (HP_WIDE.matches) set('cb-stage', cbUi.view === 'talk' ? hpConvsHtml(s, now, cbUi.open, 20, CB_NAMER) : cbUi.view === 'act' ? cbHeatHtml(s, now) : `<div class="hp-logs">${hpLogHtml(s, CB_NAMER)}</div>`);
+  else { set('cb-talk', hpConvsHtml(s, now, cbUi.open, 12, CB_NAMER)); set('cb-act', cbHeatHtml(s, now)); set('cb-log', hpLogHtml(s, CB_NAMER)); }
+  qa<HTMLButtonElement>('.hp-jump [data-hpjump]').forEach(b => {
+    const k = b.dataset.hpjump, n = k === 'ch' ? s?.tiles.length ?? 0 : k === 'tl' ? s?.rows.filter(r => r.live || now - r.startMs < HP_SPAN_MS).length ?? 0 : k === 'talk' ? s?.convs.length ?? 0 : k === 'log' ? s?.rows.length ?? 0 : 0;
+    const bd = b.querySelector('b'); if (bd) bd.textContent = n > 0 ? String(n > 999 ? '999+' : n) : '';
+  });
+  const onAir = s?.stats.onAir ?? 0;
+  if (s?.replay.active) setLamp('REPLAYING', 'amber', true);
+  else if (onAir) setLamp(`${onAir} ON AIR`, 'ok', true);
+  else if (s?.tiles.length) setLamp(`${s.tiles.length} CHANNEL${s.tiles.length === 1 ? '' : 'S'}`, 'ok');
+  else setLamp('LISTENING', 'amber', true);
+}
+HP_WIDE.addEventListener('change', () => { if (state.app === 'cb') { render('cb'); refreshReadout(); } });
 
 // ---- Dispatch: P25 and DMR trunked systems, sites, grants, units and calls (receive only) ----------------------
 const FLEET_BANDS: [string, string, number, number][] = [
@@ -9215,6 +9391,9 @@ function ensureWorker(): Worker {
       case 'fleet': fleetUi.snap = m as unknown as FleetSnap; refreshFleet(); break;
       case 'hamplus': hpUi.snap = m as unknown as HpSnap; refreshHamPlus(); break;
       case 'hamplusNote': hpNote(String(m.text)); break;
+      case 'cb': cbUi.snap = m as unknown as CbSnap; refreshCb(); break;
+      case 'cbNote': cbNote(String(m.text)); break;
+      case 'cbSaved': try { localStorage.setItem(CB_KNOWN, JSON.stringify(m.saved)); } catch { /* storage full or blocked */ } break;
       case 'hamplusSaved': try { localStorage.setItem(HP_KNOWN, JSON.stringify(m.saved)); } catch { /* storage full or blocked */ } break;
       case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][], offArea: Number(m.offArea) || 0 }; refreshFleet(true); break;
       case 'fleetExport': fleetExport(m.csv as string, m.json as string); break;
@@ -9790,7 +9969,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  hamplus: ['HAM+', 'EVERY CHANNEL · EVERY TALKER'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  hamplus: ['HAM+', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB', 'ALL 40 CHANNELS · AM · FM · SSB'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
