@@ -39,6 +39,11 @@ import kotlin.math.sqrt
 
 /** The voice level (dB over the quiet channels' motion) a channel opens at; an open one closes 2 dB under it. */
 const val CB_OPEN_DB = 5.0
+/** An open channel must measure as a voice (this many blocks voting AM, FM or sideband) within this long, or it is dropped. */
+const val CB_CONFIRM_MS = 2_000.0
+const val CB_CONFIRM_VOTES = 3
+/** A dropped channel stays shut this long. */
+const val CB_DROP_HOLD_MS = 5_000.0
 /** Nothing opens this long after the span starts: the floors and lines settle first. */
 const val CB_WARM_MS = 3_000.0
 /** A channel stays open this long without voice: a talker's breath, a short pause. */
@@ -113,7 +118,7 @@ data class CbPrefs(val modes: Map<String, CbMode> = emptyMap(), val clar: Map<St
 private class ChanState {
     var hist = ArrayList<FloatArray>(); var mem = DoubleArray(0); var run = IntArray(0); var fl = FloatArray(0); var skirt = BooleanArray(0); var v = ArrayList<Double>()
     var voiceDb = 0.0; var sigDb = 0.0; var totDb = 0.0; var d = 0.0
-    var lineDb = 0; var lineSince = 0.0; var lineLast = 0.0; var seen = 0.0; var total = 0.0; var lastT = 0.0; var over = 0; var mode = CbMode.AM
+    var lineDb = 0; var lineSince = 0.0; var lineLast = 0.0; var noVoiceMs = 0.0; var seen = 0.0; var total = 0.0; var lastT = 0.0; var over = 0; var mode = CbMode.AM
 }
 
 class CbEngine(
@@ -123,6 +128,9 @@ class CbEngine(
     private val st = List(CB_CHANNELS.size) { ChanState() }
     var cbPrefs = CbPrefs(); private set
     private val txMode = LinkedHashMap<Int, CbMode>()
+    private val confirmed = HashSet<Int>()
+    /** Openings dropped as no voice, since the start (the log and the tests read it). */
+    var dropped = 0; private set
     private val peakLevel = HashMap<Int, Double>(); private val goneMs = HashMap<Int, Double>()
     private var binHz = 0.0
 
@@ -235,6 +243,13 @@ class CbEngine(
                 }
             }
             for (b in 0 until nb) if (s.skirt[b]) ex[b] = true
+            // the channel's strongest peak, steady or not, and the bins beside it: a carrier whose level wanders (fading, a
+            // keyed carrier fluttering) moves its own bins, while a voice moves bins 300 Hz and more from its carrier
+            run {
+                var pk = -1; var pv = LINE_MIN
+                for (b in 0 until nb) if (p[b] > pv) { pv = p[b].toDouble(); pk = b }
+                if (pk >= 0) for (d in -g..g) { val j = pk + d; if (j in 0 until nb) ex[j] = true }
+            }
             // how far the bins left move (the mean of the quarter that move most: a voice's bins, not the noise around
             // them), and the power in them
             var pw = 0.0; var cnt = 0; var tot = 0.0
@@ -275,6 +290,13 @@ class CbEngine(
         // up a moment later); without one (SSB, or a weak talker under a steady line) the voice going quiet ends it
         for (o in opens.values.toList()) {
             val i = cbChannel(o.hz) - 1; val s = st[i]; val p = o.probe
+            // a voice is AM, FM or sideband to the demodulator: something that moves the spectrum but measures as none of
+            // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
+            // held shut a while
+            if (p != null && o.id !in confirmed && now - o.startMs >= CB_CONFIRM_MS) {
+                if (p.votes.sum() >= CB_CONFIRM_VOTES) confirmed.add(o.id)
+                else { opens.remove(o.id); peakLevel.remove(o.id); goneMs.remove(o.id); s.v = ArrayList(); s.over = 0; s.noVoiceMs = now; dropped++; continue }
+            }
             o.snr = s.sigDb; o.peak = max(o.peak, s.sigDb)
             if (p != null) {
                 p.noiseRatio = noiseOf(i)
@@ -292,7 +314,7 @@ class CbEngine(
         // new talkers: four measurements over the threshold, and not a strong neighbor's splatter (an open channel within
         // 20 kHz with its power [SPLATTER_DB] over this one's)
         for (i in st.indices) {
-            if (st[i].over < 4 || now < warmUntil) continue
+            if (st[i].over < 4 || now < warmUntil || now - st[i].noVoiceMs < CB_DROP_HOLD_MS) continue
             val hz = CB_CHANNELS[i]
             if (opens.values.any { it.hz == hz }) continue
             if (opens.values.any { abs(it.hz - hz) <= 20_000 && st[cbChannel(it.hz) - 1].totDb - st[i].totDb > SPLATTER_DB }) continue
@@ -303,7 +325,7 @@ class CbEngine(
     }
 
     override fun closed(o: WatchOpen<CbProbe>, t: TxRec) {
-        peakLevel.remove(o.id); goneMs.remove(o.id)
+        peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id)
         val i = cbChannel(o.hz) - 1
         // the next transmission on the channel opens on its own voice, not on what is left of this one's
         if (i >= 0) { st[i].v = ArrayList(); st[i].over = 0 }

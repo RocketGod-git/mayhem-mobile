@@ -48,7 +48,7 @@ const val CB_PROBE_RATE = 16_000.0
 const val SSB_MID_HZ = 1_650.0
 const val SSB_HALF_HZ = 1_350.0
 /** Votes: SSB has this much more on one side (dB), and its remainder is not in line with a carrier. */
-const val SSB_SIDE_DB = 6.0
+const val SSB_SIDE_DB = 10.0
 /** SSB's envelope follows the voice all the way (a carrier between words does not, so an AM pause casts no SSB vote). */
 const val SSB_ENV_MIN = 0.25
 /** FM: the envelope moves less than this (beyond noise) while the discriminator swings more than this (Hz rms). */
