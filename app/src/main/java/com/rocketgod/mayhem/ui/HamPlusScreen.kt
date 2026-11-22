@@ -93,6 +93,7 @@ import com.rocketgod.mayhem.core.hamplus.HpTxRow
 import com.rocketgod.mayhem.core.hamplus.hpBandOf
 import com.rocketgod.mayhem.core.hamplus.cwCallsign
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.min
@@ -111,15 +112,55 @@ internal fun hpTone(tone: Double, dcs: Int): String = if (tone > 0) "PL %.1f".fo
 /** A tile's name: the CW ID callsign, else the band plan's name for the frequency, else what kind of channel it is. */
 internal fun hpName(t: HpTile): String = t.callsign.ifEmpty { t.label.ifEmpty { t.kind.ifEmpty { hpBandOf(t.hz)?.name?.uppercase()?.let { "$it FM" } ?: "" } } }
 
-private val HP_SECTIONS = listOf("ch" to "CHANNELS", "tl" to "TIMELINE", "talk" to "CONVERSATIONS", "act" to "ACTIVITY", "log" to "LOG")
-private const val V_TALK = 0
-private const val V_ACT = 1
-private const val V_LOG = 2
-private val WIDE_TABS = listOf("CONVERSATIONS", "ACTIVITY", "LOG")
-/** The timeline shows the last ten minutes. */
-private const val TL_MS = 600_000.0
+/**
+ * How a screen names what it shows, so CB reuses the live bar, the threads, the log and the timeline: a channel's
+ * title (HAM+ its frequency, CB its number), a tile's name, and what a transmission carries (HAM+ its tone, CB its mode).
+ */
+internal interface HpNamer {
+    fun chan(hz: Long): String
+    fun name(t: HpTile): String
+    fun meta(r: HpTxRow): String
+    fun waiting(hold: String): String
+}
+internal val HAM_NAMER = object : HpNamer {
+    override fun chan(hz: Long) = hpMhz(hz)
+    override fun name(t: HpTile) = hpName(t)
+    override fun meta(r: HpTxRow) = hpTone(r.tone, r.dcs)
+    override fun waiting(hold: String) = "${hpMhz(hold.toLongOrNull() ?: 0)} MHz"
+}
 
-private class HpActs(val follow: (String) -> Unit, val info: (String) -> Unit, val replay: (List<Int>, String, String) -> Unit, val replayFrom: (Double) -> Unit, val rename: (String, String) -> Unit)
+/** What the shared HAM+ pieces ask of the app behind them (HAM+ or CB): the listening, the prefs, the time machine. */
+internal interface HpHost {
+    val note: StateFlow<Pair<String, Long>>
+    fun note(text: String)
+    fun follow(key: String)
+    fun pref(kind: String, key: String)
+    fun setMode(m: HpParams.Mode)
+    fun setAudio(on: Boolean, gain: Double)
+    fun clear()
+    fun stopReplay()
+}
+internal val HAM_HOST = object : HpHost {
+    override val note get() = HamPlus.note
+    override fun note(text: String) = HamPlus.note(text)
+    override fun follow(key: String) = HamPlus.follow(key)
+    override fun pref(kind: String, key: String) = HamPlus.pref(kind, key)
+    override fun setMode(m: HpParams.Mode) = HamPlus.setMode(m)
+    override fun setAudio(on: Boolean, gain: Double) = HamPlus.setAudio(on, gain)
+    override fun clear() = HamPlus.clear()
+    override fun stopReplay() = HamPlus.stopReplay()
+}
+
+internal val HP_SECTIONS = listOf("ch" to "CHANNELS", "tl" to "TIMELINE", "talk" to "CONVERSATIONS", "act" to "ACTIVITY", "log" to "LOG")
+internal const val HP_V_TALK = 0
+internal const val HP_V_ACT = 1
+internal const val HP_V_LOG = 2
+internal val HP_WIDE_TABS = listOf("CONVERSATIONS", "ACTIVITY", "LOG")
+/** The timeline shows the last ten minutes. */
+internal const val HP_TL_MS = 600_000.0
+
+internal class HpActs(val follow: (String) -> Unit, val info: (String) -> Unit, val replay: (List<Int>, String, String) -> Unit, val replayFrom: (Double) -> Unit, val rename: (String, String) -> Unit,
+                      val host: HpHost = HAM_HOST, val nm: HpNamer = HAM_NAMER)
 
 /**
  * HAM+: every FM conversation on the ham bands at once. Each channel heard is a tile (its name, tone, repeater offset,
@@ -141,7 +182,7 @@ fun HamPlusScreen(accent: Color) {
     val scan by HamPlus.scan.collectAsState()
     val kind by Radio.kind.collectAsState()
     val rate by SdrEngine.rateHz.collectAsState()
-    var view by rememberSaveable { mutableIntStateOf(V_TALK) }
+    var view by rememberSaveable { mutableIntStateOf(HP_V_TALK) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<Pair<String, String>?>(null) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(250); value = System.currentTimeMillis() } }.value
@@ -203,19 +244,19 @@ fun HamPlusScreen(accent: Color) {
                     if (!list.canScrollForward && list.canScrollBackward) HP_SECTIONS.size - 1 else HP_SECTIONS.indexOfFirst { it.first == k }.coerceAtLeast(0)
                 } }
                 LaunchedEffect(sel) { if (sel != null) list.animateScrollToItem(1) }
-                val counts = listOf(tiles.size, s?.rows?.count { now - it.startMs < TL_MS || it.live } ?: 0, s?.convs?.size ?: 0, 0, s?.rows?.size ?: 0)
+                val counts = listOf(tiles.size, s?.rows?.count { now - it.startMs < HP_TL_MS || it.live } ?: 0, s?.convs?.size ?: 0, 0, s?.rows?.size ?: 0)
                 Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f))) {
                     Column(Modifier.fillMaxWidth().background(Palette.paper).padding(bottom = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                         HpJump(counts, active, accent) { i -> scope.launch { list.animateScrollToItem(starts[i]) } }
-                        HpLiveBar(s, now, audioOn, prefs.hold, accent)
+                        HpLiveBar(s, now, audioOn, prefs.hold, accent, acts)
                     }
                     LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                         var idx = 0
                         item(key = "ch:top") {
                             Column(Modifier.fillMaxWidth().padding(top = d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                                 HpHead(s, now, accent)
-                                HpListenRow(prefs.hold, mode, accent)
-                                HpAudioRow(audioOn, gain, accent)
+                                HpListenRow(prefs.hold, mode, accent, acts)
+                                HpAudioRow(audioOn, gain, accent, acts)
                             }
                         }; idx++
                         item(key = "ch:card") { detail(Modifier.fillMaxWidth()) }; idx++
@@ -224,34 +265,34 @@ fun HamPlusScreen(accent: Color) {
                         starts[1] = idx; item(key = "tl:head") { HpSecHead("TIMELINE · TAP A TRANSMISSION TO HEAR IT, ANYWHERE ELSE TO REPLAY THE BAND FROM THERE") }; idx++
                         item(key = "tl:tl") { HpTimeline(s, now, accent, acts, Modifier.fillMaxWidth(), lanesMax = 8) }; idx++
                         starts[2] = idx; item(key = "talk:head") { HpSecHead("CONVERSATIONS") }; idx++
-                        idx += talkItems(s, now, accent, acts, max = 12)
+                        idx += hpTalkItems(s, now, accent, acts, max = 12)
                         starts[3] = idx; item(key = "act:head") { HpSecHead("ACTIVITY · 24 HOURS") }; idx++
-                        item(key = "act:map") { HpHeatmap(s, now, Modifier.fillMaxWidth()) }; idx++
+                        item(key = "act:map") { HpHeatmap(s, now, Modifier.fillMaxWidth(), hpHeatRows(s), HP_HEAT_EMPTY) }; idx++
                         starts[4] = idx; item(key = "log:head") { HpSecHead("LOG") }; idx++
-                        logItems(s, now)
+                        hpLogItems(s, now, HAM_NAMER)
                     }
                 }
             } else Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 // a steady grid beside the timeline: the controls never move, the live bar keeps one height, the channels
                 // fill the space and scroll there, and the tabs sit in a region as tall as the waterfall
                 HpHead(s, now, accent)
-                HpListenRow(prefs.hold, mode, accent)
-                HpAudioRow(audioOn, gain, accent)
-                HpLiveBar(s, now, audioOn, prefs.hold, accent)
+                HpListenRow(prefs.hold, mode, accent, acts)
+                HpAudioRow(audioOn, gain, accent, acts)
+                HpLiveBar(s, now, audioOn, prefs.hold, accent, acts)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                         Box(Modifier.fillMaxWidth().weight(1f)) {
                             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) { HpTileGrid(tiles, s, prefs.hold, now, accent, acts) }
                         }
                         Column(Modifier.fillMaxWidth().height(d.dp(bottomH)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                            HpSeg(WIDE_TABS, view, accent, Modifier.fillMaxWidth()) { view = it }
+                            HpSeg(HP_WIDE_TABS, view, accent, Modifier.fillMaxWidth()) { view = it }
                             val list = rememberLazyListState()
                             LaunchedEffect(view) { list.scrollToItem(0) }
                             LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                                 when (view) {
-                                    V_TALK -> talkItems(s, now, accent, acts, max = 20)
-                                    V_ACT -> item(key = "act:map") { HpHeatmap(s, now, Modifier.fillMaxWidth()) }
-                                    else -> logItems(s, now)
+                                    HP_V_TALK -> hpTalkItems(s, now, accent, acts, max = 20)
+                                    HP_V_ACT -> item(key = "act:map") { HpHeatmap(s, now, Modifier.fillMaxWidth(), hpHeatRows(s), HP_HEAT_EMPTY) }
+                                    else -> hpLogItems(s, now, HAM_NAMER)
                                 }
                             }
                         }
@@ -264,14 +305,14 @@ fun HamPlusScreen(accent: Color) {
 }
 
 @Composable
-private fun HpSecHead(text: String) {
+internal fun HpSecHead(text: String) {
     val d = rememberDims()
     Text(text, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 2.sp, maxLines = 2,
         modifier = Modifier.padding(top = d.dp(10f), start = d.dp(2f), bottom = d.dp(2f)))
 }
 
 @Composable
-private fun HpDim(text: String, modifier: Modifier = Modifier) {
+internal fun HpDim(text: String, modifier: Modifier = Modifier) {
     val d = rememberDims()
     Text(text, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), modifier = modifier.padding(d.dp(8f)))
 }
@@ -279,7 +320,7 @@ private fun HpDim(text: String, modifier: Modifier = Modifier) {
 /** Choices sized to their labels that wrap onto another line rather than clip. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, onPick: (Int) -> Unit) {
+internal fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(9f))
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
@@ -294,7 +335,7 @@ private fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier: 
 
 /** The section chips: one row that scrolls sideways, a count on each (none at 0), the section on screen lit. */
 @Composable
-private fun HpJump(counts: List<Int>, active: Int, accent: Color, onPick: (Int) -> Unit) {
+internal fun HpJump(counts: List<Int>, active: Int, accent: Color, onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(50)
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = d.dp(4f), horizontal = d.dp(2f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
@@ -346,7 +387,7 @@ private fun HpHead(s: HpSnap?, now: Long, accent: Color) {
 
 /** What is heard: ALL (every channel) or the one followed, and MIX (every channel at once) or NEWEST (the latest to key up). */
 @Composable
-private fun HpListenRow(hold: String, mode: HpParams.Mode, accent: Color) {
+internal fun HpListenRow(hold: String, mode: HpParams.Mode, accent: Color, acts: HpActs) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(10f))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
@@ -354,26 +395,26 @@ private fun HpListenRow(hold: String, mode: HpParams.Mode, accent: Color) {
         Row(Modifier.weight(1f).clip(shape).background(if (on) accent.copy(alpha = 0.14f) else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape)
             .padding(horizontal = d.dp(10f), vertical = d.dp(6f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Text(if (on) "FOLLOWING" else "HEARING", color = if (on) accent else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(8f), letterSpacing = 1.5.sp)
-            Text(if (on) hpMhz(hold.toLongOrNull() ?: 0) else "ALL", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1, softWrap = false)
+            Text(if (on) acts.nm.chan(hold.toLongOrNull() ?: 0) else "ALL", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1, softWrap = false)
             Text(if (on) "only this channel is heard" else if (mode == HpParams.Mode.MIX) "every channel at once" else "the newest to key up",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, modifier = Modifier.weight(1f))
-            if (on) ToggleBox("ALL", false, accent) { HamPlus.follow("") }
+            if (on) ToggleBox("ALL", false, accent) { acts.host.follow("") }
         }
-        HpSeg(listOf("MIX", "NEWEST"), if (mode == HpParams.Mode.MIX) 0 else 1, accent, Modifier) { HamPlus.setMode(if (it == 0) HpParams.Mode.MIX else HpParams.Mode.NEWEST) }
+        HpSeg(listOf("MIX", "NEWEST"), if (mode == HpParams.Mode.MIX) 0 else 1, accent, Modifier) { acts.host.setMode(if (it == 0) HpParams.Mode.MIX else HpParams.Mode.NEWEST) }
     }
 }
 
 @Composable
-private fun HpAudioRow(on: Boolean, gain: Double, accent: Color) {
+internal fun HpAudioRow(on: Boolean, gain: Double, accent: Color, acts: HpActs) {
     val d = rememberDims()
     var dragging by remember { mutableStateOf<Float?>(null) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-        ToggleBox(if (on) "AUDIO ON" else "AUDIO OFF", on, accent) { HamPlus.setAudio(!on) }
+        ToggleBox(if (on) "AUDIO ON" else "AUDIO OFF", on, accent) { acts.host.setAudio(!on, gain) }
         RowLabel("VOLUME")
-        Slider(value = dragging ?: (gain * 100).toFloat(), onValueChange = { dragging = it; HamPlus.setAudio(on, it / 100.0) }, onValueChangeFinished = { dragging = null },
+        Slider(value = dragging ?: (gain * 100).toFloat(), onValueChange = { dragging = it; acts.host.setAudio(on, it / 100.0) }, onValueChangeFinished = { dragging = null },
             valueRange = 0f..150f, colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Palette.line), modifier = Modifier.weight(1f))
         Text("${(dragging ?: (gain * 100).toFloat()).toInt()}%", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
-        IconBox(ClearIcon, "Clear") { HamPlus.clear() }
+        IconBox(ClearIcon, "Clear") { acts.host.clear() }
     }
 }
 
@@ -382,10 +423,10 @@ private fun HpAudioRow(on: Boolean, gain: Double, accent: Color) {
  * talking, how long, its level), else LISTENING. Always the same height, so nothing under it moves.
  */
 @Composable
-private fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, accent: Color) {
+internal fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, accent: Color, acts: HpActs) {
     val d = rememberDims()
-    val rp = s?.replay
-    val (noteText, noteUntil) = HamPlus.note.collectAsState().value
+    val rp = s?.replay; val nm = acts.nm
+    val (noteText, noteUntil) = acts.host.note.collectAsState().value
     val note = if (now < noteUntil && rp?.active != true) noteText else ""
     val heard = if (s != null && audioOn) s.rows.filter { it.live && it.hz.toString() in s.playing } else emptyList()
     val r = heard.maxByOrNull { it.startMs }
@@ -409,7 +450,7 @@ private fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, acc
                 Box(Modifier.size(d.dp(8f)).alpha(if (blink) 1f else 0.35f).background(Palette.accent2, CircleShape))
                 Text("REPLAYING", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
                 Text(rp.label, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                ToggleBox("STOP", true, accent) { HamPlus.stopReplay() }
+                ToggleBox("STOP", true, accent) { acts.host.stopReplay() }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                 HpBar((rp.pos / max(0.1, rp.total)).toFloat(), Palette.accent2, Modifier.weight(1f).height(d.dp(5f)))
@@ -419,20 +460,20 @@ private fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, acc
         }
         if (r == null) {
             Text("LISTENING", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp)
-            Text(if (!audioOn) "audio is off · every channel is still recorded" else if (hold.isNotEmpty()) "waiting for ${hpMhz(hold.toLongOrNull() ?: 0)} MHz to key up" else "nothing on the air · every channel is heard the moment it keys up",
+            Text(if (!audioOn) "audio is off · every channel is still recorded" else if (hold.isNotEmpty()) "waiting for ${nm.waiting(hold)} to key up" else "nothing on the air · every channel is heard the moment it keys up",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             return@Column
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Box(Modifier.size(d.dp(8f)).alpha(if (blink) 1f else 0.35f).background(Palette.ok, CircleShape))
             Text("NOW PLAYING", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
-            Text(hpMhz(r.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), maxLines = 1, softWrap = false)
-            Text(listOfNotNull(tile?.let { hpName(it) }, r.stationLabel.takeIf { it.isNotEmpty() }?.let { "$it talking" }, if (heard.size > 1) "+${heard.size - 1} more" else null).joinToString(" · "),
+            Text(nm.chan(r.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(14f), maxLines = 1, softWrap = false)
+            Text(listOfNotNull(tile?.let { nm.name(it) }, r.stationLabel.takeIf { it.isNotEmpty() }?.let { "$it talking" }, if (heard.size > 1) "+${heard.size - 1} more" else null).joinToString(" · "),
                 color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Text(hpDur(now - r.startMs), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Text(listOf(hpTone(r.tone, r.dcs), if (r.direct) "HEARD DIRECT, NEARBY" else "", tile?.offset?.takeIf { tile.kind == "REPEATER" }?.let { "REPEATER $it" } ?: "").filter { it.isNotEmpty() }.joinToString(" · "),
+            Text(listOf(nm.meta(r), if (r.direct) "HEARD DIRECT, NEARBY" else "", tile?.offset?.takeIf { tile.kind == "REPEATER" }?.let { "REPEATER $it" } ?: "").filter { it.isNotEmpty() }.joinToString(" · "),
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             HpBar(((r.peakDb.toFloat()) / 40f).coerceIn(0f, 1f), Palette.ok, Modifier.width(d.dp(70f)).height(d.dp(6f)))
         }
@@ -440,7 +481,7 @@ private fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, acc
 }
 
 @Composable
-private fun HpBar(frac: Float, c: Color, modifier: Modifier) {
+internal fun HpBar(frac: Float, c: Color, modifier: Modifier) {
     val f by animateFloatAsState(frac.coerceIn(0f, 1f), tween(220), label = "bar")
     Canvas(modifier) {
         val r = CornerRadius(size.height / 2, size.height / 2)
@@ -472,7 +513,7 @@ private fun HpTileGrid(tiles: List<HpTile>, s: HpSnap?, hold: String, now: Long,
 }
 
 @Composable
-private fun HpAllTile(modifier: Modifier, on: Boolean, s: HpSnap?, accent: Color, onTap: () -> Unit) {
+internal fun HpAllTile(modifier: Modifier, on: Boolean, s: HpSnap?, accent: Color, onTap: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(10f))
     Column(modifier.clip(shape).background(if (on) accent.copy(alpha = 0.16f) else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape)
@@ -530,7 +571,7 @@ private fun HpTileBox(modifier: Modifier, t: HpTile, playing: Boolean, now: Long
 }
 
 @Composable
-private fun HpPill(text: String, c: Color) {
+internal fun HpPill(text: String, c: Color) {
     val d = rememberDims()
     Text(text, color = c, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(7.5f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
         modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, c.copy(alpha = 0.6f), RoundedCornerShape(50)).padding(horizontal = d.dp(6f), vertical = d.dp(1.5f)))
@@ -538,7 +579,7 @@ private fun HpPill(text: String, c: Color) {
 
 /** Seconds on the air each minute for the last 30 minutes, as bars (the newest on the right). */
 @Composable
-private fun HpSpark(spark: List<Int>, c: Color, modifier: Modifier) {
+internal fun HpSpark(spark: List<Int>, c: Color, modifier: Modifier) {
     Canvas(modifier) {
         val n = max(1, spark.size); val w = size.width / n; val top = max(10, spark.maxOrNull() ?: 0).toFloat()
         drawRect(Palette.line.copy(alpha = 0.5f), Offset(0f, size.height - 1f), Size(size.width, 1f))
@@ -559,9 +600,9 @@ internal fun hpTapTx(rows: List<HpTxRow>, hz: Long, ms: Double, now: Double, tol
 }
 
 /** What the quiet timeline says: the last transmission heard (a tap replays from it), else that nothing was heard yet. */
-internal fun hpQuietText(rows: List<HpTxRow>, now: Double): Pair<String, String> {
+internal fun hpQuietText(rows: List<HpTxRow>, now: Double, nm: HpNamer = HAM_NAMER): Pair<String, String> {
     val last = rows.filter { !it.live }.maxByOrNull { it.endMs } ?: return "nothing on the air yet" to "every transmission shows here as it happens"
-    return "nothing on the air for ten minutes" to "last heard ${hpMhz(last.hz)}, ${hpAgo(now - last.endMs)}${if (last.recorded) ", tap to replay from there" else ""}"
+    return "nothing on the air for ten minutes" to "last heard ${nm.chan(last.hz)}, ${hpAgo(now - last.endMs)}${if (last.recorded) ", tap to replay from there" else ""}"
 }
 
 /** A tap within this many dp of a transmission's bar replays that transmission. */
@@ -575,12 +616,12 @@ private const val TAP_DP = 10f
  * a line on what was last heard.
  */
 @Composable
-private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modifier: Modifier, lanesMax: Int, fill: Boolean = false) {
+internal fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modifier: Modifier, lanesMax: Int, fill: Boolean = false) {
     val d = rememberDims()
     val all = s?.rows.orEmpty()
     // the window grows with what was heard, two minutes at the least and ten at the most; quiet, it shows all ten
-    val first = all.filter { it.live || it.endMs > now - TL_MS }.minOfOrNull { it.startMs }
-    val span = if (first == null) TL_MS else ((now - first) + 10_000).coerceIn(120_000.0, TL_MS)
+    val first = all.filter { it.live || it.endMs > now - HP_TL_MS }.minOfOrNull { it.startMs }
+    val span = if (first == null) HP_TL_MS else ((now - first) + 10_000).coerceIn(120_000.0, HP_TL_MS)
     val t0 = now - span
     val rows = all.filter { it.live || it.endMs > t0 }
     val lanes = rows.map { it.hz }.distinct().sortedBy { h -> -(rows.filter { it.hz == h }.maxOf { if (it.live) now.toDouble() else it.endMs }) }.take(lanesMax).sorted()
@@ -593,7 +634,8 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
     val cur = androidx.compose.runtime.rememberUpdatedState(Triple(rows, lanes, Pair(now, span)))
     val hasKept = all.any { it.recorded && !it.live }
     val keptNow = androidx.compose.runtime.rememberUpdatedState(hasKept)
-    val tapEmpty: (Double) -> Unit = { ms -> if (keptNow.value) acts.replayFrom(ms) else HamPlus.note("Nothing recorded yet") }
+    val tapEmpty: (Double) -> Unit = { ms -> if (keptNow.value) acts.replayFrom(ms) else acts.host.note("Nothing recorded yet") }
+    val nm = acts.nm
     Column(modifier.clip(RoundedCornerShape(d.dp(10f))).background(Palette.surface.copy(alpha = 0.5f)).border(1.dp, Palette.line, RoundedCornerShape(d.dp(10f))).padding(d.dp(6f))) {
         Row(Modifier.fillMaxWidth().then(if (fixedH) Modifier.height(laneH * max(1, lanes.size)) else Modifier.weight(1f))) {
             Column(Modifier.width(labelW)) {
@@ -603,8 +645,8 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
                 for (h in lanes) {
                     val t = tiles.firstOrNull { it.hz == h }
                     Column(Modifier.height(laneH).clickable { acts.follow(h.toString()) }, verticalArrangement = Arrangement.Center) {
-                        Text(hpMhz(h), color = if (rows.any { it.live && it.hz == h }) Palette.ok else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
-                        if (t != null) Text(hpName(t), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(nm.chan(h), color = if (rows.any { it.live && it.hz == h }) Palette.ok else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
+                        if (t != null) Text(nm.name(t), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -619,7 +661,7 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
                         if (ls.isEmpty()) { tapEmpty(nw.toDouble()); return@detectTapGestures }
                         val h = ls[(p.y / lh).toInt().coerceIn(0, ls.size - 1)]
                         val hit = hpTapTx(rs, h, ms, nw.toDouble(), tolPx * sp / size.width)
-                        if (hit != null && hit.recorded && !hit.live) acts.replay(listOf(hit.id), "${hpMhz(hit.hz)} at ${hpClock(hit.startMs)}", "tx")
+                        if (hit != null && hit.recorded && !hit.live) acts.replay(listOf(hit.id), "${nm.chan(hit.hz)} at ${hpClock(hit.startMs)}", "tx")
                         else tapEmpty(ms)
                     }
                 }) {
@@ -644,7 +686,7 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
                     drawLine(mutedC, Offset(w - 1f, 0f), Offset(w - 1f, gridH), strokeWidth = 2f)
                 }
                 if (lanes.isEmpty()) {
-                    val (head, sub) = hpQuietText(all, now.toDouble())
+                    val (head, sub) = hpQuietText(all, now.toDouble(), nm)
                     if (fill) Column(Modifier.fillMaxSize().padding(horizontal = d.dp(8f)), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(head.uppercase(), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -662,7 +704,7 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
 }
 
 /** The conversations, newest first: each a thread with a bubble per transmission in its talker's color. */
-private fun LazyListScope.talkItems(s: HpSnap?, now: Long, accent: Color, acts: HpActs, max: Int): Int {
+internal fun LazyListScope.hpTalkItems(s: HpSnap?, now: Long, accent: Color, acts: HpActs, max: Int): Int {
     val convs = s?.convs.orEmpty().take(max)
     if (s == null || convs.isEmpty()) { item(key = "talk:none") { HpDim("conversations show here as a thread, a bubble per talker, each radio told apart by its own carrier") }; return 1 }
     items(convs, key = { "talk:${it.id}" }) { c -> HpConvCard(c.id, s, now, accent, acts) }
@@ -671,23 +713,23 @@ private fun LazyListScope.talkItems(s: HpSnap?, now: Long, accent: Color, acts: 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HpConvCard(convId: Int, s: HpSnap, now: Long, accent: Color, acts: HpActs) {
+internal fun HpConvCard(convId: Int, s: HpSnap, now: Long, accent: Color, acts: HpActs) {
     val d = rememberDims()
     val c = s.convs.firstOrNull { it.id == convId } ?: return
     val rows = s.rows.filter { it.conv == convId }.sortedBy { it.startMs }
     val t = s.tiles.firstOrNull { it.hz == c.hz }
     var all by remember(convId) { mutableStateOf(false) }
     val shown = if (all) rows else rows.takeLast(8)
-    val shape = RoundedCornerShape(d.dp(12f))
+    val shape = RoundedCornerShape(d.dp(12f)); val nm = acts.nm
     Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, if (c.live) Palette.ok.copy(alpha = 0.7f) else Palette.line, shape).padding(d.dp(8f)).animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Text(hpMhz(c.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(14f), maxLines = 1, softWrap = false)
-            Text(listOfNotNull(t?.let { hpName(it) }, if (c.live) "ON THE AIR" else hpAgo(now - c.endMs)).joinToString(" · "), color = if (c.live) Palette.ok else Palette.muted,
+            Text(nm.chan(c.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(14f), maxLines = 1, softWrap = false)
+            Text(listOfNotNull(t?.let { nm.name(it) }, if (c.live) "ON THE AIR" else hpAgo(now - c.endMs)).joinToString(" · "), color = if (c.live) Palette.ok else Palette.muted,
                 fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (c.net) HpPill("NET", accent)
             val ids = rows.filter { it.recorded && !it.live }.map { it.id }
-            if (ids.isNotEmpty()) ToggleBox("▶ ${hpDur(c.talkMs)}", false, accent) { acts.replay(ids, "${hpMhz(c.hz)} conversation from ${hpClock(c.startMs)}", "conv") }
+            if (ids.isNotEmpty()) ToggleBox("▶ ${hpDur(c.talkMs)}", false, accent) { acts.replay(ids, "${nm.chan(c.hz)} conversation from ${hpClock(c.startMs)}", "conv") }
         }
         if (rows.size > shown.size) Text("${rows.size - shown.size} earlier · show all", color = accent, fontFamily = Mono, fontSize = d.sp(9f), modifier = Modifier.clickable { all = true }.padding(vertical = d.dp(2f)))
         val order = rows.map { it.station }.filter { it.isNotEmpty() }.distinct()
@@ -698,7 +740,7 @@ private fun HpConvCard(convId: Int, s: HpSnap, now: Long, accent: Color, acts: H
 /** One transmission as a chat bubble: the first talker on the left, the others on the right, each in its own color. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accent: Color, acts: HpActs) {
+internal fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accent: Color, acts: HpActs) {
     val d = rememberDims()
     val c = if (r.color >= 0) hpColor(r.color) else Palette.ink
     val right = side > 0
@@ -706,7 +748,7 @@ private fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accent
     val pulse = if (r.live) rememberInfiniteTransition(label = "b").animateFloat(0.4f, 1f, infiniteRepeatable(tween(650), RepeatMode.Reverse), label = "p").value else 1f
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (right) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = d.dp(300f)).clip(shape).background(c.copy(alpha = 0.2f).compositeOver(Palette.surface)).border(1.dp, c.copy(alpha = if (r.live) pulse else 0.75f), shape)
-            .clickable(enabled = r.recorded && !r.live) { acts.replay(listOf(r.id), "${hpMhz(r.hz)} at ${hpClock(r.startMs)}", "tx") }
+            .clickable(enabled = r.recorded && !r.live) { acts.replay(listOf(r.id), "${acts.nm.chan(r.hz)} at ${hpClock(r.startMs)}", "tx") }
             .padding(horizontal = d.dp(9f), vertical = d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 val who = r.stationLabel.ifEmpty { if (repeater) "VIA REPEATER" else "UNKNOWN" }
@@ -715,32 +757,38 @@ private fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accent
                 Text(if (r.live) "TALKING ${hpDur(now - r.startMs)}" else hpDur(r.endMs - r.startMs), color = if (r.live) Palette.ok else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
                 if (r.recorded && !r.live) Text("▶", color = accent, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f))
             }
-            val meta = listOf(hpClock(r.startMs), hpTone(r.tone, r.dcs), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "",
+            val meta = listOf(hpClock(r.startMs), acts.nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "",
                 if (r.direct) "NEARBY" else "", cwCallsign(r.cw).let { if (it.isNotEmpty()) "CW ID $it" else "" }, if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }
             Text(meta.joinToString(" · "), color = Palette.ink.copy(alpha = 0.72f), fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 2)
         }
     }
 }
 
+/** HAM+'s activity rows: the bands heard, in band order, by name. */
+private fun hpHeatRows(s: HpSnap?): List<Pair<String, String>> =
+    HP_BANDS.filter { b -> s?.heat?.bands?.any { it.id == b.id && it.slots.any { v -> v > 0 } } == true }.map { it.id to it.name.uppercase() }
+private const val HP_HEAT_EMPTY = "each band's busy hours fill in here as the day goes on, kept between sessions"
+
 /**
- * The last 24 hours, per band: each cell a quarter hour, brighter the more of it was on the air (airtime over the time
- * listened); a quarter hour never listened to stays a faint dot, so a quiet hour and an unheard one look different.
+ * The last 24 hours, a row each of [rows] (the activity map's row id and its label): each cell a quarter hour, brighter
+ * the more of it was on the air (airtime over the time listened); a quarter hour never listened to stays a faint dot,
+ * so a quiet hour and an unheard one look different.
  */
 @Composable
-private fun HpHeatmap(s: HpSnap?, now: Long, modifier: Modifier) {
+internal fun HpHeatmap(s: HpSnap?, now: Long, modifier: Modifier, rows: List<Pair<String, String>>, empty: String) {
     val d = rememberDims()
     val heat = s?.heat
-    val bands = HP_BANDS.filter { b -> heat?.bands?.any { it.id == b.id && it.slots.any { v -> v > 0 } } == true }
+    val bands = rows.filter { (id, _) -> heat?.bands?.any { it.id == id } == true }
     Column(modifier.clip(RoundedCornerShape(d.dp(10f))).background(Palette.surface.copy(alpha = 0.5f)).border(1.dp, Palette.line, RoundedCornerShape(d.dp(10f))).padding(d.dp(8f)),
         verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-        if (heat == null || bands.isEmpty()) { HpDim("each band's busy hours fill in here as the day goes on, kept between sessions"); return@Column }
+        if (heat == null || bands.isEmpty()) { HpDim(empty); return@Column }
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
         val nowSlot = (cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)) / (1440 / HEAT_SLOTS)
         val okC = Palette.ok; val lineC = Palette.line; val inkC = Palette.ink
-        for (b in bands) {
-            val slots = heat.bands.first { it.id == b.id }.slots
+        for ((id, name) in bands) {
+            val slots = heat.bands.first { it.id == id }.slots
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(b.name.uppercase(), color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(52f)), maxLines = 1)
+                Text(name, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), modifier = Modifier.width(d.dp(52f)), maxLines = 1)
                 Canvas(Modifier.weight(1f).height(d.dp(16f))) {
                     val w = size.width / HEAT_SLOTS
                     for (i in 0 until HEAT_SLOTS) {
@@ -760,20 +808,20 @@ private fun HpHeatmap(s: HpSnap?, now: Long, modifier: Modifier) {
 }
 
 /** Every transmission, newest first. */
-private fun LazyListScope.logItems(s: HpSnap?, now: Long) {
+internal fun LazyListScope.hpLogItems(s: HpSnap?, now: Long, nm: HpNamer) {
     val rows = s?.rows.orEmpty().take(200)
     if (rows.isEmpty()) { item(key = "log:none") { HpDim("every transmission is logged here with its time, channel, length, tone and carrier offset") }; return }
-    items(rows, key = { "log:${it.id}" }) { r -> HpLogLine(r, now) }
+    items(rows, key = { "log:${it.id}" }) { r -> HpLogLine(r, now, nm) }
 }
 
 @Composable
-private fun HpLogLine(r: HpTxRow, now: Long) {
+private fun HpLogLine(r: HpTxRow, now: Long, nm: HpNamer) {
     val d = rememberDims()
     Row(Modifier.fillMaxWidth().padding(horizontal = d.dp(4f), vertical = d.dp(1f)), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
         Text(hpClock(r.startMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
-        Text(hpMhz(r.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
+        Text(nm.chan(r.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
         Text(if (r.live) "LIVE" else hpDur(r.endMs - r.startMs), color = if (r.live) Palette.ok else Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
-        Text(listOf(r.stationLabel, hpTone(r.tone, r.dcs), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "", if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }.joinToString(" · "),
+        Text(listOf(r.stationLabel, nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "", if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }.joinToString(" · "),
             color = if (r.color >= 0) hpColor(r.color) else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
     }
 }

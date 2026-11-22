@@ -145,8 +145,8 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.38f, 0.7f); path.l(0.16f, 0.94f); path.m(0.62f, 0.7f); path.l(0.84f, 0.94f)
                 path.m(0.3f, 0.82f); path.l(0.7f, 0.82f)
             }
-            MayhemApp.FLEET -> {
-                // Dispatch: a handheld radio, its speaker grille, and the call going out from it
+            MayhemApp.FLEET, MayhemApp.CB -> {
+                // Dispatch (and CB): a handheld radio, its speaker grille, and the call going out from it
                 val a = p(0.24f, 0.32f); val b = p(0.60f, 0.92f)
                 path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.06f, s * 0.06f))
                 path.m(0.32f, 0.32f); path.l(0.32f, 0.08f)

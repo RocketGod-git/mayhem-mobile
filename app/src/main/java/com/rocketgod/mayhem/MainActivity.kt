@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
         Apps.cellFile = java.io.File(filesDir, "cell.json")
         com.rocketgod.mayhem.core.Dispatch.init(this)
         com.rocketgod.mayhem.core.HamPlus.init(this)
+        com.rocketgod.mayhem.core.Cb.init(this)
         com.rocketgod.mayhem.core.analyzer.Analyzer.init(filesDir)
         if (savedInstanceState == null) {
             // Land on the launcher (the front door), not Audio, and arm the auto-pick so it tunes the strongest

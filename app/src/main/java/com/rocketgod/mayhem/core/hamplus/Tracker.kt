@@ -94,6 +94,8 @@ data class HpTxRow(
     /** The talker's own carrier was heard on the repeater's input: they are near. */
     val direct: Boolean,
     var conv: Int, var recorded: Boolean, val cw: String,
+    /** CB: the mode it was heard in (AM, FM, USB, LSB). HAM+ leaves it empty. */
+    val mode: String = "",
 )
 
 data class HpTileStation(val key: String, val label: String, val letter: String, val color: Int, val callsign: String, val txs: Int, val offsetHz: Long)
@@ -203,7 +205,17 @@ fun envCorr(a: FloatArray, b: FloatArray, startDiffFrames: Int, maxLag: Int = LI
 
 private class Ev(var hits: Int, var misses: Int)
 
-class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble() }) {
+/**
+ * What the tracker asks of a band plan: what a frequency is (its name, its use, its repeater offsets) and the row of
+ * the activity map it counts in. HAM+ has the ARRL plans and a row per band; CB its channel names and a row a channel.
+ */
+interface TrackerPlan { fun info(hz: Long): PlanInfo; fun heatRow(hz: Long): String }
+val HAM_TRACKER_PLAN: TrackerPlan = object : TrackerPlan {
+    override fun info(hz: Long): PlanInfo = planInfo(hz)
+    override fun heatRow(hz: Long): String = hpBandOf(hz)?.id ?: ""
+}
+
+class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double = { System.currentTimeMillis().toDouble() }) {
     private val chans = LinkedHashMap<String, Chan>()
     private val txs = ArrayList<TxRec>()
     private val txStation = HashMap<Int, String>()
@@ -232,7 +244,7 @@ class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble()
 
     /** A repeater output: the band plan says so, a CW ID was heard on it, or its input was found. */
     fun repeaterLike(hz: Long): Boolean {
-        val c = chans[chanKey(hz)]; val p = planInfo(hz)
+        val c = chans[chanKey(hz)]; val p = plan.info(hz)
         if (outputOf(hz) != 0L) return false
         return p.use == "output" || inputOf(hz) != 0L || (!c?.callsign.isNullOrEmpty() && p.use != "simplex")
     }
@@ -289,9 +301,9 @@ class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble()
             if (b > a) c.minutes[m] = (c.minutes[m] ?: 0.0) + b - a
         }
         c.minutes.keys.removeAll { it < m1 - SPARK_MIN }
-        val band = hpBandOf(t.hz)
-        if (band != null) {
-            val b = heat.bands.firstOrNull { it.id == band.id } ?: HpHeatBand(band.id, DoubleArray(HEAT_SLOTS)).also { heat.bands.add(it) }
+        val row = plan.heatRow(t.hz)
+        if (row.isNotEmpty()) {
+            val b = heat.bands.firstOrNull { it.id == row } ?: HpHeatBand(row, DoubleArray(HEAT_SLOTS)).also { heat.bands.add(it) }
             b.slots[localSlot(t.startMs)] += dur / 1000
         }
         val call = cwCallsign(t.cw)
@@ -299,7 +311,7 @@ class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble()
         val s = assign(c, t.offsetHz, t.offsetSd, t.tone, t.dcs, t.startMs, t.endMs, true)
         if (s != null) txStation[t.id] = s.key
         if (call.isNotEmpty()) {
-            val u = planInfo(t.hz).use
+            val u = plan.info(t.hz).use
             if (s != null && (u == "simplex" || u == "input" || outputOf(t.hz) != 0L)) s.callsign = call
             else { c.callsign = call; c.callsignMs = t.endMs }
         }
@@ -322,7 +334,7 @@ class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble()
             judged.add(t.id)
             // as a repeater input: an output at a plan offset keyed with it
             for (c in chans.values) {
-                val off = t.hz - c.hz; val p = planInfo(c.hz)
+                val off = t.hz - c.hz; val p = plan.info(c.hz)
                 if (p.offsets.none { abs(it - off) < 1_250 }) continue
                 val k = "${chanKey(c.hz)}|${chanKey(t.hz)}"
                 val ev = pairEv[k] ?: Ev(0, 0)
@@ -351,8 +363,8 @@ class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble()
 
     private fun pairedTogether(a: Long, b: Long): Boolean =
         abs(inputOf(a) - b) < 1_250 || abs(inputOf(b) - a) < 1_250 ||
-            (planInfo(a).offsets.any { abs(b - a - it) < 1_250 } && pairEv.containsKey("${chanKey(a)}|${chanKey(b)}")) ||
-            (planInfo(b).offsets.any { abs(a - b - it) < 1_250 } && pairEv.containsKey("${chanKey(b)}|${chanKey(a)}"))
+            (plan.info(a).offsets.any { abs(b - a - it) < 1_250 } && pairEv.containsKey("${chanKey(a)}|${chanKey(b)}")) ||
+            (plan.info(b).offsets.any { abs(a - b - it) < 1_250 } && pairEv.containsKey("${chanKey(b)}|${chanKey(a)}"))
 
     /** Link groups: each tile key in a linked network mapped to a group number from 1. */
     fun linkGroups(): Map<String, Int> {
@@ -450,7 +462,7 @@ class HamTracker(val now: () -> Double = { System.currentTimeMillis().toDouble()
             val inHz = inputOf(tileHz); val ci = if (inHz != 0L) chans[chanKey(inHz)] else null
             val lv = live.filter { abs(it.hz - tileHz) < 1_250 || (inHz != 0L && abs(it.hz - inHz) < 1_250) }
             val lo = lv.firstOrNull { abs(it.hz - tileHz) < 1_250 } ?: lv.firstOrNull()
-            val p = planInfo(tileHz); val rep = repeaterLike(tileHz)
+            val p = plan.info(tileHz); val rep = repeaterLike(tileHz)
             val spark = IntArray(SPARK_MIN) { i -> (((c.minutes[nowMin - SPARK_MIN + 1 + i]) ?: 0.0) / 1000).roundToInt() }
             if (lo != null) { val a = max(lo.startMs, nowMin * 60_000.0); spark[SPARK_MIN - 1] += ((now - a) / 1000).roundToInt() }
             val sts: List<Station> = if (rep) ci?.stations ?: emptyList() else c.stations

@@ -64,22 +64,68 @@ data class HpParams(val thresholdDb: Double = 8.0, val mode: Mode = Mode.MIX, va
     enum class Mode { MIX, NEWEST }
 }
 
-private class Offset(val hz: Double, val sd: Double)
+/** A carrier offset (Hz) and its spread; NaN when not measured. */
+class ProbeOffset(val hz: Double, val sd: Double)
 
-private class Probe(rate: Double, offsetHz: Double) {
+/** What the watcher needs of a channel's demodulator: HAM+ has the FM one below, CB its AM / FM / SSB one. */
+interface WatchProbe {
+    val clip: ClipWriter; val means: MutableList<Double>; val env: List<Float>
+    val a48: FloatArray; val out48: Int; val levelDb: Double; val cw0: String
+    fun push(fi: FloatArray, fq: FloatArray, n: Int, listen: Boolean)
+    fun retune(offsetHz: Double)
+    fun offset(skip: Int = 0): ProbeOffset
+    fun tone(): Double
+    fun dcs(): Int
+    /** The transmission ended: flush what is still buffered (a Morse letter). */
+    fun end()
+}
+
+/**
+ * Where a watcher's channels are and how one opens. HAM+ watches every point of a 2.5 kHz raster inside the ham bands
+ * and lets a carrier move to its own raster point; CB watches the 40 channels of its plan and nothing else.
+ */
+interface WatchPlan {
+    /** The name in log lines. */
+    val name: String
+    val raster: Long
+    /** Whether a raster point may open a channel. */
+    fun inPlan(hz: Long): Boolean
+    /** The FFT size for a sample rate. */
+    fun nfft(rate: Int): Int
+    /** Half the span heard, at a sample rate. */
+    fun spanHalf(rate: Int): Double
+    /** A new carrier must be the strongest within this many raster steps, and this many from an open one. */
+    val peakSteps: Int
+    val clearSteps: Int
+    /** An open carrier off its raster point by more than half a step moves to the right one. */
+    val snap: Boolean
+}
+
+val HAM_PLAN: WatchPlan = object : WatchPlan {
+    override val name = "HAM+"
+    override val raster = HP_RASTER
+    override fun inPlan(hz: Long) = hpBandOf(hz) != null
+    override fun nfft(rate: Int) = 1 shl max(10, min(14, ceil(ln(rate / 1000.0) / ln(2.0)).toInt()))
+    override fun spanHalf(rate: Int) = rate * 0.44 - 6_250
+    override val peakSteps = 3
+    override val clearSteps = 4
+    override val snap = true
+}
+
+private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
     val ddc = Ddc(7_500.0, PROBE_RATE, 63)
     val fs: Double
-    var oi = FloatArray(0); var oq = FloatArray(0); var au = FloatArray(0); var au2 = FloatArray(0); var a8 = FloatArray(0); var a48 = FloatArray(0)
+    var oi = FloatArray(0); var oq = FloatArray(0); var au = FloatArray(0); var au2 = FloatArray(0); var a8 = FloatArray(0); override var a48 = FloatArray(0)
     val sub: SubAudioDecoder; val cw: CwReader; val lp: RealFir
-    val to8: Resampler; val to48: Resampler; val clip = ClipWriter()
+    val to8: Resampler; val to48: Resampler; override val clip = ClipWriter()
     private var pi = 1f; private var pq = 0f; private var deemph = 0.0; private var hp = 0.0; private val de: Double
     /** Discriminator sum over the current 100 ms, the 100 ms means so far, power and the envelope. */
-    private var offAcc = 0.0; private var offN = 0; val means = ArrayList<Double>()
-    private var envAcc = 0.0; private var envN = 0; val env = ArrayList<Float>()
+    private var offAcc = 0.0; private var offN = 0; override val means = ArrayList<Double>()
+    private var envAcc = 0.0; private var envN = 0; override val env = ArrayList<Float>()
     private var pow = 0.0; private var powN = 0
-    var levelDb = -90.0; var cw0 = ""
+    override var levelDb = -90.0; override var cw0 = ""
     val tones = LinkedHashMap<Double, Int>(); val dcsCodes = LinkedHashMap<Int, Int>(); var subN = 0L
-    var out48 = 0
+    override var out48 = 0
 
     init {
         ddc.reset(rate); ddc.offsetHz = offsetHz; fs = ddc.outRate
@@ -89,9 +135,9 @@ private class Probe(rate: Double, offsetHz: Double) {
         de = 1 - exp(-1 / (fs * 530e-6))
     }
 
-    fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz }
+    override fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz }
 
-    fun push(fi: FloatArray, fq: FloatArray, n: Int, listen: Boolean) {
+    override fun push(fi: FloatArray, fq: FloatArray, n: Int, listen: Boolean) {
         val max = ddc.maxOut(n)
         if (oi.size < max) { oi = FloatArray(max); oq = FloatArray(max); au = FloatArray(max); au2 = FloatArray(max); a8 = FloatArray(max); a48 = FloatArray(2 * max + 16) }
         val m = ddc.push(fi, fq, n, oi, oq)
@@ -125,23 +171,24 @@ private class Probe(rate: Double, offsetHz: Double) {
     }
 
     /** Carrier offset: the median of the 100 ms means (a burst of clicks moves one mean, not the median), and their spread. */
-    fun offset(skip: Int = 0): Offset {
-        if (means.size - skip < 3) return Offset(Double.NaN, 0.0)
+    override fun offset(skip: Int): ProbeOffset {
+        if (means.size - skip < 3) return ProbeOffset(Double.NaN, 0.0)
         val s = means.subList(skip, means.size).sorted()
         val med = s[s.size / 2]; val q1 = s[s.size / 4]; val q3 = s[s.size * 3 / 4]
-        return Offset(med, (q3 - q1) / 1.35 / sqrt(s.size.toDouble()))
+        return ProbeOffset(med, (q3 - q1) / 1.35 / sqrt(s.size.toDouble()))
     }
 
     /** The tone (or code) heard through most of the transmission: half of it at least, so a moment of voice read as a tone does not count. */
-    fun tone(): Double = top(tones, 0.0, subN)
-    fun dcs(): Int = if (tone() != 0.0) 0 else top(dcsCodes, 0, subN)
+    override fun tone(): Double = top(tones, 0.0, subN)
+    override fun dcs(): Int = if (tone() != 0.0) 0 else top(dcsCodes, 0, subN)
+    override fun end() { cw.end() }
     companion object {
         fun <K> top(m: Map<K, Int>, none: K, total: Long): K { var b = none; var v = 0; for ((k, n) in m) if (n > v) { v = n; b = k }; return if (v >= TONE_SHARE * total) b else none }
     }
 }
 
-private class Open(val id: Int, var k: Int, var hz: Long, val startMs: Double, var quietMs: Double, var peak: Double, var snr: Double,
-                   var probe: Probe?, var cut: Boolean, var shifted: Boolean, var tileKey: String)
+class WatchOpen<P : WatchProbe>(val id: Int, var k: Int, var hz: Long, val startMs: Double, var quietMs: Double, var peak: Double, var snr: Double,
+                                var probe: P?, var cut: Boolean, var shifted: Boolean, var tileKey: String)
 
 data class HpReplayState(val active: Boolean, val label: String, val kind: String, val clip: Int, val pos: Double, val total: Double)
 
@@ -156,9 +203,14 @@ fun quietQuarter(power: FloatArray, count: Int): Float {
     val v = power.copyOf(count); v.sort()
     return v[(count - 1) / 4]
 }
+fun quietQuarter(v0: DoubleArray, count: Int): Double {
+    if (count <= 0) return 0.0
+    val v = v0.copyOf(count); v.sort()
+    return v[(count - 1) / 4]
+}
 
-/** The whole picture, twice a second. */
-class HpSnap(
+/** The whole picture, twice a second. CB's snapshot adds its channels ([com.rocketgod.mayhem.core.cb.CbSnap]). */
+open class HpSnap(
     val now: Double, val centerHz: Long, val rate: Int, val spanLo: Double, val spanHi: Double, val tiles: List<HpTile>,
     val rows: List<HpTxRow>, val convs: List<HpConv>, val heat: HpHeat, val playing: List<String>, val replay: HpReplayState, val stats: HpStats,
 )
@@ -166,12 +218,18 @@ class HpSnap(
 private class Replay(val mixer: ReplayMixer, val label: String, val kind: String, val to48: Resampler, val buf8: FloatArray, val buf48: FloatArray, var acc: Double)
 
 /**
+ * Every channel of a plan in the span at once: the measurement, the opening and closing, the demodulators and their
+ * cap, the listening, the time machine and the snapshot. What is HAM+'s own (its plan, its FM probe) or CB's comes in
+ * through [WatchPlan], [makeProbe] and [gate].
+ *
  * Every call runs under the engine's lock: [onIq] on the DSP thread, the commands ([replayTx], [setPrefs], ...) from
  * the screen. [clock] is the wall clock (ms) and [perf] a monotonic clock (ms) the demod cost is timed with.
  */
-class HamPlusEngine(
-    private val clock: () -> Double = { System.currentTimeMillis().toDouble() },
-    private val perf: () -> Double = { System.nanoTime() / 1e6 },
+abstract class ChannelWatch<P : WatchProbe>(
+    val plan: WatchPlan,
+    private val clock: () -> Double,
+    private val perf: () -> Double,
+    trackerOf: ((() -> Double) -> HamTracker)? = null,
 ) : IqProcessor {
     override val wantsFm = false
     override val producesAudio = true
@@ -188,14 +246,20 @@ class HamPlusEngine(
     private val _snap = MutableStateFlow<HpSnap?>(null)
     val snap: StateFlow<HpSnap?> = _snap.asStateFlow()
 
-    private val lock = Any()
-    private var rate = 0; private var samples = 0L; private var baseMs = 0.0
-    private var nfft = 4096; private var re = FloatArray(0); private var im = FloatArray(0); private var win = FloatArray(0); private var acc = DoubleArray(0); private var frames = 0
+    protected val lock = Any()
+    protected var rate = 0; private set
+    private var samples = 0L; private var baseMs = 0.0
+    protected var nfft = 4096; private set
+    private var re = FloatArray(0); private var im = FloatArray(0); private var win = FloatArray(0); private var acc = DoubleArray(0); private var frames = 0
     private var pdb = DoubleArray(0)
     private var fi = FloatArray(0); private var fq = FloatArray(0)
-    private var first = 0L; private var count = 0; private var hamBand = BooleanArray(0)
-    private var power = FloatArray(0); private var floorDb = FloatArray(0); private var snr = FloatArray(0)
-    private val opens = LinkedHashMap<Int, Open>()
+    protected var first = 0L; private set
+    protected var count = 0; private set
+    private var hamBand = BooleanArray(0)
+    protected var power = FloatArray(0); private set
+    private var floorDb = FloatArray(0)
+    protected var snr = FloatArray(0); private set
+    protected val opens = LinkedHashMap<Int, WatchOpen<P>>()
     private var nextId = 1
     private var lastMeasure = 0.0; private var lastSnap = 0.0; private var lastCap = 0.0; private var lastLog = 0.0; private var lastCenter = 0L
     /** Probe processing time measured: ms a probe takes per second of signal (smoothed), and the cap it sets. */
@@ -206,7 +270,10 @@ class HamPlusEngine(
     private var replay: Replay? = null
     var playing: List<String> = emptyList(); private set
 
-    init { tracker = HamTracker { nowMs() } }
+    init { tracker = trackerOf?.invoke { nowMs() } ?: HamTracker { nowMs() } }
+
+    /** A demodulator for a carrier at [hz] (tile [key]). */
+    protected abstract fun makeProbe(hz: Long, key: String): P
 
     fun nowMs(): Double = baseMs + samples * 1000.0 / max(1, rate)
 
@@ -219,31 +286,31 @@ class HamPlusEngine(
 
     private fun resetLocked(rate: Int) {
         this.rate = rate; samples = 0; baseMs = clock()
-        nfft = 1 shl max(10, min(14, ceil(ln(rate / 1000.0) / ln(2.0)).toInt()))
+        nfft = plan.nfft(rate)
         re = FloatArray(nfft); im = FloatArray(nfft); acc = DoubleArray(nfft); pdb = DoubleArray(nfft); frames = 0
         win = FloatArray(nfft) { (0.5 - 0.5 * cos(2 * PI * it / (nfft - 1))).toFloat() }
-        closeAll(); plan()
-        Diag.log("HAM+: %.2f Msps · %d channels on a %s kHz raster · probe cap %d".format(Locale.US, rate / 1e6, count, (HP_RASTER / 1e3).toString(), cap))
+        closeAll(); layout()
+        Diag.log("%s: %.2f Msps · %d channels on a %s kHz raster · probe cap %d".format(Locale.US, plan.name, rate / 1e6, count, (plan.raster / 1e3).toString(), cap))
     }
 
-    private fun plan() {
-        val half = rate * 0.44 - 6_250
-        val f = ceil((centerHz - half) / HP_RASTER).toLong(); val l = floor((centerHz + half) / HP_RASTER).toLong()
+    private fun layout() {
+        val half = plan.spanHalf(rate); val R = plan.raster
+        val f = ceil((centerHz - half) / R).toLong(); val l = floor((centerHz + half) / R).toLong()
         first = f; count = max(0, (l - f + 1).toInt())
         // only the ham bands open channels: a span reaching past a band's edge leaves the rest alone
-        hamBand = BooleanArray(count) { hpBandOf(hzOf(it)) != null }
+        hamBand = BooleanArray(count) { plan.inPlan(hzOf(it)) }
         power = FloatArray(count) { -120f }; floorDb = FloatArray(count) { Float.NaN }; snr = FloatArray(count)
         lastCenter = centerHz
         tracker.setSpan(centerHz - half, centerHz + half)
     }
 
-    private fun hzOf(k: Int): Long = (first + k) * HP_RASTER
+    protected fun hzOf(k: Int): Long = (first + k) * plan.raster
 
     override fun onIq(iq: ByteArray, len: Int, rate: Int) { synchronized(lock) { onIqLocked(iq, len, rate) } }
 
     private fun onIqLocked(iq: ByteArray, len: Int, rate: Int) {
         if (rate != this.rate) resetLocked(rate)
-        if (centerHz != lastCenter) { closeAll(); acc.fill(0.0); frames = 0; plan() }
+        if (centerHz != lastCenter) { closeAll(); acc.fill(0.0); frames = 0; layout() }
         val n = len / 2
         if (fi.size < n) { fi = FloatArray(n); fq = FloatArray(n) }
         for (k in 0 until n) { fi[k] = (iq[2 * k].toInt() and 0xff) - 127.5f; fq[k] = (iq[2 * k + 1].toInt() and 0xff) - 127.5f }
@@ -265,7 +332,7 @@ class HamPlusEngine(
 
     /** Channel powers, floors, SNRs; carriers open and close. */
     private fun measure(now: Double) {
-        val nn = nfft; val binHz = rate.toDouble() / nn; val half = max(1, (4_000 / binHz).roundToInt()); val p = params
+        val nn = nfft; val binHz = rate.toDouble() / nn; val half = max(1, (4_000 / binHz).roundToInt())
         for (k in 0 until nn) pdb[(k + nn / 2) % nn] = acc[k] / frames
         acc.fill(0.0); frames = 0
         for (k in 0 until count) {
@@ -284,6 +351,12 @@ class HamPlusEngine(
             floorDb[k] = if (f.isNaN()) rel else if (rel < f) f + 0.3f * (rel - f) else f + 0.004f * (rel - f)
             snr[k] = rel - floorDb[k]
         }
+        gate(now, pdb, binHz)
+    }
+
+    /** Which channels open and close, on the measurement just made ([pdb]: the span's power a bin, DC in the middle). */
+    protected open fun gate(now: Double, pdb: DoubleArray, binHz: Double) {
+        val p = params; val pl = plan
         fun nearDc(k: Int) = abs(hzOf(k) - centerHz) < 6_000
         // open channels: still above the closing level near their raster point?
         for (o in opens.values.toList()) {
@@ -298,36 +371,37 @@ class HamPlusEngine(
         for (k in 0 until count) {
             if (snr[k] <= p.thresholdDb || nearDc(k) || !hamBand[k]) continue
             var peak = true
-            for (d in -3..3) { val j = k + d; if (d != 0 && j in 0 until count && power[j] > power[k]) { peak = false; break } }
+            for (d in -pl.peakSteps..pl.peakSteps) { val j = k + d; if (d != 0 && j in 0 until count && power[j] > power[k]) { peak = false; break } }
             if (!peak) continue
-            if (opens.values.any { abs(it.k - k) <= 4 }) continue
+            if (opens.values.any { abs(it.k - k) <= pl.clearSteps }) continue
             openAt(k, now)
         }
     }
 
-    private fun tileKey(hz: Long): String = chanKey(tracker.tileHz(hz))
+    protected fun tileKey(hz: Long): String = chanKey(tracker.tileHz(hz))
     private fun wanted(key: String): Boolean { val pr = tracker.prefs; return pr.hold == key || key in pr.prio }
     private fun probes(): Int = opens.values.count { it.probe != null }
 
-    private fun openAt(k: Int, now: Double) {
+    protected fun openAt(k: Int, now: Double): WatchOpen<P> {
         val hz = hzOf(k); val key = tileKey(hz)
-        val o = Open(nextId++, k, hz, now - MEASURE_MS, 0.0, snr[k].toDouble(), snr[k].toDouble(), null, false, false, key)
+        val o = WatchOpen<P>(nextId++, k, hz, now - MEASURE_MS, 0.0, snr[k].toDouble(), snr[k].toDouble(), null, false, false, key)
         if (fixedCap != 0) cap = fixedCap
         if (probes() >= cap && wanted(key)) {
             // a followed or priority channel takes the probe of the newest other one, which is then marked cut
             val victim = opens.values.filter { it.probe != null && !wanted(it.tileKey) }.maxByOrNull { it.startMs }
             if (victim != null) { victim.probe = null; victim.cut = true }
         }
-        if (probes() < cap) o.probe = Probe(rate.toDouble(), (hz - centerHz).toDouble())
+        if (probes() < cap) o.probe = makeProbe(hz, key)
         opens[o.id] = o
+        return o
     }
 
-    private fun close(o: Open, endMs: Double) {
+    protected fun close(o: WatchOpen<P>, endMs: Double) {
         opens.remove(o.id)
         if (endMs - o.startMs < TX_MIN_MS) return
         val p = o.probe
-        val off = p?.offset(2) ?: Offset(Double.NaN, 0.0)
-        p?.cw?.end()
+        val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
+        p?.end()
         val recorded = p != null && !o.cut
         val tone = p?.tone() ?: 0.0
         val envN = ceil((endMs - o.startMs) / ENV_MS).toInt()
@@ -338,13 +412,17 @@ class HamPlusEngine(
             val data = p!!.clip.done()
             clips.add(Clip(o.id, o.hz, o.startMs, data.copyOf(min(data.size, ((endMs - o.startMs) * CLIP_RATE / 1000).roundToInt()))))
         }
+        closed(o, t)
         tracker.addTx(t)
     }
+
+    /** A finished transmission, just before the tracker has it. */
+    protected open fun closed(o: WatchOpen<P>, t: TxRec) { /* HAM+ keeps nothing more */ }
 
     private fun closeAll() { val now = nowMs(); for (o in opens.values.toList()) close(o, now) }
 
     /** Which open channels are heard: the followed one alone; else priority ones when open; else all (mix) or the newest. */
-    private fun listenSet(): List<Open> {
+    private fun listenSet(): List<WatchOpen<P>> {
         val pr = tracker.prefs
         var c = opens.values.filter { it.probe != null && it.tileKey !in pr.mute }
         // a repeater input is the same voice as its output: the output is heard
@@ -368,11 +446,11 @@ class HamPlusEngine(
             val hear = listen.any { it === o }
             p.push(fi, fq, n, hear)
             // a carrier that is off its raster point by more than half a step moves to the right one, once
-            if (!o.shifted && now - o.startMs > 500) {
+            if (plan.snap && !o.shifted && now - o.startMs > 500) {
                 o.shifted = true
                 val off = p.offset(1)
-                if (abs(off.hz) > HP_RASTER / 2.0) {
-                    val steps = (off.hz / HP_RASTER).roundToInt(); val shift = steps * HP_RASTER
+                if (abs(off.hz) > plan.raster / 2.0) {
+                    val steps = (off.hz / plan.raster).roundToInt(); val shift = steps * plan.raster
                     o.k += steps; o.hz += shift; o.tileKey = tileKey(o.hz); p.retune((o.hz - centerHz).toDouble())
                     for (i in p.means.indices) p.means[i] -= shift.toDouble()
                 }
@@ -393,7 +471,7 @@ class HamPlusEngine(
             costT = 0.0; costSig = 0.0; costProbeS = 0.0
             if (now - lastLog > 30_000) {
                 lastLog = now
-                Diag.log("HAM+: demod cost %.1f ms per channel per second at %.2f Msps, cap %d channels".format(Locale.US, costMs, rate / 1e6, cap))
+                Diag.log("%s: demod cost %.1f ms per channel per second at %.2f Msps, cap %d channels".format(Locale.US, plan.name, costMs, rate / 1e6, cap))
             }
         }
         if (replay != null) { replayStep(n); return }
@@ -432,7 +510,7 @@ class HamPlusEngine(
 
     fun stopReplay() { synchronized(lock) { replay = null } }
     /** Forgets everything heard: the channels, stations, pairs, links, the activity map and the time machine. */
-    fun clear() { synchronized(lock) { replay = null; tracker.clear(); tracker.heat = HpHeat(); clips.clear() } }
+    open fun clear() { synchronized(lock) { replay = null; tracker.clear(); tracker.heat = HpHeat(); clips.clear() } }
 
     private fun replayStep(n: Int) {
         val r = replay ?: return
@@ -456,7 +534,7 @@ class HamPlusEngine(
     /** The channels open now, as the tracker takes them. */
     private fun liveRecs(): List<LiveRec> = opens.values.map { o ->
         val p = o.probe
-        val off = p?.offset(2) ?: Offset(Double.NaN, 0.0)
+        val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
         LiveRec(o.id, o.hz, o.startMs, (o.snr * 10).roundToInt() / 10.0, if (p != null) p.levelDb.roundToInt().toDouble() else -90.0, off.hz,
             p?.tone() ?: 0.0, p?.dcs() ?: 0, p != null && !o.cut)
     }
@@ -464,7 +542,7 @@ class HamPlusEngine(
     /** The whole picture now; the engine also publishes it on [snap] twice a second. */
     fun snapshot(): HpSnap = synchronized(lock) { snapshotLocked(nowMs()) }
 
-    private fun snapshotLocked(now: Double): HpSnap {
+    protected open fun snapshotLocked(now: Double): HpSnap {
         val tr = tracker
         tr.setLive(liveRecs()); tr.judge(now)
         val rows = tr.rows(now, 400)
@@ -475,4 +553,12 @@ class HamPlusEngine(
             HpStats(opens.size, tr.stationCount, probes(), cap, (costMs * 10).roundToInt() / 10.0, clips.seconds.roundToInt().toLong(),
                 (clips.bytes / 1e5).roundToInt() / 10.0, (clips.cap / 1e5).roundToInt() / 10.0, clips.oldestMs(), count))
     }
+}
+
+/** HAM+: every FM channel on the ham bands at once. */
+class HamPlusEngine(
+    clock: () -> Double = { System.currentTimeMillis().toDouble() },
+    perf: () -> Double = { System.nanoTime() / 1e6 },
+) : ChannelWatch<WatchProbe>(HAM_PLAN, clock, perf) {
+    override fun makeProbe(hz: Long, key: String): WatchProbe = Probe(rate.toDouble(), (hz - centerHz).toDouble())
 }
