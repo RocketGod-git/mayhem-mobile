@@ -28,7 +28,7 @@ export const CB_PROBE_RATE = 16_000;
 /** The Weaver shift: a sideband 300 to 3000 Hz from the carrier is centered at 1650 Hz and kept 1350 Hz either side. */
 export const SSB_MID_HZ = 1_650, SSB_HALF_HZ = 1_350;
 /** Votes: SSB has this much more on one side (dB), and its remainder is not in line with a carrier. */
-export const SSB_SIDE_DB = 6;
+export const SSB_SIDE_DB = 10;
 /** SSB's envelope follows the voice all the way (a carrier between words does not, so an AM pause casts no SSB vote). */
 export const SSB_ENV_MIN = 0.25;
 /** FM: the envelope moves less than this (beyond noise) while the discriminator swings more than this (Hz rms). */

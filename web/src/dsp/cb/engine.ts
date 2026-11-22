@@ -21,6 +21,10 @@ import { CB_CENTER, CB_CHANNELS, CB_RASTER, CB_TRACKER_PLAN, cbChannel, type CbM
 
 /** The voice level (dB over the quiet channels' motion) a channel opens at; an open one closes 2 dB under it. */
 export const CB_OPEN_DB = 5;
+/** An open channel must measure as a voice (this many blocks voting AM, FM or sideband) within this long, or it is dropped. */
+export const CB_CONFIRM_MS = 2_000, CB_CONFIRM_VOTES = 3;
+/** A dropped channel stays shut this long. */
+export const CB_DROP_HOLD_MS = 5_000;
 /** Nothing opens this long after the span starts: the floors and lines settle first. */
 export const CB_WARM_MS = 3_000;
 /** A channel stays open this long without voice: a talker's breath, a short pause. */
@@ -76,14 +80,17 @@ export interface CbChan {
 
 interface ChanState {
   hist: Float32Array[]; mem: Float64Array; run: Uint16Array; fl: Float32Array; skirt: Uint8Array; v: number[]; voiceDb: number; sigDb: number; totDb: number; d: number;
-  lineDb: number; lineSince: number; lineLast: number; seen: number; total: number; lastT: number; over: number; mode: CbMode;
+  lineDb: number; lineSince: number; lineLast: number; noVoiceMs: number; seen: number; total: number; lastT: number; over: number; mode: CbMode;
 }
 export interface CbPrefs { modes: Record<string, CbMode | ''>; clar: Record<string, number> }
 
 export class CbEngine extends ChannelWatch<CbProbe> {
-  readonly st: ChanState[] = CB_CHANNELS.map(() => ({ hist: [], mem: new Float64Array(0), run: new Uint16Array(0), fl: new Float32Array(0), skirt: new Uint8Array(0), v: [], voiceDb: 0, sigDb: 0, totDb: 0, d: 0, lineDb: 0, lineSince: 0, lineLast: 0, seen: 0, total: 0, lastT: 0, over: 0, mode: 'AM' as CbMode }));
+  readonly st: ChanState[] = CB_CHANNELS.map(() => ({ hist: [], mem: new Float64Array(0), run: new Uint16Array(0), fl: new Float32Array(0), skirt: new Uint8Array(0), v: [], voiceDb: 0, sigDb: 0, totDb: 0, d: 0, lineDb: 0, lineSince: 0, lineLast: 0, noVoiceMs: 0, seen: 0, total: 0, lastT: 0, over: 0, mode: 'AM' as CbMode }));
   cbPrefs: CbPrefs = { modes: {}, clar: {} };
   private readonly txMode = new Map<number, CbMode>();
+  private readonly confirmed = new Set<number>();
+  /** Openings dropped as no voice, since the start (the log and the tests read it). */
+  dropped = 0;
   private readonly peakLevel = new Map<number, number>(); private readonly goneMs = new Map<number, number>();
   private binHz = 0;
 
@@ -186,6 +193,10 @@ export class CbEngine extends ChannelWatch<CbProbe> {
         }
       }
       for (let b = 0; b < nb; b++) if (s.skirt[b]) ex[b] = 1;
+      // the channel's strongest peak, steady or not, and the bins beside it: a carrier whose level wanders (fading, a
+      // keyed carrier fluttering) moves its own bins, while a voice moves bins 300 Hz and more from its carrier
+      { let pk = -1, pv = LINE_MIN; for (let b = 0; b < nb; b++) if (p[b] > pv) { pv = p[b]; pk = b; }
+        if (pk >= 0) for (let d = -G; d <= G; d++) { const j = pk + d; if (j >= 0 && j < nb) ex[j] = 1; } }
       // how far the bins left move (the mean of the quarter that move most: a voice's bins, not the noise around
       // them), and the power in them
       let pw = 0, cnt = 0, tot = 0;
@@ -223,6 +234,14 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     // up a moment later); without one (SSB, or a weak talker under a steady line) the voice going quiet ends it
     for (const o of [...this.opens.values()]) {
       const i = cbChannel(o.hz) - 1, s = this.st[i], p = o.probe;
+      // a voice is AM, FM or sideband to the demodulator: something that moves the spectrum but measures as none of
+      // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
+      // held shut a while
+      if (p && !this.confirmed.has(o.id) && now - o.startMs >= CB_CONFIRM_MS) {
+        const v = p.votes;
+        if (v.AM + v.FM + v.USB + v.LSB >= CB_CONFIRM_VOTES) this.confirmed.add(o.id);
+        else { this.opens.delete(o.id); this.peakLevel.delete(o.id); this.goneMs.delete(o.id); s.v = []; s.over = 0; s.noVoiceMs = now; this.dropped++; continue; }
+      }
       o.snr = s.sigDb; o.peak = Math.max(o.peak, s.sigDb);
       if (p) {
         p.noiseRatio = this.noiseOf(i);
@@ -239,7 +258,7 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     // new talkers: four measurements over the threshold, and not a strong neighbor's splatter (an open channel within
     // 20 kHz with its power [SPLATTER_DB] over this one's)
     for (let i = 0; i < this.st.length; i++) {
-      if (this.st[i].over < 4 || now < this.warmUntil) continue;
+      if (this.st[i].over < 4 || now < this.warmUntil || now - this.st[i].noVoiceMs < CB_DROP_HOLD_MS) continue;
       const hz = CB_CHANNELS[i];
       if ([...this.opens.values()].some(o => o.hz === hz)) continue;
       if ([...this.opens.values()].some(o => Math.abs(o.hz - hz) <= 20_000 && this.st[cbChannel(o.hz) - 1].totDb - this.st[i].totDb > SPLATTER_DB)) continue;
@@ -250,7 +269,7 @@ export class CbEngine extends ChannelWatch<CbProbe> {
   }
 
   protected override closed(o: Open<CbProbe>, t: TxRec): void {
-    this.peakLevel.delete(o.id); this.goneMs.delete(o.id);
+    this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id);
     const i = cbChannel(o.hz) - 1;
     // the next transmission on the channel opens on its own voice, not on what is left of this one's
     if (i >= 0) { this.st[i].v = []; this.st[i].over = 0; }
