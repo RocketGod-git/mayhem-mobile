@@ -429,8 +429,8 @@ private fun CbCard(c: CbChan, s: CbSnap, now: Long, prefs: HpPrefs, accent: Colo
             add("FREQUENCY" to "${cbMhz(c.hz)} MHz")
             if (cbName(c.ch).isNotEmpty()) add("USE" to when (c.ch) { 9 -> "emergencies and help to travelers"; 19 -> "highway traffic"; 38 -> "single sideband calling, LSB"; else -> "single sideband" })
             add("MODE" to (c.manual?.let { "${it.name}, set by hand" } ?: if (c.open && c.measured != null) "${c.measured.name}, measured on this transmission" else "${c.mode.name}, chosen on each transmission"))
-            if (c.lineDb > 0) add("ON IT NOW" to cbSteadyText(c))
-            else if (c.open) add("ON IT NOW" to "${c.mode.name} on the air, voice ${c.voiceDb.roundToInt()} dB over the quiet channels")
+            if (c.open) add("ON IT NOW" to "${c.mode.name} on the air, voice ${c.voiceDb.roundToInt()} dB over the quiet channels${if (c.lineDb > 0) ", under a steady carrier +${c.lineDb} dB" else ""}")
+            else if (c.lineDb > 0) add("ON IT NOW" to cbSteadyText(c))
             if (!c.inSpan) add("SPAN" to "outside what the radio hears now")
             if (t != null) {
                 add("HEARD" to "${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${if (t.live) "on the air now" else hpAgo(now - t.lastMs)}")
