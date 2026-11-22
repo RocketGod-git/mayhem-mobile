@@ -20,7 +20,7 @@ import { CbProbe } from './probe.js';
 import { CB_CENTER, CB_CHANNELS, CB_RASTER, CB_TRACKER_PLAN, cbChannel, type CbMode } from './plan.js';
 
 /** The voice level (dB over the quiet channels' motion) a channel opens at; an open one closes 2 dB under it. */
-export const CB_OPEN_DB = 5;
+export const CB_OPEN_DB = 3;
 /** An open channel must measure as a voice (this many blocks voting AM, FM or sideband) within this long, or it is dropped. */
 export const CB_CONFIRM_MS = 2_000, CB_CONFIRM_VOTES = 3;
 /** A dropped channel stays shut this long. */
@@ -238,9 +238,8 @@ export class CbEngine extends ChannelWatch<CbProbe> {
       // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
       // held shut a while
       if (p && !this.confirmed.has(o.id) && now - o.startMs >= CB_CONFIRM_MS) {
-        const v = p.votes;
-        if (v.AM + v.FM + v.USB + v.LSB >= CB_CONFIRM_VOTES) this.confirmed.add(o.id);
-        else { this.opens.delete(o.id); this.peakLevel.delete(o.id); this.goneMs.delete(o.id); s.v = []; s.over = 0; s.noVoiceMs = now; this.dropped++; continue; }
+        if (this.voiced(p)) this.confirmed.add(o.id);
+        else { this.drop(o, now); continue; }
       }
       o.snr = s.sigDb; o.peak = Math.max(o.peak, s.sigDb);
       if (p) {
@@ -266,6 +265,20 @@ export class CbEngine extends ChannelWatch<CbProbe> {
       if (k < 0 || k >= this.count) continue;
       this.openAt(k, now);
     }
+  }
+
+  private voiced(p: CbProbe): boolean { const v = p.votes; return v.AM + v.FM + v.USB + v.LSB >= CB_CONFIRM_VOTES; }
+  /** An opening that never measured as a voice: gone without a trace, and its channel held shut a while. */
+  private drop(o: Open<CbProbe>, now: number): void {
+    const s = this.st[cbChannel(o.hz) - 1];
+    this.opens.delete(o.id); this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id);
+    if (s) { s.v = []; s.over = 0; s.noVoiceMs = now; }
+    this.dropped++;
+  }
+  /** One that ends before its voice check (a carrier dropping within 2 s) faces the check as it ends. */
+  protected override close(o: Open<CbProbe>, endMs: number): void {
+    if (o.probe && !this.confirmed.has(o.id) && !this.voiced(o.probe)) { this.drop(o, this.nowMs()); return; }
+    super.close(o, endMs);
   }
 
   protected override closed(o: Open<CbProbe>, t: TxRec): void {
