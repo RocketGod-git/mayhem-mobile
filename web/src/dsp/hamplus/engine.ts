@@ -18,7 +18,7 @@ import { RealFir, Resampler, lowpassTaps } from '../ham/filters.js';
 import { SubAudioDecoder } from '../ham/ctcss.js';
 import { CwReader } from '../fleet/rx.js';
 import { HP_RASTER, hpBandOf } from './plan.js';
-import { ClipStore, ClipWriter, CLIP_RATE, planReplay, ReplayMixer, type Clip } from './clips.js';
+import { ClipStore, ClipWriter, CLIP_RATE, planReplay, replayFromPlan, ReplayMixer, type Clip } from './clips.js';
 import { HamTracker, ENV_MS, HEAT_SLOTS, chanKey, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
 
 export const PROBE_RATE = 24_000;
@@ -317,9 +317,10 @@ export class HamPlusEngine implements IqProcessor {
     this.replay = { mixer: new ReplayMixer(parts, this.params.volume), label, kind, to48: new Resampler(48_000 / CLIP_RATE), buf8: new Float32Array(4096), buf48: new Float32Array(4096 * 6 + 16), acc: 0 };
     return true;
   }
+  /** The band from a moment on; after the last transmission, from the last one heard. False only when nothing is kept. */
   replayFrom(ms: number): boolean {
-    const ids = this.clips.all().filter(c => c.startMs + c.data.length * 1000 / CLIP_RATE > ms).map(c => c.id);
-    return this.replayTx(ids, `the band from ${new Date(ms).toTimeString().slice(0, 8)}`, 'band');
+    const plan = replayFromPlan(this.clips.all().map(c => ({ id: c.id, startMs: c.startMs, endMs: c.startMs + c.data.length * 1000 / CLIP_RATE })), ms);
+    return this.replayTx(plan.ids, `the band from ${new Date(plan.fromMs).toTimeString().slice(0, 8)}`, 'band');
   }
   stopReplay(): void { this.replay = null; }
   /** Forgets everything heard: the channels, stations, pairs, links, the activity map and the time machine. */

@@ -460,8 +460,8 @@ self.onmessage = (e: MessageEvent) => {
       else if (m.cmd === 'prefs') hamplus.setPrefs(m.prefs as never, m.labels as Record<string, string>);
       else if (m.cmd === 'restore') hamplus.restore(m.saved as never);
       else if (m.cmd === 'save') post({ type: 'hamplusSaved', saved: hamplus.tracker.save() });
-      else if (m.cmd === 'replay') { if (!hamplus.replayTx(m.ids as number[], m.label as string, m.kind as string)) emit({ type: 'log', line: 'HAM+: that audio is no longer in the time machine' }); }
-      else if (m.cmd === 'replayFrom') { if (!hamplus.replayFrom(m.ms as number)) emit({ type: 'log', line: 'HAM+: nothing recorded from that moment on' }); }
+      else if (m.cmd === 'replay') { if (!hamplus.replayTx(m.ids as number[], m.label as string, m.kind as string)) { emit({ type: 'log', line: 'HAM+: that audio is no longer in the time machine' }); post({ type: 'hamplusNote', text: 'That audio is no longer kept' }); } }
+      else if (m.cmd === 'replayFrom') { if (!hamplus.replayFrom(m.ms as number)) { emit({ type: 'log', line: 'HAM+: nothing recorded yet' }); post({ type: 'hamplusNote', text: 'Nothing recorded yet' }); } }
       else if (m.cmd === 'stop') hamplus.stopReplay();
       else if (m.cmd === 'clear') hamplus.clear();
       break;

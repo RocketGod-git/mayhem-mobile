@@ -63,6 +63,17 @@ export class ClipStore {
   clear(): void { this.clips.clear(); this.bytes = 0; }
 }
 
+/**
+ * What a tap on the timeline at [ms] replays: every clip still on the air after that moment, or, when nothing was
+ * heard after it, the band from the start of the last transmission before it. Empty only when nothing is kept.
+ */
+export function replayFromPlan(clips: { id: number; startMs: number; endMs: number }[], ms: number): { ids: number[]; fromMs: number } {
+  if (!clips.length) return { ids: [], fromMs: ms };
+  let from = ms;
+  if (!clips.some(c => c.endMs > ms)) from = clips.reduce((a, c) => c.endMs > a.endMs ? c : a).startMs;
+  return { ids: clips.filter(c => c.endMs > from).sort((a, b) => a.startMs - b.startMs).map(c => c.id), fromMs: from };
+}
+
 /** Where each clip of a replay starts, in samples from the replay's start. */
 export interface ReplayPart { id: number; at: number }
 /**

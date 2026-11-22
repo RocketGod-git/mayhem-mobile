@@ -44,9 +44,10 @@ export function hpListenHtml(hold: string, mode: 'mix' | 'newest'): string {
     + `<div class="seg hp-mode"><button data-hpmode="mix" class="${mode === 'mix' ? 'on' : ''}">MIX</button><button data-hpmode="newest" class="${mode === 'newest' ? 'on' : ''}">NEWEST</button></div>`;
 }
 
-/** The live bar: a replay (with STOP), else what is heard right now, else LISTENING. Always one height. */
-export function hpLiveHtml(s: HpSnap | null, now: number, audioOn: boolean, hold: string): { cls: string; html: string; col: string } {
+/** The live bar: a replay (with STOP), else a short note (a tap with nothing to replay), else what is heard right now, else LISTENING. Always one height. */
+export function hpLiveHtml(s: HpSnap | null, now: number, audioOn: boolean, hold: string, note = ''): { cls: string; html: string; col: string } {
   const rp = s?.replay;
+  if (note && !rp?.active) return { cls: 'on note', col: 'var(--accent2)', html: `<div class="hp-lb1"><span class="fl-np-l">REPLAY</span><b>${esc(note)}</b></div><div class="hp-lb2"><span class="hp-lbt">a transmission can be replayed as soon as it ends</span></div>` };
   if (rp?.active) {
     const f = Math.min(100, 100 * rp.pos / Math.max(0.1, rp.total));
     return { cls: 'on replay', col: 'var(--accent2)', html: `<div class="hp-lb1"><span class="fl-np-l"><i></i>REPLAYING</span><b>${esc(rp.label)}</b><button class="chip on" data-hpstop="1">STOP</button></div>`
@@ -91,7 +92,7 @@ export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHt
 
 /** One transmission as a chat bubble: the first talker on the left, the others on the right, each in its own color. */
 function bubbleHtml(r: HpTxRow, side: number, repeater: boolean, now: number): string {
-  const c = r.color >= 0 ? hpColor(r.color) : 'var(--muted)';
+  const c = r.color >= 0 ? hpColor(r.color) : 'var(--ink)';
   const who = r.stationLabel || (repeater ? 'VIA REPEATER' : 'UNKNOWN');
   const meta = [hpClock(r.startMs), hpTone(r.tone, r.dcs), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.direct ? 'NEARBY' : '', cwCallsign(r.cw) ? `CW ID ${cwCallsign(r.cw)}` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · ');
   const play = r.recorded && !r.live;
@@ -167,10 +168,22 @@ export function hpCardHtml(s: HpSnap, key: string, now: number, prefs: { hold: s
     + (conv ? hpConvHtml(s, conv.id, now, open.has(conv.id)) : '') + '</div>';
 }
 
+/** The transmission on lane [hz] nearest [ms], when it is within [tolMs] of its bar; else none (the tap is on empty time). */
+export function hpTapTx(rows: HpTxRow[], hz: number, ms: number, now: number, tolMs: number): HpTxRow | undefined {
+  let best: HpTxRow | undefined, bd = Infinity;
+  for (const r of rows) {
+    if (r.hz !== hz) continue;
+    const e = r.live ? now : r.endMs, d = ms < r.startMs ? r.startMs - ms : ms > e ? ms - e : 0;
+    if (d <= tolMs && d < bd) { bd = d; best = r; }
+  }
+  return best;
+}
+
 /** The lanes the timeline draws: channels heard in the window, the most recently active first, at most [max]. */
 export function hpLanes(s: HpSnap | null, now: number, max: number): { lanes: number[]; rows: HpTxRow[]; t0: number; span: number } {
   const first = Math.min(...(s?.rows ?? []).filter(r => r.live || r.endMs > now - HP_SPAN_MS).map(r => r.startMs), now);
-  const span = Math.min(HP_SPAN_MS, Math.max(120_000, now - first + 10_000)), t0 = now - span;
+  const quiet = !(s?.rows ?? []).some(r => r.live || r.endMs > now - HP_SPAN_MS);
+  const span = quiet ? HP_SPAN_MS : Math.min(HP_SPAN_MS, Math.max(120_000, now - first + 10_000)), t0 = now - span;
   const rows = (s?.rows ?? []).filter(r => r.live || r.endMs > t0);
   const last = new Map<number, number>();
   for (const r of rows) last.set(r.hz, Math.max(last.get(r.hz) ?? 0, r.live ? now : r.endMs));
@@ -178,14 +191,26 @@ export function hpLanes(s: HpSnap | null, now: number, max: number): { lanes: nu
   return { lanes, rows, t0, span };
 }
 
+/** What the quiet timeline says: the last transmission heard (a tap replays from it), else that nothing was heard yet. */
+export function hpQuietText(s: HpSnap | null, now: number): { head: string; sub: string } {
+  const last = (s?.rows ?? []).filter(r => !r.live).sort((a, b) => b.endMs - a.endMs)[0];
+  if (!last) return { head: 'nothing on the air yet', sub: 'every transmission shows here as it happens' };
+  return { head: 'nothing on the air for ten minutes', sub: `last heard ${hpMhz(last.hz)}, ${hpAgo(now - last.endMs)}${last.recorded ? ', tap to replay from there' : ''}` };
+}
+
+/** A tap within this many pixels of a transmission's bar replays that transmission. */
+export const HP_TAP_PX = 10;
+
 /**
  * The band timeline on a canvas: a lane per channel, each transmission a bar in its talker's color, the live ones
- * growing at the right edge and pulsing, the one replaying outlined. Returns what a tap at (x, y) hits.
+ * growing at the right edge and pulsing, the one replaying outlined. Quiet, it keeps one lane's height on a phone (so
+ * the first channel to key up moves nothing) and the grid with a line on what was last heard. Returns what a tap at
+ * (x, y) hits.
  */
 export function hpPaintTimeline(cv: HTMLCanvasElement, s: HpSnap | null, now: number, max: number, colors: { ink: string; muted: string; line: string; ok: string; accent: string }): (x: number, y: number) => { tx?: HpTxRow; ms: number; hz?: number } {
   const { lanes, rows, t0, span } = hpLanes(s, now, max);
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth || 300, labelW = 84, laneH = 24, axis = 16;
-  const H = Math.max(80, lanes.length * laneH + axis);
+  const H = Math.max(1, lanes.length) * laneH + axis;
   if (cv.dataset.fill !== '1') cv.style.height = `${H}px`;
   const HH = cv.dataset.fill === '1' ? (cv.clientHeight || H) : H;
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(HH * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(HH * dpr); }
@@ -193,8 +218,8 @@ export function hpPaintTimeline(cv: HTMLCanvasElement, s: HpSnap | null, now: nu
   const lh = lanes.length ? Math.min(laneH * 1.6, Math.max(laneH, (HH - axis) / lanes.length)) : laneH;
   const pw = W - labelW - 4, px = (ms: number) => labelW + Math.max(0, Math.min(1, (ms - t0) / span)) * pw;
   g.font = '600 10px ui-monospace, Menlo, Consolas, monospace'; g.textBaseline = 'middle';
-  if (!lanes.length) { g.fillStyle = colors.muted; g.fillText('every transmission in the last ten minutes shows here as it happens', 8, 40); return () => ({ ms: now }); }
-  for (let m = 0; m <= 10; m++) { const x = labelW + pw * m / 10; g.strokeStyle = colors.line; g.globalAlpha = m % 5 === 0 ? 0.9 : 0.35; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, lanes.length * lh); g.stroke(); }
+  const gridH = lanes.length ? lanes.length * lh : HH - axis;
+  for (let m = 0; m <= 10; m++) { const x = labelW + pw * m / 10; g.strokeStyle = colors.line; g.globalAlpha = m % 5 === 0 ? 0.9 : 0.35; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, gridH); g.stroke(); }
   g.globalAlpha = 1;
   const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now / 320));
   const replayClip = s?.replay.active ? s.replay.clip : -1;
@@ -214,17 +239,31 @@ export function hpPaintTimeline(cv: HTMLCanvasElement, s: HpSnap | null, now: nu
       if (r.live) { g.fillStyle = colors.ok; g.beginPath(); g.arc(b, y + lh / 2, lh * 0.12, 0, 2 * Math.PI); g.fill(); }
     }
   });
-  g.strokeStyle = colors.muted; g.lineWidth = 2; g.beginPath(); g.moveTo(W - 5, 0); g.lineTo(W - 5, lanes.length * lh); g.stroke(); g.lineWidth = 1;
+  if (!lanes.length) {
+    const q = hpQuietText(s, now), fit = (t: string, w: number) => { while (t.length > 4 && g.measureText(t).width > w) t = t.slice(0, -2).trimEnd() + '…'; return t; };
+    if (cv.dataset.fill === '1') {
+      // the big view: two lines in the middle of the grid
+      g.textAlign = 'center'; g.fillStyle = colors.ink; g.font = '700 12px ui-monospace, Menlo, Consolas, monospace';
+      g.fillText(fit(q.head.toUpperCase(), pw - 16), labelW + pw / 2, gridH / 2 - 9);
+      g.fillStyle = colors.muted; g.font = '10px ui-monospace, Menlo, Consolas, monospace';
+      g.fillText(fit(q.sub, pw - 16), labelW + pw / 2, gridH / 2 + 9); g.textAlign = 'left';
+    } else {
+      // one lane: QUIET where the frequencies go, the line on what was last heard beside it
+      g.fillStyle = colors.muted; g.font = '700 10px ui-monospace, Menlo, Consolas, monospace'; g.fillText('QUIET', 2, lh / 2);
+      g.font = '10px ui-monospace, Menlo, Consolas, monospace'; g.fillStyle = colors.ink; g.fillText(fit(q.sub, pw - 12), labelW + 6, lh / 2);
+    }
+  }
+  g.strokeStyle = colors.muted; g.lineWidth = 2; g.beginPath(); g.moveTo(W - 5, 0); g.lineTo(W - 5, gridH); g.stroke(); g.lineWidth = 1;
   const mins = Math.round(span / 60_000);
   g.fillStyle = colors.muted; g.font = '9px ui-monospace, Menlo, Consolas, monospace';
-  g.textAlign = 'left'; g.fillText(`−${mins} min`, labelW, lanes.length * lh + axis / 2 + 2);
-  g.textAlign = 'center'; g.fillText(`−${mins % 2 ? (mins / 2).toFixed(1) : mins / 2} min`, labelW + pw / 2, lanes.length * lh + axis / 2 + 2);
-  g.textAlign = 'right'; g.fillText('now', W - 5, lanes.length * lh + axis / 2 + 2); g.textAlign = 'left';
+  g.textAlign = 'left'; g.fillText(`−${mins} min`, labelW, gridH + axis / 2 + 2);
+  g.textAlign = 'center'; g.fillText(`−${mins % 2 ? (mins / 2).toFixed(1) : mins / 2} min`, labelW + pw / 2, gridH + axis / 2 + 2);
+  g.textAlign = 'right'; g.fillText('now', W - 5, gridH + axis / 2 + 2); g.textAlign = 'left';
   return (x: number, yy: number) => {
     const ms = t0 + span * Math.max(0, Math.min(1, (x - labelW) / pw));
-    const h = lanes[Math.floor(yy / lh)];
+    if (!lanes.length) return { ms };
+    const h = lanes[Math.max(0, Math.min(lanes.length - 1, Math.floor(yy / lh)))];
     if (x < labelW) return { ms, hz: h };
-    const tx = h ? rows.find(r => r.hz === h && r.startMs - 4_000 <= ms && (r.live ? now : r.endMs) + 4_000 >= ms) : undefined;
-    return { tx, ms };
+    return { tx: hpTapTx(rows, h, ms, now, HP_TAP_PX * span / pw), ms };
   };
 }

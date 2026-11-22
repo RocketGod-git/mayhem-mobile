@@ -3038,7 +3038,8 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-live.replay .fl-vu { flex: 1; }
 .hp-live.replay .fl-np-l { color: var(--accent2); }
 .hp-live.replay .fl-np-l i { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
-.hp-live.replay .hp-lb1 > b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.hp-live.replay .hp-lb1 > b, .hp-live.note .hp-lb1 > b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.hp-live.note .fl-np-l { color: var(--accent2); }
 .hp-live .chip { flex: none; padding: 3px 10px; font-size: 10px; }
 .hp-head { display: flex; flex-direction: column; gap: 4px; margin: 2px 0 6px; }
 .hp-hl { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 9px; color: var(--muted); }
@@ -3099,12 +3100,12 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-ch .chip { flex: none; padding: 4px 10px; font-size: 10px; }
 .hp-more { align-self: flex-start; background: none; border: 0; padding: 2px 0; font: inherit; font-size: 9px; color: var(--accent); cursor: pointer; }
 .hp-bub { --st: var(--muted); align-self: flex-start; max-width: min(300px, 86%); display: flex; flex-direction: column; gap: 2px; padding: 5px 9px;
-  border-radius: 12px 12px 12px 3px; border: 1px solid color-mix(in srgb, var(--st) 55%, transparent); background: color-mix(in srgb, var(--st) 16%, transparent);
-  animation: hp-in .25s ease-out; }
+  border-radius: 12px 12px 12px 3px; border: 1px solid color-mix(in srgb, var(--st) 70%, var(--surface)); background: color-mix(in srgb, var(--st) 20%, var(--surface)); }
 .hp-bub.r { align-self: flex-end; border-radius: 12px 12px 3px 12px; }
 .hp-bub.tap { cursor: pointer; }
-.hp-bub.tap:hover { background: color-mix(in srgb, var(--st) 26%, transparent); }
-.hp-bub.live { animation: hp-in .25s ease-out, hp-talk 1.3s ease-in-out infinite; }
+.hp-bub.tap:hover { background: color-mix(in srgb, var(--st) 30%, var(--surface)); }
+/* no fade-in: the thread is redrawn every second while it is live, and a fade on each redraw kept every bubble dim */
+.hp-bub.live { animation: hp-talk 1.3s ease-in-out infinite; }
 @keyframes hp-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes hp-talk { 50% { border-color: var(--st); box-shadow: 0 0 12px color-mix(in srgb, var(--st) 40%, transparent); } }
 .hp-bub > div { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -3112,7 +3113,7 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-bub > div span { font-size: 10px; font-weight: 700; color: var(--ink); }
 .hp-bub > div span.ok { color: var(--ok); }
 .hp-bub > div i { font-style: normal; color: var(--accent); font-weight: 900; }
-.hp-bub small { font-size: 8.5px; color: var(--muted); overflow-wrap: anywhere; }
+.hp-bub small { font-size: 8.5px; color: color-mix(in srgb, var(--ink) 72%, var(--surface)); overflow-wrap: anywhere; }
 /* the 24-hour map */
 .hp-heat { display: flex; flex-direction: column; gap: 4px; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 50%, transparent); }
 .hp-hr { display: flex; align-items: center; gap: 6px; }
@@ -3131,7 +3132,9 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-log > em { font-style: normal; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* a channel's card */
 .hp-cardbox { margin: 4px 0 8px; }
-.hp-card { display: flex; flex-direction: column; gap: 7px; padding: 10px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent); background: var(--surface); animation: hp-in .2s ease-out; }
+.hp-card { display: flex; flex-direction: column; gap: 7px; padding: 10px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent); background: var(--surface); }
+/* the card fades in when it opens, not on every redraw of what it holds */
+.hp-cardbox:not([hidden]) { animation: hp-in .2s ease-out; }
 .hp-kv { display: grid; grid-template-columns: 86px 1fr; gap: 3px 8px; align-items: baseline; }
 .hp-kv small { font-size: 8.5px; letter-spacing: 1px; color: var(--muted); }
 .hp-kv span { font-size: 10px; color: var(--ink); }
@@ -3165,6 +3168,6 @@ main#view.view.hamplus.hpwide { display: grid; grid-template-columns: minmax(0, 
 @media (min-width: 1500px) { main#view.view.hamplus.hpwide { grid-template-columns: minmax(0, 1fr) minmax(520px, 900px); } }
 @media (min-width: 720px) { .view.hamplus:not(.hpwide) .hp-live { position: static; } }
 @media (max-width: 420px) { .hp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .view.hamplus:not(.hpwide) .hp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (prefers-reduced-motion: reduce) { .hp-tile.live, .hp-bub, .hp-bub.live, .hp-card { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .hp-tile.live, .hp-bub.live, .hp-cardbox:not([hidden]) { animation: none; } }
 .seg.hp-mode { flex: none; }
 .seg.hp-mode button { flex: none; padding-left: 12px; padding-right: 12px; white-space: nowrap; }

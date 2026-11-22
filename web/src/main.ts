@@ -4719,8 +4719,10 @@ const hpUi = {
   snap: null as HpSnap | null, band: 'AUTO', span: 8_000_000, prefs: { hold: '', mute: [] as string[], prio: [] as string[] }, labels: {} as Record<string, string>,
   mode: 'mix' as 'mix' | 'newest', audioOn: true, gain: 1, view: 'talk' as HpView, sel: '', open: new Set<number>(),
   windows: [] as { band: string; hz: number }[], idx: 0, until: 0, autoMode: '', timer: 0, drawn: 0, pending: 0, hold: false, wired: false, savedAt: 0, anim: 0,
-  hit: null as HpHit | null, hitWide: null as HpHit | null,
+  hit: null as HpHit | null, hitWide: null as HpHit | null, note: '', noteUntil: 0,
 };
+/** A short line in the live bar for a few seconds: what a tap on the timeline could not replay. */
+function hpNote(text: string): void { hpUi.note = text; hpUi.noteUntil = Date.now() + 3_500; refreshHamPlus(true); }
 (() => {
   try {
     const v = JSON.parse(localStorage.getItem(HP_KEY) ?? 'null');
@@ -4857,12 +4859,16 @@ function renderHamPlus(view: HTMLElement): void {
   $('hp-clear').onclick = () => { hpSend({ cmd: 'clear' }); try { localStorage.removeItem(HP_KNOWN); } catch { /* storage blocked */ } hpUi.snap = null; hpUi.sel = ''; refreshHamPlus(true); };
   for (const id of ['hp-tl', 'hp-tlw']) {
     const c = q<HTMLCanvasElement>(`#${id}`); if (!c) continue;
-    c.onclick = (e) => {
-      const r = c.getBoundingClientRect(), x = e.clientX - r.left, hit = (id === 'hp-tl' ? hpUi.hit : hpUi.hitWide)?.(x, e.clientY - r.top);
+    // the whole box takes the tap, its padding too: a tap on a bar replays it, anywhere else replays the band from there
+    // (a new replay in place of one playing), and with nothing kept the live bar says so
+    (c.parentElement ?? c).onclick = (e) => {
+      const r = c.getBoundingClientRect(), x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
+      const hit = (id === 'hp-tl' ? hpUi.hit : hpUi.hitWide)?.(x, y);
       if (!hit) return;
       if (hit.hz && x < 84) { hpFollow(String(hit.hz)); return; }
-      if (hit.tx && hit.tx.recorded && !hit.tx.live) hpReplay([hit.tx.id], `${hpMhz(hit.tx.hz)} at ${hpClock(hit.tx.startMs)}`, 'tx');
-      else { void ensureAudio(); hpSend({ cmd: 'replayFrom', ms: hit.ms }); }
+      if (hit.tx && hit.tx.recorded && !hit.tx.live) { hpReplay([hit.tx.id], `${hpMhz(hit.tx.hz)} at ${hpClock(hit.tx.startMs)}`, 'tx'); return; }
+      if (!hpUi.snap?.rows.some(t => t.recorded && !t.live)) { hpNote('Nothing recorded yet'); return; }
+      void ensureAudio(); hpSend({ cmd: 'replayFrom', ms: hit.ms });
     };
   }
   // a redraw between press and release would swap the element under the pointer and lose the click
@@ -4897,7 +4903,7 @@ function refreshHamPlus(force = false): void {
   const set = (id: string, html: string) => { const el = q<HTMLElement>(`#${id}`); if (el && el.innerHTML !== html) { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; } };
   set('hp-head', hpHeadHtml(s, hpScanText(now)));
   set('hp-listen', hpListenHtml(hpUi.prefs.hold, hpUi.mode));
-  const lb = hpLiveHtml(s, now, hpUi.audioOn, hpUi.prefs.hold), live = q<HTMLElement>('#hp-live');
+  const lb = hpLiveHtml(s, now, hpUi.audioOn, hpUi.prefs.hold, now < hpUi.noteUntil ? hpUi.note : ''), live = q<HTMLElement>('#hp-live');
   if (live) { live.className = `fl-now hp-live ${lb.cls}`; live.style.setProperty('--sys', lb.col); if (live.innerHTML !== lb.html) live.innerHTML = lb.html; }
   const aud = q<HTMLButtonElement>('#hp-aud'); if (aud) { aud.textContent = hpUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; aud.classList.toggle('on', hpUi.audioOn); }
   const vv = q('#hp-volv'); if (vv) vv.textContent = `${Math.round(hpUi.gain * 100)}%`;
@@ -9207,6 +9213,7 @@ function ensureWorker(): Worker {
       case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;
       case 'fleet': fleetUi.snap = m as unknown as FleetSnap; refreshFleet(); break;
       case 'hamplus': hpUi.snap = m as unknown as HpSnap; refreshHamPlus(); break;
+      case 'hamplusNote': hpNote(String(m.text)); break;
       case 'hamplusSaved': try { localStorage.setItem(HP_KNOWN, JSON.stringify(m.saved)); } catch { /* storage full or blocked */ } break;
       case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][], offArea: Number(m.offArea) || 0 }; refreshFleet(true); break;
       case 'fleetExport': fleetExport(m.csv as string, m.json as string); break;
