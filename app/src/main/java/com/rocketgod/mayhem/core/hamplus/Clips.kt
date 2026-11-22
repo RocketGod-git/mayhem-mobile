@@ -78,6 +78,19 @@ class ClipStore(val cap: Int = CLIP_CAP_BYTES) {
 /** Where each clip of a replay starts, in samples from the replay's start. */
 data class ReplayPart(val id: Int, val at: Int)
 
+/** A kept clip's place in time, for [replayFromPlan]. */
+data class ClipSpan(val id: Int, val startMs: Double, val endMs: Double)
+
+/**
+ * What a tap on the timeline at [ms] replays: every clip still on the air after that moment, or, when nothing was
+ * heard after it, the band from the start of the last transmission before it. Empty only when nothing is kept.
+ */
+fun replayFromPlan(clips: List<ClipSpan>, ms: Double): Pair<List<Int>, Double> {
+    if (clips.isEmpty()) return emptyList<Int>() to ms
+    val from = if (clips.any { it.endMs > ms }) ms else clips.maxBy { it.endMs }.startMs
+    return clips.filter { it.endMs > from }.sortedBy { it.startMs }.map { it.id } to from
+}
+
 /**
  * Plans a replay: clips in time order, each placed at its true time after the first, with every silence longer than
  * [gapMaxMs] cut to it. Clips that overlapped on the air overlap in the replay (and are mixed).

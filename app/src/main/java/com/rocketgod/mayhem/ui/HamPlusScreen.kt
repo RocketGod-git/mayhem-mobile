@@ -69,6 +69,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
@@ -384,15 +385,25 @@ private fun HpAudioRow(on: Boolean, gain: Double, accent: Color) {
 private fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, accent: Color) {
     val d = rememberDims()
     val rp = s?.replay
+    val (noteText, noteUntil) = HamPlus.note.collectAsState().value
+    val note = if (now < noteUntil && rp?.active != true) noteText else ""
     val heard = if (s != null && audioOn) s.rows.filter { it.live && it.hz.toString() in s.playing } else emptyList()
     val r = heard.maxByOrNull { it.startMs }
     val tile = r?.let { x -> s?.tiles?.firstOrNull { it.hz == x.hz } }
-    val col = if (rp?.active == true) Palette.accent2 else if (r != null) hpColor(r.color).takeIf { r.color >= 0 } ?: Palette.ok else Palette.line
+    val col = if (rp?.active == true || note.isNotEmpty()) Palette.accent2 else if (r != null) hpColor(r.color).takeIf { r.color >= 0 } ?: Palette.ok else Palette.line
     val shape = RoundedCornerShape(d.dp(12f))
-    val lit = rp?.active == true || r != null
+    val lit = rp?.active == true || r != null || note.isNotEmpty()
     Column(Modifier.fillMaxWidth().height(d.dp(52f)).clip(shape).background(Brush.horizontalGradient(listOf(col.copy(alpha = if (lit) 0.24f else 0.05f), Palette.surface)))
         .border(1.dp, col.copy(alpha = if (lit) 0.9f else 0.6f), shape).padding(horizontal = d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f), Alignment.CenterVertically)) {
         val blink = (now / 500) % 2 == 0L
+        if (note.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text("REPLAY", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
+                Text(note, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            }
+            Text("a transmission can be replayed as soon as it ends", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            return@Column
+        }
         if (rp != null && rp.active) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                 Box(Modifier.size(d.dp(8f)).alpha(if (blink) 1f else 0.35f).background(Palette.accent2, CircleShape))
@@ -535,29 +546,60 @@ private fun HpSpark(spark: List<Int>, c: Color, modifier: Modifier) {
     }
 }
 
+/** The transmission on lane [hz] nearest [ms], when it is within [tolMs] of its bar; else none (the tap is on empty time). */
+internal fun hpTapTx(rows: List<HpTxRow>, hz: Long, ms: Double, now: Double, tolMs: Double): HpTxRow? {
+    var best: HpTxRow? = null; var bd = Double.MAX_VALUE
+    for (r in rows) {
+        if (r.hz != hz) continue
+        val e = if (r.live) now else r.endMs
+        val dd = if (ms < r.startMs) r.startMs - ms else if (ms > e) ms - e else 0.0
+        if (dd <= tolMs && dd < bd) { bd = dd; best = r }
+    }
+    return best
+}
+
+/** What the quiet timeline says: the last transmission heard (a tap replays from it), else that nothing was heard yet. */
+internal fun hpQuietText(rows: List<HpTxRow>, now: Double): Pair<String, String> {
+    val last = rows.filter { !it.live }.maxByOrNull { it.endMs } ?: return "nothing on the air yet" to "every transmission shows here as it happens"
+    return "nothing on the air for ten minutes" to "last heard ${hpMhz(last.hz)}, ${hpAgo(now - last.endMs)}${if (last.recorded) ", tap to replay from there" else ""}"
+}
+
+/** A tap within this many dp of a transmission's bar replays that transmission. */
+private const val TAP_DP = 10f
+
 /**
  * The band timeline: a lane per channel heard in the last ten minutes, each transmission a bar in its talker's color,
  * the ones on the air growing at the right edge. A tap on a bar replays that transmission; a tap anywhere else replays
- * the whole band from that moment.
+ * the whole band from that moment (from the last transmission when tapped after it), a new replay in place of one
+ * playing. Quiet, it keeps one lane's height on a phone (the first channel to key up moves nothing) and the grid with
+ * a line on what was last heard.
  */
 @Composable
 private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modifier: Modifier, lanesMax: Int, fill: Boolean = false) {
     val d = rememberDims()
-    // the window grows with what was heard, two minutes at the least and ten at the most
-    val first = s?.rows.orEmpty().filter { it.live || it.endMs > now - TL_MS }.minOfOrNull { it.startMs }
-    val span = ((now - (first ?: now.toDouble())) + 10_000).coerceIn(120_000.0, TL_MS)
+    val all = s?.rows.orEmpty()
+    // the window grows with what was heard, two minutes at the least and ten at the most; quiet, it shows all ten
+    val first = all.filter { it.live || it.endMs > now - TL_MS }.minOfOrNull { it.startMs }
+    val span = if (first == null) TL_MS else ((now - first) + 10_000).coerceIn(120_000.0, TL_MS)
     val t0 = now - span
-    val rows = s?.rows.orEmpty().filter { it.live || it.endMs > t0 }
+    val rows = all.filter { it.live || it.endMs > t0 }
     val lanes = rows.map { it.hz }.distinct().sortedBy { h -> -(rows.filter { it.hz == h }.maxOf { if (it.live) now.toDouble() else it.endMs }) }.take(lanesMax).sorted()
     val tiles = s?.tiles.orEmpty()
     val laneH = d.dp(22f); val labelW = d.dp(78f)
     val replayClip = s?.replay?.takeIf { it.active }?.clip ?: -1
     val pulse = rememberInfiniteTransition(label = "tl").animateFloat(0.5f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "p").value
     val fixedH = !fill
+    // the tap reads the latest picture: keyed on it, the gesture restarted every redraw and lost taps
+    val cur = androidx.compose.runtime.rememberUpdatedState(Triple(rows, lanes, Pair(now, span)))
+    val hasKept = all.any { it.recorded && !it.live }
+    val keptNow = androidx.compose.runtime.rememberUpdatedState(hasKept)
+    val tapEmpty: (Double) -> Unit = { ms -> if (keptNow.value) acts.replayFrom(ms) else HamPlus.note("Nothing recorded yet") }
     Column(modifier.clip(RoundedCornerShape(d.dp(10f))).background(Palette.surface.copy(alpha = 0.5f)).border(1.dp, Palette.line, RoundedCornerShape(d.dp(10f))).padding(d.dp(6f))) {
-        if (lanes.isEmpty()) { HpDim("every transmission in the last ten minutes shows here as it happens"); return@Column }
-        Row(Modifier.fillMaxWidth().then(if (fixedH) Modifier.height(laneH * lanes.size + d.dp(16f)) else Modifier.weight(1f))) {
+        Row(Modifier.fillMaxWidth().then(if (fixedH) Modifier.height(laneH * max(1, lanes.size)) else Modifier.weight(1f))) {
             Column(Modifier.width(labelW)) {
+                if (lanes.isEmpty()) Column(Modifier.height(laneH), verticalArrangement = Arrangement.Center) {
+                    Text("QUIET", color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
+                }
                 for (h in lanes) {
                     val t = tiles.firstOrNull { it.hz == h }
                     Column(Modifier.height(laneH).clickable { acts.follow(h.toString()) }, verticalArrangement = Arrangement.Center) {
@@ -567,32 +609,48 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
                 }
             }
             val lineC = Palette.line; val okC = Palette.ok; val inkC = Palette.ink; val mutedC = Palette.muted
-            Canvas(Modifier.weight(1f).fillMaxHeight().pointerInput(rows, lanes, now, span) {
-                detectTapGestures { p ->
-                    val lh = laneH.toPx(); val li = (p.y / lh).toInt()
-                    val ms = t0 + span * (p.x / size.width)
-                    val hit = lanes.getOrNull(li)?.let { h -> rows.firstOrNull { it.hz == h && it.startMs - 4_000 <= ms && (if (it.live) now.toDouble() else it.endMs) + 4_000 >= ms } }
-                    if (hit != null && hit.recorded && !hit.live) acts.replay(listOf(hit.id), "${hpMhz(hit.hz)} at ${hpClock(hit.startMs)}", "tx")
-                    else acts.replayFrom(ms)
-                }
-            }) {
-                val lh = laneH.toPx(); val w = size.width
-                for (m in 0..10) { val x = w * m / 10f; drawLine(lineC.copy(alpha = if (m % 5 == 0) 0.9f else 0.35f), Offset(x, 0f), Offset(x, lh * lanes.size)) }
-                lanes.forEachIndexed { li, h ->
-                    val y = li * lh
-                    drawLine(lineC.copy(alpha = 0.3f), Offset(0f, y + lh), Offset(w, y + lh))
-                    for (r in rows) {
-                        if (r.hz != h) continue
-                        val a = ((r.startMs - t0) / span).toFloat().coerceIn(0f, 1f) * w
-                        val b = (((if (r.live) now.toDouble() else r.endMs) - t0) / span).toFloat().coerceIn(0f, 1f) * w
-                        val c = if (r.color >= 0) hpColor(r.color) else accent
-                        val top = y + lh * 0.18f; val hh = lh * 0.64f
-                        drawRoundRect(c.copy(alpha = if (r.live) pulse else if (r.recorded) 0.85f else 0.35f), Offset(a, top), Size(max(2.5f, b - a), hh), CornerRadius(3f, 3f))
-                        if (r.id == replayClip) drawRoundRect(inkC, Offset(a - 1f, top - 1f), Size(max(2.5f, b - a) + 2f, hh + 2f), CornerRadius(3f, 3f), style = Stroke(2f))
-                        if (r.live) drawCircle(okC, lh * 0.12f, Offset(b, y + lh / 2))
+            val tolPx = with(LocalDensity.current) { d.dp(TAP_DP).toPx() }
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                Canvas(Modifier.fillMaxSize().pointerInput(Unit) {
+                    detectTapGestures { p ->
+                        val (rs, ls, nt) = cur.value; val (nw, sp) = nt
+                        val lh = laneH.toPx()
+                        val ms = (nw - sp) + sp * (p.x / size.width).coerceIn(0f, 1f)
+                        if (ls.isEmpty()) { tapEmpty(nw.toDouble()); return@detectTapGestures }
+                        val h = ls[(p.y / lh).toInt().coerceIn(0, ls.size - 1)]
+                        val hit = hpTapTx(rs, h, ms, nw.toDouble(), tolPx * sp / size.width)
+                        if (hit != null && hit.recorded && !hit.live) acts.replay(listOf(hit.id), "${hpMhz(hit.hz)} at ${hpClock(hit.startMs)}", "tx")
+                        else tapEmpty(ms)
                     }
+                }) {
+                    val lh = laneH.toPx(); val w = size.width
+                    val gridH = if (lanes.isEmpty()) size.height else lh * lanes.size
+                    for (m in 0..10) { val x = w * m / 10f; drawLine(lineC.copy(alpha = if (m % 5 == 0) 0.9f else 0.35f), Offset(x, 0f), Offset(x, gridH)) }
+                    lanes.forEachIndexed { li, h ->
+                        val y = li * lh
+                        drawLine(lineC.copy(alpha = 0.3f), Offset(0f, y + lh), Offset(w, y + lh))
+                        for (r in rows) {
+                            if (r.hz != h) continue
+                            val a = ((r.startMs - t0) / span).toFloat().coerceIn(0f, 1f) * w
+                            val b = (((if (r.live) now.toDouble() else r.endMs) - t0) / span).toFloat().coerceIn(0f, 1f) * w
+                            val c = if (r.color >= 0) hpColor(r.color) else accent
+                            val top = y + lh * 0.18f; val hh = lh * 0.64f
+                            drawRoundRect(c.copy(alpha = if (r.live) pulse else if (r.recorded) 0.85f else 0.35f), Offset(a, top), Size(max(2.5f, b - a), hh), CornerRadius(3f, 3f))
+                            if (r.id == replayClip) drawRoundRect(inkC, Offset(a - 1f, top - 1f), Size(max(2.5f, b - a) + 2f, hh + 2f), CornerRadius(3f, 3f), style = Stroke(2f))
+                            if (r.live) drawCircle(okC, lh * 0.12f, Offset(b, y + lh / 2))
+                        }
+                    }
+                    drawLine(mutedC, Offset(w - 1f, 0f), Offset(w - 1f, gridH), strokeWidth = 2f)
                 }
-                drawLine(mutedC, Offset(w - 1f, 0f), Offset(w - 1f, lh * lanes.size), strokeWidth = 2f)
+                if (lanes.isEmpty()) {
+                    val (head, sub) = hpQuietText(all, now.toDouble())
+                    if (fill) Column(Modifier.fillMaxSize().padding(horizontal = d.dp(8f)), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(head.uppercase(), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
+                    else Text(sub, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.align(Alignment.CenterStart).padding(horizontal = d.dp(6f)))
+                }
             }
         }
         Row(Modifier.fillMaxWidth().padding(start = labelW), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -641,12 +699,12 @@ private fun HpConvCard(convId: Int, s: HpSnap, now: Long, accent: Color, acts: H
 @Composable
 private fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accent: Color, acts: HpActs) {
     val d = rememberDims()
-    val c = if (r.color >= 0) hpColor(r.color) else Palette.muted
+    val c = if (r.color >= 0) hpColor(r.color) else Palette.ink
     val right = side > 0
     val shape = RoundedCornerShape(topStart = d.dp(12f), topEnd = d.dp(12f), bottomStart = d.dp(if (right) 12f else 3f), bottomEnd = d.dp(if (right) 3f else 12f))
     val pulse = if (r.live) rememberInfiniteTransition(label = "b").animateFloat(0.4f, 1f, infiniteRepeatable(tween(650), RepeatMode.Reverse), label = "p").value else 1f
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (right) Arrangement.End else Arrangement.Start) {
-        Column(Modifier.widthIn(max = d.dp(300f)).clip(shape).background(c.copy(alpha = 0.16f)).border(1.dp, c.copy(alpha = if (r.live) pulse else 0.55f), shape)
+        Column(Modifier.widthIn(max = d.dp(300f)).clip(shape).background(c.copy(alpha = 0.2f).compositeOver(Palette.surface)).border(1.dp, c.copy(alpha = if (r.live) pulse else 0.75f), shape)
             .clickable(enabled = r.recorded && !r.live) { acts.replay(listOf(r.id), "${hpMhz(r.hz)} at ${hpClock(r.startMs)}", "tx") }
             .padding(horizontal = d.dp(9f), vertical = d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -658,7 +716,7 @@ private fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accent
             }
             val meta = listOf(hpClock(r.startMs), hpTone(r.tone, r.dcs), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "",
                 if (r.direct) "NEARBY" else "", cwCallsign(r.cw).let { if (it.isNotEmpty()) "CW ID $it" else "" }, if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }
-            Text(meta.joinToString(" · "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 2)
+            Text(meta.joinToString(" · "), color = Palette.ink.copy(alpha = 0.72f), fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 2)
         }
     }
 }

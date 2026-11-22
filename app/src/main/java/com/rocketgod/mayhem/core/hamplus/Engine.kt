@@ -424,9 +424,10 @@ class HamPlusEngine(
         true
     }
 
+    /** The band from a moment on; after the last transmission, from the last one heard. False only when nothing is kept. */
     fun replayFrom(ms: Double): Boolean {
-        val ids = synchronized(lock) { clips.all().filter { it.startMs + it.data.size * 1000.0 / CLIP_RATE > ms }.map { it.id } }
-        return replayTx(ids, "the band from ${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(ms.toLong()))}", "band")
+        val (ids, from) = synchronized(lock) { replayFromPlan(clips.all().map { ClipSpan(it.id, it.startMs, it.startMs + it.data.size * 1000.0 / CLIP_RATE) }, ms) }
+        return replayTx(ids, "the band from ${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(from.toLong()))}", "band")
     }
 
     fun stopReplay() { synchronized(lock) { replay = null } }

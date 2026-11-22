@@ -114,8 +114,12 @@ object HamPlus {
     fun setAudio(on: Boolean, gain: Double = _gain.value) { _audioOn.value = on; _gain.value = gain.coerceIn(0.0, 1.5); saveAudio(); pushParams() }
     private fun saveAudio() = put(K_AUDIO, JSONObject().put("on", _audioOn.value).put("gain", _gain.value).put("mode", if (_mode.value == HpParams.Mode.NEWEST) "newest" else "mix").toString())
 
-    fun replayTx(ids: List<Int>, label: String, kind: String): Boolean = engine.replayTx(ids, label, kind)
-    fun replayFrom(ms: Double): Boolean = engine.replayFrom(ms)
+    /** A short line the live bar shows for a few seconds (a tap on the timeline with nothing to replay), and until when. */
+    private val _note = MutableStateFlow("" to 0L)
+    val note: StateFlow<Pair<String, Long>> = _note
+    fun note(text: String) { _note.value = text to System.currentTimeMillis() + 3_500 }
+    fun replayTx(ids: List<Int>, label: String, kind: String): Boolean = engine.replayTx(ids, label, kind).also { if (!it) note("That audio is no longer kept") }
+    fun replayFrom(ms: Double): Boolean = engine.replayFrom(ms).also { if (!it) note("Nothing recorded yet") }
     fun stopReplay() = engine.stopReplay()
 
     /** The sample rate HAM+ asks for: the chosen span where the radio takes it, else as wide as it goes up to 2.4 MHz. */
