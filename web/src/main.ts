@@ -4712,7 +4712,7 @@ function refreshTrains(force = false): void {
 // ---- HAM+: every FM channel on the ham bands at once, every talker, the time machine ------------------------------
 const HP_BANDS_UI: [string, string][] = [['AUTO', 'AUTO'], ['2M', '2 M'], ['125', '1.25 M'], ['70CM', '70 CM'], ['6M', '6 M'], ['10M', '10 M']];
 const HP_SPANS: [number, string][] = [[2_400_000, '2.4 MHz'], [8_000_000, '8 MHz'], [20_000_000, '20 MHz']];
-const HP_KEY = 'mm.hamplus.v1', HP_KNOWN = 'mm.hamplus.known';
+const HP_KEY = 'mm.hamplus.v1', HP_KNOWN = 'mm.hamplus.known2'; // 2: 0.9.59 learned false channels from a gain step
 type HpView = 'talk' | 'act' | 'log';
 type HpHit = (x: number, y: number) => { tx?: HpTxRow; ms: number; hz?: number };
 const hpUi = {
@@ -4742,7 +4742,7 @@ function hpDwell(): void {
   if (!hpAuto || hpAutoSig !== sig) {
     hpAutoSig = sig;
     let saved: AutoSaved | null = null;
-    try { const v = JSON.parse(localStorage.getItem('mm.hamplus.auto') ?? 'null'); if (v && v.sig === sig) saved = v.saved; } catch { /* storage blocked */ }
+    try { const v = JSON.parse(localStorage.getItem('mm.hamplus.auto2') ?? 'null'); if (v && v.sig === sig) saved = v.saved; } catch { /* storage blocked */ }
     hpAuto = new FleetAuto(hpUi.windows.length, now, hpUi.idx, saved);
     if (hpAuto.idx !== hpUi.idx && hpUi.windows[hpAuto.idx]) hpTuneWindow(hpAuto.idx);
   } else hpAuto.moved(hpUi.idx, now);
@@ -4768,7 +4768,7 @@ function hpTick(now: number): void {
   const to = hpAuto.step({ now, calls: s.rows.map(r => ({ key: String(r.id), onAir: r.live, encrypted: false, tg: 1, audioMs: Math.max(0, (r.live ? s.now : r.endMs) - r.startMs) })), playing: playing ? String(playing.id) : '', controlLive: false, systems: s.tiles.length });
   hpUi.autoMode = hpAuto.mode; hpUi.until = hpAuto.mode === 'hold' ? now + 8_000 : hpAuto.until;
   if (to !== null && to !== hpUi.idx && hpUi.windows[to]) hpTuneWindow(to);
-  if (now - hpAutoSaved > 10_000) { hpAutoSaved = now; try { localStorage.setItem('mm.hamplus.auto', JSON.stringify({ sig: hpAutoSig, saved: hpAuto.save(now) })); } catch { /* storage full or blocked */ } }
+  if (now - hpAutoSaved > 10_000) { hpAutoSaved = now; try { localStorage.setItem('mm.hamplus.auto2', JSON.stringify({ sig: hpAutoSig, saved: hpAuto.save(now) })); } catch { /* storage full or blocked */ } }
 }
 function hpScanText(now: number): string {
   const n = hpUi.windows.length; if (n < 2) return 'WHOLE BAND';

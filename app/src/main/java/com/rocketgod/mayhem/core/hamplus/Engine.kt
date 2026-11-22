@@ -150,6 +150,13 @@ data class HpStats(
     val capMB: Double, val oldestMs: Double, val channels: Int,
 )
 
+/** The span's noise: the power the quietest quarter of its channels sit at (a carrier or a hundred barely move it). */
+fun quietQuarter(power: FloatArray, count: Int): Float {
+    if (count <= 0) return 0f
+    val v = power.copyOf(count); v.sort()
+    return v[(count - 1) / 4]
+}
+
 /** The whole picture, twice a second. */
 class HpSnap(
     val now: Double, val centerHz: Long, val rate: Int, val spanLo: Double, val spanHi: Double, val tiles: List<HpTile>,
@@ -267,9 +274,15 @@ class HamPlusEngine(
             for (b in max(1, c - half)..min(nn - 2, c + half)) { s += pdb[b]; cnt++ }
             val db = (10 * log10(s / max(1, cnt) + 1e-12)).toFloat()
             power[k] = db
+        }
+        // each channel's floor is kept against the span's own noise (its quietest quarter), so a gain change (AGC, LNA, amp)
+        // that lifts the whole span moves no channel: only a carrier rises above its neighbors
+        val common = quietQuarter(power, count)
+        for (k in 0 until count) {
+            val rel = power[k] - common
             val f = floorDb[k]
-            floorDb[k] = if (f.isNaN()) db else if (db < f) f + 0.3f * (db - f) else f + 0.004f * (db - f)
-            snr[k] = db - floorDb[k]
+            floorDb[k] = if (f.isNaN()) rel else if (rel < f) f + 0.3f * (rel - f) else f + 0.004f * (rel - f)
+            snr[k] = rel - floorDb[k]
         }
         fun nearDc(k: Int) = abs(hzOf(k) - centerHz) < 6_000
         // open channels: still above the closing level near their raster point?

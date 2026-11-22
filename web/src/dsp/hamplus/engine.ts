@@ -100,6 +100,13 @@ class Probe {
 
 interface Open { id: number; k: number; hz: number; startMs: number; quietMs: number; peak: number; snr: number; probe: Probe | null; cut: boolean; shifted: boolean; tileKey: string }
 
+/** The span's noise: the power the quietest quarter of its channels sit at (a carrier or a hundred barely move it). */
+export function quietQuarter(power: Float32Array | number[], count: number): number {
+  if (count <= 0) return 0;
+  const v = Array.from(power.slice(0, count)).sort((a, b) => a - b);
+  return v[Math.floor((count - 1) / 4)];
+}
+
 export class HamPlusEngine implements IqProcessor {
   readonly wantsFm = false;
   centerHz = 146_001_250;
@@ -185,9 +192,14 @@ export class HamPlusEngine implements IqProcessor {
       for (let b = Math.max(1, c - half); b <= Math.min(N - 2, c + half); b++) { s += pdb[b]; cnt++; }
       const db = 10 * Math.log10(s / Math.max(1, cnt) + 1e-12);
       this.power[k] = db;
-      const f = this.floor[k];
-      this.floor[k] = Number.isNaN(f) ? db : db < f ? f + 0.3 * (db - f) : f + 0.004 * (db - f);
-      this.snr[k] = db - this.floor[k];
+    }
+    // each channel's floor is kept against the span's own noise (its quietest quarter), so a gain change (AGC, LNA, amp)
+    // that lifts the whole span moves no channel: only a carrier rises above its neighbors
+    const common = quietQuarter(this.power, this.count);
+    for (let k = 0; k < this.count; k++) {
+      const rel = this.power[k] - common, f = this.floor[k];
+      this.floor[k] = Number.isNaN(f) ? rel : rel < f ? f + 0.3 * (rel - f) : f + 0.004 * (rel - f);
+      this.snr[k] = rel - this.floor[k];
     }
     const nearDc = (k: number) => Math.abs(this.hzOf(k) - this.centerHz) < 6_000;
     // open channels: still above the closing level near their raster point?

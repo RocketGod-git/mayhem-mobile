@@ -30,7 +30,7 @@ object HamPlus {
     private const val K_PREFS = "hamplus.prefs"
     private const val K_LABELS = "hamplus.labels"
     private const val K_AUDIO = "hamplus.audio"
-    private const val K_AUTO = "hamplus.auto"
+    private const val K_AUTO = "hamplus.auto2"
     private const val K_BAND = "hamplus.band"
     private const val K_SPAN = "hamplus.span"
     val SPANS = listOf(2_400_000 to "2.4 MHz", 8_000_000 to "8 MHz", 20_000_000 to "20 MHz")
@@ -65,7 +65,7 @@ object HamPlus {
 
     fun init(c: Context) {
         ctx = c.applicationContext
-        knownFile = File(c.filesDir, "hamplus_known.json")
+        knownFile = File(c.filesDir, "hamplus_known2.json")  // 2: 0.9.59 learned false channels from a gain step
         val p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         runCatching { val v = JSONObject(p.getString(K_PREFS, null) ?: ""); _prefs.value = HpPrefs(v.optString("hold"), strs(v.optJSONArray("mute")), strs(v.optJSONArray("prio"))) }
         runCatching { val v = JSONObject(p.getString(K_LABELS, null) ?: ""); _labels.value = v.keys().asSequence().associateWith { v.optString(it) } }
