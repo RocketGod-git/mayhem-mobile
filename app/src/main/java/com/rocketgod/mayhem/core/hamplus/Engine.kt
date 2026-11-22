@@ -293,7 +293,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         Diag.log("%s: %.2f Msps · %d channels on a %s kHz raster · probe cap %d".format(Locale.US, plan.name, rate / 1e6, count, (plan.raster / 1e3).toString(), cap))
     }
 
-    private fun layout() {
+    protected open fun layout() {
         val half = plan.spanHalf(rate); val R = plan.raster
         val f = ceil((centerHz - half) / R).toLong(); val l = floor((centerHz + half) / R).toLong()
         first = f; count = max(0, (l - f + 1).toInt())

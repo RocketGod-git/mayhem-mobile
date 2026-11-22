@@ -37,8 +37,10 @@ import kotlin.math.sqrt
  * it has held and how much of the last ten minutes it was there. Twin of web dsp/cb/engine.ts.
  */
 
-/** The voice level (dB over the quiet channels' motion) a channel opens at, and closes 2 dB under. */
+/** The voice level (dB over the quiet channels' motion) a channel opens at; an open one closes 2 dB under it. */
 const val CB_OPEN_DB = 5.0
+/** Nothing opens this long after the span starts: the floors and lines settle first. */
+const val CB_WARM_MS = 3_000.0
 /** A channel stays open this long without voice: a talker's breath, a short pause. */
 const val CB_CLOSE_HOLD_MS = 1_200.0
 /** The demodulated power falling this far under the transmission's peak this long is the carrier dropping: the end. */
@@ -128,6 +130,17 @@ class CbEngine(
         centerHz = CB_CENTER
         setParams(params.copy(thresholdDb = CB_OPEN_DB))
     }
+
+    /**
+     * A new span (the radio started, retuned or changed rate) starts every channel's measurement over, and nothing opens
+     * for [CB_WARM_MS] while the floors and the lines settle: a radio just started moves its gain and its own noise.
+     */
+    override fun layout() {
+        super.layout()
+        for (s in st) { s.hist = ArrayList(); s.fl.fill(0f); s.run.fill(0); s.skirt.fill(false); s.v = ArrayList(); s.over = 0; s.voiceDb = 0.0; s.lineSince = 0.0; s.lineLast = 0.0; s.lineDb = 0 }
+        warmUntil = nowMs() + CB_WARM_MS
+    }
+    private var warmUntil = 0.0
 
     fun setCbPrefs(p: CbPrefs) {
         synchronized(lock) {
@@ -279,7 +292,7 @@ class CbEngine(
         // new talkers: four measurements over the threshold, and not a strong neighbor's splatter (an open channel within
         // 20 kHz with its power [SPLATTER_DB] over this one's)
         for (i in st.indices) {
-            if (st[i].over < 4) continue
+            if (st[i].over < 4 || now < warmUntil) continue
             val hz = CB_CHANNELS[i]
             if (opens.values.any { it.hz == hz }) continue
             if (opens.values.any { abs(it.hz - hz) <= 20_000 && st[cbChannel(it.hz) - 1].totDb - st[i].totDb > SPLATTER_DB }) continue
