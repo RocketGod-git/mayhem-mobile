@@ -4862,6 +4862,7 @@ function renderHamPlus(view: HTMLElement): void {
     // the whole box takes the tap, its padding too: a tap on a bar replays it, anywhere else replays the band from there
     // (a new replay in place of one playing), and with nothing kept the live bar says so
     (c.parentElement ?? c).onclick = (e) => {
+      hpPainted = 0; hpPaint();   // what the tap hits is read from the picture as it is now, not the last frame drawn
       const r = c.getBoundingClientRect(), x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
       const hit = (id === 'hp-tl' ? hpUi.hit : hpUi.hitWide)?.(x, y);
       if (!hit) return;
