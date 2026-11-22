@@ -218,7 +218,8 @@ export function hpPaintTimeline(cv: HTMLCanvasElement, s: HpSnap | null, now: nu
   const lh = lanes.length ? Math.min(laneH * 1.6, Math.max(laneH, (HH - axis) / lanes.length)) : laneH;
   const pw = W - labelW - 4, px = (ms: number) => labelW + Math.max(0, Math.min(1, (ms - t0) / span)) * pw;
   g.font = '600 10px ui-monospace, Menlo, Consolas, monospace'; g.textBaseline = 'middle';
-  const gridH = lanes.length ? lanes.length * lh : HH - axis;
+  // the big view keeps its grid and axis at the bottom however few channels there are, so it reads as a timeline
+  const gridH = lanes.length && cv.dataset.fill !== '1' ? lanes.length * lh : HH - axis;
   for (let m = 0; m <= 10; m++) { const x = labelW + pw * m / 10; g.strokeStyle = colors.line; g.globalAlpha = m % 5 === 0 ? 0.9 : 0.35; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, gridH); g.stroke(); }
   g.globalAlpha = 1;
   const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now / 320));

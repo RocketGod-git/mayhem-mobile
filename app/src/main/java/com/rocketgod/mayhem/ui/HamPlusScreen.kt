@@ -624,7 +624,8 @@ private fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modif
                     }
                 }) {
                     val lh = laneH.toPx(); val w = size.width
-                    val gridH = if (lanes.isEmpty()) size.height else lh * lanes.size
+                    // the big view keeps its grid to the bottom however few channels there are, so it reads as a timeline
+                    val gridH = if (lanes.isEmpty() || fill) size.height else lh * lanes.size
                     for (m in 0..10) { val x = w * m / 10f; drawLine(lineC.copy(alpha = if (m % 5 == 0) 0.9f else 0.35f), Offset(x, 0f), Offset(x, gridH)) }
                     lanes.forEachIndexed { li, h ->
                         val y = li * lh
