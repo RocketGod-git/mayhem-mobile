@@ -19,8 +19,10 @@ import { HamTracker, chanKey, type TxRec } from '../hamplus/tracker.js';
 import { CbProbe } from './probe.js';
 import { CB_CENTER, CB_CHANNELS, CB_RASTER, CB_TRACKER_PLAN, cbChannel, type CbMode } from './plan.js';
 
-/** The voice level (dB over the quiet channels' motion) a channel opens at, and closes 1 dB under. */
+/** The voice level (dB over the quiet channels' motion) a channel opens at; an open one closes 2 dB under it. */
 export const CB_OPEN_DB = 5;
+/** Nothing opens this long after the span starts: the floors and lines settle first. */
+export const CB_WARM_MS = 3_000;
 /** A channel stays open this long without voice: a talker's breath, a short pause. */
 export const CB_CLOSE_HOLD_MS = 1_200;
 /** The demodulated power falling this far under the transmission's peak this long is the carrier dropping: the end. */
@@ -90,6 +92,17 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     this.centerHz = CB_CENTER;
     this.params.thresholdDb = CB_OPEN_DB;
   }
+
+  /**
+   * A new span (the radio started, retuned or changed rate) starts every channel's measurement over, and nothing opens
+   * for [CB_WARM_MS] while the floors and the lines settle: a radio just started moves its gain and its own noise.
+   */
+  protected override layout(): void {
+    super.layout();
+    for (const s of this.st) { s.hist = []; s.fl.fill(0); s.run.fill(0); s.skirt.fill(0); s.v = []; s.over = 0; s.voiceDb = 0; s.lineSince = 0; s.lineLast = 0; s.lineDb = 0; }
+    this.warmUntil = this.nowMs() + CB_WARM_MS;
+  }
+  private warmUntil = 0;
 
   setCbPrefs(p: Partial<CbPrefs>): void {
     Object.assign(this.cbPrefs, p);
@@ -226,7 +239,7 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     // new talkers: four measurements over the threshold, and not a strong neighbor's splatter (an open channel within
     // 20 kHz with its power [SPLATTER_DB] over this one's)
     for (let i = 0; i < this.st.length; i++) {
-      if (this.st[i].over < 4) continue;
+      if (this.st[i].over < 4 || now < this.warmUntil) continue;
       const hz = CB_CHANNELS[i];
       if ([...this.opens.values()].some(o => o.hz === hz)) continue;
       if ([...this.opens.values()].some(o => Math.abs(o.hz - hz) <= 20_000 && this.st[cbChannel(o.hz) - 1].totDb - this.st[i].totDb > SPLATTER_DB)) continue;
