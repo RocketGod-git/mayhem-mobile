@@ -21,7 +21,11 @@
  *     coded bits laid out as the Mayhem MDC-1200 transmitter sends them (seven data bytes: op, arg, unit ID and
  *     the CRC-16, reflected with final inversion over the first four bytes; then seven parity bytes), checked by
  *     the CRC and the parity. Tones to bits are tried straight and differential, both polarities. Other 1200 or
- *     2400 baud bursts are reported by rate (FleetSync uses these rates; its framing is not read yet);
+ *     2400 baud bursts are tried as FleetSync;
+ *   · FleetSync, laid out as Matthew Kaufman's fsync library reads it: 1200 baud on 1200/1800 Hz or 2400 baud on
+ *     1200/2400 Hz (1200 Hz is a 1), 0xAAAA then the sync 23EB or 052B, then 64-bit blocks of six data bytes and a
+ *     15-bit CRC (0x6815) with a parity bit. Fleet is its byte plus 99, unit its 12 bits plus 999. Anything else is
+ *     reported as a data burst by rate;
  *   · sub-audio: the CTCSS tone by Goertzel over the transmission, its reverse burst (120 or 180 degree phase
  *     step held until the tone ends) against the phase line before it, DCS by the HAM receiver's own decoder and
  *     its turn-off code (134.4 Hz, where DCS data has a spectral null, in the last 150 to 200 ms);
@@ -38,13 +42,15 @@ export interface Selcall { system: string; digits: string; atS: number }
 export interface TwoTone { aHz: number; bHz: number; aMs: number; bMs: number; atS: number }
 export interface MdcPacket { op: number; arg: number; unit: string; emergency: boolean; label: string; extra: number[]; atS: number }
 export interface DataBurst { baud: number; ms: number; atS: number }
+/** FleetSync: fleet 100-349 and unit 1000-4999 as the radios show them, -1 for "all"; [cmd] and [sub] raw. */
+export interface FleetSync { baud: number; cmd: number; sub: number; fromFleet: number; fromUnit: number; toFleet: number; toUnit: number; all: boolean; atS: number }
 export interface AnalogTx {
   startS: number; durS: number; voiceS: number;
   /** When the user unkeyed (seconds into the transmission) and the carrier after it; -1 when there was no user. */
   unkeyS: number; tailS: number;
   ctcss: number; dcs: number; reverseBurst: number; dcsTurnOff: boolean;
   courtesy: CourtesyTone | null; cw: CwId | null;
-  selcall: Selcall[]; twoTone: TwoTone[]; mdc: MdcPacket[]; data: DataBurst[];
+  selcall: Selcall[]; twoTone: TwoTone[]; mdc: MdcPacket[]; fleetsync: FleetSync[]; data: DataBurst[];
   timeout: boolean; kerchunk: boolean;
 }
 export interface AnalogSnap {
@@ -262,6 +268,7 @@ export function findSelcalls(segs: ToneSeg[]): Selcall[] {
         if (g.used || g.ms < 0.65 * s.ms || g.ms > 1.45 * s.ms) break;
         if (j > i) { const p = segs[j - 1]; if (g.atS - (p.atS + p.ms / 1000) > 0.02) break; }
         const k = symbolOf(s, g.hz); if (!k) break;
+        if (j > i && k === symbolOf(s, segs[j - 1].hz)) break;
         if (k === 'E') { if (!digits) break; digits += digits[digits.length - 1]; reps++; } else { digits += k; if (!/\d/.test(k)) odd++; }
         n++;
       }
@@ -351,12 +358,69 @@ export function decodeMdc(y: Float32Array, from: number, to: number, rate: numbe
   return out;
 }
 
+// ------------------------------------------------------------------------------------------------ FleetSync
+/** The FleetSync block check: CRC-15 (0x6815) over the six data bytes, then 2, then the parity of the 63 bits. */
+export function fleetSyncCheck(w1: number, w2: number): number {
+  let crc = 0, par = 0;
+  for (let i = 0; i < 48; i++) {
+    const b = i < 32 ? (w1 >>> (31 - i)) & 1 : (w2 >>> (63 - i)) & 1;
+    par ^= b;
+    if (b ^ ((crc >> 15) & 1)) crc ^= 0x6815;
+    crc = (crc << 1) & 0xffff;
+  }
+  for (let i = 48; i < 63; i++) par ^= (w2 >>> (63 - i)) & 1;
+  return ((crc ^ 2) + par) & 0xffff;
+}
+const FS_SYNC = [0xaaaa23eb, 0xaaaa052b];
+const ones = (x: number) => { let n = 0, v = x >>> 0; while (v) { n += v & 1; v >>>= 1; } return n; };
+/** FleetSync messages in a stretch of audio at [rate], at 1200 baud (1200/1800 Hz) and 2400 baud (1200/2400 Hz). */
+export function decodeFleetSync(y: Float32Array, from: number, to: number, rate: number, t0S: number): FleetSync[] {
+  const out: FleetSync[] = [];
+  for (const [baud, center, bw] of [[1200, 1500, 1000], [2400, 1800, 1600]]) {
+    const C = fskDemod(y, from, to, rate, center, bw), sps = rate / baud, nb = Math.floor((to - from - sps) / sps);
+    if (nb < 100) continue;
+    for (let ph = 0; ph < 8 && !out.length; ph++) {
+      const t0 = ph * sps / 8, b = new Uint8Array(nb);
+      // the lower tone (1200 Hz, below the mixer's center between the two tones) is a 1
+      for (let k = 0; k < nb; k++) b[k] = cumAt(C, t0 + (k + 1) * sps) - cumAt(C, t0 + k * sps) < 0 ? 1 : 0;
+      for (let inv = 0; inv < 2 && !out.length; inv++) {
+        let win = 0;
+        for (let k = 0; k < nb; k++) {
+          win = ((win << 1) | (b[k] ^ inv)) >>> 0;
+          if (k < 31 || !FS_SYNC.some(sy => ones(win ^ sy) <= 3)) continue;
+          // blocks of 64 bits while their check holds
+          const bytes: number[] = []; let at = k + 1;
+          for (;;) {
+            if (at + 64 > nb) break;
+            let w1 = 0, w2 = 0;
+            for (let q = 0; q < 32; q++) { w1 = ((w1 << 1) | (b[at + q] ^ inv)) >>> 0; w2 = ((w2 << 1) | (b[at + 32 + q] ^ inv)) >>> 0; }
+            if (fleetSyncCheck(w1, w2) !== (w2 & 0xffff)) break;
+            bytes.push(w1 >>> 24, (w1 >>> 16) & 255, (w1 >>> 8) & 255, w1 & 255, w2 >>> 24, (w2 >>> 16) & 255);
+            at += 64;
+          }
+          if (!bytes.length) continue;
+          const id = (v: number, off: number, none: number) => v === none ? -1 : v + off;
+          const fleetFlag = bytes[1] & 1, fromFleet = id(bytes[2], 99, 0);
+          out.push({
+            baud, cmd: bytes[1] & 0xfe, sub: bytes[0] & 0xfe, all: (bytes[0] & 1) === 1,
+            fromFleet, fromUnit: id(bytes[3] * 16 + (bytes[4] >> 4), 999, 0), toUnit: id(((bytes[4] & 15) << 8) | bytes[5], 999, 0),
+            toFleet: fleetFlag && bytes.length > 6 ? id(bytes[6], 99, 0) : fromFleet, atS: t0S + (from + (k - 31) * sps) / rate,
+          });
+          break;
+        }
+      }
+    }
+    if (out.length) break;
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------------------------------------ one transmission
-interface Frames { nF: number; E: Float64Array; kp: Int16Array; fq: Float64Array; hi: Float64Array; tonal: Uint8Array; data: Uint8Array; fsk: Uint8Array; pitches: number[] }
+interface Frames { nF: number; E: Float64Array; kp: Int16Array; fq: Float64Array; hi: Float64Array; lohi: Float64Array; tonal: Uint8Array; data: Uint8Array; fsk: Uint8Array; pitches: number[] }
 
 function frames(y: Float32Array, rate: number): Frames {
   const binHz = rate / N, nF = y.length >= N ? Math.floor((y.length - N) / H) + 1 : 0;
-  const E = new Float64Array(nF), kp = new Int16Array(nF), fq = new Float64Array(nF), hi = new Float64Array(nF), tonal = new Uint8Array(nF), data = new Uint8Array(nF), fsk = new Uint8Array(nF);
+  const E = new Float64Array(nF), kp = new Int16Array(nF), fq = new Float64Array(nF), hi = new Float64Array(nF), lohi = new Float64Array(nF), tonal = new Uint8Array(nF), data = new Uint8Array(nF), fsk = new Uint8Array(nF);
   const re = new Float64Array(N), im = new Float64Array(N), p = new Float64Array(HALF + 1);
   const kLo = Math.ceil(300 / binHz), kHi = Math.min(HALF - 2, Math.floor(3400 / binHz));
   const dLo = Math.ceil(900 / binHz), dHi = Math.min(HALF - 1, Math.floor(2700 / binHz));
@@ -373,9 +437,11 @@ function frames(y: Float32Array, rate: number): Frames {
     tonal[t] = e > 1e-15 && pk >= 0.7 * e ? 1 : 0;
     let fb = 0, fh = 0; for (let k = dLo; k <= dHi; k++) { fb += p[k]; if (k * binHz > 2150) fh += p[k]; }
     hi[t] = e > 0 ? fh / e : 0;
+    // FM noise rises with frequency (and voice does not): the 300-1200 Hz energy against 2000-3400 Hz
+    { let lo = 0, up = 0; for (let k = kLo; k <= kHi; k++) { const f = k * binHz; if (f <= 1200) lo += p[k]; else if (f >= 2000) up += p[k]; } lohi[t] = lo / (up + 1e-30); }
     data[t] = e > 1e-15 && pk + pk2 < 0.8 * e && fb >= 0.75 * e ? 1 : 0;
-    // FFSK whose bits run long looks like its two tones: those frames start a data search too
-    fsk[t] = e > 1e-15 && fb >= 0.75 * e ? 1 : 0;
+    // FFSK whose bits run long looks like its tones (2400 Hz for FleetSync II): those frames start a data search too
+    { let fw = 0; for (let k = dLo; k <= kHi; k++) fw += p[k]; fsk[t] = e > 1e-15 && fw >= 0.75 * e ? 1 : 0; }
     for (let k = cLo; k <= cHi; k++) {
       const on = p[k] > 1e-15 && p[k] >= p[k - 1] && p[k] >= p[k + 1] && p[k] > 10 * (p[k - 2] + p[k + 2]) ? 1 : 0;
       if (on) {
@@ -392,7 +458,7 @@ function frames(y: Float32Array, rate: number): Frames {
   cand.sort((a, b) => b.n - a.n || a.k - b.k);
   const pitches: number[] = [], taken: number[] = [];
   for (const c of cand) { if (taken.some(k => Math.abs(k - c.k) <= 1)) continue; taken.push(c.k); pitches.push((c.k + dSum[c.k] / Math.max(1, onCnt[c.k])) * binHz); if (pitches.length >= 3) break; }
-  return { nF, E, kp, fq, hi, tonal, data, fsk, pitches };
+  return { nF, E, kp, fq, hi, lohi, tonal, data, fsk, pitches };
 }
 
 /** Tone segments: runs of single-tone frames at one frequency, refined by a mixer at the tone. */
@@ -436,14 +502,23 @@ function toneSegments(y: Float32Array, rate: number, fr: Frames): ToneSeg[] {
     if (i + 1 < out.length && raw[i + 1].t - raw[i].u <= 8) e = Math.round(((raw[i].u - 1) * H + raw[i + 1].t * H) / 2 + N / 2);
     out[i].atS = s / rate; out[i].ms = Math.round((e - s) * 1000 / rate);
   }
-  return out;
+  // one tone broken by a dip (fading, a click): pieces within 1.5 % and 15 ms of each other are one
+  const merged: ToneSeg[] = [];
+  for (const g of out) {
+    const p = merged[merged.length - 1];
+    if (p && Math.abs(g.hz - p.hz) <= 0.015 * p.hz && g.atS - (p.atS + p.ms / 1000) <= 0.015) { p.ms = Math.round((g.atS + g.ms / 1000 - p.atS) * 1000); continue; }
+    merged.push(g);
+  }
+  return merged;
 }
 
 /** Sub-audio at about 1 kHz: two moving averages, then every [d]th sample. */
 function subAudio(y: Float32Array, rate: number): { u: Float32Array; ru: number } {
   const d = Math.max(1, Math.round(rate / 1000)), n = Math.floor(y.length / d), u = new Float32Array(n);
+  // the carrier's frequency offset is DC in the discriminator: take it out first
+  let mean = 0; for (let i = 0; i < y.length; i++) mean += y[i]; mean /= Math.max(1, y.length);
   const m1 = new Float64Array(y.length); let s = 0;
-  for (let i = 0; i < y.length; i++) { s += y[i]; if (i >= d) s -= y[i - d]; m1[i] = s / d; }
+  for (let i = 0; i < y.length; i++) { s += y[i] - mean; if (i >= d) s -= y[i - d] - mean; m1[i] = s / d; }
   s = 0; let j = 0;
   for (let i = 0; i < y.length; i++) { s += m1[i]; if (i >= d) s -= m1[i - d]; if ((i + 1) % d === 0 && j < n) u[j++] = s / d; }
   return { u, ru: rate / d };
@@ -488,18 +563,21 @@ function reverseBurst(u: Float32Array, ru: number, f0: number): number {
   return 0;
 }
 
-/** Courtesy tone groups: tones of 25 to 600 ms, gaps under 150 ms, at most 2 s in all. */
-function courtesyAfter(segs: ToneSeg[], afterS: number, voiceAt: (s: number, e: number) => boolean, durS: number): ToneSeg[] | null {
-  let i = 0;
+/**
+ * The courtesy tone: tones of 25 to 600 ms with gaps under 150 ms, at most 2 s in all, after 0.3 s with no voice (and
+ * 0.3 s into the carrier) and followed by 0.2 s with none (or the end). The last such group: a new over in the tail starts after it.
+ */
+function courtesyGroup(segs: ToneSeg[], voiceAt: (s: number, e: number) => boolean, durS: number): ToneSeg[] | null {
+  let i = 0, found: ToneSeg[] | null = null;
   while (i < segs.length) {
     const g: ToneSeg[] = []; let j = i;
     while (j < segs.length && !segs[j].used && (g.length === 0 || segs[j].atS - (g[g.length - 1].atS + g[g.length - 1].ms / 1000) < 0.15)) { g.push(segs[j]); j++; }
     if (!g.length) { i++; continue; }
     const s = g[0].atS, e = g[g.length - 1].atS + g[g.length - 1].ms / 1000;
-    if (s >= afterS - 0.05 && g.length <= 6 && e - s <= 2 && g.every(x => x.ms >= 25 && x.ms <= 600) && !voiceAt(s, e) && durS - e >= 0.1) return g;
+    if (s >= 0.3 && g.length <= 6 && e - s <= 2 && g.every(x => x.ms >= 25 && x.ms <= 600) && !voiceAt(Math.max(0, s - 0.3), e + 0.2) && durS - e >= 0.1) found = g;
     i = j;
   }
-  return null;
+  return found;
 }
 
 const near = (a: number, b: number, rel: number, abs: number) => Math.abs(a - b) <= Math.max(abs, rel * Math.max(a, b));
@@ -570,19 +648,20 @@ export class AnalogSignaling {
   analyze(y: Float32Array, startS: number): AnalogTx {
     const rate = this.rate, durS = y.length / rate, fr = frames(y, rate), ft = (t: number) => (t * H + N / 2) / rate;
     // voice: loud frames that are neither one tone nor data, kept in spans of 60 ms or more
-    const lowE = pct(fr.E, 0.2), vThr = Math.max(6 * lowE, 1e-12);
+    const lowE = pct(fr.E, 0.2), vThr = Math.max(6 * lowE, 0.002 * pct(fr.E, 0.95), 1e-12);
     const voice = new Uint8Array(fr.nF);
-    for (let t = 0; t < fr.nF; t++) voice[t] = !fr.tonal[t] && !fr.data[t] && fr.E[t] > vThr ? 1 : 0;
+    for (let t = 0; t < fr.nF; t++) voice[t] = !fr.tonal[t] && !fr.data[t] && fr.E[t] > vThr && fr.lohi[t] >= 0.5 ? 1 : 0;
     let voiceF = 0, lastVoice = -1;
     for (let t = 0; t < fr.nF;) {
       if (!voice[t]) { t++; continue; }
       let u = t, gap = 0, cnt = 0;
       while (u < fr.nF && gap < 75) { if (voice[u]) { gap = 0; cnt++; } else gap++; u++; }
       const end = u - gap;
-      if (end - t >= 15) { voiceF += cnt; lastVoice = end; } else for (let j = t; j < end; j++) voice[j] = 0;
+      if (cnt >= 15) { voiceF += cnt; lastVoice = end; } else for (let j = t; j < end; j++) voice[j] = 0;
       t = u;
     }
-    const voiceS = voiceF * H / rate, lastVoiceS = lastVoice >= 0 ? ft(lastVoice) : -1;
+    // a user is one who talked for 0.3 s or more (a squelch burst or a click is not)
+    const voiceS = voiceF * H / rate, lastVoiceS = lastVoice >= 0 && voiceS >= 0.3 ? ft(lastVoice) : -1;
     const voiceAt = (s: number, e: number) => { for (let t = 0; t < fr.nF; t++) { const c = ft(t); if (c >= s && c <= e && voice[t]) return true; } return false; };
 
     const segs = toneSegments(y, rate, fr);
@@ -595,18 +674,21 @@ export class AnalogSignaling {
       twoTone.push({ aHz: Math.round(a.hz), bHz: Math.round(b.hz), aMs: a.ms, bMs: b.ms, atS: startS + a.atS }); a.used = b.used = true; i++;
     }
     // data bursts: MDC-1200 decoded where it is, other bursts by rate
-    const mdc: MdcPacket[] = [], data: DataBurst[] = [];
+    const mdc: MdcPacket[] = [], fleetsync: FleetSync[] = [], data: DataBurst[] = [];
     for (let t = 0; t < fr.nF;) {
-      if (!fr.fsk[t]) { t++; continue; }
+      // a search frame is in the data band and louder than the quiet carrier (whose noise is in that band too)
+      if (!(fr.fsk[t] && fr.E[t] > vThr)) { t++; continue; }
       // a burst holds together over runs of one bit (a single tone for a while): gaps up to 100 ms
-      let u = t + 1, gap = 0, cnt = 1, strict = fr.data[t]; while (u < fr.nF && gap < 25) { if (fr.fsk[u]) { gap = 0; cnt++; strict += fr.data[u]; } else gap++; u++; }
+      let u = t + 1, gap = 0, cnt = 1, strict = fr.data[t]; while (u < fr.nF && gap < 25) { if (fr.fsk[u] && fr.E[u] > vThr) { gap = 0; cnt++; strict += fr.data[u]; } else gap++; u++; }
       u -= gap;
-      if (cnt >= 10 && cnt >= 0.6 * (u - t)) {
+      if (cnt >= 10 && cnt >= 0.45 * (u - t)) {
         const from = Math.max(0, t * H - 24 * H), to = Math.min(y.length, u * H + N + 24 * H);
         const got = decodeMdc(y, from, to, rate, startS);
+        const fsy = got.length ? [] : decodeFleetSync(y, from, to, rate, startS);
         if (got.length) mdc.push(...got);
-        else if (strict >= 10 && strict >= 0.5 * cnt) {
-          let hs = 0, hn = 0; for (let j = t; j < u; j++) if (fr.fsk[j]) { hs += fr.hi[j]; hn++; }
+        else if (fsy.length) fleetsync.push(...fsy);
+        else if (strict >= 10 && strict >= 0.55 * (u - t) && (u - t) * H / rate >= 0.12 && (u - t) * H / rate <= 1.2) {
+          let hs = 0, hn = 0; for (let j = t; j < u; j++) if (fr.fsk[j] && fr.E[j] > vThr) { hs += fr.hi[j]; hn++; }
           // the rate from the burst's width: 1200 baud FFSK keeps to 900-2100 Hz, 2400 baud spreads above it
           data.push({ baud: hs / hn > 0.08 ? 2400 : 1200, ms: Math.round((u - t) * H * 1000 / rate), atS: startS + ft(t) });
         }
@@ -616,7 +698,7 @@ export class AnalogSignaling {
     // CW: segments that are the ID's own marks are not courtesy tones
     const cw = decodeCwId(y, rate, fr.pitches, startS);
     if (cw) for (const s of segs) if (Math.abs(s.hz - cw.pitchHz) < 40 && s.ms < 400) s.used = true;
-    const cg = courtesyAfter(segs, lastVoiceS, voiceAt, durS);
+    const cg = courtesyGroup(segs, voiceAt, durS);
     let courtesy: CourtesyTone | null = null;
     if (cg) {
       const tones = cg.map(s => ({ hz: Math.round(s.hz), ms: Math.round(s.ms / 10) * 10 }));
@@ -640,11 +722,11 @@ export class AnalogSignaling {
     const unkeyS = lastVoiceS >= 0 ? Math.min(durS, lastVoiceS) : courtesy ? courtesy.atS - startS : -1;
     const tailS = unkeyS >= 0 ? Math.round((durS - unkeyS) * 100) / 100 : -1;
     const timeout = durS >= 25 && lastVoiceS >= 0 && durS - lastVoiceS < 0.25 && !courtesy;
-    const kerchunk = voiceS < 0.3 && !cw && !selcall.length && !twoTone.length && !mdc.length && !data.length && durS < 15;
+    const kerchunk = voiceS < 0.3 && !cw && !selcall.length && !twoTone.length && !mdc.length && !fleetsync.length && !data.length && durS < 15;
     return {
       startS: Math.round(startS * 1000) / 1000, durS: Math.round(durS * 1000) / 1000, voiceS: Math.round(voiceS * 100) / 100,
       unkeyS: unkeyS >= 0 ? Math.round(unkeyS * 100) / 100 : -1, tailS, ctcss, dcs, reverseBurst: rb, dcsTurnOff,
-      courtesy, cw, selcall, twoTone, mdc, data, timeout, kerchunk,
+      courtesy, cw, selcall, twoTone, mdc, fleetsync, data, timeout, kerchunk,
     };
   }
 
@@ -676,6 +758,7 @@ export function analogSummary(tx: AnalogTx): string[] {
   for (const s of tx.selcall) out.push(`${s.system} selcall ${s.digits}`);
   for (const t of tx.twoTone) out.push(`2-tone page ${t.aHz} and ${t.bHz} Hz`);
   for (const m of tx.mdc) out.push(`MDC-1200 unit ${m.unit}${m.label ? ' ' + m.label : ` op ${m.op.toString(16).toUpperCase().padStart(2, '0')}`}`);
+  for (const f of tx.fleetsync) out.push(`FleetSync ${f.baud === 2400 ? 'II' : 'I'} ${f.fromFleet < 0 ? 'all' : f.fromFleet}-${f.fromUnit < 0 ? 'all' : f.fromUnit} to ${f.toFleet < 0 ? 'all' : f.toFleet}-${f.toUnit < 0 ? 'all' : f.toUnit}`);
   for (const d of tx.data) out.push(`${d.baud} baud data burst`);
   if (tx.ctcss) out.push(`PL ${tx.ctcss.toFixed(1)}${tx.reverseBurst ? `, reverse burst ${tx.reverseBurst}°` : ''}`);
   if (tx.dcs) out.push(`DCS ${String(tx.dcs).padStart(3, '0')}${tx.dcsTurnOff ? ', turn-off code' : ''}`);

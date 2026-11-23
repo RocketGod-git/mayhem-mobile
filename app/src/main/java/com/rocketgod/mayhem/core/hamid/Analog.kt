@@ -20,7 +20,7 @@ import kotlin.math.sqrt
 
 /**
  * Analog repeater signaling, one transmission at a time: carrier cut, CW ID, selcall (ZVEI1/2/3, CCIR1/2, EEA, EIA),
- * 2-tone pages, MDC-1200, other 1200 and 2400 baud bursts, CTCSS and its reverse burst, DCS and its turn-off code,
+ * 2-tone pages, MDC-1200, FleetSync I and II, other 1200 and 2400 baud bursts, CTCSS and its reverse burst, DCS and its turn-off code,
  * the courtesy tone and its fingerprint, the tail, time-outs and kerchunks. The same as the web's
  * dsp/hamid/analog.ts, step for step, so every platform reads the same.
  */
@@ -32,13 +32,15 @@ data class Selcall(val system: String, val digits: String, val atS: Double)
 data class TwoTone(val aHz: Int, val bHz: Int, val aMs: Int, val bMs: Int, val atS: Double)
 data class MdcPacket(val op: Int, val arg: Int, val unit: String, val emergency: Boolean, val label: String, val extra: List<Int>, val atS: Double)
 data class DataBurst(val baud: Int, val ms: Int, val atS: Double)
+/** FleetSync: fleet 100-349 and unit 1000-4999 as the radios show them, -1 for "all"; [cmd] and [sub] raw. */
+data class FleetSync(val baud: Int, val cmd: Int, val sub: Int, val fromFleet: Int, val fromUnit: Int, val toFleet: Int, val toUnit: Int, val all: Boolean, val atS: Double)
 data class AnalogTx(
     val startS: Double, val durS: Double, val voiceS: Double,
     /** When the user unkeyed (seconds into the transmission) and the carrier after it; -1 when there was no user. */
     val unkeyS: Double, val tailS: Double,
     val ctcss: Double, val dcs: Int, val reverseBurst: Int, val dcsTurnOff: Boolean,
     val courtesy: CourtesyTone?, val cw: CwId?,
-    val selcall: List<Selcall>, val twoTone: List<TwoTone>, val mdc: List<MdcPacket>, val data: List<DataBurst>,
+    val selcall: List<Selcall>, val twoTone: List<TwoTone>, val mdc: List<MdcPacket>, val fleetsync: List<FleetSync>, val data: List<DataBurst>,
     val timeout: Boolean, val kerchunk: Boolean,
 )
 data class AnalogCwId(val callsign: String, val count: Int, val confidence: Double)
@@ -253,6 +255,7 @@ fun findSelcalls(segs: List<ToneSeg>): List<Selcall> {
                 if (g.used || g.ms < 0.65 * s.ms || g.ms > 1.45 * s.ms) break
                 if (j > i) { val p = segs[j - 1]; if (g.atS - (p.atS + p.ms / 1000.0) > 0.02) break }
                 val k = symbolOf(s, g.hz); if (k.isEmpty()) break
+                if (j > i && k == symbolOf(s, segs[j - 1].hz)) break
                 if (k == "E") { if (digits.isEmpty()) break; digits += digits.last(); reps++ } else { digits += k; if (!k[0].isDigit()) odd++ }
                 n++
             }
@@ -339,12 +342,67 @@ fun decodeMdc(y: FloatArray, from: Int, to: Int, rate: Double, t0S: Double): Lis
     return out
 }
 
+// ------------------------------------------------------------------------------------------------ FleetSync
+/** The FleetSync block check: CRC-15 (0x6815) over the six data bytes, then 2, then the parity of the 63 bits. */
+fun fleetSyncCheck(w1: Long, w2: Long): Int {
+    var crc = 0; var par = 0
+    for (i in 0 until 48) {
+        val b = (if (i < 32) (w1 ushr (31 - i)) else (w2 ushr (63 - i))).toInt() and 1
+        par = par xor b
+        if ((b xor ((crc shr 15) and 1)) != 0) crc = crc xor 0x6815
+        crc = (crc shl 1) and 0xffff
+    }
+    for (i in 48 until 63) par = par xor ((w2 ushr (63 - i)).toInt() and 1)
+    return ((crc xor 2) + par) and 0xffff
+}
+private val FS_SYNC = longArrayOf(0xaaaa23ebL, 0xaaaa052bL)
+/** FleetSync messages in a stretch of audio at [rate], at 1200 baud (1200/1800 Hz) and 2400 baud (1200/2400 Hz). */
+fun decodeFleetSync(y: FloatArray, from: Int, to: Int, rate: Double, t0S: Double): List<FleetSync> {
+    val out = ArrayList<FleetSync>()
+    for ((baud, center, bw) in listOf(Triple(1200, 1500.0, 1000.0), Triple(2400, 1800.0, 1600.0))) {
+        val C = fskDemod(y, from, to, rate, center, bw); val sps = rate / baud; val nb = floor((to - from - sps) / sps).toInt()
+        if (nb < 100) continue
+        var ph = 0
+        while (ph < 8 && out.isEmpty()) {
+            val t0 = ph * sps / 8
+            val b = IntArray(nb) { k -> if (cumAt(C, t0 + (k + 1) * sps) - cumAt(C, t0 + k * sps) < 0) 1 else 0 }
+            var inv = 0
+            while (inv < 2 && out.isEmpty()) {
+                var win = 0L
+                for (k in 0 until nb) {
+                    win = ((win shl 1) or (b[k] xor inv).toLong()) and 0xffffffffL
+                    if (k < 31 || FS_SYNC.none { java.lang.Long.bitCount(win xor it) <= 3 }) continue
+                    val bytes = ArrayList<Int>(); var at = k + 1
+                    while (at + 64 <= nb) {
+                        var w1 = 0L; var w2 = 0L
+                        for (q in 0 until 32) { w1 = (w1 shl 1) or (b[at + q] xor inv).toLong(); w2 = (w2 shl 1) or (b[at + 32 + q] xor inv).toLong() }
+                        if (fleetSyncCheck(w1, w2) != (w2 and 0xffff).toInt()) break
+                        bytes.addAll(listOf((w1 ushr 24).toInt(), (w1 ushr 16).toInt() and 255, (w1 ushr 8).toInt() and 255, w1.toInt() and 255, (w2 ushr 24).toInt(), (w2 ushr 16).toInt() and 255))
+                        at += 64
+                    }
+                    if (bytes.isEmpty()) continue
+                    fun id(v: Int, off: Int) = if (v == 0) -1 else v + off
+                    val fleetFlag = bytes[1] and 1; val fromFleet = id(bytes[2], 99)
+                    out.add(FleetSync(baud, bytes[1] and 0xfe, bytes[0] and 0xfe, fromFleet, id(bytes[3] * 16 + (bytes[4] shr 4), 999),
+                        if (fleetFlag != 0 && bytes.size > 6) id(bytes[6], 99) else fromFleet, id(((bytes[4] and 15) shl 8) or bytes[5], 999), (bytes[0] and 1) == 1,
+                        t0S + (from + (k - 31) * sps) / rate))
+                    break
+                }
+                inv++
+            }
+            ph++
+        }
+        if (out.isNotEmpty()) break
+    }
+    return out
+}
+
 // ------------------------------------------------------------------------------------------------ one transmission
-private class Frames(val nF: Int, val E: DoubleArray, val kp: IntArray, val fq: DoubleArray, val hi: DoubleArray, val tonal: BooleanArray, val data: BooleanArray, val fsk: BooleanArray, val pitches: List<Double>)
+private class Frames(val nF: Int, val E: DoubleArray, val kp: IntArray, val fq: DoubleArray, val hi: DoubleArray, val lohi: DoubleArray, val tonal: BooleanArray, val data: BooleanArray, val fsk: BooleanArray, val pitches: List<Double>)
 
 private fun frames(y: FloatArray, rate: Double): Frames {
     val binHz = rate / N; val nF = if (y.size >= N) (y.size - N) / H + 1 else 0
-    val E = DoubleArray(nF); val kp = IntArray(nF); val fq = DoubleArray(nF); val hi = DoubleArray(nF); val tonal = BooleanArray(nF); val data = BooleanArray(nF); val fsk = BooleanArray(nF)
+    val E = DoubleArray(nF); val kp = IntArray(nF); val fq = DoubleArray(nF); val hi = DoubleArray(nF); val lohi = DoubleArray(nF); val tonal = BooleanArray(nF); val data = BooleanArray(nF); val fsk = BooleanArray(nF)
     val re = DoubleArray(N); val im = DoubleArray(N); val p = DoubleArray(HALF + 1)
     val kLo = ceil(300 / binHz).toInt(); val kHi = min(HALF - 2, floor(3400 / binHz).toInt())
     val dLo = ceil(900 / binHz).toInt(); val dHi = min(HALF - 1, floor(2700 / binHz).toInt())
@@ -362,8 +420,11 @@ private fun frames(y: FloatArray, rate: Double): Frames {
         tonal[t] = e > 1e-15 && pk >= 0.7 * e
         var fb = 0.0; var fh = 0.0; for (k in dLo..dHi) { fb += p[k]; if (k * binHz > 2150) fh += p[k] }
         hi[t] = if (e > 0) fh / e else 0.0
+        // FM noise rises with frequency (and voice does not): the 300-1200 Hz energy against 2000-3400 Hz
+        run { var lo = 0.0; var up = 0.0; for (k in kLo..kHi) { val f = k * binHz; if (f <= 1200) lo += p[k] else if (f >= 2000) up += p[k] }; lohi[t] = lo / (up + 1e-30) }
         data[t] = e > 1e-15 && pk + pk2 < 0.8 * e && fb >= 0.75 * e
-        fsk[t] = e > 1e-15 && fb >= 0.75 * e
+        // FFSK whose bits run long looks like its tones (2400 Hz for FleetSync II): those frames start a data search too
+        run { var fw = 0.0; for (k in dLo..kHi) fw += p[k]; fsk[t] = e > 1e-15 && fw >= 0.75 * e }
         for (k in cLo..cHi) {
             val on = p[k] > 1e-15 && p[k] >= p[k - 1] && p[k] >= p[k + 1] && p[k] > 10 * (p[k - 2] + p[k + 2])
             if (on) {
@@ -379,7 +440,7 @@ private fun frames(y: FloatArray, rate: Double): Frames {
     cand.sortWith(compareBy<Pair<Int, Double>> { -it.second }.thenBy { it.first })
     val pitches = ArrayList<Double>(); val taken = ArrayList<Int>()
     for ((k, _) in cand) { if (taken.any { abs(it - k) <= 1 }) continue; taken.add(k); pitches.add((k + dSum[k] / max(1, onCnt[k])) * binHz); if (pitches.size >= 3) break }
-    return Frames(nF, E, kp, fq, hi, tonal, data, fsk, pitches)
+    return Frames(nF, E, kp, fq, hi, lohi, tonal, data, fsk, pitches)
 }
 
 private fun toneSegments(y: FloatArray, rate: Double, fr: Frames): MutableList<ToneSeg> {
@@ -420,13 +481,22 @@ private fun toneSegments(y: FloatArray, rate: Double, fr: Frames): MutableList<T
         if (i + 1 < out.size && raw[i + 1][0] - raw[i][1] <= 8) e = jsr(((raw[i][1] - 1) * H + raw[i + 1][0] * H) / 2.0 + N / 2).toInt()
         out[i].atS = s / rate; out[i].ms = jsr((e - s) * 1000 / rate).toInt()
     }
-    return out
+    // one tone broken by a dip (fading, a click): pieces within 1.5 % and 15 ms of each other are one
+    val merged = ArrayList<ToneSeg>()
+    for (g in out) {
+        val p = merged.lastOrNull()
+        if (p != null && abs(g.hz - p.hz) <= 0.015 * p.hz && g.atS - (p.atS + p.ms / 1000.0) <= 0.015) { p.ms = jsr((g.atS + g.ms / 1000.0 - p.atS) * 1000).toInt(); continue }
+        merged.add(g)
+    }
+    return merged
 }
 
 private fun subAudio(y: FloatArray, rate: Double): Pair<FloatArray, Double> {
     val d = max(1.0, jsr(rate / 1000)).toInt(); val n = y.size / d; val u = FloatArray(n)
+    // the carrier's frequency offset is DC in the discriminator: take it out first
+    var mean = 0.0; for (v in y) mean += v; mean /= max(1, y.size)
     val m1 = DoubleArray(y.size); var s = 0.0
-    for (i in y.indices) { s += y[i]; if (i >= d) s -= y[i - d]; m1[i] = s / d }
+    for (i in y.indices) { s += y[i] - mean; if (i >= d) s -= y[i - d] - mean; m1[i] = s / d }
     s = 0.0; var j = 0
     for (i in y.indices) { s += m1[i]; if (i >= d) s -= m1[i - d]; if ((i + 1) % d == 0 && j < n) u[j++] = (s / d).toFloat() }
     return u to rate / d
@@ -468,17 +538,22 @@ private fun reverseBurst(u: FloatArray, ru: Double, f0: Double): Int {
     return 0
 }
 
-private fun courtesyAfter(segs: List<ToneSeg>, afterS: Double, voiceAt: (Double, Double) -> Boolean, durS: Double): List<ToneSeg>? {
-    var i = 0
+/**
+ * The courtesy tone: tones of 25 to 600 ms with gaps under 150 ms, at most 2 s in all, after 0.3 s with no voice (and
+ * 0.3 s into the carrier) and followed by 0.2 s with none (or the end). The last such group: a new over in the tail
+ * starts after it.
+ */
+private fun courtesyGroup(segs: List<ToneSeg>, voiceAt: (Double, Double) -> Boolean, durS: Double): List<ToneSeg>? {
+    var i = 0; var found: List<ToneSeg>? = null
     while (i < segs.size) {
         val g = ArrayList<ToneSeg>(); var j = i
         while (j < segs.size && !segs[j].used && (g.isEmpty() || segs[j].atS - (g.last().atS + g.last().ms / 1000.0) < 0.15)) { g.add(segs[j]); j++ }
         if (g.isEmpty()) { i++; continue }
         val s = g[0].atS; val e = g.last().atS + g.last().ms / 1000.0
-        if (s >= afterS - 0.05 && g.size <= 6 && e - s <= 2 && g.all { it.ms in 25..600 } && !voiceAt(s, e) && durS - e >= 0.1) return g
+        if (s >= 0.3 && g.size <= 6 && e - s <= 2 && g.all { it.ms in 25..600 } && !voiceAt(max(0.0, s - 0.3), e + 0.2) && durS - e >= 0.1) found = g
         i = j
     }
-    return null
+    return found
 }
 
 private fun near(a: Double, b: Double, rel: Double, abs: Double) = kotlin.math.abs(a - b) <= max(abs, rel * max(a, b))
@@ -547,8 +622,8 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
     fun analyze(y: FloatArray, startS: Double): AnalogTx {
         val durS = y.size / rate; val fr = frames(y, rate)
         fun ft(t: Int) = (t * H + N / 2) / rate
-        val lowE = pct(fr.E, 0.2); val vThr = max(6 * lowE, 1e-12)
-        val voice = BooleanArray(fr.nF) { !fr.tonal[it] && !fr.data[it] && fr.E[it] > vThr }
+        val lowE = pct(fr.E, 0.2); val vThr = max(max(6 * lowE, 0.002 * pct(fr.E, 0.95)), 1e-12)
+        val voice = BooleanArray(fr.nF) { !fr.tonal[it] && !fr.data[it] && fr.E[it] > vThr && fr.lohi[it] >= 0.5 }
         var voiceF = 0; var lastVoice = -1
         var t = 0
         while (t < fr.nF) {
@@ -556,10 +631,11 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
             var u = t; var gap = 0; var cnt = 0
             while (u < fr.nF && gap < 75) { if (voice[u]) { gap = 0; cnt++ } else gap++; u++ }
             val end = u - gap
-            if (end - t >= 15) { voiceF += cnt; lastVoice = end } else for (j in t until end) voice[j] = false
+            if (cnt >= 15) { voiceF += cnt; lastVoice = end } else for (j in t until end) voice[j] = false
             t = u
         }
-        val voiceS = voiceF * H / rate; val lastVoiceS = if (lastVoice >= 0) ft(lastVoice) else -1.0
+        // a user is one who talked for 0.3 s or more (a squelch burst or a click is not)
+        val voiceS = voiceF * H / rate; val lastVoiceS = if (lastVoice >= 0 && voiceS >= 0.3) ft(lastVoice) else -1.0
         val voiceAt = { s: Double, e: Double -> var hit = false; for (q in 0 until fr.nF) { val c = ft(q); if (c >= s && c <= e && voice[q]) { hit = true; break } }; hit }
 
         val segs = toneSegments(y, rate, fr)
@@ -572,19 +648,22 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
                 a.hz < 280 || a.hz > 3000 || b.hz < 280 || b.hz > 3000) { i++; continue }
             twoTone.add(TwoTone(jsr(a.hz).toInt(), jsr(b.hz).toInt(), a.ms, b.ms, startS + a.atS)); a.used = true; b.used = true; i += 2
         }
-        val mdc = ArrayList<MdcPacket>(); val data = ArrayList<DataBurst>()
+        val mdc = ArrayList<MdcPacket>(); val fleetsync = ArrayList<FleetSync>(); val data = ArrayList<DataBurst>()
         t = 0
         while (t < fr.nF) {
-            if (!fr.fsk[t]) { t++; continue }
+            // a search frame is in the data band and louder than the quiet carrier (whose noise is in that band too)
+            if (!(fr.fsk[t] && fr.E[t] > vThr)) { t++; continue }
             var u = t + 1; var gap = 0; var cnt = 1; var strict = if (fr.data[t]) 1 else 0
-            while (u < fr.nF && gap < 25) { if (fr.fsk[u]) { gap = 0; cnt++; if (fr.data[u]) strict++ } else gap++; u++ }
+            while (u < fr.nF && gap < 25) { if (fr.fsk[u] && fr.E[u] > vThr) { gap = 0; cnt++; if (fr.data[u]) strict++ } else gap++; u++ }
             u -= gap
-            if (cnt >= 10 && cnt >= 0.6 * (u - t)) {
+            if (cnt >= 10 && cnt >= 0.45 * (u - t)) {
                 val from = max(0, t * H - 24 * H); val to = min(y.size, u * H + N + 24 * H)
                 val got = decodeMdc(y, from, to, rate, startS)
+                val fsy = if (got.isNotEmpty()) emptyList() else decodeFleetSync(y, from, to, rate, startS)
                 if (got.isNotEmpty()) mdc.addAll(got)
-                else if (strict >= 10 && strict >= 0.5 * cnt) {
-                    var hs = 0.0; var hn = 0; for (j in t until u) if (fr.fsk[j]) { hs += fr.hi[j]; hn++ }
+                else if (fsy.isNotEmpty()) fleetsync.addAll(fsy)
+                else if (strict >= 10 && strict >= 0.55 * (u - t) && (u - t) * H / rate >= 0.12 && (u - t) * H / rate <= 1.2) {
+                    var hs = 0.0; var hn = 0; for (j in t until u) if (fr.fsk[j] && fr.E[j] > vThr) { hs += fr.hi[j]; hn++ }
                     data.add(DataBurst(if (hs / hn > 0.08) 2400 else 1200, jsr((u - t) * H * 1000 / rate).toInt(), startS + ft(t)))
                 }
             }
@@ -592,7 +671,7 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
         }
         val cw = decodeCwId(y, rate, fr.pitches, startS)
         if (cw != null) for (s in segs) if (abs(s.hz - cw.pitchHz) < 40 && s.ms < 400) s.used = true
-        val cg = courtesyAfter(segs, lastVoiceS, voiceAt, durS)
+        val cg = courtesyGroup(segs, voiceAt, durS)
         var courtesy: CourtesyTone? = null
         if (cg != null) {
             val tones = cg.map { AnalogTone(jsr(it.hz).toInt(), (jsr(it.ms / 10.0) * 10).toInt()) }
@@ -615,9 +694,9 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
         val unkeyS = if (lastVoiceS >= 0) min(durS, lastVoiceS) else courtesy?.let { it.atS - startS } ?: -1.0
         val tailS = if (unkeyS >= 0) r2(durS - unkeyS) else -1.0
         val timeout = durS >= 25 && lastVoiceS >= 0 && durS - lastVoiceS < 0.25 && courtesy == null
-        val kerchunk = voiceS < 0.3 && cw == null && selcall.isEmpty() && twoTone.isEmpty() && mdc.isEmpty() && data.isEmpty() && durS < 15
+        val kerchunk = voiceS < 0.3 && cw == null && selcall.isEmpty() && twoTone.isEmpty() && mdc.isEmpty() && fleetsync.isEmpty() && data.isEmpty() && durS < 15
         return AnalogTx(jsr(startS * 1000) / 1000, jsr(durS * 1000) / 1000, r2(voiceS), if (unkeyS >= 0) r2(unkeyS) else -1.0, tailS, ctcss, dcs, rb, dcsTurnOff,
-            courtesy, cw, selcall, twoTone, mdc, data, timeout, kerchunk)
+            courtesy, cw, selcall, twoTone, mdc, fleetsync, data, timeout, kerchunk)
     }
 
     private fun remember(tx: AnalogTx) {
@@ -644,6 +723,8 @@ fun analogSummary(tx: AnalogTx): List<String> {
     for (s in tx.selcall) out.add("${s.system} selcall ${s.digits}")
     for (t in tx.twoTone) out.add("2-tone page ${t.aHz} and ${t.bHz} Hz")
     for (m in tx.mdc) out.add("MDC-1200 unit ${m.unit}${if (m.label.isNotEmpty()) " " + m.label else " op " + m.op.toString(16).uppercase().padStart(2, '0')}")
+    fun fid(v: Int) = if (v < 0) "all" else v.toString()
+    for (f in tx.fleetsync) out.add("FleetSync ${if (f.baud == 2400) "II" else "I"} ${fid(f.fromFleet)}-${fid(f.fromUnit)} to ${fid(f.toFleet)}-${fid(f.toUnit)}")
     for (d in tx.data) out.add("${d.baud} baud data burst")
     if (tx.ctcss != 0.0) out.add("PL ${String.format(Locale.US, "%.1f", tx.ctcss)}${if (tx.reverseBurst != 0) ", reverse burst ${tx.reverseBurst}°" else ""}")
     if (tx.dcs != 0) out.add("DCS ${tx.dcs.toString().padStart(3, '0')}${if (tx.dcsTurnOff) ", turn-off code" else ""}")
