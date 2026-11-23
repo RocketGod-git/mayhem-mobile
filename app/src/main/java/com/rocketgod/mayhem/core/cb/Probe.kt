@@ -46,7 +46,17 @@ const val SSB_HALF_HZ = 1_350.0
 const val SSB_RATIO = 4.0
 /** A carrier stands 15 dB over the median through this share of its keyup, once held a second (real AM 0.84 to 1, a
  *  sideband voice followed as if a carrier 0.34 to 0.81, on home's recordings). */
-const val CARRIER_HELD = 0.8
+const val CARRIER_HELD = 0.6
+/** Our sideband guard: steady lines stand [TONE_DB] over their neighborhood, and may hold at most [TONE_SHARE]. */
+const val TONE_DB = 20.0
+const val TONE_SHARE = 0.5
+private val TONE_X = Math.pow(10.0, TONE_DB / 10)
+private const val SIDE_BAND = 25.0
+private const val SIDE_FROM = 300.0
+private const val SIDE_TO = 3_000.0
+private const val EDGE_FROM = 3_200.0
+private const val EDGE_TO = 4_800.0
+private const val TONE_CARRIER_HZ = 40.0
 /** SSB's level is its power over this long (s). */
 const val SSB_AGC_S = 0.3
 /** Audio is clipped here (the carrier's level is 1), and faded in and out over this long (ms). */
@@ -87,7 +97,7 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
     private var uti = FloatArray(0); private var utq = FloatArray(0); private var usi = FloatArray(0); private var usq = FloatArray(0)
     private val hp: List<Biquad>; private val lpA: List<Biquad>; private val ssbP: List<Biquad>; private val den: Denoiser
     private var pi = 1.0; private var pq = 0.0; private var wu = 0.0; private var wl = 0.0; private var wb = 0.0; private var gate = 0.0; private var lastHop = 0
-    private var up = 0.0; private var lo = 0.0; private var upOff = 0.0; private var loOff = 0.0; private var nOff = 0; private var eS = 0.0; private var eS2 = 0.0; private var eN = 0
+    private var eS = 0.0; private var eS2 = 0.0; private var eN = 0
     private val eBlocks = ArrayList<DoubleArray>()
     private var notCarrier = false
     private val dl: FloatArray; private var dn = 0
@@ -146,6 +156,64 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
     }
     val notchHz: List<Double> get() = notches.map { it.hz }
 
+    /*
+     * Our guard on home's sideband rule, which the no-antenna recordings need: a receiver's own spurs come in bursts of
+     * lines (on the Mac's HackRF, lines every 100 Hz 221.5 kHz below the tuning, 60 dB over the noise, on for seconds),
+     * and a burst of them on one side passes home's split as a sideband. A voice's harmonics wander with its pitch and
+     * smear over tens of Hz in half a second; a spur's lines stay put to a Hz. So on fine spectra (2 Hz bins, each half
+     * second) the share of the 300 to 3000 Hz power over the noise that sits in bins [TONE_DB] over their neighborhood
+     * must stay under [TONE_SHARE] for the keyup to be taken for single sideband.
+     */
+    private var tI = FloatArray(0); private var tQ = FloatArray(0); private var tN = 0
+    private var toneIn = 0.0; private var toneAll = 0.0
+    /** The power over the noise a Hz, 300 to 3000 Hz and 3200 to 4800 Hz from the center, above (0) and below (1). */
+    private val edgeIn = DoubleArray(2); private val edgeOut = DoubleArray(2)
+    /** The share of the sidebands' power in steady lines (the followed carrier left out), NaN before a half second. */
+    val toneShare: Double get() = if (toneAll > 0) toneIn / toneAll else Double.NaN
+    /** The power over the noise 300 to 3000 Hz above and below the followed carrier, over the keyup, and the noise. */
+    private val carSide = DoubleArray(2); private var carNoise = 0.0; private var carBins = 0
+    /** Whether the followed carrier's sidebands differ by [SSB_RATIO] or more, the louder over the noise. */
+    fun lopsided(): Boolean {
+        val u = carSide[0]; val l = carSide[1]; val big = max(u, l)
+        return carBins > 0 && big >= SSB_RATIO * min(u, l) && big >= carNoise * carBins
+    }
+    /** Whether [side] holds more power a Hz just past the voice band (3.2 to 4.8 kHz) than in it: the skirt of something
+     *  strong beyond the band, not a voice (a transmitter's audio stops near 3 kHz). */
+    fun skirt(side: CbMode): Boolean { val j = if (side == CbMode.USB) 0 else 1; return edgeOut[j] > edgeIn[j] }
+    private fun toneBlock() {
+        val n = tI.size; val re = tI.copyOf(); val im = tQ.copyOf(); val w = hannSym(n)
+        for (k in 0 until n) { re[k] *= w[k]; im[k] *= w[k] }
+        Dsp.fft(re, im)
+        fun p2(k: Int): Double { val x = re[k].toDouble(); val y = im[k].toDouble(); return x * x + y * y }
+        val bh = fs / n; val g0 = max(1, (SIDE_BAND / bh).roundToInt()); val lo = (SIDE_FROM / bh).roundToInt(); val hi = (SIDE_TO / bh).roundToInt()
+        val o0 = (EDGE_FROM / bh).roundToInt(); val o1 = min(n / 2 - 1, (EDGE_TO / bh).roundToInt())
+        val car = if (trk.have) trk.hz else Double.NaN
+        for (sgn in intArrayOf(1, -1)) {
+            // band medians, then each bin against the median of the bands around it
+            val pw = ArrayList<Double>(); for (b in lo..hi) { val k = (sgn * b + n) % n; pw.add(p2(k)) }
+            val bm = ArrayList<Double>(); var g = 0; while (g < pw.size) { bm.add(median(pw.subList(g, min(pw.size, g + g0)))); g += g0 }
+            val noise = bm.sorted()[bm.size / 5].let { if (it == 0.0 || it.isNaN()) 1e-20 else it }
+            var inP = 0.0
+            for (b in pw.indices) {
+                val x = max(0.0, pw[b] - noise); inP += x
+                if (abs(sgn * (b + lo) * bh - car) <= TONE_CARRIER_HZ) continue
+                val gg = b / g0; val near = median(bm.subList(max(0, gg - 4), min(bm.size, gg + 5)))
+                toneAll += x; if (pw[b] >= near * TONE_X) toneIn += x
+            }
+            var outP = 0.0; for (b in o0..o1) { val k = (sgn * b + n) % n; outP += max(0.0, p2(k) - noise) }
+            val j = if (sgn > 0) 0 else 1; edgeIn[j] += inP / pw.size; edgeOut[j] += outP / max(1, o1 - o0 + 1)
+            // around the carrier
+            if (trk.have) {
+                val c = (car / bh).roundToInt(); var sum = 0.0; var nb = 0
+                // (a steady line, 20 dB over the bands around it, left out: a comb line beside a station is not its sideband)
+                val cp = ArrayList<Double>(); for (b in lo..hi) { val k = ((c + sgn * b) % n + n) % n; cp.add(p2(k)) }
+                val cm = ArrayList<Double>(); var gg = 0; while (gg < cp.size) { cm.add(median(cp.subList(gg, min(cp.size, gg + g0)))); gg += g0 }
+                for (b in cp.indices) { val g2 = b / g0; nb++; if (cp[b] >= median(cm.subList(max(0, g2 - 4), min(cm.size, g2 + 5))) * TONE_X) continue; sum += max(0.0, cp[b] - noise) }
+                carSide[j] += sum; if (j == 0) { carNoise += noise; carBins = nb }
+            }
+        }
+    }
+
     /** What the measurement found: null until a carrier is held or a sideband stands out. */
     fun measuredMode(): CbMode? {
         // a carrier is a station's when it stands 22 dB over the median through the keyup (home skips one under that: on
@@ -159,12 +227,16 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
         val t = trk
         val held = if (t.heldHops >= 100) t.onHops.toDouble() / t.heldHops else if (notCarrier) 0.0 else 1.0
         if (t.heldHops >= 100 && held < CARRIER_HELD) notCarrier = true
-        val side = up + lo > 0 && max(up, lo) >= SSB_RATIO * min(up, lo)
-        val sideOff = nOff >= fs * 0.1 && max(upOff, loOff) >= SSB_RATIO * min(upOff, loOff)
+        // (the split is home's, 300 to 3000 Hz either side, with its idle-line notches done another way, so the steady
+        // lines of a nearby device, which home notched, cannot tip it: see CarrierTracker.side)
+        val sideAll = t.side(false, SSB_RATIO); val side = sideAll != null
+        val sideOff = t.side(true, SSB_RATIO) != null
         val q = t.medianQ()
         val carrier = (t.have || t.log.size >= 10) && !(q < SQUELCH_DB) && held >= CARRIER_HELD && (t.heldHops >= 100 || !sideOff)
-        if (carrier) { val f = flatness(); return if (f.isFinite() && f < FLAT_FM) CbMode.FM else CbMode.AM }
-        if (side) return if (up > lo) CbMode.USB else CbMode.LSB
+        // (and a carrier is a station's when its two sidebands are alike, as AM's are: a receiver's own spur burst has a
+        // strongest line too, with its other lines on one side of it)
+        if (carrier && !lopsided()) { val f = flatness(); return if (f.isFinite() && f < FLAT_FM) CbMode.FM else CbMode.AM }
+        if (side && !(toneShare >= TONE_SHARE) && !skirt(sideAll!!)) return sideAll
         return null
     }
     /** The mode demodulated now: by hand, else measured, else the channel's last. */
@@ -184,6 +256,9 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
             uti = FloatArray(max); utq = FloatArray(max); usi = FloatArray(max); usq = FloatArray(max)
         }
         val m = ddc.push(fi, fq, n, oi, oq); val fs = fs; val oi = oi; val oq = oq; val trk = trk
+        // every half second, a fine spectrum (2 Hz bins) for the tone share
+        if (tI.isEmpty()) { var n2 = 1; while (n2 < fs / 2) n2 = n2 shl 1; tI = FloatArray(n2); tQ = FloatArray(n2) }
+        for (i in 0 until m) { tI[tN] = oi[i]; tQ[tN] = oq[i]; if (++tN >= tI.size) { toneBlock(); tN = 0 } }
         if (coarse.isNotEmpty() && lineN >= 0) {
             if (lineI.isEmpty()) { var n2 = 1; while (n2 < fs / 2) n2 = n2 shl 1; lineI = FloatArray(n2); lineQ = FloatArray(n2) }
             var i = 0
@@ -225,10 +300,6 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
             offAcc += f; if (++offN >= win) { means.add(offAcc / offN * fs / TWO_PI); offAcc = 0.0; offN = 0 }
             trk.step(a, b)
             val ti = uti[i].toDouble(); val tq = utq[i].toDouble(); val si = usi[i].toDouble(); val sq = usq[i].toDouble()
-            // how the energy splits either side of the center, over the keyup
-            up += ti * ti + tq * tq; lo += si * si + sq * sq
-            // and while a followed line is off (a carrier, off frequency, would tip the split by itself)
-            if (trk.have && !trk.onNow) { upOff += ti * ti + tq * tq; loOff += si * si + sq * sq; nOff++ }
             if ((i and 63) == 0) mode = mode()
             var v: Double; var on = true
             if (mode == CbMode.AM || mode == CbMode.FM) {
