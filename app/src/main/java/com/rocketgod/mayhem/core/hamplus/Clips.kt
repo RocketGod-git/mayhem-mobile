@@ -48,6 +48,11 @@ class ClipWriter {
         for (i in 0 until n) buf[len++] = muEncode(x[i].toDouble()).toByte()
     }
     fun done(): ByteArray = buf.copyOf(len)
+    /** Fades the last [n] samples out to silence (a transmission's end without a click). */
+    fun fadeOut(n: Int) {
+        val k = min(n, len)
+        for (i in 0 until k) { val j = len - k + i; buf[j] = muEncode(muDecode(buf[j].toInt()).toDouble() * (1 - (i + 1).toDouble() / k)).toByte() }
+    }
 }
 
 class Clip(val id: Int, val chan: Long, val startMs: Double, val data: ByteArray)

@@ -53,6 +53,16 @@ internal class Ddc(private val cutHz: Double, private val wantRate: Double, priv
 
     fun maxOut(n: Int) = n / (d1 * d2) + 2
 
+    /** The power gain at [hz] from the wanted frequency (the boxcar and the low-pass together), 1 at 0 Hz. */
+    fun powerGain(hz: Double): Double {
+        val mid = inRate / d1; val w = 2 * PI * hz / mid
+        var re = 0.0; var im = 0.0
+        for (t in h.indices) { re += h[t] * cos(w * t); im -= h[t] * sin(w * t) }
+        val x = PI * hz * d1 / inRate
+        val box = if (d1 > 1 && x != 0.0) sin(x) / (d1 * sin(x / d1)) else 1.0
+        return (re * re + im * im) * box * box
+    }
+
     /** [n] complex samples in; the output goes to [oi]/[oq] from index 0, and the count comes back. */
     fun push(xi: FloatArray, xq: FloatArray, n: Int, oi: FloatArray, oq: FloatArray): Int {
         if (offsetHz != lastOff) { lastOff = offsetHz; val w = -2 * PI * offsetHz / inRate; dr = cos(w); di = sin(w) }
