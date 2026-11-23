@@ -19,7 +19,10 @@ import { SubAudioDecoder } from '../ham/ctcss.js';
 import { CwReader } from '../fleet/rx.js';
 import { HP_RASTER, hpBandOf } from './plan.js';
 import { ClipStore, ClipWriter, CLIP_RATE, planReplay, replayFromPlan, ReplayMixer, type Clip } from './clips.js';
-import { HamTracker, ENV_MS, HEAT_SLOTS, chanKey, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
+import { HamTracker, ENV_MS, HEAT_SLOTS, LINK_CORR, LINK_EDGE_MS, chanKey, envCorr, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
+
+/** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (10 s), and how far either side of the keyup gap the lag is searched (300 ms). */
+export const LINK_LIVE_FRAMES = 30, LINK_LIVE_MAX = 200, LINK_LIVE_LAG = 6;
 
 export const PROBE_RATE = 24_000;
 /** Processor time a second the probes may take, and the cap's bounds. */
@@ -253,7 +256,36 @@ export class HamPlusEngine implements IqProcessor {
   }
   private closeAll(): void { const now = this.nowMs(); for (const o of [...this.opens.values()]) this.close(o, now); }
 
-  /** Which open channels are heard: the followed one alone; else priority ones when open; else all (mix) or the newest. */
+  /** Pairs of open channels (by id) heard carrying the same audio right now: linked repeaters. */
+  private readonly liveLinked = new Set<string>();
+  private linkAt = 0;
+  /** Four times a second: open channels that keyed up together are compared, their audio envelopes at a lag of up to two seconds. */
+  private checkLinks(now: number): void {
+    if (now - this.linkAt < 250) return;
+    this.linkAt = now;
+    const os = [...this.opens.values()].filter(o => o.probe && o.probe.env.length >= LINK_LIVE_FRAMES);
+    const ids = new Set(os.map(o => o.id));
+    for (const k of [...this.liveLinked]) { const [a, b] = k.split('|').map(Number); if (!ids.has(a) || !ids.has(b)) this.liveLinked.delete(k); }
+    for (let i = 0; i < os.length; i++) for (let j = i + 1; j < os.length; j++) {
+      const [x, y] = os[i].startMs <= os[j].startMs ? [os[i], os[j]] : [os[j], os[i]];
+      if (Math.abs(x.hz - y.hz) < 50_000 || y.startMs - x.startMs > LINK_EDGE_MS || x.tileKey === y.tileKey) continue;
+      const key = `${x.id}|${y.id}`; if (this.liveLinked.has(key)) continue;
+      const r = envCorr(Float32Array.from(x.probe!.env.slice(0, LINK_LIVE_MAX)), Float32Array.from(y.probe!.env.slice(0, LINK_LIVE_MAX)), Math.round((y.startMs - x.startMs) / ENV_MS), LINK_LIVE_LAG);
+      if (r >= LINK_CORR) this.liveLinked.add(key);
+    }
+    const tiles = new Set<string>();
+    for (const k of this.liveLinked) { const [a, b] = k.split('|').map(Number), oa = this.opens.get(a), ob = this.opens.get(b); if (oa && ob) tiles.add([oa.tileKey, ob.tileKey].sort().join('|')); }
+    this.tracker.liveLinks = tiles;
+  }
+  /** Two open channels carry the same audio: heard linked right now, or a link learned before. */
+  private linkedNow(a: Open, b: Open): boolean {
+    return this.liveLinked.has(`${a.id}|${b.id}`) || this.liveLinked.has(`${b.id}|${a.id}`) || this.tracker.linked(a.tileKey, b.tileKey);
+  }
+
+  /**
+   * Which open channels are heard: the followed one alone; else priority ones when open; else all (mix) or the newest.
+   * Linked repeaters carry the same voice a little apart, an echo when mixed: only one copy is heard, the stronger.
+   */
   private listenSet(): Open[] {
     const pr = this.tracker.prefs;
     let c = [...this.opens.values()].filter(o => o.probe && !pr.mute.includes(o.tileKey));
@@ -262,11 +294,15 @@ export class HamPlusEngine implements IqProcessor {
     if (pr.hold) return c.filter(o => o.tileKey === pr.hold);
     const pri = c.filter(o => pr.prio.includes(o.tileKey));
     if (pri.length) c = pri;
+    const one: Open[] = [];
+    for (const o of [...c].sort((a, b) => b.snr - a.snr)) if (!one.some(k => this.linkedNow(k, o))) one.push(o);
+    c = one;
     c.sort((a, b) => a.startMs - b.startMs);
     return this.params.mode === 'newest' ? c.slice(-1) : c.slice(-4);
   }
 
   private runProbes(n: number, now: number): void {
+    this.checkLinks(now);
     const listen = this.replay ? [] : this.listenSet();
     this.playing = listen.map(o => o.tileKey);
     const t0 = this.perf();

@@ -68,6 +68,8 @@ export interface HpTxRow {
   /** The talker's own carrier was heard on the repeater's input: they are near. */
   direct: boolean;
   conv: number; recorded: boolean; cw: string;
+  /** The same transmission heard on a linked repeater: the id of the row its conversation shows instead, else 0. */
+  echo?: number;
 }
 export interface HpTile {
   key: string; hz: number; label: string; use: string; kind: string; offset: string;
@@ -76,6 +78,8 @@ export interface HpTile {
   talkMs: number; txs: number; spark: number[]; callsign: string;
   stations: { key: string; label: string; letter: string; color: number; callsign: string; txs: number; offsetHz: number }[];
   net: { control: string; checkins: number } | null; link: number; unrecorded: number;
+  /** The linked repeater this one carries the same audio as (the followed one, else the one on the air, else the latest heard), or 0. */
+  linkWith: number;
   followed: boolean; muted: boolean; prio: boolean;
 }
 export interface HpConv { id: number; key: string; hz: number; startMs: number; endMs: number; live: boolean; txs: number[]; stations: string[]; talkMs: number; net: boolean }
@@ -249,14 +253,25 @@ export class HamTracker {
     return Math.abs(this.inputOf(a) - b) < 1_250 || Math.abs(this.inputOf(b) - a) < 1_250 || planInfo(a).offsets.some(o => Math.abs(b - a - o) < 1_250) && this.pairEv.has(`${chanKey(a)}|${chanKey(b)}`) || planInfo(b).offsets.some(o => Math.abs(a - b - o) < 1_250) && this.pairEv.has(`${chanKey(b)}|${chanKey(a)}`);
   }
 
-  /** Link groups: each tile key in a linked network mapped to a group number from 1. */
+  /** Tile pairs ('a|b', sorted) the receiver hears carrying the same audio right now; set by the engine. */
+  liveLinks = new Set<string>();
+  /** Link groups: each tile key in a linked network (learned, or heard linked right now) mapped to a group number from 1. */
   linkGroups(): Map<string, number> {
     const parent = new Map<string, string>();
     const find = (x: string): string => { let p = parent.get(x) ?? x; if (p !== x) { p = find(p); parent.set(x, p); } return p; };
-    for (const k of this.links) { const [a, b] = k.split('|'); parent.set(find(a), find(b)); }
+    const all = [...new Set([...this.links, ...this.liveLinks])].sort();
+    for (const k of all) { const [a, b] = k.split('|'); parent.set(find(a), find(b)); }
     const roots = new Map<string, number>(), out = new Map<string, number>();
-    for (const k of [...this.links].sort()) for (const x of k.split('|')) { const r = find(x); if (!roots.has(r)) roots.set(r, roots.size + 1); out.set(x, roots.get(r)!); }
+    for (const k of all) for (const x of k.split('|')) { const r = find(x); if (!roots.has(r)) roots.set(r, roots.size + 1); out.set(x, roots.get(r)!); }
     return out;
+  }
+  /** Two tiles are a learned link (the same network). */
+  linked(a: string, b: string): boolean {
+    if (a === b || !this.links.size) return false;
+    const parent = new Map<string, string>();
+    const find = (x: string): string => { let p = parent.get(x) ?? x; if (p !== x) { p = find(p); parent.set(x, p); } return p; };
+    for (const k of this.links) { const [x, y] = k.split('|'); parent.set(find(x), find(y)); }
+    return find(a) === find(b);
   }
 
   /** The station a transmission came from (on an output with its input heard, the input's), and whether direct. */
@@ -291,13 +306,20 @@ export class HamTracker {
     for (let i = this.txs.length - 1; i >= 0 && out.length < max; i--) add(this.txs[i], false);
     // an input transmission shows as the talker on its output: the output's row carries it, the input's row goes
     const shown = out.filter(r => r.hz === r.heardHz || !out.some(o => o.heardHz === r.hz && Math.abs(o.startMs - r.startMs) <= PAIR_START_MS));
-    // conversations: per tile, transmissions with no gap longer than CONV_GAP_MS
-    const byTile = new Map<number, HpTxRow[]>();
-    for (const r of shown) { const k = Math.round(r.hz / 100); byTile.set(k, [...(byTile.get(k) ?? []), r]); }
+    // conversations: per tile (linked repeaters share one), transmissions with no gap longer than CONV_GAP_MS
+    const groups = this.linkGroups();
+    const byTile = new Map<string, HpTxRow[]>();
+    for (const r of shown) { const g = groups.get(chanKey(r.hz)), k = g ? `g${g}` : chanKey(r.hz); byTile.set(k, [...(byTile.get(k) ?? []), r]); }
     for (const list of byTile.values()) {
       list.sort((a, b) => a.startMs - b.startMs);
       let conv = 0, end = -Infinity;
       for (const r of list) { if (r.startMs - end > CONV_GAP_MS) conv = r.id; r.conv = conv; end = Math.max(end, r.live ? now : r.endMs); }
+      // one transmission heard on two linked repeaters is one bubble: the stronger copy
+      for (const r of list) for (const o of list) {
+        if (o === r || o.hz === r.hz || r.echo || o.echo || Math.abs(o.startMs - r.startMs) > LINK_EDGE_MS) continue;
+        const keep = o.peakDb > r.peakDb || (o.peakDb === r.peakDb && o.id < r.id) ? o : r;
+        (keep === o ? r : o).echo = keep.id;
+      }
     }
     return shown.sort((a, b) => b.startMs - a.startMs);
   }
@@ -305,13 +327,14 @@ export class HamTracker {
   convs(rows: HpTxRow[], now: number): HpConv[] {
     const by = new Map<number, HpConv>();
     for (const r of [...rows].reverse()) {
+      if (r.echo) continue;
       let c = by.get(r.conv);
       if (!c) { c = { id: r.conv, key: chanKey(r.hz), hz: r.hz, startMs: r.startMs, endMs: 0, live: false, txs: [], stations: [], talkMs: 0, net: false }; by.set(r.conv, c); }
       c.txs.push(r.id); c.live ||= r.live; c.endMs = Math.max(c.endMs, r.live ? now : r.endMs); c.talkMs += (r.live ? now : r.endMs) - r.startMs;
       if (r.station && !c.stations.includes(r.station)) c.stations.push(r.station);
     }
     const out = [...by.values()].sort((a, b) => b.endMs - a.endMs);
-    for (const c of out) c.net = !!netOf(rows.filter(r => r.conv === c.id).sort((a, b) => a.startMs - b.startMs).map(r => r.station));
+    for (const c of out) c.net = !!netOf(rows.filter(r => r.conv === c.id && !r.echo).sort((a, b) => a.startMs - b.startMs).map(r => r.station));
     return out;
   }
 
@@ -340,10 +363,17 @@ export class HamTracker {
         live: !!lo, snrDb: lo?.snrDb ?? 0, levelDb: lo?.levelDb ?? -90, openMs: lo ? now - lo.startMs : 0, lastMs: lo ? now : Math.max(c.lastMs, ci?.lastMs ?? 0),
         talkMs: c.talkMs + (lo ? now - lo.startMs : 0), txs: c.txs + (lo ? 1 : 0), spark, callsign: c.callsign,
         stations: sts.map(s => ({ key: s.key, label: this.stationLabel(s), letter: s.letter, color: LETTERS.indexOf(s.letter), callsign: s.callsign, txs: s.txs, offsetHz: Math.round(s.offsetHz) })),
-        net: net ? { control: this.stationLabel(st) || net.control, checkins: net.checkins } : null, link: groups.get(k) ?? 0,
+        net: net ? { control: this.stationLabel(st) || net.control, checkins: net.checkins } : null, link: groups.get(k) ?? 0, linkWith: 0,
         unrecorded: c.unrecorded + (ci?.unrecorded ?? 0) + lv.filter(l => !l.recorded).length,
         followed: this.prefs.hold === k, muted: this.prefs.mute.includes(k), prio: this.prefs.prio.includes(k),
       });
+    }
+    // a linked repeater names the one it carries the same audio as: the followed one, else the one on the air, else the latest heard
+    for (const t of out) {
+      if (!t.link) continue;
+      const others = out.filter(o => o !== t && o.link === t.link);
+      const w = others.find(o => o.followed) ?? others.filter(o => o.live).sort((a, b) => b.snrDb - a.snrDb)[0] ?? others.sort((a, b) => b.lastMs - a.lastMs)[0];
+      t.linkWith = w?.hz ?? 0;
     }
     const rank = (t: HpTile) => t.followed ? 0 : t.live ? 1 : 2;
     return out.filter(t => t.followed || t.live || t.txs > 0).sort((a, b) => rank(a) - rank(b) || b.lastMs - a.lastMs || a.hz - b.hz).slice(0, max);

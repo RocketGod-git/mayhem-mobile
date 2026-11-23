@@ -9,7 +9,7 @@
  *  - When the conversation is long over, AUTO and SCAN go on as they always did.
  *  - A followed channel pins its window outright (tuned there first when it is elsewhere), with no looks. Unfollowing
  *    goes back to the window the scan was on and the scan carries on from there as it was.
- *  - KEEP SCANNING ([skip]) leaves a busy window at once; that window waits [HP_SKIP_MS] before AUTO comes back to it,
+ *  - SCAN ON ([skip]) leaves a busy window at once; that window waits [HP_SKIP_MS] before AUTO comes back to it,
  *    unless a followed or priority channel is in it.
  * Data channels (APRS) and muted channels hold nothing.
  */
@@ -22,7 +22,7 @@ export const HP_HANG_MS = 15_000, HP_HANG_MIN_MS = 8_000, HP_HANG_MAX_MS = 45_00
 export const HP_CONVO_MS = 90_000;
 /** A look at another window while a conversation is waited for. */
 export const HP_LOOK_MS = 5_000;
-/** A window left with KEEP SCANNING is not come back to for this long. */
+/** A window left with SCAN ON is not come back to for this long. */
 export const HP_SKIP_MS = 120_000;
 
 /** One transmission as the scan sees it: the snapshot's rows. */
@@ -58,13 +58,13 @@ export class HpScan {
   /** When the phase's wait ends (the hang, the wait between looks, the look), 0 when it has none. */
   until = 0;
   private home = -1; private homeHz = 0; private homeUntil = 0; private waitUntil = 0; private lookUntil = 0; private lookIdx = -1; private scanUntil = 0;
-  /** Which window each transmission was heard on (-1: none that counts), the ones whose end is counted, each window's channels' last ends and gaps, the windows left with KEEP SCANNING. */
+  /** Which window each transmission was heard on (-1: none that counts), the ones whose end is counted, each window's channels' last ends and gaps, the windows left with SCAN ON. */
   private readonly win = new Map<number, number>();
   private readonly ended = new Set<number>();
   private readonly lastEnd = new Map<number, Map<number, number>>();
   private readonly gaps = new Map<number, number[]>();
   private readonly cool = new Map<number, number>();
-  /** The channels busy on a window left with KEEP SCANNING, and until when they hold nothing (a neighbor window hears them too). */
+  /** The channels busy on a window left with SCAN ON, and until when they hold nothing (a neighbor window hears them too). */
   private skipped: { hz: number; until: number }[] = [];
 
   /** The window's hang: twice the median gap between keyups heard there, 8 to 45 s; 15 s until three gaps are known. */
@@ -72,7 +72,7 @@ export class HpScan {
     const g = this.gaps.get(w);
     return g && g.length >= 3 ? Math.min(HP_HANG_MAX_MS, Math.max(HP_HANG_MIN_MS, 2 * median(g))) : HP_HANG_MS;
   }
-  /** The scan is staying for traffic, so KEEP SCANNING can move it on. */
+  /** The scan is staying for traffic, so SCAN ON can move it on. */
   get busy(): boolean { return this.phase === 'live' || this.phase === 'hang' || this.phase === 'home'; }
   cooled(w: number, now: number): boolean { return (this.cool.get(w) ?? 0) > now; }
 
@@ -98,7 +98,7 @@ export class HpScan {
     if (this.win.size > 3_000) for (const k of [...this.win.keys()].slice(0, 1_000)) { this.win.delete(k); this.ended.delete(k); }
   }
 
-  /** The next window after [from] that is not [skip] and not waiting out KEEP SCANNING, or -1. */
+  /** The next window after [from] that is not [skip] and not waiting out SCAN ON, or -1. */
   private next(n: number, from: number, skip: number, now: number): number {
     for (let k = 1; k <= n; k++) { const i = (from + k) % n; if (i !== skip && !this.cooled(i, now)) return i; }
     return -1;
@@ -120,7 +120,8 @@ export class HpScan {
     }
     if (n < 2) { this.phase = ''; return auto.step(v); }
     const here = rows.filter(r => this.win.get(r.id) === idx);
-    const live = here.filter(r => r.live).sort((a, b) => b.startMs - a.startMs)[0];
+    // the channel named is the one being heard, else the newest to key up
+    const live = here.find(r => r.live && String(r.id) === v.playing) ?? here.filter(r => r.live).sort((a, b) => b.startMs - a.startMs)[0];
     if (live) {
       this.phase = 'live'; this.hz = live.hz; this.until = 0;
       this.home = idx; this.homeHz = live.hz; this.homeUntil = now + HP_CONVO_MS; this.waitUntil = 0; this.lookUntil = 0;
@@ -152,7 +153,7 @@ export class HpScan {
     this.home = -1; this.lookUntil = 0; this.waitUntil = 0; this.phase = ''; this.hz = 0; this.until = 0;
     let to = auto.step(v);
     if (to !== null && this.cooled(to, now)) {
-      // a window left with KEEP SCANNING waits out its time: the scan steps past it, a window a dwell
+      // a window left with SCAN ON waits out its time: the scan steps past it, a window a dwell
       to = null;
       if (now >= this.scanUntil) { const nx = this.next(n, idx, idx, now); if (nx >= 0) { to = nx; this.scanUntil = now + AUTO_SURVEY_MS[0]; } }
       auto.moved(to ?? idx, now);
@@ -161,7 +162,7 @@ export class HpScan {
   }
 
   /**
-   * KEEP SCANNING: off the busy window at once, to the next one. The window left waits [HP_SKIP_MS] before AUTO comes
+   * SCAN ON: off the busy window at once, to the next one. The window left waits [HP_SKIP_MS] before AUTO comes
    * back to it, unless a channel in [keep] (the followed and priority ones) is in it. A transmission open on it ends at
    * the retune and is kept like any other.
    */

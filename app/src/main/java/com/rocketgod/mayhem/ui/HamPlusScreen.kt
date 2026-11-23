@@ -184,7 +184,7 @@ fun HamPlusScreen(accent: Color) {
             else Lamp("LISTENING", Palette.accent2, blink = true)
         },
         controls = {
-            // the AUTO control carries the scan's action: KEEP SCANNING off a busy window, RESUME SCAN out of a follow
+            // the AUTO control carries the scan's action: SCAN ON off a busy window, RESUME out of a follow
             HpSeg(HamPlus.BANDS.map { it.second }, HamPlus.BANDS.indexOfFirst { it.first == band }, accent, Modifier.fillMaxWidth(), autoLabel = HamPlus.autoLabel()) {
                 if (it == 0) HamPlus.autoTap() else HamPlus.setBand(HamPlus.BANDS[it].first)
             }
@@ -286,15 +286,17 @@ private fun HpDim(text: String, modifier: Modifier = Modifier) {
 private fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, autoLabel: String = "", onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(9f))
+    // a narrow phone (320 dp): closer padding, so the six bands keep one line
+    val pad = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 360) 5f else 10f
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         labels.forEachIndexed { i, label ->
             val on = i == selected
             val act = i == 0 && autoLabel.isNotEmpty() && autoLabel != label
             val col = if (on) inkOn(accent) else if (act) Palette.ink else Palette.muted
             val box = Modifier.clip(shape).background(if (on) accent else Palette.surface).border(1.dp, if (on || act) accent else Palette.line, shape).clickable { onPick(i) }
-                .padding(horizontal = d.dp(10f), vertical = d.dp(7f))
+                .padding(horizontal = d.dp(pad), vertical = d.dp(7f))
             if (i == 0 && autoLabel.isNotEmpty()) {
-                // AUTO, KEEP SCANNING and RESUME SCAN share one place as wide as the longest, so the row never moves
+                // AUTO, SCAN ON and RESUME share one place as wide as the longest, so the row never moves
                 Box(box, contentAlignment = Alignment.Center) {
                     for (l in HP_AUTO_LABELS) Text(l, color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
                         modifier = Modifier.alpha(if (l == autoLabel) 1f else 0f))
@@ -337,8 +339,10 @@ private fun HpHead(s: HpSnap?, now: Long, accent: Color) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
             Text(bandName, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
             if (s != null && s.rate > 0) Text("%.3f–%.3f MHz".format(java.util.Locale.US, s.spanLo / 1e6, s.spanHi / 1e6), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
-            Text(HamPlus.scanText(now), color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
         }
+        // the scan's line has a line of its own, one line high whatever it says, so nothing under it moves as it changes
+        Text(HamPlus.scanText(now), color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             val nets = tiles.count { it.net != null }
             val onAir = s?.stats?.onAir ?: 0
@@ -352,7 +356,7 @@ private fun HpHead(s: HpSnap?, now: Long, accent: Color) {
             }
         }
         if (s != null) Text("demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${if (s.stats.costMs > 0) " (%.0f ms a channel a second)".format(java.util.Locale.US, s.stats.costMs) else ""} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB",
-            color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 2)
+            color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -367,9 +371,12 @@ private fun HpListenRow(hold: String, mode: HpParams.Mode, accent: Color) {
             .padding(horizontal = d.dp(10f), vertical = d.dp(6f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Text(if (on) "FOLLOWING" else "HEARING", color = if (on) accent else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(8f), letterSpacing = 1.5.sp)
             Text(if (on) hpMhz(hold.toLongOrNull() ?: 0) else "ALL", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), maxLines = 1, softWrap = false)
+            // one line, cut short on a narrow phone, and a chip no taller than the line: the row keeps one height
+            // whether a channel is followed or not, so nothing under it moves
             Text(if (on) "only this channel is heard" else if (mode == HpParams.Mode.MIX) "every channel at once" else "the newest to key up",
-                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, modifier = Modifier.weight(1f))
-            if (on) ToggleBox("ALL", false, accent) { HamPlus.follow("") }
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (on) Text("ALL", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
+                modifier = Modifier.clip(RoundedCornerShape(50)).border(1.dp, Palette.line, RoundedCornerShape(50)).clickable { HamPlus.follow("") }.padding(horizontal = d.dp(9f), vertical = d.dp(1f)))
         }
         HpSeg(listOf("MIX", "NEWEST"), if (mode == HpParams.Mode.MIX) 0 else 1, accent, Modifier) { HamPlus.setMode(if (it == 0) HpParams.Mode.MIX else HpParams.Mode.NEWEST) }
     }
@@ -527,7 +534,7 @@ private fun HpTileBox(modifier: Modifier, t: HpTile, playing: Boolean, now: Long
             HpSpark(t.spark, if (t.live) Palette.ok else accent, Modifier.fillMaxWidth().height(d.dp(14f)))
             val badges = buildList {
                 t.net?.let { add("NET · ${it.control}" to accent) }
-                if (t.link > 0) add("LINKED ${t.link}" to Palette.accent2)
+                if (t.link > 0) add((if (t.linkWith > 0) "LINKED WITH ${hpMhz(t.linkWith)}" else "LINKED ${t.link}") to Palette.accent2)
                 if (t.inputHz > 0 && now - t.nearMs < 600_000) add("NEARBY" to Palette.ok)
                 if (t.followed) add("FOLLOWING" to accent)
                 if (t.prio) add("PRIORITY" to Palette.accent2)
@@ -686,7 +693,8 @@ private fun LazyListScope.talkItems(s: HpSnap?, now: Long, accent: Color, acts: 
 private fun HpConvCard(convId: Int, s: HpSnap, now: Long, accent: Color, acts: HpActs) {
     val d = rememberDims()
     val c = s.convs.firstOrNull { it.id == convId } ?: return
-    val rows = s.rows.filter { it.conv == convId }.sortedBy { it.startMs }
+    // a transmission heard on two linked repeaters is one bubble (the echo row is the other copy)
+    val rows = s.rows.filter { it.conv == convId && it.echo == 0 }.sortedBy { it.startMs }
     val t = s.tiles.firstOrNull { it.hz == c.hz }
     var all by remember(convId) { mutableStateOf(false) }
     val shown = if (all) rows else rows.takeLast(8)

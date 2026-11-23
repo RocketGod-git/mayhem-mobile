@@ -48,11 +48,17 @@ export function hpScanText(n: number, autoBand: boolean, mode: string, idx: numb
     default: return `${autoBand ? 'AUTO SCAN' : 'SCAN'} · ${idx + 1}/${n} · NEXT ${left} s`;
   }
 }
-/** The AUTO control's label: RESUME SCAN while a channel is followed, KEEP SCANNING while the scan stays for traffic, else AUTO. */
-export function hpAutoLabel(n: number, phase: string): string {
-  if (n < 2) return 'AUTO';
-  return phase === 'follow' ? 'RESUME SCAN' : phase === 'live' || phase === 'hang' || phase === 'home' ? 'KEEP SCANNING' : 'AUTO';
+/**
+ * The AUTO tab's label. While AUTO is the band it is also the scan's control: RESUME while a channel is followed (a tap
+ * unfollows), SCAN ON while the scan stays for traffic (a tap moves on), else AUTO. With a single band picked it is only
+ * the AUTO band, so one tap always selects AUTO.
+ */
+export function hpAutoLabel(n: number, phase: string, band = 'AUTO'): string {
+  if (n < 2 || band !== 'AUTO') return 'AUTO';
+  return phase === 'follow' ? 'RESUME' : phase === 'live' || phase === 'hang' || phase === 'home' ? 'SCAN ON' : 'AUTO';
 }
+/** Every label the AUTO tab can show: the tab keeps the width of the longest, so the row never moves. */
+export const HP_AUTO_LABELS = ['AUTO', 'SCAN ON', 'RESUME'];
 
 /** The counters, the span and the scan, and the demodulators in use against what the device keeps up with. */
 export function hpHeadHtml(s: HpSnap | null, scan: string): string {
@@ -106,7 +112,7 @@ export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHt
   return `<div class="fl-tilegrid hp-grid">${all}${tiles.map(t => {
     const playing = s?.playing.includes(t.key);
     const line = [hpTone(t.tone, t.dcs), t.kind === 'REPEATER' || t.use === 'output' ? t.offset : ''].filter(Boolean).join(' · ');
-    const badges = [t.net ? pill(`NET · ${t.net.control}`, 'acc') : '', t.link ? pill(`LINKED ${t.link}`, 'warm') : '', t.inputHz && now - t.nearMs < 600_000 ? pill('NEARBY', 'ok') : '',
+    const badges = [t.net ? pill(`NET · ${t.net.control}`, 'acc') : '', t.link ? pill(t.linkWith ? `LINKED WITH ${hpMhz(t.linkWith)}` : `LINKED ${t.link}`, 'warm') : '', t.inputHz && now - t.nearMs < 600_000 ? pill('NEARBY', 'ok') : '',
       t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED`, 'bad') : ''].join('');
     return `<div class="fl-tile hp-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${hpMhz(t.hz)}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small class="${t.callsign ? 'call' : ''}">${esc(hpName(t))}</small>`
@@ -131,7 +137,8 @@ function bubbleHtml(r: HpTxRow, side: number, repeater: boolean, now: number): s
 /** A conversation: its channel and name, NET when it is one, replay of all of it, and the last bubbles (or all). */
 export function hpConvHtml(s: HpSnap, convId: number, now: number, all: boolean): string {
   const c = s.convs.find(x => x.id === convId); if (!c) return '';
-  const rows = s.rows.filter(r => r.conv === convId).sort((a, b) => a.startMs - b.startMs);
+  // a transmission heard on two linked repeaters is one bubble (the echo row is the other copy)
+  const rows = s.rows.filter(r => r.conv === convId && !r.echo).sort((a, b) => a.startMs - b.startMs);
   const t = s.tiles.find(x => x.hz === c.hz), rep = t?.kind === 'REPEATER';
   const shown = all ? rows : rows.slice(-8);
   const order = [...new Set(rows.map(r => r.station).filter(Boolean))];

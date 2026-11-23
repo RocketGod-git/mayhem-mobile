@@ -196,17 +196,17 @@ object HamPlus {
         val f = followScan
         return hpScanText(sc.windows.size, _band.value == "AUTO", sc.mode, sc.idx, max(0L, (sc.dwellEnd - now + 999) / 1000), f.phase, f.hz, max(0L, (f.until - now + 999) / 1000))
     }
-    /** The AUTO control's label: AUTO, KEEP SCANNING while the scan stays for traffic, RESUME SCAN while a channel is followed. */
-    fun autoLabel(): String = hpAutoLabel(_scan.value.windows.size, followScan.phase)
-    /** A tap on the AUTO control: KEEP SCANNING moves off the busy window, RESUME SCAN unfollows, else the AUTO band. */
+    /** The AUTO control's label: AUTO, SCAN ON while the scan stays for traffic, RESUME while a channel is followed. */
+    fun autoLabel(): String = hpAutoLabel(_scan.value.windows.size, followScan.phase, _band.value)
+    /** A tap on the AUTO control: SCAN ON moves off the busy window, RESUME unfollows, else the AUTO band. */
     fun autoTap() {
         when (autoLabel()) {
-            "KEEP SCANNING" -> skip()
-            "RESUME SCAN" -> follow("")
+            "SCAN ON" -> skip()
+            "RESUME" -> follow("")
             else -> setBand("AUTO")
         }
     }
-    /** KEEP SCANNING: off the busy window at once; it waits a while before AUTO comes back, unless a followed or priority channel is in it. */
+    /** SCAN ON: off the busy window at once; it waits a while before AUTO comes back, unless a followed or priority channel is in it. */
     fun skip() {
         val a = auto ?: return
         val sc = _scan.value; val now = System.currentTimeMillis()

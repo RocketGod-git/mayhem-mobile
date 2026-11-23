@@ -17,7 +17,7 @@ import kotlin.math.roundToLong
  *  - When the conversation is long over, AUTO and SCAN go on as they always did.
  *  - A followed channel pins its window outright (tuned there first when it is elsewhere), with no looks. Unfollowing
  *    goes back to the window the scan was on and the scan carries on from there as it was.
- *  - KEEP SCANNING ([HpScan.skip]) leaves a busy window at once; that window waits [HP_SKIP_MS] before AUTO comes back
+ *  - SCAN ON ([HpScan.skip]) leaves a busy window at once; that window waits [HP_SKIP_MS] before AUTO comes back
  *    to it, unless a followed or priority channel is in it.
  * Data channels (APRS) and muted channels hold nothing.
  */
@@ -31,7 +31,7 @@ const val HP_GAP_MAX_MS = 60_000L
 const val HP_CONVO_MS = 90_000L
 /** A look at another window while a conversation is waited for. */
 const val HP_LOOK_MS = 5_000L
-/** A window left with KEEP SCANNING is not come back to for this long. */
+/** A window left with SCAN ON is not come back to for this long. */
 const val HP_SKIP_MS = 120_000L
 
 /** One transmission as the scan sees it: the snapshot's rows. */
@@ -77,14 +77,19 @@ fun hpScanText(n: Int, autoBand: Boolean, mode: String, idx: Int, left: Long, ph
     }
 }
 
-/** The AUTO control's label: RESUME SCAN while a channel is followed, KEEP SCANNING while the scan stays for traffic, else AUTO. */
-fun hpAutoLabel(n: Int, phase: String): String = when {
-    n < 2 -> "AUTO"
-    phase == "follow" -> "RESUME SCAN"
-    phase == "live" || phase == "hang" || phase == "home" -> "KEEP SCANNING"
+/**
+ * The AUTO tab's label. While AUTO is the band it is also the scan's control: RESUME while a channel is followed (a tap
+ * unfollows), SCAN ON while the scan stays for traffic (a tap moves on), else AUTO. With a single band picked it is only
+ * the AUTO band, so one tap always selects AUTO.
+ */
+fun hpAutoLabel(n: Int, phase: String, band: String = "AUTO"): String = when {
+    n < 2 || band != "AUTO" -> "AUTO"
+    phase == "follow" -> "RESUME"
+    phase == "live" || phase == "hang" || phase == "home" -> "SCAN ON"
     else -> "AUTO"
 }
-val HP_AUTO_LABELS = listOf("AUTO", "KEEP SCANNING", "RESUME SCAN")
+/** Every label the AUTO tab can show: the tab keeps the width of the longest, so the row never moves. */
+val HP_AUTO_LABELS = listOf("AUTO", "SCAN ON", "RESUME")
 
 private fun chanOf(hz: Long): Long = (hz / 5_000.0).roundToLong()
 private fun median(a: Collection<Long>): Double { val s = a.sorted(); val m = s.size / 2; return if (s.size % 2 == 1) s[m].toDouble() else (s[m - 1] + s[m]) / 2.0 }
@@ -103,13 +108,13 @@ class HpScan {
     @Volatile var until = 0L
         private set
     private var home = -1; private var homeHz = 0L; private var homeUntil = 0L; private var waitUntil = 0L; private var lookUntil = 0L; private var lookIdx = -1; private var scanUntil = 0L
-    /** Which window each transmission was heard on (-1: none that counts), the ones whose end is counted, each window's channels' last ends and gaps, the windows left with KEEP SCANNING. */
+    /** Which window each transmission was heard on (-1: none that counts), the ones whose end is counted, each window's channels' last ends and gaps, the windows left with SCAN ON. */
     private val win = LinkedHashMap<Int, Int>()
     private val ended = HashSet<Int>()
     private val lastEnd = HashMap<Int, HashMap<Long, Long>>()
     private val gaps = HashMap<Int, ArrayDeque<Long>>()
     private val cool = HashMap<Int, Long>()
-    /** The channels busy on a window left with KEEP SCANNING, and until when they hold nothing (a neighbor window hears them too). */
+    /** The channels busy on a window left with SCAN ON, and until when they hold nothing (a neighbor window hears them too). */
     private var skipped = listOf<Pair<Long, Long>>()
 
     /** The window's hang: twice the median gap between keyups heard there, 8 to 45 s; 15 s until three gaps are known. */
@@ -117,7 +122,7 @@ class HpScan {
         val g = gaps[w]
         return if (g != null && g.size >= 3) (2 * median(g)).roundToLong().coerceIn(HP_HANG_MIN_MS, HP_HANG_MAX_MS) else HP_HANG_MS
     }
-    /** The scan is staying for traffic, so KEEP SCANNING can move it on. */
+    /** The scan is staying for traffic, so SCAN ON can move it on. */
     val busy: Boolean get() = phase == "live" || phase == "hang" || phase == "home"
     fun cooled(w: Int, now: Long): Boolean = (cool[w] ?: 0L) > now
 
@@ -142,7 +147,7 @@ class HpScan {
         if (win.size > 3_000) win.keys.take(1_000).forEach { win.remove(it); ended.remove(it) }
     }
 
-    /** The next window after [from] that is not [skip] and not waiting out KEEP SCANNING, or -1. */
+    /** The next window after [from] that is not [skip] and not waiting out SCAN ON, or -1. */
     private fun next(n: Int, from: Int, skip: Int, now: Long): Int {
         for (k in 1..n) { val i = ((from + k) % n + n) % n; if (i != skip && !cooled(i, now)) return i }
         return -1
@@ -165,7 +170,8 @@ class HpScan {
         }
         if (n < 2) { phase = ""; return auto.step(v) }
         val here = rows.filter { win[it.id] == idx }
-        val live = here.filter { it.live }.maxByOrNull { it.startMs }
+        // the channel named is the one being heard, else the newest to key up
+        val live = here.firstOrNull { it.live && it.id.toString() == v.playing } ?: here.filter { it.live }.maxByOrNull { it.startMs }
         if (live != null) {
             phase = "live"; hz = live.hz; until = 0
             home = idx; homeHz = live.hz; homeUntil = now + HP_CONVO_MS; waitUntil = 0; lookUntil = 0
@@ -197,7 +203,7 @@ class HpScan {
         home = -1; lookUntil = 0; waitUntil = 0; phase = ""; hz = 0; until = 0
         var to = auto.step(v)
         if (to != null && cooled(to, now)) {
-            // a window left with KEEP SCANNING waits out its time: the scan steps past it, a window a dwell
+            // a window left with SCAN ON waits out its time: the scan steps past it, a window a dwell
             to = null
             if (now >= scanUntil) { val nx = next(n, idx, idx, now); if (nx >= 0) { to = nx; scanUntil = now + AUTO_SURVEY_MS[0] } }
             auto.moved(to ?: idx, now)
@@ -206,7 +212,7 @@ class HpScan {
     }
 
     /**
-     * KEEP SCANNING: off the busy window at once, to the next one. The window left waits [HP_SKIP_MS] before AUTO comes
+     * SCAN ON: off the busy window at once, to the next one. The window left waits [HP_SKIP_MS] before AUTO comes
      * back to it, unless a channel in [keep] (the followed and priority ones) is in it. A transmission open on it ends at
      * the retune and is kept like any other.
      */
