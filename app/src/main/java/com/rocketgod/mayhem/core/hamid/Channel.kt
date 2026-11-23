@@ -12,6 +12,8 @@ class HamIdSnap(
     val station: String, val repeater: String, val position: Position?,
     /** DTMF digits heard on the channel so far; D-STAR header flags and what its URCALL asks for. */
     val dtmf: String = "", val dstarFlags: DStarFlags? = null, val urcall: UrCall? = null,
+    /** Analog signaling, one summary per transmission: CW ID, selcall, MDC-1200, sub-audio, courtesy tone, tail. */
+    val analog: AnalogSnap? = null,
 )
 
 class HamIdChannel(val fs: Double) {
@@ -20,10 +22,13 @@ class HamIdChannel(val fs: Double) {
     val dstar = DStarReceiver()
     val ysf = YsfReceiver()
     val dtmf = DtmfDecoder(fs)
+    val analog = AnalogSignaling(fs)
     init { mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it) } }
-    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset() }
+    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset()
+        analog.reset() }
     /** Discriminator samples, radians per sample, at [fs]. */
-    fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n) }
+    fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n)
+        analog.push(disc, n) }
 
     fun snapshot(): HamIdSnap {
         val r = mode.result()
@@ -52,6 +57,7 @@ class HamIdChannel(val fs: Double) {
         }
         val h = ds?.header
         return HamIdSnap(m, r.hits, if (m == "DMR") dmr.cc else -1, slots, ds, ys, station, repeater, position, dtmf.text,
-            h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) })
+            h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) },
+            analog = analog.snapshot())
     }
 }
