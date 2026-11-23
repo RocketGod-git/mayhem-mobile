@@ -1,19 +1,24 @@
 /**
- * The web side of the HAM+ identity directories: downloads, their caches and refresh. The parsing and matching are in
- * dsp/hamid/directory.ts and resolve.ts, shared with Android and iOS.
+ * The web side of the HAM+ identity directories: downloads, their caches and refresh, worldwide sources only. The
+ * parsing and matching are in dsp/hamid/directory.ts and resolve.ts, shared with Android and iOS.
  *
- *   · talkgroups: Brandmeister's list (about 17 KB compressed, browsers may fetch it), refreshed weekly;
- *   · PAPA's repeater lists: their published sheet, refreshed weekly (a copy ships in the app);
- *   · callsigns heard on the air: callook.info, one at a time, cached 30 days (a miss for a day);
- *   · DMR radio IDs: radioid.net's list sends no CORS header, so a browser cannot download it from there; the web
- *     app reads it from a mirror URL when one is set, or a file the user picks. Android and iOS download it directly.
+ * What a browser may read (each sends a CORS header):
+ *   · Brandmeister's talkgroup names (about 17 KB compressed), refreshed weekly;
+ *   · Brandmeister's device list, the DMR repeaters with their frequencies, color codes and positions (about 1.1 MB
+ *     compressed), refreshed weekly in the browser's cache storage;
+ *   · callook.info for US callsigns heard on the air, one at a time, cached 30 days (a miss for a day).
+ * What it may not: radioid.net (user list and per-ID answers) and HearHam send no CORS header. A radio ID is looked
+ * up one at a time through [radioIdUrl], radioid.net's own per-ID address by default (readable where the page runs
+ * without the browser's CORS rule, as in the desktop shell), or a pass-through the app is pointed at; a user list
+ * file the user picks also works. Android and iOS download radioid.net's list and HearHam's directory directly.
  */
 import { HamIdResolver } from './dsp/hamid/resolve.js';
-import { RadioIdTable, parsePapaCsv, parseCallook } from './dsp/hamid/directory.js';
-import { PAPA_ANALOG_URL, PAPA_DMR_URL } from './dsp/hamid/papa-seed.js';
+import { RadioIdTable, parseCallook, parseBrandmeisterDevices, parseRadioIdApi } from './dsp/hamid/directory.js';
 
 export const BM_TALKGROUPS_URL = 'https://api.brandmeister.network/v2/talkgroup';
+export const BM_DEVICES_URL = 'https://api.brandmeister.network/v2/device';
 export const RADIOID_USERS_URL = 'https://radioid.net/static/user.csv';
+export const RADIOID_API_URL = (id: number) => `https://radioid.net/api/dmr/user/?id=${id}`;
 export const CALLOOK_URL = (call: string) => `https://callook.info/${encodeURIComponent(call)}/json`;
 const WEEK = 7 * 86_400_000, MONTH = 30 * 86_400_000, DAY = 86_400_000;
 
@@ -26,11 +31,24 @@ async function getText(url: string, ms = 10_000): Promise<string> {
   const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
   try { const r = await fetch(url, { signal: ctl.signal }); if (!r.ok) throw new Error(`HTTP ${r.status}`); return await r.text(); } finally { clearTimeout(t); }
 }
-/** A cached download: the stored copy while it is younger than [maxAge], else a fresh one (the stored copy if that fails). */
+/** A small cached download in local storage: the stored copy while younger than [maxAge], else a fresh one. */
 async function cached(key: string, url: string, maxAge: number): Promise<string | null> {
   const s = store(key);
   if (s && Date.now() - s.at < maxAge) return s.text;
   try { const t = await getText(url); keep(key, t); return t; } catch { return s?.text ?? null; }
+}
+/** A large cached download in the browser's cache storage (local storage holds a few MB at most). */
+async function cachedLarge(url: string, maxAge: number): Promise<string | null> {
+  let cache: Cache | null = null;
+  try { cache = await caches.open('hamid'); } catch { cache = null; }
+  const hit = cache ? await cache.match(url).catch(() => undefined) : undefined;
+  const at = Number(hit?.headers.get('x-hamid-at') ?? 0);
+  if (hit && Date.now() - at < maxAge) return hit.text();
+  try {
+    const t = await getText(url, 60_000);
+    if (cache) await cache.put(url, new Response(t, { headers: { 'x-hamid-at': String(Date.now()), 'content-type': 'application/json' } })).catch(() => undefined);
+    return t;
+  } catch { return hit ? hit.text() : null; }
 }
 
 /** Brandmeister's talkgroup names into the resolver. */
@@ -39,22 +57,34 @@ export async function loadTalkgroups(res: HamIdResolver): Promise<number> {
   try { return t ? res.talkgroups.addBrandmeister(t) : 0; } catch { return 0; }
 }
 
-/** PAPA's lists, fresher than the copy in the app when the download works. */
-export async function loadPapa(res: HamIdResolver): Promise<boolean> {
-  const [a, d] = await Promise.all([cached('hamid.papa.analog', PAPA_ANALOG_URL, WEEK), cached('hamid.papa.dmr', PAPA_DMR_URL, WEEK)]);
-  const ra = a ? parsePapaCsv(a, 'analog') : [], rd = d ? parsePapaCsv(d, 'dmr') : [];
-  if (ra.length < 5 || rd.length < 5) return false;
-  const list = res.repeaters.list;
-  for (let i = list.length - 1; i >= 0; i--) if (list[i].network === 'PAPA') list.splice(i, 1);
-  res.repeaters.add(ra); res.repeaters.add(rd);
-  return true;
+/** Brandmeister's DMR repeaters into the resolver's directory. */
+export async function loadBrandmeisterRepeaters(res: HamIdResolver): Promise<number> {
+  const t = await cachedLarge(BM_DEVICES_URL, WEEK);
+  if (!t) return 0;
+  try { const list = parseBrandmeisterDevices(t); res.repeaters.add(list); return list.length; } catch { return 0; }
 }
 
-/** The DMR user list from a URL the browser may read (a mirror, or a blob: URL of a file the user picked). */
+/** A user list from a URL the browser may read (a blob: URL of a file the user picked, or a permitted mirror). */
 export async function loadRadioIds(res: HamIdResolver, url: string): Promise<number> {
   const text = await getText(url, 60_000);
   res.users = RadioIdTable.fromCsv(text);
   return res.users.size;
+}
+
+/** Looks up to [max] of the DMR radio IDs the resolver has queued, one request each, cached 30 days (a miss a day). */
+export async function lookupWantedIds(res: HamIdResolver, max = 2, radioIdUrl = RADIOID_API_URL): Promise<number> {
+  let n = 0;
+  for (const id of [...res.wantedIds].slice(0, max)) {
+    const key = `hamid.id.${id}`, s = store(key);
+    if (s && Date.now() - s.at < (s.text ? MONTH : DAY)) { const u = s.text ? parseRadioIdApi(s.text) : null; if (u) res.addUser(u); else res.wantedIds.delete(id); continue; }
+    try {
+      const t = await getText(radioIdUrl(id));
+      const u = parseRadioIdApi(t);
+      keep(key, u ? t : '');
+      if (u) { res.addUser(u); n++; } else res.wantedIds.delete(id);
+    } catch { /* blocked or offline: try again later */ }
+  }
+  return n;
 }
 
 /** Looks up to [max] of the callsigns the resolver has queued (US callsigns, callook.info). */

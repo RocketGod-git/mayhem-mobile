@@ -6,14 +6,13 @@
  */
 import type { HamIdSnap } from './channel.js';
 import type { Position } from './gps.js';
-import { RadioIdTable, TalkgroupTable, RepeaterDirectory, lookupKey, parsePapaCsv, type CallRecord, type Repeater, type RadioIdUser } from './directory.js';
-import { PAPA_ANALOG_CSV, PAPA_DMR_CSV } from './papa-seed.js';
+import { RadioIdTable, TalkgroupTable, RepeaterDirectory, lookupKey, type CallRecord, type Repeater, type RadioIdUser } from './directory.js';
 
 export interface Station { callsign: string; radioId: number; alias: string; name: string; city: string; state: string; country: string; source: string }
 export interface Resolved {
   mode: string;
   station: Station | null;
-  /** "PAPA Chat" (with [tgId]); for a private DMR call, the called radio. */
+  /** The talkgroup name (with [tgId]); for a private DMR call, the called radio. */
   talkgroup: string; tgId: number; group: boolean; called: Station | null;
   /** The repeater as the signal names it (D-STAR RPT1 and module, Fusion downlink, CW ID). */
   repeater: string;
@@ -32,18 +31,23 @@ export class HamIdResolver {
   readonly calls = new Map<string, CallRecord>();
   /** Callsigns heard on the air that no table has: the platform may look these up and add the answers. */
   readonly wanted = new Set<string>();
+  /** DMR radio IDs answered one at a time (the web's per-ID lookups), and those heard that nothing has answered yet. */
+  readonly ids = new Map<number, RadioIdUser>();
+  readonly wantedIds = new Set<number>();
 
-  constructor(seedPapa = true) {
-    if (seedPapa) { this.repeaters.add(parsePapaCsv(PAPA_ANALOG_CSV, 'analog')); this.repeaters.add(parsePapaCsv(PAPA_DMR_CSV, 'dmr')); }
-  }
   addCall(r: CallRecord): void { this.calls.set(r.callsign, r); this.wanted.delete(r.callsign); }
+  addUser(u: RadioIdUser): void { this.ids.set(u.id, u); this.wantedIds.delete(u.id); }
 
   private fromUser(st: Station, u: RadioIdUser): void {
     st.callsign = st.callsign || u.callsign; st.radioId = st.radioId || u.id; st.name = u.name; st.city = u.city; st.state = u.state; st.country = u.country; st.source = 'radioid.net';
   }
   /** Fills a station's name and place from what it is called: the offline tables, else queues the callsign. */
   private fill(st: Station): void {
-    if (st.radioId && this.users) { const u = this.users.byId(st.radioId); if (u) { this.fromUser(st, u); return; } }
+    if (st.radioId) {
+      const u = this.users?.byId(st.radioId) ?? this.ids.get(st.radioId);
+      if (u) { this.fromUser(st, u); return; }
+      if (!this.users) this.wantedIds.add(st.radioId);
+    }
     const key = lookupKey(st.callsign);
     if (!key) return;
     const rec = this.calls.get(key);

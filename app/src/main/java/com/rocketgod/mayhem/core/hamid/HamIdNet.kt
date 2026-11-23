@@ -14,12 +14,14 @@ import java.util.zip.GZIPOutputStream
  *   · DMR radio IDs: radioid.net's user list (about 17 MB, 4.5 MB as sent compressed), kept compressed on disk and
  *     parsed into the compact table on first use;
  *   · talkgroups: Brandmeister's list (45 KB);
- *   · PAPA's repeater lists (a copy also ships in the app);
+ *   · repeaters: HearHam's directory (10 MB, 1.1 MB compressed) and Brandmeister's devices (the DMR repeaters);
  *   · callsigns heard on the air: callook.info, one at a time, kept 30 days (a miss for a day).
  */
 object HamIdNet {
     const val BM_TALKGROUPS_URL = "https://api.brandmeister.network/v2/talkgroup"
     const val RADIOID_USERS_URL = "https://radioid.net/static/user.csv"
+    const val BM_DEVICES_URL = "https://api.brandmeister.network/v2/device"
+    const val HEARHAM_URL = "https://hearham.com/api/repeaters/v1"
     fun callookUrl(call: String) = "https://callook.info/${URLEncoder.encode(call, "UTF-8")}/json"
     private const val DAY = 86_400_000L; private const val WEEK = 7 * DAY; private const val MONTH = 30 * DAY
 
@@ -58,13 +60,13 @@ object HamIdNet {
         val t = cached(File(dir, "hamid/bm-talkgroups.json"), BM_TALKGROUPS_URL, WEEK) ?: return 0
         return try { res.talkgroups.addBrandmeister(t) } catch (_: Exception) { 0 }
     }
-    fun loadPapa(res: HamIdResolver, dir: File): Boolean {
-        val a = cached(File(dir, "hamid/papa-analog.csv"), PAPA_ANALOG_URL, WEEK); val d = cached(File(dir, "hamid/papa-dmr.csv"), PAPA_DMR_URL, WEEK)
-        val ra = if (a != null) parsePapaCsv(a, "analog") else emptyList(); val rd = if (d != null) parsePapaCsv(d, "dmr") else emptyList()
-        if (ra.size < 5 || rd.size < 5) return false
-        res.repeaters.list.removeAll { it.network == "PAPA" }
-        res.repeaters.add(ra); res.repeaters.add(rd)
-        return true
+    fun loadHearHam(res: HamIdResolver, dir: File): Int {
+        val t = cached(File(dir, "hamid/hearham.json.gz"), HEARHAM_URL, WEEK, gzip = true) ?: return 0
+        return try { parseHearHam(t).also { res.repeaters.add(it) }.size } catch (_: Exception) { 0 }
+    }
+    fun loadBrandmeisterRepeaters(res: HamIdResolver, dir: File): Int {
+        val t = cached(File(dir, "hamid/bm-devices.json.gz"), BM_DEVICES_URL, WEEK, gzip = true) ?: return 0
+        return try { parseBrandmeisterDevices(t).also { res.repeaters.add(it) }.size } catch (_: Exception) { 0 }
     }
     /** Looks up to [max] of the callsigns the resolver has queued. */
     fun lookupWanted(res: HamIdResolver, dir: File, max: Int = 2): Int {

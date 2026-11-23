@@ -7,9 +7,9 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Who and what an identity names, offline first: DMR radio IDs (radioid.net's user list), talkgroup names
- * (Brandmeister's and the PAPA system's), and repeaters (PAPA's published lists, HearHam, Brandmeister devices)
- * matched by frequency with the tone or color code heard. Parsers and lookups only. The same as the web's
+ * Who and what an identity names, from worldwide sources only: DMR radio IDs (radioid.net's user list or per-ID
+ * answers), talkgroup names (Brandmeister's), and repeaters (HearHam, Brandmeister devices) matched by frequency,
+ * the tone or color code heard choosing between sites that share one. Parsers and lookups only. The same as the web's
  * dsp/hamid/directory.ts.
  */
 fun parseCsv(text: String): List<List<String>> {
@@ -75,16 +75,8 @@ class RadioIdTable private constructor(private val ids: IntArray, private val of
 }
 
 data class Talkgroup(val id: Int, val name: String, val network: String)
-/** The PAPA system's DMR talkgroups as papasys.com/papa-repeaters/dmr/ lists them (read 2026-11-22). */
-val PAPA_TALKGROUPS = listOf(
-    Talkgroup(3106, "California", "PAPA"), Talkgroup(31061, "California-1", "PAPA"), Talkgroup(93, "North America", "PAPA"), Talkgroup(91, "Worldwide", "PAPA"),
-    Talkgroup(310, "TAC 310", "PAPA"), Talkgroup(3100, "USA", "PAPA"), Talkgroup(31077, "PAPA Chat", "PAPA"), Talkgroup(2, "Local", "PAPA"),
-    Talkgroup(31078, "PAPA Bridge", "PAPA"), Talkgroup(31066, "SoCal", "PAPA"), Talkgroup(31067, "SoCal 1", "PAPA"),
-)
-
 class TalkgroupTable {
     private val nets = LinkedHashMap<String, HashMap<Int, String>>()
-    init { addList(PAPA_TALKGROUPS) }
     fun addList(list: List<Talkgroup>) { for (t in list) nets.getOrPut(t.network) { HashMap() }[t.id] = t.name }
     /** Brandmeister's /v2/talkgroup answer: { "91": "World-wide", ... }. */
     fun addBrandmeister(json: String): Int {
@@ -93,7 +85,7 @@ class TalkgroupTable {
         addList(list); return list.size
     }
     fun lookup(id: Int, network: String = ""): Talkgroup? {
-        val order = (listOf(network, "PAPA", "Brandmeister") + nets.keys).filter { it.isNotEmpty() }.distinct()
+        val order = (listOf(network, "Brandmeister") + nets.keys).filter { it.isNotEmpty() }.distinct()
         for (n in order) { val name = nets[n]?.get(id); if (name != null) return Talkgroup(id, name, n) }
         return null
     }
@@ -112,22 +104,6 @@ fun parseFreqField(s: String): Pair<Long, Long>? {
     val split = if (out < 148_000_000) 600_000L else if (out < 230_000_000) 1_600_000L else if (out < 470_000_000) 5_000_000L else 12_000_000L
     val inp = when (m.groupValues[2]) { "-" -> out - split; "+" -> out + split; else -> out }
     return out to inp
-}
-
-private val CC_RE = Regex("CC\\s*(\\d+)", RegexOption.IGNORE_CASE)
-fun parsePapaCsv(text: String, kind: String): List<Repeater> {
-    val rows = parseCsv(text); val out = ArrayList<Repeater>()
-    for (r in 1 until rows.size) {
-        val c = rows[r]; val name = clean(c.getOrNull(1)); val f = parseFreqField(c.getOrNull(3) ?: "")
-        if (name.isEmpty() || f == null) continue
-        val rp = Repeater()
-        rp.name = if (kind == "dmr") "PAPA $name" else name; rp.site = clean(c.getOrNull(2)); rp.status = clean(c.getOrNull(0))
-        rp.outputHz = f.first; rp.inputHz = f.second; rp.network = "PAPA"; rp.source = "papasys.com"
-        if (kind == "dmr") { rp.mode = "DMR"; rp.cc = CC_RE.find(c.getOrNull(4) ?: "")?.groupValues?.get(1)?.toInt() ?: -1 }
-        else { rp.mode = "FM"; rp.tone = clean(c.getOrNull(4)) }
-        out.add(rp)
-    }
-    return out
 }
 
 private fun jstr(o: JSONObject, k: String) = if (o.isNull(k)) "" else o.opt(k)?.toString() ?: ""
@@ -202,13 +178,22 @@ class RepeaterDirectory {
             if (!tone.isNullOrEmpty() && r.tone.isNotEmpty() && toneEq(r.tone, tone)) s += 100 else if (!tone.isNullOrEmpty() && r.tone.isNotEmpty()) s -= 50
             if (cc != null && cc >= 0 && r.cc >= 0) s += if (r.cc == cc) 100 else -50
             if (r.status == "Down") s -= 10
-            if (r.network == "PAPA") s += 5
             val d = near(r); if (d.isFinite()) s -= min(40.0, d / 10)
             return s
         }
         return kept.map { it to score(it) }.sortedWith(compareByDescending<Pair<Repeater, Double>> { it.second }.thenBy { it.first.name }).map { it.first }
     }
     fun byCall(call: String): Repeater? { val c = call.trim().uppercase(); return list.firstOrNull { it.call == c } }
+}
+
+/** radioid.net's per-ID answer (/api/dmr/user/?id=): its first result, or null. */
+fun parseRadioIdApi(json: String): RadioIdUser? {
+    val r = JSONObject(json).optJSONArray("results")?.optJSONObject(0) ?: return null
+    val id = if (r.has("radio_id")) r.optInt("radio_id") else r.optInt("id")
+    val call = clean(jstr(r, "callsign"))
+    if (id <= 0 || call.isEmpty()) return null
+    val name = listOf(clean(if (r.has("fname")) jstr(r, "fname") else jstr(r, "name")), clean(jstr(r, "surname"))).filter { it.isNotEmpty() }.joinToString(" ")
+    return RadioIdUser(id, call.uppercase(), name, clean(jstr(r, "city")), clean(jstr(r, "state")), clean(jstr(r, "country")))
 }
 
 data class CallRecord(val callsign: String, val name: String, val city: String, val state: String, val grid: String, val lat: Double, val lon: Double, val licenseClass: String, val source: String)

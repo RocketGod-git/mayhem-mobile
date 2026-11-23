@@ -1,7 +1,8 @@
 /**
- * Who and what an identity names, offline first: DMR radio IDs (radioid.net's user list), talkgroup names
- * (Brandmeister's list and the PAPA system's own), and repeaters (PAPA's published lists, HearHam's directory,
- * Brandmeister's devices) matched by frequency with the tone or color code heard. Parsers and lookups only: the
+ * Who and what an identity names, from worldwide sources only: DMR radio IDs (radioid.net's user list, or its
+ * per-ID answers), talkgroup names (Brandmeister's list), and repeaters (HearHam's directory, Brandmeister's devices)
+ * matched by frequency, with the tone or color code heard choosing between sites that share one. A local system
+ * appears only where these sources list it. Parsers and lookups only: the
  * downloads and their caches belong to each platform. Only what was heard on the air is looked up. No DOM.
  */
 
@@ -79,23 +80,9 @@ export class RadioIdTable {
 
 // ------------------------------------------------------------------------------------------------ talkgroups
 export interface Talkgroup { id: number; name: string; network: string }
-/**
- * The PAPA system's DMR talkgroups as papasys.com/papa-repeaters/dmr/ lists them (read 2026-11-22). Time slot 1:
- * California, California-1, North America, Worldwide, TAC 310, USA. Time slot 2: PAPA Chat, Local, PAPA Bridge (the
- * link to the analog repeaters), SoCal, SoCal 1.
- */
-export const PAPA_TALKGROUPS: Talkgroup[] = [
-  { id: 3106, name: 'California', network: 'PAPA' }, { id: 31061, name: 'California-1', network: 'PAPA' },
-  { id: 93, name: 'North America', network: 'PAPA' }, { id: 91, name: 'Worldwide', network: 'PAPA' },
-  { id: 310, name: 'TAC 310', network: 'PAPA' }, { id: 3100, name: 'USA', network: 'PAPA' },
-  { id: 31077, name: 'PAPA Chat', network: 'PAPA' }, { id: 2, name: 'Local', network: 'PAPA' },
-  { id: 31078, name: 'PAPA Bridge', network: 'PAPA' }, { id: 31066, name: 'SoCal', network: 'PAPA' },
-  { id: 31067, name: 'SoCal 1', network: 'PAPA' },
-];
 
 export class TalkgroupTable {
   private readonly nets = new Map<string, Map<number, string>>();
-  constructor() { this.addList(PAPA_TALKGROUPS); }
   addList(list: Talkgroup[]): void { for (const t of list) { let m = this.nets.get(t.network); if (!m) { m = new Map(); this.nets.set(t.network, m); } m.set(t.id, t.name); } }
   /** Brandmeister's /v2/talkgroup answer: { "91": "World-wide", ... }. */
   addBrandmeister(json: string): number {
@@ -105,7 +92,7 @@ export class TalkgroupTable {
   }
   /** A talkgroup's name, from the [network] named first (the repeater's, when it is known), then any other. */
   lookup(id: number, network = ''): Talkgroup | null {
-    const order = [network, 'PAPA', 'Brandmeister', ...this.nets.keys()].filter((n, i, a) => n && a.indexOf(n) === i);
+    const order = [network, 'Brandmeister', ...this.nets.keys()].filter((n, i, a) => n && a.indexOf(n) === i);
     for (const n of order) { const name = this.nets.get(n)?.get(id); if (name) return { id, name, network: n }; }
     return null;
   }
@@ -113,7 +100,7 @@ export class TalkgroupTable {
 
 // ------------------------------------------------------------------------------------------------ repeaters
 export interface Repeater {
-  /** Short name or callsign as the source gives it ("PAPA 01", "WIL", "K6ABC"). */
+  /** Short name or callsign as the source gives it. */
   name: string; call: string; site: string; city: string;
   mode: string; outputHz: number; inputHz: number;
   /** CTCSS tone (Hz) or DCS code ("073 DPL") to access it, color code for DMR (-1 when unknown). */
@@ -129,22 +116,6 @@ export function parseFreqField(s: string): { out: number; inp: number } | null {
   const split = out < 148e6 ? 600_000 : out < 230e6 ? 1_600_000 : out < 470e6 ? 5_000_000 : 12_000_000;
   const inp = m[2] === '-' ? out - split : m[2] === '+' ? out + split : out;
   return { out, inp };
-}
-
-/** The PAPA system's repeater sheet (Status, NAME, Site Link, Frequency, tone or color code, ...). */
-export function parsePapaCsv(text: string, kind: 'analog' | 'dmr'): Repeater[] {
-  const rows = parseCsv(text), out: Repeater[] = [];
-  for (let r = 1; r < rows.length; r++) {
-    const c = rows[r]; const name = clean(c[1]), f = parseFreqField(c[3] ?? '');
-    if (!name || !f) continue;
-    const rp = blankRepeater();
-    rp.name = kind === 'dmr' ? `PAPA ${name}` : name; rp.site = clean(c[2]); rp.status = clean(c[0]);
-    rp.outputHz = f.out; rp.inputHz = f.inp; rp.network = 'PAPA'; rp.source = 'papasys.com';
-    if (kind === 'dmr') { rp.mode = 'DMR'; const m = /CC\s*(\d+)/i.exec(c[4] ?? ''); rp.cc = m ? parseInt(m[1], 10) : -1; }
-    else { rp.mode = 'FM'; rp.tone = clean(c[4]); }
-    out.push(rp);
-  }
-  return out;
 }
 
 /** HearHam's repeater list (https://hearham.com/api/repeaters/v1): frequency and offset in Hz. */
@@ -188,7 +159,7 @@ export class RepeaterDirectory {
   add(rs: Repeater[]): void { this.list.push(...rs); }
   /**
    * Repeaters whose output is within [tolHz] of [hz], best first: a matching tone or color code, then a listed
-   * position nearer [lat, lon], then PAPA's own list. [tone] is the CTCSS (Hz, as text) or "073 DPL".
+   * position nearer [lat, lon]. [tone] is the CTCSS (Hz, as text) or "073 DPL".
    */
   at(hz: number, opts: { tolHz?: number; tone?: string; cc?: number; mode?: string; lat?: number; lon?: number; maxKm?: number } = {}): Repeater[] {
     const tol = opts.tolHz ?? 2_500;
@@ -201,7 +172,6 @@ export class RepeaterDirectory {
       if (opts.tone && r.tone && toneEq(r.tone, opts.tone)) s += 100; else if (opts.tone && r.tone) s -= 50;
       if (opts.cc !== undefined && opts.cc >= 0 && r.cc >= 0) s += r.cc === opts.cc ? 100 : -50;
       if (r.status === 'Down') s -= 10;
-      if (r.network === 'PAPA') s += 5;
       const d = near(r); if (Number.isFinite(d)) s -= Math.min(40, d / 10);
       return s;
     };
@@ -227,6 +197,16 @@ export function toneEq(a: string, b: string): boolean {
 }
 
 // ------------------------------------------------------------------------------------------------ callsigns
+/** radioid.net's per-ID answer (/api/dmr/user/?id=): its first result, or null. */
+export function parseRadioIdApi(json: string): RadioIdUser | null {
+  const j = JSON.parse(json) as { results?: { id?: number; radio_id?: number; callsign?: string; fname?: string; name?: string; surname?: string; city?: string; state?: string; country?: string }[] };
+  const r = j.results?.[0];
+  const id = Number(r?.radio_id ?? r?.id);
+  if (!r || !(id > 0) || !clean(r.callsign)) return null;
+  const name = [clean(r.fname ?? r.name), clean(r.surname)].filter(Boolean).join(' ');
+  return { id, callsign: clean(r.callsign).toUpperCase(), name, city: clean(r.city), state: clean(r.state), country: clean(r.country) };
+}
+
 /** What callook.info's JSON says about a US callsign. */
 export interface CallRecord { callsign: string; name: string; city: string; state: string; grid: string; lat: number; lon: number; licenseClass: string; source: string }
 export function parseCallook(json: string): CallRecord | null {

@@ -18,15 +18,18 @@ class Resolved(val mode: String) {
 }
 class ChannelContext(val hz: Long, val tone: String? = null, val cwId: String? = null, val lat: Double? = null, val lon: Double? = null)
 
-class HamIdResolver(seedPapa: Boolean = true) {
+class HamIdResolver {
     var users: RadioIdTable? = null
     val talkgroups = TalkgroupTable()
     val repeaters = RepeaterDirectory()
     val calls = HashMap<String, CallRecord>()
     val wanted = LinkedHashSet<String>()
+    /** DMR radio IDs answered one at a time, and those heard that nothing has answered yet. */
+    val ids = HashMap<Int, RadioIdUser>()
+    val wantedIds = LinkedHashSet<Int>()
 
-    init { if (seedPapa) { repeaters.add(parsePapaCsv(PAPA_ANALOG_CSV, "analog")); repeaters.add(parsePapaCsv(PAPA_DMR_CSV, "dmr")) } }
     fun addCall(r: CallRecord) { calls[r.callsign] = r; wanted.remove(r.callsign) }
+    fun addUser(u: RadioIdUser) { ids[u.id] = u; wantedIds.remove(u.id) }
 
     private fun fromUser(st: Station, u: RadioIdUser) {
         if (st.callsign.isEmpty()) st.callsign = u.callsign
@@ -35,7 +38,11 @@ class HamIdResolver(seedPapa: Boolean = true) {
     }
     private fun fill(st: Station) {
         val us = users
-        if (st.radioId != 0 && us != null) { us.byId(st.radioId)?.let { fromUser(st, it); return } }
+        if (st.radioId != 0) {
+            val u = us?.byId(st.radioId) ?: ids[st.radioId]
+            if (u != null) { fromUser(st, u); return }
+            if (us == null) wantedIds.add(st.radioId)
+        }
         val key = lookupKey(st.callsign)
         if (key.isEmpty()) return
         calls[key]?.let { st.name = it.name; st.city = it.city; st.state = it.state; if (st.country.isEmpty()) st.country = "United States"; st.source = it.source; return }
