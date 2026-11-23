@@ -10,6 +10,8 @@ class HamIdSnap(
     val dmrCc: Int, val dmrSlots: List<DmrSlotId>?,
     val dstar: DStarId?, val ysf: YsfId?,
     val station: String, val repeater: String, val position: Position?,
+    /** DTMF digits heard on the channel so far; D-STAR header flags and what its URCALL asks for. */
+    val dtmf: String = "", val dstarFlags: DStarFlags? = null, val urcall: UrCall? = null,
 )
 
 class HamIdChannel(val fs: Double) {
@@ -17,10 +19,11 @@ class HamIdChannel(val fs: Double) {
     val dmr = DmrIdentity()
     val dstar = DStarReceiver()
     val ysf = YsfReceiver()
+    val dtmf = DtmfDecoder(fs)
     init { mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it) } }
-    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset() }
+    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset() }
     /** Discriminator samples, radians per sample, at [fs]. */
-    fun push(disc: FloatArray, n: Int) = mode.push(disc, n)
+    fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n) }
 
     fun snapshot(): HamIdSnap {
         val r = mode.result()
@@ -47,6 +50,8 @@ class HamIdChannel(val fs: Double) {
             }
             "YSF" -> { ys = ysf.id.copy(); station = ys.src; repeater = ys.down; position = ys.position }
         }
-        return HamIdSnap(m, r.hits, if (m == "DMR") dmr.cc else -1, slots, ds, ys, station, repeater, position)
+        val h = ds?.header
+        return HamIdSnap(m, r.hits, if (m == "DMR") dmr.cc else -1, slots, ds, ys, station, repeater, position, dtmf.text,
+            h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) })
     }
 }

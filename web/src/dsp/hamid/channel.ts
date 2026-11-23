@@ -9,6 +9,7 @@ import { DmrIdentity, type DmrSlotId } from './dmrid.js';
 import { DStarReceiver, repeaterOf, type DStarId } from './dstar.js';
 import { YsfReceiver, type YsfId } from './ysf.js';
 import type { Position } from './gps.js';
+import { DtmfDecoder, dstarFlags, urcallCommand, type DStarFlags, type UrCall } from './signaling.js';
 
 export interface HamIdSnap {
   mode: HamMode;
@@ -22,6 +23,10 @@ export interface HamIdSnap {
   /** The repeater the signal names: D-STAR RPT1 (with its module), the Fusion downlink callsign. */
   repeater: string;
   position: Position | null;
+  /** DTMF digits heard on the channel so far. */
+  dtmf: string;
+  /** D-STAR: the header's flags and what its URCALL asks for. */
+  dstarFlags: DStarFlags | null; urcall: UrCall | null;
 }
 
 export class HamIdChannel {
@@ -29,13 +34,14 @@ export class HamIdChannel {
   readonly dmr = new DmrIdentity();
   readonly dstar = new DStarReceiver();
   readonly ysf = new YsfReceiver();
+  readonly dtmf: DtmfDecoder;
   constructor(readonly fs: number) {
-    this.mode = new ModeDetector(fs);
+    this.mode = new ModeDetector(fs); this.dtmf = new DtmfDecoder(fs);
     this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); };
   }
-  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); }
+  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); }
   /** Discriminator samples, radians per sample, at [fs]. */
-  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); }
+  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); }
 
   snapshot(): HamIdSnap {
     const r = this.mode.result();
@@ -43,7 +49,7 @@ export class HamIdChannel {
     if (this.ysf.id.frames > 0) mode = 'YSF';
     else if (this.dstar.id.headers > 0 || this.dstar.id.frames >= 20) mode = 'D-STAR';
     else if (this.dmr.checked > 0) mode = 'DMR';
-    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null };
+    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));
       snap.dmr = { cc: this.dmr.cc, slots };
@@ -52,6 +58,7 @@ export class HamIdChannel {
     } else if (mode === 'D-STAR') {
       const id = { ...this.dstar.id }; snap.dstar = id;
       if (id.header) {
+        snap.dstarFlags = dstarFlags(id.header.flag1); snap.urcall = urcallCommand(id.header.ur);
         snap.station = id.header.my + (id.header.suffix ? '/' + id.header.suffix : '');
         const rp = repeaterOf(id.header.rpt1);
         if (rp.call && rp.call !== 'DIRECT') snap.repeater = rp.call + (rp.module ? ' ' + rp.module : '');
