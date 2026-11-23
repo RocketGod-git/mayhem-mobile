@@ -277,18 +277,22 @@ fun mdcCrc(bytes: IntArray, n: Int): Int {
     return (c xor 0xffff) and 0xffff
 }
 private val MDC_LABELS = mapOf(0x01 to "PTT ID", 0x00 to "emergency", 0x20 to "emergency ACK", 0x63 to "radio check")
-private class MdcBlock(val bytes: IntArray, val variant: Int)
-private fun mdcBlock(b: IntArray, at: Int, want: Int): MdcBlock? {
+/**
+ * One 112-bit MDC block, laid out as the Mayhem MDC-1200 transmitter (ui_mdc_tx) sends it: seven data bytes (op, arg,
+ * unit ID high and low, the CRC low and high, a zero) then seven parity bytes, each byte least significant bit first,
+ * parity bit n the XOR of data bits n, n-2, n-5 and n-6; coded bit p goes out as bit (p mod 7) * 16 + p / 7. The CRC
+ * decides; a block whose parity disagrees in more than 8 places is refused as well.
+ */
+private fun mdcBlock(b: IntArray, at: Int): IntArray? {
     if (at + 112 > b.size) return null
     val e = IntArray(112)
-    for (v in 0 until 8) {
-        if (want >= 0 && v != want) continue
-        for (i in 0 until 112) e[if (v and 1 != 0) (i % 7) * 16 + i / 7 else (i % 16) * 7 + i / 16] = b[at + i]
-        val bytes = IntArray(7)
-        for (j in 0 until 7) { var x = 0; for (k in 0 until 8) { val bit = e[2 * (8 * j + k) + ((v shr 1) and 1)]; x = x or if (v and 4 != 0) bit shl (7 - k) else bit shl k }; bytes[j] = x }
-        if (mdcCrc(bytes, 4) == (bytes[4] or (bytes[5] shl 8))) return MdcBlock(bytes, v)
-    }
-    return null
+    for (i in 0 until 112) e[(i % 16) * 7 + i / 16] = b[at + i]
+    val bytes = IntArray(7)
+    for (j in 0 until 7) { var x = 0; for (k in 0 until 8) x = x or (e[8 * j + k] shl k); bytes[j] = x }
+    if (mdcCrc(bytes, 4) != (bytes[4] or (bytes[5] shl 8))) return null
+    var bad = 0
+    for (n in 0 until 56) { val p = e[n] xor (if (n >= 2) e[n - 2] else 0) xor (if (n >= 5) e[n - 5] else 0) xor (if (n >= 6) e[n - 6] else 0); if (p != e[56 + n]) bad++ }
+    return if (bad <= 8) bytes else null
 }
 private fun fskDemod(y: FloatArray, from: Int, to: Int, rate: Double, centerHz: Double, bwHz: Double): DoubleArray {
     val n = to - from; val a = 1 - exp(-2 * PI * bwHz / rate); val w = -2 * PI * centerHz / rate; val dr = cos(w); val di = sin(w)
@@ -321,11 +325,11 @@ fun decodeMdc(y: FloatArray, from: Int, to: Int, rate: Double, t0S: Double): Lis
                 while (q < 40 && (err <= 2 || errInv <= 2)) { if (b[k - 40 + q] != MDC_SYNC[q]) err++ else errInv++; q++ }
                 if (err > 2 && errInv > 2) continue
                 val bits = if (err <= 2) b else IntArray(b.size) { b[it] xor 1 }
-                val blk = mdcBlock(bits, k, -1) ?: continue
-                val op = blk.bytes[0]; val arg = blk.bytes[1]; val hi = blk.bytes[2]; val lo = blk.bytes[3]
-                val second = mdcBlock(bits, k + 112, blk.variant)
+                val blk = mdcBlock(bits, k) ?: continue
+                val op = blk[0]; val arg = blk[1]; val hi = blk[2]; val lo = blk[3]
+                val second = mdcBlock(bits, k + 112)
                 out.add(MdcPacket(op, arg, ((hi shl 8) or lo).toString(16).uppercase().padStart(4, '0'), op == 0x00, MDC_LABELS[op] ?: "",
-                    second?.bytes?.take(4) ?: emptyList(), t0S + (from + (k - 40) * sps) / rate))
+                    second?.take(4) ?: emptyList(), t0S + (from + (k - 40) * sps) / rate))
                 skipUntil = k + if (second != null) 224 else 112
             }
             if (out.isNotEmpty()) break
@@ -336,11 +340,11 @@ fun decodeMdc(y: FloatArray, from: Int, to: Int, rate: Double, t0S: Double): Lis
 }
 
 // ------------------------------------------------------------------------------------------------ one transmission
-private class Frames(val nF: Int, val E: DoubleArray, val kp: IntArray, val fq: DoubleArray, val hi: DoubleArray, val tonal: BooleanArray, val data: BooleanArray, val pitches: List<Double>)
+private class Frames(val nF: Int, val E: DoubleArray, val kp: IntArray, val fq: DoubleArray, val hi: DoubleArray, val tonal: BooleanArray, val data: BooleanArray, val fsk: BooleanArray, val pitches: List<Double>)
 
 private fun frames(y: FloatArray, rate: Double): Frames {
     val binHz = rate / N; val nF = if (y.size >= N) (y.size - N) / H + 1 else 0
-    val E = DoubleArray(nF); val kp = IntArray(nF); val fq = DoubleArray(nF); val hi = DoubleArray(nF); val tonal = BooleanArray(nF); val data = BooleanArray(nF)
+    val E = DoubleArray(nF); val kp = IntArray(nF); val fq = DoubleArray(nF); val hi = DoubleArray(nF); val tonal = BooleanArray(nF); val data = BooleanArray(nF); val fsk = BooleanArray(nF)
     val re = DoubleArray(N); val im = DoubleArray(N); val p = DoubleArray(HALF + 1)
     val kLo = ceil(300 / binHz).toInt(); val kHi = min(HALF - 2, floor(3400 / binHz).toInt())
     val dLo = ceil(900 / binHz).toInt(); val dHi = min(HALF - 1, floor(2700 / binHz).toInt())
@@ -359,6 +363,7 @@ private fun frames(y: FloatArray, rate: Double): Frames {
         var fb = 0.0; var fh = 0.0; for (k in dLo..dHi) { fb += p[k]; if (k * binHz > 2150) fh += p[k] }
         hi[t] = if (e > 0) fh / e else 0.0
         data[t] = e > 1e-15 && pk + pk2 < 0.8 * e && fb >= 0.75 * e
+        fsk[t] = e > 1e-15 && fb >= 0.75 * e
         for (k in cLo..cHi) {
             val on = p[k] > 1e-15 && p[k] >= p[k - 1] && p[k] >= p[k + 1] && p[k] > 10 * (p[k - 2] + p[k + 2])
             if (on) {
@@ -374,7 +379,7 @@ private fun frames(y: FloatArray, rate: Double): Frames {
     cand.sortWith(compareBy<Pair<Int, Double>> { -it.second }.thenBy { it.first })
     val pitches = ArrayList<Double>(); val taken = ArrayList<Int>()
     for ((k, _) in cand) { if (taken.any { abs(it - k) <= 1 }) continue; taken.add(k); pitches.add((k + dSum[k] / max(1, onCnt[k])) * binHz); if (pitches.size >= 3) break }
-    return Frames(nF, E, kp, fq, hi, tonal, data, pitches)
+    return Frames(nF, E, kp, fq, hi, tonal, data, fsk, pitches)
 }
 
 private fun toneSegments(y: FloatArray, rate: Double, fr: Frames): MutableList<ToneSeg> {
@@ -570,16 +575,16 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
         val mdc = ArrayList<MdcPacket>(); val data = ArrayList<DataBurst>()
         t = 0
         while (t < fr.nF) {
-            if (!fr.data[t]) { t++; continue }
-            var u = t + 1; var gap = 0; var cnt = 1
-            while (u < fr.nF && gap < 25) { if (fr.data[u]) { gap = 0; cnt++ } else gap++; u++ }
+            if (!fr.fsk[t]) { t++; continue }
+            var u = t + 1; var gap = 0; var cnt = 1; var strict = if (fr.data[t]) 1 else 0
+            while (u < fr.nF && gap < 25) { if (fr.fsk[u]) { gap = 0; cnt++; if (fr.data[u]) strict++ } else gap++; u++ }
             u -= gap
             if (cnt >= 10 && cnt >= 0.6 * (u - t)) {
-                val from = max(0, t * H - 4 * H); val to = min(y.size, u * H + N + 4 * H)
+                val from = max(0, t * H - 24 * H); val to = min(y.size, u * H + N + 24 * H)
                 val got = decodeMdc(y, from, to, rate, startS)
                 if (got.isNotEmpty()) mdc.addAll(got)
-                else {
-                    var hs = 0.0; var hn = 0; for (j in t until u) if (fr.data[j]) { hs += fr.hi[j]; hn++ }
+                else if (strict >= 10 && strict >= 0.5 * cnt) {
+                    var hs = 0.0; var hn = 0; for (j in t until u) if (fr.fsk[j]) { hs += fr.hi[j]; hn++ }
                     data.add(DataBurst(if (hs / hn > 0.08) 2400 else 1200, jsr((u - t) * H * 1000 / rate).toInt(), startS + ft(t)))
                 }
             }

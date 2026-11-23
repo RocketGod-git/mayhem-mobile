@@ -18,11 +18,10 @@
  *     sized to the speed. A word counts only when it is a plausible amateur callsign (optionally /R or another
  *     suffix), with a confidence from the timing fit and the line's clarity;
  *   · MDC-1200: 1200 baud FFSK (1200 and 1800 Hz), its 40-bit sync 07 09 2A 44 6F (or its complement), the 112
- *     coded bits deinterleaved on the 16 by 7 grid, the 56 data bits (op, arg, unit ID, CRC-16 reflected with
- *     final inversion over the first four bytes, little-endian) checked by that CRC. The convolutional parity
- *     is not used, and the deinterleaving order, bit order and differential coding are each tried both ways, so
- *     only the CRC decides. Other 1200 or 2400 baud bursts are reported by rate (FleetSync uses these rates; its
- *     framing has no published description, so its IDs are not read);
+ *     coded bits laid out as the Mayhem MDC-1200 transmitter sends them (seven data bytes: op, arg, unit ID and
+ *     the CRC-16, reflected with final inversion over the first four bytes; then seven parity bytes), checked by
+ *     the CRC and the parity. Tones to bits are tried straight and differential, both polarities. Other 1200 or
+ *     2400 baud bursts are reported by rate (FleetSync uses these rates; its framing is not read yet);
  *   · sub-audio: the CTCSS tone by Goertzel over the transmission, its reverse burst (120 or 180 degree phase
  *     step held until the tone ends) against the phase line before it, DCS by the HAM receiver's own decoder and
  *     its turn-off code (134.4 Hz, where DCS data has a spectral null, in the last 150 to 200 ms);
@@ -288,18 +287,22 @@ export function mdcCrc(bytes: ArrayLike<number>, n: number): number {
   return (c ^ 0xffff) & 0xffff;
 }
 const MDC_LABELS: Record<number, string> = { 0x01: 'PTT ID', 0x00: 'emergency', 0x20: 'emergency ACK', 0x63: 'radio check' };
-/** One 112-bit MDC block: every deinterleaving, bit order and data position tried, the CRC decides. */
-function mdcBlock(b: Uint8Array, at: number, want: number): { bytes: number[]; variant: number } | null {
+/**
+ * One 112-bit MDC block, laid out as the Mayhem MDC-1200 transmitter (ui_mdc_tx) sends it: seven data bytes (op, arg,
+ * unit ID high and low, the CRC low and high, a zero) then seven parity bytes, each byte least significant bit first,
+ * parity bit n the XOR of data bits n, n-2, n-5 and n-6; coded bit p goes out as bit (p mod 7) * 16 + p / 7. The CRC
+ * decides; a block whose parity disagrees in more than 8 places is refused as well.
+ */
+function mdcBlock(b: Uint8Array, at: number): number[] | null {
   if (at + 112 > b.length) return null;
   const e = new Uint8Array(112);
-  for (let v = 0; v < 8; v++) {
-    if (want >= 0 && v !== want) continue;
-    for (let i = 0; i < 112; i++) e[(v & 1) ? (i % 7) * 16 + Math.floor(i / 7) : (i % 16) * 7 + Math.floor(i / 16)] = b[at + i];
-    const bytes: number[] = [];
-    for (let j = 0; j < 7; j++) { let x = 0; for (let k = 0; k < 8; k++) { const bit = e[2 * (8 * j + k) + ((v >> 1) & 1)]; x |= (v & 4) ? bit << (7 - k) : bit << k; } bytes.push(x); }
-    if (mdcCrc(bytes, 4) === (bytes[4] | (bytes[5] << 8))) return { bytes, variant: v };
-  }
-  return null;
+  for (let i = 0; i < 112; i++) e[(i % 16) * 7 + Math.floor(i / 16)] = b[at + i];
+  const bytes: number[] = [];
+  for (let j = 0; j < 7; j++) { let x = 0; for (let k = 0; k < 8; k++) x |= e[8 * j + k] << k; bytes.push(x); }
+  if (mdcCrc(bytes, 4) !== (bytes[4] | (bytes[5] << 8))) return null;
+  let bad = 0;
+  for (let n = 0; n < 56; n++) { const p = e[n] ^ (n >= 2 ? e[n - 2] : 0) ^ (n >= 5 ? e[n - 5] : 0) ^ (n >= 6 ? e[n - 6] : 0); if (p !== e[56 + n]) bad++; }
+  return bad <= 8 ? bytes : null;
 }
 /**
  * The audio FM demodulated around [centerHz] (three one-pole stages of [bwHz]), as the running sum of the
@@ -336,10 +339,10 @@ export function decodeMdc(y: Float32Array, from: number, to: number, rate: numbe
         for (let j = 0; j < 40 && (err <= 2 || errInv <= 2); j++) { if (b[k - 40 + j] !== MDC_SYNC[j]) err++; else errInv++; }
         if (err > 2 && errInv > 2) continue;
         const bits = err <= 2 ? b : b.map(x => x ^ 1);
-        const blk = mdcBlock(bits, k, -1); if (!blk) continue;
-        const [op, arg, hi, lo] = blk.bytes;
-        const second = mdcBlock(bits, k + 112, blk.variant);
-        out.push({ op, arg, unit: ((hi << 8) | lo).toString(16).toUpperCase().padStart(4, '0'), emergency: op === 0x00, label: MDC_LABELS[op] ?? '', extra: second ? second.bytes.slice(0, 4) : [], atS: t0S + (from + (k - 40) * sps) / rate });
+        const blk = mdcBlock(bits, k); if (!blk) continue;
+        const [op, arg, hi, lo] = blk;
+        const second = mdcBlock(bits, k + 112);
+        out.push({ op, arg, unit: ((hi << 8) | lo).toString(16).toUpperCase().padStart(4, '0'), emergency: op === 0x00, label: MDC_LABELS[op] ?? '', extra: second ? second.slice(0, 4) : [], atS: t0S + (from + (k - 40) * sps) / rate });
         skipUntil = k + (second ? 224 : 112);
       }
       if (out.length) break;
@@ -349,11 +352,11 @@ export function decodeMdc(y: Float32Array, from: number, to: number, rate: numbe
 }
 
 // ------------------------------------------------------------------------------------------------ one transmission
-interface Frames { nF: number; E: Float64Array; kp: Int16Array; fq: Float64Array; hi: Float64Array; tonal: Uint8Array; data: Uint8Array; pitches: number[] }
+interface Frames { nF: number; E: Float64Array; kp: Int16Array; fq: Float64Array; hi: Float64Array; tonal: Uint8Array; data: Uint8Array; fsk: Uint8Array; pitches: number[] }
 
 function frames(y: Float32Array, rate: number): Frames {
   const binHz = rate / N, nF = y.length >= N ? Math.floor((y.length - N) / H) + 1 : 0;
-  const E = new Float64Array(nF), kp = new Int16Array(nF), fq = new Float64Array(nF), hi = new Float64Array(nF), tonal = new Uint8Array(nF), data = new Uint8Array(nF);
+  const E = new Float64Array(nF), kp = new Int16Array(nF), fq = new Float64Array(nF), hi = new Float64Array(nF), tonal = new Uint8Array(nF), data = new Uint8Array(nF), fsk = new Uint8Array(nF);
   const re = new Float64Array(N), im = new Float64Array(N), p = new Float64Array(HALF + 1);
   const kLo = Math.ceil(300 / binHz), kHi = Math.min(HALF - 2, Math.floor(3400 / binHz));
   const dLo = Math.ceil(900 / binHz), dHi = Math.min(HALF - 1, Math.floor(2700 / binHz));
@@ -371,6 +374,8 @@ function frames(y: Float32Array, rate: number): Frames {
     let fb = 0, fh = 0; for (let k = dLo; k <= dHi; k++) { fb += p[k]; if (k * binHz > 2150) fh += p[k]; }
     hi[t] = e > 0 ? fh / e : 0;
     data[t] = e > 1e-15 && pk + pk2 < 0.8 * e && fb >= 0.75 * e ? 1 : 0;
+    // FFSK whose bits run long looks like its two tones: those frames start a data search too
+    fsk[t] = e > 1e-15 && fb >= 0.75 * e ? 1 : 0;
     for (let k = cLo; k <= cHi; k++) {
       const on = p[k] > 1e-15 && p[k] >= p[k - 1] && p[k] >= p[k + 1] && p[k] > 10 * (p[k - 2] + p[k + 2]) ? 1 : 0;
       if (on) {
@@ -387,7 +392,7 @@ function frames(y: Float32Array, rate: number): Frames {
   cand.sort((a, b) => b.n - a.n || a.k - b.k);
   const pitches: number[] = [], taken: number[] = [];
   for (const c of cand) { if (taken.some(k => Math.abs(k - c.k) <= 1)) continue; taken.push(c.k); pitches.push((c.k + dSum[c.k] / Math.max(1, onCnt[c.k])) * binHz); if (pitches.length >= 3) break; }
-  return { nF, E, kp, fq, hi, tonal, data, pitches };
+  return { nF, E, kp, fq, hi, tonal, data, fsk, pitches };
 }
 
 /** Tone segments: runs of single-tone frames at one frequency, refined by a mixer at the tone. */
@@ -592,16 +597,16 @@ export class AnalogSignaling {
     // data bursts: MDC-1200 decoded where it is, other bursts by rate
     const mdc: MdcPacket[] = [], data: DataBurst[] = [];
     for (let t = 0; t < fr.nF;) {
-      if (!fr.data[t]) { t++; continue; }
+      if (!fr.fsk[t]) { t++; continue; }
       // a burst holds together over runs of one bit (a single tone for a while): gaps up to 100 ms
-      let u = t + 1, gap = 0, cnt = 1; while (u < fr.nF && gap < 25) { if (fr.data[u]) { gap = 0; cnt++; } else gap++; u++; }
+      let u = t + 1, gap = 0, cnt = 1, strict = fr.data[t]; while (u < fr.nF && gap < 25) { if (fr.fsk[u]) { gap = 0; cnt++; strict += fr.data[u]; } else gap++; u++; }
       u -= gap;
       if (cnt >= 10 && cnt >= 0.6 * (u - t)) {
-        const from = Math.max(0, t * H - 4 * H), to = Math.min(y.length, u * H + N + 4 * H);
+        const from = Math.max(0, t * H - 24 * H), to = Math.min(y.length, u * H + N + 24 * H);
         const got = decodeMdc(y, from, to, rate, startS);
         if (got.length) mdc.push(...got);
-        else {
-          let hs = 0, hn = 0; for (let j = t; j < u; j++) if (fr.data[j]) { hs += fr.hi[j]; hn++; }
+        else if (strict >= 10 && strict >= 0.5 * cnt) {
+          let hs = 0, hn = 0; for (let j = t; j < u; j++) if (fr.fsk[j]) { hs += fr.hi[j]; hn++; }
           // the rate from the burst's width: 1200 baud FFSK keeps to 900-2100 Hz, 2400 baud spreads above it
           data.push({ baud: hs / hn > 0.08 ? 2400 : 1200, ms: Math.round((u - t) * H * 1000 / rate), atS: startS + ft(t) });
         }

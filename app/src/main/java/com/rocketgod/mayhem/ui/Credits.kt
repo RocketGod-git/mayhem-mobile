@@ -45,6 +45,7 @@ object Credits {
         false to "Wardrive Go — the HackRF driver, SDR engine and ADS-B map started there",
         false to "PDW — FLEX and POCSAG on one channel",
         false to "Trains — end-of-train field layout and BCH check after PyEOT by Eric Reuter; the PTC waveform worked out from recordings",
+        false to "Repeater signaling (HAM+) · MDC-1200 receive after the frame layout of the Mayhem ui_mdc_tx transmitter (Mayhem contributors, GPL-3.0); selcall after the published ZVEI, CCIR, EEA and EIA tone tables",
         false to "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid",
         false to "JS8Call by Jordan Sherer, KN4CRD · the JS8 dictionary, command and group tables · GPL-3.0",
         false to "OurAirports — airport names and positions (public domain)",
