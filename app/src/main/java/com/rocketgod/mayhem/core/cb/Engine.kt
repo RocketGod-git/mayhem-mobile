@@ -4,6 +4,7 @@ import com.rocketgod.mayhem.core.hamplus.ChannelWatch
 import com.rocketgod.mayhem.core.hamplus.HamTracker
 import com.rocketgod.mayhem.core.hamplus.HpSnap
 import com.rocketgod.mayhem.core.hamplus.HpTxRow
+import com.rocketgod.mayhem.core.hamplus.STEADY_SHOW_MS
 import com.rocketgod.mayhem.core.hamplus.TxRec
 import com.rocketgod.mayhem.core.hamplus.WatchOpen
 import com.rocketgod.mayhem.core.hamplus.WatchPlan
@@ -33,8 +34,10 @@ import kotlin.math.sqrt
  * A channel opens on what is left: its bins moving from one measurement to the next against their own floors (a
  * weak talker's voice, measured against how far the quietest quarter of the channels move), or plenty of power in
  * them (a strong talker, whose voice fills the channel). Then the demodulator decides: an opening that never
- * measures as AM, FM or sideband in its first 3 s (a burst of noise, a carrier keyed with nothing on it, sideband
- * facing a busy neighbor) is dropped without a trace. Nothing opens in the first 3 s of a span.
+ * measures as AM, FM or sideband in its first 3 s (a burst of noise, sideband facing a busy neighbor) is dropped
+ * without a trace. One that measures as a carrier but whose audio carries no voice (Speech.kt) stays open as a steady
+ * carrier: nothing counts it, logs it or keeps it, and it becomes a transmission from the moment a voice is heard on
+ * it. Nothing opens in the first 3 s of a span.
  *
  * A channel holding a steady line and no voice is reported as such: the level of the line over the noise, how long
  * it has held and how much of the last ten minutes it was there. Twin of web dsp/cb/engine.ts.
@@ -74,8 +77,6 @@ const val LINE_OVER_CH = 4.0
 /** A line holding this many measurements running (3 s) is remembered, and its bins left out this long after. */
 const val LINE_REMEMBER = 30
 const val LINE_MEMORY_MS = 600_000.0
-/** A channel shows "steady carrier, no voice" once a line has held this long without voice. */
-const val STEADY_SHOW_MS = 3_000.0
 /** A steady line missing this long is gone. */
 const val LINE_GONE_MS = 1_000.0
 /** The share of the last ten minutes a line was there decays with this time constant. */
@@ -90,7 +91,7 @@ private const val HALF_HZ = 4_000.0
 private const val GUARD_HZ = 300.0
 
 val CB_PLAN: WatchPlan = object : WatchPlan {
-    override val name = "CB"
+    override val name = "CB Radio"
     override val raster = CB_RASTER
     override fun inPlan(hz: Long) = cbChannel(hz) > 0
     // fine enough that a carrier sits in a bin or two and the voice beside it in others
@@ -116,7 +117,7 @@ data class CbChan(
 
 /** HAM+'s snapshot with each row's mode filled in, and the 40 channels. */
 class CbSnap(s: HpSnap, rows: List<HpTxRow>, val chans: List<CbChan>) :
-    HpSnap(s.now, s.centerHz, s.rate, s.spanLo, s.spanHi, s.tiles, rows, s.convs, s.heat, s.playing, s.replay, s.stats)
+    HpSnap(s.now, s.centerHz, s.rate, s.spanLo, s.spanHi, s.tiles, rows, s.convs, s.heat, s.playing, s.replay, s.stats, s.steady, s.flood)
 
 /** The mode set by hand per channel key (absent: auto) and the SSB clarifier (Hz). */
 data class CbPrefs(val modes: Map<String, CbMode> = emptyMap(), val clar: Map<String, Int> = emptyMap())
@@ -147,6 +148,9 @@ class CbEngine(
     init {
         centerHz = CB_CENTER
         setParams(params.copy(thresholdDb = CB_OPEN_DB))
+        // a weak AM voice can take the speech measure up to its 3 s check to find: only a voice found later than that
+        // moves the start
+        talkLateMs = CB_CONFIRM_MS + 1_000
     }
 
     /**
@@ -295,14 +299,15 @@ class CbEngine(
         // up a moment later); without one (SSB, or a weak talker under a steady line) the voice going quiet ends it
         for (o in opens.values.toList()) {
             // an opening that found every demodulator busy gets one as soon as one is free, and its check starts then
-            if (o.probe == null && probes() < cap) { o.probe = makeProbe(o.hz, o.tileKey); o.cut = false; checkFrom[o.id] = now }
+            if (o.probe == null && probes() < cap) { attach(o, now); o.cut = false; checkFrom[o.id] = now }
             val i = cbChannel(o.hz) - 1; val s = st[i]; val p = o.probe
             // a voice is AM, FM or sideband to the demodulator: something that moves the spectrum but measures as none of
             // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
             // held shut a while
+            // (a carrier with no voice on it yet is kept open, unconfirmed: steady, until a voice is heard or it goes)
             if (p != null && o.id !in confirmed && now - (checkFrom[o.id] ?: o.startMs) >= CB_CONFIRM_MS) {
-                if (voiced(p, o.hz)) confirmed.add(o.id)
-                else { drop(o, now); continue }
+                if (voiced(o)) confirmed.add(o.id)
+                else if (!carrierOnly(o)) { drop(o, now); continue }
             }
             o.snr = s.sigDb; o.peak = max(o.peak, s.sigDb)
             if (p != null) {
@@ -336,8 +341,10 @@ class CbEngine(
      * a clear sideband), and not sideband facing a busy neighbor 10 kHz away (USB facing the channel above, LSB the one
      * below), which is that neighbor's AM splatter.
      */
-    private fun voiced(p: CbProbe, hz: Long): Boolean {
-        if (!p.readable()) return false
+    private fun voiced(o: WatchOpen<CbProbe>): Boolean {
+        val p = o.probe; val hz = o.hz
+        // the audio must carry a voice too: a carrier with nothing on it measures as AM all the same
+        if (p == null || !o.talk || !p.readable()) return false
         val m = p.measuredMode(); val own = st.getOrNull(cbChannel(hz) - 1)
         fun busy(f: Long): Boolean {
             val ch = cbChannel(f); if (ch == 0) return false; val nn = st[ch - 1]
@@ -347,18 +354,28 @@ class CbEngine(
         if (m == CbMode.LSB && busy(hz - 10_000)) return false
         return true
     }
+    /** A readable station's carrier, or a clear sideband, on which no voice has been heard yet: a steady carrier. */
+    private fun carrierOnly(o: WatchOpen<CbProbe>): Boolean { val p = o.probe; return p != null && !o.talk && p.readable() }
     /** An opening that never measured as a voice: gone without a trace, and its channel held shut a while. */
     private fun drop(o: WatchOpen<CbProbe>, now: Double) {
         val s = st.getOrNull(cbChannel(o.hz) - 1)
-        opens.remove(o.id); peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id); checkFrom.remove(o.id)
+        opens.remove(o.id); forget(o)
         if (s != null) { s.v = ArrayList(); s.over = 0; s.noVoiceMs = now }
         dropped++
     }
+    private fun forget(o: WatchOpen<CbProbe>) { peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id); checkFrom.remove(o.id) }
     /** One that ends before its voice check (a carrier dropping within 3 s) faces the check as it ends. */
     override fun close(o: WatchOpen<CbProbe>, endMs: Double) {
         // (one never demodulated cannot be checked: it is not logged either)
-        val p = o.probe
-        if (o.id !in confirmed && (p == null || !voiced(p, o.hz))) { drop(o, nowMs()); return }
+        if (o.id !in confirmed && !voiced(o)) {
+            // a steady carrier going is no dropped opening: the channel reopens on whatever comes next
+            if (carrierOnly(o)) {
+                opens.remove(o.id); forget(o)
+                val s = st.getOrNull(cbChannel(o.hz) - 1); if (s != null) { s.v = ArrayList(); s.over = 0 }
+                return
+            }
+            drop(o, nowMs()); return
+        }
         super.close(o, endMs)
     }
 
@@ -383,22 +400,25 @@ class CbEngine(
     private fun chans(now: Double): List<CbChan> {
         val half = plan.spanHalf(rate)
         return CB_CHANNELS.mapIndexed { i, hz ->
-            val s = st[i]; val key = chanKey(hz); val o = opens.values.firstOrNull { it.hz == hz }; val p = o?.probe
+            val s = st[i]; val key = chanKey(hz); val all = opens.values.filter { it.hz == hz }; val o = all.firstOrNull { it.talk }; val p = o?.probe
             val manual = cbPrefs.modes[key]
-            val steadyMs = if (s.lineSince != 0.0) now - s.lineSince else 0.0
+            // a steady line, or a carrier open with no voice heard on it (one that wanders shows no line)
+            val quiet = if (o == null) all.firstOrNull { !it.talk && now - it.startMs >= STEADY_SHOW_MS } else null
+            val steadyMs = if (s.lineSince != 0.0) now - s.lineSince else if (quiet != null) now - quiet.startMs else 0.0
+            val lineDb = if (s.lineSince != 0.0) s.lineDb else if (quiet != null) max(1, (if (s.sigDb > 0) s.sigDb else s.totDb).roundToInt()) else 0
             CbChan(
                 ch = i + 1, hz = hz, key = key, inSpan = rate != 0 && abs(hz - centerHz) <= half, open = o != null,
                 mode = p?.mode() ?: manual ?: s.mode, measured = p?.measuredMode(), manual = manual, clarHz = cbPrefs.clar[key] ?: 0,
                 voiceDb = (s.voiceDb * 10).roundToInt() / 10.0, sigDb = (s.sigDb * 10).roundToInt() / 10.0,
-                lineDb = s.lineDb, steadyMs = steadyMs, steadyPct = if (s.total > 0) (100 * s.seen / s.total).roundToInt() else 0,
-                steady = o == null && s.lineDb > 0 && steadyMs >= STEADY_SHOW_MS,
+                lineDb = lineDb, steadyMs = steadyMs, steadyPct = if (s.total > 0) (100 * s.seen / s.total).roundToInt() else 0,
+                steady = o == null && lineDb > 0 && steadyMs >= STEADY_SHOW_MS,
             )
         }
     }
 
     override fun snapshotLocked(now: Double): HpSnap {
         val s = super.snapshotLocked(now)
-        val live = HashMap<Int, CbMode>(); for (o in opens.values) { val p = o.probe ?: continue; live[o.id] = p.mode() }
+        val live = HashMap<Int, CbMode>(); for (o in opens.values) { val p = o.probe ?: continue; if (o.talk) live[o.id] = p.mode() }
         // a transmission still waiting for its voice check is on the air, but not yet known to be a station (pending)
         val rows = s.rows.map { r -> r.copy(mode = (live[r.id] ?: txMode[r.id])?.name ?: "", pending = r.live && r.id !in confirmed) }
         return CbSnap(s, rows, chans(now))

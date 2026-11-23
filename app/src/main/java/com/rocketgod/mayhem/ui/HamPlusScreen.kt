@@ -88,6 +88,7 @@ import com.rocketgod.mayhem.core.hamplus.HP_AUTO_LABELS
 import com.rocketgod.mayhem.core.hamplus.HP_BANDS
 import com.rocketgod.mayhem.core.hamplus.HEAT_SLOTS
 import com.rocketgod.mayhem.core.hamplus.HpParams
+import com.rocketgod.mayhem.core.hamplus.HpFlood
 import com.rocketgod.mayhem.core.hamplus.HpSnap
 import com.rocketgod.mayhem.core.hamplus.HpTile
 import com.rocketgod.mayhem.core.hamplus.HpTxRow
@@ -215,7 +216,7 @@ fun HamPlusScreen(accent: Color) {
         if (s != null && t != null) HpTileCard(t, s!!, now, prefs.mute.contains(t.key), prefs.prio.contains(t.key), prefs.hold == t.key, accent, acts, modifier) { sel = null }
     }
 
-    PacketFrame(accent, HamPlus.log, tag = "REPEATERS", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, titleRow = true, waterfall = wf,
+    PacketFrame(accent, HamPlus.log, tag = "REPEATERS", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, titleRow = true, waterfall = wf, right = hpCountText(tiles),
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.HAMPLUS, !wf) },
         lamp = {
@@ -396,7 +397,7 @@ private fun HpHead(s: HpSnap?, now: Long, accent: Color) {
                 }
             }
         }
-        if (s != null) Text("demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${if (s.stats.costMs > 0) " (%.0f ms a channel a second)".format(java.util.Locale.US, s.stats.costMs) else ""} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB",
+        if (s != null) Text("demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${if (s.stats.costMs > 0) " (%.0f ms a channel a second)".format(java.util.Locale.US, s.stats.costMs) else ""} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB${hpSteadyText(s.stats.steady)}",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -450,9 +451,11 @@ internal fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, ac
     val heard = if (s != null && audioOn) s.rows.filter { it.live && it.hz.toString() in s.playing } else emptyList()
     val r = heard.maxByOrNull { it.startMs }
     val tile = r?.let { x -> s?.tiles?.firstOrNull { it.hz == x.hz } }
-    val col = if (rp?.active == true || note.isNotEmpty()) Palette.accent2 else if (r != null) hpColor(r.color).takeIf { r.color >= 0 } ?: Palette.ok else Palette.line
+    // nothing heard while a wideband event is on: the event, once
+    val fl = if (r == null) hpFloodText(s?.flood) else null
+    val col = if (rp?.active == true || note.isNotEmpty() || (fl != null && rp?.active != true)) Palette.accent2 else if (r != null) hpColor(r.color).takeIf { r.color >= 0 } ?: Palette.ok else Palette.line
     val shape = RoundedCornerShape(d.dp(12f))
-    val lit = rp?.active == true || r != null || note.isNotEmpty()
+    val lit = rp?.active == true || r != null || note.isNotEmpty() || fl != null
     Column(Modifier.fillMaxWidth().height(d.dp(52f)).clip(shape).background(Brush.horizontalGradient(listOf(col.copy(alpha = if (lit) 0.24f else 0.05f), Palette.surface)))
         .border(1.dp, col.copy(alpha = if (lit) 0.9f else 0.6f), shape).padding(horizontal = d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f), Alignment.CenterVertically)) {
         val blink = (now / 500) % 2 == 0L
@@ -475,6 +478,14 @@ internal fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, ac
                 HpBar((rp.pos / max(0.1, rp.total)).toFloat(), Palette.accent2, Modifier.weight(1f).height(d.dp(5f)))
                 Text("${hpDur(rp.pos * 1000)} / ${hpDur(rp.total * 1000)}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1)
             }
+            return@Column
+        }
+        if (fl != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text("WIDEBAND", color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(9f), letterSpacing = 2.sp, maxLines = 1)
+                Text(fl.first, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            }
+            Text(fl.second, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             return@Column
         }
         if (r == null) {
@@ -526,7 +537,8 @@ private fun HpTileGrid(tiles: List<HpTile>, s: HpSnap?, hold: String, now: Long,
                     repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
-            if (tiles.isEmpty()) EmptyState("hamplus", Modifier.fillMaxWidth().height(d.dp(250f)).panel(), accent)
+            if (tiles.isEmpty()) EmptyState("hamplus", Modifier.fillMaxWidth().height(d.dp(250f)).panel(), accent,
+                title = if ((s?.stats?.steady ?: 0) > 0) "No voice heard yet" else null)
         }
     }
 }
@@ -618,10 +630,37 @@ internal fun hpTapTx(rows: List<HpTxRow>, hz: Long, ms: Double, now: Double, tol
     return best
 }
 
-/** What the quiet timeline says: the last transmission heard (a tap replays from it), else that nothing was heard yet. */
-internal fun hpQuietText(rows: List<HpTxRow>, now: Double, nm: HpNamer = HAM_NAMER): Pair<String, String> {
-    val last = rows.filter { !it.live }.maxByOrNull { it.endMs } ?: return "nothing on the air yet" to "every transmission shows here as it happens"
-    return "nothing on the air for ten minutes" to "last heard ${nm.chan(last.hz)}, ${hpAgo(now - last.endMs)}${if (last.recorded) ", tap to replay from there" else ""}"
+/**
+ * What the quiet timeline says: nothing on the air right now and the last channel heard (a tap replays from its last
+ * transmission when that was kept), from the log or, after a restart, the channels heard before. "Yet" only when
+ * nothing at all has been heard.
+ */
+internal fun hpQuietText(rows: List<HpTxRow>, tiles: List<HpTile>, now: Double, nm: HpNamer = HAM_NAMER): Pair<String, String> {
+    val last = rows.filter { !it.live }.maxByOrNull { it.endMs }
+    val tile = tiles.filter { !it.live && it.lastMs > 0 }.maxByOrNull { it.lastMs }
+    if (last == null && tile == null) return "nothing on the air yet" to "every transmission shows here as it happens"
+    val fromLog = last != null && (tile == null || last.endMs >= tile.lastMs)
+    val hz = if (fromLog) last!!.hz else tile!!.hz; val at = if (fromLog) last!!.endMs else tile!!.lastMs
+    return "nothing on the air right now" to "last heard ${nm.chan(hz)}, ${hpAgo(now - at)}${if (fromLog && last!!.recorded) ", tap to replay from there" else ""}"
+}
+
+/**
+ * A wideband event on the air (one signal opening many channels at once, see the engine's checkFlood), as the listen
+ * line shows it, once: how many channels, from where to where and the tone they share. null when there is none.
+ */
+internal fun hpFloodText(f: HpFlood?): Pair<String, String>? {
+    if (f == null) return null
+    return "one signal across ${f.channels} channels" to
+        "%.3f to %.3f MHz%s · shown once, not counted as talk".format(java.util.Locale.US, f.loHz / 1e6, f.hiHz / 1e6, if (f.tone != 0.0) " · PL %.1f".format(java.util.Locale.US, f.tone) else " · the same audio")
+}
+
+/** The carriers open with no voice on them, as the cost line names them ("" when none). */
+internal fun hpSteadyText(n: Int): String = if (n > 0) " · $n steady carrier${if (n == 1) "" else "s"} with no voice, not counted" else ""
+
+/** What the readout's caption counts: the transmissions logged, so it agrees with the channels heard. */
+internal fun hpCountText(tiles: List<HpTile>): String {
+    val n = tiles.sumOf { it.txs }
+    return if (n > 0) "$n transmission${if (n == 1) "" else "s"} logged" else "no transmissions logged yet"
 }
 
 /** A tap within this many dp of a transmission's bar replays that transmission. */
@@ -716,7 +755,7 @@ private fun HpTimelineBody(s: HpSnap?, now: Long, accent: Color, acts: HpActs, m
                     drawLine(mutedC, Offset(w - 1f, 0f), Offset(w - 1f, gridH), strokeWidth = 2f)
                 }
                 if (lanes.isEmpty()) {
-                    val (head, sub) = hpQuietText(all, now.toDouble(), nm)
+                    val (head, sub) = hpQuietText(all, s?.tiles.orEmpty(), now.toDouble(), nm)
                     if (fill) Column(Modifier.fillMaxSize().padding(horizontal = d.dp(8f)), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(head.uppercase(), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)

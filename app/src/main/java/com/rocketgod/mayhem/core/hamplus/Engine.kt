@@ -51,20 +51,32 @@ const val CAP_MAX = 32
 const val CAP_START = 8
 /** A channel stays open this long below its closing level. */
 const val CLOSE_HOLD_MS = 400.0
-/** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (10 s), and how far either side of the keyup gap the lag is searched (300 ms). */
+/** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (the last 5 s), and how far either way the lag is searched (300 ms). */
 const val LINK_LIVE_FRAMES = 30
-const val LINK_LIVE_MAX = 200
+const val LINK_LIVE_MAX = 100
 const val LINK_LIVE_LAG = 6
+/** A wideband event: this many channels or more keyed within this long of each other on one tone or one audio. */
+const val FLOOD_MIN = 6
+const val FLOOD_WIN_MS = 1_000.0
+/** How long after its keyup one of many keyed together waits for that check (its tone and 1.5 s of audio are read by then). */
+const val FLOOD_HOLD_MS = 3_000.0
 /** Shorter than this is a noise blip, not a transmission. */
 const val TX_MIN_MS = 250.0
 /** A tone must be heard through this share of a transmission to be its tone. */
 const val TONE_SHARE = 0.5
+/** A carrier open this long without a voice shows as a steady carrier. */
+const val STEADY_SHOW_MS = 3_000.0
+/** A voice first heard this long after its carrier came up starts the transmission, less this much before it. */
+const val TALK_LATE_MS = 2_000.0
+const val TALK_PRE_MS = 300.0
+/** About the length of a speech block (the start of a block is this long before its end). */
+private const val SPEECH_BLOCK_MS = 85.0
 private const val MEASURE_MS = 100.0
 private const val SNAP_MS = 500.0
 private const val OFF_WIN_MS = 100.0
 private const val AUDIO_RATE = 48_000.0
 
-data class HpParams(val thresholdDb: Double = 8.0, val mode: Mode = Mode.MIX, val volume: Double = 1.0) {
+data class HpParams(val thresholdDb: Double = 8.0, val mode: Mode = Mode.NEWEST, val volume: Double = 1.0) {
     enum class Mode { MIX, NEWEST }
 }
 
@@ -82,6 +94,8 @@ interface WatchProbe {
     fun dcs(): Int
     /** The transmission ended: flush what is still buffered (a Morse letter). */
     fun end()
+    /** Whether the audio carries a voice, block by block (Speech.kt). */
+    val speech: SpeechCount
 }
 
 /**
@@ -130,6 +144,7 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
     override var levelDb = -90.0; override var cw0 = ""
     val tones = LinkedHashMap<Double, Int>(); val dcsCodes = LinkedHashMap<Int, Int>(); var subN = 0L
     override var out48 = 0
+    override val speech: FmSpeech
 
     init {
         ddc.reset(rate); ddc.offsetHz = offsetHz; fs = ddc.outRate
@@ -137,6 +152,7 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
         lp = RealFir(lowpassTaps(3_000 / fs, 47))
         to8 = Resampler(CLIP_RATE / fs); to48 = Resampler(AUDIO_RATE / fs)
         de = 1 - exp(-1 / (fs * 530e-6))
+        speech = FmSpeech(fs) { hz -> ddc.powerGain(hz) }
     }
 
     override fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz }
@@ -157,6 +173,7 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
             pow += (a * a + b * b).toDouble(); powN++
         }
         sub.push(au, m)
+        speech.push(au, m)
         subN += m
         if (sub.tone != 0.0) tones[sub.tone] = (tones[sub.tone] ?: 0) + m
         else if (sub.dcs != 0) dcsCodes[sub.dcs] = (dcsCodes[sub.dcs] ?: 0) + m
@@ -191,13 +208,32 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
     }
 }
 
-class WatchOpen<P : WatchProbe>(val id: Int, var k: Int, var hz: Long, val startMs: Double, var quietMs: Double, var peak: Double, var snr: Double,
-                                var probe: P?, var cut: Boolean, var shifted: Boolean, var tileKey: String)
+class WatchOpen<P : WatchProbe>(val id: Int, var k: Int, var hz: Long, var startMs: Double, var quietMs: Double, var peak: Double, var snr: Double,
+                                var probe: P?, var cut: Boolean, var shifted: Boolean, var tileKey: String) {
+    /** Its demodulator heard a voice ([SPEECH_MIN] speech blocks): a transmission. Until then a steady carrier, which no
+     *  count, log, recording, listening or scan takes. One no demodulator measures (all were busy) counts as before. */
+    var talk = true
+    /** When its demodulator started (engine ms): the speech meter's time is from here. */
+    var probeAt = 0.0
+    /** When its carrier came up (startMs as it opened, before a late voice moves startMs). */
+    var keyMs = startMs
+    /** Part of one wideband event (one tone or one audio opening many channels at once): shown once, never counted. */
+    var flood = false
+    /** Keyed in the same second as [FLOOD_MIN] or more others: not counted until this (engine ms), while the event check
+     *  reads their tones and audio. */
+    var holdUntil = 0.0
+}
+
+/** A wideband event on the air: how many channels, their span, the tone they share (0 when the audio was the match), since when. */
+data class HpFlood(val channels: Int, val loHz: Long, val hiHz: Long, val tone: Double, val sinceMs: Double)
+
+/** An open channel holding a carrier with no voice: its frequency, tile, since when and its level. */
+data class HpSteady(val hz: Long, val key: String, val sinceMs: Double, val levelDb: Double)
 
 data class HpReplayState(val active: Boolean, val label: String, val kind: String, val clip: Int, val pos: Double, val total: Double)
 
 data class HpStats(
-    val onAir: Int, val stations: Int, val probes: Int, val cap: Int, val costMs: Double, val clipS: Long, val clipMB: Double,
+    val onAir: Int, val steady: Int, val stations: Int, val probes: Int, val cap: Int, val costMs: Double, val clipS: Long, val clipMB: Double,
     val capMB: Double, val oldestMs: Double, val channels: Int,
 )
 
@@ -217,6 +253,8 @@ fun quietQuarter(v0: DoubleArray, count: Int): Double {
 open class HpSnap(
     val now: Double, val centerHz: Long, val rate: Int, val spanLo: Double, val spanHi: Double, val tiles: List<HpTile>,
     val rows: List<HpTxRow>, val convs: List<HpConv>, val heat: HpHeat, val playing: List<String>, val replay: HpReplayState, val stats: HpStats,
+    val steady: List<HpSteady> = emptyList(),
+    val flood: HpFlood? = null,
 )
 
 private class Replay(val mixer: ReplayMixer, val label: String, val kind: String, val to48: Resampler, val buf8: FloatArray, val buf48: FloatArray, var acc: Double)
@@ -331,6 +369,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         val now = nowMs()
         if (now - lastMeasure >= MEASURE_MS && frames > 0) { lastMeasure = now; measure(now) }
         runProbes(n, now)
+        speechStep(now)
         if (now - lastSnap >= SNAP_MS) { lastSnap = now; _snap.value = snapshotLocked(now) }
     }
 
@@ -389,19 +428,52 @@ abstract class ChannelWatch<P : WatchProbe>(
     protected fun openAt(k: Int, now: Double): WatchOpen<P> {
         val hz = hzOf(k); val key = tileKey(hz)
         val o = WatchOpen<P>(nextId++, k, hz, now - MEASURE_MS, 0.0, snr[k].toDouble(), snr[k].toDouble(), null, false, false, key)
+        o.probeAt = now
         if (fixedCap != 0) cap = fixedCap
         if (probes() >= cap && wanted(key)) {
             // a followed or priority channel takes the probe of the newest other one, which is then marked cut
             val victim = opens.values.filter { it.probe != null && !wanted(it.tileKey) }.maxByOrNull { it.startMs }
             if (victim != null) { victim.probe = null; victim.cut = true }
         }
-        if (probes() < cap) o.probe = makeProbe(hz, key)
+        if (probes() < cap) attach(o, now)
         opens[o.id] = o
+        // many keyed in the same second wait for the wideband-event check before any of them counts
+        val near = opens.values.filter { abs(it.keyMs - o.keyMs) <= FLOOD_WIN_MS }
+        if (near.size >= FLOOD_MIN) for (x in near) if (x.holdUntil == 0.0) x.holdUntil = x.keyMs + FLOOD_HOLD_MS
         return o
+    }
+    /** Gives an open channel a demodulator: from now it is a transmission only once that hears a voice. */
+    protected fun attach(o: WatchOpen<P>, now: Double) { o.probe = makeProbe(o.hz, o.tileKey); o.probeAt = now; o.talk = false }
+    /** When the open channel's voice was last heard (engine ms), or -1. */
+    protected fun lastSpeech(o: WatchOpen<P>): Double { val s = o.probe?.speech; return if (s != null && s.lastMs >= 0) o.probeAt + s.lastMs else -1.0 }
+    /** Open channels holding a carrier with no voice: each one's frequency, since when and its level. */
+    fun steadyOpens(now: Double): List<HpSteady> = opens.values.filter { !it.talk && now - it.startMs >= STEADY_SHOW_MS }
+        .map { o -> HpSteady(o.hz, o.tileKey, o.startMs, o.probe?.levelDb?.roundToInt()?.toDouble() ?: -90.0) }
+    /** A voice first heard this long after its carrier came up starts the transmission (CB's AM measure takes longer). */
+    protected var talkLateMs = TALK_LATE_MS
+    /** Speech: an open channel becomes a transmission once its voice is heard, and one whose voice has stopped for
+     *  [SPEECH_LAPSE_MS] while its carrier stays ends at its last word (the carrier left on is steady from there). */
+    private fun speechStep(now: Double) {
+        for (o in opens.values.toList()) {
+            val p = o.probe ?: continue
+            if (!o.talk) {
+                if (!p.speech.heard) continue
+                o.talk = true
+                // a carrier that was up a while before its voice (a carrier left on, then a talker) starts at the voice
+                val first = o.probeAt + p.speech.firstMs - SPEECH_BLOCK_MS
+                if (first - o.startMs > talkLateMs) o.startMs = first - TALK_PRE_MS
+                continue
+            }
+            val last = lastSpeech(o)
+            if (last >= 0 && now - last > SPEECH_LAPSE_MS) close(o, last + CLOSE_HOLD_MS)
+        }
     }
 
     protected open fun close(o: WatchOpen<P>, endMs: Double) {
         opens.remove(o.id)
+        // a carrier that never carried a voice, or one channel of a wideband event, is no transmission: nothing counted,
+        // logged or kept
+        if (!o.talk || o.flood) { steadyClosed(o, endMs); return }
         if (endMs - o.startMs < TX_MIN_MS) return
         val p = o.probe
         val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
@@ -409,40 +481,89 @@ abstract class ChannelWatch<P : WatchProbe>(
         val recorded = p != null && !o.cut
         val tone = p?.tone() ?: 0.0
         val envN = ceil((endMs - o.startMs) / ENV_MS).toInt()
-        val env = p?.env?.let { e -> FloatArray(min(e.size, envN)) { e[it] } } ?: FloatArray(0)
+        val e0 = max(0, ((o.startMs - o.probeAt) / ENV_MS).roundToInt())
+        val env = p?.env?.let { e -> FloatArray(max(0, min(e.size, e0 + envN) - e0)) { e[e0 + it] } } ?: FloatArray(0)
         val t = TxRec(o.id, o.hz, o.startMs, endMs, (o.peak * 10).roundToInt() / 10.0, off.hz, off.sd,
             tone, p?.dcs() ?: 0, p?.cw0 ?: "", env, recorded)
         if (recorded) {
+            // (the audio from the transmission's start: later than its demodulator's when the voice came after the carrier)
             val data = p!!.clip.done()
-            clips.add(Clip(o.id, o.hz, o.startMs, data.copyOf(min(data.size, ((endMs - o.startMs) * CLIP_RATE / 1000).roundToInt()))))
+            val at = min(data.size, max(0, ((o.startMs - o.probeAt) * CLIP_RATE / 1000).roundToInt()))
+            clips.add(Clip(o.id, o.hz, o.startMs, data.copyOfRange(at, min(data.size, at + ((endMs - o.startMs) * CLIP_RATE / 1000).roundToInt()))))
         }
         closed(o, t)
         tracker.addTx(t)
     }
 
+    /** A steady carrier went (or the span moved): HAM+ keeps nothing of it. */
+    protected open fun steadyClosed(o: WatchOpen<P>, endMs: Double) { /* nothing */ }
     /** A finished transmission, just before the tracker has it. */
     protected open fun closed(o: WatchOpen<P>, t: TxRec) { /* HAM+ keeps nothing more */ }
 
     private fun closeAll() { val now = nowMs(); for (o in opens.values.toList()) close(o, now) }
 
+    /** A channel that counts: a voice heard on it, and not one channel of a wideband event. */
+    protected fun counted(o: WatchOpen<P>): Boolean = o.talk && !o.flood && nowMs() >= o.holdUntil
+    /**
+     * Whether two open channels carry the same audio right now: their voice envelopes over the last [LINK_LIVE_MAX]
+     * frames (5 s) both have, lined up in time (each demodulator's frames start when it did), correlating at the best
+     * lag within [LINK_LIVE_LAG] frames either way. The last five seconds, not the first: a carrier up before its talker
+     * (a tail, a courtesy tone) is judged on the speech. The link check and the wideband-event check both ask this, so
+     * they never disagree.
+     */
+    fun sameAudio(x: WatchOpen<P>, y: WatchOpen<P>): Double {
+        val a = x.probe?.env ?: return -1.0; val b = y.probe?.env ?: return -1.0
+        val end = min(x.probeAt + a.size * ENV_MS, y.probeAt + b.size * ENV_MS)
+        val start = maxOf(x.probeAt, y.probeAt, end - LINK_LIVE_MAX * ENV_MS); val n = floor((end - start) / ENV_MS).toInt()
+        if (n < LINK_LIVE_FRAMES) return -1.0
+        val ia = ((start - x.probeAt) / ENV_MS).roundToInt(); val ib = ((start - y.probeAt) / ENV_MS).roundToInt()
+        fun cut(e: List<Float>, i: Int): FloatArray { val lo = max(0, min(e.size, i)); val hi = max(lo, min(e.size, i + n)); return FloatArray(hi - lo) { e[lo + it] } }
+        return envCorr(cut(a, ia), cut(b, ib), 0, LINK_LIVE_LAG)
+    }
     /** Pairs of open channels (by id) heard carrying the same audio right now: linked repeaters. */
     private val liveLinked = HashSet<String>()
     private var linkAt = 0.0
-    /** Four times a second: open channels that keyed up together are compared, their audio envelopes at a lag near the keyup gap. */
+    /** The wideband event on the air now, if any. */
+    var flood: HpFlood? = null; private set
+    /** Four times a second: open channels that keyed up together are compared for the same audio (linked repeaters), and
+     *  many keyed up together on one tone or one audio are one wideband event. */
     private fun checkLinks(now: Double) {
         if (now - linkAt < 250) return
         linkAt = now
-        val os = opens.values.filter { it.probe != null && it.probe!!.env.size >= LINK_LIVE_FRAMES }
+        checkFlood()
+        val os = opens.values.filter { counted(it) && it.probe != null && it.probe!!.env.size >= LINK_LIVE_FRAMES }
         val ids = os.map { it.id }.toSet()
         liveLinked.removeAll { k -> k.split('|').map { it.toInt() }.any { it !in ids } }
         for (i in os.indices) for (j in i + 1 until os.size) {
-            val (x, y) = if (os[i].startMs <= os[j].startMs) os[i] to os[j] else os[j] to os[i]
-            if (abs(x.hz - y.hz) < 50_000 || y.startMs - x.startMs > LINK_EDGE_MS || x.tileKey == y.tileKey) continue
+            val (x, y) = if (os[i].keyMs <= os[j].keyMs) os[i] to os[j] else os[j] to os[i]
+            if (abs(x.hz - y.hz) < 50_000 || y.keyMs - x.keyMs > LINK_EDGE_MS || x.tileKey == y.tileKey) continue
             val key = "${x.id}|${y.id}"; if (key in liveLinked) continue
-            val r = envCorr(x.probe!!.env.take(LINK_LIVE_MAX).toFloatArray(), y.probe!!.env.take(LINK_LIVE_MAX).toFloatArray(), ((y.startMs - x.startMs) / ENV_MS).roundToInt(), LINK_LIVE_LAG)
-            if (r >= LINK_CORR) liveLinked.add(key)
+            if (sameAudio(x, y) >= LINK_CORR) liveLinked.add(key)
         }
         tracker.liveLinks = liveLinked.mapNotNull { k -> val (a, b) = k.split('|').map { it.toInt() }; val oa = opens[a]; val ob = opens[b]; if (oa != null && ob != null) listOf(oa.tileKey, ob.tileKey).sorted().joinToString("|") else null }.toSet()
+    }
+    /**
+     * One signal smeared across the span (overload, intermod, a strong signal leaking in) opens many unrelated channels in
+     * the same second, all on one sub-audible tone or all carrying one audio. [FLOOD_MIN] or more channels keyed within
+     * [FLOOD_WIN_MS] of each other that share a tone, or the same audio by [sameAudio], are one wideband event: shown
+     * once, none of them counted as talking, logged, kept or holding the scan. A linked pair or trio stays under it.
+     */
+    private fun checkFlood() {
+        val os = opens.values.filter { it.talk && it.probe != null }
+        var best: List<WatchOpen<P>> = emptyList(); var tone = 0.0
+        for (a in os) {
+            val near = os.filter { abs(it.keyMs - a.keyMs) <= FLOOD_WIN_MS }
+            if (near.size < FLOOD_MIN) continue
+            val t = a.probe!!.tone(); val byTone = if (t != 0.0) near.filter { abs(it.probe!!.tone() - t) < 0.6 } else emptyList()
+            val byAudio = near.filter { it === a || sameAudio(a, it) >= LINK_CORR }
+            val toneWins = byTone.size >= byAudio.size; val g = if (toneWins) byTone else byAudio
+            if (g.size >= FLOOD_MIN && g.size > best.size) { best = g; tone = if (toneWins) t else 0.0 }
+        }
+        for (o in best) o.flood = true
+        // (and the ones keyed with them that no demodulator measures: the event took the demodulators)
+        if (best.isNotEmpty()) { val k = best.map { it.keyMs }.sorted()[best.size shr 1]; for (o in opens.values) if (o.probe == null && abs(o.keyMs - k) <= FLOOD_WIN_MS) o.flood = true }
+        val on = opens.values.filter { it.flood }
+        flood = if (on.isNotEmpty()) HpFlood(on.size, on.minOf { it.hz }, on.maxOf { it.hz }, if (tone != 0.0) tone else flood?.tone ?: 0.0, on.minOf { it.keyMs }) else null
     }
     /** Two open channels carry the same audio: heard linked right now, or a link learned before. */
     private fun linkedNow(a: WatchOpen<P>, b: WatchOpen<P>): Boolean = "${a.id}|${b.id}" in liveLinked || "${b.id}|${a.id}" in liveLinked || tracker.linked(a.tileKey, b.tileKey)
@@ -453,7 +574,7 @@ abstract class ChannelWatch<P : WatchProbe>(
      */
     private fun listenSet(): List<WatchOpen<P>> {
         val pr = tracker.prefs
-        var c = opens.values.filter { it.probe != null && it.tileKey !in pr.mute }
+        var c = opens.values.filter { counted(it) && it.probe != null && it.tileKey !in pr.mute }
         // a repeater input is the same voice as its output: the output is heard
         val c0 = c
         c = c0.filter { o -> !(tracker.outputOf(o.hz) != 0L && c0.any { x -> x.tileKey == o.tileKey && x !== o }) }
@@ -564,7 +685,7 @@ abstract class ChannelWatch<P : WatchProbe>(
     }
 
     /** The channels open now, as the tracker takes them. */
-    private fun liveRecs(): List<LiveRec> = opens.values.map { o ->
+    private fun liveRecs(): List<LiveRec> = opens.values.filter { counted(it) }.map { o ->
         val p = o.probe
         val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
         LiveRec(o.id, o.hz, o.startMs, (o.snr * 10).roundToInt() / 10.0, if (p != null) p.levelDb.roundToInt().toDouble() else -90.0, off.hz,
@@ -581,14 +702,15 @@ abstract class ChannelWatch<P : WatchProbe>(
         for (r in rows) r.recorded = r.recorded && (r.live || clips.has(r.id))
         val convs = tr.convs(rows, now).take(80)
         val tiles = tr.tiles(now, rows)
+        val steady = steadyOpens(now)
         return HpSnap(now, centerHz, rate, tr.spanLo, tr.spanHi, tiles, rows, convs, tr.heat.copy(), playing, replayStateLocked(),
-            HpStats(opens.size, tr.stationCount, probes(), cap, (costMs * 10).roundToInt() / 10.0, clips.seconds.roundToInt().toLong(),
-                (clips.bytes / 1e5).roundToInt() / 10.0, (clips.cap / 1e5).roundToInt() / 10.0, clips.oldestMs(), count))
+            HpStats(opens.values.count { counted(it) }, steady.size, tr.stationCount, probes(), cap, (costMs * 10).roundToInt() / 10.0, clips.seconds.roundToInt().toLong(),
+                (clips.bytes / 1e5).roundToInt() / 10.0, (clips.cap / 1e5).roundToInt() / 10.0, clips.oldestMs(), count), steady, flood)
     }
 }
 
 /** HAM+: every FM channel on the ham bands at once. */
-class HamPlusEngine(
+open class HamPlusEngine(
     clock: () -> Double = { System.currentTimeMillis().toDouble() },
     perf: () -> Double = { System.nanoTime() / 1e6 },
 ) : ChannelWatch<WatchProbe>(HAM_PLAN, clock, perf) {

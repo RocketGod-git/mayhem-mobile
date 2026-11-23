@@ -50,7 +50,9 @@ object HamPlus {
     val prefs: StateFlow<HpPrefs> = _prefs.asStateFlow()
     private val _labels = MutableStateFlow<Map<String, String>>(emptyMap())
     val labels: StateFlow<Map<String, String>> = _labels.asStateFlow()
-    private val _mode = MutableStateFlow(HpParams.Mode.MIX)
+    // NEWEST unless MIX was picked: a saved MIX from before 0.9.65 was the old default, so it moves to NEWEST once
+    private val _mode = MutableStateFlow(HpParams.Mode.NEWEST)
+    private var modeSet = false
     val mode: StateFlow<HpParams.Mode> = _mode.asStateFlow()
     private val _audioOn = MutableStateFlow(true)
     val audioOn: StateFlow<Boolean> = _audioOn.asStateFlow()
@@ -77,7 +79,8 @@ object HamPlus {
         runCatching {
             val v = JSONObject(p.getString(K_AUDIO, null) ?: "")
             _audioOn.value = v.optBoolean("on", true); _gain.value = v.optDouble("gain", 1.0).takeIf { it.isFinite() && it > 0 } ?: 1.0
-            _mode.value = if (v.optString("mode") == "newest") HpParams.Mode.NEWEST else HpParams.Mode.MIX
+            modeSet = v.optBoolean("modeSet", false)
+            _mode.value = if (modeSet && v.optString("mode") == "mix") HpParams.Mode.MIX else HpParams.Mode.NEWEST
         }
         p.getString(K_BAND, null)?.let { b -> if (BANDS.any { it.first == b }) _band.value = b }
         p.getInt(K_SPAN, 0).takeIf { s -> SPANS.any { it.first == s } }?.let { _span.value = it }
@@ -117,9 +120,9 @@ object HamPlus {
         put(K_LABELS, JSONObject(m as Map<*, *>).toString())
         pushPrefs()
     }
-    fun setMode(m: HpParams.Mode) { _mode.value = m; saveAudio(); pushParams() }
+    fun setMode(m: HpParams.Mode) { _mode.value = m; modeSet = true; saveAudio(); pushParams() }
     fun setAudio(on: Boolean, gain: Double = _gain.value) { _audioOn.value = on; _gain.value = gain.coerceIn(0.0, 1.5); saveAudio(); pushParams() }
-    private fun saveAudio() = put(K_AUDIO, JSONObject().put("on", _audioOn.value).put("gain", _gain.value).put("mode", if (_mode.value == HpParams.Mode.NEWEST) "newest" else "mix").toString())
+    private fun saveAudio() = put(K_AUDIO, JSONObject().put("on", _audioOn.value).put("gain", _gain.value).put("mode", if (_mode.value == HpParams.Mode.NEWEST) "newest" else "mix").put("modeSet", modeSet).toString())
 
     /** A short line the live bar shows for a few seconds (a tap on the timeline with nothing to replay), and until when. */
     private val _note = MutableStateFlow("" to 0L)

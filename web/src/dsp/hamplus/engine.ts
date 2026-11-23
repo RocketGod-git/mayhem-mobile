@@ -19,10 +19,15 @@ import { SubAudioDecoder } from '../ham/ctcss.js';
 import { CwReader } from '../fleet/rx.js';
 import { HP_RASTER, hpBandOf } from './plan.js';
 import { ClipStore, ClipWriter, CLIP_RATE, planReplay, replayFromPlan, ReplayMixer, type Clip } from './clips.js';
+import { FmSpeech, SPEECH_LAPSE_MS, type SpeechCount } from './speech.js';
 import { HamTracker, ENV_MS, HEAT_SLOTS, LINK_CORR, LINK_EDGE_MS, chanKey, envCorr, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
 
-/** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (10 s), and how far either side of the keyup gap the lag is searched (300 ms). */
-export const LINK_LIVE_FRAMES = 30, LINK_LIVE_MAX = 200, LINK_LIVE_LAG = 6;
+/** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (the last 5 s), and how far either way the lag is searched (300 ms). */
+export const LINK_LIVE_FRAMES = 30, LINK_LIVE_MAX = 100, LINK_LIVE_LAG = 6;
+/** A wideband event: this many channels or more keyed within this long of each other on one tone or one audio. */
+export const FLOOD_MIN = 6, FLOOD_WIN_MS = 1_000;
+/** How long after its keyup one of many keyed together waits for that check (its tone and 1.5 s of audio are read by then). */
+export const FLOOD_HOLD_MS = 3_000;
 
 export const PROBE_RATE = 24_000;
 /** Processor time a second the probes may take, and the cap's bounds. */
@@ -33,6 +38,12 @@ export const CLOSE_HOLD_MS = 400;
 export const TX_MIN_MS = 250;
 /** A tone must be heard through this share of a transmission to be its tone. */
 export const TONE_SHARE = 0.5;
+/** A carrier open this long without a voice shows as a steady carrier. */
+export const STEADY_SHOW_MS = 3_000;
+/** A voice first heard this long after its carrier came up starts the transmission, less this much before it. */
+export const TALK_LATE_MS = 2_000, TALK_PRE_MS = 300;
+/** About the length of a speech block (the start of a block is this long before its end). */
+const SPEECH_BLOCK_MS = 85;
 const MEASURE_MS = 100, SNAP_MS = 500, OFF_WIN_MS = 100;
 
 export interface HpParams { thresholdDb: number; mode: 'mix' | 'newest'; volume: number }
@@ -47,6 +58,8 @@ export interface WatchProbe {
   tone(): number; dcs(): number;
   /** The transmission ended: flush what is still buffered (a Morse letter). */
   end(): void;
+  /** Whether the audio carries a voice, block by block (speech.ts). */
+  readonly speech: SpeechCount;
 }
 
 /**
@@ -87,12 +100,14 @@ class Probe implements WatchProbe {
   pow = 0; powN = 0; levelDb = -90; cw0 = '';
   tones = new Map<number, number>(); dcsCodes = new Map<number, number>(); subN = 0;
   out48 = 0;
+  readonly speech: FmSpeech;
   constructor(rate: number, readonly offsetHz: number) {
     this.ddc.reset(rate); this.ddc.offsetHz = offsetHz; this.fs = this.ddc.outRate;
     this.sub = new SubAudioDecoder(this.fs); this.cw = new CwReader(this.fs); this.cw.onText = t => { this.cw0 = (this.cw0 ? this.cw0 + ' ' : '') + t; };
     this.lp = new RealFir(lowpassTaps(3_000 / this.fs, 47));
     this.to8 = new Resampler(CLIP_RATE / this.fs); this.to48 = new Resampler(48_000 / this.fs);
     this.de = 1 - Math.exp(-1 / (this.fs * 530e-6));
+    this.speech = new FmSpeech(this.fs, hz => this.ddc.powerGain(hz));
   }
   retune(offsetHz: number): void { this.ddc.offsetHz = offsetHz; }
   push(fi: Float32Array, fq: Float32Array, n: number, listen: boolean): void {
@@ -110,6 +125,7 @@ class Probe implements WatchProbe {
       this.pow += a * a + b * b; this.powN++;
     }
     this.sub.push(au, m);
+    this.speech.push(au, m);
     this.subN += m;
     if (this.sub.tone) this.tones.set(this.sub.tone, (this.tones.get(this.sub.tone) ?? 0) + m);
     else if (this.sub.dcs) this.dcsCodes.set(this.sub.dcs, (this.dcsCodes.get(this.sub.dcs) ?? 0) + m);
@@ -139,7 +155,21 @@ class Probe implements WatchProbe {
   end(): void { this.cw.end(); }
 }
 
-export interface Open<P extends WatchProbe = WatchProbe> { id: number; k: number; hz: number; startMs: number; quietMs: number; peak: number; snr: number; probe: P | null; cut: boolean; shifted: boolean; tileKey: string }
+export interface Open<P extends WatchProbe = WatchProbe> {
+  id: number; k: number; hz: number; startMs: number; quietMs: number; peak: number; snr: number; probe: P | null; cut: boolean; shifted: boolean; tileKey: string;
+  /** Its demodulator heard a voice ([SPEECH_MIN] speech blocks): a transmission. Until then a steady carrier, which no
+   *  count, log, recording, listening or scan takes. One no demodulator measures (all were busy) counts as before. */
+  talk: boolean;
+  /** When its demodulator started (engine ms): the speech meter's time is from here. */
+  probeAt: number;
+  /** When its carrier came up (startMs as it opened, before a late voice moves startMs). */
+  keyMs: number;
+  /** Part of one wideband event (one tone or one audio opening many channels at once): shown once, never counted. */
+  flood: boolean;
+  /** Keyed in the same second as [FLOOD_MIN] or more others: not counted until this (engine ms), while the event check
+   *  reads their tones and audio. */
+  holdUntil: number;
+}
 
 /** The span's noise: the power the quietest quarter of its channels sit at (a carrier or a hundred barely move it). */
 export function quietQuarter(power: Float32Array | number[], count: number): number {
@@ -156,7 +186,7 @@ export function quietQuarter(power: Float32Array | number[], count: number): num
 export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor {
   readonly wantsFm = false;
   centerHz = 146_001_250;
-  params: HpParams = { thresholdDb: 8, mode: 'mix', volume: 1 };
+  params: HpParams = { thresholdDb: 8, mode: 'newest', volume: 1 };
   readonly tracker: HamTracker;
   readonly clips = new ClipStore();
   /** Wall-clock anchoring: the engine's time is the samples it has had; it follows the wall clock when [followClock]. */
@@ -225,6 +255,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     const now = this.nowMs();
     if (now - this.lastMeasure >= MEASURE_MS && this.frames > 0) { this.lastMeasure = now; this.measure(now); }
     this.runProbes(n, now);
+    this.speechStep(now);
     if (now - this.lastSnap >= SNAP_MS) { this.lastSnap = now; this.post(now); }
   }
 
@@ -280,56 +311,136 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
 
   protected openAt(k: number, now: number): Open<P> {
     const hz = this.hzOf(k), key = this.tileKey(hz);
-    const o: Open<P> = { id: this.nextId++, k, hz, startMs: now - MEASURE_MS, quietMs: 0, peak: this.snr[k], snr: this.snr[k], probe: null, cut: false, shifted: false, tileKey: key };
+    const o: Open<P> = { id: this.nextId++, k, hz, startMs: now - MEASURE_MS, quietMs: 0, peak: this.snr[k], snr: this.snr[k], probe: null, cut: false, shifted: false, tileKey: key, talk: true, probeAt: now, keyMs: now - MEASURE_MS, flood: false, holdUntil: 0 };
     if (this.fixedCap) this.cap = this.fixedCap;
     if (this.probes() >= this.cap && this.wanted(key)) {
       // a followed or priority channel takes the probe of the newest other one, which is then marked cut
       const victim = [...this.opens.values()].filter(x => x.probe && !this.wanted(x.tileKey)).sort((a, b) => b.startMs - a.startMs)[0];
       if (victim) { victim.probe = null; victim.cut = true; }
     }
-    if (this.probes() < this.cap) o.probe = this.makeProbe(hz, key);
+    if (this.probes() < this.cap) this.attach(o, now);
     this.opens.set(o.id, o);
+    // many keyed in the same second wait for the wideband-event check before any of them counts
+    const near = [...this.opens.values()].filter(x => Math.abs(x.keyMs - o.keyMs) <= FLOOD_WIN_MS);
+    if (near.length >= FLOOD_MIN) for (const x of near) if (!x.holdUntil) x.holdUntil = x.keyMs + FLOOD_HOLD_MS;
     return o;
+  }
+  /** Gives an open channel a demodulator: from now it is a transmission only once that hears a voice. */
+  protected attach(o: Open<P>, now: number): void { o.probe = this.makeProbe(o.hz, o.tileKey); o.probeAt = now; o.talk = false; }
+  /** When the open channel's voice was last heard (engine ms), or -1. */
+  protected lastSpeech(o: Open<P>): number { const s = o.probe?.speech; return s && s.lastMs >= 0 ? o.probeAt + s.lastMs : -1; }
+  /** Open channels holding a carrier with no voice: how many, and each one's frequency, since when and its level. */
+  steadyOpens(now: number): { hz: number; key: string; sinceMs: number; levelDb: number }[] {
+    return [...this.opens.values()].filter(o => !o.talk && now - o.startMs >= STEADY_SHOW_MS).map(o => ({ hz: o.hz, key: o.tileKey, sinceMs: o.startMs, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90 }));
+  }
+  /** A voice first heard this long after its carrier came up starts the transmission (CB's AM measure takes longer). */
+  protected talkLateMs = TALK_LATE_MS;
+  /** Speech: an open channel becomes a transmission once its voice is heard, and one whose voice has stopped for
+   *  [SPEECH_LAPSE_MS] while its carrier stays ends at its last word (the carrier left on is steady from there). */
+  private speechStep(now: number): void {
+    for (const o of [...this.opens.values()]) {
+      const p = o.probe; if (!p) continue;
+      if (!o.talk) {
+        if (!p.speech.heard) continue;
+        o.talk = true;
+        // a carrier that was up a while before its voice (a carrier left on, then a talker) starts at the voice
+        const first = o.probeAt + p.speech.firstMs - SPEECH_BLOCK_MS;
+        if (first - o.startMs > this.talkLateMs) o.startMs = first - TALK_PRE_MS;
+        continue;
+      }
+      const last = this.lastSpeech(o);
+      if (last >= 0 && now - last > SPEECH_LAPSE_MS) this.close(o, last + CLOSE_HOLD_MS);
+    }
   }
 
   protected close(o: Open<P>, endMs: number): void {
     this.opens.delete(o.id);
+    // a carrier that never carried a voice, or one channel of a wideband event, is no transmission: nothing counted,
+    // logged or kept
+    if (!o.talk || o.flood) { this.steadyClosed(o, endMs); return; }
     if (endMs - o.startMs < TX_MIN_MS) return;
     const p = o.probe, off = p ? p.offset(2) : { hz: NaN, sd: 0 };
     if (p) p.end();
     const recorded = !!p && !o.cut;
     const t: TxRec = {
       id: o.id, hz: o.hz, startMs: o.startMs, endMs, peakDb: Math.round(o.peak * 10) / 10, offsetHz: off.hz, offsetSd: off.sd,
-      tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cw0 ?? '', env: Float32Array.from((p?.env ?? []).slice(0, Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
+      tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cw0 ?? '', env: Float32Array.from((p?.env ?? []).slice(Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)), Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)) + Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
     };
-    if (recorded) this.clips.add({ id: o.id, chan: o.hz, startMs: o.startMs, data: p!.clip.done().slice(0, Math.round((endMs - o.startMs) * CLIP_RATE / 1000)) });
+    // (the audio from the transmission's start: later than its demodulator's when the voice came after the carrier)
+    const at = Math.max(0, Math.round((o.startMs - o.probeAt) * CLIP_RATE / 1000));
+    if (recorded) this.clips.add({ id: o.id, chan: o.hz, startMs: o.startMs, data: p!.clip.done().slice(at, at + Math.round((endMs - o.startMs) * CLIP_RATE / 1000)) });
     this.closed(o, t);
     this.tracker.addTx(t);
   }
+  /** A steady carrier went (or the span moved): HAM+ keeps nothing of it. */
+  protected steadyClosed(_o: Open<P>, _endMs: number): void { /* nothing */ }
   /** A finished transmission, just before the tracker has it. */
   protected closed(_o: Open<P>, _t: TxRec): void { /* HAM+ keeps nothing more */ }
   protected closeAll(): void { const now = this.nowMs(); for (const o of [...this.opens.values()]) this.close(o, now); }
 
+  /** A channel that counts: a voice heard on it, and not one channel of a wideband event. */
+  protected counted(o: Open<P>): boolean { return o.talk && !o.flood && this.nowMs() >= o.holdUntil; }
+  /**
+   * Whether two open channels carry the same audio right now: their voice envelopes over the last [LINK_LIVE_MAX]
+   * frames (5 s) both have, lined up in time (each demodulator's frames start when it did), correlating at the best
+   * lag within [LINK_LIVE_LAG] frames either way. The last five seconds, not the first: a carrier up before its talker
+   * (a tail, a courtesy tone) is judged on the speech. The link check and the wideband-event check both ask this, so
+   * they never disagree.
+   */
+  sameAudio(x: Open<P>, y: Open<P>): number {
+    const a = x.probe?.env, b = y.probe?.env; if (!a || !b) return -1;
+    const end = Math.min(x.probeAt + a.length * ENV_MS, y.probeAt + b.length * ENV_MS);
+    const start = Math.max(x.probeAt, y.probeAt, end - LINK_LIVE_MAX * ENV_MS), n = Math.floor((end - start) / ENV_MS);
+    if (n < LINK_LIVE_FRAMES) return -1;
+    const ia = Math.round((start - x.probeAt) / ENV_MS), ib = Math.round((start - y.probeAt) / ENV_MS);
+    return envCorr(Float32Array.from(a.slice(ia, ia + n)), Float32Array.from(b.slice(ib, ib + n)), 0, LINK_LIVE_LAG);
+  }
   /** Pairs of open channels (by id) heard carrying the same audio right now: linked repeaters. */
   private readonly liveLinked = new Set<string>();
   private linkAt = 0;
-  /** Four times a second: open channels that keyed up together are compared, their audio envelopes at a lag of up to two seconds. */
+  /** The wideband event on the air now, if any: how many channels, their span, the tone they share (0 when the audio was the match). */
+  flood: { channels: number; loHz: number; hiHz: number; tone: number; sinceMs: number } | null = null;
+  /** Four times a second: open channels that keyed up together are compared for the same audio (linked repeaters), and
+   *  many keyed up together on one tone or one audio are one wideband event. */
   private checkLinks(now: number): void {
     if (now - this.linkAt < 250) return;
     this.linkAt = now;
-    const os = [...this.opens.values()].filter(o => o.probe && o.probe.env.length >= LINK_LIVE_FRAMES);
+    this.checkFlood();
+    const os = [...this.opens.values()].filter(o => this.counted(o) && o.probe && o.probe.env.length >= LINK_LIVE_FRAMES);
     const ids = new Set(os.map(o => o.id));
     for (const k of [...this.liveLinked]) { const [a, b] = k.split('|').map(Number); if (!ids.has(a) || !ids.has(b)) this.liveLinked.delete(k); }
     for (let i = 0; i < os.length; i++) for (let j = i + 1; j < os.length; j++) {
-      const [x, y] = os[i].startMs <= os[j].startMs ? [os[i], os[j]] : [os[j], os[i]];
-      if (Math.abs(x.hz - y.hz) < 50_000 || y.startMs - x.startMs > LINK_EDGE_MS || x.tileKey === y.tileKey) continue;
+      const [x, y] = os[i].keyMs <= os[j].keyMs ? [os[i], os[j]] : [os[j], os[i]];
+      if (Math.abs(x.hz - y.hz) < 50_000 || y.keyMs - x.keyMs > LINK_EDGE_MS || x.tileKey === y.tileKey) continue;
       const key = `${x.id}|${y.id}`; if (this.liveLinked.has(key)) continue;
-      const r = envCorr(Float32Array.from(x.probe!.env.slice(0, LINK_LIVE_MAX)), Float32Array.from(y.probe!.env.slice(0, LINK_LIVE_MAX)), Math.round((y.startMs - x.startMs) / ENV_MS), LINK_LIVE_LAG);
-      if (r >= LINK_CORR) this.liveLinked.add(key);
+      if (this.sameAudio(x, y) >= LINK_CORR) this.liveLinked.add(key);
     }
     const tiles = new Set<string>();
     for (const k of this.liveLinked) { const [a, b] = k.split('|').map(Number), oa = this.opens.get(a), ob = this.opens.get(b); if (oa && ob) tiles.add([oa.tileKey, ob.tileKey].sort().join('|')); }
     this.tracker.liveLinks = tiles;
+  }
+  /**
+   * One signal smeared across the span (overload, intermod, a strong signal leaking in) opens many unrelated channels in
+   * the same second, all on one sub-audible tone or all carrying one audio. [FLOOD_MIN] or more channels keyed within
+   * [FLOOD_WIN_MS] of each other that share a tone, or the same audio by [sameAudio], are one wideband event: shown
+   * once, none of them counted as talking, logged, kept or holding the scan. A linked pair or trio stays under it.
+   */
+  private checkFlood(): void {
+    const os = [...this.opens.values()].filter(o => o.talk && o.probe);
+    let best: Open<P>[] = [], tone = 0;
+    for (const a of os) {
+      const near = os.filter(o => Math.abs(o.keyMs - a.keyMs) <= FLOOD_WIN_MS);
+      if (near.length < FLOOD_MIN) continue;
+      const t = a.probe!.tone(), byTone = t ? near.filter(o => Math.abs(o.probe!.tone() - t) < 0.6) : [];
+      const byAudio = near.filter(o => o === a || this.sameAudio(a, o) >= LINK_CORR);
+      const g = byTone.length >= byAudio.length ? byTone : byAudio;
+      if (g.length >= FLOOD_MIN && g.length > best.length) { best = g; tone = g === byTone ? t : 0; }
+    }
+    for (const o of best) o.flood = true;
+    // (and the ones keyed with them that no demodulator measures: the event took the demodulators)
+    if (best.length) { const k = best.map(o => o.keyMs).sort((a, b) => a - b)[best.length >> 1]; for (const o of this.opens.values()) if (!o.probe && Math.abs(o.keyMs - k) <= FLOOD_WIN_MS) o.flood = true; }
+    const on = [...this.opens.values()].filter(o => o.flood);
+    this.flood = on.length ? { channels: on.length, loHz: Math.min(...on.map(o => o.hz)), hiHz: Math.max(...on.map(o => o.hz)), tone: tone || (this.flood?.tone ?? 0), sinceMs: Math.min(...on.map(o => o.keyMs)) } : null;
   }
   /** Two open channels carry the same audio: heard linked right now, or a link learned before. */
   private linkedNow(a: Open<P>, b: Open<P>): boolean {
@@ -342,7 +453,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
    */
   private listenSet(): Open<P>[] {
     const pr = this.tracker.prefs;
-    let c = [...this.opens.values()].filter(o => o.probe && !pr.mute.includes(o.tileKey));
+    let c = [...this.opens.values()].filter(o => this.counted(o) && o.probe && !pr.mute.includes(o.tileKey));
     // a repeater input is the same voice as its output: the output is heard
     c = c.filter(o => !(this.tracker.outputOf(o.hz) && c.some(x => x.tileKey === o.tileKey && x !== o)));
     if (pr.hold) return c.filter(o => o.tileKey === pr.hold);
@@ -432,7 +543,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
 
   /** The channels open now, as the tracker takes them. */
   liveRecs(): LiveRec[] {
-    return [...this.opens.values()].map(o => {
+    return [...this.opens.values()].filter(o => this.counted(o)).map(o => {
       const off = o.probe ? o.probe.offset(2) : { hz: NaN, sd: 0 };
       return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0, recorded: !!o.probe && !o.cut };
     });
@@ -448,7 +559,8 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     const tiles = tr.tiles(now, rows);
     return {
       now, centerHz: this.centerHz, rate: this.rate, spanLo: tr.spanLo, spanHi: tr.spanHi, tiles, rows, convs, heat: tr.heat, playing: this.playing, replay: this.replayState(),
-      stats: { onAir: this.opens.size, stations: tr.stationCount, probes: this.probes(), cap: this.cap, costMs: Math.round(this.costMs * 10) / 10, clipS: Math.round(this.clips.seconds), clipMB: Math.round(this.clips.bytes / 1e5) / 10, capMB: Math.round(this.clips.cap / 1e5) / 10, oldestMs: this.clips.oldestMs(), channels: this.count },
+      steady: this.steadyOpens(now), flood: this.flood,
+      stats: { onAir: [...this.opens.values()].filter(o => this.counted(o)).length, steady: this.steadyOpens(now).length, stations: tr.stationCount, probes: this.probes(), cap: this.cap, costMs: Math.round(this.costMs * 10) / 10, clipS: Math.round(this.clips.seconds), clipMB: Math.round(this.clips.bytes / 1e5) / 10, capMB: Math.round(this.clips.cap / 1e5) / 10, oldestMs: this.clips.oldestMs(), channels: this.count },
     };
   }
   protected post(now: number): void { this.emit({ type: this.plan.type, ...this.snapshot(now) }); }

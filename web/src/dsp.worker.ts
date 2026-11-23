@@ -459,7 +459,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'hamplus':
     case 'cb': {
       // Repeaters and CB share the watcher and its commands; CB adds its modes and clarifiers
-      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB' : 'Repeaters';
+      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB Radio' : 'Repeaters';
       if (m.cmd === 'center') w.centerHz = m.hz as number;
       else if (m.cmd === 'params') w.setParams(m.params as Record<string, unknown>);
       else if (m.cmd === 'prefs') { w.setPrefs(m.prefs as never, m.labels as Record<string, string>); if (w === cb && m.cb) cb.setCbPrefs(m.cb as never); }

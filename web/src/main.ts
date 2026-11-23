@@ -35,7 +35,7 @@ import { hpWindows } from './dsp/hamplus/plan.js';
 import { HpScan } from './dsp/hamplus/scan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import type { HpTxRow } from './dsp/hamplus/tracker.js';
-import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, HP_SPAN_MS } from './hamplus-ui.js';
+import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, hpCountText, HP_SPAN_MS } from './hamplus-ui.js';
 import type { CbSnap } from './dsp/cb/engine.js';
 import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
 import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml, cbListenHtml, cbTilesHtml, cbTitle } from './cb-ui.js';
@@ -103,7 +103,7 @@ const APPS: AppDef[] = [
   { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
   { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex channel at once', cat: 'Receive' },
-  { id: 'cb', title: 'CB', blurb: 'all 40 channels at once', cat: 'Receive' },
+  { id: 'cb', title: 'CB Radio', blurb: 'all 40 channels at once', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
@@ -4726,7 +4726,8 @@ type HpView = 'talk' | 'act' | 'log';
 type HpHit = (x: number, y: number) => { tx?: HpTxRow; ms: number; hz?: number };
 const hpUi = {
   snap: null as HpSnap | null, band: 'AUTO', span: 8_000_000, prefs: { hold: '', mute: [] as string[], prio: [] as string[] }, labels: {} as Record<string, string>,
-  mode: 'mix' as 'mix' | 'newest', audioOn: true, gain: 1, view: 'talk' as HpView, sel: '', open: new Set<number>(),
+  // NEWEST unless MIX was picked: a saved MIX from before 0.9.65 was the old default, so it moves to NEWEST once
+  mode: 'newest' as 'mix' | 'newest', modeSet: false, audioOn: true, gain: 1, view: 'talk' as HpView, sel: '', open: new Set<number>(),
   windows: [] as { band: string; hz: number }[], idx: 0, until: 0, autoMode: '', timer: 0, drawn: 0, pending: 0, hold: false, wired: false, savedAt: 0, anim: 0,
   hit: null as HpHit | null, hitWide: null as HpHit | null, note: '', noteUntil: 0,
 };
@@ -4735,11 +4736,11 @@ function hpNote(text: string): void { hpUi.note = text; hpUi.noteUntil = Date.no
 (() => {
   try {
     const v = JSON.parse(localStorage.getItem(HP_KEY) ?? 'null');
-    if (v) { hpUi.band = v.band ?? 'AUTO'; hpUi.span = Number(v.span) || 8_000_000; hpUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; hpUi.labels = v.labels ?? {}; hpUi.mode = v.mode === 'newest' ? 'newest' : 'mix'; hpUi.audioOn = v.audioOn !== false; hpUi.gain = Number(v.gain) || 1; }
+    if (v) { hpUi.band = v.band ?? 'AUTO'; hpUi.span = Number(v.span) || 8_000_000; hpUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; hpUi.labels = v.labels ?? {}; hpUi.modeSet = v.modeSet === true; hpUi.mode = hpUi.modeSet && v.mode === 'mix' ? 'mix' : 'newest'; hpUi.audioOn = v.audioOn !== false; hpUi.gain = Number(v.gain) || 1; }
   } catch { /* storage blocked */ }
 })();
 function hpSave(): void {
-  try { localStorage.setItem(HP_KEY, JSON.stringify({ band: hpUi.band, span: hpUi.span, prefs: hpUi.prefs, labels: hpUi.labels, mode: hpUi.mode, audioOn: hpUi.audioOn, gain: hpUi.gain })); } catch { /* storage full or blocked */ }
+  try { localStorage.setItem(HP_KEY, JSON.stringify({ band: hpUi.band, span: hpUi.span, prefs: hpUi.prefs, labels: hpUi.labels, mode: hpUi.mode, modeSet: hpUi.modeSet, audioOn: hpUi.audioOn, gain: hpUi.gain })); } catch { /* storage full or blocked */ }
 }
 const hpRate = () => radioCan(hpUi.span) ? hpUi.span : radioCan(2_400_000) ? 2_400_000 : 2_000_000;
 const hpSend = (m: Record<string, unknown>) => worker?.postMessage({ type: 'hamplus', ...m });
@@ -4865,7 +4866,7 @@ function renderHamPlus(view: HTMLElement): void {
     const cv = t.closest<HTMLElement>('[data-hpconv]'); if (cv) { hpReplay(cv.dataset.hpconv!.split(',').map(Number), cv.dataset.hplabel ?? '', 'conv'); return; }
     const pl = t.closest<HTMLElement>('[data-hpplay]'); if (pl) { hpReplay([Number(pl.dataset.hpplay)], pl.dataset.hplabel ?? '', 'tx'); return; }
     if (t.closest('[data-hpstop]')) { hpSend({ cmd: 'stop' }); return; }
-    const md = t.closest<HTMLElement>('[data-hpmode]'); if (md) { hpUi.mode = md.dataset.hpmode as 'mix' | 'newest'; hpSave(); hpPushParams(); refreshHamPlus(true); return; }
+    const md = t.closest<HTMLElement>('[data-hpmode]'); if (md) { hpUi.mode = md.dataset.hpmode as 'mix' | 'newest'; hpUi.modeSet = true; hpSave(); hpPushParams(); refreshHamPlus(true); return; }
     const f = t.closest<HTMLElement>('[data-hpfollow]'); if (f) { hpFollow(f.dataset.hpfollow ?? ''); return; }
   };
   $('hp-aud').onclick = () => { hpUi.audioOn = !hpUi.audioOn; hpSave(); hpPushParams(); if (hpUi.audioOn) void ensureAudio(); refreshHamPlus(true); };
@@ -4925,7 +4926,8 @@ function refreshHamPlus(force = false): void {
   if (live) { live.className = `fl-now hp-live ${lb.cls}`; live.style.setProperty('--sys', lb.col); if (live.innerHTML !== lb.html) live.innerHTML = lb.html; }
   const aud = q<HTMLButtonElement>('#hp-aud'); if (aud) { aud.textContent = hpUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; aud.classList.toggle('on', hpUi.audioOn); }
   const vv = q('#hp-volv'); if (vv) vv.textContent = `${Math.round(hpUi.gain * 100)}%`;
-  set('hp-tiles', hpTilesHtml(s, now, hpUi.prefs.hold, emptyState('hamplus')));
+  set('hp-tiles', hpTilesHtml(s, now, hpUi.prefs.hold, emptyState('hamplus', (s?.stats.steady ?? 0) > 0 ? 'No voice heard yet' : undefined)));
+  { const r = q('#capr'); const t = hpCountText(s); if (r && r.textContent !== t) r.textContent = t; }
   const card = q<HTMLElement>('#hp-card');
   if (card) { const html = s && hpUi.sel ? hpCardHtml(s, hpUi.sel, now, hpUi.prefs, hpUi.open) : ''; card.hidden = !html; if (card.innerHTML !== html) card.innerHTML = html; }
   if (HP_WIDE.matches) set('hp-stage', hpUi.view === 'talk' ? hpConvsHtml(s, now, hpUi.open, 20) : hpUi.view === 'act' ? hpHeatHtml(s, now) : `<div class="hp-logs">${hpLogHtml(s)}</div>`);
@@ -4947,7 +4949,8 @@ const CB_KEY = 'mm.cb.v1', CB_KNOWN = 'mm.cb.known1';
 const cbUi = {
   snap: null as CbSnap | null, prefs: { hold: '', mute: [] as string[], prio: [] as string[] }, labels: {} as Record<string, string>,
   modes: {} as Record<string, CbMode | ''>, clar: {} as Record<string, number>,
-  mode: 'mix' as 'mix' | 'newest', audioOn: true, gain: 1, view: 'talk' as HpView, sel: '', open: new Set<number>(),
+  // NEWEST unless MIX was picked: a saved MIX from before 0.9.65 was the old default, so it moves to NEWEST once
+  mode: 'newest' as 'mix' | 'newest', modeSet: false, audioOn: true, gain: 1, view: 'talk' as HpView, sel: '', open: new Set<number>(),
   timer: 0, drawn: 0, pending: 0, hold: false, wired: false, savedAt: 0, anim: 0,
   hit: null as HpHit | null, hitWide: null as HpHit | null, note: '', noteUntil: 0,
 };
@@ -4955,11 +4958,11 @@ function cbNote(text: string): void { cbUi.note = text; cbUi.noteUntil = Date.no
 (() => {
   try {
     const v = JSON.parse(localStorage.getItem(CB_KEY) ?? 'null');
-    if (v) { cbUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; cbUi.labels = v.labels ?? {}; cbUi.modes = v.modes ?? {}; cbUi.clar = v.clar ?? {}; cbUi.mode = v.mode === 'newest' ? 'newest' : 'mix'; cbUi.audioOn = v.audioOn !== false; cbUi.gain = Number(v.gain) || 1; }
+    if (v) { cbUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; cbUi.labels = v.labels ?? {}; cbUi.modes = v.modes ?? {}; cbUi.clar = v.clar ?? {}; cbUi.modeSet = v.modeSet === true; cbUi.mode = cbUi.modeSet && v.mode === 'mix' ? 'mix' : 'newest'; cbUi.audioOn = v.audioOn !== false; cbUi.gain = Number(v.gain) || 1; }
   } catch { /* storage blocked */ }
 })();
 function cbSave(): void {
-  try { localStorage.setItem(CB_KEY, JSON.stringify({ prefs: cbUi.prefs, labels: cbUi.labels, modes: cbUi.modes, clar: cbUi.clar, mode: cbUi.mode, audioOn: cbUi.audioOn, gain: cbUi.gain })); } catch { /* storage full or blocked */ }
+  try { localStorage.setItem(CB_KEY, JSON.stringify({ prefs: cbUi.prefs, labels: cbUi.labels, modes: cbUi.modes, clar: cbUi.clar, mode: cbUi.mode, modeSet: cbUi.modeSet, audioOn: cbUi.audioOn, gain: cbUi.gain })); } catch { /* storage full or blocked */ }
 }
 /** One span hears all 40: a HackRF at 2 MS/s, an RTL-SDR at 2.4. */
 const cbRate = () => radioCan(2_400_000) && radio?.kind === 'rtlsdr' ? 2_400_000 : radioCan(2_000_000) ? 2_000_000 : 2_400_000;
@@ -4988,7 +4991,7 @@ function cbRename(key: string, cur: string): void {
   cbSave(); cbPushPrefs();
 }
 function cbReplay(ids: number[], label: string, kind: string): void { void ensureAudio(); cbSend({ cmd: 'replay', ids, label, kind }); }
-const CB_ABOUT = 'All 40 CB channels at once. Every channel that carries a voice is demodulated in its own mode, AM, FM, USB or LSB, read from the transmission itself (a carrier that moves with the voice is AM, a steady envelope is FM, energy on one side of the channel is single sideband), or set by hand on the channel\'s card with a clarifier for SSB. A channel opens on its modulation, not its power, so a steady unmodulated carrier from a nearby receiver, charger or computer keeps it shut and shows as a steady carrier, while a voice under one still opens it. Talkers on AM and FM are told apart by their own radio\'s carrier, and the time machine keeps every transmission to replay. An RTL-SDR tunes 27 MHz directly, a Blog V4 through its HF upconverter.';
+const CB_ABOUT = 'CB Radio hears all 40 CB channels at once. Every channel that carries a voice is demodulated in its own mode, AM, FM, USB or LSB, read from the transmission itself (a carrier that moves with the voice is AM, a steady envelope is FM, energy on one side of the channel is single sideband), or set by hand on the channel\'s card with a clarifier for SSB. A channel opens on its modulation, not its power, so a steady unmodulated carrier from a nearby receiver, charger or computer keeps it shut and shows as a steady carrier, while a voice under one still opens it. Talkers on AM and FM are told apart by their own radio\'s carrier, and the time machine keeps every transmission to replay. An RTL-SDR tunes 27 MHz directly, a Blog V4 through its HF upconverter.';
 function renderCb(view: HTMLElement): void {
   const wide = HP_WIDE.matches;
   view.classList.toggle('hpwide', wide);
@@ -5038,7 +5041,7 @@ function renderCb(view: HTMLElement): void {
     const cv = t.closest<HTMLElement>('[data-hpconv]'); if (cv) { cbReplay(cv.dataset.hpconv!.split(',').map(Number), cv.dataset.hplabel ?? '', 'conv'); return; }
     const pl = t.closest<HTMLElement>('[data-hpplay]'); if (pl) { cbReplay([Number(pl.dataset.hpplay)], pl.dataset.hplabel ?? '', 'tx'); return; }
     if (t.closest('[data-hpstop]')) { cbSend({ cmd: 'stop' }); return; }
-    const md = t.closest<HTMLElement>('[data-hpmode]'); if (md) { cbUi.mode = md.dataset.hpmode as 'mix' | 'newest'; cbSave(); cbPushParams(); refreshCb(true); return; }
+    const md = t.closest<HTMLElement>('[data-hpmode]'); if (md) { cbUi.mode = md.dataset.hpmode as 'mix' | 'newest'; cbUi.modeSet = true; cbSave(); cbPushParams(); refreshCb(true); return; }
     const f = t.closest<HTMLElement>('[data-hpfollow]'); if (f) { cbFollow(f.dataset.hpfollow ?? ''); return; }
   };
   $('cb-aud').onclick = () => { cbUi.audioOn = !cbUi.audioOn; cbSave(); cbPushParams(); if (cbUi.audioOn) void ensureAudio(); refreshCb(true); };
@@ -5093,7 +5096,9 @@ function refreshCb(force = false): void {
   const aud = q<HTMLButtonElement>('#cb-aud'); if (aud) { aud.textContent = cbUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; aud.classList.toggle('on', cbUi.audioOn); }
   const vv = q('#cb-volv'); if (vv) vv.textContent = `${Math.round(cbUi.gain * 100)}%`;
   set('cb-board', cbBoardHtml(s, now, cbUi.prefs.hold, cbUi.sel));
-  set('cb-tiles', cbTilesHtml(s, now, cbUi.prefs.hold, s?.tiles.length ? '' : emptyState('cb')));
+  // (steady carriers on the board are not voices: with nothing heard yet the board still says so)
+  set('cb-tiles', cbTilesHtml(s, now, cbUi.prefs.hold, s?.tiles.length ? '' : emptyState('cb', s?.chans.some(c => c.steady) ? 'No voice heard yet' : undefined)));
+  { const r = q('#capr'); const t = hpCountText(s); if (r && r.textContent !== t) r.textContent = t; }
   const card = q<HTMLElement>('#cb-card');
   if (card) { const html = s && cbUi.sel ? cbCardHtml(s, cbUi.sel, now, cbUi.prefs, cbUi.open) : ''; card.hidden = !html; if (card.innerHTML !== html) card.innerHTML = html; }
   if (HP_WIDE.matches) set('cb-stage', cbUi.view === 'talk' ? hpConvsHtml(s, now, cbUi.open, 20, CB_NAMER) : cbUi.view === 'act' ? cbHeatHtml(s, now) : `<div class="hp-logs">${hpLogHtml(s, CB_NAMER)}</div>`);
@@ -8990,7 +8995,8 @@ function refreshList(id: string): void {
   if (id === state.app) {
     const n = counts[id] ?? 0;
     if (n > 0) setLamp(`${n} DECODED`, 'ok'); else setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
-    const r = q('#capr'); if (r) r.textContent = n > 0 ? `${n} decoded` : 'nothing decoded yet';
+    // (Repeaters and CB Radio count transmissions, which their own refresh writes here)
+    const r = q('#capr'); if (r && id !== 'hamplus' && id !== 'cb') r.textContent = n > 0 ? `${n} decoded` : 'nothing decoded yet';
   }
   const el = q(`#list-${id}`); if (!el || paused.has(id)) return;
   const lines = logs[id] ?? [];
@@ -9978,7 +9984,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB', 'ALL 40 CHANNELS · AM · FM · SSB'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS · AM · FM · SSB'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],

@@ -135,8 +135,10 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         paneWaterfall: Float = 110f,
                         /** A tap on the waterfall or a tune on the card goes here instead of the engine (HD Radio). */
                         retune: ((Long) -> Unit)? = null,
-                        /** The card's subtitle on its own row (Repeaters and CB, as on the web). */
-                        titleRow: Boolean = false) {
+                        /** The card's subtitle on its own row (Repeaters and CB Radio, as on the web). */
+                        titleRow: Boolean = false,
+                        /** The readout's caption in place of "n decoded" (Repeaters and CB Radio count transmissions). */
+                        right: String? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -156,7 +158,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
         face = {
             FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = (burstDb ?: level) / 40f,
                 left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
-                right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
+                right = right ?: if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
                 onTune = if (tunable) ({ f: Long -> tuneTo(f) }) else null,
                 lamp = lamp ?: { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) },
                 titleRow = titleRow)

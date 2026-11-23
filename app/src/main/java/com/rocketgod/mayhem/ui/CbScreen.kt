@@ -178,7 +178,7 @@ fun CbScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Cb.log, tag = "CB", title = "ALL 40 CHANNELS · AM · FM · SSB", roomy = true, titleRow = true, waterfall = wf,
+    PacketFrame(accent, Cb.log, tag = "CB RADIO", title = "ALL 40 CHANNELS · AM · FM · SSB", roomy = true, titleRow = true, waterfall = wf, right = hpCountText(tiles),
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.CB, !wf) },
         lamp = {
@@ -269,7 +269,7 @@ private fun CbHead(s: CbSnap?, accent: Color) {
     val inSpan = s?.chans?.count { it.inSpan } ?: 0
     Column(verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
-            Text("CB", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
+            Text("CB RADIO", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false)
             Text("26.965–27.405 MHz${if (s != null && s.rate > 0 && inSpan < 40) " · $inSpan of 40 channels in the span" else " · all 40 channels"}",
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
         }
@@ -362,7 +362,9 @@ private fun CbTileGrid(tiles: List<HpTile>, s: CbSnap?, hold: String, now: Long,
                     repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
-            if (tiles.isEmpty()) EmptyState("cb", Modifier.fillMaxWidth().height(d.dp(250f)).panel(), accent)
+            // (steady carriers on the board are not voices: with nothing heard yet the board still says so)
+            if (tiles.isEmpty()) EmptyState("cb", Modifier.fillMaxWidth().height(d.dp(250f)).panel(), accent,
+                title = if (s?.chans?.any { it.steady } == true) "No voice heard yet" else null)
         }
     }
 }

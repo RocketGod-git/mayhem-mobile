@@ -17,6 +17,7 @@ import { Resampler, lowpassTaps, RealFir } from '../ham/filters.js';
 import { ClipWriter, CLIP_RATE } from '../hamplus/clips.js';
 import { ENV_MS } from '../hamplus/tracker.js';
 import type { WatchProbe } from '../hamplus/engine.js';
+import { RatioSpeech } from '../hamplus/speech.js';
 import type { CbMode } from './plan.js';
 import { Biquad, butter4, run, twice, CarrierTracker, Denoiser, median, FLAT_FM, LineNotch, NOTCH_CLEAR_HZ, SQUELCH_DB } from './carrier.js';
 
@@ -56,6 +57,10 @@ export class CbProbe implements WatchProbe {
   readonly votes: CbVotes = { AM: 0, FM: 0, USB: 0, LSB: 0 };
   /** The carrier, found and held. */
   readonly trk: CarrierTracker;
+  /** Whether the audio carries a voice (speech.ts): only this measure, on what the demodulator already makes, is new
+   *  here; the demodulator and its audio are home's. */
+  readonly speech: RatioSpeech;
+  private readonly spI: Biquad[]; private readonly spQ: Biquad[];
   private notches: LineNotch[] = []; private otherNotches: LineNotch[] = []; private pending: number[] = []; private notchedFor = NaN; private sw = -1;
   private readonly to8: Resampler; private readonly to48: Resampler;
   private readonly uI: RealFir; private readonly uQ: RealFir; private readonly lI: RealFir; private readonly lQ: RealFir;
@@ -91,6 +96,8 @@ export class CbProbe implements WatchProbe {
     // a two-pole Butterworth's delay at low frequencies is sqrt(2) / (2 pi fc), twice that here
     this.dl = new Float32Array(Math.max(1, Math.round(2 * this.fs * Math.SQRT2 / (2 * Math.PI / SSB_AGC_S))));
     this.den = new Denoiser(this.fs);
+    this.speech = new RatioSpeech(this.fs);
+    this.spI = [...butter4('hp', 300, this.fs), ...butter4('lp', 3_000, this.fs)]; this.spQ = [...butter4('hp', 300, this.fs), ...butter4('lp', 3_000, this.fs)];
 
   }
   retune(offsetHz: number): void { this.ddc.offsetHz = offsetHz; }
@@ -268,11 +275,19 @@ export class CbProbe implements WatchProbe {
         // the sideband's real part, back up by 1650 Hz, over its own power over 0.3 s (times 3, as home's)
         const s = mode === 'USB' ? 1 : -1, c = Math.cos(this.wb), sn = Math.sin(s * this.wb);
         const x = mode === 'USB' ? u.ti[i] * c - u.tq[i] * sn : u.si[i] * c - u.sq[i] * sn;
+        const pu = u.ti[i] * u.ti[i] + u.tq[i] * u.tq[i], pl = u.si[i] * u.si[i] + u.sq[i] * u.sq[i];
+        if (!(trk.have && trk.present)) this.speech.push(mode === 'USB' ? pu : pl, mode === 'USB' ? pl : pu, 2);
         this.wb += dbk;
         // home levels it by its power over 0.3 s on both sides of each sample; streaming, the audio is held back by
         // the smoothing's own delay so its level is centered on it
         v = this.agcDelay(x);
       }
+      // the speech measure, while a carrier is held whatever the mode: the signal in line with it and at right angles
+      if (trk.have && trk.present) {
+        const cm = Math.hypot(trk.cr, trk.ci), L = Math.max(trk.lvl, trk.floor());
+        const x = cm > 0 && L > 0 ? (trk.br * trk.cr + trk.bi * trk.ci) / cm / L : 0, y = cm > 0 && L > 0 ? (trk.bi * trk.cr - trk.br * trk.ci) / cm / L : 0;
+        const si = run(this.spI, x), sq = run(this.spQ, y); this.speech.push(si * si, sq * sq, 1);
+      } else if (mode === 'AM' || mode === 'FM') this.speech.push(0, 0, 0);
       // 300 to 3000 Hz, clipped at 3, faded in and out where the carrier comes and goes
       for (const h of this.hp) v = h.step(v);
       for (const h of this.lpA) v = h.step(v);

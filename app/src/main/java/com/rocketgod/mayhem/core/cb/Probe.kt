@@ -8,6 +8,7 @@ import com.rocketgod.mayhem.core.hamplus.CLIP_RATE
 import com.rocketgod.mayhem.core.hamplus.ClipWriter
 import com.rocketgod.mayhem.core.hamplus.ENV_MS
 import com.rocketgod.mayhem.core.hamplus.ProbeOffset
+import com.rocketgod.mayhem.core.hamplus.RatioSpeech
 import com.rocketgod.mayhem.core.hamplus.WatchProbe
 import com.rocketgod.mayhem.core.trains.Ddc
 import kotlin.math.PI
@@ -89,6 +90,10 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
     val votes = IntArray(4)
     /** The carrier, found and held. */
     val trk: CarrierTracker
+    /** Whether the audio carries a voice (Speech.kt): only this measure, on what the demodulator already makes, is new
+     *  here; the demodulator and its audio are home's. */
+    override val speech: RatioSpeech
+    private val spI: List<Biquad>; private val spQ: List<Biquad>
     private var notches: List<LineNotch> = emptyList(); private var otherNotches: List<LineNotch> = emptyList()
     private var pending: List<Double> = emptyList(); private var notchedFor = Double.NaN; private var sw = -1
     private val to8: Resampler; private val to48: Resampler
@@ -122,6 +127,8 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
         // a two-pole Butterworth's delay at low frequencies is sqrt(2) / (2 pi fc), twice that here
         dl = FloatArray(max(1, (2 * fs * sqrt(2.0) / (2 * PI / SSB_AGC_S)).roundToInt()))
         den = Denoiser(fs)
+        speech = RatioSpeech(fs)
+        spI = butter4(false, 300.0, fs) + butter4(true, 3_000.0, fs); spQ = butter4(false, 300.0, fs) + butter4(true, 3_000.0, fs)
     }
 
     /** The envelope's spread over its mean while the carrier was on (home's FM test: under 0.12). */
@@ -315,11 +322,20 @@ class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
                 // the sideband's real part, back up by 1650 Hz, over its own power over 0.3 s (times 3, as home's)
                 val s = if (mode == CbMode.USB) 1 else -1; val c = cos(wb); val sn = sin(s * wb)
                 val x = if (mode == CbMode.USB) ti * c - tq * sn else si * c - sq * sn
+                val pu = ti * ti + tq * tq; val pl = si * si + sq * sq
+                if (!(trk.have && trk.present)) speech.push(if (mode == CbMode.USB) pu else pl, if (mode == CbMode.USB) pl else pu, 2)
                 wb += dbk
                 // home levels it by its power over 0.3 s on both sides of each sample; streaming, the audio is held back by
                 // the smoothing's own delay so its level is centered on it
                 v = agcDelay(x)
             }
+            // the speech measure, while a carrier is held whatever the mode: the signal in line with it and at right angles
+            if (trk.have && trk.present) {
+                val cm = hypot(trk.cr, trk.ci); val l = max(trk.lvl, trk.floor())
+                val x = if (cm > 0 && l > 0) (trk.br * trk.cr + trk.bi * trk.ci) / cm / l else 0.0
+                val y = if (cm > 0 && l > 0) (trk.bi * trk.cr - trk.br * trk.ci) / cm / l else 0.0
+                val si2 = run(spI, x); val sq2 = run(spQ, y); speech.push(si2 * si2, sq2 * sq2, 1)
+            } else if (mode == CbMode.AM || mode == CbMode.FM) speech.push(0.0, 0.0, 0)
             // 300 to 3000 Hz, clipped at 3, faded in and out where the carrier comes and goes
             for (h in hp) v = h.step(v)
             for (h in lpA) v = h.step(v)

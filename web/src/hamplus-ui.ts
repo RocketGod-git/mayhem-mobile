@@ -73,7 +73,22 @@ export function hpHeadHtml(s: HpSnap | null, scan: string): string {
   const cell = (n: string | number, l: string, on = false) => `<div class="${on ? 'on' : ''}"><b>${n}</b><small>${l}</small></div>`;
   return `<div class="hp-hl"><b>${band ? esc(band.name.toUpperCase()) : ''}</b>${s && s.rate ? `<span>${(s.spanLo / 1e6).toFixed(3)}–${(s.spanHi / 1e6).toFixed(3)} MHz</span>` : ''}<span class="hp-scan">${esc(scan)}</span></div>`
     + `<div class="hp-stats">${cell(tiles.length, 'CHANNELS')}${cell(onAir, 'ON AIR', onAir > 0)}${cell(s?.stats.stations ?? 0, 'STATIONS')}${cell(s?.convs.length ?? 0, 'CONVOS')}${cell(nets, 'NETS')}${cell(Math.floor((s?.stats.clipS ?? 0) / 60), 'MIN KEPT')}</div>`
-    + (s ? `<div class="hp-cost">demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${s.stats.costMs > 0 ? ` (${Math.round(s.stats.costMs)} ms a channel a second)` : ''} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB</div>` : '');
+    + (s ? `<div class="hp-cost">demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${s.stats.costMs > 0 ? ` (${Math.round(s.stats.costMs)} ms a channel a second)` : ''} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB${hpSteadyText(s.stats.steady ?? 0)}</div>` : '');
+}
+/** The carriers open with no voice on them, as the cost line names them ('' when none). */
+export const hpSteadyText = (n: number) => n > 0 ? ` · ${n} steady carrier${n === 1 ? '' : 's'} with no voice, not counted` : '';
+/**
+ * A wideband event on the air (one signal opening many channels at once, see the engine's checkFlood), as the listen
+ * line shows it, once: how many channels, from where to where and the tone they share. null when there is none.
+ */
+export function hpFloodText(f: { channels: number; loHz: number; hiHz: number; tone: number } | null): { head: string; sub: string } | null {
+  if (!f) return null;
+  return { head: `one signal across ${f.channels} channels`, sub: `${(f.loHz / 1e6).toFixed(3)} to ${(f.hiHz / 1e6).toFixed(3)} MHz${f.tone ? ` · PL ${f.tone.toFixed(1)}` : ' · the same audio'} · shown once, not counted as talk` };
+}
+/** What the readout's caption counts: the transmissions logged, so it agrees with the channels heard. */
+export function hpCountText(s: { tiles: { txs: number }[] } | null): string {
+  const n = (s?.tiles ?? []).reduce((a, t) => a + t.txs, 0);
+  return n ? `${n} transmission${n === 1 ? '' : 's'} logged` : 'no transmissions logged yet';
 }
 
 /** What is heard: ALL or the one followed, and MIX or NEWEST. */
@@ -94,7 +109,11 @@ export function hpLiveHtml(s: HpSnap | null, now: number, audioOn: boolean, hold
   }
   const heard = s && audioOn ? s.rows.filter(r => r.live && s.playing.includes(String(r.hz))) : [];
   const r = heard.sort((a, b) => b.startMs - a.startMs)[0];
-  if (!r) return { cls: '', col: 'var(--line)', html: `<div class="hp-lb1"><span class="fl-np-l">LISTENING</span></div><div class="hp-lb2"><span class="hp-lbt">${!audioOn ? 'audio is off · every channel is still recorded' : hold ? `waiting for ${nm.waiting(hold)} to key up` : 'nothing on the air · every channel is heard the moment it keys up'}</span></div>` };
+  if (!r) {
+    const fl = hpFloodText(s?.flood ?? null);
+    if (fl) return { cls: 'on note', col: 'var(--accent2)', html: `<div class="hp-lb1"><span class="fl-np-l">WIDEBAND</span><b>${esc(fl.head)}</b></div><div class="hp-lb2"><span class="hp-lbt">${esc(fl.sub)}</span></div>` };
+    return { cls: '', col: 'var(--line)', html: `<div class="hp-lb1"><span class="fl-np-l">LISTENING</span></div><div class="hp-lb2"><span class="hp-lbt">${!audioOn ? 'audio is off · every channel is still recorded' : hold ? `waiting for ${nm.waiting(hold)} to key up` : 'nothing on the air · every channel is heard the moment it keys up'}</span></div>` };
+  }
   const t = s!.tiles.find(x => x.hz === r.hz);
   const who = [t ? nm.name(t) : '', r.stationLabel ? `${r.stationLabel} talking` : '', heard.length > 1 ? `+${heard.length - 1} more` : ''].filter(Boolean).join(' · ');
   const meta = [nm.meta(r), r.direct ? 'HEARD DIRECT, NEARBY' : '', t?.kind === 'REPEATER' && t.offset ? `REPEATER ${t.offset}` : ''].filter(Boolean).join(' · ');
@@ -231,11 +250,17 @@ export function hpLanes(s: HpSnap | null, now: number, max: number): { lanes: nu
   return { lanes, rows, t0, span };
 }
 
-/** What the quiet timeline says: the last transmission heard (a tap replays from it), else that nothing was heard yet. */
+/**
+ * What the quiet timeline says: nothing on the air right now and the last channel heard (a tap replays from its last
+ * transmission when that was kept), from the log or, after a restart, the channels heard before. "Yet" only when
+ * nothing at all has been heard.
+ */
 export function hpQuietText(s: HpSnap | null, now: number, nm: HpNamer = HAM_NAMER): { head: string; sub: string } {
   const last = (s?.rows ?? []).filter(r => !r.live).sort((a, b) => b.endMs - a.endMs)[0];
-  if (!last) return { head: 'nothing on the air yet', sub: 'every transmission shows here as it happens' };
-  return { head: 'nothing on the air for ten minutes', sub: `last heard ${nm.chan(last.hz)}, ${hpAgo(now - last.endMs)}${last.recorded ? ', tap to replay from there' : ''}` };
+  const tile = (s?.tiles ?? []).filter(t => !t.live && t.lastMs > 0).sort((a, b) => b.lastMs - a.lastMs)[0];
+  if (!last && !tile) return { head: 'nothing on the air yet', sub: 'every transmission shows here as it happens' };
+  const fromLog = !!last && (!tile || last.endMs >= tile.lastMs), hz = fromLog ? last!.hz : tile!.hz, at = fromLog ? last!.endMs : tile!.lastMs;
+  return { head: 'nothing on the air right now', sub: `last heard ${nm.chan(hz)}, ${hpAgo(now - at)}${fromLog && last!.recorded ? ', tap to replay from there' : ''}` };
 }
 
 /** A tap within this many pixels of a transmission's bar replays that transmission. */

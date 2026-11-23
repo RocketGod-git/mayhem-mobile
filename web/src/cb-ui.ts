@@ -37,7 +37,7 @@ export function cbHeadHtml(s: CbSnap | null, note = ''): string {
   const tiles = s?.tiles ?? [], onAir = s?.stats.onAir ?? 0, steady = s?.chans.filter(c => c.steady).length ?? 0;
   const inSpan = s?.chans.filter(c => c.inSpan).length ?? 0;
   const cell = (n: string | number, l: string, on = false) => `<div class="${on ? 'on' : ''}"><b>${n}</b><small>${l}</small></div>`;
-  return `<div class="hp-hl"><b>CB</b><span>26.965–27.405 MHz${s && s.rate && inSpan < 40 ? ` · ${inSpan} of 40 channels in the span` : ' · all 40 channels'}</span>${note ? `<span class="hp-scan">${esc(note)}</span>` : ''}</div>`
+  return `<div class="hp-hl"><b>CB RADIO</b><span>26.965–27.405 MHz${s && s.rate && inSpan < 40 ? ` · ${inSpan} of 40 channels in the span` : ' · all 40 channels'}</span>${note ? `<span class="hp-scan">${esc(note)}</span>` : ''}</div>`
     + `<div class="hp-stats">${cell(tiles.length, 'HEARD')}${cell(onAir, 'ON AIR', onAir > 0)}${cell(s?.stats.stations ?? 0, 'TALKERS')}${cell(s?.convs.length ?? 0, 'CONVOS')}${cell(steady, 'CARRIERS')}${cell(Math.floor((s?.stats.clipS ?? 0) / 60), 'MIN KEPT')}</div>`
     + (s ? `<div class="hp-cost">demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${s.stats.costMs > 0 ? ` (${Math.round(s.stats.costMs)} ms a channel a second)` : ''} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB</div>` : '');
 }

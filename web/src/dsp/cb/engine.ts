@@ -10,14 +10,16 @@
  * A channel opens on what is left: its bins moving from one measurement to the next against their own floors (a
  * weak talker's voice, measured against how far the quietest quarter of the channels move), or plenty of power in
  * them (a strong talker, whose voice fills the channel). Then the demodulator decides: an opening that never
- * measures as AM, FM or sideband in its first 3 s (a burst of noise, a carrier keyed with nothing on it, sideband
- * facing a busy neighbor) is dropped without a trace. Nothing opens in the first 3 s of a span.
+ * measures as AM, FM or sideband in its first 3 s (a burst of noise, sideband facing a busy neighbor) is dropped
+ * without a trace. One that measures as a carrier but whose audio carries no voice (speech.ts) stays open as a steady
+ * carrier: nothing counts it, logs it or keeps it, and it becomes a transmission from the moment a voice is heard on
+ * it. Nothing opens in the first 3 s of a span.
  *
  * A channel holding a steady line and no voice is reported as such: the level of the line over the noise, how long
  * it has held and how much of the last ten minutes it was there.
  */
 import type { Emit } from '../core.js';
-import { ChannelWatch, quietQuarter, type Open, type WatchPlan } from '../hamplus/engine.js';
+import { ChannelWatch, quietQuarter, STEADY_SHOW_MS, type Open, type WatchPlan } from '../hamplus/engine.js';
 import { HamTracker, chanKey, type TxRec } from '../hamplus/tracker.js';
 import { CbProbe } from './probe.js';
 import { CB_CENTER, CB_CHANNELS, CB_RASTER, CB_TRACKER_PLAN, cbChannel, type CbMode } from './plan.js';
@@ -54,8 +56,6 @@ export const LINE_OVER_CH = 4;
 /** A line holding this many measurements running (3 s) is remembered, and its bins left out this long after. */
 export const LINE_REMEMBER = 30;
 export const LINE_MEMORY_MS = 600_000;
-/** A channel shows "steady carrier, no voice" once a line has held this long without voice. */
-export const STEADY_SHOW_MS = 3_000;
 /** A steady line missing this long is gone. */
 export const LINE_GONE_MS = 1_000;
 /** The share of the last ten minutes a line was there decays with this time constant. */
@@ -67,7 +67,7 @@ const FLOOR_DOWN = 0.3, FLOOR_UP = 0.005;
 const HALF_HZ = 4_000, GUARD_HZ = 300;
 
 export const CB_PLAN: WatchPlan = {
-  name: 'CB', type: 'cb', raster: CB_RASTER, inPlan: hz => cbChannel(hz) > 0,
+  name: 'CB Radio', type: 'cb', raster: CB_RASTER, inPlan: hz => cbChannel(hz) > 0,
   // fine enough that a carrier sits in a bin or two and the voice beside it in others
   nfft: rate => 1 << Math.max(12, Math.min(14, Math.ceil(Math.log2(rate / 250)))), spanHalf: rate => Math.min(rate * 0.44 - 6_250, 400_000),
   peakSteps: 0, clearSteps: 1, snap: false,
@@ -110,6 +110,9 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     super(CB_PLAN, emit, sink, clock, perf, now => new HamTracker(now, CB_TRACKER_PLAN));
     this.centerHz = CB_CENTER;
     this.params.thresholdDb = CB_OPEN_DB;
+    // a weak AM voice can take the speech measure up to its 3 s check to find: only a voice found later than that
+    // moves the start
+    this.talkLateMs = CB_CONFIRM_MS + 1_000;
   }
 
   /**
@@ -242,14 +245,15 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     // up a moment later); without one (SSB, or a weak talker under a steady line) the voice going quiet ends it
     for (const o of [...this.opens.values()]) {
       // an opening that found every demodulator busy gets one as soon as one is free, and its check starts then
-      if (!o.probe && this.probes() < this.cap) { o.probe = this.makeProbe(o.hz, o.tileKey); o.cut = false; this.checkFrom.set(o.id, now); }
+      if (!o.probe && this.probes() < this.cap) { this.attach(o, now); o.cut = false; this.checkFrom.set(o.id, now); }
       const i = cbChannel(o.hz) - 1, s = this.st[i], p = o.probe;
       // a voice is AM, FM or sideband to the demodulator: something that moves the spectrum but measures as none of
       // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
       // held shut a while
+      // (a carrier with no voice on it yet is kept open, unconfirmed: steady, until a voice is heard or it goes)
       if (p && !this.confirmed.has(o.id) && now - (this.checkFrom.get(o.id) ?? o.startMs) >= CB_CONFIRM_MS) {
-        if (this.voiced(p, o.hz)) this.confirmed.add(o.id);
-        else { this.drop(o, now); continue; }
+        if (this.voiced(o)) this.confirmed.add(o.id);
+        else if (!this.carrierOnly(o)) { this.drop(o, now); continue; }
       }
       o.snr = s.sigDb; o.peak = Math.max(o.peak, s.sigDb);
       if (p) {
@@ -282,8 +286,10 @@ export class CbEngine extends ChannelWatch<CbProbe> {
    * a clear sideband), and not sideband facing a busy neighbor 10 kHz away (USB facing the channel above, LSB the one
    * below), which is that neighbor's AM splatter.
    */
-  private voiced(p: CbProbe, hz: number): boolean {
-    if (!p.readable()) return false;
+  private voiced(o: Open<CbProbe>): boolean {
+    const p = o.probe, hz = o.hz;
+    // the audio must carry a voice too: a carrier with nothing on it measures as AM all the same
+    if (!p || !o.talk || !p.readable()) return false;
     const m = p.measuredMode(), own = this.st[cbChannel(hz) - 1];
     const busy = (f: number) => { const ch = cbChannel(f); if (!ch) return false; const n = this.st[ch - 1];
       return [...this.opens.values()].some(o => o.hz === f) || (!!own && n.sigDb >= own.sigDb + SPLATTER_FACING_DB); };
@@ -291,17 +297,24 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     if (m === 'LSB' && busy(hz - 10_000)) return false;
     return true;
   }
+  /** A readable station's carrier, or a clear sideband, on which no voice has been heard yet: a steady carrier. */
+  private carrierOnly(o: Open<CbProbe>): boolean { return !!o.probe && !o.talk && o.probe.readable(); }
   /** An opening that never measured as a voice: gone without a trace, and its channel held shut a while. */
   private drop(o: Open<CbProbe>, now: number): void {
     const s = this.st[cbChannel(o.hz) - 1];
-    this.opens.delete(o.id); this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id); this.checkFrom.delete(o.id);
+    this.opens.delete(o.id); this.forget(o);
     if (s) { s.v = []; s.over = 0; s.noVoiceMs = now; }
     this.dropped++;
   }
+  private forget(o: Open<CbProbe>): void { this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id); this.checkFrom.delete(o.id); }
   /** One that ends before its voice check (a carrier dropping within 3 s) faces the check as it ends. */
   protected override close(o: Open<CbProbe>, endMs: number): void {
     // (one never demodulated cannot be checked: it is not logged either)
-    if (!this.confirmed.has(o.id) && (!o.probe || !this.voiced(o.probe, o.hz))) { this.drop(o, this.nowMs()); return; }
+    if (!this.confirmed.has(o.id) && !this.voiced(o)) {
+      // a steady carrier going is no dropped opening: the channel reopens on whatever comes next
+      if (this.carrierOnly(o)) { this.opens.delete(o.id); this.forget(o); const s = this.st[cbChannel(o.hz) - 1]; if (s) { s.v = []; s.over = 0; } return; }
+      this.drop(o, this.nowMs()); return;
+    }
     super.close(o, endMs);
   }
 
@@ -323,22 +336,24 @@ export class CbEngine extends ChannelWatch<CbProbe> {
   chans(now: number): CbChan[] {
     const half = this.plan.spanHalf(this.rate);
     return CB_CHANNELS.map((hz, i) => {
-      const s = this.st[i], key = chanKey(hz), o = [...this.opens.values()].find(x => x.hz === hz), p = o?.probe;
+      const s = this.st[i], key = chanKey(hz), all = [...this.opens.values()].filter(x => x.hz === hz), o = all.find(x => x.talk), p = o?.probe;
       const override = this.cbPrefs.modes[key] ?? '';
-      const steadyMs = s.lineSince ? now - s.lineSince : 0;
+      // a steady line, or a carrier open with no voice heard on it (one that wanders shows no line)
+      const quiet = !o ? all.find(x => !x.talk && now - x.startMs >= STEADY_SHOW_MS) : undefined;
+      const steadyMs = s.lineSince ? now - s.lineSince : quiet ? now - quiet.startMs : 0, lineDb = s.lineSince ? s.lineDb : quiet ? Math.max(1, Math.round(s.sigDb > 0 ? s.sigDb : s.totDb)) : 0;
       return {
         ch: i + 1, hz, key, inSpan: !!this.rate && Math.abs(hz - this.centerHz) <= half, open: !!o,
         mode: p ? p.mode() : override || s.mode, measured: p ? p.measuredMode() : '', override, clarHz: this.cbPrefs.clar[key] ?? 0,
         voiceDb: Math.round(s.voiceDb * 10) / 10, sigDb: Math.round(s.sigDb * 10) / 10,
-        lineDb: s.lineDb, steadyMs, steadyPct: s.total > 0 ? Math.round(100 * s.seen / s.total) : 0,
-        steady: !o && s.lineDb > 0 && steadyMs >= STEADY_SHOW_MS,
+        lineDb, steadyMs, steadyPct: s.total > 0 ? Math.round(100 * s.seen / s.total) : 0,
+        steady: !o && lineDb > 0 && steadyMs >= STEADY_SHOW_MS,
       };
     });
   }
 
   override snapshot(now = this.nowMs()) {
     const s = super.snapshot(now);
-    const live = new Map<number, CbMode>(); for (const o of this.opens.values()) if (o.probe) live.set(o.id, o.probe.mode());
+    const live = new Map<number, CbMode>(); for (const o of this.opens.values()) if (o.probe && o.talk) live.set(o.id, o.probe.mode());
     // a transmission still waiting for its voice check is on the air, but not yet known to be a station (pending)
     const rows = s.rows.map(r => ({ ...r, mode: live.get(r.id) ?? this.txMode.get(r.id) ?? '', pending: r.live && !this.confirmed.has(r.id) }));
     return { ...s, rows, chans: this.chans(now) };

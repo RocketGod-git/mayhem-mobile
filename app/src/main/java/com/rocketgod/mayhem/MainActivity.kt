@@ -285,7 +285,7 @@ class MainActivity : ComponentActivity() {
         i.getStringExtra("cbreplay")?.let { name ->
             val center = i.getLongExtra("cbcenter", com.rocketgod.mayhem.core.cb.CB_CENTER)
             Apps.open(MayhemApp.CB)
-            connected.value = true; status.value = "CB replay"
+            connected.value = true; status.value = "CB Radio replay"
             Thread({
                 val f = java.io.File(getExternalFilesDir(null), name)
                 if (!f.exists()) return@Thread
