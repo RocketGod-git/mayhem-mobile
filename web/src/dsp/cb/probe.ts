@@ -18,7 +18,7 @@ import { ClipWriter, CLIP_RATE } from '../hamplus/clips.js';
 import { ENV_MS } from '../hamplus/tracker.js';
 import type { WatchProbe } from '../hamplus/engine.js';
 import type { CbMode } from './plan.js';
-import { Biquad, butter4, run, twice, CarrierTracker, Denoiser, FLAT_FM, LineNotch, NOTCH_CLEAR_HZ, SQUELCH_DB } from './carrier.js';
+import { Biquad, butter4, run, twice, CarrierTracker, Denoiser, median, FLAT_FM, LineNotch, NOTCH_CLEAR_HZ, SQUELCH_DB } from './carrier.js';
 
 export const CB_PROBE_RATE = 16_000;
 /** The Weaver shift: a sideband 300 to 3000 Hz from the carrier is centered at 1650 Hz and kept 1350 Hz either side. */
@@ -27,7 +27,10 @@ export const SSB_MID_HZ = 1_650, SSB_HALF_HZ = 1_350;
 export const SSB_RATIO = 4;
 /** A carrier stands 15 dB over the median through this share of its keyup, once held a second (real AM 0.84 to 1, a
  *  sideband voice followed as if a carrier 0.34 to 0.81, on home's recordings). */
-export const CARRIER_HELD = 0.8;
+export const CARRIER_HELD = 0.6;
+/** Our sideband guard: steady lines stand [TONE_DB] over their neighborhood, and may hold at most [TONE_SHARE]. */
+export const TONE_DB = 20, TONE_SHARE = 0.5;
+const TONE_X = Math.pow(10, TONE_DB / 10), SIDE_BAND = 25, SIDE_FROM = 300, SIDE_TO = 3_000, EDGE_FROM = 3_200, EDGE_TO = 4_800, TONE_CARRIER_HZ = 40;
 /** SSB's level is its power over this long (s). */
 export const SSB_AGC_S = 0.3;
 /** Audio is clipped here (the carrier's level is 1), and faded in and out over this long (ms). */
@@ -59,7 +62,7 @@ export class CbProbe implements WatchProbe {
   private ub = { i: new Float32Array(0), q: new Float32Array(0), li: new Float32Array(0), lq: new Float32Array(0), ti: new Float32Array(0), tq: new Float32Array(0), si: new Float32Array(0), sq: new Float32Array(0) };
   private readonly hp: Biquad[]; private readonly lpA: Biquad[]; private readonly ssbP: Biquad[]; private readonly den: Denoiser;
   private pi = 1; private pq = 0; private wu = 0; private wl = 0; private wb = 0; private gate = 0; private lastHop = 0;
-  private up = 0; private lo = 0; private upOff = 0; private loOff = 0; private nOff = 0; private eS = 0; private eS2 = 0; private eN = 0;
+  private eS = 0; private eS2 = 0; private eN = 0;
   /** The envelope's spread over its mean while the carrier was on (home's FM test: under 0.12). */
   flatness(): number {
     // over the last two seconds (the first moments after a notch is set leave a line's beat in it)
@@ -114,6 +117,62 @@ export class CbProbe implements WatchProbe {
   }
   get notchHz(): number[] { return this.notches.map(n => n.hz); }
 
+  /**
+   * Our guard on home's sideband rule, which the no-antenna recordings need: a receiver's own spurs come in bursts of
+   * lines (on the Mac's HackRF, lines every 100 Hz 221.5 kHz below the tuning, 60 dB over the noise, on for seconds),
+   * and a burst of them on one side passes home's split as a sideband. A voice's harmonics wander with its pitch and
+   * smear over tens of Hz in half a second; a spur's lines stay put to a Hz. So on fine spectra (2 Hz bins, each half
+   * second) the share of the 300 to 3000 Hz power over the noise that sits in bins [TONE_DB] over their neighborhood
+   * must stay under [TONE_SHARE] for the keyup to be taken for single sideband.
+   */
+  private tI = new Float32Array(0); private tQ = new Float32Array(0); private tN = 0;
+  private toneIn = 0; private toneAll = 0;
+  /** The power over the noise a Hz, 300 to 3000 Hz and 3200 to 4800 Hz from the center, above (0) and below (1). */
+  private readonly edgeIn = [0, 0]; private readonly edgeOut = [0, 0];
+  /** The share of the sidebands' power in steady lines (the followed carrier left out), NaN before a half second. */
+  get toneShare(): number { return this.toneAll > 0 ? this.toneIn / this.toneAll : NaN; }
+  /** The power over the noise 300 to 3000 Hz above and below the followed carrier, over the keyup, and the noise. */
+  private readonly carSide = [0, 0]; private carNoise = 0; private carBins = 0;
+  /** Whether the followed carrier's sidebands differ by [SSB_RATIO] or more, the louder over the noise. */
+  lopsided(): boolean {
+    const [u, l] = this.carSide, big = Math.max(u, l);
+    return this.carBins > 0 && big >= SSB_RATIO * Math.min(u, l) && big >= this.carNoise * this.carBins;
+  }
+  /** Whether [side] holds more power a Hz just past the voice band (3.2 to 4.8 kHz) than in it: the skirt of something
+   *  strong beyond the band, not a voice (a transmitter's audio stops near 3 kHz). */
+  skirt(side: 'USB' | 'LSB'): boolean { const j = side === 'USB' ? 0 : 1; return this.edgeOut[j] > this.edgeIn[j]; }
+  private toneBlock(): void {
+    const N = this.tI.length, re = this.tI.slice(), im = this.tQ.slice(), w = hann(N);
+    for (let k = 0; k < N; k++) { re[k] *= w[k]; im[k] *= w[k]; }
+    fft(re, im);
+    const bh = this.fs / N, G = Math.max(1, Math.round(SIDE_BAND / bh)), lo = Math.round(SIDE_FROM / bh), hi = Math.round(SIDE_TO / bh);
+    const o0 = Math.round(EDGE_FROM / bh), o1 = Math.min(N / 2 - 1, Math.round(EDGE_TO / bh));
+    const car = this.trk.have ? this.trk.hz : NaN;
+    for (const sgn of [1, -1]) {
+      // band medians, then each bin against the median of the bands around it
+      const pw: number[] = []; for (let b = lo; b <= hi; b++) { const k = (sgn * b + N) % N; pw.push(re[k] * re[k] + im[k] * im[k]); }
+      const bm: number[] = []; for (let g = 0; g < pw.length; g += G) bm.push(median(pw.slice(g, g + G)));
+      const noise = [...bm].sort((x, y) => x - y)[Math.floor(bm.length / 5)] || 1e-20;
+      let inP = 0;
+      for (let b = 0; b < pw.length; b++) {
+        const x = Math.max(0, pw[b] - noise); inP += x;
+        if (Math.abs(sgn * (b + lo) * bh - car) <= TONE_CARRIER_HZ) continue;
+        const g = Math.floor(b / G), near = median(bm.slice(Math.max(0, g - 4), g + 5));
+        this.toneAll += x; if (pw[b] >= near * TONE_X) this.toneIn += x;
+      }
+      let outP = 0; for (let b = o0; b <= o1; b++) { const k = (sgn * b + N) % N; outP += Math.max(0, re[k] * re[k] + im[k] * im[k] - noise); }
+      const j = sgn > 0 ? 0 : 1; this.edgeIn[j] += inP / pw.length; this.edgeOut[j] += outP / Math.max(1, o1 - o0 + 1);
+      // around the carrier
+      if (this.trk.have) {
+        const c = Math.round(car / bh); let sum = 0, nb = 0;
+        // (a steady line, 20 dB over the bands around it, left out: a comb line beside a station is not its sideband)
+        const cp: number[] = []; for (let b = lo; b <= hi; b++) { const k = ((c + sgn * b) % N + N) % N; cp.push(re[k] * re[k] + im[k] * im[k]); }
+        const cm: number[] = []; for (let g = 0; g < cp.length; g += G) cm.push(median(cp.slice(g, g + G)));
+        for (let b = 0; b < cp.length; b++) { const g = Math.floor(b / G); nb++; if (cp[b] >= median(cm.slice(Math.max(0, g - 4), g + 5)) * TONE_X) continue; sum += Math.max(0, cp[b] - noise); }
+        this.carSide[j] += sum; if (j === 0) { this.carNoise += noise; this.carBins = nb; }
+      }
+    }
+  }
   /** What the measurement found: '' until a carrier is held or a sideband stands out. */
   measuredMode(): CbMode | '' {
     // a carrier is a station's when it stands 22 dB over the median through the keyup (home skips one under that: on
@@ -126,11 +185,15 @@ export class CbProbe implements WatchProbe {
     // a line for a carrier)
     const t = this.trk, held = t.heldHops >= 100 ? t.onHops / t.heldHops : this.notCarrier ? 0 : 1;
     if (t.heldHops >= 100 && held < CARRIER_HELD) this.notCarrier = true;
-    const side = this.up + this.lo > 0 && Math.max(this.up, this.lo) >= SSB_RATIO * Math.min(this.up, this.lo);
-    const sideOff = this.nOff >= this.fs * 0.1 && Math.max(this.upOff, this.loOff) >= SSB_RATIO * Math.min(this.upOff, this.loOff);
+    // (the split is home's, 300 to 3000 Hz either side, with its idle-line notches done another way, so the steady
+    // lines of a nearby device, which home notched, cannot tip it: see CarrierTracker.side)
+    const sideAll = t.side(false, SSB_RATIO), side = sideAll !== '';
+    const sideOff = t.side(true, SSB_RATIO) !== '';
     const q = t.medianQ(), carrier = (t.have || t.log.length >= 10) && !(q < SQUELCH_DB) && held >= CARRIER_HELD && (t.heldHops >= 100 || !sideOff);
-    if (carrier) { const f = this.flatness(); return Number.isFinite(f) && f < FLAT_FM ? 'FM' : 'AM'; }
-    if (side) return this.up > this.lo ? 'USB' : 'LSB';
+    // (and a carrier is a station's when its two sidebands are alike, as AM's are: a receiver's own spur burst has a
+    // strongest line too, with its other lines on one side of it)
+    if (carrier && !this.lopsided()) { const f = this.flatness(); return Number.isFinite(f) && f < FLAT_FM ? 'FM' : 'AM'; }
+    if (side && !(this.toneShare >= TONE_SHARE) && !this.skirt(sideAll as 'USB' | 'LSB')) return sideAll;
     return '';
   }
   /** The mode demodulated now: by hand, else measured, else the channel's last. */
@@ -149,6 +212,9 @@ export class CbProbe implements WatchProbe {
       this.ub = { i: new Float32Array(max), q: new Float32Array(max), li: new Float32Array(max), lq: new Float32Array(max), ti: new Float32Array(max), tq: new Float32Array(max), si: new Float32Array(max), sq: new Float32Array(max) };
     }
     const m = this.ddc.push(fi, fq, n, this.oi, this.oq), fs = this.fs, oi = this.oi, oq = this.oq, u = this.ub, trk = this.trk;
+    // every half second, a fine spectrum (2 Hz bins) for the tone share
+    if (!this.tI.length) { let n2 = 1; while (n2 < fs / 2) n2 <<= 1; this.tI = new Float32Array(n2); this.tQ = new Float32Array(n2); }
+    for (let i = 0; i < m; i++) { this.tI[this.tN] = oi[i]; this.tQ[this.tN] = oq[i]; if (++this.tN >= this.tI.length) { this.toneBlock(); this.tN = 0; } }
     if (this.coarse.length && this.lineN >= 0) {
       if (!this.lineI.length) { let n2 = 1; while (n2 < fs / 2) n2 <<= 1; this.lineI = new Float32Array(n2); this.lineQ = new Float32Array(n2); }
       for (let i = 0; i < m && this.lineN < this.lineI.length; i++) { this.lineI[this.lineN] = oi[i]; this.lineQ[this.lineN] = oq[i]; this.lineN++; }
@@ -187,10 +253,6 @@ export class CbProbe implements WatchProbe {
       this.pi = a; this.pq = b;
       this.offAcc += f; if (++this.offN >= win) { this.means.push(this.offAcc / this.offN * fs / twoPi); this.offAcc = 0; this.offN = 0; }
       trk.step(a, b);
-      // how the energy splits either side of the center, over the keyup
-      this.up += u.ti[i] * u.ti[i] + u.tq[i] * u.tq[i]; this.lo += u.si[i] * u.si[i] + u.sq[i] * u.sq[i];
-      // and while a followed line is off (a carrier, off frequency, would tip the split by itself)
-      if (trk.have && !trk.onNow) { this.upOff += u.ti[i] * u.ti[i] + u.tq[i] * u.tq[i]; this.loOff += u.si[i] * u.si[i] + u.sq[i] * u.sq[i]; this.nOff++; }
       if ((i & 63) === 0) mode = this.mode();
       let v = 0, on = true;
       if (mode === 'AM' || mode === 'FM') {

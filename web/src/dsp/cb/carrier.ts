@@ -18,6 +18,10 @@
 import { fft, hann } from '../../fft.js';
 
 export const HOP_MS = 10, WIN_MS = 20, SEARCH_HZ = 2_800;
+/** The sideband split: 300 to 3000 Hz either side in 25 Hz bands, each band's level kept in half-dB steps from -10 dB. */
+export const SIDE_LO_HZ = 300, SIDE_HI_HZ = 3_000, SIDE_BAND_HZ = 25, SIDE_HIST = 120, SIDE_HIST_LO = 20;
+interface SideAcc { sum: Float64Array; hist: Uint32Array; n: number; at: number; res: 'USB' | 'LSB' | '' }
+const sideAcc = (K: number): SideAcc => ({ sum: new Float64Array(K), hist: new Uint32Array(K * SIDE_HIST), n: 0, at: -1, res: '' });
 export const STRONG_DB = 20, HELD_SHARE = 0.08, CAND_APART_HZ = 40, MAX_CAND = 3, ON_LINE_HZ = 8;
 export const FIND_MS = 500, TRACK_HZ = 60, OTHERS_HZ = 50, ON_DB = 15, BRIDGE_MS = 1_500;
 /** The held carrier gone this long while another stands strong elsewhere: a new keyup, found at once (ms). */
@@ -75,7 +79,7 @@ export class LineNotch {
   }
 }
 
-const median = (a: number[]) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+export const median = (a: number[]) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 
 export class CarrierTracker {
   /** The carrier (Hz from the center), whether one is held, how often it changed, and each change (ms in, Hz). */
@@ -134,6 +138,14 @@ export class CarrierTracker {
     const bh = this.fs / N, R = Math.floor(SEARCH_HZ / bh), pw: number[] = [];
     for (let b = -R; b <= R; b++) { const k = (b + N) % N; pw.push(re[k] * re[k] + im[k] * im[k]); }
     const med = median(pw) || 1e-20;
+    if (!this.sided) {
+      // once a hop: the power in 25 Hz bands across the channel, over the median, for the sideband split
+      this.sided = true; this.hopBands.fill(0);
+      for (let b = 0; b < pw.length; b++) {
+        const k = Math.floor(((b - R) * bh + SIDE_HI_HZ) / SIDE_BAND_HZ); if (k >= 0 && k < this.hopBands.length) this.hopBands[k] += pw[b] / med;
+      }
+      this.hopFilled = true;
+    }
     let best = -1;
     for (let b = 0; b < pw.length; b++) {
       const f = (b - R) * bh; if (f < lo || f > hi || avoid.some(x => Math.abs(f - x) <= clear)) continue;
@@ -146,6 +158,47 @@ export class CarrierTracker {
   }
 
   private hop(): void {
+    this.sided = false; this.hopFilled = false;
+    this.hop0();
+    if (!this.hopFilled) return;
+    this.addHop(this.all);
+    if (this.have && !this.onNow) this.addHop(this.off);
+  }
+  private addHop(a: SideAcc): void {
+    const K = this.hopBands.length;
+    for (let k = 0; k < K; k++) {
+      const x = this.hopBands[k]; a.sum[k] += x;
+      const j = Math.max(0, Math.min(SIDE_HIST - 1, Math.floor(2 * 10 * Math.log10(x + 1e-12)) + SIDE_HIST_LO));
+      a.hist[k * SIDE_HIST + j]++;
+    }
+    a.n++;
+  }
+  /**
+   * Which side of the center carries a voice, over the keyup ([off]: only the hops a followed line was off): home's
+   * split of the power 300 to 3000 Hz either side, with its idle-line notches done another way. Each 25 Hz band's
+   * power is followed hop by hop, and what counts is how far its mean stands over its median: a voice comes and goes
+   * (its mean well over its median), noise a little and the same on both sides, a steady line or a cluster of a
+   * nearby device's lines hardly at all, however strong. One side must hold [ratio] times the other.
+   */
+  side(off: boolean, ratio: number): 'USB' | 'LSB' | '' {
+    const a = off ? this.off : this.all;
+    if (a.n < 10) return '';
+    if (a.n === a.at) return a.res;
+    const K = this.hopBands.length; let up = 0, lo = 0;
+    for (let k = 0; k < K; k++) {
+      const f = (k + 0.5) * SIDE_BAND_HZ - SIDE_HI_HZ, af = Math.abs(f); if (af < SIDE_LO_HZ || af > SIDE_HI_HZ) continue;
+      let c = 0, j = 0; const half = a.n / 2; for (; j < SIDE_HIST; j++) { c += a.hist[k * SIDE_HIST + j]; if (c >= half) break; }
+      const med = Math.pow(10, (j + 0.5 - SIDE_HIST_LO) / 20), x = Math.max(0, a.sum[k] / a.n - med);
+      if (f > 0) up += x; else lo += x;
+    }
+    a.at = a.n; a.res = up + lo > 0 && Math.max(up, lo) >= ratio * Math.min(up, lo) ? (up > lo ? 'USB' : 'LSB') : '';
+    return a.res;
+  }
+  private readonly hopBands = new Float64Array(2 * SIDE_HI_HZ / SIDE_BAND_HZ);
+  private readonly all = sideAcc(2 * SIDE_HI_HZ / SIDE_BAND_HZ); private readonly off = sideAcc(2 * SIDE_HI_HZ / SIDE_BAND_HZ);
+  get offHops(): number { return this.off.n; }
+  private sided = false; private hopFilled = false;
+  private hop0(): void {
     this.ms += HOP_MS;
     if (this.filled < this.B) return;
     if (!this.have) {
