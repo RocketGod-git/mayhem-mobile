@@ -26,8 +26,8 @@ import { CB_CENTER, CB_CHANNELS, CB_RASTER, CB_TRACKER_PLAN, cbChannel, type CbM
 export const CB_OPEN_DB = 3;
 /** Or its power outside its steady lines this far over the noise (dB), and staying open 3 dB under that. */
 export const CB_SIG_OPEN_DB = 10;
-/** An open channel must measure as a voice (this many blocks voting AM, FM or sideband) within this long, or it is dropped. */
-export const CB_CONFIRM_MS = 3_000, CB_CONFIRM_VOTES = 3;
+/** An open channel must measure as a readable station within this long, or it is dropped. */
+export const CB_CONFIRM_MS = 3_000;
 /** A dropped channel stays shut this long. */
 export const CB_DROP_HOLD_MS = 5_000;
 /** Nothing opens this long after the span starts: the floors and lines settle first. */
@@ -97,6 +97,10 @@ export class CbEngine extends ChannelWatch<CbProbe> {
   cbPrefs: CbPrefs = { modes: {}, clar: {} };
   private readonly txMode = new Map<number, CbMode>();
   private readonly confirmed = new Set<number>();
+  /** When an opening's demodulator started, when it did not start with it. */
+  private readonly checkFrom = new Map<number, number>();
+  /** Each finished transmission's carriers, as its demodulator took them. */
+  readonly txCarriers = new Map<number, { ms: number; hz: number }[]>();
   /** Openings dropped as no voice, since the start (the log and the tests read it). */
   dropped = 0;
   private readonly peakLevel = new Map<number, number>(); private readonly goneMs = new Map<number, number>();
@@ -237,11 +241,13 @@ export class CbEngine extends ChannelWatch<CbProbe> {
     // open channels: still voiced? A carrier that drops away ends the transmission at once (the next talker may key
     // up a moment later); without one (SSB, or a weak talker under a steady line) the voice going quiet ends it
     for (const o of [...this.opens.values()]) {
+      // an opening that found every demodulator busy gets one as soon as one is free, and its check starts then
+      if (!o.probe && this.probes() < this.cap) { o.probe = this.makeProbe(o.hz, o.tileKey); o.cut = false; this.checkFrom.set(o.id, now); }
       const i = cbChannel(o.hz) - 1, s = this.st[i], p = o.probe;
       // a voice is AM, FM or sideband to the demodulator: something that moves the spectrum but measures as none of
       // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
       // held shut a while
-      if (p && !this.confirmed.has(o.id) && now - o.startMs >= CB_CONFIRM_MS) {
+      if (p && !this.confirmed.has(o.id) && now - (this.checkFrom.get(o.id) ?? o.startMs) >= CB_CONFIRM_MS) {
         if (this.voiced(p, o.hz)) this.confirmed.add(o.id);
         else { this.drop(o, now); continue; }
       }
@@ -272,11 +278,12 @@ export class CbEngine extends ChannelWatch<CbProbe> {
   }
 
   /**
-   * Whether an opening measured as a voice: enough blocks voting AM, FM or sideband, and not sideband facing a busy
-   * neighbor 10 kHz away (USB facing the channel above, LSB the one below), which is that neighbor's AM splatter.
+   * Whether an opening is a readable station by home's measure (a carrier 22 dB over the median through the keyup, or
+   * a clear sideband), and not sideband facing a busy neighbor 10 kHz away (USB facing the channel above, LSB the one
+   * below), which is that neighbor's AM splatter.
    */
   private voiced(p: CbProbe, hz: number): boolean {
-    const v = p.votes; if (v.AM + v.FM + v.USB + v.LSB < CB_CONFIRM_VOTES) return false;
+    if (!p.readable()) return false;
     const m = p.measuredMode(), own = this.st[cbChannel(hz) - 1];
     const busy = (f: number) => { const ch = cbChannel(f); if (!ch) return false; const n = this.st[ch - 1];
       return [...this.opens.values()].some(o => o.hz === f) || (!!own && n.sigDb >= own.sigDb + SPLATTER_FACING_DB); };
@@ -287,27 +294,30 @@ export class CbEngine extends ChannelWatch<CbProbe> {
   /** An opening that never measured as a voice: gone without a trace, and its channel held shut a while. */
   private drop(o: Open<CbProbe>, now: number): void {
     const s = this.st[cbChannel(o.hz) - 1];
-    this.opens.delete(o.id); this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id);
+    this.opens.delete(o.id); this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id); this.checkFrom.delete(o.id);
     if (s) { s.v = []; s.over = 0; s.noVoiceMs = now; }
     this.dropped++;
   }
   /** One that ends before its voice check (a carrier dropping within 3 s) faces the check as it ends. */
   protected override close(o: Open<CbProbe>, endMs: number): void {
-    if (o.probe && !this.confirmed.has(o.id) && !this.voiced(o.probe, o.hz)) { this.drop(o, this.nowMs()); return; }
+    // (one never demodulated cannot be checked: it is not logged either)
+    if (!this.confirmed.has(o.id) && (!o.probe || !this.voiced(o.probe, o.hz))) { this.drop(o, this.nowMs()); return; }
     super.close(o, endMs);
   }
 
   protected override closed(o: Open<CbProbe>, t: TxRec): void {
-    this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id);
+    this.peakLevel.delete(o.id); this.goneMs.delete(o.id); this.confirmed.delete(o.id); this.checkFrom.delete(o.id);
     const i = cbChannel(o.hz) - 1;
     // the next transmission on the channel opens on its own voice, not on what is left of this one's
     if (i >= 0) { this.st[i].v = []; this.st[i].over = 0; }
     const m = o.probe ? o.probe.mode() : this.st[i]?.mode ?? 'AM';
     this.txMode.set(t.id, m);
+    // the carriers it was heard on, in order with when (ms into it): one a keyup is the aim
+    if (o.probe) { this.txCarriers.set(t.id, o.probe.trk.changes.map(c => ({ ms: c.ms, hz: Math.round(c.hz) }))); if (this.txCarriers.size > 4_000) this.txCarriers.delete(this.txCarriers.keys().next().value!); }
     if (this.txMode.size > 4_000) this.txMode.delete(this.txMode.keys().next().value!);
     if (i >= 0 && o.probe && o.probe.measuredMode()) this.st[i].mode = o.probe.measuredMode() as CbMode;
   }
-  override clear(): void { super.clear(); this.txMode.clear(); }
+  override clear(): void { super.clear(); this.txMode.clear(); this.txCarriers.clear(); }
 
   /** Each of the 40 channels as the screen shows it. */
   chans(now: number): CbChan[] {
@@ -329,7 +339,8 @@ export class CbEngine extends ChannelWatch<CbProbe> {
   override snapshot(now = this.nowMs()) {
     const s = super.snapshot(now);
     const live = new Map<number, CbMode>(); for (const o of this.opens.values()) if (o.probe) live.set(o.id, o.probe.mode());
-    const rows = s.rows.map(r => ({ ...r, mode: live.get(r.id) ?? this.txMode.get(r.id) ?? '' }));
+    // a transmission still waiting for its voice check is on the air, but not yet known to be a station (pending)
+    const rows = s.rows.map(r => ({ ...r, mode: live.get(r.id) ?? this.txMode.get(r.id) ?? '', pending: r.live && !this.confirmed.has(r.id) }));
     return { ...s, rows, chans: this.chans(now) };
   }
 }

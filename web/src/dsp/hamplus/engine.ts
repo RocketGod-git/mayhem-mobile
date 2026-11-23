@@ -273,7 +273,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
 
   protected tileKey(hz: number): string { return chanKey(this.tracker.tileHz(hz)); }
   private wanted(key: string): boolean { const pr = this.tracker.prefs; return pr.hold === key || pr.prio.includes(key); }
-  private probes(): number { let n = 0; for (const o of this.opens.values()) if (o.probe) n++; return n; }
+  protected probes(): number { let n = 0; for (const o of this.opens.values()) if (o.probe) n++; return n; }
 
   protected openAt(k: number, now: number): Open<P> {
     const hz = this.hzOf(k), key = this.tileKey(hz);
