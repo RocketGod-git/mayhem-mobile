@@ -38,6 +38,8 @@ export class ClipWriter {
     for (let i = 0; i < n; i++) this.buf[this.len++] = muEncode(x[i]);
   }
   done(): Uint8Array { return this.buf.slice(0, this.len); }
+  /** Fades the last [n] samples out to silence (a transmission's end without a click). */
+  fadeOut(n: number): void { const k = Math.min(n, this.len); for (let i = 0; i < k; i++) { const j = this.len - k + i; this.buf[j] = muEncode(muDecode(this.buf[j]) * (1 - (i + 1) / k)); } }
 }
 
 export interface Clip { id: number; chan: number; startMs: number; data: Uint8Array }

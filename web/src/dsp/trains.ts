@@ -50,6 +50,14 @@ export class Ddc {
 
   maxOut(n: number): number { return Math.floor(n / (this.d1 * this.d2)) + 2; }
 
+  /** The power gain at [hz] from the wanted frequency (the boxcar and the low-pass together), 1 at 0 Hz. */
+  powerGain(hz: number): number {
+    const mid = this.inRate / this.d1, w = 2 * Math.PI * hz / mid;
+    let re = 0, im = 0; for (let t = 0; t < this.h.length; t++) { re += this.h[t] * Math.cos(w * t); im -= this.h[t] * Math.sin(w * t); }
+    const x = Math.PI * hz * this.d1 / this.inRate, box = this.d1 > 1 && x ? Math.sin(x) / (this.d1 * Math.sin(x / this.d1)) : 1;
+    return (re * re + im * im) * box * box;
+  }
+
   push(xi: Float32Array, xq: Float32Array, n: number, oi: Float32Array, oq: Float32Array): number {
     if (this.offsetHz !== this.lastOff) { this.lastOff = this.offsetHz; const w = -2 * Math.PI * this.offsetHz / this.inRate; this.dr = Math.cos(w); this.di = Math.sin(w); }
     let r = this.cr, s = this.ci, out = 0, sumI = this.ai, sumQ = this.aq, cnt = this.ac, bp = this.bp, bc = this.bc;
