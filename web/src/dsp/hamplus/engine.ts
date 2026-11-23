@@ -66,7 +66,7 @@ export interface WatchPlan {
   snap: boolean;
 }
 export const HAM_PLAN: WatchPlan = {
-  name: 'HAM+', type: 'hamplus', raster: HP_RASTER, inPlan: hz => !!hpBandOf(hz),
+  name: 'Repeaters', type: 'hamplus', raster: HP_RASTER, inPlan: hz => !!hpBandOf(hz),
   nfft: rate => 1 << Math.max(10, Math.min(14, Math.ceil(Math.log2(rate / 1000)))), spanHalf: rate => rate * 0.44 - 6_250,
   peakSteps: 3, clearSteps: 4, snap: true,
 };

@@ -102,7 +102,7 @@ interface WatchPlan {
 }
 
 val HAM_PLAN: WatchPlan = object : WatchPlan {
-    override val name = "HAM+"
+    override val name = "Repeaters"
     override val raster = HP_RASTER
     override fun inPlan(hz: Long) = hpBandOf(hz) != null
     override fun nfft(rate: Int) = 1 shl max(10, min(14, ceil(ln(rate / 1000.0) / ln(2.0)).toInt()))

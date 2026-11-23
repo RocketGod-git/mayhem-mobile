@@ -9,7 +9,11 @@ import com.rocketgod.mayhem.core.hamplus.HamPlusEngine
 import com.rocketgod.mayhem.core.hamplus.HpParams
 import com.rocketgod.mayhem.core.hamplus.HpPrefs
 import com.rocketgod.mayhem.core.hamplus.HpSaved
+import com.rocketgod.mayhem.core.hamplus.HpAct
+import com.rocketgod.mayhem.core.hamplus.HpScan
+import com.rocketgod.mayhem.core.hamplus.hpAutoLabel
 import com.rocketgod.mayhem.core.hamplus.HpWindow
+import com.rocketgod.mayhem.core.hamplus.hpScanText
 import com.rocketgod.mayhem.core.hamplus.hpWindows
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,6 +65,7 @@ object HamPlus {
     private val _scan = MutableStateFlow(Scan())
     val scan: StateFlow<Scan> = _scan.asStateFlow()
     @Volatile private var auto: FleetAuto? = null
+    private val followScan = HpScan()
     private var autoSig = ""; private var autoSaved = 0L; private var knownAt = 0L
 
     fun init(c: Context) {
@@ -101,6 +106,8 @@ object HamPlus {
         val next = if (key.isEmpty() || key == cur) "" else key
         if (next == cur) return
         pref("hold", if (next.isEmpty()) cur else next)
+        // the scan pauses (or resumes) at once, not on the next half second
+        if (Apps.playing() == com.rocketgod.mayhem.core.MayhemApp.HAMPLUS) tick(System.currentTimeMillis())
     }
     /** A name the listener gives a station (empty: back to its letter or callsign). */
     fun label(stationKey: String, name: String) {
@@ -175,7 +182,10 @@ object HamPlus {
         val a = auto ?: return
         val playingRow = s.rows.firstOrNull { it.live && it.hz.toString() in s.playing }
         val calls = s.rows.map { AutoCall(it.id.toString(), it.live, false, 1, ((if (it.live) s.now else it.endMs) - it.startMs).toLong().coerceAtLeast(0)) }
-        val to = a.step(AutoView(now, calls, playingRow?.id?.toString() ?: s.rows.firstOrNull { it.live }?.id?.toString() ?: "", false, s.tiles.size))
+        val view = AutoView(now, calls, playingRow?.id?.toString() ?: s.rows.firstOrNull { it.live }?.id?.toString() ?: "", false, s.tiles.size)
+        // a followed channel pins its window; traffic in the window, and the conversation's hang, keep AUTO and SCAN on it
+        val acts = s.rows.map { HpAct(it.id, it.hz, it.startMs.toLong(), it.endMs.toLong(), it.live) }
+        val to = followScan.step(a, view, acts, _scan.value.windows.map { it.hz }, rate().toDouble(), _scan.value.idx, _prefs.value)
         var sc = _scan.value.copy(dwellEnd = if (a.mode == "hold") now + 8_000 else a.until, mode = a.mode)
         if (to != null && to != sc.idx && to in sc.windows.indices) { sc = sc.copy(idx = to); tune(sc.windows[to].hz) }
         _scan.value = sc
@@ -183,15 +193,25 @@ object HamPlus {
     }
     fun scanText(now: Long): String {
         val sc = _scan.value
-        fun left(t: Long) = max(0L, (t - now + 999) / 1000)
-        if (sc.windows.size < 2) return "WHOLE BAND"
-        val auto = _band.value == "AUTO"
-        return when (sc.mode) {
-            "hold" -> "${if (auto) "AUTO" else "SCAN"} · HOLDING WHERE THE VOICE IS"
-            "survey" -> "${if (auto) "AUTO" else "SCAN"} · FIRST PASS · ${sc.idx + 1}/${sc.windows.size} · NEXT ${left(sc.dwellEnd)} s"
-            "look" -> "LOOKING AROUND · BACK IN ${left(sc.dwellEnd)} s"
-            else -> "${if (auto) "AUTO SCAN" else "SCAN"} · ${sc.idx + 1}/${sc.windows.size} · NEXT ${left(sc.dwellEnd)} s"
+        val f = followScan
+        return hpScanText(sc.windows.size, _band.value == "AUTO", sc.mode, sc.idx, max(0L, (sc.dwellEnd - now + 999) / 1000), f.phase, f.hz, max(0L, (f.until - now + 999) / 1000))
+    }
+    /** The AUTO control's label: AUTO, KEEP SCANNING while the scan stays for traffic, RESUME SCAN while a channel is followed. */
+    fun autoLabel(): String = hpAutoLabel(_scan.value.windows.size, followScan.phase)
+    /** A tap on the AUTO control: KEEP SCANNING moves off the busy window, RESUME SCAN unfollows, else the AUTO band. */
+    fun autoTap() {
+        when (autoLabel()) {
+            "KEEP SCANNING" -> skip()
+            "RESUME SCAN" -> follow("")
+            else -> setBand("AUTO")
         }
+    }
+    /** KEEP SCANNING: off the busy window at once; it waits a while before AUTO comes back, unless a followed or priority channel is in it. */
+    fun skip() {
+        val a = auto ?: return
+        val sc = _scan.value; val now = System.currentTimeMillis()
+        val to = followScan.skip(a, now, sc.windows.map { it.hz }, rate().toDouble(), sc.idx, (listOf(_prefs.value.hold) + _prefs.value.prio).filter { it.isNotEmpty() })
+        if (to != null && to != sc.idx && to in sc.windows.indices) { _scan.value = sc.copy(idx = to, mode = a.mode, dwellEnd = a.until); tune(sc.windows[to].hz) }
     }
 
     fun saveKnown() {

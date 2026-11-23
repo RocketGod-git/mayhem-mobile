@@ -458,8 +458,8 @@ self.onmessage = (e: MessageEvent) => {
     case 'monitorParams': monitor.set(m.params); break;
     case 'hamplus':
     case 'cb': {
-      // HAM+ and CB share the watcher and its commands; CB adds its modes and clarifiers
-      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB' : 'HAM+';
+      // Repeaters and CB share the watcher and its commands; CB adds its modes and clarifiers
+      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB' : 'Repeaters';
       if (m.cmd === 'center') w.centerHz = m.hz as number;
       else if (m.cmd === 'params') w.setParams(m.params as Record<string, unknown>);
       else if (m.cmd === 'prefs') { w.setPrefs(m.prefs as never, m.labels as Record<string, string>); if (w === cb && m.cb) cb.setCbPrefs(m.cb as never); }

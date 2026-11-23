@@ -33,6 +33,33 @@ const pill = (text: string, cls = '') => `<em class="hp-pill ${cls}">${esc(text)
 
 export const HP_SPAN_MS = 600_000;
 
+/**
+ * What the head line says the scan is doing: [n] windows, AUTO or one band, AUTO's mode, the window and the seconds
+ * left in its turn; and the HAM+ scan's own [phase] (following, staying for a conversation, a look away) with its
+ * channel and the seconds left in it.
+ */
+export function hpScanText(n: number, autoBand: boolean, mode: string, idx: number, left: number, phase = '', hz = 0, phaseLeft = 0): string {
+  if (n < 2) return 'WHOLE BAND';
+  const a = autoBand ? 'AUTO' : 'SCAN';
+  switch (phase) {
+    case 'follow': return `FOLLOWING ${hpMhz(hz)} · ${a} PAUSED`;
+    case 'live': return `${a} · STAYING FOR THE CONVERSATION ON ${hpMhz(hz)}`;
+    case 'hang': case 'home': return `${a} · STAYING FOR THE CONVERSATION ON ${hpMhz(hz)} · ${phaseLeft} s`;
+    case 'look': return `${a} · LOOKING AROUND · BACK IN ${phaseLeft} s`;
+  }
+  switch (mode) {
+    case 'hold': return `${a} · HOLDING WHERE THE VOICE IS`;
+    case 'survey': return `${a} · FIRST PASS · ${idx + 1}/${n} · NEXT ${left} s`;
+    case 'look': return `${a} · LOOKING AROUND · BACK IN ${left} s`;
+    default: return `${autoBand ? 'AUTO SCAN' : 'SCAN'} · ${idx + 1}/${n} · NEXT ${left} s`;
+  }
+}
+/** The AUTO control's label: RESUME SCAN while a channel is followed, KEEP SCANNING while the scan stays for traffic, else AUTO. */
+export function hpAutoLabel(n: number, phase: string): string {
+  if (n < 2) return 'AUTO';
+  return phase === 'follow' ? 'RESUME SCAN' : phase === 'live' || phase === 'hang' || phase === 'home' ? 'KEEP SCANNING' : 'AUTO';
+}
+
 /** The counters, the span and the scan, and the demodulators in use against what the device keeps up with. */
 export function hpHeadHtml(s: HpSnap | null, scan: string): string {
   const c = s?.centerHz ?? 0, band = hpBandOf(c) ?? HP_BANDS.find(b => c >= b.lo - 4e6 && c <= b.hi + 4e6);

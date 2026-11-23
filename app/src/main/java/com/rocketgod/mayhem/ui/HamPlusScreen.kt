@@ -84,6 +84,7 @@ import com.rocketgod.mayhem.core.HamPlus
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
+import com.rocketgod.mayhem.core.hamplus.HP_AUTO_LABELS
 import com.rocketgod.mayhem.core.hamplus.HP_BANDS
 import com.rocketgod.mayhem.core.hamplus.HEAT_SLOTS
 import com.rocketgod.mayhem.core.hamplus.HpParams
@@ -214,7 +215,7 @@ fun HamPlusScreen(accent: Color) {
         if (s != null && t != null) HpTileCard(t, s!!, now, prefs.mute.contains(t.key), prefs.prio.contains(t.key), prefs.hold == t.key, accent, acts, modifier) { sel = null }
     }
 
-    PacketFrame(accent, HamPlus.log, tag = "HAM+", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, waterfall = wf,
+    PacketFrame(accent, HamPlus.log, tag = "REPEATERS", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, waterfall = wf,
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.HAMPLUS, !wf) },
         lamp = {
@@ -224,7 +225,10 @@ fun HamPlusScreen(accent: Color) {
             else Lamp("LISTENING", Palette.accent2, blink = true)
         },
         controls = {
-            HpSeg(HamPlus.BANDS.map { it.second }, HamPlus.BANDS.indexOfFirst { it.first == band }, accent, Modifier.fillMaxWidth()) { HamPlus.setBand(HamPlus.BANDS[it].first) }
+            // the AUTO control carries the scan's action: KEEP SCANNING off a busy window, RESUME SCAN out of a follow
+            HpSeg(HamPlus.BANDS.map { it.second }, HamPlus.BANDS.indexOfFirst { it.first == band }, accent, Modifier.fillMaxWidth(), autoLabel = HamPlus.autoLabel()) {
+                if (it == 0) HamPlus.autoTap() else HamPlus.setBand(HamPlus.BANDS[it].first)
+            }
             if (kind != Radio.Kind.RTLSDR) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
                 RowLabel("SPAN")
                 val whys = HamPlus.SPANS.map { Radio.rateWhy(it.first) }
@@ -320,15 +324,23 @@ internal fun HpDim(text: String, modifier: Modifier = Modifier) {
 /** Choices sized to their labels that wrap onto another line rather than clip. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, onPick: (Int) -> Unit) {
+internal fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier: Modifier, autoLabel: String = "", onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(9f))
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
         labels.forEachIndexed { i, label ->
             val on = i == selected
-            Text(label, color = if (on) inkOn(accent) else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
-                modifier = Modifier.clip(shape).background(if (on) accent else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape).clickable { onPick(i) }
-                    .padding(horizontal = d.dp(10f), vertical = d.dp(7f)))
+            val act = i == 0 && autoLabel.isNotEmpty() && autoLabel != label
+            val col = if (on) inkOn(accent) else if (act) Palette.ink else Palette.muted
+            val box = Modifier.clip(shape).background(if (on) accent else Palette.surface).border(1.dp, if (on || act) accent else Palette.line, shape).clickable { onPick(i) }
+                .padding(horizontal = d.dp(10f), vertical = d.dp(7f))
+            if (i == 0 && autoLabel.isNotEmpty()) {
+                // AUTO, KEEP SCANNING and RESUME SCAN share one place as wide as the longest, so the row never moves
+                Box(box, contentAlignment = Alignment.Center) {
+                    for (l in HP_AUTO_LABELS) Text(l, color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false,
+                        modifier = Modifier.alpha(if (l == autoLabel) 1f else 0f))
+                }
+            } else Text(label, color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), letterSpacing = 1.sp, maxLines = 1, softWrap = false, modifier = box)
         }
     }
 }

@@ -32,9 +32,10 @@ import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
 import { hpWindows } from './dsp/hamplus/plan.js';
+import { HpScan } from './dsp/hamplus/scan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import type { HpTxRow } from './dsp/hamplus/tracker.js';
-import { hpHeadHtml, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, HP_SPAN_MS } from './hamplus-ui.js';
+import { hpHeadHtml, hpScanText, hpAutoLabel, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, HP_SPAN_MS } from './hamplus-ui.js';
 import type { CbSnap } from './dsp/cb/engine.js';
 import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
 import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml, cbListenHtml, cbTilesHtml, cbTitle } from './cb-ui.js';
@@ -101,7 +102,7 @@ const APPS: AppDef[] = [
   { id: 'devices', title: 'Devices', blurb: 'keys · remotes · TPMS', cat: 'Receive' },
   { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
-  { id: 'hamplus', title: 'HAM+', blurb: 'every repeater at once', cat: 'Receive' },
+  { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex channel at once', cat: 'Receive' },
   { id: 'cb', title: 'CB', blurb: 'all 40 channels at once', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
@@ -4745,6 +4746,7 @@ const hpSend = (m: Record<string, unknown>) => worker?.postMessage({ type: 'hamp
 const hpPushPrefs = () => hpSend({ cmd: 'prefs', prefs: hpUi.prefs, labels: hpUi.labels });
 const hpPushParams = () => hpSend({ cmd: 'params', params: { mode: hpUi.mode, volume: hpUi.audioOn ? hpUi.gain : 0 } });
 let hpAuto: FleetAuto | null = null, hpAutoSig = '', hpAutoSaved = 0;
+const hpScan = new HpScan();
 const hpSig = () => `${hpUi.band}|${hpUi.windows.map(w => w.hz).join(',')}`;
 function hpTuneWindow(i: number): void { hpUi.idx = i; const hz = hpUi.windows[i].hz; hpSend({ cmd: 'center', hz }); tune(hz); }
 function hpDwell(): void {
@@ -4775,20 +4777,21 @@ function hpTick(now: number): void {
   if (now - hpUi.savedAt > 15_000) { hpUi.savedAt = now; hpSend({ cmd: 'save' }); }
   const s = hpUi.snap; if (!s || !hpAuto) return;
   const playing = s.rows.find(r => r.live && s.playing.includes(String(r.hz))) ?? s.rows.find(r => r.live);
-  const to = hpAuto.step({ now, calls: s.rows.map(r => ({ key: String(r.id), onAir: r.live, encrypted: false, tg: 1, audioMs: Math.max(0, (r.live ? s.now : r.endMs) - r.startMs) })), playing: playing ? String(playing.id) : '', controlLive: false, systems: s.tiles.length });
+  const view = { now, calls: s.rows.map(r => ({ key: String(r.id), onAir: r.live, encrypted: false, tg: 1, audioMs: Math.max(0, (r.live ? s.now : r.endMs) - r.startMs) })), playing: playing ? String(playing.id) : '', controlLive: false, systems: s.tiles.length };
+  // a followed channel pins its window; traffic in the window, and the conversation's hang, keep AUTO and SCAN on it
+  const to = hpScan.step(hpAuto, view, s.rows, hpUi.windows.map(w => w.hz), hpRate(), hpUi.idx, hpUi.prefs);
   hpUi.autoMode = hpAuto.mode; hpUi.until = hpAuto.mode === 'hold' ? now + 8_000 : hpAuto.until;
   if (to !== null && to !== hpUi.idx && hpUi.windows[to]) hpTuneWindow(to);
   if (now - hpAutoSaved > 10_000) { hpAutoSaved = now; try { localStorage.setItem('mm.hamplus.auto2', JSON.stringify({ sig: hpAutoSig, saved: hpAuto.save(now) })); } catch { /* storage full or blocked */ } }
 }
-function hpScanText(now: number): string {
-  const n = hpUi.windows.length; if (n < 2) return 'WHOLE BAND';
-  const left = Math.max(0, Math.ceil((hpUi.until - now) / 1000)), auto = hpUi.band === 'AUTO';
-  switch (hpUi.autoMode) {
-    case 'hold': return `${auto ? 'AUTO' : 'SCAN'} · HOLDING WHERE THE VOICE IS`;
-    case 'survey': return `${auto ? 'AUTO' : 'SCAN'} · FIRST PASS · ${hpUi.idx + 1}/${n} · NEXT ${left} s`;
-    case 'look': return `LOOKING AROUND · BACK IN ${left} s`;
-    default: return `${auto ? 'AUTO SCAN' : 'SCAN'} · ${hpUi.idx + 1}/${n} · NEXT ${left} s`;
-  }
+const hpScanLine = (now: number) => hpScanText(hpUi.windows.length, hpUi.band === 'AUTO', hpUi.autoMode, hpUi.idx, Math.max(0, Math.ceil((hpUi.until - now) / 1000)), hpScan.phase, hpScan.hz, Math.max(0, Math.ceil((hpScan.until - now) / 1000)));
+const HP_AUTO_LABELS = ['AUTO', 'KEEP SCANNING', 'RESUME SCAN'];
+/** KEEP SCANNING: off the busy window at once; it waits a while before AUTO comes back, unless a followed or priority channel is in it. */
+function hpSkip(): void {
+  if (!hpAuto) return;
+  const to = hpScan.skip(hpAuto, Date.now(), hpUi.windows.map(w => w.hz), hpRate(), hpUi.idx, [hpUi.prefs.hold, ...hpUi.prefs.prio].filter(Boolean));
+  if (to !== null && to !== hpUi.idx && hpUi.windows[to]) hpTuneWindow(to);
+  refreshHamPlus(true);
 }
 function hpPref(kind: 'hold' | 'mute' | 'prio', key: string): void {
   const p = hpUi.prefs;
@@ -4796,7 +4799,7 @@ function hpPref(kind: 'hold' | 'mute' | 'prio', key: string): void {
   else { const l = p[kind]; p[kind] = l.includes(key) ? l.filter(x => x !== key) : [...l, key]; }
   hpSave(); hpPushPrefs(); refreshHamPlus(true);
 }
-function hpFollow(key: string): void { if (!key || key === hpUi.prefs.hold) { if (hpUi.prefs.hold) hpPref('hold', hpUi.prefs.hold); } else hpPref('hold', key); }
+function hpFollow(key: string): void { if (!key || key === hpUi.prefs.hold) { if (hpUi.prefs.hold) hpPref('hold', hpUi.prefs.hold); } else hpPref('hold', key); hpTick(Date.now()); refreshHamPlus(true); }
 function hpRename(key: string, cur: string): void {
   const v = window.prompt('Name this station (empty: back to its letter or callsign)', cur);
   if (v === null) return;
@@ -4815,7 +4818,7 @@ function renderHamPlus(view: HTMLElement): void {
   view.innerHTML = `
     <section class="${visCls('hamplus')}">${readoutHtml()}${wide ? '<div class="hp-tlbox wide"><canvas id="hp-tlw" class="hp-tl" data-fill="1"></canvas></div>' : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
-      <div class="ctlrow">${segHtml(HP_BANDS_UI.map(([k, l]) => `<button data-hpband="${k}">${l}</button>`))}</div>
+      <div class="ctlrow">${segHtml(HP_BANDS_UI.map(([k, l]) => k === 'AUTO' ? `<button data-hpband="AUTO" class="hp-autob">${HP_AUTO_LABELS.map(x => `<span data-al="${x}">${x}</span>`).join('')}</button>` : `<button data-hpband="${k}">${l}</button>`))}</div>
       ${hack ? `<div class="ctlrow"><span class="rl">SPAN</span>${segHtml(HP_SPANS.map(([r, l]) => `<button data-hpspan="${r}" class="${radioCan(r) ? '' : 'off'}">${l}</button>`))}</div>` : ''}
       ${wide ? '' : `<nav class="fl-jump hp-jump">${jumps.map(([k, l]) => `<button data-hpjump="${k}"><span>${l}</span><b></b></button>`).join('')}</nav>`}
       <div id="hp-live" class="fl-now hp-live"></div>
@@ -4831,7 +4834,11 @@ function renderHamPlus(view: HTMLElement): void {
       <div class="note about">${esc(HP_ABOUT)}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
-  qa<HTMLButtonElement>('[data-hpband]', view).forEach(b => b.onclick = () => hpSetBand(b.dataset.hpband!));
+  qa<HTMLButtonElement>('[data-hpband]', view).forEach(b => b.onclick = () => {
+    // the AUTO control carries the scan's action: KEEP SCANNING off a busy window, RESUME SCAN out of a follow
+    const act = b.dataset.hpband === 'AUTO' ? hpAutoLabel(hpUi.windows.length, hpScan.phase) : '';
+    if (act === 'KEEP SCANNING') hpSkip(); else if (act === 'RESUME SCAN') hpFollow(''); else hpSetBand(b.dataset.hpband!);
+  });
   qa<HTMLButtonElement>('[data-hpspan]', view).forEach(b => b.onclick = () => hpSetSpan(Number(b.dataset.hpspan)));
   qa<HTMLButtonElement>('[data-hpview]', view).forEach(b => b.onclick = () => { hpUi.view = b.dataset.hpview as HpView; const st = q<HTMLElement>('#hp-stage'); if (st) st.scrollTop = 0; refreshHamPlus(true); });
   qa<HTMLButtonElement>('[data-hpjump]', view).forEach(b => b.onclick = () => {
@@ -4907,10 +4914,13 @@ function refreshHamPlus(force = false): void {
   hpUi.drawn = now;
   const s = hpUi.snap;
   qa<HTMLButtonElement>('[data-hpband]').forEach(b => b.classList.toggle('on', b.dataset.hpband === hpUi.band));
+  const al = hpAutoLabel(hpUi.windows.length, hpScan.phase);
+  qa<HTMLElement>('.hp-autob [data-al]').forEach(x => x.classList.toggle('on', x.dataset.al === al));
+  q<HTMLElement>('.hp-autob')?.classList.toggle('act', al !== 'AUTO');
   qa<HTMLButtonElement>('[data-hpspan]').forEach(b => b.classList.toggle('on', Number(b.dataset.hpspan) === hpRate()));
   qa<HTMLButtonElement>('[data-hpview]').forEach(b => b.classList.toggle('on', b.dataset.hpview === hpUi.view));
   const set = (id: string, html: string) => { const el = q<HTMLElement>(`#${id}`); if (el && el.innerHTML !== html) { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; } };
-  set('hp-head', hpHeadHtml(s, hpScanText(now)));
+  set('hp-head', hpHeadHtml(s, hpScanLine(now)));
   set('hp-listen', hpListenHtml(hpUi.prefs.hold, hpUi.mode));
   const lb = hpLiveHtml(s, now, hpUi.audioOn, hpUi.prefs.hold, now < hpUi.noteUntil ? hpUi.note : ''), live = q<HTMLElement>('#hp-live');
   if (live) { live.className = `fl-now hp-live ${lb.cls}`; live.style.setProperty('--sys', lb.col); if (live.innerHTML !== lb.html) live.innerHTML = lb.html; }
@@ -9969,7 +9979,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  hamplus: ['HAM+', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB', 'ALL 40 CHANNELS · AM · FM · SSB'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB', 'ALL 40 CHANNELS · AM · FM · SSB'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
