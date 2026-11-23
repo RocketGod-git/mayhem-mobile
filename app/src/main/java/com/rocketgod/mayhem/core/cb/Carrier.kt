@@ -38,6 +38,13 @@ import kotlin.math.sqrt
 const val HOP_MS = 10.0
 const val WIN_MS = 20.0
 const val SEARCH_HZ = 2_800.0
+/** The sideband split: 300 to 3000 Hz either side in 25 Hz bands, each band's level kept in half-dB steps from -10 dB. */
+const val SIDE_LO_HZ = 300.0
+const val SIDE_HI_HZ = 3_000.0
+const val SIDE_BAND_HZ = 25.0
+const val SIDE_HIST = 120
+const val SIDE_HIST_LO = 20
+private class SideAcc(k: Int) { val sum = DoubleArray(k); val hist = IntArray(k * SIDE_HIST); var n = 0; var at = -1; var res: CbMode? = null }
 const val STRONG_DB = 20.0
 const val HELD_SHARE = 0.08
 const val CAND_APART_HZ = 40.0
@@ -114,7 +121,7 @@ class LineNotch(hz: Double, private val fs: Double) {
     }
 }
 
-private fun median(a: List<Double>): Double { if (a.isEmpty()) return Double.NaN; val s = a.sorted(); return s[s.size shr 1] }
+internal fun median(a: List<Double>): Double { if (a.isEmpty()) return Double.NaN; val s = a.sorted(); return s[s.size shr 1] }
 
 class CarrierChange(val ms: Double, val hz: Double)
 
@@ -184,6 +191,14 @@ class CarrierTracker(private val fs: Double) {
         val bh = fs / nn; val r = floor(SEARCH_HZ / bh).toInt(); val pw = DoubleArray(2 * r + 1)
         for (bb in -r..r) { val k = (bb + nn) % nn; val x = re[k].toDouble(); val y = im[k].toDouble(); pw[bb + r] = x * x + y * y }
         val med = pw.sorted()[pw.size shr 1].let { if (it == 0.0 || it.isNaN()) 1e-20 else it }
+        if (!sided) {
+            // once a hop: the power in 25 Hz bands across the channel, over the median, for the sideband split
+            sided = true; hopBands.fill(0.0)
+            for (bb in pw.indices) {
+                val k = floor(((bb - r) * bh + SIDE_HI_HZ) / SIDE_BAND_HZ).toInt(); if (k >= 0 && k < hopBands.size) hopBands[k] += pw[bb] / med
+            }
+            hopFilled = true
+        }
         var best = -1
         for (bb in pw.indices) {
             val f = (bb - r) * bh; if (f < lo || f > hi || avoid.any { abs(f - it) <= clear }) continue
@@ -199,6 +214,47 @@ class CarrierTracker(private val fs: Double) {
     }
 
     private fun hop() {
+        sided = false; hopFilled = false
+        hop0()
+        if (!hopFilled) return
+        addHop(all)
+        if (have && !onNow) addHop(off)
+    }
+    private fun addHop(a: SideAcc) {
+        for (k in hopBands.indices) {
+            val x = hopBands[k]; a.sum[k] += x
+            val j = max(0, min(SIDE_HIST - 1, floor(2 * 10 * log10(x + 1e-12)).toInt() + SIDE_HIST_LO))
+            a.hist[k * SIDE_HIST + j]++
+        }
+        a.n++
+    }
+    /**
+     * Which side of the center carries a voice, over the keyup ([off]: only the hops a followed line was off): home's
+     * split of the power 300 to 3000 Hz either side, with its idle-line notches done another way. Each 25 Hz band's
+     * power is followed hop by hop, and what counts is how far its mean stands over its median: a voice comes and goes
+     * (its mean well over its median), noise a little and the same on both sides, a steady line or a cluster of a
+     * nearby device's lines hardly at all, however strong. One side must hold [ratio] times the other.
+     */
+    fun side(off: Boolean, ratio: Double): CbMode? {
+        val a = if (off) this.off else all
+        if (a.n < 10) return null
+        if (a.n == a.at) return a.res
+        var up = 0.0; var lo = 0.0
+        for (k in hopBands.indices) {
+            val f = (k + 0.5) * SIDE_BAND_HZ - SIDE_HI_HZ; val af = abs(f); if (af < SIDE_LO_HZ || af > SIDE_HI_HZ) continue
+            var c = 0; var j = 0; val half = a.n / 2.0
+            while (j < SIDE_HIST) { c += a.hist[k * SIDE_HIST + j]; if (c >= half) break; j++ }
+            val md = Math.pow(10.0, (j + 0.5 - SIDE_HIST_LO) / 20); val x = max(0.0, a.sum[k] / a.n - md)
+            if (f > 0) up += x else lo += x
+        }
+        a.at = a.n; a.res = if (up + lo > 0 && max(up, lo) >= ratio * min(up, lo)) (if (up > lo) CbMode.USB else CbMode.LSB) else null
+        return a.res
+    }
+    private val hopBands = DoubleArray((2 * SIDE_HI_HZ / SIDE_BAND_HZ).toInt())
+    private val all = SideAcc(hopBands.size); private val off = SideAcc(hopBands.size)
+    val offHops: Int get() = off.n
+    private var sided = false; private var hopFilled = false
+    private fun hop0() {
         ms += HOP_MS
         if (filled < b) return
         if (!have) {
