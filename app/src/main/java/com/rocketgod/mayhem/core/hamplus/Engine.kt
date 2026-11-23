@@ -223,7 +223,7 @@ class HamPlusEngine(
         re = FloatArray(nfft); im = FloatArray(nfft); acc = DoubleArray(nfft); pdb = DoubleArray(nfft); frames = 0
         win = FloatArray(nfft) { (0.5 - 0.5 * cos(2 * PI * it / (nfft - 1))).toFloat() }
         closeAll(); plan()
-        Diag.log("HAM+: %.2f Msps · %d channels on a %s kHz raster · probe cap %d".format(Locale.US, rate / 1e6, count, (HP_RASTER / 1e3).toString(), cap))
+        Diag.log("Repeaters: %.2f Msps · %d channels on a %s kHz raster · probe cap %d".format(Locale.US, rate / 1e6, count, (HP_RASTER / 1e3).toString(), cap))
     }
 
     private fun plan() {
@@ -393,7 +393,7 @@ class HamPlusEngine(
             costT = 0.0; costSig = 0.0; costProbeS = 0.0
             if (now - lastLog > 30_000) {
                 lastLog = now
-                Diag.log("HAM+: demod cost %.1f ms per channel per second at %.2f Msps, cap %d channels".format(Locale.US, costMs, rate / 1e6, cap))
+                Diag.log("Repeaters: demod cost %.1f ms per channel per second at %.2f Msps, cap %d channels".format(Locale.US, costMs, rate / 1e6, cap))
             }
         }
         if (replay != null) { replayStep(n); return }

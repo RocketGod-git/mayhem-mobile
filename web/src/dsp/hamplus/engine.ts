@@ -145,7 +145,7 @@ export class HamPlusEngine implements IqProcessor {
     this.nfft = 1 << Math.max(10, Math.min(14, Math.ceil(Math.log2(rate / 1000))));
     this.re = new Float32Array(this.nfft); this.im = new Float32Array(this.nfft); this.win = hann(this.nfft); this.acc = new Float32Array(this.nfft); this.frames = 0;
     this.closeAll(); this.plan();
-    this.emit({ type: 'log', line: `HAM+: ${(rate / 1e6).toFixed(2)} Msps · ${this.count} channels on a ${HP_RASTER / 1e3} kHz raster · probe cap ${this.cap}` });
+    this.emit({ type: 'log', line: `Repeaters: ${(rate / 1e6).toFixed(2)} Msps · ${this.count} channels on a ${HP_RASTER / 1e3} kHz raster · probe cap ${this.cap}` });
   }
   private plan(): void {
     const half = this.rate * 0.44 - 6_250;
@@ -300,7 +300,7 @@ export class HamPlusEngine implements IqProcessor {
       this.costMs = this.costMs ? 0.7 * this.costMs + 0.3 * per : per;
       this.cap = this.fixedCap || Math.max(CAP_MIN, Math.min(CAP_MAX, Math.floor(BUDGET_MS / Math.max(0.1, this.costMs))));
       this.costT = 0; this.costSig = 0; this.costProbeS = 0;
-      if (now - this.lastLog > 30_000) { this.lastLog = now; this.emit({ type: 'log', line: `HAM+: demod cost ${this.costMs.toFixed(1)} ms per channel per second at ${(this.rate / 1e6).toFixed(2)} Msps, cap ${this.cap} channels` }); }
+      if (now - this.lastLog > 30_000) { this.lastLog = now; this.emit({ type: 'log', line: `Repeaters: demod cost ${this.costMs.toFixed(1)} ms per channel per second at ${(this.rate / 1e6).toFixed(2)} Msps, cap ${this.cap} channels` }); }
     }
     if (this.replay) { this.replayStep(n); return; }
     if (!voices) return;

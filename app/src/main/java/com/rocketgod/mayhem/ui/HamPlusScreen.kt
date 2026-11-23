@@ -174,7 +174,7 @@ fun HamPlusScreen(accent: Color) {
         if (s != null && t != null) HpTileCard(t, s!!, now, prefs.mute.contains(t.key), prefs.prio.contains(t.key), prefs.hold == t.key, accent, acts, modifier) { sel = null }
     }
 
-    PacketFrame(accent, HamPlus.log, tag = "HAM+", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, waterfall = wf,
+    PacketFrame(accent, HamPlus.log, tag = "REPEATERS", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, waterfall = wf,
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.HAMPLUS, !wf) },
         lamp = {

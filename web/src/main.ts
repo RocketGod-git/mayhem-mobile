@@ -99,7 +99,7 @@ const APPS: AppDef[] = [
   { id: 'devices', title: 'Devices', blurb: 'keys · remotes · TPMS', cat: 'Receive' },
   { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
-  { id: 'hamplus', title: 'HAM+', blurb: 'every repeater at once', cat: 'Receive' },
+  { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex channel at once', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
@@ -9800,7 +9800,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING · USB'],
-  hamplus: ['HAM+', 'EVERY CHANNEL · EVERY TALKER'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
