@@ -94,6 +94,40 @@ class FleetAuto(val windows: Int, now: Long = 0, start: Int = 0, saved: AutoSave
         this.idx = idx; enter = now; found = false; until = now + AUTO_SURVEY_MS[0]
         if (mode == "look" || mode == "scan") mode = if (held >= 0) "hold" else "scan"
     }
+    /**
+     * Something outside holds the receiver for now (HAM+ following one channel): the calls heard meanwhile are marked as
+     * counted without scoring any window, and every clock moves on by the time passed, so the scan goes on from where it
+     * was (the same window, the same mode, the same time left) once the hold ends.
+     */
+    fun pause(v: AutoView) {
+        val dt = max(0L, v.now - lastMs); lastMs = v.now
+        until += dt; enter += dt; lastLook += dt; if (lastClear > 0) lastClear += dt
+        for (c in v.calls) {
+            if (c.audioMs > (seen[c.key] ?: 0L)) seen[c.key] = c.audioMs
+            counted.add(c.key)
+        }
+        if (seen.size > 400) seen.keys.take(200).forEach { seen.remove(it) }
+        if (counted.size > 400) counted.take(200).forEach { counted.remove(it) }
+    }
+    /**
+     * Something outside keeps the receiver on this window for now (HAM+ staying for a conversation): the voice heard here
+     * scores this window as in [step], while the window's turn stands still, so no turn runs out under a conversation.
+     */
+    fun stay(v: AutoView) {
+        val now = v.now; val dt = max(0L, now - lastMs); lastMs = now
+        if (dt > 0 && mode != "survey") { val k = 0.5.pow(dt / AUTO_HALF_LIFE_MS); for (i in 0 until windows) { score[i] *= k; listen[i] *= k } }
+        listen[idx] += dt / 1000.0
+        for (c in v.calls) {
+            if (c.encrypted || c.tg == 0 || c.audioMs <= 0) continue
+            val was = seen[c.key] ?: 0L
+            if (c.audioMs > was) { score[idx] += (c.audioMs - was) / 1000.0; seen[c.key] = c.audioMs }
+            if (counted.add(c.key)) score[idx] += 2
+        }
+        if (seen.size > 400) seen.keys.take(200).forEach { seen.remove(it) }
+        if (counted.size > 400) counted.take(200).forEach { counted.remove(it) }
+        if (clearPlaying(v)) lastClear = now
+        until += dt; enter += dt
+    }
     /** One look at the state: the window to tune to, or null to stay. */
     fun step(v: AutoView): Int? {
         val now = v.now; val dt = max(0L, now - lastMs); lastMs = now

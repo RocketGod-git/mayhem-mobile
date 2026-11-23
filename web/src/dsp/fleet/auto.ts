@@ -88,6 +88,40 @@ export class FleetAuto {
     this.idx = idx; this.enter = now; this.found = false; this.until = now + AUTO_SURVEY_MS[0];
     if (this.mode === 'look' || this.mode === 'scan') this.mode = this.held >= 0 ? 'hold' : 'scan';
   }
+  /**
+   * Something outside holds the receiver for now (HAM+ following one channel): the calls heard meanwhile are marked as
+   * counted without scoring any window, and every clock moves on by the time passed, so the scan goes on from where it
+   * was (the same window, the same mode, the same time left) once the hold ends.
+   */
+  pause(v: AutoView): void {
+    const dt = Math.max(0, v.now - this.lastMs); this.lastMs = v.now;
+    this.until += dt; this.enter += dt; this.lastLook += dt; if (this.lastClear > 0) this.lastClear += dt;
+    for (const c of v.calls) {
+      if (c.audioMs > (this.seen.get(c.key) ?? 0)) this.seen.set(c.key, c.audioMs);
+      this.counted.add(c.key);
+    }
+    if (this.seen.size > 400) for (const k of [...this.seen.keys()].slice(0, 200)) this.seen.delete(k);
+    if (this.counted.size > 400) for (const k of [...this.counted].slice(0, 200)) this.counted.delete(k);
+  }
+  /**
+   * Something outside keeps the receiver on this window for now (HAM+ staying for a conversation): the voice heard here
+   * scores this window as in [step], while the window's turn stands still, so no turn runs out under a conversation.
+   */
+  stay(v: AutoView): void {
+    const now = v.now, dt = Math.max(0, now - this.lastMs); this.lastMs = now;
+    if (dt > 0 && this.mode !== 'survey') { const k = Math.pow(0.5, dt / AUTO_HALF_LIFE_MS); for (let i = 0; i < this.windows; i++) { this.score[i] *= k; this.listen[i] *= k; } }
+    this.listen[this.idx] += dt / 1000;
+    for (const c of v.calls) {
+      if (c.encrypted || !c.tg || c.audioMs <= 0) continue;
+      const was = this.seen.get(c.key) ?? 0;
+      if (c.audioMs > was) { this.score[this.idx] += (c.audioMs - was) / 1000; this.seen.set(c.key, c.audioMs); }
+      if (!this.counted.has(c.key)) { this.counted.add(c.key); this.score[this.idx] += 2; }
+    }
+    if (this.seen.size > 400) for (const k of [...this.seen.keys()].slice(0, 200)) this.seen.delete(k);
+    if (this.counted.size > 400) for (const k of [...this.counted].slice(0, 200)) this.counted.delete(k);
+    if (this.clearPlaying(v)) this.lastClear = now;
+    this.until += dt; this.enter += dt;
+  }
   /** One look at the state: the window to tune to, or null to stay. */
   step(v: AutoView): number | null {
     const now = v.now, dt = Math.max(0, now - this.lastMs); this.lastMs = now;
