@@ -71,8 +71,11 @@ export class P25Identity {
     // count, and a sync seen puts it right where that count has slipped
     let c = 0, a = 0;
     for (let k = 0; k < 24; k++) { const x = this.ring[(this.rp + k) % 24]; c += x * P25_SYNC[k]; a += Math.abs(x); }
-    if (a > 24 * 1.8 && Math.abs(c) / a > 0.86) { this.sign = (c > 0 ? 1 : -1) * 3 * 24 / a; this.dec.sync(this.t); return; }
-    if (!this.dec.status(this.t).locked) return;
+    // while a frame is being read, a sync must be cleaner and of the same polarity: inside voice data a pattern of
+    // 24 symbols near the sync (or its inverse) comes by now and then (a real recording lost one LDU in ten to that)
+    const locked = this.dec.status(this.t).locked;
+    if (a > 24 * 1.8 && (locked ? c * this.sign > 0 && Math.abs(c) / a > 0.95 : Math.abs(c) / a > 0.86)) { this.sign = (c > 0 ? 1 : -1) * 3 * 24 / a; this.dec.sync(this.t); return; }
+    if (!locked) return;
     const x = s * this.sign;
     this.dec.push(x > 2 ? 1 : x > 0 ? 0 : x > -2 ? 2 : 3, this.t);
     const now = this.dec.status(this.t);

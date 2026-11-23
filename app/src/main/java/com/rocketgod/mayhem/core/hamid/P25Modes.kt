@@ -86,8 +86,10 @@ class P25Identity {
         ring[rp] = s.toFloat(); rp = (rp + 1) % 24
         var c = 0.0; var a = 0.0
         for (k in 0 until 24) { val x = ring[(rp + k) % 24].toDouble(); c += x * P25_SYNC[k]; a += abs(x) }
-        if (a > 24 * 1.8 && abs(c) / a > 0.86) { sign = (if (c > 0) 1.0 else -1.0) * 3 * 24 / a; dec.sync(t); return }
-        if (!dec.status(t).locked) return
+        // while a frame is being read, a sync must be cleaner and of the same polarity (voice data now and then comes near it)
+        val locked = dec.status(t).locked
+        if (a > 24 * 1.8 && (if (locked) c * sign > 0 && abs(c) / a > 0.95 else abs(c) / a > 0.86)) { sign = (if (c > 0) 1.0 else -1.0) * 3 * 24 / a; dec.sync(t); return }
+        if (!locked) return
         val x = s * sign
         dec.push(if (x > 2) 1 else if (x > 0) 0 else if (x > -2) 2 else 3, t)
         val now = dec.status(t)
