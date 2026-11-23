@@ -12,6 +12,8 @@ class HamIdSnap(
     val station: String, val repeater: String, val position: Position?,
     /** DTMF digits heard on the channel so far; D-STAR header flags and what its URCALL asks for. */
     val dtmf: String = "", val dstarFlags: DStarFlags? = null, val urcall: UrCall? = null,
+    /** M17: the link setup (callsigns, CAN, META text, position, the originator and reflector a repeater names). */
+    val m17: M17Id? = null,
 )
 
 class HamIdChannel(val fs: Double) {
@@ -20,19 +22,32 @@ class HamIdChannel(val fs: Double) {
     val dstar = DStarReceiver()
     val ysf = YsfReceiver()
     val dtmf = DtmfDecoder(fs)
-    init { mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it) } }
-    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset() }
+    val m17 = M17Receiver()
+    /** Decoded voice (M17 Codec 2), 16-bit PCM at 8 kHz; voice is decoded only while this is set. */
+    var onPcm: ((ShortArray) -> Unit)? = null
+    private var c2: Codec2.Decoder? = null
+    init {
+        mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it); m17.pushSymbol(it) }
+        m17.onVoice = { f, rate ->
+            onPcm?.let { cb ->
+                if (c2?.rate != rate) c2 = Codec2.Decoder(if (rate == 1600) 1600 else 3200)
+                cb(c2!!.decode(f))
+            }
+        }
+    }
+    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); m17.reset(); c2 = null }
     /** Discriminator samples, radians per sample, at [fs]. */
     fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n) }
 
     fun snapshot(): HamIdSnap {
         val r = mode.result()
         var m = r.mode
-        if (ysf.id.frames > 0) m = "YSF"
+        if (m17.id.lsfs > 0 || m17.id.frames >= 3) m = "M17"
+        else if (ysf.id.frames > 0) m = "YSF"
         else if (dstar.id.headers > 0 || dstar.id.frames >= 20) m = "D-STAR"
         else if (dmr.checked > 0) m = "DMR"
         var station = ""; var repeater = ""; var position: Position? = null
-        var slots: List<DmrSlotId>? = null; var ds: DStarId? = null; var ys: YsfId? = null
+        var slots: List<DmrSlotId>? = null; var ds: DStarId? = null; var ys: YsfId? = null; var mi: M17Id? = null
         when (m) {
             "DMR" -> {
                 slots = dmr.slots.map { it.copy() }
@@ -49,9 +64,16 @@ class HamIdChannel(val fs: Double) {
                 position = ds.position
             }
             "YSF" -> { ys = ysf.id.copy(); station = ys.src; repeater = ys.down; position = ys.position }
+            "M17" -> {
+                // a repeater sends its own callsign as the source and the station it relays as the originator
+                val id = m17.id.copy(); mi = id
+                station = id.originator.ifEmpty { id.src }
+                repeater = if (id.originator.isNotEmpty()) id.src else if (id.reflector.isNotEmpty()) id.reflector + (if (id.module.isNotEmpty()) " ${id.module}" else "") else ""
+                position = id.position
+            }
         }
         val h = ds?.header
         return HamIdSnap(m, r.hits, if (m == "DMR") dmr.cc else -1, slots, ds, ys, station, repeater, position, dtmf.text,
-            h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) })
+            h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) }, mi)
     }
 }

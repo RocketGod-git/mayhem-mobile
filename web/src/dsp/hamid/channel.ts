@@ -10,6 +10,8 @@ import { DStarReceiver, repeaterOf, type DStarId } from './dstar.js';
 import { YsfReceiver, type YsfId } from './ysf.js';
 import type { Position } from './gps.js';
 import { DtmfDecoder, dstarFlags, urcallCommand, type DStarFlags, type UrCall } from './signaling.js';
+import { M17Receiver, type M17Id } from './m17.js';
+import { Codec2Decoder } from './codec2.js';
 
 export interface HamIdSnap {
   mode: HamMode;
@@ -27,6 +29,8 @@ export interface HamIdSnap {
   dtmf: string;
   /** D-STAR: the header's flags and what its URCALL asks for. */
   dstarFlags: DStarFlags | null; urcall: UrCall | null;
+  /** M17: the link setup (callsigns, CAN, META text, position, the originator and reflector a repeater names). */
+  m17: M17Id | null;
 }
 
 export class HamIdChannel {
@@ -35,21 +39,31 @@ export class HamIdChannel {
   readonly dstar = new DStarReceiver();
   readonly ysf = new YsfReceiver();
   readonly dtmf: DtmfDecoder;
+  readonly m17 = new M17Receiver();
+  /** Decoded voice (M17 Codec 2), 16-bit PCM at 8 kHz; voice is decoded only while this is set. */
+  onPcm: ((pcm: Int16Array) => void) | null = null;
+  private c2: Codec2Decoder | null = null;
   constructor(readonly fs: number) {
     this.mode = new ModeDetector(fs); this.dtmf = new DtmfDecoder(fs);
-    this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); };
+    this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); this.m17.pushSymbol(s); };
+    this.m17.onVoice = (f, rate) => {
+      if (!this.onPcm) return;
+      if (!this.c2 || this.c2.rate !== rate) this.c2 = new Codec2Decoder(rate === 1600 ? 1600 : 3200);
+      this.onPcm(this.c2.decode(f));
+    };
   }
-  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); }
+  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); this.m17.reset(); this.c2 = null; }
   /** Discriminator samples, radians per sample, at [fs]. */
   push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); }
 
   snapshot(): HamIdSnap {
     const r = this.mode.result();
     let mode: HamMode = r.mode;
-    if (this.ysf.id.frames > 0) mode = 'YSF';
+    if (this.m17.id.lsfs > 0 || this.m17.id.frames >= 3) mode = 'M17';
+    else if (this.ysf.id.frames > 0) mode = 'YSF';
     else if (this.dstar.id.headers > 0 || this.dstar.id.frames >= 20) mode = 'D-STAR';
     else if (this.dmr.checked > 0) mode = 'DMR';
-    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null };
+    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, m17: null };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));
       snap.dmr = { cc: this.dmr.cc, slots };
@@ -67,6 +81,12 @@ export class HamIdChannel {
     } else if (mode === 'YSF') {
       const id = { ...this.ysf.id, rem: [...this.ysf.id.rem] as [string, string, string, string] }; snap.ysf = id;
       snap.station = id.src; snap.repeater = id.down; snap.position = id.position;
+    } else if (mode === 'M17') {
+      const id = { ...this.m17.id }; snap.m17 = id;
+      // a repeater sends its own callsign as the source and the station it relays as the originator
+      snap.station = id.originator || id.src;
+      snap.repeater = id.originator ? id.src : id.reflector ? id.reflector + (id.module ? ' ' + id.module : '') : '';
+      snap.position = id.position;
     }
     return snap;
   }
