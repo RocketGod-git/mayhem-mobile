@@ -35,7 +35,7 @@ import { hpWindows } from './dsp/hamplus/plan.js';
 import { HpScan } from './dsp/hamplus/scan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import type { HpTxRow } from './dsp/hamplus/tracker.js';
-import { hpHeadHtml, hpScanText, hpAutoLabel, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, HP_SPAN_MS } from './hamplus-ui.js';
+import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, HP_SPAN_MS } from './hamplus-ui.js';
 import type { CbSnap } from './dsp/cb/engine.js';
 import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
 import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml, cbListenHtml, cbTilesHtml, cbTitle } from './cb-ui.js';
@@ -4785,8 +4785,7 @@ function hpTick(now: number): void {
   if (now - hpAutoSaved > 10_000) { hpAutoSaved = now; try { localStorage.setItem('mm.hamplus.auto2', JSON.stringify({ sig: hpAutoSig, saved: hpAuto.save(now) })); } catch { /* storage full or blocked */ } }
 }
 const hpScanLine = (now: number) => hpScanText(hpUi.windows.length, hpUi.band === 'AUTO', hpUi.autoMode, hpUi.idx, Math.max(0, Math.ceil((hpUi.until - now) / 1000)), hpScan.phase, hpScan.hz, Math.max(0, Math.ceil((hpScan.until - now) / 1000)));
-const HP_AUTO_LABELS = ['AUTO', 'KEEP SCANNING', 'RESUME SCAN'];
-/** KEEP SCANNING: off the busy window at once; it waits a while before AUTO comes back, unless a followed or priority channel is in it. */
+/** SCAN ON: off the busy window at once; it waits a while before AUTO comes back, unless a followed or priority channel is in it. */
 function hpSkip(): void {
   if (!hpAuto) return;
   const to = hpScan.skip(hpAuto, Date.now(), hpUi.windows.map(w => w.hz), hpRate(), hpUi.idx, [hpUi.prefs.hold, ...hpUi.prefs.prio].filter(Boolean));
@@ -4809,7 +4808,7 @@ function hpRename(key: string, cur: string): void {
 }
 function hpReplay(ids: number[], label: string, kind: string): void { void ensureAudio(); hpSend({ cmd: 'replay', ids, label, kind }); }
 const HP_WIDE = window.matchMedia('(min-width: 1000px)');
-const HP_ABOUT = 'Every FM conversation on the ham bands at once. Every channel that keys up in the span is demodulated, recorded and fingerprinted, even while you listen to one. Talkers are told apart by their own radio\'s carrier frequency error and tone, a repeater\'s input heard at the band plan offset joins its tile and names the talkers on the output, channels carrying the same audio are marked linked, and a station coming back between many check-ins is marked net control. The time machine keeps every transmission, so any of them, any conversation, or the whole band from any moment replays.';
+const HP_ABOUT = 'Every FM conversation on the ham bands at once. Every channel that keys up in the span is demodulated, recorded and fingerprinted, even while you listen to one. Talkers are told apart by their own radio\'s carrier frequency error and tone, a repeater\'s input heard at the band plan offset joins its tile and names the talkers on the output, channels carrying the same audio are marked linked and heard once, and a station coming back between many check-ins is marked net control. The time machine keeps every transmission, so any of them, any conversation, or the whole band from any moment replays.';
 function renderHamPlus(view: HTMLElement): void {
   const wide = HP_WIDE.matches, hack = !radio || radio.kind !== 'rtlsdr';
   view.classList.toggle('hpwide', wide);
@@ -4835,9 +4834,9 @@ function renderHamPlus(view: HTMLElement): void {
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-hpband]', view).forEach(b => b.onclick = () => {
-    // the AUTO control carries the scan's action: KEEP SCANNING off a busy window, RESUME SCAN out of a follow
-    const act = b.dataset.hpband === 'AUTO' ? hpAutoLabel(hpUi.windows.length, hpScan.phase) : '';
-    if (act === 'KEEP SCANNING') hpSkip(); else if (act === 'RESUME SCAN') hpFollow(''); else hpSetBand(b.dataset.hpband!);
+    // the AUTO control carries the scan's action: SCAN ON off a busy window, RESUME out of a follow
+    const act = b.dataset.hpband === 'AUTO' ? hpAutoLabel(hpUi.windows.length, hpScan.phase, hpUi.band) : '';
+    if (act === 'SCAN ON') hpSkip(); else if (act === 'RESUME') hpFollow(''); else hpSetBand(b.dataset.hpband!);
   });
   qa<HTMLButtonElement>('[data-hpspan]', view).forEach(b => b.onclick = () => hpSetSpan(Number(b.dataset.hpspan)));
   qa<HTMLButtonElement>('[data-hpview]', view).forEach(b => b.onclick = () => { hpUi.view = b.dataset.hpview as HpView; const st = q<HTMLElement>('#hp-stage'); if (st) st.scrollTop = 0; refreshHamPlus(true); });
@@ -4914,7 +4913,7 @@ function refreshHamPlus(force = false): void {
   hpUi.drawn = now;
   const s = hpUi.snap;
   qa<HTMLButtonElement>('[data-hpband]').forEach(b => b.classList.toggle('on', b.dataset.hpband === hpUi.band));
-  const al = hpAutoLabel(hpUi.windows.length, hpScan.phase);
+  const al = hpAutoLabel(hpUi.windows.length, hpScan.phase, hpUi.band);
   qa<HTMLElement>('.hp-autob [data-al]').forEach(x => x.classList.toggle('on', x.dataset.al === al));
   q<HTMLElement>('.hp-autob')?.classList.toggle('act', al !== 'AUTO');
   qa<HTMLButtonElement>('[data-hpspan]').forEach(b => b.classList.toggle('on', Number(b.dataset.hpspan) === hpRate()));

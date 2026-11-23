@@ -98,6 +98,8 @@ data class HpTxRow(
     val mode: String = "",
     /** CB: on the air but still waiting for its voice check, so not yet known to be a station. */
     val pending: Boolean = false,
+    /** The same transmission heard on a linked repeater: the id of the row its conversation shows instead, else 0. */
+    var echo: Int = 0,
 )
 
 data class HpTileStation(val key: String, val label: String, val letter: String, val color: Int, val callsign: String, val txs: Int, val offsetHz: Long)
@@ -111,6 +113,8 @@ data class HpTile(
     val stations: List<HpTileStation>,
     val net: HpNet?, val link: Int, val unrecorded: Int,
     val followed: Boolean, val muted: Boolean, val prio: Boolean,
+    /** The linked repeater this one carries the same audio as (the followed one, else the one on the air, else the latest heard), or 0. */
+    val linkWith: Long = 0,
 )
 
 data class HpConv(
@@ -369,13 +373,25 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
             (plan.info(b).offsets.any { abs(a - b - it) < 1_250 } && pairEv.containsKey("${chanKey(b)}|${chanKey(a)}"))
 
     /** Link groups: each tile key in a linked network mapped to a group number from 1. */
+    /** Tile pairs ("a|b", sorted) the receiver hears carrying the same audio right now; set by the engine. */
+    @Volatile var liveLinks: Set<String> = emptySet()
+    /** Link groups: each tile key in a linked network (learned, or heard linked right now) mapped to a group number from 1. */
     fun linkGroups(): Map<String, Int> {
         val parent = HashMap<String, String>()
         fun find(x: String): String { var p = parent[x] ?: x; if (p != x) { p = find(p); parent[x] = p }; return p }
-        for (k in links) { val (a, b) = k.split('|'); parent[find(a)] = find(b) }
+        val all = (links + liveLinks).toSortedSet()
+        for (k in all) { val (a, b) = k.split('|'); parent[find(a)] = find(b) }
         val roots = HashMap<String, Int>(); val out = HashMap<String, Int>()
-        for (k in links.sorted()) for (x in k.split('|')) { val r = find(x); if (r !in roots) roots[r] = roots.size + 1; out[x] = roots[r]!! }
+        for (k in all) for (x in k.split('|')) { val r = find(x); if (r !in roots) roots[r] = roots.size + 1; out[x] = roots[r]!! }
         return out
+    }
+    /** Two tiles are a learned link (the same network). */
+    fun linked(a: String, b: String): Boolean {
+        if (a == b || links.isEmpty()) return false
+        val parent = HashMap<String, String>()
+        fun find(x: String): String { var p = parent[x] ?: x; if (p != x) { p = find(p); parent[x] = p }; return p }
+        for (k in links) { val (x, y) = k.split('|'); parent[find(x)] = find(y) }
+        return find(a) == find(b)
     }
 
     private fun findStation(key: String?): Station? {
@@ -422,13 +438,20 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
         while (i >= 0 && out.size < max) { val t = txs[i]; add(t.id, t.hz, t.startMs, t.endMs, t.tone, t.dcs, t.offsetHz, t.peakDb, t.recorded, t.cw, false); i-- }
         // an input transmission shows as the talker on its output: the output's row carries it, the input's row goes
         val shown = out.filter { r -> r.hz == r.heardHz || out.none { o -> o.heardHz == r.hz && abs(o.startMs - r.startMs) <= PAIR_START_MS } }
-        // conversations: per tile, transmissions with no gap longer than CONV_GAP_MS
-        val byTile = LinkedHashMap<Long, MutableList<HpTxRow>>()
-        for (r in shown) byTile.getOrPut((r.hz / 100.0).roundToLong()) { ArrayList() }.add(r)
+        // conversations: per tile (linked repeaters share one), transmissions with no gap longer than CONV_GAP_MS
+        val groups = linkGroups()
+        val byTile = LinkedHashMap<String, MutableList<HpTxRow>>()
+        for (r in shown) { val g = groups[chanKey(r.hz)]; byTile.getOrPut(if (g != null) "g$g" else chanKey(r.hz)) { ArrayList() }.add(r) }
         for (list in byTile.values) {
             list.sortBy { it.startMs }
             var conv = 0; var end = Double.NEGATIVE_INFINITY
             for (r in list) { if (r.startMs - end > CONV_GAP_MS) conv = r.id; r.conv = conv; end = max(end, if (r.live) now else r.endMs) }
+            // one transmission heard on two linked repeaters is one bubble: the stronger copy
+            for (r in list) for (o in list) {
+                if (o === r || o.hz == r.hz || r.echo != 0 || o.echo != 0 || abs(o.startMs - r.startMs) > LINK_EDGE_MS) continue
+                val keep = if (o.peakDb > r.peakDb || (o.peakDb == r.peakDb && o.id < r.id)) o else r
+                (if (keep === o) r else o).echo = keep.id
+            }
         }
         return shown.sortedByDescending { it.startMs }
     }
@@ -439,6 +462,7 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
         }
         val by = LinkedHashMap<Int, B>()
         for (r in rows.asReversed()) {
+            if (r.echo != 0) continue
             val c = by.getOrPut(r.conv) { B(r.conv, chanKey(r.hz), r.hz, r.startMs) }
             c.txs.add(r.id); c.live = c.live || r.live
             val e = if (r.live) now else r.endMs
@@ -446,7 +470,7 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
             if (r.station.isNotEmpty() && r.station !in c.stations) c.stations.add(r.station)
         }
         return by.values.sortedByDescending { it.endMs }.map { c ->
-            val net = netOf(rows.filter { it.conv == c.id }.sortedBy { it.startMs }.map { it.station }) != null
+            val net = netOf(rows.filter { it.conv == c.id && it.echo == 0 }.sortedBy { it.startMs }.map { it.station }) != null
             HpConv(c.id, c.key, c.hz, c.startMs, c.endMs, c.live, c.txs.toList(), c.stations.toList(), c.talkMs, net)
         }
     }
@@ -488,8 +512,16 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
                 followed = prefs.hold == k, muted = k in prefs.mute, prio = k in prefs.prio,
             ))
         }
+        // a linked repeater names the one it carries the same audio as: the followed one, else the one on the air, else the latest heard
+        val named = out.map { t ->
+            if (t.link == 0) t else {
+                val others = out.filter { it !== t && it.link == t.link }
+                val w = others.firstOrNull { it.followed } ?: others.filter { it.live }.maxByOrNull { it.snrDb } ?: others.maxByOrNull { it.lastMs }
+                t.copy(linkWith = w?.hz ?: 0L)
+            }
+        }
         fun rank(t: HpTile) = if (t.followed) 0 else if (t.live) 1 else 2
-        return out.filter { it.followed || it.live || it.txs > 0 }
+        return named.filter { it.followed || it.live || it.txs > 0 }
             .sortedWith(compareBy<HpTile> { rank(it) }.thenByDescending { it.lastMs }.thenBy { it.hz }).take(max)
     }
 

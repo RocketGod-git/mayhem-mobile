@@ -3204,3 +3204,18 @@ main#view.view:is(.hamplus, .cb).hpwide { display: grid; grid-template-columns: 
 .view.cb.hpwide .cb-scroll { display: block; }
 @media (max-width: 760px) { .cb-board { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .cb-board { grid-template-columns: repeat(5, minmax(0, 1fr)); } .cb-cell b { font-size: 14px; } }
+/* Repeaters: the card's first line never breaks. The gain chip takes what the tag, the buttons and the lamp leave (no
+ * wider than its text, cut with an ellipsis when short of room); the title has its own line on a wide card. */
+.view.hamplus .fhead .fgain { flex: 1 1 0; min-width: 44px; max-width: max-content; }
+@media (max-width: 480px) { .view.hamplus .fhead { flex-wrap: nowrap; } .view.hamplus .fhead .fgain { margin-right: auto; } }
+@media (max-width: 360px) { .view.hamplus .fhead { gap: 5px; } .view.hamplus .fhead .lamp { letter-spacing: 1px; } .view.hamplus .fhead .fact { padding: 2px 3px; } .view.hamplus .fhead .fgain { min-width: 34px; } }
+/* a narrow phone: a log line's details wrap rather than cut off (NOT RECORDED stays readable) */
+@media (max-width: 400px) { .hp-log { align-items: baseline; } .hp-log > em { white-space: normal; overflow: visible; } }
+/* the scan's line has a line of its own, one line high whatever it says, so nothing under it moves as it changes */
+.hp-hl .hp-scan { flex: 1 0 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the listen line's words stay on one line, cut short on a narrow phone */
+.hp-listen .fl-listen span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a tablet: the waterfall keeps one height, so the controls under it never move as the channel list grows or shrinks */
+@media (min-width: 720px) { .view.hamplus:not(.hpwide) > .visual > .scope { flex: none; height: clamp(240px, 34vh, 380px); min-height: 0; } }
+/* the cost line keeps two lines' room, so its numbers changing length never moves what is under it */
+.hp-cost { min-height: 2.7em; }

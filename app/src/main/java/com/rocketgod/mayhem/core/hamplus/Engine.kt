@@ -51,6 +51,10 @@ const val CAP_MAX = 32
 const val CAP_START = 8
 /** A channel stays open this long below its closing level. */
 const val CLOSE_HOLD_MS = 400.0
+/** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (10 s), and how far either side of the keyup gap the lag is searched (300 ms). */
+const val LINK_LIVE_FRAMES = 30
+const val LINK_LIVE_MAX = 200
+const val LINK_LIVE_LAG = 6
 /** Shorter than this is a noise blip, not a transmission. */
 const val TX_MIN_MS = 250.0
 /** A tone must be heard through this share of a transmission to be its tone. */
@@ -421,7 +425,32 @@ abstract class ChannelWatch<P : WatchProbe>(
 
     private fun closeAll() { val now = nowMs(); for (o in opens.values.toList()) close(o, now) }
 
-    /** Which open channels are heard: the followed one alone; else priority ones when open; else all (mix) or the newest. */
+    /** Pairs of open channels (by id) heard carrying the same audio right now: linked repeaters. */
+    private val liveLinked = HashSet<String>()
+    private var linkAt = 0.0
+    /** Four times a second: open channels that keyed up together are compared, their audio envelopes at a lag near the keyup gap. */
+    private fun checkLinks(now: Double) {
+        if (now - linkAt < 250) return
+        linkAt = now
+        val os = opens.values.filter { it.probe != null && it.probe!!.env.size >= LINK_LIVE_FRAMES }
+        val ids = os.map { it.id }.toSet()
+        liveLinked.removeAll { k -> k.split('|').map { it.toInt() }.any { it !in ids } }
+        for (i in os.indices) for (j in i + 1 until os.size) {
+            val (x, y) = if (os[i].startMs <= os[j].startMs) os[i] to os[j] else os[j] to os[i]
+            if (abs(x.hz - y.hz) < 50_000 || y.startMs - x.startMs > LINK_EDGE_MS || x.tileKey == y.tileKey) continue
+            val key = "${x.id}|${y.id}"; if (key in liveLinked) continue
+            val r = envCorr(x.probe!!.env.take(LINK_LIVE_MAX).toFloatArray(), y.probe!!.env.take(LINK_LIVE_MAX).toFloatArray(), ((y.startMs - x.startMs) / ENV_MS).roundToInt(), LINK_LIVE_LAG)
+            if (r >= LINK_CORR) liveLinked.add(key)
+        }
+        tracker.liveLinks = liveLinked.mapNotNull { k -> val (a, b) = k.split('|').map { it.toInt() }; val oa = opens[a]; val ob = opens[b]; if (oa != null && ob != null) listOf(oa.tileKey, ob.tileKey).sorted().joinToString("|") else null }.toSet()
+    }
+    /** Two open channels carry the same audio: heard linked right now, or a link learned before. */
+    private fun linkedNow(a: WatchOpen<P>, b: WatchOpen<P>): Boolean = "${a.id}|${b.id}" in liveLinked || "${b.id}|${a.id}" in liveLinked || tracker.linked(a.tileKey, b.tileKey)
+
+    /**
+     * Which open channels are heard: the followed one alone; else priority ones when open; else all (mix) or the newest.
+     * Linked repeaters carry the same voice a little apart, an echo when mixed: only one copy is heard, the stronger.
+     */
     private fun listenSet(): List<WatchOpen<P>> {
         val pr = tracker.prefs
         var c = opens.values.filter { it.probe != null && it.tileKey !in pr.mute }
@@ -431,11 +460,14 @@ abstract class ChannelWatch<P : WatchProbe>(
         if (pr.hold.isNotEmpty()) return c.filter { it.tileKey == pr.hold }
         val pri = c.filter { it.tileKey in pr.prio }
         if (pri.isNotEmpty()) c = pri
-        c = c.sortedBy { it.startMs }
+        val one = ArrayList<WatchOpen<P>>()
+        for (o in c.sortedByDescending { it.snr }) if (one.none { linkedNow(it, o) }) one.add(o)
+        c = one.sortedBy { it.startMs }
         return if (params.mode == HpParams.Mode.NEWEST) c.takeLast(1) else c.takeLast(4)
     }
 
     private fun runProbes(n: Int, now: Double) {
+        checkLinks(now)
         val listen = if (replay != null) emptyList() else listenSet()
         playing = listen.map { it.tileKey }
         val t0 = perf()
