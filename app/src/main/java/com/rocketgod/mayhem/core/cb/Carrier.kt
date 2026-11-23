@@ -182,15 +182,21 @@ class CarrierTracker(private val fs: Double) {
     }
 
     private class Peak(val hz: Double, val q: Double)
+    private val pkRe = FloatArray(nf); private val pkIm = FloatArray(nf)
+    private val pkPw = DoubleArray(2 * floor(SEARCH_HZ / (fs / nf)).toInt() + 1); private val pkSort = DoubleArray(pkPw.size)
 
     /** The last 20 ms: the strongest bin within [lo, hi] Hz clear of [avoid] (±[clear] Hz), and q over the median of ±2.8 kHz. */
     private fun peak(lo: Double, hi: Double, avoid: List<Double>, clear: Double): Peak {
-        val nn = nf; val re = FloatArray(nn); val im = FloatArray(nn)
+        // the buffers are kept between calls (this runs once or twice every 10 ms per open channel): the zero padding
+        // past the window is cleared each time
+        val nn = nf; val re = pkRe; val im = pkIm
+        java.util.Arrays.fill(re, 0f); java.util.Arrays.fill(im, 0f)
         for (k in 0 until b) { val j = (rn + k) % b; re[k] = ri[j] * win[k]; im[k] = rq[j] * win[k] }
         Dsp.fft(re, im)
-        val bh = fs / nn; val r = floor(SEARCH_HZ / bh).toInt(); val pw = DoubleArray(2 * r + 1)
+        val bh = fs / nn; val r = floor(SEARCH_HZ / bh).toInt(); val pw = pkPw
         for (bb in -r..r) { val k = (bb + nn) % nn; val x = re[k].toDouble(); val y = im[k].toDouble(); pw[bb + r] = x * x + y * y }
-        val med = pw.sorted()[pw.size shr 1].let { if (it == 0.0 || it.isNaN()) 1e-20 else it }
+        System.arraycopy(pw, 0, pkSort, 0, pw.size); pkSort.sort()
+        val med = pkSort[pw.size shr 1].let { if (it == 0.0 || it.isNaN()) 1e-20 else it }
         if (!sided) {
             // once a hop: the power in 25 Hz bands across the channel, over the median, for the sideband split
             sided = true; hopBands.fill(0.0)

@@ -280,6 +280,32 @@ class MainActivity : ComponentActivity() {
                 for (k in 0 until a.length()) { val h = a.getString(k); Apps.uat.onUp(ByteArray(h.length / 2) { j -> h.substring(j * 2, j * 2 + 2).toInt(16).toByte() }) }
             }, "uatmsgs").start()
         }
+        // `--es cbreplay name.cs8 --el cbcenter 27095000` opens CB and plays a 2 MS/s signed-IQ recording from the app's
+        // external files folder into it, looped, at the pace it was recorded (screens with real traffic, no radio)
+        i.getStringExtra("cbreplay")?.let { name ->
+            val center = i.getLongExtra("cbcenter", com.rocketgod.mayhem.core.cb.CB_CENTER)
+            Apps.open(MayhemApp.CB)
+            connected.value = true; status.value = "CB replay"
+            Thread({
+                val f = java.io.File(getExternalFilesDir(null), name)
+                if (!f.exists()) return@Thread
+                val buf = ByteArray(1 shl 17); val t0 = System.nanoTime(); var sent = 0L
+                Thread.sleep(500)
+                com.rocketgod.mayhem.core.Cb.engine.centerHz = center
+                while (Apps.playing() == MayhemApp.CB) {
+                    f.inputStream().buffered(1 shl 20).use { s ->
+                        while (Apps.playing() == MayhemApp.CB) {
+                            val n = s.readNBytes(buf, 0, buf.size); if (n < buf.size) break
+                            for (k in 0 until n) buf[k] = (buf[k] + 128).toByte()
+                            com.rocketgod.mayhem.core.Cb.engine.onIq(buf, n, 2_000_000)
+                            sent += n / 2
+                            val ahead = sent * 1000 / 2_000_000 - (System.nanoTime() - t0) / 1_000_000
+                            if (ahead > 0) Thread.sleep(ahead)
+                        }
+                    }
+                }
+            }, "cbreplay").start()
+        }
         // `--ez crashtest true` crashes on purpose a moment later, to test the crash report on the next launch
         if (i.getBooleanExtra("crashtest", false)) {
             android.os.Handler(mainLooper).postDelayed({ throw IllegalStateException("crash report test (QA build, --ez crashtest)") }, 1500)
