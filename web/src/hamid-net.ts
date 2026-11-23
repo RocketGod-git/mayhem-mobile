@@ -8,9 +8,10 @@
  *     compressed), refreshed weekly in the browser's cache storage;
  *   · callook.info for US callsigns heard on the air, one at a time, cached 30 days (a miss for a day).
  * What it may not: radioid.net (user list and per-ID answers) and HearHam send no CORS header. A radio ID is looked
- * up one at a time through [radioIdUrl], radioid.net's own per-ID address by default (readable where the page runs
- * without the browser's CORS rule, as in the desktop shell), or a pass-through the app is pointed at; a user list
- * file the user picks also works. Android and iOS download radioid.net's list and HearHam's directory directly.
+ * up one at a time through [radioIdUrl]: by default our own pass-through (firebase/functions, radioidLookup), which
+ * forwards one ID to radioid.net's per-ID API and adds the CORS header, storing nothing. radioid.net's own address
+ * (RADIOID_API_URL) still works where the page runs without the browser's CORS rule, and a user list file the user
+ * picks also works. Android and iOS download radioid.net's list and HearHam's directory directly.
  */
 import { HamIdResolver } from './dsp/hamid/resolve.js';
 import { RadioIdTable, parseCallook, parseBrandmeisterDevices, parseRadioIdApi } from './dsp/hamid/directory.js';
@@ -19,6 +20,7 @@ export const BM_TALKGROUPS_URL = 'https://api.brandmeister.network/v2/talkgroup'
 export const BM_DEVICES_URL = 'https://api.brandmeister.network/v2/device';
 export const RADIOID_USERS_URL = 'https://radioid.net/static/user.csv';
 export const RADIOID_API_URL = (id: number) => `https://radioid.net/api/dmr/user/?id=${id}`;
+export const RADIOID_PROXY_URL = (id: number) => `https://us-central1-wardrive-go-ff393.cloudfunctions.net/radioidLookup?id=${id}`;
 export const CALLOOK_URL = (call: string) => `https://callook.info/${encodeURIComponent(call)}/json`;
 const WEEK = 7 * 86_400_000, MONTH = 30 * 86_400_000, DAY = 86_400_000;
 
@@ -72,7 +74,7 @@ export async function loadRadioIds(res: HamIdResolver, url: string): Promise<num
 }
 
 /** Looks up to [max] of the DMR radio IDs the resolver has queued, one request each, cached 30 days (a miss a day). */
-export async function lookupWantedIds(res: HamIdResolver, max = 2, radioIdUrl = RADIOID_API_URL): Promise<number> {
+export async function lookupWantedIds(res: HamIdResolver, max = 2, radioIdUrl = RADIOID_PROXY_URL): Promise<number> {
   let n = 0;
   for (const id of [...res.wantedIds].slice(0, max)) {
     const key = `hamid.id.${id}`, s = store(key);
