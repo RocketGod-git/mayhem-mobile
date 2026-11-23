@@ -6,7 +6,8 @@ package com.rocketgod.mayhem.core.hamid
  * 111011001010000 after the 1010 preamble; flags, RPT2, RPT1, UR, MY, MY suffix and P_FCS, K = 3 convolutional code,
  * the 24-row interleave, the x^7 + x^4 + 1 scrambler), then voice frames with 24-bit data frames (the sync every 21st,
  * the rest scrambled), paired into 6-byte slow data blocks: 4n message, 3n simple data (GPS NMEA, D-PRS), 5n the
- * header again. Either polarity. The same as the web's dsp/hamid/dstar.ts.
+ * header again, Cx code squelch, 8x and 9x DV Fast Data (which takes the voice frames too). Either polarity. Each
+ * 72-bit voice frame goes out with its time; the AMBE in it is not decoded. The same as the web's dsp/hamid/dstar.ts.
  */
 const val DSTAR_FS = "111011001010000"
 const val DSTAR_DSYNC = "101010101011010001101000"
@@ -52,12 +53,19 @@ class DStarId {
     var header: DStarHeader? = null; var headerFrom = ""
     var message = ""; var position: Position? = null; var positionText = ""; var dprsCrcOk = false
     var inverted = false; var active = false; var frames = 0; var headers = 0
-    fun copy(): DStarId = DStarId().also { it.header = header; it.headerFrom = headerFrom; it.message = message; it.position = position; it.positionText = positionText; it.dprsCrcOk = dprsCrcOk; it.inverted = inverted; it.active = active; it.frames = frames; it.headers = headers }
+    /** The code squelch block, fast data bytes received this call, and the picture found in them. */
+    var csql: DStarCsql? = null; var fastBytes = 0; var image: DStarImage? = null
+    fun copy(): DStarId = DStarId().also { it.header = header; it.headerFrom = headerFrom; it.message = message; it.position = position; it.positionText = positionText; it.dprsCrcOk = dprsCrcOk; it.inverted = inverted; it.active = active; it.frames = frames; it.headers = headers; it.csql = csql; it.fastBytes = fastBytes; it.image = image }
 }
 
 class DStarReceiver {
     var onHeader: (DStarHeader, String) -> Unit = { _, _ -> }
     var onEnd: () -> Unit = {}
+    /** Each voice frame (not those carrying fast data), stream "dstar". */
+    var onVoiceFrame: (HamVoiceFrame) -> Unit = {}
+    private val vbuf = arrayOfNulls<IntArray>(21); private val vAt = DoubleArray(21)
+    private val pend = ArrayList<Int>()
+    private val fast = FastDataStream()
     private val hist = IntArray(128); private var hp = 0
     private var inv = 0; private var hdrInv = 0
     private var hdr: IntArray? = null; private var hdrN = 0
@@ -72,7 +80,9 @@ class DStarReceiver {
     fun reset() {
         hist.fill(0); hp = 0; inv = 0; hdrInv = 0; hdr = null; hdrN = 0; cnt = -1; missed = 0; half = null
         msg = arrayOf("", "", "", ""); msgSeen = 0; slowHdr.clear(); lines.reset(); bits = 0
+        vbuf.fill(null); pend.clear(); fast.reset()
         id.header = null; id.headerFrom = ""; id.message = ""; id.position = null; id.positionText = ""; id.dprsCrcOk = false; id.inverted = false; id.active = false; id.frames = 0; id.headers = 0
+        id.csql = null; id.fastBytes = 0; id.image = null
     }
 
     private fun matches(pat: IntArray, end: Int, inv: Int): Int {
@@ -100,7 +110,7 @@ class DStarReceiver {
             }
             return
         }
-        if (id.active && matches(END, 0, inv) == 0 && alternating(15, 16, inv)) { id.active = false; cnt = -1; onEnd(); return }
+        if (id.active && matches(END, 0, inv) == 0 && alternating(15, 16, inv)) { flushVoice(); id.active = false; cnt = -1; onEnd(); return }
         for (iv in intArrayOf(inv, inv xor 1)) {
             if (matches(FS, 0, iv) <= 1 && alternating(15, 16, iv)) { hdrInv = iv; hdr = IntArray(660); hdrN = 0; return }
         }
@@ -108,24 +118,35 @@ class DStarReceiver {
             cnt++
             if (cnt % 96 == 0) {
                 val k = cnt / 96
-                if (k < 21) dataFrame(k)
+                if (k < 21) { keepVoice(k); dataFrame(k) }
                 else {
-                    if (matches(DSYNC, 0, inv) <= 4) missed = 0 else if (++missed > 2) { cnt = -1; id.active = false; return }
-                    superframe()
+                    if (matches(DSYNC, 0, inv) <= 4) missed = 0 else if (++missed > 2) { flushVoice(); cnt = -1; id.active = false; return }
+                    superframe(); keepVoice(0)
                 }
             }
             return
         }
         for (iv in intArrayOf(0, 1)) {
-            if (matches(DSYNC, 0, iv) == 0) { inv = iv; id.inverted = iv == 1; id.active = true; missed = 0; superframe(); return }
+            if (matches(DSYNC, 0, iv) == 0) { inv = iv; id.inverted = iv == 1; id.active = true; missed = 0; superframe(); keepVoice(0); return }
         }
     }
 
     private fun newCall() {
-        msg = arrayOf("", "", "", ""); msgSeen = 0; slowHdr.clear(); lines.reset()
+        msg = arrayOf("", "", "", ""); msgSeen = 0; slowHdr.clear(); lines.reset(); fast.reset(); pend.clear()
         id.message = ""; id.position = null; id.positionText = ""; id.dprsCrcOk = false; id.frames = 0
+        id.csql = null; id.fastBytes = 0; id.image = null
     }
-    private fun superframe() { cnt = 0; half = null; slowHdr.clear() }
+    private fun superframe() { flushVoice(); cnt = 0; half = null; slowHdr.clear(); vbuf.fill(null) }
+
+    /** The voice frame that ends 24 bits before the newest bit: the one before data frame [k]. */
+    private fun keepVoice(k: Int) {
+        val H = hist.size
+        vbuf[k] = IntArray(72) { (hist[(hp - 96 + it + H) % H] xor inv) and 1 }; vAt[k] = (bits - 96).toDouble(); pend.add(k)
+    }
+    private fun flushVoice() {
+        for (k in pend) { val v = vbuf[k] ?: continue; onVoiceFrame(HamVoiceFrame("dstar", "ambe-dstar", v, vAt[k], 0)) }
+        pend.clear()
+    }
 
     private fun dataFrame(k: Int) {
         id.frames++
@@ -133,9 +154,18 @@ class DStarReceiver {
         for (i in 0 until 24) b[i] = (((hist[(hp - 24 + i + H) % H] xor inv) and 1) xor PN[i])
         val by = Fec.packLsb(b, 0, 3)
         if (k % 2 == 1) { half = by; return }
-        val h = half ?: return
+        val h = half
+        if (h == null) { flushVoice(); return }
         half = null
-        block(intArrayOf(h[0], h[1], h[2], by[0], by[1], by[2]))
+        // fast data: block 1 reads voice frames 2, 3 and 1, the others the two of their own data frames
+        val idx = if (k == 2) listOf(1, 2, 0) else listOf(k - 1, k)
+        val vs = idx.map { vbuf[it] }
+        val fd = if (vs.all { it != null }) fastDataBlock(h, by, vs.map { it!! }) else null
+        if (fd != null) {
+            pend.removeAll { it in idx }
+            fast.push(fd); id.fastBytes += fd.size; id.image = fast.image()
+        } else block(intArrayOf(h[0], h[1], h[2], by[0], by[1], by[2]))
+        flushVoice()
     }
 
     private fun block(b: IntArray) {
@@ -147,6 +177,8 @@ class DStarReceiver {
         } else if (type == 3 && n >= 1) {
             val sb = StringBuilder(); for (i in 1..minOf(5, n)) sb.append(b[i].toChar())
             for (line in lines.push(sb.toString())) line(line)
+        } else if (type == 12 && n == 2) {
+            id.csql = csqlOf(b[1], b[2])
         } else if (type == 5 && n >= 1) {
             for (i in 1..minOf(5, n)) slowHdr.add(b[i])
             if (slowHdr.size >= 41) {

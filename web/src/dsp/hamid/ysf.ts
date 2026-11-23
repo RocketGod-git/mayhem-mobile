@@ -15,10 +15,13 @@
  * Headers and terminators carry CSD1 (destination, source) and CSD2 (downlink, uplink: the repeater's own callsign
  * on its output); V/D mode 1 rolls CSD1, CSD2, CSD3 (the four 5-byte remarks: the repeater's and the Internet
  * node's IDs and the radio ID) and data; V/D mode 2 rolls the same 10 bytes at a time. SC, the squelch code, is the
- * DG-ID. Text in the data units is searched for positions (NMEA, APRS). The voice (AMBE+2) is not decoded. No DOM.
+ * DG-ID. Text in the data units is searched for positions (NMEA, APRS). The voice goes out frame by frame
+ * ([onVoiceFrame]): V/D mode 1 five 72-bit AMBE+2 frames in the VCHs, V/D mode 2 five 49-bit frames out of each VCH
+ * and VeCH (voice.ts), Voice FR five 144-bit full rate frames (two in the sub header after the header). No DOM.
  */
 import { YSF_K, YSF_G, viterbi, golay24Decode, crc16Msb, packMsb, asciiField } from './fec.js';
 import { parsePositionLine, type Position } from './gps.js';
+import { ysfVd2Voice, type HamVoiceFrame } from './voice.js';
 
 /** Sync symbols of D471C9634D. */
 export const YSF_SYNC = (() => {
@@ -84,6 +87,9 @@ const slice4 = (s: number) => s > 2 ? 1 : s > 0 ? 0 : s > -2 ? 2 : 3;
 
 export class YsfReceiver {
   onFich: (f: YsfFich) => void = () => undefined;
+  /** Each vocoder frame of a communication frame, stream 'ysf'. */
+  onVoiceFrame: (f: HamVoiceFrame) => void = () => undefined;
+  private frameAt = 0;
   private readonly ring = new Float64Array(20); private rp = 0;
   private sym: Float64Array | null = null; private sn = 0; private inv = 1;
   private t = 0; private lastSync = -1e9;
@@ -114,7 +120,7 @@ export class YsfReceiver {
     const thr = expected ? 0.6 : 0.9;
     if (corr >= thr || corr <= -thr) {
       this.inv = corr > 0 ? 1 : -1; this.id.inverted = this.inv < 0;
-      this.syncs++; this.lastSync = this.t; this.sym = new Float64Array(460); this.sn = 0;
+      this.syncs++; this.lastSync = this.t; this.frameAt = this.t; this.sym = new Float64Array(460); this.sn = 0;
     }
   }
 
@@ -129,6 +135,7 @@ export class YsfReceiver {
     const p = d.subarray(100);
     const blocks = (first: number) => { const o = new Uint8Array(180); for (let j = 0; j < 5; j++) o.set(p.subarray((2 * j + first) * 36, (2 * j + first) * 36 + 36), 36 * j); return o; };
     if (fi.fi === 0) this.newCall();
+    if (fi.fi === 1) this.voice(fi, p);
     if (fi.fi === 0 || fi.fi === 2) {                       // header / terminator: CSD1 in DCH-1, CSD2 in DCH-2
       this.csd(1, decodeUnit(blocks(0))); this.csd(2, decodeUnit(blocks(1)));
     } else if (fi.fi === 1) {
@@ -145,6 +152,15 @@ export class YsfReceiver {
         this.csd(3, decodeUnit(p.subarray(0, 180)));
       }
     }
+  }
+
+  /** The vocoder frames of a communication frame's payload ([p], 360 dibits). */
+  private voice(fi: YsfFich, p: Uint8Array): void {
+    const bitsOf = (off: number, n: number) => { const b = new Uint8Array(2 * n); for (let i = 0; i < n; i++) { b[2 * i] = p[off + i] >> 1; b[2 * i + 1] = p[off + i] & 1; } return b; };
+    const at = (off: number) => this.frameAt + 101 + off;
+    if (fi.dt === 0) for (let j = 0; j < 5; j++) { const off = (2 * j + 1) * 36; this.onVoiceFrame({ stream: 'ysf', codec: 'ambe2', bits: bitsOf(off, 36), atSym: at(off), errs: 0 }); }
+    else if (fi.dt === 2) for (let j = 0; j < 5; j++) { const off = 72 * j + 20, v = ysfVd2Voice(p.subarray(off, off + 52)); this.onVoiceFrame({ stream: 'ysf', codec: 'ambe2-49', bits: v.bits, atSym: at(off), errs: v.errs }); }
+    else if (fi.dt === 3) for (const off of fi.fn === 0 && fi.ft === 1 ? [216, 288] : [0, 72, 144, 216, 288]) this.onVoiceFrame({ stream: 'ysf', codec: 'imbe', bits: bitsOf(off, 72), atSym: at(off), errs: 0 });
   }
 
   private newCall(): void {

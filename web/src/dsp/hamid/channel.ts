@@ -2,7 +2,8 @@
  * One FM channel's identity: its discriminator goes through the mode detector, and the detector's 4800/s symbol
  * stream through the DMR, D-STAR and Fusion decoders at once (each rejects what is not its own by its checks). A
  * decoder whose checks pass names the mode before the sync count does. The snapshot says who is talking, through
- * which repeater, and where they are when they send it. No DOM.
+ * which repeater, and where they are when they send it. With [onPcm] set, the voice comes out as 20 ms frames of 8 kHz
+ * audio, each with the time it was sent (voice.ts). A channel at 256 kS/s or more also reads D-STAR DD packets. No DOM.
  */
 import { ModeDetector, type HamMode } from './mode.js';
 import { DmrIdentity, type DmrSlotId } from './dmrid.js';
@@ -10,6 +11,8 @@ import { DStarReceiver, repeaterOf, type DStarId } from './dstar.js';
 import { YsfReceiver, type YsfId } from './ysf.js';
 import type { Position } from './gps.js';
 import { DtmfDecoder, dstarFlags, urcallCommand, type DStarFlags, type UrCall } from './signaling.js';
+import { HamVoice, type HamPcmFrame, type HamVoiceFrame } from './voice.js';
+import { DStarDdReceiver, type DdId } from './dstar-data.js';
 
 export interface HamIdSnap {
   mode: HamMode;
@@ -27,6 +30,10 @@ export interface HamIdSnap {
   dtmf: string;
   /** D-STAR: the header's flags and what its URCALL asks for. */
   dstarFlags: DStarFlags | null; urcall: UrCall | null;
+  /** Fusion through the Internet (the FICH's VoIP path): the node's callsign (the downlink) and its ID (Rem3). */
+  internet: { node: string; id: string } | null;
+  /** D-STAR DD packets (a channel at 256 kS/s or more). */
+  dd: DdId | null;
 }
 
 export class HamIdChannel {
@@ -35,13 +42,22 @@ export class HamIdChannel {
   readonly dstar = new DStarReceiver();
   readonly ysf = new YsfReceiver();
   readonly dtmf: DtmfDecoder;
+  readonly voice = new HamVoice();
+  readonly dd: DStarDdReceiver | null;
+  /** Set to hear the channel: every vocoder frame, decoded, in the order sent per stream. */
+  onPcm: ((f: HamPcmFrame) => void) | null = null;
   constructor(readonly fs: number) {
     this.mode = new ModeDetector(fs); this.dtmf = new DtmfDecoder(fs);
+    this.dd = fs >= 256000 ? new DStarDdReceiver(fs) : null;
     this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); };
+    this.dmr.onVoiceFrame = f => this.pcm(f, this.dmr.slots[f.stream === 'dmr2' ? 1 : 0].privacy);
+    this.dstar.onVoiceFrame = f => this.pcm(f, false);
+    this.ysf.onVoiceFrame = f => this.pcm(f, false);
   }
-  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); }
+  private pcm(f: HamVoiceFrame, encrypted: boolean): void { if (this.onPcm) this.onPcm(this.voice.decode(f, encrypted)); }
+  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); this.voice.reset(); this.dd?.reset(); }
   /** Discriminator samples, radians per sample, at [fs]. */
-  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); }
+  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); this.dd?.push(disc, n); }
 
   snapshot(): HamIdSnap {
     const r = this.mode.result();
@@ -49,7 +65,9 @@ export class HamIdChannel {
     if (this.ysf.id.frames > 0) mode = 'YSF';
     else if (this.dstar.id.headers > 0 || this.dstar.id.frames >= 20) mode = 'D-STAR';
     else if (this.dmr.checked > 0) mode = 'DMR';
-    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null };
+    else if (this.dd && this.dd.id.packets > 0) mode = 'D-STAR';
+    const dd = this.dd && this.dd.id.packets > 0 ? { ...this.dd.id, frames: [...this.dd.id.frames] } : null;
+    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, internet: null, dd };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));
       snap.dmr = { cc: this.dmr.cc, slots };
@@ -57,16 +75,18 @@ export class HamIdChannel {
       if (live) { snap.station = live.alias || String(live.src); snap.position = live.position; }
     } else if (mode === 'D-STAR') {
       const id = { ...this.dstar.id }; snap.dstar = id;
-      if (id.header) {
-        snap.dstarFlags = dstarFlags(id.header.flag1); snap.urcall = urcallCommand(id.header.ur);
-        snap.station = id.header.my + (id.header.suffix ? '/' + id.header.suffix : '');
-        const rp = repeaterOf(id.header.rpt1);
+      const h = id.header ?? dd?.header;
+      if (h) {
+        snap.dstarFlags = dstarFlags(h.flag1); snap.urcall = urcallCommand(h.ur);
+        snap.station = h.my + (h.suffix ? '/' + h.suffix : '');
+        const rp = repeaterOf(h.rpt1);
         if (rp.call && rp.call !== 'DIRECT') snap.repeater = rp.call + (rp.module ? ' ' + rp.module : '');
       }
       snap.position = id.position;
     } else if (mode === 'YSF') {
       const id = { ...this.ysf.id, rem: [...this.ysf.id.rem] as [string, string, string, string] }; snap.ysf = id;
       snap.station = id.src; snap.repeater = id.down; snap.position = id.position;
+      if (id.voip) snap.internet = { node: id.down, id: id.rem[2] };
     }
     return snap;
   }

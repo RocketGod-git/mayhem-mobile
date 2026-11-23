@@ -12,11 +12,15 @@
  *   · data frames pair up into 6-byte blocks whose first byte (the mini-header) says what they carry: 4n message
  *     part n (5 characters of a 20-character message), 3n n bytes of simple data (GPS NMEA sentences or D-PRS, the
  *     APRS-format position with its "$$CRCxxxx," prefix), 5n n bytes of the radio header sent again;
- *   · the end of a transmission: 1010 then 000100110101111.
- * Either polarity. The voice itself (AMBE) is not decoded here. No DOM.
+ *   · the end of a transmission: 1010 then 000100110101111;
+ *   · code squelch (Cx) and DV Fast Data (8x, 9x), which also takes the voice frames (dstar-data.ts).
+ * Either polarity. Each 72-bit voice frame goes out with its time ([onVoiceFrame]); the AMBE in it is not decoded.
+ * No DOM.
  */
 import { DSTAR_K, DSTAR_G, viterbi, crc16Lsb, packLsb, asciiField } from './fec.js';
 import { LineBuffer, parsePositionLine, type Position } from './gps.js';
+import { fastDataBlock, FastDataStream, csqlOf, type DStarCsql, type DStarImage } from './dstar-data.js';
+import type { HamVoiceFrame } from './voice.js';
 
 export const DSTAR_FS = '111011001010000';
 export const DSTAR_DSYNC = '101010101011010001101000';
@@ -70,6 +74,8 @@ export interface DStarId {
   header: DStarHeader | null; headerFrom: '' | 'header' | 'slow data';
   message: string; position: Position | null; positionText: string; dprsCrcOk: boolean;
   inverted: boolean; active: boolean; frames: number; headers: number;
+  /** The code squelch block, fast data bytes received this call, and the picture found in them. */
+  csql: DStarCsql | null; fastBytes: number; image: DStarImage | null;
 }
 
 const matches = (hist: Uint8Array, hp: number, pat: Uint8Array, end: number, inv: number): number => {
@@ -87,6 +93,12 @@ const alternating = (hist: Uint8Array, hp: number, end: number, n: number, inv: 
 export class DStarReceiver {
   onHeader: (h: DStarHeader, from: 'header' | 'slow data') => void = () => undefined;
   onEnd: () => void = () => undefined;
+  /** Each voice frame (not those carrying fast data), stream 'dstar'. */
+  onVoiceFrame: (f: HamVoiceFrame) => void = () => undefined;
+  /** The voice frames of this superframe by data frame index (0: the one before the sync), and those not yet out. */
+  private readonly vbuf: (Uint8Array | null)[] = new Array(21).fill(null); private readonly vAt = new Float64Array(21);
+  private pend: number[] = [];
+  private readonly fast = new FastDataStream();
   private readonly hist = new Uint8Array(128); private hp = 0;
   private inv = 0; private hdrInv = 0;
   private hdr: Uint8Array | null = null; private hdrN = 0;
@@ -97,12 +109,13 @@ export class DStarReceiver {
   private slowHdr: number[] = [];
   private readonly lines = new LineBuffer();
   bits = 0;
-  readonly id: DStarId = { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0 };
+  readonly id: DStarId = { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0, csql: null, fastBytes: 0, image: null };
 
   reset(): void {
     this.hist.fill(0); this.hp = 0; this.inv = 0; this.hdrInv = 0; this.hdr = null; this.hdrN = 0; this.cnt = -1; this.missed = 0; this.half = null;
     this.msg = ['', '', '', '']; this.msgSeen = 0; this.slowHdr = []; this.lines.reset(); this.bits = 0;
-    Object.assign(this.id, { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0 });
+    this.vbuf.fill(null); this.pend = []; this.fast.reset();
+    Object.assign(this.id, { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0, csql: null, fastBytes: 0, image: null });
   }
 
   /** A soft symbol from the 4800/s symbol stream: its sign is the bit. */
@@ -122,7 +135,7 @@ export class DStarReceiver {
     }
     // the end of a transmission (the end pattern is the frame sync inverted, so it is looked for first)
     if (this.id.active && matches(this.hist, this.hp, END, 0, this.inv) === 0 && alternating(this.hist, this.hp, 15, 16, this.inv)) {
-      this.id.active = false; this.cnt = -1; this.onEnd(); return;
+      this.flushVoice(); this.id.active = false; this.cnt = -1; this.onEnd(); return;
     }
     // a radio header: frame sync right after the preamble, in either polarity; the polarity holds once it decodes
     for (const inv of [this.inv, this.inv ^ 1]) {
@@ -134,26 +147,37 @@ export class DStarReceiver {
       this.cnt++;
       if (this.cnt % 96 === 0) {
         const k = this.cnt / 96;
-        if (k < 21) this.dataFrame(k);
+        if (k < 21) { this.keepVoice(k); this.dataFrame(k); }
         else {
           // where the next sync belongs: take it even when a bit or two is wrong, and keep the grid through a lost one
-          if (matches(this.hist, this.hp, DSYNC, 0, this.inv) <= 4) this.missed = 0; else if (++this.missed > 2) { this.cnt = -1; this.id.active = false; return; }
-          this.superframe();
+          if (matches(this.hist, this.hp, DSYNC, 0, this.inv) <= 4) this.missed = 0; else if (++this.missed > 2) { this.flushVoice(); this.cnt = -1; this.id.active = false; return; }
+          this.superframe(); this.keepVoice(0);
         }
       }
       return;
     }
     // not framed: look for the data sync (late entry), either polarity
     for (const inv of [0, 1]) {
-      if (matches(this.hist, this.hp, DSYNC, 0, inv) === 0) { this.inv = inv; this.id.inverted = inv === 1; this.id.active = true; this.missed = 0; this.superframe(); return; }
+      if (matches(this.hist, this.hp, DSYNC, 0, inv) === 0) { this.inv = inv; this.id.inverted = inv === 1; this.id.active = true; this.missed = 0; this.superframe(); this.keepVoice(0); return; }
     }
   }
 
   private newCall(): void {
-    this.msg = ['', '', '', '']; this.msgSeen = 0; this.slowHdr = []; this.lines.reset();
-    Object.assign(this.id, { message: '', position: null, positionText: '', dprsCrcOk: false, frames: 0 });
+    this.msg = ['', '', '', '']; this.msgSeen = 0; this.slowHdr = []; this.lines.reset(); this.fast.reset(); this.pend = [];
+    Object.assign(this.id, { message: '', position: null, positionText: '', dprsCrcOk: false, frames: 0, csql: null, fastBytes: 0, image: null });
   }
-  private superframe(): void { this.cnt = 0; this.half = null; this.slowHdr = []; }
+  private superframe(): void { this.flushVoice(); this.cnt = 0; this.half = null; this.slowHdr = []; this.vbuf.fill(null); }
+
+  /** The voice frame that ends 24 bits before the newest bit: the one before data frame [k]. */
+  private keepVoice(k: number): void {
+    const v = new Uint8Array(72), H = this.hist.length;
+    for (let i = 0; i < 72; i++) v[i] = (this.hist[(this.hp - 96 + i + H) % H] ^ this.inv) & 1;
+    this.vbuf[k] = v; this.vAt[k] = this.bits - 96; this.pend.push(k);
+  }
+  private flushVoice(): void {
+    for (const k of this.pend) { const v = this.vbuf[k]; if (v) this.onVoiceFrame({ stream: 'dstar', codec: 'ambe-dstar', bits: v, atSym: this.vAt[k], errs: 0 }); }
+    this.pend = [];
+  }
 
   /** Data frame [k] (1..20) has just ended: its 24 bits are the newest. */
   private dataFrame(k: number): void {
@@ -162,10 +186,17 @@ export class DStarReceiver {
     for (let i = 0; i < 24; i++) bits[i] = ((this.hist[(this.hp - 24 + i + H) % H] ^ this.inv) & 1) ^ PN[i];
     const by = packLsb(bits, 0, 3);
     if (k % 2 === 1) { this.half = by; return; }
-    if (!this.half) return;
+    if (!this.half) { this.flushVoice(); return; }
     const blk = [this.half[0], this.half[1], this.half[2], by[0], by[1], by[2]];
-    this.half = null;
-    this.block(blk);
+    const a = this.half; this.half = null;
+    // fast data: block 1 reads voice frames 2, 3 and 1, the others the two of their own data frames
+    const idx = k === 2 ? [1, 2, 0] : [k - 1, k], vs = idx.map(i => this.vbuf[i]);
+    const fd = vs.every(v => v) ? fastDataBlock(a, by, vs as Uint8Array[]) : null;
+    if (fd) {
+      this.pend = this.pend.filter(i => !idx.includes(i));
+      this.fast.push(fd); this.id.fastBytes += fd.length; this.id.image = this.fast.image();
+    } else this.block(blk);
+    this.flushVoice();
   }
 
   private block(b: number[]): void {
@@ -177,6 +208,8 @@ export class DStarReceiver {
     } else if (type === 3 && n >= 1) {
       let s = ''; for (let i = 1; i <= Math.min(5, n); i++) s += String.fromCharCode(b[i]);
       for (const line of this.lines.push(s)) this.line(line);
+    } else if (type === 12 && n === 2) {
+      this.id.csql = csqlOf(b[1], b[2]);
     } else if (type === 5 && n >= 1) {
       for (let i = 1; i <= Math.min(5, n); i++) this.slowHdr.push(b[i]);
       if (this.slowHdr.length >= 41) {
