@@ -396,7 +396,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         return o
     }
 
-    protected fun close(o: WatchOpen<P>, endMs: Double) {
+    protected open fun close(o: WatchOpen<P>, endMs: Double) {
         opens.remove(o.id)
         if (endMs - o.startMs < TX_MIN_MS) return
         val p = o.probe

@@ -38,7 +38,7 @@ import kotlin.math.sqrt
  */
 
 /** The voice level (dB over the quiet channels' motion) a channel opens at; an open one closes 2 dB under it. */
-const val CB_OPEN_DB = 5.0
+const val CB_OPEN_DB = 3.0
 /** An open channel must measure as a voice (this many blocks voting AM, FM or sideband) within this long, or it is dropped. */
 const val CB_CONFIRM_MS = 2_000.0
 const val CB_CONFIRM_VOTES = 3
@@ -294,8 +294,8 @@ class CbEngine(
             // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
             // held shut a while
             if (p != null && o.id !in confirmed && now - o.startMs >= CB_CONFIRM_MS) {
-                if (p.votes.sum() >= CB_CONFIRM_VOTES) confirmed.add(o.id)
-                else { opens.remove(o.id); peakLevel.remove(o.id); goneMs.remove(o.id); s.v = ArrayList(); s.over = 0; s.noVoiceMs = now; dropped++; continue }
+                if (voiced(p)) confirmed.add(o.id)
+                else { drop(o, now); continue }
             }
             o.snr = s.sigDb; o.peak = max(o.peak, s.sigDb)
             if (p != null) {
@@ -322,6 +322,21 @@ class CbEngine(
             if (k < 0 || k >= count) continue
             openAt(k, now)
         }
+    }
+
+    private fun voiced(p: CbProbe): Boolean = p.votes.sum() >= CB_CONFIRM_VOTES
+    /** An opening that never measured as a voice: gone without a trace, and its channel held shut a while. */
+    private fun drop(o: WatchOpen<CbProbe>, now: Double) {
+        val s = st.getOrNull(cbChannel(o.hz) - 1)
+        opens.remove(o.id); peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id)
+        if (s != null) { s.v = ArrayList(); s.over = 0; s.noVoiceMs = now }
+        dropped++
+    }
+    /** One that ends before its voice check (a carrier dropping within 2 s) faces the check as it ends. */
+    override fun close(o: WatchOpen<CbProbe>, endMs: Double) {
+        val p = o.probe
+        if (p != null && o.id !in confirmed && !voiced(p)) { drop(o, nowMs()); return }
+        super.close(o, endMs)
     }
 
     override fun closed(o: WatchOpen<CbProbe>, t: TxRec) {
