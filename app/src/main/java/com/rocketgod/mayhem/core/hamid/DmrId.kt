@@ -56,6 +56,8 @@ class DmrIdentity {
     private val pending = arrayOfNulls<Pending>(2)
     private var t = 0L
     var checked = 0
+    /** Data bursts whose slot type came through Golay without a correction (an idle repeater sends only these). */
+    var clean = 0
     private val ccVotes = IntArray(16)
 
     init {
@@ -67,7 +69,7 @@ class DmrIdentity {
     fun reset() {
         slots[0] = DmrSlotId(1); slots[1] = DmrSlotId(2)
         for (e in emb) e.reset(); for (a in alias) a.reset()
-        pending[0] = null; pending[1] = null; t = 0; checked = 0; ccVotes.fill(0)
+        pending[0] = null; pending[1] = null; t = 0; checked = 0; clean = 0; ccVotes.fill(0)
     }
 
     fun pushSymbol(s: Double) { t++; framer.push(s.toFloat()) }
@@ -75,7 +77,10 @@ class DmrIdentity {
     private fun burst(e: DmrEvent) {
         val b = e.burst; val k = b.slot and 1; val ts = slots[k]
         if (b.stErrs > 2) return
-        if (b.stErrs == 0) ccVotes[b.cc]++
+        if (b.stErrs == 0) {
+            ccVotes[b.cc]++; clean++; ts.cc = b.cc
+            if (b.dt == 9 && ts.activity.isEmpty()) ts.activity = "idle"
+        }
         val y = b.bytes
         when (b.dt) {
             1, 2 -> {
@@ -110,11 +115,12 @@ class DmrIdentity {
 
     private fun voice(slot: Int, d: IntArray, n: Int) {
         val k = slot and 1; val ts = slots[k]
-        if (ts.activity != "voice") { ts.activity = "voice"; ts.calls++ }
-        ts.lastSym = t
         if (n < 1 || n > 4) return
         val e = readEmb(d)
         if (!e.ok) return
+        // a voice sync alone can be chance: the slot is in a call once its embedded signaling checks
+        if (ts.activity != "voice") { ts.activity = "voice"; ts.calls++ }
+        ts.lastSym = t
         ts.cc = e.cc; ts.privacy = e.pi
         val l = emb[k].push(e.lcss, embBits(d))
         if (l != null) { checked++; lc(k, l, false) }

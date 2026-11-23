@@ -30,7 +30,7 @@ class HamIdChannel(val fs: Double) {
         var m = r.mode
         if (ysf.id.frames > 0) m = "YSF"
         else if (dstar.id.headers > 0 || dstar.id.frames >= 20) m = "D-STAR"
-        else if (dmr.checked > 0) m = "DMR"
+        else if (dmr.checked > 0 || dmr.clean >= 3) m = "DMR"
         var station = ""; var repeater = ""; var position: Position? = null
         var slots: List<DmrSlotId>? = null; var ds: DStarId? = null; var ys: YsfId? = null
         when (m) {

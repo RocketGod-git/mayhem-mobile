@@ -20,7 +20,7 @@ import { parseNmea, type Position } from './gps.js';
 export interface DmrSlotId {
   slot: number; cc: number; group: boolean; tg: number; src: number; alias: string;
   emergency: boolean; privacy: boolean; position: Position | null; posError: number;
-  /** 'voice' while a call is heard on the slot, 'data' after a data header, '' idle. */
+  /** 'voice' while a call is heard on the slot, 'data' after a data header, 'idle' when only idle bursts came, '' nothing. */
   activity: string; calls: number; lastSym: number;
 }
 
@@ -56,6 +56,8 @@ export class DmrIdentity {
   private t = 0;
   /** Bursts whose check (RS, CRC or embedded LC checksum) passed. */
   checked = 0;
+  /** Data bursts whose slot type came through Golay without a correction (an idle repeater sends only these). */
+  clean = 0;
   private readonly ccVotes = new Int32Array(16);
 
   constructor() {
@@ -70,7 +72,7 @@ export class DmrIdentity {
   reset(): void {
     this.slots[0] = DmrIdentity.blank(1); this.slots[1] = DmrIdentity.blank(2);
     for (const e of this.emb) e.reset(); for (const a of this.alias) a.reset();
-    this.pending[0] = this.pending[1] = null; this.t = 0; this.checked = 0; this.ccVotes.fill(0);
+    this.pending[0] = this.pending[1] = null; this.t = 0; this.checked = 0; this.clean = 0; this.ccVotes.fill(0);
   }
 
   pushSymbol(s: number): void { this.t++; this.framer.push(s); }
@@ -78,7 +80,10 @@ export class DmrIdentity {
   private burst(e: DmrEvent): void {
     const b = e.burst, ts = this.slots[b.slot & 1], k = b.slot & 1;
     if (b.stErrs > 2) return;
-    if (b.stErrs === 0) this.ccVotes[b.cc]++;
+    if (b.stErrs === 0) {
+      this.ccVotes[b.cc]++; this.clean++; ts.cc = b.cc;
+      if (b.dt === 9 && ts.activity === '') ts.activity = 'idle';
+    }
     if (b.dt === 1 || b.dt === 2) {
       if (!rs129Ok(b.bytes, b.dt)) return;
       this.checked++; ts.cc = b.cc; ts.lastSym = this.t;
@@ -108,11 +113,12 @@ export class DmrIdentity {
 
   private voice(slot: number, d: Uint8Array, n: number): void {
     const k = slot & 1, ts = this.slots[k];
-    if (ts.activity !== 'voice') { ts.activity = 'voice'; ts.calls++; }
-    ts.lastSym = this.t;
     if (n < 1 || n > 4) return;
     const emb = readEmb(d);
     if (!emb.ok) return;
+    // a voice sync alone can be chance: the slot is in a call once its embedded signaling checks
+    if (ts.activity !== 'voice') { ts.activity = 'voice'; ts.calls++; }
+    ts.lastSym = this.t;
     ts.cc = emb.cc; ts.privacy = emb.pi;
     const lc = this.emb[k].push(emb.lcss, embBits(d));
     if (lc) { this.checked++; this.lc(k, lc, false); }

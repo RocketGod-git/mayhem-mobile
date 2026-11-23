@@ -48,7 +48,7 @@ export class HamIdChannel {
     let mode: HamMode = r.mode;
     if (this.ysf.id.frames > 0) mode = 'YSF';
     else if (this.dstar.id.headers > 0 || this.dstar.id.frames >= 20) mode = 'D-STAR';
-    else if (this.dmr.checked > 0) mode = 'DMR';
+    else if (this.dmr.checked > 0 || this.dmr.clean >= 3) mode = 'DMR';
     const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));
