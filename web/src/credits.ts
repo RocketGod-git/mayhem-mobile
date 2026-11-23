@@ -45,5 +45,6 @@ export const CREDITS: [boolean, string][] = [
   [false, "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid"],
   [false, "JS8Call by Jordan Sherer, KN4CRD · the JS8 dictionary, command and group tables · GPL-3.0"],
   [false, "OurAirports — airport names and positions (public domain)"],
+  [false, "P25, NXDN and dPMR repeater IDs, written from TIA-102 (P25 Phase 1 and 2), the NXDN Forum's TS 1-A and TS 1-E, and ETSI TS 102 490 (dPMR)"],
   [false, "Shopping-cart wheel sounds and images (Gatekeeper, Rocateq) — begaydocrime.com"],
 ];
