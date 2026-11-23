@@ -20,6 +20,8 @@ class ChannelContext(val hz: Long, val tone: String? = null, val cwId: String? =
 
 class HamIdResolver(seedPapa: Boolean = true) {
     var users: RadioIdTable? = null
+    /** radioid.net's NXDN ID list (the same columns as the DMR list; IDs of 16 bits). */
+    var nxdnUsers: RadioIdTable? = null
     val talkgroups = TalkgroupTable()
     val repeaters = RepeaterDirectory()
     val calls = HashMap<String, CallRecord>()
@@ -41,6 +43,17 @@ class HamIdResolver(seedPapa: Boolean = true) {
         calls[key]?.let { st.name = it.name; st.city = it.city; st.state = it.state; if (st.country.isEmpty()) st.country = "United States"; st.source = it.source; return }
         if (us != null) { us.byCallsign(key)?.let { val id = st.radioId; fromUser(st, it); st.radioId = id; return } }
         wanted.add(key)
+    }
+
+    /**
+     * A P25 or NXDN unit ID as a station: P25 hams mostly key up with their DMR ID (seven digits, radioid.net's list),
+     * NXDN hams with an NXDN ID from radioid.net's NXDN list. Other IDs stay numbers.
+     */
+    private fun unit(id: Int, nxdn: Boolean): Station {
+        val st = Station(); st.radioId = id
+        val u = if (nxdn) nxdnUsers?.byId(id) else if (id in 1_000_000..9_999_999) users?.byId(id) else null
+        if (u != null) { fromUser(st, u); if (nxdn) st.source = "radioid.net NXDN" }
+        return st
     }
 
     fun resolve(snap: HamIdSnap, ctx: ChannelContext): Resolved {
@@ -66,6 +79,21 @@ class HamIdResolver(seedPapa: Boolean = true) {
         } else if (snap.mode == "YSF" && snap.ysf != null) {
             val st = Station(); st.callsign = snap.ysf.src; fill(st); out.station = st
             out.talkgroup = snap.ysf.dest; out.dgid = snap.ysf.dgid; out.repeater = snap.ysf.down
+        } else if (snap.mode == "P25" && snap.p25 != null && snap.p25.src != 0) {
+            val p = snap.p25; out.station = unit(p.src, false); out.group = p.group; out.tgId = p.tg
+            if (!p.group) out.called = unit(p.tg, false)
+            out.colorCode = p.nac
+        } else if (snap.mode == "P25P2" && snap.p25p2 != null) {
+            val live = snap.p25p2.slots.filter { it.src > 0 }.maxByOrNull { it.lastSym }
+            if (live != null) { out.slot = live.lch + 1; out.station = unit(live.src, false); out.group = live.group; out.tgId = live.tg; if (!live.group) out.called = unit(live.tg, false) }
+        } else if (snap.mode == "NXDN" && snap.nxdn != null && snap.nxdn.src != 0) {
+            val x = snap.nxdn
+            out.station = if (x.typeD) Station().also { it.radioId = x.src; it.alias = "${x.src shr 11}-${x.src and 0x7ff}" } else unit(x.src, true)
+            out.group = x.group; out.tgId = x.dst; if (!x.group && !x.typeD) out.called = unit(x.dst, true)
+            out.colorCode = x.ran
+        } else if (snap.mode == "dPMR" && snap.dpmr != null && snap.dpmr.own >= 0) {
+            val d = snap.dpmr; val st = Station(); st.radioId = d.own; st.alias = d.ownText; out.station = st
+            out.group = d.group; out.tgId = d.called; out.talkgroup = d.calledText; out.colorCode = d.cc
         }
         if (rep == null && snap.mode != "DMR") rep = repeaters.at(ctx.hz, tone = ctx.tone, mode = if (snap.mode == "analog" || snap.mode.isEmpty()) "FM" else snap.mode, lat = ctx.lat, lon = ctx.lon).firstOrNull()
         if (out.repeater.isEmpty() && !ctx.cwId.isNullOrEmpty()) out.repeater = ctx.cwId

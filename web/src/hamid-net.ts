@@ -14,6 +14,8 @@ import { PAPA_ANALOG_URL, PAPA_DMR_URL } from './dsp/hamid/papa-seed.js';
 
 export const BM_TALKGROUPS_URL = 'https://api.brandmeister.network/v2/talkgroup';
 export const RADIOID_USERS_URL = 'https://radioid.net/static/user.csv';
+/** radioid.net's NXDN ID list (the same columns), for NXDN unit IDs. */
+export const RADIOID_NXDN_URL = 'https://radioid.net/static/nxdn.csv';
 export const CALLOOK_URL = (call: string) => `https://callook.info/${encodeURIComponent(call)}/json`;
 const WEEK = 7 * 86_400_000, MONTH = 30 * 86_400_000, DAY = 86_400_000;
 
@@ -55,6 +57,13 @@ export async function loadRadioIds(res: HamIdResolver, url: string): Promise<num
   const text = await getText(url, 60_000);
   res.users = RadioIdTable.fromCsv(text);
   return res.users.size;
+}
+
+/** The NXDN ID list from a URL the browser may read (a mirror, or a blob: URL of a file the user picked). */
+export async function loadNxdnIds(res: HamIdResolver, url: string): Promise<number> {
+  const text = await getText(url, 60_000);
+  res.nxdnUsers = RadioIdTable.fromCsv(text);
+  return res.nxdnUsers.size;
 }
 
 /** Looks up to [max] of the callsigns the resolver has queued (US callsigns, callook.info). */

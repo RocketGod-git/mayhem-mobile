@@ -163,6 +163,8 @@ class P25Decoder {
     var onEs: (P25EncSync) -> Unit = {}
     /** The header of a call (HDU): the same encryption sync, the manufacturer and the talkgroup, sent before the voice. */
     var onHdu: (P25Hdu) -> Unit = {}
+    /** The 72 bits (9 octets) of an LDU1's link control, once its Reed-Solomon code passed. */
+    var onLc: (IntArray) -> Unit = {}
 
     private var nac = -1; private var duid = -1
     private var frameName = ""; private var tg = 0; private var src = 0; private var enc = false; private var emerg = false; private var lcf = 0
@@ -335,6 +337,7 @@ class P25Decoder {
         emerg = (svc and 0x80) != 0
         if (format == 0x00) { tg = f(32, 16); src = f(48, 24) }          // group call: talkgroup then source
         else if (format == 0x03) { tg = f(24, 24); src = f(48, 24) }     // unit to unit: destination then source
+        onLc(IntArray(9) { f(8 * it, 8) })
     }
 
     private fun report() {

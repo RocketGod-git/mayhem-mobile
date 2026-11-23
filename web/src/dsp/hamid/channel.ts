@@ -10,6 +10,7 @@ import { DStarReceiver, repeaterOf, type DStarId } from './dstar.js';
 import { YsfReceiver, type YsfId } from './ysf.js';
 import type { Position } from './gps.js';
 import { DtmfDecoder, dstarFlags, urcallCommand, type DStarFlags, type UrCall } from './signaling.js';
+import { P25Modes, type P25ModesSnap, type P25ModeName } from './p25modes.js';
 
 export interface HamIdSnap {
   mode: HamMode;
@@ -27,6 +28,8 @@ export interface HamIdSnap {
   dtmf: string;
   /** D-STAR: the header's flags and what its URCALL asks for. */
   dstarFlags: DStarFlags | null; urcall: UrCall | null;
+  /** P25 Phase 1 and 2, NXDN and dPMR: who is talking (null unless that mode is named). */
+  p25: P25ModesSnap['p25']; p25p2: P25ModesSnap['p25p2']; nxdn: P25ModesSnap['nxdn']; dpmr: P25ModesSnap['dpmr'];
 }
 
 export class HamIdChannel {
@@ -35,13 +38,18 @@ export class HamIdChannel {
   readonly dstar = new DStarReceiver();
   readonly ysf = new YsfReceiver();
   readonly dtmf: DtmfDecoder;
+  readonly p25: P25Modes;
+  /** Clear digital voice, 160 samples at 8 kHz a frame: the mode and the slot (0, or Phase 2's 0 and 1). */
+  onAudio: (mode: P25ModeName, slot: number, pcm: Float32Array) => void = () => undefined;
   constructor(readonly fs: number) {
     this.mode = new ModeDetector(fs); this.dtmf = new DtmfDecoder(fs);
     this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); };
+    this.p25 = new P25Modes(fs); this.p25.onAudio = (m, slot, pcm) => this.onAudio(m, slot, pcm);
+    const s48 = this.mode.onSymbol48; this.mode.onSymbol48 = s => { s48(s); this.p25.pushSymbol48(s); };
   }
-  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); }
+  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); this.p25.reset(); }
   /** Discriminator samples, radians per sample, at [fs]. */
-  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); }
+  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); this.p25.push(disc, n); }
 
   snapshot(): HamIdSnap {
     const r = this.mode.result();
@@ -49,7 +57,9 @@ export class HamIdChannel {
     if (this.ysf.id.frames > 0) mode = 'YSF';
     else if (this.dstar.id.headers > 0 || this.dstar.id.frames >= 20) mode = 'D-STAR';
     else if (this.dmr.checked > 0) mode = 'DMR';
-    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null };
+    const more = this.p25.mode ? this.p25.snapshot() : null;
+    if (more && mode !== 'YSF' && mode !== 'D-STAR' && mode !== 'DMR') mode = more.mode as HamMode;
+    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, p25: null, p25p2: null, nxdn: null, dpmr: null };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));
       snap.dmr = { cc: this.dmr.cc, slots };
@@ -67,7 +77,7 @@ export class HamIdChannel {
     } else if (mode === 'YSF') {
       const id = { ...this.ysf.id, rem: [...this.ysf.id.rem] as [string, string, string, string] }; snap.ysf = id;
       snap.station = id.src; snap.repeater = id.down; snap.position = id.position;
-    }
+    } else if (more && mode === more.mode) Object.assign(snap, { p25: more.p25, p25p2: more.p25p2, nxdn: more.nxdn, dpmr: more.dpmr, station: more.station, repeater: more.repeater, position: more.position });
     return snap;
   }
 }

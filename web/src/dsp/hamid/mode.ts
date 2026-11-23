@@ -16,7 +16,7 @@ import { DiscSymbols } from './symbols.js';
 import { YSF_SYNC } from './ysf.js';
 import { DSTAR_FS, DSTAR_DSYNC } from './dstar.js';
 
-export type HamMode = '' | 'analog' | 'DMR' | 'D-STAR' | 'YSF' | 'P25' | 'NXDN';
+export type HamMode = '' | 'analog' | 'DMR' | 'D-STAR' | 'YSF' | 'P25' | 'NXDN' | 'P25P2' | 'dPMR';
 export const MODES: HamMode[] = ['DMR', 'D-STAR', 'YSF', 'P25', 'NXDN'];
 
 const signs = (s: string) => Int8Array.from([...s].map(c => c === '1' ? 1 : -1));
