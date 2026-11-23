@@ -325,21 +325,26 @@ fun FreqCard(
     rightColor: Color = Palette.muted,
     digits: (@Composable () -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
+    /** The subtitle on its own row under the header, whole, rather than squeezed beside the gain pill (the web's). */
+    titleRow: Boolean = false,
 ) {
     val d = rememberDims()
     Column(Modifier.faceCard(accent, d)) {
+        // a phone's header is too narrow for the subtitle: it gives way to the gain pill and the lamp
+        val phone = d.widthDp <= 480
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             FaceTag(tag, accent)
-            // a phone's header is too narrow for the subtitle: it gives way to the gain pill and the lamp
-            val phone = d.widthDp <= 480
+            if (!phone && titleRow) Spacer(Modifier.weight(1f))
             // a long subtitle (Dispatch names every protocol it reads) takes two lines rather than lose its end
-            if (!phone) Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(if (title.length > 30) 9f else 10f), letterSpacing = if (title.length > 30) 1.sp else 2.sp, maxLines = if (title.length > 30) 2 else 1, overflow = TextOverflow.Ellipsis,
+            else if (!phone) Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(if (title.length > 30) 9f else 10f), letterSpacing = if (title.length > 30) 1.sp else 2.sp, maxLines = if (title.length > 30) 2 else 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(horizontal = d.dp(8f)))
             if (actions != null) actions() else if (onTune != null) DialActions(accent, freq, onTune = onTune)
             // the status lamp (SENDING, 4 HEARD) always shows whole: on a phone the gain pill takes what room is left and shortens
             if (phone) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { GainChip(accent) } else GainChip(accent)
             lamp()
         }
+        if (!phone && titleRow) Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, softWrap = false,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(start = d.dp(2f), top = d.dp(4f)))
         Box(Modifier.fillMaxWidth().padding(top = d.dp(2f))) {
             when {
                 digits != null -> digits()

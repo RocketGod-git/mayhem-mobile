@@ -215,7 +215,7 @@ fun HamPlusScreen(accent: Color) {
         if (s != null && t != null) HpTileCard(t, s!!, now, prefs.mute.contains(t.key), prefs.prio.contains(t.key), prefs.hold == t.key, accent, acts, modifier) { sel = null }
     }
 
-    PacketFrame(accent, HamPlus.log, tag = "REPEATERS", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, waterfall = wf,
+    PacketFrame(accent, HamPlus.log, tag = "REPEATERS", title = "EVERY CHANNEL · EVERY TALKER", roomy = true, titleRow = true, waterfall = wf,
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.HAMPLUS, !wf) },
         lamp = {
@@ -629,6 +629,17 @@ private const val TAP_DP = 10f
  */
 @Composable
 internal fun HpTimeline(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modifier: Modifier, lanesMax: Int, fill: Boolean = false) {
+    if (!fill) { HpTimelineBody(s, now, accent, acts, modifier, lanesMax, false); return }
+    // the big view holds only the lanes that fit its height (under the time axis and the padding), so none is cut off
+    val d = rememberDims()
+    BoxWithConstraints(modifier) {
+        val fit = max(1, ((maxHeight - d.dp(30f)) / d.dp(22f)).toInt())
+        HpTimelineBody(s, now, accent, acts, Modifier.fillMaxSize(), min(lanesMax, fit), true)
+    }
+}
+
+@Composable
+private fun HpTimelineBody(s: HpSnap?, now: Long, accent: Color, acts: HpActs, modifier: Modifier, lanesMax: Int, fill: Boolean) {
     val d = rememberDims()
     val all = s?.rows.orEmpty()
     // the window grows with what was heard, two minutes at the least and ten at the most; quiet, it shows all ten

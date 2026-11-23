@@ -178,7 +178,7 @@ fun CbScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Cb.log, tag = "CB", title = "ALL 40 CHANNELS · AM · FM · SSB", roomy = true, waterfall = wf,
+    PacketFrame(accent, Cb.log, tag = "CB", title = "ALL 40 CHANNELS · AM · FM · SSB", roomy = true, titleRow = true, waterfall = wf,
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.CB, !wf) },
         lamp = {
@@ -302,7 +302,7 @@ private fun CbBoard(s: CbSnap?, now: Long, hold: String, sel: String?, accent: C
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             // 10, 8 or 5 a row, so the 40 fill whole rows
-            val cols = listOf(10, 8, 5).firstOrNull { maxWidth / it >= d.dp(52f) } ?: 5
+            val cols = listOf(10, 8, 5).firstOrNull { maxWidth / it >= d.dp(48f) } ?: 5
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                 for (row in chans.chunked(cols)) Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                     for (c in row) {

@@ -134,7 +134,9 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         /** The waterfall strip's height under [widePane] (Dispatch matches the region beside it). */
                         paneWaterfall: Float = 110f,
                         /** A tap on the waterfall or a tune on the card goes here instead of the engine (HD Radio). */
-                        retune: ((Long) -> Unit)? = null) {
+                        retune: ((Long) -> Unit)? = null,
+                        /** The card's subtitle on its own row (Repeaters and CB, as on the web). */
+                        titleRow: Boolean = false) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -156,7 +158,8 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                 left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
                 right = if (snap.total > 0) "${snap.total} decoded" else "nothing decoded yet",
                 onTune = if (tunable) ({ f: Long -> tuneTo(f) }) else null,
-                lamp = lamp ?: { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) })
+                lamp = lamp ?: { if (snap.total > 0) Lamp("${snap.total} DECODED", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) },
+                titleRow = titleRow)
         },
         visual = { m ->
             Column(m, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
