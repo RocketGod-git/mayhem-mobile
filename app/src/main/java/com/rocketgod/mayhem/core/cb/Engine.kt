@@ -44,9 +44,8 @@ import kotlin.math.sqrt
 const val CB_OPEN_DB = 3.0
 /** Or its power outside its steady lines this far over the noise (dB), and staying open 3 dB under that. */
 const val CB_SIG_OPEN_DB = 10.0
-/** An open channel must measure as a voice (this many blocks voting AM, FM or sideband) within this long, or it is dropped. */
+/** An open channel must measure as a readable station within this long, or it is dropped. */
 const val CB_CONFIRM_MS = 3_000.0
-const val CB_CONFIRM_VOTES = 3
 /** A dropped channel stays shut this long. */
 const val CB_DROP_HOLD_MS = 5_000.0
 /** Nothing opens this long after the span starts: the floors and lines settle first. */
@@ -136,6 +135,10 @@ class CbEngine(
     var cbPrefs = CbPrefs(); private set
     private val txMode = LinkedHashMap<Int, CbMode>()
     private val confirmed = HashSet<Int>()
+    /** When an opening's demodulator started, when it did not start with it. */
+    private val checkFrom = HashMap<Int, Double>()
+    /** Each finished transmission's carriers, as its demodulator took them (ms into it, Hz). */
+    val txCarriers = LinkedHashMap<Int, List<CarrierChange>>()
     /** Openings dropped as no voice, since the start (the log and the tests read it). */
     var dropped = 0; private set
     private val peakLevel = HashMap<Int, Double>(); private val goneMs = HashMap<Int, Double>()
@@ -291,11 +294,13 @@ class CbEngine(
         // open channels: still voiced? A carrier that drops away ends the transmission at once (the next talker may key
         // up a moment later); without one (SSB, or a weak talker under a steady line) the voice going quiet ends it
         for (o in opens.values.toList()) {
+            // an opening that found every demodulator busy gets one as soon as one is free, and its check starts then
+            if (o.probe == null && probes() < cap) { o.probe = makeProbe(o.hz, o.tileKey); o.cut = false; checkFrom[o.id] = now }
             val i = cbChannel(o.hz) - 1; val s = st[i]; val p = o.probe
             // a voice is AM, FM or sideband to the demodulator: something that moves the spectrum but measures as none of
             // them in its first seconds (a burst of noise from a nearby device) is dropped, not logged, and the channel is
             // held shut a while
-            if (p != null && o.id !in confirmed && now - o.startMs >= CB_CONFIRM_MS) {
+            if (p != null && o.id !in confirmed && now - (checkFrom[o.id] ?: o.startMs) >= CB_CONFIRM_MS) {
                 if (voiced(p, o.hz)) confirmed.add(o.id)
                 else { drop(o, now); continue }
             }
@@ -327,11 +332,12 @@ class CbEngine(
     }
 
     /**
-     * Whether an opening measured as a voice: enough blocks voting AM, FM or sideband, and not sideband facing a busy
-     * neighbor 10 kHz away (USB facing the channel above, LSB the one below), which is that neighbor's AM splatter.
+     * Whether an opening is a readable station by home's measure (a carrier 22 dB over the median through the keyup, or
+     * a clear sideband), and not sideband facing a busy neighbor 10 kHz away (USB facing the channel above, LSB the one
+     * below), which is that neighbor's AM splatter.
      */
     private fun voiced(p: CbProbe, hz: Long): Boolean {
-        if (p.votes.sum() < CB_CONFIRM_VOTES) return false
+        if (!p.readable()) return false
         val m = p.measuredMode(); val own = st.getOrNull(cbChannel(hz) - 1)
         fun busy(f: Long): Boolean {
             val ch = cbChannel(f); if (ch == 0) return false; val nn = st[ch - 1]
@@ -344,31 +350,34 @@ class CbEngine(
     /** An opening that never measured as a voice: gone without a trace, and its channel held shut a while. */
     private fun drop(o: WatchOpen<CbProbe>, now: Double) {
         val s = st.getOrNull(cbChannel(o.hz) - 1)
-        opens.remove(o.id); peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id)
+        opens.remove(o.id); peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id); checkFrom.remove(o.id)
         if (s != null) { s.v = ArrayList(); s.over = 0; s.noVoiceMs = now }
         dropped++
     }
     /** One that ends before its voice check (a carrier dropping within 3 s) faces the check as it ends. */
     override fun close(o: WatchOpen<CbProbe>, endMs: Double) {
+        // (one never demodulated cannot be checked: it is not logged either)
         val p = o.probe
-        if (p != null && o.id !in confirmed && !voiced(p, o.hz)) { drop(o, nowMs()); return }
+        if (o.id !in confirmed && (p == null || !voiced(p, o.hz))) { drop(o, nowMs()); return }
         super.close(o, endMs)
     }
 
     override fun closed(o: WatchOpen<CbProbe>, t: TxRec) {
-        peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id)
+        peakLevel.remove(o.id); goneMs.remove(o.id); confirmed.remove(o.id); checkFrom.remove(o.id)
         val i = cbChannel(o.hz) - 1
         // the next transmission on the channel opens on its own voice, not on what is left of this one's
         if (i >= 0) { st[i].v = ArrayList(); st[i].over = 0 }
         val p = o.probe
         val m = p?.mode() ?: st.getOrNull(i)?.mode ?: CbMode.AM
         txMode[t.id] = m
+        // the carriers it was heard on, in order with when (ms into it): one a keyup is the aim
+        if (p != null) { txCarriers[t.id] = p.trk.changes.map { CarrierChange(it.ms, Math.round(it.hz).toDouble()) }; if (txCarriers.size > 4_000) txCarriers.remove(txCarriers.keys.first()) }
         if (txMode.size > 4_000) txMode.remove(txMode.keys.first())
         val mm = p?.measuredMode()
         if (i >= 0 && mm != null) st[i].mode = mm
     }
 
-    override fun clear() { synchronized(lock) { super.clear(); txMode.clear() } }
+    override fun clear() { synchronized(lock) { super.clear(); txMode.clear(); txCarriers.clear() } }
 
     /** Each of the 40 channels as the screen shows it. */
     private fun chans(now: Double): List<CbChan> {
@@ -390,7 +399,8 @@ class CbEngine(
     override fun snapshotLocked(now: Double): HpSnap {
         val s = super.snapshotLocked(now)
         val live = HashMap<Int, CbMode>(); for (o in opens.values) { val p = o.probe ?: continue; live[o.id] = p.mode() }
-        val rows = s.rows.map { r -> r.copy(mode = (live[r.id] ?: txMode[r.id])?.name ?: "") }
+        // a transmission still waiting for its voice check is on the air, but not yet known to be a station (pending)
+        val rows = s.rows.map { r -> r.copy(mode = (live[r.id] ?: txMode[r.id])?.name ?: "", pending = r.live && r.id !in confirmed) }
         return CbSnap(s, rows, chans(now))
     }
 

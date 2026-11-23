@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.core.cb
 
+import com.rocketgod.mayhem.core.Dsp
 import com.rocketgod.mayhem.core.ham.RealFir
 import com.rocketgod.mayhem.core.ham.Resampler
 import com.rocketgod.mayhem.core.ham.lowpassTaps
@@ -24,89 +25,39 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /*
- * One CB channel's demodulator: AM, FM, USB or LSB, chosen by hand or by what the transmission measures.
+ * One CB channel's demodulator: home's method (see Carrier.kt), the mode found from the transmission or set by hand.
  *
- * Every 100 ms block of the channel (down-converted to about 16 kS/s) is measured:
- *  - the carrier: the power in the carrier [CarrierTracker] holds (the strongest line, found and followed), as a share
- *    of all the power. AM keeps most of its power in the carrier; single sideband has none;
- *  - what is left once the carrier is taken out, split into the part in line with the carrier and the part across it.
- *    AM moves only the carrier's size, so its remainder lies in line; FM moves its phase, across; single sideband
- *    (and noise) turns all the way round, half and half. A single sideband tone looks like a carrier, this does not;
- *  - the envelope: how much |z| moves in the voice band against its mean, less what the channel's noise alone would
- *    move it. AM carries the voice there; FM keeps a constant envelope;
- *  - the sidebands: the power 300 to 3000 Hz above the carrier against the same below (each by the Weaver method, the
- *    same filters that demodulate SSB). Single sideband has its energy on one side; AM and FM on both.
- * A block with the voice in it votes, and the transmission's mode is the one with most votes.
+ * Down-converted to about 16 kS/s, the idle lines the engine measured are notched (12 Hz wide, never within 30 Hz of
+ * the carrier, so only once the carrier is known), and the carrier tracker finds and holds a station's carrier.
+ *  - A carrier held: AM, or FM when its envelope is flat; readable when its median q is 22 dB or more.
+ *  - None: single sideband, the side of the center (300 to 3000 Hz) with 4 times the other's energy (6 dB),
+ *    demodulated by the Weaver method and leveled by its own 0.3 s power.
+ * Audio is 300 to 3000 Hz (fourth-order each way), clipped at 3, faded in and out over 15 ms where the carrier comes
+ * and goes, and gently denoised (home's smoothed gain, never under 0.35).
  *
- * AM is demodulated synchronously against the held carrier, over its 5 Hz level. The carrier offset (the held
- * carrier for AM, the median of the discriminator's 100 ms means for FM) tells talkers apart, as HAM+ does for FM;
- * SSB has no carrier to read, so its offset is not measured. Twin of web dsp/cb/probe.ts.
+ * The carrier's offset tells AM and FM talkers apart; SSB has no carrier to read. Twin of web dsp/cb/probe.ts.
  */
 
 const val CB_PROBE_RATE = 16_000.0
 /** The Weaver shift: a sideband 300 to 3000 Hz from the carrier is centered at 1650 Hz and kept 1350 Hz either side. */
 const val SSB_MID_HZ = 1_650.0
 const val SSB_HALF_HZ = 1_350.0
-/** Votes: SSB has this much more on one side (dB), and its remainder is not in line with a carrier. */
-const val SSB_SIDE_DB = 10.0
-/** SSB's envelope follows the voice all the way (a carrier between words does not, so an AM pause casts no SSB vote). */
-const val SSB_ENV_MIN = 0.25
-/** FM: the envelope moves less than this (beyond noise) while the discriminator swings more than this (Hz rms). */
-const val FM_ENV_MAX = 0.1
-const val FM_DEV_MIN = 350.0
-/** SSB has no carrier: under this share of its power stays put at the strongest line it holds. */
-const val SSB_CARRIER_MAX = 0.3
-/** AM: at least this share in the held carrier and the envelope moving at least this much beyond noise. (What is left
- *  over is not required to lie in line with the carrier: real transmitters wobble their carrier's phase.) */
-const val AM_CARRIER_MIN = 0.8
-const val AM_ENV_MIN = 0.06
-/** AM votes start this long after its carrier was taken (ms). */
-const val AM_SETTLE_MS = 300.0
-/** FM spreads its power away from the carrier: under this share in it. (A real AM station's carrier wobbles its phase
- *  enough to swing the discriminator, so a strong carrier is never FM.) */
-const val FM_CARRIER_MAX = 0.7
-/** AM's gain is at most this much over the keyup's peak carrier level (linear, 16 dB): a deep fade is not blown up into static. */
-const val AGC_CEIL = 6.3
-/** The audio fades in and out over this long (ms): no clicks. */
+/** Single sideband: one side holds this many times the other's energy (6 dB). */
+const val SSB_RATIO = 4.0
+/** A carrier stands 15 dB over the median through this share of its keyup, once held a second (real AM 0.84 to 1, a
+ *  sideband voice followed as if a carrier 0.34 to 0.81, on home's recordings). */
+const val CARRIER_HELD = 0.8
+/** SSB's level is its power over this long (s). */
+const val SSB_AGC_S = 0.3
+/** Audio is clipped here (the carrier's level is 1), and faded in and out over this long (ms). */
+const val AUDIO_CLIP = 3.0
 const val RAMP_MS = 15.0
-/** A block votes only when its power is at least this share of the transmission's strongest block (SSB pauses do not). */
-private const val VOTE_POWER = 0.3
-private const val BLOCK_MS = 100.0
+/** How the demodulated audio is scaled to the clip and the speaker. */
+private const val OUT_GAIN = 0.35
 private const val OFF_WIN_MS = 100.0
 private const val TWO_PI = 2 * PI
 
-/**
- * Takes one steady line out of the channel: the line turned to DC and averaged (about 20 Hz wide) is its phasor, which
- * is turned back and subtracted. The phasor's own turning corrects the line's frequency, so a line read off an FFT bin
- * to within a few tens of Hz settles on it.
- */
-class LineCanceller(val hz: Double, fs: Double) {
-    private var w = 2 * PI * hz / fs
-    private var ph = 0.0; private var cr = 0.0; private var ci = 0.0; private var n = 0; private var lr = 0.0; private var li = 0.0
-    private val a = 2 * PI * 20 / fs
-
-    fun run(xi: FloatArray, xq: FloatArray, m: Int) {
-        var ph = ph; var cr = cr; var ci = ci; val a = a
-        for (k in 0 until m) {
-            val c = cos(ph); val s = sin(ph); val i = xi[k].toDouble(); val q = xq[k].toDouble()
-            cr += a * (i * c + q * s - cr); ci += a * (q * c - i * s - ci)
-            xi[k] = (i - (cr * c - ci * s)).toFloat(); xq[k] = (q - (cr * s + ci * c)).toFloat()
-            ph += w
-            if (++n >= 64) {
-                // the phasor turning means the line sits a little off: move onto it, half the way each time
-                n = 0
-                if (lr != 0.0 || li != 0.0) { val d = atan2(ci * lr - cr * li, cr * lr + ci * li); w += 0.5 * d / 64 }
-                lr = cr; li = ci
-            }
-        }
-        this.ph = ph % (2 * PI); this.cr = cr; this.ci = ci
-    }
-}
-
-/** The last block's measurements, for the tests and the card. */
-data class CbBlock(val carrier: Double, val envAc: Double, val devHz: Double, val sideDb: Double, val inline: Double)
-
-class CbProbe(private val inRate: Double, val offsetHz: Double) : WatchProbe {
+class CbProbe(inRate: Double, val offsetHz: Double) : WatchProbe {
     private val ddc = Ddc(4_500.0, CB_PROBE_RATE, 63)
     val fs: Double
     override val clip = ClipWriter()
@@ -117,81 +68,112 @@ class CbProbe(private val inRate: Double, val offsetHz: Double) : WatchProbe {
     override var out48 = 0; private set
     override var levelDb = -90.0; private set
     override val cw0 = ""
-    /** The mode set by hand (null lets the measurement choose), the clarifier for SSB (Hz), and the mode before any vote. */
+    /** The mode set by hand (null lets the measurement choose), the clarifier for SSB (Hz), and the mode before any measurement. */
     var manual: CbMode? = null
     var clarHz = 0.0
     var guess = CbMode.AM
-    /** Steady lines in the channel before this transmission (birdies), taken out of what is measured and heard. */
-    private var notches: List<LineCanceller> = emptyList(); private var pending: List<Int> = emptyList(); private var notchedFor = Double.NaN
-    /** The lines are notched once the carrier is found, and never within 30 Hz of it (they may be the station itself). */
-    fun setNotches(hz: List<Int>) { pending = hz; trk.ignore = hz.map { it.toDouble() }; notches = emptyList(); notchedFor = Double.NaN }
-    val notchHz: List<Double> get() = notches.map { it.hz }
-    /** The AM carrier, found and held. */
-    val trk: CarrierTracker
-    /** The channel's noise against its signal (linear), from the engine's measurement: what noise alone moves. */
+    /** The channel's noise as the engine measures it (kept for the engine; home's method needs no noise figure). */
     var noiseRatio = 0.0
-    /**
-     * The noise variance a sample at the radio's rate, from the engine's view of the whole span (0 when there is none):
-     * through the down-converter it is the noise in this channel, measured away from any station's own splatter.
-     */
     var noiseVarIn = 0.0
-    private val nbw: Double
-    /** The noise against the power in the last block, as used for the votes. */
-    var noiseNow = 0.0; private set
-    /** Votes by [CbMode.ordinal]. */
+    /** How each 10 ms of the transmission measured, by [CbMode.ordinal], for the card and the tests. */
     val votes = IntArray(4)
-    var last = CbBlock(0.0, 0.0, 0.0, 0.0, 0.0); private set
-    private val lp: RealFir; private val to8: Resampler; private val to48: Resampler
+    /** The carrier, found and held. */
+    val trk: CarrierTracker
+    private var notches: List<LineNotch> = emptyList(); private var otherNotches: List<LineNotch> = emptyList()
+    private var pending: List<Double> = emptyList(); private var notchedFor = Double.NaN; private var sw = -1
+    private val to8: Resampler; private val to48: Resampler
     private val uI: RealFir; private val uQ: RealFir; private val lI: RealFir; private val lQ: RealFir
     private var ui = FloatArray(0); private var uq = FloatArray(0); private var uli = FloatArray(0); private var ulq = FloatArray(0)
     private var uti = FloatArray(0); private var utq = FloatArray(0); private var usi = FloatArray(0); private var usq = FloatArray(0)
-    private val de: Double; private val hpa: Double
-    private var pi = 1.0; private var pq = 0.0; private var deemph = 0.0; private var h1 = 0.0; private var h2 = 0.0; private var ramp = 0.0; private var sw = 0
-    // the Weaver oscillators: the shift down (by the clarifier and the sideband's middle) and back up for the audio
-    private var wu = 0.0; private var wl = 0.0; private var wb = 0.0
-    // AM: the carrier level the envelope is measured against
-    private var car = 0.0
-    // SSB: the audio level for the AGC
-    private var agc = 0.0
-    // per block: power, carrier, envelope and its voice-band motion, discriminator swing, the two sidebands
-    private var bN = 0; private var bPow = 0.0; private var bEnv = 0.0; private var bEnvAc = 0.0; private var bDev = 0.0; private var bU = 0.0; private var bL = 0.0; private var bCar = 0.0; private var bSubs = 0
-    private var bIn = 0.0; private var bAcross = 0.0
-    private var envHpS = 0.0; private var devHpS = 0.0; private var peakPow = 0.0
+    private val hp: List<Biquad>; private val lpA: List<Biquad>; private val ssbP: List<Biquad>; private val den: Denoiser
+    private var pi = 1.0; private var pq = 0.0; private var wu = 0.0; private var wl = 0.0; private var wb = 0.0; private var gate = 0.0; private var lastHop = 0
+    private var up = 0.0; private var lo = 0.0; private var upOff = 0.0; private var loOff = 0.0; private var nOff = 0; private var eS = 0.0; private var eS2 = 0.0; private var eN = 0
+    private val eBlocks = ArrayList<DoubleArray>()
+    private var notCarrier = false
+    private val dl: FloatArray; private var dn = 0
     private var offAcc = 0.0; private var offN = 0; private var envAcc = 0.0; private var envN = 0; private var hpE = 0.0; private var pow = 0.0; private var powN = 0
+    /**
+     * The engine reads idle lines on bins of 150 to 250 Hz; a 12 Hz notch needs them to a few Hz, as home measured them
+     * (1 s spectra). The first half second here is looked at in one spectrum (2 Hz bins), where a steady line is a sharp
+     * peak whatever a voice does around it, and each line is put on the strongest bin within 150 Hz of the engine's
+     * reading. Until then nothing is notched or ignored.
+     */
+    private var coarse: List<Int> = emptyList(); private var lineN = 0; private var lineI = FloatArray(0); private var lineQ = FloatArray(0)
 
     init {
         ddc.reset(inRate); ddc.offsetHz = offsetHz; fs = ddc.outRate
-        lp = RealFir(lowpassTaps(3_000 / fs, 47))
         val w = lowpassTaps(SSB_HALF_HZ / fs, 63)
         uI = RealFir(w); uQ = RealFir(w); lI = RealFir(w); lQ = RealFir(w)
         to8 = Resampler(CLIP_RATE / fs); to48 = Resampler(48_000 / fs)
-        de = 1 - exp(-1 / (fs * 530e-6))
-        hpa = 1 - exp(-2 * PI * 150 / fs)
         trk = CarrierTracker(fs)
-        // the noise beside the voice band is read through the down-converter's skirt: undo its gain there
-        trk.gain = { hz -> ddc.powerGain(hz) }
-        // the down-converter's noise bandwidth (Hz): white noise of variance v a sample comes out as v times this over the rate
-        var nb = 0.0; var f = -fs / 2
-        while (f < fs / 2) { nb += ddc.powerGain(f) * 25; f += 25 }
-        nbw = nb
+        // home's filters run forward and back, squaring their response; here each runs twice forward
+        hp = butter4(false, 300.0, fs) + butter4(false, 300.0, fs); lpA = butter4(true, 3_000.0, fs) + butter4(true, 3_000.0, fs)
+        ssbP = twice(true, 1 / SSB_AGC_S, fs)
+        // a two-pole Butterworth's delay at low frequencies is sqrt(2) / (2 pi fc), twice that here
+        dl = FloatArray(max(1, (2 * fs * sqrt(2.0) / (2 * PI / SSB_AGC_S)).roundToInt()))
+        den = Denoiser(fs)
+    }
+
+    /** The envelope's spread over its mean while the carrier was on (home's FM test: under 0.12). */
+    fun flatness(): Double {
+        // over the last two seconds (the first moments after a notch is set leave a line's beat in it)
+        var s = eS; var s2 = eS2; var n = eN.toDouble(); for (b in eBlocks) { s += b[0]; s2 += b[1]; n += b[2] }
+        if (n < 100) return Double.NaN; val m = s / n; return sqrt(max(0.0, s2 / n - m * m)) / (m + 1e-9)
+    }
+    /** SSB and FM leveled as home does: over its power over 0.3 s, times 3, the audio held back to center the level on it. */
+    private fun agcDelay(x: Double): Double {
+        val p = run(ssbP, x * x); val y = dl[dn].toDouble(); dl[dn] = x.toFloat(); if (++dn >= dl.size) dn = 0
+        return y / (sqrt(max(1e-12, p)) * 3)
     }
 
     override fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz }
-
-    /** The mode demodulated now: by hand, else the most votes, else the channel's last mode. */
-    fun mode(): CbMode {
-        manual?.let { return it }
-        var best = guess; var n = 1
-        for (m in CbMode.entries) { val v = votes[m.ordinal]; if (v > n || (v == n && m == guess)) { n = v; best = m } }
-        return best
+    /** The lines the engine measured on the idle channel: notched once the carrier is known, and never taken for one. */
+    fun setNotches(hz: List<Int>) { coarse = hz; pending = emptyList(); trk.ignore = emptyList(); notches = emptyList(); notchedFor = Double.NaN; lineN = 0 }
+    private fun refineLines() {
+        val n = lineI.size; val re = lineI.copyOf(); val im = lineQ.copyOf(); val w = hannSym(n)
+        for (k in 0 until n) { re[k] *= w[k]; im[k] *= w[k] }
+        Dsp.fft(re, im)
+        val bh = fs / n
+        pending = coarse.map { h ->
+            var best = -1; var bp = -1.0
+            for (b in ((h - 150) / bh).roundToInt()..((h + 150) / bh).roundToInt()) {
+                val k = (b + n) % n; val x = re[k].toDouble(); val y = im[k].toDouble(); val p = x * x + y * y
+                if (p > bp) { bp = p; best = b }
+            }
+            best * bh
+        }
+        trk.ignore = pending; notchedFor = Double.NaN
     }
+    val notchHz: List<Double> get() = notches.map { it.hz }
 
-    /** The mode the measurement found, null before two blocks voted. */
+    /** What the measurement found: null until a carrier is held or a sideband stands out. */
     fun measuredMode(): CbMode? {
-        if (votes.sum() < 2) return null
-        var b = CbMode.AM
-        for (m in listOf(CbMode.FM, CbMode.USB, CbMode.LSB)) if (votes[m.ordinal] > votes[b.ordinal]) b = m
-        return b
+        // a carrier is a station's when it stands 22 dB over the median through the keyup (home skips one under that: on
+        // single sideband a held voice harmonic looks like a carrier, but a weak one)
+        // and it stays: a carrier stands 15 dB over the median through nearly all of its keyup, while a voice harmonic on
+        // single sideband (followed as if it were one) comes and goes with the syllables
+        // (once a followed line has failed that, a new one is not taken for a carrier until it has held a second itself)
+        // (and before a line has been held that second, a clear sideband while it is off says it is single sideband: a
+        // voice harmonic comes and goes with the voice on one side, and home, deciding on the whole keyup, never took such
+        // a line for a carrier)
+        val t = trk
+        val held = if (t.heldHops >= 100) t.onHops.toDouble() / t.heldHops else if (notCarrier) 0.0 else 1.0
+        if (t.heldHops >= 100 && held < CARRIER_HELD) notCarrier = true
+        val side = up + lo > 0 && max(up, lo) >= SSB_RATIO * min(up, lo)
+        val sideOff = nOff >= fs * 0.1 && max(upOff, loOff) >= SSB_RATIO * min(upOff, loOff)
+        val q = t.medianQ()
+        val carrier = (t.have || t.log.size >= 10) && !(q < SQUELCH_DB) && held >= CARRIER_HELD && (t.heldHops >= 100 || !sideOff)
+        if (carrier) { val f = flatness(); return if (f.isFinite() && f < FLAT_FM) CbMode.FM else CbMode.AM }
+        if (side) return if (up > lo) CbMode.USB else CbMode.LSB
+        return null
+    }
+    /** The mode demodulated now: by hand, else measured, else the channel's last. */
+    fun mode(): CbMode = manual ?: measuredMode() ?: guess
+    /** A readable station: a carrier standing 22 dB over the median through the keyup, or a clear sideband. */
+    fun readable(): Boolean {
+        val m = measuredMode()
+        if (m == CbMode.AM || m == CbMode.FM) return trk.medianQ() >= SQUELCH_DB
+        return m == CbMode.USB || m == CbMode.LSB
     }
 
     override fun push(fi: FloatArray, fq: FloatArray, n: Int, listen: Boolean) {
@@ -202,128 +184,100 @@ class CbProbe(private val inRate: Double, val offsetHz: Double) : WatchProbe {
             uti = FloatArray(max); utq = FloatArray(max); usi = FloatArray(max); usq = FloatArray(max)
         }
         val m = ddc.push(fi, fq, n, oi, oq); val fs = fs; val oi = oi; val oq = oq; val trk = trk
-        if (trk.have && (notchedFor.isNaN() || trk.switches != sw)) {
-            // the lines the engine measured on the idle channel, once the carrier is known (and again when it changes)
+        if (coarse.isNotEmpty() && lineN >= 0) {
+            if (lineI.isEmpty()) { var n2 = 1; while (n2 < fs / 2) n2 = n2 shl 1; lineI = FloatArray(n2); lineQ = FloatArray(n2) }
+            var i = 0
+            while (i < m && lineN < lineI.size) { lineI[lineN] = oi[i]; lineQ[lineN] = oq[i]; lineN++; i++ }
+            if (lineN >= lineI.size) { refineLines(); lineN = -1 }
+        }
+        val md0 = measuredMode(); val ssb = md0 == CbMode.USB || md0 == CbMode.LSB
+        if (ssb && notchedFor != -1e9) {
+            // single sideband: only the idle lines (what looked like other carriers were voice)
+            notchedFor = -1e9; notches = pending.map { LineNotch(it, fs) }; otherNotches = emptyList()
+        } else if (!ssb && trk.have && (notchedFor.isNaN() || notchedFor == -1e9 || trk.switches != sw)) {
+            // the idle lines, now the carrier is known (again when it changes), and the other stations' carriers
             notchedFor = trk.hz; sw = trk.switches
-            notches = pending.filter { abs(it - trk.hz) > NOTCH_CLEAR_HZ }.map { LineCanceller(it.toDouble(), fs) }
+            notches = pending.filter { abs(it - trk.hz) > NOTCH_CLEAR_HZ }.map { LineNotch(it, fs) }
+            otherNotches = trk.others.map { LineNotch(it, fs) }
         }
         for (c in notches) c.run(oi, oq, m)
+        // the envelope's spread while the carrier is on, read before the other stations' carriers are notched (taking a
+        // line out of an FM signal would make its envelope move)
+        if (trk.have && trk.onNow) for (i in 0 until m) { val e = hypot(oi[i].toDouble(), oq[i].toDouble()); eS += e; eS2 += e * e; eN++ }
+        if (eN >= fs / 10) { eBlocks.add(doubleArrayOf(eS, eS2, eN.toDouble())); if (eBlocks.size > 20) eBlocks.removeAt(0); eS = 0.0; eS2 = 0.0; eN = 0 }
+        for (c in otherNotches) c.run(oi, oq, m)
         // the Weaver shifts: upper sideband down by clarifier + 1650 Hz, lower by clarifier - 1650 Hz
-        val du = -TWO_PI * (clarHz + SSB_MID_HZ) / fs; val dl = -TWO_PI * (clarHz - SSB_MID_HZ) / fs
+        val du = -TWO_PI * (clarHz + SSB_MID_HZ) / fs; val dl0 = -TWO_PI * (clarHz - SSB_MID_HZ) / fs
         for (i in 0 until m) {
             val a = oi[i].toDouble(); val b = oq[i].toDouble()
             val cu = cos(wu); val su = sin(wu); val cl = cos(wl); val sl = sin(wl)
             ui[i] = (a * cu - b * su).toFloat(); uq[i] = (a * su + b * cu).toFloat(); uli[i] = (a * cl - b * sl).toFloat(); ulq[i] = (a * sl + b * cl).toFloat()
-            wu += du; wl += dl
+            wu += du; wl += dl0
         }
         wu %= TWO_PI; wl %= TWO_PI
         uI.process(ui, m, uti); uQ.process(uq, m, utq); lI.process(uli, m, usi); lQ.process(ulq, m, usq)
-        val mode = mode(); val au = au
-        val win = (fs * OFF_WIN_MS / 1000).roundToInt(); val blk = (fs * BLOCK_MS / 1000).roundToInt()
-        val dbk = TWO_PI * SSB_MID_HZ / fs
+        var mode = mode()
+        val au = au; val win = (fs * OFF_WIN_MS / 1000).roundToInt(); val dbk = TWO_PI * SSB_MID_HZ / fs; val rampN = fs * RAMP_MS / 1000
         for (i in 0 until m) {
-            val a = oi[i].toDouble(); val b = oq[i].toDouble(); val p2 = a * a + b * b; val e = sqrt(p2)
+            val a = oi[i].toDouble(); val b = oq[i].toDouble()
             val f = atan2(b * pi - a * pq, a * pi + b * pq)
             pi = a; pq = b
             offAcc += f; if (++offN >= win) { means.add(offAcc / offN * fs / TWO_PI); offAcc = 0.0; offN = 0 }
-            // the block's measurements
-            bPow += p2; bEnv += e
-            envHpS += hpa * (e - envHpS); val eh = e - envHpS; bEnvAc += eh * eh
-            val fh = max(-6_000.0, min(6_000.0, f * fs / TWO_PI))
-            devHpS += hpa * (fh - devHpS); val dh = fh - devHpS; bDev += dh * dh
-            val ti = uti[i].toDouble(); val tq = utq[i].toDouble(); val si = usi[i].toDouble(); val sq = usq[i].toDouble()
-            bU += ti * ti + tq * tq; bL += si * si + sq * sq
-            // the signal in the carrier's frame: the carrier's share of the power, and the remainder in line with it and across
             trk.step(a, b)
-            val cr = trk.cr; val ci = trk.ci; val cm = hypot(cr, ci)
-            if (trk.have) {
-                bCar += cm * cm; bSubs++
-                if (cm > 0) {
-                    val rI = trk.br - cr; val rQ = trk.bi - ci; val pin = (rI * cr + rQ * ci) / cm; val pac = (rQ * cr - rI * ci) / cm
-                    bIn += pin * pin; bAcross += pac * pac
-                }
-            }
-            if (++bN >= blk) endBlock()
-            // the audio, by the mode
-            val v: Double
-            if (mode == CbMode.FM) { deemph += de * (f - deemph); v = deemph * 0.4 }
-            else if (mode == CbMode.AM) {
-                if (trk.have && cm > 0) {
-                    // synchronous: the part of the signal in line with the carrier, less the carrier, over the carrier's level
-                    // (smoothed to 5 Hz, never under 16 dB below the keyup's peak, so a fade neither dips nor roars)
-                    val inph = (trk.br * cr + trk.bi * ci) / cm; val lv = max(trk.lvl, trk.peak / AGC_CEIL)
-                    v = if (lv > 1e-6) (inph - cm) / lv * 0.5 else 0.0
-                } else {
-                    car += (if (car != 0.0) 0.002 else 1.0) * (e - car)
-                    v = if (car > 1e-3) (e - car) / car * 0.5 else 0.0
+            val ti = uti[i].toDouble(); val tq = utq[i].toDouble(); val si = usi[i].toDouble(); val sq = usq[i].toDouble()
+            // how the energy splits either side of the center, over the keyup
+            up += ti * ti + tq * tq; lo += si * si + sq * sq
+            // and while a followed line is off (a carrier, off frequency, would tip the split by itself)
+            if (trk.have && !trk.onNow) { upOff += ti * ti + tq * tq; loOff += si * si + sq * sq; nOff++ }
+            if ((i and 63) == 0) mode = mode()
+            var v: Double; var on = true
+            if (mode == CbMode.AM || mode == CbMode.FM) {
+                on = trk.have && trk.present
+                // FM: the phase step, leveled by its own power over 0.3 s as SSB is
+                if (mode == CbMode.FM) v = agcDelay(f)
+                else {
+                    // carrier-locked: the part in line with the carrier phasor, over its level (floored at 0.15 of its middle)
+                    val cm = hypot(trk.cr, trk.ci); val l = max(trk.lvl, trk.floor())
+                    v = if (cm > 0 && l > 0) (trk.br * trk.cr + trk.bi * trk.ci) / cm / l else 0.0
                 }
             } else {
-                // back up by 1650 Hz and take the real part: the sideband's audio, 300 to 3000 Hz
+                // the sideband's real part, back up by 1650 Hz, over its own power over 0.3 s (times 3, as home's)
                 val s = if (mode == CbMode.USB) 1 else -1; val c = cos(wb); val sn = sin(s * wb)
                 val x = if (mode == CbMode.USB) ti * c - tq * sn else si * c - sq * sn
                 wb += dbk
-                val ax = abs(x); agc = if (ax > agc) agc + 0.05 * (ax - agc) else agc * (1 - 2 / fs)
-                v = x * 0.35 / max(0.5, agc)
+                // home levels it by its power over 0.3 s on both sides of each sample; streaming, the audio is held back by
+                // the smoothing's own delay so its level is centered on it
+                v = agcDelay(x)
             }
-            au[i] = v.toFloat()
+            // 300 to 3000 Hz, clipped at 3, faded in and out where the carrier comes and goes
+            for (h in hp) v = h.step(v)
+            for (h in lpA) v = h.step(v)
+            v = max(-AUDIO_CLIP, min(AUDIO_CLIP, v))
+            gate = if (on) min(rampN, gate + 1) else max(0.0, gate - 1)
+            val g = 0.5 - 0.5 * cos(PI * gate / rampN)
+            au[i] = (v * g * OUT_GAIN).toFloat()
+            pow += a * a + b * b; powN++
         }
         wb %= TWO_PI
-
-        lp.process(au, m, au2)
-        // 300 Hz and up (two one-pole high-passes), faded in over 15 ms
-        val a2 = au2; val hk = 1 - exp(-2 * PI * 300 / fs); val rampN = fs * RAMP_MS / 1000
+        // a measurement a 10 ms, for the card and the tests
+        if (trk.log.size != lastHop) { val k = trk.log.size - lastHop; lastHop = trk.log.size; val md = measuredMode(); if (md != null) votes[md.ordinal] += k }
+        else { val md = measuredMode(); if (md == CbMode.USB || md == CbMode.LSB) votes[md.ordinal]++ }
+        den.process(au, m, au2)
+        val a2 = au2; val envWin = (fs * ENV_MS / 1000).roundToInt(); val hpa = 1 - exp(-2 * PI * 300 / fs)
         for (i in 0 until m) {
-            val x = a2[i].toDouble()
-            h1 += hk * (x - h1); val y1 = x - h1
-            h2 += hk * (y1 - h2); var y = y1 - h2
-            if (ramp < rampN) { ramp += 1; y *= ramp / rampN }
-            a2[i] = y.toFloat()
-        }
-        val envWin = (fs * ENV_MS / 1000).roundToInt(); val hpa = 1 - exp(-2 * PI * 300 / fs)
-        for (i in 0 until m) {
-            hpE += hpa * (a2[i] - hpE); val v = a2[i] - hpE
-            envAcc += v * v; if (++envN >= envWin) { env.add(sqrt(envAcc / envN).toFloat()); envAcc = 0.0; envN = 0 }
-            val x = oi[i].toDouble(); val y = oq[i].toDouble(); pow += x * x + y * y; powN++
+            hpE += hpa * (a2[i] - hpE); val vv = a2[i] - hpE
+            envAcc += vv * vv; if (++envN >= envWin) { env.add(sqrt(envAcc / envN).toFloat()); envAcc = 0.0; envN = 0 }
         }
         val k8 = to8.process(a2, m, a8); clip.push(a8, k8)
         out48 = if (listen) to48.process(a2, m, a48) else 0
         if (powN > fs / 10) { levelDb = 10 * log10(pow / powN + 1e-9); pow = 0.0; powN = 0 }
     }
 
-    /** One 100 ms block measured: the carrier's share, the envelope's motion beyond noise, the swing, the sidebands; its vote. */
-    private fun endBlock() {
-        measureBlock()
-        bN = 0; bPow = 0.0; bEnv = 0.0; bEnvAc = 0.0; bDev = 0.0; bU = 0.0; bL = 0.0; bCar = 0.0; bSubs = 0; bIn = 0.0; bAcross = 0.0
-    }
-    private fun measureBlock() {
-        val n = bN; val pow = bPow / n; val envM = bEnv / n
-        // the held carrier's share of the power
-        val carrier = if (bSubs != 0) min(1.0, bCar / bSubs / max(1e-9, pow)) else 0.0
-        // the noise alone moves a constant envelope by about sqrt(noise / 2) of its mean: the noise as measured beside the
-        // voice band when it has been, else the engine's figure for the channel
-        val nv = if (noiseVarIn > 0) noiseVarIn * nbw / inRate else trk.noiseVar
-        val noise = if (nv > 0) min(1.0, nv / max(1e-9, pow)) else noiseRatio
-        noiseNow = noise
-        val envAc2 = bEnvAc / n / max(1e-9, envM * envM) - noise / 2
-        val envAc = sqrt(max(0.0, envAc2)); val devHz = sqrt(bDev / n)
-        val sideDb = 10 * log10((bU + 1e-9) / (bL + 1e-9))
-        val inline = if (bIn + bAcross > 0) bIn / (bIn + bAcross) else 0.5
-        last = CbBlock(carrier, envAc, devHz, sideDb, inline)
-        peakPow = max(peakPow, pow)
-        if (pow >= VOTE_POWER * peakPow) {
-            val v = votes
-            if (carrier < SSB_CARRIER_MAX && abs(sideDb) > SSB_SIDE_DB && envAc >= SSB_ENV_MIN) { if (sideDb > 0) v[CbMode.USB.ordinal]++ else v[CbMode.LSB.ordinal]++ }
-            // a carrier keying up moves its own envelope: AM counts once it has been held a moment
-            else if (carrier >= AM_CARRIER_MIN && envAc >= AM_ENV_MIN && trk.heldMs >= AM_SETTLE_MS) v[CbMode.AM.ordinal]++
-            else if (carrier < FM_CARRIER_MAX && envAc < FM_ENV_MAX && devHz > FM_DEV_MIN && noise < 0.2) v[CbMode.FM.ordinal]++
-        }
-    }
-
-    /** Carrier offset: the held carrier for AM, else the median of the 100 ms means and their spread; none for SSB. */
+    /** Carrier offset: the held carrier's median frequency; for FM without one, the discriminator's; none for SSB. */
     override fun offset(skip: Int): ProbeOffset {
         val m = manual ?: measuredMode()
         if (m == CbMode.USB || m == CbMode.LSB) return ProbeOffset(Double.NaN, 0.0)
-        if (m == CbMode.AM && trk.offset().isFinite()) return ProbeOffset(trk.offset(), 0.0)
+        val t = trk.offset(); if (t.isFinite()) return ProbeOffset(t, 0.0)
         if (means.size - skip < 3) return ProbeOffset(Double.NaN, 0.0)
         val s = means.subList(skip, means.size).sorted()
         val med = s[s.size / 2]; val q1 = s[s.size / 4]; val q3 = s[s.size * 3 / 4]

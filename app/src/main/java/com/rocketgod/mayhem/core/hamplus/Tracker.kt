@@ -96,6 +96,8 @@ data class HpTxRow(
     var conv: Int, var recorded: Boolean, val cw: String,
     /** CB: the mode it was heard in (AM, FM, USB, LSB). HAM+ leaves it empty. */
     val mode: String = "",
+    /** CB: on the air but still waiting for its voice check, so not yet known to be a station. */
+    val pending: Boolean = false,
 )
 
 data class HpTileStation(val key: String, val label: String, val letter: String, val color: Int, val callsign: String, val txs: Int, val offsetHz: Long)

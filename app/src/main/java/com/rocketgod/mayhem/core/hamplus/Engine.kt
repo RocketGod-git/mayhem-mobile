@@ -380,7 +380,7 @@ abstract class ChannelWatch<P : WatchProbe>(
 
     protected fun tileKey(hz: Long): String = chanKey(tracker.tileHz(hz))
     private fun wanted(key: String): Boolean { val pr = tracker.prefs; return pr.hold == key || key in pr.prio }
-    private fun probes(): Int = opens.values.count { it.probe != null }
+    protected fun probes(): Int = opens.values.count { it.probe != null }
 
     protected fun openAt(k: Int, now: Double): WatchOpen<P> {
         val hz = hzOf(k); val key = tileKey(hz)
