@@ -9,7 +9,7 @@
  *     (7: 0 to 28 km/h in 1 km/h steps, then 16 x 1.038^(K - 13)), direction of travel (4, 22.5 degree steps);
  *   · LIP in DMR: over UDP/IPv4 to port 5017 in packet data (TS 102 361-4, 6.6.3.4.2), and the USBD poll response
  *     (Data Type 1011, CRC mask 3333, service type 0000 then the same fields, TS 102 361-4 table 6.79).
- * Motorola's LRRP is not a published standard and is not read. No DOM.
+ * Motorola's LRRP, not a published standard, is read from the layout in the DSD-FME decoder (below). No DOM.
  */
 import type { Position } from './gps.js';
 
@@ -99,12 +99,57 @@ export function usbdLip(b: ArrayLike<number>): LipReport | null {
 
 /** An IPv4 packet with a good header checksum holding UDP to port 5017 → its LIP report. */
 export function lipInIp(b: ArrayLike<number>): LipReport | null {
+  const u = udpPayload(b);
+  return u && u.dport === 5017 && u.data.length >= 10 ? lipShortReport(u.data) : null;
+}
+/** An IPv4 packet with a good header checksum holding UDP to or from port 4001 → its LRRP report. */
+export function lrrpInIp(b: ArrayLike<number>): LrrpReport | null {
+  const u = udpPayload(b);
+  return u && (u.dport === 4001 || u.sport === 4001) ? lrrpReport(u.data) : null;
+}
+/** The UDP datagram in an IPv4 packet whose header checksum checks. */
+export function udpPayload(b: ArrayLike<number>): { sport: number; dport: number; data: number[] } | null {
   if (b.length < 28 || (b[0] >> 4) !== 4 || b[9] !== 17) return null;
   const ihl = (b[0] & 15) * 4; if (ihl < 20 || b.length < ihl + 8) return null;
   let sum = 0; for (let i = 0; i < ihl; i += 2) sum += (b[i] << 8) | b[i + 1];
   while (sum > 0xffff) sum = (sum & 0xffff) + (sum >>> 16);
   if (sum !== 0xffff) return null;
-  const dport = (b[ihl + 2] << 8) | b[ihl + 3], ulen = (b[ihl + 4] << 8) | b[ihl + 5];
-  if (dport !== 5017 || ulen < 8 + 10) return null;
-  return lipShortReport(Array.from({ length: ulen - 8 }, (_, i) => b[ihl + 8 + i] ?? 0));
+  const ulen = (b[ihl + 4] << 8) | b[ihl + 5];
+  if (ulen < 8) return null;
+  return { sport: (b[ihl] << 8) | b[ihl + 1], dport: (b[ihl + 2] << 8) | b[ihl + 3], data: Array.from({ length: ulen - 8 }, (_, i) => b[ihl + 8 + i] ?? 0) };
+}
+
+// ------------------------------------------------------------------------------------------------ Motorola LRRP
+/**
+ * Motorola LRRP (its location protocol over UDP port 4001; not a published standard, the layout is from the DSD-FME
+ * decoder, see the credits): a message type (0x07 immediate location response, 0x0B triggered start response, 0x0D
+ * triggered location), a length, then tokens: 0x22 request ID (a length and that many bytes), 0x34 or 0x35 time (5
+ * bytes), 0x51, 0x54 or 0x55 a circle (latitude, longitude, 2 more bytes), 0x66 a point (latitude, longitude),
+ * 0x69 or 0x6A a point with altitude (1 more byte), 0x56 the heading (one byte, 2 degree steps), 0x6C or 0x70 a
+ * speed (2 bytes, not read). Latitude: 32 bits, the top one the sign (south), 90/2^31 degrees; longitude: 32 bits
+ * two's complement, 180/2^31 degrees.
+ */
+export interface LrrpReport extends Position { heading: number }
+const LRRP_SKIP: Record<number, number> = { 0x34: 6, 0x35: 6, 0x36: 2, 0x37: 2, 0x56: 2, 0x6c: 3, 0x70: 3 };
+const LRRP_POS: Record<number, number> = { 0x51: 11, 0x54: 11, 0x55: 11, 0x66: 9, 0x69: 10, 0x6a: 10 };
+export function lrrpReport(p: ArrayLike<number>): LrrpReport | null {
+  if (p.length < 4 || (p[0] !== 0x07 && p[0] !== 0x0b && p[0] !== 0x0d)) return null;
+  const end = Math.min(p.length, 2 + p[1]);
+  let lat = NaN, lon = NaN, heading = -1;
+  const u32 = (i: number) => ((p[i] << 24) | (p[i + 1] << 16) | (p[i + 2] << 8) | p[i + 3]) >>> 0;
+  for (let i = 2; i < end;) {
+    const t = p[i];
+    if (t === 0x22 || t === 0x23) { i += 2 + (i + 1 < end ? p[i + 1] : 0); continue; }
+    const n = LRRP_POS[t];
+    if (n && i + 8 < end && Number.isNaN(lat)) {
+      const a = u32(i + 1), o = u32(i + 5);
+      lat = (a & 0x7fffffff) * 90 / 2147483648 * (a >= 0x80000000 ? -1 : 1);
+      lon = (o | 0) * 180 / 2147483648;
+      i += n; continue;
+    }
+    if (t === 0x56 && i + 1 < end) heading = p[i + 1] * 2;
+    i += LRRP_SKIP[t] ?? 1;
+  }
+  if (!Number.isFinite(lat) || Math.abs(lat) > 90 || Math.abs(lon) > 180 || (lat === 0 && lon === 0)) return null;
+  return { lat, lon, source: 'lrrp', heading };
 }

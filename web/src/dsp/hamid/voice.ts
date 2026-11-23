@@ -8,21 +8,21 @@
  *     under Yaesu's own majority code: the first 27 bits three times each, then 22, then a zero bit, whitened with the
  *     PN (9,5) sequence and interleaved 26 by 4, Yaesu "Amateur Radio Digital Specifications" 4.5 (3));
  *   · 'imbe': a 144-bit full rate frame (Fusion Voice FR, AMBE+2 full rate at 7200 bps, the IMBE-compatible mode);
- *   · 'ambe-dstar': a 72-bit D-STAR frame (AMBE 3600x2400). Its bit order and parameter tables are not in a published
- *     standard and the app has no decoder for it, so it comes out as frames with their timing and no audio.
+ *   · 'ambe-dstar': a 72-bit D-STAR frame (AMBE 3600x2400, ham/ambe-dstar.ts).
  * No DOM.
  */
 import { AmbeDecoder, golayParity, popcount } from '../ham/mbe.js';
 import { ImbeDecoder } from '../ham/imbe.js';
+import { AmbeDstarDecoder } from '../ham/ambe-dstar.js';
 import { rW, rX, rY, rZ } from '../ham/dmr.js';
 import { ysfWhitening } from './ysf.js';
 
 export type HamVoiceCodec = 'ambe2' | 'ambe2-49' | 'imbe' | 'ambe-dstar';
 /** A vocoder frame as a receiver took it off the air. [stream]: 'dmr1', 'dmr2', 'dstar' or 'ysf'. */
 export interface HamVoiceFrame { stream: string; codec: HamVoiceCodec; bits: Uint8Array; atSym: number; errs: number }
-/** One frame of audio: 160 samples at 8 kHz (20 ms), or null when there is no decoder for the codec or the voice is
- *  encrypted. [atS]: when the frame was sent, seconds from the channel's start. [status]: the vocoder's ('' voice,
- *  'R' repeated, 'M' muted, 'S' silence, 'E' erasure, 'T' tone), or 'no vocoder', or 'encrypted'. */
+/** One frame of audio: 160 samples at 8 kHz (20 ms), or null when the voice is encrypted. [atS]: when the frame was
+ *  sent, seconds from the channel's start. [status]: the vocoder's ('' voice, 'R' repeated, 'M' muted, 'S' silence,
+ *  'E' erasure, 'T' tone), or 'encrypted'. */
 export interface HamPcmFrame { stream: string; codec: HamVoiceCodec; atS: number; pcm: Float32Array | null; status: string; errs: number; bits: Uint8Array }
 
 let WHITE104: Uint8Array | null = null;
@@ -63,14 +63,19 @@ export function ambe72Frame(bits: ArrayLike<number>): [Uint8Array, Uint8Array, U
 export class HamVoice {
   private readonly ambe = new Map<string, AmbeDecoder>();
   private readonly imbe = new Map<string, ImbeDecoder>();
-  reset(): void { this.ambe.clear(); this.imbe.clear(); }
+  private readonly dstar = new Map<string, AmbeDstarDecoder>();
+  reset(): void { this.ambe.clear(); this.imbe.clear(); this.dstar.clear(); }
   /** Forgets one stream's state (a new call on it). */
-  restart(stream: string): void { this.ambe.delete(stream); this.imbe.delete(stream); }
+  restart(stream: string): void { this.ambe.delete(stream); this.imbe.delete(stream); this.dstar.delete(stream); }
 
   decode(f: HamVoiceFrame, encrypted = false): HamPcmFrame {
     const out: HamPcmFrame = { stream: f.stream, codec: f.codec, atS: f.atSym / 4800, pcm: null, status: '', errs: f.errs, bits: f.bits };
-    if (f.codec === 'ambe-dstar') { out.status = 'no vocoder'; return out; }
     if (encrypted) { out.status = 'encrypted'; return out; }
+    if (f.codec === 'ambe-dstar') {
+      let d = this.dstar.get(f.stream); if (!d) { d = new AmbeDstarDecoder(); this.dstar.set(f.stream, d); }
+      out.pcm = d.decodeVoice(f.bits).slice(); out.status = d.status; out.errs += d.errs;
+      return out;
+    }
     if (f.codec === 'imbe') {
       let d = this.imbe.get(f.stream); if (!d) { d = new ImbeDecoder(); this.imbe.set(f.stream, d); }
       out.pcm = d.decodeVoice(f.bits).slice(); out.status = d.status; out.errs += d.errs;

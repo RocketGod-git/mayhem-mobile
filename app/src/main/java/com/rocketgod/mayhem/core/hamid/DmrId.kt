@@ -16,8 +16,8 @@ import kotlin.math.abs
 /**
  * Who is on a DMR channel (ETSI TS 102 361-1 and -2), built on Fleet's DMR layers: per time slot the color code,
  * group or private call, talkgroup or called radio, the calling radio's ID, its talker alias, and its position from
- * the GPS Info LC (FLCO 8), NMEA sentences in rate 1/2 or 3/4 packet data, or ETSI LIP (in UDP to port 5017, or a
- * USBD poll response). Voice bursts hand their three AMBE+2 frames on. The same as the web's dsp/hamid/dmrid.ts.
+ * the GPS Info LC (FLCO 8), NMEA sentences in rate 1/2 or 3/4 packet data, ETSI LIP (in UDP to port 5017, or a
+ * USBD poll response) or Motorola LRRP (UDP port 4001). Voice bursts hand their three AMBE+2 frames on. The same as the web's dsp/hamid/dmrid.ts.
  */
 class DmrSlotId(val slot: Int) {
     var cc = -1; var group = true; var tg = 0; var src = 0; var alias = ""
@@ -110,8 +110,9 @@ class DmrIdentity {
                     val parts = ArrayList<Int>()
                     for (g in p.got) for (i in (if (p.confirmed) 2 else 0) until g.size) parts.add(g[i])
                     val body = parts.subList(0, maxOf(0, parts.size - 4)).toIntArray()
-                    val lip = lipInIp(body)
+                    val lip = lipInIp(body); val lrrp = if (lip == null) lrrpInIp(body) else null
                     if (lip != null) lip(ts, lip)
+                    else if (lrrp != null) { ts.position = Position(lrrp.lat, lrrp.lon, lrrp.source); ts.posError = -1; ts.speedKmh = -1.0; ts.heading = lrrp.heading }
                     else { val pos = nmeaInPayload(body); if (pos != null) { ts.position = pos; ts.posError = -1; ts.speedKmh = -1.0; ts.heading = -1.0 } }
                 }
             }

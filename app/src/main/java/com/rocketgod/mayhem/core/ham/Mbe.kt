@@ -104,7 +104,8 @@ open class AmbeDecoder {
     protected val cur = MbeParms()
     protected val prev = MbeParms()
     protected val prevEnh = MbeParms()
-    private val d = IntArray(49)
+    /** The 49 parameter bits of the last frame (read by the D-STAR decoder, AmbeDstar.kt). */
+    protected val d = IntArray(49)
     private val Tl = DoubleArray(58)
     private val Cik = DoubleArray(5 * 18)
     // Unvoiced synthesis: one continuous pseudo-random sequence, the transform it is shaped in, this frame's

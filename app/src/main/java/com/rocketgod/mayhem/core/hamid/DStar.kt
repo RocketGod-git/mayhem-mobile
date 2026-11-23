@@ -55,7 +55,9 @@ class DStarId {
     var inverted = false; var active = false; var frames = 0; var headers = 0
     /** The code squelch block, fast data bytes received this call, and the picture found in them. */
     var csql: DStarCsql? = null; var fastBytes = 0; var image: DStarImage? = null
-    fun copy(): DStarId = DStarId().also { it.header = header; it.headerFrom = headerFrom; it.message = message; it.position = position; it.positionText = positionText; it.dprsCrcOk = dprsCrcOk; it.inverted = inverted; it.active = active; it.frames = frames; it.headers = headers; it.csql = csql; it.fastBytes = fastBytes; it.image = image }
+    /** Icom's message and picture records ("$$Msg", "$$Pic") in the simple or fast data. */
+    var icomMessage: IcomMessage? = null; var icomPicture: IcomPicture? = null
+    fun copy(): DStarId = DStarId().also { it.header = header; it.headerFrom = headerFrom; it.message = message; it.position = position; it.positionText = positionText; it.dprsCrcOk = dprsCrcOk; it.inverted = inverted; it.active = active; it.frames = frames; it.headers = headers; it.csql = csql; it.fastBytes = fastBytes; it.image = image; it.icomMessage = icomMessage; it.icomPicture = icomPicture }
 }
 
 class DStarReceiver {
@@ -66,6 +68,8 @@ class DStarReceiver {
     private val vbuf = arrayOfNulls<IntArray>(21); private val vAt = DoubleArray(21)
     private val pend = ArrayList<Int>()
     private val fast = FastDataStream()
+    /** The simple data bytes of this call, for Icom's records. */
+    private val simple = FastDataStream()
     private val hist = IntArray(128); private var hp = 0
     private var inv = 0; private var hdrInv = 0
     private var hdr: IntArray? = null; private var hdrN = 0
@@ -80,9 +84,9 @@ class DStarReceiver {
     fun reset() {
         hist.fill(0); hp = 0; inv = 0; hdrInv = 0; hdr = null; hdrN = 0; cnt = -1; missed = 0; half = null
         msg = arrayOf("", "", "", ""); msgSeen = 0; slowHdr.clear(); lines.reset(); bits = 0
-        vbuf.fill(null); pend.clear(); fast.reset()
+        vbuf.fill(null); pend.clear(); fast.reset(); simple.reset()
         id.header = null; id.headerFrom = ""; id.message = ""; id.position = null; id.positionText = ""; id.dprsCrcOk = false; id.inverted = false; id.active = false; id.frames = 0; id.headers = 0
-        id.csql = null; id.fastBytes = 0; id.image = null
+        id.csql = null; id.fastBytes = 0; id.image = null; id.icomMessage = null; id.icomPicture = null
     }
 
     private fun matches(pat: IntArray, end: Int, inv: Int): Int {
@@ -132,9 +136,9 @@ class DStarReceiver {
     }
 
     private fun newCall() {
-        msg = arrayOf("", "", "", ""); msgSeen = 0; slowHdr.clear(); lines.reset(); fast.reset(); pend.clear()
+        msg = arrayOf("", "", "", ""); msgSeen = 0; slowHdr.clear(); lines.reset(); fast.reset(); simple.reset(); pend.clear()
         id.message = ""; id.position = null; id.positionText = ""; id.dprsCrcOk = false; id.frames = 0
-        id.csql = null; id.fastBytes = 0; id.image = null
+        id.csql = null; id.fastBytes = 0; id.image = null; id.icomMessage = null; id.icomPicture = null
     }
     private fun superframe() { flushVoice(); cnt = 0; half = null; slowHdr.clear(); vbuf.fill(null) }
 
@@ -163,7 +167,7 @@ class DStarReceiver {
         val fd = if (vs.all { it != null }) fastDataBlock(h, by, vs.map { it!! }) else null
         if (fd != null) {
             pend.removeAll { it in idx }
-            fast.push(fd); id.fastBytes += fd.size; id.image = fast.image()
+            fast.push(fd); id.fastBytes += fd.size; id.image = fast.image(); icom()
         } else block(intArrayOf(h[0], h[1], h[2], by[0], by[1], by[2]))
         flushVoice()
     }
@@ -176,6 +180,7 @@ class DStarReceiver {
             if (msgSeen == 15) id.message = msg.joinToString("").trim()
         } else if (type == 3 && n >= 1) {
             val sb = StringBuilder(); for (i in 1..minOf(5, n)) sb.append(b[i].toChar())
+            simple.push(b.copyOfRange(1, 1 + minOf(5, n))); icom()
             for (line in lines.push(sb.toString())) line(line)
         } else if (type == 12 && n == 2) {
             id.csql = csqlOf(b[1], b[2])
@@ -191,6 +196,12 @@ class DStarReceiver {
                 }
             }
         }
+    }
+
+    /** Icom's records, from the fast data or else the simple data. */
+    private fun icom() {
+        val f = icomRecords(fast.bytes()); val s = icomRecords(simple.bytes())
+        id.icomMessage = f.msg ?: s.msg; id.icomPicture = f.pic ?: s.pic
     }
 
     private fun line(line: String) {

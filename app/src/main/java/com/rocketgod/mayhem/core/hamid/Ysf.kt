@@ -68,7 +68,9 @@ class YsfId {
     var dgid = -1; var sqlOn = false; var dt = -1; var callMode = -1; var route = -1; var voip = false
     var position: Position? = null; var positionText = ""
     var frames = 0; var units = 0; var inverted = false; var active = false
-    fun copy(): YsfId = YsfId().also { it.dest = dest; it.src = src; it.down = down; it.up = up; it.rem = rem.copyOf(); it.dgid = dgid; it.sqlOn = sqlOn; it.dt = dt; it.callMode = callMode; it.route = route; it.voip = voip; it.position = position; it.positionText = positionText; it.frames = frames; it.units = units; it.inverted = inverted; it.active = active }
+    /** A WIRES-X reply the node sent (its name, the room it is connected to). */
+    var wires: WiresX? = null
+    fun copy(): YsfId = YsfId().also { it.wires = wires; it.dest = dest; it.src = src; it.down = down; it.up = up; it.rem = rem.copyOf(); it.dgid = dgid; it.sqlOn = sqlOn; it.dt = dt; it.callMode = callMode; it.route = route; it.voip = voip; it.position = position; it.positionText = positionText; it.frames = frames; it.units = units; it.inverted = inverted; it.active = active }
 }
 private fun slice4(s: Double) = if (s > 2) 1 else if (s > 0) 0 else if (s > -2) 2 else 3
 private val LINE_SPLIT = Regex("[\\r\\n]+")
@@ -88,7 +90,7 @@ class YsfReceiver {
     fun reset() {
         ring.fill(0.0); rp = 0; sym = null; sn = 0; inv = 1.0; t = 0; lastSync = -1_000_000_000L; dtBytes.clear(); syncs = 0
         id.dest = ""; id.src = ""; id.down = ""; id.up = ""; id.rem = arrayOf("", "", "", ""); id.dgid = -1; id.sqlOn = false; id.dt = -1; id.callMode = -1; id.route = -1; id.voip = false
-        id.position = null; id.positionText = ""; id.frames = 0; id.units = 0; id.inverted = false; id.active = false
+        id.position = null; id.positionText = ""; id.frames = 0; id.units = 0; id.inverted = false; id.active = false; id.wires = null
     }
 
     fun pushSymbol(s: Double) {
@@ -174,8 +176,9 @@ class YsfReceiver {
         id.units++
         while (dtBytes.size <= k) dtBytes.add(null)
         dtBytes[k] = u
-        val sb = StringBuilder()
-        for (b in dtBytes) { if (b == null) break; for (v in b) if (v != 0) sb.append(v.toChar()) }
+        val sb = StringBuilder(); val raw = ArrayList<Int>()
+        for (b in dtBytes) { if (b == null) break; for (v in b) { raw.add(v); if (v != 0) sb.append(v.toChar()) } }
+        wiresxReply(raw.toIntArray())?.let { id.wires = it }
         for (line in sb.toString().split(LINE_SPLIT)) {
             val pos = parsePositionLine(line)
             if (pos != null) { id.position = pos; id.positionText = line.trim() }

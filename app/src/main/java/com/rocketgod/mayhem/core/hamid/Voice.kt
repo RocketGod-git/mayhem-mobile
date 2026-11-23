@@ -1,6 +1,7 @@
 package com.rocketgod.mayhem.core.hamid
 
 import com.rocketgod.mayhem.core.ham.AmbeDecoder
+import com.rocketgod.mayhem.core.ham.AmbeDstarDecoder
 import com.rocketgod.mayhem.core.ham.ImbeDecoder
 import com.rocketgod.mayhem.core.ham.golayParity
 import com.rocketgod.mayhem.core.ham.popcount
@@ -13,12 +14,11 @@ import com.rocketgod.mayhem.core.ham.rZ
  * Voice out of a repeater channel: the vocoder frames the DMR, D-STAR and Fusion receivers take off the air, each with
  * the time it was sent, turned into 8 kHz audio by the app's own vocoders. Codecs: "ambe2" (a 72-bit AMBE+2 frame
  * with the vocoder's error correction: DMR, Fusion V/D mode 1), "ambe2-49" (the 49 voice bits: Fusion V/D mode 2,
- * under Yaesu's majority code), "imbe" (144-bit full rate: Fusion Voice FR) and "ambe-dstar" (D-STAR AMBE 3600x2400:
- * its bit order and tables are not published and there is no decoder, so frames come out without audio). The same as
- * the web's dsp/hamid/voice.ts.
+ * under Yaesu's majority code), "imbe" (144-bit full rate: Fusion Voice FR) and "ambe-dstar" (D-STAR AMBE 3600x2400,
+ * ham AmbeDstarDecoder). The same as the web's dsp/hamid/voice.ts.
  */
 class HamVoiceFrame(val stream: String, val codec: String, val bits: IntArray, val atSym: Double, val errs: Int)
-/** 160 samples at 8 kHz, or null (no vocoder, or encrypted); [atS] seconds from the channel's start. */
+/** 160 samples at 8 kHz, or null (encrypted); [atS] seconds from the channel's start. */
 class HamPcmFrame(val stream: String, val codec: String, val atS: Double, val pcm: FloatArray?, val status: String, val errs: Int, val bits: IntArray)
 
 class Vd2Voice(val bits: IntArray, val errs: Int)
@@ -59,13 +59,18 @@ fun ambe72Frame(bits: IntArray): Array<IntArray> {
 class HamVoice {
     private val ambe = HashMap<String, AmbeDecoder>()
     private val imbe = HashMap<String, ImbeDecoder>()
-    fun reset() { ambe.clear(); imbe.clear() }
-    fun restart(stream: String) { ambe.remove(stream); imbe.remove(stream) }
+    private val dstar = HashMap<String, AmbeDstarDecoder>()
+    fun reset() { ambe.clear(); imbe.clear(); dstar.clear() }
+    fun restart(stream: String) { ambe.remove(stream); imbe.remove(stream); dstar.remove(stream) }
 
     fun decode(f: HamVoiceFrame, encrypted: Boolean = false): HamPcmFrame {
         val at = f.atSym / 4800
-        if (f.codec == "ambe-dstar") return HamPcmFrame(f.stream, f.codec, at, null, "no vocoder", f.errs, f.bits)
         if (encrypted) return HamPcmFrame(f.stream, f.codec, at, null, "encrypted", f.errs, f.bits)
+        if (f.codec == "ambe-dstar") {
+            val d = dstar.getOrPut(f.stream) { AmbeDstarDecoder() }
+            val pcm = d.decodeVoice(f.bits).copyOf()
+            return HamPcmFrame(f.stream, f.codec, at, pcm, d.status, f.errs + d.errs, f.bits)
+        }
         if (f.codec == "imbe") {
             val d = imbe.getOrPut(f.stream) { ImbeDecoder() }
             val pcm = d.decodeVoice(f.bits).copyOf()

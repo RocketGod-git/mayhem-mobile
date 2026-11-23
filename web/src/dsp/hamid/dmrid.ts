@@ -8,8 +8,8 @@
  *   · NMEA sentences carried in rate 1/2 packet data (a data header with its CRC, then the blocks it announces,
  *     unconfirmed 12 bytes or confirmed 10 bytes each, the last 4 bytes of the last block being the packet CRC);
  *     a sentence counts only when its own checksum checks; rate 3/4 data blocks the same way (dmrdata.ts);
- *   · ETSI LIP short location reports, in UDP to port 5017 inside that packet data, or in a USBD poll response.
- *     Rate 1 data and the manufacturers' own location protocols (Motorola LRRP, Hytera) are not read here.
+ *   · ETSI LIP short location reports, in UDP to port 5017 inside that packet data, or in a USBD poll response;
+ *     Motorola LRRP reports in UDP on port 4001. Rate 1 data and Hytera's location protocol are not read here.
  *
  * Voice bursts hand their three 72-bit AMBE+2 frames on ([onVoiceFrame]), each with the symbol time it was sent.
  *
@@ -19,7 +19,7 @@ import { DmrFramer, type DmrEvent } from '../fleet/rx.js';
 import { readEmb, embBits, EmbLcAssembler, parseEmbLc, TalkerAlias, rs129Ok, voiceFrames } from '../fleet/lc.js';
 import { crc12Ok } from '../fleet/codes.js';
 import { parseNmea, type Position } from './gps.js';
-import { rate34Decode, lipInIp, usbdLip, type LipReport } from './dmrdata.js';
+import { rate34Decode, lipInIp, lrrpInIp, usbdLip, type LipReport } from './dmrdata.js';
 import type { HamVoiceFrame } from './voice.js';
 
 export interface DmrSlotId {
@@ -119,9 +119,11 @@ export class DmrIdentity {
         const parts: number[] = [];
         p.got.forEach(g => { for (let i = p.confirmed ? 2 : 0; i < g.length; i++) parts.push(g[i]); });
         const body = parts.slice(0, Math.max(0, parts.length - 4));
-        const lip = lipInIp(body);
-        const pos = lip ?? nmeaInPayload(body);
-        if (lip) this.lip(ts, lip); else if (pos) { ts.position = pos; ts.posError = -1; ts.speedKmh = -1; ts.heading = -1; }
+        const lip = lipInIp(body), lrrp = lip ? null : lrrpInIp(body);
+        const pos = lip || lrrp ? null : nmeaInPayload(body);
+        if (lip) this.lip(ts, lip);
+        else if (lrrp) { ts.position = { lat: lrrp.lat, lon: lrrp.lon, source: lrrp.source }; ts.posError = -1; ts.speedKmh = -1; ts.heading = lrrp.heading; }
+        else if (pos) { ts.position = pos; ts.posError = -1; ts.speedKmh = -1; ts.heading = -1; }
       }
     } else if (b.dt === 11) {
       if (!crc12Ok(b.bytes, 0x3333)) return;

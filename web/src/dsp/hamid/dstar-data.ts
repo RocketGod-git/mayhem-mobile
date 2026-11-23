@@ -50,6 +50,8 @@ export class FastDataStream {
     }
     for (let i = 0; i < b.length; i++) this.buf[this.n++] = b[i];
   }
+  /** The bytes so far. */
+  bytes(): Uint8Array { return this.buf.subarray(0, this.n); }
   /** The first JPEG (FF D8 FF to FF D9), complete or as far as it has come. */
   image(): DStarImage | null {
     const b = this.buf;
@@ -145,4 +147,38 @@ export class DStarDdReceiver {
     this.id.frames.push(f); if (this.id.frames.length > 32) this.id.frames.shift();
     this.onFrame(f, this.hdrNow!);
   }
+}
+
+// ------------------------------------------------------------------------------------------------ Icom records
+/**
+ * Icom's own records in the simple data and fast data streams (not in the JARL standard; the layout is from the
+ * D-StarBeacon project's notes, see the credits): "$$Msg,FROM,TO," then six digits and the text of a message, and
+ * "$$Pic,FROM,TO," then four characters (the picture's quality and size) and one block of the picture. The picture
+ * blocks' coding is not public, so the pictures are counted, not drawn.
+ */
+export interface IcomMessage { from: string; to: string; text: string }
+export interface IcomPicture { from: string; to: string; code: string; blocks: number }
+
+/** The records in a byte or character sequence: the last message, and the picture blocks counted. */
+export function icomRecords(b: ArrayLike<number>, from = 0): { msg: IcomMessage | null; pic: IcomPicture | null } {
+  let msg: IcomMessage | null = null, pic: IcomPicture | null = null;
+  const at = (i: number, s: string) => { for (let k = 0; k < s.length; k++) if ((b[i + k] & 255) !== s.charCodeAt(k)) return false; return true; };
+  const field = (i: number): [string, number] => { let s = ''; while (i < b.length && b[i] !== 0x2c && s.length < 12) s += String.fromCharCode(b[i++] & 255); return [s.trim(), i + 1]; };
+  for (let i = from; i + 6 < b.length; i++) {
+    const isMsg = at(i, '$$Msg,'), isPic = !isMsg && at(i, '$$Pic,');
+    if (!isMsg && !isPic) continue;
+    const [f, j] = field(i + 6), [t, k] = field(j);
+    if (!/^[A-Z0-9/ -]{3,10}$/.test(f) || k > b.length) continue;
+    if (isMsg) {
+      let text = '', p = k + 6;
+      while (p < b.length && b[p] >= 0x20 && b[p] < 0x7f) text += String.fromCharCode(b[p++]);
+      if (k + 6 <= b.length) msg = { from: f, to: t, text: text.trim() };
+    } else {
+      let code = ''; for (let p = k; p < k + 4 && p < b.length; p++) code += String.fromCharCode(b[p] & 255);
+      const was = pic as IcomPicture | null;
+      pic = was && was.from === f && was.to === t ? { from: f, to: t, code, blocks: was.blocks + 1 } : { from: f, to: t, code, blocks: 1 };
+    }
+    i = k - 1;
+  }
+  return { msg, pic };
 }

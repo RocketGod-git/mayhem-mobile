@@ -22,6 +22,7 @@
 import { YSF_K, YSF_G, viterbi, golay24Decode, crc16Msb, packMsb, asciiField } from './fec.js';
 import { parsePositionLine, type Position } from './gps.js';
 import { ysfVd2Voice, type HamVoiceFrame } from './voice.js';
+import { wiresxReply, type WiresX } from './wiresx.js';
 
 /** Sync symbols of D471C9634D. */
 export const YSF_SYNC = (() => {
@@ -82,6 +83,8 @@ export interface YsfId {
   dgid: number; sqlOn: boolean; dt: number; callMode: number; route: number; voip: boolean;
   position: Position | null; positionText: string;
   frames: number; units: number; inverted: boolean; active: boolean;
+  /** A WIRES-X reply the node sent (its name, the room it is connected to). */
+  wires: WiresX | null;
 }
 const slice4 = (s: number) => s > 2 ? 1 : s > 0 ? 0 : s > -2 ? 2 : 3;
 
@@ -95,11 +98,11 @@ export class YsfReceiver {
   private t = 0; private lastSync = -1e9;
   private dtBytes: (Uint8Array | null)[] = [];
   syncs = 0;
-  readonly id: YsfId = { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false };
+  readonly id: YsfId = { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false, wires: null };
 
   reset(): void {
     this.ring.fill(0); this.rp = 0; this.sym = null; this.sn = 0; this.inv = 1; this.t = 0; this.lastSync = -1e9; this.dtBytes = []; this.syncs = 0;
-    Object.assign(this.id, { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false });
+    Object.assign(this.id, { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false, wires: null });
   }
 
   /** One soft symbol (outer levels near ±3). */
@@ -190,7 +193,9 @@ export class YsfReceiver {
     this.id.units++;
     this.dtBytes[k] = u;
     let s = '';
-    for (let i = 0; i < this.dtBytes.length; i++) { const b = this.dtBytes[i]; if (!b) break; for (const v of b) if (v !== 0) s += String.fromCharCode(v); }
+    const raw: number[] = [];
+    for (let i = 0; i < this.dtBytes.length; i++) { const b = this.dtBytes[i]; if (!b) break; for (const v of b) { raw.push(v); if (v !== 0) s += String.fromCharCode(v); } }
+    const w = wiresxReply(raw); if (w) this.id.wires = w;
     for (const line of s.split(/[\r\n]+/)) {
       const pos = parsePositionLine(line);
       if (pos) { this.id.position = pos; this.id.positionText = line.trim(); }

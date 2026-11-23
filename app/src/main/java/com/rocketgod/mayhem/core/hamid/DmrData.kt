@@ -7,7 +7,7 @@ import kotlin.math.pow
  * DMR rate 3/4 data (ETSI TS 102 361-1 B.2.4: the 8-state trellis of table B.7, the constellation of B.8, the
  * interleave of B.9) and the ETSI Location Information Protocol (TS 100 392-18-1 6.2.1 SHORT LOCATION REPORT), as DMR
  * carries it: in UDP to port 5017 and in the USBD poll response (TS 102 361-4 table 6.79). Motorola's LRRP is not a
- * published standard and is not read. The same as the web's dsp/hamid/dmrdata.ts.
+ * published standard, is read from the layout in the DSD-FME decoder (below). The same as the web's dsp/hamid/dmrdata.ts.
  */
 private val T34 = arrayOf(
     intArrayOf(0, 8, 4, 12, 2, 10, 6, 14), intArrayOf(4, 12, 2, 10, 6, 14, 0, 8), intArrayOf(1, 9, 5, 13, 3, 11, 7, 15), intArrayOf(5, 13, 3, 11, 7, 15, 1, 9),
@@ -85,13 +85,56 @@ fun usbdLip(b: IntArray): LipReport? = if ((b[0] shr 4) != 0) null else lipField
 
 /** An IPv4 packet with a good header checksum holding UDP to port 5017 → its LIP report. */
 fun lipInIp(b: IntArray): LipReport? {
+    val u = udpPayload(b) ?: return null
+    return if (u.dport == 5017 && u.data.size >= 10) lipShortReport(u.data) else null
+}
+/** An IPv4 packet with a good header checksum holding UDP to or from port 4001 → its LRRP report. */
+fun lrrpInIp(b: IntArray): LrrpReport? {
+    val u = udpPayload(b) ?: return null
+    return if (u.dport == 4001 || u.sport == 4001) lrrpReport(u.data) else null
+}
+class Udp(val sport: Int, val dport: Int, val data: IntArray)
+/** The UDP datagram in an IPv4 packet whose header checksum checks. */
+fun udpPayload(b: IntArray): Udp? {
     if (b.size < 28 || (b[0] shr 4) != 4 || b[9] != 17) return null
     val ihl = (b[0] and 15) * 4; if (ihl < 20 || b.size < ihl + 8) return null
     var sum = 0; var i = 0
     while (i < ihl) { sum += (b[i] shl 8) or b[i + 1]; i += 2 }
     while (sum > 0xffff) sum = (sum and 0xffff) + (sum ushr 16)
     if (sum != 0xffff) return null
-    val dport = (b[ihl + 2] shl 8) or b[ihl + 3]; val ulen = (b[ihl + 4] shl 8) or b[ihl + 5]
-    if (dport != 5017 || ulen < 8 + 10) return null
-    return lipShortReport(IntArray(ulen - 8) { b.getOrElse(ihl + 8 + it) { 0 } })
+    val ulen = (b[ihl + 4] shl 8) or b[ihl + 5]
+    if (ulen < 8) return null
+    return Udp((b[ihl] shl 8) or b[ihl + 1], (b[ihl + 2] shl 8) or b[ihl + 3], IntArray(ulen - 8) { b.getOrElse(ihl + 8 + it) { 0 } })
+}
+
+/**
+ * Motorola LRRP (UDP port 4001; not a published standard, the layout is from the DSD-FME decoder): a message type
+ * (0x07, 0x0B or 0x0D), a length, then tokens: 0x22 request ID, 0x34/0x35 time, 0x51/0x54/0x55 a circle, 0x66 a point,
+ * 0x69/0x6A a point with altitude, 0x56 the heading (2 degree steps), 0x6C/0x70 a speed (not read). Latitude: the top
+ * bit the sign, 90/2^31 degrees; longitude two's complement, 180/2^31 degrees.
+ */
+class LrrpReport(val lat: Double, val lon: Double, val source: String, val heading: Double)
+private val LRRP_SKIP = mapOf(0x34 to 6, 0x35 to 6, 0x36 to 2, 0x37 to 2, 0x56 to 2, 0x6c to 3, 0x70 to 3)
+private val LRRP_POS = mapOf(0x51 to 11, 0x54 to 11, 0x55 to 11, 0x66 to 9, 0x69 to 10, 0x6a to 10)
+fun lrrpReport(p: IntArray): LrrpReport? {
+    if (p.size < 4 || (p[0] != 0x07 && p[0] != 0x0b && p[0] != 0x0d)) return null
+    val end = minOf(p.size, 2 + p[1])
+    var lat = Double.NaN; var lon = Double.NaN; var heading = -1.0
+    fun u32(i: Int) = (p[i].toLong() shl 24) or (p[i + 1].toLong() shl 16) or (p[i + 2].toLong() shl 8) or p[i + 3].toLong()
+    var i = 2
+    while (i < end) {
+        val t = p[i]
+        if (t == 0x22 || t == 0x23) { i += 2 + (if (i + 1 < end) p[i + 1] else 0); continue }
+        val n = LRRP_POS[t]
+        if (n != null && i + 8 < end && lat.isNaN()) {
+            val a = u32(i + 1); val o = u32(i + 5)
+            lat = (a and 0x7fffffffL) * 90.0 / 2147483648.0 * (if (a >= 0x80000000L) -1 else 1)
+            lon = o.toInt() * 180.0 / 2147483648.0
+            i += n; continue
+        }
+        if (t == 0x56 && i + 1 < end) heading = p[i + 1] * 2.0
+        i += LRRP_SKIP[t] ?: 1
+    }
+    if (!lat.isFinite() || abs(lat) > 90 || abs(lon) > 180 || (lat == 0.0 && lon == 0.0)) return null
+    return LrrpReport(lat, lon, "lrrp", heading)
 }

@@ -14,12 +14,12 @@
  *     APRS-format position with its "$$CRCxxxx," prefix), 5n n bytes of the radio header sent again;
  *   · the end of a transmission: 1010 then 000100110101111;
  *   · code squelch (Cx) and DV Fast Data (8x, 9x), which also takes the voice frames (dstar-data.ts).
- * Either polarity. Each 72-bit voice frame goes out with its time ([onVoiceFrame]); the AMBE in it is not decoded.
+ * Either polarity. Each 72-bit voice frame goes out with its time ([onVoiceFrame]) for the AMBE decoder (voice.ts).
  * No DOM.
  */
 import { DSTAR_K, DSTAR_G, viterbi, crc16Lsb, packLsb, asciiField } from './fec.js';
 import { LineBuffer, parsePositionLine, type Position } from './gps.js';
-import { fastDataBlock, FastDataStream, csqlOf, type DStarCsql, type DStarImage } from './dstar-data.js';
+import { fastDataBlock, FastDataStream, csqlOf, icomRecords, type DStarCsql, type DStarImage, type IcomMessage, type IcomPicture } from './dstar-data.js';
 import type { HamVoiceFrame } from './voice.js';
 
 export const DSTAR_FS = '111011001010000';
@@ -76,6 +76,8 @@ export interface DStarId {
   inverted: boolean; active: boolean; frames: number; headers: number;
   /** The code squelch block, fast data bytes received this call, and the picture found in them. */
   csql: DStarCsql | null; fastBytes: number; image: DStarImage | null;
+  /** Icom's message and picture records ("$$Msg", "$$Pic") in the simple or fast data. */
+  icomMessage: IcomMessage | null; icomPicture: IcomPicture | null;
 }
 
 const matches = (hist: Uint8Array, hp: number, pat: Uint8Array, end: number, inv: number): number => {
@@ -99,6 +101,8 @@ export class DStarReceiver {
   private readonly vbuf: (Uint8Array | null)[] = new Array(21).fill(null); private readonly vAt = new Float64Array(21);
   private pend: number[] = [];
   private readonly fast = new FastDataStream();
+  /** The simple data bytes of this call, for Icom's records. */
+  private readonly simple = new FastDataStream();
   private readonly hist = new Uint8Array(128); private hp = 0;
   private inv = 0; private hdrInv = 0;
   private hdr: Uint8Array | null = null; private hdrN = 0;
@@ -109,13 +113,13 @@ export class DStarReceiver {
   private slowHdr: number[] = [];
   private readonly lines = new LineBuffer();
   bits = 0;
-  readonly id: DStarId = { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0, csql: null, fastBytes: 0, image: null };
+  readonly id: DStarId = { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0, csql: null, fastBytes: 0, image: null, icomMessage: null, icomPicture: null };
 
   reset(): void {
     this.hist.fill(0); this.hp = 0; this.inv = 0; this.hdrInv = 0; this.hdr = null; this.hdrN = 0; this.cnt = -1; this.missed = 0; this.half = null;
     this.msg = ['', '', '', '']; this.msgSeen = 0; this.slowHdr = []; this.lines.reset(); this.bits = 0;
-    this.vbuf.fill(null); this.pend = []; this.fast.reset();
-    Object.assign(this.id, { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0, csql: null, fastBytes: 0, image: null });
+    this.vbuf.fill(null); this.pend = []; this.fast.reset(); this.simple.reset();
+    Object.assign(this.id, { header: null, headerFrom: '', message: '', position: null, positionText: '', dprsCrcOk: false, inverted: false, active: false, frames: 0, headers: 0, csql: null, fastBytes: 0, image: null, icomMessage: null, icomPicture: null });
   }
 
   /** A soft symbol from the 4800/s symbol stream: its sign is the bit. */
@@ -163,8 +167,8 @@ export class DStarReceiver {
   }
 
   private newCall(): void {
-    this.msg = ['', '', '', '']; this.msgSeen = 0; this.slowHdr = []; this.lines.reset(); this.fast.reset(); this.pend = [];
-    Object.assign(this.id, { message: '', position: null, positionText: '', dprsCrcOk: false, frames: 0, csql: null, fastBytes: 0, image: null });
+    this.msg = ['', '', '', '']; this.msgSeen = 0; this.slowHdr = []; this.lines.reset(); this.fast.reset(); this.simple.reset(); this.pend = [];
+    Object.assign(this.id, { message: '', position: null, positionText: '', dprsCrcOk: false, frames: 0, csql: null, fastBytes: 0, image: null, icomMessage: null, icomPicture: null });
   }
   private superframe(): void { this.flushVoice(); this.cnt = 0; this.half = null; this.slowHdr = []; this.vbuf.fill(null); }
 
@@ -194,7 +198,7 @@ export class DStarReceiver {
     const fd = vs.every(v => v) ? fastDataBlock(a, by, vs as Uint8Array[]) : null;
     if (fd) {
       this.pend = this.pend.filter(i => !idx.includes(i));
-      this.fast.push(fd); this.id.fastBytes += fd.length; this.id.image = this.fast.image();
+      this.fast.push(fd); this.id.fastBytes += fd.length; this.id.image = this.fast.image(); this.icom();
     } else this.block(blk);
     this.flushVoice();
   }
@@ -207,6 +211,7 @@ export class DStarReceiver {
       if (this.msgSeen === 15) this.id.message = this.msg.join('').trim();
     } else if (type === 3 && n >= 1) {
       let s = ''; for (let i = 1; i <= Math.min(5, n); i++) s += String.fromCharCode(b[i]);
+      this.simple.push(b.slice(1, 1 + Math.min(5, n))); this.icom();
       for (const line of this.lines.push(s)) this.line(line);
     } else if (type === 12 && n === 2) {
       this.id.csql = csqlOf(b[1], b[2]);
@@ -221,6 +226,12 @@ export class DStarReceiver {
         }
       }
     }
+  }
+
+  /** Icom's records, from the fast data or else the simple data. */
+  private icom(): void {
+    const f = icomRecords(this.fast.bytes()), s = icomRecords(this.simple.bytes());
+    this.id.icomMessage = f.msg ?? s.msg; this.id.icomPicture = f.pic ?? s.pic;
   }
 
   private line(line: string): void {

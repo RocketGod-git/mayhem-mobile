@@ -31,6 +31,8 @@ class FastDataStream {
     var n = 0
         private set
     fun reset() { n = 0 }
+    /** The bytes so far. */
+    fun bytes(): ByteArray = buf.copyOf(n)
     fun push(b: IntArray) {
         if (n + b.size > buf.size) { if (buf.size >= 1 shl 20) return; buf = buf.copyOf(buf.size * 2) }
         for (v in b) buf[n++] = v.toByte()
@@ -128,4 +130,39 @@ class DStarDdReceiver(fs: Double = 0.0) {
         id.frames.add(f); if (id.frames.size > 32) id.frames.removeAt(0)
         onFrame(f, hdrNow!!)
     }
+}
+
+/*
+ * Icom's own records in the simple data and fast data streams (not in the JARL standard; the layout is from the
+ * D-StarBeacon project's notes): "$$Msg,FROM,TO," then six digits and the text, and "$$Pic,FROM,TO," then four
+ * characters (quality and size) and one picture block. The blocks' coding is not public: pictures are counted.
+ */
+data class IcomMessage(val from: String, val to: String, val text: String)
+data class IcomPicture(val from: String, val to: String, val code: String, val blocks: Int)
+class IcomRecords(val msg: IcomMessage?, val pic: IcomPicture?)
+private val ICOM_CALL = Regex("^[A-Z0-9/ -]{3,10}$")
+
+fun icomRecords(b: ByteArray): IcomRecords {
+    var msg: IcomMessage? = null; var pic: IcomPicture? = null
+    fun u(i: Int) = b[i].toInt() and 255
+    fun at(i: Int, s: String): Boolean { for (k in s.indices) if (i + k >= b.size || u(i + k) != s[k].code) return false; return true }
+    fun field(i0: Int): Pair<String, Int> { var i = i0; val sb = StringBuilder(); while (i < b.size && u(i) != 0x2c && sb.length < 12) sb.append(u(i++).toChar()); return sb.toString().trim() to i + 1 }
+    var i = 0
+    while (i + 6 < b.size) {
+        val isMsg = at(i, "\$\$Msg,"); val isPic = !isMsg && at(i, "\$\$Pic,")
+        if (!isMsg && !isPic) { i++; continue }
+        val (f, j) = field(i + 6); val (t, k) = field(j)
+        if (!ICOM_CALL.matches(f) || k > b.size) { i++; continue }
+        if (isMsg) {
+            val sb = StringBuilder(); var p = k + 6
+            while (p < b.size && u(p) in 0x20..0x7e) sb.append(u(p++).toChar())
+            if (k + 6 <= b.size) msg = IcomMessage(f, t, sb.toString().trim())
+        } else {
+            val code = StringBuilder(); var p = k; while (p < k + 4 && p < b.size) code.append(u(p++).toChar())
+            val was = pic
+            pic = if (was != null && was.from == f && was.to == t) IcomPicture(f, t, code.toString(), was.blocks + 1) else IcomPicture(f, t, code.toString(), 1)
+        }
+        i = k
+    }
+    return IcomRecords(msg, pic)
 }
