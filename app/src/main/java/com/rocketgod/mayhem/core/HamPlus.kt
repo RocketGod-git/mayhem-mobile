@@ -8,6 +8,8 @@ import com.rocketgod.mayhem.core.fleet.FleetAuto
 import com.rocketgod.mayhem.core.hamplus.HamPlusEngine
 import com.rocketgod.mayhem.core.hamplus.HpParams
 import com.rocketgod.mayhem.core.hamplus.HpPrefs
+import com.rocketgod.mayhem.core.hamplus.hpPrefsRestored
+import com.rocketgod.mayhem.core.hamplus.hpPrefsSaved
 import com.rocketgod.mayhem.core.hamplus.HpSaved
 import com.rocketgod.mayhem.core.hamplus.HpAct
 import com.rocketgod.mayhem.core.hamplus.HpScan
@@ -74,7 +76,7 @@ object HamPlus {
         ctx = c.applicationContext
         knownFile = File(c.filesDir, "hamplus_known2.json")  // 2: 0.9.59 learned false channels from a gain step
         val p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        runCatching { val v = JSONObject(p.getString(K_PREFS, null) ?: ""); _prefs.value = HpPrefs(v.optString("hold"), strs(v.optJSONArray("mute")), strs(v.optJSONArray("prio"))) }
+        runCatching { val v = JSONObject(p.getString(K_PREFS, null) ?: ""); _prefs.value = hpPrefsRestored(strs(v.optJSONArray("mute")), strs(v.optJSONArray("prio"))) }
         runCatching { val v = JSONObject(p.getString(K_LABELS, null) ?: ""); _labels.value = v.keys().asSequence().associateWith { v.optString(it) } }
         runCatching {
             val v = JSONObject(p.getString(K_AUDIO, null) ?: "")
@@ -100,7 +102,7 @@ object HamPlus {
             else -> p.copy(prio = if (key in p.prio) p.prio - key else p.prio + key)
         }
         _prefs.value = next
-        put(K_PREFS, JSONObject().put("hold", next.hold).put("mute", JSONArray(next.mute)).put("prio", JSONArray(next.prio)).toString())
+        hpPrefsSaved(next).let { sv -> put(K_PREFS, JSONObject().put("mute", JSONArray(sv.mute)).put("prio", JSONArray(sv.prio)).toString()) }
         pushPrefs()
     }
     /** A tap on a channel tile: follow it (only it is heard), or back to ALL with "" or a second tap. */

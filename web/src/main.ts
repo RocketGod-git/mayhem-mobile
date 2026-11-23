@@ -34,7 +34,7 @@ import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
 import { hpWindows } from './dsp/hamplus/plan.js';
 import { HpScan } from './dsp/hamplus/scan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
-import type { HpTxRow } from './dsp/hamplus/tracker.js';
+import { hpPrefsRestored, hpPrefsSaved, type HpTxRow } from './dsp/hamplus/tracker.js';
 import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, hpCountText, HP_SPAN_MS } from './hamplus-ui.js';
 import type { CbSnap } from './dsp/cb/engine.js';
 import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
@@ -4736,11 +4736,11 @@ function hpNote(text: string): void { hpUi.note = text; hpUi.noteUntil = Date.no
 (() => {
   try {
     const v = JSON.parse(localStorage.getItem(HP_KEY) ?? 'null');
-    if (v) { hpUi.band = v.band ?? 'AUTO'; hpUi.span = Number(v.span) || 8_000_000; hpUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; hpUi.labels = v.labels ?? {}; hpUi.modeSet = v.modeSet === true; hpUi.mode = hpUi.modeSet && v.mode === 'mix' ? 'mix' : 'newest'; hpUi.audioOn = v.audioOn !== false; hpUi.gain = Number(v.gain) || 1; }
+    if (v) { hpUi.band = v.band ?? 'AUTO'; hpUi.span = Number(v.span) || 8_000_000; hpUi.prefs = hpPrefsRestored(v.prefs); hpUi.labels = v.labels ?? {}; hpUi.modeSet = v.modeSet === true; hpUi.mode = hpUi.modeSet && v.mode === 'mix' ? 'mix' : 'newest'; hpUi.audioOn = v.audioOn !== false; hpUi.gain = Number(v.gain) || 1; }
   } catch { /* storage blocked */ }
 })();
 function hpSave(): void {
-  try { localStorage.setItem(HP_KEY, JSON.stringify({ band: hpUi.band, span: hpUi.span, prefs: hpUi.prefs, labels: hpUi.labels, mode: hpUi.mode, modeSet: hpUi.modeSet, audioOn: hpUi.audioOn, gain: hpUi.gain })); } catch { /* storage full or blocked */ }
+  try { localStorage.setItem(HP_KEY, JSON.stringify({ band: hpUi.band, span: hpUi.span, prefs: hpPrefsSaved(hpUi.prefs), labels: hpUi.labels, mode: hpUi.mode, modeSet: hpUi.modeSet, audioOn: hpUi.audioOn, gain: hpUi.gain })); } catch { /* storage full or blocked */ }
 }
 const hpRate = () => radioCan(hpUi.span) ? hpUi.span : radioCan(2_400_000) ? 2_400_000 : 2_000_000;
 const hpSend = (m: Record<string, unknown>) => worker?.postMessage({ type: 'hamplus', ...m });
@@ -4958,11 +4958,11 @@ function cbNote(text: string): void { cbUi.note = text; cbUi.noteUntil = Date.no
 (() => {
   try {
     const v = JSON.parse(localStorage.getItem(CB_KEY) ?? 'null');
-    if (v) { cbUi.prefs = { hold: v.prefs?.hold ?? '', mute: v.prefs?.mute ?? [], prio: v.prefs?.prio ?? [] }; cbUi.labels = v.labels ?? {}; cbUi.modes = v.modes ?? {}; cbUi.clar = v.clar ?? {}; cbUi.modeSet = v.modeSet === true; cbUi.mode = cbUi.modeSet && v.mode === 'mix' ? 'mix' : 'newest'; cbUi.audioOn = v.audioOn !== false; cbUi.gain = Number(v.gain) || 1; }
+    if (v) { cbUi.prefs = hpPrefsRestored(v.prefs); cbUi.labels = v.labels ?? {}; cbUi.modes = v.modes ?? {}; cbUi.clar = v.clar ?? {}; cbUi.modeSet = v.modeSet === true; cbUi.mode = cbUi.modeSet && v.mode === 'mix' ? 'mix' : 'newest'; cbUi.audioOn = v.audioOn !== false; cbUi.gain = Number(v.gain) || 1; }
   } catch { /* storage blocked */ }
 })();
 function cbSave(): void {
-  try { localStorage.setItem(CB_KEY, JSON.stringify({ prefs: cbUi.prefs, labels: cbUi.labels, modes: cbUi.modes, clar: cbUi.clar, mode: cbUi.mode, modeSet: cbUi.modeSet, audioOn: cbUi.audioOn, gain: cbUi.gain })); } catch { /* storage full or blocked */ }
+  try { localStorage.setItem(CB_KEY, JSON.stringify({ prefs: hpPrefsSaved(cbUi.prefs), labels: cbUi.labels, modes: cbUi.modes, clar: cbUi.clar, mode: cbUi.mode, modeSet: cbUi.modeSet, audioOn: cbUi.audioOn, gain: cbUi.gain })); } catch { /* storage full or blocked */ }
 }
 /** One span hears all 40: a HackRF at 2 MS/s, an RTL-SDR at 2.4. */
 const cbRate = () => radioCan(2_400_000) && radio?.kind === 'rtlsdr' ? 2_400_000 : radioCan(2_000_000) ? 2_000_000 : 2_400_000;

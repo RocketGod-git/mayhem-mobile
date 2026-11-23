@@ -59,6 +59,17 @@ interface Chan {
 }
 
 export interface HpPrefs { hold: string; mute: string[]; prio: string[] }
+/**
+ * The channel preferences kept between sessions: mutes and priorities. A follow is not kept. It pins the scan to one
+ * window and pauses AUTO, and after a relaunch nothing has been heard on that channel yet, so a follow that came back
+ * would hold the scan on a channel that may never key up. Reading an older save drops the follow it kept.
+ */
+export function hpPrefsSaved(p: HpPrefs): HpPrefs { return { hold: '', mute: [...p.mute], prio: [...p.prio] }; }
+export function hpPrefsRestored(v: unknown): HpPrefs {
+  const o = (v && typeof v === 'object' ? v : {}) as { mute?: unknown; prio?: unknown };
+  const list = (x: unknown) => Array.isArray(x) ? x.filter((k): k is string => typeof k === 'string') : [];
+  return { hold: '', mute: list(o.mute), prio: list(o.prio) };
+}
 export const chanKey = (hz: number) => String(Math.round(hz / 100) * 100);
 
 export interface HpTxRow {
@@ -268,18 +279,25 @@ export class HamTracker {
   linkGroups(): Map<string, number> {
     const parent = new Map<string, string>();
     const find = (x: string): string => { let p = parent.get(x) ?? x; if (p !== x) { p = find(p); parent.set(x, p); } return p; };
-    const all = [...new Set([...this.links, ...this.liveLinks])].sort();
+    const all = [...new Set([...this.heardLinks(), ...this.liveLinks])].sort();
     for (const k of all) { const [a, b] = k.split('|'); parent.set(find(a), find(b)); }
     const roots = new Map<string, number>(), out = new Map<string, number>();
     for (const k of all) for (const x of k.split('|')) { const r = find(x); if (!roots.has(r)) roots.set(r, roots.size + 1); out.set(x, roots.get(r)!); }
     return out;
   }
+  /** A channel with transmissions heard on it (this session or a restored one). */
+  private heard(key: string): boolean { return (this.chans.get(key)?.txs ?? 0) > 0; }
+  /**
+   * The learned links whose two channels both have transmissions. A link is the same voice on two channels, so one
+   * with a channel never heard is no link: an older save could keep one made on a carrier with no voice.
+   */
+  private heardLinks(): string[] { return [...this.links].filter(k => { const [a, b] = k.split('|'); return this.heard(a) && this.heard(b); }); }
   /** Two tiles are a learned link (the same network). */
   linked(a: string, b: string): boolean {
     if (a === b || !this.links.size) return false;
     const parent = new Map<string, string>();
     const find = (x: string): string => { let p = parent.get(x) ?? x; if (p !== x) { p = find(p); parent.set(x, p); } return p; };
-    for (const k of this.links) { const [x, y] = k.split('|'); parent.set(find(x), find(y)); }
+    for (const k of this.heardLinks()) { const [x, y] = k.split('|'); parent.set(find(x), find(y)); }
     return find(a) === find(b);
   }
 
@@ -392,13 +410,14 @@ export class HamTracker {
   save(): HpSaved {
     const chans = [...this.chans.values()].filter(c => c.txs > 0).sort((a, b) => b.lastMs - a.lastMs).slice(0, 200)
       .map(c => ({ hz: c.hz, callsign: c.callsign, tone: c.tone, dcs: c.dcs, talkMs: c.talkMs, txs: c.txs, lastMs: c.lastMs, firstMs: c.firstMs }));
-    return { chans, pairs: [...this.pairs].map(([k, v]) => [Number(k), v]), links: [...this.links].map(k => k.split('|').map(Number) as [number, number]), heat: this.heat };
+    return { chans, pairs: [...this.pairs].map(([k, v]) => [Number(k), v]), links: this.heardLinks().map(k => k.split('|').map(Number) as [number, number]), heat: this.heat };
   }
   restore(s: HpSaved | null): void {
     if (!s) return;
     for (const x of s.chans ?? []) { const c = this.chan(x.hz); c.callsign ||= x.callsign; c.tone ||= x.tone; c.dcs ||= x.dcs; c.talkMs += x.talkMs; c.txs += x.txs; c.lastMs = Math.max(c.lastMs, x.lastMs); c.firstMs ||= x.firstMs; }
     for (const [o, i] of s.pairs ?? []) { this.pairs.set(chanKey(o), i); this.pairEv.set(`${chanKey(o)}|${chanKey(i)}`, { hits: PAIR_HITS, misses: 0 }); }
-    for (const [a, b] of s.links ?? []) { const k = [chanKey(a), chanKey(b)].sort().join('|'); this.links.add(k); this.linkEv.set(k, LINK_HITS); }
+    // a link comes back only between channels that come back with transmissions (see [heardLinks])
+    for (const [a, b] of s.links ?? []) { const k = [chanKey(a), chanKey(b)].sort().join('|'); if (!this.heard(chanKey(a)) || !this.heard(chanKey(b))) continue; this.links.add(k); this.linkEv.set(k, LINK_HITS); }
     if (s.heat?.cover?.length === HEAT_SLOTS) this.heat = { bands: (s.heat.bands ?? []).filter(b => b.slots?.length === HEAT_SLOTS), cover: s.heat.cover };
   }
   clear(): void { this.chans.clear(); this.txs.length = 0; this.txStation.clear(); this.pairs.clear(); this.pairEv.clear(); this.links.clear(); this.linkEv.clear(); this.judged.clear(); }

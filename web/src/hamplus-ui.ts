@@ -19,6 +19,8 @@ export function hpDur(ms: number): string {
   return t < 3600 ? `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}` : `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
 }
 export const hpAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : `${Math.floor(ms / 3_600_000)} h ago`;
+/** When a channel was last heard, from its last-heard time: 'not heard yet' when it never was (a 0 time is no time). */
+export const hpHeard = (now: number, lastMs: number) => lastMs > 0 ? hpAgo(Math.max(0, now - lastMs)) : 'not heard yet';
 export const hpClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 export const hpTone = (tone: number, dcs: number) => tone > 0 ? `PL ${tone.toFixed(1)}` : dcs > 0 ? `DCS ${String(dcs).padStart(3, '0')}` : '';
 /** A tile's name: the CW ID callsign, else the band plan's name for the frequency, else what kind of channel it is. */
@@ -142,7 +144,7 @@ export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHt
     return `<div class="fl-tile hp-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${hpMhz(t.hz)}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small class="${t.callsign ? 'call' : ''}">${esc(hpName(t))}</small>`
       + (line ? `<span class="hp-line">${esc(line)}</span>` : '')
-      + (t.live ? `<span class="hp-air">ON AIR ${hpDur(t.openMs)}<span class="fl-vu"><span><i style="width:${Math.max(5, Math.min(100, t.snrDb * 2.5)).toFixed(0)}%"></i></span></span></span>` : `<span>${hpAgo(now - t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}</span>`)
+      + (t.live ? `<span class="hp-air">ON AIR ${hpDur(t.openMs)}<span class="fl-vu"><span><i style="width:${Math.max(5, Math.min(100, t.snrDb * 2.5)).toFixed(0)}%"></i></span></span></span>` : `<span>${hpHeard(now, t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}</span>`)
       + sparkSvg(t.spark, t.live) + (badges ? `<div class="hp-badges">${badges}</div>` : '')
       + `<button class="fl-ti" data-hpinfo="${t.key}" title="details" aria-label="details">i</button></div>`;
   }).join('')}</div>${tiles.length ? '' : emptyHtml}`;
@@ -168,7 +170,7 @@ export function hpConvHtml(s: HpSnap, convId: number, now: number, all: boolean,
   const shown = all ? rows : rows.slice(-8);
   const order = [...new Set(rows.map(r => r.station).filter(Boolean))];
   const ids = rows.filter(r => r.recorded && !r.live).map(r => r.id);
-  return `<div class="hp-conv ${c.live ? 'live' : ''}"><div class="hp-ch"><b>${esc(nm.chan(c.hz))}</b><span class="${c.live ? 'ok' : ''}">${esc([t ? nm.name(t) : '', c.live ? 'ON THE AIR' : hpAgo(now - c.endMs)].filter(Boolean).join(' · '))}</span>${c.net ? pill('NET', 'acc') : ''}`
+  return `<div class="hp-conv ${c.live ? 'live' : ''}"><div class="hp-ch"><b>${esc(nm.chan(c.hz))}</b><span class="${c.live ? 'ok' : ''}">${esc([t ? nm.name(t) : '', c.live ? 'ON THE AIR' : hpHeard(now, c.endMs)].filter(Boolean).join(' · '))}</span>${c.net ? pill('NET', 'acc') : ''}`
     + (ids.length ? `<button class="chip" data-hpconv="${ids.join(',')}" data-hplabel="${esc(`${nm.chan(c.hz)} conversation from ${hpClock(c.startMs)}`)}">▶ ${hpDur(c.talkMs)}</button>` : '') + '</div>'
     + (rows.length > shown.length ? `<button class="hp-more" data-hpall="${convId}">${rows.length - shown.length} earlier · show all</button>` : '')
     + shown.map(r => bubbleHtml(r, order.indexOf(r.station), rep, now, nm)).join('') + '</div>';
@@ -213,7 +215,7 @@ export function hpCardHtml(s: HpSnap, key: string, now: number, prefs: { hold: s
   if (t.kind) kv.push(['KIND', t.kind]);
   if (t.inputHz) kv.push(['INPUT', `${hpMhz(t.inputHz)} MHz heard, talkers there are nearby`]); else if (t.offset) kv.push(['OFFSET', `${t.offset} (band plan)`]);
   if (hpTone(t.tone, t.dcs)) kv.push(['TONE', hpTone(t.tone, t.dcs)]);
-  kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpAgo(now - t.lastMs)}`]);
+  kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpHeard(now, t.lastMs)}`]);
   if (t.net) kv.push(['NET', `net control ${t.net.control}, ${t.net.checkins} check-ins`]);
   if (t.link) kv.push(['LINKED', s.tiles.filter(x => x.link === t.link && x.key !== t.key).map(x => hpMhz(x.hz)).join(', ') || `network ${t.link}`]);
   if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} transmissions came while every demodulator was busy`]);
@@ -260,7 +262,7 @@ export function hpQuietText(s: HpSnap | null, now: number, nm: HpNamer = HAM_NAM
   const tile = (s?.tiles ?? []).filter(t => !t.live && t.lastMs > 0).sort((a, b) => b.lastMs - a.lastMs)[0];
   if (!last && !tile) return { head: 'nothing on the air yet', sub: 'every transmission shows here as it happens' };
   const fromLog = !!last && (!tile || last.endMs >= tile.lastMs), hz = fromLog ? last!.hz : tile!.hz, at = fromLog ? last!.endMs : tile!.lastMs;
-  return { head: 'nothing on the air right now', sub: `last heard ${nm.chan(hz)}, ${hpAgo(now - at)}${fromLog && last!.recorded ? ', tap to replay from there' : ''}` };
+  return { head: 'nothing on the air right now', sub: `last heard ${nm.chan(hz)}, ${hpHeard(now, at)}${fromLog && last!.recorded ? ', tap to replay from there' : ''}` };
 }
 
 /** A tap within this many pixels of a transmission's bar replays that transmission. */

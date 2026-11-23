@@ -109,6 +109,12 @@ internal fun hpColor(i: Int): Color = if (i < 0) Palette.muted else HP_COLORS[i 
 internal fun hpMhz(hz: Long): String { val s = "%.4f".format(java.util.Locale.US, hz / 1e6); return if (s.endsWith("0")) s.dropLast(1) else s }
 internal fun hpDur(ms: Double): String { val t = max(0L, (ms / 1000).roundToInt().toLong()); return if (t < 3600) "${t / 60}:${(t % 60).toString().padStart(2, '0')}" else "${t / 3600}:${((t / 60) % 60).toString().padStart(2, '0')}:${(t % 60).toString().padStart(2, '0')}" }
 internal fun hpAgo(ms: Double): String = when { ms < 2_000 -> "now"; ms < 60_000 -> "${(ms / 1000).toInt()} s ago"; ms < 3_600_000 -> "${(ms / 60_000).toInt()} min ago"; else -> "${(ms / 3_600_000).toInt()} h ago" }
+/** When a channel was last heard, from its last-heard time: "not heard yet" when it never was (a 0 time is no time). */
+internal fun hpHeard(now: Double, lastMs: Double): String = if (lastMs > 0) hpAgo(max(0.0, now - lastMs)) else "not heard yet"
+/** A quiet tile's line: when it was last heard, its transmissions and its time on the air. */
+internal fun hpTileLine(t: HpTile, now: Double): String = "${hpHeard(now, t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}"
+/** A card's HEARD line. */
+internal fun hpHeardLine(t: HpTile, now: Double): String = "${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${if (t.live) "on the air now" else hpHeard(now, t.lastMs)}"
 internal fun hpClock(ms: Double): String = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(ms.toLong()))
 internal fun hpTone(tone: Double, dcs: Int): String = if (tone > 0) "PL %.1f".format(java.util.Locale.US, tone) else if (dcs > 0) "DCS ${dcs.toString().padStart(3, '0')}" else ""
 /** A tile's name: the CW ID callsign, else the band plan's name for the frequency, else what kind of channel it is. */
@@ -583,7 +589,7 @@ private fun HpTileBox(modifier: Modifier, t: HpTile, playing: Boolean, now: Long
             if (t.live) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 Text("ON AIR ${hpDur(t.openMs)}", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), maxLines = 1, softWrap = false)
                 HpBar((t.snrDb.toFloat() / 40f).coerceIn(0.05f, 1f), Palette.ok, Modifier.weight(1f).height(d.dp(5f)))
-            } else Text("${hpAgo(now - t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else Text(hpTileLine(t, now.toDouble()), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             HpSpark(t.spark, if (t.live) Palette.ok else accent, Modifier.fillMaxWidth().height(d.dp(14f)))
             val badges = buildList {
                 t.net?.let { add("NET · ${it.control}" to accent) }
@@ -641,7 +647,7 @@ internal fun hpQuietText(rows: List<HpTxRow>, tiles: List<HpTile>, now: Double, 
     if (last == null && tile == null) return "nothing on the air yet" to "every transmission shows here as it happens"
     val fromLog = last != null && (tile == null || last.endMs >= tile.lastMs)
     val hz = if (fromLog) last!!.hz else tile!!.hz; val at = if (fromLog) last!!.endMs else tile!!.lastMs
-    return "nothing on the air right now" to "last heard ${nm.chan(hz)}, ${hpAgo(now - at)}${if (fromLog && last!!.recorded) ", tap to replay from there" else ""}"
+    return "nothing on the air right now" to "last heard ${nm.chan(hz)}, ${hpHeard(now, at)}${if (fromLog && last!!.recorded) ", tap to replay from there" else ""}"
 }
 
 /**
@@ -795,7 +801,7 @@ internal fun HpConvCard(convId: Int, s: HpSnap, now: Long, accent: Color, acts: 
         verticalArrangement = Arrangement.spacedBy(d.dp(5f))) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Text(nm.chan(c.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(14f), maxLines = 1, softWrap = false)
-            Text(listOfNotNull(t?.let { nm.name(it) }, if (c.live) "ON THE AIR" else hpAgo(now - c.endMs)).joinToString(" · "), color = if (c.live) Palette.ok else Palette.muted,
+            Text(listOfNotNull(t?.let { nm.name(it) }, if (c.live) "ON THE AIR" else hpHeard(now.toDouble(), c.endMs)).joinToString(" · "), color = if (c.live) Palette.ok else Palette.muted,
                 fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (c.net) HpPill("NET", accent)
             val ids = rows.filter { it.recorded && !it.live }.map { it.id }
@@ -913,7 +919,7 @@ private fun HpTileCard(t: HpTile, s: HpSnap, now: Long, muted: Boolean, prio: Bo
             t.kind.takeIf { it.isNotEmpty() }?.let { "KIND" to it },
             if (t.inputHz > 0) "INPUT" to "${hpMhz(t.inputHz)} MHz heard, talkers there are nearby" else t.offset.takeIf { it.isNotEmpty() }?.let { "OFFSET" to "$it (band plan)" },
             hpTone(t.tone, t.dcs).takeIf { it.isNotEmpty() }?.let { "TONE" to it },
-            "HEARD" to "${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${if (t.live) "on the air now" else hpAgo(now - t.lastMs)}",
+            "HEARD" to hpHeardLine(t, now.toDouble()),
             t.net?.let { "NET" to "net control ${it.control}, ${it.checkins} check-ins" },
             if (t.link > 0) "LINKED" to (s.tiles.filter { it.link == t.link && it.key != t.key }.joinToString(", ") { hpMhz(it.hz) }.ifEmpty { "network ${t.link}" }) else null,
             if (t.unrecorded > 0) "NOT RECORDED" to "${t.unrecorded} transmissions came while every demodulator was busy" else null,

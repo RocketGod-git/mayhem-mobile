@@ -322,14 +322,14 @@ private fun CbBoard(s: CbSnap?, now: Long, hold: String, sel: String?, accent: C
 private fun CbCell(modifier: Modifier, c: CbChan, t: HpTile?, playing: Boolean, followed: Boolean, selected: Boolean, now: Long, pulse: Float, accent: Color, onTap: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(8f))
-    val recent = t != null && !t.live && now - t.lastMs < 600_000
+    val recent = t != null && !t.live && t.lastMs > 0 && now - t.lastMs < 600_000
     val mark = when (c.ch) { 9 -> "EMERG" to Palette.danger; 19 -> "HWY" to Palette.accent2; else -> null }
     val border = when { selected -> accent; c.open -> Palette.ok.copy(alpha = 0.4f + 0.5f * pulse); followed -> accent; mark != null -> mark.second.copy(alpha = 0.55f); else -> Palette.line }
     val bg = when { followed || selected -> accent.copy(alpha = 0.14f); c.open -> Palette.ok.copy(alpha = 0.1f); else -> Palette.surface }
     val (status, sc) = when {
         c.open -> c.mode.name to Palette.ok
         c.steady -> "CARRIER" to Palette.muted
-        recent -> hpAgo((now - t!!.lastMs).toDouble()) to Palette.ink
+        recent -> hpHeard(now.toDouble(), t!!.lastMs) to Palette.ink
         c.manual != null -> c.manual.name to Palette.muted
         else -> "" to Palette.muted
     }
@@ -392,7 +392,7 @@ private fun CbTileBox(modifier: Modifier, t: HpTile, c: CbChan?, playing: Boolea
             if (t.live) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 Text("ON AIR ${hpDur(t.openMs)}", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), maxLines = 1, softWrap = false)
                 HpBar((t.snrDb.toFloat() / 40f).coerceIn(0.05f, 1f), Palette.ok, Modifier.weight(1f).height(d.dp(5f)))
-            } else Text("${hpAgo(now - t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else Text(hpTileLine(t, now.toDouble()), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             HpSpark(t.spark, if (t.live) Palette.ok else accent, Modifier.fillMaxWidth().height(d.dp(14f)))
             val badges = buildList {
                 if (ch == 9) add("EMERGENCY" to Palette.danger)
@@ -435,7 +435,7 @@ private fun CbCard(c: CbChan, s: CbSnap, now: Long, prefs: HpPrefs, accent: Colo
             else if (c.lineDb > 0) add("ON IT NOW" to cbSteadyText(c))
             if (!c.inSpan) add("SPAN" to "outside what the radio hears now")
             if (t != null) {
-                add("HEARD" to "${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${if (t.live) "on the air now" else hpAgo(now - t.lastMs)}")
+                add("HEARD" to hpHeardLine(t, now.toDouble()))
                 if (t.unrecorded > 0) add("NOT RECORDED" to "${t.unrecorded} transmissions came while every demodulator was busy")
             }
         }

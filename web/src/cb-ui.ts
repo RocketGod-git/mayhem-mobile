@@ -7,7 +7,7 @@ import { CB_CHANNELS, CB_MODES, cbChannel, cbName, type CbMode } from './dsp/cb/
 import type { CbSnap, CbChan } from './dsp/cb/engine.js';
 import type { HpTile } from './dsp/hamplus/tracker.js';
 import { HEAT_SLOTS } from './dsp/hamplus/tracker.js';
-import { hpAgo, hpClock, hpColor, hpConvHtml, hpDur, sparkSvg, type HpNamer } from './hamplus-ui.js';
+import { hpHeard, hpClock, hpColor, hpConvHtml, hpDur, sparkSvg, type HpNamer } from './hamplus-ui.js';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const pill = (text: string, cls = '') => `<em class="hp-pill ${cls}">${esc(text)}</em>`;
@@ -57,8 +57,8 @@ export function cbBoardHtml(s: CbSnap | null, now: number, hold: string, sel: st
   const chans = s?.chans ?? CB_CHANNELS.map((hz, i) => ({ ch: i + 1, hz, key: String(hz), inSpan: true, open: false, mode: 'AM', measured: '', override: '', clarHz: 0, voiceDb: 0, sigDb: 0, lineDb: 0, steadyMs: 0, steadyPct: 0, steady: false } as CbChan));
   const cells = chans.map(c => {
     const t = s?.tiles.find(x => x.key === c.key), playing = s?.playing.includes(c.key);
-    const recent = t && !t.live && now - t.lastMs < 600_000;
-    const st = c.open ? `<span class="on">${esc(c.mode)}</span>` : c.steady ? '<span class="cr">CARRIER</span>' : recent ? `<span>${esc(hpAgo(now - t!.lastMs))}</span>` : c.override ? `<span>${esc(c.override)}</span>` : '<span>&nbsp;</span>';
+    const recent = t && !t.live && t.lastMs > 0 && now - t.lastMs < 600_000;
+    const st = c.open ? `<span class="on">${esc(c.mode)}</span>` : c.steady ? '<span class="cr">CARRIER</span>' : recent ? `<span>${esc(hpHeard(now, t!.lastMs))}</span>` : c.override ? `<span>${esc(c.override)}</span>` : '<span>&nbsp;</span>';
     const mark = c.ch === 9 ? 'em' : c.ch === 19 ? 'hw' : '';
     const cls = ['cb-cell', c.open ? 'live' : '', c.steady ? 'steady' : '', recent ? 'recent' : '', mark, hold === c.key ? 'fol' : '', sel === c.key ? 'sel' : '', c.inSpan ? '' : 'off'].filter(Boolean).join(' ');
     const title = `channel ${c.ch}, ${cbMhz(c.hz)} MHz${cbName(c.ch) ? `, ${cbName(c.ch).toLowerCase()}` : ''}${c.steady ? `, ${cbSteadyText(c)}` : ''}`;
@@ -81,7 +81,7 @@ export function cbTilesHtml(s: CbSnap | null, now: number, hold: string, emptyHt
     return `<div class="fl-tile hp-tile cb-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${esc(cbTitle(t.hz))}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small>${esc(cbSub(t.hz))}</small>`
       + (mode ? `<span class="hp-line">${esc(mode)}</span>` : '')
-      + (t.live ? `<span class="hp-air">ON AIR ${hpDur(t.openMs)}<span class="fl-vu"><span><i style="width:${Math.max(5, Math.min(100, t.snrDb * 2.5)).toFixed(0)}%"></i></span></span></span>` : `<span>${hpAgo(now - t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}</span>`)
+      + (t.live ? `<span class="hp-air">ON AIR ${hpDur(t.openMs)}<span class="fl-vu"><span><i style="width:${Math.max(5, Math.min(100, t.snrDb * 2.5)).toFixed(0)}%"></i></span></span></span>` : `<span>${hpHeard(now, t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}</span>`)
       + sparkSvg(t.spark, t.live) + (badges ? `<div class="hp-badges">${badges}</div>` : '')
       + `<button class="fl-ti" data-hpinfo="${t.key}" title="details" aria-label="details">i</button></div>`;
   }).join('')}</div>${tiles.length ? '' : emptyHtml}`;
@@ -104,7 +104,7 @@ export function cbCardHtml(s: CbSnap, key: string, now: number, prefs: { hold: s
   else if (c.lineDb) kv.push(['ON IT NOW', cbSteadyText(c)]);
   if (!c.inSpan) kv.push(['SPAN', 'outside what the radio hears now']);
   if (t) {
-    kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpAgo(now - t.lastMs)}`]);
+    kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpHeard(now, t.lastMs)}`]);
     if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} transmissions came while every demodulator was busy`]);
   }
   const conv = s.convs.find(x => x.key === key);

@@ -85,6 +85,14 @@ private class Chan(val hz: Long) {
 
 data class HpPrefs(val hold: String = "", val mute: List<String> = emptyList(), val prio: List<String> = emptyList())
 
+/**
+ * The channel preferences kept between sessions: mutes and priorities. A follow is not kept. It pins the scan to one
+ * window and pauses AUTO, and after a relaunch nothing has been heard on that channel yet, so a follow that came back
+ * would hold the scan on a channel that may never key up. Reading an older save drops the follow it kept.
+ */
+fun hpPrefsSaved(p: HpPrefs): HpPrefs = HpPrefs("", p.mute.toList(), p.prio.toList())
+fun hpPrefsRestored(mute: List<String>, prio: List<String>): HpPrefs = HpPrefs("", mute.toList(), prio.toList())
+
 fun chanKey(hz: Long): String = ((hz / 100.0).roundToLong() * 100).toString()
 
 data class HpTxRow(
@@ -379,18 +387,25 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
     fun linkGroups(): Map<String, Int> {
         val parent = HashMap<String, String>()
         fun find(x: String): String { var p = parent[x] ?: x; if (p != x) { p = find(p); parent[x] = p }; return p }
-        val all = (links + liveLinks).toSortedSet()
+        val all = (heardLinks() + liveLinks).toSortedSet()
         for (k in all) { val (a, b) = k.split('|'); parent[find(a)] = find(b) }
         val roots = HashMap<String, Int>(); val out = HashMap<String, Int>()
         for (k in all) for (x in k.split('|')) { val r = find(x); if (r !in roots) roots[r] = roots.size + 1; out[x] = roots[r]!! }
         return out
     }
+    /** A channel with transmissions heard on it (this session or a restored one). */
+    private fun heard(key: String): Boolean = (chans[key]?.txs ?: 0) > 0
+    /**
+     * The learned links whose two channels both have transmissions. A link is the same voice on two channels, so one
+     * with a channel never heard is no link: an older save could keep one made on a carrier with no voice.
+     */
+    private fun heardLinks(): List<String> = links.filter { k -> val (a, b) = k.split('|'); heard(a) && heard(b) }
     /** Two tiles are a learned link (the same network). */
     fun linked(a: String, b: String): Boolean {
         if (a == b || links.isEmpty()) return false
         val parent = HashMap<String, String>()
         fun find(x: String): String { var p = parent[x] ?: x; if (p != x) { p = find(p); parent[x] = p }; return p }
-        for (k in links) { val (x, y) = k.split('|'); parent[find(x)] = find(y) }
+        for (k in heardLinks()) { val (x, y) = k.split('|'); parent[find(x)] = find(y) }
         return find(a) == find(b)
     }
 
@@ -529,7 +544,7 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
     fun save(): HpSaved {
         val cs = chans.values.filter { it.txs > 0 }.sortedByDescending { it.lastMs }.take(200)
             .map { HpSavedChan(it.hz, it.callsign, it.tone, it.dcs, it.talkMs, it.txs, it.lastMs, it.firstMs) }
-        return HpSaved(cs, pairs.map { (k, v) -> k.toLong() to v }, links.map { k -> val (a, b) = k.split('|'); a.toLong() to b.toLong() }, heat.copy())
+        return HpSaved(cs, pairs.map { (k, v) -> k.toLong() to v }, heardLinks().map { k -> val (a, b) = k.split('|'); a.toLong() to b.toLong() }, heat.copy())
     }
 
     fun restore(s: HpSaved?) {
@@ -543,7 +558,8 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
             if (c.firstMs == 0.0) c.firstMs = x.firstMs
         }
         for ((o, i) in s.pairs) { pairs[chanKey(o)] = i; pairEv["${chanKey(o)}|${chanKey(i)}"] = Ev(PAIR_HITS, 0) }
-        for ((a, b) in s.links) { val k = listOf(chanKey(a), chanKey(b)).sorted().joinToString("|"); links.add(k); linkEv[k] = LINK_HITS }
+        // a link comes back only between channels that come back with transmissions (see [heardLinks])
+        for ((a, b) in s.links) { val k = listOf(chanKey(a), chanKey(b)).sorted().joinToString("|"); if (!heard(chanKey(a)) || !heard(chanKey(b))) continue; links.add(k); linkEv[k] = LINK_HITS }
         val h = s.heat
         if (h != null && h.cover.size == HEAT_SLOTS) heat = HpHeat(h.bands.filter { it.slots.size == HEAT_SLOTS }.toMutableList(), h.cover.copyOf())
     }

@@ -8,6 +8,8 @@ import com.rocketgod.mayhem.core.cb.CbPrefs
 import com.rocketgod.mayhem.core.hamplus.HpParams
 import com.rocketgod.mayhem.core.hamplus.HpPrefs
 import com.rocketgod.mayhem.core.hamplus.HpSaved
+import com.rocketgod.mayhem.core.hamplus.hpPrefsRestored
+import com.rocketgod.mayhem.core.hamplus.hpPrefsSaved
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,7 +59,7 @@ object Cb {
         ctx = c.applicationContext
         knownFile = File(c.filesDir, "cb_known1.json")
         val p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        runCatching { val v = JSONObject(p.getString(K_PREFS, null) ?: ""); _prefs.value = HpPrefs(v.optString("hold"), strs(v.optJSONArray("mute")), strs(v.optJSONArray("prio"))) }
+        runCatching { val v = JSONObject(p.getString(K_PREFS, null) ?: ""); _prefs.value = hpPrefsRestored(strs(v.optJSONArray("mute")), strs(v.optJSONArray("prio"))) }
         runCatching { val v = JSONObject(p.getString(K_LABELS, null) ?: ""); _labels.value = v.keys().asSequence().associateWith { v.optString(it) } }
         runCatching {
             val v = JSONObject(p.getString(K_AUDIO, null) ?: "")
@@ -88,7 +90,7 @@ object Cb {
             else -> p.copy(prio = if (key in p.prio) p.prio - key else p.prio + key)
         }
         _prefs.value = next
-        put(K_PREFS, JSONObject().put("hold", next.hold).put("mute", JSONArray(next.mute)).put("prio", JSONArray(next.prio)).toString())
+        hpPrefsSaved(next).let { sv -> put(K_PREFS, JSONObject().put("mute", JSONArray(sv.mute)).put("prio", JSONArray(sv.prio)).toString()) }
         pushPrefs()
     }
     /** A tap on a channel: follow it (only it is heard), or back to ALL with "" or a second tap. */
