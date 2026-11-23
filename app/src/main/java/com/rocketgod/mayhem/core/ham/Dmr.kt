@@ -67,6 +67,8 @@ private val SYNCS = listOf(
     Sync("NXDN", "", "inv", inv(fromSigns("313133113131113133")), 20, 0.95f),
 )
 private val DMR_SYNCS = SYNCS.filter { it.proto == "DMR" }
+/** The sign patterns of one protocol's sync words ("DMR", "P25", "NXDN"), for HAM+'s mode detector. */
+internal fun hamSyncSigns(proto: String): List<IntArray> = SYNCS.filter { it.proto == proto }.map { it.s }
 
 // ------------------------------------------------------------------------------------------- block codes
 /** Hamming single-error correction; [eq] lists, per parity bit, the data bits it covers. 0 ok, 1 corrected, −1 not. */
