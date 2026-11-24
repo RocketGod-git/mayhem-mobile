@@ -21,6 +21,8 @@ export const BM_DEVICES_URL = 'https://api.brandmeister.network/v2/device';
 export const RADIOID_USERS_URL = 'https://radioid.net/static/user.csv';
 export const RADIOID_API_URL = (id: number) => `https://radioid.net/api/dmr/user/?id=${id}`;
 export const RADIOID_PROXY_URL = (id: number) => `https://us-central1-wardrive-go-ff393.cloudfunctions.net/radioidLookup?id=${id}`;
+/** NXDN IDs through the same pass-through (radioid.net's NXDN list). */
+export const RADIOID_NXDN_PROXY_URL = (id: number) => `https://us-central1-wardrive-go-ff393.cloudfunctions.net/radioidLookup?id=${id}&kind=nxdn`;
 /** radioid.net's NXDN ID list (the same columns), for NXDN unit IDs. */
 export const RADIOID_NXDN_URL = 'https://radioid.net/static/nxdn.csv';
 export const CALLOOK_URL = (call: string) => `https://callook.info/${encodeURIComponent(call)}/json`;
@@ -86,6 +88,22 @@ export async function lookupWantedIds(res: HamIdResolver, max = 2, radioIdUrl = 
       const u = parseRadioIdApi(t);
       keep(key, u ? t : '');
       if (u) { res.addUser(u); n++; } else res.wantedIds.delete(id);
+    } catch { /* blocked or offline: try again later */ }
+  }
+  return n;
+}
+
+/** Looks up to [max] of the NXDN IDs the resolver has queued, the same way (cached 30 days, a miss a day). */
+export async function lookupWantedNxdn(res: HamIdResolver, max = 2, url = RADIOID_NXDN_PROXY_URL): Promise<number> {
+  let n = 0;
+  for (const id of [...res.wantedNxdn].slice(0, max)) {
+    const key = `hamid.nxdn.${id}`, s = store(key);
+    if (s && Date.now() - s.at < (s.text ? MONTH : DAY)) { const u = s.text ? parseRadioIdApi(s.text) : null; if (u) res.addNxdnUser(u); else res.wantedNxdn.delete(id); continue; }
+    try {
+      const t = await getText(url(id));
+      const u = parseRadioIdApi(t);
+      keep(key, u ? t : '');
+      if (u) { res.addNxdnUser(u); n++; } else res.wantedNxdn.delete(id);
     } catch { /* blocked or offline: try again later */ }
   }
   return n;

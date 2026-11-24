@@ -152,7 +152,8 @@ export class ModeDetector {
       const P = PERIOD[m];
       let on = 0, off = 0;
       for (let i = 1; i < a.length; i++) { if (onGrid(a[i] - a[i - 1], P)) on++; else off++; }
-      const framed = on >= 1 && on >= off && (m !== 'P25' && m !== 'M17' || eyeOkVotes(this.eyes.get(m)));
+      // (and over the whole channel its syncs are not mostly off the grid: noise and other systems match now and then)
+      const framed = on >= Math.max(1, NEED[m] - 1) && on >= off && !this.offGrid(m) && (m !== 'P25' && m !== 'M17' || eyeOkVotes(this.eyes.get(m)));
       if (framed && a.length >= NEED[m] && a.length / NEED[m] > bestN) { bestN = a.length / NEED[m]; best = m; }
     }
     const seconds = this.samples / this.fs;

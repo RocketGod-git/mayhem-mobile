@@ -3071,6 +3071,10 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-tile .hp-note { font-style: normal; color: var(--ok); font-size: 12px; }
 .hp-tile small.call { color: var(--accent); }
 .hp-tile span.hp-line { color: var(--ink); }
+.hp-tile span.hp-idl { color: var(--accent); font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hp-tile span.hp-idl.ok { color: var(--ok); }
+.fl-sech .hp-exp, .hp-tabs .hp-exp { margin-left: 8px; padding: 2px 8px; font-size: 9px; letter-spacing: 1px; vertical-align: middle; }
+.hp-tabs .hp-exp { margin-left: auto; }
 .hp-tile span.hp-air { color: var(--ok); font-weight: 800; }
 .hp-tile .hp-air .fl-vu { flex: 1; }
 .hp-tile .hp-air .fl-vu > span { min-width: 30px; height: 5px; }

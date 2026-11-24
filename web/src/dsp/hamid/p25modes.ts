@@ -56,7 +56,9 @@ export class P25Modes {
     this.gate.mark('P25:' + this.p25.id.nac, this.p25.checked, this.t48); this.gate.mark('NXDN', this.nxdn.checked, this.t48);
   }
   /** Whether [m]'s checked frames came on its frame grid (Phase 2: its checks alone). */
-  framed(m: P25ModeName): boolean { return m === 'P25P2' ? true : m === 'P25' ? this.gate.framed('P25:' + this.p25.id.nac) : this.gate.framed(m); }
+  framed(m: P25ModeName): boolean { return m === 'P25P2' ? true : m === 'P25' ? this.nac() >= 0 : this.gate.framed(m); }
+  /** The NAC whose frames came on the grid most (a stray frame that passes its code with another NAC is not it), -1 none. */
+  nac(): number { const k = this.gate.best('P25:'); return k ? Number(k.slice(4)) : -1; }
   /** Discriminator samples, radians per sample. */
   push(disc: ArrayLike<number>, n: number): void {
     this.s24.push(disc, n); this.p25p2.push(disc, n); this.samples += n;
@@ -69,7 +71,7 @@ export class P25Modes {
   snapshot(): P25ModesSnap {
     const mode = this.mode;
     const s: P25ModesSnap = { mode, p25: null, p25p2: null, nxdn: null, dpmr: null, station: '', repeater: '', position: null };
-    if (mode === 'P25') { const id = { ...this.p25.id }; s.p25 = id; if (id.src) s.station = String(id.src); }
+    if (mode === 'P25') { const id = { ...this.p25.id, nac: this.nac() }; s.p25 = id; if (id.src) s.station = String(id.src); }
     else if (mode === 'P25P2') {
       const id = { ...this.p25p2.id, slots: this.p25p2.id.slots.map(x => ({ ...x })) as P2Id['slots'] }; s.p25p2 = id;
       const live = id.slots.filter(x => x.src > 0).sort((a, b) => b.lastSym - a.lastSym)[0];

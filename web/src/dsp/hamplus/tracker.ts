@@ -8,9 +8,13 @@
  *  - linked channels: the same audio envelope on several channels at the same moment;
  *  - conversations: back-and-forth on a channel with no gap longer than [CONV_GAP_MS];
  *  - nets: one station coming back between check-ins from many others;
- *  - a 24-hour activity map per band, and per-channel activity for sparklines.
+ *  - a 24-hour activity map per band, and per-channel activity for sparklines;
+ *  - digital identity: the mode and code a channel carries and who talked on it (callsign, radio ID, talkgroup), from
+ *    each transmission's [HamIdent]. A transmission with a talker the signal names is that talker's, whatever its
+ *    carrier says.
  */
 import { planInfo, offsetText, hpBandOf, type PlanInfo } from './plan.js';
+import { identWho, isDigital, type HamIdent } from '../hamid/ident.js';
 
 export const CONV_GAP_MS = 45_000;
 /** A transmission shorter than this has too little carrier for its offset to count. */
@@ -44,15 +48,21 @@ export interface TxRec {
   env: Float32Array;
   /** Demodulated and kept in the time machine. */
   recorded: boolean;
+  /** What the identity layer read from it (a digital mode, analog signaling), or null. */
+  ident?: HamIdent | null;
 }
 /** A channel open right now, as the receiver reports it. */
-export interface LiveRec { id: number; hz: number; startMs: number; snrDb: number; levelDb: number; offsetHz: number; tone: number; dcs: number; recorded: boolean }
+export interface LiveRec { id: number; hz: number; startMs: number; snrDb: number; levelDb: number; offsetHz: number; tone: number; dcs: number; recorded: boolean; ident?: HamIdent | null }
 
 export interface Station { key: string; letter: string; offsetHz: number; n: number; m2: number; tone: number; dcs: number; callsign: string; firstMs: number; lastMs: number; txs: number; talkMs: number }
 
 interface Chan {
   hz: number; firstMs: number; lastMs: number; talkMs: number; txs: number; unrecorded: number;
   tone: number; dcs: number; callsign: string; callsignMs: number;
+  /** The digital mode last heard on it and its code (color code, NAC, RAN, DG-ID), the repeater and network a signal named. */
+  mode: string; code: number; idRepeater: string; idNetwork: string;
+  /** Talkers the signal named: who, transmissions, the last talkgroup, when last. */
+  talkers: Map<string, { who: string; txs: number; tg: number; group: boolean; lastMs: number; ident: HamIdent }>;
   stations: Station[];
   /** Airtime (ms) per minute, keyed by the minute. */
   minutes: Map<number, number>;
@@ -83,6 +93,8 @@ export interface HpTxRow {
   mode?: string;
   /** The same transmission heard on a linked repeater: the id of the row its conversation shows instead, else 0. */
   echo?: number;
+  /** What the identity layer read from it, or null. */
+  ident: HamIdent | null;
 }
 export interface HpTile {
   key: string; hz: number; label: string; use: string; kind: string; offset: string;
@@ -94,12 +106,20 @@ export interface HpTile {
   /** The linked repeater this one carries the same audio as (the followed one, else the one on the air, else the latest heard), or 0. */
   linkWith: number;
   followed: boolean; muted: boolean; prio: boolean;
+  /** The digital mode it carries ('' analog or not known) and its code (-1 none); the repeater and network a signal named. */
+  mode: string; code: number; idRepeater: string; idNetwork: string;
+  /** The talkers its signal named, the latest first: who, how many transmissions, the last talkgroup, its color. */
+  talkers: { key: string; who: string; txs: number; tg: number; group: boolean; color: number; lastMs: number; ident: HamIdent }[];
+  /** Who is talking on it now, as the signal names them ('' when no one is named). */
+  liveIdent: HamIdent | null;
 }
 export interface HpConv { id: number; key: string; hz: number; startMs: number; endMs: number; live: boolean; txs: number[]; stations: string[]; talkMs: number; net: boolean }
 export interface HpHeat { bands: { id: string; slots: number[] }[]; cover: number[] }
-export interface HpSaved { chans: { hz: number; callsign: string; tone: number; dcs: number; talkMs: number; txs: number; lastMs: number; firstMs: number }[]; pairs: [number, number][]; links: [number, number][]; heat: HpHeat }
+export interface HpSaved { chans: { hz: number; callsign: string; tone: number; dcs: number; talkMs: number; txs: number; lastMs: number; firstMs: number; mode?: string; code?: number }[]; pairs: [number, number][]; links: [number, number][]; heat: HpHeat }
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+/** A named talker's color (an index into the station colors), the same for the same name everywhere. */
+export function identColor(who: string): number { let h = 0; for (let i = 0; i < who.length; i++) h = (h * 31 + who.charCodeAt(i)) >>> 0; return h % 10; }
 const looksLikeCall = (s: string) => /^[A-Z]{1,2}\d[A-Z]{1,4}$|^[A-Z]{1,4}\d{1,4}[A-Z]{0,4}$/.test(s) && s.length >= 4 && /\d/.test(s) && /[A-Z]/.test(s);
 /** The callsign in a CW ID ('DE W1AW/R', 'W1AW RPT'), or ''. */
 export function cwCallsign(text: string): string {
@@ -159,7 +179,7 @@ export class HamTracker {
   private chan(hz: number): Chan {
     const k = chanKey(hz);
     let c = this.chans.get(k);
-    if (!c) { c = { hz, firstMs: 0, lastMs: 0, talkMs: 0, txs: 0, unrecorded: 0, tone: 0, dcs: 0, callsign: '', callsignMs: 0, stations: [], minutes: new Map() }; this.chans.set(k, c); }
+    if (!c) { c = { hz, firstMs: 0, lastMs: 0, talkMs: 0, txs: 0, unrecorded: 0, tone: 0, dcs: 0, callsign: '', callsignMs: 0, mode: '', code: -1, idRepeater: '', idNetwork: '', talkers: new Map(), stations: [], minutes: new Map() }; this.chans.set(k, c); }
     return c;
   }
   /** The output a channel is the heard input of, or 0. */
@@ -220,6 +240,7 @@ export class HamTracker {
       if (!b) { b = { id: row, slots: new Array(HEAT_SLOTS).fill(0) }; this.heat.bands.push(b); }
       b.slots[localSlot(t.startMs)] += dur / 1000;
     }
+    if (t.ident) this.noteIdent(this.chan(this.tileHz(t.hz)), t.ident, t.endMs, true);
     const call = cwCallsign(t.cw);
     // every transmission is clustered; on a repeater output the clusters are the repeater's own carrier and go unused
     const s = this.assign(c, t, true);
@@ -228,10 +249,23 @@ export class HamTracker {
     this.judge(this.now());
   }
 
+  /** A channel's digital mode, code, the repeater and network its signal names, and the talker, from an identity. */
+  private noteIdent(c: Chan, id: HamIdent, atMs: number, count: boolean): void {
+    if (isDigital(id.mode)) { c.mode = id.mode; if (id.code >= 0) c.code = id.code; }
+    if (id.repeater) c.idRepeater = id.repeater;
+    if (id.network) c.idNetwork = id.network;
+    const who = identWho(id);
+    if (!who || !count) return;
+    const k = `${id.mode}:${who}`, t = c.talkers.get(k);
+    if (t) { t.txs++; t.lastMs = Math.max(t.lastMs, atMs); t.ident = id; if (id.tg) { t.tg = id.tg; t.group = id.group; } }
+    else c.talkers.set(k, { who, txs: 1, tg: id.tg, group: id.group, lastMs: atMs, ident: id });
+  }
+
   /** The channels open now. */
   setLive(live: LiveRec[]): void {
     this.live = live;
     const now = this.now();
+    for (const l of live) if (l.ident) this.noteIdent(this.chan(this.tileHz(l.hz)), l.ident, now, false);
     // listening time per slot of the day, so a quiet hour and an hour not heard look different
     if (this.lastCover && now - this.lastCover < 5_000) this.heat.cover[localSlot(now)] += (now - this.lastCover) / 1000;
     this.lastCover = now;
@@ -321,13 +355,16 @@ export class HamTracker {
   /** Rows for the log and the conversations: finished transmissions and the ones on the air, newest first. */
   rows(now: number, max = 400): HpTxRow[] {
     const out: HpTxRow[] = [];
-    const add = (t: { id: number; hz: number; startMs: number; endMs: number; tone: number; dcs: number; offsetHz: number; peakDb: number; recorded: boolean; cw: string }, live: boolean) => {
+    const add = (t: { id: number; hz: number; startMs: number; endMs: number; tone: number; dcs: number; offsetHz: number; peakDb: number; recorded: boolean; cw: string; ident?: HamIdent | null }, live: boolean) => {
       let st: Station | null = null, direct = false;
       if (live && !this.repeaterLike(t.hz)) { const c = this.chans.get(chanKey(t.hz)); st = c ? this.assign(c, { ...t, offsetSd: 30, endMs: now }, false) : null; }
       else ({ st, direct } = this.stationOf(t));
-      const tile = this.tileHz(t.hz);
-      out.push({ id: t.id, hz: tile, heardHz: t.hz, startMs: t.startMs, endMs: live ? 0 : t.endMs, live, tone: t.tone, dcs: t.dcs, offsetHz: t.offsetHz, peakDb: t.peakDb,
-        station: st?.key ?? '', stationLabel: this.stationLabel(st), color: st ? LETTERS.indexOf(st.letter) : -1, callsign: st?.callsign ?? '', direct, conv: 0, recorded: t.recorded, cw: t.cw });
+      const tile = this.tileHz(t.hz), ident = t.ident ?? null, who = ident ? identWho(ident) : '';
+      const row: HpTxRow = { id: t.id, hz: tile, heardHz: t.hz, startMs: t.startMs, endMs: live ? 0 : t.endMs, live, tone: t.tone, dcs: t.dcs, offsetHz: t.offsetHz, peakDb: t.peakDb,
+        station: st?.key ?? '', stationLabel: this.stationLabel(st), color: st ? LETTERS.indexOf(st.letter) : -1, callsign: st?.callsign ?? '', direct, conv: 0, recorded: t.recorded, cw: t.cw, ident };
+      // a talker the signal names (a digital callsign or radio ID, an MDC-1200 or FleetSync unit) is the station
+      if (who) { const key = `${chanKey(tile)}/@${ident!.mode}:${who}`; row.station = key; row.stationLabel = this.labels[key] || who; row.callsign = ident!.callsign; row.color = identColor(who); }
+      out.push(row);
     };
     for (const l of this.live) add({ ...l, endMs: 0, peakDb: l.snrDb, cw: '' }, true);
     for (let i = this.txs.length - 1; i >= 0 && out.length < max; i--) add(this.txs[i], false);
@@ -393,6 +430,9 @@ export class HamTracker {
         net: net ? { control: this.stationLabel(st) || net.control, checkins: net.checkins } : null, link: groups.get(k) ?? 0, linkWith: 0,
         unrecorded: c.unrecorded + (ci?.unrecorded ?? 0) + lv.filter(l => !l.recorded).length,
         followed: this.prefs.hold === k, muted: this.prefs.mute.includes(k), prio: this.prefs.prio.includes(k),
+        mode: c.mode, code: c.code, idRepeater: c.idRepeater, idNetwork: c.idNetwork,
+        talkers: [...c.talkers.entries()].sort((a, b) => b[1].lastMs - a[1].lastMs).slice(0, 12).map(([key, x]) => ({ key: `${k}/@${key}`, who: this.labels[`${k}/@${key}`] || x.who, txs: x.txs, tg: x.tg, group: x.group, color: identColor(x.who), lastMs: x.lastMs, ident: x.ident })),
+        liveIdent: lo?.ident ?? lv.find(l => l.ident)?.ident ?? null,
       });
     }
     // a linked repeater names the one it carries the same audio as: the followed one, else the one on the air, else the latest heard
@@ -409,12 +449,12 @@ export class HamTracker {
   /** What to keep between sessions. */
   save(): HpSaved {
     const chans = [...this.chans.values()].filter(c => c.txs > 0).sort((a, b) => b.lastMs - a.lastMs).slice(0, 200)
-      .map(c => ({ hz: c.hz, callsign: c.callsign, tone: c.tone, dcs: c.dcs, talkMs: c.talkMs, txs: c.txs, lastMs: c.lastMs, firstMs: c.firstMs }));
+      .map(c => ({ hz: c.hz, callsign: c.callsign, tone: c.tone, dcs: c.dcs, talkMs: c.talkMs, txs: c.txs, lastMs: c.lastMs, firstMs: c.firstMs, ...(c.mode ? { mode: c.mode, code: c.code } : {}) }));
     return { chans, pairs: [...this.pairs].map(([k, v]) => [Number(k), v]), links: this.heardLinks().map(k => k.split('|').map(Number) as [number, number]), heat: this.heat };
   }
   restore(s: HpSaved | null): void {
     if (!s) return;
-    for (const x of s.chans ?? []) { const c = this.chan(x.hz); c.callsign ||= x.callsign; c.tone ||= x.tone; c.dcs ||= x.dcs; c.talkMs += x.talkMs; c.txs += x.txs; c.lastMs = Math.max(c.lastMs, x.lastMs); c.firstMs ||= x.firstMs; }
+    for (const x of s.chans ?? []) { const c = this.chan(x.hz); c.callsign ||= x.callsign; c.tone ||= x.tone; c.dcs ||= x.dcs; c.talkMs += x.talkMs; c.txs += x.txs; c.lastMs = Math.max(c.lastMs, x.lastMs); c.firstMs ||= x.firstMs; if (x.mode && !c.mode) { c.mode = x.mode; c.code = x.code ?? -1; } }
     for (const [o, i] of s.pairs ?? []) { this.pairs.set(chanKey(o), i); this.pairEv.set(`${chanKey(o)}|${chanKey(i)}`, { hits: PAIR_HITS, misses: 0 }); }
     // a link comes back only between channels that come back with transmissions (see [heardLinks])
     for (const [a, b] of s.links ?? []) { const k = [chanKey(a), chanKey(b)].sort().join('|'); if (!this.heard(chanKey(a)) || !this.heard(chanKey(b))) continue; this.links.add(k); this.linkEv.set(k, LINK_HITS); }

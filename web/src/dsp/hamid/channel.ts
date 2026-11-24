@@ -25,6 +25,8 @@ import { FrameGate, eyeOk } from './framing.js';
 
 export interface HamIdSnap {
   mode: HamMode;
+  /** The mode came from a decoder's checks (frames that passed their codes, on their grid), not the sync count alone. */
+  verified: boolean;
   hits: Record<string, number>;
   /** DMR: the color code and both slots (a slot that has carried nothing has src 0). */
   dmr: { cc: number; slots: DmrSlotId[] } | null;
@@ -141,7 +143,7 @@ export class HamIdChannel {
     const more = this.moreMode() ? this.p25.snapshot() : null;
     if (more && !claimed) mode = more.mode as HamMode;
     const dd = this.dd && this.dd.id.packets > 0 ? { ...this.dd.id, frames: [...this.dd.id.frames] } : null;
-    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, internet: null, dd, p25: null, p25p2: null, nxdn: null, dpmr: null, m17: null,
+    const snap: HamIdSnap = { mode, verified: claimed || !!more, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, internet: null, dd, p25: null, p25p2: null, nxdn: null, dpmr: null, m17: null,
       analog: this.analog.snapshot() };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));

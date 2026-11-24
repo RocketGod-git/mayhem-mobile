@@ -36,7 +36,9 @@ import { hpWindows } from './dsp/hamplus/plan.js';
 import { HpScan } from './dsp/hamplus/scan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import { hpPrefsRestored, hpPrefsSaved, type HpTxRow } from './dsp/hamplus/tracker.js';
-import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, hpCountText, HP_SPAN_MS } from './hamplus-ui.js';
+import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, hpCountText, hpExportCsv, HP_SPAN_MS } from './hamplus-ui.js';
+import { HamIdResolver } from './dsp/hamid/resolve.js';
+import { loadTalkgroups, loadBrandmeisterRepeaters, lookupWanted, lookupWantedIds, lookupWantedNxdn } from './hamid-net.js';
 import type { CbSnap } from './dsp/cb/engine.js';
 import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
 import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml, cbListenHtml, cbTilesHtml, cbTitle } from './cb-ui.js';
@@ -4763,6 +4765,27 @@ const hpUi = {
 };
 /** A short line in the live bar for a few seconds: what a tap on the timeline could not replay. */
 function hpNote(text: string): void { hpUi.note = text; hpUi.noteUntil = Date.now() + 3_500; refreshHamPlus(true); }
+/**
+ * Names for the digital IDs heard: Brandmeister's talkgroups (weekly) at once, its DMR repeater list the first time a
+ * DMR channel is heard, and each radio ID or callsign as it comes up, two of each every few seconds (radioid.net
+ * through the app's pass-through, callook.info for US callsigns), each kept 30 days.
+ */
+const hpRes = new HamIdResolver();
+let hpResWired = false, hpBmRepeaters = false, hpLookAt = 0;
+async function hpLookups(now: number): Promise<void> {
+  if (!hpResWired) { hpResWired = true; void loadTalkgroups(hpRes).then(n => { if (n) refreshHamPlus(true); }); }
+  if (!hpBmRepeaters && hpUi.snap?.tiles.some(t => t.mode === 'DMR')) { hpBmRepeaters = true; void loadBrandmeisterRepeaters(hpRes).then(n => { if (n) refreshHamPlus(true); }); }
+  if (now - hpLookAt < 4_000 || !(hpRes.wantedIds.size || hpRes.wanted.size || hpRes.wantedNxdn.size)) return;
+  hpLookAt = now;
+  const n = (await lookupWantedIds(hpRes)) + (await lookupWantedNxdn(hpRes)) + (await lookupWanted(hpRes));
+  if (n) refreshHamPlus(true);
+}
+/** The log as a CSV file. */
+function hpExport(): void {
+  const s = hpUi.snap; if (!s || !s.rows.some(r => !r.live)) { hpNote('nothing logged to export yet'); return; }
+  const d = new Date(), stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+  download(`repeaters-${stamp}.csv`, hpExportCsv(s, hpRes), 'text/csv');
+}
 (() => {
   try {
     const v = JSON.parse(localStorage.getItem(HP_KEY) ?? 'null');
@@ -4839,7 +4862,7 @@ function hpRename(key: string, cur: string): void {
 }
 function hpReplay(ids: number[], label: string, kind: string): void { void ensureAudio(); hpSend({ cmd: 'replay', ids, label, kind }); }
 const HP_WIDE = window.matchMedia('(min-width: 1000px)');
-const HP_ABOUT = 'Every FM conversation on the ham bands at once. Every channel that keys up in the span is demodulated, recorded and fingerprinted, even while you listen to one. Talkers are told apart by their own radio\'s carrier frequency error and tone, a repeater\'s input heard at the band plan offset joins its tile and names the talkers on the output, channels carrying the same audio are marked linked and heard once, and a station coming back between many check-ins is marked net control. The time machine keeps every transmission, so any of them, any conversation, or the whole band from any moment replays.';
+const HP_ABOUT = 'Every FM conversation on the ham bands at once. Every channel that keys up in the span is demodulated, recorded and fingerprinted, even while you listen to one. Talkers are told apart by their own radio\'s carrier frequency error and tone, a repeater\'s input heard at the band plan offset joins its tile and names the talkers on the output, channels carrying the same audio are marked linked and heard once, and a station coming back between many check-ins is marked net control. The time machine keeps every transmission, so any of them, any conversation, or the whole band from any moment replays. Digital channels are named by their own checks, DMR, D-STAR, Fusion, P25, NXDN, dPMR and M17, with who is talking, the talkgroup, the color code or NAC and the repeater and network the signal gives, names from radioid.net, Brandmeister and callook.info, and their voice through the app\'s own vocoders. Analog selcall, MDC-1200, FleetSync, DTMF and courtesy tones are read too. The log exports as CSV.';
 function renderHamPlus(view: HTMLElement): void {
   const wide = HP_WIDE.matches, hack = !radio || radio.kind !== 'rtlsdr';
   view.classList.toggle('hpwide', wide);
@@ -4855,12 +4878,12 @@ function renderHamPlus(view: HTMLElement): void {
       <div id="hp-head" class="hp-head"></div>
       <div id="hp-listen" class="ctlrow fl-mode hp-listen"></div>
       <div class="ctlrow hp-audio"><button class="chip" id="hp-aud"></button><span class="rl">VOLUME</span><input id="hp-vol" type="range" min="0" max="150" value="${Math.round(hpUi.gain * 100)}" aria-label="volume"><span id="hp-volv" class="hp-volv"></span><button id="hp-clear" class="ib" title="forget what was heard" aria-label="clear"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button></div>
-      ${wide ? `<div class="hp-lower"><div id="hp-tiles" class="hp-tiles"></div><div class="hp-bottom"><div class="ctlrow hp-tabs">${segHtml(tabs.map(([v, l]) => `<button data-hpview="${v}">${l}</button>`))}</div><div id="hp-stage" class="hp-stage"></div></div><div id="hp-card" class="hp-cardbox over" hidden></div></div>`
+      ${wide ? `<div class="hp-lower"><div id="hp-tiles" class="hp-tiles"></div><div class="hp-bottom"><div class="ctlrow hp-tabs">${segHtml(tabs.map(([v, l]) => `<button data-hpview="${v}">${l}</button>`))}<button class="chip hp-exp" data-hpexport="1">EXPORT</button></div><div id="hp-stage" class="hp-stage"></div></div><div id="hp-card" class="hp-cardbox over" hidden></div></div>`
       : `<div id="hp-card" class="hp-cardbox" hidden></div><div class="fl-sech" data-hpsec="ch">CHANNELS</div><div id="hp-tiles" class="hp-tiles"></div>
       <div class="fl-sech" data-hpsec="tl">TIMELINE · TAP A TRANSMISSION TO HEAR IT, ANYWHERE ELSE TO REPLAY THE BAND FROM THERE</div><div class="hp-tlbox"><canvas id="hp-tl" class="hp-tl"></canvas></div>
       <div class="fl-sech" data-hpsec="talk">CONVERSATIONS</div><div id="hp-talk" class="hp-talk"></div>
       <div class="fl-sech" data-hpsec="act">ACTIVITY · 24 HOURS</div><div id="hp-act"></div>
-      <div class="fl-sech" data-hpsec="log">LOG</div><div id="hp-log" class="hp-logs"></div>`}
+      <div class="fl-sech" data-hpsec="log">LOG<button class="chip hp-exp" data-hpexport="1">EXPORT</button></div><div id="hp-log" class="hp-logs"></div>`}
       <div class="note about">${esc(HP_ABOUT)}</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
@@ -4893,6 +4916,7 @@ function renderHamPlus(view: HTMLElement): void {
     const nm = t.closest<HTMLElement>('[data-hpname]'); if (nm) { hpRename(nm.dataset.hpname!, nm.dataset.hpcur ?? ''); return; }
     const pr = t.closest<HTMLElement>('[data-hppref]'); if (pr) { const [k, ...rest] = pr.dataset.hppref!.split(':'); hpPref(k as 'mute' | 'prio', rest.join(':')); return; }
     const all = t.closest<HTMLElement>('[data-hpall]'); if (all) { hpUi.open.add(Number(all.dataset.hpall)); refreshHamPlus(true); return; }
+    if (t.closest('[data-hpexport]')) { hpExport(); return; }
     const cv = t.closest<HTMLElement>('[data-hpconv]'); if (cv) { hpReplay(cv.dataset.hpconv!.split(',').map(Number), cv.dataset.hplabel ?? '', 'conv'); return; }
     const pl = t.closest<HTMLElement>('[data-hpplay]'); if (pl) { hpReplay([Number(pl.dataset.hpplay)], pl.dataset.hplabel ?? '', 'tx'); return; }
     if (t.closest('[data-hpstop]')) { hpSend({ cmd: 'stop' }); return; }
@@ -4922,7 +4946,7 @@ function renderHamPlus(view: HTMLElement): void {
   view.onpointerdown = () => { hpUi.hold = true; };
   if (!hpUi.wired) { hpUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
   clearInterval(hpUi.timer);
-  hpUi.timer = window.setInterval(() => { if (state.app !== 'hamplus') { clearInterval(hpUi.timer); return; } hpTick(Date.now()); refreshHamPlus(); }, 500);
+  hpUi.timer = window.setInterval(() => { if (state.app !== 'hamplus') { clearInterval(hpUi.timer); return; } hpTick(Date.now()); void hpLookups(Date.now()); refreshHamPlus(); }, 500);
   cancelAnimationFrame(hpUi.anim);
   // the timeline moves smoothly between snapshots
   const frame = () => { if (state.app !== 'hamplus') return; hpPaint(); hpUi.anim = requestAnimationFrame(frame); };
@@ -4952,16 +4976,16 @@ function refreshHamPlus(force = false): void {
   const set = (id: string, html: string) => { const el = q<HTMLElement>(`#${id}`); if (el && el.innerHTML !== html) { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; } };
   set('hp-head', hpHeadHtml(s, hpScanLine(now)));
   set('hp-listen', hpListenHtml(hpUi.prefs.hold, hpUi.mode));
-  const lb = hpLiveHtml(s, now, hpUi.audioOn, hpUi.prefs.hold, now < hpUi.noteUntil ? hpUi.note : ''), live = q<HTMLElement>('#hp-live');
+  const lb = hpLiveHtml(s, now, hpUi.audioOn, hpUi.prefs.hold, now < hpUi.noteUntil ? hpUi.note : '', undefined, hpRes), live = q<HTMLElement>('#hp-live');
   if (live) { live.className = `fl-now hp-live ${lb.cls}`; live.style.setProperty('--sys', lb.col); if (live.innerHTML !== lb.html) live.innerHTML = lb.html; }
   const aud = q<HTMLButtonElement>('#hp-aud'); if (aud) { aud.textContent = hpUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; aud.classList.toggle('on', hpUi.audioOn); }
   const vv = q('#hp-volv'); if (vv) vv.textContent = `${Math.round(hpUi.gain * 100)}%`;
-  set('hp-tiles', hpTilesHtml(s, now, hpUi.prefs.hold, emptyState('hamplus', (s?.stats.steady ?? 0) > 0 ? 'No voice heard yet' : undefined)));
+  set('hp-tiles', hpTilesHtml(s, now, hpUi.prefs.hold, emptyState('hamplus', (s?.stats.steady ?? 0) > 0 ? 'No voice heard yet' : undefined), hpRes));
   { const r = q('#capr'); const t = hpCountText(s); if (r && r.textContent !== t) r.textContent = t; }
   const card = q<HTMLElement>('#hp-card');
-  if (card) { const html = s && hpUi.sel ? hpCardHtml(s, hpUi.sel, now, hpUi.prefs, hpUi.open) : ''; card.hidden = !html; if (card.innerHTML !== html) card.innerHTML = html; }
-  if (HP_WIDE.matches) set('hp-stage', hpUi.view === 'talk' ? hpConvsHtml(s, now, hpUi.open, 20) : hpUi.view === 'act' ? hpHeatHtml(s, now) : `<div class="hp-logs">${hpLogHtml(s)}</div>`);
-  else { set('hp-talk', hpConvsHtml(s, now, hpUi.open, 12)); set('hp-act', hpHeatHtml(s, now)); set('hp-log', hpLogHtml(s)); }
+  if (card) { const html = s && hpUi.sel ? hpCardHtml(s, hpUi.sel, now, hpUi.prefs, hpUi.open, hpRes) : ''; card.hidden = !html; if (card.innerHTML !== html) card.innerHTML = html; }
+  if (HP_WIDE.matches) set('hp-stage', hpUi.view === 'talk' ? hpConvsHtml(s, now, hpUi.open, 20, undefined, hpRes) : hpUi.view === 'act' ? hpHeatHtml(s, now) : `<div class="hp-logs">${hpLogHtml(s, undefined, hpRes)}</div>`);
+  else { set('hp-talk', hpConvsHtml(s, now, hpUi.open, 12, undefined, hpRes)); set('hp-act', hpHeatHtml(s, now)); set('hp-log', hpLogHtml(s, undefined, hpRes)); }
   qa<HTMLButtonElement>('.hp-jump [data-hpjump]').forEach(b => {
     const k = b.dataset.hpjump, n = k === 'ch' ? s?.tiles.length ?? 0 : k === 'tl' ? s?.rows.filter(r => r.live || now - r.startMs < HP_SPAN_MS).length ?? 0 : k === 'talk' ? s?.convs.length ?? 0 : k === 'log' ? s?.rows.length ?? 0 : 0;
     const bd = b.querySelector('b'); if (bd) bd.textContent = n > 0 ? String(n > 999 ? '999+' : n) : '';
@@ -5407,7 +5431,7 @@ function renderFleet(view: HTMLElement): void {
       ${wide ? '' : `<nav class="fl-jump">${tabs.map(v => `<button data-flview="${v}"><span>${tabName(v)}</span><b></b></button>`).join('')}</nav>`}<div class="ctlrow fl-tabs">${wide ? segHtml(tabs.map(v => `<button data-flview="${v}">${tabName(v)}</button>`)) : ''}${wide ? '' : `<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button>`}<button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
       <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-detail" class="mt-detail" hidden></div>${wide ? '' : `<div class="fl-sech" data-flsec="map">MAP</div><div class="fl-mapwrap">${mapHtml}</div>`}${wide ? '' : '<div class="fl-sech" data-flsec="tgs">TALKGROUPS</div>'}<div id="fl-tgs" class="fl-tgs"></div>${wide ? '' : '<div class="fl-sech" data-flsec="systems">SYSTEMS</div>'}<div id="fl-cards" class="fl-cards"></div>${wide ? '' : '<div class="fl-sech" data-flsec="calls">CALLS</div>'}<div id="fl-calls" class="fl-calls"></div>${wide ? '' : '<div class="fl-sech" data-flsec="grants">GRANTS</div>'}<div id="fl-grants" class="fl-grants"></div>${wide ? '' : '<div class="fl-sech" data-flsec="freqs">FREQUENCIES</div>'}<div id="fl-freqs" class="fl-freqs"></div></div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
-      <div class="note about">Trunked radio systems and their calls, receive only, for P25 Phase 1 (C4FM and CQPSK simulcast), P25 Phase 2, DMR, NXDN and TETRA. Every carrier in the span is found and the live ones decoded at once, and systems are named by what they send (WACN, system, RFSS, site, NAC; the DMR color code and network; the NXDN system and site; the TETRA network and cell; the CW ID callsign). Grants resolve to MHz through the channel tables on the air, and Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, and its voice channel is followed when it is inside the span, with P25 voice frames and terminators and DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear calls play through the app's own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call. The channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, the DMR privacy bit and header, the NXDN cipher type and the TETRA encryption flags; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, follow and priority are per talkgroup; a tap on a talkgroup tile follows it, so only it is heard, and ALL hears every talkgroup again. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. NXDN48 and NXDN96 are read on control, traffic and conventional channels. A Type-C control channel names its system and site, its grants are followed to their traffic channels, and each call's VCALL names the talkgroup or unit and says whether it is ciphered (scramble, DES or AES are encrypted and never play); conventional channels are their own systems by RAN, and Type-D repeaters by their site. NXDN carries no channel plan on the air, so channel numbers become frequencies as they are heard, from the control channel's own number and each grant matched to the voice that follows it. Clear NXDN voice plays through the same AMBE+2 vocoder as DMR, and the 9600 bps full-rate mode through the P25 one. TETRA (EN 300 392-2) is read from the cell's synchronization and broadcast bursts on, giving the network (MCC, MNC), the cell (location area, color code, main carrier) and what it offers, call set-up and transmission grants (group, unit, the carrier and timeslot of the call), releases, registrations and SDS text and status messages. TETRA speech is followed onto its timeslot and carrier and played through the app's own TETRA ACELP decoder, written from EN 300 395-2 and checked against the standard's test sequences. A TETRA call set up end-to-end encrypted is marked encrypted and never plays; a cell that encrypts its air interface (TEA) says so on its card, and its traffic is marked encrypted, not decoded. Tap anything for all it carried.</div>
+      <div class="note about">Trunked radio systems and their calls, receive only, for P25 Phase 1 (C4FM and CQPSK simulcast), P25 Phase 2, DMR, NXDN and TETRA. Every carrier in the span is found and the live ones decoded at once, and systems are named by what they send (WACN, system, RFSS, site, NAC; the DMR color code and network; the NXDN system and site; the TETRA network and cell; the CW ID callsign). Grants resolve to MHz through the channel tables on the air, and Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, and its voice channel is followed when it is inside the span, with P25 voice frames and terminators and DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear calls play through the app\'s own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call. The channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, the DMR privacy bit and header, the NXDN cipher type and the TETRA encryption flags; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, follow and priority are per talkgroup; a tap on a talkgroup tile follows it, so only it is heard, and ALL hears every talkgroup again. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. NXDN48 and NXDN96 are read on control, traffic and conventional channels. A Type-C control channel names its system and site, its grants are followed to their traffic channels, and each call's VCALL names the talkgroup or unit and says whether it is ciphered (scramble, DES or AES are encrypted and never play); conventional channels are their own systems by RAN, and Type-D repeaters by their site. NXDN carries no channel plan on the air, so channel numbers become frequencies as they are heard, from the control channel's own number and each grant matched to the voice that follows it. Clear NXDN voice plays through the same AMBE+2 vocoder as DMR, and the 9600 bps full-rate mode through the P25 one. TETRA (EN 300 392-2) is read from the cell's synchronization and broadcast bursts on, giving the network (MCC, MNC), the cell (location area, color code, main carrier) and what it offers, call set-up and transmission grants (group, unit, the carrier and timeslot of the call), releases, registrations and SDS text and status messages. TETRA speech is followed onto its timeslot and carrier and played through the app's own TETRA ACELP decoder, written from EN 300 395-2 and checked against the standard's test sequences. A TETRA call set up end-to-end encrypted is marked encrypted and never plays; a cell that encrypts its air interface (TEA) says so on its card, and its traffic is marked encrypted, not decoded. Tap anything for all it carried.</div>
     </section>`;
   if (wide) fleetWideGrid();
   scope = attach(tunableScope('scope', 80, 70));
@@ -10030,7 +10054,7 @@ const APP_TECH: Partial<Record<AppId, string>> = {
   uat: 'UAT · FIS-B · 978 MHZ', acars: 'ACARS · VHF AIRBAND', vdl2: 'VDL MODE 2 · 136.975 MHZ', trains: 'EOT · HOT · PTC 220 MHZ',
   ais: 'AIS · 161.975 / 162.025 MHZ', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
   subghz: 'OOK · FSK · 315–915 MHZ', js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
-  hamplus: 'ANALOG FM · CTCSS · DCS · 10 M TO 70 CM', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
+  hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17 · 10 M TO 70 CM', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
   ert: 'ERT · GRIDSTREAM · 802.15.4G', btle: 'BLE · ADVERTISING · 2.4 GHZ', sat: 'SGP4 · DOPPLER · APT · LRPT · AX.25',
   sondes: 'RS41 · DFM · M10 · 400–406 MHZ', atsc: 'ATSC 1.0 · 8VSB · PSIP', prowl: 'NFM · VOICE ACTIVITY HUNT',
   spectrum: 'FFT ANALYZER · ZERO SPAN', analyzer: 'OOK · FSK · BURST DEMOD', lookingglass: 'WIDEBAND FFT SWEEP',

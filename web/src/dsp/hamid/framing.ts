@@ -48,6 +48,8 @@ export class FrameGate {
   /** Pairs of checked frames heard on the grid. */
   pairs(key: string): number { return this.on.get(key) ?? 0; }
   framed(key: string): boolean { return this.pairs(key) > 0; }
+  /** Of the keys starting [prefix] (P25's NACs), the one with the most frames on the grid, or '' when none has any. */
+  best(prefix: string): string { let b = '', n = 0; for (const [k, v] of this.on) if (k.startsWith(prefix) && v > n) { n = v; b = k; } return b; }
 }
 
 /**

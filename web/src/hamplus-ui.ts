@@ -6,6 +6,8 @@ import { HP_BANDS, hpBandOf } from './dsp/hamplus/plan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import type { HpTile, HpTxRow } from './dsp/hamplus/tracker.js';
 import { HEAT_SLOTS, cwCallsign } from './dsp/hamplus/tracker.js';
+import { MODE_BADGE, codeText, identWho, isDigital, type HamIdent } from './dsp/hamid/ident.js';
+import type { HamIdResolver, Resolved } from './dsp/hamid/resolve.js';
 
 /** A station's color, by its letter (A is 0): the same color everywhere it shows. */
 export const HP_COLORS = ['#4C8DFF', '#FFAF00', '#3DDC84', '#FF5BD2', '#00D5FF', '#FF7A45', '#B18CFF', '#E8E14A', '#FF5B52', '#52FFB8'];
@@ -32,6 +34,55 @@ export const hpName = (t: HpTile) => t.callsign || t.label || t.kind || (hpBandO
 export interface HpNamer { chan(hz: number): string; name(t: HpTile): string; meta(r: HpTxRow): string; waiting(hold: string): string }
 export const HAM_NAMER: HpNamer = { chan: hpMhz, name: t => hpName(t), meta: r => hpTone(r.tone, r.dcs), waiting: hold => `${hpMhz(Number(hold))} MHz` };
 const pill = (text: string, cls = '') => `<em class="hp-pill ${cls}">${esc(text)}</em>`;
+
+/** What the directories say about a transmission's identity (null without a resolver or an identity). */
+export function hpResolve(res: HamIdResolver | null | undefined, id: HamIdent | null, hz: number): Resolved | null {
+  return res && id ? res.resolveIdent(id, { hz }) : null;
+}
+/** A talker as a line names them: the callsign (with the radio ID when both are known), else the alias, else the ID. */
+export function hpIdentWho(id: HamIdent, r: Resolved | null = null): string {
+  const call = r?.station?.callsign || id.callsign, rid = id.radioId;
+  if (call) return rid && String(rid) !== call ? `${call} ${rid}` : call;
+  return identWho(id);
+}
+/** Where a call goes: the talkgroup with its name, the radio called, or the destination the signal names. */
+export function hpIdentTarget(id: HamIdent, r: Resolved | null = null): string {
+  if (id.mode === 'DMR' || id.mode === 'P25' || id.mode === 'P25P2' || id.mode === 'NXDN') {
+    if (!id.tg) return '';
+    if (id.group) return `TG ${id.tg}${r?.talkgroup ? ' ' + r.talkgroup : ''}`;
+    const c = r?.called?.callsign;
+    return `TO ${c ? `${c} ${id.tg}` : id.tg}`;
+  }
+  const d = id.dest.trim();
+  return d && !/^(CQCQCQ|ALL|\*+)$/i.test(d) ? `TO ${d}` : '';
+}
+/**
+ * A transmission's identity in one line, for the bubble, the live bar and the log: the mode, who (with their name and
+ * place once a directory knows them), the talkgroup or the radio called, the slot and code, the repeater and network
+ * the signal names, encryption and an emergency, what it was doing when it carried no voice, and analog signaling.
+ */
+export function hpIdentLine(id: HamIdent, r: Resolved | null = null): string {
+  const parts: string[] = [];
+  if (isDigital(id.mode)) parts.push(MODE_BADGE[id.mode] ?? id.mode);
+  const who = hpIdentWho(id, r); if (who) parts.push(who);
+  const st = r?.station;
+  if (st?.name) parts.push([st.name, st.city, st.state].filter(Boolean).join(', '));
+  const to = hpIdentTarget(id, r); if (to) parts.push(to);
+  if (id.mode === 'DMR' && id.slot) parts.push(`TS ${id.slot}`);
+  const code = codeText(id); if (code) parts.push(code);
+  if (id.repeater) parts.push(`VIA ${id.repeater}`);
+  if (id.network) parts.push(id.network);
+  else if (r?.network) parts.push(r.network);
+  if (id.encrypted) parts.push('ENCRYPTED');
+  if (id.emergency) parts.push('EMERGENCY');
+  if (!who && id.activity === 'idle') parts.push('IDLE');
+  else if (!who && id.activity === 'data') parts.push('DATA');
+  if (id.text) parts.push(`"${id.text}"`);
+  for (const l of id.signaling) parts.push(l);
+  return parts.join(' · ');
+}
+/** The mode badge and code a tile shows ('' for analog). */
+export const hpModeText = (t: HpTile) => t.mode ? [MODE_BADGE[t.mode] ?? t.mode, t.code >= 0 ? codeText({ mode: t.mode, code: t.code } as HamIdent) : ''].filter(Boolean).join(' · ') : '';
 
 export const HP_SPAN_MS = 600_000;
 
@@ -101,7 +152,7 @@ export function hpListenHtml(hold: string, mode: 'mix' | 'newest'): string {
 }
 
 /** The live bar: a replay (with STOP), else a short note (a tap with nothing to replay), else what is heard right now, else LISTENING. Always one height. */
-export function hpLiveHtml(s: HpSnap | null, now: number, audioOn: boolean, hold: string, note = '', nm: HpNamer = HAM_NAMER): { cls: string; html: string; col: string } {
+export function hpLiveHtml(s: HpSnap | null, now: number, audioOn: boolean, hold: string, note = '', nm: HpNamer = HAM_NAMER, res: HamIdResolver | null = null): { cls: string; html: string; col: string } {
   const rp = s?.replay;
   if (note && !rp?.active) return { cls: 'on note', col: 'var(--accent2)', html: `<div class="hp-lb1"><span class="fl-np-l">REPLAY</span><b>${esc(note)}</b></div><div class="hp-lb2"><span class="hp-lbt">a transmission can be replayed as soon as it ends</span></div>` };
   if (rp?.active) {
@@ -118,7 +169,7 @@ export function hpLiveHtml(s: HpSnap | null, now: number, audioOn: boolean, hold
   }
   const t = s!.tiles.find(x => x.hz === r.hz);
   const who = [t ? nm.name(t) : '', r.stationLabel ? `${r.stationLabel} talking` : '', heard.length > 1 ? `+${heard.length - 1} more` : ''].filter(Boolean).join(' · ');
-  const meta = [nm.meta(r), r.direct ? 'HEARD DIRECT, NEARBY' : '', t?.kind === 'REPEATER' && t.offset ? `REPEATER ${t.offset}` : ''].filter(Boolean).join(' · ');
+  const meta = [r.ident ? hpIdentLine(r.ident, hpResolve(res, r.ident, r.hz)) : '', nm.meta(r), r.direct ? 'HEARD DIRECT, NEARBY' : '', t?.kind === 'REPEATER' && t.offset ? `REPEATER ${t.offset}` : ''].filter(Boolean).join(' · ');
   const lvl = Math.max(5, Math.min(100, r.peakDb * 2.5));
   return { cls: 'on', col: r.color >= 0 ? hpColor(r.color) : 'var(--ok)', html: `<div class="hp-lb1"><span class="fl-np-l"><i></i>NOW PLAYING</span><b>${esc(nm.chan(r.hz))}</b><span class="hp-lbw">${esc(who)}</span><span class="fl-np-d">${hpDur(now - r.startMs)}</span></div>`
     + `<div class="hp-lb2"><span class="hp-lbt">${esc(meta)}</span><span class="fl-vu"><span><i style="width:${lvl.toFixed(0)}%"></i></span></span></div>` };
@@ -133,17 +184,21 @@ export function sparkSvg(spark: number[], live: boolean): string {
 }
 
 /** The channel tiles: ALL first, then every channel heard (live first). A tap follows one, the i opens its card. */
-export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHtml: string): string {
+export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHtml: string, res: HamIdResolver | null = null): string {
   const tiles = s?.tiles ?? [];
   const all = `<div class="fl-tile all hp-tile ${hold ? '' : 'fol'}" role="button" data-hpfollow=""><b>ALL</b><small>EVERY CHANNEL</small><span>${hold ? 'tap to hear them all' : `hearing all ${tiles.length}`}</span></div>`;
   return `<div class="fl-tilegrid hp-grid">${all}${tiles.map(t => {
     const playing = s?.playing.includes(t.key);
-    const line = [hpTone(t.tone, t.dcs), t.kind === 'REPEATER' || t.use === 'output' ? t.offset : ''].filter(Boolean).join(' · ');
+    const line = [hpModeText(t), hpTone(t.tone, t.dcs), t.kind === 'REPEATER' || t.use === 'output' ? t.offset : ''].filter(Boolean).join(' · ');
+    // who is talking now (or talked last) as the signal names them
+    const lid = t.liveIdent ?? (t.talkers[0]?.ident ?? null), lr = lid ? hpResolve(res, lid, t.hz) : null;
+    const idLine = lid && identWho(lid) ? [hpIdentWho(lid, lr), hpIdentTarget(lid, lr)].filter(Boolean).join(' · ') : '';
     const badges = [t.net ? pill(`NET · ${t.net.control}`, 'acc') : '', t.link ? pill(t.linkWith ? `LINKED WITH ${hpMhz(t.linkWith)}` : `LINKED ${t.link}`, 'warm') : '', t.inputHz && now - t.nearMs < 600_000 ? pill('NEARBY', 'ok') : '',
       t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED`, 'bad') : ''].join('');
     return `<div class="fl-tile hp-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${hpMhz(t.hz)}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small class="${t.callsign ? 'call' : ''}">${esc(hpName(t))}</small>`
       + (line ? `<span class="hp-line">${esc(line)}</span>` : '')
+      + (idLine ? `<span class="hp-idl ${t.live && t.liveIdent ? 'ok' : ''}">${esc(idLine)}</span>` : '')
       + (t.live ? `<span class="hp-air">ON AIR ${hpDur(t.openMs)}<span class="fl-vu"><span><i style="width:${Math.max(5, Math.min(100, t.snrDb * 2.5)).toFixed(0)}%"></i></span></span></span>` : `<span>${hpHeard(now, t.lastMs)} · ${t.txs} tx · ${hpDur(t.talkMs)}</span>`)
       + sparkSvg(t.spark, t.live) + (badges ? `<div class="hp-badges">${badges}</div>` : '')
       + `<button class="fl-ti" data-hpinfo="${t.key}" title="details" aria-label="details">i</button></div>`;
@@ -151,10 +206,13 @@ export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHt
 }
 
 /** One transmission as a chat bubble: the first talker on the left, the others on the right, each in its own color. */
-function bubbleHtml(r: HpTxRow, side: number, repeater: boolean, now: number, nm: HpNamer): string {
+function bubbleHtml(r: HpTxRow, side: number, repeater: boolean, now: number, nm: HpNamer, res: HamIdResolver | null = null): string {
   const c = r.color >= 0 ? hpColor(r.color) : 'var(--ink)';
-  const who = r.stationLabel || (repeater ? 'VIA REPEATER' : 'UNKNOWN');
-  const meta = [hpClock(r.startMs), nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.direct ? 'NEARBY' : '', cwCallsign(r.cw) ? `CW ID ${cwCallsign(r.cw)}` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · ');
+  const rr = r.ident ? hpResolve(res, r.ident, r.hz) : null;
+  const named = r.ident && rr?.station?.callsign && r.stationLabel === identWho(r.ident) ? hpIdentWho(r.ident, rr) : '';
+  const who = named || r.stationLabel || (repeater ? 'VIA REPEATER' : 'UNKNOWN');
+  const idl = r.ident ? hpIdentLine(r.ident, rr).split(' · ').filter(x => x !== hpIdentWho(r.ident!, rr)).join(' · ') : '';
+  const meta = [hpClock(r.startMs), idl, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.direct ? 'NEARBY' : '', cwCallsign(r.cw) ? `CW ID ${cwCallsign(r.cw)}` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · ');
   const play = r.recorded && !r.live;
   return `<div class="hp-bub ${side > 0 ? 'r' : ''} ${r.live ? 'live' : ''} ${play ? 'tap' : ''}" style="--st:${c}" ${play ? `data-hpplay="${r.id}" data-hplabel="${esc(`${nm.chan(r.hz)} at ${hpClock(r.startMs)}`)}"` : ''}>`
     + `<div><b ${r.station ? `data-hpname="${esc(r.station)}" data-hpcur="${esc(r.stationLabel.length > 1 ? r.stationLabel : '')}"` : ''}>${esc(who)}</b><span class="${r.live ? 'ok' : ''}">${r.live ? `TALKING ${hpDur(now - r.startMs)}` : hpDur(r.endMs - r.startMs)}</span>${play ? '<i>▶</i>' : ''}</div>`
@@ -162,7 +220,7 @@ function bubbleHtml(r: HpTxRow, side: number, repeater: boolean, now: number, nm
 }
 
 /** A conversation: its channel and name, NET when it is one, replay of all of it, and the last bubbles (or all). */
-export function hpConvHtml(s: HpSnap, convId: number, now: number, all: boolean, nm: HpNamer = HAM_NAMER): string {
+export function hpConvHtml(s: HpSnap, convId: number, now: number, all: boolean, nm: HpNamer = HAM_NAMER, res: HamIdResolver | null = null): string {
   const c = s.convs.find(x => x.id === convId); if (!c) return '';
   // a transmission heard on two linked repeaters is one bubble (the echo row is the other copy)
   const rows = s.rows.filter(r => r.conv === convId && !r.echo).sort((a, b) => a.startMs - b.startMs);
@@ -173,11 +231,11 @@ export function hpConvHtml(s: HpSnap, convId: number, now: number, all: boolean,
   return `<div class="hp-conv ${c.live ? 'live' : ''}"><div class="hp-ch"><b>${esc(nm.chan(c.hz))}</b><span class="${c.live ? 'ok' : ''}">${esc([t ? nm.name(t) : '', c.live ? 'ON THE AIR' : hpHeard(now, c.endMs)].filter(Boolean).join(' · '))}</span>${c.net ? pill('NET', 'acc') : ''}`
     + (ids.length ? `<button class="chip" data-hpconv="${ids.join(',')}" data-hplabel="${esc(`${nm.chan(c.hz)} conversation from ${hpClock(c.startMs)}`)}">▶ ${hpDur(c.talkMs)}</button>` : '') + '</div>'
     + (rows.length > shown.length ? `<button class="hp-more" data-hpall="${convId}">${rows.length - shown.length} earlier · show all</button>` : '')
-    + shown.map(r => bubbleHtml(r, order.indexOf(r.station), rep, now, nm)).join('') + '</div>';
+    + shown.map(r => bubbleHtml(r, order.indexOf(r.station), rep, now, nm, res)).join('') + '</div>';
 }
-export function hpConvsHtml(s: HpSnap | null, now: number, open: Set<number>, max: number, nm: HpNamer = HAM_NAMER): string {
+export function hpConvsHtml(s: HpSnap | null, now: number, open: Set<number>, max: number, nm: HpNamer = HAM_NAMER, res: HamIdResolver | null = null): string {
   if (!s || !s.convs.length) return '<div class="fl-dim">conversations show here as a thread, a bubble per talker, each radio told apart by its own carrier</div>';
-  return s.convs.slice(0, max).map(c => hpConvHtml(s, c.id, now, open.has(c.id), nm)).join('');
+  return s.convs.slice(0, max).map(c => hpConvHtml(s, c.id, now, open.has(c.id), nm, res)).join('');
 }
 
 /** The 24 hours per band: a quarter hour a cell, brighter the more of it was on the air; never listened stays a dot. */
@@ -200,19 +258,47 @@ export function hpHeatHtml(s: HpSnap | null, now: number): string {
 }
 
 /** Every transmission, newest first. */
-export function hpLogHtml(s: HpSnap | null, nm: HpNamer = HAM_NAMER): string {
+export function hpLogHtml(s: HpSnap | null, nm: HpNamer = HAM_NAMER, res: HamIdResolver | null = null): string {
   const rows = s?.rows.slice(0, 200) ?? [];
   if (!rows.length) return '<div class="fl-dim">every transmission is logged here with its time, channel, length, tone and carrier offset</div>';
   return rows.map(r => `<div class="hp-log"><span>${hpClock(r.startMs)}</span><b>${esc(nm.chan(r.hz))}</b><span class="${r.live ? 'ok' : ''}">${r.live ? 'LIVE' : hpDur(r.endMs - r.startMs)}</span>`
-    + `<em style="color:${hpColor(r.color)}">${esc([r.stationLabel, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · '))}</em></div>`).join('');
+    + `<em style="color:${hpColor(r.color)}">${esc([r.ident ? hpIdentLine(r.ident, hpResolve(res, r.ident, r.hz)) : r.stationLabel, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · '))}</em></div>`).join('');
+}
+
+/** A value for a CSV cell: quoted when it holds a comma, a quote or a line break. */
+const csvCell = (v: string | number) => { const t = String(v); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+/**
+ * The log as CSV, oldest first, one row a transmission: when, the channel, how long, the mode, who (callsign, radio
+ * ID, alias, name and place once a directory knows them), the talkgroup or radio called and its name, the slot and
+ * code, the repeater and network, encryption, an emergency, the tone, the carrier offset, the CW ID and analog
+ * signaling.
+ */
+export function hpExportCsv(s: HpSnap | null, res: HamIdResolver | null = null): string {
+  const head = ['time', 'mhz', 'seconds', 'mode', 'callsign', 'radio_id', 'alias', 'name', 'place', 'talkgroup', 'talkgroup_name', 'called', 'slot', 'code', 'repeater', 'network', 'encrypted', 'emergency', 'tone', 'offset_hz', 'cw_id', 'signaling', 'station'];
+  const rows = [...(s?.rows ?? [])].filter(r => !r.live).sort((a, b) => a.startMs - b.startMs).map(r => {
+    const id = r.ident, rr = id ? hpResolve(res, id, r.hz) : null, st = rr?.station;
+    const digital = !!id && isDigital(id.mode);
+    return [new Date(r.startMs).toISOString(), (r.hz / 1e6).toFixed(5), ((r.endMs - r.startMs) / 1000).toFixed(1), digital ? id!.mode : 'FM',
+      st?.callsign || id?.callsign || '', id?.radioId || '', id?.alias || '', st?.name || '', [st?.city, st?.state, st?.country].filter(Boolean).join(', '),
+      id && id.group && id.tg ? id.tg : '', rr?.talkgroup || (id && !id.group ? '' : id?.dest || ''), id && !id.group ? (rr?.called?.callsign || id.tg || id.dest) : '',
+      id?.slot || '', id ? codeText(id).replace(/^\S+ /, '') : '', id?.repeater || rr?.listed || '', id?.network || rr?.network || '',
+      id?.encrypted ? 'yes' : '', id?.emergency ? 'yes' : '', hpTone(r.tone, r.dcs), Number.isFinite(r.offsetHz) ? Math.round(r.offsetHz) : '', cwCallsign(r.cw),
+      (id?.signaling ?? []).join('; '), r.stationLabel].map(csvCell).join(',');
+  });
+  return [head.join(','), ...rows].join('\n') + '\n';
 }
 
 /** A channel's card: what it is known by, follow / mute / priority, its stations (tap to name) and its last conversation. */
-export function hpCardHtml(s: HpSnap, key: string, now: number, prefs: { hold: string; mute: string[]; prio: string[] }, open: Set<number>): string {
+export function hpCardHtml(s: HpSnap, key: string, now: number, prefs: { hold: string; mute: string[]; prio: string[] }, open: Set<number>, res: HamIdResolver | null = null): string {
   const t = s.tiles.find(x => x.key === key); if (!t) return '';
   const kv: [string, string][] = [];
   if (t.label) kv.push(['BAND PLAN', t.label]);
   if (t.kind) kv.push(['KIND', t.kind]);
+  if (t.mode) kv.push(['MODE', hpModeText(t)]);
+  if (t.idRepeater) kv.push(['REPEATER', t.idRepeater]);
+  const lr = t.talkers[0] ? hpResolve(res, t.talkers[0].ident, t.hz) : null;
+  if (lr?.listed) kv.push(['LISTED AS', [lr.listed, lr.repeaterSite].filter(Boolean).join(', ')]);
+  if (t.idNetwork || lr?.network) kv.push(['NETWORK', t.idNetwork || lr!.network]);
   if (t.inputHz) kv.push(['INPUT', `${hpMhz(t.inputHz)} MHz heard, talkers there are nearby`]); else if (t.offset) kv.push(['OFFSET', `${t.offset} (band plan)`]);
   if (hpTone(t.tone, t.dcs)) kv.push(['TONE', hpTone(t.tone, t.dcs)]);
   kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpHeard(now, t.lastMs)}`]);
@@ -225,8 +311,9 @@ export function hpCardHtml(s: HpSnap, key: string, now: number, prefs: { hold: s
     + `<div class="hp-kv">${kv.map(([k, v]) => `<small>${k}</small><span>${esc(v)}</span>`).join('')}</div>`
     + `<div class="hp-acts"><button class="chip ${prefs.hold === key ? 'on' : ''}" data-hpfollow="${key}">${prefs.hold === key ? 'FOLLOWING' : 'FOLLOW'}</button><button class="chip ${prefs.mute.includes(key) ? 'on' : ''}" data-hppref="mute:${key}">${prefs.mute.includes(key) ? 'MUTED' : 'MUTE'}</button><button class="chip ${prefs.prio.includes(key) ? 'on' : ''}" data-hppref="prio:${key}">PRIORITY</button>`
     + (ids.length ? `<button class="chip" data-hpconv="${ids.join(',')}" data-hplabel="${esc(`${hpMhz(t.hz)} conversation from ${hpClock(conv!.startMs)}`)}">▶ LAST CONVERSATION</button>` : '') + '</div>'
+    + (t.talkers.length ? `<small class="hp-sth">TALKERS THE SIGNAL NAMED · TAP TO NAME</small><div class="hp-sts">${t.talkers.map(x => { const r = hpResolve(res, x.ident, t.hz), name = r?.station?.name; return `<button class="hp-st" style="--st:${hpColor(x.color)}" data-hpname="${esc(x.key)}" data-hpcur="${esc(x.who !== identWho(x.ident) ? x.who : '')}"><b>${esc(x.who === identWho(x.ident) ? hpIdentWho(x.ident, r) : x.who)}</b><span>${esc([name, hpIdentTarget(x.ident, r), `${x.txs} tx`].filter(Boolean).join(' · '))}</span></button>`; }).join('')}</div>` : '')
     + (t.stations.length ? `<small class="hp-sth">${t.kind === 'REPEATER' ? 'TALKERS HEARD ON THE INPUT · TAP TO NAME' : 'STATIONS BY THEIR CARRIER · TAP TO NAME'}</small><div class="hp-sts">${t.stations.map(st => `<button class="hp-st" style="--st:${hpColor(st.color)}" data-hpname="${esc(st.key)}" data-hpcur="${esc(st.label !== st.letter && st.label !== st.callsign ? st.label : '')}"><b>${esc(st.label)}</b><span>${st.txs} tx · ${st.offsetHz >= 0 ? '+' : ''}${st.offsetHz} Hz</span></button>`).join('')}</div>` : '')
-    + (conv ? hpConvHtml(s, conv.id, now, open.has(conv.id)) : '') + '</div>';
+    + (conv ? hpConvHtml(s, conv.id, now, open.has(conv.id), HAM_NAMER, res) : '') + '</div>';
 }
 
 /** The transmission on lane [hz] nearest [ms], when it is within [tolMs] of its bar; else none (the tap is on empty time). */

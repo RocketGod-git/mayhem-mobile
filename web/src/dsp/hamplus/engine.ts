@@ -8,6 +8,12 @@
  * transmitter's carrier frequency error, a CTCSS / DCS decoder, a Morse reader for CW IDs, the audio envelope, and its
  * audio, kept as 8 kHz mu-law in the time machine and played when the channel is listened to.
  *
+ * Each probe also runs the identity layer (hamid/channel.ts) on its discriminator: DMR, D-STAR, Fusion, P25, NXDN,
+ * dPMR and M17 named by their checks, who is talking and to which talkgroup, and analog signaling (selcall, MDC-1200,
+ * FleetSync, DTMF, courtesy tones). A channel whose digital mode is named is a transmission without an FM voice, and
+ * its digital voice, decoded by the app's vocoders, is what it records and plays. While the receiver clips (a very
+ * strong signal nearby) no digital mode is named from what it hears.
+ *
  * Probes are capped by what the processor sustains: the time they take is measured and the cap set to fill
  * [BUDGET_MS] a second. A transmission without a probe is marked not recorded; none is dropped silently.
  */
@@ -21,6 +27,9 @@ import { HP_RASTER, hpBandOf } from './plan.js';
 import { ClipStore, ClipWriter, CLIP_RATE, planReplay, replayFromPlan, ReplayMixer, type Clip } from './clips.js';
 import { FmSpeech, SPEECH_LAPSE_MS, type SpeechCount } from './speech.js';
 import { HamTracker, ENV_MS, HEAT_SLOTS, LINK_CORR, LINK_EDGE_MS, chanKey, envCorr, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
+import { HamIdChannel, type HamIdSnap } from '../hamid/channel.js';
+import { identOf, isDigital, type HamIdent } from '../hamid/ident.js';
+import { iqClipping } from '../hamid/framing.js';
 
 /** Envelope a pair of open channels needs before they are compared for the same audio (1.5 s), the most compared (the last 5 s), and how far either way the lag is searched (300 ms). */
 export const LINK_LIVE_FRAMES = 30, LINK_LIVE_MAX = 100, LINK_LIVE_LAG = 6;
@@ -45,6 +54,12 @@ export const TALK_LATE_MS = 2_000, TALK_PRE_MS = 300;
 /** About the length of a speech block (the start of a block is this long before its end). */
 const SPEECH_BLOCK_MS = 85;
 const MEASURE_MS = 100, SNAP_MS = 500, OFF_WIN_MS = 100;
+/** Digital voice levels (the vocoders' outputs differ; these bring each near an FM voice) and the jitter buffer (200 ms at 8 kHz). */
+const VOICE_GAIN = 1.5, VOICE_GAIN_P25 = 4.5, VOICE_GAIN_M17 = 1.2, VOICE_PRIME = 1_600;
+/** After the receiver clips, no digital mode is named from what it hears for this long (AGC and spurs settle). */
+export const CLIP_HOLD_MS = 250;
+/** The identity layer's CW ID reader (bench: 15 of 16) is taken over the probe's own once it is this sure of a callsign. */
+const CW_SURE = 0.85;
 
 export interface HpParams { thresholdDb: number; mode: 'mix' | 'newest'; volume: number }
 
@@ -60,6 +75,16 @@ export interface WatchProbe {
   end(): void;
   /** Whether the audio carries a voice, block by block (speech.ts). */
   readonly speech: SpeechCount;
+  /** Set by the watcher before each push: the receiver is clipping. */
+  clipped?: boolean;
+  /** The identity read so far (HAM+), null when it names nothing. */
+  ident?(): HamIdent | null;
+  /** A digital mode is named: the channel is a transmission, its voice is the vocoder's. */
+  digital?(): boolean;
+  /** When the digital decoders last passed a check (ms from the probe's start), -1 never. */
+  lastDigitalMs?: number;
+  /** A CW ID callsign the identity layer's own Morse reader is sure of, '' none (taken over the probe's reader when there is one). */
+  cwId?(): string;
 }
 
 /**
@@ -101,6 +126,15 @@ class Probe implements WatchProbe {
   tones = new Map<number, number>(); dcsCodes = new Map<number, number>(); subN = 0;
   out48 = 0;
   readonly speech: FmSpeech;
+  clipped = false;
+  /** The identity layer on this channel, its last snapshot, and when its checks last moved. */
+  readonly idc: HamIdChannel;
+  private snap: HamIdSnap | null = null; private snapAt = 0; private seen = 0; private checks = 0;
+  lastDigitalMs = -1;
+  /** Decoded digital voice at 8 kHz waiting to be recorded and played (a ring), the stream being played, and when it last had a frame. */
+  private readonly vq = new Float32Array(1 << 15); private vr = 0; private vw = 0; private primed = false;
+  private stream = ''; private streamAt = -1e9;
+  private readonly v48: Resampler; private v8 = new Float32Array(0);
   constructor(rate: number, readonly offsetHz: number) {
     this.ddc.reset(rate); this.ddc.offsetHz = offsetHz; this.fs = this.ddc.outRate;
     this.sub = new SubAudioDecoder(this.fs); this.cw = new CwReader(this.fs); this.cw.onText = t => { this.cw0 = (this.cw0 ? this.cw0 + ' ' : '') + t; };
@@ -108,6 +142,54 @@ class Probe implements WatchProbe {
     this.to8 = new Resampler(CLIP_RATE / this.fs); this.to48 = new Resampler(48_000 / this.fs);
     this.de = 1 - Math.exp(-1 / (this.fs * 530e-6));
     this.speech = new FmSpeech(this.fs, hz => this.ddc.powerGain(hz));
+    this.idc = new HamIdChannel(this.fs); this.v48 = new Resampler(48_000 / CLIP_RATE);
+    // the vocoders' frames: DMR, D-STAR and Fusion as frames per stream, P25, NXDN and dPMR per slot, M17's Codec 2
+    this.idc.onPcm = f => { if (f.pcm) this.voice(`${f.stream}`, f.pcm, VOICE_GAIN); };
+    this.idc.onAudio = (m, slot, pcm) => this.voice(`${m}${slot}`, pcm, VOICE_GAIN_P25);
+    this.idc.onM17Pcm = p => { const f = new Float32Array(p.length); for (let i = 0; i < p.length; i++) f[i] = p[i] / 32768; this.voice('m17', f, VOICE_GAIN_M17); };
+  }
+  /** The stream a mode's voice comes in on: only the named mode's frames play (a stray sync of another mode is no voice). */
+  private static streamOf(mode: string, stream: string): boolean {
+    switch (mode) {
+      case 'DMR': return stream.startsWith('dmr');
+      case 'D-STAR': return stream === 'dstar';
+      case 'YSF': return stream === 'ysf';
+      case 'M17': return stream === 'm17';
+      case 'P25': case 'P25P2': case 'NXDN': case 'dPMR': return stream.startsWith(mode);
+      default: return false;
+    }
+  }
+  private voice(stream: string, pcm: Float32Array, gain: number): void {
+    const mode = this.snap?.verified ? this.snap.mode : '';
+    if (!Probe.streamOf(mode, stream)) return;
+    // one talker at a time: the stream playing keeps going until it has been quiet half a second
+    const t = this.subN / this.fs * 1000;
+    if (stream !== this.stream && t - this.streamAt < 500) return;
+    this.stream = stream; this.streamAt = t;
+    const Q = this.vq.length - 1;
+    for (let i = 0; i < pcm.length; i++) { this.vq[this.vw & Q] = pcm[i] * gain; this.vw++; }
+    if (this.vw - this.vr > Q) this.vr = this.vw - Q;
+  }
+  /** [k] samples of decoded voice at 8 kHz into [out]: silence until 200 ms are waiting, and again after running dry. */
+  private pull(out: Float32Array, k: number): void {
+    const Q = this.vq.length - 1;
+    if (!this.primed && this.vw - this.vr >= VOICE_PRIME) this.primed = true;
+    for (let i = 0; i < k; i++) {
+      if (this.primed && this.vr < this.vw) { out[i] = this.vq[this.vr & Q]; this.vr++; }
+      else { out[i] = 0; this.primed = false; }
+    }
+  }
+  digital(): boolean { return !!this.snap && this.snap.verified && isDigital(this.snap.mode); }
+  ident(): HamIdent | null { return this.snap ? identOf(this.snap) : null; }
+  cwId(): string { const c = this.snap?.analog?.cwId; return c && c.confidence >= CW_SURE ? c.callsign : ''; }
+  /** The identity snapshot four times a second, and when the decoders' checks last moved. */
+  private look(): void {
+    const t = this.subN / this.fs;
+    if (t - this.snapAt < 0.25) return;
+    this.snapAt = t;
+    const c = this.idc, n = c.dmr.checked + c.dmr.clean + c.dstar.id.frames + c.dstar.id.headers + c.ysf.id.frames + c.m17.id.lsfs + c.m17.id.frames + c.p25.p25.checked + c.p25.nxdn.checked + c.p25.dpmr.checked + c.p25.p25p2.checked;
+    if (n !== this.checks) { this.checks = n; this.lastDigitalMs = t * 1000; }
+    this.snap = c.snapshot(); this.seen++;
   }
   retune(offsetHz: number): void { this.ddc.offsetHz = offsetHz; }
   push(fi: Float32Array, fq: Float32Array, n: number, listen: boolean): void {
@@ -126,7 +208,9 @@ class Probe implements WatchProbe {
     }
     this.sub.push(au, m);
     this.speech.push(au, m);
+    this.idc.push(au, m, this.clipped);
     this.subN += m;
+    this.look();
     if (this.sub.tone) this.tones.set(this.sub.tone, (this.tones.get(this.sub.tone) ?? 0) + m);
     else if (this.sub.dcs) this.dcsCodes.set(this.sub.dcs, (this.dcsCodes.get(this.sub.dcs) ?? 0) + m);
     for (let i = 0; i < m; i++) { this.deemph += this.de * (au[i] - this.deemph); au[i] = this.deemph * 0.6; }
@@ -137,8 +221,17 @@ class Probe implements WatchProbe {
       this.hp += hpa * (a2[i] - this.hp); const v = a2[i] - this.hp;
       this.envAcc += v * v; if (++this.envN >= envWin) { this.env.push(Math.sqrt(this.envAcc / this.envN)); this.envAcc = 0; this.envN = 0; }
     }
-    const k8 = this.to8.process(a2, m, this.a8); this.clip.push(this.a8, k8);
-    this.out48 = listen ? this.to48.process(a2, m, this.a48) : 0;
+    const k8 = this.to8.process(a2, m, this.a8);
+    if (this.digital()) {
+      // a digital channel records and plays its decoded voice, as many 8 kHz samples as the FM audio would have been
+      if (this.v8.length < k8) this.v8 = new Float32Array(2 * k8 + 16);
+      this.pull(this.v8, k8); this.clip.push(this.v8, k8);
+      if (this.a48.length < 6 * k8 + 16) this.a48 = new Float32Array(12 * k8 + 32);
+      this.out48 = listen ? this.v48.process(this.v8, k8, this.a48) : 0;
+    } else {
+      this.clip.push(this.a8, k8);
+      this.out48 = listen ? this.to48.process(a2, m, this.a48) : 0;
+    }
     if (this.powN > this.fs / 10) { this.levelDb = 10 * Math.log10(this.pow / this.powN + 1e-9); this.pow = 0; this.powN = 0; }
   }
   /** Carrier offset: the median of the 100 ms means (a burst of clicks moves one mean, not the median), and their spread. */
@@ -152,7 +245,7 @@ class Probe implements WatchProbe {
   static top(m: Map<number, number>, total: number): number { let b = 0, v = 0; for (const [k, n] of m) if (n > v) { v = n; b = k; } return v >= TONE_SHARE * total ? b : 0; }
   tone(): number { return Probe.top(this.tones, this.subN); }
   dcs(): number { return this.tone() ? 0 : Probe.top(this.dcsCodes, this.subN); }
-  end(): void { this.cw.end(); }
+  end(): void { this.cw.end(); this.idc.analog.flush(); this.snapAt = -1; this.look(); }
 }
 
 export interface Open<P extends WatchProbe = WatchProbe> {
@@ -206,6 +299,10 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
   private outChunk = new Float32Array(2048); private outLen = 0; private mix = new Float32Array(0);
   private replay: { mixer: ReplayMixer; label: string; kind: string; to48: Resampler; buf8: Float32Array; buf48: Float32Array; acc: number } | null = null;
   playing: string[] = [];
+  /** The receiver clipped within [CLIP_HOLD_MS]: probes are told, so nothing digital is named from it. */
+  protected clipUntil = 0;
+  /** Clipping is checked on this watcher's buffers (CB leaves it off). */
+  protected checkClip = false;
 
   constructor(readonly plan: WatchPlan, protected readonly emit: Emit, private readonly sink: (chunk: Float32Array) => void, private readonly clock: () => number = () => Date.now(), private readonly perf: () => number = () => performance.now(), tracker?: (now: () => number) => HamTracker) {
     this.tracker = tracker ? tracker(() => this.nowMs()) : new HamTracker(() => this.nowMs());
@@ -251,6 +348,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
       this.frames++;
     }
     this.samples += n;
+    if (this.checkClip && iqClipping(iq)) this.clipUntil = this.nowMs() + CLIP_HOLD_MS;
     if (this.followClock && Math.abs(this.nowMs() - this.clock()) > 3_000) { this.baseMs = this.clock() - this.samples * 1000 / this.rate; }
     const now = this.nowMs();
     if (now - this.lastMeasure >= MEASURE_MS && this.frames > 0) { this.lastMeasure = now; this.measure(now); }
@@ -341,6 +439,8 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     for (const o of [...this.opens.values()]) {
       const p = o.probe; if (!p) continue;
       if (!o.talk) {
+        // a named digital mode is a transmission (its voice is not FM speech)
+        if (p.digital?.()) { o.talk = true; continue; }
         if (!p.speech.heard) continue;
         o.talk = true;
         // a carrier that was up a while before its voice (a carrier left on, then a talker) starts at the voice
@@ -348,7 +448,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
         if (first - o.startMs > this.talkLateMs) o.startMs = first - TALK_PRE_MS;
         continue;
       }
-      const last = this.lastSpeech(o);
+      const last = p.digital?.() ? (p.lastDigitalMs! >= 0 ? o.probeAt + p.lastDigitalMs! : -1) : this.lastSpeech(o);
       if (last >= 0 && now - last > SPEECH_LAPSE_MS) this.close(o, last + CLOSE_HOLD_MS);
     }
   }
@@ -364,7 +464,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     const recorded = !!p && !o.cut;
     const t: TxRec = {
       id: o.id, hz: o.hz, startMs: o.startMs, endMs, peakDb: Math.round(o.peak * 10) / 10, offsetHz: off.hz, offsetSd: off.sd,
-      tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cw0 ?? '', env: Float32Array.from((p?.env ?? []).slice(Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)), Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)) + Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
+      tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cwId?.() || p?.cw0 || '', ident: p?.ident?.() ?? null, env: Float32Array.from((p?.env ?? []).slice(Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)), Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)) + Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
     };
     // (the audio from the transmission's start: later than its demodulator's when the voice came after the carrier)
     const at = Math.max(0, Math.round((o.startMs - o.probeAt) * CLIP_RATE / 1000));
@@ -476,6 +576,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
       const p = o.probe; if (!p) continue;
       probes++;
       const hear = listen.includes(o);
+      p.clipped = now < this.clipUntil;
       p.push(this.fi, this.fq, n, hear);
       // a carrier that is off its raster point by more than half a step moves to the right one, once
       if (this.plan.snap && !o.shifted && now - o.startMs > 500) {
@@ -545,7 +646,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
   liveRecs(): LiveRec[] {
     return [...this.opens.values()].filter(o => this.counted(o)).map(o => {
       const off = o.probe ? o.probe.offset(2) : { hz: NaN, sd: 0 };
-      return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0, recorded: !!o.probe && !o.cut };
+      return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0, recorded: !!o.probe && !o.cut, ident: o.probe?.ident?.() ?? null };
     });
   }
 
@@ -570,6 +671,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
 export class HamPlusEngine extends ChannelWatch<Probe> {
   constructor(emit: Emit, sink: (chunk: Float32Array) => void, clock: () => number = () => Date.now(), perf: () => number = () => performance.now()) {
     super(HAM_PLAN, emit, sink, clock, perf);
+    this.checkClip = true;
   }
   protected makeProbe(hz: number): Probe { return new Probe(this.rate, hz - this.centerHz); }
 }
