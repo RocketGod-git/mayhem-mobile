@@ -14,6 +14,7 @@ import { DtmfDecoder, dstarFlags, urcallCommand, type DStarFlags, type UrCall } 
 import { HamVoice, type HamPcmFrame, type HamVoiceFrame } from './voice.js';
 import { DStarDdReceiver, type DdId } from './dstar-data.js';
 import { P25Modes, type P25ModesSnap, type P25ModeName } from './p25modes.js';
+import { AnalogSignaling, type AnalogSnap } from './analog.js';
 
 export interface HamIdSnap {
   mode: HamMode;
@@ -37,6 +38,8 @@ export interface HamIdSnap {
   dd: DdId | null;
   /** P25 Phase 1 and 2, NXDN and dPMR: who is talking (null unless that mode is named). */
   p25: P25ModesSnap['p25']; p25p2: P25ModesSnap['p25p2']; nxdn: P25ModesSnap['nxdn']; dpmr: P25ModesSnap['dpmr'];
+  /** Analog signaling, one summary per transmission: CW ID, selcall, MDC-1200, sub-audio, courtesy tone, tail. */
+  analog: AnalogSnap;
 }
 
 export class HamIdChannel {
@@ -49,11 +52,13 @@ export class HamIdChannel {
   readonly dd: DStarDdReceiver | null;
   /** Set to hear the channel: every vocoder frame, decoded, in the order sent per stream. */
   onPcm: ((f: HamPcmFrame) => void) | null = null;
+  readonly analog: AnalogSignaling;
   readonly p25: P25Modes;
   /** Clear digital voice, 160 samples at 8 kHz a frame: the mode and the slot (0, or Phase 2's 0 and 1). */
   onAudio: (mode: P25ModeName, slot: number, pcm: Float32Array) => void = () => undefined;
   constructor(readonly fs: number) {
     this.mode = new ModeDetector(fs); this.dtmf = new DtmfDecoder(fs);
+    this.analog = new AnalogSignaling(fs);
     this.dd = fs >= 256000 ? new DStarDdReceiver(fs) : null;
     this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); };
     this.dmr.onVoiceFrame = f => this.pcm(f, this.dmr.slots[f.stream === 'dmr2' ? 1 : 0].privacy);
@@ -63,9 +68,9 @@ export class HamIdChannel {
     const s48 = this.mode.onSymbol48; this.mode.onSymbol48 = s => { s48(s); this.p25.pushSymbol48(s); };
   }
   private pcm(f: HamVoiceFrame, encrypted: boolean): void { if (this.onPcm) this.onPcm(this.voice.decode(f, encrypted)); }
-  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); this.voice.reset(); this.dd?.reset(); this.p25.reset(); }
+  reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); this.voice.reset(); this.dd?.reset(); this.p25.reset(); this.analog.reset(); }
   /** Discriminator samples, radians per sample, at [fs]. */
-  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); this.dd?.push(disc, n); this.p25.push(disc, n); }
+  push(disc: ArrayLike<number>, n: number): void { this.mode.push(disc, n); this.dtmf.push(disc, n); this.dd?.push(disc, n); this.p25.push(disc, n); this.analog.push(disc, n); }
 
   snapshot(): HamIdSnap {
     const r = this.mode.result();
@@ -77,7 +82,8 @@ export class HamIdChannel {
     const more = this.p25.mode ? this.p25.snapshot() : null;
     if (more && mode !== 'YSF' && mode !== 'D-STAR' && mode !== 'DMR') mode = more.mode as HamMode;
     const dd = this.dd && this.dd.id.packets > 0 ? { ...this.dd.id, frames: [...this.dd.id.frames] } : null;
-    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, internet: null, dd, p25: null, p25p2: null, nxdn: null, dpmr: null };
+    const snap: HamIdSnap = { mode, hits: r.hits, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, internet: null, dd, p25: null, p25p2: null, nxdn: null, dpmr: null,
+      analog: this.analog.snapshot() };
     if (mode === 'DMR') {
       const slots = this.dmr.slots.map(s => ({ ...s }));
       snap.dmr = { cc: this.dmr.cc, slots };
