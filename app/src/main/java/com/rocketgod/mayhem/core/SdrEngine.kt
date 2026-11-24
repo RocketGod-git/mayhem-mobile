@@ -738,12 +738,24 @@ object SdrEngine {
      */
     const val WIDE_SCAN_RTL = 2_400_000
     @Volatile var wideScan = false; private set
+    /** The rate before the start-up view, for [endWideScan]. */
+    @Volatile private var wideScanFrom = 0
     fun setWideScan(on: Boolean) {
         if (on == wideScan) return
         if (on) {
             if (Radio.kind.value != Radio.Kind.RTLSDR) return
+            wideScanFrom = _rateHz.value
             wideScan = true; _rateHz.value = WIDE_SCAN_RTL; syncDriver()
         } else { wideScan = false; setRate(2_400_000) }
+    }
+
+    /** Back to the rate the radio had before the start-up view (2.4 Msps if unknown), the channel in the middle. */
+    fun endWideScan() {
+        if (!wideScan) return
+        val to = if (wideScanFrom in 1 until WIDE_SCAN_RTL) wideScanFrom else 2_400_000
+        Diag.log("start-up: the network radio leaves the start-up view, %.2f Msps".format(to / 1e6))
+        setRate(to)
+        recentre()
     }
 
     private fun clampRate(rate: Int): Int {

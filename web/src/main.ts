@@ -58,6 +58,7 @@ import { productsOf, radarBlocks, textOf, parseMetar, stationOf, hazardBlocks, i
 import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
+import { HOP_DRAIN_MS, HOP_LOOK_MS, bandHops, bandPick, channelScore, dialStays, fmGridParity, hopMiddles, recordView, viewScores } from './band-look.js';
 import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
 import { LoraLocal } from './dsp/lora/local.js';
 import { SONDE_BANDS, SONDE_WIDE, SONDE_NARROW, wideCenter as sondeWideCenter, narrowWindows as sondeWindows, type SondeChannelRow } from './dsp/sonde/front.js';
@@ -1788,8 +1789,22 @@ let spanByHand = false;
  * for a station, while a real station fills the channel and a clock line is one bin however tall. Elsewhere it is
  * the strongest signal seen in at least a third of the frames since the gain settled.
  */
-const pick = { armedAt: 0, firstSeen: 0, tally: new Map<number, [number, SeenSignal]>(), frames: 0, viewed: false, gainAt: -1, gainSince: 0, specAcc: null as Float64Array | null, specN: 0 };
-function pickArm(): void { pick.armedAt = performance.now(); pick.firstSeen = 0; pick.tally.clear(); pick.frames = 0; pick.gainAt = -1; pick.specAcc = null; pick.specN = 0; }
+const pick = {
+  armedAt: 0, firstSeen: 0, tally: new Map<number, [number, SeenSignal]>(), frames: 0, viewed: false, gainAt: -1, gainSince: 0, specAcc: null as Float64Array | null, specN: 0,
+  // a radio that sees only part of the band (an RTL-SDR: 2.4 of FM's 20 MHz) looks across it a view at a time: the
+  // views still to look at, every channel's best score so far, whether this view is a hop (the one at the dial is
+  // not), and the dial and band the look began with
+  hops: [] as number[], middles: new Set<number>(), swept: new Map<number, number>(), hopping: false, dialHz: 0, bandLo: 0, bandHi: 0,
+};
+function pickArm(): void { pick.armedAt = performance.now(); pick.firstSeen = 0; pick.tally.clear(); pick.frames = 0; pick.gainAt = -1; pick.specAcc = null; pick.specN = 0; pick.hops = []; pick.swept.clear(); pick.hopping = false; }
+/** The next view across the band: its middle becomes the channel for now (heard as the look goes by); the gain carries over. */
+function pickHop(c: number): void {
+  pick.hopping = true;
+  silentTune = true; try { tune(c); } finally { silentTune = false; }
+  const d = state.freq - state.viewLo;
+  if (d) { scope?.shiftSpan(d / state.rate); state.viewLo = state.freq; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); refreshChannel(); refreshReadout(); }
+  pick.armedAt = performance.now(); pick.firstSeen = 0; pick.tally.clear(); pick.frames = 0; pick.specAcc = null; pick.specN = 0;
+}
 /** The newest averaged spectrum (dB above its own median), for the broadcast pick. */
 let pickSpec: Float32Array | null = null;
 function notePickSpectrum(bins: Float32Array, rangeDb: number): void {
@@ -1801,9 +1816,13 @@ function notePickSpectrum(bins: Float32Array, rangeDb: number): void {
 /** One look at the newest list: 'stay' (a good station is already tuned, or it gave up), a station, or null (not yet). */
 function pickStep(here: number): SeenSignal | 'stay' | null {
   const now = performance.now();
-  if (now - pick.armedAt < 1500 || !lastSignals.length) return null;
+  // (a hop's view may hold no signal at all: its spectrum still counts)
+  if (now - pick.armedAt < HOP_DRAIN_MS || (!lastSignals.length && !pick.hopping)) return null;
   if (!pick.firstSeen) { pick.firstSeen = now; return null; }
-  if (now - pick.firstSeen > 30_000) return 'stay';
+  if (now - pick.firstSeen > 30_000) {
+    if (pick.hopping || pick.hops.length) log(`start-up: the band look stalled, staying on ${(state.freq / 1e6).toFixed(1)} MHz`);
+    return 'stay';
+  }
   const gain = state.lna + state.vga + (state.amp ? 14 : 0);
   if (pick.gainAt < 0 || Math.abs(gain - pick.gainAt) > 3) { pick.gainAt = gain; pick.gainSince = now; pick.tally.clear(); pick.frames = 0; pick.specAcc = null; pick.specN = 0; return null; }
   const half = state.rate / 2 - VIEW_GUARD, c = spanCenter();
@@ -1831,39 +1850,44 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
     for (let k = 0; k < pickSpec.length; k++) pick.specAcc[k] += pickSpec[k];
     pick.specN++;
   }
-  if (now - pick.firstSeen < 2500 || now - pick.gainSince < 1000 || pick.frames < 3) return null;
+  if (now - pick.firstSeen < (pick.hopping ? HOP_LOOK_MS : 2500) || now - pick.gainSince < 1000 || pick.frames < 3) return null;
   if (broadcast && pick.specAcc && pick.specN >= 3) {
     // every 100 kHz raster channel in view, scored by the average level across ±80 kHz of it. The middle channel
     // counts too: the radio opens centered on the dial, so the station is often right there, and leaving it out made
     // its two shoulders (±100 kHz) the "strongest stations" and tuned 100 kHz off it. Only the DC spike's own bins
     // (±30 kHz of the middle) are left out of every score.
-    const acc = pick.specAcc, n = acc.length, binHz = state.rate / n, w = Math.max(1, Math.floor(80_000 / binHz)), start = c - state.rate / 2;
-    const score = (f: number): number => {
-      const mid = Math.floor((f - start) / binHz); let sum = 0, cnt = 0;
-      for (let k = Math.max(0, mid - w); k <= Math.min(n - 1, mid + w); k++) {
-        if (Math.abs(start + (k + 0.5) * binHz - c) < 30_000) continue;
-        sum += acc[k]; cnt++;
-      }
-      return cnt ? sum / cnt * (2 * w + 1) / pick.specN : 0;
-    };
-    const scores: [number, number][] = [];
-    const all: [number, number][] = [];
-    for (let f = Math.ceil((c - half) / 100_000) * 100_000; f <= c + half; f += 100_000) all.push([f, score(f)]);
+    const acc = pick.specAcc;
+    const score = (f: number): number => channelScore(acc, pick.specN, state.rate, c, f);
+    const all = viewScores(acc, pick.specN, state.rate, c, half);
+    // the hops cover the whole band, each channel off its view's middle; the view at the dial is left out, since the
+    // dial sits on its middle, where a dongle's own DC and LO leakage reads as a weak station
+    if (pick.hopping) recordView(pick.swept, all);
     // the band's own grid, learned from the stations on the air, so it holds in every country: the Americas, Korea and
     // the Philippines put stations on odd tenths only (88.1 to 107.9), Europe and Japan on any 100 kHz step. Off the
     // grid a noise hump can win (101.0 picked on a Mac after Dispatch, garbled)
     const grid = fmGridParity(all);
-    for (const s of all) if (grid < 0 || Math.round(s[0] / 100_000) % 2 === grid) scores.push(s);
+    const scores = all.filter(s => grid < 0 || Math.round(s[0] / 100_000) % 2 === grid);
     if (!scores.length) return null;
     const best = scores.reduce((a, b) => (b[1] > a[1] ? b : a));
     // already on a good station: stay unless it is under a third of the best one
-    if (Math.abs(here - c) <= half && (grid < 0 || Math.round(here / 100_000) % 2 === grid)) {
+    if (!pick.hopping && Math.abs(here - c) <= half && (grid < 0 || Math.round(here / 100_000) % 2 === grid)) {
       const mine = score(here);
       // and only on the station itself: a dial 100 kHz to one side sits on its shoulder (garbled audio)
       // and standing out of the band: an empty dial (a fresh visit's default) scores near every other empty channel,
-      // a station at least half again over the median one
+      // a station at least half again over the median one. With the rest of the band still to look at, only a
+      // station that leads its view and clearly stands out stays now; the rest is settled against the whole band
       const median = scores.map(x => x[1]).sort((a, b) => a - b)[Math.floor(scores.length / 2)];
-      if (mine >= best[1] / 3 && mine >= 1.5 * median && mine >= score(here - 100_000) && mine >= score(here + 100_000)) { log(`start-up: staying on the station already tuned, ${(here / 1e6).toFixed(3)} MHz (level ${Math.round(mine)}, best in view ${(best[0] / 1e6).toFixed(1)} MHz ${Math.round(best[1])})`); return 'stay'; }
+      if (dialStays(mine, best[1], median, score(here - 100_000), score(here + 100_000), pick.hops.length > 0)) { log(`start-up: staying on the station already tuned, ${(here / 1e6).toFixed(3)} MHz (level ${Math.round(mine)}, best in view ${(best[0] / 1e6).toFixed(1)} MHz ${Math.round(best[1])})`); return 'stay'; }
+    }
+    if (pick.hops.length) { pickHop(pick.hops.shift()!); return null; }
+    if (pick.hopping) {
+      // the whole band looked at: the strongest channel on the band's grid, learned from every view
+      const p = bandPick(pick.swept, pick.dialHz, pick.bandLo, pick.bandHi, pick.middles);
+      if (!p) return 'stay';
+      log(`start-up: looked across the band, ${p.channels} channels, strongest (MHz/score) ${p.top}`);
+      if (p.keptDial) log(`start-up: staying on the station already tuned, ${(p.hz / 1e6).toFixed(1)} MHz (level ${Math.round(p.score)}, best in the band ${(p.bestHz / 1e6).toFixed(1)} MHz ${Math.round(p.bestScore)})`);
+      log(`start-up: tuned the strongest station in the band, ${(p.hz / 1e6).toFixed(1)} MHz`);
+      return { hz: p.hz, db: 0, snr: p.score, bw: 200_000, cls: 'WFM', conf: 1, val: 0 };
     }
     log(`start-up: channels by level across 160 kHz (MHz/score, ${pick.specN} frames) ${[...scores].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([f, v]) => `${(f / 1e6).toFixed(1)}/${Math.round(v)}`).join(' ')}`);
     log(`start-up: tuned the strongest station in view, ${(best[0] / 1e6).toFixed(1)} MHz`);
@@ -1873,23 +1897,6 @@ function pickStep(here: number): SeenSignal | 'stay' | null {
   for (const [n, s] of pick.tally.values()) if (n * 3 >= pick.frames && (!best || s.snr > best.snr)) best = s;
   if (best) log(`start-up: tuned the strongest steady signal in view, ${(best.hz / 1e6).toFixed(3)} MHz ${best.cls} ${Math.round(best.snr)} dB ${Math.round(best.bw / 1e3)} kHz wide`);
   return best;
-}
-/**
- * The broadcast grid in view: 1 when the stations heard sit on odd tenths (200 kHz apart, as in the Americas), 0 on
- * even tenths, -1 for any 100 kHz step. A station is a channel that tops both neighbors and is at least twice the
- * median; it takes three of them, nearly all on one parity, to settle it.
- */
-export function fmGridParity(all: [number, number][]): number {
-  if (all.length < 5) return -1;
-  const median = all.map(x => x[1]).sort((a, b) => a - b)[Math.floor(all.length / 2)];
-  let odd = 0, even = 0;
-  for (let i = 1; i < all.length - 1; i++) {
-    const v = all[i][1];
-    if (v >= 2 * median && v > 0 && v >= all[i - 1][1] && v >= all[i + 1][1]) { if (Math.round(all[i][0] / 100_000) % 2 === 1) odd++; else even++; }
-  }
-  const n = odd + even;
-  if (n < 3) return -1;
-  return odd >= 0.7 * n ? 1 : even >= 0.7 * n ? 0 : -1;
 }
 function launchAutoPick(): void {
   if (state.app !== null || launchPicked || !lastSignals.length) return;
@@ -1911,7 +1918,12 @@ function audioViewBand(): void {
   const b = LAUNCH_BANDS.find(x => state.freq >= x.lo && state.freq <= x.hi);
   if (!b) return;
   const widest = cleanWidest(radio.limits);
-  if (widest * 2 < b.hi - b.lo) { setRate(widest); scope?.clear(); refreshChannel(); return; }
+  if (widest * 2 < b.hi - b.lo) {
+    setRate(widest); scope?.clear(); refreshChannel();
+    // the view at the dial first, then across the rest of the band a view at a time
+    if (b.mode === 'WFM') { pick.hops = bandHops(b.lo, b.hi, state.rate); pick.middles = hopMiddles(pick.hops); pick.dialHz = state.freq; pick.bandLo = b.lo; pick.bandHi = b.hi; }
+    return;
+  }
   const cap = RX_RATES[Math.min(maxRateIdx(), RX_RATES.length - 1)];
   const fits = RX_RATES.filter(r => r <= Math.min(cap, widest));
   const rate = fits.find(r => r >= b.hi - b.lo) ?? fits[fits.length - 1] ?? RX_RATE;
@@ -1924,8 +1936,8 @@ function audioViewBand(): void {
 }
 /** Audio's own pick: the strongest steady station in view, tuned where it shows (no recentering: the retune chops). */
 function audioAutoPick(): void {
-  if (state.app !== 'audio' || !audioPick || !lastSignals.length) return;
-  if (!pick.viewed) { pick.viewed = true; audioViewBand(); pickArm(); return; }
+  if (state.app !== 'audio' || !audioPick || (!lastSignals.length && !pick.hopping)) return;
+  if (!pick.viewed) { pick.viewed = true; pickArm(); audioViewBand(); return; }
   const r = pickStep(state.freq);
   if (!r) return;
   audioPick = false;
