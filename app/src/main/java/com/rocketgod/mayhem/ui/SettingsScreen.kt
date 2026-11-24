@@ -451,8 +451,10 @@ private fun NetworkSection(accent: Color) {
     val status by RtlTcp.status.collectAsState()
     val savedHost by RtlTcp.host.collectAsState()
     val savedPort by RtlTcp.port.collectAsState()
-    var host by remember(savedHost) { mutableStateOf(savedHost) }
-    var port by remember(savedPort) { mutableStateOf(savedPort.toString()) }
+    // typed text lives here; it is saved as you type, but must not be rebuilt from the saved value on every keystroke
+    // (that moved the cursor to the start, so a delete did nothing and new digits went in front)
+    var host by remember { mutableStateOf(savedHost) }
+    var port by remember { mutableStateOf(savedPort.toString()) }
     val on = phase != RtlTcp.Phase.OFF
     var howTo by remember { mutableStateOf(false) }
     if (howTo) RtlTcpHowToDialog(accent) { howTo = false }
