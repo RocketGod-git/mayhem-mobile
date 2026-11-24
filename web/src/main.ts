@@ -818,7 +818,7 @@ function rangeTile(l: string, a: number, b: number): string {
   return `<button class="tl" data-range="${a}" data-end="${b}"><b>${sweepMhz(a)}–${sweepMhz(b)}</b><small>${sub}</small></button>`;
 }
 /** The sweeps' card: the Android app's, with the range in place of the digits and the pass on the meter. */
-const sweepCardHtml = () => `<div class="face sweep"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span>${gainChipHtml()}<span id="lamp" class="lamp"><i></i><b></b></span></div><div id="sweep-title" class="srange">${sweepTitle()}</div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale"></div><div class="fcap"><b id="capl">PASS —</b><span id="capr"></span></div></div>`;
+const sweepCardHtml = () => `<div class="face sweep"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span>${gainChipHtml()}<span id="lamp" class="lamp"><i></i><b></b></span></div><div id="ftech" class="ftech">${techOf(state.app)}</div><div id="sweep-title" class="srange">${sweepTitle()}</div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale"></div><div class="fcap"><b id="capl">PASS —</b><span id="capr"></span></div></div>`;
 function refreshSweepCard(progress: number, sweeps: number): void {
   const s = state.sweep, t = q('#sweep-title');
   if (t && !t.classList.contains('preview')) t.textContent = sweepTitle();
@@ -1608,7 +1608,7 @@ const scaleHtml = (sc: [number, string][]) => sc.map(([at, l]) => at >= 0.98 ? `
  * The frequency card, the same on every app (the Android app's): a tag, a title, ☆ and ⌨, a lamp; the digits
  * across the full width; a 32-LED meter with its scale; a caption line. setFace / setLamp / setMeter fill it.
  */
-const readoutHtml = () => `<div class="face"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><button id="fav" class="fact" title="save this to FAVES">☆</button><button id="fkey" class="fact" title="type a frequency">⌨</button>${gainChipHtml()}<span id="lamp" class="lamp"><i></i><b></b></span><span id="sq" hidden></span></div><div class="readout"><div id="freq" class="freq">${freqDigitsHtml()}</div></div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale">${scaleHtml(DB_SCALE)}</div><div class="fcap"><b id="capl">SIGNAL —</b><span id="capr"></span></div><div id="health" class="health">waiting for IQ…</div></div>`;
+const readoutHtml = () => `<div class="face"><div class="fhead"><span id="ftag" class="ftag"></span><span id="ftitle" class="ftitle"></span><button id="fav" class="fact" title="save this to FAVES">☆</button><button id="fkey" class="fact" title="type a frequency">⌨</button>${gainChipHtml()}<span id="lamp" class="lamp"><i></i><b></b></span><span id="sq" hidden></span></div><div id="ftech" class="ftech">${techOf(state.app)}</div><div class="readout"><div id="freq" class="freq">${freqDigitsHtml()}</div></div><div id="leds" class="leds">${'<i></i>'.repeat(32)}<s hidden></s></div><div id="lscale" class="lscale">${scaleHtml(DB_SCALE)}</div><div class="fcap"><b id="capl">SIGNAL —</b><span id="capr"></span></div><div id="health" class="health">waiting for IQ…</div></div>`;
 /** What the card says: its tag, its title, and (optionally) the caption's right side. */
 function setFace(tag: string, title: string, right?: string): void {
   const t = q('#ftag'); if (t) t.textContent = tag;
@@ -3862,7 +3862,7 @@ function drawHunt(): void {
   const decoding = chans.filter(c => c.listening && c.protocol).length;
   const alerts = msgs.filter(m => m.alert).length, flexN = msgs.filter(m => m.page.protocol === 'FLEX').length, noise = msgs.filter(huntUnreadable).length;
   // the card
-  setFace(hunt.hunting ? 'HUNT' : hunt.pinned.length ? 'PINNED' : 'MANUAL', 'FLEX · POCSAG', hunt.text);
+  setFace(hunt.hunting ? 'HUNT' : hunt.pinned.length ? 'PINNED' : 'MANUAL', 'PAGER MESSAGES', hunt.text);
   if (!hunt.hunting) setLamp(hunt.pinned.length ? `PINNED ${hunt.pinned.length}` : 'AUTO OFF', hunt.pinned.length || decoding ? 'ok' : 'amber');
   else if (decoding) setLamp(`DECODING ${decoding}`, 'ok');
   else setLamp(state.connected ? 'HUNTING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
@@ -6491,7 +6491,7 @@ function refreshHd(force = false): void {
   const [lock, tone] = hdLock(m, now);
   setLamp(lock, tone, tone === 'amber');
   const st = hdMine(m) ? m.station : null, sel = st?.programs.find(p => p.n === hdUi.prog);
-  setFace('HD RADIO', st?.sis.callsign && st.sis.nameVotes[0] >= 3 ? `${st.sis.callsign}${sel ? ` · HD${sel.n + 1}` : ''}` : 'NRSC-5 · FM HYBRID', sel?.title ? `${sel.title}${sel.artist ? ` · ${sel.artist}` : ''}` : '');
+  setFace('HD RADIO', st?.sis.callsign && st.sis.nameVotes[0] >= 3 ? `${st.sis.callsign}${sel ? ` · HD${sel.n + 1}` : ''}` : 'STATION DATA · ART · TRAFFIC', sel?.title ? `${sel.title}${sel.artist ? ` · ${sel.artist}` : ''}` : '');
 }
 function hdExport(): void {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -9983,12 +9983,32 @@ function initShell(): void {
 }
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
-  js8: ['JS8', 'HF MESSAGING · USB'],
-  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS · AM · FM · SSB'], pager: ['PAGER', 'FLEX · POCSAG'], hd: ['HD RADIO', 'NRSC-5 · FM HYBRID'], vdl2: ['FLIGHT MSGS', 'VDL MODE 2 · 136.975 MHZ'], acars: ['FLIGHT MSGS', 'ACARS · 131 MHZ'], trains: ['TRAINS', 'EOT · PTC'], fleet: ['DISPATCH', 'P25 · DMR · NXDN · TETRA · TYPE II'], cell: ['CELL', 'LTE ALERTS · CELL INFO'], atsc: ['TV', 'ATSC · DIGITAL TV · 8VSB'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
-  ert: ['METERS', 'UTILITY METERS · ERT · MESH · GRIDSTREAM · 802.15.4G'], lora: ['MESH', 'LORA · MESHTASTIC · MESHCORE · LORAWAN'], sondes: ['BALLOONS', 'WEATHER BALLOONS · RADIOSONDES'], btle: ['BLUETOOTH', 'BLE ADVERTISING'], adsb: ['AIRCRAFT', 'ADS-B · 1090 MHZ'], ais: ['SHIPS', 'AIS · 162 MHZ'], aprs: ['HAM MAP', 'APRS · PACKET STATIONS'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · UAT 978 MHZ'],
+  js8: ['JS8', 'HF MESSAGING'],
+  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS'], pager: ['PAGER', 'PAGER MESSAGES'], hd: ['HD RADIO', 'STATION DATA · ART · TRAFFIC'], vdl2: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], acars: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], trains: ['TRAINS', 'END OF TRAIN · TRAIN CONTROL'], fleet: ['DISPATCH', 'TRUNKED DISPATCH · CALLS'], cell: ['CELL', 'CELL TOWERS · ALERTS'], atsc: ['TV', 'DIGITAL TV'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  ert: ['METERS', 'UTILITY METERS'], lora: ['MESH', 'MESH RADIO TEXT'], sondes: ['BALLOONS', 'WEATHER BALLOONS'], btle: ['BLUETOOTH', 'BLUETOOTH DEVICES'], adsb: ['AIRCRAFT', 'AIRCRAFT OVERHEAD'], ais: ['SHIPS', 'SHIPS NEARBY'], aprs: ['HAM MAP', 'STATIONS ON THE MAP'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · SMALL PLANES'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
 };
+/**
+ * Each app's technical name, on its own row under the card's header on every width: the picker keeps the friendly
+ * name, and inside the app you can see what it actually speaks (APRS, ADS-B, POCSAG). Mirrored by MayhemApp.tech on
+ * Android and iOS.
+ */
+const APP_TECH: Partial<Record<AppId, string>> = {
+  audio: 'WFM · NFM · AM · SSB · RDS', hd: 'NRSC-5 · IBOC · FM HYBRID', fleet: 'P25 · DMR · NXDN · TETRA · SMARTNET',
+  pager: 'POCSAG · FLEX · REFLEX', lora: 'LORA · MESHTASTIC · MESHCORE · LORAWAN', adsb: 'ADS-B · MODE S · 1090 MHZ',
+  uat: 'UAT · FIS-B · 978 MHZ', acars: 'ACARS · VHF AIRBAND', vdl2: 'VDL MODE 2 · 136.975 MHZ', trains: 'EOT · HOT · PTC 220 MHZ',
+  ais: 'AIS · 161.975 / 162.025 MHZ', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
+  subghz: 'OOK · FSK · 315–915 MHZ', js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
+  hamplus: 'ANALOG FM · CTCSS · DCS · 10 M TO 70 CM', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
+  ert: 'ERT · GRIDSTREAM · 802.15.4G', btle: 'BLE · ADVERTISING · 2.4 GHZ', sat: 'SGP4 · DOPPLER · APT · LRPT · AX.25',
+  sondes: 'RS41 · DFM · M10 · 400–406 MHZ', atsc: 'ATSC 1.0 · 8VSB · PSIP', prowl: 'NFM · VOICE ACTIVITY HUNT',
+  spectrum: 'FFT ANALYZER · ZERO SPAN', analyzer: 'OOK · FSK · BURST DEMOD', lookingglass: 'WIDEBAND FFT SWEEP',
+  search: 'SQUELCH SCAN · ACTIVITY SEARCH', capture: 'RAW IQ · SIGNED 8-BIT .C8', transmit: 'OOK · CW · POCSAG · APRS · RTTY · ADS-B',
+  troll: 'OOK · FM · CW · .SUB REPLAY',
+};
+/** The technical row's text for an app ('' on HOME and SETTINGS, where there is no card). */
+function techOf(app: AppId | null): string { return app && app !== 'settings' ? APP_TECH[app] ?? '' : ''; }
 /** The app Settings was opened over: its rows lead the page, and it keeps running underneath. */
 let settingsOver: AppId | null = null;
 /** The Settings groups opened this visit (all start folded). */
