@@ -47,6 +47,7 @@ object Credits {
         false to "Trains — end-of-train field layout and BCH check after PyEOT by Eric Reuter; the PTC waveform worked out from recordings",
         false to "Repeater signaling (HAM+) · MDC-1200 receive after the frame layout of the Mayhem ui_mdc_tx transmitter (Mayhem contributors, GPL-3.0); FleetSync receive after the frame layout of the fsync library by Matthew Kaufman (GPL-2.0); selcall after the published ZVEI, CCIR, EEA and EIA tone tables",
         false to "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid",
+        false to "Codec 2 voice for M17 · Codec 2 by David Rowe · LGPL-2.1 · github.com/drowe67/codec2",
         false to "JS8Call by Jordan Sherer, KN4CRD · the JS8 dictionary, command and group tables · GPL-3.0",
         false to "mbelib (mbelib Author) · the AMBE+2, IMBE and D-STAR AMBE vocoders · ISC",
         false to "DSD (DSD Author) · the bit order of D-STAR voice frames · ISC",

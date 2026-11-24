@@ -6,7 +6,8 @@
  *   · P25 Phase 1: the 24-symbol frame sync, either polarity;
  *   · Fusion: D471C9634D (20 symbols);
  *   · D-STAR: the radio header's frame sync after its 1010 preamble, or the 24-bit data sync every 420 ms;
- *   · NXDN: its frame sync at 2400 symbols/s (NXDN48).
+ *   · NXDN: its frame sync at 2400 symbols/s (NXDN48);
+ *   · M17: the LSF, stream and packet sync bursts (8 symbols, either polarity) every 192 symbols.
  *
  * The sync tables are the HAM decoder's (ham/dmr.ts). A mode is named once its syncs repeat on its frame grid; a
  * channel that has named none for 0.6 s is analog. No DOM.
@@ -15,9 +16,10 @@ import { SYNCS } from '../ham/dmr.js';
 import { DiscSymbols } from './symbols.js';
 import { YSF_SYNC } from './ysf.js';
 import { DSTAR_FS, DSTAR_DSYNC } from './dstar.js';
+import { syncSymbols, M17_SYNC_LSF, M17_SYNC_PACKET } from './m17.js';
 
-export type HamMode = '' | 'analog' | 'DMR' | 'D-STAR' | 'YSF' | 'P25' | 'NXDN' | 'P25P2' | 'dPMR';
-export const MODES: HamMode[] = ['DMR', 'D-STAR', 'YSF', 'P25', 'NXDN'];
+export type HamMode = '' | 'analog' | 'DMR' | 'D-STAR' | 'YSF' | 'P25' | 'NXDN' | 'P25P2' | 'dPMR' | 'M17';
+export const MODES: HamMode[] = ['DMR', 'D-STAR', 'YSF', 'P25', 'NXDN', 'M17'];
 
 const signs = (s: string) => Int8Array.from([...s].map(c => c === '1' ? 1 : -1));
 const DMR = SYNCS.filter(s => s.proto === 'DMR').map(s => s.s);
@@ -25,14 +27,15 @@ const P25 = SYNCS.filter(s => s.proto === 'P25').map(s => s.s);
 const NXDN = SYNCS.filter(s => s.proto === 'NXDN').map(s => s.s);
 const DS_FS = signs('1010101010101010' + DSTAR_FS), DS_SYNC = signs(DSTAR_DSYNC);
 const YSF_E = YSF_SYNC.reduce((a, x) => a + x * x, 0);
-/** Sync words a mode needs before it is named, and how long (s) a count lasts. */
-const NEED: Record<string, number> = { DMR: 3, 'D-STAR': 2, YSF: 2, P25: 2, NXDN: 3 };
+const M17 = [syncSymbols(M17_SYNC_LSF), syncSymbols(M17_SYNC_PACKET)].map(s => Int8Array.from(s, v => Math.sign(v)));
+/** Sync words a mode needs before it is named (M17 six: its 8-symbol sync turns up in noise now and then). */
+const NEED: Record<string, number> = { DMR: 3, 'D-STAR': 2, YSF: 2, P25: 2, NXDN: 3, M17: 6 };
 /**
  * Each mode's frame grid in 4800/s symbols: DMR bursts every 144 (30 ms), Fusion frames every 480, P25 voice frames
- * every 864, NXDN frames every 384 (80 ms), D-STAR's data sync every 2016 bits. Syncs found by chance in noise fall
- * anywhere; a mode is named only when two of its syncs sit on its grid.
+ * every 864, NXDN frames every 384 (80 ms), D-STAR's data sync every 2016 bits, M17 frames every 192 (40 ms).
+ * Syncs found by chance in noise fall anywhere; a mode is named only when two of its syncs sit on its grid.
  */
-const PERIOD: Record<string, number> = { DMR: 144, 'D-STAR': 2016, YSF: 480, P25: 864, NXDN: 384 };
+const PERIOD: Record<string, number> = { DMR: 144, 'D-STAR': 2016, YSF: 480, P25: 864, NXDN: 384, M17: 192 };
 const HOLD_S = 2;
 
 /** Normalized correlation of the last [n] values of a ring against a sign pattern. */
@@ -53,14 +56,14 @@ export class ModeDetector {
   private readonly r24 = new Float64Array(24); private p24 = 0;
   private readonly hits = new Map<string, number[]>();
   private t48 = 0; private lastHit48 = new Map<string, number>(); private t24 = 0; private lastHit24 = -1e9;
-  private samples = 0;
+  private samples = 0; private m17Cand: number[] = [];
   private sticky: HamMode = '';
 
   constructor(readonly fs: number) {
     this.s48 = new DiscSymbols(fs, 4800); this.s24 = new DiscSymbols(fs, 2400, false);
     this.s48.onSymbol = s => this.sym48(s); this.s24.onSymbol = s => this.sym24(s);
   }
-  reset(): void { this.s48.reset(); this.s24.reset(); this.r48.fill(0); this.r24.fill(0); this.p48 = this.p24 = 0; this.hits.clear(); this.lastHit48.clear(); this.t48 = this.t24 = 0; this.lastHit24 = -1e9; this.samples = 0; this.sticky = ''; }
+  reset(): void { this.s48.reset(); this.s24.reset(); this.r48.fill(0); this.r24.fill(0); this.p48 = this.p24 = 0; this.hits.clear(); this.lastHit48.clear(); this.t48 = this.t24 = 0; this.lastHit24 = -1e9; this.samples = 0; this.m17Cand = []; this.sticky = ''; }
 
   push(disc: ArrayLike<number>, n: number): void { this.samples += n; this.s48.push(disc, n); this.s24.push(disc, n); }
 
@@ -83,6 +86,18 @@ export class ModeDetector {
     let c = 0, e = 0;
     for (let k = 0; k < 20; k++) { const x = r[(p - 20 + k + 40) % 40]; c += x * YSF_SYNC[k]; e += x * x; }
     if (e > 0 && Math.abs(c / Math.sqrt(e * YSF_E)) > 0.9) this.hit('YSF', t);
+    // M17's sync is only 8 symbols: a candidate counts when others came one and two frames (192 and 384 symbols)
+    // before it. Voice payloads and noise match it by chance too, so every candidate of the last two frames is kept.
+    for (const pat of M17) {
+      const m = corrSigns(r, p, pat);
+      if (Math.abs(m.c) > 0.9 && m.mag > 2) {
+        const c = this.m17Cand;
+        while (c.length && t - c[0] > 386) c.shift();
+        if (c.some(x => Math.abs(t - x - 192) <= 1) && c.some(x => Math.abs(t - x - 384) <= 2)) this.hit('M17', t);
+        c.push(t);
+        break;
+      }
+    }
     for (const pat of [DS_FS, DS_SYNC]) {
       let err = 0, errInv = 0; const n = pat.length;
       for (let k = 0; k < n; k++) { const b = r[(p - n + k + 40) % 40] > 0 ? 1 : -1; if (b !== pat[k]) err++; else errInv++; }

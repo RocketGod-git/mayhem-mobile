@@ -7,15 +7,16 @@ import kotlin.math.sqrt
 /**
  * What an FM channel carries, from its discriminator: analog voice, DMR, D-STAR, Fusion (YSF), P25 or NXDN, named by
  * their sync words in the 4800/s and 2400/s symbol streams once two sit on the mode's frame grid; a channel that has
- * named none for 0.6 s is analog. The same as the web's dsp/hamid/mode.ts.
+ * named none for 0.6 s is analog. M17's 8-symbol syncs count only one frame (192 symbols) after another. The same as the web's dsp/hamid/mode.ts.
  */
-val HAM_MODES = listOf("DMR", "D-STAR", "YSF", "P25", "NXDN")
+val HAM_MODES = listOf("DMR", "D-STAR", "YSF", "P25", "NXDN", "M17")
 private val DMR_P = hamSyncSigns("DMR"); private val P25_P = hamSyncSigns("P25"); private val NXDN_P = hamSyncSigns("NXDN")
 private fun signs(s: String) = IntArray(s.length) { if (s[it] == '1') 1 else -1 }
 private val DS_FS = signs("1010101010101010$DSTAR_FS"); private val DS_SYNC = signs(DSTAR_DSYNC)
 private val YSF_E = YSF_SYNC.sumOf { it * it }
-private val NEED = mapOf("DMR" to 3, "D-STAR" to 2, "YSF" to 2, "P25" to 2, "NXDN" to 3)
-private val PERIOD = mapOf("DMR" to 144, "D-STAR" to 2016, "YSF" to 480, "P25" to 864, "NXDN" to 384)
+private val M17_P = listOf(M17_SYNC_LSF, M17_SYNC_PACKET).map { w -> m17SyncSymbols(w).map { if (it > 0) 1 else -1 }.toIntArray() }
+private val NEED = mapOf("DMR" to 3, "D-STAR" to 2, "YSF" to 2, "P25" to 2, "NXDN" to 3, "M17" to 6)
+private val PERIOD = mapOf("DMR" to 144, "D-STAR" to 2016, "YSF" to 480, "P25" to 864, "NXDN" to 384, "M17" to 192)
 private const val HOLD_S = 2
 
 class ModeResult(val mode: String, val hits: Map<String, Int>, val seconds: Double)
@@ -27,11 +28,11 @@ class ModeDetector(val fs: Double) {
     private val r24 = DoubleArray(24); private var p24 = 0
     private val hits = HashMap<String, ArrayList<Long>>()
     private var t48 = 0L; private val lastHit48 = HashMap<String, Long>(); private var t24 = 0L; private var lastHit24 = -1_000_000_000L
-    private var samples = 0L
+    private var samples = 0L; private val m17Cand = ArrayDeque<Long>()
     private var sticky = ""
 
     init { s48.onSymbol = { sym48(it) }; s24.onSymbol = { sym24(it) } }
-    fun reset() { s48.reset(); s24.reset(); r48.fill(0.0); r24.fill(0.0); p48 = 0; p24 = 0; hits.clear(); lastHit48.clear(); t48 = 0; t24 = 0; lastHit24 = -1_000_000_000L; samples = 0; sticky = "" }
+    fun reset() { s48.reset(); s24.reset(); r48.fill(0.0); r24.fill(0.0); p48 = 0; p24 = 0; hits.clear(); lastHit48.clear(); t48 = 0; t24 = 0; lastHit24 = -1_000_000_000L; samples = 0; m17Cand.clear(); sticky = "" }
 
     fun push(disc: FloatArray, n: Int) { samples += n; s48.push(disc, n); s24.push(disc, n) }
 
@@ -58,6 +59,17 @@ class ModeDetector(val fs: Double) {
         var c = 0.0; var e = 0.0
         for (k in 0 until 20) { val x = r48[(p48 - 20 + k + 40) % 40]; c += x * YSF_SYNC[k]; e += x * x }
         if (e > 0 && abs(c / sqrt(e * YSF_E)) > 0.9) hit("YSF", t)
+        // M17's sync is only 8 symbols: a candidate counts when others came one and two frames (192 and 384 symbols)
+        // before it. Voice payloads and noise match it by chance too, so every candidate of the last two frames is kept.
+        for (pat in M17_P) {
+            val m = corrSigns(r48, p48, pat)
+            if (abs(m.first) > 0.9 && m.second > 2) {
+                while (m17Cand.isNotEmpty() && t - m17Cand.first() > 386) m17Cand.removeFirst()
+                if (m17Cand.any { abs(t - it - 192) <= 1 } && m17Cand.any { abs(t - it - 384) <= 2 }) hit("M17", t)
+                m17Cand.addLast(t)
+                break
+            }
+        }
         for (pat in arrayOf(DS_FS, DS_SYNC)) {
             var err = 0; var errInv = 0; val n = pat.size
             for (k in 0 until n) { val b = if (r48[(p48 - n + k + 40) % 40] > 0) 1 else -1; if (b != pat[k]) err++ else errInv++ }
