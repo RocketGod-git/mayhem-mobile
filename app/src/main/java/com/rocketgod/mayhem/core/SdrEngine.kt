@@ -4,6 +4,8 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.rocketgod.mayhem.Diag
+import com.rocketgod.mayhem.core.audio.AudioPlan
+import com.rocketgod.mayhem.core.audio.AudioRateConverter
 import com.rocketgod.mayhem.core.audio.DriftResampler
 import com.rocketgod.mayhem.core.audio.HdDetector
 import com.rocketgod.mayhem.core.audio.HdReport
@@ -42,8 +44,8 @@ object SdrEngine {
     const val IQ_RATE = 2_000_000
     /**
      * The general-purpose receivers' base rate. 1.92 Msps rather than 2, because the audio path decimates by whole
-     * numbers with no resampler: 1.92 M → 240 k → 48 k lands exactly on the 48 kHz output, where 2 M gives 50 k
-     * for WFM (played 4 % fast and sharp, and faster than the output drains, so it backs up) and 48.78 k for NFM.
+     * numbers: 1.92 M → 240 k → 48 k lands exactly on the 48 kHz output and needs no conversion, where 2 M gives 50 k,
+     * which [AudioRateConverter] has to bring to 48 k (see [AudioPlan]).
      * The fixed-purpose decoders keep [IQ_RATE]: their timing is built around it and they make no audio.
      */
     const val RX_RATE = 1_920_000
@@ -878,6 +880,21 @@ object SdrEngine {
             if (driftOut.size < drift.maxOut(n)) driftOut = ShortArray(drift.maxOut(n))
             emit(driftOut, drift.process(buf, n, driftOut))
         }
+        // The demodulator's own audio at a rate that is not 48 kHz (see AudioPlan) is converted to exactly 48 kHz here,
+        // before it is clipped, gated and played; a network radio's drift is taken up after, by the drift resampler.
+        var audioRs: AudioRateConverter? = null; var audioRsRate = 0.0
+        val rsIn = FloatArray(4096); var rsN = 0; var rsOut = FloatArray(0)
+        fun audioRsFlush(c: AudioRateConverter) {
+            if (rsOut.size < c.maxOut(rsN)) rsOut = FloatArray(c.maxOut(rsN))
+            val k = c.process(rsIn, rsN, rsOut); rsN = 0
+            for (i in 0 until k) {
+                val sampI = rsOut[i].coerceIn(-32000f, 32000f).toInt()
+                val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
+                if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
+                audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
+                if (audioLen >= audioBuf.size) { emitAudio(audioBuf, audioLen); audioLen = 0 }
+            }
+        }
         try {
             val me = Thread.currentThread()
             while (worker === me) {
@@ -898,7 +915,7 @@ object SdrEngine {
                     if (m != prevMode) {
                         prevI = 0f; prevQ = 0f; deemph = 0f; amDc = 0f; wph = 0.0
                         lpI1 = 0f; lpI2 = 0f; lpQ1 = 0f; lpQ2 = 0f
-                        decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0; chanDec = null
+                        decAcc = 0f; decCnt = 0; s1I = 0f; s1Q = 0f; s1n = 0; audioLen = 0; chanDec = null; rsN = 0; audioRs = null
                         rdsN = 0; sameN = 0
                         if (m != Mode.WFM) { rdsDec.reset(); hdDet.reset(); _rds.value = null; _hd.value = null }
                         prevMode = m
@@ -1059,9 +1076,15 @@ object SdrEngine {
                         // ~240 kHz by a plain average, everything else -> ~48 kHz through a CIC + FIR (ChannelDecimator)
                         // that keeps neighbors from folding onto the channel. Stage 2 decimates the audio to 48 kHz.
                         if (m != Mode.WFM && (chanDec == null || chanKey != rate)) { chanDec = ChannelDecimator(max(1, rate / AUDIO_RATE)); chanKey = rate }
-                        val stage1 = if (m == Mode.WFM) max(1, rate / 240_000) else chanDec!!.total
+                        val plan = AudioPlan.of(rate, m == Mode.WFM)
+                        val stage1 = plan.stage1
                         val interRate = rate / stage1
-                        val stage2 = max(1, interRate / AUDIO_RATE)
+                        val stage2 = plan.stage2
+                        // the demodulator's audio is at rate / stage1 / stage2; a rate that is not 48 kHz times both
+                        // (1.8 Msps gives 50 kHz for NFM) is converted to exactly 48 kHz, an exact one goes out untouched
+                        if (plan.exact) audioRs = null
+                        else if (audioRs == null || audioRsRate != plan.audioRate) { audioRs = AudioRateConverter(plan.audioRate); audioRsRate = plan.audioRate; rsN = 0 }
+                        val ars = audioRs
                         val wantFm = p != null && p.wantsFm
                         val filtered = m == Mode.NFM || m == Mode.AM
                         if (filtered) {
@@ -1154,14 +1177,18 @@ object SdrEngine {
                                         Mode.USB, Mode.LSB -> v *= 150f
                                         else -> {}
                                     }
-                                    val sampI = v.coerceIn(-32000f, 32000f).toInt()
-                                    val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
-                                    if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
-                                    audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
-                                    if (audioLen >= audioBuf.size) { emitAudio(audioBuf, audioLen); audioLen = 0 }
+                                    if (ars != null) { rsIn[rsN++] = v; if (rsN >= rsIn.size) audioRsFlush(ars) }
+                                    else {
+                                        val sampI = v.coerceIn(-32000f, 32000f).toInt()
+                                        val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
+                                        if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
+                                        audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
+                                        if (audioLen >= audioBuf.size) { emitAudio(audioBuf, audioLen); audioLen = 0 }
+                                    }
                                 }
                             }
                         }
+                        if (ars != null && rsN > 0) audioRsFlush(ars)
                         if (voiceOn && now - lastVoice > 250L) { lastVoice = now; _voice.value = voiceDet.read() }
                         if (wantFm && fmN > 0) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
                         if (audioLen > 0) { emitAudio(audioBuf, audioLen); audioLen = 0 }

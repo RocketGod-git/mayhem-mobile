@@ -11,6 +11,7 @@ import type { Emit, IqProcessor } from '../core.js';
 import { fft, hann, loadIqAt, accumulatePower, powerDbFrom } from '../../fft.js';
 import { ComplexFirDecimator, Mixer, RealFir, lowpassTaps } from './filters.js';
 import { SubAudioDecoder } from './ctcss.js';
+import { AudioRateConverter } from '../audiorate.js';
 
 const FFT_N = 4096, AUDIO_RATE = 48_000;
 
@@ -84,6 +85,8 @@ export class BandMonitor implements IqProcessor {
   private outChunk = new Float32Array(2048); private outLen = 0;
   private lastReport = 0; private lastPlan = '';
   private decA = 8; private decB = 5; private interRate = AUDIO_RATE;
+  /** The channels' audio is at rate / decA / decB (50 kHz at 2 Msps), converted to exactly 48 kHz for the output. */
+  private conv = new AudioRateConverter(AUDIO_RATE); private convOut = new Float32Array(0);
 
   constructor(private readonly emit: Emit, private readonly sink: (chunk: Float32Array) => void) {}
 
@@ -98,6 +101,7 @@ export class BandMonitor implements IqProcessor {
     this.decA = rate >= 3_000_000 ? 16 : 8;
     this.decB = Math.max(1, Math.round(rate / this.decA / AUDIO_RATE));
     this.interRate = rate / this.decA / this.decB;
+    this.conv = new AudioRateConverter(this.interRate);
     this.demods.clear(); this.order = []; this.frames = 0; this.acc.fill(0); this.lastPlan = ''; this.plan();
     this.emit({ type: 'log', line: `MONITOR: ${(rate / 1e6).toFixed(2)} Msps · ${this.chanHz.length} channels @ ${this.params.spacingHz / 1e3} kHz` });
   }
@@ -151,7 +155,12 @@ export class BandMonitor implements IqProcessor {
     }
     if (voices === 0) return;
     const g = p.volume / Math.sqrt(voices);
-    for (let i = 0; i < m; i++) { const v = mix[i] * g; this.outChunk[this.outLen++] = v > 1 ? 1 : v < -1 ? -1 : v; if (this.outLen >= this.outChunk.length) { this.sink(this.outChunk.slice()); this.outLen = 0; } }
+    let au = mix;
+    if (!this.conv.exact) {
+      if (this.convOut.length < this.conv.maxOut(m)) this.convOut = new Float32Array(this.conv.maxOut(m));
+      m = this.conv.process(mix, m, this.convOut); au = this.convOut;
+    }
+    for (let i = 0; i < m; i++) { const v = au[i] * g; this.outChunk[this.outLen++] = v > 1 ? 1 : v < -1 ? -1 : v; if (this.outLen >= this.outChunk.length) { this.sink(this.outChunk.slice()); this.outLen = 0; } }
   }
 
   /** Channel powers from the spectrum, floors, SNRs and open/close with hysteresis. */

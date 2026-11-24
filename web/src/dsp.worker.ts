@@ -58,6 +58,7 @@ import { AptDecoder } from './dsp/ham/apt.js';
 import { LrptDecoder } from './dsp/ham/lrpt.js';
 import type { FmTap } from './dsp/ham/demod.js';
 import { ChannelDecimator } from './dsp/ham/filters.js';
+import { AudioRateConverter, audioPlan } from './dsp/audiorate.js';
 
 type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
 
@@ -87,15 +88,14 @@ const pocsag = new PocsagDecoder(emit);
 const pager = new PagerSingle(emit);
 /** The pager app's MULTI: up to four channels across the span at once, the heard one through the speaker. */
 const hunter = new PagerHunter(emit);
-let huntPhase = 0;
+let huntRs: AudioRateConverter | null = null, huntOut = new Float32Array(0);
 hunter.onAudio = (xs, n, r) => {
-  // the channel's discriminator, resampled to the audio rate: the data's buzz, as on Android
-  const step = AUDIO_RATE / r;
-  for (let i = 0; i < n; i++) {
-    huntPhase += step;
-    if (huntPhase < 1) continue;
-    huntPhase -= 1;
-    audioBuf[audioLen++] = Math.max(-1, Math.min(1, xs[i] * 0.28));
+  // the channel's discriminator (50 kHz at 2 Msps) converted to exactly 48 kHz: the data's buzz, as on Android
+  if (!huntRs || huntRs.inRate !== r) huntRs = new AudioRateConverter(r);
+  if (huntOut.length < huntRs.maxOut(n)) huntOut = new Float32Array(huntRs.maxOut(n));
+  const k = huntRs.process(xs, n, huntOut);
+  for (let i = 0; i < k; i++) {
+    audioBuf[audioLen++] = Math.max(-1, Math.min(1, huntOut[i] * 0.28));
     if (audioLen >= audioBuf.length) flushAudio();
   }
 };
@@ -334,6 +334,23 @@ let mixBuf = new Float32Array(0), boxBuf = new Float32Array(0);
 /** Channel offset from the span center for the plain receiver (the view can be slid while the dial stays put). */
 let offsetHz = 0, offCr = 1, offCi = 0;
 const audioBuf = new Float32Array(2048); let audioLen = 0, audioPeak = 0;
+/**
+ * The demodulator's audio at a rate that is not 48 kHz (see audioPlan: 1.8 Msps gives 50 kHz for NFM) is converted
+ * to exactly 48 kHz before it is clipped, gated and played; an exact rate goes out as it always did.
+ */
+let audioRs: AudioRateConverter | null = null;
+const rsIn = new Float32Array(2048); let rsN = 0, rsOut = new Float32Array(0);
+function audioRsFlush(c: AudioRateConverter): void {
+  if (rsOut.length < c.maxOut(rsN)) rsOut = new Float32Array(c.maxOut(rsN));
+  const k = c.process(rsIn, rsN, rsOut); rsN = 0;
+  for (let i = 0; i < k; i++) {
+    const clipped = Math.max(-32000, Math.min(32000, rsOut[i]));
+    const a = Math.abs(clipped); if (a > audioPeak) audioPeak = a;
+    if (voiceOn) { vBuf[0] = clipped / 32768; voice.push(vBuf, 1); }   // judged before the squelch gates it
+    audioBuf[audioLen++] = sqOpen ? clipped / 32768 : 0;
+    if (audioLen >= audioBuf.length) flushAudio();
+  }
+}
 const fmBuf = new Float32Array(4096); let fmN = 0;
 /** Diagnostic: collect the discriminator audio for a while, then post it (`tapFm` message). */
 let fmTap: Float32Array | null = null, fmTapN = 0, fmTapRate = 0;
@@ -540,7 +557,7 @@ function process(iq: Int8Array): void {
   const p = processor;
   if (p && (p !== lastProc || rate !== lastProcRate)) { try { p.reset(rate); } catch (e) { emit({ type: 'log', line: `processor reset: ${(e as Error).message}` }); } lastProc = p; lastProcRate = rate; }
   else if (!p) lastProc = null;
-  if (mode !== prevMode) { prevI = prevQ = deemph = amDc = wph = 0; dcFmI = dcFmQ = 0; lpI1 = lpI2 = lpQ1 = lpQ2 = 0; decAcc = 0; decCnt = 0; s1I = s1Q = 0; s1n = 0; chanDec = null; audioLen = 0; rdsN = 0; sameN = 0; if (mode !== 'WFM') { rds.reset(); hd.reset(); } prevMode = mode; }
+  if (mode !== prevMode) { prevI = prevQ = deemph = amDc = wph = 0; dcFmI = dcFmQ = 0; lpI1 = lpI2 = lpQ1 = lpQ2 = 0; decAcc = 0; decCnt = 0; s1I = s1Q = 0; s1n = 0; chanDec = null; audioLen = 0; rsN = 0; audioRs = null; rdsN = 0; sameN = 0; if (mode !== 'WFM') { rds.reset(); hd.reset(); } prevMode = mode; }
 
   const now = performance.now();
   // accumulate every whole FFT frame in this buffer (a short buffer contributes one zero-padded frame)
@@ -604,7 +621,13 @@ function process(iq: Int8Array): void {
     if (mode !== 'WFM' && (!chanDec || chanKey !== rate)) { chanDec = new ChannelDecimator(Math.max(1, Math.floor(rate / AUDIO_RATE))); chanKey = rate; }
     const stage1 = mode === 'WFM' ? Math.max(1, Math.floor(rate / 240_000)) : chanDec!.total;
     const interRate = rate / stage1;
-    const audioStep = Math.max(1, interRate / AUDIO_RATE);
+    // stage 2 averages whole runs down to the audio, at rate / stage1 / stage2; a rate that is not 48 kHz times both is
+    // then converted to exactly 48 kHz (before, the runs alternated in length to average out at 48 kHz, which jittered)
+    const plan = audioPlan(rate, mode === 'WFM');
+    const audioStep = plan.exact ? Math.max(1, interRate / AUDIO_RATE) : plan.stage2;
+    if (plan.exact) audioRs = null;
+    else if (!audioRs || audioRs.inRate !== plan.audioRate) { audioRs = new AudioRateConverter(plan.audioRate); rsN = 0; }
+    const ars = audioRs;
     const wantFm = !!(p && p.wantsFm && p.onFm);
     const wInc = 2 * Math.PI * 1500 / interRate;
     // Channel width before the discriminator. AIS is 9.6 kbaud GMSK in a 25 kHz channel. ORBCOMM is 4.8 kbaud
@@ -679,9 +702,7 @@ function process(iq: Int8Array): void {
             if (fmTapN >= fmTap.length || performance.now() > fmBurstEnd) { const t = fmTap.slice(0, fmTapN); fmTap = null; post({ type: 'fmTap', rate: fmTapRate, samples: t, bursts: fmBurstCount }, [t.buffer]); }
           }
         }
-        // Stage 2 lands on exactly 48 kHz at any rate: whole-number rates average a fixed run as before; any
-        // other (2 Msps gives 50 kHz, an RTL-SDR's 2.56 or 3.2 Msps worse) alternates run lengths, so the player
-        // is fed what it plays and never overfills.
+        // Stage 2: a fixed run averaged down to the demodulator's audio rate (converted to 48 kHz after, when it is not)
         decAcc += s; decCnt++; decPhase += 1;
         if (decPhase >= audioStep) {
           decPhase -= audioStep;
@@ -690,6 +711,7 @@ function process(iq: Int8Array): void {
           else if (mode === 'NFM') v *= 16000;
           else if (mode === 'AM') v *= 60;
           else v *= 150;
+          if (ars) { rsIn[rsN++] = v; if (rsN >= rsIn.length) audioRsFlush(ars); continue; }
           const clipped = Math.max(-32000, Math.min(32000, v));
           const a = Math.abs(clipped); if (a > audioPeak) audioPeak = a;
           if (voiceOn) { vBuf[0] = clipped / 32768; voice.push(vBuf, 1); }   // judged before the squelch gates it
@@ -698,6 +720,7 @@ function process(iq: Int8Array): void {
         }
       }
     }
+    if (ars && rsN > 0) audioRsFlush(ars);
     if (wantFm && fmN > 0) { p!.onFm!(fmBuf, fmN, interRate); fmN = 0; }
     if (audioLen > 0) flushAudio();
     if (voiceOn && now - voiceLast > 250) { voiceLast = now; post({ type: 'voice', ...voice.read() }); }
