@@ -6,6 +6,8 @@
 
     <!-- Map tiles for the ADS-B map. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17: reaching an rtl_tcp server on the home network needs it -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <!-- The phone's position: the CPR reference for single-frame ADS-B positions and the map's starting centre. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />

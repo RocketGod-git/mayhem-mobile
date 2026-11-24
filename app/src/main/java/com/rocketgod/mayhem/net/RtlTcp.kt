@@ -59,6 +59,18 @@ object RtlTcp {
     @Volatile var onReleased: (() -> Unit)? = null
 
     private var prefs: android.content.SharedPreferences? = null
+    private var app: Context? = null
+
+    /** Android 17 drops an app's connections to the home network until it holds ACCESS_LOCAL_NETWORK. */
+    const val LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+    fun needsLocalNetwork(ctx: Context? = app): Boolean =
+        android.os.Build.VERSION.SDK_INT >= 37 && ctx != null &&
+            ctx.checkSelfPermission(LOCAL_NETWORK) != android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /** The permission was refused: say so instead of retrying a connection Android will drop. */
+    fun localNetworkRefused() {
+        _phase.value = Phase.OFF; _status.value = "Needs permission to reach devices on your network"
+    }
     @Volatile private var thread: Thread? = null
     @Volatile private var link: RtlTcpLink? = null
     @Volatile private var gen = 0
@@ -70,6 +82,7 @@ object RtlTcp {
 
     /** Load the remembered server; true when the network radio was on when the app last closed. */
     fun load(ctx: Context): Boolean {
+        app = ctx.applicationContext
         val p = ctx.getSharedPreferences("mayhem", Context.MODE_PRIVATE); prefs = p
         _host.value = p.getString("rtltcp_host", "") ?: ""
         _port.value = p.getInt("rtltcp_port", RtlTcpLink.DEFAULT_PORT).takeIf { it in 1..65535 } ?: RtlTcpLink.DEFAULT_PORT
@@ -88,6 +101,7 @@ object RtlTcp {
         if (hh.isEmpty() || p !in 1..65535) return
         remember(hh, p)
         prefs?.edit()?.putBoolean("rtltcp_on", true)?.apply()
+        if (needsLocalNetwork()) { localNetworkRefused(); return }
         val old = thread
         if (wanted && old?.isAlive == true && link?.let { it.host == hh && it.port == p } == true) return
         stopThread()

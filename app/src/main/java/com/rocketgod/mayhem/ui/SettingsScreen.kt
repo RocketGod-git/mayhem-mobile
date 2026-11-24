@@ -456,6 +456,10 @@ private fun NetworkSection(accent: Color) {
     val on = phase != RtlTcp.Phase.OFF
     var howTo by remember { mutableStateOf(false) }
     if (howTo) RtlTcpHowToDialog(accent) { howTo = false }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val askLocal = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) RtlTcp.connect() else RtlTcp.localNetworkRefused()
+    }
     val portOk = port.toIntOrNull()?.let { it in 1..65535 } == true
     val rows = buildList {
         add(SRow("network rtl_tcp host server ip") {
@@ -472,7 +476,10 @@ private fun NetworkSection(accent: Color) {
                     }
                     if (on) SmallButton("DISCONNECT", accent) { RtlTcp.disconnect() }
                     else SmallButton("CONNECT", if (host.isNotBlank() && portOk) accent else Palette.line) {
-                        if (host.isNotBlank() && portOk) RtlTcp.connect(host, port.toInt())
+                        if (host.isNotBlank() && portOk) {
+                            if (RtlTcp.needsLocalNetwork(ctx)) { RtlTcp.remember(host, port.toInt()); askLocal.launch(RtlTcp.LOCAL_NETWORK) }
+                            else RtlTcp.connect(host, port.toInt())
+                        }
                     }
                 }
                 if (status.isNotEmpty()) Text(status, color = when (phase) { RtlTcp.Phase.STREAMING -> Palette.ok; RtlTcp.Phase.RETRYING -> Palette.danger; else -> Palette.muted },
