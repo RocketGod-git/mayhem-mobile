@@ -454,6 +454,8 @@ private fun NetworkSection(accent: Color) {
     var host by remember(savedHost) { mutableStateOf(savedHost) }
     var port by remember(savedPort) { mutableStateOf(savedPort.toString()) }
     val on = phase != RtlTcp.Phase.OFF
+    var howTo by remember { mutableStateOf(false) }
+    if (howTo) RtlTcpHowToDialog(accent) { howTo = false }
     val portOk = port.toIntOrNull()?.let { it in 1..65535 } == true
     val rows = buildList {
         add(SRow("network rtl_tcp host server ip") {
@@ -479,6 +481,40 @@ private fun NetworkSection(accent: Color) {
         })
     }
     PanelSection("NETWORK", rows)
+    Text("How to set up a server", color = accent, fontFamily = Mono, fontSize = d.sp(11f),
+        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(10f)).clip(RoundedCornerShape(4.dp)).clickable { howTo = true }
+            .padding(horizontal = d.dp(4f), vertical = d.dp(6f)))
+}
+
+/** How to share an RTL-SDR with rtl_tcp, in four steps. */
+@Composable
+private fun RtlTcpHowToDialog(accent: Color, onDone: () -> Unit) {
+    val cmd = "rtl_tcp -a 0.0.0.0"
+    val step2 = androidx.compose.ui.text.buildAnnotatedString {
+        append("2. Run ")
+        pushStyle(androidx.compose.ui.text.SpanStyle(fontFamily = Mono, fontWeight = FontWeight.Bold, background = Palette.line))
+        append(cmd)
+        pop()
+        append(" to share it on your network. It listens on port 1234.")
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDone,
+        containerColor = Palette.surface,
+        titleContentColor = accent,
+        textContentColor = Palette.ink,
+        title = { Text("Set up an rtl_tcp server", fontFamily = Mono, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("1. On the computer with the RTL-SDR, install the RTL-SDR tools (rtl-sdr, or the RTL-SDR Blog drivers for a Blog V4).", fontFamily = Mono, fontSize = 13.sp)
+                Text(step2, fontFamily = Mono, fontSize = 13.sp)
+                Text("3. Let rtl_tcp through that computer's firewall.", fontFamily = Mono, fontSize = 13.sp)
+                Text("4. Enter that computer's IP address here and tap CONNECT.", fontFamily = Mono, fontSize = 13.sp)
+                Text("2.4 Msps needs about 40 Mbit/s, so use a wired link or strong Wi-Fi.", fontFamily = Mono, fontSize = 12.sp, color = Palette.muted, modifier = Modifier.padding(top = 4.dp))
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onDone) { Text("DONE", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold) } },
+    )
 }
 
 @Composable
