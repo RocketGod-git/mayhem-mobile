@@ -104,9 +104,12 @@ export class CallTracker {
     const k = gridKey(hz);
     return this.calls.find(c => c.kind === 'call' && (!onAir || c.onAir) && (!sys || !c.sys || c.sys === sys) && c.hz > 0 && gridKey(c.hz) === k && c.slot === slot);
   }
+  /** Calls created so far, the last part of each call's key. */
+  private made = 0;
   private create(p: Partial<CallRow> & { sys: string; proto: CallProto; hz: number; slot: number; codec: CodecId }, now: number): Call {
     const c: Call = {
-      key: `${p.sys}|${now}|${p.hz}|${p.slot}`, sys: p.sys, proto: p.proto, tg: p.tg ?? 0, group: p.group ?? true, src: p.src ?? 0, srcs: p.src ? [p.src] : [], hz: p.hz, slot: p.slot,
+      // the count keeps the key unique: two grants with no channel yet can start in the same millisecond
+      key: `${p.sys}|${now}|${p.hz}|${p.slot}|${++this.made}`, sys: p.sys, proto: p.proto, tg: p.tg ?? 0, group: p.group ?? true, src: p.src ?? 0, srcs: p.src ? [p.src] : [], hz: p.hz, slot: p.slot,
       tdma: p.tdma ?? false, encrypted: false, emergency: p.emergency ?? false, startMs: now, lastMs: now, endMs: 0, onAir: true, voiceMs: 0, frames: 0,
       levelDb: 0, peakDb: 0, site: p.site ?? '', codec: p.codec, end: '', muted: false, prio: false, audioMs: 0, lcVerified: false, granted: false, kind: 'call', cwId: '',
       outside: false, pos: null, sec: 'unknown', secFrom: '', algId: -1, keyId: -1, mi: '', pi: '', audioDb: 0, lpcn: p.lpcn ?? -1, chDerived: p.chDerived ?? false, protectedHint: false, decoded: 0, badFrames: 0, alias: '',
