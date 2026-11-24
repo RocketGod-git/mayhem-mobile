@@ -252,7 +252,27 @@ object RtlTcp {
         // shortfall is the server dropping buffers it could not send in time.
         var winStart = connectedAt + 2_000L; var winBytes0 = -1L
         var short = false; var shortSaid = 0L; var shortText = ""
+        var lastApply = 0L
+        var hStart = System.nanoTime(); var hIn = l.bytesIn; var hOut = pacer.deliveredBytes; var hRead = 0L; var hSink = 0L; var hReads = 0L
         while (live(my)) {
+            val hNow = System.nanoTime()
+            if (hNow - hStart >= 10_000_000_000L) {
+                val sec = (hNow - hStart) / 1e9
+                Diag.log("rtl_tcp reader: in %.2f MB/s · released %.2f MB/s · %d reads/s (avg %.1f KB) · in read %.0f ms/s · handing on %.0f ms/s · other %.0f ms/s · buffer %.2f s, target %.1f s".format(
+                    (l.bytesIn - hIn) / sec / 1e6, (pacer.deliveredBytes - hOut) / sec / 1e6, ((s.reads - hReads) / sec).toLong(),
+                    if (s.reads > hReads) (l.bytesIn - hIn) / 1024.0 / (s.reads - hReads) else 0.0,
+                    (s.readNs - hRead) / 1e6 / sec, (s.sinkNs - hSink) / 1e6 / sec, (hNow - hStart - (s.readNs - hRead) - (s.sinkNs - hSink)) / 1e6 / sec,
+                    pacer.latencyS, pacer.targetS))
+                hStart = hNow; hIn = l.bytesIn; hOut = pacer.deliveredBytes; hRead = s.readNs; hSink = s.sinkNs; hReads = s.reads
+            }
+            // settings are looked at every 20 ms, not on every read: the reader's job is to drain the socket
+            if (hNow - lastApply < 20_000_000L) {
+                val n = s.pump()
+                if (n < 0) return "closed by the server"
+                if (n > 0) lastData = System.currentTimeMillis()
+                continue
+            }
+            lastApply = hNow
             val f0 = s.appliedFreq
             if (s.applyPending()) { SdrEngine.onSource(s.appliedRate); pacer.reset(s.appliedRate); winStart = System.currentTimeMillis() + 2_000L; winBytes0 = -1L; short = false; shortText = "" }
             // samples buffered at the old frequency are not played at the new one

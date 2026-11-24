@@ -148,8 +148,8 @@ data class RtlTcpTargets(
 )
 
 /**
- * Streams one [RtlTcpLink]: sends what changed in [targets] and hands the I/Q to [sink] in whole I/Q pairs, in
- * chunks of [chunk] bytes (the size a USB dongle's reads come in), or what has arrived when the server goes quiet.
+ * Streams one [RtlTcpLink]: sends what changed in [targets] and hands the I/Q to [sink] in whole I/Q pairs, as it
+ * arrives, in reads of up to [chunk] bytes.
  * Every setting is sent once at the start, so a server that restarted is put back where the app was.
  */
 class RtlTcpStream(
@@ -158,7 +158,7 @@ class RtlTcpStream(
     private val targets: () -> RtlTcpTargets,
     private val sink: (ByteArray, Int) -> Unit,
     private val log: (String) -> Unit = {},
-    chunk: Int = 65536,
+    chunk: Int = 262144,
 ) {
     private val buf = ByteArray(chunk)
     private var fill = 0
@@ -201,20 +201,27 @@ class RtlTcpStream(
     }
 
     /**
-     * Read once. Hands a full chunk to the sink, or what is buffered when the read timed out (whole I/Q pairs only;
-     * an odd byte waits for its partner). Returns the bytes read (0 on a quiet timeout) or -1 when the server closed.
+     * Read once, as much as the socket holds (up to the buffer), and hand every whole I/Q pair on at once (an odd byte
+     * waits for its partner). The reader does nothing else, so the socket is drained as fast as it fills. Returns the
+     * bytes read (0 on a quiet timeout) or -1 when the server closed.
      */
     fun pump(): Int {
+        val r0 = System.nanoTime()
         val n = link.read(buf, fill, buf.size - fill)
+        val r1 = System.nanoTime(); readNs += r1 - r0; reads++
         if (n < 0) { if (fill >= 2) sink(buf, fill and 1.inv()); fill = 0; return -1 }
         fill += n
-        if (fill == buf.size || (n == 0 && fill >= 2)) {
+        if (fill >= 2) {
             val even = fill and 1.inv()
             sink(buf, even)
             if (fill > even) { buf[0] = buf[even]; fill = 1 } else fill = 0
+            sinkNs += System.nanoTime() - r1
         }
         return n
     }
+
+    /** Time spent waiting in the socket read and handing data on, and reads made: the reader's own health line. */
+    var readNs = 0L; var sinkNs = 0L; var reads = 0L
 
     companion object {
         /** Below this the R82xx tracking filter runs out (as in the USB driver). */

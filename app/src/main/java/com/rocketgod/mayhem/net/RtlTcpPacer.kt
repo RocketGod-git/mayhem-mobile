@@ -26,7 +26,8 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
     private var count = 0         // bytes buffered
     private var bps = 0L          // bytes a second at the nominal rate
     var chunk = 65536; private set
-    private var out = ByteArray(chunk)
+    // chunks copied out under the lock and handed to the engine after it, so the socket reader never waits on the engine
+    private var outs = Array(0) { ByteArray(0) }
 
     private var playing = false
     private var refillToTarget = false   // ran dry: wait for the whole target, not the short prebuffer
@@ -64,7 +65,8 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
             bps = b
             ring = ByteArray(((b * CAPACITY_S).toLong().coerceIn(1L shl 16, 64L shl 20) and 1L.inv()).toInt())
             chunk = if (b >= 3_200_000L) 65536 else 16384
-            out = ByteArray(chunk)
+            // the most one tick can owe: a tenth of a second of credit, plus one
+            outs = Array((maxOf(b / 10, chunk.toLong()) / chunk + 2).toInt()) { ByteArray(chunk) }
         }
         head = 0; count = 0; playing = false; refillToTarget = false; credit = 0.0; speed = 1.0
         winMin = Int.MAX_VALUE; winStartNs = 0L; lastInNs = -1L; inSeen = inTotal
@@ -95,8 +97,16 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
 
     private fun grow(toS: Double) { targetS = minOf(MAX_TARGET_S, maxOf(targetS, toS)) }
 
-    /** Hand the engine what is due at [nowNs]; returns the chunks handed over. */
-    fun tick(nowNs: Long): Int = synchronized(lock) {
+    /** Hand the engine what is due at [nowNs]; returns the chunks handed over. Called from one thread only. */
+    fun tick(nowNs: Long): Int {
+        val n = due(nowNs)
+        val c = chunk
+        for (i in 0 until n) sink(outs[i], c)
+        return n
+    }
+
+    /** Everything [tick] does under the lock: the bookkeeping, and copying what is due into [outs]. */
+    private fun due(nowNs: Long): Int = synchronized(lock) {
         if (bps == 0L) return@synchronized 0
         // stalls: how long since bytes last arrived, judged when they arrive again
         if (lastInNs < 0) { lastInNs = nowNs; inSeen = inTotal }
@@ -152,19 +162,19 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
         // a late wake-up is made up for, but never by more than a tenth of a second at once
         credit = minOf(credit + dt * 1e-9 * bps * speed, maxOf(bps / 10.0, chunk.toDouble()))
         var n = 0
-        while (credit >= chunk) {
+        while (credit >= chunk && n < outs.size) {
             if (count < chunk) {
                 playing = false; refillToTarget = true; credit = 0.0; rebuffers++
                 cleanSinceNs = nowNs; growPending = true; dryGapS = 0.0
                 grow(targetS + REBUFFER_STEP_S)
                 break
             }
+            val out = outs[n]
             val first = minOf(chunk, ring.size - head)
             System.arraycopy(ring, head, out, 0, first)
             if (first < chunk) System.arraycopy(ring, 0, out, first, chunk - first)
             head = (head + chunk) % ring.size; count -= chunk
             credit -= chunk; deliveredBytes += chunk
-            sink(out, chunk)
             n++
         }
         n
@@ -184,8 +194,8 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
         /** Speed off real time per second of error, and the error left alone. */
         const val STEER_GAIN = 0.2
         const val DEADBAND_S = 0.05
-        const val CUT_S = 4.0
-        const val CAPACITY_S = 5.0
+        const val CUT_S = 6.0
+        const val CAPACITY_S = 7.0
         const val WINDOW_NS = 2_000_000_000L
     }
 }
