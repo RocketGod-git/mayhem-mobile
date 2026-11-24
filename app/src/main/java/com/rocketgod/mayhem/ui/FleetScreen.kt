@@ -327,7 +327,7 @@ fun FleetScreen(accent: Color) {
     }
 
     val onAirNow = s?.calls.orEmpty().filter { it.onAir && it.kind == "call" && !it.outside }
-    PacketFrame(accent, Apps.fleetLog, tag = "DISPATCH", title = "P25 · DMR · NXDN · TETRA · TYPE II", roomy = true, waterfall = wf,
+    PacketFrame(accent, Apps.fleetLog, tag = "DISPATCH", title = "TRUNKED DISPATCH · CALLS", roomy = true, waterfall = wf,
         widePane = { m -> fleetMap(m) }, paneWaterfall = flBottom,
         onWaterfall = { Apps.setWaterfall(MayhemApp.FLEET, !wf) },
         lamp = {

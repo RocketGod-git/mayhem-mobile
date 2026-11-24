@@ -293,7 +293,7 @@ fun HdScreen(accent: Color) {
     }
 
     val wf = waterfallOn(MayhemApp.HD, phoneDefault = false)
-    PacketFrame(accent, HdApp.log, tag = "HD RADIO", title = if (call.isNotEmpty()) "$call${selProg?.let { " · HD${it.n + 1}" } ?: ""}" else "NRSC-5 · FM HYBRID",
+    PacketFrame(accent, HdApp.log, tag = "HD RADIO", title = if (call.isNotEmpty()) "$call${selProg?.let { " · HD${it.n + 1}" } ?: ""}" else "STATION DATA · ART · TRAFFIC",
         roomy = true, waterfall = wf, shift = -offset.toLong(), retune = { HdApp.pick(it) },
         widePane = { mod ->
             Column(mod, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {

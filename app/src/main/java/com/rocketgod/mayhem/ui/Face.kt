@@ -327,8 +327,12 @@ fun FreqCard(
     footer: (@Composable ColumnScope.() -> Unit)? = null,
     /** The subtitle on its own row under the header, whole, rather than squeezed beside the gain pill (the web's). */
     titleRow: Boolean = false,
+    /** The technical line under the header; null takes the open app's own (MayhemApp.tech). */
+    tech: String? = null,
 ) {
     val d = rememberDims()
+    val open by com.rocketgod.mayhem.core.Apps.current.collectAsState()
+    val techLine = tech ?: open?.tech.orEmpty()
     Column(Modifier.faceCard(accent, d)) {
         // a phone's header is too narrow for the subtitle: it gives way to the gain pill and the lamp
         val phone = d.widthDp <= 480
@@ -343,6 +347,9 @@ fun FreqCard(
             if (phone) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { GainChip(accent) } else GainChip(accent)
             lamp()
         }
+        // the technical line: fixed, on every width, phones too
+        if (techLine.isNotEmpty()) Text(techLine, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.5.sp,
+            maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(start = d.dp(2f), top = d.dp(3f)))
         if (!phone && titleRow) Text(title, color = titleColor, fontFamily = Mono, fontSize = d.sp(10f), letterSpacing = 2.sp, maxLines = 1, softWrap = false,
             overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().padding(start = d.dp(2f), top = d.dp(4f)))
         Box(Modifier.fillMaxWidth().padding(top = d.dp(2f))) {

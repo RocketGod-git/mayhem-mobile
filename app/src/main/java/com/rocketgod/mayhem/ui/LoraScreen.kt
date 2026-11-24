@@ -151,7 +151,7 @@ fun LoraScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.loraLog, tag = "MESH", title = "LORA · MESHTASTIC · MESHCORE · LORAWAN", roomy = true, waterfall = wf,
+    PacketFrame(accent, Apps.loraLog, tag = "MESH", title = "MESH RADIO TEXT", roomy = true, waterfall = wf,
         onWaterfall = { Apps.setWaterfall(MayhemApp.LORA, !wf) }, controls = {
         val wide = rate >= 10_000_000
         val narrowed by Apps.lora.narrowed.collectAsState()

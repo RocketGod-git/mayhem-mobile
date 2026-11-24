@@ -63,6 +63,47 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
         fun byName(name: String): MayhemApp? = if (name == "SUBGHZ" || name == "TPMS") DEVICES else entries.firstOrNull { it.name == name }
     }
 
+    /**
+     * The technical line under the frequency card's header: the protocols and bands this app really works with, in
+     * the engineer's words (the picker keeps the friendly name). Spectrum has instrument tiles and its own status
+     * line instead of a card, and Settings has no card, so neither shows one.
+     */
+    val tech: String get() = when (this) {
+        AUDIO -> "WFM · NFM · AM · SSB · RDS"
+        HD -> "NRSC-5 · IBOC · FM HYBRID"
+        FLEET -> "P25 · DMR · NXDN · TETRA · SMARTNET"
+        PAGER -> "POCSAG · FLEX · REFLEX"
+        LORA -> "LORA · MESHTASTIC · MESHCORE · LORAWAN"
+        ADSB -> "ADS-B · MODE S · 1090 MHZ"
+        UAT -> "UAT · FIS-B · 978 MHZ"
+        ACARS -> "ACARS · VHF AIRBAND"
+        VDL2 -> "VDL MODE 2 · 136.975 MHZ"
+        TRAINS -> "EOT · HOT · PTC 220 MHZ"
+        AIS -> "AIS · 161.975 / 162.025 MHZ"
+        CELL -> "LTE · SIB · WEA · ETWS"
+        DEVICES -> "OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ"
+        JS8 -> "JS8 · 8-FSK · HF USB"
+        HAM -> "SSB · CW · FM · FT8 · SSTV"
+        HAMPLUS -> "ANALOG FM · CTCSS · DCS · 10 M TO 70 CM"
+        CB -> "CB · 26.965–27.405 MHZ · AM · FM · SSB"
+        APRS -> "APRS · AX.25 · 144.390 MHZ"
+        ERT -> "ERT · GRIDSTREAM · 802.15.4G"
+        BTLE -> "BLE · ADVERTISING · 2.4 GHZ"
+        SAT -> "SGP4 · DOPPLER · APT · LRPT · AX.25"
+        SONDES -> "RS41 · DFM · M10 · 400–406 MHZ"
+        ATSC -> "ATSC 1.0 · 8VSB · PSIP"
+        PROWL -> "NFM · VOICE ACTIVITY HUNT"
+        SPECTRUM -> ""
+        ANALYZER -> "OOK · FSK · BURST DEMOD"
+        LOOKING_GLASS -> "WIDEBAND FFT SWEEP"
+        SEARCH -> "SQUELCH SCAN · ACTIVITY SEARCH"
+        CAPTURE -> "RAW IQ · SIGNED 8-BIT .C8"
+        // ADS-B transmit ships only in the sideload build (see TxScreen), so the Play build's line leaves it out
+        TRANSMIT -> "OOK · CW · POCSAG · APRS · RTTY" + if (com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) " · ADS-B" else ""
+        TROLL -> "OOK · FM · CW · .SUB REPLAY"
+        SETTINGS -> ""
+    }
+
     /** The tile and bar key this app sits under: VDL2 is the second band of Flight Messages. */
     fun barKey(): MayhemApp = if (this == VDL2) ACARS else this
 }
