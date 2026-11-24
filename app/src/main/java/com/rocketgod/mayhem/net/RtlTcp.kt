@@ -183,8 +183,11 @@ object RtlTcp {
                     if (attempts > 0) Diag.log("rtl_tcp: back on $at after ${attempts} ${if (attempts == 1) "retry" else "retries"}")
                     attempts = 0; lastWhy = ""
                     SdrEngine.syncDriver()
-                    val stream = RtlTcpStream(l, info, ::targets, { b, n -> runCatching { SdrEngine.onIq(b, n) } }, Diag::log)
+                    // the socket fills the jitter buffer; its own thread feeds the engine at the sample rate
+                    val pacer = RtlTcpPacer({ b, n -> runCatching { SdrEngine.onIq(b, n) } }, Diag::log)
+                    val stream = RtlTcpStream(l, info, ::targets, pacer::write, Diag::log)
                     stream.applyPending()
+                    pacer.reset(stream.appliedRate)
                     appliedFreq = stream.appliedFreq
                     SdrEngine.sourceLabel = label
                     SdrEngine.onSource(stream.appliedRate)
@@ -192,7 +195,12 @@ object RtlTcp {
                     Diag.log("rtl_tcp: streaming %.3f MHz @ %.3f Msps".format(stream.appliedFreq / 1e6, stream.appliedRate / 1e6))
                     _phase.value = Phase.STREAMING; everStreamed = true
                     _status.value = "Connected to $at · ${info.tuner}"
-                    reason = stream(my, l, stream)
+                    val pace = Thread({
+                        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) }
+                        try { while (!l.closed) { pacer.tick(System.nanoTime()); Thread.sleep(3) } } catch (_: InterruptedException) { }
+                    }, "rtltcp-pace").apply { isDaemon = true; start() }
+                    try { reason = stream(my, l, stream, pacer) } finally { l.close(); pace.interrupt(); runCatching { pace.join(500) } }
+                    if (pacer.rebuffers > 0 || pacer.overflowBytes > 0) Diag.log("rtl_tcp: jitter buffer ${pacer.rebuffers} rebuffers, ${pacer.overflowBytes} bytes overflowed this connection")
                     streamedMs = System.currentTimeMillis() - connectedAt
                 } catch (e: IOException) {
                     reason = if (l.closed && !live(my)) "" else why(e)
@@ -232,7 +240,7 @@ object RtlTcp {
     @Volatile private var connectedAt = 0L
 
     /** Stream until the link drops or the user stops it; returns why it ended. */
-    private fun stream(my: Int, l: RtlTcpLink, s: RtlTcpStream): String {
+    private fun stream(my: Int, l: RtlTcpLink, s: RtlTcpStream, pacer: RtlTcpPacer): String {
         connectedAt = System.currentTimeMillis()
         var lastData = connectedAt
         var lastStatus = 0L
@@ -242,7 +250,10 @@ object RtlTcp {
         var winStart = connectedAt + 2_000L; var winBytes0 = -1L
         var short = false; var shortSaid = 0L; var shortText = ""
         while (live(my)) {
-            if (s.applyPending()) { SdrEngine.onSource(s.appliedRate); winStart = System.currentTimeMillis() + 2_000L; winBytes0 = -1L; short = false; shortText = "" }
+            val f0 = s.appliedFreq
+            if (s.applyPending()) { SdrEngine.onSource(s.appliedRate); pacer.reset(s.appliedRate); winStart = System.currentTimeMillis() + 2_000L; winBytes0 = -1L; short = false; shortText = "" }
+            // samples buffered at the old frequency are not played at the new one
+            else if (s.appliedFreq != f0) pacer.reset(s.appliedRate)
             appliedFreq = s.appliedFreq
             val n = s.pump()
             val now = System.currentTimeMillis()
@@ -264,7 +275,8 @@ object RtlTcp {
                 } else if (short) { Diag.log("rtl_tcp: full rate again (%.2f Msps)".format(got / ((now - winStart) / 1000.0) / 1e6)); short = false; shortText = "" }
                 winStart = now; winBytes0 = l.bytesIn
             }
-            if (now - lastStatus > 1000L) { lastStatus = now; _status.value = "Connected to ${l.host}:${l.port} · ${tuner.ifEmpty { "RTL-SDR" }} · %.3f MHz".format(s.appliedFreq / 1e6) + shortText }
+            if (now - lastStatus > 1000L) { lastStatus = now; _status.value = "Connected to ${l.host}:${l.port} · ${tuner.ifEmpty { "RTL-SDR" }} · %.3f MHz".format(s.appliedFreq / 1e6) + shortText +
+                (if (pacer.rebuffers > 0) " · ${pacer.rebuffers} ${if (pacer.rebuffers == 1) "rebuffer" else "rebuffers"}" else "") }
         }
         return ""
     }
