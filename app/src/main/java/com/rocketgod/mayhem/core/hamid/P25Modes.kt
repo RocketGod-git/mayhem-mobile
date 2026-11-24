@@ -431,22 +431,31 @@ class P25Modes(val fs: Double) {
     private val s24 = DiscSymbols(fs, 2400.0)
     private var samples = 0L
     private val last = LinkedHashMap<String, Pair<Long, Int>>()
+    /** Checked frames on their grid, timed in 4800/s symbols (the 2400/s ones count two each). */
+    val gate = FrameGate()
+    private var t48 = 0L; private var t24 = 0L
     init {
-        s24.onSymbol = { nxdn.pushSymbol24(it); dpmr.pushSymbol(it) }
+        s24.onSymbol = { t24++; nxdn.pushSymbol24(it); dpmr.pushSymbol(it); gate.mark("NXDN", nxdn.checked, 2 * t24); gate.mark("dPMR", dpmr.checked, 2 * t24) }
         p25.onAudio = { onAudio("P25", 0, it) }
         p25p2.onAudio = { lch, pcm -> onAudio("P25P2", lch, pcm) }
         nxdn.onAudio = { onAudio("NXDN", 0, it) }
         dpmr.onAudio = { onAudio("dPMR", 0, it) }
     }
-    fun reset() { p25.reset(); p25p2.reset(); nxdn.reset(); dpmr.reset(); s24.reset(); samples = 0; last.clear() }
-    fun pushSymbol48(s: Double) { p25.pushSymbol(s); nxdn.pushSymbol48(s) }
+    fun reset() { p25.reset(); p25p2.reset(); nxdn.reset(); dpmr.reset(); s24.reset(); samples = 0; last.clear(); gate.reset(); t48 = 0; t24 = 0 }
+    fun pushSymbol48(s: Double) {
+        t48++; p25.pushSymbol(s); nxdn.pushSymbol48(s)
+        // P25's frames of one NAC: TDUs every 72 symbols in a repeater's hang time, LDUs every 864
+        gate.mark("P25:" + p25.id.nac, p25.checked, t48); gate.mark("NXDN", nxdn.checked, t48)
+    }
+    /** Whether [m]'s checked frames came on its frame grid (Phase 2: its checks alone). */
+    fun framed(m: String): Boolean = when (m) { "P25P2" -> true; "P25" -> gate.framed("P25:" + p25.id.nac); else -> gate.framed(m) }
     fun push(disc: FloatArray, n: Int) {
         s24.push(disc, n); p25p2.push(disc, n); samples += n
         fun mark(m: String, c: Int) { val l = last[m]; if (c > 0 && (l == null || l.second != c)) last[m] = Pair(samples, c) }
         mark("P25", p25.checked); mark("P25P2", p25p2.checked); mark("NXDN", nxdn.checked); mark("dPMR", dpmr.checked)
     }
     /** The mode whose checks passed last, or "" when none has. */
-    val mode: String get() { var best = ""; var at = -1L; for ((m, l) in last) if (l.first > at) { at = l.first; best = m }; return best }
+    val mode: String get() { var best = ""; var at = -1L; for ((m, l) in last) if (l.first > at && framed(m)) { at = l.first; best = m }; return best }
 
     fun snapshot(): P25ModesSnap {
         val m = mode

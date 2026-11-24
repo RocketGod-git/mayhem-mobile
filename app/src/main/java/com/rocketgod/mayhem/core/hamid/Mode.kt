@@ -29,10 +29,14 @@ class ModeDetector(val fs: Double) {
     private val hits = HashMap<String, ArrayList<Long>>()
     private var t48 = 0L; private val lastHit48 = HashMap<String, Long>(); private var t24 = 0L; private var lastHit24 = -1_000_000_000L
     private var samples = 0L; private val m17Cand = ArrayDeque<Long>()
+    /** The last 192 symbols (the eye at a sync), each mode's eye votes, and its consecutive sync spacings on and off its grid. */
+    private val eyeRing = DoubleArray(192); private var ep = 0
+    private val eyes = HashMap<String, EyeVotes>(); private val lastAt = HashMap<String, Long>(); private val spacing = HashMap<String, IntArray>()
     private var sticky = ""
 
     init { s48.onSymbol = { sym48(it) }; s24.onSymbol = { sym24(it) } }
-    fun reset() { s48.reset(); s24.reset(); r48.fill(0.0); r24.fill(0.0); p48 = 0; p24 = 0; hits.clear(); lastHit48.clear(); t48 = 0; t24 = 0; lastHit24 = -1_000_000_000L; samples = 0; m17Cand.clear(); sticky = "" }
+    fun reset() { s48.reset(); s24.reset(); r48.fill(0.0); r24.fill(0.0); p48 = 0; p24 = 0; hits.clear(); lastHit48.clear(); t48 = 0; t24 = 0; lastHit24 = -1_000_000_000L; samples = 0; m17Cand.clear(); sticky = ""
+        eyeRing.fill(0.0); ep = 0; eyes.clear(); lastAt.clear(); spacing.clear() }
 
     fun push(disc: FloatArray, n: Int) { samples += n; s48.push(disc, n); s24.push(disc, n) }
 
@@ -41,7 +45,17 @@ class ModeDetector(val fs: Double) {
         if (t - last < 8) return
         lastHit48[mode] = t
         hits.getOrPut(mode) { ArrayList() }.add(t)
+        val prev = lastAt[mode]
+        if (prev != null) { val sp = spacing.getOrPut(mode) { IntArray(2) }; if (onGrid(t - prev, PERIOD.getValue(mode))) sp[0]++ else sp[1]++ }
+        lastAt[mode] = t
+        if (mode == "P25" || mode == "M17") { val v = eyes.getOrPut(mode) { EyeVotes() }; if (eyeLevels(eyeRing) == 4) v.four++ else v.other++ }
     }
+    /** The eye votes at [mode]'s syncs (P25 and M17). */
+    fun eye(mode: String): EyeVotes? = eyes[mode]
+    /** [mode]'s syncs came off its frame grid more often than on it: whatever passes that mode's checks is chance. */
+    fun offGrid(mode: String): Boolean { val sp = spacing[mode] ?: return false; return sp[1] > sp[0] }
+    /** Consecutive sync spacings of [mode]: on the grid, off it. */
+    fun syncSpacing(mode: String): Pair<Int, Int> { val sp = spacing[mode] ?: return Pair(0, 0); return Pair(sp[0], sp[1]) }
 
     private fun corrSigns(ring: DoubleArray, p: Int, pat: IntArray): Pair<Double, Double> {
         val R = ring.size; val n = pat.size
@@ -54,6 +68,7 @@ class ModeDetector(val fs: Double) {
         onSymbol48(s)
         val t = ++t48
         r48[p48] = s; p48 = (p48 + 1) % 40
+        eyeRing[ep] = s; ep = (ep + 1) % 192
         for (pat in DMR_P) { val m = corrSigns(r48, p48, pat); if (m.first > 0.85 && m.second > 1.8) { hit("DMR", t); break } }
         for (pat in P25_P) { val m = corrSigns(r48, p48, pat); if (m.first > 0.86 && m.second > 1.8) { hit("P25", t); break } }
         var c = 0.0; var e = 0.0
@@ -94,11 +109,12 @@ class ModeDetector(val fs: Double) {
             hits[m] = a
             out[m] = a.size
             val P = PERIOD.getValue(m)
-            var onGrid = false
-            var i = 1
-            while (i < a.size && !onGrid) { for (j in 0 until i) { val r = ((a[i] - a[j]) % P).toInt(); if (r <= 3 || r >= P - 3) { onGrid = true; break } }; i++ }
+            // consecutive syncs a whole number of frames apart, at least as many as off the grid (Framing.kt)
+            var on = 0; var off = 0
+            for (i in 1 until a.size) { if (onGrid(a[i] - a[i - 1], P)) on++ else off++ }
+            val framed = on >= 1 && on >= off && ((m != "P25" && m != "M17") || eyeOk(eyes[m]))
             val need = NEED.getValue(m)
-            if (onGrid && a.size >= need && a.size.toDouble() / need > bestN) { bestN = a.size.toDouble() / need; best = m }
+            if (framed && a.size >= need && a.size.toDouble() / need > bestN) { bestN = a.size.toDouble() / need; best = m }
         }
         val seconds = samples / fs
         if (best.isNotEmpty()) sticky = best else if (seconds >= 0.6) sticky = "analog"

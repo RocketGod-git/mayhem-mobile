@@ -34,7 +34,7 @@ class HamIdChannel(val fs: Double) {
     /** Set to hear the channel: every vocoder frame, decoded, in the order sent per stream. */
     var onPcm: ((HamPcmFrame) -> Unit)? = null
     init {
-        mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it); m17.pushSymbol(it) }
+        mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it); m17.pushSymbol(it); frames() }
         dmr.onVoiceFrame = { pcm(it, dmr.slots[if (it.stream == "dmr2") 1 else 0].privacy) }
         dstar.onVoiceFrame = { pcm(it, false) }
         ysf.onVoiceFrame = { pcm(it, false) }
@@ -52,25 +52,54 @@ class HamIdChannel(val fs: Double) {
             }
         }
     }
+    /** Checked frames of the 4800/s decoders on their grids, and the symbol count they are timed by. */
+    val gate = FrameGate()
+    private var t48 = 0L
+    /** Discriminator samples pushed, and those pushed while the receiver clipped. */
+    var samples = 0L; var clippedSamples = 0L
     val p25 = P25Modes(fs)
     val analog = AnalogSignaling(fs)
     /** Clear digital voice, 160 samples at 8 kHz a frame: the mode and the slot (0, or Phase 2's 0 and 1). */
     var onAudio: (String, Int, FloatArray) -> Unit = { _, _, _ -> }
     init { p25.onAudio = { m, slot, pcm -> onAudio(m, slot, pcm) }; val s48 = mode.onSymbol48; mode.onSymbol48 = { s48(it); p25.pushSymbol48(it) } }
-    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); voice.reset(); dd?.reset(); p25.reset(); analog.reset(); m17.reset(); c2 = null }
+    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); voice.reset(); dd?.reset(); p25.reset(); analog.reset(); m17.reset(); c2 = null; gate.reset(); t48 = 0; samples = 0; clippedSamples = 0 }
     /** Discriminator samples, radians per sample, at [fs]. */
-    fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n); dd?.push(disc, n); p25.push(disc, n); analog.push(disc, n) }
+    fun push(disc: FloatArray, n: Int, clipped: Boolean = false) {
+        samples += n
+        // while the receiver clips (a strong signal nearby spraying spurs) only the analog signaling hears the channel
+        if (clipped) { clippedSamples += n; analog.push(disc, n); return }
+        mode.push(disc, n); dtmf.push(disc, n); dd?.push(disc, n); p25.push(disc, n); analog.push(disc, n)
+    }
+    /** After each 4800/s symbol: a checked frame of DMR, D-STAR, Fusion or M17 is timed for the frame grid. */
+    private fun frames() {
+        val t = ++t48
+        gate.mark("DMR", dmr.checked + dmr.clean, t); gate.mark("D-STAR", dstar.id.frames, t)
+        gate.mark("YSF", ysf.id.frames, t); gate.mark("M17", m17.id.lsfs + m17.id.frames, t)
+    }
+    /** Whether a decoder's checks may name [m]: its frames on their grid, its syncs not heard off it, the eye for M17. */
+    fun claims(m: String): Boolean = when (m) {
+        "M17" -> (m17.id.lsfs > 0 || m17.id.frames >= 3) && gate.framed("M17") && !mode.offGrid("M17") && eyeOk(mode.eye("M17"))
+        "YSF" -> ysf.id.frames > 0 && gate.framed("YSF") && !mode.offGrid("YSF")
+        "D-STAR" -> dstar.id.headers > 0 || (dstar.id.frames >= 20 && gate.framed("D-STAR"))
+        "DMR" -> (dmr.checked > 0 || dmr.clean >= 3) && gate.framed("DMR") && !mode.offGrid("DMR")
+        else -> false
+    }
+    /** P25 Phase 1 and 2, NXDN and dPMR: the mode whose checked frames came last on their grid (P25 with its eye). */
+    private fun moreMode(): String { val m = p25.mode; return if (m == "P25" && !eyeOk(mode.eye("P25"))) "" else m }
 
     fun snapshot(): HamIdSnap {
         val r = mode.result()
         var m = r.mode
-        if (m17.id.lsfs > 0 || m17.id.frames >= 3) m = "M17"
-        else if (ysf.id.frames > 0) m = "YSF"
-        else if (dstar.id.headers > 0 || dstar.id.frames >= 20) m = "D-STAR"
-        else if (dmr.checked > 0 || dmr.clean >= 3) m = "DMR"
+        // a decoder's checks name the mode before the detector's sync count does
+        var claimed = true
+        if (claims("M17")) m = "M17"
+        else if (claims("YSF")) m = "YSF"
+        else if (claims("D-STAR")) m = "D-STAR"
+        else if (claims("DMR")) m = "DMR"
         else if (dd != null && dd.id.packets > 0) m = "D-STAR"
-        val more = if (p25.mode.isNotEmpty()) p25.snapshot() else null
-        if (more != null && m != "YSF" && m != "D-STAR" && m != "DMR" && m != "M17") m = more.mode
+        else claimed = false
+        val more = if (moreMode().isNotEmpty()) p25.snapshot() else null
+        if (more != null && !claimed) m = more.mode
         val ddId = if (dd != null && dd.id.packets > 0) dd.id.copy() else null
         var station = ""; var repeater = ""; var position: Position? = null
         var slots: List<DmrSlotId>? = null; var ds: DStarId? = null; var ys: YsfId? = null; var mi: M17Id? = null
