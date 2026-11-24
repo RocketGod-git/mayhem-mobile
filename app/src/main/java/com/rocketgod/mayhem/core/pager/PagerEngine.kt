@@ -1,6 +1,7 @@
 package com.rocketgod.mayhem.core.pager
 
 import com.rocketgod.mayhem.core.Dsp
+import com.rocketgod.mayhem.core.audio.AudioRateConverter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -287,7 +288,7 @@ object PagerEngine {
             }
         })
         slot = Slot(hz, rx, t)
-        rx.tap = { xs, n -> if (heard === slot) pushAudio(xs, n) }
+        rx.tap = { xs, n -> if (heard === slot) pushAudio(xs, n, rx.outRate) }
         rx.configure(center, rateHz)
         replay(rx)
         return slot
@@ -433,13 +434,22 @@ object PagerEngine {
     private val ring = FloatArray(1 shl 15)
     private var aR = 0; private var aW = 0
     private var dc = 0f
-    private fun pushAudio(xs: FloatArray, n: Int) {
+    // The channel's discriminator runs at its own rate (50 kHz at 2 Msps, 45.5 kHz at 2.048), converted to exactly 48 kHz
+    // for the output; at 48 kHz itself it goes through untouched.
+    private var conv: AudioRateConverter? = null
+    private var convIn = FloatArray(0); private var convOut = FloatArray(0)
+    private fun pushAudio(xs: FloatArray, n: Int, inRate: Double) {
         synchronized(ring) {
-            for (i in 0 until n) {
-                dc += (xs[i] - dc) * 0.001f
+            if (inRate <= 0) return
+            val c = conv?.takeIf { it.inRate == inRate } ?: AudioRateConverter(inRate).also { conv = it }
+            if (convIn.size < n) convIn = FloatArray(n)
+            for (i in 0 until n) { dc += (xs[i] - dc) * 0.001f; convIn[i] = (xs[i] - dc) * AUDIO_GAIN }
+            if (convOut.size < c.maxOut(n)) convOut = FloatArray(c.maxOut(n))
+            val k = c.process(convIn, n, convOut)
+            for (i in 0 until k) {
                 val nxt = (aW + 1) and (ring.size - 1)
                 if (nxt == aR) break   // full: drop the rest of this block rather than block the DSP thread
-                ring[aW] = (xs[i] - dc) * AUDIO_GAIN
+                ring[aW] = convOut[i]
                 aW = nxt
             }
         }
