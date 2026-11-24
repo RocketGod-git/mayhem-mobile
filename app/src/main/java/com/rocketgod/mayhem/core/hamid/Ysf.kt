@@ -6,8 +6,9 @@ import kotlin.math.sqrt
  * Yaesu System Fusion (C4FM) identity, from Yaesu's "Amateur Radio Digital Specifications" (rev. 1.01): the FS sync
  * D471C9634D, the FICH (CRC-16, Golay (24,12,8), K = 5 code, dibit interleave 20 x 5) and the callsign data units
  * (PN (9,5) whitening, CRC-16, K = 5 code, dibit interleave 20 x 9 or 20 x 5): destination, source, downlink and
- * uplink callsigns, the remarks, DG-ID (the squelch code), and positions in the data units. The same as the web's
- * dsp/hamid/ysf.ts.
+ * uplink callsigns, the remarks, DG-ID (the squelch code), and positions in the data units. The voice goes out frame
+ * by frame: V/D mode 1 72-bit AMBE+2, V/D mode 2 49 bits out of each VCH and VeCH, Voice FR 144-bit full rate. The
+ * same as the web's dsp/hamid/ysf.ts.
  */
 val YSF_SYNC: DoubleArray = run {
     val lv = intArrayOf(1, 3, -1, -3); val out = ArrayList<Double>()
@@ -67,13 +68,18 @@ class YsfId {
     var dgid = -1; var sqlOn = false; var dt = -1; var callMode = -1; var route = -1; var voip = false
     var position: Position? = null; var positionText = ""
     var frames = 0; var units = 0; var inverted = false; var active = false
-    fun copy(): YsfId = YsfId().also { it.dest = dest; it.src = src; it.down = down; it.up = up; it.rem = rem.copyOf(); it.dgid = dgid; it.sqlOn = sqlOn; it.dt = dt; it.callMode = callMode; it.route = route; it.voip = voip; it.position = position; it.positionText = positionText; it.frames = frames; it.units = units; it.inverted = inverted; it.active = active }
+    /** A WIRES-X reply the node sent (its name, the room it is connected to). */
+    var wires: WiresX? = null
+    fun copy(): YsfId = YsfId().also { it.wires = wires; it.dest = dest; it.src = src; it.down = down; it.up = up; it.rem = rem.copyOf(); it.dgid = dgid; it.sqlOn = sqlOn; it.dt = dt; it.callMode = callMode; it.route = route; it.voip = voip; it.position = position; it.positionText = positionText; it.frames = frames; it.units = units; it.inverted = inverted; it.active = active }
 }
 private fun slice4(s: Double) = if (s > 2) 1 else if (s > 0) 0 else if (s > -2) 2 else 3
 private val LINE_SPLIT = Regex("[\\r\\n]+")
 
 class YsfReceiver {
     var onFich: (YsfFich) -> Unit = {}
+    /** Each vocoder frame of a communication frame, stream "ysf". */
+    var onVoiceFrame: (HamVoiceFrame) -> Unit = {}
+    private var frameAt = 0L
     private val ring = DoubleArray(20); private var rp = 0
     private var sym: DoubleArray? = null; private var sn = 0; private var inv = 1.0
     private var t = 0L; private var lastSync = -1_000_000_000L
@@ -84,7 +90,7 @@ class YsfReceiver {
     fun reset() {
         ring.fill(0.0); rp = 0; sym = null; sn = 0; inv = 1.0; t = 0; lastSync = -1_000_000_000L; dtBytes.clear(); syncs = 0
         id.dest = ""; id.src = ""; id.down = ""; id.up = ""; id.rem = arrayOf("", "", "", ""); id.dgid = -1; id.sqlOn = false; id.dt = -1; id.callMode = -1; id.route = -1; id.voip = false
-        id.position = null; id.positionText = ""; id.frames = 0; id.units = 0; id.inverted = false; id.active = false
+        id.position = null; id.positionText = ""; id.frames = 0; id.units = 0; id.inverted = false; id.active = false; id.wires = null
     }
 
     fun pushSymbol(s: Double) {
@@ -104,7 +110,7 @@ class YsfReceiver {
         val thr = if (expected) 0.6 else 0.9
         if (corr >= thr || corr <= -thr) {
             inv = if (corr > 0) 1.0 else -1.0; id.inverted = inv < 0
-            syncs++; lastSync = t; sym = DoubleArray(460); sn = 0
+            syncs++; lastSync = t; frameAt = t; sym = DoubleArray(460); sn = 0
         }
     }
 
@@ -118,6 +124,7 @@ class YsfReceiver {
         val p = d.copyOfRange(100, 460)
         fun blocks(first: Int): IntArray { val o = IntArray(180); for (j in 0 until 5) System.arraycopy(p, (2 * j + first) * 36, o, 36 * j, 36); return o }
         if (fi.fi == 0) newCall()
+        if (fi.fi == 1) voice(fi, p)
         if (fi.fi == 0 || fi.fi == 2) { csd(1, decodeUnit(blocks(0))); csd(2, decodeUnit(blocks(1))) }
         else if (fi.fi == 1) {
             when (fi.dt) {
@@ -129,6 +136,17 @@ class YsfReceiver {
                 }
                 3 -> if (fi.fn == 0) csd(3, decodeUnit(p.copyOfRange(0, 180)))
             }
+        }
+    }
+
+    /** The vocoder frames of a communication frame's payload ([p], 360 dibits). */
+    private fun voice(fi: YsfFich, p: IntArray) {
+        fun bitsOf(off: Int, n: Int) = IntArray(2 * n) { if (it and 1 == 0) p[off + (it shr 1)] shr 1 else p[off + (it shr 1)] and 1 }
+        fun at(off: Int) = (frameAt + 101 + off).toDouble()
+        when (fi.dt) {
+            0 -> for (j in 0 until 5) { val off = (2 * j + 1) * 36; onVoiceFrame(HamVoiceFrame("ysf", "ambe2", bitsOf(off, 36), at(off), 0)) }
+            2 -> for (j in 0 until 5) { val off = 72 * j + 20; val v = ysfVd2Voice(p, off); onVoiceFrame(HamVoiceFrame("ysf", "ambe2-49", v.bits, at(off), v.errs)) }
+            3 -> for (off in if (fi.fn == 0 && fi.ft == 1) intArrayOf(216, 288) else intArrayOf(0, 72, 144, 216, 288)) onVoiceFrame(HamVoiceFrame("ysf", "imbe", bitsOf(off, 72), at(off), 0))
         }
     }
 
@@ -158,8 +176,9 @@ class YsfReceiver {
         id.units++
         while (dtBytes.size <= k) dtBytes.add(null)
         dtBytes[k] = u
-        val sb = StringBuilder()
-        for (b in dtBytes) { if (b == null) break; for (v in b) if (v != 0) sb.append(v.toChar()) }
+        val sb = StringBuilder(); val raw = ArrayList<Int>()
+        for (b in dtBytes) { if (b == null) break; for (v in b) { raw.add(v); if (v != 0) sb.append(v.toChar()) } }
+        wiresxReply(raw.toIntArray())?.let { id.wires = it }
         for (line in sb.toString().split(LINE_SPLIT)) {
             val pos = parsePositionLine(line)
             if (pos != null) { id.position = pos; id.positionText = line.trim() }

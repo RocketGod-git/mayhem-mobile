@@ -10,18 +10,22 @@ import com.rocketgod.mayhem.core.fleet.embBits
 import com.rocketgod.mayhem.core.fleet.parseEmbLc
 import com.rocketgod.mayhem.core.fleet.readEmb
 import com.rocketgod.mayhem.core.fleet.rs129Ok
+import com.rocketgod.mayhem.core.fleet.voiceFrames
 import kotlin.math.abs
 
 /**
  * Who is on a DMR channel (ETSI TS 102 361-1 and -2), built on Fleet's DMR layers: per time slot the color code,
  * group or private call, talkgroup or called radio, the calling radio's ID, its talker alias, and its position from
- * the GPS Info LC (FLCO 8) or NMEA sentences in rate 1/2 packet data. The same as the web's dsp/hamid/dmrid.ts.
+ * the GPS Info LC (FLCO 8), NMEA sentences in rate 1/2 or 3/4 packet data, ETSI LIP (in UDP to port 5017, or a
+ * USBD poll response) or Motorola LRRP (UDP port 4001). Voice bursts hand their three AMBE+2 frames on. The same as the web's dsp/hamid/dmrid.ts.
  */
 class DmrSlotId(val slot: Int) {
     var cc = -1; var group = true; var tg = 0; var src = 0; var alias = ""
     var emergency = false; var privacy = false; var position: Position? = null; var posError = -1
+    /** From a LIP report: speed (km/h, -1 unknown) and heading (degrees); -1 when the position came some other way. */
+    var speedKmh = -1.0; var heading = -1.0
     var activity = ""; var calls = 0; var lastSym = -1L
-    fun copy(): DmrSlotId = DmrSlotId(slot).also { it.cc = cc; it.group = group; it.tg = tg; it.src = src; it.alias = alias; it.emergency = emergency; it.privacy = privacy; it.position = position; it.posError = posError; it.activity = activity; it.calls = calls; it.lastSym = lastSym }
+    fun copy(): DmrSlotId = DmrSlotId(slot).also { it.cc = cc; it.group = group; it.tg = tg; it.src = src; it.alias = alias; it.emergency = emergency; it.privacy = privacy; it.position = position; it.posError = posError; it.speedKmh = speedKmh; it.heading = heading; it.activity = activity; it.calls = calls; it.lastSym = lastSym }
 }
 
 class GpsLc(val pos: Position, val err: Int)
@@ -48,8 +52,10 @@ fun nmeaInPayload(b: IntArray): Position? {
 }
 
 class DmrIdentity {
-    private class Pending(val blocks: Int, val confirmed: Boolean) { val got = ArrayList<IntArray>() }
+    private class Pending(val blocks: Int, val confirmed: Boolean) { val got = ArrayList<IntArray>(); var dt = 0 }
     val framer = DmrFramer()
+    /** Each 72-bit vocoder frame of a voice burst, stream "dmr1" or "dmr2". */
+    var onVoiceFrame: (HamVoiceFrame) -> Unit = {}
     val slots = arrayOf(DmrSlotId(1), DmrSlotId(2))
     private val emb = arrayOf(EmbLcAssembler(), EmbLcAssembler())
     private val alias = arrayOf(TalkerAlias(), TalkerAlias())
@@ -99,22 +105,41 @@ class DmrIdentity {
                 if (src != 0 && src != ts.src) { ts.src = src; ts.alias = ""; alias[k].reset() }
                 ts.tg = dst; ts.group = (y[0] and 0x80) != 0
             }
-            7 -> {
+            7, 8 -> {
                 val p = pending[k] ?: return
-                p.got.add(y)
+                if (p.dt != 0 && p.dt != b.dt) return
+                p.dt = b.dt
+                p.got.add(if (b.dt == 7) y else rate34Decode(payloadBits(e.dibits)).bytes)
                 if (p.got.size >= p.blocks) {
                     pending[k] = null
                     val parts = ArrayList<Int>()
-                    for (g in p.got) for (i in (if (p.confirmed) 2 else 0) until 12) parts.add(g[i])
-                    val pos = nmeaInPayload(parts.subList(0, maxOf(0, parts.size - 4)).toIntArray())
-                    if (pos != null) { ts.position = pos; ts.posError = -1 }
+                    for (g in p.got) for (i in (if (p.confirmed) 2 else 0) until g.size) parts.add(g[i])
+                    val body = parts.subList(0, maxOf(0, parts.size - 4)).toIntArray()
+                    val lip = lipInIp(body); val lrrp = if (lip == null) lrrpInIp(body) else null
+                    if (lip != null) lip(ts, lip)
+                    else if (lrrp != null) { ts.position = Position(lrrp.lat, lrrp.lon, lrrp.source); ts.posError = -1; ts.speedKmh = -1.0; ts.heading = lrrp.heading }
+                    else { val pos = nmeaInPayload(body); if (pos != null) { ts.position = pos; ts.posError = -1; ts.speedKmh = -1.0; ts.heading = -1.0 } }
                 }
+            }
+            11 -> {
+                if (!Codes.crc12Ok(y, 0x3333)) return
+                checked++; ts.cc = b.cc; ts.lastSym = t
+                val lip = usbdLip(y); if (lip != null) lip(ts, lip)
             }
         }
     }
 
+    private fun lip(ts: DmrSlotId, r: LipReport) { ts.position = Position(r.lat, r.lon, r.source); ts.posError = r.posError; ts.speedKmh = r.speedKmh; ts.heading = r.heading }
+    private fun payloadBits(d: IntArray): IntArray {
+        val raw = IntArray(196); var p = 0
+        for (i in 12..60) { raw[p++] = d[i] shr 1; raw[p++] = d[i] and 1 }
+        for (i in 95..143) { raw[p++] = d[i] shr 1; raw[p++] = d[i] and 1 }
+        return raw
+    }
+
     private fun voice(slot: Int, d: IntArray, n: Int) {
         val k = slot and 1; val ts = slots[k]
+        voiceFrames(d).forEachIndexed { j, bits -> onVoiceFrame(HamVoiceFrame("dmr" + (k + 1), "ambe2", bits, (t - 132 + 36 * j).toDouble(), 0)) }
         if (n < 1 || n > 4) return
         val e = readEmb(d)
         if (!e.ok) return
@@ -129,10 +154,10 @@ class DmrIdentity {
     private fun lc(k: Int, b: IntArray, header: Boolean) {
         val ts = slots[k]
         val g = gpsInfoLc(b)
-        if (g != null) { ts.position = g.pos; ts.posError = g.err; return }
+        if (g != null) { ts.position = g.pos; ts.posError = g.err; ts.speedKmh = -1.0; ts.heading = -1.0; return }
         when (val e = parseEmbLc(b.copyOf(9))) {
             is EmbLc.Voice -> {
-                if (e.lc.src != ts.src) { ts.alias = ""; alias[k].reset(); if (ts.position != null && ts.position?.source != "dmr-data") { ts.position = null; ts.posError = -1 } }
+                if (e.lc.src != ts.src) { ts.alias = ""; alias[k].reset(); if (ts.position != null && ts.position?.source == "dmr-gps-lc") { ts.position = null; ts.posError = -1 } }
                 ts.tg = e.lc.dst; ts.src = e.lc.src; ts.group = e.lc.group; ts.emergency = e.lc.emergency; ts.privacy = e.lc.privacy
                 if (header && ts.activity != "voice") { ts.activity = "voice"; ts.calls++ }
             }

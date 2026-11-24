@@ -90,7 +90,8 @@ export class AmbeDecoder {
   protected readonly cur = newParms();
   protected readonly prev = newParms();
   protected readonly prevEnh = newParms();
-  private readonly d = new Uint8Array(49);
+  /** The 49 parameter bits of the last frame (read by the D-STAR decoder, ambe-dstar.ts). */
+  protected readonly d = new Uint8Array(49);
   private readonly Tl = new Float64Array(58);
   private readonly Cik = new Float64Array(5 * 18);
   // Unvoiced synthesis: one continuous pseudo-random sequence, the transform it is shaped in, this frame's

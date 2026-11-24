@@ -15,10 +15,14 @@
  * Headers and terminators carry CSD1 (destination, source) and CSD2 (downlink, uplink: the repeater's own callsign
  * on its output); V/D mode 1 rolls CSD1, CSD2, CSD3 (the four 5-byte remarks: the repeater's and the Internet
  * node's IDs and the radio ID) and data; V/D mode 2 rolls the same 10 bytes at a time. SC, the squelch code, is the
- * DG-ID. Text in the data units is searched for positions (NMEA, APRS). The voice (AMBE+2) is not decoded. No DOM.
+ * DG-ID. Text in the data units is searched for positions (NMEA, APRS). The voice goes out frame by frame
+ * ([onVoiceFrame]): V/D mode 1 five 72-bit AMBE+2 frames in the VCHs, V/D mode 2 five 49-bit frames out of each VCH
+ * and VeCH (voice.ts), Voice FR five 144-bit full rate frames (two in the sub header after the header). No DOM.
  */
 import { YSF_K, YSF_G, viterbi, golay24Decode, crc16Msb, packMsb, asciiField } from './fec.js';
 import { parsePositionLine, type Position } from './gps.js';
+import { ysfVd2Voice, type HamVoiceFrame } from './voice.js';
+import { wiresxReply, type WiresX } from './wiresx.js';
 
 /** Sync symbols of D471C9634D. */
 export const YSF_SYNC = (() => {
@@ -79,21 +83,26 @@ export interface YsfId {
   dgid: number; sqlOn: boolean; dt: number; callMode: number; route: number; voip: boolean;
   position: Position | null; positionText: string;
   frames: number; units: number; inverted: boolean; active: boolean;
+  /** A WIRES-X reply the node sent (its name, the room it is connected to). */
+  wires: WiresX | null;
 }
 const slice4 = (s: number) => s > 2 ? 1 : s > 0 ? 0 : s > -2 ? 2 : 3;
 
 export class YsfReceiver {
   onFich: (f: YsfFich) => void = () => undefined;
+  /** Each vocoder frame of a communication frame, stream 'ysf'. */
+  onVoiceFrame: (f: HamVoiceFrame) => void = () => undefined;
+  private frameAt = 0;
   private readonly ring = new Float64Array(20); private rp = 0;
   private sym: Float64Array | null = null; private sn = 0; private inv = 1;
   private t = 0; private lastSync = -1e9;
   private dtBytes: (Uint8Array | null)[] = [];
   syncs = 0;
-  readonly id: YsfId = { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false };
+  readonly id: YsfId = { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false, wires: null };
 
   reset(): void {
     this.ring.fill(0); this.rp = 0; this.sym = null; this.sn = 0; this.inv = 1; this.t = 0; this.lastSync = -1e9; this.dtBytes = []; this.syncs = 0;
-    Object.assign(this.id, { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false });
+    Object.assign(this.id, { dest: '', src: '', down: '', up: '', rem: ['', '', '', ''], dgid: -1, sqlOn: false, dt: -1, callMode: -1, route: -1, voip: false, position: null, positionText: '', frames: 0, units: 0, inverted: false, active: false, wires: null });
   }
 
   /** One soft symbol (outer levels near ±3). */
@@ -114,7 +123,7 @@ export class YsfReceiver {
     const thr = expected ? 0.6 : 0.9;
     if (corr >= thr || corr <= -thr) {
       this.inv = corr > 0 ? 1 : -1; this.id.inverted = this.inv < 0;
-      this.syncs++; this.lastSync = this.t; this.sym = new Float64Array(460); this.sn = 0;
+      this.syncs++; this.lastSync = this.t; this.frameAt = this.t; this.sym = new Float64Array(460); this.sn = 0;
     }
   }
 
@@ -129,6 +138,7 @@ export class YsfReceiver {
     const p = d.subarray(100);
     const blocks = (first: number) => { const o = new Uint8Array(180); for (let j = 0; j < 5; j++) o.set(p.subarray((2 * j + first) * 36, (2 * j + first) * 36 + 36), 36 * j); return o; };
     if (fi.fi === 0) this.newCall();
+    if (fi.fi === 1) this.voice(fi, p);
     if (fi.fi === 0 || fi.fi === 2) {                       // header / terminator: CSD1 in DCH-1, CSD2 in DCH-2
       this.csd(1, decodeUnit(blocks(0))); this.csd(2, decodeUnit(blocks(1)));
     } else if (fi.fi === 1) {
@@ -145,6 +155,15 @@ export class YsfReceiver {
         this.csd(3, decodeUnit(p.subarray(0, 180)));
       }
     }
+  }
+
+  /** The vocoder frames of a communication frame's payload ([p], 360 dibits). */
+  private voice(fi: YsfFich, p: Uint8Array): void {
+    const bitsOf = (off: number, n: number) => { const b = new Uint8Array(2 * n); for (let i = 0; i < n; i++) { b[2 * i] = p[off + i] >> 1; b[2 * i + 1] = p[off + i] & 1; } return b; };
+    const at = (off: number) => this.frameAt + 101 + off;
+    if (fi.dt === 0) for (let j = 0; j < 5; j++) { const off = (2 * j + 1) * 36; this.onVoiceFrame({ stream: 'ysf', codec: 'ambe2', bits: bitsOf(off, 36), atSym: at(off), errs: 0 }); }
+    else if (fi.dt === 2) for (let j = 0; j < 5; j++) { const off = 72 * j + 20, v = ysfVd2Voice(p.subarray(off, off + 52)); this.onVoiceFrame({ stream: 'ysf', codec: 'ambe2-49', bits: v.bits, atSym: at(off), errs: v.errs }); }
+    else if (fi.dt === 3) for (const off of fi.fn === 0 && fi.ft === 1 ? [216, 288] : [0, 72, 144, 216, 288]) this.onVoiceFrame({ stream: 'ysf', codec: 'imbe', bits: bitsOf(off, 72), atSym: at(off), errs: 0 });
   }
 
   private newCall(): void {
@@ -174,7 +193,9 @@ export class YsfReceiver {
     this.id.units++;
     this.dtBytes[k] = u;
     let s = '';
-    for (let i = 0; i < this.dtBytes.length; i++) { const b = this.dtBytes[i]; if (!b) break; for (const v of b) if (v !== 0) s += String.fromCharCode(v); }
+    const raw: number[] = [];
+    for (let i = 0; i < this.dtBytes.length; i++) { const b = this.dtBytes[i]; if (!b) break; for (const v of b) { raw.push(v); if (v !== 0) s += String.fromCharCode(v); } }
+    const w = wiresxReply(raw); if (w) this.id.wires = w;
     for (const line of s.split(/[\r\n]+/)) {
       const pos = parsePositionLine(line);
       if (pos) { this.id.position = pos; this.id.positionText = line.trim(); }
