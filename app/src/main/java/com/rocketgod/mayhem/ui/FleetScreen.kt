@@ -287,7 +287,7 @@ fun FleetScreen(accent: Color) {
                 V_GRANTS -> if (s == null) EmptyState("fleet", Modifier.fillMaxSize().panel(), accent) else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                     item(key = "bars") { TgBars(s, now, colorOf, ::pick) }
                     if (s.grants.isEmpty()) item(key = "none") { FlDim("no grants yet · a quiet system may go minutes between calls") }
-                    items(s.grants, key = { "${it.sys}|${it.tg}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }
+                    items(s.grants, key = { "${it.sys}|${it.tg}|${it.group}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }
                 }
                 V_FREQS -> if (s == null || s.carriers.none { now - it.lastMs < 600_000 }) FlDim("no carriers found yet", Modifier.fillMaxSize())
                     else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(3f))) {
@@ -315,7 +315,7 @@ fun FleetScreen(accent: Color) {
             V_GRANTS -> {
                 item(key = "grants:bars") { TgBars(s, now, colorOf, ::pick) }
                 if (s.grants.isEmpty()) item(key = "grants:none") { FlDim("no grants yet · a quiet system may go minutes between calls") }
-                else items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }
+                else items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.group}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }
             }
             V_FREQS -> {
                 val cars = s.carriers.filter { now - it.lastMs < 600_000 }
@@ -410,7 +410,7 @@ fun FleetScreen(accent: Color) {
                             starts[4] = idx; item(key = "grants:head") { FlSecHead(FL_SECTIONS[4].second) }; idx++
                             if (s != null) { item(key = "grants:bars") { TgBars(s, now, colorOf, ::pick) }; idx++ }
                             if (s == null || s.grants.isEmpty()) { item(key = "grants:none") { FlDim("no grants yet · a quiet system may go minutes between calls") }; idx++ }
-                            else { items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }; idx += s.grants.size }
+                            else { items(s.grants, key = { "grants:${it.sys}|${it.tg}|${it.group}|${it.ch}|${it.ms}" }) { g -> GrantLine(g, now, colorOf(g.sys), ::pick) }; idx += s.grants.size }
                             starts[5] = idx; item(key = "freqs:head") { FlSecHead(FL_SECTIONS[5].second) }; idx++
                             val cars = s?.carriers.orEmpty().filter { now - it.lastMs < 600_000 }
                             if (s == null || cars.isEmpty()) { item(key = "freqs:none") { FlDim("no carriers found yet") }; idx++ }

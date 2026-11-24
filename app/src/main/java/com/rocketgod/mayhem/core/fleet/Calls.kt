@@ -146,9 +146,12 @@ class CallTracker(private val now: () -> Long) {
         val k = callGrid(hz)
         return calls.firstOrNull { it.kind == "call" && (!onAir || it.onAir) && (sys.isEmpty() || it.sys.isEmpty() || it.sys == sys) && it.hz > 0 && callGrid(it.hz) == k && it.slot == slot }
     }
+    /** Calls created so far, the last part of each call's key. */
+    private var made = 0L
     private fun create(sys: String, proto: String, hz: Long, slot: Int, codec: String, now: Long, tg: Int = 0, group: Boolean = true, src: Int = 0, tdma: Boolean = false,
                        emergency: Boolean = false, site: String = "", lpcn: Int = -1, chDerived: Boolean = false): Call {
-        val c = Call("$sys|$now|$hz|$slot", sys, proto, tg, group, src, hz, slot, tdma, emergency, now, site, codec, lpcn, chDerived)
+        // the count keeps the key unique: two grants with no channel yet can start in the same millisecond
+        val c = Call("$sys|$now|$hz|$slot|${++made}", sys, proto, tg, group, src, hz, slot, tdma, emergency, now, site, codec, lpcn, chDerived)
         if (src != 0) c.srcs.add(src)
         label(c)
         calls.add(0, c)
