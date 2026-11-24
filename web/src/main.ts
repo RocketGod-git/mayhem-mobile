@@ -2,6 +2,7 @@
 import { openKeypad, FREQ_UNITS, freqAuto } from './keypad.js';
 import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isHackRf, isMayhemSerial, MAYHEM_SERIAL_FILTER } from './hackrf.js';
 import { RTL_MAX_GAIN_DB, RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
+import { appHidden, txAppsHidden } from './app-visibility.js';
 import { APP_NEEDS, RATE_CHOICES, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
 import type { P25Status } from './dsp/ham/p25.js';
@@ -123,6 +124,8 @@ const APPS: AppDef[] = [
 /** Apps folded into another app's tile and bar key: VDL2 is the second band of Flight Messages. */
 const MERGED_INTO: Partial<Record<AppId, AppId>> = { vdl2: 'acars' };
 const keyOf = (id: AppId | null) => id ? MERGED_INTO[id] ?? id : id;
+/** Whether the connected radio hides this app (an RTL-SDR hides TX and Troll; see app-visibility.ts). */
+const hiddenApp = (id: AppId | null | undefined) => appHidden(id, radio?.kind);
 const FLIGHT_MSGS_KEY = 'mm.flightmsgs.band';
 /** The tile and the bar key open Flight Messages on the band you used last. */
 function openPicked(id: AppId): void {
@@ -955,6 +958,7 @@ const radioCan = (hz: number) => !radio || canSample(radio.limits, hz);
 function narrowShift(): void { state.viewLo = state.freq + NARROW_SHIFT; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); }
 function open(app: AppId | null): void {
   if ((app as string) === 'subghz' || (app as string) === 'tpms') app = 'devices';      // Sub-GHz and TPMS are part of Devices now
+  if (hiddenApp(app)) app = null;                         // an app this radio hides (TX and Troll on an RTL-SDR) opens Home instead
   if (app === 'settings') { openSettings(); return; }
   if (app === 'acars' || app === 'vdl2') { try { localStorage.setItem(FLIGHT_MSGS_KEY, app); } catch { /* no storage */ } }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
@@ -2040,7 +2044,20 @@ function refreshLauncherLimits(): void {
     const bl = b.querySelector<HTMLElement>('.tile-blurb'); if (bl) bl.textContent = why ? 'needs a HackRF' : (bl.dataset.blurb ?? bl.textContent);
     if (why) b.title = `${APPS.find(a => a.id === id)?.title ?? id} on a ${radio?.label}: ${why}`;
     else b.removeAttribute('title');
+    b.style.display = hiddenApp(id as AppId) ? 'none' : '';
   });
+  // a group whose every tile is hidden (TRANSMIT on an RTL-SDR) goes too, name and all
+  qa<HTMLElement>('.lgrp').forEach(g => { g.style.display = qa<HTMLElement>('[data-app]', g).every(b => b.style.display === 'none') ? 'none' : ''; });
+  applyRadioApps();
+}
+/** What the bar was last built for: whether the transmit apps were hidden. */
+let barTxHidden = false;
+/** Follow the radio: rebuild the bar when the transmit apps come or go, and leave one of them for Home if it is now hidden. */
+function applyRadioApps(): void {
+  const hide = txAppsHidden(radio?.kind);
+  if (hide !== barTxHidden) { barTxHidden = hide; buildBar(); }
+  // the transmit safety question goes with the app that asked it
+  if (hiddenApp(state.app)) { q('#tx-safety')?.remove(); open(null); }
 }
 
 /** Tell the worker how many spectrum bins this scope can show (it sizes the FFT to match). */
@@ -3487,6 +3504,7 @@ const analyzerUi = new AnalyzerUi({
   scope: () => scope,
   empty: (title, tips) => emptyState('analyzer', title, tips),
   // into Transmit's own .sub replay, tuned to the burst; Transmit asks its safety question as it always does
+  txShown: () => !hiddenApp('transmit'),
   sendToTx: (sub, hz, fsk) => { txHandoff = { sub, hz, fsk }; open('transmit'); tune(hz); },
 });
 /** A burst the Analyzer handed to Transmit: its .sub text, where to send it, and whether it was FSK. */
@@ -9932,7 +9950,7 @@ let versionText = 'dev build', releaseUrl = 'https://github.com/RocketGod-git/ma
 
 // ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
 /** The app bar's order, the native apps' default: by what they do (receive, analyze, transmit, tools), as Home lists them. */
-const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings' && !MERGED_INTO[a.id]).map(a => a.id));
+const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings' && !MERGED_INTO[a.id] && !hiddenApp(a.id)).map(a => a.id));
 /** The app's name in capitals, as its header, Settings and FAVES show it. */
 const appName = (id: AppId) => APPS.find(a => a.id === id)?.title.toUpperCase() ?? (id === 'subghz' ? 'SUB-GHZ' : id.toUpperCase());
 /** The bar's own shorter names for the longest apps, so a key never takes half the strip (the readout tag uses them too, for
@@ -10261,7 +10279,9 @@ function refreshShell(): void {
 function showFaves(open: boolean): void {
   const sh = $('faves'); sh.hidden = !open; if (!open) return;
   const list = $('faves-list');
-  list.innerHTML = bookmarks.length ? bookmarks.map((b, i) => `<div class="fav-row" data-fv="${i}"><div><b>${(b.hz / 1e6).toFixed(4)} MHz</b><small>${esc(b.name)} · ${b.app ? appName(b.app) : b.mode}</small></div><button class="x" data-fvx="${i}">✕</button></div>`).join('')
+  // a FAVE saved in an app this radio hides (TX or Troll on an RTL-SDR) stays saved but is not listed
+  const rows = bookmarks.map((b, i) => hiddenApp(b.app) ? '' : `<div class="fav-row" data-fv="${i}"><div><b>${(b.hz / 1e6).toFixed(4)} MHz</b><small>${esc(b.name)} · ${b.app ? appName(b.app) : b.mode}</small></div><button class="x" data-fvx="${i}">✕</button></div>`).join('');
+  list.innerHTML = rows ? rows
     : '<div class="empty">No FAVES yet. Tune something and tap ☆ beside the frequency.</div>';
   qa<HTMLElement>('[data-fv]', list).forEach(r => r.onclick = (e) => {
     const i = Number(r.dataset.fv);

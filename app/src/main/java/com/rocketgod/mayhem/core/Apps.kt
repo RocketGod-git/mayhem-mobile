@@ -477,6 +477,9 @@ object Apps {
     fun openPicked(app: MayhemApp) = open(if (app == MayhemApp.ACARS && NavBar.flightBandVdl()) MayhemApp.VDL2 else app)
 
     fun open(app: MayhemApp) {
+        // an app this radio hides (TX and Troll on an RTL-SDR) is not opened by anything: a favorite, the last app,
+        // SEND TO TX; Home instead
+        if (AppVisibility.hidden(app)) { home(); return }
         if (app == MayhemApp.ACARS || app == MayhemApp.VDL2) NavBar.setFlightBandVdl(app == MayhemApp.VDL2)
         if (app == MayhemApp.SETTINGS) {
             if (_current.value != MayhemApp.SETTINGS) under = _current.value

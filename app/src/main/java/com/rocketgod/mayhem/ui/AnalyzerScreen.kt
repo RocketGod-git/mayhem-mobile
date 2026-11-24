@@ -766,9 +766,12 @@ private fun BurstDetail(x: AnBurst, m: BurstMeta, protocols: List<Protocol>, c: 
             ToggleBox(if (m.star) "★" else "☆", m.star, Palette.accent2, Modifier.fillMaxHeight()) { Analyzer.setMeta(b.id) { it.copy(star = !it.star) } }
             ToggleBox("✕", false, c, Modifier.fillMaxHeight()) { onClose() }
         }
+        val txKind by com.rocketgod.mayhem.core.Radio.kind.collectAsState()
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             ToggleBox("COMPARE", false, c, Modifier.weight(1f).fillMaxHeight()) { onCompare() }
-            ToggleBox("SEND TO TX", false, Palette.danger, Modifier.weight(1f).fillMaxHeight(), dim = a.runs.isEmpty()) { if (a.runs.isNotEmpty()) onTx(a) }
+            // no Transmit to send to on a radio that hides it (an RTL-SDR)
+            if (!com.rocketgod.mayhem.core.AppVisibility.hidden(com.rocketgod.mayhem.core.MayhemApp.TRANSMIT, txKind))
+                ToggleBox("SEND TO TX", false, Palette.danger, Modifier.weight(1f).fillMaxHeight(), dim = a.runs.isEmpty()) { if (a.runs.isNotEmpty()) onTx(a) }
         }
         // every frame of the press this one belongs to: tap one to read it, or compare them all
         if (frames != null) ChipRow {

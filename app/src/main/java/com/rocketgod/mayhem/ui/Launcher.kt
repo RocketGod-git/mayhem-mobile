@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rocketgod.mayhem.core.AppVisibility
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.NavBar
@@ -124,6 +125,7 @@ private fun AppGrid(modifier: Modifier) {
     val d = rememberDims()
     var asking by remember { mutableStateOf<MayhemApp?>(null) }
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
+    val kind by Radio.kind.collectAsState()
     val grid = rememberLazyGridState(GridSpot.index, GridSpot.offset)
     DisposableEffect(Unit) { onDispose { GridSpot.index = grid.firstVisibleItemIndex; GridSpot.offset = grid.firstVisibleItemScrollOffset } }
     LazyVerticalGrid(
@@ -134,9 +136,10 @@ private fun AppGrid(modifier: Modifier) {
         contentPadding = PaddingValues(top = d.dp(2f), bottom = d.dp(12f)),
         modifier = modifier
     ) {
-        // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
+        // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build; an RTL-SDR hides
+        // both transmit apps (AppVisibility).
         val groups = MayhemApp.entries
-            .filter { (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) && it.barKey() == it }
+            .filter { (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) && it.barKey() == it && !AppVisibility.hidden(it, kind) }
             .groupBy { it.category }
         for ((cat, apps) in listOf("Receive", "Analyze", "Transmit", "Tools").mapNotNull { c -> groups[c]?.let { c to it } }) {
             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -159,9 +162,11 @@ private fun AppRail(modifier: Modifier) {
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
     val scroll = rememberScrollState(RailSpot.x)
     DisposableEffect(Unit) { onDispose { RailSpot.x = scroll.value } }
-    // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build.
+    val kind by Radio.kind.collectAsState()
+    // The Troll app (novelty transmitters) ships only in the sideload APK, never the Play build; an RTL-SDR hides
+    // both transmit apps (AppVisibility).
     val groups = MayhemApp.entries
-        .filter { (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) && it.barKey() == it }
+        .filter { (it != MayhemApp.TROLL || com.rocketgod.mayhem.BuildConfig.INCLUDE_TROLL) && it.barKey() == it && !AppVisibility.hidden(it, kind) }
         .groupBy { it.category }
     Row(modifier.scrollGlow(scroll, horizontal = true).horizontalScroll(scroll).padding(bottom = d.dp(6f)),
         horizontalArrangement = Arrangement.spacedBy(d.dp(14f))) {

@@ -138,7 +138,7 @@ class MainActivity : ComponentActivity() {
             if (Apps.current.value == null) {
                 // Home is the front door, unless the user asked to come back to the app they last used
                 val last = if (com.rocketgod.mayhem.core.NavBar.opensOnLast.value) com.rocketgod.mayhem.core.NavBar.lastApp() else null
-                if (last != null && com.rocketgod.mayhem.core.Radio.blockedBecause(last).isEmpty()) Apps.open(last)
+                if (last != null && com.rocketgod.mayhem.core.Radio.blockedBecause(last).isEmpty() && !com.rocketgod.mayhem.core.AppVisibility.hidden(last)) Apps.open(last)
                 else { Apps.home(); com.rocketgod.mayhem.core.AutoPick.armBand() }
             }
             Diag.clear()

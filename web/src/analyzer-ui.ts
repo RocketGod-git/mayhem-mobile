@@ -34,6 +34,8 @@ export interface Host {
   /** The app's waterfall, for marking bursts on it. */
   scope(): Scope | null;
   /** Hand a Flipper .sub to the Transmit app's replay, tuned to `hz` (Transmit's own safety prompt still applies). */
+  /** Whether Transmit is offered at all (an RTL-SDR hides it): SEND TO TX is left out when it is not. */
+  txShown(): boolean;
   sendToTx(sub: string, hz: number, fsk: boolean): void;
   /** The app's empty state (glyph, title, tips), as every list in the app draws it. */
   empty(title?: string, tips?: string[]): string;
@@ -539,7 +541,7 @@ export class AnalyzerUi {
     const sec = (id: string, title: string, body: string, copy = true) => `<details class="an-sec" data-ansec="${id}" ${this.openSec.has(id) ? 'open' : ''}><summary><b>${title}</b>${copy ? `<button class="chip" data-ancopy="${id}">COPY</button>` : ''}</summary>${body}</details>`;
     const histHtml = `<div class="an-sub">PULSE LENGTHS <i class="mk">marks</i> <i class="sp">gaps</i> · dashed: the threshold between classes</div><canvas id="an-hist" class="an-hist"></canvas>`;
     return `<div class="an-head"><b>${esc(hz)}</b><span>${b.name ? `<em class="an-name">${esc(b.name)}</em> · ` : ''}${b.src ? esc(b.src) + ' · +' + b.t.toFixed(3) + ' s' : clock(b.wall)} · ${b.ms.toFixed(1)} ms · ${b.snr.toFixed(0)} dB SNR</span>`
-      + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button><button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button><button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
+      + `<button class="chip an-starbtn ${b.star ? 'on' : ''}" data-ando="star" title="star: kept through CLEAR">${b.star ? '★' : '☆'}</button><button class="chip" data-ando="compare">COMPARE</button>${this.host.txShown() ? `<button class="chip" data-ando="tx" ${a.runs.length ? '' : 'disabled'}>SEND TO TX</button>` : ''}<button class="chip" data-ando="close" title="close (Esc)">✕</button></div>`
       + this.frameStrip(b)
       // on a wide screen the trace and its bits take the left and the readings sit beside them (no scrolling down to
       // them); on a narrow one the two wrappers fold away (display: contents) and it is one column as before

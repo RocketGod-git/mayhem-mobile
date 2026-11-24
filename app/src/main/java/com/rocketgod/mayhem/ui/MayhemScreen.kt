@@ -77,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.rocketgod.mayhem.core.AppVisibility
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
 import com.rocketgod.mayhem.core.NavBar
@@ -102,6 +103,8 @@ fun MayhemScreen(status: String, connected: Boolean) {
     var faves by remember { mutableStateOf(false) }
     SideEffect { RadioStatus.text = status; RadioStatus.connected = connected }
     BackHandler(enabled = current != null) { Apps.back() }
+    // an RTL-SDR became the radio while TX or Troll was open (or under Settings): back to Home, where it can't be reopened
+    LaunchedEffect(Unit) { Radio.kind.collect { k -> if (AppVisibility.hidden(Apps.playing(), k)) Apps.home() } }
     // registered after, so it wins: back closes the RADIO panel before it leaves the app under it
     BackHandler(enabled = RadioUi.open) { RadioUi.open = false }
     // every screen, Home included, is a live receiver: none of them may dim and lock mid-listen
@@ -254,8 +257,10 @@ private fun TopButton(icon: androidx.compose.ui.graphics.vector.ImageVector, lab
 @Composable
 private fun AppScroller(current: MayhemApp?) {
     val d = rememberDims()
-    val bar by NavBar.bar.collectAsState()
-    Radio.kind.collectAsState().value
+    val saved by NavBar.bar.collectAsState()
+    val kind by Radio.kind.collectAsState()
+    // the ticked apps less the ones this radio hides (TX and Troll on an RTL-SDR)
+    val bar = AppVisibility.visible(saved, kind)
     var asking by remember { mutableStateOf<MayhemApp?>(null) }
     asking?.let { app -> NeedsHackRfDialog(app) { asking = null } }
     val onSettings = current == MayhemApp.SETTINGS
@@ -459,7 +464,10 @@ private fun StripSeg(app: MayhemApp, label: String, active: Boolean, tint: Color
 @Composable
 private fun FavesSheet(accent: Color, onClose: () -> Unit) {
     val d = rememberDims()
-    val list by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
+    val all by com.rocketgod.mayhem.core.Bookmarks.list.collectAsState()
+    val kind by Radio.kind.collectAsState()
+    // a favorite saved in an app this radio hides (TX or Troll on an RTL-SDR) stays saved but is not listed
+    val list = all.filter { b -> !AppVisibility.hidden(b.app?.let { MayhemApp.byName(it) }, kind) }
     androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
         Column(Modifier.fillMaxWidth().heightIn(max = (d.heightDp * 0.75f).dp).clip(RoundedCornerShape(14.dp)).background(Palette.surface)
             .border(1.dp, Palette.line, RoundedCornerShape(14.dp)).padding(d.dp(14f))) {
