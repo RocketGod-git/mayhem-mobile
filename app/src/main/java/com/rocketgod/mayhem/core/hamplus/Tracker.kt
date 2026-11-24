@@ -1,5 +1,8 @@
 package com.rocketgod.mayhem.core.hamplus
 
+import com.rocketgod.mayhem.core.hamid.HamIdent
+import com.rocketgod.mayhem.core.hamid.identWho
+import com.rocketgod.mayhem.core.hamid.isDigital
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
@@ -62,12 +65,15 @@ class TxRec(
     val env: FloatArray,
     /** Demodulated and kept in the time machine. */
     val recorded: Boolean,
+    /** What the identity layer read from it (a digital mode, analog signaling), or null. */
+    val ident: HamIdent? = null,
 )
 
 /** A channel open right now, as the receiver reports it. */
 data class LiveRec(
     val id: Int, val hz: Long, val startMs: Double, val snrDb: Double, val levelDb: Double, val offsetHz: Double,
     val tone: Double, val dcs: Int, val recorded: Boolean,
+    val ident: HamIdent? = null,
 )
 
 class Station(
@@ -78,10 +84,17 @@ class Station(
 private class Chan(val hz: Long) {
     var firstMs = 0.0; var lastMs = 0.0; var talkMs = 0.0; var txs = 0; var unrecorded = 0
     var tone = 0.0; var dcs = 0; var callsign = ""; var callsignMs = 0.0
+    /** The digital mode last heard on it and its code (color code, NAC, RAN, DG-ID), the repeater and network a signal named. */
+    var mode = ""; var code = -1; var idRepeater = ""; var idNetwork = ""
+    /** Talkers the signal named, by mode and who. */
+    val talkers = LinkedHashMap<String, Talker>()
     val stations = ArrayList<Station>()
     /** Airtime (ms) per minute, keyed by the minute. */
     val minutes = LinkedHashMap<Long, Double>()
 }
+
+/** A talker the signal named on a channel: who, transmissions, the last talkgroup, when last. */
+class Talker(val who: String, var txs: Int, var tg: Int, var group: Boolean, var lastMs: Double, var ident: HamIdent)
 
 data class HpPrefs(val hold: String = "", val mute: List<String> = emptyList(), val prio: List<String> = emptyList())
 
@@ -108,8 +121,11 @@ data class HpTxRow(
     val pending: Boolean = false,
     /** The same transmission heard on a linked repeater: the id of the row its conversation shows instead, else 0. */
     var echo: Int = 0,
+    /** What the identity layer read from it, or null. */
+    val ident: HamIdent? = null,
 )
 
+data class HpTileTalker(val key: String, val who: String, val txs: Int, val tg: Int, val group: Boolean, val color: Int, val lastMs: Double, val ident: HamIdent)
 data class HpTileStation(val key: String, val label: String, val letter: String, val color: Int, val callsign: String, val txs: Int, val offsetHz: Long)
 data class HpNet(val control: String, val checkins: Int)
 
@@ -123,6 +139,12 @@ data class HpTile(
     val followed: Boolean, val muted: Boolean, val prio: Boolean,
     /** The linked repeater this one carries the same audio as (the followed one, else the one on the air, else the latest heard), or 0. */
     val linkWith: Long = 0,
+    /** The digital mode it carries ("" analog or not known) and its code (-1 none); the repeater and network a signal named. */
+    val mode: String = "", val code: Int = -1, val idRepeater: String = "", val idNetwork: String = "",
+    /** The talkers its signal named, the latest first. */
+    val talkers: List<HpTileTalker> = emptyList(),
+    /** Who is talking on it now, as the signal names them. */
+    val liveIdent: HamIdent? = null,
 )
 
 data class HpConv(
@@ -135,14 +157,14 @@ class HpHeat(val bands: MutableList<HpHeatBand> = ArrayList(), val cover: Double
     fun copy(): HpHeat = HpHeat(bands.mapTo(ArrayList()) { HpHeatBand(it.id, it.slots.copyOf()) }, cover.copyOf())
 }
 
-data class HpSavedChan(val hz: Long, val callsign: String, val tone: Double, val dcs: Int, val talkMs: Double, val txs: Int, val lastMs: Double, val firstMs: Double)
+data class HpSavedChan(val hz: Long, val callsign: String, val tone: Double, val dcs: Int, val talkMs: Double, val txs: Int, val lastMs: Double, val firstMs: Double, val mode: String = "", val code: Int = -1)
 
 class HpSaved(val chans: List<HpSavedChan>, val pairs: List<Pair<Long, Long>>, val links: List<Pair<Long, Long>>, val heat: HpHeat?) {
     fun toJson(): String {
         val o = JSONObject()
         o.put("chans", JSONArray().apply {
             for (c in chans) put(JSONObject().put("hz", c.hz).put("callsign", c.callsign).put("tone", c.tone).put("dcs", c.dcs)
-                .put("talkMs", c.talkMs).put("txs", c.txs).put("lastMs", c.lastMs).put("firstMs", c.firstMs))
+                .put("talkMs", c.talkMs).put("txs", c.txs).put("lastMs", c.lastMs).put("firstMs", c.firstMs).apply { if (c.mode.isNotEmpty()) { put("mode", c.mode); put("code", c.code) } })
         })
         o.put("pairs", JSONArray().apply { for ((a, b) in pairs) put(JSONArray().put(a).put(b)) })
         o.put("links", JSONArray().apply { for ((a, b) in links) put(JSONArray().put(a).put(b)) })
@@ -166,7 +188,7 @@ class HpSaved(val chans: List<HpSavedChan>, val pairs: List<Pair<Long, Long>>, v
                 val chans = if (ch == null) emptyList() else (0 until ch.length()).mapNotNull { i ->
                     ch.optJSONObject(i)?.let {
                         HpSavedChan(it.optLong("hz"), it.optString("callsign", ""), it.optDouble("tone", 0.0), it.optInt("dcs", 0),
-                            it.optDouble("talkMs", 0.0), it.optInt("txs", 0), it.optDouble("lastMs", 0.0), it.optDouble("firstMs", 0.0))
+                            it.optDouble("talkMs", 0.0), it.optInt("txs", 0), it.optDouble("lastMs", 0.0), it.optDouble("firstMs", 0.0), it.optString("mode", ""), it.optInt("code", -1))
                     }
                 }
                 val h = o.optJSONObject("heat")
@@ -183,6 +205,8 @@ class HpSaved(val chans: List<HpSavedChan>, val pairs: List<Pair<Long, Long>>, v
 }
 
 private const val LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+/** A named talker's color (an index into the station colors), the same for the same name everywhere. */
+fun identColor(who: String): Int { var h = 0L; for (c in who) h = (h * 31 + c.code) and 0xffffffffL; return (h % 10).toInt() }
 private val CALL_RE = Regex("^[A-Z]{1,2}\\d[A-Z]{1,4}$|^[A-Z]{1,4}\\d{1,4}[A-Z]{0,4}$")
 private fun looksLikeCall(s: String) = CALL_RE.containsMatchIn(s) && s.length >= 4 && s.any { it.isDigit() } && s.any { it in 'A'..'Z' }
 
@@ -320,6 +344,7 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
             val b = heat.bands.firstOrNull { it.id == row } ?: HpHeatBand(row, DoubleArray(HEAT_SLOTS)).also { heat.bands.add(it) }
             b.slots[localSlot(t.startMs)] += dur / 1000
         }
+        t.ident?.let { noteIdent(chan(tileHz(t.hz)), it, t.endMs, true) }
         val call = cwCallsign(t.cw)
         // every transmission is clustered; on a repeater output the clusters are the repeater's own carrier and go unused
         val s = assign(c, t.offsetHz, t.offsetSd, t.tone, t.dcs, t.startMs, t.endMs, true)
@@ -333,9 +358,22 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
     }
 
     /** The channels open now. */
+    /** A channel's digital mode, code, the repeater and network its signal names, and the talker, from an identity. */
+    private fun noteIdent(c: Chan, id: HamIdent, atMs: Double, count: Boolean) {
+        if (isDigital(id.mode)) { c.mode = id.mode; if (id.code >= 0) c.code = id.code }
+        if (id.repeater.isNotEmpty()) c.idRepeater = id.repeater
+        if (id.network.isNotEmpty()) c.idNetwork = id.network
+        val who = identWho(id)
+        if (who.isEmpty() || !count) return
+        val k = "${id.mode}:$who"; val t = c.talkers[k]
+        if (t != null) { t.txs++; t.lastMs = max(t.lastMs, atMs); t.ident = id; if (id.tg != 0) { t.tg = id.tg; t.group = id.group } }
+        else c.talkers[k] = Talker(who, 1, id.tg, id.group, atMs, id)
+    }
+
     fun setLive(live: List<LiveRec>) {
         this.live = live
         val n = now()
+        for (l in live) l.ident?.let { noteIdent(chan(tileHz(l.hz)), it, n, false) }
         // listening time per slot of the day, so a quiet hour and an hour not heard look different
         if (lastCover != 0.0 && n - lastCover < 5_000) heat.cover[localSlot(n)] += (n - lastCover) / 1000
         lastCover = n
@@ -438,19 +476,24 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
     /** Rows for the log and the conversations: finished transmissions and the ones on the air, newest first. */
     fun rows(now: Double, max: Int = 400): List<HpTxRow> {
         val out = ArrayList<HpTxRow>()
-        fun add(id: Int, hz: Long, startMs: Double, endMs: Double, tone: Double, dcs: Int, offsetHz: Double, peakDb: Double, recorded: Boolean, cw: String, live: Boolean) {
+        fun add(id: Int, hz: Long, startMs: Double, endMs: Double, tone: Double, dcs: Int, offsetHz: Double, peakDb: Double, recorded: Boolean, cw: String, live: Boolean, ident: HamIdent? = null) {
             var st: Station? = null; var direct = false
             if (live && !repeaterLike(hz)) {
                 val c = chans[chanKey(hz)]
                 st = if (c != null) assign(c, offsetHz, 30.0, tone, dcs, startMs, now, false) else null
             } else { val r = stationOf(id, hz, startMs, endMs); st = r.first; direct = r.second }
-            val tile = tileHz(hz)
-            out.add(HpTxRow(id, tile, hz, startMs, if (live) 0.0 else endMs, live, tone, dcs, offsetHz, peakDb,
-                st?.key ?: "", stationLabel(st), if (st != null) LETTERS.indexOf(st.letter) else -1, st?.callsign ?: "", direct, 0, recorded, cw))
+            val tile = tileHz(hz); val who = if (ident != null) identWho(ident) else ""
+            // a talker the signal names (a digital callsign or radio ID, an MDC-1200 or FleetSync unit) is the station
+            if (who.isNotEmpty()) {
+                val key = "${chanKey(tile)}/@${ident!!.mode}:$who"
+                out.add(HpTxRow(id, tile, hz, startMs, if (live) 0.0 else endMs, live, tone, dcs, offsetHz, peakDb,
+                    key, labels[key] ?: who, identColor(who), ident.callsign, direct, 0, recorded, cw, ident = ident))
+            } else out.add(HpTxRow(id, tile, hz, startMs, if (live) 0.0 else endMs, live, tone, dcs, offsetHz, peakDb,
+                st?.key ?: "", stationLabel(st), if (st != null) LETTERS.indexOf(st.letter) else -1, st?.callsign ?: "", direct, 0, recorded, cw, ident = ident))
         }
-        for (l in live) add(l.id, l.hz, l.startMs, 0.0, l.tone, l.dcs, l.offsetHz, l.snrDb, l.recorded, "", true)
+        for (l in live) add(l.id, l.hz, l.startMs, 0.0, l.tone, l.dcs, l.offsetHz, l.snrDb, l.recorded, "", true, l.ident)
         var i = txs.size - 1
-        while (i >= 0 && out.size < max) { val t = txs[i]; add(t.id, t.hz, t.startMs, t.endMs, t.tone, t.dcs, t.offsetHz, t.peakDb, t.recorded, t.cw, false); i-- }
+        while (i >= 0 && out.size < max) { val t = txs[i]; add(t.id, t.hz, t.startMs, t.endMs, t.tone, t.dcs, t.offsetHz, t.peakDb, t.recorded, t.cw, false, t.ident); i-- }
         // an input transmission shows as the talker on its output: the output's row carries it, the input's row goes
         val shown = out.filter { r -> r.hz == r.heardHz || out.none { o -> o.heardHz == r.hz && abs(o.startMs - r.startMs) <= PAIR_START_MS } }
         // conversations: per tile (linked repeaters share one), transmissions with no gap longer than CONV_GAP_MS
@@ -525,6 +568,9 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
                 net = if (net != null) HpNet(stationLabel(st).ifEmpty { net.control }, net.checkins) else null, link = groups[k] ?: 0,
                 unrecorded = c.unrecorded + (ci?.unrecorded ?: 0) + lv.count { !it.recorded },
                 followed = prefs.hold == k, muted = k in prefs.mute, prio = k in prefs.prio,
+                mode = c.mode, code = c.code, idRepeater = c.idRepeater, idNetwork = c.idNetwork,
+                talkers = c.talkers.entries.sortedByDescending { it.value.lastMs }.take(12).map { (tk, x) -> HpTileTalker("$k/@$tk", labels["$k/@$tk"] ?: x.who, x.txs, x.tg, x.group, identColor(x.who), x.lastMs, x.ident) },
+                liveIdent = lo?.ident ?: lv.firstOrNull { it.ident != null }?.ident,
             ))
         }
         // a linked repeater names the one it carries the same audio as: the followed one, else the one on the air, else the latest heard
@@ -543,7 +589,7 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
     /** What to keep between sessions. */
     fun save(): HpSaved {
         val cs = chans.values.filter { it.txs > 0 }.sortedByDescending { it.lastMs }.take(200)
-            .map { HpSavedChan(it.hz, it.callsign, it.tone, it.dcs, it.talkMs, it.txs, it.lastMs, it.firstMs) }
+            .map { HpSavedChan(it.hz, it.callsign, it.tone, it.dcs, it.talkMs, it.txs, it.lastMs, it.firstMs, it.mode, it.code) }
         return HpSaved(cs, pairs.map { (k, v) -> k.toLong() to v }, heardLinks().map { k -> val (a, b) = k.split('|'); a.toLong() to b.toLong() }, heat.copy())
     }
 
@@ -556,6 +602,7 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
             if (c.dcs == 0) c.dcs = x.dcs
             c.talkMs += x.talkMs; c.txs += x.txs; c.lastMs = max(c.lastMs, x.lastMs)
             if (c.firstMs == 0.0) c.firstMs = x.firstMs
+            if (x.mode.isNotEmpty() && c.mode.isEmpty()) { c.mode = x.mode; c.code = x.code }
         }
         for ((o, i) in s.pairs) { pairs[chanKey(o)] = i; pairEv["${chanKey(o)}|${chanKey(i)}"] = Ev(PAIR_HITS, 0) }
         // a link comes back only between channels that come back with transmissions (see [heardLinks])

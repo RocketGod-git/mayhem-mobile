@@ -1,5 +1,10 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.hamplus.hpIdentLine
+import com.rocketgod.mayhem.core.hamplus.hpIdentTarget
+import com.rocketgod.mayhem.core.hamplus.hpIdentWho
+import com.rocketgod.mayhem.core.hamplus.hpModeText
+import com.rocketgod.mayhem.core.hamid.identWho
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -190,6 +195,7 @@ fun HamPlusScreen(accent: Color) {
     val scan by HamPlus.scan.collectAsState()
     val kind by Radio.kind.collectAsState()
     val rate by SdrEngine.rateHz.collectAsState()
+    @Suppress("UNUSED_VARIABLE") val names by HamPlus.names.collectAsState()
     var view by rememberSaveable { mutableIntStateOf(HP_V_TALK) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -279,7 +285,7 @@ fun HamPlusScreen(accent: Color) {
                         idx += hpTalkItems(s, now, accent, acts, max = 12)
                         starts[3] = idx; item(key = "act:head") { HpSecHead("ACTIVITY · 24 HOURS") }; idx++
                         item(key = "act:map") { HpHeatmap(s, now, Modifier.fillMaxWidth(), hpHeatRows(s), HP_HEAT_EMPTY) }; idx++
-                        starts[4] = idx; item(key = "log:head") { HpSecHead("LOG") }; idx++
+                        starts[4] = idx; item(key = "log:head") { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) { HpSecHead("LOG"); HpExportButton(accent) } }; idx++
                         hpLogItems(s, now, HAM_NAMER)
                     }
                 }
@@ -296,7 +302,10 @@ fun HamPlusScreen(accent: Color) {
                             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) { HpTileGrid(tiles, s, prefs.hold, now, accent, acts) }
                         }
                         Column(Modifier.fillMaxWidth().height(d.dp(bottomH)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                            HpSeg(HP_WIDE_TABS, view, accent, Modifier.fillMaxWidth()) { view = it }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                                HpSeg(HP_WIDE_TABS, view, accent, Modifier.weight(1f)) { view = it }
+                                HpExportButton(accent)
+                            }
                             val list = rememberLazyListState()
                             LaunchedEffect(view) { list.scrollToItem(0) }
                             LazyColumn(Modifier.fillMaxWidth().weight(1f), state = list, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -509,7 +518,7 @@ internal fun HpLiveBar(s: HpSnap?, now: Long, audioOn: Boolean, hold: String, ac
             Text(hpDur(now - r.startMs), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Text(listOf(nm.meta(r), if (r.direct) "HEARD DIRECT, NEARBY" else "", tile?.offset?.takeIf { tile.kind == "REPEATER" }?.let { "REPEATER $it" } ?: "").filter { it.isNotEmpty() }.joinToString(" · "),
+            Text(listOf(r.ident?.let { hpIdentLine(it, HamPlus.resolve(it, r.hz)) } ?: "", nm.meta(r), if (r.direct) "HEARD DIRECT, NEARBY" else "", tile?.offset?.takeIf { tile.kind == "REPEATER" }?.let { "REPEATER $it" } ?: "").filter { it.isNotEmpty() }.joinToString(" · "),
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             HpBar(((r.peakDb.toFloat()) / 40f).coerceIn(0f, 1f), Palette.ok, Modifier.width(d.dp(70f)).height(d.dp(6f)))
         }
@@ -584,8 +593,15 @@ private fun HpTileBox(modifier: Modifier, t: HpTile, playing: Boolean, now: Long
                 if (playing) Text("♪", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(12f))
             }
             Text(hpName(t), color = if (t.callsign.isNotEmpty()) accent else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val line = listOf(hpTone(t.tone, t.dcs), if (t.kind == "REPEATER" || t.use == "output") t.offset else "").filter { it.isNotEmpty() }.joinToString(" · ")
+            val line = listOf(hpModeText(t), hpTone(t.tone, t.dcs), if (t.kind == "REPEATER" || t.use == "output") t.offset else "").filter { it.isNotEmpty() }.joinToString(" · ")
             if (line.isNotEmpty()) Text(line, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // who is talking now (or talked last) as the signal names them
+            val lid = t.liveIdent ?: t.talkers.firstOrNull()?.ident
+            if (lid != null && identWho(lid).isNotEmpty()) {
+                val lr = HamPlus.resolve(lid, t.hz)
+                Text(listOf(hpIdentWho(lid, lr), hpIdentTarget(lid, lr)).filter { it.isNotEmpty() }.joinToString(" · "), color = if (t.live && t.liveIdent != null) Palette.ok else accent,
+                    fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             if (t.live) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 Text("ON AIR ${hpDur(t.openMs)}", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), maxLines = 1, softWrap = false)
                 HpBar((t.snrDb.toFloat() / 40f).coerceIn(0.05f, 1f), Palette.ok, Modifier.weight(1f).height(d.dp(5f)))
@@ -827,13 +843,16 @@ internal fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accen
             .clickable(enabled = r.recorded && !r.live) { acts.replay(listOf(r.id), "${acts.nm.chan(r.hz)} at ${hpClock(r.startMs)}", "tx") }
             .padding(horizontal = d.dp(9f), vertical = d.dp(5f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f))) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                val who = r.stationLabel.ifEmpty { if (repeater) "VIA REPEATER" else "UNKNOWN" }
+                val rr = r.ident?.let { HamPlus.resolve(it, r.hz) }
+                val named = if (r.ident != null && rr?.station?.callsign?.isNotEmpty() == true && r.stationLabel == identWho(r.ident)) hpIdentWho(r.ident, rr) else ""
+                val who = named.ifEmpty { r.stationLabel.ifEmpty { if (repeater) "VIA REPEATER" else "UNKNOWN" } }
                 Text(who, color = c, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), maxLines = 1, softWrap = false,
                     modifier = if (r.station.isNotEmpty()) Modifier.clickable { acts.rename(r.station, r.stationLabel.takeIf { it.length > 1 } ?: "") } else Modifier)
                 Text(if (r.live) "TALKING ${hpDur(now - r.startMs)}" else hpDur(r.endMs - r.startMs), color = if (r.live) Palette.ok else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
                 if (r.recorded && !r.live) Text("▶", color = accent, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f))
             }
-            val meta = listOf(hpClock(r.startMs), acts.nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "",
+            val idl = r.ident?.let { id -> val rr = HamPlus.resolve(id, r.hz); val w = hpIdentWho(id, rr); hpIdentLine(id, rr).split(" · ").filter { it != w }.joinToString(" · ") } ?: ""
+            val meta = listOf(hpClock(r.startMs), idl, acts.nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "",
                 if (r.direct) "NEARBY" else "", cwCallsign(r.cw).let { if (it.isNotEmpty()) "CW ID $it" else "" }, if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }
             Text(meta.joinToString(" · "), color = Palette.ink.copy(alpha = 0.72f), fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 2)
         }
@@ -897,7 +916,7 @@ private fun HpLogLine(r: HpTxRow, now: Long, nm: HpNamer) {
         Text(hpClock(r.startMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
         Text(nm.chan(r.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
         Text(if (r.live) "LIVE" else hpDur(r.endMs - r.startMs), color = if (r.live) Palette.ok else Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
-        Text(listOf(r.stationLabel, nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "", if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }.joinToString(" · "),
+        Text(listOf(r.ident?.let { hpIdentLine(it, HamPlus.resolve(it, r.hz)) } ?: r.stationLabel, nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "", if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }.joinToString(" · "),
             color = if (r.color >= 0) hpColor(r.color) else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
     }
 }
@@ -917,6 +936,10 @@ private fun HpTileCard(t: HpTile, s: HpSnap, now: Long, muted: Boolean, prio: Bo
         val kv = listOfNotNull(
             t.label.takeIf { it.isNotEmpty() }?.let { "BAND PLAN" to it },
             t.kind.takeIf { it.isNotEmpty() }?.let { "KIND" to it },
+            hpModeText(t).takeIf { it.isNotEmpty() }?.let { "MODE" to it },
+            t.idRepeater.takeIf { it.isNotEmpty() }?.let { "REPEATER" to it },
+            t.talkers.firstOrNull()?.let { HamPlus.resolve(it.ident, t.hz) }?.takeIf { it.listed.isNotEmpty() }?.let { "LISTED AS" to listOf(it.listed, it.repeaterSite).filter { x -> x.isNotEmpty() }.joinToString(", ") },
+            (t.idNetwork.ifEmpty { t.talkers.firstOrNull()?.let { HamPlus.resolve(it.ident, t.hz) }?.network.orEmpty() }).takeIf { it.isNotEmpty() }?.let { "NETWORK" to it },
             if (t.inputHz > 0) "INPUT" to "${hpMhz(t.inputHz)} MHz heard, talkers there are nearby" else t.offset.takeIf { it.isNotEmpty() }?.let { "OFFSET" to "$it (band plan)" },
             hpTone(t.tone, t.dcs).takeIf { it.isNotEmpty() }?.let { "TONE" to it },
             "HEARD" to hpHeardLine(t, now.toDouble()),
@@ -936,6 +959,20 @@ private fun HpTileCard(t: HpTile, s: HpSnap, now: Long, muted: Boolean, prio: Bo
             val ids = conv?.let { c -> s.rows.filter { it.conv == c.id && it.recorded && !it.live }.map { it.id } }.orEmpty()
             if (ids.isNotEmpty()) ToggleBox("▶ LAST CONVERSATION", false, accent) { acts.replay(ids, "${hpMhz(t.hz)} conversation from ${hpClock(conv!!.startMs)}", "conv") }
         }
+        if (t.talkers.isNotEmpty()) {
+            Text("TALKERS THE SIGNAL NAMED · TAP TO NAME", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                for (x in t.talkers) {
+                    val c = hpColor(x.color); val sh = RoundedCornerShape(d.dp(8f)); val rr = HamPlus.resolve(x.ident, t.hz)
+                    val plain = x.who == identWho(x.ident)
+                    Row(Modifier.clip(sh).background(c.copy(alpha = 0.14f)).border(1.dp, c.copy(alpha = 0.6f), sh).clickable { acts.rename(x.key, if (plain) "" else x.who) }
+                        .padding(horizontal = d.dp(8f), vertical = d.dp(4f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                        Text(if (plain) hpIdentWho(x.ident, rr) else x.who, color = c, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), maxLines = 1, softWrap = false)
+                        Text(listOf(rr?.station?.name.orEmpty(), hpIdentTarget(x.ident, rr), "${x.txs} tx").filter { it.isNotEmpty() }.joinToString(" · "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+        }
         if (t.stations.isNotEmpty()) {
             Text(if (t.kind == "REPEATER") "TALKERS HEARD ON THE INPUT · TAP TO NAME" else "STATIONS BY THEIR CARRIER · TAP TO NAME", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -950,5 +987,26 @@ private fun HpTileCard(t: HpTile, s: HpSnap, now: Long, muted: Boolean, prio: Bo
             }
         }
         s.convs.firstOrNull { it.hz == t.hz }?.let { HpConvCard(it.id, s, now, accent, acts) }
+    }
+}
+
+/** EXPORT: the log as a CSV file, handed to the share sheet (a drive, mail, a spreadsheet app). */
+@Composable
+internal fun HpExportButton(accent: Color) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    ToggleBox("EXPORT", false, accent) {
+        val s = HamPlus.engine.snap.value
+        if (s == null || s.rows.none { !it.live }) { HamPlus.note("nothing logged to export yet"); return@ToggleBox }
+        runCatching {
+            val dir = java.io.File(ctx.cacheDir, "logs").apply { mkdirs() }
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
+            val f = java.io.File(dir, "repeaters-$stamp.csv").apply { writeText(HamPlus.exportCsv()) }
+            val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".logs", f)
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/csv"; putExtra(android.content.Intent.EXTRA_STREAM, uri); putExtra(android.content.Intent.EXTRA_SUBJECT, f.name)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            ctx.startActivity(android.content.Intent.createChooser(send, "Export the log").apply { addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK) })
+        }.onFailure { HamPlus.note("could not export the log") }
     }
 }

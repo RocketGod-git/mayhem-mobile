@@ -9,6 +9,12 @@ import com.rocketgod.mayhem.core.ham.Resampler
 import com.rocketgod.mayhem.core.ham.SubAudioDecoder
 import com.rocketgod.mayhem.core.ham.lowpassTaps
 import com.rocketgod.mayhem.core.trains.Ddc
+import com.rocketgod.mayhem.core.hamid.HamIdChannel
+import com.rocketgod.mayhem.core.hamid.HamIdSnap
+import com.rocketgod.mayhem.core.hamid.HamIdent
+import com.rocketgod.mayhem.core.hamid.identOf
+import com.rocketgod.mayhem.core.hamid.iqClippingU8
+import com.rocketgod.mayhem.core.hamid.isDigital
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,6 +44,11 @@ import kotlin.math.sqrt
  * a down-converter to about 24 kS/s and a probe: the FM discriminator, whose mean over the transmission is the
  * transmitter's carrier frequency error, a CTCSS / DCS decoder, a Morse reader for CW IDs, the audio envelope, and its
  * audio, kept as 8 kHz mu-law in the time machine and played when the channel is listened to.
+ *
+ * Each probe also runs the identity layer (core/hamid/Channel.kt) on its discriminator: DMR, D-STAR, Fusion, P25,
+ * NXDN, dPMR and M17 named by their checks, who is talking and to which talkgroup, and analog signaling. A channel
+ * whose digital mode is named is a transmission without an FM voice, and its digital voice, decoded by the app's
+ * vocoders, is what it records and plays. While the receiver clips no digital mode is named. The same as the web's.
  *
  * Probes are capped by what the processor sustains: the time they take is measured and the cap set to fill
  * [BUDGET_MS] a second. A transmission without a probe is marked not recorded; none is dropped silently.
@@ -75,6 +86,15 @@ private const val MEASURE_MS = 100.0
 private const val SNAP_MS = 500.0
 private const val OFF_WIN_MS = 100.0
 private const val AUDIO_RATE = 48_000.0
+/** Digital voice levels (the vocoders' outputs differ; these bring each near an FM voice) and the jitter buffer (200 ms at 8 kHz). */
+private const val VOICE_GAIN = 1.5f
+private const val VOICE_GAIN_P25 = 4.5f
+private const val VOICE_GAIN_M17 = 1.2f
+private const val VOICE_PRIME = 1_600
+/** After the receiver clips, no digital mode is named from what it hears for this long (AGC and spurs settle). */
+const val CLIP_HOLD_MS = 250.0
+/** The identity layer's CW ID reader (bench: 15 of 16) is taken over the probe's own once it is this sure of a callsign. */
+private const val CW_SURE = 0.85
 
 data class HpParams(val thresholdDb: Double = 8.0, val mode: Mode = Mode.NEWEST, val volume: Double = 1.0) {
     enum class Mode { MIX, NEWEST }
@@ -96,6 +116,16 @@ interface WatchProbe {
     fun end()
     /** Whether the audio carries a voice, block by block (Speech.kt). */
     val speech: SpeechCount
+    /** Set by the watcher before each push: the receiver is clipping. */
+    var clipped: Boolean get() = false; set(_) {}
+    /** The identity read so far (HAM+), null when it names nothing. */
+    fun ident(): HamIdent? = null
+    /** A digital mode is named: the channel is a transmission, its voice is the vocoder's. */
+    fun digital(): Boolean = false
+    /** When the digital decoders last passed a check (ms from the probe's start), -1 never. */
+    val lastDigitalMs: Double get() = -1.0
+    /** A CW ID callsign the identity layer's own Morse reader is sure of, "" none. */
+    fun cwId(): String = ""
 }
 
 /**
@@ -145,6 +175,16 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
     val tones = LinkedHashMap<Double, Int>(); val dcsCodes = LinkedHashMap<Int, Int>(); var subN = 0L
     override var out48 = 0
     override val speech: FmSpeech
+    override var clipped = false
+    /** The identity layer on this channel, its last snapshot, and when its checks last moved. */
+    val idc: HamIdChannel
+    var snap: HamIdSnap? = null; private set
+    private var snapAt = 0.0; private var checks = 0
+    override var lastDigitalMs = -1.0; private set
+    /** Decoded digital voice at 8 kHz waiting to be recorded and played (a ring), the stream playing, when it last had a frame. */
+    private val vq = FloatArray(1 shl 15); private var vr = 0L; private var vw = 0L; private var primed = false
+    private var stream = ""; private var streamAt = -1e9
+    private val v48 = Resampler(AUDIO_RATE / CLIP_RATE); private var v8 = FloatArray(0)
 
     init {
         ddc.reset(rate); ddc.offsetHz = offsetHz; fs = ddc.outRate
@@ -153,6 +193,50 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
         to8 = Resampler(CLIP_RATE / fs); to48 = Resampler(AUDIO_RATE / fs)
         de = 1 - exp(-1 / (fs * 530e-6))
         speech = FmSpeech(fs) { hz -> ddc.powerGain(hz) }
+        idc = HamIdChannel(fs)
+        // the vocoders' frames: DMR, D-STAR and Fusion per stream, P25, NXDN and dPMR per slot, M17's Codec 2
+        idc.onPcm = { f -> f.pcm?.let { voice(f.stream, it, VOICE_GAIN) } }
+        idc.onAudio = { m, slot, pcm -> voice("$m$slot", pcm, VOICE_GAIN_P25) }
+        idc.onM17Pcm = { p -> voice("m17", FloatArray(p.size) { p[it] / 32768f }, VOICE_GAIN_M17) }
+    }
+
+    /** The stream a mode's voice comes in on: only the named mode's frames play (a stray sync of another mode is no voice). */
+    private fun streamOf(mode: String, st: String): Boolean = when (mode) {
+        "DMR" -> st.startsWith("dmr"); "D-STAR" -> st == "dstar"; "YSF" -> st == "ysf"; "M17" -> st == "m17"
+        "P25", "P25P2", "NXDN", "dPMR" -> st.startsWith(mode)
+        else -> false
+    }
+    private fun voice(st: String, pcm: FloatArray, gain: Float) {
+        val sn = snap; val mode = if (sn != null && sn.verified) sn.mode else ""
+        if (!streamOf(mode, st)) return
+        // one talker at a time: the stream playing keeps going until it has been quiet half a second
+        val t = subN / fs * 1000
+        if (st != stream && t - streamAt < 500) return
+        stream = st; streamAt = t
+        val q = vq.size - 1
+        for (v in pcm) { vq[(vw and q.toLong()).toInt()] = v * gain; vw++ }
+        if (vw - vr > q) vr = vw - q
+    }
+    /** [k] samples of decoded voice at 8 kHz into [out]: silence until 200 ms are waiting, and again after running dry. */
+    private fun pull(out: FloatArray, k: Int) {
+        val q = vq.size - 1
+        if (!primed && vw - vr >= VOICE_PRIME) primed = true
+        for (i in 0 until k) {
+            if (primed && vr < vw) { out[i] = vq[(vr and q.toLong()).toInt()]; vr++ } else { out[i] = 0f; primed = false }
+        }
+    }
+    override fun digital(): Boolean { val sn = snap; return sn != null && sn.verified && isDigital(sn.mode) }
+    override fun ident(): HamIdent? = snap?.let { identOf(it) }
+    override fun cwId(): String { val c = snap?.analog?.cwId; return if (c != null && c.confidence >= CW_SURE) c.callsign else "" }
+    /** The identity snapshot four times a second, and when the decoders' checks last moved. */
+    private fun look(force: Boolean = false) {
+        val t = subN / fs
+        if (!force && t - snapAt < 0.25) return
+        snapAt = t
+        val c = idc
+        val n = c.dmr.checked + c.dmr.clean + c.dstar.id.frames + c.dstar.id.headers + c.ysf.id.frames + c.m17.id.lsfs + c.m17.id.frames + c.p25.p25.checked + c.p25.nxdn.checked + c.p25.dpmr.checked + c.p25.p25p2.checked
+        if (n != checks) { checks = n; lastDigitalMs = t * 1000 }
+        snap = c.snapshot()
     }
 
     override fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz }
@@ -174,7 +258,9 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
         }
         sub.push(au, m)
         speech.push(au, m)
+        idc.push(au, m, clipped)
         subN += m
+        look()
         if (sub.tone != 0.0) tones[sub.tone] = (tones[sub.tone] ?: 0) + m
         else if (sub.dcs != 0) dcsCodes[sub.dcs] = (dcsCodes[sub.dcs] ?: 0) + m
         for (i in 0 until m) { deemph += de * (au[i] - deemph); au[i] = (deemph * 0.6).toFloat() }
@@ -186,8 +272,17 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
             envAcc += v * v
             if (++envN >= envWin) { env.add(sqrt(envAcc / envN).toFloat()); envAcc = 0.0; envN = 0 }
         }
-        val k8 = to8.process(a2, m, a8); clip.push(a8, k8)
-        out48 = if (listen) to48.process(a2, m, a48) else 0
+        val k8 = to8.process(a2, m, a8)
+        if (digital()) {
+            // a digital channel records and plays its decoded voice, as many 8 kHz samples as the FM audio would have been
+            if (v8.size < k8) v8 = FloatArray(2 * k8 + 16)
+            pull(v8, k8); clip.push(v8, k8)
+            if (a48.size < 6 * k8 + 16) a48 = FloatArray(12 * k8 + 32)
+            out48 = if (listen) v48.process(v8, k8, a48) else 0
+        } else {
+            clip.push(a8, k8)
+            out48 = if (listen) to48.process(a2, m, a48) else 0
+        }
         if (powN > fs / 10) { levelDb = 10 * log10(pow / powN + 1e-9); pow = 0.0; powN = 0 }
     }
 
@@ -202,7 +297,7 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
     /** The tone (or code) heard through most of the transmission: half of it at least, so a moment of voice read as a tone does not count. */
     override fun tone(): Double = top(tones, 0.0, subN)
     override fun dcs(): Int = if (tone() != 0.0) 0 else top(dcsCodes, 0, subN)
-    override fun end() { cw.end() }
+    override fun end() { cw.end(); idc.analog.flush(); look(true) }
     companion object {
         fun <K> top(m: Map<K, Int>, none: K, total: Long): K { var b = none; var v = 0; for ((k, n) in m) if (n > v) { v = n; b = k }; return if (v >= TONE_SHARE * total) b else none }
     }
@@ -284,6 +379,10 @@ abstract class ChannelWatch<P : WatchProbe>(
     @Volatile var followClock = true
     /** A cap set from outside (tests, a device setting); 0 lets the measurement set it. */
     @Volatile var fixedCap = 0
+    /** The receiver clipped until then (engine ms): probes are told, so nothing digital is named from it. */
+    protected var clipUntil = 0.0
+    /** Clipping is checked on this watcher's buffers (CB leaves it off). */
+    protected open val checkClip = false
 
     private val _snap = MutableStateFlow<HpSnap?>(null)
     val snap: StateFlow<HpSnap?> = _snap.asStateFlow()
@@ -365,6 +464,7 @@ abstract class ChannelWatch<P : WatchProbe>(
             frames++; off += step
         }
         samples += n
+        if (checkClip && iqClippingU8(iq, len)) clipUntil = nowMs() + CLIP_HOLD_MS
         if (followClock && abs(nowMs() - clock()) > 3_000) baseMs = clock() - samples * 1000.0 / this.rate
         val now = nowMs()
         if (now - lastMeasure >= MEASURE_MS && frames > 0) { lastMeasure = now; measure(now) }
@@ -457,6 +557,8 @@ abstract class ChannelWatch<P : WatchProbe>(
         for (o in opens.values.toList()) {
             val p = o.probe ?: continue
             if (!o.talk) {
+                // a named digital mode is a transmission (its voice is not FM speech)
+                if (p.digital()) { o.talk = true; continue }
                 if (!p.speech.heard) continue
                 o.talk = true
                 // a carrier that was up a while before its voice (a carrier left on, then a talker) starts at the voice
@@ -464,7 +566,7 @@ abstract class ChannelWatch<P : WatchProbe>(
                 if (first - o.startMs > talkLateMs) o.startMs = first - TALK_PRE_MS
                 continue
             }
-            val last = lastSpeech(o)
+            val last = if (p.digital()) (if (p.lastDigitalMs >= 0) o.probeAt + p.lastDigitalMs else -1.0) else lastSpeech(o)
             if (last >= 0 && now - last > SPEECH_LAPSE_MS) close(o, last + CLOSE_HOLD_MS)
         }
     }
@@ -484,7 +586,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         val e0 = max(0, ((o.startMs - o.probeAt) / ENV_MS).roundToInt())
         val env = p?.env?.let { e -> FloatArray(max(0, min(e.size, e0 + envN) - e0)) { e[e0 + it] } } ?: FloatArray(0)
         val t = TxRec(o.id, o.hz, o.startMs, endMs, (o.peak * 10).roundToInt() / 10.0, off.hz, off.sd,
-            tone, p?.dcs() ?: 0, p?.cw0 ?: "", env, recorded)
+            tone, p?.dcs() ?: 0, p?.cwId()?.ifEmpty { null } ?: p?.cw0 ?: "", env, recorded, p?.ident())
         if (recorded) {
             // (the audio from the transmission's start: later than its demodulator's when the voice came after the carrier)
             val data = p!!.clip.done()
@@ -501,6 +603,8 @@ abstract class ChannelWatch<P : WatchProbe>(
     protected open fun closed(o: WatchOpen<P>, t: TxRec) { /* HAM+ keeps nothing more */ }
 
     private fun closeAll() { val now = nowMs(); for (o in opens.values.toList()) close(o, now) }
+    /** Ends every channel still open now, as transmissions that ended here (the end of a recording, a test). */
+    fun endAll() = synchronized(lock) { closeAll() }
 
     /** A channel that counts: a voice heard on it, and not one channel of a wideband event. */
     protected fun counted(o: WatchOpen<P>): Boolean = o.talk && !o.flood && nowMs() >= o.holdUntil
@@ -597,6 +701,7 @@ abstract class ChannelWatch<P : WatchProbe>(
             val p = o.probe ?: continue
             probes++
             val hear = listen.any { it === o }
+            p.clipped = now < clipUntil
             p.push(fi, fq, n, hear)
             // a carrier that is off its raster point by more than half a step moves to the right one, once
             if (plan.snap && !o.shifted && now - o.startMs > 500) {
@@ -689,7 +794,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         val p = o.probe
         val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
         LiveRec(o.id, o.hz, o.startMs, (o.snr * 10).roundToInt() / 10.0, if (p != null) p.levelDb.roundToInt().toDouble() else -90.0, off.hz,
-            p?.tone() ?: 0.0, p?.dcs() ?: 0, p != null && !o.cut)
+            p?.tone() ?: 0.0, p?.dcs() ?: 0, p != null && !o.cut, p?.ident())
     }
 
     /** The whole picture now; the engine also publishes it on [snap] twice a second. */
@@ -714,5 +819,6 @@ open class HamPlusEngine(
     clock: () -> Double = { System.currentTimeMillis().toDouble() },
     perf: () -> Double = { System.nanoTime() / 1e6 },
 ) : ChannelWatch<WatchProbe>(HAM_PLAN, clock, perf) {
+    override val checkClip = true
     override fun makeProbe(hz: Long, key: String): WatchProbe = Probe(rate.toDouble(), (hz - centerHz).toDouble())
 }

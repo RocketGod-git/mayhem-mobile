@@ -21,6 +21,8 @@ class HamIdSnap(
     val analog: AnalogSnap? = null,
     /** M17: the link setup (callsigns, CAN, META text, position, the originator and reflector a repeater names). */
     val m17: M17Id? = null,
+    /** The mode came from a decoder's checks (frames that passed their codes, on their grid), not the sync count alone. */
+    val verified: Boolean = false,
 )
 
 class HamIdChannel(val fs: Double) {
@@ -133,6 +135,6 @@ class HamIdChannel(val fs: Double) {
         return HamIdSnap(m, r.hits, if (m == "DMR") dmr.cc else -1, slots, ds, ys, station, repeater, position, dtmf.text,
             h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) },
             if (ys != null && ys.voip) ys.down to ys.rem[2] else null, ddId,
-            mm?.p25, mm?.p25p2, mm?.nxdn, mm?.dpmr, analog.snapshot(), mi)
+            mm?.p25, mm?.p25p2, mm?.nxdn, mm?.dpmr, analog.snapshot(), mi, claimed || more != null)
     }
 }

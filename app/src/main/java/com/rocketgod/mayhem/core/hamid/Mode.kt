@@ -2,6 +2,7 @@ package com.rocketgod.mayhem.core.hamid
 
 import com.rocketgod.mayhem.core.ham.hamSyncSigns
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
@@ -112,8 +113,9 @@ class ModeDetector(val fs: Double) {
             // consecutive syncs a whole number of frames apart, at least as many as off the grid (Framing.kt)
             var on = 0; var off = 0
             for (i in 1 until a.size) { if (onGrid(a[i] - a[i - 1], P)) on++ else off++ }
-            val framed = on >= 1 && on >= off && ((m != "P25" && m != "M17") || eyeOk(eyes[m]))
+            // (and over the whole channel its syncs are not mostly off the grid: noise and other systems match now and then)
             val need = NEED.getValue(m)
+            val framed = on >= max(1, need - 1) && on >= off && !offGrid(m) && ((m != "P25" && m != "M17") || eyeOk(eyes[m]))
             if (framed && a.size >= need && a.size.toDouble() / need > bestN) { bestN = a.size.toDouble() / need; best = m }
         }
         val seconds = samples / fs

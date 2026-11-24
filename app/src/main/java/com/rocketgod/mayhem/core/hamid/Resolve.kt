@@ -29,9 +29,13 @@ class HamIdResolver {
     /** DMR radio IDs answered one at a time, and those heard that nothing has answered yet. */
     val ids = HashMap<Int, RadioIdUser>()
     val wantedIds = LinkedHashSet<Int>()
+    /** NXDN IDs answered one at a time, and those heard that nothing has answered yet. */
+    val nxdnIds = HashMap<Int, RadioIdUser>()
+    val wantedNxdn = LinkedHashSet<Int>()
 
     fun addCall(r: CallRecord) { calls[r.callsign] = r; wanted.remove(r.callsign) }
     fun addUser(u: RadioIdUser) { ids[u.id] = u; wantedIds.remove(u.id) }
+    fun addNxdnUser(u: RadioIdUser) { nxdnIds[u.id] = u; wantedNxdn.remove(u.id) }
 
     private fun fromUser(st: Station, u: RadioIdUser) {
         if (st.callsign.isEmpty()) st.callsign = u.callsign
@@ -58,8 +62,11 @@ class HamIdResolver {
      */
     private fun unit(id: Int, nxdn: Boolean): Station {
         val st = Station(); st.radioId = id
-        val u = if (nxdn) nxdnUsers?.byId(id) else if (id in 1_000_000..9_999_999) users?.byId(id) else null
+        val dmrLike = id in 1_000_000..9_999_999
+        val u = if (nxdn) nxdnUsers?.byId(id) ?: nxdnIds[id] else if (dmrLike) users?.byId(id) ?: ids[id] else null
         if (u != null) { fromUser(st, u); if (nxdn) st.source = "radioid.net NXDN" }
+        else if (nxdn && nxdnUsers == null && id > 0) wantedNxdn.add(id)
+        else if (!nxdn && dmrLike && users == null) wantedIds.add(id)
         return st
     }
 
@@ -105,6 +112,42 @@ class HamIdResolver {
         if (rep == null && snap.mode != "DMR") rep = repeaters.at(ctx.hz, tone = ctx.tone, mode = if (snap.mode == "analog" || snap.mode.isEmpty()) "FM" else snap.mode, lat = ctx.lat, lon = ctx.lon).firstOrNull()
         if (out.repeater.isEmpty() && !ctx.cwId.isNullOrEmpty()) out.repeater = ctx.cwId
         if (rep != null) { out.listed = rep.name.ifEmpty { rep.call }; out.repeaterSite = rep.site.ifEmpty { rep.city }; out.network = rep.network }
+        return out
+    }
+
+    /**
+     * The same as [resolve], from a transmission's [HamIdent] (what the log keeps of it): the station with its name and
+     * place, the talkgroup's name or the radio called, the repeater the directories list here and its network.
+     */
+    fun resolveIdent(id: HamIdent, ctx: ChannelContext): Resolved {
+        val out = Resolved(id.mode); out.position = id.position; out.group = id.group; out.repeater = id.repeater; out.network = id.network
+        out.colorCode = id.code; out.slot = id.slot
+        var rep: Repeater? = null
+        when (id.mode) {
+            "DMR" -> {
+                rep = repeaters.at(ctx.hz, cc = id.code, mode = "DMR", lat = ctx.lat, lon = ctx.lon).firstOrNull()
+                if (id.radioId != 0) {
+                    val st = Station(); st.radioId = id.radioId; st.alias = id.alias; st.callsign = id.callsign; fill(st); out.station = st
+                    out.tgId = id.tg
+                    if (id.group) out.talkgroup = talkgroups.lookup(id.tg, rep?.network ?: "")?.name ?: ""
+                    else { val c = Station(); c.radioId = id.tg; fill(c); out.called = c }
+                }
+            }
+            "D-STAR", "YSF", "M17" -> {
+                if (id.callsign.isNotEmpty()) { val st = Station(); st.callsign = id.callsign; st.alias = id.alias; fill(st); out.station = st }
+                out.talkgroup = id.dest
+                if (id.mode == "YSF") { out.dgid = id.code; out.colorCode = -1 }
+            }
+            "P25", "P25P2" -> if (id.radioId != 0) { out.station = unit(id.radioId, false); out.tgId = id.tg; if (!id.group) out.called = unit(id.tg, false) }
+            "NXDN" -> if (id.radioId != 0) {
+                out.station = if (id.alias.isNotEmpty()) Station().also { it.radioId = id.radioId; it.alias = id.alias } else unit(id.radioId, true)
+                out.tgId = id.tg; if (!id.group && id.alias.isEmpty()) out.called = unit(id.tg, true)
+            }
+            "dPMR" -> { if (id.radioId != 0 || id.alias.isNotEmpty()) out.station = Station().also { it.radioId = id.radioId; it.alias = id.alias }; out.talkgroup = id.dest }
+        }
+        if (rep == null && id.mode != "DMR") rep = repeaters.at(ctx.hz, tone = ctx.tone, mode = if (id.mode == "analog") "FM" else id.mode, lat = ctx.lat, lon = ctx.lon).firstOrNull()
+        if (out.repeater.isEmpty() && !ctx.cwId.isNullOrEmpty()) out.repeater = ctx.cwId
+        if (rep != null) { out.listed = rep.name.ifEmpty { rep.call }; out.repeaterSite = rep.site.ifEmpty { rep.city }; if (out.network.isEmpty()) out.network = rep.network }
         return out
     }
 }

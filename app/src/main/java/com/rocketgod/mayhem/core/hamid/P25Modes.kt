@@ -448,7 +448,9 @@ class P25Modes(val fs: Double) {
         gate.mark("P25:" + p25.id.nac, p25.checked, t48); gate.mark("NXDN", nxdn.checked, t48)
     }
     /** Whether [m]'s checked frames came on its frame grid (Phase 2: its checks alone). */
-    fun framed(m: String): Boolean = when (m) { "P25P2" -> true; "P25" -> gate.framed("P25:" + p25.id.nac); else -> gate.framed(m) }
+    fun framed(m: String): Boolean = when (m) { "P25P2" -> true; "P25" -> nac() >= 0; else -> gate.framed(m) }
+    /** The NAC whose frames came on the grid most (a stray frame that passes its code with another NAC is not it), -1 none. */
+    fun nac(): Int { val k = gate.best("P25:"); return if (k.isNotEmpty()) k.substring(4).toInt() else -1 }
     fun push(disc: FloatArray, n: Int) {
         s24.push(disc, n); p25p2.push(disc, n); samples += n
         fun mark(m: String, c: Int) { val l = last[m]; if (c > 0 && (l == null || l.second != c)) last[m] = Pair(samples, c) }
@@ -460,7 +462,7 @@ class P25Modes(val fs: Double) {
     fun snapshot(): P25ModesSnap {
         val m = mode
         return when (m) {
-            "P25" -> { val x = p25.id.copy(); P25ModesSnap(m, x, null, null, null, if (x.src != 0) x.src.toString() else "", "", null) }
+            "P25" -> { val x = p25.id.copy(nac = nac()); P25ModesSnap(m, x, null, null, null, if (x.src != 0) x.src.toString() else "", "", null) }
             "P25P2" -> { val x = p25p2.id.deep(); val live = x.slots.filter { it.src > 0 }.maxByOrNull { it.lastSym }; P25ModesSnap(m, null, x, null, null, live?.src?.toString() ?: "", "", null) }
             "NXDN" -> { val x = nxdn.id.copy(); P25ModesSnap(m, null, null, x, null, if (x.src == 0) "" else if (x.typeD) "${x.src shr 11}-${x.src and 0x7ff}" else x.src.toString(), "", null) }
             "dPMR" -> { val x = dpmr.id.copy(); P25ModesSnap(m, null, null, null, x, x.ownText, "", x.position) }

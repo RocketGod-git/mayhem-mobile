@@ -15,7 +15,10 @@ import java.util.zip.GZIPOutputStream
  *     parsed into the compact table on first use;
  *   · talkgroups: Brandmeister's list (45 KB);
  *   · repeaters: HearHam's directory (10 MB, 1.1 MB compressed) and Brandmeister's devices (the DMR repeaters);
- *   · callsigns heard on the air: callook.info, one at a time, kept 30 days (a miss for a day).
+ *   · callsigns heard on the air: callook.info, one at a time, kept 30 days (a miss for a day);
+ *   · radio IDs heard on the air (DMR, and NXDN from its own list): radioid.net's per-ID API, one at a time, kept 30
+ *     days (a miss for a day). Repeaters looks IDs up this way rather than downloading the whole list; the app has no
+ *     browser CORS rule, so it asks radioid.net directly (the web goes through its pass-through).
  */
 object HamIdNet {
     const val BM_TALKGROUPS_URL = "https://api.brandmeister.network/v2/talkgroup"
@@ -24,6 +27,7 @@ object HamIdNet {
     const val HEARHAM_URL = "https://hearham.com/api/repeaters/v1"
     /** radioid.net's NXDN ID list (the same columns), for NXDN unit IDs. */
     const val RADIOID_NXDN_URL = "https://radioid.net/static/nxdn.csv"
+    fun radioIdUrl(id: Int, nxdn: Boolean = false) = "https://radioid.net/api/${if (nxdn) "nxdn" else "dmr"}/user/?id=$id"
     fun callookUrl(call: String) = "https://callook.info/${URLEncoder.encode(call, "UTF-8")}/json"
     private const val DAY = 86_400_000L; private const val WEEK = 7 * DAY; private const val MONTH = 30 * DAY
 
@@ -75,6 +79,32 @@ object HamIdNet {
         val t = cached(File(dir, "hamid/bm-devices.json.gz"), BM_DEVICES_URL, WEEK, gzip = true) ?: return 0
         return try { parseBrandmeisterDevices(t).also { res.repeaters.add(it) }.size } catch (_: Exception) { 0 }
     }
+    /** Looks up to [max] of the radio IDs the resolver has queued (DMR, then NXDN), one request each. */
+    fun lookupWantedIds(res: HamIdResolver, dir: File, max: Int = 2): Int {
+        var n = 0
+        fun one(id: Int, nxdn: Boolean) {
+            val f = File(dir, "hamid/${if (nxdn) "nxdn" else "ids"}/$id.json")
+            val add: (RadioIdUser) -> Unit = { if (nxdn) res.addNxdnUser(it) else res.addUser(it) }
+            val drop = { if (nxdn) res.wantedNxdn.remove(id) else res.wantedIds.remove(id) }
+            if (f.exists()) {
+                val text = f.readText(); val age = System.currentTimeMillis() - f.lastModified()
+                if (age < if (text.isNotEmpty()) MONTH else DAY) { val u = if (text.isNotEmpty()) runCatching { parseRadioIdApi(text) }.getOrNull() else null; if (u != null) add(u) else drop(); return }
+            }
+            try {
+                val text = String(get(radioIdUrl(id, nxdn)), Charsets.UTF_8)
+                val u = runCatching { parseRadioIdApi(text) }.getOrNull()
+                f.parentFile?.mkdirs(); f.writeText(if (u != null) text else "")
+                if (u != null) { add(u); n++ } else drop()
+            } catch (e: java.io.IOException) {
+                // a 404 is no such ID (kept a day as a miss); offline tries again later
+                if (e.message == "HTTP 404") { f.parentFile?.mkdirs(); f.writeText(""); drop() }
+            } catch (_: Exception) { /* try again later */ }
+        }
+        for (id in res.wantedIds.toList().take(max)) one(id, false)
+        for (id in res.wantedNxdn.toList().take(max)) one(id, true)
+        return n
+    }
+
     /** Looks up to [max] of the callsigns the resolver has queued. */
     fun lookupWanted(res: HamIdResolver, dir: File, max: Int = 2): Int {
         var n = 0

@@ -84,7 +84,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
         DEVICES -> "OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ"
         JS8 -> "JS8 · 8-FSK · HF USB"
         HAM -> "SSB · CW · FM · FT8 · SSTV"
-        HAMPLUS -> "ANALOG FM · CTCSS · DCS · 10 M TO 70 CM"
+        HAMPLUS -> "FM · DMR · D-STAR · FUSION · P25 · NXDN · M17 · 10 M TO 70 CM"
         CB -> "CB · 26.965–27.405 MHZ · AM · FM · SSB"
         APRS -> "APRS · AX.25 · 144.390 MHZ"
         ERT -> "ERT · GRIDSTREAM · 802.15.4G"

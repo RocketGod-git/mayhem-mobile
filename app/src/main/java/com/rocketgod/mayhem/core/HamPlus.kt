@@ -17,6 +17,9 @@ import com.rocketgod.mayhem.core.hamplus.hpAutoLabel
 import com.rocketgod.mayhem.core.hamplus.HpWindow
 import com.rocketgod.mayhem.core.hamplus.hpScanText
 import com.rocketgod.mayhem.core.hamplus.hpWindows
+import com.rocketgod.mayhem.core.hamplus.hpExportCsv
+import com.rocketgod.mayhem.core.hamid.HamIdNet
+import com.rocketgod.mayhem.core.hamid.HamIdResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +46,52 @@ object HamPlus {
     val BANDS = listOf("AUTO" to "AUTO", "2M" to "2 M", "125" to "1.25 M", "70CM" to "70 CM", "6M" to "6 M", "10M" to "10 M")
 
     val engine = HamPlusEngine()
+    /**
+     * Names for the digital IDs heard: Brandmeister's talkgroups (weekly) at once, its DMR repeater list the first time a
+     * DMR channel is heard, and each radio ID (radioid.net, DMR and NXDN) or callsign (callook.info) as it comes up, two
+     * of each every few seconds, each kept 30 days. On a thread of its own; [names] moves when an answer comes in.
+     */
+    val res = HamIdResolver()
+    private val _names = MutableStateFlow(0)
+    val names: StateFlow<Int> = _names.asStateFlow()
+    @Volatile private var lookBusy = false
+    private var resWired = false; private var bmRepeaters = false; private var lookAt = 0L
+    private fun lookups(now: Long) {
+        val dir = ctx?.filesDir ?: return
+        if (lookBusy) return
+        val dmr = !bmRepeaters && engine.snap.value?.tiles?.any { it.mode == "DMR" } == true
+        val due = now - lookAt >= 4_000 && (res.wantedIds.isNotEmpty() || res.wanted.isNotEmpty() || res.wantedNxdn.isNotEmpty())
+        if (resWired && !dmr && !due) return
+        val first = !resWired; resWired = true; if (dmr) bmRepeaters = true; if (due) lookAt = now
+        lookBusy = true
+        Thread({
+            try {
+                var n = 0
+                // the network on a resolver of its own (the screen reads [res] meanwhile), the answers merged under its lock
+                val tmp = HamIdResolver()
+                if (first) { HamIdNet.loadTalkgroups(tmp, dir); synchronized(res) { n += HamIdNet.loadTalkgroups(res, dir) } }
+                if (dmr) { HamIdNet.loadBrandmeisterRepeaters(tmp, dir); synchronized(res) { n += HamIdNet.loadBrandmeisterRepeaters(res, dir) } }
+                if (due) {
+                    val ids: List<Int>; val nx: List<Int>; val calls: List<String>
+                    synchronized(res) { ids = res.wantedIds.take(2); nx = res.wantedNxdn.take(2); calls = res.wanted.take(2) }
+                    tmp.wantedIds.addAll(ids); tmp.wantedNxdn.addAll(nx); tmp.wanted.addAll(calls)
+                    n += HamIdNet.lookupWantedIds(tmp, dir) + HamIdNet.lookupWanted(tmp, dir)
+                    synchronized(res) {
+                        for (u in tmp.ids.values) res.addUser(u); for (u in tmp.nxdnIds.values) res.addNxdnUser(u); for (c in tmp.calls.values) res.addCall(c)
+                        // asked and not answered (no such ID or callsign): not asked again this session
+                        for (id in ids) if (id !in tmp.wantedIds) res.wantedIds.remove(id)
+                        for (id in nx) if (id !in tmp.wantedNxdn) res.wantedNxdn.remove(id)
+                        for (c in calls) if (c !in tmp.wanted) res.wanted.remove(c)
+                    }
+                }
+                if (n > 0) _names.value = _names.value + 1
+            } catch (_: Exception) { /* offline: try again later */ } finally { lookBusy = false }
+        }, "hamid-lookups").apply { isDaemon = true }.start()
+    }
+    /** The log as CSV (time, channel, mode, who, talkgroup, names), oldest first. */
+    fun exportCsv(): String = synchronized(res) { hpExportCsv(engine.snap.value, res) }
+    /** What the directories say about an identity heard on [hz] (the screen's lines). */
+    fun resolve(id: com.rocketgod.mayhem.core.hamid.HamIdent?, hz: Long): com.rocketgod.mayhem.core.hamid.Resolved? = if (id == null) null else synchronized(res) { res.resolveIdent(id, com.rocketgod.mayhem.core.hamid.ChannelContext(hz)) }
     /** The frame's log (HAM+ writes its lines to the debug log; this one stays empty). */
     val log = PacketLog()
     private var ctx: Context? = null
@@ -183,6 +232,7 @@ object HamPlus {
      */
     fun tick(now: Long) {
         if (now - knownAt > 15_000) { knownAt = now; saveKnown() }
+        lookups(now)
         val s = engine.snap.value ?: return
         val a = auto ?: return
         val playingRow = s.rows.firstOrNull { it.live && it.hz.toString() in s.playing }

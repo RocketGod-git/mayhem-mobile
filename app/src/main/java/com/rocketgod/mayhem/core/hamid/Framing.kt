@@ -35,6 +35,8 @@ class FrameGate {
     }
     fun pairs(key: String): Int = on[key] ?: 0
     fun framed(key: String): Boolean = pairs(key) > 0
+    /** Of the keys starting [prefix] (P25's NACs), the one with the most frames on the grid, or "" when none has any. */
+    fun best(prefix: String): String { var b = ""; var n = 0; for ((k, v) in on) if (k.startsWith(prefix) && v > n) { n = v; b = k }; return b }
 }
 
 /** The eye of [n] symbols (outer levels near ±3): 4 on four levels, 2 when nearly all are on the outer two, else 0. */
@@ -61,5 +63,11 @@ const val CLIP_SHARE = 0.002
 fun iqClipping(iq: ByteArray, n: Int = iq.size): Boolean {
     var c = 0
     for (i in 0 until n) { val v = iq[i].toInt(); if (v >= 127 || v <= -127) c++ }
+    return c >= CLIP_SHARE * n && c > 4
+}
+/** The same for unsigned 8-bit IQ (the engine's input: 0 and 255 are full scale). */
+fun iqClippingU8(iq: ByteArray, n: Int = iq.size): Boolean {
+    var c = 0
+    for (i in 0 until n) { val v = iq[i].toInt() and 0xff; if (v == 0 || v == 255) c++ }
     return c >= CLIP_SHARE * n && c > 4
 }
