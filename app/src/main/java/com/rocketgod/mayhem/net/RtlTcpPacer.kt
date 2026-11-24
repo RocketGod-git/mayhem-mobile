@@ -1,19 +1,21 @@
 package com.rocketgod.mayhem.net
 
 /**
- * A jitter buffer between an rtl_tcp socket and the engine. rtl_tcp sends in bursts (measured from a wired PC: 2 to
- * 16 MB/s in 250 ms slices around the 4.8 MB/s that 2.4 Msps needs), and Wi-Fi adds its own. The engine expects
- * samples the way a USB dongle delivers them, steadily, so its queue and the audio writer drop on a burst and
- * underrun on a gap. The reader [write]s whatever arrives; [tick], called every few milliseconds on its own
- * thread, hands the engine [chunk]-byte pieces at the nominal rate (2 bytes a sample) on a steady clock:
+ * A jitter buffer between an rtl_tcp socket and the engine, the way a streaming or VoIP player keeps one. rtl_tcp
+ * sends in bursts (measured from a wired PC: 2 to 16 MB/s in 250 ms slices around the 4.8 MB/s that 2.4 Msps needs)
+ * and Wi-Fi adds stalls of a second or two, after which the server sends what it held all at once. The engine expects
+ * samples the way a USB dongle delivers them, steadily. The reader [write]s whatever arrives; [tick], called every few
+ * milliseconds on its own thread, hands the engine [chunk]-byte pieces (2 bytes a sample) on a steady clock:
  *
- *  - It starts once [PREBUFFER_S] is buffered, and if it runs dry it waits for that much again (a rebuffer). Each
- *    rebuffer adds a tenth of a second to what it waits for, up to [MAX_PREBUFFER_S], so a link with longer gaps
- *    gets the margin it needs and a steady one keeps the short delay.
- *  - When the backlog's lowest point over two seconds stays above the prebuffer (the server ran ahead, or the delay
- *    a burst left behind), it releases faster, half again as fast when it is far behind and a few percent when it is
- *    a little behind, until the delay is back to the prebuffer, rather than throwing samples away. A backlog near
- *    [HIGH_S] is caught up at once.
+ *  - It starts once [PREBUFFER_S] is buffered (at connect and after every retune, so the dial answers quickly).
+ *  - The depth it keeps, [targetS], is learned from the link. A stall (no data for half a second or more) raises it
+ *    to the stall's length plus a margin, up to [MAX_TARGET_S], and running dry raises it a step too; a run dry waits
+ *    for the whole target again. Each clean minute (no stall, nothing run dry) takes a step back toward [PREBUFFER_S].
+ *    The target belongs to the link, so a retune keeps it.
+ *  - It reaches and holds the target only by releasing a little fast or slow: the backlog's low point over two
+ *    seconds against the target sets a speed between [MIN_SPEED] and [MAX_SPEED] of real time, which the audio
+ *    output's resampler absorbs without a sound. Nothing is thrown away, except a backlog past [CUT_S], which is cut
+ *    back to the target at a chunk boundary and said once.
  *
  * Plain JVM; time comes in as nanoseconds, so it is tested with a made-up clock.
  */
@@ -27,20 +29,31 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
     private var out = ByteArray(chunk)
 
     private var playing = false
+    private var refillToTarget = false   // ran dry: wait for the whole target, not the short prebuffer
     private var lastNs = 0L
     private var credit = 0.0
-    private var draining = false
-    private var trimming = false
     private var winStartNs = 0L
     private var winMin = Int.MAX_VALUE
-    /** Seconds buffered before playing starts; grows with each rebuffer, kept across resets (it is the link's). */
-    @Volatile var prebufferS = PREBUFFER_S; private set
+    private var inTotal = 0L      // bytes written ever
+    private var inSeen = 0L       // [inTotal] at the last arrival [tick] saw
+    private var lastInNs = -1L    // when [tick] last saw bytes arrive
+    private var cleanSinceNs = -1L
+    private var growPending = false
+    private var dryGapS = 0.0     // the longest stall around the last run dry, for its log line
 
-    /** Times it ran dry while playing and had to wait for [PREBUFFER_S] again. */
+    /** The depth it steers to, in seconds; learned from the link and kept across resets. */
+    @Volatile var targetS = PREBUFFER_S; private set
+    /** How fast it releases right now, against real time. */
+    @Volatile var speed = 1.0; private set
+    /** Times it ran dry while playing and had to wait for the target again. */
     @Volatile var rebuffers = 0; private set
     /** Bytes thrown away because the buffer was full (it holds [CAPACITY_S]); should stay 0. */
     @Volatile var overflowBytes = 0L; private set
+    /** Bytes cut from a backlog past [CUT_S]; should stay 0. */
+    @Volatile var cutBytes = 0L; private set
     @Volatile var deliveredBytes = 0L; private set
+    /** Handing samples to the engine (not waiting for the buffer to fill). */
+    val isPlaying: Boolean get() = synchronized(lock) { playing }
     /** How far behind the radio the engine is right now: what is buffered, in seconds. */
     val latencyS: Double get() = synchronized(lock) { if (bps > 0) count.toDouble() / bps else 0.0 }
 
@@ -53,13 +66,15 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
             chunk = if (b >= 3_200_000L) 65536 else 16384
             out = ByteArray(chunk)
         }
-        head = 0; count = 0; playing = false; credit = 0.0; draining = false; trimming = false; winMin = Int.MAX_VALUE; winStartNs = 0L
+        head = 0; count = 0; playing = false; refillToTarget = false; credit = 0.0; speed = 1.0
+        winMin = Int.MAX_VALUE; winStartNs = 0L; lastInNs = -1L; inSeen = inTotal
     }
 
     /** Samples from the socket, whole I/Q pairs. */
     fun write(b: ByteArray, n: Int) = synchronized(lock) {
         if (ring.isEmpty() || n <= 0) return@synchronized
         var off = 0; var len = n
+        inTotal += n
         if (len > ring.size) { overflowBytes += len - ring.size; off = len - ring.size; len = ring.size }
         val free = ring.size - count
         if (len > free) {
@@ -78,39 +93,70 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
         Unit
     }
 
+    private fun grow(toS: Double) { targetS = minOf(MAX_TARGET_S, maxOf(targetS, toS)) }
+
     /** Hand the engine what is due at [nowNs]; returns the chunks handed over. */
     fun tick(nowNs: Long): Int = synchronized(lock) {
         if (bps == 0L) return@synchronized 0
+        // stalls: how long since bytes last arrived, judged when they arrive again
+        if (lastInNs < 0) { lastInNs = nowNs; inSeen = inTotal }
+        if (cleanSinceNs < 0) cleanSinceNs = nowNs
+        if (inTotal != inSeen) {
+            val gapS = (nowNs - lastInNs) / 1e9
+            inSeen = inTotal; lastInNs = nowNs
+            if (gapS >= STALL_S) {
+                cleanSinceNs = nowNs
+                if (growPending) dryGapS = maxOf(dryGapS, gapS)
+                if (gapS + MARGIN_S > targetS + 0.05) {
+                    val was = targetS
+                    grow(gapS + MARGIN_S)
+                    // a stall it rode through says so now; one that ran it dry says so when it plays again
+                    if (!growPending && targetS > was) onEvent("rtl_tcp: link stalled %.1f s, buffer target up to %.1f s".format(gapS, targetS))
+                }
+            }
+        }
         if (!playing) {
-            if (count < bps * prebufferS) return@synchronized 0
-            playing = true; lastNs = nowNs; credit = 0.0; winStartNs = nowNs; winMin = count
+            val need = if (refillToTarget) targetS else PREBUFFER_S
+            if (count < bps * need) return@synchronized 0
+            playing = true; lastNs = nowNs; credit = 0.0; winStartNs = nowNs; winMin = count; speed = 1.0
+            if (growPending) {
+                growPending = false
+                onEvent((if (dryGapS > 0) "rtl_tcp: link stalled %.1f s, ".format(dryGapS) else "rtl_tcp: ") +
+                    "ran dry (rebuffer %d), buffer target up to %.1f s".format(rebuffers, targetS))
+            }
             return@synchronized 0
         }
         val dt = (nowNs - lastNs).coerceAtLeast(0L); lastNs = nowNs
-        // the backlog's low point over a few seconds is the delay a burst does not explain
         winMin = minOf(winMin, count)
-        // A burst lifts the backlog for a moment and the gap after it takes it back, so a high level on its own says
-        // nothing; only a low point that stays high is delay to shed. Shedding it fast or slow is decided once a window.
+        // A burst lifts the backlog for a moment and the gap after it takes it back, so only the low point over a
+        // window says how deep the buffer really is; it is steered toward the target a little at a time.
         if (nowNs - winStartNs >= WINDOW_NS) {
-            val low = winMin.toDouble() / bps
-            val wasDraining = draining
-            draining = low > prebufferS + DRAIN_ABOVE_S
-            trimming = !draining && (low > prebufferS + TRIM_ABOVE_S || ((trimming || wasDraining) && low > prebufferS + 0.05))
-            if (draining && !wasDraining) onEvent("rtl_tcp: %.2f s behind, catching up".format(low))
+            val err = winMin.toDouble() / bps - targetS
+            speed = if (kotlin.math.abs(err) < DEADBAND_S) 1.0 else (1.0 + err * STEER_GAIN).coerceIn(MIN_SPEED, MAX_SPEED)
             winStartNs = nowNs; winMin = count
+            if (targetS > PREBUFFER_S && nowNs - cleanSinceNs >= CLEAN_NS) {
+                targetS = maxOf(PREBUFFER_S, targetS - DECAY_STEP_S); cleanSinceNs = nowNs
+                onEvent("rtl_tcp: link steady, buffer target down to %.1f s".format(targetS))
+            }
         }
-        // close to full (the server ran far ahead): shed it now, before anything is lost
-        if (count > bps * HIGH_S && !draining) { draining = true; onEvent("rtl_tcp: %.2f s buffered, catching up".format(count.toDouble() / bps)) }
-        // never faster than the clock once the backlog is down to the prebuffer
-        val speed = if (count <= bps * prebufferS) 1.0 else if (draining) DRAIN_SPEED else if (trimming) TRIM_SPEED else 1.0
+        // only a backlog far past anything a stall explains is cut, at a chunk boundary, back to the target
+        if (count > bps * CUT_S) {
+            val keep = (bps * targetS).toLong()
+            val drop = ((count - keep) / chunk * chunk).toInt()
+            if (drop > 0) {
+                head = (head + drop) % ring.size; count -= drop
+                if (cutBytes == 0L) onEvent("rtl_tcp: %.1f s backlog, cut back to %.1f s".format((count + drop).toDouble() / bps, targetS))
+                cutBytes += drop
+            }
+        }
         // a late wake-up is made up for, but never by more than a tenth of a second at once
         credit = minOf(credit + dt * 1e-9 * bps * speed, maxOf(bps / 10.0, chunk.toDouble()))
         var n = 0
         while (credit >= chunk) {
             if (count < chunk) {
-                playing = false; credit = 0.0; rebuffers++
-                prebufferS = minOf(prebufferS + 0.1, MAX_PREBUFFER_S)
-                onEvent("rtl_tcp: ran dry, waiting for %.1f s of samples (rebuffer %d)".format(prebufferS, rebuffers))
+                playing = false; refillToTarget = true; credit = 0.0; rebuffers++
+                cleanSinceNs = nowNs; growPending = true; dryGapS = 0.0
+                grow(targetS + REBUFFER_STEP_S)
                 break
             }
             val first = minOf(chunk, ring.size - head)
@@ -126,16 +172,20 @@ class RtlTcpPacer(private val sink: (ByteArray, Int) -> Unit, private val onEven
 
     companion object {
         const val PREBUFFER_S = 0.3
-        /** Buffered past this, it catches up at once ([CAPACITY_S] is the most it holds). */
-        const val HIGH_S = 2.0
-        /** Catch up fast when the backlog's low point stays this far above the prebuffer. */
-        const val DRAIN_ABOVE_S = 0.6
-        const val MAX_PREBUFFER_S = 0.7
-        /** Trim when the backlog's low point stays this far above the prebuffer. */
-        const val TRIM_ABOVE_S = 0.15
-        const val CAPACITY_S = 3.0
-        const val DRAIN_SPEED = 1.5
-        const val TRIM_SPEED = 1.03
+        const val MAX_TARGET_S = 2.5
+        /** No data for this long is a stall, and the target is raised to cover it. */
+        const val STALL_S = 0.5
+        const val MARGIN_S = 0.4
+        const val REBUFFER_STEP_S = 0.2
+        const val DECAY_STEP_S = 0.25
+        const val CLEAN_NS = 60_000_000_000L
+        const val MIN_SPEED = 0.98
+        const val MAX_SPEED = 1.02
+        /** Speed off real time per second of error, and the error left alone. */
+        const val STEER_GAIN = 0.2
+        const val DEADBAND_S = 0.05
+        const val CUT_S = 4.0
+        const val CAPACITY_S = 5.0
         const val WINDOW_NS = 2_000_000_000L
     }
 }

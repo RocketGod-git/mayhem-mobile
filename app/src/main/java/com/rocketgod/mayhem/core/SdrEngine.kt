@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.rocketgod.mayhem.Diag
+import com.rocketgod.mayhem.core.audio.DriftResampler
 import com.rocketgod.mayhem.core.audio.HdDetector
 import com.rocketgod.mayhem.core.audio.HdReport
 import com.rocketgod.mayhem.core.audio.RdsDecoder
@@ -532,6 +533,9 @@ object SdrEngine {
     /** Called by the driver at start and after every sample-rate change. */
     fun onSource(rate: Int) { sampleRate = rate }
 
+    /** The radio's samples come over a network (rtl_tcp), off the phone's clock: its audio is resampled to fit. */
+    @Volatile var driftAudio = false
+
     /** Raw IQ from the USB thread (uint8 I,Q interleaved). Copies into an exact-size pooled buffer and enqueues;
      *  drops oldest on overrun to stay near-real-time. */
     fun onIq(buf: ByteArray, len: Int) {
@@ -861,6 +865,19 @@ object SdrEngine {
             if (r in 0 until n) stDropped += n - r
             if (r < 0) { Diag.log("audio output lost (code $r), reopening it"); runCatching { t.release() }; track = null }
         }
+        // A network radio's audio is not on the phone's clock (see DriftResampler): it is stretched or squeezed to
+        // keep the output's queue level, so it neither drops nor underruns. A USB radio's goes out untouched.
+        val drift = DriftResampler(AUDIO_RATE)
+        var driftOut = ShortArray(0); var driftTrack: AudioTrack? = null; var driftWas = false
+        fun emitAudio(buf: ShortArray, n: Int) {
+            val t = track
+            if (!driftAudio || t == null || n <= 0) { driftWas = false; emit(buf, n); return }
+            if (t !== driftTrack || !driftWas || writtenTo !== t) { drift.reset(); driftTrack = t; driftWas = true }
+            val queued = if (writtenTo === t) written - runCatching { t.playbackHeadPosition }.getOrDefault(written) else 0
+            drift.steer(queued.coerceAtLeast(0), n)
+            if (driftOut.size < drift.maxOut(n)) driftOut = ShortArray(drift.maxOut(n))
+            emit(driftOut, drift.process(buf, n, driftOut))
+        }
         try {
             val me = Thread.currentThread()
             while (worker === me) {
@@ -1141,13 +1158,13 @@ object SdrEngine {
                                     val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
                                     if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
                                     audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
-                                    if (audioLen >= audioBuf.size) { emit(audioBuf, audioLen); audioLen = 0 }
+                                    if (audioLen >= audioBuf.size) { emitAudio(audioBuf, audioLen); audioLen = 0 }
                                 }
                             }
                         }
                         if (voiceOn && now - lastVoice > 250L) { lastVoice = now; _voice.value = voiceDet.read() }
                         if (wantFm && fmN > 0) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }
-                        if (audioLen > 0) { emit(audioBuf, audioLen); audioLen = 0 }
+                        if (audioLen > 0) { emitAudio(audioBuf, audioLen); audioLen = 0 }
                         if (chN > 0) {
                             // Squelch: channel power vs a floor that follows dips quickly and rises only slowly, so a
                             // carrier that stays up doesn't get absorbed into the floor.
@@ -1175,7 +1192,7 @@ object SdrEngine {
                                 val a = if (v < 0) -v else v
                                 if (a > audioPeak) audioPeak = a
                             }
-                            emit(procPcm, k)
+                            if (p.pacedAudio) emit(procPcm, k) else emitAudio(procPcm, k)
                         }
                     }
                     pool.offer(item)

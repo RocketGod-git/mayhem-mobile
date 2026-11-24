@@ -317,6 +317,7 @@ object RtlSdr {
         resetBuffer()
         SdrEngine.sourceLabel = label
         SdrEngine.onSource(targetRateHz)
+        SdrEngine.driftAudio = false   // a USB radio is on the phone's clock: its audio goes out untouched
         SdrEngine.setActive(true)
         Diag.log("RTL-SDR: streaming %.3f MHz @ %.3f Msps".format(targetFreqHz / 1e6, targetRateHz / 1e6))
         onStatus("$label · %.3f MHz".format(targetFreqHz / 1e6))

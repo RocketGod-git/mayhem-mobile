@@ -191,6 +191,7 @@ object RtlTcp {
                     appliedFreq = stream.appliedFreq
                     SdrEngine.sourceLabel = label
                     SdrEngine.onSource(stream.appliedRate)
+                    SdrEngine.driftAudio = true
                     SdrEngine.setActive(true)
                     Diag.log("rtl_tcp: streaming %.3f MHz @ %.3f Msps".format(stream.appliedFreq / 1e6, stream.appliedRate / 1e6))
                     _phase.value = Phase.STREAMING; everStreamed = true
@@ -200,13 +201,15 @@ object RtlTcp {
                         try { while (!l.closed) { pacer.tick(System.nanoTime()); Thread.sleep(3) } } catch (_: InterruptedException) { }
                     }, "rtltcp-pace").apply { isDaemon = true; start() }
                     try { reason = stream(my, l, stream, pacer) } finally { l.close(); pace.interrupt(); runCatching { pace.join(500) } }
-                    if (pacer.rebuffers > 0 || pacer.overflowBytes > 0) Diag.log("rtl_tcp: jitter buffer ${pacer.rebuffers} rebuffers, ${pacer.overflowBytes} bytes overflowed this connection")
+                    if (pacer.rebuffers > 0 || pacer.overflowBytes > 0 || pacer.cutBytes > 0)
+                        Diag.log("rtl_tcp: jitter buffer ${pacer.rebuffers} rebuffers, ${pacer.overflowBytes} bytes overflowed, ${pacer.cutBytes} bytes cut this connection (target %.1f s)".format(pacer.targetS))
                     streamedMs = System.currentTimeMillis() - connectedAt
                 } catch (e: IOException) {
                     reason = if (l.closed && !live(my)) "" else why(e)
                 } finally {
                     l.close()
                     SdrEngine.setActive(false)
+                    SdrEngine.driftAudio = false
                 }
                 if (!live(my)) break
                 if (streamedMs > 10_000L) backoff = 1_000L

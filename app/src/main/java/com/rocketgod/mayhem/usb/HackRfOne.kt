@@ -248,6 +248,7 @@ object HackRfOne {
         Diag.log("HackRF cfg rc (>=0 ok, <0 FAILED): sampleRate=$rcSr basebandFilter=$rcBb setFreq=$rcFq amp=$rcAmp lna=$rcLna vga=$rcVga rxMode=$rcRx · post-RX cachebust+reassert(freq=$rcFq2 amp=$rcAmp2 lna=$rcLna2 vga=$rcVga2)")
         SdrEngine.sourceLabel = boardLabel
         SdrEngine.onSource(want.rateHz)
+        SdrEngine.driftAudio = false   // a USB radio is on the phone's clock: its audio goes out untouched
         SdrEngine.setActive(true)
         Diag.log("HackRF: streaming IQ @ %.3f MHz, %.2f Msps".format(want.freqHz / 1e6, want.rateHz / 1e6))
         onStatus("$boardLabel · %.3f MHz".format(want.freqHz / 1e6))
