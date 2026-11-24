@@ -86,6 +86,7 @@ import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.RtlSdr
+import com.rocketgod.mayhem.net.RtlTcp
 import kotlinx.coroutines.delay
 import com.rocketgod.mayhem.core.ham.Ham
 import com.rocketgod.mayhem.core.ham.HamDemod.Mode as HamMode
@@ -296,7 +297,7 @@ private fun RadioCard(accent: Color) {
             Box(Modifier.size(8.dp).background(if (up) Palette.ok else Palette.danger, CircleShape))
             Text(if (up) Radio.label.uppercase() else "NO RADIO", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f),
                 letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            if (rtl && RtlSdr.tuner.isNotEmpty()) Badge(RtlSdr.tuner)
+            if (rtl && Radio.rtlTuner.isNotEmpty()) Badge(Radio.rtlTuner)
         }
         if (up) Row(Modifier.fillMaxWidth()) {
             Stat("TUNED", "%.3f".format((lo + offset) / 1e6), Modifier.weight(1f))
@@ -305,7 +306,7 @@ private fun RadioCard(accent: Color) {
         }
         if (up) LevelBar(level, accent, Modifier.fillMaxWidth().height(d.dp(5f)))
         val badges = buildList {
-            if (rtl && RtlSdr.hfReady) add("HF READY" to true)
+            if (rtl && Radio.rtlHfReady) add("HF READY" to true)
             if (bias) add("BIAS-T ON" to true)
             if (!rtl && up && amp) add("AMP +14" to true)
             if (muted) add("MUTED" to true)
@@ -392,11 +393,12 @@ fun RadioPanel() {
         Box(Modifier.fillMaxWidth().height(1.dp).background(lerp(Palette.line, red, 0.45f)))
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(top = d.dp(10f), bottom = d.dp(16f))) {
-                if (caps == null) PanelCard("NO RADIO", "Plug in a HackRF, a PortaPack in HackRF mode, or an RTL-SDR to see what it can be set to.", false)
+                if (caps == null) PanelCard("NO RADIO", "Plug in a HackRF, a PortaPack in HackRF mode, or an RTL-SDR, or connect to an RTL-SDR on your network below.", false)
                 else {
-                    val sub = if (rtl) "${RtlSdr.label} · tuner ${RtlSdr.tuner.ifEmpty { "?" }}"
+                    val sub = if (rtl && Radio.network) "rtl_tcp · ${RtlTcp.where()} · tuner ${RtlTcp.tuner.ifEmpty { "?" }}${if (RtlTcp.gainSteps > 0) " · ${RtlTcp.gainSteps} gain steps" else ""}"
+                              else if (rtl) "${RtlSdr.label} · tuner ${RtlSdr.tuner.ifEmpty { "?" }}"
                               else HackRfOne.boardLabel.ifEmpty { "HackRF" } + if (HackRfOne.firmware.isNotEmpty()) " · fw ${HackRfOne.firmware}" else ""
-                    PanelCard(if (rtl) "RTL-SDR" else "HACKRF", sub, true)
+                    PanelCard(if (rtl) "RTL-SDR" else "HACKRF", sub, !(rtl && Radio.network) || RtlTcp.phase.collectAsState().value == RtlTcp.Phase.STREAMING)
 
                     val gain = buildList {
                         add(SRow("agc") { SwitchRow("AGC", agc, "The app keeps the level right by stepping the gain${if (caps.stagedGain) " (VGA first, then LNA)" else ""}. Moving a gain by hand turns it off.") { SdrEngine.setAgc(it) } })
@@ -431,9 +433,63 @@ fun RadioPanel() {
                     if (rtl) Text("No offset tuning: R82xx tuners have no offset mode (librtlsdr refuses it for them too).", color = Palette.muted, fontFamily = Mono,
                         fontSize = d.sp(10f), lineHeight = d.sp(15f), modifier = Modifier.padding(start = d.dp(4f), end = d.dp(4f), top = d.dp(12f)))
                 }
+                NetworkSection(red)
             }
         }
     }
+    }
+}
+
+/**
+ * NETWORK: an RTL-SDR on another computer behind rtl_tcp, as the radio. Host and port are remembered, and so is
+ * whether it is on: while it is, a radio plugged into USB is left alone, and Disconnect hands the radio back to USB.
+ */
+@Composable
+private fun NetworkSection(accent: Color) {
+    val d = rememberDims()
+    val phase by RtlTcp.phase.collectAsState()
+    val status by RtlTcp.status.collectAsState()
+    val savedHost by RtlTcp.host.collectAsState()
+    val savedPort by RtlTcp.port.collectAsState()
+    var host by remember(savedHost) { mutableStateOf(savedHost) }
+    var port by remember(savedPort) { mutableStateOf(savedPort.toString()) }
+    val on = phase != RtlTcp.Phase.OFF
+    val portOk = port.toIntOrNull()?.let { it in 1..65535 } == true
+    val rows = buildList {
+        add(SRow("network rtl_tcp host server ip") {
+            Column(Modifier.fillMaxWidth().padding(horizontal = d.dp(14f), vertical = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text("rtl_tcp server", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = d.sp(13f))
+                Text("An RTL-SDR on another computer, shared with rtl_tcp. While connected, a radio on USB is left alone.",
+                    color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                    NetField(host, "Host or IP address", Modifier.weight(1f), androidx.compose.ui.text.input.KeyboardType.Uri, accent, enabled = !on) { v ->
+                        host = v.filter { !it.isWhitespace() }.take(253); RtlTcp.remember(host, port.toIntOrNull() ?: savedPort)
+                    }
+                    NetField(port, "Port", Modifier.width(d.dp(72f)), androidx.compose.ui.text.input.KeyboardType.Number, accent, enabled = !on) { v ->
+                        port = v.filter { it.isDigit() }.take(5); port.toIntOrNull()?.let { if (it in 1..65535) RtlTcp.remember(host, it) }
+                    }
+                    if (on) SmallButton("DISCONNECT", accent) { RtlTcp.disconnect() }
+                    else SmallButton("CONNECT", if (host.isNotBlank() && portOk) accent else Palette.line) {
+                        if (host.isNotBlank() && portOk) RtlTcp.connect(host, port.toInt())
+                    }
+                }
+                if (status.isNotEmpty()) Text(status, color = when (phase) { RtlTcp.Phase.STREAMING -> Palette.ok; RtlTcp.Phase.RETRYING -> Palette.danger; else -> Palette.muted },
+                    fontFamily = Mono, fontSize = d.sp(10.5f), maxLines = 2)
+            }
+        })
+    }
+    PanelSection("NETWORK", rows)
+}
+
+@Composable
+private fun NetField(value: String, hint: String, modifier: Modifier, kb: androidx.compose.ui.text.input.KeyboardType, accent: Color, enabled: Boolean, onChange: (String) -> Unit) {
+    val d = rememberDims()
+    Box(modifier.clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp)).alpha(if (enabled) 1f else 0.6f)
+        .padding(horizontal = d.dp(10f), vertical = d.dp(8f)), contentAlignment = Alignment.CenterStart) {
+        if (value.isEmpty()) Text(hint, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(12f), maxLines = 1)
+        BasicTextField(value, onChange, enabled = enabled, singleLine = true, cursorBrush = SolidColor(accent),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = kb, autoCorrectEnabled = false),
+            textStyle = TextStyle(color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f)), modifier = Modifier.fillMaxWidth())
     }
 }
 

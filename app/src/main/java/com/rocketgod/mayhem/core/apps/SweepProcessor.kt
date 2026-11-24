@@ -22,7 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class Retuner(
     private val tune: (Long) -> Unit = { SdrEngine.tuneLo(it) },
-    private val applied: (Long) -> Boolean = { HackRfOne.appliedFreq == it || RtlSdr.appliedFreq == it },
+    private val applied: (Long) -> Boolean = { HackRfOne.appliedFreq == it || RtlSdr.appliedFreq == it || com.rocketgod.mayhem.net.RtlTcp.appliedFreq == it },
 ) {
     private var settle = 0
     /** The frequency asked for and not yet confirmed by the driver; 0 once it has been. */

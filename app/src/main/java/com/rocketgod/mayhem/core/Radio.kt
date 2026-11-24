@@ -29,9 +29,17 @@ object Radio {
     val canTransmit: Boolean get() = limits.canTransmit
     val name: String get() = if (_kind.value == Kind.RTLSDR) "RTL-SDR" else "HackRF"
 
+    /** The RTL-SDR is on the network (rtl_tcp), not on USB. It is the same radio to every app. */
+    val network: Boolean get() = _kind.value == Kind.RTLSDR && com.rocketgod.mayhem.net.RtlTcp.active
+
+    /** The RTL-SDR's tuner as bring-up named it, on USB or across the network; "" until known. */
+    val rtlTuner: String get() = if (network) com.rocketgod.mayhem.net.RtlTcp.tuner else com.rocketgod.mayhem.usb.RtlSdr.tuner
+    /** Whether the RTL-SDR reaches below 24 MHz. */
+    val rtlHfReady: Boolean get() = if (network) com.rocketgod.mayhem.net.RtlTcp.hfReady else com.rocketgod.mayhem.usb.RtlSdr.hfReady
+
     /** What is attached, as it named itself at bring-up: board and firmware, or dongle and tuner; "" for nothing. */
     val label: String get() = when (_kind.value) {
-        Kind.RTLSDR -> com.rocketgod.mayhem.usb.RtlSdr.label
+        Kind.RTLSDR -> if (network) com.rocketgod.mayhem.net.RtlTcp.label else com.rocketgod.mayhem.usb.RtlSdr.label
         Kind.HACKRF -> com.rocketgod.mayhem.usb.HackRfOne.let { h -> h.boardLabel.ifEmpty { "HackRF" } + if (h.firmware.isNotEmpty()) " · fw ${h.firmware}" else "" }
         Kind.NONE -> ""
     }
@@ -73,7 +81,7 @@ object Radio {
     val caps: Caps? get() = when (_kind.value) {
         Kind.HACKRF -> HACKRF_CAPS
         Kind.RTLSDR -> Caps(stagedGain = false, tunerGain = true, amp = false, biasT = true, biasVolts = 4.5,
-            tunerAgc = true, rtlAgc = true, ppm = true, directSampling = com.rocketgod.mayhem.usb.RtlSdr.canDirectSample, bbFilters = emptyList())
+            tunerAgc = true, rtlAgc = true, ppm = true, directSampling = if (network) com.rocketgod.mayhem.net.RtlTcp.canDirectSample else com.rocketgod.mayhem.usb.RtlSdr.canDirectSample, bbFilters = emptyList())
         Kind.NONE -> null
     }
 

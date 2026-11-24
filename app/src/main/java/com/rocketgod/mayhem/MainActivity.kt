@@ -35,6 +35,7 @@ import com.rocketgod.mayhem.ui.Pip
 import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.HackRfUsb
 import com.rocketgod.mayhem.usb.RtlSdr
+import com.rocketgod.mayhem.net.RtlTcp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -75,6 +76,8 @@ class MainActivity : ComponentActivity() {
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> if (d != null && HackRfUsb.isRadio(d)) {
                     Diag.log("USB detached: ${HackRfUsb.describe(d)}")
+                    // the network radio is in use: a USB radio leaving changes nothing
+                    if (RtlTcp.wanted || RtlTcp.active) return
                     HackRfOne.abort(); RtlSdr.abort()
                     connected.value = false
                     status.value = "${if (RtlSdr.isRtlSdr(d)) "RTL-SDR" else "HackRF"} detached"
@@ -106,6 +109,16 @@ class MainActivity : ComponentActivity() {
         Apps.init(this)
         com.rocketgod.mayhem.ui.Skins.load(this)
         SdrEngine.loadGains(this)
+        val netOn = RtlTcp.load(this)
+        // Picking the network radio stops a USB radio first; turning it off lets USB take over again.
+        RtlTcp.releaseUsb = {
+            if (radioUsbRunning() || rxThread?.isAlive == true) {
+                Diag.log("rtl_tcp picked: stopping the USB radio")
+                HackRfOne.abort(); RtlSdr.abort()
+                runCatching { rxThread?.join(3000) }
+            }
+        }
+        RtlTcp.onReleased = { runOnUiThread { if (!isDestroyed) { status.value = "network radio disconnected"; autoConnect() } } }
         com.rocketgod.mayhem.ui.Waterfalls.load(this)
         com.rocketgod.mayhem.core.Tx.load(this)
         com.rocketgod.mayhem.core.NavBar.load(this)
@@ -171,6 +184,17 @@ class MainActivity : ComponentActivity() {
             combine(Apps.current, SdrEngine.muted, connected, Prowl.view) { _, _, _, _ -> Unit }.collect { runCatching { setPictureInPictureParams(pipParams()) } }
         }
 
+        // the network radio's state is the app's radio state while it is in use
+        lifecycleScope.launch {
+            var drove = false
+            combine(RtlTcp.phase, RtlTcp.status) { p, t -> p to t }.collect { (p, t) ->
+                if (p == RtlTcp.Phase.OFF) { if (drove && !radioUsbRunning()) connected.value = false; drove = false; return@collect }
+                drove = true
+                status.value = t
+                connected.value = p == RtlTcp.Phase.STREAMING
+            }
+        }
+        if (netOn && !RtlTcp.wanted) RtlTcp.connect()
         if (!handleIntent(intent)) autoConnect()
         debugExtras(intent)
         Geo.request(this)
@@ -324,6 +348,7 @@ class MainActivity : ComponentActivity() {
         val d = IntentCompat.getParcelableExtra(i, UsbManager.EXTRA_DEVICE, UsbDevice::class.java) ?: return false
         Diag.log("USB attached: ${HackRfUsb.describe(d)}")
         if (!HackRfUsb.isRadio(d)) return false
+        if (RtlTcp.wanted) { Diag.log("USB radio attached, staying on the network radio (Disconnect it in RADIO to use USB)"); return true }
         engage(d)
         return true
     }
@@ -331,6 +356,8 @@ class MainActivity : ComponentActivity() {
     /** App launched with a radio already on the port: enumerate and ask for permission if we lack it. */
     private fun autoConnect(quiet: Boolean = false) {
         if (radioRunning()) return
+        // the user picked the network radio: USB waits until it is turned off
+        if (RtlTcp.wanted || RtlTcp.active) return
         val d = HackRfUsb.find(this)
         if (!quiet || d != null) Diag.log(HackRfUsb.scanLog(this))
         // a PortaPack in its Mayhem serial mode is asked to become a HackRF; it comes back as an ordinary attach
@@ -348,6 +375,7 @@ class MainActivity : ComponentActivity() {
         // flag: one radio thread at a time, or the loser returns at once and marks the app disconnected while the
         // winner streams (the "no radio" banner over a working radio)
         if (radioRunning() || rxThread?.isAlive == true) { Diag.log("engage: a radio is already running, ignoring"); return }
+        if (RtlTcp.wanted || RtlTcp.active) { Diag.log("engage: the network radio is in use, leaving USB alone"); return }
         val rtl = RtlSdr.isRtlSdr(d)
         SdrEngine.onRadio(if (rtl) com.rocketgod.mayhem.core.Radio.Kind.RTLSDR else com.rocketgod.mayhem.core.Radio.Kind.HACKRF)
         status.value = "${if (rtl) "RTL-SDR" else "HackRF"} · opening ${HackRfUsb.describe(d)}"
@@ -370,10 +398,11 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         runCatching { unregisterReceiver(receiver) }
-        if (isFinishing) { HackRfOne.abort(); RtlSdr.abort() }
+        if (isFinishing) { HackRfOne.abort(); RtlSdr.abort(); RtlTcp.shutdown() }
     }
 
-    private fun radioRunning() = HackRfOne.running || RtlSdr.running
+    private fun radioUsbRunning() = HackRfOne.running || RtlSdr.running
+    private fun radioRunning() = radioUsbRunning() || RtlTcp.wanted || RtlTcp.active
     /** The permission dialog is up; asking again from onResume would stack a second one. */
     private var askingPermission = false
 }
