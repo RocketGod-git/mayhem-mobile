@@ -237,7 +237,7 @@ fun BtleScreen(accent: Color) {
 
     // BLE advertisements are sub-millisecond hops across 2.4 GHz: a phone gives the waterfall's room to the cards
     val wf = waterfallOn(MayhemApp.BTLE, phoneDefault = false)
-    PacketFrame(accent, Apps.btleLog, tag = "BLUETOOTH", title = "BLE ADVERTISING", tunable = false, emptyKey = "btle", waterfall = wf,
+    PacketFrame(accent, Apps.btleLog, tag = "BLUETOOTH", title = "BLUETOOTH DEVICES", tunable = false, emptyKey = "btle", waterfall = wf,
         onWaterfall = { Apps.setWaterfall(MayhemApp.BTLE, !wf) },
         lamp = {
             when {
@@ -437,7 +437,7 @@ fun AcarsScreen(accent: Color, vdl: Boolean = false) {
     val picked = if (pickedStation == null) live.firstOrNull { it.key == sel } else null
 
     val wf = waterfallOn(app, phoneDefault = true)
-    PacketFrame(accent, plog, tag = "FLIGHT MSGS", title = if (vdl) "VDL MODE 2 · 136.975 MHZ" else "ACARS · 131 MHZ", roomy = true, shift = shift, emptyKey = key, waterfall = wf,
+    PacketFrame(accent, plog, tag = "FLIGHT MSGS", title = "AIRLINE MESSAGES", roomy = true, shift = shift, emptyKey = key, waterfall = wf,
         onWaterfall = { Apps.setWaterfall(app, !wf) },
         lamp = { if (live.isNotEmpty()) Lamp("${live.size} AIRCRAFT", Palette.ok) else Lamp("LISTENING", Palette.accent2, blink = true) },
         controls = {

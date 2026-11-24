@@ -285,7 +285,7 @@ private fun HunterFace(accent: Color, freq: Long, status: PagerEngine.Status, ch
     val decoding = channels.count { it.listening && it.protocol.isNotEmpty() }
     val alerts = remember(messages) { messages.count { it.alert } }
     val level by SdrEngine.levelDb.collectAsState()
-    FreqCard(accent, tag = if (status.hunting) "HUNT" else if (status.pinned > 0) "PINNED" else "MANUAL", title = "FLEX · POCSAG", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+    FreqCard(accent, tag = if (status.hunting) "HUNT" else if (status.pinned > 0) "PINNED" else "MANUAL", title = "PAGER MESSAGES", freq = freq, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
         right = status.text,
         lamp = {
             when {

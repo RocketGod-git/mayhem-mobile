@@ -178,7 +178,7 @@ fun CbScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Cb.log, tag = "CB RADIO", title = "ALL 40 CHANNELS · AM · FM · SSB", roomy = true, titleRow = true, waterfall = wf, right = hpCountText(tiles),
+    PacketFrame(accent, Cb.log, tag = "CB RADIO", title = "ALL 40 CHANNELS", roomy = true, titleRow = true, waterfall = wf, right = hpCountText(tiles),
         widePane = { m -> Column(m.padding(top = d.dp(4f))) { HpTimeline(s, now, accent, acts, Modifier.fillMaxSize(), lanesMax = 14, fill = true) } }, paneWaterfall = bottomH,
         onWaterfall = { Apps.setWaterfall(MayhemApp.CB, !wf) },
         lamp = {

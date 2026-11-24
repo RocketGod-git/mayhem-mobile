@@ -153,7 +153,7 @@ fun Js8Screen(accent: Color) {
     }
 
     val face: @Composable () -> Unit = {
-        FreqCard(accent, tag = "JS8", title = "HF MESSAGING · USB", freq = s.dial, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
+        FreqCard(accent, tag = "JS8", title = "HF MESSAGING", freq = s.dial, meter = level / 40f, left = "SIGNAL +%.0f dB".format(level),
             right = if (s.activity.isNotEmpty()) "${s.activity.size} frames" else "nothing decoded yet",
             onTune = { Js8.tune(it) },
             lamp = {

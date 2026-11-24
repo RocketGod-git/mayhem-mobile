@@ -165,7 +165,7 @@ fun TrainsScreen(accent: Color) {
     // the waterfall at 8 MHz shows little of a 20 ms burst: a phone leaves it out for the cards (the band strip shows the
     // bursts), a bigger screen keeps it, and the waterfall's own show / hide overrides either
     val waterfall = waterfallOn(MayhemApp.TRAINS, phoneDefault = false)
-    PacketFrame(accent, Apps.trainsLog, tag = "TRAINS", title = "EOT · PTC", roomy = true, listWeight = if (waterfall) 2.5f else 6f, burstDb = burst, waterfall = waterfall,
+    PacketFrame(accent, Apps.trainsLog, tag = "TRAINS", title = "END OF TRAIN · TRAIN CONTROL", roomy = true, listWeight = if (waterfall) 2.5f else 6f, burstDb = burst, waterfall = waterfall,
         onWaterfall = { Apps.setWaterfall(MayhemApp.TRAINS, !waterfall) }, controls = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             SegBar(listOf("EOT · HOT", "PTC 220", "BOTH"), if (auto) 2 else if (band == TrainsProcessor.Band.EOT) 0 else 1, accent, Modifier.weight(1f)) {

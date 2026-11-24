@@ -297,7 +297,7 @@ fun CellScreen(accent: Color) {
         }
     }
 
-    PacketFrame(accent, Apps.cellLog, tag = "CELL", title = "LTE ALERTS · CELL INFO", roomy = true, waterfall = wf,
+    PacketFrame(accent, Apps.cellLog, tag = "CELL", title = "CELL TOWERS · ALERTS", roomy = true, waterfall = wf,
         widePane = { m ->
             Column(m) {
                 Row(Modifier.padding(start = d.dp(2f), bottom = d.dp(6f)), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
