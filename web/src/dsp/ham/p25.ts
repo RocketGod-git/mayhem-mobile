@@ -170,6 +170,8 @@ export class P25Decoder {
   onEs: (es: P25EncSync) => void = () => undefined;
   /** The header of a call (HDU): the same encryption sync, the manufacturer and the talkgroup, sent before the voice. */
   onHdu: (h: P25EncSync & { mfid: number; tg: number }) => void = () => undefined;
+  /** The 72 bits (9 octets) of an LDU1's link control, once its Reed-Solomon code passed. */
+  onLc: (lc: Uint8Array) => void = () => undefined;
 
   private nac = -1; private duid = -1;
   private frameName = ''; private tg = 0; private src = 0; private enc = false; private emerg = false; private lcf = 0;
@@ -385,6 +387,8 @@ export class P25Decoder {
     } else if (lcf === 0x03) {                          // call between two radios: destination then source
       this.tg = f(24, 24); this.src = f(48, 24);
     }
+    const lc = new Uint8Array(9); for (let i = 0; i < 9; i++) lc[i] = f(8 * i, 8);
+    this.onLc(lc);
   }
 
   private report(): void {

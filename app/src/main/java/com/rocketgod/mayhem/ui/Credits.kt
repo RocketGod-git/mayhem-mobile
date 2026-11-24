@@ -57,5 +57,6 @@ object Credits {
         false to "Brandmeister · DMR talkgroup names and repeaters",
         false to "HearHam · repeater directory",
         false to "callook.info · US callsign lookups",
+        false to "P25, NXDN and dPMR repeater IDs, written from TIA-102 (P25 Phase 1 and 2), the NXDN Forum's TS 1-A and TS 1-E, and ETSI TS 102 490 (dPMR)",
     )
 }

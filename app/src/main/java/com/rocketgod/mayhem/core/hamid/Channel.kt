@@ -15,6 +15,8 @@ class HamIdSnap(
     val dtmf: String = "", val dstarFlags: DStarFlags? = null, val urcall: UrCall? = null,
     /** Fusion through the Internet: the node's callsign (the downlink) and its ID (Rem3). D-STAR DD packets. */
     val internet: Pair<String, String>? = null, val dd: DdId? = null,
+    /** P25 Phase 1 and 2, NXDN and dPMR: who is talking (null unless that mode is named). */
+    val p25: P25Id? = null, val p25p2: P2Id? = null, val nxdn: NxdnId? = null, val dpmr: DpmrId? = null,
 )
 
 class HamIdChannel(val fs: Double) {
@@ -34,9 +36,13 @@ class HamIdChannel(val fs: Double) {
         ysf.onVoiceFrame = { pcm(it, false) }
     }
     private fun pcm(f: HamVoiceFrame, encrypted: Boolean) { onPcm?.invoke(voice.decode(f, encrypted)) }
-    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); voice.reset(); dd?.reset() }
+    val p25 = P25Modes(fs)
+    /** Clear digital voice, 160 samples at 8 kHz a frame: the mode and the slot (0, or Phase 2's 0 and 1). */
+    var onAudio: (String, Int, FloatArray) -> Unit = { _, _, _ -> }
+    init { p25.onAudio = { m, slot, pcm -> onAudio(m, slot, pcm) }; val s48 = mode.onSymbol48; mode.onSymbol48 = { s48(it); p25.pushSymbol48(it) } }
+    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); voice.reset(); dd?.reset(); p25.reset() }
     /** Discriminator samples, radians per sample, at [fs]. */
-    fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n); dd?.push(disc, n) }
+    fun push(disc: FloatArray, n: Int) { mode.push(disc, n); dtmf.push(disc, n); dd?.push(disc, n); p25.push(disc, n) }
 
     fun snapshot(): HamIdSnap {
         val r = mode.result()
@@ -45,6 +51,8 @@ class HamIdChannel(val fs: Double) {
         else if (dstar.id.headers > 0 || dstar.id.frames >= 20) m = "D-STAR"
         else if (dmr.checked > 0 || dmr.clean >= 3) m = "DMR"
         else if (dd != null && dd.id.packets > 0) m = "D-STAR"
+        val more = if (p25.mode.isNotEmpty()) p25.snapshot() else null
+        if (more != null && m != "YSF" && m != "D-STAR" && m != "DMR") m = more.mode
         val ddId = if (dd != null && dd.id.packets > 0) dd.id.copy() else null
         var station = ""; var repeater = ""; var position: Position? = null
         var slots: List<DmrSlotId>? = null; var ds: DStarId? = null; var ys: YsfId? = null
@@ -64,10 +72,13 @@ class HamIdChannel(val fs: Double) {
                 position = ds.position
             }
             "YSF" -> { ys = ysf.id.copy(); station = ys.src; repeater = ys.down; position = ys.position }
+            more?.mode -> { station = more!!.station; repeater = more.repeater; position = more.position }
         }
+        val mm = if (more != null && m == more.mode) more else null
         val h = ds?.header ?: if (m == "D-STAR") ddId?.header else null
         return HamIdSnap(m, r.hits, if (m == "DMR") dmr.cc else -1, slots, ds, ys, station, repeater, position, dtmf.text,
             h?.let { dstarFlags(it.flag1) }, h?.let { urcallCommand(it.ur) },
-            if (ys != null && ys.voip) ys.down to ys.rem[2] else null, ddId)
+            if (ys != null && ys.voip) ys.down to ys.rem[2] else null, ddId,
+            mm?.p25, mm?.p25p2, mm?.nxdn, mm?.dpmr)
     }
 }

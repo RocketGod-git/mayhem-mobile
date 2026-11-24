@@ -22,6 +22,8 @@ object HamIdNet {
     const val RADIOID_USERS_URL = "https://radioid.net/static/user.csv"
     const val BM_DEVICES_URL = "https://api.brandmeister.network/v2/device"
     const val HEARHAM_URL = "https://hearham.com/api/repeaters/v1"
+    /** radioid.net's NXDN ID list (the same columns), for NXDN unit IDs. */
+    const val RADIOID_NXDN_URL = "https://radioid.net/static/nxdn.csv"
     fun callookUrl(call: String) = "https://callook.info/${URLEncoder.encode(call, "UTF-8")}/json"
     private const val DAY = 86_400_000L; private const val WEEK = 7 * DAY; private const val MONTH = 30 * DAY
 
@@ -54,6 +56,11 @@ object HamIdNet {
     fun loadRadioIds(res: HamIdResolver, dir: File): Int {
         val t = cached(File(dir, "hamid/radioid-users.csv.gz"), RADIOID_USERS_URL, WEEK, gzip = true) ?: return 0
         val table = RadioIdTable.fromCsv(t); if (table.size > 0) res.users = table
+        return table.size
+    }
+    fun loadNxdnIds(res: HamIdResolver, dir: File): Int {
+        val t = cached(File(dir, "hamid/radioid-nxdn.csv.gz"), RADIOID_NXDN_URL, WEEK, gzip = true) ?: return 0
+        val table = RadioIdTable.fromCsv(t); if (table.size > 0) res.nxdnUsers = table
         return table.size
     }
     fun loadTalkgroups(res: HamIdResolver, dir: File): Int {

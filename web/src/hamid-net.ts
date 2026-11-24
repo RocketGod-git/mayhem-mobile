@@ -21,6 +21,8 @@ export const BM_DEVICES_URL = 'https://api.brandmeister.network/v2/device';
 export const RADIOID_USERS_URL = 'https://radioid.net/static/user.csv';
 export const RADIOID_API_URL = (id: number) => `https://radioid.net/api/dmr/user/?id=${id}`;
 export const RADIOID_PROXY_URL = (id: number) => `https://us-central1-wardrive-go-ff393.cloudfunctions.net/radioidLookup?id=${id}`;
+/** radioid.net's NXDN ID list (the same columns), for NXDN unit IDs. */
+export const RADIOID_NXDN_URL = 'https://radioid.net/static/nxdn.csv';
 export const CALLOOK_URL = (call: string) => `https://callook.info/${encodeURIComponent(call)}/json`;
 const WEEK = 7 * 86_400_000, MONTH = 30 * 86_400_000, DAY = 86_400_000;
 
@@ -87,6 +89,13 @@ export async function lookupWantedIds(res: HamIdResolver, max = 2, radioIdUrl = 
     } catch { /* blocked or offline: try again later */ }
   }
   return n;
+}
+
+/** The NXDN ID list from a URL the browser may read (a mirror, or a blob: URL of a file the user picked). */
+export async function loadNxdnIds(res: HamIdResolver, url: string): Promise<number> {
+  const text = await getText(url, 60_000);
+  res.nxdnUsers = RadioIdTable.fromCsv(text);
+  return res.nxdnUsers.size;
 }
 
 /** Looks up to [max] of the callsigns the resolver has queued (US callsigns, callook.info). */

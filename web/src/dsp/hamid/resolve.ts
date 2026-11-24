@@ -26,6 +26,8 @@ const blank = (): Station => ({ callsign: '', radioId: 0, alias: '', name: '', c
 
 export class HamIdResolver {
   users: RadioIdTable | null = null;
+  /** radioid.net's NXDN ID list (the same columns as the DMR list; IDs of 16 bits). */
+  nxdnUsers: RadioIdTable | null = null;
   readonly talkgroups = new TalkgroupTable();
   readonly repeaters = new RepeaterDirectory();
   readonly calls = new Map<string, CallRecord>();
@@ -56,6 +58,17 @@ export class HamIdResolver {
     this.wanted.add(key);
   }
 
+  /**
+   * A P25 or NXDN unit ID as a station: P25 hams mostly key up with their DMR ID (seven digits, radioid.net's list),
+   * NXDN hams with an NXDN ID from radioid.net's NXDN list. Other IDs stay numbers.
+   */
+  private unit(id: number, nxdn: boolean): Station {
+    const st = blank(); st.radioId = id;
+    const u = nxdn ? this.nxdnUsers?.byId(id) : id >= 1_000_000 && id <= 9_999_999 ? this.users?.byId(id) : null;
+    if (u) { this.fromUser(st, u); if (nxdn) st.source = 'radioid.net NXDN'; }
+    return st;
+  }
+
   resolve(snap: HamIdSnap, ctx: ChannelContext): Resolved {
     const out: Resolved = { mode: snap.mode, station: null, talkgroup: '', tgId: 0, group: true, called: null, repeater: '', listed: '', repeaterSite: '', network: '', dgid: -1, colorCode: -1, slot: 0, position: snap.position };
     let rep: Repeater | null = null;
@@ -80,6 +93,20 @@ export class HamIdResolver {
     } else if (snap.mode === 'YSF' && snap.ysf) {
       const st = blank(); st.callsign = snap.ysf.src; this.fill(st); out.station = st;
       out.talkgroup = snap.ysf.dest; out.dgid = snap.ysf.dgid; out.repeater = snap.ysf.down;
+    } else if (snap.mode === 'P25' && snap.p25 && snap.p25.src) {
+      const p = snap.p25; out.station = this.unit(p.src, false); out.group = p.group; out.tgId = p.tg;
+      if (!p.group) out.called = this.unit(p.tg, false);
+      out.colorCode = p.nac;
+    } else if (snap.mode === 'P25P2' && snap.p25p2) {
+      const live = snap.p25p2.slots.filter(x => x.src > 0).sort((a, b) => b.lastSym - a.lastSym)[0];
+      if (live) { out.slot = live.lch + 1; out.station = this.unit(live.src, false); out.group = live.group; out.tgId = live.tg; if (!live.group) out.called = this.unit(live.tg, false); }
+    } else if (snap.mode === 'NXDN' && snap.nxdn && snap.nxdn.src) {
+      const x = snap.nxdn; out.station = x.typeD ? { ...blank(), radioId: x.src, alias: `${x.src >> 11}-${x.src & 0x7ff}` } : this.unit(x.src, true);
+      out.group = x.group; out.tgId = x.dst; if (!x.group && !x.typeD) out.called = this.unit(x.dst, true);
+      out.colorCode = x.ran;
+    } else if (snap.mode === 'dPMR' && snap.dpmr && snap.dpmr.own >= 0) {
+      const d = snap.dpmr, st = blank(); st.radioId = d.own; st.alias = d.ownText; out.station = st;
+      out.group = d.group; out.tgId = d.called; out.talkgroup = d.calledText; out.colorCode = d.cc;
     }
     if (!rep && snap.mode !== 'DMR') rep = this.repeaters.at(ctx.hz, { tone: ctx.tone, mode: snap.mode === 'analog' || snap.mode === '' ? 'FM' : snap.mode, lat: ctx.lat, lon: ctx.lon })[0] ?? null;
     if (!out.repeater && ctx.cwId) out.repeater = ctx.cwId;

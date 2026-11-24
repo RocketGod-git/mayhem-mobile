@@ -54,5 +54,6 @@ export const CREDITS: [boolean, string][] = [
   [false, "Brandmeister · DMR talkgroup names and repeaters"],
   [false, "HearHam · repeater directory"],
   [false, "callook.info · US callsign lookups"],
+  [false, "P25, NXDN and dPMR repeater IDs, written from TIA-102 (P25 Phase 1 and 2), the NXDN Forum's TS 1-A and TS 1-E, and ETSI TS 102 490 (dPMR)"],
   [false, "Shopping-cart wheel sounds and images (Gatekeeper, Rocateq) — begaydocrime.com"],
 ];
