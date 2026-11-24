@@ -1,0 +1,5 @@
+{
+  "functions": [
+    { "source": "functions", "codebase": "mayhem", "runtime": "nodejs22" }
+  ]
+}

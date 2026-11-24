@@ -1,0 +1,9 @@
+{
+  "name": "mayhem-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": { "node": "22" },
+  "dependencies": {
+    "firebase-functions": "6.3.2"
+  }
+}

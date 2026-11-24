@@ -48,5 +48,9 @@ object Credits {
         false to "OpenStreetMap contributors — map tiles · Leaflet (Vladimir Agafonkin) · osmdroid",
         false to "JS8Call by Jordan Sherer, KN4CRD · the JS8 dictionary, command and group tables · GPL-3.0",
         false to "OurAirports — airport names and positions (public domain)",
+        false to "radioid.net · DMR radio IDs, callsigns, names and places",
+        false to "Brandmeister · DMR talkgroup names and repeaters",
+        false to "HearHam · repeater directory",
+        false to "callook.info · US callsign lookups",
     )
 }
