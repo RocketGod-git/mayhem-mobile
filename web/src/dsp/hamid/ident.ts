@@ -76,7 +76,8 @@ export function identOf(s: HamIdSnap): HamIdent | null {
     else if (tx?.fleetsync.length) { const f = tx.fleetsync[0]; id.alias = `FleetSync ${f.fromFleet < 0 ? 'all' : f.fromFleet}-${f.fromUnit < 0 ? 'all' : f.fromUnit}`; }
     return id;
   }
-  const id = blankIdent(s.mode); id.signaling = sig; id.position = s.position;
+  // (analog signaling read on a digital channel is the 4FSK itself: a kerchunk, a tone; none of it is said)
+  const id = blankIdent(s.mode); id.position = s.position;
   switch (s.mode) {
     case 'DMR': {
       const d = s.dmr; if (!d) break;

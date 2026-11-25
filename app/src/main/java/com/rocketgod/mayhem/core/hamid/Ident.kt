@@ -55,7 +55,8 @@ fun identOf(s: HamIdSnap): HamIdent? {
         else if (tx != null) { val f = tx.fleetsync[0]; id.alias = "FleetSync ${if (f.fromFleet < 0) "all" else f.fromFleet}-${if (f.fromUnit < 0) "all" else f.fromUnit}" }
         return id
     }
-    val id = HamIdent(s.mode, signaling = sig, position = s.position)
+    // (analog signaling read on a digital channel is the 4FSK itself: a kerchunk, a tone; none of it is said)
+    val id = HamIdent(s.mode, position = s.position)
     when (s.mode) {
         "DMR" -> {
             id.code = s.dmrCc

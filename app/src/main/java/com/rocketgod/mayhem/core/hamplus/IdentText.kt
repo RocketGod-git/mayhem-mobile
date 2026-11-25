@@ -38,7 +38,7 @@ fun hpIdentTarget(id: HamIdent, r: Resolved? = null): String {
         return "TO " + if (c.isNotEmpty()) "$c ${id.tg}" else id.tg.toString()
     }
     val d = id.dest.trim()
-    return if (d.isNotEmpty() && !Regex("^(CQCQCQ|ALL|\\*+)$", RegexOption.IGNORE_CASE).matches(d)) "TO $d" else ""
+    return if (d.isNotEmpty() && !Regex("^(CQCQCQ|@?ALL|\\*+)$", RegexOption.IGNORE_CASE).matches(d)) "TO $d" else ""
 }
 
 /** A transmission's identity in one line, for the bubble, the live bar and the log (the web's hpIdentLine). */

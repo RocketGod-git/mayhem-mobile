@@ -54,7 +54,7 @@ export function hpIdentTarget(id: HamIdent, r: Resolved | null = null): string {
     return `TO ${c ? `${c} ${id.tg}` : id.tg}`;
   }
   const d = id.dest.trim();
-  return d && !/^(CQCQCQ|ALL|\*+)$/i.test(d) ? `TO ${d}` : '';
+  return d && !/^(CQCQCQ|@?ALL|\*+)$/i.test(d) ? `TO ${d}` : '';
 }
 /**
  * A transmission's identity in one line, for the bubble, the live bar and the log: the mode, who (with their name and
