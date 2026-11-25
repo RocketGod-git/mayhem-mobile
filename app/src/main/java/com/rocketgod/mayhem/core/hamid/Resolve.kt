@@ -57,12 +57,12 @@ class HamIdResolver {
     }
 
     /**
-     * A P25 or NXDN unit ID as a station: P25 hams mostly key up with their DMR ID (seven digits, radioid.net's list),
+     * A P25 or NXDN unit ID as a station: P25 hams mostly key up with their DMR ID (seven digits or more, radioid.net's list),
      * NXDN hams with an NXDN ID from radioid.net's NXDN list. Other IDs stay numbers.
      */
     private fun unit(id: Int, nxdn: Boolean): Station {
         val st = Station(); st.radioId = id
-        val dmrLike = id in 1_000_000..9_999_999
+        val dmrLike = id in 1_000_000..16_777_215
         val u = if (nxdn) nxdnUsers?.byId(id) ?: nxdnIds[id] else if (dmrLike) users?.byId(id) ?: ids[id] else null
         if (u != null) { fromUser(st, u); if (nxdn) st.source = "radioid.net NXDN" }
         else if (nxdn && nxdnUsers == null && id > 0) wantedNxdn.add(id)

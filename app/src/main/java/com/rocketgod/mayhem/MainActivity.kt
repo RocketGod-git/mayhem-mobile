@@ -280,7 +280,7 @@ class MainActivity : ComponentActivity() {
         // `--ez aprsdemo true` adds one made-up APRS station (with a position and weather), to test its card and map dot
         if (i.getBooleanExtra("aprsdemo", false)) {
             val now = System.currentTimeMillis()
-            Apps.aprs.injectForTest(com.rocketgod.mayhem.core.apps.AprsStation("W6ABC-9", lat = 34.2694, lon = -118.7815, symbol = '>', table = '/',
+            Apps.aprs.injectForTest(com.rocketgod.mayhem.core.apps.AprsStation("N0CALL-9", lat = 34.2694, lon = -118.7815, symbol = '>', table = '/',
                 course = 270, speed = 32.0, alt = 300.0, comment = "test station", packets = 3, firstMs = now - 600_000, lastMs = now,
                 wx = com.rocketgod.mayhem.core.apps.AprsWx(windDir = 250, windMph = 6, tempF = 64, humidity = 55, pressureMb = 1013.2)))
         }

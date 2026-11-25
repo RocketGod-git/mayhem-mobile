@@ -64,12 +64,12 @@ export class HamIdResolver {
   }
 
   /**
-   * A P25 or NXDN unit ID as a station: P25 hams mostly key up with their DMR ID (seven digits, radioid.net's list),
+   * A P25 or NXDN unit ID as a station: P25 hams mostly key up with their DMR ID (seven digits or more, radioid.net's list),
    * NXDN hams with an NXDN ID from radioid.net's NXDN list. Other IDs stay numbers.
    */
   private unit(id: number, nxdn: boolean): Station {
     const st = blank(); st.radioId = id;
-    const dmrLike = id >= 1_000_000 && id <= 9_999_999;
+    const dmrLike = id >= 1_000_000 && id <= 16_777_215;
     const u = nxdn ? this.nxdnUsers?.byId(id) ?? this.nxdnIds.get(id) : dmrLike ? this.users?.byId(id) ?? this.ids.get(id) : null;
     if (u) { this.fromUser(st, u); if (nxdn) st.source = 'radioid.net NXDN'; }
     else if (nxdn && !this.nxdnUsers && id > 0) this.wantedNxdn.add(id);
