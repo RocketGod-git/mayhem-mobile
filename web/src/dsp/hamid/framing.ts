@@ -79,9 +79,10 @@ export const eyeOk = (v: EyeVotes | undefined) => !!v && v.four > 0 && v.four >=
 
 /** A receive buffer clips when this share of its values sit at the converter's full scale. */
 export const CLIP_SHARE = 0.002;
-/** Whether 8-bit IQ ([iq], interleaved) is clipping: at least [CLIP_SHARE] of its values at ±127 or -128. */
-export function iqClipping(iq: Int8Array, n = iq.length): boolean {
-  let c = 0;
-  for (let i = 0; i < n; i++) { const v = iq[i]; if (v >= 127 || v <= -127) c++; }
-  return c >= CLIP_SHARE * n && c > 4;
+/** Whether 8-bit IQ ([iq], interleaved) is clipping: at least [CLIP_SHARE] of its values at ±127 or -128, looking at
+ *  every [step]th value (Repeaters looks at one in 16: an overload fills a buffer, it does not hide in one sample). */
+export function iqClipping(iq: Int8Array, n = iq.length, step = 1): boolean {
+  let c = 0, m = 0;
+  for (let i = 0; i < n; i += step) { const v = iq[i]; m++; if (v >= 127 || v <= -127) c++; }
+  return c >= CLIP_SHARE * m && c > (step > 1 ? 1 : 4);
 }

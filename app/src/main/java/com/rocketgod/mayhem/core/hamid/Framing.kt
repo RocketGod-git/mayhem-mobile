@@ -65,9 +65,10 @@ fun iqClipping(iq: ByteArray, n: Int = iq.size): Boolean {
     for (i in 0 until n) { val v = iq[i].toInt(); if (v >= 127 || v <= -127) c++ }
     return c >= CLIP_SHARE * n && c > 4
 }
-/** The same for unsigned 8-bit IQ (the engine's input: 0 and 255 are full scale). */
-fun iqClippingU8(iq: ByteArray, n: Int = iq.size): Boolean {
-    var c = 0
-    for (i in 0 until n) { val v = iq[i].toInt() and 0xff; if (v == 0 || v == 255) c++ }
-    return c >= CLIP_SHARE * n && c > 4
+/** The same for unsigned 8-bit IQ (the engine's input: 0 and 255 are full scale), looking at every [step]th value
+ *  (Repeaters looks at one in 16: an overload fills a buffer, it does not hide in one sample). */
+fun iqClippingU8(iq: ByteArray, n: Int = iq.size, step: Int = 1): Boolean {
+    var c = 0; var m = 0; var i = 0
+    while (i < n) { val v = iq[i].toInt() and 0xff; m++; if (v == 0 || v == 255) c++; i += step }
+    return c >= CLIP_SHARE * m && c > (if (step > 1) 1 else 4)
 }

@@ -7,7 +7,11 @@
  *
  * A decoder names its mode only once two of its checked frames came a whole number of frames apart and the mode
  * detector did not hear that mode's sync at some other spacing more often than on its grid; M17 and P25 also need a
- * 4-level eye (framing.ts). Samples pushed as clipped go to no digital decoder, only to the analog signaling. No DOM.
+ * 4-level eye (framing.ts). Samples pushed as clipped go to no digital decoder, only to the analog signaling.
+ *
+ * [lazy] (Repeaters, a channel each): only the cheap sync sniffer (sniffer.ts), DTMF and the analog signaling (read
+ * only when a transmission held a tone) run until a mode's sync is heard on its grid; then the full decoders start,
+ * fed the last 0.75 s first so a header is not missed, and go back to sleep when 3 s pass without one check. No DOM.
  */
 import { ModeDetector, type HamMode } from './mode.js';
 import { DmrIdentity, type DmrSlotId } from './dmrid.js';
@@ -22,6 +26,7 @@ import { AnalogSignaling, type AnalogSnap } from './analog.js';
 import { M17Receiver, type M17Id } from './m17.js';
 import { Codec2Decoder } from './codec2.js';
 import { FrameGate, eyeOk } from './framing.js';
+import { SyncSniffer } from './sniffer.js';
 
 export interface HamIdSnap {
   mode: HamMode;
@@ -76,12 +81,20 @@ export class HamIdChannel {
   readonly p25: P25Modes;
   /** Clear digital voice, 160 samples at 8 kHz a frame: the mode and the slot (0, or Phase 2's 0 and 1). */
   onAudio: (mode: P25ModeName, slot: number, pcm: Float32Array) => void = () => undefined;
-  constructor(readonly fs: number) {
+  /** Lazy: the sniffer, the last 0.75 s of discriminator (fed to the decoders when they wake), whether they are awake. */
+  readonly sniffer: SyncSniffer | null; private readonly ring: Float32Array; private rp = 0; private rn = 0;
+  awake: boolean; private wokeAt = 0; private checksAt = 0;
+  /** How many times the full decoders woke, and the mode whose sync woke them the last time (diagnostics, tests). */
+  wakes = 0; wokeBy = '';
+  constructor(readonly fs: number, readonly lazy = false) {
     this.mode = new ModeDetector(fs); this.dtmf = new DtmfDecoder(fs);
-    this.analog = new AnalogSignaling(fs);
+    this.analog = new AnalogSignaling(fs); this.analog.onlyTonal = lazy;
+    this.sniffer = lazy ? new SyncSniffer(fs) : null; this.awake = !lazy;
+    this.ring = new Float32Array(lazy ? Math.ceil(0.75 * fs) : 0);
     this.dd = fs >= 256000 ? new DStarDdReceiver(fs) : null;
     this.mode.onSymbol48 = s => { this.dmr.pushSymbol(s); this.dstar.pushSymbol(s); this.ysf.pushSymbol(s); this.m17.pushSymbol(s); this.frames(); };
-    this.dmr.onVoiceFrame = f => this.pcm(f, this.dmr.slots[f.stream === 'dmr2' ? 1 : 0].privacy);
+    // (a DMR voice sync alone turns up in other signals: its frames count once a DMR burst has passed a check)
+    this.dmr.onVoiceFrame = f => { if (this.dmr.checked + this.dmr.clean > 0) this.pcm(f, this.dmr.slots[f.stream === 'dmr2' ? 1 : 0].privacy); };
     this.dstar.onVoiceFrame = f => this.pcm(f, false);
     this.ysf.onVoiceFrame = f => this.pcm(f, false);
     this.m17.onVoice = (f, rate) => {
@@ -94,14 +107,48 @@ export class HamIdChannel {
   }
   private pcm(f: HamVoiceFrame, encrypted: boolean): void { if (this.onPcm) this.onPcm(this.voice.decode(f, encrypted)); }
   reset(): void { this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.dtmf.reset(); this.voice.reset(); this.dd?.reset(); this.p25.reset(); this.analog.reset(); this.m17.reset(); this.c2 = null;
-    this.gate.reset(); this.t48 = 0; this.samples = 0; this.clippedSamples = 0; }
+    this.gate.reset(); this.t48 = 0; this.samples = 0; this.clippedSamples = 0;
+    this.sniffer?.reset(); this.awake = !this.lazy; this.rp = this.rn = 0; this.wakes = 0; }
   /** Discriminator samples, radians per sample, at [fs]. */
   /** Discriminator samples, radians per sample, at [fs]. [clipped]: the receiver clipped while they came (a strong
    *  signal nearby spraying spurs): they go to the analog signaling only, so nothing digital is named from them. */
   push(disc: ArrayLike<number>, n: number, clipped = false): void {
     this.samples += n;
     if (clipped) { this.clippedSamples += n; this.analog.push(disc, n); return; }
+    if (!this.awake) {
+      this.dtmf.push(disc, n); this.analog.push(disc, n);
+      const R = this.ring.length;
+      for (let i = 0; i < n;) {
+        const m = Math.min(n - i, R - this.rp);
+        if (disc instanceof Float32Array) this.ring.set(disc.subarray(i, i + m), this.rp); else for (let k = 0; k < m; k++) this.ring[this.rp + k] = disc[i + k];
+        i += m; this.rp += m; if (this.rp >= R) this.rp = 0;
+      }
+      this.rn = Math.min(R, this.rn + n);
+      this.sniffer!.push(disc, n);
+      if (this.sniffer!.woke) this.wake();
+      return;
+    }
     this.mode.push(disc, n); this.dtmf.push(disc, n); this.dd?.push(disc, n); this.p25.push(disc, n); this.analog.push(disc, n);
+    if (this.lazy && this.samples - this.wokeAt > 3 * this.fs && this.checks() === this.checksAt) this.sleep();
+  }
+  /** Checks the decoders have passed (frames, headers, packets). */
+  private checks(): number {
+    return this.dmr.checked + this.dmr.clean + this.dstar.id.frames + this.dstar.id.headers + this.ysf.id.frames + this.m17.id.lsfs + this.m17.id.frames + this.m17.id.packets
+      + this.p25.p25.checked + this.p25.nxdn.checked + this.p25.dpmr.checked + this.p25.p25p2.checked + (this.dd?.id.packets ?? 0);
+  }
+  /** A sync on its grid: the full decoders start, fed the last 0.75 s first (in order). */
+  private wake(): void {
+    this.awake = true; this.wakes++; this.wokeBy = this.sniffer!.woke; this.wokeAt = this.samples; this.checksAt = this.checks();
+    const R = this.ring.length, start = (this.rp - this.rn + R) % R, buf = new Float32Array(this.rn);
+    for (let i = 0; i < this.rn; i++) buf[i] = this.ring[(start + i) % R];
+    this.rn = 0;
+    for (let o = 0; o < buf.length; o += 2400) { const m = Math.min(2400, buf.length - o), x = buf.subarray(o, o + m); this.mode.push(x, m); this.dd?.push(x, m); this.p25.push(x, m); }
+  }
+  /** Nothing checked since waking: what woke it was chance, the decoders stop and the sniffer looks again. */
+  private sleep(): void {
+    this.awake = false; this.sniffer!.reset();
+    this.mode.reset(); this.dmr.reset(); this.dstar.reset(); this.ysf.reset(); this.voice.reset(); this.dd?.reset(); this.p25.reset(); this.m17.reset(); this.c2 = null;
+    this.gate.reset(); this.t48 = 0;
   }
   /** After each 4800/s symbol: a checked frame of DMR, D-STAR, Fusion or M17 is timed for the frame grid. */
   private frames(): void {
@@ -129,7 +176,17 @@ export class HamIdChannel {
     return m;
   }
 
+  /** Asleep, the snapshot holds only DTMF and the analog signaling: kept until either moves. */
+  private light: HamIdSnap | null = null; private lightKey = '';
   snapshot(): HamIdSnap {
+    if (this.lazy && !this.awake) {
+      const key = `${this.analog.txs.length}|${this.analog.carrier}|${this.dtmf.text}`;
+      if (!this.light || key !== this.lightKey) {
+        this.lightKey = key;
+        this.light = { mode: '', verified: false, hits: {}, dmr: null, dstar: null, ysf: null, station: '', repeater: '', position: null, dtmf: this.dtmf.text, dstarFlags: null, urcall: null, internet: null, dd: null, p25: null, p25p2: null, nxdn: null, dpmr: null, m17: null, analog: this.analog.snapshot() };
+      }
+      return this.light;
+    }
     const r = this.mode.result();
     let mode: HamMode = r.mode;
     // a decoder's checks name the mode before the detector's sync count does

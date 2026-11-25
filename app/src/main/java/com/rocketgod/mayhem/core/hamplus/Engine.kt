@@ -193,7 +193,7 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
         to8 = Resampler(CLIP_RATE / fs); to48 = Resampler(AUDIO_RATE / fs)
         de = 1 - exp(-1 / (fs * 530e-6))
         speech = FmSpeech(fs) { hz -> ddc.powerGain(hz) }
-        idc = HamIdChannel(fs)
+        idc = HamIdChannel(fs, true)
         // the vocoders' frames: DMR, D-STAR and Fusion per stream, P25, NXDN and dPMR per slot, M17's Codec 2
         idc.onPcm = { f -> f.pcm?.let { voice(f.stream, it, VOICE_GAIN) } }
         idc.onAudio = { m, slot, pcm -> voice("$m$slot", pcm, VOICE_GAIN_P25) }
@@ -464,7 +464,7 @@ abstract class ChannelWatch<P : WatchProbe>(
             frames++; off += step
         }
         samples += n
-        if (checkClip && iqClippingU8(iq, len)) clipUntil = nowMs() + CLIP_HOLD_MS
+        if (checkClip && iqClippingU8(iq, len, 16)) clipUntil = nowMs() + CLIP_HOLD_MS
         if (followClock && abs(nowMs() - clock()) > 3_000) baseMs = clock() - samples * 1000.0 / this.rate
         val now = nowMs()
         if (now - lastMeasure >= MEASURE_MS && frames > 0) { lastMeasure = now; measure(now) }

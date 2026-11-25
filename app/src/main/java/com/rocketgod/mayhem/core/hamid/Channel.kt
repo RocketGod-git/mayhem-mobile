@@ -25,7 +25,12 @@ class HamIdSnap(
     val verified: Boolean = false,
 )
 
-class HamIdChannel(val fs: Double) {
+/**
+ * [lazy] (Repeaters, a channel each): only the cheap sync sniffer (Sniffer.kt), DTMF and the analog signaling (read only
+ * around what was tonal) run until a mode's sync is heard on its grid; then the full decoders start, fed the last 0.75 s
+ * first so a header is not missed, and go back to sleep when 3 s pass without one check. The same as the web's.
+ */
+class HamIdChannel(val fs: Double, val lazy: Boolean = false) {
     val mode = ModeDetector(fs)
     val dmr = DmrIdentity()
     val dstar = DStarReceiver()
@@ -37,7 +42,8 @@ class HamIdChannel(val fs: Double) {
     var onPcm: ((HamPcmFrame) -> Unit)? = null
     init {
         mode.onSymbol48 = { dmr.pushSymbol(it); dstar.pushSymbol(it); ysf.pushSymbol(it); m17.pushSymbol(it); frames() }
-        dmr.onVoiceFrame = { pcm(it, dmr.slots[if (it.stream == "dmr2") 1 else 0].privacy) }
+        // (a DMR voice sync alone turns up in other signals: its frames count once a DMR burst has passed a check)
+        dmr.onVoiceFrame = { if (dmr.checked + dmr.clean > 0) pcm(it, dmr.slots[if (it.stream == "dmr2") 1 else 0].privacy) }
         dstar.onVoiceFrame = { pcm(it, false) }
         ysf.onVoiceFrame = { pcm(it, false) }
     }
@@ -60,18 +66,56 @@ class HamIdChannel(val fs: Double) {
     /** Discriminator samples pushed, and those pushed while the receiver clipped. */
     var samples = 0L; var clippedSamples = 0L
     val p25 = P25Modes(fs)
-    val analog = AnalogSignaling(fs)
+    val analog = AnalogSignaling(fs).also { it.onlyTonal = lazy }
+    /** Lazy: the sniffer, the last 0.75 s of discriminator (fed to the decoders when they wake), whether they are awake. */
+    val sniffer: SyncSniffer? = if (lazy) SyncSniffer(fs) else null
+    private val ring = FloatArray(if (lazy) Math.ceil(0.75 * fs).toInt() else 0); private var rp = 0; private var rn = 0
+    var awake = !lazy; private set
+    private var wokeAt = 0L; private var checksAt = 0
+    /** How many times the full decoders woke, and the mode whose sync woke them the last time (diagnostics, tests). */
+    var wakes = 0; private set
+    var wokeBy = ""; private set
     /** Clear digital voice, 160 samples at 8 kHz a frame: the mode and the slot (0, or Phase 2's 0 and 1). */
     var onAudio: (String, Int, FloatArray) -> Unit = { _, _, _ -> }
     init { p25.onAudio = { m, slot, pcm -> onAudio(m, slot, pcm) }; val s48 = mode.onSymbol48; mode.onSymbol48 = { s48(it); p25.pushSymbol48(it) } }
-    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); voice.reset(); dd?.reset(); p25.reset(); analog.reset(); m17.reset(); c2 = null; gate.reset(); t48 = 0; samples = 0; clippedSamples = 0 }
+    fun reset() { mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); dtmf.reset(); voice.reset(); dd?.reset(); p25.reset(); analog.reset(); m17.reset(); c2 = null; gate.reset(); t48 = 0; samples = 0; clippedSamples = 0
+        sniffer?.reset(); awake = !lazy; rp = 0; rn = 0; wakes = 0; light = null }
     /** Discriminator samples, radians per sample, at [fs]. */
     fun push(disc: FloatArray, n: Int, clipped: Boolean = false) {
         samples += n
         // while the receiver clips (a strong signal nearby spraying spurs) only the analog signaling hears the channel
         if (clipped) { clippedSamples += n; analog.push(disc, n); return }
+        if (!awake) {
+            dtmf.push(disc, n); analog.push(disc, n)
+            val r = ring.size; var i = 0
+            while (i < n) { val m = minOf(n - i, r - rp); System.arraycopy(disc, i, ring, rp, m); i += m; rp += m; if (rp >= r) rp = 0 }
+            rn = minOf(r, rn + n)
+            val sn = sniffer!!; sn.push(disc, n)
+            if (sn.woke.isNotEmpty()) wake()
+            return
+        }
         mode.push(disc, n); dtmf.push(disc, n); dd?.push(disc, n); p25.push(disc, n); analog.push(disc, n)
+        if (lazy && samples - wokeAt > 3 * fs && checks() == checksAt) sleep()
     }
+    /** Checks the decoders have passed (frames, headers, packets). */
+    private fun checks(): Int = dmr.checked + dmr.clean + dstar.id.frames + dstar.id.headers + ysf.id.frames + m17.id.lsfs + m17.id.frames + m17.id.packets +
+        p25.p25.checked + p25.nxdn.checked + p25.dpmr.checked + p25.p25p2.checked + (dd?.id?.packets ?: 0)
+    /** A sync on its grid: the full decoders start, fed the last 0.75 s first (in order). */
+    private fun wake() {
+        awake = true; wakes++; wokeBy = sniffer!!.woke; wokeAt = samples; checksAt = checks()
+        val r = ring.size; val start = ((rp - rn) % r + r) % r; val buf = FloatArray(rn) { ring[(start + it) % r] }
+        rn = 0
+        var o = 0
+        while (o < buf.size) { val m = minOf(2400, buf.size - o); val x = buf.copyOfRange(o, o + m); mode.push(x, m); dd?.push(x, m); p25.push(x, m); o += m }
+    }
+    /** Nothing checked since waking: what woke it was chance, the decoders stop and the sniffer looks again. */
+    private fun sleep() {
+        awake = false; sniffer!!.reset()
+        mode.reset(); dmr.reset(); dstar.reset(); ysf.reset(); voice.reset(); dd?.reset(); p25.reset(); m17.reset(); c2 = null
+        gate.reset(); t48 = 0
+    }
+    /** Asleep, the snapshot holds only DTMF and the analog signaling: kept until either moves. */
+    private var light: HamIdSnap? = null; private var lightKey = ""
     /** After each 4800/s symbol: a checked frame of DMR, D-STAR, Fusion or M17 is timed for the frame grid. */
     private fun frames() {
         val t = ++t48
@@ -90,6 +134,13 @@ class HamIdChannel(val fs: Double) {
     private fun moreMode(): String { val m = p25.mode; return if (m == "P25" && !eyeOk(mode.eye("P25"))) "" else m }
 
     fun snapshot(): HamIdSnap {
+        if (lazy && !awake) {
+            val key = "${analog.txs.size}|${analog.carrier}|${dtmf.text}"
+            val l = light
+            if (l != null && key == lightKey) return l
+            lightKey = key
+            return HamIdSnap("", emptyMap(), -1, null, null, null, "", "", null, dtmf.text, analog = analog.snapshot()).also { light = it }
+        }
         val r = mode.result()
         var m = r.mode
         // a decoder's checks name the mode before the detector's sync count does

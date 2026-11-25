@@ -596,6 +596,17 @@ export class AnalogSignaling {
   private readonly prints: { key: string; tones: { hz: number; ms: number }[]; count: number }[] = [];
   private readonly timeouts: number[] = [];
 
+  /**
+   * Read a transmission only around what was tonal in it (a selcall or 2-tone page, a data burst, a CW ID, a courtesy
+   * tone): Repeaters' light look at a channel, where plain voice costs next to nothing more. A tone is 40 ms and more of
+   * 10 ms blocks of the 8 kHz audio (high-passed past the sub-audible tone) whose zero crossings stay put and give the
+   * frequency its energy does (one tone, where speech's formants do not); each such
+   * stretch is read with 0.6 s either side.
+   */
+  onlyTonal = false;
+  private zHp = 0; private zPrev = 0; private zc = 0; private zN = 0; private zE0 = 0; private zE1 = 0; private fPrev = 0; private fRun = 0;
+  /** Stretches to read (decimated positions). */
+  private segs: [number, number][] = [];
   /** [audio]: the input is squelched audio (silent when no carrier) rather than the discriminator. */
   constructor(readonly fs: number, readonly audio = false) {
     this.D = Math.max(1, Math.round(fs / 8000)); this.rate = fs / this.D; this.B = Math.max(1, Math.round(fs * 0.01));
@@ -619,6 +630,24 @@ export class AnalogSignaling {
   private append(v: number): void {
     if (this.blen === this.buf.length) { const b = new Float32Array(this.buf.length * 2); b.set(this.buf); this.buf = b; }
     this.buf[this.blen++] = v; this.dpos++;
+    if (this.onlyTonal && this.carrier) {
+      // one-pole high-pass at about 250 Hz, then zero crossings per 10 ms
+      this.zHp += 0.18 * (v - this.zHp); const h = v - this.zHp, dh = h - this.zPrev;
+      if ((h > 0) !== (this.zPrev > 0)) this.zc++;
+      this.zPrev = h; this.zE0 += h * h; this.zE1 += dh * dh;
+      if (++this.zN >= 80) {
+        // the frequency twice: by zero crossings and by the energy of the difference (2 - 2 cos w of the energy for one
+        // tone); they agree only on a tone (or a two-tone data burst), not on speech's several formants
+        const f = this.zc * this.rate / (2 * this.zN), r = this.zE0 > 0 ? 1 - this.zE1 / (2 * this.zE0) : 1;
+        const fe = Math.acos(Math.max(-1, Math.min(1, r))) * this.rate / (2 * Math.PI);
+        const steady = f > 250 && f < 3200 && Math.abs(f - this.fPrev) <= Math.max(60, 0.04 * f) && Math.abs(fe - f) <= Math.max(60, 0.06 * f);
+        this.fRun = steady ? this.fRun + 1 : 0; this.fPrev = f; this.zc = 0; this.zN = 0; this.zE0 = 0; this.zE1 = 0;
+        if (this.fRun >= 4) {
+          const pad = Math.round(0.6 * this.rate), from = this.dpos - 6 * 80 - pad, to = this.dpos + pad, last = this.segs[this.segs.length - 1];
+          if (last && from <= last[1]) last[1] = Math.max(last[1], to); else this.segs.push([from, to]);
+        }
+      }
+    }
     if (!this.carrier && this.onRun === 0 && this.blen > 2 * this.rate) { const keep = Math.round(this.rate); this.buf.copyWithin(0, this.blen - keep, this.blen); this.bufAt += this.blen - keep; this.blen = keep; }
     if (this.carrier && this.dpos - this.txStart > 240 * this.rate) { this.endTx(this.dpos); this.txStart = this.dpos; }
   }
@@ -636,7 +665,17 @@ export class AnalogSignaling {
   }
   private endTx(end: number): void {
     const a = this.txStart - this.bufAt, b = Math.min(this.blen, end - this.bufAt);
-    if (b - a >= Math.round(0.08 * this.rate)) {
+    if (this.onlyTonal) {
+      // the light look reads only the tonal stretches (each a part, which says nothing of a kerchunk or a time-out)
+      for (const [f, t] of this.segs) {
+        const a2 = Math.max(a, f - this.bufAt), b2 = Math.min(b, t - this.bufAt);
+        if (b2 - a2 < Math.round(0.08 * this.rate)) continue;
+        const tx = this.analyze(this.buf.slice(a2, b2), (this.bufAt + a2) / this.rate);
+        tx.kerchunk = false; tx.timeout = false;
+        this.remember(tx); this.txs.push(tx); if (this.txs.length > 30) this.txs.shift(); this.onTx(tx);
+      }
+      this.segs = []; this.fRun = 0;
+    } else if (b - a >= Math.round(0.08 * this.rate)) {
       const tx = this.analyze(this.buf.slice(a, b), this.txStart / this.rate);
       this.remember(tx); this.txs.push(tx); if (this.txs.length > 30) this.txs.shift(); this.onTx(tx);
     }
@@ -681,7 +720,8 @@ export class AnalogSignaling {
       // a burst holds together over runs of one bit (a single tone for a while): gaps up to 100 ms
       let u = t + 1, gap = 0, cnt = 1, strict = fr.data[t]; while (u < fr.nF && gap < 25) { if (fr.fsk[u] && fr.E[u] > vThr) { gap = 0; cnt++; strict += fr.data[u]; } else gap++; u++; }
       u -= gap;
-      if (cnt >= 10 && cnt >= 0.45 * (u - t)) {
+      // (the light look leaves a burst that is one pure tone all through, a CW ID or a courtesy tone, to those readers)
+      if (cnt >= 10 && cnt >= 0.45 * (u - t) && !(this.onlyTonal && strict === 0)) {
         const from = Math.max(0, t * H - 24 * H), to = Math.min(y.length, u * H + N + 24 * H);
         const got = decodeMdc(y, from, to, rate, startS);
         const fsy = got.length ? [] : decodeFleetSync(y, from, to, rate, startS);

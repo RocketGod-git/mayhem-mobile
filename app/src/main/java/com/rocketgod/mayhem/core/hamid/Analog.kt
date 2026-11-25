@@ -5,6 +5,7 @@ import com.rocketgod.mayhem.core.ham.SubAudioDecoder
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.acos
 import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -573,6 +574,16 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
     private class Print(val key: String, val tones: List<AnalogTone>, var count: Int)
     private val prints = ArrayList<Print>()
     private val timeouts = ArrayList<Double>()
+    /**
+     * Read a transmission only around what was tonal in it (a selcall or 2-tone page, a data burst, a CW ID, a courtesy
+     * tone): Repeaters' light look at a channel, where plain voice costs next to nothing more. A tone is 40 ms and more of
+     * 10 ms blocks of the 8 kHz audio (high-passed past the sub-audible tone) whose zero crossings stay put and give the
+     * frequency its energy does (one tone, where speech's formants do not); each such
+     * stretch is read with 0.6 s either side. The same as the web's.
+     */
+    var onlyTonal = false
+    private var zHp = 0.0; private var zPrev = 0.0; private var zc = 0; private var zN = 0; private var zE0 = 0.0; private var zE1 = 0.0; private var fPrev = 0.0; private var fRun = 0
+    private val segs = ArrayList<LongArray>()
 
     fun reset() {
         carrier = false; txs.clear(); bN = 0; bE = 0.0; bD = 0.0; prev = 0.0; onRun = 0; offRun = 0
@@ -593,6 +604,24 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
     private fun append(v: Float) {
         if (blen == buf.size) buf = buf.copyOf(buf.size * 2)
         buf[blen++] = v; dpos++
+        if (onlyTonal && carrier) {
+            // one-pole high-pass at about 250 Hz, then zero crossings per 10 ms
+            zHp += 0.18 * (v - zHp); val h = v - zHp; val dh = h - zPrev
+            if ((h > 0) != (zPrev > 0)) zc++
+            zPrev = h; zE0 += h * h; zE1 += dh * dh
+            if (++zN >= 80) {
+                // the frequency twice: by zero crossings and by the energy of the difference (2 - 2 cos w of the energy for one
+                // tone); they agree only on a tone (or a two-tone data burst), not on speech's several formants
+                val f = zc * rate / (2 * zN); val r = if (zE0 > 0) 1 - zE1 / (2 * zE0) else 1.0
+                val fe = acos(r.coerceIn(-1.0, 1.0)) * rate / (2 * PI)
+                val steady = f > 250 && f < 3200 && abs(f - fPrev) <= max(60.0, 0.04 * f) && abs(fe - f) <= max(60.0, 0.06 * f)
+                fRun = if (steady) fRun + 1 else 0; fPrev = f; zc = 0; zN = 0; zE0 = 0.0; zE1 = 0.0
+                if (fRun >= 4) {
+                    val pad = jsr(0.6 * rate).toLong(); val from = dpos - 6 * 80 - pad; val to = dpos + pad; val last = segs.lastOrNull()
+                    if (last != null && from <= last[1]) last[1] = max(last[1], to) else segs.add(longArrayOf(from, to))
+                }
+            }
+        }
         if (!carrier && onRun == 0 && blen > 2 * rate) { val keep = jsr(rate).toInt(); System.arraycopy(buf, blen - keep, buf, 0, keep); bufAt += blen - keep; blen = keep }
         if (carrier && dpos - txStart > 240 * rate) { endTx(dpos); txStart = dpos }
     }
@@ -610,7 +639,16 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
     }
     private fun endTx(end: Long) {
         val a = (txStart - bufAt).toInt(); val b = min(blen.toLong(), end - bufAt).toInt()
-        if (b - a >= jsr(0.08 * rate)) {
+        if (onlyTonal) {
+            // the light look reads only the tonal stretches (each a part, which says nothing of a kerchunk or a time-out)
+            for (sg in segs) {
+                val a2 = max(a.toLong(), sg[0] - bufAt).toInt(); val b2 = min(b.toLong(), sg[1] - bufAt).toInt()
+                if (b2 - a2 < jsr(0.08 * rate)) continue
+                val tx = analyze(buf.copyOfRange(a2, b2), (bufAt + a2) / rate).copy(kerchunk = false, timeout = false)
+                remember(tx); txs.add(tx); if (txs.size > 30) txs.removeAt(0); onTx(tx)
+            }
+            segs.clear(); fRun = 0
+        } else if (b - a >= jsr(0.08 * rate)) {
             val tx = analyze(buf.copyOfRange(a, b), txStart / rate)
             remember(tx); txs.add(tx); if (txs.size > 30) txs.removeAt(0); onTx(tx)
         }
@@ -656,7 +694,8 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
             var u = t + 1; var gap = 0; var cnt = 1; var strict = if (fr.data[t]) 1 else 0
             while (u < fr.nF && gap < 25) { if (fr.fsk[u] && fr.E[u] > vThr) { gap = 0; cnt++; if (fr.data[u]) strict++ } else gap++; u++ }
             u -= gap
-            if (cnt >= 10 && cnt >= 0.45 * (u - t)) {
+            // (the light look leaves a burst that is one pure tone all through, a CW ID or a courtesy tone, to those readers)
+            if (cnt >= 10 && cnt >= 0.45 * (u - t) && !(onlyTonal && strict == 0)) {
                 val from = max(0, t * H - 24 * H); val to = min(y.size, u * H + N + 24 * H)
                 val got = decodeMdc(y, from, to, rate, startS)
                 val fsy = if (got.isNotEmpty()) emptyList() else decodeFleetSync(y, from, to, rate, startS)

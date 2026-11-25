@@ -142,7 +142,7 @@ class Probe implements WatchProbe {
     this.to8 = new Resampler(CLIP_RATE / this.fs); this.to48 = new Resampler(48_000 / this.fs);
     this.de = 1 - Math.exp(-1 / (this.fs * 530e-6));
     this.speech = new FmSpeech(this.fs, hz => this.ddc.powerGain(hz));
-    this.idc = new HamIdChannel(this.fs); this.v48 = new Resampler(48_000 / CLIP_RATE);
+    this.idc = new HamIdChannel(this.fs, true); this.v48 = new Resampler(48_000 / CLIP_RATE);
     // the vocoders' frames: DMR, D-STAR and Fusion as frames per stream, P25, NXDN and dPMR per slot, M17's Codec 2
     this.idc.onPcm = f => { if (f.pcm) this.voice(`${f.stream}`, f.pcm, VOICE_GAIN); };
     this.idc.onAudio = (m, slot, pcm) => this.voice(`${m}${slot}`, pcm, VOICE_GAIN_P25);
@@ -348,7 +348,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
       this.frames++;
     }
     this.samples += n;
-    if (this.checkClip && iqClipping(iq)) this.clipUntil = this.nowMs() + CLIP_HOLD_MS;
+    if (this.checkClip && iqClipping(iq, iq.length, 16)) this.clipUntil = this.nowMs() + CLIP_HOLD_MS;
     if (this.followClock && Math.abs(this.nowMs() - this.clock()) > 3_000) { this.baseMs = this.clock() - this.samples * 1000 / this.rate; }
     const now = this.nowMs();
     if (now - this.lastMeasure >= MEASURE_MS && this.frames > 0) { this.lastMeasure = now; this.measure(now); }
