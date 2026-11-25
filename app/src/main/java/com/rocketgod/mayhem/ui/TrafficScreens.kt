@@ -384,18 +384,23 @@ fun AprsScreen(accent: Color) {
                 Chip("JS8", layers.js8, Color(SPOT_ARGB.getValue(SpotMode.JS8)), Modifier.weight(1f)) { HamSpots.setLayers(layers.copy(js8 = !layers.js8)) }
             }
         }) {
-        if (s != null && layers.aprs) StationCard(s, home, now, onMap = if (s.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = "" }
-        else if (sp != null && layers.shows(sp.mode)) SpotCard(sp, ref, now, onMap = { view = View.MAP; focusKey++ }) { sel = "" }
+        // the card takes at most half of what is left and scrolls inside it, so the map or list keeps the other half
+        val half = Modifier.weight(1f, fill = false)
+        if (s != null && layers.aprs) StationCard(s, home, now, onMap = if (s.lat != null) ({ view = View.MAP; focusKey++ }) else null, modifier = half) { sel = "" }
+        else if (sp != null && layers.shows(sp.mode)) SpotCard(sp, ref, now, onMap = { view = View.MAP; focusKey++ }, modifier = half) { sel = "" }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {
             View.MAP -> {
                 val items = stations.mapNotNull { x -> val la = x.lat; val lo = x.lon; if (la == null || lo == null) null else
                     GeoItem(x.call, la, lo, x.call, if (x.kind == "station") GeoItem.Kind.STATION else GeoItem.Kind.OBJECT, heading = x.course?.toDouble()) } +
                     spots.map { x -> GeoItem(x.id, x.lat, x.lon, x.call, GeoItem.Kind.QSO, color = SPOT_ARGB[x.mode]) }
+                // labels claim room newest first (the selected one before all), and one that would overlap is left off
+                val heard = stations.associate { it.call to it.lastMs } + spots.associate { it.id to it.lastMs }
+                val ordered = items.sortedByDescending { heard[it.id] ?: 0L }
                 val shapes = spots.map { x -> GeoShape(x.id, HamGrid.ring(x.grid), line = false, color = SPOT_ARGB.getValue(x.mode), sel = x.id == sel) }
                 val line = if (sp != null && ref != null && layers.shows(sp.mode)) listOf(ref to (sp.lat to sp.lon)) else emptyList()
                 val focus = s?.let { x -> x.lat?.let { la -> x.lon?.let { la to it } } } ?: sp?.let { it.lat to it.lon }
-                GeoMapView(items, accent, m.panel(), home = home, selected = sel, layers = GeoLayers(lines = line, shapes = shapes), withHome = true, start = remember { mapStart(home) },
+                GeoMapView(ordered, accent, m.panel(), home = home, selected = sel, layers = GeoLayers(lines = line, shapes = shapes), withHome = true, start = remember { mapStart(home) }, declutter = true,
                     emptyTitle = if (items.isNotEmpty()) "" else "NOTHING HEARD YET",
                     emptySub = mapEmptySub("APRS stations, and FT8 and JS8 stations that send a grid, appear here as they are heard", home),
                     focus = focus, focusKey = focusKey) { sel = it }
@@ -437,7 +442,7 @@ private fun HamLog(layers: HamLayers, paused: Boolean, modifier: Modifier, onPic
 }
 
 @Composable
-private fun SpotCard(s: HamSpot, ref: Pair<Double, Double>?, now: Long, onMap: () -> Unit, onClose: () -> Unit) {
+private fun SpotCard(s: HamSpot, ref: Pair<Double, Double>?, now: Long, onMap: () -> Unit, modifier: Modifier = Modifier, onClose: () -> Unit) {
     val base = parseCall(s.call).base
     StationLookups.changed.collectAsState().value
     LaunchedEffect(base) {
@@ -465,11 +470,11 @@ private fun SpotCard(s: HamSpot, ref: Pair<Double, Double>?, now: Long, onMap: (
         "FIRST HEARD" to "${ageText(now - s.firstMs)} · ${clockOf(s.firstMs)}",
         "DECODES" to s.heard.toString(),
     )
-    DetailCard(s.call, s.mode.name, lines, grid, onMap, onClose)
+    DetailCard(s.call, s.mode.name, lines, grid, onMap, onClose, modifier = modifier)
 }
 
 @Composable
-private fun StationCard(s: AprsStation, home: Pair<Double, Double>?, now: Long, onMap: (() -> Unit)?, onClose: () -> Unit) {
+private fun StationCard(s: AprsStation, home: Pair<Double, Double>?, now: Long, onMap: (() -> Unit)?, modifier: Modifier = Modifier, onClose: () -> Unit) {
     val base = parseCall(s.call.replace(Regex("-\\d+$"), "")).base
     StationLookups.changed.collectAsState().value
     LaunchedEffect(base) {
@@ -512,5 +517,5 @@ private fun StationCard(s: AprsStation, home: Pair<Double, Double>?, now: Long, 
         add("FIRST HEARD" to "${ageText(now - s.firstMs)} · ${clockOf(s.firstMs)}")
         add("PACKETS" to s.packets.toString())
     }
-    DetailCard(s.call, if (s.kind == "station") "APRS" else s.kind, lines, grid, onMap, onClose)
+    DetailCard(s.call, if (s.kind == "station") "APRS" else s.kind, lines, grid, onMap, onClose, modifier = modifier)
 }
