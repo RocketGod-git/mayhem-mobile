@@ -130,7 +130,7 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
         val lats = withPos.map { it.lat!! }; val lons = withPos.map { it.lon!! }
         if (withPos.size == 1) { mv.controller.animateTo(GeoPoint(lats[0], lons[0])); return }
         val pad = 0.05
-        runCatching { mv.zoomToBoundingBox(BoundingBox(lats.max() + pad, lons.max() + pad, lats.min() - pad, lons.min() - pad), true, 80) }
+        safeFit(mv, lats.max() + pad, lons.max() + pad, lats.min() - pad, lons.min() - pad, 30, animated = true)
     }
 
     LaunchedEffect(planes, follow, selected) {

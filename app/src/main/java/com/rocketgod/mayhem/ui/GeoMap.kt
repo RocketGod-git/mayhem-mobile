@@ -465,9 +465,7 @@ fun GeoMapView(
         }
         // the border never eats the whole view: a map squeezed to a strip under a detail card left osmdroid no room
         // and its fit spun on the main thread until the app stopped responding
-        val border = minOf(((if (fitHome || fitPins) 70 else 40) * mv.resources.displayMetrics.density).toInt(), minOf(mv.width, mv.height) / 4)
-        if (mv.width - 2 * border < 16 || mv.height - 2 * border < 16) return
-        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, border) }
+        safeFit(mv, n, e, s, w, if (fitHome || fitPins) 70 else 40)
         val maxZoom = if (fitHome || fitPins) 17.0 else 11.0
         if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
     }
@@ -497,7 +495,7 @@ fun GeoMapView(
         if (pts.isEmpty()) return
         val n = pts.maxOf { it.first }; val s = pts.minOf { it.first }; val e = pts.maxOf { it.second }; val w = pts.minOf { it.second }
         if (n - s < 1e-6 && e - w < 1e-6) { mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), if (fitPins) 15.0 else maxOf(mv.zoomLevelDouble, 11.0), null); return }
-        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitPins) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }
+        safeFit(mv, n, e, s, w, if (fitPins) 70 else 40)
         val maxZoom = if (fitPins) 17.0 else 11.0
         if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
     }
@@ -612,4 +610,22 @@ fun GeoMapView(
         Text("© OpenStreetMap contributors", color = Palette.muted, fontFamily = Mono, fontSize = 8.sp,
             modifier = Modifier.align(Alignment.BottomStart).padding(4.dp).background(Palette.paper.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(horizontal = 4.dp, vertical = 1.dp))
     }
+}
+
+/**
+ * Frame a box on the map without letting osmdroid spin. Its zoom-to-box loops on the main thread when the view has no
+ * room for the box (not laid out yet, or squeezed to a strip under a card) or the box is not finite or leaves the
+ * Mercator range, which Play vitals showed as "not responding" freezes. So: no fit until the view has a real size,
+ * the border never takes more than a quarter of the short side, and the box is clamped to what the map can show.
+ */
+internal fun safeFit(mv: MapView, north: Double, east: Double, south: Double, west: Double, borderDp: Int, animated: Boolean = false) {
+    if (mv.width < 64 || mv.height < 64) return
+    if (!(north.isFinite() && east.isFinite() && south.isFinite() && west.isFinite())) return
+    val lim = 85.0
+    val n = north.coerceIn(-lim, lim); val s = south.coerceIn(-lim, lim)
+    val e = east.coerceIn(-180.0, 180.0); val w = west.coerceIn(-180.0, 180.0)
+    if (n <= s || e <= w) return
+    val border = minOf((borderDp * mv.resources.displayMetrics.density).toInt(), minOf(mv.width, mv.height) / 4)
+    if (mv.width - 2 * border < 16 || mv.height - 2 * border < 16) return
+    runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), animated, border) }
 }
