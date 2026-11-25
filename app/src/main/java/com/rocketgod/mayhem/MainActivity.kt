@@ -335,6 +335,34 @@ class MainActivity : ComponentActivity() {
                 }
             }, "cbreplay").start()
         }
+        // `--es hpreplay name.cs8 --el hpcenter 446775000 --ei hprate 125000` feeds a signed-IQ recording from the app's
+        // external files folder into Repeaters at its own pace, looped, centered where it was recorded (the Repeaters
+        // air fixtures: home's P25 and DMR, and the synthetic digital scenes)
+        i.getStringExtra("hpreplay")?.let { name ->
+            val center = i.getLongExtra("hpcenter", 446_775_000L); val rate = i.getIntExtra("hprate", 125_000)
+            Apps.open(MayhemApp.HAMPLUS)
+            connected.value = true; status.value = "Repeaters replay"
+            Thread({
+                val f = java.io.File(getExternalFilesDir(null), name)
+                if (!f.exists()) { Diag.log("hpreplay: $name not found in ${getExternalFilesDir(null)}"); return@Thread }
+                val buf = ByteArray(2 * 16_384); val t0 = System.nanoTime(); var sent = 0L
+                Thread.sleep(500)
+                val e = com.rocketgod.mayhem.core.HamPlus.engine
+                while (Apps.playing() == MayhemApp.HAMPLUS) {
+                    f.inputStream().buffered(1 shl 20).use { s ->
+                        while (Apps.playing() == MayhemApp.HAMPLUS) {
+                            val n = s.readNBytes(buf, 0, buf.size); if (n < buf.size) break
+                            for (k in 0 until n) buf[k] = (buf[k] + 128).toByte()
+                            e.centerHz = center
+                            e.onIq(buf, n, rate)
+                            sent += n / 2
+                            val ahead = sent * 1000 / rate - (System.nanoTime() - t0) / 1_000_000
+                            if (ahead > 0) Thread.sleep(ahead)
+                        }
+                    }
+                }
+            }, "hpreplay").start()
+        }
         // `--ez crashtest true` crashes on purpose a moment later, to test the crash report on the next launch
         if (i.getBooleanExtra("crashtest", false)) {
             android.os.Handler(mainLooper).postDelayed({ throw IllegalStateException("crash report test (QA build, --ez crashtest)") }, 1500)
