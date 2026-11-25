@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.Dispatch.init(this)
         com.rocketgod.mayhem.core.HamPlus.init(this)
         com.rocketgod.mayhem.core.Cb.init(this)
+        com.rocketgod.mayhem.core.ham.HamSpots.init(this)
         com.rocketgod.mayhem.core.analyzer.Analyzer.init(filesDir)
         if (savedInstanceState == null) {
             // Land on the launcher (the front door), not Audio, and arm the auto-pick so it tunes the strongest
@@ -283,6 +284,21 @@ class MainActivity : ComponentActivity() {
             Apps.aprs.injectForTest(com.rocketgod.mayhem.core.apps.AprsStation("W6ABC-9", lat = 34.2694, lon = -118.7815, symbol = '>', table = '/',
                 course = 270, speed = 32.0, alt = 300.0, comment = "test station", packets = 3, firstMs = now - 600_000, lastMs = now,
                 wx = com.rocketgod.mayhem.core.apps.AprsWx(windDir = 250, windMph = 6, tempF = 64, humidity = 55, pressureMb = 1013.2)))
+        }
+        // `--es hamspots name.txt` replays FT8 and JS8 decodes into Ham Map's grid layers from the app's external files
+        // folder, one per line as MODE|dial Hz|SNR|offset Hz|seconds ago|text (screens with stations, no radio)
+        i.getStringExtra("hamspots")?.let { name ->
+            val f = java.io.File(getExternalFilesDir(null), name)
+            if (f.exists()) {
+                val now = System.currentTimeMillis()
+                for (l in f.readLines()) {
+                    val p = l.split('|'); if (p.size < 6) continue
+                    val dial = p[1].toLongOrNull() ?: continue; val snr = p[2].toIntOrNull() ?: 0; val hz = p[3].toIntOrNull() ?: 0
+                    val at = now - (p[4].toLongOrNull() ?: 0L) * 1000
+                    if (p[0] == "FT8") com.rocketgod.mayhem.core.ham.HamSpots.ft8(com.rocketgod.mayhem.core.ham.Ft8Decode("", snr, 0.0, hz, p[5]), dial, at)
+                    else { val m = com.rocketgod.mayhem.core.js8.Js8Msg.parseMessage(p[5]); com.rocketgod.mayhem.core.ham.HamSpots.js8(m.kind, m.from, m.body, m.grid, snr, hz.toDouble(), at, p[5], dial) }
+                }
+            }
         }
         // `--es uatreplay name.cs8` feeds a 2 MS/s signed-IQ recording from the app's external files folder into UAT
         i.getStringExtra("uatreplay")?.let { name ->

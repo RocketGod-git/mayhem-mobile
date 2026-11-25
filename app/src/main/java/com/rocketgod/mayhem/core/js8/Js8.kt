@@ -182,6 +182,8 @@ object Js8 {
                 val st = stations[mm.from]
                 if (st != null && mm.grid != null) stations[mm.from] = st.copy(grid = mm.grid.uppercase())
             }
+            // Ham Map plots the sender at its grid, whether or not Ham Map is open (once, when the message completes)
+            if (m.complete) com.rocketgod.mayhem.core.ham.HamSpots.js8(mm.kind, mm.from, mm.body, mm.grid, m.snr, m.hz.toDouble(), if (m.endMs > 0) m.endMs else m.startMs, m.text, s.dial)
         }
         newMsgs.clear()
         s = s.copy(entries = entries.takeLast(600), stations = stations)

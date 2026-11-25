@@ -3222,3 +3222,11 @@ main#view.view:is(.hamplus, .cb).hpwide { display: grid; grid-template-columns: 
 @media (min-width: 720px) { .view.hamplus:not(.hpwide) > .visual > .scope { flex: none; height: clamp(240px, 34vh, 380px); min-height: 0; } }
 /* the cost line keeps two lines' room, so its numbers changing length never moves what is under it */
 .hp-cost { min-height: 2.7em; }
+/* Ham Map layers: APRS, FT8 and JS8 chips, each with its color dot; the mode column in the list and the log */
+.hm-layers { display: flex; gap: 6px; }
+.hm-layers > .chip { flex: 1 1 0; min-width: 0; padding: 7px 4px; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.hm-layers > .chip > i { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--accent); }
+.hm-layers > .chip.hm-ft8 > i, .hm-mode.hm-ft8 { background: #4fc3f7; }
+.hm-layers > .chip.hm-js8 > i, .hm-mode.hm-js8 { background: #ffb74d; }
+.hm-layers > .chip.on > i { box-shadow: 0 0 0 1.5px #05080a; }
+.hm-mode { display: inline-block; min-width: 3.4em; margin-right: 6px; padding: 0 4px; border-radius: 4px; background: var(--accent); color: #05080a; font-size: 10px; text-align: center; vertical-align: 1px; }

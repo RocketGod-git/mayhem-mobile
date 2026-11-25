@@ -53,6 +53,11 @@ import com.rocketgod.mayhem.core.apps.mmsiInfo
 import com.rocketgod.mayhem.core.apps.navStatusName
 import com.rocketgod.mayhem.core.apps.shipTypeName
 import com.rocketgod.mayhem.core.ham.CallInfo
+import com.rocketgod.mayhem.core.ham.HamGrid
+import com.rocketgod.mayhem.core.ham.HamLayers
+import com.rocketgod.mayhem.core.ham.HamSpot
+import com.rocketgod.mayhem.core.ham.HamSpots
+import com.rocketgod.mayhem.core.ham.SpotMode
 import com.rocketgod.mayhem.core.ham.latLonToGrid
 import com.rocketgod.mayhem.core.ham.lookupCall
 import com.rocketgod.mayhem.core.ham.parseCall
@@ -331,10 +336,17 @@ private object StationLookups {
     val changed = kotlinx.coroutines.flow.MutableStateFlow(0)
 }
 
+/** FT8 and JS8 squares and markers each in their own color, so the layers tell apart on the map. */
+private val SPOT_ARGB = mapOf(SpotMode.FT8 to 0xFF4FC3F7.toInt(), SpotMode.JS8 to 0xFFFFB74D.toInt())
+/** One row of the Ham Map list: an APRS station or an FT8 / JS8 station, its mode first. */
+private class HamRow(val key: String, val top: String, val bottom: String, val ms: Long, val onMap: Boolean)
+
 @Composable
 fun AprsScreen(accent: Color) {
     val live by Apps.aprs.table.collectAsState()
     val count by Apps.aprsLog.count.collectAsState()
+    val liveSpots by HamSpots.list.collectAsState()
+    val layers by HamSpots.layers.collectAsState()
     val home by Geo.fix.collectAsState()
     val ctx = LocalContext.current
     // the map opens on you: ask for the location here if it is not allowed yet
@@ -342,39 +354,118 @@ fun AprsScreen(accent: Color) {
     var view by rememberSaveable { mutableStateOf(View.MAP) }
     var sel by rememberSaveable { mutableStateOf("") }
     var frozen by remember { mutableStateOf<List<AprsStation>?>(null) }
+    var frozenSpots by remember { mutableStateOf<List<HamSpot>?>(null) }
     var focusKey by remember { mutableStateOf(0) }
-    val stations = frozen ?: live
     val now = ticker()
-    val s = live.firstOrNull { it.call == sel } ?: stations.firstOrNull { it.call == sel }
-    TrafficFrame(accent, tunable = true, tag = "HAM MAP", title = "$count PACKETS", count = stations.size, unit = "STATIONS",
+    // aged stations leave on the next check even with nothing new heard
+    val ageTick = now / 15_000
+    val spotsAll = frozenSpots ?: remember(liveSpots, ageTick) { HamSpots.current() }
+    val aprsAll = frozen ?: live
+    val stations = if (layers.aprs) aprsAll else emptyList()
+    val spots = spotsAll.filter { layers.shows(it.mode) }
+    val isSpot = sel.startsWith("ft8:") || sel.startsWith("js8:")
+    val s = if (isSpot) null else live.firstOrNull { it.call == sel } ?: aprsAll.firstOrNull { it.call == sel }
+    val sp = if (!isSpot) null else spotsAll.firstOrNull { it.id == sel }
+    // distances from your position, else from the grid in Settings
+    val ref = home ?: com.rocketgod.mayhem.core.ham.gridToLatLon(com.rocketgod.mayhem.core.Station.grid())
+    val gap = rememberDims().dp(6f)
+    TrafficFrame(accent, tunable = true, tag = "HAM MAP", title = "$count PACKETS" + if (spots.isNotEmpty()) " · ${spots.size} GRIDS" else "",
+        count = stations.size + spots.size, unit = "STATIONS",
         views = View.entries, view = view, onView = { view = it },
-        paused = frozen != null, onPause = { frozen = if (frozen == null) live else null },
-        onClear = { Apps.aprs.clear(); Apps.aprsLog.clear(); sel = ""; if (frozen != null) frozen = emptyList() },
+        paused = frozen != null, onPause = { if (frozen == null) { frozen = live; frozenSpots = spotsAll } else { frozen = null; frozenSpots = null } },
+        onClear = { Apps.aprs.clear(); Apps.aprsLog.clear(); HamSpots.clear(); sel = ""; if (frozen != null) { frozen = emptyList(); frozenSpots = emptyList() } },
         shift = Apps.NARROW_SHIFT,
-        extra = { PresetTiles(accent, listOf(Preset("144.390", "N. America", 144_390_000L), Preset("144.800", "Europe", 144_800_000L),
-            Preset("145.175", "Australia", 145_175_000L), Preset("144.640", "Japan", 144_640_000L)), shift = Apps.NARROW_SHIFT) }) {
-        if (s != null) StationCard(s, home, now, onMap = if (s.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = "" }
+        extra = {
+            PresetTiles(accent, listOf(Preset("144.390", "N. America", 144_390_000L), Preset("144.800", "Europe", 144_800_000L),
+                Preset("145.175", "Australia", 145_175_000L), Preset("144.640", "Japan", 144_640_000L)), shift = Apps.NARROW_SHIFT)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                Chip("APRS", layers.aprs, accent, Modifier.weight(1f)) { HamSpots.setLayers(layers.copy(aprs = !layers.aprs)) }
+                Chip("FT8", layers.ft8, Color(SPOT_ARGB.getValue(SpotMode.FT8)), Modifier.weight(1f)) { HamSpots.setLayers(layers.copy(ft8 = !layers.ft8)) }
+                Chip("JS8", layers.js8, Color(SPOT_ARGB.getValue(SpotMode.JS8)), Modifier.weight(1f)) { HamSpots.setLayers(layers.copy(js8 = !layers.js8)) }
+            }
+        }) {
+        if (s != null && layers.aprs) StationCard(s, home, now, onMap = if (s.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = "" }
+        else if (sp != null && layers.shows(sp.mode)) SpotCard(sp, ref, now, onMap = { view = View.MAP; focusKey++ }) { sel = "" }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {
-            View.MAP -> GeoMapView(
-                stations.mapNotNull { x -> val la = x.lat; val lo = x.lon; if (la == null || lo == null) null else
-                    GeoItem(x.call, la, lo, x.call, if (x.kind == "station") GeoItem.Kind.STATION else GeoItem.Kind.OBJECT, heading = x.course?.toDouble()) },
-                accent, m.panel(), home = home, selected = sel, withHome = true, start = remember { mapStart(home) },
-                emptyTitle = if (stations.any { it.lat != null }) "" else "NOTHING HEARD YET",
-                emptySub = mapEmptySub("stations, objects and weather reports appear here as their packets come in", home),
-                focus = s?.let { x -> x.lat?.let { la -> x.lon?.let { la to it } } }, focusKey = focusKey) { sel = it }
-            View.LIST -> TwoLineList(stations, { it.call }, sel, m, "aprs",
-                top = { x -> x.call + if (x.kind != "station") "  ${x.kind} by ${x.owner ?: "?"}" else "" },
-                bottom = { x -> listOfNotNull(aprsSymbolName(x.table, x.symbol).takeIf { it.isNotEmpty() },
-                    if (x.lat != null && x.lon != null) "%.3f,%.3f".format(x.lat, x.lon) else null,
-                    x.speed?.takeIf { it > 0 }?.let { "%.0f kn".format(it) }).joinToString(" · ") }) { x ->
-                sel = x.call; if (x.lat != null) view = View.MAP
+            View.MAP -> {
+                val items = stations.mapNotNull { x -> val la = x.lat; val lo = x.lon; if (la == null || lo == null) null else
+                    GeoItem(x.call, la, lo, x.call, if (x.kind == "station") GeoItem.Kind.STATION else GeoItem.Kind.OBJECT, heading = x.course?.toDouble()) } +
+                    spots.map { x -> GeoItem(x.id, x.lat, x.lon, x.call, GeoItem.Kind.QSO, color = SPOT_ARGB[x.mode]) }
+                val shapes = spots.map { x -> GeoShape(x.id, HamGrid.ring(x.grid), line = false, color = SPOT_ARGB.getValue(x.mode), sel = x.id == sel) }
+                val line = if (sp != null && ref != null && layers.shows(sp.mode)) listOf(ref to (sp.lat to sp.lon)) else emptyList()
+                val focus = s?.let { x -> x.lat?.let { la -> x.lon?.let { la to it } } } ?: sp?.let { it.lat to it.lon }
+                GeoMapView(items, accent, m.panel(), home = home, selected = sel, layers = GeoLayers(lines = line, shapes = shapes), withHome = true, start = remember { mapStart(home) },
+                    emptyTitle = if (items.isNotEmpty()) "" else "NOTHING HEARD YET",
+                    emptySub = mapEmptySub("APRS stations, and FT8 and JS8 stations that send a grid, appear here as they are heard", home),
+                    focus = focus, focusKey = focusKey) { sel = it }
             }
-            View.LOG -> FrozenLog(Apps.aprsLog, frozen != null, m, "listening on the APRS frequency…", "aprs") { l ->
-                Regex("^([A-Za-z0-9-]+)>").find(l)?.let { sel = it.groupValues[1] }
+            View.LIST -> {
+                val rows = (stations.map { x ->
+                    HamRow(x.call, "APRS " + x.call + if (x.kind != "station") "  ${x.kind} by ${x.owner ?: "?"}" else "",
+                        listOfNotNull(aprsSymbolName(x.table, x.symbol).takeIf { it.isNotEmpty() },
+                            if (x.lat != null && x.lon != null) "%.3f,%.3f".format(x.lat, x.lon) else null,
+                            x.speed?.takeIf { it > 0 }?.let { "%.0f kn".format(it) }).joinToString(" · "), x.lastMs, x.lat != null)
+                } + spots.map { x ->
+                    HamRow(x.id, "${x.mode.name.padEnd(5)}${x.call}",
+                        listOf(x.grid, HamGrid.bandLabel(x.dial), HamGrid.snrText(x.snr), ageText(now - x.lastMs)).filter { it.isNotEmpty() }.joinToString(" · "), x.lastMs, true)
+                }).sortedByDescending { it.ms }
+                TwoLineList(rows, { it.key }, sel, m, "aprs", top = { it.top }, bottom = { it.bottom }) { x -> sel = x.key; if (x.onMap) view = View.MAP }
             }
+            View.LOG -> HamLog(layers, frozen != null, m) { sel = it }
         }
     }
+}
+
+/** The log: APRS packets and the FT8 and JS8 decodes that carried a grid, newest first, each with its mode first. */
+@Composable
+private fun HamLog(layers: HamLayers, paused: Boolean, modifier: Modifier, onPick: (String) -> Unit) {
+    val aprs by Apps.aprsLog.snapshot.collectAsState()
+    val spotLog by HamSpots.log.collectAsState()
+    val merged = remember(aprs, spotLog, layers) {
+        val rows = ArrayList<Pair<Long, String>>()
+        if (layers.aprs) aprs.lines.forEachIndexed { i, l -> rows += (aprs.stamps.getOrNull(i) ?: 0L) to "APRS $l" }
+        for (x in spotLog) if (layers.shows(x.mode)) rows += x.ms to x.line
+        rows.sortedByDescending { it.first }.take(300).map { it.second }
+    }
+    var held by remember { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(paused) { held = if (paused) merged else null }
+    LogList(held ?: merged, modifier, empty = "listening on the APRS frequency…", emptyKey = "aprs") { l ->
+        if (l.startsWith("APRS ")) Regex("^([A-Za-z0-9-]+)>").find(l.removePrefix("APRS "))?.let { onPick(it.groupValues[1]) }
+        else Regex("^(FT8|JS8) (\\S+)").find(l)?.let { onPick("${it.groupValues[1].lowercase()}:${it.groupValues[2]}") }
+    }
+}
+
+@Composable
+private fun SpotCard(s: HamSpot, ref: Pair<Double, Double>?, now: Long, onMap: () -> Unit, onClose: () -> Unit) {
+    val base = parseCall(s.call).base
+    StationLookups.changed.collectAsState().value
+    LaunchedEffect(base) {
+        if (base.isNotEmpty() && StationLookups.asked.add(base)) {
+            val i = withContext(Dispatchers.IO) { runCatching { lookupCall(base) }.getOrNull() }
+            if (i != null) StationLookups.cache[base] = i
+            StationLookups.changed.value++
+        }
+    }
+    val info = StationLookups.cache[base]
+    val lines = buildList {
+        add("${s.mode.name} station · grid ${s.grid}")
+        listOfNotNull(info?.name, info?.qth).joinToString(" · ").takeIf { it.isNotEmpty() }?.let { add(it) }
+        info?.country?.let { add(it + (info.cls?.let { c -> " · $c" } ?: "")) }
+        add(s.text)
+    }
+    val grid = listOf(
+        "GRID" to "${s.grid} · ${if (s.grid.length >= 6) "subsquare" else "square"}",
+        "POSITION" to "%.3f, %.3f (center)".format(s.lat, s.lon),
+        "FROM YOU" to (if (ref == null) "allow location or set your grid" else fromYou(ref, s.lat, s.lon, miles = true)),
+        "BAND" to HamGrid.bandLabel(s.dial).ifEmpty { "—" },
+        "FREQUENCY" to "${HamGrid.freqText(s)} · ${s.offset.roundToInt()} Hz audio",
+        "SNR" to HamGrid.snrText(s.snr),
+        "HEARD" to ageText(now - s.lastMs),
+        "FIRST HEARD" to "${ageText(now - s.firstMs)} · ${clockOf(s.firstMs)}",
+        "DECODES" to s.heard.toString(),
+    )
+    DetailCard(s.call, s.mode.name, lines, grid, onMap, onClose)
 }
 
 @Composable

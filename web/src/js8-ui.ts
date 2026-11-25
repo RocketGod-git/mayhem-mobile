@@ -11,6 +11,7 @@ import type { Frame } from './dsp/js8/codec.js';
 import { frameTones } from './dsp/js8/codec.js';
 import { toneTrack } from './dsp/js8/synth.js';
 import type { Js8Decode } from './dsp/js8/decoder.js';
+import { hamSpots } from './ham-spots.js';
 
 export interface Js8Tx {
   readonly enabled: boolean; readonly needsPrompt: boolean; readonly active: boolean;
@@ -138,6 +139,8 @@ function onMessage(m: Js8Message): void {
     const s = st.stations.get(mm.from);
     if (s && mm.grid) s.grid = mm.grid.toUpperCase();
   }
+  // Ham Map plots the sender at its grid, whether or not Ham Map is open (once per message, when it completes)
+  if (m.complete) hamSpots.js8(mm, { snr: m.snr, hz: m.hz, ms: m.endMs || m.startMs, text: m.text }, st.dial);
 }
 /** Feed for the demo and tests: complete messages as if assembled from the air. */
 export function js8Inject(m: Js8Message, station?: Partial<Js8Station>): void {

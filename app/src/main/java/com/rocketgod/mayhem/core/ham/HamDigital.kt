@@ -71,7 +71,12 @@ object HamDigital {
             val m = _settings.value.mode
             if (m.name == d.name || (m == Mode.AUTO && (winner == d.name || d.name == "FT8" || d.name == "SSTV"))) append(t)
         }
-        ft8.onDecodes = { list, _ -> _ft8.value = (list + _ft8.value).take(200) }
+        ft8.onDecodes = { list, _ ->
+            _ft8.value = (list + _ft8.value).take(200)
+            // Ham Map plots every station that sent its grid, whether or not Ham Map is open
+            val at = System.currentTimeMillis(); val dial = Ham.state.value.channel
+            for (d in list) HamSpots.ft8(d, dial, at)
+        }
         sstv.onImage = { Picture.onSstv(it) }
         dmr.onLog = { if (dvMode()) append("$it\n") }
         dmr.p25.onLog = { if (dvMode()) append("$it\n") }
