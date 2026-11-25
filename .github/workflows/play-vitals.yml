@@ -1,0 +1,67 @@
+name: Play vitals
+
+# Read-only: prints the app's crash and ANR issues from the Google Play Developer Reporting API (the same data as
+# Android vitals in Play Console), with a sample stack for each. Run by hand (Run workflow).
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many days back to look'
+        type: string
+        default: '28'
+
+permissions:
+  contents: read
+
+jobs:
+  vitals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Crash and ANR issues
+        env:
+          SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          DAYS: ${{ inputs.days }}
+        run: |
+          pip install --quiet google-auth requests
+          python - <<'PY'
+          import json, os, datetime
+          from google.oauth2 import service_account
+          from google.auth.transport.requests import AuthorizedSession
+
+          APP = "apps/com.rocketgod.mayhem"
+          creds = service_account.Credentials.from_service_account_info(
+              json.loads(os.environ["SA_JSON"]),
+              scopes=["https://www.googleapis.com/auth/playdeveloperreporting"])
+          s = AuthorizedSession(creds)
+          base = "https://playdeveloperreporting.googleapis.com/v1beta1"
+          days = int(os.environ.get("DAYS") or 28)
+          end = datetime.datetime.utcnow().date()
+          start = end - datetime.timedelta(days=days)
+          d = lambda x: {"year": x.year, "month": x.month, "day": x.day}
+          interval = {"startTime": {**d(start), "timeZone": {"id": "America/Los_Angeles"}},
+                      "endTime": {**d(end), "timeZone": {"id": "America/Los_Angeles"}}}
+
+          r = s.get(f"{base}/{APP}/errorIssues:search",
+                    params={"interval.startTime.year": start.year, "interval.startTime.month": start.month,
+                            "interval.startTime.day": start.day, "interval.endTime.year": end.year,
+                            "interval.endTime.month": end.month, "interval.endTime.day": end.day,
+                            "pageSize": 50})
+          print("errorIssues HTTP", r.status_code)
+          if r.status_code != 200:
+              print(r.text[:1500]); raise SystemExit(1)
+          issues = r.json().get("errorIssues", [])
+          print(f"{len(issues)} issue(s) in the last {days} days\n")
+          for i in issues:
+              print("=" * 100)
+              for k in ("type", "cause", "location", "errorReportCount", "distinctUsers", "firstAppVersion",
+                        "lastAppVersion", "lastErrorReportTime", "name"):
+                  if k in i: print(f"{k}: {i[k]}")
+              rr = s.get(f"{base}/{APP}/errorReports:search",
+                         params={"filter": f"errorIssueId = {i['name'].split('/')[-1]}", "pageSize": 1})
+              if rr.status_code == 200 and rr.json().get("errorReports"):
+                  rep = rr.json()["errorReports"][0]
+                  print("sample report:", {k: rep.get(k) for k in ("appVersion", "deviceModel", "osVersion", "eventTime")})
+                  print("\n".join(rep.get("reportText", "").splitlines()[:40]))
+              print()
+          PY
