@@ -17,9 +17,12 @@ import kotlin.math.roundToInt
  * the web's dsp/hamid/sniffer.ts.
  */
 
+/** Takes each symbol (an interface, not a function type: a (Double) -> Unit boxes every symbol on Android). */
+fun interface SymbolSink { fun symbol(s: Double) }
+
 /** Symbols for sync matching only: summed over one symbol, nearest sample, timing of four picked a block, mean levels. */
 class LightSymbols(val fs: Double, val baud: Double) {
-    var onSymbol: (Double) -> Unit = {}
+    var onSymbol: SymbolSink = SymbolSink { }
     private val sps = fs / baud; private val L = max(1, sps.roundToInt()); private val ring = DoubleArray(L); private var rp = 0; private var acc = 0.0
     private var buf = DoubleArray(ceil(sps * 244).toInt() + 8); private var n = 0; private var base = 0L; private var tNext = 0.0
     private var center = 0.0; private var level = 0.0
@@ -50,7 +53,8 @@ class LightSymbols(val fs: Double, val baud: Double) {
         if (dev > 1e-9) { center = if (level > 0) center + 0.5 * (c - center) else c; level = if (level > 0) level + 0.5 * (dev - level) else dev }
         // a 4FSK symbol's mean distance from the center is two (levels ±1 and ±3)
         val sc = if (level > 0) 2 / level else 1.0
-        while (t < len) { onSymbol((b[t.roundToInt()] - center) * sc); t += T }
+        val sink = onSymbol
+        while (t < len) { sink.symbol((b[t.roundToInt()] - center) * sc); t += T }
         tNext = base + t
         val used = len.toInt()
         System.arraycopy(b, used, b, 0, n - used); n -= used; base += used
@@ -70,12 +74,13 @@ private fun snSigns(s: String) = DoubleArray(s.length) { if (s[it] == '1') 1.0 e
 /** A pattern list arranged for speed: outer-level groups by mask, exact sign patterns in maps, the rest one by one. */
 private class Matcher(list: List<SnPat>) {
     class Outer(val mask: Int, val need: Int, val pats: ArrayList<SnPat> = ArrayList())
-    class Exact(val mask: Int, val map: HashMap<Int, SnPat> = HashMap())
+    /** Exact sign patterns of one mask: their signs and patterns side by side (a map would box every lookup). */
+    class Exact(val mask: Int) { var signs = IntArray(0); val pats = ArrayList<SnPat>(); fun put(sign: Int, p: SnPat) { signs += sign; pats.add(p) } }
     val outer = ArrayList<Outer>(); val exact = ArrayList<Exact>(); val loose = ArrayList<SnPat>()
     init {
         for (p in list) {
             if (p.outer) (outer.firstOrNull { it.mask == p.mask } ?: Outer(p.mask, p.n - if (p.n >= 16) 2 else 0).also { outer.add(it) }).pats.add(p)
-            else if (p.tol == 0) { val g = exact.firstOrNull { it.mask == p.mask } ?: Exact(p.mask).also { exact.add(it) }; g.map[p.sign] = p; if (p.both) g.map[p.sign.inv() and p.mask] = p }
+            else if (p.tol == 0) { val g = exact.firstOrNull { it.mask == p.mask } ?: Exact(p.mask).also { exact.add(it) }; g.put(p.sign, p); if (p.both) g.put(p.sign.inv() and p.mask, p) }
             else loose.add(p)
         }
     }
@@ -100,7 +105,7 @@ class SyncSniffer(val fs: Double) {
     /** The mode that woke the channel, "" until one has. */
     var woke = ""; private set
     init {
-        s48.onSymbol = { s ->
+        s48.onSymbol = SymbolSink { s ->
             val t = ++t48
             sg48 = (sg48 shl 1) or (if (s > 0) 1 else 0); ou48 = (ou48 shl 1) or (if (s > 2 || s < -2) 1 else 0)
             look(P48, sg48, ou48, t)
@@ -113,9 +118,10 @@ class SyncSniffer(val fs: Double) {
     fun reset() { s48.reset(); sg48 = 0; ou48 = 0; t48 = 0; prev = 0.0; sg24.fill(0); ou24.fill(0); last.clear(); run.clear(); woke = "" }
     fun push(disc: FloatArray, n: Int) = s48.push(disc, n)
     private fun look(m: Matcher, sg: Int, ou: Int, t: Long) {
-        for (g in m.outer) { if (Integer.bitCount(ou and g.mask) < g.need) continue; for (p in g.pats) tryPat(p, sg, t) }
-        for (g in m.exact) { val p = g.map[sg and g.mask]; if (p != null) hit(p, t) }
-        for (p in m.loose) tryPat(p, sg, t)
+        val O = m.outer; for (i in O.indices) { val g = O[i]; if (Integer.bitCount(ou and g.mask) < g.need) continue; val ps = g.pats; for (j in ps.indices) tryPat(ps[j], sg, t) }
+        val E = m.exact
+        for (i in E.indices) { val g = E[i]; val v = sg and g.mask; val sgs = g.signs; for (j in sgs.indices) if (sgs[j] == v) { hit(g.pats[j], t); break } }
+        val L = m.loose; for (i in L.indices) tryPat(L[i], sg, t)
     }
     /** No bits wrong, or one when the pattern allows it, either polarity when it may be inverted. */
     private fun tryPat(p: SnPat, sg: Int, t: Long) {
