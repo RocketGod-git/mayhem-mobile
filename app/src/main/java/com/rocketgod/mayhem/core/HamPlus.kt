@@ -191,9 +191,21 @@ object HamPlus {
     }
     fun windows(): List<HpWindow> = hpWindows(_band.value, rate().toDouble())
 
+    /** The attached radio's own spurs: an RTL-SDR with an R820T or R828D tuner (on USB or through rtl_tcp) makes one at each
+     *  harmonic of its 28.8 MHz reference. A HackRF's are not measured yet, so none is assumed. */
+    private fun ownSpurStep(): Long {
+        val r82 = { t: String -> t.startsWith("R82") }
+        return when {
+            com.rocketgod.mayhem.net.RtlTcp.active -> if (r82(com.rocketgod.mayhem.net.RtlTcp.tuner)) 28_800_000L else 0L
+            Radio.kind.value == Radio.Kind.RTLSDR -> if (r82(com.rocketgod.mayhem.usb.RtlSdr.tuner)) 28_800_000L else 0L
+            else -> 0L
+        }
+    }
+
     /** The app opened: the windows, the prefs, the kept state, the audio. */
     fun open() {
         val w = windows()
+        engine.ownSpurStep = ownSpurStep()
         engine.centerHz = w[0].hz
         SdrEngine.configure(SdrEngine.Mode.NONE, w[0].hz, rate(), 32, 40, true, engine)
         pushPrefs(); pushParams()
@@ -216,6 +228,7 @@ object HamPlus {
     private fun tune(hz: Long) { engine.centerHz = hz; SdrEngine.tune(hz) }
     private fun sig(w: List<HpWindow>) = "${_band.value}|${w.joinToString(",") { "${it.hz}" }}"
     private fun dwell() {
+        engine.ownSpurStep = ownSpurStep()
         val sc = _scan.value; val now = System.currentTimeMillis(); val s = sig(sc.windows)
         val a = auto
         if (a == null || autoSig != s) {

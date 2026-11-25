@@ -126,10 +126,11 @@ export function hpHeadHtml(s: HpSnap | null, scan: string): string {
   const cell = (n: string | number, l: string, on = false) => `<div class="${on ? 'on' : ''}"><b>${n}</b><small>${l}</small></div>`;
   return `<div class="hp-hl"><b>${band ? esc(band.name.toUpperCase()) : ''}</b>${s && s.rate ? `<span>${(s.spanLo / 1e6).toFixed(3)}–${(s.spanHi / 1e6).toFixed(3)} MHz</span>` : ''}<span class="hp-scan">${esc(scan)}</span></div>`
     + `<div class="hp-stats">${cell(tiles.length, 'CHANNELS')}${cell(onAir, 'ON AIR', onAir > 0)}${cell(s?.stats.stations ?? 0, 'STATIONS')}${cell(s?.convs.length ?? 0, 'CONVOS')}${cell(nets, 'NETS')}${cell(Math.floor((s?.stats.clipS ?? 0) / 60), 'MIN KEPT')}</div>`
-    + (s ? `<div class="hp-cost">demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${s.stats.costMs > 0 ? ` (${Math.round(s.stats.costMs)} ms a channel a second)` : ''} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB${hpSteadyText(s.stats.steady ?? 0)}</div>` : '');
+    + (s ? `<div class="hp-cost">demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${s.stats.costMs > 0 ? ` (${Math.round(s.stats.costMs)} ms a channel a second)` : ''} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB${hpSteadyText(s.stats.steady ?? 0, s.stats.own ?? [])}</div>` : '');
 }
 /** The carriers open with no voice on them, as the cost line names them ('' when none). */
-export const hpSteadyText = (n: number) => n > 0 ? ` · ${n} steady carrier${n === 1 ? '' : 's'} with no voice, not counted` : '';
+export const hpSteadyText = (n: number, own: number[] = []) => (n > 0 ? ` · ${n} steady carrier${n === 1 ? '' : 's'} with no voice, not counted` : '')
+  + (own.length ? ` · ${own.map(h => (h / 1e6).toFixed(3)).join(', ')} steady, the radio's own` : '');
 /**
  * A wideband event on the air (one signal opening many channels at once, see the engine's checkFlood), as the listen
  * line shows it, once: how many channels, from where to where and the tone they share. null when there is none.

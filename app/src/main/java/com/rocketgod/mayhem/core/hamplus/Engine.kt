@@ -80,6 +80,12 @@ const val TONE_SHARE = 0.5
 const val STEADY_SHOW_MS = 3_000.0
 /** A voice first heard this long after its carrier came up starts the transmission, less this much before it. */
 const val TALK_LATE_MS = 2_000.0
+/** Speech must span this long before an open channel is a talker; a stronger channel this near, this many dB over it and
+ *  keyed within this long makes it that one's splatter. */
+const val TALK_SPAN_MS = 400.0
+const val GHOST_HZ = 25_000L
+const val GHOST_DB = 15.0
+const val GHOST_MS = 1_000.0
 const val TALK_PRE_MS = 300.0
 /** About the length of a speech block (the start of a block is this long before its end). */
 private const val SPEECH_BLOCK_MS = 85.0
@@ -327,15 +333,21 @@ class WatchOpen<P : WatchProbe>(val id: Int, var k: Int, var hz: Long, var start
 /** A wideband event on the air: how many channels, their span, the tone they share (0 when the audio was the match), since when. */
 data class HpFlood(val channels: Int, val loHz: Long, val hiHz: Long, val tone: Double, val sinceMs: Double)
 
-/** An open channel holding a carrier with no voice: its frequency, tile, since when and its level. */
-data class HpSteady(val hz: Long, val key: String, val sinceMs: Double, val levelDb: Double)
+/** An open channel holding a carrier with no voice: its frequency, tile, since when and its level; [own]: on one of the
+ *  attached radio's own spurs (an RTL-SDR's 28.8 MHz reference harmonics), never a transmission. */
+data class HpSteady(val hz: Long, val key: String, val sinceMs: Double, val levelDb: Double, val own: Boolean = false)
 
 data class HpReplayState(val active: Boolean, val label: String, val kind: String, val clip: Int, val pos: Double, val total: Double)
 
 data class HpStats(
     val onAir: Int, val steady: Int, val stations: Int, val probes: Int, val cap: Int, val costMs: Double, val clipS: Long, val clipMB: Double,
     val capMB: Double, val oldestMs: Double, val channels: Int,
+    /** The open carriers on the radio's own spurs (Hz), shown as such and never counted. */
+    val own: List<Long> = emptyList(),
 )
+
+/** How close (Hz) a carrier must sit to one of the radio's own spurs to be taken as it: the reference's error is ppm. */
+const val OWN_SPUR_HZ = 4_000L
 
 /** The span's noise: the power the quietest quarter of its channels sit at (a carrier or a hundred barely move it). */
 fun quietQuarter(power: FloatArray, count: Int): Float {
@@ -536,11 +548,13 @@ abstract class ChannelWatch<P : WatchProbe>(
         val hz = hzOf(k); val key = tileKey(hz)
         val o = WatchOpen<P>(nextId++, k, hz, now - MEASURE_MS, 0.0, snr[k].toDouble(), snr[k].toDouble(), null, false, false, key)
         o.probeAt = now
+        // the radio's own spur: shown as a steady carrier, never demodulated, counted or logged
+        if (ownSpur(hz)) { o.talk = false; opens[o.id] = o; return o }
         if (fixedCap != 0) cap = fixedCap
         if (probes() >= cap && wanted(key)) {
             // a followed or priority channel takes the probe of the newest other one, which is then marked cut
             val victim = opens.values.filter { it.probe != null && !wanted(it.tileKey) }.maxByOrNull { it.startMs }
-            if (victim != null) { victim.probe = null; victim.cut = true }
+            if (victim != null) { if (victim.probe?.speech?.heard == true) victim.talk = true; victim.probe = null; victim.cut = true }
         }
         if (probes() < cap) attach(o, now)
         opens[o.id] = o
@@ -549,13 +563,27 @@ abstract class ChannelWatch<P : WatchProbe>(
         if (near.size >= FLOOD_MIN) for (x in near) if (x.holdUntil == 0.0) x.holdUntil = x.keyMs + FLOOD_HOLD_MS
         return o
     }
+    /**
+     * A short burst is no talker: its speech must span [TALK_SPAN_MS] (a courtesy beep or a kerchunk is
+     * shorter), and a channel keyed with a much stronger one beside it ([GHOST_HZ], [GHOST_DB], within [GHOST_MS]) is that
+     * one's splatter (a DMR repeater's FSK reads as a data burst 20 kHz off), not a talker of its own.
+     */
+    protected fun ghost(o: WatchOpen<P>): Boolean =
+        opens.values.any { x -> x !== o && abs(x.hz - o.hz) <= GHOST_HZ && x.peak - o.peak >= GHOST_DB && abs(x.keyMs - o.keyMs) <= GHOST_MS }
     /** Gives an open channel a demodulator: from now it is a transmission only once that hears a voice. */
     protected fun attach(o: WatchOpen<P>, now: Double) { o.probe = makeProbe(o.hz, o.tileKey); o.probeAt = now; o.talk = false }
     /** When the open channel's voice was last heard (engine ms), or -1. */
     protected fun lastSpeech(o: WatchOpen<P>): Double { val s = o.probe?.speech; return if (s != null && s.lastMs >= 0) o.probeAt + s.lastMs else -1.0 }
     /** Open channels holding a carrier with no voice: each one's frequency, since when and its level. */
     fun steadyOpens(now: Double): List<HpSteady> = opens.values.filter { !it.talk && now - it.startMs >= STEADY_SHOW_MS }
-        .map { o -> HpSteady(o.hz, o.tileKey, o.startMs, o.probe?.levelDb?.roundToInt()?.toDouble() ?: -90.0) }
+        .map { o -> HpSteady(o.hz, o.tileKey, o.startMs, o.probe?.levelDb?.roundToInt()?.toDouble() ?: -90.0, ownSpur(o.hz)) }
+    /**
+     * The attached radio's own spurs are every [ownSpurStep] Hz (0: none known). An RTL-SDR's R820T or R828D makes one
+     * at each harmonic of its 28.8 MHz reference (432.000 is the 15th): a steady carrier with a drone on it that no one
+     * sends, so a carrier within [OWN_SPUR_HZ] of one gets no demodulator and is never a transmission.
+     */
+    @Volatile var ownSpurStep = 0L
+    fun ownSpur(hz: Long): Boolean { val st = ownSpurStep; if (st <= 0) return false; val r = hz % st; return min(r, st - r) <= OWN_SPUR_HZ }
     /** A voice first heard this long after its carrier came up starts the transmission (CB's AM measure takes longer). */
     protected var talkLateMs = TALK_LATE_MS
     /** Speech: an open channel becomes a transmission once its voice is heard, and one whose voice has stopped for
@@ -566,7 +594,7 @@ abstract class ChannelWatch<P : WatchProbe>(
             if (!o.talk) {
                 // a named digital mode is a transmission (its voice is not FM speech)
                 if (p.digital()) { o.talk = true; continue }
-                if (!p.speech.heard) continue
+                if (!p.speech.heard || p.speech.lastMs - p.speech.firstMs < TALK_SPAN_MS || ghost(o)) continue
                 o.talk = true
                 // a carrier that was up a while before its voice (a carrier left on, then a talker) starts at the voice
                 val first = o.probeAt + p.speech.firstMs - SPEECH_BLOCK_MS
@@ -817,7 +845,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         val steady = steadyOpens(now)
         return HpSnap(now, centerHz, rate, tr.spanLo, tr.spanHi, tiles, rows, convs, tr.heat.copy(), playing, replayStateLocked(),
             HpStats(opens.values.count { counted(it) }, steady.size, tr.stationCount, probes(), cap, (costMs * 10).roundToInt() / 10.0, clips.seconds.roundToInt().toLong(),
-                (clips.bytes / 1e5).roundToInt() / 10.0, (clips.cap / 1e5).roundToInt() / 10.0, clips.oldestMs(), count), steady, flood)
+                (clips.bytes / 1e5).roundToInt() / 10.0, (clips.cap / 1e5).roundToInt() / 10.0, clips.oldestMs(), count, steady.filter { it.own }.map { it.hz }), steady, flood)
     }
 }
 

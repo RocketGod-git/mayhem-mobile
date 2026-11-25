@@ -40,12 +40,17 @@ export const FLOOD_MIN = 6, FLOOD_WIN_MS = 1_000;
 export const FLOOD_HOLD_MS = 3_000;
 
 export const PROBE_RATE = 24_000;
+/** How close (Hz) a carrier must sit to one of the radio's own spurs to be taken as it: the reference's error is ppm. */
+export const OWN_SPUR_HZ = 4_000;
 /** Processor time a second the probes may take, and the cap's bounds. */
 export const BUDGET_MS = 450, CAP_MIN = 2, CAP_MAX = 32, CAP_START = 8;
 /** A channel stays open this long below its closing level. */
 export const CLOSE_HOLD_MS = 400;
 /** Shorter than this is a noise blip, not a transmission. */
 export const TX_MIN_MS = 250;
+/** Speech must span this long before an open channel is a talker; a stronger channel this near, this many dB over it and
+ *  keyed within this long makes it that one's splatter. */
+export const TALK_SPAN_MS = 400, GHOST_HZ = 25_000, GHOST_DB = 15, GHOST_MS = 1_000;
 /** A tone must be heard through this share of a transmission to be its tone. */
 export const TONE_SHARE = 0.5;
 /** A carrier open this long without a voice shows as a steady carrier. */
@@ -415,11 +420,13 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
   protected openAt(k: number, now: number): Open<P> {
     const hz = this.hzOf(k), key = this.tileKey(hz);
     const o: Open<P> = { id: this.nextId++, k, hz, startMs: now - MEASURE_MS, quietMs: 0, peak: this.snr[k], snr: this.snr[k], probe: null, cut: false, shifted: false, tileKey: key, talk: true, probeAt: now, keyMs: now - MEASURE_MS, flood: false, holdUntil: 0 };
+    // the radio's own spur: shown as a steady carrier, never demodulated, counted or logged
+    if (this.ownSpur(hz)) { o.talk = false; this.opens.set(o.id, o); return o; }
     if (this.fixedCap) this.cap = this.fixedCap;
     if (this.probes() >= this.cap && this.wanted(key)) {
       // a followed or priority channel takes the probe of the newest other one, which is then marked cut
       const victim = [...this.opens.values()].filter(x => x.probe && !this.wanted(x.tileKey)).sort((a, b) => b.startMs - a.startMs)[0];
-      if (victim) { victim.probe = null; victim.cut = true; }
+      if (victim) { if (victim.probe?.speech.heard) victim.talk = true; victim.probe = null; victim.cut = true; }
     }
     if (this.probes() < this.cap) this.attach(o, now);
     this.opens.set(o.id, o);
@@ -429,13 +436,29 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     return o;
   }
   /** Gives an open channel a demodulator: from now it is a transmission only once that hears a voice. */
+  /**
+   * A short burst is no talker: its speech must span TALK_SPAN_MS (a courtesy beep or a kerchunk is
+   * shorter), and a channel keyed with a much stronger one beside it (GHOST_HZ, GHOST_DB, within GHOST_MS) is that
+   * one's splatter (a DMR repeater's FSK reads as a data burst 20 kHz off), not a talker of its own.
+   */
+  protected ghost(o: Open<P>): boolean {
+    for (const x of this.opens.values()) if (x !== o && Math.abs(x.hz - o.hz) <= GHOST_HZ && x.peak - o.peak >= GHOST_DB && Math.abs(x.keyMs - o.keyMs) <= GHOST_MS) return true;
+    return false;
+  }
   protected attach(o: Open<P>, now: number): void { o.probe = this.makeProbe(o.hz, o.tileKey); o.probeAt = now; o.talk = false; }
   /** When the open channel's voice was last heard (engine ms), or -1. */
   protected lastSpeech(o: Open<P>): number { const s = o.probe?.speech; return s && s.lastMs >= 0 ? o.probeAt + s.lastMs : -1; }
   /** Open channels holding a carrier with no voice: how many, and each one's frequency, since when and its level. */
-  steadyOpens(now: number): { hz: number; key: string; sinceMs: number; levelDb: number }[] {
-    return [...this.opens.values()].filter(o => !o.talk && now - o.startMs >= STEADY_SHOW_MS).map(o => ({ hz: o.hz, key: o.tileKey, sinceMs: o.startMs, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90 }));
+  steadyOpens(now: number): { hz: number; key: string; sinceMs: number; levelDb: number; own: boolean }[] {
+    return [...this.opens.values()].filter(o => !o.talk && now - o.startMs >= STEADY_SHOW_MS).map(o => ({ hz: o.hz, key: o.tileKey, sinceMs: o.startMs, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, own: this.ownSpur(o.hz) }));
   }
+  /**
+   * The attached radio's own spurs are every [ownSpurStep] Hz (0: none known). An RTL-SDR's R820T or R828D makes one at
+   * each harmonic of its 28.8 MHz reference (432.000 is the 15th): a steady carrier with a drone on it that no one sends,
+   * so a carrier within OWN_SPUR_HZ of one gets no demodulator and is never a transmission.
+   */
+  ownSpurStep = 0;
+  ownSpur(hz: number): boolean { const st = this.ownSpurStep; if (st <= 0) return false; const r = hz % st; return Math.min(r, st - r) <= OWN_SPUR_HZ; }
   /** A voice first heard this long after its carrier came up starts the transmission (CB's AM measure takes longer). */
   protected talkLateMs = TALK_LATE_MS;
   /** Speech: an open channel becomes a transmission once its voice is heard, and one whose voice has stopped for
@@ -446,7 +469,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
       if (!o.talk) {
         // a named digital mode is a transmission (its voice is not FM speech)
         if (p.digital?.()) { o.talk = true; continue; }
-        if (!p.speech.heard) continue;
+        if (!p.speech.heard || p.speech.lastMs - p.speech.firstMs < TALK_SPAN_MS || this.ghost(o)) continue;
         o.talk = true;
         // a carrier that was up a while before its voice (a carrier left on, then a talker) starts at the voice
         const first = o.probeAt + p.speech.firstMs - SPEECH_BLOCK_MS;
@@ -666,7 +689,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     return {
       now, centerHz: this.centerHz, rate: this.rate, spanLo: tr.spanLo, spanHi: tr.spanHi, tiles, rows, convs, heat: tr.heat, playing: this.playing, replay: this.replayState(),
       steady: this.steadyOpens(now), flood: this.flood,
-      stats: { onAir: [...this.opens.values()].filter(o => this.counted(o)).length, steady: this.steadyOpens(now).length, stations: tr.stationCount, probes: this.probes(), cap: this.cap, costMs: Math.round(this.costMs * 10) / 10, clipS: Math.round(this.clips.seconds), clipMB: Math.round(this.clips.bytes / 1e5) / 10, capMB: Math.round(this.clips.cap / 1e5) / 10, oldestMs: this.clips.oldestMs(), channels: this.count },
+      stats: { onAir: [...this.opens.values()].filter(o => this.counted(o)).length, steady: this.steadyOpens(now).length, own: this.steadyOpens(now).filter(x => x.own).map(x => x.hz), stations: tr.stationCount, probes: this.probes(), cap: this.cap, costMs: Math.round(this.costMs * 10) / 10, clipS: Math.round(this.clips.seconds), clipMB: Math.round(this.clips.bytes / 1e5) / 10, capMB: Math.round(this.clips.cap / 1e5) / 10, oldestMs: this.clips.oldestMs(), channels: this.count },
     };
   }
   protected post(now: number): void { this.emit({ type: this.plan.type, ...this.snapshot(now) }); }

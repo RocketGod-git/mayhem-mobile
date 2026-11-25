@@ -295,7 +295,7 @@ function tune(hz: number, hold = false): void {
   if (state.app === 'hd') { if (hdUi.auto) hdSetAuto(false); hdTune(hz); return; }
   state.freq = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
   // HAM+ measures every channel against the radio's center: it moves with it
-  if (state.app === 'hamplus') hpSend({ cmd: 'center', hz: state.freq });
+  if (state.app === 'hamplus') { hpSend({ cmd: 'spurs', step: hpOwnSpurStep() }); hpSend({ cmd: 'center', hz: state.freq }); }
   if (state.app === 'cb') cbSend({ cmd: 'center', hz: state.freq });
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
   // the finger that just picked something (`hold`). Explicit tuning — the dial, the keypad, the step keys — is
@@ -4798,12 +4798,15 @@ function hpSave(): void {
 }
 const hpRate = () => radioCan(hpUi.span) ? hpUi.span : radioCan(2_400_000) ? 2_400_000 : 2_000_000;
 const hpSend = (m: Record<string, unknown>) => worker?.postMessage({ type: 'hamplus', ...m });
+/** The attached radio's own spurs: an RTL-SDR with an R820T or R828D tuner makes one at each harmonic of its 28.8 MHz
+ *  reference. A HackRF's are not measured yet, so none is assumed. */
+const hpOwnSpurStep = () => radio?.kind === 'rtlsdr' && (radio as RtlSdr).tuner.startsWith('R82') ? 28_800_000 : 0;
 const hpPushPrefs = () => hpSend({ cmd: 'prefs', prefs: hpUi.prefs, labels: hpUi.labels });
 const hpPushParams = () => hpSend({ cmd: 'params', params: { mode: hpUi.mode, volume: hpUi.audioOn ? hpUi.gain : 0 } });
 let hpAuto: FleetAuto | null = null, hpAutoSig = '', hpAutoSaved = 0;
 const hpScan = new HpScan();
 const hpSig = () => `${hpUi.band}|${hpUi.windows.map(w => w.hz).join(',')}`;
-function hpTuneWindow(i: number): void { hpUi.idx = i; const hz = hpUi.windows[i].hz; hpSend({ cmd: 'center', hz }); tune(hz); }
+function hpTuneWindow(i: number): void { hpUi.idx = i; const hz = hpUi.windows[i].hz; hpSend({ cmd: 'spurs', step: hpOwnSpurStep() }); hpSend({ cmd: 'center', hz }); tune(hz); }
 function hpDwell(): void {
   const sig = hpSig(), now = Date.now();
   if (!hpAuto || hpAutoSig !== sig) {

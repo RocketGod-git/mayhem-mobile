@@ -412,7 +412,7 @@ private fun HpHead(s: HpSnap?, now: Long, accent: Color) {
                 }
             }
         }
-        if (s != null) Text("demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${if (s.stats.costMs > 0) " (%.0f ms a channel a second)".format(java.util.Locale.US, s.stats.costMs) else ""} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB${hpSteadyText(s.stats.steady)}",
+        if (s != null) Text("demodulating ${s.stats.probes} now · this device keeps up with ${s.stats.cap} at once${if (s.stats.costMs > 0) " (%.0f ms a channel a second)".format(java.util.Locale.US, s.stats.costMs) else ""} · time machine ${s.stats.clipMB} of ${s.stats.capMB} MB${hpSteadyText(s.stats.steady, s.stats.own)}",
             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -677,7 +677,9 @@ internal fun hpFloodText(f: HpFlood?): Pair<String, String>? {
 }
 
 /** The carriers open with no voice on them, as the cost line names them ("" when none). */
-internal fun hpSteadyText(n: Int): String = if (n > 0) " · $n steady carrier${if (n == 1) "" else "s"} with no voice, not counted" else ""
+internal fun hpSteadyText(n: Int, own: List<Long> = emptyList()): String =
+    (if (n > 0) " · $n steady carrier${if (n == 1) "" else "s"} with no voice, not counted" else "") +
+        (if (own.isNotEmpty()) " · ${own.joinToString(", ") { "%.3f".format(java.util.Locale.US, it / 1e6) }} steady, the radio's own" else "")
 
 /** What the readout's caption counts: the transmissions logged, so it agrees with the channels heard. */
 internal fun hpCountText(tiles: List<HpTile>): String {

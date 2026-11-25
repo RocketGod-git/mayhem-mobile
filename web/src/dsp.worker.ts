@@ -481,6 +481,7 @@ self.onmessage = (e: MessageEvent) => {
       // Repeaters and CB share the watcher and its commands; CB adds its modes and clarifiers
       const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB Radio' : 'Repeaters';
       if (m.cmd === 'center') w.centerHz = m.hz as number;
+      else if (m.cmd === 'spurs') w.ownSpurStep = m.step as number;
       else if (m.cmd === 'params') w.setParams(m.params as Record<string, unknown>);
       else if (m.cmd === 'prefs') { w.setPrefs(m.prefs as never, m.labels as Record<string, string>); if (w === cb && m.cb) cb.setCbPrefs(m.cb as never); }
       else if (m.cmd === 'restore') w.restore(m.saved as never);
