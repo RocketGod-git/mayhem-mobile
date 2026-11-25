@@ -354,6 +354,19 @@ class MainActivity : ComponentActivity() {
         // `--es hpreplay name.cs8 --el hpcenter 446775000 --ei hprate 125000` feeds a signed-IQ recording from the app's
         // external files folder into Repeaters at its own pace, looped, centered where it was recorded (the Repeaters
         // air fixtures: home's P25 and DMR, and the synthetic digital scenes)
+        // `--ei hpiq 10` records the next 10 s of Repeaters' IQ (unsigned 8-bit, as the radio sends it) to hpiq-<center>-<rate>.cu8
+        // in the app's external files folder; `--ez hpdump true` writes the log as Repeaters exports it to hp-log.csv there
+        i.getIntExtra("hpiq", 0).takeIf { it > 0 }?.let { secs ->
+            val e = com.rocketgod.mayhem.core.HamPlus.engine; var out: java.io.OutputStream? = null; var left = 0L
+            e.iqTap = { b, n, rate, center ->
+                if (out == null) { left = 2L * rate * secs; out = java.io.File(getExternalFilesDir(null), "hpiq-$center-$rate.cu8").outputStream().buffered(1 shl 20); Diag.log("hpiq: recording $secs s at $center") }
+                val o = out!!; val k = minOf(n.toLong(), left).toInt(); o.write(b, 0, k); left -= k
+                if (left <= 0) { o.close(); e.iqTap = null; Diag.log("hpiq: done") }
+            }
+        }
+        if (i.getBooleanExtra("hpdump", false)) {
+            runCatching { java.io.File(getExternalFilesDir(null), "hp-log.csv").writeText(com.rocketgod.mayhem.core.HamPlus.exportCsv()); Diag.log("hpdump: written") }
+        }
         i.getStringExtra("hpreplay")?.let { name ->
             val center = i.getLongExtra("hpcenter", 446_775_000L); val rate = i.getIntExtra("hprate", 125_000)
             Apps.open(MayhemApp.HAMPLUS)

@@ -452,7 +452,9 @@ abstract class ChannelWatch<P : WatchProbe>(
 
     protected fun hzOf(k: Int): Long = (first + k) * plan.raster
 
-    override fun onIq(iq: ByteArray, len: Int, rate: Int) { synchronized(lock) { onIqLocked(iq, len, rate) } }
+    /** Debug builds: every buffer in, as it came (the hpiq hook records the air for a fixture). */
+    @Volatile var iqTap: ((ByteArray, Int, Int, Long) -> Unit)? = null
+    override fun onIq(iq: ByteArray, len: Int, rate: Int) { iqTap?.invoke(iq, len, rate, centerHz); synchronized(lock) { onIqLocked(iq, len, rate) } }
 
     private fun onIqLocked(iq: ByteArray, len: Int, rate: Int) {
         if (rate != this.rate) resetLocked(rate)
