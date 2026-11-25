@@ -41,7 +41,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     HAM("Ham Radio", "SSB · CW · repeaters", "Receive"),
     HAMPLUS("Repeaters", "every repeater and simplex channel at once", "Receive"),
     CB("CB Radio", "all 40 channels at once", "Receive"),
-    APRS("Ham Map", "APRS · 144.39 MHz", "Receive"),
+    APRS("Ham Map", "APRS · FT8 · JS8", "Receive"),
     ERT("Utility Meters", "ERT · Gridstream · 802.15.4g", "Receive"),
     BTLE("Bluetooth", "BLE advertising · 2.4 GHz", "Receive"),
     SAT("Satellites", "track and decode", "Receive"),

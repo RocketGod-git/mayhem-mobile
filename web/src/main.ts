@@ -45,6 +45,7 @@ import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml,
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, protoLabel, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
+import { hamSpots, loadLayers, saveLayers, visibleSpots, gridRing, freqText, bandLabel, type HamSpot, type HamLayer } from './ham-spots.js';
 import { renderJs8, js8Dial, js8SetDial, js8Speeds, js8OnDecodes, js8OnWaterfall, refreshJs8, type Js8Host } from './js8-ui.js';
 import type { Js8Decode } from './dsp/js8/decoder.js';
 import type { Js8Speed } from './dsp/js8/modes.js';
@@ -108,7 +109,7 @@ const APPS: AppDef[] = [
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
   { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex channel at once', cat: 'Receive' },
   { id: 'cb', title: 'CB Radio', blurb: 'all 40 channels at once', cat: 'Receive' },
-  { id: 'aprs', title: 'Ham Map', blurb: 'APRS · 144.39 MHz', cat: 'Receive' },
+  { id: 'aprs', title: 'Ham Map', blurb: 'APRS · FT8 · JS8', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
@@ -174,7 +175,7 @@ const state = {
     protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', hist: new Map<string, { t: number; s: string; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
   capturing: false, captureName: '', captureBytes: 0, captures: [] as { name: string; size: number }[],
   aircraft: [] as Aircraft[], frames: 0, aisTable: [] as Vessel[], aisSel: 0, aisView: 'map' as 'map' | 'list' | 'log',
-  aprsStations: [] as AprsStation[], aprsSel: '', aprsView: 'map' as 'map' | 'list' | 'log',
+  aprsStations: [] as AprsStation[], aprsSel: '', aprsView: 'map' as 'map' | 'list' | 'log', hamLayers: loadLayers(),
   connected: false, board: '', firmware: '', gainsScaled: false, agc: true, biast: false,
   squelch: 0, sqOpen: true, scanning: false,
   prowl: {
@@ -8396,6 +8397,7 @@ function renderAprs(view: HTMLElement): void {
     <section class="controls">
       ${presetHtml('REGION', [['144.390 N. America', 144_390_000], ['144.800 Europe', 144_800_000], ['145.175 Australia', 145_175_000], ['144.640 Japan', 144_640_000]])}
       <div class="ctlrow">${segHtml(['map', 'list', 'log'].map(v => `<button data-aprsview="${v}">${v.toUpperCase()}</button>`))}${pauseClearHtml('aprs')}</div>
+      <div class="row hm-layers">${HAM_LAYERS.map(([k, l]) => `<button class="chip hm-${k} ${state.hamLayers[k] ? 'on' : ''}" data-hmlayer="${k}" aria-pressed="${state.hamLayers[k]}"><i></i>${l}</button>`).join('')}</div>
       <div id="aprs-card" class="accard" hidden></div>
       <div id="aprs-map" class="panel map"></div>
       <div id="aprs-list" class="panel list"></div>
@@ -8403,9 +8405,14 @@ function renderAprs(view: HTMLElement): void {
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-aprsview]', view).forEach(b => b.onclick = () => { state.aprsView = b.dataset.aprsview as typeof state.aprsView; refreshAprs(); });
-  q('#list-aprs')?.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest('.li'); const mm = li?.textContent?.match(/^([A-Za-z0-9-]+)>/); if (mm) { state.aprsSel = mm[1]; refreshAprs(); } });
+  q('#list-aprs')?.addEventListener('click', (e) => { const li = (e.target as HTMLElement).closest<HTMLElement>('[data-hmsel]'); if (li?.dataset.hmsel) { state.aprsSel = li.dataset.hmsel; refreshAprs(); } });
+  qa<HTMLButtonElement>('[data-hmlayer]', view).forEach(b => b.onclick = () => {
+    const k = b.dataset.hmlayer as HamLayer; state.hamLayers = { ...state.hamLayers, [k]: !state.hamLayers[k] }; saveLayers(state.hamLayers);
+    b.classList.toggle('on', state.hamLayers[k]); b.setAttribute('aria-pressed', String(state.hamLayers[k])); refreshList('aprs'); refreshAprs();
+  });
   if (!state.home) requestGeo();
-  geo = new GeoMap($('aprs-map'), { home: state.home, start: mapStart(state.home), onPick: id => { state.aprsSel = id; refreshAprs(); }, log });
+  geo = new GeoMap($('aprs-map'), { home: state.home, start: mapStart(state.home), onPick: id => { state.aprsSel = id; refreshAprs(); }, log, declutter: true });
+  refreshList('aprs');
   refreshAprs();
 }
 
@@ -9024,7 +9031,7 @@ function clearApp(id: string): void {
   logs[id] = []; counts[id] = 0;
   switch (id) {
     case 'ais': state.aisTable = []; state.aisSel = 0; break;
-    case 'aprs': state.aprsStations = []; state.aprsSel = ''; break;
+    case 'aprs': state.aprsStations = []; state.aprsSel = ''; aprsLogMs.length = 0; hamSpots.clear(); break;
     case 'adsb': state.aircraft = []; state.frames = 0; state.adsbSel = ''; break;
     case 'devices': state.r433.heard = []; break;
     case 'btle': bleUi.tracker.clear(); bleUi.sel = ''; break;
@@ -9053,6 +9060,7 @@ function refreshList(id: string): void {
     const r = q('#capr'); if (r && id !== 'hamplus' && id !== 'cb') r.textContent = n > 0 ? `${n} decoded` : 'nothing decoded yet';
   }
   const el = q(`#list-${id}`); if (!el || paused.has(id)) return;
+  if (id === 'aprs') { el.innerHTML = hamLogHtml(); return; }
   const lines = logs[id] ?? [];
   const total = counts[id] ?? lines.length;
   el.innerHTML = lines.length ? lines.map((l, i) => logLineHtml(l, total - i)).join('') : emptyState(id);
@@ -9125,20 +9133,103 @@ function refreshAis(): void {
   geo?.setEmpty(state.aisTable.some(v => v.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('ships and buoys appear here as their AIS position reports come in'));
   geo?.update(state.aisTable.filter(v => v.lat !== undefined && v.lon !== undefined).map(v => ({ id: String(v.mmsi), lat: v.lat!, lon: v.lon!, heading: v.hdg ?? v.cog, label: v.name || String(v.mmsi), kind: (v.cls === 'AtoN' ? 'aton' : v.cls === 'base' ? 'object' : 'ship') as GeoItem['kind'] })), String(state.aisSel));
 }
+/** Ham Map's layers, in the order of their chips: APRS packets, and the FT8 and JS8 stations that sent a grid. */
+const HAM_LAYERS: [HamLayer, string][] = [['aprs', 'APRS'], ['ft8', 'FT8'], ['js8', 'JS8']];
+/** FT8 and JS8 squares and markers each in their own color, so the layers tell apart on the map. */
+const SPOT_COLOR: Record<HamSpot['mode'], string> = { FT8: '#4fc3f7', JS8: '#ffb74d' };
+/** When each APRS log line came in (parallel to logs.aprs), so the Ham Map log interleaves it with the grid decodes. */
+const aprsLogMs: number[] = [];
+const isSpotId = (id: string) => /^(ft8|js8):/.test(id);
+/** Where distances are measured from: your position, else the grid in Settings. */
+const hamHome = (): { lat: number; lon: number } | null => state.home ?? (myGrid() ? gridToLatLon(myGrid()) : null);
+const snrText = (n: number) => `${n > 0 ? '+' : ''}${n} dB`;
+hamSpots.subscribe(() => { if (state.app === 'aprs') { refreshList('aprs'); refreshAprs(); } });
+
+/** The log: APRS packets and the FT8 and JS8 decodes that carried a grid, newest first, each with its mode first. */
+function hamLogHtml(): string {
+  const L = state.hamLayers, rows: { ms: number; sel: string; line: string }[] = [];
+  if (L.aprs) (logs['aprs'] ?? []).forEach((l, i) => rows.push({ ms: aprsLogMs[i] ?? 0, sel: /^([A-Za-z0-9-]+)>/.exec(l)?.[1] ?? '', line: `APRS ${l}` }));
+  for (const x of hamSpots.logLines()) if (L[x.mode === 'FT8' ? 'ft8' : 'js8']) rows.push({ ms: x.ms, sel: `${x.mode.toLowerCase()}:${x.call}`, line: x.line });
+  rows.sort((a, b) => b.ms - a.ms);
+  if (!rows.length) return emptyState('aprs');
+  return rows.slice(0, 300).map((r, i) => `<div class="tap" data-hmsel="${esc(r.sel)}">${logLineHtml(r.line, rows.length - i)}</div>`).join('');
+}
 function refreshAprs(): void {
   if (state.app !== 'aprs') return;
+  const L = state.hamLayers;
+  const aprs = L.aprs ? state.aprsStations : [], spots = visibleSpots(hamSpots.list(), L);
   // the packet count rides in the card's title, as in the native apps
-  if (state.app === 'aprs') setFace('HAM MAP', `${counts['aprs'] ?? 0} PACKETS`);
+  setFace('HAM MAP', `${counts['aprs'] ?? 0} PACKETS${spots.length ? ` · ${spots.length} GRIDS` : ''}`);
   qa('[data-aprsview]').forEach(b => b.classList.toggle('on', b.dataset.aprsview === state.aprsView));
   const list = q('#aprs-list'), mapEl = q('#aprs-map'), logEl = q('#aprs-log'); if (!list || !mapEl || !logEl) return;
   list.hidden = state.aprsView !== 'list'; mapEl.hidden = state.aprsView !== 'map'; logEl.hidden = state.aprsView !== 'log';
-  if (paused.has('aprs')) { qa<HTMLElement>('[data-call]', list).forEach(d => d.classList.toggle('gold', d.dataset.call === state.aprsSel)); renderStationCard(state.aprsStations.find(s => s.call === state.aprsSel)); return; }
-  list.innerHTML = state.aprsStations.length ? state.aprsStations.map((s, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${s.call === state.aprsSel ? 'gold' : ''}" data-call="${esc(s.call)}"><b>${esc(s.call)}${s.kind !== 'station' ? ` <small>${s.kind} by ${esc(s.owner ?? '?')}</small>` : ''}</b><span>${esc(aprsSymbolName(s.table, s.symbol))}${s.lat !== undefined && s.lon !== undefined ? ` · ${s.lat.toFixed(3)},${s.lon.toFixed(3)}` : ''}${s.speed ? ` · ${Math.round(s.speed)} kn` : ''}</span></div>`).join('') : emptyState('aprs');
-  qa<HTMLElement>('[data-call]', list).forEach(d => d.onclick = () => { state.aprsSel = d.dataset.call!; const s = state.aprsStations.find(x => x.call === state.aprsSel); if (s?.lat !== undefined) state.aprsView = 'map'; refreshAprs(); });
-  renderStationCard(state.aprsStations.find(s => s.call === state.aprsSel));
+  const sel = state.aprsSel;
+  const card = () => { if (isSpotId(sel)) { renderStationCard(undefined); renderSpotCard(hamSpots.get(sel)); } else { spotCardKey = ''; renderStationCard(state.aprsStations.find(s => s.call === sel)); } };
+  if (paused.has('aprs')) { qa<HTMLElement>('[data-call]', list).forEach(d => d.classList.toggle('gold', d.dataset.call === sel)); card(); return; }
+  const now = Date.now();
+  const rows = [
+    ...aprs.map(s => ({ ms: s.lastMs, html: (alt: string) => `<div class="li row2 tap ${alt} ${s.call === sel ? 'gold' : ''}" data-call="${esc(s.call)}"><b><span class="hm-mode hm-aprs">APRS</span>${esc(s.call)}${s.kind !== 'station' ? ` <small>${s.kind} by ${esc(s.owner ?? '?')}</small>` : ''}</b><span>${esc(aprsSymbolName(s.table, s.symbol))}${s.lat !== undefined && s.lon !== undefined ? ` · ${s.lat.toFixed(3)},${s.lon.toFixed(3)}` : ''}${s.speed ? ` · ${Math.round(s.speed)} kn` : ''}</span></div>` })),
+    ...spots.map(s => ({ ms: s.lastMs, html: (alt: string) => `<div class="li row2 tap ${alt} ${s.id === sel ? 'gold' : ''}" data-call="${esc(s.id)}"><b><span class="hm-mode hm-${s.mode.toLowerCase()}">${s.mode}</span>${esc(s.call)}</b><span>${esc([s.grid, bandLabel(s.dial), snrText(s.snr), ageText(now - s.lastMs)].filter(Boolean).join(' · '))}</span></div>` })),
+  ].sort((a, b) => b.ms - a.ms);
+  list.innerHTML = rows.length ? rows.map((r, i) => r.html(i % 2 ? 'alt' : '')).join('') : emptyState('aprs');
+  qa<HTMLElement>('[data-call]', list).forEach(d => d.onclick = () => {
+    state.aprsSel = d.dataset.call!;
+    const has = isSpotId(state.aprsSel) || state.aprsStations.find(x => x.call === state.aprsSel)?.lat !== undefined;
+    if (has) state.aprsView = 'map'; refreshAprs();
+  });
+  card();
   if (state.aprsView === 'map') geo?.invalidate();
-  geo?.setEmpty(state.aprsStations.some(s => s.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('stations, objects and weather reports appear here as their packets come in'));
-  geo?.update(state.aprsStations.filter(s => s.lat !== undefined && s.lon !== undefined).map(s => ({ id: s.call, lat: s.lat!, lon: s.lon!, heading: s.course, label: s.call, kind: (s.kind === 'station' ? 'station' : 'object') as GeoItem['kind'] })), state.aprsSel);
+  const plotted = aprs.some(s => s.lat !== undefined) || spots.length > 0;
+  geo?.setEmpty(plotted ? '' : 'NOTHING HEARD YET', mapEmptySub('APRS stations, and FT8 and JS8 stations that send a grid, appear here as they are heard'));
+  geo?.update([
+    ...aprs.filter(s => s.lat !== undefined && s.lon !== undefined).map(s => ({ id: s.call, lat: s.lat!, lon: s.lon!, heading: s.course, label: s.call, kind: (s.kind === 'station' ? 'station' : 'object') as GeoItem['kind'] })),
+    ...spots.map(s => ({ id: s.id, lat: s.lat, lon: s.lon, label: s.call, kind: 'qso' as const, color: SPOT_COLOR[s.mode] })),
+  ], sel);
+  geo?.setShapes(spots.map(s => ({ id: s.id, pts: gridRing(s.grid), line: false, color: SPOT_COLOR[s.mode], sel: s.id === sel, label: `${s.call} ${s.grid}` })));
+  const at = isSpotId(sel) ? hamSpots.get(sel) : undefined, home = hamHome();
+  geo?.setLines(at && home && L[at.mode === 'FT8' ? 'ft8' : 'js8'] ? [[[home.lat, home.lon], [at.lat, at.lon]]] : []);
+}
+// ---- FT8 / JS8 station card: the decode, the grid, how far, and who the callsign belongs to ---------------------------
+let spotCardKey = '';
+function renderSpotCard(s: HamSpot | undefined): void {
+  const card = q<HTMLElement>('#aprs-card'); if (!card) return;
+  if (!s) { if (spotCardKey) card.hidden = true; spotCardKey = ''; return; }
+  card.hidden = false;
+  const base = parseCall(s.call).base;
+  if (base && !stationInfo.has(base)) { stationInfo.set(base, null); void lookupCall(base).then(i => { stationInfo.set(base, i); if (state.app === 'aprs') refreshAprs(); }).catch(() => undefined); }
+  const info = base ? stationInfo.get(base) ?? null : null;
+  const key = [s.id, s.text, s.grid, info?.name, info?.qth, info?.country].join('|');
+  if (key !== spotCardKey) {
+    spotCardKey = key;
+    const lines: string[] = [];
+    lines.push(`<div class="accard-model">${esc(`${s.mode} station · grid ${s.grid}`)}</div>`);
+    if (info?.name || info?.qth) lines.push(`<div class="accard-op">${esc([info.name, info.qth].filter(Boolean).join(' · '))}</div>`);
+    if (info?.country) lines.push(`<div class="accard-country">${esc(info.country)}${info.class ? ` · ${esc(info.class)}` : ''}</div>`);
+    lines.push(`<div class="accard-op">${esc(s.text)}</div>`);
+    card.innerHTML = `
+      <div class="accard-bar">
+        <b>${esc(s.call)}</b><span class="accard-hex">${s.mode}</span>
+        <span class="accard-btns"><button class="chip" data-spmap title="center the map on it">MAP</button><button class="chip" data-spclose title="close">✕</button></span>
+      </div>
+      <div class="accard-body"><div class="accard-id">${lines.join('')}</div></div>
+      <div class="accard-grid">
+        ${['GRID', 'POSITION', 'FROM YOU', 'BAND', 'FREQUENCY', 'SNR', 'HEARD', 'FIRST HEARD', 'DECODES'].map(k => `<div><span class="k">${k}</span><span class="v" data-f="${k}">—</span></div>`).join('')}
+      </div>`;
+    qa<HTMLButtonElement>('[data-spclose]', card).forEach(b => b.onclick = () => { state.aprsSel = ''; refreshAprs(); });
+    qa<HTMLButtonElement>('[data-spmap]', card).forEach(b => b.onclick = () => { state.aprsView = 'map'; refreshAprs(); const x = hamSpots.get(state.aprsSel); if (x) geo?.center(x.lat, x.lon, x.grid.length >= 6 ? 10 : 7); });
+  }
+  const now = Date.now(), home = hamHome();
+  const set = (k: string, val: string) => { const el = card.querySelector<HTMLElement>(`[data-f="${k}"]`); if (el && el.textContent !== val) el.textContent = val; };
+  set('GRID', `${s.grid} · ${s.grid.length >= 6 ? 'subsquare' : 'square'}`);
+  set('POSITION', `${s.lat.toFixed(3)}, ${s.lon.toFixed(3)} (center)`);
+  if (home) { const d = distanceBearing(home.lat, home.lon, s.lat, s.lon); set('FROM YOU', `${d.km.toFixed(d.km < 10 ? 1 : 0)} km · ${(d.km * 0.621371).toFixed(0)} mi · ${Math.round(d.deg)}°`); }
+  else set('FROM YOU', 'allow location or set your grid');
+  set('BAND', bandLabel(s.dial) || '—');
+  set('FREQUENCY', `${freqText(s)} · ${Math.round(s.offset)} Hz audio`);
+  set('SNR', snrText(s.snr));
+  set('HEARD', ageText(now - s.lastMs));
+  set('FIRST HEARD', `${ageText(now - s.firstMs)} · ${new Date(s.firstMs).toLocaleTimeString()}`);
+  set('DECODES', String(s.heard));
 }
 function refreshBtle(): void { qa('[data-btle]').forEach(b => b.classList.toggle('on', Number(b.dataset.btle) === state.btleCh)); }
 /** The map over the whole window with the selected aircraft and the list beside it (Esc or ⛶ again leaves). */
@@ -9440,6 +9531,7 @@ function ensureWorker(): Worker {
         // a repeat that completed a partial page takes the old line's place rather than adding a second
         const was = typeof m.replaces === 'string' ? list.indexOf(m.replaces) : -1;
         if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
+        if (id === 'aprs') { if (was >= 0) aprsLogMs.splice(was, 1); aprsLogMs.unshift(Date.now()); if (aprsLogMs.length > 300) aprsLogMs.length = 300; }
         list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars' || id === 'vdl2') onAcarsLine(m.line as string, id); else if (id === 'btle') refreshBle(); break; }
       case 'vdl2frame': onVdl2Frame(m.f as AvlcFrame); break;
       case 'hdsnap': hdUi.snap = m as unknown as HdSnapMsg; hdRecord(hdUi.snap); refreshHd(); break;
@@ -9562,7 +9654,7 @@ function ensureWorker(): Worker {
       }
       case 'js8': js8OnDecodes(m.list as Js8Decode[], m.speed as Js8Speed, m.slot as number); break;
       case 'js8wf': js8OnWaterfall(m.row as Uint8Array, m.ms as number); break;
-      case 'ft8': { const g = state.ham.digi; g.ft8.unshift(...(m.list as typeof g.ft8)); if (g.ft8.length > 200) g.ft8.length = 200; refreshFt8(); break; }
+      case 'ft8': { const g = state.ham.digi; g.ft8.unshift(...(m.list as typeof g.ft8)); if (g.ft8.length > 200) g.ft8.length = 200; refreshFt8(); const at = Date.now(); for (const d of m.list as typeof g.ft8) hamSpots.ft8(d, state.ham.freq, at); break; }
       case 'dmr': state.ham.digi.dmr = m.status as DmrStatus; refreshDmr(); break;
       case 'p25': state.ham.digi.p25 = m.status as P25Status; refreshP25(); break;
       case 'sstv': onSstv(m); break;

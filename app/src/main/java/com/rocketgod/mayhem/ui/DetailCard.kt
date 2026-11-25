@@ -5,6 +5,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,10 +32,15 @@ import androidx.compose.ui.unit.sp
 fun DetailCard(
     title: String, sub: String, lines: List<String>, grid: List<Pair<String, String>>,
     onMap: (() -> Unit)?, onClose: () -> Unit, photo: ImageBitmap? = null,
+    /** From the screen: a weight in its column, so the card shares the height with the map instead of taking it all. */
+    modifier: Modifier = Modifier,
 ) {
     val d = rememberDims()
     val gold = Palette.accent2
-    Column(Modifier.fillMaxWidth().padding(bottom = d.dp(6f)).panel(gold).padding(d.dp(8f))) {
+    // the card never takes the whole screen: past about 40% of the height it scrolls, so the map or list under it
+    // keeps some room on a small phone
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.4f).dp
+    Column(modifier.fillMaxWidth().padding(bottom = d.dp(6f)).heightIn(max = maxH).panel(gold).verticalScroll(rememberScrollState()).padding(d.dp(8f))) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(title, color = gold, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(15f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("  $sub", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
@@ -52,7 +61,8 @@ fun DetailCard(
         }
         val cols = if (d.wide) 3 else 2
         for (row in grid.chunked(cols)) {
-            Row(Modifier.fillMaxWidth().padding(top = d.dp(4f))) {
+            // a gap between the columns, so a long reading wraps inside its own column instead of running into the next
+            Row(Modifier.fillMaxWidth().padding(top = d.dp(4f)), horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
                 for ((k, v) in row) Column(Modifier.weight(1f)) {
                     Text(k, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, maxLines = 1)
                     Text(v, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f))

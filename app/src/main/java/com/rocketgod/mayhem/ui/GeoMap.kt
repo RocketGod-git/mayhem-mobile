@@ -252,7 +252,7 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
         val t = (System.currentTimeMillis() % 1200L) / 1200f
         val items = items
         val hidden = if (declutter) hiddenLabels(mv, items, d) else null
-        for ((idx, it) in items.withIndex()) {
+        for (it in items) {
             val (x, y) = xy(mv, it.lat, it.lon)
             val col0 = it.color ?: when (it.kind) { GeoItem.Kind.OBJECT, GeoItem.Kind.SAT, GeoItem.Kind.ATON -> goldInt; else -> accentInt }
             val a = (it.alpha.coerceIn(0f, 1f) * 255).toInt()
@@ -277,8 +277,13 @@ private class ItemsOverlay(private val accentInt: Int, private val goldInt: Int,
             c.drawPath(shape, dot); c.drawPath(shape, rim)
             c.restore()
             if (it.kind == GeoItem.Kind.STATION) { dot.color = 0xFF0B1416.toInt(); c.drawCircle(x, y, 0.3f * s, dot) }
+        }
+        // labels after every marker, so a neighbor's dot never covers a name
+        for ((idx, it) in items.withIndex()) {
             if (hidden?.get(idx) == true) continue
-            val ly = y + half + label.textSize
+            val (x, y) = xy(mv, it.lat, it.lon)
+            val swell = if (it.pulse) 1f + 0.5f * sin(Math.PI * ((System.currentTimeMillis() % 1000L) / 1000.0)).toFloat() else 1f
+            val ly = y + sizeDp(it.kind) * d / 2f * swell + label.textSize
             c.drawText(it.label, x, ly, halo); c.drawText(it.label, x, ly, label)
         }
     }
@@ -458,7 +463,11 @@ fun GeoMapView(
             mv.controller.animateTo(GeoPoint(pts[0].first, pts[0].second), if (fitHome || fitPins) 15.0 else maxOf(mv.zoomLevelDouble, 11.0), null)
             return
         }
-        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, ((if (fitHome || fitPins) 70 else 40) * mv.resources.displayMetrics.density).toInt()) }
+        // the border never eats the whole view: a map squeezed to a strip under a detail card left osmdroid no room
+        // and its fit spun on the main thread until the app stopped responding
+        val border = minOf(((if (fitHome || fitPins) 70 else 40) * mv.resources.displayMetrics.density).toInt(), minOf(mv.width, mv.height) / 4)
+        if (mv.width - 2 * border < 16 || mv.height - 2 * border < 16) return
+        runCatching { mv.zoomToBoundingBox(BoundingBox(n, e, s, w), false, border) }
         val maxZoom = if (fitHome || fitPins) 17.0 else 11.0
         if (mv.zoomLevelDouble > maxZoom) mv.controller.setZoom(maxZoom)
     }
