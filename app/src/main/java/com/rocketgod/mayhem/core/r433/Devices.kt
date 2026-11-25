@@ -46,14 +46,6 @@ object Devices {
     fun nextBand() = pickBand((_band.value + 1) % BANDS.size)
     fun setHop(on: Boolean) { _hop.value = on }
 
-    /** Units, so a number is never shown bare. */
-    private val UNITS = mapOf(
-        "temperature_C" to " °C", "temperature_1_C" to " °C", "temperature_F" to " °F", "humidity" to " %", "humidity_1" to " %",
-        "moisture" to " %", "pressure_hPa" to " hPa", "pressure_kPa" to " kPa", "pressure_PSI" to " PSI", "wind_avg_km_h" to " km/h",
-        "wind_max_km_h" to " km/h", "wind_avg_m_s" to " m/s", "wind_max_m_s" to " m/s", "wind_avg_mi_h" to " mph", "wind_dir_deg" to "°",
-        "rain_mm" to " mm", "rain_in" to " in", "light_lux" to " lux", "battery_mV" to " mV", "pm2_5_ug_m3" to " µg/m³",
-        "estimated_pm10_0_ug_m3" to " µg/m³", "storm_dist" to " km", "strike_distance" to " mi",
-    )
     /** The fields that make the one-line summary, in the order a person would read them. */
     private val SUMMARY = listOf("temperature_C", "temperature_F", "humidity", "pressure_hPa", "pressure_PSI", "pressure_kPa", "moisture",
         "rain_mm", "rain_in", "wind_avg_km_h", "wind_avg_mi_h", "wind_avg_m_s", "leak_detected", "strike_count", "pm2_5_ug_m3", "light_lux")
@@ -83,15 +75,8 @@ object Devices {
         "heartbeat" to "a periodic check-in, not an event",
     )
 
-    fun value(k: String, v: Any?): String = when (k) {
-        "battery_ok" -> when {
-            v == 1 || v == true || (v is Number && v.toDouble() == 1.0) -> "battery ok"
-            v is Number && v.toDouble() > 0 && v.toDouble() < 1 -> "battery ${(v.toDouble() * 100).roundToInt()}%"
-            else -> "BATTERY LOW"
-        }
-        "leak_detected" -> if (v == 1 || v == true) "WET" else "dry"
-        else -> fmtValue(v) + (UNITS[k] ?: "")
-    }
+    /** One field of a reading, in the units picked in Settings ([DevicesFmt], shared with the card's big line). */
+    fun value(k: String, v: Any?): String = DevicesFmt.r433Value(k, v)
 
     /** The two or three readings that say what a device is doing. */
     fun summary(d: R433Data): String {
@@ -151,12 +136,6 @@ object Devices {
 
     fun mhz(hz: Long) = "%.3f MHz".format(java.util.Locale.US, hz / 1e6)
 
-    private fun num(v: Any?): Double? = when (v) {
-        is Number -> v.toDouble()
-        is String -> v.trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
-        else -> null
-    }
-
     /** The big line on a card, and the small one under it: what this thing just said, in the fewest words. */
     fun headline(h: HeardDevice, k: Kind = kind(h)): Pair<String, String> {
         val v = h.data
@@ -166,16 +145,8 @@ object Devices {
             val big = (v["button"] ?: v["btn"] ?: v["cmd"] ?: v["state"])?.let { fmtValue(it) } ?: "PRESS"
             return big to (v["counter"]?.let { "counter ${fmtValue(it)}" } ?: v["hop"]?.let { "code ${fmtValue(it).take(8)}" } ?: "")
         }
-        val kpa = num(v["pressure_kPa"]); val psiRaw = num(v["pressure_PSI"]); val bar = num(v["pressure_bar"])
-        val tcRaw = num(v["temperature_C"]); val tf = num(v["temperature_F"])
-        val tc = tcRaw ?: tf?.let { (it - 32) * 5 / 9 }
-        if (k == Kind.TIRE) {
-            val psi = psiRaw ?: kpa?.let { it * 0.1450377 } ?: bar?.let { it * 14.50377 }
-            return (psi?.let { "%.1f psi".format(java.util.Locale.US, it) } ?: "TIRE") to (tc?.let { "%.0f °F".format(java.util.Locale.US, it * 9 / 5 + 32) } ?: "")
-        }
-        if (tc != null) return "%.1f °F".format(java.util.Locale.US, tc * 9 / 5 + 32) to (v["humidity"]?.let { "${fmtValue(it)}% humidity" } ?: "")
-        val temp = v["temperature"]
-        if (temp is String) return temp.split(" · ").last() to (v["humidity"]?.let { "${fmtValue(it)} humidity" } ?: "")
+        // a tire or weather sensor: the same helpers write its detail, so the card and the detail agree on the units
+        DevicesFmt.r433Measure(v, k == Kind.TIRE)?.let { return it }
         val sum = summary(v).split(" · ")
         return sum[0].ifEmpty { k.label } to sum.drop(1).joinToString(" · ")
     }

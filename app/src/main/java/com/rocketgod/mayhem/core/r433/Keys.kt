@@ -228,7 +228,8 @@ class KeyDecoders(private val onReading: (KeyReading) -> Unit) {
             Fam.WEATHER -> {
                 val w = WeatherFields.parse(p.sensorType, p.decodeData)
                 val fields = ArrayList<Pair<String, String>>()
-                w.temp?.let { t -> fields.add("TEMPERATURE" to String.format(Locale.US, "%.1f °C · %.1f °F", t.toDouble(), t.toDouble() * 9 / 5 + 32)) }
+                // in °C only: the screen shows it in the units picked in Settings, on the card and in the detail alike
+                w.temp?.let { t -> fields.add("TEMPERATURE" to String.format(Locale.US, "%.1f °C", t.toDouble())) }
                 w.humidity?.let { fields.add("HUMIDITY" to "$it%") }
                 w.channel?.let { fields.add("CHANNEL" to it.toString()) }
                 w.batteryLow?.let { fields.add("BATTERY" to if (it) "low" else "OK") }

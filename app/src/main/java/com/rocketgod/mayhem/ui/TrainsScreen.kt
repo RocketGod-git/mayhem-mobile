@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -262,7 +263,7 @@ private fun TrainBanner(units: List<EotUnit>, stations: List<PtcStation>, hots: 
             Text(head, color = if (train) c else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(16f), letterSpacing = 1.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis)
             val bits = ArrayList<String>()
-            recent.firstOrNull()?.let { bits += "rear unit ${it.unit} · ${it.last.psig} psig" }
+            recent.firstOrNull()?.let { bits += "rear unit ${it.unit} · ${Units.fmtPsig(it.last.psig.toDouble())}" }
             if (loco.isNotEmpty()) bits += "${loco.size} locomotive${if (loco.size > 1) "s" else ""} on PTC"
             hot?.let { bits += "head unit command ${trainAgo(now - it.ms)}" }
             // a wayside's status changing is the signal and switch logic reacting to a train on its block
@@ -372,8 +373,8 @@ private fun PsiGauge(psig: Int, accent: Color, modifier: Modifier) {
                 Offset(c.x + (r + s) * cos(a).toFloat(), c.y + (r + s) * sin(a).toFloat()), 1.dp.toPx())
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("$psig", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(17f))
-            Text("PSIG", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
+            Text(Units.psigNumber(psig.toDouble()), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(17f))
+            Text(Units.psigWord(), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), letterSpacing = 1.sp)
         }
     }
 }
@@ -625,8 +626,8 @@ private fun eotFields(u: EotUnit, now: Long): List<Pair<String, String>> {
     return listOf(
         "UNIT ID" to "${p.unit}  (0x%05X)".format(p.unit),
         "CHANNEL" to if (u.channel == "DPU") "DPU 457.925 MHz" else "EOT 457.9375 MHz",
-        "BRAKE PIPE" to "${p.psig} psig",
-        "RANGE HEARD" to "$lo – $hi psig over ${u.pressure.size} reports",
+        "BRAKE PIPE" to Units.fmtPsig(p.psig.toDouble()),
+        "RANGE HEARD" to "${Units.fmtPsig(lo.toDouble())} to ${Units.fmtPsig(hi.toDouble())} over ${u.pressure.size} reports",
         "BRAKES" to (brakeState(u)?.first ?: "released / steady"),
         "MOTION" to if (p.motion) "moving" else "stopped",
         "MARKER LIGHT" to if (p.markerLight) "on" else "off",

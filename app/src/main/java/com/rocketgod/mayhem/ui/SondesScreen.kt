@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -133,7 +134,7 @@ fun SondesScreen(accent: Color) {
                     val items = ArrayList<GeoItem>(); val paths = ArrayList<GeoPath>()
                     for (s in withPos) {
                         val mine = sel.isEmpty() || s.serial == sel
-                        items.add(GeoItem(s.serial, s.lat!!, s.lon!!, s.serial + (s.alt?.let { " %.1f km".format(Locale.US, it / 1000) } ?: ""), GeoItem.Kind.SONDE))
+                        items.add(GeoItem(s.serial, s.lat!!, s.lon!!, s.serial + (s.alt?.let { " ${Units.fmtAltShort(it)}" } ?: ""), GeoItem.Kind.SONDE))
                         paths.add(GeoPath(s.track.map { it.lat to it.lon }, faint = !mine))
                         s.burst?.let { b -> items.add(GeoItem("burst:${s.serial}", b.lat, b.lon, "BURST", GeoItem.Kind.BURST)) }
                         val p = s.predict
@@ -335,7 +336,7 @@ private fun SondeSites(sites: List<Pair<HubSite, Pair<Double, Double>>>, accent:
                 horizontalArrangement = Arrangement.spacedBy(d.dp(10f))) {
                 Column(Modifier.weight(1f)) {
                     Text(x.name, color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${Math.round(db.first)} km ${compass(db.second)} · ${x.types.joinToString(", ").ifEmpty { "sonde" }}", color = Palette.muted,
+                    Text("${Units.fmtDist(db.first)} ${compass(db.second)} · ${x.types.joinToString(", ").ifEmpty { "sonde" }}", color = Palette.muted,
                         fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
                 Text(whenText, color = if (up) Palette.ok else Palette.muted, fontFamily = Mono, fontWeight = if (up) FontWeight.Bold else FontWeight.Normal,
@@ -353,8 +354,8 @@ private fun SondeCard(s: SondeRow, accent: Color, now: Long, selected: Boolean, 
     val flash = max(0.0, 1 - age / 0.9).toFloat()
     val live = age < 60
     val ago = when { age < 60 -> "${max(0, age.toInt())} s ago"; age < 3600 -> "${(age / 60).toInt()} min ago"; else -> "${(age / 3600).toInt()} h ago" }
-    val climb = s.climb?.let { "${if (it >= 0) "▲" else "▼"} ${"%.1f".format(Locale.US, kotlin.math.abs(it))} m/s" } ?: ""
-    val ptu = listOfNotNull(s.tempC?.let { "%.1f °C".format(Locale.US, it) }, s.rh?.let { "${Math.round(it)}% RH" }, s.hPa?.let { "%.1f hPa".format(Locale.US, it) },
+    val climb = s.climb?.let { "${if (it >= 0) "▲" else "▼"} ${Units.fmtClimb(kotlin.math.abs(it), false)}" } ?: ""
+    val ptu = listOfNotNull(s.tempC?.let { Units.fmtTemp(it) }, s.rh?.let { "${Math.round(it)}% RH" }, s.hPa?.let { Units.fmtPressure(it) },
         s.battV?.let { "%.1f V".format(Locale.US, it) }).joinToString(" · ")
     val p = s.predict
     val sla = s.lat; val slo = s.lon
@@ -380,14 +381,14 @@ private fun SondeCard(s: SondeRow, accent: Color, now: Long, selected: Boolean, 
             Text(ago, color = if (live) Palette.ok else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp)
         }
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Text(s.alt?.let { "%,d".format(Locale.US, Math.round(it)) } ?: "—", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
-            Text("METERS", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.padding(bottom = d.dp(4f)))
+            Text(s.alt?.let { Units.altNumber(it) } ?: "—", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
+            Text(Units.altWord(), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 1.sp, modifier = Modifier.padding(bottom = d.dp(4f)))
             Text(climb, color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1,
                 modifier = Modifier.weight(1f).padding(bottom = d.dp(3f)))
         }
         val vh = s.vH
         Text("%.3f MHz · %d %s".format(Locale.US, s.hz / 1e6, s.frames, if (s.frames == 1) "frame" else "frames") +
-            (if (vh != null) " · %.0f km/h %s".format(Locale.US, vh * 3.6, s.heading?.let { compass(it) } ?: "") else ""),
+            (if (vh != null) " · ${Units.fmtSpeedMs(vh)} ${s.heading?.let { compass(it) } ?: ""}" else ""),
             color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (ptu.isNotEmpty()) Text(ptu, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis)
         if (land.isNotEmpty()) Text(land, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -428,20 +429,20 @@ internal fun sondeFields(s: SondeRow, me: Pair<Double, Double>?): List<Pair<Stri
     f("FIRST HEARD", LoraHub.clock(s.firstMs)); f("LAST HEARD", LoraHub.clock(s.lastMs)); f("FRAMES", "${s.frames}"); f("FRAME NUMBER", s.frame?.toString())
     f("GPS TIME", t?.let { if (s.date != null) "${s.date} $it" else it }); f("FLIGHT", s.phase.label)
     f("POSITION", if (fix) "%.5f, %.5f".format(Locale.US, la, lo) else null); f("FROM YOU", if (fix) fromHere(me, la!!, lo!!) else null)
-    f("ALTITUDE", s.alt?.let { "%,d m".format(Locale.US, Math.round(it)) }); f("HIGHEST", s.maxAlt?.let { "%,d m".format(Locale.US, Math.round(it)) })
-    f("CLIMB", s.climb?.let { "${if (it >= 0) "+" else ""}${"%.1f".format(Locale.US, it)} m/s" })
-    f("GROUND SPEED", s.vH?.let { "%.1f m/s (%.0f km/h)".format(Locale.US, it, it * 3.6) })
+    f("ALTITUDE", s.alt?.let { Units.fmtAlt(it) }); f("HIGHEST", s.maxAlt?.let { Units.fmtAlt(it) })
+    f("CLIMB", s.climb?.let { Units.fmtClimb(it) })
+    f("GROUND SPEED", s.vH?.let { Units.fmtSpeedMs(it) })
     f("HEADING", s.heading?.let { "${Math.round(it)}° ${compass(it)}" }); f("SATELLITES", s.sats?.toString())
-    f("TEMPERATURE", s.tempC?.let { "%.1f °C".format(Locale.US, it) }); f("HUMIDITY", s.rh?.let { "%.0f %%".format(Locale.US, it) })
-    f("PRESSURE", s.hPa?.let { "%.1f hPa".format(Locale.US, it) })
+    f("TEMPERATURE", s.tempC?.let { Units.fmtTemp(it) }); f("HUMIDITY", s.rh?.let { "%.0f %%".format(Locale.US, it) })
+    f("PRESSURE", s.hPa?.let { Units.fmtPressure(it) })
     f("BATTERY", s.battV?.let { "%.1f V".format(Locale.US, it) }); f("BURST TIMER", s.killS?.let { sondeMins(it.toDouble()) })
-    f("BURST", s.burst?.let { "%,d m at %s".format(Locale.US, Math.round(it.alt), LoraHub.clock(it.ms)) })
+    f("BURST", s.burst?.let { "${Units.fmtAlt(it.alt)} at ${LoraHub.clock(it.ms)}" })
     val p = s.predict
     f("PREDICTED LANDING", p?.let { "%.4f, %.4f in %s".format(Locale.US, it.lat, it.lon, sondeMins(it.inS.toDouble())) })
     f("LANDING FROM YOU", p?.let { fromHere(me, it.lat, it.lon) })
-    f("ASSUMED BURST", if (p != null && s.phase == SondePhase.ASCENT) "%,d m".format(Locale.US, p.burstAlt) else null)
+    f("ASSUMED BURST", if (p != null && s.phase == SondePhase.ASCENT) Units.fmtAlt(p.burstAlt.toDouble()) else null)
     f("ERRORS FIXED", if (s.fixed > 0) "${s.fixed}" else null)
-    for (x in s.fields) out.add(x.name to x.value)
+    for (x in s.fields) out.add(x.name to Units.fmtText(x.value))
     return out
 }
 
@@ -463,9 +464,9 @@ internal fun distBearing(aLat: Double, aLon: Double, bLat: Double, bLon: Double)
     return km to (atan2(y, x) / r + 360) % 360
 }
 
-/** "12 km NE" from where you are, or "" without a position. */
+/** "12 km NE" or "7.5 mi NE" from where you are, in the units picked in Settings, or "" without a position. */
 internal fun fromHere(me: Pair<Double, Double>?, lat: Double, lon: Double): String {
     me ?: return ""
     val (km, brg) = distBearing(me.first, me.second, lat, lon)
-    return "${if (km < 10) "%.1f".format(Locale.US, km) else "${Math.round(km)}"} km ${compass(brg)}"
+    return "${Units.fmtDist(km)} ${compass(brg)}"
 }

@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -125,7 +126,7 @@ private fun groupArea(g: AlertGroup): WarningArea? {
 private fun whereOf(a: WarningArea, home: Pair<Double, Double>?): Pair<String, Int> {
     if (home == null) return "YOUR POSITION IS NOT KNOWN · allow location to see whether you are inside this alert area" to 0
     val (inside, edge) = areaRelation(home, a)
-    val dist = if (edge < 1000) "${Math.round(edge)} m" else "%.${if (edge < 10_000) 1 else 0}f km".format(Locale.US, edge / 1000)
+    val dist = Units.fmtDist(edge / 1000)
     return if (inside) "INSIDE THE ALERT AREA · $dist from its edge" to 1 else "OUTSIDE THE ALERT AREA · $dist from its edge" to 2
 }
 @Composable
@@ -241,7 +242,7 @@ fun CellScreen(accent: Color) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(2f)), itemVerticalAlignment = Alignment.CenterVertically) {
                 Text(g.cls.uppercase(Locale.US), color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.5.sp)
                 Text(where, color = whereColor(tone), fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(11f), letterSpacing = 1.sp)
-                Text("${a.points.size} points · ${"%.1f".format(Locale.US, a.areaKm2)} km² · area format derived from recordings", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
+                Text("${a.points.size} points · ${Units.fmtArea(a.areaKm2)} · area format derived from recordings", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))
             }
         }
     }

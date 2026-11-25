@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -213,7 +214,7 @@ private fun MeshDetail(dev: MeshDevice, accent: Color, modifier: Modifier, onMap
         }
         SelectionContainer {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                FieldGrid(dev.fields.map { it.name to it.value }, labelWidth = 96f, minColumn = 220f)
+                FieldGrid(dev.fields.map { it.name to Units.fmtText(it.value) }, labelWidth = 96f, minColumn = 220f)
                 if (dev.net == MeshDecoder.GRIDSTREAM && dev.wanVotes.size > 1) {
                     Text("position heard ${dev.wanVotes.values.maxOrNull() ?: 0}× of ${dev.wanVotes.values.sum()} beacons (the most-heard one is shown)",
                         color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f))

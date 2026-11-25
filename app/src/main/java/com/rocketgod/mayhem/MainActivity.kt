@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem
 
+import com.rocketgod.mayhem.core.Units
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
@@ -113,6 +114,7 @@ class MainActivity : ComponentActivity() {
         }
         Apps.init(this)
         com.rocketgod.mayhem.ui.Skins.load(this)
+        com.rocketgod.mayhem.core.Units.load(this)
         SdrEngine.loadGains(this)
         val netOn = RtlTcp.load(this)
         // Picking the network radio stops a USB radio first; turning it off lets USB take over again.

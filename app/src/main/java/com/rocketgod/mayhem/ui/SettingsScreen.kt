@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.UnitSystem
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -161,7 +163,7 @@ fun SettingsScreen(accent: Color) {
         SRow("opens on start home last") { SegRow("Opens on", listOf("home" to "HOME", "last" to "LAST APP"), if (opensLast) "last" else "home") { NavBar.setOpensOnLast(it == "last") } },
     )
     val barKeys = "bar order apps reorder drag " + NavBar.all().joinToString(" ") { it.title + " " + it.blurb }
-    val lookKeys = "look skin theme colour color waterfall palette " + Skin.entries.joinToString(" ") { it.title }
+    val lookKeys = "look skin theme colour color waterfall palette $UNITS_KEYS " + Skin.entries.joinToString(" ") { it.title }
     val stationKeys = "station callsign call grid license name dmr aprs ssid"
     val txKeys = "transmit tx enable license dummy load"
     val howApps = NavBar.all()
@@ -909,8 +911,19 @@ private fun LookGroup(ctx: android.content.Context) {
                 }
             }
         })
+        Spacer(Modifier.height(d.gap))
+        // every screen reads the choice as it draws, so the app redraws at once in the new units
+        Group(listOf(SRow(UNITS_KEYS) {
+            SRowLayout("Units", "Temperature, wind, rain, pressure, tire pressure and distances on land. Flights keep feet and knots, Ships keep knots.") {
+                Seg(listOf(UnitSystem.METRIC.name to "METRIC", UnitSystem.IMPERIAL.name to "IMPERIAL"), Units.current.name) { v ->
+                    UnitSystem.entries.firstOrNull { it.name == v }?.let { Units.setUnits(it) }
+                }
+            }
+        }))
     }
 }
+
+private const val UNITS_KEYS = "units metric imperial celsius fahrenheit km miles mph psi kpa hpa inhg"
 
 @Composable
 private fun StationGroup(accent: Color) {

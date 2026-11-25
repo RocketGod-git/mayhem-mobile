@@ -1,5 +1,7 @@
 package com.rocketgod.mayhem.core.fleet
 
+import com.rocketgod.mayhem.core.UnitSystem
+import com.rocketgod.mayhem.core.Units
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -57,9 +59,8 @@ object DispatchView {
         val deg = (atan2(y, x) / r + 360) % 360
         return DistBearing(mi, deg, listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")[(deg / 45).roundToInt() % 8])
     }
-    /** "2.4 mi NE" (or feet under a tenth of a mile). */
-    fun distText(d: DistBearing): String =
-        if (d.mi < 0.1) "${(d.mi * 5280).roundToInt()} ft ${d.dir}" else "${if (d.mi < 10) String.format(java.util.Locale.US, "%.1f", d.mi) else d.mi.roundToInt().toString()} mi ${d.dir}"
+    /** "2.4 mi NE" or "3.9 km NE" (feet or meters when close), in the units picked in Settings. */
+    fun distText(d: DistBearing, u: UnitSystem = Units.current): String = "${Units.fmtDist(d.mi * Units.KM_PER_MI, u)} ${d.dir}"
     /** The position line of a call: distance and bearing from the listener when known, then the coordinates. */
     fun posText(p: CallPos, me: Pair<Double, Double>?): String {
         val at = String.format(java.util.Locale.US, "%.5f, %.5f", p.lat, p.lon)
@@ -134,8 +135,7 @@ object DispatchView {
         fun xy(lat: Double, lon: Double) = (w / 2 + (lon - cx) * k * s).toFloat() to (h / 2 - (lat - cy) * s).toFloat()
         val kmPerPx = 111.32 / s; val want = kmPerPx * w / 4
         val km = listOf(0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0).firstOrNull { it >= want } ?: want
-        val mi = km * 0.621371
-        val label = if (mi < 0.25) "${(mi * 5280).roundToInt()} ft" else "${if (mi < 10) String.format(java.util.Locale.US, "%.1f", mi) else mi.roundToInt().toString()} mi"
+        val label = Units.fmtDist(km)
         return TrackFit(trail.map { xy(it.lat, it.lon) }, others.map { xy(it.first, it.second) }, me?.let { xy(it.first, it.second) }, (km / kmPerPx).toFloat(), label)
     }
     /** Encrypted share of a set of calls: encrypted, total (calls only, not CW IDs). */

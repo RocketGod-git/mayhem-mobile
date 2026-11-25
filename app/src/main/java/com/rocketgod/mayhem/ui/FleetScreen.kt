@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -1160,10 +1161,10 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                         if (dist != null && dist.mi < 60) me else null, tr.map { it.lat to it.lon }, acts)
                     StatTiles(listOfNotNull(
                         dist?.let { DispatchView.distText(it) to "FROM YOU · ${Math.round(it.deg)}°" },
-                        st.mph?.let { v -> if (st.moving) "${Math.round(v)} mph" to "HEADING ${st.dir} · ${st.course}°" else "STOPPED" to "NOT MOVING" },
+                        st.mph?.let { v -> if (st.moving) Units.fmtSpeedKmh(v * Units.KM_PER_MI) to "HEADING ${st.dir} · ${st.course}°" else "STOPPED" to "NOT MOVING" },
                         "${st.fixes}" to (if (st.fixes == 1) "POSITION FIX" else if (st.spanMs > 0) "FIXES OVER ${DispatchView.spanShort(st.spanMs)}" else "FIXES"),
                         DispatchView.agoShort(now - last.ms) to "SINCE LAST FIX",
-                        if (st.mi >= 0.05) (if (st.mi < 10) "%.1f mi".format(java.util.Locale.US, st.mi) else "${Math.round(st.mi)} mi") to "TRAVELED" else null))
+                        if (st.mi >= 0.05) Units.fmtDist(st.mi * Units.KM_PER_MI) to "TRAVELED" else null))
                     CardKv(kvOf("POSITION" to "%.5f, %.5f".format(java.util.Locale.US, last.lat, last.lon), "LAST FIX" to "${flClock(last.ms)}${if (u.posVerified) " · checked" else ""}"))
                 }
                 if (off > 0) CardNote("$off position ${if (off == 1) "report" else "reports"} outside the system's area, not placed")
@@ -1259,7 +1260,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                 CardUnitsMap("sys:${x.key}", placed, col, me, acts)
                 val la0 = placed.minOf { it.lat!! }; val la1 = placed.maxOf { it.lat!! }; val lo0 = placed.minOf { it.lon!! }; val lo1 = placed.maxOf { it.lon!! }
                 val h = DispatchView.distBearing(la0, lo0, la0, lo1).mi; val v = DispatchView.distBearing(la0, lo0, la1, lo0).mi
-                CardKv(kvOf("UNITS PLACED" to "${placed.size} of ${units.size}", "AREA" to "%.1f × %.1f mi".format(java.util.Locale.US, max(0.1, h), max(0.1, v))))
+                CardKv(kvOf("UNITS PLACED" to "${placed.size} of ${units.size}", "AREA" to "${Units.fmtDist(max(0.1, h) * Units.KM_PER_MI)} × ${Units.fmtDist(max(0.1, v) * Units.KM_PER_MI)}"))
             })
             if (units.isNotEmpty()) secs.add(CardSec("UNITS · ${units.size}") {
                 CardTags(units.sortedByDescending { it.lastMs }.take(40).map { Triple("${it.id}", DispatchView.agoShort(now - it.lastMs), "unit:${it.key}") }, col, acts)

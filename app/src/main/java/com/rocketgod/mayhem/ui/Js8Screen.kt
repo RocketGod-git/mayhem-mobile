@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -502,7 +503,7 @@ private fun J8Station(st: Js8.Station, now: Long, open: Boolean, accent: Color, 
             Text(Js8.ago(st.lastMs, now), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
             Text("${st.hz.roundToInt()} Hz", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
             Text(st.grid, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
-            Text(if (w != null) "${w.first.roundToInt()} km ${Js8.compass(w.second)}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1,
+            Text(if (w != null) "${Units.fmtDist(w.first)} ${Js8.compass(w.second)}" else "", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1,
                 modifier = Modifier.weight(1f), overflow = TextOverflow.Ellipsis)
         }
         if (open) {
@@ -510,7 +511,7 @@ private fun J8Station(st: Js8.Station, now: Long, open: Boolean, accent: Color, 
                 add("Last heard" to "${Js8.utc(st.lastMs)} UTC · ${js8Mode(st.mode).label}"); add("Offset" to "${st.hz.roundToInt()} Hz"); add("SNR" to "${Js8.fmtSnr(st.snr)} dB")
                 add("DT" to "%.2f s now · %.2f s average".format(java.util.Locale.US, st.dt, st.dtAvg)); add("Drift" to "%.1f Hz/min".format(java.util.Locale.US, st.drift))
                 if (st.grid.isNotEmpty()) add("Grid" to st.grid)
-                if (w != null) add("From you" to "${w.first.roundToInt()} km · ${(w.first * 0.621).roundToInt()} mi · ${w.second.roundToInt()}° ${Js8.compass(w.second)}")
+                if (w != null) add("From you" to "${Units.fmtDist(w.first)} · ${w.second.roundToInt()}° ${Js8.compass(w.second)}")
                 add("Frames" to "${st.heard} since ${Js8.utc(st.firstMs)} UTC")
             })
             Row(horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {

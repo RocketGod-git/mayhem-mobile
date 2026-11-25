@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.widget.Toast
@@ -100,10 +101,10 @@ private fun hdSize(n: Int) = if (n < 1024) "$n B" else "%.1f KB".format(java.uti
 /** The station's transmitter as sent: a place on the map, or why it is not one. */
 private fun hdLocText(s: SisSummary, home: Pair<Double, Double>?): String {
     val lat = s.lat ?: return "-"; val lon = s.lon ?: return "-"
-    val at = "%.5f, %.5f".format(java.util.Locale.US, lat, lon) + (s.altM?.let { " · $it m" } ?: "")
+    val at = "%.5f, %.5f".format(java.util.Locale.US, lat, lon) + (s.altM?.let { " · ${Units.fmtAlt(it.toDouble())}" } ?: "")
     if (!HdSis.locationValid(lat, lon)) return "$at · not a valid location as sent, not placed on the map"
     val d = home?.let { com.rocketgod.mayhem.core.ham.distanceBearing(it.first, it.second, lat, lon) } ?: return at
-    return at + " · " + (if (d.first < 10) "%.1f".format(java.util.Locale.US, d.first) else "%.0f".format(java.util.Locale.US, d.first)) + " km at %.0f°".format(java.util.Locale.US, d.second)
+    return at + " · " + Units.fmtDist(d.first) + " at %.0f°".format(java.util.Locale.US, d.second)
 }
 /** The station clock, checked against this device's: never used when it disagrees. */
 private fun hdClockText(s: SisSummary): String {
@@ -569,7 +570,7 @@ private fun HdStationCard(r: HdStationRec, here: Boolean, now: Long, objs: List<
             HdKv(listOfNotNull(
                 if (r.facility >= 0) "FACILITY" to "${r.facility}" else null,
                 if (r.country.isNotEmpty()) "COUNTRY" to r.country else null,
-                if (r.lat != null && r.lon != null) "TX" to "%.4f, %.4f".format(java.util.Locale.US, r.lat, r.lon) + (r.altM?.let { " · $it m" } ?: "") else null,
+                if (r.lat != null && r.lon != null) "TX" to "%.4f, %.4f".format(java.util.Locale.US, r.lat, r.lon) + (r.altM?.let { " · ${Units.fmtAlt(it.toDouble())}" } ?: "") else null,
                 if (r.data.isNotEmpty()) "DATA" to r.data.joinToString(", ") else null,
                 "FIRST" to java.text.DateFormat.getDateInstance(java.text.DateFormat.SHORT, java.util.Locale.US).format(java.util.Date(r.firstMs))))
         }

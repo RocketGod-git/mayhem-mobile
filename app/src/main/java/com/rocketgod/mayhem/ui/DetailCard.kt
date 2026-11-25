@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -80,12 +81,16 @@ fun ageText(ms: Long): String = when {
     else -> "${(ms / 60_000.0).toInt()} min ago"
 }
 
-/** Distance and bearing from the phone, or why there is none. */
-fun fromYou(home: Pair<Double, Double>?, lat: Double?, lon: Double?, miles: Boolean = false): String {
+/**
+ * Distance and bearing from the phone, or why there is none. On land (APRS, Ham Map) in the units picked in Settings;
+ * otherwise (Flights, Ships) in km and nautical miles, as aviation and marine read them.
+ */
+fun fromYou(home: Pair<Double, Double>?, lat: Double?, lon: Double?, land: Boolean = false): String {
     if (home == null) return "allow location to see"
     if (lat == null || lon == null) return "—"
     val (km, deg) = com.rocketgod.mayhem.core.ham.distanceBearing(home.first, home.second, lat, lon)
-    val other = if (miles) "%.0f mi".format(km * 0.621371) else "%.0f nmi".format(km * 0.539957)
+    if (land) return "${Units.fmtDist(km)} · ${Math.round(deg)}°"
+    val other = "%.0f nmi".format(km * 0.539957)
     return "%s km · %s · %d°".format(if (km < 10) "%.1f".format(km) else "%.0f".format(km), other, deg.toInt())
 }
 

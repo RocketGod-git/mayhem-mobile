@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.core.apps
 
+import com.rocketgod.mayhem.core.Units
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.asin
@@ -271,7 +272,7 @@ fun trackerAlert(d: BleDevice): String {
     if (!d.tracker) return ""
     val mins = floor((d.lastMs - d.firstMs) / 60_000.0).toLong()
     val label = kindLabel(d.kind).uppercase(Locale.US)
-    if (d.movedM >= TRACKER_MOVE_M) return "$label MOVING WITH YOU · ${String.format(Locale.US, "%.1f", d.movedM / 1000)} km · $mins min"
+    if (d.movedM >= TRACKER_MOVE_M) return "$label MOVING WITH YOU · ${Units.fmtDist(d.movedM / 1000)} · $mins min"
     if (d.lastMs - d.firstMs >= TRACKER_ALERT_MS) return "$label NEAR YOU FOR $mins MIN"
     return ""
 }

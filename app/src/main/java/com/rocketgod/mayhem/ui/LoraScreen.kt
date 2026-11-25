@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -331,7 +332,7 @@ private fun LoraDetail(node: LoraNode, accent: Color, modifier: Modifier, onMap:
             ToggleBox("✕", false, accent, Modifier.fillMaxHeight()) { onClose() }
         }
         val all = listOf(MeshField("FIRST HEARD", LoraHub.clock(node.firstMs)), MeshField("LAST HEARD", LoraHub.clock(node.lastMs)),
-            MeshField("PACKETS", "${node.packets}"), MeshField("FREQUENCY", LoraHub.mhz(node.hz)), MeshField("MODEM", node.modem)) + node.fields
+            MeshField("PACKETS", "${node.packets}"), MeshField("FREQUENCY", LoraHub.mhz(node.hz)), MeshField("MODEM", node.modem)) + node.fields.map { MeshField(it.name, Units.fmtText(it.value)) }
         SelectionContainer {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
                 FieldGrid(all.map { it.name to it.value }, labelWidth = 96f, minColumn = 220f)

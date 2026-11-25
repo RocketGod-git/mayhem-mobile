@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import android.Manifest
@@ -523,7 +524,7 @@ private fun CallInfoPanel(call: String, entries: List<com.rocketgod.mayhem.core.
             val there = i.grid?.let { gridToLatLon(it) } ?: if (i.lat != null && i.lon != null) i.lat!! to i.lon!! else null
             if (here != null && there != null) {
                 val (km, deg) = distanceBearing(here.first, here.second, there.first, there.second)
-                lines += ((i.grid?.let { "grid $it · " } ?: "") + (if (km >= 100) "%.0f".format(km) else "%.1f".format(km)) + " km · bearing %.0f°".format(deg) +
+                lines += ((i.grid?.let { "grid $it · " } ?: "") + Units.fmtDist(km) + " · bearing %.0f°".format(deg) +
                     if (km > 500) " (long path %.0f°)".format((deg + 180) % 360) else "") to Palette.ink
             } else i.grid?.let { lines += "grid $it" to Palette.ink }
             lines += i.source to Palette.muted

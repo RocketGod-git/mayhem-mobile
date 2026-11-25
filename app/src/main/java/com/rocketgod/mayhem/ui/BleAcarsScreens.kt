@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -326,7 +327,7 @@ private fun BleDetail(dv: BleDevice, accent: Color, now: Long, modifier: Modifie
     val more = buildList {
         add("First heard" to "${clockOf(dv.firstMs)} · ${bleAgo(now - dv.firstMs)}")
         add("Last heard" to "${clockOf(dv.lastMs)} · ${bleAgo(now - dv.lastMs)}")
-        if (dv.firstPos != null) add("Moved with you" to "${Math.round(dv.movedM)} m")
+        if (dv.firstPos != null) add("Moved with you" to Units.fmtDist(dv.movedM / 1000))
     }
     CardPanel(dv.name.ifEmpty { kind }, "${dv.maker.ifEmpty { "UNKNOWN MAKER" }} · ${kind.uppercase(Locale.US)}", accent, modifier, edge = edge, onClose = onClose) {
         if (dv.alert.isNotEmpty()) BleWarn("⚠ ${dv.alert}. Look for it in your bag, car or clothes, or check it with a tracker-finder app.")

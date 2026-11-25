@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.layout.onSizeChanged
@@ -416,7 +417,8 @@ private fun ago(ms: Long, now: Long): String {
 }
 
 private fun hhmm(h: Int?, m: Int?) = if (h != null && m != null) "%02d:%02dZ".format(Locale.US, h, m) else ""
-private fun f(c: Int) = Math.round(c * 9 / 5.0 + 32).toInt()
+/** A METAR temperature for the big clock face, in the units picked in Settings: "19°" or "66°". */
+private fun f(c: Int) = Units.tempNumber(c.toDouble())
 
 /** A METAR as a line of plain words: wind, visibility, sky, weather. */
 private fun plainWx(m: Metar): String = buildList {
@@ -455,8 +457,8 @@ private fun WxCard(id: String, m: Metar, at: Long, now: Long, selected: Boolean,
                 modifier = Modifier.clip(RoundedCornerShape(50)).background(cat).padding(horizontal = d.dp(8f), vertical = d.dp(2f)))
         }
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
-            Text(m.tempC?.let { "${f(it)}°" } ?: "—", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
-            Text("F" + (m.tempC?.let { " · $it°C" } ?: "") + (m.dewC?.let { " · dew ${f(it)}°" } ?: ""), color = Palette.muted, fontFamily = Mono,
+            Text(m.tempC?.let { f(it) } ?: "—", color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(22f))
+            Text(Units.tempUnit() + (m.dewC?.let { " · dew ${f(it)}" } ?: ""), color = Palette.muted, fontFamily = Mono,
                 fontSize = d.sp(9f), modifier = Modifier.weight(1f).padding(bottom = d.dp(4f)))
             m.altimInHg?.let { Text("%.2f inHg".format(Locale.US, it), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), modifier = Modifier.padding(bottom = d.dp(4f))) }
         }
@@ -522,8 +524,8 @@ private fun UatDetail(sel: String, snap: UatProcessor.Snapshot, now: Long, me: P
             m.visSm?.let { rows.add("Visibility" to "${if (it % 1.0 == 0.0) it.toInt().toString() else it.toString()}${if (it >= 10) "+" else ""} statute miles") }
             if (m.sky.isNotEmpty()) rows.add("Sky" to m.sky.joinToString(", "))
             if (m.wx.isNotEmpty()) rows.add("Weather" to m.wx.joinToString(" "))
-            m.tempC?.let { rows.add("Temperature" to "$it °C · ${f(it)} °F") }
-            m.dewC?.let { rows.add("Dew point" to "$it °C") }
+            m.tempC?.let { rows.add("Temperature" to Units.fmtTemp(it.toDouble(), 0)) }
+            m.dewC?.let { rows.add("Dew point" to Units.fmtTemp(it.toDouble(), 0)) }
             m.altimInHg?.let { rows.add("Altimeter" to "%.2f inHg".format(Locale.US, it)) }
             ap?.let { a -> fromHere(me, a.lat, a.lon).takeIf { it.isNotEmpty() }?.let { rows.add("From you" to it) } }
             extra.add("" to m.raw)

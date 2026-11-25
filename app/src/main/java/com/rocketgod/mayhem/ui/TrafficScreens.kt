@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.Units
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
@@ -462,7 +463,7 @@ private fun SpotCard(s: HamSpot, ref: Pair<Double, Double>?, now: Long, onMap: (
     val grid = listOf(
         "GRID" to "${s.grid} · ${if (s.grid.length >= 6) "subsquare" else "square"}",
         "POSITION" to "%.3f, %.3f (center)".format(s.lat, s.lon),
-        "FROM YOU" to (if (ref == null) "allow location or set your grid" else fromYou(ref, s.lat, s.lon, miles = true)),
+        "FROM YOU" to (if (ref == null) "allow location or set your grid" else fromYou(ref, s.lat, s.lon, land = true)),
         "BAND" to HamGrid.bandLabel(s.dial).ifEmpty { "—" },
         "FREQUENCY" to "${HamGrid.freqText(s)} · ${s.offset.roundToInt()} Hz audio",
         "SNR" to HamGrid.snrText(s.snr),
@@ -500,18 +501,18 @@ private fun StationCard(s: AprsStation, home: Pair<Double, Double>?, now: Long, 
     val grid = buildList {
         add("POSITION" to (if (hasPos) "%.4f, %.4f".format(s.lat, s.lon) else "no position"))
         add("GRID" to (if (hasPos) latLonToGrid(s.lat!!, s.lon!!, 8) else "—"))
-        add("FROM YOU" to fromYou(home, s.lat, s.lon, miles = true))
+        add("FROM YOU" to fromYou(home, s.lat, s.lon, land = true))
         add("COURSE" to (s.course?.let { "$it°" } ?: "—"))
-        add("SPEED" to (s.speed?.let { "%d mph · %d kn".format((it * 1.15078).roundToInt(), it.roundToInt()) } ?: "—"))
-        add("ALTITUDE" to (s.alt?.let { "%,d ft · %d m".format((it * 3.28084).roundToInt(), it.roundToInt()) } ?: "—"))
+        add("SPEED" to (s.speed?.let { Units.fmtSpeedKmh(it.toDouble() * 1.852) } ?: "—"))
+        add("ALTITUDE" to (s.alt?.let { Units.fmtAlt(it.toDouble()) } ?: "—"))
         s.wx?.let { w ->
-            add("TEMP" to (w.tempF?.let { "$it °F · %.1f °C".format((it - 32) * 5 / 9.0) } ?: "—"))
-            add("WIND" to (w.windMph?.let { "$it mph" + (w.windDir?.let { dd -> " from $dd°" } ?: "") } ?: "—"))
-            add("GUST" to (w.gustMph?.let { "$it mph" } ?: "—"))
+            add("TEMP" to (w.tempF?.let { Units.fmtTemp(Units.fToC(it.toDouble())) } ?: "—"))
+            add("WIND" to (w.windMph?.let { Units.fmtSpeedKmh(it.toDouble() * Units.KM_PER_MI) + (w.windDir?.let { dd -> " from $dd°" } ?: "") } ?: "—"))
+            add("GUST" to (w.gustMph?.let { Units.fmtSpeedKmh(it.toDouble() * Units.KM_PER_MI) } ?: "—"))
             add("HUMIDITY" to (w.humidity?.let { "$it %" } ?: "—"))
-            add("PRESSURE" to (w.pressureMb?.let { "%.1f mb".format(it) } ?: "—"))
-            add("RAIN 1H" to (w.rain1h?.let { "%.2f in".format(it / 100.0) } ?: "—"))
-            add("RAIN 24H" to (w.rain24h?.let { "%.2f in".format(it / 100.0) } ?: "—"))
+            add("PRESSURE" to (w.pressureMb?.let { Units.fmtPressure(it) } ?: "—"))
+            add("RAIN 1H" to (w.rain1h?.let { Units.fmtRain(it / 100.0 * Units.MM_PER_IN) } ?: "—"))
+            add("RAIN 24H" to (w.rain24h?.let { Units.fmtRain(it / 100.0 * Units.MM_PER_IN) } ?: "—"))
         }
         add("HEARD" to ageText(now - s.lastMs))
         add("FIRST HEARD" to "${ageText(now - s.firstMs)} · ${clockOf(s.firstMs)}")
