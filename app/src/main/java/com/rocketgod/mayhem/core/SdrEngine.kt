@@ -835,6 +835,7 @@ object SdrEngine {
         var decAcc = 0f; var decCnt = 0                 // stage-2 (audio) decimator accumulator
         var s1I = 0f; var s1Q = 0f; var s1n = 0        // stage-1 WFM average accumulator
         var chanDec: ChannelDecimator? = null; var chanKey = 0   // stage-1 for the narrow modes, rebuilt with the rate
+        var audioComb: HfComb? = null   // the plain receiver's HF comb notch, made for its channel rate
         var mixBuf = FloatArray(0); var chanBuf = FloatArray(0)
         val audioBuf = ShortArray(8192); var audioLen = 0
         val fmBuf = FloatArray(4096); var fmN = 0
@@ -1138,6 +1139,12 @@ object SdrEngine {
                             val cd = chanDec!!
                             if (chanBuf.size < cd.outSize(nSamp)) chanBuf = FloatArray(cd.outSize(nSamp))
                             nChan = cd.process(mixBuf, nSamp, chanBuf)
+                            // below 30 MHz the HF comb's lines that are really there come out of the channel before it is demodulated
+                            val lo = _freqHz.value
+                            if (lo + off < HfComb.TOP_HZ + 8_000) {
+                                val cmb = audioComb?.takeIf { it.fs == interRate.toDouble() } ?: HfComb(interRate.toDouble(), 8_000.0, Diag::log).also { audioComb = it }
+                                cmb.tune(lo.toDouble(), off.toDouble()); cmb.processInterleaved(chanBuf, nChan)
+                            }
                         }
                         for (j in 0 until nChan) {
                             run {

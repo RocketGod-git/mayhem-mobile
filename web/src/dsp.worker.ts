@@ -36,6 +36,7 @@ import { SpectrumProcessor, type SpecConfig } from './dsp/spectrum/processor.js'
 import { fromIqFile, parseSub, rateFromName, synthesize } from './dsp/analyzer/files.js';
 import { IqRecorder } from './dsp/capture.js';
 import { HamDemod } from './dsp/ham/demod.js';
+import { COMB_TOP_HZ, CombNotch } from './dsp/hfcomb.js';
 import { BandMonitor } from './dsp/ham/monitor.js';
 import { HamPlusEngine } from './dsp/hamplus/engine.js';
 import { CbEngine } from './dsp/cb/engine.js';
@@ -295,6 +296,8 @@ setInterval(() => {
   post({ type: 'digiStatus', conf, winner: digiMode === 'auto' ? (autoSettled ? 'ANALOG VOICE' : digiWinner) : digiMode.toUpperCase(), wpm: cw.wpm });
 }, 700);
 let centreHz = 0, specFrame = 0;
+/** The plain receiver's HF comb notch (hfcomb.ts), made for its channel rate. */
+let audioComb: CombNotch | null = null;
 
 let fre = new Float32Array(fftN), fim = new Float32Array(fftN), pdb = new Float32Array(bins);
 let win = hann(fftN), acc = new Float32Array(fftN), sortBuf = new Float32Array(bins);
@@ -657,7 +660,14 @@ function process(iq: Int8Array): void {
         if (s1n >= stage1) { boxBuf[2 * nChan] = s1I / s1n; boxBuf[2 * nChan + 1] = s1Q / s1n; nChan++; s1I = 0; s1Q = 0; s1n = 0; }
       }
       chanOut = boxBuf;
-    } else { const r = chanDec!.process(mixBuf, nSamp); chanOut = r.out; nChan = r.n; }
+    } else {
+      const r = chanDec!.process(mixBuf, nSamp); chanOut = r.out; nChan = r.n;
+      // below 30 MHz the HF comb's lines that are really there come out of the channel before it is demodulated
+      if (centreHz + offsetHz < COMB_TOP_HZ + 8_000) {
+        if (!audioComb || audioComb.fs !== interRate) audioComb = new CombNotch(interRate, 8_000, line => emit({ type: 'log', line }));
+        audioComb.tune(centreHz, offsetHz); audioComb.processInterleaved(chanOut, nChan);
+      }
+    }
     for (let j = 0; j < nChan; j++) {
       {
         let ci = chanOut[2 * j], cq = chanOut[2 * j + 1];
