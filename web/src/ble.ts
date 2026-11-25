@@ -9,6 +9,7 @@
  *
  * Twin ports: core/apps/BleDevices.kt and core/apps/BleDevices.swift (same names, same constants).
  */
+import { fmtDist } from './units.js';
 
 const PDU_TYPES = ['ADV_IND', 'ADV_DIRECT_IND', 'ADV_NONCONN_IND', 'SCAN_REQ', 'SCAN_RSP', 'CONNECT_REQ', 'ADV_SCAN_IND'];
 
@@ -229,7 +230,7 @@ export function distM(a: { lat: number; lon: number }, b: { lat: number; lon: nu
 export function trackerAlert(d: BleDevice): string {
   if (!d.tracker) return '';
   const mins = Math.floor((d.lastMs - d.firstMs) / 60_000);
-  if (d.movedM >= TRACKER_MOVE_M) return `${KIND_LABEL[d.kind].toUpperCase()} MOVING WITH YOU · ${(d.movedM / 1000).toFixed(1)} km · ${mins} min`;
+  if (d.movedM >= TRACKER_MOVE_M) return `${KIND_LABEL[d.kind].toUpperCase()} MOVING WITH YOU · ${fmtDist(d.movedM / 1000)} · ${mins} min`;
   if (d.lastMs - d.firstMs >= TRACKER_ALERT_MS) return `${KIND_LABEL[d.kind].toUpperCase()} NEAR YOU FOR ${mins} MIN`;
   return '';
 }

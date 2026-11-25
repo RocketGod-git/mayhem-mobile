@@ -215,7 +215,8 @@ export class KeyDecoders {
     if (p.family === Fam.WEATHER) {
       const w = parseWeather(p.sensorType, p.decodeData);
       const fields: [string, string][] = [];
-      if (w.temp !== null) fields.push(['TEMPERATURE', `${w.temp.toFixed(1)} °C · ${(w.temp * 9 / 5 + 32).toFixed(1)} °F`]);
+      // in °C only: the screen shows it in the units picked in Settings, on the card and in the detail alike
+      if (w.temp !== null) fields.push(['TEMPERATURE', `${w.temp.toFixed(1)} °C`]);
       if (w.humidity !== null) fields.push(['HUMIDITY', `${w.humidity}%`]);
       if (w.channel !== null) fields.push(['CHANNEL', String(w.channel)]);
       if (w.batteryLow !== null) fields.push(['BATTERY', w.batteryLow ? 'low' : 'OK']);

@@ -3,6 +3,7 @@
  * security line, distance and bearing from the listener, the order of the on-air stack (emergencies pinned on top,
  * then the call being heard), and what the now-playing bar names. The page only lays these out.
  */
+import { fmtDist, KM_PER_MI } from '../../units.js';
 import type { CallRow, CallPos } from './calls.js';
 
 /** P25 algorithm IDs (TIA-102.BAAC), the publicly documented ones. */
@@ -49,9 +50,9 @@ export function distBearing(a: { lat: number; lon: number }, b: { lat: number; l
   const deg = (Math.atan2(y, x) / r + 360) % 360;
   return { mi, deg, dir: ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8] };
 }
-/** '2.4 mi NE' (or feet under a tenth of a mile). */
+/** '2.4 mi NE' or '3.9 km NE' (feet or meters when close), in the units picked in Settings. */
 export function distText(d: { mi: number; dir: string }): string {
-  return d.mi < 0.1 ? `${Math.round(d.mi * 5280)} ft ${d.dir}` : `${d.mi < 10 ? d.mi.toFixed(1) : Math.round(d.mi)} mi ${d.dir}`;
+  return `${fmtDist(d.mi * KM_PER_MI)} ${d.dir}`;
 }
 /** The position line of a call: distance and bearing from the listener when known, then the coordinates. */
 export function posText(p: CallPos, me: { lat: number; lon: number } | null): string {
@@ -131,7 +132,7 @@ export function trackSvg(trail: [number, number, number][], opts: { others?: [nu
   const X = (lon: number) => (w / 2 + (lon - cx) * k * s).toFixed(1), Y = (lat: number) => (h / 2 - (lat - cy) * s).toFixed(1);
   // scale bar: a round distance near a quarter of the width
   const kmPerPx = 111.32 / s, want = kmPerPx * w / 4, steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200], km = steps.find(v => v >= want) ?? want, px = km / kmPerPx;
-  const mi = km * 0.621371, lab = mi < 0.25 ? `${Math.round(mi * 5280)} ft` : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`;
+  const lab = fmtDist(km);
   const n = trail.length;
   const line = n > 1 ? `<polyline class="tr" points="${trail.map(t => `${X(t[1])},${Y(t[0])}`).join(' ')}"/>` : '';
   const dots = trail.map((t, i) => `<circle class="${i === n - 1 ? 'now' : 'old'}" cx="${X(t[1])}" cy="${Y(t[0])}" r="${i === n - 1 ? 5 : 2.4}" style="opacity:${i === n - 1 ? 1 : (0.25 + 0.6 * i / Math.max(1, n - 1)).toFixed(2)}"/>`).join('');

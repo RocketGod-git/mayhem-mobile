@@ -22,6 +22,9 @@ import { GEOSCAN_SATS } from './dsp/geoscan.js';
 import type { HeardDevice, R433Data, R433Protocol, R433Report } from './dsp/r433/index.js';
 import type { ZwLink, ZwNode } from './dsp/r433/zwave.js';
 import { CREDITS } from './credits.js';
+import { syncRows } from './list-rows.js';
+import { r433Measure, r433Value } from './devices-fmt.js';
+import * as U from './units.js';
 import { AnalyzerUi } from './analyzer-ui.js';
 import { SpectrumUi } from './spectrum-ui.js';
 import type { Burst } from './dsp/analyzer/capture.js';
@@ -172,7 +175,7 @@ const state = {
   pagerMulti: true,
   ism: { weather: true, remotes: true, cars: true },
   r433: { heard: [] as HeardDevice[], stats: null as R433Report | null, hop: false, band: 0,
-    protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', hist: new Map<string, { t: number; s: string; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
+    protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', hist: new Map<string, { t: number; d: HeardDevice; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
   capturing: false, captureName: '', captureBytes: 0, captures: [] as { name: string; size: number }[],
   aircraft: [] as Aircraft[], frames: 0, aisTable: [] as Vessel[], aisSel: 0, aisView: 'map' as 'map' | 'list' | 'log',
   aprsStations: [] as AprsStation[], aprsSel: '', aprsView: 'map' as 'map' | 'list' | 'log', hamLayers: loadLayers(),
@@ -2989,7 +2992,7 @@ function callInfoHtml(info: CallInfo | null, call: string): string {
     if (info.qth) parts.push(info.qth);
     const here = myLatLon();
     const there = info.grid ? gridToLatLon(info.grid) : info.lat !== undefined && info.lon !== undefined ? { lat: info.lat, lon: info.lon } : null;
-    if (here && there) { const d = distanceBearing(here.lat, here.lon, there.lat, there.lon); parts.push(`${info.grid ? `grid ${info.grid} · ` : ''}${d.km >= 100 ? d.km.toFixed(0) : d.km.toFixed(1)} km · bearing ${d.deg.toFixed(0)}°${d.km > 500 ? ` (long path ${((d.deg + 180) % 360).toFixed(0)}°)` : ''}`); }
+    if (here && there) { const d = distanceBearing(here.lat, here.lon, there.lat, there.lon); parts.push(`${info.grid ? `grid ${info.grid} · ` : ''}${U.fmtDist(d.km)} · bearing ${d.deg.toFixed(0)}°${d.km > 500 ? ` (long path ${((d.deg + 180) % 360).toFixed(0)}°)` : ''}`); }
     else if (info.grid) parts.push(`grid ${info.grid}`);
     parts.push(`<span class="dim">${info.source}</span>`);
   }
@@ -3414,17 +3417,6 @@ const R433_BANDS: [string, number][] = [
 const R433_DWELL_MS = 20_000;
 let r433Timer = 0;
 
-/** Units for the readings, so a number is never shown bare. */
-const R433_UNITS: Record<string, string> = {
-  temperature_C: ' °C', temperature_1_C: ' °C', temperature_F: ' °F',
-  humidity: ' %', humidity_1: ' %', moisture: ' %',
-  pressure_hPa: ' hPa', pressure_kPa: ' kPa', pressure_PSI: ' PSI',
-  wind_avg_km_h: ' km/h', wind_max_km_h: ' km/h', wind_avg_m_s: ' m/s', wind_max_m_s: ' m/s',
-  wind_avg_mi_h: ' mph', wind_dir_deg: '°',
-  rain_mm: ' mm', rain_in: ' in', light_lux: ' lux', battery_mV: ' mV',
-  pm2_5_ug_m3: ' µg/m³', estimated_pm10_0_ug_m3: ' µg/m³',
-  storm_dist: ' km', strike_distance: ' mi',
-};
 /** Which fields make the one-line summary, in the order a person would want to read them. */
 const R433_SUMMARY = ['temperature_C', 'temperature_F', 'humidity', 'pressure_hPa', 'pressure_PSI', 'pressure_kPa',
   'moisture', 'rain_mm', 'rain_in', 'wind_avg_km_h', 'wind_avg_mi_h', 'wind_avg_m_s', 'leak_detected',
@@ -3455,12 +3447,6 @@ const R433_MEANING: Record<string, string> = {
   burst: 'the data type of the last burst, from its slot type',
   channels: 'every frequency this color code was heard on',
 };
-
-function r433Value(k: string, v: unknown): string {
-  if (k === 'battery_ok') return v === 1 || v === true ? 'battery ok' : typeof v === 'number' && v > 0 && v < 1 ? `battery ${Math.round(v * 100)}%` : 'BATTERY LOW';
-  if (k === 'leak_detected') return v ? 'WET' : 'dry';
-  return `${v}${R433_UNITS[k] ?? ''}`;
-}
 
 /** The line under a device's name: the two or three readings that actually say what it is doing. */
 function r433Summary(d: R433Data): string {
@@ -3590,22 +3576,14 @@ function r433Ago(ms: number): string {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ${Math.floor(s / 60) % 60}m ago`;
 }
 const r433Mhz = (hz: number) => `${(hz / 1e6).toFixed(3)} MHz`;
-const r433Num = (v: unknown): number | null => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && !isNaN(Number(v)) ? Number(v) : null);
 /** The big line on a card: what this thing just said, in the fewest words. */
 function r433Headline(d: HeardDevice, k: R433Kind): [string, string] {
   const v = d.data;
   if (k === 'Z-WAVE') { const n = (v.nodes as ZwNode[] | undefined)?.length ?? 0; return [`${n} node${n === 1 ? '' : 's'}`, `${v.from} → ${v.to} ${v.said}`]; }
   if (k === 'RADIO') return [`CC ${v.color_code}`, `${v.burst} from ${v.from}`];
   if (k === 'CAR KEY' || k === 'REMOTE') return [String(v.button ?? v.btn ?? v.cmd ?? v.state ?? 'PRESS'), v.counter !== undefined ? `counter ${v.counter}` : v.hop !== undefined ? `code ${String(v.hop).slice(0, 8)}` : ''];
-  const kpaRaw = r433Num(v.pressure_kPa), psiRaw = r433Num(v.pressure_PSI), barRaw = r433Num(v.pressure_bar);
-  const tcRaw = r433Num(v.temperature_C), tfRaw = r433Num(v.temperature_F);
-  const tc = tcRaw !== null ? tcRaw : tfRaw !== null ? (tfRaw - 32) * 5 / 9 : null;
-  if (k === 'TIRE SENSOR') {
-    const psi = psiRaw !== null ? psiRaw : kpaRaw !== null ? kpaRaw * 0.1450377 : barRaw !== null ? barRaw * 14.50377 : null;
-    return [psi !== null ? `${psi.toFixed(1)} psi` : 'TIRE', tc !== null ? `${(tc * 9 / 5 + 32).toFixed(0)} °F` : ''];
-  }
-  if (tc !== null) return [`${(tc * 9 / 5 + 32).toFixed(1)} °F`, v.humidity !== undefined ? `${v.humidity}% humidity` : ''];
-  if (typeof v.temperature === 'string') return [v.temperature.split(' · ').pop() ?? v.temperature, v.humidity !== undefined ? `${v.humidity} humidity` : ''];
+  // a tire or weather sensor: the same helpers write its detail, so the card and the detail agree on the units
+  const m = r433Measure(v, k === 'TIRE SENSOR'); if (m) return m;
   const sum = r433Summary(v).split(' · ');
   return [sum[0] || k, sum.slice(1).join(' · ')];
 }
@@ -3673,7 +3651,7 @@ function r433DetailPanel(d: HeardDevice & { hz?: number }, doubtful: boolean): s
   const k = r433Kind(d);
   const fields = k === 'Z-WAVE' ? zwDetailFields(d) : r433Fields(d, doubtful);
   const hist = state.r433.hist.get(d.key) ?? [];
-  const rows = hist.slice().reverse().map(h => `<div><b>${r433Clock(h.t)}</b><span>${esc(h.s)}${h.hz ? ` · ${r433Mhz(h.hz)}` : ''}</span></div>`).join('');
+  const rows = hist.slice().reverse().map(h => `<div><b>${r433Clock(h.t)}</b><span>${esc(r433HistLine(h.d))}${h.hz ? ` · ${r433Mhz(h.hz)}` : ''}</span></div>`).join('');
   return `<div class="mt-dh"><b>${esc(d.data.id !== undefined ? String(d.data.id) : d.model)}</b><span>${d.model.toUpperCase() === k ? k : `${k} · ${esc(d.model)}`}</span><button class="chip" data-dvdo="close">✕</button></div>`
     + `<div class="mt-fields">${fields.map(([a, b, m]) => `<div${m ? ` title="${esc(m)}"` : ''}><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}`
     + (rows ? `<p>EVERY TIME IT WAS HEARD</p>${rows}` : '') + '</div>';
@@ -3993,7 +3971,7 @@ function bleCard(d: BleDevice, now: number): string {
 function bleDetail(d: BleDevice, now: number): string {
   const rows = [...d.history].reverse().map(h => `<div><span>${new Date(h.ms).toLocaleTimeString()}</span><span>CH ${h.ch}</span><span>${Math.round(h.db)} dB</span><span>${esc(h.pduType)}</span><code>${esc(h.raw)}</code></div>`).join('');
   const more = [{ name: 'First heard', value: `${trClock(d.firstMs)} · ${bleAgo(now - d.firstMs)}` }, { name: 'Last heard', value: `${trClock(d.lastMs)} · ${bleAgo(now - d.lastMs)}` },
-    ...(d.firstPos ? [{ name: 'Moved with you', value: `${Math.round(d.movedM)} m` }] : [])];
+    ...(d.firstPos ? [{ name: 'Moved with you', value: U.fmtDist(d.movedM / 1000) }] : [])];
   return `<div class="mt-dh ${d.alert ? 'red' : ''}"><b>${esc(d.name || KIND_LABEL[d.kind])}</b><span>${esc(d.maker || 'UNKNOWN MAKER')} · ${esc(KIND_LABEL[d.kind].toUpperCase())}</span><button class="chip" data-bdo="close">✕</button></div>`
     + (d.alert ? `<div class="ble-warn">⚠ ${esc(d.alert)}. Look for it in your bag, car or clothes, or check it with a tracker-finder app.</div>` : '')
     + `<div class="mt-fields">${[...d.fields, ...more].map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}</div>`
@@ -4423,7 +4401,7 @@ function meshDetail(d: MeshDev, onMap: boolean): string {
   const kind = d.net === MESH_ERT ? 'ERT METER' : d.net === MESH_GRIDSTREAM ? 'GRIDSTREAM METER' : d.net === MESH_SUN ? '802.15.4g NODE' : `MESH NODE · ${meshSync(d.net)}`;
   const votes = Object.values(d.wanVotes);
   return `<div class="mt-dh"><b>${esc(d.label)}</b><span>${kind}</span>${onMap ? '<button class="chip" data-mdo="map">MAP</button>' : ''}${meters.view === 'map' ? '<button class="chip" data-mdo="cards">CARDS</button>' : ''}<button class="chip" data-mdo="close">✕</button></div>`
-    + `<div class="mt-fields">${d.fields.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
+    + `<div class="mt-fields">${d.fields.map(f => `<div><b>${esc(f.name)}</b><span>${esc(U.fmtText(f.value))}</span></div>`).join('')}`
     + (d.net === MESH_GRIDSTREAM && votes.length > 1 ? `<p>position heard ${Math.max(...votes)}× of ${votes.reduce((a, b) => a + b, 0)} beacons (the most-heard one is shown)</p>` : '') + '</div>';
 }
 function refreshMeters(force = false): void {
@@ -4517,8 +4495,10 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
   const p = u.last.psig, peak = u.pressure.filter(x => u.lastMs - x[0] < 600_000).reduce((m, x) => Math.max(m, x[1]), p);
   const prev = u.pressure.length >= 2 ? u.pressure[u.pressure.length - 2][1] : p;
   if (p < 15 && peak >= 40) return ['EMERGENCY · LINE VENTED', 'red'];
-  if (peak - p >= 6 && p <= prev) return [`BRAKES APPLIED −${peak - p} PSI`, 'red'];
-  if (p - prev >= 3) return [`RELEASING +${p - prev} PSI`, 'ok'];
+  // a change of pressure, in the units picked in Settings
+  const dp = (x: number) => `${U.psigNumber(x)} ${U.units() === 'imperial' ? 'PSI' : 'KPA'}`;
+  if (peak - p >= 6 && p <= prev) return [`BRAKES APPLIED −${dp(peak - p)}`, 'red'];
+  if (p - prev >= 3) return [`RELEASING +${dp(p - prev)}`, 'ok'];
   return null;
 }
 
@@ -4577,7 +4557,7 @@ function trGauge(psig: number, red: boolean): string {
   const t = Math.PI * (1 + 90 / 127);
   return `<svg class="tr-gauge ${red ? 'red' : ''}" viewBox="0 0 84 60"><path class="t" d="M8 52 A34 34 0 0 1 76 52"/><path class="v" d="M8 52 A34 34 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)}"/>`
     + `<line x1="${(42 + 29 * Math.cos(t)).toFixed(1)}" y1="${(52 + 29 * Math.sin(t)).toFixed(1)}" x2="${(42 + 39 * Math.cos(t)).toFixed(1)}" y2="${(52 + 39 * Math.sin(t)).toFixed(1)}"/>`
-    + `<text x="42" y="46" class="n">${psig}</text><text x="42" y="57" class="u">PSIG</text></svg>`;
+    + `<text x="42" y="46" class="n">${U.psigNumber(psig)}</text><text x="42" y="57" class="u">${U.psigWord()}</text></svg>`;
 }
 /** The rear unit's brake pipe pressure across its reports: a drop is the brakes going on. */
 function trPressure(u: EotUnit): string {
@@ -4647,7 +4627,7 @@ function trEotFields(u: EotUnit, now: number): [string, string][] {
   let hex = ''; for (let i = 0; i < p.bits.length; i += 4) hex += parseInt(p.bits.slice(i, i + 4).padEnd(4, '0'), 2).toString(16).toUpperCase();
   return [
     ['UNIT ID', `${p.unit}  (0x${p.unit.toString(16).toUpperCase().padStart(5, '0')})`], ['CHANNEL', u.channel === 'DPU' ? 'DPU 457.925 MHz' : 'EOT 457.9375 MHz'],
-    ['BRAKE PIPE', `${p.psig} psig`], ['RANGE HEARD', `${lo} – ${hi} psig over ${u.pressure.length} reports`], ['BRAKES', trBrake(u)?.[0] ?? 'released / steady'],
+    ['BRAKE PIPE', U.fmtPsig(p.psig)], ['RANGE HEARD', `${U.fmtPsig(lo)} to ${U.fmtPsig(hi)} over ${u.pressure.length} reports`], ['BRAKES', trBrake(u)?.[0] ?? 'released / steady'],
     ['MOTION', p.motion ? 'moving' : 'stopped'], ['MARKER LIGHT', p.markerLight ? 'on' : 'off'], ['MARKER BATTERY', p.markerBattery ? 'ok' : 'weak'],
     ['BATTERY', `${p.batteryPct}% · ${p.batteryCond.toLowerCase()}`], ['AIR TURBINE', p.turbine ? 'generating' : 'off'], ['VALVE CIRCUIT', p.valve ? '1 (ready)' : '0'],
     ['ARM STATUS', p.arm.toLowerCase()], ['MESSAGE TYPE', `${p.type} (${p.type.toString(2).padStart(3, '0')})`], ['CONFIRM BIT', p.confirm ? '1' : '0'],
@@ -4711,7 +4691,7 @@ function refreshTrains(force = false): void {
   const red = braking?.[1] === 'red' || loco.length > 0;
   const head = braking?.[1] === 'red' ? (braking[0].startsWith('EMERGENCY') ? 'EMERGENCY BRAKING' : 'TRAIN BRAKING') : train && moving ? 'TRAIN NEARBY · MOVING' : recent.length ? 'TRAIN NEARBY · STOPPED' : loco.length ? 'PTC TRAIN APPROACHING' : train ? 'TRAIN NEARBY' : stations.length ? 'PTC TERRITORY' : 'LISTENING FOR TRAINS';
   const bits: string[] = [];
-  if (recent[0]) bits.push(`rear unit ${recent[0].unit} · ${recent[0].last.psig} psig`);
+  if (recent[0]) bits.push(`rear unit ${recent[0].unit} · ${U.fmtPsig(recent[0].last.psig)}`);
   if (loco.length) bits.push(`${loco.length} locomotive${loco.length > 1 ? 's' : ''} on PTC`);
   if (hot) bits.push(`head unit command ${trAgo(now - hot.ms)}`);
   // a wayside's status changing is the signal and switch logic reacting to a train on its block
@@ -5802,9 +5782,9 @@ function fleetDetail(s: FleetSnap, now: number): string {
         fit: tr.map(p => [p[0], p[1]] as [number, number]) };
       where = `<div class="flc-map flc-geo"></div><div class="flc-stats">`
         + (d ? big(distText(d), `FROM YOU · ${Math.round(d.deg)}°`) : '')
-        + (st.mph !== null ? big(st.moving ? `${Math.round(st.mph)} mph` : 'STOPPED', st.moving ? `HEADING ${st.dir} · ${st.course}°` : 'NOT MOVING') : '')
+        + (st.mph !== null ? big(st.moving ? U.fmtSpeedKmh(st.mph * U.KM_PER_MI) : 'STOPPED', st.moving ? `HEADING ${st.dir} · ${st.course}°` : 'NOT MOVING') : '')
         + big(`${st.fixes}`, st.fixes === 1 ? 'POSITION FIX' : st.spanMs > 0 ? `FIXES OVER ${flSpan(st.spanMs)}` : 'FIXES')
-        + big(agoShort(now - last[2]), 'SINCE LAST FIX') + (st.mi >= 0.05 ? big(`${st.mi < 10 ? st.mi.toFixed(1) : Math.round(st.mi)} mi`, 'TRAVELED') : '')
+        + big(agoShort(now - last[2]), 'SINCE LAST FIX') + (st.mi >= 0.05 ? big(U.fmtDist(st.mi * U.KM_PER_MI), 'TRAVELED') : '')
         + `</div>` + kv([['POSITION', `${last[0].toFixed(5)}, ${last[1].toFixed(5)}`], ['LAST FIX', `${fleetClock(last[2])}${u.posVerified ? ' · checked' : ''}`]]);
     }
     const off = full?.offArea ?? u.offArea;
@@ -5869,7 +5849,7 @@ function fleetDetail(s: FleetSnap, now: number): string {
     let area = '';
     if (placed.length) {
       const la = placed.map(u => u.lat!), lo = placed.map(u => u.lon!), h = flDistBearing({ lat: Math.min(...la), lon: Math.min(...lo) }, { lat: Math.min(...la), lon: Math.max(...lo) }).mi, v = flDistBearing({ lat: Math.min(...la), lon: lo[0] }, { lat: Math.max(...la), lon: lo[0] }).mi;
-      area = fleetCardUnits(`sys:${x.key}`, placed, col, me) + kv([['UNITS PLACED', `${placed.length} of ${units.length}`], ['AREA', `${Math.max(0.1, h).toFixed(1)} × ${Math.max(0.1, v).toFixed(1)} mi`]]);
+      area = fleetCardUnits(`sys:${x.key}`, placed, col, me) + kv([['UNITS PLACED', `${placed.length} of ${units.length}`], ['AREA', `${U.fmtDist(Math.max(0.1, h) * U.KM_PER_MI)} × ${U.fmtDist(Math.max(0.1, v) * U.KM_PER_MI)}`]]);
     }
     const [enc, n] = encShare(calls);
     const stats = `<div class="flc-stats">${big(`${x.sites.length}`, 'SITES')}${big(`${units.length}`, 'UNITS')}${big(`${x.tgs || tgs.length}`, 'TALKGROUPS')}${big(`${x.grants}`, 'GRANTS')}${n ? big(`${Math.round(100 * enc / n)}%`, 'ENCRYPTED') : ''}</div>`;
@@ -6381,10 +6361,10 @@ function hdHead(m: HdSnapMsg | null, now: number): string {
 /** The station's transmitter as sent: a place on the map, or why it is not one. */
 function hdLocText(s: SisSummary): string {
   if (s.lat === null || s.lon === null) return '-';
-  const at = `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.altM !== null ? ` · ${s.altM} m` : ''}`;
+  const at = `${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}${s.altM !== null ? ` · ${U.fmtAlt(s.altM)}` : ''}`;
   if (!locationValid(s.lat, s.lon)) return `${at} · not a valid location as sent, not placed on the map`;
   const h = state.home, d = h ? distanceBearing(h.lat, h.lon, s.lat, s.lon) : null;
-  return `${at}${d ? ` · ${d.km < 10 ? d.km.toFixed(1) : d.km.toFixed(0)} km at ${d.deg.toFixed(0)}°` : ''}`;
+  return `${at}${d ? ` · ${U.fmtDist(d.km)} at ${d.deg.toFixed(0)}°` : ''}`;
 }
 /** The station clock, checked against this device's: never used when it disagrees. */
 function hdClockText(s: SisSummary): string {
@@ -6768,7 +6748,7 @@ function groupArea(g: AlertGroup): WarningArea | null {
 /** INSIDE / OUTSIDE with the distance to the edge, from your position. */
 function whereOf(a: WarningArea): [string, 'in' | 'out' | ''] {
   if (!state.home) return ['YOUR POSITION IS NOT KNOWN · allow location to see whether you are inside this alert area', ''];
-  const r = areaRelation([state.home.lat, state.home.lon], a), d = r.edgeM < 1000 ? `${Math.round(r.edgeM)} m` : `${(r.edgeM / 1000).toFixed(r.edgeM < 10_000 ? 1 : 0)} km`;
+  const r = areaRelation([state.home.lat, state.home.lon], a), d = U.fmtDist(r.edgeM / 1000);
   return r.inside ? [`INSIDE THE ALERT AREA · ${d} from its edge`, 'in'] : [`OUTSIDE THE ALERT AREA · ${d} from its edge`, 'out'];
 }
 function areaThumb(a: WarningArea): string {
@@ -6786,7 +6766,7 @@ function cellAlertMap(s: CellSnap | null): void {
   if (!g || !a) { cellUi.mapSig = ''; return; }
   const sig = `${g.key}|${state.home?.lat ?? ''}|${state.home?.lon ?? ''}`;
   const [where, tone] = whereOf(a);
-  cap.innerHTML = `<b style="color:${CELL_RANK_COLOR[Math.max(0, Math.min(5, g.rank))]}">${esc(g.cls.toUpperCase())}</b><span class="cl-where ${tone}">${esc(where)}</span><small>${a.points.length} points · ${a.areaKm2.toFixed(1)} km² · area format derived from recordings</small>`;
+  cap.innerHTML = `<b style="color:${CELL_RANK_COLOR[Math.max(0, Math.min(5, g.rank))]}">${esc(g.cls.toUpperCase())}</b><span class="cl-where ${tone}">${esc(where)}</span><small>${a.points.length} points · ${U.fmtArea(a.areaKm2)} · area format derived from recordings</small>`;
   if (sig === cellUi.mapSig) return;
   cellUi.mapSig = sig;
   geo?.setHome(state.home);
@@ -7588,7 +7568,7 @@ function loraMessage(e: LoraEventRow): string {
 /** Everything decoded from one node, field by field, its recent messages, with MAP when it has a position. */
 function loraDetail(n: LoraNodeRow, onMap: boolean): string {
   const all = [{ name: 'FIRST HEARD', value: loraClock(n.firstMs) }, { name: 'LAST HEARD', value: loraClock(n.lastMs) }, { name: 'PACKETS', value: `${n.packets}` },
-    { name: 'FREQUENCY', value: `${(n.hz / 1e6).toFixed(4)} MHz` }, { name: 'MODEM', value: n.modem }, ...n.fields];
+    { name: 'FREQUENCY', value: `${(n.hz / 1e6).toFixed(4)} MHz` }, { name: 'MODEM', value: n.modem }, ...n.fields.map(f => ({ name: f.name, value: U.fmtText(f.value) }))];
   return `<div class="mt-dh"><b>${esc(n.label)}</b><span>${esc(`${n.proto.toUpperCase()} · ${n.kind}`)}</span>${onMap ? '<button class="chip" data-ldo="map">MAP</button>' : ''}${loraUi.view !== 'nodes' ? '<button class="chip" data-ldo="cards">CARDS</button>' : ''}<button class="chip" data-ldo="close">✕</button></div>`
     + `<div class="mt-fields">${all.map(f => `<div><b>${esc(f.name)}</b><span>${esc(f.value)}</span></div>`).join('')}`
     + [...n.texts].reverse().map(t => `<p class="lr-q">“${esc(t)}”</p>`).join('') + '</div>';
@@ -7660,19 +7640,19 @@ const SONDE_PHASE: Record<string, string> = { ground: 'ON THE GROUND', ascent: '
 function sondeFromHere(lat: number, lon: number): string {
   const me = state.home ?? lastKnownPos(); if (!me) return '';
   const [km, brg] = distBearing(me, { lat, lon });
-  return `${km < 10 ? km.toFixed(1) : Math.round(km)} km ${compass(brg)}`;
+  return `${U.fmtDist(km)} ${compass(brg)}`;
 }
 function sondeCard(s: SondeRow, now: number): string {
   const age = (now - s.lastMs) / 1000, flash = Math.max(0, 1 - age / 0.9), live = age < 60;
   const ago = age < 60 ? `${Math.max(0, Math.floor(age))} s ago` : age < 3600 ? `${Math.floor(age / 60)} min ago` : `${Math.floor(age / 3600)} h ago`;
-  const climb = s.climb !== undefined ? `${s.climb >= 0 ? '▲' : '▼'} ${Math.abs(s.climb).toFixed(1)} m/s` : '';
-  const ptu = [s.tempC !== undefined ? `${s.tempC.toFixed(1)} °C` : '', s.rh !== undefined ? `${Math.round(s.rh)}% RH` : '', s.hPa !== undefined ? `${s.hPa.toFixed(1)} hPa` : '', s.battV !== undefined ? `${s.battV.toFixed(1)} V` : ''].filter(Boolean).join(' · ');
+  const climb = s.climb !== undefined ? `${s.climb >= 0 ? '▲' : '▼'} ${U.fmtClimb(Math.abs(s.climb), false)}` : '';
+  const ptu = [s.tempC !== undefined ? U.fmtTemp(s.tempC) : '', s.rh !== undefined ? `${Math.round(s.rh)}% RH` : '', s.hPa !== undefined ? U.fmtPressure(s.hPa) : '', s.battV !== undefined ? `${s.battV.toFixed(1)} V` : ''].filter(Boolean).join(' · ');
   const landFrom = s.predict ? sondeFromHere(s.predict.lat, s.predict.lon) : s.lat !== undefined && s.lon !== undefined ? sondeFromHere(s.lat, s.lon) : '';
   const land = s.predict ? `lands in ${sondeMins(s.predict.inS)}${landFrom ? ` · ${landFrom} from you` : ''}` : s.phase === 'landed' ? `down${landFrom ? ` · ${landFrom} from you` : ''}` : '';
   return `<div class="mt-card ${sondeUi.sel === s.serial ? 'sel' : ''} ${live ? '' : 'dim'}" data-sonde="${esc(s.serial)}" data-fk="${esc(s.serial)}" data-fms="${s.lastMs}" style="--flash:${flash.toFixed(2)}">`
     + `<div class="mt-h"><span class="mt-id" style="font-size:${s.serial.length > 8 ? 16 : 20}px">${esc(s.serial)}</span><span class="mt-k"><b>${esc(s.model ?? s.type)}</b><small class="${s.lat !== undefined ? 'pos' : ''}">${esc(SONDE_PHASE[s.phase] ?? '')}${s.burst ? ' · BURST' : ''}</small></span><span class="mt-live ${live ? 'on' : ''}"><i></i>${ago}</span></div>`
-    + `<div class="mt-clk"><b>${s.alt !== undefined ? Math.round(s.alt).toLocaleString('en-US') : '—'}</b><small>METERS</small><em>${esc(climb)}</em></div>`
-    + `<div class="lr-name">${(s.hz / 1e6).toFixed(3)} MHz · ${s.frames} ${s.frames === 1 ? 'frame' : 'frames'}${s.vH !== undefined ? ` · ${(s.vH * 3.6).toFixed(0)} km/h ${s.heading !== undefined ? compass(s.heading) : ''}` : ''}</div>`
+    + `<div class="mt-clk"><b>${s.alt !== undefined ? U.altNumber(s.alt) : '—'}</b><small>${U.altWord()}</small><em>${esc(climb)}</em></div>`
+    + `<div class="lr-name">${(s.hz / 1e6).toFixed(3)} MHz · ${s.frames} ${s.frames === 1 ? 'frame' : 'frames'}${s.vH !== undefined ? ` · ${U.fmtSpeedMs(s.vH)} ${s.heading !== undefined ? compass(s.heading) : ''}` : ''}</div>`
     + (ptu ? `<div class="lr-last">${esc(ptu)}</div>` : '')
     + (land ? `<div class="lr-last">${esc(land)}</div>` : '') + '</div>';
 }
@@ -7711,7 +7691,7 @@ function sondeSitesHtml(now: number): string {
     const next = nextLaunchMs(x, now);
     const when = next === null ? (x.times.some(t => /irregular|mission/i.test(t)) ? 'launches irregularly' : 'schedule not listed')
       : next <= now ? `<b class="ok">up now · launched ${sondeMins((now - next) / 1000)} ago</b>` : `next launch in ${sondeMins((next - now) / 1000)}`;
-    return `<div class="sd-site"><div class="sd-sn"><b>${esc(x.name)}</b><small>${Math.round(d[0])} km ${compass(d[1])} · ${esc(x.types.join(', ') || 'sonde')}</small></div><div class="sd-sw">${when}</div></div>`;
+    return `<div class="sd-site"><div class="sd-sn"><b>${esc(x.name)}</b><small>${U.fmtDist(d[0])} ${compass(d[1])} · ${esc(x.types.join(', ') || 'sonde')}</small></div><div class="sd-sw">${when}</div></div>`;
   }).join('');
   return `<div class="sd-sites"><div class="sd-sh">LAUNCH SITES NEAR YOU</div>${rows}</div>`;
 }
@@ -7724,16 +7704,16 @@ function sondeDetail(s: SondeRow, onMap: boolean): string {
     ...f('FIRST HEARD', loraClock(s.firstMs)), ...f('LAST HEARD', loraClock(s.lastMs)), ...f('FRAMES', `${s.frames}`), ...f('FRAME NUMBER', s.frame !== undefined && `${s.frame}`),
     ...f('GPS TIME', t && (s.date ? `${s.date} ${t}` : t)), ...f('FLIGHT', SONDE_PHASE[s.phase]),
     ...f('POSITION', fix && `${s.lat!.toFixed(5)}, ${s.lon!.toFixed(5)}`), ...f('FROM YOU', fix && sondeFromHere(s.lat!, s.lon!)),
-    ...f('ALTITUDE', s.alt !== undefined && `${Math.round(s.alt).toLocaleString('en-US')} m`), ...f('HIGHEST', s.maxAlt !== undefined && `${Math.round(s.maxAlt).toLocaleString('en-US')} m`),
-    ...f('CLIMB', s.climb !== undefined && `${s.climb >= 0 ? '+' : ''}${s.climb.toFixed(1)} m/s`), ...f('GROUND SPEED', s.vH !== undefined && `${s.vH.toFixed(1)} m/s (${(s.vH * 3.6).toFixed(0)} km/h)`),
+    ...f('ALTITUDE', s.alt !== undefined && U.fmtAlt(s.alt)), ...f('HIGHEST', s.maxAlt !== undefined && U.fmtAlt(s.maxAlt)),
+    ...f('CLIMB', s.climb !== undefined && U.fmtClimb(s.climb)), ...f('GROUND SPEED', s.vH !== undefined && U.fmtSpeedMs(s.vH)),
     ...f('HEADING', s.heading !== undefined && `${Math.round(s.heading)}° ${compass(s.heading)}`), ...f('SATELLITES', s.sats !== undefined && `${s.sats}`),
-    ...f('TEMPERATURE', s.tempC !== undefined && `${s.tempC.toFixed(1)} °C`), ...f('HUMIDITY', s.rh !== undefined && `${s.rh.toFixed(0)} %`), ...f('PRESSURE', s.hPa !== undefined && `${s.hPa.toFixed(1)} hPa`),
+    ...f('TEMPERATURE', s.tempC !== undefined && U.fmtTemp(s.tempC)), ...f('HUMIDITY', s.rh !== undefined && `${s.rh.toFixed(0)} %`), ...f('PRESSURE', s.hPa !== undefined && U.fmtPressure(s.hPa)),
     ...f('BATTERY', s.battV !== undefined && `${s.battV.toFixed(1)} V`), ...f('BURST TIMER', s.killS !== undefined && sondeMins(s.killS)),
-    ...f('BURST', s.burst && `${Math.round(s.burst.alt).toLocaleString('en-US')} m at ${loraClock(s.burst.ms)}`),
+    ...f('BURST', s.burst && `${U.fmtAlt(s.burst.alt)} at ${loraClock(s.burst.ms)}`),
     ...f('PREDICTED LANDING', s.predict && `${s.predict.lat.toFixed(4)}, ${s.predict.lon.toFixed(4)} in ${sondeMins(s.predict.inS)}`),
     ...f('LANDING FROM YOU', s.predict && sondeFromHere(s.predict.lat, s.predict.lon)),
-    ...f('ASSUMED BURST', s.predict && s.phase === 'ascent' && `${s.predict.burstAlt.toLocaleString('en-US')} m`),
-    ...f('ERRORS FIXED', s.fixed > 0 && `${s.fixed}`), ...s.fields];
+    ...f('ASSUMED BURST', s.predict && s.phase === 'ascent' && U.fmtAlt(s.predict.burstAlt)),
+    ...f('ERRORS FIXED', s.fixed > 0 && `${s.fixed}`), ...s.fields.map(x => ({ name: x.name, value: U.fmtText(x.value) }))];
   return `<div class="mt-dh"><b>${esc(s.serial)}</b><span>${esc(`${s.model ?? s.type} · ${SONDE_PHASE[s.phase] ?? ''}`)}</span>${onMap ? '<button class="chip" data-sdo="map">MAP</button>' : ''}${sondeUi.view !== 'sondes' ? '<button class="chip" data-sdo="cards">CARDS</button>' : ''}<button class="chip" data-sdo="close">✕</button></div>`
     + `<div class="mt-fields">${all.map(x => `<div><b>${esc(x.name)}</b><span>${esc(x.value)}</span></div>`).join('')}</div>`;
 }
@@ -7839,7 +7819,7 @@ function refreshSondes(force = false): void {
     const paths: { pts: [number, number][]; dashed?: boolean; faint?: boolean }[] = [];
     for (const s of withPos) {
       const mine = !sondeUi.sel || s.serial === sondeUi.sel;
-      items.push({ id: s.serial, lat: s.lat!, lon: s.lon!, label: `${s.serial}${s.alt !== undefined ? ` ${(s.alt / 1000).toFixed(1)} km` : ''}`, kind: 'sonde' });
+      items.push({ id: s.serial, lat: s.lat!, lon: s.lon!, label: `${s.serial}${s.alt !== undefined ? ` ${U.fmtAltShort(s.alt)}` : ''}`, kind: 'sonde' });
       paths.push({ pts: s.track.map(p => [p[0], p[1]] as [number, number]), faint: !mine });
       if (s.burst) items.push({ id: `burst:${s.serial}`, lat: s.burst.lat, lon: s.burst.lon, label: 'BURST', kind: 'burst' });
       if (s.predict && mine) { paths.push({ pts: s.predict.path, dashed: true }); items.push({ id: `land:${s.serial}`, lat: s.predict.lat, lon: s.predict.lon, label: `${s.serial} lands`, kind: 'landing' }); }
@@ -7986,7 +7966,7 @@ function uatAge(ms: number, now: number): string {
 function uatFromHere(lat: number, lon: number): { km: number; text: string } | null {
   const me = state.home ?? lastKnownPos(); if (!me) return null;
   const [km, brg] = distBearing(me, { lat, lon });
-  return { km, text: `${Math.round(km * 0.621371)} mi ${compass(brg)}` };
+  return { km, text: `${U.fmtDist(km)} ${compass(brg)}` };
 }
 function uatOpen(): void {
   configure('NONE', 978_000_000, 2e6, 32, 32, true, 'uat');
@@ -8004,10 +7984,10 @@ function uatWxCard(id: string, m: Metar, at: number, now: number): string {
   const ap = uatAirports?.get(id);
   const from = ap ? uatFromHere(ap[0], ap[1]) : null;
   const cat = m.category ?? '';
-  const f = (c: number) => Math.round(c * 9 / 5 + 32);
+  const f = (c: number) => U.tempNumber(c);
   return `<div class="mt-card ua-wx ${uatUi.sel === `wx:${id}` ? 'sel' : ''}" data-ua="wx:${esc(id)}" style="--cat:${UAT_CAT[cat] ?? 'var(--muted)'}">`
     + `<div class="mt-h"><span class="mt-id">${esc(id)}</span><span class="mt-k"><b>${esc(ap?.[2] ?? '')}</b><small>${m.hh !== undefined ? `${String(m.hh).padStart(2, '0')}:${String(m.mm).padStart(2, '0')}Z · ` : ''}${uatAge(at, now)}${from ? ` · ${from.text}` : ''}</small></span>${cat ? `<span class="ua-cat">${cat}</span>` : ''}</div>`
-    + `<div class="mt-clk"><b>${m.tempC !== undefined ? `${f(m.tempC)}°` : '—'}</b><small>F${m.tempC !== undefined ? ` · ${m.tempC}°C` : ''}${m.dewC !== undefined ? ` · dew ${f(m.dewC)}°` : ''}</small><em>${m.altimInHg !== undefined ? `${m.altimInHg.toFixed(2)} inHg` : ''}</em></div>`
+    + `<div class="mt-clk"><b>${m.tempC !== undefined ? f(m.tempC) : '—'}</b><small>${U.tempUnit()}${m.dewC !== undefined ? ` · dew ${f(m.dewC)}` : ''}</small><em>${m.altimInHg !== undefined ? `${m.altimInHg.toFixed(2)} inHg` : ''}</em></div>`
     + `<div class="lr-name">${esc(uatPlainWx(m))}</div>`
     + `<div class="lr-last ua-raw">${esc(m.raw)}</div></div>`;
 }
@@ -8037,7 +8017,7 @@ function uatDetail(now: number): string {
     return `<div class="mt-dh"><b>${esc(id)}</b><span>${esc(ap?.[2] ?? '')}${m.category ? ` · ${m.category}` : ''}</span>${close}</div>`
       + `<div class="mt-fields">${row('Observed', m.hh !== undefined ? `${String(m.hh).padStart(2, '0')}:${String(m.mm).padStart(2, '0')} UTC · ${uatAge(e.at, now)}` : uatAge(e.at, now))}${row('Wind', m.windKt === 0 ? 'calm' : m.windKt !== undefined ? `${m.windDir ?? 'variable'}° at ${m.windKt} kt${m.gustKt ? `, gusts ${m.gustKt}` : ''}` : undefined)}`
       + `${row('Visibility', m.visSm !== undefined ? `${m.visSm} statute miles` : undefined)}${row('Sky', m.sky.join(', ') || undefined)}${row('Weather', m.wx.join(' ') || undefined)}`
-      + `${row('Temperature', m.tempC !== undefined ? `${m.tempC} °C · ${Math.round(m.tempC * 9 / 5 + 32)} °F` : undefined)}${row('Dew point', m.dewC !== undefined ? `${m.dewC} °C` : undefined)}${row('Altimeter', m.altimInHg !== undefined ? `${m.altimInHg.toFixed(2)} inHg` : undefined)}</div>`
+      + `${row('Temperature', m.tempC !== undefined ? U.fmtTemp(m.tempC, 0) : undefined)}${row('Dew point', m.dewC !== undefined ? U.fmtTemp(m.dewC, 0) : undefined)}${row('Altimeter', m.altimInHg !== undefined ? `${m.altimInHg.toFixed(2)} inHg` : undefined)}</div>`
       + `<div class="ua-text">${esc(m.raw)}</div>` + tafs.map(t => `<div class="ua-text"><b>TAF</b> ${esc(t.text)}</div>`).join('') + notes.map(t => `<div class="ua-text"><b>${esc(t.kind)}</b> ${esc(t.text)}</div>`).join('');
   }
   if (kind === 'ac') {
@@ -8781,7 +8761,8 @@ function renderSettings(view: HTMLElement): void {
     ${secHtml('app', `THIS APP · ${over ? appName(over) : ''}`, appRows)}
     <section class="sset fold link" id="sec-radio" data-keys="radio gain lna vga amp agc bias tee ppm sample rate filter"><div class="sset-h">RADIO</div></section>
     <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
-    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsOn()), 'full screen fullscreen status bar address bar') : ''}</section>
+    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsOn()), 'full screen fullscreen status bar address bar') : ''}
+    ${srow('Units', 'Temperature, wind, rain, pressure, tire pressure and distances on land. Flights keep feet and knots, Ships keep knots.', segHtml((['metric', 'imperial'] as const).map(u => `<button data-setunits="${u}" class="${U.units() === u ? 'on' : ''}">${u === 'metric' ? 'METRIC' : 'IMPERIAL'}</button>`)), 'units metric imperial celsius fahrenheit km miles mph psi kpa hpa inhg')}</section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
     <div class="panel about" id="station">
       <div class="row"><input class="txin" data-st="call" placeholder="CALLSIGN" value="${state.ham.station.call}" autocapitalize="characters" spellcheck="false"><input class="txin" data-st="license" placeholder="license class (Technician, General…)" value="${state.ham.station.license}"></div>
@@ -8827,6 +8808,8 @@ function renderSettings(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); refreshSettings(); });
   const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); refreshSettings(); };
   const fs = q('#fs-toggle'); if (fs) fs.onclick = () => { setFsWanted(!fsOn()); setTimeout(refreshSettings, 300); };
+  // the app under Settings redraws at once in the new units
+  qa<HTMLButtonElement>('[data-setunits]', view).forEach(b => b.onclick = () => { U.setUnits(b.dataset.setunits as U.UnitSystem); refreshSettings(); if (settingsOver) redraw(settingsOver); });
   bindSettings(view);
   $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; refreshSettings(); } };
   attachCreditsScroller($('credits'), $('credits-roll'));
@@ -9225,7 +9208,7 @@ function renderSpotCard(s: HamSpot | undefined): void {
   const set = (k: string, val: string) => { const el = card.querySelector<HTMLElement>(`[data-f="${k}"]`); if (el && el.textContent !== val) el.textContent = val; };
   set('GRID', `${s.grid} · ${s.grid.length >= 6 ? 'subsquare' : 'square'}`);
   set('POSITION', `${s.lat.toFixed(3)}, ${s.lon.toFixed(3)} (center)`);
-  if (home) { const d = distanceBearing(home.lat, home.lon, s.lat, s.lon); set('FROM YOU', `${d.km.toFixed(d.km < 10 ? 1 : 0)} km · ${(d.km * 0.621371).toFixed(0)} mi · ${Math.round(d.deg)}°`); }
+  if (home) { const d = distanceBearing(home.lat, home.lon, s.lat, s.lon); set('FROM YOU', `${U.fmtDist(d.km)} · ${Math.round(d.deg)}°`); }
   else set('FROM YOU', 'allow location or set your grid');
   set('BAND', bandLabel(s.dial) || '—');
   set('FREQUENCY', `${freqText(s)} · ${Math.round(s.offset)} Hz audio`);
@@ -9283,27 +9266,17 @@ function refreshAdsb(): void {
   el.hidden = !adsbFull && state.adsbView !== 'list'; mapEl.hidden = !adsbFull && state.adsbView !== 'map';
   renderAcCard(state.aircraft.find(a => a.icao === state.adsbSel));
   if (paused.has('adsb')) { qa<HTMLElement>('[data-icao]', el).forEach(d => d.classList.toggle('gold', d.dataset.icao === state.adsbSel)); return; }
-  if (!state.aircraft.length) el.innerHTML = emptyState('adsb');
-  else {
-    el.querySelector('.empty')?.remove();
-    const rows = new Map(qa<HTMLElement>('[data-icao]', el).map(r => [r.dataset.icao!, r]));
-    state.aircraft.forEach((a) => {
-      let row = rows.get(a.icao);
-      if (!row) {
-        row = document.createElement('div');
-        row.className = 'acrow tap'; row.dataset.icao = a.icao;
-        row.innerHTML = '<div class="acth"></div><div class="acmid"><div><b data-r="call"></b> <span class="achex" data-r="hex"></span></div><div class="acid" data-r="id"></div><div class="acop" data-r="op"></div></div><div class="acnum"><b><span data-r="alt"></span> <i data-r="vr"></i></b><span data-r="gs"></span><small data-r="far"></small></div>';
-        row.onclick = () => {
-          state.adsbSel = row!.dataset.icao!; const p = state.aircraft.find(x => x.icao === state.adsbSel);
-          if (p?.lat !== undefined && p.lon !== undefined) { if (!adsbFull) state.adsbView = 'map'; refreshAdsb(); geo?.center(p.lat, p.lon); } else refreshAdsb();
-        };
-      }
-      rows.delete(a.icao);
-      acRowFill(row, a);
-      el.appendChild(row);   // moves an existing row into the current order
-    });
-    for (const r of rows.values()) r.remove();
-  }
+  // the list's empty state shows only while the list has no rows; the map says in its own words when none has a position
+  syncRows(el, state.aircraft, a => a.icao, 'icao', (icao) => {
+    const row = document.createElement('div');
+    row.className = 'acrow tap'; row.dataset.icao = icao;
+    row.innerHTML = '<div class="acth"></div><div class="acmid"><div><b data-r="call"></b> <span class="achex" data-r="hex"></span></div><div class="acid" data-r="id"></div><div class="acop" data-r="op"></div></div><div class="acnum"><b><span data-r="alt"></span> <i data-r="vr"></i></b><span data-r="gs"></span><small data-r="far"></small></div>';
+    row.onclick = () => {
+      state.adsbSel = row.dataset.icao!; const p = state.aircraft.find(x => x.icao === state.adsbSel);
+      if (p?.lat !== undefined && p.lon !== undefined) { if (!adsbFull) state.adsbView = 'map'; refreshAdsb(); geo?.center(p.lat, p.lon); } else refreshAdsb();
+    };
+    return row;
+  }, acRowFill, emptyState('adsb'));
   if (state.adsbView === 'map' || adsbFull) geo?.invalidate();
   geo?.setEmpty(state.aircraft.some(a => a.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('aircraft appear here once each one sends its position'));
   geo?.update(state.aircraft.filter(a => a.lat !== undefined && a.lon !== undefined).map(a => ({ id: a.icao, lat: a.lat!, lon: a.lon!, heading: a.track, label: (a.flight ?? '').trim() || a.icao.toUpperCase(), kind: 'plane' as const })), state.adsbSel);
@@ -9397,20 +9370,20 @@ function renderStationCard(s: AprsStation | undefined): void {
   const hasPos = s.lat !== undefined && s.lon !== undefined;
   set('POSITION', hasPos ? `${s.lat!.toFixed(4)}, ${s.lon!.toFixed(4)}` : 'no position');
   set('GRID', hasPos ? latLonToGrid(s.lat!, s.lon!, 8) : '—');
-  if (state.home && hasPos) { const d = distanceBearing(state.home.lat, state.home.lon, s.lat!, s.lon!); set('FROM YOU', `${d.km.toFixed(d.km < 10 ? 1 : 0)} km · ${(d.km * 0.621371).toFixed(0)} mi · ${Math.round(d.deg)}°`); }
+  if (state.home && hasPos) { const d = distanceBearing(state.home.lat, state.home.lon, s.lat!, s.lon!); set('FROM YOU', `${U.fmtDist(d.km)} · ${Math.round(d.deg)}°`); }
   else set('FROM YOU', state.home ? '—' : 'allow location to see');
   set('COURSE', s.course !== undefined ? `${Math.round(s.course)}°` : '—');
-  set('SPEED', s.speed !== undefined ? `${Math.round(s.speed * 1.15078)} mph · ${Math.round(s.speed)} kn` : '—');
-  set('ALTITUDE', s.alt !== undefined ? `${Math.round(s.alt * 3.28084).toLocaleString()} ft · ${Math.round(s.alt)} m` : '—');
+  set('SPEED', s.speed !== undefined ? U.fmtSpeedKmh(s.speed * 1.852) : '—');
+  set('ALTITUDE', s.alt !== undefined ? U.fmtAlt(s.alt) : '—');
   if (s.wx) {
     const w = s.wx;
-    set('TEMP', w.tempF !== undefined ? `${w.tempF} °F · ${((w.tempF - 32) * 5 / 9).toFixed(1)} °C` : '—');
-    set('WIND', w.windMph !== undefined ? `${w.windMph} mph${w.windDir !== undefined ? ` from ${w.windDir}°` : ''}` : '—');
-    set('GUST', w.gustMph !== undefined ? `${w.gustMph} mph` : '—');
+    set('TEMP', w.tempF !== undefined ? U.fmtTemp(U.fToC(w.tempF)) : '—');
+    set('WIND', w.windMph !== undefined ? `${U.fmtSpeedKmh(w.windMph * U.KM_PER_MI)}${w.windDir !== undefined ? ` from ${w.windDir}°` : ''}` : '—');
+    set('GUST', w.gustMph !== undefined ? U.fmtSpeedKmh(w.gustMph * U.KM_PER_MI) : '—');
     set('HUMIDITY', w.humidity !== undefined ? `${w.humidity} %` : '—');
-    set('PRESSURE', w.pressureMb !== undefined ? `${w.pressureMb.toFixed(1)} mb` : '—');
-    set('RAIN 1H', w.rain1h !== undefined ? `${(w.rain1h / 100).toFixed(2)} in` : '—');
-    set('RAIN 24H', w.rain24h !== undefined ? `${(w.rain24h / 100).toFixed(2)} in` : '—');
+    set('PRESSURE', w.pressureMb !== undefined ? U.fmtPressure(w.pressureMb) : '—');
+    set('RAIN 1H', w.rain1h !== undefined ? U.fmtRain(w.rain1h / 100 * U.MM_PER_IN) : '—');
+    set('RAIN 24H', w.rain24h !== undefined ? U.fmtRain(w.rain24h / 100 * U.MM_PER_IN) : '—');
   }
   set('HEARD', ageText(now - s.lastMs));
   set('FIRST HEARD', `${ageText(now - s.firstMs)} · ${new Date(s.firstMs).toLocaleTimeString()}`);
@@ -9596,7 +9569,7 @@ function ensureWorker(): Worker {
         const i = r.heard.findIndex(x => x.key === d.key);
         if (i >= 0) r.heard[i] = d; else r.heard.push(d);
         const h = r.hist.get(d.key) ?? [];
-        h.push({ t: d.lastSeen, s: r433HistLine(d), hz: d.hz });
+        h.push({ t: d.lastSeen, d, hz: d.hz });
         if (h.length > 40) h.shift();
         r.hist.set(d.key, h);
         refreshR433();

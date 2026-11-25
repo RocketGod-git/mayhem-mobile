@@ -2,6 +2,7 @@
  * The JS8 app: conversations, groups, stations heard, their map, the band activity waterfall, the inbox, and
  * sending through the licensed transmit path. Decodes come from the worker's JS8 receiver.
  */
+import { fmtDist } from './units.js';
 import { GeoMap, type GeoItem, mapStart, lastKnownPos, zoneGuess } from './geomap.js';
 import { distanceBearing, gridToLatLon } from './callsign.js';
 import { HB_HI_HZ, HB_LO_HZ, JS8_DIALS, JS8_MODES, TX_MAX_HZ, TX_MIN_HZ, frameSeconds, js8Mode, symSamples, type Js8Speed } from './dsp/js8/modes.js';
@@ -460,8 +461,8 @@ function heardHtml(now: number): string {
     const w = s.grid ? where(s.grid) : null;
     const sel = st.sel === s.call;
     return `<div class="j8-st ${sel ? 'sel' : ''} ${now - s.lastMs < 5 * 60_000 ? 'live' : ''}" data-j8do="station" data-j8arg="${esc(s.call)}">
-      <div class="j8-strow"><b>${esc(s.call)}</b><span class="snr">${fmtSnr(s.snr)} dB</span><span>${ago(s.lastMs, now)}</span><span>${Math.round(s.hz)} Hz</span><span>${esc(s.grid)}</span><span>${w ? `${Math.round(w.km)} km ${compass(w.deg)}` : ''}</span></div>
-      ${sel ? `<div class="j8-detail"><div class="kv"><span>Last heard</span><span>${utc(s.lastMs)} UTC · ${js8Mode(s.mode).label}</span></div><div class="kv"><span>Offset</span><span>${Math.round(s.hz)} Hz</span></div><div class="kv"><span>SNR</span><span>${fmtSnr(s.snr)} dB</span></div><div class="kv"><span>DT</span><span>${s.dt.toFixed(2)} s now · ${s.dtAvg.toFixed(2)} s average</span></div><div class="kv"><span>Drift</span><span>${s.drift.toFixed(1)} Hz/min</span></div>${s.grid ? `<div class="kv"><span>Grid</span><span>${esc(s.grid)}</span></div>` : ''}${w ? `<div class="kv"><span>From you</span><span>${Math.round(w.km)} km · ${Math.round(w.km * 0.621)} mi · ${Math.round(w.deg)}° ${compass(w.deg)}</span></div>` : ''}<div class="kv"><span>Frames</span><span>${s.heard} since ${utc(s.firstMs)} UTC</span></div>
+      <div class="j8-strow"><b>${esc(s.call)}</b><span class="snr">${fmtSnr(s.snr)} dB</span><span>${ago(s.lastMs, now)}</span><span>${Math.round(s.hz)} Hz</span><span>${esc(s.grid)}</span><span>${w ? `${fmtDist(w.km)} ${compass(w.deg)}` : ''}</span></div>
+      ${sel ? `<div class="j8-detail"><div class="kv"><span>Last heard</span><span>${utc(s.lastMs)} UTC · ${js8Mode(s.mode).label}</span></div><div class="kv"><span>Offset</span><span>${Math.round(s.hz)} Hz</span></div><div class="kv"><span>SNR</span><span>${fmtSnr(s.snr)} dB</span></div><div class="kv"><span>DT</span><span>${s.dt.toFixed(2)} s now · ${s.dtAvg.toFixed(2)} s average</span></div><div class="kv"><span>Drift</span><span>${s.drift.toFixed(1)} Hz/min</span></div>${s.grid ? `<div class="kv"><span>Grid</span><span>${esc(s.grid)}</span></div>` : ''}${w ? `<div class="kv"><span>From you</span><span>${fmtDist(w.km)} · ${Math.round(w.deg)}° ${compass(w.deg)}</span></div>` : ''}<div class="kv"><span>Frames</span><span>${s.heard} since ${utc(s.firstMs)} UTC</span></div>
         <div class="row"><button class="chip" data-j8do="chatwith" data-j8arg="${esc(s.call)}">MESSAGE</button><button class="chip" data-j8do="hbsnr" data-j8arg="${esc(s.call)}">ACK ${fmtSnr(s.snr)} dB</button>${s.grid ? `<button class="chip" data-j8do="map" data-j8arg="${esc(s.call)}">MAP</button>` : ''}</div></div>` : ''}
     </div>`;
   }).join('')}</div>`;
