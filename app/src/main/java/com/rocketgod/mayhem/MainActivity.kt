@@ -46,7 +46,7 @@ import kotlinx.coroutines.launch
  * thread. Everything after "IQ is flowing" is [com.rocketgod.mayhem.core.SdrEngine] + the Compose screen.
  */
 class MainActivity : ComponentActivity() {
-    private val status = MutableStateFlow("no radio — plug in a HackRF or an RTL-SDR via USB-OTG")
+    private val status = MutableStateFlow("no radio, plug in a HackRF or an RTL-SDR via USB-OTG, or connect one on your network in RADIO")
     private val connected = MutableStateFlow(false)
     private var rxThread: Thread? = null
 
@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
                         Thread({ HackRfUsb.portapackToHackRf(applicationContext, d) }, "portapack-switch").start()
                         status.value = "PortaPack switching to HackRF mode…"
                     }
-                    else status.value = "USB permission denied — replug to retry"
+                    else status.value = "USB permission denied, replug to retry"
                 }
                 ACTION_PIP_MUTE -> SdrEngine.toggleMute()
                 ACTION_PIP_SKIP -> Prowl.skip()

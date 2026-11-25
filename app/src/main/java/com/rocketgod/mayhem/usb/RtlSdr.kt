@@ -262,12 +262,12 @@ object RtlSdr {
                 reopenTimes.add(now)
                 if (reopenTimes.size > 6) { Diag.log("RTL-SDR: reopened the dongle 6 times in 10 s and it still fails — stopping"); break }
                 Diag.log(if (stalled) "RTL-SDR: no samples for 2 s — reopening the dongle"
-                         else "RTL-SDR: retune to %.3f MHz would not land — reopening the dongle there".format(targetFreqHz / 1e6))
+                         else "RTL-SDR: retune to %.3f MHz would not land, reopening the dongle there".format(targetFreqHz / 1e6))
                 runCatching { c.releaseInterface(device.getInterface(0)) }
                 runCatching { c.close() }
                 Thread.sleep(100)
                 val nc = mgr.openDevice(device)
-                if (nc == null) { Diag.log("RTL-SDR: could not reopen the dongle"); onStatus("RTL-SDR: lost the dongle — replug it"); break }
+                if (nc == null) { Diag.log("RTL-SDR: could not reopen the dongle"); onStatus("RTL-SDR: lost the dongle, replug it"); break }
                 c = nc; conn = nc
                 ep = claim(nc, device) ?: run { Diag.log("RTL-SDR: no bulk-IN endpoint after reopening"); null } ?: break
                 bringUp(nc, ep, onStatus)
@@ -429,7 +429,7 @@ object RtlSdr {
         var mn = 255; var mx = 0
         for (k in 0 until n) { val v = b[k].toInt() and 0xff; if (v < mn) mn = v; if (v > mx) mx = v }
         Diag.log("RTL-SDR raw: n=$n min=$mn max=$mx")
-        if (mx - mn < 3) { Diag.log("RTL-SDR: the samples barely move — check the aerial and try another USB port"); onStatus("RTL-SDR: no signal — check aerial / cable") }
+        if (mx - mn < 3) { Diag.log("RTL-SDR: the samples barely move, check the antenna and try another USB port"); onStatus("RTL-SDR: no signal, check the antenna and the cable") }
     }
 
     private fun pending() = targetFreqHz != appliedFreq || wantGain() != appliedGain ||

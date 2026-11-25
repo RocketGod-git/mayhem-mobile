@@ -765,7 +765,7 @@ function configure(mode: Mode, freq: number, rate: number, lna: number, vga: num
     // Say it plainly at the moment the app opens. A dongle that cannot reach 2.4 GHz will show a waterfall of
     // noise on the Bluetooth screen and look broken; it is not, it just cannot go there.
     const no = whyNot(radio.limits, freq, rate);
-    if (no) { log(`${radio.label}: this app ${no}.`); setStatus(`${radio.label} cannot do this one — ${no}`, true); }
+    if (no) { log(`${radio.label}: this app ${no}.`); setStatus(`${radio.label} cannot do this one, ${no}`, true); }
     rate = nearestRate(radio.limits, rate);
     state.rate = rate;
     radio.targetFreqHz = freq; radio.targetRateHz = rate;
@@ -8983,7 +8983,7 @@ function refreshReadout(): void {
   highlightBands();
   refreshFav();
   const h = q('#health'); if (h && lastHealth) h.textContent = lastHealth;
-  const ll = q('#launch-line'); if (ll) ll.textContent = lastHealth ? `${(state.freq / 1e6).toFixed(3)} MHz${state.mode === 'NONE' ? '' : ` ${state.mode}`} · ${lastHealth}` : 'no IQ yet — connect a HackRF or an RTL-SDR';
+  const ll = q('#launch-line'); if (ll) ll.textContent = lastHealth ? `${(state.freq / 1e6).toFixed(3)} MHz${state.mode === 'NONE' ? '' : ` ${state.mode}`} · ${lastHealth}` : 'no IQ yet, connect a HackRF or an RTL-SDR';
   if (!meterOwned()) setMeter(lastLevel / 40, `SIGNAL +${Math.max(0, Math.round(lastLevel))} dB`);
 }
 /** Apps that drive the card's meter themselves (Audio's channel over the noise, HAM's S-meter, sweeps' progress). */
@@ -9673,8 +9673,8 @@ async function connect(dev?: USBDevice): Promise<void> {
     lastTried = d;
     if (isMayhemSerial(d)) {
       log('That is a PortaPack in Mayhem serial mode.');
-      setStatus('PortaPack in Mayhem mode — switching…', false);
-      if (!(await portapackToHackRf(d))) { setStatus('PortaPack in serial mode — tap HackRF on its screen', false); showHint(new Error('PortaPack in Mayhem mode. CONNECT could not switch it. On the PortaPack, choose HackRF mode.')); }
+      setStatus('PortaPack in Mayhem mode, switching…', false);
+      if (!(await portapackToHackRf(d))) { setStatus('PortaPack in serial mode, tap HackRF on its screen', false); showHint(new Error('PortaPack in Mayhem mode. CONNECT could not switch it. On the PortaPack, choose HackRF mode.')); }
       return;
     }
     await ensureAudio();
@@ -10054,7 +10054,7 @@ const APP_TECH: Partial<Record<AppId, string>> = {
   uat: 'UAT · FIS-B · 978 MHZ', acars: 'ACARS · VHF AIRBAND', vdl2: 'VDL MODE 2 · 136.975 MHZ', trains: 'EOT · HOT · PTC 220 MHZ',
   ais: 'AIS · 161.975 / 162.025 MHZ', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
   subghz: 'OOK · FSK · 315–915 MHZ', js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
-  hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17 · 10 M TO 70 CM', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
+  hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
   ert: 'ERT · GRIDSTREAM · 802.15.4G', btle: 'BLE · ADVERTISING · 2.4 GHZ', sat: 'SGP4 · DOPPLER · APT · LRPT · AX.25',
   sondes: 'RS41 · DFM · M10 · 400–406 MHZ', atsc: 'ATSC 1.0 · 8VSB · PSIP', prowl: 'NFM · VOICE ACTIVITY HUNT',
   spectrum: 'FFT ANALYZER · ZERO SPAN', analyzer: 'OOK · FSK · BURST DEMOD', lookingglass: 'WIDEBAND FFT SWEEP',
@@ -10405,8 +10405,8 @@ function init(): void {
     (async () => await HackRf.remembered() ?? (RTLSDR_READY ? await RtlSdr.remembered() : undefined))().then(d => {
       if (!d || radio) return;
       const what = isRtlSdr(d) ? 'RTL-SDR' : isMayhemSerial(d) ? 'PortaPack' : 'HackRF';
-      setStatus(`${what} remembered — connecting…`, false);
-      void connect(d).catch(() => setStatus(`${what} remembered — tap CONNECT`, false));
+      setStatus(`${what} remembered, connecting…`, false);
+      void connect(d).catch(() => setStatus(`${what} remembered, tap CONNECT`, false));
     }).catch(() => undefined);
     navigator.usb.addEventListener('connect', (e) => {
       const d = e.device;

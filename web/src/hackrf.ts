@@ -252,7 +252,7 @@ export class HackRf implements Radio {
         this.ev.onLog(`HackRF raw: n=${buf.length} nonZero=${nz}/${buf.length} min=${mn} max=${mx}`);
         if (nz === 0) {
           this.ev.onLog('HackRF: RX is all-zero samples — front-end delivering nothing. Check antenna, a data-capable OTG cable / powered hub, and that a PortaPack is in HackRF mode.');
-          this.ev.onStatus('HackRF: no signal — check antenna / cable / PortaPack mode');
+          this.ev.onStatus('HackRF: no signal, check the antenna, the cable and PortaPack mode');
         } else if (nz * 50 < buf.length) {
           // A HackRF Pro at HackRF One gain settings sits well below one ADC count: not a fault, just too little gain.
           this.ev.onLog(`HackRF: RX level is under 1 LSB (${nz}/${buf.length} non-zero) — raise LNA / VGA (a HackRF Pro needs roughly 30 dB more VGA than a HackRF One).`);

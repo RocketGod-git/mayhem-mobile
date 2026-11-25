@@ -336,7 +336,7 @@ object HackRfOne {
                             if (!zeroHintShown && nz * 50 < n) {
                                 zeroHintShown = true
                                 Diag.log("HackRF: RX is all-zero samples — front-end delivering nothing. Check the antenna and a data-capable OTG cable / powered hub. (A HackRF Pro inside a PortaPack running Mayhem streams zeros to a raw-SDR host until the device is put in on-screen 'HackRF' mode.)")
-                                onStatus("HackRF: no signal — check antenna / cable / PortaPack mode")
+                                onStatus("HackRF: no signal, check the antenna, the cable and PortaPack mode")
                             }
                         }
                         for (k in 0 until n) scratch[k] = (scratch[k].toInt() xor 0x80).toByte()   // signed int8 → offset-128 uint8

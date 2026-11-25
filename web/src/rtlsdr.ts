@@ -455,8 +455,8 @@ export class RtlSdr implements Radio {
         for (let k = 0; k < buf.length; k++) { const v = buf[k]; if (v !== 0) nz++; if (v < mn) mn = v; if (v > mx) mx = v; }
         this.ev.onLog(`RTL-SDR raw: n=${buf.length} nonZero=${nz}/${buf.length} min=${mn} max=${mx}`);
         if (nz === 0) {
-          this.ev.onLog('RTL-SDR: all-zero samples — the tuner is not delivering. Check the aerial and try a different USB port.');
-          this.ev.onStatus('RTL-SDR: no signal — check aerial / cable');
+          this.ev.onLog('RTL-SDR: all-zero samples, the tuner is not delivering. Check the antenna and try a different USB port.');
+          this.ev.onStatus('RTL-SDR: no signal, check the antenna and the cable');
         }
       }
 
