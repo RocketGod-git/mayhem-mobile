@@ -1,6 +1,7 @@
 package com.rocketgod.mayhem.core.ham
 
 import com.rocketgod.mayhem.Diag
+import com.rocketgod.mayhem.core.HfComb
 import com.rocketgod.mayhem.core.IqProcessor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +53,7 @@ class HamDemod : IqProcessor {
 
     data class Params(
         val offsetHz: Double = 0.0,   // channel carrier relative to the LO
+        val loHz: Double = 0.0,       // the radio's LO, for the HF comb notch (0 = not known, no notch)
         val mode: Mode = Mode.USB,
         val lo: Double = 100.0,       // audio pass band, Hz (SSB: lo..hi; AM/NFM: hi is the half bandwidth)
         val hi: Double = 2800.0,
@@ -123,6 +125,8 @@ class HamDemod : IqProcessor {
     private val anf = AutoNotch()
     private val dcAudio = DcBlock(0.995f)
     private val sub = SubAudioDecoder(AUDIO_RATE)
+    /** Below 30 MHz the 48 k baseband first loses the 16 kHz comb's lines that are really there (HfComb). */
+    private val comb = HfComb(AUDIO_RATE, 8_000.0, Diag::log)
 
     private var tmp = FloatArray(0)
     private var bufPre = FloatArray(0)
@@ -289,6 +293,7 @@ class HamDemod : IqProcessor {
             var x = buf48
             narrowRs?.let { nB = it.process(buf48, nB, bufR); x = bufR }
             if (nB == 0) return
+            if (p.loHz > 0) { comb.tune(p.loHz, p.offsetHz - if (p.mode == Mode.CW) p.pitch else 0.0); comb.processInterleaved(x, nB) }
             m = nB
             if (p.mode == Mode.USB || p.mode == Mode.LSB || p.mode == Mode.CW) {
                 ssb.process(x, nB, o)

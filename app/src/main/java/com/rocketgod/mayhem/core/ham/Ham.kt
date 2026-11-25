@@ -203,7 +203,7 @@ object Ham {
     }
 
     private fun js8Params(dial: Long) {
-        demod.set(HamDemod.Params(offsetHz = (dial - js8Lo).toDouble(), mode = Mode.USB, lo = 100.0, hi = 3200.0, pitch = 600.0,
+        demod.set(HamDemod.Params(offsetHz = (dial - js8Lo).toDouble(), loHz = js8Lo.toDouble(), mode = Mode.USB, lo = 100.0, hi = 3200.0, pitch = 600.0,
             agc = AgcMode.SLOW, nr = false, anf = false, squelchDb = 0, volume = _state.value.volume))
     }
 
@@ -414,6 +414,7 @@ object Ham {
         demod.set(
             HamDemod.Params(
                 offsetHz = (s.channel - s.lo).toDouble(),
+                loHz = s.lo.toDouble(),
                 mode = s.mode,
                 lo = if (ssb) s.pbLo + s.shift else s.pbLo,
                 hi = if (ssb) s.pbHi + s.shift else s.pbHi,

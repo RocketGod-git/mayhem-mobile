@@ -22,6 +22,7 @@ import { fft, hann } from '../../fft.js';
 import { Ddc } from '../trains.js';
 import { RealFir, Resampler, lowpassTaps } from '../ham/filters.js';
 import { SubAudioDecoder } from '../ham/ctcss.js';
+import { COMB_TOP_HZ, CombMemory, CombNotch } from '../hfcomb.js';
 import { CwReader } from '../fleet/rx.js';
 import { HP_RASTER, hpBandOf } from './plan.js';
 import { ClipStore, ClipWriter, CLIP_RATE, planReplay, replayFromPlan, ReplayMixer, type Clip } from './clips.js';
@@ -135,8 +136,11 @@ class Probe implements WatchProbe {
   private readonly vq = new Float32Array(1 << 15); private vr = 0; private vw = 0; private primed = false;
   private stream = ''; private streamAt = -1e9;
   private readonly v48: Resampler; private v8 = new Float32Array(0);
-  constructor(rate: number, readonly offsetHz: number) {
+  /** 10 m: the HF comb's lines that are really there, taken out of the channel before the discriminator (hfcomb.ts). */
+  private readonly comb: CombNotch | null;
+  constructor(rate: number, readonly offsetHz: number, comb: ((fs: number) => CombNotch) | null = null, private readonly loHz = 0) {
     this.ddc.reset(rate); this.ddc.offsetHz = offsetHz; this.fs = this.ddc.outRate;
+    this.comb = comb ? comb(this.fs) : null; this.comb?.tune(loHz, offsetHz);
     this.sub = new SubAudioDecoder(this.fs); this.cw = new CwReader(this.fs); this.cw.onText = t => { this.cw0 = (this.cw0 ? this.cw0 + ' ' : '') + t; };
     this.lp = new RealFir(lowpassTaps(3_000 / this.fs, 47));
     this.to8 = new Resampler(CLIP_RATE / this.fs); this.to48 = new Resampler(48_000 / this.fs);
@@ -191,11 +195,12 @@ class Probe implements WatchProbe {
     if (n !== this.checks) { this.checks = n; this.lastDigitalMs = t * 1000; }
     this.snap = c.snapshot(); this.seen++;
   }
-  retune(offsetHz: number): void { this.ddc.offsetHz = offsetHz; }
+  retune(offsetHz: number): void { this.ddc.offsetHz = offsetHz; this.comb?.tune(this.loHz, offsetHz); }
   push(fi: Float32Array, fq: Float32Array, n: number, listen: boolean): void {
     const max = this.ddc.maxOut(n);
     if (this.oi.length < max) { this.oi = new Float32Array(max); this.oq = new Float32Array(max); this.au = new Float32Array(max); this.au2 = new Float32Array(max); this.a8 = new Float32Array(max); this.a48 = new Float32Array(2 * max + 16); }
     const m = this.ddc.push(fi, fq, n, this.oi, this.oq);
+    this.comb?.processSplit(this.oi, this.oq, m);
     this.cw.push(this.oi, this.oq, m);
     const win = Math.round(this.fs * OFF_WIN_MS / 1000), envWin = Math.round(this.fs * ENV_MS / 1000), au = this.au;
     for (let i = 0; i < m; i++) {
@@ -673,6 +678,11 @@ export class HamPlusEngine extends ChannelWatch<Probe> {
     super(HAM_PLAN, emit, sink, clock, perf);
     this.checkClip = true;
   }
-  protected makeProbe(hz: number): Probe { return new Probe(this.rate, hz - this.centerHz); }
+  /** What this span's 10 m channels found of the HF comb, so a new transmission starts with its lines known. */
+  private readonly combMem = new CombMemory();
+  protected makeProbe(hz: number): Probe {
+    const comb = hz < COMB_TOP_HZ ? (fs: number) => new CombNotch(fs, 7_000, line => this.emit({ type: 'log', line }), 30, this.combMem) : null;
+    return new Probe(this.rate, hz - this.centerHz, comb, this.centerHz);
+  }
 }
 export type HpSnap = ReturnType<HamPlusEngine['snapshot']>;

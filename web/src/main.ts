@@ -2401,7 +2401,7 @@ function js8Open(): void {
   js8Params();
 }
 function js8Params(): void {
-  worker?.postMessage({ type: 'hamParams', params: { offsetHz: js8Dial() - state.hamLo, mode: 'USB', lo: 100, hi: 3200, pitch: 600, agc: 'slow', nr: false, anf: false, squelchDb: 0, volume: state.ham.volume } });
+  worker?.postMessage({ type: 'hamParams', params: { offsetHz: js8Dial() - state.hamLo, loHz: state.hamLo, mode: 'USB', lo: 100, hi: 3200, pitch: 600, agc: 'slow', nr: false, anf: false, squelchDb: 0, volume: state.ham.volume } });
 }
 function js8Tune(hz: number): void {
   hz = Math.min(6_000_000_000, Math.max(1_000_000, Math.round(hz)));
@@ -2571,7 +2571,7 @@ function hamSetWidth(w: number): void {
 function hamSend(): void {
   const h = state.ham;
   const ssb = h.mode === 'USB' || h.mode === 'LSB';
-  worker?.postMessage({ type: 'hamParams', params: { offsetHz: h.freq - state.hamLo, mode: h.mode, lo: ssb ? h.lo + h.shift : h.lo, hi: ssb ? h.hi + h.shift : h.hi, pitch: h.pitch, agc: h.agc, nr: h.nr, anf: h.anf, squelchDb: h.mode === 'NFM' ? h.squelch : 0, volume: h.volume } });
+  worker?.postMessage({ type: 'hamParams', params: { offsetHz: h.freq - state.hamLo, loHz: state.hamLo, mode: h.mode, lo: ssb ? h.lo + h.shift : h.lo, hi: ssb ? h.hi + h.shift : h.hi, pitch: h.pitch, agc: h.agc, nr: h.nr, anf: h.anf, squelchDb: h.mode === 'NFM' ? h.squelch : 0, volume: h.volume } });
   refreshHamChannel();
 }
 /** Shade the demodulated pass band on the panadapter: SSB is one-sided, everything else symmetric. */

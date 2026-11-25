@@ -2,6 +2,7 @@ package com.rocketgod.mayhem.core.hamplus
 
 import com.rocketgod.mayhem.Diag
 import com.rocketgod.mayhem.core.Dsp
+import com.rocketgod.mayhem.core.HfComb
 import com.rocketgod.mayhem.core.IqProcessor
 import com.rocketgod.mayhem.core.fleet.CwReader
 import com.rocketgod.mayhem.core.ham.RealFir
@@ -160,7 +161,7 @@ val HAM_PLAN: WatchPlan = object : WatchPlan {
     override val snap = true
 }
 
-private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
+private class Probe(rate: Double, offsetHz: Double, comb: ((Double) -> HfComb)? = null, private val loHz: Double = 0.0) : WatchProbe {
     val ddc = Ddc(7_500.0, PROBE_RATE, 63)
     val fs: Double
     var oi = FloatArray(0); var oq = FloatArray(0); var au = FloatArray(0); var au2 = FloatArray(0); var a8 = FloatArray(0); override var a48 = FloatArray(0)
@@ -185,6 +186,8 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
     private val vq = FloatArray(1 shl 15); private var vr = 0L; private var vw = 0L; private var primed = false
     private var stream = ""; private var streamAt = -1e9
     private val v48 = Resampler(AUDIO_RATE / CLIP_RATE); private var v8 = FloatArray(0)
+    /** 10 m: the HF comb's lines that are really there, taken out of the channel before the discriminator (HfComb). */
+    private val comb: HfComb?
 
     init {
         ddc.reset(rate); ddc.offsetHz = offsetHz; fs = ddc.outRate
@@ -198,6 +201,7 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
         idc.onPcm = { f -> f.pcm?.let { voice(f.stream, it, VOICE_GAIN) } }
         idc.onAudio = { m, slot, pcm -> voice("$m$slot", pcm, VOICE_GAIN_P25) }
         idc.onM17Pcm = { p -> voice("m17", FloatArray(p.size) { p[it] / 32768f }, VOICE_GAIN_M17) }
+        this.comb = comb?.invoke(fs); this.comb?.tune(loHz, offsetHz)
     }
 
     /** The stream a mode's voice comes in on: only the named mode's frames play (a stray sync of another mode is no voice). */
@@ -239,12 +243,13 @@ private class Probe(rate: Double, offsetHz: Double) : WatchProbe {
         snap = c.snapshot()
     }
 
-    override fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz }
+    override fun retune(offsetHz: Double) { ddc.offsetHz = offsetHz; comb?.tune(loHz, offsetHz) }
 
     override fun push(fi: FloatArray, fq: FloatArray, n: Int, listen: Boolean) {
         val max = ddc.maxOut(n)
         if (oi.size < max) { oi = FloatArray(max); oq = FloatArray(max); au = FloatArray(max); au2 = FloatArray(max); a8 = FloatArray(max); a48 = FloatArray(2 * max + 16) }
         val m = ddc.push(fi, fq, n, oi, oq)
+        comb?.processSplit(oi, oq, m)
         cw.push(oi, oq, m)
         val win = (fs * OFF_WIN_MS / 1000).roundToInt(); val envWin = (fs * ENV_MS / 1000).roundToInt(); val au = au
         for (i in 0 until m) {
@@ -820,5 +825,10 @@ open class HamPlusEngine(
     perf: () -> Double = { System.nanoTime() / 1e6 },
 ) : ChannelWatch<WatchProbe>(HAM_PLAN, clock, perf) {
     override val checkClip = true
-    override fun makeProbe(hz: Long, key: String): WatchProbe = Probe(rate.toDouble(), (hz - centerHz).toDouble())
+    /** What this span's 10 m channels found of the HF comb, so a new transmission starts with its lines known. */
+    private val combMem = HfComb.Memory()
+    override fun makeProbe(hz: Long, key: String): WatchProbe {
+        val comb: ((Double) -> HfComb)? = if (hz < HfComb.TOP_HZ) { fs -> HfComb(fs, 7_000.0, Diag::log, 30.0, combMem) } else null
+        return Probe(rate.toDouble(), (hz - centerHz).toDouble(), comb, centerHz.toDouble())
+    }
 }

@@ -6,6 +6,7 @@
  *     AM             : channel low-pass → envelope → DC block
  *     NFM            : channel low-pass → discriminator → CTCSS/DCS tap → de-emphasis → 3 kHz low-pass, squelch
  *   then AGC (fast/slow/off) → noise reduction → auto-notch → level → 48 kHz audio to the AudioWorklet.
+ *   Below 30 MHz the 48 k baseband first loses the 16 kHz comb's lines that are really there (hfcomb.ts).
  *
  * The LO stays put while you tune inside the span (a panadapter), so the waterfall does not lurch and the
  * HackRF's DC spike stays away from the channel.
@@ -14,6 +15,7 @@ import type { Emit, IqProcessor } from '../core.js';
 import { Cic3Decimator, Agc, AutoNotch, ComplexBandpassToReal, ComplexFirDecimator, DcBlock, Mixer, NoiseReducer, RealFir, Resampler, complexBandpassTaps, lowpassTaps } from './filters.js';
 import { SubAudioDecoder } from './ctcss.js';
 import type { DigitalDecoder } from './digital.js';
+import { CombNotch } from '../hfcomb.js';
 
 
 export type HamMode = 'USB' | 'LSB' | 'CW' | 'AM' | 'NFM' | 'WFM';
@@ -22,6 +24,7 @@ export interface IqTap { onIq240(buf: Float32Array, n: number): void }
 export type AgcMode = 'off' | 'fast' | 'slow';
 export interface HamParams {
   offsetHz: number;     // channel carrier relative to the LO
+  loHz?: number;        // the radio's LO (Hz), for the HF comb notch; 0 or missing = not known, no notch
   mode: HamMode;
   lo: number;           // audio pass band, Hz (SSB: 100..hi; AM/NFM: half bandwidth is hi)
   hi: number;
@@ -78,6 +81,7 @@ export class HamDemod implements IqProcessor {
   /** CTCSS tone being received (0 = none) — a sure sign of an analog voice channel. */
   get tone(): number { return this.sub.tone; }
   private filterKey = '';
+  private comb: CombNotch | null = null;
 
   /** Digital decoders fed with the demodulated audio (after AGC, before NR/notch/volume). */
   digital: DigitalDecoder[] = [];
@@ -120,6 +124,7 @@ export class HamDemod implements IqProcessor {
     this.wfmDeCoef = 1 - Math.exp(-1 / (this.interRate * 75e-6));
     this.resampler = Math.abs(this.interRate - AUDIO_RATE) > 1 ? new Resampler(AUDIO_RATE / this.interRate) : null;
     this.filterKey = ''; this.rebuildFilters();
+    this.comb = new CombNotch(this.interRate, 8_000, line => this.emit({ type: 'log', line }));
     this.audioLp = new RealFir(lowpassTaps(3000 / this.interRate, 63));
     this.agc.setSpeed(this.params.agc === 'fast' ? 120 : 600, this.params.agc === 'fast' ? 60 : 300);
     this.nr.reset(); this.anf.reset(); this.sub.reset(this.interRate);
@@ -191,6 +196,7 @@ export class HamDemod implements IqProcessor {
     if (nB === 0) return;
     const x = this.buf48;
     m = nB;
+    if (this.comb && p.loHz) { this.comb.tune(p.loHz, p.offsetHz - (p.mode === 'CW' ? p.pitch : 0)); this.comb.processInterleaved(x, nB); }
     if (p.mode === 'USB' || p.mode === 'LSB' || p.mode === 'CW') {
       this.ssb.process(x, nB, out);
       let pw = 0; for (let i = 0; i < nB; i++) pw += out[i] * out[i];
