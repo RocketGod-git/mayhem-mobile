@@ -37,9 +37,18 @@ export interface KeyReading {
 const SETTLE_MAX = 512;
 /** Less shift than this (in discriminator units, about 2 kHz at 250 kHz) is a plain carrier, not two tones. */
 const MIN_SPREAD = 500;
-/** How many samples late the smoothed envelope says a carrier came up. */
-const LAG = 5;
-const RECENT = 32;
+/** A carrier is 10 dB over the noise to come up, and lets go below 7 dB. */
+const ON_K = 3.2, OFF_K = 2.2;
+/**
+ * A mark's edges are cut halfway between the noise and the mark's own level, where the smoothed envelope's rise
+ * and fall cross at the same delay, so widths come out true at any strength. It lets go this share of the way
+ * below that middle.
+ */
+const MARK_HYST = 0.15;
+/** How long a rising mark is watched for its level before it is cut, in us. */
+const RISE_US = 96;
+/** Samples kept for backdating an edge (256 us at 250 kHz). */
+const RECENT = 64;
 
 /**
  * A 24-bit frame as the 12 tri-state symbols of a PT2262-style encoder, when it is one: every bit pair is 00 (0),
@@ -60,14 +69,18 @@ const hex = (v: bigint, w = 1) => v.toString(16).toUpperCase().padStart(w, '0');
 
 /**
  * Levels and durations from one channel. A carrier is present while the envelope stands about ten decibels over
- * the noise (seven to let go, so a dip does not chop a mark in two); while it is, the frequency is "high" above
- * its own running middle, which tracks wherever in the channel the transmitter actually sits.
+ * the noise (seven to let go, so a dip does not chop it in two); while it is, the frequency is "high" above its
+ * own running middle, which tracks wherever in the channel the transmitter actually sits. The on-off stream is
+ * cut separately, at the middle of each mark (see MARK_HYST).
  */
 export class KeySlicer {
-  private usPer = 4;
+  private usPer = 4; private riseMax = 24;
   private noise = 0; private noiseN = 0;
   private on = false; private fmHi = 0; private fmLo = 0; private bufHi = 0; private away = 0; private skip = 0;
-  private readonly recent = new Float32Array(RECENT); private recentAt = 0;
+  /** The on-off mark: up, being measured, its level and middle, and samples it has stood below that middle. */
+  private mark = false; private rising = false; private riseN = 0; private peak = 0;
+  private lvl = 0; private mid = 0; private hyst = 0; private below = 0; private quiet = 0;
+  private readonly recent = new Float32Array(RECENT); private readonly recentEnv = new Float32Array(RECENT); private recentAt = 0;
   private readonly settle: number[] = []; private settled = true;
   private ookLvl = false; private ookRun = 0;
   private fmLvl = false; private fmRun = 0;
@@ -76,37 +89,82 @@ export class KeySlicer {
 
   reset(rate: number): void {
     this.usPer = 1e6 / rate;
+    this.riseMax = Math.max(8, Math.min(RECENT - 16, Math.round(RISE_US / this.usPer)));
     this.noise = 0; this.noiseN = 0; this.on = false; this.fmHi = 0; this.fmLo = 0;
-    this.recent.fill(0); this.recentAt = 0; this.settle.length = 0; this.settled = true;
+    this.mark = false; this.rising = false; this.below = 0; this.quiet = 0;
+    this.recent.fill(0); this.recentEnv.fill(0); this.recentAt = 0; this.settle.length = 0; this.settled = true;
     this.ookLvl = false; this.ookRun = 0; this.fmLvl = false; this.fmRun = 0;
   }
 
+  /** The envelope `k` samples before the newest. */
+  private envAt(k: number): number { return this.recentEnv[(this.recentAt - 1 - k + RECENT * 2) & (RECENT - 1)]; }
+
+  /**
+   * A rising mark has shown its level: cut it where the envelope crossed the middle, backdating the on-off stream
+   * (and the carrier, if this starts one) to that sample.
+   */
+  private markUp(): void {
+    this.rising = false;
+    const level = this.peak;
+    this.mid = (this.noise + level) / 2; this.hyst = (level - this.noise) * MARK_HYST; this.lvl = level;
+    let k = 0;
+    while (k < RECENT - 1 && this.envAt(k) < this.mid) k++;
+    const tail = k;
+    while (k < RECENT - 1 && this.envAt(k) >= this.mid) k++;
+    if (k === tail) return;
+    const up = k - 1;
+    const back = Math.min(up, this.ookRun - 1);
+    if (this.ookRun - back > 0) this.onOok(false, Math.round((this.ookRun - back) * this.usPer));
+    this.ookLvl = true; this.ookRun = back;
+    // the current sample is counted again below
+    this.mark = true; this.below = Math.max(0, tail - 1);
+    if (this.on) return;
+    // a new carrier: the backdated samples start the frequency's settling
+    this.on = true;
+    const fb = Math.max(0, Math.min(up, this.fmRun - 1));
+    this.fmRun -= fb;
+    this.settle.length = 0; this.bufHi = 0; this.away = 0;
+    for (let j = fb; j >= 1; j--) this.settle.push(this.recent[(this.recentAt - 1 - j + RECENT * 2) & (RECENT - 1)]);
+    this.skip = Math.min(this.settle.length, 3) + 3;
+    this.settled = false;
+  }
+
   process(env: Int16Array, fm: Int16Array, n: number): void {
-    const usPer = this.usPer, recent = this.recent;
+    const usPer = this.usPer, recent = this.recent, recentEnv = this.recentEnv;
     for (let i = 0; i < n; i++) {
       const e = env[i], f = fm[i];
-      recent[this.recentAt] = f; this.recentAt = (this.recentAt + 1) & (RECENT - 1);
-      if (!this.on) {
-        // the noise level, settled quickly at first and slowly after
+      recent[this.recentAt] = f; recentEnv[this.recentAt] = e; this.recentAt = (this.recentAt + 1) & (RECENT - 1);
+      if (!this.mark && !this.rising) this.quiet++;
+      // the noise level, settled quickly at first and slowly after. It is read a rise's length late and only well
+      // clear of a mark, so neither a mark's tail nor the start of the next one (before it trips the line) counts.
+      if (!this.on && !this.rising && this.quiet > this.riseMax * 2) {
         this.noiseN++;
-        this.noise += (e - this.noise) / (this.noiseN < 256 ? this.noiseN : 256);
+        this.noise += (this.envAt(this.riseMax) - this.noise) / (this.noiseN < 256 ? this.noiseN : 256);
       }
-      if (!this.on && this.noiseN > 64 && e > this.noise * 3.2) {
-        this.on = true;
-        // The envelope is smoothed, so it crosses the line a few samples after the carrier really came up: those
-        // samples belong to the mark, in both streams, and they start the frequency's settling.
-        const back = Math.min(LAG, this.ookLvl ? 0 : this.ookRun - 1, this.fmRun - 1);
-        if (this.ookRun - back > 0) this.onOok(false, Math.round((this.ookRun - back) * usPer));
-        this.ookLvl = true; this.ookRun = back;
-        this.fmRun -= back;
-        this.settle.length = 0; this.bufHi = 0; this.away = 0;
-        for (let k = back; k >= 1; k--) this.settle.push(recent[(this.recentAt - 1 - k + RECENT * 2) & (RECENT - 1)]);
-        this.skip = this.settle.length + 3;
-        this.settled = false;
-      } else if (this.on && e < this.noise * 2.2) this.on = false;
-      const on = this.on;
-      if (on === this.ookLvl) this.ookRun++;
-      else { this.onOok(this.ookLvl, Math.round(this.ookRun * usPer)); this.ookLvl = on; this.ookRun = 1; }
+      if (this.rising) {
+        // the mark's level: the highest 4-sample average while it rises, until it levels off or falls back
+        this.riseN++;
+        const s4 = (e + this.envAt(1) + this.envAt(2) + this.envAt(3)) / 4;
+        if (s4 > this.peak) this.peak = s4;
+        if (this.riseN >= this.riseMax || (this.riseN >= 4 && s4 < this.peak * 0.75)) this.markUp();
+      } else if (!this.mark && this.noiseN > 64 && e > (this.on ? Math.max(this.noise * ON_K, this.mid + this.hyst) : this.noise * ON_K)) {
+        this.rising = true; this.riseN = 0; this.peak = 0; this.quiet = 0;
+      }
+      if (this.mark) {
+        if (e >= this.mid) { this.below = 0; this.lvl += (e - this.lvl) / 32; this.mid = (this.noise + this.lvl) / 2; this.hyst = (this.lvl - this.noise) * MARK_HYST; }
+        else this.below++;
+        if (e < this.mid - this.hyst) {
+          // down: the samples since it fell through the middle are the space
+          this.mark = false;
+          const back = Math.min(this.below - 1, this.ookRun - 1);
+          if (this.ookRun - back > 0) this.onOok(true, Math.round((this.ookRun - back) * usPer));
+          this.ookLvl = false; this.ookRun = back;
+        }
+      }
+      if (this.on && !this.mark && !this.rising && e < this.noise * OFF_K) this.on = false;
+      const on = this.on, mark = this.mark;
+      if (mark === this.ookLvl) this.ookRun++;
+      else { this.onOok(this.ookLvl, Math.round(this.ookRun * usPer)); this.ookLvl = mark; this.ookRun = 1; }
       // The first few samples of a carrier only settle the middle and the size of the shift; once they have, they
       // are read with the rest, so none of the mark is lost to it.
       if (on && !this.settled) {
@@ -174,6 +232,7 @@ export class KeySlicer {
     if (this.fmRun) this.onFsk(this.fmLvl, Math.round(this.fmRun * usPer));
     this.onOok(false, 50_000); this.onFsk(false, 50_000);
     this.ookLvl = false; this.ookRun = 0; this.fmLvl = false; this.fmRun = 0; this.on = false;
+    this.mark = false; this.rising = false; this.below = 0;
   }
 }
 
@@ -191,9 +250,30 @@ export class KeyDecoders {
     const pp = ppAll();
     this.pirAm = pp.am; this.pirFm = pp.fm; this.pirFmInv = ppAll().fm;
     for (const p of [...this.pirAm, ...this.pirFm, ...this.pirFmInv]) p.onHit = (h) => this.onPirate(h);
-    this.slicer = new KeySlicer(
-      (l, us) => { for (const p of this.protos) p.feed(l, us); for (const p of this.pirAm) p.feed(l, us); },
-      (l, us) => { for (const p of this.pirFm) p.feed(l, us); for (const p of this.pirFmInv) p.feed(!l, us); });
+    this.slicer = new KeySlicer((l, us) => this.ook(l, us), (l, us) => this.fsk(l, us));
+  }
+
+  /** One on-off level and how long it lasted. */
+  ook(l: boolean, us: number): void { for (const p of this.protos) p.feed(l, us); for (const p of this.pirAm) p.feed(l, us); }
+  /** One frequency level and how long it lasted. */
+  fsk(l: boolean, us: number): void { for (const p of this.pirFm) p.feed(l, us); for (const p of this.pirFmInv) p.feed(!l, us); }
+
+  /**
+   * Known pulse widths (signed us, positive high, as a Flipper `.sub` holds them), straight to the decoders, as
+   * the slicer would hand them over: quiet first, and a long silence after. For FSK the carrier is up throughout.
+   */
+  feedPulses(us: number[], fsk: boolean): void {
+    let lvl = false, run = 50_000, total = 0;
+    const put = fsk ? (l: boolean, d: number) => this.fsk(l, d) : (l: boolean, d: number) => this.ook(l, d);
+    for (const x of us) {
+      if (!x) continue;
+      const l = x > 0, d = Math.abs(x);
+      total += d;
+      if (l === lvl) run += d;
+      else { put(lvl, run); lvl = l; run = d; }
+    }
+    put(lvl, run); put(false, 50_000);
+    if (fsk) { this.ook(false, 50_000); this.ook(true, total); this.ook(false, 50_000); }
   }
 
   /**

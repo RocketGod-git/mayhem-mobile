@@ -786,7 +786,8 @@ function analyzerImport(name: string, bytes: Uint8Array): void {
   if (/\.sub$/i.test(name)) {
     const sub = parseSub(new TextDecoder().decode(bytes));
     if (!sub) note = 'not a RAW .sub file (a decoded .sub holds a key, not pulses)';
-    else count = captureFile(synthesize(sub.pulses, sub.fsk), 1_000_000, name, send);
+    // the samples are for the views; the decoders read the file's own pulse widths
+    else count = captureFile(synthesize(sub.pulses, sub.fsk), 1_000_000, name, send, sub);
   } else {
     const rate = rateFromName(name) ?? 2_000_000;
     count = captureFile(fromIqFile(bytes, name), rate, name, send);

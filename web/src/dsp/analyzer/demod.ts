@@ -110,6 +110,24 @@ export function carrierOf(env: Int16Array, n: number, noise: number): Uint8Array
   return on;
 }
 
+/**
+ * The level of an on-off burst's marks: the mean of the carrier's samples in the upper half between the noise and
+ * that mean, refined twice, so the edges' rise and fall do not pull it down.
+ */
+export function markLevel(envOn: ArrayLike<number>, noise: number): number {
+  if (!envOn.length) return noise * ON_K;
+  let hi = 0;
+  for (let i = 0; i < envOn.length; i++) hi += envOn[i];
+  hi /= envOn.length;
+  for (let it = 0; it < 2; it++) {
+    const t = (noise + hi) / 2;
+    let s = 0, c = 0;
+    for (let i = 0; i < envOn.length; i++) if (envOn[i] >= t) { s += envOn[i]; c++; }
+    if (c) hi = s / c;
+  }
+  return hi;
+}
+
 /** Two-means on a set of values: the two centers, the share in the upper one, and the spread within them. */
 export function twoMeans(v: ArrayLike<number>, count = v.length): { a: number; b: number; share: number; sd: number } {
   if (!count) return { a: 0, b: 0, share: 0, sd: 0 };
@@ -427,9 +445,11 @@ export function analyze(env: Int16Array, fm: Int16Array, n: number, rate: number
     let lo: number, hi: number;
     if (m === 'FSK') { lo = fmT.a; hi = fmT.b; }
     else if (m === 'ASK') { lo = envT.a; hi = envT.b; }
-    else { lo = noise; hi = envOn.length ? envOn.reduce((x, y) => x + y, 0) / envOn.length : noise * ON_K; if (envT.share < 0.9 && askLike) hi = envT.b; }
+    else { lo = noise; hi = markLevel(envOn, noise); if (envT.share < 0.9 && askLike) hi = envT.b; }
     if (hi <= lo) hi = lo + 1;
-    const thrAuto = m === 'OOK' ? Math.min(0.5, Math.max(0.15, (noise * ON_K - lo) / (hi - lo))) : 0.5;
+    // halfway between the levels: the smoothed envelope rises and falls through it at the same delay, so widths
+    // come out true however strong the burst
+    const thrAuto = 0.5;
     const thr = thrO ?? thrAuto;
     const cut = lo + thr * (hi - lo);
     // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits

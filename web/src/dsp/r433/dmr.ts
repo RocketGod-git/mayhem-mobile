@@ -136,6 +136,10 @@ export class DmrSpot {
         let m = 0; for (let i = 0; i < 24; i++) m += at(bx + i * sps); m /= 24;
         let lvl = 0; for (let i = 0; i < 24; i++) lvl += (at(bx + i * sps) - m) * S.sig[i]; lvl /= 24;
         if (lvl <= 0) continue;
+        // DMR holds its carrier: an on-off keyed burst, whose spaces read as noise, is not one
+        let held = true;
+        for (let k = Math.max(0, Math.round(bx - 5 * sps)), e = Math.min(n, Math.round(bx + 29 * sps)); k < e && held; k++) held = p[k] >= top * 0.1;
+        if (!held) break;
         // dibits 61 to 65 and 90 to 94 of the 144-dibit burst (sync at 66): the 20-bit slot type
         const dib = (j: number) => { const v = (at(bx + (j - 66) * sps) - m) / lvl * 3; return v >= 2 ? 1 : v >= 0 ? 0 : v >= -2 ? 2 : 3; };
         let st = 0;

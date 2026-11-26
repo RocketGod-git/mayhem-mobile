@@ -9,6 +9,8 @@ import type { PPDecoder, PPHit } from './pirate/pp-base.js';
 import { ppAll } from './pirate/protos.js';
 
 const STATE_IDLE = 0, STATE_PULSE = 1, STATE_GAP_START = 2, STATE_GAP = 3, MIN_HIGH = 4, MAX_HIGH = 60000;
+/** Less shift than this (radians a sample, about 1.6 kHz at 500 kHz) is a plain carrier, not two tones. */
+const FM_MIN_SPREAD = 0.02;
 const hex = (v: bigint, w = 8) => v.toString(16).toUpperCase().padStart(w, '0');
 
 export class IsmDecoder implements IqProcessor {
@@ -27,8 +29,8 @@ export class IsmDecoder implements IqProcessor {
   private readonly pirAm: PPDecoder[];
   private readonly pirFm: PPDecoder[];
   private readonly pirFmInv: PPDecoder[];
-  // FSK front end: phase step between decimated samples, smoothed, sliced around its own running middle
-  private fmPrevI = 0; private fmPrevQ = 0; private fmLP = 0; private fmMid = 0;
+  // FSK front end: phase step between decimated samples, smoothed, sliced at the middle between its two tones
+  private fmPrevI = 0; private fmPrevQ = 0; private fmLP = 0; private fmHi = 0; private fmLo = 0;
   private fmWasPresent = false; private fmLevel = false;
   private fmDurNs = 0;
 
@@ -108,19 +110,25 @@ export class IsmDecoder implements IqProcessor {
   }
 
   /**
-   * One decimated sample through the FSK slicer: while a carrier is up (the OOK tracker says so), the smoothed
+   * One decimated sample through the FSK slicer: while a carrier is up (the OOK slicer reads high), the smoothed
    * phase step above its running middle is "high"; pulses of each level go to the FM decoders.
    */
   private fmSample(ci: number, cq: number): void {
     const d = Math.atan2(ci * this.fmPrevQ - cq * this.fmPrevI, ci * this.fmPrevI + cq * this.fmPrevQ);
     this.fmPrevI = ci; this.fmPrevQ = cq;
     this.fmLP += 0.5 * (d - this.fmLP);
-    const present = this.state !== STATE_IDLE;
+    // the carrier as the on-off slicer reads it: its gap states hold through noise, which has no middle
+    const present = this.currentHiLow;
     let level = false;
     if (present) {
-      if (!this.fmWasPresent) this.fmMid = this.fmLP;
-      this.fmMid += 0.01 * (this.fmLP - this.fmMid);
-      level = this.fmLP > this.fmMid;
+      // the tones as a high and a low that jump to a new extreme and relax slowly (a running mean drifts toward
+      // whichever tone is held, and cuts a long run short)
+      const x = this.fmLP;
+      if (!this.fmWasPresent) { this.fmHi = x; this.fmLo = x; }
+      this.fmHi += (x - this.fmHi) * (x > this.fmHi ? 0.25 : 1 / 512);
+      this.fmLo += (x - this.fmLo) * (x < this.fmLo ? 0.25 : 1 / 512);
+      const spread = this.fmHi - this.fmLo, mid = (this.fmHi + this.fmLo) / 2, h = spread * 0.15;
+      level = spread < FM_MIN_SPREAD ? false : x > mid + h ? true : x < mid - h ? false : this.fmLevel;
     }
     this.fmWasPresent = present;
     if (level === this.fmLevel && this.fmDurNs < 30_000_000) this.fmDurNs += this.nsPerSamp;

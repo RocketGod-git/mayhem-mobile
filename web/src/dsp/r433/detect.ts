@@ -27,6 +27,7 @@ export const PD_MAX_GAP_RATIO = 10;                  // a gap this many times th
 
 const OOK_MAX_HIGH_LEVEL = 16384;                    // 0 dB, full scale
 const OOK_EST_HIGH_RATIO = 64;                       // how slowly the carrier-level estimate moves
+const OOK_EST_HIGH_UP = 8;                           // and how quickly it climbs to a stronger carrier
 const OOK_EST_LOW_RATIO = 1024;                      // how slowly the noise-level estimate moves — very slowly
 const FSK_EST_SLOW = 64;
 
@@ -217,7 +218,10 @@ export class PulseDetect {
               this.ookState = OokState.GapStart;
             }
           } else {
-            this.highEstimate += ((amp / OOK_EST_HIGH_RATIO) | 0) - ((this.highEstimate / OOK_EST_HIGH_RATIO) | 0);
+            // Up quickly, down slowly: from its start at 3x the noise, a slow climb holds the line near the noise
+            // for a strong burst's first marks, and each reads long and its space short.
+            const r = amp > this.highEstimate ? OOK_EST_HIGH_UP : OOK_EST_HIGH_RATIO;
+            this.highEstimate += ((amp / r) | 0) - ((this.highEstimate / r) | 0);
             if (this.highEstimate < OOK_MIN_HIGH_LEVEL) this.highEstimate = OOK_MIN_HIGH_LEVEL;
           }
           if (this.ook.numPulses === 0) this.fsk.step(fm[n], this.fskPulses);
@@ -311,4 +315,41 @@ export class PulseDetect {
       onBurst(PulseKind.OOK, this.ook);
     }
   }
+}
+
+/**
+ * Known pulse widths (signed us, positive high, as a Flipper `.sub` holds them) cut into bursts the way the
+ * detector would cut a live signal, at 1 MHz so every width is exact: glitches under PD_MIN_PULSE_SAMPLES at
+ * 250 kHz are folded in, and a burst ends on a long enough gap or a full buffer.
+ */
+export function exactBursts(us: number[], fsk: boolean, onBurst: BurstFn): void {
+  const rate = 1_000_000, minUs = PD_MIN_PULSE_SAMPLES * 4;
+  const runs: number[] = [];
+  for (const x of us) {
+    if (!x) continue;
+    const last = runs.length - 1;
+    if (last >= 0 && (Math.sign(runs[last]) === Math.sign(x) || (!fsk && Math.abs(x) < minUs && runs.length > 1))) {
+      // same level, or an OOK glitch: part of the run before it
+      runs[last] += Math.sign(runs[last]) * Math.abs(x);
+    } else runs.push(x);
+  }
+  const p = emptyPulses(rate, fsk);
+  let maxPulse = 0;
+  const send = () => { if (p.numPulses) onBurst(fsk ? PulseKind.FSK : PulseKind.OOK, p); clearPulses(p); maxPulse = 0; };
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i];
+    if (r > 0) {
+      p.pulse[p.numPulses] = r;
+      if (r > maxPulse) maxPulse = r;
+      continue;
+    }
+    const gap = -r;
+    // a space before any mark is the quiet ahead of the burst
+    if (i === 0) continue;
+    p.gap[p.numPulses] = gap;
+    p.numPulses++;
+    if (p.numPulses >= PD_MAX_PULSES || (gap > PD_MAX_GAP_RATIO * maxPulse && gap > PD_MIN_GAP_MS * 1000) || gap > PD_MAX_GAP_MS * 1000) send();
+  }
+  if (runs.length && runs[runs.length - 1] > 0) { p.gap[p.numPulses] = PD_MAX_GAP_MS * 1000; p.numPulses++; }
+  send();
 }

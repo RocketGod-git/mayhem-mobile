@@ -13,7 +13,7 @@
 import type { Emit, IqProcessor } from '../core.js';
 import { BurstChannels, MAX_CHANNELS, type BurstChannel } from '../r433/channels.js';
 import { KeyDecoders, type KeyReading } from '../r433/keys.js';
-import { PulseDetect, type PulseKind } from '../r433/detect.js';
+import { PulseDetect, exactBursts, type PulseKind } from '../r433/detect.js';
 import { R433 } from '../r433/runner.js';
 import type { PulseData } from '../r433/slicers.js';
 import { carrierOf, noiseOf, twoMeans } from './demod.js';
@@ -91,6 +91,11 @@ export class AnalyzerCapture implements IqProcessor {
   /** Stop keeping new bursts (the decoders and the finder carry on). */
   paused = false;
   src: string | undefined;
+  /**
+   * For a file of known pulse widths (a `.sub`): what the decoders made of the pulses heard between two times, in
+   * seconds. Set, it stands in for reading the channels, so an import does not depend on the slicer.
+   */
+  exact: ((t0: number, t1: number) => string[]) | null = null;
   /** Ended bursts not yet passed on, and the last few passed on, for the splatter check. */
   private readonly held: { b: Burst; end: number; spread: number }[] = [];
   private readonly recent: { t0: number; t1: number; hz: number; snr: number; spread: number }[] = [];
@@ -177,8 +182,10 @@ export class AnalyzerCapture implements IqProcessor {
       s.t = this.offsetS + this.channels.startOf(ch.slot) / this.rate;
       s.pd.setSampleRate(ch.rate); s.pd.reset(); s.keys.slicer.reset(ch.rate); s.keys.slicer.flush(); s.keys.reset();
     }
-    s.pd.process(env, fm, n, this.sink);
-    s.keys.slicer.process(env, fm, n);
+    if (!this.exact) {
+      s.pd.process(env, fm, n, this.sink);
+      s.keys.slicer.process(env, fm, n);
+    }
     const cap = Math.round(ch.rate * MAX_BURST_S);
     const take = Math.min(n, cap - s.n);
     if (take <= 0 || this.paused) return;
@@ -199,6 +206,7 @@ export class AnalyzerCapture implements IqProcessor {
     this.cur = ch.slot;
     s.pd.flush(this.sink);
     s.keys.slicer.flush();
+    if (this.exact) for (const m of this.exact(s.t, this.offsetS + this.channels.samples / this.rate)) s.matches.add(m);
     if (this.paused || s.n < 16) return;
     const n = s.n;
     for (const f of zwMatches(s.iq, n, s.rate)) s.matches.add(`Z-Wave: ${f.home} ${f.src}→${f.dst} ${zwDescribe(f).text}`);
@@ -248,10 +256,14 @@ export class AnalyzerProcessor implements IqProcessor {
  * Run a whole recording through a fresh capture: an imported .cu8 / .cs8 (or a Flipper .sub turned back into
  * samples). The file is read in the same blocks a radio delivers, then a moment of silence lets the last burst go.
  */
-export function captureFile(iq: Int8Array, rate: number, src: string, onBurst: (b: Burst) => void): number {
+export function captureFile(iq: Int8Array, rate: number, src: string, onBurst: (b: Burst) => void, exact?: { pulses: number[]; fsk: boolean }): number {
   let count = 0;
   const cap = new AnalyzerCapture(b => { count++; onBurst(b); });
   cap.src = src;
+  if (exact) {
+    const segs = exactMatches(exact.pulses, exact.fsk);
+    cap.exact = (t0, t1) => segs.filter(g => g.t0 < t1 && g.t1 > t0).flatMap(g => g.matches);
+  }
   cap.reset(rate);
   const block = 262144;
   for (let p = 0; p < iq.length; p += block) cap.onIq(iq.subarray(p, Math.min(iq.length, p + block)), rate);
@@ -262,6 +274,41 @@ export function captureFile(iq: Int8Array, rate: number, src: string, onBurst: (
   cap.onIq(quiet, rate);
   cap.finish();
   return count;
+}
+
+/** A quiet this long (us) parts two bursts of a file, as the finder would part them (it lets go after 60 ms). */
+const EXACT_SPLIT_US = 50_000;
+
+/**
+ * Every Devices decoder (car keys, remotes and sensors, rtl_433) run on a `.sub` file's own pulse widths, burst by
+ * burst, with when each burst sits in the samples `synthesize` makes of the file (its 0.1 s lead, each pulse capped
+ * at 0.2 s, as there).
+ */
+export function exactMatches(pulses: number[], fsk: boolean): { t0: number; t1: number; matches: string[] }[] {
+  const out: { t0: number; t1: number; matches: string[] }[] = [];
+  const keys = new KeyDecoders(r => cur.add(matchLabel(r)));
+  const radio = new R433();
+  let cur = new Set<string>();
+  let t = 0.1, start = -1, seg: number[] = [];
+  const end = (t1: number) => {
+    if (!seg.length) return;
+    cur = new Set();
+    keys.reset(); keys.feedPulses(seg, fsk);
+    exactBursts(seg, fsk, (kind, p) => {
+      for (const r of radio.run(kind, p)) if (!r.dev.disabled) cur.add(`protocol ${r.dev.num}: ${r.data.model}${r.data.id !== undefined ? ` ${r.data.id}` : ''}`);
+    });
+    out.push({ t0: start, t1, matches: [...cur] });
+    seg = []; start = -1;
+  };
+  for (const p of pulses) {
+    const d = Math.min(Math.abs(p), 200_000);
+    if (p < 0 && d >= EXACT_SPLIT_US) { end(t); t += d / 1e6; continue; }
+    if (start < 0) start = t;
+    seg.push(p);
+    t += d / 1e6;
+  }
+  end(t);
+  return out;
 }
 
 /** What the person keeps: bursts outside these are dropped as they arrive (counted, not shown). */
