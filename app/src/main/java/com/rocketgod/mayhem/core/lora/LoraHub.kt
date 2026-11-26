@@ -81,9 +81,19 @@ class LoraHub(val log: PacketLog) {
         scanner.onLora = { _, _ -> _bursts.value = _bursts.value + 1 }
     }
 
+    /** Why the span was stepped down because the radio lost samples ("" when it wasn't), for the screen. */
+    val deliveryNote = MutableStateFlow("")
+    /** Frames dropped because samples went missing inside them ([LoraScanner.gap]). */
+    val torn: Int get() = scanner.torn
+
     fun clear() = synchronized(lock) {
         byKey.clear(); order.clear(); count = 0; _nodes.value = emptyList(); _events.value = emptyList(); _bursts.value = 0; _frames.value = 0
+        scanner.torn = 0
     }
+
+    /** Samples went missing [back] samples before the newest one the scanner was given, to within [slack]: a frame the
+     *  gap lands in is dropped rather than decoded as garbage. */
+    fun gap(back: Long, slack: Long = 0) = scanner.gap(back, slack)
 
     fun heard(h: LoraHeard) = synchronized(lock) { take(h) }
 

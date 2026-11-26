@@ -169,7 +169,7 @@ fun LoraScreen(accent: Color) {
         }
         if (wide) {
             // LOCAL follows the area; a band tile is the user's own pick, kept until LOCAL is tapped again
-            val localHz = remember(localTick, area) { LoraLocal.wideCenter(area) ?: LoraPlan.homeBand().center }
+            val localHz = remember(localTick, area, rate) { LoraLocal.wideCenter(area, rate) ?: LoraPlan.homeBand().center }
             val userWide = remember(pickTick, localTick) { SdrEngine.savedLong("lora_user_wide") }
             val tiles = listOf(Tile("LOCAL", LoraLocal.title(area), userWide == 0L && freq == localHz)) +
                 LoraPlan.bands.map { Tile(it.title, it.sub, userWide != 0L && freq == it.center) }
@@ -186,15 +186,22 @@ fun LoraScreen(accent: Color) {
                 SdrEngine.saveLong("lora_user_narrow", chans[i].hz); SdrEngine.tune(chans[i].hz + 300_000); pickTick++
             }
         }
-        val whyWide = Radio.rateWhy(LoraScanner.RATE)
+        // 10 MHz opens; 20 is by hand. A span picked by hand is tried again even where the radio lost samples before
+        val spans = listOf(LoraScanner.RATE, LoraScanner.MAX_RATE)
+        val whys = spans.map { Radio.rateWhy(it) }
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             RowLabel("SPAN")
-            SegBar(listOf("2 MHz", if (midSpan) "${rate / 1_000_000} MHz" else "20 MHz"), if (rate > 2_400_000) 1 else 0, accent, Modifier.weight(1f),
-                tints = listOf(null, if (whyWide.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null)) {
+            SegBar(listOf("2 MHz", if (midSpan) "${rate / 1_000_000} MHz" else "10 MHz", "20 MHz"),
+                if (rate <= 2_400_000) 0 else if (rate < LoraScanner.MAX_RATE) 1 else 2, accent, Modifier.weight(1f),
+                tints = listOf(null) + whys.map { if (it.isNotEmpty()) Palette.muted.copy(alpha = 0.45f) else null }) {
                 if (it == 0) {
                     if (rate > 2_400_000) { SdrEngine.setRate(2_000_000); SdrEngine.tune(Apps.loraNarrowStart()) }
-                } else gated(whyWide) {
-                    if (rate < LoraScanner.RATE) { Apps.lora.narrowed.value = 0; SdrEngine.setRate(LoraScanner.RATE); SdrEngine.tune(Apps.loraWideStart()) }
+                } else gated(whys[it - 1]) {
+                    val to = spans[it - 1]
+                    if (rate != to) {
+                        Apps.lora.narrowed.value = 0; Apps.lora.deliveryNote.value = ""; Apps.loraCap = 0
+                        SdrEngine.setRate(to); SdrEngine.tune(Apps.loraWideStart(to))
+                    }
                 }()
             }
             IconBox(TuneIcon, "Your own channel", Modifier.fillMaxHeight()) { customOpen = true }
@@ -203,8 +210,9 @@ fun LoraScreen(accent: Color) {
         if (mine != null)
             Text("YOUR CHANNEL · %.4f MHz · %s · SF%d".format(mine.hz / 1e6, LoraHub.bwName(mine.bw), mine.sf),
                 color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val losing by Apps.lora.deliveryNote.collectAsState()
         if (narrowed != 0 && narrowed == rate)
-            Text("Span narrowed to ${rate / 1_000_000} MHz: this device fell behind at a wider one. Tap 20 MHz to try again.",
+            Text(losing.ifEmpty { "Span narrowed to ${rate / 1_000_000} MHz: this device fell behind at a wider one. Tap a wider span to try again." },
                 color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 2, overflow = TextOverflow.Ellipsis)
         if (customOpen) LoraCustomDialog(accent) { customOpen = false }
     }, body = {
@@ -212,7 +220,8 @@ fun LoraScreen(accent: Color) {
         Column(Modifier.fillMaxWidth().weight(1.6f).padding(top = d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             val by = nodes.groupingBy { it.proto }.eachCount()
             val parts = listOf("Meshtastic", "MeshCore", "LoRaWAN").mapNotNull { p -> by[p]?.let { "${p.uppercase()} $it" } }
-            Text(if (parts.isEmpty()) (if (bursts > 0) "$bursts LoRa bursts heard · $frames frames" else "listening for LoRa") else parts.joinToString(" · ") + " · $frames frames",
+            val torn = Apps.lora.torn.let { if (it > 0) " · $it lost to radio gaps" else "" }
+            Text(if (parts.isEmpty()) (if (bursts > 0) "$bursts LoRa bursts heard · $frames frames$torn" else "listening for LoRa") else parts.joinToString(" · ") + " · $frames frames$torn",
                 color = if (parts.isEmpty()) Palette.muted else accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             switcher(true, Modifier.fillMaxWidth())

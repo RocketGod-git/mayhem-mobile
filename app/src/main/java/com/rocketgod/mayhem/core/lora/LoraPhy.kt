@@ -122,7 +122,11 @@ object LoraCodec {
  * start-of-frame down-chirp peak, both read on the same window grid, give the timing (where the symbols really
  * start) and the frequency error; then the header, its length, and the payload.
  */
-class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
+/**
+ * [rfHz]: the channel's RF frequency (negative for a conjugated input). One crystal sets a node's carrier and its chip
+ * clock, so its frequency error gives its timing drift. 0: the preamble alone says.
+ */
+class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null, val rfHz: Double = 0.0) {
     /** Low data rate optimization: on when a symbol lasts 16 ms or more. */
     val ldro: Boolean = ldro ?: ((1 shl sf).toDouble() / bw >= 0.016)
     private val n = 1 shl sf
@@ -138,7 +142,7 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
     /** Debug: each stage of each frame attempt. */
     var trace: ((String) -> Unit)? = null
 
-    private class Pending(val p: Long, val c: Double, val sfd: Long, val sync: List<Int>, val snr: Double)
+    private class Pending(val p: Long, val c: Double, val rd: Double, val rdAt: Double, val slide: Double, val q: Double, val sfd: Long, val sync: List<Int>, val snr: Double)
     private var pending: Pending? = null
 
     init {
@@ -151,8 +155,11 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
 
     private var lastQ = 0f
 
-    /** Peak bin of the window at absolute sample [at], times [chirp], with a frequency correction of [c] bins; its height over the mean in [lastQ]. */
-    private fun peak(at: Long, chirp: FloatArray, c: Double = 0.0): Int {
+    /**
+     * Peak bin of the window at absolute sample [at], times [chirp], with a frequency correction of [c] bins, and the
+     * samples from [jumpAt] on turned by [jump] radians; its height over the mean in [lastQ].
+     */
+    private fun peak(at: Long, chirp: FloatArray, c: Double = 0.0, jumpAt: Int = n, jump: Double = 0.0): Int {
         val o = ((at - base) * 2).toInt()
         val w = -2 * Math.PI * c / n
         for (i in 0 until n) {
@@ -160,6 +167,10 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
             if (c != 0.0) { val cr = cos(w * i).toFloat(); val ci = sin(w * i).toFloat(); val t = xr * cr - xi * ci; xi = xr * ci + xi * cr; xr = t }
             re[i] = xr * chirp[2 * i] - xi * chirp[2 * i + 1]
             im[i] = xr * chirp[2 * i + 1] + xi * chirp[2 * i]
+        }
+        if (jumpAt < n) {
+            val jr = cos(jump).toFloat(); val ji = sin(jump).toFloat()
+            for (i in jumpAt until n) { val t = re[i] * jr - im[i] * ji; im[i] = re[i] * ji + im[i] * jr; re[i] = t }
         }
         Dsp.fft(re, im)
         var best = 0; var bv = -1f; var sum = 0f
@@ -172,15 +183,20 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
     /** The peak's position to a fraction of a bin (Jacobsen's estimator on the complex bins around it), signed. */
     private fun peakFrac(at: Long, chirp: FloatArray, c: Double): Double {
         val k = peak(at, chirp, c)
+        var v = k + frac(k)
+        if (v > n / 2.0) v -= n
+        return v
+    }
+
+    /** The fraction of a bin peak [k] of the last FFT is off, in [-0.5, 0.5]. */
+    private fun frac(k: Int): Double {
         val a = (k - 1 + n) % n; val b = (k + 1) % n
         // (X[k-1] - X[k+1]) / (2 X[k] - X[k-1] - X[k+1]), real part
         val nr = re[a] - re[b]; val ni = im[a] - im[b]
         val dr = 2 * re[k] - re[a] - re[b]; val di = 2 * im[k] - im[a] - im[b]
         val den = dr * dr + di * di
         val d = if (den > 0) ((nr * dr + ni * di) / den).toDouble() else 0.0
-        var v = k + max(-0.5, min(0.5, d))
-        if (v > n / 2.0) v -= n
-        return v
+        return max(-0.5, min(0.5, d))
     }
 
     private val end: Long get() = base + bufLen / 2
@@ -276,40 +292,93 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
         // the dechirped peak over the noise bins is 1 + N x the signal-to-noise ratio (power, per sample)
         peak(p + 2 * n, down, cf)
         val pq = lastQ.toDouble()
-        pending = Pending(p, cf, p + m * n, sync, 10 * log10(max(pq - 1, 1e-3) / n))
+        // cf holds the timing fraction too. A late window moves an up-chirp peak up and a down-chirp peak down, so the
+        // start-of-frame down-chirps, read with cf, give the timing apart from the frequency; the preamble's peaks slide
+        // with the timing and with any drift in the frequency
+        val sfd = p + m * n
+        var rd = peakFrac(sfd, up, cf); var rdAt = m.toDouble()
+        if (sfd + 2 * n <= end) { rd = (rd + peakFrac(sfd + n, up, cf)) / 2; rdAt += 0.5 }
+        val mm = min(m - 3, 16)
+        var sx = 0.0; var sy = 0.0; var sxx = 0.0; var sxy = 0.0
+        for (j in 1..mm) { val y = peakFrac(p + j * n, down, cf); sx += j; sy += y; sxx += j * j; sxy += j * y }
+        val lim = 6e-5 * n
+        val slide = if (mm >= 4) max(-lim, min(lim, (mm * sxy - sx * sy) / (mm * sxx - sx * sx))) else 0.0
+        trace?.invoke("down $rd slide $slide")
+        pending = Pending(p, cf, rd, rdAt, slide, pq, sfd, sync, 10 * log10(max(pq - 1, 1e-3) / n))
     }
 
     /** Decode the frame once enough samples are in; false while waiting. */
     private fun finish(pd: Pending): Boolean {
         val start = pd.sfd + (9 * n) / 4
-        if (start + 8 * n > end) return false
-        // the frequency estimate first, then a little either side of it: the frame's own CRC says which was right
-        // (a strong or clipped signal can leave the estimate a quarter or half a bin out)
+        // the clock error the frequency error gives (one crystal), as chips the timing slides a symbol
+        val sl0 = if (rfHz != 0.0) (pd.c * bw / n) / rfHz * n else 0.0
+        // (the model keeps the timing within a quarter symbol of the grid)
+        val s0 = (start - pd.p).toDouble() / n
+        fun need(k: Int): Long = start + k.toLong() * n + n / 4 + 1
+        if (need(8) > end) return false
+        // The preamble's peaks slide (pd.slide, bins a symbol) as the timing slides plus as the frequency drifts (a
+        // crystal warming up as it sends). First: the timing slides as the frequency error says, the rest is drift;
+        // then all of it timing; then no drift. Each with the frequency estimate, then the first a little either side
+        // of it: the frame's own CRC says which was right (a strong or clipped signal can leave the estimate a quarter
+        // or half a bin out). Last the fixed grid with no tracking, as before
+        // (mode 2: the model and the loop; 1: the model alone, for a weak frame the loop would wander on)
+        val tries = arrayListOf(doubleArrayOf(0.0, sl0, pd.slide - sl0, 2.0), doubleArrayOf(0.0, pd.slide, 0.0, 2.0),
+            doubleArrayOf(0.0, sl0, 0.0, 2.0), doubleArrayOf(0.0, pd.slide, 0.0, 1.0))
+        for (dc in doubleArrayOf(-0.5, 0.5, -0.25, 0.25)) tries.add(doubleArrayOf(dc, sl0, pd.slide - sl0, 2.0))
+        tries.add(doubleArrayOf(0.0, 0.0, 0.0, 0.0))
         var fallback: LoraFrame? = null
         var consumed = start
         var hdr = false
-        for (dc in doubleArrayOf(0.0, -0.5, 0.5, -0.25, 0.25)) {
-            val c = pd.c + dc
-            fun sym(i: Int): Int = ((peak(start + i.toLong() * n, down, c) - 1) % n + n) % n
+        for ((t, tr) in tries.withIndex()) {
+            val dc = tr[0]; val slide = tr[1]; val drift = tr[2]; val mode = tr[3].toInt()
+            val track = mode > 0
+            val first = t == 0
+            // how late the grid is where the preamble frequency was read (window 2.5): the tracked reads take it out of
+            // the frequency; the fixed grid reads as it always has
+            val d25 = ((drift - slide) * (pd.rdAt - 2.5) - pd.rd) / 2
+            val c = (if (track) pd.c - d25 + drift * (s0 - 2.5) else pd.c) + dc
+            // symbol i is due at start + i n, less how late the grid has slid. The window starts on the whole sample;
+            // the fraction it is late moves the dechirped peak up as much, so it goes into the frequency
+            val tau0 = if (track) -(d25 + slide * (s0 - 2.5)) else 0.0
+            // the loop follows what is left in the frequency: holding the timing to the model keeps the wrap's phase
+            // step (below) from feeding back into it
+            var cl = 0.0; var cr = 0.0; var at = start
+            fun sym(i: Int): Int {
+                val pos = start + i.toLong() * n + tau0 - slide * i
+                at = Math.round(pos)
+                val late = if (track) at - pos else 0.0
+                val f = c + drift * i + cl + late
+                var k = peak(at, down, f)
+                // read off the chip grid, the chirp's wrap from top to bottom leaves a phase step there: undo it, read again
+                if (abs(late) > 0.02 && k > 0) k = peak(at, down, f, kotlin.math.ceil(n - k - late).toInt(), 2 * Math.PI * late)
+                // a symbol faded into the noise says nothing
+                if (mode == 2 && lastQ > 0.25 * pd.q) {
+                    val r = frac(k)
+                    cr += TRACK_I * r
+                    cl += cr + TRACK_P * r
+                } else cl += cr
+                return ((k - 1) % n + n) % n
+            }
             // reduced to sf-2 bits by rounding, not truncating: a fraction of a bin of timing or frequency error puts
             // a peak one bin either side of its multiple of 4
             val hs = IntArray(8) { ((sym(it) + 2) / 4) % (n / 4) }
-            if (dc == 0.0) trace?.invoke("header syms ${hs.toList()}")
+            if (first) trace?.invoke("header syms ${hs.toList()}")
             val h = LoraCodec.header(hs, sf) ?: continue
             hdr = true
             val total = LoraCodec.symbolCount(sf, ldro, h)
-            if (start + total.toLong() * n > end) {
-                if (dc == 0.0) trace?.invoke("waiting for ${start + total.toLong() * n - end} of $total symbols, base $base buf ${bufLen / 2}")
+            if (need(total) > end) {
+                if (first) trace?.invoke("waiting for ${need(total) - end} of $total symbols, base $base buf ${bufLen / 2}")
                 return false
             }
             val syms = IntArray(total) { if (it < 8) hs[it] else sym(it) }
             val (data, ok) = LoraCodec.payload(syms, sf, ldro, h) ?: continue
-            consumed = max(consumed, start + total.toLong() * n)
-            val f = LoraFrame(sf, bw, h.cr, data, ok, c * bw / n, pd.snr, pd.sync)
+            val done = at + n
+            consumed = max(consumed, done)
+            val f = LoraFrame(sf, bw, h.cr, data, ok, (c - (if (track) drift * (s0 - 2.5) else 0.0)) * bw / n, pd.snr, pd.sync)
             if (ok != false) {
                 Stats.headers.incrementAndGet(); Stats.good.incrementAndGet()
-                trace?.invoke("frame at correction $dc")
-                pending = null; grid = max(grid, start + total.toLong() * n)
+                trace?.invoke("frame at correction $dc, slide $slide, drift $drift" + (if (mode == 2) "" else if (mode == 1) ", no loop" else ", fixed grid"))
+                pending = null; grid = max(grid, done)
                 onFrame?.invoke(f)
                 return true
             }
@@ -338,6 +407,9 @@ class LoraReceiver(val sf: Int, val bw: Int, ldro: Boolean? = null) {
 
     companion object {
         private const val THRESH = 12f
+        /** Tracking loop gains, per symbol: on the frequency and on its drift. */
+        private const val TRACK_P = 0.2
+        private const val TRACK_I = 0.01
         /** Swift's rounding (half away from zero). */
         private fun rnd(x: Double): Long = if (x >= 0) kotlin.math.floor(x + 0.5).toLong() else -kotlin.math.floor(-x + 0.5).toLong()
     }

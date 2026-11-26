@@ -188,7 +188,7 @@ object HackRfOne {
 
             while (!stop) {
                 bringUpRx(onStatus)
-                streamLoop(c, rx, onStatus)
+                while (streamLoop(c, rx, onStatus) && !stop && txJob == null) { /* another rate, another pool */ }
                 val job = txJob ?: break
                 txJob = null
                 if (stop) break
@@ -295,8 +295,16 @@ object HackRfOne {
     }
 
     // ---- IQ streaming (async UsbRequest pool) ----------------------------------------------------------------
-    private fun streamLoop(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
-        val nbuf = 12; val bufSz = 16384                 // 12 × 16 KB in flight
+    /** Reads kept in flight at [rate]: 12 x 16 KB (98 ms at 1 Msps, 10 at 10), and from 10 Msps up 32 x 64 KB (52 ms at
+     *  20) where the phone takes 64 KB reads (Android 9 on), so a stalled moment doesn't overflow the radio. */
+    private fun readPool(rate: Int): Pair<Int, Int> =
+        if (rate >= 10_000_000 && android.os.Build.VERSION.SDK_INT >= 28) 32 to 65536
+        else if (rate >= 10_000_000) 48 to 16384 else 12 to 16384
+
+    /** Streams until stop, a transmission, or a rate that wants another pool (true: stream again). */
+    private fun streamLoop(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit): Boolean {
+        val rate = applied?.rateHz ?: targetRateHz
+        val (nbuf, bufSz) = readPool(rate)
         val buffers = Array(nbuf) { ByteBuffer.allocateDirect(bufSz) }
         val reqs = ArrayList<UsbRequest>(nbuf)
         var ok = true
@@ -309,13 +317,18 @@ object HackRfOne {
         }
         if (!ok) {
             UsbRequests.drainAndClose(c, reqs)
-            streamLoopSync(c, rx, onStatus); return
+            streamLoopSync(c, rx, onStatus); return false
         }
         val scratch = ByteArray(bufSz)
         var lastStatus = 0L
+        SdrEngine.streamStart(rate, nbuf * bufSz / 2, bufSz / 2)
         try {
             while (!stop && txJob == null) {
-                applyPendingRetune(onStatus)
+                if (applyPendingRetune(onStatus)) {
+                    val now = applied?.rateHz ?: rate
+                    if (readPool(now) != readPool(rate)) return true
+                    SdrEngine.streamStart(now, nbuf * bufSz / 2, bufSz / 2)
+                }
                 val req = try { c.requestWait(100L) } catch (e: TimeoutException) { null } ?: continue
                 val idx = req.clientData as? Int ?: -1
                 if (idx in 0 until nbuf) {
@@ -357,13 +370,15 @@ object HackRfOne {
         } finally {
             UsbRequests.drainAndClose(c, reqs)
         }
+        return false
     }
 
     private fun streamLoopSync(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit) {
         Diag.log("HackRF: async RX unavailable — synchronous fallback")
         val buf = ByteArray(16384)
+        SdrEngine.streamStart(applied?.rateHz ?: targetRateHz, buf.size / 2, buf.size / 2)
         while (!stop && txJob == null) {
-            applyPendingRetune(onStatus)
+            if (applyPendingRetune(onStatus)) SdrEngine.streamStart(applied?.rateHz ?: targetRateHz, buf.size / 2, buf.size / 2)
             val n = c.bulkTransfer(rx, buf, buf.size, 500)
             if (n > 0) {
                 for (k in 0 until n) buf[k] = (buf[k].toInt() xor 0x80).toByte()
@@ -374,12 +389,12 @@ object HackRfOne {
 
     /** Apply any freq / rate / gain change the engine requested since the last buffer (retune between buffers so
      *  IQ never straddles a tune). */
-    private fun applyPendingRetune(onStatus: (String) -> Unit) {
+    private fun applyPendingRetune(onStatus: (String) -> Unit): Boolean {
         // The controls are read once, written from that one reading and recorded as sent; a control moved meanwhile
         // differs from the record and goes out on the next pass.
         val want = snapshot()
         val plan = retunePlan(want, applied)
-        if (plan.isEmpty()) return
+        if (plan.isEmpty()) return false
         for (w in plan) when (w) {
             is RxWrite.SampleRate -> runCatching { setSampleRate(w.hz); SdrEngine.onSource(w.hz) }
             is RxWrite.BasebandFilter -> runCatching { setBasebandFilter(w.hz) }
@@ -393,6 +408,8 @@ object HackRfOne {
             is RxWrite.Gains -> runCatching { setGains(w.amp, w.lna, w.vga) }
         }
         applied = want
+        // a new rate, and a retune's settling pause, are not lost samples
+        return plan.any { it is RxWrite.SampleRate || it is RxWrite.Retune }
     }
 
     // ================= HackRF vendor protocol (libhackrf hackrf.c) =================

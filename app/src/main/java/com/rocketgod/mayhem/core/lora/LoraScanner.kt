@@ -18,8 +18,17 @@ import kotlin.math.sqrt
  */
 class LoraHeard(val frame: LoraFrame, val hz: Long, val inverted: Boolean, val timeMs: Long)
 
+/** A frame's air time in samples at [rate]: up to 16 preamble symbols (Meshtastic's), sync and start of frame, then
+ *  the explicit header and payload with its CRC, by the LoRa air time formula. */
+fun airSamples(f: LoraFrame, rate: Int): Long {
+    val sym = (1 shl f.sf).toDouble() / f.bw
+    val de = if (sym > 0.016) 1 else 0
+    val n = 8 + max(0, Math.ceil((8.0 * f.payload.size - 4 * f.sf + 44) / (4 * (f.sf - 2 * de))).toInt() * (f.cr + 4))
+    return Math.ceil((20.25 + n) * sym * rate).toLong()
+}
+
 /**
- * Not a Mayhem port: the LoRa app's processor. One wide span (20 MHz on a HackRF) is watched for bursts; each burst's
+ * Not a Mayhem port: the LoRa app's processor. One wide span (10 MHz on a HackRF, 20 by hand) is watched for bursts; each burst's
  * width gives its bandwidth, the known channel plans give its spreading factor where they can, and a channel of its
  * own (mixed down, decimated, resampled to one sample a chip) runs LoRa receivers on it, from a little before the
  * burst began, until it ends. The channels decode on a worker thread of their own, behind the radio's, side by side.
@@ -50,6 +59,8 @@ class LoraScanner : IqProcessor {
      * heated up) still decodes what a narrower span holds, where a span it can't keep up with decodes nothing.
      */
     @Volatile var onTooMuch: ((Int) -> Unit)? = null
+    /** Asked for a narrower span than this rate when the radio loses samples at it (SdrEngine.delivery), once a second. */
+    @Volatile var onLosing: ((Int) -> Unit)? = null
     private var strain = 0
     @Volatile private var channelCount = 0
 
@@ -143,10 +154,10 @@ class LoraScanner : IqProcessor {
         // the detect thread owns everything below: a reset from the radio's thread waits for it to take it
         if (shedding && Thread.currentThread().name != DETECT_NAME) {
             feed.clear()
-            runCatching { detect.submit { resetHere(rate) }.get() }
+            runCatching { detect.submit { resetHere(rate); base = offered }.get() }
             return
         }
-        resetHere(rate)
+        resetHere(rate); base = offered
     }
 
     private fun resetHere(rate: Int) {
@@ -165,6 +176,7 @@ class LoraScanner : IqProcessor {
         ring = ByteArray(2 * size) { 128.toByte() }
         ringSize = size; ringMask = size - 1
         written = 0; nextFrame = n.toLong(); regions.clear(); owners.clear(); slots.clear(); slotCenter = -1
+        synchronized(gapLock) { gaps.clear() }
     }
 
     /**
@@ -174,31 +186,60 @@ class LoraScanner : IqProcessor {
      * count as skipped (the health line says so).
      */
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {
-        if (!shedding) { process(iq, len, rate); return }
+        val start = offered
+        if (!shedding) { process(iq, len, rate, start); offered = start + len / 2; return }
         val b = spare.poll()?.takeIf { it.size == len } ?: ByteArray(len)
         System.arraycopy(iq, 0, b, 0, len)
-        if (!feed.offer(Chunk(b, len, rate))) { skipped += len / 2; spare.offer(b) }
+        // a buffer the detect thread can't take is a gap right there
+        if (!feed.offer(Chunk(b, len, rate, start))) { skipped += len / 2; spare.offer(b); gap(0) }
+        else offered = start + len / 2
         if (draining.compareAndSet(false, true)) detect.execute(drain)
     }
 
     /** Detect thread: everything queued, then a last look so a buffer offered while it was finishing isn't stranded. */
     private val drain = Runnable {
         while (true) {
-            while (true) { val c = feed.poll() ?: break; runCatching { process(c.b, c.len, c.rate) }; spare.offer(c.b) }
+            while (true) { val c = feed.poll() ?: break; runCatching { process(c.b, c.len, c.rate, c.start) }; spare.offer(c.b) }
             draining.set(false)
             if (feed.isEmpty() || !draining.compareAndSet(false, true)) break
         }
     }
 
-    private class Chunk(val b: ByteArray, val len: Int, val rate: Int)
+    private class Chunk(val b: ByteArray, val len: Int, val rate: Int, val start: Long)
+
+    // ---- gaps: samples that never arrived (the radio overflowed, or buffers were dropped behind) ----
+    /** Samples handed to [onIq] (the engine's thread), and where in that count the ring's sample 0 is. */
+    @Volatile private var offered = 0L
+    @Volatile private var base = 0L
+    /** Each recent gap (in [offered]'s count) and how sure that is (samples either side). */
+    private val gaps = ArrayList<LongArray>()
+    private val gapLock = Any()
+    /** Frames dropped because a gap fell inside them: what they decoded to is garbage. */
+    @Volatile var torn = 0
+    /** Samples went missing [back] samples before the newest one given to [onIq] (negative: inside samples still to
+     *  come), placed to within [slack]. A frame the gap lands in is dropped unless its CRC checks out. */
+    fun gap(back: Long, slack: Long = 0) = synchronized(gapLock) {
+        val at = offered - back
+        gaps.removeAll { offered - it[0] > rate.toLong() * 10 }
+        gaps.add(longArrayOf(at, max(0L, slack)))
+        if (gaps.size > 64) gaps.removeAt(0)
+    }
+    /** Whether a frame that ended by ring sample [at] had a gap inside it. A good CRC means it arrived whole. */
+    private fun broken(f: LoraFrame, at: Long): Boolean = synchronized(gapLock) {
+        if (f.crcOk == true || gaps.isEmpty()) return@synchronized false
+        // the channel reports up to one run (65 536 samples) and its filters' delay after the frame's end
+        val end = at + base
+        val lo = end - airSamples(f, rate) - 65_536 - (rate * 0.01).toLong()
+        gaps.any { it[0] + it[1] >= lo && it[0] - it[1] <= end }
+    }
     /** Buffers waiting for the detect thread (about 0.4 s at 20 Msps), and spent ones for reuse. */
     private val feed = java.util.concurrent.ArrayBlockingQueue<Chunk>(1024)
     private val spare = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
     private val draining = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Detect thread (or inline for replays and tests): the ring, the looks, and the hand-off to the channels. */
-    private fun process(iq: ByteArray, len: Int, rate: Int) {
-        if (ringSize == 0 || rate != this.rate) resetHere(rate)
+    private fun process(iq: ByteArray, len: Int, rate: Int, start: Long) {
+        if (ringSize == 0 || rate != this.rate) { resetHere(rate); base = start }
         val t0 = System.nanoTime()
         val n = len / 2
         var k = 0
@@ -498,7 +539,7 @@ class LoraScanner : IqProcessor {
             val done = (e.pos >= e.until && upTo >= e.until) || (e.until < Long.MAX_VALUE / 8 && upTo - e.born > rate.toLong() * 8)
             if (done) {
                 gone.add(e.id)
-                for ((f, inv, at) in e.bad) if (e.goodAt.none { abs(it - at) < rate }) onHeard?.invoke(LoraHeard(f, trueHz(e.hz + f.cfoHz.toLong(), f), inv, System.currentTimeMillis()))
+                for ((f, inv, at) in e.bad) if (e.goodAt.none { abs(it - at) < rate }) if (broken(f, at)) torn++ else onHeard?.invoke(LoraHeard(f, trueHz(e.hz + f.cfoHz.toLong(), f), inv, System.currentTimeMillis()))
             }
             done
         }
@@ -548,6 +589,7 @@ class LoraScanner : IqProcessor {
     private fun heard(f: LoraFrame, e: Extractor, inv: Boolean) = synchronized(heardLock) {
         // a damaged frame waits: another timing phase may yet get it right, and the phases' damaged copies differ
         val at = e.pos
+        if (broken(f, at)) { torn++; return@synchronized }
         if (f.crcOk == false) { if (e.bad.none { at - it.third < rate }) e.bad.add(Triple(f, inv, at)); return@synchronized }
         e.goodAt.add(at)
         var h = 5381L
@@ -615,7 +657,7 @@ class LoraScanner : IqProcessor {
             val ph0 = w * (from % rate)
             cr = cos(ph0).toFloat(); ci = sin(ph0).toFloat()
             for (sf in sfs) for (inv in if (inverted) listOf(false, true) else listOf(false)) for (ph in 0 until phases) {
-                val rcv = LoraReceiver(sf, bw)
+                val rcv = LoraReceiver(sf, bw, null, if (inv) -hz.toDouble() else hz.toDouble())
                 rcv.onFrame = { f -> heard(f, this, inv) }
                 // once a channel: its timing phases all see the same transmission
                 rcv.onAligned = { markLora(); if (!confirmed) { confirmed = true; onLora?.invoke(hz, bw) } }
@@ -700,8 +742,10 @@ class LoraScanner : IqProcessor {
     }
 
     companion object {
-        /** 20 Msps: every LoRa bandwidth divides it exactly, and it is the widest a HackRF samples. */
-        const val RATE = 20_000_000
+        /** The wide span (LoraPlan.WIDE_RATE, 10 Msps): every LoRa bandwidth divides it exactly. */
+        const val RATE = LoraPlan.WIDE_RATE
+        /** 20 Msps, the widest a HackRF samples: by hand only, and stepped down when the radio loses samples there. */
+        const val MAX_RATE = LoraPlan.MAX_RATE
         /**
          * How far either side of center a channel can sit. Measured on a HackRF Pro at 20 Msps (noise shape, 15 and
          * 20 MHz baseband filters alike): flat within 1 dB to ±8.5 MHz, 1.5 dB down at ±9, 2.5 dB at ±9.7. So the

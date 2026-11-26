@@ -207,32 +207,55 @@ object LoraLocal {
 
     // ---- where to center ----
 
+    /** The area's Meshtastic default channel: its region's starting preset (LongFast in most), the busiest Meshtastic
+     *  channel almost everywhere. Null where no Meshtastic region is known. */
+    fun meshtasticDefault(area: String): Local? {
+        val rn = meshtasticRegion(country(area)) ?: return null
+        val r = LoraPlan.regions.firstOrNull { it.name == rn } ?: return null
+        val p = r.presets.firstOrNull { it.name == r.start } ?: return null
+        val hz = LoraPlan.slotHz(r, p) ?: return null
+        return Local(hz, p.bw, p.sf, "Meshtastic ${p.name} $rn")
+    }
+
     /**
-     * The wide span's center that holds the most local channels, the most local first: each is added while the
-     * whole set still fits inside the radio's filter. Leftover room goes toward the channels that didn't fit (more of
-     * the band they are in). Kept off the spike at the center.
+     * The wide span's center at [rate]. The user's own channel and the area's Meshtastic default channel are always in
+     * view; then, from each channel in turn (most local first), every other one that still fits inside the radio's
+     * filter is taken, most local first; the window holding the most wins, the more local start breaking a tie
+     * (Portugal's 868 channels outnumber its 433). Leftover room goes toward the channels that didn't fit but are in
+     * reach of the band (433 MHz presets never pull an 868 MHz view). Kept off the spike at the center.
      */
-    fun wideCenter(area: String): Long? {
+    fun wideCenter(area: String, rate: Int = LoraPlan.WIDE_RATE): Long? {
         val ch = channels(area)
         if (ch.isEmpty()) return null
-        val half = LoraScanner.usableHalf(LoraScanner.RATE).toLong()
-        // From each channel in turn (most local first), take every other one that still fits, most local first; the
-        // window holding the most wins, the more local start breaking a tie (Portugal's 868 channels outnumber its 433).
-        var bestLo = 0L; var bestHi = 0L; var bestN = 0; var bestOut: List<Long> = emptyList()
-        // the user's own channel (first in the list) is always in view
-        val starts = if (custom != null) listOf(0) else ch.indices.toList()
-        for (start in starts) {
-            val s0 = ch[start]
-            var lo = s0.hz - s0.bw / 2; var hi = s0.hz + s0.bw / 2; var n = 1
-            val out = ArrayList<Long>()
-            for ((i, c) in ch.withIndex()) {
-                if (i == start) continue
-                val l = minOf(lo, c.hz - c.bw / 2); val h = maxOf(hi, c.hz + c.bw / 2)
-                if (h - l <= 2 * half) { lo = l; hi = h; n++ }
-                // only channels in reach of this band pull the leftover room (433 MHz presets never share a 900 MHz view)
-                else if (abs(c.hz - (lo + hi) / 2) < 3 * half) out.add(c.hz)
+        val half = LoraScanner.usableHalf(rate).toLong()
+        // what must be in view: the user's own channel (first in the list), then the Meshtastic default if both fit
+        val must = ArrayList<Int>()
+        if (custom != null) must.add(0)
+        val md = meshtasticDefault(area)
+        val mi = if (md == null) -1 else ch.indexOfFirst { it.hz == md.hz && it.bw == md.bw }
+        if (mi >= 0 && mi !in must) {
+            val set = must + mi
+            val lo = set.minOf { ch[it].hz - ch[it].bw / 2 }; val hi = set.maxOf { ch[it].hz + ch[it].bw / 2 }
+            if (hi - lo <= 2 * half) must.add(mi)
+        }
+        var bestLo = 0L; var bestHi = 0L; var bestN = -1; var bestOut: List<Long> = emptyList(); var bestHeld: List<Int> = emptyList()
+        for (start in -1 until ch.size) {
+            if (start < 0 && must.isEmpty()) continue
+            var lo = Long.MAX_VALUE; var hi = Long.MIN_VALUE
+            val held = ArrayList<Int>(); val out = ArrayList<Long>()
+            fun take(i: Int): Boolean {
+                val l = minOf(lo, ch[i].hz - ch[i].bw / 2); val h = maxOf(hi, ch[i].hz + ch[i].bw / 2)
+                if (h - l > 2 * half) return false
+                lo = l; hi = h; held.add(i)
+                return true
             }
-            if (n > bestN) { bestLo = lo; bestHi = hi; bestN = n; bestOut = out }
+            for (i in must) take(i)
+            if (start >= 0 && start !in held && !take(start)) continue
+            for ((i, c) in ch.withIndex()) {
+                if (i in held || take(i)) continue
+                if (abs(c.hz - (lo + hi) / 2) < 3 * half) out.add(c.hz)
+            }
+            if (held.size > bestN) { bestLo = lo; bestHi = hi; bestN = held.size; bestOut = out; bestHeld = held }
         }
         val lo = bestLo; val hi = bestHi; val out = bestOut
         var center = (lo + hi) / 2
@@ -241,12 +264,31 @@ object LoraLocal {
             val toward = out.sum() / out.size
             center += if (toward > center) slack else -slack
         }
-        ch.firstOrNull { abs(it.hz - center) < it.bw }?.let { center = it.hz + it.bw + 100_000 }
+        // off the spike, to whichever side keeps every held channel in view
+        ch.firstOrNull { abs(it.hz - center) < it.bw }?.let { near ->
+            fun fits(x: Long) = bestHeld.all { abs(ch[it].hz - x) + ch[it].bw / 2 <= half }
+            listOf(near.hz + near.bw + 100_000, near.hz - near.bw - 100_000).firstOrNull { fits(it) }?.let { center = it }
+        }
         return center
     }
 
-    /** One channel at a time (a 2 MHz radio): the most local one. */
-    fun narrowChannel(area: String): Long? = channels(area).firstOrNull()?.hz
+    /** One channel at a time (a 2 MHz radio): the user's own, else the area's Meshtastic default, else the most local. */
+    fun narrowChannel(area: String): Long? {
+        if (custom != null) return channels(area).firstOrNull()?.hz
+        return meshtasticDefault(area)?.hz ?: channels(area).firstOrNull()?.hz
+    }
+
+    /** Every area this object knows a Meshtastic region or MeshCore preset for (for tests and tools). */
+    fun knownAreas(): List<String> {
+        val ids = LinkedHashSet<String>()
+        ids += listOf("US", "CA", "MX", "PR", "GU", "AR", "CL", "CO", "PE", "VE", "EC", "BO", "PY", "UY", "CR", "PA", "GT", "HN", "SV", "NI", "DO", "JM", "TT", "BS", "CU",
+            "BR", "AU", "NZ", "JP", "KR", "TW", "TH", "IN", "MY", "SG", "PH", "CN", "RU", "KZ", "NP", "ZA", "IL", "TR", "AE", "SA", "EG", "MA", "KE", "NG")
+        ids += EUROPE
+        PARTS.mapTo(ids) { it.first }
+        for (p in MESHCORE) if (p.area != "EU") ids.add(p.area)
+        for (a in areas()) if (a.id != "AUTO") ids.add(a.id)
+        return ids.toList()
+    }
 
     /** Something the plan depends on changed: the scanner places its channels again. */
     @Volatile var onChange: (() -> Unit)? = null
