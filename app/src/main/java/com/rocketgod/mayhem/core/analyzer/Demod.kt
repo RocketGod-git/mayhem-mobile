@@ -130,6 +130,24 @@ fun carrierOf(env: ShortArray, n: Int, noise: Double): BooleanArray {
     return on
 }
 
+/**
+ * The level of an on-off burst's marks: the mean of the carrier's samples in the upper half between the noise and
+ * that mean, refined twice, so the edges' rise and fall do not pull it down.
+ */
+fun markLevel(envOn: DoubleArray, count: Int, noise: Double): Double {
+    if (count == 0) return noise * ON_K
+    var hi = 0.0
+    for (i in 0 until count) hi += envOn[i]
+    hi /= count
+    for (it in 0 until 2) {
+        val t = (noise + hi) / 2
+        var s = 0.0; var c = 0
+        for (i in 0 until count) if (envOn[i] >= t) { s += envOn[i]; c++ }
+        if (c > 0) hi = s / c
+    }
+    return hi
+}
+
 /** Two-means on a set of values: the two centers, the share in the upper one, and the spread within them. */
 fun twoMeans(v: DoubleArray, count: Int = v.size): TwoMeans {
     if (count == 0) return TwoMeans(0.0, 0.0, 0.0, 0.0)
@@ -484,11 +502,13 @@ fun analyze(env: ShortArray, fm: ShortArray, n: Int, rate: Double, o: Overrides 
         else if (m == Mod.ASK) { lo = envT.a; hi = envT.b }
         else {
             lo = noise
-            hi = if (envOn.size > 0) { var s = 0.0; for (k in 0 until envOn.size) s += envOn.a[k]; s / envOn.size } else noise * ON_K
+            hi = markLevel(envOn.a, envOn.size, noise)
             if (envT.share < 0.9 && askLike) hi = envT.b
         }
         if (hi <= lo) hi = lo + 1
-        val thrAuto = if (m == Mod.OOK) min(0.5, max(0.15, (noise * ON_K - lo) / (hi - lo))) else 0.5
+        // halfway between the levels: the smoothed envelope rises and falls through it at the same delay, so widths
+        // come out true however strong the burst
+        val thrAuto = 0.5
         val thr = thrO ?: thrAuto
         val cut = lo + thr * (hi - lo)
         // FSK noise rides around the middle of the two tones, so it gets the key slicer's wider band; an OOK cut sits

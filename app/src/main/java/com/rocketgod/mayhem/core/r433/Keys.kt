@@ -45,9 +45,19 @@ data class KeyReading(
 private const val SETTLE_MAX = 512
 /** Less shift than this (in discriminator units, about 2 kHz at 250 kHz) is a plain carrier, not two tones. */
 private const val MIN_SPREAD = 500
-/** How many samples late the smoothed envelope says a carrier came up. */
-private const val LAG = 5
-private const val RECENT = 32
+/** A carrier is 10 dB over the noise to come up, and lets go below 7 dB. */
+private const val ON_K = 3.2
+private const val OFF_K = 2.2
+/**
+ * A mark's edges are cut halfway between the noise and the mark's own level, where the smoothed envelope's rise
+ * and fall cross at the same delay, so widths come out true at any strength. It lets go this share of the way
+ * below that middle.
+ */
+private const val MARK_HYST = 0.15
+/** How long a rising mark is watched for its level before it is cut, in us. */
+private const val RISE_US = 96.0
+/** Samples kept for backdating an edge (256 us at 250 kHz). */
+private const val RECENT = 64
 
 /** An unsigned value as upper-case hex, no padding. */
 private fun hex(v: Long): String = java.lang.Long.toHexString(v).uppercase(Locale.US)
@@ -69,14 +79,18 @@ fun triState(data: Long, bits: Int): String? {
 
 /**
  * Levels and durations from one channel. A carrier is present while the envelope stands about ten decibels over
- * the noise (seven to let go, so a dip does not chop a mark in two); while it is, the frequency is "high" above
- * its own running middle, which tracks wherever in the channel the transmitter actually sits.
+ * the noise (seven to let go, so a dip does not chop it in two); while it is, the frequency is "high" above its
+ * own running middle, which tracks wherever in the channel the transmitter actually sits. The on-off stream is
+ * cut separately, at the middle of each mark (see MARK_HYST).
  */
 class KeySlicer(private val onOok: (Boolean, Int) -> Unit, private val onFsk: (Boolean, Int) -> Unit) {
-    private var usPer = 4.0
+    private var usPer = 4.0; private var riseMax = 24
     private var noise = 0.0; private var noiseN = 0
     private var on = false; private var fmHi = 0.0; private var fmLo = 0.0; private var bufHi = 0.0; private var away = 0; private var skip = 0
-    private val recent = DoubleArray(RECENT); private var recentAt = 0
+    /** The on-off mark: up, being measured, its level and middle, and samples it has stood below that middle. */
+    private var mark = false; private var rising = false; private var riseN = 0; private var peak = 0.0
+    private var lvl = 0.0; private var mid = 0.0; private var hyst = 0.0; private var below = 0; private var quiet = 0
+    private val recent = DoubleArray(RECENT); private val recentEnv = DoubleArray(RECENT); private var recentAt = 0
     private val settle = DoubleArray(SETTLE_MAX + RECENT); private var settleN = 0; private var settled = true
     private var ookLvl = false; private var ookRun = 0
     private var fmLvl = false; private var fmRun = 0
@@ -85,37 +99,82 @@ class KeySlicer(private val onOok: (Boolean, Int) -> Unit, private val onFsk: (B
 
     fun reset(rate: Double) {
         usPer = 1e6 / rate
+        riseMax = maxOf(8, minOf(RECENT - 16, Math.round(RISE_US / usPer).toInt()))
         noise = 0.0; noiseN = 0; on = false; fmHi = 0.0; fmLo = 0.0
-        recent.fill(0.0); recentAt = 0; settleN = 0; settled = true
+        mark = false; rising = false; below = 0; quiet = 0
+        recent.fill(0.0); recentEnv.fill(0.0); recentAt = 0; settleN = 0; settled = true
         ookLvl = false; ookRun = 0; fmLvl = false; fmRun = 0
     }
 
+    /** The envelope `k` samples before the newest. */
+    private fun envAt(k: Int): Double = recentEnv[(recentAt - 1 - k + RECENT * 2) and (RECENT - 1)]
+
+    /**
+     * A rising mark has shown its level: cut it where the envelope crossed the middle, backdating the on-off stream
+     * (and the carrier, if this starts one) to that sample.
+     */
+    private fun markUp() {
+        rising = false
+        val level = peak
+        mid = (noise + level) / 2; hyst = (level - noise) * MARK_HYST; lvl = level
+        var k = 0
+        while (k < RECENT - 1 && envAt(k) < mid) k++
+        val tail = k
+        while (k < RECENT - 1 && envAt(k) >= mid) k++
+        if (k == tail) return
+        val up = k - 1
+        val back = min(up, ookRun - 1)
+        if (ookRun - back > 0) onOok(false, us(ookRun - back))
+        ookLvl = true; ookRun = back
+        // the current sample is counted again below
+        mark = true; below = maxOf(0, tail - 1)
+        if (on) return
+        // a new carrier: the backdated samples start the frequency's settling
+        on = true
+        val fb = maxOf(0, min(up, fmRun - 1))
+        fmRun -= fb
+        settleN = 0; bufHi = 0.0; away = 0
+        for (j in fb downTo 1) settle[settleN++] = recent[(recentAt - 1 - j + RECENT * 2) and (RECENT - 1)]
+        skip = min(settleN, 3) + 3
+        settled = false
+    }
+
     fun process(env: ShortArray, fm: ShortArray, n: Int) {
-        val recent = recent
+        val recent = recent; val recentEnv = recentEnv
         for (i in 0 until n) {
             val e = env[i].toDouble(); val f = fm[i].toDouble()
-            recent[recentAt] = f; recentAt = (recentAt + 1) and (RECENT - 1)
-            if (!on) {
-                // the noise level, settled quickly at first and slowly after
+            recent[recentAt] = f; recentEnv[recentAt] = e; recentAt = (recentAt + 1) and (RECENT - 1)
+            if (!mark && !rising) quiet++
+            // the noise level, settled quickly at first and slowly after. It is read a rise's length late and only well
+            // clear of a mark, so neither a mark's tail nor the start of the next one (before it trips the line) counts.
+            if (!on && !rising && quiet > riseMax * 2) {
                 noiseN++
-                noise += (e - noise) / (if (noiseN < 256) noiseN else 256)
+                noise += (envAt(riseMax) - noise) / (if (noiseN < 256) noiseN else 256)
             }
-            if (!on && noiseN > 64 && e > noise * 3.2) {
-                on = true
-                // The envelope is smoothed, so it crosses the line a few samples after the carrier really came up: those
-                // samples belong to the mark, in both streams, and they start the frequency's settling.
-                val back = min(LAG, min(if (ookLvl) 0 else ookRun - 1, fmRun - 1))
-                if (ookRun - back > 0) onOok(false, us(ookRun - back))
-                ookLvl = true; ookRun = back
-                fmRun -= back
-                settleN = 0; bufHi = 0.0; away = 0
-                for (k in back downTo 1) settle[settleN++] = recent[(recentAt - 1 - k + RECENT * 2) and (RECENT - 1)]
-                skip = settleN + 3
-                settled = false
-            } else if (on && e < noise * 2.2) on = false
-            val up = on
-            if (up == ookLvl) ookRun++
-            else { onOok(ookLvl, us(ookRun)); ookLvl = up; ookRun = 1 }
+            if (rising) {
+                // the mark's level: the highest 4-sample average while it rises, until it levels off or falls back
+                riseN++
+                val s4 = (e + envAt(1) + envAt(2) + envAt(3)) / 4
+                if (s4 > peak) peak = s4
+                if (riseN >= riseMax || (riseN >= 4 && s4 < peak * 0.75)) markUp()
+            } else if (!mark && noiseN > 64 && e > (if (on) maxOf(noise * ON_K, mid + hyst) else noise * ON_K)) {
+                rising = true; riseN = 0; peak = 0.0; quiet = 0
+            }
+            if (mark) {
+                if (e >= mid) { below = 0; lvl += (e - lvl) / 32; mid = (noise + lvl) / 2; hyst = (lvl - noise) * MARK_HYST }
+                else below++
+                if (e < mid - hyst) {
+                    // down: the samples since it fell through the middle are the space
+                    mark = false
+                    val back = min(below - 1, ookRun - 1)
+                    if (ookRun - back > 0) onOok(true, us(ookRun - back))
+                    ookLvl = false; ookRun = back
+                }
+            }
+            if (on && !mark && !rising && e < noise * OFF_K) on = false
+            val up = on; val mk = mark
+            if (mk == ookLvl) ookRun++
+            else { onOok(ookLvl, us(ookRun)); ookLvl = mk; ookRun = 1 }
             // The first few samples of a carrier only settle the middle and the size of the shift; once they have, they
             // are read with the rest, so none of the mark is lost to it.
             if (up && !settled) {
@@ -182,6 +241,7 @@ class KeySlicer(private val onOok: (Boolean, Int) -> Unit, private val onFsk: (B
         if (fmRun != 0) onFsk(fmLvl, us(fmRun))
         onOok(false, 50_000); onFsk(false, 50_000)
         ookLvl = false; ookRun = 0; fmLvl = false; fmRun = 0; on = false
+        mark = false; rising = false; below = 0
     }
 }
 
@@ -198,9 +258,30 @@ class KeyDecoders(private val onReading: (KeyReading) -> Unit) {
         val pp = PPProtos.all()
         pirAm = pp.first; pirFm = pp.second; pirFmInv = PPProtos.all().second
         for (p in pirAm + pirFm + pirFmInv) p.onHit = { h -> onPirate(h) }
-        slicer = KeySlicer(
-            { l, us -> for (p in protos) p.feed(l, us); for (p in pirAm) p.feed(l, us) },
-            { l, us -> for (p in pirFm) p.feed(l, us); for (p in pirFmInv) p.feed(!l, us) })
+        slicer = KeySlicer({ l, us -> ook(l, us) }, { l, us -> fsk(l, us) })
+    }
+
+    /** One on-off level and how long it lasted. */
+    fun ook(l: Boolean, us: Int) { for (p in protos) p.feed(l, us); for (p in pirAm) p.feed(l, us) }
+    /** One frequency level and how long it lasted. */
+    fun fsk(l: Boolean, us: Int) { for (p in pirFm) p.feed(l, us); for (p in pirFmInv) p.feed(!l, us) }
+
+    /**
+     * Known pulse widths (signed us, positive high, as a Flipper `.sub` holds them), straight to the decoders, as
+     * the slicer would hand them over: quiet first, and a long silence after. For FSK the carrier is up throughout.
+     */
+    fun feedPulses(us: List<Int>, fsk: Boolean) {
+        var lvl = false; var run = 50_000; var total = 0
+        val put: (Boolean, Int) -> Unit = if (fsk) { l, d -> fsk(l, d) } else { l, d -> ook(l, d) }
+        for (x in us) {
+            if (x == 0) continue
+            val l = x > 0; val d = kotlin.math.abs(x)
+            total += d
+            if (l == lvl) run += d
+            else { put(lvl, run); lvl = l; run = d }
+        }
+        put(lvl, run); put(false, 50_000)
+        if (fsk) { ook(false, 50_000); ook(true, total); ook(false, 50_000) }
     }
 
     /**

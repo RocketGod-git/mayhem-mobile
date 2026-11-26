@@ -20,6 +20,8 @@ const val PD_MAX_GAP_MS = 100
 const val PD_MAX_GAP_RATIO = 10
 private const val OOK_MAX_HIGH_LEVEL = 16384
 private const val OOK_EST_HIGH_RATIO = 64
+/** And how quickly it climbs to a stronger carrier. */
+private const val OOK_EST_HIGH_UP = 8
 private const val OOK_EST_LOW_RATIO = 1024
 private const val FSK_EST_SLOW = 64
 /**
@@ -132,7 +134,10 @@ class PulseDetect(private var sampleRate: Double) {
                             pulseLength = 0; ookState = 2
                         }
                     } else {
-                        highEstimate += amp / OOK_EST_HIGH_RATIO - highEstimate / OOK_EST_HIGH_RATIO
+                        // Up quickly, down slowly: from its start at 3x the noise, a slow climb holds the line near the noise
+                        // for a strong burst's first marks, and each reads long and its space short.
+                        val r = if (amp > highEstimate) OOK_EST_HIGH_UP else OOK_EST_HIGH_RATIO
+                        highEstimate += amp / r - highEstimate / r
                         if (highEstimate < OOK_MIN_HIGH_LEVEL) highEstimate = OOK_MIN_HIGH_LEVEL
                     }
                     if (ook.numPulses == 0) fsk.step(fm[n].toInt(), fskPulses)
@@ -206,6 +211,39 @@ class PulseDetect(private var sampleRate: Double) {
         val threshold = (lowEstimate + min(highEstimate, OOK_MAX_HIGH_LEVEL)) / 2
         return lowEstimate to (threshold + threshold / 8)
     }
+}
+
+/**
+ * Known pulse widths (signed us, positive high, as a Flipper `.sub` holds them) cut into bursts the way the
+ * detector would cut a live signal, at 1 MHz so every width is exact: glitches under PD_MIN_PULSE_SAMPLES at
+ * 250 kHz are folded in, and a burst ends on a long enough gap or a full buffer.
+ */
+fun exactBursts(us: List<Int>, fsk: Boolean, onBurst: BurstFn) {
+    val minUs = PD_MIN_PULSE_SAMPLES * 4
+    val runs = ArrayList<Int>()
+    for (x in us) {
+        if (x == 0) continue
+        val last = runs.size - 1
+        if (last >= 0 && (Integer.signum(runs[last]) == Integer.signum(x) || (!fsk && abs(x) < minUs && runs.size > 1))) {
+            // same level, or an OOK glitch: part of the run before it
+            runs[last] += Integer.signum(runs[last]) * abs(x)
+        } else runs.add(x)
+    }
+    val p = PulseData(PD_MAX_PULSES + 1, 1e6, fsk)
+    var maxPulse = 0
+    val send = { if (p.numPulses > 0) onBurst(fsk, p); p.clear(); maxPulse = 0 }
+    for (i in runs.indices) {
+        val r = runs[i]
+        if (r > 0) { p.pulse[p.numPulses] = r; if (r > maxPulse) maxPulse = r; continue }
+        val gap = -r
+        // a space before any mark is the quiet ahead of the burst
+        if (i == 0) continue
+        p.gap[p.numPulses] = gap
+        p.numPulses++
+        if (p.numPulses >= PD_MAX_PULSES || (gap > PD_MAX_GAP_RATIO * maxPulse && gap > PD_MIN_GAP_MS * 1000) || gap > PD_MAX_GAP_MS * 1000) send()
+    }
+    if (runs.isNotEmpty() && runs[runs.size - 1] > 0) { p.gap[p.numPulses] = PD_MAX_GAP_MS * 1000; p.numPulses++ }
+    send()
 }
 
 /** butter(1, 0.05) on the envelope, butter(1, 0.2) on the discriminator. */

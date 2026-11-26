@@ -9,6 +9,8 @@ import com.rocketgod.mayhem.core.r433.KeyReading
 import com.rocketgod.mayhem.core.r433.MAX_CHANNELS
 import com.rocketgod.mayhem.core.r433.PulseDetect
 import com.rocketgod.mayhem.core.r433.R433
+import com.rocketgod.mayhem.core.r433.R433Result
+import com.rocketgod.mayhem.core.r433.exactBursts
 import com.rocketgod.mayhem.core.r433.fmtValue
 import com.rocketgod.mayhem.core.r433.zwDescribe
 import com.rocketgod.mayhem.core.r433.zwMatches
@@ -113,6 +115,11 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
     /** Stop keeping new bursts (the decoders and the finder carry on). */
     @Volatile var paused = false
     var src: String? = null
+    /**
+     * For a file of known pulse widths (a `.sub`): what the decoders made of the pulses heard between two times, in
+     * seconds. Set, it stands in for reading the channels, so an import does not depend on the slicer.
+     */
+    var exact: ((Double, Double) -> List<String>)? = null
     /** Ended bursts not yet passed on, and the last few passed on, for the splatter check. */
     private val held = ArrayList<Held>()
     private val recent = ArrayList<Recent>()
@@ -191,9 +198,7 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
      * burst's matches are complete when the channel closes (the Devices app decodes on a worker instead).
      */
     private val sink: BurstFn = { fsk, pulses ->
-        for (r in radio.run(fsk, pulses)) if (!r.dev.disabled) {
-            slots[cur].matches.add("protocol ${r.dev.num}: ${r.data["model"]?.let { fmtValue(it) } ?: r.dev.name}${r.data["id"]?.let { " ${fmtValue(it)}" } ?: ""}")
-        }
+        for (r in radio.run(fsk, pulses)) if (!r.dev.disabled) slots[cur].matches.add(protocolLabel(r))
     }
 
     private fun onChannel(ch: BurstChannel, env: ShortArray, fm: ShortArray, n: Int, iq: ByteArray?) {
@@ -204,8 +209,10 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
             s.t = offsetS + channels.startOf(ch.slot).toDouble() / rate
             s.pd.setSampleRate(ch.rate); s.pd.reset(); s.keys.slicer.reset(ch.rate); s.keys.slicer.flush(); s.keys.reset()
         }
-        s.pd.process(env, fm, n, sink)
-        s.keys.slicer.process(env, fm, n)
+        if (exact == null) {
+            s.pd.process(env, fm, n, sink)
+            s.keys.slicer.process(env, fm, n)
+        }
         val cap = Math.round(ch.rate * MAX_BURST_S).toInt()
         val take = min(n, cap - s.n)
         if (take <= 0 || paused) return
@@ -226,6 +233,7 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
         cur = ch.slot
         s.pd.flush(sink)
         s.keys.slicer.flush()
+        exact?.let { for (m in it(s.t, offsetS + channels.samples.toDouble() / rate)) s.matches.add(m) }
         if (paused || s.n < 16) return
         val n = s.n
         for (f in zwMatches(s.iq, n, s.rate)) s.matches.add("Z-Wave: ${f.home} ${f.src}→${f.dst} ${zwDescribe(f).text}")
@@ -247,6 +255,47 @@ class AnalyzerCapture(private val onBurst: (Burst) -> Unit) : IqProcessor {
             s.matches.toList(), src,
         ), end, tones.b - tones.a))
     }
+}
+
+/** What an rtl_433 protocol said, in a few words. */
+private fun protocolLabel(r: R433Result): String =
+    "protocol ${r.dev.num}: ${r.data["model"]?.let { fmtValue(it) } ?: r.dev.name}${r.data["id"]?.let { " ${fmtValue(it)}" } ?: ""}"
+
+/** A quiet this long (us) parts two bursts of a file, as the finder would part them (it lets go after 60 ms). */
+private const val EXACT_SPLIT_US = 50_000
+
+/** One burst of a file of known pulse widths: when it sits in the samples made of the file, and what was read. */
+class ExactSeg(val t0: Double, val t1: Double, val matches: List<String>)
+
+/**
+ * Every Devices decoder (car keys, remotes and sensors, rtl_433) run on a `.sub` file's own pulse widths, burst by
+ * burst, with when each burst sits in the samples `synthesize` makes of the file (its 0.1 s lead, each pulse capped
+ * at 0.2 s, as there).
+ */
+fun exactMatches(pulses: List<Int>, fsk: Boolean): List<ExactSeg> {
+    val out = ArrayList<ExactSeg>()
+    var cur = LinkedHashSet<String>()
+    val keys = KeyDecoders { r -> cur.add(matchLabel(r)) }
+    val radio = R433()
+    var t = 0.1; var start = -1.0
+    val seg = ArrayList<Int>()
+    fun end(t1: Double) {
+        if (seg.isEmpty()) return
+        cur = LinkedHashSet()
+        keys.reset(); keys.feedPulses(seg, fsk)
+        exactBursts(seg, fsk) { k, p -> for (r in radio.run(k, p)) if (!r.dev.disabled) cur.add(protocolLabel(r)) }
+        out.add(ExactSeg(start, t1, cur.toList()))
+        seg.clear(); start = -1.0
+    }
+    for (p in pulses) {
+        val d = min(abs(p), 200_000)
+        if (p < 0 && d >= EXACT_SPLIT_US) { end(t); t += d / 1e6; continue }
+        if (start < 0) start = t
+        seg.add(p)
+        t += d / 1e6
+    }
+    end(t)
+    return out
 }
 
 /** The once-a-second status line: bursts followed now and since the start, bursts captured, and the span watched. */
@@ -276,10 +325,14 @@ class AnalyzerProcessor(onBurst: (Burst) -> Unit, private val onStats: (Analyzer
  * samples), as signed bytes. The file is read in the same blocks a radio delivers, then a moment of silence lets the
  * last burst go. The capture takes the radio's offset-128 bytes, so each block is shifted on the way in.
  */
-fun captureFile(iq: ByteArray, rate: Int, src: String, onBurst: (Burst) -> Unit): Int {
+fun captureFile(iq: ByteArray, rate: Int, src: String, exact: SubFile? = null, onBurst: (Burst) -> Unit): Int {
     var count = 0
     val cap = AnalyzerCapture { b -> count++; onBurst(b) }
     cap.src = src
+    if (exact != null) {
+        val segs = exactMatches(exact.pulses, exact.fsk)
+        cap.exact = { t0, t1 -> segs.filter { it.t0 < t1 && it.t1 > t0 }.flatMap { it.matches } }
+    }
     cap.reset(rate)
     val block = 262144
     var buf = ByteArray(block)

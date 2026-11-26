@@ -125,6 +125,11 @@ class DmrSpot {
                 var m = 0.0; for (i in 0 until 24) m += at(bx + i * sps); m /= 24
                 var lvl = 0.0; for (i in 0 until 24) lvl += (at(bx + i * sps) - m) * sig[i]; lvl /= 24
                 if (lvl <= 0) continue
+                // DMR holds its carrier: an on-off keyed burst, whose spaces read as noise, is not one
+                var held = true
+                var k = max(0, (bx - 5 * sps).roundToInt()); val e = min(n, (bx + 29 * sps).roundToInt())
+                while (k < e && held) { held = p[k] >= top * 0.1; k++ }
+                if (!held) break
                 // dibits 61 to 65 and 90 to 94 of the 144-dibit burst (sync at 66): the 20-bit slot type
                 fun dib(j: Int): Int { val v = (at(bx + (j - 66) * sps) - m) / lvl * 3; return if (v >= 2) 1 else if (v >= 0) 0 else if (v >= -2) 2 else 3 }
                 var st = 0

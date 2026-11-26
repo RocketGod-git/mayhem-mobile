@@ -194,7 +194,8 @@ object Analyzer {
                 if (name.endsWith(".sub", ignoreCase = true)) {
                     val sub = parseSub(String(bytes, Charsets.UTF_8))
                     if (sub == null) note = "not a RAW .sub file (a decoded .sub holds a key, not pulses)"
-                    else count = captureFile(synthesize(sub.pulses, sub.fsk), 1_000_000, name) { got.add(it) }
+                    // the samples are for the views; the decoders read the file's own pulse widths
+                    else count = captureFile(synthesize(sub.pulses, sub.fsk), 1_000_000, name, sub) { got.add(it) }
                 } else {
                     val rate = rateFromName(name) ?: 2_000_000.0
                     count = captureFile(fromIqFile(bytes, name), rate.toInt(), name) { got.add(it) }
