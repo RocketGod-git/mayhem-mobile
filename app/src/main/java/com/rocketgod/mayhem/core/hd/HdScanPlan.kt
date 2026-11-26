@@ -17,8 +17,8 @@ import kotlin.math.roundToLong
  * finder reports in each. Stations already heard are merged in. At the top of the band it looks again and starts over.
  */
 object HdScanPlan {
-    /** The FM band's station centers: 87.9 to 107.9 MHz, on a 100 kHz raster so it works everywhere. */
-    const val BAND_LO = 87_900_000L
+    /** The FM band's station centers: 87.5 to 107.9 MHz, on a 100 kHz raster so it works everywhere. */
+    const val BAND_LO = 87_500_000L
     const val BAND_HI = 107_900_000L
     const val RASTER = 100_000L
     /** A wide look takes at most this many spans across the band; past that the window survey is quicker. */
@@ -44,8 +44,8 @@ object HdScanPlan {
     /** The windows of the survey at the HD rate, each heard from its middle, bottom up (the HD finder's reach each side). */
     fun windows(hdRate: Int): List<Long> {
         val reach = hdRate / 2 - 260_000L
-        val out = ArrayList<Long>(); var c = 88_000_000L + reach
-        while (c - reach < 108_000_000L) { out.add(snap(c)); c += 2 * reach - 100_000 }
+        val out = ArrayList<Long>(); var c = BAND_LO + reach
+        while (c - reach < BAND_HI + RASTER) { out.add(snap(c)); c += 2 * reach - 100_000 }
         return out
     }
 

@@ -23,17 +23,14 @@ class HdCandidate(val hz: Long, val scoreDb: Double, val levelDb: Double)
 class HdSnap(
     val hz: Long, val centerHz: Long, val rate: Int, val rx: RxStatus, val station: StationSnap, val cands: List<HdCandidate>,
     val det: HdReport?, val dropped: Int, val load: Double, val queued: Int,
+    /** The selected program's digital audio. */
+    val audio: HdAudioStatus? = null,
 )
 
 /** A finished object, with the station it came from. */
 class HdObjMsg(val hz: Long, val obj: HdObject)
 
-/**
- * The HD Radio app's processor: the existing sideband detector for a fast presence and level reading, the Layer 1
- * receiver ([HdRx]), the FEC on a thread of its own so audio keeps flowing, and the station's data ([HdStation]).
- * Also a finder over the whole span: FM channels whose spectrum shows both digital sidebands.
- * The WFM audio of the same station plays from the engine's own demodulator alongside.
- */
+/** The HD Radio app's processor: sideband detector, Layer 1, FEC and audio decode on their own thread, and the station's data. */
 class HdProcessor(private val log: PacketLog?) : IqProcessor {
     /** The span center and the station's offset from it, read each buffer. */
     @Volatile var centerOf: () -> Long = { 0L }
@@ -47,6 +44,8 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
     @Volatile var onSnap: (HdSnap) -> Unit = {}
     /** The wall clock (tests step it). */
     @Volatile var clock: () -> Long = { System.currentTimeMillis() }
+    /** The selected program's digital audio, mixed into the engine's audio output. */
+    val audio = HdAudio()
 
     private val _snap = MutableStateFlow<HdSnap?>(null)
     val snap: StateFlow<HdSnap?> = _snap.asStateFlow()
@@ -54,6 +53,7 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
     private var rx = HdRx()
     private val stationLock = Any()
     private var station = HdStation()
+    @Volatile private var p3: P3Decoder? = null; @Volatile private var p4: P3Decoder? = null
     @Volatile private var gen = 0
     private val det: HdDetector
     @Volatile private var detReport: HdReport? = null
@@ -82,6 +82,7 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
         }
         val g = gen
         station.clock = { clock() }
+        station.onAudio = { by, pdus -> audio.addFrame(by, pdus) }
         station.onEvent = { line -> log?.add("${clockText(clock())} ${"%.1f".format(java.util.Locale.US, tunedHz / 1e6)} $line") }
         station.onObject = { o -> if (g == gen) onObject(HdObjMsg(tunedHz, o)) }
     }
@@ -94,6 +95,7 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
                 busy = true
                 try { decodeFrame(item.first, item.second) } catch (e: Throwable) { com.rocketgod.mayhem.Diag.log("HD frame decode failed: ${e.message}") }
                 busy = false
+                try { while (queue.isEmpty() && audio.decodeOne()) {} } catch (e: Throwable) { com.rocketgod.mayhem.Diag.log("HD audio decode failed: ${e.message}") }
             }
         }, "hd-fec").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1; start() }
     }
@@ -109,7 +111,9 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
         queue.clear()
         rx = HdRx()
         synchronized(stationLock) { station = HdStation() }
+        p3 = null; p4 = null
         wire(); det.reset(); detReport = null; framesDropped = 0
+        audio.reset()
     }
 
     @Synchronized override fun onIq(iq: ByteArray, len: Int, rate: Int) {
@@ -125,6 +129,7 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
             rx.push(iq, n, rate, offsetHz.toDouble())
             det.push(iq, n, rate, offsetHz.toDouble())
         }
+        if (inline) { val aEnd = System.nanoTime() + AUDIO_SLICE_NS; while (audio.decodeOne() && System.nanoTime() < aEnd) {} }
         find(iq, n, rate)
         val now = clock()
         cpuNs += System.nanoTime() - t0
@@ -148,6 +153,20 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
         }
         val pdu = HdL2.pduFromFrame(HdFec.descramble(bits))
         synchronized(stationLock) { if (g == gen) station.addFrame(pdu, sis, ber, f.snrLoDb, f.snrHiDb) }
+        val px = f.px ?: return
+        if (g != gen) return
+        val cols = px.size / HdFec.PM_ROWS; val ext = cols / 72
+        var p3 = this.p3
+        if (p3 == null || p3.J != 2 * ext) { p3 = P3Decoder(ext); this.p3 = p3 }
+        val p4 = if (f.px2 != null) (this.p4 ?: P3Decoder(2).also { this.p4 = it }) else { this.p4 = null; null }
+        val first = Math.round(f.startSample / L1_SAMPLES).toInt() * 8
+        for (bp in 0 until 8) {
+            val got = ArrayList<P3Frame>()
+            got += p3.push(px.copyOfRange(bp * 64 * cols, (bp + 1) * 64 * cols), first + bp)
+            val px2 = f.px2
+            if (px2 != null && p4 != null) got += p4.push(px2.copyOfRange(bp * 64 * 144, (bp + 1) * 64 * 144), first + bp)
+            if (got.isNotEmpty()) synchronized(stationLock) { if (g == gen) for (r in got) station.addP3(r.pdu, r.ber) }
+        }
     }
 
     /** Power spectrum of the whole span; every second, the FM channels that show both digital sidebands. */
@@ -171,9 +190,9 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
         }
         val out = ArrayList<HdCandidate>()
         val lo = centerHz - rate / 2 + 240_000; val hi = centerHz + rate / 2 - 240_000
-        var ch = ceil((lo - 87_900_000) / 200_000.0).toLong() * 200_000 + 87_900_000
+        var ch = ceil((lo - HdScanPlan.BAND_LO) / 200_000.0).toLong() * 200_000 + HdScanPlan.BAND_LO
         while (ch <= hi) {
-            if (ch in 87_900_000..107_900_000) {
+            if (ch in HdScanPlan.BAND_LO..HdScanPlan.BAND_HI) {
                 val o = (ch - centerHz).toDouble()
                 val sbL = db(o - 198_000, o - 130_000); val sbH = db(o + 130_000, o + 198_000)
                 val outL = db(o - 230_000, o - 206_000); val outH = db(o + 206_000, o + 230_000)
@@ -191,7 +210,7 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
     /** Post a snapshot now (the processor posts one every half second of its own). */
     fun publish() {
         val st = synchronized(stationLock) { station.snapshot() }
-        val s = HdSnap(tunedHz, centerHz, rate, rx.status, st, cands, detReport, framesDropped, cpuLoad, queue.size + (if (busy) 1 else 0))
+        val s = HdSnap(tunedHz, centerHz, rate, rx.status, st, cands, detReport, framesDropped, cpuLoad, queue.size + (if (busy) 1 else 0), audio.status())
         _snap.value = s
         onSnap(s)
     }
@@ -202,6 +221,8 @@ class HdProcessor(private val log: PacketLog?) : IqProcessor {
     companion object {
         const val SNAP_MS = 500L
         private const val FIND_N = 4096
+        private const val AUDIO_SLICE_NS = 12_000_000L
+        private const val L1_SAMPLES = 16 * 32 * HdOfdm.NSYM
         private val CLOCK = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
         @Synchronized fun clockText(ms: Long): String = CLOCK.format(java.util.Date(ms))
     }

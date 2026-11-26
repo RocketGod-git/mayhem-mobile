@@ -13,6 +13,8 @@ import com.rocketgod.mayhem.core.audio.RdsDecoder
 import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameDecoder
 import com.rocketgod.mayhem.core.audio.SameEvent
+import com.rocketgod.mayhem.core.hd.HdAudio
+import com.rocketgod.mayhem.core.hd.HdProcessor
 import com.rocketgod.mayhem.usb.HackRfOne
 import com.rocketgod.mayhem.usb.RtlSdr
 import com.rocketgod.mayhem.core.ham.ChannelDecimator
@@ -158,6 +160,39 @@ object SdrEngine {
         if (dial in 76_000_000L..108_000_000L) { radioFreqHz = dial; dialSaved = true }
         rdsOn = p.getBoolean("rds", true); _rdsWanted.value = rdsOn
         _ppm.value = p.getInt("rtl_ppm", 0).coerceIn(-200, 200); RtlSdr.ppm = _ppm.value
+        hdSurroundOn = p.getBoolean("hd_surround", false); _hdSurround.value = hdSurroundOn
+        watchOutputs(ctx)
+    }
+
+    /** HD Radio audio upmixed to 5.1; it plays so only on an output with 6 or more channels. */
+    @Volatile private var hdSurroundOn = false
+    private val _hdSurround = MutableStateFlow(false)
+    val hdSurround: StateFlow<Boolean> = _hdSurround.asStateFlow()
+    @Volatile private var surroundRefused = false
+    fun setHdSurround(on: Boolean) { hdSurroundOn = on; surroundRefused = false; _hdSurround.value = on; prefs?.edit()?.putBoolean("hd_surround", on)?.apply() }
+    private val _outputChannels = MutableStateFlow(2)
+    /** The most channels an output of this device reports (built-in ones aside), 2 when none says. */
+    val outputChannels: Int get() = _outputChannels.value
+    val outputChannelsFlow: StateFlow<Int> = _outputChannels.asStateFlow()
+    private var outputsWatched = false
+    private fun watchOutputs(ctx: android.content.Context) {
+        if (outputsWatched) return
+        val am = ctx.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return
+        outputsWatched = true
+        val builtIn = setOf(android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
+            android.media.AudioDeviceInfo.TYPE_TELEPHONY, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+        fun read() {
+            _outputChannels.value = runCatching {
+                am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS).filter { it.type !in builtIn }.maxOfOrNull { it.channelCounts.maxOrNull() ?: 2 } ?: 2
+            }.getOrDefault(2).coerceAtLeast(2)
+        }
+        read()
+        runCatching {
+            am.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) = read()
+                override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>?) = read()
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
+        }
     }
 
     /** Remember where the receivers are tuned, for the other apps and the next launch. */
@@ -489,7 +524,7 @@ object SdrEngine {
     private val rdsDec = RdsDecoder { _rds.value = it }
     fun setRds(on: Boolean) { rdsOn = on; _rdsWanted.value = on; if (!on) _rds.value = null; prefs?.edit()?.putBoolean("rds", on)?.apply() }
 
-    /** Whether a WFM station carries HD Radio sidebands; detection only, the codec is proprietary. */
+    /** Whether a WFM station carries HD Radio sidebands; detection only, the HD Radio screen plays the audio. */
     @Volatile private var hdOn = false
     private val _hdWanted = MutableStateFlow(false)
     val hdWanted: StateFlow<Boolean> = _hdWanted.asStateFlow()
@@ -815,6 +850,8 @@ object SdrEngine {
         // ahead of every decoder's own threads: a buffer this thread can't take in time is thrown away
         runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
         var track: AudioTrack? = null
+        // the open output's channels: 2, or 6 (5.1) while HD Radio plays its upmix
+        var trackCh = 2
         var fftN = FFT_N; var specBins = SPEC_BINS
         var fre = FloatArray(fftN); var fim = FloatArray(fftN); var win = hann(fftN)
         var acc = DoubleArray(fftN); var frames = 0
@@ -870,27 +907,66 @@ object SdrEngine {
             val queued = written - runCatching { t.playbackHeadPosition }.getOrDefault(written)
             return (size - queued).coerceIn(0, size)
         }
-        fun emit(buf: ShortArray, n: Int) {
+        // n frames of trackCh channels interleaved
+        fun emitFrames(buf: ShortArray, n: Int) {
             val t = track ?: return
-            val e0 = System.nanoTime()
+            val e0 = System.nanoTime(); val ch = trackCh
             // never waits on the speaker: an output that stops taking audio (a route or focus change on some phones)
             // blocked this thread a second per write and froze the waterfall; what it cannot take now is dropped
-            val r = try { t.write(buf, 0, n, AudioTrack.WRITE_NON_BLOCKING) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
-            stEmit += System.nanoTime() - e0; if (r > 0) { stAudio += r; if (writtenTo !== t) { writtenTo = t; written = 0 }; written += r }
-            if (r in 0 until n) stDropped += n - r
+            val r = try { t.write(buf, 0, ch * n, AudioTrack.WRITE_NON_BLOCKING) } catch (e: Exception) { AudioTrack.ERROR_DEAD_OBJECT }
+            val f = if (r > 0) r / ch else r
+            stEmit += System.nanoTime() - e0; if (f > 0) { stAudio += f; if (writtenTo !== t) { writtenTo = t; written = 0 }; written += f }
+            if (f in 0 until n) stDropped += n - f
             if (r < 0) { Diag.log("audio output lost (code $r), reopening it"); runCatching { t.release() }; track = null }
+        }
+        // a mono block plays on the front left and right
+        var stereoOut = ShortArray(0)
+        fun emit(buf: ShortArray, n: Int) {
+            if (track == null) return
+            val ch = trackCh
+            if (stereoOut.size < ch * n) stereoOut = ShortArray(ch * n)
+            if (ch > 2) stereoOut.fill(0, 0, ch * n)
+            for (i in 0 until n) { val v = buf[i]; stereoOut[ch * i] = v; stereoOut[ch * i + 1] = v }
+            emitFrames(stereoOut, n)
         }
         // A network radio's audio is not on the phone's clock (see DriftResampler): it is stretched or squeezed to
         // keep the output's queue level, so it neither drops nor underruns. A USB radio's goes out untouched.
-        val drift = DriftResampler(AUDIO_RATE)
-        var driftOut = ShortArray(0); var driftTrack: AudioTrack? = null; var driftWas = false
+        // one per output channel, all steered alike so they stay in step
+        val drifts = Array(6) { DriftResampler(AUDIO_RATE) }; val drift = drifts[0]
+        val driftOuts = Array(6) { ShortArray(0) }; var driftOut = ShortArray(0); var driftTrack: AudioTrack? = null; var driftWas = false
+        fun driftSteer(t: AudioTrack, n: Int) {
+            if (t !== driftTrack || !driftWas || writtenTo !== t) { for (d in drifts) d.reset(); driftTrack = t; driftWas = true }
+            val queued = if (writtenTo === t) written - runCatching { t.playbackHeadPosition }.getOrDefault(written) else 0
+            for (d in drifts) d.steer(queued.coerceAtLeast(0), n)
+            if (driftOut.size < drift.maxOut(n)) { driftOut = ShortArray(drift.maxOut(n)); for (c in 0 until 6) driftOuts[c] = ShortArray(drift.maxOut(n)) }
+        }
+        // HD Radio: the analog with the selected program's digital audio mixed in, in stereo or upmixed to 5.1
+        var hdMix: HdAudio? = null
+        var hdA = FloatArray(0); val hdCh = Array(6) { ShortArray(0) }; var hdOut = ShortArray(0)
+        fun pcm16(v: Float): Short = (v * 32768f).toInt().coerceIn(-32768, 32767).toShort()
+        fun emitHd(hm: HdAudio, buf: ShortArray, n: Int) {
+            if (hdA.size < n) { hdA = FloatArray(n); for (c in 0 until 6) hdCh[c] = ShortArray(n) }
+            for (i in 0 until n) hdA[i] = buf[i] / 32768f
+            val o = hm.output(hdA, n)
+            val ch = trackCh; val nc = minOf(ch, o.size)
+            for (c in 0 until nc) { val src = o[c]; val dst = hdCh[c]; for (i in 0 until n) dst[i] = pcm16(src[i]) }
+            val t = track
+            val srcs: Array<ShortArray>; var k = n
+            if (driftAudio && t != null) {
+                driftSteer(t, n)
+                for (c in 0 until nc) k = minOf(k, drifts[c].process(hdCh[c], n, driftOuts[c]))
+                srcs = driftOuts
+            } else { driftWas = false; srcs = hdCh }
+            if (hdOut.size < ch * k) hdOut = ShortArray(ch * k)
+            for (i in 0 until k) for (c in 0 until ch) hdOut[ch * i + c] = if (c < nc) srcs[c][i] else 0
+            emitFrames(hdOut, k)
+        }
         fun emitAudio(buf: ShortArray, n: Int) {
+            val hm = hdMix
+            if (hm != null && n > 0) { emitHd(hm, buf, n); return }
             val t = track
             if (!driftAudio || t == null || n <= 0) { driftWas = false; emit(buf, n); return }
-            if (t !== driftTrack || !driftWas || writtenTo !== t) { drift.reset(); driftTrack = t; driftWas = true }
-            val queued = if (writtenTo === t) written - runCatching { t.playbackHeadPosition }.getOrDefault(written) else 0
-            drift.steer(queued.coerceAtLeast(0), n)
-            if (driftOut.size < drift.maxOut(n)) driftOut = ShortArray(drift.maxOut(n))
+            driftSteer(t, n)
             emit(driftOut, drift.process(buf, n, driftOut))
         }
         // The demodulator's own audio at a rate that is not 48 kHz (see AudioPlan) is converted to exactly 48 kHz here,
@@ -921,6 +997,11 @@ object SdrEngine {
                     val m = _mode.value
                     val rate = sampleRate
                     val p = processor
+                    hdMix = (p as? HdProcessor)?.audio
+                    val want6 = hdMix != null && hdSurroundOn && !surroundRefused && _outputChannels.value >= 6
+                    hdMix?.let { it.setSurround(want6); it.muted = muteNow }
+                    val wantCh = if (want6) 6 else 2
+                    track?.let { if (trackCh != wantCh) { runCatching { it.release() }; track = null; lastTrackTry = 0L; written = 0 } }
                     if (p != null && (p !== lastProc || rate != lastProcRate)) {
                         runCatching { p.reset(rate) }.onFailure { Diag.log("processor reset failed: ${it.message}") }
                         lastProc = p; lastProcRate = rate
@@ -938,7 +1019,9 @@ object SdrEngine {
                     val wantTrack = m != Mode.NONE || p?.producesAudio == true
                     if (wantTrack && track == null && System.currentTimeMillis() - lastTrackTry > 1000L) {
                         lastTrackTry = System.currentTimeMillis()
-                        track = runCatching { newTrack() }.onFailure { Diag.log("audio output unavailable: ${it.message}") }.getOrNull()
+                        track = runCatching { newTrack(wantCh) }.onFailure { Diag.log("audio output unavailable: ${it.message}") }.getOrNull()
+                        if (track == null && wantCh == 6) { surroundRefused = true; Diag.log("the output refused 5.1, HD Radio plays in stereo") }
+                        trackCh = wantCh
                         lastVol = -1f
                     }
                     val tk = track
@@ -1277,12 +1360,13 @@ object SdrEngine {
         }
     }
 
-    private fun newTrack(): AudioTrack {
-        val minBuf = AudioTrack.getMinBufferSize(AUDIO_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+    private fun newTrack(ch: Int = 2): AudioTrack {
+        val mask = if (ch == 6) AudioFormat.CHANNEL_OUT_5POINT1 else AudioFormat.CHANNEL_OUT_STEREO
+        val minBuf = AudioTrack.getMinBufferSize(AUDIO_RATE, mask, AudioFormat.ENCODING_PCM_16BIT)
         val t = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-            .setAudioFormat(AudioFormat.Builder().setSampleRate(AUDIO_RATE).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(max(minBuf, AUDIO_RATE / 2 * 2))
+            .setAudioFormat(AudioFormat.Builder().setSampleRate(AUDIO_RATE).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(mask).build())
+            .setBufferSizeInBytes(max(minBuf, AUDIO_RATE / 2 * 2 * ch))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         // writes never wait (the radio thread must not), so the output keeps its own cushion instead: it starts, and

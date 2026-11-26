@@ -93,7 +93,7 @@ object HdApp {
         proc.centerOf = { SdrEngine.freqHz.value }
         proc.offsetOf = { SdrEngine.offsetHz.value }
         val known = _stations.value.values.maxByOrNull { it.lastMs }
-        val dial = SdrEngine.channelHz().takeIf { it in 87_900_000L..107_900_000L }
+        val dial = SdrEngine.channelHz().takeIf { it in HdScanPlan.BAND_LO..HdScanPlan.BAND_HI }
         val f = dial ?: known?.hz ?: WINDOWS[0]
         proc.paused = false; SdrEngine.holdDemod = false
         SdrEngine.configure(SdrEngine.Mode.WFM, f, RATE, 24, 24, false, proc)
@@ -103,11 +103,13 @@ object HdApp {
 
     /** Tune a station: the channel moves inside the span; the radio follows only when the sidebands would leave it. */
     fun tune(hz: Long, recenter: Boolean = false) {
-        val f = (hz.coerceIn(87_900_000L, 107_900_000L) / 100_000.0).roundToLong() * 100_000
+        val f = (hz.coerceIn(HdScanPlan.BAND_LO, HdScanPlan.BAND_HI) / 100_000.0).roundToLong() * 100_000
         val lo = SdrEngine.freqHz.value
         if (recenter || abs(f - lo) > REACH) { SdrEngine.tuneLo(f); SdrEngine.setOffset(0) }
         else SdrEngine.setOffset((f - lo).toInt())
     }
+    /** The program whose audio plays: only it is decoded. */
+    fun setProgram(n: Int) { proc.audio.select(n and 7) }
     /** A tune by hand stops AUTO. */
     fun pick(hz: Long) { if (_scan.value.auto) setAuto(false); tune(hz) }
 

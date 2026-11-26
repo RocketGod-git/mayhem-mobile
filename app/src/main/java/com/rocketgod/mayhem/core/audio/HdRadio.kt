@@ -133,7 +133,7 @@ private class Sideband {
 /**
  * HD Radio (NRSC-5, FM hybrid) detector: finds the digital sidebands either side of the analog carrier, measures them
  * against the noise just beyond, and proves they carry OFDM by locking to the cyclic prefix, which also yields the
- * carrier error. Detection only: the audio codec is proprietary, so there is nothing to play.
+ * carrier error. Detection only: core/hd decodes the data and audio.
  *
  * The channel is brought to ~480 kHz, where a 1024-point spectrum gives the sideband, analog and reference powers.
  * Each sideband is then mixed to DC on its own and brought to ~96 kHz, where x[n]·conj(x[n−L]) over a prefix length

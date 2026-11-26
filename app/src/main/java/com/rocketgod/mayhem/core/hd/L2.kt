@@ -64,13 +64,18 @@ object HdL2 {
     }
 
     class AudioPdu(val off: Int, val end: Int, val codecMode: Int, val streamId: Int, val pduSeq: Int, val blend: Int, val latency: Int,
-                   val nop: Int, val la: Int, val locators: IntArray, val hdrExp: IntArray, val program: Int, val progType: Int?, val access: Int, val psd: IntArray)
+                   val nop: Int, val la: Int, val locators: IntArray, val hdrExp: IntArray, val program: Int, val progType: Int?, val access: Int, val psd: IntArray,
+                   /** The first packet is the back half of one the previous PDU began; the last is the front half of one the next ends. */
+                   val pfirst: Boolean = false, val plast: Boolean = false,
+                   /** The audio packet sequence number (6 bits) of the first whole packet. */
+                   val pktSeq: Int = 0)
     /** One audio transport PDU at byte [off] (1017s Figure 5-2, Table 5-1), or null. */
     fun parseAudioPdu(by: IntArray, off: Int): AudioPdu? {
         if (off + 14 > by.size) return null
         val h = off + 8                                            // the eight RS parity bytes come first
         val codecMode = by[h] and 15; val streamId = (by[h] shr 4) and 3; val pduSeq = ((by[h] shr 6) and 3) or ((by[h + 1] and 1) shl 2)
         val blend = (by[h + 1] shr 1) and 3; val latency = ((by[h + 2] shr 6) and 3) or ((by[h + 3] and 1) shl 2)
+        val pfirst = by[h + 3] and 2 != 0; val plast = by[h + 3] and 4 != 0; val pktSeq = (by[h + 3] shr 3) or ((by[h + 4] and 1) shl 5)
         val nop = (by[h + 4] shr 1) and 0x3F; var hef = by[h + 4] shr 7; val la = by[h + 5]
         if (codecMode == 15 || nop == 0) return null
         val lc16 = codecMode == 0 || (streamId == 1 && codecMode in 1..3)
@@ -85,7 +90,7 @@ object HdL2 {
             if (p + nbytes + 1 > by.size) return null
             for (i in 0 until nop) {
                 val j = (i shr 1) * 3
-                locators[i] = if (i % 2 == 0) by[p + j] or ((by[p + j + 1] shr 4) shl 8) else (by[p + j + 1] and 15) or (by[p + j + 2] shl 4)
+                locators[i] = if (i % 2 == 0) by[p + j] or ((by[p + j + 1] and 15) shl 8) else (by[p + j + 1] shr 4) or (by[p + j + 2] shl 4)
             }
             p += nbytes
         }
@@ -104,7 +109,7 @@ object HdL2 {
         val psdEnd = off + la
         val psd = if (psdEnd >= p) by.copyOfRange(p, minOf(by.size, psdEnd + 1).coerceAtLeast(p)) else IntArray(0)
         val end = if (locators.isNotEmpty()) off + locators[locators.size - 1] else -1
-        return AudioPdu(off, end, codecMode, streamId, pduSeq, blend, latency, nop, la, locators, hdr.toIntArray(), program, progType, access, psd)
+        return AudioPdu(off, end, codecMode, streamId, pduSeq, blend, latency, nop, la, locators, hdr.toIntArray(), program, progType, access, psd, pfirst, plast, pktSeq)
     }
 
     /** Consecutive audio PDUs from the start of the L2 PDU (MPS, then the SPS), stopping before [limit]. */
@@ -112,6 +117,7 @@ object HdL2 {
         val pdus = ArrayList<AudioPdu>()
         var off = 0
         while (off < limit - 14) {
+            if (!HdRs.fixAudioHeader(by, off)) break
             val d = parseAudioPdu(by, off)
             if (d == null || d.end < 0 || d.end >= limit || d.end <= off) break
             pdus.add(d); off = d.end + 1
@@ -245,7 +251,13 @@ object HdL2 {
         return Packet(dtpf, u[a] or (u[a + 1] shl 8), u[a + 2] or (u[a + 3] shl 8), u.copyOfRange(a + 4, b))
     }
 
-    class Id3Frame(val id: String, val bytes: IntArray, val text: String? = null, val desc: String? = null, val lang: String? = null)
+    class Id3Commercial(val price: String, val validUntil: String, val url: String, val receivedAs: Int, val seller: String, val description: String,
+                        val logoMime: String, val logo: IntArray?)
+    class Id3Frame(
+        val id: String, val bytes: IntArray, val text: String? = null, val desc: String? = null, val lang: String? = null,
+        /** APIC and GEOB: the content's MIME and bytes (APIC: its picture type); UFID and PRIV: the owner in [desc], the data. */
+        val mime: String? = null, val picType: Int? = null, val data: IntArray? = null, val commercial: Id3Commercial? = null,
+    )
     private fun latin1(b: IntArray, from: Int = 0, to: Int = b.size): String { val sb = StringBuilder(); for (i in from until to) sb.append(b[i].toChar()); return sb.toString() }
     private fun utf16(b: IntArray, from: Int, to: Int): String {
         var le = true; var i = from
@@ -254,7 +266,7 @@ object HdL2 {
         while (i + 1 < to) { sb.append((if (le) b[i] or (b[i + 1] shl 8) else (b[i] shl 8) or b[i + 1]).toChar()); i += 2 }
         return sb.toString()
     }
-    private fun decodeText(enc: Int, b: IntArray, from: Int, to: Int): String {
+    private fun decodeText(enc: Int, b: IntArray, from: Int = 0, to: Int = b.size): String {
         val s = when (enc) {
             1, 2 -> utf16(b, from, to)
             3 -> String(ByteArray(to - from) { b[from + it].toByte() }, Charsets.UTF_8)
@@ -262,6 +274,33 @@ object HdL2 {
         }
         return s.trimEnd('\u0000')
     }
+    /** A terminated string and what follows it (two zero bytes on a pair boundary in UTF-16). */
+    private fun splitText(enc: Int, b: IntArray): Pair<IntArray, IntArray> {
+        if (enc == 1 || enc == 2) {
+            var i = 0
+            while (i + 1 < b.size) { if (b[i] == 0 && b[i + 1] == 0) return b.copyOfRange(0, i) to b.copyOfRange(i + 2, b.size); i += 2 }
+            return b to IntArray(0)
+        }
+        val z = b.indexOf(0)
+        return if (z < 0) b to IntArray(0) else b.copyOfRange(0, z) to b.copyOfRange(z + 1, b.size)
+    }
+    private fun printableText(b: IntArray) = if (b.isNotEmpty() && b.all { it in 32..126 }) latin1(b) else ""
+    private fun IntArray.from(i: Int) = if (i >= size) IntArray(0) else copyOfRange(i, size)
+    /** ID3 COMR (1028s): price, valid until (YYYYMMDD), contact URL, received as, seller, description, optional logo. */
+    private fun parseComr(b: IntArray): Id3Commercial {
+        val enc = b[0]
+        var r = b.from(1)
+        val (price, a) = splitText(0, r); r = a
+        val validUntil = latin1(r, 0, minOf(8, r.size)); r = r.from(8)
+        val (url, c) = splitText(0, r); r = c
+        val receivedAs = r.getOrElse(0) { 0 }; r = r.from(1)
+        val (seller, d) = splitText(enc, r); r = d
+        val (desc, e) = splitText(enc, r); r = e
+        var logoMime = ""; var logo: IntArray? = null
+        if (r.isNotEmpty()) { val (m, lg) = splitText(0, r); logoMime = latin1(m); if (lg.isNotEmpty()) logo = lg }
+        return Id3Commercial(latin1(price), validUntil, latin1(url), receivedAs, decodeText(enc, seller), decodeText(enc, desc), logoMime, logo)
+    }
+    private fun indexOf0(b: IntArray, from: Int): Int { for (i in from until b.size) if (b[i] == 0) return i; return -1 }
     /** ID3 v2.3 tag frames (the PSD subset of 1028s); null when it is not a tag. */
     fun parseId3(p: IntArray): List<Id3Frame>? {
         if (p.size < 10 || p[0] != 0x49 || p[1] != 0x44 || p[2] != 0x33) return null
@@ -275,12 +314,31 @@ object HdL2 {
             val body = p.copyOfRange(q + 10, bEnd.coerceAtLeast(q + 10))
             q = (q + 10 + fsz).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             out.add(when {
+                id == "TXXX" && body.isNotEmpty() -> { val (d, r) = splitText(body[0], body.from(1)); Id3Frame(id, body, desc = decodeText(body[0], d), text = decodeText(body[0], r)) }
                 id[0] == 'T' && body.isNotEmpty() -> Id3Frame(id, body, text = decodeText(body[0], body, 1, body.size))
-                id == "COMM" && body.size >= 4 -> {
-                    val z = (4 until body.size).firstOrNull { body[it] == 0 } ?: -1
-                    Id3Frame(id, body, lang = latin1(body, 1, 4), desc = decodeText(body[0], body, 4, if (z >= 0) z else body.size),
-                        text = if (z >= 0) decodeText(body[0], body, z + 1, body.size) else "")
+                (id == "COMM" || id == "USLT") && body.size >= 4 -> {
+                    val (d, r) = splitText(body[0], body.from(4))
+                    Id3Frame(id, body, lang = latin1(body, 1, 4), desc = decodeText(body[0], d), text = decodeText(body[0], r))
                 }
+                id == "WXXX" && body.isNotEmpty() -> { val (d, r) = splitText(body[0], body.from(1)); Id3Frame(id, body, desc = decodeText(body[0], d), text = latin1(r).trimEnd('\u0000')) }
+                id[0] == 'W' -> Id3Frame(id, body, text = latin1(body).trimEnd('\u0000'))
+                id == "UFID" || id == "PRIV" -> {
+                    val z = body.indexOf(0)
+                    val data = if (z < 0) IntArray(0) else body.from(z + 1)
+                    Id3Frame(id, body, desc = latin1(body, 0, if (z < 0) body.size else z), data = data, text = printableText(data))
+                }
+                id == "APIC" && body.size > 4 -> {
+                    // encoding, MIME, picture type, description, then the picture
+                    val z = indexOf0(body, 1)
+                    if (z > 0) { val (d, r) = splitText(body[0], body.from(z + 2)); Id3Frame(id, body, mime = latin1(body, 1, z), picType = body.getOrNull(z + 1), desc = decodeText(body[0], d), data = r) }
+                    else Id3Frame(id, body)
+                }
+                id == "GEOB" && body.size > 4 -> {
+                    val z = indexOf0(body, 1)
+                    if (z > 0) { val (fn, r1) = splitText(body[0], body.from(z + 1)); val (d, r) = splitText(body[0], r1); Id3Frame(id, body, mime = latin1(body, 1, z), text = decodeText(body[0], fn), desc = decodeText(body[0], d), data = r) }
+                    else Id3Frame(id, body)
+                }
+                id == "COMR" && body.size > 2 -> Id3Frame(id, body, commercial = parseComr(body))
                 else -> Id3Frame(id, body)
             })
         }

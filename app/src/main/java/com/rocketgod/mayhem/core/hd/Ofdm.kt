@@ -34,15 +34,22 @@ object HdOfdm {
 
     /** MP1 reference subcarriers (Table 12-24) and their column of the reference matrix. */
     val REF_SC: IntArray; val REF_COL: IntArray
+    /** The main sidebands' references come first; the extended partitions' (MP2, MP3, MP11) follow. */
+    val NMAIN: Int
     init {
         val sc = ArrayList<Int>(); val col = ArrayList<Int>()
         var j = 0; var s = -546
         while (s <= -356) { sc.add(s); col.add(j); s += 19; j++ }
         j = 0; s = 356
         while (s <= 546) { sc.add(s); col.add(50 + j); s += 19; j++ }
+        NMAIN = sc.size
+        for (e in intArrayOf(-337, -318, 318, 337, -299, -280, 280, 299)) { sc.add(e); col.add(if (e < 0) (e + 546) / 19 else 50 + (e - 356) / 19) }
         REF_SC = sc.toIntArray(); REF_COL = col.toIntArray()
     }
     val NREF = REF_SC.size
+
+    /** Extended partitions per sideband for a primary service mode indicator (Table 6-2): 0 MP1, 1 MP2, 2 MP3, 4 MP11. */
+    fun extPartitions(psmi: Int): Int { val m = psmi and 3; return if (m == 2) 1 else if (m != 3) 0 else if ((psmi and 15) == 11) 4 else 2 }
 
     /** Table 11-1 fixed sync bits (bit number to value). */
     val SYNC_BITS = arrayOf(31 to 0, 30 to 1, 29 to 1, 28 to 0, 27 to 0, 26 to 1, 25 to 0, 22 to 1, 17 to 0, 10 to 1, 9 to 1)
@@ -122,7 +129,12 @@ private class HdResampler {
 /** One L1 frame's demodulated content, ready for de-interleaving. */
 class FrameSoft(
     /** 512 x 720 PM matrix of soft values, positive meaning 1. */
-    val pm: FloatArray, val psmi: Int,
+    val pm: FloatArray,
+    /** 512 x (72 per extended partition pair) PX1 matrix (P3) in modes MP2, MP3 and MP11, else null. */
+    val px: FloatArray?,
+    /** 512 x 144 PX2 matrix (P4) in mode MP11, else null. */
+    val px2: FloatArray?,
+    val psmi: Int,
     /** Per-sideband SNR of the equalized data subcarriers, dB. */
     val snrLoDb: Double, val snrHiDb: Double,
     /** Absolute sample (at FS) where the frame starts. */
@@ -143,7 +155,7 @@ class HdRx {
         const val SYMS = 640
     }
     private val FS = HdOfdm.FS; private val NFFT = HdOfdm.NFFT; private val NCP = HdOfdm.NCP; private val NSYM = HdOfdm.NSYM
-    private val NSC = HdOfdm.NSC; private val WIN_OFF = HdOfdm.WIN_OFF; private val REF_SC = HdOfdm.REF_SC; private val NREF = HdOfdm.NREF
+    private val NSC = HdOfdm.NSC; private val WIN_OFF = HdOfdm.WIN_OFF; private val REF_SC = HdOfdm.REF_SC; private val NREF = HdOfdm.NREF; private val NMAIN = HdOfdm.NMAIN
     private val PM_ROWS = HdFec.PM_ROWS; private val PM_COLS = HdFec.PM_COLS
     private val rs = HdResampler()
     private var rate = 0; private var offset = Double.NaN
@@ -292,7 +304,7 @@ class HdRx {
         // a carrier s whole bins off turns by 2 pi s NSYM / NFFT from one symbol to the next: undo that per candidate
         var bestS = 0; var bestV = Double.NEGATIVE_INFINITY
         for (s in -40..40) {
-            var vr = 0.0; var vi = 0.0; for (sc in REF_SC) { val b = (sc + s + 2 * NFFT) % NFFT; vr += scRe[b]; vi += scIm[b] }
+            var vr = 0.0; var vi = 0.0; for (j in 0 until NMAIN) { val b = (REF_SC[j] + s + 2 * NFFT) % NFFT; vr += scRe[b]; vi += scIm[b] }
             val a = -4 * PI * s * NSYM / NFFT; val v = vr * cos(a) - vi * sin(a)
             if (v > bestV) { bestV = v; bestS = s }
         }
@@ -353,10 +365,12 @@ class HdRx {
             for (j in 0 until NREF) {
                 val i = REF_SC[j] + 546; val ar = symRe[off + i].toDouble(); val ai = symIm[off + i].toDouble(); val br = symRe[prev + i].toDouble(); val bi = symIm[prev + i].toDouble()
                 val dr = ar * br + ai * bi; val di = ai * br - ar * bi
-                val bit = if (dr < 0) 1 else 0; refBits[slot * NREF + j] = bit.toByte(); n += bit
+                val bit = if (dr < 0) 1 else 0; refBits[slot * NREF + j] = bit.toByte()
+                if (j >= NMAIN) continue
+                n += bit
                 val mm = hypot(dr, di).let { if (it == 0.0) 1.0 else it }; qr += (dr * dr - di * di) / mm; qi += 2 * dr * di / mm
             }
-            maj[slot] = if (n * 2 > NREF) 1 else 0
+            maj[slot] = if (n * 2 > NMAIN) 1 else 0
             val dphi = atan2(qi, qr) / 2
             cfo += 0.02 * dphi / (2 * PI * NSYM / FS)
         }
@@ -476,15 +490,23 @@ class HdRx {
         val pm = FloatArray(PM_ROWS * PM_COLS)
         val hr = FloatArray(NSC); val hi = FloatArray(NSC)
         val mag = DoubleArray(NREF); val ph = DoubleArray(NREF)
+        // references in frequency order per sideband, the extended ones only where the mode lights them
+        val ext = HdOfdm.extPartitions(lastPsmi); val N = NMAIN
+        val chains = arrayOf(
+            IntArray(11) { it } + intArrayOf(N, N + 1, N + 4, N + 5).copyOfRange(0, ext),
+            intArrayOf(N + 6, N + 7, N + 2, N + 3).copyOfRange(4 - ext, 4) + IntArray(11) { 11 + it },
+        )
+        val pxCols = if (ext != 0) HdP3.pxColumns(minOf(ext, 2)) else null; val px = pxCols?.let { FloatArray(PM_ROWS * it.sc.size) }
+        val px2Cols = if (ext == 4) HdP3.px2Columns() else null; val px2 = px2Cols?.let { FloatArray(PM_ROWS * it.sc.size) }
         var eLo = 0.0; var vLo = 0.0; var nLo = 0; var eHi = 0.0; var vHi = 0.0; var nHi = 0
         for (n in 0 until PM_ROWS) {
             for (j in 0 until NREF) { val r = Hs[(n * NREF + j) * 2].toDouble(); val i = Hs[(n * NREF + j) * 2 + 1].toDouble(); mag[j] = hypot(r, i); ph[j] = atan2(i, r) }
-            for ((a, b) in arrayOf(0 to 11, 11 to 22)) {
-                for (j in a + 1 until b) { var d = ph[j] - ph[j - 1]; while (d > PI) { ph[j] -= 2 * PI; d -= 2 * PI }; while (d < -PI) { ph[j] += 2 * PI; d += 2 * PI } }
-                for (j in a until b - 1) {
-                    val k0 = REF_SC[j]; val k1 = REF_SC[j + 1]
+            for (ch in chains) {
+                for (q in 1 until ch.size) { val j = ch[q]; var d = ph[j] - ph[ch[q - 1]]; while (d > PI) { ph[j] -= 2 * PI; d -= 2 * PI }; while (d < -PI) { ph[j] += 2 * PI; d += 2 * PI } }
+                for (q in 0 until ch.size - 1) {
+                    val j0 = ch[q]; val j1 = ch[q + 1]; val k0 = REF_SC[j0]; val k1 = REF_SC[j1]
                     for (k in k0..k1) {
-                        val t = (k - k0).toDouble() / (k1 - k0); val m = mag[j] + t * (mag[j + 1] - mag[j]); val p = ph[j] + t * (ph[j + 1] - ph[j])
+                        val t = (k - k0).toDouble() / (k1 - k0); val m = mag[j0] + t * (mag[j1] - mag[j0]); val p = ph[j0] + t * (ph[j1] - ph[j0])
                         hr[k + 546] = (m * cos(p)).toFloat(); hi[k + 546] = (m * sin(p)).toFloat()
                     }
                 }
@@ -499,8 +521,12 @@ class HdRx {
                 val e = abs(v) / h2                                             // equalized amplitude on this rail
                 if (k < 546) { eLo += e; vLo += e * e; nLo++ } else { eHi += e; vHi += e * e; nHi++ }
             }
+            for ((m, cs) in arrayOf(px to pxCols, px2 to px2Cols)) if (m != null && cs != null) for (c in cs.sc.indices) {
+                val k = cs.sc[c] + 546; val xr = symRe[off + k]; val xi = symIm[off + k]; val a = hr[k]; val b = hi[k]
+                m[n * cs.sc.size + c] = if (cs.iq[c] != 0) xi * a - xr * b else xr * a + xi * b
+            }
         }
         fun snr(s: Double, s2: Double, n: Int): Double { if (n == 0) return -99.0; val m = s / n; val v = s2 / n - m * m; return 10 * log10(m * m / max(v, 1e-9)) }
-        onFrame(FrameSoft(pm, lastPsmi, snr(eLo, vLo, nLo), snr(eHi, vHi, nHi), symStart[fs % SYMS]))
+        onFrame(FrameSoft(pm, px, px2, lastPsmi, snr(eLo, vLo, nLo), snr(eHi, vHi, nHi), symStart[fs % SYMS]))
     }
 }
