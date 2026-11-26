@@ -11,10 +11,7 @@
  * This runs on the main thread (it reads and writes localStorage); the DSP worker gets the channels it produces
  * (plan.ts setLocalChannels) in a message.
  */
-import { MESHCORE, REGIONS, homeBand, localeRegion, slotHz, usableHalf, type LocalChannel, type McPreset } from './plan.js';
-
-/** The LoRa scanner's wide rate (LoraScanner.RATE; not imported, so this module stays clear of the DSP). */
-const WIDE_RATE = 20_000_000;
+import { MESHCORE, REGIONS, WIDE_RATE, homeBand, localeRegion, slotHz, usableHalf, type LocalChannel, type McPreset } from './plan.js';
 
 /** Europe as MeshCore's "EU/UK" presets mean it. */
 export const EUROPE = new Set(['GB', 'IE', 'FR', 'DE', 'NL', 'BE', 'LU', 'ES', 'PT', 'IT', 'AT', 'CH', 'LI', 'DK', 'SE', 'NO', 'FI', 'IS',
@@ -145,55 +142,95 @@ function areas(): Area[] {
   return [{ id: 'AUTO', title: 'Automatic' }, ...named];
 }
 
-/** The wide span's center that holds the most local channels. From each channel in turn (most local first), every
- *  other one that still fits inside the radio's filter is taken, most local first; the window holding the most wins,
- *  the more local start breaking a tie (Portugal's 868 channels outnumber its 433). The user's own channel (first in
- *  the list) is always in view. Leftover room goes toward the channels that didn't fit but are in reach of the band
- *  (433 MHz presets never pull an 868 MHz view). Kept off the spike at the center. */
-function wideCenter(a: string): number | null {
+/** The area's Meshtastic default channel: its region's starting preset (LongFast in most), the busiest Meshtastic
+ *  channel almost everywhere. Null where no Meshtastic region is known. */
+function meshtasticDefault(a: string): LocalChannel | null {
+  const rn = meshtasticRegion(country(a));
+  const r = rn ? REGIONS.find(x => x.name === rn) : undefined;
+  const p = r?.presets.find(x => x.name === r.start);
+  const hz = r && p ? slotHz(r, p) : null;
+  return p && hz !== null ? { hz, bw: p.bw, sf: p.sf, name: `Meshtastic ${p.name} ${rn}` } : null;
+}
+
+/** The wide span's center at `rate`. The user's own channel and the area's Meshtastic default channel are always in
+ *  view; then, from each channel in turn (most local first), every other one that still fits inside the radio's
+ *  filter is taken, most local first; the window holding the most wins, the more local start breaking a tie
+ *  (Portugal's 868 channels outnumber its 433). Leftover room goes toward the channels that didn't fit but are in
+ *  reach of the band (433 MHz presets never pull an 868 MHz view). Kept off the spike at the center. */
+function wideCenter(a: string, rate = WIDE_RATE): number | null {
   const ch = channels(a);
   if (ch.length === 0) return null;
-  const half = Math.trunc(usableHalf(WIDE_RATE));
-  let best: { lo: number; hi: number; n: number; out: number[] } | null = null;
-  const starts = custom() ? [0] : ch.map((_, i) => i);
-  for (const start of starts) {
-    const s0 = ch[start];
-    let lo = s0.hz - Math.trunc(s0.bw / 2), hi = s0.hz + Math.trunc(s0.bw / 2), n = 1;
-    const out: number[] = [];
-    ch.forEach((c, i) => {
-      if (i === start) return;
-      const l = Math.min(lo, c.hz - Math.trunc(c.bw / 2)), h = Math.max(hi, c.hz + Math.trunc(c.bw / 2));
-      if (h - l <= 2 * half) { lo = l; hi = h; n++; }
-      else if (Math.abs(c.hz - Math.trunc((lo + hi) / 2)) < 3 * half) out.push(c.hz);
-    });
-    if (!best || n > best.n) best = { lo, hi, n, out };
+  const half = Math.trunc(usableHalf(rate));
+  const edge = (c: LocalChannel): [number, number] => [c.hz - Math.trunc(c.bw / 2), c.hz + Math.trunc(c.bw / 2)];
+  // what must be in view: the user's own channel (first in the list), then the Meshtastic default if both fit
+  const must: number[] = custom() ? [0] : [];
+  const md = meshtasticDefault(a);
+  const mi = md ? ch.findIndex(c => c.hz === md.hz && c.bw === md.bw) : -1;
+  if (mi >= 0 && !must.includes(mi)) {
+    const ends = [...must, mi].flatMap(i => edge(ch[i]));
+    if (Math.max(...ends) - Math.min(...ends) <= 2 * half) must.push(mi);
   }
-  const { lo, hi, out } = best!;
+  let best: { lo: number; hi: number; n: number; out: number[]; held: number[] } | null = null;
+  for (const start of [-1, ...ch.map((_, i) => i)]) {
+    if (start < 0 && must.length === 0) continue;
+    let lo = Infinity, hi = -Infinity;
+    const held: number[] = [], out: number[] = [];
+    const take = (i: number): boolean => {
+      const [l0, h0] = edge(ch[i]);
+      const l = Math.min(lo, l0), h = Math.max(hi, h0);
+      if (h - l > 2 * half) return false;
+      lo = l; hi = h; held.push(i);
+      return true;
+    };
+    for (const i of must) take(i);
+    if (start >= 0 && !held.includes(start) && !take(start)) continue;
+    ch.forEach((c, i) => {
+      if (held.includes(i) || take(i)) return;
+      if (Math.abs(c.hz - Math.trunc((lo + hi) / 2)) < 3 * half) out.push(c.hz);
+    });
+    if (!best || held.length > best.n) best = { lo, hi, n: held.length, out, held };
+  }
+  const { lo, hi, out, held } = best!;
   let center = Math.trunc((lo + hi) / 2);
   const slack = half - Math.trunc((hi - lo) / 2);
   if (slack > 0 && out.length > 0) {
     const toward = Math.trunc(out.reduce((s, x) => s + x, 0) / out.length);
     center += toward > center ? slack : -slack;
   }
+  // off the spike, to whichever side keeps every held channel in view
   const near = ch.find(c => Math.abs(c.hz - center) < c.bw);
-  if (near) center = near.hz + near.bw + 100_000;
+  if (near) {
+    const fits = (x: number): boolean => held.every(i => Math.abs(ch[i].hz - x) + Math.trunc(ch[i].bw / 2) <= half);
+    center = [near.hz + near.bw + 100_000, near.hz - near.bw - 100_000].find(fits) ?? center;
+  }
   return center;
 }
 
-/** One channel at a time (a 2 MHz radio): the most local one. */
-function narrowChannel(a: string): number | null { return channels(a)[0]?.hz ?? null; }
+/** One channel at a time (a 2 MHz radio): the user's own, else the area's Meshtastic default, else the most local. */
+function narrowChannel(a: string): number | null {
+  if (custom()) return channels(a)[0]?.hz ?? null;
+  return meshtasticDefault(a)?.hz ?? channels(a)[0]?.hz ?? null;
+}
+
+/** Every area this module knows a Meshtastic region or MeshCore preset for (for tests and tools). */
+function knownAreas(): string[] {
+  const ids = new Set<string>([...AMERICAS_US, ...Object.keys(OWN_REGION), ...EUROPE, ...EU_868_TOO, ...PARTS.map(p => p.area)]);
+  for (const p of MESHCORE) if (p.area !== 'EU') ids.add(p.area);
+  for (const x of areas()) if (x.id !== 'AUTO') ids.add(x.id);
+  return [...ids];
+}
 
 /** How far above a narrow channel the radio is tuned (clear of the spike at the center). */
 const NARROW_SHIFT = 300_000;
 const sane = (hz: number): boolean => hz >= 400_000_000 && hz <= 1_000_000_000;
 
 /** The wide span's center: the band the user picked (kept until they pick LOCAL again), else the local one. */
-function wideStart(): number {
+function wideStart(rate = WIDE_RATE): number {
   const u = readHz(KEY_WIDE);
   if (sane(u)) return u;
-  return wideCenter(area()) ?? homeBand().center;
+  return wideCenter(area(), rate) ?? homeBand().center;
 }
-/** One channel at a time: the user's pick, else the most local channel; the radio sits 300 kHz above it. */
+/** One channel at a time: the user's pick, else narrowChannel; the radio sits 300 kHz above it. */
 function narrowStart(): number {
   const u = readHz(KEY_NARROW);
   if (sane(u)) return u + NARROW_SHIFT;
@@ -201,9 +238,9 @@ function narrowStart(): number {
 }
 
 export const LoraLocal = {
-  NARROW_SHIFT,
+  NARROW_SHIFT, WIDE_RATE,
   picked, setPicked, area, country, meshcore, channels, title, areas, custom, setCustom, wideCenter, narrowChannel,
-  wideStart, narrowStart,
+  wideStart, narrowStart, meshtasticDefault, knownAreas,
   /** The band tile the user picked (0: LOCAL). */
   userWide: (): number => readHz(KEY_WIDE),
   setUserWide: (hz: number): void => write(KEY_WIDE, hz > 0 ? String(hz) : null),

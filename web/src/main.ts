@@ -4,6 +4,7 @@ import { BB_FILTER_BW, HackRf, HACKRF_FILTERS, isHackRf, isMayhemSerial, MAYHEM_
 import { RTL_MAX_GAIN_DB, RTLSDR_FILTERS, RTLSDR_READY, RtlSdr, isRtlSdr } from './rtlsdr.js';
 import { appHidden, txAppsHidden } from './app-visibility.js';
 import { APP_NEEDS, RATE_CHOICES, blockedBecause, canSample, canTune, cleanWidest, nearestRate, whyNot, type Radio } from './radio.js';
+import type { Gap } from './delivery.js';
 import type { DmrStatus } from './dsp/ham/dmr.js';
 import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
@@ -66,7 +67,7 @@ import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
 import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
 import { HOP_DRAIN_MS, HOP_LOOK_MS, bandHops, bandPick, channelScore, dialStays, fmGridParity, hopMiddles, recordView, viewScores } from './band-look.js';
-import { BANDS as LORA_BANDS } from './dsp/lora/plan.js';
+import { BANDS as LORA_BANDS, stepDown as loraStepDown } from './dsp/lora/plan.js';
 import { LoraLocal } from './dsp/lora/local.js';
 import { SONDE_BANDS, SONDE_WIDE, SONDE_NARROW, wideCenter as sondeWideCenter, narrowWindows as sondeWindows, type SondeChannelRow } from './dsp/sonde/front.js';
 import type { SondeRow } from './dsp/sonde/track.js';
@@ -7471,25 +7472,43 @@ function atscExport(csv: string, json: string): void {
 }
 
 // ---- LoRa: every Meshtastic, MeshCore and LoRaWAN node heard across the span ------------------------------------
-const LORA_WIDE = 20_000_000, LORA_NARROW = 2_000_000;
+/** The wide view opens at 10 Msps; 20 is by hand. Each steps down when the radio loses samples there. */
+const LORA_WIDE = LoraLocal.WIDE_RATE, LORA_MAX = 20_000_000, LORA_NARROW = 2_000_000;
 interface LoraNodeRow { key: string; proto: string; label: string; name: string | null; kind: string; lat: number | null; lon: number | null; firstMs: number; lastMs: number; packets: number; snr: number[]; fields: { name: string; value: string }[]; last: string; hz: number; modem: string; texts: string[] }
 interface LoraEventRow { id: number; ms: number; proto: string; from: string | null; nodeKey: string | null; text: string | null; channel: string | null }
-interface LoraSnap { nodes: LoraNodeRow[]; messages: LoraEventRow[]; bursts: number; frames: number; rate: number; centerHz: number; wide: boolean; busy: number; open: number;
+interface LoraSnap { nodes: LoraNodeRow[]; messages: LoraEventRow[]; bursts: number; frames: number; rate: number; centerHz: number; wide: boolean; busy: number; open: number; torn: number;
   channels: { name: string; hz: number; standing: boolean; active: boolean; hotAgoMs: number | null; frames: number }[] }
 /** The LoRa screen: NODES shows every node live; MAP puts the ones that broadcast a position where they say they are;
  *  MESSAGES is the text traffic in order. A tap on a card or a pin opens everything decoded from that node. */
 // opens on the LOG: it fills first (every frame and burst), while nodes and chat take minutes
-const loraUi = { snap: null as LoraSnap | null, view: 'log' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0 };
+const loraUi = { snap: null as LoraSnap | null, view: 'log' as 'nodes' | 'map' | 'messages' | 'log', sel: '', full: false, drawn: 0, timer: 0, drawPending: 0,
+  /** The fastest rate this radio delivered every sample at, this session (0: not limited), and why it was lowered. */
+  cap: 0, note: '' };
 const loraClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 const loraPins = (): GeoItem[] => (loraUi.snap?.nodes ?? []).filter(n => n.lat !== null && n.lon !== null).map(n => ({ id: n.key, lat: n.lat!, lon: n.lon!, label: n.label, kind: 'station' as GeoItem['kind'] }));
 /** LoRa opens where the user last put it, else centered on what is local to where the browser is (its MeshCore
- *  presets and its Meshtastic region, local.ts): 20 MHz where the radio can sample it, else one channel with the
- *  radio 300 kHz above it (clear of the spike at the center). The gain starts where it settled here last time. */
+ *  presets and its Meshtastic region, local.ts): 10 MHz where the radio can sample it and delivers every sample
+ *  there, else one channel with the radio 300 kHz above it (clear of the spike at the center). The gain starts where
+ *  it settled here last time. */
 function loraOpen(): void {
-  const wide = radioCan(LORA_WIDE);
+  const wide = radioCan(LORA_WIDE) && (loraUi.cap === 0 || loraUi.cap >= LORA_WIDE);
   loraSendPlan();
-  configure('NONE', wide ? LoraLocal.wideStart() : LoraLocal.narrowStart(), wide ? LORA_WIDE : LORA_NARROW, 32, 40, true, 'lora');
+  configure('NONE', wide ? LoraLocal.wideStart(LORA_WIDE) : LoraLocal.narrowStart(), wide ? LORA_WIDE : LORA_NARROW, 32, 40, true, 'lora');
   loraRecall();
+}
+/** Once a second: a radio losing samples at this rate (delivery.ts) steps down to the next one, and says so. One
+ *  gap ruins any frame it lands in, so a narrower span that arrives whole hears more. */
+function loraDelivery(): void {
+  const d = radio?.delivery, t = performance.now();
+  if (state.app !== 'lora' || !d || !d.losing(t)) return;
+  const from = state.rate, to = loraStepDown(from);
+  if (!to) return;
+  const mhz = (r: number) => String(Math.round(r / 1e5) / 10);
+  loraUi.cap = to;
+  loraUi.note = `radio losing samples at ${mhz(from)} Msps; using ${mhz(to)}`;
+  log(`LoRa: ${loraUi.note} (${d.note(t)})`);
+  setRate(to); tune(to >= LORA_WIDE ? LoraLocal.wideStart(to) : LoraLocal.narrowStart());
+  render('lora');
 }
 /** The channels local to the area in use, to the DSP worker (it builds the plan the scanner listens by). */
 function loraSendPlan(): void { worker?.postMessage({ type: 'loraPlan', channels: LoraLocal.channels(LoraLocal.area()) }); }
@@ -7498,14 +7517,16 @@ LoraLocal.position = () => state.home ?? lastKnownPos();
 LoraLocal.onChange = () => {
   loraSendPlan();
   if (state.app !== 'lora') return;
-  tune(state.rate >= 10_000_000 ? LoraLocal.wideStart() : LoraLocal.narrowStart());
+  tune(state.rate >= 10_000_000 ? LoraLocal.wideStart(state.rate) : LoraLocal.narrowStart());
   render('lora');
 };
-function loraSpan(wide: boolean): void {
-  if (wide === state.rate >= 10_000_000) return;
-  if (wide) {
-    if (!radioCan(LORA_WIDE)) { log(`${radio?.label ?? 'this radio'} cannot sample 20 MHz`); return; }
-    setRate(LORA_WIDE); tune(LoraLocal.wideStart());
+/** SPAN: 2, 10 or 20 MHz. A span picked by hand is tried again even where the radio lost samples before. */
+function loraSpan(rate: number): void {
+  if (rate === state.rate) return;
+  if (rate > LORA_NARROW) {
+    if (!radioCan(rate)) { log(`${radio?.label ?? 'this radio'} cannot sample ${rate / 1e6} MHz`); return; }
+    loraUi.cap = 0; loraUi.note = '';
+    setRate(rate); tune(LoraLocal.wideStart(rate));
   } else {
     setRate(LORA_NARROW); tune(LoraLocal.narrowStart());
   }
@@ -7515,7 +7536,7 @@ function loraSpan(wide: boolean): void {
 const loraNarrowChannels = () => LoraLocal.channels(LoraLocal.area()).slice(0, 8);
 /** The wide tiles' and narrow tiles' lit state: LOCAL follows the area; a band tile is the user's own pick. */
 function loraTilesOn(): void {
-  const user = LoraLocal.userWide(), localHz = LoraLocal.wideCenter(LoraLocal.area()) ?? LoraLocal.wideStart();
+  const user = LoraLocal.userWide(), localHz = LoraLocal.wideCenter(LoraLocal.area(), state.rate) ?? LoraLocal.wideStart(state.rate);
   qa<HTMLButtonElement>('[data-lrwide]').forEach(b => {
     const hz = Number(b.dataset.lrwide);
     b.classList.toggle('on', hz === 0 ? user === 0 && state.freq === localHz : user !== 0 && state.freq === hz);
@@ -7543,17 +7564,17 @@ function renderLora(view: HTMLElement): void {
       <div id="lr-chans" class="lr-chans"></div>
       <div class="ctlrow"><span class="rl">AREA</span>${areaSel}</div>
       ${tiles}
-      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([`<button data-lrspan="0" class="${wide ? '' : 'on'}">2 MHz</button>`, `<button data-lrspan="1" class="${wide ? 'on' : ''} ${radioCan(LORA_WIDE) ? '' : 'off'}">20 MHz</button>`])}<button id="lr-own" class="chip" title="your own channel">YOUR CHANNEL</button></div>
+      <div class="ctlrow"><span class="rl">SPAN</span>${segHtml([LORA_NARROW, LORA_WIDE, LORA_MAX].map(r => `<button data-lrspan="${r}" class="${state.rate === r ? 'on' : ''} ${radioCan(r) ? '' : 'off'}">${r / 1e6} MHz</button>`))}<button id="lr-own" class="chip" title="your own channel">YOUR CHANNEL</button></div>
       ${own ? `<div class="lr-ownline">YOUR CHANNEL · ${(own.hz / 1e6).toFixed(4)} MHz · ${loraBwName(own.bw)} · SF${own.sf}</div>` : ''}
-      <div class="note about">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 433, 470–510, 863–870 and 902–928 MHz, by area. It starts on the channels where you are (your language's region, and the part of it your last position is in): MeshCore's community presets and the Meshtastic region. AREA, the band tiles and your own channel change it. A HackRF watches 20 MHz at once; an RTL-SDR one channel at a time.</div>
+      <div class="note about">LoRa across the band at once: Meshtastic (decrypted on the default channels: names, positions, telemetry, text), MeshCore (adverts with names and positions, public channel messages) and LoRaWAN (device addresses, frame counters), plus any other LoRa as raw frames. 433, 470–510, 863–870 and 902–928 MHz, by area. It starts on the channels where you are (your language's region, and the part of it your last position is in): MeshCore's community presets and the Meshtastic region. AREA, the band tiles and your own channel change it. A HackRF watches 10 MHz at once (20 by hand, where the radio delivers every sample); an RTL-SDR one channel at a time.</div>
       </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-lrview]', view).forEach(b => b.onclick = () => { loraUi.view = b.dataset.lrview as typeof loraUi.view; refreshLora(true); });
-  qa<HTMLButtonElement>('[data-lrspan]', view).forEach(b => b.onclick = () => loraSpan(b.dataset.lrspan === '1'));
+  qa<HTMLButtonElement>('[data-lrspan]', view).forEach(b => b.onclick = () => loraSpan(Number(b.dataset.lrspan)));
   qa<HTMLButtonElement>('[data-lrwide]', view).forEach(b => b.onclick = () => {
     const hz = Number(b.dataset.lrwide);
     LoraLocal.setUserWide(hz);
-    tune(hz === 0 ? LoraLocal.wideStart() : hz);
+    tune(hz === 0 ? LoraLocal.wideStart(state.rate) : hz);
     loraTilesOn();
   });
   qa<HTMLButtonElement>('[data-lrnarrow]', view).forEach(b => b.onclick = () => {
@@ -7718,7 +7739,9 @@ function refreshLora(force = false): void {
   const by = new Map<string, number>(); for (const n of nodes) by.set(n.proto, (by.get(n.proto) ?? 0) + 1);
   const parts = ['Meshtastic', 'MeshCore', 'LoRaWAN'].filter(p => by.has(p)).map(p => `${p.toUpperCase()} ${by.get(p)}`);
   const sum = q('#lr-sum');
-  if (sum) sum.innerHTML = parts.length ? `<div>${parts.join(' · ')} · ${snap?.frames ?? 0} frames</div>` : `<div class="muted">${snap && snap.bursts > 0 ? `${snap.bursts} LoRa bursts heard · ${snap.frames} frames` : 'listening for LoRa'}</div>`;
+  const torn = snap && snap.torn > 0 ? ` · ${snap.torn} lost to radio gaps` : '';
+  if (sum) sum.innerHTML = (parts.length ? `<div>${parts.join(' · ')} · ${snap?.frames ?? 0} frames${torn}</div>` : `<div class="muted">${snap && snap.bursts > 0 ? `${snap.bursts} LoRa bursts heard · ${snap.frames} frames${torn}` : 'listening for LoRa'}</div>`)
+    + (loraUi.note ? `<div class="muted">${esc(loraUi.note)}</div>` : '');
   qa<HTMLButtonElement>('[data-lrview]').forEach(b => { const v = b.dataset.lrview; b.classList.toggle('on', v === loraUi.view); b.textContent = v === 'nodes' ? `NODES ${nodes.length}` : v === 'map' ? `MAP ${pins.length}` : v === 'messages' ? `CHAT ${msgs.length}` : 'LOG'; });
   const cards = q('#lr-cards'), mapEl = q('#lr-map'), chat = q('#lr-msgs'), logEl = q('#lr-log'), nopos = q('#lr-nopos'), det = q('#lr-detail'), stage = q('#lr-stage');
   if (!cards || !mapEl || !chat || !logEl || !nopos || !det || !stage) return;
@@ -9636,7 +9659,7 @@ function ensureWorker(): Worker {
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
-      case 'health': lastHealth = m.line; lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${m.line}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
+      case 'health': { const lost = radio?.delivery.note(performance.now()) ?? ''; lastHealth = lost ? `${m.line} · ${lost}` : m.line; } loraDelivery(); lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${lastHealth}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
         const id = state.app ?? 'x', list = (logs[id] ??= []);
@@ -9887,6 +9910,8 @@ async function connect(dev?: USBDevice): Promise<void> {
     const w = ensureWorker();
     const events = {
       onIq: (buf: Int8Array) => w.postMessage({ type: 'iq', buf: buf.buffer }, [buf.buffer]),
+      // after the buffers around it, so the worker can place it
+      onGap: (g: Gap) => w.postMessage({ type: 'gap', ...g }),
       onLog: log,
     };
     if (isRtlSdr(d)) {
@@ -9945,7 +9970,7 @@ async function connect(dev?: USBDevice): Promise<void> {
  * string, no PortaPack, no gain rescaling, and a rate that has to be pulled inside what the dongle will do
  * before the first buffer rather than after.
  */
-async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; onLog: (l: string) => void }): Promise<void> {
+async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; onGap: (g: Gap) => void; onLog: (l: string) => void }): Promise<void> {
   const btn = $<HTMLButtonElement>('connect');
   const r = new RtlSdr(d, {
     ...events,

@@ -385,6 +385,8 @@ drainPort.port1.onmessage = () => {
 };
 function armDrain(): void { if (!drainArmed && queue.length) { drainArmed = true; drainPort.port2.postMessage(0); } }
 function dropQueued(): void { queue.length = 0; }
+/** Samples waiting in the queue. */
+const queuedSamples = (): number => queue.reduce((s, b) => s + (b.length >> 1), 0);
 
 self.onmessage = (e: MessageEvent) => {
   const m = e.data;
@@ -397,12 +399,15 @@ self.onmessage = (e: MessageEvent) => {
       // exactly as before the queue existed
       if (processor !== lora && queue.length === 0) { process(b); break; }
       const cap = Math.max(8, Math.min(QUEUE_MAX, Math.ceil(0.2 * rate * 2 / Math.max(b.length, 1))));
-      while (queue.length >= cap) queue.shift();
+      // the oldest buffer dropped is the next the scanner would have taken: a gap right there
+      while (queue.length >= cap) { queue.shift(); if (processor === lora) lora.gap(0); }
       queue.push(b); armDrain(); break;
     }
+    // samples the radio sent never arrived, `back` samples before the newest one sent here
+    case 'gap': if (processor === lora) lora.gap((m.back as number) - queuedSamples(), m.slack as number); break;
     case 'config':
       if (processor === lora && typeof m.rate === 'number' && m.rate !== rate) dropQueued();
-      if (processor === lora && typeof m.centreHz === 'number' && m.centreHz !== centreHz) dropQueued();
+      if (processor === lora && typeof m.centreHz === 'number' && m.centreHz !== centreHz) { dropQueued(); lora.gap(0); }
       if (typeof m.rate === 'number') rate = m.rate;
       if (typeof m.specBins === 'number') setSpecBins(m.specBins);
       if (typeof m.centreHz === 'number') { centreHz = m.centreHz; if (processor === sonde) sonde.setCenter(centreHz); }

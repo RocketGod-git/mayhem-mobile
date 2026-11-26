@@ -4,6 +4,7 @@
  * including the Pro's post-RECEIVE cache-busting re-tune (see the comment at the bring-up).
  */
 
+import { DeliveryMeter } from './delivery.js';
 import type { Radio, RadioCaps, RadioEvents, RadioLimits } from './radio.js';
 
 export const HACKRF_FILTERS: USBDeviceFilter[] = [
@@ -36,6 +37,12 @@ export function boardName(id: number): string {
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/** One bulk read, in bytes. */
+const READ_SIZE = 65536;
+/** Reads kept in flight: 8 (65 ms at 2 Msps), 32 from 10 Msps up (52 ms at 20), so a stalled page doesn't overflow
+ *  the radio. */
+export function readDepth(rate: number): number { return rate >= 10_000_000 ? 32 : 8; }
 
 /** Kept as a name of its own; structurally this is `RadioEvents`. */
 export type HackRfEvents = RadioEvents;
@@ -233,17 +240,28 @@ export class HackRf implements Radio {
     }
   }
 
+  /** Samples delivered against wall time (delivery.ts), restarted with every rate and retune. */
+  readonly delivery = new DeliveryMeter();
+  private restartDelivery(): void {
+    const rate = this.applied?.rateHz ?? this.targetRateHz;
+    this.delivery.restart(rate, performance.now(), readDepth(rate) * READ_SIZE / 2, READ_SIZE / 2);
+  }
+
   // ---- streaming: keep a pool of bulk reads in flight, FIFO ---------------------------------------------------
   private async stream(): Promise<void> {
-    const N = 8, SIZE = 65536;
     const inflight: Promise<USBInTransferResult>[] = [];
-    for (let i = 0; i < N; i++) inflight.push(this.dev.transferIn(this.epIn, SIZE));
+    const topUp = (): void => {
+      while (!this.stopFlag && !this.txJob && inflight.length < readDepth(this.targetRateHz)) inflight.push(this.dev.transferIn(this.epIn, READ_SIZE));
+    };
+    topUp();
+    this.restartDelivery();
     let lastStatus = 0;
-    while (!this.stopFlag && !this.txJob) {
+    while (!this.stopFlag && !this.txJob && inflight.length) {
       const res = await inflight.shift()!;
-      if (!this.stopFlag && !this.txJob) inflight.push(this.dev.transferIn(this.epIn, SIZE));
+      topUp();
       if (res.status !== 'ok' || !res.data) { this.ev.onLog(`HackRF: transfer ${res.status}`); if (res.status === 'stall') await this.dev.clearHalt('in', this.epIn); continue; }
       const dv = res.data;
+      const gap = this.delivery.push(dv.byteLength >> 1, performance.now());
       const buf = new Int8Array(dv.buffer, dv.byteOffset, dv.byteLength);
       if (this.dbgBuffers < 3) {
         this.dbgBuffers++;
@@ -259,7 +277,8 @@ export class HackRf implements Radio {
         }
       }
       this.ev.onIq(buf);
-      await this.applyPending();
+      if (gap) this.ev.onGap?.(gap);
+      if (await this.applyPending()) this.restartDelivery();
       const now = performance.now();
       if (now - lastStatus > 1000) { lastStatus = now; this.ev.onStatus(`${this.board} · ${(this.appliedFreq / 1e6).toFixed(3)} MHz`); }
     }
@@ -274,10 +293,10 @@ export class HackRf implements Radio {
 
   /** Any change asked for since the last buffer. The controls are read once, written from that one reading and recorded as
    *  sent; a control moved while a transfer was awaited differs from the record and goes out on the next pass. */
-  private async applyPending(): Promise<void> {
+  private async applyPending(): Promise<boolean> {
     const want = this.snapshot();
     const plan = retunePlan(want, this.applied);
-    if (!plan.length) return;
+    if (!plan.length) return false;
     for (const w of plan) {
       switch (w.kind) {
         case 'rate': await this.setSampleRate(w.hz); break;
@@ -294,6 +313,8 @@ export class HackRf implements Radio {
       }
     }
     this.applied = want;
+    // a new rate, and a retune's settling pause, are not lost samples
+    return plan.some(w => w.kind === 'rate' || w.kind === 'retune');
   }
 
   // ---- vendor protocol ----------------------------------------------------------------------------------------

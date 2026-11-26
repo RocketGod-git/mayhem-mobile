@@ -16,11 +16,20 @@
 import { fft } from '../../fft.js';
 import { ComplexFirDecimator, lowpassTaps } from '../ham/filters.js';
 import { LoraReceiver, roundAway, type LoraFrame } from './phy.js';
-import { planChannels, usableHalf, type LoraChannel } from './plan.js';
+import { MAX_RATE, WIDE_RATE, planChannels, usableHalf, type LoraChannel } from './plan.js';
 
 /** One LoRa frame the scanner heard: the frame, the channel it came on (Hz, the measured frequency error included),
  *  whether its chirps ran downward (a LoRaWAN downlink), and when (ms since the epoch). */
 export interface LoraHeard { frame: LoraFrame; hz: number; inverted: boolean; time: number }
+
+/** A frame's air time in samples at `rate`: up to 16 preamble symbols (Meshtastic's), sync and start of frame, then
+ *  the explicit header and payload with its CRC, by the LoRa air time formula. */
+export function airSamples(f: LoraFrame, rate: number): number {
+  const sym = (1 << f.sf) / f.bw;
+  const de = sym > 0.016 ? 1 : 0;
+  const n = 8 + Math.max(0, Math.ceil((8 * f.payload.length - 4 * f.sf + 44) / (4 * (f.sf - 2 * de))) * (f.cr + 4));
+  return Math.ceil((20.25 + n) * sym * rate);
+}
 
 /** Int64.max / 4 in the Swift: "until the scanner is reset". */
 const FOREVER = 2 ** 60;
@@ -167,8 +176,10 @@ export interface LoraChannelState {
 }
 
 export class LoraScanner {
-  /** 20 Msps: every LoRa bandwidth divides it exactly, and it is the widest a HackRF samples. */
-  static readonly RATE = 20_000_000;
+  /** The wide span (plan.ts WIDE_RATE, 10 Msps): every LoRa bandwidth divides it exactly. */
+  static readonly RATE = WIDE_RATE;
+  /** 20 Msps, the widest a HackRF samples: by hand only, and stepped down when the radio loses samples there. */
+  static readonly MAX_RATE = MAX_RATE;
   /** The span a radio that can't sample 20 MHz gets (an RTL-SDR), from Apps.swift. */
   static readonly NARROW_RATE = 2_000_000;
   static readonly BWS = [62_500, 125_000, 250_000, 500_000];
@@ -242,6 +253,29 @@ export class LoraScanner {
     return r;
   }
 
+  // ---- gaps: samples that never arrived (the radio overflowed, or buffers were dropped behind) ----
+  /** Where each recent gap is (sample index) and how sure that is (samples either side). */
+  private gaps: [number, number][] = [];
+  /** Frames dropped because a gap fell inside them: what they decoded to is garbage. */
+  torn = 0;
+  /** Samples taken so far. */
+  get position(): number { return this.written; }
+  /** Samples went missing `back` samples before the newest one taken (negative: inside samples still to come),
+   *  placed to within `slack`. A frame the gap lands in is dropped unless its CRC checks out. */
+  gap(back: number, slack = 0): void {
+    const at = this.written - back;
+    this.gaps = this.gaps.filter(g => this.written - g[0] < this.rate * 10);
+    this.gaps.push([at, Math.max(0, slack)]);
+    if (this.gaps.length > 64) this.gaps.shift();
+  }
+  /** Whether a frame that ended by sample `at` had a gap inside it. A good CRC means it arrived whole. */
+  private broken(f: LoraFrame, at: number): boolean {
+    if (f.crcOk === true || this.gaps.length === 0) return false;
+    // the channel reports up to one run (65 536 samples) and its filters' delay after the frame's end
+    const lo = at - airSamples(f, this.rate) - 65_536 - Math.trunc(this.rate * 0.01);
+    return this.gaps.some(([g, s]) => g + s >= lo && g - s <= at);
+  }
+
   private regions: Region[] = [];
   private slots: Slot[] = [];
   private slotCenter = -1;
@@ -282,7 +316,7 @@ export class LoraScanner {
     this.ring = new Int8Array(2 * size);
     this.ringSize = size; this.ringMask = size - 1;
     this.written = 0; this.nextFrame = N; this.regions = []; this.owners.clear(); this.slots = []; this.slotCenter = -1;
-    this.remote.clear(); this._pool?.reset();
+    this.remote.clear(); this._pool?.reset(); this.gaps = [];
   }
 
   onIq(iq: Int8Array, rate: number): void {
@@ -612,6 +646,7 @@ export class LoraScanner {
         gone.push(e.id);
         for (const [f, inv, at] of e.bad) {
           if (e.goodAt.some(g => Math.abs(g - at) < rate)) continue;
+          if (this.broken(f, at)) { this.torn++; continue; }
           this.onHeard?.({ frame: f, hz: this.trueHz(e.hz + Math.trunc(f.cfoHz), f), inverted: inv, time: Date.now() });
         }
       }
@@ -639,6 +674,7 @@ export class LoraScanner {
     const rate = this.rate;
     // a damaged frame waits: another timing phase may yet get it right, and the phases' damaged copies differ
     const at = e.pos;
+    if (this.broken(f, at)) { this.torn++; return; }
     if (f.crcOk === false) { if (!e.bad.some(b => at - b[2] < rate)) e.bad.push([f, inv, at]); return; }
     e.goodAt.push(at);
     this.report(f, e.slot, e.hz, inv, at);
@@ -646,6 +682,7 @@ export class LoraScanner {
 
   /** A frame from a pool worker's standing channel. */
   private remoteHeard(id: number, f: LoraFrame, hz: number, inv: boolean, at: number): void {
+    if (this.broken(f, at)) { this.torn++; return; }
     const s = this.remote.get(id);
     if (!s && !this.owners.has(id)) {
       // a channel already dropped (the span moved): only its damaged frames come late, and they still count
@@ -818,7 +855,7 @@ class Extractor {
     for (const sf of sfs) {
       for (const inv of inverted ? [false, true] : [false]) {
         for (let p = 0; p < phases; p++) {
-          const r = new LoraReceiver(sf, bw);
+          const r = new LoraReceiver(sf, bw, undefined, inv ? -hz : hz);
           r.onFrame = f => scanner.heard(f, this, inv);
           r.onAligned = () => scanner.markLora();
           this.rx.push([r, inv, p]);
