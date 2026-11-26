@@ -287,6 +287,24 @@ class MainActivity : ComponentActivity() {
                 course = 270, speed = 32.0, alt = 300.0, comment = "test station", packets = 3, firstMs = now - 600_000, lastMs = now,
                 wx = com.rocketgod.mayhem.core.apps.AprsWx(windDir = 250, windMph = 6, tempF = 64, humidity = 55, pressureMb = 1013.2)))
         }
+        // `--ez adsbdemo true` adds two made-up aircraft with no position yet, to test the Flights list
+        if (i.getBooleanExtra("adsbdemo", false)) {
+            val now = System.currentTimeMillis()
+            repeat(43) { com.rocketgod.mayhem.core.AdsbStore.noteFrame() }
+            com.rocketgod.mayhem.core.AdsbStore.merge(mapOf(
+                "a1b2c3" to com.rocketgod.mayhem.model.Aircraft("a1b2c3").apply { flight = "DEMO101 "; altBaro = 34000; gs = 450 },
+                "d4e5f6" to com.rocketgod.mayhem.model.Aircraft("d4e5f6").apply { flight = "DEMO202 "; altBaro = 12500; gs = 310; vertRate = 1200 },
+            ), now)
+        }
+        // `--ez devicesdemo true` adds one made-up weather sensor (19.1 °C, 41%), to test its card and detail in both units
+        if (i.getBooleanExtra("devicesdemo", false)) {
+            val now = System.currentTimeMillis()
+            val data = com.rocketgod.mayhem.core.r433.R433Data().apply { put("model", "Auriol-HG02832"); put("id", "186"); put("temperature", "19.1 °C"); put("humidity", "41%"); put("channel", "1"); put("battery", "OK") }
+            com.rocketgod.mayhem.core.r433.Devices.proc.injectForTest(com.rocketgod.mayhem.core.r433.HeardDevice("weather:Auriol-HG02832:186", "Auriol-HG02832", 0, "weather sensors", 3,
+                now - 60_000, now, data, false, family = "weather", hz = 433_920_000L, history = listOf(com.rocketgod.mayhem.core.r433.HeardReading(now, data, 0, 433_920_000L))))
+        }
+        // `--es units METRIC` or `IMPERIAL` picks the units, as the Settings choice does
+        i.getStringExtra("units")?.let { u -> runCatching { com.rocketgod.mayhem.core.Units.setUnits(com.rocketgod.mayhem.core.UnitSystem.valueOf(u)) } }
         // `--es hamspots name.txt` replays FT8 and JS8 decodes into Ham Map's grid layers from the app's external files
         // folder, one per line as MODE|dial Hz|SNR|offset Hz|seconds ago|text (screens with stations, no radio)
         i.getStringExtra("hamspots")?.let { name ->

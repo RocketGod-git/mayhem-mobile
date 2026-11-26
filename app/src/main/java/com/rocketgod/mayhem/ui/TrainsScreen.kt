@@ -1,5 +1,6 @@
 package com.rocketgod.mayhem.ui
 
+import com.rocketgod.mayhem.core.UnitSystem
 import com.rocketgod.mayhem.core.Units
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -584,10 +585,12 @@ internal fun brakeState(u: EotUnit): Pair<String, Color>? {
     val recent = u.pressure.filter { u.lastMs - it.first < 600_000 }
     val peak = recent.maxOfOrNull { it.second } ?: p
     val prev = if (u.pressure.size >= 2) u.pressure[u.pressure.size - 2].second else p
+    // a change of pressure, in the units picked in Settings
+    val dp = { x: Int -> "${Units.psigNumber(x.toDouble())} ${if (Units.units() == UnitSystem.IMPERIAL) "PSI" else "KPA"}" }
     return when {
         p < 15 && peak >= 40 -> "EMERGENCY · LINE VENTED" to Palette.danger
-        peak - p >= 6 && p <= prev -> "BRAKES APPLIED −${peak - p} PSI" to Palette.danger
-        p - prev >= 3 -> "RELEASING +${p - prev} PSI" to Palette.ok
+        peak - p >= 6 && p <= prev -> "BRAKES APPLIED −${dp(peak - p)}" to Palette.danger
+        p - prev >= 3 -> "RELEASING +${dp(p - prev)}" to Palette.ok
         else -> null
     }
 }

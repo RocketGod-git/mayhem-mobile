@@ -116,6 +116,8 @@ class R433Processor : IqProcessor {
     val zwNets = ZWaveNets()
     private val _devices = MutableStateFlow<List<HeardDevice>>(emptyList())
     val devices: StateFlow<List<HeardDevice>> = _devices.asStateFlow()
+    /** Debug builds only: shows a made-up device, for laying the screen out on an emulator with no radio. */
+    fun injectForTest(d: HeardDevice) { _devices.value = _devices.value.filter { it.key != d.key } + d }
     private val _report = MutableStateFlow(R433Report())
     val report: StateFlow<R433Report> = _report.asStateFlow()
 
