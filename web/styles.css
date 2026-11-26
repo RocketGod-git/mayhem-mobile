@@ -3101,8 +3101,8 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 /* HAM+: every channel at once. The layout follows Dispatch: on a wide screen the timeline is the big view over a short
    waterfall, and the column beside it keeps its controls still while the channels and the tabs scroll in their own
    regions; on a phone one page scrolls under pinned section chips and the live bar. */
-.view:is(.hamplus, .cb) .fhead { flex-wrap: wrap; row-gap: 4px; }
-.view:is(.hamplus, .cb) .fhead .ftitle { order: 99; flex: 1 0 100%; padding: 0 2px; font-size: 9px; letter-spacing: 1.5px; white-space: normal; line-height: 1.2; }
+.view:is(.hamplus, .cb, .gmrs) .fhead { flex-wrap: wrap; row-gap: 4px; }
+.view:is(.hamplus, .cb, .gmrs) .fhead .ftitle { order: 99; flex: 1 0 100%; padding: 0 2px; font-size: 9px; letter-spacing: 1.5px; white-space: normal; line-height: 1.2; }
 .hp-live { position: sticky; top: 40px; z-index: 1090; margin: 0 0 6px; box-shadow: 0 -6px 0 var(--paper); }
 .hp-live .hp-lb1, .hp-live .hp-lb2 { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
 .hp-live .hp-lb1 > b { font-size: 15px; font-weight: 900; letter-spacing: 1px; color: var(--ink); flex: none; }
@@ -3136,7 +3136,7 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-jump { margin-top: 4px; }
 /* channel tiles */
 .hp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-.view:is(.hamplus, .cb):not(.hpwide) .hp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.view:is(.hamplus, .cb, .gmrs):not(.hpwide) .hp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .hp-tile { gap: 2px; transition: border-color .25s, background .25s, box-shadow .25s; }
 .hp-tile b { font-size: 15px; display: flex; align-items: center; gap: 5px; }
 .hp-tile .hp-note { font-style: normal; color: var(--ok); font-size: 12px; }
@@ -3225,27 +3225,27 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-st b { color: var(--st); font-size: 11px; font-weight: 900; }
 .hp-st span { color: var(--muted); font-size: 9px; }
 /* wide: the timeline big on the left over the waterfall; the column beside it in steady regions */
-main#view.view:is(.hamplus, .cb).hpwide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 640px); grid-template-rows: minmax(0, 1fr); gap: 12px; --hp-wf: clamp(120px, 22vh, 230px); }
-.view:is(.hamplus, .cb).hpwide > .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.view:is(.hamplus, .cb).hpwide > .visual > .scope { flex: none; height: var(--hp-wf); min-height: var(--hp-wf); margin-top: 8px; }
-.view:is(.hamplus, .cb).hpwide > .visual.nowf > .scope { display: none; }
-.view:is(.hamplus, .cb).hpwide .hp-tlbox.wide { flex: 1; min-height: 0; margin-top: 8px; display: flex; }
-.view:is(.hamplus, .cb).hpwide .hp-tlbox.wide .hp-tl { flex: 1; height: auto; min-height: 0; }
-.view:is(.hamplus, .cb).hpwide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
-.view:is(.hamplus, .cb).hpwide .face .funit, .view:is(.hamplus, .cb).hpwide .face .lscale, .view:is(.hamplus, .cb).hpwide .face .health { display: none; }
-.view:is(.hamplus, .cb).hpwide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; gap: 0; }
-.view:is(.hamplus, .cb).hpwide > .controls > * { flex: none; }
-.view:is(.hamplus, .cb).hpwide > .controls > .note { display: none; }
-.view:is(.hamplus, .cb).hpwide .hp-live { position: static; margin: 6px 0; box-shadow: none; }
-.view:is(.hamplus, .cb).hpwide .hp-lower { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-.view:is(.hamplus, .cb).hpwide .hp-tiles { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
-.view:is(.hamplus, .cb).hpwide .hp-bottom { flex: none; height: var(--hp-wf); min-height: 0; display: flex; flex-direction: column; gap: 6px; }
-.view:is(.hamplus, .cb).hpwide .hp-tabs { flex: none; margin: 0; }
-.view:is(.hamplus, .cb).hpwide #hp-stage { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.view:is(.hamplus, .cb).hpwide .hp-cardbox.over:not([hidden]) { position: absolute; inset: 0; z-index: 20; overflow-y: auto; overscroll-behavior: contain; margin: 0; background: var(--paper); }
-@media (min-width: 1500px) { main#view.view:is(.hamplus, .cb).hpwide { grid-template-columns: minmax(0, 1fr) minmax(520px, 900px); } }
-@media (min-width: 720px) { .view:is(.hamplus, .cb):not(.hpwide) .hp-live { position: static; } }
-@media (max-width: 420px) { .hp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .view:is(.hamplus, .cb):not(.hpwide) .hp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+main#view.view:is(.hamplus, .cb, .gmrs).hpwide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 640px); grid-template-rows: minmax(0, 1fr); gap: 12px; --hp-wf: clamp(120px, 22vh, 230px); }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .visual > .scope { flex: none; height: var(--hp-wf); min-height: var(--hp-wf); margin-top: 8px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .visual.nowf > .scope { display: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tlbox.wide { flex: 1; min-height: 0; margin-top: 8px; display: flex; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tlbox.wide .hp-tl { flex: 1; height: auto; min-height: 0; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .face .funit, .view:is(.hamplus, .cb, .gmrs).hpwide .face .lscale, .view:is(.hamplus, .cb, .gmrs).hpwide .face .health { display: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; gap: 0; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .controls > * { flex: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .controls > .note { display: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-live { position: static; margin: 6px 0; box-shadow: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-lower { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tiles { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-bottom { flex: none; height: var(--hp-wf); min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tabs { flex: none; margin: 0; }
+.view:is(.hamplus, .cb, .gmrs).hpwide #hp-stage { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-cardbox.over:not([hidden]) { position: absolute; inset: 0; z-index: 20; overflow-y: auto; overscroll-behavior: contain; margin: 0; background: var(--paper); }
+@media (min-width: 1500px) { main#view.view:is(.hamplus, .cb, .gmrs).hpwide { grid-template-columns: minmax(0, 1fr) minmax(520px, 900px); } }
+@media (min-width: 720px) { .view:is(.hamplus, .cb, .gmrs):not(.hpwide) .hp-live { position: static; } }
+@media (max-width: 420px) { .hp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .view:is(.hamplus, .cb, .gmrs):not(.hpwide) .hp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: reduce) { .hp-tile.live, .hp-bub.live, .hp-cardbox:not([hidden]) { animation: none; } }
 .seg.hp-mode { flex: none; }
 .seg.hp-mode button { flex: none; padding-left: 12px; padding-right: 12px; white-space: nowrap; }
@@ -3279,7 +3279,7 @@ main#view.view:is(.hamplus, .cb).hpwide { display: grid; grid-template-columns: 
 .cb-foot { font-size: 9px; color: var(--muted); margin: -2px 2px 8px; line-height: 1.35; }
 .cb-modes, .cb-clar { gap: 8px; align-items: center; margin: 6px 0; }
 .cb-clar b { font-size: 12px; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
-.view.cb.hpwide .cb-scroll { display: block; }
+.view:is(.cb, .gmrs).hpwide .cb-scroll { display: block; }
 @media (max-width: 760px) { .cb-board { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .cb-board { grid-template-columns: repeat(5, minmax(0, 1fr)); } .cb-cell b { font-size: 14px; } }
 /* Repeaters: the card's first line never breaks. The gain chip takes what the tag, the buttons and the lamp leave (no

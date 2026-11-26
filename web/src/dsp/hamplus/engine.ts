@@ -120,8 +120,9 @@ export const HAM_PLAN: WatchPlan = {
   peakSteps: 3, clearSteps: 4, snap: true, grid: hpGridOf,
 };
 
-class Probe implements WatchProbe {
-  readonly ddc = new Ddc(7_500, PROBE_RATE, 63);
+/** HAM+'s FM demodulator, which GMRS and MURS take as it is. */
+export class Probe implements WatchProbe {
+  readonly ddc: Ddc;
   readonly fs: number;
   oi = new Float32Array(0); oq = new Float32Array(0); au = new Float32Array(0); au2 = new Float32Array(0); a8 = new Float32Array(0); a48 = new Float32Array(0);
   readonly sub: SubAudioDecoder; readonly cw: CwReader; readonly lp: RealFir;
@@ -145,8 +146,9 @@ class Probe implements WatchProbe {
   private readonly v48: Resampler; private v8 = new Float32Array(0);
   /** 10 m: the HF comb's lines that are really there, taken out of the channel before the discriminator (hfcomb.ts). */
   private readonly comb: CombNotch | null;
-  constructor(rate: number, readonly offsetHz: number, comb: ((fs: number) => CombNotch) | null = null, private readonly loHz = 0) {
-    this.ddc.reset(rate); this.ddc.offsetHz = offsetHz; this.fs = this.ddc.outRate;
+  /** [cutHz] and [taps]: the channel filter (GMRS, its neighbors 12.5 kHz away, a narrower and steeper one). */
+  constructor(rate: number, readonly offsetHz: number, comb: ((fs: number) => CombNotch) | null = null, private readonly loHz = 0, cutHz = 7_500, taps = 63) {
+    this.ddc = new Ddc(cutHz, PROBE_RATE, taps); this.ddc.reset(rate); this.ddc.offsetHz = offsetHz; this.fs = this.ddc.outRate;
     this.comb = comb ? comb(this.fs) : null; this.comb?.tune(loHz, offsetHz);
     this.sub = new SubAudioDecoder(this.fs); this.cw = new CwReader(this.fs); this.cw.onText = t => { this.cw0 = (this.cw0 ? this.cw0 + ' ' : '') + t; };
     this.lp = new RealFir(lowpassTaps(3_000 / this.fs, 47));
@@ -254,9 +256,11 @@ class Probe implements WatchProbe {
     return { hz: med, sd: (q3 - q1) / 1.35 / Math.sqrt(ms.length) };
   }
   /** The tone (or code) heard through most of the transmission: half of it at least, so a moment of voice read as a tone does not count. */
-  static top(m: Map<number, number>, total: number): number { let b = 0, v = 0; for (const [k, n] of m) if (n > v) { v = n; b = k; } return v >= TONE_SHARE * total ? b : 0; }
+  static top(m: Map<number, number>, total: number, share = TONE_SHARE): number { let b = 0, v = 0; for (const [k, n] of m) if (n > v) { v = n; b = k; } return v >= share * total ? b : 0; }
+  /** The share of the transmission a DCS code must be read through (GMRS asks less: see its DCS_SHARE). */
+  dcsShare = TONE_SHARE;
   tone(): number { return Probe.top(this.tones, this.subN); }
-  dcs(): number { return this.tone() ? 0 : Probe.top(this.dcsCodes, this.subN); }
+  dcs(): number { return this.tone() ? 0 : Probe.top(this.dcsCodes, this.subN, this.dcsShare); }
   end(): void { this.cw.end(); this.idc.analog.flush(); this.snapAt = -1; this.look(); }
 }
 

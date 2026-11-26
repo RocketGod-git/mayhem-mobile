@@ -40,6 +40,7 @@ import { COMB_TOP_HZ, CombNotch } from './dsp/hfcomb.js';
 import { BandMonitor } from './dsp/ham/monitor.js';
 import { HamPlusEngine } from './dsp/hamplus/engine.js';
 import { CbEngine } from './dsp/cb/engine.js';
+import { GmrsEngine } from './dsp/gmrs/engine.js';
 import { Classifier } from './dsp/ham/classify.js';
 import { VoiceDetector } from './dsp/voice.js';
 import { OrbcommDecoder } from './dsp/orbcomm.js';
@@ -208,6 +209,7 @@ const geoscan = new GeoscanDecoder(emit);
 const monitor = new BandMonitor(emit, toAudio);
 const hamplus = new HamPlusEngine(emit, toAudio);
 const cb = new CbEngine(emit, toAudio);
+const gmrs = new GmrsEngine('gmrs', emit, toAudio), murs = new GmrsEngine('murs', emit, toAudio);
 const classifier = new Classifier();
 // digital decoders on the HAM audio; 'auto' runs the three audio modems together and shows whichever is making sense
 const cw = new CwDecoder(600), rtty = new RttyDecoder(), psk = new Psk31Decoder(1000), ft8 = new Ft8Decoder(), sstv = new SstvDecoder();
@@ -495,15 +497,16 @@ self.onmessage = (e: MessageEvent) => {
     case 'hamParams': ham.set(m.params); break;
     case 'monitorParams': monitor.set(m.params); break;
     case 'hamplus':
-    case 'cb': {
-      // Repeaters and CB share the watcher and its commands; CB adds its modes and clarifiers
-      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB Radio' : 'Repeaters';
+    case 'cb':
+    case 'gmrs': {
+      // Repeaters, CB and GMRS share the watcher and its commands; CB adds its modes and clarifiers, GMRS has a watcher a band
+      const w = m.type === 'cb' ? cb : m.type === 'gmrs' ? (m.band === 'murs' ? murs : gmrs) : hamplus, name = w.plan.name;
       if (m.cmd === 'center') w.centerHz = m.hz as number;
       else if (m.cmd === 'spurs') w.ownSpurStep = m.step as number;
       else if (m.cmd === 'params') w.setParams(m.params as Record<string, unknown>);
       else if (m.cmd === 'prefs') { w.setPrefs(m.prefs as never, m.labels as Record<string, string>); if (w === cb && m.cb) cb.setCbPrefs(m.cb as never); }
       else if (m.cmd === 'restore') w.restore(m.saved as never);
-      else if (m.cmd === 'save') post({ type: `${m.type}Saved`, saved: w.tracker.save() });
+      else if (m.cmd === 'save') post({ type: `${m.type}Saved`, band: m.band, saved: w.tracker.save() });
       else if (m.cmd === 'replay') { if (!w.replayTx(m.ids as number[], m.label as string, m.kind as string)) { emit({ type: 'log', line: `${name}: that audio is no longer in the time machine` }); post({ type: `${m.type}Note`, text: 'That audio is no longer kept' }); } }
       else if (m.cmd === 'replayFrom') { if (!w.replayFrom(m.ms as number)) { emit({ type: 'log', line: `${name}: nothing recorded yet` }); post({ type: `${m.type}Note`, text: 'Nothing recorded yet' }); } }
       else if (m.cmd === 'stop') w.stopReplay();
@@ -558,6 +561,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'monitor': return monitor;
     case 'hamplus': hamplus.centerHz = centreHz; return hamplus;
     case 'cb': cb.centerHz = centreHz; return cb;
+    case 'gmrs': { const w = m.band === 'murs' ? murs : gmrs; w.centerHz = centreHz; return w; }
     default: return null;
   }
 }
@@ -628,7 +632,7 @@ function process(iq: Int8Array): void {
       const line = `RX: iqRMS=${rms.toFixed(1)} dcI=${(sI / nn).toFixed(1)} dcQ=${(sQ / nn).toFixed(1)} · peak ${offKhz >= 0 ? '+' : ''}${offKhz.toFixed(0)} kHz ${peak.toFixed(0)}dB vs floor ${median.toFixed(0)}dB (Δ${(peak - median).toFixed(0)})`;
       // LoRa's gain steers by its strongest burst and its clips (loraAgc in main), measured in the scanner's looks
       const loraLevel = processor === lora ? { ...lora.scanner.takeLevel(), agoMs: lora.scanner.loraAtMs > 0 ? Date.now() - lora.scanner.loraAtMs : -1 } : undefined;
-      post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus || processor === cb ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
+      post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus || processor === cb || processor === gmrs || processor === murs ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
       audioPeak = 0;
     }
   }

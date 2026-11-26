@@ -41,7 +41,8 @@ export interface CwId { callsign: string; suffix: string; text: string; wpm: num
 export interface Selcall { system: string; digits: string; atS: number }
 export interface TwoTone { aHz: number; bHz: number; aMs: number; bMs: number; atS: number }
 export interface MdcPacket { op: number; arg: number; unit: string; emergency: boolean; label: string; extra: number[]; atS: number }
-export interface DataBurst { baud: number; ms: number; atS: number }
+/** A data burst no decoder here names: its rate, length, and its first bytes as raw bits in hex (the lower tone a 1). */
+export interface DataBurst { baud: number; ms: number; atS: number; hex: string }
 /** FleetSync: fleet 100-349 and unit 1000-4999 as the radios show them, -1 for "all"; [cmd] and [sub] raw. */
 export interface FleetSync { baud: number; cmd: number; sub: number; fromFleet: number; fromUnit: number; toFleet: number; toUnit: number; all: boolean; atS: number }
 export interface AnalogTx {
@@ -98,11 +99,15 @@ function goertzel(x: Float32Array, from: number, to: number, hz: number, rate: n
 
 // ------------------------------------------------------------------------------------------------ callsigns
 const CALL_RE = /^((?:[A-Z]{1,2}|[A-Z][0-9]|[2-9][A-Z])[0-9][A-Z]{1,4})(?:\/([A-Z0-9]{1,4}))?$/;
-/** A plausible amateur callsign in a CW word ('W6ABC', 'W6ABC/R', 'DEW6ABC'), or null. */
+/** A GMRS callsign: four letters and three digits (WRAB123), or the older three letters and four digits (KAE1234). */
+const GMRS_RE = /^(WR[A-Z]{2}[0-9]{3}|K[A-Z]{2}[0-9]{4})(?:\/([A-Z0-9]{1,4}))?$/;
+/** A plausible amateur or GMRS callsign in a CW word ('W6ABC', 'W6ABC/R', 'DEW6ABC', 'WRAB123'), or null. */
 export function plausibleCall(word: string): { call: string; suffix: string } | null {
   for (const w of [word, word.startsWith('DE') ? word.slice(2) : '']) {
     const m = w ? CALL_RE.exec(w) : null;
     if (m && m[1].length >= 3 && m[1].length <= 7) return { call: m[1], suffix: m[2] ?? '' };
+    const g = w ? GMRS_RE.exec(w) : null;
+    if (g) return { call: g[1], suffix: g[2] ?? '' };
   }
   return null;
 }
@@ -328,6 +333,30 @@ function fskDemod(y: Float32Array, from: number, to: number, rate: number, cente
   return C;
 }
 const cumAt = (C: Float64Array, t: number) => { const n = C.length - 1, k = Math.floor(t); return k >= n ? C[n] : C[k] + (t - k) * (C[k + 1] - C[k]); };
+/** A burst's bit integrals at [baud] (the tones split about 1600 Hz at 1200 baud, 1800 at 2400), at the bit phase that is cleanest. */
+function burstBits(y: Float32Array, from: number, to: number, rate: number, baud: number, max: number): number[] {
+  const C = baud === 2400 ? fskDemod(y, from, to, rate, 1800, 1600) : fskDemod(y, from, to, rate, 1600, 1200);
+  const sps = rate / baud, nb = Math.min(max, Math.floor((to - from - sps) / sps)), d = (ph: number, k: number) => cumAt(C, ph * sps / 8 + (k + 1) * sps) - cumAt(C, ph * sps / 8 + k * sps);
+  let best = 0, bestQ = -1;
+  for (let ph = 0; ph < 8; ph++) { let q = 0; for (let k = 0; k < nb; k++) q += Math.abs(d(ph, k)); if (q > bestQ) { bestQ = q; best = ph; } }
+  const out: number[] = []; for (let k = 0; k < nb; k++) out.push(d(best, k)); return out;
+}
+/** Whether bits read at 2400 baud come in equal pairs (at either alignment, 9 in 10 of them): a 1200 baud burst. */
+function pairs(b: number[]): boolean {
+  for (let a = 0; a < 2; a++) { let same = 0, n = 0; for (let k = a; k + 1 < b.length; k += 2) { n++; if ((b[k] < 0) === (b[k + 1] < 0)) same++; } if (n >= 16 && same >= 0.9 * n) return true; }
+  return false;
+}
+/**
+ * A burst no decoder named, read as raw bits: its rate (the spectrum's guess, 2400 when it reaches past 2150 Hz, taken
+ * back to 1200 when its 2400 baud bits come in pairs: Bell 202's 2200 Hz tone reaches as far) and its first
+ * [maxBytes] as hex, most significant bit first, the lower tone a 1.
+ */
+export function burstRead(y: Float32Array, from: number, to: number, rate: number, guess: number, maxBytes = 12): { baud: number; hex: string } {
+  const baud = guess === 2400 && pairs(burstBits(y, from, to, rate, 2400, 400)) ? 1200 : guess;
+  const b = burstBits(y, from, to, rate, baud, 8 * maxBytes), out: string[] = [];
+  for (let k = 0; k + 8 <= b.length; k += 8) { let v = 0; for (let j = 0; j < 8; j++) v = (v << 1) | (b[k + j] < 0 ? 1 : 0); out.push(v.toString(16).toUpperCase().padStart(2, '0')); }
+  return { baud, hex: out.join(' ') };
+}
 /** MDC-1200 packets in a stretch of audio at [rate]. */
 export function decodeMdc(y: Float32Array, from: number, to: number, rate: number, t0S: number): MdcPacket[] {
   const n = to - from; if (n < rate * 0.1) return [];
@@ -742,7 +771,8 @@ export class AnalogSignaling {
         else if (strict >= 10 && strict >= 0.55 * (u - t) && (u - t) * H / rate >= 0.12 && (u - t) * H / rate <= 1.2) {
           let hs = 0, hn = 0; for (let j = t; j < u; j++) if (fr.fsk[j] && fr.E[j] > vThr) { hs += fr.hi[j]; hn++; }
           // the rate from the burst's width: 1200 baud FFSK keeps to 900-2100 Hz, 2400 baud spreads above it
-          data.push({ baud: hs / hn > 0.08 ? 2400 : 1200, ms: Math.round((u - t) * H * 1000 / rate), atS: startS + ft(t) });
+          const rd = burstRead(y, t * H, Math.min(y.length, u * H + N), rate, hs / hn > 0.08 ? 2400 : 1200);
+          data.push({ baud: rd.baud, ms: Math.round((u - t) * H * 1000 / rate), atS: startS + ft(t), hex: rd.hex });
         }
       }
       t = u;
@@ -852,7 +882,7 @@ export function analogSummary(tx: AnalogTx): string[] {
   for (const t of tx.twoTone) out.push(`2-tone page ${t.aHz} and ${t.bHz} Hz`);
   for (const m of tx.mdc) out.push(`MDC-1200 unit ${m.unit}${m.label ? ' ' + m.label : ` op ${m.op.toString(16).toUpperCase().padStart(2, '0')}`}`);
   for (const f of tx.fleetsync) out.push(`FleetSync ${f.baud === 2400 ? 'II' : 'I'} ${f.fromFleet < 0 ? 'all' : f.fromFleet}-${f.fromUnit < 0 ? 'all' : f.fromUnit} to ${f.toFleet < 0 ? 'all' : f.toFleet}-${f.toUnit < 0 ? 'all' : f.toUnit}`);
-  for (const d of tx.data) out.push(`${d.baud} baud data burst`);
+  for (const d of tx.data) out.push(`${d.baud} baud data burst${d.hex ? ' ' + d.hex : ''}`);
   if (tx.ctcss) out.push(`PL ${tx.ctcss.toFixed(1)}${tx.reverseBurst ? `, reverse burst ${tx.reverseBurst}°` : ''}`);
   if (tx.dcs) out.push(`DCS ${String(tx.dcs).padStart(3, '0')}${tx.dcsTurnOff ? ', turn-off code' : ''}`);
   if (tx.courtesy) out.push(`Courtesy tone ${tx.courtesy.tones.map(t => t.hz).join(' ')} Hz${tx.courtesy.seen > 1 ? `, heard ${tx.courtesy.seen} times` : ''}`);

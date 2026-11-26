@@ -47,6 +47,9 @@ import { loadTalkgroups, loadBrandmeisterRepeaters, lookupWanted, lookupWantedId
 import type { CbSnap } from './dsp/cb/engine.js';
 import { CB_CENTER, type CbMode } from './dsp/cb/plan.js';
 import { CB_NAMER, CB_CLAR_MAX, cbBoardHtml, cbCardHtml, cbHeadHtml, cbHeatHtml, cbListenHtml, cbTilesHtml, cbTitle } from './cb-ui.js';
+import type { GmrsSnap } from './dsp/gmrs/engine.js';
+import { GMRS_RATE, MURS_RATE, NARROW_RATE, centerOf as gmrsCenter, type GmrsBand } from './dsp/gmrs/plan.js';
+import { GMRS_NAMER, gmrsBandsHtml, gmrsBoardHtml, gmrsCallsHtml, gmrsCardHtml, gmrsChanTitle, gmrsHeadHtml, gmrsHeatHtml, gmrsListenHtml, gmrsLogHtml, gmrsTilesHtml } from './gmrs-ui.js';
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, protoLabel, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
@@ -93,7 +96,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'satcom' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'gmrs' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'satcom' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -115,6 +118,7 @@ const APPS: AppDef[] = [
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
   { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex channel at once', cat: 'Receive' },
   { id: 'cb', title: 'CB Radio', blurb: 'all 40 channels at once', cat: 'Receive' },
+  { id: 'gmrs', title: 'GMRS', blurb: 'all 30 channels and MURS at once', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · FT8 · JS8', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
@@ -305,6 +309,7 @@ function tune(hz: number, hold = false): void {
   // HAM+ measures every channel against the radio's center: it moves with it
   if (state.app === 'hamplus') { hpSend({ cmd: 'spurs', step: hpOwnSpurStep() }); hpSend({ cmd: 'center', hz: state.freq }); }
   if (state.app === 'cb') cbSend({ cmd: 'center', hz: state.freq });
+  if (state.app === 'gmrs') gmrsSend({ cmd: 'center', hz: state.freq });
   // A tap on the launcher waterfall holds the channel inside the span so the view does not jerk out from under
   // the finger that just picked something (`hold`). Explicit tuning — the dial, the keypad, the step keys — is
   // free to go anywhere the radio reaches: the view follows it, so you are never walled inside the band you
@@ -1037,6 +1042,7 @@ function open(app: AppId | null): void {
     case 'fleet': fleetOpen(); break;
     case 'hamplus': hpOpen(); break;
     case 'cb': cbOpen(); break;
+    case 'gmrs': gmrsOpen(); break;
     case 'cell': cellOpen(); break;
     case 'atsc': atscOpen(); break;
     case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
@@ -1765,6 +1771,8 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   ham: ['ham', 'Nothing open', ['Every channel in the span is watched; one that opens shows up here with its tone', 'Try 2 m near 146.520, or set the threshold to +6 dB']],
   hamplus: ['hamplus', 'Nothing on the air yet', ['Every channel that keys up shows up here at once, repeaters, simplex and their inputs', 'Each transmission is recorded, so a tap on it later plays it back', 'AUTO looks at 10 m, 6 m, 2 m, 1.25 m and 70 cm and stays where the voice is', 'A HackRF at 8 MHz hears all of 2 m at once']],
   cb: ['cb', 'Nothing on the air yet', ['All 40 channels are heard at once, each in its own mode', 'A channel opens on a voice, so a steady carrier from a charger or a computer stays shut', 'Daytime skip brings far stations, and the activity map shows when the band opens', 'A HackRF at 2 MS/s or an RTL-SDR at 2.4 MS/s hears the whole band']],
+  gmrs: ['gmrs', 'Nothing on the air yet', ['All 30 FRS and GMRS channels are heard at once: 1 to 22 and the eight repeater inputs, 467.550 to 467.725', 'Each keyup is played, logged and kept with its tone; one through a repeater shows the repeater and both tones', 'Morse IDs are read and their callsigns listed; MDC-1200, FleetSync and other data bursts are flagged', 'A HackRF at 8 MS/s hears all 30; an RTL-SDR hears the 15 channels at 462 MHz (1 to 7 and 15 to 22)']],
+  murs: ['gmrs', 'Nothing on the air yet', ['All five MURS channels are heard at once: 151.820, 151.880, 151.940, 154.570 and 154.600', 'Each keyup is played, logged and kept with its tone, its Morse ID and any data burst', 'A HackRF at 4 MS/s hears all five; an RTL-SDR hears the three at 151 MHz']],
   fleet: ['fleet', 'No trunked systems yet', ['Control channels send all the time: a system shows up within seconds of its band being in the span', 'Every call granted jumps to the top while it is on the air', 'AUTO steps through VHF, TETRA 380 to 430, UHF, T-band, 700, 800 and 900 MHz and stays on the band where clear voice is heard; pick a band to stay on it', 'A HackRF at 8 or 20 MHz hears a whole site at once']],
   ert: ['ert', 'No meters yet', ['Meters report every 30 s to a few minutes: give it a minute', 'Most meters sit at 908–924 MHz: the 19.2 MHz span covers them']],
   uat: ['uat', 'Listening on 978 MHz', ['FAA ground towers broadcast weather here several times a second: radar, airport weather, notices', 'Small planes, and the traffic the towers rebroadcast, show up on the map', 'A 978 MHz antenna (a 915 MHz one works) with a view of the sky helps']],
@@ -2000,6 +2008,7 @@ function render(app: AppId | null): void {
     case 'fleet': renderFleet(view); break;
     case 'hamplus': renderHamPlus(view); break;
     case 'cb': renderCb(view); break;
+    case 'gmrs': renderGmrs(view); break;
     case 'hd': renderHd(view); break;
     case 'cell': renderCell(view); break;
     case 'atsc': renderAtsc(view); break;
@@ -4614,7 +4623,7 @@ function trBrake(u: EotUnit): [string, 'red' | 'ok'] | null {
 /* Waterfalls that can be put away (the Android app's WATERFALL button). On a wide screen each starts shown; on a phone
  * BLE, ADS-B and Trains start without it (their bursts hardly show on it, and the cards or the map get the room), while
  * Meters, LoRa and ACARS keep it. A choice is remembered per app. */
-const WF_PHONE: Partial<Record<AppId, boolean>> = { hamplus: false, cb: false, hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, atsc: false, ert: true, lora: true, acars: true, vdl2: true };
+const WF_PHONE: Partial<Record<AppId, boolean>> = { hamplus: false, cb: false, gmrs: false, hd: false, sondes: false, btle: false, adsb: false, trains: false, fleet: false, cell: false, atsc: false, ert: true, lora: true, acars: true, vdl2: true };
 const WF_SVG = WF_ICON;
 /** The apps whose waterfall can be put away. The button is the scope's own (Scope.setHide, top left corner), wired
  *  for these apps in wireCommon, so no screen draws one of its own. */
@@ -5260,6 +5269,183 @@ function refreshCb(force = false): void {
   else setLamp('LISTENING', 'amber', true);
 }
 HP_WIDE.addEventListener('change', () => { if (state.app === 'cb') { render('cb'); refreshReadout(); } });
+
+// ---- GMRS: all 30 FRS / GMRS channels (or the five MURS ones) at once on HAM+'s watcher, receive only -------------
+const GMRS_KEY = 'mm.gmrs.v1', gmrsKnown = (b: GmrsBand) => `mm.${b}.known1`;
+const gmrsUi = {
+  snap: null as GmrsSnap | null, band: 'gmrs' as GmrsBand, prefs: { hold: '', mute: [] as string[], prio: [] as string[] }, labels: {} as Record<string, string>,
+  mode: 'newest' as 'mix' | 'newest', audioOn: true, gain: 1, view: 'talk' as HpView | 'calls', sel: '', open: new Set<number>(),
+  timer: 0, drawn: 0, pending: 0, hold: false, wired: false, savedAt: 0, anim: 0,
+  hit: null as HpHit | null, hitWide: null as HpHit | null, note: '', noteUntil: 0,
+};
+function gmrsNote(text: string): void { gmrsUi.note = text; gmrsUi.noteUntil = Date.now() + 3_500; refreshGmrs(true); }
+(() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(GMRS_KEY) ?? 'null');
+    if (v) { gmrsUi.prefs = hpPrefsRestored(v.prefs); gmrsUi.labels = v.labels ?? {}; gmrsUi.band = v.band === 'murs' ? 'murs' : 'gmrs'; gmrsUi.mode = v.mode === 'mix' ? 'mix' : 'newest'; gmrsUi.audioOn = v.audioOn !== false; gmrsUi.gain = Number(v.gain) || 1; }
+  } catch { /* storage blocked */ }
+})();
+function gmrsSave(): void {
+  try { localStorage.setItem(GMRS_KEY, JSON.stringify({ prefs: hpPrefsSaved(gmrsUi.prefs), labels: gmrsUi.labels, band: gmrsUi.band, mode: gmrsUi.mode, audioOn: gmrsUi.audioOn, gain: gmrsUi.gain })); } catch { /* storage full or blocked */ }
+}
+/** The whole band in one span: a HackRF at 8 MS/s (GMRS) or 4 (MURS); an RTL-SDR at 2.4, the part it can. */
+const gmrsWide = () => radio?.kind !== 'rtlsdr' && radioCan(gmrsUi.band === 'murs' ? MURS_RATE : GMRS_RATE);
+const gmrsRate = () => gmrsWide() ? (gmrsUi.band === 'murs' ? MURS_RATE : GMRS_RATE) : NARROW_RATE;
+const gmrsSend = (m: Record<string, unknown>) => worker?.postMessage({ type: 'gmrs', band: gmrsUi.band, ...m });
+const gmrsPushPrefs = () => gmrsSend({ cmd: 'prefs', prefs: gmrsUi.prefs, labels: gmrsUi.labels });
+const gmrsPushParams = () => gmrsSend({ cmd: 'params', params: { mode: gmrsUi.mode, volume: gmrsUi.audioOn ? gmrsUi.gain : 0 } });
+function gmrsOpen(): void {
+  const hz = gmrsCenter(gmrsUi.band, gmrsWide());
+  configure('NONE', hz, gmrsRate(), 32, 40, true, 'gmrs', { band: gmrsUi.band });
+  gmrsSend({ cmd: 'center', hz });
+  gmrsPushPrefs(); gmrsPushParams();
+  try { const k = JSON.parse(localStorage.getItem(gmrsKnown(gmrsUi.band)) ?? 'null'); if (k) gmrsSend({ cmd: 'restore', saved: k }); } catch { /* storage blocked */ }
+  if (gmrsUi.audioOn) void ensureAudio();
+}
+function gmrsBand(b: GmrsBand): void {
+  if (b === gmrsUi.band) return;
+  gmrsSend({ cmd: 'save' });
+  gmrsUi.band = b; gmrsUi.snap = null; gmrsUi.sel = ''; gmrsSave();
+  gmrsOpen(); render('gmrs'); refreshReadout();
+}
+function gmrsPref(kind: 'hold' | 'mute' | 'prio', key: string): void {
+  const p = gmrsUi.prefs;
+  if (kind === 'hold') p.hold = p.hold === key ? '' : key;
+  else { const l = p[kind]; p[kind] = l.includes(key) ? l.filter(x => x !== key) : [...l, key]; }
+  gmrsSave(); gmrsPushPrefs(); refreshGmrs(true);
+}
+function gmrsFollow(key: string): void { if (!key || key === gmrsUi.prefs.hold) { if (gmrsUi.prefs.hold) gmrsPref('hold', gmrsUi.prefs.hold); } else gmrsPref('hold', key); }
+function gmrsRename(key: string, cur: string): void {
+  const v = window.prompt('Name this talker (empty: back to its letter)', cur);
+  if (v === null) return;
+  const n = v.trim().toUpperCase().slice(0, 16);
+  if (n) gmrsUi.labels[key] = n; else delete gmrsUi.labels[key];
+  gmrsSave(); gmrsPushPrefs();
+}
+function gmrsReplay(ids: number[], label: string, kind: string): void { void ensureAudio(); gmrsSend({ cmd: 'replay', ids, label, kind }); }
+const GMRS_ABOUT = 'GMRS hears every FRS and GMRS channel at once and only listens. Channels 1 to 22 and the eight repeater inputs (467.550 to 467.725 MHz) are watched together, and every keyup is opened, played, logged with its channel, time and length, and kept in the time machine to replay. Each keyup\'s CTCSS tone or DCS code is read; a keyup on a repeater input is paired with the repeater\'s output 5 MHz down, so the log names the repeater and both tones. Morse IDs are read and every callsign heard is listed; MDC-1200 and FleetSync IDs are named, and other data bursts are flagged as data with their first bytes. The MURS tab does the same for the five MURS channels. A HackRF hears all of GMRS at 8 MS/s; an RTL-SDR hears the 15 channels at 462 MHz (1 to 7 and 15 to 22), and three of the five MURS ones.';
+function renderGmrs(view: HTMLElement): void {
+  const wide = HP_WIDE.matches;
+  view.classList.toggle('hpwide', wide);
+  const tabs: [string, string][] = [['talk', 'CONVERSATIONS'], ['calls', 'CALLSIGNS'], ['act', 'ACTIVITY'], ['log', 'LOG']];
+  const jumps: [string, string][] = [['ch', 'CHANNELS'], ['tl', 'TIMELINE'], ['talk', 'CONVERSATIONS'], ['calls', 'CALLSIGNS'], ['act', 'ACTIVITY'], ['log', 'LOG']];
+  view.innerHTML = `
+    <section class="${visCls('gmrs')}">${readoutHtml()}${wide ? '<div class="hp-tlbox wide"><canvas id="gm-tlw" class="hp-tl" data-fill="1"></canvas></div>' : ''}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      ${wide ? '' : `<nav class="fl-jump hp-jump">${jumps.map(([k, l]) => `<button data-hpjump="${k}"><span>${l}</span><b></b></button>`).join('')}</nav>`}
+      <div id="gm-live" class="fl-now hp-live"></div>
+      ${gmrsBandsHtml(gmrsUi.band)}
+      <div id="gm-head" class="hp-head"></div>
+      <div id="gm-listen" class="ctlrow fl-mode hp-listen"></div>
+      <div class="ctlrow hp-audio"><button class="chip" id="gm-aud"></button><span class="rl">VOLUME</span><input id="gm-vol" type="range" min="0" max="150" value="${Math.round(gmrsUi.gain * 100)}" aria-label="volume"><span id="gm-volv" class="hp-volv"></span><button id="gm-clear" class="ib" title="forget what was heard" aria-label="clear"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button></div>
+      ${wide ? `<div class="hp-lower"><div class="hp-tiles cb-scroll"><div id="gm-board"></div><div id="gm-tiles"></div></div><div class="hp-bottom"><div class="ctlrow hp-tabs">${segHtml(tabs.map(([v, l]) => `<button data-hpview="${v}">${l}</button>`))}</div><div id="gm-stage" class="hp-stage"></div></div><div id="gm-card" class="hp-cardbox over" hidden></div></div>`
+      : `<div id="gm-card" class="hp-cardbox" hidden></div><div class="fl-sech" data-hpsec="ch">CHANNELS</div><div id="gm-board"></div><div id="gm-tiles" class="hp-tiles"></div>
+      <div class="fl-sech" data-hpsec="tl">TIMELINE · TAP A KEYUP TO HEAR IT, ANYWHERE ELSE TO REPLAY FROM THERE</div><div class="hp-tlbox"><canvas id="gm-tl" class="hp-tl"></canvas></div>
+      <div class="fl-sech" data-hpsec="talk">CONVERSATIONS</div><div id="gm-talk" class="hp-talk"></div>
+      <div class="fl-sech" data-hpsec="calls">CALLSIGNS</div><div id="gm-calls" class="hp-logs"></div>
+      <div class="fl-sech" data-hpsec="act">ACTIVITY · 24 HOURS A CHANNEL</div><div id="gm-act"></div>
+      <div class="fl-sech" data-hpsec="log">LOG</div><div id="gm-log" class="hp-logs"></div>`}
+      <div class="note about">${esc(GMRS_ABOUT)}</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-hpview]', view).forEach(b => b.onclick = () => { gmrsUi.view = b.dataset.hpview as HpView | 'calls'; const st = q<HTMLElement>('#gm-stage'); if (st) st.scrollTop = 0; refreshGmrs(true); });
+  qa<HTMLButtonElement>('[data-hpjump]', view).forEach(b => b.onclick = () => {
+    const t = q(`[data-hpsec="${b.dataset.hpjump}"]`), sc = $('view'), r = t?.getBoundingClientRect();
+    if (t && r) sc.scrollTo({ top: sc.scrollTop + r.top - sc.getBoundingClientRect().top - 120, behavior: 'smooth' });
+  });
+  const sc = $('view');
+  if (gmrsSpy) sc.removeEventListener('scroll', gmrsSpy);
+  gmrsSpy = () => {
+    if (state.app !== 'gmrs' || HP_WIDE.matches) return;
+    const top = sc.getBoundingClientRect().top + 160; let cur = 'ch';
+    for (const k of ['ch', 'tl', 'talk', 'calls', 'act', 'log']) { const el = q(`[data-hpsec="${k}"]`); if (el && el.getBoundingClientRect().top <= top) cur = k; }
+    if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4) cur = 'log';
+    qa<HTMLButtonElement>('.hp-jump [data-hpjump]').forEach(b => b.classList.toggle('on', b.dataset.hpjump === cur));
+  };
+  sc.addEventListener('scroll', gmrsSpy, { passive: true }); gmrsSpy();
+  view.onclick = (e) => {
+    const t = e.target as HTMLElement;
+    const bd = t.closest<HTMLElement>('[data-gmrsband]'); if (bd) { gmrsBand(bd.dataset.gmrsband === 'murs' ? 'murs' : 'gmrs'); return; }
+    const info = t.closest<HTMLElement>('[data-hpinfo]'); if (info) { gmrsUi.sel = gmrsUi.sel === info.dataset.hpinfo ? '' : info.dataset.hpinfo!; refreshGmrs(true); if (!HP_WIDE.matches && gmrsUi.sel) $('gm-card').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    if (t.closest('[data-hpclose]')) { gmrsUi.sel = ''; refreshGmrs(true); return; }
+    const nm = t.closest<HTMLElement>('[data-hpname]'); if (nm) { gmrsRename(nm.dataset.hpname!, nm.dataset.hpcur ?? ''); return; }
+    const pr = t.closest<HTMLElement>('[data-hppref]'); if (pr) { const [k, ...rest] = pr.dataset.hppref!.split(':'); gmrsPref(k as 'mute' | 'prio', rest.join(':')); return; }
+    const all = t.closest<HTMLElement>('[data-hpall]'); if (all) { gmrsUi.open.add(Number(all.dataset.hpall)); refreshGmrs(true); return; }
+    const cv = t.closest<HTMLElement>('[data-hpconv]'); if (cv) { gmrsReplay(cv.dataset.hpconv!.split(',').map(Number), cv.dataset.hplabel ?? '', 'conv'); return; }
+    const pl = t.closest<HTMLElement>('[data-hpplay]'); if (pl) { gmrsReplay([Number(pl.dataset.hpplay)], pl.dataset.hplabel ?? '', 'tx'); return; }
+    if (t.closest('[data-hpstop]')) { gmrsSend({ cmd: 'stop' }); return; }
+    const md = t.closest<HTMLElement>('[data-hpmode]'); if (md) { gmrsUi.mode = md.dataset.hpmode as 'mix' | 'newest'; gmrsSave(); gmrsPushParams(); refreshGmrs(true); return; }
+    const f = t.closest<HTMLElement>('[data-hpfollow]'); if (f) { gmrsFollow(f.dataset.hpfollow ?? ''); return; }
+  };
+  $('gm-aud').onclick = () => { gmrsUi.audioOn = !gmrsUi.audioOn; gmrsSave(); gmrsPushParams(); if (gmrsUi.audioOn) void ensureAudio(); refreshGmrs(true); };
+  $('gm-vol').oninput = (e) => { gmrsUi.gain = Number((e.target as HTMLInputElement).value) / 100; gmrsSave(); gmrsPushParams(); refreshGmrs(true); };
+  $('gm-clear').onclick = () => { gmrsSend({ cmd: 'clear' }); try { localStorage.removeItem(gmrsKnown(gmrsUi.band)); } catch { /* storage blocked */ } gmrsUi.snap = null; gmrsUi.sel = ''; refreshGmrs(true); };
+  for (const id of ['gm-tl', 'gm-tlw']) {
+    const c = q<HTMLCanvasElement>(`#${id}`); if (!c) continue;
+    (c.parentElement ?? c).onclick = (e) => {
+      gmrsPainted = 0; gmrsPaint();
+      const r = c.getBoundingClientRect(), x = Math.max(0, Math.min(r.width, e.clientX - r.left)), y = Math.max(0, Math.min(r.height - 1, e.clientY - r.top));
+      const hit = (id === 'gm-tl' ? gmrsUi.hit : gmrsUi.hitWide)?.(x, y);
+      if (!hit) return;
+      if (hit.hz && x < 84) { gmrsFollow(String(hit.hz)); return; }
+      if (hit.tx && hit.tx.recorded && !hit.tx.live) { gmrsReplay([hit.tx.id], `${gmrsChanTitle(hit.tx.hz)} at ${hpClock(hit.tx.startMs)}`, 'tx'); return; }
+      if (!gmrsUi.snap?.rows.some(t => t.recorded && !t.live)) { gmrsNote('Nothing recorded yet'); return; }
+      void ensureAudio(); gmrsSend({ cmd: 'replayFrom', ms: hit.ms });
+    };
+  }
+  const release = () => { if (!gmrsUi.hold) return; setTimeout(() => { gmrsUi.hold = false; refreshGmrs(true); }, 0); };
+  view.onpointerdown = () => { gmrsUi.hold = true; };
+  if (!gmrsUi.wired) { gmrsUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
+  clearInterval(gmrsUi.timer);
+  gmrsUi.timer = window.setInterval(() => {
+    if (state.app !== 'gmrs') { clearInterval(gmrsUi.timer); return; }
+    const now = Date.now(); if (now - gmrsUi.savedAt > 15_000) { gmrsUi.savedAt = now; gmrsSend({ cmd: 'save' }); }
+    refreshGmrs();
+  }, 500);
+  cancelAnimationFrame(gmrsUi.anim);
+  const frame = () => { if (state.app !== 'gmrs') return; gmrsPaint(); gmrsUi.anim = requestAnimationFrame(frame); };
+  gmrsUi.anim = requestAnimationFrame(frame);
+  refreshGmrs(true);
+}
+let gmrsSpy: (() => void) | null = null, gmrsPainted = 0;
+function gmrsPaint(): void {
+  const now = Date.now(); if (now - gmrsPainted < 66) return; gmrsPainted = now;
+  const c = hpColors();
+  const p = q<HTMLCanvasElement>('#gm-tl'); if (p) gmrsUi.hit = hpPaintTimeline(p, gmrsUi.snap, now, 8, c, GMRS_NAMER);
+  const w = q<HTMLCanvasElement>('#gm-tlw'); if (w) gmrsUi.hitWide = hpPaintTimeline(w, gmrsUi.snap, now, 16, c, GMRS_NAMER);
+}
+function refreshGmrs(force = false): void {
+  if (state.app !== 'gmrs' || gmrsUi.hold) return;
+  const now = Date.now();
+  if (!force && now - gmrsUi.drawn < 240) { clearTimeout(gmrsUi.pending); gmrsUi.pending = window.setTimeout(() => refreshGmrs(true), 250); return; }
+  gmrsUi.drawn = now;
+  const s = gmrsUi.snap, band = gmrsUi.band;
+  qa<HTMLButtonElement>('[data-hpview]').forEach(b => b.classList.toggle('on', b.dataset.hpview === gmrsUi.view));
+  const set = (id: string, html: string) => { const el = q<HTMLElement>(`#${id}`); if (el && el.innerHTML !== html) { const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; } };
+  set('gm-head', gmrsHeadHtml(s, band));
+  set('gm-listen', gmrsListenHtml(gmrsUi.prefs.hold, gmrsUi.mode));
+  const lb = hpLiveHtml(s, now, gmrsUi.audioOn, gmrsUi.prefs.hold, now < gmrsUi.noteUntil ? gmrsUi.note : '', GMRS_NAMER), live = q<HTMLElement>('#gm-live');
+  if (live) { live.className = `fl-now hp-live ${lb.cls}`; live.style.setProperty('--sys', lb.col); if (live.innerHTML !== lb.html) live.innerHTML = lb.html; }
+  const aud = q<HTMLButtonElement>('#gm-aud'); if (aud) { aud.textContent = gmrsUi.audioOn ? 'AUDIO ON' : 'AUDIO OFF'; aud.classList.toggle('on', gmrsUi.audioOn); }
+  const vv = q('#gm-volv'); if (vv) vv.textContent = `${Math.round(gmrsUi.gain * 100)}%`;
+  set('gm-board', gmrsBoardHtml(s, band, now, gmrsUi.prefs.hold, gmrsUi.sel));
+  set('gm-tiles', gmrsTilesHtml(s, now, gmrsUi.prefs.hold, s?.tiles.length ? '' : emptyState(band, s?.chans.some(c => c.steady) ? 'No voice heard yet' : undefined)));
+  { const r = q('#capr'); const t = hpCountText(s); if (r && r.textContent !== t) r.textContent = t; }
+  const card = q<HTMLElement>('#gm-card');
+  if (card) { const html = s && gmrsUi.sel ? gmrsCardHtml(s, gmrsUi.sel, now, gmrsUi.prefs, gmrsUi.open) : ''; card.hidden = !html; if (card.innerHTML !== html) card.innerHTML = html; }
+  if (HP_WIDE.matches) set('gm-stage', gmrsUi.view === 'talk' ? hpConvsHtml(s, now, gmrsUi.open, 20, GMRS_NAMER) : gmrsUi.view === 'calls' ? `<div class="hp-logs">${gmrsCallsHtml(s, now)}</div>` : gmrsUi.view === 'act' ? gmrsHeatHtml(s, band, now) : `<div class="hp-logs">${gmrsLogHtml(s)}</div>`);
+  else { set('gm-talk', hpConvsHtml(s, now, gmrsUi.open, 12, GMRS_NAMER)); set('gm-calls', gmrsCallsHtml(s, now)); set('gm-act', gmrsHeatHtml(s, band, now)); set('gm-log', gmrsLogHtml(s)); }
+  qa<HTMLButtonElement>('.hp-jump [data-hpjump]').forEach(b => {
+    const k = b.dataset.hpjump, n = k === 'ch' ? s?.tiles.length ?? 0 : k === 'tl' ? s?.rows.filter(r => r.live || now - r.startMs < HP_SPAN_MS).length ?? 0 : k === 'talk' ? s?.convs.length ?? 0 : k === 'calls' ? s?.calls.length ?? 0 : k === 'log' ? s?.rows.length ?? 0 : 0;
+    const bd = b.querySelector('b'); if (bd) bd.textContent = n > 0 ? String(n > 999 ? '999+' : n) : '';
+  });
+  const onAir = s?.stats.onAir ?? 0;
+  if (s?.replay.active) setLamp('REPLAYING', 'amber', true);
+  else if (onAir) setLamp(`${onAir} ON AIR`, 'ok', true);
+  else if (s?.tiles.length) setLamp(`${s.tiles.length} CHANNEL${s.tiles.length === 1 ? '' : 'S'}`, 'ok');
+  else setLamp('LISTENING', 'amber', true);
+}
+HP_WIDE.addEventListener('change', () => { if (state.app === 'gmrs') { render('gmrs'); refreshReadout(); } });
 
 // ---- Dispatch: P25 and DMR trunked systems, sites, grants, units and calls (receive only) ----------------------
 const FLEET_BANDS: [string, string, number, number][] = [
@@ -9311,7 +9497,7 @@ function refreshList(id: string): void {
     const n = counts[id] ?? 0;
     if (n > 0) setLamp(`${n} DECODED`, 'ok'); else setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
     // (Repeaters and CB Radio count transmissions, which their own refresh writes here)
-    const r = q('#capr'); if (r && id !== 'hamplus' && id !== 'cb') r.textContent = n > 0 ? `${n} decoded` : 'nothing decoded yet';
+    const r = q('#capr'); if (r && id !== 'hamplus' && id !== 'cb' && id !== 'gmrs') r.textContent = n > 0 ? `${n} decoded` : 'nothing decoded yet';
   }
   const el = q(`#list-${id}`); if (!el || paused.has(id)) return;
   if (id === 'aprs') { el.innerHTML = hamLogHtml(); return; }
@@ -9801,6 +9987,9 @@ function ensureWorker(): Worker {
       case 'cb': cbUi.snap = m as unknown as CbSnap; refreshCb(); break;
       case 'cbNote': cbNote(String(m.text)); break;
       case 'cbSaved': try { localStorage.setItem(CB_KNOWN, JSON.stringify(m.saved)); } catch { /* storage full or blocked */ } break;
+      case 'gmrs': if (m.band === gmrsUi.band) { gmrsUi.snap = m as unknown as GmrsSnap; refreshGmrs(); } break;
+      case 'gmrsNote': gmrsNote(String(m.text)); break;
+      case 'gmrsSaved': try { localStorage.setItem(gmrsKnown(m.band === 'murs' ? 'murs' : 'gmrs'), JSON.stringify(m.saved)); } catch { /* storage full or blocked */ } break;
       case 'hamplusSaved': try { localStorage.setItem(HP_KNOWN, JSON.stringify(m.saved)); } catch { /* storage full or blocked */ } break;
       case 'fleetUnit': fleetUi.unit = { key: m.key as string, reports: m.reports as FleetUnitReport[], trail: m.trail as [number, number, number][], offArea: Number(m.offArea) || 0 }; refreshFleet(true); break;
       case 'fleetExport': fleetExport(m.csv as string, m.json as string); break;
@@ -10378,7 +10567,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING'],
-  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS'], pager: ['PAGER', 'PAGER MESSAGES'], hd: ['HD RADIO', 'STATION DATA · ART · TRAFFIC'], vdl2: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], acars: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], trains: ['TRAINS', 'END OF TRAIN · TRAIN CONTROL'], fleet: ['DISPATCH', 'TRUNKED DISPATCH · CALLS'], cell: ['CELL', 'CELL TOWERS · ALERTS'], atsc: ['TV', 'DIGITAL TV'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS'], gmrs: ['GMRS', 'ALL 30 CHANNELS · MURS'], pager: ['PAGER', 'PAGER MESSAGES'], hd: ['HD RADIO', 'STATION DATA · ART · TRAFFIC'], vdl2: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], acars: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], trains: ['TRAINS', 'END OF TRAIN · TRAIN CONTROL'], fleet: ['DISPATCH', 'TRUNKED DISPATCH · CALLS'], cell: ['CELL', 'CELL TOWERS · ALERTS'], atsc: ['TV', 'DIGITAL TV'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
   ert: ['METERS', 'UTILITY METERS'], lora: ['MESH', 'MESH RADIO TEXT'], sondes: ['BALLOONS', 'WEATHER BALLOONS'], btle: ['BLUETOOTH', 'BLUETOOTH DEVICES'], adsb: ['AIRCRAFT', 'AIRCRAFT OVERHEAD'], ais: ['SHIPS', 'SHIPS NEARBY'], aprs: ['HAM MAP', 'STATIONS ON THE MAP'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · SMALL PLANES'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
@@ -10394,7 +10583,7 @@ const APP_TECH: Partial<Record<AppId, string>> = {
   uat: 'UAT · FIS-B · 978 MHZ', acars: 'ACARS · VHF AIRBAND', vdl2: 'VDL MODE 2 · 136.975 MHZ', trains: 'EOT · HOT · PTC 220 MHZ',
   ais: 'AIS · 161.975 / 162.025 MHZ', satcom: 'INMARSAT · STD-C EGC · AERO · L-BAND', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
   subghz: 'OOK · FSK · 315–915 MHZ', js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
-  hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
+  hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', gmrs: 'GMRS · FRS · MURS · NFM · CTCSS · DCS', aprs: 'APRS · AX.25 · 144.390 MHZ',
   ert: 'ERT · GRIDSTREAM · 802.15.4G', btle: 'BLE · ADVERTISING · 2.4 GHZ', sat: 'SGP4 · DOPPLER · APT · LRPT · AX.25',
   sondes: 'RS41 · DFM · M10 · 400–406 MHZ', atsc: 'ATSC 1.0 · 8VSB · PSIP', prowl: 'NFM · VOICE ACTIVITY HUNT',
   spectrum: 'FFT ANALYZER · ZERO SPAN', analyzer: 'OOK · FSK · BURST DEMOD', lookingglass: 'WIDEBAND FFT SWEEP',
