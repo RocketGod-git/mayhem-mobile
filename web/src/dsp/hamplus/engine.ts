@@ -24,7 +24,7 @@ import { RealFir, Resampler, lowpassTaps } from '../ham/filters.js';
 import { SubAudioDecoder } from '../ham/ctcss.js';
 import { COMB_TOP_HZ, CombMemory, CombNotch } from '../hfcomb.js';
 import { CwReader } from '../fleet/rx.js';
-import { HP_RASTER, hpBandOf } from './plan.js';
+import { HP_RASTER, hpBandOf, hpGridOf } from './plan.js';
 import { ClipStore, ClipWriter, CLIP_RATE, planReplay, replayFromPlan, ReplayMixer, type Clip } from './clips.js';
 import { FmSpeech, SPEECH_LAPSE_MS, type SpeechCount } from './speech.js';
 import { HamTracker, ENV_MS, HEAT_SLOTS, LINK_CORR, LINK_EDGE_MS, chanKey, envCorr, type HpPrefs, type HpSaved, type LiveRec, type TxRec } from './tracker.js';
@@ -94,8 +94,8 @@ export interface WatchProbe {
 }
 
 /**
- * Where a watcher's channels are and how one opens. HAM+ watches every point of a 2.5 kHz raster inside the ham bands
- * and lets a carrier move to its own raster point; CB watches the 40 channels of its plan and nothing else.
+ * Where a watcher's channels are and how one opens. HAM+ watches every point of a 2.5 kHz raster inside its ham and business
+ * bands and lets a carrier move to its own channel; CB watches the 40 channels of its plan and nothing else.
  */
 export interface WatchPlan {
   /** The name in log lines and the snapshot message type. */
@@ -111,11 +111,13 @@ export interface WatchPlan {
   peakSteps: number; clearSteps: number;
   /** An open carrier off its raster point by more than half a step moves to the right one. */
   snap: boolean;
+  /** The channel grid a carrier at [hz] snaps to (the raster when absent): 6.25 kHz business channels fall between raster points. */
+  grid?(hz: number): number;
 }
 export const HAM_PLAN: WatchPlan = {
   name: 'Repeaters', type: 'hamplus', raster: HP_RASTER, inPlan: hz => !!hpBandOf(hz),
   nfft: rate => 1 << Math.max(10, Math.min(14, Math.ceil(Math.log2(rate / 1000)))), spanHalf: rate => rate * 0.44 - 6_250,
-  peakSteps: 3, clearSteps: 4, snap: true,
+  peakSteps: 3, clearSteps: 4, snap: true, grid: hpGridOf,
 };
 
 class Probe implements WatchProbe {
@@ -336,7 +338,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     const half = this.plan.spanHalf(this.rate), R = this.plan.raster;
     const first = Math.ceil((this.centerHz - half) / R), last = Math.floor((this.centerHz + half) / R);
     this.first = first; this.count = Math.max(0, last - first + 1);
-    // only the ham bands open channels: a span reaching past a band's edge leaves the rest alone
+    // only the plan's bands open channels: a span reaching past a band's edge leaves the rest alone
     this.hamBand = new Uint8Array(this.count); for (let k = 0; k < this.count; k++) this.hamBand[k] = this.plan.inPlan(this.hzOf(k)) ? 1 : 0;
     this.power = new Float32Array(this.count).fill(-120); this.floor = new Float32Array(this.count).fill(NaN); this.snr = new Float32Array(this.count);
     this.lastCenter = this.centerHz;
@@ -606,13 +608,13 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
       const hear = listen.includes(o);
       p.clipped = now < this.clipUntil;
       p.push(this.fi, this.fq, n, hear);
-      // a carrier that is off its raster point by more than half a step moves to the right one, once
+      // a carrier that is off its channel by more than half a step moves to the right one, once (on a 6.25 kHz
+      // grid that can be a channel between two raster points, kept at its own frequency)
       if (this.plan.snap && !o.shifted && now - o.startMs > 500) {
         o.shifted = true;
-        const off = p.offset(1);
-        if (Math.abs(off.hz) > HP_RASTER / 2) {
-          const steps = Math.round(off.hz / HP_RASTER), shift = steps * HP_RASTER;
-          o.k += steps; o.hz += shift; o.tileKey = this.tileKey(o.hz); p.retune(o.hz - this.centerHz);
+        const off = p.offset(1), g = this.plan.grid?.(o.hz) ?? HP_RASTER, shift = Math.round((o.hz + off.hz) / g) * g - o.hz;
+        if (shift && Math.abs(off.hz - shift) < Math.abs(off.hz)) {
+          o.k += Math.round(shift / HP_RASTER); o.hz += shift; o.tileKey = this.tileKey(o.hz); p.retune(o.hz - this.centerHz);
           for (let i = 0; i < p.means.length; i++) p.means[i] -= shift;
         }
       }

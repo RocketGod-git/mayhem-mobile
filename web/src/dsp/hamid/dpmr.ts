@@ -115,6 +115,10 @@ const idText = (v: number) => (v >>> 16) <= 0xff && (v & 0xffff) === 0xffff ? `C
 const H = 1024;
 export class DpmrIdentity {
   onAudio: (pcm: Float32Array) => void = () => undefined;
+  /** Each 72-bit TCH block as received; when set, the blocks go here instead of through the decoder (Dispatch). */
+  onVoiceBits: ((bits: Uint8Array) => void) | null = null;
+  /** A header, a frame or an end frame passed its checks ([id] already updated). */
+  onEvent: (kind: 'header' | 'frame' | 'end') => void = () => undefined;
   id: DpmrId = blank();
   private readonly hist = new Float32Array(H); private t = 0;
   /** Work waiting for its symbols: what, where it starts, the polarity times the level correction, frames carried by the grid. */
@@ -184,6 +188,7 @@ export class DpmrIdentity {
     id.calledText = idText(id.called); id.ownText = idText(id.own); id.group = id.calledText.includes('*') || id.calledText.startsWith('COMMON');
     // a communication start header, an ACK header reply or a system delivery header is followed by superframes (5.11)
     if (id.headerType === 0 || id.headerType === 5 || id.headerType === 6) { this.start(); this.queue('frame', at + 132, sign, -1); }
+    this.onEvent('header');
   }
   private start(): void { this.id.activity = 'voice'; this.id.calls++; this.voice.reset(); this.lines.reset(); this.id.slowData = ''; this.ids.fill(-1); }
 
@@ -225,9 +230,10 @@ export class DpmrIdentity {
     }
     // voice in modes 000, 001, and 101 until the slow data says data has started (DP 11)
     const dp = field(d!, 28, 2);
+    this.onEvent('frame');
     if (mode === 0 || mode === 1 || (mode === 5 && dp !== 3)) {
       const tch = this.bits(at + 48, 144, sign);
-      for (let k = 0; k < 4; k++) { id.voiceFrames++; this.onAudio(this.voice.decode(tch.subarray(72 * k, 72 * k + 72))); }
+      for (let k = 0; k < 4; k++) { id.voiceFrames++; const b = tch.subarray(72 * k, 72 * k + 72); if (this.onVoiceBits) this.onVoiceBits(b); else this.onAudio(this.voice.decode(b)); }
     }
     this.queue('frame', at + 192, sign);
   }
@@ -248,6 +254,7 @@ export class DpmrIdentity {
       if (good && dpmrCrc7(w, 17) === field(w, 17, 7)) {
         this.checked++; this.id.activity = ''; this.id.lastSym = this.t;
         this.jobs = this.jobs.filter(j => j.kind !== 'frame');
+        this.onEvent('end');
         return;
       }
     }

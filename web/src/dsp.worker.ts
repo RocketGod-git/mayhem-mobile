@@ -43,11 +43,13 @@ import { CbEngine } from './dsp/cb/engine.js';
 import { Classifier } from './dsp/ham/classify.js';
 import { VoiceDetector } from './dsp/voice.js';
 import { OrbcommDecoder } from './dsp/orbcomm.js';
+import { SatcomProcessor, type SatcomMode } from './dsp/lband/satcom.js';
 import { G3ruhDecoder } from './dsp/g3ruh.js';
 import { RdsDecoder } from './dsp/rds.js';
 import { HdDetector } from './dsp/hdradio.js';
 import { HdProcessor } from './dsp/hd/hd.js';
 import { SameDecoder } from './dsp/same.js';
+import { AnalogIds, analogIdText } from './dsp/hamid/analog.js';
 import { GeoscanDecoder } from './dsp/geoscan.js';
 import { CwDecoder, RttyDecoder, Psk31Decoder, type DigitalDecoder } from './dsp/ham/digital.js';
 import { Ft8Decoder } from './dsp/ham/ft8.js';
@@ -175,6 +177,14 @@ let demodHold = false;
 // for it (NOAA weather radio is NFM at 162 MHz), so it costs nothing elsewhere.
 const same = new SameDecoder(emit);
 let sameOn = false, sameRate = 0; const sameBuf = new Float32Array(4096); let sameN = 0;
+// MDC-1200 and FleetSync IDs on the NFM discriminator, the same way, while Prowl or the Audio app asks for them
+let idsOn = false, ids: AnalogIds | null = null, idsHz = 0; const idsBuf = new Float32Array(4096); let idsN = 0;
+function idsAt(rate: number): AnalogIds {
+  if (ids && ids.fs === rate) return ids;
+  ids = new AnalogIds(rate);
+  ids.onId = id => post({ type: 'nfmId', ...id, text: analogIdText(id), hz: centreHz + offsetHz, ms: Date.now() });
+  return ids;
+}
 const recorder = new IqRecorder(emit);
 /** The HAM receiver writes its own 48 kHz audio straight to the AudioWorklet port (the worker's demod is off). */
 let audioChunks = 0;
@@ -192,6 +202,7 @@ fleet.calls.onAudio = (pcm, call) => {
 };
 fleet.calls.onEnd = call => { if (fleetFader.current === call.key) { const t = fleetFader.tail(); if (t) toAudio(t); emit({ type: 'fleetVu', key: '', db: -90 }); } };
 const orbcomm = new OrbcommDecoder(emit);
+const satcom = new SatcomProcessor(emit);
 const g3ruh = new G3ruhDecoder(emit);
 const geoscan = new GeoscanDecoder(emit);
 const monitor = new BandMonitor(emit, toAudio);
@@ -409,6 +420,9 @@ self.onmessage = (e: MessageEvent) => {
       // The channel being demodulated is the span center plus the offset, not the span center.
       orbcomm.channelHz = centreHz + offsetHz;
       if (typeof m.offsetHz === 'number') offsetHz = m.offsetHz;
+      // a retune starts the ID reader fresh, so an ID is never put on the channel after it
+      if (ids && centreHz + offsetHz !== idsHz) { ids.reset(); idsN = 0; }
+      idsHz = centreHz + offsetHz;
       if (m.mode) mode = m.mode as Mode;
       if (typeof m.squelch === 'number') { squelchDb = m.squelch; if (squelchDb === 0) sqOpen = true; }
       if (typeof m.voice === 'boolean') { voiceOn = m.voice; if (!voiceOn) voice.reset(); }
@@ -433,6 +447,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
+    case 'satcom': if (m.cmd === 'mode') satcom.mode = m.mode as SatcomMode; else if (m.cmd === 'clear') satcom.clear(); break;
     case 'cell':
       if (m.cmd === 'detail') { const d = cell.detail(m.key as string); if (d) emit({ type: 'cellDetail', ...d }); }
       else if (m.cmd === 'export') emit({ type: 'cellExport', ...cell.exportAll() });
@@ -455,6 +470,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'hdProgram': hdApp.audio.select(Number(m.n) & 7); break;
     case 'hdSurround': hdApp.audio.setSurround(!!m.on && Number(m.channels) >= 6); break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
+    case 'nfmIds': idsOn = !!m.on; idsN = 0; ids = null; break;
     case 'pager': pager.select(m.which); break;
     case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;
     case 'ismFamilies': ism.weather = !!m.weather; ism.remotes = !!m.remotes; ism.cars = !!m.cars; break;
@@ -520,6 +536,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'uat': return uat;
     case 'hd': hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; return hdApp;
     case 'cell': cell.centerHz = centreHz; return cell;
+    case 'satcom': satcom.centerHz = centreHz; satcom.channelHz = centreHz + offsetHz; if (m.mode) satcom.mode = m.mode as SatcomMode; return satcom;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'fleet': fleet.centerHz = centreHz; return fleet;
     case 'atsc': atsc.centerHz = centreHz; return atsc;
@@ -704,6 +721,7 @@ function process(iq: Int8Array): void {
         if (wantFm) { fmBuf[fmN++] = s; if (fmN >= fmBuf.length) { p!.onFm!(fmBuf, fmN, interRate); fmN = 0; } }
         if (rdsOn && mode === 'WFM') { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.length) { rds.push(rdsBuf, rdsN, interRate); rdsN = 0; } }
         if (sameOn && mode === 'NFM') { if (sameRate !== interRate) { same.reset(interRate); sameRate = interRate; } sameBuf[sameN++] = s; if (sameN >= sameBuf.length) { same.onFm(sameBuf, sameN, interRate); sameN = 0; } }
+        if (idsOn && mode === 'NFM') { idsBuf[idsN++] = s; if (idsN >= idsBuf.length) { idsAt(interRate).push(idsBuf, idsN); idsN = 0; } }
         if (fmTap) {
           fmTapRate = interRate;
           if (!fmBurst) { if (fmTapN < fmTap.length) fmTap[fmTapN++] = s; else { const t = fmTap; fmTap = null; post({ type: 'fmTap', rate: fmTapRate, samples: t }, [t.buffer]); } }
@@ -756,6 +774,7 @@ function process(iq: Int8Array): void {
   if (p === atsc) { atsc.centerHz = centreHz; atsc.pool = atscPoolFor(rate); }
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p === hdApp) { hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; }
+  if (p === satcom) { satcom.centerHz = centreHz; satcom.channelHz = centreHz + offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
 

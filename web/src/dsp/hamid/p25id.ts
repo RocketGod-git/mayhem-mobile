@@ -12,10 +12,12 @@
  *     encryption sync (algorithm 0x80 is clear);
  *   · the voice: the nine IMBE frames of each LDU, through the IMBE decoder, unless the call is encrypted.
  *
- * Positions: the Phase 1 voice channel carries none in its link control; packet data (and with it LRRP and NMEA) is
- * not read here. No DOM.
+ * Positions (fleet/p25data.ts): the packets of data frames (DUID C), with LRRP, LIP or NMEA in their UDP, and the
+ * Harris and Motorola GPS link controls of the talker. No DOM.
  */
 import { P25Decoder } from '../ham/p25.js';
+import { P25PduReader, p25GpsLc, type UnitData } from '../fleet/p25data.js';
+import type { Position } from './gps.js';
 import { SYNCS } from '../ham/dmr.js';
 import { ImbeStream } from './voice.js';
 
@@ -28,8 +30,10 @@ export interface P25Id {
   /** Frames read (Network ID passed), link controls read, IMBE frames played, calls (headers or a new talker). */
   frames: number; lcs: number; voiceFrames: number; calls: number;
   inverted: boolean; lastSym: number;
+  /** Packets read; the last position and text a unit sent, and which unit; the last packet in words. */
+  packets: number; position: Position | null; text: string; dataUnit: number; data: string;
 }
-const blank = (): P25Id => ({ nac: -1, tg: 0, src: 0, group: true, emergency: false, encrypted: false, algId: -1, keyId: 0, lcf: -1, mfid: 0, lc: '', frames: 0, lcs: 0, voiceFrames: 0, calls: 0, inverted: false, lastSym: -1 });
+const blank = (): P25Id => ({ nac: -1, tg: 0, src: 0, group: true, emergency: false, encrypted: false, algId: -1, keyId: 0, lcf: -1, mfid: 0, lc: '', frames: 0, lcs: 0, voiceFrames: 0, calls: 0, inverted: false, lastSym: -1, packets: 0, position: null, text: '', dataUnit: 0, data: '' });
 const P25_SYNC = SYNCS.find(s => s.proto === 'P25' && s.src === '')!.s;
 const hex = (b: ArrayLike<number>) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
 
@@ -41,6 +45,8 @@ export class P25Identity {
   private readonly voice = new ImbeStream();
   private readonly ring = new Float32Array(24); private rp = 0;
   private t = 0; /** Polarity times the level correction of the last sync. */ private sign = 1; private framesSeen = 0; private open = false;
+  /** A data frame's blocks: the place in the frame (a status symbol every 36th) and the block being read. */
+  private readonly pdu = new P25PduReader(); private pos = 0; private inData = false; private readonly blk = new Uint8Array(98); private nb = 0;
 
   constructor() {
     this.dec.onVoice = bits => {
@@ -55,9 +61,15 @@ export class P25Identity {
       id.encrypted = h.algId !== 0x80 && h.algId !== 0; id.lastSym = this.t;
       this.voice.reset();
     };
+    this.pdu.onPacket = p => { this.id.packets++; this.id.data = p.line; this.unitData(p); };
     this.dec.onEs = es => { const id = this.id; id.algId = es.algId; id.keyId = es.keyId; id.encrypted = es.algId !== 0x80 && es.algId !== 0; };
   }
-  reset(): void { this.id = blank(); this.dec.reset(); this.voice.reset(); this.ring.fill(0); this.rp = 0; this.t = 0; this.sign = 1; this.framesSeen = 0; this.open = false; }
+  reset(): void { this.id = blank(); this.dec.reset(); this.voice.reset(); this.ring.fill(0); this.rp = 0; this.t = 0; this.sign = 1; this.framesSeen = 0; this.open = false; this.inData = false; this.pos = 0; }
+  private unitData(d: UnitData): void {
+    const id = this.id; id.lastSym = this.t;
+    if (d.position) { id.position = d.position; id.dataUnit = d.unit; }
+    if (d.message) { id.text = d.message; id.dataUnit = d.unit; }
+  }
   /** A new call: what the last one was is cleared. */
   private start(): void { if (!this.open) { this.open = true; const id = this.id; id.calls++; id.encrypted = false; id.algId = -1; id.keyId = 0; id.emergency = false; } }
   /** Frames whose Network ID passed: the mode is named by these. */
@@ -74,16 +86,26 @@ export class P25Identity {
     // while a frame is being read, a sync must be cleaner and of the same polarity: inside voice data a pattern of
     // 24 symbols near the sync (or its inverse) comes by now and then (a real recording lost one LDU in ten to that)
     const locked = this.dec.status(this.t).locked;
-    if (a > 24 * 1.8 && (locked ? c * this.sign > 0 && Math.abs(c) / a > 0.95 : Math.abs(c) / a > 0.86)) { this.sign = (c > 0 ? 1 : -1) * 3 * 24 / a; this.dec.sync(this.t); return; }
+    // (inside a data frame too: a packet cut short ends at the next frame's sync)
+    if (a > 24 * 1.8 && (locked || this.inData ? c * this.sign > 0 && Math.abs(c) / a > 0.95 : Math.abs(c) / a > 0.86)) { this.sign = (c > 0 ? 1 : -1) * 3 * 24 / a; this.dec.sync(this.t); this.pos = 24; this.inData = false; return; }
+    const x = s * this.sign, dibit = x > 2 ? 1 : x > 0 ? 0 : x > -2 ? 2 : 3;
+    // a data frame's blocks, after its NID, the status symbols left out
+    const status = this.pos++ % 36 === 35;
+    if (this.inData) {
+      if (status) return;
+      this.blk[this.nb++] = dibit;
+      if (this.nb === 98) { this.nb = 0; if (!this.pdu.push(this.blk)) this.inData = false; }
+      return;
+    }
     if (!locked) return;
-    const x = s * this.sign;
-    this.dec.push(x > 2 ? 1 : x > 0 ? 0 : x > -2 ? 2 : 3, this.t);
+    this.dec.push(dibit, this.t);
     const now = this.dec.status(this.t);
     if (now.frames !== this.framesSeen) {
       this.framesSeen = now.frames;
       const id = this.id; id.frames = now.frames; id.nac = now.nac; id.inverted = this.sign < 0; id.lastSym = this.t;
       // a terminator ends the call (what it was stays shown until the next one starts)
       if (now.duid === 0x3 || now.duid === 0xf) { this.voice.reset(); this.open = false; }
+      if (now.duid === 0xc) { this.inData = true; this.nb = 0; this.pdu.start(); }
     }
   }
 
@@ -104,5 +126,6 @@ export class P25Identity {
       const tg = lcf === 0 ? (b[4] << 8) | b[5] : (b[3] << 16) | (b[4] << 8) | b[5];
       id.src = src; id.tg = tg; id.group = lcf === 0;
     }
+    const gps = p25GpsLc(b, id.src); if (gps) this.unitData(gps);
   }
 }

@@ -6,6 +6,8 @@
  *   · BPTC(196,96) for voice LC headers / terminators (RS(12,9) checked) and CSBKs (CRC-CCITT checked)
  *   · EMB via QR(16,7) plus the embedded LC spread over voice bursts B–E (Hamming 16,11,4, column parity,
  *     5-bit checksum) — talkgroup, source ID and talker alias mid-call
+ *   · the GPS Info LC (FLCO 8) in the embedded signaling: the talking radio's position
+ *   · the PI header's privacy algorithm and key, by name (display only)
  *   · the three AMBE+2 voice frames per burst, de-interleaved and handed to the vocoder
  * Both time slots are followed; the audio follows one of them. The same correlator recognizes P25, D-STAR,
  * NXDN and Fusion (YSF) sync words so the DIGITAL tab can name a digital voice signal we do not decode (yet).
@@ -14,6 +16,7 @@ import { AmbeDecoder, golay208, popcount, c0Clean } from './mbe.js';
 import { RealFir, lowpassTaps } from './filters.js';
 import { P25Decoder } from './p25.js';
 import { ImbeDecoder } from './imbe.js';
+import { gpsInfoLc, dmrAlgName } from '../fleet/lc.js';
 
 const RATE = 48_000, SPS = 10, SLOT = 144, RING = 4096, MASK = RING - 1;
 
@@ -173,10 +176,13 @@ const CSBKO: Record<number, string> = { 0x04: 'UNIT-TO-UNIT REQUEST', 0x05: 'UNI
 const DATA_TYPES = ['PI HEADER', 'VOICE HEADER', 'END OF CALL', 'CSBK', 'MBC HEADER', 'MBC', 'DATA HEADER', 'RATE ½ DATA', 'RATE ¾ DATA', 'IDLE', 'RATE 1 DATA'];
 
 // ------------------------------------------------------------------------------------------- time slot
-export interface SlotStatus { voice: boolean; tg: number; src: number; group: boolean; alias: string; cc: number; last: string; since: number; errs: number }
+export interface SlotStatus { voice: boolean; tg: number; src: number; group: boolean; alias: string; cc: number; last: string; since: number; errs: number;
+  /** The talking radio's position from its GPS Info LC, and the position error code (0 to 7), or null. */
+  gps: { lat: number; lon: number; err: number } | null }
 class TimeSlot {
   voice = false; seq = -1;
   tg = 0; src = 0; group = true; alias = ''; cc = -1;
+  gps: { lat: number; lon: number; err: number } | null = null;
   last = ''; since = 0;
   errs = 0; frames = 0;
   lastLog = ''; lastLogAt = -1e9;
@@ -186,12 +192,17 @@ class TimeSlot {
   private aliasFmt = 1;
   setLc(lc: Lc): boolean {
     if (lc.flco >= 4 && lc.flco <= 7) { this.talkerAlias(lc); return false; }
-    if (lc.flco === 8) return false;                       // GPS info, not shown
+    if (lc.flco === 8) {                                   // GPS info: the talking radio's position
+      const g = gpsInfoLc([lc.flco, lc.fid, lc.opts, lc.dst >> 16 & 255, lc.dst >> 8 & 255, lc.dst & 255, lc.src >> 16 & 255, lc.src >> 8 & 255, lc.src & 255]);
+      if (g) this.gps = { lat: g.pos.lat, lon: g.pos.lon, err: g.err };
+      return false;
+    }
     const changed = lc.dst !== this.tg || lc.src !== this.src;
+    if (lc.src !== this.src) this.gps = null;
     this.tg = lc.dst; this.src = lc.src; this.group = lc.flco === 0;
     return changed;
   }
-  status(): SlotStatus { return { voice: this.voice, tg: this.tg, src: this.src, group: this.group, alias: this.alias, cc: this.cc, last: this.last, since: this.since, errs: this.frames ? this.errs / this.frames : 0 }; }
+  status(): SlotStatus { return { voice: this.voice, tg: this.tg, src: this.src, group: this.group, alias: this.alias, cc: this.cc, last: this.last, since: this.since, errs: this.frames ? this.errs / this.frames : 0, gps: this.gps }; }
   endCall(): void { this.voice = false; this.seq = -1; this.emb.reset(); this.ambe.reset(); }
   /** Talker alias (FLCO 4 header + 5..7 blocks): 7-bit, ISO-8, UTF-8 or UTF-16BE text. */
   private talkerAlias(lc: Lc): void {
@@ -290,7 +301,7 @@ export class DmrDecoder {
     this.imbe.reset();
     this.lp.reset(); this.up.reset(); this.ring.fill(0); this.n = 0; this.locked = false; this.pos = 0; this.frame = 0; this.parity = 0;
     this.lastSyncN = -1e9; this.syncCount = 0; this.cc = -1; this.source = ''; this.candSync = null; this.candCorr = 0; this.simplexPhase = -1; this.msDual = false; this.msOther = 0; this.mode = 'dmr'; this.dmrFrameN = -1e9; this.p25.reset();
-    for (const t of this.ts) { t.endCall(); t.tg = 0; t.src = 0; t.alias = ''; t.last = ''; t.cc = -1; t.errs = 0; t.frames = 0; }
+    for (const t of this.ts) { t.endCall(); t.tg = 0; t.src = 0; t.alias = ''; t.last = ''; t.cc = -1; t.gps = null; t.errs = 0; t.frames = 0; }
     this.polOk = this.polBad = 0; this.confirmed = false; this.sps = SPS; this.ccVotes.fill(0); this.validCount = 0;
     this.dvName = ''; this.dvAt = -1e9; this.dvCount = 0;
   }
@@ -565,6 +576,12 @@ export class DmrDecoder {
       b[9] ^= m; b[10] ^= m; b[11] ^= m;
       if (rs129ok(b)) { this.validCount++; const lc = parseLc(b); ts.setLc(lc); this.logLine(ts, dt === 1 ? 'VOICE HEADER' : 'END OF CALL'); }
       else this.logLine(ts, `${name} (bad RS)`);
+    } else if (dt === 0) {
+      // a privacy header: the algorithm (by name) and key of an encrypted call; nothing is decrypted
+      const b = bptc(raw);
+      b[10] ^= 0x69; b[11] ^= 0x69;
+      if (crcOk(b, 12)) { this.validCount++; this.logLine(ts, `PI HEADER · ${dmrAlgName(b[0])} · KEY ${b[2]}`); }
+      else this.logLine(ts, `${name} (bad CRC)`);
     } else if (dt === 3 || dt === 4) {
       const b = bptc(raw);
       const m = dt === 3 ? 0xa5 : 0xaa;
@@ -601,7 +618,7 @@ export class DmrDecoder {
     const frag = this.frag;
     for (let i = 0; i < 16; i++) { frag[2 * i] = dib[70 + i] >> 1; frag[2 * i + 1] = dib[70 + i] & 1; }
     const lc = ts.emb.add(frag, lcss);
-    if (lc) { this.validCount++; const parsed = parseLc(lc); if (ts.setLc(parsed)) this.logLine(ts, 'VOICE'); else if (parsed.flco >= 4 && parsed.flco <= 7 && ts.alias) this.logLine(ts, `alias ${ts.alias}`); }
+    if (lc) { this.validCount++; const parsed = parseLc(lc); if (ts.setLc(parsed)) this.logLine(ts, 'VOICE'); else if (parsed.flco >= 4 && parsed.flco <= 7 && ts.alias) this.logLine(ts, `alias ${ts.alias}`); else if (parsed.flco === 8 && ts.gps) this.logLine(ts, `GPS ${ts.gps.lat.toFixed(5)}, ${ts.gps.lon.toFixed(5)}`); }
   }
 
   private voiceBurst(ts: TimeSlot): void {

@@ -1,15 +1,16 @@
 /**
- * Dispatch: a receive-only monitor for P25, DMR, TETRA, NXDN and Motorola Type II trunked radio. Finds every carrier in the span, gives the live
+ * Dispatch: a receive-only monitor for P25, DMR, TETRA, NXDN and Motorola Type II trunked radio, and conventional dPMR. Finds every carrier in the span, gives the live
  * ones a channel each (the control channels and the channels of calls on the air keep theirs, the rest take turns),
  * decodes the control signaling and builds the systems, sites, channel tables, grants, registrations, unit positions
- * and calls from what is on the air. Labels are only what the air carries. Publishes a 'fleet' snapshot (at most two
+ * and calls from what is on the air. DMR packet data is put back together (hamid/dmrpdu.ts) for unit positions (LIP,
+ * LRRP, NMEA) and text messages. Labels are only what the air carries. Publishes a 'fleet' snapshot (at most two
  * a second) and 'packet' log lines.
  */
 import { fft, hann } from '../../fft.js';
 import type { Emit, IqProcessor } from '../core.js';
 import { Ddc } from '../trains.js';
 import { RealFir, lowpassTaps } from '../ham/filters.js';
-import { crc12Ok, DMR_CRC_MASK, hex } from './codes.js';
+import { crc12Ok, DMR_CRC_MASK, dmrReadBurst, hex } from './codes.js';
 import { parseTsbk, resolveChannel, svcFlags, tsbkLine, h, type Field, type Iden, type Tsbk } from './tsbk.js';
 import { parseCsbk, unwrap16, csbkLine, VendorCheck, type Csbk } from './csbk.js';
 import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, slice, type P25Block, type DmrEvent } from './rx.js';
@@ -22,7 +23,13 @@ import { TetraRx, type TetraSync } from './tetra.js';
 import { TetraMac, tetraCarrierHz, tetraDisconnectCause, tetraGrantName, tetraCommName, type TetraEvent, type TetraSysinfo, type TetraCmce, type TetraMacInfo } from './tetra-mac.js';
 import { NxdnRx, NxdnPlan, NXDN_CATEGORY, nxdnLine, nxdnId, type NxdnSite, type NxdnMsg, type NxdnTraffic, type NxdnScch, type NxdnAdj } from './nxdn.js';
 import { OswRx, OswParser, FmVoice, provePlan, tgOf, tgStatus, oswHex, oswWordText, type Osw, type OswEvent, type OswPlan } from './smartnet.js';
+import { p25GpsLc } from './p25data.js';
+import { applyUnitData, type UnitData } from './unitdata.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
+import { AnalogIds, analogIdText, type AnalogId } from '../hamid/analog.js';
+import { DmrPduAssembler, dmrPduContent, dmrPayloadBits, dpfName, rate1Bytes, type DmrPdu } from '../hamid/dmrpdu.js';
+import { rate34Decode } from '../hamid/dmrdata.js';
+import { DpmrIdentity, type DpmrId } from '../hamid/dpmr.js';
 
 export const CH_RATE = 24_000;
 /** How far from its system's area a DMR unit position may resolve, and from the receiver before the area is known (km). */
@@ -54,8 +61,8 @@ const RECHECK_MS = 300_000;
 const TURN_CHANNELS = 2;
 const LIVE_MS = 4_000;
 
-export type SysProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET';
-export type CarrierClass = '' | 'TETRA' | 'NXDN48' | 'NXDN96' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR' | 'MOTOROLA TYPE II';
+export type SysProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET' | 'DPMR';
+export type CarrierClass = '' | 'TETRA' | 'NXDN48' | 'NXDN96' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'DPMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR' | 'MOTOROLA TYPE II';
 export type Role = '' | 'control' | 'voice' | 'rest' | 'data';
 export interface CarrierRow {
   key: number; hz: number; levelDb: number; peakDb: number; firstMs: number; lastMs: number; onMs: number; heardMs: number;
@@ -63,6 +70,8 @@ export interface CarrierRow {
   lastDecodeMs: number; envCv: number; eye: number; decoding: boolean; callsign: string; tdma: boolean; lcn: string;
   /** When the channel last keyed its CW ID. */
   callsignMs: number;
+  /** The last MDC-1200 or FleetSync ID heard on an analog carrier ('' none), when, and whether it was an emergency. */
+  ident: string; identMs: number; identEmergency: boolean;
 }
 export interface SiteRow {
   key: string; label: string; rfss: number; site: number; nac: number; ccHz: number[]; lastMs: number; levelDb: number;
@@ -147,7 +156,9 @@ interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: 
   /** The talker alias its radio sent (DMR), or ''. */
   alias?: string;
   /** A position kept from an earlier session (restored from the device), used until a report on the air replaces it. */
-  fix?: [number, number] }
+  fix?: [number, number];
+  /** [fix] came from the air with whole coordinates (LIP, LRRP, NMEA in packet data): no twin to resolve. */
+  full?: boolean }
 interface Tg { key: string; sys: string; tg: number; firstMs: number; lastMs: number; grants: number; recent: number[]; members: Set<number>; history: GrantRow[] }
 
 /** Channels a span can run at once: the down-converters cost in proportion to the sample rate. */
@@ -169,6 +180,9 @@ class Chan {
   /** Motorola Type II signaling words, and analog FM voice on a channel a Type II grant named. */
   osw!: OswRx; fm: FmVoice | null = null;
   cw!: CwReader;
+  /** MDC-1200 and FleetSync on a carrier that is analog or not classed yet, off the channel's own discriminator. */
+  ids: AnalogIds | null = null;
+  private dI = 0; private dQ = 0; private disc = new Float32Array(0);
   oi = new Float32Array(0); oq = new Float32Array(0);
   openedMs: number; lastSyncMs = 0; quietSince: number; private cwOn = false;
   /** The Phase 2 TDMA receiver, on a channel a grant named TDMA. */
@@ -184,6 +198,8 @@ class Chan {
   }
   /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
   nxdn: NxdnRx[] | null = null;
+  /** dPMR, read from the NXDN48 receiver's symbols. */
+  dpmr: DpmrIdentity | null = null;
   /** The TETRA MAC on the TETRA receiver's bursts. */
   tetraMac: TetraMac | null = null;
   /**
@@ -280,6 +296,11 @@ class Chan {
     const s0 = this.p25.clean + this.dmr.bursts;
     this.rx.push(zi, zq, m);
     this.osw.push(zi, zq, m); this.fm?.push(zi, zq, m);
+    if (this.ids) {
+      if (this.disc.length < m) this.disc = new Float32Array(m);
+      for (let k = 0; k < m; k++) { const i = zi[k], q = zq[k]; this.disc[k] = Math.atan2(q * this.dI - i * this.dQ, i * this.dI + q * this.dQ); this.dI = i; this.dQ = q; }
+      this.ids.push(this.disc, m);
+    }
     this.p2?.push(zi, zq, m);
     if (this.nxdn) for (const r of this.nxdn) if (r.fs === this.fs) r.push(zi, zq, m);
     this.nxdnSyncCheck();
@@ -495,8 +516,12 @@ export class FleetProcessor implements IqProcessor {
     ch.p25v.onLog = () => this.p25Lc(c, ch);
     ch.p25v.onEs = es => this.p25Sec(c, 'LDU2', es);
     ch.p25v.onHdu = hd => this.p25Sec(c, 'HDU', hd);
+    ch.p25.onPdu = p => this.unitData(c, p);
+    ch.p25v.onLc = lc => { const g = p25GpsLc(lc, ch.p25v.status(ch.t).source); if (g) this.unitData(c, g); };
     ch.cw.onText = t => this.cwText(c, t);
     ch.osw.onOsw = (o, gap) => this.oswWord(c, ch, o, gap);
+    // an analog carrier, or one not classed yet, is read for MDC-1200 and FleetSync from its first sample (the ID leads the over)
+    if (!c.sys && (c.cls === '' || c.cls === 'ANALOG FM')) { ch.ids = new AnalogIds(ch.fs); ch.ids.onId = id => this.analogId(c, id); }
     if (c.tdma) this.p2On(c, ch);
     this.chans.set(c.key, ch);
     if (this.calls.at('', c.hz, 0)?.proto === 'SMARTNET') this.fmOn(c, ch);
@@ -532,9 +557,50 @@ export class FleetProcessor implements IqProcessor {
       };
       r.framer.onCac = (sr, msgs) => { keep(); this.nxdnCac(c, sr, msgs, b); };
       r.framer.onTraffic = t => { keep(); if (r.framer.locked || t.msgs.length) this.nxdnTraffic(c, t, b); };
+      if (b === 2400) r.tap = x => this.dpmrOn(c, ch).pushSymbol(x);
       return r;
     };
     ch.nxdn = ([2400, 4800] as const).filter(b => !baud || b === baud).map(b => make(b, b === baud));
+  }
+  /** The dPMR reader of a channel, its calls and units passed to [dpmrEvent]. */
+  private dpmrOn(c: Carrier, ch: Chan): DpmrIdentity {
+    if (ch.dpmr) return ch.dpmr;
+    const d = new DpmrIdentity();
+    d.onEvent = k => this.dpmrEvent(c, k, d.id);
+    d.onVoiceBits = bits => { const call = this.calls.at(c.sys, c.hz, 0); if (call && call.proto === 'DPMR') this.calls.frames(call, [bits.slice()]); };
+    ch.dpmr = d;
+    return d;
+  }
+  /**
+   * dPMR (ETSI TS 102 490) on a carrier: a conventional channel is a system by its color code, a header or a chained
+   * frame keeps the call on the air (the called and own IDs, 24 bits, shown as Annex A's characters), the end frame ends it.
+   */
+  private dpmrEvent(c: Carrier, kind: 'header' | 'frame' | 'end', x: DpmrId): void {
+    const now = this.now(), was = this.systems.get(c.sys);
+    // a carrier another protocol is decoding on stays that protocol's (a CRC passing on its symbols is chance)
+    if (this.nxdnLately(c, now) || (was && was.proto !== 'DPMR' && now - c.lastDecodeMs < 5_000)) return;
+    c.cls = 'DPMR'; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; this.blocks++; if (c.role === '') c.role = 'voice';
+    const cc = x.cc >= 0 ? x.cc : was?.proto === 'DPMR' ? was.cc : -1;
+    if (cc < 0) return;
+    const key = `DPMR CC${cc}`;
+    let s = this.systems.get(key);
+    if (!s) { s = { key, proto: 'DPMR', color: this.colorNext++, wacn: -1, sysId: cc, cc, fid: 0, net: -1, model: 'CONVENTIONAL', firstMs: now, lastMs: now, idens: new Map(), derived: false, lcns: new Map(), lcnVotes: new Map(), rest: -1, busy: [], lpcnVotes: new Map(), lpcnHz: new Map(), heardHz: new Set(), trunk: 'CONVENTIONAL' }; this.systems.set(key, s); }
+    s.lastMs = now; s.heardHz.add(c.key); c.sys = key;
+    const who = `${x.group ? 'TG' : 'UNIT'} ${x.calledText || x.called} ← ${x.ownText || x.own}`;
+    if (kind === 'end') {
+      this.calls.terminate(key, c.hz, 0, now);
+      this.addLog({ ms: now, hz: c.hz, proto: 'DPMR', name: 'END', text: `dPMR · CC ${cc} · END`, hex: '', ok: true });
+    } else {
+      const call = this.calls.voice(key, 'DPMR', c.hz, 0, kind === 'frame' ? 80 : 0, now);
+      if (x.called >= 0 && x.own >= 0 && (call.tg !== x.called || call.src !== x.own)) {
+        this.calls.lc(key, c.hz, 0, { group: x.group, dst: x.called, src: x.own, emergency: false, privacy: false }, now, 'DPMR');
+        const u = this.touchUnit(key, x.own, c, now, 'call', { hex: '', line: `dPMR · ${who}` }, '', x.group ? x.called : undefined);
+        if (x.ownText) { u.alias = x.ownText; this.unitAlias.set(u.key, x.ownText); }
+        c.unitIds.set(x.own, now);
+      }
+      if (kind === 'header') this.addLog({ ms: now, hz: c.hz, proto: 'DPMR', name: 'HEADER', text: `dPMR · CC ${cc} · HEADER · ${who}`, hex: '', ok: true });
+    }
+    this.pending = true;
   }
   private nxdnSys(key: string, now: number, init: { model: string; wacn: number; sysId: number; trunk: string; baud: number }): Sys {
     let s = this.systems.get(key);
@@ -622,6 +688,7 @@ export class FleetProcessor implements IqProcessor {
       s.heardHz.add(c.key); c.sys = key;
     }
     if (t.scch) this.nxdnScch(c, t.scch, now, baud);
+    for (const d of t.data) this.unitData(c, d);
     for (const m of t.msgs) {
       if (m.type === 0x01 && m.dst !== undefined) {
         this.nxdnLearn(c, m.src ?? 0, m.dst, !!m.group, now);
@@ -913,9 +980,10 @@ export class FleetProcessor implements IqProcessor {
   private classify(c: Carrier, ch: Chan, now: number): void {
     if (c.tdma && !ch.p2) this.p2On(c, ch);
     if (!c.tdma && !ch.tetra && c.cls !== 'TETRA' && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) && tetraBand(c.hz)) this.tetraOn(c, ch);
-    if (!c.tdma && !ch.nxdn && c.cls !== 'TETRA' && now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)) this.nxdnOn(c, ch);
+    // a dPMR carrier is read from its first symbols on every turn
+    if (!c.tdma && !ch.nxdn && c.cls !== 'TETRA' && (c.cls === 'DPMR' || (now - ch.openedMs > 1_500 && !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)))) this.nxdnOn(c, ch);
     c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100; c.eye = Math.round(ch.rx.eye * 100) / 100;
-    if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return;
+    if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) { ch.ids = null; return; }
     if (now - ch.openedMs < CLASS_MS) return;
     if (c.tdma && ch.rx.envCv > 0.15) c.cls = 'P25 PHASE 2 TDMA';
     else if (ch.rx.eye > 1.3 && ch.rx.envCv < 0.15) c.cls = 'UNKNOWN 4FSK';
@@ -1124,6 +1192,14 @@ export class FleetProcessor implements IqProcessor {
     if (b.dt === 9) return;
     const mask = DMR_CRC_MASK[b.dt];
     const ok = mask !== undefined && crc12Ok(b.bytes, mask);
+    // packet data: a header opens a PDU on its slot, the blocks it announced fill it (on a voice channel too)
+    if (b.dt === 6 && ok) this.pduFor(c, b.slot).header(b.bytes);
+    else if ((b.dt === 7 || b.dt === 8 || b.dt === 10) && this.pduFor(c, b.slot).open) {
+      const d = e.dibits.length >= 144 ? dmrPayloadBits(e.dibits) : null;
+      const bytes = b.dt === 7 ? b.bytes : d ? (b.dt === 8 ? rate34Decode(d).bytes : rate1Bytes(d)) : null;
+      const p = bytes && this.pduFor(c, b.slot).block(bytes);
+      if (p) this.dmrPdu(c, b, p, now);
+    }
     // a privacy indicator header (it follows the voice LC header of an encrypted call): the call it opens is encrypted
     // its fields (not in ETSI TS 102 361; read from public descriptions, not yet verified on air): algorithm ID in
     // octet 0, key ID in octet 2, a 32-bit MI in octets 3 to 6
@@ -1264,6 +1340,42 @@ export class FleetProcessor implements IqProcessor {
     this.calls.frames(call, voiceFrames(d)); ch?.voiced(slot);
     this.pending = true;
   }
+  /** Packet data being put together, per carrier and slot. */
+  private readonly pdus = new Map<string, DmrPduAssembler>();
+  private pduFor(c: Carrier, slot: number): DmrPduAssembler {
+    const k = `${c.key}:${slot}`; let a = this.pdus.get(k);
+    if (!a) { if (this.pdus.size > 400) this.pdus.clear(); a = new DmrPduAssembler(); this.pdus.set(k, a); }
+    return a;
+  }
+  /**
+   * A whole DMR packet data PDU: logged, its source unit (and the unit it went to) given the report, a position (LIP,
+   * LRRP, NMEA: whole coordinates) placed on the map and the unit's track, a text message in both units' history.
+   */
+  private dmrPdu(c: Carrier, b: DmrEvent['burst'], p: DmrPdu, now: number): void {
+    const h = p.hdr, x = dmrPduContent(p), was = this.systems.get(c.dmrSys || c.sys);
+    const s = was?.proto === 'DMR' ? was : this.dmrSystem(c, { fid: 0, verified: false } as Csbk, b.cc, now);
+    s.lastMs = now;
+    const ts = b.ms ? 'FROM A RADIO' : `TS${b.slot + 1}`, to = `${h.group ? 'TG ' : ''}${h.dst}`;
+    const name = x?.kind === 'text' ? 'TEXT MESSAGE' : x?.pos ? 'POSITION' : dpfName(h.dpf);
+    const body = x?.kind === 'text' ? `"${x.text}"` : x?.pos ? `${x.pos.lat.toFixed(5)}, ${x.pos.lon.toFixed(5)}${x.speedKmh >= 0 ? ` · ${Math.round(x.speedKmh)} km/h` : ''}${x.heading >= 0 ? ` · heading ${Math.round(x.heading)}` : ''}` : `SAP ${h.sap} · ${p.bits >> 3} octets`;
+    const line = `${x ? `${x.via} · ` : ''}${body}`, hx = hex(p.data);
+    this.addLog({ ms: now, hz: c.hz, proto: 'DMR', name, text: `CC ${b.cc} · ${ts} · ${name} · ${h.src} → ${to} · ${line}${p.crcOk ? '' : ' · message CRC failed'}`, hex: hx, ok: p.crcOk });
+    if (h.src) {
+      const u = this.touchUnit(s.key, h.src, c, now, x?.kind === 'text' ? `text message to ${to}` : x?.pos ? `position (${x.via})` : `packet data to ${to}`, { hex: hx, line }, '', h.group ? h.dst : undefined);
+      c.unitIds.set(h.src, now);
+      if (x?.pos) this.unitFix(u, x.pos.lat, x.pos.lon, now);
+    }
+    if (x?.kind === 'text' && !h.group && h.dst) this.touchUnit(s.key, h.dst, c, now, `text message from ${h.src}`, { hex: hx, line }, '');
+  }
+  /** A whole position from the air: it stands until the next report (no twin to resolve, as the CSBK reports have). */
+  private unitFix(u: Unit, lat: number, lon: number, now: number): void {
+    const f: [number, number] = [round6(lat), round6(lon)];
+    u.lonLo = -1; u.latLo = -1; u.fix = f; u.full = true; u.posMs = now; u.posVerified = true; u.fixes = [];
+    const last = u.reports[u.reports.length - 1]; if (last) { last.lat = f[0]; last.lon = f[1]; }
+    const t = u.trail[u.trail.length - 1];
+    if (!t || t[0] !== f[0] || t[1] !== f[1]) { u.trail.push([f[0], f[1], now]); if (u.trail.length > 300) u.trail.shift(); }
+    this.anchorsAt = -1; this.pending = true;
+  }
   private dmrSystem(c: Carrier, cs: Csbk, cc: number, now: number): Sys {
     let key = c.dmrSys;
     if (cs.verified && cs.sysCode !== undefined) key = `DMR ${cs.model} ${cs.net}`;
@@ -1340,7 +1452,7 @@ export class FleetProcessor implements IqProcessor {
     const u = this.touchUnit(s.key, cs.unit!, c, now, 'unit report', cs, '');
     c.unitIds.set(cs.unit!, now);
     if (cs.noFix || cs.lonLo === undefined || cs.latLo === undefined) return;
-    u.lonLo = cs.lonLo; u.latLo = cs.latLo; u.posMs = now; u.posVerified = cs.verified;
+    u.lonLo = cs.lonLo; u.latLo = cs.latLo; u.posMs = now; u.posVerified = cs.verified; u.full = false;
     const last = u.reports[u.reports.length - 1];
     if (last) { last.lonLo = cs.lonLo; last.latLo = cs.latLo; }
     const fx = u.fixes[u.fixes.length - 1];
@@ -1348,6 +1460,24 @@ export class FleetProcessor implements IqProcessor {
     this.anchorsAt = -1;
     const p = this.place(s.key, cs.latLo, cs.lonLo);
     if (last && p) { last.lat = p[0]; last.lon = p[1]; }
+  }
+  /** An MDC-1200 or FleetSync ID on an analog carrier: on the carrier's row and in the log, unit IDs in full. */
+  private analogId(c: Carrier, id: AnalogId): void {
+    const now = this.now();
+    if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return;
+    const text = analogIdText(id);
+    c.ident = text; c.identMs = now; c.identEmergency = id.emergency;
+    if (!c.cls) c.cls = 'ANALOG FM';
+    this.addLog({ ms: now, hz: c.hz, proto: id.kind, name: id.kind === 'MDC-1200' ? id.what : `FLEETSYNC ${id.what}`, text: `ANALOG FM · ${text}${id.emergency ? ' · EMERGENCY' : ''}`, hex: '', ok: true });
+    this.pending = true;
+  }
+  /** An MDC-1200 or FleetSync ID heard on [hz] (the tests). */
+  feedAnalogId(hz: number, id: AnalogId): void { this.analogId(this.carrierAt(hz), id); }
+  /** What a unit sent (unitdata.ts): logged, and its position, alias and the report go to the unit. */
+  private unitData(c: Carrier, d: UnitData): void {
+    const now = this.now(), sys = c.sys || (d.proto === 'P25' ? `P25 NAC ${h(Math.max(0, c.nac), 3)}` : `NXDN CONV RAN ${Math.max(0, c.nxdnRan ?? 0)}`);
+    this.addLog({ ms: now, hz: c.hz, proto: d.proto, name: d.name, text: d.proto === 'P25' ? `NAC ${h(Math.max(0, c.nac), 3)} · ${d.line}` : `${c.cls} · ${d.line}`, hex: d.hex, ok: true });
+    if (d.unit > 0 && d.unit !== 0xffffff) applyUnitData(this.touchUnit(sys, d.unit, c, now, d.kind, { hex: d.hex, line: d.line }, ''), d, now);
   }
   private cwText(c: Carrier, text: string): void {
     const word = text.split(' ').find(looksLikeCallsign);
@@ -1421,6 +1551,7 @@ export class FleetProcessor implements IqProcessor {
 
   // ------------------------------------------------------------------------------------------------ output
   private resolvePos(u: Unit): [number | null, number | null] {
+    if (u.lonLo < 0 && u.fix && u.full) return [u.fix[0], u.fix[1]];
     if (u.lonLo < 0 && u.fix) {
       // a position kept from an earlier session: shown only where the system's radios can be (an older build drew
       // some reports in the wrong place)
@@ -1476,7 +1607,7 @@ export class FleetProcessor implements IqProcessor {
   }
   private callPos(c: CallRow): CallPos | null {
     const at = (u: Unit | undefined, via: 'unit' | 'talkgroup'): CallPos | null => {
-      if (!u || u.lonLo < 0) return null;
+      if (!u || (u.lonLo < 0 && !u.full)) return null;
       const [lat, lon] = this.resolvePos(u);
       return lat === null || lon === null ? null : { lat, lon, unit: u.id, ms: u.posMs, via, verified: u.posVerified };
     };
@@ -1484,7 +1615,7 @@ export class FleetProcessor implements IqProcessor {
       if (!id) return undefined;
       if (c.sys) return this.units.get(`${c.sys}/${id}`) ?? (id > 0xffff ? this.units.get(`${c.sys}/${id & 0xffff}`) : undefined);
       let found: Unit | undefined;
-      for (const u of this.units.values()) if (u.id === id && u.lonLo >= 0) { if (found) return undefined; found = u; }
+      for (const u of this.units.values()) if (u.id === id && (u.lonLo >= 0 || u.full)) { if (found) return undefined; found = u; }
       return found;
     };
     const own = at(unitOf(c.src), 'unit'); if (own) return own;
@@ -1604,7 +1735,7 @@ export class FleetProcessor implements IqProcessor {
       else if (s.proto === 'SMARTNET') sites = this.oswSites(s);
       else sites = this.dmrSites(s);
       for (const st of sites) for (const k of st.carriers) for (const u of this.units.values()) if (u.sys === s.key && u.carriers.has(k)) unitSite.set(u.key, st.label);
-      const label = s.proto === 'SMARTNET' ? `MOTOROLA TYPE II · SYSTEM ${h(s.sysId, 4)}` : s.proto === 'NXDN' ? (s.trunk === 'CONVENTIONAL' ? `NXDN · CONVENTIONAL · RAN ${s.sysId}` : s.trunk === 'TYPE-D' ? `NXDN · TYPE-D · SITE ${s.sysId}` : `NXDN · ${s.model} SYSTEM ${s.sysId}`) : s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : s.trunk === 'CAPACITY PLUS' ? `CAPACITY PLUS · COLOR CODE ${s.cc}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
+      const label = s.proto === 'DPMR' ? `dPMR · CONVENTIONAL · COLOR CODE ${s.cc}` : s.proto === 'SMARTNET' ? `MOTOROLA TYPE II · SYSTEM ${h(s.sysId, 4)}` : s.proto === 'NXDN' ? (s.trunk === 'CONVENTIONAL' ? `NXDN · CONVENTIONAL · RAN ${s.sysId}` : s.trunk === 'TYPE-D' ? `NXDN · TYPE-D · SITE ${s.sysId}` : `NXDN · ${s.model} SYSTEM ${s.sysId}`) : s.proto === 'TETRA' ? `TETRA · MCC ${s.wacn} · MNC ${s.sysId}` : s.proto === 'P25' ? `WACN ${h(s.wacn, 5)} · SYSTEM ${h(s.sysId, 3)}` : s.net >= 0 ? `${s.model} NETWORK ${s.net}` : s.trunk === 'CAPACITY PLUS' ? `CAPACITY PLUS · COLOR CODE ${s.cc}` : `COLOR CODE ${s.cc}${s.fid > 0 ? ` · FID ${h(s.fid, 2)}` : ''}`;
       const units = [...this.units.values()].filter(u => u.sys === s.key).length, tgs = [...this.tgs.values()].filter(t => t.sys === s.key).length;
       const lpcns = s.nxdnPlan ? [...s.nxdnPlan.heard].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.nxdnPlan!.votes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn)
         : [...s.lpcnHz].map(([lpcn, hz]) => ({ lpcn, hz, votes: s.lpcnVotes.get(lpcn)?.get(hz) ?? 0 })).sort((a, b) => a.lpcn - b.lpcn);
@@ -1649,7 +1780,7 @@ export class FleetProcessor implements IqProcessor {
     if (!c) for (const x of this.carriers.values()) if (Math.abs(x.hz - hz) < 1_500) { c = x; break; }
     if (!c) {
       c = { key, hz, levelDb: 0, peakDb: 0, firstMs: now, lastMs: now, onMs: 0, heardMs: 0, cls: '', role: '', sys: '', nac: -1, cc: -1, frames: 0, blocks: 0, crcOk: 0, lastDecodeMs: 0,
-        envCv: 0, eye: 0, decoding: false, callsign: '', callsignMs: 0, tdma: false, lcn: '', lastAuditionMs: 0, turns: 0, turnDb: 0, p25: { sys: -1, wacn: -1, rfss: -1, site: -1 }, dmrSys: '', tables: new Map(), unitIds: new Map() };
+        envCv: 0, eye: 0, decoding: false, callsign: '', callsignMs: 0, ident: '', identMs: 0, identEmergency: false, tdma: false, lcn: '', lastAuditionMs: 0, turns: 0, turnDb: 0, p25: { sys: -1, wacn: -1, rfss: -1, site: -1 }, dmrSys: '', tables: new Map(), unitIds: new Map() };
       this.carriers.set(key, c);
     }
     return c;
@@ -1664,6 +1795,8 @@ export class FleetProcessor implements IqProcessor {
   feedDmr(hz: number, slot: number, cc: number, dt: number, bytes: Uint8Array): void {
     this.dmrBurst(this.carrierAt(hz), null, { burst: { slot, cc, dt, stErrs: 0, bytes, busy: 1 }, dibits: new Uint8Array(0) });
   }
+  /** One recorded DMR data burst as its 144 dibits (rate 3/4 and rate 1 blocks are read from the dibits). */
+  feedDmrBurst(hz: number, dibits: Uint8Array): void { const b = dmrReadBurst(dibits); if (b) this.dmrBurst(this.carrierAt(hz), null, { burst: b, dibits }); }
   /** One recorded DMR voice burst (144 dibits) heard on [hz]: [n] is its place in the superframe (0 has the sync). */
   feedDmrVoice(hz: number, slot: number, dibits: Uint8Array, n: number): void { const c = this.carrierAt(hz); this.dmrSeen.set(c.key, this.now()); this.dmrVoice(c, null, slot, dibits, n); }
   /** A recorded channel clip, complex baseband at [fs] mixed to 0 Hz from [hz]: decoded as a channel of the span. */
@@ -1717,7 +1850,7 @@ export class FleetProcessor implements IqProcessor {
   }
   clear(): void {
     this.carriers.clear(); this.systems.clear(); this.sites.clear(); this.units.clear(); this.tgs.clear(); this.grants = []; this.log.length = 0; this.logSeen.clear();
-    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = []; this.oswParsers.clear();
+    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = []; this.oswParsers.clear(); this.pdus.clear();
     this.post(true);
   }
 }

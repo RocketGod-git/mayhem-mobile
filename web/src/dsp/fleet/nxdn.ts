@@ -27,6 +27,8 @@
  *    two of 9 octets each (dual), as its SR's structure bit 0 says (Table 6.3-1).
  */
 import { SymbolRx } from './rx.js';
+import { NxdnDataReader, nxdnUdch } from './nxdndata.js';
+import type { UnitData } from './unitdata.js';
 
 const FSW = [-3, 1, -3, 3, -3, -3, 3, 3, -1, 3];
 /** Symbols in a frame after the FSW (the LICH to the end of the post field or of the last VCH), and in a whole frame. */
@@ -140,9 +142,9 @@ const CC_NAMES: Record<number, string> = {
 };
 const TC_NAMES: Record<number, string> = {
   0x01: 'VCALL', 0x02: 'VCALL_REC_REQ', 0x03: 'VCALL_IV', 0x04: 'VCALL_ASSGN', 0x05: 'VCALL_ASSGN_DUP', 0x07: 'TX_REL_EX', 0x08: 'TX_REL',
-  0x09: 'DCALL', 0x0b: 'DCALL', 0x0c: 'DCALL_ACK', 0x0f: 'HEAD_DLY', 0x10: 'IDLE', 0x11: 'DISC', 0x19: 'SRV_INFO', 0x1a: 'CCH_INFO', 0x1b: 'ADJ_SITE_INFO',
+  0x09: 'DCALL_HDR', 0x0b: 'DCALL_UDT', 0x0c: 'DCALL_ACK', 0x0f: 'HEAD_DLY', 0x10: 'IDLE', 0x11: 'DISC', 0x19: 'SRV_INFO', 0x1a: 'CCH_INFO', 0x1b: 'ADJ_SITE_INFO',
   0x1c: 'FAIL_STAT_INFO', 0x28: 'AUTH_INQ_REQ', 0x30: 'STAT_INQ_REQ', 0x31: 'STAT_INQ_RESP', 0x32: 'STAT_REQ', 0x33: 'STAT_RESP', 0x34: 'REM_CON_REQ',
-  0x35: 'REM_CON_RESP', 0x38: 'SDCALL_REQ', 0x39: 'SDCALL_RESP', 0x3a: 'SDCALL_IV',
+  0x35: 'REM_CON_RESP', 0x38: 'SDCALL_REQ', 0x39: 'SDCALL_RESP', 0x3a: 'SDCALL_IV', 0x3f: 'PROP_FORM',
 };
 export interface NxdnAdj { category: number; system: number; site: number; num: number; ch: number }
 export interface NxdnMsg {
@@ -160,13 +162,16 @@ export interface NxdnMsg {
   unit?: number; gid?: number; cause?: number;
   /** SRV_INFO service flags (6.5.33). */
   service?: number;
+  /** STAT_REQ and STAT_RESP: the status (nxdndata.ts). */
+  status?: number;
   /** Type-D IDs carry a 5-bit home repeater or prefix ahead of an 11-bit ID (1-E 6.6.6, 6.6.7). */
   typeD?: boolean;
 }
+const fromHex = (h: string) => Uint8Array.from(h.match(/../g) ?? [], x => parseInt(x, 16));
 const hexOf = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('').toUpperCase();
 /** Call Timer (6.5.32): 15 s steps to 180 s, then 30 s steps to 600 s. */
 const callTimer = (v: number) => v === 0 ? 0 : v <= 12 ? 15 * v : v <= 0x1a ? 180 + 30 * (v - 12) : -1;
-const CALLISH_TC = [0x01, 0x02, 0x04, 0x05, 0x07, 0x08, 0x11], CALLISH_CC = [0x01, 0x02, 0x03, 0x04, 0x05, 0x0d, 0x0e, 0x11];
+const CALLISH_TC = [0x01, 0x02, 0x04, 0x05, 0x07, 0x08, 0x09, 0x11, 0x32, 0x33, 0x38], CALLISH_CC = [0x01, 0x02, 0x03, 0x04, 0x05, 0x0d, 0x0e, 0x11];
 /**
  * One layer 3 message from its octets. [on] says where it came from: a control channel ('cc') or a traffic channel
  * ('tc'), whose message types overlap. [typeD]: a Type-D FACCH1, whose IDs carry a prefix.
@@ -180,7 +185,8 @@ export function nxdnParse(o: Uint8Array, on: 'cc' | 'tc', typeD = false): NxdnMs
     m.emergency = (o[1] & 0x80) !== 0; m.callType = o[2] >> 5; m.group = m.callType < 2; m.voiceOpt = o[2] & 0x1f; m.src = u16(3); m.dst = u16(5);
     if (typeD) m.typeD = true;
   }
-  if (on === 'tc' && type === 0x01) { m.cipher = o[7] >> 6; m.keyId = o[7] & 0x3f; }
+  if (on === 'tc' && (type === 0x01 || type === 0x09 || type === 0x38)) { m.cipher = o[7] >> 6; m.keyId = o[7] & 0x3f; }
+  if (on === 'tc' && (type === 0x32 || type === 0x33)) m.status = o[7];
   // the assignments: Call Timer (6 bits) then the Channel (10 bits) in octets 7 and 8 (Figure 6.4-31)
   if (!typeD && (type === 0x04 || type === 0x05 || (on === 'cc' && (type === 0x0d || type === 0x0e)))) { m.timer = callTimer(o[7] >> 2); m.ch = ((o[7] & 3) << 8) | o[8]; }
   if (type === 0x18 && on === 'cc') {
@@ -217,6 +223,7 @@ export function nxdnLine(m: NxdnMsg): string {
   if (m.voiceOpt !== undefined && (m.type === 0x01 || m.type === 0x04 || m.type === 0x05)) parts.push(['4800 EHR', '', '9600 EHR', '9600 EFR'][m.voiceOpt & 7] || `mode ${m.voiceOpt & 7}`);
   if (m.cipher !== undefined) parts.push(m.cipher ? `${NXDN_CIPHERS[m.cipher]} · KEY ${m.keyId}` : 'CLEAR');
   if (m.emergency) parts.push('EMERGENCY');
+  if (m.status !== undefined) parts.push(`STATUS ${m.status}`);
   if (m.cch) parts.push(`${NXDN_CATEGORY[m.cch.category]} SYSTEM ${m.cch.system} · SITE ${m.cch.site}`, `${({ 8: 'current', 4: 'new', 2: 'added', 1: 'deleted' } as Record<number, string>)[m.cch.flags] ?? ''} channel ${m.cch.ch1}${m.cch.ch2 && m.cch.flags === 8 ? ` and ${m.cch.ch2}` : ''}`.trim());
   if (m.adj) for (const a of m.adj) parts.push(`site ${a.site} of ${NXDN_CATEGORY[a.category]} ${a.system} on channel ${a.ch}`);
   if (m.unit !== undefined) parts.push(`UNIT ${m.unit}${m.gid && m.gid !== 0xffff ? ` · TG ${m.gid}` : ''}${m.cause !== undefined ? ` · ${m.cause === 1 ? 'accepted' : `cause ${m.cause.toString(16).toUpperCase().padStart(2, '0')}`}` : ''}`);
@@ -268,6 +275,8 @@ export interface NxdnTraffic {
   msgs: NxdnMsg[];
   /** A Type-D SCCH message. */
   scch: NxdnScch | null;
+  /** What a unit sent, once whole (nxdndata.ts): a data call's position or text, a status, a talker alias. */
+  data: UnitData[];
 }
 /** One baud rate's receiver: symbols in (from [SymbolRx]), frames found by their FSW, every kind of channel read. */
 export class NxdnFramer {
@@ -277,7 +286,8 @@ export class NxdnFramer {
   onCac: (sr: number, msgs: NxdnMsg[]) => void = () => undefined;
   /** A traffic or conventional channel frame. */
   onTraffic: (t: NxdnTraffic) => void = () => undefined;
-  readonly stats = { fsw: 0, lichOk: 0, cacOk: 0, cacBad: 0, sacchOk: 0, facchOk: 0, scchOk: 0, voice: 0 };
+  readonly stats = { fsw: 0, lichOk: 0, cacOk: 0, cacBad: 0, sacchOk: 0, facchOk: 0, scchOk: 0, udchOk: 0, voice: 0 };
+  private readonly data = new NxdnDataReader();
   /** The last frame's worth of symbols, and the frames waiting for their body (every FSW match gets its own look). */
   private readonly hist = new Float32Array(256); private hp = 0;
   private pending: number[] = [];
@@ -350,8 +360,18 @@ export class NxdnFramer {
       this.onCac(field(cac, 0, 8), msgs);
       return true;
     }
+    // a data frame (functional channel 01): the UDCH, or a FACCH2 (option 11), alone after the LICH
+    if ((rf === 1 || rf === 2) && fn === 1) {
+      const u = nxdnUdch(this.soft(v, 8, 174), true);
+      if (!u) return false;
+      this.stats.udchOk++; this.lastGood = end; this.locked = true;
+      const o = bytesOf(u, 8, 22), m = nxdnParse(o, 'tc');
+      const t: NxdnTraffic = { rf, fn, opt, dir, ran: -1, typeD: false, halves: [null, null], msgs: m.type === 0x0b ? [] : [m], scch: null, data: this.data.push(o) };
+      this.onTraffic(t);
+      return true;
+    }
     // a traffic channel: the SACCH (or a Type-D SCCH), then the VCHs or FACCH1s
-    const t: NxdnTraffic = { rf, fn, opt, dir, ran: -1, typeD: false, halves: [null, null], msgs: [], scch: null };
+    const t: NxdnTraffic = { rf, fn, opt, dir, ran: -1, typeD: false, halves: [null, null], msgs: [], scch: null, data: [] };
     const sc = nxdnSacch(this.soft(v, 8, 30), true);
     let good = false;
     if (rf === 3 && sc.scch) {
@@ -393,6 +413,7 @@ export class NxdnFramer {
     if (!good && !onGrid) return false;
     if (good) this.lastGood = end;
     if (!this.locked) { t.halves = [null, null]; t.ran = -1; t.scch = null; }
+    else for (const m of t.msgs) t.data.push(...this.data.push(fromHex(m.hex)));
     this.stats.voice += t.halves.filter(Boolean).length;
     this.onTraffic(t);
     return true;
@@ -409,8 +430,10 @@ export class NxdnRx {
   private oi = new Float32Array(0); private oq = new Float32Array(0);
   /** The first tenth of a second is held to measure the carrier offset (the scrambled levels average out). */
   private hold: { i: number[]; q: number[] } | null = { i: [], q: [] };
+  /** The symbols also go here (dPMR shares the NXDN48 receiver: 2400 symbols a second, the same deviation). */
+  tap: ((s: number) => void) | null = null;
   constructor(readonly fs: number, readonly baud: 2400 | 4800) {
-    this.rx = new SymbolRx(fs, baud, 0.5); this.rx.onSymbol = s => this.framer.push(s);
+    this.rx = new SymbolRx(fs, baud, 0.5); this.rx.onSymbol = s => { this.framer.push(s); this.tap?.(s); };
     const fc = (baud === 2400 ? 1050 : 2400) + baud / 2 + 800, n = 2 * Math.round(2 * fs / baud) + 1, m = (n - 1) / 2;
     this.h = new Float32Array(n); let sum = 0;
     for (let i = 0; i < n; i++) {

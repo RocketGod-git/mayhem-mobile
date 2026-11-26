@@ -1,5 +1,6 @@
-/** The 36.331 ASN.1 subset for BCCH-DL-SCH (system information), in the specification's own notation. */
+/** The 36.331 ASN.1 subset for BCCH-DL-SCH (system information) and PCCH (paging), in the specification's own notation. */
 export const RRC_ASN = `
+maxPageRec INTEGER ::= 16
 maxSIB INTEGER ::= 32
 maxSI-Message INTEGER ::= 32
 maxPLMN-r11 INTEGER ::= 6
@@ -33,6 +34,41 @@ BCCH-DL-SCH-MessageType ::= CHOICE {
   c1 CHOICE { systemInformation SystemInformation, systemInformationBlockType1 SystemInformationBlockType1 },
   messageClassExtension SEQUENCE {}
 }
+
+PCCH-Message ::= SEQUENCE { message PCCH-MessageType }
+PCCH-MessageType ::= CHOICE {
+  c1 CHOICE { paging Paging },
+  messageClassExtension SEQUENCE {}
+}
+Paging ::= SEQUENCE {
+  pagingRecordList PagingRecordList OPTIONAL,
+  systemInfoModification ENUMERATED {true} OPTIONAL,
+  etws-Indication ENUMERATED {true} OPTIONAL,
+  nonCriticalExtension Paging-v890-IEs OPTIONAL
+}
+Paging-v890-IEs ::= SEQUENCE { lateNonCriticalExtension OCTET STRING OPTIONAL, nonCriticalExtension Paging-v920-IEs OPTIONAL }
+Paging-v920-IEs ::= SEQUENCE { cmas-Indication-r9 ENUMERATED {true} OPTIONAL, nonCriticalExtension Paging-v1130-IEs OPTIONAL }
+Paging-v1130-IEs ::= SEQUENCE { eab-ParamModification-r11 ENUMERATED {true} OPTIONAL, nonCriticalExtension Paging-v1310-IEs OPTIONAL }
+Paging-v1310-IEs ::= SEQUENCE {
+  redistributionIndication-r13 ENUMERATED {true} OPTIONAL,
+  systemInfoModification-eDRX-r13 ENUMERATED {true} OPTIONAL,
+  nonCriticalExtension SEQUENCE {} OPTIONAL
+}
+PagingRecordList ::= SEQUENCE (SIZE (1..maxPageRec)) OF PagingRecord
+PagingRecord ::= SEQUENCE {
+  ue-Identity PagingUE-Identity,
+  cn-Domain ENUMERATED {ps, cs},
+  ...
+}
+PagingUE-Identity ::= CHOICE {
+  s-TMSI S-TMSI,
+  imsi IMSI,
+  ...,
+  ng-5G-S-TMSI-r15 BIT STRING (SIZE (48)),
+  fullI-RNTI-r15 BIT STRING (SIZE (40))
+}
+S-TMSI ::= SEQUENCE { mmec BIT STRING (SIZE (8)), m-TMSI BIT STRING (SIZE (32)) }
+IMSI ::= SEQUENCE (SIZE (6..21)) OF INTEGER (0..9)
 
 SystemInformation ::= SEQUENCE {
   criticalExtensions CHOICE {

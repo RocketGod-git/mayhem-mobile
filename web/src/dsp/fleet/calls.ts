@@ -13,7 +13,7 @@ export interface CallPos { lat: number; lon: number; unit: number; ms: number; v
 export interface Lock { sys: string; site: string; label: string; hz: number }
 export type CallSec = 'unknown' | 'clear' | 'enc';
 /** The air interfaces calls come from. */
-export type CallProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET';
+export type CallProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET' | 'DPMR';
 /**
  * The vocoder of a call: IMBE for P25 Phase 1, AMBE+2 half rate for DMR, Phase 2 and NXDN, the TETRA ACELP codec for
  * TETRA. NXDN's EFR (its 9600 bps full rate) is the IMBE frame: [efr]. Motorola Type II voice is analog FM.

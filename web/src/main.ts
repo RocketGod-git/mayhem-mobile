@@ -15,6 +15,8 @@ import { BleTracker, KIND_LABEL, parseAdv, type BleDevice } from './ble.js';
 import { AcarsPlanes, labelMeaning, normReg, parseAcarsLine, type AcarsMsg } from './acars-planes.js';
 import { AcarsStats, Vdl2Tracker, VDL2_CHANNELS, acarsFor, airlineOf, kindLabelOf, msgInsight, numChips, planeInsight, xidSummary, type Airport, type AvlcFrame, type MsgInsight, type PlaneInsight, type VdlAircraft, type VdlStation } from './acars-insight.js';
 import { ORBCOMM_CHANNELS, type OrbcommSat } from './dsp/orbcomm.js';
+import { NCS_CHANNELS, type EgcMessage } from './dsp/lband/stdc.js';
+import type { SatcomMode, SatcomSnap } from './dsp/lband/satcom.js';
 import type { PacketFrame } from './dsp/g3ruh.js';
 import { fetchGroup } from './sat.js';
 import { PACKET_SATS } from './packet-sats.js';
@@ -91,7 +93,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'satcom' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -117,6 +119,7 @@ const APPS: AppDef[] = [
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
   { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
+  { id: 'satcom', title: 'Satcom', blurb: 'Inmarsat · EGC · Aero ACARS', cat: 'Receive' },
   { id: 'sondes', title: 'Weather Balloons', blurb: 'radiosondes · 400–406 MHz', cat: 'Receive' },
   { id: 'atsc', title: 'TV', blurb: 'ATSC · guide · pictures', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice', cat: 'Receive' },
@@ -141,8 +144,9 @@ function openPicked(id: AppId): void {
   open(id);
 }
 const RANGES: [string, number, number][] = [
-  ['FM 88-108', 88e6, 108e6], ['AIR 118-137', 118e6, 137e6], ['2m 144-148', 144e6, 148e6], ['70cm 420-450', 420e6, 450e6],
-  ['ISM 902-928', 902e6, 928e6], ['GSM 925-960', 925e6, 960e6], ['1.2-1.6G', 1200e6, 1600e6], ['2.4G ISM', 2400e6, 2483e6],
+  ['FM 88-108', 88e6, 108e6], ['AIR 118-137', 118e6, 137e6], ['2m 144-148', 144e6, 148e6], ['VHF BIZ 150-174', 150e6, 174e6],
+  ['RAIL 160.215-161.565', 160.215e6, 161.565e6], ['70cm 420-450', 420e6, 450e6], ['UHF BIZ 450-470', 450e6, 470e6],
+  ['800 806-869', 806e6, 869e6], ['900 BIZ 896-941', 896e6, 941e6], ['ISM 902-928', 902e6, 928e6], ['GSM 925-960', 925e6, 960e6], ['1.2-1.6G', 1200e6, 1600e6], ['2.4G ISM', 2400e6, 2483e6],
   ['0.1-1 GHz', 100e6, 1000e6], ['1-3 GHz', 1000e6, 3000e6], ['3-6 GHz', 3000e6, 6000e6],
 ];
 
@@ -1029,6 +1033,7 @@ function open(app: AppId | null): void {
     case 'vdl2': configure('AM', 136_975_000, 2e6, 32, 32, false, 'vdl2'); state.viewLo = VDL2_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'acars': configure('AM', 131_550_000, 2e6, 32, 32, false, 'acars'); state.viewLo = ACARS_SPAN_HZ; if (radio) radio.targetFreqHz = state.viewLo; sendOffset(); break;
     case 'trains': trainsTune(); if (trainsUi.auto) trainsCycle(); break;
+    case 'satcom': satcomTune(); break;
     case 'fleet': fleetOpen(); break;
     case 'hamplus': hpOpen(); break;
     case 'cb': cbOpen(); break;
@@ -1058,6 +1063,8 @@ function open(app: AppId | null): void {
   render(app);
   // SAME weather-alert decoding belongs to the audio app (NOAA weather radio); scope it so no other NFM app pays for it.
   worker?.postMessage({ type: 'same', on: app === 'audio' });
+  // MDC-1200 and FleetSync IDs ride the same NFM discriminator, read for Prowl and the Audio app
+  worker?.postMessage({ type: 'nfmIds', on: app === 'audio' || app === 'prowl' });
 }
 /** The second line of a map's empty overlay: what will show up, and where the map is centered. */
 const mapEmptySub = (what: string) => `${what}. ${state.home ? 'Centered on you.' : mapStart(null).standIn ? 'No location yet: allow it to center the map on you.' : 'Centered where you were last.'}`;
@@ -1079,12 +1086,15 @@ const HUNT: HuntRange[] = [
   { lo: 118e6, hi: 137e6, mode: 'AM', name: 'airband' },
   { lo: 144e6, hi: 148e6, mode: 'NFM', name: '2 m ham' },
   { lo: 150e6, hi: 174e6, mode: 'NFM', name: 'VHF business' },
-  { lo: 420e6, hi: 470e6, mode: 'NFM', name: 'UHF' },
+  { lo: 420e6, hi: 470e6, mode: 'NFM', name: '70 cm ham and UHF business' },
   { lo: 851e6, hi: 869e6, mode: 'NFM', name: '800 public safety' },
+  { lo: 896e6, hi: 902e6, mode: 'NFM', name: '900 business mobiles' },
+  { lo: 935e6, hi: 941e6, mode: 'NFM', name: '900 business' },
 ];
 interface ProwlTrack { hz: number; first: number; last: number; best: number; hits: number; skipUntil: number; why: string }
-interface ProwlHit { at: number; hz: number; mode: Mode; cls: string; secs: number; score: number; db: number; band: string; kept: boolean; why: string }
-interface ProwlTarget { hz: number; bw: number; cls: string; at: number; lastLive: number; lastSeen: number; judged: boolean; peak: number; band: string }
+/** [id]: the MDC-1200 or FleetSync ID heard on it ('' none), [emergency] when an MDC-1200 emergency came. */
+interface ProwlHit { at: number; hz: number; mode: Mode; cls: string; secs: number; score: number; db: number; band: string; kept: boolean; why: string; id: string; emergency: boolean }
+interface ProwlTarget { hz: number; bw: number; cls: string; at: number; lastLive: number; lastSeen: number; judged: boolean; peak: number; band: string; id: string; emergency: boolean }
 
 // The quiet timeout has to outlast the test, or a channel gets dropped before it can be judged and the log
 // fills with things that were never actually listened to.
@@ -1185,7 +1195,7 @@ function prowlLand(t: ProwlTrack, now: number): void {
   const mode: Mode = t.hz > 117e6 && t.hz < 138e6 ? 'AM' : 'NFM';
   if (state.mode !== mode) setMode(mode);
   tune(t.hz);
-  p.target = { hz: t.hz, bw: sig ? sig.bw : 12_500, cls: sig ? sig.cls : '', at: now, lastLive: now, lastSeen: now, judged: false, peak: t.best, band: p.band };
+  p.target = { hz: t.hz, bw: sig ? sig.bw : 12_500, cls: sig ? sig.cls : '', at: now, lastLive: now, lastSeen: now, judged: false, peak: t.best, band: p.band, id: '', emergency: false };
   p.score = 0; p.best = 0; p.parts = '';
   worker?.postMessage({ type: 'config', voice: true });
   prowlNote(`${mhz(t.hz)} ${mode} at ${Math.round(t.best)} dB, listening`);
@@ -1231,7 +1241,7 @@ function prowlRelease(now: number, kept: boolean, why = ''): void {
     prowlSkip(t.hz, 'went away before it could be judged', now, 45_000);
     prowlNote(`${mhz(t.hz)} went before it could be judged`);
   } else if (secs > 0.8) {
-    p.log.unshift({ at: Date.now(), hz: t.hz, mode: state.mode, cls: t.cls, secs, score: p.best, db: t.peak, band: t.band, kept, why });
+    p.log.unshift({ at: Date.now(), hz: t.hz, mode: state.mode, cls: t.cls, secs, score: p.best, db: t.peak, band: t.band, kept, why, id: t.id, emergency: t.emergency });
     if (p.log.length > 200) p.log.length = 200;
     if (kept) prowlNote(`${mhz(t.hz)} finished after ${secs.toFixed(0)}s`);
   }
@@ -1327,7 +1337,7 @@ function refreshProwl(): void {
     const t = p.target;
     st.classList.toggle('voice', !!t && t.judged && p.score >= PROWL_VOICE);
     st.innerHTML = t
-      ? `<b>${esc(mhz(t.hz))} MHz &middot; ${esc(state.mode)}</b><span>${esc(t.cls || 'unclassified')} &middot; ${Math.round(t.peak)} dB &middot; ${((performance.now() - t.at) / 1000).toFixed(0)}s</span><span class="dim">speech ${p.score.toFixed(2)}, best ${p.best.toFixed(2)}${t.judged ? '' : ' &middot; deciding'}</span>`
+      ? `<b>${esc(mhz(t.hz))} MHz &middot; ${esc(state.mode)}</b><span>${esc(t.cls || 'unclassified')} &middot; ${Math.round(t.peak)} dB &middot; ${((performance.now() - t.at) / 1000).toFixed(0)}s</span><span class="dim">speech ${p.score.toFixed(2)}, best ${p.best.toFixed(2)}${t.judged ? '' : ' &middot; deciding'}</span>${t.id ? `<span>${t.emergency ? '<b>EMERGENCY</b> &middot; ' : ''}${esc(t.id)}</span>` : ''}`
       : p.held !== null
         ? `<b>HOLDING ${esc(mhz(p.held))} MHz</b><span>listening here until you press HUNT</span><span class="dim">${p.seen} in view · ${p.tracks.size} remembered</span>`
         : `<b>${p.on ? 'HUNTING' : 'STOPPED'}</b><span>${p.seen} in view · ${p.ready} worth a try</span><span class="dim">${p.tracks.size} remembered${p.sweep ? ` · ${esc(p.band || 'this span')}` : ''}</span>`;
@@ -1336,7 +1346,7 @@ function refreshProwl(): void {
   const el = q('#prowl-log');
   if (!el) return;
   el.innerHTML = p.log.length
-    ? p.log.map((h, i) => `<button class="chip bm${h.kept ? ' on' : ''}${h.kept ? '' : ' faded'}" data-ph="${i}" title="tap to hold here &middot; ${esc(h.kept ? 'speech' : h.why || 'not speech')} &middot; speech score ${h.score.toFixed(2)}">${esc(mhz(h.hz))} &middot; ${h.secs.toFixed(0)}s &middot; ${h.score.toFixed(2)}<i data-phx="${i}">✕</i></button>`).join('')
+    ? p.log.map((h, i) => `<button class="chip bm${h.kept ? ' on' : ''}${h.kept ? '' : ' faded'}" data-ph="${i}" title="tap to hold here &middot; ${esc(h.kept ? 'speech' : h.why || 'not speech')} &middot; speech score ${h.score.toFixed(2)}${h.id ? ` &middot; ${esc(h.id)}` : ''}">${esc(mhz(h.hz))} &middot; ${h.secs.toFixed(0)}s &middot; ${h.score.toFixed(2)}${h.id ? ` &middot; ${h.emergency ? 'EMERGENCY ' : ''}${esc(h.id.replace(/^(MDC-1200|FLEETSYNC I+) /, ''))}` : ''}<i data-phx="${i}">✕</i></button>`).join('')
     : emptyState('prowl');
   // Tapping one holds the receiver on it.
   qa<HTMLButtonElement>('[data-ph]', el).forEach(b => b.onclick = (ev) => {
@@ -1763,6 +1773,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   aprs: ['aprs', 'No stations yet', ['North America uses 144.390 MHz: cars and digipeaters beacon every few minutes', 'An antenna up high hears much farther']],
   analyzer: ['analyzer', 'No bursts yet', ['Press a key fob or a remote near the antenna', 'Or IMPORT a recording (.cu8 .cs8 .sub) or a session (.mmanalyzer)']],
   devices: ['devices', 'Nothing heard yet', ['Press a key fob or a remote near the antenna', 'Sensors report every 30 to 60 seconds; tire sensors wake when a car moves', 'HOP takes turns between 315 and 433.92']],
+  satcom: ['satcom', 'Waiting for the satellite', ['This needs an L-band patch antenna and an LNA (1525 to 1560 MHz): a stock antenna hears nothing up here', 'Aim the patch at the Inmarsat satellite for your ocean region, toward the equator, with a clear view of the sky', 'EGC: the NCS carrier is on all the time; safety broadcasts come every few minutes', 'AERO: tap a P-channel carrier on the waterfall, about 1545 to 1555 MHz']],
   pager: ['pager', 'No pages yet', ['US FLEX networks sit around 929–932 MHz: try the presets', 'POCSAG is common on 152–158 and 466 MHz']],
 };
 function emptyState(key: string, title?: string, tips?: string[]): string {
@@ -1985,6 +1996,7 @@ function render(app: AppId | null): void {
     case 'lora': renderLora(view); break;
     case 'sondes': renderSondes(view); break;
     case 'trains': renderTrains(view); break;
+    case 'satcom': renderSatcom(view); break;
     case 'fleet': renderFleet(view); break;
     case 'hamplus': renderHamPlus(view); break;
     case 'cb': renderCb(view); break;
@@ -2472,7 +2484,7 @@ function refreshDmr(): void {
     el.classList.toggle('voice', sl.voice);
     el.classList.toggle('on', s.locked && s.audioSlot === i + 1);
     const who = sl.tg || sl.src ? `${sl.group ? 'TG' : 'ID'} ${sl.tg} ← ${sl.src}${sl.alias ? ` “${sl.alias}”` : ''}` : 'no call seen';
-    el.innerHTML = `<b>SLOT ${i + 1}${sl.voice ? ' · ▶ VOICE' : ''}${s.locked && s.audioSlot === i + 1 ? ' · 🔊' : ''}</b><span>${who}</span><span class="dim">${sl.last || (s.locked ? 'idle' : '—')}${sl.cc >= 0 ? ` · CC ${sl.cc}` : ''}${sl.errs > 0.02 ? ` · ${(sl.errs * 100).toFixed(0)}% frame errors` : ''}</span>`;
+    el.innerHTML = `<b>SLOT ${i + 1}${sl.voice ? ' · ▶ VOICE' : ''}${s.locked && s.audioSlot === i + 1 ? ' · 🔊' : ''}</b><span>${who}</span><span class="dim">${sl.last || (s.locked ? 'idle' : '—')}${sl.cc >= 0 ? ` · CC ${sl.cc}` : ''}${sl.errs > 0.02 ? ` · ${(sl.errs * 100).toFixed(0)}% frame errors` : ''}</span>${sl.gps ? `<span class="dim">GPS ${sl.gps.lat.toFixed(5)}, ${sl.gps.lon.toFixed(5)}</span>` : ''}`;
   }
 }
 /** P25 Phase 1: which system, which kind of frame, and who is talking. */
@@ -3277,7 +3289,7 @@ function renderAudio(view: HTMLElement): void {
   // The Android app's Audio: the card, RDS as its own strip, the waterfall; then three rows — how to listen,
   // where (the bands), and squelch with SCAN. RDS and HD Radio are switches in Settings; gain is in Settings too.
   view.innerHTML = `
-    <section class="visual"><div id="same-alert" class="samealert" hidden></div>${readoutHtml()}<div id="rds" class="rdsbar station" hidden></div><div id="scope" class="panel"></div></section>
+    <section class="visual"><div id="same-alert" class="samealert" hidden></div>${readoutHtml()}<div id="rds" class="rdsbar station" hidden></div><div id="nfm-id" class="rdsbar station" hidden></div><div id="scope" class="panel"></div></section>
     <section class="controls">
       ${segHtml(['WFM', 'NFM', 'AM', 'USB', 'LSB'].map(m => `<button data-mode="${m}">${m}</button>`))}
       <div style="margin-top:6px">${hsHtml(bandTilesHtml())}</div>
@@ -3324,6 +3336,27 @@ function onSameAlert(m: { event: string; header?: { eventName: string; originato
   el.hidden = false;
   el.onclick = () => { el.hidden = true; };                    // tap to dismiss
   log(`SAME: ${h.eventName} from ${h.callsign}`);
+}
+
+// ---- MDC-1200 / FleetSync: who keyed up, read off the NFM discriminator in the worker (Audio and Prowl).
+interface NfmId { kind: string; unit: string; to: string; emergency: boolean; what: string; text: string; hz: number; ms: number }
+let lastNfmId: NfmId | null = null;
+function onNfmId(m: NfmId): void {
+  lastNfmId = m;
+  log(`${m.text} on ${mhz(m.hz)} MHz`);
+  const t = state.prowl.target;
+  if (t && Math.abs(t.hz - m.hz) < 3_000) { t.id = m.text; t.emergency ||= m.emergency; refreshProwl(); }
+  drawNfmId();
+}
+/** The Audio card's ID strip: the last MDC-1200 or FleetSync ID on the tuned NFM channel, for two minutes. */
+function drawNfmId(): void {
+  const el = q('#nfm-id'); if (!el) return;
+  const m = lastNfmId;
+  if (!m || state.mode !== 'NFM' || Math.abs(m.hz - state.freq) > 3_000 || Date.now() - m.ms > 120_000) { el.hidden = true; return; }
+  const fields: [string, string][] = m.kind === 'MDC-1200' ? [['MDC-1200', `UNIT ${m.unit}`], ['', m.what]] : [[`FLEETSYNC ${m.what}`, m.unit.toUpperCase()], ['TO', m.to.toUpperCase()]];
+  el.innerHTML = `<span class="rdsline">${fields.map(([k, v]) => `${k ? `<i>${esc(k)}</i>` : ''}<b>${esc(v)}</b>`).join('<em>·</em>')}<em>·</em><i>${esc(new Date(m.ms).toLocaleTimeString())}</i></span>`;
+  el.classList.toggle('alert', m.emergency);
+  el.hidden = false;
 }
 
 // ---- RDS: station name / RadioText ticker over the audio waterfall, decoded from the WFM composite in the worker.
@@ -4114,7 +4147,7 @@ function acarsDetail(r: AcRow, now: number): string {
   const msgs = r.msgs.map(m => {
     const x = acInsight(m);
     const chips = [acChip(kindLabelOf(x.kind), 'k'), x.phase ? acChip(x.phase, 'ph') : '', x.pos ? acChip(`${x.pos.lat.toFixed(3)}, ${x.pos.lon.toFixed(3)}`) : '', ...numChips(x.nums).map(c => acChip(c)), ...x.airports.map(a => acChip(a))].join('');
-    return `<div class="ac-msg"><div><b>${new Date(m.ms).toLocaleTimeString()}</b><span>${m.down ? '↓ from the aircraft' : '↑ to the aircraft'} · ${esc(m.label)}${labelMeaning(m.label) ? ` ${esc(labelMeaning(m.label))}` : ''} · blk ${esc(m.blk)}${m.msn ? ` · #${esc(m.msn)}` : ''} · ${m.mhz}${m.crcOk ? '' : ' · CRC?'}</span></div>`
+    return `<div class="ac-msg"><div><b>${new Date(m.ms).toLocaleTimeString()}</b><span>${m.down ? '↓ from the aircraft' : '↑ to the aircraft'} · ${esc(m.label)}${labelMeaning(m.label) ? ` ${esc(labelMeaning(m.label))}` : ''} · blk ${esc(m.blk)}${m.msn ? ` · #${esc(m.msn)}` : ''} · ${m.mhz}${m.sat ? ' · SATCOM' : ''}${m.crcOk ? '' : ' · CRC?'}</span></div>`
       + `<div class="ac-chips">${chips}</div><div class="ac-sum">${esc(x.summary)}</div>${m.text ? `<pre>${esc(m.text)}</pre>` : ''}</div>`;
   }).join('');
   const fields: [string, string][] = [['Registration', r.reg || '—'], ['Flight', r.flight || '—'], ['Airline', r.airline || '—'], ['ICAO', r.icao || '—'], ['Messages', String(r.msgs.length)]];
@@ -4443,6 +4476,79 @@ function refreshMeters(force = false): void {
   if (n > 0) setLamp(`${n} DEVICE${n === 1 ? '' : 'S'}`, 'ok');
 }
 
+// ---- Satcom: Inmarsat L-band, EGC broadcasts to ships and ACARS to aircraft (receive only) ----------------------
+const satcomUi = { snap: null as SatcomSnap | null, mode: 'egc' as SatcomMode, egcHz: NCS_CHANNELS[0][1], aeroHz: 1_545_075_000, timer: 0 };
+/** The span sits 300 kHz below the channel: the radio's DC spike is never on it, and a carrier tapped on the
+ *  waterfall anywhere near it is reached without a retune. */
+const SATCOM_SPAN_BELOW = 300_000;
+function satcomTune(): void {
+  const hz = satcomUi.mode === 'egc' ? satcomUi.egcHz : satcomUi.aeroHz;
+  configure('NFM', hz, 2e6, 40, 40, true, 'satcom', { mode: satcomUi.mode });
+  state.viewLo = hz - SATCOM_SPAN_BELOW; if (radio) radio.targetFreqHz = state.viewLo; sendOffset();
+}
+function satcomSetMode(m: SatcomMode): void {
+  if (m === satcomUi.mode) return;
+  satcomUi.mode = m; satcomUi.snap = null;
+  satcomTune(); render('satcom');
+}
+/** ACARS from Aero goes to Flight Msgs too, marked as heard from a satellite. */
+function onSatcomAcars(line: string): void {
+  const list = (logs.acars ??= []);
+  list.unshift(line); if (list.length > 300) list.length = 300;
+  counts.acars = (counts.acars ?? 0) + 1;
+  onAcarsLine(line, 'acars');
+}
+const SC_COLOR = ['var(--muted)', 'var(--accent)', 'var(--warn, #f5a524)', 'var(--danger)'];
+function scMsgHtml(m: EgcMessage): string {
+  const body = m.encrypted ? '<p class="cl-dimtxt">encrypted or binary: present, not decoded</p>' : m.text ? `<p>${esc(m.text)}</p>` : '';
+  const wait = m.complete ? '' : `<p class="cl-dimtxt">${m.parts} part${m.parts === 1 ? '' : 's'} in, waiting for the rest</p>`;
+  return `<div class="pcard alert cl-alert" style="--al:${SC_COLOR[m.priority] ?? SC_COLOR[0]}">`
+    + `<div class="pc-h"><span class="pc-b">${esc(m.priorityName)}</span><span class="pc-t">${esc(new Date(m.lastMs).toTimeString().slice(0, 8))}</span><span class="pc-r">${esc(m.serviceName)}</span></div>`
+    + (m.area ? `<div class="cl-when">${esc(m.area)}</div>` : '')
+    + `<div class="cl-msg"><em>MESSAGE ${m.seq}${m.repeats ? ` · HEARD ${m.repeats + 1} TIMES` : ''}</em>${body}${wait}</div></div>`;
+}
+function renderSatcom(view: HTMLElement): void {
+  const u = satcomUi, egc = u.mode === 'egc';
+  view.innerHTML = `
+    <section class="${visCls('satcom')}">${readoutHtml()}<div id="scope" class="panel short"></div></section>
+    <section class="controls">
+      <div class="ctlrow">${segHtml(([['egc', 'EGC · SHIPS'], ['aero600', 'AERO 600'], ['aero1200', 'AERO 1200']] as [SatcomMode, string][]).map(([k, l]) => `<button data-scmode="${k}" class="${u.mode === k ? 'on' : ''}">${l}</button>`))}</div>
+      ${egc ? `<div class="row bandstrip">${NCS_CHANNELS.map(([n, hz]) => `<button class="chip" data-schz="${hz}">${n} ${(hz / 1e6).toFixed(3)}</button>`).join('')}</div>`
+        : '<div class="caption">TAP A CARRIER · 1545 TO 1555 MHZ</div>'}
+      <div id="sc-stats" class="health"></div>
+      ${egc ? `${countRowHtml('satcom', '0 MESSAGES')}<div id="sc-msgs" class="cl-alerts"></div>` : logHtml('satcom', 'listening…')}
+      <div class="note about">Inmarsat on L-band, receive only. EGC decodes the broadcasts every Inmarsat-C ship terminal hears on its region's NCS carrier: SafetyNET (NAVAREA and coastal warnings, weather, distress relays, search and rescue) and FleetNET, with the priority and the area each is meant for. Encrypted messages are flagged and not decoded. AERO decodes the ACARS that ground stations send to aircraft on a P-channel; each message also shows in Flight Msgs, marked SATCOM. Needs an L-band patch antenna and an LNA.</div>
+    </section>`;
+  scope = attach(tunableScope('scope', 80, 70));
+  qa<HTMLButtonElement>('[data-scmode]', view).forEach(b => b.onclick = () => satcomSetMode(b.dataset.scmode as SatcomMode));
+  qa<HTMLButtonElement>('[data-schz]', view).forEach(b => b.onclick = () => { satcomUi.egcHz = Number(b.dataset.schz); satcomTune(); refreshSatcom(); });
+  clearInterval(u.timer);
+  u.timer = window.setInterval(() => { if (state.app !== 'satcom') { clearInterval(u.timer); return; } refreshSatcom(); }, 1000);
+  if (!egc) refreshList('satcom');
+  refreshSatcom();
+}
+function refreshSatcom(): void {
+  if (state.app !== 'satcom') return;
+  const u = satcomUi, s = u.snap, egc = u.mode === 'egc';
+  if (egc) u.egcHz = state.freq; else u.aeroHz = state.freq;
+  qa<HTMLElement>('[data-schz]').forEach(b => b.classList.toggle('on', Number(b.dataset.schz) === state.freq));
+  const st = q('#sc-stats');
+  if (st) {
+    const carrier = s && Number.isFinite(s.carrierHz) ? `CARRIER ${s.carrierHz >= 0 ? '+' : '−'}${Math.abs(s.carrierHz / 1000).toFixed(2)} kHz · ${s.lock > 0.5 ? 'LOCKED' : 'NOT LOCKED'}` : 'NO CARRIER YET';
+    const f = s?.egc, a = s?.aero;
+    const utc = f && f.frameNo >= 0 ? ` · FRAME ${f.frameNo} (${new Date(f.frameNo * 8640).toISOString().slice(11, 19)} UTC)` : '';
+    st.textContent = egc ? `${carrier} · ${f?.frames ?? 0} FRAMES · ${f?.packets ?? 0} PACKETS${f?.badPackets ? ` · ${f.badPackets} BAD` : ''}${utc}`
+      : `${carrier} · ${a?.frames ?? 0} FRAMES · ${a?.units ?? 0} SIGNAL UNITS${a?.badUnits ? ` · ${a.badUnits} BAD` : ''}${a && a.ges >= 0 ? ` · GES ${a.ges}` : ''}`;
+  }
+  if (!egc || paused.has('satcom')) return;
+  const msgs = s?.messages ?? [];
+  const c = q('#count-satcom'); if (c) c.textContent = `${msgs.length} MESSAGE${msgs.length === 1 ? '' : 'S'}`;
+  const el = q('#sc-msgs'); if (el) el.innerHTML = msgs.length ? msgs.map(scMsgHtml).join('') : emptyState('satcom');
+  if (msgs.length) setLamp(`${msgs.length} MESSAGE${msgs.length === 1 ? '' : 'S'}`, 'ok');
+  else if (s && s.lock > 0.5) setLamp('LOCKED', 'ok');
+  else setLamp(state.connected ? 'LISTENING' : 'NO RADIO', state.connected ? 'amber' : '', state.connected);
+}
+
 // ---- Trains: end-of-train telemetry and the PTC train-control network (receive only) ----------------------------
 interface TrainsSnap { band: 'EOT' | 'PTC'; hears: string[]; units: EotUnit[]; hots: HotHeard[]; stations: PtcStation[]; activity: Record<string, number>; other: number }
 const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '' };
@@ -4733,7 +4839,8 @@ function refreshTrains(force = false): void {
 }
 
 // ---- HAM+: every FM channel on the ham bands at once, every talker, the time machine ------------------------------
-const HP_BANDS_UI: [string, string][] = [['AUTO', 'AUTO'], ['2M', '2 M'], ['125', '1.25 M'], ['70CM', '70 CM'], ['6M', '6 M'], ['10M', '10 M']];
+// AUTO scans the ham bands, BIZ the business bands (VHF, UHF and 900 MHz land mobile)
+const HP_BANDS_UI: [string, string][] = [['AUTO', 'AUTO'], ['2M', '2 M'], ['125', '1.25 M'], ['70CM', '70 CM'], ['6M', '6 M'], ['10M', '10 M'], ['BIZ', 'BIZ']];
 const HP_SPANS: [number, string][] = [[2_400_000, '2.4 MHz'], [8_000_000, '8 MHz'], [20_000_000, '20 MHz']];
 const HP_KEY = 'mm.hamplus.v1', HP_KNOWN = 'mm.hamplus.known2'; // 2: 0.9.59 learned false channels from a gain step
 type HpView = 'talk' | 'act' | 'log';
@@ -5230,7 +5337,7 @@ function dispatchLockFor(sysKey: string, siteLabel = ''): DispatchLock | null {
   const hz = site?.ccHz[0] ?? x.sites.find(y => y.ccHz.length)?.ccHz[0] ?? 0;
   return { sys: x.key, site: siteLabel, label: `${fleetSysTitle(x)}${siteLabel ? ` · SITE ${siteLabel}` : ''}`, hz };
 }
-const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'SMARTNET' ? `TYPE II SYS ${sys.sysId.toString(16).toUpperCase().padStart(4, '0')}` : sys.proto === 'NXDN' ? (sys.trunk === 'CONVENTIONAL' ? `NXDN RAN ${sys.sysId}` : sys.trunk === 'TYPE-D' ? `TYPE-D SITE ${sys.sysId}` : `${sys.model} SYS ${sys.sysId}`) : sys.proto === 'TETRA' ? `MCC ${sys.wacn} · MNC ${sys.sysId}` : sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : sys.trunk === 'CAPACITY PLUS' ? `CAP+ CC ${sys.cc}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
+const fleetSysTitle = (sys: FleetSystem) => sys.proto === 'DPMR' ? `dPMR CC ${sys.cc}` : sys.proto === 'SMARTNET' ? `TYPE II SYS ${sys.sysId.toString(16).toUpperCase().padStart(4, '0')}` : sys.proto === 'NXDN' ? (sys.trunk === 'CONVENTIONAL' ? `NXDN RAN ${sys.sysId}` : sys.trunk === 'TYPE-D' ? `TYPE-D SITE ${sys.sysId}` : `${sys.model} SYS ${sys.sysId}`) : sys.proto === 'TETRA' ? `MCC ${sys.wacn} · MNC ${sys.sysId}` : sys.proto === 'P25' ? `WACN ${sys.wacn.toString(16).toUpperCase().padStart(5, '0')} · SYS ${sys.sysId.toString(16).toUpperCase().padStart(3, '0')}` : sys.net >= 0 ? `${sys.model} NET ${sys.net}` : sys.trunk === 'CAPACITY PLUS' ? `CAP+ CC ${sys.cc}` : `CC ${sys.cc}${sys.fid > 0 ? ` · FID ${sys.fid.toString(16).toUpperCase().padStart(2, '0')}` : ''}`;
 /** Talkgroup preferences are kept on the device (the key names keep the app's internal id). */
 function loadDispatchPrefs(): TgPrefs {
   try { const v = JSON.parse(localStorage.getItem('mm.fleet.tgprefs') ?? 'null'); if (v && Array.isArray(v.mute) && Array.isArray(v.prio)) return { mute: v.mute, hold: typeof v.hold === 'string' ? v.hold : '', prio: v.prio }; } catch { /* storage blocked */ }
@@ -5573,6 +5680,11 @@ function fleetSiteHtml(sys: FleetSystem, site: FleetSite, now: number): string {
 }
 /** A CW ID chip: the callsign, how long ago it was keyed, and on which channel. */
 const flIdChip = (id: string, ago: number, hz = 0) => `<span class="fl-id" title="CW ID${hz ? ` on ${fleetMhz(hz)} MHz` : ''}, ${fleetAgoText(ago)}"><small>ID</small>${esc(id)}<i>${fleetAgo(ago)}</i></span>`;
+/** An analog carrier's MDC-1200 or FleetSync ID as a chip: 'MDC 1234', 'FS 100-1001', EMERGENCY when it was one. */
+const flUnitChip = (c: { ident: string; identMs: number; identEmergency: boolean }, now: number) => {
+  const m = /^MDC-1200 UNIT (\S+)|^FLEETSYNC I+ (\S+)/.exec(c.ident), ago = now - c.identMs;
+  return `<span class="fl-id" title="${esc(c.ident)}, ${fleetAgoText(ago)}"><small>${c.ident.startsWith('MDC') ? 'MDC' : 'FS'}</small>${esc(m ? m[1] ?? m[2] : c.ident)}${c.identEmergency ? ' EMERGENCY' : ''}<i>${fleetAgo(ago)}</i></span>`;
+};
 function fleetSystemCard(sys: FleetSystem, now: number): string {
   const col = FLEET_COLORS[sys.color % FLEET_COLORS.length], age = now - sys.lastMs, flash = Math.max(0, 1 - age / 1500);
   const title = fleetSysTitle(sys);
@@ -5605,7 +5717,7 @@ function fleetFreqsHtml(s: FleetSnap, now: number): string {
     const id = c.nac >= 0 ? `NAC ${c.nac.toString(16).toUpperCase().padStart(3, '0')}` : c.cc >= 0 ? `CC ${c.cc}` : '';
     const sel = fleetUi.sel?.kind === 'car' && fleetUi.sel.key === String(c.key);
     return `<div data-flsel="car:${c.key}" class="fl-frow ${live ? '' : 'dim'} ${sel ? 'sel' : ''}" style="--sys:${c.sys ? fleetColor(c.sys) : 'transparent'}"><b><i class="fl-dot"></i>${fleetMhz(c.hz)}</b>`
-      + `<span class="fl-fcls">${c.cls || (c.decoding ? 'LISTENING' : 'NOT HEARD YET')}${c.callsign ? ` ${flIdChip(c.callsign, now - c.callsignMs)}` : ''}</span>`
+      + `<span class="fl-fcls">${c.cls || (c.decoding ? 'LISTENING' : 'NOT HEARD YET')}${c.callsign ? ` ${flIdChip(c.callsign, now - c.callsignMs)}` : ''}${c.ident ? ` ${flUnitChip(c, now)}` : ''}</span>`
       + `<span class="fl-frole">${c.role ? c.role.toUpperCase() : ''}${c.tdma ? ' TDMA' : ''}</span><span class="fl-fid">${id}</span>`
       + `<span class="fl-flvl"><span class="fl-lvl"><i style="width:${Math.max(0, Math.min(100, 2 * c.levelDb)).toFixed(0)}%"></i></span>${c.levelDb.toFixed(0)} dB</span>`
       + `<em>${live ? (c.decoding ? 'DECODING' : 'LIVE') : inSpan ? fleetAgo(age) : 'OUT OF SPAN'}</em></div>`;
@@ -5874,7 +5986,8 @@ function fleetDetail(s: FleetSnap, now: number): string {
   const chips = (now - c.lastDecodeMs < 10_000 ? chip('DECODING', 'ok') : now - c.lastMs < 4_000 ? chip('ON THE AIR', 'ok') : seen(c.lastMs)) + (c.cls ? chip(c.cls) : '') + (c.role ? chip(c.role.toUpperCase(), 'acc') : '');
   const stats = `<div class="flc-stats">${big(`${c.levelDb.toFixed(0)} dB`, `LEVEL · PEAK ${c.peakDb.toFixed(0)}`)}${c.blocks ? big(`${Math.round(100 * c.crcOk / Math.max(1, c.blocks))}%`, `BLOCKS PASSING · ${c.crcOk}/${c.blocks}`) : ''}${c.frames ? big(`${c.frames}`, 'FRAMES') : ''}${c.onMs > 0 ? big(flSpan(c.onMs), 'ON THE AIR') : ''}</div>`;
   const facts = kv([['FREQUENCY', `${fleetMhz(c.hz)} MHz`], ['SYSTEM', sys ? `${fleetSysTitle(sys)} · ${fleetSysType(sys, s)}` : ''], ['NAC', c.nac >= 0 ? c.nac.toString(16).toUpperCase().padStart(3, '0') : ''], ['COLOR CODE', c.cc >= 0 ? `${c.cc}` : ''], ['LCN', c.lcn],
-    ['CW ID', c.callsign ? `${c.callsign}${c.callsignMs ? ` · ${fleetClock(c.callsignMs)}` : ''}` : ''], ['ENVELOPE', `${c.envCv.toFixed(2)} (constant near 0, linear near 0.3)`], ['EYE', c.eye.toFixed(2)],
+    ['CW ID', c.callsign ? `${c.callsign}${c.callsignMs ? ` · ${fleetClock(c.callsignMs)}` : ''}` : ''],
+    ['UNIT ID', c.ident ? `${c.ident}${c.identEmergency ? ' · EMERGENCY' : ''} · ${fleetClock(c.identMs)}` : ''], ['ENVELOPE', `${c.envCv.toFixed(2)} (constant near 0, linear near 0.3)`], ['EYE', c.eye.toFixed(2)],
     ['FIRST HEARD', fleetClock(c.firstMs)], ['LAST HEARD', `${fleetClock(c.lastMs)} · ${agoShort(now - c.lastMs)} ago`]]);
   return `<div class="flc">${head(fleetMhz(c.hz), 'CARRIER', sys ? fleetSysTitle(sys) : (c.cls || 'not classed yet'), col, chips)}<div class="flc-grid">`
     + sec('SIGNAL', stats + facts, true) + sec('CALLS ON THIS CHANNEL', callList(calls, 8)) + sec('ACTIVITY', spark(calls.map(k => k.startMs))) + `</div></div>`;
@@ -5887,6 +6000,7 @@ function fleetSysType(x: FleetSystem, s: FleetSnap): string {
   if (x.proto === 'DMR') return x.trunk === 'CAPACITY PLUS' ? 'DMR CAPACITY PLUS' : x.trunk === 'TIER III' ? 'DMR TIER III' : 'DMR';
   if (x.proto === 'NXDN') return x.trunk ? `NXDN ${x.trunk}` : 'NXDN';
   if (x.proto === 'SMARTNET') return 'MOTOROLA TYPE II';
+  if (x.proto === 'DPMR') return 'dPMR';
   return x.proto;
 }
 function refreshFleet(force = false): void {
@@ -6680,7 +6794,7 @@ const CELL_KEY = 'mm.cell.v1';
 const CELL_HACKRF_RATE = 15_360_000, CELL_WIDE_RATE = 20_000_000, CELL_RTL_RATE = 1_920_000;
 const CELL_WIDE = window.matchMedia('(min-width: 1000px)');
 CELL_WIDE.addEventListener('change', () => { if (state.app === 'cell') { const v = q<HTMLElement>('main#view'); if (v) renderCell(v); } });
-type CellView = 'alerts' | 'cells' | 'neighbors' | 'log';
+type CellView = 'alerts' | 'cells' | 'neighbors' | 'paging' | 'log';
 interface CellDetail { key: string; mib: CellMib | null; sib1: Record<string, unknown> | null; sib1Hex: string; sibs: CellSibRec[] }
 const cellUi = {
   snap: null as CellSnap | null, view: 'alerts' as CellView, band: 'AUTO', sel: '', detail: null as CellDetail | null, detailAsked: 0,
@@ -6786,7 +6900,7 @@ function renderCell(view: HTMLElement): void {
   if (wide && cellUi.view === 'alerts') cellUi.view = 'cells';
   view.classList.toggle('clwide', wide);
   cellUi.html.clear();
-  const tabs = (wide ? ['cells', 'neighbors', 'log'] : ['alerts', 'cells', 'neighbors', 'log']) as CellView[];
+  const tabs = (wide ? ['cells', 'neighbors', 'paging', 'log'] : ['alerts', 'cells', 'neighbors', 'paging', 'log']) as CellView[];
   view.innerHTML = `
     <section class="${visCls('cell')}">${readoutHtml()}${wide ? '<div id="cl-alertbox" class="cl-alertbox"><div class="cl-boxh"><b>MESSAGES</b><small id="cl-alertcount"></small></div><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>' : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
@@ -6794,9 +6908,9 @@ function renderCell(view: HTMLElement): void {
       <div class="ctlrow">${segHtml([['AUTO', 'AUTO'], ...CELL_BANDS.map(b => [b.id, b.label])].map(([k, l]) => `<button data-clband="${k}">${l}</button>`))}</div>
       <div class="ctlrow">${segHtml(tabs.map(v => `<button data-clview="${v}">${v.toUpperCase()}</button>`))}<button id="cl-export" class="ib" title="export the log (CSV) and every decoded field (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button></div>
       ${wide ? '<div id="cl-detail" class="mt-detail cl-detail cl-dock" hidden></div>' : ''}
-      <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
+      <div id="cl-stage" class="mt-stage cl-stage">${wide ? '' : '<div id="cl-awrap" class="cl-awrap"><div id="cl-amapbox" class="cl-amapbox"><div id="cl-amap" class="panel map"></div><div id="cl-amapcap" class="cl-amapcap"></div></div><div id="cl-alerts" class="cl-alerts"></div></div>'}<div id="cl-cards" class="cl-cards"></div><div id="cl-nbrs" class="cl-nbrs"></div><div id="cl-paging" class="cl-nbrs"></div>${wide ? '' : '<div id="cl-detail" class="mt-detail cl-detail" hidden></div>'}</div>
       <div id="cl-log">${logHtml('cell', 'watching for LTE cells…')}</div>
-      <div class="note about">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Only system information is decoded; paging and phone traffic are left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 or 15 MHz carrier, 20 MS/s for a 20 MHz one, which the app resamples to the LTE rate), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
+      <div class="note about">LTE cells and their emergency alerts, receive only. Cell reads what every LTE cell broadcasts to all phones: the MIB, SIB1 (operator, cell and tracking area IDs, band, SI schedule) and the other SIBs (access, reselection, intra and inter-frequency neighbors, NR neighbors from SIB24, CDMA2000 time from SIB8), and the warning messages: CMAS / Wireless Emergency Alerts in SIB12 and ETWS in SIB10/11, in every language sent. Paging is decoded too: every paging occasion SIB2 sets is read on P-RNTI, and each page is listed with the identity it calls (S-TMSI or IMSI, in full), its domain and how often that identity was paged, with the system information change, ETWS and CMAS flags. Phone traffic is left alone. SIBs and alerts need the whole carrier in the span (15.36 MS/s for a 10 or 15 MHz carrier, 20 MS/s for a 20 MHz one, which the app resamples to the LTE rate), which only a HackRF samples; an RTL-SDR covers about 2.4 MHz, enough for cell search and the MIB from the center 1.08 MHz. Carriers send SIB12 only while an alert is active. A WEA alert area is drawn on the map with your position and whether you are inside it; the area and geo-fencing trigger formats are derived from our own recordings (their defining document is outside the specs this app is built from). Cell positions are not on the air, so cells are not mapped. AUTO sweeps the US LTE downlink bands (B12/17, B13, B14, B5/26, B2/25, B4/66, B41), visits each carrier and stays for its whole SI cycle. MESSAGES lists every MIB and SIB as one plain line, newest first: a repeat only counts up, a changed value gets its own row, and warnings (SIB10/11/12) are red and stay pinned on top with their full text until you clear them. Tap a row or a cell for every decoded field. Paging is not decoded.</div>
     </section>`;
   scope = attach(tunableScope('scope', 80, 70));
   qa<HTMLButtonElement>('[data-clband]', view).forEach(b => b.onclick = () => cellSetBand(b.dataset.clband!));
@@ -6819,11 +6933,11 @@ function renderCell(view: HTMLElement): void {
     else return;
     refreshCell(true);
   };
-  for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-head']) $(id).onclick = pick;
+  for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-paging', 'cl-head']) $(id).onclick = pick;
   // a redraw between press and release would swap the element under the pointer and lose the tap
   const hold = () => { cellUi.hold = true; };
   const release = () => { if (!cellUi.hold) return; setTimeout(() => { cellUi.hold = false; refreshCell(true); }, 0); };
-  for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-head']) $(id).onpointerdown = hold;
+  for (const id of ['cl-cards', 'cl-detail', 'cl-alerts', 'cl-nbrs', 'cl-paging', 'cl-head']) $(id).onpointerdown = hold;
   cellUi.mapSig = '';
   geo = new GeoMap($('cl-amap'), { home: state.home, start: mapStart(state.home), onPick: () => undefined, log });
   if (!cellUi.wired) { cellUi.wired = true; window.addEventListener('pointerup', release); window.addEventListener('pointercancel', release); }
@@ -6963,6 +7077,21 @@ function cellNbrsHtml(s: CellSnap, now: number): string {
     return `<div class="cl-nbr ${live ? '' : 'dim'}"><div class="cl-nh" data-clsel="${esc(c.key)}"><b>${esc(cellLabel(c))}</b><small>${n.intra.length} same-frequency · ${n.inter.length} LTE carriers · ${n.nr.length} NR carriers</small></div>${intra}${excl}${inter}${nr}${oldHtml}</div>`;
   }).join('') + '<div class="cl-dim">a highlighted cell is one this app has heard itself</div>';
 }
+/** The paging log: the identities paged most, then every page as heard. */
+function cellPagingHtml(s: CellSnap, now: number): string {
+  const p = s.paging;
+  if (!p || (!p.total && !p.rows.length)) return '<div class="empty">pages arrive on P-RNTI at the paging occasions SIB2 sets · they need the whole carrier in the span and SIB2 decoded first (FDD cells)</div>';
+  const label = (key: string) => { const c = s.cells.find(x => x.key === key); return c ? cellLabel(c) : key; };
+  const counts = new Map(p.ids.map(x => [`${x.type}|${x.id}`, x.count]));
+  const f = p.flags, flags = [f.sysInfoMod ? clPill(`SI CHANGE ×${f.sysInfoMod}`, 'acc') : '', f.etws ? clPill(`ETWS ×${f.etws}`, 'red') : '', f.cmas ? clPill(`CMAS ×${f.cmas}`, 'red') : '', f.eab ? clPill(`EAB ×${f.eab}`) : ''].join('');
+  const head = `<div class="cl-nbr"><div class="cl-nh"><b>${p.total} PAGE RECORD${p.total === 1 ? '' : 'S'}</b><small>${p.ids.length} identit${p.ids.length === 1 ? 'y' : 'ies'} · S-TMSI as MMEC:M-TMSI</small></div>${flags ? `<div class="cl-flags">${flags}</div>` : ''}</div>`;
+  const top = p.ids.length ? `<div class="cl-nbr"><table class="cl-tab"><tr><th>IDENTITY</th><th>TYPE</th><th>DOMAIN</th><th>PAGES</th><th>LAST</th></tr>${p.ids.slice(0, 50).map(x => `<tr><td class="cl-wrap">${esc(x.id)}</td><td>${esc(x.type)}</td><td>${esc(x.domain)}</td><td>×${x.count}</td><td>${esc(cellAgo(now - x.lastMs))}</td></tr>`).join('')}</table></div>` : '';
+  const rows = p.rows.length ? `<div class="cl-nbr"><table class="cl-tab"><tr><th>TIME</th><th>CELL</th><th>TYPE</th><th>IDENTITY</th><th>DOMAIN</th></tr>${p.rows.map(r => {
+    const n = r.id ? counts.get(`${r.type}|${r.id}`) ?? 1 : r.count;
+    return `<tr><td>${esc(new Date(r.lastMs).toTimeString().slice(0, 8))}</td><td class="cl-wrap" data-clsel="${esc(r.cell)}">${esc(label(r.cell))}</td><td>${esc(r.type)}</td><td class="cl-wrap">${r.id ? esc(r.id) : '-'}${n > 1 ? ` <span class="cl-dimtxt">×${n}</span>` : ''}</td><td>${esc(r.domain || '-')}</td></tr>`;
+  }).join('')}</table></div>` : '';
+  return head + top + rows;
+}
 function cellDetailHtml(s: CellSnap, now: number): string {
   const c = s.cells.find(x => x.key === cellUi.sel); if (!c) return '';
   const d = cellUi.detail?.key === c.key ? cellUi.detail : null, sm = c.summary, m = c.mib;
@@ -7011,18 +7140,19 @@ function refreshCell(force = false): void {
   const nAlerts = s ? groupAlerts(s.alerts).length : 0, nb = s ? s.cells.filter(c => c.neighbors && (c.neighbors.intra.length || c.neighbors.inter.length || c.neighbors.nr.length)).length : 0;
   qa<HTMLButtonElement>('[data-clview]').forEach(b => {
     const v = b.dataset.clview as CellView; b.classList.toggle('on', v === view);
-    b.textContent = v === 'alerts' ? `MESSAGES${nAlerts ? ` · ${nAlerts} ALERT${nAlerts === 1 ? '' : 'S'}` : ` ${s?.feed?.length ?? 0}`}` : v === 'cells' ? `CELLS ${s?.cells.length ?? 0}` : v === 'neighbors' ? `NEIGHBORS ${nb}` : 'LOG';
+    b.textContent = v === 'alerts' ? `MESSAGES${nAlerts ? ` · ${nAlerts} ALERT${nAlerts === 1 ? '' : 'S'}` : ` ${s?.feed?.length ?? 0}`}` : v === 'cells' ? `CELLS ${s?.cells.length ?? 0}` : v === 'neighbors' ? `NEIGHBORS ${nb}` : v === 'paging' ? `PAGING ${s?.paging?.total ?? 0}` : 'LOG';
   });
-  const alerts = q('#cl-alerts'), cards = q('#cl-cards'), nbrs = q('#cl-nbrs'), det = q('#cl-detail'), stage = q('#cl-stage'), logEl = q('#cl-log');
-  if (!alerts || !cards || !nbrs || !det || !stage || !logEl) return;
+  const alerts = q('#cl-alerts'), cards = q('#cl-cards'), nbrs = q('#cl-nbrs'), pg = q('#cl-paging'), det = q('#cl-detail'), stage = q('#cl-stage'), logEl = q('#cl-log');
+  if (!alerts || !cards || !nbrs || !pg || !det || !stage || !logEl) return;
   if (!wide) { const w = q('#cl-awrap'); if (w) w.hidden = view !== 'alerts'; }
-  cards.hidden = view !== 'cells'; nbrs.hidden = view !== 'neighbors';
+  cards.hidden = view !== 'cells'; nbrs.hidden = view !== 'neighbors'; pg.hidden = view !== 'paging';
   stage.hidden = view === 'log'; logEl.hidden = view !== 'log';
   const ac = q('#cl-alertcount'); if (ac) ac.textContent = nAlerts ? `${nAlerts} kept until cleared` : '';
   if (!paused.has('cell')) {
     if (wide || view === 'alerts') { put(alerts, 'alerts', cellAlertsHtml(s, now)); cellAlertMap(s); }
     if (view === 'cells') put(cards, 'cards', s && s.cells.length ? s.cells.map(c => cellCard(c, now)).join('') : `<div class="es"><span class="es-g">${glyph('cell', 'currentColor', 44)}</span><b>No cells yet</b><ul><li>AUTO sweeps the LTE downlink bands and stops on each carrier it finds</li><li>A cell appears within a second of its carrier being tuned; SIB1 and the other SIBs follow over a few seconds</li></ul></div>`);
     if (view === 'neighbors') put(nbrs, 'nbrs', s ? cellNbrsHtml(s, now) : '');
+    if (view === 'paging') put(pg, 'paging', s ? cellPagingHtml(s, now) : '');
   }
   if (cellUi.sel && s) {
     if (!cellUi.detail || now - cellUi.detailAsked > 5000) { cellUi.detailAsked = now; worker?.postMessage({ type: 'cell', cmd: 'detail', key: cellUi.sel }); }
@@ -9103,7 +9233,7 @@ function wireCommon(view: HTMLElement): void {
 
 function refreshReadout(): void {
   setFreqDisplay(state.freq);
-  if (state.app === 'audio') setFace(state.mode, audioTitle());
+  if (state.app === 'audio') { setFace(state.mode, audioTitle()); drawNfmId(); }
   scope?.setLabels(centredLabels(spanCenter(), state.rate));
   refreshSpanBar();
   document.body.classList.toggle('offspan', channelOff());
@@ -9137,6 +9267,7 @@ function redraw(id: string): void {
     case 'lora': refreshList(id); refreshLora(true); break;
     case 'sondes': refreshList(id); refreshSondes(true); break;
     case 'trains': refreshList(id); refreshTrains(true); break;
+    case 'satcom': refreshList(id); refreshSatcom(); break;
     case 'fleet': refreshList(id); refreshFleet(true); break;
     case 'hd': refreshList(id); refreshHd(true); break;
     case 'cell': refreshList(id); refreshCell(true); break;
@@ -9164,6 +9295,7 @@ function clearApp(id: string): void {
     case 'sondes': sondeUi.snap = null; sondeUi.sel = ''; break;
     case 'uat': uatData.towers.clear(); uatData.regional.clear(); uatData.national.clear(); uatData.metars.clear(); uatData.texts.clear(); uatData.planes.clear(); uatData.products.clear(); uatData.regionalSeen.clear(); uatData.hazards.clear(); uatData.hazardTime.clear(); uatData.shapes.clear(); uatData.up = uatData.down = 0; uatData.firstAt = 0; uatData.radarTime = ''; uatUi.sel = ''; uatUi.radarDirty = true; break;
     case 'trains': trainsUi.snap = null; break;
+    case 'satcom': if (satcomUi.snap) satcomUi.snap.messages = []; worker?.postMessage({ type: 'satcom', cmd: 'clear' }); break;
     case 'fleet': fleetUi.snap = null; fleetUi.sel = null; fleetUi.unit = null; try { localStorage.removeItem(KNOWN_KEY); } catch { /* storage blocked */ } break;
     case 'hd': hdUi.snap = null; hdUi.sel = ''; for (const o of hdUi.objects) URL.revokeObjectURL(o.url); hdUi.objects = []; hdUi.tileUrls.clear(); hdUi.mapKey = ''; break;
     case 'cell': cellUi.sel = ''; cellUi.detail = null; break;
@@ -9644,7 +9776,7 @@ function ensureWorker(): Worker {
         const was = typeof m.replaces === 'string' ? list.indexOf(m.replaces) : -1;
         if (was >= 0) list.splice(was, 1); else counts[id] = (counts[id] ?? 0) + 1;
         if (id === 'aprs') { if (was >= 0) aprsLogMs.splice(was, 1); aprsLogMs.unshift(Date.now()); if (aprsLogMs.length > 300) aprsLogMs.length = 300; }
-        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars' || id === 'vdl2') onAcarsLine(m.line as string, id); else if (id === 'btle') refreshBle(); break; }
+        list.unshift(m.line); if (list.length > 300) list.length = 300; refreshList(id); if (id === 'ais') refreshAis(); else if (id === 'aprs') refreshAprs(); else if (id === 'acars' || id === 'vdl2') onAcarsLine(m.line as string, id); else if (id === 'satcom') onSatcomAcars(m.line as string); else if (id === 'btle') refreshBle(); break; }
       case 'vdl2frame': onVdl2Frame(m.f as AvlcFrame); break;
       case 'hdsnap': hdUi.snap = m as unknown as HdSnapMsg; hdRecord(hdUi.snap); refreshHd(); break;
       case 'hdobj': hdOnObject(m); break;
@@ -9652,6 +9784,7 @@ function ensureWorker(): Worker {
       case 'rds': lastRds = m as typeof lastRds; drawRds(); break;
       case 'hd': lastHd = m as typeof lastHd; console.log('[hd]', JSON.stringify(m)); drawHd(); break;
       case 'same': onSameAlert(m); break;
+      case 'nfmId': onNfmId(m as unknown as NfmId); break;
       case 'table': state.aisTable = m.rows; refreshAis(); break;
       case 'stations': state.aprsStations = m.rows; refreshAprs(); break;
       case 'meters': meters.snap = m as MetersSnap; refreshMeters(); break;
@@ -9661,6 +9794,7 @@ function ensureWorker(): Worker {
       case 'lora': loraUi.snap = m as LoraSnap; refreshLora(); break;
       case 'sonde': sondeUi.snap = m as unknown as SondeSnap; refreshSondes(); break;
       case 'trains': trainsUi.snap = m as TrainsSnap; refreshTrains(); break;
+      case 'satcom': satcomUi.snap = m.snap as SatcomSnap; refreshSatcom(); break;
       case 'fleet': fleetUi.snap = m as unknown as FleetSnap; refreshFleet(); break;
       case 'hamplus': hpUi.snap = m as unknown as HpSnap; refreshHamPlus(); break;
       case 'hamplusNote': hpNote(String(m.text)); break;
@@ -10258,7 +10392,7 @@ const APP_TECH: Partial<Record<AppId, string>> = {
   audio: 'WFM · NFM · AM · SSB · RDS', hd: 'NRSC-5 · IBOC · FM HYBRID', fleet: 'P25 · DMR · NXDN · TETRA · SMARTNET',
   pager: 'POCSAG · FLEX · REFLEX', lora: 'LORA · MESHTASTIC · MESHCORE · LORAWAN', adsb: 'ADS-B · MODE S · 1090 MHZ',
   uat: 'UAT · FIS-B · 978 MHZ', acars: 'ACARS · VHF AIRBAND', vdl2: 'VDL MODE 2 · 136.975 MHZ', trains: 'EOT · HOT · PTC 220 MHZ',
-  ais: 'AIS · 161.975 / 162.025 MHZ', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
+  ais: 'AIS · 161.975 / 162.025 MHZ', satcom: 'INMARSAT · STD-C EGC · AERO · L-BAND', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
   subghz: 'OOK · FSK · 315–915 MHZ', js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
   hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
   ert: 'ERT · GRIDSTREAM · 802.15.4G', btle: 'BLE · ADVERTISING · 2.4 GHZ', sat: 'SGP4 · DOPPLER · APT · LRPT · AX.25',

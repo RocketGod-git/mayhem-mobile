@@ -26,20 +26,48 @@ export const BANDS: Band[] = [
   { id: '23cm', name: '23 cm', lo: 1_240_000_000, hi: 1_300_000_000, mode: 'NFM', step: 25_000, offset: -20_000_000, calling: 1_294_500_000, segments: [[1_240_000_000, 1_300_000_000, 'FM / ATV / repeaters']] },
 ];
 
+/** The US itinerant business channels any licensee may use, by their color dots and stars. */
+const ITINERANT: [number, number, string][] = [
+  [151_625_000, 151_625_000, 'itinerant · red dot'], [151_955_000, 151_955_000, 'itinerant · purple dot'],
+  [464_500_000, 464_500_000, 'itinerant · brown dot'], [464_550_000, 464_550_000, 'itinerant · yellow dot'],
+  [467_762_500, 467_762_500, 'itinerant · J dot'], [467_812_500, 467_812_500, 'itinerant · K dot'],
+  [467_850_000, 467_850_000, 'itinerant · silver star'], [467_875_000, 467_875_000, 'itinerant · gold star'],
+  [467_900_000, 467_900_000, 'itinerant · red star'], [467_925_000, 467_925_000, 'itinerant · blue star'],
+  [469_500_000, 469_500_000, 'itinerant'], [469_550_000, 469_550_000, 'itinerant'],
+];
+/** Earlier entries win where they overlap: the narrow services first, the business bands around them last. */
 export const NON_HAM: Band[] = [
   { id: 'air', name: 'Air', lo: 118_000_000, hi: 137_000_000, mode: 'AM', step: 25_000, calling: 121_500_000, segments: [[118_000_000, 137_000_000, 'AM · 121.500 guard']] },
   { id: 'wx', name: 'NOAA', lo: 162_400_000, hi: 162_550_000, mode: 'NFM', step: 25_000, calling: 162_400_000, segments: [[162_400_000, 162_550_000, 'weather radio']] },
+  { id: 'rail', name: 'Railroad', lo: 160_215_000, hi: 161_565_000, mode: 'NFM', step: 7_500, segments: [[160_215_000, 161_565_000, 'AAR road and yard channels']] },
   { id: 'marine', name: 'Marine', lo: 156_000_000, hi: 162_025_000, mode: 'NFM', step: 25_000, calling: 156_800_000, segments: [[156_000_000, 162_025_000, 'VHF marine · ch 16 = 156.800']] },
   { id: 'frs', name: 'FRS/GMRS', lo: 462_550_000, hi: 467_725_000, mode: 'NFM', step: 12_500, calling: 462_562_500, segments: [[462_550_000, 462_725_000, 'ch 1–7 / 15–22'], [467_562_500, 467_712_500, 'ch 8–14']] },
+  { id: 'vhfbiz', name: 'VHF Business', lo: 150_000_000, hi: 174_000_000, mode: 'NFM', step: 2_500, calling: 151_820_000, segments: [
+    [151_820_000, 151_820_000, 'MURS 1'], [151_880_000, 151_880_000, 'MURS 2'], [151_940_000, 151_940_000, 'MURS 3'],
+    [154_570_000, 154_570_000, 'MURS 4 · blue dot'], [154_600_000, 154_600_000, 'MURS 5 · green dot'],
+    ...ITINERANT.filter(([hz]) => hz < 174_000_000), [150_000_000, 174_000_000, 'land mobile · 7.5 kHz channels']] },
+  { id: 'uhfbiz', name: 'UHF Business', lo: 450_000_000, hi: 470_000_000, mode: 'NFM', step: 6_250, offset: 5_000_000, calling: 464_500_000, segments: [
+    [451_150_000, 451_150_000, 'business repeater · DMR'], [451_400_000, 451_400_000, 'business repeater · DMR'],
+    ...ITINERANT.filter(([hz]) => hz > 450_000_000),
+    [450_000_000, 455_000_000, 'repeater outputs (+5)'], [455_000_000, 460_000_000, 'repeater inputs'],
+    [460_000_000, 465_000_000, 'repeater outputs (+5)'], [465_000_000, 470_000_000, 'repeater inputs']] },
+  { id: '800', name: '800 MHz', lo: 851_000_000, hi: 869_000_000, mode: 'NFM', step: 12_500, offset: -45_000_000, segments: [[851_000_000, 869_000_000, 'business and public safety · repeaters (−45)']] },
+  { id: '800m', name: '800 Mobiles', lo: 806_000_000, hi: 824_000_000, mode: 'NFM', step: 12_500, segments: [[806_000_000, 824_000_000, 'mobiles of the 851–869 repeaters']] },
+  { id: '900', name: '900 MHz', lo: 935_000_000, hi: 941_000_000, mode: 'NFM', step: 6_250, offset: -39_000_000, segments: [[935_000_000, 941_000_000, 'business repeaters (−39)']] },
+  { id: '900m', name: '900 Mobiles', lo: 896_000_000, hi: 902_000_000, mode: 'NFM', step: 6_250, segments: [[896_000_000, 902_000_000, 'mobiles of the 935–941 repeaters']] },
 ];
 
-export function bandOf(hz: number): Band | undefined { return BANDS.find(b => hz >= b.lo && hz <= b.hi) ?? NON_HAM.find(b => hz >= b.lo && hz <= b.hi); }
+/** The band at [hz]: a ham band, else the first other one with a segment there (FRS/GMRS spans business channels), else any. */
+export function bandOf(hz: number): Band | undefined {
+  const inside = (b: Band) => hz >= b.lo && hz <= b.hi;
+  return BANDS.find(inside) ?? NON_HAM.find(b => inside(b) && b.segments.some(([lo, hi]) => hz >= lo && hz <= hi)) ?? NON_HAM.find(inside);
+}
 export function segmentOf(hz: number): string {
   const b = bandOf(hz); if (!b) return '';
   const s = b.segments.find(([lo, hi]) => hz >= lo && hz <= hi);
   return s ? `${b.name} · ${s[2]}` : b.name;
 }
-/** Repeater output segments and their offsets (US band plan); outside these a frequency is simplex. */
+/** Repeater output segments and their offsets (US band plans, ham and business); outside these a frequency is simplex. */
 const REPEATER_SEGMENTS: [number, number, number][] = [
   [29_620_000, 29_700_000, -100_000],
   [51_620_000, 51_980_000, -500_000], [52_500_000, 52_980_000, -500_000], [53_000_000, 53_980_000, -1_000_000],
@@ -48,6 +76,9 @@ const REPEATER_SEGMENTS: [number, number, number][] = [
   [442_000_000, 445_000_000, 5_000_000], [447_000_000, 450_000_000, -5_000_000],
   [927_000_000, 928_000_000, -25_000_000],
   [1_282_000_000, 1_288_000_000, -12_000_000],
+  // business: UHF, 800 and 900 MHz repeater pairs
+  [450_000_000, 455_000_000, 5_000_000], [460_000_000, 465_000_000, 5_000_000],
+  [851_000_000, 869_000_000, -45_000_000], [935_000_000, 941_000_000, -39_000_000],
 ];
 /** The repeater input for an output frequency (null when the frequency is not in a repeater output segment). */
 export function repeaterInput(hz: number): number | null {

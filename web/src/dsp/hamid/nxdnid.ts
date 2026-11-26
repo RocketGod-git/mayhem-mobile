@@ -10,9 +10,11 @@
  *   · TX_REL and DISC end the call;
  *   · the voice: each 72-bit VCH (EHR) through the AMBE+2 decoder, or each 144-bit VCH of a 9600 EFR call through the
  *     IMBE decoder, unless the call is ciphered.
- * Positions: the voice channel carries none (short data and its GPS formats are not read here). No DOM.
+ * Data (fleet/nxdndata.ts): a data call's GPS position (NMEA or Kenwood's) or short message, a status, the Kenwood
+ * talker alias. No DOM.
  */
 import { NxdnFramer, type NxdnTraffic } from '../fleet/nxdn.js';
+import type { Position } from './gps.js';
 import { AmbeStream, ImbeStream } from './voice.js';
 
 export interface NxdnId {
@@ -28,8 +30,10 @@ export interface NxdnId {
   activity: string; calls: number; voiceFrames: number; lastSym: number;
   /** Frames that passed a check of 12 bits or more (or a whole SACCH superframe, or a Type-D INFO1 to INFO4 run). */
   checked: number;
+  /** The source's talker alias; the last position, status and short message a unit sent, and which unit. */
+  alias: string; position: Position | null; status: number; text: string; dataUnit: number;
 }
-const blank = (): NxdnId => ({ baud: 0, ran: -1, kind: '', src: 0, dst: 0, group: true, callType: -1, emergency: false, cipher: 0, keyId: 0, voiceOpt: 0, typeD: false, activity: '', calls: 0, voiceFrames: 0, lastSym: -1, checked: 0 });
+const blank = (): NxdnId => ({ baud: 0, ran: -1, kind: '', src: 0, dst: 0, group: true, callType: -1, emergency: false, cipher: 0, keyId: 0, voiceOpt: 0, typeD: false, activity: '', calls: 0, voiceFrames: 0, lastSym: -1, checked: 0, alias: '', position: null, status: -1, text: '', dataUnit: 0 });
 
 const FSW = [-3, 1, -3, 3, -3, -3, 3, 3, -1, 3];
 /**
@@ -89,6 +93,13 @@ export class NxdnIdentity {
         id.cipher = m.cipher ?? 0; id.keyId = m.keyId ?? 0; id.voiceOpt = m.voiceOpt ?? 0; id.typeD = !!m.typeD || t.typeD;
       } else if (m.type === 0x08 || m.type === 0x07 || m.type === 0x11) id.activity = '';
     }
+    for (const d of t.data) {
+      if (d.alias) { if (d.unit === id.src) id.alias = d.alias; continue; }
+      id.dataUnit = d.unit; if (id.activity !== 'voice') id.activity = 'data';
+      if (d.position) id.position = d.position;
+      if (d.status !== undefined) id.status = d.status;
+      if (d.message) id.text = d.message;
+    }
     const halves = t.halves.filter((x): x is Uint8Array => !!x);
     if (!halves.length) return;
     if (id.activity !== 'voice') this.start(r);
@@ -99,5 +110,5 @@ export class NxdnIdentity {
       else for (const f of [h.subarray(0, 72), h.subarray(72)]) { id.voiceFrames++; this.onAudio(r.ambe.decode(f)); }
     }
   }
-  private start(r: Rate): void { this.id.activity = 'voice'; this.id.calls++; r.ambe.reset(); r.imbe.reset(); }
+  private start(r: Rate): void { this.id.activity = 'voice'; this.id.calls++; this.id.alias = ''; r.ambe.reset(); r.imbe.reset(); }
 }

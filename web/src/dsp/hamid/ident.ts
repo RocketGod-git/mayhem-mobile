@@ -91,6 +91,8 @@ export function identOf(s: HamIdSnap): HamIdent | null {
         id.callsign = lookupKey(live.alias);
         id.activity = live.activity || id.activity;
       }
+      // a text message: the sending unit, where it went, the text
+      { const m = (live?.message ? live : d.slots.find(x => x.message))?.message; if (m) id.text = `${m.src} → ${m.group ? 'TG ' : ''}${m.dst}: ${m.text}`; }
       break;
     }
     case 'D-STAR': {
@@ -115,7 +117,7 @@ export function identOf(s: HamIdSnap): HamIdent | null {
     case 'P25': {
       const p = s.p25; if (!p) break;
       id.code = p.nac; id.radioId = p.src; id.tg = p.tg; id.group = p.group; id.encrypted = p.encrypted; id.emergency = p.emergency;
-      id.activity = p.voiceFrames > 0 || p.encrypted ? 'voice' : 'data';
+      id.activity = p.voiceFrames > 0 || p.encrypted ? 'voice' : 'data'; id.text = p.text;
       break;
     }
     case 'P25P2': {
@@ -129,6 +131,8 @@ export function identOf(s: HamIdSnap): HamIdent | null {
       const x = s.nxdn; if (!x) break;
       id.code = x.ran; id.radioId = x.src; id.tg = x.dst; id.group = x.group; id.encrypted = x.cipher > 0; id.emergency = x.emergency;
       if (x.typeD) id.alias = `${x.src >> 11}-${x.src & 0x7ff}`;
+      if (x.alias) id.alias = x.alias;
+      id.text = x.text;
       id.activity = x.activity || (x.voiceFrames ? 'voice' : '');
       break;
     }

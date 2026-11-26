@@ -80,7 +80,8 @@ export function hpPrefsRestored(v: unknown): HpPrefs {
   const list = (x: unknown) => Array.isArray(x) ? x.filter((k): k is string => typeof k === 'string') : [];
   return { hold: '', mute: list(o.mute), prio: list(o.prio) };
 }
-export const chanKey = (hz: number) => String(Math.round(hz / 100) * 100);
+/** A channel's key: its frequency to 50 Hz (a 6.25 kHz channel such as 451.15625 MHz keeps its own). */
+export const chanKey = (hz: number) => String(Math.round(hz / 50) * 50);
 
 export interface HpTxRow {
   id: number; hz: number; heardHz: number; startMs: number; endMs: number; live: boolean;

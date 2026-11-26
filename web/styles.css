@@ -253,6 +253,7 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 .rdsbar b { color: var(--accent2); font-weight: 700; }                  /* field value */
 .rdsbar em { font-style: normal; color: var(--muted); opacity: 0.7; margin: 0 8px; }           /* separator */
 .rdsbar.dim b { color: var(--muted); }
+.rdsbar.alert b { color: var(--danger); }                  /* an MDC-1200 emergency on the ID strip */
 /* HD Radio badge: under the zoom control, out of the way of the RDS bar. */
 .hdbadge { position: absolute; top: 34px; right: 6px; z-index: 2; font-size: 10px; letter-spacing: 1px; padding: 2px 7px; border-radius: 5px;
   border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--muted); pointer-events: none; white-space: nowrap; }
@@ -470,7 +471,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.satcom, .view.fleet, .view.hd, .view.cell, .view.atsc {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -562,7 +563,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.satcom, .view.fleet, .view.hd, .view.cell, .view.atsc {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -624,7 +625,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.satcom, .view.fleet, .view.hd, .view.cell, .view.atsc {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -866,7 +867,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
   .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.uat:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
-  .view.acars:has(> .visual:not(.nowf)) .controls, .view.vdl2:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.fleet:has(> .visual:not(.nowf)) .controls, .view.hd:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls, .view.atsc:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
+  .view.acars:has(> .visual:not(.nowf)) .controls, .view.vdl2:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.satcom:has(> .visual:not(.nowf)) .controls, .view.fleet:has(> .visual:not(.nowf)) .controls, .view.hd:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls, .view.atsc:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
   /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
   .view .visual.nowf { flex: none; }
   .view:has(> .visual.nowf) > .controls { flex: 1; max-height: none; min-height: 0; }
