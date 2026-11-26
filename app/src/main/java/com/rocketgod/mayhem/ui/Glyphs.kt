@@ -183,6 +183,15 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                 path.m(0.22f, 0.7f); path.l(0.36f, 0.54f); path.l(0.46f, 0.64f); path.l(0.56f, 0.5f); path.l(0.66f, 0.62f)
                 circles.add(Triple(0.81f, 0.48f, 0.04f)); circles.add(Triple(0.81f, 0.62f, 0.04f))
             }
+            MayhemApp.SATCOM -> {
+                // a dish with its feed, looking up at a geostationary satellite
+                path.m(0.14f, 0.40f); path.q(0.22f, 0.82f, 0.64f, 0.78f); path.close()
+                path.m(0.39f, 0.59f); path.l(0.66f, 0.32f)
+                path.m(0.40f, 0.78f); path.l(0.34f, 0.94f); path.l(0.62f, 0.94f); path.l(0.56f, 0.78f)
+                circles.add(Triple(0.66f, 0.32f, 0.04f))
+                var a = -120.0; var first = true
+                while (a <= 30.0 + 1e-6) { val x = 0.66f + 0.14f * cos(Math.toRadians(a)).toFloat(); val y = 0.32f + 0.14f * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
+            }
             MayhemApp.SONDES -> {
                 // a balloon on its line, the sonde hanging under it
                 circles.add(Triple(0.5f, 0.3f, 0.22f))

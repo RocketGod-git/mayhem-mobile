@@ -34,6 +34,7 @@ import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.math.sqrt
 
 /*
@@ -136,8 +137,8 @@ interface WatchProbe {
 }
 
 /**
- * Where a watcher's channels are and how one opens. HAM+ watches every point of a 2.5 kHz raster inside the ham bands
- * and lets a carrier move to its own raster point; CB watches the 40 channels of its plan and nothing else.
+ * Where a watcher's channels are and how one opens. HAM+ watches every point of a 2.5 kHz raster inside its ham and business
+ * bands and lets a carrier move to its own channel; CB watches the 40 channels of its plan and nothing else.
  */
 interface WatchPlan {
     /** The name in log lines. */
@@ -154,6 +155,8 @@ interface WatchPlan {
     val clearSteps: Int
     /** An open carrier off its raster point by more than half a step moves to the right one. */
     val snap: Boolean
+    /** The channel grid a carrier at [hz] snaps to: 6.25 kHz business channels fall between raster points. */
+    fun grid(hz: Long): Long = raster
 }
 
 val HAM_PLAN: WatchPlan = object : WatchPlan {
@@ -165,6 +168,7 @@ val HAM_PLAN: WatchPlan = object : WatchPlan {
     override val peakSteps = 3
     override val clearSteps = 4
     override val snap = true
+    override fun grid(hz: Long) = hpGridOf(hz)
 }
 
 private class Probe(rate: Double, offsetHz: Double, comb: ((Double) -> HfComb)? = null, private val loHz: Double = 0.0) : WatchProbe {
@@ -455,7 +459,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         val half = plan.spanHalf(rate); val R = plan.raster
         val f = ceil((centerHz - half) / R).toLong(); val l = floor((centerHz + half) / R).toLong()
         first = f; count = max(0, (l - f + 1).toInt())
-        // only the ham bands open channels: a span reaching past a band's edge leaves the rest alone
+        // only the plan's bands open channels: a span reaching past a band's edge leaves the rest alone
         hamBand = BooleanArray(count) { plan.inPlan(hzOf(it)) }
         power = FloatArray(count) { -120f }; floorDb = FloatArray(count) { Float.NaN }; snr = FloatArray(count)
         lastCenter = centerHz
@@ -738,13 +742,13 @@ abstract class ChannelWatch<P : WatchProbe>(
             val hear = listen.any { it === o }
             p.clipped = now < clipUntil
             p.push(fi, fq, n, hear)
-            // a carrier that is off its raster point by more than half a step moves to the right one, once
+            // a carrier that is off its channel by more than half a step moves to the right one, once (on a 6.25 kHz
+            // grid that can be a channel between two raster points, kept at its own frequency)
             if (plan.snap && !o.shifted && now - o.startMs > 500) {
                 o.shifted = true
-                val off = p.offset(1)
-                if (abs(off.hz) > plan.raster / 2.0) {
-                    val steps = (off.hz / plan.raster).roundToInt(); val shift = steps * plan.raster
-                    o.k += steps; o.hz += shift; o.tileKey = tileKey(o.hz); p.retune((o.hz - centerHz).toDouble())
+                val off = p.offset(1); val g = plan.grid(o.hz); val shift = ((o.hz + off.hz) / g).roundToLong() * g - o.hz
+                if (shift != 0L && abs(off.hz - shift) < abs(off.hz)) {
+                    o.k += (shift.toDouble() / plan.raster).roundToInt(); o.hz += shift; o.tileKey = tileKey(o.hz); p.retune((o.hz - centerHz).toDouble())
                     for (i in p.means.indices) p.means[i] -= shift.toDouble()
                 }
             }

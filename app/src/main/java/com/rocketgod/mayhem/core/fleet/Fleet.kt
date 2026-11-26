@@ -4,8 +4,20 @@ import com.rocketgod.mayhem.core.Dsp
 import com.rocketgod.mayhem.core.IqProcessor
 import com.rocketgod.mayhem.core.PacketLog
 import com.rocketgod.mayhem.core.ham.P25Decoder
+import com.rocketgod.mayhem.core.hamid.AnalogId
+import com.rocketgod.mayhem.core.hamid.AnalogIds
+import com.rocketgod.mayhem.core.hamid.analogIdText
 import com.rocketgod.mayhem.core.ham.RealFir
 import com.rocketgod.mayhem.core.ham.lowpassTaps
+import com.rocketgod.mayhem.core.hamid.DmrPdu
+import com.rocketgod.mayhem.core.hamid.DmrPduAssembler
+import com.rocketgod.mayhem.core.hamid.DpmrId
+import com.rocketgod.mayhem.core.hamid.DpmrIdentity
+import com.rocketgod.mayhem.core.hamid.dmrPayloadBits
+import com.rocketgod.mayhem.core.hamid.dmrPduContent
+import com.rocketgod.mayhem.core.hamid.dpfName
+import com.rocketgod.mayhem.core.hamid.rate1Bytes
+import com.rocketgod.mayhem.core.hamid.rate34Decode
 import com.rocketgod.mayhem.core.trains.Ddc
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,10 +38,11 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
- * Dispatch: a receive-only monitor for P25, DMR, TETRA, NXDN and Motorola Type II trunked radio. Finds every carrier in the span, gives the
+ * Dispatch: a receive-only monitor for P25, DMR, TETRA, NXDN and Motorola Type II trunked radio, and conventional dPMR. Finds every carrier in the span, gives the
  * live ones a channel each (the control channels and the channels of calls on the air keep theirs, the rest take
  * turns), decodes the control signaling and builds the systems, sites, channel tables, grants, registrations, unit
- * positions and calls from what is on the air. Labels are only what the air carries. Publishes a snapshot (at most two
+ * positions and calls from what is on the air. DMR packet data is put back together (hamid/DmrPdu.kt) for unit
+ * positions (LIP, LRRP, NMEA) and text messages. Labels are only what the air carries. Publishes a snapshot (at most two
  * a second) and log lines. Internal names and saved keys stay "fleet" so saved data carries over.
  */
 const val CH_RATE = 24_000.0
@@ -72,6 +85,8 @@ data class CarrierRow(
     val lastDecodeMs: Long, val envCv: Double, val eye: Double, val decoding: Boolean, val callsign: String, val tdma: Boolean, val lcn: String,
     /** When the channel last keyed its CW ID. */
     val callsignMs: Long = 0,
+    /** The last MDC-1200 or FleetSync ID heard on an analog carrier ("" none), when, and whether it was an emergency. */
+    val ident: String = "", val identMs: Long = 0, val identEmergency: Boolean = false,
 )
 data class Neighbor(val label: String, val hz: Long, val ch: String, val sys: Int, val heard: Boolean)
 data class Lcn(val lcn: Int, val hz: Long, val slot: Int)
@@ -156,6 +171,7 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     var levelDb = 0.0; var peakDb = 0.0; val firstMs = now; var lastMs = now; var onMs = 0L; var heardMs = 0L
     var cls = ""; var role = ""; var sys = ""; var nac = -1; var cc = -1; var frames = 0; var blocks = 0; var crcOk = 0; var lastDecodeMs = 0L
     var envCv = 0.0; var eye = 0.0; var decoding = false; var callsign = ""; var callsignMs = 0L; var tdma = false; var lcn = ""
+    var ident = ""; var identMs = 0L; var identEmergency = false
     var hdr: Hdr? = null; var lastAuditionMs = 0L
     /** Motorola Type II: the channel number the control channel announces for itself, and the plan that number proved. */
     var osw: OswCc? = null
@@ -168,7 +184,7 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
     var nxdnD: NxdnD? = null
     fun row() = CarrierRow(key, hz, levelDb, peakDb, firstMs, lastMs, onMs, heardMs, cls, role, sys, nac, cc, frames, blocks, crcOk, lastDecodeMs, envCv, eye,
-        decoding, callsign, tdma, lcn, callsignMs)
+        decoding, callsign, tdma, lcn, callsignMs, ident, identMs, identEmergency)
 }
 private class OswCc(val cc: Int, val plan: SmartNet.Plan?)
 /** Motorola Type II: the channel plan its control channel proved (null until one does), and the channels granted (count). */
@@ -216,6 +232,8 @@ private class UnitRec(val key: String, val sys: String, val id: Int, val firstMs
     var alias = ""
     /** A position kept from an earlier session (restored from the device), used until a report on the air replaces it. */
     var fix: Pair<Double, Double>? = null
+    /** [fix] came from the air with whole coordinates (LIP, LRRP, NMEA in packet data): no twin to resolve. */
+    var full = false
 }
 private class Tg(val key: String, val sys: String, val tg: Int, val firstMs: Long, var lastMs: Long) {
     var grants = 0; var recent = ArrayList<Long>(); val members = LinkedHashSet<Int>(); val history = ArrayList<GrantRow>()
@@ -246,6 +264,9 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
     val dmr = DmrFramer()
     /** Motorola Type II signaling words, and analog FM voice on a channel a Type II grant named. */
     val osw: OswRx; var fm: FmVoice? = null
+    /** MDC-1200 and FleetSync on a carrier that is analog or not classed yet, off the channel's own discriminator. */
+    var ids: AnalogIds? = null
+    private var dI = 0f; private var dQ = 0f; private var disc = FloatArray(0)
     /** The turn is a quick first look. */
     var quick = false
     val cw: CwReader
@@ -258,6 +279,8 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
     var tetra: TetraChan? = null
     /** NXDN receivers (NXDN48 and NXDN96) on the channel baseband, for a carrier nothing else read; the one that locks stays. */
     var nxdn: List<NxdnRx>? = null
+    /** dPMR, read from the NXDN48 receiver's symbols. */
+    var dpmr: DpmrIdentity? = null
     /** The TETRA MAC on the TETRA receiver's bursts. */
     var tetraMac: TetraMac? = null
     /**
@@ -354,6 +377,11 @@ private class Chan(val key: Long, var hz: Double, center: Long, rate: Int, now: 
         val s0 = p25.clean + dmr.bursts
         rx.push(zi, zq, m)
         osw.push(zi, zq, m); fm?.push(zi, zq, m)
+        ids?.let { a ->
+            if (disc.size < m) disc = FloatArray(m)
+            for (k in 0 until m) { val i = zi[k]; val q = zq[k]; disc[k] = kotlin.math.atan2(q * dI - i * dQ, i * dI + q * dQ); dI = i; dQ = q }
+            a.push(disc, m)
+        }
         p2?.push(zi, zq, m)
         nxdn?.let { for (r in it) if (r.fs == fs) r.push(zi, zq, m) }
         nxdnSyncCheck()
@@ -655,8 +683,12 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         ch.p25v.onLog = { p25Lc(c, ch) }
         ch.p25v.onEs = { es -> p25Sec(c, "LDU2", es.algId, es.keyId, es.mi) }
         ch.p25v.onHdu = { hd -> p25Sec(c, "HDU", hd.algId, hd.keyId, hd.mi) }
+        ch.p25.onPdu = { p -> unitData(c, p) }
+        ch.p25v.onLc = { lc -> P25Data.gpsLc(lc, ch.p25v.status(ch.t).source)?.let { unitData(c, it) } }
         ch.cw.onText = { t -> cwText(c, t) }
         ch.osw.onOsw = { o, gap -> oswWord(c, ch, o, gap) }
+        // an analog carrier, or one not classed yet, is read for MDC-1200 and FleetSync from its first sample (the ID leads the over)
+        if (c.sys.isEmpty() && (c.cls == "" || c.cls == "ANALOG FM")) ch.ids = AnalogIds(ch.fs).also { a -> a.onId = { id -> analogId(c, id) } }
         if (c.tdma) p2On(c, ch)
         chans[c.key] = ch
         if (calls.at("", c.hz, 0)?.proto == "SMARTNET") fmOn(c, ch)
@@ -694,9 +726,49 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             }
             r.framer.onCac = { sr, msgs -> keep(); nxdnCac(c, sr, msgs, b) }
             r.framer.onTraffic = { t -> keep(); if (r.framer.locked || t.msgs.isNotEmpty()) nxdnTraffic(c, t, b) }
+            if (b == 2400) r.tap = { x -> dpmrOn(c, ch).pushSymbol(x.toDouble()) }
             return r
         }
         ch.nxdn = intArrayOf(2400, 4800).filter { baud == 0 || it == baud }.map { make(it, it == baud) }
+    }
+    /** The dPMR reader of a channel, its calls and units passed to [dpmrEvent]. */
+    private fun dpmrOn(c: Carrier, ch: Chan): DpmrIdentity {
+        ch.dpmr?.let { return it }
+        val d = DpmrIdentity()
+        d.onEvent = { k -> dpmrEvent(c, k, d.id) }
+        d.onVoiceBits = { bits -> val call = calls.at(c.sys, c.hz, 0); if (call != null && call.proto == "DPMR") calls.frames(call, listOf(bits.copyOf())) }
+        ch.dpmr = d
+        return d
+    }
+    /**
+     * dPMR (ETSI TS 102 490) on a carrier: a conventional channel is a system by its color code, a header or a chained
+     * frame keeps the call on the air (the called and own IDs, 24 bits, shown as Annex A's characters), the end frame ends it.
+     */
+    private fun dpmrEvent(c: Carrier, kind: String, x: DpmrId) {
+        val now = now(); val was = systems[c.sys]
+        // a carrier another protocol is decoding on stays that protocol's (a CRC passing on its symbols is chance)
+        if (nxdnLately(c, now) || (was != null && was.proto != "DPMR" && now - c.lastDecodeMs < 5_000)) return
+        c.cls = "DPMR"; c.lastDecodeMs = now; c.frames++; c.crcOk++; c.blocks++; blocks++; if (c.role == "") c.role = "voice"
+        val cc = if (x.cc >= 0) x.cc else if (was?.proto == "DPMR") was.cc else -1
+        if (cc < 0) return
+        val key = "DPMR CC$cc"
+        val s = systems[key] ?: newSys(key, "DPMR", -1, cc, cc, 0, -1, "CONVENTIONAL", now).also { it.trunk = "CONVENTIONAL" }
+        s.lastMs = now; s.heardHz.add(c.key); c.sys = key
+        val who = "${if (x.group) "TG" else "UNIT"} ${x.calledText.ifEmpty { x.called.toString() }} ← ${x.ownText.ifEmpty { x.own.toString() }}"
+        if (kind == "end") {
+            calls.terminate(key, c.hz, 0, now)
+            addLog(LogRow(now, c.hz, "DPMR", "END", "dPMR · CC $cc · END", "", true))
+        } else {
+            val call = calls.voice(key, "DPMR", c.hz, 0, if (kind == "frame") 80 else 0, now)
+            if (x.called >= 0 && x.own >= 0 && (call.tg != x.called || call.src != x.own)) {
+                calls.lc(key, c.hz, 0, LcIn(x.group, x.called, x.own, false, false), now, "DPMR")
+                val u = touchUnit(key, x.own, c, now, "call", NxdnUnitMsg("", "dPMR · $who"), "", if (x.group) x.called else null)
+                if (x.ownText.isNotEmpty()) { u.alias = x.ownText; unitAlias[u.key] = x.ownText }
+                c.unitIds[x.own] = now
+            }
+            if (kind == "header") addLog(LogRow(now, c.hz, "DPMR", "HEADER", "dPMR · CC $cc · HEADER · $who", "", true))
+        }
+        pending = true
     }
     private fun newSys(key: String, proto: String, wacn: Int, sysId: Int, cc: Int, fid: Int, net: Int, model: String, now: Long, derived: Boolean = false): Sys =
         Sys(key, proto, colorNext++, wacn, sysId, cc, fid, net, model, now, now, derived).also { systems[key] = it }
@@ -785,6 +857,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             s.heardHz.add(c.key); c.sys = key
         }
         t.scch?.let { nxdnScch(c, it, now, baud) }
+        for (d in t.data) unitData(c, d)
         for (m in t.msgs) {
             val dst = m.dst
             if (m.type == 0x01 && dst != null) {
@@ -1185,9 +1258,10 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (c.tdma && ch.p2 == null) p2On(c, ch)
         val quiet = !(c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000)
         if (!c.tdma && ch.tetra == null && c.cls != "TETRA" && now - ch.openedMs > 1_500 && quiet && tetraBand(c.hz)) tetraOn(c, ch)
-        if (!c.tdma && ch.nxdn == null && c.cls != "TETRA" && now - ch.openedMs > 1_500 && quiet) nxdnOn(c, ch)
+        // a dPMR carrier is read from its first symbols on every turn
+        if (!c.tdma && ch.nxdn == null && c.cls != "TETRA" && (c.cls == "DPMR" || (now - ch.openedMs > 1_500 && quiet))) nxdnOn(c, ch)
         c.heardMs += 500; c.envCv = Math.round(ch.rx.envCv * 100) / 100.0; c.eye = Math.round(ch.rx.eye * 100) / 100.0
-        if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return
+        if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) { ch.ids = null; return }
         if (now - ch.openedMs < CLASS_MS) return
         c.cls = when {
             c.tdma && ch.rx.envCv > 0.15 -> "P25 PHASE 2 TDMA"
@@ -1332,6 +1406,14 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (b.dt == 9) return
         val mask = Codes.DMR_CRC_MASK[b.dt]
         val ok = mask != null && Codes.crc12Ok(b.bytes, mask)
+        // packet data: a header opens a PDU on its slot, the blocks it announced fill it (on a voice channel too)
+        if (b.dt == 6 && ok) pduFor(c, b.slot).header(b.bytes)
+        else if ((b.dt == 7 || b.dt == 8 || b.dt == 10) && pduFor(c, b.slot).open) {
+            val d = if (e.dibits.size >= 144) dmrPayloadBits(e.dibits) else null
+            val bytes = if (b.dt == 7) b.bytes else if (d == null) null else if (b.dt == 8) rate34Decode(d).bytes else rate1Bytes(d)
+            val p = if (bytes != null) pduFor(c, b.slot).block(bytes) else null
+            if (p != null) dmrPdu(c, b, p, now)
+        }
         // a privacy indicator header (it follows the voice LC header of an encrypted call): the call it opens is encrypted.
         // Its fields (not in ETSI TS 102 361; read from public descriptions): algorithm ID in octet 0, key ID in octet 2,
         // a 32-bit MI in octets 3 to 6
@@ -1460,6 +1542,44 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (call.src != 0) { val uk = "${call.sys.ifEmpty { c.sys }}/${call.src}"; unitAlias[uk] = name; units[uk]?.alias = name }
         addLog(LogRow(now(), c.hz, "DMR", "TALKER ALIAS", "TS${slot + 1} · TALKER ALIAS · $name${if (call.src != 0) " · UNIT ${call.src}" else ""}", "", true))
     }
+    /** Packet data being put together, per carrier and slot. */
+    private val pdus = HashMap<String, DmrPduAssembler>()
+    private fun pduFor(c: Carrier, slot: Int): DmrPduAssembler {
+        val k = "${c.key}:$slot"
+        pdus[k]?.let { return it }
+        if (pdus.size > 400) pdus.clear()
+        return DmrPduAssembler().also { pdus[k] = it }
+    }
+    /**
+     * A whole DMR packet data PDU: logged, its source unit (and the unit it went to) given the report, a position (LIP,
+     * LRRP, NMEA: whole coordinates) placed on the map and the unit's track, a text message in both units' history.
+     */
+    private fun dmrPdu(c: Carrier, b: Codes.DmrBurst, p: DmrPdu, now: Long) {
+        val h = p.hdr; val x = dmrPduContent(p); val was = systems[c.dmrSys.ifEmpty { c.sys }]
+        val s = if (was?.proto == "DMR") was else dmrSystem(c, Csbk(0, 0, true, "", false), b.cc, now)
+        s.lastMs = now
+        val ts = if (b.ms) "FROM A RADIO" else "TS${b.slot + 1}"; val to = "${if (h.group) "TG " else ""}${h.dst}"
+        val pos = x?.pos
+        val name = if (x?.kind == "text") "TEXT MESSAGE" else if (pos != null) "POSITION" else dpfName(h.dpf)
+        val body = if (x?.kind == "text") "\"${x.text}\"" else if (pos != null) "%.5f, %.5f".format(java.util.Locale.US, pos.lat, pos.lon) + (if (x.speedKmh >= 0) " · ${Math.round(x.speedKmh)} km/h" else "") + (if (x.heading >= 0) " · heading ${Math.round(x.heading)}" else "") else "SAP ${h.sap} · ${p.bits shr 3} octets"
+        val line = (if (x != null) "${x.via} · " else "") + body; val hx = Codes.hex(p.data)
+        addLog(LogRow(now, c.hz, "DMR", name, "CC ${b.cc} · $ts · $name · ${h.src} → $to · $line${if (p.crcOk) "" else " · message CRC failed"}", hx, p.crcOk))
+        if (h.src != 0) {
+            val u = touchUnit(s.key, h.src, c, now, if (x?.kind == "text") "text message to $to" else if (pos != null) "position (${x.via})" else "packet data to $to", NxdnUnitMsg(hx, line), "", if (h.group) h.dst else null)
+            c.unitIds[h.src] = now
+            if (pos != null) unitFix(u, pos.lat, pos.lon, now)
+        }
+        if (x?.kind == "text" && !h.group && h.dst != 0) touchUnit(s.key, h.dst, c, now, "text message from ${h.src}", NxdnUnitMsg(hx, line), "")
+    }
+    /** A whole position from the air: it stands until the next report (no twin to resolve, as the CSBK reports have). */
+    private fun unitFix(u: UnitRec, lat: Double, lon: Double, now: Long) {
+        val f = round6(lat) to round6(lon)
+        u.lonLo = -1; u.latLo = -1; u.fix = f; u.full = true; u.posMs = now; u.posVerified = true; u.fixes.clear()
+        u.reports.lastOrNull()?.let { it.lat = f.first; it.lon = f.second }
+        val t = u.trail.lastOrNull()
+        if (t == null || t.lat != f.first || t.lon != f.second) { u.trail.add(TrailPt(f.first, f.second, now)); if (u.trail.size > 300) u.trail.removeAt(0) }
+        anchorsDirty = true; pending = true
+    }
     private fun dmrSystem(c: Carrier, cs: Csbk, cc: Int, now: Long): Sys {
         var key = c.dmrSys
         if (cs.verified && cs.sysCode != null) key = "DMR ${cs.model} ${cs.net}"
@@ -1538,7 +1658,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         c.unitIds[cs.unit!!] = now
         val lonLo = cs.lonLo; val latLo = cs.latLo
         if (cs.noFix || lonLo == null || latLo == null) return
-        u.lonLo = lonLo; u.latLo = latLo; u.posMs = now; u.posVerified = cs.verified
+        u.lonLo = lonLo; u.latLo = latLo; u.posMs = now; u.posVerified = cs.verified; u.full = false
         val last = u.reports.lastOrNull()
         if (last != null) { last.lonLo = lonLo; last.latLo = latLo }
         val fx = u.fixes.lastOrNull()
@@ -1546,6 +1666,31 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         anchorsDirty = true
         val p = place(s.key, latLo, lonLo)
         if (last != null && p != null) { last.lat = p.first; last.lon = p.second }
+    }
+    /** An MDC-1200 or FleetSync ID on an analog carrier: on the carrier's row and in the log, unit IDs in full. */
+    private fun analogId(c: Carrier, id: AnalogId) {
+        val now = now()
+        if (c.lastDecodeMs > 0 && now - c.lastDecodeMs < 15_000) return
+        val text = analogIdText(id)
+        c.ident = text; c.identMs = now; c.identEmergency = id.emergency
+        if (c.cls.isEmpty()) c.cls = "ANALOG FM"
+        addLog(LogRow(now, c.hz, id.kind, if (id.kind == "MDC-1200") id.what else "FLEETSYNC ${id.what}", "ANALOG FM · $text${if (id.emergency) " · EMERGENCY" else ""}", "", true))
+        pending = true
+    }
+    /** An MDC-1200 or FleetSync ID heard on [hz] (the tests). */
+    @Synchronized fun feedAnalogId(hz: Long, id: AnalogId) { analogId(carrierAt(hz.toDouble()), id) }
+    /** What a unit sent (UnitData.kt): logged; a whole position becomes its fix and joins its trail, an alias names it. */
+    private fun unitData(c: Carrier, d: UnitData) {
+        val now = now(); val sys = c.sys.ifEmpty { if (d.proto == "P25") "P25 NAC ${hx(max(0, c.nac), 3)}" else "NXDN CONV RAN ${max(0, c.nxdnRan)}" }
+        addLog(LogRow(now, c.hz, d.proto, d.name, if (d.proto == "P25") "NAC ${hx(max(0, c.nac), 3)} · ${d.line}" else "${c.cls} · ${d.line}", d.hex, true))
+        if (d.unit <= 0 || d.unit == 0xffffff) return
+        val u = touchUnit(sys, d.unit, c, now, d.kind, NxdnUnitMsg(d.hex, d.line), "")
+        d.alias?.let { u.alias = it }
+        val p = d.position ?: return
+        u.fix = p.lat to p.lon; u.posMs = now; u.posVerified = true
+        val l = u.trail.lastOrNull()
+        if (l == null || l.lat != p.lat || l.lon != p.lon) { u.trail.add(TrailPt(p.lat, p.lon, now)); if (u.trail.size > 300) u.trail.removeAt(0) }
+        u.reports.lastOrNull()?.let { it.lat = p.lat; it.lon = p.lon }
     }
     private fun cwText(c: Carrier, text: String) {
         val word = text.split(' ').firstOrNull { looksLikeCallsign(it) }
@@ -1617,6 +1762,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     // ------------------------------------------------------------------------------------------------ output
     private fun resolvePos(u: UnitRec): Pair<Double?, Double?> {
         val f = u.fix
+        if (u.lonLo < 0 && f != null && u.full) return f.first to f.second
         if (u.lonLo < 0 && f != null) {
             // a position kept from an earlier session: shown only where the system's radios can be (an older build drew
             // some reports in the wrong place)
@@ -1667,7 +1813,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (u.fixes.isEmpty()) {
             // a track kept from an earlier session: the same check as its position
             val f = u.fix
-            return if (f != null && !keptOk(u.sys, f)) emptyList<TrailPt>() to 1 else u.trail.toList() to 0
+            return if (f != null && !u.full && !keptOk(u.sys, f)) emptyList<TrailPt>() to 1 else u.trail.toList() to 0
         }
         val trail = ArrayList<TrailPt>(); var off = 0
         for (x in u.fixes) {
@@ -1691,7 +1837,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     private fun callPos(c: Call): CallPos? {
         fun at(u: UnitRec?, via: String): CallPos? {
-            if (u == null || u.lonLo < 0) return null
+            if (u == null || (u.lonLo < 0 && !u.full)) return null
             val (lat, lon) = resolvePos(u)
             return if (lat == null || lon == null) null else CallPos(lat, lon, u.id, u.posMs, via, u.posVerified)
         }
@@ -1699,7 +1845,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             if (id == 0) return null
             if (c.sys.isNotEmpty()) return units["${c.sys}/$id"] ?: (if (id > 0xffff) units["${c.sys}/${id and 0xffff}"] else null)
             var found: UnitRec? = null
-            for (u in units.values) if (u.id == id && u.lonLo >= 0) { if (found != null) return null; found = u }
+            for (u in units.values) if (u.id == id && (u.lonLo >= 0 || u.full)) { if (found != null) return null; found = u }
             return found
         }
         at(unitOf(c.src), "unit")?.let { return it }
@@ -1799,6 +1945,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             }
             for (st in siteRows) for (k in st.carriers) for (u in units.values) if (u.sys == s.key && k in u.carriers) unitSite[u.key] = st.label
             val label = when {
+                s.proto == "DPMR" -> "dPMR · CONVENTIONAL · COLOR CODE ${s.cc}"
                 s.proto == "SMARTNET" -> "MOTOROLA TYPE II · SYSTEM ${hx(s.sysId, 4)}"
                 s.proto == "NXDN" && s.trunk == "CONVENTIONAL" -> "NXDN · CONVENTIONAL · RAN ${s.sysId}"
                 s.proto == "NXDN" && s.trunk == "TYPE-D" -> "NXDN · TYPE-D · SITE ${s.sysId}"
@@ -1885,6 +2032,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     @Synchronized fun feedDmr(hz: Long, slot: Int, cc: Int, dt: Int, bytes: IntArray) {
         dmrBurst(carrierAt(hz.toDouble()), DmrEvent(Codes.DmrBurst(slot, cc, dt, 0, bytes, 1), IntArray(0)))
     }
+    /** One recorded DMR data burst as its 144 dibits (rate 3/4 and rate 1 blocks are read from the dibits). */
+    @Synchronized fun feedDmrBurst(hz: Long, dibits: IntArray) { val b = Codes.dmrReadBurst(dibits) ?: return; dmrBurst(carrierAt(hz.toDouble()), DmrEvent(b, dibits)) }
     /** One recorded DMR voice burst (144 dibits) heard on [hz]: [n] is its place in the superframe (0 has the sync). */
     @Synchronized fun feedDmrVoice(hz: Long, slot: Int, dibits: IntArray, n: Int) { val c = carrierAt(hz.toDouble()); dmrSeen[c.key] = now(); dmrVoice(c, null, slot, dibits, n) }
     /** A recorded channel clip, complex baseband at [fs] mixed to 0 Hz from [hz]: decoded as a channel of the span. */
@@ -1949,6 +2098,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         .put("lastMs", c.lastMs).put("onMs", c.onMs).put("heardMs", c.heardMs).put("cls", c.cls).put("role", c.role).put("sys", c.sys).put("nac", c.nac).put("cc", c.cc)
         .put("frames", c.frames).put("blocks", c.blocks).put("crcOk", c.crcOk).put("lastDecodeMs", c.lastDecodeMs).put("envCv", c.envCv).put("eye", c.eye)
         .put("decoding", c.decoding).put("callsign", c.callsign).put("callsignMs", c.callsignMs).put("tdma", c.tdma).put("lcn", c.lcn)
+        .put("ident", c.ident).put("identMs", c.identMs).put("identEmergency", c.identEmergency)
     private fun siteJson(x: SiteRow) = JSONObject().put("key", x.key).put("label", x.label).put("rfss", x.rfss).put("site", x.site).put("nac", x.nac).put("ccHz", JSONArray(x.ccHz))
         .put("lastMs", x.lastMs).put("levelDb", if (x.levelDb.isFinite()) x.levelDb else JSONObject.NULL)
         .put("neighbors", JSONArray(x.neighbors.map { JSONObject().put("label", it.label).put("hz", it.hz).put("ch", it.ch).put("sys", it.sys).put("heard", it.heard) }))
@@ -1970,7 +2120,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     @Synchronized fun clear() {
         carriers.clear(); systems.clear(); sites.clear(); units.clear(); anchorsDirty = true; embAsm.clear(); aliases.clear(); unitAlias.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
-        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList(); oswParsers.clear()
+        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList(); oswParsers.clear(); pdus.clear()
         post(true)
     }
 

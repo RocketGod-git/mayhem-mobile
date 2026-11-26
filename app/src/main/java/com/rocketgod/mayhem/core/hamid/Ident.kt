@@ -70,6 +70,9 @@ fun identOf(s: HamIdSnap): HamIdent? {
                 id.callsign = lookupKey(live.alias)
                 if (live.activity.isNotEmpty()) id.activity = live.activity
             }
+            // a text message: the sending unit, where it went, the text
+            val m = live?.message ?: slots.firstOrNull { it.message != null }?.message
+            if (m != null) id.text = "${m.src} → ${if (m.group) "TG " else ""}${m.dst}: ${m.text}"
         }
         "D-STAR" -> {
             val h = s.dstar?.header ?: s.dd?.header
@@ -92,7 +95,7 @@ fun identOf(s: HamIdSnap): HamIdent? {
         }
         "P25" -> s.p25?.let { p ->
             id.code = p.nac; id.radioId = p.src; id.tg = p.tg; id.group = p.group; id.encrypted = p.encrypted; id.emergency = p.emergency
-            id.activity = if (p.voiceFrames > 0 || p.encrypted) "voice" else "data"
+            id.activity = if (p.voiceFrames > 0 || p.encrypted) "voice" else "data"; id.text = p.text
         }
         "P25P2" -> s.p25p2?.let { p ->
             id.code = p.nac
@@ -102,6 +105,8 @@ fun identOf(s: HamIdSnap): HamIdent? {
         "NXDN" -> s.nxdn?.let { x ->
             id.code = x.ran; id.radioId = x.src; id.tg = x.dst; id.group = x.group; id.encrypted = x.cipher > 0; id.emergency = x.emergency
             if (x.typeD) id.alias = "${x.src shr 11}-${x.src and 0x7ff}"
+            if (x.alias.isNotEmpty()) id.alias = x.alias
+            id.text = x.text
             id.activity = x.activity.ifEmpty { if (x.voiceFrames > 0) "voice" else "" }
         }
         "dPMR" -> s.dpmr?.let { x ->

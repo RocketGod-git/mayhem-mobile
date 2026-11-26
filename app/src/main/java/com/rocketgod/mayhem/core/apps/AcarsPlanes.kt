@@ -16,14 +16,17 @@ import java.util.Locale
 data class AcarsMsg(
     val mhz: String, val down: Boolean, val reg: String, val label: String, val blk: String, val ack: String, val msn: String, val flight: String,
     val crcOk: Boolean, val mode: String, val text: String, val ms: Long,
+    /** Heard from a satellite (Inmarsat Aero, in the Satcom app) rather than on VHF. */
+    val sat: Boolean = false,
 )
 
 /**
  * Reads one decoder line: `ACARS 131.550 ↓ N12345  H1  blk 3  ack NAK  #M01A UA1234  CRC?  mode 2` with the text on
- * the next line (the CRC and mode parts only when they say something). Null for any other line. The channel may come
- * with a decimal comma: the decoder's `%.3f` follows the device's locale.
+ * the next line (the CRC and mode parts only when they say something), or the same with VDL2 or SAT (Inmarsat Aero)
+ * in front. Null for any other line. The channel may come with a decimal comma: the decoder's `%.3f` follows the
+ * device's locale.
  */
-private val HEAD = Regex("^(?:ACARS|VDL2) (\\d+[.,]\\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\\S*))?(  CRC\\?)?(?:  mode (.))?$")
+private val HEAD = Regex("^(ACARS|VDL2|SAT) (\\d+[.,]\\d{3}) ([↓↑]) (.*?)  (..)  blk (.)  ack (NAK|.)(?:  #(.{4}) (\\S*))?(  CRC\\?)?(?:  mode (.))?$")
 
 fun parseAcarsLine(line: String, ms: Long): AcarsMsg? {
     val nl = line.indexOf('\n')
@@ -32,9 +35,9 @@ fun parseAcarsLine(line: String, ms: Long): AcarsMsg? {
     val m = HEAD.find(head) ?: return null
     val g = m.groups
     return AcarsMsg(
-        mhz = g[1]!!.value.replace(',', '.'), down = g[2]!!.value == "↓", reg = g[3]!!.value.trim(), label = g[4]!!.value, blk = g[5]!!.value,
-        ack = g[6]!!.value, msn = g[7]?.value ?: "", flight = (g[8]?.value ?: "").trim(), crcOk = g[9] == null, mode = g[10]?.value ?: "2",
-        text = text, ms = ms,
+        mhz = g[2]!!.value.replace(',', '.'), down = g[3]!!.value == "↓", reg = g[4]!!.value.trim(), label = g[5]!!.value, blk = g[6]!!.value,
+        ack = g[7]!!.value, msn = g[8]?.value ?: "", flight = (g[9]?.value ?: "").trim(), crcOk = g[10] == null, mode = g[11]?.value ?: "2",
+        text = text, ms = ms, sat = g[1]!!.value == "SAT",
     )
 }
 

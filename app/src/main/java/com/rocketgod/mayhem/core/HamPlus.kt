@@ -43,7 +43,8 @@ object HamPlus {
     private const val K_BAND = "hamplus.band"
     private const val K_SPAN = "hamplus.span"
     val SPANS = listOf(2_400_000 to "2.4 MHz", 8_000_000 to "8 MHz", 20_000_000 to "20 MHz")
-    val BANDS = listOf("AUTO" to "AUTO", "2M" to "2 M", "125" to "1.25 M", "70CM" to "70 CM", "6M" to "6 M", "10M" to "10 M")
+    /** AUTO scans the ham bands, BIZ the business bands (VHF, UHF and 900 MHz land mobile). */
+    val BANDS = listOf("AUTO" to "AUTO", "2M" to "2 M", "125" to "1.25 M", "70CM" to "70 CM", "6M" to "6 M", "10M" to "10 M", "BIZ" to "BIZ")
 
     val engine = HamPlusEngine()
     /**

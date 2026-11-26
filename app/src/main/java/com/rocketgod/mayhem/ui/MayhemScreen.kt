@@ -128,6 +128,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.HD -> HdScreen(accent)
                     MayhemApp.DEVICES -> DevicesScreen(accent)
                     MayhemApp.SAT -> SatScreen(accent)
+                    MayhemApp.SATCOM -> SatcomScreen(accent)
                     MayhemApp.ADSB -> AdsbScreen(accent)
                     MayhemApp.AIS -> AisScreen(accent)
                     MayhemApp.APRS -> AprsScreen(accent)

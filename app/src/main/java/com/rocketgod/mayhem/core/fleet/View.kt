@@ -28,8 +28,8 @@ object DispatchView {
     fun secText(c: CallRow): String {
         if (c.encrypted) {
             val parts = arrayListOf("ENCRYPTED")
-            // DMR algorithm IDs have no public table: shown by number
-            if (c.proto == "DMR") { if (c.pi.isNotEmpty() && c.algId >= 0) { parts.add("ALGID 0x${hx(c.algId, 2)}"); parts.add("KEY ${c.keyId}") } else if (c.pi.isNotEmpty()) parts.add("PRIVACY HEADER") }
+            // DMR: the privacy header's algorithm by name (DMR Association IDs) and its key
+            if (c.proto == "DMR") { if (c.pi.isNotEmpty() && c.algId >= 0) { parts.add(dmrAlgName(c.algId)); parts.add("KEY ${c.keyId}") } else if (c.pi.isNotEmpty()) parts.add("PRIVACY HEADER") }
             // NXDN: the cipher type of the VCALL (TS 1-A 6.5.27) and its 6-bit key ID
             else if (c.proto == "NXDN") { if (c.algId > 0) parts.add(NXDN_CIPHERS.getOrNull(c.algId) ?: "CIPHER ${c.algId}"); if (c.keyId > 0) parts.add("KEY ${c.keyId}") }
             else {

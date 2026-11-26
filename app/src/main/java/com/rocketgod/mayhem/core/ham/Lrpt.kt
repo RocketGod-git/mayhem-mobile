@@ -43,8 +43,9 @@ private fun convEncode32(word: Int): IntArray {
     return out
 }
 
-/** Full-frame Viterbi: [soft] holds 2n values (G1, G2; positive = 1), [out] gets n / 8 bytes. Returns a BER estimate. */
-private class Viterbi(private val n: Int) {
+/** Full-frame Viterbi: [soft] holds 2n values (G1, G2; positive = 1), [out] gets n / 8 bytes. Returns a BER estimate.
+ *  The Satcom frames use it too (core/sat/LbandFrame.kt). */
+internal class Viterbi(private val n: Int) {
     private val prev = ByteArray(n * STATES)
     private var m0 = IntArray(STATES); private var m1 = IntArray(STATES)
 

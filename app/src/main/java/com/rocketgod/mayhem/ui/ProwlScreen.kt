@@ -93,6 +93,9 @@ fun ProwlScreen(accent: Color) {
                 ToggleBox(if (v.on) "SKIP" else "NEXT", false, accent, Modifier.weight(1f).fillMaxHeight()) { Prowl.skip() }
             }
             if (v.note.isNotEmpty()) Text(v.note, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+            // who keyed up, when the channel sent an MDC-1200 or FleetSync ID
+            if (t != null && t.id.isNotEmpty()) Text((if (t.emergency) "EMERGENCY · " else "") + t.id, color = if (t.emergency) Palette.danger else accent,
+                fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             // What the signal finder sees, so a tap can go straight to one.
             val inView = signals.sortedByDescending { it.snr }.take(8)
             if (inView.isNotEmpty()) TileRow(inView.map { s ->
@@ -124,7 +127,8 @@ fun ProwlScreen(accent: Color) {
                     for (h in v.log) {
                         val ink = if (h.kept) inkOn(accent) else Palette.muted
                         Row(Modifier.control(accent, h.kept).padding(vertical = d.dp(6f)).padding(start = d.dp(10f), end = d.dp(4f)), verticalAlignment = Alignment.CenterVertically) {
-                            Text("${Prowl.mhz(h.hz)} · ${h.secs.roundToInt()}s · ${"%.2f".format(h.score)}${if (h.kept) "" else " · ${h.why.ifEmpty { "not speech" }}"}",
+                            val who = if (h.id.isEmpty()) "" else " · ${if (h.emergency) "EMERGENCY " else ""}${h.id.replace(Regex("^(MDC-1200|FLEETSYNC I+) "), "")}"
+                            Text("${Prowl.mhz(h.hz)} · ${h.secs.roundToInt()}s · ${"%.2f".format(h.score)}$who${if (h.kept) "" else " · ${h.why.ifEmpty { "not speech" }}"}",
                                 color = ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.clickable { Prowl.holdAt(h.hz, h.mode) })
                             Text("✕", color = ink, fontFamily = Mono, fontSize = d.sp(11f),
