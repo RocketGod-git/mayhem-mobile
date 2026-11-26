@@ -366,12 +366,12 @@ internal fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier:
 
 /** The section chips: one row that scrolls sideways, a count on each (none at 0), the section on screen lit. */
 @Composable
-internal fun HpJump(counts: List<Int>, active: Int, accent: Color, onPick: (Int) -> Unit) {
+internal fun HpJump(counts: List<Int>, active: Int, accent: Color, sections: List<Pair<String, String>> = HP_SECTIONS, onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(50)
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = d.dp(4f), horizontal = d.dp(2f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
         verticalAlignment = Alignment.CenterVertically) {
-        HP_SECTIONS.forEachIndexed { i, (_, label) ->
+        sections.forEachIndexed { i, (_, label) ->
             val on = i == active
             Row(Modifier.then(if (on) Modifier.shadow(d.dp(8f), shape, ambientColor = accent, spotColor = accent) else Modifier).clip(shape)
                 .background(if (on) accent else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape).clickable { onPick(i) }

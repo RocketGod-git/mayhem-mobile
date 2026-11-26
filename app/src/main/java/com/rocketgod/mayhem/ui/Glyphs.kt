@@ -156,6 +156,16 @@ fun AppGlyph(app: MayhemApp, tint: Color, modifier: Modifier = Modifier) {
                     while (a <= 40.0) { val x = 0.6f + r.toFloat() * cos(Math.toRadians(a)).toFloat(); val y = 0.52f + r.toFloat() * sin(Math.toRadians(a)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a += 10.0 }
                 }
             }
+            MayhemApp.GMRS -> {
+                // GMRS: a family handheld, its stubby antenna and a channel readout over the speaker
+                val a = p(0.24f, 0.30f); val b = p(0.68f, 0.92f)
+                path.addRoundRect(RoundRect(a.x, a.y, b.x, b.y, s * 0.06f, s * 0.06f))
+                path.m(0.34f, 0.30f); path.l(0.34f, 0.14f)
+                path.m(0.32f, 0.40f); path.l(0.60f, 0.40f); path.l(0.60f, 0.52f); path.l(0.32f, 0.52f); path.l(0.32f, 0.40f)
+                path.m(0.34f, 0.64f); path.l(0.58f, 0.64f); path.m(0.34f, 0.74f); path.l(0.58f, 0.74f); path.m(0.34f, 0.84f); path.l(0.58f, 0.84f)
+                var a0 = -40.0; var first = true
+                while (a0 <= 40.0) { val x = 0.68f + 0.14f * cos(Math.toRadians(a0)).toFloat(); val y = 0.44f + 0.14f * sin(Math.toRadians(a0)).toFloat(); if (first) { path.m(x, y); first = false } else path.l(x, y); a0 += 10.0 }
+            }
             MayhemApp.CELL -> {
                 // a lattice mast with its antennas, waves going out to both sides
                 path.m(0.5f, 0.3f); path.l(0.34f, 0.92f); path.m(0.5f, 0.3f); path.l(0.66f, 0.92f)

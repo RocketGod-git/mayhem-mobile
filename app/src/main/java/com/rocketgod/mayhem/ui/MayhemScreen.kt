@@ -123,6 +123,7 @@ fun MayhemScreen(status: String, connected: Boolean) {
                     MayhemApp.HAM -> HamScreen(accent)
                     MayhemApp.HAMPLUS -> HamPlusScreen(accent)
                     MayhemApp.CB -> CbScreen(accent)
+                    MayhemApp.GMRS -> GmrsScreen(accent)
                     MayhemApp.JS8 -> Js8Screen(accent)
                     MayhemApp.AUDIO -> AudioScreen(accent)
                     MayhemApp.HD -> HdScreen(accent)

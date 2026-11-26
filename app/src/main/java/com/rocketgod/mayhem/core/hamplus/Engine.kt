@@ -171,8 +171,10 @@ val HAM_PLAN: WatchPlan = object : WatchPlan {
     override fun grid(hz: Long) = hpGridOf(hz)
 }
 
-private class Probe(rate: Double, offsetHz: Double, comb: ((Double) -> HfComb)? = null, private val loHz: Double = 0.0) : WatchProbe {
-    val ddc = Ddc(7_500.0, PROBE_RATE, 63)
+/** HAM+'s FM demodulator, which GMRS and MURS take as it is. [cutHz] and [taps]: the channel filter (GMRS, its
+ *  neighbors 12.5 kHz away, a narrower and steeper one). */
+class Probe(rate: Double, offsetHz: Double, comb: ((Double) -> HfComb)? = null, private val loHz: Double = 0.0, cutHz: Double = 7_500.0, taps: Int = 63) : WatchProbe {
+    private val ddc = Ddc(cutHz, PROBE_RATE, taps)
     val fs: Double
     var oi = FloatArray(0); var oq = FloatArray(0); var au = FloatArray(0); var au2 = FloatArray(0); var a8 = FloatArray(0); override var a48 = FloatArray(0)
     val sub: SubAudioDecoder; val cw: CwReader; val lp: RealFir
@@ -311,10 +313,12 @@ private class Probe(rate: Double, offsetHz: Double, comb: ((Double) -> HfComb)? 
 
     /** The tone (or code) heard through most of the transmission: half of it at least, so a moment of voice read as a tone does not count. */
     override fun tone(): Double = top(tones, 0.0, subN)
-    override fun dcs(): Int = if (tone() != 0.0) 0 else top(dcsCodes, 0, subN)
+    /** The share of the transmission a DCS code must be read through (GMRS asks less: see its DCS_SHARE). */
+    var dcsShare = TONE_SHARE
+    override fun dcs(): Int = if (tone() != 0.0) 0 else top(dcsCodes, 0, subN, dcsShare)
     override fun end() { cw.end(); idc.analog.flush(); look(true) }
     companion object {
-        fun <K> top(m: Map<K, Int>, none: K, total: Long): K { var b = none; var v = 0; for ((k, n) in m) if (n > v) { v = n; b = k }; return if (v >= TONE_SHARE * total) b else none }
+        fun <K> top(m: Map<K, Int>, none: K, total: Long, share: Double = TONE_SHARE): K { var b = none; var v = 0; for ((k, n) in m) if (n > v) { v = n; b = k }; return if (v >= share * total) b else none }
     }
 }
 
@@ -417,7 +421,7 @@ abstract class ChannelWatch<P : WatchProbe>(
     private var fi = FloatArray(0); private var fq = FloatArray(0)
     protected var first = 0L; private set
     protected var count = 0; private set
-    private var hamBand = BooleanArray(0)
+    protected var hamBand = BooleanArray(0); private set
     protected var power = FloatArray(0); private set
     private var floorDb = FloatArray(0)
     protected var snr = FloatArray(0); private set

@@ -41,6 +41,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     HAM("Ham Radio", "SSB · CW · repeaters", "Receive"),
     HAMPLUS("Repeaters", "every repeater and simplex channel at once", "Receive"),
     CB("CB Radio", "all 40 channels at once", "Receive"),
+    GMRS("GMRS", "all 30 channels and MURS at once", "Receive"),
     APRS("Ham Map", "APRS · FT8 · JS8", "Receive"),
     ERT("Utility Meters", "ERT · Gridstream · 802.15.4g", "Receive"),
     BTLE("Bluetooth", "BLE advertising · 2.4 GHz", "Receive"),
@@ -87,6 +88,7 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
         HAM -> "SSB · CW · FM · FT8 · SSTV"
         HAMPLUS -> "FM · DMR · D-STAR · FUSION · P25 · NXDN · M17"
         CB -> "CB · 26.965–27.405 MHZ · AM · FM · SSB"
+        GMRS -> "GMRS · FRS · MURS · NFM · CTCSS · DCS"
         APRS -> "APRS · AX.25 · 144.390 MHZ"
         ERT -> "ERT · GRIDSTREAM · 802.15.4G"
         BTLE -> "BLE · ADVERTISING · 2.4 GHZ"
@@ -631,6 +633,7 @@ object Apps {
             MayhemApp.FLEET -> startFleet()
             MayhemApp.HAMPLUS -> HamPlus.open()
             MayhemApp.CB -> Cb.open()
+            MayhemApp.GMRS -> Gmrs.open()
             MayhemApp.CELL -> startCell()
             MayhemApp.ATSC -> com.rocketgod.mayhem.core.atsc.AtscApp.start()
             MayhemApp.SONDES -> startSondes()
