@@ -3,10 +3,7 @@
  *
  * What it does: finds the digital sidebands an HD station puts either side of its analog carrier, measures how
  * strong they are against the noise just beyond them, and proves they carry OFDM by locking to the cyclic prefix,
- * which also yields the carrier frequency error. What it does not do: decode audio. The codec (HDC) is proprietary
- * and undocumented; nrsc5's decoder is a reverse-engineering of it running to tens of thousands of lines, well
- * beyond a port. Layer 1 proper (symbol sync, system control, the station-information service) is the honest next
- * step, and this is its front end.
+ * which also yields the carrier frequency error. What it does not do: decode; that is in dsp/hd/.
  *
  * How. The channel is mixed to DC and brought to ~480 kHz. A 1024-point spectrum there gives the power in each
  * primary sideband (129.4–198.0 kHz out: subcarriers 356–545 at 363.373 Hz spacing), in the analog channel, and

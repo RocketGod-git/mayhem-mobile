@@ -167,7 +167,7 @@ let rdsOn = false; const rdsBuf = new Float32Array(8192); let rdsN = 0;
 // audio path's channel filter). Off unless the audio app asks; it costs a sideband's worth of filtering.
 const hd = new HdDetector(r => post({ type: 'hd', ...r }));
 let hdOn = false;
-/** The HD Radio app: Layer 1 to the station's data, on the raw IQ beside the WFM audio of the same station. */
+/** The HD Radio app: Layer 1 to the station's data and digital audio, on the raw IQ beside the WFM audio. */
 const hdApp = new HdProcessor(emit);
 /** HD AUTO's wide look is on: the demodulator rests (the span is many times the channel; only the spectrum is wanted). */
 let demodHold = false;
@@ -452,6 +452,8 @@ self.onmessage = (e: MessageEvent) => {
     case 'hd': hdOn = !!m.on; if (!hdOn) hd.reset(); break;
     // HD Radio AUTO is looking across the band at a wide rate: its decoder rests until the look is over
     case 'hdLook': hdApp.paused = demodHold = !!m.on; break;
+    case 'hdProgram': hdApp.audio.select(Number(m.n) & 7); break;
+    case 'hdSurround': hdApp.audio.setSurround(!!m.on && Number(m.channels) >= 6); break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
     case 'pager': pager.select(m.which); break;
     case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;
@@ -758,7 +760,15 @@ function process(iq: Int8Array): void {
 }
 
 function flushAudio(): void {
-  if (audioPort) { const chunk = audioBuf.slice(0, audioLen); audioPort.postMessage(chunk, [chunk.buffer]); }
+  if (audioPort) {
+    const chunk = audioBuf.slice(0, audioLen);
+    if (processor === hdApp) {
+      const o = hdApp.audio.output(chunk);
+      if (o.length === 2) audioPort.postMessage({ l: o[0], r: o[1] }, [o[0].buffer, o[1].buffer]);
+      else audioPort.postMessage({ ch: o }, o.map(x => x.buffer));
+    }
+    else audioPort.postMessage(chunk, [chunk.buffer]);
+  }
   audioLen = 0;
 }
 

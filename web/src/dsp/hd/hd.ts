@@ -6,12 +6,15 @@
 import type { Emit, IqProcessor } from '../core.js';
 import { fft, hann } from '../../fft.js';
 import { HdDetector, type HdReport } from '../hdradio.js';
-import { HdRx, type FrameSoft } from './ofdm.js';
-import { N_PIDS, N_P1, PIDS_BITS, P1_BITS, TbViterbi, depuncture25, descramble, p1Index, pidsIndex, reencodeBer, viterbiTb } from './fec.js';
+import { HdRx, NSYM, type FrameSoft } from './ofdm.js';
+import { P3Decoder } from './p3.js';
+import { N_PIDS, N_P1, PIDS_BITS, PM_ROWS, P1_BITS, TbViterbi, depuncture25, descramble, p1Index, pidsIndex, reencodeBer, viterbiTb } from './fec.js';
 import { l1ToL2, pduFromFrame } from './l2.js';
 import { HdStation } from './station.js';
+import { HdAudio } from './audio.js';
+import { HD_BAND_HI, HD_BAND_LO } from '../../hdscan.js';
 
-const SNAP_MS = 500, SLICE_MS = 10, FIND_N = 4096;
+const L1_SAMPLES = 16 * 32 * NSYM, SNAP_MS = 500, SLICE_MS = 10, AUDIO_SLICE_MS = 12, FIND_N = 4096;
 
 export interface HdCandidate { hz: number; scoreDb: number; levelDb: number }
 
@@ -19,7 +22,10 @@ export class HdProcessor implements IqProcessor {
   centerHz = 0; offsetHz = 0;
   /** AUTO's wide look is on: the span is not one to decode (nothing runs until it is back at the HD rate). */
   paused = false;
+  /** The selected program's digital audio, mixed into the worker's audio output. */
+  readonly audio = new HdAudio();
   private rx = new HdRx();
+  private p3: P3Decoder | null = null; private p4: P3Decoder | null = null;
   private station = new HdStation();
   private readonly det: HdDetector;
   private detReport: HdReport | null = null;
@@ -39,6 +45,7 @@ export class HdProcessor implements IqProcessor {
 
   private wire(): void {
     this.rx.onFrame = f => { this.queue.push(f); if (this.queue.length > 2) { this.queue.shift(); this.framesDropped++; } };
+    this.station.onAudio = (by, pdus) => this.audio.addFrame(by, pdus);
     this.station.onEvent = line => this.emit({ type: 'packet', line: `${new Date().toTimeString().slice(0, 8)} ${(this.tunedHz / 1e6).toFixed(1)} ${line}` });
     this.station.onObject = o => {
       const bytes = o.bytes.slice();
@@ -52,7 +59,8 @@ export class HdProcessor implements IqProcessor {
   }
   /** A new station: everything starts over. */
   clear(): void {
-    this.rx = new HdRx(); this.station = new HdStation(); this.wire(); this.det.reset(); this.detReport = null; this.queue = []; this.job = null; this.framesDropped = 0;
+    this.rx = new HdRx(); this.station = new HdStation(); this.p3 = this.p4 = null; this.wire(); this.det.reset(); this.detReport = null; this.queue = []; this.job = null; this.framesDropped = 0;
+    this.audio.reset();
   }
   tuned(): void { this.clear(); }
 
@@ -72,6 +80,8 @@ export class HdProcessor implements IqProcessor {
       if (!this.job) { const f = this.queue.shift(); if (!f) break; this.job = this.frameJob(f); }
       if (this.job.next().done) this.job = null;
     }
+    const aEnd = performance.now() + AUDIO_SLICE_MS;
+    while (this.audio.decodeOne() && performance.now() < aEnd);
     const now = Date.now();
     this.cpuMs += performance.now() - t0;
     if (now - this.lastSnap >= SNAP_MS) {
@@ -98,6 +108,16 @@ export class HdProcessor implements IqProcessor {
     yield;
     const pdu = pduFromFrame(descramble(bits));
     this.station.addFrame(pdu, sis, { ber, snrLoDb: f.snrLoDb, snrHiDb: f.snrHiDb });
+    if (!f.px) return;
+    const cols = f.px.length / PM_ROWS, ext = cols / 72;
+    if (this.p3?.J !== 2 * ext) this.p3 = new P3Decoder(ext);
+    if (f.px2) this.p4 ??= new P3Decoder(2); else this.p4 = null;
+    const first = Math.round(f.startSample / L1_SAMPLES) * 8;
+    for (let bp = 0; bp < 8; bp++) {
+      yield;
+      for (const r of this.p3.push(f.px.subarray(bp * 64 * cols, (bp + 1) * 64 * cols), first + bp)) this.station.addP3(r.pdu, r.ber);
+      if (f.px2 && this.p4) for (const r of this.p4.push(f.px2.subarray(bp * 64 * 144, (bp + 1) * 64 * 144), first + bp)) this.station.addP3(r.pdu, r.ber);
+    }
   }
 
   /** Power spectrum of the whole span; every second, the FM channels that show both digital sidebands. */
@@ -119,8 +139,8 @@ export class HdProcessor implements IqProcessor {
     };
     const out: HdCandidate[] = [];
     const lo = this.centerHz - rate / 2 + 240_000, hi = this.centerHz + rate / 2 - 240_000;
-    for (let ch = Math.ceil((lo - 87_900_000) / 200_000) * 200_000 + 87_900_000; ch <= hi; ch += 200_000) {
-      if (ch < 87_900_000 || ch > 107_900_000) continue;
+    for (let ch = Math.ceil((lo - HD_BAND_LO) / 200_000) * 200_000 + HD_BAND_LO; ch <= hi; ch += 200_000) {
+      if (ch < HD_BAND_LO || ch > HD_BAND_HI) continue;
       const o = ch - this.centerHz;
       const sbL = db(o - 198_000, o - 130_000), sbH = db(o + 130_000, o + 198_000);
       const outL = db(o - 230_000, o - 206_000), outH = db(o + 206_000, o + 230_000);
@@ -138,7 +158,7 @@ export class HdProcessor implements IqProcessor {
     this.emit({
       type: 'hdsnap', hz: this.tunedHz, centerHz: this.centerHz, rate: this.rate, rx, station: st, cands: this.cands,
       det: d ? { present: d.present, snrDb: d.snrDb, lock: d.lock, sbLoDb: d.sbLoDb, sbHiDb: d.sbHiDb, refDb: d.refDb, analogDb: d.analogDb, cfoHz: d.cfoHz } : null,
-      dropped: this.framesDropped, load: this.cpuLoad, queued: this.queue.length + (this.job ? 1 : 0),
+      dropped: this.framesDropped, load: this.cpuLoad, queued: this.queue.length + (this.job ? 1 : 0), audio: this.audio.status(),
     });
   }
 }

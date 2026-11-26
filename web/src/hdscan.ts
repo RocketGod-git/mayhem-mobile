@@ -8,8 +8,8 @@
  * finder reports in each. Stations already heard are merged in. At the top of the band it looks again and starts over.
  */
 
-/** The FM band's station centers: 87.9 to 107.9 MHz, on a 100 kHz raster so it works everywhere. */
-export const HD_BAND_LO = 87_900_000, HD_BAND_HI = 107_900_000, HD_RASTER = 100_000;
+/** The FM band's station centers: 87.5 to 107.9 MHz, on a 100 kHz raster so it works everywhere. */
+export const HD_BAND_LO = 87_500_000, HD_BAND_HI = 107_900_000, HD_RASTER = 100_000;
 /** A wide look takes at most this many spans across the band; past that the window survey is quicker. */
 export const HD_MAX_LOOKS = 4;
 /** The part of a span a look trusts: the radio's baseband filter rolls the edges off. */
@@ -32,7 +32,7 @@ const snap = (hz: number) => Math.round(hz / HD_RASTER) * HD_RASTER;
 /** The windows of the survey at the HD rate, each heard from its middle, bottom up (the HD finder's reach each side). */
 export function hdWindows(hdRate: number): number[] {
   const reach = hdRate / 2 - 260_000, out: number[] = [];
-  for (let c = 88_000_000 + reach; c - reach < 108_000_000; c += 2 * reach - 100_000) out.push(snap(c));
+  for (let c = HD_BAND_LO + reach; c - reach < HD_BAND_HI + HD_RASTER; c += 2 * reach - 100_000) out.push(snap(c));
   return out;
 }
 

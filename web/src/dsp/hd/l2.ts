@@ -9,6 +9,7 @@
  * (L2 bytes are formed least significant bit first from the L1 stream); block boundary markers (7D 3A E2 42) appear in
  * fixed streams even without FEC and are removed before HDLC un-escaping.
  */
+import { fixAudioHeader } from './rs.js';
 
 /** Table 5-6: the eight L2 PCI codewords. */
 export const PCI_CW = [0x38D8D3, 0xCE3634, 0xE3634C, 0x8D8D33, 0x3634CE, 0x8D338D, 0xD8D338, 0x634CE3];
@@ -61,6 +62,10 @@ export function frameFromPdu(bytes: Uint8Array, L: number, pci: number): Uint8Ar
 export interface AudioPdu {
   off: number; end: number; codecMode: number; streamId: number; pduSeq: number; blend: number; latency: number;
   nop: number; la: number; locators: number[]; hdrExp: number[]; program: number; progType: number | null; access: number; psd: Uint8Array;
+  /** The first packet is the back half of one the previous PDU began; the last is the front half of one the next ends. */
+  pfirst: boolean; plast: boolean;
+  /** The audio packet sequence number (6 bits) of the first whole packet. */
+  pktSeq: number;
 }
 /** One audio transport PDU at byte `off` (1017s Figure 5-2, Table 5-1), or null. */
 export function parseAudioPdu(by: Uint8Array, off: number): AudioPdu | null {
@@ -68,6 +73,7 @@ export function parseAudioPdu(by: Uint8Array, off: number): AudioPdu | null {
   const h = by.subarray(off + 8, off + 14);                 // the eight RS parity bytes come first
   const codecMode = h[0] & 15, streamId = (h[0] >> 4) & 3, pduSeq = ((h[0] >> 6) & 3) | ((h[1] & 1) << 2);
   const blend = (h[1] >> 1) & 3, latency = ((h[2] >> 6) & 3) | ((h[3] & 1) << 2);
+  const pfirst = !!(h[3] & 2), plast = !!(h[3] & 4), pktSeq = (h[3] >> 3) | ((h[4] & 1) << 5);
   const nop = (h[4] >> 1) & 0x3F; let hef = h[4] >> 7; const la = h[5];
   if (codecMode === 15 || nop === 0) return null;
   const lc16 = codecMode === 0 || (streamId === 1 && codecMode >= 1 && codecMode <= 3);
@@ -82,7 +88,7 @@ export function parseAudioPdu(by: Uint8Array, off: number): AudioPdu | null {
     if (p + nbytes + 1 > by.length) return null;
     for (let i = 0; i < nop; i++) {
       const j = (i >> 1) * 3;
-      locators.push(i % 2 === 0 ? by[p + j] | ((by[p + j + 1] >> 4) << 8) : (by[p + j + 1] & 15) | (by[p + j + 2] << 4));
+      locators.push(i % 2 === 0 ? by[p + j] | ((by[p + j + 1] & 15) << 8) : (by[p + j + 1] >> 4) | (by[p + j + 2] << 4));
     }
     p += nbytes;
   }
@@ -99,7 +105,7 @@ export function parseAudioPdu(by: Uint8Array, off: number): AudioPdu | null {
   const psdEnd = off + la;
   const psd = psdEnd >= p ? by.slice(p, Math.min(by.length, psdEnd + 1)) : new Uint8Array(0);
   const end = locators.length ? off + locators[locators.length - 1] : -1;
-  return { off, end, codecMode, streamId, pduSeq, blend, latency, nop, la, locators, hdrExp, program, progType, access, psd };
+  return { off, end, codecMode, streamId, pduSeq, blend, latency, nop, la, locators, hdrExp, program, progType, access, psd, pfirst, plast, pktSeq };
 }
 
 /** Consecutive audio PDUs from the start of the L2 PDU (MPS, then the SPS), stopping before `limit`. */
@@ -107,6 +113,7 @@ export function parseAudioRegion(by: Uint8Array, limit: number): { pdus: AudioPd
   const pdus: AudioPdu[] = [];
   let off = 0;
   while (off < limit - 14) {
+    if (!fixAudioHeader(by, off)) break;
     const d = parseAudioPdu(by, off);
     if (!d || d.end < 0 || d.end >= limit || d.end <= off) break;
     pdus.push(d); off = d.end + 1;
@@ -229,7 +236,12 @@ export function parsePacket(u: Uint8Array): Packet | null {
   return { dtpf, port: body[0] | (body[1] << 8), seq: body[2] | (body[3] << 8), payload: body.slice(4) };
 }
 
-export interface Id3Frame { id: string; text?: string; desc?: string; lang?: string; bytes: Uint8Array }
+export interface Id3Commercial { price: string; validUntil: string; url: string; receivedAs: number; seller: string; description: string; logoMime: string; logo?: Uint8Array }
+export interface Id3Frame {
+  id: string; text?: string; desc?: string; lang?: string; bytes: Uint8Array;
+  /** APIC and GEOB: the content's MIME and bytes (APIC: its picture type); UFID and PRIV: the owner in `desc`, the data. */
+  mime?: string; picType?: number; data?: Uint8Array; commercial?: Id3Commercial;
+}
 const latin1 = (b: Uint8Array) => { let s = ''; for (const c of b) s += String.fromCharCode(c); return s; };
 function utf16(b: Uint8Array): string {
   let le = true, i = 0;
@@ -239,6 +251,26 @@ function utf16(b: Uint8Array): string {
   return s;
 }
 const decodeText = (enc: number, b: Uint8Array) => (enc === 1 || enc === 2 ? utf16(b) : enc === 3 ? new TextDecoder().decode(b) : latin1(b)).replace(/\0+$/, '');
+/** A terminated string and what follows it (two zero bytes on a pair boundary in UTF-16). */
+function splitText(enc: number, b: Uint8Array): [Uint8Array, Uint8Array] {
+  if (enc === 1 || enc === 2) { for (let i = 0; i + 1 < b.length; i += 2) if (!b[i] && !b[i + 1]) return [b.subarray(0, i), b.subarray(i + 2)]; return [b, new Uint8Array(0)]; }
+  const z = b.indexOf(0); return z < 0 ? [b, new Uint8Array(0)] : [b.subarray(0, z), b.subarray(z + 1)];
+}
+const printableText = (b: Uint8Array) => b.length && b.every(c => c >= 32 && c < 127) ? latin1(b) : '';
+/** ID3 COMR (1028s): price, valid until (YYYYMMDD), contact URL, received as, seller, description, optional logo. */
+function parseComr(b: Uint8Array): Id3Commercial {
+  const enc = b[0];
+  let r = b.subarray(1);
+  const [price, a] = splitText(0, r); r = a;
+  const validUntil = latin1(r.subarray(0, 8)); r = r.subarray(8);
+  const [url, c] = splitText(0, r); r = c;
+  const receivedAs = r[0] ?? 0; r = r.subarray(1);
+  const [seller, d] = splitText(enc, r); r = d;
+  const [desc, e] = splitText(enc, r); r = e;
+  const out: Id3Commercial = { price: latin1(price), validUntil, url: latin1(url), receivedAs, seller: decodeText(enc, seller), description: decodeText(enc, desc), logoMime: '' };
+  if (r.length) { const [m, logo] = splitText(0, r); out.logoMime = latin1(m); if (logo.length) out.logo = logo.slice(); }
+  return out;
+}
 /** ID3 v2.3 tag frames (the PSD subset of 1028s); null when it is not a tag. */
 export function parseId3(p: Uint8Array): Id3Frame[] | null {
   if (p.length < 10 || p[0] !== 0x49 || p[1] !== 0x44 || p[2] !== 0x33) return null;
@@ -251,13 +283,24 @@ export function parseId3(p: Uint8Array): Id3Frame[] | null {
     const body = p.slice(q + 10, Math.min(end, q + 10 + fsz));
     q += 10 + fsz;
     const f: Id3Frame = { id, bytes: body };
-    if (id[0] === 'T' && body.length) f.text = decodeText(body[0], body.subarray(1));
-    else if (id === 'COMM' && body.length >= 4) {
+    if (id === 'TXXX' && body.length) { const [d, r] = splitText(body[0], body.subarray(1)); f.desc = decodeText(body[0], d); f.text = decodeText(body[0], r); }
+    else if (id[0] === 'T' && body.length) f.text = decodeText(body[0], body.subarray(1));
+    else if ((id === 'COMM' || id === 'USLT') && body.length >= 4) {
       f.lang = latin1(body.subarray(1, 4));
-      const rest = body.subarray(4), z = rest.indexOf(0);
-      f.desc = decodeText(body[0], z >= 0 ? rest.subarray(0, z) : rest);
-      f.text = z >= 0 ? decodeText(body[0], rest.subarray(z + 1)) : '';
+      const [d, r] = splitText(body[0], body.subarray(4));
+      f.desc = decodeText(body[0], d); f.text = decodeText(body[0], r);
     }
+    else if (id === 'WXXX' && body.length) { const [d, r] = splitText(body[0], body.subarray(1)); f.desc = decodeText(body[0], d); f.text = latin1(r).replace(/\0+$/, ''); }
+    else if (id[0] === 'W') f.text = latin1(body).replace(/\0+$/, '');
+    else if (id === 'UFID' || id === 'PRIV') { const z = body.indexOf(0); f.desc = latin1(body.subarray(0, z < 0 ? body.length : z)); f.data = z < 0 ? new Uint8Array(0) : body.slice(z + 1); f.text = printableText(f.data); }
+    else if (id === 'APIC' && body.length > 4) {
+      // encoding, MIME, picture type, description, then the picture
+      const z = body.indexOf(0, 1); if (z > 0) { f.mime = latin1(body.subarray(1, z)); f.picType = body[z + 1]; const [d, r] = splitText(body[0], body.subarray(z + 2)); f.desc = decodeText(body[0], d); f.data = r.slice(); }
+    }
+    else if (id === 'GEOB' && body.length > 4) {
+      const z = body.indexOf(0, 1); if (z > 0) { f.mime = latin1(body.subarray(1, z)); const [fn, r1] = splitText(body[0], body.subarray(z + 1)), [d, r] = splitText(body[0], r1); f.text = decodeText(body[0], fn); f.desc = decodeText(body[0], d); f.data = r.slice(); }
+    }
+    else if (id === 'COMR' && body.length > 2) f.commercial = parseComr(body);
     out.push(f);
   }
   return out;

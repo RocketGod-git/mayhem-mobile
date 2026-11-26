@@ -10,6 +10,7 @@
  */
 import { fft } from '../../fft.js';
 import { PM_COLS, PM_ROWS, pmColumns } from './fec.js';
+import { px2Columns, pxColumns } from './p3.js';
 
 export const FS = 744_187.5;
 export const NFFT = 2048, NCP = 112, NSYM = NFFT + NCP;
@@ -22,7 +23,12 @@ const WIN_OFF = NCP >> 1;
 export const REF_SC: number[] = [], REF_COL: number[] = [];
 for (let j = 0, sc = -546; sc <= -356; sc += 19, j++) { REF_SC.push(sc); REF_COL.push(j); }
 for (let j = 0, sc = 356; sc <= 546; sc += 19, j++) { REF_SC.push(sc); REF_COL.push(50 + j); }
+/** The main sidebands' references come first; the extended partitions' (MP2, MP3, MP11) follow. */
+const NMAIN = REF_SC.length;
+for (const sc of [-337, -318, 318, 337, -299, -280, 280, 299]) { REF_SC.push(sc); REF_COL.push(sc < 0 ? (sc + 546) / 19 : 50 + (sc - 356) / 19); }
 const NREF = REF_SC.length;
+/** Extended partitions per sideband for a primary service mode indicator (Table 6-2): 0 MP1, 1 MP2, 2 MP3, 4 MP11. */
+export function extPartitions(psmi: number): number { const m = psmi & 3; return m === 2 ? 1 : m !== 3 ? 0 : (psmi & 15) === 11 ? 4 : 2; }
 
 /** Table 11-1 fixed sync bits (bit number to value). */
 export const SYNC_BITS: [number, number][] = [[31, 0], [30, 1], [29, 1], [28, 0], [27, 0], [26, 1], [25, 0], [22, 1], [17, 0], [10, 1], [9, 1]];
@@ -101,6 +107,10 @@ class Resampler {
 export interface FrameSoft {
   /** 512 x 720 PM matrix of soft values, positive meaning 1. */
   pm: Float32Array;
+  /** 512 x (72 per extended partition pair) PX1 matrix (P3) in modes MP2, MP3 and MP11, else null. */
+  px: Float32Array | null;
+  /** 512 x 144 PX2 matrix (P4) in mode MP11, else null. */
+  px2: Float32Array | null;
   psmi: number;
   /** Per-sideband SNR of the equalized data subcarriers, dB. */
   snrLoDb: number; snrHiDb: number;
@@ -266,7 +276,7 @@ export class HdRx {
     // a carrier s whole bins off turns by 2 pi s NSYM / NFFT from one symbol to the next: undo that per candidate
     let bestS = 0, bestV = -Infinity;
     for (let s = -40; s <= 40; s++) {
-      let vr = 0, vi = 0; for (const sc of REF_SC) { const b = (sc + s + 2 * NFFT) % NFFT; vr += scRe[b]; vi += scIm[b]; }
+      let vr = 0, vi = 0; for (let j = 0; j < NMAIN; j++) { const b = (REF_SC[j] + s + 2 * NFFT) % NFFT; vr += scRe[b]; vi += scIm[b]; }
       const a = -4 * Math.PI * s * NSYM / NFFT, v = vr * Math.cos(a) - vi * Math.sin(a);
       if (v > bestV) { bestV = v; bestS = s; }
     }
@@ -331,10 +341,12 @@ export class HdRx {
       for (let j = 0; j < NREF; j++) {
         const i = REF_SC[j] + 546, ar = this.symRe[off + i], ai = this.symIm[off + i], br = this.symRe[prev + i], bi = this.symIm[prev + i];
         const dr = ar * br + ai * bi, di = ai * br - ar * bi;
-        const bit = dr < 0 ? 1 : 0; this.refBits[slot * NREF + j] = bit; n += bit;
+        const bit = dr < 0 ? 1 : 0; this.refBits[slot * NREF + j] = bit;
+        if (j >= NMAIN) continue;
+        n += bit;
         const m = Math.hypot(dr, di) || 1; qr += (dr * dr - di * di) / m; qi += 2 * dr * di / m;
       }
-      this.maj[slot] = n * 2 > NREF ? 1 : 0;
+      this.maj[slot] = n * 2 > NMAIN ? 1 : 0;
       const dphi = Math.atan2(qi, qr) / 2;
       this.cfo += 0.02 * dphi / (2 * Math.PI * NSYM / FS);
     }
@@ -444,15 +456,20 @@ export class HdRx {
     const pm = new Float32Array(PM_ROWS * PM_COLS);
     const hr = new Float32Array(NSC), hi = new Float32Array(NSC);
     const mag = new Float64Array(NREF), ph = new Float64Array(NREF);
+    // references in frequency order per sideband, the extended ones only where the mode lights them
+    const ext = extPartitions(this.lastPsmi), main = (a: number) => Array.from({ length: 11 }, (_, j) => a + j);
+    const N = NMAIN, chains = [[...main(0), ...[N, N + 1, N + 4, N + 5].slice(0, ext)], [...[N + 6, N + 7, N + 2, N + 3].slice(4 - ext), ...main(11)]];
+    const pxCols = ext ? pxColumns(Math.min(ext, 2)) : null, px = pxCols ? new Float32Array(PM_ROWS * pxCols.sc.length) : null;
+    const px2Cols = ext === 4 ? px2Columns() : null, px2 = px2Cols ? new Float32Array(PM_ROWS * px2Cols.sc.length) : null;
     let eLo = 0, vLo = 0, nLo = 0, eHi = 0, vHi = 0, nHi = 0;
     for (let n = 0; n < PM_ROWS; n++) {
       for (let j = 0; j < NREF; j++) { const r = Hs[(n * NREF + j) * 2], i = Hs[(n * NREF + j) * 2 + 1]; mag[j] = Math.hypot(r, i); ph[j] = Math.atan2(i, r); }
-      for (const [a, b] of [[0, 11], [11, 22]]) {
-        for (let j = a + 1; j < b; j++) { let d = ph[j] - ph[j - 1]; while (d > Math.PI) { ph[j] -= 2 * Math.PI; d -= 2 * Math.PI; } while (d < -Math.PI) { ph[j] += 2 * Math.PI; d += 2 * Math.PI; } }
-        for (let j = a; j < b - 1; j++) {
-          const k0 = REF_SC[j], k1 = REF_SC[j + 1];
+      for (const ch of chains) {
+        for (let q = 1; q < ch.length; q++) { const j = ch[q]; let d = ph[j] - ph[ch[q - 1]]; while (d > Math.PI) { ph[j] -= 2 * Math.PI; d -= 2 * Math.PI; } while (d < -Math.PI) { ph[j] += 2 * Math.PI; d += 2 * Math.PI; } }
+        for (let q = 0; q < ch.length - 1; q++) {
+          const j0 = ch[q], j1 = ch[q + 1], k0 = REF_SC[j0], k1 = REF_SC[j1];
           for (let k = k0; k <= k1; k++) {
-            const t = (k - k0) / (k1 - k0), m = mag[j] + t * (mag[j + 1] - mag[j]), p = ph[j] + t * (ph[j + 1] - ph[j]);
+            const t = (k - k0) / (k1 - k0), m = mag[j0] + t * (mag[j1] - mag[j0]), p = ph[j0] + t * (ph[j1] - ph[j0]);
             hr[k + 546] = m * Math.cos(p); hi[k + 546] = m * Math.sin(p);
           }
         }
@@ -467,8 +484,12 @@ export class HdRx {
         const e = Math.abs(v) / h2;                                    // equalized amplitude on this rail
         if (k < 546) { eLo += e; vLo += e * e; nLo++; } else { eHi += e; vHi += e * e; nHi++; }
       }
+      for (const [m, cs] of [[px, pxCols], [px2, px2Cols]] as const) if (m && cs) for (let c = 0; c < cs.sc.length; c++) {
+        const k = cs.sc[c] + 546, xr = this.symRe[off + k], xi = this.symIm[off + k], a = hr[k], b = hi[k];
+        m[n * cs.sc.length + c] = cs.iq[c] ? xi * a - xr * b : xr * a + xi * b;
+      }
     }
     const snr = (s: number, s2: number, n: number) => { if (!n) return -99; const m = s / n, v = s2 / n - m * m; return 10 * Math.log10(m * m / Math.max(v, 1e-9)); };
-    this.onFrame({ pm, psmi: this.lastPsmi, snrLoDb: snr(eLo, vLo, nLo), snrHiDb: snr(eHi, vHi, nHi), startSample: this.symStart[fs % SYMS] });
+    this.onFrame({ pm, px, px2, psmi: this.lastPsmi, snrLoDb: snr(eLo, vLo, nLo), snrHiDb: snr(eHi, vHi, nHi), startSample: this.symStart[fs % SYMS] });
   }
 }
