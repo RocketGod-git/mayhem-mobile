@@ -225,7 +225,7 @@ internal fun HamDigitalTab(accent: Color) {
         }
         if (g.mode == HamDigital.Mode.P25 || g.mode == HamDigital.Mode.AUTO) P25Panel(p25)
         if (g.mode == HamDigital.Mode.DMR || g.mode == HamDigital.Mode.AUTO) DmrPanel(accent, dmr, g.dmrSlot)
-        SectionLabel("PSK31 CENTRE · RTTY BAUD / SHIFT")
+        SectionLabel("PSK31 CENTER · RTTY BAUD / SHIFT")
         val psk = listOf(500.0, 1000.0, 1500.0, 2000.0)
         SegBar(psk.map { "${it.toInt()} Hz" }, psk.indexOf(g.pskHz), accent) { i -> HamDigital.update { it.copy(pskHz = psk[i]) } }
         Spacer(Modifier.height(d.gap))

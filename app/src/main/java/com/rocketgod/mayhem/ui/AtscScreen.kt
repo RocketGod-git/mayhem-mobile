@@ -121,11 +121,16 @@ fun AtscScreen(accent: Color) {
     val d = rememberDims()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val s by AtscApp.proc.snap.collectAsState()
+    val liveSnap by AtscApp.proc.snap.collectAsState()
     val scan by AtscApp.scan.collectAsState()
     val stills by AtscApp.stills.collectAsState()
     val kind by Radio.kind.collectAsState()
     val logSnap by AtscApp.log.snapshot.collectAsState()
+    // PAUSE holds the channels, the guide and the log still for reading; decoding carries on and RESUME catches up
+    var paused by remember { mutableStateOf(false) }
+    var heldSnap by remember { mutableStateOf<AtscSnap?>(null) }
+    var heldLog by remember { mutableStateOf<List<String>>(emptyList()) }
+    val s = if (paused) heldSnap else liveSnap
     val wide = d.wide
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf("") }
@@ -171,7 +176,9 @@ fun AtscScreen(accent: Color) {
         Row(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.Top) {
             AtSeg(tabs.map { labels[it] }, tabs.indexOf(view), accent, Modifier.weight(1f)) { view = tabs[it] }
             ToggleBox("EXPORT", false, accent) { export() }
-            IconBox(ClearIcon, "Clear") { scope.launch(Dispatchers.Default) { AtscApp.clear() }; sel = ""; guide.clear() }
+            PauseClear(paused, accent, Modifier, onPause = { paused = !paused; heldSnap = liveSnap; heldLog = logSnap.lines }) {
+                scope.launch(Dispatchers.Default) { AtscApp.clear() }; sel = ""; guide.clear(); heldSnap = null; heldLog = emptyList()
+            }
             if (withFull && !wide) IconBox(FullscreenIcon, "Full screen") { full = true }
         }
     }
@@ -202,7 +209,7 @@ fun AtscScreen(accent: Color) {
                 0 -> wall(Modifier.fillMaxSize())
                 1 -> AtSignal(s, sigSel, accent, Modifier.fillMaxSize(), { sigSel = it }, { AtscApp.holdOn(it) })
                 2 -> AtGuide(s, guide, wide, accent, Modifier.fillMaxSize(), ::pick)
-                else -> LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "looking for stations…", total = logSnap.total, accent = accent)
+                else -> LogList(if (paused) heldLog else logSnap.lines, Modifier.fillMaxSize(), empty = "looking for stations…", total = if (paused) null else logSnap.total, accent = accent)
             }
             if (!wide && view != 3) detailPanel(Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)))
         }

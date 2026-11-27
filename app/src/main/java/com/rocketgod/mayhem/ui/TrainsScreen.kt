@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -88,9 +89,14 @@ fun TrainsScreen(accent: Color) {
     val d = rememberDims()
     val band by Apps.trainsBand.collectAsState()
     val auto by Apps.trainsAuto.collectAsState()
-    val units by Apps.trains.units.collectAsState()
-    val hots by Apps.trains.hots.collectAsState()
-    val stations by Apps.trains.stations.collectAsState()
+    val liveUnits by Apps.trains.units.collectAsState()
+    val liveHots by Apps.trains.hots.collectAsState()
+    val liveStations by Apps.trains.stations.collectAsState()
+    // PAUSE holds the cards still for reading as well as the log; decoding carries on and RESUME catches up
+    var held by remember { mutableStateOf<Triple<List<EotUnit>, List<PtcStation>, List<HotHeard>>?>(null) }
+    val units = held?.first ?: liveUnits
+    val stations = held?.second ?: liveStations
+    val hots = held?.third ?: liveHots
     val activity by Apps.trains.activity.collectAsState()
     val other by Apps.trains.ptcOther.collectAsState()
     var view by rememberSaveable { mutableIntStateOf(0) }
@@ -168,7 +174,9 @@ fun TrainsScreen(accent: Color) {
     // bursts), a bigger screen keeps it, and the waterfall's own show / hide overrides either
     val waterfall = waterfallOn(MayhemApp.TRAINS, phoneDefault = false)
     PacketFrame(accent, Apps.trainsLog, tag = "TRAINS", title = "END OF TRAIN · TRAIN CONTROL", roomy = true, listWeight = if (waterfall) 2.5f else 6f, burstDb = burst, waterfall = waterfall,
-        onWaterfall = { Apps.setWaterfall(MayhemApp.TRAINS, !waterfall) }, controls = {
+        onWaterfall = { Apps.setWaterfall(MayhemApp.TRAINS, !waterfall) },
+        onPause = { on -> held = if (on) Triple(liveUnits, liveStations, liveHots) else null },
+        onClear = { Apps.trains.clear(); sel = null; if (held != null) held = Triple(emptyList(), emptyList(), emptyList()) }, controls = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
             SegBar(listOf("EOT · HOT", "PTC 220", "BOTH"), if (auto) 2 else if (band == TrainsProcessor.Band.EOT) 0 else 1, accent, Modifier.weight(1f)) {
                 when (it) {
@@ -685,10 +693,13 @@ private fun ptcFields(s: PtcStation, now: Long): List<Pair<String, String>> {
  */
 @Composable
 internal fun FieldDetail(fields: List<Pair<String, String>>, title: String, kind: String, accent: Color, modifier: Modifier,
-                         history: List<Pair<String, String>> = emptyList(), onClose: () -> Unit) {
+                         history: List<Pair<String, String>> = emptyList(),
+                         /** A label's explanation, shown when the underlined label is tapped. */
+                         meanings: Map<String, String> = emptyMap(), onClose: () -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(d.dp(14f))
     val scroll = rememberScrollState()
+    var why by remember(title) { mutableStateOf<String?>(null) }
     Column(modifier.fillMaxWidth().clip(shape).background(Palette.panel.copy(alpha = 0.95f))
         .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.16f), Palette.panel)))
         .border(1.5.dp, accent.copy(alpha = 0.8f), shape).scrollGlow(scroll).verticalScroll(scroll).padding(d.dp(11f)),
@@ -701,7 +712,8 @@ internal fun FieldDetail(fields: List<Pair<String, String>>, title: String, kind
         }
         SelectionContainer {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(d.dp(4f))) {
-                FieldGrid(fields, labelWidth = 112f, minColumn = 320f)
+                FieldGrid(fields, labelWidth = 112f, minColumn = 320f, meanings = meanings) { m -> why = if (why == m) null else m }
+                why?.let { w -> Text(w, color = Palette.accent2, fontFamily = Mono, fontSize = d.sp(10f), modifier = Modifier.clickable { why = null }) }
                 if (history.isNotEmpty()) {
                     Text("EVERY TIME IT WAS HEARD", color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 2.sp,
                         modifier = Modifier.padding(top = d.dp(4f)))
@@ -720,7 +732,8 @@ internal fun FieldDetail(fields: List<Pair<String, String>>, title: String, kind
  * the web's field grid: a phone gets one column, a tablet or a full-screen panel two or more.
  */
 @Composable
-internal fun FieldGrid(fields: List<Pair<String, String>>, labelWidth: Float, minColumn: Float) {
+internal fun FieldGrid(fields: List<Pair<String, String>>, labelWidth: Float, minColumn: Float,
+                       meanings: Map<String, String> = emptyMap(), onWhy: (String) -> Unit = {}) {
     val d = rememberDims()
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val gap = d.dp(10f)
@@ -731,8 +744,10 @@ internal fun FieldGrid(fields: List<Pair<String, String>>, labelWidth: Float, mi
                     val f = row.getOrNull(i)
                     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
                         if (f != null) {
+                            val m = meanings[f.first]
                             Text(f.first, color = Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9f), letterSpacing = 1.sp,
-                                modifier = Modifier.width(d.dp(labelWidth)))
+                                textDecoration = if (m != null) TextDecoration.Underline else null,
+                                modifier = Modifier.width(d.dp(labelWidth)).then(if (m != null) Modifier.clickable { onWhy(m) } else Modifier))
                             Text(f.second, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
                         }
                     }

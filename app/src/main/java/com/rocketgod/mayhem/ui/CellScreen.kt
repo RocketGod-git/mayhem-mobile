@@ -159,12 +159,17 @@ fun CellScreen(accent: Color) {
     val d = rememberDims()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val s by Apps.cell.snap.collectAsState()
+    val liveSnap by Apps.cell.snap.collectAsState()
     val band by Apps.cellBand.collectAsState()
     val scan by Apps.cellScan.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
     val kind by Radio.kind.collectAsState()
     val logSnap by Apps.cellLog.snapshot.collectAsState()
+    // PAUSE holds the cells, the messages and the log still for reading; decoding carries on and RESUME catches up
+    var paused by remember { mutableStateOf(false) }
+    var heldSnap by remember { mutableStateOf<CellSnap?>(null) }
+    var heldLog by remember { mutableStateOf<List<String>>(emptyList()) }
+    val s = if (paused) heldSnap else liveSnap
     val wide = d.wide
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
@@ -222,7 +227,9 @@ fun CellScreen(accent: Color) {
         Row(modifier, horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.Top) {
             ClSeg(tabs.map { "${CL_VIEWS[it]} ${counts[it]}".trim() }, tabs.indexOf(view), accent, Modifier.weight(1f)) { view = tabs[it] }
             ToggleBox("EXPORT", false, accent) { export() }
-            IconBox(ClearIcon, "Clear") { scope.launch(Dispatchers.Default) { Apps.cell.clear() }; sel = null }
+            PauseClear(paused, accent, Modifier, onPause = { paused = !paused; heldSnap = liveSnap; heldLog = logSnap.lines }) {
+                scope.launch(Dispatchers.Default) { Apps.cell.clear() }; sel = null; heldSnap = null; heldLog = emptyList()
+            }
             if (withFull && !wide) IconBox(FullscreenIcon, "Full screen") { full = true }
         }
     }
@@ -292,7 +299,7 @@ fun CellScreen(accent: Color) {
                 1 -> if (s == null || s!!.cells.isEmpty()) EmptyState("cellcards", Modifier.fillMaxSize().panel(), accent)
                     else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = gap) { items(s!!.cells, key = { it.key }) { c -> CellCard(c, s!!, now, sel == c.key, accent, ::pick) } }
                 2 -> NeighborList(s, now, accent, Modifier.fillMaxSize(), ::pick)
-                else -> LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "watching for LTE cells…", total = logSnap.total, accent = accent)
+                else -> LogList(if (paused) heldLog else logSnap.lines, Modifier.fillMaxSize(), empty = "watching for LTE cells…", total = if (paused) null else logSnap.total, accent = accent)
             }
             if (!wide && view != 3) detailPanel(Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)))
         }

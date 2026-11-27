@@ -73,10 +73,13 @@ fun MetersScreen(accent: Color) {
     val rate by SdrEngine.rateHz.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
     val nets by Apps.mesh.nets.collectAsState()
-    val devices by Apps.mesh.devices.collectAsState()
+    val live by Apps.mesh.devices.collectAsState()
     val bursts by Apps.mesh.bursts.collectAsState()
     val links by Apps.mesh.links.collectAsState()
     val logSnap by Apps.metersLog.snapshot.collectAsState()
+    // PAUSE holds the cards and the log still for reading; decoding carries on and RESUME catches up
+    var held by remember { mutableStateOf<Pair<List<MeshDevice>, List<String>>?>(null) }
+    val devices = held?.first ?: live
     var view by rememberSaveable { mutableIntStateOf(0) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
     var focusKey by remember { mutableIntStateOf(0) }
@@ -94,7 +97,7 @@ fun MetersScreen(accent: Color) {
         for (dv in devices) if (dv.net == MeshDecoder.GRIDSTREAM) { val la = dv.lat; val lo = dv.lon; if (la != null && lo != null) byId[dv.id] = la to lo }
         GeoLayers(lines = links.mapNotNull { k -> val a = byId[k.a]; val b = byId[k.b]; if (a != null && b != null) a to b else null })
     }
-    val picked = devices.firstOrNull { it.key == sel }
+    val picked = live.firstOrNull { it.key == sel } ?: devices.firstOrNull { it.key == sel }
 
     val wf = waterfallOn(MayhemApp.ERT, phoneDefault = true)
     @Composable
@@ -103,6 +106,9 @@ fun MetersScreen(accent: Color) {
             // DEVICES, MAP and the decode LOG: one switcher, the same inline and full screen
             SegBar(listOf("DEVICES · ${devices.size}", "MAP · ${mapItems.size}", "LOG · ${logSnap.total}"), view, accent, Modifier.weight(1f).fillMaxHeight()) { view = it }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
+            PauseClear(held != null, accent, onPause = { held = if (held == null) live to logSnap.lines else null }) {
+                Apps.mesh.clear(); Apps.metersLog.clear(); sel = null; if (held != null) held = emptyList<MeshDevice>() to emptyList()
+            }
         }
     }
 
@@ -111,7 +117,7 @@ fun MetersScreen(accent: Color) {
     fun stage(modifier: Modifier) {
         Box(modifier) {
             if (view == 2) {
-                LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "watching the band for meters…", total = logSnap.total, accent = accent)
+                LogList(held?.second ?: logSnap.lines, Modifier.fillMaxSize(), empty = "watching the band for meters…", total = if (held == null) logSnap.total else null, accent = accent)
             } else if (view == 0 && devices.isEmpty()) {
                 EmptyState("ert", Modifier.fillMaxSize().panel(), accent)
             } else if (view == 0) {

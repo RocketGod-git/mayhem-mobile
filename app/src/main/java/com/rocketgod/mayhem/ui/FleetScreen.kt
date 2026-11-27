@@ -388,6 +388,8 @@ fun FleetScreen(accent: Color) {
                                         ToggleBox("EXPORT", false, accent) { export() }
                                         ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent) { held = if (held == null) live else null }
                                         IconBox(ClearIcon, "Clear") { Apps.fleet.clear(); Apps.fleetLog.clear(); Dispatch.forget(); held = null; sel = null }
+                                        // the tabbed view over the whole screen, as the web app's full-screen button gives
+                                        IconBox(FullscreenIcon, "Full screen") { full = true }
                                     }
                                     if (s != null) OnAirStack(s, now, 4, audioOn, following?.key, me, vu, prefs, lock, colorOf, acts, Modifier.fillMaxWidth())
                                 }

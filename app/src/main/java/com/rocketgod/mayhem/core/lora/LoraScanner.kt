@@ -221,6 +221,17 @@ class LoraScanner : IqProcessor {
         if (air > 0) busy += 0.1 * (used / air - busy)
     }
 
+    /** One known channel inside the span, for the screen: always on, open now, ms since it was last hot (null: never). */
+    class ChannelState(val name: String, val hz: Long, val bw: Int, val standing: Boolean, val active: Boolean, val hotAgoMs: Long?)
+
+    /** The known channels inside the span now, with their activity. Read-only, from the UI: a copy as it stands. */
+    fun channelStates(): List<ChannelState> {
+        val t = written; val r = rate
+        val now = runCatching { slots.toList() }.getOrNull() ?: return emptyList()
+        return now.map { s -> ChannelState(s.ch.name, s.ch.hz, s.ch.bw, s.standing, s.active,
+            if (s.lastHot > 0 && r > 0) max(0L, (t - s.lastHot) * 1000 / r) else null) }
+    }
+
     /** The known channels that fall inside the span (clear of its edges), as bin ranges. */
     private fun placeSlots(center: Long) {
         slotCenter = center

@@ -1,6 +1,10 @@
 package com.rocketgod.mayhem.ui
 
 import com.rocketgod.mayhem.core.Units
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
@@ -187,9 +191,16 @@ fun AdsbScreen(accent: Color) {
     LaunchedEffect(Unit) { Apps.adsbPick?.let { sel = it; Apps.adsbPick = null } }
     var frozen by remember { mutableStateOf<List<Aircraft>?>(null) }
     var focusKey by remember { mutableStateOf(0) }
+    var full by rememberSaveable { mutableStateOf(false) }
     val planes = frozen ?: live
     val now = ticker()
     val a = live.firstOrNull { it.icao == sel } ?: planes.firstOrNull { it.icao == sel }
+    val mapPane: @Composable (Modifier) -> Unit = { mm ->
+        AdsbMap(planes, accent, home, sel, mm.panel(), focus = a?.let { p -> p.lat?.let { la -> p.lon?.let { la to it } } }, focusKey = focusKey,
+            emptyTitle = if (planes.any { it.lat != null }) "" else "NOTHING HEARD YET",
+            emptySub = mapEmptySub("aircraft appear here once each one sends its position", home),
+            full = full, onFull = { full = !full }) { sel = it }
+    }
     // 1090 MHz pulses hardly show on a waterfall: a phone gives its room to the map
     val wf = waterfallOn(MayhemApp.ADSB, phoneDefault = false)
     TrafficFrame(accent, tunable = false, tag = "AIRCRAFT", title = "$frames FRAMES", count = planes.size, unit = "AIRCRAFT",
@@ -199,14 +210,78 @@ fun AdsbScreen(accent: Color) {
         if (a != null) AircraftCard(a, home, now, onMap = if (a.lat != null) ({ view = View.MAP; focusKey++ }) else null) { sel = null }
         val m = Modifier.fillMaxWidth().weight(1f)
         when (view) {
-            View.MAP -> AdsbMap(planes, accent, home, sel, m.panel(), focus = a?.let { p -> p.lat?.let { la -> p.lon?.let { la to it } } }, focusKey = focusKey,
-                emptyTitle = if (planes.any { it.lat != null }) "" else "NOTHING HEARD YET",
-                emptySub = mapEmptySub("aircraft appear here once each one sends its position", home)) { sel = it }
-            else -> TwoLineList(planes.sortedByDescending { it.seenAtMs }, { it.icao }, sel, m, "adsb",
-                top = { "${it.icao.uppercase()} ${it.flight?.trim() ?: ""}" },
-                bottom = { p -> listOfNotNull(p.altBaro?.let { "%,d ft".format(it) }, p.gs?.let { "$it kt" }, p.track?.let { "$it°" },
-                    if (p.lat != null && p.lon != null) "%.3f,%.3f".format(p.lat, p.lon) else "no pos").joinToString(" · ") }) { p ->
-                sel = p.icao; if (p.lat != null) view = View.MAP
+            View.MAP -> if (full) EmptyPanel("the map is open full screen", m) else mapPane(m)
+            else -> AircraftList(planes.sortedByDescending { it.seenAtMs }, sel, home, m) { p ->
+                sel = p.icao; if (p.lat != null) { view = View.MAP; focusKey++ }
+            }
+        }
+    }
+    // the map over the whole window, the selected aircraft and the list with it
+    if (full) FullscreenPanel("FLIGHTS · ${planes.size} AIRCRAFT", accent, onClose = { full = false }) {
+        val pick: (Aircraft) -> Unit = { p -> sel = p.icao; if (p.lat != null) focusKey++ }
+        if (d.wide) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            mapPane(Modifier.weight(1f).fillMaxHeight())
+            Column(Modifier.width(d.dp(360f)).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                if (a != null) AircraftCard(a, home, now, onMap = null) { sel = null }
+                AircraftList(planes.sortedByDescending { it.seenAtMs }, sel, home, Modifier.fillMaxWidth().weight(1f), pick)
+            }
+        } else {
+            if (a != null) AircraftCard(a, home, now, onMap = null) { sel = null }
+            mapPane(Modifier.fillMaxWidth().weight(0.62f).padding(vertical = d.dp(6f)))
+            AircraftList(planes.sortedByDescending { it.seenAtMs }, sel, home, Modifier.fillMaxWidth().weight(0.38f), pick)
+        }
+    }
+}
+
+/**
+ * The aircraft list: the photo (a plane glyph until the registry sends one), callsign and hex, registration and type,
+ * operator, then altitude with a climb arrow, speed, and distance and bearing from you.
+ */
+@Composable
+private fun AircraftList(planes: List<Aircraft>, selected: String?, home: Pair<Double, Double>?, modifier: Modifier, onPick: (Aircraft) -> Unit) {
+    val d = rememberDims()
+    val state = rememberLazyListState()
+    AircraftInfo.changed.collectAsState().value
+    if (planes.isEmpty()) { EmptyPanel("adsb", modifier); return }
+    Box(modifier.panel()) {
+        LazyColumn(Modifier.fillMaxSize().scrollGlow(state).padding(horizontal = d.dp(4f), vertical = d.dp(2f)), state = state) {
+            itemsIndexed(planes, key = { _, it -> it.icao }) { i, p ->
+                LaunchedEffect(p.icao) { AircraftInfo.lookup(p.icao) }
+                val info = AircraftInfo.get(p.icao)
+                val on = p.icao == selected
+                val ink = if (on) Palette.accent2 else Palette.ink
+                val sub = if (on) Palette.accent2.copy(alpha = 0.85f) else Palette.muted
+                val call = p.flight?.trim().orEmpty()
+                Row(Modifier.fillMaxWidth().background(if (i % 2 == 1) Palette.panel.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(3.dp))
+                    .clickable { onPick(p) }.padding(vertical = d.dp(5f), horizontal = d.dp(4f)),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                    Box(Modifier.size(d.dp(56f), d.dp(40f)).clip(RoundedCornerShape(4.dp)).background(Palette.surface), contentAlignment = Alignment.Center) {
+                        val photo = info?.photo
+                        if (photo != null) Image(remember(photo) { photo.asImageBitmap() }, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        else AppGlyph(MayhemApp.ADSB, Palette.muted, Modifier.size(d.dp(26f)))
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                            Text(call.ifEmpty { p.icao.uppercase() }, color = ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1)
+                            if (call.isNotEmpty()) Text(p.icao.uppercase(), color = sub, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
+                        }
+                        val id = listOfNotNull(info?.reg, info?.typeIcao).joinToString(" · ").ifEmpty { if (info != null && !info.done) "looking up…" else "" }
+                        if (id.isNotEmpty()) Text(id, color = sub, fontFamily = Mono, fontSize = d.sp(10.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val op = info?.owner ?: listOfNotNull(info?.maker, info?.type).joinToString(" ")
+                        if (op.isNotEmpty()) Text(op, color = sub, fontFamily = Mono, fontSize = d.sp(10.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        val climb = p.vertRate?.let { if (it > 300) " ▲" else if (it < -300) " ▼" else "" } ?: ""
+                        Text((p.altBaro?.let { "%,d ft".format(it) } ?: "— ft") + climb, color = ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(11f), maxLines = 1)
+                        Text(p.gs?.let { "$it kt" } ?: "— kt", color = sub, fontFamily = Mono, fontSize = d.sp(10.5f), maxLines = 1)
+                        val la = p.lat; val lo = p.lon
+                        val far = if (la == null || lo == null) "no position" else home?.let { h ->
+                            val (km, deg) = com.rocketgod.mayhem.core.ham.distanceBearing(h.first, h.second, la, lo)
+                            "%.0f nmi · %d°".format(km * 0.539957, Math.round(deg).toInt())
+                        } ?: ""
+                        if (far.isNotEmpty()) Text(far, color = sub, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
+                    }
+                }
             }
         }
     }

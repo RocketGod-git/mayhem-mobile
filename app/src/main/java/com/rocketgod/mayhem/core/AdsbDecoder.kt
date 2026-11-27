@@ -12,7 +12,7 @@ import kotlin.math.sqrt
  * Pure-Kotlin ADS-B (Mode S) decoder for RAW IQ at 2.0 Msps / 1090 MHz — the Kotlin counterpart of Mayhem's
  * proc_adsbrx. Ported from antirez's dump1090 (via Wardrive Go): magnitude lookup → preamble correlation →
  * Manchester bit extraction → CRC-24 → DF17/18 field decode (ICAO, callsign, altitude, airborne CPR position,
- * velocity). Decoded aircraft are pushed into [AdsbStore].
+ * velocity), plus the squawk from DF5/DF21 identity replies. Decoded aircraft are pushed into [AdsbStore].
  *
  * [process] is fed one IQ buffer at a time by [SdrEngine] when in ADS-B mode; it carries the trailing samples
  * across buffers so a message straddling a buffer boundary still decodes. [refProvider] (the phone's GPS fix)
@@ -116,6 +116,16 @@ object AdsbDecoder : IqProcessor {
                 k += 8
             }
             val df = msg[0] shr 3
+            if (errors == 0 && (df == 5 || df == 21)) {
+                // Identity reply: the parity field is CRC xor ICAO, so only a plane already confirmed by DF17 is trusted.
+                val id = identity(msg)
+                if (id != null && (icaoFrames[id.first] ?: 0) >= MIN_CONFIRM) {
+                    AdsbStore.noteFrame()
+                    batch.getOrPut(id.first) { Aircraft(id.first) }.apply { lastTs = nowTs; squawk = id.second }
+                    j += ((if (df == 5) SHORT_BITS else LONG_BITS) + PREAMBLE) * 2
+                } else j++
+                continue
+            }
             if (errors > 0 || (df != 17 && df != 18)) { j++; continue }   // only ADS-B (DF17/18), clean bits
             dbgDf++
             val msgBits = LONG_BITS                                        // DF17/18 are always 112-bit
@@ -201,6 +211,24 @@ object AdsbDecoder : IqProcessor {
                 }
             }
         }
+    }
+
+    /** DF5 / DF21 identity reply bytes to (ICAO recovered from the address parity, squawk), or null for any other DF. */
+    fun identity(msg: IntArray): Pair<String, String>? {
+        val df = msg[0] shr 3
+        if (df != 5 && df != 21) return null
+        val icao = "%06x".format(checksum(msg, if (df == 5) SHORT_BITS else LONG_BITS))
+        return icao to squawkOf(((msg[2] shl 8) or msg[3]) and 0x1FFF)
+    }
+
+    /** 13-bit ID field (C1 A1 C2 A2 C4 A4 X B1 D1 B2 D2 B4 D4) to the four octal squawk digits. */
+    fun squawkOf(id13: Int): String {
+        fun b(n: Int) = (id13 shr n) and 1
+        val a = b(11) or (b(9) shl 1) or (b(7) shl 2)
+        val bb = b(5) or (b(3) shl 1) or (b(1) shl 2)
+        val c = b(12) or (b(10) shl 1) or (b(8) shl 2)
+        val d = b(4) or (b(2) shl 1) or (b(0) shl 2)
+        return "$a$bb$c$d"
     }
 
     /** ADS-B 12-bit altitude (Q-bit path) → feet, or null. */
