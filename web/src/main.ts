@@ -52,6 +52,7 @@ import type { GmrsSnap } from './dsp/gmrs/engine.js';
 import { GMRS_RATE, MURS_RATE, NARROW_RATE, centerOf as gmrsCenter, type GmrsBand } from './dsp/gmrs/plan.js';
 import { GMRS_NAMER, gmrsBandsHtml, gmrsBoardHtml, gmrsCallsHtml, gmrsCardHtml, gmrsChanTitle, gmrsHeadHtml, gmrsHeatHtml, gmrsListenHtml, gmrsLogHtml, gmrsTilesHtml } from './gmrs-ui.js';
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, protoLabel, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
+import { enteredPlan } from './dsp/fleet/smartnet.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { hamSpots, loadLayers, saveLayers, visibleSpots, gridRing, freqText, bandLabel, type HamSpot, type HamLayer } from './ham-spots.js';
@@ -5870,6 +5871,7 @@ function renderFleet(view: HTMLElement): void {
     const t = e.target as HTMLElement;
     const lk = t.closest<HTMLElement>('[data-fllock]'); if (lk) { const [sys, site] = lk.dataset.fllock!.split('|'); const l = dispatchLockFor(sys, site ?? ''); if (l) dispatchLock(l); return true; }
     if (t.closest('[data-flunlock]')) { dispatchLock(null); return true; }
+    const pl = t.closest<HTMLElement>('[data-flplan]'); if (pl) { const hz = Number(pl.dataset.flplan); const st = fleetUi.snap?.systems.flatMap(x => x.sites).find(x => x.plan?.ccHz === hz); dispatchPlanDialog(hz, st?.plan?.how === 'entered' || st?.plan?.how === 'learned'); return true; }
     const go = t.closest<HTMLElement>('[data-flgo]'); if (go) { const [la, lo, ...k] = go.dataset.flgo!.split(','); dispatchGoTo(Number(la), Number(lo), k.join(',')); return true; }
     return false;
   };
@@ -5963,7 +5965,8 @@ function fleetSiteHtml(sys: FleetSystem, site: FleetSite, now: number): string {
   const lvl = Math.max(0, Math.min(1, site.levelDb / 50));
   let body = '';
   if (sys.proto === 'SMARTNET') {
-    body += `<div class="fl-kv">${site.site >= 0 ? `<span>CONTROL CHANNEL <b>${site.site}</b></span>` : ''}${site.time ? `<span>${esc(site.time.toUpperCase())}</span>` : ''}</div>`;
+    body += `<div class="fl-kv">${site.site >= 0 ? `<span>CONTROL CHANNEL <b>${site.site}</b></span>` : ''}</div>`;
+    body += dispatchPlanHtml(site);
     if (site.lcns.length) body += `<div class="fl-lcn">${site.lcns.map(l => `<span><b>CH ${l.lcn}</b><i>${fleetMhz(l.hz)}</i></span>`).join('')}</div>`;
   } else if (sys.proto === 'NXDN') {
     body += `<div class="fl-kv"><span>${sys.trunk === 'CONVENTIONAL' ? 'RAN' : 'SITE'} <b>${site.site}</b></span>${site.nac >= 0 && sys.trunk === 'TYPE-C' ? `<span>RAN <b>${site.nac}</b></span>` : ''}${site.time ? `<span>${esc(site.time.toUpperCase())}</span>` : ''}${site.cls > 0 ? `<span>VERSION <b>${site.cls}</b></span>` : ''}</div>`;
@@ -5985,6 +5988,41 @@ function fleetSiteHtml(sys: FleetSystem, site: FleetSite, now: number): string {
   const siteLock = sys.proto === 'P25' ? `<button class="chip fl-lockb ${lockedHere ? 'on' : ''}" ${lockedHere ? 'data-flunlock="1"' : `data-fllock="${esc(sys.key)}|${esc(site.label)}"`} title="${lockedHere ? 'unlock' : 'lock on this site'}">${lockedHere ? 'LOCKED' : 'LOCK SITE'}</button>` : '';
   return `<div class="fl-site ${live ? '' : 'dim'}"><div class="fl-sh"><b>${esc(sys.proto === 'P25' ? `SITE ${site.label}` : site.label.toUpperCase())}</b>${site.callsign && sys.proto === 'P25' ? `<em>${esc(site.callsign)}</em>` : ''}${siteLock}<span class="fl-lvl"><i style="width:${(100 * lvl).toFixed(0)}%"></i></span><small>${site.levelDb.toFixed(0)} dB · ${fleetAgo(age)}</small></div><div class="fl-ccs">${ccs}</div>${body}</div>`;
 }
+/** What a Type II site's channel plan is, or that it is not known yet, with ENTER PLAN when it can be given by hand. */
+const SN_NO_PLAN = "Voice can't be followed yet: this system's channel plan isn't known. Learning it from the air, or enter it.";
+function dispatchPlanHtml(site: FleetSite): string {
+  const p = site.plan; if (!p) return '';
+  const btn = !p.text || p.how === 'entered' || p.how === 'learned' ? `<button class="chip fl-planb" data-flplan="${p.ccHz}">ENTER PLAN</button>` : '';
+  return p.text ? `<div class="fl-kv fl-plan"><span>CHANNEL PLAN <b>${esc(p.text)}</b></span>${btn}</div>` : `<div class="fl-plan none"><span>${esc(SN_NO_PLAN)}</span>${btn}</div>`;
+}
+/**
+ * The channel plan of a VHF or UHF Type II system, typed in from its published plan: base and high MHz, the spacing
+ * and the first channel number. Kept for the control channel on [ccHz]; FORGET goes back to learning it from the air.
+ */
+function dispatchPlanDialog(ccHz: number, kept: boolean): void {
+  if (q('#fl-plandlg')) return;
+  const el = document.createElement('div');
+  el.id = 'fl-plandlg'; el.className = 'modal';
+  const row = (id: string, label: string, ph: string) => `<div class="ctlrow"><span class="rl">${label}</span><input id="${id}" class="txin" inputmode="decimal" placeholder="${ph}"></div>`;
+  el.innerHTML = `<div class="modal-card"><h3>CHANNEL PLAN</h3><p>${esc(`Control channel ${fleetMhz(ccHz)} MHz. Enter the system's published plan: channel numbers from the first channel up map to base, base plus one spacing, and so on, up to high.`)}</p>
+    ${row('fl-plan-base', 'BASE MHz', '453.0125')}${row('fl-plan-high', 'HIGH MHz', '453.9875')}${row('fl-plan-step', 'SPACING kHz', '12.5')}${row('fl-plan-first', 'FIRST CHANNEL', '0')}
+    <div id="fl-plan-err" class="note" hidden>${esc(SN_PLAN_ERR)}</div>
+    <div class="modal-actions">${kept ? '<button id="fl-plan-forget" class="chip">FORGET</button>' : ''}<button id="fl-plan-cancel" class="chip">CANCEL</button><button id="fl-plan-save" class="chip primary">SAVE</button></div></div>`;
+  document.body.appendChild(el);
+  const close = () => el.remove();
+  el.onclick = e => { if (e.target === el) close(); };
+  $('fl-plan-cancel').onclick = close;
+  const fg = q('#fl-plan-forget'); if (fg) fg.onclick = () => { close(); worker?.postMessage({ type: 'fleet', cmd: 'plan', ccHz, plan: null }); };
+  const num = (id: string) => { const v = ($(id) as HTMLInputElement).value.trim().replace(',', '.'); return v ? Number(v) : NaN; };
+  $('fl-plan-save').onclick = () => {
+    const plan = enteredPlan(num('fl-plan-base'), num('fl-plan-high'), num('fl-plan-step'), num('fl-plan-first'));
+    if (!plan) { $('fl-plan-err').hidden = false; return; }
+    close(); worker?.postMessage({ type: 'fleet', cmd: 'plan', ccHz, plan });
+  };
+  ($('fl-plan-base') as HTMLInputElement).focus();
+}
+const SN_AWAY = 'outside what the radio can see from here; Dispatch tunes there when it is the call to hear';
+const SN_PLAN_ERR = 'Check the numbers: base and high from 25 to 1300 MHz with high at or above base, spacing from 1 to 100 kHz, and the first channel a whole number, with the last channel no higher than 1023.';
 /** A CW ID chip: the callsign, how long ago it was keyed, and on which channel. */
 const flIdChip = (id: string, ago: number, hz = 0) => `<span class="fl-id" title="CW ID${hz ? ` on ${fleetMhz(hz)} MHz` : ''}, ${fleetAgoText(ago)}"><small>ID</small>${esc(id)}<i>${fleetAgo(ago)}</i></span>`;
 /** An analog carrier's MDC-1200 or FleetSync ID as a chip: 'MDC 1234', 'FS 100-1001', EMERGENCY when it was one. */
@@ -6071,7 +6109,9 @@ function dispatchOnAirCard(c: FleetCall, s: FleetSnap, now: number): string {
   const meter = Array.from({ length: segs }, (_, i) => `<i class="${i < lit ? (i >= segs - 3 ? 'hi' : 'on') : ''}"></i>`).join('');
   const note = dispatchAudioNote(c, s.codecs), key = dispatchKey(c), sel = c.group ? `tg:${esc(key)}` : `unit:${esc(c.sys)}/${c.tg}`;
   const lpName = c.proto === 'NXDN' || c.proto === 'SMARTNET' ? 'CH' : 'LPCN', lp = c.lpcn >= 0 ? ` · ${lpName} ${c.lpcn}` : '';
-  const ch = c.hz > 0 ? `${fleetMhz(c.hz)} MHz${c.tdma ? ` · TDMA S${c.slot + 1}` : c.proto === 'DMR' || c.proto === 'TETRA' ? ` · TS${c.slot + 1}` : ''}${lp}` : c.lpcn >= 0 ? `${lpName} ${c.lpcn}${c.proto === 'DMR' ? ` · TS${c.slot + 1}` : ''} · ${c.proto === 'SMARTNET' ? 'channel plan not proved' : 'learning its frequency'}` : 'channel not resolved';
+  const ch = c.hz > 0 ? `${fleetMhz(c.hz)} MHz${c.tdma ? ` · TDMA S${c.slot + 1}` : c.proto === 'DMR' || c.proto === 'TETRA' ? ` · TS${c.slot + 1}` : ''}${lp}` : c.lpcn >= 0 ? `${lpName} ${c.lpcn}${c.proto === 'DMR' ? ` · TS${c.slot + 1}` : ''} · ${c.proto === 'SMARTNET' ? 'channel plan not known' : 'learning its frequency'}` : 'channel not resolved';
+  // a Type II voice channel the radio cannot see from here: the follow goes there when it is the call to hear
+  const away = c.proto === 'SMARTNET' && c.onAir && c.hz > 0 && (c.hz < s.spanLo || c.hz > s.spanHi) && fleetUi.following?.key !== c.key ? ` · ${SN_AWAY}` : '';
   // the card slides in once, when the call first shows; the dot blinks with the redraws (twice a second)
   const first = fleetUi.airSeen.get(c.key) ?? now; if (!fleetUi.airSeen.has(c.key)) { fleetUi.airSeen.set(c.key, now); if (fleetUi.airSeen.size > 400) fleetUi.airSeen.delete(fleetUi.airSeen.keys().next().value as string); }
   const fresh = now - first < 450, blink = Math.floor(now / 500) % 2 === 1;
@@ -6082,7 +6122,7 @@ function dispatchOnAirCard(c: FleetCall, s: FleetSnap, now: number): string {
   const vu = playing ? `<div class="fl-vu" data-vu="${esc(c.key)}" style="--vu:${dispatchVuPct(c.key).toFixed(0)}%"><small>AUDIO</small><span><i></i></span></div>` : '';
   return `<div class="fl-air ${fresh ? 'fresh' : ''} ${blink ? 'blink' : ''} ${c.emergency ? 'emerg' : ''} ${c.encrypted ? 'enc' : ''} ${c.muted ? 'muted' : ''} ${c.outside ? 'out' : ''} ${c.prio ? 'prio' : ''} ${playing ? 'playing' : ''} ${ended ? 'ended' : ''}" data-flkey="${esc(c.key)}" style="--sys:${col}">`
     + `<div class="fl-air-h"><span class="fl-onbadge"><i></i>${badge}</span><span class="fl-proto">${protoLabel(c.proto, c.tdma)}</span><b data-flsel="${sel}">${esc(dispatchWho(c))}</b>${c.emergency && !ended ? '' : c.emergency ? flPill(`EMERGENCY · ${fleetAgoText(now - c.endMs)}`, 'red') : ''}${dispatchSec(c)}<span class="fl-air-t">${flDur((ended ? c.endMs : now) - c.startMs)}</span></div>`
-    + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>${c.alias ? esc(c.alias.toUpperCase()) : 'UNIT'}</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : c.alias ? `<small>TALKER</small><b>${esc(c.alias)}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}${lockB}</div>`
+    + `<div class="fl-air-b"><span class="fl-air-u">${c.src ? `<small>${c.alias ? esc(c.alias.toUpperCase()) : 'UNIT'}</small><b data-flsel="unit:${esc(c.sys)}/${c.src}">${c.src}</b>` : c.alias ? `<small>TALKER</small><b>${esc(c.alias)}</b>` : '<small>UNIT</small><b>-</b>'}</span><span class="fl-air-s"><small>${esc(sys?.label ?? (c.sys || 'no control channel'))}${c.site ? ` · SITE ${esc(c.site)}` : ''}</small><span>${ch}${following ? ' · FOLLOWING' : ''}${away}</span></span>${car ? flIdChip(car.callsign, now - car.callsignMs, car.hz) : ''}${lockB}</div>`
     + dispatchPosChip(c, true) + dispatchSecLine(c) + vu
     + `<div class="fl-meter" title="signal ${c.levelDb.toFixed(0)} dB">${meter}<small>${c.levelDb > 0 ? `${c.levelDb.toFixed(0)} dB` : ''}</small></div>`
     + `<div class="fl-air-f"><small>${c.voiceMs ? `VOICE ${(c.voiceMs / 1000).toFixed(1)} s` : c.granted ? 'GRANTED' : ''}${note ? ` · ${esc(note)}` : ''}</small><span class="pc-m">${dispatchPrefButtons(key)}</span></div></div>`;

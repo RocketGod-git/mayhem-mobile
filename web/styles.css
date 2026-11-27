@@ -3621,3 +3621,7 @@ main#view.view:is(.hamplus, .cb, .gmrs).hpwide { display: grid; grid-template-co
   .lr-ch { flex: none; }
 }
 .lr-setcard .lr-namebox .txin.lr-short { flex: 1; width: auto; }
+/* Type II channel plan line on a site card */
+.fl-plan { align-items: center; margin-top: 4px; }
+.fl-plan.none { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: var(--accent2); }
+.fl-plan .fl-planb { margin-left: auto; }

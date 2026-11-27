@@ -22,7 +22,7 @@ import { hasCodec, type CodecId } from './codec.js';
 import { TetraRx, type TetraSync } from './tetra.js';
 import { TetraMac, tetraCarrierHz, tetraDisconnectCause, tetraGrantName, tetraCommName, type TetraEvent, type TetraSysinfo, type TetraCmce, type TetraMacInfo } from './tetra-mac.js';
 import { NxdnRx, NxdnPlan, NXDN_CATEGORY, nxdnLine, nxdnId, type NxdnSite, type NxdnMsg, type NxdnTraffic, type NxdnScch, type NxdnAdj } from './nxdn.js';
-import { OswRx, OswParser, FmVoice, provePlan, tgOf, tgStatus, oswHex, oswWordText, type Osw, type OswEvent, type OswPlan } from './smartnet.js';
+import { OswRx, OswParser, FmVoice, fitPlan, customPlan, oswOffsetText, OswLearner, PLAN_TOL_HZ, tgOf, tgStatus, oswHex, oswWordText, type Osw, type OswEvent, type OswPlan, type OswCustom } from './smartnet.js';
 import { p25GpsLc } from './p25data.js';
 import { applyUnitData, type UnitData } from './unitdata.js';
 import { P2Rx, p2Messages, p2Ptt, p2EndPtt, MAC_OPS, type P2Mac, type P2Seed } from './p2.js';
@@ -60,6 +60,8 @@ const RECHECK_MS = 300_000;
 /** When the span has more carriers than channels, this many channels stay free for turns while new carriers wait (one after). */
 const TURN_CHANNELS = 2;
 const LIVE_MS = 4_000;
+/** A carrier back after this long off the air has keyed up (a Type II voice channel taking a call). */
+const KEYUP_GAP_MS = 2_000;
 
 export type SysProto = 'P25' | 'DMR' | 'TETRA' | 'NXDN' | 'SMARTNET' | 'DPMR';
 export type CarrierClass = '' | 'TETRA' | 'NXDN48' | 'NXDN96' | 'P25 C4FM' | 'P25 CQPSK/LSM' | 'P25 PHASE 2 TDMA' | 'DMR' | 'DPMR' | 'ANALOG FM' | 'UNKNOWN 4FSK' | 'UNKNOWN LINEAR' | 'MOTOROLA TYPE II';
@@ -78,6 +80,8 @@ export interface SiteRow {
   neighbors: { label: string; hz: number; ch: string; sys: number; heard: boolean }[]; secondary: { hz: number; ch: string }[];
   time: string; callsign: string; carriers: number[]; lcns: { lcn: number; hz: number; slot: number }[]; rest: number; busy: number[];
   idens: Iden[]; units: number; lra: number; cls: number;
+  /** Motorola Type II: the channel plan in use ('' none), how it is known ('proved', 'entered', 'learned', ''), and the control channel it is kept under. */
+  plan?: { text: string; how: string; ccHz: number };
 }
 export interface SystemRow {
   key: string; proto: SysProto; color: number; label: string; wacn: number; sysId: number; cc: number; fid: number;
@@ -119,14 +123,19 @@ export type { CallRow, CallPos, Lock, TgPrefs };
 /** What the device keeps between sessions (see FleetProcessor.known). */
 export interface KnownSystem { key: string; proto: SysProto; wacn: number; sysId: number; cc: number; fid: number; net: number; model: string; firstMs: number; lastMs: number; derived: boolean; hz: number[] }
 export interface KnownUnit { sys: string; id: number; lat: number; lon: number; posMs: number; verified: boolean; firstMs: number; lastMs: number }
-export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[] }
+/** A Motorola Type II channel plan entered or learned, kept under its control channel's frequency. */
+export interface KnownPlan extends OswCustom { hz: number }
+export interface KnownState { v: 1; systems: KnownSystem[]; units: KnownUnit[]; plans?: KnownPlan[] }
 const KNOWN_UNITS = 3000;
 
 interface Carrier extends CarrierRow { tetra?: TetraSync; tetraCell?: TetraSysinfo; nxdn?: NxdnSite & { baud: number }; nxdnAdj?: Map<string, NxdnAdj>; nxdnRan?: number; nxdnRanN?: number;
   /** A Type-D repeater's call as its SCCH builds it up: source (INFO3), destination (INFO2/INFO4), cipher (INFO1). */
   nxdnD?: { src: number; dst: number; group: boolean; cipher: number; keyId: number; ms: number }; hdr?: { ms: number; slot: number }; lastAuditionMs: number;
-  /** Motorola Type II: the channel number the control channel announces for itself, and the plan that number proved. */
-  osw?: { cc: number; plan: OswPlan | null };
+  /**
+   * Motorola Type II: the channel number the control channel announces for itself, the plan in use (null until one is
+   * known), the radio's error that plan measured (heard minus plan, added to every channel), and how the plan is known.
+   */
+  osw?: { cc: number; plan: OswPlan | null; offset: number; how: '' | 'proved' | 'entered' | 'learned' };
   /** Turns the carrier has had on a channel, and its level at the last. */
   turns: number; turnDb: number;
   p25: { sys: number; wacn: number; rfss: number; site: number }; dmrSys: string; tables: Map<number, Iden>; unitIds: Map<number, number> }
@@ -146,8 +155,8 @@ interface Sys {
   tetra?: TetraSys;
   /** NXDN: the channel plan learned from what was heard, and the symbol rate of the system's channels. */
   nxdnPlan?: NxdnPlan; nxdnBaud?: number;
-  /** Motorola Type II: the channel plan its control channel proved (null until one does), and the channels granted (count). */
-  osw?: { plan: OswPlan | null; chans: Map<number, number> };
+  /** Motorola Type II: the channels granted (count). Each control channel has its own plan (Carrier.osw). */
+  osw?: { chans: Map<number, number> };
   /** Capacity Plus: what the latest channel status said of each busy logical channel, and when it was heard. */
   cap?: { at: Map<number, CapLcn>; ms: number };
 }
@@ -405,10 +414,13 @@ export class FleetProcessor implements IqProcessor {
       const hz = this.centerHz + (sp / sw - N / 2) * bin, key = gridKey(hz);
       const n0 = this.carriers.size, c = this.carrierAt(Math.abs(hz - key) < 1_500 ? key : Math.round(hz / 100) * 100), fresh = this.carriers.size > n0;
       seen.add(c.key);
+      // a carrier coming up after two seconds or more off the air: a Type II grant just before it may name its channel
+      const keyed = fresh || now - c.lastMs >= KEYUP_GAP_MS;
       if (fresh) { c.levelDb = db; c.peakDb = db; }
       if (now - c.lastMs < 2_000) c.onMs += now - c.lastMs;
       c.lastMs = now; c.levelDb = Math.round(db * 10) / 10; c.peakDb = Math.max(c.peakDb, c.levelDb);
       const ch = this.chans.get(c.key); if (ch) ch.hz = hz;
+      if (keyed && this.oswLearners.size && c.role !== 'control' && c.role !== 'rest') this.oswKeyUp(hz, now);
     }
     for (const c of this.carriers.values()) if (!seen.has(c.key) && this.inSpan(c.hz) && now - c.lastMs > 1_000) { const ch = this.chans.get(c.key); if (ch) ch.cw.end(); }
     this.pending = true;
@@ -1012,6 +1024,7 @@ export class FleetProcessor implements IqProcessor {
     }
     c.frames++; c.blocks = rx.expected; c.crcOk = rx.good; c.lastDecodeMs = now; this.blocks++;
     let p = this.oswParsers.get(c.key); if (!p) { p = new OswParser(); this.oswParsers.set(c.key, p); }
+    p.upper800 = c.osw?.plan?.id.startsWith('800') ?? false;
     const ev = gap > 1 ? p.lost() : [];
     ev.push(...p.push(o));
     for (const e of ev) this.oswEvent(c, e, now);
@@ -1024,7 +1037,7 @@ export class FleetProcessor implements IqProcessor {
       this.systems.set(key, s);
     }
     s.trunk = 'TYPE II';
-    if (!s.osw) s.osw = { plan: null, chans: new Map() };
+    if (!s.osw) s.osw = { chans: new Map() };
     s.lastMs = now;
     return s;
   }
@@ -1032,10 +1045,9 @@ export class FleetProcessor implements IqProcessor {
     const hexw = oswHex(e.words), log = (name: string, text: string) => this.addLog({ ms: now, hz: c.hz, proto: 'TYPE II', name, text, hex: hexw, ok: true });
     if (e.kind === 'sysid') {
       const s = this.oswSys(e.sys, now); c.sys = s.key; s.heardHz.add(c.key);
-      const plan = provePlan(e.cc, c.hz);
-      c.osw = { cc: e.cc, plan };
-      if (plan && !s.osw!.plan) s.osw!.plan = plan;
-      log('SYSTEM ID', `SYSTEM ${h(e.sys, 4)} · CONTROL CHANNEL ${e.cc}${plan ? ` · ${plan.label}` : ' · no channel plan puts that number on this frequency'}`);
+      c.osw = { cc: e.cc, plan: null, offset: 0, how: '' };
+      this.oswResolve(c);
+      log('SYSTEM ID', `SYSTEM ${h(e.sys, 4)} · CONTROL CHANNEL ${e.cc}${c.osw.plan ? ` · ${this.oswPlanText(c)}` : ' · no channel plan puts that number on this frequency'}`);
       this.pending = true;
       return;
     }
@@ -1045,7 +1057,9 @@ export class FleetProcessor implements IqProcessor {
       const who = `${e.group ? 'TG' : 'UNIT'} ${tg}${st ? ` · STATUS ${st}` : ''}${e.kind === 'grant' ? ` ← ${e.src}` : ''}`;
       if (!s?.osw) { log(e.kind === 'grant' ? 'GRANT' : 'UPDATE', `${who} · CH ${e.ch} · system ID not heard yet`); return; }
       s.lastMs = now;
-      const plan = s.osw.plan, hz = plan ? plan.hz(e.ch) : 0;
+      const hz = this.oswHz(c, e.ch, now);
+      // no plan yet: the grant may teach one, from the carrier that keys up after it
+      if (!hz && c.osw && !c.osw.plan && e.kind === 'grant') this.oswLearner(c).grant(e.ch, now);
       s.osw.chans.set(e.ch, (s.osw.chans.get(e.ch) ?? 0) + 1);
       const site = this.oswSiteLabel(c);
       this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: e.kind === 'grant' ? 'grant' : 'update', tg, group: e.group, src: e.kind === 'grant' ? e.src : 0, ch: `CH ${e.ch}`, hz, slot: 0, tdma: false, emergency: false, encrypted: false, carrierHz: c.hz, site, lpcn: e.ch }, e.kind === 'update');
@@ -1057,6 +1071,68 @@ export class FleetProcessor implements IqProcessor {
     log(`OSW ${e.words.map(w => h(w.cmd, 3)).join('+')}`, `not read · ${e.words.map(oswWordText).join(' / ')}`);
   }
   private oswSiteLabel(c: Carrier): string { return c.osw ? `channel ${c.osw.cc}` : `${(c.hz / 1e6).toFixed(4)} MHz`; }
+  /** Type II plans entered or learned, by control channel frequency (to 100 Hz), and the learners still at work. */
+  private readonly oswStore = new Map<number, KnownPlan>();
+  private readonly oswLearners = new Map<number, OswLearner>();
+  private oswLearner(c: Carrier): OswLearner { let l = this.oswLearners.get(c.key); if (!l) { l = new OswLearner(); this.oswLearners.set(c.key, l); } return l; }
+  /** The plan kept for a control channel heard on [hz]: the nearest within [PLAN_TOL_HZ]. */
+  private oswStored(hz: number): KnownPlan | undefined {
+    let best: KnownPlan | undefined;
+    for (const p of this.oswStore.values()) if (Math.abs(p.hz - hz) <= PLAN_TOL_HZ && (!best || Math.abs(p.hz - hz) < Math.abs(best.hz - hz))) best = p;
+    return best;
+  }
+  /** A control channel's plan: one entered wins, then a published plan its own number proves, then one learned. */
+  private oswResolve(c: Carrier): void {
+    const o = c.osw; if (!o) return;
+    const st = this.oswStored(c.hz);
+    o.plan = null; o.offset = 0; o.how = '';
+    if (st?.kind === 'entered') { o.plan = customPlan(st); o.offset = fitPlan(o.cc, c.hz, [o.plan])?.offset ?? 0; o.how = 'entered'; return; }
+    const f = fitPlan(o.cc, c.hz);
+    if (f) { o.plan = f.plan; o.offset = f.offset; o.how = 'proved'; return; }
+    if (st) { o.plan = customPlan(st); o.how = 'learned'; }
+  }
+  /** The plan in use as text: "800 MHz standard, radio 2.1 kHz high", "learned: 453.0125 + 12.5 kHz". */
+  private oswPlanText(c: Carrier): string { const o = c.osw; return o?.plan ? [o.plan.label, oswOffsetText(o.offset)].filter(Boolean).join(', ') : ''; }
+  /**
+   * Where a channel granted on a control channel is: its plan's frequency with the radio's error added, moved onto a
+   * live carrier within [PLAN_TOL_HZ] (not a control channel) when there is one. 0 when no plan is known.
+   */
+  private oswHz(c: Carrier, ch: number, now: number): number {
+    const o = c.osw, p = o?.plan ? o.plan.hz(ch) : 0;
+    if (!o || !p) return 0;
+    const hz = p + o.offset;
+    let best: Carrier | undefined;
+    for (const x of this.carriers.values()) {
+      if (x.role === 'control' || x.role === 'rest' || now - x.lastMs >= LIVE_MS || Math.abs(x.hz - hz) > PLAN_TOL_HZ) continue;
+      if (!best || Math.abs(x.hz - hz) < Math.abs(best.hz - hz)) best = x;
+    }
+    return best ? best.hz : hz;
+  }
+  /** A carrier keyed up at [hz]: every control channel learning its plan hears of it. */
+  private oswKeyUp(hz: number, now: number): void {
+    for (const [k, l] of this.oswLearners) {
+      if (!l.keyUp(hz, now)) continue;
+      const cc = this.carriers.get(k), x = l.custom(); if (!cc || !x) continue;
+      const key = Math.round(cc.hz / 100) * 100;
+      this.oswStore.set(key, { ...x, hz: key });
+      for (const c of this.carriers.values()) if (c.osw && Math.abs(c.hz - cc.hz) <= PLAN_TOL_HZ) this.oswResolve(c);
+      this.addLog({ ms: now, hz: cc.hz, proto: 'TYPE II', name: 'CHANNEL PLAN', text: `channel plan learned from the air · ${this.oswPlanText(cc)}`, hex: '', ok: true });
+      this.pending = true;
+    }
+  }
+  /**
+   * A plan for the control channel on [ccHz] entered by hand (it wins over every other), or null to forget the one
+   * entered or learned there and learn again.
+   */
+  setOswPlan(ccHz: number, x: OswCustom | null): void {
+    for (const [k, p] of this.oswStore) if (Math.abs(p.hz - ccHz) <= PLAN_TOL_HZ) this.oswStore.delete(k);
+    const key = Math.round(ccHz / 100) * 100;
+    if (x) this.oswStore.set(key, { kind: 'entered', base: x.base, high: x.high, step: x.step, first: x.first, hz: key });
+    for (const c of this.carriers.values()) if (Math.abs(c.hz - ccHz) <= PLAN_TOL_HZ) { this.oswLearners.delete(c.key); this.oswResolve(c); }
+    this.post(true);
+  }
+  /** A carrier keyed up at [hz] at [ms] (the tests' synthetic carriers). */
+  feedKeyUp(hz: number, ms: number): void { this.oswKeyUp(hz, ms); }
   /** A Type II voice channel: analog FM voice to the call on the air there. */
   private fmOn(c: Carrier, ch: Chan): void {
     if (ch.fm) return;
@@ -1065,10 +1141,14 @@ export class FleetProcessor implements IqProcessor {
   }
   private oswSites(s: Sys): SiteRow[] {
     const cs = [...this.carriers.values()].filter(c => c.sys === s.key && c.cls === 'MOTOROLA TYPE II');
-    const plan = s.osw?.plan ?? null;
-    const lcns = plan ? [...(s.osw?.chans.keys() ?? [])].sort((a, b) => a - b).map(ch => ({ lcn: ch, hz: plan.hz(ch), slot: 0 })) : [];
-    return cs.map(c => ({ key: `${s.key}/${c.key}`, label: this.oswSiteLabel(c), rfss: -1, site: c.osw?.cc ?? -1, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
-      neighbors: [], secondary: [], time: c.osw ? (c.osw.plan ? c.osw.plan.label : 'channel plan not proved') : '', callsign: c.callsign, carriers: [c.key], lcns, rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: -1 }));
+    const chans = [...(s.osw?.chans.keys() ?? [])].sort((a, b) => a - b);
+    return cs.map(c => {
+      const o = c.osw, plan = o?.plan ?? null, text = this.oswPlanText(c);
+      const lcns = o && plan ? chans.map(ch => ({ lcn: ch, hz: plan.hz(ch) ? plan.hz(ch) + o.offset : 0, slot: 0 })).filter(l => l.hz > 0) : [];
+      return { key: `${s.key}/${c.key}`, label: this.oswSiteLabel(c), rfss: -1, site: o?.cc ?? -1, nac: -1, ccHz: [c.hz], lastMs: c.lastMs, levelDb: c.levelDb,
+        neighbors: [], secondary: [], time: o ? (text || 'channel plan not known') : '', callsign: c.callsign, carriers: [c.key], lcns, rest: -1, busy: [], idens: [], units: 0, lra: -1, cls: -1,
+        plan: { text, how: o?.how ?? '', ccHz: c.hz } };
+    });
   }
 
   // ------------------------------------------------------------------------------------------------ P25
@@ -1715,7 +1795,7 @@ export class FleetProcessor implements IqProcessor {
     const units: KnownUnit[] = [];
     for (const u of this.units.values()) { const [lat, lon] = this.resolvePos(u); if (lat !== null && lon !== null) units.push({ sys: u.sys, id: u.id, lat, lon, posMs: u.posMs, verified: u.posVerified, firstMs: u.firstMs, lastMs: u.lastMs }); }
     units.sort((a, b) => b.posMs - a.posMs);
-    return { v: 1, systems, units: units.slice(0, KNOWN_UNITS) };
+    return { v: 1, systems, units: units.slice(0, KNOWN_UNITS), plans: [...this.oswStore.values()].map(p => ({ ...p })) };
   }
   restore(k: KnownState): void {
     if (!k || k.v !== 1) return;
@@ -1730,6 +1810,11 @@ export class FleetProcessor implements IqProcessor {
       if (!u) { u = { key, sys: x.sys, id: x.id, firstMs: x.firstMs, lastMs: x.lastMs, lonLo: -1, latLo: -1, posMs: x.posMs, posVerified: x.verified, trail: [[x.lat, x.lon, x.posMs]], groups: new Set(), grants: 0, carriers: new Set(), reports: [], fixes: [], tgCounts: new Map() }; this.units.set(key, u); }
       if (u.lonLo < 0 && x.posMs >= u.posMs) { u.fix = [x.lat, x.lon]; u.posMs = x.posMs; u.posVerified = x.verified; }
     }
+    for (const p of k.plans ?? []) {
+      const ok = !!p && (p.kind === 'entered' || p.kind === 'learned') && [p.hz, p.base, p.high, p.step, p.first].every(v => typeof v === 'number' && Number.isFinite(v)) && p.step > 0 && p.high >= p.base;
+      if (ok) { const key = Math.round(p.hz / 100) * 100; this.oswStore.set(key, { kind: p.kind, base: p.base, high: p.high, step: p.step, first: p.first, hz: key }); }
+    }
+    for (const c of this.carriers.values()) this.oswResolve(c);
     this.post(true);
   }
   /** The receiver's position arrived or moved: every stored report is resolved against it again. */
@@ -1930,7 +2015,7 @@ export class FleetProcessor implements IqProcessor {
   }
   clear(): void {
     this.carriers.clear(); this.systems.clear(); this.sites.clear(); this.units.clear(); this.tgs.clear(); this.grants = []; this.log.length = 0; this.logSeen.clear();
-    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = []; this.oswParsers.clear(); this.pdus.clear();
+    this.chans.clear(); this.blocks = 0; this.colorNext = 0; this.calls.clear(); this.pendingGrants = []; this.nxdnPending = []; this.oswParsers.clear(); this.oswLearners.clear(); this.pdus.clear();
     this.post(true);
   }
 }

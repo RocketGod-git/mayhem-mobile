@@ -23,6 +23,7 @@ import { AcarsDecoder } from './dsp/acars.js';
 import { Vdl2Decoder } from './dsp/vdl2.js';
 import { TrainsProcessor } from './dsp/trains.js';
 import { FleetProcessor, type TgPrefs, type KnownState } from './dsp/fleet/fleet.js';
+import type { OswCustom } from './dsp/fleet/smartnet.js';
 import { AudioFader, MAKEUP } from './dsp/fleet/codec.js';
 import { CellProcessor } from './dsp/cell/cell.js';
 import { AtscProcessor } from './dsp/atsc/atsc.js';
@@ -445,6 +446,8 @@ self.onmessage = (e: MessageEvent) => {
       else if (m.cmd === 'known') emit({ type: 'fleetKnown', known: fleet.known() });
       else if (m.cmd === 'restore') fleet.restore(m.known as KnownState);
       else if (m.cmd === 'prefs') fleet.setPrefs(m.prefs as TgPrefs);
+      // a Type II channel plan entered (or forgotten) for a control channel: kept on the device at once
+      else if (m.cmd === 'plan') { fleet.setOswPlan(Number(m.ccHz), (m.plan as OswCustom | null) ?? null); emit({ type: 'fleetKnown', known: fleet.known() }); }
       else if (m.cmd === 'audio') { if (!m.on && fleetAudio.on) { const t = fleetFader.tail(); if (t) toAudio(t); } fleetAudio.on = !!m.on; fleetAudio.gain = Math.max(0, Math.min(1.5, Number(m.gain ?? fleetAudio.gain))); }
       else if (m.cmd === 'replay') {
         const pcm = fleet.callAudio(m.key as string);
