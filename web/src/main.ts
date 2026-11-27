@@ -600,7 +600,7 @@ function agcStep(rms: number): void {
   if (state.app === 'lora' && loraGain.level) {
     // LoRa's one-second level swings with the bursts: the median of the last few
     loraGain.rms.push(rms); if (loraGain.rms.length > 8) loraGain.rms.splice(0, loraGain.rms.length - 8);
-    if (loraGain.rms.length < 4) return;
+    if (loraGain.rms.length < 4 && !(loraGain.coarse && loraGain.level.peak >= 127)) return;
     loraAgc([...loraGain.rms].sort((a, b) => a - b)[loraGain.rms.length >> 1], now, lo, hi);
     return;
   }
@@ -653,6 +653,8 @@ const loraGain = {
   probeAt: -Infinity, stillSince: 0,
   /** Since when over 1% of samples have clipped every second (0: not now): real overload outlasts any packet. */
   overSince: 0,
+  /** The start with no gain kept for this radio and band: 8 dB steps down while the converter is pinned. */
+  coarse: true,
   /** Its latest reasoning, for the log. */
   note: 'LoRa gain not started',
 };
@@ -661,11 +663,12 @@ const loraGain = {
  *  there starts from it instead of finding it again. */
 const loraGainKey = () => `mm.lora.gain.${radio?.kind === 'rtlsdr' ? 'rtl' : isPro() ? 'pro' : 'one'}.${Math.trunc(state.freq / 10_000_000)}`;
 function loraRecall(): void {
-  Object.assign(loraGain, { level: null, rms: [], peaks: [], clipAt: -Infinity, hold: 0, probeAt: -Infinity, stillSince: 0, overSince: 0 });
+  Object.assign(loraGain, { level: null, rms: [], peaks: [], clipAt: -Infinity, hold: 0, probeAt: -Infinity, stillSince: 0, overSince: 0, coarse: true });
   if (!state.agc || !radio) return;
   let g = 0;
   try { g = Number(localStorage.getItem(loraGainKey()) ?? 0); } catch { /* private window */ }
   if (!(g > 0)) return;
+  loraGain.coarse = false;
   const lna = Math.trunc(g / 1000) % 1000, vga = g % 1000;
   setGains(lna, vga, radio.kind === 'rtlsdr' ? state.amp : true);
   log(`LoRa gain: starting where it settled last time here (amp ${state.amp ? 'on' : 'off'} LNA ${state.lna} VGA ${state.vga})`);
@@ -695,6 +698,8 @@ function loraAgc(rms: number, now: number, lo: number, hi: number): void {
   // outlasts any packet (over 1% of samples clipped for 8 seconds running) brings the front end down.
   if (lv.clipShare > 0.01) { if (!g.overSince) g.overSince = now; } else g.overSince = 0;
   const clipped = g.overSince > 0 && now - g.overSince >= 8_000;
+  // the big steps last until the first second the converter isn't pinned; then 2 dB steps as before
+  if (lv.peak < 127) g.coarse = false;
   let why = '';
   if (hasAmp && !a) {
     // the front-end amp stays on for LoRa: measured on a HackRF Pro, 43 and 14 frames in 4 minutes with it on, none
@@ -709,6 +714,10 @@ function loraAgc(rms: number, now: number, lo: number, hi: number): void {
     else if (v > 0) { nv = Math.max(0, v - 6); why = 'clipped: VGA down'; }
     else why = 'clipped at the lowest gain (a transmitter right beside the antenna)';
     g.peaks = [];
+  } else if (g.coarse && (v > 0 || (hasLna && l > 0))) {
+    // opened pinned (at the start, with no gain kept here): 2 dB a second spent about 12 s clipped
+    if (v > 0) { nv = Math.max(0, v - 8); why = 'pinned at the start: VGA down 8 dB'; }
+    else { nl = l - LNA_STEP; why = 'pinned at the start: LNA down'; }
   } else if (anyClip && !loraNow && v > vMax / 2 && rms > lo) {
     // a meter's burst clipped: the VGA alone gives a little back, the front end stays where far nodes need it
     nv = Math.max(0, v - 2); why = 'clip outside LoRa: VGA down a step';
@@ -9938,6 +9947,8 @@ async function connect(dev?: USBDevice): Promise<void> {
           state.gainsScaled = true; setGains(l, v, a);
           log(`HackRF Pro: gains LNA ${l} / VGA ${v}${a ? ' / amp' : ''} (${pref ? 'your saved Pro gain' : 'scaled up: One presets sit under 1 ADC count on a Pro'})`);
         }
+        // the gain LoRa kept is per board: only now is it known which one to start from
+        if (newBoard && state.app === 'lora') loraRecall();
       },
     });
     r.targetFreqHz = state.freq; r.targetRateHz = state.rate; r.setGain(state.lna, state.vga, state.amp);
@@ -9974,7 +9985,12 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   const btn = $<HTMLButtonElement>('connect');
   const r = new RtlSdr(d, {
     ...events,
-    onStatus: s => { ackTune(s); state.board = r.label; state.firmware = r.tuner; setStatus(s, true); if (!state.app) $('sub').textContent = r.label; },
+    onStatus: s => {
+      ackTune(s);
+      const newBoard = state.board !== r.label;
+      state.board = r.label; state.firmware = r.tuner; setStatus(s, true); if (!state.app) $('sub').textContent = r.label;
+      if (newBoard && state.app === 'lora') loraRecall();
+    },
   });
   r.targetFreqHz = state.freq;
   r.targetRateHz = nearestRate(r.limits, state.rate);

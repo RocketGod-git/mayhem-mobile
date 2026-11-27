@@ -150,7 +150,7 @@ function build(): LoraChannel[] {
     for (const p of r.presets) {
       const hz = slotHz(r, p);
       if (hz === null) continue;
-      const standing = !localKnown && (p.name === r.start || ((r.name === 'US' || r.name === 'ANZ') && (p.name === 'LongTurbo' || p.name === 'MediumFast')));
+      const standing = !localKnown && (p.name === r.start || p.name === 'MediumFast' || ((r.name === 'US' || r.name === 'ANZ') && p.name === 'LongTurbo'));
       add(hz, p.bw, p.sf, `Meshtastic ${p.name} ${r.name}`, standing);
     }
   }

@@ -140,14 +140,21 @@ class Slot {
   trackLook = -1;
   /** Frames decoded on it (for the screen's per-channel activity). */
   frames = 0;
+  /** The stretch of activity (its firstHot) whose spreading factor was last checked, and when a frame last came on it. */
+  probed = -1; heardAt = -1;
   constructor(readonly ch: LoraChannel, readonly lo: number, readonly hi: number,
               readonly below: [number, number] | null, readonly above: [number, number] | null) {}
 }
 
-interface Owner { r: Region | null; s: Slot | null; until: number }
+/** Where the channel is and what it listens for (`sfs` null: every spreading factor). `probed`: opened at the one a
+ *  burst's preamble showed, and kept open while its slot is hot (even a standing one). */
+interface Owner { r: Region | null; s: Slot | null; until: number; hz: number; bw: number; sfs: number[] | null; probed: boolean }
+
+/** A burst on a known channel whose spreading factor is to be checked, once the samples from `from` to `due` are in. */
+interface Probe { slot: Slot; from: number; due: number }
 
 /** What a standing channel needs to run anywhere: where it is, its modem, and the sample it starts at. */
-export interface StandingSpec { id: number; rate: number; offHz: number; bw: number; hz: number; sf: number | null; from: number; name: string }
+export interface StandingSpec { id: number; rate: number; offHz: number; bw: number; hz: number; sfs: number[] | null; from: number; name: string }
 
 /**
  * Where the standing channels run when not inline: every raw buffer goes to it (`feed`, with the absolute index of
@@ -297,6 +304,9 @@ export class LoraScanner {
   // Channel half only.
   private extractors: Extractor[] = [];
   private recent: [number, number][] = [];      // (payload hash, sample) of frames already reported
+  private probes: Probe[] = [];
+  /** Spreading factor checks run, and channels they opened (for tests and tools). */
+  probeCount = 0; probeOpened = 0;
 
   reset(rate: number): void {
     this.rate = rate;
@@ -311,7 +321,7 @@ export class LoraScanner {
     // 0.4 s of history: a burst is only recognized as LoRa some way into its preamble
     let size = 1;
     while (size < Math.trunc(rate * 0.4)) size <<= 1;
-    this.extractors = []; this.recent = [];
+    this.extractors = []; this.recent = []; this.probes = [];
     this.inbox = []; this.untils.clear(); this.finished = []; this.latest = 0; this.scheduled = false;
     this.ring = new Int8Array(2 * size);
     this.ringSize = size; this.ringMask = size - 1;
@@ -364,7 +374,7 @@ export class LoraScanner {
     for (const [id, o] of this.owners) {
       if (o.s?.standing !== true) continue;
       if (this.remote.has(id)) { this.owners.delete(id); continue; }
-      this.owners.set(id, { r: o.r, s: null, until: this.written });
+      this.owners.set(id, { ...o, s: null, until: this.written });
     }
     if (this.remote.size) { this._pool?.drop([...this.remote.keys()]); this.remote.clear(); }
     this.slots = [];
@@ -378,10 +388,19 @@ export class LoraScanner {
       const below = guardBand(bin(-0.8), Math.min(bin(-0.6), lo - 1)), above = guardBand(Math.max(bin(0.6), hi + 1), bin(0.8));
       if (hi - lo >= 3) this.slots.push(new Slot(c, lo, hi, below, above));
     }
+    // standing channels on one frequency and bandwidth (a region with room for one slot puts every preset there)
+    // share one channel, its receivers at each of their spreading factors
+    const groups = new Map<string, Slot[]>();
     for (const sl of this.slots) {
       if (!sl.ch.standing) continue;
       sl.standing = true;
-      sl.active = this.spawn(sl.ch.hz, sl.ch.bw, sl.ch.sf, false, this.written, null, sl, sl.ch.name, true);
+      const k = `${sl.ch.hz}/${sl.ch.bw}`;
+      groups.set(k, [...(groups.get(k) ?? []), sl]);
+    }
+    for (const g of groups.values()) {
+      const sfs = g.some(x => x.ch.sf === null) ? null : [...new Set(g.map(x => x.ch.sf as number))].sort((a, b) => a - b);
+      const on = this.spawn(g[0].ch.hz, g[0].ch.bw, sfs, false, this.written, null, g[0], g.map(x => x.ch.name).join(' + '), true);
+      for (const x of g) x.active = on;
     }
   }
 
@@ -442,7 +461,7 @@ export class LoraScanner {
     }
     const center = this.centerOf();
     if (center !== this.slotCenter || this.replanWanted) { this.replanWanted = false; this.placeSlots(center); }
-    if (frames % 4 === 0) this.watchSlots();
+    if (frames % 4 === 0) { this.watchSlots(); this.runProbes(); }
 
     // the channels no plan knows: clusters of hot bins grouped into bursts
     let i = 0;
@@ -483,7 +502,7 @@ export class LoraScanner {
         const b = regions[j];
         a.lo = Math.min(a.lo, b.lo); a.hi = Math.max(a.hi, b.hi); a.start = Math.min(a.start, b.start); a.last = Math.max(a.last, b.last);
         a.grew = Math.max(a.grew, b.grew); a.spawned.push(...b.spawned); a.hits = Math.max(a.hits, b.hits);
-        for (const [id, o] of this.owners) if (o.r === b) this.owners.set(id, { r: a, s: o.s, until: o.until });
+        for (const [id, o] of this.owners) if (o.r === b) this.owners.set(id, { ...o, r: a });
         regions.splice(j, 1);
       } else k++;
     }
@@ -500,8 +519,7 @@ export class LoraScanner {
       let last = -1_000_000_000;
       for (let b = s.lo; b <= s.hi; b++) if (hotAt[b] > last) last = hotAt[b];
       if (last > s.lastHot) { if (last - s.lastHot > gap) s.firstHot = last; s.lastHot = last; }
-      if (s.standing) continue;
-      if (s.active) {
+      if (s.active && !s.standing) {
         // off once quiet for three symbols (at the slowest spreading factor it could be)
         const sym = (1 << (s.ch.sf ?? 12)) / s.ch.bw;
         if (written - s.lastHot > rate * Math.max(0.03, 3 * sym)) { s.active = false; LoraScanner.trace?.(`slot off ${(written / rate * 1000).toFixed(1)} ms ${s.ch.name}`); }
@@ -521,15 +539,76 @@ export class LoraScanner {
       for (let b = s.lo; b <= s.hi; b++) inside += lvl[b];
       inside /= s.hi - s.lo + 1;
       const edge = Math.max(mean(s.below), mean(s.above));
-      if (inside <= 6 * edge) { why(`edges ${(inside / Math.max(edge, 1e-9)).toFixed(1)}`); continue; }
+      // a standing channel is already listening: its burst only gets its spreading factor checked, a test of its
+      // own, so a weaker burst passes and the chirp test (blind to symbols shorter than two looks) is skipped
+      if (inside <= (s.standing ? 3 : 6) * edge) { why(`edges ${(inside / Math.max(edge, 1e-9)).toFixed(1)}`); continue; }
+      if (s.standing) { this.probeLater(s); continue; }
       if (!this.chirpsSlot(s)) { why(`not a chirp ${s.track.slice(0, 16).map(x => (x === null ? '-' : String(x))).join(' ')}`); continue; }
       // one transmission at a time per stretch of band: a channel overlapping one already on is the same signal (or
-      // its splash)
-      const o = this.slots.find(x => x !== s && x.active && x.hi >= s.lo && x.lo <= s.hi);
+      // its splash). A standing channel of another shape doesn't count (it is always on): a 125 kHz preset beside a
+      // single 250 kHz slot still opens, and its edges test keeps it shut for the 250 kHz signal itself
+      const o = this.slots.find(x => x !== s && x.active && x.hi >= s.lo && x.lo <= s.hi && (!x.standing || (x.ch.hz === s.ch.hz && x.ch.bw === s.ch.bw)));
       if (o) { why('overlaps ' + o.ch.name); continue; }
       LoraScanner.trace?.(`slot on ${(written / rate * 1000).toFixed(1)} ms ${s.ch.name} cover ${cover.toFixed(2)}`);
-      s.active = this.spawn(s.ch.hz, s.ch.bw, s.ch.sf, s.ch.name.includes('downlink'), s.firstHot - Math.trunc(rate * 0.02), null, s, s.ch.name);
+      s.active = this.spawn(s.ch.hz, s.ch.bw, s.ch.sf === null ? null : [s.ch.sf], s.ch.name.includes('downlink'), s.firstHot - Math.trunc(rate * 0.02), null, s, s.ch.name);
+      if (s.active) this.probeLater(s);
     }
+  }
+
+  /** How far into a burst its spreading factor is read (past the channel filters' start), and the longest symbol. */
+  private static readonly PROBE_SKIP = 128;
+  private static readonly PROBE_CHIPS = 4096;
+
+  /** A burst on a known channel with a spreading factor: checked once its preamble is in, once per burst (slots on
+   *  one channel share the check). */
+  private probeLater(s: Slot): void {
+    if (s.ch.sf === null || s.probed === s.firstHot) return;
+    s.probed = s.firstHot;
+    const from = s.firstHot - this.HOP;
+    if (this.probes.some(p => p.slot.ch.hz === s.ch.hz && p.slot.ch.bw === s.ch.bw && Math.abs(p.from - from) < this.rate * 0.05)) return;
+    const chips = LoraScanner.PROBE_SKIP + LoraScanner.PROBE_CHIPS + 64;
+    this.probes.push({ slot: s, from, due: from + Math.ceil(chips * this.rate / s.ch.bw) });
+  }
+
+  /** The spreading factors something already listens for on a channel (null: all of them). */
+  private listening(hz: number, bw: number): Set<number | null> {
+    const out = new Set<number | null>();
+    for (const o of this.owners.values()) {
+      if (o.bw !== bw || Math.abs(o.hz - hz) >= bw / 8) continue;
+      if (o.sfs === null) out.add(null); else for (const sf of o.sfs) out.add(sf);
+    }
+    return out;
+  }
+
+  /** The checks whose samples are in: the burst's spreading factor from its preamble, and receivers at it when
+   *  nothing listens for that one yet. */
+  private runProbes(): void {
+    if (this.probes.length === 0) return;
+    const rate = this.rate, written = this.written;
+    const keep: Probe[] = [];
+    for (const p of this.probes) {
+      if (p.due > written) { keep.push(p); continue; }
+      const s = p.slot;
+      // a frame already came on its channel in this burst: what it listens for holds
+      if (p.from < written - this.ringMask || this.slots.some(x => x.ch.hz === s.ch.hz && x.ch.bw === s.ch.bw && x.heardAt >= p.from)) continue;
+      const have = this.listening(s.ch.hz, s.ch.bw);
+      if (have.has(null)) continue;
+      const sf = this.probe(s.ch.hz, s.ch.bw, p.from, p.due, [...have] as number[]);
+      this.probeCount++;
+      LoraScanner.trace?.(`probe ${(written / rate * 1000).toFixed(1)} ms ${s.ch.name}: SF${sf ?? '?'}`);
+      if (sf === null || have.has(sf)) continue;
+      if (this.spawn(s.ch.hz, s.ch.bw, [sf], false, p.from - Math.trunc(rate * 0.02), null, s, `${s.ch.name} at SF${sf}`, false, true)) this.probeOpened++;
+    }
+    this.probes = keep;
+  }
+
+  /** Which spreading factor a burst has, from its preamble (samples `from` to `to`), or null; `first`: the ones
+   *  already listened for, tried first. */
+  private probe(hz: number, bw: number, from: number, to: number, first: number[] = []): number | null {
+    const e = new Extractor(-1, this.rate, hz - this.centerOf(), bw, hz, from, [], false, 1, this, null);
+    e.capture = [];
+    e.run(to, this.ring, this.ringMask);
+    return sfOf(e.capture, LoraScanner.PROBE_SKIP, first);
   }
 
   /** A preamble's chirps move the peak across the channel at one steady rate (wrapping at its edge); an FSK burst's
@@ -577,7 +656,7 @@ export class LoraScanner {
   }
 
   /** A channel of its own for a burst; false when there is no room (the known channels keep room the others can't take). */
-  private spawn(hz: number, bw: number, sf: number | null, inverted: boolean, from0: number, r: Region | null, s: Slot | null, name: string | null, standing = false): boolean {
+  private spawn(hz: number, bw: number, sfList: number[] | null, inverted: boolean, from0: number, r: Region | null, s: Slot | null, name: string | null, standing = false, probed = false): boolean {
     const rate = this.rate, written = this.written;
     LoraScanner.trace?.(`spawn ${(written / rate * 1000).toFixed(1)} ms ${(hz / 1e6).toFixed(4)} MHz bw ${bw} ${name ?? '-'}`);
     const open = [...this.owners.values()].filter(o => o.s?.standing !== true);
@@ -586,12 +665,12 @@ export class LoraScanner {
       if (open.length >= 10 || (s === null && open.filter(o => o.s === null).length >= 4)) return false;
     }
     const from = Math.max(from0, written - this.ringMask + Math.trunc(rate / 50), 0);
-    const sfs = sf !== null ? [sf] : [7, 8, 9, 10, 11, 12];
+    const sfs = sfList ?? [7, 8, 9, 10, 11, 12];
     this.nextId++;
     if (standing && this._pool && s) {
-      this._pool.add({ id: this.nextId, rate, offHz: hz - this.centerOf(), bw, hz, sf, from, name: name ?? '' });
+      this._pool.add({ id: this.nextId, rate, offHz: hz - this.centerOf(), bw, hz, sfs: sfList, from, name: name ?? '' });
       this.remote.set(this.nextId, s);
-      this.owners.set(this.nextId, { r, s, until: FOREVER });
+      this.owners.set(this.nextId, { r, s, until: FOREVER, hz, bw, sfs: sfList, probed: false });
       this.onBurst?.(hz, bw, name);
       return true;
     }
@@ -599,7 +678,7 @@ export class LoraScanner {
     const t = LoraScanner.trace;
     if (t && LoraScanner.traceHz !== 0 && Math.abs(hz - LoraScanner.traceHz) < 1000) { e.traceAll(x => t('rx: ' + x)); e.tapped = true; }
     const until = standing ? FOREVER : written + Math.trunc(rate * 0.2);
-    this.owners.set(this.nextId, { r, s, until });
+    this.owners.set(this.nextId, { r, s, until, hz, bw, sfs: sfList, probed });
     this.inbox.push(e); this.untils.set(this.nextId, until);
     this.onBurst?.(hz, bw, name);
     return true;
@@ -613,12 +692,12 @@ export class LoraScanner {
       if (this.remote.has(id)) continue;
       let u = o.until;
       if (o.r) u = Math.max(u, o.r.last + tail);
-      if (o.s && !o.s.standing) {
+      if (o.s && (!o.s.standing || o.probed)) {
         // a few symbols past the last time the channel was heard (a weak frame drops out of the looks now and then)
-        const sym = (1 << (o.s.ch.sf ?? 12)) / o.s.ch.bw;
+        const sym = (1 << (o.probed && o.sfs ? o.sfs[0] : o.s.ch.sf ?? 12)) / o.s.ch.bw;
         u = Math.max(u, o.s.lastHot + Math.trunc(rate * Math.max(0.05, 3 * sym)));
       }
-      if (u !== o.until) this.owners.set(id, { r: o.r, s: o.s, until: u });
+      if (u !== o.until) this.owners.set(id, { ...o, until: u });
     }
     for (const id of this.finished) this.owners.delete(id);
     this.finished = [];
@@ -710,10 +789,12 @@ export class LoraScanner {
     const rate = this.rate;
     let h = 5381;
     for (const b of f.payload) h = (Math.imul(h, 33) + b) | 0;
+    if (slot) slot.heardAt = at;
     this.recent = this.recent.filter(x => !(Math.abs(at - x[1]) > rate * 3));
     if (this.recent.some(x => x[0] === h)) return;
     this.recent.push([h, at]);
-    if (slot) slot.frames++;
+    // a shared channel's frame counts on the slot of its own spreading factor
+    if (slot) (this.slots.find(x => x.ch.hz === slot.ch.hz && x.ch.bw === slot.ch.bw && x.ch.sf === f.sf) ?? slot).frames++;
     this.onHeard?.({ frame: f, hz: this.trueHz(hz + Math.trunc(f.cfoHz), f), inverted: inv, time: Date.now() });
   }
 }
@@ -746,7 +827,7 @@ export class ChannelRunner implements HeardSink {
   add(sp: StandingSpec): void {
     if (sp.rate !== this.rate) { this.setRate(sp.rate); this.list = []; }
     const e = new Extractor(sp.id, sp.rate, sp.offHz, sp.bw, sp.hz, Math.max(sp.from, this.written - this.ringMask + Math.trunc(sp.rate / 50), 0),
-      sp.sf !== null ? [sp.sf] : [7, 8, 9, 10, 11, 12], false, 4, this, null);
+      sp.sfs ?? [7, 8, 9, 10, 11, 12], false, 4, this, null);
     e.until = FOREVER;
     this.list.push(e);
   }
@@ -804,6 +885,8 @@ class Extractor {
   tapped = false;
   bad: [LoraFrame, boolean, number][] = [];
   goodAt: number[] = [];
+  /** Set: the samples at one a chip (one timing phase) are kept here instead of going to receivers. */
+  capture: number[] | null = null;
   private readonly dec: ChannelDecimator;
   /** Windowed-sinc interpolator: TAPS taps at the decimated rate, PHASES fractional positions. */
   private static readonly TAPS = 32;
@@ -917,6 +1000,7 @@ class Extractor {
     if (drop > 0) { y.copyWithin(0, 2 * drop, this.yLen); this.yLen -= 2 * drop; t -= drop; }
     this.t = t;
     if (outs[0].length === 0) return;
+    if (this.capture) { for (const v of outs[0]) this.capture.push(v); return; }
     if (this.tapped) LoraScanner.tap?.(outs[0]);
     for (let p = 0; p < phases; p++) {
       const out = outs[p];
@@ -933,3 +1017,42 @@ class Extractor {
   }
 }
 
+/** Spreading factors a burst is read at, and how much of a dechirped symbol's energy one bin (and its stronger
+ *  neighbor, for a peak between two) must hold: a preamble at the right factor puts 0.4-0.8 there, any other 0.06 or
+ *  less, noise about 1.5 ln(N) / N. */
+const PROBE_SFS = [7, 8, 9, 10, 11, 12];
+const PROBE_MIN = 0.2;
+
+/** The spreading factor of the up-chirps in `x` (interleaved, one sample a chip) from `skip` on: one symbol at each
+ *  factor, dechirped; the factor whose energy collects into one bin, or null. `first`: tried first, and the answer
+ *  at once when one of them collects. */
+export function sfOf(x: ArrayLike<number>, skip: number, first: number[] = []): number | null {
+  const share = (sf: number): number => {
+    const n = 1 << sf;
+    if (2 * (skip + n) > x.length) return 0;
+    const re = new Float32Array(n), im = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      // times the down-chirp: an up-chirp of this factor becomes one tone
+      const ph = -2 * Math.PI * ((i * i) / (2 * n) - i / 2), c = Math.cos(ph), s = Math.sin(ph);
+      const a = x[2 * (skip + i)], b = x[2 * (skip + i) + 1];
+      re[i] = a * c - b * s; im[i] = a * s + b * c;
+    }
+    fft(re, im);
+    let best = 0, bv = -1, sum = 0;
+    for (let i = 0; i < n; i++) { const m = re[i] * re[i] + im[i] * im[i]; re[i] = m; sum += m; if (m > bv) { bv = m; best = i; } }
+    if (sum <= 0) return 0;
+    return (bv + Math.max(re[(best + 1) % n], re[(best + n - 1) % n])) / sum;
+  };
+  const got = new Map<number, number>();
+  for (const sf of first) {
+    if (!PROBE_SFS.includes(sf)) continue;
+    const v = share(sf); got.set(sf, v);
+    if (v >= PROBE_MIN) return sf;
+  }
+  let best: number | null = null, bv = 0, second = 0;
+  for (const sf of PROBE_SFS) {
+    const v = got.get(sf) ?? share(sf);
+    if (v > bv) { second = bv; bv = v; best = sf; } else if (v > second) second = v;
+  }
+  return best !== null && bv >= PROBE_MIN && bv >= 3 * second ? best : null;
+}

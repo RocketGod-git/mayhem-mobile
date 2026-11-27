@@ -108,8 +108,9 @@ function channels(a: string): LocalChannel[] {
   const r = rn ? REGIONS.find(x => x.name === rn) : undefined;
   if (rn && r) {
     // LongTurbo is the US default from Meshtastic 2.8 (channel 0 resolves to slot 14, 908.75 MHz) and where SoCal's
-    // mesh moved; LongFast and MediumFast are still widely used
-    const names = rn === 'US' ? ['LongTurbo', r.start, 'MediumFast'] : rn === 'ANZ' ? [r.start, 'LongTurbo', 'MediumFast'] : [r.start];
+    // mesh moved; MediumFast is widely used everywhere (many European meshes moved to it for airtime). A region with
+    // room for one slot (EU_868) puts it on LongFast's frequency at another spreading factor
+    const names = rn === 'US' ? ['LongTurbo', r.start, 'MediumFast'] : rn === 'ANZ' ? [r.start, 'LongTurbo', 'MediumFast'] : [r.start, 'MediumFast'];
     for (const n of names) {
       const p = r.presets.find(x => x.name === n);
       const hz = p ? slotHz(r, p) : null;
