@@ -326,13 +326,14 @@ object RtlSdr {
     private const val STALL_MS = 2000L
 
     /**
-     * Stream with the web app's reads in flight: eight of 64 KB (Android before 9 caps a queued read at 16 KB, so
-     * there twelve of 16 KB). Returns when the rate must change or on stop, or true when the dongle has delivered
-     * nothing for two seconds, which run() answers by reopening it.
+     * Stream with a deep pool of reads in flight so a brief host stall does not overflow the dongle and drop samples
+     * (the loss heard as audio pops): sixteen of 64 KB, ~0.2 s at 2.4 Msps (Android before 9 caps a queued read at
+     * 16 KB, so there twelve of 16 KB). Returns when the rate must change or on stop, or true when the dongle has
+     * delivered nothing for two seconds, which run() answers by reopening it.
      */
     private fun streamUntilRateChange(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit): Boolean {
         val big = android.os.Build.VERSION.SDK_INT >= 28
-        val nbuf = if (big) 8 else 12; val bufSz = if (big) 65536 else 16384
+        val nbuf = if (big) 16 else 12; val bufSz = if (big) 65536 else 16384
         val buffers = Array(nbuf) { ByteBuffer.allocateDirect(bufSz) }
         val reqs = ArrayList<UsbRequest>(nbuf)
         for (i in 0 until nbuf) {

@@ -388,6 +388,7 @@ fun HdScreen(accent: Color) {
         lamp = { Lamp(lock, tone ?: Palette.muted, blink = tone == Palette.accent2) },
         controls = {
             HdHead(m, tuned, call, rec, scan, stations.size, here.size, now, lock, tone, accent)
+            VolumeMuteCard("hd", accent)
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)), verticalAlignment = Alignment.CenterVertically) {
                 ToggleBox("AUTO", scan.auto, accent, Modifier.fillMaxHeight()) { HdApp.setAuto(!scan.auto) }
                 ToggleBox("◀", false, accent, Modifier.fillMaxHeight()) { HdApp.step(-1) }

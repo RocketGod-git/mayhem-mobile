@@ -492,6 +492,15 @@ object SdrEngine {
     @Volatile private var muteNow = false
     fun toggleMute() { muteNow = !muteNow; _muted.value = muteNow }
 
+    /**
+     * The active app's output gain for the apps that play the built-in demod straight to the speaker - Audio, HD
+     * Radio and Home. It scales that audio in software (0 to 1.5), after the squelch so the gate still reads the raw
+     * signal. Every other app drives its own level in its processor, so the UI sets this to 1 for them. The top-bar
+     * MUTE (muteNow) is separate and downstream; a per-app mute is this set to 0.
+     */
+    @Volatile private var appGainNow = 1f
+    fun setAppGain(g: Float) { appGainNow = g.coerceIn(0f, 1.5f) }
+
     fun setSquelch(db: Int) {
         _squelchDb.value = db.coerceIn(0, 40)
         if (db <= 0) { sqOpen = true; _squelchOpen.value = true }
@@ -1011,8 +1020,8 @@ object SdrEngine {
             if (hdA.size < n) { hdA = FloatArray(n); for (c in 0 until 6) hdCh[c] = ShortArray(n) }
             for (i in 0 until n) hdA[i] = buf[i] / 32768f
             val o = hm.output(hdA, n)
-            val ch = trackCh; val nc = minOf(ch, o.size)
-            for (c in 0 until nc) { val src = o[c]; val dst = hdCh[c]; for (i in 0 until n) dst[i] = pcm16(src[i]) }
+            val ch = trackCh; val nc = minOf(ch, o.size); val g = appGainNow
+            for (c in 0 until nc) { val src = o[c]; val dst = hdCh[c]; for (i in 0 until n) dst[i] = pcm16(src[i] * g) }
             val t = track
             val srcs: Array<ShortArray>; var k = n
             if (driftAudio && t != null) {
@@ -1043,7 +1052,9 @@ object SdrEngine {
                 val sampI = rsOut[i].coerceIn(-32000f, 32000f).toInt()
                 val am = if (sampI < 0) -sampI else sampI; if (am > audioPeak) audioPeak = am
                 if (voiceOn) voiceDet.push(sampI / 32768f)      // judged before the squelch gates it
-                audioBuf[audioLen++] = if (sqOpen) sampI.toShort() else 0
+                // the per-app volume scales the audio here, after the squelch has read the raw level
+                val gated = if (sqOpen) (sampI * appGainNow).toInt().coerceIn(-32767, 32767) else 0
+                audioBuf[audioLen++] = gated.toShort()
                 if (audioLen >= audioBuf.size) { emitAudio(audioBuf, audioLen); audioLen = 0 }
             }
         }
@@ -1404,9 +1415,13 @@ object SdrEngine {
                     val i1 = System.nanoTime(); stAll += i1 - i0
                     if (i1 - stLast >= 1_000_000_000L) {
                         val sec = (i1 - stLast) / 1e9; fun ms(v: Long) = v / 1e6 / sec
+                        // All three pop causes on one line, so a click is attributable: audio underruns (the output
+                        // ran dry), overflow drops (the output's queue was full), and the radio's own USB sample loss.
+                        val usbLost = deliveryNote()
                         Diag.log("DSP per s: %d bufs (%.0f KB) · busy %.0f ms · spectrum %.0f · HD %.0f · demod %.0f · audio write %.0f (%d samples, want %d, dropped %d, underruns %d) · %s %.0f · idle %.0f".format(
                             (stItems / sec).toInt(), stBytes / 1024.0 / sec, ms(stAll), ms(stSpec), ms(stHd), ms(stDemod), ms(stEmit), (stAudio / sec).toLong(), AUDIO_RATE,
-                            (stDropped / sec).toLong(), underruns(), p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)))
+                            (stDropped / sec).toLong(), underruns(), p?.javaClass?.simpleName ?: "no processor", ms(stProc), ms(stWait)) +
+                            (if (usbLost.isEmpty()) "" else " · $usbLost"))
                         // an output that says it plays but whose position has not moved for 2 s while audio was refused
                         // has stopped: it is opened again (the next buffer does it)
                         val tk = track
@@ -1446,7 +1461,8 @@ object SdrEngine {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         // writes never wait (the radio thread must not), so the output keeps its own cushion instead: it starts, and
-        // resumes after running dry, only with 0.2 s queued (an empty one stuttered on every late buffer)
+        // resumes after running dry, only with 0.2 s queued (an empty one stuttered on every late buffer). The deeper
+        // USB pool now feeds it more steadily, so underruns are rarer to begin with.
         runCatching { t.setStartThresholdInFrames(AUDIO_RATE / 5) }
         runCatching { t.play() }
         return t

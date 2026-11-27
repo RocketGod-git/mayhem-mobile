@@ -113,6 +113,8 @@ private fun Browser(accent: Color, modifier: Modifier, stretch: Boolean) {
             seen.value = b
             com.rocketgod.mayhem.core.AutoPick.arm()
         }
+        // Home plays the tuned FM, so it gets its own volume and mute like Audio and HD.
+        Box(Modifier.fillMaxWidth().padding(top = d.dp(4f))) { VolumeMuteCard("home", accent) }
     }
 }
 

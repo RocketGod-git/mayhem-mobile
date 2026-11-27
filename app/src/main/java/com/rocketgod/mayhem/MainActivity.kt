@@ -136,6 +136,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.sonde.SondeHub.init(filesDir)
         Apps.cellFile = java.io.File(filesDir, "cell.json")
         com.rocketgod.mayhem.core.Dispatch.init(this)
+        com.rocketgod.mayhem.core.AppVolume.init(this)
         com.rocketgod.mayhem.core.HamPlus.init(this)
         com.rocketgod.mayhem.core.Cb.init(this)
         com.rocketgod.mayhem.core.Gmrs.init(this)

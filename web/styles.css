@@ -769,6 +769,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .ctlrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
 .ctlrow > .seg { flex: 1; }
 .rl { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 2px; }
+/* The per-app volume/mute card (Audio, HD Radio, Home), modeled on Dispatch's audio row. */
+.volcard > .chip { flex: none; min-width: 64px; }
+.volcard > .chip.muted { background: color-mix(in srgb, var(--danger) 18%, var(--surface)); color: var(--danger); border-color: var(--danger); }
+.volcard > input[type=range] { flex: 1; width: auto; }
+.volcard > .volv { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.home-vol { margin: 6px 0 0; }
 /* An on/off box the height of a bar, lit and glowing when on; an icon box; the one filled action of a panel. */
 .tog { background: var(--surface); color: var(--muted); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; font-weight: 700; font-size: 12px; letter-spacing: 1.5px; cursor: pointer; white-space: nowrap; }
 .tog.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
@@ -1960,7 +1966,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 /* The burst's full view: one column on a phone or a narrow window. On a wide screen the trace, its zoom and its bits
  * take the left and fill the height, and the readings (demodulation, pulses, frames, levels, name, export) sit in a
  * column beside them that scrolls on its own, instead of a screen's worth of scrolling below the trace. */
-.an-body, .an-main { display: contents; }
+/* Narrow (phone): the sheet is a fixed height, so the body scrolls as one column (the trace at a clamped height,
+ * then demod, pulses, frames and the rest below). Without this the sheet clipped everything under the trace. */
+.an-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.an-main { display: contents; }
+.an-main .an-wave { flex: none; height: clamp(220px, 42vh, 380px); display: flex; }
+.an-main .an-wave canvas { width: 100%; height: 100%; }
+.an-body > .an-scroll { flex: none; min-height: 0; overflow: visible; }
 @media (min-width: 1280px) {
   .an-body { display: flex; gap: 14px; flex: 1; min-height: 0; }
   .an-main { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; min-height: 0; overflow: auto; }

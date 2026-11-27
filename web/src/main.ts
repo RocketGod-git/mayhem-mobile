@@ -235,6 +235,69 @@ let worker: Worker | null = null;
 let audioCtx: AudioContext | null = null;
 let audioPort: MessagePort | null = null;
 let muteGain: GainNode | null = null;
+// A per-app output gain, between the player worklet and the global mute. The apps that play the tuned FM straight
+// through the worklet - Audio, HD Radio and Home - have no volume of their own, so this is it; every other app
+// drives its own volume in the worker, so appGain stays at 1 for them. The top-bar MUTE is muteGain, downstream.
+let appGain: GainNode | null = null;
+type AppVol = { vol: number; muted: boolean };
+const appVol: Record<'audio' | 'hd' | 'home', AppVol> = loadAppVol();
+function loadAppVol(): Record<'audio' | 'hd' | 'home', AppVol> {
+  const def = { audio: { vol: 1, muted: false }, hd: { vol: 1, muted: false }, home: { vol: 1, muted: false } };
+  try {
+    const v = JSON.parse(localStorage.getItem('mm.appvol') ?? 'null');
+    if (v) for (const k of ['audio', 'hd', 'home'] as const) if (v[k]) { def[k].vol = Number(v[k].vol) || 1; def[k].muted = !!v[k].muted; }
+  } catch { /* storage blocked */ }
+  return def;
+}
+const saveAppVol = () => { try { localStorage.setItem('mm.appvol', JSON.stringify(appVol)); } catch { /* storage full or blocked */ } };
+// Audio output pop counters, reported by the worklet. underruns = buffer ran dry and re-primed (a click);
+// overflowDrops = buffer filled and half was thrown away (a click). seen holds the values folded into the last
+// health line, so the line shows what moved in the last second rather than the running total.
+const audioDiag = { underruns: 0, concealed: 0, overflowDrops: 0 };
+let audioDiagSeen = { underruns: 0, concealed: 0, overflowDrops: 0 };
+/** For the health line: the audio pops since the last time this was read, '' when none. */
+function audioHealthNote(): string {
+  const u = audioDiag.underruns - audioDiagSeen.underruns, c = audioDiag.concealed - audioDiagSeen.concealed, o = audioDiag.overflowDrops - audioDiagSeen.overflowDrops;
+  audioDiagSeen = { underruns: audioDiag.underruns, concealed: audioDiag.concealed, overflowDrops: audioDiag.overflowDrops };
+  const parts: string[] = [];
+  if (u > 0) parts.push(`${u} underrun${u === 1 ? '' : 's'}`);
+  if (c > 0) parts.push(`${c} gap${c === 1 ? '' : 's'} concealed`);
+  if (o > 0) parts.push(`${o} overflow drop${o === 1 ? '' : 's'}`);
+  return parts.length ? `audio ${parts.join(', ')}` : '';
+}
+/** Which per-app volume owns the output right now, or null for an app that sets its own volume in the worker. */
+function appVolKey(): 'audio' | 'hd' | 'home' | null {
+  if (state.app === 'audio') return 'audio';
+  if (state.app === 'hd') return 'hd';
+  if (state.app === null) return 'home';
+  return null;
+}
+/** Push the active app's volume and mute onto appGain; 1 for every app that handles its own level. */
+function applyAppGain(): void {
+  if (!appGain) return;
+  const k = appVolKey();
+  const a = k ? appVol[k] : null;
+  appGain.gain.value = a ? (a.muted ? 0 : a.vol) : 1;
+}
+/** A volume/mute card, modeled on Dispatch's: a mute chip, a VOLUME label, a 0-150% slider and a readout. */
+function volCardHtml(key: 'audio' | 'hd' | 'home', extra = ''): string {
+  const a = appVol[key];
+  return `<div class="ctlrow volcard ${extra}"><button class="chip" data-volmute="${key}"></button><span class="rl">VOLUME</span>`
+    + `<input type="range" min="0" max="150" value="${Math.round(a.vol * 100)}" data-volrange="${key}" aria-label="volume"><span class="volv" data-volv="${key}"></span></div>`;
+}
+function updateVolCard(key: 'audio' | 'hd' | 'home'): void {
+  const a = appVol[key];
+  const mute = q<HTMLButtonElement>(`[data-volmute="${key}"]`);
+  if (mute) { mute.textContent = a.muted ? 'MUTED' : 'MUTE'; mute.classList.toggle('on', !a.muted); mute.classList.toggle('muted', a.muted); }
+  const vv = q(`[data-volv="${key}"]`); if (vv) vv.textContent = `${Math.round(a.vol * 100)}%`;
+}
+function wireVolCard(root: ParentNode, key: 'audio' | 'hd' | 'home'): void {
+  const mute = root.querySelector<HTMLButtonElement>(`[data-volmute="${key}"]`);
+  const range = root.querySelector<HTMLInputElement>(`[data-volrange="${key}"]`);
+  if (mute) mute.onclick = () => { appVol[key].muted = !appVol[key].muted; saveAppVol(); applyAppGain(); updateVolCard(key); };
+  if (range) range.oninput = (e) => { appVol[key].vol = Number((e.target as HTMLInputElement).value) / 100; saveAppVol(); applyAppGain(); updateVolCard(key); };
+  updateVolCard(key);
+}
 let scope: Scope | null = null;
 let sweepScope: Scope | null = null;
 let lastSweepRow = new Float32Array(0);
@@ -2063,6 +2126,8 @@ function render(app: AppId | null): void {
   wireCommon(view);
   bindHs(view);
   refreshReadout(); setGains(state.lna, state.vga, state.amp); setMode(state.mode);
+  // appGain follows the app: Audio, HD and Home each get their own volume, every other app drives its own.
+  applyAppGain();
   refreshShell();
   window.scrollTo(0, 0);
   // every app shares this one scroller; a new app opens at its top, not where the last one was left (a redraw of
@@ -2075,6 +2140,7 @@ let renderedApp: AppId | null | undefined;
 function renderLauncher(view: HTMLElement): void {
   view.innerHTML = `
     <section class="visual launch-visual">${readoutHtml()}<div id="launch-scope" class="launch-scope"></div><div id="launch-line" class="launch-line"></div>
+    ${volCardHtml('home', 'home-vol')}
     <div class="launch-radio"><div class="caption">BANDS</div>${hsHtml(`<div class="row wrap bandrow">${bandChipsHtml()}</div>`, 'bandhs')}<div class="launch-gain"></div></div></section>
     <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
       const apps = APPS.filter(a => a.cat === c && !MERGED_INTO[a.id]); if (!apps.length) return '';
@@ -2084,6 +2150,7 @@ function renderLauncher(view: HTMLElement): void {
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));
   scope.setLabels(centredLabels(state.freq, state.rate));
+  wireVolCard(view, 'home');
   qa<HTMLButtonElement>('[data-app]', view).forEach(b => b.onclick = () => openPicked(b.dataset.app as AppId));
   // Restore the app strip to where it was, and keep track as it moves, so opening an app and coming back does not
   // jump it to the start (the strip scrolls sideways on a phone, down on a wide screen — remember both).
@@ -3336,6 +3403,7 @@ function renderAudio(view: HTMLElement): void {
     <section class="controls">
       ${segHtml(['WFM', 'NFM', 'AM', 'USB', 'LSB'].map(m => `<button data-mode="${m}">${m}</button>`))}
       <div style="margin-top:6px">${hsHtml(bandTilesHtml())}</div>
+      ${volCardHtml('audio')}
       <div class="ctlrow"><span class="rl">SQL</span>${segHtml([0, 6, 12, 20].map(d => `<button data-sql="${d}">${d ? `${d} dB` : 'OFF'}</button>`))}<button id="scan" class="tog">SCAN</button></div>
     </section>`;
   scope = attach(tunableScope('scope', 200));
@@ -3346,6 +3414,7 @@ function renderAudio(view: HTMLElement): void {
   $('scan').onclick = () => { if (bookmarks.length < 2) { log('SCAN hops your FAVES — star a few with ☆ beside the frequency first'); showHint(new Error('SCAN hops your FAVES — star a few with ☆ beside the frequency first')); return; } setScanning(!state.scanning); };
   $('scan').classList.toggle('on', state.scanning);
   const hdEl = document.createElement('div'); hdEl.id = 'hd'; hdEl.className = 'hdbadge'; hdEl.hidden = true; $('scope').appendChild(hdEl);
+  wireVolCard(view, 'audio');
   refreshBookmarks(); refreshSquelch();
   sendRds(); drawRds(); sendHd(); drawHd();
 }
@@ -6694,6 +6763,7 @@ function renderHd(view: HTMLElement): void {
     <section class="${visCls('hd')}">${readoutHtml()}${wide ? `<div class="hd-left"><div class="ctlrow">${segHtml([['now', 'NOW PLAYING'], ['map', 'MAP']].map(([k, l]) => `<button data-hdleft="${k}">${l}</button>`))}</div><div id="hd-hero" class="hd-hero"></div><div class="hd-mapbox">${mapHtml}</div></div>` : ''}<div id="scope" class="panel short"></div></section>
     <section class="controls">
       <div id="hd-head" class="hd-head"></div>
+      ${volCardHtml('hd')}
       <div class="ctlrow"><button id="hd-auto" class="tog">AUTO</button><button id="hd-prev" class="chip" title="the previous station heard" aria-label="previous station">◀</button><button id="hd-next" class="chip" title="the next station heard" aria-label="next station">▶</button><button id="hd-export" class="ib" title="export the stations and the log" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('hd')}</div>
       <div class="ctlrow">${segHtml(tabs.map(v => `<button data-hdview="${v}">${v === 'now' ? 'NOW' : v.toUpperCase()}</button>`))}</div>
       <div id="hd-detail" class="mt-detail hd-detail" hidden></div>
@@ -6729,6 +6799,7 @@ function renderHd(view: HTMLElement): void {
   clearInterval(hdUi.timer);
   hdUi.timer = window.setInterval(() => { if (state.app !== 'hd') { clearInterval(hdUi.timer); clearTimeout(hdUi.scanTimer); return; } refreshHd(); }, 500);
   if (hdUi.auto) { clearTimeout(hdUi.scanTimer); hdUi.scanTimer = window.setTimeout(hdScanTick, 500); }
+  wireVolCard(view, 'hd');
   refreshList('hd');
   refreshHd(true);
   hdVuStart();
@@ -10217,7 +10288,7 @@ function ensureWorker(): Worker {
         if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
-      case 'health': { const lost = radio?.delivery.note(performance.now()) ?? ''; lastHealth = lost ? `${m.line} · ${lost}` : m.line; } loraDelivery(); lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${lastHealth}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '— demod producing audio' : '— silent (no modulation / no signal)'}`); break;
+      case 'health': { const lost = radio?.delivery.note(performance.now()) ?? '', pops = audioHealthNote(); const extra = [lost, pops].filter(Boolean).join(' · '); lastHealth = extra ? `${m.line} · ${extra}` : m.line; } loraDelivery(); lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${lastHealth}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '- demod producing audio' : '- silent (no modulation / no signal)'}`); break;
       case 'log': log(m.line); break;
       case 'packet': { if (state.app === 'ham') { const s = state.ham.sat; s.packets.unshift(`${new Date().toTimeString().slice(0, 8)} ${m.line as string}`); if (s.packets.length > 100) s.packets.length = 100; const pk = q('#sat-packet-list'); if (pk) pk.innerHTML = s.packets.map((p, i) => `<div class="li ${i % 2 ? 'alt' : ''}">${p}</div>`).join(''); break; }
         const id = state.app ?? 'x', list = (logs[id] ??= []);
@@ -10405,12 +10476,20 @@ function ensureWorker(): Worker {
 
 async function ensureAudio(): Promise<void> {
   if (!audioCtx) {
-    audioCtx = new AudioContext({ sampleRate: 48_000 });
+    // latencyHint 'playback' asks the browser for a larger output buffer. The default low-latency buffer (~24 ms on
+    // this hardware) glitches at the device layer under any load and is heard as an occasional pop, even though the
+    // samples we render are clean. A receiver has no need for low latency, so trade ~150 ms of delay for a buffer the
+    // device can sustain. Confirmed on a bench HackRF: pops with the default buffer, none with this.
+    audioCtx = new AudioContext({ sampleRate: 48_000, latencyHint: 'playback' });
     await audioCtx.audioWorklet.addModule('./audio-worklet.js');
     // 6 outputs where the device has them; the unused four stay silent and a stereo destination downmixes them away
     const node = new AudioWorkletNode(audioCtx, 'mayhem-player', { outputChannelCount: [audioCtx.destination.maxChannelCount >= 6 ? 6 : 2] });
+    appGain = audioCtx.createGain(); applyAppGain();
     muteGain = audioCtx.createGain(); muteGain.gain.value = state.muted ? 0 : 1;
-    node.connect(muteGain); muteGain.connect(audioCtx.destination);
+    node.connect(appGain); appGain.connect(muteGain); muteGain.connect(audioCtx.destination);
+    // The worklet reports its pop counters here, about once a second when they change, so the health line can say
+    // whether a click was an audio underrun or an overflow drop (as against a USB sample loss from the radio).
+    node.port.onmessage = (e) => { const d = e.data; if (d && d.type === 'audiodiag') { audioDiag.underruns = d.underruns; audioDiag.concealed = d.concealed ?? 0; audioDiag.overflowDrops = d.overflowDrops; } };
     const ch = new MessageChannel();
     node.port.postMessage({ port: ch.port1 }, [ch.port1]);
     audioPort = ch.port2;

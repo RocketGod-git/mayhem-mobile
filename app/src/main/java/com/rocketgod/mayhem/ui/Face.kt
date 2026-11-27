@@ -37,6 +37,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -233,6 +235,31 @@ fun ToggleBox(label: String, on: Boolean, accent: Color, modifier: Modifier = Mo
         .padding(horizontal = d.dp(12f), vertical = d.dp(8f)), contentAlignment = Alignment.Center) {
         Text(label, color = if (on) Palette.ink else Palette.muted, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f),
             letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
+    }
+}
+
+/**
+ * The per-app volume and mute, modeled on Dispatch's audio row: a MUTE box, a VOLUME label, a 0 to 150 % slider and
+ * a readout. [key] is "audio", "hd" or "home"; it drives [com.rocketgod.mayhem.core.AppVolume], which scales that
+ * app's speaker output. The top-bar MUTE is separate and still silences everything on top of this.
+ */
+@Composable
+fun VolumeMuteCard(key: String, accent: Color) {
+    val d = rememberDims()
+    val flow = when (key) {
+        "audio" -> com.rocketgod.mayhem.core.AppVolume.audio
+        "hd" -> com.rocketgod.mayhem.core.AppVolume.hd
+        else -> com.rocketgod.mayhem.core.AppVolume.home
+    }
+    val v by flow.collectAsState()
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    val shown = dragging ?: (v.vol * 100f)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+        ToggleBox(if (v.muted) "MUTED" else "MUTE", !v.muted, accent) { com.rocketgod.mayhem.core.AppVolume.toggleMute(key) }
+        RowLabel("VOLUME")
+        Slider(value = shown, onValueChange = { dragging = it; com.rocketgod.mayhem.core.AppVolume.setVolume(key, it / 100f) }, onValueChangeFinished = { dragging = null },
+            valueRange = 0f..150f, colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Palette.line), modifier = Modifier.weight(1f))
+        Text("${shown.toInt()}%", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), maxLines = 1, softWrap = false)
     }
 }
 

@@ -420,9 +420,11 @@ export class RtlSdr implements Radio {
   // ---- streaming ------------------------------------------------------------------------------------------
 
   private async stream(): Promise<'stop' | 'reopen'> {
-    const N = 8, SIZE = 65536;
-    // Several reads are kept in flight so the dongle never waits on us. Each carries its own catch: when one
-    // fails - the device unplugged, the endpoint gone - the other seven fail moments later, and a rejected
+    const N = 16, SIZE = 65536;
+    // Several reads are kept in flight so the dongle never waits on us, deep enough (16 x 64 KiB, ~0.2 s at
+    // 2.4 Msps) that a brief host stall does not overflow the dongle and drop samples - the loss heard as pops.
+    // Each carries its own catch: when one fails - the device unplugged, the endpoint gone - the others fail
+    // moments later, and a rejected
     // promise nobody is waiting on yet takes the whole page down rather than the receiver.
     const read = (): Promise<USBInTransferResult> =>
       this.dev.transferIn(this.epIn, SIZE).catch((e: Error) => {

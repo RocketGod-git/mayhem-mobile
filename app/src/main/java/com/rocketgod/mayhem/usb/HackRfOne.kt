@@ -295,11 +295,15 @@ object HackRfOne {
     }
 
     // ---- IQ streaming (async UsbRequest pool) ----------------------------------------------------------------
-    /** Reads kept in flight at [rate]: 12 x 16 KB (98 ms at 1 Msps, 10 at 10), and from 10 Msps up 32 x 64 KB (52 ms at
-     *  20) where the phone takes 64 KB reads (Android 9 on), so a stalled moment doesn't overflow the radio. */
+    /** Reads kept in flight at [rate], so a stalled moment (a busy audio thread, say) doesn't overflow the radio and
+     *  drop samples - the loss bursts heard as audio pops. From 10 Msps up, 32 x 64 KB (52 ms at 20); at the wide
+     *  audio rates, 16 x 64 KB (~213 ms at 2.4 Msps) where the phone takes 64 KB reads (Android 9 on); 12 x 16 KB at
+     *  the narrow rates where a stall is unlikely and latency matters more. */
     private fun readPool(rate: Int): Pair<Int, Int> =
         if (rate >= 10_000_000 && android.os.Build.VERSION.SDK_INT >= 28) 32 to 65536
-        else if (rate >= 10_000_000) 48 to 16384 else 12 to 16384
+        else if (rate >= 10_000_000) 48 to 16384
+        else if (rate >= 1_500_000 && android.os.Build.VERSION.SDK_INT >= 28) 16 to 65536
+        else 12 to 16384
 
     /** Streams until stop, a transmission, or a rate that wants another pool (true: stream again). */
     private fun streamLoop(c: UsbDeviceConnection, rx: UsbEndpoint, onStatus: (String) -> Unit): Boolean {

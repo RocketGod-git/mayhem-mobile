@@ -40,9 +40,10 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /** One bulk read, in bytes. */
 const READ_SIZE = 65536;
-/** Reads kept in flight: 8 (65 ms at 2 Msps), 32 from 10 Msps up (52 ms at 20), so a stalled page doesn't overflow
- *  the radio. */
-export function readDepth(rate: number): number { return rate >= 10_000_000 ? 32 : 8; }
+/** Reads kept in flight, so a stalled page (a busy Mac audio thread, say) does not overflow the radio and drop
+ *  samples - the loss bursts that are heard as audio pops. 16 at the wide audio rates (130 ms at 2 Msps), 32 from
+ *  10 Msps up (52 ms at 20), 8 at the narrow rates where a stall is unlikely and latency matters more. */
+export function readDepth(rate: number): number { return rate >= 10_000_000 ? 32 : rate >= 1_500_000 ? 16 : 8; }
 
 /** Kept as a name of its own; structurally this is `RadioEvents`. */
 export type HackRfEvents = RadioEvents;

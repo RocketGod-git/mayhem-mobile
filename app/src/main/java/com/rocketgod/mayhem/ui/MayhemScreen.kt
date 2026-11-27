@@ -111,6 +111,16 @@ fun MayhemScreen(status: String, connected: Boolean) {
     val view = LocalView.current
     DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
     val inPip by Pip.active.collectAsState()
+    // The per-app output volume follows the open app: Audio, HD and Home each get their own, every other app drives
+    // its own level in its processor, so it hands the engine a flat gain.
+    LaunchedEffect(current) {
+        com.rocketgod.mayhem.core.AppVolume.activate(when (current) {
+            null -> "home"
+            MayhemApp.AUDIO -> "audio"
+            MayhemApp.HD -> "hd"
+            else -> null
+        })
+    }
     if (inPip) { PipView(Apps.playing(), accent); return }
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().displayCutoutPadding().navigationBarsPadding()) {

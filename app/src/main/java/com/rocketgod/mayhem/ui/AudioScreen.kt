@@ -115,6 +115,7 @@ fun AudioScreen(accent: Color) {
                 TileRow(LISTEN_BANDS.map { Tile(it.name, "%d–%d".format(it.lo / 1_000_000, it.hi / 1_000_000), it == lit) }, accent) { i ->
                     val b = LISTEN_BANDS[i]; SdrEngine.setMode(b.mode); SdrEngine.tune(b.centre)
                 }
+                VolumeMuteCard("audio", accent)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
                     Text("SQL", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(9f), letterSpacing = 2.sp)
                     SegBar(SQL_STEPS.map { if (it == 0) "OFF" else "$it dB" }, SQL_STEPS.indexOf(squelch), accent, Modifier.weight(1f)) { SdrEngine.setSquelch(SQL_STEPS[it]) }
