@@ -44,7 +44,12 @@ data class AnalogTx(
     val courtesy: CourtesyTone?, val cw: CwId?,
     val selcall: List<Selcall>, val twoTone: List<TwoTone>, val mdc: List<MdcPacket>, val fleetsync: List<FleetSync>, val data: List<DataBurst>,
     val timeout: Boolean, val kerchunk: Boolean,
+    /** A carrier with no voice and no signaling, keyed [KERCHUNK_MAX_S] to [NO_VOICE_MAX_S]: too long for a kerchunk. */
+    val noVoice: Boolean = false,
 )
+/** The longest keyup (to its courtesy tone when it has one) that is a kerchunk, and the longest a carrier with no voice is called one. */
+const val KERCHUNK_MAX_S = 2.0
+const val NO_VOICE_MAX_S = 15.0
 data class AnalogCwId(val callsign: String, val count: Int, val confidence: Double)
 data class AnalogPrint(val key: String, val tones: List<AnalogTone>, val count: Int)
 data class AnalogSnap(val carrier: Boolean, val txs: List<AnalogTx>, val cwId: AnalogCwId?, val courtesy: List<AnalogPrint>, val timeoutS: Double)
@@ -692,7 +697,7 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
             for (sg in segs) {
                 val a2 = max(a.toLong(), sg[0] - bufAt).toInt(); val b2 = min(b.toLong(), sg[1] - bufAt).toInt()
                 if (b2 - a2 < jsr(0.08 * rate)) continue
-                val tx = analyze(buf.copyOfRange(a2, b2), (bufAt + a2) / rate).copy(kerchunk = false, timeout = false)
+                val tx = analyze(buf.copyOfRange(a2, b2), (bufAt + a2) / rate).copy(kerchunk = false, noVoice = false, timeout = false)
                 remember(tx); txs.add(tx); if (txs.size > 30) txs.removeAt(0); onTx(tx)
             }
             segs.clear(); fRun = 0; dRun = 0
@@ -782,9 +787,12 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
         val unkeyS = if (lastVoiceS >= 0) min(durS, lastVoiceS) else courtesy?.let { it.atS - startS } ?: -1.0
         val tailS = if (unkeyS >= 0) r2(durS - unkeyS) else -1.0
         val timeout = durS >= 25 && lastVoiceS >= 0 && durS - lastVoiceS < 0.25 && courtesy == null
-        val kerchunk = voiceS < 0.3 && cw == null && selcall.isEmpty() && twoTone.isEmpty() && mdc.isEmpty() && fleetsync.isEmpty() && data.isEmpty() && durS < 15
+        // a keyup with no voice keyed under KERCHUNK_MAX_S (to its courtesy tone when it has one) is a kerchunk; one up to NO_VOICE_MAX_S is a carrier with no voice
+        val quiet = voiceS < 0.3 && cw == null && selcall.isEmpty() && twoTone.isEmpty() && mdc.isEmpty() && fleetsync.isEmpty() && data.isEmpty() && durS < NO_VOICE_MAX_S
+        val kerchunk = quiet && (if (unkeyS >= 0) unkeyS else durS) < KERCHUNK_MAX_S
+        val noVoice = quiet && !kerchunk
         return AnalogTx(jsr(startS * 1000) / 1000, jsr(durS * 1000) / 1000, r2(voiceS), if (unkeyS >= 0) r2(unkeyS) else -1.0, tailS, ctcss, dcs, rb, dcsTurnOff,
-            courtesy, cw, selcall, twoTone, mdc, fleetsync, data, timeout, kerchunk)
+            courtesy, cw, selcall, twoTone, mdc, fleetsync, data, timeout, kerchunk, noVoice)
     }
 
     private fun remember(tx: AnalogTx) {
@@ -859,5 +867,6 @@ fun analogSummary(tx: AnalogTx): List<String> {
     if (tx.tailS >= 0) out.add("Tail ${String.format(Locale.US, "%.1f", tx.tailS)} s")
     if (tx.timeout) out.add("Timed out after ${jsr(tx.durS).toInt()} s")
     if (tx.kerchunk) out.add("Kerchunk")
+    if (tx.noVoice) out.add("Carrier, no voice")
     return out
 }

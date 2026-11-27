@@ -12,6 +12,7 @@ import com.rocketgod.mayhem.core.hamplus.hpPrefsRestored
 import com.rocketgod.mayhem.core.hamplus.hpPrefsSaved
 import com.rocketgod.mayhem.core.hamplus.HpSaved
 import com.rocketgod.mayhem.core.hamplus.HpAct
+import com.rocketgod.mayhem.core.hamplus.HP_CAP_MS
 import com.rocketgod.mayhem.core.hamplus.HpScan
 import com.rocketgod.mayhem.core.hamplus.hpAutoLabel
 import com.rocketgod.mayhem.core.hamplus.HpWindow
@@ -254,6 +255,8 @@ object HamPlus {
         val view = AutoView(now, calls, playingRow?.id?.toString() ?: s.rows.firstOrNull { it.live }?.id?.toString() ?: "", false, s.tiles.size)
         // a followed channel pins its window; traffic in the window, and the conversation's hang, keep AUTO and SCAN on it
         val acts = s.rows.map { HpAct(it.id, it.hz, it.startMs.toLong(), it.endMs.toLong(), it.live) }
+        // BIZ: no window keeps the scan more than a minute while others wait their turn
+        followScan.capMs = if (_band.value == "BIZ") HP_CAP_MS else 0L
         val to = followScan.step(a, view, acts, _scan.value.windows.map { it.hz }, rate().toDouble(), _scan.value.idx, _prefs.value)
         var sc = _scan.value.copy(dwellEnd = if (a.mode == "hold") now + 8_000 else a.until, mode = a.mode)
         if (to != null && to != sc.idx && to in sc.windows.indices) { sc = sc.copy(idx = to); tune(sc.windows[to].hz) }

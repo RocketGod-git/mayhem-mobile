@@ -129,7 +129,8 @@ object AdsbDecoder : IqProcessor {
             if (errors > 0 || (df != 17 && df != 18)) { j++; continue }   // only ADS-B (DF17/18), clean bits
             dbgDf++
             val msgBits = LONG_BITS                                        // DF17/18 are always 112-bit
-            if (checksum(msg, msgBits) != 0L) { dbgCrcFail++; j++; continue }   // CRC must be clean (ICAO in the clear)
+            val syn = checksum(msg, msgBits).toInt()
+            if (syn != 0 && !repair(msg, syn)) { dbgCrcFail++; j++; continue }   // CRC must be clean (ICAO in the clear)
             dbgCrcOk++
 
             AdsbStore.noteFrame()                                          // valid Mode-S frame — proof of ingestion
@@ -230,6 +231,9 @@ object AdsbDecoder : IqProcessor {
         val d = b(4) or (b(2) shl 1) or (b(0) shl 2)
         return "$a$bb$c$d"
     }
+
+    /** What a special squawk means, or "". */
+    fun squawkMeaning(s: String): String = when (s) { "7500" -> "HIJACK"; "7600" -> "RADIO FAILURE"; "7700" -> "EMERGENCY"; else -> "" }
 
     /** ADS-B 12-bit altitude (Q-bit path) → feet, or null. */
     private fun decodeAc12(msg: IntArray): Int? {
@@ -361,6 +365,36 @@ object AdsbDecoder : IqProcessor {
         }
         val rem = ((msg[bits / 8 - 3].toLong() shl 16) or (msg[bits / 8 - 2].toLong() shl 8) or msg[bits / 8 - 1].toLong())
         return (crc xor rem) and 0xFFFFFFL
+    }
+
+    /**
+     * CRC repair for a DF17/18 frame. The CRC is linear, so a bit error at position i always leaves the same remainder:
+     * CRC[i] for the 88 data bits, 1 shl (111 - i) for the 24 parity bits. One bad bit is flipped back outright; two
+     * are flipped back only when the repaired address is an aircraft already heard cleanly. The DF field is never touched.
+     */
+    private val syn1 = HashMap<Int, Int>()
+    private val syn2 = HashMap<Int, Int>()
+    init {
+        fun s(i: Int): Int = if (i < LONG_BITS - 24) CRC[i].toInt() else 1 shl (LONG_BITS - 1 - i)
+        for (i in 5 until LONG_BITS) syn1[s(i)] = i
+        val dup = HashSet<Int>()
+        for (a in 5 until LONG_BITS) for (b in a + 1 until LONG_BITS) {
+            val k = s(a) xor s(b)
+            if (syn1.containsKey(k)) continue
+            if (syn2.containsKey(k)) dup.add(k) else syn2[k] = a * 128 + b
+        }
+        for (k in dup) syn2.remove(k)   // a remainder two pairs share is ambiguous
+    }
+
+    private fun repair(msg: IntArray, syn: Int): Boolean {
+        fun flip(i: Int) { msg[i shr 3] = msg[i shr 3] xor (0x80 shr (i and 7)) }
+        syn1[syn]?.let { flip(it); return true }
+        val p = syn2[syn] ?: return false
+        flip(p shr 7); flip(p and 127)
+        val icao = "%02x%02x%02x".format(msg[1], msg[2], msg[3])
+        if ((icaoFrames[icao] ?: 0) >= MIN_CONFIRM || AdsbStore.has(icao)) return true
+        flip(p shr 7); flip(p and 127)
+        return false
     }
 
     private fun nowTs14(): Long {

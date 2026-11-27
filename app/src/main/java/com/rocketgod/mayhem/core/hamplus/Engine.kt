@@ -88,6 +88,13 @@ const val GHOST_HZ = 25_000L
 const val GHOST_DB = 15.0
 const val GHOST_MS = 1_000.0
 const val TALK_PRE_MS = 300.0
+/** The span's noise moving this much off its median of the last [GAIN_REF] measurements is a gain step (AGC, LNA, amp);
+ *  after one no carrier opens for [SETTLE_MS] while every closed channel's floor follows at once, so the first seconds
+ *  of AGC open nothing. Judged only on a span of [GAIN_MIN_CH] channels or more (a narrower one's noise is too few). */
+const val GAIN_STEP_DB = 1.5
+const val SETTLE_MS = 2_000.0
+const val GAIN_REF = 5
+const val GAIN_MIN_CH = 64
 /** About the length of a speech block (the start of a block is this long before its end). */
 private const val SPEECH_BLOCK_MS = 85.0
 private const val MEASURE_MS = 100.0
@@ -426,6 +433,8 @@ abstract class ChannelWatch<P : WatchProbe>(
     private var floorDb = FloatArray(0)
     protected var snr = FloatArray(0); private set
     protected val opens = LinkedHashMap<Int, WatchOpen<P>>()
+    /** The span's noise at the last measurement, and until when the gain is settling (engine ms). */
+    private val commons = ArrayList<Float>(); private var settleUntil = 0.0
     private var nextId = 1
     private var lastMeasure = 0.0; private var lastSnap = 0.0; private var lastCap = 0.0; private var lastLog = 0.0; private var lastCenter = 0L
     /** Probe processing time measured: ms a probe takes per second of signal (smoothed), and the cap it sets. */
@@ -466,7 +475,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         // only the plan's bands open channels: a span reaching past a band's edge leaves the rest alone
         hamBand = BooleanArray(count) { plan.inPlan(hzOf(it)) }
         power = FloatArray(count) { -120f }; floorDb = FloatArray(count) { Float.NaN }; snr = FloatArray(count)
-        lastCenter = centerHz
+        lastCenter = centerHz; commons.clear(); settleUntil = 0.0
         tracker.setSpan(centerHz - half, centerHz + half)
     }
 
@@ -515,10 +524,19 @@ abstract class ChannelWatch<P : WatchProbe>(
         // each channel's floor is kept against the span's own noise (its quietest quarter), so a gain change (AGC, LNA, amp)
         // that lifts the whole span moves no channel: only a carrier rises above its neighbors
         val common = quietQuarter(power, count)
+        // a gain step: until it has settled, every channel not open takes its level as its floor, so none opens on it
+        if (count >= GAIN_MIN_CH && commons.size >= GAIN_REF) {
+            val ref = commons.sorted()[GAIN_REF shr 1]
+            if (abs(common - ref) >= GAIN_STEP_DB) settleUntil = now + SETTLE_MS
+        }
+        commons.add(common); if (commons.size > GAIN_REF) commons.removeAt(0)
+        val settling = now < settleUntil
+        val held = HashSet<Int>()
+        if (settling) for (o in opens.values) for (d in -1..1) held.add(o.k + d)
         for (k in 0 until count) {
             val rel = power[k] - common
             val f = floorDb[k]
-            floorDb[k] = if (f.isNaN()) rel else if (rel < f) f + 0.3f * (rel - f) else f + 0.004f * (rel - f)
+            floorDb[k] = if (f.isNaN() || (settling && k !in held)) rel else if (rel < f) f + 0.3f * (rel - f) else f + 0.004f * (rel - f)
             snr[k] = rel - floorDb[k]
         }
         gate(now, pdb, binHz)
@@ -624,12 +642,13 @@ abstract class ChannelWatch<P : WatchProbe>(
         val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
         p?.end()
         val recorded = p != null && !o.cut
-        val tone = p?.tone() ?: 0.0
+        val digital = p?.digital() == true
+        val tone = if (p != null && !digital) p.tone() else 0.0
         val envN = ceil((endMs - o.startMs) / ENV_MS).toInt()
         val e0 = max(0, ((o.startMs - o.probeAt) / ENV_MS).roundToInt())
         val env = p?.env?.let { e -> FloatArray(max(0, min(e.size, e0 + envN) - e0)) { e[e0 + it] } } ?: FloatArray(0)
         val t = TxRec(o.id, o.hz, o.startMs, endMs, (o.peak * 10).roundToInt() / 10.0, off.hz, off.sd,
-            tone, p?.dcs() ?: 0, p?.cwId()?.ifEmpty { null } ?: p?.cw0 ?: "", env, recorded, p?.ident())
+            tone, if (p != null && !digital) p.dcs() else 0, p?.cwId()?.ifEmpty { null } ?: p?.cw0 ?: "", env, recorded, p?.ident())
         if (recorded) {
             // (the audio from the transmission's start: later than its demodulator's when the voice came after the carrier)
             val data = p!!.clip.done()
@@ -837,7 +856,7 @@ abstract class ChannelWatch<P : WatchProbe>(
         val p = o.probe
         val off = p?.offset(2) ?: ProbeOffset(Double.NaN, 0.0)
         LiveRec(o.id, o.hz, o.startMs, (o.snr * 10).roundToInt() / 10.0, if (p != null) p.levelDb.roundToInt().toDouble() else -90.0, off.hz,
-            p?.tone() ?: 0.0, p?.dcs() ?: 0, p != null && !o.cut, p?.ident())
+            if (p != null && !p.digital()) p.tone() else 0.0, if (p != null && !p.digital()) p.dcs() else 0, p != null && !o.cut, p?.ident())
     }
 
     /** The whole picture now; the engine also publishes it on [snap] twice a second. */

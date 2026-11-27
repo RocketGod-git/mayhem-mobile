@@ -210,7 +210,12 @@ private class Sys(val key: String, val proto: String, val color: Int, val wacn: 
     /** TETRA: calls by call identifier, and the air interface encryption seen. */
     var tetra: TetraSys? = null
     var osw: OswSys? = null
+    /** Capacity Plus: what the latest channel status said of each busy logical channel, and when it was heard. */
+    var cap: CapSys? = null
 }
+/** A busy Capacity Plus logical channel: in voice or not, its talkgroup or the ID on it, when heard, its last grant. */
+private class CapLcn(val voice: Boolean, val tg: Int, val ms: Long, var grantMs: Long)
+private class CapSys { val at = LinkedHashMap<Int, CapLcn>(); var ms = 0L }
 private class TetraCall(var tg: Int, var group: Boolean, var src: Int, var hz: Long, var slot: Int, var e2ee: Boolean, val ms: Long)
 private class TetraSys {
     val calls = LinkedHashMap<Int, TetraCall>(); var encSdus = 0; var clearSdus = 0; var aie = false; var sec: TetraSecurity? = null
@@ -414,6 +419,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     private var lastFind = 0L; private var lastPost = 0L; private var pending = false; private var colorNext = 0
     private val logSeen = HashMap<String, Long>()
     private val vendor = VendorCheck()
+    /** Capacity Plus channel status first parts, per carrier and slot, waiting for their last part. */
+    private val capParts = HashMap<String, IntArray>()
     private val bbFir = HashMap<Long, Pair<RealFir, RealFir>>()
     val calls = CallTracker { now() }
     private val p25Seen = HashMap<Long, Long>()
@@ -1396,6 +1403,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                     if (b.dt == 1) learnLpcn(c, b.slot, lc, now)
                     val call = calls.lc(c.sys, c.hz, b.slot, LcIn(lc.group, lc.dst, lc.src, lc.emergency, lc.privacy), now)
                     if (call.sys.isNotEmpty() && c.sys.isEmpty()) c.sys = call.sys
+                    capVoice(c, b.slot, lc.dst, now)
                 }
                 if (b.dt == 2) calls.terminate(c.sys, c.hz, b.slot, now)
                 val name = if (b.dt == 1) "VOICE LC HEADER" else "TERMINATOR WITH LC"
@@ -1525,6 +1533,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         if (lc.dst == 0 && lc.src == 0) return
         val call = calls.lc(c.sys, c.hz, slot, LcIn(lc.group, lc.dst, lc.src, lc.emergency, lc.privacy), now, "DMR")
         if (call.sys.isNotEmpty() && c.sys.isEmpty()) c.sys = call.sys
+        capVoice(c, slot, lc.dst, now)
         val k = "${c.key}:$slot:${lc.dst}:${lc.src}:${lc.privacy}"; val seen = embSeen[k]
         if (seen == null || now - seen > 10_000) {
             embSeen[k] = now; if (embSeen.size > 500) embSeen.clear()
@@ -1593,10 +1602,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         when (cs.kind) {
             "beacon" -> {
                 s.trunk = "CAPACITY PLUS"
-                s.rest = cs.rest ?: -1; s.busy = cs.busy ?: emptyList()
-                // a unit exchange on this carrier just now and one logical channel busy: that channel is this carrier's slot
-                val hd = c.hdr
-                if (s.busy.size == 1 && hd != null && now - hd.ms < 1_000) lcnVote(s, s.busy[0], c.hz, hd.slot)
+                s.rest = cs.rest ?: -1
+                capWhole(c, slot, cs)?.let { capApply(s, c, it, now) }
                 c.lcn = s.lcns.filter { it.value.first == c.hz }.keys.joinToString("/")
                 for (k in carriers.values) if (k.sys == s.key) {
                     val mine = s.lcns.filter { it.value.first == k.hz }.keys
@@ -1604,8 +1611,8 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
                 }
                 cs.unit?.let { if (!allUnits(cs, it)) touchUnit(s.key, it, c, now, "busy channel", cs, "") }
             }
-            "unithdr" -> cs.unit?.let { if (!allUnits(cs, it)) { c.hdr = Hdr(now, slot); touchUnit(s.key, it, c, now, "unit report header", cs, "") } }
-            "unitrpt" -> if (cs.unit != null && !allUnits(cs, cs.unit!!)) unitReport(s, c, cs, now)
+            "unithdr" -> cs.unit?.let { if (!allUnits(cs, it)) { c.hdr = Hdr(now, slot); touchUnit(s.key, it, c, now, "unit report header", cs, ""); if (cs.lcn != null) capData(s, c, slot, cs, now) } }
+            "unitrpt" -> if (cs.unit != null && !allUnits(cs, cs.unit!!)) { unitReport(s, c, cs, now); capData(s, c, slot, cs, now) }
             "grant" -> {
                 if (cs.verified && cs.fid == 0) s.trunk = "TIER III"
                 val dst = cs.dst ?: return
@@ -1642,16 +1649,91 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             if (s.lpcnHz[g.lpcn] != best) { s.lpcnHz[g.lpcn] = best; pending = true }
         }
     }
-    /** Votes per carrier slot for the logical channel it is; each slot takes the one it got at least two thirds of. */
-    private fun lcnVote(s: Sys, lcn: Int, hz: Long, slot: Int) {
-        val k = "$hz:$slot"; val v = s.lcnVotes.getOrPut(k) { LinkedHashMap() }
-        v[lcn] = (v[lcn] ?: 0) + 1
-        var best = -1; var n = 0; var all = 0
-        for ((l, c) in v) { all += c; if (c > n) { n = c; best = l } }
-        if (n >= 3 && n * 3 >= all * 2) {
-            s.lcns.entries.removeIf { it.value.first == hz && it.value.second == slot && it.key != best }
-            s.lcns[best] = hz to slot
+    /**
+     * Votes per carrier slot for the logical channel it is, [w] each; each slot takes the one it got at least two thirds
+     * of. On Capacity Plus the vote also goes to the repeater's other slot for the neighboring channel (1 and 2, 3 and 4:
+     * inferred from our recordings, where each busy channel's traffic came on the slot this numbering gives).
+     */
+    private fun lcnVote(s: Sys, lcn: Int, hz: Long, slot: Int, w: Int = 1) {
+        fun one(l0: Int, sl: Int) {
+            val k = "$hz:$sl"; val v = s.lcnVotes.getOrPut(k) { LinkedHashMap() }
+            v[l0] = (v[l0] ?: 0) + w
+            var best = -1; var n = 0; var all = 0
+            for ((l, c) in v) { all += c; if (c > n) { n = c; best = l } }
+            if (n < 3 || n * 3 < all * 2) return
+            s.lcns.entries.removeIf { it.value.first == hz && it.value.second == sl && it.key != best }
+            if (s.lcns[best] != (hz to sl)) pending = true
+            s.lcns[best] = hz to sl
         }
+        one(lcn, slot)
+        if (s.trunk == "CAPACITY PLUS") one(if (lcn % 2 != 0) lcn + 1 else lcn - 1, 1 - slot)
+    }
+    /** A channel status, put together from its two parts when it came in two (the parts follow on the same slot). */
+    private fun capWhole(c: Carrier, slot: Int, cs: Csbk): CapStatus? {
+        val k = "${c.key}:$slot"
+        if (cs.frag == 3) return cs.status
+        if (cs.frag == 2) { if (capParts.size > 400) capParts.clear(); capParts[k] = cs.payload ?: IntArray(0); return null }
+        val first = capParts.remove(k)
+        if (cs.frag != 1 || first == null) return null
+        val st = Csbks.capStatus(first + (cs.payload ?: IntArray(0)))
+        if (st != null) Csbks.capFields(cs, st) { k2, v -> cs.fields.add(Field(k2, v)) }
+        return st
+    }
+    /**
+     * A whole channel status: a logical channel in group voice is a grant of its talkgroup (on its carrier and slot once
+     * that is learned), one carrying a unit's ID a call to that unit; the ones carrying data (0xFFFF) are kept for
+     * [capData]. Every repeater of the system repeats the status, so a grant is renewed at most once a second.
+     */
+    private fun capApply(s: Sys, c: Carrier, st: CapStatus, now: Long) {
+        val cap = s.cap ?: CapSys().also { s.cap = it }
+        cap.ms = now; s.busy = (st.voice.map { it.first } + st.other.map { it.first }).distinct().sorted()
+        val seen = HashSet<Int>()
+        fun put(lcn: Int, voice: Boolean, tg: Int, group: Boolean) {
+            seen.add(lcn)
+            val was = cap.at[lcn]; val same = was != null && was.voice == voice && was.tg == tg && now - was.ms < 5_000
+            val e = CapLcn(voice, tg, now, if (same) was!!.grantMs else 0L)
+            cap.at[lcn] = e
+            if (!voice || (same && now - e.grantMs < 1_000)) return
+            e.grantMs = now
+            val hz = s.lcns[lcn]?.first ?: 0L
+            // the status keeps the talkgroup on its channel through the hang time after the call: that renews the grant
+            // row, and opens no call again
+            if (same && !calls.onAirTo(s.key, tg, group)) {
+                val g = grants.firstOrNull { it.sys == s.key && it.tg == tg && it.ch == "LCN $lcn" && now - it.lastMs < 5_000 }
+                if (g != null) { g.lastMs = now; return }
+            }
+            grant(s.key, GrantRow(now, now, s.key, if (group) "grant" else "u2u", tg, group, 0, "LCN $lcn", hz, (lcn - 1) and 1,
+                false, false, false, c.hz, "", lcn, hz > 0), same)
+        }
+        for ((l, tg) in st.voice) put(l, true, tg, true)
+        // a unit's ID on a busy channel: a call to that unit (inferred: our recordings carry only 0xFFFF there)
+        for ((l, id) in st.other) put(l, Csbks.capUnit(id), id, false)
+        // a channel the status stops listing is kept a while: the status leaves it out now and then within one call
+        cap.at.entries.removeIf { it.key !in seen && now - it.value.ms > 5_000 }
+    }
+    /** Voice on [c] naming a talkgroup the status put on one logical channel of this slot: two votes for it. */
+    private fun capVoice(c: Carrier, slot: Int, tg: Int, now: Long) {
+        for (s in systems.values) {
+            val cap = s.cap ?: continue
+            if (s.trunk != "CAPACITY PLUS" || now - cap.ms > 2_000 || (c.cc >= 0 && s.cc != c.cc) || (c.dmrSys.isNotEmpty() && c.dmrSys != s.key)) continue
+            val l = cap.at.filter { (n, e) -> e.voice && e.tg == tg && now - e.ms < 2_000 && ((n - 1) and 1) == slot }.keys
+            if (l.size == 1) lcnVote(s, l.first(), c.hz, slot, 2)
+        }
+    }
+    /**
+     * A unit report exchange on [c]: when the latest status has one data channel of this slot not placed on another
+     * carrier, a vote that it is this one; on a data channel already placed, a data grant naming the unit. (Exchanges
+     * also come on channels the status does not list yet, so these votes count less than the voice's.)
+     */
+    private fun capData(s: Sys, c: Carrier, slot: Int, cs: Csbk, now: Long) {
+        val cap = s.cap ?: return; val unit = cs.unit ?: return
+        if (s.trunk != "CAPACITY PLUS" || now - cap.ms > 500) return
+        val data = cap.at.filter { (_, e) -> !e.voice && now - e.ms < 500 }.keys
+        val free = data.filter { n -> ((n - 1) and 1) == slot && (s.lcns[n] == null || s.lcns[n]!!.first == c.hz) }
+        if (free.size == 1) lcnVote(s, free[0], c.hz, slot)
+        val mine = s.lcns.entries.firstOrNull { it.value.first == c.hz && it.value.second == slot }?.key ?: return
+        if (mine !in data) return
+        grant(s.key, GrantRow(now, now, s.key, "datagrant", unit, false, unit, "LCN $mine", c.hz, slot, false, false, false, c.hz, "", mine, true), false)
     }
     private fun unitReport(s: Sys, c: Carrier, cs: Csbk, now: Long) {
         val u = touchUnit(s.key, cs.unit!!, c, now, "unit report", cs, "")

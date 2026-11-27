@@ -333,6 +333,8 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
         c.lastMs = max(c.lastMs, t.endMs); c.talkMs += dur; c.txs++
         if (!t.recorded) c.unrecorded++
         if (t.tone != 0.0) { c.tone = t.tone; c.dcs = 0 } else if (t.dcs != 0) { c.dcs = t.dcs; c.tone = 0.0 }
+        // a channel heard digital shows no sub-audible tone: what read as one was the digital signal itself
+        if (t.ident?.let { isDigital(it.mode) } == true) { c.tone = 0.0; c.dcs = 0 }
         // airtime a minute, for the sparkline
         val m0 = floor(t.startMs / 60_000).toLong(); val m1 = floor(t.endMs / 60_000).toLong()
         for (m in m0..m1) {
@@ -548,6 +550,8 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
             val lv = live.filter { abs(it.hz - tileHz) < 1_250 || (inHz != 0L && abs(it.hz - inHz) < 1_250) }
             val lo = lv.firstOrNull { abs(it.hz - tileHz) < 1_250 } ?: lv.firstOrNull()
             val p = plan.info(tileHz); val rep = repeaterLike(tileHz)
+            // a carrier classed as digital (now, or the last mode heard on it) shows no CTCSS or DCS
+            val digital = if (lo != null) lo.ident?.let { isDigital(it.mode) } == true else isDigital(c.mode)
             val spark = IntArray(SPARK_MIN) { i -> (((c.minutes[nowMin - SPARK_MIN + 1 + i]) ?: 0.0) / 1000).roundToInt() }
             if (lo != null) { val a = max(lo.startMs, nowMin * 60_000.0); spark[SPARK_MIN - 1] += ((now - a) / 1000).roundToInt() }
             val sts: List<Station> = if (rep) ci?.stations ?: emptyList() else c.stations
@@ -560,8 +564,8 @@ class HamTracker(val plan: TrackerPlan = HAM_TRACKER_PLAN, val now: () -> Double
                 key = k, hz = tileHz, label = p.label, use = p.use, kind = kind,
                 offset = if (rep || p.use == "output") offsetText(if (inHz != 0L) listOf(inHz - tileHz) else p.offsets) else "",
                 inputHz = inHz, nearMs = ci?.lastMs ?: 0.0,
-                tone = lo?.tone?.takeIf { it != 0.0 } ?: c.tone.takeIf { it != 0.0 } ?: ci?.tone ?: 0.0,
-                dcs = lo?.dcs?.takeIf { it != 0 } ?: c.dcs,
+                tone = if (digital) 0.0 else lo?.tone?.takeIf { it != 0.0 } ?: c.tone.takeIf { it != 0.0 } ?: ci?.tone ?: 0.0,
+                dcs = if (digital) 0 else lo?.dcs?.takeIf { it != 0 } ?: c.dcs,
                 live = lo != null, snrDb = lo?.snrDb ?: 0.0, levelDb = lo?.levelDb ?: -90.0, openMs = if (lo != null) now - lo.startMs else 0.0,
                 lastMs = if (lo != null) now else max(c.lastMs, ci?.lastMs ?: 0.0),
                 talkMs = c.talkMs + (if (lo != null) now - lo.startMs else 0.0), txs = c.txs + (if (lo != null) 1 else 0), spark = spark.toList(), callsign = c.callsign,

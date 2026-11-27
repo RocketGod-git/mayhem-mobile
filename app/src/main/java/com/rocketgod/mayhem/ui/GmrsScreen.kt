@@ -429,7 +429,7 @@ private fun GmrsTileBox(modifier: Modifier, t: HpTile, c: GmrsChanState?, playin
                 if (t.followed) add("FOLLOWING" to accent)
                 if (t.prio) add("PRIORITY" to Palette.accent2)
                 if (t.muted) add("MUTED" to Palette.muted)
-                if (t.unrecorded > 0) add("${t.unrecorded} NOT RECORDED" to Palette.danger)
+                if (t.unrecorded > 0) add("${t.unrecorded} NOT RECORDED · DEVICE BUSY" to Palette.danger)
             }
             if (badges.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f))) { for ((b, bc) in badges) HpPill(b, bc) }
         }
@@ -472,7 +472,7 @@ private fun GmrsCard(c: GmrsChanState, s: GmrsSnap, now: Long, prefs: HpPrefs, a
             if (!c.inSpan) add("SPAN" to "outside what the radio hears now")
             if (t != null) {
                 add("HEARD" to "${t.txs} keyups · ${hpDur(t.talkMs)} on the air · ${if (t.live) "on the air now" else hpHeard(now.toDouble(), t.lastMs)}")
-                if (t.unrecorded > 0) add("NOT RECORDED" to "${t.unrecorded} keyups came while every demodulator was busy")
+                if (t.unrecorded > 0) add("NOT RECORDED" to "${t.unrecorded} keyups were heard but their audio was not kept, because every demodulator this device runs at once was busy with other channels")
             }
         }
         for ((k, v) in kv) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
@@ -533,7 +533,7 @@ private fun LazyListScope.gmrsLogItems(s: GmrsSnap?, now: Long) {
             Text(hpClock(r.startMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
             Text(gmrsChanTitle(r.heardHz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
             Text(if (r.live) "LIVE" else hpDur(r.endMs - r.startMs), color = if (r.live) Palette.ok else Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
-            Text(listOf(r.ident?.let { hpIdentLine(it) } ?: r.stationLabel, gmrsMeta(r, s), if (calls.isNotEmpty()) "CW ID ${calls.joinToString(" ")}" else "", if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }.joinToString(" · "),
+            Text(listOf(r.ident?.let { hpIdentLine(it) } ?: r.stationLabel, gmrsMeta(r, s), if (calls.isNotEmpty()) "CW ID ${calls.joinToString(" ")}" else "", if (!r.recorded) "NO AUDIO KEPT" else "").filter { it.isNotEmpty() }.joinToString(" · "),
                 color = if (r.color >= 0) hpColor(r.color) else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         }
     }

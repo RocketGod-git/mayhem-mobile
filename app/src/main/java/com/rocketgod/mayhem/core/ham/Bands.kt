@@ -98,6 +98,15 @@ val NON_HAM = listOf(
         segments = listOf(Triple(896_000_000L, 902_000_000L, "mobiles of the 935–941 repeaters"))),
 )
 
+/**
+ * The service a frequency belongs to where one band plan names it for every screen (Audio, Repeaters): NOAA weather
+ * radio 162.400 to 162.550, then marine VHF 156.000 to 162.025, which wins over the land mobile band around it. "" elsewhere.
+ */
+fun serviceTitle(hz: Long): String = when {
+    hz >= 162_400_000L - 1_250 && hz <= 162_550_000L + 1_250 -> "NOAA WEATHER RADIO"
+    hz in 156_000_000L..162_025_000L -> "MARINE VHF"
+    else -> ""
+}
 /** The band at [hz]: a ham band, else the first other one with a segment there (FRS/GMRS spans business channels), else any. */
 fun bandOf(hz: Long): Band? = BANDS.firstOrNull { hz in it.lo..it.hi }
     ?: NON_HAM.firstOrNull { b -> hz in b.lo..b.hi && b.segments.any { (lo, hi, _) -> hz in lo..hi } }

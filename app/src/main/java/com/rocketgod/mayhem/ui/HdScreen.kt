@@ -215,13 +215,25 @@ private fun hdLock(m: HdSnap?, now: Long): Pair<String, Color?> {
     return "ANALOG ONLY" to null
 }
 
+/** Clean frames a station sends with no audio for a program before it is said not to send that program (about a minute). */
+private const val HD_ABSENT_FRAMES = 40
+/** Why a program plays nothing yet: no station locked, its audio not in yet, or the station not sending it. */
+private fun hdNoAudioWhy(st: StationSnap?, n: Int): String {
+    val name = "HD${n + 1}"
+    if (st == null || st.framesGood == 0) return "WAITING FOR THE STATION"
+    if (st.programs.any { it.n == n }) return "NO AUDIO FOR $name YET"
+    // a program on the extra partitions (P3) needs their frames clean before its absence means anything
+    val p3ok = st.p3.frames == 0 || st.p3.good >= HD_ABSENT_FRAMES / 2
+    return if (st.framesGood >= HD_ABSENT_FRAMES && p3ok) "STATION NOT SENDING $name" else "NO AUDIO FOR $name YET"
+}
 /** What the selected program's audio is doing, in words and how it shows. */
 private fun hdAudioText(m: HdSnap?, n: Int): Pair<String, Color?> {
     val a = m?.audio
     if (a == null || a.program != n) return (if (n == 0) "ANALOG" else "WAITING") to null
     if (a.state == "digital") return "DIGITAL" to Palette.ok
     val wait = if (a.good > 0 || a.bufferS > 0) "BUFFERING ${min(99, (a.bufferS / 2 * 100).roundToInt())}%" else "WAITING"
-    return (if (n == 0) "ANALOG · $wait" else if (wait == "WAITING") "SILENT · WAITING" else "SILENT · $wait") to Palette.accent2
+    if (n == 0) return "ANALOG · $wait" to Palette.accent2
+    return (if (wait == "WAITING") "SILENT · ${hdNoAudioWhy(m.station, n)}" else "SILENT · $wait") to Palette.accent2
 }
 
 /** The station's own logo for a program: one received this session, else the one kept with the station. */

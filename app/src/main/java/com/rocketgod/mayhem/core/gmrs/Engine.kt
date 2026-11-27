@@ -1,6 +1,7 @@
 package com.rocketgod.mayhem.core.gmrs
 
 import com.rocketgod.mayhem.core.hamid.HamIdent
+import com.rocketgod.mayhem.core.hamid.NO_VOICE_MAX_S
 import com.rocketgod.mayhem.core.hamplus.CLOSE_HOLD_MS
 import com.rocketgod.mayhem.core.hamplus.ChannelWatch
 import com.rocketgod.mayhem.core.hamplus.HAM_PLAN
@@ -27,7 +28,9 @@ import kotlin.math.max
  *    with it, at once (the tracker also learns the pair, as HAM+ does, and then shows the two as one channel);
  *  - every callsign a Morse ID carries is listed (GMRS calls, WRAB123 or KAE1234, and amateur ones);
  *  - a keyup without a voice that carried signaling (an MDC-1200 or FleetSync ID, a data burst, a Morse ID alone) is
- *    logged all the same; a data burst no decoder names is flagged as data with a short hex dump of its bits.
+ *    logged all the same; a data burst no decoder names is flagged as data with a short hex dump of its bits;
+ *  - a carrier up [NO_VOICE_MAX_S] or more with no voice and no ID is a steady carrier, as on Repeaters: not counted,
+ *    whatever else its modulation read as.
  */
 private class GmrsWatch(override val name: String, override val raster: Long, override val peakSteps: Int, private val murs: Boolean) : WatchPlan {
     override fun inPlan(hz: Long): Boolean { val c = gmrsChan(hz) ?: return false; return (c.kind == GmrsKind.MURS) == murs }
@@ -55,11 +58,14 @@ data class GmrsChanState(
     val id: String, val hz: Long, val key: String, val kind: GmrsKind, val name: String, val inSpan: Boolean,
     val open: Boolean, val steady: Boolean, val tone: Double, val dcs: Int, val lastMs: Double, val txs: Int, val call: String, val data: Boolean,
 )
-private class KeyRec(val id: Int, val hz: Long, val startMs: Double, val endMs: Double, val tone: Double, val dcs: Int)
+/** [keyMs]: when its carrier came up (a voice late on its carrier moves startMs, not this). */
+private class KeyRec(val id: Int, val hz: Long, val startMs: Double, val keyMs: Double, val endMs: Double, val tone: Double, val dcs: Int)
 private class Seen { var tone = 0.0; var dcs = 0; var lastMs = 0.0; var txs = 0; var call = ""; var data = false }
 
 /** The data bursts no decoder named, as the identity layer lists them. */
 fun dataLines(id: HamIdent?): List<String> = id?.signaling.orEmpty().filter { it.contains("data burst") }
+/** Signaling that names who keyed: an MDC-1200 or FleetSync ID, a selcall, a 2-tone page, DTMF. */
+private val ID_LINE = Regex("MDC-1200|FleetSync|selcall|2-tone|DTMF")
 
 /**
  * A DCS code read through this share of a keyup is its code (HAM+ asks half): a code passes the Golay check and
@@ -119,18 +125,23 @@ class GmrsEngine(
         }
     }
 
-    /** A keyup no voice was heard on is kept when it carried signaling or a Morse callsign: an ID, a data burst. */
+    /**
+     * A keyup no voice was heard on is kept when it carried signaling or a Morse callsign: an ID, a data burst, a
+     * kerchunk. One up [NO_VOICE_MAX_S] or more is a steady carrier, kept only for an ID it carried.
+     */
     override fun steadyClosed(o: WatchOpen<Probe>, endMs: Double) {
         val p = o.probe ?: return
         if (o.flood || ownSpur(o.hz)) return
         p.end()
-        if (p.ident()?.signaling.isNullOrEmpty() && idCalls(p.cwId().ifEmpty { p.cw0 }).isEmpty()) return
+        val sig = p.ident()?.signaling.orEmpty()
+        val named = idCalls(p.cwId().ifEmpty { p.cw0 }).isNotEmpty() || sig.any { ID_LINE.containsMatchIn(it) }
+        if (!named && (sig.isEmpty() || endMs - o.keyMs >= NO_VOICE_MAX_S * 1000)) return
         o.talk = true
         close(o, endMs)
     }
 
     override fun closed(o: WatchOpen<Probe>, t: TxRec) {
-        keys.add(KeyRec(t.id, t.hz, t.startMs, t.endMs, t.tone, t.dcs))
+        keys.add(KeyRec(t.id, t.hz, t.startMs, o.keyMs, t.endMs, t.tone, t.dcs))
         if (keys.size > KEEP_KEYS) keys.removeAt(0)
         val s = seen.getOrPut(t.hz) { Seen() }
         s.lastMs = t.endMs; s.txs++; if (t.tone != 0.0 || t.dcs != 0) { s.tone = t.tone; s.dcs = t.dcs }
@@ -143,11 +154,13 @@ class GmrsEngine(
     }
 
     /** Keyups finished and on the air now, oldest first. */
-    private fun allKeys(): List<KeyRec> = keys + opens.values.filter { counted(it) }.map { o -> KeyRec(o.id, o.hz, o.startMs, 0.0, o.probe?.tone() ?: 0.0, o.probe?.dcs() ?: 0) }
+    private fun allKeys(): List<KeyRec> = keys + opens.values.filter { counted(it) }.map { o -> KeyRec(o.id, o.hz, o.startMs, o.keyMs, 0.0, o.probe?.tone() ?: 0.0, o.probe?.dcs() ?: 0) }
 
     /**
-     * Repeater keyups by keyup id: an input keyup and the output keyup that starts within [PAIR_START_MS] of it and
-     * overlaps it are one, both ids naming it. An input keyed alone is a repeater keyup whose output was not heard.
+     * Repeater keyups by keyup id: an input keyup and the output keyup that overlaps it and whose carrier came up within
+     * [PAIR_START_MS] of the input's (or was already up, the repeater's hang) are one, both ids naming it. Carriers, not
+     * voices: a voice heard late on either one moves its start, not its keyup. An input keyed alone is a repeater keyup
+     * whose output was not heard.
      */
     fun repeaterKeys(): Map<Int, GmrsRpt> = synchronized(lock) { repeaterKeysLocked() }
     private fun repeaterKeysLocked(): Map<Int, GmrsRpt> {
@@ -155,7 +168,7 @@ class GmrsEngine(
         for (r in all) {
             val c = gmrsChan(r.hz) ?: continue
             if (c.kind != GmrsKind.INPUT) continue
-            val o = all.firstOrNull { x -> abs(x.hz - c.outHz) < 1_000 && abs(x.startMs - r.startMs) <= PAIR_START_MS && (x.endMs == 0.0 || x.endMs >= r.startMs) && (r.endMs == 0.0 || r.endMs >= x.startMs) }
+            val o = all.firstOrNull { x -> abs(x.hz - c.outHz) < 1_000 && x.keyMs - r.keyMs <= PAIR_START_MS && (x.endMs == 0.0 || x.endMs >= r.keyMs) && (r.endMs == 0.0 || r.endMs >= x.keyMs) }
             val p = GmrsRpt(c.outHz, c.hz, r.tone, r.dcs, o?.tone ?: 0.0, o?.dcs ?: 0, true, o != null)
             out[r.id] = p
             if (o != null) out[o.id] = p

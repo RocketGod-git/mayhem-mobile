@@ -2,8 +2,8 @@ package com.rocketgod.mayhem.core.fleet
 
 /**
  * DMR control signaling blocks to named fields: the ETSI TS 102 361-2/-4 CSBKs (Tier III Aloha, broadcasts, grants,
- * acknowledgements) and, under feature set ID 0x10, the block formats derived from our own recordings (rest-channel
- * beacon, unit report header and unit report, with the vendor check).
+ * acknowledgements) and, under feature set ID 0x10, the block formats derived from our own recordings (Capacity Plus
+ * channel status, unit report header and unit report, with the vendor check).
  */
 class Csbk(val op: Int, val fid: Int, val last: Boolean, val hex: String,
            /** Checked by its CRC; the derived unit-report formats have none known. */ val verified: Boolean) {
@@ -15,7 +15,12 @@ class Csbk(val op: Int, val fid: Int, val last: Boolean, val hex: String,
     var lpcn: Int? = null; var slot: Int? = null; var dst: Int? = null; var src: Int? = null; var group: Boolean? = null; var emergency: Boolean? = null
     var rest: Int? = null; var busy: List<Int>? = null; var beaconSlot: Int? = null; var unit: Int? = null; var lcn: Int? = null
     var lonLo: Int? = null; var latLo: Int? = null; var noFix: Boolean = false
+    /** Capacity Plus channel status: fragment (3 whole, 2 first, 1 last), its 7 payload octets, and what a whole one says. */
+    var frag: Int? = null; var payload: IntArray? = null; var status: CapStatus? = null
 }
+
+/** What a Capacity Plus channel status says about each busy logical channel (LCN 1 and 2 are one repeater's two slots, inferred). */
+data class CapStatus(val voice: List<Pair<Int, Int>>, val other: List<Pair<Int, Int>>)
 
 data class SysCode(val model: String, val net: Int, val site: Int, val par: Int)
 
@@ -84,7 +89,7 @@ object Csbks {
     }
 
     /**
-     * Feature set 0x10, formats derived from our recordings: 0x3E is a rest-channel beacon (CRC verified), 0x3D with
+     * Feature set 0x10, formats derived from our recordings: 0x3E is the Capacity Plus channel status (CRC verified), 0x3D with
      * 0x09 after it is a unit report (the vendor check below), 0x3B a periodic broadcast, 0x08 a call
      * announcement. Anything else is shown as hex.
      */
@@ -94,14 +99,12 @@ object Csbks {
         c.derived = true
         when (op) {
             0x3e -> {
-                c.kind = "beacon"; c.name = "REST-CHANNEL BEACON"
-                c.beaconSlot = (b[2] shr 5) and 1; c.rest = b[2] and 15
-                val busy = ArrayList<Int>(); if ((b[5] and 0x80) != 0) for (n in 1..8) if ((b[6] and (0x80 shr (n - 1))) != 0) busy.add(n)
-                c.busy = busy
-                val id = w(7)
-                add("SLOT", "${c.beaconSlot!! + 1}"); add("REST CHANNEL", "LCN ${c.rest}"); add("BUSY", if (busy.isNotEmpty()) busy.joinToString(", ") { "LCN $it" } else "none")
-                if (id != 0xffff && (b[5] and 0x80) != 0) { c.unit = id; add("ID ON BUSY CHANNEL", "$id (${hx(id, 4)})") }
-                add("FLAGS", "${hx(b[2], 2)} ${hx(b[3], 2)}")
+                c.kind = "beacon"; c.name = "CHANNEL STATUS"
+                c.frag = b[2] shr 6; c.beaconSlot = (b[2] shr 5) and 1; c.rest = b[2] and 31
+                c.payload = IntArray(7) { b[3 + it] and 255 }
+                add("SLOT", "${c.beaconSlot!! + 1}"); add("REST CHANNEL", "LCN ${c.rest}")
+                if (c.frag == 3) capStatus(c.payload!!)?.let { capFields(c, it, add) }
+                else add("PART", when (c.frag) { 2 -> "first of two"; 1 -> "last of two"; else -> "none" })
             }
             0x3d -> {
                 c.kind = "unithdr"; c.name = "UNIT REPORT HEADER"
@@ -127,6 +130,40 @@ object Csbks {
             else -> { c.derived = false; c.kind = "vendor"; c.name = "FID 10 CSBK ${hx(op, 2)}"; add("PAYLOAD", Codes.hex(b, 2, 10)) }
         }
         return c
+    }
+
+    /**
+     * The channel status payload (the 7 octets after the rest-channel octet, and the last block's 7 when it comes in two).
+     * Inferred from our recordings, where the talkgroups match the voice LC of the call on that channel:
+     * a bitmap of LCN 1-8 in group voice, one octet of talkgroup per bit set, the same for LCN 9-16, then an octet whose
+     * bit 7 and bit 4 say a bitmap of LCN 1-8 and of 9-16 follow, each with a 16-bit ID per bit set (0xFFFF on every
+     * channel carrying unit reports). Null when the payload ends early.
+     */
+    fun capStatus(p: IntArray): CapStatus? {
+        var i = 0
+        fun next() = if (i < p.size) p[i++] and 255 else -1
+        val voice = ArrayList<Pair<Int, Int>>(); val other = ArrayList<Pair<Int, Int>>()
+        for (base in intArrayOf(0, 8)) {
+            val bm = next(); if (bm < 0) return null
+            for (n in 0 until 8) if ((bm and (0x80 shr n)) != 0) { val tg = next(); if (tg < 0) return null; voice.add(base + n + 1 to tg) }
+        }
+        val m = next(); if (m < 0) return null
+        for ((bit, base) in listOf(0x80 to 0, 0x10 to 8)) {
+            if ((m and bit) == 0) continue
+            val bm = next(); if (bm < 0) return null
+            for (n in 0 until 8) if ((bm and (0x80 shr n)) != 0) { val a = next(); val z = next(); if (z < 0) return null; other.add(base + n + 1 to ((a shl 8) or z)) }
+        }
+        return CapStatus(voice, other)
+    }
+    /** An ID on a busy channel that names a unit (not 0, not 0xFFFF for data or the other all-unit IDs). */
+    fun capUnit(id: Int) = id in 1 until 0xfff0
+    /** A whole channel status onto the block: busy channels, their talkgroups, and the first unit ID as its unit. */
+    fun capFields(c: Csbk, st: CapStatus, add: (String, String) -> Unit) {
+        c.status = st; val busy = (st.voice.map { it.first } + st.other.map { it.first }).distinct().sorted(); c.busy = busy
+        add("BUSY", if (busy.isNotEmpty()) busy.joinToString(", ") { "LCN $it" } else "none")
+        for ((l, tg) in st.voice) add("LCN $l", "TG $tg")
+        for ((l, id) in st.other) add("LCN $l", if (capUnit(id)) "unit $id" else if (id == 0xffff) "data" else "ID ${hx(id, 4)}")
+        st.other.firstOrNull { capUnit(it.second) }?.let { c.unit = it.second }
     }
 
     /**

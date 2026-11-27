@@ -19,6 +19,10 @@ import kotlin.math.roundToLong
  *    goes back to the window the scan was on and the scan carries on from there as it was.
  *  - SCAN ON ([HpScan.skip]) leaves a busy window at once; that window waits [HP_SKIP_MS] before AUTO comes back
  *    to it, unless a followed or priority channel is in it.
+ *  - BIZ ([HpScan.capMs]): a window holds the scan at most [HpScan.capMs] at a time while some window has not been
+ *    visited this round, so a band always busy somewhere (an 8 MHz VHF business window) never keeps the rest from being
+ *    heard. The window moved to is held at least [HP_VISIT_MS]; once every window is visited a new round begins. A
+ *    followed channel is never cut short.
  * Data channels (APRS) and muted channels hold nothing.
  */
 
@@ -33,6 +37,9 @@ const val HP_CONVO_MS = 90_000L
 const val HP_LOOK_MS = 5_000L
 /** A window left with SCAN ON is not come back to for this long. */
 const val HP_SKIP_MS = 120_000L
+/** BIZ: the most a window holds the scan while others wait their turn, and the least a window moved to is held. */
+const val HP_CAP_MS = 60_000L
+const val HP_VISIT_MS = 6_000L
 
 /** One transmission as the scan sees it: the snapshot's rows. */
 data class HpAct(val id: Int, val hz: Long, val startMs: Long, val endMs: Long, val live: Boolean)
@@ -68,6 +75,7 @@ fun hpScanText(n: Int, autoBand: Boolean, mode: String, idx: Int, left: Long, ph
         "live" -> return "$a · STAYING FOR THE CONVERSATION ON ${mhz(hz)}"
         "hang", "home" -> return "$a · STAYING FOR THE CONVERSATION ON ${mhz(hz)} · $phaseLeft s"
         "look" -> return "$a · LOOKING AROUND · BACK IN $phaseLeft s"
+        "visit" -> return "$a · EVERY WINDOW IN TURN · ${idx + 1}/$n · $phaseLeft s"
     }
     return when (mode) {
         "hold" -> "$a · HOLDING WHERE THE VOICE IS"
@@ -98,7 +106,7 @@ class HpScan {
     /** The followed frequency the scan is paused for, or 0. */
     @Volatile var follow = 0L
         private set
-    /** "" (AUTO's own), "follow", "live" (a channel on the air), "hang", "home" (waiting at the conversation's window between looks), "look". */
+    /** "" (AUTO's own), "follow", "live" (a channel on the air), "hang", "home" (waiting at the conversation's window between looks), "look", "visit" (BIZ: every window in turn). */
     @Volatile var phase = ""
         private set
     /** The channel the phase is about (the followed one, the one on the air, the conversation's). */
@@ -116,6 +124,11 @@ class HpScan {
     private val cool = HashMap<Int, Long>()
     /** The channels busy on a window left with SCAN ON, and until when they hold nothing (a neighbor window hears them too). */
     private var skipped = listOf<Pair<Long, Long>>()
+    /** 0: no cap (the ham bands). Else the most one window holds the scan while others wait their turn. */
+    @Volatile var capMs = 0L
+    /** The windows visited this round, the band they belong to, the window tuned and since when, and the visit's end. */
+    private val visited = HashSet<Int>()
+    private var sig = ""; private var atIdx = -1; private var atMs = 0L; private var visitUntil = 0L
 
     /** The window's hang: twice the median gap between keyups heard there, 8 to 45 s; 15 s until three gaps are known. */
     fun hang(w: Int): Long {
@@ -159,6 +172,10 @@ class HpScan {
      */
     fun step(auto: FleetAuto, v: AutoView, rows: List<HpAct>, centers: List<Long>, rate: Double, idx: Int, p: HpPrefs): Int? {
         val now = v.now; val n = centers.size
+        val sg = centers.joinToString(",")
+        if (sg != sig) { sig = sg; visited.clear(); atIdx = -1; visitUntil = 0 }
+        if (idx != atIdx) { atIdx = idx; atMs = now }
+        visited.add(idx)
         learn(rows, centers, rate, idx, p)
         val fhz = p.hold.toLongOrNull() ?: 0L
         val fw = if (fhz > 0) hpWindowOf(centers, rate, fhz, idx) else -1
@@ -169,6 +186,14 @@ class HpScan {
             if (auto.idx != idx && auto.idx in 0 until n) return auto.idx
         }
         if (n < 2) { phase = ""; return auto.step(v) }
+        if (capMs > 0 && now - atMs >= capMs) {
+            val nx = unvisited(n, idx, now)
+            if (nx >= 0) {
+                home = -1; lookUntil = 0; waitUntil = 0; hz = 0
+                visitUntil = now + HP_VISIT_MS; phase = "visit"; until = visitUntil
+                auto.moved(nx, now); return nx
+            }
+        }
         val here = rows.filter { win[it.id] == idx }
         // the channel named is the one being heard, else the newest to key up
         val live = here.firstOrNull { it.live && it.id.toString() == v.playing } ?: here.filter { it.live }.maxByOrNull { it.startMs }
@@ -177,6 +202,8 @@ class HpScan {
             home = idx; homeHz = live.hz; homeUntil = now + HP_CONVO_MS; waitUntil = 0; lookUntil = 0
             auto.stay(v); return null
         }
+        if (now < visitUntil) { phase = "visit"; hz = 0; until = visitUntil; auto.stay(v); return null }
+        visitUntil = 0
         val last = here.maxByOrNull { it.endMs }
         if (last != null && now - last.endMs < hang(idx)) {
             phase = "hang"; hz = last.hz; until = last.endMs + hang(idx)
@@ -209,6 +236,15 @@ class HpScan {
             auto.moved(to ?: idx, now)
         }
         return to
+    }
+
+    /** The next window after [from] not visited this round and not waiting out SCAN ON; a new round when all are. */
+    private fun unvisited(n: Int, from: Int, now: Long): Int {
+        repeat(2) {
+            for (k in 1 until n) { val i = (from + k) % n; if (i !in visited && !cooled(i, now)) return i }
+            visited.clear(); visited.add(from)
+        }
+        return -1
     }
 
     /**

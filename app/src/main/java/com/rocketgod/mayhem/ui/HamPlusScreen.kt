@@ -5,6 +5,7 @@ import com.rocketgod.mayhem.core.hamplus.hpIdentTarget
 import com.rocketgod.mayhem.core.hamplus.hpIdentWho
 import com.rocketgod.mayhem.core.hamplus.hpModeText
 import com.rocketgod.mayhem.core.hamid.identWho
+import com.rocketgod.mayhem.core.ham.serviceTitle
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -124,7 +125,7 @@ internal fun hpHeardLine(t: HpTile, now: Double): String = "${t.txs} transmissio
 internal fun hpClock(ms: Double): String = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(ms.toLong()))
 internal fun hpTone(tone: Double, dcs: Int): String = if (tone > 0) "PL %.1f".format(java.util.Locale.US, tone) else if (dcs > 0) "DCS ${dcs.toString().padStart(3, '0')}" else ""
 /** A tile's name: the CW ID callsign, else the band plan's name for the frequency, else what kind of channel it is. */
-internal fun hpName(t: HpTile): String = t.callsign.ifEmpty { t.label.ifEmpty { t.kind.ifEmpty { hpBandOf(t.hz)?.name?.uppercase()?.let { "$it FM" } ?: "" } } }
+internal fun hpName(t: HpTile): String = t.callsign.ifEmpty { t.label.ifEmpty { serviceTitle(t.hz).ifEmpty { t.kind.ifEmpty { hpBandOf(t.hz)?.name?.uppercase()?.let { "$it FM" } ?: "" } } } }
 
 /**
  * How a screen names what it shows, so CB reuses the live bar, the threads, the log and the timeline: a channel's
@@ -615,7 +616,7 @@ private fun HpTileBox(modifier: Modifier, t: HpTile, playing: Boolean, now: Long
                 if (t.followed) add("FOLLOWING" to accent)
                 if (t.prio) add("PRIORITY" to Palette.accent2)
                 if (t.muted) add("MUTED" to Palette.muted)
-                if (t.unrecorded > 0) add("${t.unrecorded} NOT RECORDED" to Palette.danger)
+                if (t.unrecorded > 0) add("${t.unrecorded} NOT RECORDED · DEVICE BUSY" to Palette.danger)
             }
             if (badges.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f))) { for ((b, c) in badges) HpPill(b, c) }
         }
@@ -856,7 +857,7 @@ internal fun HpBubble(r: HpTxRow, side: Int, repeater: Boolean, now: Long, accen
             }
             val idl = r.ident?.let { id -> val rr = HamPlus.resolve(id, r.hz); val w = hpIdentWho(id, rr); hpIdentLine(id, rr).split(" · ").filter { it != w }.joinToString(" · ") } ?: ""
             val meta = listOf(hpClock(r.startMs), idl, acts.nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "",
-                if (r.direct) "NEARBY" else "", cwCallsign(r.cw).let { if (it.isNotEmpty()) "CW ID $it" else "" }, if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }
+                if (r.direct) "NEARBY" else "", cwCallsign(r.cw).let { if (it.isNotEmpty()) "CW ID $it" else "" }, if (!r.recorded) "NO AUDIO KEPT" else "").filter { it.isNotEmpty() }
             Text(meta.joinToString(" · "), color = Palette.ink.copy(alpha = 0.72f), fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 2)
         }
     }
@@ -919,7 +920,7 @@ private fun HpLogLine(r: HpTxRow, now: Long, nm: HpNamer) {
         Text(hpClock(r.startMs), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
         Text(nm.chan(r.hz), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
         Text(if (r.live) "LIVE" else hpDur(r.endMs - r.startMs), color = if (r.live) Palette.ok else Palette.ink, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, softWrap = false)
-        Text(listOf(r.ident?.let { hpIdentLine(it, HamPlus.resolve(it, r.hz)) } ?: r.stationLabel, nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "", if (!r.recorded) "NOT RECORDED" else "").filter { it.isNotEmpty() }.joinToString(" · "),
+        Text(listOf(r.ident?.let { hpIdentLine(it, HamPlus.resolve(it, r.hz)) } ?: r.stationLabel, nm.meta(r), if (r.offsetHz.isFinite()) "%+d Hz".format(java.util.Locale.US, r.offsetHz.roundToInt()) else "", if (!r.recorded) "NO AUDIO KEPT" else "").filter { it.isNotEmpty() }.joinToString(" · "),
             color = if (r.color >= 0) hpColor(r.color) else Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
     }
 }
@@ -948,7 +949,7 @@ private fun HpTileCard(t: HpTile, s: HpSnap, now: Long, muted: Boolean, prio: Bo
             "HEARD" to hpHeardLine(t, now.toDouble()),
             t.net?.let { "NET" to "net control ${it.control}, ${it.checkins} check-ins" },
             if (t.link > 0) "LINKED" to (s.tiles.filter { it.link == t.link && it.key != t.key }.joinToString(", ") { hpMhz(it.hz) }.ifEmpty { "network ${t.link}" }) else null,
-            if (t.unrecorded > 0) "NOT RECORDED" to "${t.unrecorded} transmissions came while every demodulator was busy" else null,
+            if (t.unrecorded > 0) "NOT RECORDED" to "${t.unrecorded} transmissions were heard but their audio was not kept, because every demodulator this device runs at once was busy with other channels; a narrower SPAN leaves fewer channels to share them" else null,
         )
         for ((k, v) in kv) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
             Text(k, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), letterSpacing = 1.sp, modifier = Modifier.width(d.dp(86f)), maxLines = 1)

@@ -23,6 +23,7 @@ object AdsbStore {
     private val _frames = MutableStateFlow(0L)
     val frames: StateFlow<Long> = _frames.asStateFlow()
     fun noteFrame() { _frames.value = _frames.value + 1 }
+    fun has(icao: String): Boolean = planes.containsKey(icao)
 
     /** Merge a decoder batch (newest field values win), age out stale aircraft, publish. */
     fun merge(batch: Map<String, Aircraft>, nowMs: Long) {

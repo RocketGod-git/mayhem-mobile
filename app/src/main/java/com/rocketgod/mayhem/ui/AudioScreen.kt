@@ -65,6 +65,7 @@ import com.rocketgod.mayhem.core.Radio
 import com.rocketgod.mayhem.core.Scanner
 import com.rocketgod.mayhem.core.SdrEngine
 import com.rocketgod.mayhem.core.audio.HdReport
+import com.rocketgod.mayhem.core.ham.serviceTitle
 import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameHeader
 import kotlin.math.abs
@@ -194,8 +195,9 @@ private fun bandTitle(hz: Long): String = when (hz) {
     in 108_000_001L..117_999_999L -> "AIR NAVIGATION"
     in 118_000_000L..137_000_000L -> "AIRBAND"
     in 144_000_000L..146_000_000L -> "2 M AMATEUR"
-    in 156_000_000L..162_025_000L -> "MARINE VHF"
-    in 162_400_000L..162_550_000L -> "NOAA WEATHER"
+    else -> serviceTitle(hz).ifEmpty { otherTitle(hz) }
+}
+private fun otherTitle(hz: Long): String = when (hz) {
     in 433_050_000L..434_790_000L -> "ISM 433"
     in 430_000_000L..440_000_000L -> "70 CM AMATEUR"
     in 902_000_000L..928_000_000L -> "ISM 915"

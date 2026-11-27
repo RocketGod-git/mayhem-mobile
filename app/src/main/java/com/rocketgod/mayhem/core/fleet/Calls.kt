@@ -170,10 +170,14 @@ class CallTracker(private val now: () -> Long) {
     fun grant(g: GrantIn, now: Long = this.now()): Call? {
         if (g.tg == 0 && g.hz == 0L) return null
         var c = calls.firstOrNull { x -> x.kind == "call" && x.onAir && x.sys == g.sys && x.tg == g.tg && x.group == g.group && (x.hz == 0L || g.hz == 0L || callGrid(x.hz) == callGrid(g.hz)) && (x.slot == g.slot || x.hz == 0L || g.hz == 0L) }
-        if (c == null && g.hz != 0L) {
-            // voice that arrived before its grant (or a grant for a channel already carrying an unlabeled call)
+        if ((c == null || c.hz == 0L) && g.hz != 0L) {
+            // voice that arrived before its grant (or a grant for a channel already carrying an unlabeled call); an earlier
+            // grant of this call with no channel yet gives way to it
             val v = find(g.sys, g.hz, g.slot)
-            if (v != null && v.tg == 0) c = v
+            if (v != null && v.tg == 0 && v !== c) {
+                if (c != null) { v.granted = true; v.grantMs = c.grantMs; calls.remove(c) }
+                c = v
+            }
         }
         // grant updates trail a call for a moment after its terminator: they do not open it again
         if (c == null && calls.any { x -> x.kind == "call" && !x.onAir && x.end == "terminator" && now - x.endMs < TRAIL_MS && x.sys == g.sys && x.tg == g.tg && (g.hz == 0L || x.hz == 0L || callGrid(x.hz) == callGrid(g.hz)) }) return null
@@ -191,6 +195,8 @@ class CallTracker(private val now: () -> Long) {
         label(c)
         return c
     }
+    /** A call to this talkgroup or unit is on the air. */
+    fun onAirTo(sys: String, tg: Int, group: Boolean): Boolean = calls.any { it.kind == "call" && it.onAir && it.sys == sys && it.tg == tg && it.group == group }
     private fun addSrc(c: Call, src: Int) { c.src = src; if (src !in c.srcs) { c.srcs.add(src); if (c.srcs.size > 12) c.srcs.removeAt(0) } }
 
     /** Voice on a channel: a P25 voice frame (180 ms of speech) or a DMR voice burst (60 ms). */
@@ -204,11 +210,11 @@ class CallTracker(private val now: () -> Long) {
     fun lc(sys: String, hz: Long, slot: Int, lc: LcIn, now: Long = this.now(), proto: String = "DMR", tdma: Boolean = false): Call {
         var c = find(sys, hz, slot)
         if (c != null && c.tg != 0 && c.tg != lc.dst) { finish(c, "terminator", now); c = null }
-        if (c == null) {
-            // a granted call whose channel is not resolved yet (a DMR logical channel): the voice link control places it
-            c = calls.firstOrNull { x -> x.kind == "call" && x.onAir && x.proto == proto && x.hz == 0L && x.tg == lc.dst && x.group == lc.group && (sys.isEmpty() || x.sys.isEmpty() || x.sys == sys) }
-            if (c != null) { c.hz = hz; c.slot = slot }
-        }
+        // a granted call whose channel is not resolved yet (a DMR logical channel): the voice link control places it, or
+        // when its voice came first as a call with no name, that call takes the grant's place
+        val g = if (c == null || c.tg == 0) calls.firstOrNull { x -> x !== c && x.kind == "call" && x.onAir && x.proto == proto && x.hz == 0L && x.tg == lc.dst && x.group == lc.group && (sys.isEmpty() || x.sys.isEmpty() || x.sys == sys) } else null
+        if (g != null && c == null) { c = g; c.hz = hz; c.slot = slot }
+        else if (g != null && c != null) { c.granted = true; c.grantMs = g.grantMs; c.lpcn = g.lpcn; c.site = c.site.ifEmpty { g.site }; calls.remove(g) }
         if (c == null) c = create(sys, proto, hz, slot, codecOf(proto, tdma), now, lc.dst, lc.group, tdma = tdma)
         c.tg = lc.dst; c.group = lc.group; addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true
         if (sys.isNotEmpty() && c.sys.isEmpty()) c.sys = sys

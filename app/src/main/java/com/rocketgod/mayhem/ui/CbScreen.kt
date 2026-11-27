@@ -401,7 +401,7 @@ private fun CbTileBox(modifier: Modifier, t: HpTile, c: CbChan?, playing: Boolea
                 if (t.followed) add("FOLLOWING" to accent)
                 if (t.prio) add("PRIORITY" to Palette.accent2)
                 if (t.muted) add("MUTED" to Palette.muted)
-                if (t.unrecorded > 0) add("${t.unrecorded} NOT RECORDED" to Palette.danger)
+                if (t.unrecorded > 0) add("${t.unrecorded} NOT RECORDED · DEVICE BUSY" to Palette.danger)
             }
             if (badges.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(4f)), verticalArrangement = Arrangement.spacedBy(d.dp(3f))) { for ((b, bc) in badges) HpPill(b, bc) }
         }
@@ -436,7 +436,7 @@ private fun CbCard(c: CbChan, s: CbSnap, now: Long, prefs: HpPrefs, accent: Colo
             if (!c.inSpan) add("SPAN" to "outside what the radio hears now")
             if (t != null) {
                 add("HEARD" to hpHeardLine(t, now.toDouble()))
-                if (t.unrecorded > 0) add("NOT RECORDED" to "${t.unrecorded} transmissions came while every demodulator was busy")
+                if (t.unrecorded > 0) add("NOT RECORDED" to "${t.unrecorded} transmissions were heard but their audio was not kept, because every demodulator this device runs at once was busy with other channels")
             }
         }
         for ((k, v) in kv) Row(horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {

@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rocketgod.mayhem.core.AdsbStore
+import com.rocketgod.mayhem.core.AdsbDecoder.squawkMeaning
 import com.rocketgod.mayhem.core.AircraftInfo
 import com.rocketgod.mayhem.core.Apps
 import com.rocketgod.mayhem.core.MayhemApp
@@ -264,6 +265,11 @@ private fun AircraftList(planes: List<Aircraft>, selected: String?, home: Pair<D
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                             Text(call.ifEmpty { p.icao.uppercase() }, color = ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f), maxLines = 1)
                             if (call.isNotEmpty()) Text(p.icao.uppercase(), color = sub, fontFamily = Mono, fontSize = d.sp(10f), maxLines = 1)
+                            p.squawk?.let { sq ->
+                                val why = squawkMeaning(sq)
+                                Text("SQ $sq" + if (why.isNotEmpty()) " $why" else "", color = if (why.isNotEmpty()) Palette.danger else sub, fontFamily = Mono,
+                                    fontWeight = if (why.isNotEmpty()) FontWeight.Bold else FontWeight.Normal, fontSize = d.sp(10f), maxLines = 1)
+                            }
                         }
                         val id = listOfNotNull(info?.reg, info?.typeIcao).joinToString(" · ").ifEmpty { if (info != null && !info.done) "looking up…" else "" }
                         if (id.isNotEmpty()) Text(id, color = sub, fontFamily = Mono, fontSize = d.sp(10.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -298,7 +304,7 @@ private fun AircraftCard(a: Aircraft, home: Pair<Double, Double>?, now: Long, on
         listOfNotNull(info?.maker, info?.type).joinToString(" ").takeIf { it.isNotEmpty() }?.let { add(it) }
         info?.owner?.let { add(it) }
         info?.country?.let { add(it) }
-        a.squawk?.let { add("squawk $it" + when (it) { "7500" -> " · HIJACK"; "7600" -> " · RADIO FAILURE"; "7700" -> " · EMERGENCY"; else -> "" }) }
+        a.squawk?.let { add("squawk $it" + squawkMeaning(it).let { w -> if (w.isNotEmpty()) " · $w" else "" }) }
         if (isEmpty()) add(if (info == null || !info.done) "looking up the registry…" else "not in the registry")
     }
     DetailCard(
