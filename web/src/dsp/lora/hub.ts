@@ -76,6 +76,8 @@ export interface LoraSnapshot {
   open: number;
   /** Processing time over air time, smoothed (1 = just keeping up). */
   busy: number;
+  /** Frames dropped because samples went missing inside them (LoraScanner.gap). */
+  torn: number;
 }
 
 const put = (n: LoraNode, name: string, value: string): void => {
@@ -120,14 +122,18 @@ export class LoraHub implements IqProcessor {
 
   /** CLEAR on the screen. */
   clear(): void {
-    this.byKey.clear(); this.order = []; this.count = 0; this.nodes = []; this.events = []; this.bursts = 0;
+    this.byKey.clear(); this.order = []; this.count = 0; this.nodes = []; this.events = []; this.bursts = 0; this.scanner.torn = 0;
     this.dirty = true; this.flush();
   }
+
+  /** Samples went missing `back` samples before the newest one given to onIq, to within `slack`: a frame the gap
+   *  lands in is dropped rather than decoded as garbage. */
+  gap(back: number, slack = 0): void { this.scanner.gap(back, slack); this.dirty = true; }
 
   /** Send the snapshot now (e.g. right after the screen opens). */
   flush(): void { this.lastEmit = Date.now(); this.dirty = false; this.emit(this.snapshot() as unknown as Record<string, unknown>); }
 
-  /** Where to tune for a band tile: the band's center at 20 Msps, or its main channel + 300 kHz at 2 Msps. */
+  /** Where to tune for a band tile: the band's center at the wide rate, or its main channel + 300 kHz at 2 Msps. */
   static tuneFor(band: number, wide: boolean): { centerHz: number; rate: number } {
     const b = BANDS[band] ?? homeBand();
     return wide ? { centerHz: b.center, rate: LoraScanner.RATE } : { centerHz: b.narrow + NARROW_SHIFT, rate: LoraScanner.NARROW_RATE };
@@ -153,6 +159,7 @@ export class LoraHub implements IqProcessor {
       bursts: this.bursts, frames: this.count, rate: this.rate, centerHz: this.centerHz, wide: this.rate >= 10_000_000,
       bands: BANDS, band, narrowTiles: NARROW_TILES, narrowShift: NARROW_SHIFT, home: BANDS.indexOf(homeBand()),
       channels: this.scanner.channelStates(), open: this.scanner.openChannels, busy: this.scanner.busy,
+      torn: this.scanner.torn,
     };
   }
 

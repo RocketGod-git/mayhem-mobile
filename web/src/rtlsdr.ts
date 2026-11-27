@@ -27,6 +27,7 @@
  * HackRF delivers signed ones, so every buffer is rebased before the rest of the app sees it.
  */
 
+import { DeliveryMeter } from './delivery.js';
 import type { RadioCaps, Radio, RadioEvents, RadioLimits } from './radio.js';
 
 /**
@@ -258,6 +259,8 @@ export const RTL_LIMITS: RadioLimits = {
 
 export class RtlSdr implements Radio {
   readonly kind = 'rtlsdr' as const;
+  /** Samples delivered against wall time (delivery.ts), restarted with every rate change and drained retune. */
+  readonly delivery = new DeliveryMeter();
 
   targetFreqHz = 433_920_000;
   targetRateHz = 2_000_000;
@@ -428,6 +431,8 @@ export class RtlSdr implements Radio {
       });
     const inflight: Promise<USBInTransferResult>[] = [];
     for (let i = 0; i < N; i++) inflight.push(read());
+    const watch = (): void => this.delivery.restart(this.appliedRate, performance.now(), N * SIZE / 2, SIZE / 2);
+    watch();
     let lastStatus = 0, bad = 0;
     while (!this.stopFlag) {
       const res = await inflight.shift()!;
@@ -441,6 +446,7 @@ export class RtlSdr implements Radio {
       }
       bad = 0;
       const dv = res.data;
+      const gap = this.delivery.push(dv.byteLength >> 1, performance.now());
       const raw = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
 
       // The dongle sends offset binary - zero signal sits at 127 - where every other radio in this app sends
@@ -461,6 +467,7 @@ export class RtlSdr implements Radio {
       }
 
       this.ev.onIq(buf);
+      if (gap) this.ev.onGap?.(gap);
       if (this.targetRateHz !== this.appliedRate) {
         // A sample-rate change resets the bulk FIFO (resetBuffer), which aborts any transferIn still in flight
         // ("transfer babble") and the stream never recovers — that is what froze an app switch from 2.4 to
@@ -473,6 +480,7 @@ export class RtlSdr implements Radio {
         try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
         if (!this.stopFlag) for (let i = 0; i < N; i++) inflight.push(read());
         bad = 0;
+        watch();
       }
       if (this.pending() && performance.now() >= this.retuneAfter) {
         // Retune between buffers. Live first - with reads in flight it costs nothing - unless this machine has
@@ -488,6 +496,7 @@ export class RtlSdr implements Radio {
           try { await this.dev.clearHalt('in', this.epIn); } catch { /* nothing was stalled */ }
           if (!this.stopFlag) for (let i = 0; i < N; i++) inflight.push(read());
           bad = 0;
+          watch();
           // Still failing with the bus quiet: only a fresh open of the dongle has been seen to fix this (it is what
           // reconnecting by hand did), so leave and let run() reopen it at the new frequency.
           if (!ok) { await Promise.allSettled(inflight.splice(0)); return 'reopen'; }

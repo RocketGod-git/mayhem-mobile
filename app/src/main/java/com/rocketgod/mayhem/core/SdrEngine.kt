@@ -245,6 +245,8 @@ object SdrEngine {
         _agc.value = gainPrefPro?.let { it[3] == 1 } ?: true; agcLast = 0
         val (l, v, a) = startGains(preset.first, preset.second, preset.third)
         _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; _radioAmp.value = a; syncDriver()
+        // the gain LoRa kept is per board: only now is it known which one to start from
+        if (Apps.playing() == MayhemApp.LORA) loraRecall()
     }
 
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
@@ -262,6 +264,8 @@ object SdrEngine {
     @Volatile var loraGainNote = "LoRa gain not started"; private set
     /** When it last tried a stage up past what the headroom says, and since when the gain has held still. */
     private var loraProbeAt = 0L; private var loraStillSince = 0L
+    /** The start with no gain kept for this radio and band: 8 dB steps down while the converter is pinned. */
+    private var loraCoarse = true
 
     /**
      * Where the gain settles depends on the antenna and the place (a big antenna beside a node clips at a gain a small
@@ -270,9 +274,11 @@ object SdrEngine {
      */
     private fun loraGainKey() = "lora_gain2_${if (isPro()) "pro" else if (Radio.kind.value == Radio.Kind.RTLSDR) "rtl" else "one"}_${_freqHz.value / 10_000_000}"
     fun loraRecall() {
+        loraCoarse = true
         if (!_agc.value) return
         val g = savedLong(loraGainKey())
         if (g <= 0) return
+        loraCoarse = false
         _radioAmp.value = g / 1_000_000 == 1L || Radio.kind.value != Radio.Kind.RTLSDR; _radioLna.value = (g / 1000 % 1000).toInt().coerceIn(0, LNA_MAX); _radioVga.value = (g % 1000).toInt().coerceIn(0, vgaMax())
         loraPeaks.clear(); loraStillSince = 0
         Diag.log("LoRa gain: starting where it settled last time here (amp %s LNA %d VGA %d)".format(if (_radioAmp.value) "on" else "off", _radioLna.value, _radioVga.value))
@@ -309,6 +315,8 @@ object SdrEngine {
         // outlasts any packet (over 1% of samples clipped for 8 seconds running) brings the front end down.
         if (clipShare > 0.01) { if (loraOverSince == 0L) loraOverSince = now } else loraOverSince = 0L
         val clipped = loraOverSince > 0L && now - loraOverSince >= 8_000
+        // the big steps last until the first second the converter isn't pinned; then 2 dB steps as before
+        if (peakNow < 126.5) loraCoarse = false
         val why: String
         if (hasAmp && !a) {
             // the front-end amp stays on for LoRa: measured on a HackRF Pro, 43 and 14 frames in 4 minutes with it on,
@@ -325,6 +333,10 @@ object SdrEngine {
                 else -> "clipped at the lowest gain (a transmitter right beside the antenna)"
             }
             loraPeaks.clear()
+        } else if (loraCoarse && (v > 0 || (hasLna && l > 0))) {
+            // opened pinned (at the start, with no gain kept here): 2 dB a second spent about 12 s clipped
+            if (v > 0) { _radioVga.value = maxOf(0, v - 8); why = "pinned at the start: VGA down 8 dB" }
+            else { _radioLna.value = l - LNA_STEP; why = "pinned at the start: LNA down" }
         } else if (anyClip && !loraNow && v > vMax / 2 && rms > lo) {
             // a meter's burst clipped: the VGA alone gives a little back, the front end stays where far nodes need it
             _radioVga.value = maxOf(0, v - 2); why = "clip outside LoRa: VGA down a step"
@@ -424,7 +436,7 @@ object SdrEngine {
         val bursty = Apps.playing() == MayhemApp.LORA
         if (bursty) {
             burstLevels.addLast(rms); while (burstLevels.size > 8) burstLevels.removeFirst()
-            if (burstLevels.size < 4) return
+            if (burstLevels.size < 4 && !(loraCoarse && (loraLevel?.first ?: 0.0) >= 126.5)) return
             rms = burstLevels.sorted()[burstLevels.size / 2]
             loraAgc(rms, now, lo, hi)
             return
@@ -562,6 +574,7 @@ object SdrEngine {
         if (on) startWorker()
         else {
             stopWorker()
+            streamStart(0, 0, 1)
             _spectrum.value = FloatArray(0)
             _rxHealth.value = ""
         }
@@ -577,17 +590,47 @@ object SdrEngine {
      *  drops oldest on overrun to stay near-real-time. */
     fun onIq(buf: ByteArray, len: Int) {
         bufTotal++
+        val gap = synchronized(delivery) { delivery.push((len / 2).toLong(), DeliveryMeter.nowMs()) }
         val dst = pool.poll()?.takeIf { it.size == len } ?: ByteArray(len)
         System.arraycopy(buf, 0, dst, 0, len)
         // at most about 0.2 s of samples waits, whatever the buffer size and rate: a deeper backlog (a phone's first
         // seconds, before the code is warm) would leave the waterfall and the decoders that far behind
         val cap = if (deepQueue) (QUEUE_SECONDS * sampleRate * 2 / maxOf(len, 1)).toInt().coerceIn(8, 512) else 8
-        while (queue.size >= cap) { val old = queue.poll() ?: break; pool.offer(old); dropTotal++ }
+        while (queue.size >= cap) { val old = queue.poll() ?: break; dropped(old) }
         if (!queue.offer(dst)) {
-            queue.poll()?.let { pool.offer(it); dropTotal++ }
+            queue.poll()?.let { dropped(it) }
             queue.offer(dst)
         }
+        // LoRa places the gap: an empty array rides the queue right behind the buffers before it
+        if (gap != null && processor is com.rocketgod.mayhem.core.lora.LoraScanner) {
+            val mark = ByteArray(0)
+            gapAt[mark] = gap
+            if (!queue.offer(mark)) gapAt.remove(mark)
+        }
     }
+
+    /** A queued buffer thrown away: for LoRa that is a gap right where the next one starts. */
+    private fun dropped(b: ByteArray) {
+        if (b.isEmpty()) { gapAt.remove(b); return }
+        pool.offer(b); dropTotal++; dropGap = true
+    }
+
+    /** Samples delivered against wall time (DeliveryMeter), for every app: the drivers restart it with [streamStart]. */
+    val delivery = DeliveryMeter()
+    /** The gaps found, by the empty array that stands in for each in the queue. */
+    private val gapAt = java.util.concurrent.ConcurrentHashMap<ByteArray, Gap>()
+    @Volatile private var dropGap = false
+
+    /** From the drivers: streaming (again) at [rate], with [inflightSamples] of reads queued and buffers of [bufSamples],
+     *  at the start, after a rate change, and after a retune that pauses the stream (not lost samples). */
+    fun streamStart(rate: Int, inflightSamples: Int, bufSamples: Int) {
+        synchronized(delivery) { delivery.restart(rate, DeliveryMeter.nowMs(), inflightSamples.toLong(), bufSamples.toLong()) }
+    }
+
+    /** What the radio lost lately, for a screen ("" while nothing). */
+    fun deliveryNote(): String = synchronized(delivery) { delivery.note(DeliveryMeter.nowMs()) }
+    /** The radio losing samples at the rate it streams now (watched 5 s at least). */
+    fun deliveryLosing(): Boolean = synchronized(delivery) { delivery.losing(DeliveryMeter.nowMs()) }
 
     /**
      * Buffers in from the radio, and those thrown away because processing fell behind. A drop is silent otherwise, and
@@ -765,7 +808,7 @@ object SdrEngine {
      * read it as the new one (the queue is deep enough to hold a fifth of a second).
      */
     private fun dropQueued() {
-        while (true) { val b = queue.poll() ?: break; pool.offer(b) }
+        while (true) { val b = queue.poll() ?: break; if (b.isEmpty()) gapAt.remove(b) else pool.offer(b) }
     }
 
     /**
@@ -990,6 +1033,12 @@ object SdrEngine {
                 val w0 = System.nanoTime()
                 val item = try { queue.take() } catch (e: InterruptedException) { break }
                 val i0 = System.nanoTime(); stWait += i0 - w0; stItems++; stBytes += item.size
+                if (item.isEmpty()) {
+                    // a gap the meter found: everything before it has gone to the processor
+                    gapAt.remove(item)?.let { g -> (processor as? com.rocketgod.mayhem.core.lora.LoraScanner)?.gap(g.back, g.slack) }
+                    continue
+                }
+                if (dropGap) { dropGap = false; (processor as? com.rocketgod.mayhem.core.lora.LoraScanner)?.gap(0, (item.size / 2).toLong()) }
                 try {
                     val len = item.size
                     val nSamp = len / 2
@@ -1134,12 +1183,14 @@ object SdrEngine {
                             var peak = -999f; var peakIdx = 0
                             for (k in 0 until FFT_N) { val dv = pdb[k]; if (dv > peak) { peak = dv; peakIdx = k } }
                             val offKhz = (peakIdx - FFT_N / 2) * (rate.toDouble() / FFT_N) / 1000.0
+                            val lost = deliveryNote()
                             val health = "%s RX: iqRMS=%.1f dcI=%.1f dcQ=%.1f · peak %+.0f kHz %.0fdB vs floor %.0fdB (Δ%.0f)".format(
-                                sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median)
+                                sourceLabel, rms, sumI / nn, sumQ / nn, offKhz, peak, median, peak - median) + (if (lost.isEmpty()) "" else " · $lost")
                             val nb = bufTotal - bufSeen; val nd = dropTotal - dropSeen; bufSeen += nb; dropSeen += nd
                             val ls = p as? com.rocketgod.mayhem.core.lora.LoraScanner
                             val sk = (ls?.skipped ?: 0L) - skipSeen; skipSeen += sk
                             ls?.load(if (nb > 0) nd.toDouble() / nb else 0.0, sk.toDouble() / rate)
+                            if (ls != null && deliveryLosing()) ls.onLosing?.invoke(rate)
                             Diag.log(health + (if (nd > 0) " · DROPPED %d of %d buffers (falling behind)".format(nd, nb) else "") +
                                 (if (ls != null) " · LoRa scanner %.0f%% of real time".format(ls.busy * 100) else "") +
                                 (if (sk > 0) " · LoRa channels SKIPPED %.0f ms (fell behind)".format(sk * 1000.0 / rate) else ""))

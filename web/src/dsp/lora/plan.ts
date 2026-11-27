@@ -67,6 +67,14 @@ export function slotHz(r: LoraRegion, p: LoraPreset): number | null {
  *  apart, share one view. */
 export function usableHalf(rate: number): number { return rate / 2 * 0.975; }
 
+/** The wide view's rate: 10 Msps (20 MB/s over USB). At 20 Msps many hosts lose a few USB reads a second without
+ *  any error, and one gap ruins the frame it lands in; at 10 they deliver every sample. */
+export const WIDE_RATE = 10_000_000;
+/** The widest a HackRF samples, by hand only. */
+export const MAX_RATE = 20_000_000;
+/** The next rate down for a radio losing samples at `rate`: 20 to 10 Msps, then to one channel at 2 (0: none). */
+export function stepDown(rate: number): number { return rate > WIDE_RATE ? WIDE_RATE : rate > 2_000_000 ? 2_000_000 : 0; }
+
 /** One of MeshCore's community presets. `area` is the country (ISO code), "EU" for Europe as a whole, or a part of a
  *  country ("US-SOCAL"). */
 export interface McPreset { title: string; hz: number; bw: number; sf: number; area: string }
@@ -142,7 +150,7 @@ function build(): LoraChannel[] {
     for (const p of r.presets) {
       const hz = slotHz(r, p);
       if (hz === null) continue;
-      const standing = !localKnown && (p.name === r.start || ((r.name === 'US' || r.name === 'ANZ') && (p.name === 'LongTurbo' || p.name === 'MediumFast')));
+      const standing = !localKnown && (p.name === r.start || p.name === 'MediumFast' || ((r.name === 'US' || r.name === 'ANZ') && p.name === 'LongTurbo'));
       add(hz, p.bw, p.sf, `Meshtastic ${p.name} ${r.name}`, standing);
     }
   }

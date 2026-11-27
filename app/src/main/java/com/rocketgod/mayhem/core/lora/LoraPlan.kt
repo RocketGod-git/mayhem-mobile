@@ -15,6 +15,14 @@ data class LoraChannel(val hz: Long, val bw: Int, val sf: Int?, val name: String
  * presets, and the LoRaWAN channel plans. Kotlin twin of the iOS LoraPlan.swift.
  */
 object LoraPlan {
+    /** The wide view's rate: 10 Msps (20 MB/s over USB). At 20 Msps many hosts lose a few USB reads a second without
+     *  any error, and one gap ruins the frame it lands in; at 10 they deliver every sample. */
+    const val WIDE_RATE = 10_000_000
+    /** The widest a HackRF samples, by hand only. */
+    const val MAX_RATE = 20_000_000
+    /** The next rate down for a radio losing samples at [rate]: 20 to 10 Msps, then to one channel at 2 (0: none). */
+    fun stepDown(rate: Int): Int = if (rate > WIDE_RATE) WIDE_RATE else if (rate > 2_000_000) 2_000_000 else 0
+
     /** A Meshtastic preset: its display name (also the default channel's name), bandwidth, spreading factor. */
     class Preset(val name: String, val bw: Int, val sf: Int)
 
@@ -62,7 +70,7 @@ object LoraPlan {
 
     /**
      * Every channel with a known modem, worldwide. standing: listened to all the time once inside the span (each
-     * region's starting preset, the newer US default LongTurbo and the popular MediumFast, and every channel local to
+     * region's starting preset and the popular MediumFast, the newer US default LongTurbo, and every channel local to
      * the area in use: its MeshCore presets and the user's own channel). Rebuilt when the area or that channel changes.
      */
     val channels: List<LoraChannel>
@@ -90,7 +98,7 @@ object LoraPlan {
         val localKnown = local.isNotEmpty()
         for (r in regions) for (p in r.presets) {
             val hz = slotHz(r, p) ?: continue
-            val standing = !localKnown && (p.name == r.start || ((r.name == "US" || r.name == "ANZ") && (p.name == "LongTurbo" || p.name == "MediumFast")))
+            val standing = !localKnown && (p.name == r.start || p.name == "MediumFast" || ((r.name == "US" || r.name == "ANZ") && p.name == "LongTurbo"))
             add(hz, p.bw, p.sf, "Meshtastic ${p.name} ${r.name}", standing)
         }
         // what is local to the area in use first (named as its own list names it), then every MeshCore community preset
@@ -133,7 +141,7 @@ object LoraPlan {
      * [hz], a narrow channel at its edge included.
      */
     fun band(holding: Long): Band? {
-        val half = LoraScanner.usableHalf(LoraScanner.RATE).toLong() - 32_000
+        val half = LoraScanner.usableHalf(MAX_RATE).toLong() - 32_000
         return bands.firstOrNull { kotlin.math.abs(it.center - holding) <= half }
     }
 

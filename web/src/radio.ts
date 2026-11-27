@@ -7,6 +7,8 @@
  * asks, rather than trying something and reading the wreckage afterwards.
  */
 
+import type { DeliveryMeter, Gap } from './delivery.js';
+
 export type RadioKind = 'hackrf' | 'rtlsdr';
 
 /** The envelope a radio will work inside. Everything here is hardware, not preference. */
@@ -34,6 +36,8 @@ export interface RadioEvents {
   onIq: (buf: Int8Array) => void;
   onLog: (line: string) => void;
   onStatus: (line: string) => void;
+  /** Samples the radio sent never arrived (delivery.ts), told after the buffers around the gap. */
+  onGap?: (gap: Gap) => void;
 }
 
 export interface Radio {
@@ -54,6 +58,8 @@ export interface Radio {
   setGain(lnaDb: number, vgaDb: number, amp: boolean): void;
   /** Which knobs this radio really has, for the RADIO panel. Only what bring-up has found is listed. */
   readonly caps: RadioCaps;
+  /** Samples delivered against wall time, at the rate streaming now. */
+  readonly delivery: DeliveryMeter;
 }
 
 /**

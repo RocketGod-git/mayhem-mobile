@@ -117,9 +117,11 @@ export const LoraCodec = {
   },
 };
 
-interface Pending { p: number; c: number; sfd: number; sync: number[]; snr: number }
+interface Pending { p: number; c: number; rd: number; rdAt: number; slide: number; q: number; sfd: number; sync: number[]; snr: number }
 
 const THRESH = 12;
+/** Tracking loop gains, per symbol: on the frequency and on its drift. */
+const TRACK_P = 0.2, TRACK_I = 0.01;
 
 /**
  * A streaming LoRa receiver for one channel: complex samples at exactly the bandwidth (one per chip) go in, frames
@@ -146,7 +148,9 @@ export class LoraReceiver {
   trace: ((s: string) => void) | null = null;
   private pending: Pending | null = null;
 
-  constructor(readonly sf: number, readonly bw: number, ldro?: boolean) {
+  /** `rfHz`: the channel's RF frequency (negative for a conjugated input). One crystal sets a node's carrier and its
+   *  chip clock, so its frequency error gives its timing drift. 0: the preamble alone says. */
+  constructor(readonly sf: number, readonly bw: number, ldro?: boolean, readonly rfHz = 0) {
     const n = 1 << sf;
     this.n = n;
     // low data rate optimization: on when a symbol lasts 16 ms or more
@@ -161,8 +165,8 @@ export class LoraReceiver {
   }
 
   /** Peak bin and its height over the mean, of the window at absolute sample `at`, times `chirp`, with a frequency
-   *  correction of `c` bins. */
-  private peak(at: number, chirp: Float32Array, c = 0): [number, number] {
+   *  correction of `c` bins, and the samples from `jumpAt` on turned by `jump` radians. */
+  private peak(at: number, chirp: Float32Array, c = 0, jumpAt = this.n, jump = 0): [number, number] {
     const n = this.n, buf = this.buf, re = this.re, im = this.im;
     const o = (at - this.base) * 2;
     const w = -2 * Math.PI * c / n;
@@ -171,6 +175,10 @@ export class LoraReceiver {
       if (c !== 0) { const cr = Math.fround(Math.cos(w * i)), ci = Math.fround(Math.sin(w * i)); const t = xr * cr - xi * ci; xi = xr * ci + xi * cr; xr = t; }
       re[i] = xr * chirp[2 * i] - xi * chirp[2 * i + 1];
       im[i] = xr * chirp[2 * i + 1] + xi * chirp[2 * i];
+    }
+    if (jumpAt < n) {
+      const jr = Math.cos(jump), ji = Math.sin(jump);
+      for (let i = jumpAt; i < n; i++) { const t = re[i] * jr - im[i] * ji; im[i] = re[i] * ji + im[i] * jr; re[i] = t; }
     }
     fft(re, im);
     let best = 0, bv = -1, sum = 0;
@@ -181,17 +189,22 @@ export class LoraReceiver {
 
   /** The peak's position to a fraction of a bin (Jacobsen's estimator on the complex bins around it), signed. */
   private peakFrac(at: number, chirp: Float32Array, c: number): number {
-    const n = this.n, re = this.re, im = this.im;
     const [k] = this.peak(at, chirp, c);
+    let v = k + this.frac(k);
+    if (v > this.n / 2) v -= this.n;
+    return v;
+  }
+
+  /** The fraction of a bin peak k of the last FFT is off, in [-0.5, 0.5]. */
+  private frac(k: number): number {
+    const n = this.n, re = this.re, im = this.im;
     const a = (k - 1 + n) % n, b = (k + 1) % n;
     // (X[k-1] - X[k+1]) / (2 X[k] - X[k-1] - X[k+1]), real part
     const nr = re[a] - re[b], ni = im[a] - im[b];
     const dr = 2 * re[k] - re[a] - re[b], di = 2 * im[k] - im[a] - im[b];
     const den = dr * dr + di * di;
     const d = den > 0 ? (nr * dr + ni * di) / den : 0;
-    let v = k + Math.max(-0.5, Math.min(0.5, d));
-    if (v > n / 2) v -= n;
-    return v;
+    return Math.max(-0.5, Math.min(0.5, d));
   }
 
   private get end(): number { return this.base + this.len / 2; }
@@ -291,42 +304,91 @@ export class LoraReceiver {
     const sync = [2, 1].map(j => this.peak(p + (m - j) * n, this.down, cf)[0]);
     // the dechirped peak over the noise bins is 1 + N x the signal-to-noise ratio (power, per sample)
     const pq = this.peak(p + 2 * n, this.down, cf)[1];
-    this.pending = { p, c: cf, sfd: p + m * n, sync, snr: 10 * Math.log10(Math.max(pq - 1, 1e-3) / n) };
+    // cf holds the timing fraction too. A late window moves an up-chirp peak up and a down-chirp peak down, so the
+    // start-of-frame down-chirps, read with cf, give the timing apart from the frequency; the preamble's peaks slide
+    // with the timing and with any drift in the frequency
+    const sfd = p + m * n;
+    let rd = this.peakFrac(sfd, this.up, cf), rdAt = m;
+    if (sfd + 2 * n <= this.end) { rd = (rd + this.peakFrac(sfd + n, this.up, cf)) / 2; rdAt += 0.5; }
+    const M = Math.min(m - 3, 16);
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (let j = 1; j <= M; j++) { const y = this.peakFrac(p + j * n, this.down, cf); sx += j; sy += y; sxx += j * j; sxy += j * y; }
+    const lim = 6e-5 * n, slide = M >= 4 ? Math.max(-lim, Math.min(lim, (M * sxy - sx * sy) / (M * sxx - sx * sx))) : 0;
+    this.trace?.(`down ${rd} slide ${slide}`);
+    this.pending = { p, c: cf, rd, rdAt, slide, q: pq, sfd, sync, snr: 10 * Math.log10(Math.max(pq - 1, 1e-3) / n) };
   }
 
   /** Decode the frame once enough samples are in; false while waiting. */
   private finish(pd: Pending): boolean {
     const n = this.n, sf = this.sf;
     const start = pd.sfd + Math.floor((9 * n) / 4);
-    if (start + 8 * n > this.end) return false;
-    // the frequency estimate first, then a little either side of it: the frame's own CRC says which was right
-    // (a strong or clipped signal can leave the estimate a quarter or half a bin out)
+    // the clock error the frequency error gives (one crystal), as chips the timing slides a symbol
+    const eps0 = this.rfHz !== 0 ? (pd.c * this.bw / n) / this.rfHz : 0;
+    // (the model keeps the timing within a quarter symbol of the grid)
+    const s0 = (start - pd.p) / n, need = (k: number): number => start + k * n + n / 4 + 1;
+    if (need(8) > this.end) return false;
+    // The preamble's peaks slide (pd.slide, bins a symbol) as the timing slides plus as the frequency drifts (a crystal
+    // warming up as it sends). First: the timing slides as the frequency error says, the rest is drift; then all of
+    // it timing; then no drift. Each with the frequency estimate, then the first a little either side of it: the
+    // frame's own CRC says which was right (a strong or clipped signal can leave the estimate a quarter or half a bin
+    // out). Last the fixed grid with no tracking, as before
+    const sl0 = eps0 * n;
+    // (mode 2: the model and the loop; 1: the model alone, for a weak frame the loop would wander on)
+    const tries: [number, number, number, number][] = [[0, sl0, pd.slide - sl0, 2], [0, pd.slide, 0, 2], [0, sl0, 0, 2], [0, pd.slide, 0, 1]];
+    for (const dc of [-0.5, 0.5, -0.25, 0.25]) tries.push([dc, sl0, pd.slide - sl0, 2]);
+    tries.push([0, 0, 0, 0]);
     let fallback: LoraFrame | null = null;
     let consumed = start;
-    for (const dc of [0, -0.5, 0.5, -0.25, 0.25]) {
-      const c = pd.c + dc;
-      const sym = (i: number): number => (((this.peak(start + i * n, this.down, c)[0] - 1) % n) + n) % n;
+    for (const [t, [dc, slide, drift, mode]] of tries.entries()) {
+      const track = mode > 0;
+      const first = t === 0;
+      // how late the grid is where the preamble frequency was read (window 2.5): the tracked reads take it out of
+      // the frequency; the fixed grid reads as it always has
+      const d25 = ((drift - slide) * (pd.rdAt - 2.5) - pd.rd) / 2;
+      const c = (track ? pd.c - d25 + drift * (s0 - 2.5) : pd.c) + dc;
+      // symbol i is due at start + i n, less how late the grid has slid. The window starts on the whole sample; the
+      // fraction it is late moves the dechirped peak up as much, so it goes into the frequency
+      const tau0 = track ? -(d25 + slide * (s0 - 2.5)) : 0;
+      // the loop follows what is left in the frequency: holding the timing to the model keeps the wrap's phase step
+      // (below) from feeding back into it
+      let cl = 0, cr = 0, at = start;
+      const sym = (i: number): number => {
+        const pos = start + i * n + tau0 - slide * i;
+        at = Math.round(pos);
+        const late = track ? at - pos : 0, f = c + drift * i + cl + late;
+        let [k, q] = this.peak(at, this.down, f);
+        // read off the chip grid, the chirp's wrap from top to bottom leaves a phase step there: undo it, read again
+        if (Math.abs(late) > 0.02 && k > 0) [k, q] = this.peak(at, this.down, f, Math.ceil(n - k - late), 2 * Math.PI * late);
+        // a symbol faded into the noise says nothing
+        if (mode === 2 && q > 0.25 * pd.q) {
+          const r = this.frac(k);
+          cr += TRACK_I * r;
+          cl += cr + TRACK_P * r;
+        } else cl += cr;
+        return (((k - 1) % n) + n) % n;
+      };
       // reduced to sf-2 bits by rounding, not truncating: a fraction of a bin of timing or frequency error puts
       // a peak one bin either side of its multiple of 4
       const hs: number[] = [];
       for (let i = 0; i < 8; i++) hs.push(Math.floor((sym(i) + 2) / 4) % (n / 4));
-      if (dc === 0) this.trace?.(`header syms [${hs.join(', ')}]`);
+      if (first) this.trace?.(`header syms [${hs.join(', ')}]`);
       const h = LoraCodec.header(hs, sf);
       if (!h) continue;
       const total = LoraCodec.symbolCount(sf, this.ldro, h);
-      if (start + total * n > this.end) {
-        if (dc === 0) this.trace?.(`waiting for ${start + total * n - this.end} of ${total} symbols, base ${this.base} buf ${this.len / 2}`);
+      if (need(total) > this.end) {
+        if (first) this.trace?.(`waiting for ${need(total) - this.end} of ${total} symbols, base ${this.base} buf ${this.len / 2}`);
         return false;
       }
       const syms = hs.slice();
       for (let i = 8; i < total; i++) syms.push(sym(i));
       const res = LoraCodec.payload(syms, sf, this.ldro, h);
       if (!res) continue;
-      consumed = Math.max(consumed, start + total * n);
-      const f: LoraFrame = { sf, bw: this.bw, cr: h.cr, payload: res.data, crcOk: res.ok, cfoHz: c * this.bw / n, snrDb: pd.snr, sync: pd.sync };
+      const done = at + n;
+      consumed = Math.max(consumed, done);
+      const f: LoraFrame = { sf, bw: this.bw, cr: h.cr, payload: res.data, crcOk: res.ok, cfoHz: (c - (track ? drift * (s0 - 2.5) : 0)) * this.bw / n, snrDb: pd.snr, sync: pd.sync };
       if (res.ok !== false) {
-        this.trace?.(`frame at correction ${dc}`);
-        this.pending = null; this.grid = Math.max(this.grid, start + total * n);
+        this.trace?.(`frame at correction ${dc}, slide ${slide.toFixed(4)}, drift ${drift.toFixed(4)}${mode === 2 ? '' : mode === 1 ? ', no loop' : ', fixed grid'}`);
+        this.pending = null; this.grid = Math.max(this.grid, done);
         this.onFrame?.(f);
         return true;
       }

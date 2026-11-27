@@ -343,6 +343,8 @@ object RtlSdr {
             reqs.add(r)
         }
         if (reqs.isEmpty()) { streamSync(c, rx, onStatus); return false }
+        // a fresh pool: at the start, after a rate change or a drained retune (not lost samples)
+        SdrEngine.streamStart(appliedRate, reqs.size * bufSz / 2, bufSz / 2)
         val scratch = ByteArray(bufSz)
         var lastStatus = 0L
         var lastData = System.currentTimeMillis()
@@ -412,6 +414,7 @@ object RtlSdr {
         Diag.log("RTL-SDR: async RX unavailable — synchronous fallback")
         val buf = ByteArray(16384)
         var fails = 0
+        SdrEngine.streamStart(appliedRate, buf.size / 2, buf.size / 2)
         while (!stop && targetRateHz == appliedRate) {
             applyPending()
             applyBias()
