@@ -85,6 +85,19 @@ function area(): string {
 
 const country = (a: string): string => a.split('-')[0];
 
+/** A stretch of band a LoRaWAN network lives on: its uplink channels, as one span to listen to. */
+export interface LoraWanBand { name: string; hz: number; bw: number; lo: number; hi: number }
+/** Where The Things Network and Helium put their uplinks: sub-band 2 of US915 (channels 8 to 15 and 65) in the USA
+ *  and Canada, and of AU915 in Australia and New Zealand. Everywhere else LoRaWAN spreads over the band's few
+ *  channels, which the band plan already covers. */
+function lorawanBands(a: string): LoraWanBand[] {
+  const cc = country(a);
+  const b = (name: string, first: number) => ({ name, hz: first + 700_000, bw: 1_600_000, lo: first - 62_500, hi: first + 1_400_000 + 62_500 });
+  if (cc === 'US' || cc === 'CA') return [b('LoRaWAN sub-band 2', 903_900_000)];
+  if (cc === 'AU' || cc === 'NZ') return [b('LoRaWAN sub-band 2', 916_800_000)];
+  return [];
+}
+
 /** The MeshCore presets for an area: its own part's first, then its country's, then Europe's. */
 function meshcore(a: string): McPreset[] {
   const cc = country(a);
@@ -119,6 +132,23 @@ function channels(a: string): LocalChannel[] {
   }
   const c = custom();
   if (c) out.unshift({ hz: c.hz, bw: c.bw, sf: c.sf, name: 'Custom' });
+  return out;
+}
+
+/**
+ * What an area listens to. A part of a country (its position known) listens to its own channels. A whole country
+ * (where in it is not known) also listens to the regional networks inside it, after the rest: Southern California's
+ * MeshCore runs on its own frequency, so do parts of Australia, the Netherlands and New Zealand. They are heard
+ * whenever the span holds them, but they never move where the span is centered: that stays on channels(), the
+ * country's own, the same everywhere as before.
+ */
+function listening(a: string): LocalChannel[] {
+  const out = channels(a);
+  if (a.includes('-')) return out;
+  for (const p of MESHCORE) {
+    if (!p.area.startsWith(a + '-') || out.some(c => c.hz === p.hz && c.bw === p.bw && c.sf === p.sf)) continue;
+    out.push({ hz: p.hz, bw: p.bw, sf: p.sf, name: `MeshCore ${p.title}` });
+  }
   return out;
 }
 
@@ -240,7 +270,7 @@ function narrowStart(): number {
 
 export const LoraLocal = {
   NARROW_SHIFT, WIDE_RATE,
-  picked, setPicked, area, country, meshcore, channels, title, areas, custom, setCustom, wideCenter, narrowChannel,
+  picked, setPicked, area, country, meshcore, channels, listening, lorawanBands, title, areas, custom, setCustom, wideCenter, narrowChannel,
   wideStart, narrowStart, meshtasticDefault, knownAreas,
   /** The band tile the user picked (0: LOCAL). */
   userWide: (): number => readHz(KEY_WIDE),

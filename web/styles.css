@@ -962,6 +962,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .radiocard.on { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--surface)); }
 .radiocard div { flex: 1; min-width: 0; } .radiocard b { display: block; letter-spacing: 2px; font-size: 11px; color: var(--accent2); } .radiocard.on b { color: var(--ok); }
 .radiocard small { color: var(--muted); font-size: 10px; }
+/* RADIO panel: the radios this site may use, one row each */
+.rp-devs { display: grid; gap: 6px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; }
+.rp-devh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.rp-devh b { font-size: 11px; letter-spacing: 2px; color: var(--ink); }
+.rp-devh small { flex: 1; min-width: 0; font-size: 10px; color: var(--muted); }
+.rp-dev { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.rp-dev > i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.rp-dev.on { border-color: var(--ok); }
+.rp-dev.on > i { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.rp-dev div { flex: 1; min-width: 140px; }
+.rp-dev b { display: block; font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+.rp-dev small { font-size: 10px; color: var(--muted); }
+.rp-inuse { font-size: 9px; font-weight: 700; letter-spacing: 1.5px; color: var(--ok); }
 /* the radio card's live rows: name and tuner, TUNED / RATE / GAIN, and the state badges */
 .radiocard .rc-head { display: flex; align-items: center; gap: 8px; }
 .radiocard .rc-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--ink); }
@@ -1334,17 +1347,218 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .lr-last { font-size: 10px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .lr-msgs { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; padding-bottom: 6px; }
 .lr-msg { border-radius: 10px; padding: 9px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); cursor: pointer; }
-.lr-mh { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
-.lr-mh b { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lr-mh span { font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--muted); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-mh { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; min-width: 0; }
+.lr-mh b { font-size: 12px; color: var(--accent); overflow-wrap: anywhere; }
+.lr-mh span { font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--muted); flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .lr-mh i { font-style: normal; font-size: 9px; color: var(--muted); flex: none; }
-.lr-mt { font-size: 12px; color: var(--ink); user-select: text; overflow-wrap: anywhere; margin-top: 3px; }
+.lr-mt { font-size: 12px; color: var(--ink); user-select: text; overflow-wrap: anywhere; white-space: pre-wrap; margin-top: 3px; }
 .mt-fields p.lr-q { font-size: 11px; color: var(--ink); }
 .lr-chans { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
 .lr-chans span { font-size: 9px; letter-spacing: 1px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
 .lr-chans span.on { border-color: var(--accent); color: var(--ink); }
 .lr-chans span.hot { color: var(--ok); border-color: var(--ok); }
 .lr-chans span.warn { color: var(--danger); border-color: var(--danger); }
+/* Mesh: one line for the channels heard and how many are watched; it never wraps, so nothing under it moves. */
+.lr-watchrow { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; min-height: 24px; font-size: 10px; letter-spacing: 1px; color: var(--muted); white-space: nowrap; }
+.lr-watchrow .lr-heard { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lr-watchrow .lr-heard b { color: var(--ink); font-weight: 600; }
+.lr-watchrow .lr-heard b.hot { color: var(--ok); }
+.lr-watchrow .lr-heard b i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 4px; vertical-align: 1px; box-shadow: 0 0 6px var(--ok); }
+.lr-watchrow .warn { flex: none; color: var(--danger); }
+.lr-watchrow .lr-watch { flex: none; font: inherit; letter-spacing: inherit; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+.lr-watchrow .lr-watch:hover, .lr-watchrow .lr-watch.on { color: var(--ink); border-color: var(--accent); }
+.lr-watchlist { display: grid; gap: 4px; margin: 2px 0 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.lr-watchlist div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; }
+.lr-watchlist b { color: var(--ink); font-weight: 600; letter-spacing: 1px; }
+/* Mesh: the network chips, settings and full screen on one row; the four numbers under it. */
+.lr-top { flex-wrap: nowrap; }
+.lr-nets { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.lr-net { display: inline-flex; align-items: center; gap: 6px; flex: none; font: 700 10px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; cursor: pointer; }
+.lr-net b { color: var(--ink); font-weight: 700; }
+.lr-net i { width: 7px; height: 7px; border-radius: 50%; background: var(--nc); }
+.lr-net.none { opacity: 0.55; }
+.lr-net.out { border-style: dashed; opacity: 1; }
+.lr-net.out i { background: none; box-shadow: inset 0 0 0 1.5px var(--nc); }
+.lr-net small { font-size: 8px; letter-spacing: 1px; color: var(--danger); }
+.lr-net.on { color: #05080a; border-color: var(--nc, var(--accent)); background: var(--nc, var(--accent)); opacity: 1; }
+.lr-net.on b, .lr-net.on small { color: #05080a; }
+.lr-net.on i { background: #05080a; }
+/* Mesh: what the views leave out, and the area's channels the span misses */
+.lr-filt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 8px; font-size: 10px; letter-spacing: .5px; color: var(--muted); }
+.lr-chs { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.lr-ch { display: inline-flex; align-items: center; gap: 5px; font: 600 10px ui-monospace, Menlo, Consolas, monospace; letter-spacing: .5px; color: var(--muted); background: none; border: 1px dashed color-mix(in srgb, var(--nc) 45%, var(--line)); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+.lr-ch b { font-weight: 600; color: var(--muted); }
+.lr-ch i { width: 6px; height: 6px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--nc); }
+.lr-ch:hover { color: var(--ink); border-color: var(--nc); }
+.lr-ch.on { cursor: default; color: var(--ink); border-style: solid; border-color: var(--nc); background: color-mix(in srgb, var(--nc) 14%, transparent); }
+.lr-ch.on b { color: var(--ink); }
+.lr-ch.on i { background: var(--nc); }
+.lr-legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 9px; letter-spacing: .5px; }
+.lr-legend i { width: 6px; height: 6px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--muted); margin-left: 4px; }
+.lr-legend i.on { background: var(--ink); box-shadow: none; margin-left: 0; }
+.lr-legend .lr-geo { margin: 0 0 0 4px; }
+.lr-geo { font: 700 9px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; color: var(--accent); background: none; border: 1px solid var(--accent); border-radius: 5px; padding: 2px 6px; margin-left: 4px; cursor: pointer; }
+.lr-geo { margin: 2px 0 0; }
+.lr-sp { flex: 1; }
+.lr-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 2px 0 8px; }
+.lr-tile { background: color-mix(in srgb, var(--ink) 4%, var(--surface)); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+.lr-tile small { display: block; font-size: 9px; letter-spacing: 1.5px; color: var(--muted); }
+.lr-tile b { display: block; font-size: 22px; line-height: 1.15; color: var(--ink); font-variant-numeric: tabular-nums; }
+.lr-tile em { display: block; font-style: normal; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 719.98px) { .lr-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Mesh MAP: the map with the node list beside it (under it on a narrow screen). */
+.lr-mapview { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(250px, 1fr); gap: 8px; min-height: 0; }
+.lr-mapbox { position: relative; min-height: 0; }
+.lr-mapview .map { height: 100%; min-height: 220px; }
+.lr-list { overflow-y: auto; min-height: 0; border: 1px solid var(--line); border-radius: 8px; }
+.lr-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 8px; padding: 6px 9px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 11px; }
+.lr-row:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.lr-row.sel { box-shadow: inset 2px 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.lr-row.dim { opacity: 0.55; }
+.lr-row > i { grid-row: 1 / 3; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--nc); }
+.lr-rn { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-rn b { color: var(--ink); }
+.lr-rn small { color: var(--muted); }
+.lr-rs { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.lr-rw { min-width: 0; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-ra { text-align: right; font-size: 10px; color: var(--muted); white-space: nowrap; }
+.lr-ra em { font-style: normal; color: var(--accent); }
+.lr-empty { padding: 14px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.lr-wait { grid-column: 1 / -1; padding: 16px; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.lr-wait b { color: var(--accent); letter-spacing: 2px; }
+.lr-wait p { margin: 6px 0 0; }
+@media (max-width: 899.98px) { .lr-mapview { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(240px, 46vh) auto; } .lr-list { max-height: 50vh; } }
+/* Mesh: the listening sheet behind the cog. */
+.modal-card.lr-setcard { border-color: var(--accent); max-width: 560px; max-height: calc(100vh - 32px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.lr-seth { display: flex; align-items: center; justify-content: space-between; }
+.lr-seth b { color: var(--accent); letter-spacing: 2px; }
+.lr-setsub { font-size: 9px; letter-spacing: 1.5px; color: var(--muted); margin-top: 4px; }
+.lr-warn { color: var(--danger); }
+/* Mesh sizing. The data is the page: with the waterfall hidden (the default) the views fill the screen; with it shown
+ * they keep one height. Either way the views never grow as data arrives, so nothing around them moves. A phone
+ * scrolls the whole page instead (its lists are not scroll boxes). */
+@media (min-width: 720px) {
+  .view.lora:not(.lorafull) > .controls { display: flex; flex-direction: column; }
+  .view.lora:not(.lorafull) #lr-stage, .view.lora:not(.lorafull) #lr-log { flex: 1 1 auto; height: auto; min-height: 300px; }
+  .view.lora:not(.lorafull) #lr-stage .mt-cards, .view.lora:not(.lorafull) #lr-stage .lr-msgs, .view.lora:not(.lorafull) #lr-stage .lr-mapview { max-height: none; height: 100%; }
+  .view.lora:not(.lorafull) #lr-log { display: flex; flex-direction: column; }
+  .view.lora:not(.lorafull) #lr-log .list { flex: 1; min-height: 0; max-height: none; }
+}
+.view.lora.lorafull .lr-mapview { height: 100%; }
+/* Mesh: a node's detail is a card over the view, not a bar across it. Drag it by its header; ✕ or a click anywhere
+ * else puts it away. */
+#lr-detail { position: absolute; top: 10px; right: 10px; left: auto; bottom: auto; align-self: start; width: min(440px, calc(100% - 20px)); max-height: calc(100% - 20px); margin: 0; z-index: 700; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55); }
+#lr-detail .mt-dh { cursor: grab; user-select: none; touch-action: none; }
+#lr-detail.drag .mt-dh { cursor: grabbing; }
+#lr-detail .mt-fields { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+#lr-detail .mt-fields b { width: 110px; }
+/* Mesh: cards keep their own height (they were stretched to the whole view) */
+#lr-cards { align-content: start; grid-auto-rows: max-content; }
+/* Mesh NODES in ALL: a column per network */
+#lr-cards.cols { display: block; }
+.lr-cols { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 10px; align-items: start; }
+.lr-col { display: grid; gap: 8px; min-width: 0; }
+.lr-colh { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 4px 2px; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; color: var(--ink); background: var(--paper); border-bottom: 2px solid var(--nc); }
+.lr-colh i { width: 8px; height: 8px; border-radius: 50%; background: var(--nc); }
+.lr-colh b { color: var(--muted); }
+.lr-colh button { font: 700 12px ui-monospace, Menlo, Consolas, monospace; line-height: 1; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; cursor: pointer; }
+.lr-colh button:hover:not(:disabled) { color: var(--ink); border-color: var(--nc); }
+.lr-colh button:disabled { opacity: .3; cursor: default; }
+.lr-colhid { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 9px; letter-spacing: 1.5px; color: var(--muted); }
+.lr-colhid button { display: inline-flex; align-items: center; gap: 5px; font: 700 9px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; color: var(--ink); background: none; border: 1px dashed var(--nc); border-radius: 999px; padding: 3px 9px; cursor: pointer; }
+.lr-colhid i { width: 6px; height: 6px; border-radius: 50%; background: var(--nc); }
+@media (max-width: 719.98px) { .lr-cols { grid-template-columns: minmax(0, 1fr) !important; } }
+/* Mesh node card: four short lines, the network's color down its edge */
+#lr-cards:not(.cols) { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px; }
+.lr-col { gap: 6px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); align-content: start; }
+.lr-col > .lr-colh, .lr-col > .lr-empty { grid-column: 1 / -1; }
+.mt-card.lr-card { gap: 3px; padding: 7px 10px 7px 12px; border-radius: 10px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--nc) calc(7% + 18% * var(--flash, 0)), var(--surface)), var(--surface) 60%);
+  border: 1px solid color-mix(in srgb, var(--nc) calc(18% + 70% * var(--flash, 0)), var(--line));
+  box-shadow: inset 3px 0 0 var(--nc), 0 0 calc(14px * var(--flash, 0)) color-mix(in srgb, var(--nc) 55%, transparent); }
+.mt-card.lr-card.sel { border: 1px solid var(--nc); box-shadow: inset 3px 0 0 var(--nc), 0 0 0 1px var(--nc); }
+.lr-c1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.lr-cid { font-size: 15px; font-weight: 700; color: var(--nc); flex: none; letter-spacing: .3px; }
+.lr-cname { font-size: 11px; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.lr-card .mt-live { font-size: 9px; align-self: center; }
+.lr-card .mt-live i { width: 7px; height: 7px; }
+.lr-snr { font-size: 12px; font-weight: 700; flex: none; align-self: center; }
+.lr-snr small { font-size: 8px; margin-left: 1px; color: var(--muted); }
+.lr-snr.hi { color: var(--ok); } .lr-snr.mid { color: var(--ink); } .lr-snr.lo { color: var(--warn, #e8a33d); }
+.lr-ctag { font-size: 9px; letter-spacing: 1px; color: var(--muted); overflow-wrap: anywhere; }
+.lr-stats { display: flex; flex-wrap: wrap; gap: 3px 4px; margin: 2px 0; }
+.lr-stats span { display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; font-size: 10px; color: var(--ink); background: color-mix(in srgb, var(--ink) 5%, transparent); border-radius: 4px; padding: 1px 6px; overflow-wrap: anywhere; }
+.lr-stats small { font-size: 8px; letter-spacing: 1px; color: var(--muted); }
+.lr-c3 { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; font-size: 10px; }
+.lr-what { flex: 1 1 auto; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.lr-meta { flex: none; margin-left: auto; font-size: 9px; color: var(--muted); }
+.lr-spk { flex: none; width: 70px; height: 16px; }
+.lr-spk polyline { fill: none; stroke: var(--nc); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.lr-spk polygon { fill: var(--nc); fill-opacity: .15; }
+/* Mesh card: the node's key readings, two to a row */
+.lr-kf { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin: 6px 0; }
+.lr-kf small { display: block; font-size: 8px; letter-spacing: 1px; color: var(--muted); }
+.lr-kf span { display: block; font-size: 11px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Mesh CHANNELS tab: every known channel in the span, busiest first */
+.lr-chantab { overflow-y: auto; min-height: 0; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.lr-cth, .lr-ctr { display: grid; grid-template-columns: 10px minmax(140px, 1.6fr) 90px 120px 150px 60px 90px; gap: 10px; align-items: center; padding: 5px 10px; border-bottom: 1px solid var(--line); }
+.lr-cth { position: sticky; top: 0; z-index: 1; background: var(--surface); font-size: 9px; letter-spacing: 1.5px; color: var(--muted); }
+.lr-ctr i { width: 8px; height: 8px; border-radius: 50%; background: var(--nc); }
+.lr-ctr b { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-ctr span { color: var(--ink); font-variant-numeric: tabular-nums; }
+.lr-ctr em { font-style: normal; color: var(--muted); }
+.lr-ctr.quiet { opacity: 0.5; }
+.lr-ctr.hot { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.lr-ctr.hot i { box-shadow: 0 0 6px var(--nc); }
+@media (max-width: 719.98px) { .lr-cth, .lr-ctr { grid-template-columns: 10px minmax(0, 1fr) 72px 56px; } .lr-cth > :nth-child(4), .lr-cth > :nth-child(5), .lr-cth > :nth-child(7), .lr-ctr > :nth-child(4), .lr-ctr > :nth-child(5), .lr-ctr > :nth-child(7) { display: none; } }
+@media (min-width: 720px) { .view.lora:not(.lorafull) #lr-stage .lr-chantab { height: 100%; } }
+.view.lora.lorafull .lr-chantab { height: 100%; }
+/* Mesh: sending from your own node, under the chat */
+.lr-compose { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.lr-compose select { flex: none; width: auto; max-width: 100%; }
+.lr-namebox { position: relative; flex: 1; min-width: 0; display: flex; }
+.lr-namebox.short { flex: 0 0 96px; }
+.lr-namebox input { flex: 1; min-width: 0; padding-right: 44px; }
+.lr-namebox i { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-style: normal; font-size: 9px; color: var(--muted); pointer-events: none; }
+.lr-namehint { font-size: 9px; color: var(--muted); margin: -2px 0 6px; }
+.lr-txbox { position: relative; flex: 1; min-width: 180px; display: flex; align-items: center; }
+.lr-txbox input { flex: 1; min-width: 0; padding-right: 82px; }
+.lr-emobtn { position: absolute; right: 6px; display: flex; background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; }
+.lr-emobtn svg { width: 18px; height: 18px; }
+.lr-emobtn:hover { color: var(--ink); }
+.lr-txn { position: absolute; right: 34px; font-size: 9px; color: var(--muted); pointer-events: none; }
+.lr-txn.over { color: var(--danger); font-weight: 700; }
+.lr-emo { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; display: grid; grid-template-columns: repeat(8, 34px); gap: 2px; padding: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.lr-emo button { font-size: 18px; line-height: 1; height: 32px; background: none; border: none; border-radius: 6px; cursor: pointer; }
+.lr-emo button:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.lr-compose .chip.primary { background: var(--accent); color: #05080a; border-color: var(--accent); }
+.lr-txst { flex-basis: 100%; font-size: 10px; color: var(--muted); min-height: 14px; }
+.lr-msg.mine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.lr-ack { flex: none; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--ok); }
+.lr-ack.wait { color: var(--muted); font-weight: 400; }
+.lr-you { font-style: normal; font-size: 8px; letter-spacing: 1px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; }
+.lr-setcard .txin.lr-short { flex: none; width: 72px; }
+.lr-setcard .ctlrow > .txin:not(.lr-short):not(.lr-area) { flex: 1; min-width: 0; }
+.lr-chk { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--ink); }
+.lr-myid { font-size: 10px; letter-spacing: 1px; color: var(--muted); }
+/* Mesh: the data is the page. One column at every width: the radio card shrinks to its header and caption (the span
+ * tuned shows at the start of the heard line), the waterfall is a strip under it, and the views take the rest. */
+.view.lora .face .readout, .view.lora .face .leds, .view.lora .face .lscale, .view.lora .face .health { display: none; }
+@media (min-width: 720px) {
+  main#view.lora:not(.lorafull) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .view.lora:not(.lorafull) > .visual { flex: none; }
+  .view.lora:not(.lorafull) > .visual:not(.nowf) #scope { flex: none; height: 150px; min-height: 0; }
+  .view.lora:not(.lorafull) > .controls, .view.lora:not(.lorafull):has(> .visual:not(.nowf)) > .controls { flex: 1; max-height: none; min-height: 0; }
+}
+.lr-watchrow .lr-span { flex: none; color: var(--ink); }
+.lr-watchrow .lr-bf { flex: none; }
+/* Mesh: the channels in the listening sheet, each with where it is and its modem */
+.lr-chtable { display: grid; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.lr-chtable > div { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+.lr-chtable > div:last-child { border-bottom: 0; }
+.lr-chtable b { color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-chtable span { color: var(--ink); font-variant-numeric: tabular-nums; }
+.lr-chtable em { font-style: normal; color: var(--muted); }
 /* LoRa: the area picker, your own channel, and "↑ N NEW" over a list scrolled away from the newest */
 .ctlrow > .lr-area { flex: 1; min-width: 0; width: auto; }
 .lr-ownline { margin-top: 4px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1356,7 +1570,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .lr-newpill[hidden] { display: none; }
 .view.lora.lorafull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; overflow: hidden; }
 .view.lora.lorafull > .visual, .view.lora.lorafull > .controls > :not(.ctlrow):not(.mt-stage):not(.mt-sum) { display: none !important; }
-.view.lora.lorafull > .controls > .ctlrow ~ .ctlrow { display: none !important; }
+.view.lora.lorafull > .controls > .ctlrow ~ .ctlrow:not(.lr-tabs) { display: none !important; }
 .view.lora.lorafull > .controls { height: 100%; max-height: none; display: flex !important; flex-direction: column; overflow: hidden; padding: 0; }
 .view.lora.lorafull .mt-stage { flex: 1; min-height: 0; }
 .view.lora.lorafull .mt-cards, .view.lora.lorafull .lr-msgs { max-height: none; height: 100%; }
@@ -3399,3 +3613,11 @@ main#view.view:is(.hamplus, .cb, .gmrs).hpwide { display: grid; grid-template-co
 .hm-layers > .chip.hm-js8 > i, .hm-mode.hm-js8 { background: #ffb74d; }
 .hm-layers > .chip.on > i { box-shadow: 0 0 0 1.5px #05080a; }
 .hm-mode { display: inline-block; min-width: 3.4em; margin-right: 6px; padding: 0 4px; border-radius: 4px; background: var(--accent); color: #05080a; font-size: 10px; text-align: center; vertical-align: 1px; }
+/* Mesh on a phone: the network chips get their own row above the buttons, and the channel pills scroll sideways */
+@media (max-width: 719.98px) {
+  .lr-top { flex-wrap: wrap; row-gap: 6px; }
+  .lr-top .lr-nets { flex: 1 0 100%; }
+  .lr-chs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+  .lr-ch { flex: none; }
+}
+.lr-setcard .lr-namebox .txin.lr-short { flex: 1; width: auto; }

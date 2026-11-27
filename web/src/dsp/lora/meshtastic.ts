@@ -163,6 +163,11 @@ export function parse(b: Uint8Array): MeshtasticPacket | null {
       found = [chan, data, Number(port)]; break;
     }
   }
+  if (!found) {
+    // licensed (ham) mode sends the message unencrypted: a body that reads cleanly as one, on a port that exists
+    const data = Proto.parse(body), port = data?.int(1) ?? null;
+    if (data && port !== null && port > 0n && port < 512n && PORTNUM[Number(port)] !== undefined && data.bytes(2) !== null) found = ['licensed (unencrypted)', data, Number(port)];
+  }
   if (!found) return p;
   const [chan, data, port] = found;
   p.portnum = port;

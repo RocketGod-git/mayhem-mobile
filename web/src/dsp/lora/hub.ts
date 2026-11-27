@@ -231,8 +231,23 @@ export class LoraHub implements IqProcessor {
         if (mt.lat !== null && mt.lon !== null) { n.lat = mt.lat; n.lon = mt.lon; }
         for (const [k, v] of mt.fields) if (k !== 'TEXT' && k !== 'REPLY TO') put(n, k, v);
         if (mt.portnum === null) put(n, 'CHANNEL', `private (hash ${hex2(mt.channelHash)})`);
+        // how far away it is and who passed it on, as of its latest packet (the map draws the relay link)
+        if (mt.hopStart > 0) put(n, 'HOPS AWAY', `${mt.hopStart - mt.hopLimit}`);
+        if (mt.relayNode !== 0) put(n, 'RELAYED BY', `…${hex2(mt.relayNode)}`);
+        // who it last spoke to: everyone, or one node (a direct message, readable or not)
+        put(n, 'LAST SENT TO', MT.nodeName(mt.dest) === 'everyone' ? 'everyone' : `${MT.nodeName(mt.dest)} (direct)`);
+        if (mt.viaMqtt) put(n, 'VIA MQTT', 'yes');
       };
     } else if (mcOk && mc) {
+      // a repeater's copy: the same type and payload, a longer path. Counted on the node, not shown again.
+      const pk = `MC/${mc.type}/${hexBytes(mc.payload)}`;
+      for (const [k, v] of this.seenPackets) if (!(ms - v < 600_000)) this.seenPackets.delete(k);
+      if (this.seenPackets.has(pk)) {
+        const n = mc.nodeKey ? this.byKey.get('MC/' + hexBytes(mc.nodeKey, 0, 6)) : mc.name !== null ? [...this.byKey.values()].find(x => x.proto === 'MeshCore' && x.name === mc.name) : undefined;
+        if (n) { put(n, 'REPEATS HEARD', String((parseInt(n.fields.find(x => x.name === 'REPEATS HEARD')?.value ?? '0', 10) || 0) + 1)); this.publishNodes(); }
+        return;
+      }
+      this.seenPackets.set(pk, ms);
       proto = 'MeshCore'; kind = mc.typeName; text = mc.text; chan = mc.channel;
       fields = mc.fields.map(([a, b]) => F(a, b));
       if (mc.nodeKey) {

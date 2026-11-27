@@ -135,6 +135,8 @@ class Slot {
   lastOn = 0;
   /** The current stretch of activity in it: when it began and when it was last hot. */
   firstHot = 0; lastHot = 0;
+  /** How many times a burst opened it in this span, and when the last one did (sample index). */
+  opens = 0; lastOpen = 0;
   /** The strongest bin in it at each look since its activity began (null: nothing hot in that look). */
   track: (number | null)[] = [];
   trackLook = -1;
@@ -180,6 +182,8 @@ export interface LoraChannelState {
   standing: boolean; active: boolean;
   /** Ms since its bins were last hot (null: never in this span), frames decoded on it. */
   hotAgoMs: number | null; frames: number;
+  /** Times a burst opened it in this span, and ms since the last (null: never). */
+  opens: number; openAgoMs: number | null;
 }
 
 export class LoraScanner {
@@ -360,6 +364,7 @@ export class LoraScanner {
     return this.slots.map(s => ({
       name: s.ch.name, hz: s.ch.hz, bw: s.ch.bw, sf: s.ch.sf, standing: s.standing, active: s.active,
       hotAgoMs: s.lastHot > 0 ? Math.max(0, Math.round((t - s.lastHot) / this.rate * 1000)) : null, frames: s.frames,
+      opens: s.opens, openAgoMs: s.opens > 0 ? Math.max(0, Math.round((t - s.lastOpen) / this.rate * 1000)) : null,
     }));
   }
 
@@ -551,7 +556,7 @@ export class LoraScanner {
       if (o) { why('overlaps ' + o.ch.name); continue; }
       LoraScanner.trace?.(`slot on ${(written / rate * 1000).toFixed(1)} ms ${s.ch.name} cover ${cover.toFixed(2)}`);
       s.active = this.spawn(s.ch.hz, s.ch.bw, s.ch.sf === null ? null : [s.ch.sf], s.ch.name.includes('downlink'), s.firstHot - Math.trunc(rate * 0.02), null, s, s.ch.name);
-      if (s.active) this.probeLater(s);
+      if (s.active) { s.opens++; s.lastOpen = written; this.probeLater(s); }
     }
   }
 

@@ -142,6 +142,22 @@ export class Tx {
     });
   }
 
+  /** One LoRa frame (dsp/lora/tx.ts loraModulate: interleaved I/Q, unit amplitude, at `rate`) on `freqHz`, sent once
+   *  on the usual digital offset off the LO. */
+  loraBurst(freqHz: number, iq: Float32Array, rate: number, label: string): boolean {
+    const n = iq.length >> 1, inc = 2 * Math.PI * OFFSET / rate;
+    let i = 0;
+    return this.begin(label, freqHz, rate, OFFSET, (buf) => {
+      if (i >= n) return 0;
+      const m = Math.min(buf.length >> 1, n - i);
+      for (let k = 0; k < m; k++, i++) {
+        const w = inc * i, c = Math.cos(w), s = Math.sin(w), x = iq[2 * i], y = iq[2 * i + 1];
+        buf[2 * k] = Math.round(AMP * (x * c - y * s)); buf[2 * k + 1] = Math.round(AMP * (x * s + y * c));
+      }
+      return m * 2;
+    });
+  }
+
   /** Replay a .c8 capture (Int8Array) captured at rateHz/freqHz (from its sidecar). */
   replay(name: string, iq: Int8Array, freqHz: number, rateHz: number): boolean {
     let pos = 0;
