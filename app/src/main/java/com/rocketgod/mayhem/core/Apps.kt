@@ -148,7 +148,7 @@ object Apps {
     val metersLog = PacketLog(); val ert = ErtDecoder(metersLog); val mesh = MeshDecoder(metersLog)
     val meters = MetersProcessor(ert, mesh)
     /** LoRa: Meshtastic, MeshCore, LoRaWAN and any other LoRa across one wide span. */
-    val loraLog = PacketLog(); val lora = com.rocketgod.mayhem.core.lora.LoraHub(loraLog)
+    val loraLog = PacketLog(com.rocketgod.mayhem.core.lora.LoraHistory.MAX_LOG); val lora = com.rocketgod.mayhem.core.lora.LoraHub(loraLog)
     val btleLog = PacketLog(); val btle = BtleDecoder(btleLog)
     /** BLE RX's devices: one per advertiser, fed the whole PDU of every good packet. Read through [bleDevices]. */
     private val bleTracker = BleTracker()
@@ -450,6 +450,8 @@ object Apps {
         if (recorder == null) recorder = IqRecorder(File(ctx.getExternalFilesDir(null), "captures"))
         Geo.init(ctx)
         com.rocketgod.mayhem.core.lora.LoraLocal.init(ctx)
+        com.rocketgod.mayhem.core.lora.LoraMe.init(ctx)
+        com.rocketgod.mayhem.core.lora.LoraHistory.init(ctx, lora, loraLog)
         Bookmarks.load(ctx)
         com.rocketgod.mayhem.core.spectrum.Spectrum.load(ctx)
         com.rocketgod.mayhem.core.hd.HdApp.init(ctx)
@@ -459,6 +461,24 @@ object Apps {
     /** The fastest LoRa rate this radio delivered every sample at, this run (0: not limited), and when it last stepped. */
     @Volatile var loraCap = 0
     @Volatile private var loraStepAt = 0L
+    /** When the rate was last lowered, and how long to wait before trying the wider one again (doubles each time it
+     *  fails within 30 s, up to 30 min). A span picked by hand resets it. */
+    @Volatile var loraCapAt = 0L
+    @Volatile var loraRetryMs = 120_000L
+
+    /**
+     * A step-down is not for good: a busy moment passes, so the wide span is tried again once the radio has delivered
+     * every sample for [loraRetryMs] at the lower rate. Called about once a second while Mesh runs.
+     */
+    fun loraRecover() {
+        val plan = com.rocketgod.mayhem.core.lora.LoraPlan
+        val now = System.currentTimeMillis()
+        if (playing() != MayhemApp.LORA || loraCap == 0 || loraCapAt == 0L || now - loraCapAt <= loraRetryMs) return
+        if (!Radio.canSample(Radio.limits, plan.WIDE_RATE) || SdrEngine.rateHz.value >= plan.WIDE_RATE) return
+        com.rocketgod.mayhem.Diag.log("LoRa: trying ${plan.WIDE_RATE / 1_000_000} Msps again")
+        loraCap = 0; loraCapAt = now; lora.narrowed.value = 0; lora.deliveryNote.value = ""
+        kotlin.concurrent.thread(isDaemon = true, name = "lora-widen") { SdrEngine.setRate(plan.WIDE_RATE); SdrEngine.tune(loraWideStart(plan.WIDE_RATE)) }
+    }
 
     /** LoRa's wide span center: the one the user picked (kept until they pick LOCAL again), else the local one. */
     fun loraWideStart(rate: Int = com.rocketgod.mayhem.core.lora.LoraPlan.WIDE_RATE): Long {
@@ -610,9 +630,13 @@ object Apps {
                 lora.scanner.onLosing = onLosing@{ r ->
                     val next = plan.stepDown(r)
                     if (next == 0 || !Radio.canSample(Radio.limits, next) || System.currentTimeMillis() - loraStepAt < 6_000) return@onLosing
-                    loraStepAt = System.currentTimeMillis()
-                    fun mhz(x: Int) = if (x % 1_000_000 == 0) "${x / 1_000_000}" else "%.1f".format(x / 1e6)
-                    val why = "radio losing samples at ${mhz(r)} Msps; using ${mhz(next)}"
+                    val t = System.currentTimeMillis()
+                    loraStepAt = t
+                    // failing again soon after a try at the wide rate: the next try waits twice as long
+                    if (loraCapAt != 0L && t - loraCapAt < 30_000 && r >= plan.WIDE_RATE) loraRetryMs = minOf(loraRetryMs * 2, 1_800_000L)
+                    loraCapAt = t
+                    fun mhz(x: Int) = if (x % 1_000_000 == 0) "${x / 1_000_000}" else "%.1f".format(java.util.Locale.US, x / 1e6)
+                    val why = "radio losing samples at ${mhz(r)} Msps; using ${mhz(next)}, trying ${mhz(r)} again in ${Math.round(loraRetryMs / 60_000.0)} min"
                     com.rocketgod.mayhem.Diag.log("LoRa: $why (${SdrEngine.deliveryNote()})")
                     loraCap = next; lora.narrowed.value = next; lora.deliveryNote.value = why
                     kotlin.concurrent.thread(isDaemon = true, name = "lora-narrow") {

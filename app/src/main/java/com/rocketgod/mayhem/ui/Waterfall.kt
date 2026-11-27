@@ -529,6 +529,9 @@ fun WaterfallView(
     onBox: ((Int) -> Unit)? = null,
     /** Puts the waterfall away: the show / hide button on the top left corner. Null: no button. */
     onHide: (() -> Unit)? = null,
+    /** The app's own labels over the spectrum in place of the classifier's: span fraction, height (0..1 of the trace
+     *  band) and text each (Mesh names the channels it listens to). */
+    namedMarks: List<Triple<Float, Float, String>>? = null,
     onTapFrac: ((Float) -> Unit)? = null,
 ) {
     val engineLo by SdrEngine.freqHz.collectAsState()
@@ -842,7 +845,13 @@ fun WaterfallView(
                 drawPath(holdPath, Palette.hold.copy(alpha = 0.6f), style = Stroke(1f))
                 if (showSignals && !floorDb.isNaN()) {
                     marks.clear()
-                    if (engineFed) {
+                    if (namedMarks != null) {
+                        for ((f, hgt, t) in namedMarks) {
+                            if (marks.full) break
+                            val v = toView(f) ?: continue
+                            marks.add(v * w, traceBase - hgt.coerceIn(0f, 1f) * band, t)
+                        }
+                    } else if (engineFed) {
                         if (centerHz > 0 && spanHz > 0) for (s in signals.sortedByDescending { it.snr }) {
                             if (marks.full) break
                             val v = toView((0.5 + (s.hz - centerHz) / spanHz).toFloat()) ?: continue

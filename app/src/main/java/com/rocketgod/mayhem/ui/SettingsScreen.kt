@@ -435,10 +435,61 @@ fun RadioPanel() {
                     if (rtl) Text("No offset tuning: R82xx tuners have no offset mode (librtlsdr refuses it for them too).", color = Palette.muted, fontFamily = Mono,
                         fontSize = d.sp(10f), lineHeight = d.sp(15f), modifier = Modifier.padding(start = d.dp(4f), end = d.dp(4f), top = d.dp(12f)))
                 }
+                RadiosSection(red)
                 NetworkSection(red)
             }
         }
     }
+    }
+}
+
+/**
+ * RADIOS: every radio on the USB port this app drives, the one running marked IN USE with DISCONNECT (which keeps it
+ * off until CONNECT or USE), the others with USE (the running one stops, then that one opens with no chooser), and ADD
+ * A RADIO, which asks Android for permission to open one not yet allowed. The last one used opens on its own next time.
+ */
+@Composable
+private fun RadiosSection(accent: Color) {
+    val d = rememberDims()
+    val ctx = LocalContext.current
+    val tick by com.rocketgod.mayhem.usb.RadioChoice.version.collectAsState()
+    val kind by Radio.kind.collectAsState()
+    val choice = com.rocketgod.mayhem.usb.RadioChoice
+    val devs = remember(tick, kind) { choice.attached(ctx) }
+    val running = choice.running
+    Text("RADIOS", color = rowAccent(), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 3.sp,
+        modifier = Modifier.padding(start = d.dp(4f), top = d.dp(16f), bottom = d.dp(6f)))
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(Palette.surface).border(1.dp, lerp(Palette.line, accent, 0.22f), shape).padding(d.dp(12f)),
+        verticalArrangement = Arrangement.spacedBy(d.dp(10f))) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+            Text(if (devs.isEmpty()) "No radio on the USB port. Plug in a HackRF, a PortaPack or an RTL-SDR."
+                else "On the USB port · USE switches to it", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f), modifier = Modifier.weight(1f))
+            SmallButton("ADD A RADIO", accent) { choice.onAdd?.invoke(null) }
+        }
+        for (dev in devs) {
+            val on = running == dev.deviceName && kind != Radio.Kind.NONE
+            val allowed = runCatching { com.rocketgod.mayhem.usb.HackRfUsb.hasPermission(ctx, dev) }.getOrDefault(false)
+            val serial = if (allowed) runCatching { dev.serialNumber }.getOrNull() else null
+            val sub = (if (serial.isNullOrEmpty()) (if (allowed) "no serial number" else "not allowed yet: USE asks") else "serial …${serial.takeLast(8)}") + if (on) " · running" else ""
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Box(Modifier.size(8.dp).background(if (on) Palette.ok else Palette.muted, CircleShape))
+                Column(Modifier.weight(1f)) {
+                    Text(choice.name(dev), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(12f))
+                    Text(sub, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f), lineHeight = d.sp(14f))
+                }
+                if (on) {
+                    Text("IN USE", color = Palette.ok, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), letterSpacing = 1.sp)
+                    SmallButton("DISCONNECT", accent) { choice.onDisconnect?.invoke(); choice.changed() }
+                } else SmallButton("USE", accent) { choice.onUse?.invoke(dev); choice.changed() }
+            }
+        }
+        if (kind == Radio.Kind.NONE && devs.isNotEmpty() && choice.userOff)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(8f))) {
+                Text("Disconnected: the radio stays off until CONNECT or USE.", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f),
+                    lineHeight = d.sp(14f), modifier = Modifier.weight(1f))
+                SmallButton("CONNECT", accent) { choice.onConnect?.invoke(); choice.changed() }
+            }
     }
 }
 

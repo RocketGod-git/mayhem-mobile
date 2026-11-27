@@ -142,7 +142,11 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         /** The built-in PAUSE also holds the screen's own rows ([list]): told true on PAUSE, false on RESUME. */
                         onPause: ((Boolean) -> Unit)? = null,
                         /** The built-in CLEAR also forgets the screen's own rows, not only the log. */
-                        onClear: (() -> Unit)? = null) {
+                        onClear: (() -> Unit)? = null,
+                        /** Labels over the spectrum in place of the classifier's guesses ([WaterfallView] namedMarks). */
+                        marks: List<Triple<Float, Float, String>>? = null,
+                        /** The waterfall as a slim strip this many dp tall (Mesh), the controls and body taking the rest; null: the usual split. */
+                        slimWaterfall: Float? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -159,6 +163,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
     AdaptivePane(
         // the card keeps its height; the waterfall and the log split the rest evenly
         share = true, noVisual = !waterfall && !(d.wide && widePane != null),
+        slimVisual = slimWaterfall?.let { d.dp(it) },
         face = {
             FreqCard(accent, tag = tag, title = title, freq = freq - shift, meter = (burstDb ?: level) / 40f,
                 left = if (burstDb != null) "BURST +%.0f dB".format(burstDb) else "SIGNAL +%.0f dB".format(level),
@@ -174,7 +179,7 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                 if (pane == null || waterfall) Box((if (pane != null) Modifier.fillMaxWidth().height(d.dp(paneWaterfall)) else Modifier.fillMaxWidth().weight(1f)).clip(RoundedCornerShape(d.dp(12f))).border(1.dp, Palette.line, RoundedCornerShape(d.dp(12f)))) {
                     WaterfallView(spec, SdrEngine.SPEC_BINS, accent, Modifier.fillMaxSize(),
                         rows = if (d.wide) 160 else 90, traceFrac = 0.26f, channel = channel, labels = centredLabels(freq, SdrEngine.currentRate()),
-                        onPreviewFrac = if (tunable) onPreview else null, onHide = onWaterfall, onTapFrac = if (tunable) onTune else null)
+                        onPreviewFrac = if (tunable) onPreview else null, onHide = onWaterfall, onTapFrac = if (tunable) onTune else null, namedMarks = marks)
                 }
                 // put away under a wide pane: the strip sits where the waterfall was
                 else if (onWaterfall != null) WaterfallCorner(false, Modifier.fillMaxWidth(), onWaterfall)

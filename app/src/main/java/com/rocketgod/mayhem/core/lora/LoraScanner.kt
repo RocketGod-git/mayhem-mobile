@@ -127,6 +127,10 @@ class LoraScanner : IqProcessor {
         var standing = false
         /** The current stretch of activity in it: when it began and when it was last hot. */
         var firstHot = 0L; var lastHot = 0L
+        /** How many times a burst opened it in this span, and when the last one did (sample index). */
+        var opens = 0; var lastOpen = 0L
+        /** Frames decoded on it in this span. */
+        @Volatile var frames = 0
         /** The strongest bin in it at each look since its activity began (null: nothing hot in that look). */
         val track = ArrayList<Int?>()
         var trackLook = -1
@@ -277,14 +281,18 @@ class LoraScanner : IqProcessor {
     }
 
     /** One known channel inside the span, for the screen: always on, open now, ms since it was last hot (null: never). */
-    class ChannelState(val name: String, val hz: Long, val bw: Int, val standing: Boolean, val active: Boolean, val hotAgoMs: Long?)
+    class ChannelState(val name: String, val hz: Long, val bw: Int, val standing: Boolean, val active: Boolean, val hotAgoMs: Long?,
+                       val sf: Int? = null, val frames: Int = 0,
+                       /** Times a burst opened it in this span, and ms since the last (null: never). */
+                       val opens: Int = 0, val openAgoMs: Long? = null)
 
     /** The known channels inside the span now, with their activity. Read-only, from the UI: a copy as it stands. */
     fun channelStates(): List<ChannelState> {
         val t = written; val r = rate
         val now = runCatching { slots.toList() }.getOrNull() ?: return emptyList()
         return now.map { s -> ChannelState(s.ch.name, s.ch.hz, s.ch.bw, s.standing, s.active,
-            if (s.lastHot > 0 && r > 0) max(0L, (t - s.lastHot) * 1000 / r) else null) }
+            if (s.lastHot > 0 && r > 0) max(0L, (t - s.lastHot) * 1000 / r) else null, s.ch.sf, s.frames,
+            s.opens, if (s.opens > 0 && r > 0) max(0L, Math.round((t - s.lastOpen) * 1000.0 / r)) else null) }
     }
 
     /** The known channels that fall inside the span (clear of its edges), as bin ranges. */
@@ -461,7 +469,7 @@ class LoraScanner : IqProcessor {
             if (o != null) { why("overlaps " + o.ch.name); continue }
             trace?.invoke("slot on %.1f ms %s cover %.2f".format(written.toDouble() / rate * 1000, s.ch.name, cover))
             s.active = spawn(s.ch.hz, s.ch.bw, s.ch.sf?.let { listOf(it) }, s.ch.name.contains("downlink"), s.firstHot - (rate * 0.02).toLong(), null, s, s.ch.name)
-            if (s.active) probeLater(s)
+            if (s.active) { s.opens++; s.lastOpen = written; probeLater(s) }
         }
     }
 
@@ -687,6 +695,8 @@ class LoraScanner : IqProcessor {
         recent.removeAll { abs(at - it[1]) > rate.toLong() * 3 }
         if (recent.any { it[0] == h }) return@synchronized
         recent.add(longArrayOf(h, at))
+        // a shared channel's frame counts on the slot of its own spreading factor
+        e.slot?.let { sl -> (runCatching { slots.firstOrNull { it.ch.hz == sl.ch.hz && it.ch.bw == sl.ch.bw && it.ch.sf == f.sf } }.getOrNull() ?: sl).frames++ }
         onHeard?.invoke(LoraHeard(f, trueHz(e.hz + f.cfoHz.toLong(), f), inv, System.currentTimeMillis()))
     }
 

@@ -188,6 +188,25 @@ object Tx {
         }
     }
 
+    /**
+     * One LoRa frame (LoraTx.modulate: interleaved I/Q, unit amplitude, at [rate]) on [freqHz], sent once on the usual
+     * digital offset off the LO.
+     */
+    fun loraBurst(freqHz: Long, iq: FloatArray, rate: Int, label: String): Boolean {
+        val n = iq.size / 2; val inc = 2 * PI * OFFSET_HZ / rate
+        var i = 0
+        return start(label, freqHz, rate, OFFSET_HZ) { buf ->
+            if (i >= n) return@start 0
+            val m = minOf(buf.size / 2, n - i)
+            for (k in 0 until m) {
+                val w = inc * i; val c = cos(w); val s = sin(w); val x = iq[2 * i]; val y = iq[2 * i + 1]
+                buf[2 * k] = Math.round(AMP * (x * c - y * s)).toInt().toByte(); buf[2 * k + 1] = Math.round(AMP * (x * s + y * c)).toInt().toByte()
+                i++
+            }
+            m * 2
+        }
+    }
+
     /** Replay a capture (.c8 signed int8 I/Q) at the rate and frequency in its sidecar. */
     fun replay(c8: File): Boolean {
         val side = File(c8.path.removeSuffix(".c8") + ".txt")

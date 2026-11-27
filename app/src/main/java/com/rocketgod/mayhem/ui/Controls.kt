@@ -448,11 +448,20 @@ fun AdaptivePane(
     stacked: Boolean = false,
     /** No waterfall at all: the controls (and their list) take its room. */
     noVisual: Boolean = false,
+    /** The visual as a slim strip this tall (Mesh): the face, then the strip at full width, then the controls taking all
+     *  the rest of the height, on every screen width. Null: the usual split. */
+    slimVisual: Dp? = null,
     visual: @Composable (Modifier) -> Unit,
     controls: @Composable ColumnScope.() -> Unit
 ) {
     val d = rememberDims()
-    if (d.wide && stacked) {
+    if (slimVisual != null) {
+        Column(Modifier.fillMaxSize()) {
+            if (face != null) Box(Modifier.fillMaxWidth().padding(bottom = d.dp(6f))) { face() }
+            if (!noVisual) visual(Modifier.fillMaxWidth().height(slimVisual))
+            Column(Modifier.fillMaxWidth().weight(1f)) { controls() }
+        }
+    } else if (d.wide && stacked) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             // a list among the controls ([share]) needs a height to fill: the top gets 45%, the visual the rest
             val top = if (share) Modifier.fillMaxWidth().height(maxHeight * 0.45f) else Modifier.fillMaxWidth()

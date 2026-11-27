@@ -69,6 +69,11 @@ class PacketLog(private val cap: Int = 300) {
         onAdd?.invoke(s)
     }
     fun clear() { _lines.value = emptyList(); _count.value = 0; _snapshot.value = Snapshot(emptyList(), 0) }
+    /** Lines kept from an earlier run (newest first) and the count they had, put back before anything new arrives. */
+    fun restore(lines: List<String>, total: Int) {
+        val l = lines.take(cap)
+        _lines.value = l; _count.value = maxOf(total, l.size); _snapshot.value = Snapshot(l, maxOf(total, l.size), List(l.size) { 0L })
+    }
 }
 
 /**

@@ -75,6 +75,8 @@ class LoraHub(val log: PacketLog) {
      * fields rewritten) is the same packet and is counted, not shown again.
      */
     private val seenPackets = HashMap<Long, Long>()
+    /** MeshCore packets already shown, by type and payload (a repeater's copy has the same ones), and when. */
+    private val seenMc = HashMap<String, Long>()
 
     init {
         scanner.onHeard = { h -> heard(h) }
@@ -151,8 +153,30 @@ class LoraHub(val log: PacketLog) {
                 if (la != null && lo != null) { n.lat = la; n.lon = lo }
                 for ((k, v) in mt.fields) if (k != "TEXT" && k != "REPLY TO") n.put(k, v)
                 if (mt.portnum == null) n.put("CHANNEL", "private (hash %02x)".format(mt.channelHash))
+                // how far away it is and who passed it on, as of its latest packet (the map draws the relay link)
+                if (mt.hopStart > 0) n.put("HOPS AWAY", "${mt.hopStart - mt.hopLimit}")
+                if (mt.relayNode != 0) n.put("RELAYED BY", "…%02x".format(mt.relayNode))
+                // who it last spoke to: everyone, or one node (a direct message, readable or not)
+                val to = MeshtasticPacket.nodeName(mt.dest)
+                n.put("LAST SENT TO", if (to == "everyone") "everyone" else "$to (direct)")
+                if (mt.viaMqtt) n.put("VIA MQTT", "yes")
             }
         } else if (mc != null) {
+            // a repeater's copy: the same type and payload, a longer path. Counted on the node, not shown again.
+            val pk = "MC/${mc.type}/${hexOf(mc.payload)}"
+            seenMc.entries.removeAll { ms - it.value >= 600_000 }
+            if (seenMc[pk] != null) {
+                val nk = mc.nodeKey
+                val n = if (nk != null) byKey["MC/" + hexOf(nk, 0, minOf(6, nk.size))]
+                    else if (mc.name != null) byKey.values.firstOrNull { it.proto == "MeshCore" && it.name == mc.name } else null
+                if (n != null) {
+                    val before = n.fields.firstOrNull { it.name == "REPEATS HEARD" }?.value?.toIntOrNull() ?: 0
+                    n.put("REPEATS HEARD", (before + 1).toString())
+                    publishNodes()
+                }
+                return
+            }
+            seenMc[pk] = ms
             proto = "MeshCore"; kind = mc.typeName; text = mc.text; chan = mc.channel
             fields = mc.fields.map { MeshField(it.first, it.second) }
             val k = mc.nodeKey

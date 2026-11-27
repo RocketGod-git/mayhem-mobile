@@ -131,6 +131,21 @@ object LoraLocal {
 
     fun country(area: String): String = area.substringBefore('-')
 
+    /** A stretch of band a LoRaWAN network lives on: its uplink channels, as one span to listen to. */
+    data class WanBand(val name: String, val hz: Long, val bw: Int, val lo: Long, val hi: Long)
+
+    /** Where The Things Network and Helium put their uplinks: sub-band 2 of US915 (channels 8 to 15 and 65) in the USA
+     *  and Canada, and of AU915 in Australia and New Zealand. Everywhere else LoRaWAN spreads over the band's few
+     *  channels, which the band plan already covers. */
+    fun lorawanBands(area: String): List<WanBand> {
+        fun b(name: String, first: Long) = WanBand(name, first + 700_000, 1_600_000, first - 62_500, first + 1_400_000 + 62_500)
+        return when (country(area)) {
+            "US", "CA" -> listOf(b("LoRaWAN sub-band 2", 903_900_000))
+            "AU", "NZ" -> listOf(b("LoRaWAN sub-band 2", 916_800_000))
+            else -> emptyList()
+        }
+    }
+
     /** The MeshCore presets for an area, its own part's first, then its country's, then Europe's. */
     fun meshcore(area: String): List<McPreset> {
         val cc = country(area)
@@ -162,6 +177,23 @@ object LoraLocal {
             }
         }
         custom?.let { out.add(0, Local(it.hz, it.bw, it.sf, "Custom")) }
+        return out
+    }
+
+    /**
+     * What an area listens to. A part of a country (its position known) listens to its own channels. A whole country
+     * (where in it is not known) also listens to the regional networks inside it, after the rest: Southern California's
+     * MeshCore runs on its own frequency, so do parts of Australia, the Netherlands and New Zealand. They are heard
+     * whenever the span holds them, but they never move where the span is centered: that stays on [channels], the
+     * country's own.
+     */
+    fun listening(area: String): List<Local> {
+        val out = ArrayList(channels(area))
+        if (area.contains('-')) return out
+        for (p in MESHCORE) {
+            if (!p.area.startsWith("$area-") || out.any { it.hz == p.hz && it.bw == p.bw && it.sf == p.sf }) continue
+            out.add(Local(p.hz, p.bw, p.sf, "MeshCore ${p.title}"))
+        }
         return out
     }
 

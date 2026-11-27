@@ -94,7 +94,7 @@ object LoraPlan {
         }
         // Every region's default channels listen all the time only where the area is unknown; with an area, only its
         // own do (another country's channels in the span took receivers and found nothing)
-        val local = LoraLocal.channels(area)
+        val local = LoraLocal.listening(area)
         val localKnown = local.isNotEmpty()
         for (r in regions) for (p in r.presets) {
             val hz = slotHz(r, p) ?: continue

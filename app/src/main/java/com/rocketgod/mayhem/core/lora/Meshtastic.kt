@@ -118,6 +118,12 @@ object Meshtastic {
             val port = data.int(1) ?: continue
             if (port > 0 && port < 512 && MeshtasticEnums.portnum[port.toInt()] != null && data.bytes(2) != null) { found = Triple(chan, data, port); break }
         }
+        if (found == null) {
+            // licensed (ham) mode sends the message unencrypted: a body that reads cleanly as one, on a port that exists
+            val data = Proto.parse(body); val port = data?.int(1)
+            if (data != null && port != null && port > 0 && port < 512 && MeshtasticEnums.portnum[port.toInt()] != null && data.bytes(2) != null)
+                found = Triple("licensed (unencrypted)", data, port)
+        }
         val (chan, data, port) = found ?: return p
         p.portnum = port.toInt()
         p.fields.add("CHANNEL" to chan)
