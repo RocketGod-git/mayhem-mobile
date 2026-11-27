@@ -70,7 +70,7 @@ object LoraPlan {
 
     /**
      * Every channel with a known modem, worldwide. standing: listened to all the time once inside the span (each
-     * region's starting preset, the newer US default LongTurbo and the popular MediumFast, and every channel local to
+     * region's starting preset and the popular MediumFast, the newer US default LongTurbo, and every channel local to
      * the area in use: its MeshCore presets and the user's own channel). Rebuilt when the area or that channel changes.
      */
     val channels: List<LoraChannel>
@@ -98,7 +98,7 @@ object LoraPlan {
         val localKnown = local.isNotEmpty()
         for (r in regions) for (p in r.presets) {
             val hz = slotHz(r, p) ?: continue
-            val standing = !localKnown && (p.name == r.start || ((r.name == "US" || r.name == "ANZ") && (p.name == "LongTurbo" || p.name == "MediumFast")))
+            val standing = !localKnown && (p.name == r.start || p.name == "MediumFast" || ((r.name == "US" || r.name == "ANZ") && p.name == "LongTurbo"))
             add(hz, p.bw, p.sf, "Meshtastic ${p.name} ${r.name}", standing)
         }
         // what is local to the area in use first (named as its own list names it), then every MeshCore community preset

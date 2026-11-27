@@ -130,12 +130,26 @@ class LoraScanner : IqProcessor {
         /** The strongest bin in it at each look since its activity began (null: nothing hot in that look). */
         val track = ArrayList<Int?>()
         var trackLook = -1
+        /** The stretch of activity (its firstHot) whose spreading factor was last checked, and when a frame last came on it. */
+        var probed = -1L
+        @Volatile var heardAt = -1L
     }
     private val slots = ArrayList<Slot>()
     private var slotCenter = -1L
 
-    /** Radio thread: each channel handed to the worker, what keeps it open, and until when. */
-    private class Owner(val r: Region?, val s: Slot?, val until: Long)
+    /**
+     * Radio thread: each channel handed to the worker, what keeps it open, and until when; where it is and what it
+     * listens for ([sfs] null: every spreading factor). [probed]: opened at the one a burst's preamble showed, and kept
+     * open while its slot is hot (even a standing one).
+     */
+    private data class Owner(val r: Region?, val s: Slot?, val until: Long, val hz: Long, val bw: Int, val sfs: List<Int>?, val probed: Boolean)
+
+    /** A burst on a known channel whose spreading factor is to be checked, once the samples from [from] to [due] are in. */
+    private class Probe(val slot: Slot, val from: Long, val due: Long)
+    private val probes = ArrayList<Probe>()
+    /** Spreading factor checks run, and channels they opened (for tests and tools). */
+    @Volatile var probeCount = 0; private set
+    @Volatile var probeOpened = 0; private set
     private val owners = LinkedHashMap<Int, Owner>()
     private var nextId = 0
     // Shared with the worker, under the lock: new channels, how far each may run, how far the samples go.
@@ -175,7 +189,7 @@ class LoraScanner : IqProcessor {
         synchronized(lock) { inbox.clear(); untils.clear(); finished.clear(); latest = 0; scheduled = false }
         ring = ByteArray(2 * size) { 128.toByte() }
         ringSize = size; ringMask = size - 1
-        written = 0; nextFrame = n.toLong(); regions.clear(); owners.clear(); slots.clear(); slotCenter = -1
+        written = 0; nextFrame = n.toLong(); regions.clear(); owners.clear(); slots.clear(); slotCenter = -1; probes.clear()
         synchronized(gapLock) { gaps.clear() }
     }
 
@@ -266,7 +280,7 @@ class LoraScanner : IqProcessor {
     private fun placeSlots(center: Long) {
         slotCenter = center
         // the old standing channels were tuned to the old center: they finish where they are
-        for ((id, o) in owners.entries.toList()) if (o.s?.standing == true) owners[id] = Owner(o.r, null, written)
+        for ((id, o) in owners.entries.toList()) if (o.s?.standing == true) owners[id] = o.copy(s = null, until = written)
         slots.clear()
         val half = usableHalf(rate)
         for (c in plan) {
@@ -278,9 +292,17 @@ class LoraScanner : IqProcessor {
             val below = guardBand(bin(-0.8), min(bin(-0.6), lo - 1)); val above = guardBand(max(bin(0.6), hi + 1), bin(0.8))
             if (hi - lo >= 3) slots.add(Slot(c, lo, hi, below, above))
         }
+        // standing channels on one frequency and bandwidth (a region with room for one slot puts every preset there)
+        // share one channel, its receivers at each of their spreading factors
+        val groups = LinkedHashMap<String, ArrayList<Slot>>()
         for (sl in slots) if (sl.ch.standing) {
             sl.standing = true
-            sl.active = spawn(sl.ch.hz, sl.ch.bw, sl.ch.sf, false, written, null, sl, sl.ch.name, standing = true)
+            groups.getOrPut("${sl.ch.hz}/${sl.ch.bw}") { ArrayList() }.add(sl)
+        }
+        for (g in groups.values) {
+            val sfs = if (g.any { it.ch.sf == null }) null else g.mapNotNull { it.ch.sf }.distinct().sorted()
+            val on = spawn(g[0].ch.hz, g[0].ch.bw, sfs, false, written, null, g[0], g.joinToString(" + ") { it.ch.name }, standing = true)
+            for (x in g) x.active = on
         }
     }
 
@@ -344,7 +366,7 @@ class LoraScanner : IqProcessor {
         }
         val center = centerOf()
         if (center != slotCenter || replanWanted) { replanWanted = false; placeSlots(center) }
-        if (frames % 4 == 0) watchSlots()
+        if (frames % 4 == 0) { watchSlots(); runProbes() }
 
         // the channels no plan knows: clusters of hot bins grouped into bursts
         var i = 0
@@ -380,7 +402,7 @@ class LoraScanner : IqProcessor {
                 val b = regions[j]
                 a.lo = min(a.lo, b.lo); a.hi = max(a.hi, b.hi); a.start = min(a.start, b.start); a.last = max(a.last, b.last)
                 a.grew = max(a.grew, b.grew); a.spawned.addAll(b.spawned); a.hits = max(a.hits, b.hits)
-                for ((id, o) in owners.entries.toList()) if (o.r === b) owners[id] = Owner(a, o.s, o.until)
+                for ((id, o) in owners.entries.toList()) if (o.r === b) owners[id] = o.copy(r = a)
                 regions.removeAt(j)
             } else k++
         }
@@ -396,8 +418,7 @@ class LoraScanner : IqProcessor {
             var last = -1_000_000_000L
             for (b in s.lo..s.hi) if (hotAt[b] > last) last = hotAt[b]
             if (last > s.lastHot) { if (last - s.lastHot > gap) s.firstHot = last; s.lastHot = last }
-            if (s.standing) continue
-            if (s.active) {
+            if (s.active && !s.standing) {
                 // off once quiet for three symbols (at the slowest spreading factor it could be)
                 val sym = (1 shl (s.ch.sf ?: 12)).toDouble() / s.ch.bw
                 if ((written - s.lastHot) > rate * max(0.03, 3 * sym)) { s.active = false; trace?.invoke("slot off %.1f ms %s".format(written.toDouble() / rate * 1000, s.ch.name)) }
@@ -417,15 +438,72 @@ class LoraScanner : IqProcessor {
             for (b in s.lo..s.hi) inside += lvl[b]
             inside /= (s.hi - s.lo + 1)
             val edge = max(mean(s.below), mean(s.above))
-            if (inside <= 6 * edge) { why("edges %.1f".format(inside / max(edge, 1e-9f))); continue }
+            // a standing channel is already listening: its burst only gets its spreading factor checked, a test of its
+            // own, so a weaker burst passes and the chirp test (blind to symbols shorter than two looks) is skipped
+            if (inside <= (if (s.standing) 3 else 6) * edge) { why("edges %.1f".format(inside / max(edge, 1e-9f))); continue }
+            if (s.standing) { probeLater(s); continue }
             if (!chirps(s.track.takeLast(16), s.ch.bw)) { why("not a chirp"); continue }
             // one transmission at a time per stretch of band: a channel overlapping one already on is the same
-            // signal (or its splash)
-            val o = slots.firstOrNull { it !== s && it.active && it.hi >= s.lo && it.lo <= s.hi }
+            // signal (or its splash). A standing channel of another shape doesn't count (it is always on): a 125 kHz
+            // preset beside a single 250 kHz slot still opens, and its edges test keeps it shut for the 250 kHz signal
+            val o = slots.firstOrNull { it !== s && it.active && it.hi >= s.lo && it.lo <= s.hi && (!it.standing || (it.ch.hz == s.ch.hz && it.ch.bw == s.ch.bw)) }
             if (o != null) { why("overlaps " + o.ch.name); continue }
             trace?.invoke("slot on %.1f ms %s cover %.2f".format(written.toDouble() / rate * 1000, s.ch.name, cover))
-            s.active = spawn(s.ch.hz, s.ch.bw, s.ch.sf, s.ch.name.contains("downlink"), s.firstHot - (rate * 0.02).toLong(), null, s, s.ch.name)
+            s.active = spawn(s.ch.hz, s.ch.bw, s.ch.sf?.let { listOf(it) }, s.ch.name.contains("downlink"), s.firstHot - (rate * 0.02).toLong(), null, s, s.ch.name)
+            if (s.active) probeLater(s)
         }
+    }
+
+    /** A burst on a known channel with a spreading factor: checked once its preamble is in, once per burst (slots on
+     *  one channel share the check). */
+    private fun probeLater(s: Slot) {
+        if (s.ch.sf == null || s.probed == s.firstHot) return
+        s.probed = s.firstHot
+        val from = s.firstHot - HOP
+        if (probes.any { it.slot.ch.hz == s.ch.hz && it.slot.ch.bw == s.ch.bw && abs(it.from - from) < rate * 0.05 }) return
+        val chips = PROBE_SKIP + PROBE_CHIPS + 64
+        probes.add(Probe(s, from, from + Math.ceil(chips.toDouble() * rate / s.ch.bw).toLong()))
+    }
+
+    /** The spreading factors something already listens for on a channel (null: all of them). */
+    private fun listening(hz: Long, bw: Int): Set<Int?> {
+        val out = HashSet<Int?>()
+        for (o in owners.values) {
+            if (o.bw != bw || abs(o.hz - hz) >= bw / 8) continue
+            if (o.sfs == null) out.add(null) else out.addAll(o.sfs)
+        }
+        return out
+    }
+
+    /** The checks whose samples are in: the burst's spreading factor from its preamble, and receivers at it when
+     *  nothing listens for that one yet. */
+    private fun runProbes() {
+        if (probes.isEmpty()) return
+        val keep = ArrayList<Probe>()
+        for (p in probes) {
+            if (p.due > written) { keep.add(p); continue }
+            val s = p.slot
+            // a frame already came on its channel in this burst: what it listens for holds
+            if (p.from < written - ringMask || slots.any { it.ch.hz == s.ch.hz && it.ch.bw == s.ch.bw && it.heardAt >= p.from }) continue
+            val have = listening(s.ch.hz, s.ch.bw)
+            if (null in have) continue
+            val sf = probe(s.ch.hz, s.ch.bw, p.from, p.due, have.filterNotNull())
+            probeCount++
+            trace?.invoke("probe %.1f ms %s: SF%s".format(written.toDouble() / rate * 1000, s.ch.name, sf?.toString() ?: "?"))
+            if (sf == null || sf in have) continue
+            if (spawn(s.ch.hz, s.ch.bw, listOf(sf), false, p.from - (rate * 0.02).toLong(), null, s, "${s.ch.name} at SF$sf", probed = true)) probeOpened++
+        }
+        probes.clear(); probes.addAll(keep)
+    }
+
+    /** Which spreading factor a burst has, from its preamble (ring samples [from] to [to]), or null; [first]: the ones
+     *  already listened for, tried first. */
+    private fun probe(hz: Long, bw: Int, from: Long, to: Long, first: List<Int>): Int? {
+        val e = Extractor(-1, rate, (hz - centerOf()).toDouble(), bw, hz, from, emptyList(), false, 1, null)
+        val cap = FloatArrayBuilder()
+        e.capture = cap
+        e.run(to, ring, ringMask)
+        return sfOf(cap.toArray(), PROBE_SKIP, first)
     }
 
     /**
@@ -473,7 +551,7 @@ class LoraScanner : IqProcessor {
     }
 
     /** A channel of its own for a burst; false when there is no room (the known channels keep room the others can't take). */
-    private fun spawn(hz: Long, bw: Int, sf: Int?, inverted: Boolean, from0: Long, r: Region?, s: Slot?, name: String?, standing: Boolean = false): Boolean {
+    private fun spawn(hz: Long, bw: Int, sfList: List<Int>?, inverted: Boolean, from0: Long, r: Region?, s: Slot?, name: String?, standing: Boolean = false, probed: Boolean = false): Boolean {
         trace?.invoke("spawn %.1f ms %.4f MHz bw %d %s".format(written.toDouble() / rate * 1000, hz / 1e6, bw, name ?: "-"))
         val open = owners.values.filter { it.s?.standing != true }
         if (!standing) {
@@ -483,13 +561,13 @@ class LoraScanner : IqProcessor {
         // at most three quarters of the ring back: one started at its very end was overwritten before it ran, skipped
         // half a ring ahead (and lost its preamble), and counted as a channel falling behind
         val from = maxOf(from0, written - ringMask * 3L / 4, 0L)
-        val sfs = if (sf != null) listOf(sf) else (7..12).toList()
+        val sfs = sfList ?: (7..12).toList()
         nextId++
-        val e = Extractor(nextId, rate, (hz - centerOf()).toDouble(), bw, hz, from, sfs, inverted, if (s != null) 4 else 2)
+        val e = Extractor(nextId, rate, (hz - centerOf()).toDouble(), bw, hz, from, sfs, inverted, if (s != null) 4 else 2, s)
         val t = trace
         if (t != null && traceHz != 0.0 && abs(hz - traceHz) < 1000) { e.traceAll { t("rx: $it") }; e.tapped = true }
         val until = if (standing) Long.MAX_VALUE / 4 else written + (rate * 0.2).toLong()
-        owners[nextId] = Owner(r, s, until)
+        owners[nextId] = Owner(r, s, until, hz, bw, sfList, probed)
         synchronized(lock) { inbox.add(e); untils[nextId] = until }
         onBurst?.invoke(hz, bw, name)
         return true
@@ -502,12 +580,12 @@ class LoraScanner : IqProcessor {
             var u = o.until
             if (o.r != null) u = max(u, o.r.last + tail)
             val s = o.s
-            if (s != null && !s.standing) {
+            if (s != null && (!s.standing || o.probed)) {
                 // a few symbols past the last time the channel was heard (a weak frame drops out of the looks now and then)
-                val sym = (1 shl (s.ch.sf ?: 12)).toDouble() / s.ch.bw
+                val sym = (1 shl (if (o.probed && o.sfs != null) o.sfs[0] else s.ch.sf ?: 12)).toDouble() / s.ch.bw
                 u = max(u, s.lastHot + (rate * max(0.05, 3 * sym)).toLong())
             }
-            if (u != o.until) owners[id] = Owner(o.r, o.s, u)
+            if (u != o.until) owners[id] = o.copy(until = u)
         }
         val go: Boolean
         synchronized(lock) {
@@ -592,6 +670,7 @@ class LoraScanner : IqProcessor {
         if (broken(f, at)) { torn++; return@synchronized }
         if (f.crcOk == false) { if (e.bad.none { at - it.third < rate }) e.bad.add(Triple(f, inv, at)); return@synchronized }
         e.goodAt.add(at)
+        e.slot?.heardAt = at
         var h = 5381L
         for (b in f.payload) h = h * 33 + b
         recent.removeAll { abs(at - it[1]) > rate.toLong() * 3 }
@@ -601,7 +680,7 @@ class LoraScanner : IqProcessor {
     }
 
     // ---- a channel ----
-    private inner class Extractor(val id: Int, rate: Int, offHz: Double, val bw: Int, val hz: Long, from: Long, sfs: List<Int>, inverted: Boolean, private val phases: Int) {
+    private inner class Extractor(val id: Int, rate: Int, offHz: Double, val bw: Int, val hz: Long, from: Long, sfs: List<Int>, inverted: Boolean, private val phases: Int, val slot: Slot?) {
         @Volatile var pos = from
         /** On a core now; the worker hands it more only once it is done. */
         val busy = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -612,6 +691,8 @@ class LoraScanner : IqProcessor {
         var confirmed = false
         val bad = ArrayList<Triple<LoraFrame, Boolean, Long>>()
         val goodAt = ArrayList<Long>()
+        /** Set: the samples at one a chip (one timing phase) are kept here instead of going to receivers. */
+        var capture: FloatArrayBuilder? = null
         private val dec = ChannelDecimator(max(1, rate / (2 * bw)))
         private val poly: FloatArray
         private val step: Double
@@ -718,6 +799,7 @@ class LoraScanner : IqProcessor {
             val drop = max(0, t.toInt() - tt / 2)
             if (drop > 0) { System.arraycopy(y, 2 * drop, y, 0, yLen - 2 * drop); yLen -= 2 * drop; t -= drop }
             if (outs[0].size == 0) return
+            capture?.let { c -> val o0 = outs[0].toArray(); var k = 0; while (k < o0.size) { c.add(o0[k], o0[k + 1]); k += 2 }; return }
             if (tapped) tap?.invoke(outs[0].toArray())
             for (p in 0 until phases) {
                 if (outs[p].size == 0) continue
@@ -767,6 +849,52 @@ class LoraScanner : IqProcessor {
         /** Windowed-sinc interpolator: TAPS taps at the decimated rate, PHASES fractional positions. */
         private const val TAPS = 32
         private const val PHASES = 128
+        /** How far into a burst its spreading factor is read (past the channel filters' start), and the longest symbol. */
+        private const val PROBE_SKIP = 128
+        private const val PROBE_CHIPS = 4096
+        /**
+         * Spreading factors a burst is read at, and how much of a dechirped symbol's energy one bin (and its stronger
+         * neighbor, for a peak between two) must hold: a preamble at the right factor puts 0.4-0.8 there, any other
+         * 0.06 or less, noise about 1.5 ln(N) / N.
+         */
+        private val PROBE_SFS = intArrayOf(7, 8, 9, 10, 11, 12)
+        private const val PROBE_MIN = 0.2
+
+        /**
+         * The spreading factor of the up-chirps in [x] (interleaved, one sample a chip) from [skip] on: one symbol at
+         * each factor, dechirped; the factor whose energy collects into one bin, or null. [first]: tried first, and the
+         * answer at once when one of them collects.
+         */
+        fun sfOf(x: FloatArray, skip: Int, first: List<Int> = emptyList()): Int? {
+            fun share(sf: Int): Double {
+                val n = 1 shl sf
+                if (2 * (skip + n) > x.size) return 0.0
+                val re = FloatArray(n); val im = FloatArray(n)
+                for (i in 0 until n) {
+                    // times the down-chirp: an up-chirp of this factor becomes one tone
+                    val ph = -2 * Math.PI * (i.toDouble() * i / (2 * n) - i / 2.0); val c = cos(ph); val s = sin(ph)
+                    val a = x[2 * (skip + i)]; val b = x[2 * (skip + i) + 1]
+                    re[i] = (a * c - b * s).toFloat(); im[i] = (a * s + b * c).toFloat()
+                }
+                Dsp.fft(re, im)
+                var best = 0; var bv = -1.0; var sum = 0.0
+                for (i in 0 until n) { val m = re[i].toDouble() * re[i] + im[i].toDouble() * im[i]; re[i] = m.toFloat(); sum += m; if (m > bv) { bv = m; best = i } }
+                if (sum <= 0) return 0.0
+                return (bv + max(re[(best + 1) % n], re[(best + n - 1) % n])) / sum
+            }
+            val got = HashMap<Int, Double>()
+            for (sf in first) {
+                if (sf !in PROBE_SFS) continue
+                val v = share(sf); got[sf] = v
+                if (v >= PROBE_MIN) return sf
+            }
+            var best: Int? = null; var bv = 0.0; var second = 0.0
+            for (sf in PROBE_SFS) {
+                val v = got[sf] ?: share(sf)
+                if (v > bv) { second = bv; bv = v; best = sf } else if (v > second) second = v
+            }
+            return if (best != null && bv >= PROBE_MIN && bv >= 3 * second) best else null
+        }
 
         /**
          * The radio's threads run ahead of all of these (a buffer they can't take in time is lost to everyone), the

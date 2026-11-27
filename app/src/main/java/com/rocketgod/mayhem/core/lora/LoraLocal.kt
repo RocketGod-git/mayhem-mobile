@@ -150,9 +150,11 @@ object LoraLocal {
         val r = rn?.let { n -> LoraPlan.regions.firstOrNull { it.name == n } }
         if (rn != null && r != null) {
             // LongTurbo is the US default from Meshtastic 2.8 (channel 0 resolves to slot 14, 908.75 MHz) and where
-            // SoCal's mesh moved; LongFast and MediumFast are still widely used
+            // SoCal's mesh moved; MediumFast is widely used everywhere (many European meshes moved to it for airtime). A
+            // region with room for one slot (EU_868) puts it on LongFast's frequency at another spreading factor
             val names = ArrayList(if (rn == "US") listOf("LongTurbo", r.start, "MediumFast") else listOf(r.start))
-            if (rn == "ANZ") names += listOf("LongTurbo", "MediumFast")
+            if (rn == "ANZ") names += listOf("LongTurbo")
+            if (rn != "US") names += "MediumFast"
             for (n in names) {
                 val p = r.presets.firstOrNull { it.name == n } ?: continue
                 val hz = LoraPlan.slotHz(r, p) ?: continue

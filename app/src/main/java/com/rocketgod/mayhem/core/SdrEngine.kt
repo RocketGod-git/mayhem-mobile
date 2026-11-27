@@ -245,6 +245,8 @@ object SdrEngine {
         _agc.value = gainPrefPro?.let { it[3] == 1 } ?: true; agcLast = 0
         val (l, v, a) = startGains(preset.first, preset.second, preset.third)
         _radioLna.value = (l.coerceIn(0, LNA_MAX) / LNA_STEP) * LNA_STEP; _radioVga.value = (v.coerceIn(0, vgaMax()) / VGA_STEP) * VGA_STEP; _radioAmp.value = a; syncDriver()
+        // the gain LoRa kept is per board: only now is it known which one to start from
+        if (Apps.playing() == MayhemApp.LORA) loraRecall()
     }
 
     /** Wider spans hold proportionally more total power at the same per-signal level, so they may sit hotter. */
@@ -262,6 +264,8 @@ object SdrEngine {
     @Volatile var loraGainNote = "LoRa gain not started"; private set
     /** When it last tried a stage up past what the headroom says, and since when the gain has held still. */
     private var loraProbeAt = 0L; private var loraStillSince = 0L
+    /** The start with no gain kept for this radio and band: 8 dB steps down while the converter is pinned. */
+    private var loraCoarse = true
 
     /**
      * Where the gain settles depends on the antenna and the place (a big antenna beside a node clips at a gain a small
@@ -270,9 +274,11 @@ object SdrEngine {
      */
     private fun loraGainKey() = "lora_gain2_${if (isPro()) "pro" else if (Radio.kind.value == Radio.Kind.RTLSDR) "rtl" else "one"}_${_freqHz.value / 10_000_000}"
     fun loraRecall() {
+        loraCoarse = true
         if (!_agc.value) return
         val g = savedLong(loraGainKey())
         if (g <= 0) return
+        loraCoarse = false
         _radioAmp.value = g / 1_000_000 == 1L || Radio.kind.value != Radio.Kind.RTLSDR; _radioLna.value = (g / 1000 % 1000).toInt().coerceIn(0, LNA_MAX); _radioVga.value = (g % 1000).toInt().coerceIn(0, vgaMax())
         loraPeaks.clear(); loraStillSince = 0
         Diag.log("LoRa gain: starting where it settled last time here (amp %s LNA %d VGA %d)".format(if (_radioAmp.value) "on" else "off", _radioLna.value, _radioVga.value))
@@ -309,6 +315,8 @@ object SdrEngine {
         // outlasts any packet (over 1% of samples clipped for 8 seconds running) brings the front end down.
         if (clipShare > 0.01) { if (loraOverSince == 0L) loraOverSince = now } else loraOverSince = 0L
         val clipped = loraOverSince > 0L && now - loraOverSince >= 8_000
+        // the big steps last until the first second the converter isn't pinned; then 2 dB steps as before
+        if (peakNow < 126.5) loraCoarse = false
         val why: String
         if (hasAmp && !a) {
             // the front-end amp stays on for LoRa: measured on a HackRF Pro, 43 and 14 frames in 4 minutes with it on,
@@ -325,6 +333,10 @@ object SdrEngine {
                 else -> "clipped at the lowest gain (a transmitter right beside the antenna)"
             }
             loraPeaks.clear()
+        } else if (loraCoarse && (v > 0 || (hasLna && l > 0))) {
+            // opened pinned (at the start, with no gain kept here): 2 dB a second spent about 12 s clipped
+            if (v > 0) { _radioVga.value = maxOf(0, v - 8); why = "pinned at the start: VGA down 8 dB" }
+            else { _radioLna.value = l - LNA_STEP; why = "pinned at the start: LNA down" }
         } else if (anyClip && !loraNow && v > vMax / 2 && rms > lo) {
             // a meter's burst clipped: the VGA alone gives a little back, the front end stays where far nodes need it
             _radioVga.value = maxOf(0, v - 2); why = "clip outside LoRa: VGA down a step"
@@ -424,7 +436,7 @@ object SdrEngine {
         val bursty = Apps.playing() == MayhemApp.LORA
         if (bursty) {
             burstLevels.addLast(rms); while (burstLevels.size > 8) burstLevels.removeFirst()
-            if (burstLevels.size < 4) return
+            if (burstLevels.size < 4 && !(loraCoarse && (loraLevel?.first ?: 0.0) >= 126.5)) return
             rms = burstLevels.sorted()[burstLevels.size / 2]
             loraAgc(rms, now, lo, hi)
             return
