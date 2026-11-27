@@ -134,6 +134,9 @@ class P25Framer {
     var onBlock: (P25Block) -> Unit = {}
     /** Any frame with a valid NID (voice and data frames too): the NAC and DUID. */
     var onFrame: (Int, Int) -> Unit = { _, _ -> }
+    /** A data frame's packet (P25Data.kt), read whatever its CRCs said. */
+    var onPdu: (P25Packet) -> Unit = {}
+    private val pdu = P25PduReader().also { r -> r.onPacket = { onPdu(it) } }; private var data = false
     private val sm = SyncMatch()
     private enum class St { IDLE, NID, BODY, SKIP }
     private var state = St.IDLE
@@ -162,9 +165,11 @@ class P25Framer {
         frames++; nac = r.nac; nidErrs = r.errs; if (r.errs <= 4) clean++
         if (r.errs <= 4) { nacs.add(r.nac); if (nacs.size > 6) nacs.remove(nacs.first()) }
         onFrame(r.nac, r.duid)
-        if (r.duid == 7) { state = St.BODY; nb = 0; want = 98; blk = 0 } else state = St.IDLE
+        data = r.duid == 0xc
+        if (r.duid == 7 || data) { state = St.BODY; nb = 0; want = 98; blk = 0; if (data) pdu.start() } else state = St.IDLE
     }
     private fun body() {
+        if (data) { if (pdu.push(buf.copyOf(98))) { nb = 0; want = 98 } else state = St.IDLE; return }
         val t = Codes.tsbkDecode(buf)
         val ok = Codes.crc12Ok(t.bytes)
         onBlock(P25Block(nac, nidErrs, t.bytes, ok, t.metric, blk))

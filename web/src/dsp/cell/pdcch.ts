@@ -1,5 +1,5 @@
 /**
- * PCFICH and PDCCH, common search space, SI-RNTI only. 36.211 6.2.4 REGs, 6.7 PCFICH, 6.9.3 PHICH mapping (the REGs it
+ * PCFICH and PDCCH, common search space, SI-RNTI and P-RNTI. 36.211 6.2.4 REGs, 6.7 PCFICH, 6.9.3 PHICH mapping (the REGs it
  * takes from symbol 0, normal duration), 6.8 PDCCH (scrambling, quadruplet interleaving with the 36.212 5.1.4.2.1
  * sub-block interleaver, cyclic shift by N_ID, k-first mapping over the free REGs). 36.212 5.3.4 CFI code words,
  * 5.3.3 DCI CRC with the RNTI on the parity, formats 1A and 1C with the ambiguous-size padding. 36.213 9.1.1 common
@@ -98,8 +98,8 @@ export function dciWithCrc(bits: Uint8Array, rnti: number): Uint8Array {
   return out;
 }
 
-export interface DciHit { L: number; cce: number; size: number; bits: Uint8Array; dci: Dci }
-/** Per cell control-region decoder: CFI, then blind decoding of the common search space for SI-RNTI. */
+export interface DciHit { L: number; cce: number; size: number; bits: Uint8Array; dci: Dci; rnti: number }
+/** Per cell control-region decoder: CFI, then blind decoding of the common search space for SI-RNTI and P-RNTI. */
 export class ControlDecoder {
   readonly sizes: DciSizes;
   private readonly R: Reg[][] = [];
@@ -146,7 +146,8 @@ export class ControlDecoder {
     for (let i = 0; i < soft.length; i++) if (c[i]) soft[i] = -soft[i];
     return { soft, ncce: Math.floor(lay.M / 9) };
   }
-  search(g: Grid, H: Chan, sf: number, cfi: number, rnti = SI_RNTI): DciHit[] {
+  /** Every DCI in the common search space whose CRC carries one of the RNTIs (one Viterbi pass serves them all). */
+  search(g: Grid, H: Chan, sf: number, cfi: number, rntis: number[] = [SI_RNTI]): DciHit[] {
     const { soft, ncce } = this.softBits(g, H, sf, cfi), hits: DciHit[] = [], seen = new Set<string>();
     const sizes = [...new Set([this.sizes.f1a, this.sizes.f1c])];
     for (const [Lagg, ncand] of [[4, 4], [8, 2]]) {
@@ -155,12 +156,13 @@ export class ControlDecoder {
         const cce0 = Lagg * (m % nposs), from = 72 * cce0, len = 72 * Lagg;
         for (const A of sizes) {
           const D = A + 16, acc = ccDematch(soft, D, from, len), bits = viterbiTb(acc, D), par = crcBits(bits, CRC16, A);
-          if ((bitsToInt(par) ^ bitsToInt(bits, A, 16)) !== rnti) continue;
-          const b = bits.slice(0, A), key = Array.from(b).join('');
+          const rnti = bitsToInt(par) ^ bitsToInt(bits, A, 16);
+          if (!rntis.includes(rnti)) continue;
+          const b = bits.slice(0, A), key = rnti + ':' + Array.from(b).join('');
           if (seen.has(key)) continue;
           seen.add(key);
           const dci = A === this.sizes.f1c ? parse1C(b, this.nrb) : parse1A(b, this.nrb, this.tdd);
-          if (dci) hits.push({ L: Lagg, cce: cce0, size: A, bits: b, dci });
+          if (dci) hits.push({ L: Lagg, cce: cce0, size: A, bits: b, dci, rnti });
         }
       }
     }

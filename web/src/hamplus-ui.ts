@@ -15,7 +15,8 @@ export const hpColor = (i: number) => i < 0 ? 'var(--muted)' : HP_COLORS[i % HP_
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
 /** 146.52 as 146.520, 442.0125 as 442.0125: at least three decimals, a fourth only when it is there. */
-export function hpMhz(hz: number): string { const s = (hz / 1e6).toFixed(4); return s.endsWith('0') ? s.slice(0, -1) : s; }
+/** MHz as the tiles show it: '146.52', '146.5225', and a 6.25 kHz channel in full, '451.15625'. */
+export function hpMhz(hz: number): string { const s = (hz / 1e6).toFixed(hz % 500 ? 5 : 4); return s.endsWith('0') ? s.slice(0, -1) : s; }
 export function hpDur(ms: number): string {
   const t = Math.max(0, Math.round(ms / 1000));
   return t < 3600 ? `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}` : `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;

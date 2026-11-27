@@ -40,14 +40,17 @@ import { COMB_TOP_HZ, CombNotch } from './dsp/hfcomb.js';
 import { BandMonitor } from './dsp/ham/monitor.js';
 import { HamPlusEngine } from './dsp/hamplus/engine.js';
 import { CbEngine } from './dsp/cb/engine.js';
+import { GmrsEngine } from './dsp/gmrs/engine.js';
 import { Classifier } from './dsp/ham/classify.js';
 import { VoiceDetector } from './dsp/voice.js';
 import { OrbcommDecoder } from './dsp/orbcomm.js';
+import { SatcomProcessor, type SatcomMode } from './dsp/lband/satcom.js';
 import { G3ruhDecoder } from './dsp/g3ruh.js';
 import { RdsDecoder } from './dsp/rds.js';
 import { HdDetector } from './dsp/hdradio.js';
 import { HdProcessor } from './dsp/hd/hd.js';
 import { SameDecoder } from './dsp/same.js';
+import { AnalogIds, analogIdText } from './dsp/hamid/analog.js';
 import { GeoscanDecoder } from './dsp/geoscan.js';
 import { CwDecoder, RttyDecoder, Psk31Decoder, type DigitalDecoder } from './dsp/ham/digital.js';
 import { Ft8Decoder } from './dsp/ham/ft8.js';
@@ -175,6 +178,14 @@ let demodHold = false;
 // for it (NOAA weather radio is NFM at 162 MHz), so it costs nothing elsewhere.
 const same = new SameDecoder(emit);
 let sameOn = false, sameRate = 0; const sameBuf = new Float32Array(4096); let sameN = 0;
+// MDC-1200 and FleetSync IDs on the NFM discriminator, the same way, while Prowl or the Audio app asks for them
+let idsOn = false, ids: AnalogIds | null = null, idsHz = 0; const idsBuf = new Float32Array(4096); let idsN = 0;
+function idsAt(rate: number): AnalogIds {
+  if (ids && ids.fs === rate) return ids;
+  ids = new AnalogIds(rate);
+  ids.onId = id => post({ type: 'nfmId', ...id, text: analogIdText(id), hz: centreHz + offsetHz, ms: Date.now() });
+  return ids;
+}
 const recorder = new IqRecorder(emit);
 /** The HAM receiver writes its own 48 kHz audio straight to the AudioWorklet port (the worker's demod is off). */
 let audioChunks = 0;
@@ -192,11 +203,13 @@ fleet.calls.onAudio = (pcm, call) => {
 };
 fleet.calls.onEnd = call => { if (fleetFader.current === call.key) { const t = fleetFader.tail(); if (t) toAudio(t); emit({ type: 'fleetVu', key: '', db: -90 }); } };
 const orbcomm = new OrbcommDecoder(emit);
+const satcom = new SatcomProcessor(emit);
 const g3ruh = new G3ruhDecoder(emit);
 const geoscan = new GeoscanDecoder(emit);
 const monitor = new BandMonitor(emit, toAudio);
 const hamplus = new HamPlusEngine(emit, toAudio);
 const cb = new CbEngine(emit, toAudio);
+const gmrs = new GmrsEngine('gmrs', emit, toAudio), murs = new GmrsEngine('murs', emit, toAudio);
 const classifier = new Classifier();
 // digital decoders on the HAM audio; 'auto' runs the three audio modems together and shows whichever is making sense
 const cw = new CwDecoder(600), rtty = new RttyDecoder(), psk = new Psk31Decoder(1000), ft8 = new Ft8Decoder(), sstv = new SstvDecoder();
@@ -414,6 +427,9 @@ self.onmessage = (e: MessageEvent) => {
       // The channel being demodulated is the span center plus the offset, not the span center.
       orbcomm.channelHz = centreHz + offsetHz;
       if (typeof m.offsetHz === 'number') offsetHz = m.offsetHz;
+      // a retune starts the ID reader fresh, so an ID is never put on the channel after it
+      if (ids && centreHz + offsetHz !== idsHz) { ids.reset(); idsN = 0; }
+      idsHz = centreHz + offsetHz;
       if (m.mode) mode = m.mode as Mode;
       if (typeof m.squelch === 'number') { squelchDb = m.squelch; if (squelchDb === 0) sqOpen = true; }
       if (typeof m.voice === 'boolean') { voiceOn = m.voice; if (!voiceOn) voice.reset(); }
@@ -438,6 +454,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'btleChannel': btle.channel = m.ch as number; break;
     case 'trainsBand': trains.band = m.band === 'PTC' ? 'PTC' : 'EOT'; break;
     case 'trainsClear': trains.clear(); break;
+    case 'satcom': if (m.cmd === 'mode') satcom.mode = m.mode as SatcomMode; else if (m.cmd === 'clear') satcom.clear(); break;
     case 'cell':
       if (m.cmd === 'detail') { const d = cell.detail(m.key as string); if (d) emit({ type: 'cellDetail', ...d }); }
       else if (m.cmd === 'export') emit({ type: 'cellExport', ...cell.exportAll() });
@@ -460,6 +477,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'hdProgram': hdApp.audio.select(Number(m.n) & 7); break;
     case 'hdSurround': hdApp.audio.setSurround(!!m.on && Number(m.channels) >= 6); break;
     case 'same': sameOn = !!m.on; if (!sameOn) { sameN = 0; sameRate = 0; } break;
+    case 'nfmIds': idsOn = !!m.on; idsN = 0; ids = null; break;
     case 'pager': pager.select(m.which); break;
     case 'hunt': hunter.command(m.cmd as string, m.hz as number | undefined); break;
     case 'ismFamilies': ism.weather = !!m.weather; ism.remotes = !!m.remotes; ism.cars = !!m.cars; break;
@@ -484,15 +502,16 @@ self.onmessage = (e: MessageEvent) => {
     case 'hamParams': ham.set(m.params); break;
     case 'monitorParams': monitor.set(m.params); break;
     case 'hamplus':
-    case 'cb': {
-      // Repeaters and CB share the watcher and its commands; CB adds its modes and clarifiers
-      const w = m.type === 'cb' ? cb : hamplus, name = m.type === 'cb' ? 'CB Radio' : 'Repeaters';
+    case 'cb':
+    case 'gmrs': {
+      // Repeaters, CB and GMRS share the watcher and its commands; CB adds its modes and clarifiers, GMRS has a watcher a band
+      const w = m.type === 'cb' ? cb : m.type === 'gmrs' ? (m.band === 'murs' ? murs : gmrs) : hamplus, name = w.plan.name;
       if (m.cmd === 'center') w.centerHz = m.hz as number;
       else if (m.cmd === 'spurs') w.ownSpurStep = m.step as number;
       else if (m.cmd === 'params') w.setParams(m.params as Record<string, unknown>);
       else if (m.cmd === 'prefs') { w.setPrefs(m.prefs as never, m.labels as Record<string, string>); if (w === cb && m.cb) cb.setCbPrefs(m.cb as never); }
       else if (m.cmd === 'restore') w.restore(m.saved as never);
-      else if (m.cmd === 'save') post({ type: `${m.type}Saved`, saved: w.tracker.save() });
+      else if (m.cmd === 'save') post({ type: `${m.type}Saved`, band: m.band, saved: w.tracker.save() });
       else if (m.cmd === 'replay') { if (!w.replayTx(m.ids as number[], m.label as string, m.kind as string)) { emit({ type: 'log', line: `${name}: that audio is no longer in the time machine` }); post({ type: `${m.type}Note`, text: 'That audio is no longer kept' }); } }
       else if (m.cmd === 'replayFrom') { if (!w.replayFrom(m.ms as number)) { emit({ type: 'log', line: `${name}: nothing recorded yet` }); post({ type: `${m.type}Note`, text: 'Nothing recorded yet' }); } }
       else if (m.cmd === 'stop') w.stopReplay();
@@ -525,6 +544,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'uat': return uat;
     case 'hd': hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; return hdApp;
     case 'cell': cell.centerHz = centreHz; return cell;
+    case 'satcom': satcom.centerHz = centreHz; satcom.channelHz = centreHz + offsetHz; if (m.mode) satcom.mode = m.mode as SatcomMode; return satcom;
     case 'trains': trains.centerHz = centreHz; if (m.band === 'EOT' || m.band === 'PTC') trains.band = m.band; return trains;
     case 'fleet': fleet.centerHz = centreHz; return fleet;
     case 'atsc': atsc.centerHz = centreHz; return atsc;
@@ -546,6 +566,7 @@ function makeProcessor(app: string, m: Record<string, unknown>): IqProcessor | n
     case 'monitor': return monitor;
     case 'hamplus': hamplus.centerHz = centreHz; return hamplus;
     case 'cb': cb.centerHz = centreHz; return cb;
+    case 'gmrs': { const w = m.band === 'murs' ? murs : gmrs; w.centerHz = centreHz; return w; }
     default: return null;
   }
 }
@@ -616,7 +637,7 @@ function process(iq: Int8Array): void {
       const line = `RX: iqRMS=${rms.toFixed(1)} dcI=${(sI / nn).toFixed(1)} dcQ=${(sQ / nn).toFixed(1)} · peak ${offKhz >= 0 ? '+' : ''}${offKhz.toFixed(0)} kHz ${peak.toFixed(0)}dB vs floor ${median.toFixed(0)}dB (Δ${(peak - median).toFixed(0)})`;
       // LoRa's gain steers by its strongest burst and its clips (loraAgc in main), measured in the scanner's looks
       const loraLevel = processor === lora ? { ...lora.scanner.takeLevel(), agoMs: lora.scanner.loraAtMs > 0 ? Date.now() - lora.scanner.loraAtMs : -1 } : undefined;
-      post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus || processor === cb ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
+      post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus || processor === cb || processor === gmrs || processor === murs ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
       audioPeak = 0;
     }
   }
@@ -709,6 +730,7 @@ function process(iq: Int8Array): void {
         if (wantFm) { fmBuf[fmN++] = s; if (fmN >= fmBuf.length) { p!.onFm!(fmBuf, fmN, interRate); fmN = 0; } }
         if (rdsOn && mode === 'WFM') { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.length) { rds.push(rdsBuf, rdsN, interRate); rdsN = 0; } }
         if (sameOn && mode === 'NFM') { if (sameRate !== interRate) { same.reset(interRate); sameRate = interRate; } sameBuf[sameN++] = s; if (sameN >= sameBuf.length) { same.onFm(sameBuf, sameN, interRate); sameN = 0; } }
+        if (idsOn && mode === 'NFM') { idsBuf[idsN++] = s; if (idsN >= idsBuf.length) { idsAt(interRate).push(idsBuf, idsN); idsN = 0; } }
         if (fmTap) {
           fmTapRate = interRate;
           if (!fmBurst) { if (fmTapN < fmTap.length) fmTap[fmTapN++] = s; else { const t = fmTap; fmTap = null; post({ type: 'fmTap', rate: fmTapRate, samples: t }, [t.buffer]); } }
@@ -761,6 +783,7 @@ function process(iq: Int8Array): void {
   if (p === atsc) { atsc.centerHz = centreHz; atsc.pool = atscPoolFor(rate); }
   if (p === aprs) aprs.offsetHz = offsetHz;
   if (p === hdApp) { hdApp.centerHz = centreHz; hdApp.offsetHz = offsetHz; }
+  if (p === satcom) { satcom.centerHz = centreHz; satcom.channelHz = centreHz + offsetHz; }
   if (p) { try { p.onIq(iq, rate); } catch (e) { emit({ type: 'log', line: `processor error: ${(e as Error).message}` }); } }
 }
 

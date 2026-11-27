@@ -5,6 +5,7 @@
  */
 import { fmtDist, KM_PER_MI } from '../../units.js';
 import type { CallRow, CallPos } from './calls.js';
+import { dmrAlgName } from './lc.js';
 
 /** P25 algorithm IDs (TIA-102.BAAC), the publicly documented ones. */
 export const P25_ALGS: Record<number, string> = {
@@ -20,8 +21,8 @@ export const algName = (id: number) => id < 0 ? '' : P25_ALGS[id] ?? `ALGID 0x${
 export function secText(c: Pick<CallRow, 'encrypted' | 'sec' | 'algId' | 'keyId' | 'pi' | 'proto'>): string {
   if (c.encrypted) {
     const parts = ['ENCRYPTED'];
-    // DMR algorithm IDs have no public table: shown by number
-    if (c.proto === 'DMR') { if (c.pi && c.algId >= 0) parts.push(`ALGID 0x${hx(c.algId, 2)}`, `KEY ${c.keyId}`); else if (c.pi) parts.push('PRIVACY HEADER'); }
+    // DMR: the privacy header's algorithm by name (DMR Association IDs) and its key
+    if (c.proto === 'DMR') { if (c.pi && c.algId >= 0) parts.push(dmrAlgName(c.algId), `KEY ${c.keyId}`); else if (c.pi) parts.push('PRIVACY HEADER'); }
     // NXDN: the cipher type of the VCALL (TS 1-A 6.5.27) and its 6-bit key ID
     else if (c.proto === 'NXDN') { if (c.algId > 0) parts.push(NXDN_CIPHER_NAMES[c.algId] ?? `CIPHER ${c.algId}`); if (c.keyId > 0) parts.push(`KEY ${c.keyId}`); }
     else {

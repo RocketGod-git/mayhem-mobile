@@ -2,6 +2,9 @@ package com.rocketgod.mayhem.core.hamid
 
 import com.rocketgod.mayhem.core.fleet.NxdnFramer
 import com.rocketgod.mayhem.core.fleet.NxdnTraffic
+import com.rocketgod.mayhem.core.fleet.P25Data
+import com.rocketgod.mayhem.core.fleet.P25PduReader
+import com.rocketgod.mayhem.core.fleet.UnitData
 import com.rocketgod.mayhem.core.fleet.P2Rx
 import com.rocketgod.mayhem.core.fleet.P2Seed
 import com.rocketgod.mayhem.core.fleet.p2EndPtt
@@ -60,6 +63,8 @@ data class P25Id(
     var lcf: Int = -1, var mfid: Int = 0, var lc: String = "",
     var frames: Int = 0, var lcs: Int = 0, var voiceFrames: Int = 0, var calls: Int = 0,
     var inverted: Boolean = false, var lastSym: Long = -1,
+    /** Packets read; the last position and text a unit sent, and which unit; the last packet in words. */
+    var packets: Int = 0, var position: Position? = null, var text: String = "", var dataUnit: Int = 0, var data: String = "",
 )
 /** The P25 frame sync 5575F5FF77FF as signs (dibit 01 +, 11 -). */
 private val P25_SYNC = IntArray(24).also { a -> var k = 0; for (c in "5575F5FF77FF") { val v = c.digitToInt(16); a[k++] = if ((v and 8) != 0) -1 else 1; a[k++] = if ((v and 2) != 0) -1 else 1 } }
@@ -71,13 +76,21 @@ class P25Identity {
     private val voice = ImbeStream()
     private val ring = FloatArray(24); private var rp = 0
     private var t = 0L; private var sign = 1.0; private var framesSeen = 0; private var open = false
+    /** A data frame's blocks: the place in the frame (a status symbol every 36th) and the block being read. */
+    private val pdu = P25PduReader(); private var pos = 0; private var inData = false; private val blk = IntArray(98); private var nb = 0
     init {
+        pdu.onPacket = { p -> id.packets++; id.data = p.line; unitData(p) }
         dec.onVoice = { bits -> if (!id.encrypted) { id.voiceFrames++; onAudio(voice.decode(bits)) } }
         dec.onLc = { lc(it) }
         dec.onHdu = { h -> open = false; start(); id.src = 0; id.algId = h.algId; id.keyId = h.keyId; id.mfid = h.mfid; if (h.tg != 0) id.tg = h.tg; id.encrypted = h.algId != 0x80 && h.algId != 0; id.lastSym = t; voice.reset() }
         dec.onEs = { es -> id.algId = es.algId; id.keyId = es.keyId; id.encrypted = es.algId != 0x80 && es.algId != 0 }
     }
-    fun reset() { id = P25Id(); dec.reset(); voice.reset(); ring.fill(0f); rp = 0; t = 0; sign = 1.0; framesSeen = 0; open = false }
+    fun reset() { id = P25Id(); dec.reset(); voice.reset(); ring.fill(0f); rp = 0; t = 0; sign = 1.0; framesSeen = 0; open = false; inData = false; pos = 0 }
+    private fun unitData(d: UnitData) {
+        id.lastSym = t
+        d.position?.let { id.position = it; id.dataUnit = d.unit }
+        d.message?.let { id.text = it; id.dataUnit = d.unit }
+    }
     private fun start() { if (!open) { open = true; id.calls++; id.encrypted = false; id.algId = -1; id.keyId = 0; id.emergency = false } }
     val checked: Int get() = id.frames
 
@@ -88,15 +101,25 @@ class P25Identity {
         for (k in 0 until 24) { val x = ring[(rp + k) % 24].toDouble(); c += x * P25_SYNC[k]; a += abs(x) }
         // while a frame is being read, a sync must be cleaner and of the same polarity (voice data now and then comes near it)
         val locked = dec.status(t).locked
-        if (a > 24 * 1.8 && (if (locked) c * sign > 0 && abs(c) / a > 0.95 else abs(c) / a > 0.86)) { sign = (if (c > 0) 1.0 else -1.0) * 3 * 24 / a; dec.sync(t); return }
+        // (inside a data frame too: a packet cut short ends at the next frame's sync)
+        if (a > 24 * 1.8 && (if (locked || inData) c * sign > 0 && abs(c) / a > 0.95 else abs(c) / a > 0.86)) { sign = (if (c > 0) 1.0 else -1.0) * 3 * 24 / a; dec.sync(t); pos = 24; inData = false; return }
+        val x = s * sign; val dibit = if (x > 2) 1 else if (x > 0) 0 else if (x > -2) 2 else 3
+        // a data frame's blocks, after its NID, the status symbols left out
+        val status = pos++ % 36 == 35
+        if (inData) {
+            if (status) return
+            blk[nb++] = dibit
+            if (nb == 98) { nb = 0; if (!pdu.push(blk.copyOf())) inData = false }
+            return
+        }
         if (!locked) return
-        val x = s * sign
-        dec.push(if (x > 2) 1 else if (x > 0) 0 else if (x > -2) 2 else 3, t)
+        dec.push(dibit, t)
         val now = dec.status(t)
         if (now.frames != framesSeen) {
             framesSeen = now.frames
             id.frames = now.frames; id.nac = now.nac; id.inverted = sign < 0; id.lastSym = t
             if (now.duid == 0x3 || now.duid == 0xf) { voice.reset(); open = false }
+            if (now.duid == 0xc) { inData = true; nb = 0; pdu.start() }
         }
     }
     private fun lc(b: IntArray) {
@@ -111,6 +134,7 @@ class P25Identity {
             id.tg = if (lcf == 0) (b[4] shl 8) or b[5] else (b[3] shl 16) or (b[4] shl 8) or b[5]
             id.group = lcf == 0
         }
+        P25Data.gpsLc(b, id.src)?.let { unitData(it) }
     }
 }
 
@@ -206,6 +230,8 @@ data class NxdnId(
     var baud: Int = 0, var ran: Int = -1, var kind: String = "", var src: Int = 0, var dst: Int = 0, var group: Boolean = true, var callType: Int = -1,
     var emergency: Boolean = false, var cipher: Int = 0, var keyId: Int = 0, var voiceOpt: Int = 0, var typeD: Boolean = false,
     var activity: String = "", var calls: Int = 0, var voiceFrames: Int = 0, var lastSym: Long = -1, var checked: Int = 0,
+    /** The source's talker alias; the last position, status and short message a unit sent, and which unit. */
+    var alias: String = "", var position: Position? = null, var status: Int = -1, var text: String = "", var dataUnit: Int = 0,
 )
 private val NX_FSW = intArrayOf(-3, 1, -3, 3, -3, -3, 3, 3, -1, 3)
 
@@ -253,6 +279,14 @@ class NxdnIdentity {
                 id.cipher = m.cipher ?: 0; id.keyId = m.keyId ?: 0; id.voiceOpt = m.voiceOpt ?: 0; id.typeD = m.typeD || t.typeD
             } else if (m.type == 0x08 || m.type == 0x07 || m.type == 0x11) id.activity = ""
         }
+        for (d in t.data) {
+            val al = d.alias
+            if (al != null) { if (d.unit == id.src) id.alias = al; continue }
+            id.dataUnit = d.unit; if (id.activity != "voice") id.activity = "data"
+            d.position?.let { id.position = it }
+            d.status?.let { id.status = it }
+            d.message?.let { id.text = it }
+        }
         val halves = t.halves.filterNotNull()
         if (halves.isEmpty()) return
         if (id.activity != "voice") start(r)
@@ -263,7 +297,7 @@ class NxdnIdentity {
             else for (f in listOf(h.copyOfRange(0, 72), h.copyOfRange(72, 144))) { id.voiceFrames++; onAudio(r.ambe.decode(f)) }
         }
     }
-    private fun start(r: Rate) { id.activity = "voice"; id.calls++; r.ambe.reset(); r.imbe.reset() }
+    private fun start(r: Rate) { id.activity = "voice"; id.calls++; id.alias = ""; r.ambe.reset(); r.imbe.reset() }
 }
 
 // ------------------------------------------------------------------------------------------------ dPMR
@@ -316,6 +350,10 @@ private const val DP_H = 1024
 
 class DpmrIdentity {
     var onAudio: (FloatArray) -> Unit = {}
+    /** Each 72-bit TCH block as received; when set, the blocks go here instead of through the decoder (Dispatch). */
+    var onVoiceBits: ((IntArray) -> Unit)? = null
+    /** A header ("header"), a frame ("frame") or an end frame ("end") passed its checks ([id] already updated). */
+    var onEvent: (String) -> Unit = {}
     var id = DpmrId(); private set
     private class Job(val kind: Int, val at: Long, val sign: Double, val fly: Int)   // kind 0 header, 1 frame, 2 end
     private val hist = FloatArray(DP_H); private var t = 0L
@@ -369,6 +407,7 @@ class DpmrIdentity {
         id.headerType = dpField(hi, 0, 4); id.called = dpField(hi, 4, 24); id.own = dpField(hi, 28, 24); id.commMode = dpField(hi, 52, 3); id.format = dpField(hi, 55, 4)
         id.calledText = dpIdText(id.called); id.ownText = dpIdText(id.own); id.group = id.calledText.contains('*') || id.calledText.startsWith("COMMON")
         if (id.headerType == 0 || id.headerType == 5 || id.headerType == 6) { start(); queue(1, at + 132, sign, -1) }
+        onEvent("header")
     }
     private fun start() { id.activity = "voice"; id.calls++; voice.reset(); lines.reset(); id.slowData = ""; ids.fill(-1) }
     private fun frame(at: Long, sign0: Double, fly: Int) {
@@ -397,9 +436,10 @@ class DpmrIdentity {
             }
         }
         val dp = dpField(d, 28, 2)
+        onEvent("frame")
         if (mode == 0 || mode == 1 || (mode == 5 && dp != 3)) {
             val tch = bits(at + 48, 144, sign)
-            for (k in 0 until 4) { id.voiceFrames++; onAudio(voice.decode(tch.copyOfRange(72 * k, 72 * k + 72))) }
+            for (k in 0 until 4) { id.voiceFrames++; val b = tch.copyOfRange(72 * k, 72 * k + 72); val v = onVoiceBits; if (v != null) v(b) else onAudio(voice.decode(b)) }
         }
         queue(1, at + 192, sign)
     }
@@ -413,7 +453,7 @@ class DpmrIdentity {
                 val x = dpmrHammingDecode(v); if (x < 0) { good = false; break }
                 for (i in 0 until 8) w[8 * k + i] = (x shr (7 - i)) and 1
             }
-            if (good && dpmrCrc7(w, 17) == dpField(w, 17, 7)) { checked++; id.activity = ""; id.lastSym = t; jobs = ArrayList(jobs.filter { it.kind != 1 }); return }
+            if (good && dpmrCrc7(w, 17) == dpField(w, 17, 7)) { checked++; id.activity = ""; id.lastSym = t; jobs = ArrayList(jobs.filter { it.kind != 1 }); onEvent("end"); return }
         }
     }
 }
@@ -462,9 +502,9 @@ class P25Modes(val fs: Double) {
     fun snapshot(): P25ModesSnap {
         val m = mode
         return when (m) {
-            "P25" -> { val x = p25.id.copy(nac = nac()); P25ModesSnap(m, x, null, null, null, if (x.src != 0) x.src.toString() else "", "", null) }
+            "P25" -> { val x = p25.id.copy(nac = nac()); P25ModesSnap(m, x, null, null, null, if (x.src != 0) x.src.toString() else "", "", x.position) }
             "P25P2" -> { val x = p25p2.id.deep(); val live = x.slots.filter { it.src > 0 }.maxByOrNull { it.lastSym }; P25ModesSnap(m, null, x, null, null, live?.src?.toString() ?: "", "", null) }
-            "NXDN" -> { val x = nxdn.id.copy(); P25ModesSnap(m, null, null, x, null, if (x.src == 0) "" else if (x.typeD) "${x.src shr 11}-${x.src and 0x7ff}" else x.src.toString(), "", null) }
+            "NXDN" -> { val x = nxdn.id.copy(); P25ModesSnap(m, null, null, x, null, if (x.src == 0) "" else x.alias.ifEmpty { if (x.typeD) "${x.src shr 11}-${x.src and 0x7ff}" else x.src.toString() }, "", x.position) }
             "dPMR" -> { val x = dpmr.id.copy(); P25ModesSnap(m, null, null, null, x, x.ownText, "", x.position) }
             else -> P25ModesSnap("", null, null, null, null, "", "", null)
         }

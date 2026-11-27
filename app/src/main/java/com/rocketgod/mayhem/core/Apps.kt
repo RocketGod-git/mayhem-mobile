@@ -41,10 +41,12 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
     HAM("Ham Radio", "SSB · CW · repeaters", "Receive"),
     HAMPLUS("Repeaters", "every repeater and simplex channel at once", "Receive"),
     CB("CB Radio", "all 40 channels at once", "Receive"),
+    GMRS("GMRS", "all 30 channels and MURS at once", "Receive"),
     APRS("Ham Map", "APRS · FT8 · JS8", "Receive"),
     ERT("Utility Meters", "ERT · Gridstream · 802.15.4g", "Receive"),
     BTLE("Bluetooth", "BLE advertising · 2.4 GHz", "Receive"),
     SAT("Satellites", "track and decode", "Receive"),
+    SATCOM("Satcom", "Inmarsat · EGC · Aero ACARS", "Receive"),
     SONDES("Weather Balloons", "radiosondes · 400–406 MHz", "Receive"),
     ATSC("TV", "ATSC · guide · pictures", "Receive"),
     PROWL("Prowl", "hunts live voice", "Receive"),
@@ -86,10 +88,12 @@ enum class MayhemApp(val title: String, val blurb: String, val category: String)
         HAM -> "SSB · CW · FM · FT8 · SSTV"
         HAMPLUS -> "FM · DMR · D-STAR · FUSION · P25 · NXDN · M17"
         CB -> "CB · 26.965–27.405 MHZ · AM · FM · SSB"
+        GMRS -> "GMRS · FRS · MURS · NFM · CTCSS · DCS"
         APRS -> "APRS · AX.25 · 144.390 MHZ"
         ERT -> "ERT · GRIDSTREAM · 802.15.4G"
         BTLE -> "BLE · ADVERTISING · 2.4 GHZ"
         SAT -> "SGP4 · DOPPLER · APT · LRPT · AX.25"
+        SATCOM -> "INMARSAT · STD-C EGC · AERO · L-BAND"
         SONDES -> "RS41 · DFM · M10 · 400–406 MHZ"
         ATSC -> "ATSC 1.0 · 8VSB · PSIP"
         PROWL -> "NFM · VOICE ACTIVITY HUNT"
@@ -238,6 +242,42 @@ object Apps {
             if (Radio.canSample(Radio.limits, t.PTC_RATE)) SdrEngine.configure(SdrEngine.Mode.NONE, t.PTC_CENTER, t.PTC_RATE, 32, 40, true, trains)
             else SdrEngine.configure(SdrEngine.Mode.NONE, t.PTC_NARROW, 2_000_000, 32, 40, true, trains)
         }
+    }
+    /** Satcom: Inmarsat on L-band, the NCS's EGC broadcasts to ships or an Aero P-channel's ACARS to aircraft. Aero's
+     *  ACARS also goes into Flight Msgs, marked as heard from a satellite. */
+    val satcomLog = PacketLog(); val satcom = com.rocketgod.mayhem.core.sat.SatcomProcessor(satcomLog)
+    /** The span sits this far below the channel: the DC spike is never on it, and a carrier tapped nearby needs no retune. */
+    const val SATCOM_SHIFT = 300_000L
+    private val _satcomMode = MutableStateFlow(com.rocketgod.mayhem.core.sat.SatcomProcessor.Mode.EGC)
+    val satcomMode: StateFlow<com.rocketgod.mayhem.core.sat.SatcomProcessor.Mode> = _satcomMode.asStateFlow()
+    @Volatile private var satcomEgcHz = com.rocketgod.mayhem.core.sat.Stdc.NCS_CHANNELS[0].second
+    @Volatile private var satcomAeroHz = 1_545_075_000L
+    fun setSatcomMode(m: com.rocketgod.mayhem.core.sat.SatcomProcessor.Mode) {
+        if (m == _satcomMode.value) return
+        noteSatcomHz()
+        _satcomMode.value = m
+        if (playing() == MayhemApp.SATCOM) startSatcom()
+    }
+    /** Tune the Satcom channel: inside the span through the offset, else the radio moves with the channel SATCOM_SHIFT above it. */
+    fun satcomTune(hz: Long) {
+        if (_satcomMode.value == com.rocketgod.mayhem.core.sat.SatcomProcessor.Mode.EGC) satcomEgcHz = hz else satcomAeroHz = hz
+        if (playing() == MayhemApp.SATCOM) startSatcom()
+    }
+    private fun noteSatcomHz() {
+        if (playing() != MayhemApp.SATCOM) return
+        val ch = SdrEngine.channelHz()
+        if (_satcomMode.value == com.rocketgod.mayhem.core.sat.SatcomProcessor.Mode.EGC) satcomEgcHz = ch else satcomAeroHz = ch
+    }
+    fun satcomClear() { satcom.clear() }
+    private fun startSatcom() {
+        val m = _satcomMode.value
+        val hz = if (m == com.rocketgod.mayhem.core.sat.SatcomProcessor.Mode.EGC) satcomEgcHz else satcomAeroHz
+        satcom.setMode(m)
+        satcom.centerOf = { SdrEngine.freqHz.value }; satcom.channelOf = { SdrEngine.channelHz() }
+        satcom.onNote = { com.rocketgod.mayhem.Diag.log(it) }
+        satcom.onAcars = { acarsLog.add(it) }
+        SdrEngine.configure(SdrEngine.Mode.NONE, hz - SATCOM_SHIFT, 2_000_000, 40, 40, true, satcom)
+        SdrEngine.setOffset(SATCOM_SHIFT.toInt())
     }
     /** Dispatch: P25, DMR, TETRA and NXDN trunked systems and their calls, every carrier in the span at once. */
     val fleetLog = PacketLog(); val fleet = com.rocketgod.mayhem.core.fleet.FleetProcessor(fleetLog)
@@ -507,6 +547,8 @@ object Apps {
         SdrEngine.watchSignals = app != MayhemApp.LOOKING_GLASS && app != MayhemApp.SEARCH
         SdrEngine.deepQueue = app == MayhemApp.LORA
         SdrEngine.sameOn = app == MayhemApp.AUDIO
+        // MDC-1200 and FleetSync IDs ride the same NFM discriminator, read for Prowl and the Audio app
+        SdrEngine.idsOn = app == MayhemApp.AUDIO || app == MayhemApp.PROWL
         cameFrom = _current.value
         _current.value = app
         NavBar.noteOpened(app)
@@ -608,9 +650,11 @@ object Apps {
                 acars.onNote = { com.rocketgod.mayhem.Diag.log(it) }
             }
             MayhemApp.TRAINS -> startTrains()
+            MayhemApp.SATCOM -> startSatcom()
             MayhemApp.FLEET -> startFleet()
             MayhemApp.HAMPLUS -> HamPlus.open()
             MayhemApp.CB -> Cb.open()
+            MayhemApp.GMRS -> Gmrs.open()
             MayhemApp.CELL -> startCell()
             MayhemApp.ATSC -> com.rocketgod.mayhem.core.atsc.AtscApp.start()
             MayhemApp.SONDES -> startSondes()
@@ -658,6 +702,7 @@ object Apps {
         SdrEngine.watchSignals = true
         SdrEngine.deepQueue = false
         SdrEngine.sameOn = true
+        SdrEngine.idsOn = true
         _current.value = null
         _sweep.value = null
         // Back from an app that moved the radio (ADS-B, AIS...): the launcher listens again, and lands on the
@@ -674,6 +719,7 @@ object Apps {
         SdrEngine.watchSignals = true
         SdrEngine.deepQueue = false
         SdrEngine.sameOn = true
+        SdrEngine.idsOn = true
         _current.value = MayhemApp.AUDIO
         SdrEngine.configure(mode, freqHz, SdrEngine.RX_RATE, 24, 24, false, null)
         SdrEngine.setDial(freqHz, mode)

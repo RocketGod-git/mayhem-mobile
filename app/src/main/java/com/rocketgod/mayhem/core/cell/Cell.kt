@@ -22,9 +22,11 @@ import kotlin.math.roundToInt
 /*
  * Cell: LTE broadcast information and emergency alerts, receive only. Captures blocks of the downlink, finds cells
  * (PSS/SSS), reads the MIB from the central 6 RBs (any radio at 1.92 MS/s or more), and with the whole carrier in the
- * span decodes SI-RNTI traffic only: SIB1 and the SI messages (SIB2 to SIB24, ETWS and CMAS in SIB10/11/12).
- * The next block is placed on the next SI window still wanted, from the SFN timing of the last block.
- * Paging and every other RNTI are left alone.
+ * span decodes SI-RNTI traffic: SIB1 and the SI messages (SIB2 to SIB24, ETWS and CMAS in SIB10/11/12), and P-RNTI
+ * traffic: the Paging messages at every paging occasion SIB2 sets (FDD).
+ * The next block is placed on the next SI window still wanted (or, with none, the next paging frame), from the SFN
+ * timing of the last block.
+ * Every other RNTI is left alone.
  */
 data class SibRec(val name: String, val si: Int, val ms: Long, val count: Int, val hex: String, val value: Obj)
 data class SibSeen(val name: String, val si: Int, val ms: Long, val count: Int)
@@ -52,6 +54,8 @@ data class CellSnap(
     val offCenter: OffCenter? = null,
     /** The message feed, newest first. */
     val feed: List<FeedRow> = emptyList(),
+    /** Paging records heard, newest first, and the identities by how often they were paged. */
+    val paging: PagingSnap = PagingSnap(0, emptyList(), emptyList(), PagingFlags(0, 0, 0, 0)),
 )
 data class OffCenter(val hz: Long, val pci: Int, val ms: Long)
 data class CellDetail(val key: String, val mib: Mib?, val sib1: Obj?, val sib1Hex: String, val sibs: List<SibRec>)
@@ -80,6 +84,8 @@ private val RASTER = intArrayOf(100_000, -100_000, 200_000, -200_000, 300_000, -
 private fun duplexPss(num: Numerology, tdd: Boolean): Int { if (!tdd) return num.pssOffset; val (o, cp) = num.symbol(2); return num.subframe + o + cp }
 private fun sssLag(num: Numerology, tdd: Boolean) = if (tdd) 3 * num.nfft + 2 * num.cpn + num.cp0 else num.nfft + num.cpn
 private fun round1(x: Double) = Math.round(x * 10) / 10.0
+private val FLAG_TEXT = mapOf("SI CHANGE" to "system information is changing (systemInfoModification)", "ETWS" to "ETWS notification on SIB10/11 (etws-Indication)",
+    "CMAS" to "CMAS notification on SIB12 (cmas-Indication)", "EAB CHANGE" to "access barring parameters changing (eab-ParamModification)")
 
 class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     @Volatile var centerHz = 0L
@@ -92,6 +98,8 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
     val warnings = WarningAssembler()
     /** Every MIB and SIB as one readable row, repeats folded. */
     val feed = MessageFeed()
+    /** Every paging record and flag heard on P-RNTI. */
+    val paging = PagingLog()
     private val log = ArrayList<LogRow>()
     /** Bumped whenever something worth keeping changes (the state is saved when it moves). */
     @Volatile var version = 0; private set
@@ -386,7 +394,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         if (sf0.isEmpty()) return
         val ref = sf0.firstOrNull { it.h == mibH } ?: sf0[0]; val refSfn = mib.sfn
         cell.timing = Timing(blockAbs + (ref.pos * dd + delay - off) * toIn, refSfn)
-        val sched = cell.summary?.schedule ?: emptyList()
+        val sched = cell.summary?.schedule ?: emptyList(); val pcfg = if (tdd) null else pcch(cell)
         for (hf in map) {
             val isSf0 = (hf.h % 2 == 0) == evenSf0
             val frames = Math.floorDiv(hf.h - ref.h - (if (isSf0) 0 else 1), 2); val sfn = ((refSfn + frames) % 1024 + 1024) % 1024
@@ -398,14 +406,21 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                     val st = t.windowStartSfnMod * 10 + t.windowStartSubframe; val pos = (sfn % t.periodicity) * 10 + sf
                     if (pos >= st && pos < st + t.windowMs && wanted(cell, t.si, now)) { si = t.si; break }
                 }
-                if (!sib1 && si == 0) continue
-                if (sib1 && cell.sib1Ms > 0 && now - cell.sib1Ms < 2000 && sched.isNotEmpty()) continue
-                if (tdd && !sib1) continue
+                val page = pcfg != null && isPagingSf(pcfg, sfn, sf)
+                val wantSib1 = sib1 && !(cell.sib1Ms > 0 && now - cell.sib1Ms < 2000 && sched.isNotEmpty())
+                if (tdd) si = 0
+                if (!wantSib1 && si == 0 && !page) continue
                 val startF = base + j * num.subframe
                 val d = demodSf(startF, nrb, sf, cell.pci, max(1, Math.round(num.nfft / 128.0).toInt())) ?: continue
-                subframe(cell, d.first, sf, sfn, sib1, si, hf.h * 5 + j, now, tdd)
+                subframe(cell, d.first, sf, sfn, wantSib1, si, page, hf.h * 5 + j, now, tdd)
             }
         }
+    }
+
+    /** The cell's paging frames and occasions from its SIB2, or null before SIB2. */
+    private fun pcch(cell: Cell): PagingConfig? {
+        val v = cell.sibs["sib2"]?.value ?: return null
+        return runCatching { val s = sib2Summary(v); pagingConfig(s.pagingCycle, s.nB) }.getOrNull()
     }
 
     private fun wanted(cell: Cell, si: Int, now: Long): Boolean {
@@ -414,19 +429,30 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         return got == null || now - got.ms > 30_000
     }
 
-    private fun subframe(cell: Cell, g: Grid, sf: Int, sfn: Int, sib1: Boolean, si: Int, gIdx: Int, now: Long, tdd: Boolean) {
+    private fun subframe(cell: Cell, g: Grid, sf: Int, sfn: Int, sib1: Boolean, si: Int, page: Boolean, gIdx: Int, now: Long, tdd: Boolean) {
         val ctl0 = cell.ctl[0]; val nrb = ctl0.nrb; val h = chanEst(g, sf, cell.pci, nrb, ctl0.nports)
         val cfi = ctl0.cfi(g, h, sf).first; val nl = if (nrb > 10) cfi else cfi + 1
+        val rntis = (if (sib1 || si != 0) listOf(SI_RNTI) else emptyList()) + (if (page) listOf(P_RNTI) else emptyList())
         var hits: List<DciHit> = emptyList(); var ctl = ctl0
-        for (c in cell.ctl) { hits = c.search(g, h, sf, nl); ctl = c; if (hits.isNotEmpty()) break }
+        for (c in cell.ctl) { hits = c.search(g, h, sf, nl, rntis); ctl = c; if (hits.isNotEmpty()) break }
         for (hit in hits) {
             cell.dciCount++; dci++
+            // 36.213 7.1.7: P-RNTI follows the SI-RNTI TBS rules
             val a = tbsSi(hit.dci) ?: continue
             val (p0, p1) = allocation(hit.dci, nrb)
             if (p0.isEmpty() || (p0 + p1).max() >= nrb) continue
-            val llr = pdschLlr(g, h, cell.pci, nrb, ctl.nports, sf, cfi, p0, p1, 0xffff, tdd)
-            // DCI 1C carries no RV: SIB1 follows 36.321 5.3.1 (k = SFN/2 mod 4), other SI may be any of the four
+            val llr = pdschLlr(g, h, cell.pci, nrb, ctl.nports, sf, cfi, p0, p1, hit.rnti, tdd)
             val d = hit.dci
+            if (hit.rnti == P_RNTI) {
+                // one transmission per occasion: the RV of DCI 1A, else 0
+                val tb = TbDecoder(a); tb.add(llr, if (d is Dci1A) d.rv else 0)
+                val pb = tb.decode()
+                if (pb == null) { cell.tbFail++; continue }
+                cell.tbOk++; tbOkAll++
+                pcchBlock(cell, bitsToBytes(pb), now)
+                continue
+            }
+            // DCI 1C carries no RV: SIB1 follows 36.321 5.3.1 (k = SFN/2 mod 4), other SI may be any of the four
             val rvs = if (d is Dci1A) listOf(d.rv) else if (sib1) listOf(Math.ceil(1.5 * ((sfn shr 1) % 4)).toInt() % 4) else listOf(0, 2, 3, 1)
             var bits: ByteArray? = null
             for (rv in rvs) { val tb = TbDecoder(a); tb.add(llr, rv); bits = tb.decode(); if (bits != null) break }
@@ -487,6 +513,16 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         if (siIdx != 0) { val g = cell.siGot[siIdx]; cell.siGot[siIdx] = SiGot(now, (g?.count ?: 0) + 1) }
     }
 
+    /** One PCCH transport block that passed CRC-24A. Also the entry point for recorded blocks. */
+    private fun pcchBlock(cell: Cell, bytes: ByteArray, now: Long) {
+        val hex = hexOf(bytes); val r = decodePaging(bytes)
+        cell.lastMs = now; dirty = true
+        val m = r.msg
+        if (m == null) { addLog(now, cell.hz, cell.pci, "PAGE", "undecodable paging (${r.error ?: "error"})", hex); return }
+        for (f in paging.add(m, cell.key, cell.hz, cell.pci, now)) addLog(now, cell.hz, cell.pci, "PAGE", FLAG_TEXT[f] ?: f, hex)
+        if (m.records.isNotEmpty()) version++
+    }
+
     private fun feedRow(cell: Cell, name: String, text: String, alert: Boolean, fp: String, now: Long, slot: String = "") {
         val op = cell.summary?.plmns?.firstOrNull { it.name.isNotEmpty() }?.name ?: cell.summary?.plmns?.firstOrNull()?.id ?: ""
         val r = feed.add(cell.key, cell.hz, cell.pci, op, cell.band, name, text, alert, fp, now, slot)
@@ -515,6 +551,18 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                     if (at >= from && at < best) best = at
                     if (at >= from) break
                 }
+            }
+        }
+        // nothing wanted on SI-RNTI: the next paging frame
+        if (!best.isFinite()) for (c in cs) {
+            val tm = c.timing ?: continue
+            if (c.tdd || (c.mib != null && c.mib!!.bandwidth > maxRb)) continue
+            val p = pcch(c) ?: continue
+            val cur = floor((abs - tm.abs) / frame).toInt()
+            for (f in cur until cur + 1024) {
+                if ((((tm.sfn + f) % 1024) + 1024) % 1024 % p.every != 0) continue
+                val at = tm.abs + f * frame + p.sfs[0] * frame / 10 - lead
+                if (at >= from) { best = minOf(best, at); break }
             }
         }
         nextAbs = if (best.isFinite() && best - abs < fs * 6) Math.round(best) else from
@@ -576,6 +624,7 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         if (nextAbs > abs && rate > 0) Math.round((nextAbs - abs).toDouble() / rate * 1000) else 0, cpuMs,
         profile, floorDb,
         cells.values.sortedByDescending { it.lastMs }.map { row(it) }, warnings.messages(), log.takeLast(300).toList(), dci, tbOkAll, pss, offCenter, feed.take(400),
+        paging.snapshot(),
     )
     /** Every decoded field of one cell, for its detail view. */
     @Synchronized
@@ -595,6 +644,11 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
         val c = cellFor(pci, false, ms, hz)
         c.lastMs = max(c.lastMs, ms)
         message(c, hexToBytes(hex), sib1, 0, ms)
+    }
+    @Synchronized
+    fun feedPage(hz: Long, pci: Int, hex: String, ms: Long = now()) {
+        val c = cellFor(pci, false, ms, hz)
+        pcchBlock(c, hexToBytes(hex), ms)
     }
     @Synchronized
     fun feedMib(hz: Long, pci: Int, mib: Mib, ms: Long = now()) {
@@ -673,12 +727,16 @@ class CellProcessor(private val packets: PacketLog? = null) : IqProcessor {
                 .put("decoded", if (d == null) JSONObject.NULL else JSONObject().put("mib", d.mib?.let { mibJson(it) } ?: JSONObject.NULL).put("sib1", jsonOf(d.sib1)).put("sib1Hex", d.sib1Hex)
                     .put("sibs", JSONArray(d.sibs.map { JSONObject().put("name", it.name).put("si", it.si).put("ms", it.ms).put("count", it.count).put("hex", it.hex).put("value", jsonOf(it.value)) }))))
         }
-        val json = JSONObject().put("exported", isoUtc(now())).put("cells", cs).put("alerts", JSONArray(s.alerts.map { warningJson(it) })).toString(1)
+        val pg = paging.snapshot(paging.max, paging.max)
+        val pj = JSONObject().put("total", pg.total)
+            .put("ids", JSONArray(pg.ids.map { JSONObject().put("type", it.type).put("id", it.id).put("domain", it.domain).put("count", it.count).put("firstMs", it.firstMs).put("lastMs", it.lastMs).put("cells", JSONArray(it.cells)) }))
+            .put("rows", JSONArray(pg.rows.map { JSONObject().put("ms", it.ms).put("lastMs", it.lastMs).put("cell", it.cell).put("pci", it.pci).put("type", it.type).put("id", it.id).put("domain", it.domain).put("count", it.count) }))
+        val json = JSONObject().put("exported", isoUtc(now())).put("cells", cs).put("alerts", JSONArray(s.alerts.map { warningJson(it) })).put("paging", pj).toString(1)
         return csv.toString() to json
     }
-    /** Forgets the cells and the log; the alerts stay until clearAlerts(). */
+    /** Forgets the cells, the log and the paging; the alerts stay until clearAlerts(). */
     @Synchronized
-    fun clear() { cells.clear(); feed.clear(); log.clear(); dci = 0; tbOkAll = 0; version++; packets?.clear(); post(true) }
+    fun clear() { cells.clear(); feed.clear(); paging.clear(); log.clear(); dci = 0; tbOkAll = 0; version++; packets?.clear(); post(true) }
     @Synchronized
     fun clearAlerts() { warnings.clear(); version++; post(true) }
 

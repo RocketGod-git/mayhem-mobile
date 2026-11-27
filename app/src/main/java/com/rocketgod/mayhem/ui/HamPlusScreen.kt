@@ -111,7 +111,8 @@ internal val HP_COLORS = listOf(0xFF4C8DFF, 0xFFFFAF00, 0xFF3DDC84, 0xFFFF5BD2, 
 internal fun hpColor(i: Int): Color = if (i < 0) Palette.muted else HP_COLORS[i % HP_COLORS.size]
 
 /** 146.52 as 146.520, 442.0125 as 442.0125: at least three decimals, a fourth only when it is there. */
-internal fun hpMhz(hz: Long): String { val s = "%.4f".format(java.util.Locale.US, hz / 1e6); return if (s.endsWith("0")) s.dropLast(1) else s }
+/** MHz as the tiles show it: "146.52", "146.5225", and a 6.25 kHz channel in full, "451.15625". */
+internal fun hpMhz(hz: Long): String { val s = (if (hz % 500 != 0L) "%.5f" else "%.4f").format(java.util.Locale.US, hz / 1e6); return if (s.endsWith("0")) s.dropLast(1) else s }
 internal fun hpDur(ms: Double): String { val t = max(0L, (ms / 1000).roundToInt().toLong()); return if (t < 3600) "${t / 60}:${(t % 60).toString().padStart(2, '0')}" else "${t / 3600}:${((t / 60) % 60).toString().padStart(2, '0')}:${(t % 60).toString().padStart(2, '0')}" }
 internal fun hpAgo(ms: Double): String = when { ms < 2_000 -> "now"; ms < 60_000 -> "${(ms / 1000).toInt()} s ago"; ms < 3_600_000 -> "${(ms / 60_000).toInt()} min ago"; else -> "${(ms / 3_600_000).toInt()} h ago" }
 /** When a channel was last heard, from its last-heard time: "not heard yet" when it never was (a 0 time is no time). */
@@ -365,12 +366,12 @@ internal fun HpSeg(labels: List<String>, selected: Int, accent: Color, modifier:
 
 /** The section chips: one row that scrolls sideways, a count on each (none at 0), the section on screen lit. */
 @Composable
-internal fun HpJump(counts: List<Int>, active: Int, accent: Color, onPick: (Int) -> Unit) {
+internal fun HpJump(counts: List<Int>, active: Int, accent: Color, sections: List<Pair<String, String>> = HP_SECTIONS, onPick: (Int) -> Unit) {
     val d = rememberDims()
     val shape = RoundedCornerShape(50)
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = d.dp(4f), horizontal = d.dp(2f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
         verticalAlignment = Alignment.CenterVertically) {
-        HP_SECTIONS.forEachIndexed { i, (_, label) ->
+        sections.forEachIndexed { i, (_, label) ->
             val on = i == active
             Row(Modifier.then(if (on) Modifier.shadow(d.dp(8f), shape, ambientColor = accent, spotColor = accent) else Modifier).clip(shape)
                 .background(if (on) accent else Palette.surface).border(1.dp, if (on) accent else Palette.line, shape).clickable { onPick(i) }

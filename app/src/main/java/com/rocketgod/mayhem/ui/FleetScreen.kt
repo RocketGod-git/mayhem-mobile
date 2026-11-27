@@ -718,12 +718,12 @@ private fun OnAirStack(s: FleetSnap, now: Long, max: Int, audioOn: Boolean, foll
 
 /** A CW ID chip: the callsign, and how long ago it was keyed. */
 @Composable
-private fun IdChip(id: String, ago: Long) {
+private fun IdChip(id: String, ago: Long, label: String = "ID", tint: Color = Palette.accent2) {
     val d = rememberDims()
-    Row(Modifier.clip(RoundedCornerShape(50)).border(1.dp, Palette.accent2.copy(alpha = 0.7f), RoundedCornerShape(50)).background(Palette.accent2.copy(alpha = 0.08f))
+    Row(Modifier.clip(RoundedCornerShape(50)).border(1.dp, tint.copy(alpha = 0.7f), RoundedCornerShape(50)).background(tint.copy(alpha = 0.08f))
         .padding(horizontal = d.dp(7f), vertical = d.dp(2f)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(5f))) {
-        Text("ID", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(7.5f), letterSpacing = 1.sp)
-        Text(id, color = Palette.accent2, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), maxLines = 1)
+        Text(label, color = Palette.muted, fontFamily = Mono, fontSize = d.sp(7.5f), letterSpacing = 1.sp)
+        Text(id, color = tint, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(9.5f), maxLines = 1)
         Text(flAgo(ago), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8f), maxLines = 1)
     }
 }
@@ -1091,6 +1091,11 @@ private fun FreqLine(c: CarrierRow, s: FleetSnap, now: Long, selected: Boolean, 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
                 Text(c.cls.ifEmpty { if (c.decoding) "LISTENING" else "NOT HEARD YET" }, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(9.5f))
                 if (c.callsign.isNotEmpty()) IdChip(c.callsign, now - c.callsignMs)
+                // an analog carrier's MDC-1200 unit or FleetSync fleet and unit
+                if (c.ident.isNotEmpty()) {
+                    val who = Regex("^MDC-1200 UNIT (\\S+)|^FLEETSYNC I+ (\\S+)").find(c.ident)?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() } ?: c.ident
+                    IdChip(who + if (c.identEmergency) " EMERGENCY" else "", now - c.identMs, if (c.ident.startsWith("MDC")) "MDC" else "FS", if (c.identEmergency) Palette.danger else Palette.accent2)
+                }
             }
             Text(listOf(c.role.uppercase() + if (c.tdma) " TDMA" else "", id).filter { it.isNotBlank() }.joinToString(" · "), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f))
         }
@@ -1114,6 +1119,7 @@ private fun sysType(x: SystemRow, s: FleetSnap): String = when (x.proto) {
     "DMR" -> when (x.trunk) { "CAPACITY PLUS" -> "DMR CAPACITY PLUS"; "TIER III" -> "DMR TIER III"; else -> "DMR" }
     "NXDN" -> if (x.trunk.isNotEmpty()) "NXDN ${x.trunk}" else "NXDN"
     "SMARTNET" -> "MOTOROLA TYPE II"
+    "DPMR" -> "dPMR"
     else -> x.proto
 }
 /** Only what has data: a field with no value is left out, never shown as a dash. */
@@ -1288,6 +1294,7 @@ private fun FleetCard(s: FleetSnap, sel: String, now: Long, view: Int, wide: Boo
                 CardKv(kvOf("FREQUENCY" to "${mhz(c.hz)} MHz", "SYSTEM" to sys?.let { "${Dispatch.sysTitle(it)} · ${sysType(it, s)}" },
                     "NAC" to (if (c.nac >= 0) hx(c.nac, 3) else null), "COLOR CODE" to (if (c.cc >= 0) "${c.cc}" else null), "LCN" to c.lcn,
                     "CW ID" to (if (c.callsign.isNotEmpty()) c.callsign + (if (c.callsignMs > 0) " · ${flClock(c.callsignMs)}" else "") else null),
+                    "UNIT ID" to (if (c.ident.isNotEmpty()) c.ident + (if (c.identEmergency) " · EMERGENCY" else "") + " · ${flClock(c.identMs)}" else null),
                     "ENVELOPE" to "%.2f (constant near 0, linear near 0.3)".format(java.util.Locale.US, c.envCv), "EYE" to "%.2f".format(java.util.Locale.US, c.eye),
                     "FIRST HEARD" to flClock(c.firstMs), "LAST HEARD" to "${flClock(c.lastMs)} · ${DispatchView.agoShort(now - c.lastMs)} ago"))
             })

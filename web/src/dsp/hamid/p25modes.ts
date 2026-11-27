@@ -71,12 +71,12 @@ export class P25Modes {
   snapshot(): P25ModesSnap {
     const mode = this.mode;
     const s: P25ModesSnap = { mode, p25: null, p25p2: null, nxdn: null, dpmr: null, station: '', repeater: '', position: null };
-    if (mode === 'P25') { const id = { ...this.p25.id, nac: this.nac() }; s.p25 = id; if (id.src) s.station = String(id.src); }
+    if (mode === 'P25') { const id = { ...this.p25.id, nac: this.nac() }; s.p25 = id; if (id.src) s.station = String(id.src); s.position = id.position; }
     else if (mode === 'P25P2') {
       const id = { ...this.p25p2.id, slots: this.p25p2.id.slots.map(x => ({ ...x })) as P2Id['slots'] }; s.p25p2 = id;
       const live = id.slots.filter(x => x.src > 0).sort((a, b) => b.lastSym - a.lastSym)[0];
       if (live) s.station = String(live.src);
-    } else if (mode === 'NXDN') { const id = { ...this.nxdn.id }; s.nxdn = id; if (id.src) s.station = id.typeD ? `${id.src >> 11}-${id.src & 0x7ff}` : String(id.src); }
+    } else if (mode === 'NXDN') { const id = { ...this.nxdn.id }; s.nxdn = id; if (id.src) s.station = id.alias || (id.typeD ? `${id.src >> 11}-${id.src & 0x7ff}` : String(id.src)); s.position = id.position; }
     else if (mode === 'dPMR') { const id = { ...this.dpmr.id }; s.dpmr = id; s.station = id.ownText; s.position = id.position; }
     return s;
   }

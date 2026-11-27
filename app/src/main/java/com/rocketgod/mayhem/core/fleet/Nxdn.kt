@@ -159,9 +159,9 @@ private val CC_NAMES = mapOf(
 )
 private val TC_NAMES = mapOf(
     0x01 to "VCALL", 0x02 to "VCALL_REC_REQ", 0x03 to "VCALL_IV", 0x04 to "VCALL_ASSGN", 0x05 to "VCALL_ASSGN_DUP", 0x07 to "TX_REL_EX", 0x08 to "TX_REL",
-    0x09 to "DCALL", 0x0b to "DCALL", 0x0c to "DCALL_ACK", 0x0f to "HEAD_DLY", 0x10 to "IDLE", 0x11 to "DISC", 0x19 to "SRV_INFO", 0x1a to "CCH_INFO", 0x1b to "ADJ_SITE_INFO",
+    0x09 to "DCALL_HDR", 0x0b to "DCALL_UDT", 0x0c to "DCALL_ACK", 0x0f to "HEAD_DLY", 0x10 to "IDLE", 0x11 to "DISC", 0x19 to "SRV_INFO", 0x1a to "CCH_INFO", 0x1b to "ADJ_SITE_INFO",
     0x1c to "FAIL_STAT_INFO", 0x28 to "AUTH_INQ_REQ", 0x30 to "STAT_INQ_REQ", 0x31 to "STAT_INQ_RESP", 0x32 to "STAT_REQ", 0x33 to "STAT_RESP", 0x34 to "REM_CON_REQ",
-    0x35 to "REM_CON_RESP", 0x38 to "SDCALL_REQ", 0x39 to "SDCALL_RESP", 0x3a to "SDCALL_IV",
+    0x35 to "REM_CON_RESP", 0x38 to "SDCALL_REQ", 0x39 to "SDCALL_RESP", 0x3a to "SDCALL_IV", 0x3f to "PROP_FORM",
 )
 data class NxdnAdj(val category: Int, val system: Int, val site: Int, val num: Int, val ch: Int)
 /** CCH_INFO: the Location ID, the flags (8 current, 4 new, 2 added, 1 deleted) and the two channels. */
@@ -178,13 +178,15 @@ class NxdnMsg(val type: Int, val name: String, val hex: String) {
     var unit: Int? = null; var gid: Int? = null; var cause: Int? = null
     /** SRV_INFO service flags (6.5.33). */
     var service: Int? = null
+    /** STAT_REQ and STAT_RESP: the status (NxdnData.kt). */
+    var status: Int? = null
     /** Type-D IDs carry a 5-bit home repeater or prefix ahead of an 11-bit ID (1-E 6.6.6, 6.6.7). */
     var typeD = false
 }
 private fun nxHex(o: IntArray) = o.joinToString("") { "%02X".format(it) }
 /** Call Timer (6.5.32): 15 s steps to 180 s, then 30 s steps to 600 s. */
 private fun callTimer(v: Int) = if (v == 0) 0 else if (v <= 12) 15 * v else if (v <= 0x1a) 180 + 30 * (v - 12) else -1
-private val CALLISH_TC = setOf(0x01, 0x02, 0x04, 0x05, 0x07, 0x08, 0x11)
+private val CALLISH_TC = setOf(0x01, 0x02, 0x04, 0x05, 0x07, 0x08, 0x09, 0x11, 0x32, 0x33, 0x38)
 private val CALLISH_CC = setOf(0x01, 0x02, 0x03, 0x04, 0x05, 0x0d, 0x0e, 0x11)
 /**
  * One layer 3 message from its octets. [on] says where it came from: a control channel ("cc") or a traffic channel
@@ -201,7 +203,8 @@ fun nxdnParse(o: IntArray, on: String, typeD: Boolean = false): NxdnMsg {
         m.emergency = (o[1] and 0x80) != 0; m.callType = o[2] shr 5; m.group = (o[2] shr 5) < 2; m.voiceOpt = o[2] and 0x1f; m.src = u16(3); m.dst = u16(5)
         if (typeD) m.typeD = true
     }
-    if (on == "tc" && type == 0x01) { m.cipher = o[7] shr 6; m.keyId = o[7] and 0x3f }
+    if (on == "tc" && (type == 0x01 || type == 0x09 || type == 0x38)) { m.cipher = o[7] shr 6; m.keyId = o[7] and 0x3f }
+    if (on == "tc" && (type == 0x32 || type == 0x33)) m.status = o[7]
     // the assignments: Call Timer (6 bits) then the Channel (10 bits) in octets 7 and 8 (Figure 6.4-31)
     if (!typeD && (type == 0x04 || type == 0x05 || (on == "cc" && (type == 0x0d || type == 0x0e)))) { m.timer = callTimer(o[7] shr 2); m.ch = ((o[7] and 3) shl 8) or o[8] }
     if (type == 0x18 && on == "cc") nxdnLocation(loc(1))?.let { id ->
@@ -240,6 +243,7 @@ fun nxdnLine(m: NxdnMsg): String {
     if (vo != null && (m.type == 0x01 || m.type == 0x04 || m.type == 0x05)) parts.add(listOf("4800 EHR", "", "9600 EHR", "9600 EFR").getOrNull(vo and 7)?.ifEmpty { null } ?: "mode ${vo and 7}")
     m.cipher?.let { parts.add(if (it != 0) "${NXDN_CIPHERS[it]} · KEY ${m.keyId}" else "CLEAR") }
     if (m.emergency) parts.add("EMERGENCY")
+    m.status?.let { parts.add("STATUS $it") }
     m.cch?.let { c -> parts.add("${NXDN_CATEGORY[c.category]} SYSTEM ${c.system} · SITE ${c.site}"); parts.add("${mapOf(8 to "current", 4 to "new", 2 to "added", 1 to "deleted")[c.flags] ?: ""} channel ${c.ch1}${if (c.ch2 != 0 && c.flags == 8) " and ${c.ch2}" else ""}".trim()) }
     m.adj?.forEach { a -> parts.add("site ${a.site} of ${NXDN_CATEGORY[a.category]} ${a.system} on channel ${a.ch}") }
     m.unit?.let { u -> val g = m.gid; val c = m.cause; parts.add("UNIT $u${if (g != null && g != 0 && g != 0xffff) " · TG $g" else ""}${if (c != null) " · ${if (c == 1) "accepted" else "cause %02X".format(c)}" else ""}") }
@@ -290,6 +294,8 @@ class NxdnTraffic(val rf: Int, val fn: Int, val opt: Int, val dir: Int) {
     val msgs = ArrayList<NxdnMsg>()
     /** A Type-D SCCH message. */
     var scch: NxdnScch? = null
+    /** What a unit sent, once whole (NxdnData.kt): a data call's position or text, a status, a talker alias. */
+    val data = ArrayList<UnitData>()
 }
 /** One baud rate's receiver: symbols in (from [SymbolRx]), frames found by their FSW, every kind of channel read. */
 class NxdnFramer {
@@ -300,10 +306,11 @@ class NxdnFramer {
     /** A traffic or conventional channel frame. */
     var onTraffic: (NxdnTraffic) -> Unit = {}
     class Stats {
-        var fsw = 0; var lichOk = 0; var cacOk = 0; var cacBad = 0; var sacchOk = 0; var facchOk = 0; var scchOk = 0; var voice = 0
-        override fun toString() = "fsw $fsw lichOk $lichOk cacOk $cacOk cacBad $cacBad sacchOk $sacchOk facchOk $facchOk scchOk $scchOk voice $voice"
+        var fsw = 0; var lichOk = 0; var cacOk = 0; var cacBad = 0; var sacchOk = 0; var facchOk = 0; var scchOk = 0; var udchOk = 0; var voice = 0
+        override fun toString() = "fsw $fsw lichOk $lichOk cacOk $cacOk cacBad $cacBad sacchOk $sacchOk facchOk $facchOk scchOk $scchOk udchOk $udchOk voice $voice"
     }
     val stats = Stats()
+    private val data = NxdnDataReader()
     /** The last frame's worth of symbols, and the frames waiting for their body (every FSW match gets its own look). */
     private val hist = FloatArray(256); private var hp = 0
     private val pending = ArrayDeque<Int>()
@@ -378,6 +385,17 @@ class NxdnFramer {
             onCac(nxField(cac, 0, 8), msgs)
             return true
         }
+        // a data frame (functional channel 01): the UDCH, or a FACCH2 (option 11), alone after the LICH
+        if ((rf == 1 || rf == 2) && fn == 1) {
+            val u = nxdnUdchSoft(soft(v, 8, 174)) ?: return false
+            stats.udchOk++; lastGood = end; locked = true
+            val o = bytesOf(u, 8, 22); val m = nxdnParse(o, "tc")
+            val t = NxdnTraffic(rf, fn, opt, dir)
+            if (m.type != 0x0b) t.msgs.add(m)
+            t.data.addAll(data.push(o))
+            onTraffic(t)
+            return true
+        }
         // a traffic channel: the SACCH (or a Type-D SCCH), then the VCHs or FACCH1s
         val t = NxdnTraffic(rf, fn, opt, dir)
         val sc = nxdnSacchSoft(soft(v, 8, 30))
@@ -423,6 +441,7 @@ class NxdnFramer {
         if (!good && !onGrid) return false
         if (good) lastGood = end
         if (!locked) { t.halves[0] = null; t.halves[1] = null; t.ran = -1; t.scch = null }
+        else for (m in t.msgs) t.data.addAll(data.push(Codes.fromHex(m.hex)))
         stats.voice += t.halves.count { it != null }
         onTraffic(t)
         return true
@@ -434,13 +453,15 @@ class NxdnFramer {
  */
 class NxdnRx(val fs: Double, val baud: Int) {
     val framer = NxdnFramer()
+    /** The symbols also go here (dPMR shares the NXDN48 receiver: 2400 symbols a second, the same deviation). */
+    var tap: ((Float) -> Unit)? = null
     val rx = SymbolRx(fs, baud.toDouble(), 0.5)
     private val h: FloatArray; private val bi: FloatArray; private val bq: FloatArray; private var p = 0
     private var oi = FloatArray(0); private var oq = FloatArray(0)
     /** The first tenth of a second is held to measure the carrier offset (the scrambled levels average out). */
     private var holdI: FloatArray? = FloatArray(1024); private var holdQ = FloatArray(1024); private var holdN = 0
     init {
-        rx.onSymbol = { s -> framer.push(s) }
+        rx.onSymbol = { s -> framer.push(s); tap?.invoke(s) }
         val fc = (if (baud == 2400) 1050 else 2400) + baud / 2.0 + 800; val n = 2 * (2 * fs / baud).roundToInt() + 1; val m = (n - 1) / 2
         h = FloatArray(n); var sum = 0.0
         for (i in 0 until n) {

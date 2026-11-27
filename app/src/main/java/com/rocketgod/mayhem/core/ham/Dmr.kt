@@ -6,17 +6,21 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToLong
+import com.rocketgod.mayhem.core.fleet.dmrAlgName
+import com.rocketgod.mayhem.core.hamid.gpsInfoLc
 
 /*
  * DMR (ETSI TS 102 361) receiver fed with the NFM discriminator: 4FSK at 4800 symbols/s (the transmitter's
- * raised-cosine pulses are Nyquist, so the receiver band-limits and samples at the symbol centres), sync-word
+ * raised-cosine pulses are Nyquist, so the receiver band-limits and samples at the symbol centers), sync-word
  * correlation for symbol timing and eye levels, then per 30 ms time slot:
- *   · CACH (which slot), slot type via Golay (20,8): colour code + data type
+ *   · CACH (which slot), slot type via Golay (20,8): color code + data type
  *   · BPTC(196,96) for voice LC headers / terminators (RS(12,9) checked) and CSBKs (CRC-CCITT checked)
  *   · EMB via QR(16,7) plus the embedded LC spread over voice bursts B–E (Hamming 16,11,4, column parity,
  *     5-bit checksum) — talkgroup, source ID and talker alias mid-call
+ *   · the GPS Info LC (FLCO 8) in the embedded signaling: the talking radio's position
+ *   · the PI header's privacy algorithm and key, by name (display only)
  *   · the three AMBE+2 voice frames per burst, de-interleaved and handed to the vocoder
- * Both time slots are followed; the audio follows one of them. The same correlator recognises P25 (decoded, with
+ * Both time slots are followed; the audio follows one of them. The same correlator recognizes P25 (decoded, with
  * its IMBE vocoder), D-STAR, NXDN and Fusion (YSF) sync words so the DIGITAL tab can name what it hears.
  * Twin of web/src/dsp/ham/dmr.ts.
  */
@@ -200,11 +204,14 @@ private val CSBKO = mapOf(0x04 to "UNIT-TO-UNIT REQUEST", 0x05 to "UNIT-TO-UNIT 
 private val DATA_TYPES = listOf("PI HEADER", "VOICE HEADER", "END OF CALL", "CSBK", "MBC HEADER", "MBC", "DATA HEADER", "RATE ½ DATA", "RATE ¾ DATA", "IDLE", "RATE 1 DATA")
 
 // ------------------------------------------------------------------------------------------- time slot
-data class SlotStatus(val voice: Boolean, val tg: Int, val src: Int, val group: Boolean, val alias: String, val cc: Int, val last: String, val since: Long, val errs: Float)
+/** [gps]: the talking radio's position from its GPS Info LC (lat, lon, error code 0 to 7), or null. */
+data class SlotGps(val lat: Double, val lon: Double, val err: Int)
+data class SlotStatus(val voice: Boolean, val tg: Int, val src: Int, val group: Boolean, val alias: String, val cc: Int, val last: String, val since: Long, val errs: Float, val gps: SlotGps? = null)
 
 private class TimeSlot {
     var voice = false; var seq = -1
     var tg = 0; var src = 0; var group = true; var alias = ""; var cc = -1
+    var gps: SlotGps? = null
     var last = ""; var since = 0L
     var errs = 0f; var frames = 0
     var lastLog = ""; var lastLogAt = -1_000_000_000L
@@ -215,13 +222,18 @@ private class TimeSlot {
 
     fun setLc(lc: Lc): Boolean {
         if (lc.flco in 4..7) { talkerAlias(lc); return false }
-        if (lc.flco == 8) return false                 // GPS info, not shown
+        if (lc.flco == 8) {                            // GPS info: the talking radio's position
+            val g = gpsInfoLc(intArrayOf(lc.flco, lc.fid, lc.opts, (lc.dst shr 16) and 255, (lc.dst shr 8) and 255, lc.dst and 255, (lc.src shr 16) and 255, (lc.src shr 8) and 255, lc.src and 255))
+            if (g != null) gps = SlotGps(g.pos.lat, g.pos.lon, g.err)
+            return false
+        }
         val changed = lc.dst != tg || lc.src != src
+        if (lc.src != src) gps = null
         tg = lc.dst; src = lc.src; group = lc.flco == 0
         return changed
     }
 
-    fun status() = SlotStatus(voice, tg, src, group, alias, cc, last, since, if (frames > 0) errs / frames else 0f)
+    fun status() = SlotStatus(voice, tg, src, group, alias, cc, last, since, if (frames > 0) errs / frames else 0f, gps)
     fun endCall() { voice = false; seq = -1; emb.reset(); ambe.reset() }
 
     /** Talker alias (FLCO 4 header + 5..7 blocks): 7-bit, ISO-8, UTF-8 or UTF-16BE text. */
@@ -319,7 +331,7 @@ class DmrDecoder : FmTap {
         lp.reset(); up.reset(); ring.fill(0f); n = 0; locked = false; pos = 0; frame = 0; parity = 0
         lastSyncN = -1_000_000_000L; syncCount = 0; cc = -1; source = ""; candSync = null; candCorr = 0f
         simplexPhase = -1; msDual = false; msOther = 0; p25Mode = false; dmrFrameN = -1_000_000_000L; p25.reset()
-        for (t in ts) { t.endCall(); t.tg = 0; t.src = 0; t.alias = ""; t.last = ""; t.cc = -1; t.errs = 0f; t.frames = 0 }
+        for (t in ts) { t.endCall(); t.tg = 0; t.src = 0; t.alias = ""; t.last = ""; t.cc = -1; t.gps = null; t.errs = 0f; t.frames = 0 }
         polOk = 0; polBad = 0; confirmed = false; sps = SPS.toDouble(); ccVotes.fill(0f); validCount = 0
         dvName = ""; dvAt = -1_000_000_000L; dvCount = 0
     }
@@ -608,6 +620,12 @@ class DmrDecoder : FmTap {
             b[9] = b[9] xor m; b[10] = b[10] xor m; b[11] = b[11] xor m
             if (rs129ok(b)) { validCount++; t.setLc(parseLc(b)); logLine(t, if (dt == 1) "VOICE HEADER" else "END OF CALL") }
             else logLine(t, "$name (bad RS)")
+        } else if (dt == 0) {
+            // a privacy header: the algorithm (by name) and key of an encrypted call; nothing is decrypted
+            val b = bptc(raw)
+            b[10] = b[10] xor 0x69; b[11] = b[11] xor 0x69
+            if (crcOk(b, 12)) { validCount++; logLine(t, "PI HEADER · ${dmrAlgName(b[0])} · KEY ${b[2]}") }
+            else logLine(t, "$name (bad CRC)")
         } else if (dt == 3 || dt == 4) {
             val b = bptc(raw)
             val m = if (dt == 3) 0xa5 else 0xaa
@@ -652,6 +670,7 @@ class DmrDecoder : FmTap {
         val parsed = parseLc(lc)
         if (t.setLc(parsed)) logLine(t, "VOICE")
         else if (parsed.flco in 4..7 && t.alias.isNotEmpty()) logLine(t, "alias ${t.alias}")
+        else if (parsed.flco == 8) t.gps?.let { logLine(t, "GPS %.5f, %.5f".format(java.util.Locale.US, it.lat, it.lon)) }
     }
 
     private fun voiceBurst(t: TimeSlot) {

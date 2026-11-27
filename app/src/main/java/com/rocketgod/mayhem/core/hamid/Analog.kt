@@ -32,7 +32,8 @@ data class CwId(val callsign: String, val suffix: String, val text: String, val 
 data class Selcall(val system: String, val digits: String, val atS: Double)
 data class TwoTone(val aHz: Int, val bHz: Int, val aMs: Int, val bMs: Int, val atS: Double)
 data class MdcPacket(val op: Int, val arg: Int, val unit: String, val emergency: Boolean, val label: String, val extra: List<Int>, val atS: Double)
-data class DataBurst(val baud: Int, val ms: Int, val atS: Double)
+/** A data burst no decoder here names: its rate, length, and its first bytes as raw bits in hex (the lower tone a 1). */
+data class DataBurst(val baud: Int, val ms: Int, val atS: Double, val hex: String = "")
 /** FleetSync: fleet 100-349 and unit 1000-4999 as the radios show them, -1 for "all"; [cmd] and [sub] raw. */
 data class FleetSync(val baud: Int, val cmd: Int, val sub: Int, val fromFleet: Int, val fromUnit: Int, val toFleet: Int, val toUnit: Int, val all: Boolean, val atS: Double)
 data class AnalogTx(
@@ -90,12 +91,16 @@ private fun goertzel(x: FloatArray, from: Int, to: Int, hz: Double, rate: Double
 
 // ------------------------------------------------------------------------------------------------ callsigns
 private val CALL_RE = Regex("^((?:[A-Z]{1,2}|[A-Z][0-9]|[2-9][A-Z])[0-9][A-Z]{1,4})(?:/([A-Z0-9]{1,4}))?$")
+/** A GMRS callsign: four letters and three digits (WRAB123), or the older three letters and four digits (KAE1234). */
+private val GMRS_RE = Regex("^(WR[A-Z]{2}[0-9]{3}|K[A-Z]{2}[0-9]{4})(?:/([A-Z0-9]{1,4}))?$")
 data class PlausibleCall(val call: String, val suffix: String)
-/** A plausible amateur callsign in a CW word ("W6ABC", "W6ABC/R", "DEW6ABC"), or null. */
+/** A plausible amateur or GMRS callsign in a CW word ("W6ABC", "W6ABC/R", "DEW6ABC", "WRAB123"), or null. */
 fun plausibleCall(word: String): PlausibleCall? {
     for (w in listOf(word, if (word.startsWith("DE")) word.substring(2) else "")) {
         val m = if (w.isNotEmpty()) CALL_RE.find(w) else null
         if (m != null && m.groupValues[1].length in 3..7) return PlausibleCall(m.groupValues[1], m.groupValues[2])
+        val g = if (w.isNotEmpty()) GMRS_RE.find(w) else null
+        if (g != null) return PlausibleCall(g.groupValues[1], g.groupValues[2])
     }
     return null
 }
@@ -311,6 +316,37 @@ private fun fskDemod(y: FloatArray, from: Int, to: Int, rate: Double, centerHz: 
     return C
 }
 private fun cumAt(C: DoubleArray, t: Double): Double { val n = C.size - 1; val k = floor(t).toInt(); return if (k >= n) C[n] else C[k] + (t - k) * (C[k + 1] - C[k]) }
+/** A burst's bit integrals at [baud] (the tones split about 1600 Hz at 1200 baud, 1800 at 2400), at the bit phase that is cleanest. */
+private fun burstBits(y: FloatArray, from: Int, to: Int, rate: Double, baud: Int, most: Int): DoubleArray {
+    val C = if (baud == 2400) fskDemod(y, from, to, rate, 1800.0, 1600.0) else fskDemod(y, from, to, rate, 1600.0, 1200.0)
+    val sps = rate / baud; val nb = max(0, min(most, floor((to - from - sps) / sps).toInt()))
+    fun d(ph: Int, k: Int) = cumAt(C, ph * sps / 8 + (k + 1) * sps) - cumAt(C, ph * sps / 8 + k * sps)
+    var best = 0; var bestQ = -1.0
+    for (ph in 0 until 8) { var q = 0.0; for (k in 0 until nb) q += abs(d(ph, k)); if (q > bestQ) { bestQ = q; best = ph } }
+    return DoubleArray(nb) { d(best, it) }
+}
+/** Whether bits read at 2400 baud come in equal pairs (at either alignment, 9 in 10 of them): a 1200 baud burst. */
+private fun pairs(b: DoubleArray): Boolean {
+    for (a in 0 until 2) {
+        var same = 0; var n = 0; var k = a
+        while (k + 1 < b.size) { n++; if ((b[k] < 0) == (b[k + 1] < 0)) same++; k += 2 }
+        if (n >= 16 && same >= 0.9 * n) return true
+    }
+    return false
+}
+class BurstRead(val baud: Int, val hex: String)
+/**
+ * A burst no decoder named, read as raw bits: its rate (the spectrum's guess, 2400 when it reaches past 2150 Hz, taken
+ * back to 1200 when its 2400 baud bits come in pairs: Bell 202's 2200 Hz tone reaches as far) and its first
+ * [maxBytes] as hex, most significant bit first, the lower tone a 1.
+ */
+fun burstRead(y: FloatArray, from: Int, to: Int, rate: Double, guess: Int, maxBytes: Int = 12): BurstRead {
+    val baud = if (guess == 2400 && pairs(burstBits(y, from, to, rate, 2400, 400))) 1200 else guess
+    val b = burstBits(y, from, to, rate, baud, 8 * maxBytes); val out = ArrayList<String>()
+    var k = 0
+    while (k + 8 <= b.size) { var v = 0; for (j in 0 until 8) v = (v shl 1) or (if (b[k + j] < 0) 1 else 0); out.add("%02X".format(Locale.US, v)); k += 8 }
+    return BurstRead(baud, out.joinToString(" "))
+}
 /** MDC-1200 packets in a stretch of audio at [rate]. */
 fun decodeMdc(y: FloatArray, from: Int, to: Int, rate: Double, t0S: Double): List<MdcPacket> {
     val n = to - from; if (n < rate * 0.1) return emptyList()
@@ -582,8 +618,13 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
      * stretch is read with 0.6 s either side. The same as the web's.
      */
     var onlyTonal = false
-    private var zHp = 0.0; private var zPrev = 0.0; private var zc = 0; private var zN = 0; private var zE0 = 0.0; private var zE1 = 0.0; private var fPrev = 0.0; private var fRun = 0
+    private var zHp = 0.0; private var zPrev = 0.0; private var zc = 0; private var zN = 0; private var zE0 = 0.0; private var zE1 = 0.0; private var fPrev = 0.0; private var fRun = 0; private var dRun = 0
     private val segs = ArrayList<LongArray>()
+    /**
+     * With [onlyTonal], each tonal stretch is read once it is over rather than when the carrier drops, and plain carrier
+     * is not kept past a second: a voice channel's audio (Prowl, Audio, Dispatch), where the carrier may never be seen to drop.
+     */
+    var eager = false
 
     fun reset() {
         carrier = false; txs.clear(); bN = 0; bE = 0.0; bD = 0.0; prev = 0.0; onRun = 0; offRun = 0
@@ -615,12 +656,19 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
                 val f = zc * rate / (2 * zN); val r = if (zE0 > 0) 1 - zE1 / (2 * zE0) else 1.0
                 val fe = acos(r.coerceIn(-1.0, 1.0)) * rate / (2 * PI)
                 val steady = f > 250 && f < 3200 && abs(f - fPrev) <= max(60.0, 0.04 * f) && abs(fe - f) <= max(60.0, 0.06 * f)
-                fRun = if (steady) fRun + 1 else 0; fPrev = f; zc = 0; zN = 0; zE0 = 0.0; zE1 = 0.0
-                if (fRun >= 4) {
+                // 1200 baud FFSK (MDC-1200, FleetSync) wanders between its two tones with the bits: one tone a block by both
+                // measures, but not the same one block to block; 60 ms of it is a data burst
+                val fsk = f > 1000 && f < 2600 && abs(fe - f) <= max(80.0, 0.08 * f) && abs(f - fPrev) <= 400
+                fRun = if (steady) fRun + 1 else 0; dRun = if (fsk) dRun + 1 else 0; fPrev = f; zc = 0; zN = 0; zE0 = 0.0; zE1 = 0.0
+                if (fRun >= 4 || dRun >= 6) {
                     val pad = jsr(0.6 * rate).toLong(); val from = dpos - 6 * 80 - pad; val to = dpos + pad; val last = segs.lastOrNull()
                     if (last != null && from <= last[1]) last[1] = max(last[1], to) else segs.add(longArrayOf(from, to))
                 }
             }
+        }
+        if (eager && onlyTonal && carrier) {
+            val last = segs.lastOrNull()
+            if (if (last != null) dpos >= last[1] else dpos - txStart > 2 * rate) { val end = if (last != null) dpos else dpos - jsr(rate).toLong(); endTx(end); txStart = end }
         }
         if (!carrier && onRun == 0 && blen > 2 * rate) { val keep = jsr(rate).toInt(); System.arraycopy(buf, blen - keep, buf, 0, keep); bufAt += blen - keep; blen = keep }
         if (carrier && dpos - txStart > 240 * rate) { endTx(dpos); txStart = dpos }
@@ -647,7 +695,7 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
                 val tx = analyze(buf.copyOfRange(a2, b2), (bufAt + a2) / rate).copy(kerchunk = false, timeout = false)
                 remember(tx); txs.add(tx); if (txs.size > 30) txs.removeAt(0); onTx(tx)
             }
-            segs.clear(); fRun = 0
+            segs.clear(); fRun = 0; dRun = 0
         } else if (b - a >= jsr(0.08 * rate)) {
             val tx = analyze(buf.copyOfRange(a, b), txStart / rate)
             remember(tx); txs.add(tx); if (txs.size > 30) txs.removeAt(0); onTx(tx)
@@ -703,7 +751,8 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
                 else if (fsy.isNotEmpty()) fleetsync.addAll(fsy)
                 else if (strict >= 10 && strict >= 0.55 * (u - t) && (u - t) * H / rate >= 0.12 && (u - t) * H / rate <= 1.2) {
                     var hs = 0.0; var hn = 0; for (j in t until u) if (fr.fsk[j] && fr.E[j] > vThr) { hs += fr.hi[j]; hn++ }
-                    data.add(DataBurst(if (hs / hn > 0.08) 2400 else 1200, jsr((u - t) * H * 1000 / rate).toInt(), startS + ft(t)))
+                    val rd = burstRead(y, t * H, min(y.size, u * H + N), rate, if (hs / hn > 0.08) 2400 else 1200)
+                    data.add(DataBurst(rd.baud, jsr((u - t) * H * 1000 / rate).toInt(), startS + ft(t), rd.hex))
                 }
             }
             t = u
@@ -756,6 +805,45 @@ class AnalogSignaling(val fs: Double, val audio: Boolean = false) {
 }
 
 /** One line per thing heard in a transmission, for the UI (app copy: no dashes as punctuation, no colons). */
+/** An MDC-1200 or FleetSync ID off a voice channel, as Prowl, Audio and Dispatch show it. The same as the web's. */
+data class AnalogId(
+    /** "MDC-1200" or "FLEETSYNC". */
+    val kind: String,
+    /** MDC-1200: the unit ID as the radios show it (hex). FleetSync: the sender's fleet and unit ("100-1001", "all"). */
+    val unit: String,
+    /** FleetSync: who it was sent to, fleet and unit; "" for MDC-1200. */
+    val to: String,
+    val emergency: Boolean,
+    /** What it was: "PTT ID", "EMERGENCY", "RADIO CHECK", "OP 2B"; FleetSync "I" (1200 baud) or "II" (2400 baud). */
+    val what: String,
+    val atS: Double,
+)
+
+/** The MDC-1200 and FleetSync IDs in a transmission, in that order. */
+fun analogIds(tx: AnalogTx): List<AnalogId> {
+    fun fid(fleet: Int, unit: Int) = if (fleet < 0 && unit < 0) "all" else "${if (fleet < 0) "all" else fleet}-${if (unit < 0) "all" else unit}"
+    return tx.mdc.map { m -> AnalogId("MDC-1200", m.unit, "", m.emergency, m.label.ifEmpty { "op " + m.op.toString(16).uppercase().padStart(2, '0') }.uppercase(), m.atS) } +
+        tx.fleetsync.map { f -> AnalogId("FLEETSYNC", fid(f.fromFleet, f.fromUnit), if (f.all) "all" else fid(f.toFleet, f.toUnit), false, if (f.baud == 2400) "II" else "I", f.atS) }
+}
+
+/** One line for an ID: "MDC-1200 UNIT 1234 · PTT ID", "MDC-1200 UNIT 0042 · EMERGENCY", "FLEETSYNC I 100-1001 TO 100-1234". */
+fun analogIdText(id: AnalogId): String =
+    if (id.kind == "MDC-1200") "MDC-1200 UNIT ${id.unit} · ${id.what}" else "FLEETSYNC ${id.what} ${id.unit.uppercase()} TO ${id.to.uppercase()}"
+
+/**
+ * MDC-1200 and FleetSync on a narrow FM voice channel's discriminator: the analog signaling's light look (only what is
+ * tonal is read, each stretch once it is over), each ID handed on as it is read.
+ */
+class AnalogIds(val fs: Double) {
+    val sig = AnalogSignaling(fs).also { it.onlyTonal = true; it.eager = true }
+    var onId: (AnalogId) -> Unit = {}
+    init { sig.onTx = { tx -> for (id in analogIds(tx)) onId(id) } }
+    fun push(x: FloatArray, n: Int) = sig.push(x, n)
+    /** The end of a recording: what is still open is read. */
+    fun flush() = sig.flush()
+    fun reset() = sig.reset()
+}
+
 fun analogSummary(tx: AnalogTx): List<String> {
     val out = ArrayList<String>()
     tx.cw?.let { out.add("CW ID ${it.callsign}${if (it.suffix.isNotEmpty()) "/" + it.suffix else ""}, ${it.wpm} WPM") }
@@ -764,7 +852,7 @@ fun analogSummary(tx: AnalogTx): List<String> {
     for (m in tx.mdc) out.add("MDC-1200 unit ${m.unit}${if (m.label.isNotEmpty()) " " + m.label else " op " + m.op.toString(16).uppercase().padStart(2, '0')}")
     fun fid(v: Int) = if (v < 0) "all" else v.toString()
     for (f in tx.fleetsync) out.add("FleetSync ${if (f.baud == 2400) "II" else "I"} ${fid(f.fromFleet)}-${fid(f.fromUnit)} to ${fid(f.toFleet)}-${fid(f.toUnit)}")
-    for (d in tx.data) out.add("${d.baud} baud data burst")
+    for (d in tx.data) out.add("${d.baud} baud data burst${if (d.hex.isNotEmpty()) " " + d.hex else ""}")
     if (tx.ctcss != 0.0) out.add("PL ${String.format(Locale.US, "%.1f", tx.ctcss)}${if (tx.reverseBurst != 0) ", reverse burst ${tx.reverseBurst}°" else ""}")
     if (tx.dcs != 0) out.add("DCS ${tx.dcs.toString().padStart(3, '0')}${if (tx.dcsTurnOff) ", turn-off code" else ""}")
     tx.courtesy?.let { c -> out.add("Courtesy tone ${c.tones.joinToString(" ") { it.hz.toString() }} Hz${if (c.seen > 1) ", heard ${c.seen} times" else ""}") }

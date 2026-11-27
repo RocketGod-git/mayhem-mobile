@@ -214,3 +214,10 @@ fun embDibits(cc: Int, pi: Boolean, lcss: Int, g: Int = QR167_GENS[0]): IntArray
     val data = ((cc and 15) shl 3) or (if (pi) 4 else 0) or (lcss and 3); val w = (data shl 9) or qr167Parity(data, g)
     return IntArray(8) { (w shr (2 * (7 - it))) and 3 }
 }
+
+/**
+ * DMR privacy algorithm IDs as a privacy header carries them, for display only (nothing here decrypts). ETSI TS 102 361
+ * leaves privacy undefined; these are the DMR Association's values: ARC4 (Enhanced Privacy), DES, AES-128, AES-256.
+ */
+val DMR_ALGS: Map<Int, String> = mapOf(0x21 to "ARC4", 0x22 to "DES", 0x24 to "AES-128", 0x25 to "AES-256")
+fun dmrAlgName(id: Int): String = if (id < 0) "" else DMR_ALGS[id] ?: "ALGID 0x${Integer.toHexString(id).uppercase().padStart(2, '0')}"

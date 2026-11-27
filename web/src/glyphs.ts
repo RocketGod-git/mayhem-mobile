@@ -30,6 +30,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   hd: { d: 'M50 30 L36 92 M50 30 L64 92 M41 70 H59 M8 22 H28 V44 H8 Z M72 22 H92 V44 H72 Z ' + arc(50, 30, 12, 200, 340, 14), circles: [[50, 30, 4]] },
   devices: { d: 'M22 88 L22 54 L50 32 L78 54 L78 88 Z M44 88 L44 70 L56 70 L56 88 ' + arc(50, 32, 12, -150, -30) + arc(50, 32, 22, -150, -30) },
   sat: { d: 'M40 40 L60 40 L60 60 L40 60 Z M10 44 L32 44 L32 56 L10 56 Z M68 44 L90 44 L90 56 L68 56 Z M32 50 L40 50 M60 50 L68 50 M50 60 L50 70 ' + arc(50, 90, 20, 200, 340) },
+  // a dish with its feed, looking up at a geostationary satellite
+  satcom: { d: 'M14 40 Q22 82 64 78 Z M39 59 L66 32 M40 78 L34 94 H62 L56 78 ' + arc(66, 32, 14, -120, 30), circles: [[66, 32, 4]] },
   adsb: { d: 'M50 6 L50 92 M6 52 L50 38 L94 52 M30 90 L50 78 L70 90' },
   // a small plane over a cloud: weather and traffic from 978 MHz
   uat: { d: 'M50 6 L50 46 M28 26 L50 18 L72 26 M41 46 L50 40 L59 46 M18 86 A12 12 0 0 1 26 64 A17 17 0 0 1 58 58 A14 14 0 0 1 82 72 A9 9 0 0 1 80 86 Z' },
@@ -55,6 +57,8 @@ const PATHS: Record<string, { d: string; circles?: [number, number, number][]; d
   fleet: { d: 'M30 32 H54 Q60 32 60 38 V86 Q60 92 54 92 H30 Q24 92 24 86 V38 Q24 32 30 32 Z M32 32 V8 M32 50 H52 M32 62 H52 M32 74 H52 ' + arc(60, 52, 16, -40, 40, 10) + arc(60, 52, 30, -40, 40, 10) },
   // CB: the same handheld radio, a transceiver on a channel
   cb: { d: 'M30 32 H54 Q60 32 60 38 V86 Q60 92 54 92 H30 Q24 92 24 86 V38 Q24 32 30 32 Z M32 32 V8 M32 50 H52 M32 62 H52 M32 74 H52 ' + arc(60, 52, 16, -40, 40, 10) + arc(60, 52, 30, -40, 40, 10) },
+  // GMRS: a family handheld, its stubby antenna and a channel readout over the speaker
+  gmrs: { d: 'M30 30 H62 Q68 30 68 36 V86 Q68 92 62 92 H30 Q24 92 24 86 V36 Q24 30 30 30 Z M34 30 V14 M32 40 H60 V52 H32 Z M34 64 H58 M34 74 H58 M34 84 H58 ' + arc(68, 44, 14, -40, 40, 10) },
   vdl2: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M22 66 L36 44 L50 60 L64 40 L78 56 M50 6 L50 20 M38 14 L62 14' },
   acars: { d: 'M16 30 H84 Q90 30 90 36 V72 Q90 78 84 78 H16 Q10 78 10 72 V36 Q10 30 16 30 Z M10 32 L50 56 L90 32 M50 6 L50 20 M38 14 L62 14' },
   // a spectrum peak over a baseline, a marker chevron over it: a bench analyzer's screen

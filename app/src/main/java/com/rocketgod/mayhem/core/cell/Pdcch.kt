@@ -4,7 +4,7 @@ import kotlin.math.ceil
 import kotlin.math.min
 
 /*
- * PCFICH and PDCCH, common search space, SI-RNTI only. 36.211 6.2.4 REGs, 6.7 PCFICH, 6.9.3 PHICH mapping (the REGs it
+ * PCFICH and PDCCH, common search space, SI-RNTI and P-RNTI. 36.211 6.2.4 REGs, 6.7 PCFICH, 6.9.3 PHICH mapping (the REGs it
  * takes from symbol 0, normal duration), 6.8 PDCCH (scrambling, quadruplet interleaving with the 36.212 5.1.4.2.1
  * sub-block interleaver, cyclic shift by N_ID, k-first mapping over the free REGs). 36.212 5.3.4 CFI code words,
  * 5.3.3 DCI CRC with the RNTI on the parity, formats 1A and 1C with the ambiguous-size padding. 36.213 9.1.1 common
@@ -105,10 +105,10 @@ fun dciWithCrc(bits: ByteArray, rnti: Int): ByteArray {
     return out
 }
 
-class DciHit(val L: Int, val cce: Int, val size: Int, val bits: ByteArray, val dci: Dci)
+class DciHit(val L: Int, val cce: Int, val size: Int, val bits: ByteArray, val dci: Dci, val rnti: Int)
 class ControlLayout(val order: List<Reg>, val zidx: IntArray, val M: Int, val idx: IntArray)
 
-/** Per cell control-region decoder: CFI, then blind decoding of the common search space for SI-RNTI. */
+/** Per cell control-region decoder: CFI, then blind decoding of the common search space for SI-RNTI and P-RNTI. */
 class ControlDecoder(val pci: Int, val nrb: Int, val nports: Int, phich: String, val tdd: Boolean = false, mi: Int = 1) {
     val sizes: DciSizes = dciSizes(nrb, tdd)
     private val r: Array<List<Reg>> = Array(5) { if (it == 0) emptyList() else regs(pci, nrb, nports, it) }
@@ -145,7 +145,8 @@ class ControlDecoder(val pci: Int, val nrb: Int, val nports: Int, phich: String,
         for (i in soft.indices) if (c[i].toInt() != 0) soft[i] = -soft[i]
         return soft to lay.M / 9
     }
-    fun search(g: Grid, h: Chan, sf: Int, cfi: Int, rnti: Int = SI_RNTI): List<DciHit> {
+    /** Every DCI in the common search space whose CRC carries one of the RNTIs (one Viterbi pass serves them all). */
+    fun search(g: Grid, h: Chan, sf: Int, cfi: Int, rntis: List<Int> = listOf(SI_RNTI)): List<DciHit> {
         val (soft, ncce) = softBits(g, h, sf, cfi); val hits = ArrayList<DciHit>(); val seen = HashSet<String>()
         val sizes = linkedSetOf(this.sizes.f1a, this.sizes.f1c)
         for ((lagg, ncand) in listOf(4 to 4, 8 to 2)) {
@@ -155,11 +156,12 @@ class ControlDecoder(val pci: Int, val nrb: Int, val nports: Int, phich: String,
                 if (from + len > soft.size) continue
                 for (a in sizes) {
                     val d = a + 16; val acc = ccDematch(soft, d, from, len); val bits = viterbiTb(acc, d); val par = crcBits(bits, CRC16, a)
-                    if ((bitsToInt(par) xor bitsToInt(bits, a, 16)) != rnti) continue
-                    val b = bits.copyOfRange(0, a); val key = b.joinToString("")
+                    val rnti = bitsToInt(par) xor bitsToInt(bits, a, 16)
+                    if (rnti !in rntis) continue
+                    val b = bits.copyOfRange(0, a); val key = "$rnti:" + b.joinToString("")
                     if (!seen.add(key)) continue
                     val dci: Dci? = if (a == this.sizes.f1c) parse1C(b, nrb) else parse1A(b, nrb, tdd)
-                    if (dci != null) hits.add(DciHit(lagg, cce0, a, b, dci))
+                    if (dci != null) hits.add(DciHit(lagg, cce0, a, b, dci, rnti))
                 }
             }
         }

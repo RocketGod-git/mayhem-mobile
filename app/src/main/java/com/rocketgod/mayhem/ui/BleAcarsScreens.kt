@@ -658,7 +658,7 @@ private fun AcarsDetail(r: AcRow, ads: Aircraft?, stations: List<VdlStation>, ac
                         Text(clockOf(m.ms), color = accent, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f), maxLines = 1)
                         val mean = labelMeaning(m.label)
                         Text("${if (m.down) "↓ from the aircraft" else "↑ to the aircraft"} · ${m.label}${if (mean.isNotEmpty()) " $mean" else ""} · blk ${m.blk}" +
-                            (if (m.msn.isNotEmpty()) " · #${m.msn}" else "") + " · ${m.mhz}" + (if (m.crcOk) "" else " · CRC?"),
+                            (if (m.msn.isNotEmpty()) " · #${m.msn}" else "") + " · ${m.mhz}" + (if (m.sat) " · SATCOM" else "") + (if (m.crcOk) "" else " · CRC?"),
                             color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
                     }
                     AcChips(buildList {

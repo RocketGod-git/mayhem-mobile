@@ -13,6 +13,9 @@ import com.rocketgod.mayhem.core.audio.RdsDecoder
 import com.rocketgod.mayhem.core.audio.RdsState
 import com.rocketgod.mayhem.core.audio.SameDecoder
 import com.rocketgod.mayhem.core.audio.SameEvent
+import com.rocketgod.mayhem.core.hamid.AnalogId
+import com.rocketgod.mayhem.core.hamid.AnalogIds
+import com.rocketgod.mayhem.core.hamid.analogIdText
 import com.rocketgod.mayhem.core.hd.HdAudio
 import com.rocketgod.mayhem.core.hd.HdProcessor
 import com.rocketgod.mayhem.usb.HackRfOne
@@ -556,6 +559,22 @@ object SdrEngine {
     }
     fun dismissSame() { _same.value = null }
 
+    /** MDC-1200 and FleetSync IDs on the NFM discriminator the same way, while Prowl or the Audio app asks for them. */
+    @Volatile var idsOn = false
+    /** An ID heard: what it was, its line, the channel it was on (LO plus offset) and when (wall clock). */
+    data class NfmId(val id: AnalogId, val text: String, val hz: Long, val ms: Long)
+    private val _nfmId = MutableStateFlow<NfmId?>(null)
+    val nfmId: StateFlow<NfmId?> = _nfmId.asStateFlow()
+    private var ids: AnalogIds? = null
+    private var idsHz = 0L
+    private fun idsAt(rate: Double): AnalogIds {
+        ids?.let { if (it.fs == rate) return it }
+        return AnalogIds(rate).also { a ->
+            a.onId = { id -> val text = analogIdText(id); _nfmId.value = NfmId(id, text, idsHz, System.currentTimeMillis()); Diag.log("$text on ${idsHz / 1e6} MHz") }
+            ids = a
+        }
+    }
+
     fun listenForVoice(on: Boolean) { if (on != voiceOn) { voiceDet.reset(); _voice.value = null }; voiceOn = on }
 
     @Volatile private var sampleRate = IQ_RATE
@@ -930,6 +949,7 @@ object SdrEngine {
         var lastVoice = 0L
         val rdsBuf = FloatArray(8192); var rdsN = 0; var rdsWas = false; var rdsFreq = 0L
         val sameBuf = FloatArray(4096); var sameN = 0; var sameWas = false
+        val idsBuf = FloatArray(4096); var idsN = 0
         var hdWas = false
         var lastTrackTry = 0L; var lastErr = 0L
         // a write the output refuses means the system has taken it away; drop it and the next buffer opens another
@@ -1210,6 +1230,10 @@ object SdrEngine {
                     if (wantRds != rdsWas || (wantRds && tuned != rdsFreq)) { rdsDec.reset(); rdsN = 0; rdsWas = wantRds; rdsFreq = tuned; if (wantRds) _rds.value = null }
                     val wantSame = sameOn && m == Mode.NFM
                     if (wantSame != sameWas) { sameDec.reset(0); sameN = 0; sameWas = wantSame }
+                    // a retune starts the ID reader fresh, so an ID is never put on the channel after it
+                    val wantIds = idsOn && m == Mode.NFM; val idsAtHz = _freqHz.value + _offsetHz.value
+                    if (!wantIds) { ids = null; idsN = 0 } else if (idsAtHz != idsHz) { ids?.reset(); idsN = 0 }
+                    idsHz = idsAtHz
                     val wantHd = hdOn && m == Mode.WFM
                     if (wantHd != hdWas) { hdDet.reset(); hdWas = wantHd }
                     val hd0 = System.nanoTime()
@@ -1316,6 +1340,7 @@ object SdrEngine {
                                 }
                                 if (wantRds) { rdsBuf[rdsN++] = s; if (rdsN >= rdsBuf.size) { runCatching { rdsDec.push(rdsBuf, rdsN, interRate) }; rdsN = 0 } }
                                 if (wantSame) { sameBuf[sameN++] = s; if (sameN >= sameBuf.size) { runCatching { sameDec.onFm(sameBuf, sameN, interRate) }; sameN = 0 } }
+                                if (wantIds) { idsBuf[idsN++] = s; if (idsN >= idsBuf.size) { runCatching { idsAt(interRate.toDouble()).push(idsBuf, idsN) }; idsN = 0 } }
                                 if (wantFm) {
                                     fmBuf[fmN++] = s
                                     if (fmN >= fmBuf.size) { runCatching { p!!.onFm(fmBuf, fmN, interRate) }; fmN = 0 }

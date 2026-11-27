@@ -5,21 +5,24 @@
  *
  *   · the GPS Info LC (FLCO 8, feature set 0) in the embedded signaling: 4 reserved bits, a 3-bit position error,
  *     25 bits of longitude (two's complement, 360 / 2^25 degrees) and 24 of latitude (180 / 2^24 degrees);
- *   · NMEA sentences carried in rate 1/2 packet data (a data header with its CRC, then the blocks it announces,
- *     unconfirmed 12 bytes or confirmed 10 bytes each, the last 4 bytes of the last block being the packet CRC);
- *     a sentence counts only when its own checksum checks; rate 3/4 data blocks the same way (dmrdata.ts);
- *   · ETSI LIP short location reports, in UDP to port 5017 inside that packet data, or in a USBD poll response;
- *     Motorola LRRP reports in UDP on port 4001. Rate 1 data and Hytera's location protocol are not read here.
+ *   · packet data put back together by dmrpdu.ts (the data header, then its rate 1/2, 3/4 or 1 blocks and the
+ *     message CRC): NMEA sentences that pass their own checksum, ETSI LIP short location reports in UDP to port 5017,
+ *     Motorola LRRP in UDP on port 4001, and text messages (Motorola TMS on UDP port 4007, ETSI defined short data
+ *     and UDT text) with the sending unit and where it went;
+ *   · LIP in a USBD poll response. Hytera's location protocol is not read here.
  *
  * Voice bursts hand their three 72-bit AMBE+2 frames on ([onVoiceFrame]), each with the symbol time it was sent.
  *
  * Fed soft symbols at 4800/s, outer levels near ±3. A mobile heard directly (MS sync, no CACH) reads as slot 1. No DOM.
  */
 import { DmrFramer, type DmrEvent } from '../fleet/rx.js';
-import { readEmb, embBits, EmbLcAssembler, parseEmbLc, TalkerAlias, rs129Ok, voiceFrames } from '../fleet/lc.js';
+import { readEmb, embBits, EmbLcAssembler, parseEmbLc, TalkerAlias, rs129Ok, voiceFrames, gpsInfoLc } from '../fleet/lc.js';
 import { crc12Ok } from '../fleet/codes.js';
-import { parseNmea, type Position } from './gps.js';
-import { rate34Decode, lipInIp, lrrpInIp, usbdLip, type LipReport } from './dmrdata.js';
+import type { Position } from './gps.js';
+import { rate34Decode, usbdLip, type LipReport } from './dmrdata.js';
+import { DmrPduAssembler, dmrPduContent, dmrPayloadBits, rate1Bytes } from './dmrpdu.js';
+export { nmeaInPayload } from './dmrpdu.js';
+export { gpsInfoLc } from '../fleet/lc.js';
 import type { HamVoiceFrame } from './voice.js';
 
 export interface DmrSlotId {
@@ -29,38 +32,10 @@ export interface DmrSlotId {
   speedKmh: number; heading: number;
   /** 'voice' while a call is heard on the slot, 'data' after a data header, 'idle' when only idle bursts came, '' nothing. */
   activity: string; calls: number; lastSym: number;
+  /** The last text message on the slot: who sent it, where it went (a talkgroup when [group]), how it came, the text. */
+  message: DmrText | null;
 }
-
-/** The GPS Info LC's position (FLCO 8), or null when it is not one or holds no position. */
-export function gpsInfoLc(b: ArrayLike<number>): { pos: Position; err: number } | null {
-  if ((b[0] & 0x3f) !== 8 || b[1] !== 0) return null;
-  const err = (b[2] >> 1) & 7;
-  let lon = ((b[2] & 1) << 24) | (b[3] << 16) | (b[4] << 8) | b[5];
-  let lat = (b[6] << 16) | (b[7] << 8) | b[8];
-  if (lon & 0x1000000) lon -= 0x2000000;
-  if (lat & 0x800000) lat -= 0x1000000;
-  const pos: Position = { lat: lat * 180 / 16777216, lon: lon * 360 / 33554432, source: 'dmr-gps-lc' };
-  if (Math.abs(pos.lat) > 90 || Math.abs(pos.lon) > 180 || (lat === 0 && lon === 0)) return null;
-  return { pos, err };
-}
-
-/** NMEA sentences with good checksums anywhere in a byte payload; the last one with a position. */
-export function nmeaInPayload(b: ArrayLike<number>): Position | null {
-  let s = ''; for (let i = 0; i < b.length; i++) { const c = b[i] & 255; s += c >= 32 && c < 127 ? String.fromCharCode(c) : '\n'; }
-  let found: Position | null = null;
-  for (const m of s.match(/\$[A-Z]{2}[A-Z]{3},[^$\n]*\*[0-9A-F]{2}/g) ?? []) { const p = parseNmea(m); if (p) { p.source = 'dmr-data'; found = p; } }
-  return found;
-}
-
-interface Pending { blocks: number; confirmed: boolean; src: number; dst: number; group: boolean; got: Uint8Array[]; dt: number }
-
-/** The 196 payload bits of a data burst's dibits (before and after the center field). */
-function payloadBits(d: ArrayLike<number>): Uint8Array {
-  const raw = new Uint8Array(196); let p = 0;
-  for (let i = 12; i <= 60; i++) { raw[p++] = d[i] >> 1; raw[p++] = d[i] & 1; }
-  for (let i = 95; i <= 143; i++) { raw[p++] = d[i] >> 1; raw[p++] = d[i] & 1; }
-  return raw;
-}
+export interface DmrText { src: number; dst: number; group: boolean; via: string; text: string }
 
 export class DmrIdentity {
   readonly framer = new DmrFramer();
@@ -69,7 +44,7 @@ export class DmrIdentity {
   readonly slots: [DmrSlotId, DmrSlotId] = [DmrIdentity.blank(1), DmrIdentity.blank(2)];
   private readonly emb = [new EmbLcAssembler(), new EmbLcAssembler()];
   private readonly alias = [new TalkerAlias(), new TalkerAlias()];
-  private readonly pending: (Pending | null)[] = [null, null];
+  private readonly pdu = [new DmrPduAssembler(), new DmrPduAssembler()];
   private t = 0;
   /** Bursts whose check (RS, CRC or embedded LC checksum) passed. */
   checked = 0;
@@ -81,7 +56,7 @@ export class DmrIdentity {
     this.framer.onBurst = e => this.burst(e);
     this.framer.onVoice = (slot, d, n) => this.voice(slot, d, n);
   }
-  private static blank(slot: number): DmrSlotId { return { slot, cc: -1, group: true, tg: 0, src: 0, alias: '', emergency: false, privacy: false, position: null, posError: -1, speedKmh: -1, heading: -1, activity: '', calls: 0, lastSym: -1 }; }
+  private static blank(slot: number): DmrSlotId { return { slot, cc: -1, group: true, tg: 0, src: 0, alias: '', emergency: false, privacy: false, position: null, posError: -1, speedKmh: -1, heading: -1, activity: '', calls: 0, lastSym: -1, message: null }; }
 
   /** The system's color code: the most common among bursts that came through clean, or -1. */
   get cc(): number { let b = -1, v = 0; for (let i = 0; i < 16; i++) if (this.ccVotes[i] > v) { v = this.ccVotes[i]; b = i; } return b; }
@@ -89,7 +64,7 @@ export class DmrIdentity {
   reset(): void {
     this.slots[0] = DmrIdentity.blank(1); this.slots[1] = DmrIdentity.blank(2);
     for (const e of this.emb) e.reset(); for (const a of this.alias) a.reset();
-    this.pending[0] = this.pending[1] = null; this.t = 0; this.checked = 0; this.clean = 0; this.ccVotes.fill(0);
+    this.pdu[0].reset(); this.pdu[1].reset(); this.t = 0; this.checked = 0; this.clean = 0; this.ccVotes.fill(0);
   }
 
   pushSymbol(s: number): void { this.t++; this.framer.push(s); }
@@ -109,27 +84,18 @@ export class DmrIdentity {
     } else if (b.dt === 6) {
       if (!crc12Ok(b.bytes, 0xcccc)) return;
       this.checked++; ts.cc = b.cc; ts.lastSym = this.t;
-      const dpf = b.bytes[0] & 15;
-      const src = (b.bytes[5] << 16) | (b.bytes[6] << 8) | b.bytes[7], dst = (b.bytes[2] << 16) | (b.bytes[3] << 8) | b.bytes[4];
+      const h = this.pdu[k].header(b.bytes);
       ts.activity = 'data';
-      if (dpf === 2 || dpf === 3) this.pending[k] = { blocks: b.bytes[8] & 0x7f, confirmed: dpf === 3, src, dst, group: (b.bytes[0] & 0x80) !== 0, got: [], dt: 0 };
-      if (src && src !== ts.src) { ts.src = src; ts.alias = ''; this.alias[k].reset(); }
-      ts.tg = dst; ts.group = (b.bytes[0] & 0x80) !== 0;
-    } else if (b.dt === 7 || b.dt === 8) {
-      const p = this.pending[k]; if (!p || (p.dt && p.dt !== b.dt)) return;
-      p.dt = b.dt;
-      p.got.push(b.dt === 7 ? b.bytes : rate34Decode(payloadBits(e.dibits)).bytes);
-      if (p.got.length >= p.blocks) {
-        this.pending[k] = null;
-        const parts: number[] = [];
-        p.got.forEach(g => { for (let i = p.confirmed ? 2 : 0; i < g.length; i++) parts.push(g[i]); });
-        const body = parts.slice(0, Math.max(0, parts.length - 4));
-        const lip = lipInIp(body), lrrp = lip ? null : lrrpInIp(body);
-        const pos = lip || lrrp ? null : nmeaInPayload(body);
-        if (lip) this.lip(ts, lip);
-        else if (lrrp) { ts.position = { lat: lrrp.lat, lon: lrrp.lon, source: lrrp.source }; ts.posError = -1; ts.speedKmh = -1; ts.heading = lrrp.heading; }
-        else if (pos) { ts.position = pos; ts.posError = -1; ts.speedKmh = -1; ts.heading = -1; }
-      }
+      if (!h) return;
+      if (h.src && h.src !== ts.src) { ts.src = h.src; ts.alias = ''; this.alias[k].reset(); }
+      ts.tg = h.dst; ts.group = h.group;
+    } else if (b.dt === 7 || b.dt === 8 || b.dt === 10) {
+      if (!this.pdu[k].open) return;
+      const p = this.pdu[k].block(b.dt === 7 ? b.bytes : b.dt === 8 ? rate34Decode(dmrPayloadBits(e.dibits)).bytes : rate1Bytes(dmrPayloadBits(e.dibits)));
+      const x = p && dmrPduContent(p);
+      if (!p || !x) return;
+      if (x.pos) { ts.position = x.pos; ts.posError = x.posError; ts.speedKmh = x.speedKmh; ts.heading = x.heading; }
+      if (x.kind === 'text') ts.message = { src: p.hdr.src, dst: p.hdr.dst, group: p.hdr.group, via: x.via, text: x.text };
     } else if (b.dt === 11) {
       if (!crc12Ok(b.bytes, 0x3333)) return;
       this.checked++; ts.cc = b.cc; ts.lastSym = this.t;

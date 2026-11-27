@@ -16,8 +16,9 @@ import kotlin.math.abs
 /**
  * Who is on a DMR channel (ETSI TS 102 361-1 and -2), built on Fleet's DMR layers: per time slot the color code,
  * group or private call, talkgroup or called radio, the calling radio's ID, its talker alias, and its position from
- * the GPS Info LC (FLCO 8), NMEA sentences in rate 1/2 or 3/4 packet data, ETSI LIP (in UDP to port 5017, or a
- * USBD poll response) or Motorola LRRP (UDP port 4001). Voice bursts hand their three AMBE+2 frames on. The same as the web's dsp/hamid/dmrid.ts.
+ * the GPS Info LC (FLCO 8), packet data put back together by DmrPdu.kt (NMEA sentences, ETSI LIP in UDP to port 5017,
+ * Motorola LRRP in UDP port 4001, and text messages: Motorola TMS, ETSI short data and UDT text, with the unit and
+ * where it went), or LIP in a USBD poll response. Voice bursts hand their three AMBE+2 frames on. The same as the web's dsp/hamid/dmrid.ts.
  */
 class DmrSlotId(val slot: Int) {
     var cc = -1; var group = true; var tg = 0; var src = 0; var alias = ""
@@ -25,8 +26,11 @@ class DmrSlotId(val slot: Int) {
     /** From a LIP report: speed (km/h, -1 unknown) and heading (degrees); -1 when the position came some other way. */
     var speedKmh = -1.0; var heading = -1.0
     var activity = ""; var calls = 0; var lastSym = -1L
-    fun copy(): DmrSlotId = DmrSlotId(slot).also { it.cc = cc; it.group = group; it.tg = tg; it.src = src; it.alias = alias; it.emergency = emergency; it.privacy = privacy; it.position = position; it.posError = posError; it.speedKmh = speedKmh; it.heading = heading; it.activity = activity; it.calls = calls; it.lastSym = lastSym }
+    /** The last text message on the slot: who sent it, where it went, how it came, the text. */
+    var message: DmrText? = null
+    fun copy(): DmrSlotId = DmrSlotId(slot).also { it.cc = cc; it.group = group; it.tg = tg; it.src = src; it.alias = alias; it.emergency = emergency; it.privacy = privacy; it.position = position; it.posError = posError; it.speedKmh = speedKmh; it.heading = heading; it.activity = activity; it.calls = calls; it.lastSym = lastSym; it.message = message }
 }
+class DmrText(val src: Int, val dst: Int, val group: Boolean, val via: String, val text: String)
 
 class GpsLc(val pos: Position, val err: Int)
 /** The GPS Info LC's position (FLCO 8), or null when it is not one or holds no position. */
@@ -42,24 +46,14 @@ fun gpsInfoLc(b: IntArray): GpsLc? {
     return GpsLc(pos, err)
 }
 
-private val NMEA_RE = Regex("\\$[A-Z]{2}[A-Z]{3},[^$\\n]*\\*[0-9A-F]{2}")
-/** NMEA sentences with good checksums anywhere in a byte payload; the last one with a position. */
-fun nmeaInPayload(b: IntArray): Position? {
-    val sb = StringBuilder(); for (v in b) { val c = v and 255; sb.append(if (c in 32..126) c.toChar() else '\n') }
-    var found: Position? = null
-    for (m in NMEA_RE.findAll(sb)) { val p = parseNmea(m.value); if (p != null) { p.source = "dmr-data"; found = p } }
-    return found
-}
-
 class DmrIdentity {
-    private class Pending(val blocks: Int, val confirmed: Boolean) { val got = ArrayList<IntArray>(); var dt = 0 }
     val framer = DmrFramer()
     /** Each 72-bit vocoder frame of a voice burst, stream "dmr1" or "dmr2". */
     var onVoiceFrame: (HamVoiceFrame) -> Unit = {}
     val slots = arrayOf(DmrSlotId(1), DmrSlotId(2))
     private val emb = arrayOf(EmbLcAssembler(), EmbLcAssembler())
     private val alias = arrayOf(TalkerAlias(), TalkerAlias())
-    private val pending = arrayOfNulls<Pending>(2)
+    private val pdu = arrayOf(DmrPduAssembler(), DmrPduAssembler())
     private var t = 0L
     var checked = 0
     /** Data bursts whose slot type came through Golay without a correction (an idle repeater sends only these). */
@@ -75,7 +69,7 @@ class DmrIdentity {
     fun reset() {
         slots[0] = DmrSlotId(1); slots[1] = DmrSlotId(2)
         for (e in emb) e.reset(); for (a in alias) a.reset()
-        pending[0] = null; pending[1] = null; t = 0; checked = 0; clean = 0; ccVotes.fill(0)
+        pdu[0].reset(); pdu[1].reset(); t = 0; checked = 0; clean = 0; ccVotes.fill(0)
     }
 
     fun pushSymbol(s: Double) { t++; framer.push(s.toFloat()) }
@@ -98,28 +92,18 @@ class DmrIdentity {
             6 -> {
                 if (!Codes.crc12Ok(y, 0xcccc)) return
                 checked++; ts.cc = b.cc; ts.lastSym = t
-                val dpf = y[0] and 15
-                val src = (y[5] shl 16) or (y[6] shl 8) or y[7]; val dst = (y[2] shl 16) or (y[3] shl 8) or y[4]
+                val h = pdu[k].header(y)
                 ts.activity = "data"
-                if (dpf == 2 || dpf == 3) pending[k] = Pending(y[8] and 0x7f, dpf == 3)
-                if (src != 0 && src != ts.src) { ts.src = src; ts.alias = ""; alias[k].reset() }
-                ts.tg = dst; ts.group = (y[0] and 0x80) != 0
+                if (h == null) return
+                if (h.src != 0 && h.src != ts.src) { ts.src = h.src; ts.alias = ""; alias[k].reset() }
+                ts.tg = h.dst; ts.group = h.group
             }
-            7, 8 -> {
-                val p = pending[k] ?: return
-                if (p.dt != 0 && p.dt != b.dt) return
-                p.dt = b.dt
-                p.got.add(if (b.dt == 7) y else rate34Decode(payloadBits(e.dibits)).bytes)
-                if (p.got.size >= p.blocks) {
-                    pending[k] = null
-                    val parts = ArrayList<Int>()
-                    for (g in p.got) for (i in (if (p.confirmed) 2 else 0) until g.size) parts.add(g[i])
-                    val body = parts.subList(0, maxOf(0, parts.size - 4)).toIntArray()
-                    val lip = lipInIp(body); val lrrp = if (lip == null) lrrpInIp(body) else null
-                    if (lip != null) lip(ts, lip)
-                    else if (lrrp != null) { ts.position = Position(lrrp.lat, lrrp.lon, lrrp.source); ts.posError = -1; ts.speedKmh = -1.0; ts.heading = lrrp.heading }
-                    else { val pos = nmeaInPayload(body); if (pos != null) { ts.position = pos; ts.posError = -1; ts.speedKmh = -1.0; ts.heading = -1.0 } }
-                }
+            7, 8, 10 -> {
+                if (!pdu[k].open) return
+                val p = pdu[k].block(when (b.dt) { 7 -> y; 8 -> rate34Decode(dmrPayloadBits(e.dibits)).bytes; else -> rate1Bytes(dmrPayloadBits(e.dibits)) }) ?: return
+                val x = dmrPduContent(p) ?: return
+                if (x.pos != null) { ts.position = x.pos; ts.posError = x.posError; ts.speedKmh = x.speedKmh; ts.heading = x.heading }
+                if (x.kind == "text") ts.message = DmrText(p.hdr.src, p.hdr.dst, p.hdr.group, x.via, x.text)
             }
             11 -> {
                 if (!Codes.crc12Ok(y, 0x3333)) return
@@ -130,13 +114,6 @@ class DmrIdentity {
     }
 
     private fun lip(ts: DmrSlotId, r: LipReport) { ts.position = Position(r.lat, r.lon, r.source); ts.posError = r.posError; ts.speedKmh = r.speedKmh; ts.heading = r.heading }
-    private fun payloadBits(d: IntArray): IntArray {
-        val raw = IntArray(196); var p = 0
-        for (i in 12..60) { raw[p++] = d[i] shr 1; raw[p++] = d[i] and 1 }
-        for (i in 95..143) { raw[p++] = d[i] shr 1; raw[p++] = d[i] and 1 }
-        return raw
-    }
-
     private fun voice(slot: Int, d: IntArray, n: Int) {
         val k = slot and 1; val ts = slots[k]
         voiceFrames(d).forEachIndexed { j, bits -> onVoiceFrame(HamVoiceFrame("dmr" + (k + 1), "ambe2", bits, (t - 132 + 36 * j).toDouble(), 0)) }

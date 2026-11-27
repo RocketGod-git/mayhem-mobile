@@ -305,6 +305,7 @@ private fun DmrPanel(accent: Color, s: DmrStatus?, slotSel: Int) {
                 Text(who, color = Palette.ink, fontFamily = Mono, fontSize = d.sp(10f))
                 Text((sl?.last?.ifEmpty { null } ?: if (s?.locked == true) "idle" else "—") + (if ((sl?.cc ?: -1) >= 0) " · CC ${sl!!.cc}" else "") +
                     (if ((sl?.errs ?: 0f) > 0.02f) " · %.0f%% frame errors".format(sl!!.errs * 100) else ""), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f))
+                sl?.gps?.let { g -> Text("GPS %.5f, %.5f".format(java.util.Locale.US, g.lat, g.lon), color = Palette.muted, fontFamily = Mono, fontSize = d.sp(10f)) }
             }
         }
     }

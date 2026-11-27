@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity() {
         com.rocketgod.mayhem.core.Dispatch.init(this)
         com.rocketgod.mayhem.core.HamPlus.init(this)
         com.rocketgod.mayhem.core.Cb.init(this)
+        com.rocketgod.mayhem.core.Gmrs.init(this)
         com.rocketgod.mayhem.core.ham.HamSpots.init(this)
         com.rocketgod.mayhem.core.analyzer.Analyzer.init(filesDir)
         if (savedInstanceState == null) {

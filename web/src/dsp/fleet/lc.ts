@@ -3,6 +3,7 @@
  * bursts, its Reed-Solomon (12,9) check over GF(256) with the per-burst masks, and the voice burst payload split into
  * its three 72-bit vocoder frames. No DOM.
  */
+import type { Position } from '../hamid/gps.js';
 
 // ------------------------------------------------------------------------------------------------ GF(256)
 const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
@@ -182,4 +183,28 @@ export function embDibits(cc: number, pi: boolean, lcss: number, g = QR167_GENS[
   const data = ((cc & 15) << 3) | (pi ? 4 : 0) | (lcss & 3), w = (data << 9) | qr167Parity(data, g), out: number[] = [];
   for (let i = 7; i >= 0; i--) out.push((w >> (2 * i)) & 3);
   return out;
+}
+
+/**
+ * DMR privacy algorithm IDs as a privacy header carries them, for display only (nothing here decrypts). ETSI TS 102 361
+ * leaves privacy undefined; these are the DMR Association's values: ARC4 (Enhanced Privacy), DES, AES-128, AES-256.
+ */
+export const DMR_ALGS: Record<number, string> = { 0x21: 'ARC4', 0x22: 'DES', 0x24: 'AES-128', 0x25: 'AES-256' };
+export const dmrAlgName = (id: number) => id < 0 ? '' : DMR_ALGS[id] ?? `ALGID 0x${id.toString(16).toUpperCase().padStart(2, '0')}`;
+
+/**
+ * The GPS Info LC's position (FLCO 8, feature set 0): 4 reserved bits, a 3-bit position error, 25 bits of longitude
+ * (two's complement, 360 / 2^25 degrees) and 24 of latitude (180 / 2^24 degrees).
+ * Null when it is not one or holds no position.
+ */
+export function gpsInfoLc(b: ArrayLike<number>): { pos: Position; err: number } | null {
+  if ((b[0] & 0x3f) !== 8 || b[1] !== 0) return null;
+  const err = (b[2] >> 1) & 7;
+  let lon = ((b[2] & 1) << 24) | (b[3] << 16) | (b[4] << 8) | b[5];
+  let lat = (b[6] << 16) | (b[7] << 8) | b[8];
+  if (lon & 0x1000000) lon -= 0x2000000;
+  if (lat & 0x800000) lat -= 0x1000000;
+  const pos: Position = { lat: lat * 180 / 16777216, lon: lon * 360 / 33554432, source: 'dmr-gps-lc' };
+  if (Math.abs(pos.lat) > 90 || Math.abs(pos.lon) > 180 || (lat === 0 && lon === 0)) return null;
+  return { pos, err };
 }

@@ -104,6 +104,7 @@ private fun pipLine(app: MayhemApp?): String = when (app) {
     MayhemApp.VDL2 -> lastLine(Apps.vdl2Log)
     MayhemApp.ACARS -> lastLine(Apps.acarsLog)
     MayhemApp.TRAINS -> lastLine(Apps.trainsLog)
+    MayhemApp.SATCOM -> Apps.satcom.snap.collectAsState().value?.messages?.firstOrNull()?.let { "${it.priorityName} · ${it.serviceName}" } ?: lastLine(Apps.satcomLog)
     MayhemApp.FLEET -> lastLine(Apps.fleetLog)
     MayhemApp.JS8 -> com.rocketgod.mayhem.core.js8.Js8.state.collectAsState().value.entries.lastOrNull()?.text ?: "listening…"
     MayhemApp.CELL -> lastLine(Apps.cellLog)

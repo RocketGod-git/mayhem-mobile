@@ -88,6 +88,9 @@ fun AudioScreen(accent: Color) {
     val rds by SdrEngine.rds.collectAsState()
     val hd by SdrEngine.hd.collectAsState()
     val alert by SdrEngine.same.collectAsState()
+    val nfmId by SdrEngine.nfmId.collectAsState()
+    // the last MDC-1200 or FleetSync ID on the tuned NFM channel, for two minutes
+    val idHere = nfmId?.takeIf { mode == SdrEngine.Mode.NFM && abs(it.hz - freq) < 3_000 && System.currentTimeMillis() - it.ms < 120_000 }
     val station = mode == SdrEngine.Mode.WFM && rdsWanted
     // RDS has something to show: the strip only appears then (no empty "reading…" row taking a line of the
     // screen); until then the dial's title says RDS is listening, and once the station is named it names it
@@ -98,6 +101,7 @@ fun AudioScreen(accent: Color) {
     }
     val strip: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
         AnimatedVisibility(station && rdsHas, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) { StationStrip(rds, accent) }
+        AnimatedVisibility(idHere != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) { idHere?.let { IdStrip(it, accent) } }
     }
 
     // Three rows: how to listen, where, and squelch with SCAN. The digits, ⌨ and the waterfall tune; ☆ saves and
@@ -249,6 +253,26 @@ private fun StationStrip(r: RdsState?, accent: Color) {
             val rt = r?.rt?.trim().orEmpty()
             Text(rt.ifEmpty { if (locked) "no radiotext from this station" else "reading the station's data…" }, color = Palette.muted, fontFamily = Mono,
                 fontSize = d.sp(11f), maxLines = 1, modifier = Modifier.padding(top = 3.dp).basicMarquee(iterations = Int.MAX_VALUE))
+        }
+    }
+}
+
+/** Who keyed up on the NFM channel: the MDC-1200 unit or the FleetSync fleet and unit large, what it sent, an emergency in red. */
+@Composable
+private fun IdStrip(n: SdrEngine.NfmId, accent: Color) {
+    val d = rememberDims()
+    val shape = RoundedCornerShape(d.dp(12f))
+    val id = n.id; val mdc = id.kind == "MDC-1200"
+    Row(Modifier.fillMaxWidth().background(Palette.surface, shape).border(1.dp, if (id.emergency) Palette.danger else Palette.line, shape)
+        .padding(horizontal = d.dp(10f), vertical = d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
+        Text(id.unit.uppercase(), color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Black, fontSize = d.sp(19f), letterSpacing = 3.sp, maxLines = 1)
+        Column(Modifier.weight(1f).padding(start = d.dp(10f))) {
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Pill(if (mdc) "MDC-1200" else "FLEETSYNC ${id.what}", accent)
+                if (mdc) Pill(id.what, if (id.emergency) Palette.danger else Palette.muted)
+            }
+            Text((if (mdc) "unit ${id.unit}" else "fleet and unit ${id.unit} to ${id.to}") + " · " + java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(n.ms)),
+                color = Palette.muted, fontFamily = Mono, fontSize = d.sp(11f), maxLines = 1, modifier = Modifier.padding(top = 3.dp))
         }
     }
 }

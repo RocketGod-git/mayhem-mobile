@@ -1,23 +1,26 @@
 /**
  * Cell: LTE broadcast information and emergency alerts, receive only. Captures blocks of the downlink, finds cells
  * (PSS/SSS), reads the MIB from the central 6 RBs (any radio at 1.92 MS/s or more), and with the whole carrier in the
- * span decodes SI-RNTI traffic only: SIB1 and the SI messages (SIB2 to SIB24, ETWS and CMAS in SIB10/11/12).
- * The next block is placed on the next SI window still wanted, from the SFN timing of the last block.
+ * span decodes SI-RNTI traffic: SIB1 and the SI messages (SIB2 to SIB24, ETWS and CMAS in SIB10/11/12), and P-RNTI
+ * traffic: the Paging messages at every paging occasion SIB2 sets (FDD).
+ * The next block is placed on the next SI window still wanted (or, with none, the next paging frame), from the SFN
+ * timing of the last block.
  * A rate that is not a multiple of 1.92 MS/s (a HackRF at 20 MS/s, for 20 MHz carriers) is read through an LTE rate:
  * cell search on a 1.92 MS/s resampling of the block, and each subframe wanted resampled on its own to 30.72 MS/s.
- * Paging and every other RNTI are left alone.
+ * Every other RNTI is left alone.
  */
 import { fft, hann } from '../../fft.js';
 import type { Emit, IqProcessor } from '../core.js';
 import { Numerology, Grid, chanEst, crsSeq, crsShift, ofdmDemod, bitsToBytes, hexOf, NRB_MAX } from './common.js';
 import { LOW, LOW_FS, decimate, decimDelay, cpCfo, rotate, pssSearch, halfFrameMap, sssIdentify, lteResamplers, type Rational, type HalfFrame } from './sync.js';
 import { decodeMib, type Mib } from './pbch.js';
-import { ControlDecoder } from './pdcch.js';
+import { ControlDecoder, SI_RNTI } from './pdcch.js';
 import { allocation, tbsSi, pdschLlr, TbDecoder } from './pdsch.js';
 import { decodeBcchDlSch, messageParts, hexToBytes } from './rrc.js';
 import { sib1Summary, neighbors, sib2Summary, sib3Summary, sib8Time, earfcnDl, dlEarfcnForMhz, type Sib1Summary, type Neighbors, type Sib2Summary, type Sib3Summary } from './sysinfo.js';
 import { WarningAssembler, type WarningMessage } from './cbs.js';
 import { bandOf } from './bands.js';
+import { P_RNTI, PagingLog, decodePaging, pagingConfig, isPagingSf, type PagingConfig, type PagingSnap } from './paging.js';
 import { MessageFeed, mibLine, sib1Line, sibLine as feedLine, fingerprint, feedCtx, warningSlot, type FeedRow } from './feed.js';
 
 type Obj = Record<string, unknown>;
@@ -46,6 +49,8 @@ export interface CellSnap {
   offCenter: { hz: number; pci: number; ms: number } | null;
   /** The message feed, newest first. */
   feed: FeedRow[];
+  /** Paging records heard, newest first, and the identities by how often they were paged. */
+  paging: PagingSnap;
 }
 export interface CellState { v: 1; cells: Obj[]; alerts: WarningMessage[]; log: LogRow[]; feed?: FeedRow[] }
 
@@ -77,6 +82,8 @@ export class CellProcessor implements IqProcessor {
   readonly log: LogRow[] = [];
   /** Every MIB and SIB as one readable row, repeats folded. */
   readonly feed = new MessageFeed();
+  /** Every paging record and flag heard on P-RNTI. */
+  readonly paging = new PagingLog();
   /** Bumped whenever something worth keeping changes (the page saves the state when it moves). */
   version = 0;
   /** Called with every new or completed warning message. */
@@ -367,7 +374,7 @@ export class CellProcessor implements IqProcessor {
     if (!sf0.length) return;
     const ref = sf0.find(h => h.h === mibH) ?? sf0[0], refSfn = mib.sfn;
     cell.timing = { abs: blockAbs + (ref.pos * D + delay - off) * toIn, sfn: refSfn };
-    const sched = cell.summary?.schedule ?? [];
+    const sched = cell.summary?.schedule ?? [], pcfg = tdd ? null : this.pcch(cell);
     for (const hf of map) {
       const isSf0 = (hf.h % 2 === 0) === evenSf0, frames = Math.floor((hf.h - ref.h - (isSf0 ? 0 : 1)) / 2), sfn = ((refSfn + frames) % 1024 + 1024) % 1024;
       const base = hf.pos * D + delay - off;
@@ -378,15 +385,23 @@ export class CellProcessor implements IqProcessor {
           const st = t.windowStartSfnMod * 10 + t.windowStartSubframe, pos = (sfn % t.periodicity) * 10 + sf;
           if (pos >= st && pos < st + t.windowMs && this.wanted(cell, t.si, now)) { si = t.si; break; }
         }
-        if (!sib1 && !si) continue;
-        if (sib1 && cell.sib1Ms && now - cell.sib1Ms < 2000 && sched.length) continue;
-        if (tdd && !sib1) continue;
+        const page = !!pcfg && isPagingSf(pcfg, sfn, sf);
+        const wantSib1 = sib1 && !(cell.sib1Ms && now - cell.sib1Ms < 2000 && sched.length);
+        if (tdd) si = 0;
+        if (!wantSib1 && !si && !page) continue;
         const startF = base + j * num.subframe;
         const d = this.demodSf(startF, nrb, sf, cell.pci, Math.max(1, Math.round(num.nfft / 128)));
         if (!d) continue;
-        this.subframe(cell, d.g, sf, sfn, sib1, si, hf.h * 5 + j, now, tdd);
+        this.subframe(cell, d.g, sf, sfn, wantSib1, si, page, hf.h * 5 + j, now, tdd);
       }
     }
+  }
+
+  /** The cell's paging frames and occasions from its SIB2, or null before SIB2. */
+  private pcch(cell: Cell): PagingConfig | null {
+    const v = cell.sibs.get('sib2')?.value;
+    if (!v) return null;
+    try { const s = sib2Summary(v); return pagingConfig(s.pagingCycle, s.nB); } catch { return null; }
   }
 
   private wanted(cell: Cell, si: number, now: number): boolean {
@@ -395,17 +410,29 @@ export class CellProcessor implements IqProcessor {
     return !got || now - got.ms > 30_000;
   }
 
-  private subframe(cell: Cell, g: Grid, sf: number, sfn: number, sib1: boolean, si: number, G: number, now: number, tdd: boolean): void {
+  private subframe(cell: Cell, g: Grid, sf: number, sfn: number, sib1: boolean, si: number, page: boolean, G: number, now: number, tdd: boolean): void {
     const ctl0 = cell.ctl[0], nrb = ctl0.nrb, H = chanEst(g, sf, cell.pci, nrb, ctl0.nports);
     const { cfi } = ctl0.cfi(g, H, sf), L = nrb > 10 ? cfi : cfi + 1;
+    const rntis = [...(sib1 || si ? [SI_RNTI] : []), ...(page ? [P_RNTI] : [])];
     let hits: ReturnType<ControlDecoder['search']> = [], ctl = ctl0;
-    for (const c of cell.ctl) { hits = c.search(g, H, sf, L); ctl = c; if (hits.length) break; }
+    for (const c of cell.ctl) { hits = c.search(g, H, sf, L, rntis); ctl = c; if (hits.length) break; }
     for (const h of hits) {
       cell.dciCount++; this.dci++;
+      // 36.213 7.1.7: P-RNTI follows the SI-RNTI TBS rules
       const A = tbsSi(h.dci);
       const [p0, p1] = allocation(h.dci, nrb);
       if (A === null || !p0.length || Math.max(...p0, ...p1) >= nrb) continue;
-      const llr = pdschLlr(g, H, cell.pci, nrb, ctl.nports, sf, cfi, p0, p1, 0xffff, tdd);
+      const llr = pdschLlr(g, H, cell.pci, nrb, ctl.nports, sf, cfi, p0, p1, h.rnti, tdd);
+      if (h.rnti === P_RNTI) {
+        // one transmission per occasion: the RV of DCI 1A, else 0
+        const tb = new TbDecoder(A);
+        tb.add(llr, h.dci.fmt === '1A' ? h.dci.rv : 0);
+        const bits = tb.decode();
+        if (!bits) { cell.tbFail++; continue; }
+        cell.tbOk++; this.tbOk++;
+        this.pcchBlock(cell, bitsToBytes(bits), now);
+        continue;
+      }
       // DCI 1C carries no RV: SIB1 follows 36.321 5.3.1 (k = SFN/2 mod 4), other SI may be any of the four
       const rvs = h.dci.fmt === '1A' ? [h.dci.rv] : sib1 ? [Math.ceil(1.5 * ((sfn >> 1) % 4)) % 4] : [0, 2, 3, 1];
       let bits: Uint8Array | null = null;
@@ -465,6 +492,15 @@ export class CellProcessor implements IqProcessor {
     if (siIdx) { const g = cell.siGot.get(siIdx); cell.siGot.set(siIdx, { ms: now, count: (g?.count ?? 0) + 1 }); }
   }
 
+  /** One PCCH transport block that passed CRC-24A. Also the entry point for recorded blocks. */
+  pcchBlock(cell: Cell, bytes: Uint8Array, now: number): void {
+    const hex = hexOf(bytes), r = decodePaging(bytes);
+    cell.lastMs = now; this.dirty = true;
+    if (!r.msg) { this.addLog(now, cell.hz, cell.pci, 'PAGE', `undecodable paging (${r.error ?? 'error'})`, hex); return; }
+    for (const f of this.paging.add(r.msg, cell.key, cell.hz, cell.pci, now)) this.addLog(now, cell.hz, cell.pci, 'PAGE', FLAG_TEXT[f] ?? f, hex);
+    if (r.msg.records.length) this.version++;
+  }
+
   private feedRow(cell: Cell, name: string, text: string, alert: boolean, fp: string, now: number, slot = ''): void {
     const op = cell.summary?.plmns.find(p => p.name)?.name ?? cell.summary?.plmns[0]?.id ?? '';
     const r = this.feed.add({ cell: cell.key, hz: cell.hz, pci: cell.pci, op, band: cell.band, name, text, alert, fp }, now, slot);
@@ -492,6 +528,17 @@ export class CellProcessor implements IqProcessor {
           if (at >= from && at < best) best = at;
           if (at >= from) break;
         }
+      }
+    }
+    // nothing wanted on SI-RNTI: the next paging frame
+    if (!Number.isFinite(best)) for (const c of cells) {
+      const p = c.timing && !c.tdd && !(c.mib && c.mib.bandwidth > this.maxRb) ? this.pcch(c) : null;
+      if (!p || !c.timing) continue;
+      const cur = Math.floor((this.abs - c.timing.abs) / frame);
+      for (let f = cur; f < cur + 1024; f++) {
+        if ((c.timing.sfn + f) % p.every) continue;
+        const at = c.timing.abs + f * frame + p.sfs[0] * frame / 10 - lead;
+        if (at >= from) { best = Math.min(best, at); break; }
       }
     }
     this.nextAbs = Number.isFinite(best) && best - this.abs < fs * 6 ? Math.round(best) : from;
@@ -555,6 +602,7 @@ export class CellProcessor implements IqProcessor {
       profile: this.profile, floorDb: this.floorDb,
       cells: [...this.cells.values()].sort((a, b) => b.lastMs - a.lastMs).map(c => this.row(c)),
       alerts: this.warnings.messages(), log: this.log.slice(-300), dci: this.dci, tbOk: this.tbOk, pss: this.pss, offCenter: this.offCenter, feed: this.feed.rows.slice(0, 400),
+      paging: this.paging.snapshot(),
     };
   }
   /** Every decoded field of one cell, for its detail view. */
@@ -577,6 +625,12 @@ export class CellProcessor implements IqProcessor {
     this.centerHz = prev;
     c.lastMs = Math.max(c.lastMs, ms);
     this.message(c, hexToBytes(hex), sib1, 0, ms);
+  }
+  feedPage(hz: number, pci: number, hex: string, ms = this.now()): void {
+    const prev = this.centerHz; this.centerHz = hz;
+    const c = this.cellFor(pci, false, ms);
+    this.centerHz = prev;
+    this.pcchBlock(c, hexToBytes(hex), ms);
   }
   feedMib(hz: number, pci: number, mib: Mib, ms = this.now()): void {
     const prev = this.centerHz; this.centerHz = hz;
@@ -624,15 +678,16 @@ export class CellProcessor implements IqProcessor {
     const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const csv = 'utc,mhz,pci,kind,text,hex\n' + this.log.map(r => [new Date(r.ms).toISOString(), (r.hz / 1e6).toFixed(1), r.pci, r.kind, q(r.text), r.hex].join(',')).join('\n') + '\n';
     const s = this.snapshot();
-    const json = JSON.stringify({ exported: new Date(this.now()).toISOString(), cells: s.cells.map(c => ({ ...c, decoded: this.detail(c.key) })), alerts: s.alerts }, null, 1);
+    const json = JSON.stringify({ exported: new Date(this.now()).toISOString(), cells: s.cells.map(c => ({ ...c, decoded: this.detail(c.key) })), alerts: s.alerts, paging: this.paging.snapshot(this.paging.max, this.paging.max) }, null, 1);
     return { csv, json };
   }
-  /** Forgets the cells and the log; the alerts stay until clearAlerts(). */
-  clear(): void { this.cells.clear(); this.feed.clear(); this.log.length = 0; this.dci = 0; this.tbOk = 0; this.version++; this.post(true); }
+  /** Forgets the cells, the log and the paging; the alerts stay until clearAlerts(). */
+  clear(): void { this.cells.clear(); this.feed.clear(); this.paging.clear(); this.log.length = 0; this.dci = 0; this.tbOk = 0; this.version++; this.post(true); }
   clearAlerts(): void { this.warnings.clear(); this.version++; this.post(true); }
 }
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
+const FLAG_TEXT: Record<string, string> = { 'SI CHANGE': 'system information is changing (systemInfoModification)', ETWS: 'ETWS notification on SIB10/11 (etws-Indication)', CMAS: 'CMAS notification on SIB12 (cmas-Indication)', 'EAB CHANGE': 'access barring parameters changing (eab-ParamModification)' };
 /** Whether a MIB heard at hz is cell c seen again: same PCI and duplex, within 10 MHz, same MIB content, SFN in step (when now is given). */
 function sameCell(c: { pci: number; tdd: boolean; hz: number; mib: Mib | null; mibMs: number }, pci: number, tdd: boolean, hz: number, mib: Mib, now: number): boolean {
   const m = c.mib;

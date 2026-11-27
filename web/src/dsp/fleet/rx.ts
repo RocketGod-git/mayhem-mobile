@@ -3,6 +3,7 @@
  * C4FM, CQPSK/LSM and DMR alike (the phase step across one symbol), symbol timing picked again for every block of
  * 480 symbols so a dropped sample costs one block, the P25 and DMR framers, and a Morse reader for CW IDs. No DOM.
  */
+import { P25PduReader, type P25Packet } from './p25data.js';
 import { DMR_SYNC, P25_SYNC, isStatusPos, nidDecode, syncSigns, tsbkDecode, crc12Ok, dmrReadBurst, cachSlot, type DmrBurst } from './codes.js';
 
 export const BAUD = 4800;
@@ -127,6 +128,9 @@ export class P25Framer {
   onBlock: (b: P25Block) => void = () => undefined;
   /** Any frame with a valid NID (voice and data frames too): the NAC and DUID. */
   onFrame: (nac: number, duid: number) => void = () => undefined;
+  /** A data frame's packet (p25data.ts), read whatever its CRCs said. */
+  onPdu: (p: P25Packet) => void = () => undefined;
+  private readonly pdu = new P25PduReader(); private data = false;
   private readonly sm = new SyncMatch();
   private state: 'idle' | 'nid' | 'body' | 'skip' = 'idle';
   private pos = 0; private buf = new Uint8Array(400); private nb = 0; private want = 0;
@@ -149,6 +153,7 @@ export class P25Framer {
     if (this.nb < this.want) return;
     if (this.state === 'nid') this.nid(); else this.body();
   }
+  constructor() { this.pdu.onPacket = p => this.onPdu(p); }
   private begin(): void { this.state = 'nid'; this.pos = 24; this.nb = 0; this.want = 32; this.flywheel = 0; }
   private nid(): void {
     const r = nidDecode(this.buf, this.nacs);
@@ -156,10 +161,12 @@ export class P25Framer {
     this.frames++; this.nac = r.nac; this.nidErrs = r.errs; if (r.errs <= 4) this.clean++;
     if (r.errs <= 4) { this.nacs.add(r.nac); if (this.nacs.size > 6) this.nacs.delete(this.nacs.values().next().value as number); }
     this.onFrame(r.nac, r.duid);
-    if (r.duid === 7) { this.state = 'body'; this.nb = 0; this.want = 98; this.blk = 0; }
+    this.data = r.duid === 0xc;
+    if (r.duid === 7 || this.data) { this.state = 'body'; this.nb = 0; this.want = 98; this.blk = 0; if (this.data) this.pdu.start(); }
     else this.state = 'idle';
   }
   private body(): void {
+    if (this.data) { if (this.pdu.push(this.buf)) { this.nb = 0; this.want = 98; } else this.state = 'idle'; return; }
     const { bytes, metric } = tsbkDecode(this.buf);
     const ok = crc12Ok(bytes);
     this.onBlock({ nac: this.nac, nidErrs: this.nidErrs, bytes, crcOk: ok, metric, index: this.blk });

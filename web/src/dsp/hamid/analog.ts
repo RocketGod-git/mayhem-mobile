@@ -41,7 +41,8 @@ export interface CwId { callsign: string; suffix: string; text: string; wpm: num
 export interface Selcall { system: string; digits: string; atS: number }
 export interface TwoTone { aHz: number; bHz: number; aMs: number; bMs: number; atS: number }
 export interface MdcPacket { op: number; arg: number; unit: string; emergency: boolean; label: string; extra: number[]; atS: number }
-export interface DataBurst { baud: number; ms: number; atS: number }
+/** A data burst no decoder here names: its rate, length, and its first bytes as raw bits in hex (the lower tone a 1). */
+export interface DataBurst { baud: number; ms: number; atS: number; hex: string }
 /** FleetSync: fleet 100-349 and unit 1000-4999 as the radios show them, -1 for "all"; [cmd] and [sub] raw. */
 export interface FleetSync { baud: number; cmd: number; sub: number; fromFleet: number; fromUnit: number; toFleet: number; toUnit: number; all: boolean; atS: number }
 export interface AnalogTx {
@@ -98,11 +99,15 @@ function goertzel(x: Float32Array, from: number, to: number, hz: number, rate: n
 
 // ------------------------------------------------------------------------------------------------ callsigns
 const CALL_RE = /^((?:[A-Z]{1,2}|[A-Z][0-9]|[2-9][A-Z])[0-9][A-Z]{1,4})(?:\/([A-Z0-9]{1,4}))?$/;
-/** A plausible amateur callsign in a CW word ('W6ABC', 'W6ABC/R', 'DEW6ABC'), or null. */
+/** A GMRS callsign: four letters and three digits (WRAB123), or the older three letters and four digits (KAE1234). */
+const GMRS_RE = /^(WR[A-Z]{2}[0-9]{3}|K[A-Z]{2}[0-9]{4})(?:\/([A-Z0-9]{1,4}))?$/;
+/** A plausible amateur or GMRS callsign in a CW word ('W6ABC', 'W6ABC/R', 'DEW6ABC', 'WRAB123'), or null. */
 export function plausibleCall(word: string): { call: string; suffix: string } | null {
   for (const w of [word, word.startsWith('DE') ? word.slice(2) : '']) {
     const m = w ? CALL_RE.exec(w) : null;
     if (m && m[1].length >= 3 && m[1].length <= 7) return { call: m[1], suffix: m[2] ?? '' };
+    const g = w ? GMRS_RE.exec(w) : null;
+    if (g) return { call: g[1], suffix: g[2] ?? '' };
   }
   return null;
 }
@@ -328,6 +333,30 @@ function fskDemod(y: Float32Array, from: number, to: number, rate: number, cente
   return C;
 }
 const cumAt = (C: Float64Array, t: number) => { const n = C.length - 1, k = Math.floor(t); return k >= n ? C[n] : C[k] + (t - k) * (C[k + 1] - C[k]); };
+/** A burst's bit integrals at [baud] (the tones split about 1600 Hz at 1200 baud, 1800 at 2400), at the bit phase that is cleanest. */
+function burstBits(y: Float32Array, from: number, to: number, rate: number, baud: number, max: number): number[] {
+  const C = baud === 2400 ? fskDemod(y, from, to, rate, 1800, 1600) : fskDemod(y, from, to, rate, 1600, 1200);
+  const sps = rate / baud, nb = Math.min(max, Math.floor((to - from - sps) / sps)), d = (ph: number, k: number) => cumAt(C, ph * sps / 8 + (k + 1) * sps) - cumAt(C, ph * sps / 8 + k * sps);
+  let best = 0, bestQ = -1;
+  for (let ph = 0; ph < 8; ph++) { let q = 0; for (let k = 0; k < nb; k++) q += Math.abs(d(ph, k)); if (q > bestQ) { bestQ = q; best = ph; } }
+  const out: number[] = []; for (let k = 0; k < nb; k++) out.push(d(best, k)); return out;
+}
+/** Whether bits read at 2400 baud come in equal pairs (at either alignment, 9 in 10 of them): a 1200 baud burst. */
+function pairs(b: number[]): boolean {
+  for (let a = 0; a < 2; a++) { let same = 0, n = 0; for (let k = a; k + 1 < b.length; k += 2) { n++; if ((b[k] < 0) === (b[k + 1] < 0)) same++; } if (n >= 16 && same >= 0.9 * n) return true; }
+  return false;
+}
+/**
+ * A burst no decoder named, read as raw bits: its rate (the spectrum's guess, 2400 when it reaches past 2150 Hz, taken
+ * back to 1200 when its 2400 baud bits come in pairs: Bell 202's 2200 Hz tone reaches as far) and its first
+ * [maxBytes] as hex, most significant bit first, the lower tone a 1.
+ */
+export function burstRead(y: Float32Array, from: number, to: number, rate: number, guess: number, maxBytes = 12): { baud: number; hex: string } {
+  const baud = guess === 2400 && pairs(burstBits(y, from, to, rate, 2400, 400)) ? 1200 : guess;
+  const b = burstBits(y, from, to, rate, baud, 8 * maxBytes), out: string[] = [];
+  for (let k = 0; k + 8 <= b.length; k += 8) { let v = 0; for (let j = 0; j < 8; j++) v = (v << 1) | (b[k + j] < 0 ? 1 : 0); out.push(v.toString(16).toUpperCase().padStart(2, '0')); }
+  return { baud, hex: out.join(' ') };
+}
 /** MDC-1200 packets in a stretch of audio at [rate]. */
 export function decodeMdc(y: Float32Array, from: number, to: number, rate: number, t0S: number): MdcPacket[] {
   const n = to - from; if (n < rate * 0.1) return [];
@@ -604,9 +633,14 @@ export class AnalogSignaling {
    * stretch is read with 0.6 s either side.
    */
   onlyTonal = false;
-  private zHp = 0; private zPrev = 0; private zc = 0; private zN = 0; private zE0 = 0; private zE1 = 0; private fPrev = 0; private fRun = 0;
+  private zHp = 0; private zPrev = 0; private zc = 0; private zN = 0; private zE0 = 0; private zE1 = 0; private fPrev = 0; private fRun = 0; private dRun = 0;
   /** Stretches to read (decimated positions). */
   private segs: [number, number][] = [];
+  /**
+   * With [onlyTonal], each tonal stretch is read once it is over rather than when the carrier drops, and plain carrier
+   * is not kept past a second: a voice channel's audio (Prowl, Audio, Dispatch), where the carrier may never be seen to drop.
+   */
+  eager = false;
   /** [audio]: the input is squelched audio (silent when no carrier) rather than the discriminator. */
   constructor(readonly fs: number, readonly audio = false) {
     this.D = Math.max(1, Math.round(fs / 8000)); this.rate = fs / this.D; this.B = Math.max(1, Math.round(fs * 0.01));
@@ -641,12 +675,19 @@ export class AnalogSignaling {
         const f = this.zc * this.rate / (2 * this.zN), r = this.zE0 > 0 ? 1 - this.zE1 / (2 * this.zE0) : 1;
         const fe = Math.acos(Math.max(-1, Math.min(1, r))) * this.rate / (2 * Math.PI);
         const steady = f > 250 && f < 3200 && Math.abs(f - this.fPrev) <= Math.max(60, 0.04 * f) && Math.abs(fe - f) <= Math.max(60, 0.06 * f);
-        this.fRun = steady ? this.fRun + 1 : 0; this.fPrev = f; this.zc = 0; this.zN = 0; this.zE0 = 0; this.zE1 = 0;
-        if (this.fRun >= 4) {
+        // 1200 baud FFSK (MDC-1200, FleetSync) wanders between its two tones with the bits: one tone a block by both
+        // measures, but not the same one block to block; 60 ms of it is a data burst
+        const fsk = f > 1000 && f < 2600 && Math.abs(fe - f) <= Math.max(80, 0.08 * f) && Math.abs(f - this.fPrev) <= 400;
+        this.fRun = steady ? this.fRun + 1 : 0; this.dRun = fsk ? this.dRun + 1 : 0; this.fPrev = f; this.zc = 0; this.zN = 0; this.zE0 = 0; this.zE1 = 0;
+        if (this.fRun >= 4 || this.dRun >= 6) {
           const pad = Math.round(0.6 * this.rate), from = this.dpos - 6 * 80 - pad, to = this.dpos + pad, last = this.segs[this.segs.length - 1];
           if (last && from <= last[1]) last[1] = Math.max(last[1], to); else this.segs.push([from, to]);
         }
       }
+    }
+    if (this.eager && this.onlyTonal && this.carrier) {
+      const last = this.segs[this.segs.length - 1];
+      if (last ? this.dpos >= last[1] : this.dpos - this.txStart > 2 * this.rate) { const end = last ? this.dpos : this.dpos - Math.round(this.rate); this.endTx(end); this.txStart = end; }
     }
     if (!this.carrier && this.onRun === 0 && this.blen > 2 * this.rate) { const keep = Math.round(this.rate); this.buf.copyWithin(0, this.blen - keep, this.blen); this.bufAt += this.blen - keep; this.blen = keep; }
     if (this.carrier && this.dpos - this.txStart > 240 * this.rate) { this.endTx(this.dpos); this.txStart = this.dpos; }
@@ -674,7 +715,7 @@ export class AnalogSignaling {
         tx.kerchunk = false; tx.timeout = false;
         this.remember(tx); this.txs.push(tx); if (this.txs.length > 30) this.txs.shift(); this.onTx(tx);
       }
-      this.segs = []; this.fRun = 0;
+      this.segs = []; this.fRun = 0; this.dRun = 0;
     } else if (b - a >= Math.round(0.08 * this.rate)) {
       const tx = this.analyze(this.buf.slice(a, b), this.txStart / this.rate);
       this.remember(tx); this.txs.push(tx); if (this.txs.length > 30) this.txs.shift(); this.onTx(tx);
@@ -730,7 +771,8 @@ export class AnalogSignaling {
         else if (strict >= 10 && strict >= 0.55 * (u - t) && (u - t) * H / rate >= 0.12 && (u - t) * H / rate <= 1.2) {
           let hs = 0, hn = 0; for (let j = t; j < u; j++) if (fr.fsk[j] && fr.E[j] > vThr) { hs += fr.hi[j]; hn++; }
           // the rate from the burst's width: 1200 baud FFSK keeps to 900-2100 Hz, 2400 baud spreads above it
-          data.push({ baud: hs / hn > 0.08 ? 2400 : 1200, ms: Math.round((u - t) * H * 1000 / rate), atS: startS + ft(t) });
+          const rd = burstRead(y, t * H, Math.min(y.length, u * H + N), rate, hs / hn > 0.08 ? 2400 : 1200);
+          data.push({ baud: rd.baud, ms: Math.round((u - t) * H * 1000 / rate), atS: startS + ft(t), hex: rd.hex });
         }
       }
       t = u;
@@ -791,6 +833,47 @@ export class AnalogSignaling {
   }
 }
 
+/** An MDC-1200 or FleetSync ID off a voice channel, as Prowl, Audio and Dispatch show it. */
+export interface AnalogId {
+  kind: 'MDC-1200' | 'FLEETSYNC';
+  /** MDC-1200: the unit ID as the radios show it (hex). FleetSync: the sender's fleet and unit ('100-1001', 'all'). */
+  unit: string;
+  /** FleetSync: who it was sent to, fleet and unit; '' for MDC-1200. */
+  to: string;
+  emergency: boolean;
+  /** What it was: 'PTT ID', 'EMERGENCY', 'RADIO CHECK', 'OP 2B'; FleetSync 'I' (1200 baud) or 'II' (2400 baud). */
+  what: string;
+  atS: number;
+}
+/** The MDC-1200 and FleetSync IDs in a transmission, in that order. */
+export function analogIds(tx: AnalogTx): AnalogId[] {
+  const fid = (fleet: number, unit: number) => fleet < 0 && unit < 0 ? 'all' : `${fleet < 0 ? 'all' : fleet}-${unit < 0 ? 'all' : unit}`;
+  return [
+    ...tx.mdc.map(m => ({ kind: 'MDC-1200' as const, unit: m.unit, to: '', emergency: m.emergency, what: (m.label || `op ${m.op.toString(16).toUpperCase().padStart(2, '0')}`).toUpperCase(), atS: m.atS })),
+    ...tx.fleetsync.map(f => ({ kind: 'FLEETSYNC' as const, unit: fid(f.fromFleet, f.fromUnit), to: f.all ? 'all' : fid(f.toFleet, f.toUnit), emergency: false, what: f.baud === 2400 ? 'II' : 'I', atS: f.atS })),
+  ];
+}
+/** One line for an ID: 'MDC-1200 UNIT 1234 · PTT ID', 'MDC-1200 UNIT 0042 · EMERGENCY', 'FLEETSYNC I 100-1001 TO 100-1234'. */
+export function analogIdText(id: AnalogId): string {
+  return id.kind === 'MDC-1200' ? `MDC-1200 UNIT ${id.unit} · ${id.what}` : `FLEETSYNC ${id.what} ${id.unit.toUpperCase()} TO ${id.to.toUpperCase()}`;
+}
+/**
+ * MDC-1200 and FleetSync on a narrow FM voice channel's discriminator: the analog signaling's light look (only what is
+ * tonal is read, each stretch once it is over), each ID handed on as it is read.
+ */
+export class AnalogIds {
+  readonly sig: AnalogSignaling;
+  onId: (id: AnalogId) => void = () => undefined;
+  constructor(readonly fs: number) {
+    this.sig = new AnalogSignaling(fs); this.sig.onlyTonal = true; this.sig.eager = true;
+    this.sig.onTx = tx => { for (const id of analogIds(tx)) this.onId(id); };
+  }
+  push(x: ArrayLike<number>, n: number): void { this.sig.push(x, n); }
+  /** The end of a recording: what is still open is read. */
+  flush(): void { this.sig.flush(); }
+  reset(): void { this.sig.reset(); }
+}
+
 /** One line per thing heard in a transmission, for the UI (app copy: no dashes as punctuation, no colons). */
 export function analogSummary(tx: AnalogTx): string[] {
   const out: string[] = [];
@@ -799,7 +882,7 @@ export function analogSummary(tx: AnalogTx): string[] {
   for (const t of tx.twoTone) out.push(`2-tone page ${t.aHz} and ${t.bHz} Hz`);
   for (const m of tx.mdc) out.push(`MDC-1200 unit ${m.unit}${m.label ? ' ' + m.label : ` op ${m.op.toString(16).toUpperCase().padStart(2, '0')}`}`);
   for (const f of tx.fleetsync) out.push(`FleetSync ${f.baud === 2400 ? 'II' : 'I'} ${f.fromFleet < 0 ? 'all' : f.fromFleet}-${f.fromUnit < 0 ? 'all' : f.fromUnit} to ${f.toFleet < 0 ? 'all' : f.toFleet}-${f.toUnit < 0 ? 'all' : f.toUnit}`);
-  for (const d of tx.data) out.push(`${d.baud} baud data burst`);
+  for (const d of tx.data) out.push(`${d.baud} baud data burst${d.hex ? ' ' + d.hex : ''}`);
   if (tx.ctcss) out.push(`PL ${tx.ctcss.toFixed(1)}${tx.reverseBurst ? `, reverse burst ${tx.reverseBurst}°` : ''}`);
   if (tx.dcs) out.push(`DCS ${String(tx.dcs).padStart(3, '0')}${tx.dcsTurnOff ? ', turn-off code' : ''}`);
   if (tx.courtesy) out.push(`Courtesy tone ${tx.courtesy.tones.map(t => t.hz).join(' ')} Hz${tx.courtesy.seen > 1 ? `, heard ${tx.courtesy.seen} times` : ''}`);

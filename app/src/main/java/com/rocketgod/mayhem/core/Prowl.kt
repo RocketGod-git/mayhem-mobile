@@ -28,8 +28,10 @@ object Prowl {
         Range(118e6, 137e6, SdrEngine.Mode.AM, "airband"),
         Range(144e6, 148e6, SdrEngine.Mode.NFM, "2 m ham"),
         Range(150e6, 174e6, SdrEngine.Mode.NFM, "VHF business"),
-        Range(420e6, 470e6, SdrEngine.Mode.NFM, "UHF"),
+        Range(420e6, 470e6, SdrEngine.Mode.NFM, "70 cm ham and UHF business"),
         Range(851e6, 869e6, SdrEngine.Mode.NFM, "800 public safety"),
+        Range(896e6, 902e6, SdrEngine.Mode.NFM, "900 business mobiles"),
+        Range(935e6, 941e6, SdrEngine.Mode.NFM, "900 business"),
     )
     val SPANS = listOf("1.92 MHz" to 1_920_000, "7.68 MHz" to 7_680_000, "19.2 MHz" to 19_200_000)
 
@@ -45,10 +47,11 @@ object Prowl {
     const val VOICE = 0.45                  // speech score needed to stay
 
     private class Track(var hz: Double, var first: Long, var last: Long, var best: Double, var hits: Int, var skipUntil: Long, var why: String)
+    /** [id]: the MDC-1200 or FleetSync ID heard on it ("" none), [emergency] when an MDC-1200 emergency came. */
     data class Hit(val at: Long, val hz: Double, val mode: SdrEngine.Mode, val cls: String, val secs: Double, val score: Double,
-                   val db: Double, val band: String, val kept: Boolean, val why: String)
+                   val db: Double, val band: String, val kept: Boolean, val why: String, val id: String = "", val emergency: Boolean = false)
     data class Target(val hz: Double, val bw: Double, val cls: String, val at: Long, var lastLive: Long, var lastSeen: Long,
-                      var judged: Boolean, var peak: Double, val band: String)
+                      var judged: Boolean, var peak: Double, val band: String, var id: String = "", var emergency: Boolean = false)
     data class View(
         val on: Boolean = false, val target: Target? = null, val held: Double? = null, val note: String = "",
         val seen: Int = 0, val ready: Int = 0, val remembered: Int = 0, val sweep: Boolean = false, val band: String = "",
@@ -76,6 +79,8 @@ object Prowl {
     private var ready = 0
     private var span = SdrEngine.RX_RATE
     private var lastLo = 0L
+    /** When the last ID read was heard (SdrEngine.nfmId), so each is taken once. */
+    private var idMs = 0L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
@@ -209,6 +214,13 @@ object Prowl {
                 parts = "band %.2f · rhythm %.3f · swing %.1f dB · level %.0f dB".format(v.band, v.mod, v.vary, v.levelDb)
             }
         }
+        SdrEngine.nfmId.value?.let { n ->
+            if (n.ms != idMs) {
+                idMs = n.ms
+                val t = target
+                if (t != null && abs(n.hz - t.hz) < 3_000) { t.id = n.text; t.emergency = t.emergency || n.id.emergency }
+            }
+        }
         for (s in signals) {
             if (!worthy(s)) continue
             val k = key(s.hz)
@@ -298,7 +310,7 @@ object Prowl {
             skipTrack(t.hz, "went away before it could be judged", now, 45_000)
             note = "${mhz(t.hz)} went before it could be judged"
         } else if (secs > 0.8) {
-            log.add(0, Hit(System.currentTimeMillis(), t.hz, SdrEngine.mode.value, t.cls, secs, best, t.peak, t.band, kept, why))
+            log.add(0, Hit(System.currentTimeMillis(), t.hz, SdrEngine.mode.value, t.cls, secs, best, t.peak, t.band, kept, why, t.id, t.emergency))
             while (log.size > 200) log.removeAt(log.size - 1)
             if (kept) note = "${mhz(t.hz)} finished after ${secs.roundToInt()}s"
         }

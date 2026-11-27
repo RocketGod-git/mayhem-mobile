@@ -106,7 +106,8 @@ data class HpPrefs(val hold: String = "", val mute: List<String> = emptyList(), 
 fun hpPrefsSaved(p: HpPrefs): HpPrefs = HpPrefs("", p.mute.toList(), p.prio.toList())
 fun hpPrefsRestored(mute: List<String>, prio: List<String>): HpPrefs = HpPrefs("", mute.toList(), prio.toList())
 
-fun chanKey(hz: Long): String = ((hz / 100.0).roundToLong() * 100).toString()
+/** A channel's key: its frequency to 50 Hz (a 6.25 kHz channel such as 451.15625 MHz keeps its own). */
+fun chanKey(hz: Long): String = ((hz / 50.0).roundToLong() * 50).toString()
 
 data class HpTxRow(
     val id: Int, val hz: Long, val heardHz: Long, val startMs: Double, val endMs: Double, val live: Boolean,

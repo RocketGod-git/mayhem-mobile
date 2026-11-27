@@ -253,6 +253,7 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 .rdsbar b { color: var(--accent2); font-weight: 700; }                  /* field value */
 .rdsbar em { font-style: normal; color: var(--muted); opacity: 0.7; margin: 0 8px; }           /* separator */
 .rdsbar.dim b { color: var(--muted); }
+.rdsbar.alert b { color: var(--danger); }                  /* an MDC-1200 emergency on the ID strip */
 /* HD Radio badge: under the zoom control, out of the way of the RDS bar. */
 .hdbadge { position: absolute; top: 34px; right: 6px; z-index: 2; font-size: 10px; letter-spacing: 1px; padding: 2px 7px; border-radius: 5px;
   border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--muted); pointer-events: none; white-space: nowrap; }
@@ -470,7 +471,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body { box-sizing: border-box; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   header.bar, #hint, #unsupported, #log-panel { flex: none; }
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px 10px 6px; }
-  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
+  .view.launcher, .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.satcom, .view.fleet, .view.hd, .view.cell, .view.atsc {
     display: flex; flex-direction: column; overflow: hidden;
   }
   .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -562,7 +563,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   #hint, #unsupported, #log-panel { flex: none; }
   /* main#view IS the .view.* element, so its display comes from the per-app rules below; it just flexes to fill. */
   main#view { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 8px 12px 6px; }
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.satcom, .view.fleet, .view.hd, .view.cell, .view.atsc {
     display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 12px; flex: 1; min-height: 0; align-items: stretch;
   }
   .visual { display: flex; flex-direction: column; min-height: 0; }
@@ -624,7 +625,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .chip { font-size: 13px; }
   .view.launcher { grid-template-columns: minmax(0, 1fr) minmax(330px, 500px); }
   /* Controls stop growing past ~560 px so an ultra-wide monitor turns into waterfall, not a wall of chips. */
-  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.fleet, .view.hd, .view.cell, .view.atsc {
+  .view.audio, .view.prowl, .view.sat, .view.ham, .view.adsb, .view.sat, .view.ais, .view.aprs, .view.pager, .view.ert, .view.lora, .view.sondes, .view.uat, .view.btle, .view.tpms, .view.acars, .view.vdl2, .view.subghz, .view.devices, .view.lookingglass, .view.search, .view.capture, .view.trains, .view.satcom, .view.fleet, .view.hd, .view.cell, .view.atsc {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
   }
   .view.transmit { grid-template-columns: minmax(0, 820px); }
@@ -867,7 +868,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   /* The card apps share the screen the way the Android app does: the waterfall keeps a real height under the readout
    * (it was squeezed to a strip with its frequency scale cut off) and the cards take the rest and scroll. */
   .view.ert:has(> .visual:not(.nowf)) .controls, .view.lora:has(> .visual:not(.nowf)) .controls, .view.sondes:has(> .visual:not(.nowf)) .controls, .view.uat:has(> .visual:not(.nowf)) .controls, .view.btle:has(> .visual:not(.nowf)) .controls,
-  .view.acars:has(> .visual:not(.nowf)) .controls, .view.vdl2:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.fleet:has(> .visual:not(.nowf)) .controls, .view.hd:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls, .view.atsc:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
+  .view.acars:has(> .visual:not(.nowf)) .controls, .view.vdl2:has(> .visual:not(.nowf)) .controls, .view.trains:has(> .visual:not(.nowf)) .controls, .view.satcom:has(> .visual:not(.nowf)) .controls, .view.fleet:has(> .visual:not(.nowf)) .controls, .view.hd:has(> .visual:not(.nowf)) .controls, .view.cell:has(> .visual:not(.nowf)) .controls, .view.atsc:has(> .visual:not(.nowf)) .controls { max-height: clamp(180px, calc(100% - 350px), 52%); }
   /* A waterfall put away: the readout keeps its own height and the cards, map or log take everything under it. */
   .view .visual.nowf { flex: none; }
   .view:has(> .visual.nowf) > .controls { flex: 1; max-height: none; min-height: 0; }
@@ -3180,8 +3181,8 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 /* HAM+: every channel at once. The layout follows Dispatch: on a wide screen the timeline is the big view over a short
    waterfall, and the column beside it keeps its controls still while the channels and the tabs scroll in their own
    regions; on a phone one page scrolls under pinned section chips and the live bar. */
-.view:is(.hamplus, .cb) .fhead { flex-wrap: wrap; row-gap: 4px; }
-.view:is(.hamplus, .cb) .fhead .ftitle { order: 99; flex: 1 0 100%; padding: 0 2px; font-size: 9px; letter-spacing: 1.5px; white-space: normal; line-height: 1.2; }
+.view:is(.hamplus, .cb, .gmrs) .fhead { flex-wrap: wrap; row-gap: 4px; }
+.view:is(.hamplus, .cb, .gmrs) .fhead .ftitle { order: 99; flex: 1 0 100%; padding: 0 2px; font-size: 9px; letter-spacing: 1.5px; white-space: normal; line-height: 1.2; }
 .hp-live { position: sticky; top: 40px; z-index: 1090; margin: 0 0 6px; box-shadow: 0 -6px 0 var(--paper); }
 .hp-live .hp-lb1, .hp-live .hp-lb2 { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
 .hp-live .hp-lb1 > b { font-size: 15px; font-weight: 900; letter-spacing: 1px; color: var(--ink); flex: none; }
@@ -3215,7 +3216,7 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-jump { margin-top: 4px; }
 /* channel tiles */
 .hp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-.view:is(.hamplus, .cb):not(.hpwide) .hp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.view:is(.hamplus, .cb, .gmrs):not(.hpwide) .hp-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .hp-tile { gap: 2px; transition: border-color .25s, background .25s, box-shadow .25s; }
 .hp-tile b { font-size: 15px; display: flex; align-items: center; gap: 5px; }
 .hp-tile .hp-note { font-style: normal; color: var(--ok); font-size: 12px; }
@@ -3304,27 +3305,27 @@ main#view.view.js8.j8wide { display: grid; grid-template-columns: minmax(0, 1fr)
 .hp-st b { color: var(--st); font-size: 11px; font-weight: 900; }
 .hp-st span { color: var(--muted); font-size: 9px; }
 /* wide: the timeline big on the left over the waterfall; the column beside it in steady regions */
-main#view.view:is(.hamplus, .cb).hpwide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 640px); grid-template-rows: minmax(0, 1fr); gap: 12px; --hp-wf: clamp(120px, 22vh, 230px); }
-.view:is(.hamplus, .cb).hpwide > .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.view:is(.hamplus, .cb).hpwide > .visual > .scope { flex: none; height: var(--hp-wf); min-height: var(--hp-wf); margin-top: 8px; }
-.view:is(.hamplus, .cb).hpwide > .visual.nowf > .scope { display: none; }
-.view:is(.hamplus, .cb).hpwide .hp-tlbox.wide { flex: 1; min-height: 0; margin-top: 8px; display: flex; }
-.view:is(.hamplus, .cb).hpwide .hp-tlbox.wide .hp-tl { flex: 1; height: auto; min-height: 0; }
-.view:is(.hamplus, .cb).hpwide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
-.view:is(.hamplus, .cb).hpwide .face .funit, .view:is(.hamplus, .cb).hpwide .face .lscale, .view:is(.hamplus, .cb).hpwide .face .health { display: none; }
-.view:is(.hamplus, .cb).hpwide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; gap: 0; }
-.view:is(.hamplus, .cb).hpwide > .controls > * { flex: none; }
-.view:is(.hamplus, .cb).hpwide > .controls > .note { display: none; }
-.view:is(.hamplus, .cb).hpwide .hp-live { position: static; margin: 6px 0; box-shadow: none; }
-.view:is(.hamplus, .cb).hpwide .hp-lower { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-.view:is(.hamplus, .cb).hpwide .hp-tiles { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
-.view:is(.hamplus, .cb).hpwide .hp-bottom { flex: none; height: var(--hp-wf); min-height: 0; display: flex; flex-direction: column; gap: 6px; }
-.view:is(.hamplus, .cb).hpwide .hp-tabs { flex: none; margin: 0; }
-.view:is(.hamplus, .cb).hpwide #hp-stage { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.view:is(.hamplus, .cb).hpwide .hp-cardbox.over:not([hidden]) { position: absolute; inset: 0; z-index: 20; overflow-y: auto; overscroll-behavior: contain; margin: 0; background: var(--paper); }
-@media (min-width: 1500px) { main#view.view:is(.hamplus, .cb).hpwide { grid-template-columns: minmax(0, 1fr) minmax(520px, 900px); } }
-@media (min-width: 720px) { .view:is(.hamplus, .cb):not(.hpwide) .hp-live { position: static; } }
-@media (max-width: 420px) { .hp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .view:is(.hamplus, .cb):not(.hpwide) .hp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+main#view.view:is(.hamplus, .cb, .gmrs).hpwide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(400px, 640px); grid-template-rows: minmax(0, 1fr); gap: 12px; --hp-wf: clamp(120px, 22vh, 230px); }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .visual { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .visual > .scope { flex: none; height: var(--hp-wf); min-height: var(--hp-wf); margin-top: 8px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .visual.nowf > .scope { display: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tlbox.wide { flex: 1; min-height: 0; margin-top: 8px; display: flex; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tlbox.wide .hp-tl { flex: 1; height: auto; min-height: 0; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .face .freq { font-size: 40px !important; padding: 0.2em 0 0.05em; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .face .funit, .view:is(.hamplus, .cb, .gmrs).hpwide .face .lscale, .view:is(.hamplus, .cb, .gmrs).hpwide .face .health { display: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .controls { display: flex; flex-direction: column; overflow: hidden; max-height: none; min-height: 0; padding: 0; gap: 0; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .controls > * { flex: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide > .controls > .note { display: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-live { position: static; margin: 6px 0; box-shadow: none; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-lower { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tiles { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-bottom { flex: none; height: var(--hp-wf); min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-tabs { flex: none; margin: 0; }
+.view:is(.hamplus, .cb, .gmrs).hpwide #hp-stage { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.view:is(.hamplus, .cb, .gmrs).hpwide .hp-cardbox.over:not([hidden]) { position: absolute; inset: 0; z-index: 20; overflow-y: auto; overscroll-behavior: contain; margin: 0; background: var(--paper); }
+@media (min-width: 1500px) { main#view.view:is(.hamplus, .cb, .gmrs).hpwide { grid-template-columns: minmax(0, 1fr) minmax(520px, 900px); } }
+@media (min-width: 720px) { .view:is(.hamplus, .cb, .gmrs):not(.hpwide) .hp-live { position: static; } }
+@media (max-width: 420px) { .hp-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .view:is(.hamplus, .cb, .gmrs):not(.hpwide) .hp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (prefers-reduced-motion: reduce) { .hp-tile.live, .hp-bub.live, .hp-cardbox:not([hidden]) { animation: none; } }
 .seg.hp-mode { flex: none; }
 .seg.hp-mode button { flex: none; padding-left: 12px; padding-right: 12px; white-space: nowrap; }
@@ -3358,7 +3359,7 @@ main#view.view:is(.hamplus, .cb).hpwide { display: grid; grid-template-columns: 
 .cb-foot { font-size: 9px; color: var(--muted); margin: -2px 2px 8px; line-height: 1.35; }
 .cb-modes, .cb-clar { gap: 8px; align-items: center; margin: 6px 0; }
 .cb-clar b { font-size: 12px; min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
-.view.cb.hpwide .cb-scroll { display: block; }
+.view:is(.cb, .gmrs).hpwide .cb-scroll { display: block; }
 @media (max-width: 760px) { .cb-board { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .cb-board { grid-template-columns: repeat(5, minmax(0, 1fr)); } .cb-cell b { font-size: 14px; } }
 /* Repeaters: the card's first line never breaks. The gain chip takes what the tag, the buttons and the lamp leave (no

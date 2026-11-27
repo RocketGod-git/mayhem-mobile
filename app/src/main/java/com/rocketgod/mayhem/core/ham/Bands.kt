@@ -56,18 +56,52 @@ val BANDS = listOf(
         segments = listOf(Triple(1_240_000_000L, 1_300_000_000L, "FM / ATV / repeaters"))),
 )
 
+/** The US itinerant business channels any licensee may use, by their color dots and stars. */
+private val ITINERANT = listOf(
+    Triple(151_625_000L, 151_625_000L, "itinerant · red dot"), Triple(151_955_000L, 151_955_000L, "itinerant · purple dot"),
+    Triple(464_500_000L, 464_500_000L, "itinerant · brown dot"), Triple(464_550_000L, 464_550_000L, "itinerant · yellow dot"),
+    Triple(467_762_500L, 467_762_500L, "itinerant · J dot"), Triple(467_812_500L, 467_812_500L, "itinerant · K dot"),
+    Triple(467_850_000L, 467_850_000L, "itinerant · silver star"), Triple(467_875_000L, 467_875_000L, "itinerant · gold star"),
+    Triple(467_900_000L, 467_900_000L, "itinerant · red star"), Triple(467_925_000L, 467_925_000L, "itinerant · blue star"),
+    Triple(469_500_000L, 469_500_000L, "itinerant"), Triple(469_550_000L, 469_550_000L, "itinerant"),
+)
+
+/** Earlier entries win where they overlap: the narrow services first, the business bands around them last. */
 val NON_HAM = listOf(
     Band("air", "Air", 118_000_000, 137_000_000, Mode.AM, 25_000, calling = 121_500_000,
         segments = listOf(Triple(118_000_000L, 137_000_000L, "AM · 121.500 guard"))),
     Band("wx", "NOAA", 162_400_000, 162_550_000, Mode.NFM, 25_000, calling = 162_400_000,
         segments = listOf(Triple(162_400_000L, 162_550_000L, "weather radio"))),
+    Band("rail", "Railroad", 160_215_000, 161_565_000, Mode.NFM, 7_500,
+        segments = listOf(Triple(160_215_000L, 161_565_000L, "AAR road and yard channels"))),
     Band("marine", "Marine", 156_000_000, 162_025_000, Mode.NFM, 25_000, calling = 156_800_000,
         segments = listOf(Triple(156_000_000L, 162_025_000L, "VHF marine · ch 16 = 156.800"))),
     Band("frs", "FRS/GMRS", 462_550_000, 467_725_000, Mode.NFM, 12_500, calling = 462_562_500,
         segments = listOf(Triple(462_550_000L, 462_725_000L, "ch 1–7 / 15–22"), Triple(467_562_500L, 467_712_500L, "ch 8–14"))),
+    Band("vhfbiz", "VHF Business", 150_000_000, 174_000_000, Mode.NFM, 2_500, calling = 151_820_000,
+        segments = listOf(
+            Triple(151_820_000L, 151_820_000L, "MURS 1"), Triple(151_880_000L, 151_880_000L, "MURS 2"), Triple(151_940_000L, 151_940_000L, "MURS 3"),
+            Triple(154_570_000L, 154_570_000L, "MURS 4 · blue dot"), Triple(154_600_000L, 154_600_000L, "MURS 5 · green dot"),
+        ) + ITINERANT.filter { it.first < 174_000_000L } + Triple(150_000_000L, 174_000_000L, "land mobile · 7.5 kHz channels")),
+    Band("uhfbiz", "UHF Business", 450_000_000, 470_000_000, Mode.NFM, 6_250, offset = 5_000_000, calling = 464_500_000,
+        segments = listOf(Triple(451_150_000L, 451_150_000L, "business repeater · DMR"), Triple(451_400_000L, 451_400_000L, "business repeater · DMR")) +
+            ITINERANT.filter { it.first > 450_000_000L } + listOf(
+            Triple(450_000_000L, 455_000_000L, "repeater outputs (+5)"), Triple(455_000_000L, 460_000_000L, "repeater inputs"),
+            Triple(460_000_000L, 465_000_000L, "repeater outputs (+5)"), Triple(465_000_000L, 470_000_000L, "repeater inputs"))),
+    Band("800", "800 MHz", 851_000_000, 869_000_000, Mode.NFM, 12_500, offset = -45_000_000,
+        segments = listOf(Triple(851_000_000L, 869_000_000L, "business and public safety · repeaters (−45)"))),
+    Band("800m", "800 Mobiles", 806_000_000, 824_000_000, Mode.NFM, 12_500,
+        segments = listOf(Triple(806_000_000L, 824_000_000L, "mobiles of the 851–869 repeaters"))),
+    Band("900", "900 MHz", 935_000_000, 941_000_000, Mode.NFM, 6_250, offset = -39_000_000,
+        segments = listOf(Triple(935_000_000L, 941_000_000L, "business repeaters (−39)"))),
+    Band("900m", "900 Mobiles", 896_000_000, 902_000_000, Mode.NFM, 6_250,
+        segments = listOf(Triple(896_000_000L, 902_000_000L, "mobiles of the 935–941 repeaters"))),
 )
 
-fun bandOf(hz: Long): Band? = BANDS.firstOrNull { hz in it.lo..it.hi } ?: NON_HAM.firstOrNull { hz in it.lo..it.hi }
+/** The band at [hz]: a ham band, else the first other one with a segment there (FRS/GMRS spans business channels), else any. */
+fun bandOf(hz: Long): Band? = BANDS.firstOrNull { hz in it.lo..it.hi }
+    ?: NON_HAM.firstOrNull { b -> hz in b.lo..b.hi && b.segments.any { (lo, hi, _) -> hz in lo..hi } }
+    ?: NON_HAM.firstOrNull { hz in it.lo..it.hi }
 
 fun segmentOf(hz: Long): String {
     val b = bandOf(hz) ?: return ""
@@ -75,7 +109,7 @@ fun segmentOf(hz: Long): String {
     return if (s != null) "${b.name} · ${s.third}" else b.name
 }
 
-/** Repeater output segments and their offsets (US band plan); outside these a frequency is simplex. */
+/** Repeater output segments and their offsets (US band plans, ham and business); outside these a frequency is simplex. */
 private val REPEATER_SEGMENTS = listOf(
     Triple(29_620_000L, 29_700_000L, -100_000L),
     Triple(51_620_000L, 51_980_000L, -500_000L), Triple(52_500_000L, 52_980_000L, -500_000L), Triple(53_000_000L, 53_980_000L, -1_000_000L),
@@ -84,6 +118,9 @@ private val REPEATER_SEGMENTS = listOf(
     Triple(442_000_000L, 445_000_000L, 5_000_000L), Triple(447_000_000L, 450_000_000L, -5_000_000L),
     Triple(927_000_000L, 928_000_000L, -25_000_000L),
     Triple(1_282_000_000L, 1_288_000_000L, -12_000_000L),
+    // business: UHF, 800 and 900 MHz repeater pairs
+    Triple(450_000_000L, 455_000_000L, 5_000_000L), Triple(460_000_000L, 465_000_000L, 5_000_000L),
+    Triple(851_000_000L, 869_000_000L, -45_000_000L), Triple(935_000_000L, 941_000_000L, -39_000_000L),
 )
 
 /** The repeater input for an output frequency, or null when the frequency is not in a repeater output segment. */
