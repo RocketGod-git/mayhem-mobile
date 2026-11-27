@@ -421,7 +421,10 @@ class FlexDecoder(private val log: PacketLog) : IqProcessor {
  *  by default (what PDW does on a PC), or just one of them. */
 class PagerDecoder(private val log: PacketLog) : IqProcessor {
     enum class Which(val label: String) { FLEX("FLEX"), POCSAG("POCSAG"), BOTH("FLEX + POCSAG") }
-    val flex = FlexDecoder(log)
+    /** FLEX goes through the same decoder as the multi-channel hunter: a page sent in fragments is held until its last
+     *  one arrives and goes on the log once, whole, instead of a line per fragment. */
+    private var flex: com.rocketgod.mayhem.core.pager.FlexDecoder? = null
+    private var flexRate = 0
     /** POCSAG goes through the same decoder as the multi-channel hunter: it tracks the carrier's offset (a radio's
      *  frequency error is a DC on the discriminator), which the older single-channel decoder did not. */
     private var pocsag: com.rocketgod.mayhem.core.pager.PocsagDecoder? = null
@@ -442,17 +445,26 @@ class PagerDecoder(private val log: PacketLog) : IqProcessor {
         }
         override fun onSync(protocol: String, rate: String) {}
     }
+    private val flexSink = object : com.rocketgod.mayhem.core.pager.PagerSink {
+        override fun onPage(p: com.rocketgod.mayhem.core.pager.PagerPage) {
+            if (p.repeat == 1) return   // another transmission of a page already on the log, adding nothing
+            val partial = if (p.errors > 0) " PARTIAL" else ""
+            val text = if (p.text.isNotEmpty()) ": ${p.text}" else ""
+            log.add("FLEX %s %s CAP %010d %s%s%s".format(p.rate, p.where, p.capcode, p.kind.label, partial, text))
+        }
+    }
     // Both by default: a channel can carry either, and FLEX alone left POCSAG audible but never decoded.
     private val _which = MutableStateFlow(Which.BOTH)
     val which: StateFlow<Which> = _which.asStateFlow()
     fun select(w: Which) { _which.value = w }
     override val wantsFm: Boolean get() = true
-    override fun reset(rate: Int) { pocsag = null; pocsagRate = 0; reflex = null; reflexRate = 0; flex.reset(rate) }
+    override fun reset(rate: Int) { pocsag = null; pocsagRate = 0; reflex = null; reflexRate = 0; flex = null; flexRate = 0 }
     override fun onIq(iq: ByteArray, len: Int, rate: Int) {}
     override fun onFm(samples: FloatArray, n: Int, rate: Int) {
         val w = _which.value
         if (w != Which.POCSAG) {
-            flex.onFm(samples, n, rate)
+            if (flex == null || rate != flexRate) { flexRate = rate; flex = com.rocketgod.mayhem.core.pager.FlexDecoder(flexSink, rate.toDouble()) }
+            flex!!.push(samples, n)
             if (reflex == null || rate != reflexRate) {
                 reflexRate = rate
                 reflex = com.rocketgod.mayhem.core.pager.ReflexDecoder(quiet, rate.toDouble()).also { d -> d.onFrame = { f -> log.add(f.line) } }

@@ -12,6 +12,25 @@ import kotlin.math.roundToLong
 /** A page as the feed shows it: the decoder's page plus when, on what frequency, and whether it reads like a call-out. */
 data class PagerMessage(val id: Long, val at: Long, val hz: Long, val page: PagerPage, val alert: Boolean)
 
+/** The readable runs of a broken page, four characters or more: a missing fragment (<…>), a cut end ( …) and the
+ *  '?' of lost words split it. Errors come in bursts, so the word on either side of a lost one (three characters) may
+ *  have been fixed into the wrong word: it is left out as well. */
+internal fun readableRuns(text: String): List<String> {
+    val c = text.toCharArray()
+    val lost = c.indices.filter { c[it] == '?' }
+    for (i in lost) for (k in maxOf(0, i - 3)..minOf(c.size - 1, i + 3)) if (c[k] != '…' && c[k] != '<' && c[k] != '>') c[k] = '?'
+    return String(c).split(Regex("<…>| …$|\\?+")).map { it.trim() }.filter { it.length >= 4 }
+}
+
+/** Whether a whole page carries every readable run of a broken one, in order: the broken one is a copy of it. */
+internal fun coversPage(whole: String, broken: String): Boolean {
+    val runs = readableRuns(broken)
+    if (runs.isEmpty()) return false
+    var at = 0
+    for (r in runs) { val k = whole.indexOf(r, at); if (k < 0) return false; at = k + r.length }
+    return true
+}
+
 /**
  * Multi-channel pager decode over whatever span the radio is tuned to — worldwide, no band presets. It peak-holds
  * the current span's spectrum, finds the carriers in it, and decodes up to [SLOTS] at once, each through a
@@ -97,6 +116,15 @@ object PagerEngine {
     private const val COPY_MS = 3_000L
     /** How much weaker a receiver repeating another's page must be to be taken for a copy of it. */
     private const val COPY_DB = 10f
+    /**
+     * A page with pieces missing waits this long before it is shown. Simulcast carriers send the same pages a moment
+     * apart, and one receiver often hears a page whole while another misses its first fragment; the whole copy usually
+     * lands within a couple of seconds, and then the broken one is never shown.
+     */
+    private const val PARTIAL_WAIT_MS = 8_000L
+    /** A whole copy arriving this soon after a broken one was shown takes that card's place, and a broken copy arriving
+     *  this soon after a whole one is dropped (networks send a page again on another carrier seconds later). */
+    private const val PARTIAL_REPLACE_MS = 60_000L
     private const val MAX_MESSAGES = 400
     /** How far back the card a repeated page replaces is looked for. */
     private const val REPEAT_MS = 10 * 60_000L
@@ -135,6 +163,15 @@ object PagerEngine {
     /** Pages put on the feed in the last [COPY_MS]: what the page says, its carrier, its card, when. */
     private class Recent(val key: String, var hz: Long, var id: Long, val at: Long)
     private val recent = ArrayList<Recent>()
+    /** Broken pages waiting [PARTIAL_WAIT_MS] for a whole copy: carrier, page, when. */
+    private class Waiting(val hz: Long, val p: PagerPage, val at: Long)
+    private val brokenWaiting = ArrayList<Waiting>()
+    /** Broken pages shown in the last [PARTIAL_REPLACE_MS] (their cards), so a late whole copy can take the place. */
+    private class ShownBroken(val id: Long, val capcode: Long, val text: String, val at: Long)
+    private val shownBroken = ArrayList<ShownBroken>()
+    /** Whole pages shown in the last [PARTIAL_REPLACE_MS], so a broken copy arriving after one is dropped. */
+    private class Whole(val capcode: Long, val text: String, val at: Long)
+    private val wholes = ArrayList<Whole>()
     private var iq = FloatArray(0); private var qq = FloatArray(0)
     // The radio's DC offset (LO leakage), tracked per buffer and removed, so a carrier at the tuned center is not
     // buried under the spike and the center of the span can be hunted like the rest of it.
@@ -159,6 +196,9 @@ object PagerEngine {
         if (!running) return
         val t = now()
         if (restart || centerHz != center || rate != rateHz) {
+            // a retune ends every receiver, so no whole copy can come now: what was waiting is shown as it is
+            release(t, all = true)
+            synchronized(recent) { shownBroken.clear(); wholes.clear() }
             center = centerHz; rateHz = rate; restart = false
             slots.clear(); tried.clear(); synchronized(recent) { copies.clear(); recent.clear() }; peak = FloatArray(0); carriers = emptyList()
             spanStart = t; lastManage = 0L; heard = null
@@ -174,6 +214,7 @@ object PagerEngine {
             val mi = (si / n).toFloat(); val mq = (sq / n).toFloat()
             if (dcFresh) { dcI = mi; dcQ = mq; dcFresh = false } else { dcI += (mi - dcI) * 0.3f; dcQ += (mq - dcQ) * 0.3f }
         }
+        release(t)
         if (t - spanStart < SETTLE_MS) return
         record(buf, len)
         if (iq.size < n) { iq = FloatArray(n); qq = FloatArray(n) }
@@ -328,21 +369,27 @@ object PagerEngine {
 
     private fun manage(t: Long) {
         carriers = carriers(center, rateHz)
-        val want: List<Long> = if (hunting) carriers.filter { !isCopy(it.hz) }.take(SLOTS).map { it.hz }
+        // in HUNT, the strongest carriers, less any sitting out RETRY_MS after a failed trial (the next ones move up)
+        fun resting(hz: Long) = t - (tried[hz] ?: 0L) < RETRY_MS && slots.none { abs(it.hz - hz) < 10_000 }
+        fun wanted(): List<Long> = if (hunting) carriers.filter { !isCopy(it.hz) && !resting(it.hz) }.take(SLOTS).map { it.hz }
             else synchronized(pinned) { if (pinned.isNotEmpty()) pinned.toList() else held.toList() }
+        val want = wanted()
         // evict: in HUNT, carriers that had their trial and never proved; in PINNED, anything no longer pinned
         // A carrier that wants a receiver while all are busy: one that has never synced, has had a few seconds and
         // is no longer among the wanted gives way (POCSAG keys up for a second; it can't wait out a 20 s trial).
+        // A carrier that never synced gives way after its trial even while it is still among the strongest: a spur or a
+        // non-pager signal can outrank every pager in the span, and would otherwise hold its receiver for good.
         val waiting = hunting && slots.size >= SLOTS && want.any { hz -> slots.none { abs(it.hz - hz) < 10_000 } && t - (tried[hz] ?: 0L) >= RETRY_MS }
         val gone = slots.filter { s ->
+            val failed = s.syncs == 0 && t - s.since > TRIAL_MS
             if (!hunting) s.hz !in want
-            else isCopy(s.hz) || s.hz !in want && t - s.lastSync > PROVEN_MS &&
+            else isCopy(s.hz) || failed || s.hz !in want && t - s.lastSync > PROVEN_MS &&
                 (t - s.since > TRIAL_MS || (waiting && s.syncs == 0 && t - s.since > QUICK_MS))
         }
         // only a carrier that never synced waits out RETRY_MS: a pager that went quiet is welcome back at once
         for (s in gone) { slots.remove(s); if (hunting && s.syncs == 0) tried[s.hz] = t }
         val taken = slots.map { it.hz }.toHashSet()
-        for (hz in want) {
+        for (hz in if (gone.isNotEmpty()) wanted() else want) {
             if (slots.size >= SLOTS) break
             if (hz in taken || slots.any { abs(it.hz - hz) < 10_000 }) continue
             if (hunting && t - (tried[hz] ?: 0L) < RETRY_MS) continue
@@ -385,13 +432,52 @@ object PagerEngine {
     }
     private fun levelOf(hz: Long): Float = carriers.firstOrNull { abs(it.hz - hz) < 10_000 }?.db ?: 0f
 
+    /**
+     * A decoded page. A whole one goes to the feed, and a broken copy of it that is waiting, or was shown not long
+     * ago, gives way to it. A broken one (pieces missing) waits [PARTIAL_WAIT_MS] for a whole copy from another carrier
+     * or a repeat, and is dropped if a whole copy was shown just before it.
+     */
     private fun addPage(hz: Long, p: PagerPage) {
         val t = now()
         // a ReFLEX frame card: one per carrier, kept current, never for a copy
         if (p.protocol == "ReFLEX") { if (!isCopy(hz)) place(hz, p, t, null); return }
-        // The same page from another receiver a moment ago is one transmission heard twice when the two are far apart
-        // in level and at a spur offset: a receiver on an image copy (see [IMAGE_STEP]). It is shown once, on the
-        // stronger carrier, and the weaker one gives its slot up. Two real carriers can carry the same page; both show.
+        if (p.text.isBlank()) { show(hz, p, t, null); return }
+        var replace: Long? = null
+        synchronized(recent) {
+            wholes.removeAll { t - it.at > PARTIAL_REPLACE_MS }
+            if (p.errors > 0) {
+                if (wholes.none { it.capcode == p.capcode && coversPage(it.text, p.text) }) brokenWaiting += Waiting(hz, p, t)
+                return
+            }
+            brokenWaiting.removeAll { it.p.capcode == p.capcode && coversPage(p.text, it.p.text) }
+            shownBroken.removeAll { t - it.at > PARTIAL_REPLACE_MS }
+            val was = shownBroken.firstOrNull { it.capcode == p.capcode && coversPage(p.text, it.text) }
+            if (was != null) { shownBroken.remove(was); replace = was.id }
+            wholes += Whole(p.capcode, p.text, t)
+        }
+        show(hz, p, t, replace)
+    }
+
+    /** Broken pages whose wait is over ([all] of them on a retune) go to the feed as they are. */
+    private fun release(t: Long, all: Boolean = false) {
+        val due = synchronized(recent) {
+            if (brokenWaiting.isEmpty()) return
+            val d = brokenWaiting.filter { all || t - it.at >= PARTIAL_WAIT_MS }
+            brokenWaiting.removeAll(d.toSet()); d
+        }
+        for (w in due) {
+            val id = show(w.hz, w.p, t, null) ?: continue
+            synchronized(recent) { shownBroken += ShownBroken(id, w.p.capcode, w.p.text, t) }
+        }
+    }
+
+    /**
+     * A page for the feed, in place of card [replace] if given; its card's id, or null for a copy already shown. The
+     * same page from another receiver a moment ago is one transmission heard twice when the two are far apart in level
+     * and at a spur offset: a receiver on an image copy (see [IMAGE_STEP]). It is shown once, on the stronger carrier,
+     * and the weaker one gives its slot up. Two real carriers can carry the same page; both show.
+     */
+    private fun show(hz: Long, p: PagerPage, t: Long, replace: Long?): Long? {
         val key = "${p.protocol}|${p.rate}|${p.capcode}|${p.kind}|${p.where}|${p.text}"
         synchronized(recent) {
             recent.removeAll { t - it.at > COPY_MS }
@@ -401,13 +487,15 @@ object PagerEngine {
                 val strong = if (mine >= theirs) hz else twin.hz; val weak = if (strong == hz) twin.hz else hz
                 if (abs(mine - theirs) >= COPY_DB && imageOf(Carrier(weak, 0f), listOf(Carrier(strong, IMAGE_DB)), rateHz) != null) {
                     copies[weak] = strong; lastManage = 0L
-                    if (strong != hz) return                  // the copy: already shown
+                    if (strong != hz) return null             // the copy: already shown
                     // the stronger carrier decoded it second: its card takes the copy's place
                     twin.hz = hz; twin.id = place(hz, p, t, twin.id)
-                    return
+                    return twin.id
                 }
             }
-            recent += Recent(key, hz, place(hz, p, t, null), t)
+            val id = place(hz, p, t, replace)
+            recent += Recent(key, hz, id, t)
+            return id
         }
     }
 

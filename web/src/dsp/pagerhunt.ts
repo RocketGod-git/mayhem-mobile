@@ -38,6 +38,33 @@ const IMAGE_DB = 15;
 const COPY_MS = 3_000;
 /** How much weaker a receiver repeating another's page must be to be taken for a copy of it. */
 const COPY_DB = 10;
+/**
+ * A page with pieces missing waits this long before it is shown. Simulcast carriers send the same pages a moment
+ * apart, and one receiver often hears a page whole while another misses its first fragment; the whole copy usually
+ * lands within a couple of seconds, and then the broken one is never shown.
+ */
+const PARTIAL_WAIT_MS = 8_000;
+/** A whole copy arriving this soon after a broken one was shown takes that card's place, and a broken copy arriving
+ *  this soon after a whole one is dropped (networks send a page again on another carrier seconds later). */
+const PARTIAL_REPLACE_MS = 60_000;
+
+/** The readable runs of a broken page, four characters or more: a missing fragment (<…>), a cut end ( …) and the
+ *  '?' of lost words split it. Errors come in bursts, so the word on either side of a lost one (three characters) may
+ *  have been fixed into the wrong word: it is left out as well. */
+export function readableRuns(text: string): string[] {
+  const c = [...text];
+  const lost = c.map((ch, i) => ch === '?' ? i : -1).filter(i => i >= 0);
+  for (const i of lost) for (let k = Math.max(0, i - 3); k <= Math.min(c.length - 1, i + 3); k++) if (c[k] !== '…' && c[k] !== '<' && c[k] !== '>') c[k] = '?';
+  return c.join('').split(/<…>| …$|\?+/).map(s => s.trim()).filter(s => s.length >= 4);
+}
+/** Whether a whole page carries every readable run of a broken one, in order: the broken one is a copy of it. */
+export function coversPage(whole: string, broken: string): boolean {
+  const runs = readableRuns(broken);
+  if (!runs.length) return false;
+  let at = 0;
+  for (const r of runs) { const k = whole.indexOf(r, at); if (k < 0) return false; at = k + r.length; }
+  return true;
+}
 
 /** Hamming-windowed sinc, unity gain at DC; [cut] is the cutoff as a fraction of the sample rate. */
 function lowpass(taps: number, cut: number): Float32Array {
@@ -170,6 +197,12 @@ export class PagerHunter implements IqProcessor {
   private readonly copies = new Map<number, number>();
   /** Pages posted in the last [COPY_MS]: line, carrier and when. */
   private recent: { line: string; hz: number; at: number }[] = [];
+  /** Broken pages waiting [PARTIAL_WAIT_MS] for a whole copy. */
+  private held: { slot: Slot; m: Record<string, unknown>; at: number }[] = [];
+  /** Broken pages shown in the last [PARTIAL_REPLACE_MS], so a late whole copy can take the card's place. */
+  private shownBroken: { line: string; cap: number; text: string; at: number }[] = [];
+  /** Whole pages shown in the last [PARTIAL_REPLACE_MS], so a broken copy arriving after one is dropped. */
+  private wholes: { cap: number; text: string; at: number }[] = [];
   private heard: Slot | null = null;
   // The radio's DC offset (LO leakage), tracked per buffer and removed, so a carrier at the tuned center is not
   // buried under the spike and the center of the span can be hunted like the rest of it.
@@ -233,6 +266,9 @@ export class PagerHunter implements IqProcessor {
   onIq(iq: Int8Array, rate: number): void {
     const t = this.clock();
     if (this.restart || this.centerHz !== this.center || rate !== this.rate) {
+      // a retune ends every receiver, so no whole copy can come now: what was waiting is shown as it is
+      this.release(Infinity);
+      this.shownBroken = []; this.wholes = [];
       this.center = this.centerHz; this.rate = rate; this.restart = false;
       this.slots = []; this.tried.clear(); this.copies.clear(); this.recent = []; this.peak = new Float32Array(0); this.carrierList = [];
       this.spanStart = t; this.lastManage = 0; this.heard = null;
@@ -248,6 +284,7 @@ export class PagerHunter implements IqProcessor {
       if (this.dcFresh) { this.dcI = si / n; this.dcQ = sq / n; this.dcFresh = false; }
       else { this.dcI += (si / n - this.dcI) * 0.3; this.dcQ += (sq / n - this.dcQ) * 0.3; }
     }
+    this.release(t);
     if (t - this.spanStart < SETTLE_MS) return;
     this.record(iq);
     this.scan(iq);
@@ -322,10 +359,45 @@ export class PagerHunter implements IqProcessor {
   private levelOf(hz: number): number { return this.carrierList.find(c => Math.abs(c.hz - hz) < 10_000)?.db ?? 0; }
 
   /**
-   * A decoded page. The same line from another receiver a moment ago is one transmission heard twice: a receiver on
-   * an image copy (see [IMAGE_STEP]). It is shown once, on the stronger carrier, and the weaker one gives its slot up.
+   * A decoded page. A whole one goes to the feed, and a broken copy of it that is waiting, or was shown not long
+   * ago, gives way to it. A broken one (pieces missing) waits [PARTIAL_WAIT_MS] for a whole copy from another carrier
+   * or a repeat, and is dropped if a whole copy was shown just before it.
    */
   private onPage(slot: Slot, m: Record<string, unknown>): void {
+    const page = m.page as { cap: number; text: string; errors: number }, t = this.clock(), text = page.text ?? '';
+    if (!text.trim()) { this.show(slot, m); return; }
+    this.wholes = this.wholes.filter(w => t - w.at <= PARTIAL_REPLACE_MS);
+    if (page.errors > 0) {
+      if (this.wholes.some(w => w.cap === page.cap && coversPage(w.text, text))) return;
+      this.held.push({ slot, m, at: t });
+      return;
+    }
+    this.held = this.held.filter(h => { const p = h.m.page as { cap: number; text: string }; return !(p.cap === page.cap && coversPage(text, p.text)); });
+    this.shownBroken = this.shownBroken.filter(b => t - b.at <= PARTIAL_REPLACE_MS);
+    const was = this.shownBroken.findIndex(b => b.cap === page.cap && coversPage(text, b.text));
+    if (was >= 0) { if (!m.replaces) m = { ...m, replaces: this.shownBroken[was].line }; this.shownBroken.splice(was, 1); }
+    this.wholes.push({ cap: page.cap, text, at: t });
+    this.show(slot, m);
+  }
+
+  /** Broken pages whose wait is over (all of them when [now] is Infinity) go to the feed as they are. */
+  private release(now: number): void {
+    if (!this.held.length) return;
+    const due = this.held.filter(h => now - h.at >= PARTIAL_WAIT_MS);
+    if (!due.length) return;
+    this.held = this.held.filter(h => now - h.at < PARTIAL_WAIT_MS);
+    for (const h of due) {
+      const p = h.m.page as { cap: number; text: string };
+      this.shownBroken.push({ line: typeof h.m.line === 'string' ? h.m.line : '', cap: p.cap, text: p.text, at: this.clock() });
+      this.show(h.slot, h.m);
+    }
+  }
+
+  /**
+   * A page for the feed. The same line from another receiver a moment ago is one transmission heard twice: a receiver
+   * on an image copy (see [IMAGE_STEP]). It is shown once, on the stronger carrier, and the weaker one gives its slot up.
+   */
+  private show(slot: Slot, m: Record<string, unknown>): void {
     const t = this.clock(), line = typeof m.line === 'string' ? m.line : '';
     this.recent = this.recent.filter(r => t - r.at <= COPY_MS);
     const twin = line ? this.recent.find(r => r.hz !== slot.hz && r.line === line) : undefined;
@@ -395,16 +467,22 @@ export class PagerHunter implements IqProcessor {
   /** Who gets a receiver: AUTO, the busiest carriers; AUTO off with pins, only those; AUTO off without, whoever has one. */
   private fill(t: number): void {
     if (!this.hunting && !this.pinned.size) { this.publish(); return; }
-    const want = this.hunting ? this.carrierList.filter(c => !this.isCopy(c.hz)).slice(0, SLOTS).map(c => c.hz) : [...this.pinned];
+    // In AUTO, the strongest carriers, less any sitting out RETRY_MS after a failed trial (the next ones move up).
+    const resting = (hz: number) => t - (this.tried.get(hz) ?? -Infinity) < RETRY_MS && !this.slots.some(s => Math.abs(s.hz - hz) < 10_000);
+    const wanted = () => this.hunting ? this.carrierList.filter(c => !this.isCopy(c.hz) && !resting(c.hz)).slice(0, SLOTS).map(c => c.hz) : [...this.pinned];
+    const want = wanted();
     // evict: in AUTO, carriers that had their trial and never proved; pinned, anything no longer pinned. A carrier
     // that wants a receiver while all are busy: one that never synced, has had a few seconds and is no longer among
-    // the wanted gives way (POCSAG keys up for a second; it can't wait out a 20 s trial).
+    // the wanted gives way (POCSAG keys up for a second; it can't wait out a 20 s trial). A carrier that never synced
+    // gives way after its trial even while it is still among the strongest: a spur or a non-pager signal can outrank
+    // every pager in the span, and would otherwise hold its receiver for good.
     const waiting = this.hunting && this.slots.length >= SLOTS && want.some(hz => !this.slots.some(s => Math.abs(s.hz - hz) < 10_000) && t - (this.tried.get(hz) ?? -Infinity) >= RETRY_MS);
+    const failed = (s: Slot) => s.syncs === 0 && t - s.since > TRIAL_MS;
     const gone = this.slots.filter(s => !this.hunting ? !want.includes(s.hz)
-      : this.isCopy(s.hz) || !want.includes(s.hz) && t - s.lastSync > PROVEN_MS && (t - s.since > TRIAL_MS || (waiting && s.syncs === 0 && t - s.since > QUICK_MS)));
+      : this.isCopy(s.hz) || failed(s) || !want.includes(s.hz) && t - s.lastSync > PROVEN_MS && (t - s.since > TRIAL_MS || (waiting && s.syncs === 0 && t - s.since > QUICK_MS)));
     // only a carrier that never synced waits out RETRY_MS: a pager that went quiet is welcome back at once
     for (const s of gone) { this.slots = this.slots.filter(x => x !== s); if (this.hunting && s.syncs === 0) this.tried.set(s.hz, t); }
-    for (const hz of want) {
+    for (const hz of gone.length ? wanted() : want) {
       if (this.slots.length >= SLOTS) break;
       if (this.slots.some(s => Math.abs(s.hz - hz) < 10_000)) continue;
       if (this.hunting && t - (this.tried.get(hz) ?? -Infinity) < RETRY_MS) continue;
