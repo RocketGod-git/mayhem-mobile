@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -50,6 +51,9 @@ internal val DARK_TILE_FILTER = android.graphics.ColorMatrixColorFilter(android.
 
 /** Each aircraft as a top-down jet silhouette rotated to its ground track, in the accent, callsign beneath; tap → nearest. */
 private class PlanesOverlay(private val accentInt: Int, @Volatile var planes: List<Aircraft>, @Volatile var selected: String?, private val onTap: (String) -> Unit) : Overlay() {
+    /** You are here: a white dot. */
+    @Volatile var home: Pair<Double, Double>? = null
+    private val youFill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.FILL }
     private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = accentInt; style = android.graphics.Paint.Style.FILL }
     private val rim = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0B1416.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; strokeJoin = android.graphics.Paint.Join.ROUND }
     private val ring = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f }
@@ -76,6 +80,10 @@ private class PlanesOverlay(private val accentInt: Int, @Volatile var planes: Li
         label.textSize = 10f * d; labelHalo.textSize = 10f * d
         val rgb = accentInt and 0x00FFFFFF
         val w = mapView.width; val h = mapView.height; val margin = max(w, h)
+        home?.let { (la, lo) ->
+            proj.toPixels(GeoPoint(la, lo), pt)
+            canvas.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 4f * d, youFill); canvas.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 4f * d, rim)
+        }
         for (a in planes) {
             val la = a.lat ?: continue; val lo = a.lon ?: continue
             proj.toPixels(GeoPoint(la, lo), pt)
@@ -110,12 +118,14 @@ private class PlanesOverlay(private val accentInt: Int, @Volatile var planes: Li
 }
 
 /**
- * Live aircraft map (Wardrive Go's ADS-B map, on key-free OSM tiles). Follows the aircraft until you drag, the
- * crosshair button re-arms it. [home] is the phone's fix, used to centre an empty map.
+ * Live aircraft map (Wardrive Go's ADS-B map, on key-free OSM tiles). Follows the aircraft until you drag; the
+ * locate button fits them again, then centers on you ([locateNext]). [home] is the phone's fix, drawn as a dot.
+ * [onFull] adds the full-screen button, showing exit while [full].
  */
 @Composable
 fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, selected: String?, modifier: Modifier = Modifier,
-            focus: Pair<Double, Double>? = null, focusKey: Int = 0, emptyTitle: String = "", emptySub: String = "", onTapPlane: (String) -> Unit) {
+            focus: Pair<Double, Double>? = null, focusKey: Int = 0, emptyTitle: String = "", emptySub: String = "",
+            full: Boolean = false, onFull: (() -> Unit)? = null, onTapPlane: (String) -> Unit) {
     // your position, the last one known or a stand-in, at regional zoom (never the whole world)
     val start = remember { mapStart(home) }
     val accentInt = accent.toArgb()
@@ -135,8 +145,20 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
 
     LaunchedEffect(planes, follow, selected) {
         val mv = mapRef ?: return@LaunchedEffect
-        overlayRef?.let { it.planes = planes; it.selected = selected; mv.invalidate() }
+        overlayRef?.let { it.planes = planes; it.selected = selected; it.home = home; mv.invalidate() }
         if (follow) fitTo(mv)
+    }
+    LaunchedEffect(home) { overlayRef?.let { it.home = home; mapRef?.invalidate() } }
+    var lastLocate by remember { mutableStateOf(LocateStep.NONE) }
+    fun locate() {
+        val mv = mapRef ?: return
+        val step = locateNext(planes.count { it.lat != null && it.lon != null }, home != null, lastLocate)
+        lastLocate = step
+        when (step) {
+            LocateStep.FIT -> { follow = true; fitTo(mv) }
+            LocateStep.HOME -> { follow = false; val h = home ?: return; mv.controller.animateTo(GeoPoint(h.first, h.second), 13.0, null) }
+            else -> { follow = false; val at = mapStart(null); mv.controller.animateTo(GeoPoint(at.lat, at.lon), 9.0, null) }
+        }
     }
     LaunchedEffect(focusKey) {
         val mv = mapRef ?: return@LaunchedEffect
@@ -177,7 +199,7 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
                         }
                         false
                     }
-                    val ov = PlanesOverlay(accentInt, planes, selected, onTapPlane)
+                    val ov = PlanesOverlay(accentInt, planes, selected, onTapPlane).also { it.home = home }
                     overlays.add(ov); overlayRef = ov
                     onResume()
                 }
@@ -187,9 +209,14 @@ fun AdsbMap(planes: List<Aircraft>, accent: Color, home: Pair<Double, Double>?, 
         Box(
             Modifier.align(Alignment.BottomEnd).padding(6.dp).size(30.dp)
                 .background(if (follow) accent else Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
-                .clickable { follow = !follow; if (follow) mapRef?.let { fitTo(it) } },
+                .clickable { locate() },
             contentAlignment = Alignment.Center
         ) { Text("⌖", color = if (follow) inkOn(accent) else Palette.ink, fontFamily = Mono) }
+        if (onFull != null) Box(
+            Modifier.align(Alignment.TopEnd).padding(6.dp).size(30.dp).background(Palette.surface.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
+                .clickable { onFull() },
+            contentAlignment = Alignment.Center
+        ) { Icon(if (full) FullscreenExitIcon else FullscreenIcon, if (full) "Leave the full-screen map" else "Full-screen map", tint = Palette.ink, modifier = Modifier.size(18.dp)) }
         Text("© OpenStreetMap contributors", color = Palette.muted, fontFamily = Mono, fontSize = 8.sp,
             modifier = Modifier.align(Alignment.BottomStart).padding(4.dp).background(Palette.paper.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(horizontal = 4.dp, vertical = 1.dp))
     }

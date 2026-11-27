@@ -131,6 +131,8 @@ export class AnalyzerUi {
   private fields: Field[] = [];
   private check: CheckFound | null = null;
   private colPick: [number, number] | null = null;
+  /** The field tapped to rename, retype or delete (an index into fields), or -1. */
+  private editing = -1;
   private showProtocols = false;
   capturing = true;
   private stats: { channels: number; followed: number; captured: number; span: number } | null = null;
@@ -478,7 +480,7 @@ export class AnalyzerUi {
     det.querySelectorAll<HTMLElement>('[data-anf]').forEach(r => r.onclick = () => { const id = +r.dataset.anf!; if (id !== this.sel) { this.sel = id; this.zoom = this.pick = null; this.hl = null; } this.txBurst = true; this.draw(); });
     det.querySelectorAll<HTMLButtonElement>('[data-ando]').forEach(x => x.onclick = () => {
       if (x.dataset.ando === 'close') this.close();
-      else { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.sel = repOf(t).id; this.draw(); }
+      else { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.editing = -1; this.sel = repOf(t).id; this.draw(); }
     });
   }
 
@@ -742,8 +744,8 @@ export class AnalyzerUi {
         case 'close': this.close(); break;
         case 'star': b.star = !b.star; this.save(b); this.draw(); break;
         case 'back': this.back(); break;
-        case 'compare': this.cmpTx = 0; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.draw(); break;
-        case 'txcompare': { const t = this.txs().find(x => x.id === this.txOpen); if (t) { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.sel = repOf(t).id; this.draw(); } break; }
+        case 'compare': this.cmpTx = 0; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.editing = -1; this.draw(); break;
+        case 'txcompare': { const t = this.txs().find(x => x.id === this.txOpen); if (t) { this.cmpTx = t.id; this.comparing = true; this.fields = []; this.check = null; this.colPick = null; this.editing = -1; this.sel = repOf(t).id; this.draw(); } break; }
         case 'sym-': this.setOver(b, o => { o.symUs = a.symUs / 1.05; }); break;
         case 'sym+': this.setOver(b, o => { o.symUs = a.symUs * 1.05; }); break;
         case 'symauto': this.setOver(b, o => { o.symUs = undefined; }); break;
@@ -973,8 +975,10 @@ export class AnalyzerUi {
     const cands = this.group();
     const rows = cands.filter(x => !this.left.has(x.id) || x.id === b.id);
     const head = `<div class="an-head"><b>COMPARE</b><span>${rows.length} of ${cands.length} frame${cands.length === 1 ? '' : 's'} ${this.cmpTx ? 'of this transmission' : `like burst ${b.id}`} · ${b.auto.mod} · ${b.auto.coding} · ${b.auto.symUs.toFixed(0)} µs</span>`
-      + `<button class="chip" data-ando="suggest">SUGGEST</button><button class="chip" data-ando="saveproto" ${this.fields.length ? '' : 'disabled'}>SAVE AS PROTOCOL</button><button class="chip ${this.showProtocols ? 'on' : ''}" data-ando="protocols">PROTOCOLS ${this.protocols.length}</button><button class="chip" data-ando="back">BACK</button><button class="chip" data-ando="close">✕</button></div>`;
-    const inout = `<div class="an-sub">FRAMES · TAP TO LEAVE ONE OUT</div><div class="an-inout">${cands.map(x => `<button class="chip ${this.left.has(x.id) && x.id !== b.id ? '' : 'on'}" data-anin="${x.id}">${x.id}${x.name ? ` ${esc(x.name)}` : ''}</button>`).join('')}</div>`;
+      + `<button class="chip" data-ando="suggest">SUGGEST</button><button class="chip" data-ando="clearfields" ${this.fields.length ? '' : 'disabled'}>CLEAR FIELDS</button><button class="chip" data-ando="saveproto" ${this.fields.length ? '' : 'disabled'}>SAVE AS PROTOCOL</button><button class="chip ${this.showProtocols ? 'on' : ''}" data-ando="protocols">PROTOCOLS ${this.protocols.length}</button><button class="chip" data-ando="back">BACK</button><button class="chip" data-ando="close">✕</button></div>`;
+    const out = cands.filter(x => this.left.has(x.id) && x.id !== b.id);
+    const inout = `<div class="an-sub">FRAMES · TAP TO LEAVE ONE OUT</div><div class="an-inout">${rows.map(x => `<button class="chip on" data-anin="${x.id}" ${x.id === b.id ? 'disabled' : ''}>${x.id}${x.name ? ` ${esc(x.name)}` : ''}</button>`).join('')}</div>`
+      + (out.length ? `<div class="an-sub">LEFT OUT (tap to put back)</div><div class="an-inout">${out.map(x => `<button class="chip" data-anin="${x.id}">#${x.id}${x.name ? ` ${esc(x.name)}` : ''}</button>`).join('')}</div>` : '');
     const protos = this.showProtocols ? `<div class="an-protos">${this.protocols.length ? this.protocols.map((p, i) => `<div><b>${esc(p.name)}</b><span>${p.mod} · ${p.coding} · sync ${bitsToHex(p.sync)} · ${p.fields.length} fields${p.check ? ` · ${esc(p.check.name.split(' (')[0])}` : ''} · ${this.bursts.filter(x => x.proto?.protocol === p).length} heard</span><button class="chip" data-anprn="${i}">RENAME</button><button class="chip" data-anprd="${i}">DELETE</button></div>`).join('') : '<div class="mt-wait">no saved protocols yet: SUGGEST or drag out fields here, then SAVE AS PROTOCOL</div>'}</div>` : '';
     if (rows.length < 2) return head + `<div class="an-scroll">${protos}${inout}<div class="mt-wait">capture the same button a few more times: frames that read alike are lined up here</div></div>`;
     return head + `<div class="an-scroll an-cmp">${protos}${this.alignedHtml(align(rows.map(x => x.best)), rows, b.id)}${inout}</div>`;
@@ -1018,8 +1022,13 @@ export class AnalyzerUi {
       let fixed = true; for (let k = 0; k < 8; k++) if (al.state[c + k] !== 1) fixed = false;
       bytes += `<span class="${fixed ? 'f' : 'c'}">${fixed ? parseInt(al.consensus.slice(c, c + 8), 2).toString(16).toUpperCase().padStart(2, '0') : '··'}</span>`;
     }
-    const chips = this.fields.map((f, i) => `<button class="chip an-fchip" data-anfd="${i}" style="border-color:${KIND_COLOR[f.kind]}" title="tap to delete"><i style="background:${KIND_COLOR[f.kind]}"></i>${esc(f.name)} <small>${f.from}–${f.to}</small> ✕</button>`).join('');
-    const form = this.colPick ? `<div class="an-ctl an-newf"><span class="rl">NEW FIELD</span><span class="an-dim">bits ${this.colPick[0] - start}–${this.colPick[1] - start}</span><input id="an-fname" class="txin" maxlength="30" placeholder="name"><select id="an-fkind" class="txin">${FIELD_KINDS.map(k => `<option value="${k}">${k}</option>`).join('')}</select><button class="chip primary" data-ando="addfield">ADD</button><button class="chip" data-ando="nopick">CANCEL</button></div>` : '';
+    const chips = this.fields.map((f, i) => `<button class="chip an-fchip ${i === this.editing ? 'on' : ''}" data-anfd="${i}" style="border-color:${KIND_COLOR[f.kind]}" title="tap to rename, retype or delete"><i style="background:${KIND_COLOR[f.kind]}"></i>${esc(f.name)} <small>${f.kind} · ${f.from}–${f.to}</small></button>`).join('');
+    // naming the columns dragged out, or the field tapped: its name, its kind, then save, delete or cancel
+    const ed = this.editing >= 0 ? this.fields[this.editing] : undefined;
+    const kinds = (on: FieldKind) => FIELD_KINDS.map(k => `<option value="${k}" ${k === on ? 'selected' : ''}>${k}</option>`).join('');
+    const form = ed
+      ? `<div class="an-ctl an-newf"><span class="rl">FIELD</span><span class="an-dim">bits ${ed.from}–${ed.to} from the data start (${ed.to - ed.from})</span><input id="an-fname" class="txin" maxlength="32" placeholder="name" value="${esc(ed.name)}"><select id="an-fkind" class="txin">${kinds(ed.kind)}</select><button class="chip primary" data-ando="savefield">SAVE FIELD</button><button class="chip" data-ando="delfield">DELETE</button><button class="chip" data-ando="nopick">CANCEL</button></div>`
+      : this.colPick ? `<div class="an-ctl an-newf"><span class="rl">NEW FIELD</span><span class="an-dim">bits ${this.colPick[0] - start}–${this.colPick[1] - start} from the data start (${this.colPick[1] - this.colPick[0]})</span><input id="an-fname" class="txin" maxlength="32" placeholder="name"><select id="an-fkind" class="txin">${kinds('data' as FieldKind)}</select><button class="chip primary" data-ando="addfield">ADD FIELD</button><button class="chip" data-ando="nopick">CANCEL</button></div>` : '';
     const chk = this.check ? `<div class="an-why an-check">CHECK: ${esc(this.check.name)} over bytes ${this.check.from}–${this.check.to - 1}, stored at byte ${this.check.at}${this.check.spec.width === 16 ? (this.check.little ? ' (low byte first)' : ' (high byte first)') : ''} ✓ on every frame</div>` : '';
     return `<div class="an-why">${esc(sum)}</div><div class="an-segbar">${bar}</div>`
       + `<div class="an-bytes"><b>BYTES FROM THE ${sync ? 'SYNC WORD' : pre ? 'END OF THE PREAMBLE' : 'FIRST SHARED BIT'}</b>${bytes}</div>${chk}`
@@ -1032,7 +1041,7 @@ export class AnalyzerUi {
     const rows = this.group().filter(x => !this.left.has(x.id) || x.id === b.id);
     const al = rows.length >= 2 ? align(rows.map(x => x.best)) : null;
     det.querySelectorAll<HTMLButtonElement>('[data-anin]').forEach(x => x.onclick = () => { const id = +x.dataset.anin!; if (id !== b.id && !this.left.delete(id)) this.left.add(id); this.draw(); });
-    det.querySelectorAll<HTMLButtonElement>('[data-anfd]').forEach(x => x.onclick = () => { this.fields.splice(+x.dataset.anfd!, 1); this.draw(); });
+    det.querySelectorAll<HTMLButtonElement>('[data-anfd]').forEach(x => x.onclick = () => { const i = +x.dataset.anfd!; this.editing = this.editing === i ? -1 : i; this.colPick = null; this.draw(); this.root?.querySelector<HTMLInputElement>('#an-fname')?.focus(); });
     det.querySelectorAll<HTMLButtonElement>('[data-anprd]').forEach(x => x.onclick = () => { const i = +x.dataset.anprd!; if (!confirm(`Delete the protocol "${this.protocols[i].name}"?`)) return; this.protocols.splice(i, 1); this.saveProtocols(); this.recognizeAll(); this.draw(); });
     det.querySelectorAll<HTMLButtonElement>('[data-anprn]').forEach(x => x.onclick = () => { const p = this.protocols[+x.dataset.anprn!]; const n = prompt('Protocol name', p.name)?.trim(); if (!n) return; p.name = n; this.saveProtocols(); this.draw(); });
     det.querySelectorAll<HTMLButtonElement>('[data-ando]').forEach(x => x.onclick = () => {
@@ -1040,16 +1049,28 @@ export class AnalyzerUi {
         case 'close': this.close(); break;
         case 'back': this.back(); break;
         case 'protocols': this.showProtocols = !this.showProtocols; this.draw(); break;
-        case 'suggest': if (al) { const s = suggest(al); this.fields = s.fields; this.check = s.check; } this.draw(); break;
-        case 'nopick': this.colPick = null; this.draw(); break;
+        case 'suggest': if (al) { const s = suggest(al); this.fields = s.fields; this.check = s.check; this.editing = -1; } this.draw(); break;
+        case 'nopick': this.colPick = null; this.editing = -1; this.draw(); break;
+        case 'clearfields': this.fields = []; this.check = null; this.colPick = null; this.editing = -1; this.draw(); break;
         case 'addfield': {
           if (!al || !this.colPick) break;
           const start = dataStart(al), kind = det.querySelector<HTMLSelectElement>('#an-fkind')!.value as FieldKind;
           const name = det.querySelector<HTMLInputElement>('#an-fname')!.value.trim() || kind;
-          this.fields.push({ name, kind, from: this.colPick[0] - start, to: this.colPick[1] - start });
+          // a new field takes its columns from any it overlaps, as the native apps do
+          const from = this.colPick[0] - start, to = this.colPick[1] - start;
+          this.fields = this.fields.filter(f => f.to <= from || f.from >= to);
+          this.fields.push({ name, kind, from, to });
           this.fields.sort((p, q) => p.from - q.from); this.colPick = null; this.draw();
           break;
         }
+        case 'savefield': {
+          const f = this.fields[this.editing]; if (!f) break;
+          const kind = det.querySelector<HTMLSelectElement>('#an-fkind')!.value as FieldKind;
+          this.fields[this.editing] = { ...f, name: det.querySelector<HTMLInputElement>('#an-fname')!.value.trim() || kind, kind };
+          this.editing = -1; this.draw();
+          break;
+        }
+        case 'delfield': if (this.editing >= 0) this.fields.splice(this.editing, 1); this.editing = -1; this.draw(); break;
         case 'saveproto': {
           if (!al || !this.fields.length) break;
           const sf = this.fields.find(f => f.kind === 'sync'), start = dataStart(al);
@@ -1084,10 +1105,15 @@ export class AnalyzerUi {
       const p = box.querySelector('.pick code');
       if (p) p.innerHTML = (' '.repeat(this.colPick[0]) + '▔'.repeat(this.colPick[1] - this.colPick[0])).replace(/ /g, '&nbsp;');
     };
-    box.onpointerup = () => {
+    box.onpointerup = (e) => {
       if (from < 0) return;
-      from = -1;
-      if (this.colPick && this.colPick[1] - this.colPick[0] < 2) this.colPick = null;
+      const at = from; from = -1;
+      // a tap (no drag) on a named field opens it to rename, retype or delete
+      if (!this.colPick || this.colPick[1] - this.colPick[0] < 2) {
+        this.colPick = null;
+        const col = (colAt(e) >= 0 ? colAt(e) : at) - dataStart(al);
+        this.editing = this.fields.findIndex(f => col >= f.from && col < f.to);
+      } else this.editing = -1;
       const sx = box.scrollLeft;
       this.draw();
       const nb = this.root?.querySelector<HTMLElement>('#an-align'); if (nb) nb.scrollLeft = sx;

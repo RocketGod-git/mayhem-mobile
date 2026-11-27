@@ -138,7 +138,11 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
                         /** The card's subtitle on its own row (Repeaters and CB Radio, as on the web). */
                         titleRow: Boolean = false,
                         /** The readout's caption in place of "n decoded" (Repeaters and CB Radio count transmissions). */
-                        right: String? = null) {
+                        right: String? = null,
+                        /** The built-in PAUSE also holds the screen's own rows ([list]): told true on PAUSE, false on RESUME. */
+                        onPause: ((Boolean) -> Unit)? = null,
+                        /** The built-in CLEAR also forgets the screen's own rows, not only the log. */
+                        onClear: (() -> Unit)? = null) {
     val d = rememberDims()
     val spec by SdrEngine.spectrum.collectAsState()
     val freq by SdrEngine.freqHz.collectAsState()
@@ -182,8 +186,9 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
         if (body != null) { body(); return@AdaptivePane }
         // PAUSE holds the rows still for reading; decoding carries on underneath and RESUME catches up
         val logActions: @Composable () -> Unit = {
-            ToggleBox(if (held != null) "RESUME" else "PAUSE", held != null, accent, Modifier.fillMaxHeight()) { held = if (held == null) snap.lines else null }
-            IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { log.clear(); if (held != null) held = emptyList() }
+            PauseClear(held != null, accent, onPause = { held = if (held == null) snap.lines else null; onPause?.invoke(held != null) }) {
+                log.clear(); onClear?.invoke(); if (held != null) held = emptyList()
+            }
         }
         Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f), bottom = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
             verticalAlignment = Alignment.CenterVertically) {
@@ -197,6 +202,16 @@ internal fun PacketFrame(accent: Color, log: PacketLog, tag: String, title: Stri
             LogList(held ?: snap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) snap.total else null, accent = accent, emptyKey = emptyKey)
         }
     }
+}
+
+/**
+ * PAUSE and CLEAR, as [PacketFrame]'s own log row has them, for a screen that passes its own body (and so loses that
+ * row): PAUSE holds what the screen shows while decoding goes on, CLEAR forgets what it heard.
+ */
+@Composable
+internal fun PauseClear(paused: Boolean, accent: Color, modifier: Modifier = Modifier.fillMaxHeight(), onPause: () -> Unit, onClear: () -> Unit) {
+    ToggleBox(if (paused) "RESUME" else "PAUSE", paused, accent, modifier) { onPause() }
+    IconBox(ClearIcon, "Clear", modifier) { onClear() }
 }
 
 /** Whether [app] shows its waterfall: the WATERFALL button's choice once made, else shown, except on a phone for an

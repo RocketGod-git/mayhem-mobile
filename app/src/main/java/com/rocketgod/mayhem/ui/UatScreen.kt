@@ -144,7 +144,14 @@ fun UatScreen(accent: Color) {
     fun on(k: String) = k in layers
     LaunchedEffect(Unit) { Geo.start(ctx); Airports.load(ctx) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(1000); value = System.currentTimeMillis() } }.value
-    val snap = remember(version, now / 2000, airportsLoaded) { Apps.uat.snapshot() }
+    val liveSnap = remember(version, now / 2000, airportsLoaded) { Apps.uat.snapshot() }
+    // PAUSE holds the map, the cards and the log still for reading; decoding carries on and RESUME catches up
+    var held by remember { mutableStateOf<Pair<UatProcessor.Snapshot, List<String>>?>(null) }
+    val snap = held?.first ?: liveSnap
+    // a wide screen keeps the map beside the cards, as the web app does at 1000 px
+    val wideUat = d.wide && d.widthDp >= 1000
+    LaunchedEffect(wideUat) { if (wideUat && view == 0) view = 1 }
+    LaunchedEffect(sel) { if (wideUat && (sel.startsWith("wx:") || sel.startsWith("gm:") || sel.startsWith("ac:"))) focusKey++ }
     val me = fix ?: Geo.lastKnownPos()
 
     val metars = remember(snap, airportsLoaded) {
@@ -242,38 +249,52 @@ fun UatScreen(accent: Color) {
         }
     }
 
+    /** The map with its layers; [overlay]: the layer row and legend float over it (the wide layout). */
+    @Composable
+    fun mapPane(modifier: Modifier, overlay: Boolean) {
+        val items = ArrayList<GeoItem>(); val paths = ArrayList<GeoPath>()
+        for ((k, t) in snap.towers) items.add(GeoItem("tw:$k", t.lat, t.lon, "FIS-B", GeoItem.Kind.TOWER))
+        if (on("airports") && airportsLoaded) for ((id, e) in snap.metars) {
+            val ap = Airports[id] ?: continue
+            items.add(GeoItem("wx:$id", ap.lat, ap.lon, id, GeoItem.Kind.AIRPORT, color = (CAT[e.first.category] ?: Palette.muted).toArgb()))
+        }
+        if (on("traffic")) for (p in planes) {
+            val la = p.t.lat ?: continue; val lo = p.t.lon ?: continue
+            items.add(GeoItem("ac:${p.t.address}", la, lo, (p.t.callsign ?: p.t.address) + (p.t.altFt?.let { " ${it / 100}" } ?: ""), GeoItem.Kind.PLANE, p.t.trackDeg?.toDouble()))
+            if (p.track.size > 1) paths.add(GeoPath(p.track, faint = sel != "ac:${p.t.address}"))
+        }
+        val focus = when {
+            sel.startsWith("ac:") -> snap.planes[sel.drop(3)]?.let { p -> p.t.lat?.let { la -> p.t.lon?.let { la to it } } }
+            sel.startsWith("wx:") -> Airports[sel.drop(3)]?.let { it.lat to it.lon }
+            sel.startsWith("gm:") -> snap.shapes[sel.drop(3)]?.let { center(it.o.pts) }
+            fix == null -> snap.towers.values.firstOrNull()?.let { it.lat to it.lon }
+            else -> null
+        }
+        @Composable
+        fun map(m: Modifier) {
+            GeoMapView(items, accent, m.panel(), home = fix, selected = sel.ifEmpty { null },
+                layers = GeoLayers(paths = paths, radar = cells, radarColors = RADAR, shapes = geoShapes), start = remember { mapStart(fix) },
+                focus = focus, focusKey = focusKey + (if (fix == null && snap.towers.isNotEmpty()) 1000 else 0), autoFollow = false,
+                onMapTap = { la, lo -> sel = "pt:%.4f,%.4f".format(Locale.US, la, lo) }) { id -> sel = id }
+        }
+        if (overlay) Box(modifier) {
+            map(Modifier.fillMaxSize())
+            Column(Modifier.fillMaxWidth().padding(start = d.dp(48f), top = d.dp(10f), end = d.dp(10f)), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                layerRow()
+                legend()
+            }
+        } else Column(modifier, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            layerRow()
+            legend()
+            map(Modifier.fillMaxWidth().weight(1f))
+        }
+    }
+
     @Composable
     fun stage(modifier: Modifier) {
         Box(modifier) {
             when (view) {
-                0 -> {
-                    val items = ArrayList<GeoItem>(); val paths = ArrayList<GeoPath>()
-                    for ((k, t) in snap.towers) items.add(GeoItem("tw:$k", t.lat, t.lon, "FIS-B", GeoItem.Kind.TOWER))
-                    if (on("airports") && airportsLoaded) for ((id, e) in snap.metars) {
-                        val ap = Airports[id] ?: continue
-                        items.add(GeoItem("wx:$id", ap.lat, ap.lon, id, GeoItem.Kind.AIRPORT, color = (CAT[e.first.category] ?: Palette.muted).toArgb()))
-                    }
-                    if (on("traffic")) for (p in planes) {
-                        val la = p.t.lat ?: continue; val lo = p.t.lon ?: continue
-                        items.add(GeoItem("ac:${p.t.address}", la, lo, (p.t.callsign ?: p.t.address) + (p.t.altFt?.let { " ${it / 100}" } ?: ""), GeoItem.Kind.PLANE, p.t.trackDeg?.toDouble()))
-                        if (p.track.size > 1) paths.add(GeoPath(p.track, faint = sel != "ac:${p.t.address}"))
-                    }
-                    val focus = when {
-                        sel.startsWith("ac:") -> snap.planes[sel.drop(3)]?.let { p -> p.t.lat?.let { la -> p.t.lon?.let { la to it } } }
-                        sel.startsWith("wx:") -> Airports[sel.drop(3)]?.let { it.lat to it.lon }
-                        sel.startsWith("gm:") -> snap.shapes[sel.drop(3)]?.let { center(it.o.pts) }
-                        fix == null -> snap.towers.values.firstOrNull()?.let { it.lat to it.lon }
-                        else -> null
-                    }
-                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
-                        layerRow()
-                        legend()
-                        GeoMapView(items, accent, Modifier.fillMaxWidth().weight(1f).panel(), home = fix, selected = sel.ifEmpty { null },
-                            layers = GeoLayers(paths = paths, radar = cells, radarColors = RADAR, shapes = geoShapes), start = remember { mapStart(fix) },
-                            focus = focus, focusKey = focusKey + (if (fix == null && snap.towers.isNotEmpty()) 1000 else 0), autoFollow = false,
-                            onMapTap = { la, lo -> sel = "pt:%.4f,%.4f".format(Locale.US, la, lo) }) { id -> sel = id }
-                    }
-                }
+                0 -> mapPane(Modifier.fillMaxSize(), false)
                 1 -> CardGrid(metars, { it.first }) { (id, e, _) -> WxCard(id, e.first, e.second, now, sel == "wx:$id", me) { sel = if (sel == "wx:$id") "" else "wx:$id" } }
                 2 -> CardGrid(notices, { if (it is UatProcessor.Shape) "gm:${it.key}" else (it as UatProcessor.Text).text.take(64) }) { n ->
                     if (n is UatProcessor.Shape) ShapeCard(n, now, sel == "gm:${n.key}", me) { sel = if (sel == "gm:${n.key}") "" else "gm:${n.key}" }
@@ -281,14 +302,16 @@ fun UatScreen(accent: Color) {
                 }
                 3 -> CardGrid(planes, { it.t.address }) { p -> PlaneCard(p, now, sel == "ac:${p.t.address}", me) { sel = if (sel == "ac:${p.t.address}") "" else "ac:${p.t.address}" } }
             }
-            if (sel.isNotEmpty() && (view == 0 || (view == 1 && sel.startsWith("wx:")) || (view == 2 && sel.startsWith("gm:")) || (view == 3 && sel.startsWith("ac:"))))
+            if (!wideUat && sel.isNotEmpty() && (view == 0 || (view == 1 && sel.startsWith("wx:")) || (view == 2 && sel.startsWith("gm:")) || (view == 3 && sel.startsWith("ac:"))))
                 UatDetail(sel, snap, now, me, accent, altFt, Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                     onMap = if (view != 0) ({ view = 0; focusKey++ }) else null) { sel = "" }
         }
     }
 
+    val uatPane: (@Composable (Modifier) -> Unit)? = if (wideUat) ({ m -> mapPane(m, true) }) else null
     PacketFrame(accent, Apps.uatLog, tag = "FLIGHT UAT", title = "FLIGHT WEATHER · SMALL PLANES", tunable = false, emptyKey = "uat", waterfall = wf,
         onWaterfall = { Apps.setWaterfall(MayhemApp.UAT, !wf) },
+        widePane = uatPane,
         lamp = {
             if (snap.up > 0 || snap.down > 0) Lamp("RECEIVING", Palette.ok)
             else Lamp("LISTENING", Palette.accent2, blink = true)
@@ -297,16 +320,22 @@ fun UatScreen(accent: Color) {
         body = {
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = d.dp(8f), bottom = d.dp(6f)), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
                 verticalAlignment = Alignment.CenterVertically) {
-                ScrollSeg(listOf("MAP", "WEATHER", "NOTICES", "PLANES", "LOG"), view, accent, Modifier.weight(1f)) { view = it }
-                IconBox(ClearIcon, "Clear", Modifier.fillMaxHeight()) { Apps.uat.clear(); sel = "" }
+                val tabs = if (wideUat) listOf(1, 2, 3, 4) else listOf(0, 1, 2, 3, 4)
+                ScrollSeg(tabs.map { listOf("MAP", "WEATHER", "NOTICES", "PLANES", "LOG")[it] }, tabs.indexOf(view), accent, Modifier.weight(1f)) { view = tabs[it] }
+                PauseClear(held != null, accent, onPause = { held = if (held == null) liveSnap to logSnap.lines else null }) {
+                    Apps.uat.clear(); sel = ""; if (held != null) held = Apps.uat.snapshot() to emptyList()
+                }
             }
-            if (view == 4) LogList(logSnap.lines, Modifier.fillMaxWidth().weight(1f), total = logSnap.total, accent = accent, empty = "listening for FIS-B…") { line ->
+            // the wide layout docks the selection's details above the cards; the map beside them shows where it is
+            if (wideUat && sel.isNotEmpty())
+                UatDetail(sel, snap, now, me, accent, altFt, Modifier.fillMaxWidth().heightIn(max = d.dp(320f)).padding(bottom = d.dp(6f)), onMap = null) { sel = "" }
+            if (view == 4) LogList(held?.second ?: logSnap.lines, Modifier.fillMaxWidth().weight(1f), total = if (held == null) logSnap.total else null, accent = accent, empty = "listening for FIS-B…") { line ->
                 // a log line opens what it was about
                 val rest = line.substringAfter("AIRCRAFT ", "")
                 when {
                     rest.isNotEmpty() -> snap.planes.values.firstOrNull { p -> rest.startsWith(p.t.callsign ?: p.t.address) || rest.startsWith(p.t.address) }?.let { sel = "ac:${it.t.address}"; view = 3 }
                     line.contains("METAR ") -> Regex("METAR (\\w{3,4})").find(line)?.groupValues?.get(1)?.takeIf { snap.metars.containsKey(it) }?.let { sel = "wx:$it"; view = 1 }
-                    line.contains("TOWER") -> snap.towers.keys.firstOrNull()?.let { sel = "tw:$it"; view = 0 }
+                    line.contains("TOWER") -> snap.towers.keys.firstOrNull()?.let { sel = "tw:$it"; if (!wideUat) view = 0 else focusKey++ }
                     line.contains("FISB") -> view = 2
                 }
             }

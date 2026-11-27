@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,6 +83,10 @@ fun LoraScreen(accent: Color) {
     val bursts by Apps.lora.bursts.collectAsState()
     val frames by Apps.lora.frames.collectAsState()
     val logSnap by Apps.loraLog.snapshot.collectAsState()
+    // PAUSE holds the cards, the chat and the log still for reading; decoding carries on and RESUME catches up
+    var held by remember { mutableStateOf<Triple<List<LoraNode>, List<LoraEvent>, List<String>>?>(null) }
+    val shown = held?.first ?: nodes
+    val logLines = held?.third ?: logSnap.lines
     // opens on the LOG: it fills first (every frame and burst), while nodes and chat take minutes
     var view by rememberSaveable { mutableIntStateOf(3) }
     var sel by rememberSaveable { mutableStateOf<String?>(null) }
@@ -89,18 +94,21 @@ fun LoraScreen(accent: Color) {
     var full by remember { mutableStateOf(false) }
     val now = produceState(System.currentTimeMillis()) { while (true) { delay(100); value = System.currentTimeMillis() } }.value
 
-    val mapItems = nodes.mapNotNull { n -> val la = n.lat; val lo = n.lon; if (la != null && lo != null) GeoItem(n.key, la, lo, n.label, GeoItem.Kind.DEVICE) else null }
-    val messages = events.filter { it.text != null }
-    val picked = nodes.firstOrNull { it.key == sel }
+    val mapItems = shown.mapNotNull { n -> val la = n.lat; val lo = n.lon; if (la != null && lo != null) GeoItem(n.key, la, lo, n.label, GeoItem.Kind.DEVICE) else null }
+    val messages = (held?.second ?: events).filter { it.text != null }
+    val picked = nodes.firstOrNull { it.key == sel } ?: shown.firstOrNull { it.key == sel }
 
     val wf = waterfallOn(MayhemApp.LORA, phoneDefault = true)
     // NODES, MAP, CHAT and the decode LOG: one switcher, the same inline and full screen
     @Composable
     fun switcher(withFull: Boolean, modifier: Modifier = Modifier) {
         Row(modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalAlignment = Alignment.CenterVertically) {
-            SegBar(listOf("NODES · ${nodes.size}", "MAP · ${mapItems.size}", "CHAT · ${messages.size}", "LOG · ${logSnap.total}"), view, accent,
+            SegBar(listOf("NODES · ${shown.size}", "MAP · ${mapItems.size}", "CHAT · ${messages.size}", "LOG · ${logSnap.total}"), view, accent,
                 Modifier.weight(1f).fillMaxHeight()) { view = it }
             if (withFull) IconBox(FullscreenIcon, "Full screen", Modifier.fillMaxHeight()) { full = true }
+            PauseClear(held != null, accent, onPause = { held = if (held == null) Triple(nodes, events, logSnap.lines) else null }) {
+                Apps.lora.clear(); Apps.loraLog.clear(); sel = null; if (held != null) held = Triple(emptyList(), emptyList(), emptyList())
+            }
         }
     }
 
@@ -111,8 +119,8 @@ fun LoraScreen(accent: Color) {
         Box(modifier) {
             when (view) {
                 // newest first, and kept on the newest while the reader is at the top; scrolled down, "↑ NEW" goes back
-                0 -> if (nodes.isEmpty()) EmptyState("lora", Modifier.fillMaxSize().panel(), accent) else Box(Modifier.fillMaxSize()) {
-                    val sorted = nodes.sortedByDescending { it.lastMs }
+                0 -> if (shown.isEmpty()) EmptyState("lora", Modifier.fillMaxSize().panel(), accent) else Box(Modifier.fillMaxSize()) {
+                    val sorted = shown.sortedByDescending { it.lastMs }
                     val follow = rememberFollowNewest(cardGrid, sorted.first().lastMs)
                     LazyVerticalGrid(GridCells.Adaptive(d.dp(if (full) 300f else 250f)), Modifier.fillMaxSize(), state = cardGrid,
                         horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(8f))) {
@@ -133,7 +141,7 @@ fun LoraScreen(accent: Color) {
                             modifier = Modifier.align(Alignment.BottomStart).padding(d.dp(10f)))
                     }
                 }
-                3 -> LogList(logSnap.lines, Modifier.fillMaxSize(), empty = "listening for LoRa frames…", total = logSnap.total, accent = accent)
+                3 -> LogList(logLines, Modifier.fillMaxSize(), empty = "listening for LoRa frames…", total = if (held == null) logSnap.total else null, accent = accent)
                 else -> if (messages.isEmpty()) EmptyState("loramsg", Modifier.fillMaxSize().panel(), accent) else Box(Modifier.fillMaxSize()) {
                     val follow = rememberFollowNewest(chatList, messages.first().id.toLong())
                     LazyColumn(Modifier.fillMaxSize(), state = chatList, verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
@@ -226,12 +234,41 @@ fun LoraScreen(accent: Color) {
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             switcher(true, Modifier.fillMaxWidth())
             stage(Modifier.fillMaxWidth().weight(1f))
+            LoraChannelStrip(nodes, accent)
         }
     })
     // full screen: the title and its exit on top (the switcher crowded the exit off a phone's edge), the tabs below
     if (full) FullscreenPanel(listOf("LORA · ${nodes.size} NODES", "LORA · MAP", "LORA · CHAT", "LORA · LOG")[view], accent, onClose = { full = false }) {
         switcher(false, Modifier.fillMaxWidth().padding(bottom = d.dp(8f)))
         stage(Modifier.fillMaxWidth().weight(1f))
+    }
+}
+
+/**
+ * The known channels in the span that matter now (always on, open, heard), lit while heard, each with the packets
+ * decoded on it; and a warning while this device falls behind the radio.
+ */
+@Composable
+private fun LoraChannelStrip(nodes: List<LoraNode>, accent: Color) {
+    val d = rememberDims()
+    val scanner = Apps.lora.scanner
+    val chans = scanner.channelStates().map { c -> c to nodes.filter { abs(it.hz - c.hz) <= c.bw / 4 }.sumOf { it.packets } }
+        .filter { (c, n) -> c.standing || c.active || n > 0 || (c.hotAgoMs != null && c.hotAgoMs < 1500) }
+    val busy = scanner.busy
+    if (chans.isEmpty() && busy <= 1.05) return
+    val shape = RoundedCornerShape(d.dp(8f))
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(d.dp(6f)),
+        verticalAlignment = Alignment.CenterVertically) {
+        for ((c, n) in chans) {
+            val hot = c.hotAgoMs != null && c.hotAgoMs < 1500
+            val open = c.active && !c.standing
+            Text(c.name + if (n > 0) " · $n" else "", color = if (hot) Palette.ink else if (open) accent else Palette.muted, fontFamily = Mono,
+                fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1,
+                modifier = Modifier.clip(shape).background(if (hot) accent.copy(alpha = 0.35f) else if (open) accent.copy(alpha = 0.12f) else Palette.panel)
+                    .border(1.dp, if (hot || open) accent.copy(alpha = 0.8f) else Palette.line, shape).padding(horizontal = d.dp(8f), vertical = d.dp(4f)))
+        }
+        if (busy > 1.05) Text("behind the radio: ${Math.round(100 * busy)}% of real time", color = Palette.danger, fontFamily = Mono,
+            fontWeight = FontWeight.Bold, fontSize = d.sp(9f), maxLines = 1)
     }
 }
 

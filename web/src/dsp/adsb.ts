@@ -1,7 +1,21 @@
 /** ADS-B / Mode-S decoder from raw IQ at 2 Msps (dump1090 lineage; port of core/AdsbDecoder.kt + AdsbStore). */
 import type { Emit, IqProcessor } from './core.js';
 
-export interface Aircraft { icao: string; flight?: string; lat?: number; lon?: number; alt?: number; gs?: number; track?: number; vr?: number; seenMs: number; firstMs: number; }
+/** squawk: the Mode A identity code as four octal digits, e.g. "7700". */
+export interface Aircraft { icao: string; flight?: string; lat?: number; lon?: number; alt?: number; gs?: number; track?: number; vr?: number; squawk?: string; seenMs: number; firstMs: number; }
+
+/**
+ * The 13-bit identity field (C1 A1 C2 A2 C4 A4 X B1 D1 B2 D2 B4 D4, as DF5, DF21 and the DF17 emergency status carry
+ * it) as its four squawk digits A B C D, each the octal digit of its 4-2-1 bits (Gillham order; dump1090 decodeID13Field).
+ */
+export function squawkOf(id13: number): string {
+  const bit = (n: number) => (id13 >> n) & 1;
+  const a = bit(7) * 4 + bit(9) * 2 + bit(11), b = bit(1) * 4 + bit(3) * 2 + bit(5);
+  const c = bit(8) * 4 + bit(10) * 2 + bit(12), d = bit(0) * 4 + bit(2) * 2 + bit(4);
+  return `${a}${b}${c}${d}`;
+}
+/** What a special squawk means, as the Flights card says it (the native apps' wording). */
+export const squawkMeaning = (s: string) => s === '7500' ? 'HIJACK' : s === '7600' ? 'RADIO FAILURE' : s === '7700' ? 'EMERGENCY' : '';
 
 const PREAMBLE = 8, LONG_BITS = 112, SHORT_BITS = 56, FULL_LEN = PREAMBLE + LONG_BITS;
 const AIS_CHARS = '?ABCDEFGHIJKLMNOPQRSTUVWXYZ????? ???????????????0123456789??????';
@@ -80,7 +94,13 @@ export class AdsbDecoder implements IqProcessor {
         msg[k / 8] = (bits[k] << 7) | (bits[k + 1] << 6) | (bits[k + 2] << 5) | (bits[k + 3] << 4) | (bits[k + 4] << 3) | (bits[k + 5] << 2) | (bits[k + 6] << 1) | bits[k + 7];
       }
       const df = msg[0] >> 3;
-      if (errors > 0 || (df !== 17 && df !== 18)) { j++; continue; }
+      if (errors > 0) { j++; continue; }
+      // DF5 (short) and DF21 (long) surveillance replies carry the squawk, with the CRC laid over the address
+      if (df === 5 || df === 21) {
+        if (this.identity(msg, df === 5 ? SHORT_BITS : LONG_BITS, batch, nowMs)) { this.frames++; j += ((df === 5 ? SHORT_BITS : LONG_BITS) + PREAMBLE) * 2; } else j++;
+        continue;
+      }
+      if (df !== 17 && df !== 18) { j++; continue; }
       this.dbg.df++;
       if (this.checksum(msg, LONG_BITS) !== 0) { this.dbg.fail++; j++; continue; }
       this.dbg.ok++;
@@ -135,7 +155,25 @@ export class AdsbDecoder implements IqProcessor {
         }
         if (vr !== 0) a.vr = (vr - 1) * 64 * (vrSign ? -1 : 1);
       }
+    } else if (tc === 28 && (msg[4] & 7) === 1) {
+      // emergency / priority status: the Mode A code rides in it too
+      const id13 = ((msg[5] << 8) | msg[6]) & 0x1fff;
+      if (id13) a.squawk = squawkOf(id13);
     }
+  }
+
+  /**
+   * A DF5 or DF21 reply: its parity is the CRC added to the aircraft's address, so the checksum left over is the
+   * address. It counts only for an aircraft already heard on DF17/18, as dump1090 does, which keeps noise out.
+   */
+  private identity(msg: Int32Array, bits: number, batch: Map<string, Aircraft>, now: number): boolean {
+    const addr = this.checksum(msg, bits);
+    const icao = addr.toString(16).padStart(6, '0');
+    if ((this.icaoFrames.get(icao) ?? 0) < 2 && !this.planes.has(icao)) return false;
+    let a = batch.get(icao);
+    if (!a) { a = { icao, seenMs: now, firstMs: now }; batch.set(icao, a); }
+    a.squawk = squawkOf(((msg[2] << 8) | msg[3]) & 0x1fff);
+    return true;
   }
 
   private merge(batch: Map<string, Aircraft>, now: number): void {
@@ -148,6 +186,7 @@ export class AdsbDecoder implements IqProcessor {
       if (a.gs !== undefined) cur.gs = a.gs;
       if (a.track !== undefined) cur.track = a.track;
       if (a.vr !== undefined) cur.vr = a.vr;
+      if (a.squawk !== undefined) cur.squawk = a.squawk;
       cur.seenMs = now;
       this.planes.set(icao, cur);
     }

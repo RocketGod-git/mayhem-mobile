@@ -198,12 +198,16 @@ private fun DeviceCards(heard: List<HeardDevice>, filter: Devices.Filter, sel: S
         val picked = heard.firstOrNull { it.key == sel }
         if (picked != null) {
             val k = Devices.kind(picked)
-            val fields = if (k == Devices.Kind.ZWAVE) Devices.zwDetailFields(picked).map { it.first to it.second } else detailFields(picked)
+            val zw = if (k == Devices.Kind.ZWAVE) Devices.zwDetailFields(picked) else null
+            val fields = zw?.map { it.first to it.second } ?: detailFields(picked)
+            // a tap on an underlined label says what the field means
+            val meanings = zw?.filter { it.third.isNotEmpty() }?.associate { it.first to it.third }
+                ?: picked.data.keys.mapNotNull { key -> Devices.MEANING[key]?.let { key.replace('_', ' ').uppercase() to it } }.toMap()
             FieldDetail(fields, picked.data["id"]?.let { fmtValue(it) } ?: picked.model, if (picked.model.uppercase() == k.label) k.label else "${k.label} · ${picked.model}", kindColor(k),
                 Modifier.align(Alignment.BottomCenter).padding(d.dp(6f)),
                 history = picked.history.asReversed().map { r ->
                     Devices.clock(r.at) to (Devices.historyLine(picked, r.data) + if (r.hz > 0) " · ${Devices.mhz(r.hz)}" else "")
-                }) { onSel(null) }
+                }, meanings = meanings) { onSel(null) }
         }
     }
 }

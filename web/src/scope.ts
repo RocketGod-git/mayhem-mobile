@@ -5,8 +5,10 @@
  *   canvas so a new row costs one putImageData and two drawImage blits — no per-frame copy of the whole history.
  * - Spectra arrive as 0..1 values (the worker normalizes against a median floor); they are resampled to the
  *   column count with max-pooling so narrow carriers never fall between pixels.
- * - Inferno-style 256-entry color map, dB grid on the spectrum with the floor / range the worker reports.
+ * - A 256-entry color map (Inferno, Rainbow or the skin's, from wf-palette.ts), dB grid on the spectrum with the floor / range the worker reports.
  */
+
+import { wfLut } from './wf-palette.js';
 
 export type AxisLabel = [number, string];
 
@@ -15,22 +17,9 @@ export const WF_ICON = '<svg viewBox="0 0 24 24"><path d="M3 4h18v3H3V4zm0 5h18v
 
 function css(name: string): string { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
-/** Inferno-like color LUT: black → violet → magenta → orange → yellow → near-white. */
-const LUT = (() => {
-  const stops: [number, number, number, number][] = [
-    [0.00, 0, 0, 4], [0.13, 31, 12, 72], [0.25, 85, 15, 109], [0.38, 136, 34, 106], [0.50, 186, 54, 85],
-    [0.63, 227, 89, 51], [0.75, 249, 140, 10], [0.88, 249, 201, 50], [1.00, 252, 255, 164],
-  ];
-  const lut = new Uint8ClampedArray(256 * 4);
-  for (let i = 0; i < 256; i++) {
-    const t = i / 255;
-    let k = 0; while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
-    const [t0, r0, g0, b0] = stops[k], [t1, r1, g1, b1] = stops[k + 1];
-    const f = Math.min(1, Math.max(0, (t - t0) / (t1 - t0)));
-    lut[i * 4] = r0 + (r1 - r0) * f; lut[i * 4 + 1] = g0 + (g1 - g0) * f; lut[i * 4 + 2] = b0 + (b1 - b0) * f; lut[i * 4 + 3] = 255;
-  }
-  return lut;
-})();
+/** The waterfall's color map (Settings, LOOK, WATERFALL); Inferno until the app sets another with setWaterfallLut. */
+let LUT = wfLut('INFERNO', '#000000', '#000000', '#000000');
+export function setWaterfallLut(lut: Uint8ClampedArray): void { LUT = lut; }
 
 export interface ScopeOpts {
   /** CSS-pixel row count when the host has no layout height yet. */
