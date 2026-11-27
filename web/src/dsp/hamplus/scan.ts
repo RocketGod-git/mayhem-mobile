@@ -11,6 +11,10 @@
  *    goes back to the window the scan was on and the scan carries on from there as it was.
  *  - SCAN ON ([skip]) leaves a busy window at once; that window waits [HP_SKIP_MS] before AUTO comes back to it,
  *    unless a followed or priority channel is in it.
+ *  - BIZ ([capMs]): a window holds the scan at most [capMs] at a time while some window has not been visited this round,
+ *    so a band always busy somewhere (an 8 MHz VHF business window) never keeps the rest from being heard. The window
+ *    moved to is held at least [HP_VISIT_MS]; once every window is visited a new round begins. A followed channel is
+ *    never cut short.
  * Data channels (APRS) and muted channels hold nothing.
  */
 import { AUTO_SURVEY_MS, type AutoView, type FleetAuto } from '../fleet/auto.js';
@@ -24,12 +28,14 @@ export const HP_CONVO_MS = 90_000;
 export const HP_LOOK_MS = 5_000;
 /** A window left with SCAN ON is not come back to for this long. */
 export const HP_SKIP_MS = 120_000;
+/** BIZ: the most a window holds the scan while others wait their turn, and the least a window moved to is held. */
+export const HP_CAP_MS = 60_000, HP_VISIT_MS = 6_000;
 
 /** One transmission as the scan sees it: the snapshot's rows. */
 export interface HpAct { id: number; hz: number; startMs: number; endMs: number; live: boolean }
 export interface HpScanPrefs { hold: string; mute: string[]; prio: string[] }
 /** What the scan is doing beyond AUTO itself: '' (AUTO's own), following, a channel on the air, the hang, waiting at the conversation's window between looks, a look away. */
-export type HpPhase = '' | 'follow' | 'live' | 'hang' | 'home' | 'look';
+export type HpPhase = '' | 'follow' | 'live' | 'hang' | 'home' | 'look' | 'visit';
 
 /** Whether the window centered on [center] hears [hz] with [rate] samples a second: inside 0.44 of the rate less a channel, clear of the center's DC spike. */
 export function hpWindowHears(center: number, rate: number, hz: number): boolean {
@@ -66,6 +72,11 @@ export class HpScan {
   private readonly cool = new Map<number, number>();
   /** The channels busy on a window left with SCAN ON, and until when they hold nothing (a neighbor window hears them too). */
   private skipped: { hz: number; until: number }[] = [];
+  /** 0: no cap (the ham bands). Else the most one window holds the scan while others wait their turn. */
+  capMs = 0;
+  /** The windows visited this round, the band they belong to, the window tuned and since when, and the visit's end. */
+  private readonly visited = new Set<number>();
+  private sig = ''; private atIdx = -1; private atMs = 0; private visitUntil = 0;
 
   /** The window's hang: twice the median gap between keyups heard there, 8 to 45 s; 15 s until three gaps are known. */
   hang(w: number): number {
@@ -110,6 +121,10 @@ export class HpScan {
    */
   step(auto: FleetAuto, v: AutoView, rows: HpAct[], centers: number[], rate: number, idx: number, p: HpScanPrefs): number | null {
     const now = v.now, n = centers.length;
+    const sig = centers.join(',');
+    if (sig !== this.sig) { this.sig = sig; this.visited.clear(); this.atIdx = -1; this.visitUntil = 0; }
+    if (idx !== this.atIdx) { this.atIdx = idx; this.atMs = now; }
+    this.visited.add(idx);
     this.learn(rows, centers, rate, idx, p);
     const fhz = p.hold ? Number(p.hold) : 0, fw = fhz ? hpWindowOf(centers, rate, fhz, idx) : -1;
     if (fw >= 0) { this.follow = fhz; this.phase = 'follow'; this.hz = fhz; this.until = 0; this.home = -1; auto.pause(v); return fw !== idx ? fw : null; }
@@ -119,6 +134,14 @@ export class HpScan {
       if (auto.idx !== idx && auto.idx >= 0 && auto.idx < n) return auto.idx;
     }
     if (n < 2) { this.phase = ''; return auto.step(v); }
+    if (this.capMs > 0 && now - this.atMs >= this.capMs) {
+      const nx = this.unvisited(n, idx, now);
+      if (nx >= 0) {
+        this.home = -1; this.lookUntil = 0; this.waitUntil = 0; this.hz = 0;
+        this.visitUntil = now + HP_VISIT_MS; this.phase = 'visit'; this.until = this.visitUntil;
+        auto.moved(nx, now); return nx;
+      }
+    }
     const here = rows.filter(r => this.win.get(r.id) === idx);
     // the channel named is the one being heard, else the newest to key up
     const live = here.find(r => r.live && String(r.id) === v.playing) ?? here.filter(r => r.live).sort((a, b) => b.startMs - a.startMs)[0];
@@ -127,6 +150,8 @@ export class HpScan {
       this.home = idx; this.homeHz = live.hz; this.homeUntil = now + HP_CONVO_MS; this.waitUntil = 0; this.lookUntil = 0;
       auto.stay(v); return null;
     }
+    if (now < this.visitUntil) { this.phase = 'visit'; this.hz = 0; this.until = this.visitUntil; auto.stay(v); return null; }
+    this.visitUntil = 0;
     const last = here.reduce<HpAct | null>((m, r) => !m || r.endMs > m.endMs ? r : m, null);
     if (last && now - last.endMs < this.hang(idx)) {
       this.phase = 'hang'; this.hz = last.hz; this.until = last.endMs + this.hang(idx);
@@ -159,6 +184,15 @@ export class HpScan {
       auto.moved(to ?? idx, now);
     }
     return to;
+  }
+
+  /** The next window after [from] not visited this round and not waiting out SCAN ON; a new round when all are. */
+  private unvisited(n: number, from: number, now: number): number {
+    for (let round = 0; round < 2; round++) {
+      for (let k = 1; k < n; k++) { const i = (from + k) % n; if (!this.visited.has(i) && !this.cooled(i, now)) return i; }
+      this.visited.clear(); this.visited.add(from);
+    }
+    return -1;
   }
 
   /**

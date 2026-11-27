@@ -9,12 +9,15 @@
  *    with it, at once (the tracker also learns the pair, as HAM+ does, and then shows the two as one channel);
  *  - every callsign a Morse ID carries is listed (GMRS calls, WRAB123 or KAE1234, and amateur ones);
  *  - a keyup without a voice that carried signaling (an MDC-1200 or FleetSync ID, a data burst, a Morse ID alone) is
- *    logged all the same; a data burst no decoder names is flagged as data with a short hex dump of its bits.
+ *    logged all the same; a data burst no decoder names is flagged as data with a short hex dump of its bits;
+ *  - a carrier up [NO_VOICE_MAX_S] or more with no voice and no ID is a steady carrier, as on Repeaters: not counted,
+ *    whatever else its modulation read as.
  */
 import type { Emit } from '../core.js';
 import { CLOSE_HOLD_MS, ChannelWatch, HAM_PLAN, Probe, STEADY_SHOW_MS, type Open, type WatchPlan } from '../hamplus/engine.js';
 import { HamTracker, PAIR_START_MS, chanKey, type TxRec } from '../hamplus/tracker.js';
 import type { HamIdent } from '../hamid/ident.js';
+import { NO_VOICE_MAX_S } from '../hamid/analog.js';
 import { GMRS_TRACKER_PLAN, centerOf, channelsOf, gmrsChan, gmrsName, idCalls, type GmrsBand, type GmrsChan } from './plan.js';
 
 export const GMRS_WATCH: WatchPlan = {
@@ -43,7 +46,8 @@ export interface GmrsChanState {
   /** The last keyup on it carried a data burst no decoder named. */
   data: boolean;
 }
-interface KeyRec { id: number; hz: number; startMs: number; endMs: number; tone: number; dcs: number }
+/** [keyMs]: when its carrier came up (a voice late on its carrier moves startMs, not this). */
+interface KeyRec { id: number; hz: number; startMs: number; keyMs: number; endMs: number; tone: number; dcs: number }
 interface Seen { tone: number; dcs: number; lastMs: number; txs: number; call: string; data: boolean }
 
 /**
@@ -53,6 +57,8 @@ interface Seen { tone: number; dcs: number; lastMs: number; txs: number; call: s
 export const DCS_SHARE = 0.2;
 /** The data bursts no decoder named, as the identity layer lists them. */
 export const dataLines = (id: HamIdent | null | undefined) => (id?.signaling ?? []).filter(l => /data burst/.test(l));
+/** Signaling that names who keyed: an MDC-1200 or FleetSync ID, a selcall, a 2-tone page, DTMF. */
+const ID_LINE = /MDC-1200|FleetSync|selcall|2-tone|DTMF/;
 
 export class GmrsEngine extends ChannelWatch<Probe> {
   private readonly keys: KeyRec[] = [];
@@ -98,18 +104,22 @@ export class GmrsEngine extends ChannelWatch<Probe> {
     }
   }
 
-  /** A keyup no voice was heard on is kept when it carried signaling or a Morse callsign: an ID, a data burst. */
+  /**
+   * A keyup no voice was heard on is kept when it carried signaling or a Morse callsign: an ID, a data burst, a
+   * kerchunk. One up [NO_VOICE_MAX_S] or more is a steady carrier, kept only for an ID it carried.
+   */
   protected override steadyClosed(o: Open<Probe>, endMs: number): void {
     const p = o.probe;
     if (!p || o.flood || this.ownSpur(o.hz)) return;
     p.end();
-    if (!p.ident()?.signaling.length && !idCalls(p.cwId() || p.cw0).length) return;
+    const sig = p.ident()?.signaling ?? [], named = idCalls(p.cwId() || p.cw0).length > 0 || sig.some(l => ID_LINE.test(l));
+    if (!named && (!sig.length || endMs - o.keyMs >= NO_VOICE_MAX_S * 1000)) return;
     o.talk = true;
     this.close(o, endMs);
   }
 
-  protected override closed(_o: Open<Probe>, t: TxRec): void {
-    this.keys.push({ id: t.id, hz: t.hz, startMs: t.startMs, endMs: t.endMs, tone: t.tone, dcs: t.dcs });
+  protected override closed(o: Open<Probe>, t: TxRec): void {
+    this.keys.push({ id: t.id, hz: t.hz, startMs: t.startMs, keyMs: o.keyMs, endMs: t.endMs, tone: t.tone, dcs: t.dcs });
     if (this.keys.length > KEEP_KEYS) this.keys.shift();
     const s = this.seen.get(t.hz) ?? { tone: 0, dcs: 0, lastMs: 0, txs: 0, call: '', data: false };
     s.lastMs = t.endMs; s.txs++; if (t.tone || t.dcs) { s.tone = t.tone; s.dcs = t.dcs; }
@@ -124,18 +134,20 @@ export class GmrsEngine extends ChannelWatch<Probe> {
 
   /** Keyups finished and on the air now, oldest first. */
   private allKeys(): KeyRec[] {
-    const live = [...this.opens.values()].filter(o => this.counted(o)).map(o => ({ id: o.id, hz: o.hz, startMs: o.startMs, endMs: 0, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0 }));
+    const live = [...this.opens.values()].filter(o => this.counted(o)).map(o => ({ id: o.id, hz: o.hz, startMs: o.startMs, keyMs: o.keyMs, endMs: 0, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0 }));
     return [...this.keys, ...live];
   }
   /**
-   * Repeater keyups by keyup id: an input keyup and the output keyup that starts within [PAIR_START_MS] of it and
-   * overlaps it are one, both ids naming it. An input keyed alone is a repeater keyup whose output was not heard.
+   * Repeater keyups by keyup id: an input keyup and the output keyup that overlaps it and whose carrier came up within
+   * [PAIR_START_MS] of the input's (or was already up, the repeater's hang) are one, both ids naming it. Carriers, not
+   * voices: a voice heard late on either one moves its start, not its keyup. An input keyed alone is a repeater keyup
+   * whose output was not heard.
    */
   repeaterKeys(): Map<number, GmrsRpt> {
     const all = this.allKeys(), out = new Map<number, GmrsRpt>();
     for (const r of all) {
       const c = gmrsChan(r.hz); if (!c || c.kind !== 'input') continue;
-      const o = all.find(x => Math.abs(x.hz - c.outHz) < 1_000 && Math.abs(x.startMs - r.startMs) <= PAIR_START_MS && (x.endMs === 0 || x.endMs >= r.startMs) && (r.endMs === 0 || r.endMs >= x.startMs));
+      const o = all.find(x => Math.abs(x.hz - c.outHz) < 1_000 && x.keyMs - r.keyMs <= PAIR_START_MS && (x.endMs === 0 || x.endMs >= r.keyMs) && (r.endMs === 0 || r.endMs >= x.keyMs));
       const p: GmrsRpt = { outHz: c.outHz, inHz: c.hz, inTone: r.tone, inDcs: r.dcs, outTone: o?.tone ?? 0, outDcs: o?.dcs ?? 0, inHeard: true, outHeard: !!o };
       out.set(r.id, p);
       if (o) out.set(o.id, p);

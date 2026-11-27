@@ -57,6 +57,10 @@ export const TONE_SHARE = 0.5;
 export const STEADY_SHOW_MS = 3_000;
 /** A voice first heard this long after its carrier came up starts the transmission, less this much before it. */
 export const TALK_LATE_MS = 2_000, TALK_PRE_MS = 300;
+/** The span's noise moving this much off its median of the last [GAIN_REF] measurements is a gain step (AGC, LNA, amp);
+ *  after one no carrier opens for [SETTLE_MS] while every closed channel's floor follows at once, so the first seconds
+ *  of AGC open nothing. Judged only on a span of [GAIN_MIN_CH] channels or more (a narrower one's noise is too few). */
+export const GAIN_STEP_DB = 1.5, SETTLE_MS = 2_000, GAIN_REF = 5, GAIN_MIN_CH = 64;
 /** About the length of a speech block (the start of a block is this long before its end). */
 const SPEECH_BLOCK_MS = 85;
 const MEASURE_MS = 100, SNAP_MS = 500, OFF_WIN_MS = 100;
@@ -306,6 +310,8 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
   protected first = 0; protected count = 0; protected hamBand = new Uint8Array(0);
   protected power = new Float32Array(0); protected floor = new Float32Array(0); protected snr = new Float32Array(0);
   protected readonly opens = new Map<number, Open<P>>();
+  /** The span's noise at the last measurement, and until when the gain is settling (engine ms). */
+  private commons: number[] = []; private settleUntil = 0;
   private nextId = 1;
   private lastMeasure = 0; private lastSnap = 0; private lastCap = 0; private lastLog = 0; private lastCenter = 0;
   /** Probe processing time measured: ms a probe takes per second of signal (smoothed), and the cap it sets. */
@@ -345,7 +351,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     // only the plan's bands open channels: a span reaching past a band's edge leaves the rest alone
     this.hamBand = new Uint8Array(this.count); for (let k = 0; k < this.count; k++) this.hamBand[k] = this.plan.inPlan(this.hzOf(k)) ? 1 : 0;
     this.power = new Float32Array(this.count).fill(-120); this.floor = new Float32Array(this.count).fill(NaN); this.snr = new Float32Array(this.count);
-    this.lastCenter = this.centerHz;
+    this.lastCenter = this.centerHz; this.commons = []; this.settleUntil = 0;
     this.tracker.setSpan(this.centerHz - half, this.centerHz + half);
   }
   protected hzOf(k: number): number { return (this.first + k) * this.plan.raster; }
@@ -389,9 +395,17 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     // each channel's floor is kept against the span's own noise (its quietest quarter), so a gain change (AGC, LNA, amp)
     // that lifts the whole span moves no channel: only a carrier rises above its neighbors
     const common = quietQuarter(this.power, this.count);
+    // a gain step: until it has settled, every channel not open takes its level as its floor, so none opens on it
+    if (this.count >= GAIN_MIN_CH && this.commons.length >= GAIN_REF) {
+      const ref = [...this.commons].sort((a, b) => a - b)[GAIN_REF >> 1];
+      if (Math.abs(common - ref) >= GAIN_STEP_DB) this.settleUntil = now + SETTLE_MS;
+    }
+    this.commons.push(common); if (this.commons.length > GAIN_REF) this.commons.shift();
+    const settling = now < this.settleUntil, held = new Set<number>();
+    if (settling) for (const o of this.opens.values()) for (let d = -1; d <= 1; d++) held.add(o.k + d);
     for (let k = 0; k < this.count; k++) {
       const rel = this.power[k] - common, f = this.floor[k];
-      this.floor[k] = Number.isNaN(f) ? rel : rel < f ? f + 0.3 * (rel - f) : f + 0.004 * (rel - f);
+      this.floor[k] = Number.isNaN(f) || (settling && !held.has(k)) ? rel : rel < f ? f + 0.3 * (rel - f) : f + 0.004 * (rel - f);
       this.snr[k] = rel - this.floor[k];
     }
     this.gate(now, pdb, binHz);
@@ -495,10 +509,10 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
     if (endMs - o.startMs < TX_MIN_MS) return;
     const p = o.probe, off = p ? p.offset(2) : { hz: NaN, sd: 0 };
     if (p) p.end();
-    const recorded = !!p && !o.cut;
+    const recorded = !!p && !o.cut, digital = !!p?.digital?.();
     const t: TxRec = {
       id: o.id, hz: o.hz, startMs: o.startMs, endMs, peakDb: Math.round(o.peak * 10) / 10, offsetHz: off.hz, offsetSd: off.sd,
-      tone: p ? p.tone() : 0, dcs: p ? p.dcs() : 0, cw: p?.cwId?.() || p?.cw0 || '', ident: p?.ident?.() ?? null, env: Float32Array.from((p?.env ?? []).slice(Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)), Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)) + Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
+      tone: p && !digital ? p.tone() : 0, dcs: p && !digital ? p.dcs() : 0, cw: p?.cwId?.() || p?.cw0 || '', ident: p?.ident?.() ?? null, env: Float32Array.from((p?.env ?? []).slice(Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)), Math.max(0, Math.round((o.startMs - o.probeAt) / ENV_MS)) + Math.ceil((endMs - o.startMs) / ENV_MS))), recorded,
     };
     // (the audio from the transmission's start: later than its demodulator's when the voice came after the carrier)
     const at = Math.max(0, Math.round((o.startMs - o.probeAt) * CLIP_RATE / 1000));
@@ -680,7 +694,7 @@ export abstract class ChannelWatch<P extends WatchProbe> implements IqProcessor 
   liveRecs(): LiveRec[] {
     return [...this.opens.values()].filter(o => this.counted(o)).map(o => {
       const off = o.probe ? o.probe.offset(2) : { hz: NaN, sd: 0 };
-      return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe?.tone() ?? 0, dcs: o.probe?.dcs() ?? 0, recorded: !!o.probe && !o.cut, ident: o.probe?.ident?.() ?? null };
+      return { id: o.id, hz: o.hz, startMs: o.startMs, snrDb: Math.round(o.snr * 10) / 10, levelDb: o.probe ? Math.round(o.probe.levelDb) : -90, offsetHz: off.hz, tone: o.probe && !o.probe.digital?.() ? o.probe.tone() : 0, dcs: o.probe && !o.probe.digital?.() ? o.probe.dcs() : 0, recorded: !!o.probe && !o.cut, ident: o.probe?.ident?.() ?? null };
     });
   }
 

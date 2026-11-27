@@ -1,7 +1,7 @@
 /**
  * DMR control signaling blocks to named fields: the ETSI TS 102 361-2/-4 CSBKs (Tier III Aloha, broadcasts,
  * grants, acknowledgements) and, under feature set ID 0x10, the block formats derived from our own recordings
- * (rest-channel beacon, unit report header and unit report, with the vendor check). No DOM.
+ * (Capacity Plus channel status, unit report header and unit report, with the vendor check). No DOM.
  */
 import { hex } from './codes.js';
 import { h, type Field } from './tsbk.js';
@@ -15,6 +15,33 @@ export interface Csbk {
   lpcn?: number; slot?: number; dst?: number; src?: number; group?: boolean; emergency?: boolean;
   rest?: number; busy?: number[]; beaconSlot?: number; unit?: number; lcn?: number;
   lonLo?: number; latLo?: number; noFix?: boolean;
+  /** Capacity Plus channel status: fragment (3 whole, 2 first, 1 last), its 7 payload octets, and what a whole one says. */
+  frag?: number; payload?: number[]; status?: CapStatus;
+}
+
+/** What a Capacity Plus channel status says about each busy logical channel (LCN 1 and 2 are one repeater's two slots, inferred). */
+export interface CapStatus { voice: { lcn: number; tg: number }[]; other: { lcn: number; id: number }[] }
+/**
+ * The channel status payload (the 7 octets after the rest-channel octet, and the last block's 7 when it comes in two).
+ * Inferred from our recordings, where the talkgroups match the voice LC of the call on that channel:
+ * a bitmap of LCN 1-8 in group voice, one octet of talkgroup per bit set, the same for LCN 9-16, then an octet whose
+ * bit 7 and bit 4 say a bitmap of LCN 1-8 and of 9-16 follow, each with a 16-bit ID per bit set (0xFFFF on every
+ * channel carrying unit reports). Null when the payload ends early.
+ */
+export function capStatus(p: ArrayLike<number>): CapStatus | null {
+  let i = 0;
+  const next = () => (i < p.length ? p[i++] & 255 : -1), out: CapStatus = { voice: [], other: [] };
+  for (const base of [0, 8]) {
+    const bm = next(); if (bm < 0) return null;
+    for (let n = 0; n < 8; n++) if (bm & (0x80 >> n)) { const tg = next(); if (tg < 0) return null; out.voice.push({ lcn: base + n + 1, tg }); }
+  }
+  const m = next(); if (m < 0) return null;
+  for (const [bit, base] of [[0x80, 0], [0x10, 8]]) {
+    if (!(m & bit)) continue;
+    const bm = next(); if (bm < 0) return null;
+    for (let n = 0; n < 8; n++) if (bm & (0x80 >> n)) { const a = next(), b = next(); if (b < 0) return null; out.other.push({ lcn: base + n + 1, id: (a << 8) | b }); }
+  }
+  return out;
 }
 
 const OPS: Record<number, string> = {
@@ -89,7 +116,7 @@ export function parseCsbk(b: ArrayLike<number>, verified: boolean): Csbk {
 }
 
 /**
- * Feature set 0x10, formats derived from our recordings: 0x3E is a rest-channel beacon (CRC verified), 0x3D with
+ * Feature set 0x10, formats derived from our recordings: 0x3E is the Capacity Plus channel status (CRC verified), 0x3D with
  * 0x09 after it is a unit report (the vendor check below), 0x3B a periodic broadcast, 0x08 a call
  * announcement. Anything else is shown as hex.
  */
@@ -97,13 +124,12 @@ function vendor10(b: ArrayLike<number>, c: Csbk, add: (k: string, v: string) => 
   const op = c.op, w = (i: number) => (b[i] << 8) | b[i + 1];
   c.derived = true;
   if (op === 0x3e) {
-    c.kind = 'beacon'; c.name = 'REST-CHANNEL BEACON';
-    c.beaconSlot = (b[2] >> 5) & 1; c.rest = b[2] & 15;
-    c.busy = []; if (b[5] & 0x80) for (let n = 1; n <= 8; n++) if (b[6] & (0x80 >> (n - 1))) c.busy.push(n);
-    const id = w(7);
-    add('SLOT', `${c.beaconSlot + 1}`); add('REST CHANNEL', `LCN ${c.rest}`); add('BUSY', c.busy.length ? c.busy.map(n => `LCN ${n}`).join(', ') : 'none');
-    if (id !== 0xffff && (b[5] & 0x80)) { c.unit = id; add('ID ON BUSY CHANNEL', `${id} (${h(id, 4)})`); }
-    add('FLAGS', `${h(b[2], 2)} ${h(b[3], 2)}`);
+    c.kind = 'beacon'; c.name = 'CHANNEL STATUS';
+    c.frag = b[2] >> 6; c.beaconSlot = (b[2] >> 5) & 1; c.rest = b[2] & 31;
+    c.payload = Array.from({ length: 7 }, (_, i) => b[3 + i] & 255);
+    add('SLOT', `${c.beaconSlot + 1}`); add('REST CHANNEL', `LCN ${c.rest}`);
+    if (c.frag === 3) { const st = capStatus(c.payload); if (st) capFields(c, st, add); }
+    else add('PART', c.frag === 2 ? 'first of two' : c.frag === 1 ? 'last of two' : 'none');
   } else if (op === 0x3d) {
     c.kind = 'unithdr'; c.name = 'UNIT REPORT HEADER';
     if (b[2] === 0x88) { c.unit = w(8); c.lcn = b[7]; add('UNIT', `${c.unit} (${h(c.unit, 4)})`); add('LCN', `${c.lcn}`); }
@@ -125,6 +151,16 @@ function vendor10(b: ArrayLike<number>, c: Csbk, add: (k: string, v: string) => 
     if (a !== 0xffff) c.unit = a;
   } else { c.derived = false; c.kind = 'vendor'; c.name = `FID 10 CSBK ${h(op, 2)}`; add('PAYLOAD', hex(b, 2, 10)); }
   return c;
+}
+/** An ID on a busy channel that names a unit (not 0, not 0xFFFF for data or the other all-unit IDs). */
+export const capUnit = (id: number) => id > 0 && id < 0xfff0;
+/** A whole channel status onto the block: busy channels, their talkgroups, and the first unit ID as its unit. */
+export function capFields(c: Csbk, st: CapStatus, add: (k: string, v: string) => void): void {
+  c.status = st; c.busy = [...new Set([...st.voice.map(x => x.lcn), ...st.other.map(x => x.lcn)])].sort((a, b) => a - b);
+  add('BUSY', c.busy.length ? c.busy.map(n => `LCN ${n}`).join(', ') : 'none');
+  for (const v of st.voice) add(`LCN ${v.lcn}`, `TG ${v.tg}`);
+  for (const o of st.other) add(`LCN ${o.lcn}`, capUnit(o.id) ? `unit ${o.id}` : o.id === 0xffff ? 'data' : `ID ${h(o.id, 4)}`);
+  const u = st.other.find(o => capUnit(o.id)); if (u) c.unit = u.id;
 }
 
 /**

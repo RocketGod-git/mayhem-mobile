@@ -131,10 +131,14 @@ export class CallTracker {
   grant(g: { sys: string; proto: CallProto; tg: number; group: boolean; src: number; hz: number; slot: number; tdma: boolean; encrypted: boolean; emergency: boolean; site: string; lpcn?: number; chDerived?: boolean; efr?: boolean }, now = this.now()): Call | null {
     if (!g.tg && !g.hz) return null;
     let c = this.calls.find(x => x.kind === 'call' && x.onAir && x.sys === g.sys && x.tg === g.tg && x.group === g.group && (!x.hz || !g.hz || gridKey(x.hz) === gridKey(g.hz)) && (x.slot === g.slot || !x.hz || !g.hz));
-    if (!c && g.hz) {
-      // voice that arrived before its grant (or a grant for a channel already carrying an unlabeled call)
+    if ((!c || !c.hz) && g.hz) {
+      // voice that arrived before its grant (or a grant for a channel already carrying an unlabeled call); an earlier
+      // grant of this call with no channel yet gives way to it
       const v = this.find(g.sys, g.hz, g.slot);
-      if (v && !v.tg) c = v;
+      if (v && !v.tg && v !== c) {
+        if (c) { v.granted = true; v.grantMs = c.grantMs; this.calls.splice(this.calls.indexOf(c), 1); }
+        c = v;
+      }
     }
     // grant updates trail a call for a moment after its terminator: they do not open it again
     if (!c && this.calls.some(x => x.kind === 'call' && !x.onAir && x.end === 'terminator' && now - x.endMs < TRAIL_MS && x.sys === g.sys && x.tg === g.tg && (!g.hz || !x.hz || gridKey(x.hz) === gridKey(g.hz)))) return null;
@@ -152,6 +156,8 @@ export class CallTracker {
     this.label(c);
     return c;
   }
+  /** A call to this talkgroup or unit is on the air. */
+  onAirTo(sys: string, tg: number, group: boolean): boolean { return this.calls.some(c => c.kind === 'call' && c.onAir && c.sys === sys && c.tg === tg && c.group === group); }
   private addSrc(c: Call, src: number): void { c.src = src; if (!c.srcs.includes(src)) { c.srcs.push(src); if (c.srcs.length > 12) c.srcs.shift(); } }
 
   /** Voice on a channel: a P25 voice frame (180 ms of speech) or a DMR voice burst (60 ms). */
@@ -166,11 +172,11 @@ export class CallTracker {
   lc(sys: string, hz: number, slot: number, lc: { group: boolean; dst: number; src: number; emergency: boolean; privacy: boolean }, now = this.now(), proto: CallProto = 'DMR', tdma = false): Call {
     let c = this.find(sys, hz, slot);
     if (c && c.tg && c.tg !== lc.dst) { this.finish(c, 'terminator', now); c = undefined; }
-    if (!c) {
-      // a granted call whose channel is not resolved yet (a DMR logical channel): the voice link control places it
-      c = this.calls.find(x => x.kind === 'call' && x.onAir && x.proto === proto && !x.hz && x.tg === lc.dst && x.group === lc.group && (!sys || !x.sys || x.sys === sys));
-      if (c) { c.hz = hz; c.slot = slot; }
-    }
+    // a granted call whose channel is not resolved yet (a DMR logical channel): the voice link control places it, or
+    // when its voice came first as a call with no name, that call takes the grant's place
+    const g = (!c || !c.tg) ? this.calls.find(x => x !== c && x.kind === 'call' && x.onAir && x.proto === proto && !x.hz && x.tg === lc.dst && x.group === lc.group && (!sys || !x.sys || x.sys === sys)) : undefined;
+    if (g && !c) { c = g; c.hz = hz; c.slot = slot; }
+    else if (g && c) { c.granted = true; c.grantMs = g.grantMs; c.lpcn = g.lpcn; c.site = c.site || g.site; this.calls.splice(this.calls.indexOf(g), 1); }
     if (!c) c = this.create({ sys, proto, hz, slot, tdma, codec: codecOf(proto, tdma), tg: lc.dst, group: lc.group }, now);
     c.tg = lc.dst; c.group = lc.group; this.addSrc(c, lc.src); c.emergency = c.emergency || lc.emergency; c.lcVerified = true;
     if (sys && !c.sys) c.sys = sys;

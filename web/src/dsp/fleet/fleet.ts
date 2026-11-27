@@ -12,7 +12,7 @@ import { Ddc } from '../trains.js';
 import { RealFir, lowpassTaps } from '../ham/filters.js';
 import { crc12Ok, DMR_CRC_MASK, dmrReadBurst, hex } from './codes.js';
 import { parseTsbk, resolveChannel, svcFlags, tsbkLine, h, type Field, type Iden, type Tsbk } from './tsbk.js';
-import { parseCsbk, unwrap16, csbkLine, VendorCheck, type Csbk } from './csbk.js';
+import { parseCsbk, unwrap16, csbkLine, VendorCheck, capStatus, capFields, capUnit, type Csbk, type CapStatus } from './csbk.js';
 import { SymbolRx, P25Framer, DmrFramer, CwReader, looksLikeCallsign, slice, type P25Block, type DmrEvent } from './rx.js';
 import { P25Decoder } from '../ham/p25.js';
 import './vocoders.js';
@@ -148,7 +148,11 @@ interface Sys {
   nxdnPlan?: NxdnPlan; nxdnBaud?: number;
   /** Motorola Type II: the channel plan its control channel proved (null until one does), and the channels granted (count). */
   osw?: { plan: OswPlan | null; chans: Map<number, number> };
+  /** Capacity Plus: what the latest channel status said of each busy logical channel, and when it was heard. */
+  cap?: { at: Map<number, CapLcn>; ms: number };
 }
+/** A busy Capacity Plus logical channel: in voice or not, its talkgroup or the ID on it, when heard, its last grant. */
+interface CapLcn { voice: boolean; tg: number; ms: number; grantMs: number }
 interface TetraSys { calls: Map<number, { tg: number; group: boolean; src: number; hz: number; slot: number; e2ee: boolean; ms: number }>; encSdus: number; clearSdus: number; aie: boolean; sec: TetraSysinfo['security']; carriers: Map<number, number> }
 interface Unit { key: string; sys: string; id: number; firstMs: number; lastMs: number; lonLo: number; latLo: number; posMs: number; posVerified: boolean; trail: [number, number, number][]; groups: Set<number>; grants: number; carriers: Set<number>; reports: (UnitReport & { lonLo?: number; latLo?: number })[];
   /** Every position report as sent (low 16 bits), resolved when shown: [time, lat16, lon16]. */
@@ -331,6 +335,8 @@ export class FleetProcessor implements IqProcessor {
   private lastFind = 0; private lastPost = 0; private pending = false; private colorNext = 0;
   private readonly logSeen = new Map<string, number>();
   private readonly vendor = new VendorCheck();
+  /** Capacity Plus channel status first parts, per carrier and slot, waiting for their last part. */
+  private readonly capParts = new Map<string, number[]>();
   private readonly bbFir = new Map<number, [RealFir, RealFir]>();
   readonly calls = new CallTracker(() => this.now());
   private readonly p25Seen = new Map<number, number>();
@@ -1182,6 +1188,7 @@ export class FleetProcessor implements IqProcessor {
           if (b.dt === 1) this.learnLpcn(c, b.slot, lc, now);
           const call = this.calls.lc(c.sys, c.hz, b.slot, lc, now);
           if (call.sys && !c.sys) c.sys = call.sys;
+          this.capVoice(c, b.slot, lc, now);
         }
         if (b.dt === 2) this.calls.terminate(c.sys, c.hz, b.slot, now);
         const name = b.dt === 1 ? 'VOICE LC HEADER' : 'TERMINATOR WITH LC';
@@ -1265,6 +1272,7 @@ export class FleetProcessor implements IqProcessor {
     if (!lc.dst && !lc.src) return;
     const call = this.calls.lc(c.sys, c.hz, slot, { ...lc }, now, 'DMR');
     if (call.sys && !c.sys) c.sys = call.sys;
+    this.capVoice(c, slot, lc, now);
     const k = `${c.key}:${slot}:${lc.dst}:${lc.src}:${lc.privacy}`;
     if (this.embSeen.get(k) === undefined || now - this.embSeen.get(k)! > 10_000) {
       this.embSeen.set(k, now); if (this.embSeen.size > 500) this.embSeen.clear();
@@ -1393,9 +1401,9 @@ export class FleetProcessor implements IqProcessor {
     switch (cs.kind) {
       case 'beacon': {
         s.trunk = 'CAPACITY PLUS';
-        s.rest = cs.rest ?? -1; s.busy = cs.busy ?? [];
-        // a unit exchange on this carrier just now and one logical channel busy: that channel is this carrier's slot
-        if (s.busy.length === 1 && c.hdr && now - c.hdr.ms < 1_000) this.lcnVote(s, s.busy[0], c.hz, c.hdr.slot);
+        s.rest = cs.rest ?? -1;
+        const st = this.capWhole(c, slot, cs);
+        if (st) this.capApply(s, c, st, now);
         c.lcn = [...s.lcns].filter(([, v]) => v.hz === c.hz).map(([k]) => k).join('/');
         for (const k of this.carriers.values()) if (k.sys === s.key) {
           const mine = [...s.lcns].filter(([, v]) => v.hz === k.hz).map(([n]) => n);
@@ -1404,8 +1412,8 @@ export class FleetProcessor implements IqProcessor {
         if (cs.unit !== undefined && !allUnits(cs, cs.unit)) this.touchUnit(s.key, cs.unit, c, now, 'busy channel', cs, '');
         break;
       }
-      case 'unithdr': if (cs.unit !== undefined && !allUnits(cs, cs.unit)) { c.hdr = { ms: now, slot }; this.touchUnit(s.key, cs.unit, c, now, 'unit report header', cs, ''); } break;
-      case 'unitrpt': if (cs.unit !== undefined && !allUnits(cs, cs.unit)) this.unitReport(s, c, cs, now); break;
+      case 'unithdr': if (cs.unit !== undefined && !allUnits(cs, cs.unit)) { c.hdr = { ms: now, slot }; this.touchUnit(s.key, cs.unit, c, now, 'unit report header', cs, ''); if (cs.lcn !== undefined) this.capData(s, c, slot, cs, now); } break;
+      case 'unitrpt': if (cs.unit !== undefined && !allUnits(cs, cs.unit)) { this.unitReport(s, c, cs, now); this.capData(s, c, slot, cs, now); } break;
       case 'grant': {
         if (cs.verified && cs.fid === 0) s.trunk = 'TIER III';
         if (cs.dst === undefined) break;
@@ -1438,15 +1446,87 @@ export class FleetProcessor implements IqProcessor {
       if (s.lpcnHz.get(g.lpcn) !== best) { s.lpcnHz.set(g.lpcn, best); this.pending = true; }
     }
   }
-  /** Votes per carrier slot for the logical channel it is; each slot takes the one it got at least two thirds of. */
-  private lcnVote(s: Sys, lcn: number, hz: number, slot: number): void {
-    const k = `${hz}:${slot}`, v = s.lcnVotes.get(k) ?? new Map<number, number>();
-    v.set(lcn, (v.get(lcn) ?? 0) + 1); s.lcnVotes.set(k, v);
-    let best = -1, n = 0, all = 0; for (const [l, c] of v) { all += c; if (c > n) { n = c; best = l; } }
-    if (n >= 3 && n * 3 >= all * 2) {
-      for (const [l, at] of s.lcns) if (at.hz === hz && at.slot === slot && l !== best) s.lcns.delete(l);
-      s.lcns.set(best, { hz, slot });
+  /**
+   * Votes per carrier slot for the logical channel it is, [w] each; each slot takes the one it got at least two thirds
+   * of. On Capacity Plus the vote also goes to the repeater's other slot for the neighboring channel (1 and 2, 3 and 4:
+   * inferred from our recordings, where each busy channel's traffic came on the slot this numbering gives).
+   */
+  private lcnVote(s: Sys, lcn: number, hz: number, slot: number, w = 1): void {
+    const one = (l0: number, sl: number) => {
+      const k = `${hz}:${sl}`, v = s.lcnVotes.get(k) ?? new Map<number, number>();
+      v.set(l0, (v.get(l0) ?? 0) + w); s.lcnVotes.set(k, v);
+      let best = -1, n = 0, all = 0; for (const [l, c] of v) { all += c; if (c > n) { n = c; best = l; } }
+      if (n < 3 || n * 3 < all * 2) return;
+      for (const [l, at] of s.lcns) if (at.hz === hz && at.slot === sl && l !== best) s.lcns.delete(l);
+      if (s.lcns.get(best)?.hz !== hz || s.lcns.get(best)?.slot !== sl) this.pending = true;
+      s.lcns.set(best, { hz, slot: sl });
+    };
+    one(lcn, slot);
+    if (s.trunk === 'CAPACITY PLUS') one(lcn % 2 ? lcn + 1 : lcn - 1, 1 - slot);
+  }
+  /** A channel status, put together from its two parts when it came in two (the parts follow on the same slot). */
+  private capWhole(c: Carrier, slot: number, cs: Csbk): CapStatus | null {
+    const k = `${c.key}:${slot}`;
+    if (cs.frag === 3) return cs.status ?? null;
+    if (cs.frag === 2) { if (this.capParts.size > 400) this.capParts.clear(); this.capParts.set(k, cs.payload ?? []); return null; }
+    const first = this.capParts.get(k); this.capParts.delete(k);
+    if (cs.frag !== 1 || !first) return null;
+    const st = capStatus([...first, ...(cs.payload ?? [])]);
+    if (st) capFields(cs, st, (k2, v) => cs.fields.push({ k: k2, v }));
+    return st;
+  }
+  /**
+   * A whole channel status: a logical channel in group voice is a grant of its talkgroup (on its carrier and slot once
+   * that is learned), one carrying a unit's ID a call to that unit; the ones carrying data (0xFFFF) are kept for
+   * [capData]. Every repeater of the system repeats the status, so a grant is renewed at most once a second.
+   */
+  private capApply(s: Sys, c: Carrier, st: CapStatus, now: number): void {
+    const cap = s.cap ?? (s.cap = { at: new Map(), ms: 0 });
+    cap.ms = now; s.busy = [...new Set([...st.voice.map(x => x.lcn), ...st.other.map(x => x.lcn)])].sort((a, b) => a - b);
+    const seen = new Set<number>();
+    const put = (lcn: number, voice: boolean, tg: number, group: boolean) => {
+      seen.add(lcn);
+      const was = cap.at.get(lcn), same = !!was && was.voice === voice && was.tg === tg && now - was.ms < 5_000;
+      const e: CapLcn = { voice, tg, ms: now, grantMs: same ? was!.grantMs : 0 };
+      cap.at.set(lcn, e);
+      if (!voice || (same && now - e.grantMs < 1_000)) return;
+      e.grantMs = now;
+      const hz = s.lcns.get(lcn)?.hz ?? 0;
+      // the status keeps the talkgroup on its channel through the hang time after the call: that renews the grant
+      // row, and opens no call again
+      if (same && !this.calls.onAirTo(s.key, tg, group)) {
+        const g = this.grants.find(x => x.sys === s.key && x.tg === tg && x.ch === `LCN ${lcn}` && now - x.lastMs < 5_000);
+        if (g) { g.lastMs = now; return; }
+      }
+      this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: group ? 'grant' : 'u2u', tg, group, src: 0, ch: `LCN ${lcn}`, hz, slot: (lcn - 1) & 1, tdma: false, emergency: false, encrypted: false, carrierHz: c.hz, site: '', lpcn: lcn, chDerived: hz > 0 }, same);
+    };
+    for (const v of st.voice) put(v.lcn, true, v.tg, true);
+    // a unit's ID on a busy channel: a call to that unit (inferred: our recordings carry only 0xFFFF there)
+    for (const o of st.other) put(o.lcn, capUnit(o.id), o.id, false);
+    // a channel the status stops listing is kept a while: the status leaves it out now and then within one call
+    for (const [l, e] of [...cap.at]) if (!seen.has(l) && now - e.ms > 5_000) cap.at.delete(l);
+  }
+  /** Voice on [c] naming a talkgroup the status put on one logical channel of this slot: two votes for it. */
+  private capVoice(c: Carrier, slot: number, lc: { group: boolean; dst: number }, now: number): void {
+    for (const s of this.systems.values()) {
+      if (s.trunk !== 'CAPACITY PLUS' || !s.cap || now - s.cap.ms > 2_000 || (c.cc >= 0 && s.cc !== c.cc) || (c.dmrSys && c.dmrSys !== s.key)) continue;
+      const l = [...s.cap.at].filter(([n, e]) => e.voice && e.tg === lc.dst && now - e.ms < 2_000 && ((n - 1) & 1) === slot).map(([n]) => n);
+      if (l.length === 1) this.lcnVote(s, l[0], c.hz, slot, 2);
     }
+  }
+  /**
+   * A unit report exchange on [c]: when the latest status has one data channel of this slot not placed on another
+   * carrier, a vote that it is this one; on a data channel already placed, a data grant naming the unit. (Exchanges
+   * also come on channels the status does not list yet, so these votes count less than the voice's.)
+   */
+  private capData(s: Sys, c: Carrier, slot: number, cs: Csbk, now: number): void {
+    const cap = s.cap; if (s.trunk !== 'CAPACITY PLUS' || !cap || now - cap.ms > 500 || cs.unit === undefined) return;
+    const data = [...cap.at].filter(([, e]) => !e.voice && now - e.ms < 500).map(([n]) => n);
+    const free = data.filter(n => ((n - 1) & 1) === slot && (!s.lcns.has(n) || s.lcns.get(n)!.hz === c.hz));
+    if (free.length === 1) this.lcnVote(s, free[0], c.hz, slot);
+    const mine = [...s.lcns].find(([, v]) => v.hz === c.hz && v.slot === slot)?.[0];
+    if (mine === undefined || !data.includes(mine)) return;
+    this.grant(s.key, { ms: now, lastMs: now, sys: s.key, kind: 'datagrant', tg: cs.unit, group: false, src: cs.unit, ch: `LCN ${mine}`, hz: c.hz, slot, tdma: false, emergency: false, encrypted: false, carrierHz: c.hz, site: '', lpcn: mine, chDerived: true }, false);
   }
   private unitReport(s: Sys, c: Carrier, cs: Csbk, now: number): void {
     const u = this.touchUnit(s.key, cs.unit!, c, now, 'unit report', cs, '');

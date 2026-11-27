@@ -12,11 +12,16 @@ import { fft } from '../fft.js';
  *    across languages and speakers. A carrier, a tone and most digital modes hold a steady level instead.
  *  - How much the level varies. Speech has pauses and stresses; a continuous transmission does not.
  *
- * None of the three is conclusive alone, so the score is a weighted blend, and it needs a reasonable level
- * before it will claim anything at all.
+ * None of the three is conclusive alone, so the score is a blend, and it needs a reasonable level before it will
+ * claim anything at all. A tone keyed on and off (a page, DTMF, AFSK) has all three, so it is ruled out by how
+ * much of the speech band's energy sits in a few bins.
+ *
+ * All of it is read from the speech band only. A CTCSS tone sits steady under the voice, so in the full-band
+ * level it flattened the rhythm and the swing of a real over (155.055, PL 82.5: 0.09 before, 0.74 after).
  */
 const NF = 512;                                   // analysis frame at 48 kHz: 10.7 ms, 93.75 Hz per bin
 const ENV = 128;                                  // envelope history: 1.37 s at the frame rate
+const TOP = 6;                                    // bins that hold a tone or a pair of tones
 
 export interface VoiceScore {
   /** 0 = certainly not speech, 1 = certainly speech. */
@@ -29,6 +34,8 @@ export interface VoiceScore {
   vary: number;
   /** Level of the audio itself, in dB below full scale. */
   levelDb: number;
+  /** Share of frames whose speech band is nearly all in 6 bins: a tone or a pair of tones. */
+  tone: number;
 }
 
 const clamp01 = (v: number) => v < 0 ? 0 : v > 1 ? 1 : v;
@@ -41,9 +48,14 @@ export class VoiceDetector {
   private readonly win = new Float32Array(NF);
   private readonly env = new Float32Array(ENV);
   private readonly envDb = new Float32Array(ENV);
+  /** Per frame: speech band share, and the full-band level for the quiet gate. */
+  private readonly share = new Float32Array(ENV);
+  private readonly full = new Float32Array(ENV);
+  private readonly peak = new Float32Array(ENV);
+  private readonly top = new Float32Array(TOP);
+  private readonly sorted = new Float32Array(ENV);
   private envN = 0;
   private filled = 0;
-  private bandAvg = 0;
   private readonly ere = new Float32Array(ENV);
   private readonly eim = new Float32Array(ENV);
   /** Frames per second of the envelope, and the bins holding the syllable rate. */
@@ -53,7 +65,7 @@ export class VoiceDetector {
 
   constructor() { for (let i = 0; i < NF; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / NF); }
 
-  reset(): void { this.n = 0; this.envN = 0; this.filled = 0; this.bandAvg = 0; this.env.fill(0); this.envDb.fill(0); }
+  reset(): void { this.n = 0; this.envN = 0; this.filled = 0; this.env.fill(0); this.envDb.fill(0); this.share.fill(0); this.full.fill(0); this.peak.fill(0); }
 
   /** Feed demodulated audio at 48 kHz, full scale ±1. */
   push(a: Float32Array, len: number): void {
@@ -68,31 +80,52 @@ export class VoiceDetector {
     let sq = 0;
     for (let i = 0; i < NF; i++) { const v = b[i]; sq += v * v; re[i] = v * w[i]; im[i] = 0; }
     fft(re, im);
-    // Bin k covers k * 93.75 Hz. The speech band is 300-3400, measured against 100-8000 so that hum and hiss
-    // outside the passband count against it.
+    // Bin k covers k * 93.75 Hz. The speech band is 300-3400, measured against 300-8000 so that hiss counts
+    // against it and a CTCSS tone below 300 does not.
     const bin = (hz: number) => Math.round(hz * NF / 48_000);
     let inBand = 0, wide = 0;
-    for (let k = bin(100); k <= bin(8000); k++) {
+    const top = this.top; top.fill(0);
+    for (let k = bin(300); k <= bin(8000); k++) {
       const p = re[k] * re[k] + im[k] * im[k];
       wide += p;
-      if (k >= bin(300) && k <= bin(3400)) inBand += p;
+      if (k > bin(3400)) continue;
+      inBand += p;
+      if (p > top[TOP - 1]) { let m = TOP - 1; while (m > 0 && top[m - 1] < p) { top[m] = top[m - 1]; m--; } top[m] = p; }
     }
-    const rms = Math.sqrt(sq / NF);
-    this.env[this.envN] = rms;
-    this.envDb[this.envN] = 20 * Math.log10(rms + 1e-9);
-    this.envN = (this.envN + 1) % ENV;
+    let pk = 0;
+    for (let m = 0; m < TOP; m++) pk += top[m];
+    // Hann power gain 3/8, one-sided: this is the speech band's RMS
+    const rms = Math.sqrt(2 * inBand / (NF * NF * 0.375));
+    const j = this.envN;
+    this.env[j] = rms;
+    this.envDb[j] = 20 * Math.log10(rms + 1e-9);
+    this.share[j] = wide > 0 ? inBand / wide : 0;
+    this.full[j] = Math.sqrt(sq / NF);
+    this.peak[j] = inBand > 0 ? pk / inBand : 0;
+    this.envN = (j + 1) % ENV;
     if (this.filled < ENV) this.filled++;
-    const ratio = wide > 0 ? inBand / wide : 0;
-    this.bandAvg += 0.1 * (ratio - this.bandAvg);
+  }
+
+  /** Share of frames that are a tone or a pair of tones. */
+  private tonal(): number {
+    let n = 0;
+    for (let i = 0; i < ENV; i++) if (this.peak[i] > 0.9) n++;
+    return n / ENV;
+  }
+
+  /** Upper quartile of the band share: a fade or a pause between words does not pull it down. */
+  private bandShare(): number {
+    this.sorted.set(this.share); this.sorted.sort();
+    return this.sorted[ENV * 3 / 4];
   }
 
   /** The current verdict. Meaningless until roughly a second of audio has gone through. */
   read(): VoiceScore {
-    if (this.filled < ENV) return { score: 0, band: this.bandAvg, mod: 0, vary: 0, levelDb: -99 };
+    if (this.filled < ENV) return { score: 0, band: 0, mod: 0, vary: 0, levelDb: -99, tone: 0 };
     const env = this.env, ere = this.ere, eim = this.eim;
-    let mean = 0;
-    for (let i = 0; i < ENV; i++) mean += env[i];
-    mean /= ENV;
+    let mean = 0, fullMean = 0;
+    for (let i = 0; i < ENV; i++) { mean += env[i]; fullMean += this.full[i]; }
+    mean /= ENV; fullMean /= ENV;
     for (let i = 0; i < ENV; i++) { ere[i] = env[(this.envN + i) % ENV] - mean; eim[i] = 0; }
     fft(ere, eim);
     let syl = 0;
@@ -104,12 +137,16 @@ export class VoiceDetector {
     let vsum = 0;
     for (let i = 0; i < ENV; i++) { const d = this.envDb[i] - dbMean; vsum += d * d; }
     const vary = Math.sqrt(vsum / ENV);
-    const levelDb = 20 * Math.log10(mean + 1e-9);
+    const levelDb = 20 * Math.log10(fullMean + 1e-9), share = this.bandShare(), tone = this.tonal();
     // Too quiet to judge: an open squelch on noise would otherwise score well on variability alone.
-    if (levelDb < -46) return { score: 0, band: this.bandAvg, mod, vary, levelDb };
-    const band = clamp01((this.bandAvg - 0.35) / 0.30);
+    if (levelDb < -46) return { score: 0, band: share, mod, vary, levelDb, tone };
+    // Rhythm and swing count only as far as the energy is in the speech band: squelch noise that flutters on a
+    // weak carrier swings at the syllable rate too. A tone keyed on and off (a page, DTMF, AFSK packets) has
+    // the band and the swing, so a window that is tone for a quarter of its frames scores nothing.
+    const band = clamp01((share - 0.50) / 0.30);
     const rhythm = clamp01((mod - 0.06) / 0.14);
     const moving = clamp01((vary - 2) / 6);
-    return { score: 0.35 * band + 0.40 * rhythm + 0.25 * moving, band: this.bandAvg, mod, vary, levelDb };
+    const untoned = clamp01(1 - tone / 0.25);
+    return { score: untoned * band * (0.35 + 0.40 * rhythm + 0.25 * moving), band: share, mod, vary, levelDb, tone };
   }
 }

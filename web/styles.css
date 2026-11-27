@@ -1211,6 +1211,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .acmid { flex: 1; min-width: 0; line-height: 1.3; }
 .acmid b { font-size: 14px; letter-spacing: 1px; }
 .achex { color: var(--muted); font-size: 10px; letter-spacing: 1px; }
+.acsq { color: var(--muted); font-size: 10px; letter-spacing: 1px; margin-left: 6px; }
+.acsq.alert { color: var(--danger); font-weight: 700; }
 .acid { color: var(--accent); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acop { color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acnum { flex: none; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; font-size: 11px; color: var(--muted); }

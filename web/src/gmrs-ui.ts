@@ -88,7 +88,7 @@ export function gmrsTilesHtml(s: GmrsSnap | null, now: number, hold: string, emp
     const c = s!.chans.find(x => x.key === t.key), playing = s?.playing.includes(t.key), tone = hpTone(t.tone, t.dcs);
     const badges = [c?.id === '20' ? pill('TRAVEL', 'warm') : '', t.inputHz ? pill(`REPEATER, INPUT ${hpMhz(t.inputHz)}`, 'acc') : '', c?.kind === 'input' ? pill('REPEATER INPUT') : '',
       t.callsign ? pill(t.callsign, 'acc') : '', c?.data ? pill('DATA', 'warm') : '', c?.steady ? pill('STEADY CARRIER') : '',
-      t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED`, 'bad') : ''].join('');
+      t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED · DEVICE BUSY`, 'bad') : ''].join('');
     return `<div class="fl-tile hp-tile cb-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${esc(gmrsChanTitle(t.hz))}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small>${esc(gmrsSub(t.hz))}</small>`
       + (tone ? `<span class="hp-line">${esc(tone)}</span>` : '')
@@ -121,7 +121,7 @@ export function gmrsCardHtml(s: GmrsSnap, key: string, now: number, prefs: { hol
   if (!c.inSpan) kv.push(['SPAN', 'outside what the radio hears now']);
   if (t) {
     kv.push(['HEARD', `${t.txs} keyups · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpHeard(now, t.lastMs)}`]);
-    if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} keyups came while every demodulator was busy`]);
+    if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} keyups were heard but their audio was not kept, because every demodulator this device runs at once was busy with other channels`]);
   }
   const conv = s.convs.find(x => x.key === key);
   const ids = conv ? s.rows.filter(r => r.conv === conv.id && r.recorded && !r.live).map(r => r.id) : [];
@@ -146,7 +146,7 @@ export function gmrsLogHtml(s: GmrsSnap | null): string {
   const rows = s?.rows.slice(0, 200) ?? [];
   if (!rows.length) return '<div class="fl-dim">every keyup is logged here with its time, channel, length, tone, its repeater when it went through one, and any ID or data it carried</div>';
   return rows.map(r => `<div class="hp-log"><span>${hpClock(r.startMs)}</span><b>${esc(gmrsChanTitle(r.heardHz))}</b><span class="${r.live ? 'ok' : ''}">${r.live ? 'LIVE' : hpDur(r.endMs - r.startMs)}</span>`
-    + `<em style="color:${hpColor(r.color)}">${esc([r.ident ? hpIdentLine(r.ident) : r.stationLabel, gmrsMeta(r), r.calls.length ? `CW ID ${r.calls.join(' ')}` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · '))}</em></div>`).join('');
+    + `<em style="color:${hpColor(r.color)}">${esc([r.ident ? hpIdentLine(r.ident) : r.stationLabel, gmrsMeta(r), r.calls.length ? `CW ID ${r.calls.join(' ')}` : '', r.recorded ? '' : 'NO AUDIO KEPT'].filter(Boolean).join(' · '))}</em></div>`).join('');
 }
 
 /** The 24 hours a channel, in the plan's order. */

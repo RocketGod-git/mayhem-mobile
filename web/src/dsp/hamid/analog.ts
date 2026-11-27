@@ -30,7 +30,8 @@
  *     step held until the tone ends) against the phase line before it, DCS by the HAM receiver's own decoder and
  *     its turn-off code (134.4 Hz, where DCS data has a spectral null, in the last 150 to 200 ms);
  *   · end of over: the user unkeys at the end of the last voice; the tail is the carrier after it. A repeater
- *     that drops while voice is still on after 25 s timed out. A short keyup with no voice is a kerchunk.
+ *     that drops while voice is still on after 25 s timed out. A keyup with no voice keyed under [KERCHUNK_MAX_S] (to
+ *     its courtesy tone when it has one) is a kerchunk; one up to [NO_VOICE_MAX_S] is a carrier with no voice.
  * No DOM.
  */
 import { CTCSS_TONES, SubAudioDecoder } from '../ham/ctcss.js';
@@ -53,7 +54,11 @@ export interface AnalogTx {
   courtesy: CourtesyTone | null; cw: CwId | null;
   selcall: Selcall[]; twoTone: TwoTone[]; mdc: MdcPacket[]; fleetsync: FleetSync[]; data: DataBurst[];
   timeout: boolean; kerchunk: boolean;
+  /** A carrier with no voice and no signaling, keyed [KERCHUNK_MAX_S] to [NO_VOICE_MAX_S]: too long for a kerchunk. */
+  noVoice: boolean;
 }
+/** The longest keyup (to its courtesy tone when it has one) that is a kerchunk, and the longest a carrier with no voice is called one. */
+export const KERCHUNK_MAX_S = 2, NO_VOICE_MAX_S = 15;
 export interface AnalogSnap {
   carrier: boolean;
   /** The latest transmissions, oldest first (up to 30). */
@@ -712,7 +717,7 @@ export class AnalogSignaling {
         const a2 = Math.max(a, f - this.bufAt), b2 = Math.min(b, t - this.bufAt);
         if (b2 - a2 < Math.round(0.08 * this.rate)) continue;
         const tx = this.analyze(this.buf.slice(a2, b2), (this.bufAt + a2) / this.rate);
-        tx.kerchunk = false; tx.timeout = false;
+        tx.kerchunk = false; tx.noVoice = false; tx.timeout = false;
         this.remember(tx); this.txs.push(tx); if (this.txs.length > 30) this.txs.shift(); this.onTx(tx);
       }
       this.segs = []; this.fRun = 0; this.dRun = 0;
@@ -804,11 +809,12 @@ export class AnalogSignaling {
     const unkeyS = lastVoiceS >= 0 ? Math.min(durS, lastVoiceS) : courtesy ? courtesy.atS - startS : -1;
     const tailS = unkeyS >= 0 ? Math.round((durS - unkeyS) * 100) / 100 : -1;
     const timeout = durS >= 25 && lastVoiceS >= 0 && durS - lastVoiceS < 0.25 && !courtesy;
-    const kerchunk = voiceS < 0.3 && !cw && !selcall.length && !twoTone.length && !mdc.length && !fleetsync.length && !data.length && durS < 15;
+    const quiet = voiceS < 0.3 && !cw && !selcall.length && !twoTone.length && !mdc.length && !fleetsync.length && !data.length && durS < NO_VOICE_MAX_S;
+    const kerchunk = quiet && (unkeyS >= 0 ? unkeyS : durS) < KERCHUNK_MAX_S, noVoice = quiet && !kerchunk;
     return {
       startS: Math.round(startS * 1000) / 1000, durS: Math.round(durS * 1000) / 1000, voiceS: Math.round(voiceS * 100) / 100,
       unkeyS: unkeyS >= 0 ? Math.round(unkeyS * 100) / 100 : -1, tailS, ctcss, dcs, reverseBurst: rb, dcsTurnOff,
-      courtesy, cw, selcall, twoTone, mdc, fleetsync, data, timeout, kerchunk,
+      courtesy, cw, selcall, twoTone, mdc, fleetsync, data, timeout, kerchunk, noVoice,
     };
   }
 
@@ -889,5 +895,6 @@ export function analogSummary(tx: AnalogTx): string[] {
   if (tx.tailS >= 0) out.push(`Tail ${tx.tailS.toFixed(1)} s`);
   if (tx.timeout) out.push(`Timed out after ${Math.round(tx.durS)} s`);
   if (tx.kerchunk) out.push('Kerchunk');
+  if (tx.noVoice) out.push('Carrier, no voice');
   return out;
 }

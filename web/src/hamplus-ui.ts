@@ -3,6 +3,7 @@
  * activity map and the log, built from the receiver's snapshot. No state of its own beyond what the page passes in.
  */
 import { HP_BANDS, hpBandOf } from './dsp/hamplus/plan.js';
+import { serviceTitle } from './bands.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import type { HpTile, HpTxRow } from './dsp/hamplus/tracker.js';
 import { HEAT_SLOTS, cwCallsign } from './dsp/hamplus/tracker.js';
@@ -27,7 +28,7 @@ export const hpHeard = (now: number, lastMs: number) => lastMs > 0 ? hpAgo(Math.
 export const hpClock = (ms: number) => new Date(ms).toTimeString().slice(0, 8);
 export const hpTone = (tone: number, dcs: number) => tone > 0 ? `PL ${tone.toFixed(1)}` : dcs > 0 ? `DCS ${String(dcs).padStart(3, '0')}` : '';
 /** A tile's name: the CW ID callsign, else the band plan's name for the frequency, else what kind of channel it is. */
-export const hpName = (t: HpTile) => t.callsign || t.label || t.kind || (hpBandOf(t.hz) ? `${hpBandOf(t.hz)!.name.toUpperCase()} FM` : '');
+export const hpName = (t: HpTile) => t.callsign || t.label || serviceTitle(t.hz) || t.kind || (hpBandOf(t.hz) ? `${hpBandOf(t.hz)!.name.toUpperCase()} FM` : '');
 /**
  * How a screen names what it shows, so CB reuses the live bar, the threads, the log and the timeline: a channel's
  * title (HAM+ its frequency, CB its number), a tile's name, and what a transmission carries (HAM+ its tone, CB its mode).
@@ -100,6 +101,7 @@ export function hpScanText(n: number, autoBand: boolean, mode: string, idx: numb
     case 'live': return `${a} · STAYING FOR THE CONVERSATION ON ${hpMhz(hz)}`;
     case 'hang': case 'home': return `${a} · STAYING FOR THE CONVERSATION ON ${hpMhz(hz)} · ${phaseLeft} s`;
     case 'look': return `${a} · LOOKING AROUND · BACK IN ${phaseLeft} s`;
+    case 'visit': return `${a} · EVERY WINDOW IN TURN · ${idx + 1}/${n} · ${phaseLeft} s`;
   }
   switch (mode) {
     case 'hold': return `${a} · HOLDING WHERE THE VOICE IS`;
@@ -196,7 +198,7 @@ export function hpTilesHtml(s: HpSnap | null, now: number, hold: string, emptyHt
     const lid = t.liveIdent ?? (t.talkers[0]?.ident ?? null), lr = lid ? hpResolve(res, lid, t.hz) : null;
     const idLine = lid && identWho(lid) ? [hpIdentWho(lid, lr), hpIdentTarget(lid, lr)].filter(Boolean).join(' · ') : '';
     const badges = [t.net ? pill(`NET · ${t.net.control}`, 'acc') : '', t.link ? pill(t.linkWith ? `LINKED WITH ${hpMhz(t.linkWith)}` : `LINKED ${t.link}`, 'warm') : '', t.inputHz && now - t.nearMs < 600_000 ? pill('NEARBY', 'ok') : '',
-      t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED`, 'bad') : ''].join('');
+      t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED · DEVICE BUSY`, 'bad') : ''].join('');
     return `<div class="fl-tile hp-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${hpMhz(t.hz)}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small class="${t.callsign ? 'call' : ''}">${esc(hpName(t))}</small>`
       + (line ? `<span class="hp-line">${esc(line)}</span>` : '')
@@ -214,7 +216,7 @@ function bubbleHtml(r: HpTxRow, side: number, repeater: boolean, now: number, nm
   const named = r.ident && rr?.station?.callsign && r.stationLabel === identWho(r.ident) ? hpIdentWho(r.ident, rr) : '';
   const who = named || r.stationLabel || (repeater ? 'VIA REPEATER' : 'UNKNOWN');
   const idl = r.ident ? hpIdentLine(r.ident, rr).split(' · ').filter(x => x !== hpIdentWho(r.ident!, rr)).join(' · ') : '';
-  const meta = [hpClock(r.startMs), idl, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.direct ? 'NEARBY' : '', cwCallsign(r.cw) ? `CW ID ${cwCallsign(r.cw)}` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · ');
+  const meta = [hpClock(r.startMs), idl, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.direct ? 'NEARBY' : '', cwCallsign(r.cw) ? `CW ID ${cwCallsign(r.cw)}` : '', r.recorded ? '' : 'NO AUDIO KEPT'].filter(Boolean).join(' · ');
   const play = r.recorded && !r.live;
   return `<div class="hp-bub ${side > 0 ? 'r' : ''} ${r.live ? 'live' : ''} ${play ? 'tap' : ''}" style="--st:${c}" ${play ? `data-hpplay="${r.id}" data-hplabel="${esc(`${nm.chan(r.hz)} at ${hpClock(r.startMs)}`)}"` : ''}>`
     + `<div><b ${r.station ? `data-hpname="${esc(r.station)}" data-hpcur="${esc(r.stationLabel.length > 1 ? r.stationLabel : '')}"` : ''}>${esc(who)}</b><span class="${r.live ? 'ok' : ''}">${r.live ? `TALKING ${hpDur(now - r.startMs)}` : hpDur(r.endMs - r.startMs)}</span>${play ? '<i>▶</i>' : ''}</div>`
@@ -264,7 +266,7 @@ export function hpLogHtml(s: HpSnap | null, nm: HpNamer = HAM_NAMER, res: HamIdR
   const rows = s?.rows.slice(0, 200) ?? [];
   if (!rows.length) return '<div class="fl-dim">every transmission is logged here with its time, channel, length, tone and carrier offset</div>';
   return rows.map(r => `<div class="hp-log"><span>${hpClock(r.startMs)}</span><b>${esc(nm.chan(r.hz))}</b><span class="${r.live ? 'ok' : ''}">${r.live ? 'LIVE' : hpDur(r.endMs - r.startMs)}</span>`
-    + `<em style="color:${hpColor(r.color)}">${esc([r.ident ? hpIdentLine(r.ident, hpResolve(res, r.ident, r.hz)) : r.stationLabel, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.recorded ? '' : 'NOT RECORDED'].filter(Boolean).join(' · '))}</em></div>`).join('');
+    + `<em style="color:${hpColor(r.color)}">${esc([r.ident ? hpIdentLine(r.ident, hpResolve(res, r.ident, r.hz)) : r.stationLabel, nm.meta(r), Number.isFinite(r.offsetHz) ? `${r.offsetHz >= 0 ? '+' : ''}${Math.round(r.offsetHz)} Hz` : '', r.recorded ? '' : 'NO AUDIO KEPT'].filter(Boolean).join(' · '))}</em></div>`).join('');
 }
 
 /** A value for a CSV cell: quoted when it holds a comma, a quote or a line break. */
@@ -306,7 +308,7 @@ export function hpCardHtml(s: HpSnap, key: string, now: number, prefs: { hold: s
   kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpHeard(now, t.lastMs)}`]);
   if (t.net) kv.push(['NET', `net control ${t.net.control}, ${t.net.checkins} check-ins`]);
   if (t.link) kv.push(['LINKED', s.tiles.filter(x => x.link === t.link && x.key !== t.key).map(x => hpMhz(x.hz)).join(', ') || `network ${t.link}`]);
-  if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} transmissions came while every demodulator was busy`]);
+  if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} transmissions were heard but their audio was not kept, because every demodulator this device runs at once was busy with other channels; a narrower SPAN leaves fewer channels to share them`]);
   const conv = s.convs.find(c => c.hz === t.hz);
   const ids = conv ? s.rows.filter(r => r.conv === conv.id && r.recorded && !r.live).map(r => r.id) : [];
   return `<div class="hp-card"><div class="hp-ch"><b class="big">${hpMhz(t.hz)}</b><span class="acc">${esc(hpName(t))}</span><button class="chip" data-hpclose="1">CLOSE</button></div>`

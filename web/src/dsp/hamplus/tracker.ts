@@ -229,6 +229,8 @@ export class HamTracker {
     if (!c.firstMs) c.firstMs = t.startMs;
     c.lastMs = Math.max(c.lastMs, t.endMs); c.talkMs += dur; c.txs++; if (!t.recorded) c.unrecorded++;
     if (t.tone) { c.tone = t.tone; c.dcs = 0; } else if (t.dcs) { c.dcs = t.dcs; c.tone = 0; }
+    // a channel heard digital shows no sub-audible tone: what read as one was the digital signal itself
+    if (t.ident && isDigital(t.ident.mode)) { c.tone = 0; c.dcs = 0; }
     // airtime a minute, for the sparkline
     for (let m = Math.floor(t.startMs / 60_000); m <= Math.floor(t.endMs / 60_000); m++) {
       const a = Math.max(t.startMs, m * 60_000), b = Math.min(t.endMs, (m + 1) * 60_000);
@@ -415,6 +417,8 @@ export class HamTracker {
       const lv = this.live.filter(l => Math.abs(l.hz - tileHz) < 1_250 || (inHz && Math.abs(l.hz - inHz) < 1_250));
       const lo = lv.find(l => Math.abs(l.hz - tileHz) < 1_250) ?? lv[0];
       const p = this.plan.info(tileHz), rep = this.repeaterLike(tileHz);
+      // a carrier classed as digital (now, or the last mode heard on it) shows no CTCSS or DCS
+      const digital = lo ? !!lo.ident && isDigital(lo.ident.mode) : isDigital(c.mode);
       const spark: number[] = []; for (let m = nowMin - SPARK_MIN + 1; m <= nowMin; m++) spark.push(Math.round((c.minutes.get(m) ?? 0) / 1000));
       if (lo) { const a = Math.max(lo.startMs, nowMin * 60_000); spark[spark.length - 1] += Math.round((now - a) / 1000); }
       const sts = rep ? ci?.stations ?? [] : c.stations;
@@ -424,7 +428,7 @@ export class HamTracker {
       const st = net ? sts.find(s => s.key === net.control) ?? null : null;
       out.push({
         key: k, hz: tileHz, label: p.label, use: p.use, kind: rep ? 'REPEATER' : p.use === 'simplex' ? 'SIMPLEX' : p.use === 'input' ? 'INPUT' : p.use === 'satellite' ? 'SATELLITE' : '', offset: rep || p.use === 'output' ? offsetText(inHz ? [inHz - tileHz] : p.offsets) : '',
-        inputHz: inHz, nearMs: ci?.lastMs ?? 0, tone: lo?.tone || c.tone || ci?.tone || 0, dcs: lo?.dcs || c.dcs || 0,
+        inputHz: inHz, nearMs: ci?.lastMs ?? 0, tone: digital ? 0 : lo?.tone || c.tone || ci?.tone || 0, dcs: digital ? 0 : lo?.dcs || c.dcs || 0,
         live: !!lo, snrDb: lo?.snrDb ?? 0, levelDb: lo?.levelDb ?? -90, openMs: lo ? now - lo.startMs : 0, lastMs: lo ? now : Math.max(c.lastMs, ci?.lastMs ?? 0),
         talkMs: c.talkMs + (lo ? now - lo.startMs : 0), txs: c.txs + (lo ? 1 : 0), spark, callsign: c.callsign,
         stations: sts.map(s => ({ key: s.key, label: this.stationLabel(s), letter: s.letter, color: LETTERS.indexOf(s.letter), callsign: s.callsign, txs: s.txs, offsetHz: Math.round(s.offsetHz) })),

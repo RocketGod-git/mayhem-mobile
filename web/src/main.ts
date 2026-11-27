@@ -39,7 +39,7 @@ import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
 import { FleetAuto, type AutoSaved } from './dsp/fleet/auto.js';
 import { hpWindows } from './dsp/hamplus/plan.js';
-import { HpScan } from './dsp/hamplus/scan.js';
+import { HP_CAP_MS, HpScan } from './dsp/hamplus/scan.js';
 import type { HpSnap } from './dsp/hamplus/engine.js';
 import { hpPrefsRestored, hpPrefsSaved, type HpTxRow } from './dsp/hamplus/tracker.js';
 import { hpHeadHtml, hpScanText, hpAutoLabel, HP_AUTO_LABELS, hpListenHtml, hpLiveHtml, hpTilesHtml, hpConvsHtml, hpHeatHtml, hpLogHtml, hpCardHtml, hpPaintTimeline, hpMhz, hpClock, hpCountText, hpExportCsv, HP_SPAN_MS } from './hamplus-ui.js';
@@ -70,7 +70,7 @@ import { hubSites, hubSondes, nextLaunchMs, type HubSite, type HubSonde } from '
 import { productsOf, radarBlocks, textOf, parseMetar, stationOf, hazardBlocks, icingOf, overlayOf, suaOf, type Metar, type RadarBlock, type HazardBlock, type Overlay } from './dsp/uat/fisb.js';
 import { decodeDownlink, type UatTarget } from './dsp/uat/traffic.js';
 import { mmsiInfo, shipTypeName, navStatusName, atonTypeName } from './ais-info.js';
-import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput } from './bands.js';
+import { BANDS, NON_HAM, bandOf, segmentOf, repeaterInput, serviceTitle } from './bands.js';
 import { HOP_DRAIN_MS, HOP_LOOK_MS, bandHops, bandPick, channelScore, dialStays, fmGridParity, hopMiddles, recordView, viewScores } from './band-look.js';
 import { BANDS as LORA_BANDS, stepDown as loraStepDown } from './dsp/lora/plan.js';
 import { LoraLocal } from './dsp/lora/local.js';
@@ -905,8 +905,7 @@ function bandTitle(hz: number): string {
   if (hz > 108e6 && hz < 118e6) return 'AIR NAVIGATION';
   if (hz >= 118e6 && hz <= 137e6) return 'AIRBAND';
   if (hz >= 144e6 && hz <= 146e6) return '2 M AMATEUR';
-  if (hz >= 156e6 && hz <= 162.025e6) return 'MARINE VHF';
-  if (hz >= 162.4e6 && hz <= 162.55e6) return 'NOAA WEATHER';
+  const svc = serviceTitle(hz); if (svc) return svc;
   if (hz >= 433.05e6 && hz <= 434.79e6) return 'ISM 433';
   if (hz >= 430e6 && hz <= 440e6) return '70 CM AMATEUR';
   if (hz >= 902e6 && hz <= 928e6) return 'ISM 915';
@@ -1793,7 +1792,7 @@ const EMPTY: Record<string, [string, string, string[]]> = {
   vdl2: ['vdl2', 'Waiting for VDL2 messages', ['Every VDL2 channel from 136.10 to 136.975 MHz is decoded at once; 136.975 is the common one', 'Aircraft talk to ground stations every few minutes, more near an airport; an antenna that sees the sky hears them 200 miles out']],
   acars: ['acars', 'Waiting for ACARS messages', ['Aircraft send them every few minutes; 131.550 is the busiest US channel', 'Near an airport, or with an antenna that sees the sky, you hear aircraft up to 200 miles out']],
   btle: ['btle', 'Waiting for BLE advertisements', ['Phones, earbuds and watches advertise several times a second: start on CH 37', 'BLE is low power: hold the radio within a few meters of a device']],
-  lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a wider SPAN (20 MHz on a HackRF) holds more of its channels']],
+  lora: ['lora', 'No nodes yet', ['Meshtastic nodes beacon about every 15 minutes: leave it running', 'AREA picks where you are; a HackRF hears 10 MHz of its channels at once, and steps down by itself if the radio drops samples']],
   sondes: ['sondes', 'No weather balloons yet', ['Weather services launch around 00:00 and 12:00 UTC; a sonde climbs for about 90 minutes and is heard 200+ miles out', 'Every type is decoded on its own: leave it running and they show up']],
   loramsg: ['lora', 'No messages yet', ['Text on the default Meshtastic and MeshCore public channels shows up here', 'Names and positions arrive first; messages are rarer']],
   cell: ['cell', 'No alerts yet', ['Wireless Emergency Alerts and ETWS warnings ride in SIB12 and SIB10/11: carriers send them only while an alert is active', 'Every alert heard is kept here, newest first, until you clear it', 'Alerts need the whole carrier in the span: a HackRF']],
@@ -4981,6 +4980,8 @@ function hpTick(now: number): void {
   const playing = s.rows.find(r => r.live && s.playing.includes(String(r.hz))) ?? s.rows.find(r => r.live);
   const view = { now, calls: s.rows.map(r => ({ key: String(r.id), onAir: r.live, encrypted: false, tg: 1, audioMs: Math.max(0, (r.live ? s.now : r.endMs) - r.startMs) })), playing: playing ? String(playing.id) : '', controlLive: false, systems: s.tiles.length };
   // a followed channel pins its window; traffic in the window, and the conversation's hang, keep AUTO and SCAN on it
+  // BIZ: no window keeps the scan more than a minute while others wait their turn
+  hpScan.capMs = hpUi.band === 'BIZ' ? HP_CAP_MS : 0;
   const to = hpScan.step(hpAuto, view, s.rows, hpUi.windows.map(w => w.hz), hpRate(), hpUi.idx, hpUi.prefs);
   hpUi.autoMode = hpAuto.mode; hpUi.until = hpAuto.mode === 'hold' ? now + 8_000 : hpAuto.until;
   if (to !== null && to !== hpUi.idx && hpUi.windows[to]) hpTuneWindow(to);
@@ -6457,13 +6458,25 @@ function hdSetProg(n: number, force = false): void {
   if (n === hdUi.prog && !force) return;
   hdUi.prog = n; worker?.postMessage({ type: 'hdProgram', n });
 }
+/** Clean frames a station sends with no audio for a program before it is said not to send that program (about a minute). */
+const HD_ABSENT_FRAMES = 40;
+/** Why a program plays nothing yet: no station locked, its audio not in yet, or the station not sending it. */
+function hdNoAudioWhy(st: StationSnap | undefined, n: number): string {
+  const name = `HD${n + 1}`;
+  if (!st || st.framesGood === 0) return 'WAITING FOR THE STATION';
+  if (st.programs.some(p => p.n === n)) return `NO AUDIO FOR ${name} YET`;
+  // a program on the extra partitions (P3) needs their frames clean before its absence means anything
+  const p3ok = st.p3.frames === 0 || st.p3.good >= HD_ABSENT_FRAMES / 2;
+  return st.framesGood >= HD_ABSENT_FRAMES && p3ok ? `STATION NOT SENDING ${name}` : `NO AUDIO FOR ${name} YET`;
+}
 /** What the selected program's audio is doing, in words and how it shows. */
 function hdAudioText(m: HdSnapMsg | null, n: number): [string, '' | 'ok' | 'amber'] {
   const a = hdMine(m) ? m.audio : undefined;
   if (!a || a.program !== n) return [n === 0 ? 'ANALOG' : 'WAITING', ''];
   if (a.state === 'digital') return ['DIGITAL', 'ok'];
   const wait = a.good > 0 || a.bufferS > 0 ? `BUFFERING ${Math.min(99, Math.round(a.bufferS / 2 * 100))}%` : 'WAITING';
-  return [n === 0 ? `ANALOG · ${wait}` : wait === 'WAITING' ? 'SILENT · WAITING' : `SILENT · ${wait}`, 'amber'];
+  if (n === 0) return [`ANALOG · ${wait}`, 'amber'];
+  return [wait === 'WAITING' ? `SILENT · ${hdNoAudioWhy(m?.station, n)}` : `SILENT · ${wait}`, 'amber'];
 }
 /** Tune a station: the channel moves inside the span; the radio follows only when the sidebands would leave it. */
 function hdTune(hz: number, recenter = false): void {
@@ -7984,6 +7997,8 @@ function renderLora(view: HTMLElement): void {
   clearInterval(loraUi.timer);
   loraUi.timer = window.setInterval(() => { if (state.app !== 'lora') { clearInterval(loraUi.timer); return; } refreshLora(); }, 1000);
   loraTilesOn();
+  // the log was drawn empty: its lines and count come back (a span change redraws the screen)
+  refreshList('lora');
   refreshLora(true);
 }
 /** A channel of the user's own: frequency, bandwidth and spreading factor, listened to all the time while in span. */
@@ -9929,6 +9944,9 @@ function acRowFill(row: HTMLElement, a: Aircraft): void {
   const call = (a.flight ?? '').trim();
   set('call', call || a.icao.toUpperCase());
   set('hex', call ? a.icao.toUpperCase() : '');
+  const why = a.squawk ? squawkMeaning(a.squawk) : '';
+  set('sq', a.squawk ? `SQ ${a.squawk}${why ? ` ${why}` : ''}` : '');
+  row.querySelector('.acsq')?.classList.toggle('alert', !!why);
   set('id', [info?.reg, info?.typeIcao].filter(Boolean).join(' · ') || (info && !info.done ? 'looking up…' : ''));
   set('op', info?.owner ?? [info?.maker, info?.type].filter(Boolean).join(' '));
   set('alt', a.alt !== undefined ? `${a.alt.toLocaleString()} ft` : '— ft');
@@ -9952,7 +9970,7 @@ function refreshAdsb(): void {
   syncRows(el, state.aircraft, a => a.icao, 'icao', (icao) => {
     const row = document.createElement('div');
     row.className = 'acrow tap'; row.dataset.icao = icao;
-    row.innerHTML = '<div class="acth"></div><div class="acmid"><div><b data-r="call"></b> <span class="achex" data-r="hex"></span></div><div class="acid" data-r="id"></div><div class="acop" data-r="op"></div></div><div class="acnum"><b><span data-r="alt"></span> <i data-r="vr"></i></b><span data-r="gs"></span><small data-r="far"></small></div>';
+    row.innerHTML = '<div class="acth"></div><div class="acmid"><div><b data-r="call"></b> <span class="achex" data-r="hex"></span><span class="acsq" data-r="sq"></span></div><div class="acid" data-r="id"></div><div class="acop" data-r="op"></div></div><div class="acnum"><b><span data-r="alt"></span> <i data-r="vr"></i></b><span data-r="gs"></span><small data-r="far"></small></div>';
     row.onclick = () => {
       state.adsbSel = row.dataset.icao!; const p = state.aircraft.find(x => x.icao === state.adsbSel);
       if (p?.lat !== undefined && p.lon !== undefined) { if (!adsbFull) state.adsbView = 'map'; refreshAdsb(); geo?.center(p.lat, p.lon); } else refreshAdsb();

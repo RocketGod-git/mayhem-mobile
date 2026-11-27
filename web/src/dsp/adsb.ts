@@ -102,7 +102,8 @@ export class AdsbDecoder implements IqProcessor {
       }
       if (df !== 17 && df !== 18) { j++; continue; }
       this.dbg.df++;
-      if (this.checksum(msg, LONG_BITS) !== 0) { this.dbg.fail++; j++; continue; }
+      const syn = this.checksum(msg, LONG_BITS);
+      if (syn !== 0 && !this.repair(msg, syn)) { this.dbg.fail++; j++; continue; }
       this.dbg.ok++;
       this.frames++;
       this.decode(msg, batch, nowMs);
@@ -260,6 +261,39 @@ export class AdsbDecoder implements IqProcessor {
     if (lon > 180) lon -= 360;
     if (lat < -90 || lat > 90 || Math.abs(lon) > 180) return null;
     return [lat, lon];
+  }
+
+  /**
+   * CRC repair for a DF17/18 frame. The CRC is linear, so a bit error at position i always leaves the same remainder:
+   * CRC_TABLE[i] for the 88 data bits, 1 << (111 - i) for the 24 parity bits. One bad bit is flipped back outright; two
+   * are flipped back only when the repaired address is an aircraft already heard cleanly. The DF field is never touched.
+   */
+  private static syn1: Map<number, number> | null = null;
+  private static syn2: Map<number, number> | null = null;
+  private static tables(): void {
+    const s = (i: number) => i < LONG_BITS - 24 ? CRC_TABLE[i] : 1 << (LONG_BITS - 1 - i);
+    const one = new Map<number, number>(), two = new Map<number, number>(), dup = new Set<number>();
+    for (let i = 5; i < LONG_BITS; i++) one.set(s(i), i);
+    for (let a = 5; a < LONG_BITS; a++) for (let b = a + 1; b < LONG_BITS; b++) {
+      const k = s(a) ^ s(b);
+      if (one.has(k)) continue;
+      if (two.has(k)) dup.add(k); else two.set(k, a * 128 + b);
+    }
+    for (const k of dup) two.delete(k);   // a remainder two pairs share is ambiguous
+    AdsbDecoder.syn1 = one; AdsbDecoder.syn2 = two;
+  }
+  private repair(msg: Int32Array, syn: number): boolean {
+    if (!AdsbDecoder.syn1) AdsbDecoder.tables();
+    const flip = (i: number) => { msg[i >> 3] ^= 0x80 >> (i & 7); };
+    const b1 = AdsbDecoder.syn1!.get(syn);
+    if (b1 !== undefined) { flip(b1); return true; }
+    const p = AdsbDecoder.syn2!.get(syn);
+    if (p === undefined) return false;
+    flip(p >> 7); flip(p & 127);
+    const icao = ((msg[1] << 16) | (msg[2] << 8) | msg[3]).toString(16).padStart(6, '0');
+    if ((this.icaoFrames.get(icao) ?? 0) >= 2 || this.planes.has(icao)) return true;
+    flip(p >> 7); flip(p & 127);
+    return false;
   }
 
   private checksum(msg: Int32Array, bits: number): number {

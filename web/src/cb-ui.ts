@@ -77,7 +77,7 @@ export function cbTilesHtml(s: CbSnap | null, now: number, hold: string, emptyHt
     const c = s!.chans.find(x => x.key === t.key), ch = cbChannel(t.hz), playing = s?.playing.includes(t.key);
     const mode = c ? (c.override ? `${c.override} (SET)` : c.mode) : '';
     const badges = [ch === 9 ? pill('EMERGENCY', 'bad') : '', ch === 19 ? pill('HIGHWAY', 'warm') : '', c && c.lineDb && !c.open ? pill(`STEADY CARRIER +${c.lineDb} dB`) : '',
-      t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED`, 'bad') : ''].join('');
+      t.followed ? pill('FOLLOWING', 'acc') : '', t.prio ? pill('PRIORITY', 'warm') : '', t.muted ? pill('MUTED') : '', t.unrecorded ? pill(`${t.unrecorded} NOT RECORDED · DEVICE BUSY`, 'bad') : ''].join('');
     return `<div class="fl-tile hp-tile cb-tile ${t.live ? 'live' : ''} ${t.followed ? 'fol' : ''} ${t.muted ? 'muted' : ''} ${t.prio ? 'prio' : ''}" role="button" data-hpfollow="${t.key}">`
       + `<b>${esc(cbTitle(t.hz))}${playing ? '<i class="hp-note">♪</i>' : ''}</b><small>${esc(cbSub(t.hz))}</small>`
       + (mode ? `<span class="hp-line">${esc(mode)}</span>` : '')
@@ -105,7 +105,7 @@ export function cbCardHtml(s: CbSnap, key: string, now: number, prefs: { hold: s
   if (!c.inSpan) kv.push(['SPAN', 'outside what the radio hears now']);
   if (t) {
     kv.push(['HEARD', `${t.txs} transmissions · ${hpDur(t.talkMs)} on the air · ${t.live ? 'on the air now' : hpHeard(now, t.lastMs)}`]);
-    if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} transmissions came while every demodulator was busy`]);
+    if (t.unrecorded) kv.push(['NOT RECORDED', `${t.unrecorded} transmissions were heard but their audio was not kept, because every demodulator this device runs at once was busy with other channels`]);
   }
   const conv = s.convs.find(x => x.key === key);
   const ids = conv ? s.rows.filter(r => r.conv === conv.id && r.recorded && !r.live).map(r => r.id) : [];

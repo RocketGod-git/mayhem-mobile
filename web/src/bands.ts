@@ -57,6 +57,15 @@ export const NON_HAM: Band[] = [
   { id: '900m', name: '900 Mobiles', lo: 896_000_000, hi: 902_000_000, mode: 'NFM', step: 6_250, segments: [[896_000_000, 902_000_000, 'mobiles of the 935–941 repeaters']] },
 ];
 
+/**
+ * The service a frequency belongs to where one band plan names it for every screen (Audio, Repeaters): NOAA weather
+ * radio 162.400 to 162.550, then marine VHF 156.000 to 162.025, which wins over the land mobile band around it. '' elsewhere.
+ */
+export function serviceTitle(hz: number): string {
+  if (hz >= 162_400_000 - 1_250 && hz <= 162_550_000 + 1_250) return 'NOAA WEATHER RADIO';
+  if (hz >= 156_000_000 && hz <= 162_025_000) return 'MARINE VHF';
+  return '';
+}
 /** The band at [hz]: a ham band, else the first other one with a segment there (FRS/GMRS spans business channels), else any. */
 export function bandOf(hz: number): Band | undefined {
   const inside = (b: Band) => hz >= b.lo && hz <= b.hi;
